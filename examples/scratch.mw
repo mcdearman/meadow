@@ -1,5 +1,10 @@
+-- Self-updating thunks
+@pub data Thunk<a> = 
+  | Thunk ( () -> a )
+  | Value a
+
 @pub data Stream<a> where
-  (::) : (a, Lazy (Stream<a>)) -> Stream<a>
+  (::) : (a, Thunk<Stream<a>>) -> Stream<a>
 end
 
 @pub def sieve(xs : Stream<Int>) : Stream<Int> =
@@ -27,7 +32,7 @@ end
 
 infixr 5 (::)
 
-impl Mappable<List> where
+impl Mappable List where
   def map(f, xs) =
     match xs with
     | Nil -> Nil

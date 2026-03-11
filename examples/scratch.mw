@@ -1,38 +1,38 @@
 -- Self-updating thunks
-@pub data Thunk<a> = 
+@pub data Thunk a = 
   | Thunk ( () -> a )
   | Value a
 
-@pub data Stream<a> where
-  (::) : (a, Thunk<Stream<a>>) -> Stream<a>
+@pub data Stream a where
+  (::) : (a, Thunk (Stream a)) -> Stream a
 end
 
-@pub def sieve(xs : Stream<Int>) : Stream<Int> =
-  let rec sieve'(xs : Stream<Int>, table : Map<Int, [Int]>) : Stream<Int> =
+@pub def sieve(xs : Stream Int) : Stream Int =
+  let rec sieve'(xs : Stream Int, table : Map Int [Int]) : Stream Int =
     match xs with
     | [] -> []
     | x :: xs ->
       match table.lookup(x) with
       | None -> x :: sieve'(xs, table.insert(x * x, [x]))
       | Some facts -> sieve'(xs, facts.foldl(reinsert, table.delete(x)))
-  and reinsert (table : Map(Int, [Int]), prime : Int) : Map(Int, [Int]) =
+  and reinsert (table : Map Int [Int], prime : Int) : Map Int [Int] =
     table.insertWith((++), x + prime, [prime])
   in sieve'(xs, Map.empty)
 
-@pub def primes : Stream<Int> =
+@pub def primes : Stream Int =
   sieve(Stream.from(2))
 
-@pub class Mappable<m> where
+@pub class Mappable m where
   def map : (a -> b, m a) -> m b 
   def (<$>) : (a -> b, m a) -> m b = map
   def (<$>) = map
 end
 
-@pub data List<a> = Nil | a :: List<a>
+@pub data List a = Nil | a :: List a
 
 infixr 5 (::)
 
-impl Mappable List where
+impl Mappable (List a) where
   def map(f, xs) =
     match xs with
     | Nil -> Nil
@@ -40,7 +40,7 @@ impl Mappable List where
 end
 
 @pub def main : IO () = do
-  printLn!(Stream.take(10, primes))
+  println!(Stream.take(10, primes))
 
 @pub def gcd(a, b) =
   if b == 0 then a else gcd(b, a % b)
@@ -65,24 +65,24 @@ end
   end
 
 -- RRB Vectors
-@pub data Vec<a> =
+@pub data Vec a =
   | Empty
   | Root {
       size : Int,
       shift : Int,
-      tree : Node<a> 
+      tree : Node a,
     }
 
-data Node<a> =
-  | Leaf(Vector<a>)
+data Node a =
+  | Leaf(Vector a)
   | Internal {
-      sizes : Maybe<Vector<Int>>,
-      children : Vector<Node<a>>
+      sizes : Maybe(Vector Int),
+      children : Vector (Node a),
     }
 
 def branchingFactor = 32
 
-impl Mappable Vec where
+impl Mappable (Vec a) where
   def map(f, vec) =
     match vec with
     | Empty -> Empty

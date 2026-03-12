@@ -53,17 +53,6 @@ end
     if n == 0 then a else fib'(b, a + b, n - 1)
   in fib'(0, 1, n)
 
-@pub def runSieve (lim : Int) : UArray Int Bool =
-  runSTUArray $ do
-    sieve' <- newArray((2, lim), True);
-    let sqrtLim = floor (sqrt (fromIntegral lim));
-    forM_ [2 .. sqrtLim] $ \p -> do
-        isPrime <- readArray sieve' p
-        when isPrime $ forM_ [2 * p, 3 * p .. lim] $ \i ->
-        writeArray sieve' i False;
-    pure sieve'
-  end
-
 -- RRB Vectors
 @pub data Vec a =
   | Empty

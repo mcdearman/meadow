@@ -7,7 +7,7 @@
   (::) : (a, Thunk (Stream a)) -> Stream a
 end
 
-@pub def sieve(xs : Stream Int) : Stream Int =
+@pub fun sieve(xs : Stream Int) : Stream Int =
   let rec sieve'(xs : Stream Int, table : Map Int [Int]) : Stream Int =
     match xs with
     | [] -> []
@@ -23,9 +23,9 @@ end
   sieve(Stream.from(2))
 
 @pub class Mappable m where
-  def map : (a -> b, m a) -> m b 
-  def (<$>) : (a -> b, m a) -> m b = map
-  def (<$>) = map
+  fun map : (a -> b, m a) -> m b 
+  fun (<$>) : (a -> b, m a) -> m b = map
+  fun (<$>) = map
 end
 
 @pub data List a = Nil | a :: List a
@@ -33,22 +33,19 @@ end
 infixr 5 (::)
 
 impl Mappable (List a) where
-  def map(f, xs) =
+  fun map(f, xs) =
     match xs with
     | Nil -> Nil
     | x :: xs -> f(x) :: map(f, xs)
 end
 
-@pub def main : IO () = do
-  println!(Stream.take(10, primes))
-
-@pub def gcd(a, b) =
+@pub fun gcd(a, b) =
   if b == 0 then a else gcd(b, a % b)
 
-@pub def lcm(a, b) = 
+@pub fun lcm(a, b) = 
   (a * b) / gcd(a, b)
 
-@pub def fib(n) =
+@pub fun fib(n) =
   let rec fib'(a, b, n) =
     if n == 0 then a else fib'(b, a + b, n - 1)
   in fib'(0, 1, n)
@@ -72,7 +69,7 @@ data Node a =
 def branchingFactor = 32
 
 impl Mappable (Vec a) where
-  def map(f, vec) =
+  fun map(f, vec) =
     match vec with
     | Empty -> Empty
     | Root { size, shift, tree } -> Root { size, shift, tree = mapNode(f, tree) }
@@ -82,3 +79,6 @@ impl Mappable (Vec a) where
     | Internal { sizes, children } ->
       Internal { sizes, children = children.map(mapNode f) }
 end
+
+@pub def main : IO () = do
+  println!(Stream.take(10, primes))

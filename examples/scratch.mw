@@ -17,7 +17,7 @@ end
       | Some(facts) -> sieve'(xs, facts.foldl(reinsert, table.delete(x)))
   and reinsert (table : Map(Int, [Int]), prime : Int) : Map(Int, [Int]) =
     table.insertWith((++), x + prime, [prime])
-  in sieve'(xs, Map.empty)
+  in go(xs, Map.empty)
 
 @pub def primes : Stream(Int) =
   sieve(Stream.from(2))
@@ -46,9 +46,9 @@ end
   (a * b) / gcd(a, b)
 
 @pub fun fib(n) =
-  let rec fib'(a, b, n) =
-    if n == 0 then a else fib'(b, a + b, n - 1)
-  in fib'(0, 1, n)
+  let rec loop(a, b, n) =
+    if n == 0 then a else loop(b, a + b, n - 1)
+  in loop(0, 1, n)
 
 -- RRB Vectors
 @pub data Vec a =
@@ -62,9 +62,16 @@ end
 data Node a =
   | Leaf(Vector a)
   | Internal {
-      sizes : Maybe(Vector Int),
+      sizes : Maybe (Vector Int),
       children : Vector (Node a),
     }
+
+impl Node a where
+  fun mapNode(self, f) =
+    match self with
+    | Leaf(vec) -> Leaf(vec.map(f))
+    | Internal { sizes, children } ->
+      Internal { sizes, children = children.map(mapNode f) }
 
 def branchingFactor = 32
 
@@ -72,12 +79,7 @@ impl Mappable(Vec(a)) where
   fun map(f, vec) =
     match vec with
     | Empty -> Empty
-    | Root { size, shift, tree } -> Root { size, shift, tree = mapNode(f, tree) }
-  and mapNode(f, node) =
-    match node with
-    | Leaf(vec) -> Leaf(vec.map(f))
-    | Internal { sizes, children } ->
-      Internal { sizes, children = children.map(mapNode f) }
+    | Root { size, shift, tree } -> Root { size, shift, tree = tree.mapNode(f) }
 end
 
 @pub def main : IO() = do

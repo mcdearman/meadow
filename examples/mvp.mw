@@ -1,0 +1,45 @@
+-- declarations
+def x = 1
+
+-- visibility annotations
+@pub def y = 2
+
+-- functions
+@pub fun gcd(a, b) =
+  if b == 0 then a else gcd(b, a % b)
+
+-- let bindings
+@pub fun foo(x) =
+  let y = x + 1 in y * y
+
+-- let rec
+@pub fun fib(n) =
+  let rec loop(a, b, n) =
+    if n == 0 then a else loop(b, a + b, n - 1)
+  in loop(0, 1, n)
+
+-- data types
+@pub data LinkedList(a) = Nil | a :: LinkedList(a)
+
+-- match expressions
+@pub fun map(f, xs) =
+  match xs with
+  | Nil -> Nil
+  | x :: xs -> f(x) :: map(f, xs)
+
+-- builtin types
+[1, 2, 3] -- list literal
+(1, "hello") -- tuple literal
+"hello" -- string literal
+42 -- integer literal
+42.0 -- float literal
+True -- boolean literal
+
+-- Lists are RRB Vectors not linked lists, so we can do efficient concatenation and slicing
+@pub List(a) 
+  = Empty
+  | Root {
+      size : Int,
+      shift : Int,
+      tree : Node a,
+    }

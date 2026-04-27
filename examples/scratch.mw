@@ -8,12 +8,12 @@
 end
 
 @pub fun sieve(xs : Stream(Int)) : Stream(Int) =
-  let rec sieve'(xs : Stream(Int), table : Map(Int, [Int])) : Stream(Int) =
+  let rec loop(xs : Stream(Int), table : Map(Int, [Int])) : Stream(Int) =
     match xs with
     | [] -> []
     | x :: xs ->
       match table.lookup(x) with
-      | None -> x :: sieve'(xs, table.insert(x * x, [x]))
+      | None -> x :: loop(xs, table.insert(x * x, [x]))
       | Some(facts) -> sieve'(xs, facts.foldl(reinsert, table.delete(x)))
   and reinsert (table : Map(Int, [Int]), prime : Int) : Map(Int, [Int]) =
     table.insertWith((++), x + prime, [prime])
@@ -81,6 +81,10 @@ impl Mappable(Vec(a)) where
     | Empty -> Empty
     | Root { size, shift, tree } -> Root { size, shift, tree = tree.mapNode(f) }
 end
+
+class Foldable where
+  fun foldr : ((a, b) -> b, (b) -> t, (a) -> b)
+  fun foldMap : (Combinable c) => (((a) -> c), 
 
 @pub def main : IO() = do
   println!(Stream.take(10, primes))

@@ -51,27 +51,27 @@ end
   in loop(0, 1, n)
 
 -- RRB Vectors
-@pub data Vec a =
-  | Empty
+@pub data Vec(a)
+  = Empty
   | Root {
       size : Int,
       shift : Int,
-      tree : Node a,
+      tree : Node(a),
     }
 
-data Node a =
-  | Leaf(Vector a)
+data Node(a) 
+  = Leaf(Vector(a))
   | Internal {
-      sizes : Maybe (Vector Int),
-      children : Vector (Node a),
+      sizes : Maybe(Vector(Int)),
+      children : Vector(Node(a)),
     }
 
-impl Node a where
+impl Node(a) where
   fun mapNode(self, f) =
     match self with
     | Leaf(vec) -> Leaf(vec.map(f))
     | Internal { sizes, children } ->
-      Internal { sizes, children = children.map(mapNode f) }
+      Internal { sizes, children = children.map(\(child) -> mapNode(child, f)) }
 
 def branchingFactor = 32
 

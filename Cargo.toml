@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+chumsky = { version = "0.12.0", features = ["pratt"] }
 env_logger = "0.11.9"
 insta = "1.46.3"
+itertools = "0.14.0"
+lasso = { version = "0.7.3", features = ["multi-threaded"] }
+log = "0.4.29"
 logos = "0.16.1"
+once_cell = "1.21.4"

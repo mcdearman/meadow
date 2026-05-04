@@ -1,18 +1,18 @@
 -- Self-updating thunks
-@pub data Thunk(a) = 
-  | Thunk(() -> a)
-  | Value(a)
+@pub data Thunk a = 
+  | Thunk (() -> a)
+  | Value a
 
-@pub data Stream(a) where
-  (::) : (a, Thunk(Stream(a))) -> Stream(a)
+@pub data Stream a where
+  (::) : (a, Thunk (Stream a)) -> Stream a
 end
 
-@pub fun sieve(xs : Stream(Int)) : Stream(Int) =
+@pub fun sieve (xs : Stream Int) : Stream Int =
   let rec loop(xs : Stream(Int), table : Map(Int, [Int])) : Stream(Int) =
-    match xs with
+    match xs
     | [] -> []
     | x :: xs ->
-      match table.lookup(x) with
+      match table.lookup(x)
       | None -> x :: loop(xs, table.insert(x * x, [x]))
       | Some(facts) -> sieve'(xs, facts.foldl(reinsert, table.delete(x)))
   and reinsert (table : Map(Int, [Int]), prime : Int) : Map(Int, [Int]) =
@@ -34,7 +34,7 @@ infixr 5 (::)
 
 impl Mappable(List(a)) where
   fun map(f, xs) =
-    match xs with
+    match xs
     | Nil -> Nil
     | x :: xs -> f(x) :: map(f, xs)
 end
@@ -68,7 +68,7 @@ data Node(a)
 
 impl Node(a) where
   fun mapNode(self, f) =
-    match self with
+    match self
     | Leaf(vec) -> Leaf(vec.map(f))
     | Internal { sizes, children } ->
       Internal { sizes, children = children.map(\(child) -> mapNode(child, f)) }
@@ -77,7 +77,7 @@ def branchingFactor = 32
 
 impl Mappable(Vec(a)) where
   fun map(f, vec) =
-    match vec with
+    match vec
     | Empty -> Empty
     | Root { size, shift, tree } -> Root { size, shift, tree = tree.mapNode(f) }
 end

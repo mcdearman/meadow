@@ -8,7 +8,7 @@
 end
 
 @pub fun sieve (xs : Stream Int) : Stream Int =
-  let rec loop (xs : Stream Int, table : Map(Int, [Int])) : Stream Int =
+  let rec loop (xs : Stream Int, table : Map (Int, [Int])) : Stream Int =
     match xs with
     | [] -> []
     | x :: xs ->

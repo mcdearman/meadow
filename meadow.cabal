@@ -64,6 +64,7 @@ library
   import: warnings
   exposed-modules:
     Meadow.AST
+    Meadow.Lexer
     Meadow.Token
     Meadow.Utils
 

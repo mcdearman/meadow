@@ -1,0 +1,11 @@
+[package]
+name = "meadow"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ariadne = "0.6.0"
+chumsky = { version = "0.13.0", features = ["pratt"] }
+lasso = { version = "0.7.3", features = ["multi-threaded"] }
+logos = "0.16.1"
+once_cell = "1.21.4"

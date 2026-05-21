@@ -57,7 +57,7 @@ executable mdwc
   import: warnings
   main-is: Main.hs
   build-depends: meadow
-  hs-source-dirs: src
+  hs-source-dirs: app
   default-language: GHC2024
 
 library
@@ -89,5 +89,5 @@ test-suite tests
   build-tool-depends:
     hspec-discover:hspec-discover
 
-  hs-source-dirs: compiler/tests
+  hs-source-dirs: tests
   default-language: GHC2024

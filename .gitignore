@@ -1,5 +1,9 @@
 /target
 dist-newstyle
+.vscode
+.idea
+*.log
+.repos
 
 # Added by cargo
 #

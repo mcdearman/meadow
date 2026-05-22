@@ -1,12 +1,12 @@
 module Meadow.Token where
 
 import Data.Text (Text)
+import Meadow.Utils
 
 type LToken = Located Token
 
 data Token
   = TokenError
-  | TokenNewline
   | TokenUppercaseIdent Text
   | TokenLowercaseIdent Text
   | TokenOpIdent Text
@@ -41,12 +41,12 @@ data Token
   | TokenUse
   | TokenData
   | TokenType
+  | TokenDef
+  | TokenFun
   | TokenLet
   | TokenIn
-  | TokenWhere
-  | TokenDo
-  | TokenCase
-  | TokenOf
+  | TokenMatch
+  | TokenWith
   | TokenIf
   | TokenThen
   | TokenElse

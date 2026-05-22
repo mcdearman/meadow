@@ -10,7 +10,7 @@ category: Language
 build-type: Simple
 extra-doc-files: CHANGELOG.md
 
-common warnings
+common shared-deps
   ghc-options:
     -Wall
     -Werror=missing-signatures
@@ -29,7 +29,6 @@ common warnings
     RecordWildCards
     RequiredTypeArguments
     ScopedTypeVariables
-    StrictData
     TypeFamilies
     ViewPatterns
 
@@ -54,19 +53,21 @@ common warnings
     wcwidth,
 
 executable mdwc
-  import: warnings
+  import: shared-deps
   main-is: Main.hs
   build-depends: meadow
   hs-source-dirs: app
   default-language: GHC2024
 
 library
-  import: warnings
+  import: shared-deps
   build-depends: megaparsec
   exposed-modules:
+    Meadow
     Meadow.AST
     Meadow.Lexer
     Meadow.Parser
+    Meadow.Pipeline
     Meadow.Token
     Meadow.Utils
 
@@ -74,11 +75,11 @@ library
   default-language: GHC2024
 
 test-suite tests
-  import: warnings
+  import: shared-deps
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-    Idyllic.LayoutSpec
+    Meadow.LayoutSpec
 
   build-depends:
     -- hspec-golden-diff,

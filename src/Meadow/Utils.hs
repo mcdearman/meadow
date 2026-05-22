@@ -66,3 +66,8 @@ prettyShowNoColor a = TL.unpack $ pShowOpt config a
       defaultOutputOptionsDarkBg
         { outputOptionsColorOptions = Nothing
         }
+
+data InputMode
+  = InputModeFile Text
+  | InputModeInteractive
+  deriving (Show, Eq)

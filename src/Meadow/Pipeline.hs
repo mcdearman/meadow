@@ -2,6 +2,7 @@ module Meadow.Pipeline where
 
 import Data.Text
 import Meadow.Lexer (tokenize)
+import Meadow.Parser
 import Meadow.Utils
 import Text.Megaparsec (errorBundlePretty)
 import Text.Pretty.Simple (pPrint)
@@ -18,9 +19,6 @@ runPipeline :: PipelineEnv -> Text -> IO ()
 runPipeline env src =
   case tokenize src of
     Left err -> print $ errorBundlePretty err
-    Right tokens -> pPrint tokens
-
-data InputMode
-  = InputModeFile Text
-  | InputModeInteractive
-  deriving (Show, Eq)
+    Right tokens -> case parseMeadow (pipelineInputMode env) tokens of
+      Left err -> print err
+      Right res -> pPrint res

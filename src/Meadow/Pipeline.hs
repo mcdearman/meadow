@@ -20,5 +20,5 @@ runPipeline env src =
   case tokenize src of
     Left err -> print $ errorBundlePretty err
     Right tokens -> case parseMeadow (pipelineInputMode env) tokens of
-      Left err -> print err
+      Left err -> 
       Right res -> pPrint res

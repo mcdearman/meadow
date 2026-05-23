@@ -47,7 +47,16 @@ mod' :: Text -> Parser Module
 mod' name = Module name <$> many decl
 
 decl :: Parser LDecl
-decl = located $ DeclBind <$> bind
+decl = located (try funBind <|> patBind)
+  where
+    funBind =
+      try $
+        DeclBind
+          <$> (tokenP TokenFun *> (BindFun <$> lowerIdent <*> many pat <*> (tokenP TokenEq *> expr)))
+    patBind =
+      try $
+        DeclBind
+          <$> (tokenP TokenDef *> (BindPat <$> pat <*> (tokenP TokenEq *> expr)))
 
 expr :: Parser LExpr
 expr = app <|> atom
@@ -56,16 +65,11 @@ expr = app <|> atom
     litExpr = ExprLit <$> lit
     varExpr = ExprVar <$> lowerIdent
     lam = ExprLam <$> (tokenP TokenBackSlash *> pat) <*> (tokenP TokenRArrow *> expr)
-    let' = ExprLet <$> (tokenP TokenLet *> bind) <*> (tokenP TokenIn *> expr)
+    let' = ExprLet <$> (tokenP TokenLet *> (BindPat <$> pat <*> (tokenP TokenEq *> expr))) <*> (tokenP TokenIn *> expr)
+    letRec = ExprLet <$> (tokenP TokenLet *> tokenP TokenRec *> (BindFun <$> lowerIdent <*> many pat <*> (tokenP TokenEq *> expr))) <*> (tokenP TokenIn *> expr)
     tuple = ExprTuple <$> parens (expr `sepBy` tokenP TokenComma)
-    atom = located $ choice [try unit, try tuple, litExpr, let', varExpr, lam, parens (unLoc <$> expr)]
+    atom = located $ choice [try tuple, try $ parens (unLoc <$> expr), unit, litExpr, try letRec, let', varExpr, lam]
     app = try $ located $ ExprApp <$> atom <*> atom
-
-bind :: Parser Bind
-bind = try bindFun <|> bindPat
-  where
-    bindPat = try $ BindPat <$> pat <*> (tokenP TokenEq *> expr)
-    bindFun = try $ BindFun <$> lowerIdent <*> some pat <*> (tokenP TokenEq *> expr)
 
 pat :: Parser LPat
 pat = located $ choice [try patWildcard, patLit, patIdent, patCons, patAs, patList, patTuple, patUnit]

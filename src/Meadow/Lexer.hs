@@ -2,6 +2,7 @@ module Meadow.Lexer where
 
 import Control.Applicative (empty, liftA, optional, (<|>))
 import Control.Monad (void)
+import Data.Data (Proxy (..))
 import Data.List.NonEmpty qualified as NE
 import Data.Text (Text, pack, unpack)
 import Data.Text qualified as T
@@ -13,6 +14,8 @@ import Text.Megaparsec
   ( MonadParsec (eof, getParserState, lookAhead, notFollowedBy, takeWhile1P, takeWhileP, token, try),
     ParseErrorBundle,
     Parsec,
+    PosState (..),
+    TraversableStream (..),
     choice,
     getOffset,
     many,
@@ -25,7 +28,7 @@ import Text.Megaparsec
   )
 import Text.Megaparsec.Char (alphaNumChar, char, char', hspace1, lowerChar, space1, string, upperChar)
 import Text.Megaparsec.Char.Lexer qualified as L
-import Text.Megaparsec.Stream (VisualStream (..))
+import Text.Megaparsec.Stream hiding (Token)
 
 type Lexer = Parsec Void Text
 
@@ -38,7 +41,10 @@ tokenL =
     [ TokenMod <$ string "mod",
       TokenData <$ string "data",
       TokenType <$ string "type",
+      TokenDef <$ string "def",
+      TokenFun <$ string "fun",
       TokenLet <$ string "let",
+      TokenRec <$ string "rec",
       TokenIn <$ string "in",
       TokenMatch <$ string "match",
       TokenWith <$ string "with",
@@ -146,9 +152,9 @@ located l = do
   res <- l
   Located res . Span start <$> getOffset
 
-instance VisualStream [LToken] where
-  -- showTokens Proxy = show
-  showTokens _ = unwords . map show . NE.toList
+-- instance VisualStream [LToken] where
+--   -- showTokens Proxy = show
+--   showTokens _ = unwords . map show . NE.toList
 
 -- instance TraversableStream [LToken] where
 --   reachOffset o PosState {..} =
@@ -172,7 +178,7 @@ instance VisualStream [LToken] where
 --         case post of
 --           [] -> case pstateInput of
 --             [] -> pstateSourcePos
---             ts -> let (l,c) = offsetToLineCol $ spanEnd (last ts) in SourcePos (sourceName pstateSourcePos) l c
+--             ts -> let (l, c) = offsetToLineCol $ spanEnd (last ts) in SourcePos (sourceName pstateSourcePos) l c
 --           (x : _) -> wpStart x
 --       sameLine = sourceLine newSourcePos == sourceLine pstateSourcePos
 --       (pre, post) = splitAt (o - pstateOffset) pstateInput

@@ -44,6 +44,7 @@ data Token
   | TokenDef
   | TokenFun
   | TokenLet
+  | TokenRec
   | TokenIn
   | TokenMatch
   | TokenWith

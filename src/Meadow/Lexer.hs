@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-orphans #-}
+
 module Meadow.Lexer where
 
 import Control.Applicative (empty, liftA, optional, (<|>))
@@ -15,6 +17,7 @@ import Text.Megaparsec
     ParseErrorBundle,
     Parsec,
     PosState (..),
+    SourcePos (..),
     TraversableStream (..),
     choice,
     getOffset,
@@ -119,7 +122,7 @@ isOpChar c = c `elem` ("!$%&*+./<=>?@|\\~:" ++ ['^' .. '`'] :: String)
 
 -- whitespace :: Lexer Token
 -- whitespace = TokenWhitespace <$ takeWhile1P (Just "whitespace") isSpace
---   where
+--   wheree
 --     isSpace c = c == ' ' || c == '\t'
 
 lineComment :: Lexer ()
@@ -152,43 +155,43 @@ located l = do
   res <- l
   Located res . Span start <$> getOffset
 
--- instance VisualStream [LToken] where
---   -- showTokens Proxy = show
---   showTokens _ = unwords . map show . NE.toList
+instance VisualStream [LToken] where
+  -- showTokens Proxy = show
+  showTokens _ = unwords . map show . NE.toList
 
--- instance TraversableStream [LToken] where
---   reachOffset o PosState {..} =
---     ( Just (prefix ++ restOfLine),
---       PosState
---         { pstateInput = post,
---           pstateOffset = max pstateOffset o,
---           pstateSourcePos = newSourcePos,
---           pstateTabWidth = pstateTabWidth,
---           pstateLinePrefix = prefix
---         }
---     )
---     where
---       prefix =
---         if sameLine
---           then pstateLinePrefix ++ preLine
---           else preLine
---       preLine = reverse . takeWhile (/= '\n') . reverse $ preStr
---       (preStr, postStr) = splitAt tokensConsumed (unpack $ streamSrc pstateInput)
---       newSourcePos =
---         case post of
---           [] -> case pstateInput of
---             [] -> pstateSourcePos
---             ts -> let (l, c) = offsetToLineCol $ spanEnd (last ts) in SourcePos (sourceName pstateSourcePos) l c
---           (x : _) -> wpStart x
---       sameLine = sourceLine newSourcePos == sourceLine pstateSourcePos
---       (pre, post) = splitAt (o - pstateOffset) pstateInput
---       tokensConsumed =
---         case NE.nonEmpty pre of
---           Nothing -> 0
---           Just nePre -> tokensLength pxy nePre
---       restOfLine = takeWhile (/= '\n') postStr
---       pxy :: Proxy [LToken]
---       pxy = Proxy
+instance TraversableStream [LToken] where
+  reachOffset o PosState {..} =
+    ( Just (prefix ++ restOfLine),
+      PosState
+        { pstateInput = post,
+          pstateOffset = max pstateOffset o,
+          pstateSourcePos = newSourcePos,
+          pstateTabWidth = pstateTabWidth,
+          pstateLinePrefix = prefix
+        }
+    )
+    where
+      prefix =
+        if sameLine
+          then pstateLinePrefix ++ preLine
+          else preLine
+      preLine = reverse . takeWhile (/= '\n') . reverse $ preStr
+      (preStr, postStr) = splitAt tokensConsumed (unpack $ streamSrc pstateInput)
+      newSourcePos =
+        case post of
+          [] -> case pstateInput of
+            [] -> pstateSourcePos
+            ts -> let (l, c) = offsetToLineCol $ spanEnd (last ts) in SourcePos (sourceName pstateSourcePos) l c
+          (x : _) -> wpStart x
+      sameLine = sourceLine newSourcePos == sourceLine pstateSourcePos
+      (pre, post) = splitAt (o - pstateOffset) pstateInput
+      tokensConsumed =
+        case NE.nonEmpty pre of
+          Nothing -> 0
+          Just nePre -> tokensLength pxy nePre
+      restOfLine = takeWhile (/= '\n') postStr
+      pxy :: Proxy [LToken]
+      pxy = Proxy
 
 instance HasHints Void msg where
   hints _ = mempty

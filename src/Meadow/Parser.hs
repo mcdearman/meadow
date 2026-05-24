@@ -17,6 +17,9 @@ import Meadow.Token
 import Meadow.Utils
 import Text.Megaparsec hiding (Token)
 
+-- instance HasHints Void msg where
+--   hints _ = mempty
+
 type Parser = Parsec Void [LToken]
 
 data ParseResult

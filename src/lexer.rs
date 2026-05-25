@@ -49,14 +49,14 @@ impl<'src> Lexer<'src> {
 }
 
 impl<'src> Iterator for Lexer<'src> {
-    type Item = Token;
+    type Item = (Token, Span);
 
     fn next(&mut self) -> Option<Self::Item> {
         let token = self.next_tok();
-        if token.value == Token::Eof {
+        if *token.value == Token::Eof {
             None
         } else {
-            Some(token.value)
+            Some((*token.value, token.span))
         }
     }
 }

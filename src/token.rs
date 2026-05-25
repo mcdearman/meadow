@@ -28,8 +28,8 @@ pub enum Token {
     //     r"-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0))(/-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0)))",
     //     |lex| lex.slice().parse().ok())]
     // Rational(Rational64),
-    #[regex(r#""(\\.|[^"\\])*""#, |lex| InternedString::from(lex.slice()))]
-    String(InternedString),
+    #[regex(r#""(\\.|[^"\\])*""#, |lex| lex.slice().to_string())]
+    String(String),
     #[regex(r"'(\\.|[^'\\])'", |lex| lex.slice().chars().nth(1))]
     Char(char),
     #[regex(r"[a-z][a-zA-Z0-9'_]*", |lex| InternedString::from(lex.slice()), priority = 2)]

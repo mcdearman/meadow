@@ -4,6 +4,7 @@ dist-newstyle
 .idea
 *.log
 .repos
+.repl_history
 
 # Added by cargo
 #

@@ -1,3 +1,4 @@
+use chumsky::span::Span as ChumskySpan;
 use std::{
     fmt::{Debug, Display},
     ops::{Index, Range},
@@ -74,14 +75,42 @@ impl Index<Span> for str {
     }
 }
 
+impl ChumskySpan for Span {
+    type Context = ();
+
+    type Offset = u32;
+
+    fn new(context: Self::Context, range: Range<Self::Offset>) -> Self {
+        Self {
+            start: range.start,
+            end: range.end,
+        }
+    }
+
+    fn context(&self) -> Self::Context {
+        ()
+    }
+
+    fn start(&self) -> Self::Offset {
+        self.start
+    }
+
+    fn end(&self) -> Self::Offset {
+        self.end
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Located<T> {
-    pub value: T,
+    pub value: Box<T>,
     pub span: Span,
 }
 
 impl<T> Located<T> {
     pub fn new(value: T, span: Span) -> Self {
-        Self { value, span }
+        Self {
+            value: Box::new(value),
+            span,
+        }
     }
 }

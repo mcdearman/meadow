@@ -1,4 +1,4 @@
-use crate::{intern::InternedString, span::Located};
+use crate::{intern::InternedString, span::Located, token::Token};
 
 pub type Prog = Located<Module>;
 
@@ -25,9 +25,89 @@ pub enum Expr {
     Let(Vec<Bind>, LExpr),
     If(LExpr, LExpr, LExpr),
     Case(LExpr, Vec<(LPat, LExpr)>),
+    UnOp(LUnOp, LExpr),
+    BinOp(LBinOp, LExpr, LExpr),
     Tuple(Vec<LExpr>),
     List(Vec<LExpr>),
     Unit,
+}
+
+pub type LUnOp = Located<UnOp>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnOp {
+    Neg,
+    Not,
+}
+
+impl From<UnOp> for InternedString {
+    fn from(op: UnOp) -> Self {
+        match op {
+            UnOp::Neg => "-".into(),
+            UnOp::Not => "!".into(),
+        }
+    }
+}
+
+impl From<Token> for UnOp {
+    fn from(token: Token) -> Self {
+        match token {
+            Token::Minus => UnOp::Neg,
+            Token::Bang => UnOp::Not,
+            _ => panic!("Invalid token for unary operator: {:?}", token),
+        }
+    }
+}
+
+pub type LBinOp = Located<BinOp>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Leq,
+    Geq,
+}
+
+impl From<BinOp> for InternedString {
+    fn from(op: BinOp) -> Self {
+        match op {
+            BinOp::Add => "+".into(),
+            BinOp::Sub => "-".into(),
+            BinOp::Mul => "*".into(),
+            BinOp::Div => "/".into(),
+            BinOp::Eq => "==".into(),
+            BinOp::Neq => "!=".into(),
+            BinOp::Lt => "<".into(),
+            BinOp::Gt => ">".into(),
+            BinOp::Leq => "<=".into(),
+            BinOp::Geq => ">=".into(),
+        }
+    }
+}
+
+impl From<Token> for BinOp {
+    fn from(token: Token) -> Self {
+        match token {
+            Token::Plus => BinOp::Add,
+            Token::Minus => BinOp::Sub,
+            Token::Star => BinOp::Mul,
+            Token::Slash => BinOp::Div,
+            Token::Eq => BinOp::Eq,
+            Token::Neq => BinOp::Neq,
+            Token::Lt => BinOp::Lt,
+            Token::Gt => BinOp::Gt,
+            Token::Leq => BinOp::Leq,
+            Token::Geq => BinOp::Geq,
+            _ => panic!("Invalid token for binary operator: {:?}", token),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

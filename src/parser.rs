@@ -10,7 +10,7 @@ use chumsky::{
     IterParser, Parser,
     error::Rich,
     extra,
-    input::ValueInput,
+    input::{Stream, ValueInput},
     pratt::{infix, left, prefix},
     primitive::*,
     recursive::recursive,
@@ -20,8 +20,44 @@ use chumsky::{
 pub fn parse<'src>(
     lexer: Lexer<'src>,
     input_mode: InputMode,
-) -> (Option<Prog>, Vec<Rich<'src, LToken, Span>>) {
-    todo!()
+) -> (Option<Prog>, Vec<Rich<'src, Token, Span>>) {
+    let stream = Stream::from_iter(lexer);
+    prog().parse(stream).into_output_errors()
+}
+
+fn prog<'tokens, I>()
+-> impl Parser<'tokens, I, Prog, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
+{
+    decl()
+        .repeated()
+        .at_least(1)
+        .collect()
+        .map_with(|decls, e| Located::new(Module { decls }, e.span()))
+}
+
+fn decl<'tokens, I>()
+-> impl Parser<'tokens, I, LDecl, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
+{
+    let bind_decl = {
+        let pat_bind = pat()
+            .then_ignore(just(Token::Eq))
+            .then(expr())
+            .map(|(p, e)| Bind::Pat(p, e));
+
+        let fun_bind = lower_ident()
+            .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
+            .then_ignore(just(Token::Eq))
+            .then(expr())
+            .map(|((name, args), body)| Bind::Fun(name, args, body));
+
+        fun_bind.or(pat_bind)
+    };
+
+    bind_decl.map_with(|bind, e| LDecl::new(Decl::Bind(bind), e.span()))
 }
 
 fn expr<'tokens, I>()
@@ -30,8 +66,6 @@ where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
     recursive(|expr| {
-        // ── Atoms ─────────────────────────────────────────────────────────
-
         let lit_expr = located(lit().map(Expr::Lit));
         let var_expr = located(lower_ident().map(Expr::Var));
         let unit_expr = located(
@@ -62,9 +96,6 @@ where
             .delimited_by(just(Token::LBrack), just(Token::RBrack))
             .map_with(|es, e| Located::new(Expr::List(es), e.span()));
 
-        // ── Let ───────────────────────────────────────────────────────────
-
-        // bind: either `pat = expr` or `ident args = expr`
         let bind = {
             let pat_bind = pat()
                 .then_ignore(just(Token::Eq))
@@ -87,8 +118,6 @@ where
             .map(|(binds, body)| Expr::Let(binds, body))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
-        // ── If ────────────────────────────────────────────────────────────
-
         let if_expr = just(Token::If)
             .ignore_then(expr.clone())
             .then_ignore(just(Token::Then))
@@ -98,16 +127,12 @@ where
             .map(|((cond, then), else_)| Expr::If(cond, then, else_))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
-        // ── Lambda ────────────────────────────────────────────────────────
-
         let lam_expr = just(Token::Backslash)
             .ignore_then(pat().repeated().at_least(1).collect::<Vec<_>>())
             .then_ignore(just(Token::LArrow))
             .then(expr.clone())
             .map(|(params, body)| Expr::Lam(params, body))
             .map_with(|e, ex| Located::new(e, ex.span()));
-
-        // ── Case ──────────────────────────────────────────────────────────
 
         let case_branch = pat().then_ignore(just(Token::LArrow)).then(expr.clone());
 
@@ -116,7 +141,6 @@ where
             .then_ignore(just(Token::Of))
             .then(
                 just(Token::Bar)
-                    .or_not()
                     .ignore_then(case_branch.clone())
                     .then(
                         just(Token::Bar)
@@ -132,8 +156,6 @@ where
             .map(|(scrutinee, branches)| Expr::Case(scrutinee, branches))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
-        // ── Atom (used as pratt leaf & function/arg position) ─────────────
-
         let atom = choice((
             let_expr,
             if_expr,
@@ -146,11 +168,6 @@ where
             var_expr,
         ));
 
-        // ── Function application (left-associative, higher than any op) ───
-        //
-        // `f a b c` → App(App(App(f, a), b), c)
-        // We parse a non-empty sequence of atoms and fold left.
-
         let app = atom
             .clone()
             .then(atom.repeated().collect::<Vec<_>>())
@@ -158,7 +175,6 @@ where
                 if args.is_empty() {
                     f
                 } else {
-                    // fold: App(App(f, a), b) ...
                     args.into_iter().fold(f, |acc, arg| {
                         let span = e.span();
                         Located::new(Expr::App(acc, vec![arg]), span)
@@ -166,75 +182,16 @@ where
                 }
             });
 
-        // ── Pratt operator table ──────────────────────────────────────────
-        //
-        // Precedence levels (higher = tighter):
-        //   1  ||
-        //   2  &&
-        //   3  == != < > <= >=
-        //   4  + -
-        //   5  * / %
-        //   6  unary !  (prefix)
-
-        let mk_binop = |op: &'static str| {
-            move |lhs: LExpr, rhs: LExpr| -> LExpr {
-                let span = Span::new(lhs.span.start, rhs.span.end);
+        app.clone().pratt((prefix(
+            1,
+            just(Token::Minus),
+            |op: Token, exp: Located<Expr>, e| {
                 Located::new(
-                    Expr::App(
-                        Located::new(
-                            Expr::Var(Located::new(InternedString::from(op), span)),
-                            span,
-                        ),
-                        vec![lhs, rhs],
-                    ),
-                    span,
+                    Expr::UnOp(Located::new(UnOp::from(op), e.span()), exp),
+                    e.span(),
                 )
-            }
-        };
-
-        app.clone().pratt((
-            // Prefix
-            prefix(6, just(Token::Bang), |_, rhs: LExpr, e: &mut dyn chumsky::inspector::Inspector<ParserInput<'tokens>, Extra<'tokens>>| {
-                let span = rhs.span;
-                Located::new(
-                    Expr::App(
-                        Located::new(
-                            Expr::Var(Located::new(InternedString::from("!"), span)),
-                            span,
-                        ),
-                        vec![rhs],
-                    ),
-                    span,
-                )
-            }),
-            prefix(6, just(Token::Minus), |_, rhs: LExpr, e: &mut dyn chumsky::inspector::Inspector<ParserInput<'tokens>, Extra<'tokens>>| {
-                let span = rhs.span;
-                Located::new(
-                    Expr::App(
-                        Located::new(
-                            Expr::Var(Located::new(InternedString::from("negate"), span)),
-                            span,
-                        ),
-                        vec![rhs],
-                    ),
-                    span,
-                )
-            }),
-            // Multiplicative
-            infix(left(5), just(Token::Star),    mk_binop("*")),
-            infix(left(5), just(Token::Slash),   mk_binop("/")),
-            infix(left(5), just(Token::Percent), mk_binop("%")),
-            // Additive
-            infix(left(4), just(Token::Plus),  mk_binop("+")),
-            infix(left(4), just(Token::Minus), mk_binop("-")),
-            // Comparison
-            infix(left(3), just(Token::Eq),  mk_binop("==")),
-            infix(left(3), just(Token::Neq),mk_binop("!=")),
-            infix(left(3), just(Token::Lt),    mk_binop("<")),
-            infix(left(3), just(Token::Gt),    mk_binop(">")),
-            infix(left(3), just(Token::Leq),  mk_binop("<=")),
-            infix(left(3), just(Token::Geq),  mk_binop(">=")),
-        ))
+            },
+        ),))
     })
 }
 
@@ -297,7 +254,7 @@ fn upper_ident<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 }
 
 fn lit<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
--> impl Parser<'a, I, Lit, extra::Err<Rich<'a, Token, Span>>> {
+-> impl Parser<'a, I, Lit, extra::Err<Rich<'a, Token, Span>>> + Clone {
     select! {
         Token::Int(i) => Lit::Int(i),
         Token::String(s) => Lit::String(s),
@@ -306,7 +263,7 @@ fn lit<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 
 fn located<'tokens, I, P>(
     p: P,
-) -> impl Parser<'tokens, I, LExpr, extra::Err<Rich<'tokens, Token, Span>>>
+) -> impl Parser<'tokens, I, LExpr, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
     P: Parser<'tokens, I, Expr, extra::Err<Rich<'tokens, Token, Span>>> + Clone,

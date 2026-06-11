@@ -4,6 +4,7 @@ pub type Prog = Located<Module>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
+    pub name: InternedString,
     pub decls: Vec<LDecl>,
 }
 

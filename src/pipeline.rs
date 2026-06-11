@@ -1,5 +1,4 @@
-use crate::lexer::Lexer;
-use chumsky::input::Stream;
+use crate::{lexer::Lexer, parser::parse, span::Span};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
@@ -27,9 +26,9 @@ impl<'src> Pipeline<'src> {
         // for token in self.lexer.clone() {
         //     println!("{:?}", token);
         // }
-        let stream = Stream::from_iter(self.lexer);
-        
-        // let (ast, errors) = parse(stream, true);
+
+        let (ast, errors) = parse(self.lexer, self.mode);
+        println!("{:#?}", ast);
         Ok(())
     }
 }

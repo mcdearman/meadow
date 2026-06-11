@@ -10,23 +10,58 @@ use chumsky::{
     IterParser, Parser,
     error::Rich,
     extra,
-    input::{Stream, ValueInput},
+    input::{Input, Stream, ValueInput},
     pratt::{infix, left, prefix},
     primitive::*,
     recursive::recursive,
     select,
 };
+use itertools::Either;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParseResult {
+    Prog(Option<Prog>),
+    Interactive(Option<Either<LDecl, LExpr>>),
+}
 
 pub fn parse<'src>(
     lexer: Lexer<'src>,
     input_mode: InputMode,
-) -> (Option<Prog>, Vec<Rich<'src, Token, Span>>) {
-    let stream = Stream::from_iter(lexer);
-    prog().parse(stream).into_output_errors()
+) -> (ParseResult, Vec<Rich<'src, Token, Span>>) {
+    let eof_span = lexer
+        .clone()
+        .last()
+        .map(|(_, span)| span)
+        .unwrap_or_default();
+
+    let stream =
+        Stream::from_iter(lexer).map(eof_span.extend(Span::new(0, 0)), |(t, s): (_, _)| (t, s));
+
+    match input_mode {
+        InputMode::File(name) => {
+            let (res, errors) = prog(&InternedString::from(name))
+                .parse(stream)
+                .into_output_errors();
+            (ParseResult::Prog(res), errors)
+        }
+        InputMode::Interactive => {
+            let (res, errors) = interactive().parse(stream).into_output_errors();
+            (ParseResult::Interactive(res), errors)
+        }
+    }
 }
 
-fn prog<'tokens, I>()
--> impl Parser<'tokens, I, Prog, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+fn interactive<'tokens, I>()
+-> impl Parser<'tokens, I, Either<LDecl, LExpr>, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
+{
+    decl().map(Either::Left).or(expr().map(Either::Right))
+}
+
+fn prog<'tokens, I>(
+    name: &InternedString,
+) -> impl Parser<'tokens, I, Prog, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
@@ -34,7 +69,7 @@ where
         .repeated()
         .at_least(1)
         .collect()
-        .map_with(|decls, e| Located::new(Module { decls }, e.span()))
+        .map_with(|decls, e| Located::new(Module { name: *name, decls }, e.span()))
 }
 
 fn decl<'tokens, I>()

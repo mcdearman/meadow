@@ -128,12 +128,14 @@ pub enum Token {
     Use,
     #[token("def")]
     Def,
+    #[token("fun")]
+    Fun,
     #[token("let")]
     Let,
     #[token("in")]
     In,
-    #[token("case")]
-    Case,
+    #[token("match")]
+    Match,
     #[token("of")]
     Of,
     #[token("if")]
@@ -214,10 +216,11 @@ impl Display for Token {
             End => write!(f, "End"),
             Use => write!(f, "Use"),
             Def => write!(f, "Def"),
+            Fun => write!(f, "Fun"),
             Let => write!(f, "Let"),
             In => write!(f, "In"),
             If => write!(f, "If"),
-            Case => write!(f, "Case"),
+            Match => write!(f, "Match"),
             Of => write!(f, "Of"),
             Then => write!(f, "Then"),
             Else => write!(f, "Else"),

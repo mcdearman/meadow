@@ -78,12 +78,14 @@ where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
     let bind_decl = {
-        let pat_bind = pat()
+        let pat_bind = just(Token::Def)
+            .ignore_then(pat())
             .then_ignore(just(Token::Eq))
             .then(expr())
             .map(|(p, e)| Bind::Pat(p, e));
 
-        let fun_bind = lower_ident()
+        let fun_bind = just(Token::Fun)
+            .ignore_then(lower_ident())
             .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
             .then_ignore(just(Token::Eq))
             .then(expr())
@@ -137,7 +139,8 @@ where
                 .then(expr.clone())
                 .map(|(p, e)| Bind::Pat(p, e));
 
-            let fun_bind = lower_ident()
+            let fun_bind = just(Token::Fun)
+                .ignore_then(lower_ident())
                 .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone())
@@ -171,7 +174,7 @@ where
 
         let case_branch = pat().then_ignore(just(Token::LArrow)).then(expr.clone());
 
-        let case_expr = just(Token::Case)
+        let case_expr = just(Token::Match)
             .ignore_then(expr.clone())
             .then_ignore(just(Token::Of))
             .then(
@@ -217,16 +220,25 @@ where
                 }
             });
 
-        app.clone().pratt((prefix(
-            1,
-            just(Token::Minus),
-            |op: Token, exp: Located<Expr>, e| {
+        app.clone().pratt((
+            prefix(1, just(Token::Minus), |op: Token, exp: Located<Expr>, e| {
                 Located::new(
                     Expr::UnOp(Located::new(UnOp::from(op), e.span()), exp),
                     e.span(),
                 )
-            },
-        ),))
+            }),
+            // infix ops
+            // (
+            //     2,
+            //     just(Token::Plus),
+            //     |op: Token, left: Located<Expr>, right: Located<Expr>, e| {
+            //         Located::new(
+            //             Expr::BinOp(Located::new(BinOp::from(op), e.span()), left, right),
+            //             e.span(),
+            //         )
+            //     },
+            // ),
+        ))
     })
 }
 

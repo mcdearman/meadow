@@ -28,7 +28,13 @@ impl<'src> Pipeline<'src> {
         // }
 
         let (ast, errors) = parse(self.lexer, self.mode);
-        println!("{:#?}", ast);
+        if errors.is_empty() {
+            println!("{:#?}", ast);
+        } else {
+            for error in errors {
+                eprintln!("Error: {}", error);
+            }
+        }
         Ok(())
     }
 }

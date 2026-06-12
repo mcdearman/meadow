@@ -136,8 +136,8 @@ pub enum Token {
     In,
     #[token("match")]
     Match,
-    #[token("of")]
-    Of,
+    #[token("with")]
+    With,
     #[token("if")]
     If,
     #[token("then")]
@@ -221,7 +221,7 @@ impl Display for Token {
             In => write!(f, "In"),
             If => write!(f, "If"),
             Match => write!(f, "Match"),
-            Of => write!(f, "Of"),
+            With => write!(f, "With"),
             Then => write!(f, "Then"),
             Else => write!(f, "Else"),
             Data => write!(f, "Data"),

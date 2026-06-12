@@ -172,25 +172,15 @@ where
             .map(|(params, body)| Expr::Lam(params, body))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
-        let case_branch = pat().then_ignore(just(Token::LArrow)).then(expr.clone());
+        let case_branch = just(Token::Bar)
+            .ignore_then(pat())
+            .then_ignore(just(Token::RArrow))
+            .then(expr.clone());
 
         let case_expr = just(Token::Match)
             .ignore_then(expr.clone())
-            .then_ignore(just(Token::Of))
-            .then(
-                just(Token::Bar)
-                    .ignore_then(case_branch.clone())
-                    .then(
-                        just(Token::Bar)
-                            .ignore_then(case_branch)
-                            .repeated()
-                            .collect::<Vec<_>>(),
-                    )
-                    .map(|(first, mut rest)| {
-                        rest.insert(0, first);
-                        rest
-                    }),
-            )
+            .then_ignore(just(Token::With))
+            .then(case_branch.repeated().at_least(1).collect::<Vec<_>>())
             .map(|(scrutinee, branches)| Expr::Case(scrutinee, branches))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
@@ -265,8 +255,11 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .then_ignore(just(Token::RParen))
             .map(|patterns| Pat::Tuple(patterns));
 
-        lower_ident()
-            .map(|ident| Pat::Var(ident))
+        let cons = upper_ident()
+            .then(pat.clone().repeated().collect())
+            .map(|(name, args)| Pat::Cons(name, args));
+
+        cons.or(lower_ident().map(|ident| Pat::Var(ident)))
             .or(just(Token::Wildcard).map(|_| Pat::Wildcard))
             .or(lit().map(Pat::Lit))
             .or(list)

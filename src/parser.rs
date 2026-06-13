@@ -177,7 +177,7 @@ where
             .then_ignore(just(Token::RArrow))
             .then(expr.clone());
 
-        let case_expr = just(Token::Match)
+        let match_expr = just(Token::Match)
             .ignore_then(expr.clone())
             .then_ignore(just(Token::With))
             .then(case_branch.repeated().at_least(1).collect::<Vec<_>>())
@@ -188,7 +188,7 @@ where
             let_expr,
             if_expr,
             lam_expr,
-            case_expr,
+            match_expr,
             unit_expr,
             tuple_or_paren,
             list_expr,

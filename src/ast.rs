@@ -30,6 +30,7 @@ pub enum Expr {
     BinOp(LBinOp, LExpr, LExpr),
     Tuple(Vec<LExpr>),
     List(Vec<LExpr>),
+    Cons(Ident, Vec<LExpr>),
     Unit,
 }
 

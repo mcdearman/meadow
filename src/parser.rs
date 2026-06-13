@@ -172,7 +172,12 @@ where
             .map(|(params, body)| Expr::Lam(params, body))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
-        let case_branch = just(Token::Bar)
+        let cons_expr = upper_ident()
+            .then(expr.clone().repeated().at_least(1).collect::<Vec<_>>())
+            .map(|(name, args)| Expr::Cons(name, args))
+            .map_with(|e, ex| Located::new(e, ex.span()));
+
+        let match_arm = just(Token::Bar)
             .ignore_then(pat())
             .then_ignore(just(Token::RArrow))
             .then(expr.clone());
@@ -180,7 +185,7 @@ where
         let match_expr = just(Token::Match)
             .ignore_then(expr.clone())
             .then_ignore(just(Token::With))
-            .then(case_branch.repeated().at_least(1).collect::<Vec<_>>())
+            .then(match_arm.repeated().at_least(1).collect::<Vec<_>>())
             .map(|(scrutinee, branches)| Expr::Match(scrutinee, branches))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
@@ -189,6 +194,7 @@ where
             if_expr,
             lam_expr,
             match_expr,
+            cons_expr,
             unit_expr,
             tuple_or_paren,
             list_expr,

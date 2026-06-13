@@ -25,7 +25,7 @@ pub enum Expr {
     App(LExpr, Vec<LExpr>),
     Let(Vec<Bind>, LExpr),
     If(LExpr, LExpr, LExpr),
-    Case(LExpr, Vec<(LPat, LExpr)>),
+    Match(LExpr, Vec<(LPat, LExpr)>),
     UnOp(LUnOp, LExpr),
     BinOp(LBinOp, LExpr, LExpr),
     Tuple(Vec<LExpr>),

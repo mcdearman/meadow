@@ -181,7 +181,7 @@ where
             .ignore_then(expr.clone())
             .then_ignore(just(Token::With))
             .then(case_branch.repeated().at_least(1).collect::<Vec<_>>())
-            .map(|(scrutinee, branches)| Expr::Case(scrutinee, branches))
+            .map(|(scrutinee, branches)| Expr::Match(scrutinee, branches))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
         let atom = choice((

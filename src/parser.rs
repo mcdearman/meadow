@@ -172,11 +172,6 @@ where
             .map(|(params, body)| Expr::Lam(params, body))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
-        let cons_expr = upper_ident()
-            .then(expr.clone().repeated().at_least(1).collect::<Vec<_>>())
-            .map(|(name, args)| Expr::Cons(name, args))
-            .map_with(|e, ex| Located::new(e, ex.span()));
-
         let match_arm = just(Token::Bar)
             .ignore_then(pat())
             .then_ignore(just(Token::RArrow))
@@ -194,7 +189,6 @@ where
             if_expr,
             lam_expr,
             match_expr,
-            cons_expr,
             unit_expr,
             tuple_or_paren,
             list_expr,
@@ -216,7 +210,12 @@ where
                 }
             });
 
-        app.clone().pratt((
+        let cons = upper_ident()
+            .then(expr.clone().repeated().collect::<Vec<_>>())
+            .map(|(name, args)| Expr::Cons(name, args))
+            .map_with(|e, ex| Located::new(e, ex.span()));
+
+        (cons.or(app)).clone().pratt((
             prefix(1, just(Token::Minus), |op: Token, exp: Located<Expr>, e| {
                 Located::new(
                     Expr::UnOp(Located::new(UnOp::from(op), e.span()), exp),

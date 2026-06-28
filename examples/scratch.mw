@@ -50,6 +50,10 @@ end
     if n == 0 then a else loop(b, a + b, n - 1)
   in loop(0, 1, n)
 
+@pub fib(n) = loop(0, 1, n) 
+  where
+    loop(a, b, n) = if n == 0 then a else loop(b, a + b, n - 1)
+
 -- RRB Vectors
 @pub data Vec(a)
   = Empty
@@ -82,5 +86,12 @@ impl Mappable(Vec(a)) where
     | Root { size, shift, tree } -> Root { size, shift, tree = tree.mapNode(f) }
 end
 
-@pub def main : IO() = do
+impl Mappable(Stream(a)) where
+  map(f, xs) =
+    match xs with
+      [] -> []
+      (x :: xs) -> f(x) :: map(f, xs)
+
+@pub main : IO() = do
   println!(Stream.take(10, primes))
+

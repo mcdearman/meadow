@@ -1,9 +1,7 @@
-use std::ops::Range;
-
+use crate::{span::Span, token::Token};
 use ariadne::{Color, Label, Report, ReportKind};
 use chumsky::error::Rich;
-
-use crate::{span::Span, token::Token};
+use std::ops::Range;
 
 pub fn parse_report<'src>(
     msg: String,
@@ -20,7 +18,7 @@ pub fn parse_report<'src>(
     )
 }
 
-fn build_report<'src>(
+pub fn build_report<'src>(
     msg: String,
     filename: String,
     label: (String, Span),

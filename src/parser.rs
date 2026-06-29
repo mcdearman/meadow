@@ -4,14 +4,14 @@ use crate::{
     lexer::Lexer,
     pipeline::InputMode,
     span::{Located, Span},
-    token::{LToken, Token},
+    token::Token,
 };
 use chumsky::{
     IterParser, Parser,
     error::Rich,
     extra,
     input::{Input, Stream, ValueInput},
-    pratt::{infix, left, prefix},
+    pratt::{infix, left, none, prefix, right},
     primitive::*,
     recursive::recursive,
     select,
@@ -86,7 +86,12 @@ where
 
         let fun_bind = just(Token::Fun)
             .ignore_then(lower_ident())
-            .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
+            .then(
+                lower_ident()
+                    .separated_by(just(Token::Comma))
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LParen), just(Token::RParen)),
+            )
             .then_ignore(just(Token::Eq))
             .then(expr())
             .map(|((name, args), body)| Bind::Fun(name, args, body));
@@ -111,20 +116,13 @@ where
                 .map(|_| Expr::Unit),
         );
 
-        let tuple_or_paren = expr
+        let tuple = expr
             .clone()
             .separated_by(just(Token::Comma))
-            .at_least(1)
+            .at_least(2)
             .collect::<Vec<_>>()
             .delimited_by(just(Token::LParen), just(Token::RParen))
-            .map_with(|mut es: Vec<LExpr>, e| {
-                let val = if es.len() == 1 {
-                    *es.remove(0).value
-                } else {
-                    Expr::Tuple(es)
-                };
-                Located::new(val, e.span())
-            });
+            .map_with(|es: Vec<LExpr>, e| Located::new(Expr::Tuple(es), e.span()));
 
         let list_expr = expr
             .clone()
@@ -141,7 +139,12 @@ where
 
             let fun_bind = just(Token::Fun)
                 .ignore_then(lower_ident())
-                .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
+                .then(
+                    lower_ident()
+                        .separated_by(just(Token::Comma))
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LParen), just(Token::RParen)),
+                )
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone())
                 .map(|((name, args), body)| Bind::Fun(name, args, body));
@@ -185,37 +188,41 @@ where
             .map_with(|e, ex| Located::new(e, ex.span()));
 
         let atom = choice((
+            unit_expr,
+            lit_expr,
+            var_expr,
             let_expr,
             if_expr,
             lam_expr,
             match_expr,
-            unit_expr,
-            tuple_or_paren,
+            expr.clone()
+                .delimited_by(just(Token::LParen), just(Token::RParen)),
+            tuple,
             list_expr,
-            lit_expr,
-            var_expr,
         ));
 
         let app = atom
             .clone()
-            .then(atom.repeated().collect::<Vec<_>>())
-            .map_with(|(f, args), e| {
-                if args.is_empty() {
-                    f
-                } else {
-                    args.into_iter().fold(f, |acc, arg| {
-                        let span = e.span();
-                        Located::new(Expr::App(acc, vec![arg]), span)
-                    })
-                }
-            });
+            .then(
+                atom.clone()
+                    .separated_by(just(Token::Comma))
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LParen), just(Token::RParen)),
+            )
+            .map_with(|(f, args), e| Located::new(Expr::App(f, args), e.span()));
 
         let cons = upper_ident()
-            .then(expr.clone().repeated().collect::<Vec<_>>())
-            .map(|(name, args)| Expr::Cons(name, args))
+            .then(
+                expr.clone()
+                    .separated_by(just(Token::Comma))
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LParen), just(Token::RParen))
+                    .or_not(),
+            )
+            .map(|(name, args)| Expr::Cons(name, args.unwrap_or_default()))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
-        (cons.or(app)).clone().pratt((
+        choice((cons, app, atom)).clone().pratt((
             prefix(1, just(Token::Minus), |op: Token, exp: Located<Expr>, e| {
                 Located::new(
                     Expr::UnOp(Located::new(UnOp::from(op), e.span()), exp),
@@ -223,16 +230,126 @@ where
                 )
             }),
             // infix ops
-            // (
-            //     2,
-            //     just(Token::Plus),
-            //     |op: Token, left: Located<Expr>, right: Located<Expr>, e| {
-            //         Located::new(
-            //             Expr::BinOp(Located::new(BinOp::from(op), e.span()), left, right),
-            //             e.span(),
-            //         )
-            //     },
-            // ),
+            infix(
+                left(3),
+                just(Token::Plus),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Add, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                left(3),
+                just(Token::Minus),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Sub, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                left(4),
+                just(Token::Star),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Mul, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                left(4),
+                just(Token::Slash),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Div, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                left(4),
+                just(Token::Percent),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Mod, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                right(5),
+                just(Token::Caret),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Pow, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                left(1),
+                just(Token::Eq),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Eq, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                none(1),
+                just(Token::Neq),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Neq, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                none(2),
+                just(Token::Lt),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Lt, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                none(2),
+                just(Token::Gt),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Gt, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                none(2),
+                just(Token::Leq),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Leq, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
+            infix(
+                none(2),
+                just(Token::Geq),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::BinOp(Located::new(BinOp::Geq, e.span()), left, right),
+                        e.span(),
+                    )
+                },
+            ),
         ))
     })
 }
@@ -261,8 +378,14 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .map(|patterns| Pat::Tuple(patterns));
 
         let cons = upper_ident()
-            .then(pat.clone().repeated().collect())
-            .map(|(name, args)| Pat::Cons(name, args));
+            .then(
+                pat.clone()
+                    .separated_by(just(Token::Comma))
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::LParen), just(Token::RParen))
+                    .or_not(),
+            )
+            .map(|(name, args)| Pat::Cons(name, args.unwrap_or_default()));
 
         cons.or(lower_ident().map(|ident| Pat::Var(ident)))
             .or(just(Token::Wildcard).map(|_| Pat::Wildcard))

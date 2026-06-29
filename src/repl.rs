@@ -20,6 +20,17 @@ impl Validator for TermValidator {
     }
 }
 
+const BANNER: &str = r#"
+      __  ___               __             
+     /  |/  /__  ____ _____/ /___ _      __
+    / /|_/ / _ \/ __ `/ __  / __ \ | /| / /
+   / /  / /  __/ /_/ / /_/ / /_/ / |/ |/ / 
+  /_/  /_/\___/\__,_/\__,_/\____/|__/|__/  
+
+  Welcome to the Meadow REPL!
+  Type :quit or :q to exit.                                        
+"#;
+
 pub fn run() {
     env_logger::init();
 
@@ -30,7 +41,7 @@ pub fn run() {
         eprintln!("No previous history.");
     }
 
-    println!("Welcome to Idyll!");
+    println!("{}", BANNER);
 
     loop {
         let readline = rl.readline("> ");

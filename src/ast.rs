@@ -69,6 +69,8 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    Mod,
+    Pow,
     Eq,
     Neq,
     Lt,
@@ -84,30 +86,14 @@ impl From<BinOp> for InternedString {
             BinOp::Sub => "-".into(),
             BinOp::Mul => "*".into(),
             BinOp::Div => "/".into(),
+            BinOp::Mod => "%".into(),
+            BinOp::Pow => "^".into(),
             BinOp::Eq => "==".into(),
             BinOp::Neq => "!=".into(),
             BinOp::Lt => "<".into(),
             BinOp::Gt => ">".into(),
             BinOp::Leq => "<=".into(),
             BinOp::Geq => ">=".into(),
-        }
-    }
-}
-
-impl From<Token> for BinOp {
-    fn from(token: Token) -> Self {
-        match token {
-            Token::Plus => BinOp::Add,
-            Token::Minus => BinOp::Sub,
-            Token::Star => BinOp::Mul,
-            Token::Slash => BinOp::Div,
-            Token::Eq => BinOp::Eq,
-            Token::Neq => BinOp::Neq,
-            Token::Lt => BinOp::Lt,
-            Token::Gt => BinOp::Gt,
-            Token::Leq => BinOp::Leq,
-            Token::Geq => BinOp::Geq,
-            _ => panic!("Invalid token for binary operator: {:?}", token),
         }
     }
 }

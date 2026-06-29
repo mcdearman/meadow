@@ -1,0 +1,4 @@
+fun map(f, xs) =
+  match xs with
+  | Empty -> Empty
+  | Pair(x, xs) -> Pair(f(x), map(f, xs))

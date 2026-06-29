@@ -1,3 +1,4 @@
+use ariadne::Span as AriadneSpan;
 use chumsky::span::Span as ChumskySpan;
 use std::{
     fmt::{Debug, Display},

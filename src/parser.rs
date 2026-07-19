@@ -1,6 +1,5 @@
 use crate::{
     ast::*,
-    intern::InternedString,
     lexer::Lexer,
     pipeline::InputMode,
     span::{Located, Span},
@@ -26,8 +25,8 @@ pub enum ParseResult {
 
 pub fn parse<'src>(
     lexer: Lexer<'src>,
-    input_mode: InputMode,
-) -> (ParseResult, Vec<Rich<'src, Token, Span>>) {
+    input_mode: InputMode<'src>,
+) -> (ParseResult, Vec<Rich<'src, Token<'src>, Span>>) {
     let eof_span = lexer
         .clone()
         .last()
@@ -39,9 +38,7 @@ pub fn parse<'src>(
 
     match input_mode {
         InputMode::File(name) => {
-            let (res, errors) = prog(&InternedString::from(name))
-                .parse(stream)
-                .into_output_errors();
+            let (res, errors) = prog(name.to_string()).parse(stream).into_output_errors();
             (ParseResult::Prog(res), errors)
         }
         InputMode::Interactive => {
@@ -52,30 +49,38 @@ pub fn parse<'src>(
 }
 
 fn interactive<'tokens, I>()
--> impl Parser<'tokens, I, Either<LDecl, LExpr>, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+-> impl Parser<'tokens, I, Either<LDecl, LExpr>, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone
 where
-    I: ValueInput<'tokens, Token = Token, Span = Span>,
+    I: ValueInput<'tokens, Token = Token<'tokens>, Span = Span>,
 {
     decl().map(Either::Left).or(expr().map(Either::Right))
 }
 
 fn prog<'tokens, I>(
-    name: &InternedString,
-) -> impl Parser<'tokens, I, Prog, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+    name: String,
+) -> impl Parser<'tokens, I, Prog, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone
 where
-    I: ValueInput<'tokens, Token = Token, Span = Span>,
+    I: ValueInput<'tokens, Token = Token<'tokens>, Span = Span>,
 {
     decl()
         .repeated()
         .at_least(1)
         .collect()
-        .map_with(|decls, e| Located::new(Module { name: *name, decls }, e.span()))
+        .map_with(move |decls, e| {
+            Located::new(
+                Module {
+                    name: name.clone(),
+                    decls,
+                },
+                e.span(),
+            )
+        })
 }
 
 fn decl<'tokens, I>()
--> impl Parser<'tokens, I, LDecl, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+-> impl Parser<'tokens, I, LDecl, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone
 where
-    I: ValueInput<'tokens, Token = Token, Span = Span>,
+    I: ValueInput<'tokens, Token = Token<'tokens>, Span = Span>,
 {
     let bind_decl = {
         let pat_bind = just(Token::Def)
@@ -103,9 +108,9 @@ where
 }
 
 fn expr<'tokens, I>()
--> impl Parser<'tokens, I, LExpr, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+-> impl Parser<'tokens, I, LExpr, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone
 where
-    I: ValueInput<'tokens, Token = Token, Span = Span>,
+    I: ValueInput<'tokens, Token = Token<'tokens>, Span = Span>,
 {
     recursive(|expr| {
         let lit_expr = located(lit().map(Expr::Lit));
@@ -354,8 +359,8 @@ where
     })
 }
 
-fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
--> impl Parser<'a, I, LPat, extra::Err<Rich<'a, Token, Span>>> + Clone {
+fn pat<'a, I: ValueInput<'a, Token = Token<'a>, Span = Span>>()
+-> impl Parser<'a, I, LPat, extra::Err<Rich<'a, Token<'a>, Span>>> + Clone {
     recursive(|pat| {
         let list = just(Token::LBrack)
             .ignore_then(
@@ -398,43 +403,43 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
     })
 }
 
-fn unit<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
--> impl Parser<'a, I, (), extra::Err<Rich<'a, Token, Span>>> + Clone {
+fn unit<'a, I: ValueInput<'a, Token = Token<'a>, Span = Span>>()
+-> impl Parser<'a, I, (), extra::Err<Rich<'a, Token<'a>, Span>>> + Clone {
     just(Token::LParen)
         .ignore_then(just(Token::RParen))
         .map_with(|_, _| ())
 }
 
-fn lower_ident<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
--> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
+fn lower_ident<'a, I: ValueInput<'a, Token = Token<'a>, Span = Span>>()
+-> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token<'a>, Span>>> + Clone {
     select! {
         Token::LowerIdent(name) => name
     }
-    .map_with(|name, e| Ident::new(name, e.span()))
+    .map_with(|name, e| Ident::new(name.to_string(), e.span()))
 }
 
-fn upper_ident<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
--> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
+fn upper_ident<'a, I: ValueInput<'a, Token = Token<'a>, Span = Span>>()
+-> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token<'a>, Span>>> + Clone {
     select! {
         Token::UpperIdent(name) => name
     }
-    .map_with(|name, e| Ident::new(name, e.span()))
+    .map_with(|name, e| Ident::new(name.to_string(), e.span()))
 }
 
-fn lit<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
--> impl Parser<'a, I, Lit, extra::Err<Rich<'a, Token, Span>>> + Clone {
+fn lit<'a, I: ValueInput<'a, Token = Token<'a>, Span = Span>>()
+-> impl Parser<'a, I, Lit, extra::Err<Rich<'a, Token<'a>, Span>>> + Clone {
     select! {
         Token::Int(i) => Lit::Int(i),
-        Token::String(s) => Lit::String(s),
+        Token::String(s) => Lit::String(s.to_string()),
     }
 }
 
 fn located<'tokens, I, P>(
     p: P,
-) -> impl Parser<'tokens, I, LExpr, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+) -> impl Parser<'tokens, I, LExpr, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone
 where
-    I: ValueInput<'tokens, Token = Token, Span = Span>,
-    P: Parser<'tokens, I, Expr, extra::Err<Rich<'tokens, Token, Span>>> + Clone,
+    I: ValueInput<'tokens, Token = Token<'tokens>, Span = Span>,
+    P: Parser<'tokens, I, Expr, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone,
 {
     p.map_with(|v, e| Located::new(v, e.span()))
 }

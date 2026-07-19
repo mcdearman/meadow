@@ -1,11 +1,11 @@
-use crate::{intern::InternedString, span::Located};
+use crate::span::Located;
 use logos::Logos;
 use std::fmt::Display;
 
-pub type LToken = Located<Token>;
+pub type LToken<'a> = Located<Token<'a>>;
 
 #[derive(Logos, Debug, Clone, PartialEq)]
-pub enum Token {
+pub enum Token<'a> {
     Eof,
     #[regex(r"--.*?")]
     Comment,
@@ -28,18 +28,18 @@ pub enum Token {
     //     r"-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0))(/-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0)))",
     //     |lex| lex.slice().parse().ok())]
     // Rational(Rational64),
-    #[regex(r#""(\\.|[^"\\])*""#, |lex| lex.slice().to_string())]
-    String(String),
+    #[regex(r#""(\\.|[^"\\])*""#, |lex| lex.slice())]
+    String(&'a str),
     #[regex(r"'(\\.|[^'\\])'", |lex| lex.slice().chars().nth(1))]
     Char(char),
-    #[regex(r"[a-z][a-zA-Z0-9'_]*", |lex| InternedString::from(lex.slice()), priority = 2)]
-    LowerIdent(InternedString),
-    #[regex(r"[A-Z][a-zA-Z0-9']*", |lex| InternedString::from(lex.slice()))]
-    UpperIdent(InternedString),
-    #[regex(r"[!$%&*+./<=>?@\|\\\^-z~:]+", |lex| InternedString::from(lex.slice()), priority = 1)]
-    OpIdent(InternedString),
-    #[regex(r":[!$%&*+./<=>?@\|\\\^-z~:]+", |lex| InternedString::from(lex.slice()))]
-    ConOpIdent(InternedString),
+    #[regex(r"[a-z][a-zA-Z0-9'_]*", |lex| lex.slice(), priority = 2)]
+    LowerIdent(&'a str),
+    #[regex(r"[A-Z][a-zA-Z0-9']*", |lex| lex.slice())]
+    UpperIdent(&'a str),
+    #[regex(r"[!$%&*+./<=>?@\|\\\^-z~:]+", |lex| lex.slice(), priority = 1)]
+    OpIdent(&'a str),
+    #[regex(r":[!$%&*+./<=>?@\|\\\^-z~:]+", |lex| lex.slice())]
+    ConOpIdent(&'a str),
 
     // Punctuation
     #[token("_")]
@@ -157,7 +157,7 @@ pub enum Token {
     Error,
 }
 
-impl Display for Token {
+impl<'a> Display for Token<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use Token::*;
         match self {

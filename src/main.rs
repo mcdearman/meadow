@@ -1,11 +1,9 @@
+use crate::pipeline::InputMode;
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::{intern::InternedString, pipeline::InputMode};
-
 mod ast;
 mod diagnostics;
-mod intern;
 mod lexer;
 mod parser;
 mod pipeline;
@@ -36,10 +34,8 @@ fn run_file(path: &std::path::Path) {
         std::process::exit(1);
     });
 
-    let pipeline = pipeline::Pipeline::new(
-        &source,
-        InputMode::File(InternedString::from(path.display().to_string())),
-    );
+    let filename = path.display().to_string();
+    let pipeline = pipeline::Pipeline::new(&source, InputMode::File(&filename));
 
     if let Err(e) = pipeline.run() {
         eprintln!("Runtime error: {e}");

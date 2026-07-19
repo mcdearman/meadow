@@ -6,8 +6,8 @@ use logos::{Lexer as LogosLexer, Logos};
 
 #[derive(Debug, Clone)]
 pub struct Lexer<'src> {
-    logos: LogosLexer<'src, Token>,
-    peek: Option<LToken>,
+    logos: LogosLexer<'src, Token<'src>>,
+    peek: Option<LToken<'src>>,
 }
 
 impl<'src> Lexer<'src> {
@@ -18,7 +18,7 @@ impl<'src> Lexer<'src> {
         }
     }
 
-    pub fn fetch_token(&mut self) -> LToken {
+    pub fn fetch_token(&mut self) -> LToken<'src> {
         match self.logos.next().map(|res| match res {
             Ok(t) => (t, Span::from(self.logos.span())),
             Err(_) => (Token::Error, Span::from(self.logos.span())),
@@ -28,7 +28,7 @@ impl<'src> Lexer<'src> {
         }
     }
 
-    pub fn peek_tok(&mut self) -> LToken {
+    pub fn peek_tok(&mut self) -> LToken<'src> {
         if let Some(token) = self.peek.clone() {
             token
         } else {
@@ -38,7 +38,7 @@ impl<'src> Lexer<'src> {
         }
     }
 
-    pub fn next_tok(&mut self) -> LToken {
+    pub fn next_tok(&mut self) -> LToken<'src> {
         if let Some(token) = self.peek.take() {
             self.peek = None;
             token
@@ -49,7 +49,7 @@ impl<'src> Lexer<'src> {
 }
 
 impl<'src> Iterator for Lexer<'src> {
-    type Item = (Token, Span);
+    type Item = (Token<'src>, Span);
 
     fn next(&mut self) -> Option<Self::Item> {
         let token = self.next_tok();

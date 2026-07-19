@@ -1,10 +1,10 @@
-use crate::{intern::InternedString, span::Located, token::Token};
+use crate::{span::Located, token::Token};
 
 pub type Prog = Located<Module>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
-    pub name: InternedString,
+    pub name: String,
     pub decls: Vec<LDecl>,
 }
 
@@ -42,17 +42,17 @@ pub enum UnOp {
     Not,
 }
 
-impl From<UnOp> for InternedString {
+impl From<UnOp> for &str {
     fn from(op: UnOp) -> Self {
         match op {
-            UnOp::Neg => "-".into(),
-            UnOp::Not => "!".into(),
+            UnOp::Neg => "-",
+            UnOp::Not => "!",
         }
     }
 }
 
-impl From<Token> for UnOp {
-    fn from(token: Token) -> Self {
+impl<'a> From<Token<'a>> for UnOp {
+    fn from(token: Token<'a>) -> Self {
         match token {
             Token::Minus => UnOp::Neg,
             Token::Bang => UnOp::Not,
@@ -79,21 +79,21 @@ pub enum BinOp {
     Geq,
 }
 
-impl From<BinOp> for InternedString {
+impl From<BinOp> for &str {
     fn from(op: BinOp) -> Self {
         match op {
-            BinOp::Add => "+".into(),
-            BinOp::Sub => "-".into(),
-            BinOp::Mul => "*".into(),
-            BinOp::Div => "/".into(),
-            BinOp::Mod => "%".into(),
-            BinOp::Pow => "^".into(),
-            BinOp::Eq => "==".into(),
-            BinOp::Neq => "!=".into(),
-            BinOp::Lt => "<".into(),
-            BinOp::Gt => ">".into(),
-            BinOp::Leq => "<=".into(),
-            BinOp::Geq => ">=".into(),
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Mod => "%",
+            BinOp::Pow => "^",
+            BinOp::Eq => "==",
+            BinOp::Neq => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::Leq => "<=",
+            BinOp::Geq => ">=",
         }
     }
 }
@@ -118,7 +118,7 @@ pub enum Pat {
     Unit,
 }
 
-pub type Ident = Located<InternedString>;
+pub type Ident = Located<String>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lit {

@@ -87,12 +87,7 @@ where
 
         let fun_bind = just(Token::Fun)
             .ignore_then(lower_ident())
-            .then(
-                lower_ident()
-                    .separated_by(just(Token::Comma))
-                    .collect::<Vec<_>>()
-                    .delimited_by(just(Token::LParen), just(Token::RParen)),
-            )
+            .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
             .then_ignore(just(Token::Eq))
             .then(expr())
             .map(|((name, args), body)| Bind::Fun(name, args, body));
@@ -140,12 +135,7 @@ where
 
             let fun_bind = just(Token::Fun)
                 .ignore_then(lower_ident())
-                .then(
-                    lower_ident()
-                        .separated_by(just(Token::Comma))
-                        .collect::<Vec<_>>()
-                        .delimited_by(just(Token::LParen), just(Token::RParen)),
-                )
+                .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone())
                 .map(|((name, args), body)| Bind::Fun(name, args, body));
@@ -204,20 +194,15 @@ where
 
         let app = atom
             .clone()
-            .then(
-                atom.clone()
-                    .separated_by(just(Token::Comma))
-                    .collect::<Vec<_>>()
-                    .delimited_by(just(Token::LParen), just(Token::RParen)),
-            )
+            .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
             .map_with(|(f, args), e| Located::new(Expr::App(f, args), e.span()));
 
         let cons = upper_ident()
             .then(
                 expr.clone()
-                    .separated_by(just(Token::Comma))
+                    .repeated()
+                    .at_least(1)
                     .collect::<Vec<_>>()
-                    .delimited_by(just(Token::LParen), just(Token::RParen))
                     .or_not(),
             )
             .map(|(name, args)| Expr::Cons(name, args.unwrap_or_default()))
@@ -379,14 +364,8 @@ fn pat<'a, I: ValueInput<'a, Token = Token<'a>, Span = Span>>()
             .map(|patterns| Pat::Tuple(patterns));
 
         let cons = upper_ident()
-            .then(
-                pat.clone()
-                    .separated_by(just(Token::Comma))
-                    .collect::<Vec<_>>()
-                    .delimited_by(just(Token::LParen), just(Token::RParen))
-                    .or_not(),
-            )
-            .map(|(name, args)| Pat::Cons(name, args.unwrap_or_default()));
+            .then(pat.clone().repeated().collect::<Vec<_>>())
+            .map(|(name, args)| Pat::Cons(name, args));
 
         cons.or(lower_ident().map(|ident| Pat::Var(ident)))
             .or(just(Token::Wildcard).map(|_| Pat::Wildcard))

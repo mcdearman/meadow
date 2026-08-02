@@ -30,7 +30,7 @@ impl<'src> Pipeline<'src> {
         } else {
             let filename = match self.mode {
                 InputMode::File(name) => name,
-                InputMode::Interactive => "<interactive>".into(),
+                InputMode::Interactive => "<interactive>",
             };
 
             let cache = (filename.to_string(), Source::from(self.src));

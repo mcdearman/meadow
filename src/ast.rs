@@ -1,36 +1,36 @@
 use crate::{span::Located, token::Token};
 
-pub type Prog<'src> = Located<Module<'src>>;
+pub type Prog = Located<Module>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Module<'src> {
-    pub name: &'src str,
-    pub decls: Vec<LDecl<'src>>,
+pub struct Module {
+    pub name: String,
+    pub decls: Vec<LDecl>,
 }
 
-pub type LDecl<'src> = Located<Decl<'src>>;
+pub type LDecl = Located<Decl>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decl<'src> {
-    Bind(Bind<'src>),
+pub enum Decl {
+    Bind(Bind),
 }
 
-pub type LExpr<'src> = Located<Expr<'src>>;
+pub type LExpr = Located<Expr>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Expr<'src> {
-    Var(Ident<'src>),
-    Lit(Lit<'src>),
-    Lam(Vec<LPat<'src>>, LExpr<'src>),
-    App(LExpr<'src>, Vec<LExpr<'src>>),
-    Let(Vec<Bind<'src>>, LExpr<'src>),
-    If(LExpr<'src>, LExpr<'src>, LExpr<'src>),
-    Match(LExpr<'src>, Vec<(LPat<'src>, LExpr<'src>)>),
-    UnOp(LUnOp, LExpr<'src>),
-    BinOp(LBinOp, LExpr<'src>, LExpr<'src>),
-    Tuple(Vec<LExpr<'src>>),
-    List(Vec<LExpr<'src>>),
-    Cons(Ident<'src>, Vec<LExpr<'src>>),
+pub enum Expr {
+    Var(Ident),
+    Lit(Lit),
+    Lam(Vec<LPat>, LExpr),
+    App(LExpr, Vec<LExpr>),
+    Let(Vec<Bind>, LExpr),
+    If(LExpr, LExpr, LExpr),
+    Match(LExpr, Vec<(LPat, LExpr)>),
+    UnOp(LUnOp, LExpr),
+    BinOp(LBinOp, LExpr, LExpr),
+    Tuple(Vec<LExpr>),
+    List(Vec<LExpr>),
+    Cons(Ident, Vec<LExpr>),
     Unit,
 }
 
@@ -51,8 +51,8 @@ impl From<UnOp> for &str {
     }
 }
 
-impl<'a> From<Token<'a>> for UnOp {
-    fn from(token: Token<'a>) -> Self {
+impl From<Token> for UnOp {
+    fn from(token: Token) -> Self {
         match token {
             Token::Minus => UnOp::Neg,
             Token::Bang => UnOp::Not,
@@ -99,29 +99,29 @@ impl From<BinOp> for &str {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Bind<'src> {
-    Pat(LPat<'src>, LExpr<'src>),
-    Fun(Ident<'src>, Vec<Ident<'src>>, LExpr<'src>),
+pub enum Bind {
+    Pat(LPat, LExpr),
+    Fun(Ident, Vec<Ident>, LExpr),
 }
 
-pub type LPat<'src> = Located<Pat<'src>>;
+pub type LPat = Located<Pat>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Pat<'src> {
+pub enum Pat {
     Wildcard,
-    Var(Ident<'src>),
-    Lit(Lit<'src>),
-    As(Ident<'src>, LPat<'src>),
-    Cons(Ident<'src>, Vec<LPat<'src>>),
-    Tuple(Vec<LPat<'src>>),
-    List(Vec<LPat<'src>>),
+    Var(Ident),
+    Lit(Lit),
+    As(Ident, LPat),
+    Cons(Ident, Vec<LPat>),
+    Tuple(Vec<LPat>),
+    List(Vec<LPat>),
     Unit,
 }
 
-pub type Ident<'src> = Located<&'src str>;
+pub type Ident = Located<String>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Lit<'src> {
+pub enum Lit {
     Int(i64),
-    String(&'src str),
+    String(String),
 }

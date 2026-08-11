@@ -12,18 +12,6 @@ pub struct Span {
 }
 
 impl Span {
-    pub fn new(start: u32, end: u32) -> Self {
-        Self { start, end }
-    }
-
-    pub fn start(&self) -> u32 {
-        self.start
-    }
-
-    pub fn end(&self) -> u32 {
-        self.end
-    }
-
     pub fn extend(&self, other: Span) -> Self {
         Self {
             start: self.start.min(other.start),

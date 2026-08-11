@@ -18,15 +18,15 @@ use chumsky::{
 use itertools::Either;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ParseResult<'src> {
-    Prog(Option<Prog<'src>>),
-    Interactive(Option<Either<LDecl<'src>, LExpr<'src>>>),
+pub enum ParseResult {
+    Prog(Option<Prog>),
+    Interactive(Option<Either<LDecl, LExpr>>),
 }
 
 pub fn parse<'src>(
-    lexer: Lexer<'src>,
-    input_mode: InputMode<'src>,
-) -> (ParseResult<'src>, Vec<Rich<'src, Token<'src>, Span>>) {
+    lexer: Lexer,
+    input_mode: InputMode,
+) -> (ParseResult, Vec<Rich<'src, Token, Span>>) {
     let eof_span = lexer
         .clone()
         .last()
@@ -48,23 +48,19 @@ pub fn parse<'src>(
     }
 }
 
-fn interactive<'tokens, I>() -> impl Parser<
-    'tokens,
-    I,
-    Either<LDecl<'tokens>, LExpr<'tokens>>,
-    extra::Err<Rich<'tokens, Token<'tokens>, Span>>,
-> + Clone
+fn interactive<'tokens, I>()
+-> impl Parser<'tokens, I, Either<LDecl, LExpr>, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
-    I: ValueInput<'tokens, Token = Token<'tokens>, Span = Span>,
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
     decl().map(Either::Left).or(expr().map(Either::Right))
 }
 
 fn prog<'tokens, I>(
-    name: &'tokens str,
-) -> impl Parser<'tokens, I, Prog<'tokens>, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone
+    name: Ident,
+) -> impl Parser<'tokens, I, Prog, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
-    I: ValueInput<'tokens, Token = Token<'tokens>, Span = Span>,
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
     decl()
         .repeated()
@@ -74,9 +70,9 @@ where
 }
 
 fn decl<'tokens, I>()
--> impl Parser<'tokens, I, LDecl<'tokens>, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone
+-> impl Parser<'tokens, I, LDecl, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
-    I: ValueInput<'tokens, Token = Token<'tokens>, Span = Span>,
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
     let bind_decl = {
         let pat_bind = just(Token::Def)
@@ -99,9 +95,9 @@ where
 }
 
 fn expr<'tokens, I>()
--> impl Parser<'tokens, I, LExpr<'tokens>, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone
+-> impl Parser<'tokens, I, LExpr, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
-    I: ValueInput<'tokens, Token = Token<'tokens>, Span = Span>,
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
     recursive(|expr| {
         let lit_expr = located(lit().map(Expr::Lit));
@@ -411,10 +407,10 @@ fn lit<'a, I: ValueInput<'a, Token = Token<'a>, Span = Span>>()
 
 fn located<'tokens, I, P>(
     p: P,
-) -> impl Parser<'tokens, I, LExpr<'tokens>, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone
+) -> impl Parser<'tokens, I, LExpr, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
-    I: ValueInput<'tokens, Token = Token<'tokens>, Span = Span>,
-    P: Parser<'tokens, I, Expr<'tokens>, extra::Err<Rich<'tokens, Token<'tokens>, Span>>> + Clone,
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
+    P: Parser<'tokens, I, Expr, extra::Err<Rich<'tokens, Token, Span>>> + Clone,
 {
     p.map_with(|v, e| Located::new(v, e.span()))
 }

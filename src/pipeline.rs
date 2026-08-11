@@ -2,13 +2,13 @@ use crate::{diagnostics::parse_report, lexer::Lexer, parser::parse};
 use ariadne::Source;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputMode<'a> {
-    File(&'a str),
+pub enum InputMode {
+    File(String),
     Interactive,
 }
 
 #[derive(Debug, Clone)]
-pub struct Pipeline<'src> {
+pub struct Pipeline {
     src: &'src str,
     mode: InputMode<'src>,
     lexer: Lexer<'src>,

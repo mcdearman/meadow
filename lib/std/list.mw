@@ -1,0 +1,21 @@
+@pub data List(a) = Empty | Pair(a, List(a)) 
+
+impl List(a) where
+  fun map(self, f) =
+    match self with
+    | Empty -> Empty
+    | Pair(x, xs) -> Pair(f(x), self.map(f))
+
+  fun foldl(self, f, acc) =
+    match self with
+    | Empty -> acc
+    | Pair(x, xs) -> self.foldl(f, f(acc, x))
+end
+
+xs = [1, 2, 3]
+
+xs
+  |> map(_ * 2)
+  |> foldl(\(acc, x) -> acc + x, 0)
+  |> sum()
+

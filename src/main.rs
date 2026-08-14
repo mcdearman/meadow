@@ -35,7 +35,7 @@ fn run_file(path: &std::path::Path) {
     });
 
     let filename = path.display().to_string();
-    let pipeline = pipeline::Pipeline::new(&source, InputMode::File(&filename));
+    let pipeline = pipeline::Pipeline::new(&source, InputMode::File(filename));
 
     if let Err(e) = pipeline.run() {
         eprintln!("Runtime error: {e}");

@@ -49,7 +49,7 @@ impl<'src> Lexer<'src> {
 }
 
 impl<'src> Iterator for Lexer<'src> {
-    type Item = (Token<'src>, Span);
+    type Item = (Token, Span);
 
     fn next(&mut self) -> Option<Self::Item> {
         let token = self.next_tok();

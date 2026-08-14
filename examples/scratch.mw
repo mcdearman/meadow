@@ -22,7 +22,7 @@ end
 @pub def primes : Stream(Int) =
   sieve(Stream.from(2))
 
-@pub class Mappable(m) where
+@pub trait Mappable(m) where
   fun map : (a -> b, m(a)) -> m(b)
   fun (<$>) : (a -> b, m(a)) -> m(b) = map
   fun (<$>) = map

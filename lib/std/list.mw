@@ -10,12 +10,15 @@ impl List(a) where
     match self with
     | Empty -> acc
     | Pair(x, xs) -> self.foldl(f, f(acc, x))
+
+  fun foldr(self, f, acc) =
+    match self with
+    | Empty -> acc
+    | Pair(x, xs) -> f(x, self.foldr(f, acc))
+
+  fun filter(self, p) =
+    match self with
+    | Empty -> Empty
+    | Pair(x, xs) ->
+      if p(x) then Pair(x, self.filter(p)) else self.filter(p)
 end
-
-xs = [1, 2, 3]
-
-xs
-  |> map(_ * 2)
-  |> foldl(\(acc, x) -> acc + x, 0)
-  |> sum()
-

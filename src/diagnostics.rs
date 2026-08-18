@@ -3,39 +3,47 @@ use ariadne::{Color, Label, Report, ReportKind};
 use chumsky::error::Rich;
 use std::ops::Range;
 
+#[derive(Debug, Clone)]
+pub struct Diagnostic {
+    pub msg: String,
+    pub filename: String,
+    pub label: (String, Span),
+    pub extra_labels: Vec<(String, Span)>,
+}
+
 pub fn parse_report<'src>(
     msg: String,
     filename: String,
     label: (String, Span),
     err: &Rich<'src, Token, Span>,
 ) -> Report<'src, (String, Range<usize>)> {
-    build_report(
+    build_report(Diagnostic {
         msg,
         filename,
         label,
-        err.contexts()
-            .map(|(l, s)| (format!("while parsing this {l}"), *s)),
-    )
+        extra_labels: err
+            .contexts()
+            .map(|(l, s)| (format!("while parsing this {l}"), *s))
+            .collect(),
+    })
 }
 
-pub fn build_report<'src>(
-    msg: String,
-    filename: String,
-    label: (String, Span),
-    extra_labels: impl IntoIterator<Item = (String, Span)>,
-) -> Report<'src, (String, Range<usize>)> {
-    Report::build(ReportKind::Error, (filename.clone(), Range::from(label.1)))
-        .with_config(ariadne::Config::default())
-        .with_message(msg)
-        .with_label(
-            Label::new((filename.clone(), Range::from(label.1)))
-                .with_message(label.0)
-                .with_color(Color::Red),
-        )
-        .with_labels(extra_labels.into_iter().map(|label2| {
-            Label::new((filename.clone(), Range::from(label2.1)))
-                .with_message(label2.0)
-                .with_color(Color::Yellow)
-        }))
-        .finish()
+pub fn build_report<'src>(diag: Diagnostic) -> Report<'src, (String, Range<usize>)> {
+    Report::build(
+        ReportKind::Error,
+        (diag.filename.clone(), Range::from(diag.label.1)),
+    )
+    .with_config(ariadne::Config::default())
+    .with_message(diag.msg)
+    .with_label(
+        Label::new((diag.filename.clone(), Range::from(diag.label.1)))
+            .with_message(diag.label.0)
+            .with_color(Color::Red),
+    )
+    .with_labels(diag.extra_labels.into_iter().map(|label2| {
+        Label::new((diag.filename.clone(), Range::from(label2.1)))
+            .with_message(label2.0)
+            .with_color(Color::Yellow)
+    }))
+    .finish()
 }

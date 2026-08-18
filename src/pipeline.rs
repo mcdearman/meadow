@@ -1,4 +1,11 @@
-use crate::{diagnostics::parse_report, lexer::Lexer, parser::parse};
+use std::println;
+
+use crate::{
+    diagnostics::{build_report, parse_report},
+    lexer::Lexer,
+    parser::parse,
+    rename::Resolver,
+};
 use ariadne::Source;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +33,22 @@ impl<'src> Pipeline<'src> {
     pub fn run(self) -> Result<(), String> {
         let (ast, errors) = parse(self.lexer.clone(), &self.mode);
         if errors.is_empty() {
-            println!("{:#?}", ast);
+            // println!("{:#?}", ast);
+            let mut resolver = Resolver::with_prelude();
+            let (hir, res_errs) = resolver.resolve(&ast);
+            if res_errs.is_empty() {
+                println!("{:#?}", hir);
+            } else {
+                let filename = match &self.mode {
+                    InputMode::File(name) => name.clone(),
+                    InputMode::Interactive => "<interactive>".into(),
+                };
+                let cache = (filename.clone(), Source::from(self.src));
+                for e in res_errs {
+                    let report = build_report(e);
+                    let _ = report.eprint(cache.clone());
+                }
+            }
         } else {
             let filename = match &self.mode {
                 InputMode::File(name) => name.clone(),

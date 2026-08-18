@@ -1,6 +1,13 @@
 use crate::{span::Located, token::Token};
+use itertools::Either;
 
-pub type Prog = Located<Module>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prog {
+    File(LModule),
+    Interactive(Either<LDecl, LExpr>),
+}
+
+pub type LModule = Located<Module>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
@@ -42,12 +49,13 @@ pub enum UnOp {
     Not,
 }
 
-impl From<UnOp> for &str {
-    fn from(op: UnOp) -> Self {
-        match op {
-            UnOp::Neg => "-",
+impl ToString for UnOp {
+    fn to_string(&self) -> String {
+        match self {
+            UnOp::Neg => "neg",
             UnOp::Not => "!",
         }
+        .to_string()
     }
 }
 
@@ -79,9 +87,9 @@ pub enum BinOp {
     Geq,
 }
 
-impl From<BinOp> for &str {
-    fn from(op: BinOp) -> Self {
-        match op {
+impl ToString for BinOp {
+    fn to_string(&self) -> String {
+        match self {
             BinOp::Add => "+",
             BinOp::Sub => "-",
             BinOp::Mul => "*",
@@ -95,6 +103,7 @@ impl From<BinOp> for &str {
             BinOp::Leq => "<=",
             BinOp::Geq => ">=",
         }
+        .to_string()
     }
 }
 

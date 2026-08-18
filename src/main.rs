@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 mod ast;
 mod diagnostics;
+mod hir;
 mod lexer;
 mod parser;
 mod pipeline;

@@ -106,4 +106,8 @@ impl<T> Located<T> {
             span,
         }
     }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
 }

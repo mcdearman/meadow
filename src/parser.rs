@@ -17,16 +17,10 @@ use chumsky::{
 };
 use itertools::Either;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ParseResult {
-    Prog(Option<Prog>),
-    Interactive(Option<Either<LDecl, LExpr>>),
-}
-
 pub fn parse<'src>(
     lexer: Lexer<'src>,
     input_mode: &InputMode,
-) -> (ParseResult, Vec<Rich<'src, Token, Span>>) {
+) -> (Prog, Vec<Rich<'src, Token, Span>>) {
     let eof_span = lexer
         .clone()
         .last()
@@ -38,12 +32,12 @@ pub fn parse<'src>(
 
     match input_mode {
         InputMode::File(name) => {
-            let (res, errors) = prog(name.clone()).parse(stream).into_output_errors();
-            (ParseResult::Prog(res), errors)
+            let (res, errors) = module(name.clone()).parse(stream).into_output_errors();
+            (Prog::File(res.unwrap()), errors)
         }
         InputMode::Interactive => {
             let (res, errors) = interactive().parse(stream).into_output_errors();
-            (ParseResult::Interactive(res), errors)
+            (Prog::Interactive(res.unwrap()), errors)
         }
     }
 }
@@ -56,9 +50,9 @@ where
     decl().map(Either::Left).or(expr().map(Either::Right))
 }
 
-fn prog<'tokens, I>(
+fn module<'tokens, I>(
     name: String,
-) -> impl Parser<'tokens, I, Prog, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+) -> impl Parser<'tokens, I, LModule, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {

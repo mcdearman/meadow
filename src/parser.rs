@@ -1,5 +1,6 @@
 use crate::{
     ast::*,
+    intern::InternedString,
     lexer::Lexer,
     pipeline::InputMode,
     span::{Located, Span},
@@ -51,7 +52,7 @@ where
 }
 
 fn module<'tokens, I>(
-    name: String,
+    name: InternedString,
 ) -> impl Parser<'tokens, I, LModule, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
@@ -60,15 +61,7 @@ where
         .repeated()
         .at_least(1)
         .collect()
-        .map_with(move |decls, e| {
-            Located::new(
-                Module {
-                    name: name.clone(),
-                    decls,
-                },
-                e.span(),
-            )
-        })
+        .map_with(move |decls, e| Located::new(Module { name, decls }, e.span()))
 }
 
 fn decl<'tokens, I>()

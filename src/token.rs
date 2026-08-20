@@ -1,4 +1,4 @@
-use crate::span::Located;
+use crate::{intern::InternedString, span::Located};
 use logos::Logos;
 use std::fmt::Display;
 
@@ -29,18 +29,18 @@ pub enum Token {
     //     r"-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0))(/-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0)))",
     //     |lex| lex.slice().parse().ok())]
     // Rational(Rational64),
-    #[regex(r#""(\\.|[^"\\])*""#, |lex| lex.slice().to_string())]
-    String(String),
+    #[regex(r#""(\\.|[^"\\])*""#, |lex| InternedString::from(lex.slice()))]
+    String(InternedString),
     #[regex(r"'(\\.|[^'\\])'", |lex| lex.slice().chars().nth(1))]
     Char(char),
-    #[regex(r"[a-z][a-zA-Z0-9'_]*", |lex| lex.slice().to_string(), priority = 2)]
-    LowerIdent(String),
-    #[regex(r"[A-Z][a-zA-Z0-9']*", |lex| lex.slice().to_string())]
-    UpperIdent(String),
-    #[regex(r"[!$%&*+./<=>?@\|\\\^-z~:]+", |lex| lex.slice().to_string(), priority = 1)]
-    OpIdent(String),
-    #[regex(r":[!$%&*+./<=>?@\|\\\^-z~:]+", |lex| lex.slice().to_string())]
-    ConOpIdent(String),
+    #[regex(r"[a-z][a-zA-Z0-9'_]*", |lex| InternedString::from(lex.slice()), priority = 2)]
+    LowerIdent(InternedString),
+    #[regex(r"[A-Z][a-zA-Z0-9']*", |lex| InternedString::from(lex.slice()))]
+    UpperIdent(InternedString),
+    #[regex(r"[!$%&*+./<=>?@\|\\\^-z~:]+", |lex| InternedString::from(lex.slice()), priority = 1)]
+    OpIdent(InternedString),
+    #[regex(r":[!$%&*+./<=>?@\|\\\^-z~:]+", |lex| InternedString::from(lex.slice()))]
+    ConOpIdent(InternedString),
 
     // Punctuation
     #[token("_")]
@@ -167,7 +167,7 @@ impl<'a> Display for Token {
             Whitespace => write!(f, "Whitespace"),
             Int(i) => write!(f, "Int({})", i),
             Real(r) => write!(f, "Real({})", r),
-            String(s) => write!(f, "String({})", s),
+            String(s) => write!(f, "InternedString({})", s),
             Char(c) => write!(f, "Char({})", c),
             LowerIdent(s) => write!(f, "LowerIdent({})", s),
             UpperIdent(s) => write!(f, "UpperIdent({})", s),

@@ -1,4 +1,4 @@
-use crate::{span::Located, token::Token};
+use crate::{intern::InternedString, span::Located, token::Token};
 use itertools::Either;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,7 +11,7 @@ pub type LModule = Located<Module>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
-    pub name: String,
+    pub name: InternedString,
     pub decls: Vec<LDecl>,
 }
 
@@ -127,10 +127,10 @@ pub enum Pat {
     Unit,
 }
 
-pub type Ident = Located<String>;
+pub type Ident = Located<InternedString>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lit {
     Int(i64),
-    String(String),
+    String(InternedString),
 }

@@ -1,6 +1,5 @@
+use crate::{intern::InternedString, span::Located};
 use itertools::Either;
-
-use crate::span::Located;
 use std::sync::atomic::AtomicU32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +12,7 @@ pub type LModule = Located<Module>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
-    pub name: String,
+    pub name: InternedString,
     pub decls: Vec<LDecl>,
 }
 
@@ -81,5 +80,5 @@ impl VarId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lit {
     Int(i64),
-    String(String),
+    String(InternedString),
 }

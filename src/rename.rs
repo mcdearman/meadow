@@ -1,4 +1,7 @@
-use crate::{ast, diagnostics::Diagnostic, hir::*, span::Located};
+use crate::{
+    ast, diagnostics::Diagnostic, hir::*, intern::InternedString, pipeline::InputMode,
+    span::Located,
+};
 use itertools::{Either, Itertools};
 
 const PRIMS: &[&str] = &[
@@ -6,30 +9,28 @@ const PRIMS: &[&str] = &[
     "neg", "!",
 ];
 
-pub enum ResolveResult {
-    File(Prog),
-    Interactive(Either<LDecl, LExpr>),
-}
-
+#[derive(Debug, Clone)]
 pub struct Resolver {
-    scope: Vec<(String, VarId)>,
-    vars: Vec<String>,
+    scope: Vec<(InternedString, VarId)>,
+    vars: Vec<InternedString>,
     errors: Vec<Diagnostic>,
+    input_mode: InputMode,
 }
 
 impl Resolver {
-    pub fn new() -> Self {
+    pub fn new(input_mode: InputMode) -> Self {
         Resolver {
             scope: Vec::new(),
             vars: Vec::new(),
             errors: Vec::new(),
+            input_mode,
         }
     }
 
-    pub fn with_prelude() -> Resolver {
-        let mut r = Resolver::new();
+    pub fn new_with_prelude(input_mode: InputMode) -> Resolver {
+        let mut r = Resolver::new(input_mode);
         for name in PRIMS {
-            r.bind(name.to_string());
+            r.bind(InternedString::from(*name));
         }
         r
     }
@@ -41,14 +42,14 @@ impl Resolver {
         self.scope.truncate(mark)
     }
 
-    fn bind(&mut self, name: String) -> VarId {
+    fn bind(&mut self, name: InternedString) -> VarId {
         let id = VarId(self.vars.len() as u32);
         self.vars.push(name.clone());
         self.scope.push((name, id));
         id
     }
 
-    fn lookup(&self, name: String) -> Option<VarId> {
+    fn lookup(&self, name: InternedString) -> Option<VarId> {
         self.scope
             .iter()
             .rev()
@@ -105,15 +106,13 @@ impl Resolver {
                 LExpr::new(Expr::Lit(resolved_lit), expr.span)
             }
             ast::Expr::Var(name) => {
-                if let Some(id) = self.lookup(name.value().clone()) {
+                if let Some(id) = self.lookup(*name.value()) {
                     LExpr::new(Expr::Var(Located::new(id, name.span)), expr.span)
                 } else {
-                    self.errors.push(Diagnostic {
-                        msg: format!("Undefined variable: {}", name.value()),
-                        filename: String::new(),
-                        label: (format!("Undefined variable: {}", name.value()), name.span),
-                        extra_labels: vec![],
-                    });
+                    self.report_error(
+                        format!("Undefined variable: {}", name.value()),
+                        Located::new(name.value().clone(), name.span),
+                    );
                     LExpr::new(Expr::Error, expr.span)
                 }
             }
@@ -166,7 +165,7 @@ impl Resolver {
                 LExpr::new(Expr::Match(resolved_expr, resolved_arms), expr.span)
             }
             ast::Expr::UnOp(op, expr) => {
-                let sym = op.value().to_string();
+                let sym = InternedString::from(op.value().to_string());
                 let f = self.lookup(sym).expect("prelude never truncated");
                 let resolved_expr = self.resolve_expr(expr);
                 LExpr::new(
@@ -178,7 +177,7 @@ impl Resolver {
                 )
             }
             ast::Expr::BinOp(op, lhs, rhs) => {
-                let sym = op.value().to_string();
+                let sym = InternedString::from(op.value().to_string());
                 let f = self.lookup(sym).expect("prelude never truncated");
                 let l = self.resolve_expr(lhs);
                 let r = self.resolve_expr(rhs);
@@ -253,7 +252,20 @@ impl Resolver {
     fn resolve_lit(&self, lit: &ast::Lit) -> Lit {
         match lit {
             ast::Lit::Int(i) => Lit::Int(*i),
-            ast::Lit::String(s) => Lit::String(s.clone()),
+            ast::Lit::String(s) => Lit::String(*s),
         }
+    }
+
+    fn report_error(&mut self, msg: String, span: Located<impl std::fmt::Debug>) {
+        let diag = Diagnostic {
+            msg,
+            filename: match &self.input_mode {
+                InputMode::File(name) => name.to_string(),
+                InputMode::Interactive => "<interactive>".into(),
+            },
+            label: (format!("Error at {:?}", span.value()), span.span),
+            extra_labels: vec![],
+        };
+        self.errors.push(diag);
     }
 }

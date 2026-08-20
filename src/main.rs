@@ -1,10 +1,11 @@
-use crate::pipeline::InputMode;
+use crate::{intern::InternedString, pipeline::InputMode};
 use clap::Parser;
 use std::path::PathBuf;
 
 mod ast;
 mod diagnostics;
 mod hir;
+mod intern;
 mod lexer;
 mod parser;
 mod pipeline;
@@ -25,7 +26,10 @@ fn main() {
 
     match cli.file {
         Some(path) => run_file(&path),
-        None => repl::run(),
+        None => {
+            let mut repl = repl::Session::new(InputMode::Interactive);
+            repl.run();
+        }
     }
 }
 
@@ -36,7 +40,8 @@ fn run_file(path: &std::path::Path) {
     });
 
     let filename = path.display().to_string();
-    let pipeline = pipeline::Pipeline::new(&source, InputMode::File(filename));
+    let mut pipeline =
+        pipeline::Pipeline::new(&source, InputMode::File(InternedString::from(filename)));
 
     if let Err(e) = pipeline.run() {
         eprintln!("Runtime error: {e}");

@@ -35,13 +35,13 @@ const BANNER: &str = r#"
 "#;
 
 pub struct Session {
-    resolver: Resolver,
+    compiler_env: Pipeline,
 }
 
 impl Session {
-    pub fn new(mode: InputMode) -> Self {
+    pub fn new() -> Self {
         Self {
-            resolver: Resolver::new_with_prelude(mode),
+            resolver: Resolver::new_with_prelude(),
         }
     }
 
@@ -74,7 +74,6 @@ impl Session {
 
                     // self.pipeline.run();
                     // self.pipeline = Pipeline::new_with_context(&line, self.pipeline.clone());
-
                 }
                 Err(ReadlineError::Interrupted) => {
                     println!("CTRL-C");

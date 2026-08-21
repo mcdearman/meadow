@@ -1,4 +1,4 @@
-use crate::{intern::InternedString, span::Located, token::Token};
+use crate::{intern::InternedString, span::Located, lexer::Token};
 use itertools::Either;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

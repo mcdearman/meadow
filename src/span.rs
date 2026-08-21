@@ -1,9 +1,11 @@
 use ariadne::Span as AriadneSpan;
-use chumsky::span::Span as ChumskySpan;
+use chumsky::span::{Span as ChumskySpan, WrappingSpan};
 use std::{
     fmt::{Debug, Display},
     ops::{Index, Range},
 };
+
+use crate::source::Source;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Hash, PartialOrd, Ord)]
 pub struct Span {
@@ -68,6 +70,14 @@ impl Index<Span> for str {
     }
 }
 
+impl Index<Span> for Source {
+    type Output = str;
+
+    fn index(&self, index: Span) -> &Self::Output {
+        &self.content[index]
+    }
+}
+
 impl ChumskySpan for Span {
     type Context = ();
 
@@ -90,6 +100,22 @@ impl ChumskySpan for Span {
 
     fn end(&self) -> Self::Offset {
         self.end
+    }
+}
+
+impl<T> WrappingSpan<T> for Span {
+    type Spanned = Located<T>;
+
+    fn make_wrapped(self, inner: T) -> Self::Spanned {
+        Located::new(inner, self)
+    }
+
+    fn inner_of(spanned: &Self::Spanned) -> &T {
+        spanned.value()
+    }
+
+    fn span_of(spanned: &Self::Spanned) -> &Self {
+        &spanned.span
     }
 }
 

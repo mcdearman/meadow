@@ -1,4 +1,4 @@
-use crate::{span::Span, token::Token};
+use crate::{span::Span, lexer::Token};
 use ariadne::{Color, Label, Report, ReportKind};
 use chumsky::error::Rich;
 use std::ops::Range;
@@ -9,6 +9,22 @@ pub struct Diagnostic {
     pub filename: String,
     pub label: (String, Span),
     pub extra_labels: Vec<(String, Span)>,
+}
+
+impl Diagnostic {
+    pub fn new(
+        msg: String,
+        filename: String,
+        label: (String, Span),
+        extra_labels: Vec<(String, Span)>,
+    ) -> Self {
+        Self {
+            msg,
+            filename,
+            label,
+            extra_labels,
+        }
+    }
 }
 
 pub fn parse_report<'src>(

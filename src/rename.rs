@@ -1,5 +1,9 @@
 use crate::{
-    ast, diagnostics::Diagnostic, hir::*, intern::InternedString, pipeline::InputMode,
+    ast,
+    diagnostics::Diagnostic,
+    hir::*,
+    intern::InternedString,
+    source::{Source, SourceKind},
     span::Located,
 };
 use itertools::{Either, Itertools};
@@ -11,24 +15,24 @@ const PRIMS: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct Resolver {
+    src: Source,
     scope: Vec<(InternedString, VarId)>,
     vars: Vec<InternedString>,
     errors: Vec<Diagnostic>,
-    input_mode: InputMode,
 }
 
 impl Resolver {
-    pub fn new(input_mode: InputMode) -> Self {
+    pub fn new(src: Source) -> Self {
         Resolver {
+            src,
             scope: Vec::new(),
             vars: Vec::new(),
             errors: Vec::new(),
-            input_mode,
         }
     }
 
-    pub fn new_with_prelude(input_mode: InputMode) -> Resolver {
-        let mut r = Resolver::new(input_mode);
+    pub fn new_with_prelude(src: Source) -> Resolver {
+        let mut r = Resolver::new(src);
         for name in PRIMS {
             r.bind(InternedString::from(*name));
         }
@@ -259,9 +263,9 @@ impl Resolver {
     fn report_error(&mut self, msg: String, span: Located<impl std::fmt::Debug>) {
         let diag = Diagnostic {
             msg,
-            filename: match &self.input_mode {
-                InputMode::File(name) => name.to_string(),
-                InputMode::Interactive => "<interactive>".into(),
+            filename: match &self.src.kind {
+                SourceKind::File(name) => name.to_string(),
+                SourceKind::Interactive => "<interactive>".into(),
             },
             label: (format!("Error at {:?}", span.value()), span.span),
             extra_labels: vec![],

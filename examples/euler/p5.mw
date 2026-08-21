@@ -4,10 +4,3 @@ def e5 = [11..20] |> foldl lcm 2520
     fun gcd a 0 = a
       | gcd a b = gcd b (a % b)
   end
-
-def e5 = [11..20].foldl(lcm, 2520)
-  where 
-    fun lcm(a, b) = a * b / gcd(a, b)
-    fun gcd(a, 0) = a
-      | gcd(a, b) = gcd(b, a % b)
-  end

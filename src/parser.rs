@@ -1,16 +1,16 @@
 use crate::{
     ast::*,
+    diagnostics::Diagnostic,
     intern::InternedString,
-    lexer::Lexer,
-    pipeline::InputMode,
+    lexer::{LToken, Token},
+    source::{Source, SourceKind},
     span::{Located, Span},
-    token::Token,
 };
 use chumsky::{
     IterParser, Parser,
     error::Rich,
     extra,
-    input::{Input, Stream, ValueInput},
+    input::{Input, ValueInput},
     pratt::{infix, left, none, prefix, right},
     primitive::*,
     recursive::recursive,
@@ -18,25 +18,19 @@ use chumsky::{
 };
 use itertools::Either;
 
-pub fn parse<'src>(
-    lexer: Lexer<'src>,
-    input_mode: &InputMode,
-) -> (Prog, Vec<Rich<'src, Token, Span>>) {
-    let eof_span = lexer
-        .clone()
-        .last()
-        .map(|(_, span)| span)
-        .unwrap_or_default();
+pub struct ParseResult {
+    pub prog: Prog,
+    pub errors: Vec<Diagnostic>,
+}
+pub fn parse<'src>(src: Source, tokens: &'src [LToken]) -> (Prog, Vec<Rich<'src, Token, Span>>) {
+    let stream = tokens.split_spanned(Span::from(0..src.len()));
 
-    let stream =
-        Stream::from_iter(lexer).map(eof_span.extend(Span::new(0, 0)), |(t, s): (_, _)| (t, s));
-
-    match input_mode {
-        InputMode::File(name) => {
-            let (res, errors) = module(name.clone()).parse(stream).into_output_errors();
+    match src.kind {
+        SourceKind::File(name) => {
+            let (res, errors) = module(name).parse(stream).into_output_errors();
             (Prog::File(res.unwrap()), errors)
         }
-        InputMode::Interactive => {
+        SourceKind::Interactive => {
             let (res, errors) = interactive().parse(stream).into_output_errors();
             (Prog::Interactive(res.unwrap()), errors)
         }

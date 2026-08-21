@@ -1,4 +1,4 @@
-use crate::{intern::InternedString, pipeline::InputMode};
+use crate::source::*;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -11,8 +11,9 @@ mod parser;
 mod pipeline;
 mod rename;
 mod repl;
+mod session;
+mod source;
 mod span;
-mod token;
 
 #[derive(Parser)]
 #[command(name = "meadow", about = "Meadow language interpreter")]
@@ -27,21 +28,24 @@ fn main() {
     match cli.file {
         Some(path) => run_file(&path),
         None => {
-            let mut repl = repl::Session::new(InputMode::Interactive);
+            let mut repl = repl::Session::new(SourceKind::Interactive);
             repl.run();
         }
     }
 }
 
 fn run_file(path: &std::path::Path) {
-    let source = std::fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("Error reading '{}': {e}", path.display());
-        std::process::exit(1);
-    });
+    let source = Source::new(
+        SourceKind::File(path.display().to_string().into()),
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| {
+                eprintln!("Error reading '{}': {e}", path.display());
+                std::process::exit(1);
+            })
+            .into(),
+    );
 
-    let filename = path.display().to_string();
-    let mut pipeline =
-        pipeline::Pipeline::new(&source, InputMode::File(InternedString::from(filename)));
+    let mut pipeline = pipeline::Pipeline::new(source);
 
     if let Err(e) = pipeline.run() {
         eprintln!("Runtime error: {e}");

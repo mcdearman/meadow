@@ -1,11 +1,4 @@
-use crate::{
-    ast,
-    diagnostics::Diagnostic,
-    hir::*,
-    intern::InternedString,
-    source::{Source, SourceKind},
-    span::Located,
-};
+use crate::{ast, diagnostics::Diagnostic, hir::*, intern::InternedString, span::Located};
 use itertools::{Either, Itertools};
 
 const PRIMS: &[&str] = &[
@@ -15,24 +8,22 @@ const PRIMS: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct Resolver {
-    src: Source,
     scope: Vec<(InternedString, VarId)>,
     vars: Vec<InternedString>,
     errors: Vec<Diagnostic>,
 }
 
 impl Resolver {
-    pub fn new(src: Source) -> Self {
+    pub fn new() -> Self {
         Resolver {
-            src,
             scope: Vec::new(),
             vars: Vec::new(),
             errors: Vec::new(),
         }
     }
 
-    pub fn new_with_prelude(src: Source) -> Resolver {
-        let mut r = Resolver::new(src);
+    pub fn new_with_prelude() -> Resolver {
+        let mut r = Resolver::new();
         for name in PRIMS {
             r.bind(InternedString::from(*name));
         }
@@ -263,10 +254,6 @@ impl Resolver {
     fn report_error(&mut self, msg: String, span: Located<impl std::fmt::Debug>) {
         let diag = Diagnostic {
             msg,
-            filename: match &self.src.kind {
-                SourceKind::File(name) => name.to_string(),
-                SourceKind::Interactive => "<interactive>".into(),
-            },
             label: (format!("Error at {:?}", span.value()), span.span),
             extra_labels: vec![],
         };

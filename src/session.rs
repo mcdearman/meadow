@@ -1,3 +1,5 @@
+use crate::pipeline::Pipeline;
+
 #[derive(Debug)]
 pub struct Session {
     compiler_env: Pipeline,
@@ -6,7 +8,7 @@ pub struct Session {
 impl Session {
     pub fn new() -> Self {
         Self {
-            resolver: Resolver::new_with_prelude(),
+            compiler_env: Pipeline::new(),
         }
     }
 }

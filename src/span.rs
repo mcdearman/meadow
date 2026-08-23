@@ -1,11 +1,10 @@
+use crate::source::Source;
 use ariadne::Span as AriadneSpan;
 use chumsky::span::{Span as ChumskySpan, WrappingSpan};
 use std::{
     fmt::{Debug, Display},
     ops::{Index, Range},
 };
-
-use crate::source::Source;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Hash, PartialOrd, Ord)]
 pub struct Span {

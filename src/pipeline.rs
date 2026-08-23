@@ -9,19 +9,17 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct Pipeline {
-    pub src: Source,
     pub resolver: Resolver,
 }
 
 impl Pipeline {
-    pub fn new(src: Source) -> Self {
+    pub fn new() -> Self {
         Self {
-            src,
-            resolver: Resolver::new_with_prelude(src),
+            resolver: Resolver::new_with_prelude(),
         }
     }
 
-    pub fn run(&mut self) -> Result<(), String> {
+    pub fn run(&mut self, src: Source) -> Result<(), String> {
         let lex_res = tokenize(self.src);
         if !lex_res.errors.is_empty() {
             for error in lex_res.errors {

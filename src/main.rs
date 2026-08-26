@@ -7,6 +7,7 @@ mod diagnostics;
 mod hir;
 mod intern;
 mod lexer;
+mod linker;
 mod parser;
 mod pipeline;
 mod rename;

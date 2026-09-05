@@ -10,7 +10,7 @@ import Prettyprinter
 import Text.Pretty.Simple (pShowOpt)
 import Text.Pretty.Simple.Internal.Printer
 
-newtype LineIndex = LineIndex {lineStarts :: U.Vector Int} deriving (Show, Eq)
+newtype LineIndex = LineIndex {liLineStarts :: U.Vector Int} deriving (Show, Eq)
 
 buildLineIndex :: Text -> LineIndex
 buildLineIndex bs = LineIndex . U.fromList $ 0 : map (+ 1) (T.indices "\n" bs)

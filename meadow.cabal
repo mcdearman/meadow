@@ -67,6 +67,7 @@ library
   import: shared
   exposed-modules:
     Meadow.Infer
+    Meadow.Layout
     Meadow.Lexer
     Meadow.Parser
     Meadow.Rename

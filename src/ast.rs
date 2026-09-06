@@ -1,15 +1,8 @@
-use crate::{intern::InternedString, span::Located, lexer::Token};
-use itertools::Either;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Prog {
-    File(LModule),
-    Interactive(Either<LDecl, LExpr>),
-}
+use crate::{intern::InternedString, lexer::Token, span::Located};
 
 pub type LModule = Located<Module>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Module {
     pub name: InternedString,
     pub decls: Vec<LDecl>,

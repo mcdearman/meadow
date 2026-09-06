@@ -6,7 +6,7 @@ use std::ops::Range;
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub msg: String,
-    // pub filename: String,
+    pub filename: String,
     pub label: (String, Span),
     pub extra_labels: Vec<(String, Span)>,
 }
@@ -14,13 +14,13 @@ pub struct Diagnostic {
 impl Diagnostic {
     pub fn new(
         msg: String,
-        // filename: String,
+        filename: String,
         label: (String, Span),
         extra_labels: Vec<(String, Span)>,
     ) -> Self {
         Self {
             msg,
-            // filename,
+            filename,
             label,
             extra_labels,
         }
@@ -35,6 +35,7 @@ pub fn parse_report<'src>(
 ) -> Report<'src, (String, Range<usize>)> {
     build_report(Diagnostic {
         msg,
+        filename,
         label,
         extra_labels: err
             .contexts()

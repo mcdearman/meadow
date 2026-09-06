@@ -259,7 +259,7 @@ pub fn tokenize(src: Source) -> LexResult {
                 let span = Span::from(lexer.span());
                 let err = Diagnostic::new(
                     format!("Invalid token: {}", &src[span]),
-                    src.filename().to_string(),
+                    src.name().to_string(),
                     ("Invalid token".to_string(), span),
                     vec![],
                 );

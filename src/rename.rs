@@ -1,4 +1,6 @@
-use crate::{ast, diagnostics::Diagnostic, hir::*, intern::InternedString, span::Located};
+use crate::{
+    ast, diagnostics::Diagnostic, hir::*, intern::InternedString, source::Source, span::Located,
+};
 use itertools::{Either, Itertools};
 
 const PRIMS: &[&str] = &[
@@ -8,14 +10,16 @@ const PRIMS: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct Resolver {
+    src: Source,
     scope: Vec<(InternedString, VarId)>,
     vars: Vec<InternedString>,
     errors: Vec<Diagnostic>,
 }
 
 impl Resolver {
-    pub fn new() -> Self {
+    pub fn new(src: Source) -> Self {
         Resolver {
+            src,
             scope: Vec::new(),
             vars: Vec::new(),
             errors: Vec::new(),

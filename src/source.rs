@@ -1,24 +1,27 @@
 use crate::intern::InternedString;
-use std::ops::Index;
+use std::{ops::Index, sync::atomic::AtomicU32};
 
 pub type SourceId = u32;
 
 pub struct Sources {
-    entries: Vec<(String, Source)>,
+    entries: Vec<(String, ariadne::Source<String>)>,
 }
 
 impl ariadne::Cache<SourceId> for &Sources {
     type Storage = String;
 
-    fn fetch(&mut self, id: &SourceId) -> Result<&Source, impl std::fmt::Debug> {
+    fn fetch(
+        &mut self,
+        id: &SourceId,
+    ) -> Result<&ariadne::Source<Self::Storage>, impl std::fmt::Debug> {
         self.entries
-            .get(id.0 as usize)
+            .get(*id as usize)
             .map(|(_, s)| s)
-            .ok_or_else(|| format!("unregistered file id {}", id.0))
+            .ok_or_else(|| format!("unregistered file id {}", id))
     }
 
     fn display<'b>(&self, id: &'b SourceId) -> Option<impl std::fmt::Display + 'b> {
-        Some(self.entries[id.0 as usize].0.clone())
+        Some(self.entries[*id as usize].0.clone())
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,14 +31,17 @@ pub struct Source {
     pub content: InternedString,
 }
 
+const SOURCE_COUNT: AtomicU32 = AtomicU32::new(0);
+
 impl Source {
     pub fn new(kind: SourceKind, content: InternedString) -> Self {
-        Self { kind, content }
+        let id = SOURCE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self { id, kind, content }
     }
 
-    pub fn filename(&self) -> InternedString {
+    pub fn name(&self) -> InternedString {
         match &self.kind {
-            SourceKind::File(name) => name.clone(),
+            SourceKind::File(n) => n.clone(),
             SourceKind::Interactive => "<interactive>".into(),
         }
     }

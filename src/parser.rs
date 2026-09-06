@@ -16,33 +16,15 @@ use chumsky::{
     recursive::recursive,
     select,
 };
-use itertools::Either;
 
 pub struct ParseResult {
-    pub prog: Prog,
+    pub prog: LModule,
     pub errors: Vec<Diagnostic>,
 }
-pub fn parse<'src>(src: Source, tokens: &'src [LToken]) -> (Prog, Vec<Rich<'src, Token, Span>>) {
+pub fn parse<'src>(src: Source, tokens: &'src [LToken]) -> (LModule, Vec<Rich<'src, Token, Span>>) {
     let stream = tokens.split_spanned(Span::from(0..src.len()));
 
-    match src.kind {
-        SourceKind::File(name) => {
-            let (res, errors) = module(name).parse(stream).into_output_errors();
-            (Prog::File(res.unwrap()), errors)
-        }
-        SourceKind::Interactive => {
-            let (res, errors) = interactive().parse(stream).into_output_errors();
-            (Prog::Interactive(res.unwrap()), errors)
-        }
-    }
-}
-
-fn interactive<'tokens, I>()
--> impl Parser<'tokens, I, Either<LDecl, LExpr>, extra::Err<Rich<'tokens, Token, Span>>> + Clone
-where
-    I: ValueInput<'tokens, Token = Token, Span = Span>,
-{
-    decl().map(Either::Left).or(expr().map(Either::Right))
+    module(name).parse(stream).into_output_errors()
 }
 
 fn module<'tokens, I>(

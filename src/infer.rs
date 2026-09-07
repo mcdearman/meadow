@@ -472,7 +472,13 @@ impl TypeTable {
         for (i, slot) in self.types.iter().enumerate() {
             if let Some(ty) = slot {
                 let mut s = String::new();
-                let _ = write_type(&mut s, ty, &mut namer, Prec::Top, &std::collections::HashSet::new());
+                let _ = write_type(
+                    &mut s,
+                    ty,
+                    &mut namer,
+                    Prec::Top,
+                    &std::collections::HashSet::new(),
+                );
                 out.push((NodeId(i as u32), s));
             }
         }
@@ -728,10 +734,14 @@ impl Infer {
             }
 
             hir::Expr::App(func, args) => {
-                // n-ary application is a fold of single-argument applications; each
-                // call's latent effect joins the current region.
+                // n-ary application is a fold of single-argument applications. Only
+                // the final (saturating) call actually runs the function body, so
+                // only its latent effect joins the current region; the intermediate
+                // arrows of a curried call just build closures and stay pure — which
+                // is also how every function type here is constructed (`func_eff`).
                 let mut fty = self.infer_expr(func);
-                for arg in args {
+                let last = args.len().saturating_sub(1);
+                for (i, arg) in args.iter().enumerate() {
                     let aty = self.infer_expr(arg);
                     let ret = self.arena.fresh();
                     let phi = self.arena.fresh_effect();
@@ -740,7 +750,11 @@ impl Infer {
                         fty,
                         Type::Fun(vec![aty], Box::new(ret.clone()), Box::new(phi.clone())),
                     );
-                    self.join_effect(expr.span, phi);
+                    if i == last {
+                        self.join_effect(expr.span, phi);
+                    } else {
+                        self.unify_at(expr.span, phi, Type::RowEmpty);
+                    }
                     fty = ret;
                 }
                 fty
@@ -905,7 +919,8 @@ impl Infer {
                         self.join_effect(expr.span, rho.clone());
 
                         for arm in arms {
-                            let (arg_ty, ret_ty) = match info.ops.iter().find(|o| o.name == arm.op) {
+                            let (arg_ty, ret_ty) = match info.ops.iter().find(|o| o.name == arm.op)
+                            {
                                 Some(o) => (
                                     Arena::subst_bound(&o.arg, &fresh_params),
                                     Arena::subst_bound(&o.ret, &fresh_params),
@@ -921,8 +936,7 @@ impl Infer {
                                 Box::new(result.clone()),
                                 Box::new(rho.clone()),
                             );
-                            self.env
-                                .insert(*arm.resume.value(), Scheme::mono(k_ty));
+                            self.env.insert(*arm.resume.value(), Scheme::mono(k_ty));
                             let at = self.infer_expr(&arm.body);
                             self.unify_at(arm.body.span, at, result.clone());
                         }
@@ -1386,7 +1400,9 @@ fn hidden_effect_vars(scheme: &Scheme) -> HashSet<u32> {
         match ty {
             Type::Bound(i) => *count.entry(*i).or_default() += 1,
             Type::Var(_) | Type::RowEmpty => {}
-            Type::Con(_, args) | Type::Tuple(args) => args.iter().for_each(|a| walk(a, count, tails)),
+            Type::Con(_, args) | Type::Tuple(args) => {
+                args.iter().for_each(|a| walk(a, count, tails))
+            }
             Type::Fun(args, ret, eff) => {
                 args.iter().for_each(|a| walk(a, count, tails));
                 walk(ret, count, tails);

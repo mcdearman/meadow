@@ -179,15 +179,26 @@ const BANNER: &str = r#"
 
 pub struct Session {
     line: u32,
-    /// Compiled prior entries, oldest first — the dependency chain.
+    /// Compiled prior entries, oldest first — the dependency chain. The first
+    /// `std_len` entries are the embedded `Std` package and survive `:reset`.
     prefix: Vec<CompiledPackage>,
+    std_len: usize,
 }
 
 impl Session {
     pub fn new() -> Self {
+        let (std_pkgs, diags) = crate::stdlib::compile_std();
+        if !diags.is_empty() {
+            // A broken embedded prelude is a compiler bug, not a user error.
+            for d in &diags {
+                eprintln!("internal error compiling Std: {}: {}", d.filename, d.msg);
+            }
+        }
+        let std_len = std_pkgs.len();
         Session {
-            line: 0,
-            prefix: Vec::new(),
+            line: std_len as u32,
+            prefix: std_pkgs,
+            std_len,
         }
     }
 
@@ -228,8 +239,8 @@ impl Session {
                     match trimmed {
                         ":q" | ":quit" => break,
                         ":reset" => {
-                            self.prefix.clear();
-                            self.line = 0;
+                            self.prefix.truncate(self.std_len);
+                            self.line = self.std_len as u32;
                             println!("(reset)");
                         }
                         ":module" => self.list_module(),
@@ -251,11 +262,12 @@ impl Session {
     }
 
     fn list_module(&self) {
-        if self.prefix.is_empty() {
+        let user = &self.prefix[self.std_len.min(self.prefix.len())..];
+        if user.is_empty() {
             println!("(no bindings yet)");
             return;
         }
-        for pkg in &self.prefix {
+        for pkg in user {
             for e in &pkg.exports {
                 println!("{} : {}", e.name, e.scheme);
             }

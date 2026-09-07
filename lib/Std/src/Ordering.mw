@@ -1,0 +1,14 @@
+-- Three-way comparison.
+
+@pub data Ordering = Less | Equal | Greater
+
+@pub fun compare a b =
+  if a < b then Less
+  else if a == b then Equal
+  else Greater
+
+@pub fun isLess o = match o with | Less -> True | Equal -> False | Greater -> False
+
+@pub fun isEqual o = match o with | Less -> False | Equal -> True | Greater -> False
+
+@pub fun isGreater o = match o with | Less -> False | Equal -> False | Greater -> True

@@ -1,0 +1,166 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"def xs = 1 :: 2 :: Nil\\nfun uncons l = match l with | x :: rest -> x | Nil -> 0\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Bind(
+                Pat(
+                    Located {
+                        value: Var(
+                            Located {
+                                value: InternedString(xs),
+                                span: 4..6,
+                            },
+                        ),
+                        span: 4..6,
+                    },
+                    Located {
+                        value: Cons(
+                            Located {
+                                value: InternedString(Cons),
+                                span: 9..22,
+                            },
+                            [
+                                Located {
+                                    value: Lit(
+                                        Int(
+                                            1,
+                                        ),
+                                    ),
+                                    span: 9..10,
+                                },
+                                Located {
+                                    value: Cons(
+                                        Located {
+                                            value: InternedString(Cons),
+                                            span: 14..22,
+                                        },
+                                        [
+                                            Located {
+                                                value: Lit(
+                                                    Int(
+                                                        2,
+                                                    ),
+                                                ),
+                                                span: 14..15,
+                                            },
+                                            Located {
+                                                value: Cons(
+                                                    Located {
+                                                        value: InternedString(Nil),
+                                                        span: 19..22,
+                                                    },
+                                                    [],
+                                                ),
+                                                span: 19..22,
+                                            },
+                                        ],
+                                    ),
+                                    span: 14..22,
+                                },
+                            ],
+                        ),
+                        span: 9..22,
+                    },
+                ),
+            ),
+            span: 0..22,
+        },
+        Located {
+            value: Bind(
+                Fun(
+                    Located {
+                        value: InternedString(uncons),
+                        span: 27..33,
+                    },
+                    [
+                        Located {
+                            value: InternedString(l),
+                            span: 34..35,
+                        },
+                    ],
+                    Located {
+                        value: Match(
+                            Located {
+                                value: Var(
+                                    Located {
+                                        value: InternedString(l),
+                                        span: 44..45,
+                                    },
+                                ),
+                                span: 44..45,
+                            },
+                            [
+                                (
+                                    Located {
+                                        value: Cons(
+                                            Located {
+                                                value: InternedString(Cons),
+                                                span: 53..62,
+                                            },
+                                            [
+                                                Located {
+                                                    value: Var(
+                                                        Located {
+                                                            value: InternedString(x),
+                                                            span: 53..54,
+                                                        },
+                                                    ),
+                                                    span: 53..54,
+                                                },
+                                                Located {
+                                                    value: Var(
+                                                        Located {
+                                                            value: InternedString(rest),
+                                                            span: 58..62,
+                                                        },
+                                                    ),
+                                                    span: 58..62,
+                                                },
+                                            ],
+                                        ),
+                                        span: 53..62,
+                                    },
+                                    Located {
+                                        value: Var(
+                                            Located {
+                                                value: InternedString(x),
+                                                span: 66..67,
+                                            },
+                                        ),
+                                        span: 66..67,
+                                    },
+                                ),
+                                (
+                                    Located {
+                                        value: Cons(
+                                            Located {
+                                                value: InternedString(Nil),
+                                                span: 70..73,
+                                            },
+                                            [],
+                                        ),
+                                        span: 70..73,
+                                    },
+                                    Located {
+                                        value: Lit(
+                                            Int(
+                                                0,
+                                            ),
+                                        ),
+                                        span: 77..78,
+                                    },
+                                ),
+                            ],
+                        ),
+                        span: 38..78,
+                    },
+                ),
+            ),
+            span: 23..78,
+        },
+    ],
+}

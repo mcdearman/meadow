@@ -58,11 +58,37 @@ pub struct Resolver {
     ids: NodeIdGen,
     /// True only while resolving a module-level `Decl` (not nested in an expr).
     toplevel: bool,
+    /// `@pub` bookkeeping. If `any_pub` stays false the unit exports everything
+    /// (the historical default); otherwise only `pub_vars` / `pub_types` — plus
+    /// `@pub use M (…)` re-exports, which also land in these sets.
+    any_pub: bool,
+    pub_vars: std::collections::HashSet<VarId>,
+    pub_types: std::collections::HashSet<InternedString>,
     errors: Vec<Diagnostic>,
 }
 
-/// Constructors that are always available (see `infer::builtin`/`core`).
+/// Constructors that are always available (see `infer::ctor_type` / `core`). The
+/// `Std` prelude also declares `data List` / `data Bool` with these variants, so a
+/// re-declaration of one of these names is tolerated rather than an error.
 const BUILTIN_CTORS: &[&str] = &["Nil", "Cons", "True", "False"];
+
+/// Type constructors seeded into every resolver. Like [`BUILTIN_CTORS`], the
+/// prelude is allowed to (re-)declare `List` / `Bool` without it counting as a
+/// duplicate-definition error.
+const BUILTIN_TYCONS: &[&str] = &["Int", "String", "Bool", "Unit", "List"];
+
+/// Split a declaration into its attributes and the bare declaration underneath.
+/// The parser only ever nests one `Attributed` layer.
+fn peel(d: &ast::LDecl) -> (&[ast::Attr], &ast::LDecl) {
+    match d.value() {
+        ast::Decl::Attributed(attrs, inner) => (attrs, inner),
+        _ => (&[], d),
+    }
+}
+
+fn has_pub(attrs: &[ast::Attr]) -> bool {
+    attrs.iter().any(|a| &**a.name.value() == "pub")
+}
 
 impl Resolver {
     pub fn new(filename: impl Into<String>) -> Self {
@@ -82,6 +108,9 @@ impl Resolver {
             tyvars: Vec::new(),
             ids: NodeIdGen::new(),
             toplevel: false,
+            any_pub: false,
+            pub_vars: std::collections::HashSet::new(),
+            pub_types: std::collections::HashSet::new(),
             errors: Vec::new(),
         }
     }
@@ -171,7 +200,8 @@ impl Resolver {
     /// order. Call once per module before resolving any bodies.
     pub fn declare_toplevel(&mut self, decls: &[ast::LDecl]) {
         for d in decls {
-            if let ast::Decl::Bind(b) = d.value() {
+            let (_, base) = peel(d);
+            if let ast::Decl::Bind(b) = base.value() {
                 match b {
                     ast::Bind::Fun(name, ..) => self.predeclare(*name.value()),
                     ast::Bind::Pat(pat, _) => self.predeclare_pat(pat),
@@ -185,7 +215,8 @@ impl Resolver {
     /// expressions can be checked. Call before [`resolve_module`].
     pub fn declare_types(&mut self, decls: &[ast::LDecl]) {
         for d in decls {
-            match d.value() {
+            let (_, base) = peel(d);
+            match base.value() {
                 ast::Decl::Data(dd) => {
                     self.declare_tycon(*dd.name.value(), dd.params.len(), dd.name.span);
                     for v in &dd.variants {
@@ -193,7 +224,7 @@ impl Resolver {
                             ast::VariantFields::Positional(ts) => (ts.len(), None),
                             ast::VariantFields::Named(fs) => {
                                 self.check_dup_fields(fs);
-                                (fs.len(), Some(fs.iter().map(|(n, _)| *n.value()).collect()))
+                                (fs.len(), Some(fs.iter().map(|f| *f.name.value()).collect()))
                             }
                         };
                         self.declare_ctor(*v.name.value(), arity, field_names, v.name.span);
@@ -202,7 +233,7 @@ impl Resolver {
                 ast::Decl::Record(rd) => {
                     self.declare_tycon(*rd.name.value(), rd.params.len(), rd.name.span);
                     self.check_dup_fields(&rd.fields);
-                    let fields = rd.fields.iter().map(|(n, _)| *n.value()).collect();
+                    let fields = rd.fields.iter().map(|f| *f.name.value()).collect();
                     self.declare_ctor(*rd.name.value(), rd.fields.len(), Some(fields), rd.name.span);
                 }
                 ast::Decl::Effect(ed) => {
@@ -210,8 +241,8 @@ impl Resolver {
                     // an effect name is also a type constructor of its parameters
                     self.declare_tycon(name, ed.params.len(), ed.name.span);
                     self.effects.insert(name, ed.params.len());
-                    for (op, _) in &ed.ops {
-                        let op = *op.value();
+                    for op_field in &ed.ops {
+                        let op = *op_field.name.value();
                         if self.effect_ops.insert(op, name).is_some() || self.predeclared.contains_key(&op) {
                             self.error(
                                 format!("operation `{op}` is already defined"),
@@ -284,7 +315,7 @@ impl Resolver {
     }
 
     fn declare_tycon(&mut self, name: InternedString, arity: usize, span: Span) {
-        if self.tycons.insert(name, arity).is_some() {
+        if self.tycons.insert(name, arity).is_some() && !BUILTIN_TYCONS.contains(&&*name) {
             self.error(
                 format!("type `{name}` is already defined"),
                 "duplicate type".to_string(),
@@ -304,6 +335,7 @@ impl Resolver {
             .ctors
             .insert(name, CtorInfo { arity, field_names })
             .is_some()
+            && !BUILTIN_CTORS.contains(&&*name)
         {
             self.error(
                 format!("constructor `{name}` is already defined"),
@@ -313,14 +345,14 @@ impl Resolver {
         }
     }
 
-    fn check_dup_fields(&mut self, fields: &[(ast::Ident, ast::LType)]) {
+    fn check_dup_fields(&mut self, fields: &[ast::Field]) {
         let mut seen = std::collections::HashSet::new();
-        for (n, _) in fields {
-            if !seen.insert(*n.value()) {
+        for f in fields {
+            if !seen.insert(*f.name.value()) {
                 self.error(
-                    format!("duplicate field `{}`", n.value()),
+                    format!("duplicate field `{}`", f.name.value()),
                     "already declared".to_string(),
-                    n.span,
+                    f.name.span,
                 );
             }
         }
@@ -377,15 +409,91 @@ impl Resolver {
     }
 
     fn resolve_decl(&mut self, decl: &ast::LDecl) -> hir::LDecl {
+        let (attrs, base) = peel(decl);
+        let is_pub = has_pub(attrs);
+        if is_pub {
+            self.any_pub = true;
+        }
+        // `@pub use M (a, b, c)` — re-export names already visible in the (flat)
+        // package scope.
+        if let ast::Decl::Use(u) = base.value() {
+            if is_pub {
+                for n in &u.names {
+                    let name = *n.value();
+                    if let Some(id) = self.lookup(name) {
+                        self.pub_vars.insert(id);
+                    } else if self.tycons.contains_key(&name) {
+                        self.pub_types.insert(name);
+                    } else {
+                        self.error(
+                            format!("cannot re-export `{name}`: not found in this scope"),
+                            "not defined".to_string(),
+                            n.span,
+                        );
+                    }
+                }
+            }
+        }
+
+        let hir = self.resolve_bare_decl(base);
+        if is_pub {
+            self.mark_pub(&hir);
+        }
+        hir
+    }
+
+    /// Record a `@pub` declaration's names in the export sets.
+    fn mark_pub(&mut self, decl: &hir::LDecl) {
         match decl.value() {
+            hir::Decl::Bind(hir::Bind::Fun(name, ..)) => {
+                self.pub_vars.insert(*name.value());
+            }
+            hir::Decl::Bind(hir::Bind::Pat(pat, _)) => {
+                let mut ids = Vec::new();
+                collect_hir_pat_vars(pat, &mut ids);
+                self.pub_vars.extend(ids);
+            }
+            hir::Decl::Data(dd) => {
+                self.pub_types.insert(dd.name);
+            }
+            hir::Decl::Record(rd) => {
+                self.pub_types.insert(rd.name);
+            }
+            hir::Decl::Effect(ed) => {
+                self.pub_types.insert(ed.name);
+                for (_, op, _) in &ed.ops {
+                    self.pub_vars.insert(*op.value());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `true` if any `@pub` was seen — the unit then exports only its `@pub`
+    /// declarations (and `@pub use` re-exports) instead of everything.
+    pub fn has_pub_markers(&self) -> bool {
+        self.any_pub
+    }
+
+    pub fn is_pub_var(&self, id: VarId) -> bool {
+        self.pub_vars.contains(&id)
+    }
+
+    pub fn is_pub_type(&self, name: InternedString) -> bool {
+        self.pub_types.contains(&name)
+    }
+
+    fn resolve_bare_decl(&mut self, decl: &ast::LDecl) -> hir::LDecl {
+        match decl.value() {
+            ast::Decl::Attributed(_, inner) => self.resolve_bare_decl(inner),
             ast::Decl::Bind(bind) => {
                 self.toplevel = true;
                 let b = self.resolve_bind(bind);
                 self.toplevel = false;
                 self.node(hir::Decl::Bind(b), decl.span)
             }
-            ast::Decl::Use(path) => {
-                let segs = path.iter().map(|s| *s.value()).collect();
+            ast::Decl::Use(u) => {
+                let segs = u.path.iter().map(|s| *s.value()).collect();
                 self.node(hir::Decl::Use(segs), decl.span)
             }
             ast::Decl::Data(dd) => {
@@ -400,7 +508,7 @@ impl Resolver {
                             ),
                             ast::VariantFields::Named(fs) => hir::VariantFields::Named(
                                 fs.iter()
-                                    .map(|(n, t)| (*n.value(), self.resolve_ty(t)))
+                                    .map(|f| (*f.name.value(), self.resolve_ty(&f.ty)))
                                     .collect(),
                             ),
                         };
@@ -425,7 +533,7 @@ impl Resolver {
                 let fields = rd
                     .fields
                     .iter()
-                    .map(|(n, t)| (*n.value(), self.resolve_ty(t)))
+                    .map(|f| (*f.name.value(), self.resolve_ty(&f.ty)))
                     .collect();
                 self.tyvars.clear();
                 self.node(
@@ -442,16 +550,16 @@ impl Resolver {
                 let ops = ed
                     .ops
                     .iter()
-                    .map(|(name, ty)| {
+                    .map(|f| {
                         // `declare_types` predeclared the op name as a top-level value
-                        let opname = *name.value();
+                        let opname = *f.name.value();
                         let id = self
                             .predeclared
                             .get(&opname)
                             .copied()
                             .unwrap_or_else(|| self.bind(opname));
-                        let rty = self.resolve_ty(ty);
-                        (opname, self.node(id, name.span), rty)
+                        let rty = self.resolve_ty(&f.ty);
+                        (opname, self.node(id, f.name.span), rty)
                     })
                     .collect();
                 self.tyvars.clear();
@@ -619,6 +727,15 @@ impl Resolver {
                 self.node(hir::Expr::Lit(l), expr.span)
             }
             ast::Expr::Unit => self.node(hir::Expr::Unit, expr.span),
+            ast::Expr::Hole => {
+                self.error(
+                    "`_` can only appear inside an operator section, e.g. `(_ + 1)`"
+                        .to_string(),
+                    "stray hole".to_string(),
+                    expr.span,
+                );
+                self.node(hir::Expr::Error, expr.span)
+            }
             ast::Expr::Var(name) => {
                 if let Some(id) = self.lookup(*name.value()) {
                     let v = self.node(id, name.span);
@@ -678,6 +795,28 @@ impl Resolver {
                 let fv = self.node(f, op.span);
                 let callee = self.node(hir::Expr::Var(fv), op.span);
                 self.node(hir::Expr::App(callee, vec![ro]), expr.span)
+            }
+            // `and` / `or` short-circuit: desugar to `if` rather than a prim call.
+            ast::Expr::BinOp(op, lhs, rhs)
+                if matches!(op.value(), ast::BinOp::And | ast::BinOp::Or) =>
+            {
+                let rl = self.resolve_expr(lhs);
+                let rr = self.resolve_expr(rhs);
+                let ctor = |this: &mut Self, name: &str| {
+                    let label = this.node(InternedString::from(name), op.span);
+                    this.node(hir::Expr::Cons(label, vec![]), op.span)
+                };
+                let node = match op.value() {
+                    ast::BinOp::And => {
+                        let f = ctor(self, "False");
+                        hir::Expr::If(rl, rr, f)
+                    }
+                    _ => {
+                        let t = ctor(self, "True");
+                        hir::Expr::If(rl, t, rr)
+                    }
+                };
+                self.node(node, expr.span)
             }
             ast::Expr::BinOp(op, lhs, rhs) => {
                 let sym = InternedString::from(op.value().to_string());
@@ -937,5 +1076,21 @@ impl Resolver {
             label: (label, span),
             extra_labels: vec![],
         });
+    }
+}
+
+/// Every `VarId` an already-resolved (irrefutable) pattern binds.
+fn collect_hir_pat_vars(pat: &hir::LPat, out: &mut Vec<VarId>) {
+    match pat.value() {
+        hir::Pat::Var(id) => out.push(*id.value()),
+        hir::Pat::As(id, sub) => {
+            out.push(*id.value());
+            collect_hir_pat_vars(sub, out);
+        }
+        hir::Pat::Tuple(ps) | hir::Pat::List(ps) | hir::Pat::Cons(_, ps) => {
+            ps.iter().for_each(|p| collect_hir_pat_vars(p, out))
+        }
+        hir::Pat::Record(fs, _) => fs.iter().for_each(|(_, p)| collect_hir_pat_vars(p, out)),
+        _ => {}
     }
 }

@@ -1,0 +1,34 @@
+-- Std.Collections.Set: an ordered set of `Int`, backed by a `Tree`.
+
+@pub data Set = Set (Tree Int)
+
+@pub def emptySet = Set emptyTree
+
+fun setTree s = match s with | Set t -> t
+
+@pub fun setInsert x s = Set (treeInsert x (setTree s))
+
+@pub fun setDelete x s = Set (treeDelete x (setTree s))
+
+@pub fun setMember x s = treeMember x (setTree s)
+
+@pub fun setSize s = treeSize (setTree s)
+
+@pub fun setNull s = treeNull (setTree s)
+
+@pub fun setToList s = treeToList (setTree s)
+
+@pub fun setFromList xs = Set (treeFromList xs)
+
+@pub fun setMin s = treeMin (setTree s)
+
+@pub fun setMax s = treeMax (setTree s)
+
+@pub fun setUnion a b = foldl (\acc x -> setInsert x acc) a (setToList b)
+
+@pub fun setDiff a b = foldl (\acc x -> setDelete x acc) a (setToList b)
+
+@pub fun setIntersect a b =
+  setFromList (filter (\x -> setMember x b) (setToList a))
+
+@pub fun setSubset a b = all (\x -> setMember x b) (setToList a)

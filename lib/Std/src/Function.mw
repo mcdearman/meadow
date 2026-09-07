@@ -1,0 +1,13 @@
+-- Function combinators.
+
+@pub fun id x = x
+
+@pub fun const x y = x
+
+@pub fun flip f x y = f y x
+
+@pub fun compose f g x = f (g x)
+
+@pub fun apply f x = f x
+
+@pub fun twice f x = f (f x)

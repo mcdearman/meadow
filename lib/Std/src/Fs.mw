@@ -1,0 +1,44 @@
+-- Std.Fs: filesystem access, modelled on Rust's `std::fs`.
+--
+-- Every operation runs in the `Fs` effect. With no enclosing `handle` the
+-- runtime performs real I/O; a `handle` can intercept the operations (handy for
+-- tests / sandboxing). Fallible operations return `Result String a`, where `Err`
+-- carries the operating system's error message.
+--
+-- Note: string literals in Meadow currently include their surrounding quotes, so
+-- `writeString (path, "hi")` writes the three bytes `"hi"` including the quotes;
+-- `readToString` returns file contents verbatim.
+
+@pub record FileMeta = {
+  @pub isFile : Bool,
+  @pub isDir : Bool,
+  @pub len : Int,
+  @pub readonly : Bool,
+}
+
+@pub effect Fs {
+  readToString : String -> Result String String,
+  readBytes : String -> Result String (List Int),
+  writeString : (String, String) -> Result String Unit,
+  appendString : (String, String) -> Result String Unit,
+  removeFile : String -> Result String Unit,
+  createDir : String -> Result String Unit,
+  createDirAll : String -> Result String Unit,
+  removeDir : String -> Result String Unit,
+  removeDirAll : String -> Result String Unit,
+  rename : (String, String) -> Result String Unit,
+  copy : (String, String) -> Result String Int,
+  readDir : String -> Result String (List String),
+  metadata : String -> Result String FileMeta,
+  exists : String -> Bool,
+  isFile : String -> Bool,
+  isDir : String -> Bool,
+}
+
+-- Convenience wrappers ------------------------------------------------------
+
+@pub fun readToStringOr default path = resultOr default (readToString path)
+
+@pub fun tryReadDir path = resultOr Nil (readDir path)
+
+@pub fun existsAll paths = all exists paths

@@ -636,6 +636,14 @@ impl Machine<'_> {
                 if data.clauses.iter().any(|c| c.effect == effect && c.op == op))
         });
         let Some(idx) = idx else {
+            // No user handler: the runtime discharges a few built-in effects
+            // itself. `Std.Fs` operations hit the real filesystem here (a `handle`
+            // would have matched above and taken precedence).
+            if &*effect == "Fs" {
+                let result = native_fs(&op, arg)?;
+                self.ctrl = Control::Ret(result);
+                return Ok(());
+            }
             return err(format!("unhandled effect {effect}.{op}"));
         };
 
@@ -787,6 +795,111 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
     }
 }
 
+/// The runtime's default handler for the `Std.Fs` effect: perform the real
+/// filesystem operation and return its result. Read/write ops yield
+/// `Result String a` (`Err` carries the OS message); `exists` / `isFile` /
+/// `isDir` yield `Bool`.
+fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
+    use std::fs;
+    use std::path::Path;
+
+    let sv = |s: String| Value::Str(InternedString::from(s));
+    let ok = |v: Value| Value::Ctor(InternedString::from("Ok"), vec![v]);
+    let ioerr = |e: std::io::Error| {
+        Value::Ctor(InternedString::from("Err"), vec![Value::Str(InternedString::from(e.to_string()))])
+    };
+    let unit = |r: std::io::Result<()>| match r {
+        Ok(()) => ok(Value::Unit),
+        Err(e) => ioerr(e),
+    };
+    let one = |v: &Value| -> Result<InternedString, RuntimeError> {
+        match v {
+            Value::Str(s) => Ok(*s),
+            other => err(format!("Fs.{op}: expected a String, got {other}")),
+        }
+    };
+    let two = |v: &Value| -> Result<(InternedString, InternedString), RuntimeError> {
+        match v {
+            Value::Tuple(xs) if xs.len() == 2 => Ok((one(&xs[0])?, one(&xs[1])?)),
+            other => err(format!("Fs.{op}: expected a (String, String) pair, got {other}")),
+        }
+    };
+
+    Ok(match op {
+        "readToString" => match fs::read_to_string(&*one(&arg)?) {
+            Ok(c) => ok(sv(c)),
+            Err(e) => ioerr(e),
+        },
+        "readBytes" => match fs::read(&*one(&arg)?) {
+            Ok(b) => ok(Value::List(b.into_iter().map(|x| Value::Int(x as i64)).collect())),
+            Err(e) => ioerr(e),
+        },
+        "writeString" => {
+            let (p, c) = two(&arg)?;
+            unit(fs::write(&*p, c.as_bytes()))
+        }
+        "appendString" => {
+            use std::io::Write;
+            let (p, c) = two(&arg)?;
+            let r = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&*p)
+                .and_then(|mut f| f.write_all(c.as_bytes()));
+            unit(r)
+        }
+        "removeFile" => unit(fs::remove_file(&*one(&arg)?)),
+        "createDir" => unit(fs::create_dir(&*one(&arg)?)),
+        "createDirAll" => unit(fs::create_dir_all(&*one(&arg)?)),
+        "removeDir" => unit(fs::remove_dir(&*one(&arg)?)),
+        "removeDirAll" => unit(fs::remove_dir_all(&*one(&arg)?)),
+        "rename" => {
+            let (a, b) = two(&arg)?;
+            unit(fs::rename(&*a, &*b))
+        }
+        "copy" => {
+            let (a, b) = two(&arg)?;
+            match fs::copy(&*a, &*b) {
+                Ok(n) => ok(Value::Int(n as i64)),
+                Err(e) => ioerr(e),
+            }
+        }
+        "readDir" => match fs::read_dir(&*one(&arg)?) {
+            Ok(entries) => {
+                let mut names = Vec::new();
+                for e in entries {
+                    match e {
+                        Ok(en) => {
+                            names.push(sv(en.file_name().to_string_lossy().into_owned()))
+                        }
+                        Err(e) => return Ok(ioerr(e)),
+                    }
+                }
+                ok(Value::List(names))
+            }
+            Err(e) => ioerr(e),
+        },
+        "metadata" => match fs::metadata(&*one(&arg)?) {
+            Ok(md) => {
+                let mut rec = BTreeMap::new();
+                rec.insert(InternedString::from("isFile"), Value::Bool(md.is_file()));
+                rec.insert(InternedString::from("isDir"), Value::Bool(md.is_dir()));
+                rec.insert(InternedString::from("len"), Value::Int(md.len() as i64));
+                rec.insert(
+                    InternedString::from("readonly"),
+                    Value::Bool(md.permissions().readonly()),
+                );
+                ok(Value::Record(rec))
+            }
+            Err(e) => ioerr(e),
+        },
+        "exists" => Value::Bool(Path::new(&*one(&arg)?).exists()),
+        "isFile" => Value::Bool(Path::new(&*one(&arg)?).is_file()),
+        "isDir" => Value::Bool(Path::new(&*one(&arg)?).is_dir()),
+        other => return err(format!("unhandled effect Fs.{other}")),
+    })
+}
+
 fn as_bool(v: &Value) -> Result<bool, RuntimeError> {
     match v {
         Value::Bool(b) => Ok(*b),
@@ -820,7 +933,8 @@ impl fmt::Display for Value {
         match self {
             Value::Int(i) => write!(f, "{i}"),
             Value::Bool(b) => write!(f, "{b}"),
-            Value::Str(s) => write!(f, "{s}"),
+            // quote + escape, so a string is visually distinct from a bare ident
+            Value::Str(s) => write!(f, "{:?}", &**s),
             Value::Unit => f.write_str("()"),
             Value::Tuple(items) => {
                 f.write_str("(")?;

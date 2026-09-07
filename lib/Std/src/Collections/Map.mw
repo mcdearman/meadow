@@ -1,0 +1,83 @@
+-- Std.Collections.Map: an ordered map from `Int` keys to values, backed by a
+-- binary search tree.
+
+@pub data Map v = MapTip | MapNode (Map v) Int v (Map v)
+
+@pub def emptyMap = MapTip
+
+@pub fun mapNull m = match m with | MapTip -> True | MapNode l k v r -> False
+
+@pub fun mapSize m =
+  match m with
+  | MapTip -> 0
+  | MapNode l k v r -> 1 + mapSize l + mapSize r
+
+@pub fun mapInsert k v m =
+  match m with
+  | MapTip -> MapNode MapTip k v MapTip
+  | MapNode l key val r ->
+      if k < key then MapNode (mapInsert k v l) key val r
+      else if key < k then MapNode l key val (mapInsert k v r)
+      else MapNode l k v r
+
+@pub fun mapLookup k m =
+  match m with
+  | MapTip -> None
+  | MapNode l key val r ->
+      if k < key then mapLookup k l
+      else if key < k then mapLookup k r
+      else Some val
+
+@pub fun mapMember k m = isSome (mapLookup k m)
+
+@pub fun mapGetOr default k m =
+  match mapLookup k m with
+  | None -> default
+  | Some v -> v
+
+@pub fun mapToList m =
+  match m with
+  | MapTip -> Nil
+  | MapNode l k v r -> append (mapToList l) (Cons (k, v) (mapToList r))
+
+@pub fun mapKeys m = map fst (mapToList m)
+
+@pub fun mapValues m = map snd (mapToList m)
+
+fun mapInsertPair p m = match p with | (k, v) -> mapInsert k v m
+
+@pub fun mapFromList ps = foldl (\acc p -> mapInsertPair p acc) emptyMap ps
+
+@pub fun mapMapValues f m =
+  match m with
+  | MapTip -> MapTip
+  | MapNode l k v r -> MapNode (mapMapValues f l) k (f v) (mapMapValues f r)
+
+@pub fun mapMin m =
+  match m with
+  | MapTip -> None
+  | MapNode l k v r -> if mapNull l then Some (k, v) else mapMin l
+
+fun mapDeleteMin m =
+  match m with
+  | MapTip -> MapTip
+  | MapNode l k v r -> if mapNull l then r else MapNode (mapDeleteMin l) k v r
+
+fun mapSpliceMin l r =
+  match mapMin r with
+  | None -> l
+  | Some (mk, mv) -> MapNode l mk mv (mapDeleteMin r)
+
+fun mapRemoveRoot l r =
+  match (l, r) with
+  | (MapTip, rr) -> rr
+  | (ll, MapTip) -> ll
+  | (ll, rr) -> mapSpliceMin ll rr
+
+@pub fun mapDelete k m =
+  match m with
+  | MapTip -> MapTip
+  | MapNode l key val r ->
+      if k < key then MapNode (mapDelete k l) key val r
+      else if key < k then MapNode l key val (mapDelete k r)
+      else mapRemoveRoot l r

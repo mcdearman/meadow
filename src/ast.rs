@@ -20,17 +20,42 @@ pub struct Module {
 
 pub type LDecl = Located<Decl>;
 
+/// An attribute: `@pub`, `@attr(A, B, C)`. Attached to a declaration (via
+/// [`Decl::Attributed`]) or a record / named-variant field (see [`Field`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attr {
+    pub name: Ident,
+    pub args: Vec<Ident>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decl {
     Bind(Bind),
-    /// `use a.b.c`
-    Use(Vec<Ident>),
+    /// `use a.b.c` / `use a.b (x, y, z)` — `names` empty means the whole module.
+    Use(UseDecl),
     /// `data Node a = Leaf (Vector a) | Internal { ... }`
     Data(DataDecl),
     /// `record Person = { name : String }`
     Record(RecordDecl),
     /// `effect State s { get : () -> s, put : s -> () }`
     Effect(EffectDecl),
+    /// One or more `@attr` lines in front of another declaration.
+    Attributed(Vec<Attr>, Box<LDecl>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UseDecl {
+    pub path: Vec<Ident>,
+    /// Selected names — `use a.b (x, y)`. Empty for a bare `use a.b`.
+    pub names: Vec<Ident>,
+}
+
+/// A record field or named-variant field, with any leading attributes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Field {
+    pub attrs: Vec<Attr>,
+    pub name: Ident,
+    pub ty: LType,
 }
 
 pub type LType = Located<TypeExpr>;
@@ -62,7 +87,7 @@ pub struct EffectRow {
 pub struct EffectDecl {
     pub name: Ident,
     pub params: Vec<Ident>,
-    pub ops: Vec<(Ident, LType)>,
+    pub ops: Vec<Field>,
 }
 
 /// `op pat resume -> body` in a `handle` expression.
@@ -92,14 +117,14 @@ pub enum VariantFields {
     /// `Leaf (Vector a) Int`
     Positional(Vec<LType>),
     /// `Internal { sizes : T, children : T }`
-    Named(Vec<(Ident, LType)>),
+    Named(Vec<Field>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordDecl {
     pub name: Ident,
     pub params: Vec<Ident>,
-    pub fields: Vec<(Ident, LType)>,
+    pub fields: Vec<Field>,
 }
 
 pub type LExpr = Located<Expr>;
@@ -125,6 +150,10 @@ pub enum Expr {
     /// `handle e with { op p k -> …, return x -> … }`
     Handle(LExpr, Vec<HandlerArm>, Option<(LPat, LExpr)>),
     Unit,
+    /// A `_` hole in expression position. Only legal inside an operator section
+    /// `( … )`, where the parser rewrites the section into a lambda; anywhere
+    /// else the resolver reports it.
+    Hole,
 }
 
 pub type LUnOp = Located<UnOp>;
@@ -171,6 +200,10 @@ pub enum BinOp {
     Gt,
     Leq,
     Geq,
+    /// `and` / `or` — short-circuiting; the resolver desugars them to `if`, so
+    /// they never reach a primitive.
+    And,
+    Or,
 }
 
 impl ToString for BinOp {
@@ -188,6 +221,8 @@ impl ToString for BinOp {
             BinOp::Gt => ">",
             BinOp::Leq => "<=",
             BinOp::Geq => ">=",
+            BinOp::And => "&&",
+            BinOp::Or => "||",
         }
         .to_string()
     }

@@ -66,7 +66,48 @@ where
         .map_with(move |decls, e| Located::new(Module { name, decls }, e.span()))
 }
 
+/// `@pub`, `@attr(A, B, C)` — a `@` then a name then an optional parenthesised
+/// list of argument names.
+fn attr<'tokens, I>()
+-> impl Parser<'tokens, I, Attr, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
+{
+    just(Token::At)
+        .ignore_then(path_seg())
+        .then(
+            path_seg()
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LParen), just(Token::RParen))
+                .or_not(),
+        )
+        .map(|(name, args)| Attr {
+            name,
+            args: args.unwrap_or_default(),
+        })
+}
+
 fn decl<'tokens, I>()
+-> impl Parser<'tokens, I, LDecl, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
+{
+    attr()
+        .repeated()
+        .collect::<Vec<_>>()
+        .then(bare_decl())
+        .map_with(|(attrs, d), e| {
+            if attrs.is_empty() {
+                d
+            } else {
+                LDecl::new(Decl::Attributed(attrs, Box::new(d)), e.span())
+            }
+        })
+}
+
+fn bare_decl<'tokens, I>()
 -> impl Parser<'tokens, I, LDecl, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
@@ -78,12 +119,21 @@ where
             .then(expr())
             .map(|(p, e)| Bind::Pat(p, e));
 
+        // `fun f a b = e`, or point-free `fun f = e` (no parameters) — the latter
+        // is just a value binding, so it takes the `Bind::Pat` path (and its
+        // right-hand side is subject to the value restriction, like `def`).
         let fun_bind = just(Token::Fun)
             .ignore_then(lower_ident())
-            .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
+            .then(lower_ident().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::Eq))
             .then(expr())
-            .map(|((name, args), body)| Bind::Fun(name, args, body));
+            .map(|((name, args), body)| {
+                if args.is_empty() {
+                    Bind::Pat(Located::new(Pat::Var(name.clone()), name.span), body)
+                } else {
+                    Bind::Fun(name, args, body)
+                }
+            });
 
         fun_bind.or(pat_bind)
     };
@@ -95,7 +145,23 @@ where
                 .at_least(1)
                 .collect::<Vec<_>>(),
         )
-        .map_with(|segs, e| LDecl::new(Decl::Use(segs), e.span()));
+        .then(
+            path_seg()
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LParen), just(Token::RParen))
+                .or_not(),
+        )
+        .map_with(|(path, names), e| {
+            LDecl::new(
+                Decl::Use(UseDecl {
+                    path,
+                    names: names.unwrap_or_default(),
+                }),
+                e.span(),
+            )
+        });
 
     let variant = upper_ident()
         .then(choice((
@@ -166,12 +232,17 @@ where
     ))
 }
 
-/// `{ name : Type, age : Type, }` — shared by `record` decls and named variant fields.
+/// `{ @pub name : Type, age : Type, }` — shared by `record` decls, named variant
+/// fields, and `effect` operation lists. Each field may carry leading attributes.
 fn field_list<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
--> impl Parser<'a, I, Vec<(Ident, LType)>, extra::Err<Rich<'a, Token, Span>>> + Clone {
-    lower_ident()
+-> impl Parser<'a, I, Vec<Field>, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    attr()
+        .repeated()
+        .collect::<Vec<_>>()
+        .then(lower_ident())
         .then_ignore(just(Token::Colon))
         .then(ty())
+        .map(|((attrs, name), ty)| Field { attrs, name, ty })
         .separated_by(just(Token::Comma))
         .allow_trailing()
         .at_least(1)
@@ -325,6 +396,27 @@ where
             .delimited_by(just(Token::LParen), just(Token::RParen))
             .map_with(|es: Vec<LExpr>, e| Located::new(Expr::Tuple(es), e.span()));
 
+        // `[lo .. hi]` / `[lo ..= hi]` — an inclusive integer range (Haskell-style),
+        // desugared to `range lo (hi + 1)`.
+        let range_list = expr
+            .clone()
+            .then(choice((just(Token::DoublePeriod), just(Token::DoublePeriodEq))))
+            .then(expr.clone())
+            .delimited_by(just(Token::LBrack), just(Token::RBrack))
+            .map_with(|((lo, _), hi), e| {
+                let span = e.span();
+                let one = Located::new(Expr::Lit(Lit::Int(1)), hi.span);
+                let hi1 = Located::new(
+                    Expr::BinOp(Located::new(BinOp::Add, hi.span), hi, one),
+                    span,
+                );
+                let range = Located::new(
+                    Expr::Var(Located::new(InternedString::from("range"), span)),
+                    span,
+                );
+                Located::new(Expr::App(range, vec![lo, hi1]), span)
+            });
+
         let list_expr = expr
             .clone()
             .separated_by(just(Token::Comma))
@@ -471,10 +563,22 @@ where
         let ctor_atom =
             upper_ident().map_with(|n, e| Located::new(Expr::Cons(n, vec![]), e.span()));
 
+        // `_` — an operator-section hole (see `desugar_section`).
+        let hole_expr = just(Token::Wildcard)
+            .map_with(|_, e| Located::new(Expr::Hole, e.span()));
+
+        // `( e )` — grouping, but if `e` contains `_` holes it's an operator
+        // section and desugars to a lambda: `(_ + 1)` is `\h -> h + 1`.
+        let section = expr
+            .clone()
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .map(desugar_section);
+
         let atom = choice((
             unit_expr,
             lit_expr,
             var_expr,
+            hole_expr,
             ctor_atom,
             record_expr,
             handle_expr,
@@ -482,9 +586,9 @@ where
             if_expr,
             lam_expr,
             match_expr,
-            expr.clone()
-                .delimited_by(just(Token::LParen), just(Token::RParen)),
+            section,
             tuple,
+            range_list,
             list_expr,
         ));
 
@@ -521,13 +625,27 @@ where
             .map(|(name, args)| Expr::Cons(name, args.unwrap_or_default()))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
-        choice((cons, app, atom)).clone().pratt((
+        let ops = choice((cons, app, atom)).clone().pratt((
             prefix(1, just(Token::Minus), |op: Token, exp: Located<Expr>, e| {
                 Located::new(
                     Expr::UnOp(Located::new(UnOp::from(op), e.span()), exp),
                     e.span(),
                 )
             }),
+            // `head :: tail` — sugar for `Cons head tail` (right-associative).
+            infix(
+                right(2),
+                just(Token::ColonColon),
+                |left: Located<Expr>, _, right: Located<Expr>, e| {
+                    Located::new(
+                        Expr::Cons(
+                            Located::new(InternedString::from("Cons"), e.span()),
+                            vec![left, right],
+                        ),
+                        e.span(),
+                    )
+                },
+            ),
             // infix ops
             infix(
                 left(3),
@@ -649,8 +767,140 @@ where
                     )
                 },
             ),
-        ))
+        ));
+
+        // `and` / `or` sit below every pratt operator and short-circuit (the
+        // resolver turns them into `if`). `and` binds tighter than `or`.
+        let bin = |op: BinOp| {
+            move |l: Located<Expr>, r: Located<Expr>| {
+                let span = l.span.extend(r.span);
+                Located::new(
+                    Expr::BinOp(Located::new(op.clone(), span), l, r),
+                    span,
+                )
+            }
+        };
+        let and_expr = ops.clone().foldl(
+            just(Token::And).ignore_then(ops.clone()).repeated(),
+            bin(BinOp::And),
+        );
+        let or_expr = and_expr.clone().foldl(
+            just(Token::Or).ignore_then(and_expr.clone()).repeated(),
+            bin(BinOp::Or),
+        );
+
+        // `x |> f` == `f x` (left-assoc); `f <| x` == `f x` (right-assoc, loosest).
+        let app1 = |func: Located<Expr>, arg: Located<Expr>| {
+            let span = func.span.extend(arg.span);
+            Located::new(Expr::App(func, vec![arg]), span)
+        };
+        let pipe_l = or_expr.clone().foldl(
+            just(Token::RPipe).ignore_then(or_expr.clone()).repeated(),
+            move |lhs, rhs| app1(rhs, lhs),
+        );
+        pipe_l
+            .clone()
+            .then(
+                just(Token::LPipe)
+                    .ignore_then(pipe_l)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(move |(head, rest)| {
+                if rest.is_empty() {
+                    return head;
+                }
+                let mut all = vec![head];
+                all.extend(rest);
+                let last = all.pop().unwrap();
+                all.into_iter().rev().fold(last, |acc, f| app1(f, acc))
+            })
     })
+}
+
+/// Turn a parenthesised expression into a lambda if it contains `_` holes:
+/// `(_ + _)` becomes `\_hole0 _hole1 -> _hole0 + _hole1`, `(f _ 3)` becomes
+/// `\_hole0 -> f _hole0 3`. Holes are numbered left-to-right in source order.
+/// Holes inside a nested `\ …` belong to that lambda and are left alone. With no
+/// holes the expression is returned unchanged (plain grouping).
+fn desugar_section(inner: LExpr) -> LExpr {
+    let span = inner.span;
+    let mut n = 0usize;
+    let body = fill_holes(inner, &mut n);
+    if n == 0 {
+        return body;
+    }
+    let params = (0..n)
+        .map(|i| {
+            Located::new(
+                Pat::Var(Located::new(InternedString::from(format!("_hole{i}")), span)),
+                span,
+            )
+        })
+        .collect();
+    Located::new(Expr::Lam(params, body), span)
+}
+
+/// Replace each `Expr::Hole` with `Expr::Var(_hole{k})`, bumping `n`. Recurses
+/// through every sub-expression except the body of a nested lambda / `fun` bind.
+fn fill_holes(e: LExpr, n: &mut usize) -> LExpr {
+    let span = e.span;
+    let go = |x, n: &mut usize| fill_holes(x, n);
+    let kind = match *e.value {
+        Expr::Hole => {
+            let name = InternedString::from(format!("_hole{n}"));
+            *n += 1;
+            Expr::Var(Located::new(name, span))
+        }
+        Expr::Var(v) => Expr::Var(v),
+        Expr::Lit(l) => Expr::Lit(l),
+        Expr::Unit => Expr::Unit,
+        // A nested lambda owns any holes in its body.
+        Expr::Lam(ps, b) => Expr::Lam(ps, b),
+        Expr::App(f, args) => Expr::App(
+            go(f, n),
+            args.into_iter().map(|a| go(a, n)).collect(),
+        ),
+        Expr::UnOp(op, x) => Expr::UnOp(op, go(x, n)),
+        Expr::BinOp(op, l, r) => Expr::BinOp(op, go(l, n), go(r, n)),
+        Expr::Tuple(xs) => Expr::Tuple(xs.into_iter().map(|x| go(x, n)).collect()),
+        Expr::List(xs) => Expr::List(xs.into_iter().map(|x| go(x, n)).collect()),
+        Expr::Cons(name, xs) => {
+            Expr::Cons(name, xs.into_iter().map(|x| go(x, n)).collect())
+        }
+        Expr::Field(o, l) => Expr::Field(go(o, n), l),
+        Expr::Record(fields, base) => Expr::Record(
+            fields.into_iter().map(|(l, v)| (l, go(v, n))).collect(),
+            base.map(|b| go(b, n)),
+        ),
+        Expr::If(c, t, f) => Expr::If(go(c, n), go(t, n), go(f, n)),
+        Expr::Match(s, arms) => Expr::Match(
+            go(s, n),
+            arms.into_iter().map(|(p, b)| (p, go(b, n))).collect(),
+        ),
+        Expr::Let(binds, body) => Expr::Let(
+            binds
+                .into_iter()
+                .map(|b| match b {
+                    Bind::Pat(p, x) => Bind::Pat(p, go(x, n)),
+                    // a `fun` bind owns its body's holes
+                    other => other,
+                })
+                .collect(),
+            go(body, n),
+        ),
+        Expr::Handle(s, arms, ret) => Expr::Handle(
+            go(s, n),
+            arms.into_iter()
+                .map(|mut a| {
+                    a.body = go(a.body, n);
+                    a
+                })
+                .collect(),
+            ret.map(|(p, b)| (p, go(b, n))),
+        ),
+    };
+    Located::new(kind, span)
 }
 
 fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
@@ -702,7 +952,8 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .then_ignore(just(Token::RBrace))
             .map(|(fields, open)| Pat::Record(fields, open.is_some()));
 
-        cons.or(record)
+        let atom = cons
+            .or(record)
             .or(lower_ident().map(|ident| Pat::Var(ident)))
             .or(just(Token::Wildcard).map(|_| Pat::Wildcard))
             .or(lit().map(Pat::Lit))
@@ -710,6 +961,25 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .or(tuple)
             .or(unit().map(|_| Pat::Unit))
             .map_with(|kind, e| LPat::new(kind, e.span()))
+            .boxed();
+
+        // `head :: tail` — sugar for the `Cons head tail` pattern (right-assoc).
+        atom.clone()
+            .then(
+                just(Token::ColonColon)
+                    .ignore_then(pat.clone())
+                    .or_not(),
+            )
+            .map_with(|(head, tail), e| match tail {
+                Some(tail) => LPat::new(
+                    Pat::Cons(
+                        Located::new(InternedString::from("Cons"), e.span()),
+                        vec![head, tail],
+                    ),
+                    e.span(),
+                ),
+                None => head,
+            })
             .boxed()
     })
 }

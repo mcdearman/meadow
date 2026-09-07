@@ -1,0 +1,23 @@
+-- Integer helpers.
+
+@pub fun min a b = if a < b then a else b
+
+@pub fun max a b = if a < b then b else a
+
+@pub fun abs n = if n < 0 then 0 - n else n
+
+@pub fun signum n = if n < 0 then 0 - 1 else if n == 0 then 0 else 1
+
+@pub fun clamp lo hi n = max lo (min hi n)
+
+@pub fun succ n = n + 1
+
+@pub fun pred n = n - 1
+
+@pub fun even n = n % 2 == 0
+
+@pub fun odd n = n % 2 == 1
+
+@pub fun gcd a b = if b == 0 then abs a else gcd b (a % b)
+
+@pub fun lcm a b = if a == 0 then 0 else abs (a * b) / gcd a b

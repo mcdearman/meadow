@@ -1,0 +1,87 @@
+-- Std.Collections.Tree: an unbalanced binary search tree.
+--
+-- `treeInsert` / `treeMember` / `treeDelete` order elements with `<`, so they
+-- work on `Int`. `treeMap` / `treeFoldr` / `treeToList` are element-agnostic.
+
+@pub data Tree a = Leaf | Node (Tree a) a (Tree a)
+
+@pub def emptyTree = Leaf
+
+@pub fun treeNull t = match t with | Leaf -> True | Node l x r -> False
+
+@pub fun treeSize t =
+  match t with
+  | Leaf -> 0
+  | Node l x r -> 1 + treeSize l + treeSize r
+
+@pub fun treeDepth t =
+  match t with
+  | Leaf -> 0
+  | Node l x r -> 1 + max (treeDepth l) (treeDepth r)
+
+@pub fun treeInsert x t =
+  match t with
+  | Leaf -> Node Leaf x Leaf
+  | Node l y r ->
+      if x < y then Node (treeInsert x l) y r
+      else if y < x then Node l y (treeInsert x r)
+      else t
+
+@pub fun treeMember x t =
+  match t with
+  | Leaf -> False
+  | Node l y r ->
+      if x < y then treeMember x l
+      else if y < x then treeMember x r
+      else True
+
+@pub fun treeMin t =
+  match t with
+  | Leaf -> None
+  | Node l x r -> if treeNull l then Some x else treeMin l
+
+@pub fun treeMax t =
+  match t with
+  | Leaf -> None
+  | Node l x r -> if treeNull r then Some x else treeMax r
+
+fun treeDeleteMin t =
+  match t with
+  | Leaf -> Leaf
+  | Node l x r -> if treeNull l then r else Node (treeDeleteMin l) x r
+
+fun spliceMin l r =
+  match treeMin r with
+  | None -> l
+  | Some m -> Node l m (treeDeleteMin r)
+
+fun removeRoot l r =
+  match (l, r) with
+  | (Leaf, rr) -> rr
+  | (ll, Leaf) -> ll
+  | (ll, rr) -> spliceMin ll rr
+
+@pub fun treeDelete x t =
+  match t with
+  | Leaf -> Leaf
+  | Node l y r ->
+      if x < y then Node (treeDelete x l) y r
+      else if y < x then Node l y (treeDelete x r)
+      else removeRoot l r
+
+@pub fun treeToList t =
+  match t with
+  | Leaf -> Nil
+  | Node l x r -> append (treeToList l) (Cons x (treeToList r))
+
+@pub fun treeFromList xs = foldl (\acc x -> treeInsert x acc) emptyTree xs
+
+@pub fun treeFoldr f acc t =
+  match t with
+  | Leaf -> acc
+  | Node l x r -> treeFoldr f (f x (treeFoldr f acc r)) l
+
+@pub fun treeMap f t =
+  match t with
+  | Leaf -> Leaf
+  | Node l x r -> Node (treeMap f l) (f x) (treeMap f r)

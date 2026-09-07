@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_expr(\"1 < 2 and 2 < 3 or 9 < 0\")"
+---
+true

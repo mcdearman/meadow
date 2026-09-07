@@ -7,20 +7,23 @@ Module {
     decls: [
         Located {
             value: Use(
-                [
-                    Located {
-                        value: InternedString(std),
-                        span: 4..7,
-                    },
-                    Located {
-                        value: InternedString(list),
-                        span: 8..12,
-                    },
-                    Located {
-                        value: InternedString(map),
-                        span: 13..16,
-                    },
-                ],
+                UseDecl {
+                    path: [
+                        Located {
+                            value: InternedString(std),
+                            span: 4..7,
+                        },
+                        Located {
+                            value: InternedString(list),
+                            span: 8..12,
+                        },
+                        Located {
+                            value: InternedString(map),
+                            span: 13..16,
+                        },
+                    ],
+                    names: [],
+                },
             ),
             span: 0..16,
         },

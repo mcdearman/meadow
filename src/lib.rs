@@ -37,7 +37,7 @@
 //! ## Compilation units
 //!
 //! The compiler only ever compiles a **package** (a directory of modules with a
-//! `meadow.pkg` manifest) against a set of already-compiled dependency packages.
+//! `meadow.toml` manifest) against a set of already-compiled dependency packages.
 //! Packages form a DAG — [`package::PackageGraph::build`] topologically sorts them
 //! and rejects cycles. Modules *within* a package may be mutually recursive.
 //!
@@ -77,3 +77,4 @@ pub mod rename;
 pub mod repl;
 pub mod source;
 pub mod span;
+pub mod stdlib;

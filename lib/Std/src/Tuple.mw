@@ -1,0 +1,13 @@
+-- Pair helpers.
+
+@pub fun fst p = match p with | (a, b) -> a
+
+@pub fun snd p = match p with | (a, b) -> b
+
+@pub fun pair a b = (a, b)
+
+@pub fun swap p = match p with | (a, b) -> (b, a)
+
+@pub fun mapFst f p = match p with | (a, b) -> (f a, b)
+
+@pub fun mapSnd f p = match p with | (a, b) -> (a, f b)

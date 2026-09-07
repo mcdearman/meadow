@@ -15,6 +15,45 @@ fn comparison_and_bool() {
 }
 
 #[test]
+fn and_or_precedence_and_result() {
+    // `and` binds tighter than `or`, both looser than `<`.
+    insta::assert_snapshot!(eval_expr(
+        "1 < 2 and 2 < 3 or 9 < 0"
+    ));
+}
+
+#[test]
+fn and_short_circuits_before_dividing_by_zero() {
+    // `False and _` must not evaluate the right operand.
+    insta::assert_snapshot!(eval_expr("2 < 1 and 1 / 0 == 0"));
+}
+
+#[test]
+fn or_short_circuits_before_dividing_by_zero() {
+    insta::assert_snapshot!(eval_expr("1 < 2 or 1 / 0 == 0"));
+}
+
+#[test]
+fn operator_section_two_holes() {
+    // `(_ + _)` is `\a b -> a + b`
+    insta::assert_snapshot!(eval_expr("(_ + _) 3 4"));
+}
+
+#[test]
+fn operator_section_one_hole_each_side() {
+    insta::assert_snapshot!(eval_main(
+        "def addTen = (_ + 10)\ndef half = (_ / 2)\ndef main = (addTen 5, half 30, (100 - _) 40)\n"
+    ));
+}
+
+#[test]
+fn point_free_fun_with_no_params() {
+    insta::assert_snapshot!(eval_main(
+        "fun twice f x = f (f x)\nfun quad = twice (_ * 2)\ndef main = quad 3\n"
+    ));
+}
+
+#[test]
 fn string_literal() {
     insta::assert_snapshot!(eval_expr("\"hello\""));
 }

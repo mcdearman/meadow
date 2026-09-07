@@ -20,6 +20,38 @@ use std::fmt::Display;
 
 pub type LToken = Located<Token>;
 
+/// Strip the surrounding `"` from a string-literal slice and resolve escapes
+/// (`\n \t \r \\ \" \' \0`; an unknown escape keeps its backslash).
+fn unescape(raw: &str) -> String {
+    let inner = &raw[1..raw.len() - 1];
+    if !inner.contains('\\') {
+        return inner.to_string();
+    }
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('0') => out.push('\0'),
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('\'') => out.push('\''),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(subpattern alpha = r"[a-zA-Z]+")]
 pub enum Token {
@@ -45,7 +77,7 @@ pub enum Token {
     //     r"-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0))(/-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0)))",
     //     |lex| lex.slice().parse().ok())]
     // Rational(Rational64),
-    #[regex(r#""(\\.|[^"\\])*""#, |lex| InternedString::from(lex.slice()))]
+    #[regex(r#""(\\.|[^"\\])*""#, |lex| InternedString::from(unescape(lex.slice())))]
     String(InternedString),
     #[regex(r"'(\\.|[^'\\])'", |lex| lex.slice().chars().nth(1))]
     Char(char),
@@ -79,12 +111,10 @@ pub enum Token {
     Percent,
     #[token("^")]
     Caret,
-    #[token("or")]
-    Or,
     #[token("and")]
     And,
-    #[token("not")]
-    Not,
+    #[token("or")]
+    Or,
     #[token("=")]
     Eq,
     #[token("==")]
@@ -109,6 +139,8 @@ pub enum Token {
     DoublePeriod,
     #[token("..=")]
     DoublePeriodEq,
+    #[token("::", priority = 10)]
+    ColonColon,
     #[token(":")]
     Colon,
     #[token(";")]
@@ -208,9 +240,8 @@ impl<'a> Display for Token {
             Slash => write!(f, "Slash"),
             Percent => write!(f, "Percent"),
             Caret => write!(f, "Caret"),
-            Or => write!(f, "Or"),
             And => write!(f, "And"),
-            Not => write!(f, "Not"),
+            Or => write!(f, "Or"),
             Eq => write!(f, "Eq"),
             EqEq => write!(f, "EqEq"),
             Neq => write!(f, "Neq"),
@@ -223,6 +254,7 @@ impl<'a> Display for Token {
             Period => write!(f, "Period"),
             DoublePeriod => write!(f, "DoublePeriod"),
             DoublePeriodEq => write!(f, "DoublePeriodEq"),
+            ColonColon => write!(f, "ColonColon"),
             Colon => write!(f, "Colon"),
             SemiColon => write!(f, "SemiColon"),
             LParen => write!(f, "LParen"),
@@ -344,8 +376,12 @@ mod tests {
     #[test]
     fn numbers_and_strings() {
         use Token::*;
-        // string literals keep their surrounding quotes in the slice
-        assert_eq!(kinds("42 \"hi\""), vec![Int(42), String("\"hi\"".into())]);
+        // string literals are unquoted and unescaped by the lexer
+        assert_eq!(kinds("42 \"hi\""), vec![Int(42), String("hi".into())]);
+        assert_eq!(
+            kinds(r#""a\tb\n""#),
+            vec![String("a\tb\n".into())]
+        );
     }
 
     #[test]

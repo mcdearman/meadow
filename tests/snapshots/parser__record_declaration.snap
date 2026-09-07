@@ -14,12 +14,13 @@ Module {
                     },
                     params: [],
                     fields: [
-                        (
-                            Located {
+                        Field {
+                            attrs: [],
+                            name: Located {
                                 value: InternedString(name),
                                 span: 20..24,
                             },
-                            Located {
+                            ty: Located {
                                 value: Con(
                                     Located {
                                         value: InternedString(String),
@@ -29,13 +30,14 @@ Module {
                                 ),
                                 span: 27..33,
                             },
-                        ),
-                        (
-                            Located {
+                        },
+                        Field {
+                            attrs: [],
+                            name: Located {
                                 value: InternedString(age),
                                 span: 37..40,
                             },
-                            Located {
+                            ty: Located {
                                 value: Con(
                                     Located {
                                         value: InternedString(Int),
@@ -45,7 +47,7 @@ Module {
                                 ),
                                 span: 43..46,
                             },
-                        ),
+                        },
                     ],
                 },
             ),

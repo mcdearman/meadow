@@ -3,19 +3,24 @@
 //! (mutual recursion is fine); packages form a DAG and may not — a dependency cycle
 //! is a hard error, exactly like cargo crates.
 //!
-//! Discovery is filesystem-based. A package root optionally carries a `meadow.pkg`
-//! manifest:
+//! Discovery is filesystem-based. A package root optionally carries a
+//! `meadow.toml` manifest, in a Cargo-like format:
 //!
-//! ```text
+//! ```toml
+//! [package]
 //! name = "demo"
 //! version = "0.1.0"
 //!
 //! [dependencies]
-//! std = "../../lib/std"
+//! util = "../util"                 # bare string = path
+//! shared = { path = "../shared" }  # inline table with `path`
 //! ```
 //!
-//! Without a manifest the directory (or single `.mw` file) is treated as a
-//! standalone package named after its stem.
+//! `[package]` name/version may also be given at the top level, and the legacy
+//! file name `meadow.pkg` is still accepted. Without a manifest the directory (or
+//! single `.mw` file) is a standalone package named after its stem. The embedded
+//! `Std` package (see [`crate::stdlib`]) is always an implicit dependency and
+//! never needs to be listed.
 
 use crate::{
     diagnostics::Diagnostic,
@@ -160,44 +165,96 @@ impl Builder {
     }
 }
 
+/// Manifest file names, in precedence order.
+const MANIFEST_NAMES: &[&str] = &["meadow.toml", "meadow.pkg"];
+
 impl Manifest {
     pub fn load(dir: &Path) -> std::io::Result<Option<Manifest>> {
-        let file = dir.join("meadow.pkg");
-        if !file.is_file() {
+        let Some(file) = MANIFEST_NAMES
+            .iter()
+            .map(|n| dir.join(n))
+            .find(|p| p.is_file())
+        else {
             return Ok(None);
-        }
+        };
         let text = std::fs::read_to_string(&file)?;
-        let mut name = package_name(dir).to_string();
-        let mut version = "0.0.0".to_string();
-        let mut deps = Vec::new();
-        let mut in_deps = false;
-        for raw in text.lines() {
-            let line = raw.split('#').next().unwrap_or("").trim();
-            if line.is_empty() {
-                continue;
-            }
-            if line.starts_with('[') && line.ends_with(']') {
-                in_deps = line[1..line.len() - 1].trim() == "dependencies";
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            let key = key.trim();
-            let value = value.trim().trim_matches('"');
-            if in_deps {
-                deps.push((key.to_string(), PathBuf::from(value)));
-            } else if key == "name" {
-                name = value.to_string();
-            } else if key == "version" {
-                version = value.to_string();
-            }
+        Ok(Some(parse_manifest(&text, dir)))
+    }
+}
+
+/// A deliberately small line-based TOML reader — enough for `[package]` /
+/// `[dependencies]` with string or `{ path = "…" }` values.
+fn parse_manifest(text: &str, dir: &Path) -> Manifest {
+    let mut name = package_name(dir).to_string();
+    let mut version = "0.0.0".to_string();
+    let mut deps = Vec::new();
+    let mut section = String::new();
+
+    for raw in text.lines() {
+        let line = strip_comment(raw).trim();
+        if line.is_empty() {
+            continue;
         }
-        Ok(Some(Manifest {
-            name,
-            version,
-            deps,
-        }))
+        if let Some(inner) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            section = inner.trim().to_string();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+
+        match section.as_str() {
+            "dependencies" => {
+                if let Some(path) = dep_path(value) {
+                    deps.push((key.to_string(), PathBuf::from(path)));
+                }
+            }
+            "package" | "" => match key {
+                "name" => name = unquote(value).to_string(),
+                "version" => version = unquote(value).to_string(),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    Manifest {
+        name,
+        version,
+        deps,
+    }
+}
+
+fn strip_comment(line: &str) -> &str {
+    // `#` outside of a quoted string starts a comment.
+    let mut in_str = false;
+    for (i, c) in line.char_indices() {
+        match c {
+            '"' => in_str = !in_str,
+            '#' if !in_str => return &line[..i],
+            _ => {}
+        }
+    }
+    line
+}
+
+fn unquote(v: &str) -> &str {
+    v.trim().trim_matches('"')
+}
+
+/// A dependency value is either `"path"` or `{ path = "path" }`.
+fn dep_path(value: &str) -> Option<&str> {
+    let v = value.trim();
+    if let Some(inner) = v.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        inner
+            .split(',')
+            .filter_map(|kv| kv.split_once('='))
+            .find(|(k, _)| k.trim() == "path")
+            .map(|(_, p)| unquote(p))
+    } else {
+        Some(unquote(v))
     }
 }
 

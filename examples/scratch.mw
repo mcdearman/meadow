@@ -75,3 +75,8 @@ record Person = {
 
 -- row polymorphism
 fun getName person = person.name
+
+fun foldl f acc xs =
+  match xs with
+  | Nil -> acc
+  | x :: xs -> foldl f (f acc x) xs

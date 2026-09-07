@@ -1,0 +1,34 @@
+-- Success-or-failure values.
+
+@pub data Result e a = Err e | Ok a
+
+@pub fun isOk r = match r with | Err e -> False | Ok x -> True
+
+@pub fun isErr r = match r with | Err e -> True | Ok x -> False
+
+@pub fun resultOr fallback r = match r with | Err e -> fallback | Ok x -> x
+
+@pub fun resultMap f r =
+  match r with
+  | Err e -> Err e
+  | Ok x -> Ok (f x)
+
+@pub fun resultMapErr f r =
+  match r with
+  | Err e -> Err (f e)
+  | Ok x -> Ok x
+
+@pub fun resultThen f r =
+  match r with
+  | Err e -> Err e
+  | Ok x -> f x
+
+@pub fun resultToOption r =
+  match r with
+  | Err e -> None
+  | Ok x -> Some x
+
+@pub fun okToResult err o =
+  match o with
+  | None -> Err err
+  | Some x -> Ok x

@@ -1,0 +1,8 @@
+[package]
+name = "Std"
+version = "0.1.0"
+
+# The Meadow standard library. It is embedded in the compiler (see
+# `src/stdlib.rs`) and loaded automatically as an implicit dependency of every
+# package, so it never needs to appear under `[dependencies]`. This manifest lets
+# the tree also be discovered on disk like any other package.

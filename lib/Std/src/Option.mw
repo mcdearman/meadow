@@ -1,0 +1,31 @@
+-- Optional values.
+
+@pub data Option a = None | Some a
+
+@pub fun isSome o = match o with | None -> False | Some x -> True
+
+@pub fun isNone o = match o with | None -> True | Some x -> False
+
+@pub fun unwrapOr default o = match o with | None -> default | Some x -> x
+
+@pub fun optionOr fallback o = match o with | None -> fallback | Some x -> o
+
+@pub fun optionMap f o =
+  match o with
+  | None -> None
+  | Some x -> Some (f x)
+
+@pub fun optionThen f o =
+  match o with
+  | None -> None
+  | Some x -> f x
+
+@pub fun optionFilter keep o =
+  match o with
+  | None -> None
+  | Some x -> if keep x then o else None
+
+@pub fun optionToList o =
+  match o with
+  | None -> Nil
+  | Some x -> Cons x Nil

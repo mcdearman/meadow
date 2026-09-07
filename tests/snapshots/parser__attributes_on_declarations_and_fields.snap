@@ -1,0 +1,143 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"@pub\\n@attr(Some, Set, Of, Attributes)\\nfun f x = x\\n\\\n         @pub record Person = { @pub name : String, age : Int }\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Attributed(
+                [
+                    Attr {
+                        name: Located {
+                            value: InternedString(pub),
+                            span: 1..4,
+                        },
+                        args: [],
+                    },
+                    Attr {
+                        name: Located {
+                            value: InternedString(attr),
+                            span: 6..10,
+                        },
+                        args: [
+                            Located {
+                                value: InternedString(Some),
+                                span: 11..15,
+                            },
+                            Located {
+                                value: InternedString(Set),
+                                span: 17..20,
+                            },
+                            Located {
+                                value: InternedString(Of),
+                                span: 22..24,
+                            },
+                            Located {
+                                value: InternedString(Attributes),
+                                span: 26..36,
+                            },
+                        ],
+                    },
+                ],
+                Located {
+                    value: Bind(
+                        Fun(
+                            Located {
+                                value: InternedString(f),
+                                span: 42..43,
+                            },
+                            [
+                                Located {
+                                    value: InternedString(x),
+                                    span: 44..45,
+                                },
+                            ],
+                            Located {
+                                value: Var(
+                                    Located {
+                                        value: InternedString(x),
+                                        span: 48..49,
+                                    },
+                                ),
+                                span: 48..49,
+                            },
+                        ),
+                    ),
+                    span: 38..49,
+                },
+            ),
+            span: 0..49,
+        },
+        Located {
+            value: Attributed(
+                [
+                    Attr {
+                        name: Located {
+                            value: InternedString(pub),
+                            span: 51..54,
+                        },
+                        args: [],
+                    },
+                ],
+                Located {
+                    value: Record(
+                        RecordDecl {
+                            name: Located {
+                                value: InternedString(Person),
+                                span: 62..68,
+                            },
+                            params: [],
+                            fields: [
+                                Field {
+                                    attrs: [
+                                        Attr {
+                                            name: Located {
+                                                value: InternedString(pub),
+                                                span: 74..77,
+                                            },
+                                            args: [],
+                                        },
+                                    ],
+                                    name: Located {
+                                        value: InternedString(name),
+                                        span: 78..82,
+                                    },
+                                    ty: Located {
+                                        value: Con(
+                                            Located {
+                                                value: InternedString(String),
+                                                span: 85..91,
+                                            },
+                                            [],
+                                        ),
+                                        span: 85..91,
+                                    },
+                                },
+                                Field {
+                                    attrs: [],
+                                    name: Located {
+                                        value: InternedString(age),
+                                        span: 93..96,
+                                    },
+                                    ty: Located {
+                                        value: Con(
+                                            Located {
+                                                value: InternedString(Int),
+                                                span: 99..102,
+                                            },
+                                            [],
+                                        ),
+                                        span: 99..102,
+                                    },
+                                },
+                            ],
+                        },
+                    ),
+                    span: 55..104,
+                },
+            ),
+            span: 50..104,
+        },
+    ],
+}

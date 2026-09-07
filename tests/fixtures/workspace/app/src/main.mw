@@ -1,0 +1,5 @@
+-- `app` depends on `util` and (implicitly) on `Std`.
+
+def nums = range 1 6
+
+def main = sum (scale 3 (map double nums))

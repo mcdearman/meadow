@@ -36,6 +36,30 @@ fn constructor_application() {
 }
 
 #[test]
+fn attributes_on_declarations_and_fields() {
+    insta::assert_snapshot!(parse_ast(
+        "@pub\n@attr(Some, Set, Of, Attributes)\nfun f x = x\n\
+         @pub record Person = { @pub name : String, age : Int }\n"
+    ));
+}
+
+#[test]
+fn use_with_selected_names() {
+    insta::assert_snapshot!(parse_ast(
+        "@pub use Std.Collections.List (map, filter, foldl)\n"
+    ));
+}
+
+#[test]
+fn cons_operator_is_sugar_for_cons_ctor() {
+    // `a :: b :: Nil` (right-assoc) and `a :: rest` as a pattern both desugar to
+    // the `Cons` constructor.
+    insta::assert_snapshot!(parse_ast(
+        "def xs = 1 :: 2 :: Nil\nfun uncons l = match l with | x :: rest -> x | Nil -> 0\n"
+    ));
+}
+
+#[test]
 fn data_declaration() {
     insta::assert_snapshot!(parse_ast(
         "data Tree a\n  = Tip\n  | Branch (Tree a) a (Tree a)\n"

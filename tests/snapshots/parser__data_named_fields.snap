@@ -45,12 +45,13 @@ Module {
                             },
                             fields: Named(
                                 [
-                                    (
-                                        Located {
+                                    Field {
+                                        attrs: [],
+                                        name: Located {
                                             value: InternedString(left),
                                             span: 31..35,
                                         },
-                                        Located {
+                                        ty: Located {
                                             value: Con(
                                                 Located {
                                                     value: InternedString(Node),
@@ -70,13 +71,14 @@ Module {
                                             ),
                                             span: 38..44,
                                         },
-                                    ),
-                                    (
-                                        Located {
+                                    },
+                                    Field {
+                                        attrs: [],
+                                        name: Located {
                                             value: InternedString(right),
                                             span: 46..51,
                                         },
-                                        Located {
+                                        ty: Located {
                                             value: Con(
                                                 Located {
                                                     value: InternedString(Node),
@@ -96,7 +98,7 @@ Module {
                                             ),
                                             span: 54..60,
                                         },
-                                    ),
+                                    },
                                 ],
                             ),
                         },

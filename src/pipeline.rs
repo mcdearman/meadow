@@ -62,6 +62,9 @@ pub struct BuildOutput {
 }
 
 /// Discover, compile and link the package rooted at `entry`.
+///
+/// The embedded `Std` package (see [`crate::stdlib`]) is compiled first and made
+/// an implicit dependency of every package, so the prelude is always in scope.
 pub fn build(entry: &Path) -> BuildOutput {
     let graph = match PackageGraph::build(entry) {
         Ok(g) => g,
@@ -73,26 +76,32 @@ pub fn build(entry: &Path) -> BuildOutput {
         }
     };
 
-    let mut diagnostics = Vec::new();
+    let (std_pkgs, mut diagnostics) = crate::stdlib::compile_std();
+
     let mut compiled: Vec<Option<CompiledPackage>> =
         (0..graph.packages.len()).map(|_| None).collect();
 
     for &pid in graph.order() {
         let pkg = &graph.packages[pid];
-        let deps: Vec<&CompiledPackage> = pkg
-            .deps
-            .iter()
-            .map(|d| compiled[*d].as_ref().expect("topological order"))
-            .collect();
+        let mut deps: Vec<&CompiledPackage> = std_pkgs.iter().collect();
+        deps.extend(
+            pkg.deps
+                .iter()
+                .map(|d| compiled[*d].as_ref().expect("topological order")),
+        );
         let (cp, mut d) = compile_package(pkg, &deps);
         diagnostics.append(&mut d);
         compiled[pid] = Some(cp);
     }
 
-    let ordered: Vec<CompiledPackage> = graph
-        .order()
-        .iter()
-        .map(|&pid| compiled[pid].take().expect("compiled above"))
+    let ordered: Vec<CompiledPackage> = std_pkgs
+        .into_iter()
+        .chain(
+            graph
+                .order()
+                .iter()
+                .map(|&pid| compiled[pid].take().expect("compiled above")),
+        )
         .collect();
 
     BuildOutput {
@@ -158,6 +167,42 @@ pub fn compile_str(name: &str, src: &str) -> (CompiledPackage, Vec<Diagnostic>) 
     let (cp, unit_diags) = compile_unit(name, 0, modules, &[]);
     diags.extend(unit_diags);
     (cp, diags)
+}
+
+/// Like [`compile_str`], but with the embedded `Std` package as a dependency (so
+/// the prelude is in scope) and everything linked into one runnable
+/// [`core::Program`]. For tests / experiments that want the standard library.
+pub fn compile_str_with_std(
+    name: &str,
+    src: &str,
+) -> (core::Program, Vec<Diagnostic>) {
+    let name = InternedString::from(name);
+    let source = Source::new(
+        crate::source::SourceKind::Interactive,
+        InternedString::from(src),
+    );
+    let lex = tokenize(source);
+    let (std_pkgs, mut diags) = crate::stdlib::compile_std();
+    diags.extend(lex.errors.clone());
+    let (ast, perrs) = parser::parse(name, source, &lex.tokens);
+    for e in &perrs {
+        diags.push(rich_to_diag(&source, e));
+    }
+    let modules = ast
+        .map(|ast| {
+            vec![AstModule {
+                path: vec![],
+                name,
+                ast,
+            }]
+        })
+        .unwrap_or_default();
+    let deps: Vec<&CompiledPackage> = std_pkgs.iter().collect();
+    let (cp, unit_diags) = compile_unit(name, std_pkgs.len(), modules, &deps);
+    diags.extend(unit_diags);
+
+    let linked = Linker::link(std_pkgs.into_iter().chain(std::iter::once(cp)).collect());
+    (linked.program, diags)
 }
 
 /// Resolve -> infer -> lower a set of already-parsed modules. Shared by the batch
@@ -233,8 +278,13 @@ pub fn compile_unit(
         defs.extend(lowerer.lower_module(&m.hir));
     }
 
+    // Export surface. If the unit used `@pub` anywhere, only the `@pub`
+    // declarations (and `@pub use` re-exports) are exported; otherwise everything,
+    // as before.
+    let gated = resolver.has_pub_markers();
     let mut exports: Vec<Export> = schemes
         .iter()
+        .filter(|(var, _)| !gated || resolver.is_pub_var(**var))
         .map(|(var, scheme)| Export {
             name: names.get(var).copied().unwrap_or_default(),
             var: *var,
@@ -246,11 +296,11 @@ pub fn compile_unit(
     let data_decls: Vec<hir::LDecl> = typed
         .iter()
         .flat_map(|m| m.hir.value().decls.iter())
-        .filter(|d| {
-            matches!(
-                d.value(),
-                hir::Decl::Data(_) | hir::Decl::Record(_) | hir::Decl::Effect(_)
-            )
+        .filter(|d| match d.value() {
+            hir::Decl::Data(dd) => !gated || resolver.is_pub_type(dd.name),
+            hir::Decl::Record(rd) => !gated || resolver.is_pub_type(rd.name),
+            hir::Decl::Effect(ed) => !gated || resolver.is_pub_type(ed.name),
+            _ => false,
         })
         .cloned()
         .collect();

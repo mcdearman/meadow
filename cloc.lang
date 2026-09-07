@@ -1,0 +1,5 @@
+Meadow
+    filter remove_matches ^\s*\-\-
+    filter remove_inline \-\-.*$
+    extension mw
+    3rd_gen_scale 2.50

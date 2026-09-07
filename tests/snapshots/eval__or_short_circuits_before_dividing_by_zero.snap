@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_expr(\"1 < 2 or 1 / 0 == 0\")"
+---
+true

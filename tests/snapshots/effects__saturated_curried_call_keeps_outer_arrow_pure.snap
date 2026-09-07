@@ -1,0 +1,5 @@
+---
+source: tests/effects.rs
+expression: "schemes(\"fun foldl f acc xs =\\n\\\n         \\x20 match xs with | Nil -> acc | Cons x r -> foldl f (f acc x) r\\n\")"
+---
+foldl : forall a b c. (a -> b -> a ! c) -> a -> [b] -> a ! c

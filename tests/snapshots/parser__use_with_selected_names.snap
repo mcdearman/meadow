@@ -1,0 +1,58 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"@pub use Std.Collections.List (map, filter, foldl)\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Attributed(
+                [
+                    Attr {
+                        name: Located {
+                            value: InternedString(pub),
+                            span: 1..4,
+                        },
+                        args: [],
+                    },
+                ],
+                Located {
+                    value: Use(
+                        UseDecl {
+                            path: [
+                                Located {
+                                    value: InternedString(Std),
+                                    span: 9..12,
+                                },
+                                Located {
+                                    value: InternedString(Collections),
+                                    span: 13..24,
+                                },
+                                Located {
+                                    value: InternedString(List),
+                                    span: 25..29,
+                                },
+                            ],
+                            names: [
+                                Located {
+                                    value: InternedString(map),
+                                    span: 31..34,
+                                },
+                                Located {
+                                    value: InternedString(filter),
+                                    span: 36..42,
+                                },
+                                Located {
+                                    value: InternedString(foldl),
+                                    span: 44..49,
+                                },
+                            ],
+                        },
+                    ),
+                    span: 5..50,
+                },
+            ),
+            span: 0..50,
+        },
+    ],
+}

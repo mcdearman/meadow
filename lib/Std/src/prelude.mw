@@ -1,0 +1,38 @@
+-- The Std prelude.
+--
+-- It defines nothing. Every name below is defined in another module of this
+-- package; `map` / `filter` / `foldl` / `foldr` / `length` / `append` /
+-- `reverse` / `concat` / `elem` / `range` / `take` / `drop` are defined there
+-- *without* `@pub` and become public only through this re-export. Everything
+-- else is already `@pub` at its definition and is listed here for documentation.
+
+@pub use Std.Collections.List (
+  map, filter, foldl, foldr, length, append, reverse, concat, elem, range,
+  take, drop,
+  isEmpty, singleton, head, tail, last, nth, notElem, replicate, sum, product,
+  maximum, minimum, all, any, find, takeWhile, dropWhile, partition, concatMap,
+  zip, zipWith, unzip, sumBy, intercalate,
+  lookupAssoc, insertAssoc, removeAssoc,
+)
+
+@pub use Std.Bool (not)
+
+@pub use Std.Ordering (compare, isLess, isEqual, isGreater)
+
+@pub use Std.Function (id, const, flip, compose, apply, twice)
+
+@pub use Std.Tuple (fst, snd, pair, swap, mapFst, mapSnd)
+
+@pub use Std.Int (
+  min, max, abs, signum, clamp, succ, pred, even, odd, gcd, lcm,
+)
+
+@pub use Std.Option (
+  isSome, isNone, unwrapOr, optionOr, optionMap, optionThen, optionFilter,
+  optionToList,
+)
+
+@pub use Std.Result (
+  isOk, isErr, resultOr, resultMap, resultMapErr, resultThen, resultToOption,
+  okToResult,
+)

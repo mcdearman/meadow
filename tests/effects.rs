@@ -51,6 +51,17 @@ fn effect_polymorphism_through_map() {
 }
 
 #[test]
+fn saturated_curried_call_keeps_outer_arrow_pure() {
+    // `foldl` applies its function argument with two args in one call (`f acc x`).
+    // Only that saturating call performs the effect, so the fold function's type
+    // is `a -> b -> a ! c` — the outer (`f acc`) arrow stays pure, no stray `! c`.
+    insta::assert_snapshot!(schemes(
+        "fun foldl f acc xs =\n\
+         \x20 match xs with | Nil -> acc | Cons x r -> foldl f (f acc x) r\n"
+    ));
+}
+
+#[test]
 fn return_clause_is_optional() {
     insta::assert_snapshot!(eval_main(
         "effect E { ask : () -> Int }\n\

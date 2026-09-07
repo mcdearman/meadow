@@ -1,0 +1,5 @@
+-- Booleans. `and` / `or` are built-in short-circuiting operators; `not` is here.
+
+@pub data Bool = False | True
+
+@pub fun not b = if b then False else True

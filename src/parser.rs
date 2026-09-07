@@ -1,11 +1,11 @@
 use crate::{
     ast::*,
-    diagnostics::Diagnostic,
     intern::InternedString,
     lexer::{LToken, Token},
-    source::{Source, SourceKind},
+    source::Source,
     span::{Located, Span},
 };
+use itertools::Either;
 use chumsky::{
     IterParser, Parser,
     error::Rich,
@@ -17,14 +17,27 @@ use chumsky::{
     select,
 };
 
-pub struct ParseResult {
-    pub prog: LModule,
-    pub errors: Vec<Diagnostic>,
-}
-pub fn parse<'src>(src: Source, tokens: &'src [LToken]) -> (LModule, Vec<Rich<'src, Token, Span>>) {
+/// Parse a whole module.
+pub fn parse<'src>(
+    name: InternedString,
+    src: Source,
+    tokens: &'src [LToken],
+) -> (Option<LModule>, Vec<Rich<'src, Token, Span>>) {
     let stream = tokens.split_spanned(Span::from(0..src.len()));
-
     module(name).parse(stream).into_output_errors()
+}
+
+/// Parse a single REPL entry: either one declaration or one expression.
+pub fn parse_repl<'src>(
+    src: Source,
+    tokens: &'src [LToken],
+) -> (Option<Either<LDecl, LExpr>>, Vec<Rich<'src, Token, Span>>) {
+    let stream = tokens.split_spanned(Span::from(0..src.len()));
+    let p = choice((
+        decl().map(Either::Left),
+        expr().map(Either::Right),
+    ));
+    p.parse(stream).into_output_errors()
 }
 
 fn module<'tokens, I>(
@@ -62,7 +75,180 @@ where
         fun_bind.or(pat_bind)
     };
 
-    bind_decl.map_with(|bind, e| LDecl::new(Decl::Bind(bind), e.span()))
+    let use_decl = just(Token::Use)
+        .ignore_then(
+            path_seg()
+                .separated_by(just(Token::Period))
+                .at_least(1)
+                .collect::<Vec<_>>(),
+        )
+        .map_with(|segs, e| LDecl::new(Decl::Use(segs), e.span()));
+
+    let variant = upper_ident()
+        .then(choice((
+            field_list().map(VariantFields::Named),
+            ty_atom()
+                .repeated()
+                .collect::<Vec<_>>()
+                .map(VariantFields::Positional),
+        )))
+        .map(|(name, fields)| Variant { name, fields });
+
+    let data_decl = just(Token::Data)
+        .ignore_then(upper_ident())
+        .then(lower_ident().repeated().collect::<Vec<_>>())
+        .then_ignore(just(Token::Eq))
+        .then(
+            just(Token::Bar).or_not().ignore_then(
+                variant
+                    .separated_by(just(Token::Bar))
+                    .at_least(1)
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .map_with(|((name, params), variants), e| {
+            LDecl::new(
+                Decl::Data(DataDecl {
+                    name,
+                    params,
+                    variants,
+                }),
+                e.span(),
+            )
+        });
+
+    let record_decl = just(Token::Record)
+        .ignore_then(upper_ident())
+        .then(lower_ident().repeated().collect::<Vec<_>>())
+        .then_ignore(just(Token::Eq))
+        .then(field_list())
+        .map_with(|((name, params), fields), e| {
+            LDecl::new(
+                Decl::Record(RecordDecl {
+                    name,
+                    params,
+                    fields,
+                }),
+                e.span(),
+            )
+        });
+
+    choice((
+        use_decl,
+        data_decl,
+        record_decl,
+        bind_decl.map_with(|bind, e| LDecl::new(Decl::Bind(bind), e.span())),
+    ))
+}
+
+/// `{ name : Type, age : Type, }` — shared by `record` decls and named variant fields.
+fn field_list<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Vec<(Ident, LType)>, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    lower_ident()
+        .then_ignore(just(Token::Colon))
+        .then(ty())
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+}
+
+/// A full type expression: `a`, `Vector a`, `Maybe (Vector Int)`, `(a, b)`, `[a]`,
+/// `a -> b` (right-associative).
+fn ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, LType, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    recursive(|ty| {
+        let unit = just(Token::LParen)
+            .then(just(Token::RParen))
+            .map_with(|_, e| {
+                Located::new(
+                    TypeExpr::Con(Ident::new(InternedString::from("Unit"), e.span()), vec![]),
+                    e.span(),
+                )
+            });
+
+        let list = ty
+            .clone()
+            .delimited_by(just(Token::LBrack), just(Token::RBrack))
+            .map_with(|t, e| Located::new(TypeExpr::List(t), e.span()));
+
+        let paren_or_tuple = ty
+            .clone()
+            .separated_by(just(Token::Comma))
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .map_with(|mut ts, e| {
+                if ts.len() == 1 {
+                    ts.pop().unwrap()
+                } else {
+                    Located::new(TypeExpr::Tuple(ts), e.span())
+                }
+            });
+
+        let tvar = lower_ident().map_with(|n, e| Located::new(TypeExpr::Var(n), e.span()));
+        let tcon0 = upper_ident().map_with(|n, e| Located::new(TypeExpr::Con(n, vec![]), e.span()));
+
+        let atom = choice((unit, list, paren_or_tuple, tvar, tcon0));
+
+        let app = upper_ident()
+            .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
+            .map_with(|(n, args), e| Located::new(TypeExpr::Con(n, args), e.span()));
+
+        let head = choice((app, atom));
+
+        head.clone()
+            .then(just(Token::RArrow).ignore_then(ty.clone()).or_not())
+            .map_with(|(l, r), e| match r {
+                Some(rhs) => Located::new(TypeExpr::Fun(vec![l], rhs), e.span()),
+                None => l,
+            })
+    })
+}
+
+/// A single type *atom* — used for a `data` variant's positional fields, where
+/// `Leaf (Vector a) Int` is two fields, not one application.
+fn ty_atom<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, LType, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    let inner = ty();
+    let unit = just(Token::LParen)
+        .then(just(Token::RParen))
+        .map_with(|_, e| {
+            Located::new(
+                TypeExpr::Con(Ident::new(InternedString::from("Unit"), e.span()), vec![]),
+                e.span(),
+            )
+        });
+    let list = inner
+        .clone()
+        .delimited_by(just(Token::LBrack), just(Token::RBrack))
+        .map_with(|t, e| Located::new(TypeExpr::List(t), e.span()));
+    let paren_or_tuple = inner
+        .clone()
+        .separated_by(just(Token::Comma))
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+        .map_with(|mut ts, e| {
+            if ts.len() == 1 {
+                ts.pop().unwrap()
+            } else {
+                Located::new(TypeExpr::Tuple(ts), e.span())
+            }
+        });
+    let tvar = lower_ident().map_with(|n, e| Located::new(TypeExpr::Var(n), e.span()));
+    let tcon0 = upper_ident().map_with(|n, e| Located::new(TypeExpr::Con(n, vec![]), e.span()));
+    choice((unit, list, paren_or_tuple, tvar, tcon0))
+}
+
+fn path_seg<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    select! {
+        Token::LowerIdent(name) => name,
+        Token::UpperIdent(name) => name,
+    }
+    .map_with(|name, e| Ident::new(name, e.span()))
 }
 
 fn expr<'tokens, I>()
@@ -95,10 +281,9 @@ where
             .map_with(|es, e| Located::new(Expr::List(es), e.span()));
 
         let bind = {
-            let pat_bind = pat()
-                .then_ignore(just(Token::Eq))
-                .then(expr.clone())
-                .map(|(p, e)| Bind::Pat(p, e));
+            // `let rec` is accepted but redundant: named bindings are already
+            // self-recursive.
+            let rec_prefix = just(Token::LowerIdent(InternedString::from("rec"))).or_not();
 
             let fun_bind = just(Token::Fun)
                 .ignore_then(lower_ident())
@@ -107,7 +292,26 @@ where
                 .then(expr.clone())
                 .map(|((name, args), body)| Bind::Fun(name, args, body));
 
-            fun_bind.or(pat_bind)
+            // `[rec] name args = body`  /  `[rec] name = body`
+            let name_bind = rec_prefix
+                .ignore_then(lower_ident())
+                .then(lower_ident().repeated().collect::<Vec<_>>())
+                .then_ignore(just(Token::Eq))
+                .then(expr.clone())
+                .map(|((name, args), body)| {
+                    if args.is_empty() {
+                        Bind::Pat(Located::new(Pat::Var(name.clone()), name.span), body)
+                    } else {
+                        Bind::Fun(name, args, body)
+                    }
+                });
+
+            let pat_bind = pat()
+                .then_ignore(just(Token::Eq))
+                .then(expr.clone())
+                .map(|(p, e)| Bind::Pat(p, e));
+
+            choice((fun_bind, name_bind, pat_bind))
         };
 
         let let_expr = just(Token::Let)
@@ -128,7 +332,7 @@ where
 
         let lam_expr = just(Token::Backslash)
             .ignore_then(pat().repeated().at_least(1).collect::<Vec<_>>())
-            .then_ignore(just(Token::LArrow))
+            .then_ignore(just(Token::RArrow))
             .then(expr.clone())
             .map(|(params, body)| Expr::Lam(params, body))
             .map_with(|e, ex| Located::new(e, ex.span()));
@@ -145,10 +349,39 @@ where
             .map(|(scrutinee, branches)| Expr::Match(scrutinee, branches))
             .map_with(|e, ex| Located::new(e, ex.span()));
 
+        // `{ x = e, y = e | base }`; `{ x }` is shorthand for `{ x = x }`.
+        let record_field = lower_ident()
+            .then(just(Token::Eq).ignore_then(expr.clone()).or_not())
+            .map(|(name, val)| {
+                let val = val.unwrap_or_else(|| {
+                    Located::new(Expr::Var(name.clone()), name.span)
+                });
+                (name, val)
+            });
+
+        let record_expr = record_field
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .then(
+                just(Token::Bar)
+                    .ignore_then(expr.clone())
+                    .or_not(),
+            )
+            .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            .map_with(|(fields, base), e| Located::new(Expr::Record(fields, base), e.span()));
+
+        // A bare constructor (`Nil`, `True`) is an atom so it can be a function or
+        // constructor argument; `cons` below gathers its arguments when it has any.
+        let ctor_atom =
+            upper_ident().map_with(|n, e| Located::new(Expr::Cons(n, vec![]), e.span()));
+
         let atom = choice((
             unit_expr,
             lit_expr,
             var_expr,
+            ctor_atom,
+            record_expr,
             let_expr,
             if_expr,
             lam_expr,
@@ -159,14 +392,31 @@ where
             list_expr,
         ));
 
+        // postfix `.field` selection
+        let atom = atom
+            .then(
+                just(Token::Period)
+                    .ignore_then(lower_ident())
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map_with(|(obj, fields), e| {
+                fields
+                    .into_iter()
+                    .fold(obj, |o, field| Located::new(Expr::Field(o, field), e.span()))
+            });
+
         let app = atom
             .clone()
             .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
             .map_with(|(f, args), e| Located::new(Expr::App(f, args), e.span()));
 
+        // Constructor arguments are atoms, exactly like function-application
+        // arguments — `Cons (f x) (map f xs)` is `Cons` applied to two args, not
+        // `Cons ((f x) (map f xs))`.
         let cons = upper_ident()
             .then(
-                expr.clone()
+                atom.clone()
                     .repeated()
                     .at_least(1)
                     .collect::<Vec<_>>()
@@ -245,7 +495,7 @@ where
             ),
             infix(
                 left(1),
-                just(Token::Eq),
+                just(Token::EqEq),
                 |left: Located<Expr>, _, right: Located<Expr>, e| {
                     Located::new(
                         Expr::BinOp(Located::new(BinOp::Eq, e.span()), left, right),
@@ -334,7 +584,30 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .then(pat.clone().repeated().collect::<Vec<_>>())
             .map(|(name, args)| Pat::Cons(name, args));
 
-        cons.or(lower_ident().map(|ident| Pat::Var(ident)))
+        let record_field = lower_ident()
+            .then(just(Token::Eq).ignore_then(pat.clone()).or_not())
+            .map(|(name, p)| {
+                let p = p.unwrap_or_else(|| Located::new(Pat::Var(name.clone()), name.span));
+                (name, p)
+            });
+
+        let record = just(Token::LBrace)
+            .ignore_then(
+                record_field
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>(),
+            )
+            .then(
+                just(Token::Bar)
+                    .ignore_then(just(Token::Wildcard))
+                    .or_not(),
+            )
+            .then_ignore(just(Token::RBrace))
+            .map(|(fields, open)| Pat::Record(fields, open.is_some()));
+
+        cons.or(record)
+            .or(lower_ident().map(|ident| Pat::Var(ident)))
             .or(just(Token::Wildcard).map(|_| Pat::Wildcard))
             .or(lit().map(Pat::Lit))
             .or(list)

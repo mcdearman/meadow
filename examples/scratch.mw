@@ -69,5 +69,9 @@ fun sum = foldl (+) 0
 @pub main = 
   primes |> Stream.take 10 |> Stream.map (_ * 2) |> println
 
+record Person = {
+  name : String,
+}
+
 -- row polymorphism
 fun getName person = person.name

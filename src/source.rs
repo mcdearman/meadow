@@ -31,7 +31,7 @@ pub struct Source {
     pub content: InternedString,
 }
 
-const SOURCE_COUNT: AtomicU32 = AtomicU32::new(0);
+static SOURCE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 impl Source {
     pub fn new(kind: SourceKind, content: InternedString) -> Self {

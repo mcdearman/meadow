@@ -13,7 +13,7 @@ pub type LToken = Located<Token>;
 #[logos(subpattern alpha = r"[a-zA-Z]+")]
 pub enum Token {
     Eof,
-    #[regex(r"--.*?")]
+    #[regex(r"--[^\n]*", logos::skip, allow_greedy = true)]
     Comment,
     #[regex(r"[ \t\n\r]+", logos::skip)]
     Whitespace,
@@ -42,9 +42,9 @@ pub enum Token {
     LowerIdent(InternedString),
     #[regex(r"[A-Z][a-zA-Z0-9']*", |lex| InternedString::from(lex.slice()))]
     UpperIdent(InternedString),
-    #[regex(r"[!$%&*+./<=>?@\|\\\^-z~:]+", |lex| InternedString::from(lex.slice()), priority = 1)]
+    #[regex(r"[!$%&*+./<=>?@|^~:\-]+", |lex| InternedString::from(lex.slice()), priority = 1)]
     OpIdent(InternedString),
-    #[regex(r":[!$%&*+./<=>?@\|\\\^-z~:]+", |lex| InternedString::from(lex.slice()))]
+    #[regex(r":[!$%&*+./<=>?@|^~:\-]+", |lex| InternedString::from(lex.slice()))]
     ConOpIdent(InternedString),
 
     // Punctuation
@@ -76,6 +76,8 @@ pub enum Token {
     Not,
     #[token("=")]
     Eq,
+    #[token("==")]
+    EqEq,
     #[token("!=")]
     Neq,
     #[token("<")]
@@ -152,6 +154,8 @@ pub enum Token {
     Else,
     #[token("data")]
     Data,
+    #[token("record")]
+    Record,
     #[token("type")]
     Type,
     #[token("class")]
@@ -193,6 +197,7 @@ impl<'a> Display for Token {
             And => write!(f, "And"),
             Not => write!(f, "Not"),
             Eq => write!(f, "Eq"),
+            EqEq => write!(f, "EqEq"),
             Neq => write!(f, "Neq"),
             Lt => write!(f, "Lt"),
             Gt => write!(f, "Gt"),
@@ -231,6 +236,7 @@ impl<'a> Display for Token {
             Then => write!(f, "Then"),
             Else => write!(f, "Else"),
             Data => write!(f, "Data"),
+            Record => write!(f, "Record"),
             Type => write!(f, "Type"),
             Class => write!(f, "Class"),
             Instance => write!(f, "Instance"),

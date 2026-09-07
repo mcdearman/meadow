@@ -1,14 +1,82 @@
-use crate::{intern::InternedString, span::Located};
-use itertools::Either;
+use crate::{intern::InternedString, span::Span};
+use std::ops::Deref;
 use std::sync::atomic::AtomicU32;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Prog {
-    File(LModule),
-    Interactive(Either<LDecl, LExpr>),
+/// A stable identifier for every node/subnode in the HIR tree.
+///
+/// Ids are dense and allocated per program by [`NodeIdGen`], so downstream passes
+/// (type inference in particular) can keep their results in cheap `Vec`-backed
+/// side tables indexed by `NodeId.0` and hand back a fully annotated tree.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeId(pub u32);
+
+#[derive(Debug, Clone)]
+pub struct NodeIdGen {
+    next: u32,
 }
 
-pub type LModule = Located<Module>;
+impl NodeIdGen {
+    pub fn new() -> Self {
+        Self { next: 0 }
+    }
+
+    pub fn fresh(&mut self) -> NodeId {
+        let id = NodeId(self.next);
+        self.next += 1;
+        id
+    }
+
+    /// Number of ids handed out so far — i.e. the length a dense side table needs.
+    pub fn count(&self) -> usize {
+        self.next as usize
+    }
+}
+
+impl Default for NodeIdGen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// HIR spine wrapper: like `span::Located` but additionally carries a [`NodeId`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Node<T> {
+    pub id: NodeId,
+    pub span: Span,
+    pub value: Box<T>,
+}
+
+impl<T> Node<T> {
+    pub fn new(id: NodeId, value: T, span: Span) -> Self {
+        Self {
+            id,
+            span,
+            value: Box::new(value),
+        }
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn id(&self) -> NodeId {
+        self.id
+    }
+}
+
+impl<T> Deref for Node<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+pub type LModule = Node<Module>;
+
+/// Label for a record field. Carries a [`NodeId`]/span like any other node, but is
+/// a plain name rather than a resolved variable.
+pub type Label = Node<InternedString>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
@@ -16,15 +84,61 @@ pub struct Module {
     pub decls: Vec<LDecl>,
 }
 
-pub type LDecl = Located<Decl>;
+pub type LDecl = Node<Decl>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decl {
     Bind(Bind),
+    /// `use a.b.c` — recorded for the (package-wide) resolver; carries no runtime weight.
+    Use(Vec<InternedString>),
+    /// `data Node a = …`
+    Data(DataDecl),
+    /// `record Person = { … }`
+    Record(RecordDecl),
     Error,
 }
 
-pub type LExpr = Located<Expr>;
+pub type LTypeExpr = Node<TypeExpr>;
+
+/// A resolved type expression from a `data` / `record` declaration. Type-variable
+/// names are resolved to [`VarId`]s (fresh per declaration); type-constructor names
+/// stay interned strings and are validated against the tycon environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeExpr {
+    Var(Ident),
+    Con(InternedString, Vec<LTypeExpr>),
+    Fun(Vec<LTypeExpr>, LTypeExpr),
+    Tuple(Vec<LTypeExpr>),
+    List(LTypeExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataDecl {
+    pub name: InternedString,
+    pub params: Vec<Ident>,
+    pub variants: Vec<Variant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Variant {
+    pub name: InternedString,
+    pub fields: VariantFields,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VariantFields {
+    Positional(Vec<LTypeExpr>),
+    Named(Vec<(InternedString, LTypeExpr)>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordDecl {
+    pub name: InternedString,
+    pub params: Vec<Ident>,
+    pub fields: Vec<(InternedString, LTypeExpr)>,
+}
+
+pub type LExpr = Node<Expr>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
@@ -37,7 +151,13 @@ pub enum Expr {
     Match(LExpr, Vec<(LPat, LExpr)>),
     Tuple(Vec<LExpr>),
     List(Vec<LExpr>),
-    Cons(Ident, Vec<LExpr>),
+    /// Data-constructor application. Constructors are not resolved to [`VarId`]s yet
+    /// (no `data` decls), so the name is kept as an opaque [`Label`].
+    Cons(Label, Vec<LExpr>),
+    /// `{ x = e, y = e | base }` — the optional trailing expr is a record to extend.
+    Record(Vec<(Label, LExpr)>, Option<LExpr>),
+    /// `e.label`
+    Field(LExpr, Label),
     Unit,
     Error,
 }
@@ -49,7 +169,7 @@ pub enum Bind {
     Error,
 }
 
-pub type LPat = Located<Pat>;
+pub type LPat = Node<Pat>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pat {
@@ -57,14 +177,16 @@ pub enum Pat {
     Var(Ident),
     Lit(Lit),
     As(Ident, LPat),
-    Cons(Ident, Vec<LPat>),
+    Cons(Label, Vec<LPat>),
     Tuple(Vec<LPat>),
     List(Vec<LPat>),
+    /// `{ x, y = p | _ }` — `open` is true when the pattern ends in `| _`.
+    Record(Vec<(Label, LPat)>, bool),
     Unit,
     Error,
 }
 
-pub type Ident = Located<VarId>;
+pub type Ident = Node<VarId>;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 

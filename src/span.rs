@@ -1,5 +1,4 @@
 use crate::source::Source;
-use ariadne::Span as AriadneSpan;
 use chumsky::span::{Span as ChumskySpan, WrappingSpan};
 use std::{
     fmt::{Debug, Display},
@@ -82,7 +81,7 @@ impl ChumskySpan for Span {
 
     type Offset = u32;
 
-    fn new(context: Self::Context, range: Range<Self::Offset>) -> Self {
+    fn new(_context: Self::Context, range: Range<Self::Offset>) -> Self {
         Self {
             start: range.start,
             end: range.end,

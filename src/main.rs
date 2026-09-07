@@ -1,55 +1,83 @@
-use crate::source::*;
-use clap::Parser;
+#![allow(dead_code)] // the IR / driver surface is intentionally ahead of its first consumer
+
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod ast;
+mod core;
 mod diagnostics;
+mod eval;
 mod hir;
+mod infer;
 mod intern;
 mod lexer;
 mod linker;
+mod package;
 mod parser;
 mod pipeline;
 mod rename;
 mod repl;
-mod session;
 mod source;
 mod span;
 
 #[derive(Parser)]
-#[command(name = "meadow", about = "Meadow language interpreter")]
+#[command(name = "meadow", about = "Meadow language compiler")]
 struct Cli {
-    /// Source file to run (omit to start the REPL)
-    file: Option<PathBuf>,
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Type-check and link a package, printing the annotated result.
+    Build {
+        /// Package directory (or a single `.mw` file).
+        path: PathBuf,
+        /// Also print every node's inferred type.
+        #[arg(long)]
+        annotations: bool,
+    },
+    /// Build a package, then evaluate its `main` entry point.
+    Run {
+        path: PathBuf,
+    },
 }
 
 fn main() {
-    let cli = Cli::parse();
-
-    match cli.file {
-        Some(path) => run_file(&path),
-        None => {
-            let mut repl = repl::Session::new(SourceKind::Interactive);
-            repl.run();
-        }
+    match Cli::parse().cmd {
+        None => repl::Session::new().run(),
+        Some(Cmd::Build { path, annotations }) => build(&path, false, annotations),
+        Some(Cmd::Run { path }) => build(&path, true, false),
     }
 }
 
-fn run_file(path: &std::path::Path) {
-    let source = Source::new(
-        SourceKind::File(path.display().to_string().into()),
-        std::fs::read_to_string(path)
-            .unwrap_or_else(|e| {
-                eprintln!("Error reading '{}': {e}", path.display());
+fn build(path: &std::path::Path, run: bool, annotations: bool) {
+    let out = pipeline::build(path);
+
+    for d in &out.diagnostics {
+        eprintln!("{}: {}", d.filename, d.msg);
+    }
+
+    let Some(linked) = out.linked else {
+        std::process::exit(1);
+    };
+
+    print!("{}", linked.dump());
+    if annotations {
+        print!("{}", linked.annotations());
+    }
+
+    if run {
+        match eval::run(&linked.program) {
+            Ok(value) => println!("=> {value}"),
+            Err(e) => {
+                eprintln!("{e}");
                 std::process::exit(1);
-            })
-            .into(),
-    );
+            }
+        }
+    }
 
-    let mut pipeline = pipeline::Pipeline::new(source);
-
-    if let Err(e) = pipeline.run() {
-        eprintln!("Runtime error: {e}");
+    if !out.diagnostics.is_empty() {
         std::process::exit(1);
     }
 }

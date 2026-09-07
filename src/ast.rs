@@ -13,6 +13,57 @@ pub type LDecl = Located<Decl>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decl {
     Bind(Bind),
+    /// `use a.b.c`
+    Use(Vec<Ident>),
+    /// `data Node a = Leaf (Vector a) | Internal { ... }`
+    Data(DataDecl),
+    /// `record Person = { name : String }`
+    Record(RecordDecl),
+}
+
+pub type LType = Located<TypeExpr>;
+
+/// A type expression as written in a `data` / `record` declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeExpr {
+    /// lowercase type variable: `a`
+    Var(Ident),
+    /// type-constructor application: `Int`, `Vector a`, `Maybe (Vector Int)`
+    Con(Ident, Vec<LType>),
+    /// `a -> b` (curried when lowered)
+    Fun(Vec<LType>, LType),
+    /// `(a, b)`
+    Tuple(Vec<LType>),
+    /// `[a]`
+    List(LType),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataDecl {
+    pub name: Ident,
+    pub params: Vec<Ident>,
+    pub variants: Vec<Variant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Variant {
+    pub name: Ident,
+    pub fields: VariantFields,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VariantFields {
+    /// `Leaf (Vector a) Int`
+    Positional(Vec<LType>),
+    /// `Internal { sizes : T, children : T }`
+    Named(Vec<(Ident, LType)>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordDecl {
+    pub name: Ident,
+    pub params: Vec<Ident>,
+    pub fields: Vec<(Ident, LType)>,
 }
 
 pub type LExpr = Located<Expr>;
@@ -31,6 +82,10 @@ pub enum Expr {
     Tuple(Vec<LExpr>),
     List(Vec<LExpr>),
     Cons(Ident, Vec<LExpr>),
+    /// `{ x = e, y = e | base }` — trailing expr is the record being extended.
+    Record(Vec<(Ident, LExpr)>, Option<LExpr>),
+    /// `e.label`
+    Field(LExpr, Ident),
     Unit,
 }
 
@@ -117,6 +172,8 @@ pub enum Pat {
     Cons(Ident, Vec<LPat>),
     Tuple(Vec<LPat>),
     List(Vec<LPat>),
+    /// `{ x, y = p | _ }` — `open` (the trailing `| _`) is the bool.
+    Record(Vec<(Ident, LPat)>, bool),
     Unit,
 }
 

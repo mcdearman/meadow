@@ -1,79 +1,247 @@
-use crate::{
-    diagnostics::{build_report, parse_report},
-    intern::InternedString,
-    lexer::tokenize,
-    parser::parse,
-    rename::Resolver,
-    source::{Source, SourceKind},
-};
+//! The compiler driver. It knows exactly one job: **compile a package** (a set of
+//! modules) against a set of already-compiled dependency packages, producing typed
+//! HIR + lowered [`core`]. It has no idea whether it is serving a batch build or a
+//! REPL — the REPL just keeps feeding it one-line packages whose dependencies are
+//! the previous lines.
 
-#[derive(Debug, Clone)]
-pub struct Pipeline {
-    pub resolver: Resolver,
+use crate::{
+    ast, core,
+    diagnostics::Diagnostic,
+    hir::{self, VarId},
+    infer::{Infer, InferResult, Scheme, TypeTable},
+    intern::InternedString,
+    lexer::{tokenize, Token},
+    linker::{LinkedProgram, Linker},
+    package::{Package, PackageGraph, PackageId},
+    parser,
+    rename::Resolver,
+    source::Source,
+    span::Span,
+};
+use chumsky::error::Rich;
+use std::collections::HashMap;
+use std::path::Path;
+
+/// One parsed module handed to [`compile_unit`].
+pub struct AstModule {
+    pub path: Vec<InternedString>,
+    pub name: InternedString,
+    pub ast: ast::LModule,
 }
 
-impl Pipeline {
-    pub fn new() -> Self {
-        Self {
-            resolver: Resolver::new_with_prelude(),
+pub struct TypedModule {
+    pub path: Vec<InternedString>,
+    pub name: InternedString,
+    pub hir: hir::LModule,
+}
+
+pub struct Export {
+    pub name: InternedString,
+    pub var: VarId,
+    pub scheme: Scheme,
+}
+
+pub struct CompiledPackage {
+    pub id: PackageId,
+    pub name: InternedString,
+    pub modules: Vec<TypedModule>,
+    /// Whole-package node -> type table (node ids are dense across the package).
+    pub types: TypeTable,
+    pub exports: Vec<Export>,
+    pub defs: Vec<core::Def>,
+    /// Named-field order per constructor declared in this package.
+    pub ctor_fields: std::collections::HashMap<InternedString, Vec<InternedString>>,
+    /// This package's resolved `data` / `record` declarations, re-imported by
+    /// dependents (and by later REPL lines).
+    pub data_decls: Vec<hir::LDecl>,
+}
+
+pub struct BuildOutput {
+    pub linked: Option<LinkedProgram>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Discover, compile and link the package rooted at `entry`.
+pub fn build(entry: &Path) -> BuildOutput {
+    let graph = match PackageGraph::build(entry) {
+        Ok(g) => g,
+        Err(d) => {
+            return BuildOutput {
+                linked: None,
+                diagnostics: vec![d],
+            }
+        }
+    };
+
+    let mut diagnostics = Vec::new();
+    let mut compiled: Vec<Option<CompiledPackage>> =
+        (0..graph.packages.len()).map(|_| None).collect();
+
+    for &pid in graph.order() {
+        let pkg = &graph.packages[pid];
+        let deps: Vec<&CompiledPackage> = pkg
+            .deps
+            .iter()
+            .map(|d| compiled[*d].as_ref().expect("topological order"))
+            .collect();
+        let (cp, mut d) = compile_package(pkg, &deps);
+        diagnostics.append(&mut d);
+        compiled[pid] = Some(cp);
+    }
+
+    let ordered: Vec<CompiledPackage> = graph
+        .order()
+        .iter()
+        .map(|&pid| compiled[pid].take().expect("compiled above"))
+        .collect();
+
+    BuildOutput {
+        linked: Some(Linker::link(ordered)),
+        diagnostics,
+    }
+}
+
+fn compile_package(
+    pkg: &Package,
+    deps: &[&CompiledPackage],
+) -> (CompiledPackage, Vec<Diagnostic>) {
+    let mut diags = Vec::new();
+    let mut modules = Vec::new();
+
+    for m in &pkg.modules {
+        let lex = tokenize(m.source);
+        diags.extend(lex.errors);
+        let (ast, perrs) = parser::parse(m.name, m.source, &lex.tokens);
+        for e in &perrs {
+            diags.push(rich_to_diag(&m.source, e));
+        }
+        if let Some(ast) = ast {
+            modules.push(AstModule {
+                path: m.path.clone(),
+                name: m.name,
+                ast,
+            });
         }
     }
 
-    pub fn run(&mut self, src: Source) -> Result<(), String> {
-        let lex_res = tokenize(self.src);
-        if !lex_res.errors.is_empty() {
-            for error in lex_res.errors {
-                let msg = error.to_string();
-                let primary_span = *error.span();
-                let label_text = format!(": {}", error.reason()),
+    let (cp, unit_diags) = compile_unit(pkg.name, pkg.id, modules, deps);
+    diags.extend(unit_diags);
+    (cp, diags)
+}
 
-                let report = parse_report(
-                    msg,
-                    self.src.filename().to_string(),
-                    (label_text, primary_span),
-                    &error,
-                );
+/// Resolve -> infer -> lower a set of already-parsed modules. Shared by the batch
+/// build and the REPL.
+pub fn compile_unit(
+    unit_name: InternedString,
+    id: PackageId,
+    modules: Vec<AstModule>,
+    deps: &[&CompiledPackage],
+) -> (CompiledPackage, Vec<Diagnostic>) {
+    let mut diags = Vec::new();
+    let filename = unit_name.to_string();
 
-                let _ = report.eprint(cache.clone());
-            }
+    // --- name resolution (whole unit at once, so modules may be mutually recursive)
+    let mut resolver = Resolver::with_prelude(filename.clone());
+    for dep in deps {
+        for e in &dep.exports {
+            resolver.import(e.name, e.var);
         }
-        let (ast, errors) = parse(self.src, &lex_res.tokens);
-        if errors.is_empty() {
-            // println!("{:#?}", ast);
-            let (hir, res_errs) = self.resolver.resolve(&ast);
-            if res_errs.is_empty() {
-                println!("{:#?}", hir);
-            } else {
-                let cache = (
-                    self.src.filename().to_string(),
-                    ariadne::Source::from(self.src.content.to_string()),
-                );
-                for e in res_errs {
-                    let report = build_report(e);
-                    let _ = report.eprint(cache.clone());
-                }
-            }
-        } else {
-            let cache = (
-                self.src.filename().to_string(),
-                ariadne::Source::from(self.src.content.to_string()),
-            );
+        resolver.import_types(&dep.data_decls);
+    }
+    for m in &modules {
+        resolver.declare_types(&m.ast.value().decls);
+    }
+    for m in &modules {
+        resolver.declare_toplevel(&m.ast.value().decls);
+    }
+    let typed: Vec<TypedModule> = modules
+        .iter()
+        .map(|m| TypedModule {
+            path: m.path.clone(),
+            name: m.name,
+            hir: resolver.resolve_module(&m.ast),
+        })
+        .collect();
+    diags.extend(resolver.take_errors());
 
-            for error in errors {
-                let msg = error.to_string();
-                let primary_span = *error.span();
-                let label_text = format!("Parse error: {}", error.reason());
+    // --- type inference (one arena for the whole unit + dependency schemes)
+    let mut infer = Infer::new(filename.clone(), resolver.id_count());
+    infer.load_prelude(&resolver.prelude_bindings());
+    let dep_schemes: Vec<(VarId, Scheme)> = deps
+        .iter()
+        .flat_map(|d| d.exports.iter().map(|e| (e.var, e.scheme.clone())))
+        .collect();
+    infer.load_deps(&dep_schemes);
+    for dep in deps {
+        infer.register_types(&dep.data_decls);
+    }
+    for m in &typed {
+        infer.register_types(&m.hir.value().decls);
+    }
+    for m in &typed {
+        infer.infer_module(&m.hir);
+    }
+    let InferResult {
+        table,
+        schemes,
+        errors,
+    } = infer.finish();
+    diags.extend(errors);
 
-                let report = parse_report(
-                    msg,
-                    self.src.filename().to_string(),
-                    (label_text, primary_span),
-                    &error,
-                );
+    // --- lower to core
+    let prims = prim_map(&resolver);
+    let names = resolver.names().clone();
+    let mut lowerer = core::Lowerer::new(&prims, &names);
+    let mut defs = Vec::new();
+    for m in &typed {
+        defs.extend(lowerer.lower_module(&m.hir));
+    }
 
-                let _ = report.eprint(cache.clone());
-            }
-        }
-        Ok(())
+    let mut exports: Vec<Export> = schemes
+        .iter()
+        .map(|(var, scheme)| Export {
+            name: names.get(var).copied().unwrap_or_default(),
+            var: *var,
+            scheme: scheme.clone(),
+        })
+        .collect();
+    exports.sort_by_key(|e| e.var.0);
+
+    let data_decls: Vec<hir::LDecl> = typed
+        .iter()
+        .flat_map(|m| m.hir.value().decls.iter())
+        .filter(|d| matches!(d.value(), hir::Decl::Data(_) | hir::Decl::Record(_)))
+        .cloned()
+        .collect();
+
+    (
+        CompiledPackage {
+            id,
+            name: unit_name,
+            modules: typed,
+            types: table,
+            exports,
+            defs,
+            ctor_fields: lowerer.ctor_fields,
+            data_decls,
+        },
+        diags,
+    )
+}
+
+fn prim_map(resolver: &Resolver) -> HashMap<VarId, core::Prim> {
+    resolver
+        .prelude_bindings()
+        .into_iter()
+        .filter_map(|(name, id)| core::Prim::from_name(&name).map(|p| (id, p)))
+        .collect()
+}
+
+fn rich_to_diag(src: &Source, e: &Rich<'_, Token, Span>) -> Diagnostic {
+    Diagnostic {
+        msg: e.to_string(),
+        filename: src.name().to_string(),
+        label: (e.reason().to_string(), *e.span()),
+        extra_labels: vec![],
     }
 }

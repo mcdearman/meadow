@@ -1,0 +1,12 @@
+[package]
+name = "meadow-intern"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_intern"
+path = "src/lib.rs"
+
+[dependencies]
+lasso.workspace = true
+once_cell.workspace = true

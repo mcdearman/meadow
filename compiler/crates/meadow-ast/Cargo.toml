@@ -1,0 +1,12 @@
+[package]
+name = "meadow-ast"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_ast"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-intern.workspace = true
+meadow-span.workspace = true

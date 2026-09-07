@@ -1,0 +1,18 @@
+[package]
+name = "meadow-parser"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_parser"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-ast.workspace = true
+meadow-intern.workspace = true
+meadow-lexer.workspace = true
+meadow-source.workspace = true
+meadow-span.workspace = true
+meadow-diagnostics.workspace = true
+chumsky.workspace = true
+itertools.workspace = true

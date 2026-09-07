@@ -1,5 +1,4 @@
-/target
-dist-newstyle
+target
 .vscode
 .idea
 *.log

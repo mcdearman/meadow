@@ -1,13 +1,16 @@
 -- Project Euler #5: smallest number divisible by every integer 1..20.
 -- 2520 is already lcm(1..10), so we only fold in 11..20.
-
-def e5 = [11..20] |> foldl lcm 2520
-
-fun lcm a b = a * b / gcd a b
+--
+-- Definitions must precede their uses: top-level `def`s are evaluated eagerly
+-- in source order, and there is no forward-reference pass.
 
 fun gcd a b =
   match (a, b) with
   | (a, 0) -> a
   | (a, b) -> gcd b (a % b)
+
+fun lcm a b = a * b / gcd a b
+
+def e5 = [11..20] |> foldl lcm 2520
 
 def main = e5

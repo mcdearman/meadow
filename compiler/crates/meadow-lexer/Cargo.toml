@@ -1,0 +1,15 @@
+[package]
+name = "meadow-lexer"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_lexer"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-intern.workspace = true
+meadow-source.workspace = true
+meadow-span.workspace = true
+meadow-diagnostics.workspace = true
+logos.workspace = true

@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+meadow-intern = { path = "crates/meadow-intern" }
+meadow-span = { path = "crates/meadow-span" }
+meadow-source = { path = "crates/meadow-source" }
+meadow-diagnostics = { path = "crates/meadow-diagnostics" }
+meadow-ast = { path = "crates/meadow-ast" }
+meadow-lexer = { path = "crates/meadow-lexer" }
+meadow-parser = { path = "crates/meadow-parser" }
+meadow-hir = { path = "crates/meadow-hir" }
+meadow-rename = { path = "crates/meadow-rename" }
+meadow-infer = { path = "crates/meadow-infer" }
+meadow-core = { path = "crates/meadow-core" }
+ariadne = "0.6.0"
+chumsky = { version = "0.13.0", features = ["pratt"] }
+itertools = "0.14.0"
+lasso = { version = "0.7.3", features = ["multi-threaded"] }
+logos = "0.16.1"
+once_cell = "1.21.4"

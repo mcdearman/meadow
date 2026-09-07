@@ -1,0 +1,21 @@
+[package]
+name = "meadow-compiler"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_compiler"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-intern.workspace = true
+meadow-span.workspace = true
+meadow-source.workspace = true
+meadow-diagnostics.workspace = true
+meadow-ast.workspace = true
+meadow-lexer.workspace = true
+meadow-parser.workspace = true
+meadow-hir.workspace = true
+meadow-rename.workspace = true
+meadow-infer.workspace = true
+meadow-core.workspace = true

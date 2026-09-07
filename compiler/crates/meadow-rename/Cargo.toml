@@ -1,0 +1,16 @@
+[package]
+name = "meadow-rename"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_rename"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-ast.workspace = true
+meadow-diagnostics.workspace = true
+meadow-hir.workspace = true
+meadow-intern.workspace = true
+meadow-span.workspace = true
+itertools.workspace = true

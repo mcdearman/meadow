@@ -1,0 +1,12 @@
+[package]
+name = "meadow-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_core"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-hir.workspace = true
+meadow-intern.workspace = true

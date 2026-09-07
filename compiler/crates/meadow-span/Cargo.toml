@@ -1,0 +1,11 @@
+[package]
+name = "meadow-span"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_span"
+path = "src/lib.rs"
+
+[dependencies]
+chumsky.workspace = true

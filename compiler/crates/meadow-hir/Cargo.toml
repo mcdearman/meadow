@@ -1,0 +1,12 @@
+[package]
+name = "meadow-hir"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_hir"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-intern.workspace = true
+meadow-span.workspace = true

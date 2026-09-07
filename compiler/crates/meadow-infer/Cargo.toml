@@ -1,0 +1,14 @@
+[package]
+name = "meadow-infer"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_infer"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-diagnostics.workspace = true
+meadow-hir.workspace = true
+meadow-intern.workspace = true
+meadow-span.workspace = true

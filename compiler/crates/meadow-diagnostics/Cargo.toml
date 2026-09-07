@@ -1,0 +1,13 @@
+[package]
+name = "meadow-diagnostics"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_diagnostics"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-span.workspace = true
+ariadne.workspace = true
+chumsky.workspace = true

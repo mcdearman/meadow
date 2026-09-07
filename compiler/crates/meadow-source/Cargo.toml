@@ -1,0 +1,13 @@
+[package]
+name = "meadow-source"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_source"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-intern.workspace = true
+meadow-span.workspace = true
+ariadne.workspace = true

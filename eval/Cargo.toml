@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "meadow-eval"
+description = "The Meadow back end: a CEK abstract machine that evaluates lowered `core` programs, with algebraic-effect handlers. Its own workspace; depends on the compiler only for the `core` IR."
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "meadow_eval"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-core = { path = "../compiler/crates/meadow-core" }
+meadow-intern = { path = "../compiler/crates/meadow-intern" }

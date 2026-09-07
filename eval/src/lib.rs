@@ -15,7 +15,10 @@
 //! be resumed at most once — enforced by a `take`n `Option`).
 
 use meadow_core as core;
+use meadow_core::fmt_float;
 use meadow_intern::InternedString;
+use num_bigint::BigInt;
+use num_traits::{ToPrimitive, Zero};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -26,7 +29,12 @@ type Var = core::Var;
 
 #[derive(Debug, Clone)]
 pub enum Value {
+    /// Fixed-width integer (`Int`, i.e. i64).
     Int(i64),
+    /// Arbitrary-precision integer (`BigInt`) — produced by `toBigInt` and the
+    /// `~`-suffixed operators, never by a literal.
+    BigInt(BigInt),
+    Float(f64),
     Bool(bool),
     Str(InternedString),
     Unit,
@@ -117,17 +125,52 @@ pub struct HandlerData {
 #[derive(Debug, Clone)]
 pub enum K {
     /// `App`: the function is evaluated; evaluate this argument next.
-    EvalArg { arg: Rc<Term>, env: Env },
+    EvalArg {
+        arg: Rc<Term>,
+        env: Env,
+    },
     /// `App`: the argument is evaluated; apply the saved function to it.
-    ApplyTo { func: Value },
-    If { then: Rc<Term>, els: Rc<Term>, env: Env },
+    ApplyTo {
+        func: Value,
+    },
+    If {
+        then: Rc<Term>,
+        els: Rc<Term>,
+        env: Env,
+    },
     /// `Let` / `Lam` application: bind `var` to the incoming value, run `body`.
-    Bind { var: Var, body: Rc<Term>, env: Env },
-    LetRec { scope: Env, pending: Vec<(Var, Term)>, body: Rc<Term> },
-    BuildTuple { done: Vec<Value>, pending: Vec<Term>, env: Env },
-    BuildList { done: Vec<Value>, pending: Vec<Term>, env: Env },
-    BuildCtor { name: InternedString, done: Vec<Value>, pending: Vec<Term>, env: Env },
-    BuildPrim { op: core::Prim, done: Vec<Value>, pending: Vec<Term>, env: Env },
+    Bind {
+        var: Var,
+        body: Rc<Term>,
+        env: Env,
+    },
+    LetRec {
+        scope: Env,
+        pending: Vec<(Var, Term)>,
+        body: Rc<Term>,
+    },
+    BuildTuple {
+        done: Vec<Value>,
+        pending: Vec<Term>,
+        env: Env,
+    },
+    BuildList {
+        done: Vec<Value>,
+        pending: Vec<Term>,
+        env: Env,
+    },
+    BuildCtor {
+        name: InternedString,
+        done: Vec<Value>,
+        pending: Vec<Term>,
+        env: Env,
+    },
+    BuildPrim {
+        op: core::Prim,
+        done: Vec<Value>,
+        pending: Vec<Term>,
+        env: Env,
+    },
     BuildRecord {
         done: Vec<(InternedString, Value)>,
         pending: Vec<(InternedString, Term)>,
@@ -136,16 +179,34 @@ pub enum K {
     Proj(usize),
     Sel(InternedString),
     /// `Extend`: the record is evaluated; evaluate the new field value.
-    ExtendVal { label: InternedString, val: Rc<Term>, env: Env },
+    ExtendVal {
+        label: InternedString,
+        val: Rc<Term>,
+        env: Env,
+    },
     /// `Extend`: the field value is evaluated; insert it into the saved record.
-    ExtendWith { label: InternedString, rec: Value },
+    ExtendWith {
+        label: InternedString,
+        rec: Value,
+    },
     /// `ListCons`: the head is evaluated; evaluate the tail.
-    ConsHead { tail: Rc<Term>, env: Env },
+    ConsHead {
+        tail: Rc<Term>,
+        env: Env,
+    },
     /// `ListCons`: the tail is evaluated; prepend the saved head.
-    ConsBuild { head: Value },
-    Match { arms: Rc<Vec<(core::Pat, Term)>>, env: Env },
+    ConsBuild {
+        head: Value,
+    },
+    Match {
+        arms: Rc<Vec<(core::Pat, Term)>>,
+        env: Env,
+    },
     /// `Perform`: the operation argument is evaluated; unwind to a handler.
-    PerformWith { effect: InternedString, op: InternedString },
+    PerformWith {
+        effect: InternedString,
+        op: InternedString,
+    },
     /// A handler boundary sitting on the stack.
     HandleMark(Rc<HandlerData>, Env),
 }
@@ -681,6 +742,8 @@ enum SeqKind {
 fn lit_value(lit: &core::Lit) -> Value {
     match lit {
         core::Lit::Int(i) => Value::Int(*i),
+        core::Lit::BigInt(i) => Value::BigInt(BigInt::from(*i)),
+        core::Lit::Float(x) => Value::Float(*x),
         core::Lit::Str(s) => Value::Str(*s),
         core::Lit::Bool(b) => Value::Bool(*b),
         core::Lit::Unit => Value::Unit,
@@ -702,6 +765,8 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
             match_pat(sub, value, scope)
         }
         (P::Lit(core::Lit::Int(a)), Value::Int(b)) => a == b,
+        (P::Lit(core::Lit::BigInt(a)), Value::BigInt(b)) => &BigInt::from(*a) == b,
+        (P::Lit(core::Lit::Float(a)), Value::Float(b)) => a == b,
         (P::Lit(core::Lit::Str(a)), Value::Str(b)) => a == b,
         (P::Lit(core::Lit::Bool(a)), Value::Bool(b)) => a == b,
         (P::Lit(core::Lit::Unit), Value::Unit) => true,
@@ -713,8 +778,7 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
         }
         (P::ListNil, Value::List(vs)) => vs.is_empty(),
         (P::ListCons(ph, pt), Value::List(vs)) if !vs.is_empty() => {
-            match_pat(ph, &vs[0], scope)
-                && match_pat(pt, &Value::List(vs[1..].to_vec()), scope)
+            match_pat(ph, &vs[0], scope) && match_pat(pt, &Value::List(vs[1..].to_vec()), scope)
         }
         (P::Ctor(name, ps), Value::Ctor(vname, vs)) if name == vname && ps.len() == vs.len() => {
             ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, scope))
@@ -737,6 +801,18 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             _ => err(format!("expected two Ints, got {a} and {b}")),
         }
     };
+    let big2 = |a: &Value, b: &Value| -> Result<(BigInt, BigInt), RuntimeError> {
+        match (a, b) {
+            (Value::BigInt(x), Value::BigInt(y)) => Ok((x.clone(), y.clone())),
+            _ => err(format!("expected two BigInts, got {a} and {b}")),
+        }
+    };
+    let flt2 = |a: &Value, b: &Value| -> Result<(f64, f64), RuntimeError> {
+        match (a, b) {
+            (Value::Float(x), Value::Float(y)) => Ok((*x, *y)),
+            _ => err(format!("expected two Floats, got {a} and {b}")),
+        }
+    };
 
     match op {
         Add | Sub | Mul | Div | Mod | Pow => {
@@ -749,15 +825,20 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
                     if y == 0 {
                         return err("division by zero");
                     }
-                    x / y
+                    x.wrapping_div(y)
                 }
                 Mod => {
                     if y == 0 {
                         return err("modulo by zero");
                     }
-                    x % y
+                    x.wrapping_rem(y)
                 }
-                Pow => x.pow(y.max(0) as u32),
+                Pow => {
+                    let e = u32::try_from(y).map_err(|_| RuntimeError {
+                        msg: format!("`^` exponent must fit in u32, got {y}"),
+                    })?;
+                    x.wrapping_pow(e)
+                }
                 _ => unreachable!(),
             };
             Ok(Value::Int(r))
@@ -768,23 +849,98 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
                 Lt => x < y,
                 Gt => x > y,
                 Le => x <= y,
-                Ge => x >= y,
-                _ => unreachable!(),
+                _ => x >= y,
             };
             Ok(Value::Bool(r))
         }
+        AddB | SubB | MulB | DivB | ModB | PowB => {
+            let (x, y) = big2(&args[0], &args[1])?;
+            let r = match op {
+                AddB => x + y,
+                SubB => x - y,
+                MulB => x * y,
+                DivB => {
+                    if y.is_zero() {
+                        return err("division by zero");
+                    }
+                    x / y
+                }
+                ModB => {
+                    if y.is_zero() {
+                        return err("modulo by zero");
+                    }
+                    x % y
+                }
+                PowB => {
+                    let e = y.to_u32().ok_or_else(|| RuntimeError {
+                        msg: format!("`^~` exponent must fit in u32, got {y}"),
+                    })?;
+                    x.pow(e)
+                }
+                _ => unreachable!(),
+            };
+            Ok(Value::BigInt(r))
+        }
+        LtB | GtB | LeB | GeB => {
+            let (x, y) = big2(&args[0], &args[1])?;
+            let r = match op {
+                LtB => x < y,
+                GtB => x > y,
+                LeB => x <= y,
+                _ => x >= y,
+            };
+            Ok(Value::Bool(r))
+        }
+        AddF | SubF | MulF | DivF => {
+            let (x, y) = flt2(&args[0], &args[1])?;
+            let r = match op {
+                AddF => x + y,
+                SubF => x - y,
+                MulF => x * y,
+                _ => x / y,
+            };
+            Ok(Value::Float(r))
+        }
+        LtF | GtF | LeF | GeF => {
+            let (x, y) = flt2(&args[0], &args[1])?;
+            let r = match op {
+                LtF => x < y,
+                GtF => x > y,
+                LeF => x <= y,
+                _ => x >= y,
+            };
+            Ok(Value::Bool(r))
+        }
+        ToFloat => match &args[0] {
+            Value::Int(x) => Ok(Value::Float(*x as f64)),
+            other => err(format!("`toFloat` expects an Int, got {other}")),
+        },
+        Floor => match &args[0] {
+            Value::Float(x) => {
+                let f = x.floor();
+                if !f.is_finite() {
+                    return err(format!("`floor` of a non-finite Float: {x}"));
+                }
+                Ok(Value::Int(f as i64))
+            }
+            other => err(format!("`floor` expects a Float, got {other}")),
+        },
+        ToBig => match &args[0] {
+            Value::Int(x) => Ok(Value::BigInt(BigInt::from(*x))),
+            other => err(format!("`toBigInt` expects an Int, got {other}")),
+        },
+        ToInt => match &args[0] {
+            Value::BigInt(x) => x.to_i64().map(Value::Int).ok_or_else(|| RuntimeError {
+                msg: format!("`toInt`: {x} does not fit in Int"),
+            }),
+            other => err(format!("`toInt` expects a BigInt, got {other}")),
+        },
         Eq => Ok(Value::Bool(value_eq(&args[0], &args[1]))),
         Ne => Ok(Value::Bool(!value_eq(&args[0], &args[1]))),
-        And | Or => {
-            let a = as_bool(&args[0])?;
-            let b = as_bool(&args[1])?;
-            Ok(Value::Bool(if matches!(op, And) { a && b } else { a || b }))
-        }
         Neg => match &args[0] {
-            Value::Int(x) => Ok(Value::Int(-x)),
+            Value::Int(x) => Ok(Value::Int(x.wrapping_neg())),
             other => err(format!("`neg` expects an Int, got {other}")),
         },
-        Not => Ok(Value::Bool(!as_bool(&args[0])?)),
         Print => {
             print!("{}", args[0]);
             Ok(Value::Unit)
@@ -807,7 +963,10 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     let sv = |s: String| Value::Str(InternedString::from(s));
     let ok = |v: Value| Value::Ctor(InternedString::from("Ok"), vec![v]);
     let ioerr = |e: std::io::Error| {
-        Value::Ctor(InternedString::from("Err"), vec![Value::Str(InternedString::from(e.to_string()))])
+        Value::Ctor(
+            InternedString::from("Err"),
+            vec![Value::Str(InternedString::from(e.to_string()))],
+        )
     };
     let unit = |r: std::io::Result<()>| match r {
         Ok(()) => ok(Value::Unit),
@@ -822,7 +981,9 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     let two = |v: &Value| -> Result<(InternedString, InternedString), RuntimeError> {
         match v {
             Value::Tuple(xs) if xs.len() == 2 => Ok((one(&xs[0])?, one(&xs[1])?)),
-            other => err(format!("Fs.{op}: expected a (String, String) pair, got {other}")),
+            other => err(format!(
+                "Fs.{op}: expected a (String, String) pair, got {other}"
+            )),
         }
     };
 
@@ -832,7 +993,9 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             Err(e) => ioerr(e),
         },
         "readBytes" => match fs::read(&*one(&arg)?) {
-            Ok(b) => ok(Value::List(b.into_iter().map(|x| Value::Int(x as i64)).collect())),
+            Ok(b) => ok(Value::List(
+                b.into_iter().map(|x| Value::Int(i64::from(x))).collect(),
+            )),
             Err(e) => ioerr(e),
         },
         "writeString" => {
@@ -870,9 +1033,7 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                 let mut names = Vec::new();
                 for e in entries {
                     match e {
-                        Ok(en) => {
-                            names.push(sv(en.file_name().to_string_lossy().into_owned()))
-                        }
+                        Ok(en) => names.push(sv(en.file_name().to_string_lossy().into_owned())),
                         Err(e) => return Ok(ioerr(e)),
                     }
                 }
@@ -901,16 +1062,11 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     })
 }
 
-fn as_bool(v: &Value) -> Result<bool, RuntimeError> {
-    match v {
-        Value::Bool(b) => Ok(*b),
-        other => err(format!("expected a Bool, got {other}")),
-    }
-}
-
 fn value_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::BigInt(x), Value::BigInt(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::Unit, Value::Unit) => true,
@@ -921,7 +1077,9 @@ fn value_eq(a: &Value, b: &Value) -> bool {
             n1 == n2 && x.len() == y.len() && x.iter().zip(y).all(|(p, q)| value_eq(p, q))
         }
         (Value::Record(x), Value::Record(y)) => {
-            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| value_eq(v, w)))
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| value_eq(v, w)))
         }
         _ => false,
     }
@@ -933,6 +1091,8 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(i) => write!(f, "{i}"),
+            Value::BigInt(i) => write!(f, "{i}"),
+            Value::Float(x) => f.write_str(&fmt_float(*x)),
             Value::Bool(b) => write!(f, "{b}"),
             // quote + escape, so a string is visually distinct from a bare ident
             Value::Str(s) => write!(f, "{:?}", &**s),
@@ -1060,7 +1220,10 @@ mod tests {
         let lam = Term::Lam(
             n,
             Rc::new(Term::If(
-                Rc::new(Term::Prim(Prim::Eq, vec![Term::Var(n), Term::Lit(Lit::Int(0))])),
+                Rc::new(Term::Prim(
+                    Prim::Eq,
+                    vec![Term::Var(n), Term::Lit(Lit::Int(0))],
+                )),
                 int(0),
                 Rc::new(Term::Prim(
                     Prim::Add,
@@ -1093,9 +1256,8 @@ mod tests {
         let k = v();
         let p = v();
         let x = v();
-        let get = |_arg: Rc<Term>| {
-            Term::Perform("E".into(), "get".into(), Rc::new(Term::Lit(Lit::Unit)))
-        };
+        let get =
+            |_arg: Rc<Term>| Term::Perform("E".into(), "get".into(), Rc::new(Term::Lit(Lit::Unit)));
         let discard = v();
         let body = Term::Let(discard, Rc::new(get(int(0))), Rc::new(get(int(0))));
         let term = Term::Handle {

@@ -18,6 +18,27 @@ use std::fmt::Display;
 
 pub type LToken = Located<Token>;
 
+/// Parse an integer literal slice — optional `-`, then decimal or a `0b` / `0o` /
+/// `0x` prefixed literal — into a fixed-width [`i64`]. A literal that does not fit
+/// in `i64` fails to lex (there is no `BigInt` literal syntax — use `toBigInt`).
+fn parse_int(s: &str) -> Option<i64> {
+    let (neg, body) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
+    let (radix, digits) = if let Some(d) = body.strip_prefix("0x") {
+        (16, d)
+    } else if let Some(d) = body.strip_prefix("0b") {
+        (2, d)
+    } else if let Some(d) = body.strip_prefix("0o") {
+        (8, d)
+    } else {
+        (10, body)
+    };
+    let n = i64::from_str_radix(digits, radix).ok()?;
+    Some(if neg { -n } else { n })
+}
+
 /// Strip the surrounding `"` from a string-literal slice and resolve escapes
 /// (`\n \t \r \\ \" \' \0`; an unknown escape keeps its backslash).
 fn unescape(raw: &str) -> String {
@@ -59,9 +80,11 @@ pub enum Token {
     #[regex(r"[ \t\n\r]+", logos::skip)]
     Whitespace,
     // Literals and identifiers
+    // No leading `-`: a minus is always its own token, so `-2` / `-2.5` are the
+    // prefix operator applied to a literal (the parser folds the sign in).
     #[regex(
-        r"-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0))", 
-        |lex| lex.slice().parse().ok(),
+        r"(0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0)",
+        |lex| parse_int(lex.slice()),
         priority = 3
     )]
     Int(i64),

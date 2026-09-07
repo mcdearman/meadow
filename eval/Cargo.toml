@@ -13,3 +13,5 @@ path = "src/lib.rs"
 [dependencies]
 meadow-core = { path = "../compiler/crates/meadow-core" }
 meadow-intern = { path = "../compiler/crates/meadow-intern" }
+num-bigint = "0.4"
+num-traits = "0.2"

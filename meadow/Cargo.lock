@@ -99,6 +99,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "autocfg"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -549,6 +555,8 @@ version = "0.1.0"
 dependencies = [
  "meadow-intern",
  "meadow-span",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]
@@ -573,7 +581,10 @@ name = "meadow-core"
 version = "0.1.0"
 dependencies = [
  "meadow-hir",
+ "meadow-infer",
  "meadow-intern",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]
@@ -591,6 +602,8 @@ version = "0.1.0"
 dependencies = [
  "meadow-core",
  "meadow-intern",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]
@@ -599,6 +612,8 @@ version = "0.1.0"
 dependencies = [
  "meadow-intern",
  "meadow-span",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]
@@ -628,6 +643,8 @@ dependencies = [
  "meadow-intern",
  "meadow-source",
  "meadow-span",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]
@@ -642,6 +659,7 @@ dependencies = [
  "meadow-lexer",
  "meadow-source",
  "meadow-span",
+ "num-bigint",
 ]
 
 [[package]]
@@ -697,6 +715,34 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-integer"
+version = "0.1.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "num-traits"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+dependencies = [
+ "autocfg",
 ]
 
 [[package]]

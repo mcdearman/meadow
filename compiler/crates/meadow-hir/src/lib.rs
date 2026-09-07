@@ -19,9 +19,15 @@ use meadow_span::Span;
 /// Primitive operators, in the order their [`VarId`]s are handed out by
 /// `rename::Resolver::with_prelude`. `infer` builds matching type schemes by
 /// index, and `core`/the linker map names to `Prim`s, so the order is load-bearing.
+///
+/// `and` / `or` are *not* here — they are keyword operators the resolver desugars
+/// to `if` (that is what makes them short-circuit); `not` is a `Std.Bool`
+/// function.
 pub const PRIMS: &[&str] = &[
-    "print", "println", "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "&&", "||",
-    "neg", "!",
+    "print", "println", "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "neg", //
+    "+.", "-.", "*.", "/.", "<.", ">.", "<=.", ">=.", "toFloat", "floor", //
+    // arbitrary-precision integer ops (operands `BigInt`) + Int/BigInt conversions
+    "+~", "-~", "*~", "/~", "%~", "^~", "<~", ">~", "<=~", ">=~", "toBigInt", "toInt",
 ];
 use std::ops::Deref;
 use std::sync::atomic::AtomicU32;
@@ -257,6 +263,9 @@ impl VarId {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lit {
+    /// Fixed-width integer (`Int`, i.e. i64). No `BigInt` literal — see [`PRIMS`].
     Int(i64),
+    /// Float literal as its IEEE-754 bit pattern (see `ast::Lit::Float`).
+    Float(u64),
     String(InternedString),
 }

@@ -18,6 +18,8 @@ meadow-hir = { path = "crates/meadow-hir" }
 meadow-rename = { path = "crates/meadow-rename" }
 meadow-infer = { path = "crates/meadow-infer" }
 meadow-core = { path = "crates/meadow-core" }
+num-bigint = "0.4"
+num-traits = "0.2"
 ariadne = "0.6.0"
 chumsky = { version = "0.13.0", features = ["pratt"] }
 itertools = "0.14.0"

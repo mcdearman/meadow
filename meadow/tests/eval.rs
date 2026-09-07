@@ -133,3 +133,41 @@ fn non_exhaustive_match() {
          def main = head Nil\n"
     ));
 }
+
+#[test]
+fn bigint_beyond_i64() {
+    // The default `Int` is i64; a `~` operator makes the expression `BigInt` and
+    // the literals coerce. `2 ^~ 100` overflows i64 but is exact here.
+    insta::assert_snapshot!(eval_expr("2 ^~ 100"));
+}
+
+#[test]
+fn bigint_factorial() {
+    // `25!` overflows i64; the `~` operators put the whole computation in
+    // `BigInt` and every literal (`0`, `1`, `25`) coerces to match.
+    insta::assert_snapshot!(eval_main(
+        "fun fact n = if n == 0 then 1 else n *~ fact (n -~ 1)\n\
+         def main = fact 25\n"
+    ));
+}
+
+#[test]
+fn radix_int_literals() {
+    insta::assert_snapshot!(eval_expr("0xff + 0b1010 + 0o17"));
+}
+
+#[test]
+fn float_arithmetic_and_precedence() {
+    // `*.` binds tighter than `+.`; unary minus folds into the literal.
+    insta::assert_snapshot!(eval_expr("2.0 *. 3.0 +. -1.5 /. 3.0"));
+}
+
+#[test]
+fn float_comparison_ops() {
+    insta::assert_snapshot!(eval_expr("(1.5 <. 2.0, 2.0 >=. 2.0, 3.0 <=. 1.0)"));
+}
+
+#[test]
+fn float_int_conversions() {
+    insta::assert_snapshot!(eval_expr("(toFloat 7 /. 2.0, floor 3.9, floor (-2.1))"));
+}

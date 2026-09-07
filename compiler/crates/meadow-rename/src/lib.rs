@@ -66,7 +66,7 @@ const BUILTIN_CTORS: &[&str] = &["Nil", "Cons", "True", "False"];
 /// Type constructors seeded into every resolver. Like [`BUILTIN_CTORS`], the
 /// prelude is allowed to (re-)declare `List` / `Bool` without it counting as a
 /// duplicate-definition error.
-const BUILTIN_TYCONS: &[&str] = &["Int", "String", "Bool", "Unit", "List"];
+const BUILTIN_TYCONS: &[&str] = &["Int", "BigInt", "Float", "String", "Bool", "Unit", "List"];
 
 /// Split a declaration into its attributes and the bare declaration underneath.
 /// The parser only ever nests one `Attributed` layer.
@@ -84,7 +84,7 @@ fn has_pub(attrs: &[ast::Attr]) -> bool {
 impl Resolver {
     pub fn new(filename: impl Into<String>) -> Self {
         let mut tycons = HashMap::new();
-        for (name, arity) in [("Int", 0), ("String", 0), ("Bool", 0), ("Unit", 0), ("List", 1)] {
+        for (name, arity) in [("Int", 0), ("BigInt", 0), ("Float", 0), ("String", 0), ("Bool", 0), ("Unit", 0), ("List", 1)] {
             tycons.insert(InternedString::from(name), arity);
         }
         Resolver {
@@ -1056,6 +1056,7 @@ impl Resolver {
     fn resolve_lit(&self, lit: &ast::Lit) -> hir::Lit {
         match lit {
             ast::Lit::Int(i) => hir::Lit::Int(*i),
+            ast::Lit::Float(b) => hir::Lit::Float(*b),
             ast::Lit::String(s) => hir::Lit::String(*s),
         }
     }

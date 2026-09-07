@@ -1,0 +1,8 @@
+---
+source: tests/infer.rs
+expression: "schemes(\"def a = 1 + 2\\ndef b = 1 +~ 2\\ndef c = 1 +~ toBigInt 2\\ndef d = 5\\n\")"
+---
+a : Int
+b : BigInt
+c : BigInt
+d : Int

@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_expr(\"2 ^~ 100\")"
+---
+1267650600228229401496703205376

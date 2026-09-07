@@ -61,6 +61,12 @@ impl Type {
     pub fn int() -> Type {
         Type::con("Int")
     }
+    pub fn bigint() -> Type {
+        Type::con("BigInt")
+    }
+    pub fn float() -> Type {
+        Type::con("Float")
+    }
     pub fn bool() -> Type {
         Type::con("Bool")
     }
@@ -100,6 +106,11 @@ pub enum VarKind {
     /// An effect row variable — structurally a row, tracked separately so error
     /// messages and pretty-printing can tell effects from records.
     Effect,
+    /// A numeric-literal variable. Unifies only with `Int`, `BigInt`, a plain
+    /// type var (keeping the `Num`), or another `Num`; anything else is a type
+    /// error. Never generalized, never printed — any that survive inference
+    /// default to `Int` (see `Arena::default_num_vars`).
+    Num,
 }
 
 /// A polytype: `quant` lists the kind of each quantified variable, and `ty` refers
@@ -181,6 +192,9 @@ impl Arena {
     fn fresh_effect(&mut self) -> Type {
         self.fresh_in(VarKind::Effect)
     }
+    fn fresh_num(&mut self) -> Type {
+        self.fresh_in(VarKind::Num)
+    }
     fn fresh_of(&mut self, kind: VarKind) -> Type {
         self.fresh_in(kind)
     }
@@ -249,6 +263,16 @@ impl Arena {
         let b = self.prune(b);
         match (a, b) {
             (Type::Var(i), Type::Var(j)) if i == j => Ok(()),
+            (Type::Var(i), Type::Var(j)) => {
+                // When a `Num` var meets a plain type var, keep the `Num` (bind
+                // the type var to it) so a literal threaded through a polymorphic
+                // function stays numeric and later defaults, instead of the plain
+                // var winning and freezing the result as `∀a. a`.
+                match (self.slot_kind(i), self.slot_kind(j)) {
+                    (VarKind::Num, VarKind::Type) => self.bind_var(j, Type::Var(i)),
+                    _ => self.bind_var(i, Type::Var(j)),
+                }
+            }
             (Type::Var(i), t) | (t, Type::Var(i)) => self.bind_var(i, t),
 
             (Type::Con(n1, a1), Type::Con(n2, a2)) if n1 == n2 && a1.len() == a2.len() => {
@@ -289,8 +313,31 @@ impl Arena {
 
     fn bind_var(&mut self, id: u32, ty: Type) -> Result<(), UnifyError> {
         self.occurs_adjust(id, &ty)?;
+        if self.slot_kind(id) == VarKind::Num && !Self::num_compatible(&ty) {
+            return Err(UnifyError::Mismatch(Type::con("Int"), ty));
+        }
         self.slots[id as usize] = Slot::Bound(ty);
         Ok(())
+    }
+
+    /// Can a `Num` (numeric-literal) var legally unify with this type? Only with
+    /// `Int` / `BigInt`, or another var (kept unresolved for now).
+    fn num_compatible(ty: &Type) -> bool {
+        match ty {
+            Type::Var(_) => true,
+            Type::Con(n, args) if args.is_empty() => matches!(&**n, "Int" | "BigInt"),
+            _ => false,
+        }
+    }
+
+    /// Bind every still-unbound `Num` var to `Int` — a numeric literal that no
+    /// context ever pinned to `BigInt`. Run once, at the end of inference.
+    fn default_num_vars(&mut self) {
+        for slot in &mut self.slots {
+            if let Slot::Unbound { kind: VarKind::Num, .. } = slot {
+                *slot = Slot::Bound(Type::con("Int"));
+            }
+        }
     }
 
     /// Occurs check + level adjustment in one walk. Any unbound var reachable from
@@ -365,7 +412,10 @@ impl Arena {
     fn quantify(&self, ty: &Type, map: &mut HashMap<u32, u32>, kinds: &mut Vec<VarKind>) -> Type {
         match ty {
             Type::Var(id) => {
-                if self.slot_level(*id) > self.level {
+                // `Num` vars are never generalized — a numeric literal is not
+                // polymorphic. Left free here, then defaulted to `Int` in
+                // `finish` unless a use site pins it to `BigInt` first.
+                if self.slot_kind(*id) != VarKind::Num && self.slot_level(*id) > self.level {
                     let idx = *map.entry(*id).or_insert_with(|| {
                         kinds.push(self.slot_kind(*id));
                         (kinds.len() - 1) as u32
@@ -586,6 +636,8 @@ impl Infer {
     }
 
     pub fn finish(mut self) -> InferResult {
+        // Any numeric literal context never pinned to `BigInt` is an `Int`.
+        self.arena.default_num_vars();
         self.table.zonk_all(&mut self.arena);
         let mut schemes = HashMap::new();
         for id in self.exports.clone() {
@@ -699,7 +751,8 @@ impl Infer {
 
     fn infer_expr_inner(&mut self, expr: &hir::LExpr) -> Type {
         match expr.value() {
-            hir::Expr::Lit(hir::Lit::Int(_)) => Type::int(),
+            hir::Expr::Lit(hir::Lit::Int(_)) => self.arena.fresh_num(),
+            hir::Expr::Lit(hir::Lit::Float(_)) => Type::float(),
             hir::Expr::Lit(hir::Lit::String(_)) => Type::string(),
             hir::Expr::Unit => Type::unit(),
 
@@ -979,7 +1032,8 @@ impl Infer {
         match pat.value() {
             hir::Pat::Wildcard => self.arena.fresh(),
             hir::Pat::Unit => Type::unit(),
-            hir::Pat::Lit(hir::Lit::Int(_)) => Type::int(),
+            hir::Pat::Lit(hir::Lit::Int(_)) => self.arena.fresh_num(),
+            hir::Pat::Lit(hir::Lit::Float(_)) => Type::float(),
             hir::Pat::Lit(hir::Lit::String(_)) => Type::string(),
 
             hir::Pat::Var(ident) => {
@@ -1299,6 +1353,8 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
             let args: Vec<Type> = args.iter().map(|a| ty_of(a, params)).collect();
             match &**name {
                 "Int" => Type::int(),
+                "BigInt" => Type::bigint(),
+                "Float" => Type::float(),
                 "String" => Type::string(),
                 "Bool" => Type::bool(),
                 "Unit" => Type::unit(),
@@ -1350,9 +1406,25 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "<" | ">" | "<=" | ">=" => {
             Scheme::mono(Type::func(vec![Type::int(), Type::int()], Type::bool()))
         }
-        "&&" | "||" => Scheme::mono(Type::func(vec![Type::bool(), Type::bool()], Type::bool())),
+        "+." | "-." | "*." | "/." => {
+            Scheme::mono(Type::func(vec![Type::float(), Type::float()], Type::float()))
+        }
+        "<." | ">." | "<=." | ">=." => {
+            Scheme::mono(Type::func(vec![Type::float(), Type::float()], Type::bool()))
+        }
+        "+~" | "-~" | "*~" | "/~" | "%~" | "^~" => Scheme::mono(Type::func(
+            vec![Type::bigint(), Type::bigint()],
+            Type::bigint(),
+        )),
+        "<~" | ">~" | "<=~" | ">=~" => Scheme::mono(Type::func(
+            vec![Type::bigint(), Type::bigint()],
+            Type::bool(),
+        )),
+        "toFloat" => Scheme::mono(Type::func(vec![Type::int()], Type::float())),
+        "floor" => Scheme::mono(Type::func(vec![Type::float()], Type::int())),
+        "toBigInt" => Scheme::mono(Type::func(vec![Type::int()], Type::bigint())),
+        "toInt" => Scheme::mono(Type::func(vec![Type::bigint()], Type::int())),
         "neg" => Scheme::mono(Type::func(vec![Type::int()], Type::int())),
-        "!" => Scheme::mono(Type::func(vec![Type::bool()], Type::bool())),
         "==" | "!=" => Scheme {
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Bound(0), Bound(0)], Type::bool()),

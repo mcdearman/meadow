@@ -8,6 +8,7 @@ name = "meadow_parser"
 path = "src/lib.rs"
 
 [dependencies]
+num-bigint.workspace = true
 meadow-ast.workspace = true
 meadow-intern.workspace = true
 meadow-lexer.workspace = true

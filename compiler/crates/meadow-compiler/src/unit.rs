@@ -155,11 +155,13 @@ pub fn compile_unit(
         .into_iter()
         .map(|(id, eff, op)| (id, (eff, op)))
         .collect();
-    let mut lowerer = core::Lowerer::new(&prims, &names, &effect_ops);
+    let mut lowerer = core::Lowerer::new(&prims, &names, &effect_ops, &table);
     let mut defs = Vec::new();
     for m in &typed {
         defs.extend(lowerer.lower_module(&m.hir));
     }
+    // Drop the `&table` borrow held by `lowerer` before `table` is moved below.
+    let ctor_fields = lowerer.ctor_fields;
 
     // Export surface. If the unit used `@pub` anywhere, only the `@pub`
     // declarations (and `@pub use` re-exports) are exported; otherwise everything.
@@ -195,7 +197,7 @@ pub fn compile_unit(
             types: table,
             exports,
             defs,
-            ctor_fields: lowerer.ctor_fields,
+            ctor_fields,
             data_decls,
         },
         diags,

@@ -13,6 +13,15 @@ fn literals_and_arithmetic() {
 }
 
 #[test]
+fn numeric_literals_coerce_by_context() {
+    // A bare integer literal is `Int` unless an operator / conversion pins it to
+    // `BigInt`; `def d` (unconstrained) defaults to `Int`.
+    insta::assert_snapshot!(schemes(
+        "def a = 1 + 2\ndef b = 1 +~ 2\ndef c = 1 +~ toBigInt 2\ndef d = 5\n"
+    ));
+}
+
+#[test]
 fn identity_generalizes() {
     insta::assert_snapshot!(schemes("def id = \\x -> x\n"));
 }

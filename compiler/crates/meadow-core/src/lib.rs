@@ -7,16 +7,33 @@
 //! walks it directly.
 
 use meadow_hir as hir;
+use meadow_infer::{Type as InferType, TypeTable};
 use meadow_intern::InternedString;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Lit {
+    /// Fixed-width integer (`Int`, i.e. i64).
     Int(i64),
+    /// An integer literal whose inferred type is `BigInt` (context coerced it) —
+    /// widened to an arbitrary-precision value at runtime.
+    BigInt(i64),
+    Float(f64),
     Str(InternedString),
     Bool(bool),
     Unit,
+}
+
+/// Render a float the way Meadow prints it — always with a fractional part, so it
+/// reads as a float and not an int (`1` becomes `1.0`). Shared by the core
+/// pretty-printer and the evaluator's `Value` display.
+pub fn fmt_float(x: f64) -> String {
+    if x.is_finite() && x == x.trunc() {
+        format!("{x:.1}")
+    } else {
+        format!("{x}")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,12 +50,37 @@ pub enum Prim {
     Gt,
     Le,
     Ge,
-    And,
-    Or,
     Neg,
-    Not,
     Print,
     Println,
+    // --- floating point ---
+    AddF,
+    SubF,
+    MulF,
+    DivF,
+    LtF,
+    GtF,
+    LeF,
+    GeF,
+    /// `Int -> Float`
+    ToFloat,
+    /// `Float -> Int` (round toward negative infinity)
+    Floor,
+    // --- arbitrary precision (`BigInt`) ---
+    AddB,
+    SubB,
+    MulB,
+    DivB,
+    ModB,
+    PowB,
+    LtB,
+    GtB,
+    LeB,
+    GeB,
+    /// `Int -> BigInt`
+    ToBig,
+    /// `BigInt -> Int` (fails at runtime if out of range)
+    ToInt,
 }
 
 impl Prim {
@@ -56,19 +98,44 @@ impl Prim {
             ">" => Prim::Gt,
             "<=" => Prim::Le,
             ">=" => Prim::Ge,
-            "&&" => Prim::And,
-            "||" => Prim::Or,
             "neg" => Prim::Neg,
-            "!" => Prim::Not,
             "print" => Prim::Print,
             "println" => Prim::Println,
+            "+." => Prim::AddF,
+            "-." => Prim::SubF,
+            "*." => Prim::MulF,
+            "/." => Prim::DivF,
+            "<." => Prim::LtF,
+            ">." => Prim::GtF,
+            "<=." => Prim::LeF,
+            ">=." => Prim::GeF,
+            "toFloat" => Prim::ToFloat,
+            "floor" => Prim::Floor,
+            "+~" => Prim::AddB,
+            "-~" => Prim::SubB,
+            "*~" => Prim::MulB,
+            "/~" => Prim::DivB,
+            "%~" => Prim::ModB,
+            "^~" => Prim::PowB,
+            "<~" => Prim::LtB,
+            ">~" => Prim::GtB,
+            "<=~" => Prim::LeB,
+            ">=~" => Prim::GeB,
+            "toBigInt" => Prim::ToBig,
+            "toInt" => Prim::ToInt,
             _ => return None,
         })
     }
 
     pub fn arity(self) -> usize {
         match self {
-            Prim::Neg | Prim::Not | Prim::Print | Prim::Println => 1,
+            Prim::Neg
+            | Prim::Print
+            | Prim::Println
+            | Prim::ToFloat
+            | Prim::Floor
+            | Prim::ToBig
+            | Prim::ToInt => 1,
             _ => 2,
         }
     }
@@ -194,6 +261,8 @@ impl Printer {
     fn lit(l: &Lit) -> String {
         match l {
             Lit::Int(i) => i.to_string(),
+            Lit::BigInt(i) => i.to_string(),
+            Lit::Float(x) => fmt_float(*x),
             Lit::Str(s) => format!("{:?}", &**s), // the string contents, quoted
             Lit::Bool(b) => b.to_string(),
             Lit::Unit => "()".to_string(),
@@ -315,6 +384,9 @@ pub struct Lowerer<'a> {
     /// Operation `VarId` -> `(effect, op)` — a reference to one lowers to
     /// `\x -> perform Effect.op x`.
     effect_ops: &'a HashMap<Var, (InternedString, InternedString)>,
+    /// Inferred types, keyed by `NodeId` — consulted so an integer literal whose
+    /// context coerced it to `BigInt` lowers to [`Lit::BigInt`], not [`Lit::Int`].
+    types: &'a TypeTable,
     /// Named-field order per constructor, accumulated across `lower_module` calls.
     pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
 }
@@ -324,12 +396,31 @@ impl<'a> Lowerer<'a> {
         prims: &'a HashMap<Var, Prim>,
         names: &'a HashMap<Var, InternedString>,
         effect_ops: &'a HashMap<Var, (InternedString, InternedString)>,
+        types: &'a TypeTable,
     ) -> Self {
         Lowerer {
             prims,
             names,
             effect_ops,
+            types,
             ctor_fields: HashMap::new(),
+        }
+    }
+
+    /// Is the node at `id` inferred to have type `BigInt`?
+    fn is_bigint(&self, id: hir::NodeId) -> bool {
+        matches!(
+            self.types.get(id),
+            Some(InferType::Con(n, args)) if args.is_empty() && &**n == "BigInt"
+        )
+    }
+
+    /// Lower an integer literal, choosing `Int` vs `BigInt` from its inferred type.
+    fn int_lit(&self, id: hir::NodeId, value: i64) -> Lit {
+        if self.is_bigint(id) {
+            Lit::BigInt(value)
+        } else {
+            Lit::Int(value)
         }
     }
 
@@ -424,7 +515,8 @@ impl<'a> Lowerer<'a> {
 
     fn lower_expr(&mut self, expr: &hir::LExpr) -> Term {
         match expr.value() {
-            hir::Expr::Lit(hir::Lit::Int(i)) => Term::Lit(Lit::Int(*i)),
+            hir::Expr::Lit(hir::Lit::Int(i)) => Term::Lit(self.int_lit(expr.id, *i)),
+            hir::Expr::Lit(hir::Lit::Float(b)) => Term::Lit(Lit::Float(f64::from_bits(*b))),
             hir::Expr::Lit(hir::Lit::String(s)) => Term::Lit(Lit::Str(*s)),
             hir::Expr::Unit => Term::Lit(Lit::Unit),
 
@@ -677,7 +769,8 @@ impl<'a> Lowerer<'a> {
             hir::Pat::Unit => Pat::Lit(Lit::Unit),
             hir::Pat::Var(id) => Pat::Var(*id.value()),
             hir::Pat::As(id, sub) => Pat::As(*id.value(), Box::new(self.lower_pat(sub))),
-            hir::Pat::Lit(hir::Lit::Int(i)) => Pat::Lit(Lit::Int(*i)),
+            hir::Pat::Lit(hir::Lit::Int(i)) => Pat::Lit(self.int_lit(pat.id, *i)),
+            hir::Pat::Lit(hir::Lit::Float(b)) => Pat::Lit(Lit::Float(f64::from_bits(*b))),
             hir::Pat::Lit(hir::Lit::String(s)) => Pat::Lit(Lit::Str(*s)),
             hir::Pat::Tuple(items) => {
                 Pat::Tuple(items.iter().map(|p| self.lower_pat(p)).collect())
@@ -769,8 +862,8 @@ mod tests {
     #[test]
     fn prim_name_roundtrip() {
         for name in [
-            "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "neg",
-            "!", "print", "println",
+            "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "neg", "print",
+            "println", "+.", "-.", "*.", "/.", "<.", ">.", "<=.", ">=.", "toFloat", "floor",
         ] {
             assert!(Prim::from_name(name).is_some(), "{name} should be a prim");
         }

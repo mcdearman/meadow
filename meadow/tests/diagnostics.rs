@@ -78,3 +78,17 @@ fn nominal_record_is_not_structural() {
 fn parse_error() {
     insta::assert_snapshot!(errors("def x = \n"));
 }
+
+#[test]
+fn plain_op_rejects_bigint() {
+    // A `BigInt` cannot flow into a plain `Int` operator (no implicit widening of
+    // a non-literal).
+    insta::assert_snapshot!(errors("def x = toBigInt 3 + 4\n"));
+}
+
+#[test]
+fn int_and_bigint_results_dont_unify() {
+    // Literals coerce, but once `+~` has produced a `BigInt` it will not unify
+    // with an `Int` result.
+    insta::assert_snapshot!(errors("def x = 1 +~ 2 == 1 + 2\n"));
+}

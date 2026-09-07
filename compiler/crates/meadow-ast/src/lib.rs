@@ -159,17 +159,16 @@ pub enum Expr {
 
 pub type LUnOp = Located<UnOp>;
 
+/// The only prefix operator is `-` (there is no prefix `!` — `not` is a function).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnOp {
     Neg,
-    Not,
 }
 
 impl ToString for UnOp {
     fn to_string(&self) -> String {
         match self {
             UnOp::Neg => "neg",
-            UnOp::Not => "!",
         }
         .to_string()
     }
@@ -195,6 +194,27 @@ pub enum BinOp {
     /// they never reach a primitive.
     And,
     Or,
+    /// Floating-point `+. -. *. /.` and `<. >. <=. >=.`.
+    AddF,
+    SubF,
+    MulF,
+    DivF,
+    LtF,
+    GtF,
+    LeqF,
+    GeqF,
+    /// Arbitrary-precision `+~ -~ *~ /~ %~ ^~` and `<~ >~ <=~ >=~` (operands are
+    /// `BigInt`).
+    AddB,
+    SubB,
+    MulB,
+    DivB,
+    ModB,
+    PowB,
+    LtB,
+    GtB,
+    LeqB,
+    GeqB,
 }
 
 impl ToString for BinOp {
@@ -214,6 +234,24 @@ impl ToString for BinOp {
             BinOp::Geq => ">=",
             BinOp::And => "&&",
             BinOp::Or => "||",
+            BinOp::AddF => "+.",
+            BinOp::SubF => "-.",
+            BinOp::MulF => "*.",
+            BinOp::DivF => "/.",
+            BinOp::LtF => "<.",
+            BinOp::GtF => ">.",
+            BinOp::LeqF => "<=.",
+            BinOp::GeqF => ">=.",
+            BinOp::AddB => "+~",
+            BinOp::SubB => "-~",
+            BinOp::MulB => "*~",
+            BinOp::DivB => "/~",
+            BinOp::ModB => "%~",
+            BinOp::PowB => "^~",
+            BinOp::LtB => "<~",
+            BinOp::GtB => ">~",
+            BinOp::LeqB => "<=~",
+            BinOp::GeqB => ">=~",
         }
         .to_string()
     }
@@ -245,6 +283,11 @@ pub type Ident = Located<InternedString>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lit {
+    /// Fixed-width integer — the default numeric literal (`Int`, i.e. i64). There
+    /// is no `BigInt` literal; use `toBigInt` and the `~`-suffixed operators.
     Int(i64),
+    /// A floating-point literal, stored as its IEEE-754 bit pattern so the AST
+    /// stays `Eq` / `Hash`; decode with `f64::from_bits`.
+    Float(u64),
     String(InternedString),
 }

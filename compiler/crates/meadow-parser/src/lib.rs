@@ -637,11 +637,27 @@ where
             .boxed();
 
         let ops = choice((cons, app, atom)).clone().pratt((
-            prefix(1, just(Token::Minus), |_op: Token, exp: Located<Expr>, e| {
-                Located::new(
-                    Expr::UnOp(Located::new(UnOp::Neg, e.span()), exp),
-                    e.span(),
-                )
+            prefix(6, just(Token::Minus), |_op: Token, exp: Located<Expr>, e| {
+                let span = e.span();
+                let inner_span = exp.span;
+                // Fold `-<literal>` into a signed literal so `-1.5` works without
+                // a `Float -> Float` `neg`; anything else stays `neg <expr>`.
+                match *exp.value {
+                    Expr::Lit(Lit::Float(bits)) => Located::new(
+                        Expr::Lit(Lit::Float((-f64::from_bits(bits)).to_bits())),
+                        span,
+                    ),
+                    Expr::Lit(Lit::Int(n)) => {
+                        Located::new(Expr::Lit(Lit::Int(-n)), span)
+                    }
+                    other => Located::new(
+                        Expr::UnOp(
+                            Located::new(UnOp::Neg, span),
+                            Located::new(other, inner_span),
+                        ),
+                        span,
+                    ),
+                }
             }),
             // `head :: tail` — sugar for `Cons head tail` (right-associative).
             infix(
@@ -656,6 +672,44 @@ where
                         e.span(),
                     )
                 },
+            ),
+            // Float operators: `*.` `/.` (tight), `+.` `-.` (loose), `<. >. <=. >=.`.
+            infix(
+                left(4),
+                select! { Token::OpIdent(s) if &*s == "*." || &*s == "/." => s },
+                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| float_binop(&s, l, r, e.span()),
+            ),
+            infix(
+                left(3),
+                select! { Token::OpIdent(s) if &*s == "+." || &*s == "-." => s },
+                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| float_binop(&s, l, r, e.span()),
+            ),
+            infix(
+                none(2),
+                select! { Token::OpIdent(s) if matches!(&*s, "<." | ">." | "<=." | ">=.") => s },
+                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| float_binop(&s, l, r, e.span()),
+            ),
+            // BigInt operators: `*~` `/~` `%~` (tight), `+~` `-~` (loose), `^~`
+            // (right-assoc, tightest), `<~ >~ <=~ >=~` (non-assoc comparisons).
+            infix(
+                left(4),
+                select! { Token::OpIdent(s) if matches!(&*s, "*~" | "/~" | "%~") => s },
+                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| big_binop(&s, l, r, e.span()),
+            ),
+            infix(
+                left(3),
+                select! { Token::OpIdent(s) if matches!(&*s, "+~" | "-~") => s },
+                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| big_binop(&s, l, r, e.span()),
+            ),
+            infix(
+                right(5),
+                select! { Token::OpIdent(s) if &*s == "^~" => s },
+                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| big_binop(&s, l, r, e.span()),
+            ),
+            infix(
+                none(2),
+                select! { Token::OpIdent(s) if matches!(&*s, "<~" | ">~" | "<=~" | ">=~") => s },
+                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| big_binop(&s, l, r, e.span()),
             ),
             // infix ops
             infix(
@@ -837,6 +891,40 @@ where
             })
             .boxed()
     })
+}
+
+/// Build a float-operator `BinOp` node from its symbol (`"+."`, `"<=."`, …).
+fn float_binop(sym: &str, l: LExpr, r: LExpr, span: Span) -> LExpr {
+    let op = match sym {
+        "+." => BinOp::AddF,
+        "-." => BinOp::SubF,
+        "*." => BinOp::MulF,
+        "/." => BinOp::DivF,
+        "<." => BinOp::LtF,
+        ">." => BinOp::GtF,
+        "<=." => BinOp::LeqF,
+        ">=." => BinOp::GeqF,
+        _ => unreachable!("float_binop: {sym}"),
+    };
+    Located::new(Expr::BinOp(Located::new(op, span), l, r), span)
+}
+
+/// Build a BigInt-operator `BinOp` node from its symbol (`"+~"`, `"<=~"`, …).
+fn big_binop(sym: &str, l: LExpr, r: LExpr, span: Span) -> LExpr {
+    let op = match sym {
+        "+~" => BinOp::AddB,
+        "-~" => BinOp::SubB,
+        "*~" => BinOp::MulB,
+        "/~" => BinOp::DivB,
+        "%~" => BinOp::ModB,
+        "^~" => BinOp::PowB,
+        "<~" => BinOp::LtB,
+        ">~" => BinOp::GtB,
+        "<=~" => BinOp::LeqB,
+        ">=~" => BinOp::GeqB,
+        _ => unreachable!("big_binop: {sym}"),
+    };
+    Located::new(Expr::BinOp(Located::new(op, span), l, r), span)
 }
 
 /// Turn a parenthesised expression into a lambda if it contains `_` holes:
@@ -1032,6 +1120,7 @@ fn lit<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, Lit, extra::Err<Rich<'a, Token, Span>>> + Clone {
     select! {
         Token::Int(i) => Lit::Int(i),
+        Token::Real(x) => Lit::Float(x.to_bits()),
         Token::String(s) => Lit::String(s),
     }
 }

@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_main(\"fun fact n = if n == 0 then 1 else n *~ fact (n -~ 1)\ndef main = fact 25\n\")"
+---
+15511210043330985984000000

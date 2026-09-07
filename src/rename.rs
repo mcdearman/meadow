@@ -49,6 +49,10 @@ pub struct Resolver {
     tycons: HashMap<InternedString, usize>,
     /// Data / record constructors in scope.
     ctors: HashMap<InternedString, CtorInfo>,
+    /// Declared effects: name -> parameter count.
+    effects: HashMap<InternedString, usize>,
+    /// Operation name -> the effect it belongs to.
+    effect_ops: HashMap<InternedString, InternedString>,
     /// Type variables of the `data` / `record` decl currently being resolved.
     tyvars: Vec<(InternedString, VarId)>,
     ids: NodeIdGen,
@@ -73,6 +77,8 @@ impl Resolver {
             predeclared: HashMap::new(),
             tycons,
             ctors: HashMap::new(),
+            effects: HashMap::new(),
+            effect_ops: HashMap::new(),
             tyvars: Vec::new(),
             ids: NodeIdGen::new(),
             toplevel: false,
@@ -199,6 +205,24 @@ impl Resolver {
                     let fields = rd.fields.iter().map(|(n, _)| *n.value()).collect();
                     self.declare_ctor(*rd.name.value(), rd.fields.len(), Some(fields), rd.name.span);
                 }
+                ast::Decl::Effect(ed) => {
+                    let name = *ed.name.value();
+                    // an effect name is also a type constructor of its parameters
+                    self.declare_tycon(name, ed.params.len(), ed.name.span);
+                    self.effects.insert(name, ed.params.len());
+                    for (op, _) in &ed.ops {
+                        let op = *op.value();
+                        if self.effect_ops.insert(op, name).is_some() || self.predeclared.contains_key(&op) {
+                            self.error(
+                                format!("operation `{op}` is already defined"),
+                                "duplicate operation".to_string(),
+                                ed.name.span,
+                            );
+                        }
+                        // ops are top-level values (functions) — predeclare them
+                        self.predeclare(op);
+                    }
+                }
                 _ => {}
             }
         }
@@ -231,9 +255,32 @@ impl Resolver {
                         },
                     );
                 }
+                hir::Decl::Effect(ed) => {
+                    self.tycons.insert(ed.name, ed.params.len());
+                    self.effects.insert(ed.name, ed.params.len());
+                    for (opname, op, _) in &ed.ops {
+                        self.effect_ops.insert(*opname, ed.name);
+                        // bring the operation value into scope under its own id
+                        self.import(*opname, *op.value());
+                    }
+                }
                 _ => {}
             }
         }
+    }
+
+    /// `(op VarId, effect name, op name)` for every declared operation — the
+    /// lowerer turns a reference to one into `\x -> perform Effect.op x`.
+    pub fn effect_op_vars(&self) -> Vec<(VarId, InternedString, InternedString)> {
+        self.effect_ops
+            .iter()
+            .filter_map(|(op, eff)| {
+                self.predeclared
+                    .get(op)
+                    .or_else(|| self.scope.iter().rev().find(|(n, _)| n == op).map(|(_, id)| id))
+                    .map(|id| (*id, *eff, *op))
+            })
+            .collect()
     }
 
     fn declare_tycon(&mut self, name: InternedString, arity: usize, span: Span) {
@@ -390,6 +437,33 @@ impl Resolver {
                     decl.span,
                 )
             }
+            ast::Decl::Effect(ed) => {
+                let params = self.bind_tyvars(&ed.params);
+                let ops = ed
+                    .ops
+                    .iter()
+                    .map(|(name, ty)| {
+                        // `declare_types` predeclared the op name as a top-level value
+                        let opname = *name.value();
+                        let id = self
+                            .predeclared
+                            .get(&opname)
+                            .copied()
+                            .unwrap_or_else(|| self.bind(opname));
+                        let rty = self.resolve_ty(ty);
+                        (opname, self.node(id, name.span), rty)
+                    })
+                    .collect();
+                self.tyvars.clear();
+                self.node(
+                    hir::Decl::Effect(hir::EffectDecl {
+                        name: *ed.name.value(),
+                        params,
+                        ops,
+                    }),
+                    decl.span,
+                )
+            }
         }
     }
 
@@ -450,10 +524,11 @@ impl Resolver {
                 let rargs = args.iter().map(|a| self.resolve_ty(a)).collect();
                 self.node(hir::TypeExpr::Con(name, rargs), t.span)
             }
-            ast::TypeExpr::Fun(ps, r) => {
+            ast::TypeExpr::Fun(ps, r, eff) => {
                 let rps = ps.iter().map(|p| self.resolve_ty(p)).collect();
                 let rr = self.resolve_ty(r);
-                self.node(hir::TypeExpr::Fun(rps, rr), t.span)
+                let reff = eff.as_ref().map(|e| self.resolve_effect_row(e));
+                self.node(hir::TypeExpr::Fun(rps, rr, reff), t.span)
             }
             ast::TypeExpr::Tuple(ts) => {
                 let rts = ts.iter().map(|x| self.resolve_ty(x)).collect();
@@ -464,6 +539,49 @@ impl Resolver {
                 self.node(hir::TypeExpr::List(rx), t.span)
             }
         }
+    }
+
+    fn resolve_effect_row(&mut self, row: &ast::EffectRow) -> hir::EffectRow {
+        let labels = row
+            .labels
+            .iter()
+            .map(|(name, args)| {
+                let n = *name.value();
+                match self.effects.get(&n).copied() {
+                    Some(arity) if arity == args.len() => {}
+                    Some(arity) => self.error(
+                        format!("effect `{n}` takes {arity} argument(s), got {}", args.len()),
+                        "wrong number of effect arguments".to_string(),
+                        name.span,
+                    ),
+                    None => self.error(
+                        format!("unknown effect `{n}`"),
+                        "not declared".to_string(),
+                        name.span,
+                    ),
+                }
+                (n, args.iter().map(|a| self.resolve_ty(a)).collect())
+            })
+            .collect();
+        let tail = row.tail.as_ref().map(|t| {
+            let name = *t.value();
+            let id = self
+                .tyvars
+                .iter()
+                .rev()
+                .find(|(nm, _)| *nm == name)
+                .map(|(_, id)| *id)
+                .unwrap_or_else(|| {
+                    self.error(
+                        format!("unbound effect variable `{name}`"),
+                        "not a parameter of this declaration".to_string(),
+                        t.span,
+                    );
+                    VarId::fresh()
+                });
+            self.node(id, t.span)
+        });
+        hir::EffectRow { labels, tail }
     }
 
     fn resolve_bind(&mut self, bind: &ast::Bind) -> hir::Bind {
@@ -618,6 +736,44 @@ impl Resolver {
                 let o = self.resolve_expr(obj);
                 let l = self.node(*label.value(), label.span);
                 self.node(hir::Expr::Field(o, l), expr.span)
+            }
+            ast::Expr::Handle(scrut, arms, ret) => {
+                let rs = self.resolve_expr(scrut);
+                let rarms = arms
+                    .iter()
+                    .map(|arm| {
+                        let opname = *arm.op.value();
+                        let effect = self.effect_ops.get(&opname).copied().unwrap_or_else(|| {
+                            self.error(
+                                format!("unknown operation `{opname}`"),
+                                "not an effect operation".to_string(),
+                                arm.op.span,
+                            );
+                            InternedString::default()
+                        });
+                        let mark = self.mark();
+                        let rparam = self.resolve_pat(&arm.param);
+                        let rid = self.bind(*arm.resume.value());
+                        let rresume = self.node(rid, arm.resume.span);
+                        let rbody = self.resolve_expr(&arm.body);
+                        self.reset(mark);
+                        hir::HandlerArm {
+                            effect,
+                            op: opname,
+                            param: rparam,
+                            resume: rresume,
+                            body: rbody,
+                        }
+                    })
+                    .collect_vec();
+                let rret = ret.as_ref().map(|(pat, body)| {
+                    let mark = self.mark();
+                    let rp = self.resolve_pat(pat);
+                    let rb = self.resolve_expr(body);
+                    self.reset(mark);
+                    (rp, rb)
+                });
+                self.node(hir::Expr::Handle(rs, rarms, rret), expr.span)
             }
         }
     }

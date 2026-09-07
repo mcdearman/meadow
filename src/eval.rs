@@ -1,15 +1,27 @@
-//! A straightforward call-by-value tree-walking interpreter for [`crate::core`].
+//! A **CEK abstract machine** for [`crate::core`].
 //!
-//! This is the reference semantics: no optimizations, no bytecode. Environments
-//! are `Rc`-linked frames; `LetRec` creates a frame the closures close over before
-//! it is filled, which is enough for recursive functions (recursive *values* that
-//! force each other are not supported).
+//! The evaluator is an explicit `(Control, Environment, Kontinuation)` loop rather
+//! than a recursive tree-walk. The continuation is a `Vec<K>` of stack frames —
+//! one per "hole" in a partly-evaluated term — which is what makes algebraic
+//! effects implementable:
+//!
+//! * `perform E.op arg` scans the kontinuation top-down for the nearest matching
+//!   `HandleMark`, **splits the stack there**, and hands the sliced-off prefix to
+//!   the handler clause as a resumption ([`Value::Cont`]).
+//! * resuming (calling that `Value::Cont`) splices the captured frames back on.
+//!
+//! Handlers are **deep** (the captured slice includes the `HandleMark`, so a
+//! resumption re-enters under the same handler) and **one-shot** (each `Cont` may
+//! be resumed at most once — enforced by a `take`n `Option`).
 
 use crate::{core, intern::InternedString};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
+
+type Term = core::Term;
+type Var = core::Var;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -22,8 +34,8 @@ pub enum Value {
     Record(BTreeMap<InternedString, Value>),
     Ctor(InternedString, Vec<Value>),
     Closure {
-        param: core::Var,
-        body: Rc<core::Term>,
+        param: Var,
+        body: Rc<Term>,
         env: Env,
     },
     /// A partially applied primitive.
@@ -31,6 +43,8 @@ pub enum Value {
         op: core::Prim,
         args: Vec<Value>,
     },
+    /// A captured (one-shot, deep) continuation — a slice of stack frames.
+    Cont(Rc<RefCell<Option<Vec<K>>>>),
 }
 
 #[derive(Debug)]
@@ -52,7 +66,7 @@ fn err<T>(msg: impl Into<String>) -> Result<T, RuntimeError> {
 
 #[derive(Debug)]
 pub struct Frame {
-    slots: RefCell<Vec<(core::Var, Value)>>,
+    slots: RefCell<Vec<(Var, Value)>>,
     parent: Option<Env>,
 }
 
@@ -72,11 +86,11 @@ fn child(parent: &Env) -> Env {
     })
 }
 
-fn define(env: &Env, var: core::Var, val: Value) {
+fn define(env: &Env, var: Var, val: Value) {
     env.slots.borrow_mut().push((var, val));
 }
 
-fn lookup(env: &Env, var: core::Var) -> Option<Value> {
+fn lookup(env: &Env, var: Var) -> Option<Value> {
     let mut cur = Some(env.clone());
     while let Some(frame) = cur {
         if let Some((_, v)) = frame.slots.borrow().iter().rev().find(|(k, _)| *k == var) {
@@ -87,194 +101,572 @@ fn lookup(env: &Env, var: core::Var) -> Option<Value> {
     None
 }
 
-// --- driver --------------------------------------------------------------
+// --- the machine ---------------------------------------------------------
 
 pub type FieldTable = std::collections::HashMap<InternedString, Vec<InternedString>>;
 
+#[derive(Debug, Clone)]
+pub struct HandlerData {
+    clauses: Vec<core::HClause>,
+    ret: Option<(Var, Rc<Term>)>,
+}
+
+/// One continuation frame: "given the value of the sub-expression currently being
+/// evaluated, here is what to do next".
+#[derive(Debug, Clone)]
+pub enum K {
+    /// `App`: the function is evaluated; evaluate this argument next.
+    EvalArg { arg: Rc<Term>, env: Env },
+    /// `App`: the argument is evaluated; apply the saved function to it.
+    ApplyTo { func: Value },
+    If { then: Rc<Term>, els: Rc<Term>, env: Env },
+    /// `Let` / `Lam` application: bind `var` to the incoming value, run `body`.
+    Bind { var: Var, body: Rc<Term>, env: Env },
+    LetRec { scope: Env, pending: Vec<(Var, Term)>, body: Rc<Term> },
+    BuildTuple { done: Vec<Value>, pending: Vec<Term>, env: Env },
+    BuildList { done: Vec<Value>, pending: Vec<Term>, env: Env },
+    BuildCtor { name: InternedString, done: Vec<Value>, pending: Vec<Term>, env: Env },
+    BuildPrim { op: core::Prim, done: Vec<Value>, pending: Vec<Term>, env: Env },
+    BuildRecord {
+        done: Vec<(InternedString, Value)>,
+        pending: Vec<(InternedString, Term)>,
+        env: Env,
+    },
+    Proj(usize),
+    Sel(InternedString),
+    /// `Extend`: the record is evaluated; evaluate the new field value.
+    ExtendVal { label: InternedString, val: Rc<Term>, env: Env },
+    /// `Extend`: the field value is evaluated; insert it into the saved record.
+    ExtendWith { label: InternedString, rec: Value },
+    /// `ListCons`: the head is evaluated; evaluate the tail.
+    ConsHead { tail: Rc<Term>, env: Env },
+    /// `ListCons`: the tail is evaluated; prepend the saved head.
+    ConsBuild { head: Value },
+    Match { arms: Rc<Vec<(core::Pat, Term)>>, env: Env },
+    /// `Perform`: the operation argument is evaluated; unwind to a handler.
+    PerformWith { effect: InternedString, op: InternedString },
+    /// A handler boundary sitting on the stack.
+    HandleMark(Rc<HandlerData>, Env),
+}
+
+enum Control {
+    Eval(Rc<Term>, Env),
+    Ret(Value),
+}
+
+struct Machine<'a> {
+    ctrl: Control,
+    kont: Vec<K>,
+    fields: &'a FieldTable,
+}
+
 pub fn run(program: &core::Program) -> Result<Value, RuntimeError> {
-    let interp = Interp {
-        ctor_fields: &program.ctor_fields,
-    };
     let env = root_env();
-    // Placeholders first so recursive references resolve; then evaluate in order.
+    // Placeholders first so recursive top-level references resolve.
     for def in &program.defs {
         define(&env, def.var, Value::Unit);
     }
     for def in &program.defs {
-        let v = interp.eval(&def.term, &env)?;
+        let m = Machine {
+            ctrl: Control::Eval(Rc::new(def.term.clone()), env.clone()),
+            kont: Vec::new(),
+            fields: &program.ctor_fields,
+        };
+        let v = m.run()?;
         define(&env, def.var, v);
     }
     match program.entry {
-        Some(entry) => lookup(&env, entry).ok_or_else(|| RuntimeError {
+        Some(e) => lookup(&env, e).ok_or_else(|| RuntimeError {
             msg: "entry point not found".into(),
         }),
         None => Ok(Value::Unit),
     }
 }
 
-// --- evaluation --------------------------------------------------------------
-
-struct Interp<'a> {
-    ctor_fields: &'a FieldTable,
-}
-
-impl Interp<'_> {
-    fn eval(&self, term: &core::Term, env: &Env) -> Result<Value, RuntimeError> {
-        use core::Term as T;
-        match term {
-            T::Var(v) => lookup(env, *v).ok_or_else(|| RuntimeError {
-                msg: format!("unbound variable {:?}", v),
-            }),
-            T::Lit(l) => Ok(lit_value(l)),
-
-            T::Lam(param, body) => Ok(Value::Closure {
-                param: *param,
-                body: Rc::new((**body).clone()),
-                env: env.clone(),
-            }),
-
-            T::App(f, a) => {
-                let func = self.eval(f, env)?;
-                let arg = self.eval(a, env)?;
-                self.apply(func, arg)
-            }
-
-            T::Let(v, rhs, body) => {
-                let val = self.eval(rhs, env)?;
-                let scope = child(env);
-                define(&scope, *v, val);
-                self.eval(body, &scope)
-            }
-
-            T::LetRec(binds, body) => {
-                let scope = child(env);
-                for (v, _) in binds {
-                    define(&scope, *v, Value::Unit);
-                }
-                for (v, rhs) in binds {
-                    let val = self.eval(rhs, &scope)?;
-                    define(&scope, *v, val);
-                }
-                self.eval(body, &scope)
-            }
-
-            T::If(c, t, e) => match self.eval(c, env)? {
-                Value::Bool(true) => self.eval(t, env),
-                Value::Bool(false) => self.eval(e, env),
-                other => err(format!("`if` condition is not a Bool: {}", other)),
-            },
-
-            T::Tuple(items) => Ok(Value::Tuple(
-                items
-                    .iter()
-                    .map(|t| self.eval(t, env))
-                    .collect::<Result<_, _>>()?,
-            )),
-            T::List(items) => Ok(Value::List(
-                items
-                    .iter()
-                    .map(|t| self.eval(t, env))
-                    .collect::<Result<_, _>>()?,
-            )),
-            T::ListCons(head, tail) => {
-                let head = self.eval(head, env)?;
-                match self.eval(tail, env)? {
-                    Value::List(mut items) => {
-                        items.insert(0, head);
-                        Ok(Value::List(items))
-                    }
-                    other => err(format!("`Cons` tail is not a list: {}", other)),
-                }
-            }
-            T::Proj(t, i) => match self.eval(t, env)? {
-                Value::Tuple(items) => {
-                    items.into_iter().nth(*i).ok_or_else(|| RuntimeError {
-                        msg: format!("tuple projection {i} out of range"),
-                    })
-                }
-                other => err(format!("cannot project field {i} out of {}", other)),
-            },
-
-            T::Record(fields) => {
-                let mut map = BTreeMap::new();
-                for (label, t) in fields {
-                    map.insert(*label, self.eval(t, env)?);
-                }
-                Ok(Value::Record(map))
-            }
-            T::Sel(t, label) => match self.eval(t, env)? {
-                Value::Record(map) => {
-                    map.get(label).cloned().ok_or_else(|| RuntimeError {
-                        msg: format!("record has no field `{label}`"),
-                    })
-                }
-                // Nominal record / data value: index by the constructor's field order.
-                Value::Ctor(cname, vals) => self
-                    .ctor_fields
-                    .get(&cname)
-                    .and_then(|fs| fs.iter().position(|f| f == label))
-                    .and_then(|i| vals.into_iter().nth(i))
-                    .ok_or_else(|| RuntimeError {
-                        msg: format!("`{cname}` has no field `{label}`"),
-                    }),
-                other => err(format!("cannot select `.{label}` from {}", other)),
-            },
-            T::Extend(t, label, v) => match self.eval(t, env)? {
-                Value::Record(mut map) => {
-                    map.insert(*label, self.eval(v, env)?);
-                    Ok(Value::Record(map))
-                }
-                other => err(format!("cannot extend non-record {}", other)),
-            },
-
-            T::Ctor(name, args) => Ok(Value::Ctor(
-                *name,
-                args.iter()
-                    .map(|t| self.eval(t, env))
-                    .collect::<Result<_, _>>()?,
-            )),
-
-            T::Case(scrut, arms) => {
-                let value = self.eval(scrut, env)?;
-                for (pat, body) in arms {
-                    let scope = child(env);
-                    if match_pat(pat, &value, &scope) {
-                        return self.eval(body, &scope);
+impl Machine<'_> {
+    fn run(mut self) -> Result<Value, RuntimeError> {
+        loop {
+            if self.kont.is_empty() {
+                if let Control::Ret(_) = &self.ctrl {
+                    match std::mem::replace(&mut self.ctrl, Control::Ret(Value::Unit)) {
+                        Control::Ret(v) => return Ok(v),
+                        Control::Eval(..) => unreachable!(),
                     }
                 }
-                err("non-exhaustive pattern match")
             }
-
-            T::Prim(op, args) => {
-                let vals: Vec<Value> = args
-                    .iter()
-                    .map(|t| self.eval(t, env))
-                    .collect::<Result<_, _>>()?;
-                run_prim(*op, vals)
-            }
-
-            T::Error => err("evaluating an ill-formed expression"),
+            self.step()?;
         }
     }
 
-    fn apply(&self, func: Value, arg: Value) -> Result<Value, RuntimeError> {
+    fn step(&mut self) -> Result<(), RuntimeError> {
+        match std::mem::replace(&mut self.ctrl, Control::Ret(Value::Unit)) {
+            Control::Eval(term, env) => self.eval(term, env),
+            Control::Ret(v) => self.ret(v),
+        }
+    }
+
+    /// Decompose a term: push frames for its sub-expressions, then start on the
+    /// first one; or, for a value form, return it directly.
+    fn eval(&mut self, term: Rc<Term>, env: Env) -> Result<(), RuntimeError> {
+        use core::Term as T;
+        match &*term {
+            T::Var(v) => {
+                let val = lookup(&env, *v).ok_or_else(|| RuntimeError {
+                    msg: format!("unbound variable {v:?}"),
+                })?;
+                self.ctrl = Control::Ret(val);
+            }
+            T::Lit(l) => self.ctrl = Control::Ret(lit_value(l)),
+            T::Lam(param, body) => {
+                self.ctrl = Control::Ret(Value::Closure {
+                    param: *param,
+                    body: body.clone(),
+                    env,
+                });
+            }
+            T::App(f, a) => {
+                self.kont.push(K::EvalArg {
+                    arg: a.clone(),
+                    env: env.clone(),
+                });
+                self.ctrl = Control::Eval(f.clone(), env);
+            }
+            T::Let(v, rhs, body) => {
+                self.kont.push(K::Bind {
+                    var: *v,
+                    body: body.clone(),
+                    env: env.clone(),
+                });
+                self.ctrl = Control::Eval(rhs.clone(), env);
+            }
+            T::LetRec(binds, body) => {
+                let scope = child(&env);
+                for (v, _) in binds {
+                    define(&scope, *v, Value::Unit);
+                }
+                // `pending` holds the not-yet-evaluated binds, innermost last; the
+                // last entry is always the one currently being evaluated (its slot
+                // gets filled when its value comes back — see `K::LetRec` in `ret`).
+                let pending: Vec<(Var, Term)> = binds.iter().rev().cloned().collect();
+                match pending.last().cloned() {
+                    Some((_, rhs)) => {
+                        self.kont.push(K::LetRec {
+                            scope: scope.clone(),
+                            pending,
+                            body: body.clone(),
+                        });
+                        self.ctrl = Control::Eval(Rc::new(rhs), scope);
+                    }
+                    None => {
+                        let _ = pending;
+                        self.ctrl = Control::Eval(body.clone(), scope);
+                    }
+                }
+            }
+            T::If(c, t, e) => {
+                self.kont.push(K::If {
+                    then: t.clone(),
+                    els: e.clone(),
+                    env: env.clone(),
+                });
+                self.ctrl = Control::Eval(c.clone(), env);
+            }
+            T::Tuple(items) => self.start_seq(items, env, SeqKind::Tuple),
+            T::List(items) => self.start_seq(items, env, SeqKind::List),
+            T::Ctor(name, args) => self.start_seq(args, env, SeqKind::Ctor(*name)),
+            T::Prim(op, args) => self.start_seq(args, env, SeqKind::Prim(*op)),
+            T::Record(fields) => {
+                let pending: Vec<(InternedString, Term)> =
+                    fields.iter().rev().map(|(l, t)| (*l, t.clone())).collect();
+                match pending.last().cloned() {
+                    Some((_, first)) => {
+                        self.kont.push(K::BuildRecord {
+                            done: vec![],
+                            pending,
+                            env: env.clone(),
+                        });
+                        self.ctrl = Control::Eval(Rc::new(first), env);
+                    }
+                    None => self.ctrl = Control::Ret(Value::Record(BTreeMap::new())),
+                }
+            }
+            T::Proj(t, i) => {
+                self.kont.push(K::Proj(*i));
+                self.ctrl = Control::Eval(t.clone(), env);
+            }
+            T::Sel(t, label) => {
+                self.kont.push(K::Sel(*label));
+                self.ctrl = Control::Eval(t.clone(), env);
+            }
+            T::Extend(rec, label, val) => {
+                self.kont.push(K::ExtendVal {
+                    label: *label,
+                    val: val.clone(),
+                    env: env.clone(),
+                });
+                self.ctrl = Control::Eval(rec.clone(), env);
+            }
+            T::ListCons(head, tail) => {
+                self.kont.push(K::ConsHead {
+                    tail: tail.clone(),
+                    env: env.clone(),
+                });
+                self.ctrl = Control::Eval(head.clone(), env);
+            }
+            T::Case(scrut, arms) => {
+                self.kont.push(K::Match {
+                    arms: Rc::new(arms.clone()),
+                    env: env.clone(),
+                });
+                self.ctrl = Control::Eval(scrut.clone(), env);
+            }
+            T::Perform(effect, op, arg) => {
+                self.kont.push(K::PerformWith {
+                    effect: *effect,
+                    op: *op,
+                });
+                self.ctrl = Control::Eval(arg.clone(), env);
+            }
+            T::Handle { body, clauses, ret } => {
+                let data = Rc::new(HandlerData {
+                    clauses: clauses.clone(),
+                    ret: ret.clone(),
+                });
+                self.kont.push(K::HandleMark(data, env.clone()));
+                self.ctrl = Control::Eval(body.clone(), env);
+            }
+            T::Error => return err("evaluating an ill-formed expression"),
+        }
+        Ok(())
+    }
+
+    fn start_seq(&mut self, items: &[Term], env: Env, kind: SeqKind) {
+        let mut pending: Vec<Term> = items.iter().rev().cloned().collect();
+        match pending.pop() {
+            Some(first) => {
+                let done = Vec::new();
+                self.kont.push(match kind {
+                    SeqKind::Tuple => K::BuildTuple {
+                        done,
+                        pending,
+                        env: env.clone(),
+                    },
+                    SeqKind::List => K::BuildList {
+                        done,
+                        pending,
+                        env: env.clone(),
+                    },
+                    SeqKind::Ctor(name) => K::BuildCtor {
+                        name,
+                        done,
+                        pending,
+                        env: env.clone(),
+                    },
+                    SeqKind::Prim(op) => K::BuildPrim {
+                        op,
+                        done,
+                        pending,
+                        env: env.clone(),
+                    },
+                });
+                self.ctrl = Control::Eval(Rc::new(first), env);
+            }
+            None => {
+                self.ctrl = Control::Ret(match kind {
+                    SeqKind::Tuple => Value::Tuple(vec![]),
+                    SeqKind::List => Value::List(vec![]),
+                    SeqKind::Ctor(name) => Value::Ctor(name, vec![]),
+                    SeqKind::Prim(_) => Value::Unit, // prims always have args
+                });
+            }
+        }
+    }
+
+    /// A value came back; pop the top frame and combine.
+    fn ret(&mut self, v: Value) -> Result<(), RuntimeError> {
+        let Some(frame) = self.kont.pop() else {
+            self.ctrl = Control::Ret(v);
+            return Ok(());
+        };
+        match frame {
+            K::EvalArg { arg, env } => {
+                self.kont.push(K::ApplyTo { func: v });
+                self.ctrl = Control::Eval(arg, env);
+            }
+            K::ApplyTo { func } => self.apply(func, v)?,
+            K::If { then, els, env } => match v {
+                Value::Bool(true) => self.ctrl = Control::Eval(then, env),
+                Value::Bool(false) => self.ctrl = Control::Eval(els, env),
+                other => return err(format!("`if` condition is not a Bool: {other}")),
+            },
+            K::Bind { var, body, env } => {
+                let scope = child(&env);
+                define(&scope, var, v);
+                self.ctrl = Control::Eval(body, scope);
+            }
+            K::LetRec {
+                scope,
+                mut pending,
+                body,
+            } => {
+                // the just-evaluated bind is the last `pending` entry
+                let (var, _) = pending.pop().expect("letrec marker");
+                define(&scope, var, v);
+                match pending.last().cloned() {
+                    Some((_, next_rhs)) => {
+                        self.kont.push(K::LetRec {
+                            scope: scope.clone(),
+                            pending,
+                            body,
+                        });
+                        self.ctrl = Control::Eval(Rc::new(next_rhs), scope);
+                    }
+                    None => self.ctrl = Control::Eval(body, scope),
+                }
+            }
+            K::BuildTuple {
+                mut done,
+                mut pending,
+                env,
+            } => {
+                done.push(v);
+                match pending.pop() {
+                    Some(next) => {
+                        self.kont.push(K::BuildTuple {
+                            done,
+                            pending,
+                            env: env.clone(),
+                        });
+                        self.ctrl = Control::Eval(Rc::new(next), env);
+                    }
+                    None => self.ctrl = Control::Ret(Value::Tuple(done)),
+                }
+            }
+            K::BuildList {
+                mut done,
+                mut pending,
+                env,
+            } => {
+                done.push(v);
+                match pending.pop() {
+                    Some(next) => {
+                        self.kont.push(K::BuildList {
+                            done,
+                            pending,
+                            env: env.clone(),
+                        });
+                        self.ctrl = Control::Eval(Rc::new(next), env);
+                    }
+                    None => self.ctrl = Control::Ret(Value::List(done)),
+                }
+            }
+            K::BuildCtor {
+                name,
+                mut done,
+                mut pending,
+                env,
+            } => {
+                done.push(v);
+                match pending.pop() {
+                    Some(next) => {
+                        self.kont.push(K::BuildCtor {
+                            name,
+                            done,
+                            pending,
+                            env: env.clone(),
+                        });
+                        self.ctrl = Control::Eval(Rc::new(next), env);
+                    }
+                    None => self.ctrl = Control::Ret(Value::Ctor(name, done)),
+                }
+            }
+            K::BuildPrim {
+                op,
+                mut done,
+                mut pending,
+                env,
+            } => {
+                done.push(v);
+                match pending.pop() {
+                    Some(next) => {
+                        self.kont.push(K::BuildPrim {
+                            op,
+                            done,
+                            pending,
+                            env: env.clone(),
+                        });
+                        self.ctrl = Control::Eval(Rc::new(next), env);
+                    }
+                    None => self.ctrl = Control::Ret(run_prim(op, done)?),
+                }
+            }
+            K::BuildRecord {
+                mut done,
+                mut pending,
+                env,
+            } => {
+                let (label, _) = pending.pop().expect("record marker");
+                done.push((label, v));
+                match pending.last().cloned() {
+                    Some((_, next)) => {
+                        self.kont.push(K::BuildRecord {
+                            done,
+                            pending,
+                            env: env.clone(),
+                        });
+                        self.ctrl = Control::Eval(Rc::new(next), env);
+                    }
+                    None => {
+                        self.ctrl = Control::Ret(Value::Record(done.into_iter().collect()));
+                    }
+                }
+            }
+            K::Proj(i) => match v {
+                Value::Tuple(items) => {
+                    let val = items.into_iter().nth(i).ok_or_else(|| RuntimeError {
+                        msg: format!("tuple projection {i} out of range"),
+                    })?;
+                    self.ctrl = Control::Ret(val);
+                }
+                other => return err(format!("cannot project field {i} out of {other}")),
+            },
+            K::Sel(label) => {
+                let val = match v {
+                    Value::Record(map) => map.get(&label).cloned().ok_or_else(|| RuntimeError {
+                        msg: format!("record has no field `{label}`"),
+                    })?,
+                    Value::Ctor(cname, vals) => self
+                        .fields
+                        .get(&cname)
+                        .and_then(|fs| fs.iter().position(|f| *f == label))
+                        .and_then(|i| vals.into_iter().nth(i))
+                        .ok_or_else(|| RuntimeError {
+                            msg: format!("`{cname}` has no field `{label}`"),
+                        })?,
+                    other => return err(format!("cannot select `.{label}` from {other}")),
+                };
+                self.ctrl = Control::Ret(val);
+            }
+            K::ExtendVal { label, val, env } => {
+                self.kont.push(K::ExtendWith { label, rec: v });
+                self.ctrl = Control::Eval(val, env);
+            }
+            K::ExtendWith { label, rec } => match rec {
+                Value::Record(mut map) => {
+                    map.insert(label, v);
+                    self.ctrl = Control::Ret(Value::Record(map));
+                }
+                other => return err(format!("cannot extend non-record {other}")),
+            },
+            K::ConsHead { tail, env } => {
+                self.kont.push(K::ConsBuild { head: v });
+                self.ctrl = Control::Eval(tail, env);
+            }
+            K::ConsBuild { head } => match v {
+                Value::List(mut items) => {
+                    items.insert(0, head);
+                    self.ctrl = Control::Ret(Value::List(items));
+                }
+                other => return err(format!("`Cons` tail is not a list: {other}")),
+            },
+            K::Match { arms, env } => {
+                for (pat, body) in arms.iter() {
+                    let scope = child(&env);
+                    if match_pat(pat, &v, &scope) {
+                        self.ctrl = Control::Eval(Rc::new(body.clone()), scope);
+                        return Ok(());
+                    }
+                }
+                return err("non-exhaustive pattern match");
+            }
+            K::PerformWith { effect, op } => self.perform(effect, op, v)?,
+            K::HandleMark(data, henv) => {
+                // body returned normally — run the `return` clause (or identity)
+                match &data.ret {
+                    Some((param, body)) => {
+                        let scope = child(&henv);
+                        define(&scope, *param, v);
+                        self.ctrl = Control::Eval(body.clone(), scope);
+                    }
+                    None => self.ctrl = Control::Ret(v),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn apply(&mut self, func: Value, arg: Value) -> Result<(), RuntimeError> {
         match func {
             Value::Closure { param, body, env } => {
                 let scope = child(&env);
                 define(&scope, param, arg);
-                self.eval(&body, &scope)
+                self.ctrl = Control::Eval(body, scope);
             }
             Value::Builtin { op, mut args } => {
                 args.push(arg);
-                if args.len() >= op.arity() {
-                    run_prim(op, args)
+                self.ctrl = if args.len() >= op.arity() {
+                    Control::Ret(run_prim(op, args)?)
                 } else {
-                    Ok(Value::Builtin { op, args })
-                }
+                    Control::Ret(Value::Builtin { op, args })
+                };
             }
-            other => err(format!("{} is not a function", other)),
+            Value::Cont(frames) => {
+                let Some(saved) = frames.borrow_mut().take() else {
+                    return err("continuation resumed more than once");
+                };
+                self.kont.extend(saved);
+                self.ctrl = Control::Ret(arg);
+            }
+            other => return err(format!("{other} is not a function")),
         }
+        Ok(())
     }
+
+    /// Handle a `perform`: unwind the kontinuation to the nearest matching handler,
+    /// capture the sliced-off prefix as a resumption, and run the handler clause.
+    fn perform(
+        &mut self,
+        effect: InternedString,
+        op: InternedString,
+        arg: Value,
+    ) -> Result<(), RuntimeError> {
+        // find the nearest HandleMark (from the top) with a matching clause
+        let idx = self.kont.iter().rposition(|k| {
+            matches!(k, K::HandleMark(data, _)
+                if data.clauses.iter().any(|c| c.effect == effect && c.op == op))
+        });
+        let Some(idx) = idx else {
+            return err(format!("unhandled effect {effect}.{op}"));
+        };
+
+        // frames [idx..] — including the HandleMark itself, so a resumption
+        // re-enters under the same handler (deep handlers)
+        let captured = self.kont.split_off(idx);
+        let (data, henv) = match &captured[0] {
+            K::HandleMark(d, e) => (d.clone(), e.clone()),
+            _ => unreachable!(),
+        };
+        let clause = data
+            .clauses
+            .iter()
+            .find(|c| c.effect == effect && c.op == op)
+            .expect("matched above")
+            .clone();
+
+        let cont = Value::Cont(Rc::new(RefCell::new(Some(captured))));
+        let scope = child(&henv);
+        define(&scope, clause.param, arg);
+        define(&scope, clause.resume, cont);
+        self.ctrl = Control::Eval(Rc::new(clause.body), scope);
+        Ok(())
+    }
+}
+
+enum SeqKind {
+    Tuple,
+    List,
+    Ctor(InternedString),
+    Prim(core::Prim),
 }
 
 fn lit_value(lit: &core::Lit) -> Value {
@@ -318,9 +710,9 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
         (P::Ctor(name, ps), Value::Ctor(vname, vs)) if name == vname && ps.len() == vs.len() => {
             ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, scope))
         }
-        (P::Record(fields), Value::Record(map)) => fields.iter().all(|(label, p)| {
-            map.get(label).is_some_and(|v| match_pat(p, v, scope))
-        }),
+        (P::Record(fields), Value::Record(map)) => fields
+            .iter()
+            .all(|(label, p)| map.get(label).is_some_and(|v| match_pat(p, v, scope))),
         _ => false,
     }
 }
@@ -333,7 +725,7 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
     let int2 = |a: &Value, b: &Value| -> Result<(i64, i64), RuntimeError> {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => Ok((*x, *y)),
-            _ => err(format!("expected two Ints, got {} and {}", a, b)),
+            _ => err(format!("expected two Ints, got {a} and {b}")),
         }
     };
 
@@ -381,7 +773,7 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
         }
         Neg => match &args[0] {
             Value::Int(x) => Ok(Value::Int(-x)),
-            other => err(format!("`neg` expects an Int, got {}", other)),
+            other => err(format!("`neg` expects an Int, got {other}")),
         },
         Not => Ok(Value::Bool(!as_bool(&args[0])?)),
         Print => {
@@ -398,7 +790,7 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
 fn as_bool(v: &Value) -> Result<bool, RuntimeError> {
     match v {
         Value::Bool(b) => Ok(*b),
-        other => err(format!("expected a Bool, got {}", other)),
+        other => err(format!("expected a Bool, got {other}")),
     }
 }
 
@@ -415,9 +807,7 @@ fn value_eq(a: &Value, b: &Value) -> bool {
             n1 == n2 && x.len() == y.len() && x.iter().zip(y).all(|(p, q)| value_eq(p, q))
         }
         (Value::Record(x), Value::Record(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .all(|(k, v)| y.get(k).is_some_and(|w| value_eq(v, w)))
+            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| value_eq(v, w)))
         }
         _ => false,
     }
@@ -475,6 +865,7 @@ impl fmt::Display for Value {
             }
             Value::Closure { .. } => f.write_str("<closure>"),
             Value::Builtin { op, .. } => write!(f, "<builtin {op:?}>"),
+            Value::Cont(_) => f.write_str("<continuation>"),
         }
     }
 }
@@ -482,69 +873,164 @@ impl fmt::Display for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Lit, Prim, Program, Term};
+    use crate::core::{HClause, Lit, Prim, Program, Term};
+    use std::rc::Rc;
 
-    fn run_term(term: Term) -> Value {
-        let program = Program {
+    fn v() -> Var {
+        crate::hir::VarId::fresh()
+    }
+
+    /// Evaluate a single term (as `def main = term`, entry `main`).
+    fn eval_term(term: Term) -> Result<Value, RuntimeError> {
+        let m = v();
+        run(&Program {
             defs: vec![core::Def {
-                var: crate::hir::VarId::fresh(),
+                var: m,
                 name: "main".into(),
                 term,
             }],
-            entry: None,
+            entry: Some(m),
             ..Default::default()
-        };
-        // no entry -> `run` returns Unit, so evaluate the single def directly
-        let interp = Interp {
-            ctor_fields: &program.ctor_fields,
-        };
-        interp.eval(&program.defs[0].term, &root_env()).unwrap()
+        })
+    }
+
+    fn int(i: i64) -> Rc<Term> {
+        Rc::new(Term::Lit(Lit::Int(i)))
     }
 
     #[test]
-    fn prim_arithmetic() {
-        assert_eq!(
-            run_prim(Prim::Add, vec![Value::Int(2), Value::Int(3)]).unwrap().to_string(),
-            "5"
-        );
-        assert_eq!(
-            run_prim(Prim::Mul, vec![Value::Int(4), Value::Int(5)]).unwrap().to_string(),
-            "20"
-        );
-    }
-
-    #[test]
-    fn prim_division_by_zero_errors() {
-        assert!(run_prim(Prim::Div, vec![Value::Int(1), Value::Int(0)]).is_err());
-    }
-
-    #[test]
-    fn prim_equality_is_structural() {
-        let a = Value::Tuple(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
-        let b = Value::Tuple(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
-        assert!(value_eq(&a, &b));
-        assert!(!value_eq(&a, &Value::Int(1)));
-    }
-
-    #[test]
-    fn evaluates_arithmetic_term() {
+    fn arithmetic_and_application() {
         // (\x -> x + 1) 41
-        let x = crate::hir::VarId::fresh();
+        let x = v();
         let body = Term::Prim(Prim::Add, vec![Term::Var(x), Term::Lit(Lit::Int(1))]);
-        let term = Term::App(
-            Box::new(Term::Lam(x, Box::new(body))),
-            Box::new(Term::Lit(Lit::Int(41))),
+        let term = Term::App(Rc::new(Term::Lam(x, Rc::new(body))), int(41));
+        assert_eq!(eval_term(term).unwrap().to_string(), "42");
+    }
+
+    #[test]
+    fn if_and_let() {
+        let x = v();
+        let term = Term::Let(
+            x,
+            int(10),
+            Rc::new(Term::If(
+                Rc::new(Term::Prim(
+                    Prim::Lt,
+                    vec![Term::Var(x), Term::Lit(Lit::Int(20))],
+                )),
+                int(1),
+                int(2),
+            )),
         );
-        assert_eq!(run_term(term).to_string(), "42");
+        assert_eq!(eval_term(term).unwrap().to_string(), "1");
     }
 
     #[test]
     fn list_cons_prepends() {
         let term = Term::ListCons(
-            Box::new(Term::Lit(Lit::Int(0))),
-            Box::new(Term::List(vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(2))])),
+            int(0),
+            Rc::new(Term::List(vec![
+                Term::Lit(Lit::Int(1)),
+                Term::Lit(Lit::Int(2)),
+            ])),
         );
-        assert_eq!(run_term(term).to_string(), "[0, 1, 2]");
+        assert_eq!(eval_term(term).unwrap().to_string(), "[0, 1, 2]");
+    }
+
+    #[test]
+    fn recursion_via_letrec() {
+        // letrec f = \n -> if n == 0 then 0 else n + f (n - 1) in f 5   => 15
+        let f = v();
+        let n = v();
+        let lam = Term::Lam(
+            n,
+            Rc::new(Term::If(
+                Rc::new(Term::Prim(Prim::Eq, vec![Term::Var(n), Term::Lit(Lit::Int(0))])),
+                int(0),
+                Rc::new(Term::Prim(
+                    Prim::Add,
+                    vec![
+                        Term::Var(n),
+                        Term::App(
+                            Rc::new(Term::Var(f)),
+                            Rc::new(Term::Prim(
+                                Prim::Sub,
+                                vec![Term::Var(n), Term::Lit(Lit::Int(1))],
+                            )),
+                        ),
+                    ],
+                )),
+            )),
+        );
+        let term = Term::LetRec(
+            vec![(f, lam)],
+            Rc::new(Term::App(Rc::new(Term::Var(f)), int(5))),
+        );
+        assert_eq!(eval_term(term).unwrap().to_string(), "15");
+    }
+
+    #[test]
+    fn handler_state_like() {
+        // handle (perform E.get () ; perform E.get ())  with
+        //   get _ k -> k 7
+        //   return x -> x
+        // ==> 7  (each `get` resumes with 7; the body's value is the 2nd get)
+        let k = v();
+        let p = v();
+        let x = v();
+        let get = |_arg: Rc<Term>| {
+            Term::Perform("E".into(), "get".into(), Rc::new(Term::Lit(Lit::Unit)))
+        };
+        let discard = v();
+        let body = Term::Let(discard, Rc::new(get(int(0))), Rc::new(get(int(0))));
+        let term = Term::Handle {
+            body: Rc::new(body),
+            clauses: vec![HClause {
+                effect: "E".into(),
+                op: "get".into(),
+                param: p,
+                resume: k,
+                body: Term::App(Rc::new(Term::Var(k)), int(7)),
+            }],
+            ret: Some((x, Rc::new(Term::Var(x)))),
+        };
+        assert_eq!(eval_term(term).unwrap().to_string(), "7");
+    }
+
+    #[test]
+    fn unhandled_effect_errors() {
+        let term = Term::Perform("E".into(), "boom".into(), Rc::new(Term::Lit(Lit::Unit)));
+        let e = eval_term(term).unwrap_err();
+        assert!(e.msg.contains("unhandled effect E.boom"), "{}", e.msg);
+    }
+
+    #[test]
+    fn one_shot_resume_twice_errors() {
+        // clause resumes k, then tries to resume k again
+        let k = v();
+        let p = v();
+        let term = Term::Handle {
+            body: Rc::new(Term::Perform(
+                "E".into(),
+                "op".into(),
+                Rc::new(Term::Lit(Lit::Unit)),
+            )),
+            clauses: vec![HClause {
+                effect: "E".into(),
+                op: "op".into(),
+                param: p,
+                resume: k,
+                // k 1 ; k 2
+                body: Term::Let(
+                    v(),
+                    Rc::new(Term::App(Rc::new(Term::Var(k)), int(1))),
+                    Rc::new(Term::App(Rc::new(Term::Var(k)), int(2))),
+                ),
+            }],
+            ret: None,
+        };
+        let e = eval_term(term).unwrap_err();
+        assert!(e.msg.contains("resumed more than once"), "{}", e.msg);
     }
 
     #[test]
@@ -555,6 +1041,24 @@ mod tests {
             Value::Ctor("Some".into(), vec![Value::Int(3)]).to_string(),
             "Some(3)"
         );
-        assert_eq!(Value::Ctor("None".into(), vec![]).to_string(), "None");
+    }
+
+    #[test]
+    fn prim_arithmetic_direct() {
+        assert_eq!(
+            run_prim(Prim::Mul, vec![Value::Int(4), Value::Int(5)])
+                .unwrap()
+                .to_string(),
+            "20"
+        );
+        assert!(run_prim(Prim::Div, vec![Value::Int(1), Value::Int(0)]).is_err());
+    }
+
+    #[test]
+    fn structural_equality() {
+        let a = Value::Tuple(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
+        let b = Value::Tuple(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
+        assert!(value_eq(&a, &b));
+        assert!(!value_eq(&a, &Value::Int(1)));
     }
 }

@@ -1,0 +1,5 @@
+---
+source: tests/effects.rs
+expression: "eval_main(\"effect State s { get : () -> s, put : s -> () }\\n\\\n         fun tick u = let n = get () in let x = put (n + 1) in n\\n\\\n         fun runState s0 act =\\n\\\n           handle act () with {\\n\\\n             get g k -> \\\\s -> (k s) s,\\n\\\n             put s2 k -> \\\\s -> (k ()) s2,\\n\\\n             return x -> \\\\s -> (x, s)\\n\\\n           } s0\\n\\\n         def main = runState 0 (\\\\u -> let a = tick () in let b = tick () in get ())\\n\")"
+---
+(2, 2)

@@ -1,0 +1,5 @@
+---
+source: tests/infer.rs
+expression: "schemes(\"fun greet name = println name\\n\")"
+---
+greet : forall a b. a -> Unit ! { io | b }

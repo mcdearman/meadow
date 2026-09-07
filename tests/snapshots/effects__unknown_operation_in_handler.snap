@@ -1,0 +1,5 @@
+---
+source: tests/effects.rs
+expression: "errors(\"effect E { a : () -> Int }\\n\\\n         fun run act = handle act () with { nope x k -> k 0 }\\n\")"
+---
+unknown operation `nope`

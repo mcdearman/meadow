@@ -1,0 +1,5 @@
+---
+source: tests/effects.rs
+expression: "errors(\"effect E { op : () -> Int ! Nope }\\n\")"
+---
+unknown effect `Nope`

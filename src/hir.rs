@@ -110,6 +110,8 @@ pub enum Decl {
     Data(DataDecl),
     /// `record Person = { … }`
     Record(RecordDecl),
+    /// `effect State s { … }`
+    Effect(EffectDecl),
     Error,
 }
 
@@ -122,9 +124,37 @@ pub type LTypeExpr = Node<TypeExpr>;
 pub enum TypeExpr {
     Var(Ident),
     Con(InternedString, Vec<LTypeExpr>),
-    Fun(Vec<LTypeExpr>, LTypeExpr),
+    /// `arg -> ret ! effect` (curried; effect on the last arrow).
+    Fun(Vec<LTypeExpr>, LTypeExpr, Option<EffectRow>),
     Tuple(Vec<LTypeExpr>),
     List(LTypeExpr),
+}
+
+/// A resolved effect annotation. `labels` names are effect constructors; `tail`
+/// (if any) is a resolved type variable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectRow {
+    pub labels: Vec<(InternedString, Vec<LTypeExpr>)>,
+    pub tail: Option<Ident>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectDecl {
+    pub name: InternedString,
+    pub params: Vec<Ident>,
+    /// Each operation: `(name, its top-level VarId, declared type)`. The op is
+    /// callable as a value, so it gets a `VarId` like a `def`.
+    pub ops: Vec<(InternedString, Ident, LTypeExpr)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandlerArm {
+    /// The effect this operation belongs to (resolved from `op`).
+    pub effect: InternedString,
+    pub op: InternedString,
+    pub param: LPat,
+    pub resume: Ident,
+    pub body: LExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +203,8 @@ pub enum Expr {
     Record(Vec<(Label, LExpr)>, Option<LExpr>),
     /// `e.label`
     Field(LExpr, Label),
+    /// `handle e with { … }`
+    Handle(LExpr, Vec<HandlerArm>, Option<(LPat, LExpr)>),
     Unit,
     Error,
 }

@@ -1,0 +1,5 @@
+---
+source: tests/effects.rs
+expression: "eval_main(\"effect E { ask : () -> Int }\\n\\\n         fun run act = handle act () with { ask a k -> k 99 }\\n\\\n         def main = run (\\\\u -> ask () + ask ())\\n\")"
+---
+198

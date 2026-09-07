@@ -8,6 +8,7 @@
 
 use crate::{hir, intern::InternedString};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Lit {
@@ -90,27 +91,50 @@ pub enum Pat {
     Record(Vec<(InternedString, Pat)>),
 }
 
+/// Core terms. Recursive positions are `Rc<Term>` (not `Box`) so the CEK
+/// interpreter ([`crate::eval`]) can share subterms freely — a captured
+/// continuation is just a slice of `Rc`-holding stack frames.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Term {
     Var(Var),
     Lit(Lit),
-    Lam(Var, Box<Term>),
-    App(Box<Term>, Box<Term>),
-    Let(Var, Box<Term>, Box<Term>),
-    LetRec(Vec<(Var, Term)>, Box<Term>),
-    If(Box<Term>, Box<Term>, Box<Term>),
+    Lam(Var, Rc<Term>),
+    App(Rc<Term>, Rc<Term>),
+    Let(Var, Rc<Term>, Rc<Term>),
+    LetRec(Vec<(Var, Term)>, Rc<Term>),
+    If(Rc<Term>, Rc<Term>, Rc<Term>),
     Tuple(Vec<Term>),
-    Proj(Box<Term>, usize),
+    Proj(Rc<Term>, usize),
     List(Vec<Term>),
     /// Built-in list `Cons head tail` — prepends `head` onto the list `tail`.
-    ListCons(Box<Term>, Box<Term>),
+    ListCons(Rc<Term>, Rc<Term>),
     Record(Vec<(InternedString, Term)>),
-    Sel(Box<Term>, InternedString),
-    Extend(Box<Term>, InternedString, Box<Term>),
+    Sel(Rc<Term>, InternedString),
+    Extend(Rc<Term>, InternedString, Rc<Term>),
     Ctor(InternedString, Vec<Term>),
-    Case(Box<Term>, Vec<(Pat, Term)>),
+    Case(Rc<Term>, Vec<(Pat, Term)>),
     Prim(Prim, Vec<Term>),
+    /// `perform Effect.op arg` — an algebraic-effect operation call.
+    Perform(InternedString, InternedString, Rc<Term>),
+    /// `handle body with { … }` — an effect handler.
+    Handle {
+        body: Rc<Term>,
+        clauses: Vec<HClause>,
+        /// `return x -> e` — defaults to the identity when absent.
+        ret: Option<(Var, Rc<Term>)>,
+    },
     Error,
+}
+
+/// One operation clause of a handler: `op param resume -> body`. `resume` is bound
+/// to the (one-shot, deep) continuation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HClause {
+    pub effect: InternedString,
+    pub op: InternedString,
+    pub param: Var,
+    pub resume: Var,
+    pub body: Term,
 }
 
 #[derive(Debug, Clone)]
@@ -225,6 +249,24 @@ impl Printer {
                 format!("(case {} of {})", self.term(s), parts.join("; "))
             }
             Term::Prim(op, args) => format!("({op:?} {})", self.terms(args)),
+            Term::Perform(eff, op, arg) => {
+                format!("(perform {eff}.{op} {})", self.term(arg))
+            }
+            Term::Handle { body, clauses, ret } => {
+                let mut parts: Vec<String> = clauses
+                    .iter()
+                    .map(|c| {
+                        let p = self.var(c.param);
+                        let k = self.var(c.resume);
+                        format!("{}.{} {p} {k} -> {}", c.effect, c.op, self.term(&c.body))
+                    })
+                    .collect();
+                if let Some((v, b)) = ret {
+                    let v = self.var(*v);
+                    parts.push(format!("return {v} -> {}", self.term(b)));
+                }
+                format!("(handle {} with {{ {} }})", self.term(body), parts.join("; "))
+            }
             Term::Error => "<error>".to_string(),
         }
     }
@@ -269,15 +311,23 @@ impl Printer {
 pub struct Lowerer<'a> {
     prims: &'a HashMap<Var, Prim>,
     names: &'a HashMap<Var, InternedString>,
+    /// Operation `VarId` -> `(effect, op)` — a reference to one lowers to
+    /// `\x -> perform Effect.op x`.
+    effect_ops: &'a HashMap<Var, (InternedString, InternedString)>,
     /// Named-field order per constructor, accumulated across `lower_module` calls.
     pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
 }
 
 impl<'a> Lowerer<'a> {
-    pub fn new(prims: &'a HashMap<Var, Prim>, names: &'a HashMap<Var, InternedString>) -> Self {
+    pub fn new(
+        prims: &'a HashMap<Var, Prim>,
+        names: &'a HashMap<Var, InternedString>,
+        effect_ops: &'a HashMap<Var, (InternedString, InternedString)>,
+    ) -> Self {
         Lowerer {
             prims,
             names,
+            effect_ops,
             ctor_fields: HashMap::new(),
         }
     }
@@ -366,7 +416,7 @@ impl<'a> Lowerer<'a> {
     fn curry_lam(&mut self, params: &[hir::Ident], body: &hir::LExpr) -> Term {
         let mut term = self.lower_expr(body);
         for p in params.iter().rev() {
-            term = Term::Lam(*p.value(), Box::new(term));
+            term = Term::Lam(*p.value(), Rc::new(term));
         }
         term
     }
@@ -379,9 +429,17 @@ impl<'a> Lowerer<'a> {
 
             hir::Expr::Var(id) => {
                 let v = *id.value();
-                match self.prims.get(&v) {
-                    Some(&op) => self.eta_prim(op),
-                    None => Term::Var(v),
+                if let Some(&op) = self.prims.get(&v) {
+                    self.eta_prim(op)
+                } else if let Some(&(eff, opname)) = self.effect_ops.get(&v) {
+                    // `get` becomes `\x -> perform Effect.get x`
+                    let x = hir::VarId::fresh();
+                    Term::Lam(
+                        x,
+                        Rc::new(Term::Perform(eff, opname, Rc::new(Term::Var(x)))),
+                    )
+                } else {
+                    Term::Var(v)
                 }
             }
 
@@ -400,10 +458,10 @@ impl<'a> Lowerer<'a> {
                         let mut binds = Vec::new();
                         self.bind_pat(Term::Var(v), p, &mut binds);
                         for (bv, bt) in binds.into_iter().rev() {
-                            term = Term::Let(bv, Box::new(bt), Box::new(term));
+                            term = Term::Let(bv, Rc::new(bt), Rc::new(term));
                         }
                     }
-                    term = Term::Lam(v, Box::new(term));
+                    term = Term::Lam(v, Rc::new(term));
                 }
                 term
             }
@@ -419,7 +477,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let mut term = self.lower_expr(func);
                 for a in args {
-                    term = Term::App(Box::new(term), Box::new(self.lower_expr(a)));
+                    term = Term::App(Rc::new(term), Rc::new(self.lower_expr(a)));
                 }
                 term
             }
@@ -433,9 +491,9 @@ impl<'a> Lowerer<'a> {
             }
 
             hir::Expr::If(c, t, e) => Term::If(
-                Box::new(self.lower_expr(c)),
-                Box::new(self.lower_expr(t)),
-                Box::new(self.lower_expr(e)),
+                Rc::new(self.lower_expr(c)),
+                Rc::new(self.lower_expr(t)),
+                Rc::new(self.lower_expr(e)),
             ),
 
             hir::Expr::Match(scrut, arms) => {
@@ -444,7 +502,7 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .map(|(p, e)| (self.lower_pat(p), self.lower_expr(e)))
                     .collect();
-                Term::Case(Box::new(s), arms)
+                Term::Case(Rc::new(s), arms)
             }
 
             hir::Expr::Tuple(items) => {
@@ -462,12 +520,12 @@ impl<'a> Lowerer<'a> {
                     ("False", 0) => Term::Lit(Lit::Bool(false)),
                     ("Cons", 2) => {
                         let mut it = lowered.into_iter();
-                        Term::ListCons(Box::new(it.next().unwrap()), Box::new(it.next().unwrap()))
+                        Term::ListCons(Rc::new(it.next().unwrap()), Rc::new(it.next().unwrap()))
                     }
                     // under/over-applied built-in constructor: eta-expand and apply
                     ("Nil" | "Cons", _) => lowered
                         .into_iter()
-                        .fold(self.eta_ctor(&name), |f, a| Term::App(Box::new(f), Box::new(a))),
+                        .fold(self.eta_ctor(&name), |f, a| Term::App(Rc::new(f), Rc::new(a))),
                     // unknown constructor (no `data` decls yet)
                     _ => Term::Ctor(name, lowered),
                 }
@@ -483,36 +541,90 @@ impl<'a> Lowerer<'a> {
                     Some(b) => {
                         let mut term = self.lower_expr(b);
                         for (l, e) in lowered {
-                            term = Term::Extend(Box::new(term), l, Box::new(e));
+                            term = Term::Extend(Rc::new(term), l, Rc::new(e));
                         }
                         term
                     }
                 }
             }
             hir::Expr::Field(obj, label) => {
-                Term::Sel(Box::new(self.lower_expr(obj)), *label.value())
+                Term::Sel(Rc::new(self.lower_expr(obj)), *label.value())
+            }
+
+            hir::Expr::Handle(body, arms, ret) => {
+                let lbody = Rc::new(self.lower_expr(body));
+                let clauses = arms
+                    .iter()
+                    .map(|arm| {
+                        let (param, refutable) = self.pat_binder(&arm.param);
+                        let body = self.with_pat_prelude(param, refutable, &arm.body);
+                        HClause {
+                            effect: arm.effect,
+                            op: arm.op,
+                            param,
+                            resume: *arm.resume.value(),
+                            body,
+                        }
+                    })
+                    .collect();
+                let ret = ret.as_ref().map(|(pat, rbody)| {
+                    let (v, refutable) = self.pat_binder(pat);
+                    (v, Rc::new(self.with_pat_prelude(v, refutable, rbody)))
+                });
+                Term::Handle {
+                    body: lbody,
+                    clauses,
+                    ret,
+                }
             }
 
             hir::Expr::Error => Term::Error,
         }
     }
 
+    /// `(binder var, Some(pat) if the pattern is refutable / structured)`.
+    fn pat_binder<'p>(&self, pat: &'p hir::LPat) -> (Var, Option<&'p hir::LPat>) {
+        match pat.value() {
+            hir::Pat::Var(id) => (*id.value(), None),
+            hir::Pat::Wildcard => (hir::VarId::fresh(), None),
+            _ => (hir::VarId::fresh(), Some(pat)),
+        }
+    }
+
+    /// Lower `body`, prefixing `let`s that destructure `var` per `pat`.
+    fn with_pat_prelude(
+        &mut self,
+        var: Var,
+        pat: Option<&hir::LPat>,
+        body: &hir::LExpr,
+    ) -> Term {
+        let mut term = self.lower_expr(body);
+        if let Some(p) = pat {
+            let mut binds = Vec::new();
+            self.bind_pat(Term::Var(var), p, &mut binds);
+            for (bv, bt) in binds.into_iter().rev() {
+                term = Term::Let(bv, Rc::new(bt), Rc::new(term));
+            }
+        }
+        term
+    }
+
     fn lower_let_bind(&mut self, bind: &hir::Bind, body: Term) -> Term {
         match bind {
             hir::Bind::Fun(name, params, fbody) => {
                 let term = self.curry_lam(params, fbody);
-                Term::LetRec(vec![(*name.value(), term)], Box::new(body))
+                Term::LetRec(vec![(*name.value(), term)], Rc::new(body))
             }
             hir::Bind::Pat(pat, expr) => {
                 let rhs = self.lower_expr(expr);
                 match pat.value() {
                     hir::Pat::Var(id) => {
-                        Term::Let(*id.value(), Box::new(rhs), Box::new(body))
+                        Term::Let(*id.value(), Rc::new(rhs), Rc::new(body))
                     }
                     hir::Pat::Wildcard => {
-                        Term::Let(hir::VarId::fresh(), Box::new(rhs), Box::new(body))
+                        Term::Let(hir::VarId::fresh(), Rc::new(rhs), Rc::new(body))
                     }
-                    _ => Term::Case(Box::new(rhs), vec![(self.lower_pat(pat), body)]),
+                    _ => Term::Case(Rc::new(rhs), vec![(self.lower_pat(pat), body)]),
                 }
             }
             hir::Bind::Error => body,
@@ -531,12 +643,12 @@ impl<'a> Lowerer<'a> {
             }
             hir::Pat::Tuple(items) => {
                 for (i, p) in items.iter().enumerate() {
-                    self.bind_pat(Term::Proj(Box::new(scrut.clone()), i), p, out);
+                    self.bind_pat(Term::Proj(Rc::new(scrut.clone()), i), p, out);
                 }
             }
             hir::Pat::Record(fields, _) => {
                 for (label, p) in fields {
-                    self.bind_pat(Term::Sel(Box::new(scrut.clone()), *label.value()), p, out);
+                    self.bind_pat(Term::Sel(Rc::new(scrut.clone()), *label.value()), p, out);
                 }
             }
             hir::Pat::Error => {}
@@ -549,7 +661,7 @@ impl<'a> Lowerer<'a> {
                     out.push((
                         v,
                         Term::Case(
-                            Box::new(scrut.clone()),
+                            Rc::new(scrut.clone()),
                             vec![(core_pat.clone(), Term::Var(v))],
                         ),
                     ));
@@ -608,11 +720,11 @@ impl<'a> Lowerer<'a> {
                 let t = hir::VarId::fresh();
                 Term::Lam(
                     h,
-                    Box::new(Term::Lam(
+                    Rc::new(Term::Lam(
                         t,
-                        Box::new(Term::ListCons(
-                            Box::new(Term::Var(h)),
-                            Box::new(Term::Var(t)),
+                        Rc::new(Term::ListCons(
+                            Rc::new(Term::Var(h)),
+                            Rc::new(Term::Var(t)),
                         )),
                     )),
                 )
@@ -628,7 +740,7 @@ impl<'a> Lowerer<'a> {
         let body = Term::Prim(op, vars.iter().map(|v| Term::Var(*v)).collect());
         vars.into_iter()
             .rev()
-            .fold(body, |acc, v| Term::Lam(v, Box::new(acc)))
+            .fold(body, |acc, v| Term::Lam(v, Rc::new(acc)))
     }
 }
 
@@ -680,7 +792,7 @@ mod tests {
             defs: vec![Def {
                 var: a,
                 name: "f".into(),
-                term: Term::Lam(b, Box::new(Term::Var(b))),
+                term: Term::Lam(b, Rc::new(Term::Var(b))),
             }],
             entry: Some(a),
             ..Default::default()

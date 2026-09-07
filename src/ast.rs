@@ -29,23 +29,49 @@ pub enum Decl {
     Data(DataDecl),
     /// `record Person = { name : String }`
     Record(RecordDecl),
+    /// `effect State s { get : () -> s, put : s -> () }`
+    Effect(EffectDecl),
 }
 
 pub type LType = Located<TypeExpr>;
 
-/// A type expression as written in a `data` / `record` declaration.
+/// A type expression as written in a `data` / `record` / `effect` declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
     /// lowercase type variable: `a`
     Var(Ident),
     /// type-constructor application: `Int`, `Vector a`, `Maybe (Vector Int)`
     Con(Ident, Vec<LType>),
-    /// `a -> b` (curried when lowered)
-    Fun(Vec<LType>, LType),
+    /// `a -> b ! e` (curried when lowered; the effect is on the last arrow).
+    Fun(Vec<LType>, LType, Option<EffectRow>),
     /// `(a, b)`
     Tuple(Vec<LType>),
     /// `[a]`
     List(LType),
+}
+
+/// An effect annotation `! <row>`: `! io`, `! e`, `! { io, State Int | e }`.
+/// Closed iff `tail` is `None` and `labels` is non-empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectRow {
+    pub labels: Vec<(Ident, Vec<LType>)>,
+    pub tail: Option<Ident>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectDecl {
+    pub name: Ident,
+    pub params: Vec<Ident>,
+    pub ops: Vec<(Ident, LType)>,
+}
+
+/// `op pat resume -> body` in a `handle` expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandlerArm {
+    pub op: Ident,
+    pub param: LPat,
+    pub resume: Ident,
+    pub body: LExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +122,8 @@ pub enum Expr {
     Record(Vec<(Ident, LExpr)>, Option<LExpr>),
     /// `e.label`
     Field(LExpr, Ident),
+    /// `handle e with { op p k -> …, return x -> … }`
+    Handle(LExpr, Vec<HandlerArm>, Option<(LPat, LExpr)>),
     Unit,
 }
 

@@ -101,3 +101,27 @@ fn maybe_type() {
          fun orElse m d = match m with | None -> d | Some x -> x\n"
     ));
 }
+
+// --- effect inference ---------------------------------------------------------
+
+#[test]
+fn io_effect_from_println() {
+    // `println` carries `{ io | e }`; a function that calls it is effectful.
+    insta::assert_snapshot!(schemes("fun greet name = println name\n"));
+}
+
+#[test]
+fn effect_polymorphism_through_higher_order() {
+    // `map`'s effect is exactly the effect of its function argument.
+    insta::assert_snapshot!(schemes(
+        "fun map f xs =\n  match xs with\n  | Nil -> Nil\n  | Cons x r -> Cons (f x) (map f r)\n"
+    ));
+}
+
+#[test]
+fn effectful_binding_is_not_generalized() {
+    // `def a` is pure ⇒ polymorphic; `def b` performs io ⇒ monomorphic Unit.
+    insta::assert_snapshot!(schemes(
+        "def a = \\x -> x\ndef b = println \"hi\"\n"
+    ));
+}

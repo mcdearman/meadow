@@ -3,4 +3,4 @@ source: tests/infer.rs
 expression: "schemes(\"fun const a b = a\\nfun compose f g x = f (g x)\\n\")"
 ---
 const : forall a b. a -> b -> a
-compose : forall a b c. (a -> b) -> (c -> a) -> c -> b
+compose : forall a b c d. (a -> b ! c) -> (d -> a ! c) -> d -> b ! c

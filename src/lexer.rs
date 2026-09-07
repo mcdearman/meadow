@@ -167,6 +167,10 @@ pub enum Token {
     Data,
     #[token("record")]
     Record,
+    #[token("effect")]
+    Effect,
+    #[token("handle")]
+    Handle,
     #[token("type")]
     Type,
     #[token("class")]
@@ -248,6 +252,8 @@ impl<'a> Display for Token {
             Else => write!(f, "Else"),
             Data => write!(f, "Data"),
             Record => write!(f, "Record"),
+            Effect => write!(f, "Effect"),
+            Handle => write!(f, "Handle"),
             Type => write!(f, "Type"),
             Class => write!(f, "Class"),
             Instance => write!(f, "Instance"),

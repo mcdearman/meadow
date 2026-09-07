@@ -43,12 +43,17 @@ pub enum Type {
     /// Type constructor applied to arguments: `Int`, `Bool`, `String`, `Unit`,
     /// `List a`, …
     Con(InternedString, Vec<Type>),
-    /// Uncurried function type (the HIR has multi-arg lambdas / applications).
-    Fun(Vec<Type>, Box<Type>),
+    /// Function type `arg -> ret ! effect`. Currying keeps the arg list length 1;
+    /// the third component is the arrow's **latent effect** — a *row* (`RowEmpty`
+    /// for a pure arrow, `RowExtend` / a row var otherwise). See the module docs.
+    Fun(Vec<Type>, Box<Type>, Box<Type>),
     Tuple(Vec<Type>),
     /// A record over a row (the boxed type is `RowEmpty` / `RowExtend` / a row var).
     Record(Box<Type>),
+    /// Empty row — a closed record `{}` *and* the pure effect.
     RowEmpty,
+    /// `label(field) | rest`. For a record row the `field` is the field's type; for
+    /// an effect row it is `Tuple([..effect type args..])`.
     RowExtend(InternedString, Box<Type>, Box<Type>),
 }
 
@@ -71,18 +76,33 @@ impl Type {
     pub fn list(elem: Type) -> Type {
         Type::Con(InternedString::from("List"), vec![elem])
     }
-    /// A curried function type: `func([a, b], r)` is `a -> b -> r`.
+    /// A curried **pure** function type: `func([a, b], r)` is `a -> b -> r`.
     pub fn func(args: Vec<Type>, ret: Type) -> Type {
-        args.into_iter()
-            .rev()
-            .fold(ret, |acc, a| Type::Fun(vec![a], Box::new(acc)))
+        Type::func_eff(args, ret, Type::RowEmpty)
+    }
+
+    /// A curried function type whose *innermost* arrow carries `eff`; the outer
+    /// arrows (from extra curried params) are pure.
+    pub fn func_eff(args: Vec<Type>, ret: Type, eff: Type) -> Type {
+        let mut it = args.into_iter().rev();
+        let inner = match it.next() {
+            Some(last) => Type::Fun(vec![last], Box::new(ret), Box::new(eff)),
+            None => return ret, // nullary "function" — just the result
+        };
+        it.fold(inner, |acc, a| {
+            Type::Fun(vec![a], Box::new(acc), Box::new(Type::RowEmpty))
+        })
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VarKind {
     Type,
+    /// A record row variable.
     Row,
+    /// An effect row variable — structurally a row, tracked separately so error
+    /// messages and pretty-printing can tell effects from records.
+    Effect,
 }
 
 /// A polytype: `quant` lists the kind of each quantified variable, and `ty` refers
@@ -91,6 +111,21 @@ pub enum VarKind {
 pub struct Scheme {
     pub quant: Vec<VarKind>,
     pub ty: Type,
+}
+
+/// An operation of an `effect` declaration, with its argument and result types
+/// over the effect's parameters (`Bound(0..params)`).
+#[derive(Debug, Clone)]
+struct EffOp {
+    name: InternedString,
+    arg: Type,
+    ret: Type,
+}
+
+#[derive(Debug, Clone)]
+struct EffectInfo {
+    params: usize,
+    ops: Vec<EffOp>,
 }
 
 impl Scheme {
@@ -146,6 +181,9 @@ impl Arena {
     fn fresh_row(&mut self) -> Type {
         self.fresh_in(VarKind::Row)
     }
+    fn fresh_effect(&mut self) -> Type {
+        self.fresh_in(VarKind::Effect)
+    }
     fn fresh_of(&mut self, kind: VarKind) -> Type {
         self.fresh_in(kind)
     }
@@ -191,12 +229,11 @@ impl Arena {
         let ty = self.prune(ty.clone());
         match ty {
             Type::Var(_) | Type::Bound(_) | Type::RowEmpty => ty,
-            Type::Con(name, args) => {
-                Type::Con(name, args.iter().map(|a| self.zonk(a)).collect())
-            }
-            Type::Fun(args, ret) => Type::Fun(
+            Type::Con(name, args) => Type::Con(name, args.iter().map(|a| self.zonk(a)).collect()),
+            Type::Fun(args, ret, eff) => Type::Fun(
                 args.iter().map(|a| self.zonk(a)).collect(),
                 Box::new(self.zonk(&ret)),
+                Box::new(self.zonk(&eff)),
             ),
             Type::Tuple(items) => Type::Tuple(items.iter().map(|a| self.zonk(a)).collect()),
             Type::Record(row) => Type::Record(Box::new(self.zonk(&row))),
@@ -223,14 +260,16 @@ impl Arena {
                 }
                 Ok(())
             }
-            (Type::Fun(a1, r1), Type::Fun(a2, r2)) => {
+            (Type::Fun(a1, r1, e1), Type::Fun(a2, r2, e2)) => {
                 if a1.len() != a2.len() {
                     return Err(UnifyError::Arity(a1.len(), a2.len()));
                 }
                 for (x, y) in a1.into_iter().zip(a2) {
                     self.unify(x, y)?;
                 }
-                self.unify(*r1, *r2)
+                self.unify(*r1, *r2)?;
+                // latent effects are rows — falls into the row arm below
+                self.unify(*e1, *e2)
             }
             (Type::Tuple(a1), Type::Tuple(a2)) if a1.len() == a2.len() => {
                 for (x, y) in a1.into_iter().zip(a2) {
@@ -280,11 +319,12 @@ impl Arena {
                 }
                 Ok(())
             }
-            Type::Fun(args, ret) => {
+            Type::Fun(args, ret, eff) => {
                 for a in &args {
                     self.occurs_adjust(id, a)?;
                 }
-                self.occurs_adjust(id, &ret)
+                self.occurs_adjust(id, &ret)?;
+                self.occurs_adjust(id, &eff)
             }
             Type::Record(row) => self.occurs_adjust(id, &row),
             Type::RowExtend(_, field, rest) => {
@@ -298,7 +338,11 @@ impl Arena {
     /// If the row ends in an unbound row var and lacks the label, the var is
     /// extended in place (standard rewrite-row; no lacks-predicates, so distinct
     /// labels are assumed).
-    fn rewrite_row(&mut self, row: Type, label: InternedString) -> Result<(Type, Type), UnifyError> {
+    fn rewrite_row(
+        &mut self,
+        row: Type,
+        label: InternedString,
+    ) -> Result<(Type, Type), UnifyError> {
         let row = self.prune(row);
         match row {
             Type::RowExtend(l, field, rest) if l == label => Ok((*field, *rest)),
@@ -309,11 +353,8 @@ impl Arena {
             Type::Var(id) => {
                 let field = self.fresh();
                 let new_rest = self.fresh_row();
-                let ext = Type::RowExtend(
-                    label,
-                    Box::new(field.clone()),
-                    Box::new(new_rest.clone()),
-                );
+                let ext =
+                    Type::RowExtend(label, Box::new(field.clone()), Box::new(new_rest.clone()));
                 self.slots[id as usize] = Slot::Bound(ext);
                 Ok((field, new_rest))
             }
@@ -324,12 +365,7 @@ impl Arena {
 
     // --- generalize / instantiate -------------------------------------------
 
-    fn quantify(
-        &self,
-        ty: &Type,
-        map: &mut HashMap<u32, u32>,
-        kinds: &mut Vec<VarKind>,
-    ) -> Type {
+    fn quantify(&self, ty: &Type, map: &mut HashMap<u32, u32>, kinds: &mut Vec<VarKind>) -> Type {
         match ty {
             Type::Var(id) => {
                 if self.slot_level(*id) > self.level {
@@ -348,9 +384,10 @@ impl Arena {
                 *name,
                 args.iter().map(|a| self.quantify(a, map, kinds)).collect(),
             ),
-            Type::Fun(args, ret) => Type::Fun(
+            Type::Fun(args, ret, eff) => Type::Fun(
                 args.iter().map(|a| self.quantify(a, map, kinds)).collect(),
                 Box::new(self.quantify(ret, map, kinds)),
+                Box::new(self.quantify(eff, map, kinds)),
             ),
             Type::Tuple(items) => {
                 Type::Tuple(items.iter().map(|a| self.quantify(a, map, kinds)).collect())
@@ -373,9 +410,10 @@ impl Arena {
                 *name,
                 args.iter().map(|a| Self::subst_bound(a, fresh)).collect(),
             ),
-            Type::Fun(args, ret) => Type::Fun(
+            Type::Fun(args, ret, eff) => Type::Fun(
                 args.iter().map(|a| Self::subst_bound(a, fresh)).collect(),
                 Box::new(Self::subst_bound(ret, fresh)),
+                Box::new(Self::subst_bound(eff, fresh)),
             ),
             Type::Tuple(items) => {
                 Type::Tuple(items.iter().map(|a| Self::subst_bound(a, fresh)).collect())
@@ -434,7 +472,7 @@ impl TypeTable {
         for (i, slot) in self.types.iter().enumerate() {
             if let Some(ty) = slot {
                 let mut s = String::new();
-                let _ = write_type(&mut s, ty, &mut namer, Prec::Top);
+                let _ = write_type(&mut s, ty, &mut namer, Prec::Top, &std::collections::HashSet::new());
                 out.push((NodeId(i as u32), s));
             }
         }
@@ -467,6 +505,12 @@ pub struct Infer {
     ctors: HashMap<InternedString, Scheme>,
     /// `tyname -> field -> accessor scheme` (`Person -> name -> ∀. Person -> String`).
     record_fields: HashMap<InternedString, HashMap<InternedString, Scheme>>,
+    /// Declared effects and their operation signatures (for `handle` checking).
+    effects: HashMap<InternedString, EffectInfo>,
+    /// The effect row of the code region currently being inferred — an open row
+    /// var that accumulates every effect performed in the current function body.
+    /// Saved/restored around lambda bodies and `let` right-hand sides.
+    cur_effect: Type,
     errors: Vec<Diagnostic>,
 }
 
@@ -480,8 +524,29 @@ impl Infer {
             exports: Vec::new(),
             ctors: HashMap::new(),
             record_fields: HashMap::new(),
+            effects: HashMap::new(),
+            cur_effect: Type::RowEmpty,
             errors: Vec::new(),
         }
+    }
+
+    /// Record that the current region performs effect `name` with type args `args`
+    /// (used by operation calls in later phases).
+    fn emit_effect(&mut self, span: Span, name: InternedString, args: Vec<Type>) {
+        let tail = self.arena.fresh_effect();
+        let want = Type::RowExtend(name, Box::new(Type::Tuple(args)), Box::new(tail));
+        self.unify_at(span, self.cur_effect.clone(), want);
+    }
+
+    /// Fold a called function's latent effect `phi` into the current region.
+    /// A pure arrow (`phi` = `RowEmpty`) imposes nothing; an open effect row ties
+    /// its tail to `cur_effect`, which is how effect polymorphism propagates
+    /// (`map`'s effect ends up equal to its function argument's).
+    fn join_effect(&mut self, span: Span, phi: Type) {
+        if matches!(self.arena.zonk(&phi), Type::RowEmpty) {
+            return;
+        }
+        self.unify_at(span, self.cur_effect.clone(), phi);
     }
 
     /// Seed the environment with the primitive operators. `prims` must be the
@@ -509,7 +574,8 @@ impl Infer {
                 hir::Decl::Use(_)
                 | hir::Decl::Error
                 | hir::Decl::Data(_)
-                | hir::Decl::Record(_) => {}
+                | hir::Decl::Record(_)
+                | hir::Decl::Effect(_) => {}
             }
             self.table.set(decl.id, Type::unit());
         }
@@ -556,17 +622,21 @@ impl Infer {
                     param_tys.push(t);
                 }
                 let ret = self.arena.fresh();
-                // curried: `fun f a b = e` has type `a -> b -> typeof(e)`
-                let fn_ty = param_tys
-                    .into_iter()
-                    .rev()
-                    .fold(ret.clone(), |acc, pty| Type::Fun(vec![pty], Box::new(acc)));
+                // The body runs in its own effect region; that region ends up on the
+                // function's (innermost) arrow. Defining the function is itself pure,
+                // so the outer `cur_effect` is untouched.
+                let body_eff = self.arena.fresh_effect();
+                let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
+
+                // curried: `fun f a b = e` is `a -> b -> typeof(e) ! <body effect>`
+                let fn_ty = Type::func_eff(param_tys, ret.clone(), body_eff);
                 // Bind the name monomorphically first so the body can recurse.
                 self.env.insert(vid, Scheme::mono(fn_ty.clone()));
                 self.table.set(name.id, fn_ty.clone());
 
                 let body_ty = self.infer_expr(body);
                 self.unify_at(body.span, ret, body_ty);
+                self.cur_effect = saved;
                 self.arena.exit_level();
 
                 let scheme = self.generalize(&fn_ty);
@@ -580,14 +650,31 @@ impl Infer {
                 // Infer rhs *and* the pattern at the raised level, so unifying them
                 // doesn't drag the rhs's fresh vars down out of generalization.
                 self.arena.enter_level();
+                let rhs_eff = self.arena.fresh_effect();
+                let saved = std::mem::replace(&mut self.cur_effect, rhs_eff.clone());
                 let rhs = self.infer_expr(expr);
                 let mut bound = Vec::new();
                 let pty = self.infer_pat(pat, &mut bound);
                 self.unify_at(pat.span, pty, rhs);
+                self.cur_effect = saved;
                 self.arena.exit_level();
 
+                // The value restriction, replaced: generalize a `let`/`def` binding
+                // only when its right-hand side is pure. `def r = ref []` is
+                // effectful ⇒ `r` stays monomorphic (and can't be misused
+                // polymorphically); `def id = \x -> x` is pure ⇒ generalized.
+                let pure = matches!(self.arena.zonk(&rhs_eff), Type::RowEmpty | Type::Var(_));
+                if !pure && !toplevel {
+                    // let the enclosing region see the rhs's effects
+                    self.unify_at(pat.span, self.cur_effect.clone(), rhs_eff);
+                }
+
                 for (vid, vty) in bound {
-                    let scheme = self.generalize(&vty);
+                    let scheme = if pure {
+                        self.generalize(&vty)
+                    } else {
+                        Scheme::mono(self.arena.zonk(&vty))
+                    };
                     self.env.insert(vid, scheme);
                     if toplevel {
                         self.exports.push(vid);
@@ -625,23 +712,35 @@ impl Infer {
             }
 
             hir::Expr::Lam(params, body) => {
-                // Multi-parameter lambdas curry: `\a b -> e` is `\a -> \b -> e`,
-                // matching both hand-written `\a -> \b -> e` and n-ary application.
+                // Multi-parameter lambdas curry: `\a b -> e` is `\a -> \b -> e`.
+                // The body has its own effect region, which lands on the arrow;
+                // building a closure is pure, so the ambient effect is untouched.
                 let mut bound = Vec::new();
-                let ptys: Vec<Type> = params.iter().map(|p| self.infer_pat(p, &mut bound)).collect();
+                let ptys: Vec<Type> = params
+                    .iter()
+                    .map(|p| self.infer_pat(p, &mut bound))
+                    .collect();
+                let body_eff = self.arena.fresh_effect();
+                let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
                 let bty = self.infer_expr(body);
-                ptys.into_iter()
-                    .rev()
-                    .fold(bty, |acc, pty| Type::Fun(vec![pty], Box::new(acc)))
+                self.cur_effect = saved;
+                Type::func_eff(ptys, bty, body_eff)
             }
 
             hir::Expr::App(func, args) => {
-                // n-ary application is a fold of single-argument applications.
+                // n-ary application is a fold of single-argument applications; each
+                // call's latent effect joins the current region.
                 let mut fty = self.infer_expr(func);
                 for arg in args {
                     let aty = self.infer_expr(arg);
                     let ret = self.arena.fresh();
-                    self.unify_at(expr.span, fty, Type::Fun(vec![aty], Box::new(ret.clone())));
+                    let phi = self.arena.fresh_effect();
+                    self.unify_at(
+                        expr.span,
+                        fty,
+                        Type::Fun(vec![aty], Box::new(ret.clone()), Box::new(phi.clone())),
+                    );
+                    self.join_effect(expr.span, phi);
                     fty = ret;
                 }
                 fty
@@ -695,13 +794,15 @@ impl Infer {
                     Some(mut cty) => {
                         self.table.set(label.id, cty.clone());
                         // apply the constructor to its arguments, one at a time
+                        // (constructors are pure — the fresh effect var unifies away)
                         for arg in args {
                             let aty = self.infer_expr(arg);
                             let ret = self.arena.fresh();
+                            let eff = self.arena.fresh_effect();
                             self.unify_at(
                                 arg.span,
                                 cty,
-                                Type::Fun(vec![aty], Box::new(ret.clone())),
+                                Type::Fun(vec![aty], Box::new(ret.clone()), Box::new(eff)),
                             );
                             cty = ret;
                         }
@@ -754,10 +855,11 @@ impl Infer {
                     Some(scheme) => {
                         let accessor = self.instantiate(&scheme);
                         let res = self.arena.fresh();
+                        let eff = self.arena.fresh_effect();
                         self.unify_at(
                             expr.span,
                             accessor,
-                            Type::Fun(vec![pruned], Box::new(res.clone())),
+                            Type::Fun(vec![pruned], Box::new(res.clone()), Box::new(eff)),
                         );
                         res
                     }
@@ -775,6 +877,77 @@ impl Infer {
                     }
                 };
                 self.table.set(label.id, result.clone());
+                result
+            }
+
+            hir::Expr::Handle(body, arms, ret) => {
+                // The handled expression runs in its own effect region.
+                let body_eff = self.arena.fresh_effect();
+                let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
+                let body_ty = self.infer_expr(body);
+                self.cur_effect = saved;
+
+                let result = self.arena.fresh();
+                let ename = arms.first().and_then(|a| self.op_effect(a.op));
+
+                match ename.and_then(|n| self.effects.get(&n).cloned().map(|i| (n, i))) {
+                    Some((ename, info)) => {
+                        let fresh_params: Vec<Type> =
+                            (0..info.params).map(|_| self.arena.fresh()).collect();
+                        let rho = self.arena.fresh_effect();
+                        let handled = Type::RowExtend(
+                            ename,
+                            Box::new(Type::Tuple(fresh_params.clone())),
+                            Box::new(rho.clone()),
+                        );
+                        self.unify_at(expr.span, body_eff, handled);
+                        // effects the handler lets through join the ambient region
+                        self.join_effect(expr.span, rho.clone());
+
+                        for arm in arms {
+                            let (arg_ty, ret_ty) = match info.ops.iter().find(|o| o.name == arm.op) {
+                                Some(o) => (
+                                    Arena::subst_bound(&o.arg, &fresh_params),
+                                    Arena::subst_bound(&o.ret, &fresh_params),
+                                ),
+                                None => (self.arena.fresh(), self.arena.fresh()),
+                            };
+                            let mut bound = Vec::new();
+                            let pty = self.infer_pat(&arm.param, &mut bound);
+                            self.unify_at(arm.param.span, pty, arg_ty);
+                            // resume : op-result -> handler-result ! ρ   (deep)
+                            let k_ty = Type::Fun(
+                                vec![ret_ty],
+                                Box::new(result.clone()),
+                                Box::new(rho.clone()),
+                            );
+                            self.env
+                                .insert(*arm.resume.value(), Scheme::mono(k_ty));
+                            let at = self.infer_expr(&arm.body);
+                            self.unify_at(arm.body.span, at, result.clone());
+                        }
+                    }
+                    None => {
+                        for arm in arms {
+                            let mut bound = Vec::new();
+                            self.infer_pat(&arm.param, &mut bound);
+                            let k = self.arena.fresh();
+                            self.env.insert(*arm.resume.value(), Scheme::mono(k));
+                            self.infer_expr(&arm.body);
+                        }
+                    }
+                }
+
+                match ret {
+                    Some((pat, rbody)) => {
+                        let mut bound = Vec::new();
+                        let pty = self.infer_pat(pat, &mut bound);
+                        self.unify_at(pat.span, pty, body_ty);
+                        let rt = self.infer_expr(rbody);
+                        self.unify_at(rbody.span, rt, result.clone());
+                    }
+                    None => self.unify_at(expr.span, result.clone(), body_ty),
+                }
                 result
             }
 
@@ -822,10 +995,11 @@ impl Infer {
                         for sub in args {
                             let sty = self.infer_pat(sub, bound);
                             let ret = self.arena.fresh();
+                            let eff = self.arena.fresh_effect();
                             self.unify_at(
                                 sub.span,
                                 cty,
-                                Type::Fun(vec![sty], Box::new(ret.clone())),
+                                Type::Fun(vec![sty], Box::new(ret.clone()), Box::new(eff)),
                             );
                             cty = ret;
                         }
@@ -934,9 +1108,54 @@ impl Infer {
                         .collect();
                     self.record_ctor(rd.name, rd.name, &quant, &head, &fields);
                 }
+                hir::Decl::Effect(ed) => {
+                    let params = param_map(&ed.params);
+                    let n = ed.params.len();
+                    // `{ EffName p0 .. p{n-1} | e }` where `e = Bound(n)`
+                    let head_args: Vec<Type> = (0..n as u32).map(Type::Bound).collect();
+                    let mut ops = Vec::new();
+                    for (opname, opvar, opty) in &ed.ops {
+                        let t = ty_of(opty, &params);
+                        let (arg, ret) = match &t {
+                            Type::Fun(a, r, _) => (a[0].clone(), (**r).clone()),
+                            _ => (Type::unit(), t.clone()),
+                        };
+                        let mut quant = vec![VarKind::Type; n];
+                        quant.push(VarKind::Effect);
+                        let eff_row = Type::RowExtend(
+                            ed.name,
+                            Box::new(Type::Tuple(head_args.clone())),
+                            Box::new(Type::Bound(n as u32)),
+                        );
+                        self.env.insert(
+                            *opvar.value(),
+                            Scheme {
+                                quant,
+                                ty: Type::Fun(
+                                    vec![arg.clone()],
+                                    Box::new(ret.clone()),
+                                    Box::new(eff_row),
+                                ),
+                            },
+                        );
+                        ops.push(EffOp {
+                            name: *opname,
+                            arg,
+                            ret,
+                        });
+                    }
+                    self.effects.insert(ed.name, EffectInfo { params: n, ops });
+                }
                 _ => {}
             }
         }
+    }
+
+    fn op_effect(&self, op: InternedString) -> Option<InternedString> {
+        self.effects
+            .iter()
+            .find(|(_, info)| info.ops.iter().any(|o| o.name == op))
+            .map(|(name, _)| *name)
     }
 
     fn record_ctor(
@@ -967,7 +1186,11 @@ impl Infer {
                     *name,
                     Scheme {
                         quant: quant.to_vec(),
-                        ty: Type::Fun(vec![head.clone()], Box::new(t.clone())),
+                        ty: Type::Fun(
+                            vec![head.clone()],
+                            Box::new(t.clone()),
+                            Box::new(Type::RowEmpty),
+                        ),
                     },
                 );
             }
@@ -1020,7 +1243,9 @@ impl Infer {
                 )
             }
             UnifyError::Arity(x, y) => (
-                format!("function applied to the wrong number of arguments: expected {x}, found {y}"),
+                format!(
+                    "function applied to the wrong number of arguments: expected {x}, found {y}"
+                ),
                 "arity mismatch".to_string(),
             ),
             UnifyError::MissingLabel(l) => (
@@ -1069,13 +1294,35 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
                 _ => Type::Con(*name, args),
             }
         }
-        hir::TypeExpr::Fun(ps, r) => Type::func(
-            ps.iter().map(|p| ty_of(p, params)).collect(),
-            ty_of(r, params),
-        ),
+        hir::TypeExpr::Fun(ps, r, eff) => {
+            let effty = match eff {
+                Some(row) => eff_of(row, params),
+                None => Type::RowEmpty,
+            };
+            Type::func_eff(
+                ps.iter().map(|p| ty_of(p, params)).collect(),
+                ty_of(r, params),
+                effty,
+            )
+        }
         hir::TypeExpr::Tuple(ts) => Type::Tuple(ts.iter().map(|x| ty_of(x, params)).collect()),
         hir::TypeExpr::List(x) => Type::list(ty_of(x, params)),
     }
+}
+
+/// Convert a resolved effect row into an effect [`Type`].
+fn eff_of(row: &hir::EffectRow, params: &HashMap<VarId, u32>) -> Type {
+    let tail = match &row.tail {
+        Some(v) => params
+            .get(v.value())
+            .map(|&i| Type::Bound(i))
+            .unwrap_or(Type::RowEmpty),
+        None => Type::RowEmpty,
+    };
+    row.labels.iter().rev().fold(tail, |rest, (name, args)| {
+        let argtup = Type::Tuple(args.iter().map(|a| ty_of(a, params)).collect());
+        Type::RowExtend(*name, Box::new(argtup), Box::new(rest))
+    })
 }
 
 // ===========================================================================
@@ -1098,9 +1345,18 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Bound(0), Bound(0)], Type::bool()),
         },
+        // `∀a e. a -> Unit ! { io | e }`
         "print" | "println" => Scheme {
-            quant: vec![VarKind::Type],
-            ty: Type::func(vec![Bound(0)], Type::unit()),
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Bound(0)],
+                Type::unit(),
+                Type::RowExtend(
+                    InternedString::from("io"),
+                    Box::new(Type::Tuple(vec![])),
+                    Box::new(Bound(1)),
+                ),
+            ),
         },
         _ => return None,
     };
@@ -1111,11 +1367,48 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
 // Pretty printing
 // ===========================================================================
 
+use std::collections::HashSet;
+
 fn show(ty: &Type) -> String {
     let mut namer = Namer::default();
     let mut s = String::new();
-    let _ = write_type(&mut s, ty, &mut namer, Prec::Top);
+    let _ = write_type(&mut s, ty, &mut namer, Prec::Top, &HashSet::new());
     s
+}
+
+/// `Bound` indices (of effect kind) that a `Scheme` should NOT surface: a lone
+/// effect variable that occurs once and isn't the tail of a labelled row is pure
+/// noise, so `∀a e. a -> a ! e` prints as `∀a. a -> a`.
+fn hidden_effect_vars(scheme: &Scheme) -> HashSet<u32> {
+    let mut count: HashMap<u32, u32> = HashMap::new();
+    let mut labelled_tail: HashSet<u32> = HashSet::new();
+    fn walk(ty: &Type, count: &mut HashMap<u32, u32>, tails: &mut HashSet<u32>) {
+        match ty {
+            Type::Bound(i) => *count.entry(*i).or_default() += 1,
+            Type::Var(_) | Type::RowEmpty => {}
+            Type::Con(_, args) | Type::Tuple(args) => args.iter().for_each(|a| walk(a, count, tails)),
+            Type::Fun(args, ret, eff) => {
+                args.iter().for_each(|a| walk(a, count, tails));
+                walk(ret, count, tails);
+                walk(eff, count, tails);
+            }
+            Type::Record(row) => walk(row, count, tails),
+            Type::RowExtend(_, field, rest) => {
+                walk(field, count, tails);
+                // if this row has a label and its tail is a Bound var, that var is
+                // "visible" (it prints as `{ … | e }`)
+                if let Type::Bound(i) = &**rest {
+                    tails.insert(*i);
+                }
+                walk(rest, count, tails);
+            }
+        }
+    }
+    walk(&scheme.ty, &mut count, &mut labelled_tail);
+    (0..scheme.quant.len() as u32)
+        .filter(|&i| scheme.quant[i as usize] == VarKind::Effect)
+        .filter(|i| count.get(i).copied().unwrap_or(0) < 2 && !labelled_tail.contains(i))
+        .collect()
 }
 
 #[derive(Default)]
@@ -1155,14 +1448,20 @@ enum Prec {
     App,
 }
 
-fn write_type(out: &mut impl fmt::Write, ty: &Type, namer: &mut Namer, prec: Prec) -> fmt::Result {
+fn write_type(
+    out: &mut impl fmt::Write,
+    ty: &Type,
+    namer: &mut Namer,
+    prec: Prec,
+    hidden: &HashSet<u32>,
+) -> fmt::Result {
     match ty {
         Type::Var(id) => write!(out, "{}", namer.name(*id)),
         Type::Bound(i) => write!(out, "{}", var_name(*i)),
         Type::Con(name, args) if args.is_empty() => write!(out, "{name}"),
         Type::Con(name, args) if &**name == "List" => {
             out.write_char('[')?;
-            write_type(out, &args[0], namer, Prec::Top)?;
+            write_type(out, &args[0], namer, Prec::Top, hidden)?;
             out.write_char(']')
         }
         Type::Con(name, args) => {
@@ -1173,32 +1472,33 @@ fn write_type(out: &mut impl fmt::Write, ty: &Type, namer: &mut Namer, prec: Pre
             write!(out, "{name}")?;
             for a in args {
                 out.write_char(' ')?;
-                write_type(out, a, namer, Prec::App)?;
+                write_type(out, a, namer, Prec::App, hidden)?;
             }
             if wrap {
                 out.write_char(')')?;
             }
             Ok(())
         }
-        Type::Fun(args, ret) => {
+        Type::Fun(args, ret, eff) => {
             let wrap = prec >= Prec::Arrow;
             if wrap {
                 out.write_char('(')?;
             }
             if args.len() == 1 {
-                write_type(out, &args[0], namer, Prec::Arrow)?;
+                write_type(out, &args[0], namer, Prec::Arrow, hidden)?;
             } else {
                 out.write_char('(')?;
                 for (i, a) in args.iter().enumerate() {
                     if i > 0 {
                         out.write_str(", ")?;
                     }
-                    write_type(out, a, namer, Prec::Top)?;
+                    write_type(out, a, namer, Prec::Top, hidden)?;
                 }
                 out.write_char(')')?;
             }
             out.write_str(" -> ")?;
-            write_type(out, ret, namer, Prec::Top)?;
+            write_type(out, ret, namer, Prec::Top, hidden)?;
+            write_effect_suffix(out, eff, namer, hidden)?;
             if wrap {
                 out.write_char(')')?;
             }
@@ -1210,25 +1510,98 @@ fn write_type(out: &mut impl fmt::Write, ty: &Type, namer: &mut Namer, prec: Pre
                 if i > 0 {
                     out.write_str(", ")?;
                 }
-                write_type(out, a, namer, Prec::Top)?;
+                write_type(out, a, namer, Prec::Top, hidden)?;
             }
             out.write_char(')')
         }
         Type::Record(row) => {
             out.write_str("{ ")?;
-            write_row(out, row, namer)?;
+            write_row(out, row, namer, hidden)?;
             out.write_str(" }")
         }
         Type::RowEmpty => out.write_str("()"),
         Type::RowExtend(..) => {
             out.write_str("(| ")?;
-            write_row(out, ty, namer)?;
+            write_row(out, ty, namer, hidden)?;
             out.write_str(" |)")
         }
     }
 }
 
-fn write_row(out: &mut impl fmt::Write, row: &Type, namer: &mut Namer) -> fmt::Result {
+/// Print ` ! e` after an arrow when its latent effect is non-pure. Effect rows
+/// read as `io`, `State Int`, `{ io, State Int }`, `{ io | e }` — a single closed
+/// label needs no braces; a lone `hidden` variable prints nothing.
+fn write_effect_suffix(
+    out: &mut impl fmt::Write,
+    eff: &Type,
+    namer: &mut Namer,
+    hidden: &HashSet<u32>,
+) -> fmt::Result {
+    let mut labels: Vec<(InternedString, &[Type])> = Vec::new();
+    let mut tail: Option<String> = None;
+    let mut cur = eff;
+    loop {
+        match cur {
+            Type::RowEmpty => break,
+            Type::RowExtend(name, field, rest) => {
+                let args: &[Type] = match &**field {
+                    Type::Tuple(a) => a,
+                    _ => &[],
+                };
+                labels.push((*name, args));
+                cur = rest;
+            }
+            Type::Var(id) => {
+                tail = Some(namer.name(*id));
+                break;
+            }
+            Type::Bound(i) => {
+                if labels.is_empty() && hidden.contains(i) {
+                    return Ok(());
+                }
+                tail = Some(var_name(*i));
+                break;
+            }
+            _ => break,
+        }
+    }
+    if labels.is_empty() && tail.is_none() {
+        return Ok(()); // pure arrow
+    }
+    if labels.is_empty() {
+        return write!(out, " ! {}", tail.unwrap()); // `a -> b ! e`
+    }
+    out.write_str(" ! ")?;
+    let braces = labels.len() != 1 || tail.is_some();
+    if braces {
+        out.write_str("{ ")?;
+    }
+    for (i, (name, args)) in labels.iter().enumerate() {
+        if i > 0 {
+            out.write_str(", ")?;
+        }
+        write!(out, "{name}")?;
+        for a in *args {
+            out.write_char(' ')?;
+            write_type(out, a, namer, Prec::App, hidden)?;
+        }
+    }
+    if let Some(t) = tail {
+        out.write_char(' ')?;
+        write!(out, "| {t}")?;
+    }
+    if braces {
+        out.write_str(" }")?;
+    }
+    Ok(())
+}
+
+fn write_row(
+    out: &mut impl fmt::Write,
+    row: &Type,
+    namer: &mut Namer,
+    hidden: &HashSet<u32>,
+) -> fmt::Result {
     let mut first = true;
     let mut cur = row;
     loop {
@@ -1239,7 +1612,7 @@ fn write_row(out: &mut impl fmt::Write, row: &Type, namer: &mut Namer) -> fmt::R
                 }
                 first = false;
                 write!(out, "{label} : ")?;
-                write_type(out, field, namer, Prec::Top)?;
+                write_type(out, field, namer, Prec::Top, hidden)?;
                 cur = rest;
             }
             Type::RowEmpty => break,
@@ -1261,7 +1634,7 @@ fn write_row(out: &mut impl fmt::Write, row: &Type, namer: &mut Namer) -> fmt::R
                 if !first {
                     out.write_str(", ")?;
                 }
-                write_type(out, other, namer, Prec::Top)?;
+                write_type(out, other, namer, Prec::Top, hidden)?;
                 break;
             }
         }
@@ -1272,21 +1645,25 @@ fn write_row(out: &mut impl fmt::Write, row: &Type, namer: &mut Namer) -> fmt::R
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut namer = Namer::default();
-        write_type(f, self, &mut namer, Prec::Top)
+        write_type(f, self, &mut namer, Prec::Top, &HashSet::new())
     }
 }
 
 impl fmt::Display for Scheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if !self.quant.is_empty() {
+        let hidden = hidden_effect_vars(self);
+        let visible: Vec<u32> = (0..self.quant.len() as u32)
+            .filter(|i| !hidden.contains(i))
+            .collect();
+        if !visible.is_empty() {
             f.write_str("forall")?;
-            for i in 0..self.quant.len() as u32 {
-                write!(f, " {}", var_name(i))?;
+            for i in &visible {
+                write!(f, " {}", var_name(*i))?;
             }
             f.write_str(". ")?;
         }
         let mut namer = Namer::default();
-        write_type(f, &self.ty, &mut namer, Prec::Top)
+        write_type(f, &self.ty, &mut namer, Prec::Top, &hidden)
     }
 }
 
@@ -1307,8 +1684,14 @@ mod tests {
             "(Int, String)"
         );
         // free (unbound) variables get printed as `a`, `b`, …
-        assert_eq!(Type::func(vec![Type::Var(3)], Type::Var(3)).to_string(), "a -> a");
-        assert_eq!(Type::func(vec![Type::Var(1)], Type::Var(9)).to_string(), "a -> b");
+        assert_eq!(
+            Type::func(vec![Type::Var(3)], Type::Var(3)).to_string(),
+            "a -> a"
+        );
+        assert_eq!(
+            Type::func(vec![Type::Var(1)], Type::Var(9)).to_string(),
+            "a -> b"
+        );
     }
 
     #[test]
@@ -1322,7 +1705,10 @@ mod tests {
                 Box::new(Type::Var(0)),
             )),
         );
-        assert_eq!(Type::Record(Box::new(row)).to_string(), "{ x : Int, y : Bool | a }");
+        assert_eq!(
+            Type::Record(Box::new(row)).to_string(),
+            "{ x : Int, y : Bool | a }"
+        );
     }
 
     #[test]

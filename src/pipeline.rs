@@ -222,7 +222,12 @@ pub fn compile_unit(
     // --- lower to core
     let prims = prim_map(&resolver);
     let names = resolver.names().clone();
-    let mut lowerer = core::Lowerer::new(&prims, &names);
+    let effect_ops: HashMap<VarId, (InternedString, InternedString)> = resolver
+        .effect_op_vars()
+        .into_iter()
+        .map(|(id, eff, op)| (id, (eff, op)))
+        .collect();
+    let mut lowerer = core::Lowerer::new(&prims, &names, &effect_ops);
     let mut defs = Vec::new();
     for m in &typed {
         defs.extend(lowerer.lower_module(&m.hir));
@@ -241,7 +246,12 @@ pub fn compile_unit(
     let data_decls: Vec<hir::LDecl> = typed
         .iter()
         .flat_map(|m| m.hir.value().decls.iter())
-        .filter(|d| matches!(d.value(), hir::Decl::Data(_) | hir::Decl::Record(_)))
+        .filter(|d| {
+            matches!(
+                d.value(),
+                hir::Decl::Data(_) | hir::Decl::Record(_) | hir::Decl::Effect(_)
+            )
+        })
         .cloned()
         .collect();
 

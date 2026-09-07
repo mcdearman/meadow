@@ -146,10 +146,22 @@ where
             )
         });
 
+    let effect_decl = just(Token::Effect)
+        .ignore_then(upper_ident())
+        .then(lower_ident().repeated().collect::<Vec<_>>())
+        .then(field_list())
+        .map_with(|((name, params), ops), e| {
+            LDecl::new(
+                Decl::Effect(EffectDecl { name, params, ops }),
+                e.span(),
+            )
+        });
+
     choice((
         use_decl,
         data_decl,
         record_decl,
+        effect_decl,
         bind_decl.map_with(|bind, e| LDecl::new(Decl::Bind(bind), e.span())),
     ))
 }
@@ -209,12 +221,39 @@ fn ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
             .map_with(|(n, args), e| Located::new(TypeExpr::Con(n, args), e.span()));
 
-        let head = choice((app, atom));
+        let head = choice((app, atom.clone()));
+
+        // effect annotation after `!` — reuses the local `atom` for label args,
+        // so it must live inside this `recursive` closure (no separate fn).
+        let eff_label = upper_ident()
+            .then(atom.clone().repeated().collect::<Vec<_>>());
+        let eff_braced = eff_label
+            .clone()
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .then(just(Token::Bar).ignore_then(lower_ident()).or_not())
+            .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            .map(|(labels, tail)| EffectRow { labels, tail });
+        let eff_bare_var = lower_ident().map(|n| EffectRow {
+            labels: vec![],
+            tail: Some(n),
+        });
+        let eff_bare_label = eff_label.map(|l| EffectRow {
+            labels: vec![l],
+            tail: None,
+        });
+        let eff_row = choice((eff_braced, eff_bare_var, eff_bare_label));
 
         head.clone()
-            .then(just(Token::RArrow).ignore_then(ty.clone()).or_not())
+            .then(
+                just(Token::RArrow)
+                    .ignore_then(ty.clone())
+                    .then(just(Token::Bang).ignore_then(eff_row).or_not())
+                    .or_not(),
+            )
             .map_with(|(l, r), e| match r {
-                Some(rhs) => Located::new(TypeExpr::Fun(vec![l], rhs), e.span()),
+                Some((rhs, eff)) => Located::new(TypeExpr::Fun(vec![l], rhs, eff), e.span()),
                 None => l,
             })
     })
@@ -384,6 +423,49 @@ where
             .delimited_by(just(Token::LBrace), just(Token::RBrace))
             .map_with(|(fields, base), e| Located::new(Expr::Record(fields, base), e.span()));
 
+        // `handle e with { op p k -> body, return x -> body }`  (arms comma-separated)
+        let handle_expr = {
+            let ret_arm = just(Token::LowerIdent(InternedString::from("return")))
+                .ignore_then(pat())
+                .then_ignore(just(Token::RArrow))
+                .then(expr.clone())
+                .map(Either::Right);
+            let op_arm = lower_ident()
+                .then(pat())
+                .then(lower_ident())
+                .then_ignore(just(Token::RArrow))
+                .then(expr.clone())
+                .map(|(((op, param), resume), body)| {
+                    Either::Left(HandlerArm {
+                        op,
+                        param,
+                        resume,
+                        body,
+                    })
+                });
+            just(Token::Handle)
+                .ignore_then(expr.clone())
+                .then_ignore(just(Token::With))
+                .then(
+                    choice((ret_arm, op_arm))
+                        .separated_by(just(Token::Comma))
+                        .allow_trailing()
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+                )
+                .map_with(|(scrut, arms), e| {
+                    let mut ops = Vec::new();
+                    let mut ret = None;
+                    for a in arms {
+                        match a {
+                            Either::Left(arm) => ops.push(arm),
+                            Either::Right((x, body)) => ret = Some((x, body)),
+                        }
+                    }
+                    Located::new(Expr::Handle(scrut, ops, ret), e.span())
+                })
+        };
+
         // A bare constructor (`Nil`, `True`) is an atom so it can be a function or
         // constructor argument; `cons` below gathers its arguments when it has any.
         let ctor_atom =
@@ -395,6 +477,7 @@ where
             var_expr,
             ctor_atom,
             record_expr,
+            handle_expr,
             let_expr,
             if_expr,
             lam_expr,

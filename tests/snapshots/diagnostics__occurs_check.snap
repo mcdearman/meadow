@@ -1,0 +1,5 @@
+---
+source: tests/diagnostics.rs
+expression: "errors(\"def x = \\\\f -> f f\\n\")"
+---
+infinite type: `a` occurs in `a`

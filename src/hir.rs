@@ -1,3 +1,18 @@
+//! The **high-level IR** — the resolver's output, and the input to inference and
+//! lowering.
+//!
+//! Structurally it mirrors [`crate::ast`], with two differences:
+//!
+//! * Every node is a [`Node<T>`] — value + [`Span`] + a dense [`NodeId`]. Inference
+//!   keeps its results in a `Vec` indexed by `NodeId`, producing a fully annotated
+//!   tree.
+//! * Every identifier is a [`VarId`] (globally unique — see the module docs in
+//!   `lib.rs`). Type-constructor and data-constructor names stay interned strings.
+//!
+//! Operators are gone (desugared to primitive [`Expr::App`]s). `data` / `record`
+//! declarations arrive here already validated ([`Decl::Data`], [`Decl::Record`],
+//! [`TypeExpr`]).
+
 use crate::{intern::InternedString, span::Span};
 use std::ops::Deref;
 use std::sync::atomic::AtomicU32;

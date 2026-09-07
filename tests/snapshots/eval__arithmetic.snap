@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_expr(\"1 + 2 * 3 - 4\")"
+---
+3

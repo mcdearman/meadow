@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_main(\"fun map f xs = match xs with | Nil -> Nil | Cons x r -> Cons (f x) (map f r)\\n\\\n         def main = map (\\\\x -> x * x) [1, 2, 3, 4]\\n\")"
+---
+[1, 4, 9, 16]

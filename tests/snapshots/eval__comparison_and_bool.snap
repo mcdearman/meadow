@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_expr(\"if 2 < 3 then True else False\")"
+---
+true

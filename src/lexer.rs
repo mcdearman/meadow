@@ -1,3 +1,14 @@
+//! Lexing, via `logos`.
+//!
+//! [`tokenize`] turns a [`Source`] into a `Vec<LToken>` (each a `Token` + its
+//! [`Span`]). Whitespace and `--` line comments are skipped by the lexer itself.
+//! An unrecognized byte becomes a [`Token::Error`] *and* a [`Diagnostic`], so the
+//! parser can keep going.
+//!
+//! Note the operator handling: `==`, `->`, `<=` … are their own `#[token]`s and
+//! win over the catch-all `OpIdent` regex (which covers user-defined operator
+//! names); this is why the regex must *not* include letters.
+
 use crate::{
     diagnostics::Diagnostic,
     intern::InternedString,
@@ -275,4 +286,70 @@ pub fn tokenize(src: Source) -> LexResult {
         }
     }
     LexResult { tokens, errors }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::SourceKind;
+
+    /// Lex `src` and return just the token kinds (spans and errors dropped).
+    fn kinds(src: &str) -> Vec<Token> {
+        let source = Source::new(SourceKind::Interactive, src.into());
+        tokenize(source)
+            .tokens
+            .into_iter()
+            .map(|t| *t.value)
+            .collect()
+    }
+
+    #[test]
+    fn keywords_and_identifiers() {
+        use Token::*;
+        assert_eq!(
+            kinds("fun map xs"),
+            vec![Fun, LowerIdent("map".into()), LowerIdent("xs".into())]
+        );
+    }
+
+    #[test]
+    fn upper_vs_lower_identifiers() {
+        use Token::*;
+        assert_eq!(
+            kinds("Cons x"),
+            vec![UpperIdent("Cons".into()), LowerIdent("x".into())]
+        );
+    }
+
+    #[test]
+    fn operators_are_distinct_tokens_not_op_idents() {
+        // `==` and `->` must win over the generic `OpIdent` regex.
+        use Token::*;
+        assert_eq!(kinds("a == b"), vec![LowerIdent("a".into()), EqEq, LowerIdent("b".into())]);
+        assert_eq!(kinds("\\x -> x"), vec![Backslash, LowerIdent("x".into()), RArrow, LowerIdent("x".into())]);
+    }
+
+    #[test]
+    fn comments_and_whitespace_are_skipped() {
+        use Token::*;
+        assert_eq!(kinds("1 -- a comment\n+ 2"), vec![Int(1), Plus, Int(2)]);
+    }
+
+    #[test]
+    fn numbers_and_strings() {
+        use Token::*;
+        // string literals keep their surrounding quotes in the slice
+        assert_eq!(kinds("42 \"hi\""), vec![Int(42), String("\"hi\"".into())]);
+    }
+
+    #[test]
+    fn record_is_a_keyword() {
+        assert_eq!(kinds("record"), vec![Token::Record]);
+    }
+
+    #[test]
+    fn invalid_character_reports_an_error() {
+        let res = tokenize(Source::new(SourceKind::Interactive, "a \0 b".into()));
+        assert!(!res.errors.is_empty());
+    }
 }

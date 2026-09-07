@@ -1,0 +1,5 @@
+---
+source: tests/diagnostics.rs
+expression: "errors(\"record R = { a : Int, a : Int }\\n\")"
+---
+duplicate field `a`

@@ -1,0 +1,73 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"def xs = Cons 1 (Cons 2 Nil)\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Bind(
+                Pat(
+                    Located {
+                        value: Var(
+                            Located {
+                                value: InternedString(xs),
+                                span: 4..6,
+                            },
+                        ),
+                        span: 4..6,
+                    },
+                    Located {
+                        value: Cons(
+                            Located {
+                                value: InternedString(Cons),
+                                span: 9..13,
+                            },
+                            [
+                                Located {
+                                    value: Lit(
+                                        Int(
+                                            1,
+                                        ),
+                                    ),
+                                    span: 14..15,
+                                },
+                                Located {
+                                    value: Cons(
+                                        Located {
+                                            value: InternedString(Cons),
+                                            span: 17..21,
+                                        },
+                                        [
+                                            Located {
+                                                value: Lit(
+                                                    Int(
+                                                        2,
+                                                    ),
+                                                ),
+                                                span: 22..23,
+                                            },
+                                            Located {
+                                                value: Cons(
+                                                    Located {
+                                                        value: InternedString(Nil),
+                                                        span: 24..27,
+                                                    },
+                                                    [],
+                                                ),
+                                                span: 24..27,
+                                            },
+                                        ],
+                                    ),
+                                    span: 17..27,
+                                },
+                            ],
+                        ),
+                        span: 9..28,
+                    },
+                ),
+            ),
+            span: 0..28,
+        },
+    ],
+}

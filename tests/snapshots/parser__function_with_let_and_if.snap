@@ -1,0 +1,137 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"fun foo x =\\n  let y = x + 1 in\\n  if y == 0 then y else y * y\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Bind(
+                Fun(
+                    Located {
+                        value: InternedString(foo),
+                        span: 4..7,
+                    },
+                    [
+                        Located {
+                            value: InternedString(x),
+                            span: 8..9,
+                        },
+                    ],
+                    Located {
+                        value: Let(
+                            [
+                                Pat(
+                                    Located {
+                                        value: Var(
+                                            Located {
+                                                value: InternedString(y),
+                                                span: 18..19,
+                                            },
+                                        ),
+                                        span: 18..19,
+                                    },
+                                    Located {
+                                        value: BinOp(
+                                            Located {
+                                                value: Add,
+                                                span: 22..27,
+                                            },
+                                            Located {
+                                                value: Var(
+                                                    Located {
+                                                        value: InternedString(x),
+                                                        span: 22..23,
+                                                    },
+                                                ),
+                                                span: 22..23,
+                                            },
+                                            Located {
+                                                value: Lit(
+                                                    Int(
+                                                        1,
+                                                    ),
+                                                ),
+                                                span: 26..27,
+                                            },
+                                        ),
+                                        span: 22..27,
+                                    },
+                                ),
+                            ],
+                            Located {
+                                value: If(
+                                    Located {
+                                        value: BinOp(
+                                            Located {
+                                                value: Eq,
+                                                span: 36..42,
+                                            },
+                                            Located {
+                                                value: Var(
+                                                    Located {
+                                                        value: InternedString(y),
+                                                        span: 36..37,
+                                                    },
+                                                ),
+                                                span: 36..37,
+                                            },
+                                            Located {
+                                                value: Lit(
+                                                    Int(
+                                                        0,
+                                                    ),
+                                                ),
+                                                span: 41..42,
+                                            },
+                                        ),
+                                        span: 36..42,
+                                    },
+                                    Located {
+                                        value: Var(
+                                            Located {
+                                                value: InternedString(y),
+                                                span: 48..49,
+                                            },
+                                        ),
+                                        span: 48..49,
+                                    },
+                                    Located {
+                                        value: BinOp(
+                                            Located {
+                                                value: Mul,
+                                                span: 55..60,
+                                            },
+                                            Located {
+                                                value: Var(
+                                                    Located {
+                                                        value: InternedString(y),
+                                                        span: 55..56,
+                                                    },
+                                                ),
+                                                span: 55..56,
+                                            },
+                                            Located {
+                                                value: Var(
+                                                    Located {
+                                                        value: InternedString(y),
+                                                        span: 59..60,
+                                                    },
+                                                ),
+                                                span: 59..60,
+                                            },
+                                        ),
+                                        span: 55..60,
+                                    },
+                                ),
+                                span: 33..60,
+                            },
+                        ),
+                        span: 14..60,
+                    },
+                ),
+            ),
+            span: 0..60,
+        },
+    ],
+}

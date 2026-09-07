@@ -1,0 +1,5 @@
+---
+source: tests/infer.rs
+expression: "schemes(\"fun withAge r = { age = 0 | r }\\n\")"
+---
+withAge : forall a. { | a } -> { age : Int | a }

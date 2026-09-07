@@ -1,0 +1,5 @@
+---
+source: tests/lower.rs
+expression: "core_ir(\"fun classify n = match n with | 0 -> \\\"z\\\" | _ -> \\\"nz\\\"\\n\")"
+---
+v0 = (\v1. (case v1 of 0 -> "\"z\""; _ -> "\"nz\""))

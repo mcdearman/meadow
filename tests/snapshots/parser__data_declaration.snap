@@ -1,0 +1,96 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"data Tree a\\n  = Tip\\n  | Branch (Tree a) a (Tree a)\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Data(
+                DataDecl {
+                    name: Located {
+                        value: InternedString(Tree),
+                        span: 5..9,
+                    },
+                    params: [
+                        Located {
+                            value: InternedString(a),
+                            span: 10..11,
+                        },
+                    ],
+                    variants: [
+                        Variant {
+                            name: Located {
+                                value: InternedString(Tip),
+                                span: 16..19,
+                            },
+                            fields: Positional(
+                                [],
+                            ),
+                        },
+                        Variant {
+                            name: Located {
+                                value: InternedString(Branch),
+                                span: 24..30,
+                            },
+                            fields: Positional(
+                                [
+                                    Located {
+                                        value: Con(
+                                            Located {
+                                                value: InternedString(Tree),
+                                                span: 32..36,
+                                            },
+                                            [
+                                                Located {
+                                                    value: Var(
+                                                        Located {
+                                                            value: InternedString(a),
+                                                            span: 37..38,
+                                                        },
+                                                    ),
+                                                    span: 37..38,
+                                                },
+                                            ],
+                                        ),
+                                        span: 32..38,
+                                    },
+                                    Located {
+                                        value: Var(
+                                            Located {
+                                                value: InternedString(a),
+                                                span: 40..41,
+                                            },
+                                        ),
+                                        span: 40..41,
+                                    },
+                                    Located {
+                                        value: Con(
+                                            Located {
+                                                value: InternedString(Tree),
+                                                span: 43..47,
+                                            },
+                                            [
+                                                Located {
+                                                    value: Var(
+                                                        Located {
+                                                            value: InternedString(a),
+                                                            span: 48..49,
+                                                        },
+                                                    ),
+                                                    span: 48..49,
+                                                },
+                                            ],
+                                        ),
+                                        span: 43..49,
+                                    },
+                                ],
+                            ),
+                        },
+                    ],
+                },
+            ),
+            span: 0..50,
+        },
+    ],
+}

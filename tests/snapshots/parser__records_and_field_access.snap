@@ -1,0 +1,143 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"def r = { x = 1, y = 2 }\\ndef v = r.x\\ndef ext = { z = 3 | r }\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Bind(
+                Pat(
+                    Located {
+                        value: Var(
+                            Located {
+                                value: InternedString(r),
+                                span: 4..5,
+                            },
+                        ),
+                        span: 4..5,
+                    },
+                    Located {
+                        value: Record(
+                            [
+                                (
+                                    Located {
+                                        value: InternedString(x),
+                                        span: 10..11,
+                                    },
+                                    Located {
+                                        value: Lit(
+                                            Int(
+                                                1,
+                                            ),
+                                        ),
+                                        span: 14..15,
+                                    },
+                                ),
+                                (
+                                    Located {
+                                        value: InternedString(y),
+                                        span: 17..18,
+                                    },
+                                    Located {
+                                        value: Lit(
+                                            Int(
+                                                2,
+                                            ),
+                                        ),
+                                        span: 21..22,
+                                    },
+                                ),
+                            ],
+                            None,
+                        ),
+                        span: 8..24,
+                    },
+                ),
+            ),
+            span: 0..24,
+        },
+        Located {
+            value: Bind(
+                Pat(
+                    Located {
+                        value: Var(
+                            Located {
+                                value: InternedString(v),
+                                span: 29..30,
+                            },
+                        ),
+                        span: 29..30,
+                    },
+                    Located {
+                        value: Field(
+                            Located {
+                                value: Var(
+                                    Located {
+                                        value: InternedString(r),
+                                        span: 33..34,
+                                    },
+                                ),
+                                span: 33..34,
+                            },
+                            Located {
+                                value: InternedString(x),
+                                span: 35..36,
+                            },
+                        ),
+                        span: 33..36,
+                    },
+                ),
+            ),
+            span: 25..36,
+        },
+        Located {
+            value: Bind(
+                Pat(
+                    Located {
+                        value: Var(
+                            Located {
+                                value: InternedString(ext),
+                                span: 41..44,
+                            },
+                        ),
+                        span: 41..44,
+                    },
+                    Located {
+                        value: Record(
+                            [
+                                (
+                                    Located {
+                                        value: InternedString(z),
+                                        span: 49..50,
+                                    },
+                                    Located {
+                                        value: Lit(
+                                            Int(
+                                                3,
+                                            ),
+                                        ),
+                                        span: 53..54,
+                                    },
+                                ),
+                            ],
+                            Some(
+                                Located {
+                                    value: Var(
+                                        Located {
+                                            value: InternedString(r),
+                                            span: 57..58,
+                                        },
+                                    ),
+                                    span: 57..58,
+                                },
+                            ),
+                        ),
+                        span: 47..60,
+                    },
+                ),
+            ),
+            span: 37..60,
+        },
+    ],
+}

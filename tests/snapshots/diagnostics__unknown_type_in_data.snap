@@ -1,0 +1,5 @@
+---
+source: tests/diagnostics.rs
+expression: "errors(\"data Bad = B Nope\\n\")"
+---
+unknown type `Nope`

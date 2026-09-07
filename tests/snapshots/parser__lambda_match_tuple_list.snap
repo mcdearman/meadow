@@ -1,0 +1,118 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"def f = \\\\p -> match p with | (a, b) -> [a, b, a]\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Bind(
+                Pat(
+                    Located {
+                        value: Var(
+                            Located {
+                                value: InternedString(f),
+                                span: 4..5,
+                            },
+                        ),
+                        span: 4..5,
+                    },
+                    Located {
+                        value: Lam(
+                            [
+                                Located {
+                                    value: Var(
+                                        Located {
+                                            value: InternedString(p),
+                                            span: 9..10,
+                                        },
+                                    ),
+                                    span: 9..10,
+                                },
+                            ],
+                            Located {
+                                value: Match(
+                                    Located {
+                                        value: Var(
+                                            Located {
+                                                value: InternedString(p),
+                                                span: 20..21,
+                                            },
+                                        ),
+                                        span: 20..21,
+                                    },
+                                    [
+                                        (
+                                            Located {
+                                                value: Tuple(
+                                                    [
+                                                        Located {
+                                                            value: Var(
+                                                                Located {
+                                                                    value: InternedString(a),
+                                                                    span: 30..31,
+                                                                },
+                                                            ),
+                                                            span: 30..31,
+                                                        },
+                                                        Located {
+                                                            value: Var(
+                                                                Located {
+                                                                    value: InternedString(b),
+                                                                    span: 33..34,
+                                                                },
+                                                            ),
+                                                            span: 33..34,
+                                                        },
+                                                    ],
+                                                ),
+                                                span: 29..35,
+                                            },
+                                            Located {
+                                                value: List(
+                                                    [
+                                                        Located {
+                                                            value: Var(
+                                                                Located {
+                                                                    value: InternedString(a),
+                                                                    span: 40..41,
+                                                                },
+                                                            ),
+                                                            span: 40..41,
+                                                        },
+                                                        Located {
+                                                            value: Var(
+                                                                Located {
+                                                                    value: InternedString(b),
+                                                                    span: 43..44,
+                                                                },
+                                                            ),
+                                                            span: 43..44,
+                                                        },
+                                                        Located {
+                                                            value: Var(
+                                                                Located {
+                                                                    value: InternedString(a),
+                                                                    span: 46..47,
+                                                                },
+                                                            ),
+                                                            span: 46..47,
+                                                        },
+                                                    ],
+                                                ),
+                                                span: 39..48,
+                                            },
+                                        ),
+                                    ],
+                                ),
+                                span: 14..48,
+                            },
+                        ),
+                        span: 8..48,
+                    },
+                ),
+            ),
+            span: 0..48,
+        },
+    ],
+}

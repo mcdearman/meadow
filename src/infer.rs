@@ -1289,3 +1289,117 @@ impl fmt::Display for Scheme {
         write_type(f, &self.ty, &mut namer, Prec::Top)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_display() {
+        assert_eq!(Type::int().to_string(), "Int");
+        assert_eq!(Type::list(Type::int()).to_string(), "[Int]");
+        assert_eq!(
+            Type::func(vec![Type::int(), Type::int()], Type::bool()).to_string(),
+            "Int -> Int -> Bool"
+        );
+        assert_eq!(
+            Type::Tuple(vec![Type::int(), Type::string()]).to_string(),
+            "(Int, String)"
+        );
+        // free (unbound) variables get printed as `a`, `b`, …
+        assert_eq!(Type::func(vec![Type::Var(3)], Type::Var(3)).to_string(), "a -> a");
+        assert_eq!(Type::func(vec![Type::Var(1)], Type::Var(9)).to_string(), "a -> b");
+    }
+
+    #[test]
+    fn record_type_display() {
+        let row = Type::RowExtend(
+            InternedString::from("x"),
+            Box::new(Type::int()),
+            Box::new(Type::RowExtend(
+                InternedString::from("y"),
+                Box::new(Type::bool()),
+                Box::new(Type::Var(0)),
+            )),
+        );
+        assert_eq!(Type::Record(Box::new(row)).to_string(), "{ x : Int, y : Bool | a }");
+    }
+
+    #[test]
+    fn scheme_display_names_quantifiers() {
+        let s = Scheme {
+            quant: vec![VarKind::Type, VarKind::Type],
+            ty: Type::func(vec![Type::Bound(0)], Type::Bound(1)),
+        };
+        assert_eq!(s.to_string(), "forall a b. a -> b");
+        assert_eq!(Scheme::mono(Type::int()).to_string(), "Int");
+    }
+
+    #[test]
+    fn arena_unifies_var_with_concrete() {
+        let mut a = Arena::new();
+        let v = a.fresh();
+        a.unify(v.clone(), Type::int()).unwrap();
+        assert_eq!(a.zonk(&v), Type::int());
+    }
+
+    #[test]
+    fn arena_unifies_two_vars_transitively() {
+        let mut a = Arena::new();
+        let (x, y) = (a.fresh(), a.fresh());
+        a.unify(x.clone(), y.clone()).unwrap();
+        a.unify(y, Type::bool()).unwrap();
+        assert_eq!(a.zonk(&x), Type::bool());
+    }
+
+    #[test]
+    fn arena_reports_mismatch() {
+        let mut a = Arena::new();
+        assert!(a.unify(Type::int(), Type::bool()).is_err());
+    }
+
+    #[test]
+    fn arena_occurs_check() {
+        let mut a = Arena::new();
+        let v = a.fresh();
+        // v = v -> v  must be rejected
+        let recursive = Type::func(vec![v.clone()], v.clone());
+        assert!(matches!(a.unify(v, recursive), Err(UnifyError::Occurs(..))));
+    }
+
+    #[test]
+    fn arena_rewrites_rows_to_align_labels() {
+        let mut a = Arena::new();
+        // { x : Int | r }  ~  { y : Bool, x : Int }
+        let lhs = Type::Record(Box::new(Type::RowExtend(
+            InternedString::from("x"),
+            Box::new(Type::int()),
+            Box::new(a.fresh_row()),
+        )));
+        let rhs = Type::Record(Box::new(Type::RowExtend(
+            InternedString::from("y"),
+            Box::new(Type::bool()),
+            Box::new(Type::RowExtend(
+                InternedString::from("x"),
+                Box::new(Type::int()),
+                Box::new(Type::RowEmpty),
+            )),
+        )));
+        a.unify(lhs.clone(), rhs).unwrap();
+        assert_eq!(a.zonk(&lhs).to_string(), "{ x : Int, y : Bool }");
+    }
+
+    #[test]
+    fn generalization_respects_levels() {
+        // A var created at a deeper level is generalized; one at the current
+        // level is not.
+        let mut infer = Infer::new("t", 0);
+        infer.arena.enter_level();
+        let deep = infer.arena.fresh();
+        infer.arena.exit_level();
+        let shallow = infer.arena.fresh();
+
+        assert_eq!(infer.generalize(&deep).quant.len(), 1);
+        assert_eq!(infer.generalize(&shallow).quant.len(), 0);
+    }
+}

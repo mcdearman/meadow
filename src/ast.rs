@@ -1,3 +1,13 @@
+//! The **abstract syntax tree** — the parser's output, before name resolution.
+//!
+//! Every node is wrapped in [`span::Located`] (value + source [`Span`]). Names are
+//! still plain [`InternedString`]s here; [`crate::rename`] turns them into
+//! [`crate::hir::VarId`]s and stamps node ids. Operators live as [`UnOp`] / [`BinOp`]
+//! and are desugared to primitive calls during resolution, so the HIR has no
+//! operator nodes.
+//!
+//! [`Span`]: crate::span::Span
+
 use crate::{intern::InternedString, lexer::Token, span::Located};
 
 pub type LModule = Located<Module>;

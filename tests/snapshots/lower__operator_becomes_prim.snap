@@ -1,0 +1,5 @@
+---
+source: tests/lower.rs
+expression: "core_ir(\"def x = 2 * 3 + 1\\n\")"
+---
+v0 = (Add (Mul 2 3) 1)

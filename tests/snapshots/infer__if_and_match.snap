@@ -1,0 +1,5 @@
+---
+source: tests/infer.rs
+expression: "schemes(\"fun classify n =\\n  match n == 0 with\\n  | True -> \\\"zero\\\"\\n  | False -> \\\"nonzero\\\"\\n\")"
+---
+classify : Int -> String

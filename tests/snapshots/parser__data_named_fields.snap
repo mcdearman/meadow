@@ -1,0 +1,109 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"data Node a = Leaf a | Inner { left : Node a, right : Node a }\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Data(
+                DataDecl {
+                    name: Located {
+                        value: InternedString(Node),
+                        span: 5..9,
+                    },
+                    params: [
+                        Located {
+                            value: InternedString(a),
+                            span: 10..11,
+                        },
+                    ],
+                    variants: [
+                        Variant {
+                            name: Located {
+                                value: InternedString(Leaf),
+                                span: 14..18,
+                            },
+                            fields: Positional(
+                                [
+                                    Located {
+                                        value: Var(
+                                            Located {
+                                                value: InternedString(a),
+                                                span: 19..20,
+                                            },
+                                        ),
+                                        span: 19..20,
+                                    },
+                                ],
+                            ),
+                        },
+                        Variant {
+                            name: Located {
+                                value: InternedString(Inner),
+                                span: 23..28,
+                            },
+                            fields: Named(
+                                [
+                                    (
+                                        Located {
+                                            value: InternedString(left),
+                                            span: 31..35,
+                                        },
+                                        Located {
+                                            value: Con(
+                                                Located {
+                                                    value: InternedString(Node),
+                                                    span: 38..42,
+                                                },
+                                                [
+                                                    Located {
+                                                        value: Var(
+                                                            Located {
+                                                                value: InternedString(a),
+                                                                span: 43..44,
+                                                            },
+                                                        ),
+                                                        span: 43..44,
+                                                    },
+                                                ],
+                                            ),
+                                            span: 38..44,
+                                        },
+                                    ),
+                                    (
+                                        Located {
+                                            value: InternedString(right),
+                                            span: 46..51,
+                                        },
+                                        Located {
+                                            value: Con(
+                                                Located {
+                                                    value: InternedString(Node),
+                                                    span: 54..58,
+                                                },
+                                                [
+                                                    Located {
+                                                        value: Var(
+                                                            Located {
+                                                                value: InternedString(a),
+                                                                span: 59..60,
+                                                            },
+                                                        ),
+                                                        span: 59..60,
+                                                    },
+                                                ],
+                                            ),
+                                            span: 54..60,
+                                        },
+                                    ),
+                                ],
+                            ),
+                        },
+                    ],
+                },
+            ),
+            span: 0..62,
+        },
+    ],
+}

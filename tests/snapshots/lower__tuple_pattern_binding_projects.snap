@@ -1,0 +1,5 @@
+---
+source: tests/lower.rs
+expression: "core_ir(\"def swapped = match (1, 2) with | (a, b) -> (b, a)\\n\")"
+---
+v0 = (case (tup 1 2) of (tup v1 v2) -> (tup v2 v1))

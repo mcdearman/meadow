@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_expr(\"1 / 0\")"
+---
+runtime error: division by zero

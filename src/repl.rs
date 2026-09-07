@@ -6,7 +6,7 @@
 //! literally handed back to the compiler as ordinary dependency packages.
 
 use crate::{
-    ast, core, eval, hir,
+    ast, core, diagnostics, eval, hir,
     intern::InternedString,
     lexer::tokenize,
     parser,
@@ -269,13 +269,13 @@ impl Session {
         );
 
         let lex = tokenize(src);
-        for e in &lex.errors {
-            eprintln!("lex error: {}", e.msg);
-        }
         let (parsed, perrs) = parser::parse_repl(src, &lex.tokens);
-        for e in &perrs {
-            eprintln!("parse error: {e}");
-        }
+
+        // Surface lex / parse problems with a source snippet, then bail if the
+        // entry didn't parse at all.
+        let mut front_errors = lex.errors.clone();
+        front_errors.extend(perrs.iter().map(|e| diagnostics::from_parse_error("repl", e)));
+        diagnostics::emit(&front_errors, "repl", input);
         let Some(item) = parsed else { return };
 
         let decl = match item {
@@ -304,11 +304,8 @@ impl Session {
             &deps,
         );
 
-        let mut had_error = false;
-        for d in &diags {
-            had_error = true;
-            eprintln!("error: {}", d.msg);
-        }
+        let had_error = !diags.is_empty();
+        diagnostics::emit(&diags, "repl", input);
 
         for e in &compiled.exports {
             println!("{} : {}", e.name, e.scheme);

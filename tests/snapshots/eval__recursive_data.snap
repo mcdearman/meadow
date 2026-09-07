@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_main(\"data Tree a = Tip | Branch (Tree a) a (Tree a)\\n\\\n         fun sum t = match t with | Tip -> 0 | Branch l x r -> x + sum l + sum r\\n\\\n         def main = sum (Branch (Branch Tip 3 Tip) 5 (Branch Tip 7 Tip))\\n\")"
+---
+15

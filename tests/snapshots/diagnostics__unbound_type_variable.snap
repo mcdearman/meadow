@@ -1,0 +1,5 @@
+---
+source: tests/diagnostics.rs
+expression: "errors(\"data Bad a = B b\\n\")"
+---
+unbound type variable `b`

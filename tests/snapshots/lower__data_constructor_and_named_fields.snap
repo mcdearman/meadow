@@ -1,0 +1,5 @@
+---
+source: tests/lower.rs
+expression: "core_ir(\"record P = { name : String, age : Int }\\n\\\n         def p = P { age = 1, name = \\\"x\\\" }\\n\")"
+---
+v0 = (P "\"x\"" 1)

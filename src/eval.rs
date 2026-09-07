@@ -478,3 +478,83 @@ impl fmt::Display for Value {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Lit, Prim, Program, Term};
+
+    fn run_term(term: Term) -> Value {
+        let program = Program {
+            defs: vec![core::Def {
+                var: crate::hir::VarId::fresh(),
+                name: "main".into(),
+                term,
+            }],
+            entry: None,
+            ..Default::default()
+        };
+        // no entry -> `run` returns Unit, so evaluate the single def directly
+        let interp = Interp {
+            ctor_fields: &program.ctor_fields,
+        };
+        interp.eval(&program.defs[0].term, &root_env()).unwrap()
+    }
+
+    #[test]
+    fn prim_arithmetic() {
+        assert_eq!(
+            run_prim(Prim::Add, vec![Value::Int(2), Value::Int(3)]).unwrap().to_string(),
+            "5"
+        );
+        assert_eq!(
+            run_prim(Prim::Mul, vec![Value::Int(4), Value::Int(5)]).unwrap().to_string(),
+            "20"
+        );
+    }
+
+    #[test]
+    fn prim_division_by_zero_errors() {
+        assert!(run_prim(Prim::Div, vec![Value::Int(1), Value::Int(0)]).is_err());
+    }
+
+    #[test]
+    fn prim_equality_is_structural() {
+        let a = Value::Tuple(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
+        let b = Value::Tuple(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
+        assert!(value_eq(&a, &b));
+        assert!(!value_eq(&a, &Value::Int(1)));
+    }
+
+    #[test]
+    fn evaluates_arithmetic_term() {
+        // (\x -> x + 1) 41
+        let x = crate::hir::VarId::fresh();
+        let body = Term::Prim(Prim::Add, vec![Term::Var(x), Term::Lit(Lit::Int(1))]);
+        let term = Term::App(
+            Box::new(Term::Lam(x, Box::new(body))),
+            Box::new(Term::Lit(Lit::Int(41))),
+        );
+        assert_eq!(run_term(term).to_string(), "42");
+    }
+
+    #[test]
+    fn list_cons_prepends() {
+        let term = Term::ListCons(
+            Box::new(Term::Lit(Lit::Int(0))),
+            Box::new(Term::List(vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(2))])),
+        );
+        assert_eq!(run_term(term).to_string(), "[0, 1, 2]");
+    }
+
+    #[test]
+    fn value_display_forms() {
+        assert_eq!(Value::Unit.to_string(), "()");
+        assert_eq!(Value::Bool(true).to_string(), "true");
+        assert_eq!(
+            Value::Ctor("Some".into(), vec![Value::Int(3)]).to_string(),
+            "Some(3)"
+        );
+        assert_eq!(Value::Ctor("None".into(), vec![]).to_string(), "None");
+    }
+}

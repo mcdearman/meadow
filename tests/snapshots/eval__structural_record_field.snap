@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_expr(\"{ x = 1, y = 2 }.y\")"
+---
+2

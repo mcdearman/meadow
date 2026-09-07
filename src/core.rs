@@ -129,6 +129,139 @@ pub struct Program {
     pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
 }
 
+impl Program {
+    /// A stable, human-readable rendering of the whole program.
+    ///
+    /// [`Var`]s (`hir::VarId`) come from a process-wide counter, so their numeric
+    /// values are non-deterministic across runs — this printer renumbers them
+    /// `v0, v1, …` in first-occurrence order, which makes it safe to snapshot.
+    pub fn pretty(&self) -> String {
+        let mut p = Printer::default();
+        let mut out = String::new();
+        for d in &self.defs {
+            let v = p.var(d.var);
+            out.push_str(&format!("{v} = {}\n", p.term(&d.term)));
+        }
+        if let Some(e) = self.entry {
+            out.push_str(&format!("entry: {}\n", p.var(e)));
+        }
+        out
+    }
+}
+
+#[derive(Default)]
+struct Printer {
+    names: HashMap<Var, String>,
+    next: u32,
+}
+
+impl Printer {
+    fn var(&mut self, v: Var) -> String {
+        if let Some(s) = self.names.get(&v) {
+            return s.clone();
+        }
+        let s = format!("v{}", self.next);
+        self.next += 1;
+        self.names.insert(v, s.clone());
+        s
+    }
+
+    fn lit(l: &Lit) -> String {
+        match l {
+            Lit::Int(i) => i.to_string(),
+            Lit::Str(s) => format!("{:?}", &**s), // the string contents, quoted
+            Lit::Bool(b) => b.to_string(),
+            Lit::Unit => "()".to_string(),
+        }
+    }
+
+    fn term(&mut self, t: &Term) -> String {
+        match t {
+            Term::Var(v) => self.var(*v),
+            Term::Lit(l) => Self::lit(l),
+            Term::Lam(v, b) => {
+                let v = self.var(*v);
+                format!("(\\{v}. {})", self.term(b))
+            }
+            Term::App(f, a) => format!("({} {})", self.term(f), self.term(a)),
+            Term::Let(v, r, b) => {
+                let v = self.var(*v);
+                format!("(let {v} = {} in {})", self.term(r), self.term(b))
+            }
+            Term::LetRec(binds, b) => {
+                let parts: Vec<String> = binds
+                    .iter()
+                    .map(|(v, t)| {
+                        let v = self.var(*v);
+                        format!("{v} = {}", self.term(t))
+                    })
+                    .collect();
+                format!("(letrec {} in {})", parts.join("; "), self.term(b))
+            }
+            Term::If(c, t, e) => {
+                format!("(if {} {} {})", self.term(c), self.term(t), self.term(e))
+            }
+            Term::Tuple(items) => format!("(tup {})", self.terms(items)),
+            Term::Proj(t, i) => format!("({}.{i})", self.term(t)),
+            Term::List(items) => format!("[{}]", self.terms(items)),
+            Term::ListCons(h, t) => format!("(:: {} {})", self.term(h), self.term(t)),
+            Term::Record(fields) => {
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|(l, t)| format!("{l} = {}", self.term(t)))
+                    .collect();
+                format!("{{ {} }}", parts.join(", "))
+            }
+            Term::Sel(t, l) => format!("({}.{l})", self.term(t)),
+            Term::Extend(t, l, v) => {
+                format!("({} with {l} = {})", self.term(t), self.term(v))
+            }
+            Term::Ctor(n, args) => format!("({n} {})", self.terms(args)),
+            Term::Case(s, arms) => {
+                let parts: Vec<String> = arms
+                    .iter()
+                    .map(|(p, b)| format!("{} -> {}", self.pat(p), self.term(b)))
+                    .collect();
+                format!("(case {} of {})", self.term(s), parts.join("; "))
+            }
+            Term::Prim(op, args) => format!("({op:?} {})", self.terms(args)),
+            Term::Error => "<error>".to_string(),
+        }
+    }
+
+    fn terms(&mut self, ts: &[Term]) -> String {
+        ts.iter().map(|t| self.term(t)).collect::<Vec<_>>().join(" ")
+    }
+
+    fn pat(&mut self, p: &Pat) -> String {
+        match p {
+            Pat::Wild => "_".to_string(),
+            Pat::Var(v) => self.var(*v),
+            Pat::As(v, sub) => {
+                let v = self.var(*v);
+                format!("{v}@{}", self.pat(sub))
+            }
+            Pat::Lit(l) => Self::lit(l),
+            Pat::Tuple(ps) => format!("(tup {})", self.pats(ps)),
+            Pat::List(ps) => format!("[{}]", self.pats(ps)),
+            Pat::ListNil => "[]".to_string(),
+            Pat::ListCons(h, t) => format!("(:: {} {})", self.pat(h), self.pat(t)),
+            Pat::Ctor(n, ps) => format!("({n} {})", self.pats(ps)),
+            Pat::Record(fields) => {
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|(l, p)| format!("{l} = {}", self.pat(p)))
+                    .collect();
+                format!("{{ {} }}", parts.join(", "))
+            }
+        }
+    }
+
+    fn pats(&mut self, ps: &[Pat]) -> String {
+        ps.iter().map(|p| self.pat(p)).collect::<Vec<_>>().join(" ")
+    }
+}
+
 // ===========================================================================
 // Lowering: hir -> core
 // ===========================================================================
@@ -513,5 +646,46 @@ fn collect_pat_vars(pat: &hir::LPat, out: &mut Vec<Var>) {
             fields.iter().for_each(|(_, p)| collect_pat_vars(p, out))
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prim_name_roundtrip() {
+        for name in [
+            "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "neg",
+            "!", "print", "println",
+        ] {
+            assert!(Prim::from_name(name).is_some(), "{name} should be a prim");
+        }
+        assert_eq!(Prim::from_name("map"), None);
+    }
+
+    #[test]
+    fn prim_arity() {
+        assert_eq!(Prim::Add.arity(), 2);
+        assert_eq!(Prim::Neg.arity(), 1);
+        assert_eq!(Prim::Println.arity(), 1);
+        assert_eq!(Prim::Eq.arity(), 2);
+    }
+
+    #[test]
+    fn pretty_renumbers_variables() {
+        let a = hir::VarId::fresh();
+        let b = hir::VarId::fresh();
+        let prog = Program {
+            defs: vec![Def {
+                var: a,
+                name: "f".into(),
+                term: Term::Lam(b, Box::new(Term::Var(b))),
+            }],
+            entry: Some(a),
+            ..Default::default()
+        };
+        // `a` is seen first (as the def name) -> v0; `b` -> v1.
+        assert_eq!(prog.pretty(), "v0 = (\\v1. v1)\nentry: v0\n");
     }
 }

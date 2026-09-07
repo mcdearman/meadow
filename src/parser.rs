@@ -1,3 +1,16 @@
+//! Parsing, via `chumsky`.
+//!
+//! [`parse`] parses a whole module; [`parse_repl`] parses a single decl *or*
+//! expression for the REPL. Expressions are built bottom-up: `atom` → `app`
+//! (juxtaposition) → `pratt` (operators, with precedence/associativity given by
+//! the `infix`/`prefix` levels). Type expressions have their own small grammar
+//! ([`ty`] / [`ty_atom`]) used only inside `data` / `record` declarations.
+//!
+//! Errors are returned alongside a partial tree (`(Option<_>, Vec<Rich>)`); the
+//! driver converts each `Rich` into a [`Diagnostic`].
+//!
+//! [`Diagnostic`]: crate::diagnostics::Diagnostic
+
 use crate::{
     ast::*,
     intern::InternedString,

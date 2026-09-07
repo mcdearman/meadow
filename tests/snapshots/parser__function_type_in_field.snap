@@ -1,0 +1,64 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"data Thunk a = Thunk (Unit -> a)\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Data(
+                DataDecl {
+                    name: Located {
+                        value: InternedString(Thunk),
+                        span: 5..10,
+                    },
+                    params: [
+                        Located {
+                            value: InternedString(a),
+                            span: 11..12,
+                        },
+                    ],
+                    variants: [
+                        Variant {
+                            name: Located {
+                                value: InternedString(Thunk),
+                                span: 15..20,
+                            },
+                            fields: Positional(
+                                [
+                                    Located {
+                                        value: Fun(
+                                            [
+                                                Located {
+                                                    value: Con(
+                                                        Located {
+                                                            value: InternedString(Unit),
+                                                            span: 22..26,
+                                                        },
+                                                        [],
+                                                    ),
+                                                    span: 22..26,
+                                                },
+                                            ],
+                                            Located {
+                                                value: Var(
+                                                    Located {
+                                                        value: InternedString(a),
+                                                        span: 30..31,
+                                                    },
+                                                ),
+                                                span: 30..31,
+                                            },
+                                        ),
+                                        span: 22..31,
+                                    },
+                                ],
+                            ),
+                        },
+                    ],
+                },
+            ),
+            span: 0..32,
+        },
+    ],
+}

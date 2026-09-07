@@ -1,0 +1,118 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"def e = 1 + 2 * 3 - 4 / 2 ^ 2\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Bind(
+                Pat(
+                    Located {
+                        value: Var(
+                            Located {
+                                value: InternedString(e),
+                                span: 4..5,
+                            },
+                        ),
+                        span: 4..5,
+                    },
+                    Located {
+                        value: BinOp(
+                            Located {
+                                value: Sub,
+                                span: 8..29,
+                            },
+                            Located {
+                                value: BinOp(
+                                    Located {
+                                        value: Add,
+                                        span: 8..17,
+                                    },
+                                    Located {
+                                        value: Lit(
+                                            Int(
+                                                1,
+                                            ),
+                                        ),
+                                        span: 8..9,
+                                    },
+                                    Located {
+                                        value: BinOp(
+                                            Located {
+                                                value: Mul,
+                                                span: 12..17,
+                                            },
+                                            Located {
+                                                value: Lit(
+                                                    Int(
+                                                        2,
+                                                    ),
+                                                ),
+                                                span: 12..13,
+                                            },
+                                            Located {
+                                                value: Lit(
+                                                    Int(
+                                                        3,
+                                                    ),
+                                                ),
+                                                span: 16..17,
+                                            },
+                                        ),
+                                        span: 12..17,
+                                    },
+                                ),
+                                span: 8..17,
+                            },
+                            Located {
+                                value: BinOp(
+                                    Located {
+                                        value: Div,
+                                        span: 20..29,
+                                    },
+                                    Located {
+                                        value: Lit(
+                                            Int(
+                                                4,
+                                            ),
+                                        ),
+                                        span: 20..21,
+                                    },
+                                    Located {
+                                        value: BinOp(
+                                            Located {
+                                                value: Pow,
+                                                span: 24..29,
+                                            },
+                                            Located {
+                                                value: Lit(
+                                                    Int(
+                                                        2,
+                                                    ),
+                                                ),
+                                                span: 24..25,
+                                            },
+                                            Located {
+                                                value: Lit(
+                                                    Int(
+                                                        2,
+                                                    ),
+                                                ),
+                                                span: 28..29,
+                                            },
+                                        ),
+                                        span: 24..29,
+                                    },
+                                ),
+                                span: 20..29,
+                            },
+                        ),
+                        span: 8..29,
+                    },
+                ),
+            ),
+            span: 0..29,
+        },
+    ],
+}

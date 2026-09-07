@@ -1,0 +1,55 @@
+---
+source: tests/parser.rs
+expression: "parse_ast(\"record Person = {\\n  name : String,\\n  age : Int,\\n}\\n\")"
+---
+Module {
+    name: InternedString(test),
+    decls: [
+        Located {
+            value: Record(
+                RecordDecl {
+                    name: Located {
+                        value: InternedString(Person),
+                        span: 7..13,
+                    },
+                    params: [],
+                    fields: [
+                        (
+                            Located {
+                                value: InternedString(name),
+                                span: 20..24,
+                            },
+                            Located {
+                                value: Con(
+                                    Located {
+                                        value: InternedString(String),
+                                        span: 27..33,
+                                    },
+                                    [],
+                                ),
+                                span: 27..33,
+                            },
+                        ),
+                        (
+                            Located {
+                                value: InternedString(age),
+                                span: 37..40,
+                            },
+                            Located {
+                                value: Con(
+                                    Located {
+                                        value: InternedString(Int),
+                                        span: 43..46,
+                                    },
+                                    [],
+                                ),
+                                span: 43..46,
+                            },
+                        ),
+                    ],
+                },
+            ),
+            span: 0..49,
+        },
+    ],
+}

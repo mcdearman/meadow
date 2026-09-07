@@ -1,0 +1,5 @@
+---
+source: tests/diagnostics.rs
+expression: "errors(\"record P = { name : String }\\n\\\n         fun getName r = r.name\\n\\\n         def bad = getName (P { name = \\\"x\\\" })\\n\")"
+---
+type mismatch: `{ name : a | b }` vs `P`

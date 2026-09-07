@@ -1,3 +1,10 @@
+//! Source buffers.
+//!
+//! A [`Source`] is a `Copy` handle bundling an id, its origin ([`SourceKind`] —
+//! a file path or the interactive prompt) and its interned contents, so it can be
+//! passed by value through the lexer/parser. [`Sources`] is the `ariadne` cache
+//! used to render diagnostics with source snippets.
+
 use crate::intern::InternedString;
 use std::{ops::Index, sync::atomic::AtomicU32};
 

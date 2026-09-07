@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_expr(\"(\\\\x -> \\\\y -> x + y) 10 20\")"
+---
+30

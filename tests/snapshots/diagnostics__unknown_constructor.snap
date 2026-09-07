@@ -1,0 +1,5 @@
+---
+source: tests/diagnostics.rs
+expression: "errors(\"def x = Nope 1\\n\")"
+---
+unknown constructor `Nope`

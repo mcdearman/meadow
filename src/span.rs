@@ -1,3 +1,11 @@
+//! Source positions.
+//!
+//! [`Span`] is a byte range `start..end` into a source string (`u32` offsets — a
+//! source file is never that big). [`Located<T>`] pairs a value with its span; it
+//! is the AST's spine wrapper (the HIR uses [`crate::hir::Node`], which adds a
+//! node id). The `chumsky` trait impls at the bottom let the parser produce
+//! `Located` nodes directly via `map_with`.
+
 use crate::source::Source;
 use chumsky::span::{Span as ChumskySpan, WrappingSpan};
 use std::{
@@ -133,5 +141,39 @@ impl<T> Located<T> {
 
     pub fn value(&self) -> &T {
         &self.value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extend_covers_both_spans() {
+        let a = Span::new(2, 5);
+        let b = Span::new(8, 12);
+        assert_eq!(a.extend(b), Span::new(2, 12));
+        assert_eq!(b.extend(a), Span::new(2, 12));
+    }
+
+    #[test]
+    fn round_trips_through_range() {
+        let s = Span::new(3, 7);
+        let r: Range<usize> = s.into();
+        assert_eq!(r, 3..7);
+        assert_eq!(Span::from(3usize..7usize), s);
+    }
+
+    #[test]
+    fn indexes_a_string_slice() {
+        let text = "hello world";
+        assert_eq!(&text[Span::new(6, 11)], "world");
+    }
+
+    #[test]
+    fn display_and_debug_match() {
+        let s = Span::new(1, 4);
+        assert_eq!(s.to_string(), "1..4");
+        assert_eq!(format!("{s:?}"), "1..4");
     }
 }

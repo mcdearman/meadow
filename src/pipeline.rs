@@ -129,6 +129,37 @@ fn compile_package(
     (cp, diags)
 }
 
+/// Compile a single source string as a one-module, dependency-free package.
+///
+/// Convenience for tests and quick experiments — it runs lex → parse → resolve →
+/// infer → lower and returns the [`CompiledPackage`] plus every diagnostic
+/// (lex/parse/resolve/type errors are all collected, never fatal).
+pub fn compile_str(name: &str, src: &str) -> (CompiledPackage, Vec<Diagnostic>) {
+    let name = InternedString::from(name);
+    let source = Source::new(
+        crate::source::SourceKind::Interactive,
+        InternedString::from(src),
+    );
+    let lex = tokenize(source);
+    let mut diags: Vec<Diagnostic> = lex.errors;
+    let (ast, perrs) = parser::parse(name, source, &lex.tokens);
+    for e in &perrs {
+        diags.push(rich_to_diag(&source, e));
+    }
+    let modules = ast
+        .map(|ast| {
+            vec![AstModule {
+                path: vec![],
+                name,
+                ast,
+            }]
+        })
+        .unwrap_or_default();
+    let (cp, unit_diags) = compile_unit(name, 0, modules, &[]);
+    diags.extend(unit_diags);
+    (cp, diags)
+}
+
 /// Resolve -> infer -> lower a set of already-parsed modules. Shared by the batch
 /// build and the REPL.
 pub fn compile_unit(
@@ -238,10 +269,5 @@ fn prim_map(resolver: &Resolver) -> HashMap<VarId, core::Prim> {
 }
 
 fn rich_to_diag(src: &Source, e: &Rich<'_, Token, Span>) -> Diagnostic {
-    Diagnostic {
-        msg: e.to_string(),
-        filename: src.name().to_string(),
-        label: (e.reason().to_string(), *e.span()),
-        extra_labels: vec![],
-    }
+    crate::diagnostics::from_parse_error(&src.name().to_string(), e)
 }

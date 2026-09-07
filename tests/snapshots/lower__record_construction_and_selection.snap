@@ -1,0 +1,6 @@
+---
+source: tests/lower.rs
+expression: "core_ir(\"def r = { x = 1 }\\ndef v = r.x\\n\")"
+---
+v0 = { x = 1 }
+v1 = (v0.x)

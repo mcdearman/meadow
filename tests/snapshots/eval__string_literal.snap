@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_expr(\"\\\"hello\\\"\")"
+---
+"hello"

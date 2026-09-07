@@ -1,3 +1,11 @@
+//! String interning.
+//!
+//! Identifiers, string literals and type names are interned into a single
+//! process-wide [`ThreadedRodeo`] so the rest of the compiler can pass around a
+//! `Copy`, `Eq`, `Hash` handle ([`InternedString`]) instead of `String`s.
+//! `InternedString` `Deref`s to `str`, so it is usable directly in `format!`,
+//! comparisons, etc. The interner is never cleared — fine for a compiler process.
+
 use lasso::{Spur, ThreadedRodeo};
 use once_cell::sync::Lazy;
 use std::{

@@ -1,0 +1,5 @@
+---
+source: tests/eval.rs
+expression: "eval_main(\"fun head xs = match xs with | Cons x r -> x\\n\\\n         def main = head Nil\\n\")"
+---
+runtime error: non-exhaustive pattern match

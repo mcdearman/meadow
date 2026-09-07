@@ -1,0 +1,5 @@
+---
+source: tests/diagnostics.rs
+expression: "errors(\"def x = \\n\")"
+---
+found end of input expected 'Minus', something else, 'LParen', 'LBrace', 'Let', 'If', 'Backslash', 'Match', or 'LBrack'

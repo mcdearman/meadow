@@ -1,0 +1,6 @@
+---
+source: tests/lower.rs
+expression: "core_ir(\"def a = [1, 2, 3]\\ndef b = Cons 0 a\\n\")"
+---
+v0 = [1 2 3]
+v1 = (:: 0 v0)

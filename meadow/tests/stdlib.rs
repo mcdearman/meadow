@@ -6,7 +6,7 @@ use meadow_eval as eval;
 
 #[test]
 fn stdlib_compiles_without_diagnostics() {
-    let (_pkgs, diags) = stdlib::compile_std();
+    let (_pkgs, diags) = stdlib::compile_std(meadow::Options::debug());
     assert!(
         diags.is_empty(),
         "Std did not compile clean:\n{}",
@@ -19,7 +19,7 @@ fn stdlib_compiles_without_diagnostics() {
 }
 
 fn run(src: &str) -> String {
-    let (program, diags) = pipeline::compile_str_with_std("test", src);
+    let (program, diags) = pipeline::compile_str_with_std("test", src, meadow::Options::debug());
     if !diags.is_empty() {
         return format!(
             "compile errors:\n{}",
@@ -42,14 +42,14 @@ fn prelude_list_functions_are_in_scope() {
 
 #[test]
 fn cons_sugar_builds_a_list() {
-    assert_eq!(run("def main = 1 :: 2 :: 3 :: Nil\n"), "[1, 2, 3]");
+    assert_eq!(run("def main = 1 :: 2 :: 3 :: Nil\n"), "[1; 2; 3]");
 }
 
 #[test]
 fn cons_sugar_in_patterns() {
     assert_eq!(
         run("fun swapFirstTwo xs =\n  match xs with\n  | a :: b :: rest -> b :: a :: rest\n  | other -> other\ndef main = swapFirstTwo [1; 2; 3; 4]\n"),
-        "[2, 1, 3, 4]"
+        "[2; 1; 3; 4]"
     );
 }
 
@@ -133,6 +133,6 @@ fn fs_effect_can_be_handled() {
 fn std_tree_sorts() {
     assert_eq!(
         run("use Std.Collections.Tree\ndef main = Tree.toList (Tree.fromList [5; 3; 8; 1; 4; 7; 9; 2; 6])\n"),
-        "[1, 2, 3, 4, 5, 6, 7, 8, 9]"
+        "[1; 2; 3; 4; 5; 6; 7; 8; 9]"
     );
 }

@@ -1,0 +1,125 @@
+# Build `meadow` for every supported platform and attach the archives to a
+# GitHub Release. The install scripts fetch these by a version-less asset name
+# (`meadow-<target>.tar.gz` / `.zip`) so they can use the `/releases/latest/`
+# redirect and never need to know the version.
+#
+# Cut a release by pushing a tag:
+#
+#     git tag v0.1.0 && git push origin v0.1.0
+#
+# or run this workflow manually to get a draft.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            linker: aarch64-linux-gnu-gcc
+            apt: gcc-aarch64-linux-gnu
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup update stable && rustup target add ${{ matrix.target }}
+
+      - name: Install cross linker
+        if: matrix.apt != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+
+      # The CLI is its own workspace, so the build runs in `meadow/`.
+      - name: Build
+        working-directory: meadow
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+
+      # Skip on the cross-compiled targets, which cannot run on the runner.
+      - name: Smoke test
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-pc-windows-msvc'
+        working-directory: meadow
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/meadow"
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          "$bin" --version
+          echo 'def main = 6 * 7' > /tmp/smoke.mw
+          "$bin" run /tmp/smoke.mw | tail -1 | grep -q '=> 42'
+
+      - name: Package (unix)
+        if: matrix.os != 'windows-latest'
+        working-directory: meadow/target/${{ matrix.target }}/release
+        run: tar -czf "$GITHUB_WORKSPACE/meadow-${{ matrix.target }}.tar.gz" meadow
+
+      - name: Package (windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: meadow/target/${{ matrix.target }}/release
+        run: Compress-Archive -Path meadow.exe -DestinationPath "$env:GITHUB_WORKSPACE/meadow-${{ matrix.target }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meadow-${{ matrix.target }}
+          path: |
+            meadow-${{ matrix.target }}.tar.gz
+            meadow-${{ matrix.target }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    # Only a tag push publishes. A manual run still builds every target and
+    # leaves the archives as workflow artifacts, which is what you want when
+    # testing the matrix without cutting a release.
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*
+          body: |
+            ## Install
+
+            **macOS / Linux**
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | sh
+            ```
+
+            **Windows (PowerShell)**
+
+            ```powershell
+            irm https://raw.githubusercontent.com/${{ github.repository }}/master/install.ps1 | iex
+            ```

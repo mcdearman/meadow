@@ -19,3 +19,4 @@ meadow-hir.workspace = true
 meadow-rename.workspace = true
 meadow-infer.workspace = true
 meadow-core.workspace = true
+meadow-exhaust.workspace = true

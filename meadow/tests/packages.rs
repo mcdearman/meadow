@@ -21,7 +21,7 @@ fn manifest_parses_cargo_style() {
 
 #[test]
 fn builds_app_against_a_path_dependency() {
-    let out = pipeline::build(Path::new(&format!("{WORKSPACE}/app")));
+    let out = pipeline::build(Path::new(&format!("{WORKSPACE}/app")), meadow::Options::debug());
     assert!(
         out.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
@@ -35,7 +35,7 @@ fn builds_app_against_a_path_dependency() {
 #[test]
 fn private_names_do_not_cross_package_boundaries() {
     // `util` exports `double` / `scale` (both `@pub`) but not the plain `secret`.
-    let out = pipeline::build(Path::new(&format!("{WORKSPACE}/util")));
+    let out = pipeline::build(Path::new(&format!("{WORKSPACE}/util")), meadow::Options::debug());
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     let linked = out.linked.unwrap();
     let mut names: Vec<_> = linked

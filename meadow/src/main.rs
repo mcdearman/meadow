@@ -5,12 +5,12 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
-use meadow::pipeline;
+use meadow::{pipeline, Profile};
 use meadow_eval as eval;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "meadow", about = "Meadow language compiler")]
+#[command(name = "meadow", about = "Meadow language compiler", version)]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -25,25 +25,58 @@ enum Cmd {
         /// Also print every node's inferred type.
         #[arg(long)]
         annotations: bool,
+        #[command(flatten)]
+        profile: ProfileArgs,
     },
     /// Build a package, then evaluate its `main` entry point.
-    Run { path: PathBuf },
+    Run {
+        path: PathBuf,
+        #[command(flatten)]
+        profile: ProfileArgs,
+    },
+}
+
+/// `--release` / `--debug` — the build profile. Debug is the default: it skips
+/// the exhaustiveness check so a half-written `match` still runs.
+#[derive(clap::Args)]
+#[group(multiple = false)]
+struct ProfileArgs {
+    /// Build with release checks (`match` must be exhaustive).
+    #[arg(long)]
+    release: bool,
+    /// Build with debug checks (the default).
+    #[arg(long)]
+    debug: bool,
+}
+
+impl ProfileArgs {
+    fn profile(&self) -> Profile {
+        if self.release {
+            Profile::Release
+        } else {
+            Profile::Debug
+        }
+    }
 }
 
 fn main() {
     match Cli::parse().cmd {
         // No subcommand → interactive REPL.
         None => repl::Session::new().run(),
-        Some(Cmd::Build { path, annotations }) => build(&path, false, annotations),
-        Some(Cmd::Run { path }) => build(&path, true, false),
+        Some(Cmd::Build {
+            path,
+            annotations,
+            profile,
+        }) => build(&path, false, annotations, profile.profile()),
+        Some(Cmd::Run { path, profile }) => build(&path, true, false, profile.profile()),
     }
 }
 
 /// Discover, compile and link the package at `path`; optionally evaluate its
 /// entry point. Exits non-zero if any diagnostic was produced or evaluation
 /// failed.
-fn build(path: &std::path::Path, run: bool, annotations: bool) {
-    let out = pipeline::build(path);
+fn build(path: &std::path::Path, run: bool, annotations: bool, profile: Profile) {
+    let out = pipeline::build(path, profile.options());
 
     for d in &out.diagnostics {
         eprintln!("{}: {}", d.filename, d.msg);

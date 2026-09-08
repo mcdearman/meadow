@@ -9,6 +9,7 @@
 
 use meadow::linker::Linker;
 use meadow::pipeline::{self, CompiledPackage};
+use meadow::Options;
 use meadow_compiler::{
     lexer::tokenize,
     parser,
@@ -40,6 +41,28 @@ pub fn errors(src: &str) -> String {
     compile(src).1.join("\n")
 }
 
+/// Diagnostics from compiling `src` under an explicit profile — the coverage
+/// tests use this, since `--release` is what turns the exhaustiveness check on.
+pub fn errors_with(src: &str, opts: Options) -> String {
+    let (_, diags) = meadow_compiler::compile_str_with("test", src, opts);
+    joined(&diags)
+}
+
+/// Like [`errors_with`], but with the embedded `Std` package in scope (needed
+/// whenever the program pattern-matches on `List`, `Maybe`, `Bool`, …).
+pub fn errors_std_with(src: &str, opts: Options) -> String {
+    let (_, diags) = pipeline::compile_str_with_std("test", src, opts);
+    joined(&diags)
+}
+
+fn joined(diags: &[meadow_compiler::diagnostics::Diagnostic]) -> String {
+    diags
+        .iter()
+        .map(|d| d.msg.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Compile `src` (which must define `main`), link, and evaluate the entry point.
 pub fn eval_main(src: &str) -> String {
     let (cp, diags) = compile(src);
@@ -61,7 +84,7 @@ pub fn eval_expr(expr: &str) -> String {
 /// Like [`eval_main`], but links the embedded `Std` package so prelude names
 /// (`map`, `lowMask`, `bytesGet`, …) and `Std.*` containers are in scope.
 pub fn eval_main_std(src: &str) -> String {
-    let (program, diags) = pipeline::compile_str_with_std("test", src);
+    let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
     if !diags.is_empty() {
         return format!(
             "compile errors:\n{}",
@@ -83,7 +106,7 @@ pub fn eval_expr_std(expr: &str) -> String {
 pub fn schemes_std(src: &str) -> String {
     // `compile_str_with_std` only returns a linked `Program`, so re-run the
     // unit compile with the std package as a dep to recover export schemes.
-    let (std_pkgs, _) = meadow::stdlib::compile_std();
+    let (std_pkgs, _) = meadow::stdlib::compile_std(Options::debug());
     let std_refs: Vec<&CompiledPackage> = std_pkgs.iter().collect();
     let source = meadow_compiler::source::Source::new(
         meadow_compiler::source::SourceKind::Interactive,
@@ -101,7 +124,7 @@ pub fn schemes_std(src: &str) -> String {
         })
         .unwrap_or_default();
     let (cp, diags) =
-        meadow_compiler::compile_unit("test".into(), 1, modules, &std_refs);
+        meadow_compiler::compile_unit("test".into(), 1, modules, &std_refs, Options::debug());
     let mut out = String::new();
     for e in &cp.exports {
         out.push_str(&format!("{} : {}\n", e.name, e.scheme));

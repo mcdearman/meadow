@@ -9,4 +9,8 @@
 pub mod linker;
 pub mod package;
 pub mod pipeline;
+pub mod profile;
 pub mod stdlib;
+
+pub use meadow_compiler::Options;
+pub use profile::Profile;

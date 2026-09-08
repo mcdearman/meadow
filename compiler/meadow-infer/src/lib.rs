@@ -557,7 +557,28 @@ pub struct InferResult {
     pub table: TypeTable,
     /// Scheme for each top-level binding produced by this run, keyed by its `VarId`.
     pub schemes: HashMap<VarId, Scheme>,
+    /// Every data / record type's constructors, for the exhaustiveness checker.
+    pub variants: VariantEnv,
     pub errors: Vec<Diagnostic>,
+}
+
+/// `type name -> its constructors`, covering this unit *and* its dependencies.
+pub type VariantEnv = HashMap<InternedString, Vec<VariantSig>>;
+
+/// One constructor of a data / record type.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantSig {
+    pub name: InternedString,
+    /// Field types, written over the type's parameters as `Type::Bound(i)` —
+    /// instantiate with [`subst_bound`] against the scrutinee's type arguments.
+    pub fields: Vec<Type>,
+    /// Field labels, for a `record` or a named `data` variant.
+    pub labels: Option<Vec<InternedString>>,
+}
+
+/// Replace each `Type::Bound(i)` in `ty` with `args[i]`.
+pub fn subst_bound(ty: &Type, args: &[Type]) -> Type {
+    Arena::subst_bound(ty, args)
 }
 
 pub struct Infer {
@@ -571,6 +592,9 @@ pub struct Infer {
     exports: Vec<VarId>,
     /// Data / record constructor schemes, e.g. `Leaf : ∀a. Vector a -> Node a`.
     ctors: HashMap<InternedString, Scheme>,
+    /// The same information grouped by *type*, which is what an exhaustiveness
+    /// check needs: given a scrutinee type, what are all its constructors?
+    variants: VariantEnv,
     /// `tyname -> field -> accessor scheme` (`Person -> name -> ∀. Person -> String`).
     record_fields: HashMap<InternedString, HashMap<InternedString, Scheme>>,
     /// Declared effects and their operation signatures (for `handle` checking).
@@ -591,6 +615,7 @@ impl Infer {
             table: TypeTable::new(node_count),
             exports: Vec::new(),
             ctors: HashMap::new(),
+            variants: HashMap::new(),
             record_fields: HashMap::new(),
             effects: HashMap::new(),
             cur_effect: Type::RowEmpty,
@@ -664,6 +689,7 @@ impl Infer {
         InferResult {
             table: self.table,
             schemes,
+            variants: self.variants,
             errors: self.errors,
         }
     }
@@ -686,13 +712,13 @@ impl Infer {
                 let vid = *name.value();
                 self.arena.enter_level();
 
-                let mut param_tys = Vec::with_capacity(params.len());
-                for p in params {
-                    let t = self.arena.fresh();
-                    self.env.insert(*p.value(), Scheme::mono(t.clone()));
-                    self.table.set(p.id, t.clone());
-                    param_tys.push(t);
-                }
+                // Parameters are patterns (`fun f a (x, y) = …`); inferring each
+                // binds the variables it introduces.
+                let mut bound = Vec::new();
+                let param_tys: Vec<Type> = params
+                    .iter()
+                    .map(|p| self.infer_pat(p, &mut bound))
+                    .collect();
                 let ret = self.arena.fresh();
                 // The body runs in its own effect region; that region ends up on the
                 // function's (innermost) arrow. Defining the function is itself pure,
@@ -1270,7 +1296,7 @@ impl Infer {
         let cty = if field_tys.is_empty() {
             head.clone()
         } else {
-            Type::func(field_tys, head.clone())
+            Type::func(field_tys.clone(), head.clone())
         };
         self.ctors.insert(
             ctor,
@@ -1279,6 +1305,23 @@ impl Infer {
                 ty: cty,
             },
         );
+        let labels: Option<Vec<InternedString>> = fields
+            .iter()
+            .map(|(n, _)| *n)
+            .collect::<Option<Vec<_>>>()
+            .filter(|ls| !ls.is_empty());
+        let sig = VariantSig {
+            name: ctor,
+            fields: field_tys,
+            labels,
+        };
+        // `register_types` runs once per unit and again for each dependency, so a
+        // re-registered constructor replaces rather than duplicates its entry.
+        let group = self.variants.entry(tyname).or_default();
+        match group.iter_mut().find(|v| v.name == ctor) {
+            Some(existing) => *existing = sig,
+            None => group.push(sig),
+        }
         let accessors = self.record_fields.entry(tyname).or_default();
         for (name, t) in fields {
             if let Some(name) = name {

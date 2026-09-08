@@ -22,7 +22,7 @@ use meadow_compiler::{
     lexer::tokenize,
     parser,
     source::{Source, SourceKind},
-    AstModule, CompiledPackage, Export,
+    AstModule, CompiledPackage, Export, Options,
 };
 use std::collections::HashMap;
 
@@ -61,7 +61,7 @@ const MODULES: &[(&str, &str)] = &[
 /// Returns the one compiled package plus any diagnostics — which for a healthy
 /// tree is empty. Callers surface the diagnostics ([`crate::pipeline::build`] and
 /// the REPL print them; `tests/stdlib.rs` asserts they stay empty).
-pub fn compile_std() -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
+pub fn compile_std(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     let pkg = InternedString::from(PACKAGE_NAME);
 
@@ -98,6 +98,7 @@ pub fn compile_std() -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
             subs.len(),
             vec![AstModule { path: path.clone(), name: mname, ast }],
             &dep_refs,
+            opts,
         );
         diags.extend(unit_diags);
         // A sibling reaches this module only via `use`, never flat.

@@ -268,7 +268,9 @@ impl ToString for BinOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bind {
     Pat(LPat, LExpr),
-    Fun(Ident, Vec<Ident>, LExpr),
+    /// `fun f a (x, y) = e` — parameters are patterns, and must be *irrefutable*
+    /// (checked after inference, since single-variant constructors are allowed).
+    Fun(Ident, Vec<LPat>, LExpr),
 }
 
 pub type LPat = Located<Pat>;

@@ -78,7 +78,12 @@ Module {
                     },
                     [
                         Located {
-                            value: InternedString(l),
+                            value: Var(
+                                Located {
+                                    value: InternedString(l),
+                                    span: 34..35,
+                                },
+                            ),
                             span: 34..35,
                         },
                     ],

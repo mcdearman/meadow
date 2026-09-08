@@ -9,6 +9,7 @@
 use crate::{
     ast, core,
     diagnostics::{from_parse_error, Diagnostic},
+    exhaust,
     hir::{self, VarId},
     infer::{Infer, InferResult, Scheme, TypeTable},
     intern::InternedString,
@@ -16,6 +17,7 @@ use crate::{
     parser,
     rename::Resolver,
     source::{Source, SourceKind},
+    Options,
 };
 use std::collections::HashMap;
 
@@ -73,6 +75,15 @@ pub struct CompiledPackage {
 /// crate's `compile_str_with_std` / `build` when the standard library or a
 /// package graph is needed.
 pub fn compile_str(name: &str, src: &str) -> (CompiledPackage, Vec<Diagnostic>) {
+    compile_str_with(name, src, Options::default())
+}
+
+/// [`compile_str`] under an explicit set of compiler [`Options`].
+pub fn compile_str_with(
+    name: &str,
+    src: &str,
+    opts: Options,
+) -> (CompiledPackage, Vec<Diagnostic>) {
     let name = InternedString::from(name);
     let source = Source::new(SourceKind::Interactive, InternedString::from(src));
     let lex = tokenize(source);
@@ -90,7 +101,7 @@ pub fn compile_str(name: &str, src: &str) -> (CompiledPackage, Vec<Diagnostic>) 
             }]
         })
         .unwrap_or_default();
-    let (cp, unit_diags) = compile_unit(name, 0, modules, &[]);
+    let (cp, unit_diags) = compile_unit(name, 0, modules, &[], opts);
     diags.extend(unit_diags);
     (cp, diags)
 }
@@ -102,8 +113,9 @@ pub fn compile_unit(
     id: usize,
     modules: Vec<AstModule>,
     deps: &[&CompiledPackage],
+    opts: Options,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
-    compile_unit_in_package(unit_name, unit_name, id, modules, deps)
+    compile_unit_in_package(unit_name, unit_name, id, modules, deps, opts)
 }
 
 /// Like [`compile_unit`], but `pkg` names the umbrella package (so a `use pkg.a.b`
@@ -115,6 +127,7 @@ pub fn compile_unit_in_package(
     id: usize,
     modules: Vec<AstModule>,
     deps: &[&CompiledPackage],
+    opts: Options,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     let filename = unit_name.to_string();
@@ -192,9 +205,21 @@ pub fn compile_unit_in_package(
     let InferResult {
         table,
         schemes,
+        variants,
         errors,
     } = infer.finish();
     diags.extend(errors);
+
+    // --- pattern coverage (needs the types; runs before lowering discards them)
+    for m in &typed {
+        diags.extend(exhaust::check_module(
+            &filename,
+            &m.hir,
+            &table,
+            &variants,
+            opts.check_exhaustive,
+        ));
+    }
 
     // --- lower to core
     let prims = prim_map(&resolver);
@@ -204,7 +229,8 @@ pub fn compile_unit_in_package(
         .into_iter()
         .map(|(id, eff, op)| (id, (eff, op)))
         .collect();
-    let mut lowerer = core::Lowerer::new(&prims, &names, &effect_ops, &table);
+    let ctor_arity = resolver.ctor_arities();
+    let mut lowerer = core::Lowerer::new(&prims, &names, &effect_ops, &table, &ctor_arity);
     let mut defs = Vec::new();
     for m in &typed {
         defs.extend(lowerer.lower_module(&m.hir));

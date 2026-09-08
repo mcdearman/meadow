@@ -243,7 +243,8 @@ pub enum Expr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bind {
     Pat(LPat, LExpr),
-    Fun(Ident, Vec<Ident>, LExpr),
+    /// `fun f a (x, y) = e` — parameters are irrefutable patterns.
+    Fun(Ident, Vec<LPat>, LExpr),
     Error,
 }
 

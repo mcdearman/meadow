@@ -224,11 +224,6 @@ pub enum Pat {
     Tuple(Vec<Pat>),
     /// `#[p, …]` — matches a builtin `Array` of exactly this length.
     Array(Vec<Pat>),
-    List(Vec<Pat>),
-    /// Built-in list `Nil`.
-    ListNil,
-    /// Built-in list `Cons head tail`.
-    ListCons(Box<Pat>, Box<Pat>),
     Ctor(InternedString, Vec<Pat>),
     Record(Vec<(InternedString, Pat)>),
 }
@@ -247,11 +242,9 @@ pub enum Term {
     If(Rc<Term>, Rc<Term>, Rc<Term>),
     Tuple(Vec<Term>),
     Proj(Rc<Term>, usize),
-    /// `#[e, …]` — a builtin `Array` literal.
+    /// `#[e, …]` — a builtin `Array` literal. The *only* built-in collection:
+    /// `List` and `Vector` are ordinary `Std` data types and lower to `Ctor`.
     Array(Vec<Term>),
-    List(Vec<Term>),
-    /// Built-in list `Cons head tail` — prepends `head` onto the list `tail`.
-    ListCons(Rc<Term>, Rc<Term>),
     Record(Vec<(InternedString, Term)>),
     Sel(Rc<Term>, InternedString),
     Extend(Rc<Term>, InternedString, Rc<Term>),
@@ -374,8 +367,6 @@ impl Printer {
             Term::Tuple(items) => format!("(tup {})", self.terms(items)),
             Term::Proj(t, i) => format!("({}.{i})", self.term(t)),
             Term::Array(items) => format!("#[{}]", self.terms(items)),
-            Term::List(items) => format!("[{}]", self.terms(items)),
-            Term::ListCons(h, t) => format!("(:: {} {})", self.term(h), self.term(t)),
             Term::Record(fields) => {
                 let parts: Vec<String> = fields
                     .iter()
@@ -433,9 +424,6 @@ impl Printer {
             Pat::Lit(l) => Self::lit(l),
             Pat::Tuple(ps) => format!("(tup {})", self.pats(ps)),
             Pat::Array(ps) => format!("#[{}]", self.pats(ps)),
-            Pat::List(ps) => format!("[{}]", self.pats(ps)),
-            Pat::ListNil => "[]".to_string(),
-            Pat::ListCons(h, t) => format!("(:: {} {})", self.pat(h), self.pat(t)),
             Pat::Ctor(n, ps) => format!("({n} {})", self.pats(ps)),
             Pat::Record(fields) => {
                 let parts: Vec<String> = fields
@@ -465,6 +453,9 @@ pub struct Lowerer<'a> {
     /// Inferred types, keyed by `NodeId` — consulted so an integer literal whose
     /// context coerced it to `BigInt` lowers to [`Lit::BigInt`], not [`Lit::Int`].
     types: &'a TypeTable,
+    /// Declared arity per data constructor, so an under-applied one can be
+    /// eta-expanded into a function.
+    ctor_arity: &'a HashMap<InternedString, usize>,
     /// Named-field order per constructor, accumulated across `lower_module` calls.
     pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
 }
@@ -475,12 +466,14 @@ impl<'a> Lowerer<'a> {
         names: &'a HashMap<Var, InternedString>,
         effect_ops: &'a HashMap<Var, (InternedString, InternedString)>,
         types: &'a TypeTable,
+        ctor_arity: &'a HashMap<InternedString, usize>,
     ) -> Self {
         Lowerer {
             prims,
             names,
             effect_ops,
             types,
+            ctor_arity,
             ctor_fields: HashMap::new(),
         }
     }
@@ -583,10 +576,32 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn curry_lam(&mut self, params: &[hir::Ident], body: &hir::LExpr) -> Term {
+    /// `\p1 p2 -> body` for irrefutable parameter patterns: each parameter binds
+    /// one fresh variable, and anything structural is destructured by `let`s at
+    /// the top of the body.
+    fn curry_lam(&mut self, params: &[hir::LPat], body: &hir::LExpr) -> Term {
+        let binders: Vec<_> = params.iter().map(|p| self.pat_binder(p)).collect();
         let mut term = self.lower_expr(body);
-        for p in params.iter().rev() {
-            term = Term::Lam(*p.value(), Rc::new(term));
+        for (v, structured) in binders.into_iter().rev() {
+            term = self.with_pat_prelude_term(v, structured, term);
+            term = Term::Lam(v, Rc::new(term));
+        }
+        term
+    }
+
+    /// Prefix `term` with the `let`s that destructure `var` according to `pat`.
+    fn with_pat_prelude_term(
+        &mut self,
+        var: Var,
+        pat: Option<&hir::LPat>,
+        mut term: Term,
+    ) -> Term {
+        if let Some(p) = pat {
+            let mut binds = Vec::new();
+            self.bind_pat(Term::Var(var), p, &mut binds);
+            for (bv, bt) in binds.into_iter().rev() {
+                term = Term::Let(bv, Rc::new(bt), Rc::new(term));
+            }
         }
         term
     }
@@ -614,28 +629,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            hir::Expr::Lam(params, body) => {
-                let params: Vec<_> = params
-                    .iter()
-                    .map(|p| match p.value() {
-                        hir::Pat::Var(id) => (*id.value(), None),
-                        hir::Pat::Wildcard => (hir::VarId::fresh(), None),
-                        _ => (hir::VarId::fresh(), Some(p)),
-                    })
-                    .collect();
-                let mut term = self.lower_expr(body);
-                for (v, refutable) in params.into_iter().rev() {
-                    if let Some(p) = refutable {
-                        let mut binds = Vec::new();
-                        self.bind_pat(Term::Var(v), p, &mut binds);
-                        for (bv, bt) in binds.into_iter().rev() {
-                            term = Term::Let(bv, Rc::new(bt), Rc::new(term));
-                        }
-                    }
-                    term = Term::Lam(v, Rc::new(term));
-                }
-                term
-            }
+            hir::Expr::Lam(params, body) => self.curry_lam(params, body),
 
             hir::Expr::App(func, args) => {
                 if let hir::Expr::Var(id) = func.value() {
@@ -682,26 +676,22 @@ impl<'a> Lowerer<'a> {
             hir::Expr::Array(items) => {
                 Term::Array(items.iter().map(|e| self.lower_expr(e)).collect())
             }
+            // `[a; b; c]` is sugar for `Cons a (Cons b (Cons c Nil))` — `List` is
+            // an ordinary `Std` data type, so it lowers to plain constructors.
             hir::Expr::List(items) => {
-                Term::List(items.iter().map(|e| self.lower_expr(e)).collect())
+                let nil = Term::Ctor(InternedString::from("Nil"), vec![]);
+                items.iter().rev().fold(nil, |acc, e| {
+                    let head = self.lower_expr(e);
+                    Term::Ctor(InternedString::from("Cons"), vec![head, acc])
+                })
             }
             hir::Expr::Cons(label, args) => {
                 let name = *label.value();
                 let lowered: Vec<Term> = args.iter().map(|e| self.lower_expr(e)).collect();
                 match (&*name, lowered.len()) {
-                    ("Nil", 0) => Term::List(vec![]),
                     ("True", 0) => Term::Lit(Lit::Bool(true)),
                     ("False", 0) => Term::Lit(Lit::Bool(false)),
-                    ("Cons", 2) => {
-                        let mut it = lowered.into_iter();
-                        Term::ListCons(Rc::new(it.next().unwrap()), Rc::new(it.next().unwrap()))
-                    }
-                    // under/over-applied built-in constructor: eta-expand and apply
-                    ("Nil" | "Cons", _) => lowered
-                        .into_iter()
-                        .fold(self.eta_ctor(&name), |f, a| Term::App(Rc::new(f), Rc::new(a))),
-                    // unknown constructor (no `data` decls yet)
-                    _ => Term::Ctor(name, lowered),
+                    _ => self.ctor(name, lowered),
                 }
             }
 
@@ -772,15 +762,8 @@ impl<'a> Lowerer<'a> {
         pat: Option<&hir::LPat>,
         body: &hir::LExpr,
     ) -> Term {
-        let mut term = self.lower_expr(body);
-        if let Some(p) = pat {
-            let mut binds = Vec::new();
-            self.bind_pat(Term::Var(var), p, &mut binds);
-            for (bv, bt) in binds.into_iter().rev() {
-                term = Term::Let(bv, Rc::new(bt), Rc::new(term));
-            }
-        }
-        term
+        let term = self.lower_expr(body);
+        self.with_pat_prelude_term(var, pat, term)
     }
 
     fn lower_let_bind(&mut self, bind: &hir::Bind, body: Term) -> Term {
@@ -859,20 +842,20 @@ impl<'a> Lowerer<'a> {
             hir::Pat::Array(items) => {
                 Pat::Array(items.iter().map(|p| self.lower_pat(p)).collect())
             }
+            // `[a; b; c]` — the same `Cons`/`Nil` chain as the expression form.
             hir::Pat::List(items) => {
-                Pat::List(items.iter().map(|p| self.lower_pat(p)).collect())
+                let nil = Pat::Ctor(InternedString::from("Nil"), vec![]);
+                items.iter().rev().fold(nil, |acc, p| {
+                    let head = self.lower_pat(p);
+                    Pat::Ctor(InternedString::from("Cons"), vec![head, acc])
+                })
             }
             hir::Pat::Cons(label, args) => {
                 let name = *label.value();
                 let lowered: Vec<Pat> = args.iter().map(|p| self.lower_pat(p)).collect();
                 match (&*name, lowered.len()) {
-                    ("Nil", 0) => Pat::ListNil,
                     ("True", 0) => Pat::Lit(Lit::Bool(true)),
                     ("False", 0) => Pat::Lit(Lit::Bool(false)),
-                    ("Cons", 2) => {
-                        let mut it = lowered.into_iter();
-                        Pat::ListCons(Box::new(it.next().unwrap()), Box::new(it.next().unwrap()))
-                    }
                     _ => Pat::Ctor(name, lowered),
                 }
             }
@@ -886,29 +869,21 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// A built-in constructor used as a value / under-applied: `Cons` becomes
-    /// `\h. \t. cons h t`, `Nil` the empty list, `True`/`False` bool literals.
-    fn eta_ctor(&self, name: &str) -> Term {
-        match name {
-            "Nil" => Term::List(vec![]),
-            "True" => Term::Lit(Lit::Bool(true)),
-            "False" => Term::Lit(Lit::Bool(false)),
-            "Cons" => {
-                let h = hir::VarId::fresh();
-                let t = hir::VarId::fresh();
-                Term::Lam(
-                    h,
-                    Rc::new(Term::Lam(
-                        t,
-                        Rc::new(Term::ListCons(
-                            Rc::new(Term::Var(h)),
-                            Rc::new(Term::Var(t)),
-                        )),
-                    )),
-                )
-            }
-            _ => Term::Ctor(InternedString::from(name), vec![]),
+    /// Build a constructor application, eta-expanding an under-applied one so a
+    /// bare `Cons` / `Just` can still be passed around as a function.
+    fn ctor(&self, name: InternedString, args: Vec<Term>) -> Term {
+        let arity = self.ctor_arity.get(&name).copied().unwrap_or(args.len());
+        if args.len() >= arity {
+            return Term::Ctor(name, args);
         }
+        let extra: Vec<Var> = (args.len()..arity).map(|_| hir::VarId::fresh()).collect();
+        let mut all = args;
+        all.extend(extra.iter().map(|v| Term::Var(*v)));
+        let body = Term::Ctor(name, all);
+        extra
+            .into_iter()
+            .rev()
+            .fold(body, |acc, v| Term::Lam(v, Rc::new(acc)))
     }
 
     /// `\a. \b. prim(a, b)` — used when a primitive is referenced without (or with

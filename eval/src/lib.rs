@@ -42,8 +42,10 @@ pub enum Value {
     /// The one builtin collection: a persistent, `Rc`-shared contiguous buffer.
     /// `Rc` gives O(1) clone + structural sharing; `Rc::make_mut` lets `arraySet`
     /// / `arrayPush` mutate in place when the buffer is uniquely held.
+    ///
+    /// `List` and `Vector` are *not* here — they are ordinary `Std` data types
+    /// and reach the runtime as [`Value::Ctor`] chains.
     Array(Rc<Vec<Value>>),
-    List(Vec<Value>),
     Record(BTreeMap<InternedString, Value>),
     Ctor(InternedString, Vec<Value>),
     Closure {
@@ -163,11 +165,6 @@ pub enum K {
         pending: Vec<Term>,
         env: Env,
     },
-    BuildList {
-        done: Vec<Value>,
-        pending: Vec<Term>,
-        env: Env,
-    },
     BuildCtor {
         name: InternedString,
         done: Vec<Value>,
@@ -197,15 +194,6 @@ pub enum K {
     ExtendWith {
         label: InternedString,
         rec: Value,
-    },
-    /// `ListCons`: the head is evaluated; evaluate the tail.
-    ConsHead {
-        tail: Rc<Term>,
-        env: Env,
-    },
-    /// `ListCons`: the tail is evaluated; prepend the saved head.
-    ConsBuild {
-        head: Value,
     },
     Match {
         arms: Rc<Vec<(core::Pat, Term)>>,
@@ -344,7 +332,6 @@ impl Machine<'_> {
             }
             T::Tuple(items) => self.start_seq(items, env, SeqKind::Tuple),
             T::Array(items) => self.start_seq(items, env, SeqKind::Array),
-            T::List(items) => self.start_seq(items, env, SeqKind::List),
             T::Ctor(name, args) => self.start_seq(args, env, SeqKind::Ctor(*name)),
             T::Prim(op, args) => self.start_seq(args, env, SeqKind::Prim(*op)),
             T::Record(fields) => {
@@ -377,13 +364,6 @@ impl Machine<'_> {
                     env: env.clone(),
                 });
                 self.ctrl = Control::Eval(rec.clone(), env);
-            }
-            T::ListCons(head, tail) => {
-                self.kont.push(K::ConsHead {
-                    tail: tail.clone(),
-                    env: env.clone(),
-                });
-                self.ctrl = Control::Eval(head.clone(), env);
             }
             T::Case(scrut, arms) => {
                 self.kont.push(K::Match {
@@ -428,11 +408,6 @@ impl Machine<'_> {
                         pending,
                         env: env.clone(),
                     },
-                    SeqKind::List => K::BuildList {
-                        done,
-                        pending,
-                        env: env.clone(),
-                    },
                     SeqKind::Ctor(name) => K::BuildCtor {
                         name,
                         done,
@@ -452,7 +427,6 @@ impl Machine<'_> {
                 self.ctrl = Control::Ret(match kind {
                     SeqKind::Tuple => Value::Tuple(vec![]),
                     SeqKind::Array => Value::Array(Rc::new(vec![])),
-                    SeqKind::List => Value::List(vec![]),
                     SeqKind::Ctor(name) => Value::Ctor(name, vec![]),
                     SeqKind::Prim(_) => Value::Unit, // prims always have args
                 });
@@ -536,24 +510,6 @@ impl Machine<'_> {
                         self.ctrl = Control::Eval(Rc::new(next), env);
                     }
                     None => self.ctrl = Control::Ret(Value::Array(Rc::new(done))),
-                }
-            }
-            K::BuildList {
-                mut done,
-                mut pending,
-                env,
-            } => {
-                done.push(v);
-                match pending.pop() {
-                    Some(next) => {
-                        self.kont.push(K::BuildList {
-                            done,
-                            pending,
-                            env: env.clone(),
-                        });
-                        self.ctrl = Control::Eval(Rc::new(next), env);
-                    }
-                    None => self.ctrl = Control::Ret(Value::List(done)),
                 }
             }
             K::BuildCtor {
@@ -653,17 +609,6 @@ impl Machine<'_> {
                     self.ctrl = Control::Ret(Value::Record(map));
                 }
                 other => return err(format!("cannot extend non-record {other}")),
-            },
-            K::ConsHead { tail, env } => {
-                self.kont.push(K::ConsBuild { head: v });
-                self.ctrl = Control::Eval(tail, env);
-            }
-            K::ConsBuild { head } => match v {
-                Value::List(mut items) => {
-                    items.insert(0, head);
-                    self.ctrl = Control::Ret(Value::List(items));
-                }
-                other => return err(format!("`Cons` tail is not a list: {other}")),
             },
             K::Match { arms, env } => {
                 for (pat, body) in arms.iter() {
@@ -774,7 +719,6 @@ impl Machine<'_> {
 enum SeqKind {
     Tuple,
     Array,
-    List,
     Ctor(InternedString),
     Prim(core::Prim),
 }
@@ -815,13 +759,6 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
         }
         (P::Array(ps), Value::Array(vs)) if ps.len() == vs.len() => {
             ps.iter().zip(vs.iter()).all(|(p, v)| match_pat(p, v, scope))
-        }
-        (P::List(ps), Value::List(vs)) if ps.len() == vs.len() => {
-            ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, scope))
-        }
-        (P::ListNil, Value::List(vs)) => vs.is_empty(),
-        (P::ListCons(ph, pt), Value::List(vs)) if !vs.is_empty() => {
-            match_pat(ph, &vs[0], scope) && match_pat(pt, &Value::List(vs[1..].to_vec()), scope)
         }
         (P::Ctor(name, ps), Value::Ctor(vname, vs)) if name == vname && ps.len() == vs.len() => {
             ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, scope))
@@ -1202,7 +1139,7 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             Err(e) => ioerr(e),
         },
         "readBytes" => match fs::read(&*one(&arg)?) {
-            Ok(b) => ok(Value::List(
+            Ok(b) => ok(list_value(
                 b.into_iter().map(|x| Value::Int(i64::from(x))).collect(),
             )),
             Err(e) => ioerr(e),
@@ -1246,7 +1183,7 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                         Err(e) => return Ok(ioerr(e)),
                     }
                 }
-                ok(Value::List(names))
+                ok(list_value(names))
             }
             Err(e) => ioerr(e),
         },
@@ -1291,10 +1228,10 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             other => err(format!("Process.{op}: expected a String, got {other}")),
         }
     };
-    fn as_list<'a>(op: &str, v: &'a Value) -> Result<&'a Vec<Value>, RuntimeError> {
-        match v {
-            Value::List(xs) => Ok(xs),
-            other => err(format!("Process.{op}: expected a List, got {other}")),
+    fn as_list(op: &str, v: &Value) -> Result<Vec<Value>, RuntimeError> {
+        match list_items(v) {
+            Some(xs) => Ok(xs),
+            None => err(format!("Process.{op}: expected a List, got {v}")),
         }
     }
     let as_cwd = |v: &Value| -> Result<Option<InternedString>, RuntimeError> {
@@ -1312,7 +1249,7 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
         let program = as_str(&t[0])?;
         let mut cmd = Proc::new(&*program);
         for a in as_list(op, &t[1])? {
-            cmd.arg(&*as_str(a)?);
+            cmd.arg(&*as_str(&a)?);
         }
         if let Some(dir) = as_cwd(&t[2])? {
             cmd.current_dir(&*dir);
@@ -1346,7 +1283,7 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             std::process::exit(code as i32);
         }
         "currentPid" => Value::Int(std::process::id() as i64),
-        "argv" => Value::List(std::env::args().skip(1).map(sv).collect()),
+        "argv" => list_value(std::env::args().skip(1).map(sv).collect()),
         "getEnv" => match std::env::var(&*as_str(&arg)?) {
             Ok(v) => just(sv(v)),
             Err(_) => none(),
@@ -1365,6 +1302,41 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
         }
         other => return err(format!("unhandled effect Process.{other}")),
     })
+}
+
+// --- `Std.Collections.List` marshalling -------------------------------------
+//
+// `List` is an ordinary `Std` data type (`data List a = Nil | Cons a (List a)`),
+// so at runtime it is nothing but a chain of `Value::Ctor`s — the runtime has no
+// list of its own. Native operations whose declared signature mentions `List`
+// build and read that chain here, the same way `Bool` crosses the boundary as
+// `Value::Bool`.
+
+fn nil_value() -> Value {
+    Value::Ctor(InternedString::from("Nil"), vec![])
+}
+
+/// Build a `Cons`/`Nil` chain from `items`, in order.
+fn list_value(items: Vec<Value>) -> Value {
+    items.into_iter().rfold(nil_value(), |tail, head| {
+        Value::Ctor(InternedString::from("Cons"), vec![head, tail])
+    })
+}
+
+/// Flatten a `Cons`/`Nil` chain to its elements. `None` if `v` is not a list.
+fn list_items(v: &Value) -> Option<Vec<Value>> {
+    let mut out = Vec::new();
+    let mut cur = v;
+    loop {
+        match cur {
+            Value::Ctor(n, args) if &**n == "Nil" && args.is_empty() => return Some(out),
+            Value::Ctor(n, args) if &**n == "Cons" && args.len() == 2 => {
+                out.push(args[0].clone());
+                cur = &args[1];
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// Names of the outer `Std.Collections.Vector` constructors — the values `[…]`
@@ -1442,7 +1414,7 @@ fn value_eq(a: &Value, b: &Value) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::Unit, Value::Unit) => true,
-        (Value::Tuple(x), Value::Tuple(y)) | (Value::List(x), Value::List(y)) => {
+        (Value::Tuple(x), Value::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| value_eq(p, q))
         }
         (Value::Array(x), Value::Array(y)) => {
@@ -1493,16 +1465,6 @@ impl fmt::Display for Value {
                 }
                 f.write_str("]")
             }
-            Value::List(items) => {
-                f.write_str("[")?;
-                for (i, v) in items.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(", ")?;
-                    }
-                    write!(f, "{v}")?;
-                }
-                f.write_str("]")
-            }
             Value::Record(map) => {
                 f.write_str("{ ")?;
                 for (i, (k, v)) in map.iter().enumerate() {
@@ -1512,6 +1474,22 @@ impl fmt::Display for Value {
                     write!(f, "{k} = {v}")?;
                 }
                 f.write_str(" }")
+            }
+            // `Std.Collections.List` values print in their own literal syntax:
+            // `[1; 2; 3]`. The comma form `[1, 2, 3]` is a `Vector`, and
+            // `#[1, 2, 3]` an `Array`.
+            Value::Ctor(name, _) if matches!(&**name, "Nil" | "Cons") => {
+                if let Some(xs) = list_items(self) {
+                    f.write_str("[")?;
+                    for (i, v) in xs.iter().enumerate() {
+                        if i > 0 {
+                            f.write_str("; ")?;
+                        }
+                        write!(f, "{v}")?;
+                    }
+                    return f.write_str("]");
+                }
+                write!(f, "{name}(..)")
             }
             // `Std.Collections.Vector` values print like a list: `[1, 2, 3]`.
             Value::Ctor(name, _) if is_vector_ctor(name) => {
@@ -1602,14 +1580,14 @@ mod tests {
 
     #[test]
     fn list_cons_prepends() {
-        let term = Term::ListCons(
-            int(0),
-            Rc::new(Term::List(vec![
-                Term::Lit(Lit::Int(1)),
-                Term::Lit(Lit::Int(2)),
-            ])),
+        // Lists are plain `Std` constructors: `Cons 0 (Cons 1 (Cons 2 Nil))`.
+        let cons = |h: Term, t: Term| Term::Ctor("Cons".into(), vec![h, t]);
+        let nil = Term::Ctor("Nil".into(), vec![]);
+        let term = cons(
+            Term::Lit(Lit::Int(0)),
+            cons(Term::Lit(Lit::Int(1)), cons(Term::Lit(Lit::Int(2)), nil)),
         );
-        assert_eq!(eval_term(term).unwrap().to_string(), "[0, 1, 2]");
+        assert_eq!(eval_term(term).unwrap().to_string(), "[0; 1; 2]");
     }
 
     #[test]
@@ -1733,8 +1711,8 @@ mod tests {
 
     #[test]
     fn structural_equality() {
-        let a = Value::Tuple(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
-        let b = Value::Tuple(vec![Value::Int(1), Value::List(vec![Value::Int(2)])]);
+        let a = Value::Tuple(vec![Value::Int(1), list_value(vec![Value::Int(2)])]);
+        let b = Value::Tuple(vec![Value::Int(1), list_value(vec![Value::Int(2)])]);
         assert!(value_eq(&a, &b));
         assert!(!value_eq(&a, &Value::Int(1)));
     }

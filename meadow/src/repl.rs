@@ -13,7 +13,7 @@ use meadow_compiler::{
     parser,
     source::{Source, SourceKind},
     span::{Located, Span},
-    AstModule, CompiledPackage,
+    AstModule, CompiledPackage, Options,
 };
 use meadow_eval as eval;
 use itertools::Either;
@@ -181,6 +181,8 @@ const BANNER: &str = r#"
 
 pub struct Session {
     line: u32,
+    /// The REPL is an edit-run loop, so it compiles under the debug profile.
+    opts: Options,
     /// Compiled prior entries, oldest first — the dependency chain. The first
     /// `std_len` entries are the embedded `Std` package and survive `:reset`.
     prefix: Vec<CompiledPackage>,
@@ -189,7 +191,8 @@ pub struct Session {
 
 impl Session {
     pub fn new() -> Self {
-        let (std_pkgs, diags) = stdlib::compile_std();
+        let opts = Options::debug();
+        let (std_pkgs, diags) = stdlib::compile_std(opts);
         if !diags.is_empty() {
             // A broken embedded prelude is a compiler bug, not a user error.
             for d in &diags {
@@ -199,6 +202,7 @@ impl Session {
         let std_len = std_pkgs.len();
         Session {
             line: std_len as u32,
+            opts,
             prefix: std_pkgs,
             std_len,
         }
@@ -316,6 +320,7 @@ impl Session {
             self.line as usize,
             vec![ast_mod],
             &deps,
+            self.opts,
         );
 
         let had_error = !diags.is_empty();

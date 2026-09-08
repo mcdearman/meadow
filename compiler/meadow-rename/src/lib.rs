@@ -202,6 +202,13 @@ impl Resolver {
         self.scope.iter().take(PRIMS.len()).copied().collect()
     }
 
+    /// Declared arity of every data / record constructor in scope. `Cons` / `Nil`
+    /// come from the prelude's `data List`; the two `Bool` constructors lower to
+    /// literals and never need an arity.
+    pub fn ctor_arities(&self) -> HashMap<InternedString, usize> {
+        self.ctors.iter().map(|(n, c)| (*n, c.arity)).collect()
+    }
+
     pub fn names(&self) -> &HashMap<VarId, InternedString> {
         &self.names
     }
@@ -731,13 +738,7 @@ impl Resolver {
                 let id = self.bind_defn(*name.value());
                 let name_node = self.node(id, name.span);
                 let mark = self.mark();
-                let rparams = params
-                    .iter()
-                    .map(|p| {
-                        let pid = self.bind(*p.value());
-                        self.node(pid, p.span)
-                    })
-                    .collect_vec();
+                let rparams = params.iter().map(|p| self.resolve_pat(p)).collect_vec();
                 let rbody = self.resolve_expr(body);
                 self.reset(mark);
                 hir::Bind::Fun(name_node, rparams, rbody)

@@ -1,0 +1,15 @@
+[package]
+name = "meadow-exhaust"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_exhaust"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-diagnostics.workspace = true
+meadow-hir.workspace = true
+meadow-infer.workspace = true
+meadow-intern.workspace = true
+meadow-span.workspace = true

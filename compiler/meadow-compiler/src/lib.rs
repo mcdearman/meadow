@@ -46,6 +46,7 @@
 pub use meadow_ast as ast;
 pub use meadow_core as core;
 pub use meadow_diagnostics as diagnostics;
+pub use meadow_exhaust as exhaust;
 pub use meadow_hir as hir;
 pub use meadow_infer as infer;
 pub use meadow_intern as intern;
@@ -55,8 +56,11 @@ pub use meadow_rename as rename;
 pub use meadow_source as source;
 pub use meadow_span as span;
 
+mod options;
+pub use options::Options;
+
 mod unit;
 pub use unit::{
-    compile_str, compile_unit, compile_unit_in_package, AstModule, CompiledPackage, Export,
-    TypedModule,
+    compile_str, compile_str_with, compile_unit, compile_unit_in_package, AstModule,
+    CompiledPackage, Export, TypedModule,
 };

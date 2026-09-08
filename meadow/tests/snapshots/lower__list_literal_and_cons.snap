@@ -1,6 +1,6 @@
 ---
 source: tests/lower.rs
-expression: "core_ir(\"def a = [1, 2, 3]\\ndef b = Cons 0 a\\n\")"
+expression: "core_ir(\"def a = [1; 2; 3]\\ndef b = Cons 0 a\\n\")"
 ---
-v0 = (<error> #[1 2 3])
-v1 = (:: 0 v0)
+v0 = (Cons 1 (Cons 2 (Cons 3 (Nil ))))
+v1 = (Cons 0 v0)

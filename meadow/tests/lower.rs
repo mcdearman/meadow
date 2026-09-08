@@ -30,8 +30,10 @@ fn match_lowers_to_case() {
 
 #[test]
 fn list_literal_and_cons() {
+    // `[a; b; c]` is sugar for a `Cons`/`Nil` chain — `List` is an ordinary data
+    // type, so there is no list form in core.
     insta::assert_snapshot!(core_ir(
-        "def a = [1, 2, 3]\ndef b = Cons 0 a\n"
+        "def a = [1; 2; 3]\ndef b = Cons 0 a\n"
     ));
 }
 

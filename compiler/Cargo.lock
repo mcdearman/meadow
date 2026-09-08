@@ -244,6 +244,7 @@ dependencies = [
  "meadow-ast",
  "meadow-core",
  "meadow-diagnostics",
+ "meadow-exhaust",
  "meadow-hir",
  "meadow-infer",
  "meadow-intern",
@@ -271,6 +272,17 @@ version = "0.1.0"
 dependencies = [
  "ariadne",
  "chumsky",
+ "meadow-span",
+]
+
+[[package]]
+name = "meadow-exhaust"
+version = "0.1.0"
+dependencies = [
+ "meadow-diagnostics",
+ "meadow-hir",
+ "meadow-infer",
+ "meadow-intern",
  "meadow-span",
 ]
 

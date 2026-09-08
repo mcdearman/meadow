@@ -117,12 +117,12 @@ where
             .then(expr())
             .map(|(p, e)| Bind::Pat(p, e));
 
-        // `fun f a b = e`, or point-free `fun f = e` (no parameters) — the latter
-        // is just a value binding, so it takes the `Bind::Pat` path (and its
-        // right-hand side is subject to the value restriction, like `def`).
+        // `fun f a (x, y) = e`, or point-free `fun f = e` (no parameters) — the
+        // latter is just a value binding, so it takes the `Bind::Pat` path (and
+        // its right-hand side is subject to the value restriction, like `def`).
         let fun_bind = just(Token::Fun)
             .ignore_then(lower_ident())
-            .then(lower_ident().repeated().collect::<Vec<_>>())
+            .then(param_pat().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::Eq))
             .then(expr())
             .map(|((name, args), body)| {
@@ -480,7 +480,7 @@ where
 
             let fun_bind = just(Token::Fun)
                 .ignore_then(lower_ident())
-                .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
+                .then(param_pat().repeated().at_least(1).collect::<Vec<_>>())
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone())
                 .map(|((name, args), body)| Bind::Fun(name, args, body));
@@ -488,7 +488,7 @@ where
             // `[rec] name args = body`  /  `[rec] name = body`
             let name_bind = rec_prefix
                 .ignore_then(lower_ident())
-                .then(lower_ident().repeated().collect::<Vec<_>>())
+                .then(param_pat().repeated().collect::<Vec<_>>())
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone())
                 .map(|((name, args), body)| {
@@ -1135,15 +1135,19 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .then_ignore(just(Token::RBrack))
             .map(|patterns| Pat::Array(patterns));
 
+        // `(p)` is grouping, `(p, q)` a tuple — mirroring the type grammar.
         let tuple = just(Token::LParen)
             .ignore_then(
                 pat.clone()
                     .separated_by(just(Token::Comma))
                     .allow_trailing()
-                    .collect(),
+                    .collect::<Vec<_>>(),
             )
             .then_ignore(just(Token::RParen))
-            .map(|patterns| Pat::Tuple(patterns));
+            .map(|mut patterns| match patterns.len() {
+                1 => *patterns.pop().unwrap().value,
+                _ => Pat::Tuple(patterns),
+            });
 
         // `Mod.Ctor p q` — a constructor pattern qualified by a `use`d module.
         let qual_cons = upper_ident()
@@ -1210,6 +1214,55 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             })
             .boxed()
     })
+}
+
+/// A **parameter** pattern: the unambiguous, atomic subset of [`pat`], so
+/// `fun f (a, b) c = e` reads as two parameters rather than one constructor
+/// application. Anything richer goes in parentheses — `fun f (Just x) = e`
+/// parses fine and is then rejected by the irrefutability check, which is where
+/// the useful error lives (see `meadow-exhaust`).
+fn param_pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, LPat, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    let inner = pat();
+
+    // `()` unit, `(p)` grouping, `(p, q)` tuple.
+    let paren = inner
+        .clone()
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .delimited_by(just(Token::LParen), just(Token::RParen))
+        .map_with(|mut ps, e| match ps.len() {
+            0 => LPat::new(Pat::Unit, e.span()),
+            1 => ps.pop().unwrap(),
+            _ => LPat::new(Pat::Tuple(ps), e.span()),
+        });
+
+    let record_field = lower_ident()
+        .then(just(Token::Eq).ignore_then(inner.clone()).or_not())
+        .map(|(name, p)| {
+            let p = p.unwrap_or_else(|| Located::new(Pat::Var(name.clone()), name.span));
+            (name, p)
+        });
+    let record = record_field
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .then(
+            just(Token::Bar)
+                .ignore_then(just(Token::Wildcard))
+                .or_not(),
+        )
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .map_with(|(fields, open), e| LPat::new(Pat::Record(fields, open.is_some()), e.span()));
+
+    choice((
+        paren,
+        record,
+        lower_ident().map_with(|n, e| LPat::new(Pat::Var(n), e.span())),
+        just(Token::Wildcard).map_with(|_, e| LPat::new(Pat::Wildcard, e.span())),
+    ))
+    .boxed()
 }
 
 fn unit<'a, I: ValueInput<'a, Token = Token, Span = Span>>()

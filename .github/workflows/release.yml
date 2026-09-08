@@ -1,13 +1,16 @@
 # Build `meadow` for every supported platform and attach the archives to a
-# GitHub Release. The install scripts fetch these by a version-less asset name
-# (`meadow-<target>.tar.gz` / `.zip`) so they can use the `/releases/latest/`
-# redirect and never need to know the version.
+# GitHub Release, plus `meadow-setup-*.exe` — the double-clickable Windows
+# installer built from `installer/`.
+#
+# Asset names carry no version, so the installers can use the
+# `/releases/latest/download/...` redirect and never need to know the tag.
 #
 # Cut a release by pushing a tag:
 #
 #     git tag v0.1.0 && git push origin v0.1.0
 #
-# or run this workflow manually to get a draft.
+# A manual run builds everything and leaves the archives as workflow artifacts
+# without publishing.
 
 name: release
 
@@ -71,6 +74,13 @@ jobs:
           echo 'def main = 6 * 7' > /tmp/smoke.mw
           "$bin" run /tmp/smoke.mw | tail -1 | grep -q '=> 42'
 
+      # The double-clickable installer. Windows only — `install.sh` covers the
+      # rest — and its own workspace, so it builds separately.
+      - name: Build installer
+        if: matrix.os == 'windows-latest'
+        working-directory: installer
+        run: cargo build --release --target ${{ matrix.target }}
+
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
         working-directory: meadow/target/${{ matrix.target }}/release
@@ -78,8 +88,16 @@ jobs:
 
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
-        working-directory: meadow/target/${{ matrix.target }}/release
-        run: Compress-Archive -Path meadow.exe -DestinationPath "$env:GITHUB_WORKSPACE/meadow-${{ matrix.target }}.zip"
+        shell: pwsh
+        run: |
+          # The zip the installer downloads.
+          Compress-Archive `
+            -Path meadow/target/${{ matrix.target }}/release/meadow.exe `
+            -DestinationPath meadow-${{ matrix.target }}.zip
+          # The installer itself, under a name a person can recognise.
+          $arch = '${{ matrix.target }}'.Split('-')[0]
+          Copy-Item installer/target/${{ matrix.target }}/release/meadow-setup.exe `
+            "meadow-setup-$arch.exe"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -87,6 +105,7 @@ jobs:
           path: |
             meadow-${{ matrix.target }}.tar.gz
             meadow-${{ matrix.target }}.zip
+            meadow-setup-*.exe
           if-no-files-found: error
 
   release:
@@ -112,14 +131,15 @@ jobs:
           body: |
             ## Install
 
+            **Windows** — download **`meadow-setup-x86_64.exe`** below and run
+            it. (On an ARM machine take `meadow-setup-aarch64.exe`.) It installs
+            `meadow` and adds it to your `PATH`; open a new terminal afterwards.
+
             **macOS / Linux**
 
             ```sh
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | sh
             ```
 
-            **Windows (PowerShell)**
-
-            ```powershell
-            irm https://raw.githubusercontent.com/${{ github.repository }}/master/install.ps1 | iex
-            ```
+            Then `meadow` starts the REPL, and `meadow run <path>` builds and
+            runs a package.

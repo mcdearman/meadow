@@ -1,0 +1,26 @@
+[workspace]
+
+[package]
+name = "meadow-setup"
+version = "0.1.0"
+edition = "2024"
+description = "Installer for the Meadow language toolchain"
+
+[[bin]]
+name = "meadow-setup"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

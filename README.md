@@ -15,40 +15,41 @@ def main = classify 42
 
 ## Install
 
+**Windows** — download `meadow-setup-x86_64.exe` from the
+[latest release](https://github.com/mcdearman/meadow/releases/latest) and run
+it. (Take `meadow-setup-aarch64.exe` on an ARM machine.)
+
 **macOS / Linux**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/install.sh | sh
 ```
 
-**Windows (PowerShell)**
-
-```powershell
-irm https://raw.githubusercontent.com/mcdearman/meadow/master/install.ps1 | iex
-```
-
-Both drop a self-contained `meadow` into `~/.meadow/bin` and add it to your
-PATH. They download a prebuilt binary when one exists for your platform and
-otherwise build from source, which needs a [Rust toolchain](https://rustup.rs).
+Either way you get a self-contained `meadow` in `~/.meadow/bin`, added to your
+`PATH` — open a new terminal and run `meadow`.
 
 <details>
 <summary>Options</summary>
 
+`meadow-setup.exe` installs the `meadow.exe` sitting next to it if there is one,
+so you can also unzip a release and install offline.
+
+```
+meadow-setup.exe --dir <path>       install somewhere else
+meadow-setup.exe --from <path>      install a specific meadow.exe
+meadow-setup.exe --version v0.1.0   pin a release
+meadow-setup.exe --no-modify-path   leave PATH alone
+meadow-setup.exe --uninstall
+```
+
 ```sh
 install.sh --version v0.1.0   # pin a release
-install.sh --from-source      # always build from source
+install.sh --from-source      # always build from source (needs cargo)
 install.sh --no-modify-path   # leave shell profiles alone
 install.sh --uninstall
 ```
 
-```powershell
-.\install.ps1 -Version v0.1.0
-.\install.ps1 -FromSource
-.\install.ps1 -NoModifyPath
-.\install.ps1 -Uninstall
-```
-
-`MEADOW_HOME` overrides the install directory.
+`MEADOW_HOME` overrides the install directory for both.
 </details>
 
 ## Use
@@ -80,13 +81,14 @@ fallback arm.
 
 ## Building from a checkout
 
-The tree is three independent Cargo workspaces:
+The tree is four independent Cargo workspaces:
 
 | | |
 |---|---|
 | `compiler/` | the front end, one crate per pass |
 | `eval/` | the CEK machine |
 | `meadow/` | build system, CLI and REPL — the binary |
+| `installer/` | `meadow-setup.exe`, the Windows installer |
 
 ```sh
 cargo install --path meadow      # install the CLI

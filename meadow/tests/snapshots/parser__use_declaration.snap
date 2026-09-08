@@ -23,6 +23,7 @@ Module {
                         },
                     ],
                     names: [],
+                    alias: None,
                 },
             ),
             span: 0..16,

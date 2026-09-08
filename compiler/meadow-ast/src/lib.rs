@@ -52,6 +52,9 @@ pub struct UseDecl {
     pub path: Vec<Ident>,
     /// Selected names — `use a.b (x, y)`. Empty for a bare `use a.b`.
     pub names: Vec<Ident>,
+    /// `use a.b as C` — the name the module is qualified by at use sites.
+    /// Defaults to the last path segment.
+    pub alias: Option<Ident>,
 }
 
 /// A record field or named-variant field, with any leading attributes.

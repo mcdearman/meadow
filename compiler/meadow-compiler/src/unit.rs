@@ -165,7 +165,7 @@ pub fn compile_unit_in_package(
                 other => other,
             };
             if let ast::Decl::Use(u) = base {
-                apply_use(&mut resolver, pkg, u, deps);
+                apply_use(&mut resolver, pkg, u, deps, &filename, &mut diags);
             }
         }
     }
@@ -348,25 +348,89 @@ fn hir_pat_vars(pat: &hir::LPat, out: &mut Vec<VarId>) {
 
 /// Resolve one `use` decl against the dependency packages and register the
 /// resulting module qualifier (+ any explicitly named unqualified imports).
+/// Bring the module a `use` names into scope, and report it if there is no such
+/// module (or no such exported name).
 fn apply_use(
     resolver: &mut Resolver,
     pkg: InternedString,
     u: &ast::UseDecl,
     deps: &[&CompiledPackage],
+    filename: &str,
+    diags: &mut Vec<Diagnostic>,
 ) {
     let segs: Vec<InternedString> = u.path.iter().map(|s| *s.value()).collect();
     if segs.is_empty() {
         return;
     }
-    // `use Pkg.a.b` inside package `Pkg` refers to the local module `a.b`.
-    let local: &[InternedString] = if segs[0] == pkg { &segs[1..] } else { &segs };
+    let path_span = u
+        .path
+        .iter()
+        .fold(u.path[0].span, |acc, s| acc.extend(s.span));
+    let Resolved { map, found } = resolve_module(pkg, &segs, deps);
 
-    let mut map: HashMap<InternedString, VarId> = HashMap::new();
+    if !found {
+        let path = dotted(&segs);
+        let mut msg = format!("no module `{path}`");
+        if let Some(suggestion) = suggest_module(&segs, deps) {
+            msg.push_str(&format!(" — did you mean `{suggestion}`?"));
+        }
+        diags.push(Diagnostic {
+            msg,
+            filename: filename.to_string(),
+            label: ("not found".to_string(), path_span),
+            extra_labels: vec![],
+        });
+        return;
+    }
+
+    let qualifier = match &u.alias {
+        Some(a) => *a.value(),
+        None => *segs.last().unwrap(),
+    };
+    resolver.activate_module(qualifier, map.clone());
+    // Only *values* live in `map`. A selected name can also be a type, a data
+    // constructor or an effect operation, and those are imported wholesale
+    // elsewhere (`import_types`), so a miss here is not an error.
+    for n in &u.names {
+        if let Some(&id) = map.get(&*n.value()) {
+            resolver.import(*n.value(), id);
+        }
+    }
+}
+
+/// What a `use` path names: whether the module exists at all, and the values it
+/// exports.
+pub struct Resolved {
+    /// Exported **values**, by name. Types, constructors and effect operations
+    /// are imported wholesale elsewhere and never appear here.
+    pub map: HashMap<InternedString, VarId>,
+    /// Whether the module exists — which is not the same as `!map.is_empty()`,
+    /// since `Std.Collections` is nothing but `mod` declarations.
+    pub found: bool,
+}
+
+/// Look up the module a `use` path names among `deps`. Shared by `use`
+/// resolution and by the REPL's completer, so the two cannot disagree about
+/// what is in scope.
+pub fn resolve_module(
+    pkg: InternedString,
+    segs: &[InternedString],
+    deps: &[&CompiledPackage],
+) -> Resolved {
+    let mut map = HashMap::new();
+    let mut found = false;
+    if segs.is_empty() {
+        return Resolved { map, found };
+    }
+    // `use Pkg.a.b` inside package `Pkg` refers to the local module `a.b`.
+    let local: &[InternedString] = if segs[0] == pkg { &segs[1..] } else { segs };
+
     for dep in deps {
         // intra-batch sub-module: dep is named by its dotted module path
-        let dep_is_local_module = dotted(local) == &*dep.name.to_string()
-            || dotted(&segs) == &*dep.name.to_string();
+        let dep_is_local_module =
+            dotted(local) == &*dep.name.to_string() || dotted(segs) == &*dep.name.to_string();
         if dep_is_local_module {
+            found = true;
             for e in &dep.exports {
                 map.insert(e.name, e.var);
             }
@@ -375,6 +439,9 @@ fn apply_use(
         // external package: first segment is the package name, rest is module path
         if segs[0] == dep.name {
             let want = &segs[1..];
+            if dep.modules.iter().any(|m| m.path == want) {
+                found = true;
+            }
             for e in &dep.exports {
                 if e.module == want {
                     map.insert(e.name, e.var);
@@ -382,16 +449,24 @@ fn apply_use(
             }
         }
     }
-    if map.is_empty() {
-        return; // unresolved — use sites will report `module not in scope`
-    }
-    let qualifier = *segs.last().unwrap();
-    resolver.activate_module(qualifier, map.clone());
-    for n in &u.names {
-        if let Some(&id) = map.get(&*n.value()) {
-            resolver.import(*n.value(), id);
+    Resolved { map, found }
+}
+
+/// A module elsewhere whose last segment matches the one asked for, rendered as
+/// the full path it should have been written as — so `use List` can point at
+/// `Std.Collections.List`.
+fn suggest_module(segs: &[InternedString], deps: &[&CompiledPackage]) -> Option<String> {
+    let last = segs.last()?;
+    for dep in deps {
+        for m in &dep.modules {
+            if m.path.last() == Some(last) && m.path.as_slice() != segs {
+                let mut full = vec![dep.name];
+                full.extend(m.path.iter().copied());
+                return Some(dotted(&full));
+            }
         }
     }
+    None
 }
 
 fn dotted(segs: &[InternedString]) -> String {

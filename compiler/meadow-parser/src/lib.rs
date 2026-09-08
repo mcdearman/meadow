@@ -147,6 +147,9 @@ where
                 .at_least(1)
                 .collect::<Vec<_>>(),
         )
+        // `as C` — rename the qualifier. Upper-case, because that is what a
+        // qualified reference (`C.map`) can name.
+        .then(just(Token::As).ignore_then(upper_ident()).or_not())
         .then(
             path_seg()
                 .separated_by(just(Token::Comma))
@@ -155,11 +158,12 @@ where
                 .delimited_by(just(Token::LParen), just(Token::RParen))
                 .or_not(),
         )
-        .map_with(|(path, names), e| {
+        .map_with(|((path, alias), names), e| {
             LDecl::new(
                 Decl::Use(UseDecl {
                     path,
                     names: names.unwrap_or_default(),
+                    alias,
                 }),
                 e.span(),
             )

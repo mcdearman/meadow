@@ -47,6 +47,7 @@ Module {
                                     span: 44..49,
                                 },
                             ],
+                            alias: None,
                         },
                     ),
                     span: 5..50,

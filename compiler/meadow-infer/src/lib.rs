@@ -342,7 +342,10 @@ impl Arena {
     /// context ever pinned to `BigInt`. Run once, at the end of inference.
     fn default_num_vars(&mut self) {
         for slot in &mut self.slots {
-            if let Slot::Unbound { kind: VarKind::Num, .. } = slot {
+            if let Slot::Unbound {
+                kind: VarKind::Num, ..
+            } = slot
+            {
                 *slot = Slot::Bound(Type::con("Int"));
             }
         }
@@ -1490,9 +1493,10 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "<" | ">" | "<=" | ">=" => {
             Scheme::mono(Type::func(vec![Type::int(), Type::int()], Type::bool()))
         }
-        "+." | "-." | "*." | "/." => {
-            Scheme::mono(Type::func(vec![Type::float(), Type::float()], Type::float()))
-        }
+        "+." | "-." | "*." | "/." => Scheme::mono(Type::func(
+            vec![Type::float(), Type::float()],
+            Type::float(),
+        )),
         "<." | ">." | "<=." | ">=." => {
             Scheme::mono(Type::func(vec![Type::float(), Type::float()], Type::bool()))
         }
@@ -1545,15 +1549,9 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         }
         "bitNot" | "popCount" => Scheme::mono(Type::func(vec![Type::int()], Type::int())),
         // --- bytes ---
-        "stringToBytes" => {
-            Scheme::mono(Type::func(vec![Type::string()], Type::array(Type::int())))
-        }
-        "bytesToString" => {
-            Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string()))
-        }
-        "bytesToHex" => {
-            Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string()))
-        }
+        "stringToBytes" => Scheme::mono(Type::func(vec![Type::string()], Type::array(Type::int()))),
+        "bytesToString" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
+        "bytesToHex" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
         "bytesFromHex" => Scheme::mono(Type::func(
             vec![Type::string()],
             Type::Con(

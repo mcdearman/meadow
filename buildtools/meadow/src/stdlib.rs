@@ -14,6 +14,8 @@
 //! *not* `@pub` in `Std.Collections.List`, so re-export is what makes them
 //! public).
 
+use std::sync::OnceLock;
+
 use meadow_compiler::{
     compile_unit_in_package,
     diagnostics::{self, Diagnostic},
@@ -69,6 +71,25 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Time", include_str!("../../../lib/Std/src/Time.mw")),
     ("prelude", include_str!("../../../lib/Std/src/prelude.mw")),
 ];
+
+/// The embedded `Std` package, compiled once per process.
+///
+/// [`compile_std`] takes about five seconds and is deterministic, so compiling
+/// it twice in one process is pure waste — and something did exactly that on
+/// every REPL line, every language-server keystroke, and once per test, which is
+/// what made the test suite take minutes rather than seconds.
+///
+/// Cached per profile: `--release` turns on the exhaustiveness check and can
+/// report different diagnostics. The result is cloned rather than shared,
+/// because linking consumes its packages — and cloning the compiled tree is
+/// about two orders of magnitude cheaper than rebuilding it.
+pub fn std_packages(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
+    static DEBUG: OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)> = OnceLock::new();
+    static RELEASE: OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)> = OnceLock::new();
+    let cell = if opts.check_exhaustive { &RELEASE } else { &DEBUG };
+    let (packages, diags) = cell.get_or_init(|| compile_std(opts));
+    (packages.clone(), diags.clone())
+}
 
 /// Compile the embedded `Std` package.
 ///

@@ -47,6 +47,10 @@ enum Cmd {
         #[command(flatten)]
         profile: ProfileArgs,
     },
+    /// Run the language server, speaking LSP over stdin and stdout.
+    ///
+    /// Editors start this; there is no reason to run it by hand.
+    Lsp,
     /// Re-indent `.mw` sources in place.
     Fmt {
         /// Files or directories to format. Defaults to the current directory.
@@ -120,6 +124,13 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some(Cmd::Lsp) => {
+            let (packages, _) = meadow::stdlib::std_packages(meadow::Options::debug());
+            if let Err(e) = meadow_lsp::server::run(packages) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Cmd::Fmt {
             paths,
             check,

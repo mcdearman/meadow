@@ -1,0 +1,22 @@
+[package]
+name = "meadow-lsp"
+description = "A Language Server Protocol implementation for Meadow: diagnostics, hover, go-to-definition, inlay hints and semantic tokens."
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_lsp"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-compiler.workspace = true
+lsp-server = "0.10"
+lsp-types = "0.97"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Only the tests need a real standard library to analyse against. A normal
+# dependency here would be a cycle: `meadow` depends on this crate for its `lsp`
+# subcommand.
+[dev-dependencies]
+meadow.workspace = true

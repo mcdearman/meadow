@@ -10,7 +10,7 @@ use meadow_hir as hir;
 use meadow_infer::{Type as InferType, TypeTable};
 use meadow_intern::InternedString;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Lit {
@@ -82,7 +82,7 @@ pub enum Prim {
     ToBig,
     /// `BigInt -> Int` (fails at runtime if out of range)
     ToInt,
-    // --- the builtin `Array` (a persistent, `Rc`-shared contiguous buffer) ---
+    // --- the builtin `Array` (a persistent, `Arc`-shared contiguous buffer) ---
     /// `Array a -> Int`
     ArrayLen,
     /// `Array a -> Int -> a` — runtime error if out of bounds.
@@ -250,37 +250,37 @@ pub enum Pat {
     Record(Vec<(InternedString, Pat)>),
 }
 
-/// Core terms. Recursive positions are `Rc<Term>` (not `Box`) so the CEK
+/// Core terms. Recursive positions are `Arc<Term>` (not `Box`) so the CEK
 /// interpreter (the `meadow-eval` crate) can share subterms freely — a captured
-/// continuation is just a slice of `Rc`-holding stack frames.
+/// continuation is just a slice of `Arc`-holding stack frames.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Term {
     Var(Var),
     Lit(Lit),
-    Lam(Var, Rc<Term>),
-    App(Rc<Term>, Rc<Term>),
-    Let(Var, Rc<Term>, Rc<Term>),
-    LetRec(Vec<(Var, Term)>, Rc<Term>),
-    If(Rc<Term>, Rc<Term>, Rc<Term>),
+    Lam(Var, Arc<Term>),
+    App(Arc<Term>, Arc<Term>),
+    Let(Var, Arc<Term>, Arc<Term>),
+    LetRec(Vec<(Var, Term)>, Arc<Term>),
+    If(Arc<Term>, Arc<Term>, Arc<Term>),
     Tuple(Vec<Term>),
-    Proj(Rc<Term>, usize),
+    Proj(Arc<Term>, usize),
     /// `#[e, …]` — a builtin `Array` literal. The *only* built-in collection:
     /// `List` and `Vector` are ordinary `Std` data types and lower to `Ctor`.
     Array(Vec<Term>),
     Record(Vec<(InternedString, Term)>),
-    Sel(Rc<Term>, InternedString),
-    Extend(Rc<Term>, InternedString, Rc<Term>),
+    Sel(Arc<Term>, InternedString),
+    Extend(Arc<Term>, InternedString, Arc<Term>),
     Ctor(InternedString, Vec<Term>),
-    Case(Rc<Term>, Vec<(Pat, Term)>),
+    Case(Arc<Term>, Vec<(Pat, Term)>),
     Prim(Prim, Vec<Term>),
     /// `perform Effect.op arg` — an algebraic-effect operation call.
-    Perform(InternedString, InternedString, Rc<Term>),
+    Perform(InternedString, InternedString, Arc<Term>),
     /// `handle body with { … }` — an effect handler.
     Handle {
-        body: Rc<Term>,
+        body: Arc<Term>,
         clauses: Vec<HClause>,
         /// `return x -> e` — defaults to the identity when absent.
-        ret: Option<(Var, Rc<Term>)>,
+        ret: Option<(Var, Arc<Term>)>,
     },
     Error,
 }
@@ -607,7 +607,7 @@ impl<'a> Lowerer<'a> {
         let mut term = self.lower_expr(body);
         for (v, structured) in binders.into_iter().rev() {
             term = self.with_pat_prelude_term(v, structured, term);
-            term = Term::Lam(v, Rc::new(term));
+            term = Term::Lam(v, Arc::new(term));
         }
         term
     }
@@ -623,7 +623,7 @@ impl<'a> Lowerer<'a> {
             let mut binds = Vec::new();
             self.bind_pat(Term::Var(var), p, &mut binds);
             for (bv, bt) in binds.into_iter().rev() {
-                term = Term::Let(bv, Rc::new(bt), Rc::new(term));
+                term = Term::Let(bv, Arc::new(bt), Arc::new(term));
             }
         }
         term
@@ -646,7 +646,7 @@ impl<'a> Lowerer<'a> {
                     let x = hir::VarId::fresh();
                     Term::Lam(
                         x,
-                        Rc::new(Term::Perform(eff, opname, Rc::new(Term::Var(x)))),
+                        Arc::new(Term::Perform(eff, opname, Arc::new(Term::Var(x)))),
                     )
                 } else {
                     Term::Var(v)
@@ -666,7 +666,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let mut term = self.lower_expr(func);
                 for a in args {
-                    term = Term::App(Rc::new(term), Rc::new(self.lower_expr(a)));
+                    term = Term::App(Arc::new(term), Arc::new(self.lower_expr(a)));
                 }
                 term
             }
@@ -680,9 +680,9 @@ impl<'a> Lowerer<'a> {
             }
 
             hir::Expr::If(c, t, e) => Term::If(
-                Rc::new(self.lower_expr(c)),
-                Rc::new(self.lower_expr(t)),
-                Rc::new(self.lower_expr(e)),
+                Arc::new(self.lower_expr(c)),
+                Arc::new(self.lower_expr(t)),
+                Arc::new(self.lower_expr(e)),
             ),
 
             hir::Expr::Match(scrut, arms) => {
@@ -691,7 +691,7 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .map(|(p, e)| (self.lower_pat(p), self.lower_expr(e)))
                     .collect();
-                Term::Case(Rc::new(s), arms)
+                Term::Case(Arc::new(s), arms)
             }
 
             hir::Expr::Tuple(items) => {
@@ -729,18 +729,18 @@ impl<'a> Lowerer<'a> {
                     Some(b) => {
                         let mut term = self.lower_expr(b);
                         for (l, e) in lowered {
-                            term = Term::Extend(Rc::new(term), l, Rc::new(e));
+                            term = Term::Extend(Arc::new(term), l, Arc::new(e));
                         }
                         term
                     }
                 }
             }
             hir::Expr::Field(obj, label) => {
-                Term::Sel(Rc::new(self.lower_expr(obj)), *label.value())
+                Term::Sel(Arc::new(self.lower_expr(obj)), *label.value())
             }
 
             hir::Expr::Handle(body, arms, ret) => {
-                let lbody = Rc::new(self.lower_expr(body));
+                let lbody = Arc::new(self.lower_expr(body));
                 let clauses = arms
                     .iter()
                     .map(|arm| {
@@ -757,7 +757,7 @@ impl<'a> Lowerer<'a> {
                     .collect();
                 let ret = ret.as_ref().map(|(pat, rbody)| {
                     let (v, refutable) = self.pat_binder(pat);
-                    (v, Rc::new(self.with_pat_prelude(v, refutable, rbody)))
+                    (v, Arc::new(self.with_pat_prelude(v, refutable, rbody)))
                 });
                 Term::Handle {
                     body: lbody,
@@ -794,18 +794,18 @@ impl<'a> Lowerer<'a> {
         match bind {
             hir::Bind::Fun(name, params, fbody) => {
                 let term = self.curry_lam(params, fbody);
-                Term::LetRec(vec![(*name.value(), term)], Rc::new(body))
+                Term::LetRec(vec![(*name.value(), term)], Arc::new(body))
             }
             hir::Bind::Pat(pat, expr) => {
                 let rhs = self.lower_expr(expr);
                 match pat.value() {
                     hir::Pat::Var(id) => {
-                        Term::Let(*id.value(), Rc::new(rhs), Rc::new(body))
+                        Term::Let(*id.value(), Arc::new(rhs), Arc::new(body))
                     }
                     hir::Pat::Wildcard => {
-                        Term::Let(hir::VarId::fresh(), Rc::new(rhs), Rc::new(body))
+                        Term::Let(hir::VarId::fresh(), Arc::new(rhs), Arc::new(body))
                     }
-                    _ => Term::Case(Rc::new(rhs), vec![(self.lower_pat(pat), body)]),
+                    _ => Term::Case(Arc::new(rhs), vec![(self.lower_pat(pat), body)]),
                 }
             }
             hir::Bind::Error => body,
@@ -824,12 +824,12 @@ impl<'a> Lowerer<'a> {
             }
             hir::Pat::Tuple(items) => {
                 for (i, p) in items.iter().enumerate() {
-                    self.bind_pat(Term::Proj(Rc::new(scrut.clone()), i), p, out);
+                    self.bind_pat(Term::Proj(Arc::new(scrut.clone()), i), p, out);
                 }
             }
             hir::Pat::Record(fields, _) => {
                 for (label, p) in fields {
-                    self.bind_pat(Term::Sel(Rc::new(scrut.clone()), *label.value()), p, out);
+                    self.bind_pat(Term::Sel(Arc::new(scrut.clone()), *label.value()), p, out);
                 }
             }
             hir::Pat::Error => {}
@@ -842,7 +842,7 @@ impl<'a> Lowerer<'a> {
                     out.push((
                         v,
                         Term::Case(
-                            Rc::new(scrut.clone()),
+                            Arc::new(scrut.clone()),
                             vec![(core_pat.clone(), Term::Var(v))],
                         ),
                     ));
@@ -908,7 +908,7 @@ impl<'a> Lowerer<'a> {
         extra
             .into_iter()
             .rev()
-            .fold(body, |acc, v| Term::Lam(v, Rc::new(acc)))
+            .fold(body, |acc, v| Term::Lam(v, Arc::new(acc)))
     }
 
     /// `\a. \b. prim(a, b)` — used when a primitive is referenced without (or with
@@ -918,7 +918,7 @@ impl<'a> Lowerer<'a> {
         let body = Term::Prim(op, vars.iter().map(|v| Term::Var(*v)).collect());
         vars.into_iter()
             .rev()
-            .fold(body, |acc, v| Term::Lam(v, Rc::new(acc)))
+            .fold(body, |acc, v| Term::Lam(v, Arc::new(acc)))
     }
 }
 
@@ -973,7 +973,7 @@ mod tests {
             defs: vec![Def {
                 var: a,
                 name: "f".into(),
-                term: Term::Lam(b, Rc::new(Term::Var(b))),
+                term: Term::Lam(b, Arc::new(Term::Var(b))),
             }],
             entry: Some(a),
             ..Default::default()

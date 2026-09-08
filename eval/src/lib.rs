@@ -23,6 +23,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 type Term = core::Term;
 type Var = core::Var;
@@ -53,7 +54,7 @@ pub enum Value {
     Ctor(InternedString, Vec<Value>),
     Closure {
         param: Var,
-        body: Rc<Term>,
+        body: Arc<Term>,
         env: Env,
     },
     /// A partially applied primitive.
@@ -126,7 +127,7 @@ pub type FieldTable = std::collections::HashMap<InternedString, Vec<InternedStri
 #[derive(Debug, Clone)]
 pub struct HandlerData {
     clauses: Vec<core::HClause>,
-    ret: Option<(Var, Rc<Term>)>,
+    ret: Option<(Var, Arc<Term>)>,
 }
 
 /// One continuation frame: "given the value of the sub-expression currently being
@@ -135,7 +136,7 @@ pub struct HandlerData {
 pub enum K {
     /// `App`: the function is evaluated; evaluate this argument next.
     EvalArg {
-        arg: Rc<Term>,
+        arg: Arc<Term>,
         env: Env,
     },
     /// `App`: the argument is evaluated; apply the saved function to it.
@@ -143,20 +144,20 @@ pub enum K {
         func: Value,
     },
     If {
-        then: Rc<Term>,
-        els: Rc<Term>,
+        then: Arc<Term>,
+        els: Arc<Term>,
         env: Env,
     },
     /// `Let` / `Lam` application: bind `var` to the incoming value, run `body`.
     Bind {
         var: Var,
-        body: Rc<Term>,
+        body: Arc<Term>,
         env: Env,
     },
     LetRec {
         scope: Env,
         pending: Vec<(Var, Term)>,
-        body: Rc<Term>,
+        body: Arc<Term>,
     },
     BuildTuple {
         done: Vec<Value>,
@@ -190,7 +191,7 @@ pub enum K {
     /// `Extend`: the record is evaluated; evaluate the new field value.
     ExtendVal {
         label: InternedString,
-        val: Rc<Term>,
+        val: Arc<Term>,
         env: Env,
     },
     /// `Extend`: the field value is evaluated; insert it into the saved record.
@@ -212,7 +213,7 @@ pub enum K {
 }
 
 enum Control {
-    Eval(Rc<Term>, Env),
+    Eval(Arc<Term>, Env),
     Ret(Value),
 }
 
@@ -256,7 +257,7 @@ pub fn run_tests(
             let m = Machine {
                 ctrl: Control::Ret(f),
                 kont: vec![K::EvalArg {
-                    arg: Rc::new(core::Term::Lit(core::Lit::Unit)),
+                    arg: Arc::new(core::Term::Lit(core::Lit::Unit)),
                     env: env.clone(),
                 }],
                 fields: &program.ctor_fields,
@@ -275,7 +276,7 @@ fn load(program: &core::Program) -> Result<Env, RuntimeError> {
     }
     for def in &program.defs {
         let m = Machine {
-            ctrl: Control::Eval(Rc::new(def.term.clone()), env.clone()),
+            ctrl: Control::Eval(Arc::new(def.term.clone()), env.clone()),
             kont: Vec::new(),
             fields: &program.ctor_fields,
         };
@@ -309,7 +310,7 @@ impl Machine<'_> {
 
     /// Decompose a term: push frames for its sub-expressions, then start on the
     /// first one; or, for a value form, return it directly.
-    fn eval(&mut self, term: Rc<Term>, env: Env) -> Result<(), RuntimeError> {
+    fn eval(&mut self, term: Arc<Term>, env: Env) -> Result<(), RuntimeError> {
         use core::Term as T;
         match &*term {
             T::Var(v) => {
@@ -357,7 +358,7 @@ impl Machine<'_> {
                             pending,
                             body: body.clone(),
                         });
-                        self.ctrl = Control::Eval(Rc::new(rhs), scope);
+                        self.ctrl = Control::Eval(Arc::new(rhs), scope);
                     }
                     None => {
                         let _ = pending;
@@ -387,7 +388,7 @@ impl Machine<'_> {
                             pending,
                             env: env.clone(),
                         });
-                        self.ctrl = Control::Eval(Rc::new(first), env);
+                        self.ctrl = Control::Eval(Arc::new(first), env);
                     }
                     None => self.ctrl = Control::Ret(Value::Record(BTreeMap::new())),
                 }
@@ -464,7 +465,7 @@ impl Machine<'_> {
                         env: env.clone(),
                     },
                 });
-                self.ctrl = Control::Eval(Rc::new(first), env);
+                self.ctrl = Control::Eval(Arc::new(first), env);
             }
             None => {
                 self.ctrl = Control::Ret(match kind {
@@ -514,7 +515,7 @@ impl Machine<'_> {
                             pending,
                             body,
                         });
-                        self.ctrl = Control::Eval(Rc::new(next_rhs), scope);
+                        self.ctrl = Control::Eval(Arc::new(next_rhs), scope);
                     }
                     None => self.ctrl = Control::Eval(body, scope),
                 }
@@ -532,7 +533,7 @@ impl Machine<'_> {
                             pending,
                             env: env.clone(),
                         });
-                        self.ctrl = Control::Eval(Rc::new(next), env);
+                        self.ctrl = Control::Eval(Arc::new(next), env);
                     }
                     None => self.ctrl = Control::Ret(Value::Tuple(done)),
                 }
@@ -550,7 +551,7 @@ impl Machine<'_> {
                             pending,
                             env: env.clone(),
                         });
-                        self.ctrl = Control::Eval(Rc::new(next), env);
+                        self.ctrl = Control::Eval(Arc::new(next), env);
                     }
                     None => self.ctrl = Control::Ret(Value::Array(Rc::new(done))),
                 }
@@ -570,7 +571,7 @@ impl Machine<'_> {
                             pending,
                             env: env.clone(),
                         });
-                        self.ctrl = Control::Eval(Rc::new(next), env);
+                        self.ctrl = Control::Eval(Arc::new(next), env);
                     }
                     None => self.ctrl = Control::Ret(Value::Ctor(name, done)),
                 }
@@ -590,7 +591,7 @@ impl Machine<'_> {
                             pending,
                             env: env.clone(),
                         });
-                        self.ctrl = Control::Eval(Rc::new(next), env);
+                        self.ctrl = Control::Eval(Arc::new(next), env);
                     }
                     None => self.ctrl = Control::Ret(run_prim(op, done)?),
                 }
@@ -609,7 +610,7 @@ impl Machine<'_> {
                             pending,
                             env: env.clone(),
                         });
-                        self.ctrl = Control::Eval(Rc::new(next), env);
+                        self.ctrl = Control::Eval(Arc::new(next), env);
                     }
                     None => {
                         self.ctrl = Control::Ret(Value::Record(done.into_iter().collect()));
@@ -657,7 +658,7 @@ impl Machine<'_> {
                 for (pat, body) in arms.iter() {
                     let scope = child(&env);
                     if match_pat(pat, &v, &scope) {
-                        self.ctrl = Control::Eval(Rc::new(body.clone()), scope);
+                        self.ctrl = Control::Eval(Arc::new(body.clone()), scope);
                         return Ok(());
                     }
                 }
@@ -773,7 +774,7 @@ impl Machine<'_> {
         let scope = child(&henv);
         define(&scope, clause.param, arg);
         define(&scope, clause.resume, cont);
-        self.ctrl = Control::Eval(Rc::new(clause.body), scope);
+        self.ctrl = Control::Eval(Arc::new(clause.body), scope);
         Ok(())
     }
 }
@@ -821,9 +822,10 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
         (P::Tuple(ps), Value::Tuple(vs)) if ps.len() == vs.len() => {
             ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, scope))
         }
-        (P::Array(ps), Value::Array(vs)) if ps.len() == vs.len() => {
-            ps.iter().zip(vs.iter()).all(|(p, v)| match_pat(p, v, scope))
-        }
+        (P::Array(ps), Value::Array(vs)) if ps.len() == vs.len() => ps
+            .iter()
+            .zip(vs.iter())
+            .all(|(p, v)| match_pat(p, v, scope)),
         (P::Ctor(name, ps), Value::Ctor(vname, vs)) if name == vname && ps.len() == vs.len() => {
             ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, scope))
         }
@@ -999,11 +1001,9 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
         ArrayGet => {
             let a = as_array(&args[0])?;
             let i = as_index(&args[1])?;
-            a.get(i)
-                .cloned()
-                .ok_or_else(|| RuntimeError {
-                    msg: format!("arrayGet: index {i} out of bounds (len {})", a.len()),
-                })
+            a.get(i).cloned().ok_or_else(|| RuntimeError {
+                msg: format!("arrayGet: index {i} out of bounds (len {})", a.len()),
+            })
         }
         ArrayGetOr => {
             let a = as_array(&args[1])?;
@@ -1119,7 +1119,9 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
                 for v in xs.iter() {
                     match v {
                         Value::Char(c) => out.push(*c),
-                        other => return err(format!("charsToString: expected a Char, got {other}")),
+                        other => {
+                            return err(format!("charsToString: expected a Char, got {other}"));
+                        }
                     }
                 }
                 Ok(Value::Str(InternedString::from(out)))
@@ -1337,8 +1339,12 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     let as_cwd = |v: &Value| -> Result<Option<InternedString>, RuntimeError> {
         match v {
             Value::Ctor(n, args) if &**n == "None" && args.is_empty() => Ok(None),
-            Value::Ctor(n, args) if &**n == "Just" && args.len() == 1 => Ok(Some(as_str(&args[0])?)),
-            other => err(format!("Process.{op}: expected a Maybe String, got {other}")),
+            Value::Ctor(n, args) if &**n == "Just" && args.len() == 1 => {
+                Ok(Some(as_str(&args[0])?))
+            }
+            other => err(format!(
+                "Process.{op}: expected a Maybe String, got {other}"
+            )),
         }
     };
     let build = |v: &Value| -> Result<Proc, RuntimeError> {
@@ -1359,7 +1365,11 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                 Value::Tuple(kv) if kv.len() == 2 => {
                     cmd.env(&*as_str(&kv[0])?, &*as_str(&kv[1])?);
                 }
-                other => return err(format!("Process.{op}: expected a (String, String) pair, got {other}")),
+                other => {
+                    return err(format!(
+                        "Process.{op}: expected a (String, String) pair, got {other}"
+                    ));
+                }
             }
         }
         Ok(cmd)
@@ -1391,13 +1401,21 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
         "setEnv" => {
             let t = match &arg {
                 Value::Tuple(t) if t.len() == 2 => t,
-                other => return err(format!("Process.setEnv: expected a (String, String) pair, got {other}")),
+                other => {
+                    return err(format!(
+                        "Process.setEnv: expected a (String, String) pair, got {other}"
+                    ));
+                }
             };
-            unsafe { std::env::set_var(&*as_str(&t[0])?, &*as_str(&t[1])?); }
+            unsafe {
+                std::env::set_var(&*as_str(&t[0])?, &*as_str(&t[1])?);
+            }
             Value::Unit
         }
         "removeEnv" => {
-            unsafe { std::env::remove_var(&*as_str(&arg)?); }
+            unsafe {
+                std::env::remove_var(&*as_str(&arg)?);
+            }
             Value::Unit
         }
         other => return err(format!("unhandled effect Process.{other}")),
@@ -1671,7 +1689,9 @@ fn native_random(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                 }
                 _ => err(format!("Random.{op}: expected two Ints, got {arg}")),
             },
-            other => err(format!("Random.{op}: expected an (Int, Int) pair, got {other}")),
+            other => err(format!(
+                "Random.{op}: expected an (Int, Int) pair, got {other}"
+            )),
         },
         other => err(format!("unhandled effect Random.{other}")),
     }
@@ -1695,9 +1715,7 @@ fn native_time(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                 .unwrap_or(0),
         )),
         // Monotonic, for measuring a duration: unaffected by the clock changing.
-        "monotonic" => Ok(Value::Int(
-            ORIGIN.with(|o| o.elapsed().as_nanos() as i64),
-        )),
+        "monotonic" => Ok(Value::Int(ORIGIN.with(|o| o.elapsed().as_nanos() as i64))),
         "sleep" => match arg {
             Value::Int(ms) if ms > 0 => {
                 std::thread::sleep(Duration::from_millis(ms as u64));
@@ -1734,8 +1752,8 @@ mod tests {
         })
     }
 
-    fn int(i: i64) -> Rc<Term> {
-        Rc::new(Term::Lit(Lit::Int(i)))
+    fn int(i: i64) -> Arc<Term> {
+        Arc::new(Term::Lit(Lit::Int(i)))
     }
 
     #[test]
@@ -1743,7 +1761,7 @@ mod tests {
         // (\x -> x + 1) 41
         let x = v();
         let body = Term::Prim(Prim::Add, vec![Term::Var(x), Term::Lit(Lit::Int(1))]);
-        let term = Term::App(Rc::new(Term::Lam(x, Rc::new(body))), int(41));
+        let term = Term::App(Arc::new(Term::Lam(x, Arc::new(body))), int(41));
         assert_eq!(eval_term(term).unwrap().to_string(), "42");
     }
 
@@ -1753,8 +1771,8 @@ mod tests {
         let term = Term::Let(
             x,
             int(10),
-            Rc::new(Term::If(
-                Rc::new(Term::Prim(
+            Arc::new(Term::If(
+                Arc::new(Term::Prim(
                     Prim::Lt,
                     vec![Term::Var(x), Term::Lit(Lit::Int(20))],
                 )),
@@ -1784,19 +1802,19 @@ mod tests {
         let n = v();
         let lam = Term::Lam(
             n,
-            Rc::new(Term::If(
-                Rc::new(Term::Prim(
+            Arc::new(Term::If(
+                Arc::new(Term::Prim(
                     Prim::Eq,
                     vec![Term::Var(n), Term::Lit(Lit::Int(0))],
                 )),
                 int(0),
-                Rc::new(Term::Prim(
+                Arc::new(Term::Prim(
                     Prim::Add,
                     vec![
                         Term::Var(n),
                         Term::App(
-                            Rc::new(Term::Var(f)),
-                            Rc::new(Term::Prim(
+                            Arc::new(Term::Var(f)),
+                            Arc::new(Term::Prim(
                                 Prim::Sub,
                                 vec![Term::Var(n), Term::Lit(Lit::Int(1))],
                             )),
@@ -1807,7 +1825,7 @@ mod tests {
         );
         let term = Term::LetRec(
             vec![(f, lam)],
-            Rc::new(Term::App(Rc::new(Term::Var(f)), int(5))),
+            Arc::new(Term::App(Arc::new(Term::Var(f)), int(5))),
         );
         assert_eq!(eval_term(term).unwrap().to_string(), "15");
     }
@@ -1822,26 +1840,26 @@ mod tests {
         let p = v();
         let x = v();
         let get =
-            |_arg: Rc<Term>| Term::Perform("E".into(), "get".into(), Rc::new(Term::Lit(Lit::Unit)));
+            |_arg: Arc<Term>| Term::Perform("E".into(), "get".into(), Arc::new(Term::Lit(Lit::Unit)));
         let discard = v();
-        let body = Term::Let(discard, Rc::new(get(int(0))), Rc::new(get(int(0))));
+        let body = Term::Let(discard, Arc::new(get(int(0))), Arc::new(get(int(0))));
         let term = Term::Handle {
-            body: Rc::new(body),
+            body: Arc::new(body),
             clauses: vec![HClause {
                 effect: "E".into(),
                 op: "get".into(),
                 param: p,
                 resume: k,
-                body: Term::App(Rc::new(Term::Var(k)), int(7)),
+                body: Term::App(Arc::new(Term::Var(k)), int(7)),
             }],
-            ret: Some((x, Rc::new(Term::Var(x)))),
+            ret: Some((x, Arc::new(Term::Var(x)))),
         };
         assert_eq!(eval_term(term).unwrap().to_string(), "7");
     }
 
     #[test]
     fn unhandled_effect_errors() {
-        let term = Term::Perform("E".into(), "boom".into(), Rc::new(Term::Lit(Lit::Unit)));
+        let term = Term::Perform("E".into(), "boom".into(), Arc::new(Term::Lit(Lit::Unit)));
         let e = eval_term(term).unwrap_err();
         assert!(e.msg.contains("unhandled effect E.boom"), "{}", e.msg);
     }
@@ -1852,10 +1870,10 @@ mod tests {
         let k = v();
         let p = v();
         let term = Term::Handle {
-            body: Rc::new(Term::Perform(
+            body: Arc::new(Term::Perform(
                 "E".into(),
                 "op".into(),
-                Rc::new(Term::Lit(Lit::Unit)),
+                Arc::new(Term::Lit(Lit::Unit)),
             )),
             clauses: vec![HClause {
                 effect: "E".into(),
@@ -1865,8 +1883,8 @@ mod tests {
                 // k 1 ; k 2
                 body: Term::Let(
                     v(),
-                    Rc::new(Term::App(Rc::new(Term::Var(k)), int(1))),
-                    Rc::new(Term::App(Rc::new(Term::Var(k)), int(2))),
+                    Arc::new(Term::App(Arc::new(Term::Var(k)), int(1))),
+                    Arc::new(Term::App(Arc::new(Term::Var(k)), int(2))),
                 ),
             }],
             ret: None,

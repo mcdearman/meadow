@@ -30,7 +30,7 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     // Without this, the default path of `.` would sweep every `.mw` file below
     // the working directory into one package and fail in a hundred ways.
     let linked = if opts.std && !is_package(Path::new(&opts.path)) {
-        let (packages, diags) = crate::stdlib::compile_std(opts.profile.options());
+        let (packages, diags) = crate::stdlib::std_packages(opts.profile.options());
         for d in &diags {
             eprintln!("{}: {}", d.filename, d.msg);
         }

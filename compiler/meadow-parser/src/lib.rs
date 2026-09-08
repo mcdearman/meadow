@@ -696,10 +696,24 @@ where
             })
             .boxed();
 
+        // Zero-or-more arguments, and a bare atom when there are none — *not*
+        // `at_least(1)` with `atom` as a later alternative in the `choice` below.
+        //
+        // That arrangement parses the head atom, discovers there is no argument,
+        // throws the whole parse away and lets `atom` redo it. For a nested
+        // expression that doubles the work at every level, so a `let` inside an
+        // `if` inside a `let` costs 2^depth: `Std.Collections.Vector` took 3.6
+        // seconds to parse, and a ten-deep nest took eighty.
         let app = atom
             .clone()
-            .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
-            .map_with(|(f, args), e| Located::new(Expr::App(f, args), e.span()))
+            .then(atom.clone().repeated().collect::<Vec<_>>())
+            .map_with(|(f, args), e| {
+                if args.is_empty() {
+                    f
+                } else {
+                    Located::new(Expr::App(f, args), e.span())
+                }
+            })
             .boxed();
 
         // Constructor arguments are atoms, exactly like function-application
@@ -732,7 +746,7 @@ where
             })
             .boxed();
 
-        let ops = choice((qual, cons, app, atom)).clone().pratt((
+        let ops = choice((qual, cons, app)).clone().pratt((
             prefix(6, just(Token::Minus), |_op: Token, exp: Located<Expr>, e| {
                 let span = e.span();
                 let inner_span = exp.span;

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Meadow",
+  "scopeName": "source.meadow",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#attribute" },
+    { "include": "#string" },
+    { "include": "#char" },
+    { "include": "#number" },
+    { "include": "#declaration" },
+    { "include": "#keyword" },
+    { "include": "#constant" },
+    { "include": "#type" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-dash.meadow",
+      "match": "--.*$"
+    },
+    "attribute": {
+      "name": "storage.modifier.attribute.meadow",
+      "match": "@[a-zA-Z][a-zA-Z0-9]*"
+    },
+    "string": {
+      "name": "string.quoted.double.meadow",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.meadow", "match": "\\\\." }
+      ]
+    },
+    "char": {
+      "name": "string.quoted.single.meadow",
+      "match": "'(\\\\.|[^'\\\\])'"
+    },
+    "number": {
+      "patterns": [
+        { "name": "constant.numeric.hex.meadow", "match": "\\b0x[0-9a-fA-F]+\\b" },
+        { "name": "constant.numeric.octal.meadow", "match": "\\b0o[0-7]+\\b" },
+        { "name": "constant.numeric.binary.meadow", "match": "\\b0b[01]+\\b" },
+        { "name": "constant.numeric.float.meadow", "match": "\\b[0-9]+\\.[0-9]+\\b" },
+        { "name": "constant.numeric.integer.meadow", "match": "\\b[0-9]+\\b" }
+      ]
+    },
+    "declaration": {
+      "patterns": [
+        {
+          "comment": "the name a `fun` introduces",
+          "match": "\\b(fun)\\s+([a-z][a-zA-Z0-9'_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.meadow" },
+            "2": { "name": "entity.name.function.meadow" }
+          }
+        },
+        {
+          "comment": "the name a `def` introduces",
+          "match": "\\b(def)\\s+([a-z][a-zA-Z0-9'_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.meadow" },
+            "2": { "name": "variable.other.constant.meadow" }
+          }
+        },
+        {
+          "comment": "a type being declared",
+          "match": "\\b(data|record|effect)\\s+([A-Z][a-zA-Z0-9']*)",
+          "captures": {
+            "1": { "name": "keyword.other.meadow" },
+            "2": { "name": "entity.name.type.meadow" }
+          }
+        },
+        {
+          "comment": "a module path in `use`",
+          "match": "\\b(use)\\s+([A-Za-z][A-Za-z0-9'.]*)",
+          "captures": {
+            "1": { "name": "keyword.control.import.meadow" },
+            "2": { "name": "entity.name.namespace.meadow" }
+          }
+        }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "keyword.control.meadow",
+          "match": "\\b(if|then|else|match|with|handle)\\b"
+        },
+        {
+          "name": "keyword.other.meadow",
+          "match": "\\b(mod|use|def|fun|let|rec|in|data|record|effect|type|class|end|as)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.meadow",
+          "match": "\\b(and|or|not)\\b"
+        }
+      ]
+    },
+    "constant": {
+      "name": "constant.language.meadow",
+      "match": "\\b(True|False)\\b"
+    },
+    "type": {
+      "comment": "any other capitalised name: a type, a constructor, or a module qualifier",
+      "name": "entity.name.type.meadow",
+      "match": "\\b[A-Z][a-zA-Z0-9']*\\b"
+    },
+    "operator": {
+      "name": "keyword.operator.meadow",
+      "match": "(->|<-|\\|>|<\\||::|==|!=|<=|>=|>>>|<<|>>|[-+*/%^<>=!|&~.:]+)"
+    }
+  }
+}

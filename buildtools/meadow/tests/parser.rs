@@ -91,3 +91,56 @@ fn function_type_in_field() {
 fn use_declaration() {
     insta::assert_snapshot!(parse_ast("use std.list.map\n"));
 }
+
+// --- parser performance ------------------------------------------------------
+
+/// Nested `let` / `if`, `depth` levels deep.
+fn nested(depth: usize) -> String {
+    let mut body = String::from("0");
+    for i in (0..depth).rev() {
+        body = format!("let x{i} = {i} in\nif c then {i} else\n{body}");
+    }
+    format!("fun f c =\n{body}\n")
+}
+
+#[test]
+fn nesting_does_not_blow_the_parser_up() {
+    // `app` used to be `atom` plus *at least one* argument, with `atom` as a
+    // later alternative in the same `choice`. A bare `let` or `if` was therefore
+    // parsed twice at every level — 2^depth — and this took twenty minutes at
+    // depth 16. `Std.Collections.Vector` alone spent 3.6 seconds here.
+    //
+    // The bound is deliberately loose: the point is the difference between
+    // milliseconds and never finishing, not a benchmark.
+    let src = nested(16);
+    let start = std::time::Instant::now();
+    let out = common::parse_ast(&src);
+    let elapsed = start.elapsed();
+    assert!(
+        !out.starts_with("parse failed"),
+        "deeply nested code should still parse: {out}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "parsing 16 levels of nesting took {elapsed:?} — the exponential blowup is back"
+    );
+}
+
+#[test]
+fn nesting_costs_grow_gently() {
+    // Doubling the depth should roughly double the work, not square it.
+    let time = |d: usize| {
+        let src = nested(d);
+        let t = std::time::Instant::now();
+        let _ = common::parse_ast(&src);
+        t.elapsed().as_secs_f64()
+    };
+    // Warm up, so the first measurement does not carry one-off costs.
+    let _ = time(4);
+    let small = time(6).max(1e-6);
+    let large = time(12);
+    assert!(
+        large < small * 50.0,
+        "12 levels took {large:.4}s against {small:.4}s for 6 — that is not linear growth"
+    );
+}

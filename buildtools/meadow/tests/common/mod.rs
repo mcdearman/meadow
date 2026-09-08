@@ -153,7 +153,7 @@ pub fn eval_expr_std(expr: &str) -> String {
 pub fn schemes_std(src: &str) -> String {
     // `compile_str_with_std` only returns a linked `Program`, so re-run the
     // unit compile with the std package as a dep to recover export schemes.
-    let (std_pkgs, _) = meadow::stdlib::compile_std(Options::debug());
+    let (std_pkgs, _) = meadow::stdlib::std_packages(Options::debug());
     let std_refs: Vec<&CompiledPackage> = std_pkgs.iter().collect();
     let source = meadow_compiler::source::Source::new(
         meadow_compiler::source::SourceKind::Interactive,

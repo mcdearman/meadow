@@ -121,10 +121,7 @@ pub fn group_module(module: &mut hir::Module) {
 
     let mut groups = Vec::with_capacity(comps.len());
     for comp in comps {
-        let recursive = comp.len() > 1
-            || comp
-                .first()
-                .is_some_and(|&s| edges[s].contains(&s));
+        let recursive = comp.len() > 1 || comp.first().is_some_and(|&s| edges[s].contains(&s));
         let members = comp
             .iter()
             .map(|&slot| {
@@ -179,7 +176,9 @@ fn expr_mentions(expr: &hir::LExpr, owner: &HashMap<VarId, usize>, out: &mut Vec
         | hir::Expr::List(xs)
         | hir::Expr::Cons(_, xs) => xs.iter().for_each(|x| expr_mentions(x, owner, out)),
         hir::Expr::Record(fields, base) => {
-            fields.iter().for_each(|(_, e)| expr_mentions(e, owner, out));
+            fields
+                .iter()
+                .for_each(|(_, e)| expr_mentions(e, owner, out));
             if let Some(b) = base {
                 expr_mentions(b, owner, out);
             }

@@ -7,3 +7,8 @@ target
 .claude
 # insta scratch: regenerated on any snapshot mismatch
 *.pending-snap
+
+# Built VS Code extension: rebuilt by `editors/vscode/build.sh`, and attached to
+# each release by `release.yml`. A checked-in binary would only go stale.
+editors/vscode/node_modules/
+editors/vscode/*.vsix

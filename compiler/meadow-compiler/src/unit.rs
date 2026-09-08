@@ -31,6 +31,7 @@ pub struct AstModule {
 }
 
 /// A resolved module, paired with its position in the package.
+#[derive(Clone)]
 pub struct TypedModule {
     pub path: Vec<InternedString>,
     pub name: InternedString,
@@ -40,6 +41,7 @@ pub struct TypedModule {
 /// An exported top-level binding: its name, its `VarId`, its inferred scheme, and
 /// the dotted path of the module it was declared in (empty for a single-module
 /// package). A dependent reaches it as `<pkg>.<module path>.<name>` via `use`.
+#[derive(Clone)]
 pub struct Export {
     pub name: InternedString,
     pub var: VarId,
@@ -48,6 +50,7 @@ pub struct Export {
 }
 
 /// The output of [`compile_unit`]: one package, fully typed and lowered.
+#[derive(Clone)]
 pub struct CompiledPackage {
     /// Caller-assigned id — the build system uses the package-graph index, the
     /// REPL uses the line number. Not interpreted here.

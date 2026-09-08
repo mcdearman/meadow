@@ -8,7 +8,7 @@
 use meadow::{linker::Linker, stdlib, test, Options};
 
 fn run() -> Vec<(String, Option<String>)> {
-    let (packages, diags) = stdlib::compile_std(Options::debug());
+    let (packages, diags) = stdlib::std_packages(Options::debug());
     assert!(
         diags.is_empty(),
         "the standard library should compile cleanly: {:?}",
@@ -49,7 +49,7 @@ fn the_library_actually_carries_tests() {
 fn every_module_with_a_public_surface_is_tested() {
     // Not a coverage measure — just a check that no module was left out entirely
     // when tests were added, and that a new one does not quietly arrive untested.
-    let (packages, _) = stdlib::compile_std(Options::debug());
+    let (packages, _) = stdlib::std_packages(Options::debug());
     let tested: Vec<String> = packages[0]
         .tests
         .iter()

@@ -380,7 +380,7 @@ pub struct Session {
 impl Session {
     pub fn new() -> Self {
         let opts = Options::debug();
-        let (std_pkgs, diags) = stdlib::compile_std(opts);
+        let (std_pkgs, diags) = stdlib::std_packages(opts);
         if !diags.is_empty() {
             // A broken embedded prelude is a compiler bug, not a user error.
             for d in &diags {

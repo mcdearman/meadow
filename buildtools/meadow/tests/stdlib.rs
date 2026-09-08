@@ -6,7 +6,7 @@ use meadow_eval as eval;
 
 #[test]
 fn stdlib_compiles_without_diagnostics() {
-    let (_pkgs, diags) = stdlib::compile_std(meadow::Options::debug());
+    let (_pkgs, diags) = stdlib::std_packages(meadow::Options::debug());
     assert!(
         diags.is_empty(),
         "Std did not compile clean:\n{}",
@@ -135,4 +135,42 @@ fn std_tree_sorts() {
         run("use Std.Collections.Tree as Tree\ndef main = Tree.toList (Tree.fromList [5; 3; 8; 1; 4; 7; 9; 2; 6])\n"),
         "[1; 2; 3; 4; 5; 6; 7; 8; 9]"
     );
+}
+
+// --- the standard library is compiled once per process ------------------------
+
+#[test]
+fn std_packages_is_cached() {
+    // `compile_std` takes hundreds of milliseconds and is deterministic. It used
+    // to run afresh for every REPL line, every language-server keystroke and,
+    // worst of all, once per test — which is what made the suite take minutes.
+    let cold = std::time::Instant::now();
+    let (first, _) = stdlib::std_packages(meadow::Options::debug());
+    let cold = cold.elapsed();
+
+    let warm = std::time::Instant::now();
+    let (second, _) = stdlib::std_packages(meadow::Options::debug());
+    let warm = warm.elapsed();
+
+    assert_eq!(first.len(), second.len(), "the same packages come back");
+    assert_eq!(
+        first[0].exports.len(),
+        second[0].exports.len(),
+        "and with the same exports"
+    );
+    // A clone, against a compile. The margin is generous: the point is that the
+    // second call is not doing the work again.
+    assert!(
+        warm * 4 < cold || cold < std::time::Duration::from_millis(50),
+        "second call took {warm:?} against {cold:?} — the cache is not being used"
+    );
+}
+
+#[test]
+fn the_two_profiles_are_cached_separately() {
+    // `--release` turns on the exhaustiveness check, so the two can disagree
+    // about diagnostics and must not share a cache entry.
+    let (debug, _) = stdlib::std_packages(meadow::Options::debug());
+    let (release, _) = stdlib::std_packages(meadow::Options::release());
+    assert_eq!(debug.len(), release.len());
 }

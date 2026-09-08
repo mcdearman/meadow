@@ -8,14 +8,14 @@ use meadow::complete::{self, Names};
 use meadow_compiler::{lexer::tokenize, parser, source::Source, source::SourceKind};
 
 fn std_names() -> Names {
-    let (pkgs, diags) = meadow::stdlib::compile_std(meadow::Options::debug());
+    let (pkgs, diags) = meadow::stdlib::std_packages(meadow::Options::debug());
     assert!(diags.is_empty(), "Std should compile cleanly: {diags:?}");
     complete::snapshot(&pkgs, &[])
 }
 
 /// `snapshot` with the given `use` lines already in effect.
 fn names_with_uses(lines: &[&str]) -> Names {
-    let (pkgs, _) = meadow::stdlib::compile_std(meadow::Options::debug());
+    let (pkgs, _) = meadow::stdlib::std_packages(meadow::Options::debug());
     let uses: Vec<_> = lines.iter().map(|l| parse_decl(l)).collect();
     complete::snapshot(&pkgs, &uses)
 }
@@ -187,7 +187,7 @@ fn nothing_is_offered_where_a_new_name_goes() {
 fn a_repl_definition_becomes_completable() {
     // A REPL line arrives as a package with `prelude_exports: None`, so
     // everything it defines is unqualified — the completer must see it.
-    let (mut pkgs, _) = meadow::stdlib::compile_std(meadow::Options::debug());
+    let (mut pkgs, _) = meadow::stdlib::std_packages(meadow::Options::debug());
     let (line, diags) = meadow_compiler::compile_str("repl:1", "def wobble = 1\n");
     assert!(diags.is_empty(), "{diags:?}");
     pkgs.push(line);

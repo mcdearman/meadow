@@ -65,7 +65,7 @@ pub fn build(entry: &Path, opts: Options) -> BuildOutput {
         };
     }
 
-    let (std_pkgs, mut diagnostics) = stdlib::compile_std(opts);
+    let (std_pkgs, mut diagnostics) = stdlib::std_packages(opts);
 
     let mut compiled: Vec<Option<CompiledPackage>> =
         (0..graph.packages.len()).map(|_| None).collect();
@@ -139,7 +139,7 @@ pub fn compile_str_with_std(
     let name = InternedString::from(name);
     let source = Source::new(SourceKind::Interactive, InternedString::from(src));
     let lex = tokenize(source);
-    let (std_pkgs, mut diags) = stdlib::compile_std(opts);
+    let (std_pkgs, mut diags) = stdlib::std_packages(opts);
     diags.extend(lex.errors.clone());
     let (ast, perrs) = parser::parse(name, source, &lex.tokens);
     for e in &perrs {

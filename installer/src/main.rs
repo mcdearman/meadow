@@ -195,6 +195,8 @@ fn run(args: &Args) -> Result<(), String> {
     println!("  meadow run <path>        build and run a package");
     println!("  meadow build --release   build with release checks");
     println!("  meadow fmt <path>        re-indent .mw sources");
+    println!("  meadow test              run a package's @test functions");
+    println!("  meadow lsp               the language server (editors start this)");
     println!();
     if args.modify_path {
         println!("Open a new terminal, then run `meadow`.");

@@ -129,8 +129,27 @@ jobs:
             meadow-setup-*.exe
           if-no-files-found: error
 
+  # The VS Code extension. Platform-independent, so it is built once rather than
+  # per target, and attached alongside the binaries.
+  extension:
+    name: vsix
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build
+        run: editors/vscode/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: editors/vscode/*.vsix
+          if-no-files-found: error
+
   release:
-    needs: build
+    needs: [build, extension]
     runs-on: ubuntu-latest
     # Only a tag push publishes. A manual run still builds every target and
     # leaves the archives as workflow artifacts, which is what you want when
@@ -164,3 +183,14 @@ jobs:
 
             Then `meadow` starts the REPL, and `meadow run <path>` builds and
             runs a package.
+
+            **VS Code** — download **`meadow-*.vsix`** below and install it with
+            *Extensions: Install from VSIX…*, or:
+
+            ```sh
+            code --install-extension meadow-0.1.0.vsix
+            ```
+
+            It gives you syntax highlighting on its own, and diagnostics, hover,
+            go-to-definition and inlay hints once `meadow` is on your `PATH` —
+            the extension runs `meadow lsp`.

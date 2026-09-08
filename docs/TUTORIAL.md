@@ -1142,10 +1142,22 @@ assertion five calls deep still stops the test and still names itself.
 | `meadow test [<path>] [<filter>]` | run `@test` functions |
 | `meadow fmt <path>` | re-indent in place |
 | `meadow fmt --check <path>` | report, exit 1 if anything differs |
+| `meadow lsp` | run the language server (editors start this) |
 | `meadow update` | replace the binary with the latest release |
 
 `--release` and `--debug` select a profile. Today the only difference is that
 release requires every `match` to be exhaustive.
+
+### Editors
+
+`meadow lsp` speaks the Language Server Protocol over stdin and stdout, so any
+LSP client can use it. It gives you diagnostics as you type, hover showing the
+inferred type and the `--` comment above the definition, go-to-definition, inlay
+hints for parameters and `let` bindings, and semantic tokens.
+
+The VS Code extension lives in `editors/vscode`; `editors/vscode/build.sh`
+produces a `.vsix`, and every release attaches one. It runs `meadow lsp`, and
+falls back to plain syntax highlighting if the executable is not on your `PATH`.
 
 ### The formatter
 

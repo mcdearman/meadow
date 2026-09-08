@@ -189,6 +189,24 @@ representation of one, so it matches a vector emptied at run time too. A
 *non-empty* `Vector` has no structural pattern (it is a balanced tree, not a
 cons list); match on `Vector.len` or convert with `Vector.toList`.
 
+### Editor support
+
+`meadow lsp` is a language server — diagnostics as you type, hover with the
+inferred type and the doc comment above the definition, go-to-definition, inlay
+hints, and semantic highlighting from the compiler's own lexer. Any LSP client
+can drive it; it speaks the protocol over stdin and stdout.
+
+For VS Code, build and install the extension:
+
+```sh
+editors/vscode/build.sh
+code --install-extension editors/vscode/meadow-0.1.0.vsix
+```
+
+Each release also attaches a built `.vsix`. The extension runs `meadow lsp`, so
+it needs `meadow` on your `PATH` (or `meadow.server.path` set); without it you
+still get syntax highlighting from the bundled TextMate grammar.
+
 ### Profiles
 
 `--debug` (the default) and `--release` are bundles of compiler flags. Today the

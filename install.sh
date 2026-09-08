@@ -147,11 +147,26 @@ install_prebuilt() {
     tar -xzf "$tmp/$asset" -C "$tmp" || err "could not unpack $asset"
     [ -f "$tmp/meadow" ] || err "$asset did not contain a meadow binary"
 
-    install -m 755 "$tmp/meadow" "$BIN_DIR/meadow" 2>/dev/null \
-        || { cp "$tmp/meadow" "$BIN_DIR/meadow" && chmod 755 "$BIN_DIR/meadow"; }
+    replace_binary "$tmp/meadow"
 
     rm -rf "$tmp"
     trap - EXIT
+}
+
+# Put `$1` at $BIN_DIR/meadow, replacing whatever is there.
+#
+# The old binary is renamed out of the way first: writing over an executable that
+# is currently running fails on Linux (ETXTBSY), while renaming it never does, so
+# an upgrade works even with a REPL open elsewhere. Unlinking a busy file is fine
+# on Unix, so the leftover goes immediately.
+replace_binary() {
+    if [ -f "$BIN_DIR/meadow" ]; then
+        rm -f "$BIN_DIR/meadow.old"
+        mv "$BIN_DIR/meadow" "$BIN_DIR/meadow.old" 2>/dev/null || true
+    fi
+    install -m 755 "$1" "$BIN_DIR/meadow" 2>/dev/null \
+        || { cp "$1" "$BIN_DIR/meadow" && chmod 755 "$BIN_DIR/meadow"; }
+    rm -f "$BIN_DIR/meadow.old"
 }
 
 install_from_source() {

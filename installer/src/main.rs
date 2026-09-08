@@ -156,29 +156,24 @@ fn run(args: &Args) -> Result<(), String> {
 
     let dest = bin_dir.join(EXE);
     let source = locate_binary(args)?;
+    let backup = displace(&dest);
     match source {
         Source::Local(path) => {
             println!("  copying {}", path.display());
-            // Copying over a running exe fails; a stale one can just be moved
-            // aside and cleaned up on the next run.
-            if dest.exists() {
-                let backup = dest.with_extension("exe.old");
-                let _ = std::fs::remove_file(&backup);
-                let _ = std::fs::rename(&dest, &backup);
-            }
             std::fs::copy(&path, &dest)
                 .map_err(|e| format!("could not write {}: {e}", dest.display()))?;
         }
         Source::Downloaded(tmp) => {
-            if dest.exists() {
-                let backup = dest.with_extension("exe.old");
-                let _ = std::fs::remove_file(&backup);
-                let _ = std::fs::rename(&dest, &backup);
-            }
             std::fs::rename(&tmp, &dest)
                 .or_else(|_| std::fs::copy(&tmp, &dest).map(|_| ()))
                 .map_err(|e| format!("could not write {}: {e}", dest.display()))?;
         }
+    }
+    // Now that the new binary is in place the old one is dead weight — but it may
+    // still be locked by a running REPL, in which case leaving it is the right
+    // answer and the next install will clear it.
+    if let Some(backup) = backup {
+        let _ = std::fs::remove_file(backup);
     }
     println!("  installed {}", dest.display());
 
@@ -223,6 +218,21 @@ fn uninstall(home: &Path, bin_dir: &Path, modify_path: bool) -> Result<(), Strin
         .map_err(|e| format!("could not remove {}: {e}", home.display()))?;
     println!("Removed {}", home.display());
     Ok(())
+}
+
+/// Move an existing install out of the way, returning where it went.
+///
+/// Windows will not let you write over a running executable, but it *will* let
+/// you rename one — so an upgrade works even while a REPL is open in another
+/// window, and that window keeps running the binary it started with.
+fn displace(dest: &Path) -> Option<PathBuf> {
+    if !dest.exists() {
+        return None;
+    }
+    let backup = dest.with_extension("exe.old");
+    // A leftover from an upgrade that could not clean up (see `run`).
+    let _ = std::fs::remove_file(&backup);
+    std::fs::rename(dest, &backup).ok().map(|()| backup)
 }
 
 enum Source {

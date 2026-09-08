@@ -1,34 +1,38 @@
 -- Std.Collections.Set: an ordered set of `Int`, backed by a `Tree`.
+-- Reach these as `Set.insert` etc.
+
+use Std.Collections.Tree
+use Std.Collections.List (foldl, filter, all)
 
 @pub data Set = Set (Tree Int)
 
-@pub def emptySet = Set emptyTree
+@pub def empty = Set Tree.empty
 
-fun setTree s = match s with | Set t -> t
+fun unwrap s = match s with | Set t -> t
 
-@pub fun setInsert x s = Set (treeInsert x (setTree s))
+@pub fun insert x s = Set (Tree.insert x (unwrap s))
 
-@pub fun setDelete x s = Set (treeDelete x (setTree s))
+@pub fun delete x s = Set (Tree.delete x (unwrap s))
 
-@pub fun setMember x s = treeMember x (setTree s)
+@pub fun member x s = Tree.member x (unwrap s)
 
-@pub fun setSize s = treeSize (setTree s)
+@pub fun size s = Tree.size (unwrap s)
 
-@pub fun setNull s = treeNull (setTree s)
+@pub fun null s = Tree.null (unwrap s)
 
-@pub fun setToList s = treeToList (setTree s)
+@pub fun toList s = Tree.toList (unwrap s)
 
-@pub fun setFromList xs = Set (treeFromList xs)
+@pub fun fromList xs = Set (Tree.fromList xs)
 
-@pub fun setMin s = treeMin (setTree s)
+@pub fun minElem s = Tree.minElem (unwrap s)
 
-@pub fun setMax s = treeMax (setTree s)
+@pub fun maxElem s = Tree.maxElem (unwrap s)
 
-@pub fun setUnion a b = foldl (\acc x -> setInsert x acc) a (setToList b)
+@pub fun union a b = foldl (\acc x -> insert x acc) a (toList b)
 
-@pub fun setDiff a b = foldl (\acc x -> setDelete x acc) a (setToList b)
+@pub fun diff a b = foldl (\acc x -> delete x acc) a (toList b)
 
-@pub fun setIntersect a b =
-  setFromList (filter (\x -> setMember x b) (setToList a))
+@pub fun intersect a b =
+  fromList (filter (\x -> member x b) (toList a))
 
-@pub fun setSubset a b = all (\x -> setMember x b) (setToList a)
+@pub fun subset a b = all (\x -> member x b) (toList a)

@@ -1,0 +1,61 @@
+-- Std.Process: spawning subprocesses and process-level operations, modelled on
+-- Rust's `std::process`.
+--
+-- Every operation runs in the `Process` effect. With no enclosing `handle` the
+-- runtime does the real thing (spawns a child, reads `std::env`, …); a `handle`
+-- can intercept it (handy for tests / sandboxing) -- see `Std.Fs` for the same
+-- pattern.
+--
+-- A `Command` is the plain tuple `(program, args, cwd, envVars)` --
+-- `String, List String, Maybe String, List (String, String)`. Build one with
+-- `command` and `withArg` / `withArgs` / `withCwd` / `withEnv`.
+--
+-- An `Output` is `(status, stdout, stderr)` -- `Int, String, String`. `status`
+-- is the child's exit code, or `-1` if it was killed by a signal.
+
+use Std.Collections.List (append)
+
+@pub effect Process {
+  -- Run to completion, capturing stdout/stderr.
+  spawn : (String, List String, Maybe String, List (String, String))
+            -> Result String (Int, String, String),
+  -- Run to completion, inheriting the parent's stdio; just the exit code.
+  status : (String, List String, Maybe String, List (String, String))
+             -> Result String Int,
+  -- Terminate the current process immediately with the given exit code.
+  exit : Int -> Unit,
+  currentPid : Unit -> Int,
+  -- The process's command-line arguments (not including the program name).
+  argv : Unit -> List String,
+  getEnv : String -> Maybe String,
+  setEnv : (String, String) -> Unit,
+  removeEnv : String -> Unit,
+}
+
+@pub fun command program = (program, Nil, None, Nil)
+
+@pub fun withArg a cmd =
+  match cmd with | (p, xs, cwd, envs) -> (p, append xs (Cons a Nil), cwd, envs)
+
+@pub fun withArgs extra cmd =
+  match cmd with | (p, xs, cwd, envs) -> (p, append xs extra, cwd, envs)
+
+@pub fun withCwd dir cmd =
+  match cmd with | (p, xs, cwd, envs) -> (p, xs, Just dir, envs)
+
+@pub fun withEnv pair cmd =
+  match cmd with | (p, xs, cwd, envs) -> (p, xs, cwd, append envs (Cons pair Nil))
+
+-- Run `program` with `args` to completion, capturing its output.
+@pub fun run program args = spawn (withArgs args (command program))
+
+-- Run `program` with `args` to completion, inheriting stdio; just the exit code.
+@pub fun runInherit program args = status (withArgs args (command program))
+
+@pub fun outputStatus out = match out with | (s, o, e) -> s
+
+@pub fun outputStdout out = match out with | (s, o, e) -> o
+
+@pub fun outputStderr out = match out with | (s, o, e) -> e
+
+@pub fun succeeded out = outputStatus out == 0

@@ -1,59 +1,63 @@
--- Std.Collections.Tree: an unbalanced binary search tree.
+-- Std.Collections.Tree: an unbalanced binary search tree. Reach these as
+-- `Tree.insert` etc.
 --
--- `treeInsert` / `treeMember` / `treeDelete` order elements with `<`, so they
--- work on `Int`. `treeMap` / `treeFoldr` / `treeToList` are element-agnostic.
+-- `insert` / `member` / `delete` order elements with `<`, so they work on `Int`.
+-- `map` / `foldr` / `toList` are element-agnostic.
+
+use Std.Int (max)
+use Std.Collections.List (append, foldl)
 
 @pub data Tree a = Leaf | Node (Tree a) a (Tree a)
 
-@pub def emptyTree = Leaf
+@pub def empty = Leaf
 
-@pub fun treeNull t = match t with | Leaf -> True | Node l x r -> False
+@pub fun null t = match t with | Leaf -> True | Node l x r -> False
 
-@pub fun treeSize t =
+@pub fun size t =
   match t with
   | Leaf -> 0
-  | Node l x r -> 1 + treeSize l + treeSize r
+  | Node l x r -> 1 + size l + size r
 
-@pub fun treeDepth t =
+@pub fun depth t =
   match t with
   | Leaf -> 0
-  | Node l x r -> 1 + max (treeDepth l) (treeDepth r)
+  | Node l x r -> 1 + max (depth l) (depth r)
 
-@pub fun treeInsert x t =
+@pub fun insert x t =
   match t with
   | Leaf -> Node Leaf x Leaf
   | Node l y r ->
-      if x < y then Node (treeInsert x l) y r
-      else if y < x then Node l y (treeInsert x r)
+      if x < y then Node (insert x l) y r
+      else if y < x then Node l y (insert x r)
       else t
 
-@pub fun treeMember x t =
+@pub fun member x t =
   match t with
   | Leaf -> False
   | Node l y r ->
-      if x < y then treeMember x l
-      else if y < x then treeMember x r
+      if x < y then member x l
+      else if y < x then member x r
       else True
 
-@pub fun treeMin t =
+@pub fun minElem t =
   match t with
   | Leaf -> None
-  | Node l x r -> if treeNull l then Some x else treeMin l
+  | Node l x r -> if null l then Just x else minElem l
 
-@pub fun treeMax t =
+@pub fun maxElem t =
   match t with
   | Leaf -> None
-  | Node l x r -> if treeNull r then Some x else treeMax r
+  | Node l x r -> if null r then Just x else maxElem r
 
-fun treeDeleteMin t =
+fun deleteMin t =
   match t with
   | Leaf -> Leaf
-  | Node l x r -> if treeNull l then r else Node (treeDeleteMin l) x r
+  | Node l x r -> if null l then r else Node (deleteMin l) x r
 
 fun spliceMin l r =
-  match treeMin r with
+  match minElem r with
   | None -> l
-  | Some m -> Node l m (treeDeleteMin r)
+  | Just m -> Node l m (deleteMin r)
 
 fun removeRoot l r =
   match (l, r) with
@@ -61,27 +65,27 @@ fun removeRoot l r =
   | (ll, Leaf) -> ll
   | (ll, rr) -> spliceMin ll rr
 
-@pub fun treeDelete x t =
+@pub fun delete x t =
   match t with
   | Leaf -> Leaf
   | Node l y r ->
-      if x < y then Node (treeDelete x l) y r
-      else if y < x then Node l y (treeDelete x r)
+      if x < y then Node (delete x l) y r
+      else if y < x then Node l y (delete x r)
       else removeRoot l r
 
-@pub fun treeToList t =
+@pub fun toList t =
   match t with
   | Leaf -> Nil
-  | Node l x r -> append (treeToList l) (Cons x (treeToList r))
+  | Node l x r -> append (toList l) (Cons x (toList r))
 
-@pub fun treeFromList xs = foldl (\acc x -> treeInsert x acc) emptyTree xs
+@pub fun fromList xs = foldl (\acc x -> insert x acc) empty xs
 
-@pub fun treeFoldr f acc t =
+@pub fun foldr f acc t =
   match t with
   | Leaf -> acc
-  | Node l x r -> treeFoldr f (f x (treeFoldr f acc r)) l
+  | Node l x r -> foldr f (f x (foldr f acc r)) l
 
-@pub fun treeMap f t =
+@pub fun map f t =
   match t with
   | Leaf -> Leaf
-  | Node l x r -> Node (treeMap f l) (f x) (treeMap f r)
+  | Node l x r -> Node (map f l) (f x) (map f r)

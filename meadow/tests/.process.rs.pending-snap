@@ -1,0 +1,13 @@
+{"run_id":"1788833590-656509000","line":37,"new":{"module_name":"process","snapshot_name":"command_builder","metadata":{"source":"tests/process.rs","assertion_line":37,"expression":"eval_main_std(\"def cmd = withArg \\\"-n\\\" (withArg \\\"hi\\\" (command \\\"echo\\\"))\\n\\\n         def main = match spawn cmd with | Ok o -> outputStdout o | Err e -> e\\n\")"},"snapshot":"\"hi -n\\n\""},"old":{"module_name":"process","metadata":{},"snapshot":"\"hi\""}}
+{"run_id":"1788833603-351506000","line":37,"new":null,"old":null}
+{"run_id":"1788833603-351506000","line":18,"new":null,"old":null}
+{"run_id":"1788833603-351506000","line":8,"new":null,"old":null}
+{"run_id":"1788833603-351506000","line":50,"new":null,"old":null}
+{"run_id":"1788833603-351506000","line":26,"new":null,"old":null}
+{"run_id":"1788833603-351506000","line":45,"new":null,"old":null}
+{"run_id":"1788833681-360452000","line":18,"new":null,"old":null}
+{"run_id":"1788833681-360452000","line":50,"new":null,"old":null}
+{"run_id":"1788833681-360452000","line":8,"new":null,"old":null}
+{"run_id":"1788833681-360452000","line":37,"new":null,"old":null}
+{"run_id":"1788833681-360452000","line":45,"new":null,"old":null}
+{"run_id":"1788833681-360452000","line":26,"new":null,"old":null}

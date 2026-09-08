@@ -69,34 +69,50 @@ Module {
                                                 span: 29..35,
                                             },
                                             Located {
-                                                value: List(
+                                                value: App(
+                                                    Located {
+                                                        value: Var(
+                                                            Located {
+                                                                value: InternedString(vecFromArray),
+                                                                span: 39..48,
+                                                            },
+                                                        ),
+                                                        span: 39..48,
+                                                    },
                                                     [
                                                         Located {
-                                                            value: Var(
-                                                                Located {
-                                                                    value: InternedString(a),
-                                                                    span: 40..41,
-                                                                },
+                                                            value: Array(
+                                                                [
+                                                                    Located {
+                                                                        value: Var(
+                                                                            Located {
+                                                                                value: InternedString(a),
+                                                                                span: 40..41,
+                                                                            },
+                                                                        ),
+                                                                        span: 40..41,
+                                                                    },
+                                                                    Located {
+                                                                        value: Var(
+                                                                            Located {
+                                                                                value: InternedString(b),
+                                                                                span: 43..44,
+                                                                            },
+                                                                        ),
+                                                                        span: 43..44,
+                                                                    },
+                                                                    Located {
+                                                                        value: Var(
+                                                                            Located {
+                                                                                value: InternedString(a),
+                                                                                span: 46..47,
+                                                                            },
+                                                                        ),
+                                                                        span: 46..47,
+                                                                    },
+                                                                ],
                                                             ),
-                                                            span: 40..41,
-                                                        },
-                                                        Located {
-                                                            value: Var(
-                                                                Located {
-                                                                    value: InternedString(b),
-                                                                    span: 43..44,
-                                                                },
-                                                            ),
-                                                            span: 43..44,
-                                                        },
-                                                        Located {
-                                                            value: Var(
-                                                                Located {
-                                                                    value: InternedString(a),
-                                                                    span: 46..47,
-                                                                },
-                                                            ),
-                                                            span: 46..47,
+                                                            span: 39..48,
                                                         },
                                                     ],
                                                 ),

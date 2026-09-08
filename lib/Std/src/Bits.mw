@@ -1,0 +1,54 @@
+-- Std.Bits: bit twiddling on `Int` (64-bit, two's complement).
+--
+-- The primitives `shl` / `shr` / `ushr` / `bitAnd` / `bitOr` / `bitXor` /
+-- `bitNot` / `popCount` are always in scope (they are compiler builtins); the
+-- operators `<<` and `>>` (and `>>>` for an unsigned right shift) desugar to
+-- `shl` / `shr` / `ushr`. This module adds the derived helpers.
+
+-- The mask with the low `n` bits set (`n` in 0..63; `lowMask 8 == 255`).
+@pub fun lowMask n = (1 << n) - 1
+
+-- Keep only the low `n` bits of `x`.
+@pub fun lowBits n x = bitAnd x (lowMask n)
+
+-- A single-bit mask: `bit n == 1 << n`.
+@pub fun bit n = 1 << n
+
+-- Is bit `n` of `x` set?
+@pub fun testBit x n = bitAnd (x >> n) 1 == 1
+
+@pub fun setBit x n = bitOr x (bit n)
+
+@pub fun clearBit x n = bitAnd x (bitNot (bit n))
+
+@pub fun flipBit x n = bitXor x (bit n)
+
+-- Extract byte `k` (0 = least significant) of `x` as a value in 0..255.
+@pub fun byteOf k x = bitAnd (x >> (8 * k)) 255
+
+-- Assemble four bytes (each 0..255) into an `Int`, `b0` least significant.
+@pub fun fromBytes4 b0 b1 b2 b3 =
+  bitOr (bitOr b0 (b1 << 8)) (bitOr (b2 << 16) (b3 << 24))
+
+fun bitsClzGo x n =
+  if n >= 64 then 64
+  else if testBit x (63 - n) then n
+  else bitsClzGo x (n + 1)
+
+-- Number of leading zero bits (of the 64-bit word). `countLeadingZeros 1 == 63`;
+-- of 0 it is 64.
+@pub fun countLeadingZeros x = bitsClzGo x 0
+
+fun bitsCtzGo x n =
+  if n >= 64 then 64
+  else if testBit x n then n
+  else bitsCtzGo x (n + 1)
+
+-- Number of trailing zero bits. `countTrailingZeros 8 == 3`; of 0 it is 64.
+@pub fun countTrailingZeros x = bitsCtzGo x 0
+
+-- Rotate the low 64 bits left by `n` (0..63).
+@pub fun rotateLeft x n = bitOr (x << n) (ushr x (64 - n))
+
+-- Rotate the low 64 bits right by `n` (0..63).
+@pub fun rotateRight x n = bitOr (ushr x n) (x << (64 - n))

@@ -11,7 +11,7 @@ name = "meadow"
 path = "src/main.rs"
 
 [dependencies]
-meadow-compiler = { path = "../compiler/crates/meadow-compiler" }
+meadow-compiler = { path = "../compiler/meadow-compiler" }
 meadow-eval = { path = "../eval" }
 chumsky = { version = "0.13.0", features = ["pratt"] }
 clap = { version = "4.6.1", features = ["cargo", "derive"] }

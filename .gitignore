@@ -4,6 +4,7 @@ target
 *.log
 .repos
 .repl_history
+.claude
 
 # Added by cargo
 #

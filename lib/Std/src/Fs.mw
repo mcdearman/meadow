@@ -37,8 +37,11 @@
 
 -- Convenience wrappers ------------------------------------------------------
 
-@pub fun readToStringOr default path = resultOr default (readToString path)
+use Std.Result (unwrapOr)
+use Std.Collections.List (all)
 
-@pub fun tryReadDir path = resultOr Nil (readDir path)
+@pub fun readToStringOr default path = unwrapOr default (readToString path)
+
+@pub fun tryReadDir path = unwrapOr Nil (readDir path)
 
 @pub fun existsAll paths = all exists paths

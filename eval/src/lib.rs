@@ -39,6 +39,10 @@ pub enum Value {
     Str(InternedString),
     Unit,
     Tuple(Vec<Value>),
+    /// The one builtin collection: a persistent, `Rc`-shared contiguous buffer.
+    /// `Rc` gives O(1) clone + structural sharing; `Rc::make_mut` lets `arraySet`
+    /// / `arrayPush` mutate in place when the buffer is uniquely held.
+    Array(Rc<Vec<Value>>),
     List(Vec<Value>),
     Record(BTreeMap<InternedString, Value>),
     Ctor(InternedString, Vec<Value>),
@@ -150,6 +154,11 @@ pub enum K {
         body: Rc<Term>,
     },
     BuildTuple {
+        done: Vec<Value>,
+        pending: Vec<Term>,
+        env: Env,
+    },
+    BuildArray {
         done: Vec<Value>,
         pending: Vec<Term>,
         env: Env,
@@ -334,6 +343,7 @@ impl Machine<'_> {
                 self.ctrl = Control::Eval(c.clone(), env);
             }
             T::Tuple(items) => self.start_seq(items, env, SeqKind::Tuple),
+            T::Array(items) => self.start_seq(items, env, SeqKind::Array),
             T::List(items) => self.start_seq(items, env, SeqKind::List),
             T::Ctor(name, args) => self.start_seq(args, env, SeqKind::Ctor(*name)),
             T::Prim(op, args) => self.start_seq(args, env, SeqKind::Prim(*op)),
@@ -413,6 +423,11 @@ impl Machine<'_> {
                         pending,
                         env: env.clone(),
                     },
+                    SeqKind::Array => K::BuildArray {
+                        done,
+                        pending,
+                        env: env.clone(),
+                    },
                     SeqKind::List => K::BuildList {
                         done,
                         pending,
@@ -436,6 +451,7 @@ impl Machine<'_> {
             None => {
                 self.ctrl = Control::Ret(match kind {
                     SeqKind::Tuple => Value::Tuple(vec![]),
+                    SeqKind::Array => Value::Array(Rc::new(vec![])),
                     SeqKind::List => Value::List(vec![]),
                     SeqKind::Ctor(name) => Value::Ctor(name, vec![]),
                     SeqKind::Prim(_) => Value::Unit, // prims always have args
@@ -502,6 +518,24 @@ impl Machine<'_> {
                         self.ctrl = Control::Eval(Rc::new(next), env);
                     }
                     None => self.ctrl = Control::Ret(Value::Tuple(done)),
+                }
+            }
+            K::BuildArray {
+                mut done,
+                mut pending,
+                env,
+            } => {
+                done.push(v);
+                match pending.pop() {
+                    Some(next) => {
+                        self.kont.push(K::BuildArray {
+                            done,
+                            pending,
+                            env: env.clone(),
+                        });
+                        self.ctrl = Control::Eval(Rc::new(next), env);
+                    }
+                    None => self.ctrl = Control::Ret(Value::Array(Rc::new(done))),
                 }
             }
             K::BuildList {
@@ -706,6 +740,11 @@ impl Machine<'_> {
                 self.ctrl = Control::Ret(result);
                 return Ok(());
             }
+            if &*effect == "Process" {
+                let result = native_process(&op, arg)?;
+                self.ctrl = Control::Ret(result);
+                return Ok(());
+            }
             return err(format!("unhandled effect {effect}.{op}"));
         };
 
@@ -734,6 +773,7 @@ impl Machine<'_> {
 
 enum SeqKind {
     Tuple,
+    Array,
     List,
     Ctor(InternedString),
     Prim(core::Prim),
@@ -772,6 +812,9 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
         (P::Lit(core::Lit::Unit), Value::Unit) => true,
         (P::Tuple(ps), Value::Tuple(vs)) if ps.len() == vs.len() => {
             ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, scope))
+        }
+        (P::Array(ps), Value::Array(vs)) if ps.len() == vs.len() => {
+            ps.iter().zip(vs.iter()).all(|(p, v)| match_pat(p, v, scope))
         }
         (P::List(ps), Value::List(vs)) if ps.len() == vs.len() => {
             ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, scope))
@@ -949,7 +992,173 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             println!("{}", args[0]);
             Ok(Value::Unit)
         }
+
+        // --- builtin `Array` -------------------------------------------------
+        ArrayLen => Ok(Value::Int(as_array(&args[0])?.len() as i64)),
+        ArrayGet => {
+            let a = as_array(&args[0])?;
+            let i = as_index(&args[1])?;
+            a.get(i)
+                .cloned()
+                .ok_or_else(|| RuntimeError {
+                    msg: format!("arrayGet: index {i} out of bounds (len {})", a.len()),
+                })
+        }
+        ArrayGetOr => {
+            let a = as_array(&args[1])?;
+            let i = as_index(&args[2])?;
+            Ok(a.get(i).cloned().unwrap_or_else(|| args[0].clone()))
+        }
+        ArraySet => {
+            let mut rc = as_array(&args[0])?.clone();
+            let i = as_index(&args[1])?;
+            let buf = Rc::make_mut(&mut rc);
+            if i >= buf.len() {
+                return err(format!(
+                    "arraySet: index {i} out of bounds (len {})",
+                    buf.len()
+                ));
+            }
+            buf[i] = args[2].clone();
+            Ok(Value::Array(rc))
+        }
+        ArrayPush => {
+            let mut rc = as_array(&args[0])?.clone();
+            Rc::make_mut(&mut rc).push(args[1].clone());
+            Ok(Value::Array(rc))
+        }
+        ArrayPop => {
+            let mut rc = as_array(&args[0])?.clone();
+            let buf = Rc::make_mut(&mut rc);
+            if buf.pop().is_none() {
+                return err("arrayPop: empty array");
+            }
+            Ok(Value::Array(rc))
+        }
+        ArraySlice => {
+            let a = as_array(&args[0])?;
+            let n = a.len() as i64;
+            let from = as_int(&args[1])?.clamp(0, n) as usize;
+            let to = as_int(&args[2])?.clamp(from as i64, n) as usize;
+            Ok(Value::Array(Rc::new(a[from..to].to_vec())))
+        }
+        ArrayConcat => {
+            let x = as_array(&args[0])?;
+            let y = as_array(&args[1])?;
+            if x.is_empty() {
+                return Ok(args[1].clone());
+            }
+            if y.is_empty() {
+                return Ok(args[0].clone());
+            }
+            let mut out = Vec::with_capacity(x.len() + y.len());
+            out.extend(x.iter().cloned());
+            out.extend(y.iter().cloned());
+            Ok(Value::Array(Rc::new(out)))
+        }
+
+        // --- bitwise `Int` ops --------------------------------------------------
+        Shl | Shr | Ushr | BitAnd | BitOr | BitXor => {
+            let (x, y) = int2(&args[0], &args[1])?;
+            let r = match op {
+                Shl => x.wrapping_shl(y as u32),
+                // arithmetic (sign-extending) right shift
+                Shr => x.wrapping_shr(y as u32),
+                // logical right shift (treat `x` as 64 unsigned bits)
+                Ushr => (x as u64).wrapping_shr(y as u32) as i64,
+                BitAnd => x & y,
+                BitOr => x | y,
+                BitXor => x ^ y,
+                _ => unreachable!(),
+            };
+            Ok(Value::Int(r))
+        }
+        BitNot => Ok(Value::Int(!as_int(&args[0])?)),
+        PopCount => Ok(Value::Int(as_int(&args[0])?.count_ones() as i64)),
+
+        // --- bytes -----------------------------------------------------------
+        StringToBytes => match &args[0] {
+            Value::Str(s) => Ok(Value::Array(Rc::new(
+                s.bytes().map(|b| Value::Int(b as i64)).collect(),
+            ))),
+            other => err(format!("`stringToBytes` expects a String, got {other}")),
+        },
+        BytesToString => {
+            let buf = bytes_of(&args[0], "bytesToString")?;
+            Ok(Value::Str(InternedString::from(
+                String::from_utf8_lossy(&buf).into_owned(),
+            )))
+        }
+        BytesToHex => {
+            let buf = bytes_of(&args[0], "bytesToHex")?;
+            let mut s = String::with_capacity(buf.len() * 2);
+            for b in buf {
+                s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
+                s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
+            }
+            Ok(Value::Str(InternedString::from(s)))
+        }
+        BytesFromHex => {
+            let s = match &args[0] {
+                Value::Str(s) => *s,
+                other => return err(format!("`bytesFromHex` expects a String, got {other}")),
+            };
+            let none = || Value::Ctor(InternedString::from("None"), vec![]);
+            let bytes = s.as_bytes();
+            if bytes.len() % 2 != 0 {
+                return Ok(none());
+            }
+            let mut out = Vec::with_capacity(bytes.len() / 2);
+            for pair in bytes.chunks_exact(2) {
+                let hi = (pair[0] as char).to_digit(16);
+                let lo = (pair[1] as char).to_digit(16);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => out.push(Value::Int(((h << 4) | l) as i64)),
+                    _ => return Ok(none()),
+                }
+            }
+            Ok(Value::Ctor(
+                InternedString::from("Just"),
+                vec![Value::Array(Rc::new(out))],
+            ))
+        }
     }
+}
+
+/// Read a `Value::Array` of `Int`s in 0..=255 into a byte buffer. `what` names the
+/// caller for the error message.
+fn bytes_of(v: &Value, what: &str) -> Result<Vec<u8>, RuntimeError> {
+    let a = as_array(v)?;
+    let mut buf = Vec::with_capacity(a.len());
+    for x in a.iter() {
+        match x {
+            Value::Int(n) if (0..=255).contains(n) => buf.push(*n as u8),
+            other => return err(format!("`{what}`: not a byte (0..255): {other}")),
+        }
+    }
+    Ok(buf)
+}
+
+fn as_array<'a>(v: &'a Value) -> Result<&'a Rc<Vec<Value>>, RuntimeError> {
+    match v {
+        Value::Array(a) => Ok(a),
+        other => err(format!("expected an Array, got {other}")),
+    }
+}
+
+fn as_int(v: &Value) -> Result<i64, RuntimeError> {
+    match v {
+        Value::Int(i) => Ok(*i),
+        other => err(format!("expected an Int, got {other}")),
+    }
+}
+
+fn as_index(v: &Value) -> Result<usize, RuntimeError> {
+    let i = as_int(v)?;
+    if i < 0 {
+        return err(format!("negative array index {i}"));
+    }
+    Ok(i as usize)
 }
 
 /// The runtime's default handler for the `Std.Fs` effect: perform the real
@@ -1062,8 +1271,171 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     })
 }
 
+/// The runtime's default handler for the `Std.Process` effect: spawn real child
+/// processes / touch the real environment. A `Command` (from `Std.Process`) is
+/// the tuple `(program, args, cwd, envVars) : (String, List String,
+/// Maybe String, List (String, String))`; an `Output` is `(status, stdout,
+/// stderr) : (Int, String, String)`.
+fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
+    use std::process::Command as Proc;
+
+    let sv = |s: String| Value::Str(InternedString::from(s));
+    let ok = |v: Value| Value::Ctor(InternedString::from("Ok"), vec![v]);
+    let errv = |m: String| Value::Ctor(InternedString::from("Err"), vec![sv(m)]);
+    let just = |v: Value| Value::Ctor(InternedString::from("Just"), vec![v]);
+    let none = || Value::Ctor(InternedString::from("None"), vec![]);
+
+    let as_str = |v: &Value| -> Result<InternedString, RuntimeError> {
+        match v {
+            Value::Str(s) => Ok(*s),
+            other => err(format!("Process.{op}: expected a String, got {other}")),
+        }
+    };
+    fn as_list<'a>(op: &str, v: &'a Value) -> Result<&'a Vec<Value>, RuntimeError> {
+        match v {
+            Value::List(xs) => Ok(xs),
+            other => err(format!("Process.{op}: expected a List, got {other}")),
+        }
+    }
+    let as_cwd = |v: &Value| -> Result<Option<InternedString>, RuntimeError> {
+        match v {
+            Value::Ctor(n, args) if &**n == "None" && args.is_empty() => Ok(None),
+            Value::Ctor(n, args) if &**n == "Just" && args.len() == 1 => Ok(Some(as_str(&args[0])?)),
+            other => err(format!("Process.{op}: expected a Maybe String, got {other}")),
+        }
+    };
+    let build = |v: &Value| -> Result<Proc, RuntimeError> {
+        let t = match v {
+            Value::Tuple(t) if t.len() == 4 => t,
+            other => return err(format!("Process.{op}: expected a Command, got {other}")),
+        };
+        let program = as_str(&t[0])?;
+        let mut cmd = Proc::new(&*program);
+        for a in as_list(op, &t[1])? {
+            cmd.arg(&*as_str(a)?);
+        }
+        if let Some(dir) = as_cwd(&t[2])? {
+            cmd.current_dir(&*dir);
+        }
+        for e in as_list(op, &t[3])? {
+            match e {
+                Value::Tuple(kv) if kv.len() == 2 => {
+                    cmd.env(&*as_str(&kv[0])?, &*as_str(&kv[1])?);
+                }
+                other => return err(format!("Process.{op}: expected a (String, String) pair, got {other}")),
+            }
+        }
+        Ok(cmd)
+    };
+
+    Ok(match op {
+        "spawn" => match build(&arg)?.output() {
+            Ok(out) => ok(Value::Tuple(vec![
+                Value::Int(out.status.code().unwrap_or(-1) as i64),
+                sv(String::from_utf8_lossy(&out.stdout).into_owned()),
+                sv(String::from_utf8_lossy(&out.stderr).into_owned()),
+            ])),
+            Err(e) => errv(e.to_string()),
+        },
+        "status" => match build(&arg)?.status() {
+            Ok(st) => ok(Value::Int(st.code().unwrap_or(-1) as i64)),
+            Err(e) => errv(e.to_string()),
+        },
+        "exit" => {
+            let code = as_int(&arg)?;
+            std::process::exit(code as i32);
+        }
+        "currentPid" => Value::Int(std::process::id() as i64),
+        "argv" => Value::List(std::env::args().skip(1).map(sv).collect()),
+        "getEnv" => match std::env::var(&*as_str(&arg)?) {
+            Ok(v) => just(sv(v)),
+            Err(_) => none(),
+        },
+        "setEnv" => {
+            let t = match &arg {
+                Value::Tuple(t) if t.len() == 2 => t,
+                other => return err(format!("Process.setEnv: expected a (String, String) pair, got {other}")),
+            };
+            unsafe { std::env::set_var(&*as_str(&t[0])?, &*as_str(&t[1])?); }
+            Value::Unit
+        }
+        "removeEnv" => {
+            unsafe { std::env::remove_var(&*as_str(&arg)?); }
+            Value::Unit
+        }
+        other => return err(format!("unhandled effect Process.{other}")),
+    })
+}
+
+/// Names of the outer `Std.Collections.Vector` constructors — the values `[…]`
+/// literal syntax produces. Their internal shape varies with how the vector was
+/// built, so [`Display`] and [`value_eq`] flatten them to their element sequence.
+fn is_vector_ctor(name: &str) -> bool {
+    matches!(name, "VEmpty" | "VSingle" | "VFull")
+}
+
+/// Flatten a `Vector` value to its elements, in order. `None` if `v` is not a
+/// recognizable vector (wrong ctor / arity / field types).
+fn vector_elems(v: &Value) -> Option<Vec<Value>> {
+    match v {
+        Value::Ctor(n, args) if &**n == "VEmpty" && args.is_empty() => Some(Vec::new()),
+        Value::Ctor(n, args) if &**n == "VSingle" && args.len() == 1 => match &args[0] {
+            Value::Array(xs) => Some(xs.iter().cloned().collect()),
+            _ => None,
+        },
+        Value::Ctor(n, args) if &**n == "VFull" && args.len() == 7 => {
+            let mut out = Vec::new();
+            for i in [2usize, 3] {
+                match &args[i] {
+                    Value::Array(xs) => out.extend(xs.iter().cloned()),
+                    _ => return None,
+                }
+            }
+            vector_node_elems(&args[4], &mut out)?;
+            for i in [5usize, 6] {
+                match &args[i] {
+                    Value::Array(xs) => out.extend(xs.iter().cloned()),
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+fn vector_node_elems(n: &Value, out: &mut Vec<Value>) -> Option<()> {
+    match n {
+        Value::Ctor(name, args) if &**name == "VLeaf" && args.len() == 1 => match &args[0] {
+            Value::Array(xs) => {
+                out.extend(xs.iter().cloned());
+                Some(())
+            }
+            _ => None,
+        },
+        Value::Ctor(name, args) if &**name == "VBranch" && args.len() == 2 => match &args[1] {
+            Value::Array(kids) => {
+                for k in kids.iter() {
+                    vector_node_elems(k, out)?;
+                }
+                Some(())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn value_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
+        (Value::Ctor(na, _), Value::Ctor(nb, _)) if is_vector_ctor(na) && is_vector_ctor(nb) => {
+            match (vector_elems(a), vector_elems(b)) {
+                (Some(xs), Some(ys)) => {
+                    xs.len() == ys.len() && xs.iter().zip(&ys).all(|(p, q)| value_eq(p, q))
+                }
+                _ => false,
+            }
+        }
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::BigInt(x), Value::BigInt(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x == y,
@@ -1072,6 +1444,10 @@ fn value_eq(a: &Value, b: &Value) -> bool {
         (Value::Unit, Value::Unit) => true,
         (Value::Tuple(x), Value::Tuple(y)) | (Value::List(x), Value::List(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| value_eq(p, q))
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            Rc::ptr_eq(x, y)
+                || (x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| value_eq(p, q)))
         }
         (Value::Ctor(n1, x), Value::Ctor(n2, y)) => {
             n1 == n2 && x.len() == y.len() && x.iter().zip(y).all(|(p, q)| value_eq(p, q))
@@ -1107,6 +1483,16 @@ impl fmt::Display for Value {
                 }
                 f.write_str(")")
             }
+            Value::Array(items) => {
+                f.write_str("#[")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{v}")?;
+                }
+                f.write_str("]")
+            }
             Value::List(items) => {
                 f.write_str("[")?;
                 for (i, v) in items.iter().enumerate() {
@@ -1126,6 +1512,20 @@ impl fmt::Display for Value {
                     write!(f, "{k} = {v}")?;
                 }
                 f.write_str(" }")
+            }
+            // `Std.Collections.Vector` values print like a list: `[1, 2, 3]`.
+            Value::Ctor(name, _) if is_vector_ctor(name) => {
+                if let Some(xs) = vector_elems(self) {
+                    f.write_str("[")?;
+                    for (i, v) in xs.iter().enumerate() {
+                        if i > 0 {
+                            f.write_str(", ")?;
+                        }
+                        write!(f, "{v}")?;
+                    }
+                    return f.write_str("]");
+                }
+                write!(f, "{name}(..)")
             }
             Value::Ctor(name, args) if args.is_empty() => write!(f, "{name}"),
             Value::Ctor(name, args) => {
@@ -1315,8 +1715,8 @@ mod tests {
         assert_eq!(Value::Unit.to_string(), "()");
         assert_eq!(Value::Bool(true).to_string(), "true");
         assert_eq!(
-            Value::Ctor("Some".into(), vec![Value::Int(3)]).to_string(),
-            "Some(3)"
+            Value::Ctor("Just".into(), vec![Value::Int(3)]).to_string(),
+            "Just(3)"
         );
     }
 

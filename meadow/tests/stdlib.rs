@@ -48,7 +48,7 @@ fn cons_sugar_builds_a_list() {
 #[test]
 fn cons_sugar_in_patterns() {
     assert_eq!(
-        run("fun swapFirstTwo xs =\n  match xs with\n  | a :: b :: rest -> b :: a :: rest\n  | other -> other\ndef main = swapFirstTwo [1, 2, 3, 4]\n"),
+        run("fun swapFirstTwo xs =\n  match xs with\n  | a :: b :: rest -> b :: a :: rest\n  | other -> other\ndef main = swapFirstTwo [1; 2; 3; 4]\n"),
         "[2, 1, 3, 4]"
     );
 }
@@ -73,7 +73,7 @@ fn foldl_and_filter() {
 #[test]
 fn option_helpers() {
     assert_eq!(
-        run("def main = unwrapOr 0 (optionMap (\\x -> x + 1) (Some 41))\n"),
+        run("use Std.Maybe\ndef main = Maybe.unwrapOr 0 (Maybe.map (\\x -> x + 1) (Just 41))\n"),
         "42"
     );
 }
@@ -81,15 +81,15 @@ fn option_helpers() {
 #[test]
 fn std_map_roundtrip() {
     assert_eq!(
-        run("def main =\n  let m = mapInsert 2 \"b\" (mapInsert 1 \"a\" emptyMap) in\n  mapLookup 2 m\n"),
-        "Some(\"b\")"
+        run("use Std.Collections.Map\ndef main =\n  let m = Map.insert 2 \"b\" (Map.insert 1 \"a\" Map.empty) in\n  Map.lookup 2 m\n"),
+        "Just(\"b\")"
     );
 }
 
 #[test]
 fn std_set_dedups() {
     assert_eq!(
-        run("def main = setSize (setFromList [1, 2, 2, 3, 3, 3])\n"),
+        run("use Std.Collections.Set\ndef main = Set.size (Set.fromList [1; 2; 2; 3; 3; 3])\n"),
         "3"
     );
 }
@@ -132,7 +132,7 @@ fn fs_effect_can_be_handled() {
 #[test]
 fn std_tree_sorts() {
     assert_eq!(
-        run("def main = treeToList (treeFromList [5, 3, 8, 1, 4, 7, 9, 2, 6])\n"),
+        run("use Std.Collections.Tree\ndef main = Tree.toList (Tree.fromList [5; 3; 8; 1; 4; 7; 9; 2; 6])\n"),
         "[1, 2, 3, 4, 5, 6, 7, 8, 9]"
     );
 }

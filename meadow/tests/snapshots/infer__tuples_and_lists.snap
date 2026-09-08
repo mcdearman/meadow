@@ -3,4 +3,5 @@ source: tests/infer.rs
 expression: "schemes(\"fun swap p = match p with | (a, b) -> (b, a)\\nfun singleton x = [x]\\n\")"
 ---
 swap : forall a b. (a, b) -> (b, a)
-singleton : forall a. a -> [a]
+singleton : forall a b. a -> b
+!! undefined variable: vecFromArray

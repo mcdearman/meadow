@@ -1,33 +1,34 @@
--- Std.Collections.List: linked lists.
---
--- `map` / `filter` / `foldl` / `foldr` / `length` / `append` / `reverse` /
--- `concat` / `elem` / `range` / `take` / `drop` are defined here without `@pub`
--- and made public by re-export from the prelude
--- (`@pub use Std.Collections.List (...)`).
+-- Std.Collections.List: linked lists. Reach these as `List.map` etc., or
+-- `use Std.Collections.List (map, ...)`. The `[a; b; c]` literal and `::` build
+-- one of these.
+
+use Std.Bool (not)
+use Std.Tuple (fst, snd)
+use Std.Int (min, max)
 
 @pub data List a = Nil | Cons a (List a)
 
-fun append xs ys =
+@pub fun append xs ys =
   match xs with
   | Nil -> ys
   | Cons x rest -> x :: append rest ys
 
-fun map f xs =
+@pub fun map f xs =
   match xs with
   | Nil -> Nil
   | Cons x rest -> f x :: map f rest
 
-fun filter keep xs =
+@pub fun filter keep xs =
   match xs with
   | Nil -> Nil
   | Cons x rest -> if keep x then x :: filter keep rest else filter keep rest
 
-fun foldl f acc xs =
+@pub fun foldl f acc xs =
   match xs with
   | Nil -> acc
   | Cons x rest -> foldl f (f acc x) rest
 
-fun foldr f acc xs =
+@pub fun foldr f acc xs =
   match xs with
   | Nil -> acc
   | Cons x rest -> f x (foldr f acc rest)
@@ -37,31 +38,31 @@ fun reverseOnto acc xs =
   | Nil -> acc
   | Cons x rest -> reverseOnto (x :: acc) rest
 
-fun reverse xs = reverseOnto Nil xs
+@pub fun reverse xs = reverseOnto Nil xs
 
-fun length xs =
+@pub fun length xs =
   match xs with
   | Nil -> 0
   | Cons x rest -> 1 + length rest
 
-fun elem x xs =
+@pub fun elem x xs =
   match xs with
   | Nil -> False
   | Cons y rest -> if x == y then True else elem x rest
 
-fun range lo hi = if lo < hi then lo :: range (lo + 1) hi else Nil
+@pub fun range lo hi = if lo < hi then lo :: range (lo + 1) hi else Nil
 
-fun take n xs =
+@pub fun take n xs =
   match xs with
   | Nil -> Nil
   | Cons y rest -> if n < 1 then Nil else y :: take (n - 1) rest
 
-fun drop n xs =
+@pub fun drop n xs =
   match xs with
   | Nil -> Nil
   | Cons y rest -> if n < 1 then xs else drop (n - 1) rest
 
-fun concat xss = foldr append Nil xss
+@pub fun concat xss = foldr append Nil xss
 
 -- Public surface --------------------------------------------------------------
 
@@ -69,20 +70,20 @@ fun concat xss = foldr append Nil xss
 
 @pub fun singleton x = Cons x Nil
 
-@pub fun head xs = match xs with | Nil -> None | Cons x rest -> Some x
+@pub fun head xs = match xs with | Nil -> None | Cons x rest -> Just x
 
-@pub fun tail xs = match xs with | Nil -> None | Cons x rest -> Some rest
+@pub fun tail xs = match xs with | Nil -> None | Cons x rest -> Just rest
 
 @pub fun last xs =
   match xs with
   | Nil -> None
-  | Cons x Nil -> Some x
+  | Cons x Nil -> Just x
   | Cons x rest -> last rest
 
 @pub fun nth n xs =
   match xs with
   | Nil -> None
-  | Cons x rest -> if n < 1 then Some x else nth (n - 1) rest
+  | Cons x rest -> if n < 1 then Just x else nth (n - 1) rest
 
 @pub fun notElem x xs = not (elem x xs)
 
@@ -95,12 +96,12 @@ fun concat xss = foldr append Nil xss
 @pub fun maximum xs =
   match xs with
   | Nil -> None
-  | Cons x rest -> Some (foldl max x rest)
+  | Cons x rest -> Just (foldl max x rest)
 
 @pub fun minimum xs =
   match xs with
   | Nil -> None
-  | Cons x rest -> Some (foldl min x rest)
+  | Cons x rest -> Just (foldl min x rest)
 
 @pub fun all keep xs =
   match xs with
@@ -115,7 +116,7 @@ fun concat xss = foldr append Nil xss
 @pub fun find keep xs =
   match xs with
   | Nil -> None
-  | Cons x rest -> if keep x then Some x else find keep rest
+  | Cons x rest -> if keep x then Just x else find keep rest
 
 @pub fun takeWhile keep xs =
   match xs with
@@ -158,7 +159,7 @@ fun concat xss = foldr append Nil xss
 @pub fun lookupAssoc key pairs =
   match pairs with
   | Nil -> None
-  | Cons (k, v) rest -> if k == key then Some v else lookupAssoc key rest
+  | Cons (k, v) rest -> if k == key then Just v else lookupAssoc key rest
 
 @pub fun insertAssoc key val pairs =
   match pairs with

@@ -1,19 +1,13 @@
 -- The Std prelude.
 --
--- It defines nothing. Every name below is defined in another module of this
--- package; `map` / `filter` / `foldl` / `foldr` / `length` / `append` /
--- `reverse` / `concat` / `elem` / `range` / `take` / `drop` are defined there
--- *without* `@pub` and become public only through this re-export. Everything
--- else is already `@pub` at its definition and is listed here for documentation.
-
-@pub use Std.Collections.List (
-  map, filter, foldl, foldr, length, append, reverse, concat, elem, range,
-  take, drop,
-  isEmpty, singleton, head, tail, last, nth, notElem, replicate, sum, product,
-  maximum, minimum, all, any, find, takeWhile, dropWhile, partition, concatMap,
-  zip, zipWith, unzip, sumBy, intercalate,
-  lookupAssoc, insertAssoc, removeAssoc,
-)
+-- It defines nothing. Every name below is `@pub use`-re-exported from another
+-- module, which is what makes it available *unqualified* in every package that
+-- depends on `Std`. Anything not listed here is reached with a qualifier
+-- (`Maybe.map`, `List.foldr`, `Set.insert`, …) or an explicit `use`.
+--
+-- The sequence API in scope by default is `Vector`'s -- `[1, 2, 3]` builds a
+-- `Vector`, and bare `map` / `foldl` / `range` / … operate on it. For the linked
+-- `List` (`::`, `[1; 2; 3]`) use `List.map` etc.
 
 @pub use Std.Bool (not)
 
@@ -27,12 +21,40 @@
   min, max, abs, signum, clamp, succ, pred, even, odd, gcd, lcm,
 )
 
-@pub use Std.Option (
-  isSome, isNone, unwrapOr, optionOr, optionMap, optionThen, optionFilter,
-  optionToList,
+@pub use Std.Bits (
+  lowMask, lowBits, bit, testBit, setBit, clearBit, flipBit, byteOf, fromBytes4,
+  countLeadingZeros, countTrailingZeros, rotateLeft, rotateRight,
 )
 
-@pub use Std.Result (
-  isOk, isErr, resultOr, resultMap, resultMapErr, resultThen, resultToOption,
-  okToResult,
+@pub use Std.Bytes (
+  bytesEmpty, bytesLength, bytesIsEmpty, bytesGet, bytesGetOr, bytesSet,
+  bytesPush, bytesPop, bytesSlice, bytesConcat,
+  bytesGetU16LE, bytesGetU16BE, bytesGetU32LE, bytesGetU32BE,
+  bytesSetU16LE, bytesSetU16BE, bytesSetU32LE, bytesSetU32BE,
+)
+
+@pub use Std.Fs (
+  readToString, readBytes, writeString, appendString, removeFile,
+  createDir, createDirAll, removeDir, removeDirAll, rename, copy, readDir,
+  metadata, exists, isFile, isDir,
+  readToStringOr, tryReadDir, existsAll,
+)
+
+@pub use Std.Process (
+  command, withArg, withArgs, withCwd, withEnv, run, runInherit,
+  outputStatus, outputStdout, outputStderr, succeeded,
+  exit, currentPid, argv, getEnv, setEnv, removeEnv,
+)
+
+-- `Vector` is the default sequence.
+@pub use Std.Collections.Vector (
+  vecFromArray,
+  empty, singleton, fromArray, fromList, toArray, toList,
+  len, length, isEmpty, get, getOr, head, last, nth, set,
+  pushBack, pushFront, popBack, popFront,
+  append, splitAt, slice, take, drop,
+  map, filter, foldl, foldr, reverse, updateAt, forEach,
+  range, elem, notElem, sum, product, sumBy, all, any, find,
+  concat, concatMap, replicate, takeWhile, dropWhile, partition,
+  zip, zipWith, unzip, maximum, minimum,
 )

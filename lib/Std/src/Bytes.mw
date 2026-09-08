@@ -1,0 +1,78 @@
+-- Std.Bytes: working with byte arrays.
+--
+-- A "byte array" is just an `Array Int` whose elements are each in 0..255 -- there
+-- is no distinct `Bytes` type. The runtime bridge to `String` is the primitives
+-- `stringToBytes` / `bytesToString` (lossy UTF-8) and `bytesToHex` /
+-- `bytesFromHex`; this module adds construction, masking setters, and
+-- little-/big-endian multi-byte integer reads and writes on top of them.
+
+-- The empty byte array.
+@pub def bytesEmpty = #[]
+
+@pub fun bytesLength b = arrayLen b
+
+@pub fun bytesIsEmpty b = arrayLen b == 0
+
+-- `Just` the byte at `i`, or `None` if `i` is out of range.
+@pub fun bytesGet b i =
+  if i < 0 then None
+  else if i >= arrayLen b then None
+  else Just (arrayGet b i)
+
+-- The byte at `i`, or `default` when out of range.
+@pub fun bytesGetOr default b i = arrayGetOr default b i
+
+-- Persistently set byte `i` to the low 8 bits of `v`.
+@pub fun bytesSet b i v = arraySet b i (bitAnd v 255)
+
+-- Append the low 8 bits of `v`.
+@pub fun bytesPush b v = arrayPush b (bitAnd v 255)
+
+@pub fun bytesPop b = arrayPop b
+
+-- The `[from, to)` sub-array, clamped to bounds.
+@pub fun bytesSlice b from to = arraySlice b from to
+
+@pub fun bytesConcat a b = arrayConcat a b
+
+-- --- multi-byte integer reads (return 0 for bytes past the end) --------------
+
+@pub fun bytesGetU16LE b i =
+  bitOr (bytesGetOr 0 b i)
+        (bytesGetOr 0 b (i + 1) << 8)
+
+@pub fun bytesGetU16BE b i =
+  bitOr (bytesGetOr 0 b i << 8)
+        (bytesGetOr 0 b (i + 1))
+
+@pub fun bytesGetU32LE b i =
+  bitOr (bitOr (bytesGetOr 0 b i)
+               (bytesGetOr 0 b (i + 1) << 8))
+        (bitOr (bytesGetOr 0 b (i + 2) << 16)
+               (bytesGetOr 0 b (i + 3) << 24))
+
+@pub fun bytesGetU32BE b i =
+  bitOr (bitOr (bytesGetOr 0 b i << 24)
+               (bytesGetOr 0 b (i + 1) << 16))
+        (bitOr (bytesGetOr 0 b (i + 2) << 8)
+               (bytesGetOr 0 b (i + 3)))
+
+-- --- multi-byte integer writes (each returns a new byte array) --------------
+
+@pub fun bytesSetU16LE b i v =
+  bytesSet (bytesSet b i v) (i + 1) (v >> 8)
+
+@pub fun bytesSetU16BE b i v =
+  bytesSet (bytesSet b i (v >> 8)) (i + 1) v
+
+@pub fun bytesSetU32LE b i v =
+  bytesSet (bytesSet (bytesSet (bytesSet b i v)
+                               (i + 1) (v >> 8))
+                     (i + 2) (v >> 16))
+           (i + 3) (v >> 24)
+
+@pub fun bytesSetU32BE b i v =
+  bytesSet (bytesSet (bytesSet (bytesSet b i (v >> 24))
+                               (i + 1) (v >> 16))
+                     (i + 2) (v >> 8))
+           (i + 3) v

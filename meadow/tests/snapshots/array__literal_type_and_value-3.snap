@@ -1,0 +1,5 @@
+---
+source: tests/array.rs
+expression: "eval_expr(\"#[]\")"
+---
+#[]

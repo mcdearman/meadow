@@ -2,4 +2,4 @@
 source: tests/effects.rs
 expression: "schemes(\"effect State s { get : () -> s, put : s -> () }\\n\\\n         fun tick u = let n = get () in let x = put (n + 1) in n\\n\")"
 ---
-tick : forall a b. a -> Int ! { State Int | b }
+tick : forall a e. a -> Int ! { State Int | e }

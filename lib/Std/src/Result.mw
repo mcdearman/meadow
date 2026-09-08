@@ -1,4 +1,5 @@
--- Success-or-failure values.
+-- Std.Result: success-or-failure values. Reach these as `Result.map` etc.
+-- (`None` / `Just` / `Ok` / `Err` are constructors -- always in scope by name.)
 
 @pub data Result e a = Err e | Ok a
 
@@ -6,29 +7,29 @@
 
 @pub fun isErr r = match r with | Err e -> True | Ok x -> False
 
-@pub fun resultOr fallback r = match r with | Err e -> fallback | Ok x -> x
+@pub fun unwrapOr fallback r = match r with | Err e -> fallback | Ok x -> x
 
-@pub fun resultMap f r =
+@pub fun map f r =
   match r with
   | Err e -> Err e
   | Ok x -> Ok (f x)
 
-@pub fun resultMapErr f r =
+@pub fun mapErr f r =
   match r with
   | Err e -> Err (f e)
   | Ok x -> Ok x
 
-@pub fun resultThen f r =
+@pub fun andThen f r =
   match r with
   | Err e -> Err e
   | Ok x -> f x
 
-@pub fun resultToOption r =
+@pub fun toMaybe r =
   match r with
   | Err e -> None
-  | Ok x -> Some x
+  | Ok x -> Just x
 
-@pub fun okToResult err o =
+@pub fun fromMaybe err o =
   match o with
   | None -> Err err
-  | Some x -> Ok x
+  | Just x -> Ok x

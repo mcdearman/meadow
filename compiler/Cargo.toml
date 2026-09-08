@@ -1,23 +1,23 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["meadow-*"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-meadow-intern = { path = "crates/meadow-intern" }
-meadow-span = { path = "crates/meadow-span" }
-meadow-source = { path = "crates/meadow-source" }
-meadow-diagnostics = { path = "crates/meadow-diagnostics" }
-meadow-ast = { path = "crates/meadow-ast" }
-meadow-lexer = { path = "crates/meadow-lexer" }
-meadow-parser = { path = "crates/meadow-parser" }
-meadow-hir = { path = "crates/meadow-hir" }
-meadow-rename = { path = "crates/meadow-rename" }
-meadow-infer = { path = "crates/meadow-infer" }
-meadow-core = { path = "crates/meadow-core" }
+meadow-intern = { path = "meadow-intern" }
+meadow-span = { path = "meadow-span" }
+meadow-source = { path = "meadow-source" }
+meadow-diagnostics = { path = "meadow-diagnostics" }
+meadow-ast = { path = "meadow-ast" }
+meadow-lexer = { path = "meadow-lexer" }
+meadow-parser = { path = "meadow-parser" }
+meadow-hir = { path = "meadow-hir" }
+meadow-rename = { path = "meadow-rename" }
+meadow-infer = { path = "meadow-infer" }
+meadow-core = { path = "meadow-core" }
 num-bigint = "0.4"
 num-traits = "0.2"
 ariadne = "0.6.0"

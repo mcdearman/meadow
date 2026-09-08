@@ -1,0 +1,18 @@
+-- Std: the standard library root module.
+--
+-- Each `mod` below is a child module. Nothing here is in scope for a child
+-- automatically -- a module reaches another only through an explicit `use`.
+
+@pub mod Bool
+@pub mod Ordering
+@pub mod Function
+@pub mod Tuple
+@pub mod Int
+@pub mod Maybe
+@pub mod Result
+@pub mod Bits
+@pub mod Bytes
+@pub mod Collections
+@pub mod Fs
+@pub mod Process
+@pub mod prelude

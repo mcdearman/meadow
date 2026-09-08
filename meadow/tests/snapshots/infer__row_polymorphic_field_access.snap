@@ -2,4 +2,4 @@
 source: tests/infer.rs
 expression: "schemes(\"def name = \\\\r -> r.name\\n\")"
 ---
-name : forall a b. { name : a | b } -> a
+name : forall a r. { name : a | r } -> a

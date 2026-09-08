@@ -1,83 +1,87 @@
 -- Std.Collections.Map: an ordered map from `Int` keys to values, backed by a
--- binary search tree.
+-- binary search tree. Reach these as `Map.insert` etc.
+
+use Std.Collections.List (append, foldl)
+use Std.Tuple (fst, snd)
+use Std.Maybe (isSome)
 
 @pub data Map v = MapTip | MapNode (Map v) Int v (Map v)
 
-@pub def emptyMap = MapTip
+@pub def empty = MapTip
 
-@pub fun mapNull m = match m with | MapTip -> True | MapNode l k v r -> False
+@pub fun null m = match m with | MapTip -> True | MapNode l k v r -> False
 
-@pub fun mapSize m =
+@pub fun size m =
   match m with
   | MapTip -> 0
-  | MapNode l k v r -> 1 + mapSize l + mapSize r
+  | MapNode l k v r -> 1 + size l + size r
 
-@pub fun mapInsert k v m =
+@pub fun insert k v m =
   match m with
   | MapTip -> MapNode MapTip k v MapTip
   | MapNode l key val r ->
-      if k < key then MapNode (mapInsert k v l) key val r
-      else if key < k then MapNode l key val (mapInsert k v r)
+      if k < key then MapNode (insert k v l) key val r
+      else if key < k then MapNode l key val (insert k v r)
       else MapNode l k v r
 
-@pub fun mapLookup k m =
+@pub fun lookup k m =
   match m with
   | MapTip -> None
   | MapNode l key val r ->
-      if k < key then mapLookup k l
-      else if key < k then mapLookup k r
-      else Some val
+      if k < key then lookup k l
+      else if key < k then lookup k r
+      else Just val
 
-@pub fun mapMember k m = isSome (mapLookup k m)
+@pub fun member k m = isSome (lookup k m)
 
-@pub fun mapGetOr default k m =
-  match mapLookup k m with
+@pub fun getOr default k m =
+  match lookup k m with
   | None -> default
-  | Some v -> v
+  | Just v -> v
 
-@pub fun mapToList m =
+@pub fun toList m =
   match m with
   | MapTip -> Nil
-  | MapNode l k v r -> append (mapToList l) (Cons (k, v) (mapToList r))
+  | MapNode l k v r -> append (toList l) (Cons (k, v) (toList r))
 
-@pub fun mapKeys m = map fst (mapToList m)
+@pub fun keys m = List.map fst (toList m)
 
-@pub fun mapValues m = map snd (mapToList m)
+@pub fun values m = List.map snd (toList m)
 
-fun mapInsertPair p m = match p with | (k, v) -> mapInsert k v m
+fun insertPair p m = match p with | (k, v) -> insert k v m
 
-@pub fun mapFromList ps = foldl (\acc p -> mapInsertPair p acc) emptyMap ps
+@pub fun fromList ps = foldl (\acc p -> insertPair p acc) empty ps
 
-@pub fun mapMapValues f m =
+@pub fun map f m =
   match m with
   | MapTip -> MapTip
-  | MapNode l k v r -> MapNode (mapMapValues f l) k (f v) (mapMapValues f r)
+  | MapNode l k v r -> MapNode (map f l) k (f v) (map f r)
 
-@pub fun mapMin m =
+@pub fun minEntry m =
   match m with
   | MapTip -> None
-  | MapNode l k v r -> if mapNull l then Some (k, v) else mapMin l
+  | MapNode l k v r -> if null l then Just (k, v) else minEntry l
 
-fun mapDeleteMin m =
+fun deleteMin m =
   match m with
   | MapTip -> MapTip
-  | MapNode l k v r -> if mapNull l then r else MapNode (mapDeleteMin l) k v r
+  | MapNode l k v r -> if null l then r else MapNode (deleteMin l) k v r
 
-fun mapSpliceMin l r =
-  match mapMin r with
+fun spliceMin l r =
+  match minEntry r with
   | None -> l
-  | Some (mk, mv) -> MapNode l mk mv (mapDeleteMin r)
+  | Just (mk, mv) -> MapNode l mk mv (deleteMin r)
 
-fun mapRemoveRoot l r =
+fun removeRoot l r =
   match (l, r) with
   | (MapTip, rr) -> rr
   | (ll, MapTip) -> ll
-  | (ll, rr) -> mapSpliceMin ll rr
+  | (ll, rr) -> spliceMin ll rr
 
-@pub fun mapDelete k m =
+@pub fun delete k m =
   match m with
   | MapTip -> MapTip
   | MapNode l key val r ->
-      if k < key then MapNode (mapDelete k l) key val r
-      else if key < k then MapNode l key val (mapDelete k r)
-      else mapRemoveRoot l r
+      if k < key then MapNode (delete k l) key val r
+      else if key < k then MapNode l key val (delete k r)
+      else removeRoot l r

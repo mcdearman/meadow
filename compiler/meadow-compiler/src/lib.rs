@@ -1,0 +1,62 @@
+//! # Meadow — compiler front end (facade)
+//!
+//! The Meadow source tree is three independent Cargo workspaces:
+//!
+//! * **`compiler/`** — this workspace. One crate per pass, wired together here so
+//!   downstream code can `use meadow_compiler::{lexer, parser, infer, …}`.
+//! * **`eval/`** — the `meadow-eval` crate: a CEK machine that runs a
+//!   [`core::Program`]. Depends only on `meadow-core` + `meadow-intern`.
+//! * **`meadow/`** — the build system (package discovery, pipeline, linker,
+//!   embedded stdlib) plus the CLI and REPL.
+//!
+//! ## The pipeline
+//!
+//! ```text
+//!   &str
+//!    │  lexer::tokenize            logos-based; skips whitespace/comments
+//!    ▼
+//!   Vec<LToken>
+//!    │  parser::parse              chumsky; pratt-parsed operators
+//!    ▼
+//!   ast::Module                   surface syntax, names still strings
+//!    │  rename::Resolver          ast → hir
+//!    ▼
+//!   hir::Module                   nodes stamped with hir::NodeId; names → hir::VarId
+//!    │  infer::Infer              Algorithm J
+//!    ▼
+//!   infer::TypeTable             NodeId → Type, plus a Scheme per top-level binding
+//!    │  core::Lowerer            hir → core (an extended lambda calculus)
+//!    ▼
+//!   Vec<core::Def>
+//!    │  meadow::linker::Linker   concatenate packages, find `main`   (in the `meadow` crate)
+//!    ▼
+//!   core::Program
+//!    │  meadow_eval::run         CEK abstract machine                (in the `eval` crate)
+//!    ▼
+//!   meadow_eval::Value
+//! ```
+//!
+//! ## Identifiers
+//!
+//! [`hir::VarId`]s are globally unique (a process-wide atomic counter), so ids
+//! minted by separately compiled packages / REPL lines never collide and the
+//! linker can key on them. [`hir::NodeId`]s are dense per resolver, so type
+//! inference can use a `Vec`-backed side table.
+
+pub use meadow_ast as ast;
+pub use meadow_core as core;
+pub use meadow_diagnostics as diagnostics;
+pub use meadow_hir as hir;
+pub use meadow_infer as infer;
+pub use meadow_intern as intern;
+pub use meadow_lexer as lexer;
+pub use meadow_parser as parser;
+pub use meadow_rename as rename;
+pub use meadow_source as source;
+pub use meadow_span as span;
+
+mod unit;
+pub use unit::{
+    compile_str, compile_unit, compile_unit_in_package, AstModule, CompiledPackage, Export,
+    TypedModule,
+};

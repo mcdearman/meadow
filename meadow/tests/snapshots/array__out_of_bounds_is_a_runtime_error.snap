@@ -1,0 +1,5 @@
+---
+source: tests/array.rs
+expression: "eval_expr(\"arrayGet #[1, 2, 3] 5\")"
+---
+runtime error: arrayGet: index 5 out of bounds (len 3)

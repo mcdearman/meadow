@@ -45,7 +45,7 @@
         "meadow.server.path": {
           "type": "string",
           "default": "meadow",
-          "description": "Path to the `meadow` executable. The extension runs `meadow lsp`."
+          "description": "Path to the `meadow` executable; the extension runs `meadow lsp`. Left at `meadow`, it also looks in ~/.cargo/bin and ~/.meadow/bin \u2014 a VS Code started from the Dock does not inherit your shell's PATH."
         },
         "meadow.inlayHints.enabled": {
           "type": "boolean",
@@ -76,5 +76,9 @@
   },
   "devDependencies": {
     "@types/vscode": "^1.75.0"
+  },
+  "scripts": {
+    "test": "node --test test/resolve.test.js",
+    "package": "./build.sh"
   }
 }

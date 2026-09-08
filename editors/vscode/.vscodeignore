@@ -2,3 +2,4 @@
 **/*.map
 **/tsconfig.json
 .gitignore
+test/**

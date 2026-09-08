@@ -5,3 +5,5 @@ target
 .repos
 .repl_history
 .claude
+# insta scratch: regenerated on any snapshot mismatch
+*.pending-snap

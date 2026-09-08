@@ -8,6 +8,7 @@
 
 pub mod linker;
 pub mod package;
+pub mod complete;
 pub mod pipeline;
 pub mod profile;
 pub mod stdlib;

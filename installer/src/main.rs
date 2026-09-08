@@ -226,13 +226,24 @@ fn uninstall(home: &Path, bin_dir: &Path, modify_path: bool) -> Result<(), Strin
 /// you rename one — so an upgrade works even while a REPL is open in another
 /// window, and that window keeps running the binary it started with.
 fn displace(dest: &Path) -> Option<PathBuf> {
+    let backup = backup_path(dest);
+    // A leftover from an upgrade that could not clean up — either a previous run
+    // of this installer, or a `meadow update` that could not delete its own
+    // running image. Clear it whether or not we are about to make another.
+    let _ = std::fs::remove_file(&backup);
     if !dest.exists() {
         return None;
     }
-    let backup = dest.with_extension("exe.old");
-    // A leftover from an upgrade that could not clean up (see `run`).
-    let _ = std::fs::remove_file(&backup);
     std::fs::rename(dest, &backup).ok().map(|()| backup)
+}
+
+/// Where a displaced binary is parked. Must match `meadow::update::backup_path`,
+/// so the installer and `meadow update` tidy up after each other: the name plus
+/// `.old`, appended rather than replacing `.exe`.
+fn backup_path(exe: &Path) -> PathBuf {
+    let mut name = exe.file_name().unwrap_or_default().to_os_string();
+    name.push(".old");
+    exe.with_file_name(name)
 }
 
 enum Source {

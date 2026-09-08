@@ -5,7 +5,7 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
-use meadow::{pipeline, Profile};
+use meadow::{pipeline, update, Profile};
 use meadow_eval as eval;
 use std::path::PathBuf;
 
@@ -33,6 +33,15 @@ enum Cmd {
         path: PathBuf,
         #[command(flatten)]
         profile: ProfileArgs,
+    },
+    /// Replace this binary with the latest published release.
+    Update {
+        /// Install a specific release tag instead of the newest.
+        #[arg(long, value_name = "TAG")]
+        version: Option<String>,
+        /// Re-install even if this is already the latest version.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -69,6 +78,12 @@ fn main() {
             profile,
         }) => build(&path, false, annotations, profile.profile()),
         Some(Cmd::Run { path, profile }) => build(&path, true, false, profile.profile()),
+        Some(Cmd::Update { version, force }) => {
+            if let Err(e) = update::run(&update::Options { version, force }) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 }
 

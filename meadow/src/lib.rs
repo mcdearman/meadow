@@ -11,6 +11,7 @@ pub mod package;
 pub mod complete;
 pub mod pipeline;
 pub mod profile;
+pub mod update;
 pub mod stdlib;
 
 pub use meadow_compiler::Options;

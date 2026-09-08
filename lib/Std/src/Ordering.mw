@@ -12,3 +12,23 @@
 @pub fun isEqual o = match o with | Less -> False | Equal -> True | Greater -> False
 
 @pub fun isGreater o = match o with | Less -> False | Equal -> False | Greater -> True
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun compareOrdersThreeWays u =
+  let a = assertEq (compare 1 2) Less "1 vs 2" in
+  let b = assertEq (compare 2 2) Equal "2 vs 2" in
+  assertEq (compare 3 2) Greater "3 vs 2"
+
+@test fun compareHandlesNegativesAndZero u =
+  let a = assertEq (compare (0 - 5) 0) Less "-5 vs 0" in
+  let b = assertEq (compare 0 (0 - 5)) Greater "0 vs -5" in
+  assertEq (compare (0 - 5) (0 - 5)) Equal "-5 vs -5"
+
+@test fun predicatesAgreeWithCompare u =
+  let a = assertTrue (isLess (compare 1 2)) "isLess" in
+  let b = assertTrue (isEqual (compare 2 2)) "isEqual" in
+  let c = assertTrue (isGreater (compare 3 2)) "isGreater" in
+  assertFalse (isLess (compare 2 2)) "isLess of Equal"

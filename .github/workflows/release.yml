@@ -23,8 +23,29 @@ permissions:
   contents: write
 
 jobs:
+  # Nothing is published until this passes. It runs the same `scripts/check.sh`
+  # as `ci.yml`, plus the version check — the only thing a tag can get wrong that
+  # a branch cannot, since the release assets carry no version and nothing
+  # downstream would notice a tag that disagreed with the manifests.
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup update stable
+      - name: Check
+        shell: bash
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            scripts/check.sh --version "${{ github.ref_name }}"
+          else
+            scripts/check.sh
+          fi
+
   build:
     name: ${{ matrix.target }}
+    needs: checks
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

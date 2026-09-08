@@ -233,14 +233,17 @@ impl Indenter {
     fn indent_for(&mut self, toks: &[Tok<'_>], author: usize) -> usize {
         let first = toks.first_text();
 
-        // A closer goes back out to the line that opened it.
+        // A closer goes back out to the line that opened it. Read the stack
+        // without touching it: `update` walks this line's tokens in a moment and
+        // pops the bracket there, and popping it twice would take the enclosing
+        // frames with it.
         if let Some(close) = first.chars().next().filter(|c| matches!(c, ')' | ']' | '}')) {
-            while let Some(frame) = self.stack.pop() {
-                if matches!(frame, Frame::Open { close: c, .. } if c == close) {
-                    return frame.at();
-                }
-            }
-            return 0;
+            return self
+                .stack
+                .iter()
+                .rev()
+                .find(|f| matches!(f, Frame::Open { close: c, .. } if *c == close))
+                .map_or(0, |f| f.at());
         }
 
         // `in` closes its `let`, and lines up with it — discarding whatever the
@@ -399,6 +402,19 @@ impl Indenter {
                 self.stack.push(Frame::Block { at: indent })
             }
             _ => {}
+        }
+
+        // A trailing `,` ends an item of a bracketed list — a handler's clauses, a
+        // record's fields, an array's elements. Whatever this line opened belongs
+        // to the item and is finished with it, so drop back to the bracket the
+        // list lives in and let the next item start level with this one.
+        if toks.last_text() == "," && self.stack.iter().any(|f| matches!(f, Frame::Open { .. })) {
+            while let Some(&frame) = self.stack.last() {
+                if matches!(frame, Frame::Open { .. }) {
+                    break;
+                }
+                self.stack.pop();
+            }
         }
 
         // Only a keyword-opened block anchors the line below it. A bracket does
@@ -623,6 +639,23 @@ mod tests {
             f(src),
             "fun f x =\n  match x with\n  | A ->\n      B\n\ndef g = 1\n"
         );
+    }
+
+    #[test]
+    fn a_closing_bracket_does_not_pop_the_frames_around_it() {
+        // The closer is read twice — once to pick this line's indent, once when
+        // the line's tokens are scanned — so it must only *pop* once, or the
+        // `let` it sits inside goes with it and `in` lands at the margin.
+        let src = "fun f x =\n  let body =\n    g [\n      1,\n    ]\n  in\n  body\n";
+        assert_eq!(f(src), src);
+    }
+
+    #[test]
+    fn a_trailing_comma_ends_the_item_it_belongs_to() {
+        // Each handler clause starts level with the last, however deep the one
+        // before it went.
+        let src = "fun f a =\n  handle a () with {\n    one x k ->\n      match x with\n      | A -> k 1,\n    two y k -> k 2,\n    return r -> r\n  }\n";
+        assert_eq!(f(src), src);
     }
 
     #[test]

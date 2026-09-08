@@ -1355,6 +1355,25 @@ impl Infer {
         })
     }
 
+    /// Export the operations of every `effect` in `decls`, so a dependent can
+    /// reach them by qualifier (`State.get`) or name them in a `use`.
+    ///
+    /// [`register_types`] gives every operation of every dependency a scheme in
+    /// the environment, which is what makes them callable unqualified — but that
+    /// happens for dependencies too, so it cannot tell which are *this* unit's to
+    /// export. The caller knows, and calls this with only the local modules.
+    ///
+    /// [`register_types`]: Self::register_types
+    pub fn export_effect_ops(&mut self, decls: &[hir::LDecl]) {
+        for d in decls {
+            if let hir::Decl::Effect(ed) = d.value() {
+                for (_, op, _) in &ed.ops {
+                    self.exports.push(*op.value());
+                }
+            }
+        }
+    }
+
     /// Populate `ctors` / `record_fields` from `data` / `record` declarations.
     /// Call before `infer_module`.
     pub fn register_types(&mut self, decls: &[hir::LDecl]) {
@@ -1613,7 +1632,8 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
         }
         hir::TypeExpr::Tuple(ts) => Type::Tuple(ts.iter().map(|x| ty_of(x, params)).collect()),
         // `[T]` type syntax now denotes the RRB `Vector`; write `List T` for a list.
-        hir::TypeExpr::List(x) => Type::vector(ty_of(x, params)),
+        hir::TypeExpr::Vector(x) => Type::vector(ty_of(x, params)),
+        hir::TypeExpr::List(x) => Type::list(ty_of(x, params)),
     }
 }
 
@@ -1709,6 +1729,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "stringToBytes" => Scheme::mono(Type::func(vec![Type::string()], Type::array(Type::int()))),
         "bytesToString" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
         "bytesToHex" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
+        "show" => a1(Type::func(vec![Bound(0)], Type::string())),
         "bytesFromHex" => Scheme::mono(Type::func(
             vec![Type::string()],
             Type::Con(

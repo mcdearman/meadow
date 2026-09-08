@@ -3,6 +3,7 @@
 -- Each `mod` below is a child module. Nothing here is in scope for a child
 -- automatically -- a module reaches another only through an explicit `use`.
 
+@pub mod Test
 @pub mod Bool
 @pub mod Ordering
 @pub mod Function
@@ -10,9 +11,20 @@
 @pub mod Int
 @pub mod Maybe
 @pub mod Result
+@pub mod Either
 @pub mod Bits
 @pub mod Bytes
+@pub mod Yield
 @pub mod Collections
+@pub mod State
+@pub mod Exn
+@pub mod Stream
+@pub mod Random
 @pub mod Fs
 @pub mod Process
+@pub mod String
+@pub mod Path
+@pub mod Json
+@pub mod Time
+@pub mod Test
 @pub mod prelude

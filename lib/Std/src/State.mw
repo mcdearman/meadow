@@ -1,0 +1,84 @@
+-- Std.State: a mutable-looking cell, handled purely.
+--
+-- `get` and `put` read and write a state that the handler threads through for
+-- you, so a computation reads like it is mutating a variable while staying an
+-- ordinary pure function:
+--
+--   use Std.State (get, put, runState)
+--
+--   fun tick u = let n = get () in let ignored = put (n + 1) in n
+--   def main = runState 0 (\u -> let a = tick () in let b = tick () in get ())
+--   -- (2, 2)
+--
+-- The handlers below are the classic state-passing ones: each clause returns a
+-- *function of the state*, and the whole `handle` is applied to the initial
+-- state at the end. `k` is the rest of the computation, so `k v` is "carry on
+-- with `v`", and applying that to a state is what threads it along.
+
+use Std.Tuple (fst, snd)
+
+@pub effect State s {
+  get : Unit -> s,
+  put : s -> Unit,
+}
+
+-- --- running ------------------------------------------------------------------
+
+-- The result and the final state.
+@pub fun runState s0 act =
+  handle act () with {
+    get u k -> \s -> (k s) s,
+    put s2 k -> \s -> (k ()) s2,
+    return x -> \s -> (x, s)
+  } s0
+
+-- Just the result.
+@pub fun evalState s0 act = fst (runState s0 act)
+
+-- Just the final state.
+@pub fun execState s0 act = snd (runState s0 act)
+
+-- --- derived operations -------------------------------------------------------
+
+-- Apply `f` to the state.
+@pub fun modify f =
+  let s = get () in
+  put (f s)
+
+-- Read the state through `f` without changing it.
+@pub fun gets f = f (get ())
+
+-- Replace the state, returning the old one.
+@pub fun swap s2 =
+  let old = get () in
+  let ignored = put s2 in
+  old
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+fun tick u =
+  let n = get () in
+  let ignored = put (n + 1) in
+  n
+
+@test fun stateThreadsThroughTheComputation u =
+  assertEq
+    (runState 0 (\u2 -> let a = tick () in let b = tick () in get ()))
+    (2, 2)
+    "two ticks then a read"
+
+@test fun evalAndExecProjectTheHalves u =
+  let a = assertEq (evalState 5 (\u2 -> get ())) 5 "evalState is the result" in
+  assertEq (execState 5 (\u2 -> put 9)) 9 "execState is the final state"
+
+@test fun modifyAndGets u =
+  let a = assertEq (execState 10 (\u2 -> modify (\s -> s * 3))) 30 "modify" in
+  assertEq (evalState 10 (\u2 -> gets (\s -> s + 1))) 11 "gets reads through a function"
+
+@test fun swapReturnsTheOldState u =
+  assertEq (runState 1 (\u2 -> swap 2)) (1, 2) "the old value, and the new state"
+
+@test fun aStateThatIsNeverTouchedComesBackUnchanged u =
+  assertEq (runState 7 (\u2 -> 1)) (1, 7) "no get, no put"

@@ -271,10 +271,19 @@ fn ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
                 )
             });
 
-        let list = ty
+        // `[a]` is a `Vector`; `[a;]` is a `List`. The `;` is the same marker the
+        // `[x; y]` literal uses, so the type reads like the values it holds.
+        let seq = ty
             .clone()
+            .then(just(Token::SemiColon).or_not())
             .delimited_by(just(Token::LBrack), just(Token::RBrack))
-            .map_with(|t, e| Located::new(TypeExpr::List(t), e.span()));
+            .map_with(|(t, semi), e| {
+                let kind = match semi {
+                    Some(_) => TypeExpr::List(t),
+                    None => TypeExpr::Vector(t),
+                };
+                Located::new(kind, e.span())
+            });
 
         let paren_or_tuple = ty
             .clone()
@@ -293,7 +302,7 @@ fn ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         let tvar = lower_ident().map_with(|n, e| Located::new(TypeExpr::Var(n), e.span()));
         let tcon0 = upper_ident().map_with(|n, e| Located::new(TypeExpr::Con(n, vec![]), e.span()));
 
-        let atom = choice((unit, list, paren_or_tuple, tvar, tcon0));
+        let atom = choice((unit, seq, paren_or_tuple, tvar, tcon0));
 
         let app = upper_ident()
             .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
@@ -350,10 +359,17 @@ fn ty_atom<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
                 e.span(),
             )
         });
-    let list = inner
+    let seq = inner
         .clone()
+        .then(just(Token::SemiColon).or_not())
         .delimited_by(just(Token::LBrack), just(Token::RBrack))
-        .map_with(|t, e| Located::new(TypeExpr::List(t), e.span()));
+        .map_with(|(t, semi), e| {
+            let kind = match semi {
+                Some(_) => TypeExpr::List(t),
+                None => TypeExpr::Vector(t),
+            };
+            Located::new(kind, e.span())
+        });
     let paren_or_tuple = inner
         .clone()
         .separated_by(just(Token::Comma))
@@ -369,7 +385,7 @@ fn ty_atom<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         });
     let tvar = lower_ident().map_with(|n, e| Located::new(TypeExpr::Var(n), e.span()));
     let tcon0 = upper_ident().map_with(|n, e| Located::new(TypeExpr::Con(n, vec![]), e.span()));
-    choice((unit, list, paren_or_tuple, tvar, tcon0))
+    choice((unit, seq, paren_or_tuple, tvar, tcon0))
 }
 
 fn path_seg<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
@@ -439,23 +455,27 @@ where
             .map_with(|es, e| Located::new(Expr::Array(es), e.span()))
             .boxed();
 
-        // `[a; b; c]` — a `List` literal (semicolon-separated, at least one `;`).
+        // `[a; b; c]` — a `List` literal. One `;` anywhere makes it a list, so a
+        // single-element list is `[a;]`; without a `;` the brackets are a
+        // `Vector`, which is why `[a]` cannot mean this.
         let list_expr = expr
             .clone()
             .then(
                 just(Token::SemiColon)
-                    .ignore_then(expr.clone())
+                    .ignore_then(expr.clone().or_not())
                     .repeated()
                     .at_least(1)
                     .collect::<Vec<_>>(),
             )
-            .then_ignore(just(Token::SemiColon).or_not())
-            .delimited_by(just(Token::LBrack), just(Token::RBrack))
-            .map_with(|(head, tail), e| {
+            .map(|(head, tail)| {
                 let mut es = vec![head];
-                es.extend(tail);
-                Located::new(Expr::List(es), e.span())
+                es.extend(tail.into_iter().flatten());
+                es
             })
+            // `[;]` — the empty list. `[]` is the empty `Vector`.
+            .or(just(Token::SemiColon).map(|_| vec![]))
+            .delimited_by(just(Token::LBrack), just(Token::RBrack))
+            .map_with(|es, e| Located::new(Expr::List(es), e.span()))
             .boxed();
 
         // `[a, b, c]` — an RRB `Vector` literal (comma-separated). Desugars to
@@ -1116,16 +1136,32 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, LPat, extra::Err<Rich<'a, Token, Span>>> + Clone {
     recursive(|pat| {
         // `[a, b]` / `[a; b]` — a `List` pattern (either separator). There is no
-        // structural pattern for `Vector` (it is an opaque library type).
-        let list = just(Token::LBrack)
-            .ignore_then(
-                pat.clone()
-                    .separated_by(just(Token::Comma).or(just(Token::SemiColon)))
-                    .allow_trailing()
-                    .collect(),
+        // A `;` anywhere makes a bracket pattern a `List`, exactly as it does for
+        // the literal and the type — so `[;]` is `Nil` and `[x;]` is one element.
+        // Without one the brackets are a `Vector`, of which only `[]` is
+        // matchable; the resolver reports the rest.
+        let list = pat
+            .clone()
+            .then(
+                just(Token::SemiColon)
+                    .ignore_then(pat.clone().or_not())
+                    .repeated()
+                    .at_least(1)
+                    .collect::<Vec<_>>(),
             )
-            .then_ignore(just(Token::RBrack))
-            .map(|patterns| Pat::List(patterns));
+            .map(|(head, tail)| {
+                let mut ps = vec![head];
+                ps.extend(tail.into_iter().flatten());
+                Pat::List(ps)
+            })
+            .or(just(Token::SemiColon).map(|_| Pat::List(vec![])))
+            .or(pat
+                .clone()
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect()
+                .map(Pat::Vector))
+            .delimited_by(just(Token::LBrack), just(Token::RBrack));
 
         // `#[p, ...]` — a builtin `Array` pattern (exact length).
         let array = just(Token::Hash)

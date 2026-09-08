@@ -83,7 +83,9 @@ pub const PRIMS: &[&str] = &[
     "stringToBytes",
     "bytesToString",
     "bytesToHex",
-    "bytesFromHex",
+    "bytesFromHex", //
+    // render any value as the REPL would print it
+    "show",
 ];
 use std::ops::Deref;
 use std::sync::atomic::AtomicU32;
@@ -228,6 +230,9 @@ pub enum TypeExpr {
     /// `arg -> ret ! effect` (curried; effect on the last arrow).
     Fun(Vec<LTypeExpr>, LTypeExpr, Option<EffectRow>),
     Tuple(Vec<LTypeExpr>),
+    /// `[a]` — the default sequence, an RRB `Vector`.
+    Vector(LTypeExpr),
+    /// `[a;]` — a linked `List`.
     List(LTypeExpr),
 }
 

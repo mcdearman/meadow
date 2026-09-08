@@ -1,0 +1,215 @@
+-- Std.Path: filesystem paths as strings.
+--
+-- `Std.Fs` takes and returns paths as plain `String`s; this module is the string
+-- handling that goes with them. It is pure -- nothing here touches the disk, so
+-- `parent "a/b"` is `"a"` whether or not either exists.
+--
+-- Separators: `/` always works, and on Windows `\` is accepted on input too.
+-- Output always uses `/`, which every Windows API also accepts. There is no
+-- attempt at UNC paths, drive-relative paths, or the other corners of Windows
+-- path semantics.
+
+use Std.Bool (not)
+use Std.String as S
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+use Std.Maybe (Maybe, Just, None)
+
+@pub def separator = "/"
+
+@pub fun isSeparator b = b == 47 or b == 92
+
+-- --- joining ------------------------------------------------------------------
+
+-- `join "a" "b"` is `"a/b"`. An absolute `b` wins outright, as it does in Rust's
+-- `Path::join` -- joining onto it would silently produce a path nobody meant.
+@pub fun join a b =
+  if S.isEmpty a then b
+  else if S.isEmpty b then a
+  else if isAbsolute b then b
+  else if endsWithSeparator a then S.concat a b
+  else S.concatAll [a, separator, b]
+
+@pub fun joinAll parts = V.foldl (\acc p -> join acc p) "" parts
+
+-- --- splitting ----------------------------------------------------------------
+
+-- Everything before the final separator: `parent "a/b/c"` is `"a/b"`. `None` when
+-- there is nothing above -- a bare name, or the root itself.
+@pub fun parent p =
+  let n = lastSeparator p in
+  if n < 0 then None
+  else if n == 0 then (if S.byteLength p == 1 then None else Just separator)
+  else Just (S.slice p 0 n)
+
+-- The final component: `fileName "a/b/c.txt"` is `"c.txt"`.
+@pub fun fileName p =
+  let n = lastSeparator p in
+  if n < 0 then p else S.drop p (n + 1)
+
+-- The final component without its extension.
+@pub fun fileStem p =
+  let name = fileName p in
+  let d = lastDot name in
+  if d <= 0 then name else S.slice name 0 d
+
+-- The extension, without the dot, or `""` when there is none. A leading dot does
+-- not count -- `.gitignore` has no extension, it is a name.
+@pub fun extension p =
+  let name = fileName p in
+  let d = lastDot name in
+  if d <= 0 then "" else S.drop name (d + 1)
+
+@pub fun hasExtension p = not (S.isEmpty (extension p))
+
+-- Replace the extension (given without a dot); an empty `ext` removes it.
+@pub fun withExtension p ext =
+  let stem = fileStem p in
+  let base = match parent p with
+             | None -> stem
+             | Just d -> join d stem
+  in
+  if S.isEmpty ext then base else S.concatAll [base, ".", ext]
+
+@pub fun withFileName p name =
+  match parent p with
+  | None -> name
+  | Just d -> join d name
+
+-- Every non-empty component, separators discarded.
+@pub fun components p = V.filter (\c -> not (S.isEmpty c)) (splitAny p)
+
+-- --- classifying --------------------------------------------------------------
+
+@pub fun isAbsolute p =
+  if S.isEmpty p then False
+  else if isSeparator (byteAt p 0) then True
+  else hasDrive p
+
+@pub fun isRelative p = not (isAbsolute p)
+
+-- `C:` and friends. Only the shape is checked, not the letter.
+fun hasDrive p =
+  if S.byteLength p < 2 then False else byteAt p 1 == 58
+
+-- --- normalising --------------------------------------------------------------
+
+-- Resolve `.` and `..` textually and collapse repeated separators. Purely
+-- lexical: it never looks at the disk, so it cannot follow symlinks, and
+-- `normalize "a/../b"` is `"b"` even if `a` is a link somewhere else.
+@pub fun normalize p =
+  let abs = isAbsolute p in
+  let parts = V.foldl (\acc c -> pushPart abs acc c) [] (components p) in
+  let body = S.join separator parts in
+  if abs
+  then S.concat separator body
+  else if S.isEmpty body then "." else body
+
+fun pushPart abs acc c =
+  if c == "." then acc
+  else if c != ".." then V.pushBack acc c
+  else
+    match V.last acc with
+    | None -> if abs then acc else V.pushBack acc c
+    | Just prev -> if prev == ".." then V.pushBack acc c else V.popBack acc
+
+-- --- helpers ------------------------------------------------------------------
+
+fun endsWithSeparator p =
+  let n = S.byteLength p in
+  if n == 0 then False else isSeparator (byteAt p (n - 1))
+
+-- Split on either separator.
+fun splitAny p = splitLoop p 0 0 []
+
+fun splitLoop p start i acc =
+  if i >= S.byteLength p
+  then V.pushBack acc (S.slice p start i)
+  else if isSeparator (byteAt p i)
+  then splitLoop p (i + 1) (i + 1) (V.pushBack acc (S.slice p start i))
+  else splitLoop p start (i + 1) acc
+
+fun lastSeparator p = lastSepFrom p (S.byteLength p - 1)
+
+fun lastSepFrom p i =
+  if i < 0 then 0 - 1
+  else if isSeparator (byteAt p i) then i
+  else lastSepFrom p (i - 1)
+
+fun lastDot name = lastDotFrom name (S.byteLength name - 1)
+
+fun lastDotFrom name i =
+  if i < 0 then 0 - 1
+  else if byteAt name i == 46 then i
+  else lastDotFrom name (i - 1)
+
+-- Every call here has already checked the index, so the `None` case is dead. `0`
+-- is never a separator or a dot, so even if it were reached nothing would match.
+fun byteAt p i =
+  match S.byteAt p i with
+  | None -> 0
+  | Just b -> b
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun joiningPutsInOneSeparator u =
+  let a = assertEq (join "a/b" "c.txt") "a/b/c.txt" "join" in
+  let b = assertEq (join "a/" "b") "a/b" "no doubled separator" in
+  let c = assertEq (join "" "b") "b" "onto nothing" in
+  let d = assertEq (join "a" "") "a" "nothing onto something" in
+  assertEq (joinAll ["a", "b", "c"]) "a/b/c" "joinAll"
+
+@test fun anAbsoluteRightHandSideWins u =
+  -- Rust's `Path::join` does this too: joining onto an absolute path would
+  -- silently produce something nobody meant.
+  let a = assertEq (join "a" "/b") "/b" "absolute" in
+  assertEq (join "a" "C:/b") "C:/b" "a drive is absolute too"
+
+@test fun splittingAPath u =
+  let a = assertEq (fileName "a/b/c.txt") "c.txt" "fileName" in
+  let b = assertEq (fileName "c.txt") "c.txt" "a bare name is its own fileName" in
+  let c = assertEq (fileStem "a/b/c.txt") "c" "fileStem" in
+  let d = assertEq (extension "a/b/c.txt") "txt" "extension" in
+  let e = assertEq (parent "a/b/c.txt") (Just "a/b") "parent" in
+  assertEq (parent "c.txt") None "a bare name has no parent"
+
+@test fun aLeadingDotIsANameNotAnExtension u =
+  let a = assertEq (extension ".gitignore") "" ".gitignore has no extension" in
+  let b = assertEq (fileStem ".gitignore") ".gitignore" "it is all stem" in
+  let c = assertFalse (hasExtension "README") "no dot at all" in
+  assertTrue (hasExtension "a.txt") "a real extension"
+
+@test fun replacingPartsOfAPath u =
+  let a = assertEq (withExtension "a/b/c.txt" "md") "a/b/c.md" "withExtension" in
+  let b = assertEq (withExtension "a/b/c.txt" "") "a/b/c" "an empty extension removes it" in
+  let c = assertEq (withExtension "c" "txt") "c.txt" "adding one" in
+  assertEq (withFileName "a/b/c.txt" "d.md") "a/b/d.md" "withFileName"
+
+@test fun classification u =
+  let a = assertTrue (isAbsolute "/a") "leading slash" in
+  let b = assertTrue (isAbsolute "C:/a") "drive" in
+  let c = assertFalse (isAbsolute "a/b") "relative" in
+  let d = assertFalse (isAbsolute "") "empty is not absolute" in
+  assertTrue (isRelative "a/b") "isRelative"
+
+@test fun componentsDropTheSeparators u =
+  let a = assertEq (components "a/b/c") ["a", "b", "c"] "components" in
+  let b = assertEq (components "/a//b/") ["a", "b"] "empties are dropped" in
+  assertEq (components "") [] "nothing"
+
+@test fun normalizeResolvesDotsTextually u =
+  let a = assertEq (normalize "a/./b") "a/b" "a single dot goes" in
+  let b = assertEq (normalize "a/b/../c") "a/c" "dot-dot climbs" in
+  let c = assertEq (normalize "a/./b/../c") "a/c" "both at once" in
+  let d = assertEq (normalize "a//b") "a/b" "repeated separators collapse" in
+  let e = assertEq (normalize "/a/../b") "/b" "absolute stays absolute" in
+  let f = assertEq (normalize ".") "." "a lone dot is the current directory" in
+  -- A relative path can keep leading `..`; an absolute one cannot climb past root.
+  let g = assertEq (normalize "../a") "../a" "leading dot-dot survives" in
+  assertEq (normalize "/../a") "/a" "root has no parent"
+
+@test fun windowsSeparatorsAreAcceptedOnInput u =
+  let a = assertEq (fileName "a\b\c.txt") "c.txt" "backslash" in
+  assertEq (normalize "a\b") "a/b" "output is always forward slashes"

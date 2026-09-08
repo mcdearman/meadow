@@ -15,6 +15,9 @@
 -- true O(log n) RRB merge. Everything else is the faithful structure.
 
 use Std.Tuple (fst, snd)
+-- `toStream` performs `yield`. An effect's operations are in scope from every
+-- dependency whether or not they are `use`d, but naming it says where it lives.
+use Std.Yield (yield)
 
 -- --- tuning ----------------------------------------------------------------
 
@@ -547,3 +550,101 @@ fun vPopChunkFront shift node =
 
 @pub fun minimum v =
   foldl (\acc x -> match acc with | None -> Just x | Just m -> if x < m then Just x else acc) None v
+
+-- Yield every element, in order, for `Std.Stream`.
+@pub fun toStream v = forEach (\x -> yield x) v
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun buildingAndObserving u =
+  let a = assertEq (len empty) 0 "len of empty" in
+  let b = assertTrue (isEmpty empty) "isEmpty" in
+  let c = assertEq (len [1, 2, 3]) 3 "len" in
+  let d = assertEq (toList [1, 2, 3]) [1; 2; 3] "toList" in
+  assertEq (toArray [1, 2, 3]) #[1, 2, 3] "toArray"
+
+@test fun indexedAccessIsBoundsChecked u =
+  let a = assertEq (get [1, 2, 3] 1) (Just 2) "get" in
+  let b = assertEq (get [1, 2, 3] 3) None "past the end" in
+  let c = assertEq (get [1, 2, 3] (0 - 1)) None "before the start" in
+  let d = assertEq (getOr 0 [1, 2, 3] 9) 0 "getOr" in
+  let e = assertEq (head [1, 2]) (Just 1) "head" in
+  let f = assertEq (last [1, 2]) (Just 2) "last" in
+  assertEq (head empty) None "head of empty"
+
+@test fun bothEndsPushAndPop u =
+  let a = assertEq (toList (pushBack [1, 2] 3)) [1; 2; 3] "pushBack" in
+  let b = assertEq (toList (pushFront [2, 3] 1)) [1; 2; 3] "pushFront" in
+  let c = assertEq (toList (popBack [1, 2, 3])) [1; 2] "popBack" in
+  assertEq (toList (popFront [1, 2, 3])) [2; 3] "popFront"
+
+@test fun anEmptiedVectorIsTheEmptyVector u =
+  -- `[]` is the `VEmpty` pattern, and the library keeps that the only shape an
+  -- empty vector can take -- every path that empties one has to normalise.
+  let a = assertTrue (isEmpty (popBack [1])) "popBack to empty" in
+  let b = assertTrue (isEmpty (popFront [1])) "popFront to empty" in
+  let c = assertTrue (isEmpty (drop [1, 2, 3] 3)) "drop everything" in
+  let d = assertTrue (isEmpty (take [1, 2, 3] 0)) "take nothing" in
+  assertTrue (isEmpty (filter (\x -> x > 9) [1, 2, 3])) "filter everything out"
+
+@test fun sliceTakeDropAndSplit u =
+  let a = assertEq (toList (slice [1, 2, 3, 4] 1 3)) [2; 3] "slice" in
+  let b = assertEq (toList (take [1, 2, 3] 2)) [1; 2] "take" in
+  let c = assertEq (toList (drop [1, 2, 3] 2)) [3;] "drop" in
+  let (l, r) = splitAt [1, 2, 3] 1 in
+  let d = assertEq (toList l) [1;] "splitAt left" in
+  assertEq (toList r) [2; 3] "splitAt right"
+
+@test fun mapFilterAndFolds u =
+  let a = assertEq (toList (map (\n -> n * 2) [1, 2, 3])) [2; 4; 6] "map" in
+  let b = assertEq (toList (filter (\n -> n > 1) [1, 2, 3])) [2; 3] "filter" in
+  let c = assertEq (foldl (\acc n -> acc - n) 10 [1, 2]) 7 "foldl" in
+  let d = assertEq (foldr (\n acc -> n - acc) 0 [1, 2]) (0 - 1) "foldr" in
+  assertEq (toList (reverse [1, 2, 3])) [3; 2; 1] "reverse"
+
+@test fun appendAndSet u =
+  let a = assertEq (toList (append [1, 2] [3, 4])) [1; 2; 3; 4] "append" in
+  let b = assertEq (toList (append empty [1, 2])) [1; 2] "append onto empty" in
+  assertEq (toList (set [1, 2, 3] 1 9)) [1; 9; 3] "set"
+
+@test fun aVectorSurvivesBeingGrownPastOneChunk u =
+  -- 40 elements is more than `vWidth`, so this exercises the tree rather than
+  -- the single-chunk representation.
+  let big = foldl (\v n -> pushBack v n) empty (range 0 40) in
+  let a = assertEq (len big) 40 "length after many pushes" in
+  let b = assertEq (get big 0) (Just 0) "first" in
+  let c = assertEq (get big 39) (Just 39) "last" in
+  assertEq (toList (take big 3)) [0; 1; 2] "still indexable"
+
+@test fun theQueryHelpers u =
+  let a = assertEq (sum [1, 2, 3]) 6 "sum" in
+  let b = assertEq (product [2, 3]) 6 "product" in
+  let c = assertTrue (all (\n -> n > 0) [1, 2]) "all" in
+  let d = assertTrue (any (\n -> n > 1) [1, 2]) "any" in
+  let e = assertEq (find (\n -> n > 1) [1, 2, 3]) (Just 2) "find" in
+  let f = assertEq (find (\n -> n > 9) [1, 2]) None "find nothing" in
+  let g = assertTrue (elem 2 [1, 2]) "elem" in
+  let h = assertEq (maximum [1, 3, 2]) (Just 3) "maximum" in
+  assertEq (minimum [3, 1, 2]) (Just 1) "minimum"
+
+@test fun zipUnzipAndPartition u =
+  let a = assertEq (toList (zip [1, 2] ["a", "b"])) [(1, "a"); (2, "b")] "zip" in
+  let b = assertEq (toList (zipWith (\x y -> x + y) [1, 2] [10, 20])) [11; 22] "zipWith" in
+  -- `zip` stops at the shorter side.
+  let c = assertEq (len (zip [1, 2, 3] [1])) 1 "zip of unequal lengths" in
+  let (evens, odds) = partition (\n -> n % 2 == 0) [1, 2, 3, 4] in
+  let d = assertEq (toList evens) [2; 4] "partition kept" in
+  assertEq (toList odds) [1; 3] "partition dropped"
+
+@test fun rangeAndReplicate u =
+  let a = assertEq (toList (range 1 4)) [1; 2; 3] "range is half-open" in
+  let b = assertTrue (isEmpty (range 4 1)) "an empty range" in
+  assertEq (toList (replicate 3 "x")) ["x"; "x"; "x"] "replicate"
+
+@test fun takeWhileDropWhileAndConcat u =
+  let a = assertEq (toList (takeWhile (\n -> n < 3) [1, 2, 3, 1])) [1; 2] "takeWhile stops" in
+  let b = assertEq (toList (dropWhile (\n -> n < 3) [1, 2, 3, 1])) [3; 1] "dropWhile" in
+  let c = assertEq (toList (concat [[1, 2], [3]])) [1; 2; 3] "concat" in
+  assertEq (toList (concatMap (\n -> [n, n]) [1, 2])) [1; 1; 2; 2] "concatMap"

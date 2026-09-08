@@ -11,3 +11,21 @@
 @pub fun mapFst f p = match p with | (a, b) -> (f a, b)
 
 @pub fun mapSnd f p = match p with | (a, b) -> (a, f b)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun projectionsAndConstruction u =
+  let p = pair 1 "a" in
+  let a = assertEq (fst p) 1 "fst" in
+  let b = assertEq (snd p) "a" "snd" in
+  assertEq p (1, "a") "pair builds a plain tuple"
+
+@test fun swapExchangesTheSides u =
+  let a = assertEq (swap (1, "a")) ("a", 1) "swap" in
+  assertEq (swap (swap (1, "a"))) (1, "a") "swap is an involution"
+
+@test fun mapFstAndMapSndTouchOneSideOnly u =
+  let a = assertEq (mapFst (\n -> n + 1) (1, "a")) (2, "a") "mapFst" in
+  assertEq (mapSnd (\s -> "b") (1, "a")) (1, "b") "mapSnd"

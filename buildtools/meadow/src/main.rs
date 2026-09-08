@@ -5,7 +5,7 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
-use meadow::{format, pipeline, update, Profile};
+use meadow::{format, pipeline, test, update, Profile};
 use meadow_eval as eval;
 use std::path::PathBuf;
 
@@ -31,6 +31,19 @@ enum Cmd {
     /// Build a package, then evaluate its `main` entry point.
     Run {
         path: PathBuf,
+        #[command(flatten)]
+        profile: ProfileArgs,
+    },
+    /// Build a package and run its `@test` functions.
+    Test {
+        /// Package directory (or a single `.mw` file).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Only run tests whose name contains this.
+        filter: Option<String>,
+        /// Also run the standard library's own tests.
+        #[arg(long)]
+        std: bool,
         #[command(flatten)]
         profile: ProfileArgs,
     },
@@ -89,6 +102,24 @@ fn main() {
             profile,
         }) => build(&path, false, annotations, profile.profile()),
         Some(Cmd::Run { path, profile }) => build(&path, true, false, profile.profile()),
+        Some(Cmd::Test {
+            path,
+            filter,
+            std,
+            profile,
+        }) => match test::run(&test::Options {
+            path,
+            filter,
+            std,
+            profile: profile.profile(),
+        }) {
+            Ok(true) => {}
+            Ok(false) => std::process::exit(1),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        },
         Some(Cmd::Fmt {
             paths,
             check,

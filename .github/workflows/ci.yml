@@ -1,0 +1,53 @@
+# Every push and pull request. The gate.
+#
+# The steps live in `scripts/check.sh`, not here — so that running it locally is
+# the same thing CI does, and so adding a check means editing one file rather
+# than two. See `release.yml`, which runs the same script before it publishes.
+
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a branch makes the run in flight irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux is where releases are cut from; Windows is where the work is
+        # done, and the only place path handling and the installer differ.
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup update stable
+
+      # Four independent workspaces, so four target directories. Keyed on every
+      # `Cargo.lock` in the tree.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            compiler/target
+            eval/target
+            buildtools/target
+            installer/target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-
+
+      - name: Check
+        shell: bash
+        run: scripts/check.sh

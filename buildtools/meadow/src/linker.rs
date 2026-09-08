@@ -15,10 +15,19 @@ pub struct GlobalSymbol {
     pub scheme: Scheme,
 }
 
+/// A `@test` function, and the package it came from.
+pub struct TestCase {
+    pub package: InternedString,
+    pub name: InternedString,
+    pub var: VarId,
+}
+
 pub struct LinkedProgram {
     pub program: core::Program,
     pub symbols: Vec<GlobalSymbol>,
     pub packages: Vec<CompiledPackage>,
+    /// Every `@test` in the linked packages, in package then declaration order.
+    pub tests: Vec<TestCase>,
 }
 
 pub struct Linker;
@@ -27,12 +36,18 @@ impl Linker {
     pub fn link(packages: Vec<CompiledPackage>) -> LinkedProgram {
         let mut defs = Vec::new();
         let mut symbols = Vec::new();
+        let mut tests = Vec::new();
         let mut ctor_fields = std::collections::HashMap::new();
         let mut entry = None;
 
         for pkg in &packages {
             defs.extend(pkg.defs.iter().cloned());
             ctor_fields.extend(pkg.ctor_fields.clone());
+            tests.extend(pkg.tests.iter().map(|&(name, var)| TestCase {
+                package: pkg.name,
+                name,
+                var,
+            }));
             for e in &pkg.exports {
                 if &*e.name == "main" {
                     entry = Some(e.var);
@@ -54,6 +69,7 @@ impl Linker {
             },
             symbols,
             packages,
+            tests,
         }
     }
 }

@@ -3,6 +3,15 @@ name = "Std"
 version = "0.1.0"
 
 # The Meadow standard library. It is embedded in the compiler (see
-# `src/stdlib.rs`) and loaded automatically as an implicit dependency of every
-# package, so it never needs to appear under `[dependencies]`. This manifest lets
-# the tree also be discovered on disk like any other package.
+# `buildtools/meadow/src/stdlib.rs`) and loaded automatically as an implicit
+# dependency of every package, so it never needs to appear under
+# `[dependencies]`.
+#
+# This tree cannot be built *as* a package, and `meadow build` / `meadow test`
+# on it say so. Two reasons: the embedded copy would be injected alongside it,
+# declaring every name twice; and a package compiles all its modules as one unit
+# sharing one flat namespace, whereas `Std` is compiled one module per unit,
+# which is what lets `Vector`, `List`, `Maybe` and `Either` each have a `map`.
+#
+#   meadow test --std     run the standard library's tests
+#   meadow fmt lib/Std    format it (no manifest needed)

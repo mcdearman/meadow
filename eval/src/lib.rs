@@ -220,6 +220,51 @@ struct Machine<'a> {
 }
 
 pub fn run(program: &core::Program) -> Result<Value, RuntimeError> {
+    let env = load(program)?;
+    match program.entry {
+        Some(e) => lookup(&env, e).ok_or_else(|| RuntimeError {
+            msg: "entry point not found".into(),
+        }),
+        None => Ok(Value::Unit),
+    }
+}
+
+/// Load the program, then call each of `tests` with `()`, in order.
+///
+/// One load for the whole run, so top-level definitions are evaluated once and
+/// the tests share them — the same thing `run` does before reading its entry
+/// point. Each test gets its own result: a failing one does not stop the rest.
+pub fn run_tests(
+    program: &core::Program,
+    tests: &[core::Var],
+) -> Result<Vec<Result<Value, RuntimeError>>, RuntimeError> {
+    let env = load(program)?;
+    Ok(tests
+        .iter()
+        .map(|&var| {
+            let Some(f) = lookup(&env, var) else {
+                return Err(RuntimeError {
+                    msg: "test not found".into(),
+                });
+            };
+            // Start with the function already evaluated and `()` queued as its
+            // argument — the same state the machine reaches part-way through an
+            // `App`, so applying it needs no new machinery.
+            let m = Machine {
+                ctrl: Control::Ret(f),
+                kont: vec![K::EvalArg {
+                    arg: Rc::new(core::Term::Lit(core::Lit::Unit)),
+                    env: env.clone(),
+                }],
+                fields: &program.ctor_fields,
+            };
+            m.run()
+        })
+        .collect())
+}
+
+/// Evaluate every top-level definition into a fresh environment.
+fn load(program: &core::Program) -> Result<Env, RuntimeError> {
     let env = root_env();
     // Placeholders first so recursive top-level references resolve.
     for def in &program.defs {
@@ -234,12 +279,7 @@ pub fn run(program: &core::Program) -> Result<Value, RuntimeError> {
         let v = m.run()?;
         define(&env, def.var, v);
     }
-    match program.entry {
-        Some(e) => lookup(&env, e).ok_or_else(|| RuntimeError {
-            msg: "entry point not found".into(),
-        }),
-        None => Ok(Value::Unit),
-    }
+    Ok(env)
 }
 
 impl Machine<'_> {
@@ -690,6 +730,25 @@ impl Machine<'_> {
                 self.ctrl = Control::Ret(result);
                 return Ok(());
             }
+            // `Std.Test.fail` with nobody listening is a failed assertion: stop
+            // the test and hand its message to the runner. A `handle` still takes
+            // precedence, which is how a test asserts that something *does* fail.
+            if &*effect == "Test" && &*op == "fail" {
+                return err(match arg {
+                    Value::Str(s) => s.to_string(),
+                    other => other.to_string(),
+                });
+            }
+            if &*effect == "Random" {
+                let result = native_random(&op, arg)?;
+                self.ctrl = Control::Ret(result);
+                return Ok(());
+            }
+            if &*effect == "Time" {
+                let result = native_time(&op, arg)?;
+                self.ctrl = Control::Ret(result);
+                return Ok(());
+            }
             return err(format!("unhandled effect {effect}.{op}"));
         };
 
@@ -1026,6 +1085,9 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
                 String::from_utf8_lossy(&buf).into_owned(),
             )))
         }
+        // The `Display` the REPL prints with, exposed to the language. Structural,
+        // so it works at every type without a class or a derive.
+        Show => Ok(Value::Str(InternedString::from(args[0].to_string()))),
         BytesToHex => {
             let buf = bytes_of(&args[0], "bytesToHex")?;
             let mut s = String::with_capacity(buf.len() * 2);
@@ -1520,6 +1582,91 @@ impl fmt::Display for Value {
             Value::Builtin { op, .. } => write!(f, "<builtin {op:?}>"),
             Value::Cont(_) => f.write_str("<continuation>"),
         }
+    }
+}
+
+/// The runtime's default handler for the `Std.Random` effect.
+///
+/// SplitMix64, seeded once per process from the clock. It is not cryptographic
+/// and makes no promise of reproducibility — a program that wants repeatable
+/// numbers should `handle` the effect with `Std.Random`'s own pure generator,
+/// which is the whole reason that generator is in the library.
+fn native_random(op: &str, arg: Value) -> Result<Value, RuntimeError> {
+    use std::cell::Cell;
+    thread_local! {
+        static STATE: Cell<u64> = Cell::new(0);
+    }
+
+    let next = || {
+        STATE.with(|s| {
+            let mut x = s.get();
+            if x == 0 {
+                x = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0x9E3779B97F4A7C15)
+                    | 1;
+            }
+            x = x.wrapping_add(0x9E3779B97F4A7C15);
+            s.set(x);
+            let mut z = x;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        })
+    };
+
+    match op {
+        "nextInt" | "nextSeed" => Ok(Value::Int(next() as i64)),
+        // [0, 1) from the top 53 bits, which is what a f64 can hold exactly.
+        "nextFloat" => Ok(Value::Float((next() >> 11) as f64 / (1u64 << 53) as f64)),
+        "intBetween" => match arg {
+            Value::Tuple(ref t) if t.len() == 2 => match (&t[0], &t[1]) {
+                (Value::Int(lo), Value::Int(hi)) => {
+                    if hi <= lo {
+                        return Ok(Value::Int(*lo));
+                    }
+                    let span = (hi - lo) as u64;
+                    Ok(Value::Int(lo + (next() % span) as i64))
+                }
+                _ => err(format!("Random.{op}: expected two Ints, got {arg}")),
+            },
+            other => err(format!("Random.{op}: expected an (Int, Int) pair, got {other}")),
+        },
+        other => err(format!("unhandled effect Random.{other}")),
+    }
+}
+
+/// The runtime's default handler for the `Std.Time` effect: the real clock.
+fn native_time(op: &str, arg: Value) -> Result<Value, RuntimeError> {
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    // A process-wide origin, so `monotonic` is a small number that fits an `Int`
+    // and counts from the program's own start rather than from an unspecified past.
+    thread_local! {
+        static ORIGIN: Instant = Instant::now();
+    }
+
+    match op {
+        // Wall clock, milliseconds since the Unix epoch.
+        "now" => Ok(Value::Int(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        )),
+        // Monotonic, for measuring a duration: unaffected by the clock changing.
+        "monotonic" => Ok(Value::Int(
+            ORIGIN.with(|o| o.elapsed().as_nanos() as i64),
+        )),
+        "sleep" => match arg {
+            Value::Int(ms) if ms > 0 => {
+                std::thread::sleep(Duration::from_millis(ms as u64));
+                Ok(Value::Unit)
+            }
+            Value::Int(_) => Ok(Value::Unit),
+            other => err(format!("Time.sleep: expected an Int, got {other}")),
+        },
+        other => err(format!("unhandled effect Time.{other}")),
     }
 }
 

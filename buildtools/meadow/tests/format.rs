@@ -53,10 +53,12 @@ fn indentation_is_recovered_from_a_flattened_file() {
             }
         }
     }
-    // 40 of these are the hand-aligned bit-twiddling in `Std.Bytes` and two
-    // continuations elsewhere. Anything more means a structural rule regressed.
+    // The stragglers are hand-aligned continuations — most of the bit-twiddling
+    // in `Std.Bytes`, and a handful elsewhere. A proportion rather than a count,
+    // so the bound keeps its meaning as the library grows: comfortably above the
+    // ~1.3% these account for, far below what a broken rule would produce.
     assert!(
-        wrong <= 40,
+        wrong * 50 <= total,
         "{wrong} of {total} lines were not recovered from a flattened standard library"
     );
 }

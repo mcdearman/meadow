@@ -121,6 +121,9 @@ pub enum Prim {
     /// `Array Int -> String` -- lowercase hex, two chars per byte, no separator.
     /// Non-`Int` / out-of-range (not 0..255) elements error at runtime.
     BytesToHex,
+    /// `show : forall a. a -> String` — the runtime's own rendering of a value,
+    /// the same one the REPL prints. Structural, so it needs no per-type work.
+    Show,
     /// `String -> Option (Array Int)` -- parse a hex string (either case, no
     /// separators, even length) into bytes. `None` on any malformed input.
     BytesFromHex,
@@ -186,6 +189,7 @@ impl Prim {
             "bytesToString" => Prim::BytesToString,
             "bytesToHex" => Prim::BytesToHex,
             "bytesFromHex" => Prim::BytesFromHex,
+            "show" => Prim::Show,
             _ => return None,
         })
     }
@@ -206,7 +210,8 @@ impl Prim {
             | Prim::StringToBytes
             | Prim::BytesToString
             | Prim::BytesToHex
-            | Prim::BytesFromHex => 1,
+            | Prim::BytesFromHex
+            | Prim::Show => 1,
             Prim::ArraySet | Prim::ArraySlice | Prim::ArrayGetOr => 3,
             _ => 2,
         }

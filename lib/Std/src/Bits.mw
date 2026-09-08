@@ -52,3 +52,39 @@ fun bitsCtzGo x n =
 
 -- Rotate the low 64 bits right by `n` (0..63).
 @pub fun rotateRight x n = bitOr (ushr x n) (x << (64 - n))
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun masksAndSingleBits u =
+  let a = assertEq (lowMask 8) 255 "lowMask 8" in
+  let b = assertEq (lowMask 0) 0 "lowMask 0" in
+  let c = assertEq (bit 0) 1 "bit 0" in
+  let d = assertEq (bit 10) 1024 "bit 10" in
+  assertEq (lowBits 4 255) 15 "lowBits keeps the low nibble"
+
+@test fun bitAccessors u =
+  let a = assertTrue (testBit 5 0) "bit 0 of 5" in
+  let b = assertFalse (testBit 5 1) "bit 1 of 5" in
+  let c = assertTrue (testBit 5 2) "bit 2 of 5" in
+  let d = assertEq (setBit 5 1) 7 "setBit" in
+  let e = assertEq (clearBit 7 1) 5 "clearBit" in
+  assertEq (flipBit (flipBit 5 3) 3) 5 "flipBit twice is the identity"
+
+@test fun byteExtractionAndAssembly u =
+  let a = assertEq (byteOf 0 0x12345678) 0x78 "byte 0" in
+  let b = assertEq (byteOf 3 0x12345678) 0x12 "byte 3" in
+  assertEq (fromBytes4 0x78 0x56 0x34 0x12) 0x12345678 "fromBytes4"
+
+@test fun countingZeros u =
+  let a = assertEq (countLeadingZeros 1) 63 "clz 1" in
+  let b = assertEq (countLeadingZeros 0) 64 "clz 0" in
+  let c = assertEq (countTrailingZeros 8) 3 "ctz 8" in
+  let d = assertEq (countTrailingZeros 0) 64 "ctz 0" in
+  assertEq (countTrailingZeros 1) 0 "ctz 1"
+
+@test fun rotationsComeBackAround u =
+  let a = assertEq (rotateLeft 1 1) 2 "rotateLeft" in
+  let b = assertEq (rotateRight 2 1) 1 "rotateRight" in
+  assertEq (rotateRight (rotateLeft 0x1234 9) 9) 0x1234 "a rotation is reversible"

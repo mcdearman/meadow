@@ -33,3 +33,33 @@
   match o with
   | None -> Err err
   | Just x -> Ok x
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun theSideTests u =
+  let a = assertTrue (isOk (Ok 1)) "isOk Ok" in
+  let b = assertFalse (isOk (Err "e")) "isOk Err" in
+  assertTrue (isErr (Err "e")) "isErr Err"
+
+@test fun unwrapOrTakesTheOk u =
+  let a = assertEq (unwrapOr 0 (Ok 5)) 5 "unwrapOr Ok" in
+  assertEq (unwrapOr 0 (Err "e")) 0 "unwrapOr Err"
+
+@test fun mapIsOkBiasedAndMapErrIsNot u =
+  let a = assertEq (map (\n -> n + 1) (Ok 1)) (Ok 2) "map Ok" in
+  let b = assertEq (map (\n -> n + 1) (Err "e")) (Err "e") "map leaves Err" in
+  let c = assertEq (mapErr (\e -> "!") (Err "e")) (Err "!") "mapErr Err" in
+  assertEq (mapErr (\e -> "!") (Ok 1)) (Ok 1) "mapErr leaves Ok"
+
+@test fun andThenChainsAndShortCircuits u =
+  let a = assertEq (andThen (\n -> Ok (n + 1)) (Ok 1)) (Ok 2) "andThen Ok" in
+  let b = assertEq (andThen (\n -> Err "bad") (Ok 1)) (Err "bad") "the function may fail" in
+  assertEq (andThen (\n -> Ok n) (Err "e")) (Err "e") "andThen Err"
+
+@test fun conversionsWithMaybe u =
+  let a = assertEq (toMaybe (Ok 1)) (Just 1) "toMaybe Ok" in
+  let b = assertEq (toMaybe (Err "e")) None "toMaybe Err" in
+  let c = assertEq (fromMaybe "e" (Just 1)) (Ok 1) "fromMaybe Just" in
+  assertEq (fromMaybe "e" None) (Err "e") "fromMaybe None"

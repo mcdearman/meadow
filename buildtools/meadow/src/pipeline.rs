@@ -46,6 +46,25 @@ pub fn build(entry: &Path, opts: Options) -> BuildOutput {
         }
     };
 
+    // `Std` is embedded and injected below as an implicit dependency, so building
+    // the tree on disk would declare every one of its names twice. Say that,
+    // rather than emitting a hundred `already defined` errors that name the
+    // symptom instead of the cause.
+    if graph.packages.iter().any(|p| &*p.name == stdlib::PACKAGE_NAME) {
+        return BuildOutput {
+            linked: None,
+            diagnostics: vec![Diagnostic {
+                msg: "`Std` is embedded in the compiler and cannot be built as a package \
+                      — its modules are compiled one per unit, which a package build \
+                      cannot reproduce. Run `meadow test --std` to run its tests"
+                    .to_string(),
+                filename: stdlib::PACKAGE_NAME.to_string(),
+                label: (String::new(), Span::from(0..0)),
+                extra_labels: vec![],
+            }],
+        };
+    }
+
     let (std_pkgs, mut diagnostics) = stdlib::compile_std(opts);
 
     let mut compiled: Vec<Option<CompiledPackage>> =

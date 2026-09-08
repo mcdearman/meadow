@@ -29,3 +29,37 @@
   match o with
   | None -> Nil
   | Just x -> Cons x Nil
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun theSideTests u =
+  let a = assertTrue (isSome (Just 1)) "isSome Just" in
+  let b = assertFalse (isSome None) "isSome None" in
+  let c = assertTrue (isNone None) "isNone None" in
+  assertFalse (isNone (Just 1)) "isNone Just"
+
+@test fun unwrapOrAndOrElse u =
+  let a = assertEq (unwrapOr 0 (Just 5)) 5 "unwrapOr Just" in
+  let b = assertEq (unwrapOr 0 None) 0 "unwrapOr None" in
+  let c = assertEq (orElse (Just 2) (Just 1)) (Just 1) "orElse keeps the first Just" in
+  let d = assertEq (orElse (Just 2) None) (Just 2) "orElse falls back" in
+  assertEq (orElse None None) None "orElse of two Nones"
+
+@test fun mapAndAndThen u =
+  let a = assertEq (map (\n -> n + 1) (Just 1)) (Just 2) "map Just" in
+  let b = assertEq (map (\n -> n + 1) None) None "map None" in
+  let c = assertEq (andThen (\n -> Just (n + 1)) (Just 1)) (Just 2) "andThen Just" in
+  -- The function may itself say `None`, which is the point of `andThen`.
+  let d = assertEq (andThen (\n -> None) (Just 1)) None "andThen can fail" in
+  assertEq (andThen (\n -> Just n) None) None "andThen None"
+
+@test fun keepIfFilters u =
+  let a = assertEq (keepIf (\n -> n > 2) (Just 5)) (Just 5) "kept" in
+  let b = assertEq (keepIf (\n -> n > 2) (Just 1)) None "dropped" in
+  assertEq (keepIf (\n -> n > 2) None) None "keepIf None"
+
+@test fun toListIsEmptyOrSingleton u =
+  let a = assertEq (toList (Just 1)) [1;] "toList Just" in
+  assertEq (toList None) [;] "toList None"

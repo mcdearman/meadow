@@ -78,7 +78,10 @@ pub enum TypeExpr {
     Fun(Vec<LType>, LType, Option<EffectRow>),
     /// `(a, b)`
     Tuple(Vec<LType>),
-    /// `[a]`
+    /// `[a]` — the default sequence, an RRB `Vector`.
+    Vector(LType),
+    /// `[a;]` — a linked `List`. The `;` marks it, exactly as it does in the
+    /// `[x; y]` literal and for the same reason: brackets alone mean `Vector`.
     List(LType),
 }
 
@@ -290,6 +293,12 @@ pub enum Pat {
     Tuple(Vec<LPat>),
     /// `#[p, ...]` -- matches a builtin `Array` of exactly this length.
     Array(Vec<LPat>),
+    /// `[]` / `[p, q]` — a `Vector` pattern. Only the empty one is supported;
+    /// `Vector` is a library type with no structural form, so the resolver
+    /// rejects the rest rather than the parser, which lets it say why.
+    Vector(Vec<LPat>),
+    /// `[;]` / `[p; q]` / `[p;]` — a `List` pattern. The `;` marks it, as it does
+    /// in the `[x; y]` literal and the `[a;]` type.
     List(Vec<LPat>),
     /// `{ x, y = p | _ }` — `open` (the trailing `| _`) is the bool.
     Record(Vec<(Ident, LPat)>, bool),

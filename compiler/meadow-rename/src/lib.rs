@@ -44,6 +44,11 @@ pub struct Resolver {
     effects: HashMap<InternedString, usize>,
     /// Operation name -> the effect it belongs to.
     effect_ops: HashMap<InternedString, InternedString>,
+    /// Operation `VarId` -> `(effect, operation)`. Keyed by id, not name: an
+    /// ordinary value can share an operation's name and shadow it in scope —
+    /// `Std.State.get` against the prelude's `Vector.get`, say — and the lowerer
+    /// has to tell a `perform` from a variable by identity, not spelling.
+    effect_op_ids: HashMap<VarId, (InternedString, InternedString)>,
     /// Type variables of the `data` / `record` decl currently being resolved.
     tyvars: Vec<(InternedString, VarId)>,
     ids: NodeIdGen,
@@ -55,6 +60,8 @@ pub struct Resolver {
     any_pub: bool,
     pub_vars: std::collections::HashSet<VarId>,
     pub_types: std::collections::HashSet<InternedString>,
+    /// `@test` functions, in declaration order — `meadow test` runs these.
+    test_vars: Vec<(InternedString, VarId)>,
     /// Active module qualifiers: `Foo` -> its exported value names. Populated by the
     /// driver from this module's `mod` children and `use`d modules; consulted when
     /// resolving `Foo.name`.
@@ -85,6 +92,10 @@ fn has_pub(attrs: &[ast::Attr]) -> bool {
     attrs.iter().any(|a| &**a.name.value() == "pub")
 }
 
+fn has_test(attrs: &[ast::Attr]) -> bool {
+    attrs.iter().any(|a| &**a.name.value() == "test")
+}
+
 /// A name is a constructor iff it starts with an uppercase letter.
 fn is_ctor_name(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_uppercase())
@@ -105,12 +116,14 @@ impl Resolver {
             ctors: HashMap::new(),
             effects: HashMap::new(),
             effect_ops: HashMap::new(),
+            effect_op_ids: HashMap::new(),
             tyvars: Vec::new(),
             ids: NodeIdGen::new(),
             toplevel: false,
             any_pub: false,
             pub_vars: std::collections::HashSet::new(),
             pub_types: std::collections::HashSet::new(),
+            test_vars: Vec::new(),
             qualifiers: HashMap::new(),
             errors: Vec::new(),
         }
@@ -231,7 +244,9 @@ impl Resolver {
             let (_, base) = peel(d);
             if let ast::Decl::Bind(b) = base.value() {
                 match b {
-                    ast::Bind::Fun(name, ..) => self.predeclare(*name.value()),
+                    ast::Bind::Fun(name, ..) => {
+                        self.predeclare(*name.value());
+                    }
                     ast::Bind::Pat(pat, _) => self.predeclare_pat(pat),
                 }
             }
@@ -279,7 +294,8 @@ impl Resolver {
                             );
                         }
                         // ops are top-level values (functions) — predeclare them
-                        self.predeclare(op);
+                        let id = self.predeclare(op);
+                        self.effect_op_ids.insert(id, (name, op));
                     }
                 }
                 _ => {}
@@ -319,6 +335,7 @@ impl Resolver {
                     self.effects.insert(ed.name, ed.params.len());
                     for (opname, op, _) in &ed.ops {
                         self.effect_ops.insert(*opname, ed.name);
+                        self.effect_op_ids.insert(*op.value(), (ed.name, *opname));
                         // bring the operation value into scope under its own id
                         self.import(*opname, *op.value());
                     }
@@ -331,14 +348,9 @@ impl Resolver {
     /// `(op VarId, effect name, op name)` for every declared operation — the
     /// lowerer turns a reference to one into `\x -> perform Effect.op x`.
     pub fn effect_op_vars(&self) -> Vec<(VarId, InternedString, InternedString)> {
-        self.effect_ops
+        self.effect_op_ids
             .iter()
-            .filter_map(|(op, eff)| {
-                self.predeclared
-                    .get(op)
-                    .or_else(|| self.scope.iter().rev().find(|(n, _)| n == op).map(|(_, id)| id))
-                    .map(|id| (*id, *eff, *op))
-            })
+            .map(|(&id, &(eff, op))| (id, eff, op))
             .collect()
     }
 
@@ -394,23 +406,28 @@ impl Resolver {
         self.ctors.get(&name).and_then(|c| c.field_names.clone())
     }
 
-    fn predeclare(&mut self, name: InternedString) {
-        if !self.predeclared.contains_key(&name) {
-            let id = self.bind(name);
-            self.predeclared.insert(name, id);
+    fn predeclare(&mut self, name: InternedString) -> VarId {
+        if let Some(&id) = self.predeclared.get(&name) {
+            return id;
         }
+        let id = self.bind(name);
+        self.predeclared.insert(name, id);
+        id
     }
 
     fn predeclare_pat(&mut self, pat: &ast::LPat) {
         match pat.value() {
-            ast::Pat::Var(n) => self.predeclare(*n.value()),
+            ast::Pat::Var(n) => {
+                self.predeclare(*n.value());
+            }
             ast::Pat::As(n, p) => {
                 self.predeclare(*n.value());
                 self.predeclare_pat(p);
             }
-            ast::Pat::Tuple(ps) | ast::Pat::List(ps) | ast::Pat::Cons(_, ps) => {
-                ps.iter().for_each(|p| self.predeclare_pat(p))
-            }
+            ast::Pat::Tuple(ps)
+            | ast::Pat::List(ps)
+            | ast::Pat::Vector(ps)
+            | ast::Pat::Cons(_, ps) => ps.iter().for_each(|p| self.predeclare_pat(p)),
             ast::Pat::Record(fs, _) => fs.iter().for_each(|(_, p)| self.predeclare_pat(p)),
             _ => {}
         }
@@ -469,7 +486,29 @@ impl Resolver {
         if is_pub {
             self.mark_pub(&hir);
         }
+        if has_test(attrs) {
+            self.mark_test(&hir, base.span);
+        }
         hir
+    }
+
+    /// Record a `@test` declaration. A test is a function of no interest to
+    /// anything but the runner, which calls it with `()` — so it has to *be*
+    /// callable, and `@test def x = …` is a mistake worth naming.
+    fn mark_test(&mut self, decl: &hir::LDecl, span: Span) {
+        match decl.value() {
+            hir::Decl::Bind(hir::Bind::Fun(name, params, _)) if params.len() == 1 => {
+                self.test_vars.push((
+                    self.names.get(name.value()).copied().unwrap_or_default(),
+                    *name.value(),
+                ));
+            }
+            _ => self.error(
+                "`@test` must be a function of one argument".to_string(),
+                "write `@test fun name u = …`, which the runner calls with `()`".to_string(),
+                span,
+            ),
+        }
     }
 
     /// Record a `@pub` declaration's names in the export sets.
@@ -513,6 +552,11 @@ impl Resolver {
     /// schemes live in a dependency rather than this unit.
     pub fn pub_var_ids(&self) -> impl Iterator<Item = VarId> + '_ {
         self.pub_vars.iter().copied()
+    }
+
+    /// Every `@test` function of this unit, in declaration order.
+    pub fn test_vars(&self) -> &[(InternedString, VarId)] {
+        &self.test_vars
     }
 
     pub fn is_pub_type(&self, name: InternedString) -> bool {
@@ -678,6 +722,10 @@ impl Resolver {
             ast::TypeExpr::Tuple(ts) => {
                 let rts = ts.iter().map(|x| self.resolve_ty(x)).collect();
                 self.node(hir::TypeExpr::Tuple(rts), t.span)
+            }
+            ast::TypeExpr::Vector(x) => {
+                let rx = self.resolve_ty(x);
+                self.node(hir::TypeExpr::Vector(rx), t.span)
             }
             ast::TypeExpr::List(x) => {
                 let rx = self.resolve_ty(x);
@@ -1067,6 +1115,29 @@ impl Resolver {
             ast::Pat::List(pats) => {
                 let rp = pats.iter().map(|p| self.resolve_pat(p)).collect_vec();
                 self.node(hir::Pat::List(rp), pat.span)
+            }
+            // `[]` is the empty `Vector`, which is `VEmpty` — the library keeps
+            // that the only representation of an empty vector (`vNormalize` and
+            // `fromArray` both collapse to it). A non-empty vector has no
+            // structural form, so say so rather than guessing.
+            ast::Pat::Vector(pats) => {
+                if pats.is_empty() {
+                    let label = self.node(InternedString::from("VEmpty"), pat.span);
+                    self.node(hir::Pat::Cons(label, vec![]), pat.span)
+                } else {
+                    self.error(
+                        "a `Vector` pattern can only be the empty `[]`".to_string(),
+                        format!(
+                            "write `[{}]` to match a list, or match on `len` instead",
+                            vec!["_"; pats.len()].join("; ")
+                        ),
+                        pat.span,
+                    );
+                    pats.iter().for_each(|p| {
+                        self.resolve_pat(p);
+                    });
+                    self.node(hir::Pat::Error, pat.span)
+                }
             }
             ast::Pat::Record(fields, open) => {
                 let rfields = fields

@@ -1,0 +1,130 @@
+-- Std.Exn: failure as an effect -- an early exit that unwinds to the nearest
+-- handler instead of being threaded through every return type.
+--
+--   use Std.Exn (raise, toResult)
+--
+--   fun half n = if even n then n / 2 else raise "odd"
+--   def main = toResult (\u -> half 7)   -- Err("odd")
+--
+-- This is `Result`'s sibling, not its replacement. `Result` is the right answer
+-- when a caller is expected to look at the failure; `Exn` is the right answer
+-- when the failure should travel a long way untouched, because nothing in
+-- between has to mention it. `toResult` converts at the boundary, so the two
+-- meet wherever you want them to.
+--
+-- The error type is a parameter, so it can be a `String`, a `data` type of your
+-- own, or anything else. `throw` is declared as returning `Unit` because an
+-- effect operation has to declare *some* result; no handler here ever resumes
+-- it, so it never actually returns.
+
+use Std.Bool (not)
+
+@pub effect Exn e {
+  throw : e -> Unit,
+}
+
+-- `throw` where a *value* is expected. An effect operation must declare a result
+-- type and `throw` declares `Unit`, so `if p then 1 else throw e` does not
+-- typecheck; `raise` is the same throw with a type that fits anywhere.
+@pub fun raise e = absurd (throw e)
+
+-- --- handling -----------------------------------------------------------------
+
+-- `Ok` of the result, or `Err` of whatever was thrown.
+@pub fun toResult act =
+  handle act () with {
+    throw e k -> Err e,
+    return x -> Ok x
+  }
+
+-- Run `act`; if it throws, hand the error to `recover` and use that instead.
+@pub fun catch recover act =
+  handle act () with {
+    throw e k -> recover e,
+    return x -> x
+  }
+
+-- Run `act`, falling back to a fixed value.
+@pub fun withDefault fallback act =
+  catch (\e -> fallback) act
+
+-- `Just` the result, or `None` if it threw.
+@pub fun toMaybe act =
+  handle act () with {
+    throw e k -> None,
+    return x -> Just x
+  }
+
+-- Whether `act` threw. Mostly useful in tests.
+@pub fun threw act =
+  handle act () with {
+    throw e k -> True,
+    return x -> False
+  }
+
+-- --- lifting ------------------------------------------------------------------
+
+-- Turn a `Result` back into a throw, so `Result`-returning code can be used
+-- inside an `Exn` computation without a `match` at every call.
+@pub fun ofResult r =
+  match r with
+  | Err e -> absurd (throw e)
+  | Ok x -> x
+
+@pub fun ofMaybe e o =
+  match o with
+  | None -> absurd (throw e)
+  | Just x -> x
+
+-- Throw unless the condition holds.
+@pub fun ensure cond e = if cond then () else throw e
+
+@pub fun refute cond e = ensure (not cond) e
+
+-- An effect operation has to declare a result type, so `throw` claims `Unit` --
+-- but no handler in this module resumes it, so the value is never produced.
+-- `absurd` bridges that: it has type `a -> b`, which lets `ofResult` claim the
+-- element type instead of `Unit`. It is only reachable if a handler resumes a
+-- `throw`, and then it fails loudly rather than quietly returning nonsense.
+fun absurd u = arrayGet #[] 0
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+fun half n = if n % 2 == 0 then n / 2 else raise "odd"
+
+@test fun toResultCapturesEitherOutcome u =
+  let a = assertEq (toResult (\u2 -> half 8)) (Ok 4) "success" in
+  assertEq (toResult (\u2 -> half 7)) (Err "odd") "failure"
+
+@test fun catchAndWithDefaultRecover u =
+  let a = assertEq (catch (\e -> 0) (\u2 -> half 7)) 0 "catch" in
+  let b = assertEq (catch (\e -> 0) (\u2 -> half 8)) 4 "catch leaves a success alone" in
+  assertEq (withDefault 0 (\u2 -> half 7)) 0 "withDefault"
+
+@test fun toMaybeAndThrew u =
+  let a = assertEq (toMaybe (\u2 -> half 8)) (Just 4) "toMaybe success" in
+  let b = assertEq (toMaybe (\u2 -> half 7)) None "toMaybe failure" in
+  let c = assertTrue (threw (\u2 -> half 7)) "threw" in
+  assertFalse (threw (\u2 -> half 8)) "did not throw"
+
+@test fun aThrowUnwindsPastEverythingInBetween u =
+  -- Nothing between the `raise` and the handler mentions failure; that is the
+  -- whole point of an effect rather than a `Result` return.
+  let deep = \u2 -> 1 + (2 * half 7) in
+  assertEq (toResult deep) (Err "odd") "unwound from inside an expression"
+
+@test fun ofResultAndOfMaybeLift u =
+  let a = assertEq (toResult (\u2 -> ofResult (Ok 1) + 1)) (Ok 2) "ofResult Ok" in
+  let b = assertEq (toResult (\u2 -> ofResult (Err "bad") + 1)) (Err "bad") "ofResult Err" in
+  let c = assertEq (toResult (\u2 -> ofMaybe "none" (Just 1))) (Ok 1) "ofMaybe Just" in
+  assertEq (toResult (\u2 -> ofMaybe "none" None)) (Err "none") "ofMaybe None"
+
+@test fun ensureAndRefute u =
+  let a = assertEq (toResult (\u2 -> ensure True "e")) (Ok ()) "ensure holds" in
+  let b = assertEq (toResult (\u2 -> ensure False "e")) (Err "e") "ensure fails" in
+  assertEq (toResult (\u2 -> refute True "e")) (Err "e") "refute"
+
+@test fun theErrorCanBeAnyType u =
+  assertEq (toResult (\u2 -> raise (1, "code"))) (Err (1, "code")) "a tuple error"

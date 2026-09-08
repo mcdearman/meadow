@@ -1,0 +1,150 @@
+-- Std.Time: the clock, as an effect.
+--
+-- With no handler the runtime reads the real clock. With `withClock` it reads
+-- whatever you say, which is the point: code that looks at the time is normally
+-- the hardest to test, and here it is a two-line handler.
+--
+--   use Std.Time (now, withClock)
+--
+--   fun isExpired deadline = now () > deadline
+--   @test fun expiry u = assertTrue (withClock 500 (\u -> isExpired 100)) "expired"
+--
+-- All times are `Int`s. `now` is milliseconds since the Unix epoch (1970-01-01
+-- UTC) and can jump backwards if the system clock is adjusted; `monotonic` is
+-- nanoseconds from an unspecified origin that only ever moves forward, which is
+-- what a duration should be measured with.
+
+use Std.Int (abs)
+use Std.String as S
+use Std.Collections.Vector (vecFromArray)
+
+@pub effect Time {
+  now : Unit -> Int,
+  monotonic : Unit -> Int,
+  -- Do nothing for this many milliseconds. Zero or less returns at once.
+  sleep : Int -> Unit,
+}
+
+-- --- units --------------------------------------------------------------------
+
+@pub def millisPerSecond = 1000
+
+@pub def millisPerMinute = 60000
+
+@pub def millisPerHour = 3600000
+
+@pub def millisPerDay = 86400000
+
+@pub fun seconds n = n * millisPerSecond
+
+@pub fun minutes n = n * millisPerMinute
+
+@pub fun hours n = n * millisPerHour
+
+@pub fun days n = n * millisPerDay
+
+@pub fun toSeconds ms = ms / millisPerSecond
+
+@pub fun nanosToMillis ns = ns / 1000000
+
+-- --- measuring ----------------------------------------------------------------
+
+-- `(result, elapsed nanoseconds)`. Uses the monotonic clock, so a system clock
+-- adjustment part-way through cannot produce a negative duration.
+@pub fun timed act =
+  let start = monotonic () in
+  let result = act () in
+  let stop = monotonic () in
+  (result, stop - start)
+
+-- Just the duration.
+@pub fun elapsed act =
+  match timed act with
+  | (result, ns) -> ns
+
+-- --- handling -----------------------------------------------------------------
+
+-- Run `act` with the clock frozen at `t`: every `now` answers `t`, `monotonic`
+-- counts from zero, and `sleep` returns instantly.
+@pub fun withClock t act =
+  handle act () with {
+    now u k -> k t,
+    monotonic u k -> k 0,
+    sleep ms k -> k (),
+    return x -> x
+  }
+
+-- Run `act` with a clock that starts at `t` and advances by `tick` on every
+-- reading -- enough to test code that compares two `now`s, and to make `sleep`
+-- move the clock without waiting.
+@pub fun withTickingClock t tick act =
+  handle act () with {
+    now u k -> \s -> (k s) (s + tick),
+    monotonic u k -> \s -> (k (s * 1000000)) (s + tick),
+    sleep ms k -> \s -> (k ()) (s + ms),
+    return x -> \s -> x
+  } t
+
+-- --- rendering ----------------------------------------------------------------
+
+-- `hh:mm:ss.mmm` of a duration in milliseconds. Not a date -- meadow has no
+-- calendar yet, and getting one right is a bigger job than it looks.
+@pub fun formatDuration ms =
+  let neg = ms < 0 in
+  let n = abs ms in
+  let body =
+    S.concatAll [
+      pad2 (n / millisPerHour), ":",
+      pad2 (n % millisPerHour / millisPerMinute), ":",
+      pad2 (n % millisPerMinute / millisPerSecond), ".",
+      pad3 (n % millisPerSecond),
+    ]
+  in
+  if neg then S.concat "-" body else body
+
+fun pad2 n = if n < 10 then S.concat "0" (S.fromInt n) else S.fromInt n
+
+fun pad3 n =
+  if n < 10
+  then S.concat "00" (S.fromInt n)
+  else if n < 100 then S.concat "0" (S.fromInt n) else S.fromInt n
+
+-- --- tests -------------------------------------------------------------------
+--
+-- Every test handles the effect, so none of them reads the real clock -- which
+-- is the property this module exists to provide.
+
+use Std.Test (assertEq, assertTrue)
+
+@test fun theUnitsConvert u =
+  let a = assertEq (seconds 1) 1000 "seconds" in
+  let b = assertEq (minutes 1) 60000 "minutes" in
+  let c = assertEq (hours 1) 3600000 "hours" in
+  let d = assertEq (days 1) 86400000 "days" in
+  let e = assertEq (toSeconds 1500) 1 "toSeconds truncates" in
+  assertEq (nanosToMillis 2500000) 2 "nanosToMillis"
+
+@test fun aFrozenClockAlwaysAnswersTheSame u =
+  let a = assertEq (withClock 500 (\u2 -> now ())) 500 "now" in
+  let b = assertEq (withClock 500 (\u2 -> let x = now () in now () - x)) 0 "it does not advance" in
+  assertEq (withClock 500 (\u2 -> monotonic ())) 0 "monotonic starts at zero"
+
+@test fun sleepUnderAFrozenClockReturnsAtOnce u =
+  -- If this touched the real clock the test suite would take an hour.
+  assertEq (withClock 0 (\u2 -> let i = sleep (hours 1) in 1)) 1 "slept instantly"
+
+@test fun aTickingClockAdvances u =
+  let a = assertEq (withTickingClock 0 100 (\u2 -> let x = now () in now () - x)) 100 "one tick" in
+  assertEq (withTickingClock 5 1 (\u2 -> now ())) 5 "the first reading is the start"
+
+@test fun timedMeasuresWithTheMonotonicClock u =
+  let (result, ns) = withTickingClock 0 7 (\u2 -> timed (\u3 -> 42)) in
+  let a = assertEq result 42 "the result comes through" in
+  assertTrue (ns >= 0) "a duration is never negative"
+
+@test fun durationsFormat u =
+  let a = assertEq (formatDuration 0) "00:00:00.000" "zero" in
+  let b = assertEq (formatDuration 1) "00:00:00.001" "one millisecond" in
+  let c = assertEq (formatDuration (seconds 3661)) "01:01:01.000" "an hour, a minute, a second" in
+  let d = assertEq (formatDuration 90061001) "25:01:01.001" "past a day, hours keep counting" in
+  assertEq (formatDuration (0 - 1500)) "-00:00:01.500" "negative"

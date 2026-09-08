@@ -36,3 +36,43 @@ fun unwrap s = match s with | Set t -> t
   fromList (filter (\x -> member x b) (toList a))
 
 @pub fun subset a b = all (\x -> member x b) (toList a)
+
+-- Yield every element in ascending order, for `Std.Stream`.
+@pub fun toStream s = List.toStream (toList s)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+def a = fromList [1; 2; 3]
+
+def b = fromList [3; 4]
+
+@test fun insertAndMember u =
+  let x = assertTrue (member 2 a) "member" in
+  let y = assertFalse (member 9 a) "not member" in
+  assertTrue (member 9 (insert 9 a)) "inserted"
+
+@test fun setsDoNotHoldDuplicates u =
+  let x = assertEq (size (fromList [1; 1; 1])) 1 "fromList dedupes" in
+  assertEq (size (insert 1 a)) 3 "re-inserting changes nothing"
+
+@test fun toListIsSortedAndDistinct u =
+  let x = assertEq (toList a) [1; 2; 3] "sorted" in
+  assertEq (toList (fromList [3; 1; 3; 2])) [1; 2; 3] "sorted and deduped"
+
+@test fun unionDiffIntersect u =
+  let x = assertEq (toList (union a b)) [1; 2; 3; 4] "union" in
+  let y = assertEq (toList (diff a b)) [1; 2] "diff" in
+  assertEq (toList (intersect a b)) [3;] "intersect"
+
+@test fun subsetAndEmptiness u =
+  let x = assertTrue (subset (fromList [1; 2]) a) "a subset" in
+  let y = assertFalse (subset b a) "not a subset" in
+  let z = assertTrue (subset empty a) "empty is a subset of anything" in
+  assertTrue (null empty) "null"
+
+@test fun deleteAndExtremes u =
+  let x = assertFalse (member 2 (delete 2 a)) "deleted" in
+  let y = assertEq (minElem a) (Just 1) "minElem" in
+  assertEq (maxElem a) (Just 3) "maxElem"

@@ -76,3 +76,49 @@
                                (i + 1) (v >> 16))
                      (i + 2) (v >> 8))
            (i + 3) v
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun lengthAndEmptiness u =
+  let a = assertEq (bytesLength bytesEmpty) 0 "empty length" in
+  let b = assertTrue (bytesIsEmpty bytesEmpty) "empty is empty" in
+  let c = assertEq (bytesLength #[1, 2, 3]) 3 "length" in
+  assertFalse (bytesIsEmpty #[1]) "one byte is not empty"
+
+@test fun boundsCheckedAccess u =
+  let a = assertEq (bytesGet #[1, 2, 3] 1) (Just 2) "in range" in
+  let b = assertEq (bytesGet #[1, 2, 3] 3) None "past the end" in
+  let c = assertEq (bytesGet #[1, 2, 3] (0 - 1)) None "before the start" in
+  assertEq (bytesGetOr 0 #[1, 2, 3] 9) 0 "getOr past the end"
+
+@test fun pushPopSetAndSlice u =
+  let a = assertEq (bytesPush #[1, 2] 3) #[1, 2, 3] "push" in
+  let b = assertEq (bytesPop #[1, 2, 3]) #[1, 2] "pop" in
+  let c = assertEq (bytesSet #[1, 2, 3] 1 9) #[1, 9, 3] "set" in
+  let d = assertEq (bytesSlice #[1, 2, 3, 4] 1 3) #[2, 3] "slice" in
+  assertEq (bytesConcat #[1] #[2]) #[1, 2] "concat"
+
+@test fun bytesSetTruncatesToOneByte u =
+  -- Only the low 8 bits are stored, which is what makes this a *byte* array.
+  assertEq (bytesGetOr 0 (bytesSet #[0] 0 0x1FF) 0) 255 "0x1FF becomes 0xFF"
+
+@test fun multiByteReadsRespectEndianness u =
+  let b = #[0x34, 0x12] in
+  let a = assertEq (bytesGetU16LE b 0) 0x1234 "u16 little-endian" in
+  let c = assertEq (bytesGetU16BE b 0) 0x3412 "u16 big-endian" in
+  let d = #[0x78, 0x56, 0x34, 0x12] in
+  let e = assertEq (bytesGetU32LE d 0) 0x12345678 "u32 little-endian" in
+  assertEq (bytesGetU32BE d 0) 0x78563412 "u32 big-endian"
+
+@test fun multiByteReadsPastTheEndAreZero u =
+  -- Documented behaviour: missing bytes read as 0 rather than failing.
+  assertEq (bytesGetU32LE #[1] 0) 1 "three bytes missing"
+
+@test fun multiByteWritesRoundTrip u =
+  let a = assertEq (bytesGetU16LE (bytesSetU16LE #[0, 0] 0 0x1234) 0) 0x1234 "u16 LE" in
+  let b = assertEq (bytesGetU16BE (bytesSetU16BE #[0, 0] 0 0x1234) 0) 0x1234 "u16 BE" in
+  let z = #[0, 0, 0, 0] in
+  let c = assertEq (bytesGetU32LE (bytesSetU32LE z 0 0x12345678) 0) 0x12345678 "u32 LE" in
+  assertEq (bytesGetU32BE (bytesSetU32BE z 0 0x12345678) 0) 0x12345678 "u32 BE"

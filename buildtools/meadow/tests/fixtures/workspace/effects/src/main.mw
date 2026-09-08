@@ -1,0 +1,103 @@
+use Std.Test (assertEq, assertTrue, assertFails, failWith)
+use Std.State as St
+use Std.Exn as E
+use Std.Stream as Str
+use Std.Random as R
+use Std.Time as T
+use Std.Path as Pa
+use Std.Json as J
+
+-- State ---------------------------------------------------------------------
+fun tick u = let n = St.get () in let ignored = St.put (n + 1) in n
+
+@test fun stateThreads u =
+  assertEq (St.runState 0 (\u2 -> let a = tick () in let b = tick () in St.get ())) (2, 2) "runState"
+
+@test fun stateModify u =
+  assertEq (St.execState 10 (\u2 -> St.modify (\s -> s * 3))) 30 "modify"
+
+-- Exn -----------------------------------------------------------------------
+fun half n = if n % 2 == 0 then n / 2 else E.raise "odd"
+
+@test fun exnToResult u =
+  let ignored = assertEq (E.toResult (\u2 -> half 8)) (Ok 4) "ok" in
+  assertEq (E.toResult (\u2 -> half 7)) (Err "odd") "err"
+
+@test fun exnCatch u =
+  assertEq (E.withDefault 0 (\u2 -> half 7)) 0 "withDefault"
+
+@test fun exnOfResult u =
+  assertEq (E.toResult (\u2 -> E.ofResult (Err "bad") + 1)) (Err "bad") "ofResult"
+
+-- Stream --------------------------------------------------------------------
+fun countdown n = if n <= 0 then () else let i = Str.yield n in countdown (n - 1)
+
+@test fun streamCollects u =
+  assertEq (Str.toList (\u2 -> countdown 3)) [3; 2; 1] "toList"
+
+@test fun streamTakeStopsEarly u =
+  assertEq (Str.take 3 (\u2 -> Str.range 0 1000000)) [0; 1; 2] "take is lazy"
+
+@test fun streamFoldAndFind u =
+  let ignored = assertEq (Str.sum (\u2 -> Str.range 1 5)) 10 "sum" in
+  assertEq (Str.find (\x -> x > 2) (\u2 -> Str.range 0 10)) (Just 3) "find"
+
+@test fun streamMapFilterCompose u =
+  assertEq
+    (Str.toList (\u2 -> Str.map (\x -> x * 2) (\u3 -> Str.filter (\x -> x % 2 == 0) (\u4 -> Str.range 0 6))))
+    [0; 4; 8]
+    "map . filter"
+
+-- Random --------------------------------------------------------------------
+@test fun randomIsReproducible u =
+  assertEq (R.withSeed 42 (\u2 -> R.between 1 7)) (R.withSeed 42 (\u2 -> R.between 1 7)) "same seed"
+
+@test fun randomStaysInRange u =
+  assertTrue (R.withSeed 7 (\u2 -> inRange (R.between 10 20))) "in [10, 20)"
+
+fun inRange n = n >= 10 and n < 20
+
+-- Time ----------------------------------------------------------------------
+@test fun clockIsMockable u =
+  assertEq (T.withClock 500 (\u2 -> T.now ())) 500 "withClock"
+
+@test fun tickingClockAdvances u =
+  assertEq (T.withTickingClock 0 100 (\u2 -> let a = T.now () in let b = T.now () in b - a)) 100 "ticking"
+
+@test fun durationFormats u =
+  assertEq (T.formatDuration (T.seconds 3661)) "01:01:01.000" "formatDuration"
+
+-- Path ----------------------------------------------------------------------
+@test fun pathJoinAndSplit u =
+  let a = assertEq (Pa.join "a/b" "c.txt") "a/b/c.txt" "join" in
+  let b = assertEq (Pa.fileName "a/b/c.txt") "c.txt" "fileName" in
+  let c = assertEq (Pa.extension "a/b/c.txt") "txt" "extension" in
+  let d = assertEq (Pa.fileStem "a/b/c.txt") "c" "fileStem" in
+  assertEq (Pa.parent "a/b/c.txt") (Just "a/b") "parent"
+
+@test fun pathNormalizes u =
+  let a = assertEq (Pa.normalize "a/./b/../c") "a/c" "normalize" in
+  assertEq (Pa.normalize "a/b/../c") "a/c" "normalize keeps"
+
+@test fun pathAbsoluteWins u =
+  assertEq (Pa.join "a" "/b") "/b" "absolute rhs"
+
+-- Json ----------------------------------------------------------------------
+@test fun jsonRoundTrips u =
+  match J.parse "{\"a\":[1,2,3],\"b\":null}" with
+  | Ok v -> assertEq (J.render v) "{\"a\":[1,2,3],\"b\":null}" "round trip"
+  | Err e -> failWith e
+
+@test fun jsonReads u =
+  match J.parse "{\"n\": {\"deep\": true}}" with
+  | Ok v -> assertEq (J.path ["n", "deep"] v) (Just (J.JBool True)) "path"
+  | Err e -> failWith e
+
+@test fun jsonRejectsGarbage u =
+  match J.parse "{oops}" with
+  | Ok v -> failWith "should not parse"
+  | Err e -> assertTrue (S2.byteLength e > 0) "has a message"
+
+use Std.String as S2
+
+def main = 0

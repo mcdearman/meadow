@@ -1,0 +1,13 @@
+-- Std.Yield: just the effect that `Std.Stream` is built on.
+--
+-- It lives in its own module for one reason: a collection's `toStream` has to
+-- perform `yield`, and `Std.Stream`'s consumers (`toVec`, `ofVec`, …) have to
+-- know about the collections. Both cannot be the earlier module, so the effect
+-- goes first on its own and everything else can depend on it.
+--
+-- Reach it through `Std.Stream`, which re-exports `yield` -- there is no reason
+-- to name this module directly.
+
+@pub effect Yield a {
+  yield : a -> Unit,
+}

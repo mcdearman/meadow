@@ -63,6 +63,9 @@ pub struct CompiledPackage {
     /// This package's resolved `data` / `record` / `effect` declarations,
     /// re-imported by dependents (and by later REPL lines).
     pub data_decls: Vec<hir::LDecl>,
+    /// `@test` functions declared in this unit: `(name, its VarId)`, in
+    /// declaration order. `meadow test` calls each with `()`.
+    pub tests: Vec<(InternedString, VarId)>,
     /// Names a dependent gets **unqualified** automatically (the package's prelude
     /// re-exports). `None` = flat-import everything (REPL prefixes, ad-hoc `deps`);
     /// `Some(list)` = only these are flat, the rest need `use`.
@@ -210,6 +213,10 @@ pub fn compile_unit_in_package(
     }
     for m in &typed {
         infer.register_types(&m.hir.value().decls);
+        // This unit's own effect operations are part of its export surface, so a
+        // dependent can write `State.get` rather than relying on them being
+        // injected into every scope (where an ordinary value can shadow them).
+        infer.export_effect_ops(&m.hir.value().decls);
     }
     for m in &typed {
         infer.infer_module(&m.hir);
@@ -315,6 +322,7 @@ pub fn compile_unit_in_package(
             defs,
             ctor_fields,
             data_decls,
+            tests: resolver.test_vars().to_vec(),
             prelude_exports: None,
         },
         diags,

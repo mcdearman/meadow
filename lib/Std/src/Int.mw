@@ -16,8 +16,48 @@
 
 @pub fun even n = n % 2 == 0
 
-@pub fun odd n = n % 2 == 1
+@pub fun odd n = n % 2 != 0
 
 @pub fun gcd a b = if b == 0 then abs a else gcd b (a % b)
 
 @pub fun lcm a b = if a == 0 then 0 else abs (a * b) / gcd a b
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun minMaxAndClamp u =
+  let a = assertEq (min 3 7) 3 "min" in
+  let b = assertEq (max 3 7) 7 "max" in
+  let c = assertEq (clamp 0 10 15) 10 "clamp above" in
+  let d = assertEq (clamp 0 10 (0 - 5)) 0 "clamp below" in
+  assertEq (clamp 0 10 5) 5 "clamp inside"
+
+@test fun absAndSignum u =
+  let a = assertEq (abs (0 - 7)) 7 "abs negative" in
+  let b = assertEq (abs 7) 7 "abs positive" in
+  let c = assertEq (abs 0) 0 "abs zero" in
+  let d = assertEq (signum (0 - 7)) (0 - 1) "signum negative" in
+  let e = assertEq (signum 0) 0 "signum zero" in
+  assertEq (signum 7) 1 "signum positive"
+
+@test fun evenAndOddSplitTheIntegers u =
+  let a = assertTrue (even 0) "0 is even" in
+  let b = assertTrue (odd 7) "7 is odd" in
+  let c = assertFalse (even 7) "7 is not even" in
+  -- Negative numbers too: `%` follows the sign of the dividend, which is the
+  -- thing an implementation gets wrong.
+  let d = assertTrue (even (0 - 4)) "-4 is even" in
+  assertTrue (odd (0 - 3)) "-3 is odd"
+
+@test fun succAndPred u =
+  let a = assertEq (succ 4) 5 "succ" in
+  let b = assertEq (pred 4) 3 "pred" in
+  assertEq (pred (succ 4)) 4 "they undo each other"
+
+@test fun gcdAndLcm u =
+  let a = assertEq (gcd 12 18) 6 "gcd" in
+  let b = assertEq (gcd 17 5) 1 "coprime" in
+  let c = assertEq (gcd 0 5) 5 "gcd with zero" in
+  let d = assertEq (lcm 4 6) 12 "lcm" in
+  assertEq (gcd (0 - 12) 18) 6 "gcd of a negative"

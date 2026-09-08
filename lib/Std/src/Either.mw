@@ -1,0 +1,161 @@
+-- Std.Either: a value that is one of two things. Reach these as `Either.map`
+-- etc., or `use` them. (`Left` / `Right` are constructors -- always in scope by
+-- name.)
+--
+-- `Either` and `Result` are the same shape, and the difference is intent:
+-- `Result e a` says one side is a failure, and the whole module is written around
+-- that. `Either a b` says nothing of the sort -- neither side is the odd one out,
+-- so it is what to reach for when a value is genuinely one of two kinds. Where a
+-- choice has to be made anyway (`map`, `andThen`) this module follows `Result`
+-- and works on the `Right`, which is also what makes `toResult` the obvious
+-- conversion.
+
+@pub data Either a b = Left a | Right b
+
+@pub fun isLeft e = match e with | Left a -> True | Right b -> False
+
+@pub fun isRight e = match e with | Left a -> False | Right b -> True
+
+-- Collapse both sides to one type: `either f g` is the `Either` eliminator, the
+-- way `match` would do it but as a value.
+@pub fun either onLeft onRight e =
+  match e with
+  | Left a -> onLeft a
+  | Right b -> onRight b
+
+@pub fun fromLeft fallback e =
+  match e with
+  | Left a -> a
+  | Right b -> fallback
+
+@pub fun fromRight fallback e =
+  match e with
+  | Left a -> fallback
+  | Right b -> b
+
+-- Right-biased, like `Result.map`: a `Left` passes through untouched.
+@pub fun map f e =
+  match e with
+  | Left a -> Left a
+  | Right b -> Right (f b)
+
+@pub fun mapLeft f e =
+  match e with
+  | Left a -> Left (f a)
+  | Right b -> Right b
+
+-- Map both sides at once, each with its own function.
+@pub fun bimap f g e =
+  match e with
+  | Left a -> Left (f a)
+  | Right b -> Right (g b)
+
+@pub fun andThen f e =
+  match e with
+  | Left a -> Left a
+  | Right b -> f b
+
+@pub fun swap e =
+  match e with
+  | Left a -> Right a
+  | Right b -> Left b
+
+-- --- conversions ------------------------------------------------------------
+
+@pub fun toMaybe e =
+  match e with
+  | Left a -> None
+  | Right b -> Just b
+
+@pub fun leftToMaybe e =
+  match e with
+  | Left a -> Just a
+  | Right b -> None
+
+@pub fun toResult e =
+  match e with
+  | Left a -> Err a
+  | Right b -> Ok b
+
+@pub fun fromResult r =
+  match r with
+  | Err e -> Left e
+  | Ok x -> Right x
+
+@pub fun fromMaybe fallback o =
+  match o with
+  | None -> Left fallback
+  | Just x -> Right x
+
+-- --- collections ------------------------------------------------------------
+--
+-- Over `List`, whose `Nil` / `Cons` are built in and so need no import. The
+-- `Vector` equivalents belong in `Std.Collections.Vector`, which is compiled
+-- after this module.
+
+@pub fun lefts es =
+  match es with
+  | [;] -> [;]
+  | e :: rest ->
+      match e with
+      | Left a -> a :: lefts rest
+      | Right b -> lefts rest
+
+@pub fun rights es =
+  match es with
+  | [;] -> [;]
+  | e :: rest ->
+      match e with
+      | Left a -> rights rest
+      | Right b -> b :: rights rest
+
+-- Both at once, in one pass, each side keeping its original order.
+@pub fun partitionEithers es =
+  match es with
+  | [;] -> ([;], [;])
+  | e :: rest ->
+      let (ls, rs) = partitionEithers rest in
+      match e with
+      | Left a -> (a :: ls, rs)
+      | Right b -> (ls, b :: rs)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun eitherCollapsesBothSides u =
+  let a = assertEq (either (\n -> n + 1) (\s -> 0) (Left 5)) 6 "Left" in
+  assertEq (either (\n -> n + 1) (\s -> 0) (Right "x")) 0 "Right"
+
+@test fun sideTestsAndDefaults u =
+  let a = assertTrue (isLeft (Left 1)) "isLeft" in
+  let b = assertFalse (isRight (Left 1)) "isRight of Left" in
+  let c = assertEq (fromLeft 0 (Left 7)) 7 "fromLeft of Left" in
+  let d = assertEq (fromLeft 0 (Right 7)) 0 "fromLeft of Right" in
+  assertEq (fromRight 0 (Right 7)) 7 "fromRight of Right"
+
+@test fun mapIsRightBiased u =
+  let a = assertEq (map (\x -> x + 1) (Right 1)) (Right 2) "map Right" in
+  let b = assertEq (map (\x -> x + 1) (Left 1)) (Left 1) "map leaves Left" in
+  let c = assertEq (mapLeft (\x -> x + 1) (Left 1)) (Left 2) "mapLeft Left" in
+  assertEq (bimap (\x -> x + 1) (\y -> y * 2) (Right 4)) (Right 8) "bimap Right"
+
+@test fun andThenAndSwap u =
+  let a = assertEq (andThen (\x -> Right (x + 1)) (Right 1)) (Right 2) "andThen" in
+  let b = assertEq (andThen (\x -> Left "no") (Right 1)) (Left "no") "the function may fail" in
+  let c = assertEq (swap (Left 1)) (Right 1) "swap Left" in
+  assertEq (swap (swap (Right 1))) (Right 1) "swap is an involution"
+
+@test fun conversions u =
+  let a = assertEq (toMaybe (Right 1)) (Just 1) "toMaybe Right" in
+  let b = assertEq (leftToMaybe (Left 1)) (Just 1) "leftToMaybe Left" in
+  let c = assertEq (toResult (Left "bad")) (Err "bad") "toResult Left" in
+  let d = assertEq (fromResult (Ok 1)) (Right 1) "fromResult Ok" in
+  assertEq (toResult (fromResult (Err "e"))) (Err "e") "round trip"
+
+@test fun leftsRightsAndPartitionKeepOrder u =
+  let es = [Left 1; Right "a"; Left 2; Right "b";] in
+  let a = assertEq (lefts es) [1; 2] "lefts" in
+  let b = assertEq (rights es) ["a"; "b"] "rights" in
+  let c = assertEq (partitionEithers es) ([1; 2], ["a"; "b"]) "partitionEithers" in
+  assertEq (partitionEithers [;]) ([;], [;]) "partition of nothing"

@@ -1,5 +1,8 @@
 ---
-source: tests/effects.rs
+source: meadow/tests/effects.rs
+assertion_line: 16
 expression: "schemes(\"effect State s { get : () -> s, put : s -> () }\\n\\\n         fun runState s0 act =\\n\\\n           handle act () with {\\n\\\n             get g k -> \\\\s -> (k s) s,\\n\\\n             put s2 k -> \\\\s -> (k ()) s2,\\n\\\n             return x -> \\\\s -> (x, s)\\n\\\n           } s0\\n\")"
 ---
+get : forall a e. Unit -> a ! { State a | e }
+put : forall a e. a -> Unit ! { State a | e }
 runState : forall a b e. a -> (Unit -> b ! { State a | e }) -> (b, a) ! e

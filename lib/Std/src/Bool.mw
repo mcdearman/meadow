@@ -3,3 +3,15 @@
 @pub data Bool = False | True
 
 @pub fun not b = if b then False else True
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun notInverts u =
+  let a = assertEq (not True) False "not True" in
+  assertEq (not False) True "not False"
+
+@test fun notIsAnInvolution u =
+  let a = assertEq (not (not True)) True "not . not on True" in
+  assertEq (not (not False)) False "not . not on False"

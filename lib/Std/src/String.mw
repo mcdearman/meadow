@@ -224,3 +224,85 @@ fun negateParsed m =
   match m with
   | None -> None
   | Just n -> Just (0 - n)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun buildingStrings u =
+  let a = assertEq (concat "foo" "bar") "foobar" "concat" in
+  let b = assertEq (concat "" "x") "x" "concat onto nothing" in
+  let c = assertEq (concatAll ["a", "b", "c"]) "abc" "concatAll" in
+  let d = assertEq (join ", " ["a", "b"]) "a, b" "join" in
+  let e = assertEq (join ", " ["only"]) "only" "one element gets no separator" in
+  let f = assertEq (join ", " []) "" "nothing" in
+  let g = assertEq (repeat "ab" 3) "ababab" "repeat" in
+  assertEq (repeat "ab" 0) "" "repeat none"
+
+@test fun lengthIsInBytes u =
+  let a = assertEq (byteLength "hello") 5 "ascii" in
+  let b = assertTrue (isEmpty "") "isEmpty" in
+  let c = assertFalse (isEmpty "x") "not empty" in
+  -- Two bytes in UTF-8, and this module is honest about counting bytes.
+  assertEq (byteLength "é") 2 "a multi-byte character"
+
+@test fun sliceTakeAndDropClamp u =
+  let a = assertEq (slice "hello" 1 3) "el" "slice" in
+  let b = assertEq (take "hello" 2) "he" "take" in
+  let c = assertEq (drop "hello" 2) "llo" "drop" in
+  let d = assertEq (slice "hi" 0 99) "hi" "past the end" in
+  let e = assertEq (slice "hi" 5 9) "" "wholly past the end" in
+  assertEq (drop "hi" 99) "" "drop everything"
+
+@test fun byteAtIsBoundsChecked u =
+  let a = assertEq (byteAt "abc" 1) (Just 98) "in range" in
+  let b = assertEq (byteAt "abc" 9) None "past the end" in
+  assertEq (byteAt "abc" (0 - 1)) None "before the start"
+
+@test fun searching u =
+  let a = assertEq (indexOf "l" "hello") (Just 2) "first occurrence" in
+  let b = assertEq (indexOf "lo" "hello") (Just 3) "a longer needle" in
+  let c = assertEq (indexOf "z" "hello") None "absent" in
+  let d = assertEq (indexOf "" "hello") (Just 0) "an empty needle is at the start" in
+  let e = assertTrue (contains "ell" "hello") "contains" in
+  let f = assertTrue (startsWith "he" "hello") "startsWith" in
+  let g = assertFalse (startsWith "hello!" "hello") "a needle longer than the haystack" in
+  assertTrue (endsWith "llo" "hello") "endsWith"
+
+@test fun splittingAndLines u =
+  let a = assertEq (split "," "a,b,c") ["a", "b", "c"] "split" in
+  let b = assertEq (split "," "a,,b") ["a", "", "b"] "adjacent separators leave gaps" in
+  let c = assertEq (split "," "a") ["a"] "no separator" in
+  -- An empty separator has no sensible answer; the string comes back whole
+  -- rather than looping forever.
+  let d = assertEq (split "" "abc") ["abc"] "an empty separator" in
+  let e = assertEq (lines "a\nb\nc") ["a", "b", "c"] "lines" in
+  let f = assertEq (lines "a\nb\n") ["a", "b"] "one trailing newline is ignored" in
+  assertEq (lines "") [] "no lines"
+
+@test fun trimming u =
+  let a = assertEq (trim "  hi  ") "hi" "trim" in
+  let b = assertEq (trim "\t\nhi\r\n") "hi" "all the whitespace bytes" in
+  let c = assertEq (trimStart "  hi  ") "hi  " "trimStart" in
+  let d = assertEq (trimEnd "  hi  ") "  hi" "trimEnd" in
+  assertEq (trim "   ") "" "all whitespace"
+
+@test fun asciiCaseConversion u =
+  let a = assertEq (toUpper "Hello, World!") "HELLO, WORLD!" "toUpper" in
+  let b = assertEq (toLower "Hello, World!") "hello, world!" "toLower" in
+  assertEq (toUpper "123") "123" "non-letters are left alone"
+
+@test fun numbersInAndOut u =
+  let a = assertEq (fromInt 0) "0" "zero" in
+  let b = assertEq (fromInt 1234) "1234" "positive" in
+  let c = assertEq (fromInt (0 - 42)) "-42" "negative" in
+  let d = assertEq (toInt "1234") (Just 1234) "parse" in
+  let e = assertEq (toInt "-42") (Just (0 - 42)) "parse a negative" in
+  let f = assertEq (toInt "12x") None "trailing rubbish is rejected" in
+  let g = assertEq (toInt "") None "empty" in
+  let h = assertEq (toInt "-") None "a lone sign" in
+  assertEq (toInt (fromInt 987654)) (Just 987654) "round trip"
+
+@test fun bytesRoundTrip u =
+  let a = assertEq (fromBytes (toBytes "hello")) "hello" "round trip" in
+  assertEq (toBytes "abc") #[97, 98, 99] "toBytes"

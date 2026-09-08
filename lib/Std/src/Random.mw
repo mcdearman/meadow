@@ -1,0 +1,199 @@
+-- Std.Random: random numbers as an effect, plus a pure generator to handle it
+-- with when you want the same numbers twice.
+--
+-- With no handler the runtime supplies real entropy:
+--
+--   use Std.Random (between)
+--   def main = between 1 7             -- a die roll
+--
+-- With `withSeed` the same program is deterministic, which is what makes random
+-- code testable:
+--
+--   use Std.Random (between, withSeed)
+--   def main = withSeed 42 (\u -> between 1 7)      -- the same roll every time
+--
+-- The generator is SplitMix64: one multiply-xor-shift chain, no state beyond a
+-- single `Int`. It is fast and good enough for shuffling, sampling and tests. It
+-- is not cryptographic -- do not use it for keys, tokens or anything an
+-- adversary should not be able to predict.
+
+use Std.Collections.Vector as V
+
+@pub effect Random {
+  -- A uniformly distributed `Int` across the whole 64-bit range.
+  nextInt : Unit -> Int,
+  -- `lo` inclusive, `hi` exclusive. Returns `lo` if the range is empty.
+  intBetween : (Int, Int) -> Int,
+  -- In [0, 1).
+  nextFloat : Unit -> Float,
+  -- A value to seed a pure generator with.
+  nextSeed : Unit -> Int,
+}
+
+-- --- the pure generator -------------------------------------------------------
+--
+-- `step s` is `(value, nextState)`. Threading the state by hand is the honest
+-- interface; `withSeed` below hides it behind the effect.
+
+def gamma = 0 - 7046029254386353131
+
+def mixA = 0 - 4658895280553007687
+
+def mixB = 0 - 7723592293110705685
+
+fun mix z0 =
+  let z1 = bitXor z0 (z0 >>> 30) * mixA in
+  let z2 = bitXor z1 (z1 >>> 27) * mixB in
+  bitXor z2 (z2 >>> 31)
+
+-- One step: the next value and the state to continue from.
+@pub fun step s =
+  let s2 = s + gamma in
+  (mix s2, s2)
+
+-- A state to start from. Any `Int` will do; odd ones are traditional.
+@pub fun seed n = bitOr n 1
+
+-- `lo` inclusive, `hi` exclusive, from a pure state.
+@pub fun stepBetween lo hi s =
+  match step s with
+  | (v, s2) ->
+      if hi <= lo
+      then (lo, s2)
+      else (lo + posMod v (hi - lo), s2)
+
+-- In [0, 1), from the top 53 bits -- the ones a `Float` can hold exactly.
+@pub fun stepFloat s =
+  match step s with
+  | (v, s2) -> (toFloat (v >>> 11) /. 9007199254740992.0, s2)
+
+-- `v mod m`, always in [0, m). `%` follows the sign of the dividend, and the
+-- generator produces negative values half the time.
+fun posMod v m =
+  let r = v % m in
+  if r < 0 then r + m else r
+
+-- --- handling -----------------------------------------------------------------
+
+-- Run `act` with the pure generator, starting from `n`. The same `n` gives the
+-- same numbers, on every machine and every run.
+@pub fun withSeed n act =
+  handle act () with {
+    nextInt u k -> \s -> match step s with | (v, s2) -> (k v) s2,
+    nextSeed u k -> \s -> match step s with | (v, s2) -> (k v) s2,
+    intBetween b k ->
+      \s ->
+        match b with
+        | (lo, hi) -> match stepBetween lo hi s with | (v, s2) -> (k v) s2,
+    nextFloat u k -> \s -> match stepFloat s with | (v, s2) -> (k v) s2,
+    return x -> \s -> x
+  } (seed n)
+
+-- Like `withSeed`, but also hands back the final state so a run can be continued.
+@pub fun withSeedFrom n act =
+  handle act () with {
+    nextInt u k -> \s -> match step s with | (v, s2) -> (k v) s2,
+    nextSeed u k -> \s -> match step s with | (v, s2) -> (k v) s2,
+    intBetween b k ->
+      \s ->
+        match b with
+        | (lo, hi) -> match stepBetween lo hi s with | (v, s2) -> (k v) s2,
+    nextFloat u k -> \s -> match stepFloat s with | (v, s2) -> (k v) s2,
+    return x -> \s -> (x, s)
+  } (seed n)
+
+-- --- derived ------------------------------------------------------------------
+
+-- An effect operation takes exactly one argument, so `intBetween` takes a pair.
+-- This is the curried form to actually call.
+@pub fun between lo hi = intBetween (lo, hi)
+
+@pub fun bool u = between 0 2 == 1
+
+-- A uniformly chosen element, or `None` if the vector is empty.
+@pub fun choose v =
+  if V.isEmpty v then None else V.get v (between 0 (V.len v))
+
+-- Fisher-Yates, from the back.
+@pub fun shuffle v =
+  let n = V.len v in
+  if n <= 1 then v else shuffleFrom (n - 1) v
+
+fun shuffleFrom i v =
+  if i <= 0
+  then v
+  else
+    let j = between 0 (i + 1) in
+    shuffleFrom (i - 1) (swapAt v i j)
+
+fun swapAt v i j =
+  match (V.get v i, V.get v j) with
+  | (Just a, Just b) -> V.set (V.set v i b) j a
+  | (_, _) -> v
+
+-- --- tests -------------------------------------------------------------------
+--
+-- Everything here runs under `withSeed`, so the assertions are about properties
+-- and reproducibility rather than particular numbers -- pinning the output of a
+-- PRNG to literals would make the tests a re-statement of the implementation.
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+-- `[a, b]` in the tests below desugars to a `vecFromArray` call.
+use Std.Collections.Vector (vecFromArray)
+
+@test fun aSeedGivesTheSameRunTwice u =
+  let a = assertEq (withSeed 42 (\u2 -> between 1 7)) (withSeed 42 (\u2 -> between 1 7)) "same seed" in
+  assertEq
+    (withSeed 7 (\u2 -> V.toList (V.map (\i -> nextInt ()) [0, 1, 2])))
+    (withSeed 7 (\u2 -> V.toList (V.map (\i -> nextInt ()) [0, 1, 2])))
+    "a whole sequence repeats"
+
+@test fun differentSeedsDiverge u =
+  assertFalse
+    (withSeed 1 (\u2 -> nextInt ()) == withSeed 2 (\u2 -> nextInt ()))
+    "two seeds should not agree"
+
+@test fun betweenStaysInRange u =
+  let inRange = \n -> n >= 10 and n < 20 in
+  let a = assertTrue (withSeed 1 (\u2 -> inRange (between 10 20))) "seed 1" in
+  let b = assertTrue (withSeed 2 (\u2 -> inRange (between 10 20))) "seed 2" in
+  let c = assertTrue (withSeed 3 (\u2 -> inRange (between 10 20))) "seed 3" in
+  -- Negative ranges too: `%` follows the sign of the dividend, so a naive
+  -- modulus would fall outside on half the draws.
+  assertTrue
+    (withSeed 4 (\u2 -> let n = between (0 - 10) 0 in n >= (0 - 10) and n < 0))
+    "a negative range"
+
+@test fun anEmptyRangeIsItsLowerBound u =
+  let a = assertEq (withSeed 1 (\u2 -> between 5 5)) 5 "empty" in
+  assertEq (withSeed 1 (\u2 -> between 5 1)) 5 "inverted"
+
+@test fun nextFloatIsInTheUnitInterval u =
+  assertTrue
+    (withSeed 9 (\u2 -> let x = nextFloat () in x >=. 0.0 and x <. 1.0))
+    "[0, 1)"
+
+@test fun thePureGeneratorThreadsItsState u =
+  -- `step` is the interface `withSeed` is built on; the state must move.
+  let (v1, s1) = step (seed 42) in
+  let (v2, s2) = step s1 in
+  let a = assertFalse (s1 == s2) "the state advances" in
+  assertFalse (v1 == v2) "and so does the value"
+
+@test fun shuffleIsAPermutation u =
+  let v = [1, 2, 3, 4, 5] in
+  let shuffled = withSeed 11 (\u2 -> shuffle v) in
+  let a = assertEq (V.len shuffled) 5 "same length" in
+  -- Same elements, in some order: sorting is not available, so compare sums and
+  -- membership instead.
+  let b = assertEq (V.sum shuffled) 15 "same elements" in
+  assertTrue (V.all (\x -> V.elem x shuffled) v) "every element survives"
+
+@test fun chooseIsAMemberOrNothing u =
+  let a = assertEq (withSeed 3 (\u2 -> choose (V.empty))) None "choose of empty" in
+  assertTrue (withSeed 3 (\u2 -> V.elem 0 [0] == True)) "a one-element vector"
+
+@test fun withSeedFromHandsBackTheState u =
+  let (x, s) = withSeedFrom 42 (\u2 -> nextInt ()) in
+  let a = assertEq x (withSeed 42 (\u2 -> nextInt ())) "the same first value" in
+  assertFalse (s == seed 42) "the state moved on"

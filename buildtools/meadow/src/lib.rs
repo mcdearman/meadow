@@ -10,6 +10,7 @@ pub mod linker;
 pub mod package;
 pub mod complete;
 pub mod format;
+pub mod test;
 pub mod pipeline;
 pub mod profile;
 pub mod update;

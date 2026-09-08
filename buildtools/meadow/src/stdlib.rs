@@ -36,6 +36,8 @@ pub const PACKAGE_NAME: &str = "Std";
 /// re-exports are the names a dependent package gets unqualified.
 pub const MODULES: &[(&str, &str)] = &[
     ("Lib", include_str!("../../../lib/Std/src/Lib.mw")),
+    // First, and dependency-free, so every module below can hold `@test`s.
+    ("Test", include_str!("../../../lib/Std/src/Test.mw")),
     ("Bool", include_str!("../../../lib/Std/src/Bool.mw")),
     ("Ordering", include_str!("../../../lib/Std/src/Ordering.mw")),
     ("Function", include_str!("../../../lib/Std/src/Function.mw")),
@@ -43,18 +45,27 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Int", include_str!("../../../lib/Std/src/Int.mw")),
     ("Maybe", include_str!("../../../lib/Std/src/Maybe.mw")),
     ("Result", include_str!("../../../lib/Std/src/Result.mw")),
+    ("Either", include_str!("../../../lib/Std/src/Either.mw")),
     ("Bits", include_str!("../../../lib/Std/src/Bits.mw")),
     ("Bytes", include_str!("../../../lib/Std/src/Bytes.mw")),
+    ("Yield", include_str!("../../../lib/Std/src/Yield.mw")),
     ("Collections", include_str!("../../../lib/Std/src/Collections.mw")),
     ("Collections.Vector", include_str!("../../../lib/Std/src/Collections/Vector.mw")),
     ("Collections.List", include_str!("../../../lib/Std/src/Collections/List.mw")),
     ("Collections.Tree", include_str!("../../../lib/Std/src/Collections/Tree.mw")),
     ("Collections.Set", include_str!("../../../lib/Std/src/Collections/Set.mw")),
     ("Collections.Map", include_str!("../../../lib/Std/src/Collections/Map.mw")),
+    ("State", include_str!("../../../lib/Std/src/State.mw")),
+    ("Exn", include_str!("../../../lib/Std/src/Exn.mw")),
+    ("Stream", include_str!("../../../lib/Std/src/Stream.mw")),
+    ("Random", include_str!("../../../lib/Std/src/Random.mw")),
     ("Fs", include_str!("../../../lib/Std/src/Fs.mw")),
     ("Process", include_str!("../../../lib/Std/src/Process.mw")),
     ("String", include_str!("../../../lib/Std/src/String.mw")),
     ("String.Parse", include_str!("../../../lib/Std/src/String/Parse.mw")),
+    ("Path", include_str!("../../../lib/Std/src/Path.mw")),
+    ("Json", include_str!("../../../lib/Std/src/Json.mw")),
+    ("Time", include_str!("../../../lib/Std/src/Time.mw")),
     ("prelude", include_str!("../../../lib/Std/src/prelude.mw")),
 ];
 
@@ -125,12 +136,14 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut types = TypeTable::default();
     let mut exports: Vec<Export> = Vec::new();
     let mut prelude_names: Vec<InternedString> = Vec::new();
+    let mut tests = Vec::new();
 
     for sub in subs {
         defs.extend(sub.defs);
         modules.extend(sub.modules);
         ctor_fields.extend(sub.ctor_fields);
         data_decls.extend(sub.data_decls);
+        tests.extend(sub.tests);
         types.absorb(sub.types);
         for e in sub.exports {
             if e.module.is_empty() {
@@ -149,6 +162,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         defs,
         ctor_fields,
         data_decls,
+        tests,
         prelude_exports: Some(prelude_names),
     }
 }

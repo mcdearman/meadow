@@ -436,9 +436,16 @@ impl Session {
         diagnostics::emit(&front_errors, "repl", input);
         let Some(item) = parsed else { return };
 
-        let decl = match item {
-            Either::Left(decl) => decl,
-            Either::Right(expr) => synth_def("it", expr),
+        // A bare expression is compiled as `def it = <expr>` so later lines can
+        // still refer to `it`, but `it` is an implementation detail and a poor
+        // label. Report it under the name the user actually asked about, or `_`
+        // when the expression has no name of its own.
+        let (decl, label) = match item {
+            Either::Left(decl) => (decl, None),
+            Either::Right(expr) => {
+                let label = expr_label(&expr);
+                (synth_def("it", expr), Some(label))
+            }
         };
 
         // Replay every `use` seen so far, so a qualifier stays active for the rest
@@ -473,7 +480,12 @@ impl Session {
         diagnostics::emit(&diags, "repl", input);
 
         for e in &compiled.exports {
-            println!("{} : {}", e.name, e.scheme);
+            // `label` is set only for a synthesized expression, so a real
+            // `def it = …` still prints as `it`.
+            match &label {
+                Some(l) => println!("{} : {}", l, e.scheme),
+                None => println!("{} : {}", e.name, e.scheme),
+            }
         }
         if compiled.exports.is_empty() && !had_error {
             for d in &compiled.data_decls {
@@ -604,6 +616,20 @@ mod tests {
             }
         }
         out
+    }
+}
+
+/// How to label a bare expression in REPL output.
+///
+/// An expression that names something — a variable, a qualified reference, a
+/// nullary constructor — is reported under that name, which is what `:t foo`
+/// wants. Anything computed has no name to give, so it prints as `_`.
+fn expr_label(expr: &ast::LExpr) -> String {
+    match expr.value() {
+        ast::Expr::Var(name) => name.value().to_string(),
+        ast::Expr::Qual(module, name) => format!("{}.{}", module.value(), name.value()),
+        ast::Expr::Cons(name, args) if args.is_empty() => name.value().to_string(),
+        _ => "_".to_string(),
     }
 }
 

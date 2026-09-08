@@ -21,6 +21,7 @@ pub enum Lit {
     BigInt(i64),
     Float(f64),
     Str(InternedString),
+    Char(char),
     Bool(bool),
     Unit,
 }
@@ -124,6 +125,14 @@ pub enum Prim {
     /// `show : forall a. a -> String` — the runtime's own rendering of a value,
     /// the same one the REPL prints. Structural, so it needs no per-type work.
     Show,
+    /// `Char -> Int` — the Unicode scalar value.
+    CharCode,
+    /// `Int -> Char` — errors at run time on a value that is not a scalar.
+    CharFromCode,
+    /// `String -> Array Char` — decodes UTF-8.
+    StringToChars,
+    /// `Array Char -> String`.
+    CharsToString,
     /// `String -> Option (Array Int)` -- parse a hex string (either case, no
     /// separators, even length) into bytes. `None` on any malformed input.
     BytesFromHex,
@@ -190,6 +199,10 @@ impl Prim {
             "bytesToHex" => Prim::BytesToHex,
             "bytesFromHex" => Prim::BytesFromHex,
             "show" => Prim::Show,
+            "charCode" => Prim::CharCode,
+            "charFromCode" => Prim::CharFromCode,
+            "stringToChars" => Prim::StringToChars,
+            "charsToString" => Prim::CharsToString,
             _ => return None,
         })
     }
@@ -211,7 +224,11 @@ impl Prim {
             | Prim::BytesToString
             | Prim::BytesToHex
             | Prim::BytesFromHex
-            | Prim::Show => 1,
+            | Prim::Show
+            | Prim::CharCode
+            | Prim::CharFromCode
+            | Prim::StringToChars
+            | Prim::CharsToString => 1,
             Prim::ArraySet | Prim::ArraySlice | Prim::ArrayGetOr => 3,
             _ => 2,
         }
@@ -338,6 +355,7 @@ impl Printer {
             Lit::BigInt(i) => i.to_string(),
             Lit::Float(x) => fmt_float(*x),
             Lit::Str(s) => format!("{:?}", &**s), // the string contents, quoted
+            Lit::Char(c) => format!("{c:?}"),
             Lit::Bool(b) => b.to_string(),
             Lit::Unit => "()".to_string(),
         }
@@ -616,6 +634,7 @@ impl<'a> Lowerer<'a> {
             hir::Expr::Lit(hir::Lit::Int(i)) => Term::Lit(self.int_lit(expr.id, *i)),
             hir::Expr::Lit(hir::Lit::Float(b)) => Term::Lit(Lit::Float(f64::from_bits(*b))),
             hir::Expr::Lit(hir::Lit::String(s)) => Term::Lit(Lit::Str(*s)),
+            hir::Expr::Lit(hir::Lit::Char(c)) => Term::Lit(Lit::Char(*c)),
             hir::Expr::Unit => Term::Lit(Lit::Unit),
 
             hir::Expr::Var(id) => {
@@ -841,6 +860,7 @@ impl<'a> Lowerer<'a> {
             hir::Pat::Lit(hir::Lit::Int(i)) => Pat::Lit(self.int_lit(pat.id, *i)),
             hir::Pat::Lit(hir::Lit::Float(b)) => Pat::Lit(Lit::Float(f64::from_bits(*b))),
             hir::Pat::Lit(hir::Lit::String(s)) => Pat::Lit(Lit::Str(*s)),
+            hir::Pat::Lit(hir::Lit::Char(c)) => Pat::Lit(Lit::Char(*c)),
             hir::Pat::Tuple(items) => {
                 Pat::Tuple(items.iter().map(|p| self.lower_pat(p)).collect())
             }

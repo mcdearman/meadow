@@ -85,7 +85,12 @@ pub const PRIMS: &[&str] = &[
     "bytesToHex",
     "bytesFromHex", //
     // render any value as the REPL would print it
-    "show",
+    "show", //
+    // `Char` <-> its Unicode scalar value, and `String` <-> its characters
+    "charCode",
+    "charFromCode",
+    "stringToChars",
+    "charsToString",
 ];
 use std::ops::Deref;
 use std::sync::atomic::AtomicU32;
@@ -393,4 +398,5 @@ pub enum Lit {
     /// Float literal as its IEEE-754 bit pattern (see `ast::Lit::Float`).
     Float(u64),
     String(InternedString),
+    Char(char),
 }

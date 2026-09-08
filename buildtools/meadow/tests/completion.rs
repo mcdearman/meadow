@@ -120,22 +120,59 @@ fn use_name_list_completes_that_modules_exports() {
 }
 
 #[test]
-fn a_qualifier_completes_only_after_it_is_used() {
+fn a_bare_use_completes_its_names_unqualified() {
+    // `use M` imports everything unqualified, so that is what Tab must offer.
+    // `intercalate` is `List`-only — the prelude's sequence API is `Vector`'s.
     let bare = std_names();
-    assert!(complete_at(&bare, "List.ma").is_empty());
+    assert!(!complete_at(&bare, "inter").contains(&"intercalate".to_string()));
 
     let n = names_with_uses(&["use Std.Collections.List"]);
-    assert_eq!(complete_at(&n, "List.ma"), vec!["map", "maximum"]);
-    // The qualifier itself is offered in term position.
-    assert!(complete_at(&n, "Lis").contains(&"List".to_string()));
+    let got = complete_at(&n, "inter");
+    assert!(
+        got.contains(&"intercalate".to_string()),
+        "a bare `use` should complete its names unqualified, got {got:?}"
+    );
+}
+
+#[test]
+fn a_bare_use_offers_no_qualifier() {
+    // It introduces no qualifier, so completing one would offer names that do
+    // not resolve.
+    let n = names_with_uses(&["use Std.Collections.List"]);
+    assert!(complete_at(&n, "List.ma").is_empty());
+    assert!(!complete_at(&n, "Lis").contains(&"List".to_string()));
+}
+
+#[test]
+fn selected_names_complete_unqualified() {
+    let n = names_with_uses(&["use Std.Collections.List (intercalate)"]);
+    assert!(complete_at(&n, "inter").contains(&"intercalate".to_string()));
+    // …and only those: `lookupAssoc` is also `List`-only but was not named.
+    assert!(!complete_at(&n, "lookup").contains(&"lookupAssoc".to_string()));
+    assert!(complete_at(&n, "List.ma").is_empty());
 }
 
 #[test]
 fn an_alias_is_what_completes() {
     let n = names_with_uses(&["use Std.Collections.List as L"]);
     assert_eq!(complete_at(&n, "L.ma"), vec!["map", "maximum"]);
-    // The default qualifier was replaced by the alias.
+    // A qualifier comes only from `as`, so the module's own name is not one.
     assert!(complete_at(&n, "List.ma").is_empty());
+    // The alias is offered in term position.
+    assert!(complete_at(&n, "L").contains(&"L".to_string()));
+}
+
+#[test]
+fn an_alias_imports_nothing_unqualified() {
+    let n = names_with_uses(&["use Std.Collections.List as L"]);
+    assert!(!complete_at(&n, "inter").contains(&"intercalate".to_string()));
+}
+
+#[test]
+fn an_alias_combines_with_selected_names() {
+    let n = names_with_uses(&["use Std.Collections.List as L (intercalate)"]);
+    assert!(complete_at(&n, "inter").contains(&"intercalate".to_string()));
+    assert_eq!(complete_at(&n, "L.ma"), vec!["map", "maximum"]);
 }
 
 #[test]

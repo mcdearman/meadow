@@ -10,6 +10,7 @@
 @pub mod Tuple
 @pub mod Int
 @pub mod Maybe
+@pub mod Char
 @pub mod Result
 @pub mod Either
 @pub mod Bits

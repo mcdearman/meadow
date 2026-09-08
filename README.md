@@ -52,6 +52,8 @@ install.sh --uninstall
 `MEADOW_HOME` overrides the install directory for both.
 </details>
 
+A full walkthrough of the language lives in [docs/TUTORIAL.md](docs/TUTORIAL.md).
+
 ## Use
 
 ```sh

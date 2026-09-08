@@ -73,7 +73,7 @@ fn foldl_and_filter() {
 #[test]
 fn option_helpers() {
     assert_eq!(
-        run("use Std.Maybe\ndef main = Maybe.unwrapOr 0 (Maybe.map (\\x -> x + 1) (Just 41))\n"),
+        run("use Std.Maybe as Maybe\ndef main = Maybe.unwrapOr 0 (Maybe.map (\\x -> x + 1) (Just 41))\n"),
         "42"
     );
 }
@@ -81,7 +81,7 @@ fn option_helpers() {
 #[test]
 fn std_map_roundtrip() {
     assert_eq!(
-        run("use Std.Collections.Map\ndef main =\n  let m = Map.insert 2 \"b\" (Map.insert 1 \"a\" Map.empty) in\n  Map.lookup 2 m\n"),
+        run("use Std.Collections.Map as Map\ndef main =\n  let m = Map.insert 2 \"b\" (Map.insert 1 \"a\" Map.empty) in\n  Map.lookup 2 m\n"),
         "Just(\"b\")"
     );
 }
@@ -89,7 +89,7 @@ fn std_map_roundtrip() {
 #[test]
 fn std_set_dedups() {
     assert_eq!(
-        run("use Std.Collections.Set\ndef main = Set.size (Set.fromList [1; 2; 2; 3; 3; 3])\n"),
+        run("use Std.Collections.Set as Set\ndef main = Set.size (Set.fromList [1; 2; 2; 3; 3; 3])\n"),
         "3"
     );
 }
@@ -132,7 +132,7 @@ fn fs_effect_can_be_handled() {
 #[test]
 fn std_tree_sorts() {
     assert_eq!(
-        run("use Std.Collections.Tree\ndef main = Tree.toList (Tree.fromList [5; 3; 8; 1; 4; 7; 9; 2; 6])\n"),
+        run("use Std.Collections.Tree as Tree\ndef main = Tree.toList (Tree.fromList [5; 3; 8; 1; 4; 7; 9; 2; 6])\n"),
         "[1; 2; 3; 4; 5; 6; 7; 8; 9]"
     );
 }

@@ -77,7 +77,8 @@ const BUILTIN_CTORS: &[&str] = &["Nil", "Cons", "True", "False"];
 /// Type constructors seeded into every resolver. Like [`BUILTIN_CTORS`], the
 /// prelude is allowed to (re-)declare `List` / `Bool` without it counting as a
 /// duplicate-definition error.
-const BUILTIN_TYCONS: &[&str] = &["Int", "BigInt", "Float", "String", "Bool", "Unit", "List", "Array"];
+const BUILTIN_TYCONS: &[&str] =
+    &["Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array"];
 
 /// Split a declaration into its attributes and the bare declaration underneath.
 /// The parser only ever nests one `Attributed` layer.
@@ -778,14 +779,35 @@ impl Resolver {
     }
 
     fn resolve_bind(&mut self, bind: &ast::Bind) -> hir::Bind {
+        // `toplevel` means *this binding's own name* was predeclared, so
+        // `bind_defn` should hand back the reserved id rather than a fresh one.
+        // It must not leak into the sub-expressions: a `let` inside the body that
+        // happens to share a name with a top-level binding is a new local, and
+        // reusing the top-level id there would alias the two.
+        let top = std::mem::replace(&mut self.toplevel, false);
         match bind {
             ast::Bind::Pat(pat, expr) => {
-                let rpat = self.resolve_pat(pat);
+                // Right-hand side first, so it sees the *enclosing* scope and a
+                // `let` can shadow: `let x = x + 1` reads the outer `x` rather
+                // than the one being defined. A binding with parameters is
+                // `Bind::Fun` below, which does bind its name first — that is
+                // what makes `let rec go i = … go …` work, and a value binding
+                // has nothing to gain from being self-recursive under eager
+                // evaluation anyway.
+                //
+                // At the top level this changes nothing: `bind_defn` hands back
+                // the id `declare_toplevel` already reserved, so both orders
+                // resolve to the same binding and mutual recursion still works.
                 let rexpr = self.resolve_expr(expr);
+                self.toplevel = top;
+                let rpat = self.resolve_pat(pat);
+                self.toplevel = false;
                 hir::Bind::Pat(rpat, rexpr)
             }
             ast::Bind::Fun(name, params, body) => {
+                self.toplevel = top;
                 let id = self.bind_defn(*name.value());
+                self.toplevel = false;
                 let name_node = self.node(id, name.span);
                 let mark = self.mark();
                 let rparams = params.iter().map(|p| self.resolve_pat(p)).collect_vec();
@@ -804,7 +826,13 @@ impl Resolver {
     fn check_qualifier(&mut self, q: &ast::Ident) {
         if !self.qualifiers.contains_key(&*q.value()) {
             self.error(
-                format!("module `{}` is not in scope here (add `use {}`)", q.value(), q.value()),
+                // A bare `use` imports names unqualified; a qualifier comes only
+                // from `as`, so that is what to suggest.
+                format!(
+                    "module `{}` is not in scope here (add `use <path> as {}`)",
+                    q.value(),
+                    q.value()
+                ),
                 "unknown module".to_string(),
                 q.span,
             );
@@ -907,7 +935,9 @@ impl Resolver {
                         let msg = if self.qualifiers.contains_key(&qn) {
                             format!("`{nn}` is not exported by module `{qn}`")
                         } else {
-                            format!("module `{qn}` is not in scope here (add `use {qn}`)")
+                            format!(
+                                "module `{qn}` is not in scope here (add `use <path> as {qn}`)"
+                            )
                         };
                         self.error(msg, "unresolved".to_string(), expr.span);
                         self.node(hir::Expr::Error, expr.span)
@@ -1238,6 +1268,7 @@ impl Resolver {
             ast::Lit::Int(i) => hir::Lit::Int(*i),
             ast::Lit::Float(b) => hir::Lit::Float(*b),
             ast::Lit::String(s) => hir::Lit::String(*s),
+            ast::Lit::Char(c) => hir::Lit::Char(*c),
         }
     }
 

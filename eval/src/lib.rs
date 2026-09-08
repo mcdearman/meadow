@@ -37,6 +37,9 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     Str(InternedString),
+    /// A single Unicode scalar. `String` is a byte sequence, so the two are
+    /// bridged explicitly by `stringToChars` / `charsToString`.
+    Char(char),
     Unit,
     Tuple(Vec<Value>),
     /// The one builtin collection: a persistent, `Rc`-shared contiguous buffer.
@@ -788,6 +791,7 @@ fn lit_value(lit: &core::Lit) -> Value {
         core::Lit::BigInt(i) => Value::BigInt(BigInt::from(*i)),
         core::Lit::Float(x) => Value::Float(*x),
         core::Lit::Str(s) => Value::Str(*s),
+        core::Lit::Char(c) => Value::Char(*c),
         core::Lit::Bool(b) => Value::Bool(*b),
         core::Lit::Unit => Value::Unit,
     }
@@ -811,6 +815,7 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
         (P::Lit(core::Lit::BigInt(a)), Value::BigInt(b)) => &BigInt::from(*a) == b,
         (P::Lit(core::Lit::Float(a)), Value::Float(b)) => a == b,
         (P::Lit(core::Lit::Str(a)), Value::Str(b)) => a == b,
+        (P::Lit(core::Lit::Char(a)), Value::Char(b)) => a == b,
         (P::Lit(core::Lit::Bool(a)), Value::Bool(b)) => a == b,
         (P::Lit(core::Lit::Unit), Value::Unit) => true,
         (P::Tuple(ps), Value::Tuple(vs)) if ps.len() == vs.len() => {
@@ -1088,6 +1093,39 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // The `Display` the REPL prints with, exposed to the language. Structural,
         // so it works at every type without a class or a derive.
         Show => Ok(Value::Str(InternedString::from(args[0].to_string()))),
+        CharCode => match &args[0] {
+            Value::Char(c) => Ok(Value::Int(*c as i64)),
+            other => err(format!("charCode: expected a Char, got {other}")),
+        },
+        // Not every `Int` is a character: surrogates and anything above
+        // U+10FFFF are not scalar values, and there is no `Char` to return.
+        CharFromCode => match &args[0] {
+            Value::Int(n) => u32::try_from(*n)
+                .ok()
+                .and_then(char::from_u32)
+                .map(Value::Char)
+                .ok_or_else(|| RuntimeError {
+                    msg: format!("charFromCode: {n} is not a Unicode scalar value"),
+                }),
+            other => err(format!("charFromCode: expected an Int, got {other}")),
+        },
+        StringToChars => match &args[0] {
+            Value::Str(s) => Ok(Value::Array(Rc::new(s.chars().map(Value::Char).collect()))),
+            other => err(format!("stringToChars: expected a String, got {other}")),
+        },
+        CharsToString => match &args[0] {
+            Value::Array(xs) => {
+                let mut out = String::with_capacity(xs.len());
+                for v in xs.iter() {
+                    match v {
+                        Value::Char(c) => out.push(*c),
+                        other => return err(format!("charsToString: expected a Char, got {other}")),
+                    }
+                }
+                Ok(Value::Str(InternedString::from(out)))
+            }
+            other => err(format!("charsToString: expected an Array, got {other}")),
+        },
         BytesToHex => {
             let buf = bytes_of(&args[0], "bytesToHex")?;
             let mut s = String::with_capacity(buf.len() * 2);
@@ -1475,6 +1513,7 @@ fn value_eq(a: &Value, b: &Value) -> bool {
         (Value::Float(x), Value::Float(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::Char(x), Value::Char(y)) => x == y,
         (Value::Unit, Value::Unit) => true,
         (Value::Tuple(x), Value::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| value_eq(p, q))
@@ -1506,6 +1545,7 @@ impl fmt::Display for Value {
             Value::Bool(b) => write!(f, "{b}"),
             // quote + escape, so a string is visually distinct from a bare ident
             Value::Str(s) => write!(f, "{:?}", &**s),
+            Value::Char(c) => write!(f, "{c:?}"),
             Value::Unit => f.write_str("()"),
             Value::Tuple(items) => {
                 f.write_str("(")?;

@@ -391,11 +391,23 @@ fn apply_use(
         return;
     }
 
-    let qualifier = match &u.alias {
-        Some(a) => *a.value(),
-        None => *segs.last().unwrap(),
-    };
-    resolver.activate_module(qualifier, map.clone());
+    match &u.alias {
+        // `use M as C` — a qualifier and nothing else. `C.name` reaches the
+        // module's exports; none of them are in scope unqualified.
+        Some(a) => resolver.activate_module(*a.value(), map.clone()),
+        // `use M` — bring every exported name into scope unqualified. Qualifying
+        // is what `as` is for, so a bare `use` does not introduce one.
+        None if u.names.is_empty() => {
+            // Sorted, so the scope is built the same way on every run.
+            let mut all: Vec<(InternedString, VarId)> =
+                map.iter().map(|(n, id)| (*n, *id)).collect();
+            all.sort_by_key(|(n, _)| n.to_string());
+            for (name, id) in all {
+                resolver.import(name, id);
+            }
+        }
+        None => {}
+    }
     // Only *values* live in `map`. A selected name can also be a type, a data
     // constructor or an effect operation, and those are imported wholesale
     // elsewhere (`import_types`), so a miss here is not an error.

@@ -5,7 +5,7 @@
 -- `map` / `foldr` / `toList` are element-agnostic.
 
 use Std.Int (max)
-use Std.Collections.List (append, foldl)
+use Std.Collections.List as List (append, foldl)
 
 @pub data Tree a = Leaf | Node (Tree a) a (Tree a)
 

@@ -1,7 +1,7 @@
 -- Std.Collections.Map: an ordered map from `Int` keys to values, backed by a
 -- binary search tree. Reach these as `Map.insert` etc.
 
-use Std.Collections.List (append, foldl)
+use Std.Collections.List as List (append, foldl)
 use Std.Tuple (fst, snd)
 use Std.Maybe (isSome)
 

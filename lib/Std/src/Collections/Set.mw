@@ -1,8 +1,8 @@
 -- Std.Collections.Set: an ordered set of `Int`, backed by a `Tree`.
 -- Reach these as `Set.insert` etc.
 
-use Std.Collections.Tree
-use Std.Collections.List (foldl, filter, all)
+use Std.Collections.Tree as Tree
+use Std.Collections.List as List (foldl, filter, all)
 
 @pub data Set = Set (Tree Int)
 

@@ -75,6 +75,7 @@ enum Con {
     Unit,
     Int(i64),
     Str(InternedString),
+    Char(char),
     /// A float literal, by bit pattern (so it stays comparable).
     Float(u64),
     /// `#[p, …]` — an array of exactly this length.
@@ -231,6 +232,7 @@ impl Checker<'_> {
             hir::Pat::Unit => P::Con(Con::Unit, vec![]),
             hir::Pat::Lit(hir::Lit::Int(i)) => P::Con(Con::Int(*i), vec![]),
             hir::Pat::Lit(hir::Lit::String(s)) => P::Con(Con::Str(*s), vec![]),
+            hir::Pat::Lit(hir::Lit::Char(c)) => P::Con(Con::Char(*c), vec![]),
             hir::Pat::Lit(hir::Lit::Float(b)) => P::Con(Con::Float(*b), vec![]),
             hir::Pat::Tuple(ps) => P::Con(
                 Con::Tuple(ps.len()),
@@ -479,6 +481,7 @@ fn render_at(p: &P, nested: bool) -> String {
             Con::Unit => "()".to_string(),
             Con::Int(i) => i.to_string(),
             Con::Str(s) => format!("{:?}", &**s),
+            Con::Char(c) => format!("{c:?}"),
             Con::Float(b) => f64::from_bits(*b).to_string(),
             Con::Tuple(_) => {
                 let parts: Vec<String> = args.iter().map(|a| render_at(a, false)).collect();

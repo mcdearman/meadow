@@ -50,18 +50,38 @@ fn a_module_that_only_declares_submodules_is_accepted() {
     assert_eq!(errors("use Std.Collections\ndef main = 1\n"), "");
 }
 
-// --- qualifiers and aliases --------------------------------------------------
+// --- what a bare `use` does -------------------------------------------------
 
 #[test]
-fn last_path_segment_is_the_default_qualifier() {
+fn a_bare_use_imports_every_name_unqualified() {
     assert_eq!(
-        eval_main_std("use Std.Collections.List\ndef main = List.length [1; 2; 3]\n"),
+        eval_main_std("use Std.Collections.List\ndef main = length [1; 2; 3]\n"),
         "3"
     );
 }
 
 #[test]
-fn as_renames_the_qualifier() {
+fn a_bare_use_introduces_no_qualifier() {
+    // Qualifying is what `as` is for.
+    assert_eq!(
+        errors("use Std.Collections.List\ndef main = List.length [1; 2]\n"),
+        "module `List` is not in scope here (add `use <path> as List`)"
+    );
+}
+
+#[test]
+fn a_bare_use_shadows_the_prelude() {
+    // The prelude's `length` is `Vector`'s; `List`'s wins where it is imported.
+    assert_eq!(
+        eval_main_std("use Std.Collections.List\ndef main = length [1; 2; 3]\n"),
+        "3"
+    );
+}
+
+// --- qualifiers and aliases --------------------------------------------------
+
+#[test]
+fn as_gives_a_qualifier() {
     assert_eq!(
         eval_main_std("use Std.Collections.List as L\ndef main = L.length [1; 2; 3]\n"),
         "3"
@@ -69,10 +89,13 @@ fn as_renames_the_qualifier() {
 }
 
 #[test]
-fn the_alias_replaces_the_default_qualifier() {
-    assert_eq!(
-        errors("use Std.Collections.List as L\ndef main = List.length [1; 2]\n"),
-        "module `List` is not in scope here (add `use List`)"
+fn as_does_not_import_unqualified() {
+    // `[1; 2]` is a `List`, so reaching the prelude's `Vector.length` here is a
+    // type error — which is the evidence that `as` imported nothing.
+    assert!(
+        errors("use Std.Collections.List as L\ndef main = length [1; 2]\n")
+            .contains("type mismatch"),
+        "an aliased `use` should not bring names into scope unqualified"
     );
 }
 
@@ -80,11 +103,29 @@ fn the_alias_replaces_the_default_qualifier() {
 fn two_aliases_for_one_module_coexist() {
     assert_eq!(
         eval_main_std(
-            "use Std.Collections.List\n\
+            "use Std.Collections.List as List\n\
              use Std.Collections.List as L\n\
              def main = (List.length [1; 2; 3], L.length [1; 2])\n"
         ),
         "(3, 2)"
+    );
+}
+
+// --- selected names ----------------------------------------------------------
+
+#[test]
+fn selected_names_arrive_unqualified() {
+    assert_eq!(
+        eval_main_std("use Std.String (concat)\ndef main = concat \"a\" \"b\"\n"),
+        "\"ab\""
+    );
+}
+
+#[test]
+fn selecting_names_introduces_no_qualifier() {
+    assert_eq!(
+        errors("use Std.String (concat)\ndef main = String.concat \"a\" \"b\"\n"),
+        "module `String` is not in scope here (add `use <path> as String`)"
     );
 }
 

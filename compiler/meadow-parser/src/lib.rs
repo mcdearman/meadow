@@ -1334,6 +1334,7 @@ fn lit<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         Token::Int(i) => Lit::Int(i),
         Token::Real(x) => Lit::Float(x.to_bits()),
         Token::String(s) => Lit::String(s),
+        Token::Char(c) => Lit::Char(c),
     }
 }
 

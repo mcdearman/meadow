@@ -44,6 +44,7 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Tuple", include_str!("../../../lib/Std/src/Tuple.mw")),
     ("Int", include_str!("../../../lib/Std/src/Int.mw")),
     ("Maybe", include_str!("../../../lib/Std/src/Maybe.mw")),
+    ("Char", include_str!("../../../lib/Std/src/Char.mw")),
     ("Result", include_str!("../../../lib/Std/src/Result.mw")),
     ("Either", include_str!("../../../lib/Std/src/Either.mw")),
     ("Bits", include_str!("../../../lib/Std/src/Bits.mw")),

@@ -214,9 +214,6 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
         }
     }
     n.values.extend(hir::PRIMS.iter().map(|p| p.to_string()));
-    // Operators are punctuation; completing them would only be noise.
-    n.values
-        .retain(|v| v.chars().next().is_some_and(|c| c.is_alphabetic()));
 
     // Types and constructors, from the declarations themselves.
     n.types.extend(BUILTIN_TYPES.iter().map(|t| t.to_string()));
@@ -252,25 +249,45 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
         }
     }
 
-    // Qualifiers actually in scope, resolved the same way `use` resolves them —
-    // including the alias, so `use … as L` completes `L.`.
+    // What each `use` brought into scope, resolved exactly as `apply_use` does —
+    // a qualifier only from `as`, names unqualified otherwise. Completion that
+    // disagreed with resolution would offer names that do not compile.
     let deps: Vec<&CompiledPackage> = prefix.iter().collect();
     for decl in uses {
         let Some(u) = peel_use(decl) else { continue };
         let segs: Vec<InternedString> = u.path.iter().map(|s| *s.value()).collect();
-        let Some(last) = segs.last().copied() else {
+        if segs.is_empty() {
             continue;
-        };
-        let qualifier = match &u.alias {
-            Some(a) => *a.value(),
-            None => last,
-        };
+        }
         let resolved =
             meadow_compiler::resolve_module(InternedString::from("repl"), &segs, &deps);
-        let mut vals: Vec<String> = resolved.map.keys().map(|k| k.to_string()).collect();
-        vals.sort();
-        n.qualified.insert(qualifier.to_string(), vals);
+
+        match &u.alias {
+            // `use M as C` — `C.name`, and nothing unqualified.
+            Some(a) => {
+                let mut vals: Vec<String> = resolved.map.keys().map(|k| k.to_string()).collect();
+                vals.sort();
+                n.qualified.insert(a.value().to_string(), vals);
+            }
+            // `use M` — every exported name, unqualified. No qualifier.
+            None if u.names.is_empty() => {
+                n.values.extend(resolved.map.keys().map(|k| k.to_string()));
+            }
+            None => {}
+        }
+        // `use M (a, b)` — just those, whether or not there is also an alias.
+        n.values.extend(
+            u.names
+                .iter()
+                .filter(|nm| resolved.map.contains_key(&*nm.value()))
+                .map(|nm| nm.value().to_string()),
+        );
     }
+
+    // Operators are punctuation; completing them would only be noise. Applied
+    // last, so it covers imported names too.
+    n.values
+        .retain(|v| v.chars().next().is_some_and(|c| c.is_alphabetic()));
 
     n
 }

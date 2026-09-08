@@ -73,6 +73,9 @@ impl Type {
     pub fn string() -> Type {
         Type::con("String")
     }
+    pub fn char() -> Type {
+        Type::con("Char")
+    }
     pub fn unit() -> Type {
         Type::con("Unit")
     }
@@ -945,6 +948,7 @@ impl Infer {
             hir::Expr::Lit(hir::Lit::Int(_)) => self.arena.fresh_num(),
             hir::Expr::Lit(hir::Lit::Float(_)) => Type::float(),
             hir::Expr::Lit(hir::Lit::String(_)) => Type::string(),
+            hir::Expr::Lit(hir::Lit::Char(_)) => Type::char(),
             hir::Expr::Unit => Type::unit(),
 
             hir::Expr::Var(ident) => {
@@ -1246,6 +1250,7 @@ impl Infer {
             hir::Pat::Lit(hir::Lit::Int(_)) => self.arena.fresh_num(),
             hir::Pat::Lit(hir::Lit::Float(_)) => Type::float(),
             hir::Pat::Lit(hir::Lit::String(_)) => Type::string(),
+            hir::Pat::Lit(hir::Lit::Char(_)) => Type::char(),
 
             hir::Pat::Var(ident) => {
                 let vid = *ident.value();
@@ -1730,6 +1735,14 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "bytesToString" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
         "bytesToHex" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
         "show" => a1(Type::func(vec![Bound(0)], Type::string())),
+        "charCode" => Scheme::mono(Type::func(vec![Type::char()], Type::int())),
+        "charFromCode" => Scheme::mono(Type::func(vec![Type::int()], Type::char())),
+        "stringToChars" => {
+            Scheme::mono(Type::func(vec![Type::string()], Type::array(Type::char())))
+        }
+        "charsToString" => {
+            Scheme::mono(Type::func(vec![Type::array(Type::char())], Type::string()))
+        }
         "bytesFromHex" => Scheme::mono(Type::func(
             vec![Type::string()],
             Type::Con(

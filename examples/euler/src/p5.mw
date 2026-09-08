@@ -1,8 +1,8 @@
 -- Project Euler #5: smallest number divisible by every integer 1..20.
 -- 2520 is already lcm(1..10), so we only fold in 11..20.
 --
--- Definitions must precede their uses: top-level `def`s are evaluated eagerly
--- in source order, and there is no forward-reference pass.
+-- Order does not matter: `meadow-scc` sorts the top-level bindings by dependency
+-- before inference and lowering, so a definition may come after its use.
 
 fun gcd a b =
   match (a, b) with

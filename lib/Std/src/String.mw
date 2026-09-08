@@ -225,6 +225,22 @@ fun negateParsed m =
   | None -> None
   | Just n -> Just (0 - n)
 
+-- --- characters ---------------------------------------------------------------
+--
+-- Everything above counts bytes. These two are the bridge to `Std.Char`, which
+-- counts Unicode scalars: `chars` decodes the UTF-8, `fromChars` encodes it.
+
+@pub fun chars s = V.fromArray (stringToChars s)
+
+@pub fun fromChars cs = charsToString (V.toArray cs)
+
+-- The number of *characters*, which is `byteLength` only for ASCII.
+@pub fun charLength s = arrayLen (stringToChars s)
+
+@pub fun charAt s i =
+  let cs = stringToChars s in
+  if i < 0 or i >= arrayLen cs then None else Just (arrayGet cs i)
+
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
@@ -302,6 +318,14 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let g = assertEq (toInt "") None "empty" in
   let h = assertEq (toInt "-") None "a lone sign" in
   assertEq (toInt (fromInt 987654)) (Just 987654) "round trip"
+
+@test fun charactersAreNotBytes u =
+  let a = assertEq (charLength "héllo") 5 "five characters" in
+  let b = assertEq (byteLength "héllo") 6 "six bytes -- `é` takes two" in
+  let c = assertEq (charAt "héllo" 1) (Just 'é') "charAt" in
+  let d = assertEq (charAt "hi" 9) None "past the end" in
+  let e = assertEq (fromChars (chars "round trip é")) "round trip é" "round trip" in
+  assertEq (chars "hi") ['h', 'i'] "chars"
 
 @test fun bytesRoundTrip u =
   let a = assertEq (fromBytes (toBytes "hello")) "hello" "round trip" in

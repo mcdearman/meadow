@@ -1,0 +1,147 @@
+-- Std.Char: single Unicode scalar values.
+--
+-- A `Char` is one Unicode scalar -- `'a'`, `'é'`, `'\n'` -- not one byte.
+-- `Std.String` is byte-oriented, so the two are bridged explicitly:
+-- `String.chars` decodes UTF-8 into `[Char]`, `String.fromChars` encodes it back.
+--
+-- The classification below is **ASCII-only**, and deliberately so: doing it
+-- properly means shipping the Unicode character database, which is a bigger
+-- decision than this module should make on its own. Every predicate here answers
+-- `False` for a non-ASCII character rather than guessing, and `toUpper` /
+-- `toLower` leave it alone.
+
+use Std.Ordering (compare, isLess, isEqual, isGreater)
+
+-- --- codes --------------------------------------------------------------------
+
+-- The Unicode scalar value: `code 'A'` is 65.
+@pub fun code c = charCode c
+
+-- Fails at run time on a value that is not a scalar (a surrogate, or above
+-- U+10FFFF). `Std.Char.fromCodeSafe` checks first.
+@pub fun fromCode n = charFromCode n
+
+@pub fun isScalar n =
+  n >= 0 and n <= 1114111 and (n < 55296 or n > 57343)
+
+@pub fun fromCodeSafe n = if isScalar n then Just (charFromCode n) else None
+
+@pub fun toString c = charsToString #[c]
+
+-- --- classification (ASCII) ----------------------------------------------------
+
+@pub fun isAscii c = code c < 128
+
+@pub fun isDigit c = code c >= 48 and code c <= 57
+
+@pub fun isHexDigit c =
+  isDigit c
+  or (code c >= 97 and code c <= 102)
+  or (code c >= 65 and code c <= 70)
+
+@pub fun isLower c = code c >= 97 and code c <= 122
+
+@pub fun isUpper c = code c >= 65 and code c <= 90
+
+@pub fun isAlpha c = isLower c or isUpper c
+
+@pub fun isAlphaNum c = isAlpha c or isDigit c
+
+-- Space, tab, newline, carriage return, form feed, vertical tab.
+@pub fun isSpace c =
+  let n = code c in
+  n == 32 or (n >= 9 and n <= 13)
+
+-- --- case ----------------------------------------------------------------------
+
+@pub fun toUpper c = if isLower c then charFromCode (code c - 32) else c
+
+@pub fun toLower c = if isUpper c then charFromCode (code c + 32) else c
+
+-- --- digits --------------------------------------------------------------------
+
+-- `'7'` to `7`; `None` for anything that is not a decimal digit.
+@pub fun digitToInt c = if isDigit c then Just (code c - 48) else None
+
+-- `0`..`15` to `'0'`..`'f'`; `None` outside that range.
+@pub fun fromHexDigit n =
+  if n < 0 or n > 15
+  then None
+  else if n < 10
+  then Just (charFromCode (48 + n))
+  else Just (charFromCode (87 + n))
+
+@pub fun hexDigitToInt c =
+  let n = code c in
+  if isDigit c then Just (n - 48)
+  else if n >= 97 and n <= 102 then Just (n - 87)
+  else if n >= 65 and n <= 70 then Just (n - 55)
+  else None
+
+-- --- ordering ------------------------------------------------------------------
+
+-- By code point. `==` already works at any type; this is for sorting and ranges.
+@pub fun cmp a b = compare (code a) (code b)
+
+@pub fun isBetween lo hi c = code c >= code lo and code c <= code hi
+
+-- --- tests ---------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun codesRoundTrip u =
+  let a = assertEq (code 'A') 65 "code" in
+  let b = assertEq (fromCode 97) 'a' "fromCode" in
+  let c = assertEq (fromCode (code 'é')) 'é' "round trip, non-ascii" in
+  assertEq (toString 'x') "x" "toString"
+
+@test fun scalarsAreChecked u =
+  let a = assertTrue (isScalar 65) "an ordinary code point" in
+  let b = assertFalse (isScalar 55296) "a surrogate is not a scalar" in
+  let c = assertFalse (isScalar 1114112) "above the maximum" in
+  let d = assertFalse (isScalar (0 - 1)) "negative" in
+  let e = assertEq (fromCodeSafe 97) (Just 'a') "fromCodeSafe" in
+  assertEq (fromCodeSafe 55296) None "fromCodeSafe rejects a surrogate"
+
+@test fun classification u =
+  let a = assertTrue (isDigit '7') "isDigit" in
+  let b = assertFalse (isDigit 'a') "isDigit of a letter" in
+  let c = assertTrue (isAlpha 'a') "isAlpha lower" in
+  let d = assertTrue (isAlpha 'Z') "isAlpha upper" in
+  let e = assertTrue (isAlphaNum '0') "isAlphaNum" in
+  let f = assertTrue (isSpace ' ') "space" in
+  let g = assertTrue (isSpace '\n') "newline" in
+  let h = assertFalse (isSpace 'a') "not a space" in
+  let i = assertTrue (isHexDigit 'f') "hex lower" in
+  let j = assertTrue (isHexDigit 'F') "hex upper" in
+  assertFalse (isHexDigit 'g') "not hex"
+
+@test fun classificationIsAsciiOnly u =
+  -- Documented, not accidental: a non-ASCII letter answers `False` rather than
+  -- being guessed at.
+  let a = assertFalse (isAscii 'é') "isAscii" in
+  let b = assertFalse (isAlpha 'é') "isAlpha is ASCII-only" in
+  assertEq (toUpper 'é') 'é' "toUpper leaves it alone"
+
+@test fun caseConversion u =
+  let a = assertEq (toUpper 'a') 'A' "toUpper" in
+  let b = assertEq (toLower 'A') 'a' "toLower" in
+  let c = assertEq (toUpper 'A') 'A' "already upper" in
+  let d = assertEq (toLower '7') '7' "not a letter" in
+  assertEq (toLower (toUpper 'q')) 'q' "round trip"
+
+@test fun digits u =
+  let a = assertEq (digitToInt '7') (Just 7) "digitToInt" in
+  let b = assertEq (digitToInt 'a') None "not a digit" in
+  let c = assertEq (hexDigitToInt 'f') (Just 15) "hex lower" in
+  let d = assertEq (hexDigitToInt 'F') (Just 15) "hex upper" in
+  let e = assertEq (hexDigitToInt '9') (Just 9) "hex decimal" in
+  let f = assertEq (fromHexDigit 15) (Just 'f') "fromHexDigit" in
+  let g = assertEq (fromHexDigit 7) (Just '7') "fromHexDigit decimal" in
+  assertEq (fromHexDigit 16) None "out of range"
+
+@test fun ordering u =
+  let a = assertTrue (isLess (cmp 'a' 'b')) "a < b" in
+  let b = assertTrue (isEqual (cmp 'a' 'a')) "a == a" in
+  let c = assertTrue (isGreater (cmp 'b' 'a')) "b > a" in
+  assertTrue (isBetween 'a' 'z' 'm') "isBetween"

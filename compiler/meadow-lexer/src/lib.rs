@@ -71,6 +71,28 @@ fn unescape(raw: &str) -> String {
     out
 }
 
+/// The character inside a `'…'` literal, resolving an escape.
+///
+/// Taking the second character outright would give the *backslash* of `'\n'`
+/// rather than the newline it stands for, so escapes are decoded here — the same
+/// set [`unescape`] accepts for strings.
+fn unescape_char(raw: &str) -> Option<char> {
+    let mut chars = raw[1..raw.len() - 1].chars();
+    match chars.next()? {
+        '\\' => Some(match chars.next()? {
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '0' => '\0',
+            '\\' => '\\',
+            '\'' => '\'',
+            '"' => '"',
+            other => other,
+        }),
+        c => Some(c),
+    }
+}
+
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(subpattern alpha = r"[a-zA-Z]+")]
 pub enum Token {
@@ -100,7 +122,7 @@ pub enum Token {
     // Rational(Rational64),
     #[regex(r#""(\\.|[^"\\])*""#, |lex| InternedString::from(unescape(lex.slice())))]
     String(InternedString),
-    #[regex(r"'(\\.|[^'\\])'", |lex| lex.slice().chars().nth(1))]
+    #[regex(r"'(\\.|[^'\\])'", |lex| unescape_char(lex.slice()))]
     Char(char),
     #[regex(r"[a-z][a-zA-Z0-9'_]*", |lex| InternedString::from(lex.slice()), priority = 2)]
     LowerIdent(InternedString),

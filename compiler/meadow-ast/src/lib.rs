@@ -316,4 +316,6 @@ pub enum Lit {
     /// stays `Eq` / `Hash`; decode with `f64::from_bits`.
     Float(u64),
     String(InternedString),
+    /// A single Unicode scalar: `'a'`, `'\n'`.
+    Char(char),
 }

@@ -38,9 +38,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            scripts/check.sh --version "${{ github.ref_name }}"
+            bash scripts/check.sh --version "${{ github.ref_name }}"
           else
-            scripts/check.sh
+            bash scripts/check.sh
           fi
 
   build:

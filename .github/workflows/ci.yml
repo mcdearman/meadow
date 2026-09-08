@@ -48,6 +48,9 @@ jobs:
           key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ matrix.os }}-cargo-
 
+      # Invoked through `bash` rather than executed: the tree is developed on
+      # Windows, where `core.filemode` is off, so a script's executable bit is
+      # easy to lose and the failure only shows up here.
       - name: Check
         shell: bash
-        run: scripts/check.sh
+        run: bash scripts/check.sh

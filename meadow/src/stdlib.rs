@@ -53,6 +53,8 @@ const MODULES: &[(&str, &str)] = &[
     ("Collections.Map", include_str!("../../lib/Std/src/Collections/Map.mw")),
     ("Fs", include_str!("../../lib/Std/src/Fs.mw")),
     ("Process", include_str!("../../lib/Std/src/Process.mw")),
+    ("String", include_str!("../../lib/Std/src/String.mw")),
+    ("String.Parse", include_str!("../../lib/Std/src/String/Parse.mw")),
     ("prelude", include_str!("../../lib/Std/src/prelude.mw")),
 ];
 

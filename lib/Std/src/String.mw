@@ -1,0 +1,226 @@
+-- Std.String: operations on `String`.
+--
+-- A `String` is opaque, so everything here goes through its UTF-8 bytes with the
+-- `stringToBytes` / `bytesToString` primitives. Offsets and lengths are
+-- therefore counted in **bytes**, not characters: exact for ASCII, and
+-- byte-oriented above U+007F. Slicing through the middle of a multi-byte
+-- character will produce invalid UTF-8, so `slice` and friends want offsets you
+-- got from `indexOf` or from a parser, not ones you guessed.
+--
+-- `Std.String.Parse` builds parser combinators on top of this.
+--
+-- Note on ordering: every definition precedes its first use, because a forward
+-- reference between top-level bindings currently loses all type information.
+
+@pub mod Parse
+
+use Std.Collections.Vector as V (vecFromArray)
+use Std.Int (min, max)
+use Std.Maybe (Maybe, Just, None)
+
+-- ---------------------------------------------------------------------------
+-- Bytes in, bytes out
+-- ---------------------------------------------------------------------------
+
+-- The UTF-8 bytes of `s`.
+@pub fun toBytes s = stringToBytes s
+
+-- A string from UTF-8 `bytes`.
+@pub fun fromBytes bytes = bytesToString bytes
+
+-- How many *bytes* `s` occupies.
+@pub fun byteLength s = arrayLen (stringToBytes s)
+
+@pub fun isEmpty s = byteLength s == 0
+
+-- ---------------------------------------------------------------------------
+-- Building
+-- ---------------------------------------------------------------------------
+
+-- `a` followed by `b`.
+@pub fun concat a b = bytesToString (arrayConcat (stringToBytes a) (stringToBytes b))
+
+fun concatLoop acc i xs =
+  if i >= V.len xs then acc
+  else concatLoop (arrayConcat acc (stringToBytes (V.getOr "" xs i))) (i + 1) xs
+
+-- Every string in `xs`, run together.
+@pub fun concatAll xs = bytesToString (concatLoop #[] 0 xs)
+
+fun joinLoop sep acc i xs =
+  if i >= V.len xs then acc
+  else
+    let piece = stringToBytes (V.getOr "" xs i) in
+    let next = if i == 0 then arrayConcat acc piece
+               else arrayConcat (arrayConcat acc (stringToBytes sep)) piece in
+    joinLoop sep next (i + 1) xs
+
+-- Every string in `xs`, with `sep` between them.
+@pub fun join sep xs = bytesToString (joinLoop sep #[] 0 xs)
+
+fun repeatLoop acc b n = if n <= 0 then acc else repeatLoop (arrayConcat acc b) b (n - 1)
+
+-- `s` repeated `n` times.
+@pub fun repeat s n = bytesToString (repeatLoop #[] (stringToBytes s) n)
+
+-- ---------------------------------------------------------------------------
+-- Taking it apart
+-- ---------------------------------------------------------------------------
+
+-- The bytes of `s` from `from` up to (not including) `to`, clamped to the ends.
+@pub fun slice s from to =
+  let b = stringToBytes s in
+  let n = arrayLen b in
+  let lo = max 0 (min from n) in
+  let hi = max lo (min to n) in
+  bytesToString (arraySlice b lo hi)
+
+-- The first `n` bytes.
+@pub fun take s n = slice s 0 n
+
+-- Everything after the first `n` bytes.
+@pub fun drop s n = slice s n (byteLength s)
+
+-- The byte at `i`, if there is one.
+@pub fun byteAt s i =
+  let b = stringToBytes s in
+  if i < 0 or i >= arrayLen b then None else Just (arrayGetOr 0 b i)
+
+-- ---------------------------------------------------------------------------
+-- Searching
+-- ---------------------------------------------------------------------------
+
+fun matchesAt hay needle i j =
+  if j >= arrayLen needle then True
+  else if arrayGetOr 0 hay (i + j) == arrayGetOr 0 needle j then
+    matchesAt hay needle i (j + 1)
+  else False
+
+fun findFrom hay needle i =
+  if i + arrayLen needle > arrayLen hay then None
+  else if matchesAt hay needle i 0 then Just i
+  else findFrom hay needle (i + 1)
+
+-- The byte offset of the first `needle` in `s`, if it is there. An empty needle
+-- is found at 0.
+@pub fun indexOf needle s = findFrom (stringToBytes s) (stringToBytes needle) 0
+
+@pub fun contains needle s =
+  match indexOf needle s with
+  | None -> False
+  | Just i -> True
+
+@pub fun startsWith prefix s =
+  let p = stringToBytes prefix in
+  let b = stringToBytes s in
+  if arrayLen p > arrayLen b then False else matchesAt b p 0 0
+
+@pub fun endsWith suffix s =
+  let p = stringToBytes suffix in
+  let b = stringToBytes s in
+  if arrayLen p > arrayLen b then False else matchesAt b p (arrayLen b - arrayLen p) 0
+
+fun splitLoop hay needle i acc =
+  match findFrom hay needle i with
+  | None -> V.pushBack acc (bytesToString (arraySlice hay i (arrayLen hay)))
+  | Just k ->
+      splitLoop hay needle (k + arrayLen needle)
+                (V.pushBack acc (bytesToString (arraySlice hay i k)))
+
+-- `s` cut at every occurrence of `sep`. An empty `sep` yields `s` whole, since
+-- splitting on nothing has no useful answer.
+@pub fun split sep s =
+  let n = stringToBytes sep in
+  if arrayLen n == 0 then [s] else splitLoop (stringToBytes s) n 0 V.empty
+
+-- ---------------------------------------------------------------------------
+-- Whitespace
+-- ---------------------------------------------------------------------------
+
+-- Space, tab, newline, carriage return.
+@pub fun isSpaceByte c = c == 32 or c == 9 or c == 10 or c == 13
+
+fun startOfText b i =
+  if i >= arrayLen b then i
+  else if isSpaceByte (arrayGetOr 0 b i) then startOfText b (i + 1)
+  else i
+
+fun endOfText b i =
+  if i <= 0 then 0
+  else if isSpaceByte (arrayGetOr 0 b (i - 1)) then endOfText b (i - 1)
+  else i
+
+@pub fun trimStart s =
+  let b = stringToBytes s in
+  bytesToString (arraySlice b (startOfText b 0) (arrayLen b))
+
+@pub fun trimEnd s =
+  let b = stringToBytes s in
+  bytesToString (arraySlice b 0 (endOfText b (arrayLen b)))
+
+@pub fun trim s = trimEnd (trimStart s)
+
+-- `s` split on newlines. A trailing newline does not produce a final empty line.
+@pub fun lines s = if isEmpty s then V.empty else split "\n" (trimTrailingNewline s)
+
+fun trimTrailingNewline s = if endsWith "\n" s then take s (byteLength s - 1) else s
+
+-- ---------------------------------------------------------------------------
+-- ASCII case
+-- ---------------------------------------------------------------------------
+
+fun mapBytes f b i acc =
+  if i >= arrayLen b then acc
+  else mapBytes f b (i + 1) (arrayPush acc (f (arrayGetOr 0 b i)))
+
+fun upperByte c = if c >= 97 and c <= 122 then c - 32 else c
+
+fun lowerByte c = if c >= 65 and c <= 90 then c + 32 else c
+
+-- ASCII letters only; anything else is left alone.
+@pub fun toUpper s = bytesToString (mapBytes upperByte (stringToBytes s) 0 #[])
+
+@pub fun toLower s = bytesToString (mapBytes lowerByte (stringToBytes s) 0 #[])
+
+-- ---------------------------------------------------------------------------
+-- Numbers
+-- ---------------------------------------------------------------------------
+
+fun reverseFrom a i acc =
+  if i < 0 then acc else reverseFrom a (i - 1) (arrayPush acc (arrayGetOr 0 a i))
+
+fun collectDigits n acc =
+  if n == 0 then acc else collectDigits (n / 10) (arrayPush acc (48 + n % 10))
+
+fun digitsToString n =
+  let ds = collectDigits n #[] in
+  bytesToString (reverseFrom ds (arrayLen ds - 1) #[])
+
+-- `n` in base ten.
+@pub fun fromInt n =
+  if n == 0 then "0"
+  else if n < 0 then concat "-" (digitsToString (0 - n))
+  else digitsToString n
+
+@pub fun isDigitByte c = c >= 48 and c <= 57
+
+fun digitsFrom b i acc =
+  if i >= arrayLen b then Just acc
+  else
+    let c = arrayGetOr 0 b i in
+    if isDigitByte c then digitsFrom b (i + 1) (acc * 10 + (c - 48)) else None
+
+-- `s` read as a base-ten integer, with an optional leading `-`. `None` unless
+-- the whole string is digits.
+@pub fun toInt s =
+  let b = stringToBytes s in
+  if arrayLen b == 0 then None
+  else if arrayGetOr 0 b 0 == 45 then negateParsed (digitsAfterSign b)
+  else digitsFrom b 0 0
+
+fun digitsAfterSign b = if arrayLen b == 1 then None else digitsFrom b 1 0
+
+fun negateParsed m =
+  match m with
+  | None -> None
+  | Just n -> Just (0 - n)

@@ -1,0 +1,402 @@
+-- Std.String.Parse: parser combinators over a `Vector`, after Haskell's
+-- megaparsec.
+--
+-- A parser reads a `Vector t` of tokens -- characters, lexemes, bytes, whatever
+-- you have -- and either produces a value or a `PError` saying where it gave up
+-- and what it wanted instead. The input is never re-sliced as it is consumed:
+-- it is passed along whole beside an offset, since a `Vector` indexes and slices
+-- cheaply and the input itself never changes.
+--
+-- Nothing here is string-specific: the token type is whatever you put in the
+-- `Vector`. It lives under `String` because parsing text is the common case, and
+-- `fromString` is the bridge.
+--
+--   use Std.String.Parse as P
+--
+--   def digit = P.satisfy (\c -> c >= 48 and c <= 57)
+--   def number = P.takeWhile1P "a digit" (\c -> c >= 48 and c <= 57)
+--   def main = P.runParser (P.thenSkip number P.eof) (P.fromString "123")
+--
+-- The idea worth understanding is **consumed input**. Every parser reports
+-- whether it advanced the offset, and `alt` only tries its right branch when the
+-- left one failed *without* consuming. That is what keeps an error pointed at
+-- the real problem rather than at the last alternative tried, and it is why a
+-- parser that needs to backtrack over input it already ate has to say so. Given
+--
+--   def lz = skipThen (single 108) (single 122)   -- an `l` then a `z`
+--
+-- then on the input "let":
+--
+--   alt lz (single 108)         fails at offset 1 -- `lz` ate the `l`, so `alt`
+--                                                    is committed to it
+--   alt (try lz) (single 108)   succeeds          -- `try` un-consumes on failure
+--
+-- `chunk` is *atomic*, as in megaparsec and unlike parsec: a partial match
+-- consumes nothing, so alternatives with a shared prefix need no `try`.
+--
+--   alt (chunk (fromString "letter")) (chunk (fromString "let"))
+--
+-- succeeds on "lets".
+--
+-- Note on ordering: every definition here precedes its first use, because a
+-- forward reference between top-level bindings currently loses all type
+-- information (see the compiler's `Expr::Var` inference).
+
+use Std.Collections.Vector as V (vecFromArray, fromArray)
+use Std.Bool (not)
+use Std.String as S
+use Std.Tuple (pair)
+use Std.Maybe (Maybe, Just, None)
+use Std.Result (Result, Ok, Err)
+
+-- ---------------------------------------------------------------------------
+-- Types
+-- ---------------------------------------------------------------------------
+
+-- What went wrong, and where.
+--
+-- `expected` holds labels rather than tokens: a token is of whatever type the
+-- caller chose, and there is no way to render one generically. Index the input
+-- at `offset` to see what was actually sitting there.
+@pub record PError = {
+  @pub offset : Int,
+  @pub expected : Vector String,
+  @pub atEnd : Bool,
+}
+
+-- The outcome of one parser: a value and the offset reached, or an error. The
+-- leading `Bool` is "did this consume input?", which is the whole basis of the
+-- backtracking rules.
+@pub data Reply a
+  = POk Bool a Int
+  | PErr Bool PError
+
+-- A parser is a function from the input and a position to a `Reply`.
+@pub data Parser t a = Parser (Vector t -> Int -> Reply a)
+
+-- Apply a parser -- the one place the wrapper is opened.
+@pub fun runP (Parser f) input off = f input off
+
+-- The bytes of `s`, as parser input. `stringToBytes` hands back an `Array`,
+-- while a parser reads a `Vector`.
+@pub fun fromString s = V.fromArray (stringToBytes s)
+
+-- ---------------------------------------------------------------------------
+-- Errors
+-- ---------------------------------------------------------------------------
+
+@pub fun errOffset (PError { offset = o }) = o
+
+@pub fun errExpected (PError { expected = e }) = e
+
+@pub fun errAtEnd (PError { atEnd = e }) = e
+
+fun errAt off what = PError { offset = off, expected = [what], atEnd = False }
+
+fun errEnd off what = PError { offset = off, expected = [what], atEnd = True }
+
+fun errNone off = PError { offset = off, expected = [], atEnd = False }
+
+-- Combine two failures. The one that got further along wins outright -- it is
+-- the more informative message; at the same offset the wish-lists are unioned.
+@pub fun mergeError a b =
+  if errOffset a > errOffset b then a
+  else if errOffset b > errOffset a then b
+  else
+    PError {
+      offset = errOffset a,
+      expected = V.append (errExpected a) (errExpected b),
+      atEnd = errAtEnd a or errAtEnd b,
+    }
+
+-- ---------------------------------------------------------------------------
+-- Building blocks
+-- ---------------------------------------------------------------------------
+
+-- Succeed with `x`, consuming nothing.
+@pub fun pure x = Parser (\input off -> POk False x off)
+
+-- Fail without consuming, having wanted `what`.
+@pub fun fail what = Parser (\input off -> PErr False (errAt off what))
+
+-- Fail without consuming and without an opinion about what was wanted. The
+-- identity of `choice`.
+@pub def empty = Parser (\input off -> PErr False (errNone off))
+
+-- Apply `f` to whatever `p` produces.
+@pub fun map f p =
+  Parser (\input off ->
+    match runP p input off with
+    | POk c a off2 -> POk c (f a) off2
+    | PErr c e -> PErr c e)
+
+-- Run `p`, then the parser `f` builds from its result.
+--
+-- Consumption is the union of the two halves, which is what lets `alt` see
+-- through a whole `bind` chain rather than just its first step.
+@pub fun bind p f =
+  Parser (\input off ->
+    match runP p input off with
+    | PErr c e -> PErr c e
+    | POk c a off2 ->
+        (match runP (f a) input off2 with
+         | POk c2 b off3 -> POk (c or c2) b off3
+         | PErr c2 e -> PErr (c or c2) e))
+
+-- `p` then `q`, keeping `q`'s value.
+@pub fun skipThen p q = bind p (\ignored -> q)
+
+-- `p` then `q`, keeping `p`'s value.
+@pub fun thenSkip p q = bind p (\a -> map (\ignored -> a) q)
+
+-- Apply the function `pf` yields to the value `pa` yields.
+@pub fun apply pf pa = bind pf (\f -> map f pa)
+
+-- Run both, combining their results with `f`.
+@pub fun lift2 f p q = bind p (\a -> map (\b -> f a b) q)
+
+-- ---------------------------------------------------------------------------
+-- Running
+-- ---------------------------------------------------------------------------
+
+-- Run `p` over `input`, giving `Ok value` or `Err error`.
+--
+-- This does not require that everything was consumed; follow `p` with `eof`
+-- when a trailing remainder should be an error.
+@pub fun runParser p input =
+  match runP p input 0 with
+  | POk c a off -> Ok a
+  | PErr c e -> Err e
+
+-- As `runParser`, but also reports the offset where parsing stopped.
+@pub fun runParserPartial p input =
+  match runP p input 0 with
+  | POk c a off -> Ok (pair a off)
+  | PErr c e -> Err e
+
+-- ---------------------------------------------------------------------------
+-- Choice and backtracking
+-- ---------------------------------------------------------------------------
+
+-- Try `p`; if it fails *without consuming*, try `q` instead.
+--
+-- A branch that consumed input commits: its failure is returned untouched.
+-- Reach for `try` when two alternatives share a prefix.
+@pub fun alt p q =
+  Parser (\input off ->
+    match runP p input off with
+    | POk c a off2 -> POk c a off2
+    | PErr c e ->
+        if c then PErr True e
+        else
+          (match runP q input off with
+           | POk c2 a off2 -> POk c2 a off2
+           | PErr c2 e2 -> if c2 then PErr True e2 else PErr False (mergeError e e2)))
+
+-- The first of `ps` that succeeds.
+@pub fun choice ps = V.foldl (\acc p -> alt acc p) empty ps
+
+-- Run `p`, but report no consumption if it fails, so `alt` will still consider
+-- the next branch. This is how you get arbitrary lookahead.
+@pub fun try p =
+  Parser (\input off ->
+    match runP p input off with
+    | POk c a off2 -> POk c a off2
+    | PErr c e -> PErr False e)
+
+-- Run `p` for its result but rewind the position either way.
+@pub fun lookAhead p =
+  Parser (\input off ->
+    match runP p input off with
+    | POk c a off2 -> POk False a off
+    | PErr c e -> PErr c e)
+
+-- Succeed only if `p` does *not* match here. Consumes nothing.
+@pub fun notFollowedBy p =
+  Parser (\input off ->
+    match runP p input off with
+    | POk c a off2 -> PErr False (errAt off "no match here")
+    | PErr c e -> POk False () off)
+
+-- Replace what `p` says it wanted, for errors raised before it consumed
+-- anything. The way to turn "a different token" into "an identifier".
+@pub fun label what p =
+  Parser (\input off ->
+    match runP p input off with
+    | POk c a off2 -> POk c a off2
+    | PErr c e ->
+        if c then PErr True e
+        else
+          PErr False
+            (PError { offset = errOffset e, expected = [what], atEnd = errAtEnd e }))
+
+-- `Just` what `p` produced, or `None` if it failed without consuming.
+@pub fun optional p = alt (map Just p) (pure None)
+
+-- Build the parser only when it is run.
+--
+-- Definitions are evaluated eagerly, so a grammar that refers to itself would
+-- loop while being defined. Break the cycle by wrapping the recursive use:
+--
+--   fun expr u = alt (lift2 add term (skipThen plus (defer expr))) term
+--
+@pub fun defer f = Parser (\input off -> runP (f ()) input off)
+
+-- ---------------------------------------------------------------------------
+-- Tokens
+-- ---------------------------------------------------------------------------
+
+-- Any single token; fails only at the end of input.
+@pub def anySingle =
+  Parser (\input off ->
+    match V.get input off with
+    | None -> PErr False (errEnd off "any token")
+    | Just x -> POk True x (off + 1))
+
+-- A token satisfying `f`.
+@pub fun satisfy f =
+  Parser (\input off ->
+    match V.get input off with
+    | None -> PErr False (errEnd off "any token")
+    | Just x ->
+        if f x then POk True x (off + 1)
+        else PErr False (errAt off "a different token"))
+
+-- Exactly this token.
+@pub fun single x = satisfy (\y -> y == x)
+
+-- Any token except this one.
+@pub fun notSingle x = satisfy (\y -> not (y == x))
+
+-- Any one of `xs`.
+@pub fun oneOf xs = satisfy (\y -> V.elem y xs)
+
+-- Any token not in `xs`.
+@pub fun noneOf xs = satisfy (\y -> V.notElem y xs)
+
+-- Exactly this run of tokens, or nothing consumed.
+@pub fun chunk want =
+  Parser (\input off ->
+    let n = V.len want in
+    if off + n > V.len input then PErr False (errEnd off "a longer input")
+    else
+      let got = V.slice input off (off + n) in
+      if got == want then POk (n > 0) got (off + n)
+      else PErr False (errAt off "a specific sequence"))
+
+-- The end of the input.
+@pub def eof =
+  Parser (\input off ->
+    if off >= V.len input then POk False () off
+    else PErr False (errAt off "end of input"))
+
+fun spanFrom f input off i =
+  match V.get input i with
+  | None -> POk (i > off) (V.slice input off i) i
+  | Just x ->
+      if f x then spanFrom f input off (i + 1)
+      else POk (i > off) (V.slice input off i) i
+
+-- The longest run of tokens satisfying `f`, possibly empty. Never fails.
+--
+-- Prefer this to `many (satisfy f)`: it slices the input once rather than
+-- accumulating a token at a time.
+@pub fun takeWhileP f = Parser (\input off -> spanFrom f input off off)
+
+-- As `takeWhileP`, but demanding at least one token, described by `what`.
+@pub fun takeWhile1P what f =
+  Parser (\input off ->
+    match runP (takeWhileP f) input off with
+    | PErr c e -> PErr c e
+    | POk c v off2 ->
+        if V.isEmpty v then PErr False (errAt off what) else POk True v off2)
+
+-- ---------------------------------------------------------------------------
+-- Position
+-- ---------------------------------------------------------------------------
+
+@pub def getOffset = Parser (\input off -> POk False off off)
+
+@pub def getInput = Parser (\input off -> POk False input off)
+
+-- `p`'s result, with the offsets either side of it.
+@pub fun withSpan p =
+  bind getOffset (\from -> bind p (\a -> map (\to -> (a, from, to)) getOffset))
+
+-- ---------------------------------------------------------------------------
+-- Repetition
+-- ---------------------------------------------------------------------------
+
+fun manyLoop p input acc off consumed =
+  match runP p input off with
+  | PErr c e -> if c then PErr True e else POk consumed acc off
+  | POk c a off2 ->
+      if c then manyLoop p input (V.pushBack acc a) off2 True
+      else PErr consumed (errAt off "a parser that consumes input")
+
+-- Zero or more of `p`, stopping at the first failure that consumed nothing.
+--
+-- A `p` that can succeed without consuming would spin forever, so that is
+-- reported as an error rather than hung on.
+@pub fun many p = Parser (\input off -> manyLoop p input V.empty off False)
+
+-- One or more of `p`.
+@pub fun some p = lift2 (\x xs -> V.pushFront xs x) p (many p)
+
+-- `many`, discarding the results.
+@pub fun skipMany p = map (\xs -> ()) (many p)
+
+-- `some`, discarding the results.
+@pub fun skipSome p = map (\xs -> ()) (some p)
+
+fun countLoop n p acc =
+  if n <= 0 then pure acc else bind p (\x -> countLoop (n - 1) p (V.pushBack acc x))
+
+-- Exactly `n` of `p`.
+@pub fun count n p = countLoop n p V.empty
+
+-- One or more `p`, separated by `sep`.
+@pub fun sepBy1 p sep = lift2 (\x xs -> V.pushFront xs x) p (many (skipThen sep p))
+
+-- Zero or more `p`, separated by `sep`.
+@pub fun sepBy p sep = alt (sepBy1 p sep) (pure V.empty)
+
+-- Zero or more `p`, each followed by `sep`.
+@pub fun endBy p sep = many (thenSkip p sep)
+
+-- One or more `p`, each followed by `sep`.
+@pub fun endBy1 p sep = some (thenSkip p sep)
+
+-- Zero or more `p` separated by `sep`, allowing a trailing `sep`.
+@pub fun sepEndBy p sep = thenSkip (sepBy p sep) (optional sep)
+
+-- `p` between `open` and `close`, keeping only the middle result.
+@pub fun between open close p = skipThen open (thenSkip p close)
+
+fun tillLoop p stop input acc off consumed =
+  match runP stop input off with
+  | POk c a off2 -> POk (consumed or c) acc off2
+  | PErr c e ->
+      if c then PErr True e
+      else
+        (match runP p input off with
+         | PErr c2 e2 -> PErr (consumed or c2) e2
+         | POk c2 a off2 ->
+             if c2 then tillLoop p stop input (V.pushBack acc a) off2 True
+             else PErr consumed (errAt off "a parser that consumes input"))
+
+-- `p` repeatedly until `stop` matches. The `stop` result is discarded.
+@pub fun manyTill p stop =
+  Parser (\input off -> tillLoop p stop input V.empty off False)
+
+-- ---------------------------------------------------------------------------
+-- Rendering an error
+-- ---------------------------------------------------------------------------
+
+-- A one-line description: where it stopped, and what it wanted there.
+@pub fun showError e =
+  let place = S.concat "at offset " (S.fromInt (errOffset e)) in
+  let note = if errAtEnd e then " (end of input)" else "" in
+  let want = errExpected e in
+  if V.isEmpty want then S.concat place note
+  else S.concatAll [place, note, ", expected ", S.join " or " want]

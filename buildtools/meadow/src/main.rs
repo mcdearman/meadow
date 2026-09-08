@@ -5,7 +5,7 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
-use meadow::{pipeline, update, Profile};
+use meadow::{format, pipeline, update, Profile};
 use meadow_eval as eval;
 use std::path::PathBuf;
 
@@ -33,6 +33,17 @@ enum Cmd {
         path: PathBuf,
         #[command(flatten)]
         profile: ProfileArgs,
+    },
+    /// Re-indent `.mw` sources in place.
+    Fmt {
+        /// Files or directories to format. Defaults to the current directory.
+        paths: Vec<PathBuf>,
+        /// List the files that would change and exit 1, without writing.
+        #[arg(long)]
+        check: bool,
+        /// Write the result to stdout instead of back to the file.
+        #[arg(long)]
+        stdout: bool,
     },
     /// Replace this binary with the latest published release.
     Update {
@@ -78,6 +89,33 @@ fn main() {
             profile,
         }) => build(&path, false, annotations, profile.profile()),
         Some(Cmd::Run { path, profile }) => build(&path, true, false, profile.profile()),
+        Some(Cmd::Fmt {
+            paths,
+            check,
+            stdout,
+        }) => {
+            let paths = if paths.is_empty() {
+                vec![PathBuf::from(".")]
+            } else {
+                paths
+            };
+            match format::run(&format::Options {
+                paths,
+                check,
+                stdout,
+            }) {
+                // `--check` is for CI: a file that needs formatting is a failure.
+                Ok(changed) => {
+                    if check && changed > 0 {
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some(Cmd::Update { version, force }) => {
             if let Err(e) = update::run(&update::Options { version, force }) {
                 eprintln!("error: {e}");

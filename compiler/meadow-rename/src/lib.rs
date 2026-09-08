@@ -431,6 +431,8 @@ impl Resolver {
             hir::Module {
                 name: module.value().name,
                 decls,
+                // Filled in by `meadow-scc`, which runs over the resolved module.
+                groups: Vec::new(),
             },
             module.span,
         )

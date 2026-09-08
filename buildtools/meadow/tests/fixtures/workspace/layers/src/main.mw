@@ -1,0 +1,4 @@
+-- The unit's modules share one flat scope, so no `use` is needed to reach
+-- `Alpha`'s bindings.
+
+def main = describe 20 + twentyOne

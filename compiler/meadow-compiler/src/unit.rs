@@ -16,6 +16,7 @@ use crate::{
     lexer::tokenize,
     parser,
     rename::Resolver,
+    scc,
     source::{Source, SourceKind},
     Options,
 };
@@ -175,14 +176,25 @@ pub fn compile_unit_in_package(
     for m in &modules {
         resolver.declare_toplevel(&m.ast.value().decls);
     }
-    let typed: Vec<TypedModule> = modules
+    let mut typed: Vec<TypedModule> = modules
         .iter()
-        .map(|m| TypedModule {
-            path: m.path.clone(),
-            name: m.name,
-            hir: resolver.resolve_module(&m.ast),
+        .map(|m| {
+            let mut hir = resolver.resolve_module(&m.ast);
+            // Reorder the top-level bindings by dependency and record their
+            // groups, so inference (and evaluation) never meets a name before the
+            // thing that defines it.
+            scc::group_module(&mut hir.value);
+            TypedModule {
+                path: m.path.clone(),
+                name: m.name,
+                hir,
+            }
         })
         .collect();
+    // Same again one level up: a unit's modules are resolved into one flat scope
+    // but discovered in alphabetical order, so they need sorting too.
+    let order = scc::module_order(typed.iter().map(|m| m.hir.value()));
+    typed = permute(typed, &order);
     diags.extend(resolver.take_errors());
 
     // --- type inference (one arena for the whole unit + dependency schemes)
@@ -309,6 +321,16 @@ pub fn compile_unit_in_package(
     )
 }
 
+/// Reorder `items` so that the element at `order[k]` ends up `k`th.
+fn permute<T>(items: Vec<T>, order: &[usize]) -> Vec<T> {
+    debug_assert_eq!(items.len(), order.len(), "permutation must cover every item");
+    let mut slots: Vec<Option<T>> = items.into_iter().map(Some).collect();
+    order
+        .iter()
+        .map(|&i| slots[i].take().expect("each index appears once"))
+        .collect()
+}
+
 /// Record which module each top-level binding lives in.
 fn collect_toplevel_vars(
     module: &hir::LModule,
@@ -317,32 +339,10 @@ fn collect_toplevel_vars(
 ) {
     for decl in &module.value().decls {
         if let hir::Decl::Bind(bind) = decl.value() {
-            let mut ids = Vec::new();
-            match bind {
-                hir::Bind::Fun(name, ..) => ids.push(*name.value()),
-                hir::Bind::Pat(pat, _) => hir_pat_vars(pat, &mut ids),
-                hir::Bind::Error => {}
-            }
-            for id in ids {
+            for id in bind.bound_vars() {
                 out.entry(id).or_insert_with(|| path.to_vec());
             }
         }
-    }
-}
-
-fn hir_pat_vars(pat: &hir::LPat, out: &mut Vec<VarId>) {
-    match pat.value() {
-        hir::Pat::Var(v) => out.push(*v.value()),
-        hir::Pat::As(v, p) => {
-            out.push(*v.value());
-            hir_pat_vars(p, out);
-        }
-        hir::Pat::Tuple(ps)
-        | hir::Pat::Array(ps)
-        | hir::Pat::List(ps)
-        | hir::Pat::Cons(_, ps) => ps.iter().for_each(|p| hir_pat_vars(p, out)),
-        hir::Pat::Record(fs, _) => fs.iter().for_each(|(_, p)| hir_pat_vars(p, out)),
-        _ => {}
     }
 }
 

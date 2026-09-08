@@ -1,0 +1,12 @@
+-- Alphabetically first, but depends on `Zeta` — which is what makes this
+-- fixture interesting. Modules are discovered in filename order, so without a
+-- dependency sort `Alpha` is resolved, inferred and evaluated before the module
+-- it needs.
+
+-- A `def` is evaluated eagerly at load time, so this one fails outright unless
+-- `Zeta` is lowered first.
+def twentyOne = halve 42
+
+-- A `fun` is only a closure at load time, so this one is about *inference*:
+-- `describe` used to be typed against an unconstrained fresh variable.
+fun describe n = wrap (halve n)

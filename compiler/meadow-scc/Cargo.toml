@@ -1,0 +1,11 @@
+[package]
+name = "meadow-scc"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_scc"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-hir.workspace = true

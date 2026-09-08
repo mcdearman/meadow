@@ -1,13 +1,15 @@
 //! # Meadow — compiler front end (facade)
 //!
-//! The Meadow source tree is three independent Cargo workspaces:
+//! The Meadow source tree is four independent Cargo workspaces:
 //!
 //! * **`compiler/`** — this workspace. One crate per pass, wired together here so
 //!   downstream code can `use meadow_compiler::{lexer, parser, infer, …}`.
 //! * **`eval/`** — the `meadow-eval` crate: a CEK machine that runs a
 //!   [`core::Program`]. Depends only on `meadow-core` + `meadow-intern`.
-//! * **`meadow/`** — the build system (package discovery, pipeline, linker,
-//!   embedded stdlib) plus the CLI and REPL.
+//! * **`buildtools/`** — everything you point *at* Meadow source: `meadow`, the
+//!   build system (package discovery, pipeline, linker, embedded stdlib) plus
+//!   the CLI and REPL, and `meadow-fmt`, the formatter behind `meadow fmt`.
+//! * **`installer/`** — `meadow-setup.exe`.
 //!
 //! ## The pipeline
 //!
@@ -53,6 +55,7 @@ pub use meadow_intern as intern;
 pub use meadow_lexer as lexer;
 pub use meadow_parser as parser;
 pub use meadow_rename as rename;
+pub use meadow_scc as scc;
 pub use meadow_source as source;
 pub use meadow_span as span;
 

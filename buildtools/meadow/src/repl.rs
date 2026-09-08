@@ -16,13 +16,15 @@ use meadow_compiler::{
     AstModule, CompiledPackage, Options,
 };
 use meadow_eval as eval;
+use meadow_fmt as fmt;
 use itertools::Either;
 use rustyline::{
     completion::{Completer, Pair},
     error::ReadlineError,
     highlight::Highlighter,
     validate::{ValidationResult, Validator},
-    Cmd, CompletionType, Config, Editor, Helper, Hinter, KeyCode, KeyEvent, Modifiers,
+    Cmd, CompletionType, Config, ConditionalEventHandler, Editor, Event, EventContext,
+    EventHandler, Helper, Hinter, KeyCode, KeyEvent, Modifiers, RepeatCount,
 };
 use std::borrow::Cow;
 
@@ -96,6 +98,68 @@ impl Validator for TermValidator {
     }
 }
 
+/// The prompt. Only the first line of an entry carries it, which is why
+/// continuation lines are padded by [`PAD`].
+const PROMPT: &str = "> ";
+
+/// As many spaces as the [`PROMPT`] is wide.
+const PAD: &str = "  ";
+
+/// Opens a continuation line already indented to where the formatter says the
+/// next line belongs, so a `match` arm or a `let` body does not have to be
+/// spaced in by hand.
+///
+/// Bound to Enter, where it only fires while the entry is unfinished — a
+/// complete one still falls through to the validator and is submitted — and to
+/// the explicit line-break keys, where it always fires.
+struct AutoIndent {
+    always: bool,
+}
+
+impl ConditionalEventHandler for AutoIndent {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        ctx: &EventContext<'_>,
+    ) -> Option<Cmd> {
+        if !self.always && !needs_continuation(ctx.line()) {
+            return None;
+        }
+        // Indent for where the cursor is, not for the whole buffer: Enter in the
+        // middle of an entry breaks the line at that point.
+        let before = &ctx.line()[..ctx.pos()];
+        Some(Cmd::Insert(1, format!("\n{}", auto_indent(before))))
+    }
+}
+
+/// The whitespace a continuation line opens with.
+///
+/// The formatter works in file columns, where every line starts at the left
+/// margin. Here the *first* line starts after the prompt and the rest do not, so
+/// a continuation needs the prompt's width on top of the formatter's indent —
+/// without it the second line of `fun f x =` lands level with the `fun` rather
+/// than inside it, and the arms of a bare `match` sit to the left of it.
+fn auto_indent(before: &str) -> String {
+    format!("{PAD}{}", fmt::continuation_indent(&unpad(before)))
+}
+
+/// Take [`PAD`] back off the continuation lines, so the formatter reads the
+/// buffer as the file it is pretending to be.
+fn unpad(buf: &str) -> String {
+    let mut out = String::with_capacity(buf.len());
+    for (i, line) in buf.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+            out.push_str(line.strip_prefix(PAD).unwrap_or(line));
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 /// Decide whether the current buffer should keep accepting lines instead of being
 /// submitted.
 ///
@@ -115,8 +179,10 @@ fn needs_continuation(input: &str) -> bool {
     }
 
     let multiline = input.contains('\n');
-    if multiline && input.ends_with('\n') {
-        return false; // blank line submits a multi-line entry
+    // A blank line submits a multi-line entry. "Blank" has to mean whitespace,
+    // not just empty: auto-indent puts spaces on the line before you press Enter.
+    if multiline && input.rsplit('\n').next().is_none_or(|l| l.trim().is_empty()) {
+        return false;
     }
     if !multiline {
         return !parses_ok(input);
@@ -359,15 +425,24 @@ impl Session {
             KeyEvent(KeyCode::Enter, Modifiers::SHIFT),
             KeyEvent::ctrl('J'),
         ] {
-            rl.bind_sequence(key, Cmd::Newline);
+            rl.bind_sequence(
+                key,
+                EventHandler::Conditional(Box::new(AutoIndent { always: true })),
+            );
         }
+        // Plain Enter continues an unfinished entry — indented — and otherwise
+        // falls through to the validator, which submits it.
+        rl.bind_sequence(
+            KeyEvent(KeyCode::Enter, Modifiers::NONE),
+            EventHandler::Conditional(Box::new(AutoIndent { always: false })),
+        );
 
         let _ = rl.load_history(".repl_history");
 
         print_banner();
 
         loop {
-            match rl.readline("> ") {
+            match rl.readline(PROMPT) {
                 Ok(line) => {
                     if line.trim().is_empty() {
                         continue;
@@ -616,6 +691,94 @@ mod tests {
             }
         }
         out
+    }
+
+    // --- auto-indent ---------------------------------------------------------
+
+    /// What plain Enter does to a buffer: `None` means "submit", `Some(next)` is
+    /// the buffer after the newline and its indent. Mirrors [`AutoIndent`], which
+    /// cannot be driven directly without a terminal.
+    fn press_enter(buf: &str) -> Option<String> {
+        if !needs_continuation(buf) {
+            return None;
+        }
+        Some(format!("{buf}\n{}", auto_indent(buf)))
+    }
+
+    /// What the terminal shows for a buffer, prompt included — the thing the
+    /// indentation is actually supposed to line up.
+    fn screen(buf: &str) -> String {
+        format!("{PROMPT}{buf}")
+    }
+
+    #[test]
+    fn a_continuation_sits_one_unit_inside_the_keyword_above() {
+        // On screen `fun` starts at column 2, so its body has to start at 4 — an
+        // indent of 2 would only draw it level with the keyword.
+        let buf = press_enter("fun f x =").unwrap();
+        assert_eq!(buf, "fun f x =\n    ");
+        assert_eq!(screen(&buf), "> fun f x =\n    ");
+    }
+
+    #[test]
+    fn match_arms_line_up_with_the_match_on_screen() {
+        // A bare `match`: the arms belong under the `m`, at column 2.
+        let buf = press_enter("match x with").unwrap();
+        assert_eq!(screen(&buf), "> match x with\n  ");
+
+        // Nested under a `fun`, both move right together.
+        let buf = press_enter("fun f x =\n    match x with").unwrap();
+        assert_eq!(screen(&buf), "> fun f x =\n    match x with\n    ");
+    }
+
+    #[test]
+    fn an_arm_body_hangs_under_its_arm() {
+        let buf = press_enter("fun f x =\n    match x with\n    | A ->").unwrap();
+        assert_eq!(
+            screen(&buf),
+            "> fun f x =\n    match x with\n    | A ->\n        "
+        );
+    }
+
+    #[test]
+    fn a_match_introduced_by_an_equals_puts_its_arms_under_the_keyword() {
+        let buf = press_enter("def x = match y with").unwrap();
+        assert_eq!(screen(&buf), "> def x = match y with\n          ");
+    }
+
+    #[test]
+    fn enter_submits_a_finished_entry() {
+        assert_eq!(press_enter("1 + 2"), None);
+        assert_eq!(press_enter("def x = 1"), None);
+        assert_eq!(press_enter(":t map"), None);
+    }
+
+    #[test]
+    fn a_line_of_only_indent_still_submits() {
+        // The blank line that ends a multi-line entry is not empty any more —
+        // auto-indent already put spaces on it.
+        assert_eq!(press_enter("fun f x =\n    x\n    "), None);
+        assert_eq!(press_enter("fun f x =\n    x\n"), None);
+    }
+
+    #[test]
+    fn brackets_keep_the_entry_open_and_indent_it() {
+        assert_eq!(press_enter("def r = {").as_deref(), Some("def r = {\n    "));
+    }
+
+    #[test]
+    fn the_padding_is_not_applied_twice_as_the_entry_grows() {
+        // Each line's indent is derived from the buffer, which already carries the
+        // padding — so it has to come back off before the formatter sees it.
+        let mut buf = press_enter("fun f x =").unwrap();
+        buf.push_str("match x with");
+        buf = press_enter(&buf).unwrap();
+        buf.push_str("| A ->");
+        buf = press_enter(&buf).unwrap();
+        assert_eq!(
+            screen(&buf),
+            "> fun f x =\n    match x with\n    | A ->\n        "
+        );
     }
 }
 

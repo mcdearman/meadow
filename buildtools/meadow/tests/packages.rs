@@ -56,3 +56,21 @@ fn without_pub_everything_is_still_exported() {
     names.sort();
     assert_eq!(names, vec!["a", "b", "c"]);
 }
+
+// --- module ordering within a package ----------------------------------------
+
+#[test]
+fn modules_are_compiled_in_dependency_order() {
+    // `layers` has `Alpha.mw` (needs `Zeta`), `Zeta.mw` and `main.mw`. Modules are
+    // discovered in filename order, so `Alpha` comes first and everything it uses
+    // comes later — inference and evaluation both have to sort that out.
+    let out = pipeline::build(Path::new(&format!("{WORKSPACE}/layers")), meadow::Options::debug());
+    assert!(
+        out.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        out.diagnostics.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
+    let linked = out.linked.expect("linked program");
+    // describe 20 == (20 / 2) + 1 == 11; twentyOne == 42 / 2 == 21
+    assert_eq!(eval::run(&linked.program).unwrap().to_string(), "32");
+}

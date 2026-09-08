@@ -1,0 +1,5 @@
+-- Alphabetically last, depended on by `Alpha`.
+
+fun halve n = n / 2
+
+fun wrap n = n + 1

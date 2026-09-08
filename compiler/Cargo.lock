@@ -251,6 +251,7 @@ dependencies = [
  "meadow-lexer",
  "meadow-parser",
  "meadow-rename",
+ "meadow-scc",
  "meadow-source",
  "meadow-span",
 ]
@@ -352,6 +353,13 @@ dependencies = [
  "meadow-hir",
  "meadow-intern",
  "meadow-span",
+]
+
+[[package]]
+name = "meadow-scc"
+version = "0.1.0"
+dependencies = [
+ "meadow-hir",
 ]
 
 [[package]]

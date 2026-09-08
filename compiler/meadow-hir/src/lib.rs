@@ -24,16 +24,66 @@ use meadow_span::Span;
 /// to `if` (that is what makes them short-circuit); `not` is a `Std.Bool`
 /// function.
 pub const PRIMS: &[&str] = &[
-    "print", "println", "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "neg", //
-    "+.", "-.", "*.", "/.", "<.", ">.", "<=.", ">=.", "toFloat", "floor", //
+    "print",
+    "println",
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "^",
+    "==",
+    "!=",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "neg", //
+    "+.",
+    "-.",
+    "*.",
+    "/.",
+    "<.",
+    ">.",
+    "<=.",
+    ">=.",
+    "toFloat",
+    "floor", //
     // arbitrary-precision integer ops (operands `BigInt`) + Int/BigInt conversions
-    "+~", "-~", "*~", "/~", "%~", "^~", "<~", ">~", "<=~", ">=~", "toBigInt", "toInt", //
+    "+~",
+    "-~",
+    "*~",
+    "/~",
+    "%~",
+    "^~",
+    "<~",
+    ">~",
+    "<=~",
+    ">=~",
+    "toBigInt",
+    "toInt", //
     // the one builtin collection: `Array`
-    "arrayLen", "arrayGet", "arrayGetOr", "arraySet", "arrayPush", "arrayPop", "arraySlice",
+    "arrayLen",
+    "arrayGet",
+    "arrayGetOr",
+    "arraySet",
+    "arrayPush",
+    "arrayPop",
+    "arraySlice",
     "arrayConcat", //
     // bitwise ops on `Int`, and the `String` <-> byte-array bridge
-    "shl", "shr", "ushr", "bitAnd", "bitOr", "bitXor", "bitNot", "popCount", //
-    "stringToBytes", "bytesToString", "bytesToHex", "bytesFromHex",
+    "shl",
+    "shr",
+    "ushr",
+    "bitAnd",
+    "bitOr",
+    "bitXor",
+    "bitNot",
+    "popCount", //
+    "stringToBytes",
+    "bytesToString",
+    "bytesToHex",
+    "bytesFromHex",
 ];
 use std::ops::Deref;
 use std::sync::atomic::AtomicU32;
@@ -124,6 +174,28 @@ pub type Label = Node<InternedString>;
 pub struct Module {
     pub name: InternedString,
     pub decls: Vec<LDecl>,
+    /// Top-level binding groups, in dependency order — see [`BindGroup`].
+    ///
+    /// Filled by `meadow-scc`, which also reorders `decls` to match. Empty
+    /// before that pass runs, which a consumer should read as "no grouping
+    /// information", not "no bindings".
+    pub groups: Vec<BindGroup>,
+}
+
+/// One strongly connected component of the top-level binding dependency graph.
+///
+/// Bindings that refer to one another have to be typed together: each is
+/// monomorphic while the group is being solved, and all of them generalize once
+/// it is. Ordering the groups by dependency means every binding a group refers
+/// to is already generalized by the time the group is inferred, which is what
+/// makes a helper usable at two different types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindGroup {
+    /// Indices into [`Module::decls`]. Every one names a [`Decl::Bind`].
+    pub members: Vec<usize>,
+    /// Whether any member refers to the group — a self- or mutual recursion.
+    /// A lone non-recursive binding needs no monomorphic seeding.
+    pub recursive: bool,
 }
 
 pub type LDecl = Node<Decl>;
@@ -246,6 +318,35 @@ pub enum Bind {
     /// `fun f a (x, y) = e` — parameters are irrefutable patterns.
     Fun(Ident, Vec<LPat>, LExpr),
     Error,
+}
+
+impl Bind {
+    /// Every name this binding introduces, in source order.
+    pub fn bound_vars(&self) -> Vec<VarId> {
+        let mut out = Vec::new();
+        match self {
+            Bind::Fun(name, _, _) => out.push(*name.value()),
+            Bind::Pat(pat, _) => pat_vars(pat, &mut out),
+            Bind::Error => {}
+        }
+        out
+    }
+}
+
+/// Every name a pattern introduces, in source order, appended to `out`.
+pub fn pat_vars(pat: &LPat, out: &mut Vec<VarId>) {
+    match pat.value() {
+        Pat::Var(id) => out.push(*id.value()),
+        Pat::As(id, sub) => {
+            out.push(*id.value());
+            pat_vars(sub, out);
+        }
+        Pat::Tuple(ps) | Pat::List(ps) | Pat::Array(ps) | Pat::Cons(_, ps) => {
+            ps.iter().for_each(|p| pat_vars(p, out))
+        }
+        Pat::Record(fields, _) => fields.iter().for_each(|(_, p)| pat_vars(p, out)),
+        Pat::Wildcard | Pat::Lit(_) | Pat::Unit | Pat::Error => {}
+    }
 }
 
 pub type LPat = Node<Pat>;

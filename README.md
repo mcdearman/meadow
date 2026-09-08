@@ -59,11 +59,44 @@ meadow                          # REPL
 meadow run examples/euler       # build a package and run `main`
 meadow build path/to/pkg        # type-check and link
 meadow build --release pkg      # ...with release checks
+meadow fmt src                  # re-indent .mw sources in place
+meadow fmt --check src          # ...or just report, and exit 1 if any differ
 ```
 
 A package is a directory with a `meadow.toml` and a `src/`; `meadow run` also
 takes a single `.mw` file. The `Std` library is embedded in the binary, so
 there is nothing else to install.
+
+### Formatting
+
+`meadow fmt` is an indenter, not a pretty-printer: it fixes leading and trailing
+whitespace, tabs and blank-line runs, and never moves a token to another line.
+Comments therefore survive exactly as written, and since Meadow's grammar is not
+layout-sensitive, formatting can never change what a program means.
+
+Indentation comes from structure — brackets, `match` arms lining up with their
+`match`, `then`/`else` with their `if`, `in` with its `let`, two units for an arm
+body on its own line. A line that only *continues* the expression above it has no
+structural anchor, and there `fmt` keeps the column you chose, so deliberate
+alignment like this is left alone:
+
+```
+bitOr (bitOr (bytesGetOr 0 b i)
+             (bytesGetOr 0 b (i + 1) << 8))
+      (bitOr (bytesGetOr 0 b (i + 2) << 16)
+             (bytesGetOr 0 b (i + 3) << 24))
+```
+
+The REPL uses the same rules to indent continuation lines as you type them, plus
+the width of the `> ` prompt — which only the first line carries — so what you
+see lines up the way it would in a file:
+
+```
+> fun f x =
+    match x with
+    | A ->
+        1
+```
 
 ### Profiles
 
@@ -87,14 +120,14 @@ The tree is four independent Cargo workspaces:
 |---|---|
 | `compiler/` | the front end, one crate per pass |
 | `eval/` | the CEK machine |
-| `meadow/` | build system, CLI and REPL — the binary |
+| `buildtools/` | the tools you point at Meadow source: `meadow` (build system, CLI and REPL — the binary) and `meadow-fmt` (the formatter) |
 | `installer/` | `meadow-setup.exe`, the Windows installer |
 
 ```sh
-cargo install --path meadow      # install the CLI
-cd compiler && cargo test        # per-workspace tests
-cd eval     && cargo test
-cd meadow   && cargo test
+cargo install --path buildtools/meadow   # install the CLI
+cd compiler   && cargo test              # per-workspace tests
+cd eval       && cargo test
+cd buildtools && cargo test
 ```
 
 ## Releasing

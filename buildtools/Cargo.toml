@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["meadow", "meadow-fmt"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+meadow-fmt = { path = "meadow-fmt" }
+meadow-compiler = { path = "../compiler/meadow-compiler" }
+meadow-eval = { path = "../eval" }

@@ -1,0 +1,8 @@
+[package]
+name = "meadow-fmt"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_fmt"
+path = "src/lib.rs"

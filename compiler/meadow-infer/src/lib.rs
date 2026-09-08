@@ -207,6 +207,17 @@ impl Arena {
         self.fresh_in(kind)
     }
 
+    /// A type variable at the outermost level, so nothing can generalize over it.
+    /// The placeholder a forward reference gets — see `Expr::Var`.
+    fn fresh_global(&mut self) -> Type {
+        let id = self.slots.len() as u32;
+        self.slots.push(Slot::Unbound {
+            level: 0,
+            kind: VarKind::Type,
+        });
+        Type::Var(id)
+    }
+
     fn enter_level(&mut self) {
         self.level += 1;
     }
@@ -664,18 +675,139 @@ impl Infer {
         }
     }
 
+    /// Infer a module, one binding group at a time.
+    ///
+    /// `meadow-scc` has already put `decls` in dependency order and filled in
+    /// [`hir::Module::groups`], so by the time a group is reached every binding it
+    /// refers to is generalized and a mention of it instantiates properly. Within
+    /// a recursive group the members stay monomorphic until all of them are
+    /// solved — the usual binding-group discipline.
     pub fn infer_module(&mut self, module: &hir::LModule) {
-        for decl in &module.value().decls {
-            match decl.value() {
-                hir::Decl::Bind(bind) => self.infer_bind(bind, true),
-                hir::Decl::Mod(_)
-                | hir::Decl::Use(_)
-                | hir::Decl::Error
-                | hir::Decl::Data(_)
-                | hir::Decl::Record(_)
-                | hir::Decl::Effect(_) => {}
-            }
+        let module = module.value();
+        // A declaration is not itself a value; the node type is only there so the
+        // table has no holes.
+        for decl in &module.decls {
             self.table.set(decl.id, Type::unit());
+        }
+        if module.groups.is_empty() {
+            // Ungrouped HIR (the SCC pass didn't run): source order is all we have.
+            for decl in &module.decls {
+                if let hir::Decl::Bind(bind) = decl.value() {
+                    self.infer_bind(bind, true);
+                }
+            }
+            return;
+        }
+        for group in &module.groups {
+            self.infer_group(&module.decls, group);
+        }
+    }
+
+    /// Infer one strongly connected component of the top-level bindings.
+    fn infer_group(&mut self, decls: &[hir::LDecl], group: &hir::BindGroup) {
+        let binds: Vec<(&hir::Bind, Span)> = group
+            .members
+            .iter()
+            .filter_map(|&i| match decls[i].value() {
+                hir::Decl::Bind(bind) => Some((bind, decls[i].span)),
+                _ => None,
+            })
+            .collect();
+
+        // A lone non-recursive binding is just a binding.
+        if !group.recursive && binds.len() == 1 {
+            self.infer_bind(binds[0].0, true);
+            return;
+        }
+
+        self.arena.enter_level();
+
+        // Seed every name in the group before inferring any body, so a mention of
+        // a sibling resolves to a variable the sibling's own inference constrains
+        // rather than to an unrelated fresh one.
+        let mut seeds: Vec<Vec<(VarId, Type)>> = Vec::with_capacity(binds.len());
+        for (bind, span) in &binds {
+            let seeded: Vec<(VarId, Type)> = bind
+                .bound_vars()
+                .into_iter()
+                .map(|vid| {
+                    let ty = self.arena.fresh();
+                    self.bind_mono(vid, &ty, *span);
+                    (vid, ty)
+                })
+                .collect();
+            seeds.push(seeded);
+        }
+
+        // Every member of the group has to be pure for any of them to generalize:
+        // the value restriction, applied to the group as a whole.
+        let mut pure = true;
+        for ((bind, _), seed) in binds.iter().zip(&seeds) {
+            pure &= self.infer_group_member(bind, seed);
+        }
+
+        self.arena.exit_level();
+
+        for seed in &seeds {
+            for (vid, ty) in seed {
+                let scheme = if pure {
+                    self.generalize(ty)
+                } else {
+                    Scheme::mono(self.arena.zonk(ty))
+                };
+                self.env.insert(*vid, scheme);
+                self.exports.push(*vid);
+            }
+        }
+    }
+
+    /// One member of a recursive group: infer its body and tie the result to the
+    /// seed the rest of the group is seeing. Levels and generalization are the
+    /// group's business, not this function's. Returns whether it was pure.
+    fn infer_group_member(&mut self, bind: &hir::Bind, seed: &[(VarId, Type)]) -> bool {
+        match bind {
+            hir::Bind::Fun(name, params, body) => {
+                let mut bound = Vec::new();
+                let param_tys: Vec<Type> = params
+                    .iter()
+                    .map(|p| self.infer_pat(p, &mut bound))
+                    .collect();
+                let ret = self.arena.fresh();
+                let body_eff = self.arena.fresh_effect();
+                let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
+
+                let fn_ty = Type::func_eff(param_tys, ret.clone(), body_eff);
+                if let Some((_, seed_ty)) = seed.first() {
+                    self.unify_at(name.span, seed_ty.clone(), fn_ty.clone());
+                }
+                self.table.set(name.id, fn_ty.clone());
+
+                let body_ty = self.infer_expr(body);
+                self.unify_at(body.span, ret, body_ty);
+                self.cur_effect = saved;
+                self.table.set(name.id, self.arena.zonk(&fn_ty));
+                // Defining a function performs no effects.
+                true
+            }
+            hir::Bind::Pat(pat, expr) => {
+                let rhs_eff = self.arena.fresh_effect();
+                let saved = std::mem::replace(&mut self.cur_effect, rhs_eff.clone());
+                let rhs = self.infer_expr(expr);
+                let mut bound = Vec::new();
+                let pty = self.infer_pat(pat, &mut bound);
+                self.unify_at(pat.span, pty, rhs);
+                self.cur_effect = saved;
+
+                // `infer_pat` gave each name a fresh variable of its own; the group
+                // has been looking at the seed instead.
+                for (vid, vty) in bound {
+                    if let Some((_, seed_ty)) = seed.iter().find(|(v, _)| *v == vid) {
+                        self.unify_at(pat.span, seed_ty.clone(), vty);
+                    }
+                }
+                matches!(self.arena.zonk(&rhs_eff), Type::RowEmpty | Type::Var(_))
+            }
+            hir::Bind::Error => true,
         }
     }
 
@@ -709,6 +841,20 @@ impl Infer {
 
     // --- bindings ----------------------------------------------------------
 
+    /// Bind `vid` to `ty` monomorphically, first tying `ty` to whatever
+    /// placeholder an earlier forward reference left behind for the name (see the
+    /// `Expr::Var` arm). For everything else — every local, and every top-level
+    /// binding the sort managed to order — there is no prior entry and this is a
+    /// plain insert.
+    fn bind_mono(&mut self, vid: VarId, ty: &Type, span: Span) {
+        if let Some(prev) = self.env.get(&vid).cloned()
+            && prev.quant.is_empty()
+        {
+            self.unify_at(span, prev.ty, ty.clone());
+        }
+        self.env.insert(vid, Scheme::mono(ty.clone()));
+    }
+
     fn infer_bind(&mut self, bind: &hir::Bind, toplevel: bool) {
         match bind {
             hir::Bind::Fun(name, params, body) => {
@@ -732,7 +878,7 @@ impl Infer {
                 // curried: `fun f a b = e` is `a -> b -> typeof(e) ! <body effect>`
                 let fn_ty = Type::func_eff(param_tys, ret.clone(), body_eff);
                 // Bind the name monomorphically first so the body can recurse.
-                self.env.insert(vid, Scheme::mono(fn_ty.clone()));
+                self.bind_mono(vid, &fn_ty, name.span);
                 self.table.set(name.id, fn_ty.clone());
 
                 let body_ty = self.infer_expr(body);
@@ -805,8 +951,19 @@ impl Infer {
                 let ty = match self.env.get(&*ident.value()).cloned() {
                     Some(scheme) => self.instantiate(&scheme),
                     None => {
-                        // Unresolved name already reported by the resolver; keep going.
-                        self.arena.fresh()
+                        // Either an unresolved name (the resolver has already said
+                        // so) or a top-level binding in a dependency cycle that
+                        // `meadow-scc` could not break — mutually recursive
+                        // modules, in practice. Give the name one shared
+                        // monomorphic placeholder rather than an unrelated fresh
+                        // variable per mention: that is what makes the constraints
+                        // from the uses meet the eventual definition instead of
+                        // being silently discarded. The outermost level keeps any
+                        // enclosing binding from generalizing over it, which would
+                        // be a promise of polymorphism the definition never made.
+                        let ty = self.arena.fresh_global();
+                        self.env.insert(*ident.value(), Scheme::mono(ty.clone()));
+                        ty
                     }
                 };
                 self.table.set(ident.id, ty.clone());
@@ -1093,7 +1250,7 @@ impl Infer {
             hir::Pat::Var(ident) => {
                 let vid = *ident.value();
                 let t = self.arena.fresh();
-                self.env.insert(vid, Scheme::mono(t.clone()));
+                self.bind_mono(vid, &t, ident.span);
                 self.table.set(ident.id, t.clone());
                 bound.push((vid, t.clone()));
                 t
@@ -1102,7 +1259,7 @@ impl Infer {
             hir::Pat::As(ident, sub) => {
                 let st = self.infer_pat(sub, bound);
                 let vid = *ident.value();
-                self.env.insert(vid, Scheme::mono(st.clone()));
+                self.bind_mono(vid, &st, ident.span);
                 self.table.set(ident.id, st.clone());
                 bound.push((vid, st.clone()));
                 st

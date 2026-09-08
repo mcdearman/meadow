@@ -396,9 +396,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermit-abi"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
+checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
 name = "home"
@@ -563,6 +563,7 @@ dependencies = [
  "itertools",
  "meadow-compiler",
  "meadow-eval",
+ "meadow-fmt",
  "rustyline",
  "yansi",
 ]
@@ -591,6 +592,7 @@ dependencies = [
  "meadow-lexer",
  "meadow-parser",
  "meadow-rename",
+ "meadow-scc",
  "meadow-source",
  "meadow-span",
 ]
@@ -635,6 +637,10 @@ dependencies = [
  "meadow-intern",
  "meadow-span",
 ]
+
+[[package]]
+name = "meadow-fmt"
+version = "0.1.0"
 
 [[package]]
 name = "meadow-hir"
@@ -702,6 +708,13 @@ dependencies = [
  "meadow-hir",
  "meadow-intern",
  "meadow-span",
+]
+
+[[package]]
+name = "meadow-scc"
+version = "0.1.0"
+dependencies = [
+ "meadow-hir",
 ]
 
 [[package]]

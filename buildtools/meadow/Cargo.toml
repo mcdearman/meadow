@@ -1,18 +1,17 @@
-[workspace]
-
 [package]
 name = "meadow"
-description = "The Meadow build system (package discovery, pipeline, linker, embedded stdlib) plus the CLI and REPL. Its own workspace."
-version = "0.1.0"
-edition = "2024"
+description = "The Meadow build system (package discovery, pipeline, linker, embedded stdlib) plus the CLI and REPL."
+version.workspace = true
+edition.workspace = true
 
 [[bin]]
 name = "meadow"
 path = "src/main.rs"
 
 [dependencies]
-meadow-compiler = { path = "../compiler/meadow-compiler" }
-meadow-eval = { path = "../eval" }
+meadow-compiler.workspace = true
+meadow-eval.workspace = true
+meadow-fmt.workspace = true
 chumsky = { version = "0.13.0", features = ["pratt"] }
 clap = { version = "4.6.1", features = ["cargo", "derive"] }
 env_logger = "0.11.10"

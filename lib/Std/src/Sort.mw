@@ -1,0 +1,348 @@
+-- Std.Sort: sorting.
+--
+--   use Std.Sort (sort, sortBy, sortOn)
+--
+--   def main = sort [3, 1, 2]              -- [1, 2, 3]
+--
+-- Two sorts, and the choice between them is the usual one:
+--
+--   `sortBy`        in place, unstable, no allocation beyond the cells.
+--                   Carries the `Mut` effect.
+--   `stableSortBy`  merge sort, stable, allocates. Pure -- no effect at all.
+--
+-- `sortBy` is an introsort: quicksort with a median-of-three pivot, insertion
+-- sort for short ranges, and a heapsort fallback once recursion gets too deep.
+-- The fallback is what makes the worst case O(n log n) rather than O(n^2), so no
+-- input can make it quadratic -- including the almost-sorted and all-equal
+-- inputs that defeat a naive quicksort.
+--
+-- --- why an array of cells ----------------------------------------------------
+--
+-- Sorting in place needs an O(1) swap, and meadow's `Array` is persistent:
+-- `arraySet` returns a new array and copies unless it uniquely owns the buffer.
+-- A `Ref (Array a)` would therefore copy on *every* write -- O(n) a swap, which
+-- is no kind of in-place sort.
+--
+-- So the scratch space is an `Array (Ref a)`: the array never changes, and each
+-- element is its own cell. Swapping is two `setRef`s, O(1), and indexing stays
+-- O(1). The cost is one allocation per element while sorting, which a real
+-- mutable-array primitive would remove; this needs nothing the language does not
+-- already have.
+
+use Std.Ordering (compare, isLess, isGreater)
+use Std.Bits (countLeadingZeros)
+use Std.Tuple (fst, snd)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+-- Ranges shorter than this go to insertion sort, which beats quicksort's
+-- overhead when there is little to divide.
+def smallRange = 16
+
+-- --- the public surface -------------------------------------------------------
+
+-- Sort a `Vector` by a comparison. Unstable: equal elements may be reordered.
+@pub fun sortBy cmp v =
+  let cells = thaw v in
+  let n = arrayLen cells in
+  let ignored = introsort cmp cells 0 n (depthLimit n) in
+  freeze cells
+
+-- Ascending, for the types `compare` handles.
+@pub fun sort v = sortBy compare v
+
+@pub fun sortDesc v = sortBy (\a b -> compare b a) v
+
+-- Sort by a projection: `sortOn length names`. The key is computed on every
+-- comparison rather than cached, so keep it cheap -- or use `sortBy`.
+@pub fun sortOn key v = sortBy (\a b -> compare (key a) (key b)) v
+
+-- The in-place sort itself, on a plain `Array`.
+@pub fun sortArrayBy cmp arr = V.toArray (sortBy cmp (V.fromArray arr))
+
+@pub fun sortArray arr = sortArrayBy compare arr
+
+-- --- the stable sort ----------------------------------------------------------
+--
+-- Merge sort over `List`. Stable, and pure -- nothing here mutates, so a caller
+-- that uses it keeps an empty effect row.
+
+@pub fun stableSortBy cmp xs = mergeSort cmp xs
+
+@pub fun stableSort xs = mergeSort compare xs
+
+-- Stable sort of a `Vector`, via `List`.
+@pub fun stableSortVecBy cmp v = V.fromList (mergeSort cmp (V.toList v))
+
+fun mergeSort cmp xs =
+  match xs with
+  | [;] -> [;]
+  | x :: rest ->
+      match rest with
+      | [;] -> xs
+      | y :: more ->
+          let (l, r) = halve xs in
+          merge cmp (mergeSort cmp l) (mergeSort cmp r)
+
+-- `<=` on the left, so equal elements keep their original order.
+fun merge cmp l r =
+  match l with
+  | [;] -> r
+  | x :: xs ->
+      match r with
+      | [;] -> l
+      | y :: ys ->
+          if isGreater (cmp x y)
+          then y :: merge cmp l ys
+          else x :: merge cmp xs r
+
+-- Split into two halves by walking two cursors, one twice as fast.
+fun halve xs = halveAt xs xs [;]
+
+fun halveAt slow fast acc =
+  match fast with
+  | [;] -> (reverseOnto [;] acc, slow)
+  | f :: fs ->
+      match fs with
+      | [;] -> (reverseOnto [;] acc, slow)
+      | g :: gs ->
+          match slow with
+          | [;] -> (reverseOnto [;] acc, slow)
+          | s :: ss -> halveAt ss gs (s :: acc)
+
+fun reverseOnto acc xs =
+  match xs with
+  | [;] -> acc
+  | x :: rest -> reverseOnto (x :: acc) rest
+
+-- --- checking -----------------------------------------------------------------
+
+@pub fun isSortedBy cmp v = sortedFrom cmp (V.toArray v) 1
+
+@pub fun isSorted v = isSortedBy compare v
+
+fun sortedFrom cmp arr i =
+  if i >= arrayLen arr
+  then True
+  else if isGreater (cmp (arrayGet arr (i - 1)) (arrayGet arr i))
+  then False
+  else sortedFrom cmp arr (i + 1)
+
+-- --- the scratch space --------------------------------------------------------
+
+-- Built through `Vector`, not by `arrayPush` in a loop.
+--
+-- `arrayPush` copies the whole buffer on every call: the argument still holds a
+-- reference while the primitive runs, so its copy-on-write can never find the
+-- buffer uniquely owned. Accumulating an `n`-element `Array` that way is O(n^2),
+-- which would swamp the sort itself. `Vector`'s map works on chunks of 32 and
+-- concatenates them, so this is O(n).
+fun thaw v = V.toArray (V.map (\x -> newRef x) v)
+
+fun freeze cells = V.map (\c -> getRef c) (V.fromArray cells)
+
+fun at cells i = getRef (arrayGet cells i)
+
+fun put cells i x = setRef (arrayGet cells i) x
+
+fun swapAt cells i j =
+  let a = at cells i in
+  let b = at cells j in
+  let ignored = put cells i b in
+  put cells j a
+
+-- --- introsort ----------------------------------------------------------------
+--
+-- `2 * floor(log2 n)` is the usual budget: a well-behaved quicksort never comes
+-- close, and one that does has already gone wrong.
+
+fun depthLimit n = 2 * floorLog2 n
+
+fun floorLog2 n = 63 - countLeadingZeros n
+
+-- Sort the half-open range [lo, hi).
+fun introsort cmp cells lo hi depth =
+  let n = hi - lo in
+  if n <= 1 then ()
+  else if n <= smallRange then insertionSort cmp cells lo hi
+  else if depth <= 0 then heapSort cmp cells lo hi
+  else
+    let p = partition cmp cells lo hi in
+    let ignored = introsort cmp cells lo p (depth - 1) in
+    introsort cmp cells (p + 1) hi (depth - 1)
+
+-- --- insertion sort -----------------------------------------------------------
+
+fun insertionSort cmp cells lo hi = insertOuter cmp cells lo hi (lo + 1)
+
+fun insertOuter cmp cells lo hi i =
+  if i >= hi
+  then ()
+  else
+    let ignored = insertInner cmp cells lo i in
+    insertOuter cmp cells lo hi (i + 1)
+
+-- Walk `j` down while it is smaller than the element before it.
+fun insertInner cmp cells lo j =
+  if j <= lo
+  then ()
+  else if isLess (cmp (at cells j) (at cells (j - 1)))
+  then
+    let ignored = swapAt cells j (j - 1) in
+    insertInner cmp cells lo (j - 1)
+  else ()
+
+-- --- quicksort ----------------------------------------------------------------
+
+-- Lomuto partition around a median-of-three pivot parked at the last slot.
+-- Returns the pivot's final index.
+fun partition cmp cells lo hi =
+  let last = hi - 1 in
+  let mid = lo + (hi - lo) / 2 in
+  let ignored = medianOfThree cmp cells lo mid last in
+  let pivot = at cells last in
+  let i = lomuto cmp cells lo last lo pivot in
+  let ignored2 = swapAt cells i last in
+  i
+
+-- Order the three so the median ends up at `last` -- the pivot a naive
+-- "first element" choice gets wrong on sorted input.
+fun medianOfThree cmp cells lo mid last =
+  let a = if isLess (cmp (at cells mid) (at cells lo)) then swapAt cells lo mid else () in
+  let b = if isLess (cmp (at cells last) (at cells lo)) then swapAt cells lo last else () in
+  -- `lo` now holds the smallest, so the median is the smaller of the other two.
+  if isLess (cmp (at cells mid) (at cells last)) then swapAt cells mid last else ()
+
+-- `j` scans, `i` is where the next smaller-than-pivot element goes.
+fun lomuto cmp cells j last i pivot =
+  if j >= last
+  then i
+  else if isLess (cmp (at cells j) pivot)
+  then
+    let ignored = swapAt cells i j in
+    lomuto cmp cells (j + 1) last (i + 1) pivot
+  else lomuto cmp cells (j + 1) last i pivot
+
+-- --- heapsort -----------------------------------------------------------------
+--
+-- The fallback. Guaranteed O(n log n) and O(1) extra space, which is what makes
+-- the whole thing safe against an input crafted to defeat the pivot.
+
+fun heapSort cmp cells lo hi =
+  let n = hi - lo in
+  if n <= 1
+  then ()
+  else
+    let ignored = buildHeap cmp cells lo n (n / 2 - 1) in
+    popAll cmp cells lo (n - 1)
+
+fun buildHeap cmp cells lo n i =
+  if i < 0
+  then ()
+  else
+    let ignored = siftDown cmp cells lo n i in
+    buildHeap cmp cells lo n (i - 1)
+
+-- Repeatedly move the largest to the end and shrink the heap.
+fun popAll cmp cells lo i =
+  if i <= 0
+  then ()
+  else
+    let ignored = swapAt cells lo (lo + i) in
+    let ignored2 = siftDown cmp cells lo i 0 in
+    popAll cmp cells lo (i - 1)
+
+-- Max-heap sift-down. `i` and the heap size `n` are relative to `lo`.
+fun siftDown cmp cells lo n i =
+  let l = 2 * i + 1 in
+  let r = l + 1 in
+  let bigL =
+    if l < n and isGreater (cmp (at cells (lo + l)) (at cells (lo + i))) then l else i
+  in
+  let big =
+    if r < n and isGreater (cmp (at cells (lo + r)) (at cells (lo + bigL))) then r else bigL
+  in
+  if big == i
+  then ()
+  else
+    let ignored = swapAt cells (lo + i) (lo + big) in
+    siftDown cmp cells lo n big
+
+-- --- tests --------------------------------------------------------------------
+
+@test fun sortsTheEasyCases u =
+  let a = assertEq (sort [3, 1, 2]) [1, 2, 3] "three elements" in
+  let b = assertEq (sort []) [] "nothing" in
+  let c = assertEq (sort [1]) [1] "one" in
+  let d = assertEq (sort [2, 1]) [1, 2] "two" in
+  assertEq (sort [1, 2, 3]) [1, 2, 3] "already sorted"
+
+@test fun theInputsThatDefeatANaivePivot u =
+  -- A "first element" pivot is quadratic on all of these; median-of-three and
+  -- the heapsort fallback are not.
+  let asc = V.range 0 200 in
+  let desc = V.reverse asc in
+  let same = V.replicate 200 7 in
+  let a = assertEq (sort asc) asc "already ascending" in
+  let b = assertEq (sort desc) asc "descending" in
+  let c = assertTrue (isSorted (sort same)) "all equal" in
+  assertEq (V.len (sort same)) 200 "and nothing was lost"
+
+@test fun aBigShuffledInputComesBackSorted u =
+  -- Long enough to go through quicksort and its recursion rather than straight
+  -- to insertion sort.
+  let shuffled = V.map (\i -> (i * 7919) % 1000) (V.range 0 1000) in
+  let sorted = sort shuffled in
+  let a = assertTrue (isSorted sorted) "sorted" in
+  let b = assertEq (V.len sorted) 1000 "same length" in
+  assertEq (V.sum sorted) (V.sum shuffled) "same elements"
+
+@test fun sortingIsAPermutationNotAFilter u =
+  -- Duplicates must survive; a set-like bug would silently drop them.
+  let v = [3, 1, 3, 2, 1, 3] in
+  let s = sort v in
+  let a = assertEq s [1, 1, 2, 3, 3, 3] "duplicates kept, in order" in
+  assertEq (V.len s) (V.len v) "same length"
+
+@test fun byAndOnAndDesc u =
+  let a = assertEq (sortDesc [1, 3, 2]) [3, 2, 1] "descending" in
+  let b = assertEq (sortBy (\x y -> compare y x) [1, 3, 2]) [3, 2, 1] "a reversed comparison" in
+  assertEq (sortOn (\p -> snd p) [(1, 3), (2, 1), (3, 2)]) [(2, 1), (3, 2), (1, 3)] "sortOn"
+
+@test fun theArrayFormSortsInPlaceAndComesBack u =
+  let a = assertEq (sortArray #[3, 1, 2]) #[1, 2, 3] "sortArray" in
+  assertEq (sortArray #[]) #[] "empty"
+
+@test fun theSortedCheck u =
+  let a = assertTrue (isSorted [1, 2, 3]) "ascending" in
+  let b = assertTrue (isSorted [1, 1, 2]) "equal neighbours are sorted" in
+  let c = assertFalse (isSorted [2, 1]) "descending" in
+  let d = assertTrue (isSorted []) "nothing is sorted" in
+  assertTrue (isSorted [1]) "one element"
+
+@test fun theStableSortKeepsEqualElementsInOrder u =
+  -- Sort pairs on the first component only: the second must come back in its
+  -- original order. This is exactly what `sortBy` does not promise.
+  let ps = [(1, "a"); (0, "b"); (1, "c"); (0, "d"); (1, "e")] in
+  assertEq
+    (stableSortBy (\x y -> compare (fst x) (fst y)) ps)
+    [(0, "b"); (0, "d"); (1, "a"); (1, "c"); (1, "e")]
+    "ties keep their original order"
+
+@test fun theStableSortAgreesWithTheFastOneOnValues u =
+  let v = V.map (\i -> (i * 31) % 97) (V.range 0 300) in
+  assertEq (V.toList (sort v)) (stableSort (V.toList v)) "same answer"
+
+@test fun theStableSortHandlesTheEdges u =
+  let a = assertEq (stableSort [;]) [;] "nothing" in
+  let b = assertEq (stableSort [1;]) [1;] "one" in
+  let c = assertEq (stableSort [2; 1]) [1; 2] "two" in
+  assertEq (stableSort [3; 1; 2]) [1; 2; 3] "three"
+
+@test fun sortingLeavesTheOriginalAlone u =
+  -- The mutation is confined to the scratch cells; the vector handed in is a
+  -- persistent value and must be unchanged.
+  let v = [3, 1, 2] in
+  let ignored = sort v in
+  assertEq v [3, 1, 2] "the input survives"

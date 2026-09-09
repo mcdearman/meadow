@@ -18,6 +18,7 @@
 @pub mod Bytes
 @pub mod Yield
 @pub mod Collections
+@pub mod Sort
 @pub mod State
 @pub mod Exn
 @pub mod Stream

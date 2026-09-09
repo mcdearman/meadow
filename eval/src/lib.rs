@@ -44,8 +44,20 @@ pub enum Value {
     Unit,
     Tuple(Vec<Value>),
     /// The one builtin collection: a persistent, `Rc`-shared contiguous buffer.
-    /// `Rc` gives O(1) clone + structural sharing; `Rc::make_mut` lets `arraySet`
-    /// / `arrayPush` mutate in place when the buffer is uniquely held.
+    /// `Rc` gives O(1) clone and structural sharing.
+    ///
+    /// **`arraySet` / `arrayPush` / `arrayPop` copy the whole buffer, always.**
+    /// They call `Rc::make_mut`, but it never finds the buffer uniquely held:
+    /// the argument vector holds one reference for the duration of the call and
+    /// the caller's environment usually holds another. Writing an `n`-element
+    /// array one push at a time is therefore O(n²) — `Std.Collections.Vector`
+    /// only gets away with it because its chunks are 32 elements. Anything
+    /// building a full-length array should go through `Vector` (chunked, so
+    /// linear) rather than accumulating with `arrayPush`.
+    ///
+    /// Making the in-place case actually happen needs last-use information the
+    /// evaluator does not have — moving out of `args` alone is not enough while
+    /// the environment still holds the binding.
     ///
     /// `List` and `Vector` are *not* here — they are ordinary `Std` data types
     /// and reach the runtime as [`Value::Ctor`] chains.

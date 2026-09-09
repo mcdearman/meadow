@@ -191,41 +191,61 @@ fn sorting_pathological_input_terminates() {
     assert_eq!(eval_main_std(src), "(true, true)");
 }
 
-// --- the known depth limit ---------------------------------------------------
+// --- deep data structures ----------------------------------------------------
 //
-// `Value::Ctor` holds a plain `Vec<Value>`, not an `Rc` — so binding a tail in
-// `| Cons x rest ->` deep-copies the whole remaining list, recursively. Two
-// consequences: `List` operations are O(n²), and past roughly 2000 elements the
-// recursive `Value::clone` overflows the *Rust* stack and aborts the process —
-// not a catchable error, and not something a Meadow program can guard against.
+// `Value::Ctor` shares its payload behind an `Rc`, so binding a tail in
+// `| Cons x rest ->` is a refcount bump rather than a copy of the rest of the
+// list. Before that a walk was O(n²) and the recursive `Value::clone`
+// overflowed the *Rust* stack at about 2000 elements — aborting the process,
+// which no Meadow program could guard against.
 //
-// `Vector` is unaffected: it is a tree, so it is only ~log32(n) deep. A 100_000
-// element `Vector` is fine.
-//
-// These tests pin the sizes that work. If the limit ever regresses below them
-// this fails; the fix is to share `Ctor`'s payload behind an `Rc` so that
-// binding a tail is a refcount bump rather than a copy.
+// Two more paths had the same shape and are now iterative: dropping a chain
+// (`Fields::drop`) and comparing two (`value_eq`).
 
 #[test]
-fn lists_of_a_workable_size_are_safe() {
-    let src = "use Std.Collections.List as L\n\
-               def main = L.length (L.range 0 1000)\n";
-    assert_eq!(eval_main_std(src), "1000");
-}
-
-#[test]
-fn vectors_are_not_subject_to_the_list_depth_limit() {
-    // The tree shape is what makes this fine at a size that would abort for a
-    // `List` fifty times smaller.
-    let src = "use Std.Collections.Vector as V\n\
-               def main = V.len (V.range 0 50000)\n";
+fn a_long_list_can_be_built_and_walked() {
+    let src = "use Std.Collections.List as L
+\n               def main = L.length (L.range 0 50000)
+";
     assert_eq!(eval_main_std(src), "50000");
 }
 
 #[test]
-fn deep_recursion_itself_is_fine() {
-    // The continuation lives on the heap, so recursion depth is not the problem
-    // — 200_000 frames, non-tail, is fine. Only the data structure is.
-    let src = "fun go i = if i <= 0 then 0 else 1 + go (i - 1)\ndef main = go 200000\n";
+fn a_long_list_can_be_compared() {
+    // `==` recursed per element until `value_eq` was made iterative.
+    let src = "use Std.Collections.List as L
+\n               def main =
+\n                 let a = L.range 0 50000 in
+\n                 (a == a, a == L.range 0 50000, a == L.range 0 49999)
+";
+    assert_eq!(eval_main_std(src), "(true, true, false)");
+}
+
+#[test]
+fn a_long_list_can_be_shown() {
+    let src = "use Std.Collections.List as L
+\n               use Std.String as S
+\n               def main = S.byteLength (show (L.range 0 20000)) > 0
+";
+    assert_eq!(eval_main_std(src), "true");
+}
+
+#[test]
+fn vectors_were_never_subject_to_it() {
+    // A tree, so only ~log32(n) deep — this worked even before the fix, and is
+    // here so a regression shows up as a difference between the two.
+    let src = "use Std.Collections.Vector as V
+\n               def main = V.len (V.range 0 50000)
+";
+    assert_eq!(eval_main_std(src), "50000");
+}
+
+#[test]
+fn deep_recursion_itself_was_never_the_problem() {
+    // The continuation lives on the heap, so 200_000 non-tail frames are fine.
+    // Only the data structure ever was.
+    let src = "fun go i = if i <= 0 then 0 else 1 + go (i - 1)
+def main = go 200000
+";
     assert_eq!(eval_main_std(src), "200000");
 }

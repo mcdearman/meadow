@@ -65,16 +65,16 @@ pub enum Value {
     Record(BTreeMap<InternedString, Value>),
     /// A data constructor and its fields.
     ///
-    /// **Not shared, unlike [`Value::Array`].** Cloning one deep-copies the whole
-    /// tree, which matters most for `List`: matching `| Cons x rest ->` binds
-    /// `rest` by cloning, so walking a list is O(n²) and the recursive
-    /// `Value::clone` overflows the Rust stack at roughly 2000 elements —
-    /// aborting the process, not raising an error a program could catch.
+    /// The payload is shared, like [`Value::Array`]'s, and for the same reason
+    /// twice over. `List` is a `Cons` chain, so matching `| Cons x rest ->` binds
+    /// `rest` on every step: with a plain `Vec` that copied the whole remaining
+    /// list, making a walk O(n²) and — because `Value::clone` recurses once per
+    /// element — overflowing the *Rust* stack at about 2000 elements, aborting
+    /// the process rather than raising an error. With an `Rc` both go away:
+    /// binding a tail is a refcount bump.
     ///
-    /// `Vector` escapes this by being a tree (~log32(n) deep); 100_000 elements
-    /// is fine. Putting this payload behind an `Rc` would fix both the depth
-    /// limit and the quadratic walk.
-    Ctor(InternedString, Vec<Value>),
+    /// Use [`Value::ctor`] to build one.
+    Ctor(InternedString, Rc<Fields>),
     Closure {
         param: Var,
         body: Arc<Term>,
@@ -94,6 +94,54 @@ pub enum Value {
     /// equality on them compare pointers rather than contents — `newRef 1` twice
     /// gives two cells that hold the same thing and are not the same cell.
     Ref(Rc<RefCell<Value>>),
+}
+
+impl Value {
+    /// Build a constructor value.
+    ///
+    /// The one place `Value::Ctor` is assembled, so the sharing is not something
+    /// a caller has to remember.
+    pub fn ctor(name: InternedString, args: Vec<Value>) -> Value {
+        Value::Ctor(name, Rc::new(Fields(args)))
+    }
+}
+
+/// A constructor's fields.
+///
+/// A newtype only so that [`Drop`] can be implemented on it. Dropping a `List`
+/// is dropping a `Cons` whose second field is another `Cons`, so the derived
+/// drop glue recurses once per element and overflows the stack on a list of a
+/// few thousand — the same shape of bug as the recursive `clone` that sharing
+/// fixed, and not fixed by sharing.
+///
+/// It cannot go on `Value` itself: a type that implements `Drop` cannot be
+/// destructured by move, and the evaluator does that everywhere.
+#[derive(Debug, Clone)]
+pub struct Fields(Vec<Value>);
+
+/// So `args.len()`, `args[0]` and `args.iter()` keep working on a `Fields`.
+impl std::ops::Deref for Fields {
+    type Target = Vec<Value>;
+    fn deref(&self) -> &Vec<Value> {
+        &self.0
+    }
+}
+
+impl Drop for Fields {
+    fn drop(&mut self) {
+        // Dismantle iteratively: move each child out, and if it is the last
+        // reference to another node, move *its* children onto the same worklist
+        // rather than letting the drop nest.
+        let mut stack: Vec<Value> = std::mem::take(&mut self.0);
+        while let Some(v) = stack.pop() {
+            if let Value::Ctor(_, rc) = v
+                && let Ok(mut fields) = Rc::try_unwrap(rc)
+            {
+                // Emptied before it drops, so its own `drop` finds nothing to do.
+                stack.append(&mut fields.0);
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -501,7 +549,7 @@ impl Machine<'_> {
                 self.ctrl = Control::Ret(match kind {
                     SeqKind::Tuple => Value::Tuple(vec![]),
                     SeqKind::Array => Value::Array(Rc::new(vec![])),
-                    SeqKind::Ctor(name) => Value::Ctor(name, vec![]),
+                    SeqKind::Ctor(name) => Value::ctor(name, vec![]),
                     SeqKind::Prim(_) => Value::Unit, // prims always have args
                 });
             }
@@ -603,7 +651,7 @@ impl Machine<'_> {
                         });
                         self.ctrl = Control::Eval(Arc::new(next), env);
                     }
-                    None => self.ctrl = Control::Ret(Value::Ctor(name, done)),
+                    None => self.ctrl = Control::Ret(Value::ctor(name, done)),
                 }
             }
             K::BuildPrim {
@@ -665,7 +713,9 @@ impl Machine<'_> {
                         .fields
                         .get(&cname)
                         .and_then(|fs| fs.iter().position(|f| *f == label))
-                        .and_then(|i| vals.into_iter().nth(i))
+                        // The payload is shared, so take a copy of the one field
+                        // rather than moving the whole thing out.
+                        .and_then(|i| vals.get(i).cloned())
                         .ok_or_else(|| RuntimeError {
                             msg: format!("`{cname}` has no field `{label}`"),
                         })?,
@@ -850,14 +900,14 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
         (P::Lit(core::Lit::Bool(a)), Value::Bool(b)) => a == b,
         (P::Lit(core::Lit::Unit), Value::Unit) => true,
         (P::Tuple(ps), Value::Tuple(vs)) if ps.len() == vs.len() => {
-            ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, scope))
+            ps.iter().zip(vs.iter()).all(|(p, v)| match_pat(p, v, scope))
         }
         (P::Array(ps), Value::Array(vs)) if ps.len() == vs.len() => ps
             .iter()
             .zip(vs.iter())
             .all(|(p, v)| match_pat(p, v, scope)),
         (P::Ctor(name, ps), Value::Ctor(vname, vs)) if name == vname && ps.len() == vs.len() => {
-            ps.iter().zip(vs).all(|(p, v)| match_pat(p, v, scope))
+            ps.iter().zip(vs.iter()).all(|(p, v)| match_pat(p, v, scope))
         }
         (P::Record(fields), Value::Record(map)) => fields
             .iter()
@@ -1191,7 +1241,7 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
                 Value::Str(s) => *s,
                 other => return err(format!("`bytesFromHex` expects a String, got {other}")),
             };
-            let none = || Value::Ctor(InternedString::from("None"), vec![]);
+            let none = || Value::ctor(InternedString::from("None"), vec![]);
             let bytes = s.as_bytes();
             if bytes.len() % 2 != 0 {
                 return Ok(none());
@@ -1205,7 +1255,7 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
                     _ => return Ok(none()),
                 }
             }
-            Ok(Value::Ctor(
+            Ok(Value::ctor(
                 InternedString::from("Just"),
                 vec![Value::Array(Rc::new(out))],
             ))
@@ -1258,9 +1308,9 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     use std::path::Path;
 
     let sv = |s: String| Value::Str(InternedString::from(s));
-    let ok = |v: Value| Value::Ctor(InternedString::from("Ok"), vec![v]);
+    let ok = |v: Value| Value::ctor(InternedString::from("Ok"), vec![v]);
     let ioerr = |e: std::io::Error| {
-        Value::Ctor(
+        Value::ctor(
             InternedString::from("Err"),
             vec![Value::Str(InternedString::from(e.to_string()))],
         )
@@ -1368,10 +1418,10 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     use std::process::Command as Proc;
 
     let sv = |s: String| Value::Str(InternedString::from(s));
-    let ok = |v: Value| Value::Ctor(InternedString::from("Ok"), vec![v]);
-    let errv = |m: String| Value::Ctor(InternedString::from("Err"), vec![sv(m)]);
-    let just = |v: Value| Value::Ctor(InternedString::from("Just"), vec![v]);
-    let none = || Value::Ctor(InternedString::from("None"), vec![]);
+    let ok = |v: Value| Value::ctor(InternedString::from("Ok"), vec![v]);
+    let errv = |m: String| Value::ctor(InternedString::from("Err"), vec![sv(m)]);
+    let just = |v: Value| Value::ctor(InternedString::from("Just"), vec![v]);
+    let none = || Value::ctor(InternedString::from("None"), vec![]);
 
     let as_str = |v: &Value| -> Result<InternedString, RuntimeError> {
         match v {
@@ -1480,13 +1530,13 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
 // `Value::Bool`.
 
 fn nil_value() -> Value {
-    Value::Ctor(InternedString::from("Nil"), vec![])
+    Value::ctor(InternedString::from("Nil"), vec![])
 }
 
 /// Build a `Cons`/`Nil` chain from `items`, in order.
 fn list_value(items: Vec<Value>) -> Value {
     items.into_iter().rfold(nil_value(), |tail, head| {
-        Value::Ctor(InternedString::from("Cons"), vec![head, tail])
+        Value::ctor(InternedString::from("Cons"), vec![head, tail])
     })
 }
 
@@ -1565,45 +1615,83 @@ fn vector_node_elems(n: &Value, out: &mut Vec<Value>) -> Option<()> {
     }
 }
 
+/// Structural equality, iteratively.
+///
+/// A `List` is a `Cons` chain as deep as it is long, so comparing two of them
+/// recursively overflows the stack at a few thousand elements. The worklist here
+/// is what keeps `==` usable on the sizes the language can now build.
+///
+/// Pairs are owned rather than borrowed because the `Vector` case has to extract
+/// its elements into a fresh `Vec`; cloning is cheap for exactly the values that
+/// can be deep, since `Ctor` and `Array` payloads are shared.
 fn value_eq(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Ctor(na, _), Value::Ctor(nb, _)) if is_vector_ctor(na) && is_vector_ctor(nb) => {
-            match (vector_elems(a), vector_elems(b)) {
-                (Some(xs), Some(ys)) => {
-                    xs.len() == ys.len() && xs.iter().zip(&ys).all(|(p, q)| value_eq(p, q))
+    let mut stack: Vec<(Value, Value)> = vec![(a.clone(), b.clone())];
+    while let Some((a, b)) = stack.pop() {
+        match (&a, &b) {
+            // A `Vector` is a tree, so two equal ones need not have equal shapes.
+            // Compare the sequences they denote instead.
+            (Value::Ctor(na, _), Value::Ctor(nb, _))
+                if is_vector_ctor(na) && is_vector_ctor(nb) =>
+            {
+                match (vector_elems(&a), vector_elems(&b)) {
+                    (Some(xs), Some(ys)) if xs.len() == ys.len() => {
+                        stack.extend(xs.into_iter().zip(ys));
+                    }
+                    _ => return false,
                 }
-                _ => false,
             }
+            (Value::Int(x), Value::Int(y)) if x == y => {}
+            (Value::BigInt(x), Value::BigInt(y)) if x == y => {}
+            (Value::Float(x), Value::Float(y)) if x == y => {}
+            (Value::Bool(x), Value::Bool(y)) if x == y => {}
+            (Value::Str(x), Value::Str(y)) if x == y => {}
+            (Value::Char(x), Value::Char(y)) if x == y => {}
+            (Value::Unit, Value::Unit) => {}
+            (Value::Tuple(x), Value::Tuple(y)) if x.len() == y.len() => {
+                stack.extend(x.iter().cloned().zip(y.iter().cloned()));
+            }
+            (Value::Array(x), Value::Array(y)) => {
+                if Rc::ptr_eq(x, y) {
+                    continue;
+                }
+                if x.len() != y.len() {
+                    return false;
+                }
+                stack.extend(x.iter().cloned().zip(y.iter().cloned()));
+            }
+            (Value::Ctor(n1, x), Value::Ctor(n2, y)) => {
+                if n1 != n2 {
+                    return false;
+                }
+                // The same allocation is trivially equal to itself — which is
+                // what makes `xs == xs` on a long list O(1) rather than O(n).
+                if Rc::ptr_eq(x, y) {
+                    continue;
+                }
+                if x.len() != y.len() {
+                    return false;
+                }
+                stack.extend(x.iter().cloned().zip(y.iter().cloned()));
+            }
+            (Value::Record(x), Value::Record(y)) => {
+                if x.len() != y.len() {
+                    return false;
+                }
+                for (k, v) in x.iter() {
+                    match y.get(k) {
+                        Some(w) => stack.push((v.clone(), w.clone())),
+                        None => return false,
+                    }
+                }
+            }
+            // Identity, not contents. Everything else here is a value and two of
+            // them are equal when they look alike; a `Ref` is a *place*, and two
+            // cells that happen to hold the same thing are still two cells.
+            (Value::Ref(x), Value::Ref(y)) if Rc::ptr_eq(x, y) => {}
+            _ => return false,
         }
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::BigInt(x), Value::BigInt(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Str(x), Value::Str(y)) => x == y,
-        (Value::Char(x), Value::Char(y)) => x == y,
-        (Value::Unit, Value::Unit) => true,
-        (Value::Tuple(x), Value::Tuple(y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| value_eq(p, q))
-        }
-        (Value::Array(x), Value::Array(y)) => {
-            Rc::ptr_eq(x, y)
-                || (x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| value_eq(p, q)))
-        }
-        (Value::Ctor(n1, x), Value::Ctor(n2, y)) => {
-            n1 == n2 && x.len() == y.len() && x.iter().zip(y).all(|(p, q)| value_eq(p, q))
-        }
-        (Value::Record(x), Value::Record(y)) => {
-            x.len() == y.len()
-                && x.iter()
-                    .all(|(k, v)| y.get(k).is_some_and(|w| value_eq(v, w)))
-        }
-        // Identity, not contents. Everything else here is a value and two of them
-        // are equal when they look alike; a `Ref` is a *place*, and two cells that
-        // happen to hold the same thing are still two cells. Comparing contents
-        // would also loop forever on a cell that holds itself.
-        (Value::Ref(x), Value::Ref(y)) => Rc::ptr_eq(x, y),
-        _ => false,
     }
+    true
 }
 
 // --- display -------------------------------------------------------------
@@ -1789,7 +1877,6 @@ fn native_time(op: &str, arg: Value) -> Result<Value, RuntimeError> {
 mod tests {
     use super::*;
     use meadow_core::{HClause, Lit, Prim, Program, Term};
-    use std::rc::Rc;
 
     fn v() -> Var {
         meadow_core::Var::fresh()
@@ -1955,7 +2042,7 @@ mod tests {
         assert_eq!(Value::Unit.to_string(), "()");
         assert_eq!(Value::Bool(true).to_string(), "true");
         assert_eq!(
-            Value::Ctor("Just".into(), vec![Value::Int(3)]).to_string(),
+            Value::ctor("Just".into(), vec![Value::Int(3)]).to_string(),
             "Just(3)"
         );
     }

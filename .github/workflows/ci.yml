@@ -34,7 +34,7 @@ jobs:
       - name: Install Rust
         run: rustup update stable
 
-      # Four independent workspaces, so four target directories. Keyed on every
+      # Five independent workspaces, so five target directories. Keyed on every
       # `Cargo.lock` in the tree.
       - uses: actions/cache@v4
         with:
@@ -42,6 +42,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             compiler/target
+            rts/target
             eval/target
             buildtools/target
             installer/target

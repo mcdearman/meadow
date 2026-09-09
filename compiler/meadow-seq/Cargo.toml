@@ -1,0 +1,13 @@
+[package]
+name = "meadow-seq"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_seq"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-core.workspace = true
+meadow-hir.workspace = true
+meadow-intern.workspace = true

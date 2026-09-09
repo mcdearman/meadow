@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "meadow-rts"
+description = "The Meadow runtime system: a register bytecode VM with a segmented stack for effect handlers, and a journal of inverse operations for stepping backwards. Its own workspace, like `eval`."
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "meadow_rts"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-core = { path = "../compiler/meadow-core" }
+meadow-intern = { path = "../compiler/meadow-intern" }
+meadow-seq = { path = "../compiler/meadow-seq" }
+num-bigint = "0.4"
+num-traits = "0.2"

@@ -1,3 +1,6 @@
+| `compiler/` | the front end, one crate per pass |
+| `eval/` | the CEK machine — the specification of what a program means |
+| `rts/` | the runtime system: a register bytecode VM (early) |
 # Meadow
 
 A small ML-family language: Hindley–Milner inference with row-polymorphic
@@ -223,7 +226,7 @@ fallback arm.
 
 ## Building from a checkout
 
-The tree is four independent Cargo workspaces:
+The tree is five independent Cargo workspaces:
 
 | | |
 |---|---|

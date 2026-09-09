@@ -25,10 +25,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# The tree is four independent Cargo workspaces, so there is no one
+# The tree is five independent Cargo workspaces, so there is no one
 # `cargo test --workspace` that covers it. Missing one is the whole reason this
 # script exists.
-WORKSPACES="compiler eval buildtools installer"
+WORKSPACES="compiler eval rts buildtools installer"
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 

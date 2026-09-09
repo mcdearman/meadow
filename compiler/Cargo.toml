@@ -19,6 +19,7 @@ meadow-rename = { path = "meadow-rename" }
 meadow-infer = { path = "meadow-infer" }
 meadow-exhaust = { path = "meadow-exhaust" }
 meadow-scc = { path = "meadow-scc" }
+meadow-seq = { path = "meadow-seq" }
 meadow-core = { path = "meadow-core" }
 num-bigint = "0.4"
 num-traits = "0.2"

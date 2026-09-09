@@ -231,7 +231,8 @@ The tree is five independent Cargo workspaces:
 | | |
 |---|---|
 | `compiler/` | the front end, one crate per pass |
-| `eval/` | the CEK machine |
+| `eval/` | the CEK machine — the specification of what a program means |
+| `rts/` | the runtime system: a register bytecode VM, checked against `eval` (early) |
 | `buildtools/` | the tools you point at Meadow source: `meadow` (build system, CLI and REPL — the binary) and `meadow-fmt` (the formatter) |
 | `installer/` | `meadow-setup.exe`, the Windows installer |
 

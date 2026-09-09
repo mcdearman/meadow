@@ -5,6 +5,7 @@
 
 @pub mod Test
 @pub mod Bool
+@pub mod Ref
 @pub mod Ordering
 @pub mod Function
 @pub mod Tuple

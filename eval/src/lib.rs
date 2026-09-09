@@ -64,6 +64,13 @@ pub enum Value {
     },
     /// A captured (one-shot, deep) continuation — a slice of stack frames.
     Cont(Rc<RefCell<Option<Vec<K>>>>),
+    /// The one mutable cell, from `newRef`.
+    ///
+    /// Unlike every other value here this one has *identity*: two `Ref`s are the
+    /// same cell only if they are the same allocation. That is what makes
+    /// equality on them compare pointers rather than contents — `newRef 1` twice
+    /// gives two cells that hold the same thing and are not the same cell.
+    Ref(Rc<RefCell<Value>>),
 }
 
 #[derive(Debug)]
@@ -1093,6 +1100,25 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // The `Display` the REPL prints with, exposed to the language. Structural,
         // so it works at every type without a class or a derive.
         Show => Ok(Value::Str(InternedString::from(args[0].to_string()))),
+
+        // --- the mutable cell ---
+        //
+        // The only place in the runtime where a value a program can still see is
+        // changed in place. `Rc::make_mut` on an `Array` looks similar but is
+        // copy-on-write: it only writes when nobody else is holding the buffer,
+        // and the caller gets a new array either way.
+        NewRef => Ok(Value::Ref(Rc::new(RefCell::new(args[0].clone())))),
+        GetRef => match &args[0] {
+            Value::Ref(cell) => Ok(cell.borrow().clone()),
+            other => err(format!("getRef: expected a Ref, got {other}")),
+        },
+        SetRef => match &args[0] {
+            Value::Ref(cell) => {
+                *cell.borrow_mut() = args[1].clone();
+                Ok(Value::Unit)
+            }
+            other => err(format!("setRef: expected a Ref, got {other}")),
+        },
         CharCode => match &args[0] {
             Value::Char(c) => Ok(Value::Int(*c as i64)),
             other => err(format!("charCode: expected a Char, got {other}")),
@@ -1548,6 +1574,11 @@ fn value_eq(a: &Value, b: &Value) -> bool {
                 && x.iter()
                     .all(|(k, v)| y.get(k).is_some_and(|w| value_eq(v, w)))
         }
+        // Identity, not contents. Everything else here is a value and two of them
+        // are equal when they look alike; a `Ref` is a *place*, and two cells that
+        // happen to hold the same thing are still two cells. Comparing contents
+        // would also loop forever on a cell that holds itself.
+        (Value::Ref(x), Value::Ref(y)) => Rc::ptr_eq(x, y),
         _ => false,
     }
 }
@@ -1639,6 +1670,9 @@ impl fmt::Display for Value {
             Value::Closure { .. } => f.write_str("<closure>"),
             Value::Builtin { op, .. } => write!(f, "<builtin {op:?}>"),
             Value::Cont(_) => f.write_str("<continuation>"),
+            // The contents, not the address: a `Ref` prints as what it holds,
+            // which is what a person debugging one wants to see.
+            Value::Ref(cell) => write!(f, "ref {}", cell.borrow()),
         }
     }
 }

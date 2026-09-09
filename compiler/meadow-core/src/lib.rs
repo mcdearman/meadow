@@ -133,6 +133,12 @@ pub enum Prim {
     StringToChars,
     /// `Array Char -> String`.
     CharsToString,
+    /// `newRef : a -> Ref a ! { Mut | e }` — allocate a mutable cell.
+    NewRef,
+    /// `getRef : Ref a -> a ! { Mut | e }`
+    GetRef,
+    /// `setRef : Ref a -> a -> Unit ! { Mut | e }`
+    SetRef,
     /// `String -> Option (Array Int)` -- parse a hex string (either case, no
     /// separators, even length) into bytes. `None` on any malformed input.
     BytesFromHex,
@@ -203,6 +209,9 @@ impl Prim {
             "charFromCode" => Prim::CharFromCode,
             "stringToChars" => Prim::StringToChars,
             "charsToString" => Prim::CharsToString,
+            "newRef" => Prim::NewRef,
+            "getRef" => Prim::GetRef,
+            "setRef" => Prim::SetRef,
             _ => return None,
         })
     }
@@ -228,7 +237,9 @@ impl Prim {
             | Prim::CharCode
             | Prim::CharFromCode
             | Prim::StringToChars
-            | Prim::CharsToString => 1,
+            | Prim::CharsToString
+            | Prim::NewRef
+            | Prim::GetRef => 1,
             Prim::ArraySet | Prim::ArraySlice | Prim::ArrayGetOr => 3,
             _ => 2,
         }

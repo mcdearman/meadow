@@ -90,7 +90,11 @@ pub const PRIMS: &[&str] = &[
     "charCode",
     "charFromCode",
     "stringToChars",
-    "charsToString",
+    "charsToString", //
+    // the one mutable cell; every operation carries the `Mut` effect
+    "newRef",
+    "getRef",
+    "setRef",
 ];
 use std::ops::Deref;
 use std::sync::atomic::AtomicU32;

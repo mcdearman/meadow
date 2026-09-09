@@ -78,7 +78,7 @@ const BUILTIN_CTORS: &[&str] = &["Nil", "Cons", "True", "False"];
 /// prelude is allowed to (re-)declare `List` / `Bool` without it counting as a
 /// duplicate-definition error.
 const BUILTIN_TYCONS: &[&str] =
-    &["Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array"];
+    &["Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array", "Ref"];
 
 /// Split a declaration into its attributes and the bare declaration underneath.
 /// The parser only ever nests one `Attributed` layer.
@@ -105,7 +105,7 @@ fn is_ctor_name(name: &str) -> bool {
 impl Resolver {
     pub fn new(filename: impl Into<String>) -> Self {
         let mut tycons = HashMap::new();
-        for (name, arity) in [("Int", 0), ("BigInt", 0), ("Float", 0), ("String", 0), ("Bool", 0), ("Unit", 0), ("List", 1), ("Array", 1)] {
+        for (name, arity) in [("Int", 0), ("BigInt", 0), ("Float", 0), ("String", 0), ("Bool", 0), ("Unit", 0), ("List", 1), ("Array", 1), ("Ref", 1)] {
             tycons.insert(InternedString::from(name), arity);
         }
         Resolver {

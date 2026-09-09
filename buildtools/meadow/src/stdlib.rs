@@ -41,6 +41,7 @@ pub const MODULES: &[(&str, &str)] = &[
     // First, and dependency-free, so every module below can hold `@test`s.
     ("Test", include_str!("../../../lib/Std/src/Test.mw")),
     ("Bool", include_str!("../../../lib/Std/src/Bool.mw")),
+    ("Ref", include_str!("../../../lib/Std/src/Ref.mw")),
     ("Ordering", include_str!("../../../lib/Std/src/Ordering.mw")),
     ("Function", include_str!("../../../lib/Std/src/Function.mw")),
     ("Tuple", include_str!("../../../lib/Std/src/Tuple.mw")),

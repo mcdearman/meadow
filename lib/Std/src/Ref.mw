@@ -1,0 +1,109 @@
+-- Std.Ref: the one mutable cell.
+--
+--   use Std.Ref (modify)
+--
+--   fun countUp n =
+--     let r = newRef 0 in
+--     let ignored = repeatN n (\u -> modify r (\x -> x + 1)) in
+--     getRef r
+--
+-- `newRef`, `getRef` and `setRef` are primitives and always in scope; this
+-- module is the handful of things built on them.
+--
+-- Every operation carries the `Mut` effect, so a function that mutates says so
+-- in its type and a pure one still reads as pure:
+--
+--   countUp : Int -> Int ! { Mut | e }
+--
+-- That is also what keeps mutation sound. Meadow generalizes a binding only when
+-- its right-hand side is *pure* -- an effect-based value restriction rather than
+-- ML's syntactic one -- so `def r = newRef []` is never given the type
+-- `forall a. Ref [a]`, and the classic trick of storing at one type and reading
+-- at another does not typecheck.
+--
+-- A `Ref` has identity: `==` on two of them compares cells, not contents, so
+-- `newRef 1 == newRef 1` is `False`. Nothing else in the language behaves that
+-- way, and it is the price of a real mutable cell.
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+-- Apply `f` to the contents.
+@pub fun modify r f = setRef r (f (getRef r))
+
+-- Replace the contents, returning what was there.
+@pub fun swap r x =
+  let old = getRef r in
+  let ignored = setRef r x in
+  old
+
+-- Apply `f` and return what was there before.
+@pub fun getAndModify r f =
+  let old = getRef r in
+  let ignored = setRef r (f old) in
+  old
+
+-- Apply `f` and return the new value.
+@pub fun modifyAndGet r f =
+  let next = f (getRef r) in
+  let ignored = setRef r next in
+  next
+
+-- Add `n` to a counter and return the new total.
+@pub fun bump r n = modifyAndGet r (\x -> x + n)
+
+-- Run `act` `n` times for its effects. The loop a mutable cell usually wants.
+@pub fun repeatN n act =
+  if n <= 0 then () else let ignored = act () in repeatN (n - 1) act
+
+-- --- tests -------------------------------------------------------------------
+
+@test fun aCellRemembersWhatWasPutInIt u =
+  let r = newRef 1 in
+  let a = assertEq (getRef r) 1 "the initial value" in
+  let b = setRef r 2 in
+  assertEq (getRef r) 2 "after setRef"
+
+@test fun modifyAppliesAFunction u =
+  let r = newRef 10 in
+  let a = modify r (\x -> x * 3) in
+  assertEq (getRef r) 30 "modify"
+
+@test fun theReturningVariants u =
+  let r = newRef 1 in
+  let a = assertEq (swap r 9) 1 "swap returns the old value" in
+  let b = assertEq (getRef r) 9 "and stores the new one" in
+  let c = assertEq (getAndModify r (\x -> x + 1)) 9 "getAndModify returns the old" in
+  let d = assertEq (getRef r) 10 "and applied f" in
+  assertEq (modifyAndGet r (\x -> x + 1)) 11 "modifyAndGet returns the new"
+
+@test fun aCellIsSharedNotCopied u =
+  -- The point of a reference: two names for one cell, and writing through one
+  -- is visible through the other. Nothing else in the language does this.
+  let r = newRef 0 in
+  let alias = r in
+  let a = setRef alias 42 in
+  assertEq (getRef r) 42 "the write is visible through the original"
+
+@test fun cellsHaveIdentity u =
+  let r = newRef 1 in
+  let a = assertTrue (r == r) "a cell is itself" in
+  -- Two cells holding the same value are still two cells.
+  assertFalse (newRef 1 == newRef 1) "distinct allocations are distinct"
+
+@test fun aLoopAccumulatesInPlace u =
+  let r = newRef 0 in
+  let a = repeatN 5 (\u2 -> modify r (\x -> x + 2)) in
+  assertEq (getRef r) 10 "five increments of two"
+
+@test fun bumpCountsAndReportsTheTotal u =
+  let r = newRef 0 in
+  let a = assertEq (bump r 3) 3 "first" in
+  assertEq (bump r 4) 7 "second"
+
+@test fun aCellCanHoldAnyType u =
+  let s = newRef "a" in
+  let a = setRef s "b" in
+  let b = assertEq (getRef s) "b" "a String cell" in
+  let xs = newRef [1; 2] in
+  let c = setRef xs [3;] in
+  assertEq (getRef xs) [3;] "a List cell"

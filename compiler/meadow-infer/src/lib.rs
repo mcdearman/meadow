@@ -90,6 +90,11 @@ impl Type {
     pub fn vector(elem: Type) -> Type {
         Type::Con(InternedString::from("Vector"), vec![elem])
     }
+    /// `Ref a` — the one mutable cell. Reading and writing one carries the `Mut`
+    /// effect, so a function that mutates says so in its type.
+    pub fn reference(inner: Type) -> Type {
+        Type::Con(InternedString::from("Ref"), vec![inner])
+    }
     /// A curried **pure** function type: `func([a, b], r)` is `a -> b -> r`.
     pub fn func(args: Vec<Type>, ret: Type) -> Type {
         Type::func_eff(args, ret, Type::RowEmpty)
@@ -1621,6 +1626,7 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
                 "Unit" => Type::unit(),
                 "List" => Type::list(args.into_iter().next().unwrap_or_else(Type::unit)),
                 "Array" => Type::array(args.into_iter().next().unwrap_or_else(Type::unit)),
+                "Ref" => Type::reference(args.into_iter().next().unwrap_or_else(Type::unit)),
                 _ => Type::Con(*name, args),
             }
         }
@@ -1660,6 +1666,15 @@ fn eff_of(row: &hir::EffectRow, params: &HashMap<VarId, u32>) -> Type {
 // ===========================================================================
 // Primitive signatures (indexed by `rename::PRIMS`)
 // ===========================================================================
+
+/// The row `{ Mut | Bound(tail) }` — the effect every `Ref` operation carries.
+fn mut_row(tail: u32) -> Type {
+    Type::RowExtend(
+        InternedString::from("Mut"),
+        Box::new(Type::Tuple(vec![])),
+        Box::new(Type::Bound(tail)),
+    )
+}
 
 fn prim_scheme(name: &str) -> Option<Scheme> {
     use Type::*;
@@ -1755,6 +1770,33 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ty: Type::func(vec![Bound(0), Bound(0)], Type::bool()),
         },
         // `∀a e. a -> Unit ! { io | e }`
+        // --- the mutable cell ---
+        //
+        // Every one of these carries `{ Mut | e }`, which is what makes mutation
+        // visible in a caller's type and what stops `def r = newRef []` being
+        // generalized: the binding's right-hand side is no longer pure, and the
+        // effect-based value restriction refuses to quantify it.
+        //
+        // `Mut` is its own label rather than part of `io`. Rows are for telling
+        // effects apart, and "this touches memory" is not "this touches the
+        // outside world" — a caller can reasonably care about one and not the
+        // other.
+        "newRef" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(vec![Bound(0)], Type::reference(Bound(0)), mut_row(1)),
+        },
+        "getRef" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(vec![Type::reference(Bound(0))], Bound(0), mut_row(1)),
+        },
+        "setRef" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::reference(Bound(0)), Bound(0)],
+                Type::unit(),
+                mut_row(1),
+            ),
+        },
         "print" | "println" => Scheme {
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(

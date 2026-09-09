@@ -275,18 +275,57 @@ fn locate_binary(args: &Args) -> Result<Source, String> {
     download(args.version.as_deref()).map(Source::Downloaded)
 }
 
+/// Whether `tag` is safe to put in a release URL.
+///
+/// It goes straight into the download path, so a `/` or a `..` walks out of this
+/// repository's releases and fetches somebody else's binary — which this program
+/// then installs and puts on `PATH`. Release tags look like `v1.2.3`.
+fn valid_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 64
+        // `.` has to be allowed, for `v1.2.3` — which lets `..` through the
+        // character check below, and `..` is the thing being guarded against.
+        && !tag.contains("..")
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
+}
+
+/// A private directory to download and unpack into.
+///
+/// `create_dir`, not `create_dir_all`: the old path was `%TEMP%\meadow-setup-<pid>`,
+/// which anyone able to write to `%TEMP%` could create first and have us unpack
+/// into — and then install whatever they had left there. Failing when it already
+/// exists is the point.
+fn scratch_dir() -> Result<PathBuf, String> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "meadow-setup-{}-{nonce:08x}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
 /// Fetch the release archive with the bundled `curl.exe` and unpack `meadow.exe`
 /// from it with `tar.exe` — both ship with Windows 10 1803 and later.
 fn download(version: Option<&str>) -> Result<PathBuf, String> {
     let target = target_triple()?;
     let asset = format!("meadow-{target}.zip");
     let url = match version {
-        Some(tag) => format!("https://github.com/{REPO}/releases/download/{tag}/{asset}"),
+        Some(tag) => {
+            if !valid_tag(tag) {
+                return Err(format!("`{tag}` is not a release tag"));
+            }
+            format!("https://github.com/{REPO}/releases/download/{tag}/{asset}")
+        }
         None => format!("https://github.com/{REPO}/releases/latest/download/{asset}"),
     };
 
-    let tmp = std::env::temp_dir().join(format!("meadow-setup-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).map_err(|e| format!("could not create temp dir: {e}"))?;
+    let tmp = scratch_dir()?;
     let archive = tmp.join(&asset);
 
     println!("  downloading {url}");

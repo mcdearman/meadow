@@ -39,6 +39,9 @@ pub fn run(opts: &Options) -> Result<(), String> {
             latest_tag()?
         }
     };
+    if !valid_tag(&wanted) {
+        return Err(format!("`{wanted}` is not a release tag"));
+    }
 
     if !opts.force && wanted.trim_start_matches('v') == CURRENT {
         println!("Already on {wanted} — the latest release.");
@@ -53,8 +56,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
         println!("Updating {CURRENT} -> {to}");
     }
 
-    let tmp = std::env::temp_dir().join(format!("meadow-update-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).map_err(|e| format!("could not create a temp dir: {e}"))?;
+    let tmp = scratch_dir("meadow-update")?;
     let result = install(&wanted, target, &tmp, &exe);
     let _ = std::fs::remove_dir_all(&tmp);
     result?;
@@ -147,6 +149,45 @@ fn replace(exe: &Path, fresh: &Path) -> Result<(), String> {
 
     let _ = std::fs::remove_file(&backup);
     Ok(())
+}
+
+/// Whether `tag` is safe to put in a release URL.
+///
+/// The tag goes straight into the download path, so a `/` or a `..` in it walks
+/// out of this repository's releases: `--version ../../someone/else/releases/\
+/// download/v1` would fetch a stranger's binary and install it over this one.
+/// Release tags look like `v1.2.3`, so anything outside this alphabet is either
+/// a typo or an attempt.
+fn valid_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 64
+        // `.` has to be allowed, for `v1.2.3` — which lets `..` through the
+        // character check below, and `..` is the thing being guarded against.
+        && !tag.contains("..")
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
+}
+
+/// A private directory to download and unpack into.
+///
+/// Deliberately `create_dir` rather than `create_dir_all`: on a shared machine
+/// the old predictable path (`/tmp/meadow-update-<pid>`) could be pre-created by
+/// somebody else — or made a symlink somewhere else — and we would unpack into
+/// it and then install what we found there. Failing when it already exists is
+/// the point, and the nonce is what makes guessing it impractical.
+fn scratch_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{nonce:08x}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    Ok(dir)
 }
 
 /// The newest release tag, from the GitHub API.
@@ -248,5 +289,37 @@ mod tests {
         let asset = format!("meadow-{target}.{}", archive_ext());
         assert!(asset.starts_with("meadow-"));
         assert!(asset.ends_with(if cfg!(windows) { ".zip" } else { ".tar.gz" }));
+    }
+    #[test]
+    fn ordinary_release_tags_are_accepted() {
+        for tag in ["v0.1.0", "0.1.0", "v1.2.3-rc.1", "v1.0.0+build.2", "nightly_2024"] {
+            assert!(valid_tag(tag), "should accept {tag}");
+        }
+    }
+
+    #[test]
+    fn a_tag_cannot_walk_out_of_the_releases_path() {
+        // The tag is interpolated into the download URL. A `/` or a `..` in it
+        // reaches another repository's releases, and whatever is downloaded
+        // replaces the running binary — so this is the check that matters.
+        for tag in [
+            "../../someone/else/releases/download/v1",
+            "v1/../../evil",
+            "..",
+            "a/b",
+            "%2e%2e%2f",
+            r"v1\..\..",
+        ] {
+            assert!(!valid_tag(tag), "should reject {tag}");
+        }
+    }
+
+    #[test]
+    fn nothing_that_could_confuse_a_url_gets_through() {
+        for tag in ["", "v1 2", "v1?x=y", "v1#frag", "v1@host", "v1:80", "v1\n"] {
+            assert!(!valid_tag(tag), "should reject {tag:?}");
+        }
+        // And nothing absurdly long.
+        assert!(!valid_tag(&"v".repeat(65)));
     }
 }

@@ -63,6 +63,17 @@ pub enum Value {
     /// and reach the runtime as [`Value::Ctor`] chains.
     Array(Rc<Vec<Value>>),
     Record(BTreeMap<InternedString, Value>),
+    /// A data constructor and its fields.
+    ///
+    /// **Not shared, unlike [`Value::Array`].** Cloning one deep-copies the whole
+    /// tree, which matters most for `List`: matching `| Cons x rest ->` binds
+    /// `rest` by cloning, so walking a list is O(n²) and the recursive
+    /// `Value::clone` overflows the Rust stack at roughly 2000 elements —
+    /// aborting the process, not raising an error a program could catch.
+    ///
+    /// `Vector` escapes this by being a tree (~log32(n) deep); 100_000 elements
+    /// is fine. Putting this payload behind an `Rc` would fix both the depth
+    /// limit and the quadratic walk.
     Ctor(InternedString, Vec<Value>),
     Closure {
         param: Var,

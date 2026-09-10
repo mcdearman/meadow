@@ -41,6 +41,13 @@ use meadow_intern::InternedString;
 /// more.
 pub const REGISTERS: usize = 256;
 
+/// Where the scratch area begins. The VM keeps a few slots the program cannot
+/// name, so that rebuilding the register file on a call can go through them
+/// instead of through a heap-allocated `Vec` — it was one malloc per call.
+/// Nothing allocates while they are in use, so the collector never sees them.
+pub(crate) const SCRATCH: usize = REGISTERS;
+const SCRATCH_LEN: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     pub msg: String,
@@ -103,7 +110,7 @@ impl<'p> Vm<'p> {
         Vm {
             program,
             heap: Heap::new(),
-            regs: vec![Value::Unit; REGISTERS],
+            regs: vec![Value::Unit; REGISTERS + SCRATCH_LEN],
             live: 0,
             handlers: Vec::new(),
             pc: 0,
@@ -205,16 +212,16 @@ impl<'p> Vm<'p> {
             Op::MakeData => {
                 let n = i.c as usize;
                 self.ensure(1 + n);
-                let fields: Vec<Value> = (0..n).map(|j| self.reg(i.b + j as Reg)).collect();
-                let a = self.heap.alloc(Kind::Data, i.imm, &fields);
+                let base = i.b as usize;
+                let a = { let Vm { heap, regs, .. } = self; heap.alloc(Kind::Data, i.imm, &regs[base..base + n]) };
                 self.set(i.a, Value::Obj(a));
             }
 
             Op::MakeArray => {
                 let n = i.c as usize;
                 self.ensure(1 + n);
-                let fields: Vec<Value> = (0..n).map(|j| self.reg(i.b + j as Reg)).collect();
-                let a = self.heap.alloc(Kind::Array, 0, &fields);
+                let base = i.b as usize;
+                let a = { let Vm { heap, regs, .. } = self; heap.alloc(Kind::Array, 0, &regs[base..base + n]) };
                 self.set(i.a, Value::Obj(a));
             }
 
@@ -313,19 +320,27 @@ impl<'p> Vm<'p> {
             Op::Closure => {
                 let n = i.c as usize;
                 self.ensure(1 + n);
-                let captures: Vec<Value> = (0..n).map(|j| self.reg(i.b + j as Reg)).collect();
-                let a = self.heap.alloc(Kind::Closure, i.imm, &captures);
+                let base = i.b as usize;
+                let a = { let Vm { heap, regs, .. } = self; heap.alloc(Kind::Closure, i.imm, &regs[base..base + n]) };
                 self.set(i.a, Value::Obj(a));
             }
 
             Op::Invoke => return self.invoke(i),
 
-            Op::Prim => {
+            // Three shapes of the same thing: one and two arguments name their
+            // registers, three come from a window.
+            Op::Prim | Op::Prim1 | Op::Prim2 => {
                 let Some(&p) = self.program.prims.get(i.imm as usize) else {
                     return err(format!("no primitive {}", i.imm));
                 };
-                self.run_prim(p, i.b, i.c, i.a)?;
+                let srcs = match i.op {
+                    Op::Prim1 => [i.b, 0, 0],
+                    Op::Prim2 => [i.b, i.c, 0],
+                    _ => [i.b, i.b.wrapping_add(1), i.b.wrapping_add(2)],
+                };
+                self.run_prim(p, srcs, i.a)?;
             }
+
 
             Op::Handle => {
                 let handler = self.reg(i.a);
@@ -380,15 +395,16 @@ impl<'p> Vm<'p> {
                 else {
                     return err(format!("no method #{} on this object", i.b));
                 };
-                // Arguments first: writing the captures into r0.. would
-                // otherwise clobber the window they sit in.
-                let args: Vec<Value> = (0..argc).map(|j| self.reg(base + j as Reg)).collect();
+                // Arguments out of the way first: writing the captures into
+                // r0.. would otherwise clobber the window they sit in. Through
+                // the scratch area rather than a `Vec`, because this is the
+                // calling convention and it ran a heap allocation per call.
+                let base = base as usize;
+                self.regs.copy_within(base..base + argc, SCRATCH);
                 for j in 0..ncap {
                     self.regs[j] = self.heap.field(a, j);
                 }
-                for (j, v) in args.into_iter().enumerate() {
-                    self.regs[ncap + j] = v;
-                }
+                self.regs.copy_within(SCRATCH..SCRATCH + argc, ncap);
                 self.live = ncap + argc;
                 self.pc = pc as usize;
                 Ok(None)

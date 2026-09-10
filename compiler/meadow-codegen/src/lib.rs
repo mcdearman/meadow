@@ -36,8 +36,6 @@
 //!
 //! # What is not done yet
 //!
-//! Two things, and the second is the bigger one.
-//!
 //! **Register reuse.** A name is given a register when it is bound and keeps it
 //! for the rest of the block, so a long straight-line block climbs through the
 //! register file even when most of what it holds is dead. The IR knows exactly
@@ -46,16 +44,22 @@
 //! Until then a block needing more than 256 registers is a hard error rather
 //! than a spill, which is the honest failure mode: it says the allocator is
 //! missing rather than quietly generating slow code. (The whole standard library
-//! peaks at 29, so there is room to be unhurried about it.)
+//! peaks well under that, so there is room to be unhurried about it.)
 //!
-//! **Contification.** Every non-trivial subexpression gets a continuation
-//! object, and an object is a heap allocation — so `f (g x) + h y` allocates
-//! three closures that are each entered exactly once and then dropped. Most of
-//! them are known, one-shot and non-escaping, which is precisely the condition
-//! for turning them back into a jump with no allocation at all. `meadow_seq`
-//! already avoids the two commonest cases by hand (a variable and a literal need
-//! no continuation), and doing it properly is the next real speed-up: it is
-//! worth more than anything in this file.
+//! **A continuation per non-tail call.** `meadow_seq` no longer builds one for
+//! every subexpression — anything that cannot transfer control is lowered where
+//! it stands, and a saturated call to a known function is a jump — so a tail
+//! loop now allocates nothing at all. What remains is structural rather than an
+//! oversight: a call in argument position has to record where to come back to,
+//! and a machine with no call stack has nowhere to put that but the heap. It
+//! costs three slots a call, against zero for Lua, which spends a contiguous
+//! stack to get it.
+//!
+//! Closing that gap means either giving the VM a call stack — and then paying
+//! to copy it whenever a continuation is captured, which is what one-shot
+//! effect handlers do constantly — or a real escape analysis, so a continuation
+//! that provably neither escapes nor outlives its call can live in registers.
+//! The second keeps the effects story intact and is the one worth doing.
 
 use meadow_bytecode::{Const, Instr, Op, Pc, Program, Reg};
 use meadow_core::{Lit, Prim};
@@ -623,10 +627,20 @@ impl<'a> Gen<'a> {
             }
             Extern::Prim(p) => {
                 let id = self.prim(*p);
-                let n = srcs.len() as u8;
-                let base = self.window(&env, srcs.len())?;
-                self.fill(base, &srcs);
-                self.emit(Instr::new(Op::Prim, dst, base, n, id));
+                // One and two arguments name their registers directly. Only
+                // arity three still gathers a window, and there are four such
+                // primitives — it is not worth a fourth operand field that
+                // every other instruction would carry unused.
+                match srcs[..] {
+                    [x] => self.emit(Instr::new(Op::Prim1, dst, x, 0, id)),
+                    [x, y] => self.emit(Instr::new(Op::Prim2, dst, x, y, id)),
+                    _ => {
+                        let n = srcs.len() as u8;
+                        let base = self.window(&env, srcs.len())?;
+                        self.fill(base, &srcs);
+                        self.emit(Instr::new(Op::Prim, dst, base, n, id));
+                    }
+                }
             }
             Extern::Array => {
                 let n = u8::try_from(srcs.len()).map_err(|_| Error {

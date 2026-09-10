@@ -111,11 +111,24 @@ pub fn lower_program(program: &core::Program) -> Lowered {
         next_name: max_var(program) + 1,
         next_label: program.defs.len() as u32,
         globals,
+        workers: HashMap::new(),
         defs: Vec::new(),
         tags: HashMap::new(),
         next_tag: 0,
         unsupported: HashSet::new(),
     };
+
+    // A definition that is a lambda gets a second entry point, taking its
+    // arguments directly. Registered before anything is lowered, so a call can
+    // be compiled as a jump to a block that does not exist yet — including a
+    // recursive one.
+    for d in &program.defs {
+        let (params, _) = lam_spine(&d.term);
+        if !params.is_empty() {
+            let label = lower.fresh_label();
+            lower.workers.insert(d.var, (label, params.len()));
+        }
+    }
 
     // Each definition is a block of one parameter: the continuation to answer
     // with. That is also exactly the environment a `jump` to it arrives with.
@@ -132,6 +145,26 @@ pub fn lower_program(program: &core::Program) -> Lowered {
                 body,
             },
         });
+
+        // The direct entry point. The block above still exists and is still
+        // reached whenever the function is used as a *value* — passed to `map`,
+        // partially applied, stored — where a real closure is the only answer.
+        if let Some(&(worker, _)) = lower.workers.get(&d.var) {
+            let (params, body) = lam_spine(&d.term);
+            let k = lower.fresh();
+            let mut block_params = params;
+            block_params.push(k);
+            let body = lower.expr(body, &block_params, k);
+            lower.defs.push(Def {
+                label: worker,
+                name: d.name,
+                block: Block {
+                    params: block_params,
+                    body,
+                },
+            });
+        }
+
         if Some(d.var) == program.entry {
             entry = Some(label);
         }
@@ -174,6 +207,10 @@ struct Lower {
     /// A definition or a `letrec` binding: where to jump, and the environment
     /// names its block expects before the continuation.
     globals: HashMap<Var, (Label, Vec<Name>)>,
+    /// A top-level definition that is a lambda gets a second block: one that
+    /// takes its arguments directly instead of returning a closure per argument.
+    /// `(label, arity)` — a call with exactly that many arguments becomes a jump.
+    workers: HashMap<Var, (Label, usize)>,
     defs: Vec<Def>,
     tags: HashMap<InternedString, Tag>,
     next_tag: Tag,
@@ -290,7 +327,20 @@ impl Lower {
         env: &[Name],
         f: impl FnOnce(&mut Self, Name, Vec<Name>) -> Statement,
     ) -> Statement {
-        let x = self.fresh();
+        self.produces_as(op, args, env, None, f)
+    }
+
+    /// The same, with the bound name forced — for a `let` whose right-hand side
+    /// needs no continuation.
+    fn produces_as(
+        &mut self,
+        op: Extern,
+        args: Vec<Name>,
+        env: &[Name],
+        name: Option<Name>,
+        f: impl FnOnce(&mut Self, Name, Vec<Name>) -> Statement,
+    ) -> Statement {
+        let x = name.unwrap_or_else(|| self.fresh());
         let mut params = vec![x];
         params.extend_from_slice(env);
         let body = f(self, x, params.clone());
@@ -299,6 +349,223 @@ impl Lower {
             args,
             blocks: vec![Block { params, body }],
         }
+    }
+
+    /// Can `e` produce a value without transferring control?
+    ///
+    /// If it can, whatever comes next is simply the `rest` of the statement that
+    /// produced it, and [`Lower::bind`] needs no continuation object at all.
+    /// That is the difference between an allocation and an indirect jump per
+    /// comparison, per argument, per operand — which was most of what the
+    /// machine did — and one `extern`.
+    ///
+    /// A variable is only simple when it is *in scope*: a reference to a
+    /// top-level definition is a `jump`, which is exactly a transfer of control.
+    /// `if` is excluded for a different reason. It does not transfer control
+    /// away, but each of its branches would need its own copy of everything that
+    /// follows, and duplicating the rest of a function per condition is how a
+    /// compiler runs out of memory on real code.
+    fn simple(&self, e: &Term, env: &[Name]) -> bool {
+        match e {
+            Term::Var(v) => env.contains(v),
+            Term::Lit(_) => true,
+            // Building a closure allocates, but it does not go anywhere.
+            Term::Lam(..) => true,
+            Term::Prim(_, xs) | Term::Ctor(_, xs) | Term::Tuple(xs) | Term::Array(xs) => {
+                xs.iter().all(|x| self.simple(x, env))
+            }
+            Term::Record(fs) => fs.iter().all(|(_, t)| self.simple(t, env)),
+            Term::Sel(t, _) | Term::Proj(t, _) => self.simple(t, env),
+            Term::Extend(t, _, v) => self.simple(t, env) && self.simple(v, env),
+            Term::Let(x, rhs, body) => {
+                let mut inner = env.to_vec();
+                inner.push(*x);
+                self.simple(rhs, env) && self.simple(body, &inner)
+            }
+            _ => false,
+        }
+    }
+
+    /// Lower a [`Lower::simple`] expression in place and continue.
+    ///
+    /// `f` receives the name its value was bound to and the environment that now
+    /// holds — the whole of the old one plus the new binding, since nothing here
+    /// truncates.
+    fn direct(&mut self, e: &Term, env: &[Name], name: Option<Name>, f: Then<'_>) -> Statement {
+        match e {
+            // Already a value. With no name forced there is nothing at all to
+            // emit; with one, a `substitute` gives it its second name.
+            Term::Var(v) => match name {
+                None => f(self, *v, env.to_vec()),
+                Some(x) => {
+                    let mut sel = env.to_vec();
+                    sel.push(*v);
+                    let mut params = env.to_vec();
+                    params.push(x);
+                    let body = f(self, x, params.clone());
+                    Statement::Substitute(sel, Box::new(Block { params, body }))
+                }
+            },
+
+            Term::Lit(l) => self.produces_as(Extern::Lit(l.clone()), vec![], env, name, f),
+
+            Term::Lam(param, body) => {
+                let want = self.wants(&[body], &[*param]);
+                let captures = restrict(env, &want);
+                let ik = self.fresh();
+                let mut params = captures.clone();
+                params.push(*param);
+                params.push(ik);
+                let inner = self.expr(body, &params, ik);
+
+                let x = name.unwrap_or_else(|| self.fresh());
+                let mut after: Vec<Name> = vec![x];
+                after.extend_from_slice(env);
+                let rest = f(self, x, after);
+                Statement::New {
+                    name: x,
+                    captures,
+                    methods: vec![Block {
+                        params,
+                        body: inner,
+                    }],
+                    rest: Box::new(rest),
+                }
+            }
+
+            Term::Prim(p, args) => {
+                let p = *p;
+                self.direct_all(args, env.to_vec(), move |this, xs, env1| {
+                    this.produces_as(Extern::Prim(p), xs, &env1, name, f)
+                })
+            }
+
+            Term::Ctor(ctor, args) => {
+                let ctor = *ctor;
+                let tag = self.tag_of(ctor);
+                self.direct_all(args, env.to_vec(), move |this, fields, env1| {
+                    this.builds(ctor, tag, fields, &env1, name, f)
+                })
+            }
+
+            Term::Tuple(items) => {
+                let ctor = InternedString::from("#tuple");
+                let tag = self.tag_of(ctor);
+                self.direct_all(items, env.to_vec(), move |this, fields, env1| {
+                    this.builds(ctor, tag, fields, &env1, name, f)
+                })
+            }
+
+            Term::Array(items) => self.direct_all(items, env.to_vec(), move |this, xs, env1| {
+                this.produces_as(Extern::Array, xs, &env1, name, f)
+            }),
+
+            Term::Record(fields) => {
+                let labels: Vec<InternedString> = fields.iter().map(|(n, _)| *n).collect();
+                let terms: Vec<Term> = fields.iter().map(|(_, t)| t.clone()).collect();
+                self.direct_all(&terms, env.to_vec(), move |this, xs, env1| {
+                    this.produces_as(Extern::Record(labels), xs, &env1, name, f)
+                })
+            }
+
+            Term::Sel(rec, label) => {
+                let label = *label;
+                self.direct(
+                    rec,
+                    env,
+                    None,
+                    Box::new(move |this, r, env1| {
+                        this.produces_as(Extern::Select(label), vec![r], &env1, name, f)
+                    }),
+                )
+            }
+
+            Term::Proj(t, i) => {
+                let i = *i;
+                self.direct(
+                    t,
+                    env,
+                    None,
+                    Box::new(move |this, x, env1| {
+                        this.produces_as(Extern::Field(i), vec![x], &env1, name, f)
+                    }),
+                )
+            }
+
+            Term::Extend(rec, label, val) => {
+                let label = *label;
+                let terms = vec![(**rec).clone(), (**val).clone()];
+                self.direct_all(&terms, env.to_vec(), move |this, xs, env1| {
+                    this.produces_as(Extern::Extend(label), xs, &env1, name, f)
+                })
+            }
+
+            Term::Let(x, rhs, body) => {
+                let x = *x;
+                self.direct(
+                    rhs,
+                    env,
+                    Some(x),
+                    Box::new(move |this, _x, env1| this.direct(body, &env1, name, f)),
+                )
+            }
+
+            other => unreachable!("direct on something that transfers control: {other:?}"),
+        }
+    }
+
+    /// `let x = K(fields); rest` — the data half of [`Lower::produces_as`].
+    fn builds(
+        &mut self,
+        ctor: InternedString,
+        tag: Tag,
+        fields: Vec<Name>,
+        env: &[Name],
+        name: Option<Name>,
+        f: Then<'_>,
+    ) -> Statement {
+        let x = name.unwrap_or_else(|| self.fresh());
+        let mut after: Vec<Name> = vec![x];
+        after.extend_from_slice(env);
+        let rest = f(self, x, after);
+        Statement::Let {
+            name: x,
+            tag,
+            ctor,
+            fields,
+            rest: Box::new(rest),
+        }
+    }
+
+    /// Several simple terms, left to right.
+    fn direct_all(
+        &mut self,
+        es: &[Term],
+        env: Vec<Name>,
+        f: impl FnOnce(&mut Lower, Vec<Name>, Vec<Name>) -> Statement,
+    ) -> Statement {
+        fn go(
+            this: &mut Lower,
+            es: &[Term],
+            env: Vec<Name>,
+            done: Vec<Name>,
+            f: Box<dyn FnOnce(&mut Lower, Vec<Name>, Vec<Name>) -> Statement + '_>,
+        ) -> Statement {
+            match es.split_first() {
+                None => f(this, done, env),
+                Some((head, rest)) => this.direct(
+                    head,
+                    &env,
+                    None,
+                    Box::new(move |this, x, env1| {
+                        let mut done = done;
+                        done.push(x);
+                        go(this, rest, env1, done, f)
+                    }),
+                ),
+            }
+        }
+        go(self, es, env, Vec::new(), Box::new(f))
     }
 
     /// Evaluate `e`, bind its value, and continue.
@@ -318,55 +585,12 @@ impl Lower {
         name: Option<Name>,
         f: Then<'_>,
     ) -> Statement {
-        // A variable already in scope is already a value; building a
-        // continuation to receive it would be pure noise. The environment is
-        // then unchanged, which is still an exact answer.
-        if name.is_none()
-            && let Term::Var(v) = e
-            && env.contains(v)
-        {
-            return f(self, *v, env.to_vec());
+        // Anything that cannot transfer control is lowered where it stands, and
+        // `keep` is not needed there: nothing is truncated, so everything that
+        // was live still is.
+        if self.simple(e, env) {
+            return self.direct(e, env, name, f);
         }
-
-        // Two more that need no continuation, for the same reason: they produce
-        // a value in one statement and cannot transfer control, so what follows
-        // can simply be the `rest` of that statement.
-        //
-        // This is worth doing rather than leaving to a later pass. `n - 1`
-        // has a literal operand, so without it every arithmetic expression in
-        // every loop allocates a closure — and a loop that allocates per
-        // iteration is a different machine from one that does not.
-        match e {
-            Term::Lit(l) => {
-                let x = name.unwrap_or_else(|| self.fresh());
-                let mut params = vec![x];
-                params.extend_from_slice(env);
-                let body = f(self, x, params.clone());
-                return Statement::Extern {
-                    op: Extern::Lit(l.clone()),
-                    args: vec![],
-                    blocks: vec![Block { params, body }],
-                };
-            }
-            // A nullary constructor: `Nil`, `None`, `True`. Nothing to evaluate.
-            Term::Ctor(ctor, args) if args.is_empty() => {
-                let ctor = *ctor;
-                let tag = self.tag_of(ctor);
-                let x = name.unwrap_or_else(|| self.fresh());
-                let mut after: Vec<Name> = vec![x];
-                after.extend_from_slice(env);
-                let rest = f(self, x, after);
-                return Statement::Let {
-                    name: x,
-                    tag,
-                    ctor,
-                    fields: vec![],
-                    rest: Box::new(rest),
-                };
-            }
-            _ => {}
-        }
-
         let kk = self.fresh();
         let x = name.unwrap_or_else(|| self.fresh());
 
@@ -496,6 +720,26 @@ impl Lower {
                     }],
                     rest: Box::new(rest),
                 }
+            }
+
+            // A saturated call to a known function is a jump. The arguments go
+            // where its block wants them and control leaves — no closure per
+            // argument, no continuation to receive one. This is what makes a
+            // loop a loop rather than a sequence of allocations.
+            Term::App(..) if self.direct_call(e).is_some() => {
+                let (worker, args) = self.direct_call(e).expect("checked");
+                let args: Vec<Term> = args.into_iter().cloned().collect();
+                self.sequence(&args, env, k, move |_this, names, _env| {
+                    let mut sel = names;
+                    sel.push(k);
+                    Statement::Substitute(
+                        sel.clone(),
+                        Box::new(Block {
+                            params: sel,
+                            body: Statement::Jump(worker),
+                        }),
+                    )
+                })
             }
 
             // Calling is arranging `[f, arg, k]` and invoking: the object drops
@@ -745,6 +989,19 @@ impl Lower {
         }
     }
 
+
+    /// Is this a saturated call to a definition with a direct entry point?
+    ///
+    /// Exact arity only. An under-applied call has to build a closure — that is
+    /// what a partial application *is* — and an over-applied one returns
+    /// something that is then called again, which the general path already
+    /// handles correctly.
+    fn direct_call<'t>(&self, e: &'t Term) -> Option<(Label, Vec<&'t Term>)> {
+        let (head, args) = call_spine(e);
+        let Term::Var(v) = head else { return None };
+        let &(label, arity) = self.workers.get(v)?;
+        (arity == args.len()).then_some((label, args))
+    }
     /// Evaluate a list of terms left to right, keeping `k` alive throughout.
     fn sequence(
         &mut self,
@@ -1353,4 +1610,29 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
             }
         }
     }
+}
+/// The parameters a term binds as nested lambdas, and what is left underneath.
+///
+/// `fun f a b = e` is `Lam(a, Lam(b, e))`, so this is how a definition's arity is
+/// recovered — which is what lets a saturated call to it become a jump.
+fn lam_spine(t: &Term) -> (Vec<Var>, &Term) {
+    let mut params = Vec::new();
+    let mut cur = t;
+    while let Term::Lam(p, body) = cur {
+        params.push(*p);
+        cur = body;
+    }
+    (params, cur)
+}
+
+/// A call, flattened: `f a b c` is `App(App(App(f, a), b), c)`.
+fn call_spine(t: &Term) -> (&Term, Vec<&Term>) {
+    let mut args = Vec::new();
+    let mut cur = t;
+    while let Term::App(f, a) = cur {
+        args.push(&**a);
+        cur = f;
+    }
+    args.reverse();
+    (cur, args)
 }

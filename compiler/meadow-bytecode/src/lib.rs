@@ -111,8 +111,17 @@ pub enum Op {
     Invoke,
 
     // --- primitives ------------------------------------------------------
-    /// `r[a] = prims[imm](r[b .. b+c])`
+    /// `r[a] = prims[imm](r[b .. b+c])` — for arity 3, where a window is
+    /// cheaper than more operand fields.
     Prim,
+    /// `r[a] = prims[imm](r[b])`
+    Prim1,
+    /// `r[a] = prims[imm](r[b], r[c])`
+    ///
+    /// Three-address, the way Lua spells `ADD A B C`. Without it every binary operation
+    /// carried two `move`s to gather its arguments into a window — three
+    /// instructions and two register writes to add two numbers.
+    Prim2,
 
     // --- effects ---------------------------------------------------------
     /// Install the handler in `r[a]`, covering `handled[imm]`, whose value goes
@@ -154,6 +163,8 @@ impl Op {
         Op::Closure,
         Op::Invoke,
         Op::Prim,
+        Op::Prim1,
+        Op::Prim2,
         Op::Handle,
         Op::Unhandle,
         Op::Perform,
@@ -351,6 +362,14 @@ impl Program {
             },
             Op::Closure => format!("{name:<14} r{} <- m{} [r{}..+{}]", i.a, i.imm, i.b, i.c),
             Op::Invoke => format!("{name:<14} r{}#{} (r{}..+{})", i.a, i.b, i.c, i.imm),
+            Op::Prim1 => match self.prims.get(i.imm as usize) {
+                Some(p) => format!("{name:<14} r{} <- {p:?}(r{})", i.a, i.b),
+                None => format!("{name:<14} r{} <- p{}(r{})", i.a, i.imm, i.b),
+            },
+            Op::Prim2 => match self.prims.get(i.imm as usize) {
+                Some(p) => format!("{name:<14} r{} <- {p:?}(r{}, r{})", i.a, i.b, i.c),
+                None => format!("{name:<14} r{} <- p{}(r{}, r{})", i.a, i.imm, i.b, i.c),
+            },
             Op::Prim => match self.prims.get(i.imm as usize) {
                 Some(p) => format!("{name:<14} r{} <- {p:?}(r{}..+{})", i.a, i.b, i.c),
                 None => format!("{name:<14} r{} <- p{}(r{}..+{})", i.a, i.imm, i.b, i.c),

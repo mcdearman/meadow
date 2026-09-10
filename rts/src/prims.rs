@@ -122,11 +122,14 @@ impl Vm<'_> {
         Value::Obj(self.heap.alloc(Kind::Data, tag, fields))
     }
 
-    /// Run `p` on the arguments at `base`, into `dst`.
-    pub(crate) fn run_prim(&mut self, p: Prim, base: u8, argc: u8, dst: u8) -> Result<(), Error> {
+    /// Run `p` on the values in `srcs`, into `dst`.
+    ///
+    /// Registers rather than values: a primitive that allocates has to re-read
+    /// its arguments after making room, because the collector will have moved
+    /// them. See the discipline at the top of this file.
+    pub(crate) fn run_prim(&mut self, p: Prim, srcs: [u8; 3], dst: u8) -> Result<(), Error> {
         use Prim::*;
-        let arg = |vm: &Vm, i: u8| vm.reg(base + i);
-        let _ = argc;
+        let arg = |vm: &Vm, i: u8| vm.reg(srcs[i as usize]);
 
         let out = match p {
             // --- Int ------------------------------------------------------

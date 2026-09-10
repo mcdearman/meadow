@@ -16,3 +16,11 @@ meadow-rts = { path = "../rts" }
 meadow-seq = { path = "../compiler/meadow-seq" }
 meadow-codegen = { path = "../compiler/meadow-codegen" }
 meadow-bytecode = { path = "../compiler/meadow-bytecode" }
+
+# The `meadow` binary is an interpreter: its inner loop wants cross-crate
+# inlining, and the instruction dispatch wants to be one function rather than
+# sixteen translation units that cannot see each other. `panic = "abort"` is
+# left off — `meadow test` reports a failing test by catching one.
+[profile.release]
+lto = true
+codegen-units = 1

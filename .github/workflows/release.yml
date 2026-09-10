@@ -188,7 +188,7 @@ jobs:
             *Extensions: Install from VSIX…*, or:
 
             ```sh
-            code --install-extension meadow-0.1.0.vsix
+            code --install-extension meadow-0.2.0.vsix
             ```
 
             It gives you syntax highlighting on its own, and diagnostics, hover,

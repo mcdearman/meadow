@@ -18,6 +18,10 @@ cd "$(dirname "$0")"
 
 npm install --silent
 
+# Stale artifacts from an earlier version would otherwise pile up, and
+# `release.yml` uploads `editors/vscode/*.vsix` — every one of them.
+rm -f ./*.vsix
+
 # `vsce` prunes devDependencies from the package itself, so pinning it here does
 # not put it in the artifact.
 node node_modules/@vscode/vsce/vsce package --allow-missing-repository --skip-license

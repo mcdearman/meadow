@@ -59,15 +59,23 @@ function executable(p) {
   }
 }
 
-/// Does this build have the `lsp` subcommand?
+/// Does this build have the `lsp` subcommand, and will it accept the arguments
+/// we are going to start it with?
 ///
-/// `meadow lsp --help` prints and exits 0 where it exists, and exits non-zero
-/// with `unrecognized subcommand` where it does not — so one cheap spawn tells
-/// a working install from one that predates the server. Bare `meadow lsp` would
-/// not do: it starts the server and waits.
+/// Both halves matter. `vscode-languageclient` appends `--stdio` to the command
+/// when the transport is stdio, so a server that has `lsp` but rejects unknown
+/// arguments exits with code 2 before reading anything — and the client reports
+/// that as `write EPIPE`, which names neither the flag nor the exit code. This
+/// probe used to ask only `lsp --help`, which passed happily while the real
+/// launch failed; asking with the flags attached is the difference between
+/// checking the thing and checking near it.
+///
+/// `--help` on the end keeps it from actually serving: clap prints and exits 0
+/// if every flag is known, and exits non-zero if any is not. Bare `meadow lsp`
+/// would start the server and wait forever.
 function speaksLsp(exe) {
   try {
-    const r = cp.spawnSync(exe, ["lsp", "--help"], {
+    const r = cp.spawnSync(exe, ["lsp", "--stdio", "--help"], {
       timeout: 5000,
       windowsHide: true,
       stdio: "ignore",

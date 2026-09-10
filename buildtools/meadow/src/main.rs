@@ -61,7 +61,22 @@ enum Cmd {
     /// Run the language server, speaking LSP over stdin and stdout.
     ///
     /// Editors start this; there is no reason to run it by hand.
-    Lsp,
+    Lsp {
+        /// Ignored: clients pass this to select the stdio transport, which is
+        /// the only one spoken.
+        ///
+        /// It has to be *accepted* rather than merely ignored. `vscode-languageclient`
+        /// appends `--stdio` to the command it was given, and refusing an unknown
+        /// argument made the server exit with code 2 before reading a byte — which
+        /// reached the user as `write EPIPE`, a message about the editor's failed
+        /// write that says nothing about the argument it passed.
+        #[arg(long)]
+        stdio: bool,
+        /// Ignored: some clients name their own process id so a server can exit
+        /// when the editor goes away. This one exits when its input closes.
+        #[arg(long = "clientProcessId", value_name = "PID")]
+        client_process_id: Option<String>,
+    },
     /// Re-indent `.mw` sources in place.
     Fmt {
         /// Files or directories to format. Defaults to the current directory.
@@ -163,7 +178,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Some(Cmd::Lsp) => {
+        Some(Cmd::Lsp { .. }) => {
             let (packages, _) = meadow::stdlib::std_packages(meadow::Options::debug());
             if let Err(e) = meadow_lsp::server::run(packages) {
                 eprintln!("error: {e}");
@@ -256,5 +271,50 @@ fn disassemble(path: &std::path::Path, profile: Profile) {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn the_cli_is_internally_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    /// The arguments a language client actually launches us with.
+    ///
+    /// `vscode-languageclient` appends `--stdio` to the command it was given
+    /// whenever the transport is stdio, and other clients add
+    /// `--clientProcessId=<pid>`. Rejecting either made `meadow lsp` exit with
+    /// code 2 before reading a byte, and the editor reported that as
+    /// `write EPIPE` — a message about its own failed write, naming neither the
+    /// argument nor the exit code. Nothing about the language server itself was
+    /// wrong, which is why it took a log file to find.
+    #[test]
+    fn lsp_accepts_what_an_editor_passes() {
+        for args in [
+            vec!["meadow", "lsp"],
+            vec!["meadow", "lsp", "--stdio"],
+            vec!["meadow", "lsp", "--clientProcessId=1234"],
+            vec!["meadow", "lsp", "--stdio", "--clientProcessId=1234"],
+        ] {
+            let parsed = Cli::try_parse_from(&args);
+            assert!(
+                parsed.is_ok(),
+                "`{}` should start the server, got {}",
+                args.join(" "),
+                parsed.err().map(|e| e.to_string()).unwrap_or_default()
+            );
+            assert!(matches!(parsed.unwrap().cmd, Some(Cmd::Lsp { .. })));
+        }
+    }
+
+    #[test]
+    fn an_argument_we_do_not_know_is_still_rejected() {
+        // Tolerating the two above is deliberate, not a blanket `allow_hyphen_values`.
+        assert!(Cli::try_parse_from(["meadow", "lsp", "--socket=9257"]).is_err());
     }
 }

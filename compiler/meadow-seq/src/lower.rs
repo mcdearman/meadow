@@ -1,508 +1,1356 @@
-//! `core` → sequent form.
+//! `core` → AxCut.
 //!
-//! The whole translation is one function, `⟦e⟧ k`: *run `e` and hand its value
-//! to the consumer `k`*. Every case is then a matter of deciding what `k` should
-//! be for the subterms.
+//! The translation is the classical one: **a value is returned by invoking a
+//! continuation**. A continuation is codata with a single method, so returning
+//! needs no mechanism of its own —
 //!
 //! ```text
-//!   ⟦x⟧ k          =  ⟨x | k⟩
-//!   ⟦let x = e; b⟧ k  =  ⟦e⟧ (mu~ x. ⟦b⟧ k)
-//!   ⟦f a⟧ k        =  ⟦f⟧ (mu~ fv. ⟦a⟧ (mu~ av. ⟨fv | apply(av, k)⟩))
+//!   substitute [k, v] in {(k, v) => invoke k#0}
 //! ```
 //!
-//! The `let` case is the one to read twice: a `let` is not a binding form here,
-//! it is *the consumer `mu~`*. Binding a name and continuing is what consuming a
-//! value means. Function application falls out the same way — evaluate the
-//! function, evaluate the argument, then cut one against the other — and the
-//! left-to-right order that a strict language needs is visible in the nesting
-//! rather than implied by an evaluator.
+//! — and a function is codata too, with one method taking an argument and the
+//! continuation to answer with. Calling and returning are one operation seen
+//! from its two sides, which is the duality the IR is named for.
 //!
-//! # Not yet translated
+//! Everything in `core` is covered. [`Unsupported`] has one variant left, for a
+//! variable that is neither in scope nor a definition, which is a bug upstream
+//! rather than a gap here.
 //!
-//! [`Unsupported`] lists what still lowers to [`Statement::Error`]. Each is a
-//! real gap, not an oversight, and the differential tests skip programs that
-//! use them rather than pretending.
+//! # The environment is positional, and this pass has to know its shape
+//!
+//! This is the part that makes the IR worth having and the pass awkward to
+//! write. A block's parameters are not "the new bindings" — they name *the whole
+//! environment* at that point, in order. So the translation cannot emit a
+//! statement without knowing exactly what is live and in what order, and every
+//! function here threads that list explicitly.
+//!
+//! The payoff is that nothing downstream has to reconstruct it. `substitute` is
+//! literally the move sequence; `jump` and `invoke` carry no arguments because
+//! there is nothing left to pass. A register allocator reads its answer off the
+//! IR instead of computing liveness.
+//!
+//! The price is paid here, in [`Lower::bind`], which must be handed the set of
+//! names that survive the subexpression it is sequencing — and that set is
+//! computed from the free variables of everything still to come.
+//!
+//! # Definitions are labels, and so are `letrec` bindings
+//!
+//! A reference to a global lowers to `substitute [k] in {(k) => jump L}`: `jump`
+//! leaves the environment alone, and the definition's block takes exactly the
+//! continuation, so the two line up with no shuffling at all. Recursion needs no
+//! back-patching, which is the reason to do it this way.
+//!
+//! `letrec` is the same mechanism with the free variables made explicit — plain
+//! lambda lifting. A group's bindings share one parameter list, the variables
+//! they capture from the enclosing scope, and a reference to one becomes
+//! `substitute [a, b, k] in {(a, b, k) => jump L}`. Mutual recursion then costs
+//! nothing extra, and no object has to point at itself, which is what a
+//! closure-based encoding would need and which no `Rc` graph should have to do.
+//!
+//! It does mean such a binding is re-evaluated at every reference rather than
+//! once, the way the CEK machine does it. For a right-hand side that is a lambda
+//! or a literal — nearly all of them — that is unobservable. For one that
+//! performs an effect it is not, and fixing it means giving each definition a
+//! memoising thunk. See the note in `meadow_rts::axcut`.
+//!
+//! # Pattern matching
+//!
+//! `match` compiles to a chain of failure continuations: one codata object per
+//! arm, each capturing the next, and a pattern that fails invokes it. That is
+//! backtracking, not a decision tree — arms can retest what an earlier arm
+//! already tested, so a wide `match` on one scrutinee does more work than it
+//! needs to. It is correct, it is small, and turning it into a decision tree is
+//! a local change to [`Lower::case`] that nothing else depends on.
+//!
+//! # Where this departs from the paper
+//!
+//! The paper's environment is **linear**: `let` and `new` consume the prefix
+//! they build from. Here they prepend and leave the rest alone, so a name may be
+//! used twice without an explicit duplication. `substitute` is still the only
+//! thing that shrinks the environment, and it appears at every call and return,
+//! so environments stay bounded — but the linearity that lets the paper's
+//! backend place registers without analysis is not yet enforced.
+//!
+//! Effects are the other departure, and a larger one: `handle` and `perform`
+//! lower to three statements that are not in AxCut at all. See
+//! [`Statement::Handle`].
 
-use crate::{
-    Branch, Consumer, Covar, Def, HandlerClause, Pattern, Producer, Program, Statement,
-};
+use crate::{Block, Def, Extern, Label, Name, Program, Statement, Tag};
 use meadow_core as core;
-use meadow_core::{Term, Var};
+use meadow_core::{Pat, Term, Var};
 use meadow_hir::VarId;
 use meadow_intern::InternedString;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-/// A source of fresh names, shared with later passes so they do not collide.
-#[derive(Debug, Default)]
-pub struct Names {
-    next_var: u32,
-    next_covar: u32,
-}
-
-impl Names {
-    /// Start handing out variables above everything the front end already used.
-    pub fn starting_at(next_var: u32) -> Names {
-        Names {
-            next_var,
-            next_covar: 0,
-        }
-    }
-
-    pub fn fresh_var(&mut self) -> Var {
-        let v = VarId(self.next_var);
-        self.next_var += 1;
-        v
-    }
-
-    pub fn fresh_covar(&mut self) -> Covar {
-        let c = Covar(self.next_covar);
-        self.next_covar += 1;
-        c
-    }
-}
-
-/// A `core` construct this pass does not translate yet.
+/// A `core` construct this pass does not translate.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Unsupported {
-    LetRec,
-    Record,
-    Select,
-    Extend,
-    ArrayPattern,
-    RecordPattern,
-    NestedPattern,
-    CoreError,
+    /// A variable that is neither in scope nor a definition — an unsaturated
+    /// primitive operator, most likely, which the front end should have
+    /// eta-expanded.
+    UnboundVar,
 }
 
 pub struct Lowered {
     pub program: Program,
-    pub names: Names,
-    /// What was met and not translated. Empty means the program is fully covered.
+    /// Empty means the program is fully covered.
     pub unsupported: HashSet<Unsupported>,
 }
 
 /// Lower a whole program.
-pub fn lower_program(program: &core::Program, first_fresh_var: u32) -> Lowered {
+///
+/// Fresh names continue above the highest [`VarId`] the front end used, so an
+/// invented name can never collide with a real one.
+pub fn lower_program(program: &core::Program) -> Lowered {
+    let mut globals = HashMap::new();
+    for (i, d) in program.defs.iter().enumerate() {
+        globals.insert(d.var, (Label(i as u32), Vec::new()));
+    }
+
     let mut lower = Lower {
-        names: Names::starting_at(first_fresh_var),
+        next_name: max_var(program) + 1,
+        next_label: program.defs.len() as u32,
+        globals,
+        defs: Vec::new(),
+        tags: HashMap::new(),
+        next_tag: 0,
         unsupported: HashSet::new(),
     };
-    let defs = program
-        .defs
-        .iter()
-        .map(|d| {
-            let ret = lower.names.fresh_covar();
-            Def {
-                var: d.var,
-                name: d.name,
-                body: lower.expr(&d.term, Consumer::Covar(ret)),
-                ret,
-            }
-        })
-        .collect();
+
+    // Each definition is a block of one parameter: the continuation to answer
+    // with. That is also exactly the environment a `jump` to it arrives with.
+    let mut entry = None;
+    for (i, d) in program.defs.iter().enumerate() {
+        let label = Label(i as u32);
+        let k = lower.fresh();
+        let body = lower.expr(&d.term, &[k], k);
+        lower.defs.push(Def {
+            label,
+            name: d.name,
+            block: Block {
+                params: vec![k],
+                body,
+            },
+        });
+        if Some(d.var) == program.entry {
+            entry = Some(label);
+        }
+    }
+
+    // Lifted `letrec` blocks are pushed as they are discovered, so a definition
+    // arrives after the blocks lifted out of it. Sorting by label puts the
+    // table back in the order the labels read, which is what a dump should show.
+    let mut defs = lower.defs;
+    defs.sort_by_key(|d| d.label);
+
     Lowered {
         program: Program {
             defs,
-            entry: program.entry,
+            entry,
+            tags: lower.tags,
         },
-        names: lower.names,
         unsupported: lower.unsupported,
     }
 }
 
+/// The highest variable the program mentions, so fresh names can start above it.
+fn max_var(program: &core::Program) -> u32 {
+    let mut seen = HashSet::new();
+    let mut hi = 0;
+    for d in &program.defs {
+        hi = hi.max(d.var.0);
+        seen.clear();
+        mentions(&d.term, &mut seen);
+        for v in &seen {
+            hi = hi.max(v.0);
+        }
+    }
+    hi
+}
+
 struct Lower {
-    names: Names,
+    next_name: u32,
+    next_label: u32,
+    /// A definition or a `letrec` binding: where to jump, and the environment
+    /// names its block expects before the continuation.
+    globals: HashMap<Var, (Label, Vec<Name>)>,
+    defs: Vec<Def>,
+    tags: HashMap<InternedString, Tag>,
+    next_tag: Tag,
     unsupported: HashSet<Unsupported>,
 }
 
+/// The continuation of a [`Lower::bind`]: given the name the value was bound to
+/// and the environment that now holds, produce what runs next.
+type Then<'a> = Box<dyn FnOnce(&mut Lower, Name, Vec<Name>) -> Statement + 'a>;
+
+/// What to do once a pattern has matched, in the environment it left behind.
+type Success<'a> = Box<dyn FnOnce(&mut Lower, Vec<Name>) -> Statement + 'a>;
+
 impl Lower {
-    fn give_up(&mut self, what: Unsupported) -> Statement {
-        self.unsupported.insert(what);
-        Statement::Error
+    fn fresh(&mut self) -> Name {
+        let v = VarId(self.next_name);
+        self.next_name += 1;
+        v
     }
 
-    /// A covariable naming `k`.
+    fn fresh_label(&mut self) -> Label {
+        let l = Label(self.next_label);
+        self.next_label += 1;
+        l
+    }
+
+    fn tag_of(&mut self, ctor: InternedString) -> Tag {
+        if let Some(t) = self.tags.get(&ctor) {
+            return *t;
+        }
+        let t = self.next_tag;
+        self.next_tag += 1;
+        self.tags.insert(ctor, t);
+        t
+    }
+
+    // --- liveness ---------------------------------------------------------
+
+    /// Replace every label-bound name by the environment it needs.
     ///
-    /// Several rules need somewhere to *send* a result, which is a covariable,
-    /// but the consumer they were handed may be any consumer at all. `mu` is
-    /// exactly the bridge: `⟨mu a. s | k⟩` runs `s` with `a` standing for `k`.
-    /// When `k` is already a covariable this is the identity, which is why the
-    /// common case emits nothing extra.
-    fn with_covar(
-        &mut self,
-        k: Consumer,
-        f: impl FnOnce(&mut Self, Covar) -> Statement,
-    ) -> Statement {
-        match k {
-            Consumer::Covar(a) => f(self, a),
-            other => {
-                let a = self.names.fresh_covar();
-                let body = f(self, a);
-                Statement::Cut(Producer::Mu(a, Box::new(body)), other)
+    /// A `letrec` binding is not a value in the environment; reaching it means
+    /// arranging its captured variables and jumping. So "this term mentions `f`"
+    /// really means "this term needs whatever `f`'s block takes", and liveness
+    /// has to be computed on the latter or a capture list comes out short.
+    fn expand(&self, want: HashSet<Var>) -> HashSet<Var> {
+        let mut out = HashSet::new();
+        for v in want {
+            match self.globals.get(&v) {
+                Some((_, extra)) => out.extend(extra.iter().copied()),
+                None => {
+                    out.insert(v);
+                }
             }
         }
+        out
     }
 
-    /// Evaluate `e`, bind its value to a fresh variable, and continue.
-    ///
-    /// The workhorse for anything strict in its operands: it is `mu~` with the
-    /// binding chosen for you.
-    fn bind(&mut self, e: &Term, f: impl FnOnce(&mut Self, Producer) -> Statement) -> Statement {
-        // An atom is already a value; binding it would only add a name.
-        if let Some(p) = self.atom(e) {
-            return f(self, p);
+    /// The names `terms` will need, minus `bound`, with labels expanded.
+    fn wants(&self, terms: &[&Term], bound: &[Var]) -> HashSet<Var> {
+        let mut want = HashSet::new();
+        for t in terms {
+            free_into(t, &mut want);
         }
-        let x = self.names.fresh_var();
-        let body = f(self, Producer::Var(x));
-        self.expr(e, Consumer::MuTilde(x, Box::new(body)))
+        for v in bound {
+            want.remove(v);
+        }
+        self.expand(want)
     }
 
-    /// Several terms in order, each bound before the next — the left-to-right
-    /// evaluation a strict language promises.
+    /// What must stay live across the evaluation of something: whatever `terms`
+    /// still need, plus `extra` (the continuation, values already computed).
+    fn keep(&self, env: &[Name], terms: &[&Term], extra: &[Name]) -> Vec<Name> {
+        let mut want = self.wants(terms, &[]);
+        want.extend(extra.iter().copied());
+        restrict(env, &want)
+    }
+
+    // --- the universal shapes --------------------------------------------
+
+    /// `return v to k` — arrange the environment as exactly `[k, v]`, then
+    /// invoke.
+    ///
+    /// The invoke carries no arguments. `k`'s method sees its own captures
+    /// followed by whatever the substitution left behind it, which is `[v]` —
+    /// which is why every continuation built by [`Lower::bind`] has parameters
+    /// `captures ++ [x]`.
+    fn ret(&mut self, k: Name, v: Name) -> Statement {
+        Statement::Substitute(
+            vec![k, v],
+            Box::new(Block {
+                params: vec![k, v],
+                body: Statement::Invoke(k, 0),
+            }),
+        )
+    }
+
+    /// `invoke f` with nothing to hand it — how a failure continuation is
+    /// entered, and the smallest possible use of the whole calling convention.
+    fn enter(&mut self, f: Name) -> Statement {
+        Statement::Substitute(
+            vec![f],
+            Box::new(Block {
+                params: vec![f],
+                body: Statement::Invoke(f, 0),
+            }),
+        )
+    }
+
+    /// An `extern` that produces one value, binds it, and continues.
+    fn produces(
+        &mut self,
+        op: Extern,
+        args: Vec<Name>,
+        env: &[Name],
+        f: impl FnOnce(&mut Self, Name, Vec<Name>) -> Statement,
+    ) -> Statement {
+        let x = self.fresh();
+        let mut params = vec![x];
+        params.extend_from_slice(env);
+        let body = f(self, x, params.clone());
+        Statement::Extern {
+            op,
+            args,
+            blocks: vec![Block { params, body }],
+        }
+    }
+
+    /// Evaluate `e`, bind its value, and continue.
+    ///
+    /// `env` is the environment right now; `keep` is the subset of it that must
+    /// still be live once `e` has produced a value — everything the continuation
+    /// will refer to, including the outer continuation itself. Getting `keep`
+    /// wrong is the one way to build an ill-formed program here, which is why
+    /// every caller computes it from free variables rather than by hand.
+    ///
+    /// `name` forces the bound variable's name, for `let`.
+    fn bind(
+        &mut self,
+        e: &Term,
+        env: &[Name],
+        keep: &[Name],
+        name: Option<Name>,
+        f: Then<'_>,
+    ) -> Statement {
+        // A variable already in scope is already a value; building a
+        // continuation to receive it would be pure noise. The environment is
+        // then unchanged, which is still an exact answer.
+        if name.is_none()
+            && let Term::Var(v) = e
+            && env.contains(v)
+        {
+            return f(self, *v, env.to_vec());
+        }
+
+        // Two more that need no continuation, for the same reason: they produce
+        // a value in one statement and cannot transfer control, so what follows
+        // can simply be the `rest` of that statement.
+        //
+        // This is worth doing rather than leaving to a later pass. `n - 1`
+        // has a literal operand, so without it every arithmetic expression in
+        // every loop allocates a closure — and a loop that allocates per
+        // iteration is a different machine from one that does not.
+        match e {
+            Term::Lit(l) => {
+                let x = name.unwrap_or_else(|| self.fresh());
+                let mut params = vec![x];
+                params.extend_from_slice(env);
+                let body = f(self, x, params.clone());
+                return Statement::Extern {
+                    op: Extern::Lit(l.clone()),
+                    args: vec![],
+                    blocks: vec![Block { params, body }],
+                };
+            }
+            // A nullary constructor: `Nil`, `None`, `True`. Nothing to evaluate.
+            Term::Ctor(ctor, args) if args.is_empty() => {
+                let ctor = *ctor;
+                let tag = self.tag_of(ctor);
+                let x = name.unwrap_or_else(|| self.fresh());
+                let mut after: Vec<Name> = vec![x];
+                after.extend_from_slice(env);
+                let rest = f(self, x, after);
+                return Statement::Let {
+                    name: x,
+                    tag,
+                    ctor,
+                    fields: vec![],
+                    rest: Box::new(rest),
+                };
+            }
+            _ => {}
+        }
+
+        let kk = self.fresh();
+        let x = name.unwrap_or_else(|| self.fresh());
+
+        // On entry to the method: captures, then what the `substitute` in `ret`
+        // left after the object itself — the single returned value.
+        let mut inner: Vec<Name> = keep.to_vec();
+        inner.push(x);
+        let body = f(self, x, inner.clone());
+
+        // `new` prepends the object to the environment.
+        let mut outer: Vec<Name> = vec![kk];
+        outer.extend_from_slice(env);
+        let rest = self.expr(e, &outer, kk);
+
+        Statement::New {
+            name: kk,
+            captures: keep.to_vec(),
+            methods: vec![Block {
+                params: inner,
+                body,
+            }],
+            rest: Box::new(rest),
+        }
+    }
+
+    /// Several terms, left to right — the order a strict language promises, made
+    /// explicit rather than left to an evaluator.
+    ///
+    /// At each step the names that must survive are the caller's `base`, the
+    /// values already computed, and the free variables of the terms still to
+    /// come.
     fn bind_all(
         &mut self,
         es: &[Term],
-        f: impl FnOnce(&mut Self, Vec<Producer>) -> Statement,
+        env: &[Name],
+        base: &HashSet<Var>,
+        f: Box<dyn FnOnce(&mut Lower, Vec<Name>, Vec<Name>) -> Statement + '_>,
     ) -> Statement {
         fn go(
             this: &mut Lower,
             es: &[Term],
-            mut done: Vec<Producer>,
-            f: impl FnOnce(&mut Lower, Vec<Producer>) -> Statement,
+            env: Vec<Name>,
+            base: &HashSet<Var>,
+            done: Vec<Name>,
+            f: Box<dyn FnOnce(&mut Lower, Vec<Name>, Vec<Name>) -> Statement + '_>,
         ) -> Statement {
             match es.split_first() {
-                None => f(this, done),
-                Some((head, rest)) => this.bind(head, move |this, p| {
-                    done.push(p);
-                    go(this, rest, done, f)
-                }),
+                None => f(this, done, env),
+                Some((head, rest)) => {
+                    let mut want = base.clone();
+                    want.extend(done.iter().copied());
+                    let rest_refs: Vec<&Term> = rest.iter().collect();
+                    want.extend(this.wants(&rest_refs, &[]));
+                    let keep = restrict(&env, &want);
+                    this.bind(
+                        head,
+                        &env,
+                        &keep,
+                        None,
+                        Box::new(move |this, x, env1| {
+                            let mut done = done;
+                            done.push(x);
+                            go(this, rest, env1, base, done, f)
+                        }),
+                    )
+                }
             }
         }
-        go(self, es, Vec::new(), f)
+        go(self, es, env.to_vec(), base, Vec::new(), f)
     }
 
-    /// A term that is already a value, needing no computation.
-    fn atom(&mut self, e: &Term) -> Option<Producer> {
-        match e {
-            Term::Var(v) => Some(Producer::Var(*v)),
-            Term::Lit(l) => Some(Producer::Lit(l.clone())),
-            _ => None,
-        }
-    }
+    // --- expressions ------------------------------------------------------
 
-    /// `⟦e⟧ k`.
-    fn expr(&mut self, e: &Term, k: Consumer) -> Statement {
+    /// `⟦e⟧ k` in environment `env` — run `e`, answer `k`.
+    ///
+    /// `env` must be the exact environment the machine will have, in order, and
+    /// must contain `k`.
+    fn expr(&mut self, e: &Term, env: &[Name], k: Name) -> Statement {
         match e {
-            Term::Var(v) => Statement::Cut(Producer::Var(*v), k),
-            Term::Lit(l) => Statement::Cut(Producer::Lit(l.clone()), k),
+            Term::Var(v) if env.contains(v) => self.ret(k, *v),
 
-            // A function names both what it takes and where its answer goes.
+            // A label: arrange exactly what its block takes and jump. `jump`
+            // leaves the environment alone, so the substitution is the entire
+            // calling sequence.
+            Term::Var(v) => match self.globals.get(v) {
+                Some((label, extra)) => {
+                    let label = *label;
+                    let mut sel = extra.clone();
+                    sel.push(k);
+                    Statement::Substitute(
+                        sel.clone(),
+                        Box::new(Block {
+                            params: sel,
+                            body: Statement::Jump(label),
+                        }),
+                    )
+                }
+                None => {
+                    self.unsupported.insert(Unsupported::UnboundVar);
+                    Statement::Error("unbound variable")
+                }
+            },
+
+            Term::Lit(l) => self.produces(Extern::Lit(l.clone()), vec![], env, |this, x, _| {
+                this.ret(k, x)
+            }),
+
+            // Codata with one method: the argument, and where to send the answer.
             Term::Lam(param, body) => {
-                let ret = self.names.fresh_covar();
-                let body = self.expr(body, Consumer::Covar(ret));
-                Statement::Cut(
-                    Producer::Lam {
-                        param: *param,
-                        ret,
-                        body: Box::new(body),
-                    },
-                    k,
+                let want = self.wants(&[body], &[*param]);
+                let captures = restrict(env, &want);
+
+                let ik = self.fresh();
+                let mut params = captures.clone();
+                params.push(*param);
+                params.push(ik);
+                let inner = self.expr(body, &params, ik);
+
+                let f = self.fresh();
+                let rest = self.ret(k, f);
+                Statement::New {
+                    name: f,
+                    captures,
+                    methods: vec![Block {
+                        params,
+                        body: inner,
+                    }],
+                    rest: Box::new(rest),
+                }
+            }
+
+            // Calling is arranging `[f, arg, k]` and invoking: the object drops
+            // off the front and its method sees `captures ++ [arg, k]`.
+            Term::App(fun, arg) => {
+                let keep = self.keep(env, &[arg], &[k]);
+                self.bind(
+                    fun,
+                    env,
+                    &keep,
+                    None,
+                    Box::new(move |this, fv, env1| {
+                        let want: HashSet<Var> = [k, fv].into_iter().collect();
+                        let keep = restrict(&env1, &want);
+                        this.bind(
+                            arg,
+                            &env1,
+                            &keep,
+                            None,
+                            Box::new(move |_this, av, _env2| {
+                                Statement::Substitute(
+                                    vec![fv, av, k],
+                                    Box::new(Block {
+                                        params: vec![fv, av, k],
+                                        body: Statement::Invoke(fv, 0),
+                                    }),
+                                )
+                            }),
+                        )
+                    }),
                 )
             }
 
-            Term::App(f, a) => self.bind(f, |this, fv| {
-                this.bind(a, |this, av| {
-                    this.with_covar(k, |_, ret| {
-                        Statement::Cut(fv, Consumer::Apply(Box::new(av), ret))
+            Term::Let(x, rhs, body) => {
+                let mut want = self.wants(&[body], &[*x]);
+                want.insert(k);
+                let keep = restrict(env, &want);
+                self.bind(
+                    rhs,
+                    env,
+                    &keep,
+                    Some(*x),
+                    Box::new(move |this, _x, env1| this.expr(body, &env1, k)),
+                )
+            }
+
+            // Lambda lifting: one label per binding, all sharing the group's
+            // captured environment. See the module docs.
+            Term::LetRec(binds, body) => {
+                let bound: Vec<Var> = binds.iter().map(|(v, _)| *v).collect();
+                let rhs: Vec<&Term> = binds.iter().map(|(_, t)| t).collect();
+                let want = self.wants(&rhs, &bound);
+                let fvs = restrict(env, &want);
+
+                // Register every label before lowering any right-hand side, so
+                // the group can refer to itself in any direction.
+                let labels: Vec<Label> = binds.iter().map(|_| self.fresh_label()).collect();
+                for (v, l) in bound.iter().zip(&labels) {
+                    self.globals.insert(*v, (*l, fvs.clone()));
+                }
+
+                for ((_, term), label) in binds.iter().zip(&labels) {
+                    let kk = self.fresh();
+                    let mut params = fvs.clone();
+                    params.push(kk);
+                    let body = self.expr(term, &params, kk);
+                    self.defs.push(Def {
+                        label: *label,
+                        name: InternedString::from("<letrec>"),
+                        block: Block { params, body },
+                    });
+                }
+
+                self.expr(body, env, k)
+            }
+
+            // Not a statement of its own: a branching primitive with two
+            // continuation blocks is all `if` ever was. Neither branch changes
+            // the environment, so both blocks take it as it stands.
+            Term::If(c, t, e) => {
+                let keep = self.keep(env, &[t, e], &[k]);
+                self.bind(
+                    c,
+                    env,
+                    &keep,
+                    None,
+                    Box::new(move |this, cv, env1| {
+                        let then = this.expr(t, &env1, k);
+                        let els = this.expr(e, &env1, k);
+                        Statement::Extern {
+                            op: Extern::Branch,
+                            args: vec![cv],
+                            blocks: vec![
+                                Block {
+                                    params: env1.clone(),
+                                    body: els,
+                                },
+                                Block {
+                                    params: env1,
+                                    body: then,
+                                },
+                            ],
+                        }
+                    }),
+                )
+            }
+
+            Term::Prim(prim, args) => {
+                let prim = *prim;
+                self.sequence(args, env, k, move |this, names, env1| {
+                    this.produces(Extern::Prim(prim), names, &env1, |this, out, _| {
+                        this.ret(k, out)
                     })
                 })
-            }),
-
-            // The rule worth pausing on: a `let` *is* the `mu~` consumer.
-            Term::Let(x, rhs, body) => {
-                let rest = self.expr(body, k);
-                self.expr(rhs, Consumer::MuTilde(*x, Box::new(rest)))
             }
 
-            Term::If(c, t, e) => self.bind(c, |this, cond| Statement::If {
-                cond,
-                then: Box::new(this.expr(t, k.clone())),
-                els: Box::new(this.expr(e, k)),
-            }),
-
-            Term::Prim(prim, args) => self.bind_all(args, |this, args| {
-                let out = this.names.fresh_var();
-                Statement::Prim {
-                    prim: *prim,
-                    args,
-                    out,
-                    next: Box::new(Statement::Cut(Producer::Var(out), k)),
-                }
-            }),
-
-            Term::Tuple(items) => self.bind_all(items, |_, ps| {
-                Statement::Cut(Producer::Tuple(ps), k)
-            }),
-
             Term::Ctor(name, args) => {
-                let name = *name;
-                self.bind_all(args, move |_, ps| {
-                    Statement::Cut(Producer::Ctor(name, ps), k)
+                let ctor = *name;
+                let tag = self.tag_of(ctor);
+                self.sequence(args, env, k, move |this, fields, _| {
+                    let x = this.fresh();
+                    let rest = this.ret(k, x);
+                    Statement::Let {
+                        name: x,
+                        tag,
+                        ctor,
+                        fields,
+                        rest: Box::new(rest),
+                    }
                 })
             }
 
+            Term::Tuple(items) => {
+                let ctor = InternedString::from("#tuple");
+                let tag = self.tag_of(ctor);
+                self.sequence(items, env, k, move |this, fields, _| {
+                    let x = this.fresh();
+                    let rest = this.ret(k, x);
+                    Statement::Let {
+                        name: x,
+                        tag,
+                        ctor,
+                        fields,
+                        rest: Box::new(rest),
+                    }
+                })
+            }
+
+            Term::Array(items) => self.sequence(items, env, k, move |this, xs, env1| {
+                this.produces(Extern::Array, xs, &env1, |this, out, _| this.ret(k, out))
+            }),
+
+            Term::Record(fields) => {
+                let labels: Vec<InternedString> = fields.iter().map(|(n, _)| *n).collect();
+                let terms: Vec<Term> = fields.iter().map(|(_, t)| t.clone()).collect();
+                self.sequence(&terms, env, k, move |this, xs, env1| {
+                    this.produces(Extern::Record(labels), xs, &env1, |this, out, _| {
+                        this.ret(k, out)
+                    })
+                })
+            }
+
+            Term::Sel(rec, label) => {
+                let label = *label;
+                let keep = restrict(env, &[k].into_iter().collect());
+                self.bind(
+                    rec,
+                    env,
+                    &keep,
+                    None,
+                    Box::new(move |this, r, env1| {
+                        this.produces(Extern::Select(label), vec![r], &env1, |this, out, _| {
+                            this.ret(k, out)
+                        })
+                    }),
+                )
+            }
+
+            Term::Extend(rec, label, val) => {
+                let label = *label;
+                let terms = vec![(**rec).clone(), (**val).clone()];
+                self.sequence(&terms, env, k, move |this, xs, env1| {
+                    this.produces(Extern::Extend(label), xs, &env1, |this, out, _| {
+                        this.ret(k, out)
+                    })
+                })
+            }
+
+            // Tuple projection cannot be a `switch`: the arity a `switch` arm
+            // would have to name is not in the term.
             Term::Proj(t, i) => {
                 let i = *i;
-                self.bind(t, move |this, p| {
-                    // Projection is a one-armed match: bind every field, keep one.
-                    let vars: Vec<Var> = (0..=i).map(|_| this.names.fresh_var()).collect();
-                    let chosen = vars[i];
-                    Statement::Cut(
-                        p,
-                        Consumer::Case(vec![Branch {
-                            pat: Pattern::Tuple(vars),
-                            body: Statement::Cut(Producer::Var(chosen), k),
-                        }]),
+                let keep = restrict(env, &[k].into_iter().collect());
+                self.bind(
+                    t,
+                    env,
+                    &keep,
+                    None,
+                    Box::new(move |this, x, env1| {
+                        this.produces(Extern::Field(i), vec![x], &env1, |this, out, _| {
+                            this.ret(k, out)
+                        })
+                    }),
+                )
+            }
+
+            Term::Case(scrutinee, arms) => {
+                let mut want = HashSet::new();
+                for (p, body) in arms {
+                    let mut bound = Vec::new();
+                    pat_vars(p, &mut bound);
+                    want.extend(self.wants(&[body], &bound));
+                }
+                want.insert(k);
+                let keep = restrict(env, &want);
+                self.bind(
+                    scrutinee,
+                    env,
+                    &keep,
+                    None,
+                    Box::new(move |this, s, env1| this.case(s, arms, env1, k)),
+                )
+            }
+
+            Term::Perform(effect, op, arg) => {
+                let (effect, op) = (*effect, *op);
+                let keep = restrict(env, &[k].into_iter().collect());
+                self.bind(
+                    arg,
+                    env,
+                    &keep,
+                    None,
+                    Box::new(move |_this, av, _env1| Statement::Perform {
+                        effect,
+                        op,
+                        arg: av,
+                        k,
+                    }),
+                )
+            }
+
+            Term::Handle { body, clauses, ret } => self.handle(body, clauses, ret.as_ref(), env, k),
+
+            // A term the front end could not build. Lowering it to a statement
+            // that fails is the faithful translation, not a gap.
+            Term::Error => Statement::Error("ill-formed term"),
+        }
+    }
+
+    /// Evaluate a list of terms left to right, keeping `k` alive throughout.
+    fn sequence(
+        &mut self,
+        terms: &[Term],
+        env: &[Name],
+        k: Name,
+        f: impl FnOnce(&mut Lower, Vec<Name>, Vec<Name>) -> Statement,
+    ) -> Statement {
+        let base: HashSet<Var> = [k].into_iter().collect();
+        self.bind_all(terms, env, &base, Box::new(f))
+    }
+
+    // --- pattern matching -------------------------------------------------
+
+    /// A chain of failure continuations, one per arm.
+    ///
+    /// `f_i` captures everything live plus `f_{i+1}`, so an arm that fails
+    /// half-way through a nested pattern can restore the whole environment by
+    /// invoking one object — including the scrutinee, which a `switch` in the
+    /// middle of the arm will have consumed.
+    fn case<'t>(
+        &mut self,
+        s: Name,
+        arms: &'t [(Pat, Term)],
+        live: Vec<Name>,
+        k: Name,
+    ) -> Statement {
+        let n = arms.len();
+        let fails: Vec<Name> = (0..=n).map(|_| self.fresh()).collect();
+
+        // The chain is entered by invoking the first arm's object.
+        let mut stmt = self.enter(fails[0]);
+
+        // Wrap innermost-first, so `f_n` — the one nobody captures — ends up
+        // outermost and is therefore built first at run time.
+        for i in 0..=n {
+            let (captures, body) = if i == n {
+                (
+                    live.clone(),
+                    Statement::Error("non-exhaustive pattern match"),
+                )
+            } else {
+                let fail = fails[i + 1];
+                let mut caps = live.clone();
+                caps.push(fail);
+                let (pat, term) = &arms[i];
+                let body = self.match_pat(
+                    pat,
+                    s,
+                    caps.clone(),
+                    fail,
+                    Box::new(move |this, env| this.expr(term, &env, k)),
+                );
+                (caps, body)
+            };
+            stmt = Statement::New {
+                name: fails[i],
+                captures: captures.clone(),
+                methods: vec![Block {
+                    params: captures,
+                    body,
+                }],
+                rest: Box::new(stmt),
+            };
+        }
+        stmt
+    }
+
+    /// Match `p` against `subject`; on success run `ok`, on failure invoke
+    /// `fail`.
+    fn match_pat<'t>(
+        &mut self,
+        p: &'t Pat,
+        subject: Name,
+        env: Vec<Name>,
+        fail: Name,
+        ok: Success<'t>,
+    ) -> Statement {
+        match p {
+            Pat::Wild => ok(self, env),
+
+            // Binding is a rename: put the value at the end of the environment
+            // under the pattern's name. `VarId`s are unique per binding site, so
+            // this can never collide with something already there.
+            Pat::Var(v) => self.rebind(subject, *v, env, ok),
+
+            Pat::As(v, sub) => {
+                let v = *v;
+                self.rebind(
+                    subject,
+                    v,
+                    env,
+                    Box::new(move |this, env1| this.match_pat(sub, subject, env1, fail, ok)),
+                )
+            }
+
+            Pat::Lit(l) => {
+                let l = l.clone();
+                self.produces(Extern::Lit(l), vec![], &env, move |this, lv, env1| {
+                    this.produces(
+                        Extern::Prim(core::Prim::Eq),
+                        vec![lv, subject],
+                        &env1,
+                        move |this, b, env2| {
+                            let no = this.enter(fail);
+                            let yes = ok(this, env2.clone());
+                            Statement::Extern {
+                                op: Extern::Branch,
+                                args: vec![b],
+                                blocks: vec![
+                                    Block {
+                                        params: env2.clone(),
+                                        body: no,
+                                    },
+                                    Block {
+                                        params: env2,
+                                        body: yes,
+                                    },
+                                ],
+                            }
+                        },
                     )
                 })
             }
 
-            Term::Case(scrutinee, arms) => self.bind(scrutinee, |this, p| {
-                let branches = arms
-                    .iter()
-                    .map(|(pat, body)| {
-                        let pat = this.pattern(pat);
-                        Branch {
-                            pat,
-                            body: this.expr(body, k.clone()),
-                        }
-                    })
-                    .collect();
-                Statement::Cut(p, Consumer::Case(branches))
-            }),
-
-            Term::Perform(effect, op, arg) => {
-                let (effect, op) = (*effect, *op);
-                self.bind(arg, move |this, arg| {
-                    this.with_covar(k, |_, ret| Statement::Perform {
-                        effect,
-                        op,
-                        arg,
-                        ret,
-                    })
-                })
+            // The one place a real `switch` appears. The constructor's fields go
+            // on the front; the scrutinee stays, because an arm body may name it
+            // — `match o with | Just x -> o` is ordinary.
+            Pat::Ctor(name, subs) => {
+                let tag = self.tag_of(*name);
+                let fields: Vec<Name> = subs.iter().map(|_| self.fresh()).collect();
+                let mut arm_env = fields.clone();
+                arm_env.extend_from_slice(&env);
+                let pairs: Vec<(&Pat, Name)> = subs.iter().zip(fields.iter().copied()).collect();
+                let body = self.match_all(pairs, arm_env.clone(), fail, ok);
+                let miss = self.enter(fail);
+                Statement::Switch {
+                    scrutinee: subject,
+                    arms: vec![(
+                        tag,
+                        Block {
+                            params: arm_env,
+                            body,
+                        },
+                    )],
+                    default: Box::new(Block {
+                        params: env,
+                        body: miss,
+                    }),
+                }
             }
 
-            Term::Handle { body, clauses, ret } => {
-                let inner = self.names.fresh_covar();
-                let body = self.expr(body, Consumer::Covar(inner));
-                let clauses = clauses
-                    .iter()
-                    .map(|c| {
-                        let cret = self.names.fresh_covar();
-                        HandlerClause {
-                            effect: c.effect,
-                            op: c.op,
-                            param: c.param,
-                            resume: c.resume,
-                            body: self.expr(&c.body, Consumer::Covar(cret)),
-                        }
-                    })
-                    .collect();
-                let ret_clause = ret.as_ref().map(|(x, body)| {
-                    let rret = self.names.fresh_covar();
-                    (*x, Box::new(self.expr(body, Consumer::Covar(rret))))
-                });
-                self.with_covar(k, |_, out| Statement::Handle {
-                    body: Box::new(body),
-                    clauses,
-                    ret: ret_clause,
-                    out,
-                })
+            Pat::Tuple(subs) => self.fields(subs, subject, env, fail, ok),
+
+            Pat::Array(subs) => {
+                // `#[p, …]` matches an array of exactly this length, so the
+                // length test comes first and the extractions follow.
+                let want = subs.len() as i64;
+                self.produces(
+                    Extern::Prim(core::Prim::ArrayLen),
+                    vec![subject],
+                    &env,
+                    move |this, n, env1| {
+                        this.produces(
+                            Extern::Lit(core::Lit::Int(want)),
+                            vec![],
+                            &env1,
+                            move |this, m, env2| {
+                                this.produces(
+                                    Extern::Prim(core::Prim::Eq),
+                                    vec![n, m],
+                                    &env2,
+                                    move |this, b, env3| {
+                                        let no = this.enter(fail);
+                                        let yes = this.fields(subs, subject, env3.clone(), fail, ok);
+                                        Statement::Extern {
+                                            op: Extern::Branch,
+                                            args: vec![b],
+                                            blocks: vec![
+                                                Block {
+                                                    params: env3.clone(),
+                                                    body: no,
+                                                },
+                                                Block {
+                                                    params: env3,
+                                                    body: yes,
+                                                },
+                                            ],
+                                        }
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
             }
 
-            // --- not yet ---------------------------------------------------
-            Term::LetRec(..) => self.give_up(Unsupported::LetRec),
-            Term::Record(..) => self.give_up(Unsupported::Record),
-            Term::Sel(..) => self.give_up(Unsupported::Select),
-            Term::Extend(..) => self.give_up(Unsupported::Extend),
-            Term::Array(items) => self.bind_all(items, |_, ps| {
-                // An array literal is a tuple as far as this IR is concerned;
-                // the runtime distinguishes them.
-                Statement::Cut(Producer::Tuple(ps), k)
-            }),
-            Term::Error => self.give_up(Unsupported::CoreError),
+            // A record pattern names the fields it wants and ignores the rest,
+            // which is what row polymorphism means here.
+            Pat::Record(fields) => {
+                fn go<'t>(
+                    this: &mut Lower,
+                    fields: &'t [(InternedString, Pat)],
+                    subject: Name,
+                    env: Vec<Name>,
+                    fail: Name,
+                    ok: Success<'t>,
+                ) -> Statement {
+                    match fields.split_first() {
+                        None => ok(this, env),
+                        Some(((label, p), rest)) => {
+                            this.produces(Extern::Select(*label), vec![subject], &env, |this, x, env1| {
+                                this.match_pat(
+                                    p,
+                                    x,
+                                    env1,
+                                    fail,
+                                    Box::new(move |this, env2| go(this, rest, subject, env2, fail, ok)),
+                                )
+                            })
+                        }
+                    }
+                }
+                go(self, fields, subject, env, fail, ok)
+            }
         }
     }
 
-    /// Flatten a core pattern. Only one level deep is representable here, so a
-    /// nested pattern is recorded as unsupported rather than silently truncated.
-    fn pattern(&mut self, p: &core::Pat) -> Pattern {
-        match p {
-            core::Pat::Wild => Pattern::Wildcard,
-            core::Pat::Var(v) => Pattern::Ctor(InternedString::from("<bind>"), vec![*v]),
-            core::Pat::Lit(l) => Pattern::Lit(l.clone()),
-            core::Pat::Tuple(ps) => match self.field_vars(ps) {
-                Some(vs) => Pattern::Tuple(vs),
-                None => {
-                    self.unsupported.insert(Unsupported::NestedPattern);
-                    Pattern::Wildcard
-                }
-            },
-            core::Pat::Ctor(name, ps) => match self.field_vars(ps) {
-                Some(vs) => Pattern::Ctor(*name, vs),
-                None => {
-                    self.unsupported.insert(Unsupported::NestedPattern);
-                    Pattern::Wildcard
-                }
-            },
-            core::Pat::Array(_) => {
-                self.unsupported.insert(Unsupported::ArrayPattern);
-                Pattern::Wildcard
+    /// Extract `subs.len()` positional fields from `subject` and match each.
+    fn fields<'t>(
+        &mut self,
+        subs: &'t [Pat],
+        subject: Name,
+        env: Vec<Name>,
+        fail: Name,
+        ok: Success<'t>,
+    ) -> Statement {
+        fn go<'t>(
+            this: &mut Lower,
+            subs: &'t [Pat],
+            i: usize,
+            subject: Name,
+            env: Vec<Name>,
+            got: Vec<(usize, Name)>,
+            fail: Name,
+            ok: Success<'t>,
+        ) -> Statement {
+            if i == subs.len() {
+                let pairs: Vec<(&Pat, Name)> =
+                    got.into_iter().map(|(j, n)| (&subs[j], n)).collect();
+                return this.match_all(pairs, env, fail, ok);
             }
-            core::Pat::Record(_) => {
-                self.unsupported.insert(Unsupported::RecordPattern);
-                Pattern::Wildcard
-            }
-            core::Pat::As(..) => {
-                self.unsupported.insert(Unsupported::NestedPattern);
-                Pattern::Wildcard
-            }
-        }
-    }
-
-    /// Sub-patterns as plain names, or `None` if any of them is not a name.
-    fn field_vars(&mut self, ps: &[core::Pat]) -> Option<Vec<Var>> {
-        ps.iter()
-            .map(|p| match p {
-                core::Pat::Var(v) => Some(*v),
-                core::Pat::Wild => Some(self.names.fresh_var()),
-                _ => None,
+            this.produces(Extern::Field(i), vec![subject], &env, move |this, x, env1| {
+                let mut got = got;
+                got.push((i, x));
+                go(this, subs, i + 1, subject, env1, got, fail, ok)
             })
-            .collect()
+        }
+        go(self, subs, 0, subject, env, Vec::new(), fail, ok)
+    }
+
+    /// Match a list of patterns against a list of values, left to right.
+    fn match_all<'t>(
+        &mut self,
+        pairs: Vec<(&'t Pat, Name)>,
+        env: Vec<Name>,
+        fail: Name,
+        ok: Success<'t>,
+    ) -> Statement {
+        match pairs.split_first() {
+            None => ok(self, env),
+            Some(((p, x), rest)) => {
+                let (p, x) = (*p, *x);
+                let rest = rest.to_vec();
+                self.match_pat(
+                    p,
+                    x,
+                    env,
+                    fail,
+                    Box::new(move |this, env1| this.match_all(rest, env1, fail, ok)),
+                )
+            }
+        }
+    }
+
+    /// Give `subject`'s value a second name at the end of the environment.
+    fn rebind(
+        &mut self,
+        subject: Name,
+        as_name: Name,
+        env: Vec<Name>,
+        ok: Success<'_>,
+    ) -> Statement {
+        let mut sel = env.clone();
+        sel.push(subject);
+        let mut params = env;
+        params.push(as_name);
+        let body = ok(self, params.clone());
+        Statement::Substitute(sel, Box::new(Block { params, body }))
+    }
+
+    // --- effects ----------------------------------------------------------
+
+    /// `handle body with { … }`.
+    ///
+    /// Three objects and one frame: the handler, whose methods are the clauses;
+    /// the body's continuation, which pops the frame and runs the `return`
+    /// clause; and the frame itself, which is the only part that is not ordinary
+    /// AxCut.
+    fn handle(
+        &mut self,
+        body: &Term,
+        clauses: &[core::HClause],
+        ret: Option<&(Var, std::sync::Arc<Term>)>,
+        env: &[Name],
+        k: Name,
+    ) -> Statement {
+        // The handler object captures whatever its clauses need from here; the
+        // argument, the resumption and the handler's own continuation all arrive
+        // as parameters.
+        let mut want = HashSet::new();
+        for c in clauses {
+            want.extend(self.wants(&[&c.body], &[c.param, c.resume]));
+        }
+        let caps_h = restrict(env, &want);
+
+        let h = self.fresh();
+        let mut methods = Vec::new();
+        let mut ops = Vec::new();
+        for c in clauses {
+            let kh = self.fresh();
+            let mut params = caps_h.clone();
+            params.push(c.param);
+            params.push(c.resume);
+            params.push(kh);
+            let body = self.expr(&c.body, &params, kh);
+            methods.push(Block {
+                params,
+                body: body,
+            });
+            ops.push((c.effect, c.op));
+        }
+
+        // After `new h`, and after `new kb`, in that order.
+        let mut env_h: Vec<Name> = vec![h];
+        env_h.extend_from_slice(env);
+
+        // The body's continuation. It does *not* capture `k`: where the value
+        // goes is read off the handler frame, because a resumption may have
+        // moved it. See [`Statement::Unhandle`].
+        let kb = self.fresh();
+        let (x, ret_body) = match ret {
+            Some((p, t)) => (*p, Some(&**t)),
+            None => (self.fresh(), None),
+        };
+        let caps_r = match ret_body {
+            Some(t) => restrict(&env_h, &self.wants(&[t], &[x])),
+            None => Vec::new(),
+        };
+        let mut params_r = caps_r.clone();
+        params_r.push(x);
+
+        let kk = self.fresh();
+        let mut env_r: Vec<Name> = vec![kk];
+        env_r.extend_from_slice(&params_r);
+        let inner = match ret_body {
+            Some(t) => self.expr(t, &env_r, kk),
+            None => self.ret(kk, x),
+        };
+
+        let mut env_b: Vec<Name> = vec![kb];
+        env_b.extend_from_slice(&env_h);
+        let body = self.expr(body, &env_b, kb);
+
+        Statement::New {
+            name: h,
+            captures: caps_h,
+            methods,
+            rest: Box::new(Statement::New {
+                name: kb,
+                captures: caps_r,
+                methods: vec![Block {
+                    params: params_r,
+                    // The body returned normally: take the handler back off and
+                    // pick up where its value goes, then run the `return`
+                    // clause outside its own handler — the same place a
+                    // `perform` clause runs.
+                    body: Statement::Unhandle {
+                        k: kk,
+                        rest: Box::new(inner),
+                    },
+                }],
+                rest: Box::new(Statement::Handle {
+                    handler: h,
+                    ops,
+                    // The frame answers the `handle` expression's own
+                    // continuation, not the body's.
+                    k,
+                    rest: Box::new(body),
+                }),
+            }),
+        }
     }
 }
 
+/// The names of `env`, in order, that are in `want` — the environment shape a
+/// continuation should capture.
+///
+/// Order comes from the environment rather than from the set, so lowering is
+/// deterministic: a `HashSet`'s iteration order is not.
+fn restrict(env: &[Name], want: &HashSet<Var>) -> Vec<Name> {
+    let mut seen = HashSet::new();
+    env.iter()
+        .filter(|n| want.contains(n) && seen.insert(**n))
+        .copied()
+        .collect()
+}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use meadow_core::{Lit, Prim};
-
-    fn lower_one(t: Term) -> (Statement, HashSet<Unsupported>) {
-        let prog = core::Program {
-            defs: vec![core::Def {
-                var: VarId(0),
-                name: InternedString::from("main"),
-                term: t,
-            }],
-            entry: Some(VarId(0)),
-            ctor_fields: Default::default(),
-        };
-        let out = lower_program(&prog, 1000);
-        (out.program.defs[0].body.clone(), out.unsupported)
-    }
-
-    fn v(n: u32) -> Term {
-        Term::Var(VarId(n))
-    }
-
-    #[test]
-    fn a_variable_is_a_cut_against_the_continuation() {
-        // The whole IR in one case: `⟦x⟧ a = ⟨x | a⟩`.
-        let (s, un) = lower_one(v(1));
-        assert!(un.is_empty());
-        match s {
-            Statement::Cut(Producer::Var(x), Consumer::Covar(_)) => assert_eq!(x.0, 1),
-            other => panic!("expected a cut, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_let_becomes_the_mu_tilde_consumer() {
-        // `⟦let x = 1; x⟧ a = ⟨1 | mu~ x. ⟨x | a⟩⟩` — binding a name is what
-        // consuming a value *is*, which is the idea the whole IR rests on.
-        let t = Term::Let(
-            VarId(1),
-            std::sync::Arc::new(Term::Lit(Lit::Int(1))),
-            std::sync::Arc::new(v(1)),
-        );
-        let (s, un) = lower_one(t);
-        assert!(un.is_empty());
-        match s {
-            Statement::Cut(Producer::Lit(Lit::Int(1)), Consumer::MuTilde(x, body)) => {
-                assert_eq!(x.0, 1);
-                assert!(matches!(*body, Statement::Cut(Producer::Var(_), _)));
+/// Free variables of `t`.
+fn free_into(t: &Term, out: &mut HashSet<Var>) {
+    fn go(t: &Term, bound: &mut Vec<Var>, out: &mut HashSet<Var>) {
+        match t {
+            Term::Var(v) => {
+                if !bound.contains(v) {
+                    out.insert(*v);
+                }
             }
-            other => panic!("expected a cut into mu~, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn application_evaluates_left_to_right() {
-        // `f g` where both are computations: the function is bound first, then
-        // the argument, then they meet. A strict language's evaluation order is
-        // visible in the nesting rather than left to an evaluator's discretion.
-        let call = |f: Term, a: Term| Term::App(std::sync::Arc::new(f), std::sync::Arc::new(a));
-        let t = call(call(v(1), v(2)), call(v(3), v(4)));
-        let (s, un) = lower_one(t);
-        assert!(un.is_empty());
-        // Outermost binding is for the function position.
-        assert!(
-            matches!(s, Statement::Cut(Producer::Var(f), Consumer::Apply(..)) if f.0 == 1)
-                || matches!(&s, Statement::Cut(_, Consumer::MuTilde(..))),
-            "got {s:?}"
-        );
-    }
-
-    #[test]
-    fn an_atom_is_not_given_a_needless_name() {
-        // `f 1` should not bind `1` to a fresh variable first — the IR would be
-        // correct but twice the size, and every later pass would pay for it.
-        let t = Term::App(
-            std::sync::Arc::new(v(1)),
-            std::sync::Arc::new(Term::Lit(Lit::Int(1))),
-        );
-        let (s, _) = lower_one(t);
-        match s {
-            Statement::Cut(Producer::Var(f), Consumer::Apply(arg, _)) => {
-                assert_eq!(f.0, 1);
-                assert!(matches!(*arg, Producer::Lit(Lit::Int(1))));
+            Term::Lit(_) | Term::Error => {}
+            Term::Lam(p, b) => {
+                bound.push(*p);
+                go(b, bound, out);
+                bound.pop();
             }
-            other => panic!("expected a direct cut, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_primitive_binds_its_arguments_then_its_result() {
-        let t = Term::Prim(Prim::Add, vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(2))]);
-        let (s, un) = lower_one(t);
-        assert!(un.is_empty());
-        match s {
-            Statement::Prim { prim, args, .. } => {
-                assert_eq!(prim, Prim::Add);
-                assert_eq!(args.len(), 2);
+            Term::App(f, a) => {
+                go(f, bound, out);
+                go(a, bound, out);
             }
-            other => panic!("expected a prim statement, got {other:?}"),
+            Term::Let(x, r, b) => {
+                go(r, bound, out);
+                bound.push(*x);
+                go(b, bound, out);
+                bound.pop();
+            }
+            Term::LetRec(binds, body) => {
+                for (v, _) in binds {
+                    bound.push(*v);
+                }
+                for (_, t) in binds {
+                    go(t, bound, out);
+                }
+                go(body, bound, out);
+                for _ in binds {
+                    bound.pop();
+                }
+            }
+            Term::If(a, b, c) => {
+                go(a, bound, out);
+                go(b, bound, out);
+                go(c, bound, out);
+            }
+            Term::Tuple(xs) | Term::Array(xs) => {
+                for x in xs {
+                    go(x, bound, out);
+                }
+            }
+            Term::Ctor(_, xs) | Term::Prim(_, xs) => {
+                for x in xs {
+                    go(x, bound, out);
+                }
+            }
+            Term::Proj(t, _) | Term::Sel(t, _) => go(t, bound, out),
+            Term::Extend(t, _, u) => {
+                go(t, bound, out);
+                go(u, bound, out);
+            }
+            Term::Record(fs) => {
+                for (_, t) in fs {
+                    go(t, bound, out);
+                }
+            }
+            Term::Perform(_, _, a) => go(a, bound, out),
+            Term::Case(s, arms) => {
+                go(s, bound, out);
+                for (p, t) in arms {
+                    let before = bound.len();
+                    pat_vars(p, bound);
+                    go(t, bound, out);
+                    bound.truncate(before);
+                }
+            }
+            Term::Handle { body, clauses, ret } => {
+                go(body, bound, out);
+                for c in clauses {
+                    bound.push(c.param);
+                    bound.push(c.resume);
+                    go(&c.body, bound, out);
+                    bound.pop();
+                    bound.pop();
+                }
+                if let Some((v, t)) = ret {
+                    bound.push(*v);
+                    go(t, bound, out);
+                    bound.pop();
+                }
+            }
         }
     }
+    go(t, &mut Vec::new(), out);
+}
 
-    #[test]
-    fn what_is_not_translated_is_reported_rather_than_dropped() {
-        // Silence here would mean a program that compiles and does the wrong
-        // thing, which is the one outcome worse than not compiling.
-        let (s, un) = lower_one(Term::LetRec(vec![], std::sync::Arc::new(v(1))));
-        assert!(matches!(s, Statement::Error));
-        assert!(un.contains(&Unsupported::LetRec));
+/// The variables a pattern binds.
+fn pat_vars(p: &Pat, out: &mut Vec<Var>) {
+    match p {
+        Pat::Wild | Pat::Lit(_) => {}
+        Pat::Var(v) => out.push(*v),
+        Pat::As(v, sub) => {
+            out.push(*v);
+            pat_vars(sub, out);
+        }
+        Pat::Tuple(ps) | Pat::Array(ps) | Pat::Ctor(_, ps) => {
+            for p in ps {
+                pat_vars(p, out);
+            }
+        }
+        Pat::Record(fs) => {
+            for (_, p) in fs {
+                pat_vars(p, out);
+            }
+        }
     }
+}
 
-    #[test]
-    fn fresh_names_do_not_collide_with_the_front_ends() {
-        // Lowering invents variables; starting below the front end's would make
-        // two different things share a name.
-        let mut names = Names::starting_at(500);
-        assert_eq!(names.fresh_var().0, 500);
-        assert_eq!(names.fresh_var().0, 501);
-        assert_eq!(names.fresh_covar().0, 0, "covariables are their own space");
+/// Every variable a term mentions, bound or free — only for sizing the fresh
+/// counter, where the distinction does not matter.
+fn mentions(t: &Term, out: &mut HashSet<Var>) {
+    match t {
+        Term::Var(v) => {
+            out.insert(*v);
+        }
+        Term::Lit(_) | Term::Error => {}
+        Term::Lam(p, b) => {
+            out.insert(*p);
+            mentions(b, out);
+        }
+        Term::App(f, a) => {
+            mentions(f, out);
+            mentions(a, out);
+        }
+        Term::Let(x, r, b) => {
+            out.insert(*x);
+            mentions(r, out);
+            mentions(b, out);
+        }
+        Term::LetRec(binds, body) => {
+            for (v, t) in binds {
+                out.insert(*v);
+                mentions(t, out);
+            }
+            mentions(body, out);
+        }
+        Term::If(a, b, c) => {
+            mentions(a, out);
+            mentions(b, out);
+            mentions(c, out);
+        }
+        Term::Tuple(xs) | Term::Array(xs) => {
+            for x in xs {
+                mentions(x, out);
+            }
+        }
+        Term::Ctor(_, xs) | Term::Prim(_, xs) => {
+            for x in xs {
+                mentions(x, out);
+            }
+        }
+        Term::Proj(t, _) | Term::Sel(t, _) => mentions(t, out),
+        Term::Extend(t, _, u) => {
+            mentions(t, out);
+            mentions(u, out);
+        }
+        Term::Record(fs) => {
+            for (_, t) in fs {
+                mentions(t, out);
+            }
+        }
+        Term::Perform(_, _, a) => mentions(a, out),
+        Term::Case(s, arms) => {
+            mentions(s, out);
+            for (p, t) in arms {
+                let mut vs = Vec::new();
+                pat_vars(p, &mut vs);
+                out.extend(vs);
+                mentions(t, out);
+            }
+        }
+        Term::Handle { body, clauses, ret } => {
+            mentions(body, out);
+            for c in clauses {
+                out.insert(c.param);
+                out.insert(c.resume);
+                mentions(&c.body, out);
+            }
+            if let Some((v, t)) = ret {
+                out.insert(*v);
+                mentions(t, out);
+            }
+        }
     }
 }

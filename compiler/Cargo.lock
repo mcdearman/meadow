@@ -238,6 +238,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "meadow-bytecode"
+version = "0.1.0"
+dependencies = [
+ "meadow-core",
+ "meadow-intern",
+]
+
+[[package]]
+name = "meadow-codegen"
+version = "0.1.0"
+dependencies = [
+ "meadow-bytecode",
+ "meadow-core",
+ "meadow-hir",
+ "meadow-intern",
+ "meadow-seq",
+]
+
+[[package]]
 name = "meadow-compiler"
 version = "0.1.0"
 dependencies = [
@@ -369,6 +388,8 @@ dependencies = [
  "meadow-core",
  "meadow-hir",
  "meadow-intern",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]

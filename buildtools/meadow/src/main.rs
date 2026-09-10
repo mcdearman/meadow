@@ -5,8 +5,7 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
-use meadow::{format, pipeline, test, update, Profile};
-use meadow_eval as eval;
+use meadow::{format, pipeline, runtime, test, update, Engine, Profile};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -33,6 +32,8 @@ enum Cmd {
         path: PathBuf,
         #[command(flatten)]
         profile: ProfileArgs,
+        #[command(flatten)]
+        engine: EngineArgs,
     },
     /// Build a package and run its `@test` functions.
     Test {
@@ -44,6 +45,16 @@ enum Cmd {
         /// Also run the standard library's own tests.
         #[arg(long)]
         std: bool,
+        #[command(flatten)]
+        profile: ProfileArgs,
+        #[command(flatten)]
+        engine: EngineArgs,
+    },
+    /// Disassemble a package: the bytecode the VM would run.
+    Dis {
+        /// Package directory (or a single `.mw` file).
+        #[arg(default_value = ".")]
+        path: PathBuf,
         #[command(flatten)]
         profile: ProfileArgs,
     },
@@ -96,6 +107,27 @@ impl ProfileArgs {
     }
 }
 
+/// `--cek` — run on the CEK abstract machine instead of the bytecode VM.
+///
+/// The VM is the default. The CEK is the specification of what a Meadow program
+/// means, so if the two disagree it is right and the VM has a bug; this flag is
+/// what makes that comparison available without a rebuild. It is also the only
+/// way to run a program that reaches the real world through an *unhandled*
+/// `Fs`, `Process`, `Random` or `Time` operation, which the VM does not
+/// discharge yet.
+#[derive(clap::Args)]
+struct EngineArgs {
+    /// Evaluate with the CEK machine rather than the bytecode VM.
+    #[arg(long)]
+    cek: bool,
+}
+
+impl EngineArgs {
+    fn engine(&self) -> Engine {
+        if self.cek { Engine::Cek } else { Engine::Vm }
+    }
+}
+
 fn main() {
     match Cli::parse().cmd {
         // No subcommand → interactive REPL.
@@ -104,18 +136,25 @@ fn main() {
             path,
             annotations,
             profile,
-        }) => build(&path, false, annotations, profile.profile()),
-        Some(Cmd::Run { path, profile }) => build(&path, true, false, profile.profile()),
+        }) => build(&path, None, annotations, profile.profile()),
+        Some(Cmd::Run {
+            path,
+            profile,
+            engine,
+        }) => build(&path, Some(engine.engine()), false, profile.profile()),
+        Some(Cmd::Dis { path, profile }) => disassemble(&path, profile.profile()),
         Some(Cmd::Test {
             path,
             filter,
             std,
             profile,
+            engine,
         }) => match test::run(&test::Options {
             path,
             filter,
             std,
             profile: profile.profile(),
+            engine: engine.engine(),
         }) {
             Ok(true) => {}
             Ok(false) => std::process::exit(1),
@@ -167,10 +206,10 @@ fn main() {
     }
 }
 
-/// Discover, compile and link the package at `path`; optionally evaluate its
-/// entry point. Exits non-zero if any diagnostic was produced or evaluation
-/// failed.
-fn build(path: &std::path::Path, run: bool, annotations: bool, profile: Profile) {
+/// Discover, compile and link the package at `path`; with `engine`, also
+/// evaluate its entry point. Exits non-zero if any diagnostic was produced or
+/// evaluation failed.
+fn build(path: &std::path::Path, engine: Option<Engine>, annotations: bool, profile: Profile) {
     let out = pipeline::build(path, profile.options());
 
     for d in &out.diagnostics {
@@ -186,8 +225,8 @@ fn build(path: &std::path::Path, run: bool, annotations: bool, profile: Profile)
         print!("{}", linked.annotations());
     }
 
-    if run {
-        match eval::run(&linked.program) {
+    if let Some(engine) = engine {
+        match runtime::run(&linked.program, engine) {
             Ok(value) => println!("=> {value}"),
             Err(e) => {
                 eprintln!("{e}");
@@ -198,5 +237,24 @@ fn build(path: &std::path::Path, run: bool, annotations: bool, profile: Profile)
 
     if !out.diagnostics.is_empty() {
         std::process::exit(1);
+    }
+}
+
+/// Print the bytecode the VM would run — the back end's output, addresses and
+/// all.
+fn disassemble(path: &std::path::Path, profile: Profile) {
+    let out = pipeline::build(path, profile.options());
+    for d in &out.diagnostics {
+        eprintln!("{}: {}", d.filename, d.msg);
+    }
+    let Some(linked) = out.linked else {
+        std::process::exit(1);
+    };
+    match runtime::compile(&linked.program) {
+        Ok(image) => print!("{}", image.disassemble()),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
     }
 }

@@ -1,198 +1,204 @@
-//! Rendering sequent programs, in the notation the papers use.
+//! A readable rendering of an AxCut program.
 //!
-//! `⟨p | c⟩` for a cut, `mu a.` and `mu~ x.` for the two binders. Worth having
-//! as more than a debugging aid: the point of this IR is that control is
-//! visible, and it is only visible if it can be read.
+//! Statements chain rather than nest — `let`, `new` and a single-continuation
+//! `extern` are written as one line followed by what comes next at the same
+//! indentation — so a long straight-line function reads as a list instead of a
+//! staircase. Only the things that genuinely branch (`switch`, a two-way
+//! `extern`) and the block a `substitute` enters are indented.
+//!
+//! Blocks show their parameters, and those parameters are the *whole
+//! environment* at that point, not just what is new. Reading a dump is
+//! therefore also reading the register assignment, which is the property the IR
+//! exists to have.
 
-use crate::{Consumer, Producer, Program, Statement};
-use std::fmt::{self, Write};
+use crate::{Block, Extern, Label, Name, Program, Statement};
+use std::fmt::Write;
 
-impl fmt::Display for Program {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Program {
+    pub fn pretty(&self) -> String {
+        let mut out = String::new();
         for def in &self.defs {
-            writeln!(f, "def {} (ret a{}) =", def.name, def.ret.0)?;
-            let mut body = String::new();
-            write_stmt(&mut body, &def.body, 1)?;
-            f.write_str(&body)?;
-            writeln!(f)?;
+            let entry = if Some(def.label) == self.entry {
+                "  (entry)"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                out,
+                "def {} {}{entry}",
+                label(def.label),
+                params(&def.block.params)
+            );
+            stmt(&mut out, &def.block.body, 1);
+            out.push('\n');
         }
-        Ok(())
+        out
     }
 }
 
-fn indent(out: &mut String, depth: usize) -> fmt::Result {
+fn label(Label(n): Label) -> String {
+    format!("#{n}")
+}
+
+fn name(n: Name) -> String {
+    format!("v{}", n.0)
+}
+
+fn names(ns: &[Name]) -> String {
+    ns.iter().map(|n| name(*n)).collect::<Vec<_>>().join(", ")
+}
+
+fn params(ns: &[Name]) -> String {
+    format!("({})", names(ns))
+}
+
+fn pad(out: &mut String, depth: usize) {
     for _ in 0..depth {
         out.push_str("  ");
     }
-    Ok(())
 }
 
-fn write_stmt(out: &mut String, s: &Statement, depth: usize) -> fmt::Result {
-    indent(out, depth)?;
+fn stmt(out: &mut String, s: &Statement, depth: usize) {
+    pad(out, depth);
     match s {
-        Statement::Cut(p, c) => {
-            out.push('<');
-            write_producer(out, p, depth)?;
-            out.push_str(" | ");
-            write_consumer(out, c, depth)?;
-            out.push_str(">\n");
-            Ok(())
+        Statement::Substitute(sel, block) => {
+            let _ = writeln!(out, "substitute [{}] in {}", names(sel), params(&block.params));
+            stmt(out, &block.body, depth + 1);
         }
-        Statement::Prim {
-            prim,
-            args,
-            out: o,
-            next,
+        Statement::Jump(l) => {
+            let _ = writeln!(out, "jump {}", label(*l));
+        }
+        Statement::Let {
+            name: n,
+            tag,
+            ctor,
+            fields,
+            rest,
         } => {
-            write!(out, "let x{} = {prim:?}(", o.0)?;
-            for (i, a) in args.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write_producer(out, a, depth)?;
-            }
-            out.push_str(")\n");
-            write_stmt(out, next, depth)
+            let _ = writeln!(
+                out,
+                "let {} = {ctor}#{tag}({});",
+                name(*n),
+                names(fields)
+            );
+            stmt(out, rest, depth);
         }
-        Statement::If { cond, then, els } => {
-            out.push_str("if ");
-            write_producer(out, cond, depth)?;
-            out.push('\n');
-            write_stmt(out, then, depth + 1)?;
-            indent(out, depth)?;
-            out.push_str("else\n");
-            write_stmt(out, els, depth + 1)
-        }
-        Statement::Jump(l, args) => {
-            write!(out, "jump L{}(", l.0)?;
-            for (i, a) in args.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write_producer(out, a, depth)?;
-            }
-            out.push_str(")\n");
-            Ok(())
-        }
-        Statement::LetLabel {
-            label,
-            params,
-            body,
-            next,
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
         } => {
-            write!(out, "label L{}(", label.0)?;
-            for (i, p) in params.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write!(out, "x{}", p.0)?;
+            let _ = writeln!(out, "switch {} {{", name(*scrutinee));
+            for (tag, b) in arms {
+                pad(out, depth + 1);
+                let _ = writeln!(out, "#{tag} {} =>", params(&b.params));
+                stmt(out, &b.body, depth + 2);
             }
-            out.push_str(") =\n");
-            write_stmt(out, body, depth + 1)?;
-            write_stmt(out, next, depth)
+            pad(out, depth + 1);
+            let _ = writeln!(out, "else {} =>", params(&default.params));
+            stmt(out, &default.body, depth + 2);
+            pad(out, depth);
+            out.push_str("}\n");
+        }
+        Statement::New {
+            name: n,
+            captures,
+            methods,
+            rest,
+        } => {
+            let _ = writeln!(out, "new {} [{}] {{", name(*n), names(captures));
+            for (tag, m) in methods.iter().enumerate() {
+                pad(out, depth + 1);
+                let _ = writeln!(out, "#{tag} {} =>", params(&m.params));
+                stmt(out, &m.body, depth + 2);
+            }
+            pad(out, depth);
+            out.push_str("};\n");
+            stmt(out, rest, depth);
+        }
+        Statement::Invoke(n, tag) => {
+            let _ = writeln!(out, "invoke {}#{tag}", name(*n));
+        }
+        Statement::Extern { op, args, blocks } => {
+            let op = match op {
+                Extern::Lit(l) => format!("lit {l:?}"),
+                Extern::Prim(p) => format!("{p:?}"),
+                Extern::Branch => "branch".to_string(),
+                Extern::Record(labels) => format!(
+                    "record{{{}}}",
+                    labels
+                        .iter()
+                        .map(|l| l.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                Extern::Select(l) => format!("select .{l}"),
+                Extern::Extend(l) => format!("extend .{l}"),
+                Extern::Array => "array".to_string(),
+                Extern::Field(i) => format!("field {i}"),
+            };
+            // One continuation is a sequence point, not a branch: write it flat.
+            if let [only] = &blocks[..] {
+                let _ = writeln!(out, "extern {op}({}) -> {};", names(args), params(&only.params));
+                stmt(out, &only.body, depth);
+            } else {
+                let _ = writeln!(out, "extern {op}({}) {{", names(args));
+                for (i, b) in blocks.iter().enumerate() {
+                    pad(out, depth + 1);
+                    let _ = writeln!(out, "#{i} {} =>", params(&b.params));
+                    stmt(out, &b.body, depth + 2);
+                }
+                pad(out, depth);
+                out.push_str("}\n");
+            }
+        }
+        Statement::Handle {
+            handler,
+            ops,
+            k,
+            rest,
+        } => {
+            let ops = ops
+                .iter()
+                .map(|(e, o)| format!("{e}.{o}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(
+                out,
+                "handle {} [{ops}] answering {};",
+                name(*handler),
+                name(*k)
+            );
+            stmt(out, rest, depth);
+        }
+        Statement::Unhandle { k, rest } => {
+            let _ = writeln!(out, "unhandle -> {};", name(*k));
+            stmt(out, rest, depth);
         }
         Statement::Perform {
             effect,
             op,
             arg,
-            ret,
+            k,
         } => {
-            write!(out, "perform {effect}.{op}(")?;
-            write_producer(out, arg, depth)?;
-            write!(out, ") -> a{}\n", ret.0)?;
-            Ok(())
+            let _ = writeln!(
+                out,
+                "perform {effect}.{op}({}) -> {}",
+                name(*arg),
+                name(*k)
+            );
         }
-        Statement::Handle {
-            body,
-            clauses,
-            ret,
-            out: o,
-        } => {
-            write!(out, "handle -> a{}\n", o.0)?;
-            write_stmt(out, body, depth + 1)?;
-            for c in clauses {
-                indent(out, depth)?;
-                write!(out, "| {}.{} x{} k{} ->\n", c.effect, c.op, c.param.0, c.resume.0)?;
-                write_stmt(out, &c.body, depth + 1)?;
-            }
-            if let Some((x, body)) = ret {
-                indent(out, depth)?;
-                write!(out, "| return x{} ->\n", x.0)?;
-                write_stmt(out, body, depth + 1)?;
-            }
-            Ok(())
-        }
-        Statement::Error => {
-            out.push_str("<error>\n");
-            Ok(())
+        Statement::Error(msg) => {
+            let _ = writeln!(out, "error {msg:?}");
         }
     }
 }
 
-fn write_producer(out: &mut String, p: &Producer, depth: usize) -> fmt::Result {
-    match p {
-        Producer::Var(v) => write!(out, "x{}", v.0),
-        Producer::Lit(l) => write!(out, "{l:?}"),
-        Producer::Ctor(name, args) => {
-            write!(out, "{name}")?;
-            if !args.is_empty() {
-                out.push('(');
-                for (i, a) in args.iter().enumerate() {
-                    if i > 0 {
-                        out.push_str(", ");
-                    }
-                    write_producer(out, a, depth)?;
-                }
-                out.push(')');
-            }
-            Ok(())
-        }
-        Producer::Tuple(items) => {
-            out.push('(');
-            for (i, a) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write_producer(out, a, depth)?;
-            }
-            out.push(')');
-            Ok(())
-        }
-        Producer::Lam { param, ret, body } => {
-            write!(out, "\\x{} a{}.\n", param.0, ret.0)?;
-            write_stmt(out, body, depth + 1)?;
-            indent(out, depth)
-        }
-        Producer::Mu(a, body) => {
-            write!(out, "mu a{}.\n", a.0)?;
-            write_stmt(out, body, depth + 1)?;
-            indent(out, depth)
-        }
-    }
-}
-
-fn write_consumer(out: &mut String, c: &Consumer, depth: usize) -> fmt::Result {
-    match c {
-        Consumer::Covar(a) => write!(out, "a{}", a.0),
-        Consumer::MuTilde(x, body) => {
-            write!(out, "mu~ x{}.\n", x.0)?;
-            write_stmt(out, body, depth + 1)?;
-            indent(out, depth)
-        }
-        Consumer::Apply(arg, ret) => {
-            out.push_str("apply(");
-            write_producer(out, arg, depth)?;
-            write!(out, ") -> a{}", ret.0)
-        }
-        Consumer::Case(branches) => {
-            out.push_str("case\n");
-            for b in branches {
-                indent(out, depth + 1)?;
-                write!(out, "| {:?} ->\n", b.pat)?;
-                write_stmt(out, &b.body, depth + 2)?;
-            }
-            indent(out, depth)
-        }
-        Consumer::Finish => out.write_str("finish"),
+impl std::fmt::Display for Block {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut out = String::new();
+        let _ = writeln!(out, "{} =>", params(&self.params));
+        stmt(&mut out, &self.body, 1);
+        f.write_str(&out)
     }
 }

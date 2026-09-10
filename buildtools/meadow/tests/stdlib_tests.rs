@@ -5,7 +5,7 @@
 //! the library is covered by the normal build, and means the language's test
 //! machinery is exercised by something bigger than a fixture.
 
-use meadow::{linker::Linker, stdlib, test, Options};
+use meadow::{linker::Linker, stdlib, test, Engine, Options};
 
 fn run() -> Vec<(String, Option<String>)> {
     let (packages, diags) = stdlib::std_packages(Options::debug());
@@ -14,7 +14,7 @@ fn run() -> Vec<(String, Option<String>)> {
         "the standard library should compile cleanly: {:?}",
         diags.iter().map(|d| &d.msg).collect::<Vec<_>>()
     );
-    test::run_linked_in(Linker::link(packages), "Std").expect("the runner should not itself fail")
+    test::run_linked_in(Linker::link(packages), "Std", Engine::default()).expect("the runner should not itself fail")
 }
 
 #[test]

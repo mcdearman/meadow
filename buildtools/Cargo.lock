@@ -611,10 +611,14 @@ dependencies = [
  "env_logger",
  "insta",
  "itertools",
+ "meadow-bytecode",
+ "meadow-codegen",
  "meadow-compiler",
  "meadow-eval",
  "meadow-fmt",
  "meadow-lsp",
+ "meadow-rts",
+ "meadow-seq",
  "rustyline",
  "yansi",
 ]
@@ -627,6 +631,25 @@ dependencies = [
  "meadow-span",
  "num-bigint",
  "num-traits",
+]
+
+[[package]]
+name = "meadow-bytecode"
+version = "0.1.0"
+dependencies = [
+ "meadow-core",
+ "meadow-intern",
+]
+
+[[package]]
+name = "meadow-codegen"
+version = "0.1.0"
+dependencies = [
+ "meadow-bytecode",
+ "meadow-core",
+ "meadow-hir",
+ "meadow-intern",
+ "meadow-seq",
 ]
 
 [[package]]
@@ -774,10 +797,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "meadow-rts"
+version = "0.1.0"
+dependencies = [
+ "meadow-bytecode",
+ "meadow-core",
+ "meadow-intern",
+ "num-bigint",
+ "num-traits",
+]
+
+[[package]]
 name = "meadow-scc"
 version = "0.1.0"
 dependencies = [
  "meadow-hir",
+]
+
+[[package]]
+name = "meadow-seq"
+version = "0.1.0"
+dependencies = [
+ "meadow-core",
+ "meadow-hir",
+ "meadow-intern",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]

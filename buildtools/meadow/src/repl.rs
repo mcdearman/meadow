@@ -15,7 +15,7 @@ use meadow_compiler::{
     span::{Located, Span},
     AstModule, CompiledPackage, Options,
 };
-use meadow_eval as eval;
+use meadow::runtime;
 use meadow_fmt as fmt;
 use itertools::Either;
 use rustyline::{
@@ -321,6 +321,7 @@ const COMMANDS: &[(&str, &str)] = &[
     (":t <expr>", "type-check without evaluating"),
     (":module", "list the bindings in scope"),
     (":reset", "forget everything defined so far"),
+    (":vm / :cek", "switch machines (the bytecode VM is the default)"),
 ];
 
 /// Print the startup banner.
@@ -375,6 +376,9 @@ pub struct Session {
     /// line to keep `use Std.Collections.List` in effect for the rest of the
     /// session.
     uses: Vec<ast::LDecl>,
+    /// Which machine evaluates a line. `:cek` and `:vm` switch it, which is the
+    /// quickest way to decide whether something odd is the language or the VM.
+    engine: meadow::Engine,
 }
 
 impl Session {
@@ -394,6 +398,7 @@ impl Session {
             prefix: std_pkgs,
             std_len,
             uses: Vec::new(),
+            engine: meadow::Engine::default(),
         }
     }
 
@@ -461,6 +466,14 @@ impl Session {
                             println!("(reset)");
                         }
                         ":module" => self.list_module(),
+                        ":vm" | ":cek" => {
+                            self.engine = if trimmed == ":cek" {
+                                meadow::Engine::Cek
+                            } else {
+                                meadow::Engine::Vm
+                            };
+                            println!("(evaluating with the {})", self.engine);
+                        }
                         _ if trimmed.starts_with(":t ") || trimmed.starts_with(":t\n") => {
                             self.handle(trimmed[2..].trim(), Mode::TypeOnly);
                         }
@@ -576,7 +589,10 @@ impl Session {
             let entry = compiled.exports.last().map(|e| e.var);
             if entry.is_some() {
                 let program = self.program_for(&compiled, entry);
-                match eval::run(&program) {
+                // Every line is compiled and run as a whole program, so the REPL
+                // gets the bytecode VM for free — and `:cek` switches it, the
+                // same as the flag on `meadow run`.
+                match runtime::run(&program, self.engine) {
                     Ok(value) => println!("= {value}"),
                     Err(e) => eprintln!("{e}"),
                 }

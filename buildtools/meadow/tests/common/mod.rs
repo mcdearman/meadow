@@ -131,6 +131,22 @@ pub fn eval_expr(expr: &str) -> String {
 /// Like [`eval_main`], but links the embedded `Std` package so prelude names
 /// (`map`, `lowMask`, `bytesGet`, …) and `Std.*` containers are in scope.
 pub fn eval_main_std(src: &str) -> String {
+    run_main_std(src, meadow::Engine::Vm)
+}
+
+/// The same, on the CEK machine — for the handful of cases that want the
+/// specification rather than what ships.
+pub fn cek_main_std(src: &str) -> String {
+    run_main_std(src, meadow::Engine::Cek)
+}
+
+/// Compile against `Std` and evaluate `main` on `engine`.
+///
+/// [`eval_main_std`] uses the bytecode VM, which is what `meadow run` uses. The
+/// snapshots in these tests were written against the CEK machine, so every one
+/// of them is also a check that the two agree — on the standard library, on real
+/// subprocesses, and on the filesystem.
+pub fn run_main_std(src: &str, engine: meadow::Engine) -> String {
     let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
     if !diags.is_empty() {
         return format!(
@@ -138,9 +154,9 @@ pub fn eval_main_std(src: &str) -> String {
             diags.iter().map(|d| d.msg.clone()).collect::<Vec<_>>().join("\n")
         );
     }
-    match meadow_eval::run(&program) {
-        Ok(v) => v.to_string(),
-        Err(e) => format!("{e}"),
+    match meadow::runtime::run(&program, engine) {
+        Ok(v) => v,
+        Err(e) => e,
     }
 }
 

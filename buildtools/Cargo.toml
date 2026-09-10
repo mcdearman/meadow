@@ -12,3 +12,7 @@ meadow-lsp = { path = "meadow-lsp" }
 meadow = { path = "meadow" }
 meadow-compiler = { path = "../compiler/meadow-compiler" }
 meadow-eval = { path = "../eval" }
+meadow-rts = { path = "../rts" }
+meadow-seq = { path = "../compiler/meadow-seq" }
+meadow-codegen = { path = "../compiler/meadow-codegen" }
+meadow-bytecode = { path = "../compiler/meadow-bytecode" }

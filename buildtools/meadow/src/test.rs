@@ -9,8 +9,8 @@
 //! a stopped test carrying the message, so a failure reads like any other runtime
 //! error and one failing test does not stop the others.
 
+use crate::runtime::{self, Engine};
 use crate::{pipeline, Profile};
-use meadow_eval as eval;
 use std::path::Path;
 
 pub struct Options {
@@ -21,6 +21,9 @@ pub struct Options {
     /// Also run the standard library's own tests.
     pub std: bool,
     pub profile: Profile,
+    /// Which machine runs them. The bytecode VM by default; `--cek` for the
+    /// specification.
+    pub engine: Engine,
 }
 
 /// Returns `true` if everything that ran passed.
@@ -74,16 +77,16 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     }
 
     let vars: Vec<_> = cases.iter().map(|t| t.var).collect();
-    let results = eval::run_tests(&linked.program, &vars).map_err(|e| e.to_string())?;
+    let results = runtime::run_tests(&linked.program, &vars, opts.engine)?;
 
     let mut failures = Vec::new();
     for (case, result) in cases.iter().zip(&results) {
         match result {
             Ok(_) => println!("test {} ... ok", case.name),
-            Err(e) => {
+            Err(msg) => {
                 println!("test {} ... FAILED", case.name);
-                // `msg`, not `to_string`: a failed assertion is not a "runtime error".
-                failures.push((case.name, e.msg.clone()));
+                // The message alone: a failed assertion is not a "runtime error".
+                failures.push((case.name, msg.clone()));
             }
         }
     }
@@ -124,6 +127,7 @@ fn is_package(path: &Path) -> bool {
 pub fn run_linked_in(
     linked: crate::linker::LinkedProgram,
     package: &str,
+    engine: Engine,
 ) -> Result<Vec<(String, Option<String>)>, String> {
     let cases: Vec<_> = linked
         .tests
@@ -131,22 +135,25 @@ pub fn run_linked_in(
         .filter(|t| &*t.package == package)
         .collect();
     let vars: Vec<_> = cases.iter().map(|t| t.var).collect();
-    let results = eval::run_tests(&linked.program, &vars).map_err(|e| e.to_string())?;
+    let results = runtime::run_tests(&linked.program, &vars, engine)?;
     Ok(cases
         .iter()
         .zip(results)
-        .map(|(c, r)| (c.name.to_string(), r.err().map(|e| e.msg)))
+        .map(|(c, r)| (c.name.to_string(), r.err()))
         .collect())
 }
 
 /// Every test that is not the standard library's.
-pub fn run_linked(linked: crate::linker::LinkedProgram) -> Result<Vec<(String, Option<String>)>, String> {
+pub fn run_linked(
+    linked: crate::linker::LinkedProgram,
+    engine: Engine,
+) -> Result<Vec<(String, Option<String>)>, String> {
     let cases: Vec<_> = linked.tests.iter().filter(|t| &*t.package != "Std").collect();
     let vars: Vec<_> = cases.iter().map(|t| t.var).collect();
-    let results = eval::run_tests(&linked.program, &vars).map_err(|e| e.to_string())?;
+    let results = runtime::run_tests(&linked.program, &vars, engine)?;
     Ok(cases
         .iter()
         .zip(results)
-        .map(|(c, r)| (c.name.to_string(), r.err().map(|e| e.msg)))
+        .map(|(c, r)| (c.name.to_string(), r.err()))
         .collect())
 }

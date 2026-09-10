@@ -18,6 +18,22 @@
 //! Recording is off by default ([`Journal::disabled`]). The VM checks one
 //! boolean per write; a program that is not being debugged pays that and nothing
 //! else.
+//!
+//! # Status, and the thing that has to be solved first
+//!
+//! **Not wired into the VM yet.** The machinery here is right and tested, but
+//! there is a real design question in front of it, and building it wrong would
+//! be worse than not building it.
+//!
+//! An [`Undo::Reg`] holds the [`Value`] a register used to have, and a `Value`
+//! that names a heap object is an *address*. The collector moves objects. So a
+//! journal entry recorded before a collection points at the wrong place after
+//! one, unless the journal is traced as a root — which would keep every object
+//! the program has ever touched alive for as long as recording is on.
+//!
+//! That is probably the right answer (a debugger that can step backwards has to
+//! keep the past reachable, and the cost is the feature working) but it is a
+//! decision, not an oversight, and it wants to be made deliberately.
 
 use crate::value::Value;
 
@@ -29,17 +45,17 @@ use crate::value::Value;
 pub enum Undo {
     /// A register held `was`.
     Reg { slot: usize, was: Value },
-    /// The stack was `len` slots long — undoing a frame push.
-    StackLen { len: usize },
-    /// The frame stack was this deep.
-    FrameLen { len: usize },
-    /// The segment stack was this deep.
-    SegLen { len: usize },
-    /// A segment was detached by a `perform`; putting it back undoes the capture.
-    SegRestore { at: usize, segments: Vec<crate::stack::Segment> },
+    /// This many registers were live — the collector's root set, which a jump
+    /// and an invoke both change.
+    Live { len: usize },
+    /// The handler stack was this deep, undoing a `handle`.
+    HandlerLen { len: usize },
+    /// A handler frame was popped by an `unhandle`, or several were detached by
+    /// a `perform`; putting them back undoes it.
+    HandlerRestore { at: usize, handlers: Vec<(u32, Value, Value)> },
     /// The program counter, recorded once per step so a step boundary is
     /// findable when walking backwards.
-    Step { frame: usize, pc: u32 },
+    Step { pc: u32 },
 }
 
 /// A recording of everything the machine has done.
@@ -95,10 +111,10 @@ impl Journal {
 
     /// Mark the start of an instruction. Stepping back runs until it reaches
     /// one of these.
-    pub fn begin_step(&mut self, frame: usize, pc: u32) {
+    pub fn begin_step(&mut self, pc: u32) {
         self.steps += 1;
         if self.recording {
-            self.entries.push(Undo::Step { frame, pc });
+            self.entries.push(Undo::Step { pc });
         }
     }
 
@@ -106,15 +122,15 @@ impl Journal {
     ///
     /// Returns where the machine was when that instruction began, or `None` at
     /// the beginning of history.
-    pub fn undo_step(&mut self) -> Option<(Vec<Undo>, usize, u32)> {
+    pub fn undo_step(&mut self) -> Option<(Vec<Undo>, u32)> {
         if !self.recording {
             return None;
         }
         let mut taken = Vec::new();
         while let Some(entry) = self.entries.pop() {
-            if let Undo::Step { frame, pc } = entry {
+            if let Undo::Step { pc } = entry {
                 self.steps -= 1;
-                return Some((taken, frame, pc));
+                return Some((taken, pc));
             }
             taken.push(entry);
         }
@@ -129,8 +145,8 @@ mod tests {
     #[test]
     fn a_disabled_journal_keeps_nothing() {
         let mut j = Journal::disabled();
-        j.begin_step(0, 0);
-        j.record(|| Undo::StackLen { len: 7 });
+        j.begin_step(0);
+        j.record(|| Undo::Live { len: 7 });
         assert!(j.is_empty());
         // It still counts steps, which is what a progress display wants.
         assert_eq!(j.steps(), 1);
@@ -140,18 +156,18 @@ mod tests {
     #[test]
     fn undoing_returns_one_instructions_worth() {
         let mut j = Journal::recording();
-        j.begin_step(0, 10);
-        j.record(|| Undo::StackLen { len: 1 });
-        j.record(|| Undo::StackLen { len: 2 });
-        j.begin_step(0, 11);
-        j.record(|| Undo::StackLen { len: 3 });
+        j.begin_step(10);
+        j.record(|| Undo::Live { len: 1 });
+        j.record(|| Undo::Live { len: 2 });
+        j.begin_step(11);
+        j.record(|| Undo::Live { len: 3 });
 
-        let (undos, frame, pc) = j.undo_step().expect("one step back");
-        assert_eq!((frame, pc), (0, 11));
+        let (undos, pc) = j.undo_step().expect("one step back");
+        assert_eq!(pc, 11);
         assert_eq!(undos.len(), 1, "only the second step's writes");
 
-        let (undos, frame, pc) = j.undo_step().expect("two steps back");
-        assert_eq!((frame, pc), (0, 10));
+        let (undos, pc) = j.undo_step().expect("two steps back");
+        assert_eq!(pc, 10);
         assert_eq!(undos.len(), 2);
 
         assert!(j.undo_step().is_none(), "history is exhausted");
@@ -163,12 +179,12 @@ mod tests {
         // They are applied in the order returned, and the newest write has to be
         // undone before the one it overwrote.
         let mut j = Journal::recording();
-        j.begin_step(0, 0);
-        j.record(|| Undo::StackLen { len: 1 });
-        j.record(|| Undo::StackLen { len: 2 });
-        let (undos, _, _) = j.undo_step().unwrap();
+        j.begin_step(0);
+        j.record(|| Undo::Live { len: 1 });
+        j.record(|| Undo::Live { len: 2 });
+        let (undos, _) = j.undo_step().unwrap();
         match (&undos[0], &undos[1]) {
-            (Undo::StackLen { len: a }, Undo::StackLen { len: b }) => {
+            (Undo::Live { len: a }, Undo::Live { len: b }) => {
                 assert_eq!((*a, *b), (2, 1));
             }
             _ => panic!("unexpected entries"),

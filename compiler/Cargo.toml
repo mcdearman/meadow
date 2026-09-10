@@ -20,6 +20,8 @@ meadow-infer = { path = "meadow-infer" }
 meadow-exhaust = { path = "meadow-exhaust" }
 meadow-scc = { path = "meadow-scc" }
 meadow-seq = { path = "meadow-seq" }
+meadow-bytecode = { path = "meadow-bytecode" }
+meadow-codegen = { path = "meadow-codegen" }
 meadow-core = { path = "meadow-core" }
 num-bigint = "0.4"
 num-traits = "0.2"

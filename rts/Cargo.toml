@@ -2,7 +2,7 @@
 
 [package]
 name = "meadow-rts"
-description = "The Meadow runtime system: a register bytecode VM with a segmented stack for effect handlers, and a journal of inverse operations for stepping backwards. Its own workspace, like `eval`."
+description = "The Meadow runtime system: a register bytecode VM with a Cheney semispace collector. It executes straight-line bytecode and knows nothing about the IR that produced it."
 version = "0.1.0"
 edition = "2024"
 
@@ -11,8 +11,18 @@ name = "meadow_rts"
 path = "src/lib.rs"
 
 [dependencies]
+meadow-bytecode = { path = "../compiler/meadow-bytecode" }
 meadow-core = { path = "../compiler/meadow-core" }
 meadow-intern = { path = "../compiler/meadow-intern" }
-meadow-seq = { path = "../compiler/meadow-seq" }
 num-bigint = "0.4"
 num-traits = "0.2"
+
+[dev-dependencies]
+# The differential tests need the front end to get a `core::Program` from
+# source, the AxCut back end to turn one into bytecode, and the CEK machine to
+# say what the answer should be.
+meadow-compiler = { path = "../compiler/meadow-compiler" }
+meadow-seq = { path = "../compiler/meadow-seq" }
+meadow-codegen = { path = "../compiler/meadow-codegen" }
+meadow-eval = { path = "../eval" }
+meadow-bytecode = { path = "../compiler/meadow-bytecode" }

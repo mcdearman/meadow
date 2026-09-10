@@ -14,6 +14,7 @@
 //! *not* `@pub` in `Std.Collections.List`, so re-export is what makes them
 //! public).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 use meadow_compiler::{
@@ -89,8 +90,29 @@ pub fn std_packages(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
     static DEBUG: OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)> = OnceLock::new();
     static RELEASE: OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)> = OnceLock::new();
     let cell = if opts.check_exhaustive { &RELEASE } else { &DEBUG };
-    let (packages, diags) = cell.get_or_init(|| compile_std(opts));
+    let (packages, diags) = cell.get_or_init(|| {
+        counter(opts).fetch_add(1, Ordering::Relaxed);
+        compile_std(opts)
+    });
     (packages.clone(), diags.clone())
+}
+
+fn counter(opts: Options) -> &'static AtomicUsize {
+    static DEBUG: AtomicUsize = AtomicUsize::new(0);
+    static RELEASE: AtomicUsize = AtomicUsize::new(0);
+    if opts.check_exhaustive { &RELEASE } else { &DEBUG }
+}
+
+/// How many times [`std_packages`] has actually compiled `Std` for this profile.
+///
+/// At most one, for the life of the process — that is the whole point of the
+/// cache, and it is what `tests/stdlib.rs` asserts. It used to assert it by
+/// timing two calls against each other, which is not a fact about the cache: the
+/// tests in that binary run in parallel and most of them warm it first, so the
+/// "cold" measurement was a second clone, and on a loaded machine the two were
+/// indistinguishable noise. A count is the property itself.
+pub fn compiles(opts: Options) -> usize {
+    counter(opts).load(Ordering::Relaxed)
 }
 
 /// Compile the embedded `Std` package.

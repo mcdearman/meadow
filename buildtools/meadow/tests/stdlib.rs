@@ -141,16 +141,17 @@ fn std_tree_sorts() {
 
 #[test]
 fn std_packages_is_cached() {
-    // `compile_std` takes hundreds of milliseconds and is deterministic. It used
-    // to run afresh for every REPL line, every language-server keystroke and,
-    // worst of all, once per test — which is what made the suite take minutes.
-    let cold = std::time::Instant::now();
+    // `compile_std` takes seconds and is deterministic. It used to run afresh
+    // for every REPL line, every language-server keystroke and, worst of all,
+    // once per test — which is what made the suite take minutes.
+    //
+    // Asserted by counting rather than by timing. The tests in this binary run
+    // in parallel and most of them warm the cache first, so a "cold" call here
+    // is really a second clone; comparing two clones against each other says
+    // nothing about the cache, and on a loaded machine it fails outright. The
+    // count *is* the property: at most one compile per profile per process.
     let (first, _) = stdlib::std_packages(meadow::Options::debug());
-    let cold = cold.elapsed();
-
-    let warm = std::time::Instant::now();
     let (second, _) = stdlib::std_packages(meadow::Options::debug());
-    let warm = warm.elapsed();
 
     assert_eq!(first.len(), second.len(), "the same packages come back");
     assert_eq!(
@@ -158,11 +159,10 @@ fn std_packages_is_cached() {
         second[0].exports.len(),
         "and with the same exports"
     );
-    // A clone, against a compile. The margin is generous: the point is that the
-    // second call is not doing the work again.
-    assert!(
-        warm * 4 < cold || cold < std::time::Duration::from_millis(50),
-        "second call took {warm:?} against {cold:?} — the cache is not being used"
+    assert_eq!(
+        stdlib::compiles(meadow::Options::debug()),
+        1,
+        "the embedded Std should be compiled exactly once per process"
     );
 }
 
@@ -173,4 +173,7 @@ fn the_two_profiles_are_cached_separately() {
     let (debug, _) = stdlib::std_packages(meadow::Options::debug());
     let (release, _) = stdlib::std_packages(meadow::Options::release());
     assert_eq!(debug.len(), release.len());
+    // Two entries, each filled once: sharing one would leave the other at zero.
+    assert_eq!(stdlib::compiles(meadow::Options::debug()), 1);
+    assert_eq!(stdlib::compiles(meadow::Options::release()), 1);
 }

@@ -1,10 +1,8 @@
-| `compiler/` | the front end, one crate per pass |
-| `eval/` | the CEK machine — the specification of what a program means |
-| `rts/` | the runtime system: a register bytecode VM (early) |
 # Meadow
 
 A small ML-family language: Hindley–Milner inference with row-polymorphic
-records, algebraic effects with deep one-shot handlers, and a CEK evaluator.
+records, algebraic effects with deep one-shot handlers, and a register bytecode
+VM with a copying collector.
 
 ```
 fun classify n =
@@ -62,8 +60,10 @@ A full walkthrough of the language lives in [docs/TUTORIAL.md](docs/TUTORIAL.md)
 ```sh
 meadow                          # REPL
 meadow run examples/euler       # build a package and run `main`
+meadow run --cek pkg            # ...on the CEK machine instead of the VM
 meadow build path/to/pkg        # type-check and link
 meadow build --release pkg      # ...with release checks
+meadow dis pkg                  # disassemble: the bytecode the VM would run
 meadow fmt src                  # re-indent .mw sources in place
 meadow fmt --check src          # ...or just report, and exit 1 if any differ
 meadow test                     # run the package's `@test` functions
@@ -73,6 +73,20 @@ meadow test . parse             # ...only those whose name contains "parse"
 A package is a directory with a `meadow.toml` and a `src/`; `meadow run` also
 takes a single `.mw` file. The `Std` library is embedded in the binary, so
 there is nothing else to install.
+
+### Two machines
+
+Programs run on a **register bytecode VM** with a copying garbage collector.
+Behind it, the compiler lowers to a sequent-calculus IR (AxCut) and then to
+straight-line instructions over a flat register file — with no call stack, since
+in that IR returning from a function is entering the continuation it was given.
+
+The older **CEK abstract machine** is still there, and is still the definition of
+what a Meadow program means. `--cek` on `run` and `test`, or `:cek` in the REPL,
+switches to it; if the two disagree the CEK is right and the VM has a bug, which
+makes the flag the first thing to reach for when a program does something
+inexplicable. Both run the whole standard library test suite on every CI build,
+so a disagreement should not survive long enough for you to find one.
 
 ### Formatting
 
@@ -206,9 +220,15 @@ editors/vscode/build.sh
 code --install-extension editors/vscode/meadow-0.1.0.vsix
 ```
 
-Each release also attaches a built `.vsix`. The extension runs `meadow lsp`, so
-it needs `meadow` on your `PATH` (or `meadow.server.path` set); without it you
-still get syntax highlighting from the bundled TextMate grammar.
+Each release also attaches a built `.vsix`.
+
+The extension runs `meadow lsp`, and finds it on your `PATH`, then in
+`$MEADOW_HOME/bin`, `~/.cargo/bin` and `~/.meadow/bin` — the last three because
+an editor launched from the Dock or the Start menu does not inherit your shell's
+`PATH`. It checks that whatever it finds actually understands `lsp`, so an old
+`meadow` is skipped rather than started and left to fail. `meadow.server.path`
+overrides all of it. Without a server you still get syntax highlighting from the
+bundled TextMate grammar.
 
 ### Profiles
 
@@ -230,11 +250,18 @@ The tree is five independent Cargo workspaces:
 
 | | |
 |---|---|
-| `compiler/` | the front end, one crate per pass |
+| `compiler/` | the front end and back end, one crate per pass — through `meadow-seq` (the AxCut IR and its reference machine) and `meadow-codegen` to `meadow-bytecode` |
 | `eval/` | the CEK machine — the specification of what a program means |
-| `rts/` | the runtime system: a register bytecode VM, checked against `eval` (early) |
+| `rts/` | the runtime: a register bytecode VM with a Cheney semispace collector. It loads an image and knows nothing about the IR that produced it |
 | `buildtools/` | the tools you point at Meadow source: `meadow` (build system, CLI and REPL — the binary) and `meadow-fmt` (the formatter) |
 | `installer/` | `meadow-setup.exe`, the Windows installer |
+
+```
+core ──▶ AxCut ──▶ bytecode ──▶ VM
+          │
+          └─▶ the AxCut machine, and the CEK machine beside it: two
+              independent checks that the pipeline preserved meaning
+```
 
 ```sh
 scripts/check.sh                         # everything CI runs
@@ -244,7 +271,7 @@ cargo install --path buildtools/meadow   # install the CLI
 
 `scripts/check.sh` is the single entry point: `ci.yml` runs it on every push and
 `release.yml` runs it before publishing, so a green run locally is a green run
-there. It covers all four workspaces — there is no one `cargo test --workspace`
+there. It covers all five workspaces — there is no one `cargo test --workspace`
 that does, which is the reason it exists.
 
 ## Releasing
@@ -257,5 +284,5 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 The tag is gated on `scripts/check.sh --version <tag>`, which fails if the tag
-disagrees with the version in any of the four `Cargo.toml`s — the release assets
+disagrees with the version in any of the five `Cargo.toml`s — the release assets
 carry no version, so nothing downstream would catch that.

@@ -62,12 +62,37 @@ done
 # `cargo test` in `buildtools` already runs the standard library's own tests
 # through the library API. Running them again through the CLI is what proves the
 # `meadow test` command works, which nothing else covers.
+#
+# Both engines, because there are two: the bytecode VM (the default) and the CEK
+# machine behind `--cek`. The CEK is the specification, so a disagreement is a VM
+# bug — and the cheapest place to notice one is here.
 
-step "meadow test --std"
+step "meadow test --std (bytecode VM)"
 cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test --std
+
+step "meadow test --std (CEK machine)"
+cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test --std --cek
 
 step "meadow fmt --check"
 cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- fmt --check lib/Std
+
+# --- the editor extension ----------------------------------------------------
+#
+# The `.vsix` is only built by `release.yml`, so until this was here a broken
+# extension build was discovered when cutting a release — which is how it went
+# unnoticed that `npx @vscode/vsce` follows the latest version and that vsce 3
+# requires a newer Node than this repository targets.
+#
+# Skipped rather than failed without npm: the extension is not needed to work on
+# the compiler, and CI installs Node so the check still gates a release.
+
+step "vscode extension"
+if command -v npm >/dev/null 2>&1; then
+  (cd editors/vscode && npm install --silent && npm test --silent >/dev/null && bash build.sh >/dev/null)
+  echo "  packaged $(ls -1 editors/vscode/*.vsix | head -1)"
+else
+  echo "  skipped: npm not found"
+fi
 
 # --- strict ------------------------------------------------------------------
 #

@@ -183,6 +183,7 @@ impl Vm<'_> {
             "Process" => return self.native_process(op, arg),
             "Random" => self.native_random(op, arg)?,
             "Time" => self.native_time(op, arg)?,
+            "Console" => self.native_console(op, arg)?,
             _ => return Ok(None),
         };
         Ok(match built {
@@ -412,6 +413,35 @@ impl Vm<'_> {
                             self.show(arg)
                         ));
                     }
+                }
+            }
+            _ => return Ok(None),
+        }))
+    }
+
+    /// Real standard input.
+    ///
+    /// `readLine` strips the line terminator, including a `\r\n` pair, so a
+    /// program reading a file piped in on Windows sees the same lines as one
+    /// reading a terminal. End of input is `None` rather than an error: a loop
+    /// over stdin ends by matching it, which is not an exceptional thing to do.
+    fn native_console(&mut self, op: &str, arg: Value) -> Result<Option<Build>, Error> {
+        use std::io::BufRead;
+
+        Ok(Some(match op {
+            "readLine" => {
+                let _ = arg;
+                let mut line = String::new();
+                match std::io::stdin().lock().read_line(&mut line) {
+                    // Zero bytes is end of input, not an empty line: an empty
+                    // line still carries its terminator.
+                    Ok(0) => Build::Data("None", vec![]),
+                    Ok(_) => {
+                        let line = line.strip_suffix('\n').unwrap_or(&line);
+                        let line = line.strip_suffix('\r').unwrap_or(line);
+                        Build::Data("Just", vec![Build::Str(line.to_string())])
+                    }
+                    Err(e) => return err(format!("Console.readLine: {e}")),
                 }
             }
             _ => return Ok(None),

@@ -135,6 +135,18 @@ impl Vm<'_> {
         Some(BigInt::from_slice(sign, &digits))
     }
 
+    /// How `print` and `println` render a value: a `String` as its text,
+    /// everything else as [`Vm::show`] gives it.
+    ///
+    /// `println "hello"` used to write `"hello"`, quotes and all, because these
+    /// are polymorphic and fell through to the display used for data.
+    pub fn displayed(&self, v: Value) -> String {
+        match v {
+            Value::Str(s) => s.to_string(),
+            other => self.show(other),
+        }
+    }
+
     /// Render a value the way the REPL prints it.
     pub fn show(&self, v: Value) -> String {
         let mut out = String::new();

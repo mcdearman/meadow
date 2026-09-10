@@ -257,12 +257,14 @@ impl Vm<'_> {
             Ne => Value::Bool(!self.value_eq(arg(self, 0), arg(self, 1))),
             Show => Value::Str(InternedString::from(self.show(arg(self, 0)))),
 
+            // A `String` prints as its text; everything else prints the way
+            // `show` renders it. See `meadow_eval::displayed` for why.
             Print => {
-                print!("{}", self.show(arg(self, 0)));
+                print!("{}", self.displayed(arg(self, 0)));
                 Value::Unit
             }
             Println => {
-                println!("{}", self.show(arg(self, 0)));
+                println!("{}", self.displayed(arg(self, 0)));
                 Value::Unit
             }
 

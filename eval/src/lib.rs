@@ -320,7 +320,8 @@ pub fn run_tests(
     program: &core::Program,
     tests: &[core::Var],
 ) -> Result<Vec<Result<Value, RuntimeError>>, RuntimeError> {
-    let env = load(program)?;
+    // Not the entry point: running the tests is not running the program.
+    let env = load_except(program, program.entry)?;
     Ok(tests
         .iter()
         .map(|&var| {
@@ -347,12 +348,27 @@ pub fn run_tests(
 
 /// Evaluate every top-level definition into a fresh environment.
 fn load(program: &core::Program) -> Result<Env, RuntimeError> {
+    load_except(program, None)
+}
+
+/// Evaluate every top-level definition into a fresh environment, except `skip`.
+///
+/// `skip` exists for the test runner. Definitions are evaluated eagerly here, so
+/// `def main = game ()` *runs the game* the moment the program loads — which is
+/// right for `meadow run` and wrong for `meadow test`, where it meant the suite
+/// played a round against whoever was watching, and blocked forever if that
+/// program read input. The bytecode VM never had the problem: it reaches a
+/// definition by jumping to it, so one nothing refers to is never evaluated.
+fn load_except(program: &core::Program, skip: Option<Var>) -> Result<Env, RuntimeError> {
     let env = root_env();
     // Placeholders first so recursive top-level references resolve.
     for def in &program.defs {
         define(&env, def.var, Value::Unit);
     }
     for def in &program.defs {
+        if Some(def.var) == skip {
+            continue;
+        }
         let m = Machine {
             ctrl: Control::Eval(Arc::new(def.term.clone()), env.clone()),
             kont: Vec::new(),
@@ -833,6 +849,11 @@ impl Machine<'_> {
                 self.ctrl = Control::Ret(result);
                 return Ok(());
             }
+            if &*effect == "Console" {
+                let result = native_console(&op, arg)?;
+                self.ctrl = Control::Ret(result);
+                return Ok(());
+            }
             return err(format!("unhandled effect {effect}.{op}"));
         };
 
@@ -917,6 +938,24 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
 }
 
 // --- primitives ----------------------------------------------------------
+
+/// How `print` and `println` render a value.
+///
+/// A `String` prints as its text. Everything else prints as [`Value`]'s own
+/// rendering, which is what `show` gives and what the REPL displays — so
+/// `println 42` is `42` and `println (1, "a")` is `(1, "a")`, with the quotes
+/// kept where a string is *data inside* a structure rather than the message.
+///
+/// Without this, `println "hello"` wrote `"hello"`, quotes and all, because
+/// these are polymorphic and fell through to `Display`. That made them unusable
+/// for anything a person reads, and it is where the claim that Meadow string
+/// literals "include their surrounding quotes" came from — they never did.
+fn displayed(v: &Value) -> String {
+    match v {
+        Value::Str(s) => s.to_string(),
+        other => other.to_string(),
+    }
+}
 
 fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
     use core::Prim::*;
@@ -1068,11 +1107,11 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             other => err(format!("`neg` expects an Int, got {other}")),
         },
         Print => {
-            print!("{}", args[0]);
+            print!("{}", displayed(&args[0]));
             Ok(Value::Unit)
         }
         Println => {
-            println!("{}", args[0]);
+            println!("{}", displayed(&args[0]));
             Ok(Value::Unit)
         }
 
@@ -1842,6 +1881,39 @@ fn native_random(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     }
 }
 
+/// The runtime's default handler for the `Std.Console` effect: real standard
+/// input.
+///
+/// `readLine` strips the line terminator, including a `\r\n` pair, so a program
+/// reading a file piped in on Windows sees the same lines as one reading a
+/// terminal. End of input is `None` rather than an error: a loop over stdin ends
+/// by matching it, which is not an exceptional thing to do.
+fn native_console(op: &str, arg: Value) -> Result<Value, RuntimeError> {
+    use std::io::BufRead;
+
+    match op {
+        "readLine" => {
+            let _ = arg;
+            let mut line = String::new();
+            match std::io::stdin().lock().read_line(&mut line) {
+                // Zero bytes is end of input, not an empty line: an empty line
+                // still carries its terminator.
+                Ok(0) => Ok(Value::ctor(InternedString::from("None"), vec![])),
+                Ok(_) => {
+                    let line = line.strip_suffix('\n').unwrap_or(&line);
+                    let line = line.strip_suffix('\r').unwrap_or(line);
+                    Ok(Value::ctor(
+                        InternedString::from("Just"),
+                        vec![Value::Str(InternedString::from(line))],
+                    ))
+                }
+                Err(e) => err(format!("Console.readLine: {e}")),
+            }
+        }
+        other => err(format!("unhandled effect Console.{other}")),
+    }
+}
+
 /// The runtime's default handler for the `Std.Time` effect: the real clock.
 fn native_time(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -2044,6 +2116,39 @@ mod tests {
         assert_eq!(
             Value::ctor("Just".into(), vec![Value::Int(3)]).to_string(),
             "Just(3)"
+        );
+    }
+
+    #[test]
+    fn running_tests_does_not_run_the_program() {
+        // `def main = ...` is evaluated at load, which is right for `run` and
+        // wrong for `test`: a `main` that reads input would block the suite, and
+        // one with any other effect would perform it. Here `main` divides by
+        // zero, so loading it at all would fail the whole run.
+        let m = v();
+        let t = v();
+        let program = Program {
+            defs: vec![
+                core::Def {
+                    var: m,
+                    name: "main".into(),
+                    term: Term::Prim(Prim::Div, vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(0))]),
+                },
+                core::Def {
+                    var: t,
+                    name: "t".into(),
+                    term: Term::Lam(v(), int(7)),
+                },
+            ],
+            entry: Some(m),
+            ..Default::default()
+        };
+        let results = run_tests(&program, &[t]).expect("the runner should not itself fail");
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].as_ref().map(|v| v.to_string()).ok(),
+            Some("7".to_string()),
+            "the test runs and `main` never does"
         );
     }
 

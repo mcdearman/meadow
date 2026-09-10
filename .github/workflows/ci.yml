@@ -34,6 +34,13 @@ jobs:
       - name: Install Rust
         run: rustup update stable
 
+      # `check.sh` also builds the VS Code extension, which needs npm. It skips
+      # that step when npm is absent, so this is what makes it a gate rather
+      # than a suggestion.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       # Five independent workspaces, so five target directories. Keyed on every
       # `Cargo.lock` in the tree.
       - uses: actions/cache@v4

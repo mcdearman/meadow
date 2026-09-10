@@ -15,9 +15,6 @@
     "vscode": "^1.75.0"
   },
   "main": "./src/extension.js",
-  "activationEvents": [
-    "onLanguage:meadow"
-  ],
   "contributes": {
     "languages": [
       {
@@ -75,7 +72,11 @@
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
-    "@types/vscode": "^1.75.0"
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "~2.32.0"
+  },
+  "overrides": {
+    "cheerio": "1.0.0-rc.12"
   },
   "scripts": {
     "test": "node --test test/resolve.test.js",

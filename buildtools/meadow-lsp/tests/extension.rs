@@ -21,7 +21,27 @@ fn the_manifest_is_valid_and_points_at_files_that_exist() {
     let pkg = editor_file("package.json");
     assert_eq!(pkg["contributes"]["languages"][0]["id"], "meadow");
     assert_eq!(pkg["contributes"]["languages"][0]["extensions"][0], ".mw");
-    assert_eq!(pkg["activationEvents"][0], "onLanguage:meadow");
+
+    // What makes opening a `.mw` file start the extension. Since VS Code 1.74
+    // the `onLanguage:meadow` activation event is generated from the language
+    // contribution above, so the manifest does not list it — but only if the
+    // engine requirement is high enough for that to be true.
+    assert!(
+        pkg["activationEvents"].is_null(),
+        "activation events are generated from `contributes.languages`; listing \
+         them again is what VS Code warns about"
+    );
+    let engine = pkg["engines"]["vscode"].as_str().unwrap();
+    let major_minor: Vec<u32> = engine
+        .trim_start_matches('^')
+        .split('.')
+        .take(2)
+        .map(|p| p.parse().unwrap())
+        .collect();
+    assert!(
+        major_minor >= vec![1, 74],
+        "generated activation events need VS Code 1.74; the manifest asks for {engine}"
+    );
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../editors/vscode");
     for rel in [

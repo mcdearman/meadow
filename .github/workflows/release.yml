@@ -34,6 +34,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup update stable
+      # `check.sh` builds the VS Code extension when npm is present. Pinned
+      # rather than left to whatever the runner ships, for the same reason
+      # `vsce` is pinned: an implicit tool version is a build that breaks on
+      # someone else's schedule.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
       - name: Check
         shell: bash
         run: |

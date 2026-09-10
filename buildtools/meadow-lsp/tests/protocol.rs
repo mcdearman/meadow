@@ -257,3 +257,137 @@ fn an_unknown_request_is_an_error_not_a_panic() {
         }
     }
 }
+
+// --- the handshake ---------------------------------------------------------
+
+/// Drive the handshake by hand, sending `chatter` between the `initialize`
+/// response and `initialized`, and answer whether the server survived.
+fn survives_chatter_before_initialized(chatter: &[(&str, Value)]) -> bool {
+    let (server, client) = Connection::memory();
+    let handle = std::thread::spawn(move || {
+        let (packages, _) = meadow::stdlib::std_packages(meadow::Options::debug());
+        let _ = meadow_lsp::server::serve(&server, packages);
+    });
+
+    client
+        .sender
+        .send(Message::Request(Request {
+            id: 1.into(),
+            method: "initialize".into(),
+            params: json!({"capabilities": {}}),
+        }))
+        .unwrap();
+    // Wait for the initialize response before the chatter, which is the window
+    // the strict handshake used to die in.
+    loop {
+        match client.receiver.recv().unwrap() {
+            Message::Response(_) => break,
+            _ => continue,
+        }
+    }
+    for (method, params) in chatter {
+        client
+            .sender
+            .send(Message::Notification(Notification {
+                method: (*method).into(),
+                params: params.clone(),
+            }))
+            .unwrap();
+    }
+    client
+        .sender
+        .send(Message::Notification(Notification {
+            method: "initialized".into(),
+            params: json!({}),
+        }))
+        .unwrap();
+
+    // If the server is alive it will answer this; if it died, the channel
+    // closes and `recv` fails.
+    client
+        .sender
+        .send(Message::Notification(Notification {
+            method: "textDocument/didOpen".into(),
+            params: json!({"textDocument": {
+                "uri": "file:///x.mw", "languageId": "meadow", "version": 1,
+                "text": "def main = 1\n"
+            }}),
+        }))
+        .unwrap();
+    let alive = loop {
+        match client.receiver.recv() {
+            Ok(Message::Notification(n)) if n.method == "textDocument/publishDiagnostics" => {
+                break true;
+            }
+            Ok(_) => continue,
+            Err(_) => break false,
+        }
+    };
+
+    drop(client);
+    let _ = handle.join();
+    alive
+}
+
+#[test]
+fn the_handshake_tolerates_what_vs_code_actually_sends() {
+    // `lsp_server::Connection::initialize` insists `initialized` is the very
+    // next message and treats anything else as fatal. VS Code sends `$/setTrace`
+    // and `workspace/didChangeConfiguration` around it, and the server used to
+    // exit during startup — which reached the user as `write EPIPE, shutting
+    // down server`, a message about the client's failed write rather than about
+    // anything the server did.
+    assert!(
+        survives_chatter_before_initialized(&[("$/setTrace", json!({"value": "off"}))]),
+        "$/setTrace before `initialized` killed the server"
+    );
+    assert!(
+        survives_chatter_before_initialized(&[(
+            "workspace/didChangeConfiguration",
+            json!({"settings": {}})
+        )]),
+        "didChangeConfiguration before `initialized` killed the server"
+    );
+    assert!(
+        survives_chatter_before_initialized(&[]),
+        "the ordinary handshake should still work"
+    );
+}
+
+#[test]
+fn a_request_before_initialized_is_answered_rather_than_dropped() {
+    // Otherwise the client waits on it forever.
+    let (server, client) = Connection::memory();
+    let handle = std::thread::spawn(move || {
+        let (packages, _) = meadow::stdlib::std_packages(meadow::Options::debug());
+        let _ = meadow_lsp::server::serve(&server, packages);
+    });
+    client
+        .sender
+        .send(Message::Request(Request {
+            id: 1.into(),
+            method: "initialize".into(),
+            params: json!({"capabilities": {}}),
+        }))
+        .unwrap();
+    loop {
+        if let Message::Response(_) = client.receiver.recv().unwrap() {
+            break;
+        }
+    }
+    client
+        .sender
+        .send(Message::Request(Request {
+            id: 2.into(),
+            method: "textDocument/hover".into(),
+            params: json!({}),
+        }))
+        .unwrap();
+    let answered = match client.receiver.recv() {
+        Ok(Message::Response(r)) => r.response_result.is_err(),
+        _ => false,
+    };
+    drop(client);
+    let _ = handle.join();
+    assert!(answered, "an early request should get an error, not silence");
+}

@@ -11,8 +11,8 @@ use crate::tokens;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use meadow_compiler::CompiledPackage;
 use lsp_types::notification::{
-    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
-    PublishDiagnostics,
+    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
+    Notification, PublishDiagnostics,
 };
 use lsp_types::request::{
     GotoDefinition, HoverRequest, InlayHintRequest, Request as LspRequest,
@@ -42,13 +42,56 @@ pub fn serve(
     connection: &Connection,
     std_packages: Vec<CompiledPackage>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
-    let capabilities = serde_json::to_value(server_capabilities())?;
-    connection.initialize(capabilities)?;
+    handshake(connection)?;
     let mut server = Server {
         std: Std::new(std_packages),
         docs: HashMap::new(),
     };
     server.main_loop(connection)
+}
+
+/// Answer `initialize`, then wait for `initialized`.
+///
+/// `lsp_server::Connection::initialize` does this too, but insists that
+/// `initialized` be the *very next* message and treats anything else as fatal.
+/// VS Code does not always oblige: `$/setTrace` and
+/// `workspace/didChangeConfiguration` can arrive first, and then the server
+/// exits during startup. What the user sees is not that — it is
+/// `write EPIPE, shutting down server` from a client writing to a process that
+/// is already gone, which says nothing about why.
+///
+/// So: wait for `initialized`, and let anything else past. A request that
+/// arrives this early is answered with `ServerNotInitialized` rather than
+/// dropped, so the client is not left waiting on it forever.
+fn handshake(connection: &Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
+    let (id, _params) = connection.initialize_start()?;
+    let result = serde_json::json!({
+        "capabilities": serde_json::to_value(server_capabilities())?,
+    });
+    connection
+        .sender
+        .send(Message::Response(Response::new_ok(id, result)))?;
+
+    loop {
+        match connection.receiver.recv()? {
+            Message::Notification(n) if n.method == Initialized::METHOD => return Ok(()),
+            // The client gave up before it finished starting us.
+            Message::Notification(n) if n.method == Exit::METHOD => {
+                return Err("client exited during initialization".into());
+            }
+            Message::Request(req) => {
+                if connection.handle_shutdown(&req)? {
+                    return Err("client shut us down during initialization".into());
+                }
+                connection.sender.send(Message::Response(Response::new_err(
+                    req.id,
+                    lsp_server::ErrorCode::ServerNotInitialized as i32,
+                    "the server is still initializing".to_string(),
+                )))?;
+            }
+            _ => {}
+        }
+    }
 }
 
 fn server_capabilities() -> ServerCapabilities {

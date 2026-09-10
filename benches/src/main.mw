@@ -1,0 +1,168 @@
+-- Meadow's benchmarks.
+--
+--   meadow run benches           -- on the bytecode VM (the default)
+--   meadow run --cek benches     -- on the CEK machine
+--   scripts/bench.sh             -- both, side by side
+--
+-- The three that matter most, and what each is actually measuring:
+--
+-- * **ackermann** -- deep, non-tail recursion that cannot be turned into a
+--   loop. `ack 2 n` is quadratic in calls and grows a nesting the machine has
+--   to keep somewhere, so this is the one that says whether recursion depth
+--   costs anything.
+-- * **naive fib** -- calls per second, and almost nothing else. Two calls and
+--   an addition per node, no allocation, no data structures. If a change makes
+--   calling cheaper it shows up here first.
+-- * **tail fib** -- pure looping speed. The same numbers computed with an
+--   accumulator, so the work per iteration is one addition and one comparison.
+--   Against `naive fib` it separates the cost of *calling* from the cost of
+--   *doing*.
+--
+-- The rest are there so a change that helps calls but hurts allocation cannot
+-- look like a free win -- which turns out to be the interesting result. On this
+-- machine, against the CEK machine the bytecode VM is:
+--
+--   ack / naiveFib / tailFib    0.99x - 1.11x    barely any faster
+--   sumList                     1.16x
+--   buildVector / joinNumbers   1.34x - 1.45x    clearly faster
+--
+-- The VM wins where a benchmark allocates *data* -- a copying collector against
+-- reference counting -- and not where it makes calls. That is what the missing
+-- contification pass predicts: every non-trivial subexpression gets a
+-- continuation object, so a call-heavy loop spends its time allocating
+-- continuations and gives back what registers bought. `scripts/bench.sh` is the
+-- number to watch when that pass lands.
+--
+-- For outside scale, the same three measured on one M2 Pro (the harnesses are
+-- not in this repository -- they need toolchains Meadow does not):
+--
+--   C -O2 / Rust -O      ~1.2 G calls/s      1250x
+--   Bun, GHC -O2, Node   0.45 - 0.74 G       270 - 400x
+--   CPython 3.14         ~30 M                  17x
+--   Meadow               ~1.9 M                  1x
+--
+-- CPython is the comparison worth having: both are interpreters and neither
+-- jits, so 17x is an engineering gap rather than an architectural one. CPython
+-- does a call in about 30 nanoseconds without allocating; Meadow allocates a
+-- continuation object for every subexpression, which is the same finding as the
+-- rows above from a different direction.
+--
+-- One reading trap: `tailFib`'s iterations per second come out *below*
+-- `naiveFib`'s calls per second, which looks backwards. Two reasons, both
+-- mundane -- `fibLoop` passes three arguments where `naiveFib` passes one, and
+-- half of naive fib's calls are leaves that return immediately. The pair still
+-- separates calling from looping; it just does not make looping look cheap.
+
+use Std.Bench (bench, benchUnits, runAll)
+use Std.Collections.List as L
+use Std.String as S
+
+-- --- the three ----------------------------------------------------------------
+
+-- Ackermann. Grows fast in both arguments; `m` is kept at 2 so the benchmark
+-- finishes, and `n` does the scaling.
+fun ack m n =
+  if m == 0 then n + 1
+  else if n == 0 then ack (m - 1) 1
+  else ack (m - 1) (ack m (n - 1))
+
+fun naiveFib n = if n < 2 then n else naiveFib (n - 1) + naiveFib (n - 2)
+
+fun tailFib n = fibLoop n 0 1
+
+fun fibLoop n a b = if n == 0 then a else fibLoop (n - 1) b (a + b)
+
+-- --- how much work each one does ----------------------------------------------
+--
+-- The throughput column is only worth reading if it counts the thing the
+-- benchmark is actually exercising. `naiveFib 20` makes 21891 calls, so
+-- reporting 88 invocations per second hides the number anyone wants.
+
+-- Calls made by `naiveFib n`: two per interior node, one per leaf, which works
+-- out to `2 * fib (n + 1) - 1`.
+fun naiveFibCalls n = 2 * tailFib (n + 1) - 1
+
+-- Ackermann has no tidy closed form, so count the calls once, outside the timed
+-- loop, with a counter.
+fun ackCalls m n =
+  let counter = newRef 0 in
+  let _ = countedAck counter m n in
+  getRef counter
+
+fun countedAck c m n =
+  let _ = setRef c (getRef c + 1) in
+  if m == 0 then n + 1
+  else if n == 0 then countedAck c (m - 1) 1
+  else countedAck c (m - 1) (countedAck c m (n - 1))
+
+-- --- a few more ---------------------------------------------------------------
+
+-- Allocation and pattern matching: one `Cons` per element, then one `match`.
+fun sumList xs =
+  match xs with
+  | [;] -> 0
+  | y :: rest -> y + sumList rest
+
+fun countUp n acc = if n == 0 then acc else countUp (n - 1) (n :: acc)
+
+-- The persistent vector, which is a tree: this is the allocation-heavy one.
+fun buildVector n = foldl (\v i -> pushBack v i) empty (range 0 n)
+
+-- Strings are immutable and concatenation copies, so this measures the
+-- allocator more than it measures strings.
+fun joinNumbers n = S.concatAll (map S.fromInt (range 0 n))
+
+def main =
+  runAll
+    -- Throughput in calls per second, so the three are directly comparable.
+    [ benchUnits "ack 2 6" (ackCalls 2 6) (\u -> ack 2 6)
+      , benchUnits "ack 2 8" (ackCalls 2 8) (\u -> ack 2 8)
+      , benchUnits "ack 3 3" (ackCalls 3 3) (\u -> ack 3 3)
+      , benchUnits "naiveFib 15" (naiveFibCalls 15) (\u -> naiveFib 15)
+      , benchUnits "naiveFib 20" (naiveFibCalls 20) (\u -> naiveFib 20)
+      -- Iterations per second: the same shape of number, for a loop.
+      , benchUnits "tailFib 100" 100 (\u -> tailFib 100)
+      , benchUnits "tailFib 10000" 10000 (\u -> tailFib 10000)
+      , benchUnits "sumList 1000" 1000 (\u -> sumList (countUp 1000 [;]))
+      , benchUnits "buildVector 1000" 1000 (\u -> buildVector 1000)
+      , benchUnits "joinNumbers 200" 200 (\u -> joinNumbers 200)
+    ]
+
+-- --- tests --------------------------------------------------------------------
+--
+-- The benchmarked functions have to be *correct*, or the numbers are a
+-- measurement of the wrong thing. Small arguments only: `meadow test` should
+-- not take as long as `meadow run`.
+
+use Std.Test (assertEq)
+
+@test fun ackermannMatchesItsDefinition u =
+  -- `ack 1 n = n + 2`, `ack 2 n = 2n + 3`, and `ack 3 n = 2^(n+3) - 3`.
+  let _ = assertEq (ack 0 4) 5 "ack 0 n" in
+  let _ = assertEq (ack 1 4) 6 "ack 1 n" in
+  let _ = assertEq (ack 2 4) 11 "ack 2 n" in
+  assertEq (ack 3 3) 61 "ack 3 3"
+
+@test fun theTwoFibsAgree u =
+  let ns = range 0 16 in
+  assertEq (map naiveFib ns) (map tailFib ns) "the same sequence, both ways"
+
+@test fun tailFibGoesFurtherThanTheNaiveOne u =
+  -- The point of having both: this one is a loop, so the depth is free.
+  assertEq (tailFib 90) 2880067194370816120 "the 90th, which naive fib cannot reach"
+
+@test fun theCallCountsAreRight u =
+  -- If these are wrong the throughput column is confidently wrong, which is
+  -- worse than having no column.
+  let _ = assertEq (naiveFibCalls 0) 1 "fib 0 is one call" in
+  let _ = assertEq (naiveFibCalls 1) 1 "fib 1 is one call" in
+  let _ = assertEq (naiveFibCalls 5) 15 "fib 5" in
+  let _ = assertEq (ackCalls 0 0) 1 "ack 0 0 is one call" in
+  -- Counted against the shape of the recursion: `ack 1 n` is `2n + 2` calls.
+  let _ = assertEq (ackCalls 1 3) 8 "ack 1 3" in
+  assertEq (ackCalls 2 2) 27 "ack 2 2"
+
+@test fun theSupportingBenchmarksAreCorrect u =
+  let _ = assertEq (sumList (countUp 100 [;])) 5050 "1..100" in
+  let _ = assertEq (len (buildVector 50)) 50 "one element per step" in
+  assertEq (joinNumbers 5) "01234" "numbers run together"

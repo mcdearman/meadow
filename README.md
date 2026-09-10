@@ -266,6 +266,7 @@ core ──▶ AxCut ──▶ bytecode ──▶ VM
 ```sh
 scripts/check.sh                         # everything CI runs
 scripts/check.sh --strict                # ...plus rustfmt and clippy
+scripts/bench.sh                         # the benchmarks, on both runtimes
 cargo install --path buildtools/meadow   # install the CLI
 ```
 

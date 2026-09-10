@@ -73,6 +73,7 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Json", include_str!("../../../lib/Std/src/Json.mw")),
     ("Time", include_str!("../../../lib/Std/src/Time.mw")),
     ("Console", include_str!("../../../lib/Std/src/Console.mw")),
+    ("Bench", include_str!("../../../lib/Std/src/Bench.mw")),
     ("prelude", include_str!("../../../lib/Std/src/prelude.mw")),
 ];
 

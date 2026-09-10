@@ -1,0 +1,122 @@
+-- Rock paper scissors, at the terminal.
+--
+-- The point of the example is the two effects. `Console` reads what you type and
+-- `Random` picks for the machine, and neither is a special case in the language:
+-- both are ordinary algebraic effects, so the whole game can be played by a test
+-- with no terminal and no entropy anywhere near it. See `playsAFullRound` at the
+-- bottom -- it runs `game` itself, not a copy of it.
+
+use Std.Console (prompt, withInput)
+use Std.Random as R
+use Std.String as S
+use Std.Test (assertEq)
+
+data Choice = Rock | Paper | Scissors
+
+data Outcome = Win | Lose | Draw
+
+fun choiceName c =
+  match c with
+  | Rock -> "rock"
+  | Paper -> "paper"
+  | Scissors -> "scissors"
+
+-- Forgiving on purpose: case and surrounding space are not answers.
+fun parseChoice s =
+  match S.toLower (S.trim s) with
+  | "rock" -> Just Rock
+  | "r" -> Just Rock
+  | "paper" -> Just Paper
+  | "p" -> Just Paper
+  | "scissors" -> Just Scissors
+  | "s" -> Just Scissors
+  | _ -> None
+
+-- Who beats whom, once. Everything else is derived from this.
+fun beats c =
+  match c with
+  | Rock -> Scissors
+  | Paper -> Rock
+  | Scissors -> Paper
+
+fun judge you me =
+  if you == me then Draw
+  else if beats you == me then Win
+  else Lose
+
+fun outcomeLine o =
+  match o with
+  | Win -> "You win!"
+  | Lose -> "You lose!"
+  | Draw -> "It's a tie."
+
+fun randomChoice u =
+  match R.between 0 3 with
+  | 0 -> Rock
+  | 1 -> Paper
+  | _ -> Scissors
+
+-- One round. `None` means the input ran out, which is how the loop ends when
+-- stdin is a file rather than a person.
+fun round () =
+  match prompt "your move (rock / paper / scissors, or quit): " with
+  | None -> None
+  | Just typed ->
+      let answer = S.toLower (S.trim typed) in
+      if answer == "quit" or answer == "q" then None
+      else
+        match parseChoice answer with
+        | None ->
+            let _ = println (S.concat "I do not know what that is: " answer) in
+            round ()
+        | Just you ->
+            let me = randomChoice () in
+            let o = judge you me in
+            let _ = println (S.concatAll ["I played ", choiceName me, ". ", outcomeLine o]) in
+            Just o
+
+fun tally wins losses draws =
+  match round () with
+  | None -> (wins, losses, draws)
+  | Just Win -> tally (wins + 1) losses draws
+  | Just Lose -> tally wins (losses + 1) draws
+  | Just Draw -> tally wins losses (draws + 1)
+
+fun game () =
+  let _ = println "Rock paper scissors. Ctrl-D or `quit` to stop." in
+  let (wins, losses, draws) = tally 0 0 0 in
+  let _ = println (S.concatAll
+  [ "\nYou won ", show wins
+        , ", lost ", show losses
+        , ", drew ", show draws, "."
+  ]) in
+  ()
+
+def main = game ()
+
+-- --- tests --------------------------------------------------------------------
+
+@test fun beatingIsACycle () =
+  -- Every choice beats exactly one other and loses to exactly one, so following
+  -- `beats` three times returns to where it started.
+  assertEq (beats (beats (beats Rock))) Rock "rock -> scissors -> paper -> rock"
+
+@test fun judgingAgreesWithBeating () =
+  let cases =
+    [ (Rock, Scissors, Win)
+      , (Scissors, Rock, Lose)
+      , (Paper, Paper, Draw)
+    ] in
+    assertEq (map (\(a, b, _) -> judge a b) cases) (map (\(_, _, o) -> o) cases) "judged"
+
+@test fun inputIsForgiving () =
+  let got = map parseChoice ["ROCK", " p ", "Scissors", "banana"] in
+  assertEq got [Just Rock, Just Paper, Just Scissors, None] "case and shorthand"
+
+@test fun playsAFullRound () =
+  -- The whole game, with no terminal and no entropy: `Console` supplies the
+  -- moves and `Random` is seeded, so the transcript is fixed. This runs `game`
+  -- itself -- if the loop, the tally or the parsing broke, this fails.
+  let played =
+    R.withSeed 7 (\u -> withInput ["rock"; "nonsense"; "paper"; "quit"] game) in
+    assertEq played () "a full game plays through to the summary"

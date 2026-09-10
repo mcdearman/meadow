@@ -179,8 +179,16 @@ fn main() {
             }
         },
         Some(Cmd::Lsp { .. }) => {
+            // Both shapes of the standard library: the bundle a package depends
+            // on, and the modules it was bundled from — which is what lets a
+            // `Std` source file be analysed as itself. One compile serves both.
             let (packages, _) = meadow::stdlib::std_packages(meadow::Options::debug());
-            if let Err(e) = meadow_lsp::server::run(packages) {
+            let (modules, _) = meadow::stdlib::std_modules(meadow::Options::debug());
+            let modules = modules
+                .into_iter()
+                .map(|(dotted, pkg)| (dotted.to_string(), pkg))
+                .collect();
+            if let Err(e) = meadow_lsp::server::run(packages, modules) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }

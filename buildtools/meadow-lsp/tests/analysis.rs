@@ -12,8 +12,20 @@ fn at(src: &str, marker: &str) -> (meadow_lsp::analysis::Analysis, usize) {
     (STD.with(|s| s.analyse(&clean)), offset)
 }
 
+/// The standard library, in both the shapes the server wants: the bundle a
+/// package depends on, and the modules it was bundled from.
+fn std() -> Std {
+    let opts = meadow::Options::debug();
+    let modules = meadow::stdlib::std_modules(opts)
+        .0
+        .into_iter()
+        .map(|(dotted, pkg)| (dotted.to_string(), pkg))
+        .collect();
+    Std::new(meadow::stdlib::std_packages(opts).0, modules)
+}
+
 thread_local! {
-    static STD: Std = Std::new(meadow::stdlib::std_packages(meadow::Options::debug()).0);
+    static STD: Std = std();
 }
 
 #[test]
@@ -145,3 +157,76 @@ fn positions_map_through_to_spans() {
     assert_eq!(line, 0, "the definition is on the first line");
 }
 
+
+// --- editing the standard library itself -----------------------------------
+
+#[test]
+fn a_std_module_recognises_itself_by_path() {
+    let s = std();
+    for (uri, want) in [
+        ("file:///c%3A/repos/meadow/lib/Std/src/Collections/Vector.mw", Some("Collections.Vector")),
+        ("file:///home/u/meadow/lib/Std/src/Maybe.mw", Some("Maybe")),
+        ("file:///home/u/meadow/lib/Std/src/prelude.mw", Some("prelude")),
+        // Backslashes, as a Windows path reaches us.
+        ("c:\\repos\\meadow\\lib\\Std\\src\\Json.mw", Some("Json")),
+        // Not one of ours, however much it looks like one.
+        ("file:///home/u/other/lib/Std/src/NotAModule.mw", None),
+        ("file:///home/u/meadow/examples/euler/src/main.mw", None),
+    ] {
+        let got = s.module_at(uri).map(|i| s.module_name(i));
+        assert_eq!(got, want, "{uri}");
+    }
+}
+
+#[test]
+fn every_std_module_analyses_clean_as_itself() {
+    // The bug this exists for: a `Std` source opened in the editor was analysed
+    // as a package *depending* on `Std`, so every type and constructor it
+    // declares was declared twice — once here, once in its own dependency — and
+    // the file filled with `already defined`.
+    //
+    // It also keeps `module_path` here honest against the one in
+    // `meadow::stdlib`, which this crate cannot call: if the two ever disagree
+    // about where a module sits, its exports land in the wrong place and
+    // something below stops resolving.
+    let s = std();
+    let opts = meadow::Options::debug();
+    for (dotted, _) in meadow::stdlib::std_modules(opts).0 {
+        let source = meadow::stdlib::MODULES
+            .iter()
+            .find(|(name, _)| *name == dotted)
+            .expect("every compiled module comes from MODULES")
+            .1;
+        let i = s
+            .module_at(&format!("file:///w/lib/Std/src/{}.mw", dotted.replace('.', "/")))
+            .unwrap_or_else(|| panic!("{dotted} should be recognised by its path"));
+        let a = s.analyse_module(i, source);
+        assert!(
+            a.diagnostics.is_empty(),
+            "{dotted} does not analyse clean:\n{}",
+            a.diagnostics
+                .iter()
+                .map(|d| format!("  {}", d.msg))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
+
+#[test]
+fn a_std_module_analysed_the_ordinary_way_collides_with_itself() {
+    // Which is why the special case exists. `Maybe` declares `Option`, and the
+    // `Std` a normal document depends on already has one.
+    let s = std();
+    let source = meadow::stdlib::MODULES
+        .iter()
+        .find(|(name, _)| *name == "Maybe")
+        .unwrap()
+        .1;
+    let a = s.analyse(source);
+    assert!(
+        a.diagnostics.iter().any(|d| d.msg.contains("already defined")),
+        "expected the collision this feature avoids, got {:?}",
+        a.diagnostics.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
+}

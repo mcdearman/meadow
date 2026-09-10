@@ -18,8 +18,14 @@ impl Client {
     fn start() -> Client {
         let (server, client) = Connection::memory();
         let handle = std::thread::spawn(move || {
-            let (packages, _) = meadow::stdlib::std_packages(meadow::Options::debug());
-            meadow_lsp::server::serve(&server, packages).expect("server");
+            let opts = meadow::Options::debug();
+        let (packages, _) = meadow::stdlib::std_packages(opts);
+        let modules = meadow::stdlib::std_modules(opts)
+            .0
+            .into_iter()
+            .map(|(dotted, pkg)| (dotted.to_string(), pkg))
+            .collect();
+            meadow_lsp::server::serve(&server, packages, modules).expect("server");
         });
 
         let mut c = Client {
@@ -265,8 +271,14 @@ fn an_unknown_request_is_an_error_not_a_panic() {
 fn survives_chatter_before_initialized(chatter: &[(&str, Value)]) -> bool {
     let (server, client) = Connection::memory();
     let handle = std::thread::spawn(move || {
-        let (packages, _) = meadow::stdlib::std_packages(meadow::Options::debug());
-        let _ = meadow_lsp::server::serve(&server, packages);
+        let opts = meadow::Options::debug();
+        let (packages, _) = meadow::stdlib::std_packages(opts);
+        let modules = meadow::stdlib::std_modules(opts)
+            .0
+            .into_iter()
+            .map(|(dotted, pkg)| (dotted.to_string(), pkg))
+            .collect();
+        let _ = meadow_lsp::server::serve(&server, packages, modules);
     });
 
     client
@@ -359,8 +371,14 @@ fn a_request_before_initialized_is_answered_rather_than_dropped() {
     // Otherwise the client waits on it forever.
     let (server, client) = Connection::memory();
     let handle = std::thread::spawn(move || {
-        let (packages, _) = meadow::stdlib::std_packages(meadow::Options::debug());
-        let _ = meadow_lsp::server::serve(&server, packages);
+        let opts = meadow::Options::debug();
+        let (packages, _) = meadow::stdlib::std_packages(opts);
+        let modules = meadow::stdlib::std_modules(opts)
+            .0
+            .into_iter()
+            .map(|(dotted, pkg)| (dotted.to_string(), pkg))
+            .collect();
+        let _ = meadow_lsp::server::serve(&server, packages, modules);
     });
     client
         .sender

@@ -48,15 +48,35 @@ pub struct Analysis {
 /// The standard library, compiled once.
 pub struct Std {
     packages: Vec<CompiledPackage>,
+    /// Each `Std` module as its own compiled unit, in dependency order, with the
+    /// dotted name it is known by. Only needed to analyse a file that *is* one.
+    modules: Vec<(String, CompiledPackage)>,
     types: std::collections::HashSet<String>,
     ctors: std::collections::HashSet<String>,
+}
+
+/// A `Std` module's path within the package.
+///
+/// `Lib` and `prelude` sit at the root — they are what a dependent gets
+/// unqualified — and everything else is nested by its dotted name. It mirrors
+/// `meadow::stdlib::module_path`, which this crate cannot call: `meadow` depends
+/// on it for the `lsp` subcommand, so the arrow only points one way. The test
+/// that analyses every module keeps the two honest.
+fn module_path(dotted: &str) -> Vec<InternedString> {
+    if dotted == "prelude" || dotted == "Lib" {
+        Vec::new()
+    } else {
+        dotted.split('.').map(InternedString::from).collect()
+    }
 }
 
 impl Std {
     /// Takes an already-compiled standard library. It is not loaded here on
     /// purpose: `meadow` owns the embedded sources and depends on this crate for
     /// its `lsp` subcommand, so reaching back for them would be a cycle.
-    pub fn new(packages: Vec<CompiledPackage>) -> Std {
+    ///
+    /// `modules` is the same library before bundling — see [`Std::module_at`].
+    pub fn new(packages: Vec<CompiledPackage>, modules: Vec<(String, CompiledPackage)>) -> Std {
         let mut types = std::collections::HashSet::new();
         let mut ctors = std::collections::HashSet::new();
         for p in &packages {
@@ -64,14 +84,71 @@ impl Std {
         }
         Std {
             packages,
+            modules,
             types,
             ctors,
         }
     }
 
+    /// Which `Std` module a document is, if it is one.
+    ///
+    /// `.../lib/Std/src/Collections/Vector.mw` is `Collections.Vector`. The name
+    /// has to match one we were given, so a file that merely sits at a similar
+    /// path in someone else's project is not mistaken for one.
+    ///
+    /// This matters because a `Std` module analysed the ordinary way — as a
+    /// package depending on `Std` — declares every one of its own types a second
+    /// time, and the editor fills with `already defined`.
+    pub fn module_at(&self, uri: &str) -> Option<usize> {
+        let path = uri.replace('\\', "/");
+        let tail = path.rsplit_once("/Std/src/")?.1;
+        let dotted = tail.strip_suffix(".mw")?.replace('/', ".");
+        self.modules.iter().position(|(name, _)| *name == dotted)
+    }
+
+    /// The dotted name of the module at `index`, for reporting.
+    pub fn module_name(&self, index: usize) -> &str {
+        &self.modules[index].0
+    }
+
     /// Compile `text` as a throwaway one-module package against `Std`.
     pub fn analyse(&self, text: &str) -> Analysis {
+        let deps: Vec<&CompiledPackage> = self.packages.iter().collect();
         let name = InternedString::from("main");
+        self.compile(text, name, name, Vec::new(), 1, &deps, None)
+    }
+
+    /// Compile `text` as the `Std` module it is: in its own place in the
+    /// package, against the modules declared before it and nothing after.
+    pub fn analyse_module(&self, index: usize, text: &str) -> Analysis {
+        let (dotted, _) = &self.modules[index];
+        let path = module_path(dotted);
+        let unit = InternedString::from(dotted.as_str());
+        let name = path.last().copied().unwrap_or(unit);
+        let deps: Vec<&CompiledPackage> =
+            self.modules[..index].iter().map(|(_, p)| p).collect();
+        // Compiled *inside* the package, not merely against it. `Bool` says
+        // `use Std.Test (assertEq)`, and a unit that does not know it belongs to
+        // `Std` cannot resolve that.
+        //
+        // The package name comes off the bundle, whose `name` is the package;
+        // a sub-unit's is its own unit name, which would make `Std.Test` look
+        // like `Test.Test`.
+        let package = self.packages.first().map(|p| p.name);
+        self.compile(text, name, unit, path, index, &deps, package)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compile(
+        &self,
+        text: &str,
+        name: InternedString,
+        unit: InternedString,
+        path: Vec<InternedString>,
+        id: usize,
+        deps: &[&CompiledPackage],
+        package: Option<InternedString>,
+    ) -> Analysis {
         let source = Source::new(SourceKind::Interactive, text.into());
         let lex = tokenize(source);
         let mut diagnostics = lex.errors;
@@ -81,18 +158,20 @@ impl Std {
         }
 
         let modules = ast
-            .map(|ast| {
-                vec![AstModule {
-                    path: vec![],
-                    name,
-                    ast,
-                }]
-            })
+            .map(|ast| vec![AstModule { path, name, ast }])
             .unwrap_or_default();
 
-        let deps: Vec<&CompiledPackage> = self.packages.iter().collect();
-        let (pkg, mut unit_diags) =
-            meadow_compiler::compile_unit(name, 1, modules, &deps, Options::debug());
+        let (pkg, mut unit_diags) = match package {
+            Some(p) => meadow_compiler::compile_unit_in_package(
+                p,
+                unit,
+                id,
+                modules,
+                deps,
+                Options::debug(),
+            ),
+            None => meadow_compiler::compile_unit(name, id, modules, deps, Options::debug()),
+        };
         diagnostics.append(&mut unit_diags);
 
         let mut a = Analysis {

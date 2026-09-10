@@ -1,85 +1,85 @@
 {
-  "name": "meadow",
-  "displayName": "Meadow",
-  "description": "Language support for Meadow: syntax highlighting, diagnostics, hover, go-to-definition and inlay hints.",
-  "version": "0.2.0",
-  "publisher": "mcdearman",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/mcdearman/meadow"
-  },
-  "categories": [
-    "Programming Languages"
-  ],
-  "engines": {
-    "vscode": "^1.75.0"
-  },
-  "main": "./src/extension.js",
-  "contributes": {
-    "languages": [
-      {
-        "id": "meadow",
-        "aliases": [
-          "Meadow",
-          "meadow"
-        ],
-        "extensions": [
-          ".mw"
-        ],
-        "configuration": "./language-configuration.json"
-      }
-    ],
-    "grammars": [
-      {
-        "language": "meadow",
-        "scopeName": "source.meadow",
-        "path": "./syntaxes/meadow.tmLanguage.json"
-      }
-    ],
-    "configuration": {
-      "title": "Meadow",
-      "properties": {
-        "meadow.server.path": {
-          "type": "string",
-          "default": "meadow",
-          "description": "Path to the `meadow` executable; the extension runs `meadow lsp`. Left at `meadow`, it also looks in ~/.cargo/bin and ~/.meadow/bin \u2014 a VS Code started from the Dock does not inherit your shell's PATH."
-        },
-        "meadow.inlayHints.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show inferred types after parameters and `let` bindings."
-        },
-        "meadow.trace.server": {
-          "type": "string",
-          "enum": [
-            "off",
-            "messages",
-            "verbose"
-          ],
-          "default": "off",
-          "description": "Log the traffic between VS Code and the language server."
-        }
-      }
-    },
-    "commands": [
-      {
-        "command": "meadow.restartServer",
-        "title": "Meadow: Restart Language Server"
-      }
-    ]
-  },
-  "dependencies": {
-    "vscode-languageclient": "^9.0.1"
-  },
-  "devDependencies": {
-    "@types/vscode": "^1.75.0",
-    "@vscode/vsce": "~2.32.0"
-  },
-  "overrides": {
-    "cheerio": "1.0.0-rc.12"
-  },
-  "scripts": {
-    "test": "node --test test/resolve.test.js",
-    "package": "./build.sh"
-  }
+	"name": "meadow",
+	"displayName": "Meadow",
+	"description": "Language support for Meadow: syntax highlighting, diagnostics, hover, go-to-definition and inlay hints.",
+	"version": "0.2.0",
+	"publisher": "ChrisMcDearman",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/mcdearman/meadow"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"main": "./src/extension.js",
+	"contributes": {
+		"languages": [
+			{
+				"id": "meadow",
+				"aliases": [
+					"Meadow",
+					"meadow"
+				],
+				"extensions": [
+					".mw"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "meadow",
+				"scopeName": "source.meadow",
+				"path": "./syntaxes/meadow.tmLanguage.json"
+			}
+		],
+		"configuration": {
+			"title": "Meadow",
+			"properties": {
+				"meadow.server.path": {
+					"type": "string",
+					"default": "meadow",
+					"description": "Path to the `meadow` executable; the extension runs `meadow lsp`. Left at `meadow`, it searches your PATH first, then $MEADOW_HOME/bin, ~/.cargo/bin and ~/.meadow/bin — an editor launched from the Dock or the Start menu does not inherit your shell PATH. Whatever it finds is asked whether it understands `lsp` before being used."
+				},
+				"meadow.inlayHints.enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show inferred types after parameters and `let` bindings."
+				},
+				"meadow.trace.server": {
+					"type": "string",
+					"enum": [
+						"off",
+						"messages",
+						"verbose"
+					],
+					"default": "off",
+					"description": "Log the traffic between VS Code and the language server."
+				}
+			}
+		},
+		"commands": [
+			{
+				"command": "meadow.restartServer",
+				"title": "Meadow: Restart Language Server"
+			}
+		]
+	},
+	"dependencies": {
+		"vscode-languageclient": "^9.0.1"
+	},
+	"devDependencies": {
+		"@types/vscode": "^1.75.0",
+		"@vscode/vsce": "~2.32.0"
+	},
+	"overrides": {
+		"cheerio": "1.0.0-rc.12"
+	},
+	"scripts": {
+		"test": "node --test test/resolve.test.js",
+		"package": "./build.sh"
+	}
 }

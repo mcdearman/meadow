@@ -22,9 +22,12 @@ use lsp_types::*;
 use std::collections::HashMap;
 use std::error::Error;
 
-pub fn run(std_packages: Vec<CompiledPackage>) -> Result<(), Box<dyn Error + Sync + Send>> {
+pub fn run(
+    std_packages: Vec<CompiledPackage>,
+    std_modules: Vec<(String, CompiledPackage)>,
+) -> Result<(), Box<dyn Error + Sync + Send>> {
     let (connection, io_threads) = Connection::stdio();
-    serve(&connection, std_packages)?;
+    serve(&connection, std_packages, std_modules)?;
     // The writer thread runs until its channel disconnects, which only happens
     // when the last `Connection` is gone. Joining while this one is still in
     // scope hangs the process — an editor would leave a stray server behind on
@@ -41,10 +44,11 @@ pub fn run(std_packages: Vec<CompiledPackage>) -> Result<(), Box<dyn Error + Syn
 pub fn serve(
     connection: &Connection,
     std_packages: Vec<CompiledPackage>,
+    std_modules: Vec<(String, CompiledPackage)>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     handshake(connection)?;
     let mut server = Server {
-        std: Std::new(std_packages),
+        std: Std::new(std_packages, std_modules),
         docs: HashMap::new(),
     };
     server.main_loop(connection)
@@ -186,7 +190,14 @@ impl Server {
     }
 
     fn set(&mut self, uri: Uri, text: String) {
-        let analysis = self.std.analyse(&text);
+        // A file that *is* a `Std` module is analysed in its own place. Analysed
+        // the ordinary way it would declare every one of its own types a second
+        // time — once here, once in the `Std` it depends on — and the editor
+        // would fill with `already defined`.
+        let analysis = match self.std.module_at(uri.as_str()) {
+            Some(i) => self.std.analyse_module(i, &text),
+            None => self.std.analyse(&text),
+        };
         let index = LineIndex::new(&text);
         self.docs.insert(
             uri,

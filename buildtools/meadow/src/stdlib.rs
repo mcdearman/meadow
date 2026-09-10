@@ -75,12 +75,32 @@ pub const MODULES: &[(&str, &str)] = &[
     ("prelude", include_str!("../../../lib/Std/src/prelude.mw")),
 ];
 
+/// Each `Std` module compiled as its own unit, in dependency order, paired with
+/// the dotted name `MODULES` spells it with.
+///
+/// [`std_packages`] is the bundle a dependent sees; this is what that bundle was
+/// made from. The language server needs the pieces: a file that *is* a `Std`
+/// module has to be analysed in its own place — against the modules before it —
+/// or every type and constructor it declares collides with the copy sitting in
+/// its own dependency, and the editor fills with `already defined`.
+pub fn std_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<Diagnostic>) {
+    type Cache = OnceLock<(Vec<(&'static str, CompiledPackage)>, Vec<Diagnostic>)>;
+    static DEBUG: Cache = OnceLock::new();
+    static RELEASE: Cache = OnceLock::new();
+    let cell = if opts.check_exhaustive { &RELEASE } else { &DEBUG };
+    let (modules, diags) = cell.get_or_init(|| {
+        counter(opts).fetch_add(1, Ordering::Relaxed);
+        compile_modules(opts)
+    });
+    (modules.clone(), diags.clone())
+}
+
 /// The embedded `Std` package, compiled once per process.
 ///
-/// [`compile_std`] takes about five seconds and is deterministic, so compiling
-/// it twice in one process is pure waste — and something did exactly that on
-/// every REPL line, every language-server keystroke, and once per test, which is
-/// what made the test suite take minutes rather than seconds.
+/// [`compile_modules`] takes about five seconds and is deterministic, so
+/// compiling it twice in one process is pure waste — and something did exactly
+/// that on every REPL line, every language-server keystroke, and once per test,
+/// which is what made the test suite take minutes rather than seconds.
 ///
 /// Cached per profile: `--release` turns on the exhaustiveness check and can
 /// report different diagnostics. The result is cloned rather than shared,
@@ -91,10 +111,29 @@ pub fn std_packages(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
     static RELEASE: OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)> = OnceLock::new();
     let cell = if opts.check_exhaustive { &RELEASE } else { &DEBUG };
     let (packages, diags) = cell.get_or_init(|| {
-        counter(opts).fetch_add(1, Ordering::Relaxed);
-        compile_std(opts)
+        // Shares the one compile with `std_modules`, so asking for both costs
+        // memory but not time.
+        let (modules, diags) = std_modules(opts);
+        let subs = modules.into_iter().map(|(_, p)| p).collect();
+        (
+            vec![bundle(InternedString::from(PACKAGE_NAME), subs)],
+            diags,
+        )
     });
     (packages.clone(), diags.clone())
+}
+
+/// The module path a dotted name sits at within the package.
+///
+/// `Lib` and `prelude` are at the root: they are what a dependent gets
+/// unqualified. Everything else is nested, so a sibling reaches it only through
+/// an explicit `use`.
+pub fn module_path(dotted: &str) -> Vec<InternedString> {
+    if dotted == "prelude" || dotted == "Lib" {
+        Vec::new()
+    } else {
+        dotted.split('.').map(InternedString::from).collect()
+    }
 }
 
 fn counter(opts: Options) -> &'static AtomicUsize {
@@ -115,19 +154,20 @@ pub fn compiles(opts: Options) -> usize {
     counter(opts).load(Ordering::Relaxed)
 }
 
-/// Compile the embedded `Std` package.
+/// Compile each embedded `Std` module as its own unit, in dependency order.
 ///
-/// Returns the one compiled package plus any diagnostics — which for a healthy
-/// tree is empty. Callers surface the diagnostics ([`crate::pipeline::build`] and
-/// the REPL print them; `tests/stdlib.rs` asserts they stay empty).
-pub fn compile_std(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
+/// Returns them paired with their dotted names plus any diagnostics — which for
+/// a healthy tree is empty. Callers surface the diagnostics
+/// ([`crate::pipeline::build`] and the REPL print them; `tests/stdlib.rs` asserts
+/// they stay empty).
+fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     let pkg = InternedString::from(PACKAGE_NAME);
 
     // Compile each module as its own unit, in order, with the ones already done as
     // dependencies. Each sub-unit gets `prelude_exports = Some([])` so a later
     // sibling only reaches it through `use`.
-    let mut subs: Vec<CompiledPackage> = Vec::new();
+    let mut subs: Vec<(&'static str, CompiledPackage)> = Vec::new();
     for (dotted, src) in MODULES {
         let filename = format!("Std/{}.mw", dotted.replace('.', "/"));
         let source = Source::new(
@@ -137,11 +177,7 @@ pub fn compile_std(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
         let lex = tokenize(source);
         diags.extend(lex.errors);
 
-        let path: Vec<InternedString> = if *dotted == "prelude" || *dotted == "Lib" {
-            Vec::new()
-        } else {
-            dotted.split('.').map(InternedString::from).collect()
-        };
+        let path = module_path(dotted);
         let mname = path.last().copied().unwrap_or_else(|| InternedString::from(*dotted));
 
         let (ast, perrs) = parser::parse(mname, source, &lex.tokens);
@@ -150,7 +186,7 @@ pub fn compile_std(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
         }
         let Some(ast) = ast else { continue };
 
-        let dep_refs: Vec<&CompiledPackage> = subs.iter().collect();
+        let dep_refs: Vec<&CompiledPackage> = subs.iter().map(|(_, p)| p).collect();
         let (mut cp, unit_diags) = compile_unit_in_package(
             pkg,
             InternedString::from(*dotted),
@@ -166,10 +202,10 @@ pub fn compile_std(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
         for e in &mut cp.exports {
             e.module = path.clone();
         }
-        subs.push(cp);
+        subs.push((dotted, cp));
     }
 
-    (vec![bundle(pkg, subs)], diags)
+    (subs, diags)
 }
 
 /// Fold the separately-compiled `Std` modules into one package. The `prelude`

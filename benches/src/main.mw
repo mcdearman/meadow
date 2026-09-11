@@ -19,33 +19,53 @@
 --   *doing*.
 --
 -- The rest are there so a change that helps calls but hurts allocation cannot
--- look like a free win -- which turns out to be the interesting result. On this
--- machine, against the CEK machine the bytecode VM is:
+-- look like a free win. On this machine, against the CEK machine the bytecode
+-- VM is:
 --
---   ack / naiveFib / tailFib    0.99x - 1.11x    barely any faster
---   sumList                     1.16x
---   buildVector / joinNumbers   1.34x - 1.45x    clearly faster
+--   tailFib                     14.2x - 14.4x    pure looping
+--   sumList / naiveFib          10.3x - 10.6x
+--   ack                          9.2x -  9.4x    deep recursion
+--   buildVector / joinNumbers    7.1x -  8.0x    allocation-heavy
 --
--- The VM wins where a benchmark allocates *data* -- a copying collector against
--- reference counting -- and not where it makes calls. That is what the missing
--- contification pass predicts: every non-trivial subexpression gets a
--- continuation object, so a call-heavy loop spends its time allocating
--- continuations and gives back what registers bought. `scripts/bench.sh` is the
--- number to watch when that pass lands.
+-- That ordering is the reverse of what it was, and the reversal is the finding.
+-- The VM used to win *only* where a benchmark allocated data -- a copying
+-- collector against reference counting -- and barely at all where it made
+-- calls, because every non-trivial subexpression got a continuation object and
+-- a call-heavy loop gave back what registers bought. Now a saturated call to a
+-- known function is a jump, a literal folds into the instruction that uses it,
+-- and a comparison fuses into the branch that tests it -- so calls and loops
+-- are where the VM is furthest ahead, and allocation is its *narrowest* margin.
+-- The collector was already the advantage there, and the interpreter's own work
+-- is the smaller share of that benchmark.
 --
--- For outside scale, the same three measured on one M2 Pro (the harnesses are
--- not in this repository -- they need toolchains Meadow does not):
+-- What is left is structural rather than an oversight. A call in argument
+-- position still has to record where to come back to, and a machine with no
+-- call stack has nowhere to put that but the heap -- three slots per non-tail
+-- call. Closing it needs an escape analysis, not another peephole.
 --
---   C -O2 / Rust -O      ~1.2 G calls/s      1250x
---   Bun, GHC -O2, Node   0.45 - 0.74 G       270 - 400x
---   CPython 3.14         ~30 M                  17x
---   Meadow               ~1.9 M                  1x
+-- For outside scale, the same `naiveFib 20` on the same machine on the same
+-- day. Those harnesses are not in this repository -- they need toolchains
+-- Meadow does not:
 --
--- CPython is the comparison worth having: both are interpreters and neither
--- jits, so 17x is an engineering gap rather than an architectural one. CPython
--- does a call in about 30 nanoseconds without allocating; Meadow allocates a
--- continuation object for every subexpression, which is the same finding as the
--- rows above from a different direction.
+--                           time     calls/s    vs Meadow
+--   C (gcc -O2)             5.7 us    3.9 G        239x
+--   Rust (rustc -O)        11.7 us    1.9 G        116x
+--   Node 18 (V8)           37.4 us    586 M         36x
+--   CPython 3.11          578   us   37.9 M        2.3x
+--   Meadow VM            1350   us   16.2 M          1x
+--
+-- Two ways that table will mislead you. C and Rust do not make 21891 calls --
+-- their compilers inline levels of the recursion away -- so read the time and
+-- not the rate; the work is still exponential, since the times track `fib n`
+-- exactly out to n = 30. And both Python and Node here are from 2022; current
+-- CPython is meaningfully faster on call-heavy code, so 2.3x is the friendly
+-- reading of that gap. A scalar loop measured the same way agrees: 100 ns an
+-- iteration against CPython's 50 and C's ~1.
+--
+-- CPython is still the comparison worth having, because both are bytecode
+-- interpreters and neither jits -- so what separates them is engineering, not
+-- architecture. CPython buys its margin with a specialising interpreter, inline
+-- caches and a contiguous frame stack, and Meadow has none of the three.
 --
 -- One reading trap: `tailFib`'s iterations per second come out *below*
 -- `naiveFib`'s calls per second, which looks backwards. Two reasons, both

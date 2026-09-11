@@ -553,6 +553,7 @@ impl Session {
             path: vec![],
             name: InternedString::from("repl"),
             ast: module,
+            source: src,
         };
 
         let deps: Vec<&CompiledPackage> = self.prefix.iter().collect();

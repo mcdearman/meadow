@@ -276,7 +276,10 @@ pub enum Bind {
     Pat(LPat, LExpr),
     /// `fun f a (x, y) = e` — parameters are patterns, and must be *irrefutable*
     /// (checked after inference, since single-variant constructors are allowed).
-    Fun(Ident, Vec<LPat>, LExpr),
+    /// `fun f p q : T = e` -- parameters are patterns, and must be *irrefutable*
+    /// (checked after inference, since single-variant constructors are allowed).
+    /// The optional type is the declared *result*, written before the `=`.
+    Fun(Ident, Vec<LPat>, Option<LType>, LExpr),
 }
 
 pub type LPat = Located<Pat>;
@@ -285,6 +288,13 @@ pub type LPat = Located<Pat>;
 pub enum Pat {
     Wildcard,
     Var(Ident),
+    /// `(p : T)` — a pattern with a declared type.
+    ///
+    /// The only place a type is written outside a `data` / `record` / `effect`
+    /// declaration, and so the only way a *parameter* gets one: a parameter is
+    /// a pattern, and `fun f x : Int = …` could not say whether the annotation
+    /// belongs to `x` or to `f`.
+    Ann(Box<LPat>, LType),
     Lit(Lit),
     As(Ident, LPat),
     Cons(Ident, Vec<LPat>),

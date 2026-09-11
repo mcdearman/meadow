@@ -225,7 +225,12 @@ fn main() {
                 .into_iter()
                 .map(|(dotted, pkg)| (dotted.to_string(), pkg))
                 .collect();
-            if let Err(e) = meadow_lsp::server::run(packages, modules) {
+            // And the sources on disk, so a definition inside `Std` is a file
+            // the editor can open. Best-effort: without it, navigation stops at
+            // the edge of the open document, which is where it used to stop
+            // anyway.
+            let src_root = meadow::stdlib::extract_sources();
+            if let Err(e) = meadow_lsp::server::run(packages, modules, src_root) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }

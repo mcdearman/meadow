@@ -16,6 +16,12 @@ struct Client {
 
 impl Client {
     fn start() -> Client {
+        Client::start_with(None)
+    }
+
+    /// The same, with the standard library's sources written out somewhere --
+    /// which is what lets a definition inside `Std` be named as a file.
+    fn start_with(std_src_root: Option<std::path::PathBuf>) -> Client {
         let (server, client) = Connection::memory();
         let handle = std::thread::spawn(move || {
             let opts = meadow::Options::debug();
@@ -25,7 +31,7 @@ impl Client {
             .into_iter()
             .map(|(dotted, pkg)| (dotted.to_string(), pkg))
             .collect();
-            meadow_lsp::server::serve(&server, packages, modules).expect("server");
+            meadow_lsp::server::serve(&server, packages, modules, std_src_root).expect("server");
         });
 
         let mut c = Client {
@@ -217,9 +223,68 @@ fn inlay_hints_annotate_parameters() {
     );
     let hints = hints.as_array().unwrap();
     assert!(!hints.is_empty(), "expected a hint for `n`");
-    assert_eq!(hints[0]["label"], json!(" : Int"));
-    // Just after `n` in `fun double n = n * 2`.
-    assert_eq!(hints[0]["position"], json!({"line": 1, "character": 12}));
+
+    // The label is a *sequence* of parts, not a string: a type name in it has
+    // to be able to carry a `location`, which is what an editor turns into a
+    // ctrl-click. Flattened, the hints read as the annotation you could have
+    // written — `fun double (n : Int) : Int = n * 2`.
+    let flat: Vec<(u64, u64, String)> = hints
+        .iter()
+        .map(|h| {
+            let parts = h["label"].as_array().expect("label parts");
+            let text: String = parts
+                .iter()
+                .map(|p| p["value"].as_str().unwrap_or_default())
+                .collect();
+            (
+                h["position"]["line"].as_u64().unwrap(),
+                h["position"]["character"].as_u64().unwrap(),
+                text,
+            )
+        })
+        .collect();
+
+    // `fun double n = n * 2` — an open paren before `n`, and the rest after it.
+    assert!(flat.contains(&(1, 11, "(".to_string())), "got {flat:?}");
+    assert!(
+        flat.contains(&(1, 12, " : Int) : Int".to_string())),
+        "the closing paren and the result type share a position: {flat:?}"
+    );
+}
+
+/// A type name inside a hint carries a `location`, which is what makes it
+/// ctrl-clickable — and a builtin, which is declared nowhere, does not.
+#[test]
+fn a_type_name_in_a_hint_is_a_link() {
+    let root = std_sources("hint-link");
+    let mut c = Client::start_with(Some(root.clone()));
+    c.set("fun pick m = match m with | Just v -> v | None -> 0\n");
+    let hints = c.request(
+        "textDocument/inlayHint",
+        json!({
+            "textDocument": {"uri": URI},
+            "range": {"start": {"line": 0, "character": 0},
+                      "end": {"line": 9, "character": 0}}
+        }),
+    );
+
+    let mut linked = Vec::new();
+    let mut plain = Vec::new();
+    for h in hints.as_array().unwrap() {
+        for p in h["label"].as_array().unwrap() {
+            let v = p["value"].as_str().unwrap_or_default().to_string();
+            if p.get("location").is_some() {
+                linked.push(v);
+            } else {
+                plain.push(v);
+            }
+        }
+    }
+    assert!(linked.contains(&"Maybe".to_string()), "linked: {linked:?}");
+    assert!(plain.contains(&"Int".to_string()), "plain: {plain:?}");
+
+    drop(c);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -278,7 +343,7 @@ fn survives_chatter_before_initialized(chatter: &[(&str, Value)]) -> bool {
             .into_iter()
             .map(|(dotted, pkg)| (dotted.to_string(), pkg))
             .collect();
-        let _ = meadow_lsp::server::serve(&server, packages, modules);
+        let _ = meadow_lsp::server::serve(&server, packages, modules, None);
     });
 
     client
@@ -378,7 +443,7 @@ fn a_request_before_initialized_is_answered_rather_than_dropped() {
             .into_iter()
             .map(|(dotted, pkg)| (dotted.to_string(), pkg))
             .collect();
-        let _ = meadow_lsp::server::serve(&server, packages, modules);
+        let _ = meadow_lsp::server::serve(&server, packages, modules, None);
     });
     client
         .sender
@@ -408,4 +473,54 @@ fn a_request_before_initialized_is_answered_rather_than_dropped() {
     drop(client);
     let _ = handle.join();
     assert!(answered, "an early request should get an error, not silence");
+}
+
+/// Go-to-definition answers with *another file's* URI.
+///
+/// The handler used to echo back the URI it was asked about, so the only way to
+/// tell a working cross-module jump from a broken one is over the protocol,
+/// where the `uri` field is visible. Everything below the protocol could be
+/// right and this still wrong.
+#[test]
+fn definition_crosses_into_the_standard_library() {
+    let root = std_sources("definition");
+    let mut c = Client::start_with(Some(root.clone()));
+    c.set("use Std.String (concatAll)\ndef main = concatAll\n");
+    // Line 1, character 12 is inside `concatAll` in `def main = concatAll`.
+    let def = c.at("textDocument/definition", 1, 12);
+
+    let uri = def["uri"].as_str().expect("a uri");
+    assert_ne!(uri, URI, "the definition is not in the open document");
+    assert!(
+        uri.starts_with("file:///"),
+        "expected a file URI, got {uri}"
+    );
+    assert!(
+        uri.ends_with("/Std/String.mw"),
+        "expected Std/String.mw, got {uri}"
+    );
+    // And it points at a real line in that file, not at 0:0.
+    assert!(
+        def["range"]["start"]["line"].as_u64().unwrap() > 0,
+        "got {:?}",
+        def["range"]
+    );
+
+    drop(c);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The standard library's sources, written somewhere an editor could open them.
+///
+/// Deliberately not `stdlib::extract_sources`: that writes to the user's home,
+/// and what is under test here is the server, not where the files are kept.
+/// `who` keeps concurrent tests out of each other's directory.
+fn std_sources(who: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("meadow-lsp-std-{}-{who}", std::process::id()));
+    for (dotted, src) in meadow::stdlib::MODULES {
+        let path = root.join(format!("Std/{}.mw", dotted.replace('.', "/")));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, src).unwrap();
+    }
+    root
 }

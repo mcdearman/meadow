@@ -111,11 +111,20 @@ where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
     let bind_decl = {
+        // `def x : Int = 5` — the same `: T` a `fun` writes before its `=`,
+        // where with no parameters it describes the bound value itself.
         let pat_bind = just(Token::Def)
             .ignore_then(pat())
+            .then(result_ty())
             .then_ignore(just(Token::Eq))
             .then(expr())
-            .map(|(p, e)| Bind::Pat(p, e));
+            .map(|((p, ret), e)| match ret {
+                Some(t) => {
+                    let span = p.span;
+                    Bind::Pat(Located::new(Pat::Ann(Box::new(p), t), span), e)
+                }
+                None => Bind::Pat(p, e),
+            });
 
         // `fun f a (x, y) = e`, or point-free `fun f = e` (no parameters) — the
         // latter is just a value binding, so it takes the `Bind::Pat` path (and
@@ -123,15 +132,10 @@ where
         let fun_bind = just(Token::Fun)
             .ignore_then(lower_ident())
             .then(param_pat().repeated().collect::<Vec<_>>())
+            .then(result_ty())
             .then_ignore(just(Token::Eq))
             .then(expr())
-            .map(|((name, args), body)| {
-                if args.is_empty() {
-                    Bind::Pat(Located::new(Pat::Var(name.clone()), name.span), body)
-                } else {
-                    Bind::Fun(name, args, body)
-                }
-            });
+            .map(|(((name, args), ret), body)| bind_of(name, args, ret, body));
 
         fun_bind.or(pat_bind)
     };
@@ -505,23 +509,19 @@ where
             let fun_bind = just(Token::Fun)
                 .ignore_then(lower_ident())
                 .then(param_pat().repeated().at_least(1).collect::<Vec<_>>())
+                .then(result_ty())
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone())
-                .map(|((name, args), body)| Bind::Fun(name, args, body));
+                .map(|(((name, args), ret), body)| bind_of(name, args, ret, body));
 
             // `[rec] name args = body`  /  `[rec] name = body`
             let name_bind = rec_prefix
                 .ignore_then(lower_ident())
                 .then(param_pat().repeated().collect::<Vec<_>>())
+                .then(result_ty())
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone())
-                .map(|((name, args), body)| {
-                    if args.is_empty() {
-                        Bind::Pat(Located::new(Pat::Var(name.clone()), name.span), body)
-                    } else {
-                        Bind::Fun(name, args, body)
-                    }
-                });
+                .map(|(((name, args), ret), body)| bind_of(name, args, ret, body));
 
             let pat_bind = pat()
                 .then_ignore(just(Token::Eq))
@@ -1189,6 +1189,21 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .then_ignore(just(Token::RBrack))
             .map(|patterns| Pat::Array(patterns));
 
+        // `(p : T)` — an annotated pattern, which is how a parameter gets a
+        // declared type. Tried before the grouping rule below, which would
+        // otherwise consume the `(p` and then fail on the colon; chumsky
+        // backtracks, so the ordering is all that is needed.
+        //
+        // The parentheses are not decoration. A pattern is a *parameter* in
+        // `fun f p q = …`, so without them `fun f x : Int = …` would have no
+        // way to say whether the annotation belongs to `x` or to `f`.
+        let annotated = just(Token::LParen)
+            .ignore_then(pat.clone())
+            .then_ignore(just(Token::Colon))
+            .then(ty())
+            .then_ignore(just(Token::RParen))
+            .map(|(p, t)| Pat::Ann(Box::new(p), t));
+
         // `(p)` is grouping, `(p, q)` a tuple — mirroring the type grammar.
         let tuple = just(Token::LParen)
             .ignore_then(
@@ -1244,6 +1259,7 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .or(lit().map(Pat::Lit))
             .or(array)
             .or(list)
+            .or(annotated)
             .or(tuple)
             .or(unit().map(|_| Pat::Unit))
             .map_with(|kind, e| LPat::new(kind, e.span()))
@@ -1279,6 +1295,17 @@ fn param_pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, LPat, extra::Err<Rich<'a, Token, Span>>> + Clone {
     let inner = pat();
 
+    // `(p : T)` — a parameter with a declared type. This parser deliberately
+    // does not reuse `pat`'s outermost rules (a bare `Just x` here would read as
+    // two parameters), so the annotated form has to be repeated rather than
+    // inherited. Before `paren`, which would otherwise take the `(p` and fail.
+    let annotated = just(Token::LParen)
+        .ignore_then(inner.clone())
+        .then_ignore(just(Token::Colon))
+        .then(ty())
+        .then_ignore(just(Token::RParen))
+        .map_with(|(p, t), e| LPat::new(Pat::Ann(Box::new(p), t), e.span()));
+
     // `()` unit, `(p)` grouping, `(p, q)` tuple.
     let paren = inner
         .clone()
@@ -1311,6 +1338,7 @@ fn param_pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         .map_with(|(fields, open), e| LPat::new(Pat::Record(fields, open.is_some()), e.span()));
 
     choice((
+        annotated,
         paren,
         record,
         lower_ident().map_with(|n, e| LPat::new(Pat::Var(n), e.span())),
@@ -1360,4 +1388,28 @@ where
     P: Parser<'tokens, I, Expr, extra::Err<Rich<'tokens, Token, Span>>> + Clone,
 {
     p.map_with(|v, e| Located::new(v, e.span()))
+}
+
+/// `: T` before the `=` of a binding — the declared result type.
+fn result_ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Option<LType>, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    just(Token::Colon).ignore_then(ty()).or_not()
+}
+
+/// Assemble a binding, which is a function only when it takes arguments.
+///
+/// `def x : Int = 5` has no parameters, so there is no result to declare — the
+/// annotation is describing `x` itself, and the binding it belongs on is the
+/// pattern. Routing it there rather than rejecting it means one syntax reads
+/// the way it looks in both places.
+fn bind_of(name: Ident, args: Vec<LPat>, ret: Option<LType>, body: LExpr) -> Bind {
+    if !args.is_empty() {
+        return Bind::Fun(name, args, ret, body);
+    }
+    let span = name.span;
+    let var = Located::new(Pat::Var(name), span);
+    match ret {
+        Some(t) => Bind::Pat(Located::new(Pat::Ann(Box::new(var), t), span), body),
+        None => Bind::Pat(var, body),
+    }
 }

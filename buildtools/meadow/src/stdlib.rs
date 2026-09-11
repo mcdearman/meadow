@@ -28,6 +28,7 @@ use meadow_compiler::{
     AstModule, CompiledPackage, Export, Options,
 };
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// The package name shown in `:module` / linker dumps, and the `Std` in
 /// `Std.Collections.List`.
@@ -200,7 +201,7 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
             pkg,
             InternedString::from(*dotted),
             subs.len(),
-            vec![AstModule { path: path.clone(), name: mname, ast }],
+            vec![AstModule { path: path.clone(), name: mname, ast, source }],
             &dep_refs,
             opts,
         );
@@ -256,4 +257,67 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         tests,
         prelude_exports: Some(prelude_names),
     }
+}
+
+/// Write the embedded sources to disk, and answer the directory they went to.
+///
+/// The library is compiled from text baked into the binary, so its modules'
+/// [`SourceKind::File`] labels — `Std/Collections/Vector.mw` — name nothing an
+/// editor could open. Go-to-definition into `Std` needs a real file, so here is
+/// one, laid out under `<home>/std/<version>` exactly as those labels spell it.
+///
+/// Versioned because the sources belong to *this* binary: `meadow update`
+/// installs a new one beside the old, and a stale `Vector.mw` would send an
+/// editor to the wrong line rather than to no line at all. Rewritten whenever
+/// what is on disk differs from what is embedded, so a half-written directory
+/// repairs itself and a hand-edited one does not persist.
+///
+/// Best-effort by design. A read-only home, a sandbox, a full disk — none of
+/// those should stop the language server from starting, so the caller gets
+/// `None` and simply loses navigation into the library.
+pub fn extract_sources() -> Option<PathBuf> {
+    let root = home()?.join("std").join(env!("CARGO_PKG_VERSION"));
+    for (dotted, src) in MODULES {
+        let path = root.join(format!("Std/{}.mw", dotted.replace('.', "/")));
+        // Compare before writing: this runs at every editor start, and the
+        // common case is that everything is already correct.
+        if std::fs::read_to_string(&path).is_ok_and(|on_disk| on_disk == **src) {
+            continue;
+        }
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        // Remove first: the copy already there is read-only, and on Windows
+        // that makes it unwritable rather than merely discouraging.
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, src).ok()?;
+        read_only(&path);
+    }
+    Some(root)
+}
+
+/// Mark an extracted source read-only.
+///
+/// These are a *copy* of the library, and the person most likely to follow a
+/// definition into one is the person who maintains the original — for whom
+/// editing the copy would mean losing the work silently. A read-only file turns
+/// that into the editor saying so.
+///
+/// Ignored if it fails; it is a courtesy, not a guarantee.
+fn read_only(path: &std::path::Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_readonly(true);
+        let _ = std::fs::set_permissions(path, perms);
+    }
+}
+
+/// Where Meadow keeps things that are not the binary. Mirrors the installer's
+/// `default_home`, including the `MEADOW_HOME` override.
+fn home() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("MEADOW_HOME") {
+        return Some(PathBuf::from(dir));
+    }
+    let base = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()?;
+    Some(PathBuf::from(base).join(".meadow"))
 }

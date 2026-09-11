@@ -61,7 +61,7 @@ pub fn compile_modules(modules: &[(&str, &str)]) -> (CompiledPackage, Vec<String
         let (ast, perrs) = parser::parse(mname, source, &lex.tokens);
         diags.extend(perrs.iter().map(|e| format!("{e:?}")));
         if let Some(ast) = ast {
-            asts.push(meadow_compiler::AstModule { path, name: mname, ast });
+            asts.push(meadow_compiler::AstModule { path, name: mname, ast, source });
         }
     }
     let (cp, unit_diags) =
@@ -183,6 +183,7 @@ pub fn schemes_std(src: &str) -> String {
                 path: vec![],
                 name: "test".into(),
                 ast,
+                source,
             }]
         })
         .unwrap_or_default();

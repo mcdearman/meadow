@@ -119,6 +119,7 @@ fn compile_package(
                 path: m.path.clone(),
                 name: m.name,
                 ast,
+                source: m.source,
             });
         }
     }
@@ -151,6 +152,7 @@ pub fn compile_str_with_std(
                 path: vec![],
                 name,
                 ast,
+                source,
             }]
         })
         .unwrap_or_default();

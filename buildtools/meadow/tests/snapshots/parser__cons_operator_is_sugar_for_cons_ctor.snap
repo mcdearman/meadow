@@ -87,6 +87,7 @@ Module {
                             span: 34..35,
                         },
                     ],
+                    None,
                     Located {
                         value: Match(
                             Located {

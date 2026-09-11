@@ -235,7 +235,7 @@ pub type LTypeExpr = Node<TypeExpr>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
     Var(Ident),
-    Con(InternedString, Vec<LTypeExpr>),
+    Con(Label, Vec<LTypeExpr>),
     /// `arg -> ret ! effect` (curried; effect on the last arrow).
     Fun(Vec<LTypeExpr>, LTypeExpr, Option<EffectRow>),
     Tuple(Vec<LTypeExpr>),
@@ -256,6 +256,8 @@ pub struct EffectRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectDecl {
     pub name: InternedString,
+    /// Where the name was written — see [`DataDecl::name_span`].
+    pub name_span: Span,
     pub params: Vec<Ident>,
     /// Each operation: `(name, its top-level VarId, declared type)`. The op is
     /// callable as a value, so it gets a `VarId` like a `def`.
@@ -275,6 +277,13 @@ pub struct HandlerArm {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataDecl {
     pub name: InternedString,
+    /// Where the name was written.
+    ///
+    /// A type constructor is not resolved to an id — see [`TypeExpr::Con`] — so
+    /// a reference to one is matched by name, and a name cannot say *where* the
+    /// declaration is. An editor asked to go there needs to know, so the
+    /// position is carried rather than recovered.
+    pub name_span: Span,
     pub params: Vec<Ident>,
     pub variants: Vec<Variant>,
 }
@@ -282,6 +291,8 @@ pub struct DataDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variant {
     pub name: InternedString,
+    /// Where the name was written — see [`DataDecl::name_span`].
+    pub name_span: Span,
     pub fields: VariantFields,
 }
 
@@ -294,6 +305,8 @@ pub enum VariantFields {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordDecl {
     pub name: InternedString,
+    /// Where the name was written — see [`DataDecl::name_span`].
+    pub name_span: Span,
     pub params: Vec<Ident>,
     pub fields: Vec<(InternedString, LTypeExpr)>,
 }
@@ -330,7 +343,8 @@ pub enum Expr {
 pub enum Bind {
     Pat(LPat, LExpr),
     /// `fun f a (x, y) = e` — parameters are irrefutable patterns.
-    Fun(Ident, Vec<LPat>, LExpr),
+    /// `fun f p q : T = e` -- the optional type is the declared *result*.
+    Fun(Ident, Vec<LPat>, Option<LTypeExpr>, LExpr),
     Error,
 }
 
@@ -339,7 +353,7 @@ impl Bind {
     pub fn bound_vars(&self) -> Vec<VarId> {
         let mut out = Vec::new();
         match self {
-            Bind::Fun(name, _, _) => out.push(*name.value()),
+            Bind::Fun(name, ..) => out.push(*name.value()),
             Bind::Pat(pat, _) => pat_vars(pat, &mut out),
             Bind::Error => {}
         }
@@ -351,6 +365,8 @@ impl Bind {
 pub fn pat_vars(pat: &LPat, out: &mut Vec<VarId>) {
     match pat.value() {
         Pat::Var(id) => out.push(*id.value()),
+        // The annotation binds nothing; the pattern under it does.
+        Pat::Ann(inner, _) => pat_vars(inner, out),
         Pat::As(id, sub) => {
             out.push(*id.value());
             pat_vars(sub, out);
@@ -369,6 +385,10 @@ pub type LPat = Node<Pat>;
 pub enum Pat {
     Wildcard,
     Var(Ident),
+    /// `(p : T)` -- a pattern with a declared type. The annotation is kept
+    /// rather than erased: inference unifies against it, and it is the only
+    /// type an editor can point at outside a declaration.
+    Ann(Box<LPat>, LTypeExpr),
     Lit(Lit),
     As(Ident, LPat),
     Cons(Label, Vec<LPat>),

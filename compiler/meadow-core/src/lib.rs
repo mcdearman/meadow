@@ -588,7 +588,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_bind_toplevel(&mut self, bind: &hir::Bind, out: &mut Vec<Def>) {
         match bind {
-            hir::Bind::Fun(name, params, body) => {
+            hir::Bind::Fun(name, params, _, body) => {
                 let v = *name.value();
                 let term = self.curry_lam(params, body);
                 out.push(Def {
@@ -833,7 +833,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_let_bind(&mut self, bind: &hir::Bind, body: Term) -> Term {
         match bind {
-            hir::Bind::Fun(name, params, fbody) => {
+            hir::Bind::Fun(name, params, _, fbody) => {
                 let term = self.curry_lam(params, fbody);
                 Term::LetRec(vec![(*name.value(), term)], Arc::new(body))
             }
@@ -859,6 +859,9 @@ impl<'a> Lowerer<'a> {
         match pat.value() {
             hir::Pat::Wildcard | hir::Pat::Unit | hir::Pat::Lit(_) => {}
             hir::Pat::Var(id) => out.push((*id.value(), scrut)),
+            // Types are erased here; the pattern under the annotation is all
+            // that binds anything.
+            hir::Pat::Ann(inner, _) => self.bind_pat(scrut, inner, out),
             hir::Pat::As(id, sub) => {
                 out.push((*id.value(), scrut.clone()));
                 self.bind_pat(scrut, sub, out);
@@ -897,6 +900,8 @@ impl<'a> Lowerer<'a> {
             hir::Pat::Wildcard => Pat::Wild,
             hir::Pat::Unit => Pat::Lit(Lit::Unit),
             hir::Pat::Var(id) => Pat::Var(*id.value()),
+            // Types are gone by here; the annotation did its work in inference.
+            hir::Pat::Ann(inner, _) => self.lower_pat(inner),
             hir::Pat::As(id, sub) => Pat::As(*id.value(), Box::new(self.lower_pat(sub))),
             hir::Pat::Lit(hir::Lit::Int(i)) => Pat::Lit(self.int_lit(pat.id, *i)),
             hir::Pat::Lit(hir::Lit::Float(b)) => Pat::Lit(Lit::Float(f64::from_bits(*b))),

@@ -100,6 +100,7 @@ fn run_src(src: &str) -> Vec<(String, Option<String>)> {
                 path: vec![],
                 name: "t".into(),
                 ast,
+                source,
             }]
         })
         .unwrap_or_default();

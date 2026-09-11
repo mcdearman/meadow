@@ -49,8 +49,18 @@ pub struct Resolver {
     /// `Std.State.get` against the prelude's `Vector.get`, say — and the lowerer
     /// has to tell a `perform` from a variable by identity, not spelling.
     effect_op_ids: HashMap<VarId, (InternedString, InternedString)>,
-    /// Type variables of the `data` / `record` decl currently being resolved.
+    /// Type variables of the declaration currently being resolved: a `data` /
+    /// `record` / `effect` parameter list, or the ones a pattern annotation
+    /// introduced.
     tyvars: Vec<(InternedString, VarId)>,
+    /// While resolving a pattern annotation, an unknown type variable is bound
+    /// rather than reported.
+    ///
+    /// `(x : a)` has no parameter list to have declared `a` in, so the
+    /// alternative to binding it here is refusing to let anyone write it. It is
+    /// scoped to the enclosing declaration, which is what makes the two `a`s in
+    /// `fun twice (f : a -> a) (x : a)` the same variable.
+    open_tyvars: bool,
     ids: NodeIdGen,
     /// True only while resolving a module-level `Decl` (not nested in an expr).
     toplevel: bool,
@@ -119,6 +129,7 @@ impl Resolver {
             effect_ops: HashMap::new(),
             effect_op_ids: HashMap::new(),
             tyvars: Vec::new(),
+            open_tyvars: false,
             ids: NodeIdGen::new(),
             toplevel: false,
             any_pub: false,
@@ -498,7 +509,7 @@ impl Resolver {
     /// callable, and `@test def x = …` is a mistake worth naming.
     fn mark_test(&mut self, decl: &hir::LDecl, span: Span) {
         match decl.value() {
-            hir::Decl::Bind(hir::Bind::Fun(name, params, _)) if params.len() == 1 => {
+            hir::Decl::Bind(hir::Bind::Fun(name, params, _, _)) if params.len() == 1 => {
                 self.test_vars.push((
                     self.names.get(name.value()).copied().unwrap_or_default(),
                     *name.value(),
@@ -569,6 +580,11 @@ impl Resolver {
             ast::Decl::Attributed(_, inner) => self.resolve_bare_decl(inner),
             ast::Decl::Bind(bind) => {
                 self.toplevel = true;
+                // A type variable an annotation introduces belongs to *this*
+                // declaration. Without the clear, `fun f (x : a) = x` and a
+                // later `fun g (y : a) = y` would share one variable and be
+                // forced to the same type.
+                self.tyvars.clear();
                 let b = self.resolve_bind(bind);
                 self.toplevel = false;
                 self.node(hir::Decl::Bind(b), decl.span)
@@ -596,6 +612,7 @@ impl Resolver {
                         };
                         hir::Variant {
                             name: *v.name.value(),
+                            name_span: v.name.span,
                             fields,
                         }
                     })
@@ -604,6 +621,7 @@ impl Resolver {
                 self.node(
                     hir::Decl::Data(hir::DataDecl {
                         name: *dd.name.value(),
+                        name_span: dd.name.span,
                         params,
                         variants,
                     }),
@@ -621,6 +639,7 @@ impl Resolver {
                 self.node(
                     hir::Decl::Record(hir::RecordDecl {
                         name: *rd.name.value(),
+                        name_span: rd.name.span,
                         params,
                         fields,
                     }),
@@ -648,6 +667,7 @@ impl Resolver {
                 self.node(
                     hir::Decl::Effect(hir::EffectDecl {
                         name: *ed.name.value(),
+                        name_span: ed.name.span,
                         params,
                         ops,
                     }),
@@ -683,6 +703,12 @@ impl Resolver {
                     .find(|(nm, _)| *nm == name)
                     .map(|(_, id)| *id)
                     .unwrap_or_else(|| {
+                        if self.open_tyvars {
+                            let id = VarId::fresh();
+                            self.names.insert(id, name);
+                            self.tyvars.push((name, id));
+                            return id;
+                        }
                         self.error(
                             format!("unbound type variable `{name}`"),
                             "not a parameter of this type".to_string(),
@@ -712,7 +738,8 @@ impl Resolver {
                     ),
                 }
                 let rargs = args.iter().map(|a| self.resolve_ty(a)).collect();
-                self.node(hir::TypeExpr::Con(name, rargs), t.span)
+                let con = self.node(name, n.span);
+                self.node(hir::TypeExpr::Con(con, rargs), t.span)
             }
             ast::TypeExpr::Fun(ps, r, eff) => {
                 let rps = ps.iter().map(|p| self.resolve_ty(p)).collect();
@@ -804,16 +831,25 @@ impl Resolver {
                 self.toplevel = false;
                 hir::Bind::Pat(rpat, rexpr)
             }
-            ast::Bind::Fun(name, params, body) => {
+            ast::Bind::Fun(name, params, ret, body) => {
                 self.toplevel = top;
                 let id = self.bind_defn(*name.value());
                 self.toplevel = false;
                 let name_node = self.node(id, name.span);
                 let mark = self.mark();
                 let rparams = params.iter().map(|p| self.resolve_pat(p)).collect_vec();
+                // Resolved after the parameters, so a type variable a parameter
+                // introduced is the same one here: in
+                // `fun id (x : a) : a = x` both `a`s are one variable.
+                let rret = ret.as_ref().map(|t| {
+                    let was = std::mem::replace(&mut self.open_tyvars, true);
+                    let r = self.resolve_ty(t);
+                    self.open_tyvars = was;
+                    r
+                });
                 let rbody = self.resolve_expr(body);
                 self.reset(mark);
-                hir::Bind::Fun(name_node, rparams, rbody)
+                hir::Bind::Fun(name_node, rparams, rret, rbody)
             }
         }
     }
@@ -1122,6 +1158,16 @@ impl Resolver {
             ast::Pat::Lit(lit) => {
                 let l = self.resolve_lit(lit);
                 self.node(hir::Pat::Lit(l), pat.span)
+            }
+            ast::Pat::Ann(inner, t) => {
+                // The annotation resolves in the enclosing declaration's scope,
+                // so a type variable in it is the same one a sibling annotation
+                // means -- and may introduce one that nothing declared.
+                let rp = self.resolve_pat(inner);
+                let was = std::mem::replace(&mut self.open_tyvars, true);
+                let rt = self.resolve_ty(t);
+                self.open_tyvars = was;
+                self.node(hir::Pat::Ann(Box::new(rp), rt), pat.span)
             }
             ast::Pat::As(name, sub) => {
                 let id = self.bind_defn(*name.value());

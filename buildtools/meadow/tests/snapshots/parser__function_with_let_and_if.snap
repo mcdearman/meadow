@@ -23,6 +23,7 @@ Module {
                             span: 8..9,
                         },
                     ],
+                    None,
                     Located {
                         value: Let(
                             [

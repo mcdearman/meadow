@@ -58,6 +58,7 @@ Module {
                                     span: 44..45,
                                 },
                             ],
+                            None,
                             Located {
                                 value: Var(
                                     Located {

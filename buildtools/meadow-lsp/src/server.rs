@@ -5,11 +5,11 @@
 //! and a cancellation protocol would be more machinery than the problem needs.
 //! `Std` is compiled once at startup, which is the only slow part.
 
-use crate::analysis::{Analysis, Std};
+use crate::analysis::{Analysis, HintPart, Loc, Std};
 use crate::pos::LineIndex;
 use crate::tokens;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
-use meadow_compiler::CompiledPackage;
+use meadow_compiler::{source::Source, span::Span, CompiledPackage};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
     Notification, PublishDiagnostics,
@@ -25,9 +25,10 @@ use std::error::Error;
 pub fn run(
     std_packages: Vec<CompiledPackage>,
     std_modules: Vec<(String, CompiledPackage)>,
+    std_src_root: Option<std::path::PathBuf>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let (connection, io_threads) = Connection::stdio();
-    serve(&connection, std_packages, std_modules)?;
+    serve(&connection, std_packages, std_modules, std_src_root)?;
     // The writer thread runs until its channel disconnects, which only happens
     // when the last `Connection` is gone. Joining while this one is still in
     // scope hangs the process — an editor would leave a stray server behind on
@@ -45,11 +46,15 @@ pub fn serve(
     connection: &Connection,
     std_packages: Vec<CompiledPackage>,
     std_modules: Vec<(String, CompiledPackage)>,
+    // Where the embedded `Std` sources were written out, if anywhere — what
+    // makes a definition inside the library a file an editor can open.
+    std_src_root: Option<std::path::PathBuf>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     handshake(connection)?;
     let mut server = Server {
-        std: Std::new(std_packages, std_modules),
+        std: Std::new(std_packages, std_modules, std_src_root),
         docs: HashMap::new(),
+        indexes: HashMap::new(),
     };
     server.main_loop(connection)
 }
@@ -132,6 +137,10 @@ struct Doc {
 struct Server {
     std: Std,
     docs: HashMap<Uri, Doc>,
+    /// Line indexes for sources that are not open documents -- the modules a
+    /// definition can land in. Keyed by source id, and never invalidated: see
+    /// [`Server::range_in`].
+    indexes: HashMap<u32, LineIndex>,
 }
 
 impl Server {
@@ -246,11 +255,28 @@ impl Server {
                 })
             }),
             GotoDefinition::METHOD => self.answer::<GotoDefinition, _>(req, |s, p| {
+                let here = p.text_document_position_params.text_document.uri.clone();
                 let (doc, offset) = s.at(&p.text_document_position_params)?;
-                let span = doc.analysis.definition_at(offset)?;
-                let (start, end) = doc.index.range(span);
+                let loc = doc
+                    .analysis
+                    .definition_at(offset, s.std.definitions(), s.std.declared_names())?;
+
+                // The definition may be in a file that is not open — so the
+                // position has to be measured against *that* source's text, not
+                // this document's. The two agree only in the case this used to
+                // be able to answer.
+                let mine = (loc.source.id == doc.analysis.source_id)
+                    .then(|| doc.index.range(loc.span));
+
+                let (uri, (start, end)) = match mine {
+                    Some(range) => (here, range),
+                    None => {
+                        let path = s.std.path_of(loc.source)?;
+                        (path_to_uri(&path)?, s.range_in(loc.source, loc.span))
+                    }
+                };
                 Some(GotoDefinitionResponse::Scalar(Location {
-                    uri: p.text_document_position_params.text_document.uri.clone(),
+                    uri,
                     range: Range {
                         start: Position::new(start.0, start.1),
                         end: Position::new(end.0, end.1),
@@ -258,31 +284,46 @@ impl Server {
                 }))
             }),
             InlayHintRequest::METHOD => self.answer::<InlayHintRequest, _>(req, |s, p| {
-                let doc = s.docs.get(&p.text_document.uri)?;
-                let from = doc.index.offset(p.range.start.line, p.range.start.character);
-                let to = doc.index.offset(p.range.end.line, p.range.end.character);
-                Some(
+                let from = {
+                    let doc = s.docs.get(&p.text_document.uri)?;
+                    doc.index.offset(p.range.start.line, p.range.start.character)
+                };
+                let to = {
+                    let doc = s.docs.get(&p.text_document.uri)?;
+                    doc.index.offset(p.range.end.line, p.range.end.character)
+                };
+                // Cloned out of the document because resolving a type name to
+                // its declaration wants the whole server, and that file may not
+                // be one this one is borrowed from.
+                let wanted: Vec<_> = {
+                    let doc = s.docs.get(&p.text_document.uri)?;
                     doc.analysis
                         .binders
                         .iter()
-                        .filter(|(span, _)| {
-                            (span.start as usize) >= from && (span.end as usize) <= to
-                        })
-                        .map(|(span, ty)| {
-                            let (_, end) = doc.index.range(*span);
-                            InlayHint {
-                                position: Position::new(end.0, end.1),
-                                label: InlayHintLabel::String(format!(" : {ty}")),
-                                kind: Some(InlayHintKind::TYPE),
-                                text_edits: None,
-                                tooltip: None,
-                                padding_left: None,
-                                padding_right: None,
-                                data: None,
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                )
+                        .filter(|h| (h.offset as usize) >= from && (h.offset as usize) <= to)
+                        .cloned()
+                        .collect()
+                };
+
+                let mut out = Vec::with_capacity(wanted.len());
+                for hint in wanted {
+                    let at = {
+                        let doc = s.docs.get(&p.text_document.uri)?;
+                        doc.index.position(hint.offset as usize)
+                    };
+                    let parts = s.label_parts(&p.text_document.uri, &hint.parts)?;
+                    out.push(InlayHint {
+                        position: Position::new(at.0, at.1),
+                        label: InlayHintLabel::LabelParts(parts),
+                        kind: Some(InlayHintKind::TYPE),
+                        text_edits: None,
+                        tooltip: None,
+                        padding_left: None,
+                        padding_right: None,
+                        data: None,
+                    });
+                }
+                Some(out)
             }),
             SemanticTokensFullRequest::METHOD => {
                 self.answer::<SemanticTokensFullRequest, _>(req, |s, p| {
@@ -336,8 +377,117 @@ impl Server {
         let doc = self.docs.get(&p.text_document.uri)?;
         Some((doc, doc.index.offset(p.position.line, p.position.character)))
     }
+
+    /// An inlay hint's label, with every type name in it linked.
+    ///
+    /// The link is what makes a hint navigable: `location` on a label part is
+    /// how an editor offers ctrl-click and a hover on something that is not in
+    /// the file at all. A name with nowhere to go -- a builtin like `Int`, or a
+    /// type variable -- stays plain text rather than becoming a dead link.
+    fn label_parts(
+        &mut self,
+        here: &Uri,
+        parts: &[HintPart],
+    ) -> Option<Vec<InlayHintLabelPart>> {
+        let mut out = Vec::with_capacity(parts.len());
+        for part in parts {
+            match part {
+                HintPart::Text(t) => out.push(plain(t.clone())),
+                HintPart::Name(name) => {
+                    let loc = {
+                        let doc = self.docs.get(here)?;
+                        doc.analysis
+                            .names
+                            .types
+                            .get(name)
+                            .copied()
+                            .or_else(|| self.std.declared_names().types.get(name).copied())
+                    };
+                    let mut p = plain(name.to_string());
+                    if let Some(loc) = loc {
+                        p.location = self.locate(here, loc);
+                        p.tooltip = Some(InlayHintLabelPartTooltip::String(format!(
+                            "type `{name}`"
+                        )));
+                    }
+                    out.push(p);
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// A [`Loc`] as a protocol `Location`, wherever it lives.
+    fn locate(&mut self, here: &Uri, loc: Loc) -> Option<Location> {
+        let mine = {
+            let doc = self.docs.get(here)?;
+            (loc.source.id == doc.analysis.source_id).then(|| doc.index.range(loc.span))
+        };
+        let (uri, (start, end)) = match mine {
+            Some(range) => (here.clone(), range),
+            None => {
+                let path = self.std.path_of(loc.source)?;
+                (path_to_uri(&path)?, self.range_in(loc.source, loc.span))
+            }
+        };
+        Some(Location {
+            uri,
+            range: Range {
+                start: Position::new(start.0, start.1),
+                end: Position::new(end.0, end.1),
+            },
+        })
+    }
+
+    /// `span` as a line/character range within `source`, which need not be a
+    /// document the editor has open.
+    ///
+    /// The line index is kept because the text it is built from never changes:
+    /// these are dependencies, and an edit to one recompiles it into a new
+    /// [`Source`] with a new id rather than mutating this one.
+    fn range_in(&mut self, source: Source, span: Span) -> ((u32, u32), (u32, u32)) {
+        self.indexes
+            .entry(source.id)
+            .or_insert_with(|| LineIndex::new(&source.content))
+            .range(span)
+    }
+}
+
+/// A `file://` URI for a path on this machine.
+///
+/// Hand-rolled because the alternative is a dependency, and because the two
+/// things that go wrong here are worth being explicit about: a Windows path
+/// needs its separators flipped and a leading slash before the drive letter,
+/// and anything outside the unreserved set has to be percent-encoded — an
+/// install under a user whose name contains a space is not exotic.
+fn path_to_uri(path: &std::path::Path) -> Option<Uri> {
+    let text = path.to_str()?.replace('\\', "/");
+    let mut out = String::from("file://");
+    if !text.starts_with('/') {
+        out.push('/');
+    }
+    for b in text.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out.parse().ok()
 }
 
 fn cast<R: LspRequest>(req: Request) -> Result<(RequestId, R::Params), ExtractError<Request>> {
     req.extract(R::METHOD).map(|(id, p)| (id, p))
+}
+
+/// A label part with nothing attached — the common case, and the base every
+/// other one is built from.
+fn plain(value: String) -> InlayHintLabelPart {
+    InlayHintLabelPart {
+        value,
+        tooltip: None,
+        location: None,
+        command: None,
+    }
 }

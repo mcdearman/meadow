@@ -28,6 +28,14 @@ pub struct AstModule {
     pub path: Vec<InternedString>,
     pub name: InternedString,
     pub ast: ast::LModule,
+    /// Where the text came from.
+    ///
+    /// A [`Span`](meadow_span::Span) is a pair of offsets and nothing else — it
+    /// carries no record of which file it indexes. That is fine while a
+    /// consumer only ever looks at one module, and not fine the moment one has
+    /// to *name* a position: an editor answering go-to-definition across
+    /// modules reads the file from here.
+    pub source: Source,
 }
 
 /// A resolved module, paired with its position in the package.
@@ -36,6 +44,9 @@ pub struct TypedModule {
     pub path: Vec<InternedString>,
     pub name: InternedString,
     pub hir: hir::LModule,
+    /// Carried through from [`AstModule::source`] — what this module's spans are
+    /// offsets into.
+    pub source: Source,
 }
 
 /// An exported top-level binding: its name, its `VarId`, its inferred scheme, and
@@ -105,6 +116,7 @@ pub fn compile_str_with(
                 path: vec![],
                 name,
                 ast,
+                source,
             }]
         })
         .unwrap_or_default();
@@ -194,6 +206,7 @@ pub fn compile_unit_in_package(
                 path: m.path.clone(),
                 name: m.name,
                 hir,
+                source: m.source,
             }
         })
         .collect();

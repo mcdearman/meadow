@@ -106,7 +106,7 @@ impl Checker<'_> {
 
     fn bind(&mut self, bind: &hir::Bind) {
         match bind {
-            hir::Bind::Fun(_, params, body) => {
+            hir::Bind::Fun(_, params, _, body) => {
                 for p in params {
                     self.require_irrefutable(p, "function parameter");
                 }
@@ -228,6 +228,8 @@ impl Checker<'_> {
     fn lower(&self, pat: &hir::LPat) -> P {
         match pat.value() {
             hir::Pat::Wildcard | hir::Pat::Var(_) | hir::Pat::Error => P::Wild,
+            // An annotation constrains the type, never the shape.
+            hir::Pat::Ann(inner, _) => self.lower(inner),
             hir::Pat::As(_, sub) => self.lower(sub),
             hir::Pat::Unit => P::Con(Con::Unit, vec![]),
             hir::Pat::Lit(hir::Lit::Int(i)) => P::Con(Con::Int(*i), vec![]),
@@ -304,6 +306,18 @@ impl Checker<'_> {
             }
             Type::Con(name, args) => {
                 if let Some(vs) = self.variants.get(name) {
+                    // A constructor's field types are written over the *type's*
+                    // parameters as `Bound(i)`, so substituting them needs an
+                    // argument per parameter. A type written with the wrong
+                    // number — `x : Maybe`, which the resolver has already
+                    // reported — would index past the end, and inference runs
+                    // after a resolver error on purpose, to collect more than
+                    // one problem per compile. So: treat a type whose arity does
+                    // not add up as opaque, and let the reported error stand.
+                    let arity = vs.iter().flat_map(|v| &v.fields).filter_map(max_bound).max();
+                    if arity.is_some_and(|n| n as usize >= args.len()) {
+                        return None;
+                    }
                     return Some(
                         vs.iter()
                             .map(|v| {
@@ -510,5 +524,24 @@ fn render_at(p: &P, nested: bool) -> String {
                 }
             }
         },
+    }
+}
+
+/// The largest `Bound` index a type mentions, if any.
+///
+/// Used to check that a type constructor was written with enough arguments to
+/// substitute for its parameters — see the note in `ctors_of`.
+fn max_bound(t: &Type) -> Option<u32> {
+    match t {
+        Type::Bound(i) => Some(*i),
+        Type::Var(_) | Type::RowEmpty => None,
+        Type::Con(_, args) | Type::Tuple(args) => args.iter().filter_map(max_bound).max(),
+        Type::Fun(ps, r, e) => ps
+            .iter()
+            .chain([&**r, &**e])
+            .filter_map(max_bound)
+            .max(),
+        Type::Record(r) => max_bound(r),
+        Type::RowExtend(_, f, rest) => [&**f, &**rest].into_iter().filter_map(max_bound).max(),
     }
 }

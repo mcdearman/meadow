@@ -625,6 +625,10 @@ pub struct Infer {
     /// var that accumulates every effect performed in the current function body.
     /// Saved/restored around lambda bodies and `let` right-hand sides.
     cur_effect: Type,
+    /// The meta variable standing for each type variable a pattern annotation
+    /// introduced -- see [`Infer::annotation`]. Never scoped, because the
+    /// resolver already scoped the `VarId`s it is keyed by.
+    ann_tyvars: HashMap<VarId, Type>,
     errors: Vec<Diagnostic>,
 }
 
@@ -638,6 +642,7 @@ impl Infer {
             exports: Vec::new(),
             ctors: HashMap::new(),
             variants: HashMap::new(),
+            ann_tyvars: HashMap::new(),
             record_fields: HashMap::new(),
             effects: HashMap::new(),
             cur_effect: Type::RowEmpty,
@@ -774,13 +779,13 @@ impl Infer {
     /// group's business, not this function's. Returns whether it was pure.
     fn infer_group_member(&mut self, bind: &hir::Bind, seed: &[(VarId, Type)]) -> bool {
         match bind {
-            hir::Bind::Fun(name, params, body) => {
+            hir::Bind::Fun(name, params, declared, body) => {
                 let mut bound = Vec::new();
                 let param_tys: Vec<Type> = params
                     .iter()
                     .map(|p| self.infer_pat(p, &mut bound))
                     .collect();
-                let ret = self.arena.fresh();
+                let ret = self.declared_result(declared);
                 let body_eff = self.arena.fresh_effect();
                 let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
 
@@ -865,7 +870,7 @@ impl Infer {
 
     fn infer_bind(&mut self, bind: &hir::Bind, toplevel: bool) {
         match bind {
-            hir::Bind::Fun(name, params, body) => {
+            hir::Bind::Fun(name, params, declared, body) => {
                 let vid = *name.value();
                 self.arena.enter_level();
 
@@ -876,7 +881,7 @@ impl Infer {
                     .iter()
                     .map(|p| self.infer_pat(p, &mut bound))
                     .collect();
-                let ret = self.arena.fresh();
+                let ret = self.declared_result(declared);
                 // The body runs in its own effect region; that region ends up on the
                 // function's (innermost) arrow. Defining the function is itself pure,
                 // so the outer `cur_effect` is untouched.
@@ -1266,6 +1271,21 @@ impl Infer {
                 t
             }
 
+            // `(p : T)` — infer the pattern, then hold it to the annotation.
+            //
+            // A type variable written here is *not* one of an enclosing
+            // declaration's parameters: there is no enclosing declaration to be
+            // a parameter of. Each distinct one is quantified over the
+            // annotation alone and then instantiated, so `(x : a)` constrains
+            // nothing and `(f : a -> a)` constrains the two ends to agree —
+            // which is what writing it twice is for.
+            hir::Pat::Ann(inner, ann) => {
+                let inferred = self.infer_pat(inner, bound);
+                let declared = self.annotation(ann);
+                self.unify_at(pat.span, inferred.clone(), declared);
+                inferred
+            }
+
             hir::Pat::As(ident, sub) => {
                 let st = self.infer_pat(sub, bound);
                 let vid = *ident.value();
@@ -1540,6 +1560,51 @@ impl Infer {
         }
     }
 
+    /// The declared result type of a binding, or a fresh variable when there is
+    /// none.
+    ///
+    /// A declared one is an ordinary meta variable that the body is unified
+    /// against, so it constrains rather than merely records: writing
+    /// `fun f x : Int = x` makes `f` an `Int -> Int` and an incompatible body
+    /// an error, instead of generalising over whatever the body happened to be.
+    fn declared_result(&mut self, declared: &Option<hir::LTypeExpr>) -> Type {
+        match declared {
+            Some(t) => self.annotation(t),
+            None => self.arena.fresh(),
+        }
+    }
+
+    /// A pattern annotation as an inference type.
+    ///
+    /// Each type variable becomes a meta variable, and the *same* one every
+    /// time that variable appears — which is why the map is keyed by `VarId`
+    /// and not rebuilt per annotation. The resolver gives a declaration's
+    /// annotations one scope, so the two `a`s in
+    /// `fun twice (f : a -> a) (x : a)` share a `VarId`, and sharing a `VarId`
+    /// has to mean sharing a type or the annotation would be decoration.
+    ///
+    /// Nothing needs clearing between declarations: the resolver clears its own
+    /// scope, so a different declaration's `a` is a different `VarId`.
+    fn annotation(&mut self, t: &hir::LTypeExpr) -> Type {
+        let mut vars = HashMap::new();
+        collect_tyvars(t, &mut vars);
+        // Index them for `ty_of`, then map each `Bound` to the meta this
+        // declaration has already agreed on for that variable.
+        let mut fresh = vec![Type::unit(); vars.len()];
+        for (var, i) in &vars {
+            let meta = match self.ann_tyvars.get(var) {
+                Some(t) => t.clone(),
+                None => {
+                    let t = self.arena.fresh();
+                    self.ann_tyvars.insert(*var, t.clone());
+                    t
+                }
+            };
+            fresh[*i as usize] = meta;
+        }
+        Arena::subst_bound(&ty_of(t, &vars), &fresh)
+    }
+
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
         let fresh: Vec<Type> = scheme
             .quant
@@ -1617,7 +1682,7 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
         },
         hir::TypeExpr::Con(name, args) => {
             let args: Vec<Type> = args.iter().map(|a| ty_of(a, params)).collect();
-            match &**name {
+            match &**name.value() {
                 "Int" => Type::int(),
                 "BigInt" => Type::bigint(),
                 "Float" => Type::float(),
@@ -1627,7 +1692,7 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
                 "List" => Type::list(args.into_iter().next().unwrap_or_else(Type::unit)),
                 "Array" => Type::array(args.into_iter().next().unwrap_or_else(Type::unit)),
                 "Ref" => Type::reference(args.into_iter().next().unwrap_or_else(Type::unit)),
-                _ => Type::Con(*name, args),
+                _ => Type::Con(*name.value(), args),
             }
         }
         hir::TypeExpr::Fun(ps, r, eff) => {
@@ -2293,5 +2358,79 @@ mod tests {
 
         assert_eq!(infer.generalize(&deep).quant.len(), 1);
         assert_eq!(infer.generalize(&shallow).quant.len(), 0);
+    }
+}
+
+/// Number the distinct type variables of an annotation, in order of appearance.
+///
+/// [`ty_of`] maps a variable to `Bound(i)` through this, so the two occurrences
+/// of `a` in `(f : a -> a)` become the same `Bound` and therefore, after
+/// instantiation, the same meta variable.
+fn collect_tyvars(t: &hir::LTypeExpr, out: &mut HashMap<VarId, u32>) {
+    match t.value() {
+        hir::TypeExpr::Var(v) => {
+            let next = out.len() as u32;
+            out.entry(*v.value()).or_insert(next);
+        }
+        hir::TypeExpr::Con(_, args) => args.iter().for_each(|a| collect_tyvars(a, out)),
+        hir::TypeExpr::Fun(ps, r, eff) => {
+            ps.iter().for_each(|p| collect_tyvars(p, out));
+            collect_tyvars(r, out);
+            if let Some(row) = eff {
+                for (_, args) in &row.labels {
+                    args.iter().for_each(|a| collect_tyvars(a, out));
+                }
+                if let Some(tail) = &row.tail {
+                    let next = out.len() as u32;
+                    out.entry(*tail.value()).or_insert(next);
+                }
+            }
+        }
+        hir::TypeExpr::Tuple(ts) => ts.iter().for_each(|x| collect_tyvars(x, out)),
+        hir::TypeExpr::Vector(x) | hir::TypeExpr::List(x) => collect_tyvars(x, out),
+    }
+}
+
+/// Renders several types with **one** variable naming.
+///
+/// `Type`'s `Display` starts a fresh [`Namer`] each time, so two independent
+/// type variables both come out as `a`. That is fine for one type on its own
+/// and misleading for several shown together: `fun snd (a, b) = b` would have
+/// its parameters hinted `(a : a)` and `(b : a)`, which says they are the same
+/// type when nothing has said so.
+///
+/// Sharing the namer across a declaration's types fixes that — the same
+/// variable gets the same letter, and different ones do not.
+#[derive(Default)]
+pub struct Renderer {
+    namer: Namer,
+}
+
+impl Renderer {
+    pub fn new() -> Renderer {
+        Renderer::default()
+    }
+
+    pub fn render(&mut self, ty: &Type) -> String {
+        let mut out = String::new();
+        // Writing into a `String` cannot fail.
+        let _ = Wrapper(&mut out).write_type(ty, &mut self.namer);
+        out
+    }
+}
+
+/// Bridges `write_type`, which wants a `fmt::Formatter`, to a `String`.
+struct Wrapper<'a>(&'a mut String);
+
+impl Wrapper<'_> {
+    fn write_type(&mut self, ty: &Type, namer: &mut Namer) -> fmt::Result {
+        struct Show<'a>(&'a Type, std::cell::RefCell<&'a mut Namer>);
+        impl fmt::Display for Show<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write_type(f, self.0, &mut self.1.borrow_mut(), Prec::Top, &HashSet::new())
+            }
+        }
+        use fmt::Write;
+        write!(self.0, "{}", Show(ty, std::cell::RefCell::new(namer)))
     }
 }

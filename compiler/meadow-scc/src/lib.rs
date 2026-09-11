@@ -140,7 +140,7 @@ pub fn group_module(module: &mut hir::Module) {
 /// The slots of the top-level bindings a binding's body mentions.
 fn mentions(bind: &hir::Bind, owner: &HashMap<VarId, usize>, out: &mut Vec<usize>) {
     match bind {
-        hir::Bind::Fun(_, _, body) => expr_mentions(body, owner, out),
+        hir::Bind::Fun(_, _, _, body) => expr_mentions(body, owner, out),
         hir::Bind::Pat(_, body) => expr_mentions(body, owner, out),
         hir::Bind::Error => {}
     }

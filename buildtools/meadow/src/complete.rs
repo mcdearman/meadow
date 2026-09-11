@@ -222,7 +222,10 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
             match d.value() {
                 hir::Decl::Data(dd) => {
                     n.types.push(dd.name.to_string());
-                    n.ctors.extend(dd.variants.iter().map(|v| v.name.to_string()));
+                    // A variant's name is canonical (`Maybe.Just`); a person
+                    // completing one types the bare spelling.
+                    n.ctors
+                        .extend(dd.variants.iter().map(|v| bare_ctor(&v.name.to_string())));
                 }
                 hir::Decl::Record(rd) => {
                     n.types.push(rd.name.to_string());
@@ -496,5 +499,13 @@ mod tests {
         assert_eq!(word_start("1 + ma", 6), 4);
         assert_eq!(word_start("List.ma", 7), 5);
         assert_eq!(word_start("use Std.", 8), 8);
+    }
+}
+
+/// The bare spelling of a canonical constructor name: `Maybe.Just` -> `Just`.
+fn bare_ctor(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((_, c)) => c.to_string(),
+        None => name.to_string(),
     }
 }

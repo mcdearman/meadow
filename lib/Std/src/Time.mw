@@ -115,6 +115,7 @@ fun pad3 n =
 -- is the property this module exists to provide.
 
 use Std.Test (assertEq, assertTrue)
+use Std.Maybe (Maybe)
 
 @test fun theUnitsConvert u =
   let a = assertEq (seconds 1) 1000 "seconds" in

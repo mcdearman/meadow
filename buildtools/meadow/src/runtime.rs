@@ -83,9 +83,12 @@ pub fn run_tests(
             // each test is simply a different place to start.
             let base = program.defs.len();
             let mut defs = program.defs.clone();
-            for var in tests {
+            for (i, var) in tests.iter().enumerate() {
                 defs.push(core::Def {
-                    var: meadow_compiler::hir::VarId::fresh(),
+                    // Invented after compilation, so it belongs to no unit —
+                    // indexed rather than counted, so the same tests over the
+                    // same program always produce the same image.
+                    var: meadow_compiler::hir::VarId::synthetic(i as u32),
                     name: "<test>".into(),
                     term: core::Term::App(
                         std::sync::Arc::new(core::Term::Var(*var)),

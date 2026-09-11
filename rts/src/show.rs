@@ -23,8 +23,21 @@ use crate::vm::Vm;
 use num_bigint::{BigInt, Sign};
 use std::fmt::Write;
 
+/// A constructor as a reader wants to see it.
+///
+/// The name a value carries is canonical -- `Maybe.Just` -- because two types
+/// may each have a `Leaf` and something has to tell them apart. A person
+/// reading output has the context the qualifier supplies, so printing it would
+/// be noise: `Just(3)`, not `Maybe.Just(3)`.
+fn bare_ctor(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((_, c)) => c,
+        None => name,
+    }
+}
+
 fn is_vector_ctor(name: &str) -> bool {
-    matches!(name, "VEmpty" | "VSingle" | "VFull")
+    matches!(name, "Vector.Empty" | "Vector.Single" | "Vector.Full")
 }
 
 impl Vm<'_> {
@@ -51,8 +64,8 @@ impl Vm<'_> {
             }
             let name = self.program.ctor(self.heap.meta(a))?;
             match (&*name, self.heap.len(a)) {
-                ("Nil", 0) => return Some(out),
-                ("Cons", 2) => {
+                ("List.Nil", 0) => return Some(out),
+                ("List.Cons", 2) => {
                     out.push(self.heap.field(a, 0));
                     cur = self.heap.field(a, 1);
                 }
@@ -70,9 +83,9 @@ impl Vm<'_> {
         let name = self.program.ctor(self.heap.meta(a))?;
         let n = self.heap.len(a);
         match (&*name, n) {
-            ("VEmpty", 0) => Some(Vec::new()),
-            ("VSingle", 1) => self.array_elems(self.heap.field(a, 0)),
-            ("VFull", 7) => {
+            ("Vector.Empty", 0) => Some(Vec::new()),
+            ("Vector.Single", 1) => self.array_elems(self.heap.field(a, 0)),
+            ("Vector.Full", 7) => {
                 let mut out = Vec::new();
                 for i in [2usize, 3] {
                     out.extend(self.array_elems(self.heap.field(a, i))?);
@@ -94,11 +107,11 @@ impl Vm<'_> {
         }
         let name = self.program.ctor(self.heap.meta(a))?;
         match (&*name, self.heap.len(a)) {
-            ("VLeaf", 1) => {
+            ("VNode.Leaf", 1) => {
                 out.extend(self.array_elems(self.heap.field(a, 0))?);
                 Some(())
             }
-            ("VBranch", 2) => {
+            ("VNode.Branch", 2) => {
                 for kid in self.array_elems(self.heap.field(a, 1))? {
                     self.vector_node(kid, out)?;
                 }
@@ -219,14 +232,14 @@ impl Vm<'_> {
                 self.join(out, &self.heap.fields(a), ", ");
                 out.push(')');
             }
-            "Nil" | "Cons" => match self.list_items(v) {
+            "List.Nil" | "List.Cons" => match self.list_items(v) {
                 Some(xs) => {
                     out.push('[');
                     self.join(out, &xs, "; ");
                     out.push(']');
                 }
                 None => {
-                    let _ = write!(out, "{name}(..)");
+                    let _ = write!(out, "{}(..)", bare_ctor(&name));
                 }
             },
             n if is_vector_ctor(n) => match self.vector_elems(v) {
@@ -236,14 +249,14 @@ impl Vm<'_> {
                     out.push(']');
                 }
                 None => {
-                    let _ = write!(out, "{name}(..)");
+                    let _ = write!(out, "{}(..)", bare_ctor(&name));
                 }
             },
             _ if self.heap.len(a) == 0 => {
-                let _ = write!(out, "{name}");
+                let _ = write!(out, "{}", bare_ctor(&name));
             }
             _ => {
-                let _ = write!(out, "{name}(");
+                let _ = write!(out, "{}(", bare_ctor(&name));
                 self.join(out, &self.heap.fields(a), ", ");
                 out.push(')');
             }

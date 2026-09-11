@@ -96,6 +96,7 @@ fun removeRoot l r =
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Maybe (Maybe)
 
 def sample = fromList [5; 3; 8; 1]
 

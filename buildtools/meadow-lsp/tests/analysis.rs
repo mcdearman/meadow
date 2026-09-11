@@ -390,10 +390,17 @@ fn one_std_module_can_reach_another() {
             .1;
         let a = s.analyse_module(i, text);
 
-        // Some name it uses that is defined elsewhere in the library.
+        // Some name it uses that this module does not define.
+        //
+        // Not simply "whose index entry names another source": a `VarId` is
+        // stable per unit, so re-analysing `Vector.mw` mints the very ids the
+        // cached copy has, and a *local* binding is therefore in the index too
+        // — pointing at the cached file rather than at this throwaway one.
+        // That is the ids working; it just is not a cross-module reference.
         let (off, _) = a
             .refs
             .iter()
+            .filter(|(_, v)| !a.defs.contains_key(v))
             .filter_map(|(span, v)| s.definitions().get(v).map(|l| (span.start as usize, *l)))
             .find(|(_, l)| l.source.id != a.source_id)
             .expect("Vector refers to something from another module");
@@ -577,4 +584,204 @@ fn go_to_definition_reaches_a_type_from_a_result_annotation() {
         "got {}",
         loc.source.name()
     );
+}
+
+/// A result hint carries the function's **effect**, not just the type it
+/// returns.
+///
+/// An effect is a property of the arrow, so the body's type does not have it:
+/// `fun logIt x = let _ = println "hi" in x` has a body of type `a` and a type
+/// of `a -> a ! { io | e }`. Hinting the body reads as a claim that the
+/// function is pure, which is worse than not annotating it at all.
+#[test]
+fn a_result_hint_shows_the_effect() {
+    assert_eq!(
+        hinted("fun logIt x = let _ = println \"hi\" in x\n"),
+        "fun logIt (x : a) : a ! { io | b } = let _ = println \"hi\" in x\n"
+    );
+    assert_eq!(
+        hinted("fun bump r = setRef r 1\n"),
+        "fun bump (r : Ref Int) : Unit ! { Mut | a } = setRef r 1\n"
+    );
+    // Shared with a parameter: the result carries whatever `f` does.
+    assert_eq!(
+        hinted("fun apply2 f x = f (f x)\n"),
+        "fun apply2 (f : a -> a ! b) (x : a) : a ! b = f (f x)\n"
+    );
+}
+
+/// A pure function shows no effect at all.
+///
+/// It still *has* a latent effect variable — every arrow does — but one that
+/// is mentioned nowhere else says nothing, and the scheme printer hides it for
+/// the same reason. `Int ! a` on `a + b` would be noise on every line.
+#[test]
+fn a_pure_function_is_not_decorated_with_an_empty_effect() {
+    assert_eq!(
+        hinted("fun add a b = a + b\n"),
+        "fun add (a : Int) (b : Int) : Int = a + b\n"
+    );
+}
+
+// --- a package, not a file ---------------------------------------------------
+
+/// Write a package under a fresh temporary directory and hand back its root.
+///
+/// `files` are `(relative path under src, contents)`. No manifest is written on
+/// purpose in one of the tests below; where there is one, it names the package,
+/// which is what a `use <pkg>.<module>` path starts with.
+fn package(dir: &str, manifest: Option<&str>, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("meadow-lsp-{dir}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    if let Some(m) = manifest {
+        std::fs::write(root.join("meadow.toml"), m).expect("manifest");
+    }
+    for (name, text) in files {
+        let path = root.join("src").join(name);
+        if let Some(p) = path.parent() {
+            std::fs::create_dir_all(p).expect("mkdir");
+        }
+        std::fs::write(path, text).expect("write");
+    }
+    std::fs::canonicalize(&root).unwrap_or(root)
+}
+
+#[test]
+fn a_module_sees_its_siblings_through_a_use() {
+    let root = package(
+        "siblings",
+        Some("[package]\nname = \"demo\"\n"),
+        &[
+            (
+                "Syntax.mw",
+                "@pub data Expr = Int Int | Add Expr Expr\n@pub fun zero u = Expr.Int 0\n",
+            ),
+            (
+                "Eval.mw",
+                "use demo.Syntax (Expr)\n\n@pub fun eval e = match e with\n  | Int n -> n\n  | Add a b -> eval a + eval b\n",
+            ),
+            ("main.mw", "use demo.Eval (eval)\ndef main = eval (Expr.Int 1)\n"),
+        ],
+    );
+    let file = root.join("src").join("Eval.mw");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let sources = meadow::editor::load_package(&file).expect("a package");
+    let a = STD
+        .with(|s| s.analyse_package(&sources, &file, &text))
+        .expect("analysis");
+    let msgs: Vec<&str> = a.diagnostics.iter().map(|d| d.msg.as_str()).collect();
+    assert!(msgs.is_empty(), "a `use` of a sibling was not resolved: {msgs:?}");
+}
+
+#[test]
+fn only_this_documents_diagnostics_are_reported() {
+    let root = package(
+        "diags",
+        Some("[package]\nname = \"demo\"\n"),
+        &[
+            ("Broken.mw", "@pub fun oops x = nosuchthing x\n"),
+            ("main.mw", "def main = 1\n"),
+        ],
+    );
+    let file = root.join("src").join("main.mw");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let sources = meadow::editor::load_package(&file).expect("a package");
+    let a = STD
+        .with(|s| s.analyse_package(&sources, &file, &text))
+        .expect("analysis");
+    let msgs: Vec<&str> = a.diagnostics.iter().map(|d| d.msg.as_str()).collect();
+    assert!(msgs.is_empty(), "another file's error landed here: {msgs:?}");
+
+    // ...and the file that *is* broken still says so.
+    let broken = root.join("src").join("Broken.mw");
+    let text = std::fs::read_to_string(&broken).unwrap();
+    let sources = meadow::editor::load_package(&broken).expect("a package");
+    let a = STD
+        .with(|s| s.analyse_package(&sources, &broken, &text))
+        .expect("analysis");
+    let msgs: Vec<&str> = a.diagnostics.iter().map(|d| d.msg.as_str()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("nosuchthing")),
+        "the broken file reported nothing: {msgs:?}"
+    );
+}
+
+#[test]
+fn go_to_definition_crosses_to_another_module_of_the_package() {
+    let root = package(
+        "goto",
+        Some("[package]\nname = \"demo\"\n"),
+        &[
+            ("Syntax.mw", "@pub data Expr = Int Int\n@pub fun zero u = Expr.Int 0\n"),
+            ("main.mw", "use demo.Syntax (Expr, zero)\ndef main = zero ()\n"),
+        ],
+    );
+    let file = root.join("src").join("main.mw");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let sources = meadow::editor::load_package(&file).expect("a package");
+    let a = STD
+        .with(|s| s.analyse_package(&sources, &file, &text))
+        .expect("analysis");
+    let offset = text.find("zero ()").expect("the call") + 1;
+    let loc = a
+        .definition_at(offset, &Default::default(), &Default::default())
+        .expect("a definition");
+    assert_ne!(
+        loc.source.id, a.source_id,
+        "the definition should be in the other file"
+    );
+    let name = loc.source.name().to_string();
+    assert!(name.ends_with("Syntax.mw"), "landed in {name}");
+}
+
+#[test]
+fn a_file_outside_a_package_is_still_analysed_alone() {
+    let stray = std::env::temp_dir().join(format!("meadow-stray-{}.mw", std::process::id()));
+    std::fs::write(&stray, "def main = 1\n").expect("write");
+    assert!(
+        meadow::editor::load_package(&stray).is_none(),
+        "a file with no package around it should not find one"
+    );
+}
+
+#[test]
+fn the_mini_ml_example_is_clean_in_an_editor() {
+    // The example that prompted all of this: five modules, each importing the
+    // others' types. Analysed one file at a time it was a screen of red.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/mini-ml/src");
+    for name in ["Syntax.mw", "Parser.mw", "Infer.mw", "Eval.mw", "main.mw"] {
+        let file = std::fs::canonicalize(root.join(name)).expect("the example");
+        let text = std::fs::read_to_string(&file).unwrap();
+        let sources = meadow::editor::load_package(&file).expect("a package");
+        let a = STD
+            .with(|s| s.analyse_package(&sources, &file, &text))
+            .expect("analysis");
+        let msgs: Vec<&str> = a.diagnostics.iter().map(|d| d.msg.as_str()).collect();
+        assert!(msgs.is_empty(), "{name}: {msgs:?}");
+    }
+}
+
+
+#[test]
+fn a_bad_use_is_reported_in_the_file_that_wrote_it() {
+    let root = package(
+        "baduse",
+        Some("[package]\nname = \"demo\"\n"),
+        &[
+            ("Other.mw", "use demo.Nowhere (thing)\n@pub def n = 1\n"),
+            ("main.mw", "def main = 1\n"),
+        ],
+    );
+    for (name, wanted) in [("main.mw", false), ("Other.mw", true)] {
+        let file = root.join("src").join(name);
+        let text = std::fs::read_to_string(&file).unwrap();
+        let sources = meadow::editor::load_package(&file).expect("a package");
+        let a = STD
+            .with(|s| s.analyse_package(&sources, &file, &text))
+            .expect("analysis");
+        let said = a.diagnostics.iter().any(|d| d.msg.contains("no module"));
+        assert_eq!(said, wanted, "{name}: {:?}", a.diagnostics.iter().map(|d| &d.msg).collect::<Vec<_>>());
+    }
 }

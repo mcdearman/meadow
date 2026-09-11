@@ -2,8 +2,8 @@
 --
 -- This is what `[1, 2, 3]` literal syntax builds. The design follows `im::Vector`:
 --
---   * a small-vector repr (`VSingle`) while the whole vector fits in one chunk,
---   * a big repr (`VFull`) with two-level front and back side buffers
+--   * a small-vector repr (`Single`) while the whole vector fits in one chunk,
+--   * a big repr (`Full`) with two-level front and back side buffers
 --     (`outerF`/`innerF` ... `innerB`/`outerB`) around an RRB middle tree, giving
 --     amortised O(1) push/pop at both ends,
 --   * middle-tree branches that are *balanced* (radix indexing, `sizes = None`)
@@ -50,27 +50,27 @@ fun vaFoldr f z xs =
 
 -- --- representation ------------------------------------------------------
 
--- A middle-tree node. `VBranch None` is radix-balanced; `VBranch (Just s)` is
+-- A middle-tree node. `Branch None` is radix-balanced; `Branch (Just s)` is
 -- relaxed and `s` holds cumulative child sizes.
 @pub data VNode a
-  = VLeaf (Array a)
-  | VBranch (Maybe (Array Int)) (Array (VNode a))
+  = Leaf (Array a)
+  | Branch (Maybe (Array Int)) (Array (VNode a))
 
--- fields of VFull: len, shift, outerF, innerF, mid, innerB, outerB
+-- fields of Full: len, shift, outerF, innerF, mid, innerB, outerB
 @pub data Vector a
-  = VEmpty
-  | VSingle (Array a)
-  | VFull Int Int (Array a) (Array a) (VNode a) (Array a) (Array a)
+  = Empty
+  | Single (Array a)
+  | Full Int Int (Array a) (Array a) (VNode a) (Array a) (Array a)
 
-def vEmptyNode = VBranch None #[]
+def vEmptyNode = Branch None #[]
 
 -- max elements a fully-balanced subtree rooted at `shift` can hold
 fun vNodeCap shift = 1 << (shift + vBits)
 
 fun vNodeLen shift node =
   match node with
-  | VLeaf xs -> arrayLen xs
-  | VBranch szs kids ->
+  | Leaf xs -> arrayLen xs
+  | Branch szs kids ->
       match szs with
       | Just s -> if arrayLen s == 0 then 0 else vaLast s
       | None ->
@@ -92,8 +92,8 @@ fun vSizesOf shift kids =
 
 fun vNodeIndex shift node i =
   match node with
-  | VLeaf xs -> arrayGet xs i
-  | VBranch szs kids ->
+  | Leaf xs -> arrayGet xs i
+  | Branch szs kids ->
       match szs with
       | None ->
           let slot = i >> shift in
@@ -106,19 +106,19 @@ fun vNodeIndex shift node i =
 
 fun vNodeUpdate shift node i x =
   match node with
-  | VLeaf xs -> VLeaf (arraySet xs i x)
-  | VBranch szs kids ->
+  | Leaf xs -> Leaf (arraySet xs i x)
+  | Branch szs kids ->
       match szs with
       | None ->
           let slot = i >> shift in
           let k2 = vNodeUpdate (shift - vBits) (arrayGet kids slot) (i - (slot << shift)) x in
-          VBranch None (arraySet kids slot k2)
+          Branch None (arraySet kids slot k2)
       | Just s ->
           let rec find k = if arrayGet s k > i then k else find (k + 1) in
           let slot = find 0 in
           let sub = if slot == 0 then i else i - arrayGet s (slot - 1) in
           let k2 = vNodeUpdate (shift - vBits) (arrayGet kids slot) sub x in
-          VBranch (Just s) (arraySet kids slot k2)
+          Branch (Just s) (arraySet kids slot k2)
 
 -- --- bulk build ------------------------------------------------------
 
@@ -128,7 +128,7 @@ fun vLeavesOf xs =
     if i >= n then acc
     else
       let j = if i + vWidth < n then i + vWidth else n in
-      go j (arrayPush acc (VLeaf (arraySlice xs i j)))
+      go j (arrayPush acc (Leaf (arraySlice xs i j)))
   in go 0 #[]
 
 fun vGroup nodes =
@@ -137,78 +137,78 @@ fun vGroup nodes =
     if i >= n then acc
     else
       let j = if i + vWidth < n then i + vWidth else n in
-      go j (arrayPush acc (VBranch None (arraySlice nodes i j)))
+      go j (arrayPush acc (Branch None (arraySlice nodes i j)))
   in go 0 #[]
 
 -- returns (shift, node); `xs` must be non-empty
 fun vBuildTree xs =
   let ls = vLeavesOf xs in
   let rec up level nodes =
-    if arrayLen nodes <= vWidth then (level, VBranch None nodes)
+    if arrayLen nodes <= vWidth then (level, Branch None nodes)
     else up (level + vBits) (vGroup nodes)
   in up vBits ls
 
 fun vNodeToArray node =
   match node with
-  | VLeaf xs -> xs
-  | VBranch szs kids -> vaFoldl (\acc k -> arrayConcat acc (vNodeToArray k)) #[] kids
+  | Leaf xs -> xs
+  | Branch szs kids -> vaFoldl (\acc k -> arrayConcat acc (vNodeToArray k)) #[] kids
 
 -- --- append a full chunk at the bottom-right --------------------------
 
 fun vNewSpine shift chunk =
-  if shift == 0 then VLeaf chunk
-  else VBranch None #[vNewSpine (shift - vBits) chunk]
+  if shift == 0 then Leaf chunk
+  else Branch None #[vNewSpine (shift - vBits) chunk]
 
 -- precondition: there is room for another `vWidth` chunk under `node`
 fun vAppendChunk shift node chunk =
   match node with
-  | VLeaf _ -> node
-  | VBranch szs kids ->
+  | Leaf _ -> node
+  | Branch szs kids ->
       if shift == vBits then
-        let kids2 = arrayPush kids (VLeaf chunk) in
+        let kids2 = arrayPush kids (Leaf chunk) in
         match szs with
-        | None -> VBranch None kids2
-        | Just _ -> VBranch (Just (vSizesOf shift kids2)) kids2
+        | None -> Branch None kids2
+        | Just _ -> Branch (Just (vSizesOf shift kids2)) kids2
       else
         let lst = vaLast kids in
         let room = vNodeLen (shift - vBits) lst + vWidth <= vNodeCap (shift - vBits) in
         if room then
           let kids2 = vaSetLast kids (vAppendChunk (shift - vBits) lst chunk) in
           match szs with
-          | None -> VBranch None kids2
-          | Just _ -> VBranch (Just (vSizesOf shift kids2)) kids2
+          | None -> Branch None kids2
+          | Just _ -> Branch (Just (vSizesOf shift kids2)) kids2
         else
           let kids2 = arrayPush kids (vNewSpine (shift - vBits) chunk) in
           match szs with
-          | None -> VBranch None kids2
-          | Just _ -> VBranch (Just (vSizesOf shift kids2)) kids2
+          | None -> Branch None kids2
+          | Just _ -> Branch (Just (vSizesOf shift kids2)) kids2
 
 -- (newShift, newNode) -- grows the root when full
 fun vPushChunkBack shift node chunk =
   if vNodeLen shift node + vWidth <= vNodeCap shift
   then (shift, vAppendChunk shift node chunk)
   else
-    let root = VBranch None #[node] in
+    let root = Branch None #[node] in
     (shift + vBits, vAppendChunk (shift + vBits) root chunk)
 
 -- remove the rightmost leaf; returns (chunk, newNode)
 fun vPopChunkBack shift node =
   match node with
-  | VLeaf xs -> (xs, vEmptyNode)
-  | VBranch szs kids ->
+  | Leaf xs -> (xs, vEmptyNode)
+  | Branch szs kids ->
       if shift == vBits then
-        let chunk = match vaLast kids with | VLeaf xs -> xs | VBranch _ _ -> #[] in
-        (chunk, VBranch None (vaInit kids))
+        let chunk = match vaLast kids with | Leaf xs -> xs | Branch _ _ -> #[] in
+        (chunk, Branch None (vaInit kids))
       else
         let (chunk, last2) = vPopChunkBack (shift - vBits) (vaLast kids) in
         if vNodeLen (shift - vBits) last2 == 0
-        then (chunk, VBranch None (vaInit kids))
-        else (chunk, VBranch None (vaSetLast kids last2))
+        then (chunk, Branch None (vaInit kids))
+        else (chunk, Branch None (vaSetLast kids last2))
 
 fun vShrinkRoot shift node =
   match node with
-  | VLeaf _ -> (shift, node)
-  | VBranch szs kids ->
+  | Leaf _ -> (shift, node)
+  | Branch szs kids ->
       if shift > vBits then
         if arrayLen kids == 1 then vShrinkRoot (shift - vBits) (arrayGet kids 0)
         else (shift, node)
@@ -218,57 +218,57 @@ fun vShrinkRoot shift node =
 
 fun vPrependChunk shift node chunk =
   match node with
-  | VLeaf _ -> node
-  | VBranch szs kids ->
+  | Leaf _ -> node
+  | Branch szs kids ->
       if shift == vBits then
-        let kids2 = arrayConcat #[VLeaf chunk] kids in
-        VBranch (Just (vSizesOf shift kids2)) kids2
+        let kids2 = arrayConcat #[Leaf chunk] kids in
+        Branch (Just (vSizesOf shift kids2)) kids2
       else
         let fst0 = arrayGet kids 0 in
         let room = vNodeLen (shift - vBits) fst0 + vWidth <= vNodeCap (shift - vBits) in
         if room then
           let kids2 = arraySet kids 0 (vPrependChunk (shift - vBits) fst0 chunk) in
-          VBranch (Just (vSizesOf shift kids2)) kids2
+          Branch (Just (vSizesOf shift kids2)) kids2
         else
           let kids2 = arrayConcat #[vNewSpine (shift - vBits) chunk] kids in
-          VBranch (Just (vSizesOf shift kids2)) kids2
+          Branch (Just (vSizesOf shift kids2)) kids2
 
 fun vPushChunkFront shift node chunk =
   if vNodeLen shift node + vWidth <= vNodeCap shift
   then (shift, vPrependChunk shift node chunk)
   else
-    let root = VBranch None #[node] in
+    let root = Branch None #[node] in
     (shift + vBits, vPrependChunk (shift + vBits) root chunk)
 
 -- --- constructors -----------------------------------------------------
 
-@pub def empty = VEmpty
+@pub def empty = Empty
 
-@pub fun singleton x = VSingle #[x]
+@pub fun singleton x = Single #[x]
 
 @pub fun fromArray xs =
   let n = arrayLen xs in
-  if n == 0 then VEmpty
-  else if n <= vWidth then VSingle xs
+  if n == 0 then Empty
+  else if n <= vWidth then Single xs
   else
     let (sh, tree) = vBuildTree xs in
-    VFull n sh #[] #[] tree #[] #[]
+    Full n sh #[] #[] tree #[] #[]
 
 -- --- observation ----------------------------------------------------
 
 @pub fun len v =
   match v with
-  | VEmpty -> 0
-  | VSingle xs -> arrayLen xs
-  | VFull len sh oF iF mid iB oB -> len
+  | Empty -> 0
+  | Single xs -> arrayLen xs
+  | Full len sh oF iF mid iB oB -> len
 
 @pub fun isEmpty v = len v == 0
 
 fun getU v i =
   match v with
-  | VEmpty -> arrayGet #[] 0
-  | VSingle xs -> arrayGet xs i
-  | VFull len sh oF iF mid iB oB ->
+  | Empty -> arrayGet #[] 0
+  | Single xs -> arrayGet xs i
+  | Full len sh oF iF mid iB oB ->
       let a = arrayLen oF in
       if i < a then arrayGet oF i
       else
@@ -303,118 +303,118 @@ fun getU v i =
   if i < 0 then v
   else if i >= len v then v
   else match v with
-  | VEmpty -> v
-  | VSingle xs -> VSingle (arraySet xs i x)
-  | VFull len sh oF iF mid iB oB ->
+  | Empty -> v
+  | Single xs -> Single (arraySet xs i x)
+  | Full len sh oF iF mid iB oB ->
       let a = arrayLen oF in
-      if i < a then VFull len sh (arraySet oF i x) iF mid iB oB
+      if i < a then Full len sh (arraySet oF i x) iF mid iB oB
       else
         let i1 = i - a in
         let b = arrayLen iF in
-        if i1 < b then VFull len sh oF (arraySet iF i1 x) mid iB oB
+        if i1 < b then Full len sh oF (arraySet iF i1 x) mid iB oB
         else
           let i2 = i1 - b in
           let m = vNodeLen sh mid in
-          if i2 < m then VFull len sh oF iF (vNodeUpdate sh mid i2 x) iB oB
+          if i2 < m then Full len sh oF iF (vNodeUpdate sh mid i2 x) iB oB
           else
             let i3 = i2 - m in
             let c = arrayLen iB in
-            if i3 < c then VFull len sh oF iF mid (arraySet iB i3 x) oB
-            else VFull len sh oF iF mid iB (arraySet oB (i3 - c) x)
+            if i3 < c then Full len sh oF iF mid (arraySet iB i3 x) oB
+            else Full len sh oF iF mid iB (arraySet oB (i3 - c) x)
 
 -- --- push / pop back ------------------------------------------------
 
 @pub fun pushBack v x =
   match v with
-  | VEmpty -> VSingle #[x]
-  | VSingle xs ->
-      if arrayLen xs < vWidth then VSingle (arrayPush xs x)
-      else VFull (vWidth + 1) vBits xs #[] vEmptyNode #[] #[x]
-  | VFull len sh oF iF mid iB oB ->
-      if arrayLen oB < vWidth then VFull (len + 1) sh oF iF mid iB (arrayPush oB x)
-      else if arrayLen iB == 0 then VFull (len + 1) sh oF iF mid oB #[x]
+  | Empty -> Single #[x]
+  | Single xs ->
+      if arrayLen xs < vWidth then Single (arrayPush xs x)
+      else Full (vWidth + 1) vBits xs #[] vEmptyNode #[] #[x]
+  | Full len sh oF iF mid iB oB ->
+      if arrayLen oB < vWidth then Full (len + 1) sh oF iF mid iB (arrayPush oB x)
+      else if arrayLen iB == 0 then Full (len + 1) sh oF iF mid oB #[x]
       else
         let (sh2, mid2) = vPushChunkBack sh mid iB in
-        VFull (len + 1) sh2 oF iF mid2 oB #[x]
+        Full (len + 1) sh2 oF iF mid2 oB #[x]
 
 fun vNormalize v =
   match v with
-  | VEmpty -> VEmpty
-  | VSingle xs -> if arrayLen xs == 0 then VEmpty else v
-  | VFull len sh oF iF mid iB oB ->
-      if len == 0 then VEmpty
+  | Empty -> Empty
+  | Single xs -> if arrayLen xs == 0 then Empty else v
+  | Full len sh oF iF mid iB oB ->
+      if len == 0 then Empty
       else if len <= vWidth and vNodeLen sh mid == 0
-      then VSingle (arrayConcat (arrayConcat (arrayConcat (arrayConcat oF iF) #[]) iB) oB)
+      then Single (arrayConcat (arrayConcat (arrayConcat (arrayConcat oF iF) #[]) iB) oB)
       else v
 
 @pub fun popBack v =
   match v with
-  | VEmpty -> VEmpty
-  | VSingle xs -> vNormalize (VSingle (vaInit xs))
-  | VFull len sh oF iF mid iB oB ->
-      if arrayLen oB > 0 then vNormalize (VFull (len - 1) sh oF iF mid iB (vaInit oB))
-      else if arrayLen iB > 0 then vNormalize (VFull (len - 1) sh oF iF mid (vaInit iB) #[])
+  | Empty -> Empty
+  | Single xs -> vNormalize (Single (vaInit xs))
+  | Full len sh oF iF mid iB oB ->
+      if arrayLen oB > 0 then vNormalize (Full (len - 1) sh oF iF mid iB (vaInit oB))
+      else if arrayLen iB > 0 then vNormalize (Full (len - 1) sh oF iF mid (vaInit iB) #[])
       else if vNodeLen sh mid > 0 then
         let (chunk, mid2) = vPopChunkBack sh mid in
         let (sh2, mid3) = vShrinkRoot sh mid2 in
-        vNormalize (VFull (len - 1) sh2 oF iF mid3 #[] (vaInit chunk))
-      else if arrayLen iF > 0 then vNormalize (VFull (len - 1) sh oF (vaInit iF) mid #[] #[])
-      else vNormalize (VFull (len - 1) sh (vaInit oF) #[] mid #[] #[])
+        vNormalize (Full (len - 1) sh2 oF iF mid3 #[] (vaInit chunk))
+      else if arrayLen iF > 0 then vNormalize (Full (len - 1) sh oF (vaInit iF) mid #[] #[])
+      else vNormalize (Full (len - 1) sh (vaInit oF) #[] mid #[] #[])
 
 -- --- push / pop front -----------------------------------------------
 
 @pub fun pushFront v x =
   match v with
-  | VEmpty -> VSingle #[x]
-  | VSingle xs ->
-      if arrayLen xs < vWidth then VSingle (arrayConcat #[x] xs)
-      else VFull (vWidth + 1) vBits #[x] #[] vEmptyNode #[] xs
-  | VFull len sh oF iF mid iB oB ->
-      if arrayLen oF < vWidth then VFull (len + 1) sh (arrayConcat #[x] oF) iF mid iB oB
-      else if arrayLen iF == 0 then VFull (len + 1) sh #[x] oF mid iB oB
+  | Empty -> Single #[x]
+  | Single xs ->
+      if arrayLen xs < vWidth then Single (arrayConcat #[x] xs)
+      else Full (vWidth + 1) vBits #[x] #[] vEmptyNode #[] xs
+  | Full len sh oF iF mid iB oB ->
+      if arrayLen oF < vWidth then Full (len + 1) sh (arrayConcat #[x] oF) iF mid iB oB
+      else if arrayLen iF == 0 then Full (len + 1) sh #[x] oF mid iB oB
       else
         let (sh2, mid2) = vPushChunkFront sh mid iF in
-        VFull (len + 1) sh2 #[x] oF mid2 iB oB
+        Full (len + 1) sh2 #[x] oF mid2 iB oB
 
 fun vPopChunkFront shift node =
   match node with
-  | VLeaf xs -> (xs, vEmptyNode)
-  | VBranch szs kids ->
+  | Leaf xs -> (xs, vEmptyNode)
+  | Branch szs kids ->
       if shift == vBits then
-        let chunk = match arrayGet kids 0 with | VLeaf xs -> xs | VBranch _ _ -> #[] in
+        let chunk = match arrayGet kids 0 with | Leaf xs -> xs | Branch _ _ -> #[] in
         let rest = arraySlice kids 1 (arrayLen kids) in
-        (chunk, VBranch (Just (vSizesOf shift rest)) rest)
+        (chunk, Branch (Just (vSizesOf shift rest)) rest)
       else
         let (chunk, first2) = vPopChunkFront (shift - vBits) (arrayGet kids 0) in
         if vNodeLen (shift - vBits) first2 == 0
         then
           let rest = arraySlice kids 1 (arrayLen kids) in
-          (chunk, VBranch (Just (vSizesOf shift rest)) rest)
+          (chunk, Branch (Just (vSizesOf shift rest)) rest)
         else
           let kids2 = arraySet kids 0 first2 in
-          (chunk, VBranch (Just (vSizesOf shift kids2)) kids2)
+          (chunk, Branch (Just (vSizesOf shift kids2)) kids2)
 
 @pub fun popFront v =
   match v with
-  | VEmpty -> VEmpty
-  | VSingle xs -> vNormalize (VSingle (arraySlice xs 1 (arrayLen xs)))
-  | VFull len sh oF iF mid iB oB ->
-      if arrayLen oF > 0 then vNormalize (VFull (len - 1) sh (arraySlice oF 1 (arrayLen oF)) iF mid iB oB)
-      else if arrayLen iF > 0 then vNormalize (VFull (len - 1) sh (arraySlice iF 1 (arrayLen iF)) #[] mid iB oB)
+  | Empty -> Empty
+  | Single xs -> vNormalize (Single (arraySlice xs 1 (arrayLen xs)))
+  | Full len sh oF iF mid iB oB ->
+      if arrayLen oF > 0 then vNormalize (Full (len - 1) sh (arraySlice oF 1 (arrayLen oF)) iF mid iB oB)
+      else if arrayLen iF > 0 then vNormalize (Full (len - 1) sh (arraySlice iF 1 (arrayLen iF)) #[] mid iB oB)
       else if vNodeLen sh mid > 0 then
         let (chunk, mid2) = vPopChunkFront sh mid in
         let (sh2, mid3) = vShrinkRoot sh mid2 in
-        vNormalize (VFull (len - 1) sh2 (arraySlice chunk 1 (arrayLen chunk)) #[] mid3 iB oB)
-      else if arrayLen iB > 0 then vNormalize (VFull (len - 1) sh (arraySlice iB 1 (arrayLen iB)) #[] mid #[] oB)
-      else vNormalize (VFull (len - 1) sh (arraySlice oB 1 (arrayLen oB)) #[] mid #[] #[])
+        vNormalize (Full (len - 1) sh2 (arraySlice chunk 1 (arrayLen chunk)) #[] mid3 iB oB)
+      else if arrayLen iB > 0 then vNormalize (Full (len - 1) sh (arraySlice iB 1 (arrayLen iB)) #[] mid #[] oB)
+      else vNormalize (Full (len - 1) sh (arraySlice oB 1 (arrayLen oB)) #[] mid #[] #[])
 
 -- --- conversion ---------------------------------------------------
 
 @pub fun toArray v =
   match v with
-  | VEmpty -> #[]
-  | VSingle xs -> xs
-  | VFull len sh oF iF mid iB oB ->
+  | Empty -> #[]
+  | Single xs -> xs
+  | Full len sh oF iF mid iB oB ->
       arrayConcat (arrayConcat (arrayConcat (arrayConcat oF iF) (vNodeToArray mid)) iB) oB
 
 @pub fun fromList xs =
@@ -433,9 +433,9 @@ fun vPopChunkFront shift node =
 
 @pub fun append l r =
   match l with
-  | VEmpty -> r
-  | VSingle _ -> vaFoldl (\v x -> pushBack v x) l (toArray r)
-  | VFull _ _ _ _ _ _ _ -> vaFoldl (\v x -> pushBack v x) l (toArray r)
+  | Empty -> r
+  | Single _ -> vaFoldl (\v x -> pushBack v x) l (toArray r)
+  | Full _ _ _ _ _ _ _ -> vaFoldl (\v x -> pushBack v x) l (toArray r)
 
 @pub fun splitAt v n =
   let xs = toArray v in
@@ -452,14 +452,14 @@ fun vPopChunkFront shift node =
 
 @pub fun map f v =
   match v with
-  | VEmpty -> VEmpty
-  | VSingle xs -> VSingle (vaMap f xs)
-  | VFull len sh oF iF mid iB oB ->
+  | Empty -> Empty
+  | Single xs -> Single (vaMap f xs)
+  | Full len sh oF iF mid iB oB ->
       let rec mapNode node =
         match node with
-        | VLeaf xs -> VLeaf (vaMap f xs)
-        | VBranch szs kids -> VBranch szs (vaMap mapNode kids)
-      in VFull len sh (vaMap f oF) (vaMap f iF) (mapNode mid) (vaMap f iB) (vaMap f oB)
+        | Leaf xs -> Leaf (vaMap f xs)
+        | Branch szs kids -> Branch szs (vaMap mapNode kids)
+      in Full len sh (vaMap f oF) (vaMap f iF) (mapNode mid) (vaMap f iB) (vaMap f oB)
 
 @pub fun foldl f z v = vaFoldl f z (toArray v)
 
@@ -557,6 +557,7 @@ fun vPopChunkFront shift node =
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Maybe (Maybe)
 
 @test fun buildingAndObserving u =
   let a = assertEq (len empty) 0 "len of empty" in
@@ -581,7 +582,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   assertEq (toList (popFront [1, 2, 3])) [2; 3] "popFront"
 
 @test fun anEmptiedVectorIsTheEmptyVector u =
-  -- `[]` is the `VEmpty` pattern, and the library keeps that the only shape an
+  -- `[]` is the `Empty` pattern, and the library keeps that the only shape an
   -- empty vector can take -- every path that empties one has to normalise.
   let a = assertTrue (isEmpty (popBack [1])) "popBack to empty" in
   let b = assertTrue (isEmpty (popFront [1])) "popFront to empty" in

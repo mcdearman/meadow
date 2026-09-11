@@ -91,6 +91,8 @@ fun absurd u = arrayGet #[] 0
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Maybe (Maybe)
+use Std.Result (Result)
 
 fun half n = if n % 2 == 0 then n / 2 else raise "odd"
 

@@ -174,7 +174,7 @@ fn the_axcut_machine_agrees_too() {
 /// A program whose entry point calls `test` with `()`, which is what the test
 /// runner does.
 fn calling(program: &core::Program, test: core::Var) -> core::Program {
-    let entry = meadow_compiler::hir::VarId::fresh();
+    let entry = meadow_compiler::hir::VarId::synthetic(0);
     let mut defs = program.defs.clone();
     defs.push(core::Def {
         var: entry,

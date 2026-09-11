@@ -4,9 +4,8 @@
 //! recursive ones handed to it together. This pass works that out at two scales,
 //! both with Tarjan's algorithm over a "mentions" graph:
 //!
-//! * [`module_order`] sorts the *modules* of a unit, since a unit's modules share
-//!   one flat scope and are discovered in alphabetical order, which has nothing
-//!   to do with what depends on what.
+//! * [`module_order`] sorts the *modules* of a unit, since they are discovered
+//!   in alphabetical order, which has nothing to do with what depends on what.
 //! * [`group_module`] sorts the *bindings* inside one module and records a
 //!   [`hir::BindGroup`] per strongly connected component.
 //!
@@ -32,10 +31,11 @@ use std::collections::HashMap;
 /// Dependency order for the modules of one compilation unit, as a permutation:
 /// the module to place `k`th is `module_order(..)[k]`.
 ///
-/// A unit's modules are resolved together into one flat scope, so a module can
-/// name a sibling's bindings without a `use` and two modules may be mutually
-/// recursive. Mutually recursive modules keep their source order relative to one
-/// another — there is no better answer, and source order is the predictable one.
+/// A unit's modules are resolved together — each in its own namespace, but
+/// against one shared pool of ids — so a module may `use` a sibling declared
+/// after it and two modules may be mutually recursive. Mutually recursive
+/// modules keep their source order relative to one another: there is no better
+/// answer, and source order is the predictable one.
 pub fn module_order<'a>(modules: impl IntoIterator<Item = &'a hir::Module>) -> Vec<usize> {
     let modules: Vec<&hir::Module> = modules.into_iter().collect();
 

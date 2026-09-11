@@ -1,0 +1,147 @@
+-- Source text to `Expr`, with `Std.String.Parse`.
+--
+-- The input is a `Vector` of *bytes*, which is what `P.fromString` hands over,
+-- so a "character" here is a byte and the grammar is ASCII. That is a real
+-- limitation and a deliberate one: a toy that handled UTF-8 identifiers would
+-- spend more lines on text than on types.
+--
+-- Every token parser eats its trailing whitespace (`tok` below), so the grammar
+-- never mentions spaces again. The one place that needs care is keywords:
+-- `chunk` is atomic, but `let` is also a prefix of `letter`, so `keyword` checks
+-- that what follows is not another identifier byte.
+
+-- The tree this parser builds, from the package's own `Syntax` module. Its
+-- constructors are written `Expr.Int` and so on: `Expr` and `Ty` both have an
+-- `Int`, and qualifying says which.
+use Syntax (Expr)
+use Std.String.Parse as P
+use Std.String as S
+use Std.Collections.Vector as V
+use Std.Collections.List as L
+use Std.Maybe (Maybe, Just, None, unwrapOr)
+use Std.Result (Result, Ok, Err)
+use Std.Bool (not)
+
+-- --- bytes ---------------------------------------------------------------
+
+fun isDigitB c = c >= 48 and c <= 57
+fun isLowerB c = c >= 97 and c <= 122
+fun isUpperB c = c >= 65 and c <= 90
+fun isAlphaB c = isLowerB c or isUpperB c
+fun isIdentStart c = isAlphaB c or c == 95
+fun isIdentByte c = isIdentStart c or isDigitB c
+fun isSpaceB c = c == 32 or c == 9 or c == 10 or c == 13
+
+def spaces = P.takeWhileP isSpaceB
+
+-- A token: the thing, then any whitespace after it.
+fun tok p = P.thenSkip p spaces
+
+fun symbol s = tok (P.chunk (P.fromString s))
+
+-- A keyword is a chunk that is not the start of a longer identifier, so `let`
+-- does not match the first three bytes of `letter`.
+fun keyword s =
+  tok (P.try (P.thenSkip (P.chunk (P.fromString s))
+                         (P.notFollowedBy (P.satisfy isIdentByte))))
+
+def reserved = ["let"; "rec"; "in"; "fun"; "if"; "then"; "else"; "true"; "false"]
+
+-- An identifier, refusing the reserved words so `let` cannot be a variable.
+--
+-- Wrapped in `try` for a reason worth understanding: the reserved check happens
+-- *after* the bytes are consumed, so without it `ident` fails on `in` having
+-- already eaten it -- and a consumed failure is not something `many` or `alt`
+-- will back out of. `try` un-consumes, which turns "this is a keyword" back
+-- into "this is not an identifier, look elsewhere".
+def ident =
+  P.try (P.bind (tok (P.lift2 (\c cs -> V.pushFront cs c)
+                       (P.satisfy isIdentStart)
+                       (P.takeWhileP isIdentByte)))
+         (\bytes ->
+           let name = S.fromBytes (V.toArray bytes) in
+            if L.elem name reserved then P.fail "an identifier" else P.pure name))
+
+def intLit =
+  P.map (\bytes -> Expr.Int (unwrapOr 0 (S.toInt (S.fromBytes (V.toArray bytes)))))
+        (tok (P.takeWhile1P "a number" isDigitB))
+
+def boolLit =
+  P.alt (P.map (\u -> Expr.Bool True) (keyword "true"))
+        (P.map (\u -> Expr.Bool False) (keyword "false"))
+
+-- --- the grammar ----------------------------------------------------------
+--
+-- Layered by precedence, loosest first. Each layer `defer`s to the next so the
+-- recursion is built lazily -- without `defer` these definitions would be a
+-- cycle of values rather than of functions, and evaluating one would not
+-- terminate.
+
+-- `f x y` -- application binds tightest and associates left.
+fun appE u =
+  P.bind (P.defer atomE)
+         (\f -> P.bind (P.many (P.defer atomE))
+                       (\args -> P.pure (V.foldl (\g a -> Expr.App g a) f args)))
+
+-- A chain of left-associative binary operators at one precedence level.
+fun binaryE ops next =
+  P.bind (P.defer next)
+         (\first ->
+           P.bind (P.many (P.lift2 (\o r -> (o, r))
+                                    (P.choice (V.map (\o -> P.map (\u -> o) (symbol o)) ops))
+                                    (P.defer next)))
+                   (\rest -> P.pure (V.foldl (\l p -> Expr.Bin (fst p) l (snd p)) first rest)))
+
+fun mulE u = binaryE ["*", "/"] appE
+fun addE u = binaryE ["+", "-"] mulE
+fun cmpE u = binaryE ["==", "<=", ">=", "<", ">"] addE
+
+fun atomE u =
+  P.choice
+    [ intLit
+      , boolLit
+      , P.map (\n -> Expr.Var n) ident
+      , P.between (symbol "(") (symbol ")") (P.defer exprE)
+    ]
+
+-- `fun x y -> e` is sugar for `fun x -> fun y -> e`.
+fun lamE u =
+  P.bind (P.skipThen (keyword "fun") (P.some ident))
+         (\names ->
+           P.bind (P.skipThen (symbol "->") (P.defer exprE))
+                   (\body -> P.pure (V.foldr (\n acc -> Expr.Lam n acc) body names)))
+
+fun ifE u =
+  P.bind (P.skipThen (keyword "if") (P.defer exprE))
+         (\c -> P.bind (P.skipThen (keyword "then") (P.defer exprE))
+           (\t -> P.bind (P.skipThen (keyword "else") (P.defer exprE))
+             (\e -> P.pure (Expr.If c t e))))
+
+-- `let [rec] name args = rhs in body`.
+--
+-- `let rec f x = e` becomes `Expr.LetRec f x e`; extra arguments curry into the
+-- right-hand side, and `let rec` with no argument is rejected because a
+-- recursive value that is not a function has nothing to stand on.
+fun letE u =
+  P.bind (P.skipThen (keyword "let") (P.optional (keyword "rec")))
+    (\isRec ->
+      P.bind ident (\name ->
+        P.bind (P.many ident) (\args ->
+          P.bind (P.skipThen (symbol "=") (P.defer exprE)) (\rhs ->
+            P.bind (P.skipThen (keyword "in") (P.defer exprE)) (\body ->
+              match isRec with
+              | None -> P.pure (Expr.Let name (V.foldr (\a acc -> Expr.Lam a acc) rhs args) body)
+              | Just r ->
+                  match V.toList args with
+                  | [;] -> P.fail "an argument after `let rec`"
+                  | first :: more ->
+                      let inner = L.foldr (\a acc -> Expr.Lam a acc) rhs more in
+                      P.pure (Expr.LetRec name first inner body))))))
+
+fun exprE u = P.choice [P.defer letE, P.defer lamE, P.defer ifE, P.defer cmpE]
+
+-- Parse a whole program: an expression, and nothing after it.
+@pub fun parse src =
+  match P.runParser (P.skipThen spaces (P.thenSkip (P.defer exprE) P.eof)) (P.fromString src) with
+  | Ok e -> Ok e
+  | Err err -> Err (P.showError err)

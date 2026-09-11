@@ -96,9 +96,9 @@ def main = total [1; 2; 3] + total [7;] + total [;]
 
 #[test]
 fn the_empty_vector_pattern_matches_a_vector_emptied_at_run_time() {
-    // `[]` is `VEmpty`, and the library keeps that the only representation of an
+    // `[]` is `Vector.Empty`, and the library keeps that the only representation of an
     // empty vector. This is the test that says so: the vector here is built
-    // non-empty and emptied by `drop`, so a stale `VSingle #[]` would slip past.
+    // non-empty and emptied by `drop`, so a stale `Vector.Single #[]` would slip past.
     let src = "\
 use Std.Collections.Vector as V
 
@@ -132,7 +132,7 @@ fn a_non_empty_vector_pattern_is_rejected_with_a_way_out() {
 fn the_empty_patterns_are_not_exhaustive_on_their_own() {
     let vector = errors_std_with("fun f v = match v with | [] -> 0\n", Options::release());
     assert!(
-        vector.contains("non-exhaustive") && vector.contains("VSingle"),
+        vector.contains("non-exhaustive") && vector.contains("Single"),
         "expected the vector's other constructors, got: {vector}"
     );
     let list = errors_std_with("fun f xs = match xs with | [;] -> 0\n", Options::release());

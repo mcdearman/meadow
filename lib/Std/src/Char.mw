@@ -88,6 +88,7 @@ use Std.Ordering (compare, isLess, isEqual, isGreater)
 -- --- tests ---------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Maybe (Maybe)
 
 @test fun codesRoundTrip u =
   let a = assertEq (code 'A') 65 "code" in

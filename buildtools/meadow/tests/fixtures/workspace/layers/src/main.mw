@@ -1,4 +1,5 @@
--- The unit's modules share one flat scope, so no `use` is needed to reach
--- `Alpha`'s bindings.
+-- Each module is its own namespace, so `Alpha`'s bindings arrive by `use` --
+-- written here with the package name in front, as `use layers.Alpha`.
+use layers.Alpha (describe, twentyOne)
 
 def main = describe 20 + twentyOne

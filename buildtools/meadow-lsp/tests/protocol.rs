@@ -31,7 +31,7 @@ impl Client {
             .into_iter()
             .map(|(dotted, pkg)| (dotted.to_string(), pkg))
             .collect();
-            meadow_lsp::server::serve(&server, packages, modules, std_src_root).expect("server");
+            meadow_lsp::server::serve(&server, packages, modules, std_src_root, None).expect("server");
         });
 
         let mut c = Client {
@@ -343,7 +343,7 @@ fn survives_chatter_before_initialized(chatter: &[(&str, Value)]) -> bool {
             .into_iter()
             .map(|(dotted, pkg)| (dotted.to_string(), pkg))
             .collect();
-        let _ = meadow_lsp::server::serve(&server, packages, modules, None);
+        let _ = meadow_lsp::server::serve(&server, packages, modules, None, None);
     });
 
     client
@@ -443,7 +443,7 @@ fn a_request_before_initialized_is_answered_rather_than_dropped() {
             .into_iter()
             .map(|(dotted, pkg)| (dotted.to_string(), pkg))
             .collect();
-        let _ = meadow_lsp::server::serve(&server, packages, modules, None);
+        let _ = meadow_lsp::server::serve(&server, packages, modules, None, None);
     });
     client
         .sender

@@ -39,7 +39,7 @@
 
 -- Convenience wrappers ------------------------------------------------------
 
-use Std.Result (unwrapOr)
+use Std.Result (Result, unwrapOr)
 use Std.Collections.List (all)
 
 @pub fun readToStringOr default path = unwrapOr default (readToString path)

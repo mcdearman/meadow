@@ -80,6 +80,7 @@
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Maybe (Maybe)
 
 @test fun lengthAndEmptiness u =
   let a = assertEq (bytesLength bytesEmpty) 0 "empty length" in

@@ -3,31 +3,31 @@
 
 use Std.Collections.List as List (append, foldl)
 use Std.Tuple (fst, snd)
-use Std.Maybe (isSome)
+use Std.Maybe (Maybe, isSome)
 
-@pub data Map v = MapTip | MapNode (Map v) Int v (Map v)
+@pub data Map v = Tip | Node (Map v) Int v (Map v)
 
-@pub def empty = MapTip
+@pub def empty = Tip
 
-@pub fun null m = match m with | MapTip -> True | MapNode l k v r -> False
+@pub fun null m = match m with | Tip -> True | Node l k v r -> False
 
 @pub fun size m =
   match m with
-  | MapTip -> 0
-  | MapNode l k v r -> 1 + size l + size r
+  | Tip -> 0
+  | Node l k v r -> 1 + size l + size r
 
 @pub fun insert k v m =
   match m with
-  | MapTip -> MapNode MapTip k v MapTip
-  | MapNode l key val r ->
-      if k < key then MapNode (insert k v l) key val r
-      else if key < k then MapNode l key val (insert k v r)
-      else MapNode l k v r
+  | Tip -> Node Tip k v Tip
+  | Node l key val r ->
+      if k < key then Node (insert k v l) key val r
+      else if key < k then Node l key val (insert k v r)
+      else Node l k v r
 
 @pub fun lookup k m =
   match m with
-  | MapTip -> None
-  | MapNode l key val r ->
+  | Tip -> None
+  | Node l key val r ->
       if k < key then lookup k l
       else if key < k then lookup k r
       else Just val
@@ -41,8 +41,8 @@ use Std.Maybe (isSome)
 
 @pub fun toList m =
   match m with
-  | MapTip -> Nil
-  | MapNode l k v r -> append (toList l) (Cons (k, v) (toList r))
+  | Tip -> Nil
+  | Node l k v r -> append (toList l) (Cons (k, v) (toList r))
 
 @pub fun keys m = List.map fst (toList m)
 
@@ -54,36 +54,36 @@ fun insertPair p m = match p with | (k, v) -> insert k v m
 
 @pub fun map f m =
   match m with
-  | MapTip -> MapTip
-  | MapNode l k v r -> MapNode (map f l) k (f v) (map f r)
+  | Tip -> Tip
+  | Node l k v r -> Node (map f l) k (f v) (map f r)
 
 @pub fun minEntry m =
   match m with
-  | MapTip -> None
-  | MapNode l k v r -> if null l then Just (k, v) else minEntry l
+  | Tip -> None
+  | Node l k v r -> if null l then Just (k, v) else minEntry l
 
 fun deleteMin m =
   match m with
-  | MapTip -> MapTip
-  | MapNode l k v r -> if null l then r else MapNode (deleteMin l) k v r
+  | Tip -> Tip
+  | Node l k v r -> if null l then r else Node (deleteMin l) k v r
 
 fun spliceMin l r =
   match minEntry r with
   | None -> l
-  | Just (mk, mv) -> MapNode l mk mv (deleteMin r)
+  | Just (mk, mv) -> Node l mk mv (deleteMin r)
 
 fun removeRoot l r =
   match (l, r) with
-  | (MapTip, rr) -> rr
-  | (ll, MapTip) -> ll
+  | (Tip, rr) -> rr
+  | (ll, Tip) -> ll
   | (ll, rr) -> spliceMin ll rr
 
 @pub fun delete k m =
   match m with
-  | MapTip -> MapTip
-  | MapNode l key val r ->
-      if k < key then MapNode (delete k l) key val r
-      else if key < k then MapNode l key val (delete k r)
+  | Tip -> Tip
+  | Node l key val r ->
+      if k < key then Node (delete k l) key val r
+      else if key < k then Node l key val (delete k r)
       else removeRoot l r
 
 -- Yield every `(key, value)` pair in key order, for `Std.Stream`.

@@ -4,7 +4,12 @@ mod common;
 use common::{eval_main_std, schemes_std};
 
 fn e(body: &str) -> String {
-    eval_main_std(&format!("use Std.Either as E\ndef main = {body}\n"))
+    // `as E` activates the qualifier; naming the *type* is what brings `Left`
+    // and `Right` into scope unqualified. `Either` is not one of the handful
+    // of types the prelude flattens, so a user writes this too.
+    eval_main_std(&format!(
+        "use Std.Either as E\nuse Std.Either (Either)\ndef main = {body}\n"
+    ))
 }
 
 // --- the eliminator ----------------------------------------------------------

@@ -90,7 +90,7 @@ fun inRange n = n >= 10 and n < 20
 
 @test fun jsonReads u =
   match J.parse "{\"n\": {\"deep\": true}}" with
-  | Ok v -> assertEq (J.path ["n", "deep"] v) (Just (J.JBool True)) "path"
+  | Ok v -> assertEq (J.path ["n", "deep"] v) (Just (Json.Bool True)) "path"
   | Err e -> failWith e
 
 @test fun jsonRejectsGarbage u =

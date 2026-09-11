@@ -37,6 +37,7 @@
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Maybe (Maybe)
 
 @test fun theSideTests u =
   let a = assertTrue (isOk (Ok 1)) "isOk Ok" in

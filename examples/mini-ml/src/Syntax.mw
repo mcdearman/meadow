@@ -1,0 +1,48 @@
+-- The object language: a toy ML, small enough to read in one sitting.
+--
+-- Everything the interpreter knows how to say is in this file. `Expr` is what
+-- the parser builds, the checker types and the evaluator runs -- one tree, three
+-- passes, which is the whole shape of the thing.
+
+-- An expression.
+--
+-- `Expr.LetRec` is separate from `Expr.Let` because the two type differently: a `let`
+-- generalizes its right-hand side *before* the body sees it, while a `let rec`
+-- has to have the name in scope, monomorphically, while checking the right-hand
+-- side. That distinction is the interesting part of Hindley-Milner, so it is
+-- worth having both rather than one clever case.
+@pub data Expr
+  = Int Int
+  | Bool Bool
+  | Var String
+  | Lam String Expr
+  | App Expr Expr
+  | Let String Expr Expr
+  | LetRec String String Expr Expr
+  | If Expr Expr Expr
+  | Bin String Expr Expr
+
+-- A type. `Ty.Var` is a *mutable cell*, which is what makes this Algorithm J
+-- rather than Algorithm W: unification writes the answer into the variable
+-- instead of building a substitution to apply later.
+@pub data Ty
+  = Int
+  | Bool
+  | Fun Ty Ty
+  | Var (Ref Tv)
+
+-- What a type variable currently knows about itself.
+--
+-- `Unbound id level` -- not yet solved. The `level` is the `let`-nesting depth
+-- at which it was created, and it is how generalization stays cheap: a variable
+-- may be quantified exactly when its level is deeper than the binding being
+-- generalized, which is checkable without scanning the environment.
+--
+-- `Link t` -- solved, and every reader follows the link.
+@pub data Tv
+  = Unbound Int Int
+  | Link Ty
+
+-- A type scheme: `forall ids. ty`. The ids are the `Unbound` ids that were
+-- generalized; `instantiate` swaps each for a fresh variable.
+@pub data Scheme = Forall (List Int) Ty

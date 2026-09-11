@@ -140,6 +140,7 @@ fun swapAt v i j =
 use Std.Test (assertEq, assertTrue, assertFalse)
 -- `[a, b]` in the tests below desugars to a `vecFromArray` call.
 use Std.Collections.Vector (vecFromArray)
+use Std.Maybe (Maybe)
 
 @test fun aSeedGivesTheSameRunTwice u =
   let a = assertEq (withSeed 42 (\u2 -> between 1 7)) (withSeed 42 (\u2 -> between 1 7)) "same seed" in

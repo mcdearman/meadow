@@ -230,7 +230,9 @@ fn main() {
             // the edge of the open document, which is where it used to stop
             // anyway.
             let src_root = meadow::stdlib::extract_sources();
-            if let Err(e) = meadow_lsp::server::run(packages, modules, src_root) {
+            if let Err(e) =
+                meadow_lsp::server::run(packages, modules, src_root, Some(meadow::editor::load_package))
+            {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -368,3 +370,4 @@ mod tests {
         assert!(Cli::try_parse_from(["meadow", "lsp", "--socket=9257"]).is_err());
     }
 }
+

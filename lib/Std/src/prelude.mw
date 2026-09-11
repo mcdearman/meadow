@@ -9,6 +9,18 @@
 -- `Vector`, and bare `map` / `foldl` / `range` / … operate on it. For the linked
 -- `List` (`::`, `[1; 2; 3]`) use `List.map` etc.
 
+-- Constructors that stay unqualified everywhere.
+--
+-- A constructor's real name is `Type.Ctor`, and re-exporting the *type* is
+-- what makes its constructors writable bare. These three are re-exported for
+-- that reason alone -- their functions still need `Maybe.map` or a `use`, but
+-- `Just` / `None` / `Ok` / `Err` / `Less` reading as themselves is worth more
+-- than the consistency. `True` / `False` / `Nil` / `::` need no help: the
+-- language's own syntax depends on them, so they are always in scope.
+@pub use Std.Maybe (Maybe)
+@pub use Std.Result (Result)
+@pub use Std.Ordering (Ordering)
+
 @pub use Std.Bool (not)
 
 @pub use Std.Ordering (compare, isLess, isEqual, isGreater)

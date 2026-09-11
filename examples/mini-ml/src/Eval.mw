@@ -1,0 +1,88 @@
+-- Running the program, once it has been typed.
+--
+-- A tree-walking interpreter over the same `Expr` the checker saw. Because the
+-- checker has already run, this code never has to ask whether a value is the
+-- right shape -- the `_` arms that answer `raise` are unreachable for any
+-- program that type-checked, and are there so that a bug in the checker fails
+-- loudly rather than silently doing arithmetic on a closure.
+--
+-- The environment maps names to `Ref Value` rather than to `Value`, for one
+-- reason: `let rec`. A recursive closure has to capture an environment that
+-- contains *itself*, which is impossible to build bottom-up with immutable
+-- data. With a cell you make the binding first, build the closure that captures
+-- it, and then fill it in -- tying the knot. That is the same `Mut` the type
+-- checker uses, doing the same job one level down.
+
+use Syntax (Expr)
+use Std.Ref (modify)
+use Std.Collections.List as L
+use Std.Maybe (Maybe, Just, None)
+use Std.Result (Result, Ok, Err)
+use Std.String as S
+use Std.Exn (raise, toResult)
+
+@pub data Value
+  = VInt Int
+  | VBool Bool
+  | VClosure String Expr (List (String, Ref Value))
+
+@pub fun showValue v =
+  match v with
+  | VInt n -> S.fromInt n
+  | VBool b -> if b then "true" else "false"
+  | VClosure p b env -> "<function>"
+
+fun lookupCell env name =
+  match L.lookupAssoc name env with
+  | Just cell -> cell
+  | None -> raise (S.concat "unbound at run time: " name)
+
+fun asInt v =
+  match v with
+  | VInt n -> n
+  | other -> raise (S.concat "expected a number, got " (showValue other))
+
+fun asBool v =
+  match v with
+  | VBool b -> b
+  | other -> raise (S.concat "expected a boolean, got " (showValue other))
+
+fun applyOp op l r =
+  if op == "+" then VInt (asInt l + asInt r)
+  else if op == "-" then VInt (asInt l - asInt r)
+  else if op == "*" then VInt (asInt l * asInt r)
+  else if op == "/" then
+    (if asInt r == 0 then raise "division by zero" else VInt (asInt l / asInt r))
+  else if op == "==" then VBool (asInt l == asInt r)
+  else if op == "<" then VBool (asInt l < asInt r)
+  else if op == ">" then VBool (asInt l > asInt r)
+  else if op == "<=" then VBool (asInt l <= asInt r)
+  else if op == ">=" then VBool (asInt l >= asInt r)
+  else raise (S.concat "unknown operator: " op)
+
+fun eval env e =
+  match e with
+  | Expr.Int n -> VInt n
+  | Expr.Bool b -> VBool b
+  | Expr.Var name -> getRef (lookupCell env name)
+  | Expr.Lam param body -> VClosure param body env
+  | Expr.App f a ->
+      let fv = eval env f in
+      let av = eval env a in
+      (match fv with
+       | VClosure param body closed -> eval ((param, newRef av) :: closed) body
+       | other -> raise (S.concat "not a function: " (showValue other)))
+  | Expr.Let name rhs body -> eval ((name, newRef (eval env rhs)) :: env) body
+  | Expr.LetRec name param rhs body ->
+      -- Tie the knot: a cell first, then the closure that captures the
+      -- environment the cell is in, then fill the cell with that closure. The
+      -- placeholder is never read -- evaluating a `fun` does not run its body.
+      let cell = newRef (VInt 0) in
+      let inner = (name, cell) :: env in
+      let ignored = setRef cell (VClosure param rhs inner) in
+      eval inner body
+  | Expr.If c t f -> if asBool (eval env c) then eval env t else eval env f
+  | Expr.Bin op l r -> applyOp op (eval env l) (eval env r)
+
+-- Run an expression. `Err` carries whatever `raise` travelled with.
+@pub fun run e = toResult (\u -> showValue (eval [;] e))

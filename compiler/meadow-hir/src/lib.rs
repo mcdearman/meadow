@@ -97,7 +97,6 @@ pub const PRIMS: &[&str] = &[
     "setRef",
 ];
 use std::ops::Deref;
-use std::sync::atomic::AtomicU32;
 
 /// A stable identifier for every node/subnode in the HIR tree.
 ///
@@ -305,6 +304,12 @@ pub enum VariantFields {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordDecl {
     pub name: InternedString,
+    /// The canonical name of this record's one constructor -- `Person.Person`.
+    ///
+    /// Spelled out rather than derived, so that inference, lowering and the
+    /// exhaustiveness checker cannot each reinvent the convention and disagree
+    /// about it. A `data` variant carries its canonical name the same way.
+    pub ctor: InternedString,
     /// Where the name was written — see [`DataDecl::name_span`].
     pub name_span: Span,
     pub params: Vec<Ident>,
@@ -404,14 +409,67 @@ pub enum Pat {
 
 pub type Ident = Node<VarId>;
 
-static COUNTER: AtomicU32 = AtomicU32::new(0);
+/// Where the synthetic range begins.
+///
+/// Everything below is handed out by a compilation unit, through [`VarIdGen`].
+/// The top is for variables invented *after* compilation — a driver appending
+/// an entry point to a program it has already linked — which belong to no unit
+/// and must not collide with one.
+pub const SYNTHETIC_BASE: u32 = 0x7000_0000;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VarId(pub u32);
 
 impl VarId {
-    pub fn fresh() -> Self {
-        Self(COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    /// The `n`th variable invented after compilation — see [`SYNTHETIC_BASE`].
+    ///
+    /// Indexed by the caller rather than counted here, so that appending the
+    /// same definitions to the same program twice produces the same ids.
+    pub const fn synthetic(n: u32) -> Self {
+        VarId(SYNTHETIC_BASE + n)
+    }
+
+    /// Was this invented after compilation rather than by a unit?
+    pub const fn is_synthetic(self) -> bool {
+        self.0 >= SYNTHETIC_BASE
+    }
+}
+
+/// Hands out the `VarId`s of one compilation unit.
+///
+/// Deliberately not a global counter, which is what this used to be. A
+/// `VarId`'s number then depended on how many had been minted *anywhere in the
+/// process*, so the same package compiled twice — in a different order, or in
+/// another process — came out with different ids. That is invisible while
+/// everything is rebuilt from scratch every time, and it is precisely what
+/// would stop a compiled package from being written to disk and read back: the
+/// ids would mean something different on the way in, silently, rather than
+/// failing.
+///
+/// A unit is seeded from a base that clears its dependencies (see
+/// `CompiledPackage::vars`), so its ids depend only on the unit itself and on
+/// how much space the packages under it needed.
+#[derive(Debug, Clone, Copy)]
+pub struct VarIdGen {
+    next: u32,
+}
+
+impl VarIdGen {
+    /// A generator whose first `VarId` is `base`.
+    pub const fn starting_at(base: u32) -> VarIdGen {
+        VarIdGen { next: base }
+    }
+
+    pub fn fresh(&mut self) -> VarId {
+        let v = VarId(self.next);
+        self.next += 1;
+        v
+    }
+
+    /// One past the last id handed out — the base a unit stacked on top of this
+    /// one must start at.
+    pub const fn end(self) -> u32 {
+        self.next
     }
 }
 

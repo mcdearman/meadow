@@ -22,62 +22,62 @@ use Std.Maybe (Maybe, Just, None)
 
 -- --- the tree -----------------------------------------------------------------
 
--- Numbers are split into `JInt` and `JFloat` rather than JSON's single number
+-- Numbers are split into `Int` and `Float` rather than JSON's single number
 -- type, because meadow's `Int` and `Float` are separate and silently widening
 -- every integer to a float would lose precision no one asked to lose.
 @pub data Json
-  = JNull
-  | JBool Bool
-  | JInt Int
-  | JFloat Float
-  | JString String
-  | JArray [Json]
-  | JObject [(String, Json)]
+  = Null
+  | Bool Bool
+  | Int Int
+  | Float Float
+  | String String
+  | Array [Json]
+  | Object [(String, Json)]
 
 -- --- constructing --------------------------------------------------------------
 
-@pub fun jNull u = JNull
+@pub fun jNull u = Null
 
-@pub fun jBool b = JBool b
+@pub fun jBool b = Bool b
 
-@pub fun jInt n = JInt n
+@pub fun jInt n = Int n
 
-@pub fun jString s = JString s
+@pub fun jString s = String s
 
-@pub fun jArray xs = JArray xs
+@pub fun jArray xs = Array xs
 
-@pub fun jObject fields = JObject fields
+@pub fun jObject fields = Object fields
 
 -- --- inspecting ---------------------------------------------------------------
 
-@pub fun isNull v = match v with | JNull -> True | _ -> False
+@pub fun isNull v = match v with | Null -> True | _ -> False
 
-@pub fun asBool v = match v with | JBool b -> Just b | _ -> None
+@pub fun asBool v = match v with | Bool b -> Just b | _ -> None
 
-@pub fun asInt v = match v with | JInt n -> Just n | _ -> None
+@pub fun asInt v = match v with | Int n -> Just n | _ -> None
 
 @pub fun asFloat v =
   match v with
-  | JFloat x -> Just x
-  | JInt n -> Just (toFloat n)
+  | Float x -> Just x
+  | Int n -> Just (toFloat n)
   | _ -> None
 
-@pub fun asString v = match v with | JString s -> Just s | _ -> None
+@pub fun asString v = match v with | String s -> Just s | _ -> None
 
-@pub fun asArray v = match v with | JArray xs -> Just xs | _ -> None
+@pub fun asArray v = match v with | Array xs -> Just xs | _ -> None
 
-@pub fun asObject v = match v with | JObject fs -> Just fs | _ -> None
+@pub fun asObject v = match v with | Object fs -> Just fs | _ -> None
 
 -- The value at `key`, or `None` if this is not an object or has no such key.
 @pub fun get key v =
   match v with
-  | JObject fields -> lookupField key fields
+  | Object fields -> lookupField key fields
   | _ -> None
 
 -- The element at `i`, or `None`.
 @pub fun index i v =
   match v with
-  | JArray xs -> V.get xs i
+  | Array xs -> V.get xs i
   | _ -> None
 
 -- Follow a chain of object keys: `path ["a", "b"] v` is `v.a.b`.
@@ -119,9 +119,9 @@ def value =
   P.defer (\u ->
     P.choice [
       P.label "null" (P.map jNull (P.chunk (P.fromString "null"))),
-      P.label "true" (P.map (\c -> JBool True) (P.chunk (P.fromString "true"))),
-      P.label "false" (P.map (\c -> JBool False) (P.chunk (P.fromString "false"))),
-      P.label "a string" (P.map JString stringLit),
+      P.label "true" (P.map (\c -> Bool True) (P.chunk (P.fromString "true"))),
+      P.label "false" (P.map (\c -> Bool False) (P.chunk (P.fromString "false"))),
+      P.label "a string" (P.map String stringLit),
       P.label "an array" array,
       P.label "an object" object,
       P.label "a number" number,
@@ -129,13 +129,13 @@ def value =
 
 def array =
   P.defer (\u ->
-    P.map JArray
+    P.map Array
       (P.between (lexeme (P.single 91)) (lexeme (P.single 93))
         (P.sepBy (lexeme value) (lexeme (P.single 44)))))
 
 def object =
   P.defer (\u ->
-    P.map JObject
+    P.map Object
       (P.between (lexeme (P.single 123)) (lexeme (P.single 125))
         (P.sepBy (lexeme member) (lexeme (P.single 44)))))
 
@@ -168,8 +168,8 @@ fun isDigit b = b >= 48 and b <= 57
 fun buildNumber sign whole frac =
   let neg = match sign with | None -> False | Just s -> True in
   match frac with
-  | None -> JInt (applySign neg (digitsToInt whole))
-  | Just f -> JFloat (applySignF neg (toFloat (digitsToInt whole) +. fraction f))
+  | None -> Int (applySign neg (digitsToInt whole))
+  | Just f -> Float (applySignF neg (toFloat (digitsToInt whole) +. fraction f))
 
 fun applySign neg n = if neg then 0 - n else n
 
@@ -213,13 +213,13 @@ fun bytesToText bytes = S.fromBytes (V.toArray bytes)
 -- Compact: no spaces, no newlines. `renderIndented` is below.
 @pub fun render v =
   match v with
-  | JNull -> "null"
-  | JBool b -> if b then "true" else "false"
-  | JInt n -> S.fromInt n
-  | JFloat x -> showFloat x
-  | JString s -> quote s
-  | JArray xs -> S.concatAll ["[", S.join "," (V.map render xs), "]"]
-  | JObject fs -> S.concatAll ["{", S.join "," (V.map renderMember fs), "}"]
+  | Null -> "null"
+  | Bool b -> if b then "true" else "false"
+  | Int n -> S.fromInt n
+  | Float x -> showFloat x
+  | String s -> quote s
+  | Array xs -> S.concatAll ["[", S.join "," (V.map render xs), "]"]
+  | Object fs -> S.concatAll ["{", S.join "," (V.map renderMember fs), "}"]
 
 fun renderMember entry =
   S.concatAll [quote (fst entry), ":", render (snd entry)]
@@ -230,7 +230,7 @@ fun renderMember entry =
 
 fun renderAt depth v =
   match v with
-  | JArray xs ->
+  | Array xs ->
       if V.isEmpty xs
       then "[]"
       else
@@ -239,7 +239,7 @@ fun renderAt depth v =
           S.join ",\n" (V.map (\x -> S.concat (pad (depth + 1)) (renderAt (depth + 1) x)) xs),
           "\n", pad depth, "]",
         ]
-  | JObject fs ->
+  | Object fs ->
       if V.isEmpty fs
       then "{}"
       else
@@ -286,34 +286,35 @@ fun padLeft width s =
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Result (Result)
 
 fun parsed text =
   match parse text with
   | Ok v -> v
-  | Err e -> JString (S.concat "parse failed: " e)
+  | Err e -> String (S.concat "parse failed: " e)
 
 @test fun theAtomsParse u =
-  let a = assertEq (parsed "null") JNull "null" in
-  let b = assertEq (parsed "true") (JBool True) "true" in
-  let c = assertEq (parsed "false") (JBool False) "false" in
-  let d = assertEq (parsed "42") (JInt 42) "an integer" in
-  let e = assertEq (parsed "-7") (JInt (0 - 7)) "a negative integer" in
-  assertEq (parsed "\"hi\"") (JString "hi") "a string"
+  let a = assertEq (parsed "null") Null "null" in
+  let b = assertEq (parsed "true") (Bool True) "true" in
+  let c = assertEq (parsed "false") (Bool False) "false" in
+  let d = assertEq (parsed "42") (Int 42) "an integer" in
+  let e = assertEq (parsed "-7") (Int (0 - 7)) "a negative integer" in
+  assertEq (parsed "\"hi\"") (String "hi") "a string"
 
 @test fun numbersSplitIntoIntAndFloat u =
   -- JSON has one number type; meadow has two, and widening every integer to a
   -- float would lose precision no one asked to lose.
-  let a = assertEq (parsed "1") (JInt 1) "no fraction means Int" in
+  let a = assertEq (parsed "1") (Int 1) "no fraction means Int" in
   assertTrue (isFloat (parsed "1.5")) "a fraction means Float"
 
-fun isFloat v = match v with | JFloat x -> True | _ -> False
+fun isFloat v = match v with | Float x -> True | _ -> False
 
 @test fun containersNestAndAreOrdered u =
-  let a = assertEq (parsed "[]") (JArray []) "an empty array" in
-  let b = assertEq (parsed "[1,2]") (JArray [JInt 1, JInt 2]) "an array" in
-  let c = assertEq (parsed "{}") (JObject []) "an empty object" in
-  let d = assertEq (parsed "{\"a\":1}") (JObject [("a", JInt 1)]) "an object" in
-  assertEq (parsed "[[1],[2]]") (JArray [JArray [JInt 1], JArray [JInt 2]]) "nesting"
+  let a = assertEq (parsed "[]") (Array []) "an empty array" in
+  let b = assertEq (parsed "[1,2]") (Array [Int 1, Int 2]) "an array" in
+  let c = assertEq (parsed "{}") (Object []) "an empty object" in
+  let d = assertEq (parsed "{\"a\":1}") (Object [("a", Int 1)]) "an object" in
+  assertEq (parsed "[[1],[2]]") (Array [Array [Int 1], Array [Int 2]]) "nesting"
 
 @test fun whitespaceIsIgnoredBetweenTokens u =
   assertEq (parsed "  { \"a\" : [ 1 , 2 ] }  ") (parsed "{\"a\":[1,2]}") "spaces do not matter"
@@ -321,10 +322,10 @@ fun isFloat v = match v with | JFloat x -> True | _ -> False
 -- Two layers of escaping meet here: the meadow literal, and the JSON text it
 -- holds. `"\"a\\nb\""` is the six characters `"a\nb"` -- JSON for a newline.
 @test fun stringEscapesAreDecoded u =
-  let a = assertEq (parsed "\"a\\nb\"") (JString "a\nb") "newline" in
-  let b = assertEq (parsed "\"a\\tb\"") (JString "a\tb") "tab" in
-  let c = assertEq (parsed "\"a\\\"b\"") (JString "a\"b") "an escaped quote" in
-  assertEq (parsed "\"a\\\\b\"") (JString "a\\b") "an escaped backslash"
+  let a = assertEq (parsed "\"a\\nb\"") (String "a\nb") "newline" in
+  let b = assertEq (parsed "\"a\\tb\"") (String "a\tb") "tab" in
+  let c = assertEq (parsed "\"a\\\"b\"") (String "a\"b") "an escaped quote" in
+  assertEq (parsed "\"a\\\\b\"") (String "a\\b") "an escaped backslash"
 
 @test fun malformedInputIsRejected u =
   let bad = \text -> match parse text with | Ok v -> False | Err e -> True in
@@ -335,40 +336,40 @@ fun isFloat v = match v with | JFloat x -> True | _ -> False
   assertTrue (bad "1 2") "two values"
 
 @test fun renderingIsCompactAndRoundTrips u =
-  let a = assertEq (render JNull) "null" "null" in
-  let b = assertEq (render (JBool True)) "true" "true" in
-  let c = assertEq (render (JInt (0 - 7))) "-7" "a negative" in
-  let d = assertEq (render (JArray [JInt 1, JInt 2])) "[1,2]" "an array" in
-  let e = assertEq (render (JObject [("a", JInt 1)])) "{\"a\":1}" "an object" in
+  let a = assertEq (render Null) "null" "null" in
+  let b = assertEq (render (Bool True)) "true" "true" in
+  let c = assertEq (render (Int (0 - 7))) "-7" "a negative" in
+  let d = assertEq (render (Array [Int 1, Int 2])) "[1,2]" "an array" in
+  let e = assertEq (render (Object [("a", Int 1)])) "{\"a\":1}" "an object" in
   let text = "{\"a\":[1,2,3],\"b\":null,\"c\":\"x\"}" in
   assertEq (render (parsed text)) text "parse then render is the identity"
 
 @test fun renderingEscapesWhatItMust u =
-  let a = assertEq (render (JString "a\"b")) "\"a\\\"b\"" "a quote" in
-  let b = assertEq (render (JString "a\nb")) "\"a\\nb\"" "a newline" in
-  let awkward = JString "tricky \" \\ \n\t" in
+  let a = assertEq (render (String "a\"b")) "\"a\\\"b\"" "a quote" in
+  let b = assertEq (render (String "a\nb")) "\"a\\nb\"" "a newline" in
+  let awkward = String "tricky \" \\ \n\t" in
   assertEq (parsed (render awkward)) awkward "everything that needs escaping round trips"
 
 @test fun accessorsReachIntoTheTree u =
   let v = parsed "{\"n\":{\"deep\":true},\"xs\":[10,20]}" in
-  let a = assertEq (path ["n", "deep"] v) (Just (JBool True)) "path" in
+  let a = assertEq (path ["n", "deep"] v) (Just (Bool True)) "path" in
   let b = assertEq (path ["n", "missing"] v) None "a missing key" in
-  let c = assertEq (get "n" v) (Just (JObject [("deep", JBool True)])) "get" in
-  let d = assertEq (index 1 (parsed "[10,20]")) (Just (JInt 20)) "index" in
+  let c = assertEq (get "n" v) (Just (Object [("deep", Bool True)])) "get" in
+  let d = assertEq (index 1 (parsed "[10,20]")) (Just (Int 20)) "index" in
   assertEq (index 9 (parsed "[10]")) None "index past the end"
 
 @test fun theTypedAccessors u =
-  let a = assertEq (asInt (JInt 1)) (Just 1) "asInt" in
-  let b = assertEq (asInt (JString "1")) None "asInt of the wrong shape" in
-  let c = assertEq (asString (JString "x")) (Just "x") "asString" in
-  let d = assertEq (asBool (JBool True)) (Just True) "asBool" in
-  let e = assertTrue (isNull JNull) "isNull" in
+  let a = assertEq (asInt (Int 1)) (Just 1) "asInt" in
+  let b = assertEq (asInt (String "1")) None "asInt of the wrong shape" in
+  let c = assertEq (asString (String "x")) (Just "x") "asString" in
+  let d = assertEq (asBool (Bool True)) (Just True) "asBool" in
+  let e = assertTrue (isNull Null) "isNull" in
   -- `asFloat` widens an integer, since a JSON `1` is a valid float to a caller
   -- that wants one.
-  assertEq (asFloat (JInt 2)) (Just 2.0) "asFloat widens an Int"
+  assertEq (asFloat (Int 2)) (Just 2.0) "asFloat widens an Int"
 
 @test fun indentedRenderingNestsByTwo u =
-  let a = assertEq (renderIndented (JArray [])) "[]" "an empty array stays on one line" in
-  let b = assertEq (renderIndented (JObject [])) "{}" "and an empty object" in
-  let c = assertEq (renderIndented (JArray [JInt 1])) "[\n  1\n]" "one element" in
-  assertEq (renderIndented (JObject [("a", JInt 1)])) "{\n  \"a\": 1\n}" "one field"
+  let a = assertEq (renderIndented (Array [])) "[]" "an empty array stays on one line" in
+  let b = assertEq (renderIndented (Object [])) "{}" "and an empty object" in
+  let c = assertEq (renderIndented (Array [Int 1])) "[\n  1\n]" "one element" in
+  assertEq (renderIndented (Object [("a", Int 1)])) "{\n  \"a\": 1\n}" "one field"

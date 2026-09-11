@@ -2,5 +2,5 @@
 source: tests/lower.rs
 expression: "core_ir(\"def a = [1; 2; 3]\\ndef b = Cons 0 a\\n\")"
 ---
-v0 = (Cons 1 (Cons 2 (Cons 3 (Nil ))))
-v1 = (Cons 0 v0)
+v0 = (List.Cons 1 (List.Cons 2 (List.Cons 3 (List.Nil ))))
+v1 = (List.Cons 0 v0)

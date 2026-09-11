@@ -66,6 +66,20 @@ pub struct CompiledPackage {
     /// Caller-assigned id — the build system uses the package-graph index, the
     /// REPL uses the line number. Not interpreted here.
     pub id: usize,
+    /// Types whose constructors a dependent may write **unqualified**.
+    ///
+    /// A constructor's real name is `Type.Ctor`, so by default a dependent has
+    /// to say which type it meant. This is the escape hatch the prelude uses:
+    /// `Maybe`, `Result`, `List` and friends are listed here, which is why
+    /// `Just` and `Nil` need no qualifier anywhere.
+    pub flat_ctor_types: Vec<InternedString>,
+    /// The `VarId` range this unit minted: `start..end`.
+    ///
+    /// A unit starts above everything its dependencies used, so the ranges of
+    /// a package and everything under it never overlap. Recorded rather than
+    /// recomputed because it is the provenance of an id — which unit owns it —
+    /// and because a unit stacked on this one needs `end` to start from.
+    pub vars: std::ops::Range<u32>,
     pub name: InternedString,
     pub modules: Vec<TypedModule>,
     /// Whole-package node -> type table (node ids are dense across the package).
@@ -152,10 +166,32 @@ pub fn compile_unit_in_package(
     let filename = unit_name.to_string();
 
     // --- name resolution (whole unit at once, so modules may be mutually recursive)
-    let mut resolver = Resolver::with_prelude(filename.clone());
-    // Types / constructors are a single global namespace — always import every dep's.
+    // Start above every dependency, so no two units can mint the same id and
+    // an id can be traced back to the unit that owns it.
+    let var_base = deps.iter().map(|d| d.vars.end).max().unwrap_or(0);
+    let mut resolver = Resolver::with_prelude(filename.clone(), var_base);
+    // Every dependency's *types* are known here, so they can be named in an
+    // annotation and their constructors written `Type.Ctor`. Which of those
+    // constructors may be written *bare* is a separate question, and the
+    // answer is `flat_ctor_types` -- the prelude's list, plus anything a `use`
+    // brings in later.
     for dep in deps {
         resolver.import_types(&dep.data_decls);
+    }
+    for dep in deps {
+        match &dep.prelude_exports {
+            // A REPL prefix or an ad-hoc dep: everything is flat, ctors too.
+            None => {
+                for ty in resolver.imported_type_names() {
+                    resolver.use_type_ctors(ty);
+                }
+            }
+            Some(_) => {
+                for ty in &dep.flat_ctor_types {
+                    resolver.use_type_ctors(*ty);
+                }
+            }
+        }
     }
     // Flat value imports: a dep with `prelude_exports = None` (a REPL prefix, an
     // ad-hoc `compile_str` dep) contributes *everything*; one with `Some(list)`
@@ -176,27 +212,41 @@ pub fn compile_unit_in_package(
             }
         }
     }
-    // Qualified imports: honour each `use` decl in the modules being compiled.
+    // Everything above is shared by every module of the unit. What follows
+    // belongs to one module at a time.
+    resolver.seal_base_scope();
+
+    // Declare first, all modules, so that a `use` can name a sibling and so
+    // that mutual recursion across modules keeps working — the package is one
+    // compilation unit, and only the *namespaces* are per module.
     for m in &modules {
-        for d in &m.ast.value().decls {
-            let base = match d.value() {
-                ast::Decl::Attributed(_, inner) => inner.value(),
-                other => other,
-            };
-            if let ast::Decl::Use(u) = base {
-                apply_use(&mut resolver, pkg, u, deps, &filename, &mut diags);
-            }
-        }
-    }
-    for m in &modules {
+        resolver.set_filename(module_filename(&filename, m.source));
+        resolver.set_module(&m.path);
         resolver.declare_types(&m.ast.value().decls);
     }
     for m in &modules {
+        resolver.set_filename(module_filename(&filename, m.source));
+        resolver.set_module(&m.path);
         resolver.declare_toplevel(&m.ast.value().decls);
     }
+
     let mut typed: Vec<TypedModule> = modules
         .iter()
         .map(|m| {
+            // Its own declarations and nothing else, then whatever it asked
+            // for. A sibling's names are never free.
+            let here = module_filename(&filename, m.source);
+            resolver.set_filename(here.clone());
+            resolver.enter_module(&m.path);
+            for d in &m.ast.value().decls {
+                let base = match d.value() {
+                    ast::Decl::Attributed(_, inner) => inner.value(),
+                    other => other,
+                };
+                if let ast::Decl::Use(u) = base {
+                    apply_use(&mut resolver, pkg, u, deps, &here, &mut diags);
+                }
+            }
             let mut hir = resolver.resolve_module(&m.ast);
             // Reorder the top-level bindings by dependency and record their
             // groups, so inference (and evaluation) never meets a name before the
@@ -210,8 +260,9 @@ pub fn compile_unit_in_package(
             }
         })
         .collect();
-    // Same again one level up: a unit's modules are resolved into one flat scope
-    // but discovered in alphabetical order, so they need sorting too.
+    // Same again one level up: a unit's modules are discovered in alphabetical
+    // order, which says nothing about what depends on what, so they need
+    // sorting too.
     let order = scc::module_order(typed.iter().map(|m| m.hir.value()));
     typed = permute(typed, &order);
     diags.extend(resolver.take_errors());
@@ -228,6 +279,7 @@ pub fn compile_unit_in_package(
         infer.register_types(&dep.data_decls);
     }
     for m in &typed {
+        infer.set_filename(module_filename(&filename, m.source));
         infer.register_types(&m.hir.value().decls);
         // This unit's own effect operations are part of its export surface, so a
         // dependent can write `State.get` rather than relying on them being
@@ -235,6 +287,7 @@ pub fn compile_unit_in_package(
         infer.export_effect_ops(&m.hir.value().decls);
     }
     for m in &typed {
+        infer.set_filename(module_filename(&filename, m.source));
         infer.infer_module(&m.hir);
     }
     let InferResult {
@@ -248,7 +301,7 @@ pub fn compile_unit_in_package(
     // --- pattern coverage (needs the types; runs before lowering discards them)
     for m in &typed {
         diags.extend(exhaust::check_module(
-            &filename,
+            &module_filename(&filename, m.source),
             &m.hir,
             &table,
             &variants,
@@ -265,11 +318,13 @@ pub fn compile_unit_in_package(
         .map(|(id, eff, op)| (id, (eff, op)))
         .collect();
     let ctor_arity = resolver.ctor_arities();
-    let mut lowerer = core::Lowerer::new(&prims, &names, &effect_ops, &table, &ctor_arity);
+    let mut lowerer =
+        core::Lowerer::new(&prims, &names, &effect_ops, &table, &ctor_arity, resolver.var_gen());
     let mut defs = Vec::new();
     for m in &typed {
         defs.extend(lowerer.lower_module(&m.hir));
     }
+    let var_end = lowerer.var_end();
     // Drop the `&table` borrow held by `lowerer` before `table` is moved below.
     let ctor_fields = lowerer.ctor_fields;
 
@@ -328,9 +383,45 @@ pub fn compile_unit_in_package(
         .cloned()
         .collect();
 
+    // Types whose constructors a dependent may write bare.
+    //
+    // Deliberately narrow: a type re-exported by `@pub use` is the package
+    // saying "this is part of my unqualified surface", which is exactly what
+    // the prelude does for `Maybe`, `Result` and `List`. An ungated package
+    // (no `@pub` anywhere) exports everything, so its own types go too.
+    let mut flat_ctor_types: Vec<InternedString> = modules
+        .iter()
+        .flat_map(|m| m.ast.value().decls.iter())
+        .filter_map(|d| match d.value() {
+            ast::Decl::Attributed(attrs, inner) => match inner.value() {
+                ast::Decl::Use(u) if attrs.iter().any(|a| &**a.name.value() == "pub") => {
+                    Some(u.names.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .flatten()
+        .map(|n| *n.value())
+        .filter(|n| n.chars().next().is_some_and(|c| c.is_uppercase()))
+        .collect();
+    if !gated {
+        for d in &data_decls {
+            match d.value() {
+                hir::Decl::Data(dd) => flat_ctor_types.push(dd.name),
+                hir::Decl::Record(rd) => flat_ctor_types.push(rd.name),
+                _ => {}
+            }
+        }
+    }
+    flat_ctor_types.sort_by_key(|n| n.to_string());
+    flat_ctor_types.dedup();
+
     (
         CompiledPackage {
             id,
+            flat_ctor_types,
+            vars: var_base..var_end,
             name: unit_name,
             modules: typed,
             types: table,
@@ -390,6 +481,30 @@ fn apply_use(
         .path
         .iter()
         .fold(u.path[0].span, |acc, s| acc.extend(s.span));
+
+    // `use Pack.Mod` — a sibling namespace of this very unit. The package is
+    // the compilation unit and modules are namespaces inside it, so a sibling
+    // is reached through the resolver's frames, not through `deps`.
+    let local: Vec<InternedString> = if segs[0] == pkg {
+        segs[1..].to_vec()
+    } else {
+        segs.clone()
+    };
+    if !local.is_empty() && resolver.has_module(&local) {
+        match &u.alias {
+            Some(a) => {
+                let values = resolver.module_values(&local);
+                resolver.activate_module(*a.value(), values);
+            }
+            None => {
+                let names: Vec<InternedString> =
+                    u.names.iter().map(|n| *n.value()).collect();
+                resolver.use_module(&local, &names);
+            }
+        }
+        return;
+    }
+
     let Resolved { map, found } = resolve_module(pkg, &segs, deps);
 
     if !found {
@@ -431,6 +546,10 @@ fn apply_use(
         if let Some(&id) = map.get(&*n.value()) {
             resolver.import(*n.value(), id);
         }
+        // `use M (Expr)` names a *type*, and naming a type brings its
+        // constructors into scope unqualified -- which is the only way to
+        // write `Int` rather than `Expr.Int`.
+        resolver.use_type_ctors(*n.value());
     }
 }
 
@@ -503,6 +622,18 @@ fn suggest_module(segs: &[InternedString], deps: &[&CompiledPackage]) -> Option<
         }
     }
     None
+}
+
+/// What a diagnostic from `source` should call its file.
+///
+/// A unit is compiled as a whole, but its modules are separate files and an
+/// error has to name the one it is in. Interactive text — the REPL, a
+/// `compile_str` — has no file, so it keeps the unit's name.
+fn module_filename(unit: &str, source: Source) -> String {
+    match source.kind {
+        SourceKind::File(name) => name.to_string(),
+        SourceKind::Interactive => unit.to_string(),
+    }
 }
 
 fn dotted(segs: &[InternedString]) -> String {

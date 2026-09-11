@@ -1,3 +1,5 @@
+use layers.Zeta (halve, wrap)
+
 -- Alphabetically first, but depends on `Zeta` — which is what makes this
 -- fixture interesting. Modules are discovered in filename order, so without a
 -- dependency sort `Alpha` is resolved, inferred and evaluated before the module

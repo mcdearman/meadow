@@ -10,6 +10,7 @@
 
 pub mod linker;
 pub mod package;
+pub mod editor;
 pub mod complete;
 pub mod format;
 pub mod runtime;

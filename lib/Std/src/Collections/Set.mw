@@ -43,6 +43,7 @@ fun unwrap s = match s with | Set t -> t
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Maybe (Maybe)
 
 def a = fromList [1; 2; 3]
 

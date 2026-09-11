@@ -633,6 +633,12 @@ pub struct Infer {
 }
 
 impl Infer {
+    /// Name the file diagnostics from here on point into — the driver moves
+    /// this along as it walks the unit's modules.
+    pub fn set_filename(&mut self, filename: impl Into<String>) {
+        self.filename = filename.into();
+    }
+
     pub fn new(filename: impl Into<String>, node_count: usize) -> Self {
         Infer {
             filename: filename.into(),
@@ -1375,12 +1381,12 @@ impl Infer {
             return Some(self.instantiate(&scheme));
         }
         Some(match &*name {
-            "Nil" => Type::list(self.arena.fresh()),
-            "Cons" => {
+            "List.Nil" => Type::list(self.arena.fresh()),
+            "List.Cons" => {
                 let a = self.arena.fresh();
                 Type::func(vec![a.clone(), Type::list(a.clone())], Type::list(a))
             }
-            "True" | "False" => Type::bool(),
+            "Bool.True" | "Bool.False" => Type::bool(),
             _ => return None,
         })
     }
@@ -1441,7 +1447,7 @@ impl Infer {
                         .iter()
                         .map(|(n, t)| (Some(*n), ty_of(t, &params)))
                         .collect();
-                    self.record_ctor(rd.name, rd.name, &quant, &head, &fields);
+                    self.record_ctor(rd.name, rd.ctor, &quant, &head, &fields);
                 }
                 hir::Decl::Effect(ed) => {
                     let params = param_map(&ed.params);
@@ -2409,6 +2415,19 @@ pub struct Renderer {
 impl Renderer {
     pub fn new() -> Renderer {
         Renderer::default()
+    }
+
+    /// A function's *result*, as it would read after the last arrow: the return
+    /// type, then the arrow's latent effect if it has one.
+    ///
+    /// Needed because an effect is a property of the arrow, not of the type it
+    /// returns. Rendering the body's type alone loses it, and a result that
+    /// silently drops `! { io | e }` is worse than no annotation at all —
+    /// it reads as a claim that the function is pure.
+    pub fn render_result(&mut self, ret: &Type, eff: &Type) -> String {
+        let mut out = self.render(ret);
+        let _ = write_effect_suffix(&mut out, eff, &mut self.namer, &HashSet::new());
+        out
     }
 
     pub fn render(&mut self, ty: &Type) -> String {

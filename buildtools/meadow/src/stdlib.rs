@@ -221,6 +221,10 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
 /// Fold the separately-compiled `Std` modules into one package. The `prelude`
 /// module's exports (path `[]`) become the names a dependent gets unqualified.
 fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
+    // The sub-units were compiled in a chain, each above the last, so the
+    // bundle's range is simply the span of all of them.
+    let lo = subs.iter().map(|s| s.vars.start).min().unwrap_or(0);
+    let hi = subs.iter().map(|s| s.vars.end).max().unwrap_or(0);
     let mut defs = Vec::new();
     let mut modules = Vec::new();
     let mut ctor_fields = HashMap::new();
@@ -228,9 +232,13 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut types = TypeTable::default();
     let mut exports: Vec<Export> = Vec::new();
     let mut prelude_names: Vec<InternedString> = Vec::new();
+    // Unioned across the sub-units, which in practice means `prelude.mw`'s:
+    // it is the only one that `@pub use`s a type.
+    let mut flat_ctor_types: Vec<InternedString> = Vec::new();
     let mut tests = Vec::new();
 
     for sub in subs {
+        flat_ctor_types.extend(sub.flat_ctor_types.iter().copied());
         defs.extend(sub.defs);
         modules.extend(sub.modules);
         ctor_fields.extend(sub.ctor_fields);
@@ -245,8 +253,13 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         }
     }
 
+    flat_ctor_types.sort_by_key(|n| n.to_string());
+    flat_ctor_types.dedup();
+
     CompiledPackage {
         id: 0,
+        flat_ctor_types,
+        vars: lo..hi,
         name,
         modules,
         types,

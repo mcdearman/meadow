@@ -51,11 +51,11 @@ impl Build {
     }
 
     fn ok(v: Build) -> Build {
-        Build::Data("Ok", vec![v])
+        Build::Data("Result.Ok", vec![v])
     }
 
     fn error(msg: String) -> Build {
-        Build::Data("Err", vec![Build::Str(msg)])
+        Build::Data("Result.Err", vec![Build::Str(msg)])
     }
 
     /// How many heap slots the whole tree needs.
@@ -111,8 +111,8 @@ impl Vm<'_> {
             }
             Build::List(xs) => {
                 let items: Vec<Value> = xs.into_iter().map(|x| self.build_here(x)).collect();
-                let nil = self.ctor_tag("Nil");
-                let cons = self.ctor_tag("Cons");
+                let nil = self.ctor_tag("List.Nil");
+                let cons = self.ctor_tag("List.Cons");
                 let mut tail = Value::Obj(self.heap.alloc(Kind::Data, nil, &[]));
                 for head in items.into_iter().rev() {
                     tail = Value::Obj(self.heap.alloc(Kind::Data, cons, &[head, tail]));
@@ -163,8 +163,8 @@ impl Vm<'_> {
             return err(format!("{what}: expected a Maybe, got {}", self.show(v)));
         };
         match self.program.ctor(self.heap.meta(a)).as_deref().map(|s| s.to_string()) {
-            Some(n) if n == "None" && self.heap.len(a) == 0 => Ok(None),
-            Some(n) if n == "Just" && self.heap.len(a) == 1 => Ok(Some(self.heap.field(a, 0))),
+            Some(n) if n == "Maybe.None" && self.heap.len(a) == 0 => Ok(None),
+            Some(n) if n == "Maybe.Just" && self.heap.len(a) == 1 => Ok(Some(self.heap.field(a, 0))),
             _ => err(format!("{what}: expected a Maybe, got {}", self.show(v))),
         }
     }
@@ -338,8 +338,8 @@ impl Vm<'_> {
                     .collect::<Vec<_>>(),
             ),
             "getEnv" => match std::env::var(&*self.str_arg(&what, arg)?) {
-                Ok(v) => Build::Data("Just", vec![Build::Str(v)]),
-                Err(_) => Build::Data("None", vec![]),
+                Ok(v) => Build::Data("Maybe.Just", vec![Build::Str(v)]),
+                Err(_) => Build::Data("Maybe.None", vec![]),
             },
             "setEnv" => {
                 let t = self.tuple_arg(&what, arg, 2)?;
@@ -435,11 +435,11 @@ impl Vm<'_> {
                 match std::io::stdin().lock().read_line(&mut line) {
                     // Zero bytes is end of input, not an empty line: an empty
                     // line still carries its terminator.
-                    Ok(0) => Build::Data("None", vec![]),
+                    Ok(0) => Build::Data("Maybe.None", vec![]),
                     Ok(_) => {
                         let line = line.strip_suffix('\n').unwrap_or(&line);
                         let line = line.strip_suffix('\r').unwrap_or(line);
-                        Build::Data("Just", vec![Build::Str(line.to_string())])
+                        Build::Data("Maybe.Just", vec![Build::Str(line.to_string())])
                     }
                     Err(e) => return err(format!("Console.readLine: {e}")),
                 }

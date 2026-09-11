@@ -1280,7 +1280,7 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
                 Value::Str(s) => *s,
                 other => return err(format!("`bytesFromHex` expects a String, got {other}")),
             };
-            let none = || Value::ctor(InternedString::from("None"), vec![]);
+            let none = || Value::ctor(InternedString::from("Maybe.None"), vec![]);
             let bytes = s.as_bytes();
             if bytes.len() % 2 != 0 {
                 return Ok(none());
@@ -1295,7 +1295,7 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
                 }
             }
             Ok(Value::ctor(
-                InternedString::from("Just"),
+                InternedString::from("Maybe.Just"),
                 vec![Value::Array(Rc::new(out))],
             ))
         }
@@ -1347,10 +1347,10 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     use std::path::Path;
 
     let sv = |s: String| Value::Str(InternedString::from(s));
-    let ok = |v: Value| Value::ctor(InternedString::from("Ok"), vec![v]);
+    let ok = |v: Value| Value::ctor(InternedString::from("Result.Ok"), vec![v]);
     let ioerr = |e: std::io::Error| {
         Value::ctor(
-            InternedString::from("Err"),
+            InternedString::from("Result.Err"),
             vec![Value::Str(InternedString::from(e.to_string()))],
         )
     };
@@ -1457,10 +1457,10 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     use std::process::Command as Proc;
 
     let sv = |s: String| Value::Str(InternedString::from(s));
-    let ok = |v: Value| Value::ctor(InternedString::from("Ok"), vec![v]);
-    let errv = |m: String| Value::ctor(InternedString::from("Err"), vec![sv(m)]);
-    let just = |v: Value| Value::ctor(InternedString::from("Just"), vec![v]);
-    let none = || Value::ctor(InternedString::from("None"), vec![]);
+    let ok = |v: Value| Value::ctor(InternedString::from("Result.Ok"), vec![v]);
+    let errv = |m: String| Value::ctor(InternedString::from("Result.Err"), vec![sv(m)]);
+    let just = |v: Value| Value::ctor(InternedString::from("Maybe.Just"), vec![v]);
+    let none = || Value::ctor(InternedString::from("Maybe.None"), vec![]);
 
     let as_str = |v: &Value| -> Result<InternedString, RuntimeError> {
         match v {
@@ -1476,8 +1476,8 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     }
     let as_cwd = |v: &Value| -> Result<Option<InternedString>, RuntimeError> {
         match v {
-            Value::Ctor(n, args) if &**n == "None" && args.is_empty() => Ok(None),
-            Value::Ctor(n, args) if &**n == "Just" && args.len() == 1 => {
+            Value::Ctor(n, args) if &**n == "Maybe.None" && args.is_empty() => Ok(None),
+            Value::Ctor(n, args) if &**n == "Maybe.Just" && args.len() == 1 => {
                 Ok(Some(as_str(&args[0])?))
             }
             other => err(format!(
@@ -1569,13 +1569,13 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
 // `Value::Bool`.
 
 fn nil_value() -> Value {
-    Value::ctor(InternedString::from("Nil"), vec![])
+    Value::ctor(InternedString::from("List.Nil"), vec![])
 }
 
 /// Build a `Cons`/`Nil` chain from `items`, in order.
 fn list_value(items: Vec<Value>) -> Value {
     items.into_iter().rfold(nil_value(), |tail, head| {
-        Value::ctor(InternedString::from("Cons"), vec![head, tail])
+        Value::ctor(InternedString::from("List.Cons"), vec![head, tail])
     })
 }
 
@@ -1585,8 +1585,8 @@ fn list_items(v: &Value) -> Option<Vec<Value>> {
     let mut cur = v;
     loop {
         match cur {
-            Value::Ctor(n, args) if &**n == "Nil" && args.is_empty() => return Some(out),
-            Value::Ctor(n, args) if &**n == "Cons" && args.len() == 2 => {
+            Value::Ctor(n, args) if &**n == "List.Nil" && args.is_empty() => return Some(out),
+            Value::Ctor(n, args) if &**n == "List.Cons" && args.len() == 2 => {
                 out.push(args[0].clone());
                 cur = &args[1];
             }
@@ -1598,20 +1598,33 @@ fn list_items(v: &Value) -> Option<Vec<Value>> {
 /// Names of the outer `Std.Collections.Vector` constructors — the values `[…]`
 /// literal syntax produces. Their internal shape varies with how the vector was
 /// built, so [`Display`] and [`value_eq`] flatten them to their element sequence.
+/// A constructor as a reader wants to see it: `Maybe.Just` prints as `Just`.
+///
+/// The canonical name exists so that two types may each own a `Leaf`; a person
+/// reading output already has the context that disambiguates, so the qualifier
+/// would be noise. `meadow_rts::show` strips it the same way, and the
+/// differential tests compare the two machines' output, so they have to agree.
+fn bare_ctor(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((_, c)) => c,
+        None => name,
+    }
+}
+
 fn is_vector_ctor(name: &str) -> bool {
-    matches!(name, "VEmpty" | "VSingle" | "VFull")
+    matches!(name, "Vector.Empty" | "Vector.Single" | "Vector.Full")
 }
 
 /// Flatten a `Vector` value to its elements, in order. `None` if `v` is not a
 /// recognizable vector (wrong ctor / arity / field types).
 fn vector_elems(v: &Value) -> Option<Vec<Value>> {
     match v {
-        Value::Ctor(n, args) if &**n == "VEmpty" && args.is_empty() => Some(Vec::new()),
-        Value::Ctor(n, args) if &**n == "VSingle" && args.len() == 1 => match &args[0] {
+        Value::Ctor(n, args) if &**n == "Vector.Empty" && args.is_empty() => Some(Vec::new()),
+        Value::Ctor(n, args) if &**n == "Vector.Single" && args.len() == 1 => match &args[0] {
             Value::Array(xs) => Some(xs.iter().cloned().collect()),
             _ => None,
         },
-        Value::Ctor(n, args) if &**n == "VFull" && args.len() == 7 => {
+        Value::Ctor(n, args) if &**n == "Vector.Full" && args.len() == 7 => {
             let mut out = Vec::new();
             for i in [2usize, 3] {
                 match &args[i] {
@@ -1634,14 +1647,14 @@ fn vector_elems(v: &Value) -> Option<Vec<Value>> {
 
 fn vector_node_elems(n: &Value, out: &mut Vec<Value>) -> Option<()> {
     match n {
-        Value::Ctor(name, args) if &**name == "VLeaf" && args.len() == 1 => match &args[0] {
+        Value::Ctor(name, args) if &**name == "VNode.Leaf" && args.len() == 1 => match &args[0] {
             Value::Array(xs) => {
                 out.extend(xs.iter().cloned());
                 Some(())
             }
             _ => None,
         },
-        Value::Ctor(name, args) if &**name == "VBranch" && args.len() == 2 => match &args[1] {
+        Value::Ctor(name, args) if &**name == "VNode.Branch" && args.len() == 2 => match &args[1] {
             Value::Array(kids) => {
                 for k in kids.iter() {
                     vector_node_elems(k, out)?;
@@ -1779,7 +1792,7 @@ impl fmt::Display for Value {
             // `Std.Collections.List` values print in their own literal syntax:
             // `[1; 2; 3]`. The comma form `[1, 2, 3]` is a `Vector`, and
             // `#[1, 2, 3]` an `Array`.
-            Value::Ctor(name, _) if matches!(&**name, "Nil" | "Cons") => {
+            Value::Ctor(name, _) if matches!(&**name, "List.Nil" | "List.Cons") => {
                 if let Some(xs) = list_items(self) {
                     f.write_str("[")?;
                     for (i, v) in xs.iter().enumerate() {
@@ -1790,7 +1803,7 @@ impl fmt::Display for Value {
                     }
                     return f.write_str("]");
                 }
-                write!(f, "{name}(..)")
+                write!(f, "{}(..)", bare_ctor(name))
             }
             // `Std.Collections.Vector` values print like a list: `[1, 2, 3]`.
             Value::Ctor(name, _) if is_vector_ctor(name) => {
@@ -1804,11 +1817,11 @@ impl fmt::Display for Value {
                     }
                     return f.write_str("]");
                 }
-                write!(f, "{name}(..)")
+                write!(f, "{}(..)", bare_ctor(name))
             }
-            Value::Ctor(name, args) if args.is_empty() => write!(f, "{name}"),
+            Value::Ctor(name, args) if args.is_empty() => write!(f, "{}", bare_ctor(name)),
             Value::Ctor(name, args) => {
-                write!(f, "{name}(")?;
+                write!(f, "{}(", bare_ctor(name))?;
                 for (i, v) in args.iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
@@ -1898,12 +1911,12 @@ fn native_console(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             match std::io::stdin().lock().read_line(&mut line) {
                 // Zero bytes is end of input, not an empty line: an empty line
                 // still carries its terminator.
-                Ok(0) => Ok(Value::ctor(InternedString::from("None"), vec![])),
+                Ok(0) => Ok(Value::ctor(InternedString::from("Maybe.None"), vec![])),
                 Ok(_) => {
                     let line = line.strip_suffix('\n').unwrap_or(&line);
                     let line = line.strip_suffix('\r').unwrap_or(line);
                     Ok(Value::ctor(
-                        InternedString::from("Just"),
+                        InternedString::from("Maybe.Just"),
                         vec![Value::Str(InternedString::from(line))],
                     ))
                 }
@@ -1950,8 +1963,15 @@ mod tests {
     use super::*;
     use meadow_core::{HClause, Lit, Prim, Program, Term};
 
+    /// A fresh variable for a hand-built test term.
+    ///
+    /// Synthetic because that is what these are: terms written by hand, not
+    /// minted by a compilation unit. Counted here rather than globally, which
+    /// is all these tests ever wanted from the old `VarId::fresh`.
     fn v() -> Var {
-        meadow_core::Var::fresh()
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        Var::synthetic(NEXT.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Evaluate a single term (as `def main = term`, entry `main`).
@@ -2002,8 +2022,8 @@ mod tests {
     #[test]
     fn list_cons_prepends() {
         // Lists are plain `Std` constructors: `Cons 0 (Cons 1 (Cons 2 Nil))`.
-        let cons = |h: Term, t: Term| Term::Ctor("Cons".into(), vec![h, t]);
-        let nil = Term::Ctor("Nil".into(), vec![]);
+        let cons = |h: Term, t: Term| Term::Ctor("List.Cons".into(), vec![h, t]);
+        let nil = Term::Ctor("List.Nil".into(), vec![]);
         let term = cons(
             Term::Lit(Lit::Int(0)),
             cons(Term::Lit(Lit::Int(1)), cons(Term::Lit(Lit::Int(2)), nil)),
@@ -2114,7 +2134,7 @@ mod tests {
         assert_eq!(Value::Unit.to_string(), "()");
         assert_eq!(Value::Bool(true).to_string(), "true");
         assert_eq!(
-            Value::ctor("Just".into(), vec![Value::Int(3)]).to_string(),
+            Value::ctor("Maybe.Just".into(), vec![Value::Int(3)]).to_string(),
             "Just(3)"
         );
     }

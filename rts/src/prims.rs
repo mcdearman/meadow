@@ -428,14 +428,14 @@ impl Vm<'_> {
                 }
                 if !ok {
                     self.ensure(1);
-                    self.data("None", &[])
+                    self.data("Maybe.None", &[])
                 } else {
                     // The array first, then `Just` around it — with room for
                     // both reserved up front, so the array cannot move in
                     // between.
                     self.ensure(2 + out.len() + 1);
                     let arr = Value::Obj(self.heap.alloc(Kind::Array, 0, &out));
-                    self.data("Just", &[arr])
+                    self.data("Maybe.Just", &[arr])
                 }
             }
             CharCode => match arg(self, 0) {

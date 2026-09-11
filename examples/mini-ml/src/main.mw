@@ -1,0 +1,194 @@
+-- mini-ml: a toy ML, in about 500 lines of Meadow.
+--
+--   meadow run examples/mini-ml          -- a REPL
+--   meadow test examples/mini-ml         -- the tests below
+--
+-- Four files, one per pass:
+--
+--   Syntax.mw   the expression and type trees
+--   Parser.mw   source text to `Expr`, with `Std.String.Parse`
+--   Infer.mw    Hindley-Milner, Algorithm J, with `Mut` for type variables
+--   Eval.mw     a tree-walking interpreter, with `Mut` to tie `let rec`
+--
+-- Each module is its own namespace, as in Rust: the package is the compilation
+-- unit, but a sibling's names arrive through a `use`, never for free.
+--
+-- The language: integers, booleans, `fun`, application, `let`, `let rec`, `if`,
+-- and the usual arithmetic and comparisons. Enough to show let-polymorphism and
+-- the occurs check, which is the point; not enough to write anything in.
+--
+--   let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10
+--   let id = fun x -> x in if id true then id 1 else 2
+--   fun x -> x x                      -- rejected: occurs check
+
+use Syntax (Expr)
+use Parser (parse)
+use Infer (typeOf)
+use Eval (Value, run, showValue)
+use Std.Test (assertEq)
+use Std.Result (Result, Ok, Err, isErr)
+use Std.Console (prompt, withInput)
+use Std.String as S
+use Std.Maybe (Maybe, Just, None)
+
+-- Type-check, then run. Nothing reaches `eval` that did not type.
+@pub fun runSource src =
+  match parse src with
+  | Err e -> Err e
+  | Ok ast ->
+      match typeOf ast with
+      | Err e -> Err e
+      | Ok ty -> run ast
+
+fun typeOfSource src =
+  match parse src with
+  | Err e -> Err e
+  | Ok ast -> typeOf ast
+
+-- What the REPL prints for one line: the type, then the value, or the first
+-- thing that went wrong. Separated out so a test can check it without a
+-- terminal.
+@pub fun replLine src =
+  match parse src with
+  | Err e -> S.concat "parse error: " e
+  | Ok ast ->
+      match typeOf ast with
+      | Err e -> S.concat "type error: " e
+      | Ok ty ->
+          match run ast with
+          | Err e -> S.concat "run-time error: " e
+          | Ok v -> S.concatAll [v, " : ", ty]
+
+fun loop u =
+  match prompt "> " with
+  | None -> ()
+  | Just line ->
+      let trimmed = S.trim line in
+      if trimmed == "" then loop ()
+      else if trimmed == ":q" then ()
+      else
+        let ignored = println (replLine trimmed) in
+        loop ()
+
+@pub def main =
+  let ignored = println "mini-ml. An expression per line, `:q` or Ctrl-D to stop." in
+  loop ()
+
+-- --- tests --------------------------------------------------------------------
+--
+-- The parser, the checker and the evaluator each get their own, and the REPL
+-- gets one that drives the whole thing through `Console` -- no terminal, the
+-- same `loop` that `main` calls.
+
+@test fun parsesArithmetic u =
+  assertEq (show (parse "1 + 2 * 3")) (show (Ok (Expr.Bin "+" (Expr.Int 1) (Expr.Bin "*" (Expr.Int 2) (Expr.Int 3))))) "precedence"
+
+@test fun parsesLet u =
+  assertEq (show (parse "let x = 1 in x")) (show (Ok (Expr.Let "x" (Expr.Int 1) (Expr.Var "x")))) "let"
+
+@test fun parsesLambdaAndApp u =
+  assertEq (show (parse "(fun x y -> x) 1 2"))
+           (show (Ok (Expr.App (Expr.App (Expr.Lam "x" (Expr.Lam "y" (Expr.Var "x"))) (Expr.Int 1)) (Expr.Int 2)))) "curried"
+
+@test fun parsesLetRec u =
+  assertEq (show (parse "let rec f n = f n in f 1"))
+           (show (Ok (Expr.LetRec "f" "n" (Expr.App (Expr.Var "f") (Expr.Var "n")) (Expr.App (Expr.Var "f") (Expr.Int 1))))) "let rec"
+
+@test fun keywordsAreNotIdentifiers u =
+  assertEq (show (parse "letter")) (show (Ok (Expr.Var "letter"))) "`let` is a prefix of `letter`"
+
+-- --- inference ----------------------------------------------------------------
+
+-- Type-check, then run. Nothing reaches `eval` that did not type.
+@pub fun runSource src =
+  match parse src with
+  | Err e -> Err e
+  | Ok ast ->
+      match typeOf ast with
+      | Err e -> Err e
+      | Ok ty -> run ast
+
+fun typeOfSource src =
+  match parse src with
+  | Err e -> Err e
+  | Ok ast -> typeOf ast
+
+@test fun infersSimpleTypes u =
+  let got = map typeOfSource ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"] in
+  assertEq got [Ok "Int", Ok "Bool", Ok "(Int -> Int)", Ok "Int"] "ground types"
+
+@test fun infersPolymorphicIdentity u =
+  assertEq (typeOfSource "fun x -> x") (Ok "(t0 -> t0)") "identity"
+
+@test fun letIsGeneralized u =
+  -- `id` is used at two different types, which only works if the `let`
+  -- generalized it.
+  assertEq (typeOfSource "let id = fun x -> x in if id true then id 1 else 2")
+           (Ok "Int") "let-polymorphism"
+
+@test fun lambdaIsNotGeneralized u =
+  -- The same function bound by a lambda instead: monomorphic, so using it at
+  -- two types must fail. This is the difference `let` makes.
+  assertEq (isErr (typeOfSource "(fun id -> if id true then id 1 else 2) (fun x -> x)"))
+           True "lambda-bound names are monomorphic"
+
+@test fun occursCheckFires u =
+  assertEq (typeOfSource "fun x -> x x")
+           (Err "occurs check: a type would contain itself") "self-application"
+
+@test fun mismatchIsReported u =
+  assertEq (typeOfSource "1 + true") (Err "cannot unify Bool with Int") "adding a bool"
+
+@test fun unboundIsReported u =
+  assertEq (typeOfSource "x + 1") (Err "unbound variable: x") "unbound"
+
+@test fun recursiveFunctionsType u =
+  assertEq (typeOfSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5")
+           (Ok "Int") "factorial"
+
+-- --- evaluation ---------------------------------------------------------------
+
+@test fun evaluatesArithmetic u =
+  assertEq (map runSource ["1 + 2 * 3", "(1 + 2) * 3", "7 / 2", "1 < 2"])
+           [Ok "7", Ok "9", Ok "3", Ok "true"] "arithmetic"
+
+@test fun evaluatesClosures u =
+  assertEq (runSource "let add = fun x y -> x + y in let inc = add 1 in inc 41")
+           (Ok "42") "partial application captures"
+
+@test fun evaluatesRecursion u =
+  assertEq (runSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10")
+           (Ok "3628800") "factorial"
+
+@test fun evaluatesMutualShadowing u =
+  assertEq (runSource "let x = 1 in let x = x + 1 in x") (Ok "2") "shadowing sees the old binding"
+
+@test fun divisionByZeroIsCaught u =
+  assertEq (runSource "1 / 0") (Err "division by zero") "a run-time error, not a crash"
+
+-- --- the REPL, end to end -----------------------------------------------------
+
+@test fun replReportsTypeAndValue u =
+  assertEq (replLine "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5")
+           "120 : Int" "value and type"
+
+@test fun replReportsEachKindOfFailure u =
+  let got = map replLine ["1 +", "1 + true", "1 / 0"] in
+  assertEq (map (\s -> S.contains ":" s) got) [True, True, True] "all three are reported"
+
+@test fun replRunsUnderWithInput u =
+  -- `main`'s own loop, driven by the `Console` effect: no terminal involved.
+  assertEq (withInput ["1 + 1"; "let id = fun x -> x in id 41"; ":q"] loop) ()
+           "a session plays through"
+
+@test fun levelsPreventUnsoundGeneralization u =
+  -- `g`'s type comes from the lambda-bound `f`, so `let` must *not* generalize
+  -- it. Quantifying everything free in the right-hand side would accept this;
+  -- levels are exactly what reject it.
+  assertEq (isErr (typeOfSource "fun f -> let g = f in if g true then g 1 else 2"))
+           True "a let whose type escaped into the environment"
+
+@test fun levelsStillGeneralizeWhatTheyShould u =
+  -- The same shape, but the right-hand side really is local.
+  assertEq (typeOfSource "let g = fun x -> x in if g true then g 1 else 2")
+           (Ok "Int") "a genuinely local let"

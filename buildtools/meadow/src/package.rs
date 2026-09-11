@@ -242,6 +242,29 @@ impl Manifest {
     }
 }
 
+/// The package directory a file belongs to: the nearest ancestor holding a
+/// `meadow.toml`, or — for a package that has no manifest — the parent of the
+/// `src` directory it sits under.
+///
+/// `None` when the file is not in a package at all, which is an ordinary thing
+/// for an editor to be shown: a scratch file, or a `.mw` opened on its own.
+pub fn enclosing_root(file: &Path) -> Option<PathBuf> {
+    let mut dir = file.parent()?;
+    loop {
+        if dir.join("meadow.toml").is_file() {
+            return Some(dir.to_path_buf());
+        }
+        // No manifest anywhere above: `src/` is the other thing that marks a
+        // package root, and it is what `discover_modules` looks for.
+        if dir.file_name().and_then(|n| n.to_str()) == Some("src")
+            && dir.parent().is_some_and(|p| p.join("src").is_dir())
+        {
+            return dir.parent().map(Path::to_path_buf);
+        }
+        dir = dir.parent()?;
+    }
+}
+
 /// A deliberately small line-based TOML reader — enough for `[package]` /
 /// `[dependencies]` with string or `{ path = "…" }` values.
 fn parse_manifest(text: &str, dir: &Path) -> Manifest {
@@ -410,7 +433,10 @@ fn collect_mw(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-fn canonical(path: &Path) -> PathBuf {
+/// A path as the filesystem itself would name it — symlinks and `..` resolved —
+/// so that two ways of naming one file compare equal. An editor's URI and a
+/// discovered module have to meet somewhere, and this is where.
+pub(crate) fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 

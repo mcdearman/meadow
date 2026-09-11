@@ -153,6 +153,8 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 use Std.State (execState, modify)
 -- `[a, b]` in the tests below desugars to a `vecFromArray` call.
 use Std.Collections.Vector (vecFromArray)
+use Std.Either (Either)
+use Std.Maybe (Maybe)
 
 fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n - 1)
 

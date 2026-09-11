@@ -23,7 +23,7 @@
 -- terminal. That is not an error, so a loop ends by pattern-matching it rather
 -- than by catching anything.
 
-use Std.Maybe (unwrapOr)
+use Std.Maybe (Maybe, unwrapOr)
 use Std.Test (assertEq)
 use Std.String as S
 use Std.Collections.List as L

@@ -5,7 +5,7 @@
 //! and a cancellation protocol would be more machinery than the problem needs.
 //! `Std` is compiled once at startup, which is the only slow part.
 
-use crate::analysis::{Analysis, HintPart, Loc, Std};
+use crate::analysis::{Analysis, HintPart, Loc, PackageLoader, Std};
 use crate::pos::LineIndex;
 use crate::tokens;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
@@ -26,9 +26,16 @@ pub fn run(
     std_packages: Vec<CompiledPackage>,
     std_modules: Vec<(String, CompiledPackage)>,
     std_src_root: Option<std::path::PathBuf>,
+    load_package: Option<PackageLoader>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let (connection, io_threads) = Connection::stdio();
-    serve(&connection, std_packages, std_modules, std_src_root)?;
+    serve(
+        &connection,
+        std_packages,
+        std_modules,
+        std_src_root,
+        load_package,
+    )?;
     // The writer thread runs until its channel disconnects, which only happens
     // when the last `Connection` is gone. Joining while this one is still in
     // scope hangs the process — an editor would leave a stray server behind on
@@ -49,12 +56,16 @@ pub fn serve(
     // Where the embedded `Std` sources were written out, if anywhere — what
     // makes a definition inside the library a file an editor can open.
     std_src_root: Option<std::path::PathBuf>,
+    // How to find the rest of the package a document belongs to. `None` — as in
+    // a test that has no files — analyses every document on its own.
+    load_package: Option<PackageLoader>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     handshake(connection)?;
     let mut server = Server {
         std: Std::new(std_packages, std_modules, std_src_root),
         docs: HashMap::new(),
         indexes: HashMap::new(),
+        load_package,
     };
     server.main_loop(connection)
 }
@@ -141,6 +152,8 @@ struct Server {
     /// definition can land in. Keyed by source id, and never invalidated: see
     /// [`Server::range_in`].
     indexes: HashMap<u32, LineIndex>,
+    /// How to find the package a document belongs to, when it belongs to one.
+    load_package: Option<PackageLoader>,
 }
 
 impl Server {
@@ -205,7 +218,12 @@ impl Server {
         // would fill with `already defined`.
         let analysis = match self.std.module_at(uri.as_str()) {
             Some(i) => self.std.analyse_module(i, &text),
-            None => self.std.analyse(&text),
+            // A file inside a package is analysed as part of it, so that a
+            // `use` of a sibling module resolves. Everything else — a scratch
+            // file, a document with no package around it — stands alone.
+            None => self
+                .in_package(&uri, &text)
+                .unwrap_or_else(|| self.std.analyse(&text)),
         };
         let index = LineIndex::new(&text);
         self.docs.insert(
@@ -216,6 +234,17 @@ impl Server {
                 index,
             },
         );
+    }
+
+    /// Analyse `text` as the module of its package that it is, if it is one.
+    fn in_package(&self, uri: &Uri, text: &str) -> Option<Analysis> {
+        let load = self.load_package?;
+        let path = uri_to_path(uri)?;
+        // The same spelling the loader uses, or the open document will not
+        // match the module it is.
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        let sources = load(&path)?;
+        self.std.analyse_package(&sources, &path, text)
     }
 
     fn publish(&self, uri: &Uri) -> Vec<Diagnostic> {
@@ -400,6 +429,7 @@ impl Server {
                             .names
                             .types
                             .get(name)
+                            .or_else(|| doc.analysis.wider_names.types.get(name))
                             .copied()
                             .or_else(|| self.std.declared_names().types.get(name).copied())
                     };
@@ -446,11 +476,38 @@ impl Server {
     /// these are dependencies, and an edit to one recompiles it into a new
     /// [`Source`] with a new id rather than mutating this one.
     fn range_in(&mut self, source: Source, span: Span) -> ((u32, u32), (u32, u32)) {
+        // A source id is minted per compile, and a package is recompiled on
+        // every keystroke, so these accumulate — slowly, and forever. Nothing
+        // here is worth remembering that long: drop the lot and rebuild the
+        // few that are asked for again.
+        if self.indexes.len() > 64 {
+            self.indexes.clear();
+        }
         self.indexes
             .entry(source.id)
             .or_insert_with(|| LineIndex::new(&source.content))
             .range(span)
     }
+}
+
+/// The filesystem path a `file://` URI names, or `None` for anything else.
+fn uri_to_path(uri: &Uri) -> Option<std::path::PathBuf> {
+    let s = uri.as_str().strip_prefix("file://")?;
+    // Percent-decoding, on bytes rather than characters: an editor escapes a
+    // non-ASCII path one UTF-8 byte at a time, so decoding per character would
+    // reassemble it wrong.
+    let mut out: Vec<u8> = Vec::with_capacity(s.len());
+    let mut bytes = s.bytes();
+    while let Some(b) = bytes.next() {
+        if b == b'%' {
+            let hi = (bytes.next()? as char).to_digit(16)?;
+            let lo = (bytes.next()? as char).to_digit(16)?;
+            out.push((hi * 16 + lo) as u8);
+        } else {
+            out.push(b);
+        }
+    }
+    Some(std::path::PathBuf::from(String::from_utf8(out).ok()?))
 }
 
 /// A `file://` URI for a path on this machine.

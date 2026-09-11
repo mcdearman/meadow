@@ -14,6 +14,7 @@
 -- is the child's exit code, or `-1` if it was killed by a signal.
 
 use Std.Collections.List (append)
+use Std.Maybe (Maybe)
 
 @pub effect Process {
   -- Run to completion, capturing stdout/stderr.

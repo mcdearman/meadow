@@ -122,6 +122,8 @@
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Maybe (Maybe)
+use Std.Result (Result)
 
 @test fun eitherCollapsesBothSides u =
   let a = assertEq (either (\n -> n + 1) (\s -> 0) (Left 5)) 6 "Left" in

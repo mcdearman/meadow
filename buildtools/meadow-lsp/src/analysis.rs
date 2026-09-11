@@ -6,8 +6,15 @@
 //! is this defined* — is a lookup by position, so this module walks the tree once
 //! and builds the indices the requests need.
 //!
-//! `Std` is compiled once and reused. It takes seconds, and a keystroke cannot
-//! wait for it.
+//! `Std` is compiled once, before the server answers anything, and reused for
+//! the life of the process. Not because it is slow — the whole library is a few
+//! tens of milliseconds — but because a keystroke recompiles the open document
+//! *only*, against that already-compiled library, and that is the whole reason
+//! an edit costs a millisecond or two rather than the cost of the world.
+//!
+//! Note what this is not: there is no incremental compilation here, and none in
+//! the batch compiler either. The unit is small and the dependency is memoised;
+//! nothing is reused between one edit and the next.
 
 use meadow_compiler::{
     diagnostics::Diagnostic,
@@ -188,11 +195,44 @@ pub struct Analysis {
     /// Type names and constructor names, so highlighting can tell `Maybe` from
     /// `Just` — both are capitalised, and only resolution knows which is which.
     pub types_in_scope: std::collections::HashSet<String>,
+    /// Definitions in the *other* modules of this document's package, when it
+    /// was analysed as part of one. Consulted after the document's own and
+    /// before the standard library's, which is the order the resolver saw them
+    /// in: a sibling's name arrives by `use`, and a local binding shadows it.
+    pub wider: DefIndex,
+    /// The same for the package's types and data constructors.
+    pub wider_names: NameIndex,
     /// The throwaway [`Source`] this document was compiled as. A definition
     /// whose `Loc` names a different one is in another file.
     pub source_id: meadow_compiler::source::SourceId,
     pub ctors_in_scope: std::collections::HashSet<String>,
 }
+
+/// The files of one package on disk, as the editor should analyse them.
+///
+/// Built by whoever knows how packages are laid out — `meadow`, which owns
+/// manifest parsing and module discovery and cannot be depended on from here
+/// (it depends on this crate for its `lsp` subcommand). The server asks for one
+/// through [`PackageLoader`] and does not care how it was found.
+pub struct PackageSources {
+    /// The package's name, which is also the first segment of a `use` path
+    /// naming one of its own modules.
+    pub name: InternedString,
+    pub modules: Vec<ModuleFile>,
+}
+
+/// One `.mw` file of a package.
+pub struct ModuleFile {
+    /// Dotted path from the source root; empty for the root module.
+    pub path: Vec<InternedString>,
+    pub name: InternedString,
+    pub file: std::path::PathBuf,
+    pub text: String,
+}
+
+/// How the server finds the package a document belongs to: given any file
+/// inside it, the whole thing, or `None` if the file is not in a package.
+pub type PackageLoader = fn(&std::path::Path) -> Option<PackageSources>;
 
 /// The standard library, compiled once.
 pub struct Std {
@@ -348,6 +388,126 @@ impl Std {
         self.compile(text, name, unit, path, index, &deps, package)
     }
 
+    /// Compile `open`'s package as one unit, with `text` standing in for the
+    /// file on disk.
+    ///
+    /// This is what makes a multi-module package work in an editor. Analysed on
+    /// its own a module cannot see its siblings — the package is the
+    /// compilation unit, and each module is a namespace inside it, so a `use`
+    /// of a sibling has nothing to resolve against and every name it brought in
+    /// is reported undefined. Compiling the package puts them back.
+    ///
+    /// Only the open document's spans are recorded in full: the rest of the
+    /// package is indexed for go-to-definition and nothing else, and its
+    /// diagnostics belong to files the editor did not ask about.
+    pub fn analyse_package(
+        &self,
+        sources: &PackageSources,
+        open: &std::path::Path,
+        text: &str,
+    ) -> Option<Analysis> {
+        let deps: Vec<&CompiledPackage> = self.packages.iter().collect();
+        let mut here: Option<Source> = None;
+        let mut modules: Vec<AstModule> = Vec::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        for m in &sources.modules {
+            let mine = m.file == open;
+            // The open buffer is newer than the file it came from, and it is
+            // the one the editor is asking about.
+            let body = if mine { text } else { &m.text };
+            let name = InternedString::from(m.file.display().to_string());
+            let source = Source::new(SourceKind::File(name), body.into());
+            if mine {
+                here = Some(source);
+            }
+            let lex = tokenize(source);
+            let (ast, perrs) = parser::parse(m.name, source, &lex.tokens);
+            if mine {
+                diagnostics.extend(lex.errors);
+                for e in &perrs {
+                    diagnostics.push(meadow_compiler::diagnostics::from_parse_error(
+                        &name.to_string(),
+                        e,
+                    ));
+                }
+            }
+            if let Some(ast) = ast {
+                modules.push(AstModule {
+                    path: m.path.clone(),
+                    name: m.name,
+                    ast,
+                    source,
+                });
+            }
+        }
+        let here = here?;
+
+        let (pkg, unit_diags) = meadow_compiler::compile_unit_in_package(
+            sources.name,
+            sources.name,
+            1,
+            modules,
+            &deps,
+            Options::debug(),
+        );
+        // A diagnostic names the file it is in, so the ones for the rest of the
+        // package are simply not this document's to report.
+        let mine = here.name().to_string();
+        diagnostics.extend(unit_diags.into_iter().filter(|d| d.filename == mine));
+
+        let mut a = Analysis {
+            source: text.to_string(),
+            source_id: here.id,
+            diagnostics,
+            typed: Vec::new(),
+            defs: Default::default(),
+            refs: Vec::new(),
+            binders: Vec::new(),
+            binding_names: Default::default(),
+            schemes: Default::default(),
+            name_refs: Vec::new(),
+            names: Default::default(),
+            types_in_scope: self.types.clone(),
+            ctors_in_scope: self.ctors.clone(),
+            wider: Default::default(),
+            wider_names: Default::default(),
+        };
+        collect_names(
+            &pkg.data_decls,
+            &mut a.types_in_scope,
+            &mut a.ctors_in_scope,
+        );
+        for e in &pkg.exports {
+            a.binding_names.insert(e.var, e.name.to_string());
+            a.schemes.insert(e.var, e.scheme.to_string());
+        }
+        for m in &pkg.modules {
+            if m.source.id == here.id {
+                let mut w = Walk {
+                    types: Some(&pkg.types),
+                    source: m.source,
+                    namer: meadow_compiler::infer::Renderer::new(),
+                    a: &mut a,
+                };
+                w.module(&m.hir);
+            } else {
+                // A sibling: where its names are, and nothing else.
+                let mut scratch = Analysis::empty();
+                let mut w = Walk {
+                    types: None,
+                    source: m.source,
+                    namer: meadow_compiler::infer::Renderer::new(),
+                    a: &mut scratch,
+                };
+                w.module(&m.hir);
+                a.wider.extend(scratch.defs);
+                a.wider_names.absorb(scratch.names);
+            }
+        }
+        Some(a)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn compile(
         &self,
@@ -398,6 +558,8 @@ impl Std {
             names: Default::default(),
             types_in_scope: self.types.clone(),
             ctors_in_scope: self.ctors.clone(),
+            wider: Default::default(),
+            wider_names: Default::default(),
         };
         collect_names(
             &pkg.data_decls,
@@ -466,6 +628,40 @@ impl Walk<'_> {
     fn hint_type(&mut self, id: hir::NodeId) -> Option<String> {
         let ty = self.types.and_then(|t| t.get(id))?.clone();
         Some(self.namer.render(&ty))
+    }
+
+    /// The declared result of a function of `arity` parameters: what follows
+    /// the last arrow, effect and all.
+    ///
+    /// Read off the *function's* type rather than the body's, because an
+    /// effect belongs to the arrow. `fun logIt x = let _ = println "hi" in x`
+    /// has a body of type `a` and a type of `a -> a ! { io | e }`; hinting the
+    /// body would claim the function is pure.
+    fn result_hint(&mut self, fn_id: hir::NodeId, arity: usize) -> Option<String> {
+        let whole = self.types.and_then(|t| t.get(fn_id))?.clone();
+        let mut ty = whole.clone();
+        let mut effect = meadow_compiler::infer::Type::RowEmpty;
+        for _ in 0..arity {
+            match ty {
+                meadow_compiler::infer::Type::Fun(_, ret, eff) => {
+                    effect = (*eff).clone();
+                    ty = (*ret).clone();
+                }
+                // Fewer arrows than parameters: inference gave up somewhere.
+                _ => return None,
+            }
+        }
+        // An effect that is nothing but a row variable, mentioned nowhere
+        // else, says nothing: *every* pure function has one, and the scheme
+        // printer hides it for the same reason. It is worth showing exactly
+        // when it is shared — `apply2 : (a -> a ! e) -> a -> a ! e` is telling
+        // you the result carries whatever `f` does.
+        if let meadow_compiler::infer::Type::Var(v) = effect {
+            if occurrences(&whole, v) <= 1 {
+                effect = meadow_compiler::infer::Type::RowEmpty;
+            }
+        }
+        Some(self.namer.render_result(&ty, &effect))
     }
 
     /// A binder: remember where it was introduced, and its type if there is one
@@ -592,7 +788,7 @@ impl Walk<'_> {
                 // would be repeating what is on the line.
                 if declared.is_none() {
                     if let (Some(last), Some(rendered)) =
-                        (params.last(), self.hint_type(body.id))
+                        (params.last(), self.result_hint(name.id, params.len()))
                     {
                         self.a.annotate_result(last.span, &rendered);
                     }
@@ -754,7 +950,12 @@ impl Analysis {
         if let Some(var) = self.var_at(offset) {
             // This document before the wider index: a local binding shadows an
             // imported one, and it is the local one the reference resolved to.
-            if let Some(loc) = self.defs.get(&var).or_else(|| fallback.get(&var)) {
+            if let Some(loc) = self
+                .defs
+                .get(&var)
+                .or_else(|| self.wider.get(&var))
+                .or_else(|| fallback.get(&var))
+            {
                 return Some(*loc);
             }
         }
@@ -765,7 +966,10 @@ impl Analysis {
             .iter()
             .filter(|(s, _, _)| covers(*s, offset))
             .min_by_key(|(s, _, _)| s.end - s.start)?;
-        self.names.get(*name, *ns).or_else(|| declared.get(*name, *ns))
+        self.names
+            .get(*name, *ns)
+            .or_else(|| self.wider_names.get(*name, *ns))
+            .or_else(|| declared.get(*name, *ns))
     }
 
     /// Markdown for the hover: a signature, then any doc comment above it.
@@ -840,7 +1044,12 @@ fn collect_names(
         match d.value() {
             hir::Decl::Data(dd) => {
                 types.insert(dd.name.to_string());
-                ctors.extend(dd.variants.iter().map(|v| v.name.to_string()));
+                // Canonical in the HIR (`Maybe.Just`); highlighting matches
+                // against the bare word the source actually contains.
+                ctors.extend(dd.variants.iter().map(|v| {
+                    let n = v.name.to_string();
+                    n.rsplit_once('.').map(|(_, c)| c.to_string()).unwrap_or(n)
+                }));
             }
             hir::Decl::Record(rd) => {
                 types.insert(rd.name.to_string());
@@ -870,6 +1079,8 @@ impl Analysis {
             schemes: Default::default(),
             types_in_scope: Default::default(),
             ctors_in_scope: Default::default(),
+            wider: Default::default(),
+            wider_names: Default::default(),
             source_id: 0,
         }
     }
@@ -914,5 +1125,25 @@ impl Analysis {
                 parts,
             }),
         }
+    }
+}
+
+/// How many times the type variable `v` appears in `ty`.
+///
+/// Used to decide whether a function's latent effect is worth printing — see
+/// [`Walk::result_hint`].
+fn occurrences(ty: &meadow_compiler::infer::Type, v: u32) -> usize {
+    use meadow_compiler::infer::Type::*;
+    match ty {
+        Var(x) => usize::from(*x == v),
+        Bound(_) | RowEmpty => 0,
+        Con(_, args) | Tuple(args) => args.iter().map(|t| occurrences(t, v)).sum(),
+        Fun(ps, r, e) => {
+            ps.iter().map(|t| occurrences(t, v)).sum::<usize>()
+                + occurrences(r, v)
+                + occurrences(e, v)
+        }
+        Record(r) => occurrences(r, v),
+        RowExtend(_, f, rest) => occurrences(f, v) + occurrences(rest, v),
     }
 }

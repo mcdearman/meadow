@@ -837,12 +837,12 @@ version = "0.1.0"
 `meadow run myapp` builds it and evaluates `main`. A single `.mw` file also counts
 as a package, which is why `meadow run hello.mw` works.
 
-### Modules inside one package share a namespace
+### Modules inside one package are separate namespaces
 
-This is the part that catches people. **Every module of a package is compiled as
-one unit with one flat namespace.** Names from `Math.mw` are directly visible in
-`main.mw` with no `use` and no qualifier — and `Math.double` does *not* work,
-because `Math` is not a module you can qualify with:
+The package is the **compilation unit** — every module of it is resolved,
+inferred and lowered together, so two modules may refer to each other and even
+be mutually recursive. But each module is its own **namespace**, as in Rust: a
+sibling's names arrive through a `use`, and never for free.
 
 ```meadow
 -- src/Math.mw
@@ -851,12 +851,43 @@ because `Math` is not a module you can qualify with:
 
 ```meadow
 -- src/main.mw  (a second file in the same package)
-@pub def main = double 21     -- not `Math.double`
+use myapp.Math (double)       -- the package name, then the module
+
+@pub def main = double 21
 ```
 
-The practical consequence is that two modules in the same package cannot both
-define `map`. Qualified access (`Mod.name`) is for **dependencies** — separate
-packages, and the standard library.
+The path starts with the package's own name, which is what `meadow.toml` says —
+`use myapp.Math`. The plain `use Math (double)` works too and means the same
+thing; the longer form is the one to write when it is not obvious that `Math` is
+next door rather than a dependency.
+
+Every `use` form works on a sibling:
+
+```meadow
+use myapp.Math               -- everything it exports, unqualified
+use myapp.Math as M          -- M.double, and nothing unqualified
+use myapp.Math (double)      -- just `double`
+```
+
+Because the namespaces are separate, two modules of one package may both define
+`map`, and a module that wants both can take one of them under an alias.
+
+Naming a **type** in a `use` brings its constructors with it — that is how
+`Expr.Int` becomes writable as `Int`:
+
+```meadow
+-- src/Syntax.mw
+@pub data Expr = Int Int | Add Expr Expr
+```
+
+```meadow
+-- src/Eval.mw
+use myapp.Syntax (Expr)      -- the type, and `Int` / `Add` with it
+
+@pub fun eval e = match e with
+  | Int n -> n
+  | Add a b -> eval a + eval b
+```
 
 ### `@pub` and a gotcha
 
@@ -919,6 +950,11 @@ This is Meadow's most distinctive feature. An **effect** is a set of operations 
 computation may perform; a **handler** decides what they mean. The type system
 tracks which effects an expression can perform, in the `! { ... }` row after the
 arrow.
+
+The payoff is worth stating up front, because it is the reason to bother: code
+that reads and writes the world is written *once*, and a handler decides whether
+"the world" is the real filesystem and the real clock, or a list of strings and
+the number 500. Nothing has to be written twice, and nothing has to be injected.
 
 ### Declaring and performing
 
@@ -988,24 +1024,120 @@ def main = (collected, counted)
 One handler collects the messages, the other counts them, and `work` knows about
 neither.
 
+### Not resuming: early exit
+
+A clause that never calls `k` throws the rest of the computation away. That is the
+whole mechanism behind `Exn`, `Stream.take`, and any "stop now" you write yourself:
+
+```meadow
+use Std.String as S
+
+effect Abort { abort : String -> Unit }
+
+fun search xs =
+  let _ = forEach (\x -> if x < 0 then abort (show x) else ()) xs in
+  "all non-negative"
+
+def main =
+  ( handle search [1, 2, 3] with { abort m k -> S.concat "found " m, return x -> x }
+  , handle search [1, -2, 3] with { abort m k -> S.concat "found " m, return x -> x } )
+```
+
+```
+=> ("all non-negative", "found -2")
+```
+
+Note there is no `break` in the language and none is needed: `forEach` does not
+know it can be interrupted, and is interrupted anyway.
+
+### Which things are effects, and which are not
+
+A fair question is why `println` is not an effect when `readLine` is. Ask the
+compiler:
+
+```meadow
+def main = println "x"
+```
+
+```sh
+$ meadow build hello.mw
+  main : Unit
+```
+
+No `!` row at all — `print` and `println` are plain primitives. Input is an effect
+and output is not, and the asymmetry is deliberate rather than an oversight:
+
+- **Reading** is the thing a test can never be allowed to do for real. A suite
+  that blocks waiting for someone to type is a suite that hangs. So `readLine` is
+  an operation, and `withInput` supplies a script.
+- **Writing** is harmless to let escape. A test that prints is noisy, not broken.
+  Making it an effect would put a `! { Console | e }` on the type of nearly every
+  function anyone writes, for very little.
+
+So there is no `IO` effect in Meadow, and nothing to import to print. If you do
+want to capture output, wrap it in an effect of your own — the `Log` example above
+is exactly that, in nine lines.
+
 ### The standard library's effects
 
-`Std` ships eight, each pairing a real implementation with a handler that fakes it
-— which is the point, since these are exactly the things that are otherwise hard to
-test.
+`Std` ships nine, plus `Mut` for mutable cells. Each pairs a real implementation
+with a handler that fakes it — which is the point, since these are exactly the
+things that are otherwise hard to test.
 
-| Module | Unhandled | Handled with |
-|---|---|---|
-| `Std.Fs` | real filesystem | any `handle` |
-| `Std.Process` | real subprocesses | any `handle` |
-| `Std.Random` | real entropy | `withSeed` — pure, reproducible |
-| `Std.Time` | real clock | `withClock`, `withTickingClock` |
-| `Std.State` | — | `runState`, `evalState`, `execState` |
-| `Std.Exn` | — | `toResult`, `catch`, `withDefault` |
-| `Std.Stream` | — | `toList`, `toVec`, `fold`, `take` … |
-| `Std.Test` | fails the test | `didFail` |
+| Module | Operations | Unhandled | Handled with |
+|---|---|---|---|
+| `Std.Ref` (`Mut`) | via `newRef` / `getRef` / `setRef` | real cells | — |
+| `Std.State` | `get`, `put` | — | `runState`, `evalState`, `execState` |
+| `Std.Console` | `readLine` | real stdin | `withInput` |
+| `Std.Exn` | `throw` | aborts | `toResult`, `catch`, `withDefault`, `toMaybe` |
+| `Std.Yield` | `yield` | — | everything in `Std.Stream` |
+| `Std.Random` | `nextInt`, `intBetween`, … | real entropy | `withSeed`, `withSeedFrom` |
+| `Std.Time` | `now`, `monotonic`, `sleep` | real clock | `withClock`, `withTickingClock` |
+| `Std.Fs` | `readToString`, `writeString`, … | real filesystem | any `handle` |
+| `Std.Process` | `spawn`, `status`, `argv`, … | real subprocesses | any `handle` |
+| `Std.Test` | `fail` | fails the test | `didFail` |
 
-#### State
+The VM does **not** discharge an unhandled `Fs`, `Process`, `Random` or `Time`
+operation — those reach the real world only on the CEK machine. In practice that
+means a `meadow test` run cannot touch your filesystem by accident.
+
+#### Mut — the one mutable cell
+
+`newRef`, `getRef` and `setRef` are primitives and always in scope. Every one of
+them carries the `Mut` effect, so a function that mutates says so in its type and
+a pure one still reads as pure:
+
+```meadow
+use Std.Ref (modify, repeatN)
+
+fun countUp n =
+  let r = newRef 0 in
+  let ignored = repeatN n (\u -> modify r (\x -> x + 1)) in
+  getRef r
+
+def main = countUp 5
+```
+
+```
+=> 5
+```
+
+`countUp : Int -> Int ! { Mut | e }`. There is no handler for `Mut` — it is an
+effect so that it shows up in types, not so that it can be reinterpreted.
+
+That typing also keeps mutation *sound*. Meadow generalizes a binding only when
+its right-hand side is pure — an effect-based value restriction rather than ML's
+syntactic one — so `def r = newRef []` is never given `forall a. Ref [a]`, and the
+classic trick of storing at one type and reading at another does not typecheck.
+
+One surprise worth knowing: a `Ref` has identity. `==` on two of them compares
+cells, not contents, so `newRef 1 == newRef 1` is `False`. Nothing else in the
+language behaves that way.
+
+#### State — a value threaded for you
+
+Where `Mut` is a real cell, `State` is a value passed along invisibly and handed
+back at the end. Nothing is allocated and nothing is shared.
 
 ```meadow
 use Std.State (get, put, modify, runState, evalState, execState)
@@ -1022,63 +1154,281 @@ def main = runState 0 (\u -> let a = tick () in let b = tick () in get ())
 => (2, 2)
 ```
 
+`runState` returns `(value, finalState)`; `evalState` keeps the value, `execState`
+the state. `modify f` is `put (f (get ()))` and `gets f` is `f (get ())`.
+
+Reach for `State` when the state is part of what a computation *means* and you
+want it out of the signatures; reach for `Mut` when you want a cell with identity,
+or speed.
+
+#### Console — input, and why it makes a program testable
+
+`readLine` is the only operation; `prompt` is `print` then `readLine`. `None`
+means end of input — a closed pipe, or Ctrl-D — which is not an error, so a loop
+ends by matching it rather than by catching anything.
+
+```meadow
+use Std.Console (prompt, withInput, readLine)
+use Std.String as S
+
+fun greet u =
+  match prompt "name: " with
+  | Just name -> S.concat "hello, " name
+  | None -> "nobody there"
+
+def main = (withInput ["ada";] greet, withInput [;] greet)
+```
+
+```
+name: name: => ("hello, ada", "nobody there")
+```
+
+The two `name: ` are real: `prompt` still *prints*, because printing is not the
+part a handler replaced. Only the reading was faked.
+
+`withInput` feeds a list of lines and answers `None` once they run out, so the
+same function covers both the interactive and the exhausted case.
+
+The example in `examples/rock-paper-scissors` is the whole point of this in
+practice. It is an interactive terminal game — it prompts, it loops, it keeps a
+tally — and its test plays a *complete game* with no terminal and no entropy
+anywhere near it:
+
+```meadow
+@test fun playsAFullRound () =
+  let played =
+    R.withSeed 7 (\u -> withInput ["rock"; "nonsense"; "paper"; "quit"] game) in
+    assertEq played () "a full game plays through to the summary"
+```
+
+That runs `game` itself, not a copy of it — the same function `def main` calls. The
+`"nonsense"` line exercises the re-prompt path, and `"quit"` exercises the exit.
+Two handlers nest: `withSeed` fixes what the machine plays, `withInput` fixes what
+you type, and between them the transcript is fully determined.
+
+Handlers compose by nesting, and the inner one sees the outer one's effects:
+
+```meadow
+use Std.Console (prompt, withInput)
+use Std.Random as R
+use Std.String as S
+
+fun guess u =
+  let secret = R.between 1 11 in
+  match prompt "pick 1-10: " with
+  | None -> "no answer"
+  | Just typed -> if S.trim typed == show secret then "right" else "wrong"
+
+def main = R.withSeed 1 (\u -> withInput ["3";] guess)
+```
+
+```
+pick 1-10: => "wrong"
+```
+
 #### Exn — failure that unwinds
 
 `raise` abandons the computation and travels to the nearest handler, so nothing in
 between has to mention failure:
 
 ```meadow
-use Std.Exn (raise, toResult, withDefault)
+use Std.Exn (raise, toResult, withDefault, toMaybe, ensure)
 
 fun half n = if n % 2 == 0 then n / 2 else raise "odd"
 
-def main = (toResult (\u -> 1 + half 8), toResult (\u -> 1 + half 7), withDefault 0 (\u -> half 7))
+def main =
+  ( toResult (\u -> 1 + half 8)
+  , toResult (\u -> 1 + half 7)
+  , withDefault 0 (\u -> half 7)
+  , toMaybe (\u -> half 7) )
 ```
 
 ```
-=> (Ok(5), Err("odd"), 0)
+=> (Ok(5), Err("odd"), 0, None)
 ```
+
+Also: `catch recover act` runs `recover` on the error, `threw act` answers a
+`Bool`, and `ensure cond e` / `refute cond e` throw when a condition fails.
+`ofResult` and `ofMaybe` go the other way, turning a value back into a throw.
 
 Use `Result` when the caller should inspect the failure; use `Exn` when it should
 travel a long way untouched. `toResult` converts at the boundary.
 
-#### Stream — generators
+#### Yield and Stream — generators
 
-A producer performs `yield`; a consumer decides what that means. `take` simply does
-not resume, which unwinds the producer — so this stops after three, not a million:
+`Std.Yield` is one operation, `yield : a -> Unit`. A producer performs it; a
+consumer decides what it means. `Std.Stream` is the consumers.
 
 ```meadow
-use Std.Stream as Stream
+use Std.Yield (yield)
+use Std.Stream as St
 
-def main = Stream.take 3 (\u -> Stream.range 0 1000000)
+fun countdown n =
+  if n <= 0 then ()
+  else let _ = yield n in countdown (n - 1)
+
+def main = (St.toList (\u -> countdown 5), St.take 2 (\u -> countdown 100))
 ```
 
 ```
-=> [0; 1; 2]
+=> ([5; 4; 3; 2; 1], [100; 99])
 ```
 
-Every collection has `toStream`, and `Stream` has `ofList` / `ofVec` back.
+`take` is the interesting one: it simply stops resuming, which unwinds the
+producer where it stands. So a producer is lazy without being written lazily —
+`countdown 100` really does stop after two, and this stops after three rather than
+building a million-element anything:
 
-#### Random and Time — deterministic when you want it
+```meadow
+use Std.Stream as St
+
+def main =
+  ( St.take 3 (\u -> St.range 0 1000000)
+  , St.toList (\u -> St.map (\x -> x * x) (\v -> St.range 1 5))
+  , St.sum (\u -> St.range 1 101) )
+```
+
+```
+=> ([0; 1; 2], [1; 4; 9; 16], 5050)
+```
+
+Consumers: `toList`, `toVec`, `forEach`, `fold`, `count`, `sum`, `take`,
+`takeWhile`, `first`, `any`, `all`, `find`. Transformers, which are producers that
+consume: `map`, `filter`. Producers: `ofList`, `ofVec`, `range`, `repeat`,
+`iterate`. Every collection has `toStream`.
+
+#### Random — deterministic when you want it
 
 ```meadow
 use Std.Random as R
+
+def rolls = R.withSeed 42 (\u -> [R.between 1 7; R.between 1 7; R.between 1 7])
+
+def main = (rolls, rolls == R.withSeed 42 (\u -> [R.between 1 7; R.between 1 7; R.between 1 7]))
+```
+
+```
+=> ([1; 4; 4], true)
+```
+
+Same seed, same sequence — which is what makes a shuffle or a simulation testable.
+Operations: `nextInt`, `intBetween` (and the friendlier `between lo hi`),
+`nextFloat`, `nextSeed`, plus `bool`, `choose` and `shuffle` on top. Unhandled,
+`between` uses real entropy.
+
+#### Time — a clock you control
+
+```meadow
 use Std.Time as T
 
-def roll = R.withSeed 42 (\u -> R.between 1 7)
+def frozen = T.withClock 500 (\u -> (T.now (), T.now ()))
 
-def frozen = T.withClock 500 (\u -> T.now ())
+def ticking = T.withTickingClock 1000 10 (\u -> (T.now (), T.now (), T.now ()))
 
-def main = (roll, roll == R.withSeed 42 (\u -> R.between 1 7), frozen)
+def main = (frozen, ticking)
 ```
 
 ```
-=> (1, true, 500)
+=> ((500, 500), (1000, 1010, 1020))
 ```
 
-Unhandled, `R.between` uses real entropy and `T.now` reads the real clock.
+`withClock` freezes time; `withTickingClock start step` advances it by `step` on
+every read, which is how you test a timeout without waiting for one. `sleep`
+returns immediately under either. There are helpers for units (`seconds`,
+`minutes`, `hours`, `days`, `toSeconds`) and `timed` / `elapsed` for measuring a
+computation with the monotonic clock.
 
----
+#### Fs — the filesystem, or a pretend one
+
+Every operation answers a `Result`, so failure is a value rather than a throw:
+
+```meadow
+use Std.Fs (readToString, writeString, exists, removeFile)
+
+def main =
+  handle
+    match readToString "config.txt" with
+    | Ok text -> text
+    | Err e -> e
+  with {
+    readToString path k -> k (Ok "colour = blue"),
+    return x -> x
+  }
+```
+
+```
+=> "colour = blue"
+```
+
+No file was touched. `Fs` has no bundled fake — a handler is a few lines and the
+one you want depends on the test, so write it inline as above. Operations cover
+reading (`readToString`, `readBytes`, `readDir`, `metadata`), writing
+(`writeString`, `appendString`, `copy`, `rename`), directories (`createDir`,
+`createDirAll`, `removeDir`, `removeDirAll`) and predicates (`exists`, `isFile`,
+`isDir`). Convenience: `readToStringOr`, `tryReadDir`, `existsAll`.
+
+#### Process — subprocesses, argv and the environment
+
+A command is built up rather than passed as one lump: `command "git"` then
+`withArg`, `withArgs`, `withCwd`, `withEnv`. `run` and `runInherit` are the short
+forms.
+
+```meadow
+use Std.Process as P
+
+fun versionOf tool =
+  match P.run tool ["--version";] with
+  | Ok out -> P.outputStdout out
+  | Err e -> e
+
+def main =
+  handle versionOf "meadow" with {
+    spawn cmd k -> k (Ok (0, "meadow 0.2.0", "")),
+    return x -> x
+  }
+```
+
+```
+=> "meadow 0.2.0"
+```
+
+`spawn` captures stdout and stderr and gives you `(status, out, err)` — pick them
+apart with `outputStatus` / `outputStdout` / `outputStderr`, or ask `succeeded`.
+`status` inherits the parent's stdio and yields only the exit code. Also here:
+`exit`, `currentPid`, `argv`, `getEnv`, `setEnv`, `removeEnv`.
+
+#### Test — an assertion is an effect too
+
+`Std.Test`'s `fail` is an ordinary operation, which is why a failing assertion
+stops the test it is in and nothing else. `didFail` handles it, so you can assert
+that something *should* fail:
+
+```meadow
+use Std.Test (assertEq, didFail)
+
+def main = (didFail (\u -> assertEq 1 1 "same"), didFail (\u -> assertEq 1 2 "different"))
+```
+
+```
+=> (false, true)
+```
+
+### Writing a handler for your own effect
+
+The shape is always the same. Declare the operations, write the code that performs
+them without thinking about who answers, then write one handler per interpretation:
+
+- **Resume with a value** — `op x k -> k answer`. The normal case; the
+  computation carries on.
+- **Resume with something computed from the rest** — `op x k -> f (k ())`. This is
+  how `collected` and `counted` above accumulate: the clause gets to see the result
+  of everything that follows.
+- **Do not resume** — `op x k -> something`. The rest is abandoned; `Exn`, `take`
+  and `Abort` all work this way.
+- **Return a function** — `op x k -> \state -> ...`, and make the `return` clause
+  `\state -> ...` too, then apply the whole `handle` to an initial value. This is
+  how `State` threads a value and how `withInput` threads the remaining lines;
+  look at `Std.State.runState` for the smallest complete example.
 
 ## 10. Testing
 

@@ -143,13 +143,16 @@ def main = (f 3, id2 \"s\")
 
 #[test]
 fn a_module_may_use_a_module_handed_over_after_it() {
-    // The unit's modules share one flat scope, so `Alpha` reaches `Zeta`'s names
-    // with no `use` — but only if `Zeta` is inferred and lowered first.
+    // Each module is its own namespace, so `Alpha` reaches `Zeta`'s names by
+    // `use` — and that works only if `Zeta` is inferred and lowered first.
     assert_eq!(
         eval_unit(&[
-            ("Alpha", "def twenty = double 10\nfun describe n = double n\n"),
+            (
+                "Alpha",
+                "use Zeta (double)\ndef twenty = double 10\nfun describe n = double n\n"
+            ),
             ("Zeta", "fun double n = n * 2\n"),
-            ("", "def main = twenty + describe 6\n"),
+            ("", "use Alpha (twenty, describe)\ndef main = twenty + describe 6\n"),
         ]),
         "32"
     );
@@ -158,7 +161,7 @@ fn a_module_may_use_a_module_handed_over_after_it() {
 #[test]
 fn a_cross_module_reference_is_checked() {
     let out = unit_errors(&[
-        ("Alpha", "def bad = double \"not a number\"\n"),
+        ("Alpha", "use Zeta (double)\ndef bad = double \"not a number\"\n"),
         ("Zeta", "fun double n = n * 2\n"),
     ]);
     assert!(out.contains("type mismatch"), "cross-module call went unchecked: {out}");
@@ -170,9 +173,12 @@ fn mutually_recursive_modules_still_compile() {
     // are functions, not values, so evaluation is fine either way.
     assert_eq!(
         eval_unit(&[
-            ("Ping", "fun ping n = if n == 0 then 0 else pong (n - 1)\n"),
-            ("Pong", "fun pong n = ping n\n"),
-            ("", "def main = ping 4\n"),
+            (
+                "Ping",
+                "use Pong (pong)\nfun ping n = if n == 0 then 0 else pong (n - 1)\n"
+            ),
+            ("Pong", "use Ping (ping)\nfun pong n = ping n\n"),
+            ("", "use Ping (ping)\ndef main = ping 4\n"),
         ]),
         "0"
     );
@@ -185,8 +191,36 @@ fn a_cycle_between_modules_is_still_checked() {
     // it a `String`, and the two have to meet even though neither module can be
     // inferred first.
     let out = unit_errors(&[
-        ("Ping", "fun ping n = if n == 0 then 0 else pong \"x\"\n"),
-        ("Pong", "fun pong s = ping s\n"),
+        ("Ping", "use Pong (pong)\nfun ping n = if n == 0 then 0 else pong \"x\"\n"),
+        ("Pong", "use Ping (ping)\nfun pong s = ping s\n"),
     ]);
     assert!(out.contains("type mismatch"), "cyclic modules went unchecked: {out}");
+}
+
+#[test]
+fn two_modules_may_define_the_same_name() {
+    // Separate namespaces, so `map` in one is not `map` in the other — and a
+    // module that wants both takes one of them under an alias.
+    assert_eq!(
+        eval_unit(&[
+            ("Vec", "fun map f = f 1\n"),
+            ("Lst", "fun map f = f 2\n"),
+            (
+                "",
+                "use Vec (map)\nuse Lst as L\nfun ident x = x\ndef main = map ident + L.map ident\n"
+            ),
+        ]),
+        "3"
+    );
+}
+
+#[test]
+fn a_sibling_can_be_taken_under_an_alias() {
+    assert_eq!(
+        eval_unit(&[
+            ("Math", "fun double n = n * 2\n"),
+            ("", "use Math as M\ndef main = M.double 21\n"),
+        ]),
+        "42"
+    );
 }

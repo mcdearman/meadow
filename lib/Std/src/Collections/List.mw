@@ -186,6 +186,7 @@ fun reverseOnto acc xs =
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Maybe (Maybe)
 
 @test fun appendAndLength u =
   let a = assertEq (append [1; 2] [3;]) [1; 2; 3] "append" in

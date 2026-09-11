@@ -522,6 +522,10 @@ pub struct Lowerer<'a> {
     ctor_arity: &'a HashMap<InternedString, usize>,
     /// Named-field order per constructor, accumulated across `lower_module` calls.
     pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
+    /// Desugaring invents variables -- a scrutinee to bind, an eta-expansion's
+    /// parameters -- and they belong to the unit being lowered, so this carries
+    /// on from where resolution left off rather than starting anywhere.
+    vars: hir::VarIdGen,
 }
 
 impl<'a> Lowerer<'a> {
@@ -531,6 +535,7 @@ impl<'a> Lowerer<'a> {
         effect_ops: &'a HashMap<Var, (InternedString, InternedString)>,
         types: &'a TypeTable,
         ctor_arity: &'a HashMap<InternedString, usize>,
+        vars: hir::VarIdGen,
     ) -> Self {
         Lowerer {
             prims,
@@ -539,7 +544,14 @@ impl<'a> Lowerer<'a> {
             types,
             ctor_arity,
             ctor_fields: HashMap::new(),
+            vars,
         }
+    }
+
+    /// One past the last `VarId` this unit has handed out, resolution and
+    /// lowering together. The unit records it so the next one can stack above.
+    pub fn var_end(&self) -> u32 {
+        self.vars.end()
     }
 
     /// Is the node at `id` inferred to have type `BigInt`?
@@ -574,7 +586,7 @@ impl<'a> Lowerer<'a> {
                 }
                 hir::Decl::Record(rd) => {
                     self.ctor_fields
-                        .insert(rd.name, rd.fields.iter().map(|(n, _)| *n).collect());
+                        .insert(rd.ctor, rd.fields.iter().map(|(n, _)| *n).collect());
                 }
                 _ => {}
             }
@@ -609,7 +621,7 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                     hir::Pat::Wildcard => {
-                        let v = hir::VarId::fresh();
+                        let v = self.vars.fresh();
                         out.push(Def {
                             var: v,
                             name: InternedString::from("_"),
@@ -618,7 +630,7 @@ impl<'a> Lowerer<'a> {
                     }
                     _ => {
                         // `def (a, b) = e` etc.: bind the value once, then project.
-                        let scrut = hir::VarId::fresh();
+                        let scrut = self.vars.fresh();
                         out.push(Def {
                             var: scrut,
                             name: InternedString::from("$bind"),
@@ -684,7 +696,7 @@ impl<'a> Lowerer<'a> {
                     self.eta_prim(op)
                 } else if let Some(&(eff, opname)) = self.effect_ops.get(&v) {
                     // `get` becomes `\x -> perform Effect.get x`
-                    let x = hir::VarId::fresh();
+                    let x = self.vars.fresh();
                     Term::Lam(
                         x,
                         Arc::new(Term::Perform(eff, opname, Arc::new(Term::Var(x)))),
@@ -744,18 +756,18 @@ impl<'a> Lowerer<'a> {
             // `[a; b; c]` is sugar for `Cons a (Cons b (Cons c Nil))` — `List` is
             // an ordinary `Std` data type, so it lowers to plain constructors.
             hir::Expr::List(items) => {
-                let nil = Term::Ctor(InternedString::from("Nil"), vec![]);
+                let nil = Term::Ctor(InternedString::from("List.Nil"), vec![]);
                 items.iter().rev().fold(nil, |acc, e| {
                     let head = self.lower_expr(e);
-                    Term::Ctor(InternedString::from("Cons"), vec![head, acc])
+                    Term::Ctor(InternedString::from("List.Cons"), vec![head, acc])
                 })
             }
             hir::Expr::Cons(label, args) => {
                 let name = *label.value();
                 let lowered: Vec<Term> = args.iter().map(|e| self.lower_expr(e)).collect();
                 match (&*name, lowered.len()) {
-                    ("True", 0) => Term::Lit(Lit::Bool(true)),
-                    ("False", 0) => Term::Lit(Lit::Bool(false)),
+                    ("Bool.True", 0) => Term::Lit(Lit::Bool(true)),
+                    ("Bool.False", 0) => Term::Lit(Lit::Bool(false)),
                     _ => self.ctor(name, lowered),
                 }
             }
@@ -812,11 +824,11 @@ impl<'a> Lowerer<'a> {
     }
 
     /// `(binder var, Some(pat) if the pattern is refutable / structured)`.
-    fn pat_binder<'p>(&self, pat: &'p hir::LPat) -> (Var, Option<&'p hir::LPat>) {
+    fn pat_binder<'p>(&mut self, pat: &'p hir::LPat) -> (Var, Option<&'p hir::LPat>) {
         match pat.value() {
             hir::Pat::Var(id) => (*id.value(), None),
-            hir::Pat::Wildcard => (hir::VarId::fresh(), None),
-            _ => (hir::VarId::fresh(), Some(pat)),
+            hir::Pat::Wildcard => (self.vars.fresh(), None),
+            _ => (self.vars.fresh(), Some(pat)),
         }
     }
 
@@ -844,7 +856,7 @@ impl<'a> Lowerer<'a> {
                         Term::Let(*id.value(), Arc::new(rhs), Arc::new(body))
                     }
                     hir::Pat::Wildcard => {
-                        Term::Let(hir::VarId::fresh(), Arc::new(rhs), Arc::new(body))
+                        Term::Let(self.vars.fresh(), Arc::new(rhs), Arc::new(body))
                     }
                     _ => Term::Case(Arc::new(rhs), vec![(self.lower_pat(pat), body)]),
                 }
@@ -915,18 +927,18 @@ impl<'a> Lowerer<'a> {
             }
             // `[a; b; c]` — the same `Cons`/`Nil` chain as the expression form.
             hir::Pat::List(items) => {
-                let nil = Pat::Ctor(InternedString::from("Nil"), vec![]);
+                let nil = Pat::Ctor(InternedString::from("List.Nil"), vec![]);
                 items.iter().rev().fold(nil, |acc, p| {
                     let head = self.lower_pat(p);
-                    Pat::Ctor(InternedString::from("Cons"), vec![head, acc])
+                    Pat::Ctor(InternedString::from("List.Cons"), vec![head, acc])
                 })
             }
             hir::Pat::Cons(label, args) => {
                 let name = *label.value();
                 let lowered: Vec<Pat> = args.iter().map(|p| self.lower_pat(p)).collect();
                 match (&*name, lowered.len()) {
-                    ("True", 0) => Pat::Lit(Lit::Bool(true)),
-                    ("False", 0) => Pat::Lit(Lit::Bool(false)),
+                    ("Bool.True", 0) => Pat::Lit(Lit::Bool(true)),
+                    ("Bool.False", 0) => Pat::Lit(Lit::Bool(false)),
                     _ => Pat::Ctor(name, lowered),
                 }
             }
@@ -942,12 +954,12 @@ impl<'a> Lowerer<'a> {
 
     /// Build a constructor application, eta-expanding an under-applied one so a
     /// bare `Cons` / `Just` can still be passed around as a function.
-    fn ctor(&self, name: InternedString, args: Vec<Term>) -> Term {
+    fn ctor(&mut self, name: InternedString, args: Vec<Term>) -> Term {
         let arity = self.ctor_arity.get(&name).copied().unwrap_or(args.len());
         if args.len() >= arity {
             return Term::Ctor(name, args);
         }
-        let extra: Vec<Var> = (args.len()..arity).map(|_| hir::VarId::fresh()).collect();
+        let extra: Vec<Var> = (args.len()..arity).map(|_| self.vars.fresh()).collect();
         let mut all = args;
         all.extend(extra.iter().map(|v| Term::Var(*v)));
         let body = Term::Ctor(name, all);
@@ -959,8 +971,8 @@ impl<'a> Lowerer<'a> {
 
     /// `\a. \b. prim(a, b)` — used when a primitive is referenced without (or with
     /// the wrong number of) arguments.
-    fn eta_prim(&self, op: Prim) -> Term {
-        let vars: Vec<Var> = (0..op.arity()).map(|_| hir::VarId::fresh()).collect();
+    fn eta_prim(&mut self, op: Prim) -> Term {
+        let vars: Vec<Var> = (0..op.arity()).map(|_| self.vars.fresh()).collect();
         let body = Term::Prim(op, vars.iter().map(|v| Term::Var(*v)).collect());
         vars.into_iter()
             .rev()
@@ -1013,8 +1025,9 @@ mod tests {
 
     #[test]
     fn pretty_renumbers_variables() {
-        let a = hir::VarId::fresh();
-        let b = hir::VarId::fresh();
+        let mut vars = hir::VarIdGen::starting_at(0);
+        let a = vars.fresh();
+        let b = vars.fresh();
         let prog = Program {
             defs: vec![Def {
                 var: a,

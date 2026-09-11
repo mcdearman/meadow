@@ -246,10 +246,10 @@ impl Checker<'_> {
             ),
             // `[a; b]` is sugar for `Cons a (Cons b Nil)`.
             hir::Pat::List(ps) => ps.iter().rev().fold(
-                P::Con(Con::Variant(InternedString::from("Nil")), vec![]),
+                P::Con(Con::Variant(InternedString::from("List.Nil")), vec![]),
                 |tail, p| {
                     P::Con(
-                        Con::Variant(InternedString::from("Cons")),
+                        Con::Variant(InternedString::from("List.Cons")),
                         vec![self.lower(p), tail],
                     )
                 },
@@ -333,12 +333,12 @@ impl Checker<'_> {
                 // and is compiled before `Std.Collections.List`.
                 let con = |n: &str| Con::Variant(InternedString::from(n));
                 match &**name {
-                    "Bool" => Some(vec![(con("False"), vec![]), (con("True"), vec![])]),
+                    "Bool" => Some(vec![(con("Bool.False"), vec![]), (con("Bool.True"), vec![])]),
                     "List" => {
                         let elem = args.first().cloned().unwrap_or(Type::RowEmpty);
                         Some(vec![
-                            (con("Nil"), vec![]),
-                            (con("Cons"), vec![elem, ty.clone()]),
+                            (con("List.Nil"), vec![]),
+                            (con("List.Cons"), vec![elem, ty.clone()]),
                         ])
                     }
                     "Unit" => Some(vec![(Con::Unit, vec![])]),
@@ -513,10 +513,14 @@ fn render_at(p: &P, nested: bool) -> String {
                     .collect();
                 format!("{{ {} }}", parts.join(", "))
             }
-            Con::Variant(name) if args.is_empty() => name.to_string(),
+            // Bare, like every other place a constructor is shown to a
+            // person: the canonical `Maybe.None` exists so the compiler can
+            // tell two types' constructors apart, and a reader looking at a
+            // missing case already knows which type they are matching on.
+            Con::Variant(name) if args.is_empty() => bare_ctor(name),
             Con::Variant(name) => {
                 let parts: Vec<String> = args.iter().map(|a| render_at(a, true)).collect();
-                let s = format!("{name} {}", parts.join(" "));
+                let s = format!("{} {}", bare_ctor(name), parts.join(" "));
                 if nested {
                     format!("({s})")
                 } else {
@@ -543,5 +547,15 @@ fn max_bound(t: &Type) -> Option<u32> {
             .max(),
         Type::Record(r) => max_bound(r),
         Type::RowExtend(_, f, rest) => [&**f, &**rest].into_iter().filter_map(max_bound).max(),
+    }
+}
+
+/// The bare spelling of a canonical constructor name, for a message a person
+/// reads: `Maybe.None` -> `None`.
+fn bare_ctor(name: &InternedString) -> String {
+    let n = name.to_string();
+    match n.rsplit_once('.') {
+        Some((_, c)) => c.to_string(),
+        None => n,
     }
 }

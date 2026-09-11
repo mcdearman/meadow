@@ -737,7 +737,7 @@ fn kind(v: &Value) -> &'static str {
 fn is_falsey(v: &Value) -> bool {
     match v {
         Value::Bool(b) => !b,
-        Value::Data(name, _, fields) => &**name == "False" && fields.is_empty(),
+        Value::Data(name, _, fields) => &**name == "Bool.False" && fields.is_empty(),
         _ => false,
     }
 }
@@ -754,8 +754,8 @@ fn list_items<'p>(v: &Value<'p>) -> Option<Vec<Value<'p>>> {
     let mut cur = v.clone();
     loop {
         match cur {
-            Value::Data(ref n, _, ref fs) if &**n == "Nil" && fs.is_empty() => return Some(out),
-            Value::Data(ref n, _, ref fs) if &**n == "Cons" && fs.len() == 2 => {
+            Value::Data(ref n, _, ref fs) if &**n == "List.Nil" && fs.is_empty() => return Some(out),
+            Value::Data(ref n, _, ref fs) if &**n == "List.Cons" && fs.len() == 2 => {
                 out.push(fs[0].clone());
                 let next = fs[1].clone();
                 cur = next;
@@ -765,18 +765,31 @@ fn list_items<'p>(v: &Value<'p>) -> Option<Vec<Value<'p>>> {
     }
 }
 
+/// A constructor as a reader wants to see it: `Maybe.Just` prints as `Just`.
+///
+/// The third of three implementations of this — `meadow_eval`'s `Display` and
+/// `meadow_rts::show` are the others — which is why
+/// `constructors_print_bare_and_agree` in `rts/tests/differential.rs` runs all
+/// three against each other rather than trusting any one of them.
+fn bare_ctor(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((_, c)) => c,
+        None => name,
+    }
+}
+
 fn is_vector_ctor(name: &str) -> bool {
-    matches!(name, "VEmpty" | "VSingle" | "VFull")
+    matches!(name, "Vector.Empty" | "Vector.Single" | "Vector.Full")
 }
 
 fn vector_elems<'p>(v: &Value<'p>) -> Option<Vec<Value<'p>>> {
     match v {
-        Value::Data(n, _, fs) if &**n == "VEmpty" && fs.is_empty() => Some(Vec::new()),
-        Value::Data(n, _, fs) if &**n == "VSingle" && fs.len() == 1 => match &fs[0] {
+        Value::Data(n, _, fs) if &**n == "Vector.Empty" && fs.is_empty() => Some(Vec::new()),
+        Value::Data(n, _, fs) if &**n == "Vector.Single" && fs.len() == 1 => match &fs[0] {
             Value::Array(xs) => Some(xs.iter().cloned().collect()),
             _ => None,
         },
-        Value::Data(n, _, fs) if &**n == "VFull" && fs.len() == 7 => {
+        Value::Data(n, _, fs) if &**n == "Vector.Full" && fs.len() == 7 => {
             let mut out = Vec::new();
             for i in [2usize, 3] {
                 match &fs[i] {
@@ -799,14 +812,14 @@ fn vector_elems<'p>(v: &Value<'p>) -> Option<Vec<Value<'p>>> {
 
 fn vector_node_elems<'p>(n: &Value<'p>, out: &mut Vec<Value<'p>>) -> Option<()> {
     match n {
-        Value::Data(name, _, fs) if &**name == "VLeaf" && fs.len() == 1 => match &fs[0] {
+        Value::Data(name, _, fs) if &**name == "VNode.Leaf" && fs.len() == 1 => match &fs[0] {
             Value::Array(xs) => {
                 out.extend(xs.iter().cloned());
                 Some(())
             }
             _ => None,
         },
-        Value::Data(name, _, fs) if &**name == "VBranch" && fs.len() == 2 => match &fs[1] {
+        Value::Data(name, _, fs) if &**name == "VNode.Branch" && fs.len() == 2 => match &fs[1] {
             Value::Array(kids) => {
                 for k in kids.iter() {
                     vector_node_elems(k, out)?;
@@ -1145,7 +1158,7 @@ fn prim<'p>(
             };
             let bytes = s.as_bytes();
             if bytes.len() % 2 != 0 {
-                return Ok(data("None", vec![]));
+                return Ok(data("Maybe.None", vec![]));
             }
             let mut out = Vec::with_capacity(bytes.len() / 2);
             for pair in bytes.chunks_exact(2) {
@@ -1154,10 +1167,10 @@ fn prim<'p>(
                     (pair[1] as char).to_digit(16),
                 ) {
                     (Some(h), Some(l)) => out.push(Value::Int(((h << 4) | l) as i64)),
-                    _ => return Ok(data("None", vec![])),
+                    _ => return Ok(data("Maybe.None", vec![])),
                 }
             }
-            Ok(data("Just", vec![Value::Array(Rc::new(out))]))
+            Ok(data("Maybe.Just", vec![Value::Array(Rc::new(out))]))
         }
         Show => Ok(Value::Str(InternedString::from(args[0].to_string()))),
         CharCode => match &args[0] {
@@ -1285,7 +1298,7 @@ impl std::fmt::Display for Value<'_> {
                 f.write_str(")")
             }
             // `Std.Collections.List` prints in its own literal syntax: `[1; 2]`.
-            Value::Data(name, _, _) if matches!(&**name, "Nil" | "Cons") => {
+            Value::Data(name, _, _) if matches!(&**name, "List.Nil" | "List.Cons") => {
                 if let Some(xs) = list_items(self) {
                     f.write_str("[")?;
                     for (i, v) in xs.iter().enumerate() {
@@ -1296,7 +1309,7 @@ impl std::fmt::Display for Value<'_> {
                     }
                     return f.write_str("]");
                 }
-                write!(f, "{name}(..)")
+                write!(f, "{}(..)", bare_ctor(name))
             }
             // `Std.Collections.Vector` prints like a list: `[1, 2]`.
             Value::Data(name, _, _) if is_vector_ctor(name) => {
@@ -1310,11 +1323,13 @@ impl std::fmt::Display for Value<'_> {
                     }
                     return f.write_str("]");
                 }
-                write!(f, "{name}(..)")
+                write!(f, "{}(..)", bare_ctor(name))
             }
-            Value::Data(name, _, fields) if fields.is_empty() => write!(f, "{name}"),
+            Value::Data(name, _, fields) if fields.is_empty() => {
+                write!(f, "{}", bare_ctor(name))
+            }
             Value::Data(name, _, fields) => {
-                write!(f, "{name}(")?;
+                write!(f, "{}(", bare_ctor(name))?;
                 for (i, v) in fields.iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
@@ -1500,9 +1515,9 @@ mod tests {
         );
         assert_eq!(t.to_string(), "(1, ())");
         // A `List` prints as its elements, not as the chain it is.
-        let nil = Value::Data(InternedString::from("Nil"), 0, Rc::new(Fields(vec![])));
+        let nil = Value::Data(InternedString::from("List.Nil"), 0, Rc::new(Fields(vec![])));
         let one = Value::Data(
-            InternedString::from("Cons"),
+            InternedString::from("List.Cons"),
             1,
             Rc::new(Fields(vec![Value::Int(1), nil])),
         );
@@ -1513,10 +1528,10 @@ mod tests {
     fn dropping_a_long_chain_does_not_recurse() {
         // 200_000 deep — the shape that aborted the CEK before its `Drop` was
         // made iterative.
-        let mut xs = Value::Data(InternedString::from("Nil"), 0, Rc::new(Fields(vec![])));
+        let mut xs = Value::Data(InternedString::from("List.Nil"), 0, Rc::new(Fields(vec![])));
         for i in 0..200_000 {
             xs = Value::Data(
-                InternedString::from("Cons"),
+                InternedString::from("List.Cons"),
                 1,
                 Rc::new(Fields(vec![Value::Int(i), xs])),
             );

@@ -410,16 +410,22 @@ fn a_recursive_data_type_end_to_end() {
     );
 }
 
+/// A type of one's own named `Nil` / `Cons` is **not** the builtin list.
+///
+/// Both `Display`s special-case `List.Nil` / `List.Cons` to print `[1; 2; 3]`.
+/// This used to fire for *any* type whose constructors were spelled that way,
+/// because constructors shared one global namespace and there was nothing to
+/// tell `Chain`'s `Cons` from the list's. Now a constructor's name is
+/// `Type.Ctor`, so the special case applies to the list and to nothing else —
+/// and a `Chain` prints as the `Chain` it is.
 #[test]
-fn a_list_prints_in_its_own_syntax_on_both_machines() {
-    // `Nil` / `Cons` are special-cased by both `Display`s, so this checks the
-    // renderings agree on the shape `Std` actually uses.
+fn a_lookalike_type_is_not_mistaken_for_the_builtin_list() {
     assert_eq!(
         agree(
             "data Chain = Nil | Cons Int Chain
              def main = Cons 1 (Cons 2 (Cons 3 Nil))"
         ),
-        "[1; 2; 3]"
+        "Cons(1, Cons(2, Cons(3, Nil)))"
     );
 }
 
@@ -779,4 +785,35 @@ fn a_deep_tail_loop_costs_the_vm_no_stack() {
          def main = count 100000 0",
     );
     assert_eq!(out, "5000050000");
+}
+
+/// A constructor prints the same on both machines, and prints *bare*.
+///
+/// A constructor's real name is `Type.Ctor` — two types may each own a `Leaf`,
+/// and every pass after the resolver keys on the qualified form. Display is the
+/// one place that has to undo it, in two separate implementations
+/// (`meadow_eval`'s `Display` and `meadow_rts::show`), which is exactly the
+/// shape of thing that drifts: the CEK machine kept printing `Maybe.Just(3)`
+/// for a while after the VM had stopped.
+#[test]
+fn constructors_print_bare_and_agree() {
+    // No `Std` here, so every constructor is one these cases declare.
+    assert_eq!(
+        agree("data Box = Wrap Int\ndef main = Wrap 3"),
+        "Wrap(3)"
+    );
+    assert_eq!(
+        agree("data Colour = Red | Green\ndef main = (Red, Green)"),
+        "(Red, Green)"
+    );
+    // Two types owning one constructor name — the reason the qualified form
+    // exists. Both print as themselves.
+    assert_eq!(
+        agree(
+            "data Tree = Leaf | Node Tree Tree\n\
+             data Rope = Leaf String | Node Rope Rope\n\
+             def main = (Tree.Leaf, Rope.Leaf \"s\")"
+        ),
+        "(Leaf, Leaf(\"s\"))"
+    );
 }

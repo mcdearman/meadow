@@ -11,7 +11,7 @@
 
 use meadow_ast as ast;
 use meadow_diagnostics::Diagnostic;
-use meadow_hir::{self as hir, NodeIdGen, PRIMS, VarId};
+use meadow_hir::{self as hir, NodeIdGen, VarIdGen, PRIMS, VarId};
 use meadow_intern::InternedString;
 use meadow_span::Span;
 use itertools::Itertools;
@@ -35,11 +35,24 @@ pub struct Resolver {
     names: HashMap<VarId, InternedString>,
     /// Top-level names bound ahead of time by [`declare_toplevel`], so mutually
     /// recursive definitions resolve to a single id.
-    predeclared: HashMap<InternedString, VarId>,
+    predeclared: HashMap<(Vec<InternedString>, InternedString), VarId>,
     /// Type constructors in scope: name -> arity. Seeded with the builtins.
     tycons: HashMap<InternedString, usize>,
-    /// Data / record constructors in scope.
+    /// Every constructor known here, keyed by its **canonical** name --
+    /// `Type.Ctor`, the one thing about it that is unique across a program.
+    ///
+    /// Keyed this way rather than by the bare name so that two types may each
+    /// have a `Leaf`. Everything downstream -- `ctor_fields`, the back end's
+    /// tag table, exhaustiveness -- inherits that uniqueness for free, because
+    /// what they receive is this name.
     ctors: HashMap<InternedString, CtorInfo>,
+    /// Bare name -> canonical, for the constructors this module may write
+    /// unqualified: the ones its own types declare, plus whatever a `use` of a
+    /// type brought in. A name absent here must be written `Type.Ctor`.
+    visible_ctors: HashMap<InternedString, InternedString>,
+    /// Type -> its constructors, bare names, in declaration order. What `use`
+    /// of a type consults, and what an exhaustiveness message would list.
+    ctors_of: HashMap<InternedString, Vec<InternedString>>,
     /// Declared effects: name -> parameter count.
     effects: HashMap<InternedString, usize>,
     /// Operation name -> the effect it belongs to.
@@ -49,6 +62,27 @@ pub struct Resolver {
     /// `Std.State.get` against the prelude's `Vector.get`, say — and the lowerer
     /// has to tell a `perform` from a variable by identity, not spelling.
     effect_op_ids: HashMap<VarId, (InternedString, InternedString)>,
+    /// What each module of this unit declares, by dotted path.
+    ///
+    /// A package is one compilation unit — its modules may be mutually
+    /// recursive and share a `NodeId` space — but each module is its own
+    /// *namespace*. It sees the prims, whatever the prelude flattened, its own
+    /// items, and whatever it `use`s; never a sibling's names for free. Rust
+    /// draws the line in the same place, and it is what gives `use Pack.Mod`
+    /// something to name.
+    frames: HashMap<Vec<InternedString>, ModuleFrame>,
+    /// What every module of the unit starts from: the builtins plus whatever
+    /// the dependencies brought in, snapshotted by [`Resolver::seal_base_scope`].
+    /// A module's own declarations are laid on top of this and nothing else.
+    base_tycons: HashMap<InternedString, usize>,
+    base_ctors: HashMap<InternedString, InternedString>,
+    base_effects: HashMap<InternedString, usize>,
+    base_effect_ops: HashMap<InternedString, InternedString>,
+    /// The module being declared into, or resolved.
+    current: Vec<InternedString>,
+    /// Scope length before any module's own items: the prims and the prelude,
+    /// which every module in the unit sees. `enter_module` truncates to this.
+    base_scope: usize,
     /// Type variables of the declaration currently being resolved: a `data` /
     /// `record` / `effect` parameter list, or the ones a pattern annotation
     /// introduced.
@@ -62,6 +96,9 @@ pub struct Resolver {
     /// `fun twice (f : a -> a) (x : a)` the same variable.
     open_tyvars: bool,
     ids: NodeIdGen,
+    /// This unit's `VarId`s. Seeded by the driver from a base that clears the
+    /// unit's dependencies -- see [`meadow_hir::VarIdGen`].
+    vars: VarIdGen,
     /// True only while resolving a module-level `Decl` (not nested in an expr).
     toplevel: bool,
     /// `@pub` bookkeeping. If `any_pub` stays false the unit exports everything
@@ -82,7 +119,17 @@ pub struct Resolver {
 /// Constructors that are always available (see `infer::ctor_type` / `core`). The
 /// `Std` prelude also declares `data List` / `data Bool` with these variants, so a
 /// re-declaration of one of these names is tolerated rather than an error.
+/// Constructors the *language* depends on, always in scope unqualified.
+///
+/// `if` needs `True` / `False`, and `[a; b]` and `::` desugar to `Cons` / `Nil`
+/// — so requiring `use Std.Bool (Bool)` before an `if` would be absurd. Every
+/// other constructor follows the ordinary rule: qualified, or brought in by a
+/// `use` of its type.
 const BUILTIN_CTORS: &[&str] = &["Nil", "Cons", "True", "False"];
+
+/// The same, paired with the type that owns them, to seed the scope.
+const BUILTIN_CTOR_OWNERS: &[(&str, &str)] =
+    &[("List", "Nil"), ("List", "Cons"), ("Bool", "True"), ("Bool", "False")];
 
 /// Type constructors seeded into every resolver. Like [`BUILTIN_CTORS`], the
 /// prelude is allowed to (re-)declare `List` / `Bool` without it counting as a
@@ -112,12 +159,65 @@ fn is_ctor_name(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_uppercase())
 }
 
+/// The type constructors every module sees without asking.
+fn builtin_tycons() -> HashMap<InternedString, usize> {
+    [
+        ("Int", 0), ("BigInt", 0), ("Float", 0), ("String", 0), ("Bool", 0),
+        ("Unit", 0), ("List", 1), ("Array", 1), ("Ref", 1),
+    ]
+    .into_iter()
+    .map(|(n, a)| (InternedString::from(n), a))
+    .collect()
+}
+
+/// The data constructors every module sees without asking — see
+/// [`BUILTIN_CTOR_OWNERS`].
+fn builtin_ctors() -> HashMap<InternedString, InternedString> {
+    BUILTIN_CTOR_OWNERS
+        .iter()
+        .map(|(ty, c)| {
+            let c = InternedString::from(*c);
+            (c, canonical_ctor(InternedString::from(*ty), c))
+        })
+        .collect()
+}
+
+/// A constructor's canonical name: `Type.Ctor`.
+///
+/// Type names are unique across a program, so this is too -- which is what
+/// lets `Vector.Leaf` and `Tree.Leaf` both exist. Every pass after the
+/// resolver sees only this form; the bare name is a *scoping* convenience that
+/// stops here.
+fn canonical_ctor(ty: InternedString, ctor: InternedString) -> InternedString {
+    InternedString::from(format!("{ty}.{ctor}"))
+}
+
+/// The bare spelling of a canonical name: `Expr.Int` -> `Int`.
+fn bare_ctor(canonical: InternedString) -> InternedString {
+    match canonical.rsplit_once('.') {
+        Some((_, c)) => InternedString::from(c),
+        None => canonical,
+    }
+}
+
+/// One module's own declarations, kept apart from every other module's.
+#[derive(Debug, Default, Clone)]
+struct ModuleFrame {
+    /// Top-level bindings, in declaration order.
+    values: Vec<(InternedString, VarId)>,
+    /// Type constructors this module declares: name -> arity.
+    tycons: Vec<(InternedString, usize)>,
+    /// Data constructors this module declares: bare spelling -> canonical.
+    ctors: Vec<(InternedString, InternedString)>,
+    /// Effects declared here: name -> parameter count.
+    effects: Vec<(InternedString, usize)>,
+    /// Effect operations declared here: operation -> its effect.
+    effect_ops: Vec<(InternedString, InternedString)>,
+}
+
 impl Resolver {
-    pub fn new(filename: impl Into<String>) -> Self {
-        let mut tycons = HashMap::new();
-        for (name, arity) in [("Int", 0), ("BigInt", 0), ("Float", 0), ("String", 0), ("Bool", 0), ("Unit", 0), ("List", 1), ("Array", 1), ("Ref", 1)] {
-            tycons.insert(InternedString::from(name), arity);
-        }
+    pub fn new(filename: impl Into<String>, var_base: u32) -> Self {
+        let tycons = builtin_tycons();
         Resolver {
             filename: filename.into(),
             scope: Vec::new(),
@@ -125,12 +225,22 @@ impl Resolver {
             predeclared: HashMap::new(),
             tycons,
             ctors: HashMap::new(),
+            visible_ctors: builtin_ctors(),
+            ctors_of: HashMap::new(),
             effects: HashMap::new(),
             effect_ops: HashMap::new(),
             effect_op_ids: HashMap::new(),
+            frames: HashMap::new(),
+            base_tycons: HashMap::new(),
+            base_ctors: HashMap::new(),
+            base_effects: HashMap::new(),
+            base_effect_ops: HashMap::new(),
+            current: Vec::new(),
+            base_scope: 0,
             tyvars: Vec::new(),
             open_tyvars: false,
             ids: NodeIdGen::new(),
+            vars: VarIdGen::starting_at(var_base),
             toplevel: false,
             any_pub: false,
             pub_vars: std::collections::HashSet::new(),
@@ -141,8 +251,126 @@ impl Resolver {
         }
     }
 
-    pub fn with_prelude(filename: impl Into<String>) -> Self {
-        let mut r = Resolver::new(filename);
+    // --- modules ----------------------------------------------------------
+
+    /// Name the file diagnostics from here on point into.
+    ///
+    /// A unit is resolved as a whole but its modules are separate files, and an
+    /// error has to say which one it is in — so the driver moves this along as
+    /// it goes.
+    pub fn set_filename(&mut self, filename: impl Into<String>) {
+        self.filename = filename.into();
+    }
+
+    /// Declarations from here on belong to `path`.
+    pub fn set_module(&mut self, path: &[InternedString]) {
+        self.current = path.to_vec();
+        self.frames.entry(self.current.clone()).or_default();
+    }
+
+    /// Everything visible to every module — the prims and the prelude — has
+    /// been imported; whatever follows is one module's own.
+    pub fn seal_base_scope(&mut self) {
+        self.base_scope = self.scope.len();
+        self.base_tycons = self.tycons.clone();
+        self.base_ctors = self.visible_ctors.clone();
+        self.base_effects = self.effects.clone();
+        self.base_effect_ops = self.effect_ops.clone();
+    }
+
+    /// Begin resolving `path`: reset to the shared base, then lay this
+    /// module's own declarations on top. A sibling's names are *not* here;
+    /// `use` puts them there.
+    pub fn enter_module(&mut self, path: &[InternedString]) {
+        self.current = path.to_vec();
+        self.scope.truncate(self.base_scope);
+        self.qualifiers.clear();
+        self.tycons = self.base_tycons.clone();
+        self.visible_ctors = self.base_ctors.clone();
+        self.effects = self.base_effects.clone();
+        self.effect_ops = self.base_effect_ops.clone();
+        let frame = self.frames.get(path).cloned().unwrap_or_default();
+        self.admit(&frame);
+    }
+
+    /// Make a frame's declarations visible in the current module.
+    fn admit(&mut self, frame: &ModuleFrame) {
+        for (n, a) in &frame.tycons {
+            self.tycons.insert(*n, *a);
+        }
+        for (bare, canonical) in &frame.ctors {
+            self.visible_ctors.insert(*bare, *canonical);
+        }
+        for (n, a) in &frame.effects {
+            self.effects.insert(*n, *a);
+        }
+        for (op, eff) in &frame.effect_ops {
+            self.effect_ops.insert(*op, *eff);
+        }
+        for (n, id) in &frame.values {
+            self.scope.push((*n, *id));
+        }
+    }
+
+    /// Does this unit contain a module at `path`?
+    pub fn has_module(&self, path: &[InternedString]) -> bool {
+        self.frames.contains_key(path)
+    }
+
+    /// A sibling module's top-level values, for `use Pack.Mod`.
+    pub fn module_values(&self, path: &[InternedString]) -> HashMap<InternedString, VarId> {
+        self.frames
+            .get(path)
+            .map(|f| f.values.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Bring a sibling module's declarations into the current scope.
+    ///
+    /// `names` empty means all of them, which is what a bare `use Pack.Mod`
+    /// asks for. A selected name may be a value, a type (whose constructors
+    /// come with it) or a constructor.
+    pub fn use_module(&mut self, path: &[InternedString], names: &[InternedString]) {
+        let Some(frame) = self.frames.get(path).cloned() else {
+            return;
+        };
+        if names.is_empty() {
+            self.admit(&frame);
+            return;
+        }
+        for want in names {
+            for (n, id) in &frame.values {
+                if n == want {
+                    self.scope.push((*n, *id));
+                }
+            }
+            for (n, a) in &frame.tycons {
+                if n == want {
+                    self.tycons.insert(*n, *a);
+                    // Naming a type brings its constructors, as everywhere else.
+                    self.use_type_ctors(*n);
+                }
+            }
+            for (n, a) in &frame.effects {
+                if n == want {
+                    self.effects.insert(*n, *a);
+                }
+            }
+            for (op, eff) in &frame.effect_ops {
+                if op == want {
+                    self.effect_ops.insert(*op, *eff);
+                }
+            }
+            for (bare, canonical) in &frame.ctors {
+                if bare == want {
+                    self.visible_ctors.insert(*bare, *canonical);
+                }
+            }
+        }
+    }
+
+    pub fn with_prelude(filename: impl Into<String>, var_base: u32) -> Self {
+        let mut r = Resolver::new(filename, var_base);
         for name in PRIMS {
             r.bind(InternedString::from(*name));
         }
@@ -160,7 +388,7 @@ impl Resolver {
     }
 
     fn bind(&mut self, name: InternedString) -> VarId {
-        let id = VarId::fresh();
+        let id = self.vars.fresh();
         self.names.insert(id, name);
         self.scope.push((name, id));
         id
@@ -178,7 +406,7 @@ impl Resolver {
     /// bind fresh. Nested definitions always bind fresh (so they can shadow).
     fn bind_defn(&mut self, name: InternedString) -> VarId {
         if self.toplevel {
-            if let Some(&id) = self.predeclared.get(&name) {
+            if let Some(&id) = self.predeclared.get(&(self.current.clone(), name)) {
                 return id;
             }
         }
@@ -189,6 +417,17 @@ impl Resolver {
     pub fn import(&mut self, name: InternedString, id: VarId) {
         self.names.insert(id, name);
         self.scope.push((name, id));
+    }
+
+    /// One past the last `VarId` this unit has handed out.
+    pub fn var_end(&self) -> u32 {
+        self.vars.end()
+    }
+
+    /// The generator itself, to carry on with after resolution — lowering to
+    /// `core` invents variables too, and they belong to the same unit.
+    pub fn var_gen(&self) -> VarIdGen {
+        self.vars
     }
 
     /// Continue node-id numbering from `base`, so every module of a package shares
@@ -282,23 +521,38 @@ impl Resolver {
                                 (fs.len(), Some(fs.iter().map(|f| *f.name.value()).collect()))
                             }
                         };
-                        self.declare_ctor(*v.name.value(), arity, field_names, v.name.span);
+                        self.declare_ctor(
+                            *dd.name.value(),
+                            *v.name.value(),
+                            arity,
+                            field_names,
+                            v.name.span,
+                        );
                     }
                 }
                 ast::Decl::Record(rd) => {
                     self.declare_tycon(*rd.name.value(), rd.params.len(), rd.name.span);
                     self.check_dup_fields(&rd.fields);
                     let fields = rd.fields.iter().map(|f| *f.name.value()).collect();
-                    self.declare_ctor(*rd.name.value(), rd.fields.len(), Some(fields), rd.name.span);
+                    // A record's one constructor shares the type's name: `Person.Person`.
+                    self.declare_ctor(
+                        *rd.name.value(),
+                        *rd.name.value(),
+                        rd.fields.len(),
+                        Some(fields),
+                        rd.name.span,
+                    );
                 }
                 ast::Decl::Effect(ed) => {
                     let name = *ed.name.value();
                     // an effect name is also a type constructor of its parameters
                     self.declare_tycon(name, ed.params.len(), ed.name.span);
                     self.effects.insert(name, ed.params.len());
+                    self.frame().effects.push((name, ed.params.len()));
                     for op_field in &ed.ops {
                         let op = *op_field.name.value();
-                        if self.effect_ops.insert(op, name).is_some() || self.predeclared.contains_key(&op) {
+                        let already = self.predeclared.contains_key(&(self.current.clone(), op));
+                        if self.effect_ops.insert(op, name).is_some() || already {
                             self.error(
                                 format!("operation `{op}` is already defined"),
                                 "duplicate operation".to_string(),
@@ -307,6 +561,7 @@ impl Resolver {
                         }
                         // ops are top-level values (functions) — predeclare them
                         let id = self.predeclare(op);
+                        self.frame().effect_ops.push((op, name));
                         self.effect_op_ids.insert(id, (name, op));
                     }
                 }
@@ -329,18 +584,23 @@ impl Resolver {
                                 (fs.len(), Some(fs.iter().map(|(n, _)| *n).collect()))
                             }
                         };
+                        // `v.name` arrives canonical (the resolver that built
+                        // this HIR made it so), and `ctors_of` wants the bare
+                        // spelling a `use` would let someone write.
                         self.ctors.insert(v.name, CtorInfo { arity, field_names });
+                        self.ctors_of.entry(dd.name).or_default().push(bare_ctor(v.name));
                     }
                 }
                 hir::Decl::Record(rd) => {
                     self.tycons.insert(rd.name, rd.params.len());
                     self.ctors.insert(
-                        rd.name,
+                        rd.ctor,
                         CtorInfo {
                             arity: rd.fields.len(),
                             field_names: Some(rd.fields.iter().map(|(n, _)| *n).collect()),
                         },
                     );
+                    self.ctors_of.entry(rd.name).or_default().push(rd.name);
                 }
                 hir::Decl::Effect(ed) => {
                     self.tycons.insert(ed.name, ed.params.len());
@@ -366,7 +626,16 @@ impl Resolver {
             .collect()
     }
 
+    fn frame(&mut self) -> &mut ModuleFrame {
+        self.frames.entry(self.current.clone()).or_default()
+    }
+
     fn declare_tycon(&mut self, name: InternedString, arity: usize, span: Span) {
+        // Recorded on the module, and also in the working set: type names stay
+        // unique across a package (a constructor's canonical name is built
+        // from one, so two `Foo`s would collide downstream), and the duplicate
+        // check needs to see every module's.
+        self.frame().tycons.push((name, arity));
         if self.tycons.insert(name, arity).is_some() && !BUILTIN_TYCONS.contains(&&*name) {
             self.error(
                 format!("type `{name}` is already defined"),
@@ -376,25 +645,36 @@ impl Resolver {
         }
     }
 
+    /// Register a constructor of `owner`.
+    ///
+    /// Three tables, because a constructor has three separate facts about it:
+    /// what it *is* (keyed canonically), what its type's constructors are (for
+    /// `use`), and whether this module may write it bare. The last is the only
+    /// one that is scoped -- a type's own module always may.
     fn declare_ctor(
         &mut self,
+        owner: InternedString,
         name: InternedString,
         arity: usize,
         field_names: Option<Vec<InternedString>>,
         span: Span,
     ) {
+        let canonical = canonical_ctor(owner, name);
         if self
             .ctors
-            .insert(name, CtorInfo { arity, field_names })
+            .insert(canonical, CtorInfo { arity, field_names })
             .is_some()
             && !BUILTIN_CTORS.contains(&&*name)
         {
             self.error(
-                format!("constructor `{name}` is already defined"),
+                format!("constructor `{owner}.{name}` is already defined"),
                 "duplicate constructor".to_string(),
                 span,
             );
         }
+        self.ctors_of.entry(owner).or_default().push(name);
+        self.frame().ctors.push((name, canonical));
+        self.visible_ctors.insert(name, canonical);
     }
 
     fn check_dup_fields(&mut self, fields: &[ast::Field]) {
@@ -410,20 +690,62 @@ impl Resolver {
         }
     }
 
+    /// The canonical name a bare constructor refers to here, if any.
+    fn resolve_ctor_name(&self, name: InternedString) -> Option<InternedString> {
+        self.visible_ctors.get(&name).copied()
+    }
+
+    /// The canonical name for an explicitly qualified `Ty.Ctor`.
+    fn resolve_qualified_ctor(
+        &self,
+        ty: InternedString,
+        name: InternedString,
+    ) -> Option<InternedString> {
+        let canonical = canonical_ctor(ty, name);
+        self.ctors.contains_key(&canonical).then_some(canonical)
+    }
+
     fn is_known_ctor(&self, name: InternedString) -> bool {
-        self.ctors.contains_key(&name) || BUILTIN_CTORS.contains(&&*name)
+        self.visible_ctors.contains_key(&name) || BUILTIN_CTORS.contains(&&*name)
     }
 
     fn ctor_field_order(&self, name: InternedString) -> Option<Vec<InternedString>> {
         self.ctors.get(&name).and_then(|c| c.field_names.clone())
     }
 
+    /// Every type name known here, including imported ones.
+    pub fn imported_type_names(&self) -> Vec<InternedString> {
+        self.ctors_of.keys().copied().collect()
+    }
+
+    /// Bring a type's constructors into scope unqualified -- what `use Expr`
+    /// does, and what importing a type name from another module does.
+    pub fn use_type_ctors(&mut self, ty: InternedString) {
+        let ctors = self.ctors_of.get(&ty).cloned().unwrap_or_default();
+        for c in ctors {
+            self.visible_ctors.insert(c, canonical_ctor(ty, c));
+        }
+    }
+
+    /// Mint the `VarId` for a top-level name of the module being declared.
+    ///
+    /// The id is minted up front so that mutual recursion works — across
+    /// modules too, since the package is one unit — but the *name* goes into
+    /// this module's frame rather than into the shared scope. A sibling sees
+    /// it only through a `use`.
     fn predeclare(&mut self, name: InternedString) -> VarId {
-        if let Some(&id) = self.predeclared.get(&name) {
+        let key = (self.current.clone(), name);
+        if let Some(&id) = self.predeclared.get(&key) {
             return id;
         }
-        let id = self.bind(name);
-        self.predeclared.insert(name, id);
+        let id = self.vars.fresh();
+        self.names.insert(id, name);
+        self.predeclared.insert(key, id);
+        self.frames
+            .entry(self.current.clone())
+            .or_default()
+            .values
+            .push((name, id));
         id
     }
 
@@ -611,7 +933,11 @@ impl Resolver {
                             ),
                         };
                         hir::Variant {
-                            name: *v.name.value(),
+                            // Canonical from here down: inference, the
+                            // exhaustiveness checker and the back end's tag
+                            // table all key on this, and all three need two
+                            // types to be able to own a `Leaf`.
+                            name: canonical_ctor(*dd.name.value(), *v.name.value()),
                             name_span: v.name.span,
                             fields,
                         }
@@ -639,6 +965,7 @@ impl Resolver {
                 self.node(
                     hir::Decl::Record(hir::RecordDecl {
                         name: *rd.name.value(),
+                        ctor: canonical_ctor(*rd.name.value(), *rd.name.value()),
                         name_span: rd.name.span,
                         params,
                         fields,
@@ -656,7 +983,7 @@ impl Resolver {
                         let opname = *f.name.value();
                         let id = self
                             .predeclared
-                            .get(&opname)
+                            .get(&(self.current.clone(), opname))
                             .copied()
                             .unwrap_or_else(|| self.bind(opname));
                         let rty = self.resolve_ty(&f.ty);
@@ -684,7 +1011,7 @@ impl Resolver {
             .iter()
             .map(|p| {
                 let name = *p.value();
-                let id = VarId::fresh();
+                let id = self.vars.fresh();
                 self.names.insert(id, name);
                 self.tyvars.push((name, id));
                 self.node(id, p.span)
@@ -704,7 +1031,7 @@ impl Resolver {
                     .map(|(_, id)| *id)
                     .unwrap_or_else(|| {
                         if self.open_tyvars {
-                            let id = VarId::fresh();
+                            let id = self.vars.fresh();
                             self.names.insert(id, name);
                             self.tyvars.push((name, id));
                             return id;
@@ -714,7 +1041,7 @@ impl Resolver {
                             "not a parameter of this type".to_string(),
                             n.span,
                         );
-                        VarId::fresh()
+                        self.vars.fresh()
                     });
                 let v = self.node(id, n.span);
                 self.node(hir::TypeExpr::Var(v), t.span)
@@ -798,7 +1125,7 @@ impl Resolver {
                         "not a parameter of this declaration".to_string(),
                         t.span,
                     );
-                    VarId::fresh()
+                    self.vars.fresh()
                 });
             self.node(id, t.span)
         });
@@ -859,6 +1186,20 @@ impl Resolver {
     /// Warn if `q` is not an active module qualifier here (a `mod` child or a
     /// `use`d module). Constructor resolution itself is by bare name (constructor
     /// names are unique across a program), so this is only a scoping check.
+    /// Does `q.Ctor` name a constructor of the *type* `q`?
+    ///
+    /// `Expr.Int` and `Mod.Int` look identical, so both readings are tried.
+    /// The type reading is tried first: a type owns its constructors, whereas
+    /// a module merely happens to contain them, and the qualified form exists
+    /// precisely so a constructor can be named by its type.
+    fn qualified_type_ctor(
+        &self,
+        q: &ast::Ident,
+        name: InternedString,
+    ) -> Option<InternedString> {
+        self.resolve_qualified_ctor(*q.value(), name)
+    }
+
     fn check_qualifier(&mut self, q: &ast::Ident) {
         if !self.qualifiers.contains_key(&*q.value()) {
             self.error(
@@ -883,7 +1224,11 @@ impl Resolver {
         name: &ast::Ident,
         args: &[ast::LExpr],
     ) -> hir::LExpr {
-        let cname = *name.value();
+        // Bare here, canonical from here on: a constructor's identity downstream
+        // is `Type.Ctor`, and the bare spelling is only how this module is
+        // allowed to write it.
+        let bare = *name.value();
+        let cname = self.resolve_ctor_name(bare).unwrap_or(bare);
         if let [only] = args {
             if let ast::Expr::Record(fields, base) = only.value() {
                 if base.is_none() {
@@ -893,9 +1238,9 @@ impl Resolver {
                 }
             }
         }
-        if !self.is_known_ctor(cname) {
+        if !self.is_known_ctor(bare) {
             self.error(
-                format!("unknown constructor `{cname}`"),
+                format!("unknown constructor `{bare}`"),
                 "not a known constructor".to_string(),
                 name.span,
             );
@@ -946,6 +1291,11 @@ impl Resolver {
             ast::Expr::App(func, args) if matches!(func.value(), ast::Expr::Qual(_, n) if is_ctor_name(n.value())) =>
             {
                 let ast::Expr::Qual(q, name) = func.value() else { unreachable!() };
+                if let Some(canonical) = self.qualified_type_ctor(q, *name.value()) {
+                    let label = self.node(canonical, name.span);
+                    let ra = args.iter().map(|a| self.resolve_expr(a)).collect_vec();
+                    return self.node(hir::Expr::Cons(label, ra), expr.span);
+                }
                 self.check_qualifier(q);
                 self.resolve_ctor_app(expr.span, name, args)
             }
@@ -959,6 +1309,10 @@ impl Resolver {
                 let qn = *q.value();
                 let nn = *name.value();
                 if is_ctor_name(&nn) {
+                    if let Some(canonical) = self.qualified_type_ctor(q, nn) {
+                        let label = self.node(canonical, name.span);
+                        return self.node(hir::Expr::Cons(label, vec![]), expr.span);
+                    }
                     self.check_qualifier(q);
                     return self.resolve_ctor_app(expr.span, name, &[]);
                 }
@@ -1027,11 +1381,11 @@ impl Resolver {
                 };
                 let node = match op.value() {
                     ast::BinOp::And => {
-                        let f = ctor(self, "False");
+                        let f = ctor(self, "Bool.False");
                         hir::Expr::If(rl, rr, f)
                     }
                     _ => {
-                        let t = ctor(self, "True");
+                        let t = ctor(self, "Bool.True");
                         hir::Expr::If(rl, t, rr)
                     }
                 };
@@ -1126,7 +1480,11 @@ impl Resolver {
         name: &ast::Ident,
         args: &[ast::LPat],
     ) -> hir::LPat {
-        let cname = *name.value();
+        // Bare here, canonical from here on: a constructor's identity downstream
+        // is `Type.Ctor`, and the bare spelling is only how this module is
+        // allowed to write it.
+        let bare = *name.value();
+        let cname = self.resolve_ctor_name(bare).unwrap_or(bare);
         if let [only] = args {
             if let ast::Pat::Record(fields, _) = only.value() {
                 if let Some(order) = self.ctor_field_order(cname) {
@@ -1134,9 +1492,9 @@ impl Resolver {
                 }
             }
         }
-        if !self.is_known_ctor(cname) {
+        if !self.is_known_ctor(bare) {
             self.error(
-                format!("unknown constructor `{cname}`"),
+                format!("unknown constructor `{bare}`"),
                 "not a known constructor".to_string(),
                 name.span,
             );
@@ -1177,6 +1535,11 @@ impl Resolver {
             }
             ast::Pat::Cons(name, args) => self.resolve_ctor_pat(pat.span, name, args),
             ast::Pat::QualCons(q, name, args) => {
+                if let Some(canonical) = self.qualified_type_ctor(q, *name.value()) {
+                    let label = self.node(canonical, name.span);
+                    let ra = args.iter().map(|p| self.resolve_pat(p)).collect_vec();
+                    return self.node(hir::Pat::Cons(label, ra), pat.span);
+                }
                 self.check_qualifier(q);
                 self.resolve_ctor_pat(pat.span, name, args)
             }
@@ -1192,13 +1555,13 @@ impl Resolver {
                 let rp = pats.iter().map(|p| self.resolve_pat(p)).collect_vec();
                 self.node(hir::Pat::List(rp), pat.span)
             }
-            // `[]` is the empty `Vector`, which is `VEmpty` — the library keeps
+            // `[]` is the empty `Vector`, which is `Vector.Empty` — the library keeps
             // that the only representation of an empty vector (`vNormalize` and
             // `fromArray` both collapse to it). A non-empty vector has no
             // structural form, so say so rather than guessing.
             ast::Pat::Vector(pats) => {
                 if pats.is_empty() {
-                    let label = self.node(InternedString::from("VEmpty"), pat.span);
+                    let label = self.node(InternedString::from("Vector.Empty"), pat.span);
                     self.node(hir::Pat::Cons(label, vec![]), pat.span)
                 } else {
                     self.error(
@@ -1254,7 +1617,10 @@ impl Resolver {
                 Some(e) => exprs.push(self.resolve_expr(e)),
                 None => {
                     self.error(
-                        format!("missing field `{fname}` for `{name}`"),
+                        // The bare spelling: a record's constructor is
+                        // canonically `Person.Person`, which would read as a
+                        // stutter in a message about `Person`.
+                        format!("missing field `{fname}` for `{}`", bare_ctor(name)),
                         "required here".to_string(),
                         span,
                     );

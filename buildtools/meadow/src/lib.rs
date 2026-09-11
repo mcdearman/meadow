@@ -19,6 +19,6 @@ pub mod profile;
 pub mod update;
 pub mod stdlib;
 
-pub use meadow_compiler::Options;
-pub use profile::Profile;
+pub use meadow_compiler::{OptLevel, Options, Strictness};
+pub use profile::{Profile, Resolved};
 pub use runtime::Engine;

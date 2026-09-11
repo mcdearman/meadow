@@ -1,43 +1,78 @@
 //! Compiler options — the individual switches a build turns on or off.
 //!
-//! The driver never passes these one at a time: it picks a *profile* (`debug` or
-//! `release`, see `meadow::Profile`) and the profile expands to a bundle of
-//! options. Today the only switch is [`Options::check_exhaustive`]; optimization
-//! levels will join it here.
+//! Two axes, and they are independent. How hard the compiler works to make the
+//! program fast ([`OptLevel`]), and how much it insists on before it will build
+//! at all ([`Strictness`]). A driver bundles them into a named profile —
+//! `meadow build --release` — but the compiler only ever sees the switches, and
+//! either can be set on its own.
+//!
+//! They used to be one thing: `--release` meant "check `match` exhaustiveness",
+//! which is a diagnostic and not an optimisation at all.
+
+pub use meadow_core::OptLevel;
+
+/// How much the compiler insists on before it will build.
+///
+/// Nothing here changes what a program *means* — only whether the compiler is
+/// willing to hand it over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Strictness {
+    /// The edit-run loop. A half-written `match` should still run, and fail at
+    /// run time only if it is actually reached.
+    #[default]
+    Lenient,
+    /// Shipping. A missing case is a bug you want to hear about first.
+    Strict,
+}
+
+impl Strictness {
+    pub fn parse(s: &str) -> Option<Strictness> {
+        match s.trim() {
+            "lenient" => Some(Strictness::Lenient),
+            "strict" => Some(Strictness::Strict),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Strictness::Lenient => "lenient",
+            Strictness::Strict => "strict",
+        }
+    }
+}
 
 /// Flags for one compilation unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Options {
-    /// Report a non-exhaustive `match` as an error.
-    ///
-    /// Off while iterating (a half-written `match` should still run, and fail at
-    /// runtime only if it is actually reached) and on for release builds, where a
-    /// missing case is a bug you want to hear about before shipping.
-    ///
-    /// Irrefutability of *binding* positions — function and lambda parameters,
-    /// `def` / `let` destructuring — is checked regardless of this flag: those
-    /// have no fallback arm, so a refutable pattern there is always an error.
-    pub check_exhaustive: bool,
+    pub opt: OptLevel,
+    pub strictness: Strictness,
 }
 
 impl Options {
-    /// Fast edit-run loop: no exhaustiveness check.
+    /// Report a non-exhaustive `match` as an error.
+    ///
+    /// Irrefutability of *binding* positions — function and lambda parameters,
+    /// `def` / `let` destructuring — is checked regardless: those have no
+    /// fallback arm, so a refutable pattern there is always an error.
+    pub const fn check_exhaustive(self) -> bool {
+        matches!(self.strictness, Strictness::Strict)
+    }
+
+    /// Fast edit-run loop: no exhaustiveness check, cheap passes only.
     pub const fn debug() -> Self {
         Options {
-            check_exhaustive: false,
+            opt: OptLevel::O1,
+            strictness: Strictness::Lenient,
         }
     }
 
-    /// Shipping build: every `match` must cover its scrutinee.
+    /// Shipping build: every `match` must cover its scrutinee, and the compiler
+    /// does everything it knows how to.
     pub const fn release() -> Self {
         Options {
-            check_exhaustive: true,
+            opt: OptLevel::O2,
+            strictness: Strictness::Strict,
         }
-    }
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Options::debug()
     }
 }

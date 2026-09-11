@@ -18,7 +18,7 @@
 //! library, by design — is unaffected, and one that reads a file is not, so that
 //! is what `--cek` is for until the natives are ported.
 
-use meadow_compiler::core;
+use meadow_compiler::{core, OptLevel};
 use std::fmt;
 
 /// Which machine to use.
@@ -49,13 +49,13 @@ const UNBOUNDED: u64 = u64::MAX;
 /// A string rather than a value because the two machines have different value
 /// types, and every caller here wanted the rendering — which the two produce
 /// identically on purpose.
-pub fn run(program: &core::Program, engine: Engine) -> Result<String, String> {
+pub fn run(program: &core::Program, engine: Engine, opt: OptLevel) -> Result<String, String> {
     match engine {
         Engine::Cek => meadow_eval::run(program)
             .map(|v| v.to_string())
             .map_err(|e| e.msg),
         Engine::Vm => {
-            let image = compile(program)?;
+            let image = compile(program, opt)?;
             meadow_rts::run(&image, UNBOUNDED).map_err(|e| e.msg)
         }
     }
@@ -68,6 +68,7 @@ pub fn run_tests(
     program: &core::Program,
     tests: &[core::Var],
     engine: Engine,
+    opt: OptLevel,
 ) -> Result<Vec<Result<String, String>>, String> {
     match engine {
         Engine::Cek => Ok(meadow_eval::run_tests(program, tests)
@@ -97,7 +98,7 @@ pub fn run_tests(
                 entry: program.entry,
                 ctor_fields: program.ctor_fields.clone(),
             };
-            let image = compile(&whole)?;
+            let image = compile(&whole, opt)?;
 
             Ok((0..tests.len())
                 .map(|i| {
@@ -119,8 +120,8 @@ pub fn run_tests(
 }
 
 /// `core` → AxCut → bytecode.
-pub fn compile(program: &core::Program) -> Result<meadow_bytecode::Program, String> {
-    let lowered = meadow_seq::lower_program(program);
+pub fn compile(program: &core::Program, opt: OptLevel) -> Result<meadow_bytecode::Program, String> {
+    let lowered = meadow_seq::lower_program(program, opt);
     if !lowered.unsupported.is_empty() {
         return Err(format!(
             "the back end cannot translate {:?} yet; try --cek",

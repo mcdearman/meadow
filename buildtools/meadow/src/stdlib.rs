@@ -89,7 +89,12 @@ pub fn std_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
     type Cache = OnceLock<(Vec<(&'static str, CompiledPackage)>, Vec<Diagnostic>)>;
     static DEBUG: Cache = OnceLock::new();
     static RELEASE: Cache = OnceLock::new();
-    let cell = if opts.check_exhaustive { &RELEASE } else { &DEBUG };
+    // Keyed on strictness alone, and only on strictness: the optimisation
+    // level is a *back end* concern — decision trees happen in `meadow_seq`,
+    // after a `CompiledPackage` exists — so it cannot change what is cached
+    // here. If that ever stops being true this key has to grow, and the
+    // number of `Std` compiles per process grows with it.
+    let cell = if opts.check_exhaustive() { &RELEASE } else { &DEBUG };
     let (modules, diags) = cell.get_or_init(|| {
         counter(opts).fetch_add(1, Ordering::Relaxed);
         compile_modules(opts)
@@ -111,7 +116,8 @@ pub fn std_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
 pub fn std_packages(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
     static DEBUG: OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)> = OnceLock::new();
     static RELEASE: OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)> = OnceLock::new();
-    let cell = if opts.check_exhaustive { &RELEASE } else { &DEBUG };
+    // Strictness only, for the reason given on `std_modules`.
+    let cell = if opts.check_exhaustive() { &RELEASE } else { &DEBUG };
     let (packages, diags) = cell.get_or_init(|| {
         // Shares the one compile with `std_modules`, so asking for both costs
         // memory but not time.
@@ -141,7 +147,8 @@ pub fn module_path(dotted: &str) -> Vec<InternedString> {
 fn counter(opts: Options) -> &'static AtomicUsize {
     static DEBUG: AtomicUsize = AtomicUsize::new(0);
     static RELEASE: AtomicUsize = AtomicUsize::new(0);
-    if opts.check_exhaustive { &RELEASE } else { &DEBUG }
+    // Strictness, for the same reason the caches are keyed on it.
+    if opts.check_exhaustive() { &RELEASE } else { &DEBUG }
 }
 
 /// How many times [`std_packages`] has actually compiled `Std` for this profile.

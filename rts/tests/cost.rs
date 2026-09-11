@@ -28,7 +28,7 @@ fn program(src: &str) -> core::Program {
 /// Run `src` and answer `(result, instructions retired, heap slots allocated)`.
 fn cost(src: &str) -> (String, u64, u64) {
     let prog = program(src);
-    let lowered = meadow_seq::lower_program(&prog);
+    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty(), "{:?}", lowered.unsupported);
     let image = meadow_codegen::compile(&lowered.program).expect("codegen");
     let mut vm = meadow_rts::Vm::new(&image);
@@ -127,4 +127,63 @@ fn a_closure_still_captures_what_it_should() {
          def main = twice (adder 10) 1",
     );
     assert_eq!(out, "21");
+}
+
+/// A comparison allocates nothing, whatever it compares.
+///
+/// Not a performance claim — a correctness one. [`Op::JumpUnlessPrim`] puts its
+/// result in `meadow_rts::vm::TEMP`, a register the collector deliberately does
+/// not scan, and that is sound only because the primitive cannot allocate while
+/// the machine is holding a value there. `Prim::compares` is the list the
+/// compiler checks a fused branch against; this is the check that the list is
+/// still telling the truth about what those primitives do.
+///
+/// Each case is run at two iteration counts. What matters is that the total does
+/// not grow with the number of comparisons, not what it is — the loop itself has
+/// to build its arguments once, and `toBigInt` is an allocation on any reading.
+/// The shape is deliberate too: both arms of the `if` are saturated tail calls,
+/// so nothing *else* in the loop can allocate and take the blame.
+#[test]
+fn a_comparison_allocates_nothing() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("", "a < b", "3 4"),
+        ("", "a > b", "3 4"),
+        ("", "a <= b", "3 4"),
+        ("", "a >= b", "3 4"),
+        ("", "a == 3", "3 4"),
+        ("", "a != 3", "3 4"),
+        ("", "a <. b", "1.5 2.5"),
+        ("", "a >=. b", "1.5 2.5"),
+        ("", "a == b", "'x' 'y'"),
+        ("", "a == 'x'", "'x' 'y'"),
+        ("", "a != b", "\"ab\" \"ab\""),
+        ("", "a == \"ab\"", "\"ab\" \"ab\""),
+        // Structural equality over data, which walks the heap without touching
+        // the allocator.
+        (
+            "data Pair = Pair Int Int\n",
+            "a == b",
+            "(Pair 1 2) (Pair 1 2)",
+        ),
+        ("", "a <~ b", "(toBigInt 5) (toBigInt 9)"),
+        ("", "a >=~ b", "(toBigInt 5) (toBigInt 9)"),
+    ];
+
+    for (prelude, cond, args) in cases {
+        let src = |n: i64| {
+            format!(
+                "{prelude}fun go i acc a b =\n\
+                 \x20 if i == 0 then acc\n\
+                 \x20 else if {cond} then go (i - 1) (acc + 1) a b else go (i - 1) acc a b\n\
+                 def main = go {n} 0 {args}\n"
+            )
+        };
+        let (_, _, few) = cost(&src(3));
+        let (_, _, many) = cost(&src(300));
+        assert_eq!(
+            few, many,
+            "`{cond}` cost {few} slots over 3 iterations and {many} over 300 — it \
+             allocates, so it must not be on `Prim::compares`"
+        );
+    }
 }

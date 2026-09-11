@@ -239,7 +239,7 @@ pub fn compile_unit_in_package(
             &m.hir,
             &table,
             &variants,
-            opts.check_exhaustive,
+            opts.check_exhaustive(),
         ));
     }
 

@@ -54,7 +54,7 @@ fn std_program() -> Std {
 #[test]
 fn the_whole_standard_library_lowers() {
     let std = std_program();
-    let lowered = meadow_seq::lower_program(&std.program);
+    let lowered = meadow_seq::lower_program(&std.program, Options::debug().opt);
     assert!(
         lowered.unsupported.is_empty(),
         "the standard library uses `core` constructs the lowering does not \
@@ -72,7 +72,7 @@ fn the_whole_standard_library_lowers() {
 #[test]
 fn the_whole_standard_library_reaches_bytecode() {
     let std = std_program();
-    let image = runtime::compile(&std.program).expect("the standard library should compile");
+    let image = runtime::compile(&std.program, Options::debug().opt).expect("the standard library should compile");
     assert!(image.code.len() > 10_000, "only {} instructions", image.code.len());
     assert!(
         image.regs as usize <= 256,
@@ -93,8 +93,8 @@ fn the_vm_agrees_with_the_cek() {
     let std = std_program();
     let vars: Vec<core::Var> = std.tests.iter().map(|(_, v)| *v).collect();
 
-    let cek = runtime::run_tests(&std.program, &vars, Engine::Cek).expect("the CEK runner");
-    let vm = runtime::run_tests(&std.program, &vars, Engine::Vm).expect("the VM runner");
+    let cek = runtime::run_tests(&std.program, &vars, Engine::Cek, Options::debug().opt).expect("the CEK runner");
+    let vm = runtime::run_tests(&std.program, &vars, Engine::Vm, Options::debug().opt).expect("the VM runner");
 
     let mut agreed = 0;
     let mut native = Vec::new();
@@ -144,25 +144,31 @@ fn the_axcut_machine_agrees_too() {
     // The middle of the pipeline, so a disagreement above can be attributed.
     // If this passes and `the_vm_agrees_with_the_cek` does not, the bug is in
     // code generation; if both fail, it is in the lowering.
-    let std = std_program();
-    let lowered = meadow_seq::lower_program(&std.program);
+    //
+    // At both levels, because the levels differ *here* — `-O2`'s decision trees
+    // are a lowering decision, and this is the test that can say so.
+    for opt in [meadow::OptLevel::O1, meadow::OptLevel::O2] {
+        let std = std_program();
+        let lowered = meadow_seq::lower_program(&std.program, opt);
 
-    let mut checked = 0;
-    for (name, var) in &std.tests {
-        let program = calling(&std.program, *var);
-        let lowered_one = meadow_seq::lower_program(&program);
-        let cek = meadow_eval::run(&program);
-        let axcut = meadow_seq::machine::Machine::run(&lowered_one.program, 200_000_000);
-        match (&cek, &axcut) {
-            (Ok(a), Ok(b)) if a.to_string() == b.to_string() => checked += 1,
-            (Err(_), Err(_)) => checked += 1,
-            (Ok(a), Err(e)) => panic!("{name}: CEK {a}, AxCut failed: {}", e.msg),
-            (Ok(a), Ok(b)) => panic!("{name}: CEK {a}, AxCut {b}"),
-            (Err(e), Ok(b)) => panic!("{name}: CEK failed: {}, AxCut {b}", e.msg),
+        let mut checked = 0;
+        for (name, var) in &std.tests {
+            let program = calling(&std.program, *var);
+            let lowered_one = meadow_seq::lower_program(&program, opt);
+            let cek = meadow_eval::run(&program);
+            let axcut = meadow_seq::machine::Machine::run(&lowered_one.program, 200_000_000);
+            let at = opt.name();
+            match (&cek, &axcut) {
+                (Ok(a), Ok(b)) if a.to_string() == b.to_string() => checked += 1,
+                (Err(_), Err(_)) => checked += 1,
+                (Ok(a), Err(e)) => panic!("{name} at {at}: CEK {a}, AxCut failed: {}", e.msg),
+                (Ok(a), Ok(b)) => panic!("{name} at {at}: CEK {a}, AxCut {b}"),
+                (Err(e), Ok(b)) => panic!("{name} at {at}: CEK failed: {}, AxCut {b}", e.msg),
+            }
         }
+        assert_eq!(checked, std.tests.len());
+        assert!(!lowered.program.defs.is_empty());
     }
-    assert_eq!(checked, std.tests.len());
-    assert!(!lowered.program.defs.is_empty());
 }
 
 /// A program whose entry point calls `test` with `()`, which is what the test
@@ -182,5 +188,114 @@ fn calling(program: &core::Program, test: core::Var) -> core::Program {
         defs,
         entry: Some(entry),
         ctor_fields: program.ctor_fields.clone(),
+    }
+}
+
+/// Every optimization level computes the same answers.
+///
+/// The back end's optional passes are the ones nothing else checks: a program
+/// only reaches `-O2` when someone builds for release, and a decision tree that
+/// picks the wrong arm is a wrong answer rather than a crash. So the standard
+/// library's own tests are run at each level and required to agree with the CEK
+/// machine, which has no levels at all.
+#[test]
+fn every_opt_level_agrees_with_the_cek() {
+    use meadow::OptLevel;
+
+    let std = std_program();
+    let vars: Vec<core::Var> = std.tests.iter().map(|(_, v)| *v).collect();
+    let cek = runtime::run_tests(&std.program, &vars, Engine::Cek, OptLevel::O1)
+        .expect("the CEK runner");
+
+    for opt in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
+        let vm = runtime::run_tests(&std.program, &vars, Engine::Vm, opt)
+            .unwrap_or_else(|e| panic!("the VM runner at {}: {e}", opt.name()));
+
+        let mut agreed = 0;
+        let mut disagreed = Vec::new();
+        for ((name, _), (a, b)) in std.tests.iter().zip(cek.iter().zip(vm.iter())) {
+            match (a, b) {
+                (Ok(x), Ok(y)) if x == y => agreed += 1,
+                (Err(_), Err(_)) => agreed += 1,
+                // The documented divergence: no native effects in the VM.
+                (Ok(_), Err(e)) if e.starts_with("unhandled effect") => {}
+                (Ok(x), Ok(y)) => disagreed.push(format!("{name}: CEK {x}, {} {y}", opt.name())),
+                (Ok(x), Err(e)) => {
+                    disagreed.push(format!("{name}: CEK {x}, {} failed: {e}", opt.name()))
+                }
+                (Err(e), Ok(y)) => {
+                    disagreed.push(format!("{name}: CEK failed: {e}, {} {y}", opt.name()))
+                }
+            }
+        }
+        assert!(
+            disagreed.is_empty(),
+            "{} of {} standard library tests disagree at {}:\n{}",
+            disagreed.len(),
+            std.tests.len(),
+            opt.name(),
+            disagreed.join("\n")
+        );
+        assert!(
+            agreed * 4 > std.tests.len() * 3,
+            "only {agreed} of {} agreed at {}",
+            std.tests.len(),
+            opt.name()
+        );
+    }
+}
+
+/// `-O2` compiles a `match` to one `switch` rather than one per arm.
+///
+/// Counting `switch` statements is the observable difference, and it is what
+/// would notice the gate being wired to nothing — which is the way an option
+/// like this usually fails.
+#[test]
+fn case_trees_are_what_o2_turns_on() {
+    use meadow::OptLevel;
+
+    let std = std_program();
+    let counts: Vec<usize> = [OptLevel::O1, OptLevel::O2]
+        .iter()
+        .map(|opt| {
+            let lowered = meadow_seq::lower_program(&std.program, *opt);
+            lowered
+                .program
+                .defs
+                .iter()
+                .map(|d| switches(&d.block.body))
+                .sum()
+        })
+        .collect();
+
+    // A tree replaces N single-arm switches with one N-arm switch, so the
+    // *count* falls even though the same tags are tested.
+    assert!(
+        counts[1] < counts[0],
+        "O1 has {} switches and O2 has {} — the gate is doing nothing",
+        counts[0],
+        counts[1]
+    );
+}
+
+/// How many `switch` statements a block contains, counting into every branch.
+fn switches(s: &meadow_seq::Statement) -> usize {
+    use meadow_seq::Statement::*;
+    match s {
+        Substitute(_, b) => switches(&b.body),
+        Jump(_) => 0,
+        Let { rest, .. } => switches(rest),
+        Switch { arms, default, .. } => {
+            1 + arms.iter().map(|(_, b)| switches(&b.body)).sum::<usize>()
+                + switches(&default.body)
+        }
+        New { methods, rest, .. } => {
+            methods.iter().map(|b| switches(&b.body)).sum::<usize>() + switches(rest)
+        }
+        Invoke(..) => 0,
+        Extern { blocks, .. } => blocks.iter().map(|b| switches(&b.body)).sum(),
+        Handle { rest, .. } | Unhandle { rest, .. } => switches(rest),
+        Perform { .. } => 0,
+        Error(_) => 0,
     }
 }

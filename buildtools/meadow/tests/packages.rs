@@ -74,3 +74,63 @@ fn modules_are_compiled_in_dependency_order() {
     // describe 20 == (20 / 2) + 1 == 11; twentyOne == 42 / 2 == 21
     assert_eq!(eval::run(&linked.program).unwrap().to_string(), "32");
 }
+
+/// `[profile.<name>]` sections, and the layering that puts them between the
+/// profile's built-in meaning and a command-line flag.
+#[test]
+fn a_manifest_configures_the_build_profiles() {
+    use meadow::package::ProfileConfig;
+    use meadow::{OptLevel, Profile, Resolved, Strictness};
+
+    let dir = std::env::temp_dir().join("meadow-profile-manifest");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(
+        dir.join("meadow.toml"),
+        "[package]\n\
+         name = \"tuned\"\n\
+         \n\
+         [profile.debug]\n\
+         opt-level = 2      # fast builds are not what this package wants\n\
+         \n\
+         [profile.release]\n\
+         strictness = \"lenient\"\n",
+    )
+    .unwrap();
+
+    let m = Manifest::load(&dir).unwrap().expect("a manifest");
+    assert_eq!(m.profile("debug").opt, Some(OptLevel::O2));
+    assert_eq!(m.profile("debug").strictness, None);
+    assert_eq!(m.profile("release").strictness, Some(Strictness::Lenient));
+    // A profile the manifest says nothing about keeps its built-in meaning.
+    assert_eq!(m.profile("bench"), ProfileConfig::default());
+
+    // Debug is `-O1` by default; this package's manifest makes it `-O2`, and
+    // says nothing about strictness, so that stays lenient.
+    let debug = Resolved::resolve(Profile::Debug, &dir, ProfileConfig::default());
+    assert_eq!(debug.opt(), OptLevel::O2);
+    assert_eq!(debug.strictness(), Strictness::Lenient);
+
+    // Release is strict by default; the manifest turns that off.
+    let release = Resolved::resolve(Profile::Release, &dir, ProfileConfig::default());
+    assert_eq!(release.opt(), OptLevel::O2);
+    assert_eq!(release.strictness(), Strictness::Lenient);
+
+    // A flag beats both.
+    let flagged = Resolved::resolve(
+        Profile::Debug,
+        &dir,
+        ProfileConfig {
+            opt: Some(OptLevel::O0),
+            strictness: Some(Strictness::Strict),
+        },
+    );
+    assert_eq!(flagged.opt(), OptLevel::O0);
+    assert_eq!(flagged.strictness(), Strictness::Strict);
+
+    // A package with no manifest at all is just the profile.
+    let bare = Resolved::resolve(Profile::Release, Path::new("no/such/place"), ProfileConfig::default());
+    assert_eq!(bare.options, Profile::Release.options());
+
+    std::fs::remove_dir_all(&dir).ok();
+}

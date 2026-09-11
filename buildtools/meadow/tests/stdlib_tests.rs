@@ -14,7 +14,7 @@ fn run() -> Vec<(String, Option<String>)> {
         "the standard library should compile cleanly: {:?}",
         diags.iter().map(|d| &d.msg).collect::<Vec<_>>()
     );
-    test::run_linked_in(Linker::link(packages), "Std", Engine::default()).expect("the runner should not itself fail")
+    test::run_linked_in(Linker::link(packages), "Std", Engine::default(), Options::debug().opt).expect("the runner should not itself fail")
 }
 
 #[test]

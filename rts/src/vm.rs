@@ -19,7 +19,9 @@
 //!
 //! # Registers and the collector
 //!
-//! One flat file of 256 registers, no frame pointer. The collector's root set is
+//! One flat file of 256 registers, no frame pointer. The compiler uses 255 of
+//! them; the top one is [`TEMP`], where a fused compare-and-branch puts the
+//! boolean it is about to throw away. The collector's root set is
 //! `r0..live`, and `live` is maintained by the instructions that know it:
 //! [`Op::Jump`] carries the target block's arity, [`Op::Invoke`] sets it from the
 //! object's captures plus its arguments, and any instruction writing `r[a]`
@@ -48,6 +50,19 @@ pub const REGISTERS: usize = 256;
 pub(crate) const SCRATCH: usize = REGISTERS;
 const SCRATCH_LEN: usize = 256;
 
+/// The whole register file, as one fixed-size block.
+pub(crate) type Regs = [Value; REGISTERS + SCRATCH_LEN];
+
+/// The one register the compiler will not use, kept for a value the program
+/// cannot name: the boolean a fused compare-and-branch tests and discards.
+///
+/// It is deliberately **not** a collector root — writing it does not raise
+/// `live` — which is safe only because a fused branch's primitive is always a
+/// comparison, and no comparison allocates. `meadow_codegen` will not emit one
+/// for anything else ([`meadow_core::Prim::compares`]), and its register
+/// allocator stops one short of the file so this slot stays free.
+pub(crate) const TEMP: Reg = (REGISTERS - 1) as Reg;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     pub msg: String,
@@ -74,7 +89,10 @@ struct Frame {
 pub struct Vm<'p> {
     pub(crate) program: &'p Program,
     pub(crate) heap: Heap,
-    pub(crate) regs: Vec<Value>,
+    /// The register file: 256 the program can name, then a scratch area it
+    /// cannot. A boxed array rather than a `Vec` so its length is a constant —
+    /// which is what lets the bounds check on every register access fold away.
+    pub(crate) regs: Box<Regs>,
     live: usize,
     handlers: Vec<Frame>,
     pc: usize,
@@ -110,7 +128,7 @@ impl<'p> Vm<'p> {
         Vm {
             program,
             heap: Heap::new(),
-            regs: vec![Value::Unit; REGISTERS + SCRATCH_LEN],
+            regs: Box::new([Value::Unit; REGISTERS + SCRATCH_LEN]),
             live: 0,
             handlers: Vec::new(),
             pc: 0,
@@ -339,6 +357,46 @@ impl<'p> Vm<'p> {
                     _ => [i.b, i.b.wrapping_add(1), i.b.wrapping_add(2)],
                 };
                 self.run_prim(p, srcs, i.a)?;
+            }
+
+            // The right operand is a constant, and it goes into the destination
+            // register before the primitive runs: `run_prim` re-reads its
+            // arguments out of registers after any collection, and writes the
+            // result last, so the destination is exactly the right place to
+            // park it. The compiler never gives a folded primitive a
+            // destination that is also its left operand.
+            Op::PrimK => {
+                debug_assert_ne!(i.a, i.b, "a folded primitive overwrote its own operand");
+                let p = self.primitive(i.c as u32)?;
+                let v = self.constant(i.imm)?;
+                self.set(i.a, v);
+                self.run_prim(p, [i.b, i.a, 0], i.a)?;
+            }
+
+            // A comparison and the branch that tests it. The boolean goes
+            // nowhere the program can see, so it needs no register of its own.
+            Op::JumpUnlessPrim | Op::JumpUnlessPrimK => {
+                let p = self.primitive(i.c as u32)?;
+                // The boolean — and a folded constant — go in [`TEMP`], which
+                // the program cannot name. Writing any register raises `live`,
+                // and leaving it raised would make the whole file a collector
+                // root until the next jump, so it is put back. Nothing can
+                // observe the gap: a fused branch's primitive is a comparison,
+                // and no comparison allocates.
+                let live = self.live;
+                let srcs = if i.op == Op::JumpUnlessPrimK {
+                    let v = self.constant(i.b as u32)?;
+                    self.set(TEMP, v);
+                    [i.a, TEMP, 0]
+                } else {
+                    [i.a, i.b, 0]
+                };
+                self.run_prim(p, srcs, TEMP)?;
+                let cond = self.reg(TEMP);
+                self.live = live;
+                if self.falsey(cond) {
+                    self.pc = i.imm as usize;
+                }
             }
 
 
@@ -603,6 +661,13 @@ impl<'p> Vm<'p> {
         for f in &mut self.handlers {
             f.handler = it.next().expect("root count");
             f.ret_k = it.next().expect("root count");
+        }
+    }
+
+    fn primitive(&self, id: u32) -> Result<meadow_core::Prim, Error> {
+        match self.program.prims.get(id as usize) {
+            Some(p) => Ok(*p),
+            None => err(format!("no primitive {id}")),
         }
     }
 

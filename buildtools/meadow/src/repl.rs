@@ -592,7 +592,7 @@ impl Session {
                 // Every line is compiled and run as a whole program, so the REPL
                 // gets the bytecode VM for free — and `:cek` switches it, the
                 // same as the flag on `meadow run`.
-                match runtime::run(&program, self.engine) {
+                match runtime::run(&program, self.engine, self.opts.opt) {
                     Ok(value) => println!("= {value}"),
                     Err(e) => eprintln!("{e}"),
                 }

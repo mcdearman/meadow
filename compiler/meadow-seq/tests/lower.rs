@@ -28,7 +28,7 @@ fn main_def(term: Term) -> Program {
 
 #[test]
 fn a_literal_is_an_extern_and_a_return() {
-    let lowered = lower_program(&main_def(Term::Lit(Lit::Int(42))));
+    let lowered = lower_program(&main_def(Term::Lit(Lit::Int(42))), meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
     let text = lowered.program.pretty();
     // The literal producer, then the universal return sequence: arrange the
@@ -53,7 +53,7 @@ fn every_block_binds_the_whole_environment() {
             Term::Lit(Lit::Int(3)),
         ],
     );
-    let lowered = lower_program(&main_def(term));
+    let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
 
     let mut checked = 0;
@@ -83,7 +83,7 @@ fn calling_a_lambda_is_a_permutation_and_a_branch() {
         Arc::new(Term::Lam(x, Arc::new(Term::Var(x)))),
         Arc::new(Term::Lit(Lit::Int(1))),
     );
-    let lowered = lower_program(&main_def(term));
+    let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
 
     let mut found = false;
@@ -124,7 +124,7 @@ fn a_global_reference_is_a_jump_with_the_environment_untouched() {
         entry: Some(m),
         ctor_fields: Default::default(),
     };
-    let lowered = lower_program(&program);
+    let lowered = lower_program(&program, meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
 
     // `substitute [k] in {(k) => jump #0}` — a one-element environment, which is
@@ -145,7 +145,7 @@ fn a_variable_from_nowhere_is_reported() {
     // Every `core` construct lowers now, so the only thing left to report is a
     // variable that is neither in scope nor a definition — a bug upstream. It
     // still has to be *said* rather than turned into a plausible statement.
-    let lowered = lower_program(&main_def(Term::Var(VarId(999))));
+    let lowered = lower_program(&main_def(Term::Var(VarId(999))), meadow_core::OptLevel::default());
     assert!(
         lowered
             .unsupported
@@ -173,7 +173,7 @@ fn a_match_becomes_a_switch_with_a_default() {
             ],
         )),
     );
-    let lowered = lower_program(&main_def(term));
+    let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
 
     let mut switches = 0;
@@ -222,7 +222,7 @@ fn a_letrec_becomes_labels_sharing_one_parameter_list() {
             Arc::new(Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Lit(Lit::Int(0))))),
         )),
     );
-    let lowered = lower_program(&main_def(term));
+    let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
 
     // One definition for `main`, one per `letrec` binding.
@@ -267,4 +267,121 @@ fn walk(s: &Statement, f: &mut impl FnMut(&Statement)) {
     for b in blocks {
         walk(&b.body, f);
     }
+}
+
+/// A literal operand rides inside the `extern` instead of becoming a value.
+///
+/// `n - 1` used to be two statements and two environment slots: one to produce
+/// the `1`, one to subtract it, and the literal stayed live until something
+/// dropped it. The folded form is what removes the register, not only the
+/// instruction.
+#[test]
+fn a_literal_operand_is_folded_into_the_primitive() {
+    let term = Term::Prim(
+        Prim::Sub,
+        vec![Term::Lit(Lit::Int(7)), Term::Lit(Lit::Int(1))],
+    );
+    let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
+
+    let mut ops = Vec::new();
+    for def in &lowered.program.defs {
+        walk(&def.block.body, &mut |s| {
+            if let Statement::Extern { op, args, .. } = s {
+                ops.push((op.clone(), args.len()));
+            }
+        });
+    }
+    // The `7` is still produced — only the right operand folds — and the
+    // subtraction takes it as its one argument.
+    assert!(
+        ops.iter()
+            .any(|(op, n)| matches!(op, meadow_seq::Extern::PrimK(Prim::Sub, Lit::Int(1))) && *n == 1),
+        "expected a folded `Sub .. 1`, got {ops:?}"
+    );
+    assert!(
+        !ops.iter().any(|(op, _)| matches!(op, meadow_seq::Extern::Prim(Prim::Sub))),
+        "the unfolded form should be gone: {ops:?}"
+    );
+}
+
+/// `if n == 0` is one statement: the comparison, the literal and the branch.
+#[test]
+fn a_comparison_fuses_into_the_branch_that_tests_it() {
+    let n = VarId(1);
+    let term = Term::Let(
+        n,
+        Arc::new(Term::Lit(Lit::Int(3))),
+        Arc::new(Term::If(
+            Arc::new(Term::Prim(
+                Prim::Eq,
+                vec![Term::Var(n), Term::Lit(Lit::Int(0))],
+            )),
+            Arc::new(Term::Lit(Lit::Int(1))),
+            Arc::new(Term::Lit(Lit::Int(2))),
+        )),
+    );
+    let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
+
+    let mut found = false;
+    for def in &lowered.program.defs {
+        walk(&def.block.body, &mut |s| {
+            if let Statement::Extern { op, args, blocks } = s {
+                if let meadow_seq::Extern::BranchPrimK(Prim::Eq, Lit::Int(0)) = op {
+                    assert_eq!(args.len(), 1, "one operand; the other is the literal");
+                    assert_eq!(blocks.len(), 2, "false and true");
+                    found = true;
+                }
+                assert!(
+                    !matches!(op, meadow_seq::Extern::Branch),
+                    "the unfused branch should be gone"
+                );
+            }
+        });
+    }
+    assert!(found, "{}", lowered.program.pretty());
+}
+
+/// At `-O2` a `match` over distinct constructors is one `switch`.
+#[test]
+fn case_trees_replace_the_chain_at_o2() {
+    use meadow_core::{OptLevel, Pat};
+
+    // `match x with | Nothing -> 0 | Just y -> y | _ -> 0`
+    let x = VarId(1);
+    let y = VarId(2);
+    let case = Term::Case(
+        Arc::new(Term::Var(x)),
+        vec![
+            (Pat::Ctor("Nothing".into(), vec![]), Term::Lit(Lit::Int(0))),
+            (
+                Pat::Ctor("Just".into(), vec![Pat::Var(y)]),
+                Term::Var(y),
+            ),
+            (Pat::Wild, Term::Lit(Lit::Int(0))),
+        ],
+    );
+    let term = Term::Let(
+        x,
+        Arc::new(Term::Ctor("Just".into(), vec![Term::Lit(Lit::Int(9))])),
+        Arc::new(case),
+    );
+
+    let arms_at = |opt| {
+        let lowered = lower_program(&main_def(term.clone()), opt);
+        let mut widths = Vec::new();
+        for def in &lowered.program.defs {
+            walk(&def.block.body, &mut |s| {
+                if let Statement::Switch { arms, .. } = s {
+                    widths.push(arms.len());
+                }
+            });
+        }
+        widths.sort_unstable();
+        widths
+    };
+
+    // One switch per arm, each testing one tag ...
+    assert_eq!(arms_at(OptLevel::O1), vec![1, 1]);
+    // ... against one switch that tests both.
+    assert_eq!(arms_at(OptLevel::O2), vec![2]);
 }

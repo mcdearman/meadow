@@ -239,11 +239,31 @@ pub enum Extern {
     Lit(meadow_core::Lit),
     /// A `meadow` primitive. One continuation, which binds the result.
     Prim(Prim),
+    /// A binary primitive whose right operand is a literal — `n - 1`, `x == 0`.
+    /// One argument, naming the left operand; one continuation.
+    ///
+    /// Folding the literal in is worth a variant of its own because of what it
+    /// removes, which is not only the instruction that loaded it: the literal
+    /// never gets a name, so it never joins the environment, never takes a
+    /// register, and is never carried through the moves at the next jump. A loop
+    /// counting down by one used to hoist `1` into the environment on every
+    /// iteration.
+    PrimK(Prim, meadow_core::Lit),
     /// Branch: two continuations, taken on false and true respectively.
     ///
     /// `if` is not a statement of its own — a branching primitive with two
     /// continuation blocks is all it ever was.
     Branch,
+    /// Branch on a binary primitive: `if x < y`, in one statement rather than a
+    /// comparison whose result is immediately tested and then thrown away.
+    ///
+    /// Two arguments, two continuations.
+    BranchPrim(Prim),
+    /// The same with a literal right operand: `if n == 0`, which is the shape
+    /// every counting loop and every literal pattern ends up in.
+    ///
+    /// One argument, two continuations.
+    BranchPrimK(Prim, meadow_core::Lit),
 
     /// Build a record. The labels name the arguments, in the same order.
     Record(Vec<InternedString>),
@@ -295,3 +315,32 @@ pub use lower::{lower_program, Lowered, Unsupported};
 pub mod machine;
 
 mod print;
+
+impl Extern {
+    /// Does this `extern` choose between two continuations rather than produce
+    /// a value?
+    ///
+    /// The three branching forms differ only in how they get their boolean, and
+    /// every consumer wants to know which group an operation is in before it
+    /// cares which member.
+    pub fn is_branch(&self) -> bool {
+        matches!(
+            self,
+            Extern::Branch | Extern::BranchPrim(_) | Extern::BranchPrimK(_, _)
+        )
+    }
+}
+
+/// Can `p`'s operands be given in either order?
+///
+/// Only used to fold a literal *left* operand into the right-hand slot the
+/// folded forms provide — `2 * x` should compile the way `x * 2` does. Listed
+/// rather than derived, and deliberately short: a wrong entry here is a program
+/// that runs and computes something else.
+pub fn commutes(p: Prim) -> bool {
+    use Prim::*;
+    matches!(
+        p,
+        Add | Mul | Eq | Ne | AddF | MulF | AddB | MulB | BitAnd | BitOr | BitXor
+    )
+}

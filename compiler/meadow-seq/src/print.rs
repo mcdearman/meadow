@@ -123,7 +123,10 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
             let op = match op {
                 Extern::Lit(l) => format!("lit {l:?}"),
                 Extern::Prim(p) => format!("{p:?}"),
+                Extern::PrimK(p, l) => format!("{p:?} .. {l:?}"),
                 Extern::Branch => "branch".to_string(),
+                Extern::BranchPrim(p) => format!("branch {p:?}"),
+                Extern::BranchPrimK(p, l) => format!("branch {p:?} .. {l:?}"),
                 Extern::Record(labels) => format!(
                     "record{{{}}}",
                     labels

@@ -127,9 +127,15 @@ impl Vm<'_> {
     /// Registers rather than values: a primitive that allocates has to re-read
     /// its arguments after making room, because the collector will have moved
     /// them. See the discipline at the top of this file.
+    ///
+    /// Register *numbers* rather than indices, and that is not incidental:
+    /// `[u8; 3]` is passed in a register and `[usize; 3]` is passed on the
+    /// stack. This is the innermost call in the machine — every arithmetic
+    /// operation the program performs — and widening it cost about 4% across
+    /// every benchmark.
     pub(crate) fn run_prim(&mut self, p: Prim, srcs: [u8; 3], dst: u8) -> Result<(), Error> {
         use Prim::*;
-        let arg = |vm: &Vm, i: u8| vm.reg(srcs[i as usize]);
+        let arg = |vm: &Vm, i: usize| vm.reg(srcs[i]);
 
         let out = match p {
             // --- Int ------------------------------------------------------

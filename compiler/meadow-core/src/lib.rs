@@ -145,6 +145,36 @@ pub enum Prim {
 }
 
 impl Prim {
+    /// Does `p` compare two values and answer a `Bool`?
+    ///
+    /// Two things rest on this list, and both are about a comparison being the
+    /// only kind of primitive that can be fused into a branch. It has to answer
+    /// a boolean, or the branch would have nothing to test; and — the reason
+    /// the runtime cares — it must not **allocate**, because the machine puts a
+    /// fused comparison's result in a register the collector does not scan.
+    ///
+    /// So this is a claim about `meadow_rts::prims`, not only about types. A
+    /// primitive that allocates does not belong here however boolean it looks.
+    pub const fn compares(self) -> bool {
+        use Prim::*;
+        matches!(
+            self,
+            Eq | Ne
+                | Lt
+                | Gt
+                | Le
+                | Ge
+                | LtF
+                | GtF
+                | LeF
+                | GeF
+                | LtB
+                | GtB
+                | LeB
+                | GeB
+        )
+    }
+
     pub fn from_name(name: &str) -> Option<Prim> {
         Some(match name {
             "+" => Prim::Add,
@@ -991,5 +1021,74 @@ mod tests {
         };
         // `a` is seen first (as the def name) -> v0; `b` -> v1.
         assert_eq!(prog.pretty(), "v0 = (\\v1. v1)\nentry: v0\n");
+    }
+}
+
+/// How hard the compiler works to make the program fast.
+///
+/// **`O0` is not "no optimisation".** The compiler is never gratuitously bad:
+/// it does not build a closure for a subexpression that cannot transfer control,
+/// a saturated call to a known function is a jump rather than three allocations,
+/// and a primitive names its operand registers instead of gathering them. Those
+/// cost nothing — no code size, no compile time worth measuring, no fidelity —
+/// so turning them off would only make a debug build ten times slower for no
+/// benefit to anyone. Nothing on this ladder controls them.
+///
+/// What the ladder controls is the work that *trades* something.
+///
+/// | | adds | costs |
+/// |---|---|---|
+/// | `O0` | nothing | — |
+/// | `O1` | nothing yet | — |
+/// | `O2` | `match` compiled to a decision tree | code size, compile time |
+///
+/// `O1` adding nothing over `O0` today is deliberate rather than an oversight:
+/// `O1` is the default, and it is where a pass lands that is worth doing on
+/// every keystroke. `O0` exists so that a suspected miscompilation can be
+/// bisected against a compiler doing the least it is allowed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum OptLevel {
+    /// Nothing optional at all.
+    ///
+    /// Which today is the same code as [`OptLevel::O1`]: everything below `O2`
+    /// is unconditional, because it is not a trade. A known call becoming a
+    /// jump, a literal folding into the instruction that uses it — those make
+    /// debug builds smaller and faster and cost nothing to read, so there is
+    /// nothing to turn off. `O0` exists for the first pass that changes that.
+    O0,
+    /// The default: everything cheap enough to want while editing.
+    #[default]
+    O1,
+    /// Everything, including passes that trade code size for speed.
+    O2,
+}
+impl OptLevel {
+    /// Parse `0`, `1`, `2` — or `O0`, `o1`, as a `-O` flag is usually written.
+    pub fn parse(s: &str) -> Option<OptLevel> {
+        match s.trim().trim_start_matches(['O', 'o']) {
+            "0" => Some(OptLevel::O0),
+            "1" => Some(OptLevel::O1),
+            "2" => Some(OptLevel::O2),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            OptLevel::O0 => "O0",
+            OptLevel::O1 => "O1",
+            OptLevel::O2 => "O2",
+        }
+    }
+
+    /// Compile `match` to a decision tree rather than a chain of failure
+    /// continuations.
+    ///
+    /// The chain retests what an earlier arm already tested, so a wide `match`
+    /// does more work than it needs to; a tree tests each scrutinee once. It is
+    /// gated because it is the trade the chain was avoiding — a tree duplicates
+    /// the arms it shares, so the code grows.
+    pub const fn case_trees(self) -> bool {
+        matches!(self, OptLevel::O2)
     }
 }

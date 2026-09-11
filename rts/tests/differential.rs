@@ -46,41 +46,59 @@ fn program(src: &str) -> core::Program {
     }
 }
 
-/// Run `src` all three ways and require the same answer.
+/// Every optimization level, since the lowering differs between them.
+const LEVELS: [meadow_core::OptLevel; 3] = [
+    meadow_core::OptLevel::O0,
+    meadow_core::OptLevel::O1,
+    meadow_core::OptLevel::O2,
+];
+
+/// Run `src` all three ways, at every optimization level, and require the same
+/// answer from all of them.
 ///
 /// Returns the shared result, so a case can also assert what it should be —
-/// otherwise three machines that are wrong in the same way would agree and pass.
+/// otherwise machines that are wrong in the same way would agree and pass.
+///
+/// Every level rather than the default, because the levels are a *lowering*
+/// decision: `-O2` compiles a `match` to a decision tree, so the cases below
+/// are the only place each construct is put through both shapes one at a time.
+/// On the whole standard library a disagreement says "something disagrees"; here
+/// it says which construct.
 #[track_caller]
 fn agree(src: &str) -> String {
     let prog = program(src);
 
     let cek = meadow_eval::run(&prog).unwrap_or_else(|e| panic!("CEK failed: {}\n{src}", e.msg));
-
-    let lowered = meadow_seq::lower_program(&prog);
-    assert!(
-        lowered.unsupported.is_empty(),
-        "lowering gave up on {:?}\n{src}",
-        lowered.unsupported
-    );
-
-    let axcut = machine::Machine::run(&lowered.program, FUEL)
-        .unwrap_or_else(|e| panic!("AxCut failed: {}\n{src}", e.msg));
-
-    let image = meadow_codegen::compile(&lowered.program)
-        .unwrap_or_else(|e| panic!("codegen failed: {}\n{src}", e.msg));
-    let vm = meadow_rts::run(&image, FUEL)
-        .unwrap_or_else(|e| panic!("VM failed: {}\n{src}\n{}", e.msg, image.disassemble()));
-
     let want = cek.to_string();
-    assert_eq!(want, axcut.to_string(), "CEK vs AxCut\n{src}");
-    assert_eq!(want, vm, "CEK vs VM\n{src}");
+
+    for opt in LEVELS {
+        let at = opt.name();
+        let lowered = meadow_seq::lower_program(&prog, opt);
+        assert!(
+            lowered.unsupported.is_empty(),
+            "lowering gave up at {at} on {:?}\n{src}",
+            lowered.unsupported
+        );
+
+        let axcut = machine::Machine::run(&lowered.program, FUEL)
+            .unwrap_or_else(|e| panic!("AxCut at {at} failed: {}\n{src}", e.msg));
+
+        let image = meadow_codegen::compile(&lowered.program)
+            .unwrap_or_else(|e| panic!("codegen at {at} failed: {}\n{src}", e.msg));
+        let vm = meadow_rts::run(&image, FUEL).unwrap_or_else(|e| {
+            panic!("VM at {at} failed: {}\n{src}\n{}", e.msg, image.disassemble())
+        });
+
+        assert_eq!(want, axcut.to_string(), "CEK vs AxCut at {at}\n{src}");
+        assert_eq!(want, vm, "CEK vs VM at {at}\n{src}");
+    }
     want
 }
 
 /// Compile all the way down, for the cases that check a *failure* — where the
 /// harness above cannot help because there is no answer to compare.
 fn image(prog: &core::Program) -> meadow_bytecode::Program {
-    let lowered = meadow_seq::lower_program(prog);
+    let lowered = meadow_seq::lower_program(prog, meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty(), "{:?}", lowered.unsupported);
     meadow_codegen::compile(&lowered.program).expect("codegen")
 }
@@ -367,7 +385,7 @@ fn a_non_exhaustive_match_fails_the_same_way_everywhere() {
          def main = f None",
     );
     let cek = meadow_eval::run(&prog).expect_err("CEK should fail");
-    let lowered = meadow_seq::lower_program(&prog);
+    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
     let axcut = machine::Machine::run(&lowered.program, FUEL).expect_err("AxCut should fail");
     let vm = meadow_rts::run(&image(&prog), FUEL).expect_err("the VM should fail");
     assert!(cek.msg.contains("non-exhaustive"), "{}", cek.msg);
@@ -449,7 +467,7 @@ fn record_extension_has_no_surface_syntax_but_lowers() {
         ctor_fields: Default::default(),
     };
 
-    let lowered = meadow_seq::lower_program(&prog);
+    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
     let cek = meadow_eval::run(&prog).expect("CEK");
     let axcut = machine::Machine::run(&lowered.program, FUEL).expect("AxCut");
@@ -624,7 +642,7 @@ fn resuming_twice_is_refused_everywhere() {
            }",
     );
     let cek = meadow_eval::run(&prog).expect_err("CEK should refuse");
-    let lowered = meadow_seq::lower_program(&prog);
+    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
     let axcut = machine::Machine::run(&lowered.program, FUEL).expect_err("AxCut should refuse");
     let vm = meadow_rts::run(&image(&prog), FUEL).expect_err("the VM should refuse");
     assert!(cek.msg.contains("more than once"), "{}", cek.msg);
@@ -668,7 +686,7 @@ fn nothing_in_core_is_left_untranslated() {
              return x -> x
            }",
     );
-    let lowered = meadow_seq::lower_program(&prog);
+    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
     assert!(
         lowered.unsupported.is_empty(),
         "still untranslated: {:?}",

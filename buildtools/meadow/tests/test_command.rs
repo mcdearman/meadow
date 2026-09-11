@@ -21,7 +21,7 @@ fn run_fixture() -> Vec<(String, Option<String>)> {
         "fixture should compile cleanly: {:?}",
         out.diagnostics.iter().map(|d| &d.msg).collect::<Vec<_>>()
     );
-    test::run_linked(out.linked.expect("linked"), meadow::Engine::default()).expect("the runner itself should not fail")
+    test::run_linked(out.linked.expect("linked"), meadow::Engine::default(), meadow::Options::debug().opt).expect("the runner itself should not fail")
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn run_src(src: &str) -> Vec<(String, Option<String>)> {
     assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| &d.msg).collect::<Vec<_>>());
     let mut pkgs: Vec<_> = std_pkgs;
     pkgs.push(cp);
-    test::run_linked(Linker::link(pkgs), meadow::Engine::default()).expect("runner")
+    test::run_linked(Linker::link(pkgs), meadow::Engine::default(), meadow::Options::debug().opt).expect("runner")
 }
 
 #[test]

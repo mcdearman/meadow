@@ -19,7 +19,10 @@
 //!   at all when the block is laid out inline — it is a change of names, and the
 //!   values are already in registers. Same for a `switch` arm and for the
 //!   continuation of a primitive. Moves appear only at [`Statement::Jump`] and
-//!   [`Statement::Invoke`], the two places control actually leaves.
+//!   [`Statement::Invoke`], the two places control actually leaves — and often
+//!   not even there. An instruction that wants a window of consecutive registers
+//!   reads the environment where it already sits whenever the environment
+//!   already has that shape, which it usually does: see [`Gen::gather`].
 //! * **A jump needs a permutation.** The target block wants its parameters in
 //!   `r0..rn`, so [`Gen::parallel_move`] emits the moves — breaking cycles with
 //!   one scratch register, which is the only place this pass has to think.
@@ -41,8 +44,8 @@
 //! register file even when most of what it holds is dead. The IR knows exactly
 //! when a value dies — that is what the environment shrinking at each
 //! `substitute` means — so this is a matter of reading it, not of computing it.
-//! Until then a block needing more than 256 registers is a hard error rather
-//! than a spill, which is the honest failure mode: it says the allocator is
+//! Until then a block needing more registers than there are is a hard error
+//! rather than a spill, which is the honest failure mode: it says the allocator is
 //! missing rather than quietly generating slow code. (The whole standard library
 //! peaks well under that, so there is room to be unhurried about it.)
 //!
@@ -77,8 +80,12 @@ fn err<T>(msg: impl Into<String>) -> Result<T, Error> {
     Err(Error { msg: msg.into() })
 }
 
-/// How many registers there are. A `u8` operand, so this is the ceiling.
-const REGISTERS: usize = 256;
+/// How many registers this pass will use.
+///
+/// One short of the 256 a `u8` operand can name. The top one is the runtime's
+/// (`meadow_rts::vm::TEMP`): a fused compare-and-branch has to put its boolean
+/// somewhere, and the instruction has no field left to say where.
+const REGISTERS: usize = 255;
 
 /// Compile an AxCut program to a loadable image.
 pub fn compile(seq: &seq::Program) -> Result<Program, Error> {
@@ -358,6 +365,32 @@ impl<'a> Gen<'a> {
         Ok(base as Reg)
     }
 
+    /// Where a windowed instruction should read its arguments from.
+    ///
+    /// A window is a run of consecutive registers, and `srcs` very often *is*
+    /// one already: `invoke`'s arguments are the environment minus one slot, and
+    /// a closure captures the environment whole, so both usually arrive as
+    /// `r0, r1, r2, …` in order. Copying that somewhere else to satisfy the
+    /// shape is pure waste — and it was most of what this pass emitted. Four
+    /// moves before every `closure`, one before every `invoke`, all of them
+    /// `move rN+1 <- rN`.
+    ///
+    /// So: if they are already consecutive and ascending, read them where they
+    /// are; otherwise take a fresh window above the environment and fill it.
+    /// Reading in place is safe for the same reason [`Gen::window`] is — every
+    /// instruction that reads a window reads all of it before writing its
+    /// destination, and the destination came from [`Gen::free`], so it is not
+    /// one of the registers being read.
+    fn gather(&mut self, env: &Env, srcs: &[Reg]) -> Result<Reg, Error> {
+        if let Some(base) = run_of(srcs) {
+            self.track(base as usize + srcs.len());
+            return Ok(base);
+        }
+        let base = self.window(env, srcs.len())?;
+        self.fill(base, srcs);
+        Ok(base)
+    }
+
     /// Move `srcs` into a window at `base`, in order.
     fn fill(&mut self, base: Reg, srcs: &[Reg]) {
         for (i, s) in srcs.iter().enumerate() {
@@ -449,8 +482,7 @@ impl<'a> Gen<'a> {
                     msg: "a constructor with more than 256 fields".into(),
                 })?;
                 let dst = self.free(&env)?;
-                let base = self.window(&env, srcs.len())?;
-                self.fill(base, &srcs);
+                let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::MakeData, dst, base, n, *tag));
                 let mut env = env;
                 env.insert(0, (*name, dst));
@@ -509,8 +541,7 @@ impl<'a> Gen<'a> {
                 self.method_tables.push(table);
 
                 let dst = self.free(&env)?;
-                let base = self.window(&env, srcs.len())?;
-                self.fill(base, &srcs);
+                let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::Closure, dst, base, ncap, table_id));
                 let mut env = env;
                 env.insert(0, (*name, dst));
@@ -521,8 +552,7 @@ impl<'a> Gen<'a> {
                 let obj = reg_of(&env, *target)?;
                 let args = without(&env, *target);
                 let srcs = regs_of(&args);
-                let base = self.window(&env, srcs.len())?;
-                self.fill(base, &srcs);
+                let base = self.gather(&env, &srcs)?;
                 let method = u8::try_from(*tag).map_err(|_| Error {
                     msg: format!("method {tag} does not fit an invoke operand"),
                 })?;
@@ -582,6 +612,54 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Emit the test a branching `extern` performs, and answer where the jump
+    /// that takes the false arm ended up — its immediate still has to be
+    /// patched once that arm's address is known.
+    ///
+    /// Usually one instruction. The exception is a literal comparison whose
+    /// constant does not fit the operand byte the fused form has for it, which
+    /// loads the constant and compares the two registers instead. Same answer,
+    /// one instruction more, and no cliff in what the compiler will accept.
+    fn emit_test(&mut self, op: &Extern, srcs: &[Reg], env: &Env) -> Result<usize, Error> {
+        let at = |g: &Gen| g.code.len() - 1;
+        match op {
+            Extern::Branch => {
+                let [c] = srcs else {
+                    return err(format!("a branch needs 1 argument, got {}", srcs.len()));
+                };
+                self.emit(Instr::ai(Op::JumpUnless, *c, 0));
+                Ok(at(self))
+            }
+            Extern::BranchPrim(p) => {
+                let [x, y] = srcs else {
+                    return err(format!("a branch on {p:?} needs 2 arguments, got {}", srcs.len()));
+                };
+                fusable(*p)?;
+                let id = self.prim(*p);
+                self.emit(Instr::new(Op::JumpUnlessPrim, *x, *y, prim_byte(id)?, 0));
+                Ok(at(self))
+            }
+            Extern::BranchPrimK(p, l) => {
+                let [x] = srcs else {
+                    return err(format!("a branch on {p:?} needs 1 argument, got {}", srcs.len()));
+                };
+                fusable(*p)?;
+                let id = self.prim(*p);
+                let k = self.konst(constant(l));
+                match u8::try_from(k) {
+                    Ok(k) => self.emit(Instr::new(Op::JumpUnlessPrimK, *x, k, prim_byte(id)?, 0)),
+                    Err(_) => {
+                        let tmp = self.free(env)?;
+                        self.emit(Instr::ai(Op::Const, tmp, k));
+                        self.emit(Instr::new(Op::JumpUnlessPrim, *x, tmp, prim_byte(id)?, 0));
+                    }
+                }
+                Ok(at(self))
+            }
+            other => err(format!("{other:?} is not a branch")),
+        }
+    }
+
     fn emit_extern(
         &mut self,
         op: &'a Extern,
@@ -589,18 +667,18 @@ impl<'a> Gen<'a> {
         blocks: &'a [Block],
         env: Env,
     ) -> Result<(), Error> {
-        // A branch is the only extern that does not produce a value, and the
-        // only one with two continuations. Neither changes the environment.
-        if let Extern::Branch = op {
+        // A branch is the only kind of extern that does not produce a value, and
+        // the only one with two continuations. None of the three changes the
+        // environment.
+        if op.is_branch() {
             let [on_false, on_true] = blocks else {
                 return err(format!("a branch needs 2 continuations, got {}", blocks.len()));
             };
-            let [cond] = args else {
-                return err(format!("a branch needs 1 argument, got {}", args.len()));
-            };
-            let c = reg_of(&env, *cond)?;
-            let test = self.code.len();
-            self.emit(Instr::ai(Op::JumpUnless, c, 0));
+            let srcs = args
+                .iter()
+                .map(|n| reg_of(&env, *n))
+                .collect::<Result<Vec<_>, _>>()?;
+            let test = self.emit_test(op, &srcs, &env)?;
             let vals = regs_of(&env);
             self.emit_block(on_true, &vals)?;
             self.code[test].imm = self.code.len() as u32;
@@ -620,7 +698,9 @@ impl<'a> Gen<'a> {
         let dst = self.free(&env)?;
 
         match op {
-            Extern::Branch => unreachable!("handled above"),
+            Extern::Branch | Extern::BranchPrim(_) | Extern::BranchPrimK(_, _) => {
+                unreachable!("handled above")
+            }
             Extern::Lit(l) => {
                 let k = self.konst(constant(l));
                 self.emit(Instr::ai(Op::Const, dst, k));
@@ -636,18 +716,37 @@ impl<'a> Gen<'a> {
                     [x, y] => self.emit(Instr::new(Op::Prim2, dst, x, y, id)),
                     _ => {
                         let n = srcs.len() as u8;
-                        let base = self.window(&env, srcs.len())?;
-                        self.fill(base, &srcs);
+                        let base = self.gather(&env, &srcs)?;
                         self.emit(Instr::new(Op::Prim, dst, base, n, id));
                     }
                 }
+            }
+            // A literal operand does not reach a register at all: the
+            // instruction carries the constant index.
+            Extern::PrimK(p, l) => {
+                let [x] = srcs[..] else {
+                    return err(format!("{p:?} with a folded constant takes 1 argument"));
+                };
+                // The runtime parks the constant in the destination before
+                // running the primitive, which works only because the
+                // destination is never the operand. It cannot be — `free`
+                // returns a register the environment is not using and `x` is in
+                // the environment — but the runtime's correctness rests on it,
+                // so it is stated here rather than left implied.
+                if dst == x {
+                    return err(format!(
+                        "{p:?} would fold a constant into r{dst}, which is also its operand"
+                    ));
+                }
+                let id = self.prim(*p);
+                let k = self.konst(constant(l));
+                self.emit(Instr::new(Op::PrimK, dst, x, prim_byte(id)?, k));
             }
             Extern::Array => {
                 let n = u8::try_from(srcs.len()).map_err(|_| Error {
                     msg: "an array literal of more than 256 elements".into(),
                 })?;
-                let base = self.window(&env, srcs.len())?;
-                self.fill(base, &srcs);
+                let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::MakeArray, dst, base, n, 0));
             }
             Extern::Record(fields) => {
@@ -656,8 +755,7 @@ impl<'a> Gen<'a> {
                 })?;
                 let id = self.shapes.len() as u32;
                 self.shapes.push(fields.clone());
-                let base = self.window(&env, srcs.len())?;
-                self.fill(base, &srcs);
+                let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::MakeRecord, dst, base, n, id));
             }
             Extern::Select(l) => {
@@ -677,6 +775,27 @@ impl<'a> Gen<'a> {
         vals.extend(regs_of(&env));
         self.emit_block(block, &vals)
     }
+}
+
+/// The base of `srcs` if it is already an ascending run of consecutive
+/// registers — which is what a window wants, and what the environment usually
+/// hands over.
+///
+/// The empty list is a run at register 0: nothing is read, so where it would
+/// have been read from does not matter.
+fn run_of(srcs: &[Reg]) -> Option<Reg> {
+    let first = match srcs.first() {
+        None => return Some(0),
+        Some(r) => *r,
+    };
+    // A run cannot reach past the file; `window` would have refused too.
+    if first as usize + srcs.len() > REGISTERS {
+        return None;
+    }
+    srcs.iter()
+        .enumerate()
+        .all(|(i, r)| *r == first + i as Reg)
+        .then_some(first)
 }
 
 /// Order the moves that put `srcs[i]` into register `i`, as `(dst, src)` pairs.
@@ -795,10 +914,59 @@ mod tests {
     }
 
     #[test]
+    fn arguments_already_in_a_row_are_read_where_they_are() {
+        // What `invoke` and `closure` are handed nearly always: a prefix or a
+        // suffix of the environment, in order.
+        assert_eq!(run_of(&[]), Some(0));
+        assert_eq!(run_of(&[7]), Some(7));
+        assert_eq!(run_of(&[0, 1, 2, 3]), Some(0));
+        assert_eq!(run_of(&[5, 6]), Some(5));
+
+        // And what is not a window: a gap, a descent, a repeat.
+        assert_eq!(run_of(&[0, 2]), None);
+        assert_eq!(run_of(&[3, 2]), None);
+        assert_eq!(run_of(&[1, 1]), None);
+        // A run that would reach past the file is not one.
+        assert_eq!(run_of(&[255, 0]), None);
+    }
+
+    #[test]
     fn duplicated_sources_all_arrive() {
         // `f f x` puts the same value in two places, and reading a register
         // twice has to keep working after the first write.
         lands_correctly(&[2, 2, 2]);
         lands_correctly(&[1, 1, 0]);
     }
+}
+
+/// The primitive table index as an operand byte.
+///
+/// The folded instructions name their primitive in `c`, which is a `u8`. There
+/// are fewer than a hundred primitives in the language, so this cannot fail —
+/// but a table that grew past 256 would otherwise wrap silently into a
+/// different operation, and that is not a failure worth discovering at run
+/// time.
+fn prim_byte(id: u32) -> Result<u8, Error> {
+    u8::try_from(id).map_err(|_| Error {
+        msg: format!("primitive {id} does not fit a folded instruction's operand"),
+    })
+}
+
+/// A fused compare-and-branch keeps its boolean in the one register the
+/// runtime reserves, and that register is **not** a collector root — so the
+/// primitive must not allocate. [`Prim::compares`] is the list of ones that do
+/// not, and this is the check that the lowering only ever built a fused branch
+/// from one of them.
+///
+/// A guard rather than a fallback: the two crates would have to disagree about
+/// what a comparison is for this to fire, and quietly generating slower code
+/// would hide that.
+fn fusable(p: Prim) -> Result<(), Error> {
+    if p.compares() {
+        return Ok(());
+    }
+    err(format!(
+        "{p:?} was fused into a branch, but only a comparison can be — it would \
+         leave its result where the collector cannot see it"
+    ))
 }

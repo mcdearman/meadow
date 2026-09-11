@@ -62,7 +62,8 @@ meadow                          # REPL
 meadow run examples/euler       # build a package and run `main`
 meadow run --cek pkg            # ...on the CEK machine instead of the VM
 meadow build path/to/pkg        # type-check and link
-meadow build --release pkg      # ...with release checks
+meadow build --release pkg      # ...optimized, and `match` must be exhaustive
+meadow run -O2 pkg              # ...or just the optimization level
 meadow dis pkg                  # disassemble: the bytecode the VM would run
 meadow fmt src                  # re-indent .mw sources in place
 meadow fmt --check src          # ...or just report, and exit 1 if any differ
@@ -232,8 +233,13 @@ bundled TextMate grammar.
 
 ### Profiles
 
-`--debug` (the default) and `--release` are bundles of compiler flags. Today the
-only difference is that release requires every `match` to be exhaustive:
+`--debug` (the default) and `--release` are names for a bundle of compiler
+options, not options themselves. There are two:
+
+| | `--debug` | `--release` |
+|---|---|---|
+| optimization level | `-O1` | `-O2` |
+| non-exhaustive `match` | allowed | an error |
 
 ```sh
 $ meadow run --release missing.mw
@@ -241,8 +247,35 @@ missing: non-exhaustive patterns: `None` is not matched
 ```
 
 Irrefutability of *binding* positions — function and lambda parameters, `def`
-and `let` destructuring — is checked in both profiles, since those have no
-fallback arm.
+and `let` destructuring — is checked at both, since those have no fallback arm.
+
+`-O2` compiles a `match` to a decision tree rather than trying its arms in turn.
+Everything below it is unconditional: a known call becoming a jump, a literal
+folding into the instruction that uses it, a comparison fusing into the branch
+that tests it. Those cost nothing to read and nothing to compile, so a debug
+build gets them too — `-O0` exists for the first pass that changes that, and is
+`-O1` today.
+
+Either axis can be set on its own, and a package can change what the profiles
+mean for it:
+
+```sh
+meadow run -O2 pkg          # optimize, but still allow a half-written `match`
+meadow build --strict pkg   # check exhaustiveness without optimizing
+```
+
+```toml
+# meadow.toml
+[profile.debug]
+opt-level = 2               # this package is slow to run, not slow to build
+
+[profile.release]
+strictness = "lenient"      # "lenient" | "strict"
+```
+
+A flag beats the manifest, and the manifest beats the profile's built-in
+meaning. A key that is absent is simply not overridden, so a `[profile.debug]`
+that names only `opt-level` leaves everything else as debug.
 
 ## Building from a checkout
 

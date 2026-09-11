@@ -5,7 +5,10 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
-use meadow::{format, pipeline, runtime, test, update, Engine, Profile};
+use meadow::{
+    format, package::ProfileConfig, pipeline, runtime, test, update, Engine, OptLevel, Profile,
+    Resolved, Strictness,
+};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -99,17 +102,33 @@ enum Cmd {
     },
 }
 
-/// `--release` / `--debug` — the build profile. Debug is the default: it skips
-/// the exhaustiveness check so a half-written `match` still runs.
+/// `--release` / `--debug` — the build profile — plus the individual switches
+/// that override whatever the profile chose.
+///
+/// Debug is the default: `-O1`, and no exhaustiveness check, so a half-written
+/// `match` still runs. Release is `-O2` and strict. Either can be overridden
+/// per switch, here or in the package's `meadow.toml`.
 #[derive(clap::Args)]
-#[group(multiple = false)]
 struct ProfileArgs {
-    /// Build with release checks (`match` must be exhaustive).
-    #[arg(long)]
+    /// Build with the release profile: `-O2`, and `match` must be exhaustive.
+    #[arg(long, conflicts_with = "debug")]
     release: bool,
-    /// Build with debug checks (the default).
+    /// Build with the debug profile (the default).
     #[arg(long)]
     debug: bool,
+    /// Optimization level: 0, 1 or 2. Overrides the profile.
+    #[arg(short = 'O', long = "opt-level", value_name = "LEVEL", value_parser = opt_level)]
+    opt: Option<OptLevel>,
+    /// Reject a non-exhaustive `match`, whatever the profile says.
+    #[arg(long, conflicts_with = "lenient")]
+    strict: bool,
+    /// Allow a non-exhaustive `match`, whatever the profile says.
+    #[arg(long)]
+    lenient: bool,
+}
+
+fn opt_level(s: &str) -> Result<OptLevel, String> {
+    OptLevel::parse(s).ok_or_else(|| format!("expected 0, 1 or 2, got `{s}`"))
 }
 
 impl ProfileArgs {
@@ -119,6 +138,24 @@ impl ProfileArgs {
         } else {
             Profile::Debug
         }
+    }
+
+    /// The switches named on the command line, which win over everything.
+    fn overrides(&self) -> ProfileConfig {
+        ProfileConfig {
+            opt: self.opt,
+            strictness: match (self.strict, self.lenient) {
+                (true, _) => Some(Strictness::Strict),
+                (_, true) => Some(Strictness::Lenient),
+                _ => None,
+            },
+        }
+    }
+
+    /// The profile, the package's `meadow.toml`, and these flags, in that order
+    /// of increasing authority.
+    fn resolve(&self, path: &std::path::Path) -> Resolved {
+        Resolved::resolve(self.profile(), path, self.overrides())
     }
 }
 
@@ -151,13 +188,13 @@ fn main() {
             path,
             annotations,
             profile,
-        }) => build(&path, None, annotations, profile.profile()),
+        }) => build(&path, None, annotations, profile.resolve(&path)),
         Some(Cmd::Run {
             path,
             profile,
             engine,
-        }) => build(&path, Some(engine.engine()), false, profile.profile()),
-        Some(Cmd::Dis { path, profile }) => disassemble(&path, profile.profile()),
+        }) => build(&path, Some(engine.engine()), false, profile.resolve(&path)),
+        Some(Cmd::Dis { path, profile }) => disassemble(&path, profile.resolve(&path)),
         Some(Cmd::Test {
             path,
             filter,
@@ -165,10 +202,10 @@ fn main() {
             profile,
             engine,
         }) => match test::run(&test::Options {
+            profile: profile.resolve(&path),
             path,
             filter,
             std,
-            profile: profile.profile(),
             engine: engine.engine(),
         }) {
             Ok(true) => {}
@@ -232,8 +269,8 @@ fn main() {
 /// Discover, compile and link the package at `path`; with `engine`, also
 /// evaluate its entry point. Exits non-zero if any diagnostic was produced or
 /// evaluation failed.
-fn build(path: &std::path::Path, engine: Option<Engine>, annotations: bool, profile: Profile) {
-    let out = pipeline::build(path, profile.options());
+fn build(path: &std::path::Path, engine: Option<Engine>, annotations: bool, profile: Resolved) {
+    let out = pipeline::build(path, profile.options);
 
     for d in &out.diagnostics {
         eprintln!("{}: {}", d.filename, d.msg);
@@ -249,7 +286,7 @@ fn build(path: &std::path::Path, engine: Option<Engine>, annotations: bool, prof
     }
 
     if let Some(engine) = engine {
-        match runtime::run(&linked.program, engine) {
+        match runtime::run(&linked.program, engine, profile.opt()) {
             Ok(value) => println!("=> {value}"),
             Err(e) => {
                 eprintln!("{e}");
@@ -265,15 +302,15 @@ fn build(path: &std::path::Path, engine: Option<Engine>, annotations: bool, prof
 
 /// Print the bytecode the VM would run — the back end's output, addresses and
 /// all.
-fn disassemble(path: &std::path::Path, profile: Profile) {
-    let out = pipeline::build(path, profile.options());
+fn disassemble(path: &std::path::Path, profile: Resolved) {
+    let out = pipeline::build(path, profile.options);
     for d in &out.diagnostics {
         eprintln!("{}: {}", d.filename, d.msg);
     }
     let Some(linked) = out.linked else {
         std::process::exit(1);
     };
-    match runtime::compile(&linked.program) {
+    match runtime::compile(&linked.program, profile.opt()) {
         Ok(image) => print!("{}", image.disassemble()),
         Err(e) => {
             eprintln!("error: {e}");

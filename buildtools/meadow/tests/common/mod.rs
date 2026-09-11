@@ -154,7 +154,7 @@ pub fn run_main_std(src: &str, engine: meadow::Engine) -> String {
             diags.iter().map(|d| d.msg.clone()).collect::<Vec<_>>().join("\n")
         );
     }
-    match meadow::runtime::run(&program, engine) {
+    match meadow::runtime::run(&program, engine, Options::debug().opt) {
         Ok(v) => v,
         Err(e) => e,
     }

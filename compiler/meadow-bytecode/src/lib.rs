@@ -122,6 +122,27 @@ pub enum Op {
     /// carried two `move`s to gather its arguments into a window — three
     /// instructions and two register writes to add two numbers.
     Prim2,
+    /// `r[a] = prims[c](r[b], consts[imm])`
+    ///
+    /// A binary primitive whose right operand is a literal — `n - 1`. The
+    /// constant is not loaded into a register first, so it costs no instruction,
+    /// no register, and nothing at the next jump.
+    ///
+    /// `c` names the primitive here rather than `imm`, which the constant needs.
+    /// Every opcode below follows that: `c` is the primitive.
+    PrimK,
+    /// `if not prims[c](r[a], r[b]) then pc = imm`
+    ///
+    /// A comparison and the branch that tests it, in one instruction. The
+    /// boolean is never written anywhere the program can see.
+    JumpUnlessPrim,
+    /// `if not prims[c](r[a], consts[b]) then pc = imm`
+    ///
+    /// The same against a literal — `if n == 0`, and every `match` on a literal
+    /// pattern. `b` is a constant index rather than a register, which caps it at
+    /// 256: the compiler emits [`Op::PrimK`] and [`Op::JumpUnless`] instead when
+    /// the constant it wants lives higher than that.
+    JumpUnlessPrimK,
 
     // --- effects ---------------------------------------------------------
     /// Install the handler in `r[a]`, covering `handled[imm]`, whose value goes
@@ -165,6 +186,9 @@ impl Op {
         Op::Prim,
         Op::Prim1,
         Op::Prim2,
+        Op::PrimK,
+        Op::JumpUnlessPrim,
+        Op::JumpUnlessPrimK,
         Op::Handle,
         Op::Unhandle,
         Op::Perform,
@@ -311,6 +335,20 @@ impl Program {
         out
     }
 
+    fn prim_name(&self, id: u32) -> String {
+        match self.prims.get(id as usize) {
+            Some(p) => format!("{p:?}"),
+            None => format!("p{id}"),
+        }
+    }
+
+    fn const_name(&self, id: u32) -> String {
+        match self.consts.get(id as usize) {
+            Some(c) => format!("{c:?}"),
+            None => format!("k{id}"),
+        }
+    }
+
     /// One instruction, with its immediate resolved against the tables — the
     /// difference between a readable dump and a column of integers.
     pub fn show(&self, i: Instr) -> String {
@@ -374,6 +412,22 @@ impl Program {
                 Some(p) => format!("{name:<14} r{} <- {p:?}(r{}..+{})", i.a, i.b, i.c),
                 None => format!("{name:<14} r{} <- p{}(r{}..+{})", i.a, i.imm, i.b, i.c),
             },
+            // The folded forms name their primitive in `c`, and their constant
+            // where the fields allow: `imm` for a value, `b` for a branch.
+            Op::PrimK => {
+                let p = self.prim_name(i.c as u32);
+                let c = self.const_name(i.imm);
+                format!("{name:<14} r{} <- {p}(r{}, {c})", i.a, i.b)
+            }
+            Op::JumpUnlessPrim => {
+                let p = self.prim_name(i.c as u32);
+                format!("{name:<14} {p}(r{}, r{}) else @{}", i.a, i.b, i.imm)
+            }
+            Op::JumpUnlessPrimK => {
+                let p = self.prim_name(i.c as u32);
+                let c = self.const_name(i.b as u32);
+                format!("{name:<14} {p}(r{}, {c}) else @{}", i.a, i.imm)
+            }
             Op::Handle => format!("{name:<14} r{} covering h{} -> r{}", i.a, i.imm, i.b),
             Op::Unhandle => format!("{name:<14} r{}", i.a),
             Op::Perform => match self.ops.get(i.imm as usize) {

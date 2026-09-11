@@ -550,14 +550,28 @@ impl<'p> Machine<'p> {
     ) -> Result<Option<Value<'p>>, Error> {
         // A branching primitive with two continuations. Neither changes the
         // environment, which is why `if` needs no statement of its own.
-        if let Extern::Branch = op {
+        if op.is_branch() {
             let [on_false, on_true] = blocks else {
                 return err(format!("a branch needs 2 continuations, got {}", blocks.len()));
             };
-            let [arg] = args else {
-                return err(format!("a branch needs 1 argument, got {}", args.len()));
+            // The three forms differ only in where the boolean comes from: a
+            // register, a comparison of two, or a comparison against a literal.
+            let v = match op {
+                Extern::Branch => match args {
+                    [arg] => self.lookup(*arg)?,
+                    _ => return err(format!("a branch needs 1 argument, got {}", args.len())),
+                },
+                Extern::BranchPrim(p) => {
+                    let vals = self.lookup_all(args)?;
+                    prim(*p, &vals, &self.program.tags)?
+                }
+                Extern::BranchPrimK(p, l) => {
+                    let mut vals = self.lookup_all(args)?;
+                    vals.push(literal(l));
+                    prim(*p, &vals, &self.program.tags)?
+                }
+                _ => unreachable!("is_branch covers exactly these"),
             };
-            let v = self.lookup(*arg)?;
             let block = if is_falsey(&v) { on_false } else { on_true };
             let vals = std::mem::take(&mut self.env);
             self.enter(block, vals)?;
@@ -572,9 +586,16 @@ impl<'p> Machine<'p> {
         };
         let vals = self.lookup_all(args)?;
         let v = match op {
-            Extern::Branch => unreachable!("handled above"),
+            Extern::Branch | Extern::BranchPrim(_) | Extern::BranchPrimK(_, _) => {
+                unreachable!("handled above")
+            }
             Extern::Lit(l) => literal(l),
             Extern::Prim(p) => prim(*p, &vals, &self.program.tags)?,
+            Extern::PrimK(p, l) => {
+                let mut vals = vals.clone();
+                vals.push(literal(l));
+                prim(*p, &vals, &self.program.tags)?
+            }
             Extern::Array => Value::Array(Rc::new(vals)),
             Extern::Record(labels) => {
                 if labels.len() != vals.len() {

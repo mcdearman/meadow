@@ -10,7 +10,7 @@
 //! error and one failing test does not stop the others.
 
 use crate::runtime::{self, Engine};
-use crate::{pipeline, Profile};
+use crate::{pipeline, Resolved};
 use std::path::Path;
 
 pub struct Options {
@@ -20,7 +20,7 @@ pub struct Options {
     pub filter: Option<String>,
     /// Also run the standard library's own tests.
     pub std: bool,
-    pub profile: Profile,
+    pub profile: Resolved,
     /// Which machine runs them. The bytecode VM by default; `--cek` for the
     /// specification.
     pub engine: Engine,
@@ -33,7 +33,7 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     // Without this, the default path of `.` would sweep every `.mw` file below
     // the working directory into one package and fail in a hundred ways.
     let linked = if opts.std && !is_package(Path::new(&opts.path)) {
-        let (packages, diags) = crate::stdlib::std_packages(opts.profile.options());
+        let (packages, diags) = crate::stdlib::std_packages(opts.profile.options);
         for d in &diags {
             eprintln!("{}: {}", d.filename, d.msg);
         }
@@ -42,7 +42,7 @@ pub fn run(opts: &Options) -> Result<bool, String> {
         }
         crate::linker::Linker::link(packages)
     } else {
-        let out = pipeline::build(Path::new(&opts.path), opts.profile.options());
+        let out = pipeline::build(Path::new(&opts.path), opts.profile.options);
         for d in &out.diagnostics {
             eprintln!("{}: {}", d.filename, d.msg);
         }
@@ -77,7 +77,8 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     }
 
     let vars: Vec<_> = cases.iter().map(|t| t.var).collect();
-    let results = runtime::run_tests(&linked.program, &vars, opts.engine)?;
+    let opt = opts.profile.options.opt;
+    let results = runtime::run_tests(&linked.program, &vars, opts.engine, opt)?;
 
     let mut failures = Vec::new();
     for (case, result) in cases.iter().zip(&results) {
@@ -128,6 +129,7 @@ pub fn run_linked_in(
     linked: crate::linker::LinkedProgram,
     package: &str,
     engine: Engine,
+    opt: meadow_compiler::OptLevel,
 ) -> Result<Vec<(String, Option<String>)>, String> {
     let cases: Vec<_> = linked
         .tests
@@ -135,7 +137,7 @@ pub fn run_linked_in(
         .filter(|t| &*t.package == package)
         .collect();
     let vars: Vec<_> = cases.iter().map(|t| t.var).collect();
-    let results = runtime::run_tests(&linked.program, &vars, engine)?;
+    let results = runtime::run_tests(&linked.program, &vars, engine, opt)?;
     Ok(cases
         .iter()
         .zip(results)
@@ -147,10 +149,11 @@ pub fn run_linked_in(
 pub fn run_linked(
     linked: crate::linker::LinkedProgram,
     engine: Engine,
+    opt: meadow_compiler::OptLevel,
 ) -> Result<Vec<(String, Option<String>)>, String> {
     let cases: Vec<_> = linked.tests.iter().filter(|t| &*t.package != "Std").collect();
     let vars: Vec<_> = cases.iter().map(|t| t.var).collect();
-    let results = runtime::run_tests(&linked.program, &vars, engine)?;
+    let results = runtime::run_tests(&linked.program, &vars, engine, opt)?;
     Ok(cases
         .iter()
         .zip(results)

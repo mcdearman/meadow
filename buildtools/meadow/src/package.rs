@@ -21,11 +21,28 @@
 //! single `.mw` file) is a standalone package named after its stem. The embedded
 //! `Std` package (see [`crate::stdlib`]) is always an implicit dependency and
 //! never needs to be listed.
+//!
+//! A manifest may also configure the build profiles, which is how a package
+//! changes what `--debug` and `--release` mean for it:
+//!
+//! ```toml
+//! [profile.debug]
+//! opt-level = 1            # 0, 1, 2 — or "O1"
+//!
+//! [profile.release]
+//! opt-level = 2
+//! strictness = "strict"    # "lenient" | "strict"
+//! ```
+//!
+//! Only the keys that are present are overridden; the rest keep the profile's
+//! built-in meaning (see [`crate::Profile`]). A command-line flag wins over
+//! both.
 
 use meadow_compiler::{
     diagnostics::Diagnostic,
     intern::InternedString,
     source::{Source, SourceKind},
+    OptLevel, Options, Strictness,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,6 +62,29 @@ pub struct Manifest {
     pub name: String,
     pub version: String,
     pub deps: Vec<(String, PathBuf)>,
+    /// `[profile.<name>]` sections, keyed by profile name.
+    pub profiles: HashMap<String, ProfileConfig>,
+}
+
+/// What one `[profile.<name>]` section says.
+///
+/// Every field is optional, and absent means "whatever that profile already
+/// meant" — a manifest that only wants a different optimization level in debug
+/// builds says exactly that and inherits the rest.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProfileConfig {
+    pub opt: Option<OptLevel>,
+    pub strictness: Option<Strictness>,
+}
+
+impl ProfileConfig {
+    /// This section applied on top of `base`.
+    pub fn apply(self, base: Options) -> Options {
+        Options {
+            opt: self.opt.unwrap_or(base.opt),
+            strictness: self.strictness.unwrap_or(base.strictness),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +220,26 @@ impl Manifest {
         let text = std::fs::read_to_string(&file)?;
         Ok(Some(parse_manifest(&text, dir)))
     }
+
+    /// The manifest governing `path`, which may be a package directory or a
+    /// single `.mw` file inside one.
+    ///
+    /// Unreadable or missing is not an error here: a package need not have a
+    /// manifest at all, and a build should not be stopped by one it could not
+    /// read when everything it says is optional anyway.
+    pub fn find(path: &Path) -> Option<Manifest> {
+        let dir = if path.is_dir() {
+            path.to_path_buf()
+        } else {
+            path.parent()?.to_path_buf()
+        };
+        Manifest::load(&dir).ok().flatten()
+    }
+
+    /// The `[profile.<name>]` section, or an empty one.
+    pub fn profile(&self, name: &str) -> ProfileConfig {
+        self.profiles.get(name).copied().unwrap_or_default()
+    }
 }
 
 /// A deliberately small line-based TOML reader — enough for `[package]` /
@@ -188,6 +248,7 @@ fn parse_manifest(text: &str, dir: &Path) -> Manifest {
     let mut name = package_name(dir).to_string();
     let mut version = "0.0.0".to_string();
     let mut deps = Vec::new();
+    let mut profiles: HashMap<String, ProfileConfig> = HashMap::new();
     let mut section = String::new();
 
     for raw in text.lines() {
@@ -216,6 +277,18 @@ fn parse_manifest(text: &str, dir: &Path) -> Manifest {
                 "version" => version = unquote(value).to_string(),
                 _ => {}
             },
+            // `[profile.release]`, `[profile.debug]`, or any other name a
+            // driver might come to know. An unknown key is ignored rather than
+            // rejected: a manifest written for a later version of the compiler
+            // should still build.
+            _ if section.starts_with("profile.") => {
+                let p = profiles.entry(section["profile.".len()..].to_string()).or_default();
+                match key {
+                    "opt-level" | "opt_level" => p.opt = OptLevel::parse(unquote(value)),
+                    "strictness" => p.strictness = Strictness::parse(unquote(value)),
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
@@ -224,6 +297,7 @@ fn parse_manifest(text: &str, dir: &Path) -> Manifest {
         name,
         version,
         deps,
+        profiles,
     }
 }
 

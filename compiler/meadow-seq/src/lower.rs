@@ -59,8 +59,12 @@
 //! arm, each capturing the next, and a pattern that fails invokes it. That is
 //! backtracking, not a decision tree — arms can retest what an earlier arm
 //! already tested, so a wide `match` on one scrutinee does more work than it
-//! needs to. It is correct, it is small, and turning it into a decision tree is
-//! a local change to [`Lower::case`] that nothing else depends on.
+//! needs to. It is correct and it is small.
+//!
+//! At [`OptLevel::O2`] the arms that dispatch on a constructor become a single
+//! `switch` instead — [`Lower::case_tree`]. It is gated because a decision tree
+//! is a code-size trade in general, and because the chain is what the arms fall
+//! back to when the tree does not cover them, so both have to keep working.
 //!
 //! # Where this departs from the paper
 //!
@@ -77,7 +81,7 @@
 
 use crate::{Block, Def, Extern, Label, Name, Program, Statement, Tag};
 use meadow_core as core;
-use meadow_core::{Pat, Term, Var};
+use meadow_core::{OptLevel, Pat, Term, Var};
 use meadow_hir::VarId;
 use meadow_intern::InternedString;
 use std::collections::{HashMap, HashSet};
@@ -101,7 +105,7 @@ pub struct Lowered {
 ///
 /// Fresh names continue above the highest [`VarId`] the front end used, so an
 /// invented name can never collide with a real one.
-pub fn lower_program(program: &core::Program) -> Lowered {
+pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     let mut globals = HashMap::new();
     for (i, d) in program.defs.iter().enumerate() {
         globals.insert(d.var, (Label(i as u32), Vec::new()));
@@ -115,6 +119,7 @@ pub fn lower_program(program: &core::Program) -> Lowered {
         defs: Vec::new(),
         tags: HashMap::new(),
         next_tag: 0,
+        opt,
         unsupported: HashSet::new(),
     };
 
@@ -201,6 +206,27 @@ fn max_var(program: &core::Program) -> u32 {
     hi
 }
 
+/// Split a binary primitive's arguments into "one operand, and a literal".
+///
+/// `n - 1` and `x == 0` are most of what arithmetic in a loop looks like, and a
+/// literal operand needs neither a name nor a register — the folded `extern`
+/// forms carry it. The literal has to end up on the *right*, which is where it
+/// usually already is; a left-hand one is only moved across when the operation
+/// does not care (see [`crate::commutes`]).
+fn const_operand(p: core::Prim, args: &[Term]) -> Option<(Term, core::Lit)> {
+    let [x, y] = args else {
+        return None;
+    };
+    if let Term::Lit(l) = y {
+        return Some((x.clone(), l.clone()));
+    }
+    match x {
+        Term::Lit(l) if crate::commutes(p) => Some((y.clone(), l.clone())),
+        _ => None,
+    }
+}
+
+
 struct Lower {
     next_name: u32,
     next_label: u32,
@@ -214,6 +240,8 @@ struct Lower {
     defs: Vec<Def>,
     tags: HashMap<InternedString, Tag>,
     next_tag: Tag,
+    /// What the back end is allowed to do beyond the unconditional minimum.
+    opt: OptLevel,
     unsupported: HashSet<Unsupported>,
 }
 
@@ -435,6 +463,13 @@ impl Lower {
 
             Term::Prim(p, args) => {
                 let p = *p;
+                // A literal operand rides along inside the `extern`, so it never
+                // becomes a name and never occupies a register.
+                if let Some((x, l)) = const_operand(p, args) {
+                    return self.direct_all(&[x], env.to_vec(), move |this, xs, env1| {
+                        this.produces_as(Extern::PrimK(p, l), xs, &env1, name, f)
+                    });
+                }
                 self.direct_all(args, env.to_vec(), move |this, xs, env1| {
                     this.produces_as(Extern::Prim(p), xs, &env1, name, f)
                 })
@@ -821,6 +856,41 @@ impl Lower {
             // the environment, so both blocks take it as it stands.
             Term::If(c, t, e) => {
                 let keep = self.keep(env, &[t, e], &[k]);
+
+                // `if x < y` is one test, not a comparison whose result is
+                // bound, immediately tested, and then never looked at again.
+                // Fusing is only available when the condition cannot itself
+                // transfer control — otherwise its operands are not values yet —
+                // which is exactly the case `bind` would have handled without a
+                // continuation anyway, so nothing else changes.
+                if let Term::Prim(p, cargs) = &**c {
+                    let p = *p;
+                    if p.compares() && self.simple(c, env) {
+                        let (op, operands) = match const_operand(p, cargs) {
+                            Some((x, l)) => (Extern::BranchPrimK(p, l), vec![x]),
+                            None => (Extern::BranchPrim(p), cargs.to_vec()),
+                        };
+                        return self.direct_all(&operands, env.to_vec(), move |this, xs, env1| {
+                            let then = this.expr(t, &env1, k);
+                            let els = this.expr(e, &env1, k);
+                            Statement::Extern {
+                                op,
+                                args: xs,
+                                blocks: vec![
+                                    Block {
+                                        params: env1.clone(),
+                                        body: els,
+                                    },
+                                    Block {
+                                        params: env1,
+                                        body: then,
+                                    },
+                                ],
+                            }
+                        });
+                    }
+                }
+
                 self.bind(
                     c,
                     env,
@@ -849,6 +919,13 @@ impl Lower {
 
             Term::Prim(prim, args) => {
                 let prim = *prim;
+                if let Some((x, l)) = const_operand(prim, args) {
+                    return self.sequence(&[x], env, k, move |this, names, env1| {
+                        this.produces(Extern::PrimK(prim, l), names, &env1, |this, out, _| {
+                            this.ret(k, out)
+                        })
+                    });
+                }
                 self.sequence(args, env, k, move |this, names, env1| {
                     this.produces(Extern::Prim(prim), names, &env1, |this, out, _| {
                         this.ret(k, out)
@@ -1022,7 +1099,127 @@ impl Lower {
     /// half-way through a nested pattern can restore the whole environment by
     /// invoking one object — including the scrutinee, which a `switch` in the
     /// middle of the arm will have consumed.
-    fn case<'t>(
+    fn case(
+        &mut self,
+        s: Name,
+        arms: &[(Pat, Term)],
+        live: Vec<Name>,
+        k: Name,
+    ) -> Statement {
+        if let Some(tree) = self
+            .opt
+            .case_trees()
+            .then(|| self.case_tree(s, arms, &live, k))
+            .flatten()
+        {
+            return tree;
+        }
+        self.case_chain(s, arms, live, k)
+    }
+
+    /// One `switch` over the arms that dispatch on a constructor, instead of one
+    /// per arm.
+    ///
+    /// The chain below tests `Cons`, then — having failed — tests `Nil`, then
+    /// tests whatever is next, and builds a failure object before any of it. A
+    /// `match` over a wide type does that work per arm even though a value has
+    /// exactly one tag. This takes the longest **prefix** of arms that are
+    /// constructor patterns on distinct constructors and gives them one `switch`
+    /// with one shared fallback, which is the whole of the common case; anything
+    /// the prefix does not cover — a wildcard, a literal, a repeated constructor
+    /// — is the fallback, compiled as a chain exactly as before, so arm order is
+    /// preserved without having to reason about it.
+    ///
+    /// Returns `None` when there is nothing to gain: fewer than two arms would
+    /// join the switch.
+    ///
+    /// This is the trade [`OptLevel::case_trees`] gates. Nested patterns are not
+    /// distributed across the arms — `Just (Cons x xs)` still falls back to the
+    /// chain when its inner pattern fails, and so retests the outer `Just` —
+    /// because that is where a real decision tree starts duplicating the code
+    /// its arms share.
+    fn case_tree(
+        &mut self,
+        s: Name,
+        arms: &[(Pat, Term)],
+        live: &[Name],
+        k: Name,
+    ) -> Option<Statement> {
+        let mut seen: HashSet<InternedString> = HashSet::new();
+        let n = arms
+            .iter()
+            .take_while(|(p, _)| match p {
+                Pat::Ctor(name, _) => seen.insert(*name),
+                _ => false,
+            })
+            .count();
+        if n < 2 {
+            return None;
+        }
+
+        // One object for "none of these matched", shared by every arm — both by
+        // the `default`, and by an arm whose *sub*-patterns fail after its tag
+        // matched. It captures the environment as it stands, which includes the
+        // scrutinee: the arms that follow still have to look at it.
+        // `new` *prepends*, so this is the environment the switch runs in — the
+        // order matters, and getting it wrong is an ill-formed program rather
+        // than a slow one.
+        let rest = self.fresh();
+        let mut env = vec![rest];
+        env.extend_from_slice(live);
+
+        let mut switch_arms = Vec::with_capacity(n);
+        for (pat, term) in &arms[..n] {
+            let Pat::Ctor(ctor, subs) = pat else {
+                unreachable!("the prefix is constructor patterns");
+            };
+            let tag = self.tag_of(*ctor);
+            let fields: Vec<Name> = subs.iter().map(|_| self.fresh()).collect();
+            let mut arm_env = fields.clone();
+            arm_env.extend_from_slice(&env);
+            let pairs: Vec<(&Pat, Name)> = subs.iter().zip(fields.iter().copied()).collect();
+            let body = self.match_all(
+                pairs,
+                arm_env.clone(),
+                rest,
+                Box::new(move |this, env1| this.expr(term, &env1, k)),
+            );
+            switch_arms.push((
+                tag,
+                Block {
+                    params: arm_env,
+                    body,
+                },
+            ));
+        }
+
+        let miss = self.enter(rest);
+        let switch = Statement::Switch {
+            scrutinee: s,
+            arms: switch_arms,
+            default: Box::new(Block {
+                params: env,
+                body: miss,
+            }),
+        };
+
+        let body = if n == arms.len() {
+            Statement::Error("non-exhaustive pattern match")
+        } else {
+            self.case(s, &arms[n..], live.to_vec(), k)
+        };
+        Some(Statement::New {
+            name: rest,
+            captures: live.to_vec(),
+            methods: vec![Block {
+                params: live.to_vec(),
+                body,
+            }],
+            rest: Box::new(switch),
+        })
+    }
+
+    fn case_chain<'t>(
         &mut self,
         s: Name,
         arms: &'t [(Pat, Term)],
@@ -1098,33 +1295,27 @@ impl Lower {
                 )
             }
 
+            // One statement: the literal rides in the `extern`, and the boolean
+            // it is compared against never exists. This used to be three — load
+            // the literal, compare, test — and it is the commonest pattern
+            // there is.
             Pat::Lit(l) => {
-                let l = l.clone();
-                self.produces(Extern::Lit(l), vec![], &env, move |this, lv, env1| {
-                    this.produces(
-                        Extern::Prim(core::Prim::Eq),
-                        vec![lv, subject],
-                        &env1,
-                        move |this, b, env2| {
-                            let no = this.enter(fail);
-                            let yes = ok(this, env2.clone());
-                            Statement::Extern {
-                                op: Extern::Branch,
-                                args: vec![b],
-                                blocks: vec![
-                                    Block {
-                                        params: env2.clone(),
-                                        body: no,
-                                    },
-                                    Block {
-                                        params: env2,
-                                        body: yes,
-                                    },
-                                ],
-                            }
+                let no = self.enter(fail);
+                let yes = ok(self, env.clone());
+                Statement::Extern {
+                    op: Extern::BranchPrimK(core::Prim::Eq, l.clone()),
+                    args: vec![subject],
+                    blocks: vec![
+                        Block {
+                            params: env.clone(),
+                            body: no,
                         },
-                    )
-                })
+                        Block {
+                            params: env,
+                            body: yes,
+                        },
+                    ],
+                }
             }
 
             // The one place a real `switch` appears. The constructor's fields go
@@ -1165,36 +1356,22 @@ impl Lower {
                     vec![subject],
                     &env,
                     move |this, n, env1| {
-                        this.produces(
-                            Extern::Lit(core::Lit::Int(want)),
-                            vec![],
-                            &env1,
-                            move |this, m, env2| {
-                                this.produces(
-                                    Extern::Prim(core::Prim::Eq),
-                                    vec![n, m],
-                                    &env2,
-                                    move |this, b, env3| {
-                                        let no = this.enter(fail);
-                                        let yes = this.fields(subs, subject, env3.clone(), fail, ok);
-                                        Statement::Extern {
-                                            op: Extern::Branch,
-                                            args: vec![b],
-                                            blocks: vec![
-                                                Block {
-                                                    params: env3.clone(),
-                                                    body: no,
-                                                },
-                                                Block {
-                                                    params: env3,
-                                                    body: yes,
-                                                },
-                                            ],
-                                        }
-                                    },
-                                )
-                            },
-                        )
+                        let no = this.enter(fail);
+                        let yes = this.fields(subs, subject, env1.clone(), fail, ok);
+                        Statement::Extern {
+                            op: Extern::BranchPrimK(core::Prim::Eq, core::Lit::Int(want)),
+                            args: vec![n],
+                            blocks: vec![
+                                Block {
+                                    params: env1.clone(),
+                                    body: no,
+                                },
+                                Block {
+                                    params: env1,
+                                    body: yes,
+                                },
+                            ],
+                        }
                     },
                 )
             }

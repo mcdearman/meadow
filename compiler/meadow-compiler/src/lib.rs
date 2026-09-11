@@ -60,7 +60,7 @@ pub use meadow_source as source;
 pub use meadow_span as span;
 
 mod options;
-pub use options::Options;
+pub use options::{Options, OptLevel, Strictness};
 
 mod unit;
 pub use unit::{

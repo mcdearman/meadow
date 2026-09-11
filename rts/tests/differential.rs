@@ -528,7 +528,7 @@ fn tuple_projection_does_not_need_the_arity() {
 fn a_handler_that_never_resumes_aborts_the_body() {
     assert_eq!(
         agree(
-            "effect Abort { bail : Unit -> Int }
+            "effect Abort { bail : () -> Int }
              def main =
                handle 1 + bail () with {
                  bail u k -> 99
@@ -546,7 +546,7 @@ fn a_handler_that_resumes_continues_the_body_in_place() {
     // where the handler was installed.
     assert_eq!(
         agree(
-            "effect Ask { ask : Unit -> Int }
+            "effect Ask { ask : () -> Int }
              def main =
                handle ask () + 1 with {
                  ask u k -> k 5 + 100
@@ -562,7 +562,7 @@ fn handlers_are_deep() {
     // which only happens if resuming puts the handler frame back.
     assert_eq!(
         agree(
-            "effect Ask { ask : Unit -> Int }
+            "effect Ask { ask : () -> Int }
              def main =
                handle ask () + ask () with {
                  ask u k -> k 5
@@ -573,7 +573,7 @@ fn handlers_are_deep() {
     // And through a function call, which is what "deep" is usually about.
     assert_eq!(
         agree(
-            "effect Ask { ask : Unit -> Int }
+            "effect Ask { ask : () -> Int }
              fun twice u = ask () + ask ()
              def main = handle twice () with { ask u k -> k 3 }"
         ),
@@ -585,7 +585,7 @@ fn handlers_are_deep() {
 fn a_return_clause_transforms_the_final_value() {
     assert_eq!(
         agree(
-            "effect Ask { ask : Unit -> Int }
+            "effect Ask { ask : () -> Int }
              def main =
                handle ask () with {
                  ask u k -> k 2,
@@ -603,7 +603,7 @@ fn state_by_hand_is_a_handler_returning_a_function() {
     // closures over the resumption, which is where a wrong capture list shows.
     assert_eq!(
         agree(
-            "effect St { get : Unit -> Int, put : Int -> Unit }
+            "effect St { get : () -> Int, put : Int -> () }
              def main =
                let f =
                  handle
@@ -626,7 +626,7 @@ fn state_by_hand_is_a_handler_returning_a_function() {
 fn a_nested_handler_takes_precedence_over_an_outer_one() {
     assert_eq!(
         agree(
-            "effect Ask { ask : Unit -> Int }
+            "effect Ask { ask : () -> Int }
              def main =
                handle
                  (handle ask () with { ask u k -> k 1 }) + ask ()
@@ -641,7 +641,7 @@ fn a_nested_handler_takes_precedence_over_an_outer_one() {
 #[test]
 fn resuming_twice_is_refused_everywhere() {
     let prog = program(
-        "effect Ask { ask : Unit -> Int }
+        "effect Ask { ask : () -> Int }
          def main =
            handle ask () with {
              ask u k -> k 1 + k 2
@@ -667,7 +667,7 @@ fn nothing_in_core_is_left_untranslated() {
     let prog = program(
         "data Opt = None | Some Int
          data Chain = Nil | Cons Int Chain
-         effect Ask { ask : Unit -> Int }
+         effect Ask { ask : () -> Int }
 
          fun chain n = if n == 0 then Nil else Cons n (chain (n - 1))
 

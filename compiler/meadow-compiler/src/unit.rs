@@ -15,7 +15,7 @@ use crate::{
     intern::InternedString,
     lexer::tokenize,
     parser,
-    rename::Resolver,
+    rename::{self, NameRef, Resolver},
     scc,
     source::{Source, SourceKind},
     Options,
@@ -47,6 +47,10 @@ pub struct TypedModule {
     /// Carried through from [`AstModule::source`] — what this module's spans are
     /// offsets into.
     pub source: Source,
+    /// Names written in this module that the HIR does not keep: the contents
+    /// of its `use` lists, and the type qualifying a `Type.Ctor`. An editor
+    /// renaming a name has to rewrite these too.
+    pub refs: Vec<rename::RefSite>,
 }
 
 /// An exported top-level binding: its name, its `VarId`, its inferred scheme, and
@@ -81,6 +85,14 @@ pub struct CompiledPackage {
     /// and because a unit stacked on this one needs `end` to start from.
     pub vars: std::ops::Range<u32>,
     pub name: InternedString,
+    /// This package's `main`, if its root module declares one.
+    ///
+    /// An entry point is not an export: nothing links against `main`, the
+    /// runtime calls it. Finding it here rather than among the exports is what
+    /// lets a program keep its declarations to itself — before this, adding
+    /// `@pub` anywhere in a package meant `main` needed it too or the linker
+    /// would report no entry point at all.
+    pub entry: Option<VarId>,
     pub modules: Vec<TypedModule>,
     /// Whole-package node -> type table (node ids are dense across the package).
     pub types: TypeTable,
@@ -257,6 +269,7 @@ pub fn compile_unit_in_package(
                 name: m.name,
                 hir,
                 source: m.source,
+                refs: resolver.take_extra_refs(),
             }
         })
         .collect();
@@ -394,7 +407,14 @@ pub fn compile_unit_in_package(
         .flat_map(|m| m.ast.value().decls.iter())
         .filter_map(|d| match d.value() {
             ast::Decl::Attributed(attrs, inner) => match inner.value() {
-                ast::Decl::Use(u) if attrs.iter().any(|a| &**a.name.value() == "pub") => {
+                // `@pub(pack) use M (T)`: the package's *unqualified* surface,
+                // which is a claim about what a dependent may write bare.
+                ast::Decl::Use(u)
+                    if attrs.iter().any(|a| {
+                        &**a.name.value() == "pub"
+                            && a.args.first().is_some_and(|x| &**x.value() == "pack")
+                    }) =>
+                {
                     Some(u.names.clone())
                 }
                 _ => None,
@@ -417,12 +437,29 @@ pub fn compile_unit_in_package(
     flat_ctor_types.sort_by_key(|n| n.to_string());
     flat_ctor_types.dedup();
 
+    // The entry point, from the root module alone: a `main` in a submodule is
+    // an ordinary function that happens to be called `main`.
+    let main = InternedString::from("main");
+    let entry = typed
+        .iter()
+        .filter(|m| m.path.is_empty())
+        .flat_map(|m| m.hir.value().decls.iter())
+        .filter_map(|d| match d.value() {
+            hir::Decl::Bind(bind) => bind
+                .bound_vars()
+                .into_iter()
+                .find(|id| names.get(id) == Some(&main)),
+            _ => None,
+        })
+        .next();
+
     (
         CompiledPackage {
             id,
             flat_ctor_types,
             vars: var_base..var_end,
             name: unit_name,
+            entry,
             modules: typed,
             types: table,
             exports,
@@ -496,11 +533,7 @@ fn apply_use(
                 let values = resolver.module_values(&local);
                 resolver.activate_module(*a.value(), values);
             }
-            None => {
-                let names: Vec<InternedString> =
-                    u.names.iter().map(|n| *n.value()).collect();
-                resolver.use_module(&local, &names);
-            }
+            None => resolver.use_module(&local, &u.names),
         }
         return;
     }
@@ -545,6 +578,10 @@ fn apply_use(
     for n in &u.names {
         if let Some(&id) = map.get(&*n.value()) {
             resolver.import(*n.value(), id);
+            resolver.note_ref(n.span, NameRef::Value(id));
+        } else if n.value().chars().next().is_some_and(|c| c.is_uppercase()) {
+            // A type (or an effect): no id to carry, so it is named.
+            resolver.note_ref(n.span, NameRef::Type(*n.value()));
         }
         // `use M (Expr)` names a *type*, and naming a type brings its
         // constructors into scope unqualified -- which is the only way to

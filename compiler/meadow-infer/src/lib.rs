@@ -1840,7 +1840,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Bound(0), Bound(0)], Type::bool()),
         },
-        // `∀a e. a -> Unit ! { io | e }`
+        // `∀a e. a -> () ! { io | e }`
         // --- the mutable cell ---
         //
         // Every one of these carries `{ Mut | e }`, which is what makes mutation
@@ -2024,6 +2024,9 @@ fn write_type(
     match ty {
         Type::Var(id) => write!(out, "{}", namer.name(*id)),
         Type::Bound(i) => write!(out, "{}", namer.bound_name(*i)),
+        // The unit type is written `()` — the same way its one value is, and
+        // the same way an empty parameter list is.
+        Type::Con(name, args) if args.is_empty() && &**name == "Unit" => out.write_str("()"),
         Type::Con(name, args) if args.is_empty() => write!(out, "{name}"),
         // `[T]` now prints the RRB `Vector`; `List T` prints as a plain application.
         Type::Con(name, args) if &**name == "Vector" && args.len() == 1 => {

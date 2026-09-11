@@ -4,7 +4,7 @@
 --
 --   use Std.Test (assertEq)
 --
---   @test fun addition u = assertEq (2 + 2) 4 "2 + 2"
+--   @test fun addition () = assertEq (2 + 2) 4 "2 + 2"
 --
 -- A failure is the `Test` effect, not a return value, so an assertion in a
 -- helper five calls deep still stops the test and still names itself. With no
@@ -16,54 +16,54 @@
 -- cannot use `Std.String` for its messages -- hence `cat` below, built from the
 -- string primitives, rather than `String.concat`.
 
-@pub effect Test {
+@pub(pack) effect Test {
   -- Abandon the current test with this message. Never returns.
-  fail : String -> Unit,
+  fail : String -> (),
 }
 
 -- --- assertions --------------------------------------------------------------
 
-@pub fun assert cond msg =
+@pub(pack) fun assert cond msg =
   if cond then () else fail msg
 
-@pub fun refuteThat cond msg =
+@pub(pack) fun refuteThat cond msg =
   if cond then fail (cat "expected false: " msg) else ()
 
 -- Both equality and `show` are structural and work at any type, so this is the
 -- assertion to reach for: the message names what was being checked and the
 -- values speak for themselves.
-@pub fun assertEq actual expected msg =
+@pub(pack) fun assertEq actual expected msg =
   if actual == expected
   then ()
   else
     fail
       (cat (cat (cat (cat msg ": expected ") (show expected)) ", got ") (show actual))
 
-@pub fun assertNeq actual unexpected msg =
+@pub(pack) fun assertNeq actual unexpected msg =
   if actual != unexpected
   then ()
   else fail (cat (cat msg ": expected anything but ") (show unexpected))
 
-@pub fun assertTrue actual msg = assertEq actual True msg
+@pub(pack) fun assertTrue actual msg = assertEq actual True msg
 
-@pub fun assertFalse actual msg = assertEq actual False msg
+@pub(pack) fun assertFalse actual msg = assertEq actual False msg
 
 -- Fail unconditionally -- for the arm of a `match` that should be unreachable.
-@pub fun failWith msg = fail msg
+@pub(pack) fun failWith msg = fail msg
 
 -- --- checking that something fails -------------------------------------------
 
 -- Run `act` and report whether it failed an assertion. This is the one place the
 -- `Test` effect is handled rather than left to the runner, and it is what lets
 -- `Std.Test` test itself.
-@pub fun didFail act =
+@pub(pack) fun didFail act =
   handle act () with {
     fail msg k -> True,
     return x -> False
   }
 
 -- `act` must fail; if it succeeds, *this* is the failure.
-@pub fun assertFails act msg =
+@pub(pack) fun assertFails act msg =
   assert (didFail act) (cat "expected a failure: " msg)
 
 -- `String.concat`, spelled out from the primitives. `Std.String` is compiled
@@ -76,7 +76,7 @@ fun cat a b =
 -- `Std.Test` can test itself because `didFail` handles the effect rather than
 -- leaving it to the runner.
 
-@test fun assertionsPassWhenTheyShould u =
+@test fun assertionsPassWhenTheyShould () =
   let a = assert True "assert" in
   let b = assertEq 1 1 "assertEq" in
   let c = assertNeq 1 2 "assertNeq" in
@@ -84,7 +84,7 @@ fun cat a b =
   let e = assertFalse False "assertFalse" in
   refuteThat False "refuteThat"
 
-@test fun assertionsFailWhenTheyShould u =
+@test fun assertionsFailWhenTheyShould () =
   let a = assertTrue (didFail (\u2 -> assert False "x")) "assert False" in
   let b = assertTrue (didFail (\u2 -> assertEq 1 2 "x")) "assertEq of different values" in
   let c = assertTrue (didFail (\u2 -> assertNeq 1 1 "x")) "assertNeq of equal values" in
@@ -92,10 +92,10 @@ fun cat a b =
   let e = assertTrue (didFail (\u2 -> failWith "x")) "failWith" in
   assertTrue (didFail (\u2 -> refuteThat True "x")) "refuteThat True"
 
-@test fun didFailIsFalseForSomethingThatSucceeds u =
+@test fun didFailIsFalseForSomethingThatSucceeds () =
   assertFalse (didFail (\u2 -> assertEq 1 1 "fine")) "no failure"
 
-@test fun equalityIsStructuralSoAssertEqWorksAtAnyType u =
+@test fun equalityIsStructuralSoAssertEqWorksAtAnyType () =
   let a = assertEq "a" "a" "strings" in
   let b = assertEq (1, "a") (1, "a") "tuples" in
   let c = assertEq [1; 2] [1; 2] "lists" in
@@ -104,13 +104,13 @@ fun cat a b =
   let d = assertEq True True "booleans" in
   assertTrue (didFail (\u2 -> assertEq [1; 2] [1; 3] "x")) "and tells them apart"
 
-@test fun aFailureUnwindsPastWhateverIsInBetween u =
+@test fun aFailureUnwindsPastWhateverIsInBetween () =
   -- The point of using an effect rather than a return value: an assertion in a
   -- helper stops the test, it does not return a value the caller must check.
   let deep = \u2 -> 1 + (2 * inner ()) in
   assertTrue (didFail deep) "the failure came from three calls down"
 
-fun inner u = let ignored = assertEq 1 2 "inner" in 0
+fun inner () = let ignored = assertEq 1 2 "inner" in 0
 
-@test fun assertFailsChecksThatSomethingFails u =
+@test fun assertFailsChecksThatSomethingFails () =
   assertFails (\u2 -> failWith "expected") "failWith should fail"

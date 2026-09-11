@@ -1,5 +1,5 @@
 ---
-source: tests/diagnostics.rs
+source: meadow/tests/diagnostics.rs
 expression: "errors(\"def x = y + 1\\n\")"
 ---
 undefined variable: y

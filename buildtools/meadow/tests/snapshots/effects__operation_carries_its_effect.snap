@@ -1,8 +1,7 @@
 ---
 source: meadow/tests/effects.rs
-assertion_line: 8
 expression: "schemes(\"effect State s { get : () -> s, put : s -> () }\\n\\\n         fun tick u = let n = get () in let x = put (n + 1) in n\\n\")"
 ---
-get : forall a e. Unit -> a ! { State a | e }
-put : forall a e. a -> Unit ! { State a | e }
+get : forall a e. () -> a ! { State a | e }
+put : forall a e. a -> () ! { State a | e }
 tick : forall a e. a -> Int ! { State Int | e }

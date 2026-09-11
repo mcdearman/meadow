@@ -601,7 +601,7 @@ fn a_result_hint_shows_the_effect() {
     );
     assert_eq!(
         hinted("fun bump r = setRef r 1\n"),
-        "fun bump (r : Ref Int) : Unit ! { Mut | a } = setRef r 1\n"
+        "fun bump (r : Ref Int) : () ! { Mut | a } = setRef r 1\n"
     );
     // Shared with a parameter: the result carries whatever `f` does.
     assert_eq!(
@@ -784,4 +784,179 @@ fn a_bad_use_is_reported_in_the_file_that_wrote_it() {
         let said = a.diagnostics.iter().any(|d| d.msg.contains("no module"));
         assert_eq!(said, wanted, "{name}: {:?}", a.diagnostics.iter().map(|d| &d.msg).collect::<Vec<_>>());
     }
+}
+
+// --- rename ------------------------------------------------------------------
+
+/// Apply a rename at the marker and hand back the edited text of every file.
+///
+/// `files` are the package's sources; the first is the one being edited, and
+/// `$` in it marks the cursor (removed before analysis) -- not `@`, which
+/// starts an attribute.
+fn renamed(
+    dir: &str,
+    files: &[(&str, &str)],
+    new_name: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let cleaned: Vec<(String, String)> = files
+        .iter()
+        .map(|(n, t)| (n.to_string(), t.replacen('$', "", 1)))
+        .collect();
+    let refs: Vec<(&str, &str)> = cleaned
+        .iter()
+        .map(|(n, t)| (n.as_str(), t.as_str()))
+        .collect();
+    let root = package(dir, Some("[package]\nname = \"demo\"\n"), &refs);
+    let (open_name, open_text) = &cleaned[0];
+    let offset = files[0].1.find('$').expect("a cursor marker");
+    let file = root.join("src").join(open_name);
+    let sources = meadow::editor::load_package(&file).expect("a package");
+    let edits = STD.with(|s| {
+        let a = s
+            .analyse_package(&sources, &file, open_text)
+            .expect("analysis");
+        a.rename_at(offset, new_name, s)
+    })?;
+
+    // Apply each file's edits back to front, so earlier spans stay valid.
+    let mut out: Vec<(String, String)> = cleaned.clone();
+    let mut by_file: std::collections::HashMap<String, Vec<(u32, u32)>> = Default::default();
+    for (source, span) in edits {
+        let name = match source {
+            None => open_name.clone(),
+            Some(src) => std::path::Path::new(&src.name().to_string())
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        };
+        // Spans from another file are offsets into what was analysed, which is
+        // the text on disk -- the same text this test wrote.
+        by_file.entry(name).or_default().push((span.start, span.end));
+    }
+    for (name, mut spans) in by_file {
+        spans.sort_by_key(|(s, _)| std::cmp::Reverse(*s));
+        let slot = out.iter_mut().find(|(n, _)| *n == name).expect("a file");
+        for (start, end) in spans {
+            slot.1.replace_range(start as usize..end as usize, new_name);
+        }
+    }
+    Ok(out)
+}
+
+#[test]
+fn renaming_reaches_every_module_of_the_package() {
+    let out = renamed(
+        "rename-cross",
+        &[
+            ("Math.mw", "@pub fun dou$ble n = n * 2\n@pub fun quad n = double (double n)\n"),
+            ("main.mw", "use demo.Math (double)\ndef main = double 21\n"),
+        ],
+        "twice",
+    )
+    .expect("a rename");
+    let math = &out.iter().find(|(n, _)| n == "Math.mw").unwrap().1;
+    let main = &out.iter().find(|(n, _)| n == "main.mw").unwrap().1;
+    assert_eq!(
+        *math,
+        "@pub fun twice n = n * 2\n@pub fun quad n = twice (twice n)\n"
+    );
+    assert_eq!(*main, "use demo.Math (twice)\ndef main = twice 21\n");
+}
+
+#[test]
+fn renaming_leaves_a_different_binding_of_the_same_name_alone() {
+    // Three `x`es: a parameter, a `let`, and a top-level one in another
+    // module. Renaming the parameter is renaming *that* binding.
+    let out = renamed(
+        "rename-shadow",
+        &[
+            (
+                "main.mw",
+                "@pub def x = 1\nfun f $x = let x = 2 in x + 1\nfun g y = x + y\n",
+            ),
+            ("Other.mw", "@pub def x = 99\n"),
+        ],
+        "p",
+    )
+    .expect("a rename");
+    let main = &out.iter().find(|(n, _)| n == "main.mw").unwrap().1;
+    assert_eq!(
+        *main,
+        "@pub def x = 1\nfun f p = let x = 2 in x + 1\nfun g y = x + y\n"
+    );
+    assert_eq!(out.iter().find(|(n, _)| n == "Other.mw").unwrap().1, "@pub def x = 99\n");
+}
+
+#[test]
+fn renaming_a_type_takes_its_mentions_with_it() {
+    let out = renamed(
+        "rename-type",
+        &[
+            ("Syntax.mw", "@pub data Ex$pr = Lit Int\n@pub fun lit n = Expr.Lit n\n"),
+            (
+                "main.mw",
+                "use demo.Syntax (Expr, lit)\nfun size e = match e with | Lit n -> n\ndef main = size (lit 1)\n",
+            ),
+        ],
+        "Term",
+    )
+    .expect("a rename");
+    assert_eq!(
+        out.iter().find(|(n, _)| n == "Syntax.mw").unwrap().1,
+        "@pub data Term = Lit Int\n@pub fun lit n = Term.Lit n\n"
+    );
+    assert_eq!(
+        out.iter().find(|(n, _)| n == "main.mw").unwrap().1,
+        "use demo.Syntax (Term, lit)\nfun size e = match e with | Lit n -> n\ndef main = size (lit 1)\n"
+    );
+}
+
+#[test]
+fn two_constructors_with_one_name_are_told_apart() {
+    // `Expr.Int` and `Ty.Int` are both written `Int`. Renaming one leaves the
+    // other where it is -- the resolver already knows which is which.
+    let out = renamed(
+        "rename-ctor",
+        &[(
+            "main.mw",
+            "@pub data Expr = I$nt Int\n@pub data Ty = Int\nfun a e = match e with | Expr.Int n -> n\nfun b t = match t with | Ty.Int -> 0\n",
+        )],
+        "Lit",
+    )
+    .expect("a rename");
+    assert_eq!(
+        out[0].1,
+        "@pub data Expr = Lit Int\n@pub data Ty = Int\nfun a e = match e with | Expr.Lit n -> n\nfun b t = match t with | Ty.Int -> 0\n"
+    );
+}
+
+#[test]
+fn a_standard_library_name_is_not_renamed() {
+    let err = renamed(
+        "rename-std",
+        &[("main.mw", "def main = ma$p (\\x -> x) [1, 2]\n")],
+        "mapped",
+    )
+    .expect_err("should refuse");
+    assert!(err.contains("outside the package"), "got: {err}");
+}
+
+#[test]
+fn a_new_name_has_to_be_one() {
+    let err = renamed(
+        "rename-bad",
+        &[("main.mw", "fun dou$ble n = n * 2\ndef main = double 1\n")],
+        "Double",
+    )
+    .expect_err("should refuse");
+    assert!(err.contains("read as a constructor"), "got: {err}");
+
+    let err = renamed(
+        "rename-bad2",
+        &[("main.mw", "fun dou$ble n = n * 2\ndef main = double 1\n")],
+        "two words",
+    )
+    .expect_err("should refuse");
+    assert!(err.contains("is not a name"), "got: {err}");
 }

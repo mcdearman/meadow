@@ -1,5 +1,5 @@
 ---
-source: tests/diagnostics.rs
+source: meadow/tests/diagnostics.rs
 expression: "errors(\"data Bad = B Nope\\n\")"
 ---
 unknown type `Nope`

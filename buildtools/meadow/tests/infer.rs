@@ -129,7 +129,7 @@ fn effect_polymorphism_through_higher_order() {
 
 #[test]
 fn effectful_binding_is_not_generalized() {
-    // `def a` is pure ⇒ polymorphic; `def b` performs io ⇒ monomorphic Unit.
+    // `def a` is pure ⇒ polymorphic; `def b` performs io ⇒ monomorphic `()`.
     insta::assert_snapshot!(schemes(
         "def a = \\x -> x\ndef b = println \"hi\"\n"
     ));

@@ -1,5 +1,5 @@
 ---
-source: tests/infer.rs
+source: meadow/tests/infer.rs
 expression: "schemes(\"def usePair =\\n  let pair = \\\\a -> \\\\b -> (a, b) in\\n  (pair 1 2, pair \\\"x\\\" \\\"y\\\")\\n\")"
 ---
 usePair : ((Int, Int), (String, String))

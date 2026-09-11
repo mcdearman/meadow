@@ -1,5 +1,5 @@
 ---
-source: tests/eval.rs
+source: meadow/tests/eval.rs
 expression: "eval_main(\"record Person = { name : String, age : Int }\\n\\\n         def p = Person { name = \\\"Ann\\\", age = 30 }\\n\\\n         def main = p.age\\n\")"
 ---
 30

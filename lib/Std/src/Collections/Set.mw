@@ -4,41 +4,41 @@
 use Std.Collections.Tree as Tree
 use Std.Collections.List as List (foldl, filter, all)
 
-@pub data Set = Set (Tree Int)
+@pub(pack) data Set = Set (Tree Int)
 
-@pub def empty = Set Tree.empty
+@pub(pack) def empty = Set Tree.empty
 
 fun unwrap s = match s with | Set t -> t
 
-@pub fun insert x s = Set (Tree.insert x (unwrap s))
+@pub(pack) fun insert x s = Set (Tree.insert x (unwrap s))
 
-@pub fun delete x s = Set (Tree.delete x (unwrap s))
+@pub(pack) fun delete x s = Set (Tree.delete x (unwrap s))
 
-@pub fun member x s = Tree.member x (unwrap s)
+@pub(pack) fun member x s = Tree.member x (unwrap s)
 
-@pub fun size s = Tree.size (unwrap s)
+@pub(pack) fun size s = Tree.size (unwrap s)
 
-@pub fun null s = Tree.null (unwrap s)
+@pub(pack) fun null s = Tree.null (unwrap s)
 
-@pub fun toList s = Tree.toList (unwrap s)
+@pub(pack) fun toList s = Tree.toList (unwrap s)
 
-@pub fun fromList xs = Set (Tree.fromList xs)
+@pub(pack) fun fromList xs = Set (Tree.fromList xs)
 
-@pub fun minElem s = Tree.minElem (unwrap s)
+@pub(pack) fun minElem s = Tree.minElem (unwrap s)
 
-@pub fun maxElem s = Tree.maxElem (unwrap s)
+@pub(pack) fun maxElem s = Tree.maxElem (unwrap s)
 
-@pub fun union a b = foldl (\acc x -> insert x acc) a (toList b)
+@pub(pack) fun union a b = foldl (\acc x -> insert x acc) a (toList b)
 
-@pub fun diff a b = foldl (\acc x -> delete x acc) a (toList b)
+@pub(pack) fun diff a b = foldl (\acc x -> delete x acc) a (toList b)
 
-@pub fun intersect a b =
+@pub(pack) fun intersect a b =
   fromList (filter (\x -> member x b) (toList a))
 
-@pub fun subset a b = all (\x -> member x b) (toList a)
+@pub(pack) fun subset a b = all (\x -> member x b) (toList a)
 
 -- Yield every element in ascending order, for `Std.Stream`.
-@pub fun toStream s = List.toStream (toList s)
+@pub(pack) fun toStream s = List.toStream (toList s)
 
 -- --- tests -------------------------------------------------------------------
 
@@ -49,31 +49,31 @@ def a = fromList [1; 2; 3]
 
 def b = fromList [3; 4]
 
-@test fun insertAndMember u =
+@test fun insertAndMember () =
   let x = assertTrue (member 2 a) "member" in
   let y = assertFalse (member 9 a) "not member" in
   assertTrue (member 9 (insert 9 a)) "inserted"
 
-@test fun setsDoNotHoldDuplicates u =
+@test fun setsDoNotHoldDuplicates () =
   let x = assertEq (size (fromList [1; 1; 1])) 1 "fromList dedupes" in
   assertEq (size (insert 1 a)) 3 "re-inserting changes nothing"
 
-@test fun toListIsSortedAndDistinct u =
+@test fun toListIsSortedAndDistinct () =
   let x = assertEq (toList a) [1; 2; 3] "sorted" in
   assertEq (toList (fromList [3; 1; 3; 2])) [1; 2; 3] "sorted and deduped"
 
-@test fun unionDiffIntersect u =
+@test fun unionDiffIntersect () =
   let x = assertEq (toList (union a b)) [1; 2; 3; 4] "union" in
   let y = assertEq (toList (diff a b)) [1; 2] "diff" in
   assertEq (toList (intersect a b)) [3;] "intersect"
 
-@test fun subsetAndEmptiness u =
+@test fun subsetAndEmptiness () =
   let x = assertTrue (subset (fromList [1; 2]) a) "a subset" in
   let y = assertFalse (subset b a) "not a subset" in
   let z = assertTrue (subset empty a) "empty is a subset of anything" in
   assertTrue (null empty) "null"
 
-@test fun deleteAndExtremes u =
+@test fun deleteAndExtremes () =
   let x = assertFalse (member 2 (delete 2 a)) "deleted" in
   let y = assertEq (minElem a) (Just 1) "minElem" in
   assertEq (maxElem a) (Just 3) "maxElem"

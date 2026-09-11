@@ -1,5 +1,5 @@
 ---
-source: tests/array.rs
+source: meadow/tests/array.rs
 expression: "schemes(\"def a = #[1, 2, 3]\\ndef e = #[]\\n\")"
 ---
 a : #[Int]

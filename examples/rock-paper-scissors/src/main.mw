@@ -50,7 +50,7 @@ fun outcomeLine o =
   | Lose -> "You lose!"
   | Draw -> "It's a tie."
 
-fun randomChoice u =
+fun randomChoice () =
   match R.between 0 3 with
   | 0 -> Rock
   | 1 -> Paper
@@ -118,5 +118,5 @@ def main = game ()
   -- moves and `Random` is seeded, so the transcript is fixed. This runs `game`
   -- itself -- if the loop, the tally or the parsing broke, this fails.
   let played =
-    R.withSeed 7 (\u -> withInput ["rock"; "nonsense"; "paper"; "quit"] game) in
+    R.withSeed 7 (\() -> withInput ["rock"; "nonsense"; "paper"; "quit"] game) in
     assertEq played () "a full game plays through to the summary"

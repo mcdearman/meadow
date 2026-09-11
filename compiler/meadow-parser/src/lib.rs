@@ -1214,6 +1214,12 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             )
             .then_ignore(just(Token::RParen))
             .map(|mut patterns| match patterns.len() {
+                // `()` is the unit pattern, not a tuple of nothing — the same
+                // reading `param_pat` gives it. They have to agree: a lambda's
+                // parameter goes through this parser and a `fun`'s through
+                // that one, and `\() -> e` would otherwise take an argument
+                // that nothing could be passed to.
+                0 => Pat::Unit,
                 1 => *patterns.pop().unwrap().value,
                 _ => Pat::Tuple(patterns),
             });

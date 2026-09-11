@@ -18,7 +18,7 @@ fn mutating_is_visible_in_the_type_and_purity_still_means_something() {
             "fun bump r = setRef r (getRef r + 1)\n\
              fun untouched x = x + 1\n"
         ),
-        "bump : forall e. Ref Int -> Unit ! { Mut | e }\nuntouched : Int -> Int\n"
+        "bump : forall e. Ref Int -> () ! { Mut | e }\nuntouched : Int -> Int\n"
     );
 }
 
@@ -57,7 +57,7 @@ fn a_cell_binding_is_monomorphic() {
     // Not an error — just not generalized. The `Ref` is usable, at one type.
     assert_eq!(
         schemes_std("def r = newRef []\nfun use1 u = setRef r [1]\n"),
-        "r : Ref [Int]\nuse1 : forall a e. a -> Unit ! { Mut | e }\n"
+        "r : Ref [Int]\nuse1 : forall a e. a -> () ! { Mut | e }\n"
     );
 }
 

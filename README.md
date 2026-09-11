@@ -127,7 +127,7 @@ Mark a function `@test` and `meadow test` runs it, cargo-style:
 ```
 use Std.Test (assertEq)
 
-@test fun doubling u = assertEq (double 21) 42 "double 21"
+@test fun doubling () = assertEq (double 21) 42 "double 21"
 ```
 
 ```sh
@@ -172,7 +172,7 @@ what that means. `take` simply doesn't resume, which unwinds the producer — th
 part a lazy list gives you for free and an eager language otherwise cannot do:
 
 ```
-def firstThree = Stream.take 3 (\u -> Stream.range 0 1000000)
+def firstThree = Stream.take 3 (\() -> Stream.range 0 1000000)
 ```
 
 Every collection has `toStream`, and `Std.Stream` has `ofList` / `ofVec` for the
@@ -210,8 +210,10 @@ cons list); match on `Vector.len` or convert with `Vector.toList`.
 ### Editor support
 
 `meadow lsp` is a language server — diagnostics as you type, hover with the
-inferred type and the doc comment above the definition, go-to-definition, inlay
-hints, and semantic highlighting from the compiler's own lexer. Any LSP client
+inferred type and the doc comment above the definition, go-to-definition,
+rename across a whole package, inlay hints, and semantic highlighting from the
+compiler's own lexer. A file inside a package is analysed as part of it, so a
+`use` of a sibling module resolves the way it does in a build. Any LSP client
 can drive it; it speaks the protocol over stdin and stdout.
 
 For VS Code, build and install the extension:

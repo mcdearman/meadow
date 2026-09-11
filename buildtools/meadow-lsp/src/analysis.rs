@@ -164,6 +164,49 @@ pub enum Namespace {
     Ctor,
 }
 
+/// What a rename is renaming, and where it was declared.
+enum Target {
+    /// A value binding, matched by the id every reference to it carries.
+    Value(VarId, (Option<Source>, Span)),
+    /// A type or a data constructor, matched by name within its namespace.
+    Name(InternedString, Namespace, (Option<Source>, Span)),
+}
+
+impl Target {
+    /// Meadow's one spelling rule: a constructor and a type start with a
+    /// capital, a value does not. Renaming across that line would not compile,
+    /// so it is refused with the reason rather than attempted.
+    fn check_new_name(&self, new: &str) -> Result<(), String> {
+        let mut chars = new.chars();
+        let first = chars.next().ok_or_else(|| "a name cannot be empty".to_string())?;
+        if !(first.is_alphabetic() || first == '_')
+            || !chars.all(|c| c.is_alphanumeric() || c == '_' || c == '\'')
+        {
+            return Err(format!("`{new}` is not a name"));
+        }
+        let wants_upper = matches!(self, Target::Name(..));
+        if wants_upper && !first.is_uppercase() {
+            return Err(format!("`{new}` would have to start with a capital"));
+        }
+        if !wants_upper && first.is_uppercase() {
+            return Err(format!("`{new}` would read as a constructor"));
+        }
+        Ok(())
+    }
+}
+
+/// The message for a rename of something declared where this server cannot
+/// edit: the standard library, or a dependency compiled from elsewhere.
+fn outside(known: bool) -> String {
+    if known {
+        "this is defined outside the package, so renaming it here would not \
+         match its definition"
+            .to_string()
+    } else {
+        "nothing to rename here".to_string()
+    }
+}
+
 /// Everything the server knows about one document.
 pub struct Analysis {
     pub source: String,
@@ -202,6 +245,13 @@ pub struct Analysis {
     pub wider: DefIndex,
     /// The same for the package's types and data constructors.
     pub wider_names: NameIndex,
+    /// Every mention of a binding in the *other* modules of the package, with
+    /// the file it is in. Only a rename needs these: go-to-definition asks
+    /// where a name is declared, and a rename has to find everywhere it is
+    /// written.
+    pub wider_refs: Vec<(Source, Span, VarId)>,
+    /// The same for types and data constructors.
+    pub wider_name_refs: Vec<(Source, Span, InternedString, Namespace)>,
     /// The throwaway [`Source`] this document was compiled as. A definition
     /// whose `Loc` names a different one is in another file.
     pub source_id: meadow_compiler::source::SourceId,
@@ -472,6 +522,8 @@ impl Std {
             ctors_in_scope: self.ctors.clone(),
             wider: Default::default(),
             wider_names: Default::default(),
+            wider_refs: Vec::new(),
+            wider_name_refs: Vec::new(),
         };
         collect_names(
             &pkg.data_decls,
@@ -491,6 +543,7 @@ impl Std {
                     a: &mut a,
                 };
                 w.module(&m.hir);
+                absorb_refs(&mut a, m);
             } else {
                 // A sibling: where its names are, and nothing else.
                 let mut scratch = Analysis::empty();
@@ -501,8 +554,17 @@ impl Std {
                     a: &mut scratch,
                 };
                 w.module(&m.hir);
+                absorb_refs(&mut scratch, m);
                 a.wider.extend(scratch.defs);
                 a.wider_names.absorb(scratch.names);
+                a.wider_refs
+                    .extend(scratch.refs.into_iter().map(|(s, v)| (m.source, s, v)));
+                a.wider_name_refs.extend(
+                    scratch
+                        .name_refs
+                        .into_iter()
+                        .map(|(s, n, ns)| (m.source, s, n, ns)),
+                );
             }
         }
         Some(a)
@@ -560,6 +622,8 @@ impl Std {
             ctors_in_scope: self.ctors.clone(),
             wider: Default::default(),
             wider_names: Default::default(),
+            wider_refs: Vec::new(),
+            wider_name_refs: Vec::new(),
         };
         collect_names(
             &pkg.data_decls,
@@ -578,8 +642,26 @@ impl Std {
                 a: &mut a,
             };
             w.module(&m.hir);
+            absorb_refs(&mut a, m);
         }
         a
+    }
+}
+
+/// Fold in the references the HIR does not carry: `use` lists, and the type
+/// qualifying a `Type.Ctor`. Without these a rename would leave the name
+/// behind in exactly the places that make a package stop compiling.
+fn absorb_refs(a: &mut Analysis, m: &meadow_compiler::TypedModule) {
+    for r in &m.refs {
+        match r.what {
+            meadow_compiler::rename::NameRef::Value(v) => a.refs.push((r.span, v)),
+            meadow_compiler::rename::NameRef::Type(n) => {
+                a.name_refs.push((r.span, n, Namespace::Type))
+            }
+            meadow_compiler::rename::NameRef::Ctor(n) => {
+                a.name_refs.push((r.span, n, Namespace::Ctor))
+            }
+        }
     }
 }
 
@@ -972,6 +1054,114 @@ impl Analysis {
             .or_else(|| declared.get(*name, *ns))
     }
 
+    // --- rename --------------------------------------------------------------
+
+    /// The identifier under `offset`, if it is one this server could rename.
+    ///
+    /// What an editor calls before showing the rename box: answering `None`
+    /// keeps it from opening on something that cannot be renamed, which is
+    /// better than opening and then failing.
+    pub fn renameable_at(&self, offset: usize, std: &Std) -> Option<Span> {
+        let (span, _) = self.rename_target(offset, std).ok()?;
+        Some(span)
+    }
+
+    /// Every span a rename of the identifier under `offset` would rewrite.
+    ///
+    /// Exact for values, because a value reference carries the `VarId` it
+    /// resolved to: two different `x`es are two ids, and the same `x` written
+    /// in four modules is one. Types and data constructors have no ids, so
+    /// they are matched by the name the resolver gave them -- which for a
+    /// constructor is its canonical `Type.Ctor`, so `Expr.Int` and `Ty.Int`
+    /// are still told apart.
+    ///
+    /// `None` in a result's first position means "this document"; `Some(src)`
+    /// is another file of the package.
+    pub fn rename_at(
+        &self,
+        offset: usize,
+        new_name: &str,
+        std: &Std,
+    ) -> Result<Vec<(Option<Source>, Span)>, String> {
+        let (_, target) = self.rename_target(offset, std)?;
+        target.check_new_name(new_name)?;
+        let mut edits: Vec<(Option<Source>, Span)> = Vec::new();
+        match target {
+            Target::Value(var, def) => {
+                edits.push(def);
+                for (span, v) in &self.refs {
+                    if *v == var {
+                        edits.push((None, *span));
+                    }
+                }
+                for (src, span, v) in &self.wider_refs {
+                    if *v == var {
+                        edits.push((Some(*src), *span));
+                    }
+                }
+            }
+            Target::Name(name, ns, def) => {
+                edits.push(def);
+                for (span, n, k) in &self.name_refs {
+                    if *n == name && *k == ns {
+                        edits.push((None, *span));
+                    }
+                }
+                for (src, span, n, k) in &self.wider_name_refs {
+                    if *n == name && *k == ns {
+                        edits.push((Some(*src), *span));
+                    }
+                }
+            }
+        }
+        // A declaration is also a reference to itself (both walks record it),
+        // and one span rewritten twice is a broken file.
+        edits.sort_by_key(|(src, span)| (src.map(|s| s.id), span.start, span.end));
+        edits.dedup();
+        Ok(edits)
+    }
+
+    /// What the cursor is on, and where it was declared -- refusing anything
+    /// this server has no business rewriting.
+    fn rename_target(&self, offset: usize, std: &Std) -> Result<(Span, Target), String> {
+        if let Some(var) = self.var_at(offset) {
+            // The cursor is on a mention, or on the binding itself -- which is
+            // where a rename is usually started from.
+            let span = self
+                .refs
+                .iter()
+                .filter(|(s, v)| *v == var && covers(*s, offset))
+                .map(|(s, _)| *s)
+                .next_back()
+                .or_else(|| self.defs.get(&var).map(|l| l.span))
+                .ok_or_else(|| "nothing to rename here".to_string())?;
+            // Declared in this document, or in a sibling module of the same
+            // package. Anywhere else -- the standard library, a dependency --
+            // is a file this server is not editing.
+            if let Some(loc) = self.defs.get(&var) {
+                return Ok((span, Target::Value(var, (None, loc.span))));
+            }
+            if let Some(loc) = self.wider.get(&var) {
+                return Ok((span, Target::Value(var, (Some(loc.source), loc.span))));
+            }
+            return Err(outside(std.definitions().contains_key(&var)));
+        }
+        let (span, name, ns) = self
+            .name_refs
+            .iter()
+            .filter(|(s, _, _)| covers(*s, offset))
+            .min_by_key(|(s, _, _)| s.end - s.start)
+            .copied()
+            .ok_or_else(|| "nothing to rename here".to_string())?;
+        if let Some(loc) = self.names.get(name, ns) {
+            return Ok((span, Target::Name(name, ns, (None, loc.span))));
+        }
+        if let Some(loc) = self.wider_names.get(name, ns) {
+            return Ok((span, Target::Name(name, ns, (Some(loc.source), loc.span))));
+        }
+        Err(outside(std.declared_names().get(name, ns).is_some()))
+    }
+
     /// Markdown for the hover: a signature, then any doc comment above it.
     pub fn hover_at(&self, offset: usize) -> Option<String> {
         let var = self.var_at(offset);
@@ -1081,6 +1271,8 @@ impl Analysis {
             ctors_in_scope: Default::default(),
             wider: Default::default(),
             wider_names: Default::default(),
+            wider_refs: Vec::new(),
+            wider_name_refs: Vec::new(),
             source_id: 0,
         }
     }

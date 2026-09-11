@@ -1,5 +1,5 @@
 ---
-source: tests/diagnostics.rs
+source: meadow/tests/diagnostics.rs
 expression: "errors(\"def x = \\n\")"
 ---
 found end of input expected 'Minus', something else, 'LParen', 'Wildcard', 'LBrace', 'Handle', 'Let', 'If', 'Backslash', 'Match', 'LBrack', or 'HashLBrack'

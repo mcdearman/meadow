@@ -1,5 +1,5 @@
 ---
-source: tests/lower.rs
+source: meadow/tests/lower.rs
 expression: "core_ir(\"def plus = (+)\\n\")"
 ---
 

@@ -21,7 +21,7 @@
     },
     "attribute": {
       "name": "storage.modifier.attribute.meadow",
-      "match": "@[a-zA-Z][a-zA-Z0-9]*"
+      "match": "@[a-zA-Z][a-zA-Z0-9]*(\\([a-zA-Z0-9, ]*\\))?"
     },
     "string": {
       "name": "string.quoted.double.meadow",

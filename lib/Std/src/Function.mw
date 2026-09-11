@@ -1,35 +1,35 @@
 -- Function combinators.
 
-@pub fun id x = x
+@pub(pack) fun id x = x
 
-@pub fun const x y = x
+@pub(pack) fun const x y = x
 
-@pub fun flip f x y = f y x
+@pub(pack) fun flip f x y = f y x
 
-@pub fun compose f g x = f (g x)
+@pub(pack) fun compose f g x = f (g x)
 
-@pub fun apply f x = f x
+@pub(pack) fun apply f x = f x
 
-@pub fun twice f x = f (f x)
+@pub(pack) fun twice f x = f (f x)
 
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
 
-@test fun idAndConstIgnoreWhatTheyShould u =
+@test fun idAndConstIgnoreWhatTheyShould () =
   let a = assertEq (id 42) 42 "id" in
   let b = assertEq (id "x") "x" "id at another type" in
   assertEq (const 1 "anything") 1 "const"
 
-@test fun composeAppliesRightToLeft u =
+@test fun composeAppliesRightToLeft () =
   -- `compose f g x` is `f (g x)`, so the doubling happens first.
   assertEq (compose (\n -> n + 1) (\n -> n * 2) 5) 11 "compose"
 
-@test fun flipSwapsTheFirstTwoArguments u =
+@test fun flipSwapsTheFirstTwoArguments () =
   assertEq (flip (\a b -> a - b) 3 10) 7 "flip subtraction"
 
-@test fun applyIsJustApplication u =
+@test fun applyIsJustApplication () =
   assertEq (apply (\n -> n * 3) 4) 12 "apply"
 
-@test fun twiceAppliesTwice u =
+@test fun twiceAppliesTwice () =
   assertEq (twice (\n -> n * 3) 2) 18 "twice"

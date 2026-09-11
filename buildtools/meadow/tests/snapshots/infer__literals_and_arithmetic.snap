@@ -1,7 +1,7 @@
 ---
-source: tests/infer.rs
+source: meadow/tests/infer.rs
 expression: "schemes(\"def n = 1 + 2 * 3\\ndef s = \\\"hi\\\"\\ndef u = ()\\n\")"
 ---
 n : Int
 s : String
-u : Unit
+u : ()

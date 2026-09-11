@@ -1,6 +1,7 @@
 ---
-source: tests/parser.rs
-expression: "parse_ast(\"data Thunk a = Thunk (Unit -> a)\\n\")"
+source: meadow/tests/parser.rs
+assertion_line: 85
+expression: "parse_ast(\"data Thunk a = Thunk (() -> a)\\n\")"
 ---
 Module {
     name: InternedString(test),
@@ -33,25 +34,25 @@ Module {
                                                     value: Con(
                                                         Located {
                                                             value: InternedString(Unit),
-                                                            span: 22..26,
+                                                            span: 22..24,
                                                         },
                                                         [],
                                                     ),
-                                                    span: 22..26,
+                                                    span: 22..24,
                                                 },
                                             ],
                                             Located {
                                                 value: Var(
                                                     Located {
                                                         value: InternedString(a),
-                                                        span: 30..31,
+                                                        span: 28..29,
                                                     },
                                                 ),
-                                                span: 30..31,
+                                                span: 28..29,
                                             },
                                             None,
                                         ),
-                                        span: 22..31,
+                                        span: 22..29,
                                     },
                                 ],
                             ),
@@ -59,7 +60,7 @@ Module {
                     ],
                 },
             ),
-            span: 0..32,
+            span: 0..30,
         },
     ],
 }

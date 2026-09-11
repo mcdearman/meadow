@@ -524,3 +524,43 @@ fn std_sources(who: &str) -> std::path::PathBuf {
     }
     root
 }
+
+#[test]
+fn rename_is_offered_and_answers_with_an_edit_per_occurrence() {
+    let mut c = Client::start();
+    let caps = c.capabilities.clone().unwrap();
+    assert!(
+        caps["capabilities"]["renameProvider"]["prepareProvider"] == json!(true),
+        "rename is not advertised: {caps}"
+    );
+    c.set(SRC);
+
+    // The box the editor opens is over the identifier itself.
+    let prepared = c.at("textDocument/prepareRename", 1, 5);
+    assert_eq!(prepared["start"], json!({"line": 1, "character": 4}));
+    assert_eq!(prepared["end"], json!({"line": 1, "character": 10}));
+
+    let edit = c.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": URI},
+            "position": {"line": 1, "character": 5},
+            "newName": "twice"
+        }),
+    );
+    let edits = edit["changes"][URI].as_array().expect("edits for this file");
+    // The declaration and the one call.
+    assert_eq!(edits.len(), 2, "{edit}");
+    for e in edits {
+        assert_eq!(e["newText"], json!("twice"));
+    }
+}
+
+#[test]
+fn rename_refuses_a_name_from_the_standard_library() {
+    let mut c = Client::start();
+    c.set("def main = println \"hi\"\n");
+    // `println` is `Std`'s, and this server is not editing `Std`.
+    let prepared = c.at("textDocument/prepareRename", 0, 12);
+    assert_eq!(prepared, Value::Null, "offered a rename it cannot do");
+}

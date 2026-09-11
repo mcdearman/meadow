@@ -61,13 +61,13 @@ evaluated to. Trimmed to the interesting part:
 
 ```
 === package hello ===
-  main : Unit ! { io | e }
+  main : () ! { io | e }
 entry: main
 Hello, Meadow!
 => ()
 ```
 
-`main` has type `Unit ! { io | e }` — it produces nothing useful, and it performs
+`main` has type `() ! { io | e }` — it produces nothing useful, and it performs
 the `io` effect. More on that in [chapter 9](#9-effects).
 
 ### The REPL
@@ -125,7 +125,7 @@ def main = 1  -- so is this
 | `Bool` | `True`, `False` | constructors, capitalised |
 | `String` | `"hi"`, `"tab\there"` | a sequence of **bytes**; escapes `\n \t \r \\ \" \0` |
 | `Char` | `'a'`, `'é'`, `'\n'` | one Unicode **scalar**, not one byte |
-| `Unit` | `()` | the empty tuple |
+| unit | `()` | one value, written the same way as its type |
 
 `Bool` values *print* as lowercase `true` / `false`, but you always write the
 constructors `True` and `False`.
@@ -853,7 +853,7 @@ sibling's names arrive through a `use`, and never for free.
 -- src/main.mw  (a second file in the same package)
 use myapp.Math (double)       -- the package name, then the module
 
-@pub def main = double 21
+def main = double 21
 ```
 
 The path starts with the package's own name, which is what `meadow.toml` says —
@@ -889,15 +889,39 @@ use myapp.Syntax (Expr)      -- the type, and `Int` / `Add` with it
   | Add a b -> eval a + eval b
 ```
 
-### `@pub` and a gotcha
+### Visibility: `@pub`, `@pub(pack)`, `@pub(super)`
 
-`@pub` marks a declaration as exported. The rule to remember:
+Nothing is visible outside the module it is written in until it says so. Three
+attributes say so, each one layer wider:
 
-> As soon as **any** declaration in the package is `@pub`, only `@pub` declarations
-> are exported — including `main`.
+| written | seen by |
+|---|---|
+| nothing | its own module, and the modules inside it |
+| `@pub(super)` | ...and its parent module's subtree |
+| `@pub` | ...and every module of this package |
+| `@pub(pack)` | ...and anyone who depends on this package |
 
-So the moment you add `@pub` anywhere, `main` needs it too, or the linker will not
-find an entry point and you will see `entry: (none)` and a result of `()`.
+So `@pub` is about leaving the **module**, and leaving the **package** is the
+louder thing to say. A library's surface is its `@pub(pack)` declarations; `@pub`
+is for the helper that two of your own modules share.
+
+```meadow
+-- src/Math.mw
+fun fudge n = n + 1           -- this module only
+@pub fun double n = n * 2     -- the rest of the package
+@pub(pack) fun triple n = n * 3   -- and anyone who depends on us
+```
+
+Naming a type makes its constructors as visible as the type, and an effect's
+operations follow its effect.
+
+One escape hatch, for small programs: **a package that never mentions
+visibility has none** — every module sees every other, and everything is
+exported. The moment any declaration is marked, the rules above apply to all of
+them.
+
+`main` is exempt: it is an entry point rather than an export, so it is found
+whether or not it is marked.
 
 ### `use`
 
@@ -939,7 +963,7 @@ util = { path = "../util" }
 ```
 
 Then `use util` for all of it, `use util (double)` for one name, or
-`use util as U` to keep it behind a qualifier. Only `@pub` names cross the
+`use util as U` to keep it behind a qualifier. Only `@pub(pack)` names cross the
 boundary.
 
 ---
@@ -959,7 +983,7 @@ the number 500. Nothing has to be written twice, and nothing has to be injected.
 ### Declaring and performing
 
 ```meadow
-effect Log { log : String -> Unit }
+effect Log { log : String -> () }
 
 fun greet name =
   let ignored = log name in
@@ -995,9 +1019,9 @@ once).
 Because the handler decides, the same code can be run for real or faked:
 
 ```meadow
-effect Log { log : String -> Unit }
+effect Log { log : String -> () }
 
-fun work u =
+fun work () =
   let a = log "step one" in
   let b = log "step two" in
   42
@@ -1032,7 +1056,7 @@ whole mechanism behind `Exn`, `Stream.take`, and any "stop now" you write yourse
 ```meadow
 use Std.String as S
 
-effect Abort { abort : String -> Unit }
+effect Abort { abort : String -> () }
 
 fun search xs =
   let _ = forEach (\x -> if x < 0 then abort (show x) else ()) xs in
@@ -1061,7 +1085,7 @@ def main = println "x"
 
 ```sh
 $ meadow build hello.mw
-  main : Unit
+  main : ()
 ```
 
 No `!` row at all — `print` and `println` are plain primitives. Input is an effect
@@ -1112,7 +1136,7 @@ use Std.Ref (modify, repeatN)
 
 fun countUp n =
   let r = newRef 0 in
-  let ignored = repeatN n (\u -> modify r (\x -> x + 1)) in
+  let ignored = repeatN n (\() -> modify r (\x -> x + 1)) in
   getRef r
 
 def main = countUp 5
@@ -1142,12 +1166,12 @@ back at the end. Nothing is allocated and nothing is shared.
 ```meadow
 use Std.State (get, put, modify, runState, evalState, execState)
 
-fun tick u =
+fun tick () =
   let n = get () in
   let ignored = put (n + 1) in
   n
 
-def main = runState 0 (\u -> let a = tick () in let b = tick () in get ())
+def main = runState 0 (\() -> let a = tick () in let b = tick () in get ())
 ```
 
 ```
@@ -1171,7 +1195,7 @@ ends by matching it rather than by catching anything.
 use Std.Console (prompt, withInput, readLine)
 use Std.String as S
 
-fun greet u =
+fun greet () =
   match prompt "name: " with
   | Just name -> S.concat "hello, " name
   | None -> "nobody there"
@@ -1197,7 +1221,7 @@ anywhere near it:
 ```meadow
 @test fun playsAFullRound () =
   let played =
-    R.withSeed 7 (\u -> withInput ["rock"; "nonsense"; "paper"; "quit"] game) in
+    R.withSeed 7 (\() -> withInput ["rock"; "nonsense"; "paper"; "quit"] game) in
     assertEq played () "a full game plays through to the summary"
 ```
 
@@ -1213,13 +1237,13 @@ use Std.Console (prompt, withInput)
 use Std.Random as R
 use Std.String as S
 
-fun guess u =
+fun guess () =
   let secret = R.between 1 11 in
   match prompt "pick 1-10: " with
   | None -> "no answer"
   | Just typed -> if S.trim typed == show secret then "right" else "wrong"
 
-def main = R.withSeed 1 (\u -> withInput ["3";] guess)
+def main = R.withSeed 1 (\() -> withInput ["3";] guess)
 ```
 
 ```
@@ -1237,10 +1261,10 @@ use Std.Exn (raise, toResult, withDefault, toMaybe, ensure)
 fun half n = if n % 2 == 0 then n / 2 else raise "odd"
 
 def main =
-  ( toResult (\u -> 1 + half 8)
-  , toResult (\u -> 1 + half 7)
-  , withDefault 0 (\u -> half 7)
-  , toMaybe (\u -> half 7) )
+  ( toResult (\() -> 1 + half 8)
+  , toResult (\() -> 1 + half 7)
+  , withDefault 0 (\() -> half 7)
+  , toMaybe (\() -> half 7) )
 ```
 
 ```
@@ -1256,7 +1280,7 @@ travel a long way untouched. `toResult` converts at the boundary.
 
 #### Yield and Stream — generators
 
-`Std.Yield` is one operation, `yield : a -> Unit`. A producer performs it; a
+`Std.Yield` is one operation, `yield : a -> ()`. A producer performs it; a
 consumer decides what it means. `Std.Stream` is the consumers.
 
 ```meadow
@@ -1267,7 +1291,7 @@ fun countdown n =
   if n <= 0 then ()
   else let _ = yield n in countdown (n - 1)
 
-def main = (St.toList (\u -> countdown 5), St.take 2 (\u -> countdown 100))
+def main = (St.toList (\() -> countdown 5), St.take 2 (\() -> countdown 100))
 ```
 
 ```
@@ -1283,9 +1307,9 @@ building a million-element anything:
 use Std.Stream as St
 
 def main =
-  ( St.take 3 (\u -> St.range 0 1000000)
-  , St.toList (\u -> St.map (\x -> x * x) (\v -> St.range 1 5))
-  , St.sum (\u -> St.range 1 101) )
+  ( St.take 3 (\() -> St.range 0 1000000)
+  , St.toList (\() -> St.map (\x -> x * x) (\() -> St.range 1 5))
+  , St.sum (\() -> St.range 1 101) )
 ```
 
 ```
@@ -1302,9 +1326,9 @@ consume: `map`, `filter`. Producers: `ofList`, `ofVec`, `range`, `repeat`,
 ```meadow
 use Std.Random as R
 
-def rolls = R.withSeed 42 (\u -> [R.between 1 7; R.between 1 7; R.between 1 7])
+def rolls = R.withSeed 42 (\() -> [R.between 1 7; R.between 1 7; R.between 1 7])
 
-def main = (rolls, rolls == R.withSeed 42 (\u -> [R.between 1 7; R.between 1 7; R.between 1 7]))
+def main = (rolls, rolls == R.withSeed 42 (\() -> [R.between 1 7; R.between 1 7; R.between 1 7]))
 ```
 
 ```
@@ -1321,9 +1345,9 @@ Operations: `nextInt`, `intBetween` (and the friendlier `between lo hi`),
 ```meadow
 use Std.Time as T
 
-def frozen = T.withClock 500 (\u -> (T.now (), T.now ()))
+def frozen = T.withClock 500 (\() -> (T.now (), T.now ()))
 
-def ticking = T.withTickingClock 1000 10 (\u -> (T.now (), T.now (), T.now ()))
+def ticking = T.withTickingClock 1000 10 (\() -> (T.now (), T.now (), T.now ()))
 
 def main = (frozen, ticking)
 ```
@@ -1406,7 +1430,7 @@ that something *should* fail:
 ```meadow
 use Std.Test (assertEq, didFail)
 
-def main = (didFail (\u -> assertEq 1 1 "same"), didFail (\u -> assertEq 1 2 "different"))
+def main = (didFail (\() -> assertEq 1 1 "same"), didFail (\() -> assertEq 1 2 "different"))
 ```
 
 ```
@@ -1440,13 +1464,13 @@ use Std.Test (assertEq, assertTrue)
 
 fun double n = n * 2
 
-@pub def main = double 21
+def main = double 21
 
-@test fun doubling u = assertEq (double 21) 42 "double 21"
+@test fun doubling () = assertEq (double 21) 42 "double 21"
 
-@test fun listsCompare u = assertEq [1; 2] [1; 2] "list equality"
+@test fun listsCompare () = assertEq [1; 2] [1; 2] "list equality"
 
-@test fun somethingTrue u = assertTrue (double 2 == 4) "double 2"
+@test fun somethingTrue () = assertTrue (double 2 == 4) "double 2"
 ```
 
 ```sh
@@ -1502,8 +1526,15 @@ release requires every `match` to be exhaustive.
 
 `meadow lsp` speaks the Language Server Protocol over stdin and stdout, so any
 LSP client can use it. It gives you diagnostics as you type, hover showing the
-inferred type and the `--` comment above the definition, go-to-definition, inlay
-hints for parameters and `let` bindings, and semantic tokens.
+inferred type and the `--` comment above the definition, go-to-definition,
+rename, inlay hints for parameters and `let` bindings, and semantic tokens.
+
+A file inside a package is analysed as part of that package, so a `use` of a
+sibling module resolves exactly as it does in a build, and go-to-definition and
+rename both cross between modules. **Rename** follows name resolution rather
+than text: it changes the binding under the cursor and not something else
+spelled the same, and it refuses a name whose definition is outside the package
+(the standard library's, say) rather than editing half of it.
 
 The VS Code extension lives in `editors/vscode`; `editors/vscode/build.sh`
 produces a `.vsix`, and every release attaches one. It runs `meadow lsp`, and
@@ -1585,8 +1616,10 @@ built on it and is worth reading as a worked example.
 - `%` follows the sign of the dividend: `(-7) % 3` is `-1`.
 - `[1..5]` is **inclusive**; `range 1 5` is **half-open**.
 - `Bool` prints lowercase but is written `True` / `False`.
-- Adding `@pub` anywhere means `main` needs it too.
-- Modules within a package share one flat namespace; `Mod.name` is for dependencies.
+- `@pub` leaves the *module*; leaving the *package* is `@pub(pack)`.
+- A package that marks nothing has no visibility rules at all — mark one thing
+  and every module has to say what it shares.
+- Each module of a package is its own namespace; a sibling's names come by `use`.
 - Exhaustiveness is only checked under `--release`.
 - `def` takes no parameters — `def f x = ...` is a parse error; use `fun`.
 - A function that selects a field (`p.x`) cannot be applied to a *nominal* record;

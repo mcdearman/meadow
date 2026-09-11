@@ -16,7 +16,7 @@
 use Std.Collections.List (append)
 use Std.Maybe (Maybe)
 
-@pub effect Process {
+@pub(pack) effect Process {
   -- Run to completion, capturing stdout/stderr.
   spawn : (String, List String, Maybe String, List (String, String))
             -> Result String (Int, String, String),
@@ -24,39 +24,39 @@ use Std.Maybe (Maybe)
   status : (String, List String, Maybe String, List (String, String))
              -> Result String Int,
   -- Terminate the current process immediately with the given exit code.
-  exit : Int -> Unit,
-  currentPid : Unit -> Int,
+  exit : Int -> (),
+  currentPid : () -> Int,
   -- The process's command-line arguments (not including the program name).
-  argv : Unit -> List String,
+  argv : () -> List String,
   getEnv : String -> Maybe String,
-  setEnv : (String, String) -> Unit,
-  removeEnv : String -> Unit,
+  setEnv : (String, String) -> (),
+  removeEnv : String -> (),
 }
 
-@pub fun command program = (program, Nil, None, Nil)
+@pub(pack) fun command program = (program, Nil, None, Nil)
 
-@pub fun withArg a cmd =
+@pub(pack) fun withArg a cmd =
   match cmd with | (p, xs, cwd, envs) -> (p, append xs (Cons a Nil), cwd, envs)
 
-@pub fun withArgs extra cmd =
+@pub(pack) fun withArgs extra cmd =
   match cmd with | (p, xs, cwd, envs) -> (p, append xs extra, cwd, envs)
 
-@pub fun withCwd dir cmd =
+@pub(pack) fun withCwd dir cmd =
   match cmd with | (p, xs, cwd, envs) -> (p, xs, Just dir, envs)
 
-@pub fun withEnv pair cmd =
+@pub(pack) fun withEnv pair cmd =
   match cmd with | (p, xs, cwd, envs) -> (p, xs, cwd, append envs (Cons pair Nil))
 
 -- Run `program` with `args` to completion, capturing its output.
-@pub fun run program args = spawn (withArgs args (command program))
+@pub(pack) fun run program args = spawn (withArgs args (command program))
 
 -- Run `program` with `args` to completion, inheriting stdio; just the exit code.
-@pub fun runInherit program args = status (withArgs args (command program))
+@pub(pack) fun runInherit program args = status (withArgs args (command program))
 
-@pub fun outputStatus out = match out with | (s, o, e) -> s
+@pub(pack) fun outputStatus out = match out with | (s, o, e) -> s
 
-@pub fun outputStdout out = match out with | (s, o, e) -> o
+@pub(pack) fun outputStdout out = match out with | (s, o, e) -> o
 
-@pub fun outputStderr out = match out with | (s, o, e) -> e
+@pub(pack) fun outputStderr out = match out with | (s, o, e) -> e
 
-@pub fun succeeded out = outputStatus out == 0
+@pub(pack) fun succeeded out = outputStatus out == 0

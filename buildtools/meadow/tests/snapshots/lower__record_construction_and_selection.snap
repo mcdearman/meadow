@@ -1,5 +1,5 @@
 ---
-source: tests/lower.rs
+source: meadow/tests/lower.rs
 expression: "core_ir(\"def r = { x = 1 }\\ndef v = r.x\\n\")"
 ---
 v0 = { x = 1 }

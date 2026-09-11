@@ -1,5 +1,5 @@
 ---
-source: tests/infer.rs
+source: meadow/tests/infer.rs
 expression: "schemes(\"fun map f xs =\\n  match xs with\\n  | Nil -> Nil\\n  | Cons x r -> Cons (f x) (map f r)\\n\")"
 ---
 map : forall a b e. (a -> b ! e) -> List a -> List b ! e

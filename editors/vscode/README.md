@@ -7,7 +7,13 @@ Language support for [Meadow](https://github.com/mcdearman/meadow).
   from a constructor: `Maybe` and `Just` are both capitalised).
 - **Diagnostics** — type and parse errors, live as you type.
 - **Hover** — the inferred type, and the `--` doc comment above the definition.
-- **Go to definition**.
+- **Go to definition** — including into another module of the package, and
+  into the standard library.
+- **Rename** (F2) — every occurrence of the binding under the cursor, across
+  every module of its package. It follows name resolution rather than text, so
+  a shadowed `x` elsewhere is left alone and two constructors that share a
+  spelling are told apart. A name from the standard library is refused, since
+  its definition is not yours to edit.
 - **Inlay hints** — inferred types after parameters and `let` bindings.
 
 ## Requirements

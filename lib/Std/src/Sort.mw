@@ -43,37 +43,37 @@ def smallRange = 16
 -- --- the public surface -------------------------------------------------------
 
 -- Sort a `Vector` by a comparison. Unstable: equal elements may be reordered.
-@pub fun sortBy cmp v =
+@pub(pack) fun sortBy cmp v =
   let cells = thaw v in
   let n = arrayLen cells in
   let ignored = introsort cmp cells 0 n (depthLimit n) in
   freeze cells
 
 -- Ascending, for the types `compare` handles.
-@pub fun sort v = sortBy compare v
+@pub(pack) fun sort v = sortBy compare v
 
-@pub fun sortDesc v = sortBy (\a b -> compare b a) v
+@pub(pack) fun sortDesc v = sortBy (\a b -> compare b a) v
 
 -- Sort by a projection: `sortOn length names`. The key is computed on every
 -- comparison rather than cached, so keep it cheap -- or use `sortBy`.
-@pub fun sortOn key v = sortBy (\a b -> compare (key a) (key b)) v
+@pub(pack) fun sortOn key v = sortBy (\a b -> compare (key a) (key b)) v
 
 -- The in-place sort itself, on a plain `Array`.
-@pub fun sortArrayBy cmp arr = V.toArray (sortBy cmp (V.fromArray arr))
+@pub(pack) fun sortArrayBy cmp arr = V.toArray (sortBy cmp (V.fromArray arr))
 
-@pub fun sortArray arr = sortArrayBy compare arr
+@pub(pack) fun sortArray arr = sortArrayBy compare arr
 
 -- --- the stable sort ----------------------------------------------------------
 --
 -- Merge sort over `List`. Stable, and pure -- nothing here mutates, so a caller
 -- that uses it keeps an empty effect row.
 
-@pub fun stableSortBy cmp xs = mergeSort cmp xs
+@pub(pack) fun stableSortBy cmp xs = mergeSort cmp xs
 
-@pub fun stableSort xs = mergeSort compare xs
+@pub(pack) fun stableSort xs = mergeSort compare xs
 
 -- Stable sort of a `Vector`, via `List`.
-@pub fun stableSortVecBy cmp v = V.fromList (mergeSort cmp (V.toList v))
+@pub(pack) fun stableSortVecBy cmp v = V.fromList (mergeSort cmp (V.toList v))
 
 fun mergeSort cmp xs =
   match xs with
@@ -118,9 +118,9 @@ fun reverseOnto acc xs =
 
 -- --- checking -----------------------------------------------------------------
 
-@pub fun isSortedBy cmp v = sortedFrom cmp (V.toArray v) 1
+@pub(pack) fun isSortedBy cmp v = sortedFrom cmp (V.toArray v) 1
 
-@pub fun isSorted v = isSortedBy compare v
+@pub(pack) fun isSorted v = isSortedBy compare v
 
 fun sortedFrom cmp arr i =
   if i >= arrayLen arr
@@ -271,14 +271,14 @@ fun siftDown cmp cells lo n i =
 
 -- --- tests --------------------------------------------------------------------
 
-@test fun sortsTheEasyCases u =
+@test fun sortsTheEasyCases () =
   let a = assertEq (sort [3, 1, 2]) [1, 2, 3] "three elements" in
   let b = assertEq (sort []) [] "nothing" in
   let c = assertEq (sort [1]) [1] "one" in
   let d = assertEq (sort [2, 1]) [1, 2] "two" in
   assertEq (sort [1, 2, 3]) [1, 2, 3] "already sorted"
 
-@test fun theInputsThatDefeatANaivePivot u =
+@test fun theInputsThatDefeatANaivePivot () =
   -- A "first element" pivot is quadratic on all of these; median-of-three and
   -- the heapsort fallback are not.
   let asc = V.range 0 200 in
@@ -289,7 +289,7 @@ fun siftDown cmp cells lo n i =
   let c = assertTrue (isSorted (sort same)) "all equal" in
   assertEq (V.len (sort same)) 200 "and nothing was lost"
 
-@test fun aBigShuffledInputComesBackSorted u =
+@test fun aBigShuffledInputComesBackSorted () =
   -- Long enough to go through quicksort and its recursion rather than straight
   -- to insertion sort.
   let shuffled = V.map (\i -> (i * 7919) % 1000) (V.range 0 1000) in
@@ -298,30 +298,30 @@ fun siftDown cmp cells lo n i =
   let b = assertEq (V.len sorted) 1000 "same length" in
   assertEq (V.sum sorted) (V.sum shuffled) "same elements"
 
-@test fun sortingIsAPermutationNotAFilter u =
+@test fun sortingIsAPermutationNotAFilter () =
   -- Duplicates must survive; a set-like bug would silently drop them.
   let v = [3, 1, 3, 2, 1, 3] in
   let s = sort v in
   let a = assertEq s [1, 1, 2, 3, 3, 3] "duplicates kept, in order" in
   assertEq (V.len s) (V.len v) "same length"
 
-@test fun byAndOnAndDesc u =
+@test fun byAndOnAndDesc () =
   let a = assertEq (sortDesc [1, 3, 2]) [3, 2, 1] "descending" in
   let b = assertEq (sortBy (\x y -> compare y x) [1, 3, 2]) [3, 2, 1] "a reversed comparison" in
   assertEq (sortOn (\p -> snd p) [(1, 3), (2, 1), (3, 2)]) [(2, 1), (3, 2), (1, 3)] "sortOn"
 
-@test fun theArrayFormSortsInPlaceAndComesBack u =
+@test fun theArrayFormSortsInPlaceAndComesBack () =
   let a = assertEq (sortArray #[3, 1, 2]) #[1, 2, 3] "sortArray" in
   assertEq (sortArray #[]) #[] "empty"
 
-@test fun theSortedCheck u =
+@test fun theSortedCheck () =
   let a = assertTrue (isSorted [1, 2, 3]) "ascending" in
   let b = assertTrue (isSorted [1, 1, 2]) "equal neighbours are sorted" in
   let c = assertFalse (isSorted [2, 1]) "descending" in
   let d = assertTrue (isSorted []) "nothing is sorted" in
   assertTrue (isSorted [1]) "one element"
 
-@test fun theStableSortKeepsEqualElementsInOrder u =
+@test fun theStableSortKeepsEqualElementsInOrder () =
   -- Sort pairs on the first component only: the second must come back in its
   -- original order. This is exactly what `sortBy` does not promise.
   let ps = [(1, "a"); (0, "b"); (1, "c"); (0, "d"); (1, "e")] in
@@ -330,17 +330,17 @@ fun siftDown cmp cells lo n i =
     [(0, "b"); (0, "d"); (1, "a"); (1, "c"); (1, "e")]
     "ties keep their original order"
 
-@test fun theStableSortAgreesWithTheFastOneOnValues u =
+@test fun theStableSortAgreesWithTheFastOneOnValues () =
   let v = V.map (\i -> (i * 31) % 97) (V.range 0 300) in
   assertEq (V.toList (sort v)) (stableSort (V.toList v)) "same answer"
 
-@test fun theStableSortHandlesTheEdges u =
+@test fun theStableSortHandlesTheEdges () =
   let a = assertEq (stableSort [;]) [;] "nothing" in
   let b = assertEq (stableSort [1;]) [1;] "one" in
   let c = assertEq (stableSort [2; 1]) [1; 2] "two" in
   assertEq (stableSort [3; 1; 2]) [1; 2; 3] "three"
 
-@test fun sortingLeavesTheOriginalAlone u =
+@test fun sortingLeavesTheOriginalAlone () =
   -- The mutation is confined to the scratch cells; the vector handed in is a
   -- persistent value and must be unchanged.
   let v = [3, 1, 2] in

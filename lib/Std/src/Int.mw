@@ -1,39 +1,39 @@
 -- Integer helpers.
 
-@pub fun min a b = if a < b then a else b
+@pub(pack) fun min a b = if a < b then a else b
 
-@pub fun max a b = if a < b then b else a
+@pub(pack) fun max a b = if a < b then b else a
 
-@pub fun abs n = if n < 0 then 0 - n else n
+@pub(pack) fun abs n = if n < 0 then 0 - n else n
 
-@pub fun signum n = if n < 0 then 0 - 1 else if n == 0 then 0 else 1
+@pub(pack) fun signum n = if n < 0 then 0 - 1 else if n == 0 then 0 else 1
 
-@pub fun clamp lo hi n = max lo (min hi n)
+@pub(pack) fun clamp lo hi n = max lo (min hi n)
 
-@pub fun succ n = n + 1
+@pub(pack) fun succ n = n + 1
 
-@pub fun pred n = n - 1
+@pub(pack) fun pred n = n - 1
 
-@pub fun even n = n % 2 == 0
+@pub(pack) fun even n = n % 2 == 0
 
-@pub fun odd n = n % 2 != 0
+@pub(pack) fun odd n = n % 2 != 0
 
-@pub fun gcd a b = if b == 0 then abs a else gcd b (a % b)
+@pub(pack) fun gcd a b = if b == 0 then abs a else gcd b (a % b)
 
-@pub fun lcm a b = if a == 0 then 0 else abs (a * b) / gcd a b
+@pub(pack) fun lcm a b = if a == 0 then 0 else abs (a * b) / gcd a b
 
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
 
-@test fun minMaxAndClamp u =
+@test fun minMaxAndClamp () =
   let a = assertEq (min 3 7) 3 "min" in
   let b = assertEq (max 3 7) 7 "max" in
   let c = assertEq (clamp 0 10 15) 10 "clamp above" in
   let d = assertEq (clamp 0 10 (0 - 5)) 0 "clamp below" in
   assertEq (clamp 0 10 5) 5 "clamp inside"
 
-@test fun absAndSignum u =
+@test fun absAndSignum () =
   let a = assertEq (abs (0 - 7)) 7 "abs negative" in
   let b = assertEq (abs 7) 7 "abs positive" in
   let c = assertEq (abs 0) 0 "abs zero" in
@@ -41,7 +41,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let e = assertEq (signum 0) 0 "signum zero" in
   assertEq (signum 7) 1 "signum positive"
 
-@test fun evenAndOddSplitTheIntegers u =
+@test fun evenAndOddSplitTheIntegers () =
   let a = assertTrue (even 0) "0 is even" in
   let b = assertTrue (odd 7) "7 is odd" in
   let c = assertFalse (even 7) "7 is not even" in
@@ -50,12 +50,12 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let d = assertTrue (even (0 - 4)) "-4 is even" in
   assertTrue (odd (0 - 3)) "-3 is odd"
 
-@test fun succAndPred u =
+@test fun succAndPred () =
   let a = assertEq (succ 4) 5 "succ" in
   let b = assertEq (pred 4) 3 "pred" in
   assertEq (pred (succ 4)) 4 "they undo each other"
 
-@test fun gcdAndLcm u =
+@test fun gcdAndLcm () =
   let a = assertEq (gcd 12 18) 6 "gcd" in
   let b = assertEq (gcd 17 5) 1 "coprime" in
   let c = assertEq (gcd 0 5) 5 "gcd with zero" in

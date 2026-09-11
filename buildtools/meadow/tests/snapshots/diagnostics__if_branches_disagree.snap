@@ -1,5 +1,5 @@
 ---
-source: tests/diagnostics.rs
+source: meadow/tests/diagnostics.rs
 expression: "errors(\"def x = if 1 < 2 then 1 else \\\"no\\\"\\n\")"
 ---
 type mismatch: `Int` vs `String`

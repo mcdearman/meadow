@@ -1,5 +1,5 @@
 ---
-source: tests/diagnostics.rs
+source: meadow/tests/diagnostics.rs
 expression: "errors(\"record P = { name : String, age : Int }\\ndef p = P { name = \\\"x\\\" }\\n\")"
 ---
 missing field `age` for `P`

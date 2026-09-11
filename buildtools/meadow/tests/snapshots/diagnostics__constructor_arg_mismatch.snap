@@ -1,5 +1,5 @@
 ---
-source: tests/diagnostics.rs
+source: meadow/tests/diagnostics.rs
 expression: "errors(\"data T = C Int\\ndef x = C \\\"str\\\"\\n\")"
 ---
 type mismatch: `Int` vs `String`

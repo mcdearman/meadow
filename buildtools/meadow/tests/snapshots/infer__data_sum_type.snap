@@ -1,5 +1,5 @@
 ---
-source: tests/infer.rs
+source: meadow/tests/infer.rs
 expression: "schemes(\"data Shape = Circle Int | Rect Int Int\\n\\\n         fun area s = match s with | Circle r -> r * r | Rect w h -> w * h\\n\")"
 ---
 area : Shape -> Int

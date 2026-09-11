@@ -1,5 +1,5 @@
 ---
-source: tests/infer.rs
+source: meadow/tests/infer.rs
 expression: "schemes(\"record Person = { name : String, age : Int }\\n\\\n         def p = Person { name = \\\"Ann\\\", age = 30 }\\n\\\n         def who = p.name\\n\")"
 ---
 p : Person

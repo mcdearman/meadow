@@ -8,29 +8,29 @@ use Std.Int (min, max)
 -- `toStream` performs `yield`; see the note in `Std.Collections.Vector`.
 use Std.Yield (yield)
 
-@pub data List a = Nil | Cons a (List a)
+@pub(pack) data List a = Nil | Cons a (List a)
 
-@pub fun append xs ys =
+@pub(pack) fun append xs ys =
   match xs with
   | Nil -> ys
   | Cons x rest -> x :: append rest ys
 
-@pub fun map f xs =
+@pub(pack) fun map f xs =
   match xs with
   | Nil -> Nil
   | Cons x rest -> f x :: map f rest
 
-@pub fun filter keep xs =
+@pub(pack) fun filter keep xs =
   match xs with
   | Nil -> Nil
   | Cons x rest -> if keep x then x :: filter keep rest else filter keep rest
 
-@pub fun foldl f acc xs =
+@pub(pack) fun foldl f acc xs =
   match xs with
   | Nil -> acc
   | Cons x rest -> foldl f (f acc x) rest
 
-@pub fun foldr f acc xs =
+@pub(pack) fun foldr f acc xs =
   match xs with
   | Nil -> acc
   | Cons x rest -> f x (foldr f acc rest)
@@ -40,117 +40,117 @@ fun reverseOnto acc xs =
   | Nil -> acc
   | Cons x rest -> reverseOnto (x :: acc) rest
 
-@pub fun reverse xs = reverseOnto Nil xs
+@pub(pack) fun reverse xs = reverseOnto Nil xs
 
-@pub fun length xs =
+@pub(pack) fun length xs =
   match xs with
   | Nil -> 0
   | Cons x rest -> 1 + length rest
 
-@pub fun elem x xs =
+@pub(pack) fun elem x xs =
   match xs with
   | Nil -> False
   | Cons y rest -> if x == y then True else elem x rest
 
-@pub fun range lo hi = if lo < hi then lo :: range (lo + 1) hi else Nil
+@pub(pack) fun range lo hi = if lo < hi then lo :: range (lo + 1) hi else Nil
 
-@pub fun take n xs =
+@pub(pack) fun take n xs =
   match xs with
   | Nil -> Nil
   | Cons y rest -> if n < 1 then Nil else y :: take (n - 1) rest
 
-@pub fun drop n xs =
+@pub(pack) fun drop n xs =
   match xs with
   | Nil -> Nil
   | Cons y rest -> if n < 1 then xs else drop (n - 1) rest
 
-@pub fun concat xss = foldr append Nil xss
+@pub(pack) fun concat xss = foldr append Nil xss
 
 -- Public surface --------------------------------------------------------------
 
-@pub fun isEmpty xs = match xs with | Nil -> True | Cons x rest -> False
+@pub(pack) fun isEmpty xs = match xs with | Nil -> True | Cons x rest -> False
 
-@pub fun singleton x = Cons x Nil
+@pub(pack) fun singleton x = Cons x Nil
 
-@pub fun head xs = match xs with | Nil -> None | Cons x rest -> Just x
+@pub(pack) fun head xs = match xs with | Nil -> None | Cons x rest -> Just x
 
-@pub fun tail xs = match xs with | Nil -> None | Cons x rest -> Just rest
+@pub(pack) fun tail xs = match xs with | Nil -> None | Cons x rest -> Just rest
 
-@pub fun last xs =
+@pub(pack) fun last xs =
   match xs with
   | Nil -> None
   | Cons x Nil -> Just x
   | Cons x rest -> last rest
 
-@pub fun nth n xs =
+@pub(pack) fun nth n xs =
   match xs with
   | Nil -> None
   | Cons x rest -> if n < 1 then Just x else nth (n - 1) rest
 
-@pub fun notElem x xs = not (elem x xs)
+@pub(pack) fun notElem x xs = not (elem x xs)
 
-@pub fun replicate n x = if n < 1 then Nil else x :: replicate (n - 1) x
+@pub(pack) fun replicate n x = if n < 1 then Nil else x :: replicate (n - 1) x
 
-@pub fun sum xs = foldl (\a b -> a + b) 0 xs
+@pub(pack) fun sum xs = foldl (\a b -> a + b) 0 xs
 
-@pub fun product xs = foldl (\a b -> a * b) 1 xs
+@pub(pack) fun product xs = foldl (\a b -> a * b) 1 xs
 
-@pub fun maximum xs =
+@pub(pack) fun maximum xs =
   match xs with
   | Nil -> None
   | Cons x rest -> Just (foldl max x rest)
 
-@pub fun minimum xs =
+@pub(pack) fun minimum xs =
   match xs with
   | Nil -> None
   | Cons x rest -> Just (foldl min x rest)
 
-@pub fun all keep xs =
+@pub(pack) fun all keep xs =
   match xs with
   | Nil -> True
   | Cons x rest -> if keep x then all keep rest else False
 
-@pub fun any keep xs =
+@pub(pack) fun any keep xs =
   match xs with
   | Nil -> False
   | Cons x rest -> if keep x then True else any keep rest
 
-@pub fun find keep xs =
+@pub(pack) fun find keep xs =
   match xs with
   | Nil -> None
   | Cons x rest -> if keep x then Just x else find keep rest
 
-@pub fun takeWhile keep xs =
+@pub(pack) fun takeWhile keep xs =
   match xs with
   | Nil -> Nil
   | Cons x rest -> if keep x then x :: takeWhile keep rest else Nil
 
-@pub fun dropWhile keep xs =
+@pub(pack) fun dropWhile keep xs =
   match xs with
   | Nil -> Nil
   | Cons x rest -> if keep x then dropWhile keep rest else xs
 
-@pub fun partition keep xs = (filter keep xs, filter (\x -> not (keep x)) xs)
+@pub(pack) fun partition keep xs = (filter keep xs, filter (\x -> not (keep x)) xs)
 
-@pub fun concatMap f xs = concat (map f xs)
+@pub(pack) fun concatMap f xs = concat (map f xs)
 
-@pub fun zip xs ys =
+@pub(pack) fun zip xs ys =
   match (xs, ys) with
   | (Nil, bs) -> Nil
   | (Cons a arest, Nil) -> Nil
   | (Cons a arest, Cons b brest) -> (a, b) :: zip arest brest
 
-@pub fun zipWith f xs ys =
+@pub(pack) fun zipWith f xs ys =
   match (xs, ys) with
   | (Nil, bs) -> Nil
   | (Cons a arest, Nil) -> Nil
   | (Cons a arest, Cons b brest) -> f a b :: zipWith f arest brest
 
-@pub fun unzip ps = (map fst ps, map snd ps)
+@pub(pack) fun unzip ps = (map fst ps, map snd ps)
 
-@pub fun sumBy f xs = foldl (\acc x -> acc + f x) 0 xs
+@pub(pack) fun sumBy f xs = foldl (\acc x -> acc + f x) 0 xs
 
-@pub fun intercalate sep xs =
+@pub(pack) fun intercalate sep xs =
   match xs with
   | Nil -> Nil
   | Cons y Nil -> y
@@ -158,19 +158,19 @@ fun reverseOnto acc xs =
 
 -- Association lists: `[(key, value)]`, keys compared with `==`.
 
-@pub fun lookupAssoc key pairs =
+@pub(pack) fun lookupAssoc key pairs =
   match pairs with
   | Nil -> None
   | Cons (k, v) rest -> if k == key then Just v else lookupAssoc key rest
 
-@pub fun insertAssoc key val pairs =
+@pub(pack) fun insertAssoc key val pairs =
   match pairs with
   | Nil -> Cons (key, val) Nil
   | Cons (k, v) rest ->
       if k == key then Cons (key, val) rest
       else Cons (k, v) (insertAssoc key val rest)
 
-@pub fun removeAssoc key pairs =
+@pub(pack) fun removeAssoc key pairs =
   match pairs with
   | Nil -> Nil
   | Cons (k, v) rest ->
@@ -178,7 +178,7 @@ fun reverseOnto acc xs =
       else Cons (k, v) (removeAssoc key rest)
 
 -- Yield every element, in order, for `Std.Stream`.
-@pub fun toStream xs =
+@pub(pack) fun toStream xs =
   match xs with
   | [;] -> ()
   | x :: rest -> let ignored = yield x in toStream rest
@@ -188,37 +188,37 @@ fun reverseOnto acc xs =
 use Std.Test (assertEq, assertTrue, assertFalse)
 use Std.Maybe (Maybe)
 
-@test fun appendAndLength u =
+@test fun appendAndLength () =
   let a = assertEq (append [1; 2] [3;]) [1; 2; 3] "append" in
   let b = assertEq (append [;] [1;]) [1;] "append onto nothing" in
   let c = assertEq (length [1; 2; 3]) 3 "length" in
   assertEq (length [;]) 0 "length of nothing"
 
-@test fun mapFilterAndFolds u =
+@test fun mapFilterAndFolds () =
   let a = assertEq (map (\n -> n * 2) [1; 2; 3]) [2; 4; 6] "map" in
   let b = assertEq (filter (\n -> n > 1) [1; 2; 3]) [2; 3] "filter" in
   let c = assertEq (foldl (\acc n -> acc - n) 10 [1; 2]) 7 "foldl" in
   -- The folds differ on a non-commutative operator, which is the point.
   assertEq (foldr (\n acc -> n - acc) 0 [1; 2]) (0 - 1) "foldr"
 
-@test fun reverseAndConcat u =
+@test fun reverseAndConcat () =
   let a = assertEq (reverse [1; 2; 3]) [3; 2; 1] "reverse" in
   let b = assertEq (reverse [;]) [;] "reverse of nothing" in
   assertEq (concat [[1; 2]; [3;]; [;]]) [1; 2; 3] "concat"
 
-@test fun takeAndDropClampToTheEnds u =
+@test fun takeAndDropClampToTheEnds () =
   let a = assertEq (take 2 [1; 2; 3]) [1; 2] "take" in
   let b = assertEq (take 9 [1; 2]) [1; 2] "take more than there is" in
   let c = assertEq (take 0 [1; 2]) [;] "take nothing" in
   let d = assertEq (drop 2 [1; 2; 3]) [3;] "drop" in
   assertEq (drop 9 [1; 2]) [;] "drop more than there is"
 
-@test fun membershipAndRange u =
+@test fun membershipAndRange () =
   let a = assertTrue (elem 2 [1; 2; 3]) "elem" in
   let b = assertFalse (elem 9 [1; 2; 3]) "not elem" in
   let c = assertEq (range 1 4) [1; 2; 3] "range is half-open" in
   assertEq (range 4 1) [;] "an empty range"
 
-@test fun isEmptyAndToStream u =
+@test fun isEmptyAndToStream () =
   let a = assertTrue (isEmpty [;]) "isEmpty" in
   assertFalse (isEmpty [1;]) "not isEmpty"

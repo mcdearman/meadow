@@ -7,51 +7,51 @@
 -- little-/big-endian multi-byte integer reads and writes on top of them.
 
 -- The empty byte array.
-@pub def bytesEmpty = #[]
+@pub(pack) def bytesEmpty = #[]
 
-@pub fun bytesLength b = arrayLen b
+@pub(pack) fun bytesLength b = arrayLen b
 
-@pub fun bytesIsEmpty b = arrayLen b == 0
+@pub(pack) fun bytesIsEmpty b = arrayLen b == 0
 
 -- `Just` the byte at `i`, or `None` if `i` is out of range.
-@pub fun bytesGet b i =
+@pub(pack) fun bytesGet b i =
   if i < 0 then None
   else if i >= arrayLen b then None
   else Just (arrayGet b i)
 
 -- The byte at `i`, or `default` when out of range.
-@pub fun bytesGetOr default b i = arrayGetOr default b i
+@pub(pack) fun bytesGetOr default b i = arrayGetOr default b i
 
 -- Persistently set byte `i` to the low 8 bits of `v`.
-@pub fun bytesSet b i v = arraySet b i (bitAnd v 255)
+@pub(pack) fun bytesSet b i v = arraySet b i (bitAnd v 255)
 
 -- Append the low 8 bits of `v`.
-@pub fun bytesPush b v = arrayPush b (bitAnd v 255)
+@pub(pack) fun bytesPush b v = arrayPush b (bitAnd v 255)
 
-@pub fun bytesPop b = arrayPop b
+@pub(pack) fun bytesPop b = arrayPop b
 
 -- The `[from, to)` sub-array, clamped to bounds.
-@pub fun bytesSlice b from to = arraySlice b from to
+@pub(pack) fun bytesSlice b from to = arraySlice b from to
 
-@pub fun bytesConcat a b = arrayConcat a b
+@pub(pack) fun bytesConcat a b = arrayConcat a b
 
 -- --- multi-byte integer reads (return 0 for bytes past the end) --------------
 
-@pub fun bytesGetU16LE b i =
+@pub(pack) fun bytesGetU16LE b i =
   bitOr (bytesGetOr 0 b i)
         (bytesGetOr 0 b (i + 1) << 8)
 
-@pub fun bytesGetU16BE b i =
+@pub(pack) fun bytesGetU16BE b i =
   bitOr (bytesGetOr 0 b i << 8)
         (bytesGetOr 0 b (i + 1))
 
-@pub fun bytesGetU32LE b i =
+@pub(pack) fun bytesGetU32LE b i =
   bitOr (bitOr (bytesGetOr 0 b i)
                (bytesGetOr 0 b (i + 1) << 8))
         (bitOr (bytesGetOr 0 b (i + 2) << 16)
                (bytesGetOr 0 b (i + 3) << 24))
 
-@pub fun bytesGetU32BE b i =
+@pub(pack) fun bytesGetU32BE b i =
   bitOr (bitOr (bytesGetOr 0 b i << 24)
                (bytesGetOr 0 b (i + 1) << 16))
         (bitOr (bytesGetOr 0 b (i + 2) << 8)
@@ -59,19 +59,19 @@
 
 -- --- multi-byte integer writes (each returns a new byte array) --------------
 
-@pub fun bytesSetU16LE b i v =
+@pub(pack) fun bytesSetU16LE b i v =
   bytesSet (bytesSet b i v) (i + 1) (v >> 8)
 
-@pub fun bytesSetU16BE b i v =
+@pub(pack) fun bytesSetU16BE b i v =
   bytesSet (bytesSet b i (v >> 8)) (i + 1) v
 
-@pub fun bytesSetU32LE b i v =
+@pub(pack) fun bytesSetU32LE b i v =
   bytesSet (bytesSet (bytesSet (bytesSet b i v)
                                (i + 1) (v >> 8))
                      (i + 2) (v >> 16))
            (i + 3) (v >> 24)
 
-@pub fun bytesSetU32BE b i v =
+@pub(pack) fun bytesSetU32BE b i v =
   bytesSet (bytesSet (bytesSet (bytesSet b i (v >> 24))
                                (i + 1) (v >> 16))
                      (i + 2) (v >> 8))
@@ -82,30 +82,30 @@
 use Std.Test (assertEq, assertTrue, assertFalse)
 use Std.Maybe (Maybe)
 
-@test fun lengthAndEmptiness u =
+@test fun lengthAndEmptiness () =
   let a = assertEq (bytesLength bytesEmpty) 0 "empty length" in
   let b = assertTrue (bytesIsEmpty bytesEmpty) "empty is empty" in
   let c = assertEq (bytesLength #[1, 2, 3]) 3 "length" in
   assertFalse (bytesIsEmpty #[1]) "one byte is not empty"
 
-@test fun boundsCheckedAccess u =
+@test fun boundsCheckedAccess () =
   let a = assertEq (bytesGet #[1, 2, 3] 1) (Just 2) "in range" in
   let b = assertEq (bytesGet #[1, 2, 3] 3) None "past the end" in
   let c = assertEq (bytesGet #[1, 2, 3] (0 - 1)) None "before the start" in
   assertEq (bytesGetOr 0 #[1, 2, 3] 9) 0 "getOr past the end"
 
-@test fun pushPopSetAndSlice u =
+@test fun pushPopSetAndSlice () =
   let a = assertEq (bytesPush #[1, 2] 3) #[1, 2, 3] "push" in
   let b = assertEq (bytesPop #[1, 2, 3]) #[1, 2] "pop" in
   let c = assertEq (bytesSet #[1, 2, 3] 1 9) #[1, 9, 3] "set" in
   let d = assertEq (bytesSlice #[1, 2, 3, 4] 1 3) #[2, 3] "slice" in
   assertEq (bytesConcat #[1] #[2]) #[1, 2] "concat"
 
-@test fun bytesSetTruncatesToOneByte u =
+@test fun bytesSetTruncatesToOneByte () =
   -- Only the low 8 bits are stored, which is what makes this a *byte* array.
   assertEq (bytesGetOr 0 (bytesSet #[0] 0 0x1FF) 0) 255 "0x1FF becomes 0xFF"
 
-@test fun multiByteReadsRespectEndianness u =
+@test fun multiByteReadsRespectEndianness () =
   let b = #[0x34, 0x12] in
   let a = assertEq (bytesGetU16LE b 0) 0x1234 "u16 little-endian" in
   let c = assertEq (bytesGetU16BE b 0) 0x3412 "u16 big-endian" in
@@ -113,11 +113,11 @@ use Std.Maybe (Maybe)
   let e = assertEq (bytesGetU32LE d 0) 0x12345678 "u32 little-endian" in
   assertEq (bytesGetU32BE d 0) 0x78563412 "u32 big-endian"
 
-@test fun multiByteReadsPastTheEndAreZero u =
+@test fun multiByteReadsPastTheEndAreZero () =
   -- Documented behaviour: missing bytes read as 0 rather than failing.
   assertEq (bytesGetU32LE #[1] 0) 1 "three bytes missing"
 
-@test fun multiByteWritesRoundTrip u =
+@test fun multiByteWritesRoundTrip () =
   let a = assertEq (bytesGetU16LE (bytesSetU16LE #[0, 0] 0 0x1234) 0) 0x1234 "u16 LE" in
   let b = assertEq (bytesGetU16BE (bytesSetU16BE #[0, 0] 0 0x1234) 0) 0x1234 "u16 BE" in
   let z = #[0, 0, 0, 0] in

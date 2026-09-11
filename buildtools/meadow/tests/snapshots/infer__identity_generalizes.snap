@@ -1,5 +1,5 @@
 ---
-source: tests/infer.rs
+source: meadow/tests/infer.rs
 expression: "schemes(\"def id = \\\\x -> x\\n\")"
 ---
 id : forall a. a -> a

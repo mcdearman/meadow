@@ -101,12 +101,20 @@ pub struct Resolver {
     vars: VarIdGen,
     /// True only while resolving a module-level `Decl` (not nested in an expr).
     toplevel: bool,
-    /// `@pub` bookkeeping. If `any_pub` stays false the unit exports everything
-    /// (the historical default); otherwise only `pub_vars` / `pub_types` — plus
-    /// `@pub use M (…)` re-exports, which also land in these sets.
-    any_pub: bool,
+    /// The visibility of the declaration being declared, so that the places
+    /// that record a name in its module's frame do not each have to be handed
+    /// one. Set by [`Resolver::declare_types`] / [`Resolver::declare_toplevel`].
+    vis: Vis,
+    /// Export bookkeeping. If `any_vis` stays false — no visibility attribute
+    /// anywhere in the unit — everything is exported, which is what a script,
+    /// a REPL line and an unannotated package all want. Otherwise only
+    /// `@pub(pack)` declarations are, plus `@pub(pack) use` re-exports.
+    any_vis: bool,
     pub_vars: std::collections::HashSet<VarId>,
     pub_types: std::collections::HashSet<InternedString>,
+    /// References the HIR will not carry — see [`RefSite`]. Collected per
+    /// module and taken by the driver after each one is resolved.
+    extra_refs: Vec<RefSite>,
     /// `@test` functions, in declaration order — `meadow test` runs these.
     test_vars: Vec<(InternedString, VarId)>,
     /// Active module qualifiers: `Foo` -> its exported value names. Populated by the
@@ -146,8 +154,88 @@ fn peel(d: &ast::LDecl) -> (&[ast::Attr], &ast::LDecl) {
     }
 }
 
-fn has_pub(attrs: &[ast::Attr]) -> bool {
-    attrs.iter().any(|a| &**a.name.value() == "pub")
+/// How far out of its own module a declaration can be seen.
+///
+/// Rust's arrangement, with the package in the place of the crate:
+///
+/// | written            | seen by                                   |
+/// |--------------------|-------------------------------------------|
+/// | nothing            | its own module and the modules inside it  |
+/// | `@pub(super)`      | ...and its parent's subtree               |
+/// | `@pub`             | ...and every module of the package        |
+/// | `@pub(pack)`       | ...and whoever depends on the package     |
+///
+/// So `@pub` is about leaving the *module*, and leaving the *package* is a
+/// separate, louder thing to say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Vis {
+    Private,
+    Super,
+    Package,
+    Exported,
+}
+
+impl Vis {
+    /// Can a declaration in `owner` with this visibility be named from `from`?
+    ///
+    /// "Inside" is by path prefix: `a.b.c` is inside `a.b`, so a private
+    /// declaration is visible to its own module's descendants, and
+    /// `@pub(super)` reaches the parent and everything under it.
+    fn reaches(self, owner: &[InternedString], from: &[InternedString]) -> bool {
+        match self {
+            Vis::Exported | Vis::Package => true,
+            Vis::Super => {
+                let parent = owner.split_last().map(|(_, p)| p).unwrap_or(&[]);
+                from.starts_with(parent)
+            }
+            Vis::Private => from.starts_with(owner),
+        }
+    }
+
+    /// How to say, in a sentence about a module, what this keeps a name to.
+    fn describe_in(self) -> &'static str {
+        match self {
+            Vis::Private => "private to module",
+            Vis::Super => "visible only to the parent of module",
+            Vis::Package => "visible only within the package of module",
+            Vis::Exported => "public in module",
+        }
+    }
+
+    /// The attribute that would let one more layer of the program see it.
+    fn wider(self) -> &'static str {
+        match self {
+            Vis::Private => "@pub",
+            Vis::Super => "@pub",
+            Vis::Package | Vis::Exported => "@pub(pack)",
+        }
+    }
+}
+
+/// A module path as it is written: `Collections.List`, or `the root module`
+/// when there is nothing to write.
+fn dotted_path(path: &[InternedString]) -> String {
+    if path.is_empty() {
+        "the root module".to_string()
+    } else {
+        path.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(".")
+    }
+}
+
+/// The visibility a declaration's attributes ask for, and the span of the
+/// `@pub(…)` argument when it is one this does not understand.
+fn vis_of(attrs: &[ast::Attr]) -> (Vis, Option<(InternedString, Span)>) {
+    let Some(a) = attrs.iter().find(|a| &**a.name.value() == "pub") else {
+        return (Vis::Private, None);
+    };
+    match a.args.first() {
+        None => (Vis::Package, None),
+        Some(arg) => match &**arg.value() {
+            "pack" => (Vis::Exported, None),
+            "super" => (Vis::Super, None),
+            _ => (Vis::Package, Some((*arg.value(), arg.span))),
+        },
+    }
 }
 
 fn has_test(attrs: &[ast::Attr]) -> bool {
@@ -200,19 +288,42 @@ fn bare_ctor(canonical: InternedString) -> InternedString {
     }
 }
 
+/// A name written in the source that the HIR does not keep.
+///
+/// Most references survive resolution: a variable becomes a `VarId` in a
+/// `hir::Expr::Var`, a type becomes a `hir::TypeExpr::Con`. Two do not — the
+/// names listed in a `use`, and the qualifier of a `Expr.Ctor` — because
+/// neither means anything after resolution. An editor still has to know they
+/// are references to the same thing, or a rename would leave them behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameRef {
+    Value(VarId),
+    Type(InternedString),
+    /// A data constructor, by its canonical `Type.Ctor` name.
+    Ctor(InternedString),
+}
+
+/// Where a [`NameRef`] was written.
+#[derive(Debug, Clone, Copy)]
+pub struct RefSite {
+    pub span: Span,
+    pub what: NameRef,
+}
+
 /// One module's own declarations, kept apart from every other module's.
 #[derive(Debug, Default, Clone)]
 struct ModuleFrame {
     /// Top-level bindings, in declaration order.
-    values: Vec<(InternedString, VarId)>,
+    values: Vec<(InternedString, VarId, Vis)>,
     /// Type constructors this module declares: name -> arity.
-    tycons: Vec<(InternedString, usize)>,
+    tycons: Vec<(InternedString, usize, Vis)>,
     /// Data constructors this module declares: bare spelling -> canonical.
-    ctors: Vec<(InternedString, InternedString)>,
+    /// A constructor is as visible as the type that owns it.
+    ctors: Vec<(InternedString, InternedString, Vis)>,
     /// Effects declared here: name -> parameter count.
-    effects: Vec<(InternedString, usize)>,
+    effects: Vec<(InternedString, usize, Vis)>,
     /// Effect operations declared here: operation -> its effect.
-    effect_ops: Vec<(InternedString, InternedString)>,
+    effect_ops: Vec<(InternedString, InternedString, Vis)>,
 }
 
 impl Resolver {
@@ -242,9 +353,11 @@ impl Resolver {
             ids: NodeIdGen::new(),
             vars: VarIdGen::starting_at(var_base),
             toplevel: false,
-            any_pub: false,
+            vis: Vis::Private,
+            any_vis: false,
             pub_vars: std::collections::HashSet::new(),
             pub_types: std::collections::HashSet::new(),
+            extra_refs: Vec::new(),
             test_vars: Vec::new(),
             qualifiers: HashMap::new(),
             errors: Vec::new(),
@@ -290,26 +403,70 @@ impl Resolver {
         self.effects = self.base_effects.clone();
         self.effect_ops = self.base_effect_ops.clone();
         let frame = self.frames.get(path).cloned().unwrap_or_default();
-        self.admit(&frame);
+        self.admit(&frame, None);
     }
 
     /// Make a frame's declarations visible in the current module.
-    fn admit(&mut self, frame: &ModuleFrame) {
-        for (n, a) in &frame.tycons {
-            self.tycons.insert(*n, *a);
+    ///
+    /// `owner` is the module the frame belongs to: `None` for the current
+    /// module's own frame, where visibility does not apply — a declaration is
+    /// always visible where it was written.
+    fn admit(&mut self, frame: &ModuleFrame, owner: Option<&[InternedString]>) {
+        // Copied out first: what follows mutates `self`, and the test only
+        // needs where we are and whether the unit talks about visibility.
+        let here = self.current.clone();
+        let all = !self.any_vis;
+        let ok = |vis: Vis| match owner {
+            None => true,
+            Some(o) => all || vis.reaches(o, &here),
+        };
+        for (n, a, v) in &frame.tycons {
+            if ok(*v) {
+                self.tycons.insert(*n, *a);
+            }
         }
-        for (bare, canonical) in &frame.ctors {
-            self.visible_ctors.insert(*bare, *canonical);
+        for (bare, canonical, v) in &frame.ctors {
+            if ok(*v) {
+                self.visible_ctors.insert(*bare, *canonical);
+            }
         }
-        for (n, a) in &frame.effects {
-            self.effects.insert(*n, *a);
+        for (n, a, v) in &frame.effects {
+            if ok(*v) {
+                self.effects.insert(*n, *a);
+            }
         }
-        for (op, eff) in &frame.effect_ops {
-            self.effect_ops.insert(*op, *eff);
+        for (op, eff, v) in &frame.effect_ops {
+            if ok(*v) {
+                self.effect_ops.insert(*op, *eff);
+            }
         }
-        for (n, id) in &frame.values {
-            self.scope.push((*n, *id));
+        for (n, id, v) in &frame.values {
+            if ok(*v) {
+                self.scope.push((*n, *id));
+            }
         }
+    }
+
+    /// Can this module name a declaration of `owner`'s with visibility `vis`?
+    ///
+    /// A unit that never mentions visibility has none: a package with no
+    /// `@pub` anywhere is a script, a REPL line or a two-file program, and
+    /// making it annotate itself to see across its own files buys nothing.
+    /// It is the same rule the export surface uses -- say nothing and
+    /// everything is public, say anything and only what you marked is.
+    fn sees(&self, vis: Vis, owner: &[InternedString]) -> bool {
+        !self.any_vis || vis.reaches(owner, &self.current)
+    }
+
+    /// Record a reference the HIR will not keep.
+    pub fn note_ref(&mut self, span: Span, what: NameRef) {
+        self.extra_refs.push(RefSite { span, what });
+    }
+
+    /// Take the references collected since the last call — the driver does
+    /// this after each module, which is what pairs them with a file.
+    pub fn take_extra_refs(&mut self) -> Vec<RefSite> {
+        std::mem::take(&mut self.extra_refs)
     }
 
     /// Does this unit contain a module at `path`?
@@ -317,11 +474,18 @@ impl Resolver {
         self.frames.contains_key(path)
     }
 
-    /// A sibling module's top-level values, for `use Pack.Mod`.
+    /// A sibling module's top-level values, for `use Pack.Mod` — the ones this
+    /// module is allowed to see.
     pub fn module_values(&self, path: &[InternedString]) -> HashMap<InternedString, VarId> {
         self.frames
             .get(path)
-            .map(|f| f.values.iter().copied().collect())
+            .map(|f| {
+                f.values
+                    .iter()
+                    .filter(|(_, _, v)| self.sees(*v, path))
+                    .map(|(n, id, _)| (*n, *id))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -330,40 +494,76 @@ impl Resolver {
     /// `names` empty means all of them, which is what a bare `use Pack.Mod`
     /// asks for. A selected name may be a value, a type (whose constructors
     /// come with it) or a constructor.
-    pub fn use_module(&mut self, path: &[InternedString], names: &[InternedString]) {
+    ///
+    /// A declaration the asking module is not allowed to see is skipped when
+    /// the whole module was asked for, and an error when it was named: saying
+    /// `use M (secret)` and silently getting nothing would be reported later
+    /// as `undefined variable`, which is true and unhelpful.
+    pub fn use_module(&mut self, path: &[InternedString], names: &[ast::Ident]) {
         let Some(frame) = self.frames.get(path).cloned() else {
             return;
         };
         if names.is_empty() {
-            self.admit(&frame);
+            self.admit(&frame, Some(path));
             return;
         }
+        let here = self.current.clone();
+        let all = !self.any_vis;
         for want in names {
-            for (n, id) in &frame.values {
-                if n == want {
+            let name = *want.value();
+            let mut found = false;
+            // What the name *is* here, for the error: a name invisible in one
+            // namespace may be perfectly visible in another.
+            let mut hidden: Option<Vis> = None;
+            let note = |vis: Vis, found: &mut bool, hidden: &mut Option<Vis>| {
+                if all || vis.reaches(path, &here) {
+                    *found = true;
+                    true
+                } else {
+                    *hidden = Some(hidden.map_or(vis, |h: Vis| h.max(vis)));
+                    false
+                }
+            };
+            let mut sites: Vec<RefSite> = Vec::new();
+            for (n, id, v) in &frame.values {
+                if *n == name && note(*v, &mut found, &mut hidden) {
                     self.scope.push((*n, *id));
+                    sites.push(RefSite { span: want.span, what: NameRef::Value(*id) });
                 }
             }
-            for (n, a) in &frame.tycons {
-                if n == want {
+            for (n, a, v) in &frame.tycons {
+                if *n == name && note(*v, &mut found, &mut hidden) {
                     self.tycons.insert(*n, *a);
                     // Naming a type brings its constructors, as everywhere else.
                     self.use_type_ctors(*n);
+                    sites.push(RefSite { span: want.span, what: NameRef::Type(*n) });
                 }
             }
-            for (n, a) in &frame.effects {
-                if n == want {
+            for (n, a, v) in &frame.effects {
+                if *n == name && note(*v, &mut found, &mut hidden) {
                     self.effects.insert(*n, *a);
                 }
             }
-            for (op, eff) in &frame.effect_ops {
-                if op == want {
+            for (op, eff, v) in &frame.effect_ops {
+                if *op == name && note(*v, &mut found, &mut hidden) {
                     self.effect_ops.insert(*op, *eff);
                 }
             }
-            for (bare, canonical) in &frame.ctors {
-                if bare == want {
+            for (bare, canonical, v) in &frame.ctors {
+                if *bare == name && note(*v, &mut found, &mut hidden) {
                     self.visible_ctors.insert(*bare, *canonical);
+                    sites.push(RefSite { span: want.span, what: NameRef::Ctor(*canonical) });
+                }
+            }
+            self.extra_refs.extend(sites);
+            if !found {
+                if let Some(vis) = hidden {
+                    let module = dotted_path(path);
+                    self.error(
+                        format!("`{name}` is {} `{module}`", vis.describe_in()),
+                        format!("mark it `{}` to use it here", vis.wider()),
+                        want.span,
+                    );
                 }
             }
         }
@@ -490,9 +690,28 @@ impl Resolver {
     /// Pre-bind the top-level names of a module so definitions (in this module or a
     /// sibling module of the same package) can refer to each other regardless of
     /// order. Call once per module before resolving any bodies.
+    /// Read a declaration's visibility off its attributes and make it the one
+    /// the recording machinery uses, reporting an argument that means nothing.
+    fn set_decl_vis(&mut self, attrs: &[ast::Attr]) -> Vis {
+        let (vis, bad) = vis_of(attrs);
+        if let Some((arg, span)) = bad {
+            self.error(
+                format!("unknown visibility `@pub({arg})`"),
+                "write `@pub`, `@pub(pack)` or `@pub(super)`".to_string(),
+                span,
+            );
+        }
+        if vis != Vis::Private {
+            self.any_vis = true;
+        }
+        self.vis = vis;
+        vis
+    }
+
     pub fn declare_toplevel(&mut self, decls: &[ast::LDecl]) {
         for d in decls {
-            let (_, base) = peel(d);
+            let (attrs, base) = peel(d);
+            self.set_decl_vis(attrs);
             if let ast::Decl::Bind(b) = base.value() {
                 match b {
                     ast::Bind::Fun(name, ..) => {
@@ -509,7 +728,8 @@ impl Resolver {
     /// expressions can be checked. Call before [`resolve_module`].
     pub fn declare_types(&mut self, decls: &[ast::LDecl]) {
         for d in decls {
-            let (_, base) = peel(d);
+            let (attrs, base) = peel(d);
+            self.set_decl_vis(attrs);
             match base.value() {
                 ast::Decl::Data(dd) => {
                     self.declare_tycon(*dd.name.value(), dd.params.len(), dd.name.span);
@@ -548,7 +768,8 @@ impl Resolver {
                     // an effect name is also a type constructor of its parameters
                     self.declare_tycon(name, ed.params.len(), ed.name.span);
                     self.effects.insert(name, ed.params.len());
-                    self.frame().effects.push((name, ed.params.len()));
+                    let vis = self.vis;
+                    self.frame().effects.push((name, ed.params.len(), vis));
                     for op_field in &ed.ops {
                         let op = *op_field.name.value();
                         let already = self.predeclared.contains_key(&(self.current.clone(), op));
@@ -561,7 +782,7 @@ impl Resolver {
                         }
                         // ops are top-level values (functions) — predeclare them
                         let id = self.predeclare(op);
-                        self.frame().effect_ops.push((op, name));
+                        self.frame().effect_ops.push((op, name, vis));
                         self.effect_op_ids.insert(id, (name, op));
                     }
                 }
@@ -635,7 +856,8 @@ impl Resolver {
         // unique across a package (a constructor's canonical name is built
         // from one, so two `Foo`s would collide downstream), and the duplicate
         // check needs to see every module's.
-        self.frame().tycons.push((name, arity));
+        let vis = self.vis;
+        self.frame().tycons.push((name, arity, vis));
         if self.tycons.insert(name, arity).is_some() && !BUILTIN_TYCONS.contains(&&*name) {
             self.error(
                 format!("type `{name}` is already defined"),
@@ -673,7 +895,8 @@ impl Resolver {
             );
         }
         self.ctors_of.entry(owner).or_default().push(name);
-        self.frame().ctors.push((name, canonical));
+        let vis = self.vis;
+        self.frame().ctors.push((name, canonical, vis));
         self.visible_ctors.insert(name, canonical);
     }
 
@@ -734,6 +957,7 @@ impl Resolver {
     /// this module's frame rather than into the shared scope. A sibling sees
     /// it only through a `use`.
     fn predeclare(&mut self, name: InternedString) -> VarId {
+        let vis = self.vis;
         let key = (self.current.clone(), name);
         if let Some(&id) = self.predeclared.get(&key) {
             return id;
@@ -745,7 +969,7 @@ impl Resolver {
             .entry(self.current.clone())
             .or_default()
             .values
-            .push((name, id));
+            .push((name, id, vis));
         id
     }
 
@@ -791,14 +1015,12 @@ impl Resolver {
 
     fn resolve_decl(&mut self, decl: &ast::LDecl) -> hir::LDecl {
         let (attrs, base) = peel(decl);
-        let is_pub = has_pub(attrs);
-        if is_pub {
-            self.any_pub = true;
-        }
-        // `@pub use M (a, b, c)` — re-export names already visible in the (flat)
-        // package scope.
+        let vis = self.set_decl_vis(attrs);
+        // `@pub(pack) use M (a, b, c)` — re-export names this module can see.
+        // Only the package's own surface is re-exportable: a `use` brings a
+        // name *here*, and a sibling asks this module for it by name anyway.
         if let ast::Decl::Use(u) = base.value() {
-            if is_pub {
+            if vis == Vis::Exported {
                 for n in &u.names {
                     let name = *n.value();
                     if let Some(id) = self.lookup(name) {
@@ -817,7 +1039,7 @@ impl Resolver {
         }
 
         let hir = self.resolve_bare_decl(base);
-        if is_pub {
+        if vis == Vis::Exported {
             self.mark_pub(&hir);
         }
         if has_test(attrs) {
@@ -845,7 +1067,7 @@ impl Resolver {
         }
     }
 
-    /// Record a `@pub` declaration's names in the export sets.
+    /// Record a `@pub(pack)` declaration's names in the export sets.
     fn mark_pub(&mut self, decl: &hir::LDecl) {
         match decl.value() {
             hir::Decl::Bind(hir::Bind::Fun(name, ..)) => {
@@ -872,10 +1094,10 @@ impl Resolver {
         }
     }
 
-    /// `true` if any `@pub` was seen — the unit then exports only its `@pub`
-    /// declarations (and `@pub use` re-exports) instead of everything.
+    /// `true` if the unit said anything about visibility at all — it then
+    /// exports only what is marked `@pub(pack)` instead of everything.
     pub fn has_pub_markers(&self) -> bool {
-        self.any_pub
+        self.any_vis
     }
 
     pub fn is_pub_var(&self, id: VarId) -> bool {
@@ -1193,11 +1415,15 @@ impl Resolver {
     /// a module merely happens to contain them, and the qualified form exists
     /// precisely so a constructor can be named by its type.
     fn qualified_type_ctor(
-        &self,
+        &mut self,
         q: &ast::Ident,
         name: InternedString,
     ) -> Option<InternedString> {
-        self.resolve_qualified_ctor(*q.value(), name)
+        let canonical = self.resolve_qualified_ctor(*q.value(), name)?;
+        // The qualifier *is* the type, written out — so it is a reference to
+        // it, and a rename of the type has to rewrite it.
+        self.note_ref(q.span, NameRef::Type(*q.value()));
+        Some(canonical)
     }
 
     fn check_qualifier(&mut self, q: &ast::Ident) {

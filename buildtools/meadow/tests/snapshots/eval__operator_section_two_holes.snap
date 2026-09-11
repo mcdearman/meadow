@@ -1,5 +1,5 @@
 ---
-source: tests/eval.rs
+source: meadow/tests/eval.rs
 expression: "eval_expr(\"(_ + _) 3 4\")"
 ---
 7

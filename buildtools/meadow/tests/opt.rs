@@ -438,7 +438,7 @@ fn a_folded_operation_still_fails_where_it_should() {
 #[test]
 fn folding_and_fusing_survive_a_resumption() {
     is(
-        "effect Tick { tick : Unit -> Int }\n\
+        "effect Tick { tick : () -> Int }\n\
          fun counting u =\n\
          \x20 handle\n\
          \x20   let a = tick () in\n\

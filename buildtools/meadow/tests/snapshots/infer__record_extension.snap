@@ -1,5 +1,5 @@
 ---
-source: tests/infer.rs
+source: meadow/tests/infer.rs
 expression: "schemes(\"fun withAge r = { age = 0 | r }\\n\")"
 ---
 withAge : forall r. { | r } -> { age : Int | r }

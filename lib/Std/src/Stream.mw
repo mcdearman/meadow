@@ -8,7 +8,7 @@
 --   use Std.Stream (yield, toList, take)
 --
 --   fun counter n = if n <= 0 then () else let ignored = yield n in counter (n - 1)
---   def main = toList (\u -> counter 3)   -- [3; 2; 1]
+--   def main = toList (\() -> counter 3)   -- [3; 2; 1]
 --
 -- The consumers here are *deep* handlers, so a `yield` from inside a nested call
 -- reaches them too. They are also one-shot: each resumes `k` at most once, which
@@ -17,13 +17,13 @@
 -- The effect itself lives in `Std.Yield`, which has to be compiled before the
 -- collections so their `toStream` can perform it. Re-exported here, so `yield`
 -- and the consumers arrive together.
-@pub use Std.Yield (yield)
+@pub(pack) use Std.Yield (yield)
 use Std.Collections.Vector as V
 
 -- --- consuming ----------------------------------------------------------------
 
 -- Every yielded value, in order.
-@pub fun toList producer =
+@pub(pack) fun toList producer =
   handle producer () with {
     yield x k -> x :: k (),
     return r -> [;]
@@ -32,7 +32,7 @@ use Std.Collections.Vector as V
 -- Every yielded value, as a `Vector` -- the default sequence, so this is usually
 -- the one you want. Built with `pushBack` rather than by reversing a list, so it
 -- costs one amortised push per value.
-@pub fun toVec producer =
+@pub(pack) fun toVec producer =
   handle producer () with {
     yield x k -> \acc -> (k ()) (V.pushBack acc x),
     return r -> \acc -> acc
@@ -41,22 +41,22 @@ use Std.Collections.Vector as V
 -- Run `producer`, calling `f` on each value and discarding the results. The
 -- point of a stream: nothing is collected, so this is constant space in the
 -- number of values (the recursion still nests).
-@pub fun forEach f producer =
+@pub(pack) fun forEach f producer =
   handle producer () with {
     yield x k -> let ignored = f x in k (),
     return r -> ()
   }
 
 -- Left fold over the yielded values.
-@pub fun fold f acc producer =
+@pub(pack) fun fold f acc producer =
   handle producer () with {
     yield x k -> \a -> (k ()) (f a x),
     return r -> \a -> a
   } acc
 
-@pub fun count producer = fold (\n x -> n + 1) 0 producer
+@pub(pack) fun count producer = fold (\n x -> n + 1) 0 producer
 
-@pub fun sum producer = fold (\n x -> n + x) 0 producer
+@pub(pack) fun sum producer = fold (\n x -> n + x) 0 producer
 
 -- --- limiting -----------------------------------------------------------------
 --
@@ -64,39 +64,39 @@ use Std.Collections.Vector as V
 -- producer. That is the part a lazy list gives you for free and an eager
 -- language cannot do without either laziness or an effect.
 
-@pub fun take n producer =
+@pub(pack) fun take n producer =
   handle producer () with {
     yield x k -> \i -> if i <= 0 then [;] else x :: (k ()) (i - 1),
     return r -> \i -> [;]
   } n
 
-@pub fun takeWhile keep producer =
+@pub(pack) fun takeWhile keep producer =
   handle producer () with {
     yield x k -> if keep x then x :: k () else [;],
     return r -> [;]
   }
 
 -- The first yielded value, if there is one.
-@pub fun first producer =
+@pub(pack) fun first producer =
   handle producer () with {
     yield x k -> Just x,
     return r -> None
   }
 
 -- Whether any yielded value satisfies `pred`. Stops at the first one that does.
-@pub fun any pred producer =
+@pub(pack) fun any pred producer =
   handle producer () with {
     yield x k -> if pred x then True else k (),
     return r -> False
   }
 
-@pub fun all pred producer =
+@pub(pack) fun all pred producer =
   handle producer () with {
     yield x k -> if pred x then k () else False,
     return r -> True
   }
 
-@pub fun find pred producer =
+@pub(pack) fun find pred producer =
   handle producer () with {
     yield x k -> if pred x then Just x else k (),
     return r -> None
@@ -107,13 +107,13 @@ use Std.Collections.Vector as V
 -- These re-yield, so they are producers themselves and compose: the result of
 -- `map f p` is something `toList`, `take` or another `map` can consume.
 
-@pub fun map f producer =
+@pub(pack) fun map f producer =
   handle producer () with {
     yield x k -> let ignored = yield (f x) in k (),
     return r -> ()
   }
 
-@pub fun filter keep producer =
+@pub(pack) fun filter keep producer =
   handle producer () with {
     yield x k -> let ignored = if keep x then yield x else () in k (),
     return r -> ()
@@ -125,22 +125,22 @@ use Std.Collections.Vector as V
 -- the other way round; these are here so a producer can be built without naming
 -- the collection's module.
 
-@pub fun ofList xs =
+@pub(pack) fun ofList xs =
   match xs with
   | [;] -> ()
   | x :: rest -> let ignored = yield x in ofList rest
 
-@pub fun ofVec v = V.forEach (\x -> yield x) v
+@pub(pack) fun ofVec v = V.forEach (\x -> yield x) v
 
 -- `lo` up to but not including `hi`.
-@pub fun range lo hi =
+@pub(pack) fun range lo hi =
   if lo >= hi then () else let ignored = yield lo in range (lo + 1) hi
 
-@pub fun repeat n x =
+@pub(pack) fun repeat n x =
   if n <= 0 then () else let ignored = yield x in repeat (n - 1) x
 
 -- Yield `seed`, `f seed`, `f (f seed)`, … `n` times.
-@pub fun iterate n f seed =
+@pub(pack) fun iterate n f seed =
   if n <= 0
   then ()
   else
@@ -158,20 +158,20 @@ use Std.Maybe (Maybe)
 
 fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n - 1)
 
-@test fun collectingWhatWasYielded u =
+@test fun collectingWhatWasYielded () =
   let a = assertEq (toList (\u2 -> countdown 3)) [3; 2; 1] "toList" in
   let b = assertEq (V.toList (toVec (\u2 -> countdown 3))) [3; 2; 1] "toVec" in
   let c = assertEq (toList (\u2 -> ())) [;] "a producer that yields nothing" in
   assertTrue (V.isEmpty (toVec (\u2 -> ()))) "toVec of nothing"
 
-@test fun foldingAndCounting u =
+@test fun foldingAndCounting () =
   let a = assertEq (fold (\acc x -> acc + x) 0 (\u2 -> range 1 5)) 10 "fold" in
   let b = assertEq (sum (\u2 -> range 1 5)) 10 "sum" in
   let c = assertEq (count (\u2 -> range 0 7)) 7 "count" in
   -- A left fold, so a non-commutative operator shows the order.
   assertEq (fold (\acc x -> acc - x) 10 (\u2 -> ofList [1; 2])) 7 "fold is left to right"
 
-@test fun takeStopsTheProducerEarly u =
+@test fun takeStopsTheProducerEarly () =
   -- The handler simply does not resume, which unwinds the producer. Without
   -- that this would count to a million.
   let a = assertEq (take 3 (\u2 -> range 0 1000000)) [0; 1; 2] "take" in
@@ -179,7 +179,7 @@ fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n -
   let c = assertEq (take 9 (\u2 -> range 0 2)) [0; 1] "take more than is yielded" in
   assertEq (takeWhile (\x -> x < 3) (\u2 -> range 0 1000000)) [0; 1; 2] "takeWhile"
 
-@test fun searchingAlsoStopsEarly u =
+@test fun searchingAlsoStopsEarly () =
   let a = assertEq (first (\u2 -> range 5 1000000)) (Just 5) "first" in
   let b = assertEq (first (\u2 -> ())) None "first of nothing" in
   let c = assertEq (find (\x -> x > 2) (\u2 -> range 0 1000000)) (Just 3) "find" in
@@ -188,7 +188,7 @@ fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n -
   let f = assertTrue (all (\x -> x < 5) (\u2 -> range 0 5)) "all" in
   assertFalse (all (\x -> x < 3) (\u2 -> range 0 1000000)) "all stops at the first failure"
 
-@test fun mapAndFilterAreProducersThemselves u =
+@test fun mapAndFilterAreProducersThemselves () =
   let a = assertEq (toList (\u2 -> map (\x -> x * 2) (\u3 -> range 0 3))) [0; 2; 4] "map" in
   let b = assertEq (toList (\u2 -> filter (\x -> x % 2 == 0) (\u3 -> range 0 6))) [0; 2; 4] "filter" in
   -- The interesting part: one composes onto the other.
@@ -197,7 +197,7 @@ fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n -
     [0; 4; 8]
     "map over filter"
 
-@test fun theProducers u =
+@test fun theProducers () =
   let a = assertEq (toList (\u2 -> ofList [1; 2; 3])) [1; 2; 3] "ofList" in
   let b = assertEq (toList (\u2 -> ofVec [1, 2, 3])) [1; 2; 3] "ofVec" in
   let c = assertEq (toList (\u2 -> range 0 3)) [0; 1; 2] "range" in
@@ -205,13 +205,13 @@ fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n -
   let e = assertEq (toList (\u2 -> repeat 3 "x")) ["x"; "x"; "x"] "repeat" in
   assertEq (toList (\u2 -> iterate 4 (\n -> n * 2) 1)) [1; 2; 4; 8] "iterate"
 
-@test fun forEachVisitsEveryValue u =
+@test fun forEachVisitsEveryValue () =
   -- `forEach` collects nothing, so count the visits with `State`.
   assertEq
     (execState 0 (\u2 -> forEach (\x -> modify (\n -> n + x)) (\u3 -> range 1 5)))
     10
     "forEach saw every value"
 
-@test fun collectionsConvertBackAndForth u =
+@test fun collectionsConvertBackAndForth () =
   let a = assertEq (toList (\u2 -> V.toStream [1, 2, 3])) [1; 2; 3] "Vector.toStream" in
   assertEq (V.toList (toVec (\u2 -> ofList [1; 2; 3]))) [1; 2; 3] "list to stream to vector"

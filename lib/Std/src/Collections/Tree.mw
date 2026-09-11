@@ -7,23 +7,23 @@
 use Std.Int (max)
 use Std.Collections.List as List (append, foldl)
 
-@pub data Tree a = Leaf | Node (Tree a) a (Tree a)
+@pub(pack) data Tree a = Leaf | Node (Tree a) a (Tree a)
 
-@pub def empty = Leaf
+@pub(pack) def empty = Leaf
 
-@pub fun null t = match t with | Leaf -> True | Node l x r -> False
+@pub(pack) fun null t = match t with | Leaf -> True | Node l x r -> False
 
-@pub fun size t =
+@pub(pack) fun size t =
   match t with
   | Leaf -> 0
   | Node l x r -> 1 + size l + size r
 
-@pub fun depth t =
+@pub(pack) fun depth t =
   match t with
   | Leaf -> 0
   | Node l x r -> 1 + max (depth l) (depth r)
 
-@pub fun insert x t =
+@pub(pack) fun insert x t =
   match t with
   | Leaf -> Node Leaf x Leaf
   | Node l y r ->
@@ -31,7 +31,7 @@ use Std.Collections.List as List (append, foldl)
       else if y < x then Node l y (insert x r)
       else t
 
-@pub fun member x t =
+@pub(pack) fun member x t =
   match t with
   | Leaf -> False
   | Node l y r ->
@@ -39,12 +39,12 @@ use Std.Collections.List as List (append, foldl)
       else if y < x then member x r
       else True
 
-@pub fun minElem t =
+@pub(pack) fun minElem t =
   match t with
   | Leaf -> None
   | Node l x r -> if null l then Just x else minElem l
 
-@pub fun maxElem t =
+@pub(pack) fun maxElem t =
   match t with
   | Leaf -> None
   | Node l x r -> if null r then Just x else maxElem r
@@ -65,7 +65,7 @@ fun removeRoot l r =
   | (ll, Leaf) -> ll
   | (ll, rr) -> spliceMin ll rr
 
-@pub fun delete x t =
+@pub(pack) fun delete x t =
   match t with
   | Leaf -> Leaf
   | Node l y r ->
@@ -73,25 +73,25 @@ fun removeRoot l r =
       else if y < x then Node l y (delete x r)
       else removeRoot l r
 
-@pub fun toList t =
+@pub(pack) fun toList t =
   match t with
   | Leaf -> Nil
   | Node l x r -> append (toList l) (Cons x (toList r))
 
-@pub fun fromList xs = foldl (\acc x -> insert x acc) empty xs
+@pub(pack) fun fromList xs = foldl (\acc x -> insert x acc) empty xs
 
-@pub fun foldr f acc t =
+@pub(pack) fun foldr f acc t =
   match t with
   | Leaf -> acc
   | Node l x r -> foldr f (f x (foldr f acc r)) l
 
-@pub fun map f t =
+@pub(pack) fun map f t =
   match t with
   | Leaf -> Leaf
   | Node l x r -> Node (map f l) (f x) (map f r)
 
 -- Yield every element in order, for `Std.Stream`.
-@pub fun toStream t = List.toStream (toList t)
+@pub(pack) fun toStream t = List.toStream (toList t)
 
 -- --- tests -------------------------------------------------------------------
 
@@ -100,34 +100,34 @@ use Std.Maybe (Maybe)
 
 def sample = fromList [5; 3; 8; 1]
 
-@test fun insertAndMember u =
+@test fun insertAndMember () =
   let a = assertTrue (member 5 sample) "member of an inserted key" in
   let b = assertFalse (member 9 sample) "member of a missing key" in
   assertFalse (member 1 empty) "nothing is in the empty tree"
 
-@test fun sizeCountsDistinctKeys u =
+@test fun sizeCountsDistinctKeys () =
   let a = assertEq (size sample) 4 "size" in
   let b = assertEq (size empty) 0 "size of empty" in
   -- Re-inserting an existing key is a no-op, not a duplicate.
   assertEq (size (insert 5 sample)) 4 "re-insert"
 
-@test fun toListIsSorted u =
+@test fun toListIsSorted () =
   let a = assertEq (toList sample) [1; 3; 5; 8] "in order regardless of insertion order" in
   assertEq (toList empty) [;] "empty"
 
-@test fun extremes u =
+@test fun extremes () =
   let a = assertEq (minElem sample) (Just 1) "minElem" in
   let b = assertEq (maxElem sample) (Just 8) "maxElem" in
   assertEq (minElem empty) None "minElem of empty"
 
-@test fun deleteRemovesOnlyItsKey u =
+@test fun deleteRemovesOnlyItsKey () =
   let t = delete 5 sample in
   let a = assertFalse (member 5 t) "deleted" in
   let b = assertTrue (member 3 t) "the others survive" in
   let c = assertEq (size t) 3 "size drops by one" in
   assertEq (toList (delete 9 sample)) (toList sample) "deleting a missing key changes nothing"
 
-@test fun nullAndDepth u =
+@test fun nullAndDepth () =
   let a = assertTrue (null empty) "null" in
   let b = assertFalse (null sample) "not null" in
   assertEq (depth empty) 0 "depth of empty"

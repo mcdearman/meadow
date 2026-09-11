@@ -1,5 +1,5 @@
 ---
-source: tests/array.rs
+source: meadow/tests/array.rs
 expression: "eval_expr(\"arrayPop #[]\")"
 ---
 runtime error: arrayPop: empty array

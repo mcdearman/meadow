@@ -1,5 +1,5 @@
 //! Multi-package builds: `meadow.toml` manifests, a local path dependency, and
-//! `@pub` gating between packages.
+//! `@pub(pack)` gating between packages.
 
 use meadow::{package::Manifest, pipeline};
 use meadow_eval as eval;
@@ -34,7 +34,7 @@ fn builds_app_against_a_path_dependency() {
 
 #[test]
 fn private_names_do_not_cross_package_boundaries() {
-    // `util` exports `double` / `scale` (both `@pub`) but not the plain `secret`.
+    // `util` exports `double` / `scale` (both `@pub(pack)`) but not `secret`.
     let out = pipeline::build(Path::new(&format!("{WORKSPACE}/util")), meadow::Options::debug());
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     let linked = out.linked.unwrap();
@@ -50,7 +50,7 @@ fn private_names_do_not_cross_package_boundaries() {
 
 #[test]
 fn without_pub_everything_is_still_exported() {
-    // Back-compat: a unit with no `@pub` anywhere exports every top-level binding.
+    // A unit that never mentions visibility exports every top-level binding.
     let (cp, _) = pipeline::compile_str("m", "fun a x = x\nfun b y = y\ndef c = 1\n");
     let mut names: Vec<_> = cp.exports.iter().map(|e| e.name.to_string()).collect();
     names.sort();

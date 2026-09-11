@@ -16,8 +16,8 @@
 -- With `withInput` it reads from a list you supply, which is what makes an
 -- interactive program testable:
 --
---   @test fun greets u =
---     assertEq (withInput ["ada"] (\u -> prompt "name: ")) (Just "ada") "reads"
+--   @test fun greets () =
+--     assertEq (withInput ["ada"] (\() -> prompt "name: ")) (Just "ada") "reads"
 --
 -- `readLine` answers `None` at end of input -- a closed pipe, or Ctrl-D at a
 -- terminal. That is not an error, so a loop ends by pattern-matching it rather
@@ -28,25 +28,25 @@ use Std.Test (assertEq)
 use Std.String as S
 use Std.Collections.List as L
 
-@pub effect Console {
+@pub(pack) effect Console {
   -- The next line, without its line terminator. `None` at end of input.
-  readLine : Unit -> Maybe String,
+  readLine : () -> Maybe String,
 }
 
 -- --- reading ------------------------------------------------------------------
 
 -- Write `message` with no trailing newline, then read a line.
-@pub fun prompt message =
+@pub(pack) fun prompt message =
   let _ = print message in
   readLine ()
 
 -- The next line, or `fallback` at end of input.
-@pub fun readLineOr fallback = unwrapOr fallback (readLine ())
+@pub(pack) fun readLineOr fallback = unwrapOr fallback (readLine ())
 
 -- The next line with surrounding whitespace removed, which is almost always what
 -- you want from a person typing: a stray space before `rock` should not be a
 -- different answer.
-@pub fun readWord () =
+@pub(pack) fun readWord () =
   match readLine () with
   | None -> None
   | Just line -> Just (S.trim line)
@@ -54,7 +54,7 @@ use Std.Collections.List as L
 -- Keep asking until the answer parses. `parse` returns `Maybe b`; a `None` is
 -- reported with `retry` and the question is put again. Ends as `None` only if
 -- input runs out, so a piped-in file cannot spin forever.
-@pub fun promptUntil message retry parse =
+@pub(pack) fun promptUntil message retry parse =
   match prompt message with
   | None -> None
   | Just line ->
@@ -65,7 +65,7 @@ use Std.Collections.List as L
           promptUntil message retry parse
 
 -- Every remaining line, in order.
-@pub fun readAll () = L.reverse (readAllLoop [;])
+@pub(pack) fun readAll () = L.reverse (readAllLoop [;])
 
 fun readAllLoop acc =
   match readLine () with
@@ -76,10 +76,10 @@ fun readAllLoop acc =
 
 -- Run `body` with `lines` as the input, so nothing touches the terminal. Once
 -- the list is exhausted every `readLine` answers `None`.
-@pub fun withInput lines body =
+@pub(pack) fun withInput lines body =
   let feed =
     handle body () with {
-      readLine u k -> \remaining ->
+      readLine () k -> \remaining ->
         match remaining with
         | [;] -> (k None) [;]
         | line :: rest -> (k (Just line)) rest,
@@ -93,36 +93,36 @@ fun readAllLoop acc =
 -- would block the suite waiting for someone to type, which is the reason input
 -- is an effect at all.
 
-@test fun readsLinesInOrder u =
-  let got = withInput ["one"; "two"] (\u -> (readLine (), readLine ())) in
+@test fun readsLinesInOrder () =
+  let got = withInput ["one"; "two"] (\() -> (readLine (), readLine ())) in
   assertEq got (Just "one", Just "two") "two lines, in order"
 
-@test fun endOfInputIsNoneNotAnError u =
-  let got = withInput ["only";] (\u -> (readLine (), readLine (), readLine ())) in
+@test fun endOfInputIsNoneNotAnError () =
+  let got = withInput ["only";] (\() -> (readLine (), readLine (), readLine ())) in
   assertEq got (Just "only", None, None) "None once the input runs out"
 
-@test fun emptyInputReadsNothing u =
-  assertEq (withInput [;] (\u -> readLine ())) None "nothing to read"
+@test fun emptyInputReadsNothing () =
+  assertEq (withInput [;] (\() -> readLine ())) None "nothing to read"
 
-@test fun readLineOrSubstitutesAtEndOfInput u =
-  let got = withInput ["here";] (\u -> (readLineOr "gone", readLineOr "gone")) in
+@test fun readLineOrSubstitutesAtEndOfInput () =
+  let got = withInput ["here";] (\() -> (readLineOr "gone", readLineOr "gone")) in
   assertEq got ("here", "gone") "the fallback only applies at the end"
 
-@test fun readWordTrimsSurroundingSpace u =
+@test fun readWordTrimsSurroundingSpace () =
   -- A person typing `rock ` should not give a different answer from `rock`.
-  assertEq (withInput ["  rock  ";] (\u -> readWord ())) (Just "rock") "trimmed"
+  assertEq (withInput ["  rock  ";] (\() -> readWord ())) (Just "rock") "trimmed"
 
-@test fun readAllCollectsTheRest u =
-  let got = withInput ["a"; "b"; "c"] (\u -> (readLine (), readAll ())) in
+@test fun readAllCollectsTheRest () =
+  let got = withInput ["a"; "b"; "c"] (\() -> (readLine (), readAll ())) in
   assertEq got (Just "a", ["b"; "c"]) "the first line, then the rest"
 
-@test fun promptUntilRetriesUntilItParses u =
+@test fun promptUntilRetriesUntilItParses () =
   let parse = \s -> match s with | "yes" -> Just True | _ -> None in
-  let got = withInput ["no"; "maybe"; "yes"] (\u -> promptUntil "?" "again" parse) in
+  let got = withInput ["no"; "maybe"; "yes"] (\() -> promptUntil "?" "again" parse) in
   assertEq got (Just True) "keeps asking past the answers that do not parse"
 
-@test fun promptUntilGivesUpAtEndOfInput u =
+@test fun promptUntilGivesUpAtEndOfInput () =
   -- Otherwise a piped-in file that never satisfies `parse` would spin forever.
   let parse = \s -> match s with | "yes" -> Just True | _ -> None in
-  let got = withInput ["no"; "no"] (\u -> promptUntil "?" "again" parse) in
+  let got = withInput ["no"; "no"] (\() -> promptUntil "?" "again" parse) in
   assertEq got None "runs out rather than looping"

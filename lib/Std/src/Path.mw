@@ -15,55 +15,55 @@ use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 use Std.Maybe (Maybe, Just, None)
 
-@pub def separator = "/"
+@pub(pack) def separator = "/"
 
-@pub fun isSeparator b = b == 47 or b == 92
+@pub(pack) fun isSeparator b = b == 47 or b == 92
 
 -- --- joining ------------------------------------------------------------------
 
 -- `join "a" "b"` is `"a/b"`. An absolute `b` wins outright, as it does in Rust's
 -- `Path::join` -- joining onto it would silently produce a path nobody meant.
-@pub fun join a b =
+@pub(pack) fun join a b =
   if S.isEmpty a then b
   else if S.isEmpty b then a
   else if isAbsolute b then b
   else if endsWithSeparator a then S.concat a b
   else S.concatAll [a, separator, b]
 
-@pub fun joinAll parts = V.foldl (\acc p -> join acc p) "" parts
+@pub(pack) fun joinAll parts = V.foldl (\acc p -> join acc p) "" parts
 
 -- --- splitting ----------------------------------------------------------------
 
 -- Everything before the final separator: `parent "a/b/c"` is `"a/b"`. `None` when
 -- there is nothing above -- a bare name, or the root itself.
-@pub fun parent p =
+@pub(pack) fun parent p =
   let n = lastSeparator p in
   if n < 0 then None
   else if n == 0 then (if S.byteLength p == 1 then None else Just separator)
   else Just (S.slice p 0 n)
 
 -- The final component: `fileName "a/b/c.txt"` is `"c.txt"`.
-@pub fun fileName p =
+@pub(pack) fun fileName p =
   let n = lastSeparator p in
   if n < 0 then p else S.drop p (n + 1)
 
 -- The final component without its extension.
-@pub fun fileStem p =
+@pub(pack) fun fileStem p =
   let name = fileName p in
   let d = lastDot name in
   if d <= 0 then name else S.slice name 0 d
 
 -- The extension, without the dot, or `""` when there is none. A leading dot does
 -- not count -- `.gitignore` has no extension, it is a name.
-@pub fun extension p =
+@pub(pack) fun extension p =
   let name = fileName p in
   let d = lastDot name in
   if d <= 0 then "" else S.drop name (d + 1)
 
-@pub fun hasExtension p = not (S.isEmpty (extension p))
+@pub(pack) fun hasExtension p = not (S.isEmpty (extension p))
 
 -- Replace the extension (given without a dot); an empty `ext` removes it.
-@pub fun withExtension p ext =
+@pub(pack) fun withExtension p ext =
   let stem = fileStem p in
   let base = match parent p with
              | None -> stem
@@ -71,22 +71,22 @@ use Std.Maybe (Maybe, Just, None)
   in
   if S.isEmpty ext then base else S.concatAll [base, ".", ext]
 
-@pub fun withFileName p name =
+@pub(pack) fun withFileName p name =
   match parent p with
   | None -> name
   | Just d -> join d name
 
 -- Every non-empty component, separators discarded.
-@pub fun components p = V.filter (\c -> not (S.isEmpty c)) (splitAny p)
+@pub(pack) fun components p = V.filter (\c -> not (S.isEmpty c)) (splitAny p)
 
 -- --- classifying --------------------------------------------------------------
 
-@pub fun isAbsolute p =
+@pub(pack) fun isAbsolute p =
   if S.isEmpty p then False
   else if isSeparator (byteAt p 0) then True
   else hasDrive p
 
-@pub fun isRelative p = not (isAbsolute p)
+@pub(pack) fun isRelative p = not (isAbsolute p)
 
 -- `C:` and friends. Only the shape is checked, not the letter.
 fun hasDrive p =
@@ -97,7 +97,7 @@ fun hasDrive p =
 -- Resolve `.` and `..` textually and collapse repeated separators. Purely
 -- lexical: it never looks at the disk, so it cannot follow symlinks, and
 -- `normalize "a/../b"` is `"b"` even if `a` is a link somewhere else.
-@pub fun normalize p =
+@pub(pack) fun normalize p =
   let abs = isAbsolute p in
   let parts = V.foldl (\acc c -> pushPart abs acc c) [] (components p) in
   let body = S.join separator parts in
@@ -154,20 +154,20 @@ fun byteAt p i =
 
 use Std.Test (assertEq, assertTrue, assertFalse)
 
-@test fun joiningPutsInOneSeparator u =
+@test fun joiningPutsInOneSeparator () =
   let a = assertEq (join "a/b" "c.txt") "a/b/c.txt" "join" in
   let b = assertEq (join "a/" "b") "a/b" "no doubled separator" in
   let c = assertEq (join "" "b") "b" "onto nothing" in
   let d = assertEq (join "a" "") "a" "nothing onto something" in
   assertEq (joinAll ["a", "b", "c"]) "a/b/c" "joinAll"
 
-@test fun anAbsoluteRightHandSideWins u =
+@test fun anAbsoluteRightHandSideWins () =
   -- Rust's `Path::join` does this too: joining onto an absolute path would
   -- silently produce something nobody meant.
   let a = assertEq (join "a" "/b") "/b" "absolute" in
   assertEq (join "a" "C:/b") "C:/b" "a drive is absolute too"
 
-@test fun splittingAPath u =
+@test fun splittingAPath () =
   let a = assertEq (fileName "a/b/c.txt") "c.txt" "fileName" in
   let b = assertEq (fileName "c.txt") "c.txt" "a bare name is its own fileName" in
   let c = assertEq (fileStem "a/b/c.txt") "c" "fileStem" in
@@ -175,31 +175,31 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let e = assertEq (parent "a/b/c.txt") (Just "a/b") "parent" in
   assertEq (parent "c.txt") None "a bare name has no parent"
 
-@test fun aLeadingDotIsANameNotAnExtension u =
+@test fun aLeadingDotIsANameNotAnExtension () =
   let a = assertEq (extension ".gitignore") "" ".gitignore has no extension" in
   let b = assertEq (fileStem ".gitignore") ".gitignore" "it is all stem" in
   let c = assertFalse (hasExtension "README") "no dot at all" in
   assertTrue (hasExtension "a.txt") "a real extension"
 
-@test fun replacingPartsOfAPath u =
+@test fun replacingPartsOfAPath () =
   let a = assertEq (withExtension "a/b/c.txt" "md") "a/b/c.md" "withExtension" in
   let b = assertEq (withExtension "a/b/c.txt" "") "a/b/c" "an empty extension removes it" in
   let c = assertEq (withExtension "c" "txt") "c.txt" "adding one" in
   assertEq (withFileName "a/b/c.txt" "d.md") "a/b/d.md" "withFileName"
 
-@test fun classification u =
+@test fun classification () =
   let a = assertTrue (isAbsolute "/a") "leading slash" in
   let b = assertTrue (isAbsolute "C:/a") "drive" in
   let c = assertFalse (isAbsolute "a/b") "relative" in
   let d = assertFalse (isAbsolute "") "empty is not absolute" in
   assertTrue (isRelative "a/b") "isRelative"
 
-@test fun componentsDropTheSeparators u =
+@test fun componentsDropTheSeparators () =
   let a = assertEq (components "a/b/c") ["a", "b", "c"] "components" in
   let b = assertEq (components "/a//b/") ["a", "b"] "empties are dropped" in
   assertEq (components "") [] "nothing"
 
-@test fun normalizeResolvesDotsTextually u =
+@test fun normalizeResolvesDotsTextually () =
   let a = assertEq (normalize "a/./b") "a/b" "a single dot goes" in
   let b = assertEq (normalize "a/b/../c") "a/c" "dot-dot climbs" in
   let c = assertEq (normalize "a/./b/../c") "a/c" "both at once" in
@@ -210,6 +210,6 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let g = assertEq (normalize "../a") "../a" "leading dot-dot survives" in
   assertEq (normalize "/../a") "/a" "root has no parent"
 
-@test fun windowsSeparatorsAreAcceptedOnInput u =
+@test fun windowsSeparatorsAreAcceptedOnInput () =
   let a = assertEq (fileName "a\b\c.txt") "c.txt" "backslash" in
   assertEq (normalize "a\b") "a/b" "output is always forward slashes"

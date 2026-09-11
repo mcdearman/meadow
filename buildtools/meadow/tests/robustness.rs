@@ -137,7 +137,7 @@ fn a_failed_match_is_an_error_not_a_panic() {
 #[test]
 fn an_unhandled_effect_names_itself() {
     let out = eval_main_std(
-        "effect E { op : Unit -> Int }\ndef main = op ()\n",
+        "effect E { op : () -> Int }\ndef main = op ()\n",
     );
     assert!(out.contains("unhandled effect") && out.contains("op"), "got {out}");
 }

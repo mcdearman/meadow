@@ -1,6 +1,6 @@
 [package]
 name = "meadow-lsp"
-description = "A Language Server Protocol implementation for Meadow: diagnostics, hover, go-to-definition, inlay hints and semantic tokens."
+description = "A Language Server Protocol implementation for Meadow: diagnostics, hover, go-to-definition, rename, inlay hints and semantic tokens."
 version.workspace = true
 edition.workspace = true
 

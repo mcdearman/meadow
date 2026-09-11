@@ -48,6 +48,12 @@ impl Linker {
                 name,
                 var,
             }));
+            // A package's own `main`, which needs no export — see
+            // `CompiledPackage::entry`. The last one wins, and packages arrive
+            // in dependency order, so that is the root package's.
+            if let Some(var) = pkg.entry {
+                entry = Some(var);
+            }
             for e in &pkg.exports {
                 if &*e.name == "main" {
                     entry = Some(e.var);
@@ -92,12 +98,14 @@ impl LinkedProgram {
         }
         match self.program.entry {
             Some(v) => {
+                // An entry point need not be exported, so the symbol table
+                // may not know it; it is `main` either way.
                 let name = self
                     .symbols
                     .iter()
                     .find(|s| s.var == v)
                     .map(|s| s.name.to_string())
-                    .unwrap_or_else(|| format!("{v:?}"));
+                    .unwrap_or_else(|| "main".to_string());
                 let _ = writeln!(out, "entry: {name}");
             }
             None => {

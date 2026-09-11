@@ -15,8 +15,8 @@ use lsp_types::notification::{
     Notification, PublishDiagnostics,
 };
 use lsp_types::request::{
-    GotoDefinition, HoverRequest, InlayHintRequest, Request as LspRequest,
-    SemanticTokensFullRequest,
+    GotoDefinition, HoverRequest, InlayHintRequest, PrepareRenameRequest, Rename,
+    Request as LspRequest, SemanticTokensFullRequest,
 };
 use lsp_types::*;
 use std::collections::HashMap;
@@ -122,6 +122,13 @@ fn server_capabilities() -> ServerCapabilities {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
+        // `prepare_provider` is what lets the editor put the cursor in a box
+        // with the old name in it, and refuse before asking on something that
+        // cannot be renamed.
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: Default::default(),
+        })),
         semantic_tokens_provider: Some(
             SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
                 legend: SemanticTokensLegend {
@@ -312,6 +319,37 @@ impl Server {
                     },
                 }))
             }),
+            PrepareRenameRequest::METHOD => self.answer::<PrepareRenameRequest, _>(req, |s, p| {
+                let (doc, offset) = s.at(&p)?;
+                let span = doc.analysis.renameable_at(offset, &s.std)?;
+                let (start, end) = doc.index.range(span);
+                Some(PrepareRenameResponse::Range(Range {
+                    start: Position::new(start.0, start.1),
+                    end: Position::new(end.0, end.1),
+                }))
+            }),
+            Rename::METHOD => {
+                let id = req.id.clone();
+                match cast::<Rename>(req) {
+                    Ok((id, p)) => match self.rename(&p) {
+                        Ok(edit) => Response::new_ok(id, Some(edit)),
+                        // A refusal the user asked for -- "this is in the
+                        // standard library", "that would read as a
+                        // constructor" -- belongs in front of them as a
+                        // message, which is what an error response becomes.
+                        Err(msg) => Response::new_err(
+                            id,
+                            lsp_server::ErrorCode::RequestFailed as i32,
+                            msg,
+                        ),
+                    },
+                    Err(e) => Response::new_err(
+                        id,
+                        lsp_server::ErrorCode::InvalidParams as i32,
+                        e.to_string(),
+                    ),
+                }
+            }
             InlayHintRequest::METHOD => self.answer::<InlayHintRequest, _>(req, |s, p| {
                 let from = {
                     let doc = s.docs.get(&p.text_document.uri)?;
@@ -448,6 +486,64 @@ impl Server {
     }
 
     /// A [`Loc`] as a protocol `Location`, wherever it lives.
+    /// Rewrite every occurrence of one name, in every file of its package.
+    ///
+    /// The edits come from name resolution rather than from matching text, so
+    /// a rename touches the binding the cursor is on and nothing else that
+    /// happens to be spelled the same -- and it reaches the other modules of
+    /// the package, which is where the rest of the occurrences usually are.
+    fn rename(&mut self, p: &RenameParams) -> Result<WorkspaceEdit, String> {
+        let here = p.text_document_position.text_document.uri.clone();
+        let edits = {
+            let doc = self
+                .docs
+                .get(&here)
+                .ok_or_else(|| "that file is not open".to_string())?;
+            let offset = doc.index.offset(
+                p.text_document_position.position.line,
+                p.text_document_position.position.character,
+            );
+            doc.analysis.rename_at(offset, &p.new_name, &self.std)?
+        };
+
+        let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+        for (source, span) in edits {
+            let (uri, (start, end)) = match source {
+                // This document: measured against the buffer, which is newer
+                // than anything on disk.
+                None => {
+                    let doc = self.docs.get(&here).ok_or("that file is not open")?;
+                    (here.clone(), doc.index.range(span))
+                }
+                Some(src) => {
+                    let path = self
+                        .std
+                        .path_of(src)
+                        .ok_or_else(|| "one of the files has no path".to_string())?;
+                    let uri = path_to_uri(&path).ok_or("one of the files has no URI")?;
+                    // An open document is the authority on its own text, even
+                    // when the analysis read it from disk.
+                    let range = match self.docs.get(&uri) {
+                        Some(doc) => doc.index.range(span),
+                        None => self.range_in(src, span),
+                    };
+                    (uri, range)
+                }
+            };
+            changes.entry(uri).or_default().push(TextEdit {
+                range: Range {
+                    start: Position::new(start.0, start.1),
+                    end: Position::new(end.0, end.1),
+                },
+                new_text: p.new_name.clone(),
+            });
+        }
+        Ok(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        })
+    }
+
     fn locate(&mut self, here: &Uri, loc: Loc) -> Option<Location> {
         let mine = {
             let doc = self.docs.get(here)?;

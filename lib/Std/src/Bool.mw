@@ -1,17 +1,17 @@
 -- Booleans. `and` / `or` are built-in short-circuiting operators; `not` is here.
 
-@pub data Bool = False | True
+@pub(pack) data Bool = False | True
 
-@pub fun not b = if b then False else True
+@pub(pack) fun not b = if b then False else True
 
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
 
-@test fun notInverts u =
+@test fun notInverts () =
   let a = assertEq (not True) False "not True" in
   assertEq (not False) True "not False"
 
-@test fun notIsAnInvolution u =
+@test fun notIsAnInvolution () =
   let a = assertEq (not (not True)) True "not . not on True" in
   assertEq (not (not False)) False "not . not on False"

@@ -1,5 +1,5 @@
 ---
-source: tests/effects.rs
+source: meadow/tests/effects.rs
 expression: "eval_main(\"effect E { boom : () -> Int }\\n\\\n         def main = boom ()\\n\")"
 ---
 runtime error: unhandled effect E.boom

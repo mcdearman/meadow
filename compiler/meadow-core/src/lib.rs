@@ -137,7 +137,7 @@ pub enum Prim {
     NewRef,
     /// `getRef : Ref a -> a ! { Mut | e }`
     GetRef,
-    /// `setRef : Ref a -> a -> Unit ! { Mut | e }`
+    /// `setRef : Ref a -> a -> () ! { Mut | e }`
     SetRef,
     /// `String -> Option (Array Int)` -- parse a hex string (either case, no
     /// separators, even length) into bytes. `None` on any malformed input.

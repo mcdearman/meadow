@@ -1,35 +1,35 @@
 -- Std.Result: success-or-failure values. Reach these as `Result.map` etc.
 -- (`None` / `Just` / `Ok` / `Err` are constructors -- always in scope by name.)
 
-@pub data Result e a = Err e | Ok a
+@pub(pack) data Result e a = Err e | Ok a
 
-@pub fun isOk r = match r with | Err e -> False | Ok x -> True
+@pub(pack) fun isOk r = match r with | Err e -> False | Ok x -> True
 
-@pub fun isErr r = match r with | Err e -> True | Ok x -> False
+@pub(pack) fun isErr r = match r with | Err e -> True | Ok x -> False
 
-@pub fun unwrapOr fallback r = match r with | Err e -> fallback | Ok x -> x
+@pub(pack) fun unwrapOr fallback r = match r with | Err e -> fallback | Ok x -> x
 
-@pub fun map f r =
+@pub(pack) fun map f r =
   match r with
   | Err e -> Err e
   | Ok x -> Ok (f x)
 
-@pub fun mapErr f r =
+@pub(pack) fun mapErr f r =
   match r with
   | Err e -> Err (f e)
   | Ok x -> Ok x
 
-@pub fun andThen f r =
+@pub(pack) fun andThen f r =
   match r with
   | Err e -> Err e
   | Ok x -> f x
 
-@pub fun toMaybe r =
+@pub(pack) fun toMaybe r =
   match r with
   | Err e -> None
   | Ok x -> Just x
 
-@pub fun fromMaybe err o =
+@pub(pack) fun fromMaybe err o =
   match o with
   | None -> Err err
   | Just x -> Ok x
@@ -39,27 +39,27 @@
 use Std.Test (assertEq, assertTrue, assertFalse)
 use Std.Maybe (Maybe)
 
-@test fun theSideTests u =
+@test fun theSideTests () =
   let a = assertTrue (isOk (Ok 1)) "isOk Ok" in
   let b = assertFalse (isOk (Err "e")) "isOk Err" in
   assertTrue (isErr (Err "e")) "isErr Err"
 
-@test fun unwrapOrTakesTheOk u =
+@test fun unwrapOrTakesTheOk () =
   let a = assertEq (unwrapOr 0 (Ok 5)) 5 "unwrapOr Ok" in
   assertEq (unwrapOr 0 (Err "e")) 0 "unwrapOr Err"
 
-@test fun mapIsOkBiasedAndMapErrIsNot u =
+@test fun mapIsOkBiasedAndMapErrIsNot () =
   let a = assertEq (map (\n -> n + 1) (Ok 1)) (Ok 2) "map Ok" in
   let b = assertEq (map (\n -> n + 1) (Err "e")) (Err "e") "map leaves Err" in
   let c = assertEq (mapErr (\e -> "!") (Err "e")) (Err "!") "mapErr Err" in
   assertEq (mapErr (\e -> "!") (Ok 1)) (Ok 1) "mapErr leaves Ok"
 
-@test fun andThenChainsAndShortCircuits u =
+@test fun andThenChainsAndShortCircuits () =
   let a = assertEq (andThen (\n -> Ok (n + 1)) (Ok 1)) (Ok 2) "andThen Ok" in
   let b = assertEq (andThen (\n -> Err "bad") (Ok 1)) (Err "bad") "the function may fail" in
   assertEq (andThen (\n -> Ok n) (Err "e")) (Err "e") "andThen Err"
 
-@test fun conversionsWithMaybe u =
+@test fun conversionsWithMaybe () =
   let a = assertEq (toMaybe (Ok 1)) (Just 1) "toMaybe Ok" in
   let b = assertEq (toMaybe (Err "e")) None "toMaybe Err" in
   let c = assertEq (fromMaybe "e" (Just 1)) (Ok 1) "fromMaybe Just" in

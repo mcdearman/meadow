@@ -1,5 +1,5 @@
 ---
-source: tests/infer.rs
+source: meadow/tests/infer.rs
 expression: "schemes(\"data Maybe a = None | Some a\\n\\\n         fun orElse m d = match m with | None -> d | Some x -> x\\n\")"
 ---
 orElse : forall a. Maybe a -> a -> a

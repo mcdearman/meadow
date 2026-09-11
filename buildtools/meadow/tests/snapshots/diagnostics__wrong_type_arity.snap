@@ -1,5 +1,5 @@
 ---
-source: tests/diagnostics.rs
+source: meadow/tests/diagnostics.rs
 expression: "errors(\"data Box a = Box a\\ndata Bad = B Box\\n\")"
 ---
 type `Box` takes 1 argument(s), got 0

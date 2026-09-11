@@ -9,9 +9,9 @@
 //!
 //! There is no qualified `use` yet, so every top-level name across these modules
 //! shares one flat namespace and must be unique. Each module marks its public API
-//! `@pub`; `prelude` defines nothing and only `@pub use`-re-exports a curated set
+//! `@pub(pack)`; `prelude` defines nothing and only `@pub(pack) use`-re-exports a curated set
 //! (including `map` / `filter` / `foldl` / `foldr` / … which are deliberately
-//! *not* `@pub` in `Std.Collections.List`, so re-export is what makes them
+//! *not* `@pub(pack)` in `Std.Collections.List`, so re-export is what makes them
 //! public).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -233,7 +233,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut exports: Vec<Export> = Vec::new();
     let mut prelude_names: Vec<InternedString> = Vec::new();
     // Unioned across the sub-units, which in practice means `prelude.mw`'s:
-    // it is the only one that `@pub use`s a type.
+    // it is the only one that `@pub(pack) use`s a type.
     let mut flat_ctor_types: Vec<InternedString> = Vec::new();
     let mut tests = Vec::new();
 
@@ -261,6 +261,8 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         flat_ctor_types,
         vars: lo..hi,
         name,
+        // A library has no entry point, and `Std` least of all.
+        entry: None,
         modules,
         types,
         exports,

@@ -1,31 +1,31 @@
 -- Pair helpers.
 
-@pub fun fst p = match p with | (a, b) -> a
+@pub(pack) fun fst p = match p with | (a, b) -> a
 
-@pub fun snd p = match p with | (a, b) -> b
+@pub(pack) fun snd p = match p with | (a, b) -> b
 
-@pub fun pair a b = (a, b)
+@pub(pack) fun pair a b = (a, b)
 
-@pub fun swap p = match p with | (a, b) -> (b, a)
+@pub(pack) fun swap p = match p with | (a, b) -> (b, a)
 
-@pub fun mapFst f p = match p with | (a, b) -> (f a, b)
+@pub(pack) fun mapFst f p = match p with | (a, b) -> (f a, b)
 
-@pub fun mapSnd f p = match p with | (a, b) -> (a, f b)
+@pub(pack) fun mapSnd f p = match p with | (a, b) -> (a, f b)
 
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
 
-@test fun projectionsAndConstruction u =
+@test fun projectionsAndConstruction () =
   let p = pair 1 "a" in
   let a = assertEq (fst p) 1 "fst" in
   let b = assertEq (snd p) "a" "snd" in
   assertEq p (1, "a") "pair builds a plain tuple"
 
-@test fun swapExchangesTheSides u =
+@test fun swapExchangesTheSides () =
   let a = assertEq (swap (1, "a")) ("a", 1) "swap" in
   assertEq (swap (swap (1, "a"))) (1, "a") "swap is an involution"
 
-@test fun mapFstAndMapSndTouchOneSideOnly u =
+@test fun mapFstAndMapSndTouchOneSideOnly () =
   let a = assertEq (mapFst (\n -> n + 1) (1, "a")) (2, "a") "mapFst" in
   assertEq (mapSnd (\s -> "b") (1, "a")) (1, "b") "mapSnd"

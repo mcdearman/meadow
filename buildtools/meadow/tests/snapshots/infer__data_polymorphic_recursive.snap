@@ -1,5 +1,5 @@
 ---
-source: tests/infer.rs
+source: meadow/tests/infer.rs
 expression: "schemes(\"data Tree a = Tip | Branch (Tree a) a (Tree a)\\n\\\n         fun size t = match t with | Tip -> 0 | Branch l x r -> 1 + size l + size r\\n\")"
 ---
 size : forall a. Tree a -> Int

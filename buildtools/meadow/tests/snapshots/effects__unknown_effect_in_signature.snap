@@ -1,5 +1,5 @@
 ---
-source: tests/effects.rs
+source: meadow/tests/effects.rs
 expression: "errors(\"effect E { op : () -> Int ! Nope }\\n\")"
 ---
 unknown effect `Nope`

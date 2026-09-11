@@ -1,8 +1,7 @@
 ---
 source: meadow/tests/effects.rs
-assertion_line: 46
 expression: "schemes(\"effect Log { log : String -> () }\\n\\\n         fun map f xs = match xs with | Nil -> Nil | Cons x r -> Cons (f x) (map f r)\\n\\\n         fun logAll xs = map (\\\\x -> log x) xs\\n\")"
 ---
-log : forall e. String -> Unit ! { Log | e }
+log : forall e. String -> () ! { Log | e }
 map : forall a b e. (a -> b ! e) -> List a -> List b ! e
-logAll : forall e. List String -> List Unit ! { Log | e }
+logAll : forall e. List String -> List () ! { Log | e }

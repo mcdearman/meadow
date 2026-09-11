@@ -1,31 +1,31 @@
 -- Std.Maybe: optional values. Reach these as `Maybe.map` etc., or `use` them.
 
-@pub data Maybe a = None | Just a
+@pub(pack) data Maybe a = None | Just a
 
-@pub fun isSome o = match o with | None -> False | Just x -> True
+@pub(pack) fun isSome o = match o with | None -> False | Just x -> True
 
-@pub fun isNone o = match o with | None -> True | Just x -> False
+@pub(pack) fun isNone o = match o with | None -> True | Just x -> False
 
-@pub fun unwrapOr default o = match o with | None -> default | Just x -> x
+@pub(pack) fun unwrapOr default o = match o with | None -> default | Just x -> x
 
-@pub fun orElse fallback o = match o with | None -> fallback | Just x -> o
+@pub(pack) fun orElse fallback o = match o with | None -> fallback | Just x -> o
 
-@pub fun map f o =
+@pub(pack) fun map f o =
   match o with
   | None -> None
   | Just x -> Just (f x)
 
-@pub fun andThen f o =
+@pub(pack) fun andThen f o =
   match o with
   | None -> None
   | Just x -> f x
 
-@pub fun keepIf pred o =
+@pub(pack) fun keepIf pred o =
   match o with
   | None -> None
   | Just x -> if pred x then o else None
 
-@pub fun toList o =
+@pub(pack) fun toList o =
   match o with
   | None -> Nil
   | Just x -> Cons x Nil
@@ -34,20 +34,20 @@
 
 use Std.Test (assertEq, assertTrue, assertFalse)
 
-@test fun theSideTests u =
+@test fun theSideTests () =
   let a = assertTrue (isSome (Just 1)) "isSome Just" in
   let b = assertFalse (isSome None) "isSome None" in
   let c = assertTrue (isNone None) "isNone None" in
   assertFalse (isNone (Just 1)) "isNone Just"
 
-@test fun unwrapOrAndOrElse u =
+@test fun unwrapOrAndOrElse () =
   let a = assertEq (unwrapOr 0 (Just 5)) 5 "unwrapOr Just" in
   let b = assertEq (unwrapOr 0 None) 0 "unwrapOr None" in
   let c = assertEq (orElse (Just 2) (Just 1)) (Just 1) "orElse keeps the first Just" in
   let d = assertEq (orElse (Just 2) None) (Just 2) "orElse falls back" in
   assertEq (orElse None None) None "orElse of two Nones"
 
-@test fun mapAndAndThen u =
+@test fun mapAndAndThen () =
   let a = assertEq (map (\n -> n + 1) (Just 1)) (Just 2) "map Just" in
   let b = assertEq (map (\n -> n + 1) None) None "map None" in
   let c = assertEq (andThen (\n -> Just (n + 1)) (Just 1)) (Just 2) "andThen Just" in
@@ -55,11 +55,11 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let d = assertEq (andThen (\n -> None) (Just 1)) None "andThen can fail" in
   assertEq (andThen (\n -> Just n) None) None "andThen None"
 
-@test fun keepIfFilters u =
+@test fun keepIfFilters () =
   let a = assertEq (keepIf (\n -> n > 2) (Just 5)) (Just 5) "kept" in
   let b = assertEq (keepIf (\n -> n > 2) (Just 1)) None "dropped" in
   assertEq (keepIf (\n -> n > 2) None) None "keepIf None"
 
-@test fun toListIsEmptyOrSingleton u =
+@test fun toListIsEmptyOrSingleton () =
   let a = assertEq (toList (Just 1)) [1;] "toList Just" in
   assertEq (toList None) [;] "toList None"

@@ -25,7 +25,7 @@ use Std.Maybe (Maybe, Just, None)
 -- Numbers are split into `Int` and `Float` rather than JSON's single number
 -- type, because meadow's `Int` and `Float` are separate and silently widening
 -- every integer to a float would lose precision no one asked to lose.
-@pub data Json
+@pub(pack) data Json
   = Null
   | Bool Bool
   | Int Int
@@ -36,52 +36,52 @@ use Std.Maybe (Maybe, Just, None)
 
 -- --- constructing --------------------------------------------------------------
 
-@pub fun jNull u = Null
+@pub(pack) fun jNull () = Null
 
-@pub fun jBool b = Bool b
+@pub(pack) fun jBool b = Bool b
 
-@pub fun jInt n = Int n
+@pub(pack) fun jInt n = Int n
 
-@pub fun jString s = String s
+@pub(pack) fun jString s = String s
 
-@pub fun jArray xs = Array xs
+@pub(pack) fun jArray xs = Array xs
 
-@pub fun jObject fields = Object fields
+@pub(pack) fun jObject fields = Object fields
 
 -- --- inspecting ---------------------------------------------------------------
 
-@pub fun isNull v = match v with | Null -> True | _ -> False
+@pub(pack) fun isNull v = match v with | Null -> True | _ -> False
 
-@pub fun asBool v = match v with | Bool b -> Just b | _ -> None
+@pub(pack) fun asBool v = match v with | Bool b -> Just b | _ -> None
 
-@pub fun asInt v = match v with | Int n -> Just n | _ -> None
+@pub(pack) fun asInt v = match v with | Int n -> Just n | _ -> None
 
-@pub fun asFloat v =
+@pub(pack) fun asFloat v =
   match v with
   | Float x -> Just x
   | Int n -> Just (toFloat n)
   | _ -> None
 
-@pub fun asString v = match v with | String s -> Just s | _ -> None
+@pub(pack) fun asString v = match v with | String s -> Just s | _ -> None
 
-@pub fun asArray v = match v with | Array xs -> Just xs | _ -> None
+@pub(pack) fun asArray v = match v with | Array xs -> Just xs | _ -> None
 
-@pub fun asObject v = match v with | Object fs -> Just fs | _ -> None
+@pub(pack) fun asObject v = match v with | Object fs -> Just fs | _ -> None
 
 -- The value at `key`, or `None` if this is not an object or has no such key.
-@pub fun get key v =
+@pub(pack) fun get key v =
   match v with
   | Object fields -> lookupField key fields
   | _ -> None
 
 -- The element at `i`, or `None`.
-@pub fun index i v =
+@pub(pack) fun index i v =
   match v with
   | Array xs -> V.get xs i
   | _ -> None
 
 -- Follow a chain of object keys: `path ["a", "b"] v` is `v.a.b`.
-@pub fun path keys v =
+@pub(pack) fun path keys v =
   V.foldl (\acc k -> maybeThen (\x -> get k x) acc) (Just v) keys
 
 fun maybeThen f o =
@@ -103,7 +103,7 @@ fun lookupField key fields =
 -- --- parsing ------------------------------------------------------------------
 
 -- `Ok` of the value, or `Err` of a message naming the byte offset.
-@pub fun parse text =
+@pub(pack) fun parse text =
   match P.runParser document (P.fromString text) with
   | Ok v -> Ok v
   | Err e -> Err (P.showError e)
@@ -113,12 +113,12 @@ fun lookupField key fields =
 -- that had not been built yet. `defer` delays construction until the parser is
 -- actually run, which is what breaks the cycle in a strict language. Every
 -- definition in the cycle needs it, not just the one that looks recursive.
-def document = P.defer (\u -> P.thenSkip (P.skipThen spaces value) P.eof)
+def document = P.defer (\() -> P.thenSkip (P.skipThen spaces value) P.eof)
 
 def value =
-  P.defer (\u ->
+  P.defer (\() ->
     P.choice [
-      P.label "null" (P.map jNull (P.chunk (P.fromString "null"))),
+      P.label "null" (P.map (\c -> Null) (P.chunk (P.fromString "null"))),
       P.label "true" (P.map (\c -> Bool True) (P.chunk (P.fromString "true"))),
       P.label "false" (P.map (\c -> Bool False) (P.chunk (P.fromString "false"))),
       P.label "a string" (P.map String stringLit),
@@ -128,19 +128,19 @@ def value =
     ])
 
 def array =
-  P.defer (\u ->
+  P.defer (\() ->
     P.map Array
       (P.between (lexeme (P.single 91)) (lexeme (P.single 93))
         (P.sepBy (lexeme value) (lexeme (P.single 44)))))
 
 def object =
-  P.defer (\u ->
+  P.defer (\() ->
     P.map Object
       (P.between (lexeme (P.single 123)) (lexeme (P.single 125))
         (P.sepBy (lexeme member) (lexeme (P.single 44)))))
 
 def member =
-  P.defer (\u ->
+  P.defer (\() ->
     P.bind (lexeme stringLit)
       (\k -> P.map (\v -> pair k v) (P.skipThen (lexeme (P.single 58)) value)))
 
@@ -211,7 +211,7 @@ fun bytesToText bytes = S.fromBytes (V.toArray bytes)
 -- --- rendering ----------------------------------------------------------------
 
 -- Compact: no spaces, no newlines. `renderIndented` is below.
-@pub fun render v =
+@pub(pack) fun render v =
   match v with
   | Null -> "null"
   | Bool b -> if b then "true" else "false"
@@ -226,7 +226,7 @@ fun renderMember entry =
 
 -- Two spaces per level, one element per line -- the shape `meadow fmt` uses for
 -- meadow itself.
-@pub fun renderIndented v = renderAt 0 v
+@pub(pack) fun renderIndented v = renderAt 0 v
 
 fun renderAt depth v =
   match v with
@@ -257,7 +257,7 @@ fun pad depth = S.repeat "  " depth
 
 -- --- escaping -----------------------------------------------------------------
 
-@pub fun quote s = S.concatAll ["\"", escapeAll s, "\""]
+@pub(pack) fun quote s = S.concatAll ["\"", escapeAll s, "\""]
 
 fun escapeAll s = S.fromBytes (V.toArray (V.concatMap escapeByte (V.fromArray (S.toBytes s))))
 
@@ -293,7 +293,7 @@ fun parsed text =
   | Ok v -> v
   | Err e -> String (S.concat "parse failed: " e)
 
-@test fun theAtomsParse u =
+@test fun theAtomsParse () =
   let a = assertEq (parsed "null") Null "null" in
   let b = assertEq (parsed "true") (Bool True) "true" in
   let c = assertEq (parsed "false") (Bool False) "false" in
@@ -301,7 +301,7 @@ fun parsed text =
   let e = assertEq (parsed "-7") (Int (0 - 7)) "a negative integer" in
   assertEq (parsed "\"hi\"") (String "hi") "a string"
 
-@test fun numbersSplitIntoIntAndFloat u =
+@test fun numbersSplitIntoIntAndFloat () =
   -- JSON has one number type; meadow has two, and widening every integer to a
   -- float would lose precision no one asked to lose.
   let a = assertEq (parsed "1") (Int 1) "no fraction means Int" in
@@ -309,25 +309,25 @@ fun parsed text =
 
 fun isFloat v = match v with | Float x -> True | _ -> False
 
-@test fun containersNestAndAreOrdered u =
+@test fun containersNestAndAreOrdered () =
   let a = assertEq (parsed "[]") (Array []) "an empty array" in
   let b = assertEq (parsed "[1,2]") (Array [Int 1, Int 2]) "an array" in
   let c = assertEq (parsed "{}") (Object []) "an empty object" in
   let d = assertEq (parsed "{\"a\":1}") (Object [("a", Int 1)]) "an object" in
   assertEq (parsed "[[1],[2]]") (Array [Array [Int 1], Array [Int 2]]) "nesting"
 
-@test fun whitespaceIsIgnoredBetweenTokens u =
+@test fun whitespaceIsIgnoredBetweenTokens () =
   assertEq (parsed "  { \"a\" : [ 1 , 2 ] }  ") (parsed "{\"a\":[1,2]}") "spaces do not matter"
 
 -- Two layers of escaping meet here: the meadow literal, and the JSON text it
 -- holds. `"\"a\\nb\""` is the six characters `"a\nb"` -- JSON for a newline.
-@test fun stringEscapesAreDecoded u =
+@test fun stringEscapesAreDecoded () =
   let a = assertEq (parsed "\"a\\nb\"") (String "a\nb") "newline" in
   let b = assertEq (parsed "\"a\\tb\"") (String "a\tb") "tab" in
   let c = assertEq (parsed "\"a\\\"b\"") (String "a\"b") "an escaped quote" in
   assertEq (parsed "\"a\\\\b\"") (String "a\\b") "an escaped backslash"
 
-@test fun malformedInputIsRejected u =
+@test fun malformedInputIsRejected () =
   let bad = \text -> match parse text with | Ok v -> False | Err e -> True in
   let a = assertTrue (bad "{oops}") "not JSON at all" in
   let b = assertTrue (bad "[1,") "cut off" in
@@ -335,7 +335,7 @@ fun isFloat v = match v with | Float x -> True | _ -> False
   -- Trailing rubbish is rejected too: `document` ends with `eof`.
   assertTrue (bad "1 2") "two values"
 
-@test fun renderingIsCompactAndRoundTrips u =
+@test fun renderingIsCompactAndRoundTrips () =
   let a = assertEq (render Null) "null" "null" in
   let b = assertEq (render (Bool True)) "true" "true" in
   let c = assertEq (render (Int (0 - 7))) "-7" "a negative" in
@@ -344,13 +344,13 @@ fun isFloat v = match v with | Float x -> True | _ -> False
   let text = "{\"a\":[1,2,3],\"b\":null,\"c\":\"x\"}" in
   assertEq (render (parsed text)) text "parse then render is the identity"
 
-@test fun renderingEscapesWhatItMust u =
+@test fun renderingEscapesWhatItMust () =
   let a = assertEq (render (String "a\"b")) "\"a\\\"b\"" "a quote" in
   let b = assertEq (render (String "a\nb")) "\"a\\nb\"" "a newline" in
   let awkward = String "tricky \" \\ \n\t" in
   assertEq (parsed (render awkward)) awkward "everything that needs escaping round trips"
 
-@test fun accessorsReachIntoTheTree u =
+@test fun accessorsReachIntoTheTree () =
   let v = parsed "{\"n\":{\"deep\":true},\"xs\":[10,20]}" in
   let a = assertEq (path ["n", "deep"] v) (Just (Bool True)) "path" in
   let b = assertEq (path ["n", "missing"] v) None "a missing key" in
@@ -358,7 +358,7 @@ fun isFloat v = match v with | Float x -> True | _ -> False
   let d = assertEq (index 1 (parsed "[10,20]")) (Just (Int 20)) "index" in
   assertEq (index 9 (parsed "[10]")) None "index past the end"
 
-@test fun theTypedAccessors u =
+@test fun theTypedAccessors () =
   let a = assertEq (asInt (Int 1)) (Just 1) "asInt" in
   let b = assertEq (asInt (String "1")) None "asInt of the wrong shape" in
   let c = assertEq (asString (String "x")) (Just "x") "asString" in
@@ -368,7 +368,7 @@ fun isFloat v = match v with | Float x -> True | _ -> False
   -- that wants one.
   assertEq (asFloat (Int 2)) (Just 2.0) "asFloat widens an Int"
 
-@test fun indentedRenderingNestsByTwo u =
+@test fun indentedRenderingNestsByTwo () =
   let a = assertEq (renderIndented (Array [])) "[]" "an empty array stays on one line" in
   let b = assertEq (renderIndented (Object [])) "{}" "and an empty object" in
   let c = assertEq (renderIndented (Array [Int 1])) "[\n  1\n]" "one element" in

@@ -12,7 +12,7 @@
 -- Note on ordering: every definition precedes its first use, because a forward
 -- reference between top-level bindings currently loses all type information.
 
-@pub mod Parse
+@pub(pack) mod Parse
 
 use Std.Collections.Vector as V (vecFromArray)
 use Std.Int (min, max)
@@ -23,29 +23,29 @@ use Std.Maybe (Maybe, Just, None)
 -- ---------------------------------------------------------------------------
 
 -- The UTF-8 bytes of `s`.
-@pub fun toBytes s = stringToBytes s
+@pub(pack) fun toBytes s = stringToBytes s
 
 -- A string from UTF-8 `bytes`.
-@pub fun fromBytes bytes = bytesToString bytes
+@pub(pack) fun fromBytes bytes = bytesToString bytes
 
 -- How many *bytes* `s` occupies.
-@pub fun byteLength s = arrayLen (stringToBytes s)
+@pub(pack) fun byteLength s = arrayLen (stringToBytes s)
 
-@pub fun isEmpty s = byteLength s == 0
+@pub(pack) fun isEmpty s = byteLength s == 0
 
 -- ---------------------------------------------------------------------------
 -- Building
 -- ---------------------------------------------------------------------------
 
 -- `a` followed by `b`.
-@pub fun concat a b = bytesToString (arrayConcat (stringToBytes a) (stringToBytes b))
+@pub(pack) fun concat a b = bytesToString (arrayConcat (stringToBytes a) (stringToBytes b))
 
 fun concatLoop acc i xs =
   if i >= V.len xs then acc
   else concatLoop (arrayConcat acc (stringToBytes (V.getOr "" xs i))) (i + 1) xs
 
 -- Every string in `xs`, run together.
-@pub fun concatAll xs = bytesToString (concatLoop #[] 0 xs)
+@pub(pack) fun concatAll xs = bytesToString (concatLoop #[] 0 xs)
 
 fun joinLoop sep acc i xs =
   if i >= V.len xs then acc
@@ -56,19 +56,19 @@ fun joinLoop sep acc i xs =
     joinLoop sep next (i + 1) xs
 
 -- Every string in `xs`, with `sep` between them.
-@pub fun join sep xs = bytesToString (joinLoop sep #[] 0 xs)
+@pub(pack) fun join sep xs = bytesToString (joinLoop sep #[] 0 xs)
 
 fun repeatLoop acc b n = if n <= 0 then acc else repeatLoop (arrayConcat acc b) b (n - 1)
 
 -- `s` repeated `n` times.
-@pub fun repeat s n = bytesToString (repeatLoop #[] (stringToBytes s) n)
+@pub(pack) fun repeat s n = bytesToString (repeatLoop #[] (stringToBytes s) n)
 
 -- ---------------------------------------------------------------------------
 -- Taking it apart
 -- ---------------------------------------------------------------------------
 
 -- The bytes of `s` from `from` up to (not including) `to`, clamped to the ends.
-@pub fun slice s from to =
+@pub(pack) fun slice s from to =
   let b = stringToBytes s in
   let n = arrayLen b in
   let lo = max 0 (min from n) in
@@ -76,13 +76,13 @@ fun repeatLoop acc b n = if n <= 0 then acc else repeatLoop (arrayConcat acc b) 
   bytesToString (arraySlice b lo hi)
 
 -- The first `n` bytes.
-@pub fun take s n = slice s 0 n
+@pub(pack) fun take s n = slice s 0 n
 
 -- Everything after the first `n` bytes.
-@pub fun drop s n = slice s n (byteLength s)
+@pub(pack) fun drop s n = slice s n (byteLength s)
 
 -- The byte at `i`, if there is one.
-@pub fun byteAt s i =
+@pub(pack) fun byteAt s i =
   let b = stringToBytes s in
   if i < 0 or i >= arrayLen b then None else Just (arrayGetOr 0 b i)
 
@@ -103,19 +103,19 @@ fun findFrom hay needle i =
 
 -- The byte offset of the first `needle` in `s`, if it is there. An empty needle
 -- is found at 0.
-@pub fun indexOf needle s = findFrom (stringToBytes s) (stringToBytes needle) 0
+@pub(pack) fun indexOf needle s = findFrom (stringToBytes s) (stringToBytes needle) 0
 
-@pub fun contains needle s =
+@pub(pack) fun contains needle s =
   match indexOf needle s with
   | None -> False
   | Just i -> True
 
-@pub fun startsWith prefix s =
+@pub(pack) fun startsWith prefix s =
   let p = stringToBytes prefix in
   let b = stringToBytes s in
   if arrayLen p > arrayLen b then False else matchesAt b p 0 0
 
-@pub fun endsWith suffix s =
+@pub(pack) fun endsWith suffix s =
   let p = stringToBytes suffix in
   let b = stringToBytes s in
   if arrayLen p > arrayLen b then False else matchesAt b p (arrayLen b - arrayLen p) 0
@@ -129,7 +129,7 @@ fun splitLoop hay needle i acc =
 
 -- `s` cut at every occurrence of `sep`. An empty `sep` yields `s` whole, since
 -- splitting on nothing has no useful answer.
-@pub fun split sep s =
+@pub(pack) fun split sep s =
   let n = stringToBytes sep in
   if arrayLen n == 0 then [s] else splitLoop (stringToBytes s) n 0 V.empty
 
@@ -138,7 +138,7 @@ fun splitLoop hay needle i acc =
 -- ---------------------------------------------------------------------------
 
 -- Space, tab, newline, carriage return.
-@pub fun isSpaceByte c = c == 32 or c == 9 or c == 10 or c == 13
+@pub(pack) fun isSpaceByte c = c == 32 or c == 9 or c == 10 or c == 13
 
 fun startOfText b i =
   if i >= arrayLen b then i
@@ -150,18 +150,18 @@ fun endOfText b i =
   else if isSpaceByte (arrayGetOr 0 b (i - 1)) then endOfText b (i - 1)
   else i
 
-@pub fun trimStart s =
+@pub(pack) fun trimStart s =
   let b = stringToBytes s in
   bytesToString (arraySlice b (startOfText b 0) (arrayLen b))
 
-@pub fun trimEnd s =
+@pub(pack) fun trimEnd s =
   let b = stringToBytes s in
   bytesToString (arraySlice b 0 (endOfText b (arrayLen b)))
 
-@pub fun trim s = trimEnd (trimStart s)
+@pub(pack) fun trim s = trimEnd (trimStart s)
 
 -- `s` split on newlines. A trailing newline does not produce a final empty line.
-@pub fun lines s = if isEmpty s then V.empty else split "\n" (trimTrailingNewline s)
+@pub(pack) fun lines s = if isEmpty s then V.empty else split "\n" (trimTrailingNewline s)
 
 fun trimTrailingNewline s = if endsWith "\n" s then take s (byteLength s - 1) else s
 
@@ -178,9 +178,9 @@ fun upperByte c = if c >= 97 and c <= 122 then c - 32 else c
 fun lowerByte c = if c >= 65 and c <= 90 then c + 32 else c
 
 -- ASCII letters only; anything else is left alone.
-@pub fun toUpper s = bytesToString (mapBytes upperByte (stringToBytes s) 0 #[])
+@pub(pack) fun toUpper s = bytesToString (mapBytes upperByte (stringToBytes s) 0 #[])
 
-@pub fun toLower s = bytesToString (mapBytes lowerByte (stringToBytes s) 0 #[])
+@pub(pack) fun toLower s = bytesToString (mapBytes lowerByte (stringToBytes s) 0 #[])
 
 -- ---------------------------------------------------------------------------
 -- Numbers
@@ -197,12 +197,12 @@ fun digitsToString n =
   bytesToString (reverseFrom ds (arrayLen ds - 1) #[])
 
 -- `n` in base ten.
-@pub fun fromInt n =
+@pub(pack) fun fromInt n =
   if n == 0 then "0"
   else if n < 0 then concat "-" (digitsToString (0 - n))
   else digitsToString n
 
-@pub fun isDigitByte c = c >= 48 and c <= 57
+@pub(pack) fun isDigitByte c = c >= 48 and c <= 57
 
 fun digitsFrom b i acc =
   if i >= arrayLen b then Just acc
@@ -212,7 +212,7 @@ fun digitsFrom b i acc =
 
 -- `s` read as a base-ten integer, with an optional leading `-`. `None` unless
 -- the whole string is digits.
-@pub fun toInt s =
+@pub(pack) fun toInt s =
   let b = stringToBytes s in
   if arrayLen b == 0 then None
   else if arrayGetOr 0 b 0 == 45 then negateParsed (digitsAfterSign b)
@@ -230,14 +230,14 @@ fun negateParsed m =
 -- Everything above counts bytes. These two are the bridge to `Std.Char`, which
 -- counts Unicode scalars: `chars` decodes the UTF-8, `fromChars` encodes it.
 
-@pub fun chars s = V.fromArray (stringToChars s)
+@pub(pack) fun chars s = V.fromArray (stringToChars s)
 
-@pub fun fromChars cs = charsToString (V.toArray cs)
+@pub(pack) fun fromChars cs = charsToString (V.toArray cs)
 
 -- The number of *characters*, which is `byteLength` only for ASCII.
-@pub fun charLength s = arrayLen (stringToChars s)
+@pub(pack) fun charLength s = arrayLen (stringToChars s)
 
-@pub fun charAt s i =
+@pub(pack) fun charAt s i =
   let cs = stringToChars s in
   if i < 0 or i >= arrayLen cs then None else Just (arrayGet cs i)
 
@@ -245,7 +245,7 @@ fun negateParsed m =
 
 use Std.Test (assertEq, assertTrue, assertFalse)
 
-@test fun buildingStrings u =
+@test fun buildingStrings () =
   let a = assertEq (concat "foo" "bar") "foobar" "concat" in
   let b = assertEq (concat "" "x") "x" "concat onto nothing" in
   let c = assertEq (concatAll ["a", "b", "c"]) "abc" "concatAll" in
@@ -255,14 +255,14 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let g = assertEq (repeat "ab" 3) "ababab" "repeat" in
   assertEq (repeat "ab" 0) "" "repeat none"
 
-@test fun lengthIsInBytes u =
+@test fun lengthIsInBytes () =
   let a = assertEq (byteLength "hello") 5 "ascii" in
   let b = assertTrue (isEmpty "") "isEmpty" in
   let c = assertFalse (isEmpty "x") "not empty" in
   -- Two bytes in UTF-8, and this module is honest about counting bytes.
   assertEq (byteLength "é") 2 "a multi-byte character"
 
-@test fun sliceTakeAndDropClamp u =
+@test fun sliceTakeAndDropClamp () =
   let a = assertEq (slice "hello" 1 3) "el" "slice" in
   let b = assertEq (take "hello" 2) "he" "take" in
   let c = assertEq (drop "hello" 2) "llo" "drop" in
@@ -270,12 +270,12 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let e = assertEq (slice "hi" 5 9) "" "wholly past the end" in
   assertEq (drop "hi" 99) "" "drop everything"
 
-@test fun byteAtIsBoundsChecked u =
+@test fun byteAtIsBoundsChecked () =
   let a = assertEq (byteAt "abc" 1) (Just 98) "in range" in
   let b = assertEq (byteAt "abc" 9) None "past the end" in
   assertEq (byteAt "abc" (0 - 1)) None "before the start"
 
-@test fun searching u =
+@test fun searching () =
   let a = assertEq (indexOf "l" "hello") (Just 2) "first occurrence" in
   let b = assertEq (indexOf "lo" "hello") (Just 3) "a longer needle" in
   let c = assertEq (indexOf "z" "hello") None "absent" in
@@ -285,7 +285,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let g = assertFalse (startsWith "hello!" "hello") "a needle longer than the haystack" in
   assertTrue (endsWith "llo" "hello") "endsWith"
 
-@test fun splittingAndLines u =
+@test fun splittingAndLines () =
   let a = assertEq (split "," "a,b,c") ["a", "b", "c"] "split" in
   let b = assertEq (split "," "a,,b") ["a", "", "b"] "adjacent separators leave gaps" in
   let c = assertEq (split "," "a") ["a"] "no separator" in
@@ -296,19 +296,19 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let f = assertEq (lines "a\nb\n") ["a", "b"] "one trailing newline is ignored" in
   assertEq (lines "") [] "no lines"
 
-@test fun trimming u =
+@test fun trimming () =
   let a = assertEq (trim "  hi  ") "hi" "trim" in
   let b = assertEq (trim "\t\nhi\r\n") "hi" "all the whitespace bytes" in
   let c = assertEq (trimStart "  hi  ") "hi  " "trimStart" in
   let d = assertEq (trimEnd "  hi  ") "  hi" "trimEnd" in
   assertEq (trim "   ") "" "all whitespace"
 
-@test fun asciiCaseConversion u =
+@test fun asciiCaseConversion () =
   let a = assertEq (toUpper "Hello, World!") "HELLO, WORLD!" "toUpper" in
   let b = assertEq (toLower "Hello, World!") "hello, world!" "toLower" in
   assertEq (toUpper "123") "123" "non-letters are left alone"
 
-@test fun numbersInAndOut u =
+@test fun numbersInAndOut () =
   let a = assertEq (fromInt 0) "0" "zero" in
   let b = assertEq (fromInt 1234) "1234" "positive" in
   let c = assertEq (fromInt (0 - 42)) "-42" "negative" in
@@ -319,7 +319,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let h = assertEq (toInt "-") None "a lone sign" in
   assertEq (toInt (fromInt 987654)) (Just 987654) "round trip"
 
-@test fun charactersAreNotBytes u =
+@test fun charactersAreNotBytes () =
   let a = assertEq (charLength "héllo") 5 "five characters" in
   let b = assertEq (byteLength "héllo") 6 "six bytes -- `é` takes two" in
   let c = assertEq (charAt "héllo" 1) (Just 'é') "charAt" in
@@ -327,6 +327,6 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let e = assertEq (fromChars (chars "round trip é")) "round trip é" "round trip" in
   assertEq (chars "hi") ['h', 'i'] "chars"
 
-@test fun bytesRoundTrip u =
+@test fun bytesRoundTrip () =
   let a = assertEq (fromBytes (toBytes "hello")) "hello" "round trip" in
   assertEq (toBytes "abc") #[97, 98, 99] "toBytes"

@@ -1,5 +1,5 @@
 ---
-source: tests/eval.rs
+source: meadow/tests/eval.rs
 expression: "eval_expr(\"(toFloat 7 /. 2.0, floor 3.9, floor (-2.1))\")"
 ---
 (3.5, 3, -3)

@@ -85,4 +85,4 @@ fun eval env e =
   | Expr.Bin op l r -> applyOp op (eval env l) (eval env r)
 
 -- Run an expression. `Err` carries whatever `raise` travelled with.
-@pub fun run e = toResult (\u -> showValue (eval [;] e))
+@pub fun run e = toResult (\() -> showValue (eval [;] e))

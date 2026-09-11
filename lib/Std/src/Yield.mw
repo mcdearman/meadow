@@ -8,6 +8,6 @@
 -- Reach it through `Std.Stream`, which re-exports `yield` -- there is no reason
 -- to name this module directly.
 
-@pub effect Yield a {
-  yield : a -> Unit,
+@pub(pack) effect Yield a {
+  yield : a -> (),
 }

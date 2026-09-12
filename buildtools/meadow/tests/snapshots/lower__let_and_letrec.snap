@@ -2,4 +2,5 @@
 source: meadow/tests/lower.rs
 expression: "core_ir(\"fun f n =\\n  let rec go k = if k == 0 then n else go (k - 1) in\\n  go 3\\n\")"
 ---
-v0 = (\v1. (letrec v2 = (\v3. (if (Eq v3 0) v1 (v2 (Sub v3 1)))) in (v2 3)))
+v0 : forall a b. (a -> a ! b)
+v0 = (/\a b. (\(v1 : a). (letrec v2 : forall c. (Int -> a ! c) = (/\c. (\(v3 : Int). (if (Eq v3 0) v1 ((v2 @c) (Sub v3 1))))) in ((v2 @b) 3))))

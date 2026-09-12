@@ -1,6 +1,5 @@
 ---
 source: meadow/tests/parser.rs
-assertion_line: 85
 expression: "parse_ast(\"data Thunk a = Thunk (() -> a)\\n\")"
 ---
 Module {

@@ -2,4 +2,5 @@
 source: meadow/tests/lower.rs
 expression: "core_ir(\"fun classify n = match n with | 0 -> \\\"z\\\" | _ -> \\\"nz\\\"\\n\")"
 ---
-v0 = (\v1. (case v1 of 0 -> "z"; _ -> "nz"))
+v0 : forall a. (Int -> String ! a)
+v0 = (/\a. (\(v1 : Int). (case v1 of 0 -> "z"; _ -> "nz")))

@@ -106,6 +106,10 @@ pub struct Lowered {
 /// Fresh names continue above the highest [`VarId`] the front end used, so an
 /// invented name can never collide with a real one.
 pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
+    // AxCut is untyped. Core's type abstractions and applications go first,
+    // in one pass, so that nothing below has to see through one — see
+    // [`core::erase`].
+    let program = &core::erase::program(program);
     let mut globals = HashMap::new();
     for (i, d) in program.defs.iter().enumerate() {
         globals.insert(d.var, (Label(i as u32), Vec::new()));
@@ -398,14 +402,19 @@ impl Lower {
             Term::Var(v) => env.contains(v),
             Term::Lit(_) => true,
             // Building a closure allocates, but it does not go anywhere.
+            // Erased before this pass runs.
+            Term::TyLam(..) | Term::TyApp(..) => false,
             Term::Lam(..) => true,
-            Term::Prim(_, xs) | Term::Ctor(_, xs) | Term::Tuple(xs) | Term::Array(xs) => {
+            Term::Prim(_, xs, _)
+            | Term::Ctor(_, _, xs)
+            | Term::Tuple(xs)
+            | Term::Array(xs, _) => {
                 xs.iter().all(|x| self.simple(x, env))
             }
             Term::Record(fs) => fs.iter().all(|(_, t)| self.simple(t, env)),
-            Term::Sel(t, _) | Term::Proj(t, _) => self.simple(t, env),
+            Term::Sel(t, _, _) | Term::Proj(t, _) => self.simple(t, env),
             Term::Extend(t, _, v) => self.simple(t, env) && self.simple(v, env),
-            Term::Let(x, rhs, body) => {
+            Term::Let(x, _, rhs, body) => {
                 let mut inner = env.to_vec();
                 inner.push(*x);
                 self.simple(rhs, env) && self.simple(body, &inner)
@@ -437,7 +446,7 @@ impl Lower {
 
             Term::Lit(l) => self.produces_as(Extern::Lit(l.clone()), vec![], env, name, f),
 
-            Term::Lam(param, body) => {
+            Term::Lam(param, _, body) => {
                 let want = self.wants(&[body], &[*param]);
                 let captures = restrict(env, &want);
                 let ik = self.fresh();
@@ -461,7 +470,7 @@ impl Lower {
                 }
             }
 
-            Term::Prim(p, args) => {
+            Term::Prim(p, args, _) => {
                 let p = *p;
                 // A literal operand rides along inside the `extern`, so it never
                 // becomes a name and never occupies a register.
@@ -475,7 +484,7 @@ impl Lower {
                 })
             }
 
-            Term::Ctor(ctor, args) => {
+            Term::Ctor(ctor, _, args) => {
                 let ctor = *ctor;
                 let tag = self.tag_of(ctor);
                 self.direct_all(args, env.to_vec(), move |this, fields, env1| {
@@ -491,7 +500,7 @@ impl Lower {
                 })
             }
 
-            Term::Array(items) => self.direct_all(items, env.to_vec(), move |this, xs, env1| {
+            Term::Array(items, _) => self.direct_all(items, env.to_vec(), move |this, xs, env1| {
                 this.produces_as(Extern::Array, xs, &env1, name, f)
             }),
 
@@ -503,7 +512,7 @@ impl Lower {
                 })
             }
 
-            Term::Sel(rec, label) => {
+            Term::Sel(rec, label, _) => {
                 let label = *label;
                 self.direct(
                     rec,
@@ -535,7 +544,7 @@ impl Lower {
                 })
             }
 
-            Term::Let(x, rhs, body) => {
+            Term::Let(x, _, rhs, body) => {
                 let x = *x;
                 self.direct(
                     rhs,
@@ -705,6 +714,10 @@ impl Lower {
     /// must contain `k`.
     fn expr(&mut self, e: &Term, env: &[Name], k: Name) -> Statement {
         match e {
+            // `lower_program` erased these; nothing below AxCut has types.
+            Term::TyLam(..) | Term::TyApp(..) => {
+                unreachable!("a type abstraction reached AxCut")
+            }
             Term::Var(v) if env.contains(v) => self.ret(k, *v),
 
             // A label: arrange exactly what its block takes and jump. `jump`
@@ -734,7 +747,7 @@ impl Lower {
             }),
 
             // Codata with one method: the argument, and where to send the answer.
-            Term::Lam(param, body) => {
+            Term::Lam(param, _, body) => {
                 let want = self.wants(&[body], &[*param]);
                 let captures = restrict(env, &want);
 
@@ -808,7 +821,7 @@ impl Lower {
                 )
             }
 
-            Term::Let(x, rhs, body) => {
+            Term::Let(x, _, rhs, body) => {
                 let mut want = self.wants(&[body], &[*x]);
                 want.insert(k);
                 let keep = restrict(env, &want);
@@ -824,8 +837,8 @@ impl Lower {
             // Lambda lifting: one label per binding, all sharing the group's
             // captured environment. See the module docs.
             Term::LetRec(binds, body) => {
-                let bound: Vec<Var> = binds.iter().map(|(v, _)| *v).collect();
-                let rhs: Vec<&Term> = binds.iter().map(|(_, t)| t).collect();
+                let bound: Vec<Var> = binds.iter().map(|(v, _, _)| *v).collect();
+                let rhs: Vec<&Term> = binds.iter().map(|(_, _, t)| t).collect();
                 let want = self.wants(&rhs, &bound);
                 let fvs = restrict(env, &want);
 
@@ -836,7 +849,7 @@ impl Lower {
                     self.globals.insert(*v, (*l, fvs.clone()));
                 }
 
-                for ((_, term), label) in binds.iter().zip(&labels) {
+                for ((_, _, term), label) in binds.iter().zip(&labels) {
                     let kk = self.fresh();
                     let mut params = fvs.clone();
                     params.push(kk);
@@ -863,7 +876,7 @@ impl Lower {
                 // transfer control — otherwise its operands are not values yet —
                 // which is exactly the case `bind` would have handled without a
                 // continuation anyway, so nothing else changes.
-                if let Term::Prim(p, cargs) = &**c {
+                if let Term::Prim(p, cargs, _) = &**c {
                     let p = *p;
                     if p.compares() && self.simple(c, env) {
                         let (op, operands) = match const_operand(p, cargs) {
@@ -917,7 +930,7 @@ impl Lower {
                 )
             }
 
-            Term::Prim(prim, args) => {
+            Term::Prim(prim, args, _) => {
                 let prim = *prim;
                 if let Some((x, l)) = const_operand(prim, args) {
                     return self.sequence(&[x], env, k, move |this, names, env1| {
@@ -933,7 +946,7 @@ impl Lower {
                 })
             }
 
-            Term::Ctor(name, args) => {
+            Term::Ctor(name, _, args) => {
                 let ctor = *name;
                 let tag = self.tag_of(ctor);
                 self.sequence(args, env, k, move |this, fields, _| {
@@ -965,7 +978,7 @@ impl Lower {
                 })
             }
 
-            Term::Array(items) => self.sequence(items, env, k, move |this, xs, env1| {
+            Term::Array(items, _) => self.sequence(items, env, k, move |this, xs, env1| {
                 this.produces(Extern::Array, xs, &env1, |this, out, _| this.ret(k, out))
             }),
 
@@ -979,7 +992,7 @@ impl Lower {
                 })
             }
 
-            Term::Sel(rec, label) => {
+            Term::Sel(rec, label, _) => {
                 let label = *label;
                 let keep = restrict(env, &[k].into_iter().collect());
                 self.bind(
@@ -1023,7 +1036,7 @@ impl Lower {
                 )
             }
 
-            Term::Case(scrutinee, arms) => {
+            Term::Case(scrutinee, arms, _) => {
                 let mut want = HashSet::new();
                 for (p, body) in arms {
                     let mut bound = Vec::new();
@@ -1041,7 +1054,7 @@ impl Lower {
                 )
             }
 
-            Term::Perform(effect, op, arg) => {
+            Term::Perform(effect, op, arg, _) => {
                 let (effect, op) = (*effect, *op);
                 let keep = restrict(env, &[k].into_iter().collect());
                 self.bind(
@@ -1058,7 +1071,7 @@ impl Lower {
                 )
             }
 
-            Term::Handle { body, clauses, ret } => self.handle(body, clauses, ret.as_ref(), env, k),
+            Term::Handle { body, clauses, ret, .. } => self.handle(body, clauses, ret.as_ref(), env, k),
 
             // A term the front end could not build. Lowering it to a statement
             // that fails is the faithful translation, not a gap.
@@ -1283,9 +1296,9 @@ impl Lower {
             // Binding is a rename: put the value at the end of the environment
             // under the pattern's name. `VarId`s are unique per binding site, so
             // this can never collide with something already there.
-            Pat::Var(v) => self.rebind(subject, *v, env, ok),
+            Pat::Var(v, _) => self.rebind(subject, *v, env, ok),
 
-            Pat::As(v, sub) => {
+            Pat::As(v, _, sub) => {
                 let v = *v;
                 self.rebind(
                     subject,
@@ -1492,7 +1505,7 @@ impl Lower {
         &mut self,
         body: &Term,
         clauses: &[core::HClause],
-        ret: Option<&(Var, std::sync::Arc<Term>)>,
+        ret: Option<&(Var, core::Ty, std::sync::Arc<Term>)>,
         env: &[Name],
         k: Name,
     ) -> Statement {
@@ -1531,7 +1544,7 @@ impl Lower {
         // moved it. See [`Statement::Unhandle`].
         let kb = self.fresh();
         let (x, ret_body) = match ret {
-            Some((p, t)) => (*p, Some(&**t)),
+            Some((p, _, t)) => (*p, Some(&**t)),
             None => (self.fresh(), None),
         };
         let caps_r = match ret_body {
@@ -1601,13 +1614,14 @@ fn restrict(env: &[Name], want: &HashSet<Var>) -> Vec<Name> {
 fn free_into(t: &Term, out: &mut HashSet<Var>) {
     fn go(t: &Term, bound: &mut Vec<Var>, out: &mut HashSet<Var>) {
         match t {
+            Term::TyLam(_, b) | Term::TyApp(b, _) => go(b, bound, out),
             Term::Var(v) => {
                 if !bound.contains(v) {
                     out.insert(*v);
                 }
             }
             Term::Lit(_) | Term::Error => {}
-            Term::Lam(p, b) => {
+            Term::Lam(p, _, b) => {
                 bound.push(*p);
                 go(b, bound, out);
                 bound.pop();
@@ -1616,17 +1630,17 @@ fn free_into(t: &Term, out: &mut HashSet<Var>) {
                 go(f, bound, out);
                 go(a, bound, out);
             }
-            Term::Let(x, r, b) => {
+            Term::Let(x, _, r, b) => {
                 go(r, bound, out);
                 bound.push(*x);
                 go(b, bound, out);
                 bound.pop();
             }
             Term::LetRec(binds, body) => {
-                for (v, _) in binds {
+                for (v, _, _) in binds {
                     bound.push(*v);
                 }
-                for (_, t) in binds {
+                for (_, _, t) in binds {
                     go(t, bound, out);
                 }
                 go(body, bound, out);
@@ -1639,17 +1653,17 @@ fn free_into(t: &Term, out: &mut HashSet<Var>) {
                 go(b, bound, out);
                 go(c, bound, out);
             }
-            Term::Tuple(xs) | Term::Array(xs) => {
+            Term::Tuple(xs) | Term::Array(xs, _) => {
                 for x in xs {
                     go(x, bound, out);
                 }
             }
-            Term::Ctor(_, xs) | Term::Prim(_, xs) => {
+            Term::Ctor(_, _, xs) | Term::Prim(_, xs, _) => {
                 for x in xs {
                     go(x, bound, out);
                 }
             }
-            Term::Proj(t, _) | Term::Sel(t, _) => go(t, bound, out),
+            Term::Proj(t, _) | Term::Sel(t, _, _) => go(t, bound, out),
             Term::Extend(t, _, u) => {
                 go(t, bound, out);
                 go(u, bound, out);
@@ -1659,8 +1673,8 @@ fn free_into(t: &Term, out: &mut HashSet<Var>) {
                     go(t, bound, out);
                 }
             }
-            Term::Perform(_, _, a) => go(a, bound, out),
-            Term::Case(s, arms) => {
+            Term::Perform(_, _, a, _) => go(a, bound, out),
+            Term::Case(s, arms, _) => {
                 go(s, bound, out);
                 for (p, t) in arms {
                     let before = bound.len();
@@ -1669,7 +1683,7 @@ fn free_into(t: &Term, out: &mut HashSet<Var>) {
                     bound.truncate(before);
                 }
             }
-            Term::Handle { body, clauses, ret } => {
+            Term::Handle { body, clauses, ret, .. } => {
                 go(body, bound, out);
                 for c in clauses {
                     bound.push(c.param);
@@ -1678,7 +1692,7 @@ fn free_into(t: &Term, out: &mut HashSet<Var>) {
                     bound.pop();
                     bound.pop();
                 }
-                if let Some((v, t)) = ret {
+                if let Some((v, _, t)) = ret {
                     bound.push(*v);
                     go(t, bound, out);
                     bound.pop();
@@ -1693,8 +1707,8 @@ fn free_into(t: &Term, out: &mut HashSet<Var>) {
 fn pat_vars(p: &Pat, out: &mut Vec<Var>) {
     match p {
         Pat::Wild | Pat::Lit(_) => {}
-        Pat::Var(v) => out.push(*v),
-        Pat::As(v, sub) => {
+        Pat::Var(v, _) => out.push(*v),
+        Pat::As(v, _, sub) => {
             out.push(*v);
             pat_vars(sub, out);
         }
@@ -1715,11 +1729,12 @@ fn pat_vars(p: &Pat, out: &mut Vec<Var>) {
 /// counter, where the distinction does not matter.
 fn mentions(t: &Term, out: &mut HashSet<Var>) {
     match t {
+        Term::TyLam(_, b) | Term::TyApp(b, _) => mentions(b, out),
         Term::Var(v) => {
             out.insert(*v);
         }
         Term::Lit(_) | Term::Error => {}
-        Term::Lam(p, b) => {
+        Term::Lam(p, _, b) => {
             out.insert(*p);
             mentions(b, out);
         }
@@ -1727,13 +1742,13 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
             mentions(f, out);
             mentions(a, out);
         }
-        Term::Let(x, r, b) => {
+        Term::Let(x, _, r, b) => {
             out.insert(*x);
             mentions(r, out);
             mentions(b, out);
         }
         Term::LetRec(binds, body) => {
-            for (v, t) in binds {
+            for (v, _, t) in binds {
                 out.insert(*v);
                 mentions(t, out);
             }
@@ -1744,17 +1759,17 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
             mentions(b, out);
             mentions(c, out);
         }
-        Term::Tuple(xs) | Term::Array(xs) => {
+        Term::Tuple(xs) | Term::Array(xs, _) => {
             for x in xs {
                 mentions(x, out);
             }
         }
-        Term::Ctor(_, xs) | Term::Prim(_, xs) => {
+        Term::Ctor(_, _, xs) | Term::Prim(_, xs, _) => {
             for x in xs {
                 mentions(x, out);
             }
         }
-        Term::Proj(t, _) | Term::Sel(t, _) => mentions(t, out),
+        Term::Proj(t, _) | Term::Sel(t, _, _) => mentions(t, out),
         Term::Extend(t, _, u) => {
             mentions(t, out);
             mentions(u, out);
@@ -1764,8 +1779,8 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
                 mentions(t, out);
             }
         }
-        Term::Perform(_, _, a) => mentions(a, out),
-        Term::Case(s, arms) => {
+        Term::Perform(_, _, a, _) => mentions(a, out),
+        Term::Case(s, arms, _) => {
             mentions(s, out);
             for (p, t) in arms {
                 let mut vs = Vec::new();
@@ -1774,14 +1789,14 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
                 mentions(t, out);
             }
         }
-        Term::Handle { body, clauses, ret } => {
+        Term::Handle { body, clauses, ret, .. } => {
             mentions(body, out);
             for c in clauses {
                 out.insert(c.param);
                 out.insert(c.resume);
                 mentions(&c.body, out);
             }
-            if let Some((v, t)) = ret {
+            if let Some((v, _, t)) = ret {
                 out.insert(*v);
                 mentions(t, out);
             }
@@ -1795,7 +1810,7 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
 fn lam_spine(t: &Term) -> (Vec<Var>, &Term) {
     let mut params = Vec::new();
     let mut cur = t;
-    while let Term::Lam(p, body) = cur {
+    while let Term::Lam(p, _, body) = cur {
         params.push(*p);
         cur = body;
     }

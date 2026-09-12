@@ -205,7 +205,7 @@ pub type FieldTable = std::collections::HashMap<InternedString, Vec<InternedStri
 #[derive(Debug, Clone)]
 pub struct HandlerData {
     clauses: Vec<core::HClause>,
-    ret: Option<(Var, Arc<Term>)>,
+    ret: Option<(Var, core::Ty, Arc<Term>)>,
 }
 
 /// One continuation frame: "given the value of the sub-expression currently being
@@ -360,6 +360,9 @@ fn load(program: &core::Program) -> Result<Env, RuntimeError> {
 /// program read input. The bytecode VM never had the problem: it reaches a
 /// definition by jumping to it, so one nothing refers to is never evaluated.
 fn load_except(program: &core::Program, skip: Option<Var>) -> Result<Env, RuntimeError> {
+    // This machine is untyped, like every other backend: core's type
+    // abstractions come off first. One pass, once per program load.
+    let program = &core::erase::program(program);
     let env = root_env();
     // Placeholders first so recursive top-level references resolve.
     for def in &program.defs {
@@ -414,7 +417,11 @@ impl Machine<'_> {
                 self.ctrl = Control::Ret(val);
             }
             T::Lit(l) => self.ctrl = Control::Ret(lit_value(l)),
-            T::Lam(param, body) => {
+            // Erased by `load_except`; this machine never sees a type.
+            T::TyLam(..) | T::TyApp(..) => {
+                unreachable!("a type abstraction reached the evaluator")
+            }
+            T::Lam(param, _, body) => {
                 self.ctrl = Control::Ret(Value::Closure {
                     param: *param,
                     body: body.clone(),
@@ -428,7 +435,7 @@ impl Machine<'_> {
                 });
                 self.ctrl = Control::Eval(f.clone(), env);
             }
-            T::Let(v, rhs, body) => {
+            T::Let(v, _, rhs, body) => {
                 self.kont.push(K::Bind {
                     var: *v,
                     body: body.clone(),
@@ -438,13 +445,17 @@ impl Machine<'_> {
             }
             T::LetRec(binds, body) => {
                 let scope = child(&env);
-                for (v, _) in binds {
+                for (v, _, _) in binds {
                     define(&scope, *v, Value::Unit);
                 }
                 // `pending` holds the not-yet-evaluated binds, innermost last; the
                 // last entry is always the one currently being evaluated (its slot
                 // gets filled when its value comes back — see `K::LetRec` in `ret`).
-                let pending: Vec<(Var, Term)> = binds.iter().rev().cloned().collect();
+                let pending: Vec<(Var, Term)> = binds
+                    .iter()
+                    .rev()
+                    .map(|(v, _, t)| (*v, t.clone()))
+                    .collect();
                 match pending.last().cloned() {
                     Some((_, rhs)) => {
                         self.kont.push(K::LetRec {
@@ -469,9 +480,9 @@ impl Machine<'_> {
                 self.ctrl = Control::Eval(c.clone(), env);
             }
             T::Tuple(items) => self.start_seq(items, env, SeqKind::Tuple),
-            T::Array(items) => self.start_seq(items, env, SeqKind::Array),
-            T::Ctor(name, args) => self.start_seq(args, env, SeqKind::Ctor(*name)),
-            T::Prim(op, args) => self.start_seq(args, env, SeqKind::Prim(*op)),
+            T::Array(items, _) => self.start_seq(items, env, SeqKind::Array),
+            T::Ctor(name, _, args) => self.start_seq(args, env, SeqKind::Ctor(*name)),
+            T::Prim(op, args, _) => self.start_seq(args, env, SeqKind::Prim(*op)),
             T::Record(fields) => {
                 let pending: Vec<(InternedString, Term)> =
                     fields.iter().rev().map(|(l, t)| (*l, t.clone())).collect();
@@ -491,7 +502,7 @@ impl Machine<'_> {
                 self.kont.push(K::Proj(*i));
                 self.ctrl = Control::Eval(t.clone(), env);
             }
-            T::Sel(t, label) => {
+            T::Sel(t, label, _) => {
                 self.kont.push(K::Sel(*label));
                 self.ctrl = Control::Eval(t.clone(), env);
             }
@@ -503,21 +514,21 @@ impl Machine<'_> {
                 });
                 self.ctrl = Control::Eval(rec.clone(), env);
             }
-            T::Case(scrut, arms) => {
+            T::Case(scrut, arms, _) => {
                 self.kont.push(K::Match {
                     arms: Rc::new(arms.clone()),
                     env: env.clone(),
                 });
                 self.ctrl = Control::Eval(scrut.clone(), env);
             }
-            T::Perform(effect, op, arg) => {
+            T::Perform(effect, op, arg, _) => {
                 self.kont.push(K::PerformWith {
                     effect: *effect,
                     op: *op,
                 });
                 self.ctrl = Control::Eval(arg.clone(), env);
             }
-            T::Handle { body, clauses, ret } => {
+            T::Handle { body, clauses, ret, .. } => {
                 let data = Rc::new(HandlerData {
                     clauses: clauses.clone(),
                     ret: ret.clone(),
@@ -764,7 +775,7 @@ impl Machine<'_> {
             K::HandleMark(data, henv) => {
                 // body returned normally — run the `return` clause (or identity)
                 match &data.ret {
-                    Some((param, body)) => {
+                    Some((param, _, body)) => {
                         let scope = child(&henv);
                         define(&scope, *param, v);
                         self.ctrl = Control::Eval(body.clone(), scope);
@@ -905,11 +916,11 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
     use core::Pat as P;
     match (pat, value) {
         (P::Wild, _) => true,
-        (P::Var(v), _) => {
+        (P::Var(v, _), _) => {
             define(scope, *v, value.clone());
             true
         }
-        (P::As(v, sub), _) => {
+        (P::As(v, _, sub), _) => {
             define(scope, *v, value.clone());
             match_pat(sub, value, scope)
         }
@@ -1978,11 +1989,7 @@ mod tests {
     fn eval_term(term: Term) -> Result<Value, RuntimeError> {
         let m = v();
         run(&Program {
-            defs: vec![core::Def {
-                var: m,
-                name: "main".into(),
-                term,
-            }],
+            defs: vec![core::Def::untyped(m, "main", term)],
             entry: Some(m),
             ..Default::default()
         })
@@ -1996,25 +2003,25 @@ mod tests {
     fn arithmetic_and_application() {
         // (\x -> x + 1) 41
         let x = v();
-        let body = Term::Prim(Prim::Add, vec![Term::Var(x), Term::Lit(Lit::Int(1))]);
-        let term = Term::App(Arc::new(Term::Lam(x, Arc::new(body))), int(41));
+        let body = Term::prim(Prim::Add, vec![Term::Var(x), Term::Lit(Lit::Int(1))]);
+        let term = Term::App(Arc::new(Term::lam(x, body)), int(41));
         assert_eq!(eval_term(term).unwrap().to_string(), "42");
     }
 
     #[test]
     fn if_and_let() {
         let x = v();
-        let term = Term::Let(
+        let term = Term::let_(
             x,
-            int(10),
-            Arc::new(Term::If(
-                Arc::new(Term::Prim(
+            Term::Lit(Lit::Int(10)),
+            Term::If(
+                Arc::new(Term::prim(
                     Prim::Lt,
                     vec![Term::Var(x), Term::Lit(Lit::Int(20))],
                 )),
                 int(1),
                 int(2),
-            )),
+            ),
         );
         assert_eq!(eval_term(term).unwrap().to_string(), "1");
     }
@@ -2022,8 +2029,8 @@ mod tests {
     #[test]
     fn list_cons_prepends() {
         // Lists are plain `Std` constructors: `Cons 0 (Cons 1 (Cons 2 Nil))`.
-        let cons = |h: Term, t: Term| Term::Ctor("List.Cons".into(), vec![h, t]);
-        let nil = Term::Ctor("List.Nil".into(), vec![]);
+        let cons = |h: Term, t: Term| Term::ctor("List.Cons", vec![h, t]);
+        let nil = Term::ctor("List.Nil", vec![]);
         let term = cons(
             Term::Lit(Lit::Int(0)),
             cons(Term::Lit(Lit::Int(1)), cons(Term::Lit(Lit::Int(2)), nil)),
@@ -2036,32 +2043,32 @@ mod tests {
         // letrec f = \n -> if n == 0 then 0 else n + f (n - 1) in f 5   => 15
         let f = v();
         let n = v();
-        let lam = Term::Lam(
+        let lam = Term::lam(
             n,
-            Arc::new(Term::If(
-                Arc::new(Term::Prim(
+                Term::If(
+                Arc::new(Term::prim(
                     Prim::Eq,
                     vec![Term::Var(n), Term::Lit(Lit::Int(0))],
                 )),
                 int(0),
-                Arc::new(Term::Prim(
+                Arc::new(Term::prim(
                     Prim::Add,
                     vec![
                         Term::Var(n),
                         Term::App(
                             Arc::new(Term::Var(f)),
-                            Arc::new(Term::Prim(
+                            Arc::new(Term::prim(
                                 Prim::Sub,
                                 vec![Term::Var(n), Term::Lit(Lit::Int(1))],
                             )),
                         ),
                     ],
                 )),
-            )),
+            ),
         );
-        let term = Term::LetRec(
+        let term = Term::letrec(
             vec![(f, lam)],
-            Arc::new(Term::App(Arc::new(Term::Var(f)), int(5))),
+            Term::App(Arc::new(Term::Var(f)), int(5)),
         );
         assert_eq!(eval_term(term).unwrap().to_string(), "15");
     }
@@ -2075,27 +2082,29 @@ mod tests {
         let k = v();
         let p = v();
         let x = v();
-        let get =
-            |_arg: Arc<Term>| Term::Perform("E".into(), "get".into(), Arc::new(Term::Lit(Lit::Unit)));
+        let get = |_arg: Arc<Term>| Term::perform("E", "get", Term::Lit(Lit::Unit));
         let discard = v();
-        let body = Term::Let(discard, Arc::new(get(int(0))), Arc::new(get(int(0))));
+        let body = Term::let_(discard, get(int(0)), get(int(0)));
         let term = Term::Handle {
             body: Arc::new(body),
             clauses: vec![HClause {
                 effect: "E".into(),
                 op: "get".into(),
                 param: p,
+                param_ty: core::unknown(),
                 resume: k,
+                resume_ty: core::unknown(),
                 body: Term::App(Arc::new(Term::Var(k)), int(7)),
             }],
-            ret: Some((x, Arc::new(Term::Var(x)))),
+            ret: Some((x, core::unknown(), Arc::new(Term::Var(x)))),
+            ty: core::unknown(),
         };
         assert_eq!(eval_term(term).unwrap().to_string(), "7");
     }
 
     #[test]
     fn unhandled_effect_errors() {
-        let term = Term::Perform("E".into(), "boom".into(), Arc::new(Term::Lit(Lit::Unit)));
+        let term = Term::perform("E", "boom", Term::Lit(Lit::Unit));
         let e = eval_term(term).unwrap_err();
         assert!(e.msg.contains("unhandled effect E.boom"), "{}", e.msg);
     }
@@ -2106,24 +2115,23 @@ mod tests {
         let k = v();
         let p = v();
         let term = Term::Handle {
-            body: Arc::new(Term::Perform(
-                "E".into(),
-                "op".into(),
-                Arc::new(Term::Lit(Lit::Unit)),
-            )),
+            body: Arc::new(Term::perform("E", "op", Term::Lit(Lit::Unit))),
             clauses: vec![HClause {
                 effect: "E".into(),
                 op: "op".into(),
                 param: p,
+                param_ty: core::unknown(),
                 resume: k,
+                resume_ty: core::unknown(),
                 // k 1 ; k 2
-                body: Term::Let(
+                body: Term::let_(
                     v(),
-                    Arc::new(Term::App(Arc::new(Term::Var(k)), int(1))),
-                    Arc::new(Term::App(Arc::new(Term::Var(k)), int(2))),
+                    Term::App(Arc::new(Term::Var(k)), int(1)),
+                    Term::App(Arc::new(Term::Var(k)), int(2)),
                 ),
             }],
             ret: None,
+            ty: core::unknown(),
         };
         let e = eval_term(term).unwrap_err();
         assert!(e.msg.contains("resumed more than once"), "{}", e.msg);
@@ -2149,16 +2157,15 @@ mod tests {
         let t = v();
         let program = Program {
             defs: vec![
-                core::Def {
-                    var: m,
-                    name: "main".into(),
-                    term: Term::Prim(Prim::Div, vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(0))]),
-                },
-                core::Def {
-                    var: t,
-                    name: "t".into(),
-                    term: Term::Lam(v(), int(7)),
-                },
+                core::Def::untyped(
+                    m,
+                    "main",
+                    Term::prim(
+                        Prim::Div,
+                        vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(0))],
+                    ),
+                ),
+                core::Def::untyped(t, "t", Term::lam(v(), Term::Lit(Lit::Int(7)))),
             ],
             entry: Some(m),
             ..Default::default()

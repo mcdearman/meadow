@@ -579,9 +579,27 @@ pub struct InferResult {
     pub table: TypeTable,
     /// Scheme for each top-level binding produced by this run, keyed by its `VarId`.
     pub schemes: HashMap<VarId, Scheme>,
+    /// Every binding this run generalized -- top-level *and* local -- with the
+    /// arena variables it quantified over.
+    ///
+    /// Lowering needs both halves. The scheme says what the binding's type is;
+    /// the variables say which of the type annotations scattered through its
+    /// body are the *same* variable, which is what a `TyLam` binds and a
+    /// `TyApp` supplies. Inference is the only pass that knows this, and it
+    /// knows it only while generalizing.
+    pub generalized: HashMap<VarId, Generalized>,
     /// Every data / record type's constructors, for the exhaustiveness checker.
     pub variants: VariantEnv,
     pub errors: Vec<Diagnostic>,
+}
+
+/// A generalized binding, as lowering needs to see it.
+#[derive(Debug, Clone)]
+pub struct Generalized {
+    pub scheme: Scheme,
+    /// The arena variable behind each quantifier, in quantifier order. A
+    /// monomorphic binding has none.
+    pub vars: Vec<u32>,
 }
 
 /// `type name -> its constructors`, covering this unit *and* its dependencies.
@@ -612,6 +630,9 @@ pub struct Infer {
     table: TypeTable,
     /// `VarId`s bound at module top level by this run (its exports).
     exports: Vec<VarId>,
+    /// Every binding generalized (or deliberately not) by this run — see
+    /// [`InferResult::generalized`].
+    generalized: HashMap<VarId, Generalized>,
     /// Data / record constructor schemes, e.g. `Leaf : ∀a. Vector a -> Node a`.
     ctors: HashMap<InternedString, Scheme>,
     /// The same information grouped by *type*, which is what an exhaustiveness
@@ -644,6 +665,7 @@ impl Infer {
             filename: filename.into(),
             arena: Arena::new(),
             env: HashMap::new(),
+            generalized: HashMap::new(),
             table: TypeTable::new(node_count),
             exports: Vec::new(),
             ctors: HashMap::new(),
@@ -770,9 +792,11 @@ impl Infer {
         for seed in &seeds {
             for (vid, ty) in seed {
                 let scheme = if pure {
-                    self.generalize(ty)
+                    self.generalize_named(Some(*vid), ty)
                 } else {
-                    Scheme::mono(self.arena.zonk(ty))
+                    let s = Scheme::mono(self.arena.zonk(ty));
+                    self.record_mono(*vid, &s);
+                    s
                 };
                 self.env.insert(*vid, scheme);
                 self.exports.push(*vid);
@@ -840,9 +864,29 @@ impl Infer {
                 schemes.insert(id, self.normalize_scheme(&scheme));
             }
         }
+        // Re-zonk: a variable can be solved after the binding that generalized
+        // over it was recorded, and core's annotations have to agree with the
+        // table's.
+        let generalized = self
+            .generalized
+            .iter()
+            .map(|(v, g)| {
+                (
+                    *v,
+                    Generalized {
+                        scheme: Scheme {
+                            quant: g.scheme.quant.clone(),
+                            ty: self.arena.zonk(&g.scheme.ty),
+                        },
+                        vars: g.vars.clone(),
+                    },
+                )
+            })
+            .collect();
         InferResult {
             table: self.table,
             schemes,
+            generalized,
             variants: self.variants,
             errors: self.errors,
         }
@@ -905,7 +949,7 @@ impl Infer {
                 self.cur_effect = saved;
                 self.arena.exit_level();
 
-                let scheme = self.generalize(&fn_ty);
+                let scheme = self.generalize_named(Some(vid), &fn_ty);
                 self.table.set(name.id, self.arena.zonk(&fn_ty));
                 self.env.insert(vid, scheme);
                 if toplevel {
@@ -937,9 +981,11 @@ impl Infer {
 
                 for (vid, vty) in bound {
                     let scheme = if pure {
-                        self.generalize(&vty)
+                        self.generalize_named(Some(vid), &vty)
                     } else {
-                        Scheme::mono(self.arena.zonk(&vty))
+                        let s = Scheme::mono(self.arena.zonk(&vty));
+                        self.record_mono(vid, &s);
+                        s
                     };
                     self.env.insert(vid, scheme);
                     if toplevel {
@@ -1555,15 +1601,38 @@ impl Infer {
         }
     }
 
-    fn generalize(&mut self, ty: &Type) -> Scheme {
+    /// Generalize, and record what was quantified under `vid`.
+    ///
+    /// The arena variables are kept, not just their count: a `TyLam` in core
+    /// binds them and the annotations inside the binding's body mention them,
+    /// so the two have to agree about which variable is which.
+    fn generalize_named(&mut self, vid: Option<VarId>, ty: &Type) -> Scheme {
         let z = self.arena.zonk(ty);
         let mut map = HashMap::new();
         let mut kinds = Vec::new();
         let body = self.arena.quantify(&z, &mut map, &mut kinds);
-        Scheme {
+        let scheme = Scheme {
             quant: kinds,
             ty: body,
+        };
+        if let Some(vid) = vid {
+            // `map` is arena var -> quantifier index; invert it.
+            let mut vars = vec![0u32; scheme.quant.len()];
+            for (&var, &idx) in &map {
+                vars[idx as usize] = var;
+            }
+            self.generalized.insert(vid, Generalized { scheme: scheme.clone(), vars });
         }
+        scheme
+    }
+
+    /// Record a binding that was *not* generalized, so lowering can find every
+    /// binding in one place.
+    fn record_mono(&mut self, vid: VarId, scheme: &Scheme) {
+        self.generalized.insert(
+            vid,
+            Generalized { scheme: scheme.clone(), vars: Vec::new() },
+        );
     }
 
     /// The declared result type of a binding, or a fresh variable when there is
@@ -2365,8 +2434,8 @@ mod tests {
         infer.arena.exit_level();
         let shallow = infer.arena.fresh();
 
-        assert_eq!(infer.generalize(&deep).quant.len(), 1);
-        assert_eq!(infer.generalize(&shallow).quant.len(), 0);
+        assert_eq!(infer.generalize_named(None, &deep).quant.len(), 1);
+        assert_eq!(infer.generalize_named(None, &shallow).quant.len(), 0);
     }
 }
 
@@ -2438,6 +2507,159 @@ impl Renderer {
         // Writing into a `String` cannot fail.
         let _ = Wrapper(&mut out).write_type(ty, &mut self.namer);
         out
+    }
+}
+
+/// A type with every row written in one canonical order.
+///
+/// A row is a *set* of labels: `{ io, Mut | e }` and `{ Mut, io | e }` are the
+/// same effect, and inference is free to build either. Anything that compares
+/// two types structurally — a rename check, the core type checker, the
+/// matcher below — has to put them in the same order first or it will reject
+/// a type for agreeing with itself.
+pub fn normalize(ty: &Type) -> Type {
+    match ty {
+        Type::Var(_) | Type::Bound(_) | Type::RowEmpty => ty.clone(),
+        Type::Con(n, args) => Type::Con(*n, args.iter().map(normalize).collect()),
+        Type::Fun(args, ret, eff) => Type::Fun(
+            args.iter().map(normalize).collect(),
+            Box::new(normalize(ret)),
+            Box::new(normalize(eff)),
+        ),
+        Type::Tuple(items) => Type::Tuple(items.iter().map(normalize).collect()),
+        Type::Record(row) => Type::Record(Box::new(normalize(row))),
+        Type::RowExtend(..) => {
+            let (mut labels, tail) = row_parts(ty);
+            // By name, and stable — a row may legitimately repeat a label
+            // (`{ Test, Test | e }` is what two nested handlers produce), and
+            // the repeats have to stay next to each other.
+            labels.sort_by(|(a, _), (b, _)| a.to_string().cmp(&b.to_string()));
+            labels.into_iter().rev().fold(
+                tail.as_ref().map_or(Type::RowEmpty, normalize),
+                |acc, (l, f)| Type::RowExtend(l, Box::new(normalize(&f)), Box::new(acc)),
+            )
+        }
+    }
+}
+
+/// Are these the same type, rows aside from their order?
+pub fn equal(a: &Type, b: &Type) -> bool {
+    normalize(a) == normalize(b)
+}
+
+/// The type arguments that instantiate `scheme` to `concrete`, in quantifier
+/// order — or `None` if `concrete` is not an instance of it.
+///
+/// One-way matching, not unification: `concrete` came from a use site that
+/// inference already checked, so it *is* a substitution instance, and this
+/// only has to read the substitution back off. Lowering needs it because
+/// instantiation happens by replacing quantifiers with fresh variables and
+/// then solving them — the arguments are never written down anywhere, and
+/// core has to write them down.
+pub fn match_scheme(scheme: &Scheme, concrete: &Type) -> Option<Vec<Type>> {
+    let mut out: HashMap<u32, Type> = HashMap::new();
+    if !match_ty(&scheme.ty, concrete, &mut out) {
+        return None;
+    }
+    // Some quantifiers can go unmentioned — a phantom row variable, or one that
+    // only appears under a part the match skipped. They are unconstrained, so
+    // any type will do, and the unit type is the least surprising one.
+    Some(
+        (0..scheme.quant.len() as u32)
+            .map(|i| match (out.get(&i), scheme.quant[i as usize]) {
+                (Some(t), _) => t.clone(),
+                (None, VarKind::Row) | (None, VarKind::Effect) => Type::RowEmpty,
+                (None, _) => Type::unit(),
+            })
+            .collect(),
+    )
+}
+
+fn match_ty(pat: &Type, conc: &Type, out: &mut HashMap<u32, Type>) -> bool {
+    match (pat, conc) {
+        // The one interesting case: a quantifier binds, or has to agree with
+        // what it bound earlier.
+        (Type::Bound(i), _) => match out.get(i) {
+            // Up to row order: the same variable can be matched against the
+            // same effect row written two different ways.
+            Some(prev) => equal(prev, conc),
+            None => {
+                out.insert(*i, normalize(conc));
+                true
+            }
+        },
+        (Type::Var(a), Type::Var(b)) => a == b,
+        (Type::RowEmpty, Type::RowEmpty) => true,
+        (Type::Con(n1, a1), Type::Con(n2, a2)) => {
+            n1 == n2
+                && a1.len() == a2.len()
+                && a1.iter().zip(a2).all(|(x, y)| match_ty(x, y, out))
+        }
+        (Type::Fun(p1, r1, e1), Type::Fun(p2, r2, e2)) => {
+            p1.len() == p2.len()
+                && p1.iter().zip(p2).all(|(x, y)| match_ty(x, y, out))
+                && match_ty(r1, r2, out)
+                && match_ty(e1, e2, out)
+        }
+        (Type::Tuple(a), Type::Tuple(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| match_ty(x, y, out))
+        }
+        (Type::Record(a), Type::Record(b)) => match_ty(a, b, out),
+        // A row is a set, not a list: the same labels can be written in either
+        // order, so find each of the pattern's labels in the concrete row and
+        // match what is left over against the pattern's tail.
+        (Type::RowExtend(..), _) => match_row(pat, conc, out),
+        _ => false,
+    }
+}
+
+/// Match a row pattern against a concrete row, label by label.
+fn match_row(pat: &Type, conc: &Type, out: &mut HashMap<u32, Type>) -> bool {
+    let (mut want, ptail) = row_parts(pat);
+    let (mut have, ctail) = row_parts(conc);
+    want.sort_by_key(|(l, _)| l.to_string());
+    have.sort_by_key(|(l, _)| l.to_string());
+
+    let mut leftover: Vec<(InternedString, Type)> = Vec::new();
+    for (label, field) in have {
+        match want.iter().position(|(l, _)| *l == label) {
+            Some(i) => {
+                let (_, pf) = want.remove(i);
+                if !match_ty(&pf, &field, out) {
+                    return false;
+                }
+            }
+            None => leftover.push((label, field)),
+        }
+    }
+    // Labels the pattern demanded and the row does not have.
+    if !want.is_empty() {
+        return false;
+    }
+    let rest = leftover
+        .into_iter()
+        .rev()
+        .fold(ctail.unwrap_or(Type::RowEmpty), |acc, (l, f)| {
+            Type::RowExtend(l, Box::new(f), Box::new(acc))
+        });
+    match ptail {
+        Some(t) => match_ty(&t, &rest, out),
+        None => rest == Type::RowEmpty,
+    }
+}
+
+/// A row as its labels and its tail (`None` when the row is closed).
+fn row_parts(mut ty: &Type) -> (Vec<(InternedString, Type)>, Option<Type>) {
+    let mut labels = Vec::new();
+    loop {
+        match ty {
+            Type::RowExtend(l, f, rest) => {
+                labels.push((*l, (**f).clone()));
+                ty = rest;
+            }
+            Type::RowEmpty => return (labels, None),
+            other => return (labels, Some(other.clone())),
+        }
     }
 }
 

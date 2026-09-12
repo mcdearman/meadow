@@ -1,0 +1,10 @@
+---
+source: meadow/tests/lower.rs
+expression: "core_ir(\"fun apply f x = f x\\n\\\n         def n = apply (\\\\y -> y + 1) 41\\n\\\n         def s = apply (\\\\t -> t) \\\"hi\\\"\\n\")"
+---
+v0 : forall a b c. ((a -> b ! c) -> (a -> b ! c))
+v0 = (/\a b c. (\(v1 : (a -> b ! c)). (\(v2 : a). (v1 v2))))
+v3 : Int
+v3 = (((v0 @Int @Int @d) (\(v4 : Int). (Add v4 1))) 41)
+v5 : String
+v5 = (((v0 @String @String @e) (\(v6 : String). v6)) "hi")

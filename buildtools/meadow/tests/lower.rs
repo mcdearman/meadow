@@ -64,3 +64,14 @@ fn operator_becomes_prim() {
 fn bare_operator_eta_expands() {
     insta::assert_snapshot!(core_ir("def plus = (+)\n"));
 }
+
+#[test]
+fn a_polymorphic_function_is_a_type_abstraction() {
+    // What makes core System F: `apply` binds its type variables, and each
+    // mention of it says what they are at that call.
+    insta::assert_snapshot!(core_ir(
+        "fun apply f x = f x\n\
+         def n = apply (\\y -> y + 1) 41\n\
+         def s = apply (\\t -> t) \"hi\"\n"
+    ));
+}

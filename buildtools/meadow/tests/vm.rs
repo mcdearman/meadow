@@ -179,6 +179,7 @@ fn calling(program: &core::Program, test: core::Var) -> core::Program {
     defs.push(core::Def {
         var: entry,
         name: "<test>".into(),
+        poly: core::Poly::mono(core::unknown()),
         term: core::Term::App(
             std::sync::Arc::new(core::Term::Var(test)),
             std::sync::Arc::new(core::Term::Lit(core::Lit::Unit)),

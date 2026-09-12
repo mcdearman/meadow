@@ -90,6 +90,9 @@ pub fn run_tests(
                     // same program always produce the same image.
                     var: meadow_compiler::hir::VarId::synthetic(i as u32),
                     name: "<test>".into(),
+                    // Whatever the test returns; nothing reads it, and this
+                    // definition is built after type checking is over.
+                    poly: core::Poly::mono(core::unknown()),
                     term: core::Term::App(
                         std::sync::Arc::new(core::Term::Var(*var)),
                         std::sync::Arc::new(core::Term::Lit(core::Lit::Unit)),

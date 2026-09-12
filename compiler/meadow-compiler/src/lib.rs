@@ -26,11 +26,17 @@
 //!   hir::Module                   nodes stamped with hir::NodeId; names → hir::VarId
 //!    │  infer::Infer              Algorithm J
 //!    ▼
-//!   infer::TypeTable             NodeId → Type, plus a Scheme per top-level binding
-//!    │  core::Lowerer            hir → core (an extended lambda calculus)
+//!   infer::TypeTable             NodeId → Type, plus a Scheme per binding
+//!    │  core::Lowerer            hir → core (System F: every binder typed,
+//!    ▼                           every instantiation written out)
+//!   Vec<core::Def>
+//!    │  core::lint::check        the types check (debug builds and tests)
 //!    ▼
 //!   Vec<core::Def>
 //!    │  meadow::linker::Linker   concatenate packages, find `main`   (in the `meadow` crate)
+//!    ▼
+//!   core::Program
+//!    │  core::erase              types off; everything below is untyped
 //!    ▼
 //!   core::Program
 //!    │  meadow_eval::run         CEK abstract machine                (in the `eval` crate)

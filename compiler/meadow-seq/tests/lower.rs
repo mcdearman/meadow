@@ -16,11 +16,7 @@ use std::sync::Arc;
 fn main_def(term: Term) -> Program {
     let var = VarId(100);
     Program {
-        defs: vec![Def {
-            var,
-            name: "main".into(),
-            term,
-        }],
+        defs: vec![Def::untyped(var, "main", term)],
         entry: Some(var),
         ctor_fields: Default::default(),
     }
@@ -46,10 +42,10 @@ fn every_block_binds_the_whole_environment() {
     // parameter list would be shorter than the environment reaching it, and the
     // AxCut machine would refuse to enter it. Here we check the static side:
     // every `substitute` supplies exactly as many values as its block takes.
-    let term = Term::Prim(
+    let term = Term::prim(
         Prim::Mul,
         vec![
-            Term::Prim(Prim::Add, vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(2))]),
+            Term::prim(Prim::Add, vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(2))]),
             Term::Lit(Lit::Int(3)),
         ],
     );
@@ -80,7 +76,7 @@ fn calling_a_lambda_is_a_permutation_and_a_branch() {
     // IR promises: rearrange the registers, then jump into the method.
     let x = VarId(1);
     let term = Term::App(
-        Arc::new(Term::Lam(x, Arc::new(Term::Var(x)))),
+        Arc::new(Term::lam(x, (Term::Var(x)))),
         Arc::new(Term::Lit(Lit::Int(1))),
     );
     let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
@@ -110,16 +106,8 @@ fn a_global_reference_is_a_jump_with_the_environment_untouched() {
     let m = VarId(51);
     let program = Program {
         defs: vec![
-            Def {
-                var: g,
-                name: "g".into(),
-                term: Term::Lit(Lit::Int(7)),
-            },
-            Def {
-                var: m,
-                name: "main".into(),
-                term: Term::Var(g),
-            },
+            Def::untyped(g, "g", Term::Lit(Lit::Int(7))),
+            Def::untyped(m, "main", Term::Var(g)),
         ],
         entry: Some(m),
         ctor_fields: Default::default(),
@@ -159,19 +147,19 @@ fn a_match_becomes_a_switch_with_a_default() {
     // `match x with | Just y -> y | _ -> 0`, as core builds it.
     let x = VarId(1);
     let y = VarId(2);
-    let term = Term::Let(
+    let term = Term::let_(
         x,
-        Arc::new(Term::Ctor("Just".into(), vec![Term::Lit(Lit::Int(9))])),
-        Arc::new(Term::Case(
-            Arc::new(Term::Var(x)),
+        Term::ctor("Just", vec![Term::Lit(Lit::Int(9))]),
+        Term::case(
+            Term::Var(x),
             vec![
                 (
-                    meadow_core::Pat::Ctor("Just".into(), vec![meadow_core::Pat::Var(y)]),
+                    meadow_core::Pat::Ctor("Just".into(), vec![meadow_core::Pat::var(y)]),
                     Term::Var(y),
                 ),
                 (meadow_core::Pat::Wild, Term::Lit(Lit::Int(0))),
             ],
-        )),
+        ),
     );
     let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
@@ -205,22 +193,22 @@ fn a_letrec_becomes_labels_sharing_one_parameter_list() {
     let g = VarId(3);
     let a = VarId(4);
     let b = VarId(5);
-    let term = Term::Let(
+    let term = Term::let_(
         n,
-        Arc::new(Term::Lit(Lit::Int(1))),
-        Arc::new(Term::LetRec(
+        Term::Lit(Lit::Int(1)),
+        Term::letrec(
             vec![
                 (
                     f,
-                    Term::Lam(a, Arc::new(Term::App(Arc::new(Term::Var(g)), Arc::new(Term::Var(a))))),
+                    Term::lam(a, Term::App(Arc::new(Term::Var(g)), Arc::new(Term::Var(a)))),
                 ),
                 (
                     g,
-                    Term::Lam(b, Arc::new(Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Var(n))))),
+                    Term::lam(b, Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Var(n)))),
                 ),
             ],
-            Arc::new(Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Lit(Lit::Int(0))))),
-        )),
+            Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Lit(Lit::Int(0)))),
+        ),
     );
     let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
@@ -277,7 +265,7 @@ fn walk(s: &Statement, f: &mut impl FnMut(&Statement)) {
 /// instruction.
 #[test]
 fn a_literal_operand_is_folded_into_the_primitive() {
-    let term = Term::Prim(
+    let term = Term::prim(
         Prim::Sub,
         vec![Term::Lit(Lit::Int(7)), Term::Lit(Lit::Int(1))],
     );
@@ -308,17 +296,17 @@ fn a_literal_operand_is_folded_into_the_primitive() {
 #[test]
 fn a_comparison_fuses_into_the_branch_that_tests_it() {
     let n = VarId(1);
-    let term = Term::Let(
+    let term = Term::let_(
         n,
-        Arc::new(Term::Lit(Lit::Int(3))),
-        Arc::new(Term::If(
-            Arc::new(Term::Prim(
+        Term::Lit(Lit::Int(3)),
+        Term::If(
+            Arc::new(Term::prim(
                 Prim::Eq,
                 vec![Term::Var(n), Term::Lit(Lit::Int(0))],
             )),
             Arc::new(Term::Lit(Lit::Int(1))),
             Arc::new(Term::Lit(Lit::Int(2))),
-        )),
+        ),
     );
     let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
 
@@ -349,22 +337,18 @@ fn case_trees_replace_the_chain_at_o2() {
     // `match x with | Nothing -> 0 | Just y -> y | _ -> 0`
     let x = VarId(1);
     let y = VarId(2);
-    let case = Term::Case(
-        Arc::new(Term::Var(x)),
+    let case = Term::case(
+        Term::Var(x),
         vec![
             (Pat::Ctor("Nothing".into(), vec![]), Term::Lit(Lit::Int(0))),
             (
-                Pat::Ctor("Just".into(), vec![Pat::Var(y)]),
+                Pat::Ctor("Just".into(), vec![Pat::var(y)]),
                 Term::Var(y),
             ),
             (Pat::Wild, Term::Lit(Lit::Int(0))),
         ],
     );
-    let term = Term::Let(
-        x,
-        Arc::new(Term::Ctor("Just".into(), vec![Term::Lit(Lit::Int(9))])),
-        Arc::new(case),
-    );
+    let term = Term::let_(x, Term::ctor("Just", vec![Term::Lit(Lit::Int(9))]), case);
 
     let arms_at = |opt| {
         let lowered = lower_program(&main_def(term.clone()), opt);

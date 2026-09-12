@@ -306,6 +306,7 @@ pub fn compile_unit_in_package(
     let InferResult {
         table,
         schemes,
+        generalized,
         variants,
         errors,
     } = infer.finish();
@@ -331,13 +332,51 @@ pub fn compile_unit_in_package(
         .map(|(id, eff, op)| (id, (eff, op)))
         .collect();
     let ctor_arity = resolver.ctor_arities();
-    let mut lowerer =
-        core::Lowerer::new(&prims, &names, &effect_ops, &table, &ctor_arity, resolver.var_gen());
+    // Every polymorphic name a mention could refer to: this unit's bindings,
+    // and the ones its dependencies exported. Lowering needs them to give each
+    // mention its type arguments.
+    let mut all_schemes: HashMap<VarId, Scheme> = dep_schemes.iter().cloned().collect();
+    for (var, g) in &generalized {
+        all_schemes.insert(*var, g.scheme.clone());
+    }
+    let mut lowerer = core::Lowerer::new(
+        &prims,
+        &names,
+        &effect_ops,
+        &table,
+        &ctor_arity,
+        &generalized,
+        &all_schemes,
+        resolver.var_gen(),
+    );
     let mut defs = Vec::new();
     for m in &typed {
         defs.extend(lowerer.lower_module(&m.hir));
     }
     let var_end = lowerer.var_end();
+
+    // --- lint (debug builds and tests only)
+    //
+    // Core is typed so that a pass over it can be checked; this is where the
+    // checking happens. A failure is a compiler bug, not a program error, so
+    // it is loud, and it costs a release build nothing.
+    //
+    // Only for a unit that compiled cleanly: the core of a program with type
+    // errors in it is ill-typed, and saying so twice helps nobody.
+    if cfg!(debug_assertions) && diags.is_empty() {
+        let program = core::Program {
+            defs: defs.clone(),
+            entry: None,
+            ctor_fields: lowerer.ctor_fields.clone(),
+        };
+        let imported: HashMap<VarId, Scheme> = dep_schemes.iter().cloned().collect();
+        let problems = core::lint::check(&program, &variants, &imported);
+        assert!(
+            problems.is_empty(),
+            "core lint failed after lowering `{filename}`:\n{}",
+            problems.join("\n")
+        );
+    }
     // Drop the `&table` borrow held by `lowerer` before `table` is moved below.
     let ctor_fields = lowerer.ctor_fields;
 

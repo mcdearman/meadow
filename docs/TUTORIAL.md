@@ -1407,13 +1407,13 @@ fun versionOf tool =
 
 def main =
   handle versionOf "meadow" with {
-    spawn cmd k -> k (Ok (0, "meadow 0.2.0", "")),
+    spawn cmd k -> k (Ok (0, "meadow 0.2.1", "")),
     return x -> x
   }
 ```
 
 ```
-=> "meadow 0.2.0"
+=> "meadow 0.2.1"
 ```
 
 `spawn` captures stdout and stderr and gives you `(status, out, err)` — pick them

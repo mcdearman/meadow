@@ -2,4 +2,5 @@
 source: meadow/tests/lower.rs
 expression: "core_ir(\"fun add a b = a + b\\n\")"
 ---
-v0 = (\v1. (\v2. (Add v1 v2)))
+v0 : forall a. (Int -> (Int -> Int ! a))
+v0 = (/\a. (\(v1 : Int). (\(v2 : Int). (Add v1 v2))))

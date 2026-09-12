@@ -1,13 +1,49 @@
-//! Core: a small extended lambda calculus that every front-end feature lowers to.
+//! **Core: a typed lambda calculus that every front-end feature lowers to.**
 //!
-//! Inference runs on the HIR; once a program type-checks we translate it here. Core
-//! is deliberately tiny — single-argument lambdas/applications, explicit recursion,
-//! primitive ops already resolved, pattern matching reduced to `Case` + tuple/record
-//! projection. Later optimization passes will chew on this, and the `meadow-eval` crate
-//! walks it directly.
+//! Inference runs on the HIR; once a program type-checks we translate it here.
+//! Core is deliberately tiny — single-argument lambdas and applications,
+//! explicit recursion, primitives already resolved, pattern matching reduced to
+//! `Case` plus tuple and record projection.
+//!
+//! # Why it is typed
+//!
+//! It is **System F**, near enough: every binder carries its type, every
+//! generalized binding is a [`Term::TyLam`], and every mention of a
+//! polymorphic name is a [`Term::TyApp`] carrying the types it was
+//! instantiated at. So each term has exactly one type, computable in one
+//! bottom-up pass with nothing to infer — which is what makes [`lint`] cheap
+//! and total, and what makes an optimisation pass *checkable*.
+//!
+//! That is the whole reason for the types. An inlining that substitutes the
+//! wrong type, a specialization that drops a type argument, a `case` rebuilt
+//! with an arm of the wrong type — each is a miscompile that runs, and runs
+//! wrong. GHC's answer is a typed core and `-dcore-lint`; this is the same
+//! answer, and the lint runs after every pass in a debug build and in the
+//! whole test suite.
+//!
+//! Two conventions are worth knowing before reading the types:
+//!
+//! * A core type is an [`meadow_infer::Type`] in which **`Var(n)` is a rigid
+//!   type variable** — bound by an enclosing `TyLam`, never solved by
+//!   anything. `Bound` does not appear; a core polytype ([`Poly`]) writes its
+//!   binders down instead of numbering them.
+//! * [`unknown`] is the type of something the compiler could not type, which
+//!   only happens in a unit that already has errors. The lint accepts it
+//!   anywhere.
+//!
+//! # What is downstream
+//!
+//! Nothing. [`erase`] drops the type abstractions on the way out, and AxCut,
+//! the bytecode machine and the CEK evaluator are all untyped: none of them
+//! can ask a question a type would answer.
+
+pub mod erase;
+pub mod lint;
+pub mod lower;
+pub use lower::Lowerer;
 
 use meadow_hir as hir;
-use meadow_infer::{Type as InferType, TypeTable};
+use meadow_infer::{Generalized, Scheme, Type as InferType, TypeTable, VarKind};
 use meadow_intern::InternedString;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -278,11 +314,133 @@ impl Prim {
 
 pub type Var = hir::VarId;
 
+/// A type, as core writes them.
+///
+/// The same representation inference uses, with one reinterpretation that is
+/// the whole of core's type discipline: **`Type::Var(n)` is a rigid type
+/// variable**, with an id unique across the compilation unit, bound by an
+/// enclosing [`Term::TyLam`] or by a [`Def`]'s [`Poly`]. It is not a
+/// unification variable — nothing in core solves anything — and
+/// `Type::Bound` never appears here at all, since a core polytype writes its
+/// binders down rather than numbering them.
+pub type Ty = InferType;
+
+/// A rigid type variable: its id, and what sort of thing it ranges over
+/// (an ordinary type, a record row, an effect row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TyVar {
+    pub id: u32,
+    pub kind: VarKind,
+}
+
+/// A polytype — `forall (a : k) …. t` — as a definition or a `let` binder
+/// carries it. Monomorphic when `binders` is empty, which is the common case.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Poly {
+    pub binders: Vec<TyVar>,
+    pub ty: Ty,
+}
+
+impl Poly {
+    pub fn mono(ty: Ty) -> Poly {
+        Poly { binders: Vec::new(), ty }
+    }
+
+    pub fn is_mono(&self) -> bool {
+        self.binders.is_empty()
+    }
+
+    /// The type this polytype takes at `args`, one per binder.
+    ///
+    /// Substituting rather than unifying: core says what the arguments are, so
+    /// instantiation is a walk.
+    pub fn instantiate(&self, args: &[Ty]) -> Ty {
+        if self.binders.is_empty() {
+            return self.ty.clone();
+        }
+        let map: HashMap<u32, Ty> = self
+            .binders
+            .iter()
+            .zip(args)
+            .map(|(b, a)| (b.id, a.clone()))
+            .collect();
+        subst_rigid(&self.ty, &map)
+    }
+}
+
+/// The type of something the compiler could not type: a node inference never
+/// reached, or a type argument that could not be recovered. Both only happen
+/// in a unit that already has errors, and [`crate::lint`] accepts it anywhere
+/// rather than piling a second complaint on the first.
+pub fn unknown() -> Ty {
+    InferType::Con(InternedString::from("?"), Vec::new())
+}
+
+/// Is this the placeholder [`unknown`] type?
+pub fn is_unknown(ty: &Ty) -> bool {
+    matches!(ty, InferType::Con(n, args) if args.is_empty() && &**n == "?")
+}
+
+/// Replace a scheme's numbered quantifiers by types — the bridge from an
+/// inference `Scheme` to a core [`Poly`], whose binders are named.
+pub fn subst_bound(ty: &Ty, map: &HashMap<u32, Ty>) -> Ty {
+    match ty {
+        InferType::Bound(i) => map.get(i).cloned().unwrap_or_else(|| ty.clone()),
+        InferType::Var(_) | InferType::RowEmpty => ty.clone(),
+        InferType::Con(n, args) => {
+            InferType::Con(*n, args.iter().map(|a| subst_bound(a, map)).collect())
+        }
+        InferType::Fun(args, ret, eff) => InferType::Fun(
+            args.iter().map(|a| subst_bound(a, map)).collect(),
+            Box::new(subst_bound(ret, map)),
+            Box::new(subst_bound(eff, map)),
+        ),
+        InferType::Tuple(items) => {
+            InferType::Tuple(items.iter().map(|a| subst_bound(a, map)).collect())
+        }
+        InferType::Record(row) => InferType::Record(Box::new(subst_bound(row, map))),
+        InferType::RowExtend(label, field, rest) => InferType::RowExtend(
+            *label,
+            Box::new(subst_bound(field, map)),
+            Box::new(subst_bound(rest, map)),
+        ),
+    }
+}
+
+/// Replace rigid type variables by types.
+pub fn subst_rigid(ty: &Ty, map: &HashMap<u32, Ty>) -> Ty {
+    match ty {
+        InferType::Var(v) => map.get(v).cloned().unwrap_or_else(|| ty.clone()),
+        InferType::Bound(_) | InferType::RowEmpty => ty.clone(),
+        InferType::Con(n, args) => InferType::Con(
+            *n,
+            args.iter().map(|a| subst_rigid(a, map)).collect(),
+        ),
+        InferType::Fun(args, ret, eff) => InferType::Fun(
+            args.iter().map(|a| subst_rigid(a, map)).collect(),
+            Box::new(subst_rigid(ret, map)),
+            Box::new(subst_rigid(eff, map)),
+        ),
+        InferType::Tuple(items) => {
+            InferType::Tuple(items.iter().map(|a| subst_rigid(a, map)).collect())
+        }
+        InferType::Record(row) => InferType::Record(Box::new(subst_rigid(row, map))),
+        InferType::RowExtend(label, field, rest) => InferType::RowExtend(
+            *label,
+            Box::new(subst_rigid(field, map)),
+            Box::new(subst_rigid(rest, map)),
+        ),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pat {
     Wild,
-    Var(Var),
-    As(Var, Box<Pat>),
+    /// A bound variable and the type it is bound at. Annotated like every other
+    /// binder: the checker types an arm's body in an environment built from
+    /// this, rather than working the types out from the scrutinee itself.
+    Var(Var, Ty),
+    As(Var, Ty, Box<Pat>),
     Lit(Lit),
     Tuple(Vec<Pat>),
     /// `#[p, …]` — matches a builtin `Array` of exactly this length.
@@ -298,32 +456,127 @@ pub enum Pat {
 pub enum Term {
     Var(Var),
     Lit(Lit),
-    Lam(Var, Arc<Term>),
+    /// `\(x : T) -> e`
+    Lam(Var, Ty, Arc<Term>),
+    /// `/\(a : k) … -> e` — the type abstraction a generalized binding gets.
+    /// Its binders are what the annotations inside `e` refer to.
+    TyLam(Vec<TyVar>, Arc<Term>),
     App(Arc<Term>, Arc<Term>),
-    Let(Var, Arc<Term>, Arc<Term>),
-    LetRec(Vec<(Var, Term)>, Arc<Term>),
+    /// `e [T, …]` — the instantiation of a polymorphic binding, written out.
+    /// Every mention of a polymorphic name is wrapped in one of these.
+    TyApp(Arc<Term>, Vec<Ty>),
+    Let(Var, Poly, Arc<Term>, Arc<Term>),
+    LetRec(Vec<(Var, Poly, Term)>, Arc<Term>),
     If(Arc<Term>, Arc<Term>, Arc<Term>),
     Tuple(Vec<Term>),
     Proj(Arc<Term>, usize),
     /// `#[e, …]` — a builtin `Array` literal. The *only* built-in collection:
     /// `List` and `Vector` are ordinary `Std` data types and lower to `Ctor`.
-    Array(Vec<Term>),
+    /// The type is the element type, which an empty literal could not otherwise
+    /// supply.
+    Array(Vec<Term>, Ty),
     Record(Vec<(InternedString, Term)>),
-    Sel(Arc<Term>, InternedString),
+    Sel(Arc<Term>, InternedString, Ty),
     Extend(Arc<Term>, InternedString, Arc<Term>),
-    Ctor(InternedString, Vec<Term>),
-    Case(Arc<Term>, Vec<(Pat, Term)>),
-    Prim(Prim, Vec<Term>),
-    /// `perform Effect.op arg` — an algebraic-effect operation call.
-    Perform(InternedString, InternedString, Arc<Term>),
+    /// A saturated constructor application, with the type it builds — from
+    /// which the checker instantiates the constructor's field types.
+    Ctor(InternedString, Ty, Vec<Term>),
+    /// `case scrut of …` and the type every arm has to produce.
+    Case(Arc<Term>, Vec<(Pat, Term)>, Ty),
+    Prim(Prim, Vec<Term>, Ty),
+    /// `perform Effect.op arg` — an algebraic-effect operation call, and the
+    /// type it resumes with.
+    Perform(InternedString, InternedString, Arc<Term>, Ty),
     /// `handle body with { … }` — an effect handler.
     Handle {
         body: Arc<Term>,
         clauses: Vec<HClause>,
         /// `return x -> e` — defaults to the identity when absent.
-        ret: Option<(Var, Arc<Term>)>,
+        ret: Option<(Var, Ty, Arc<Term>)>,
+        /// What the whole `handle` produces.
+        ty: Ty,
     },
+    /// A term that failed to compile. Well-typed at any type, on purpose: it
+    /// only exists in a unit that already has errors, and the checker has
+    /// nothing useful to say about it.
     Error,
+}
+
+impl Term {
+    // --- untyped constructors -------------------------------------------
+    //
+    // For terms built where no type is available or wanted: a test, or code
+    // the driver invents after type checking is over (the entry point the
+    // test runner wraps around a `@test` function, say). They annotate with
+    // [`unknown`], which [`crate::lint`] accepts anywhere.
+
+    pub fn lam(v: Var, body: Term) -> Term {
+        Term::Lam(v, unknown(), Arc::new(body))
+    }
+
+    pub fn let_(v: Var, rhs: Term, body: Term) -> Term {
+        Term::Let(v, Poly::mono(unknown()), Arc::new(rhs), Arc::new(body))
+    }
+
+    pub fn letrec(binds: Vec<(Var, Term)>, body: Term) -> Term {
+        Term::LetRec(
+            binds
+                .into_iter()
+                .map(|(v, t)| (v, Poly::mono(unknown()), t))
+                .collect(),
+            Arc::new(body),
+        )
+    }
+
+    pub fn prim(op: Prim, args: Vec<Term>) -> Term {
+        Term::Prim(op, args, unknown())
+    }
+
+    pub fn ctor(name: impl Into<InternedString>, args: Vec<Term>) -> Term {
+        Term::Ctor(name.into(), unknown(), args)
+    }
+
+    pub fn case(scrut: Term, arms: Vec<(Pat, Term)>) -> Term {
+        Term::Case(Arc::new(scrut), arms, unknown())
+    }
+
+    pub fn array(items: Vec<Term>) -> Term {
+        Term::Array(items, unknown())
+    }
+
+    pub fn sel(rec: Term, label: impl Into<InternedString>) -> Term {
+        Term::Sel(Arc::new(rec), label.into(), unknown())
+    }
+
+    pub fn perform(
+        effect: impl Into<InternedString>,
+        op: impl Into<InternedString>,
+        arg: Term,
+    ) -> Term {
+        Term::Perform(effect.into(), op.into(), Arc::new(arg), unknown())
+    }
+}
+
+impl Pat {
+    pub fn var(v: Var) -> Pat {
+        Pat::Var(v, unknown())
+    }
+
+    pub fn as_(v: Var, sub: Pat) -> Pat {
+        Pat::As(v, unknown(), Box::new(sub))
+    }
+}
+
+impl Def {
+    /// A definition with no type worth stating — see [`Term::lam`] and friends.
+    pub fn untyped(var: Var, name: impl Into<InternedString>, term: Term) -> Def {
+        Def {
+            var,
+            name: name.into(),
+            poly: Poly::mono(unknown()),
+            term,
+        }
+    }
 }
 
 /// One operation clause of a handler: `op param resume -> body`. `resume` is bound
@@ -333,7 +586,11 @@ pub struct HClause {
     pub effect: InternedString,
     pub op: InternedString,
     pub param: Var,
+    /// The operation's argument type.
+    pub param_ty: Ty,
     pub resume: Var,
+    /// `resume`'s type: `a -> r` from the operation's result to the handler's.
+    pub resume_ty: Ty,
     pub body: Term,
 }
 
@@ -341,6 +598,9 @@ pub struct HClause {
 pub struct Def {
     pub var: Var,
     pub name: InternedString,
+    /// The definition's type. A polymorphic one's `term` is a [`Term::TyLam`]
+    /// binding exactly these binders.
+    pub poly: Poly,
     pub term: Term,
 }
 
@@ -364,6 +624,7 @@ impl Program {
         let mut out = String::new();
         for d in &self.defs {
             let v = p.var(d.var);
+            out.push_str(&format!("{v} : {}\n", p.poly(&d.poly)));
             out.push_str(&format!("{v} = {}\n", p.term(&d.term)));
         }
         if let Some(e) = self.entry {
@@ -377,9 +638,103 @@ impl Program {
 struct Printer {
     names: HashMap<Var, String>,
     next: u32,
+    /// Rigid type variables, named in first-occurrence order for the same
+    /// reason values are: their ids come from the inference arena and mean
+    /// nothing to a reader.
+    tyvars: HashMap<u32, String>,
+    next_ty: u32,
 }
 
 impl Printer {
+    /// A rigid type variable's printed name: `a`, `b`, … then `a1`, `b1`.
+    fn tyvar(&mut self, id: u32) -> String {
+        if let Some(s) = self.tyvars.get(&id) {
+            return s.clone();
+        }
+        let n = self.next_ty;
+        self.next_ty += 1;
+        let letter = (b'a' + (n % 26) as u8) as char;
+        let s = if n < 26 {
+            letter.to_string()
+        } else {
+            format!("{letter}{}", n / 26)
+        };
+        self.tyvars.insert(id, s.clone());
+        s
+    }
+
+    fn ty(&mut self, t: &Ty) -> String {
+        match t {
+            InferType::Var(v) => self.tyvar(*v),
+            InferType::Bound(i) => format!("?{i}"),
+            InferType::RowEmpty => "{}".to_string(),
+            InferType::Con(n, args) if args.is_empty() => n.to_string(),
+            InferType::Con(n, args) => {
+                let parts: Vec<String> = args.iter().map(|a| self.ty(a)).collect();
+                format!("({n} {})", parts.join(" "))
+            }
+            InferType::Fun(args, ret, eff) => {
+                let parts: Vec<String> = args.iter().map(|a| self.ty(a)).collect();
+                let e = match &**eff {
+                    InferType::RowEmpty => String::new(),
+                    other => format!(" ! {}", self.ty(other)),
+                };
+                format!("({} -> {}{e})", parts.join(" "), self.ty(ret))
+            }
+            InferType::Tuple(items) => {
+                let parts: Vec<String> = items.iter().map(|a| self.ty(a)).collect();
+                format!("({})", parts.join(", "))
+            }
+            InferType::Record(row) => self.row(row),
+            InferType::RowExtend(..) => self.row(t),
+        }
+    }
+
+    /// A row, record or effect: `{ x : Int, y : Int }`, `{ io, Mut | e }`.
+    ///
+    /// An effect's payload is the empty tuple when the effect takes no
+    /// parameters, and writing `io : ()` for that would be noise.
+    fn row(&mut self, t: &Ty) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        let mut cur = t;
+        loop {
+            match cur {
+                InferType::RowExtend(label, field, rest) => {
+                    parts.push(match &**field {
+                        InferType::Tuple(xs) if xs.is_empty() => label.to_string(),
+                        other => format!("{label} : {}", self.ty(other)),
+                    });
+                    cur = rest;
+                }
+                InferType::RowEmpty => {
+                    return format!("{{{}}}", parts.join(", "));
+                }
+                tail => {
+                    let tail = self.ty(tail);
+                    return if parts.is_empty() {
+                        format!("{{| {tail}}}")
+                    } else {
+                        format!("{{{} | {tail}}}", parts.join(", "))
+                    };
+                }
+            }
+        }
+    }
+
+    fn poly(&mut self, p: &Poly) -> String {
+        if p.binders.is_empty() {
+            return self.ty(&p.ty);
+        }
+        let names: Vec<String> = p.binders.iter().map(|b| self.tyvar(b.id)).collect();
+        format!("forall {}. {}", names.join(" "), self.ty(&p.ty))
+    }
+
+    fn tys(&mut self, ts: &[Ty]) -> String {
+        ts.iter()
+            .map(|t| format!("@{}", self.ty(t)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
     fn var(&mut self, v: Var) -> String {
         if let Some(s) = self.names.get(&v) {
             return s.clone();
@@ -406,21 +761,32 @@ impl Printer {
         match t {
             Term::Var(v) => self.var(*v),
             Term::Lit(l) => Self::lit(l),
-            Term::Lam(v, b) => {
+            Term::Lam(v, t, b) => {
                 let v = self.var(*v);
-                format!("(\\{v}. {})", self.term(b))
+                let t = self.ty(t);
+                format!("(\\({v} : {t}). {})", self.term(b))
+            }
+            Term::TyLam(binders, b) => {
+                let names: Vec<String> =
+                    binders.iter().map(|x| self.tyvar(x.id)).collect();
+                format!("(/\\{}. {})", names.join(" "), self.term(b))
+            }
+            Term::TyApp(f, args) => {
+                format!("({} {})", self.term(f), self.tys(args))
             }
             Term::App(f, a) => format!("({} {})", self.term(f), self.term(a)),
-            Term::Let(v, r, b) => {
+            Term::Let(v, p, r, b) => {
                 let v = self.var(*v);
-                format!("(let {v} = {} in {})", self.term(r), self.term(b))
+                let p = self.poly(p);
+                format!("(let {v} : {p} = {} in {})", self.term(r), self.term(b))
             }
             Term::LetRec(binds, b) => {
                 let parts: Vec<String> = binds
                     .iter()
-                    .map(|(v, t)| {
+                    .map(|(v, p, t)| {
                         let v = self.var(*v);
-                        format!("{v} = {}", self.term(t))
+                        let p = self.poly(p);
+                        format!("{v} : {p} = {}", self.term(t))
                     })
                     .collect();
                 format!("(letrec {} in {})", parts.join("; "), self.term(b))
@@ -430,7 +796,10 @@ impl Printer {
             }
             Term::Tuple(items) => format!("(tup {})", self.terms(items)),
             Term::Proj(t, i) => format!("({}.{i})", self.term(t)),
-            Term::Array(items) => format!("#[{}]", self.terms(items)),
+            Term::Array(items, t) => {
+                let t = self.ty(t);
+                format!("#[{} : {t}]", self.terms(items))
+            }
             Term::Record(fields) => {
                 let parts: Vec<String> = fields
                     .iter()
@@ -438,23 +807,26 @@ impl Printer {
                     .collect();
                 format!("{{ {} }}", parts.join(", "))
             }
-            Term::Sel(t, l) => format!("({}.{l})", self.term(t)),
+            Term::Sel(t, l, _) => format!("({}.{l})", self.term(t)),
             Term::Extend(t, l, v) => {
                 format!("({} with {l} = {})", self.term(t), self.term(v))
             }
-            Term::Ctor(n, args) => format!("({n} {})", self.terms(args)),
-            Term::Case(s, arms) => {
+            Term::Ctor(n, t, args) => {
+                let t = self.ty(t);
+                format!("({n} {} : {t})", self.terms(args))
+            }
+            Term::Case(s, arms, _) => {
                 let parts: Vec<String> = arms
                     .iter()
                     .map(|(p, b)| format!("{} -> {}", self.pat(p), self.term(b)))
                     .collect();
                 format!("(case {} of {})", self.term(s), parts.join("; "))
             }
-            Term::Prim(op, args) => format!("({op:?} {})", self.terms(args)),
-            Term::Perform(eff, op, arg) => {
+            Term::Prim(op, args, _) => format!("({op:?} {})", self.terms(args)),
+            Term::Perform(eff, op, arg, _) => {
                 format!("(perform {eff}.{op} {})", self.term(arg))
             }
-            Term::Handle { body, clauses, ret } => {
+            Term::Handle { body, clauses, ret, .. } => {
                 let mut parts: Vec<String> = clauses
                     .iter()
                     .map(|c| {
@@ -463,7 +835,7 @@ impl Printer {
                         format!("{}.{} {p} {k} -> {}", c.effect, c.op, self.term(&c.body))
                     })
                     .collect();
-                if let Some((v, b)) = ret {
+                if let Some((v, _, b)) = ret {
                     let v = self.var(*v);
                     parts.push(format!("return {v} -> {}", self.term(b)));
                 }
@@ -480,8 +852,8 @@ impl Printer {
     fn pat(&mut self, p: &Pat) -> String {
         match p {
             Pat::Wild => "_".to_string(),
-            Pat::Var(v) => self.var(*v),
-            Pat::As(v, sub) => {
+            Pat::Var(v, _) => self.var(*v),
+            Pat::As(v, _, sub) => {
                 let v = self.var(*v);
                 format!("{v}@{}", self.pat(sub))
             }
@@ -504,501 +876,6 @@ impl Printer {
     }
 }
 
-// ===========================================================================
-// Lowering: hir -> core
-// ===========================================================================
-
-pub struct Lowerer<'a> {
-    prims: &'a HashMap<Var, Prim>,
-    names: &'a HashMap<Var, InternedString>,
-    /// Operation `VarId` -> `(effect, op)` — a reference to one lowers to
-    /// `\x -> perform Effect.op x`.
-    effect_ops: &'a HashMap<Var, (InternedString, InternedString)>,
-    /// Inferred types, keyed by `NodeId` — consulted so an integer literal whose
-    /// context coerced it to `BigInt` lowers to [`Lit::BigInt`], not [`Lit::Int`].
-    types: &'a TypeTable,
-    /// Declared arity per data constructor, so an under-applied one can be
-    /// eta-expanded into a function.
-    ctor_arity: &'a HashMap<InternedString, usize>,
-    /// Named-field order per constructor, accumulated across `lower_module` calls.
-    pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
-    /// Desugaring invents variables -- a scrutinee to bind, an eta-expansion's
-    /// parameters -- and they belong to the unit being lowered, so this carries
-    /// on from where resolution left off rather than starting anywhere.
-    vars: hir::VarIdGen,
-}
-
-impl<'a> Lowerer<'a> {
-    pub fn new(
-        prims: &'a HashMap<Var, Prim>,
-        names: &'a HashMap<Var, InternedString>,
-        effect_ops: &'a HashMap<Var, (InternedString, InternedString)>,
-        types: &'a TypeTable,
-        ctor_arity: &'a HashMap<InternedString, usize>,
-        vars: hir::VarIdGen,
-    ) -> Self {
-        Lowerer {
-            prims,
-            names,
-            effect_ops,
-            types,
-            ctor_arity,
-            ctor_fields: HashMap::new(),
-            vars,
-        }
-    }
-
-    /// One past the last `VarId` this unit has handed out, resolution and
-    /// lowering together. The unit records it so the next one can stack above.
-    pub fn var_end(&self) -> u32 {
-        self.vars.end()
-    }
-
-    /// Is the node at `id` inferred to have type `BigInt`?
-    fn is_bigint(&self, id: hir::NodeId) -> bool {
-        matches!(
-            self.types.get(id),
-            Some(InferType::Con(n, args)) if args.is_empty() && &**n == "BigInt"
-        )
-    }
-
-    /// Lower an integer literal, choosing `Int` vs `BigInt` from its inferred type.
-    fn int_lit(&self, id: hir::NodeId, value: i64) -> Lit {
-        if self.is_bigint(id) {
-            Lit::BigInt(value)
-        } else {
-            Lit::Int(value)
-        }
-    }
-
-    pub fn lower_module(&mut self, module: &hir::LModule) -> Vec<Def> {
-        let mut defs = Vec::new();
-        for decl in &module.value().decls {
-            match decl.value() {
-                hir::Decl::Bind(bind) => self.lower_bind_toplevel(bind, &mut defs),
-                hir::Decl::Data(dd) => {
-                    for v in &dd.variants {
-                        if let hir::VariantFields::Named(fs) = &v.fields {
-                            self.ctor_fields
-                                .insert(v.name, fs.iter().map(|(n, _)| *n).collect());
-                        }
-                    }
-                }
-                hir::Decl::Record(rd) => {
-                    self.ctor_fields
-                        .insert(rd.ctor, rd.fields.iter().map(|(n, _)| *n).collect());
-                }
-                _ => {}
-            }
-        }
-        defs
-    }
-
-    fn name_of(&self, v: Var) -> InternedString {
-        self.names.get(&v).copied().unwrap_or_default()
-    }
-
-    fn lower_bind_toplevel(&mut self, bind: &hir::Bind, out: &mut Vec<Def>) {
-        match bind {
-            hir::Bind::Fun(name, params, _, body) => {
-                let v = *name.value();
-                let term = self.curry_lam(params, body);
-                out.push(Def {
-                    var: v,
-                    name: self.name_of(v),
-                    term,
-                });
-            }
-            hir::Bind::Pat(pat, expr) => {
-                let rhs = self.lower_expr(expr);
-                match pat.value() {
-                    hir::Pat::Var(id) => {
-                        let v = *id.value();
-                        out.push(Def {
-                            var: v,
-                            name: self.name_of(v),
-                            term: rhs,
-                        });
-                    }
-                    hir::Pat::Wildcard => {
-                        let v = self.vars.fresh();
-                        out.push(Def {
-                            var: v,
-                            name: InternedString::from("_"),
-                            term: rhs,
-                        });
-                    }
-                    _ => {
-                        // `def (a, b) = e` etc.: bind the value once, then project.
-                        let scrut = self.vars.fresh();
-                        out.push(Def {
-                            var: scrut,
-                            name: InternedString::from("$bind"),
-                            term: rhs,
-                        });
-                        let mut binds = Vec::new();
-                        self.bind_pat(Term::Var(scrut), pat, &mut binds);
-                        for (v, t) in binds {
-                            out.push(Def {
-                                var: v,
-                                name: self.name_of(v),
-                                term: t,
-                            });
-                        }
-                    }
-                }
-            }
-            hir::Bind::Error => {}
-        }
-    }
-
-    /// `\p1 p2 -> body` for irrefutable parameter patterns: each parameter binds
-    /// one fresh variable, and anything structural is destructured by `let`s at
-    /// the top of the body.
-    fn curry_lam(&mut self, params: &[hir::LPat], body: &hir::LExpr) -> Term {
-        let binders: Vec<_> = params.iter().map(|p| self.pat_binder(p)).collect();
-        let mut term = self.lower_expr(body);
-        for (v, structured) in binders.into_iter().rev() {
-            term = self.with_pat_prelude_term(v, structured, term);
-            term = Term::Lam(v, Arc::new(term));
-        }
-        term
-    }
-
-    /// Prefix `term` with the `let`s that destructure `var` according to `pat`.
-    fn with_pat_prelude_term(
-        &mut self,
-        var: Var,
-        pat: Option<&hir::LPat>,
-        mut term: Term,
-    ) -> Term {
-        if let Some(p) = pat {
-            let mut binds = Vec::new();
-            self.bind_pat(Term::Var(var), p, &mut binds);
-            for (bv, bt) in binds.into_iter().rev() {
-                term = Term::Let(bv, Arc::new(bt), Arc::new(term));
-            }
-        }
-        term
-    }
-
-    fn lower_expr(&mut self, expr: &hir::LExpr) -> Term {
-        match expr.value() {
-            hir::Expr::Lit(hir::Lit::Int(i)) => Term::Lit(self.int_lit(expr.id, *i)),
-            hir::Expr::Lit(hir::Lit::Float(b)) => Term::Lit(Lit::Float(f64::from_bits(*b))),
-            hir::Expr::Lit(hir::Lit::String(s)) => Term::Lit(Lit::Str(*s)),
-            hir::Expr::Lit(hir::Lit::Char(c)) => Term::Lit(Lit::Char(*c)),
-            hir::Expr::Unit => Term::Lit(Lit::Unit),
-
-            hir::Expr::Var(id) => {
-                let v = *id.value();
-                if let Some(&op) = self.prims.get(&v) {
-                    self.eta_prim(op)
-                } else if let Some(&(eff, opname)) = self.effect_ops.get(&v) {
-                    // `get` becomes `\x -> perform Effect.get x`
-                    let x = self.vars.fresh();
-                    Term::Lam(
-                        x,
-                        Arc::new(Term::Perform(eff, opname, Arc::new(Term::Var(x)))),
-                    )
-                } else {
-                    Term::Var(v)
-                }
-            }
-
-            hir::Expr::Lam(params, body) => self.curry_lam(params, body),
-
-            hir::Expr::App(func, args) => {
-                if let hir::Expr::Var(id) = func.value() {
-                    if let Some(&op) = self.prims.get(&*id.value()) {
-                        if op.arity() == args.len() {
-                            let a = args.iter().map(|a| self.lower_expr(a)).collect();
-                            return Term::Prim(op, a);
-                        }
-                    }
-                }
-                let mut term = self.lower_expr(func);
-                for a in args {
-                    term = Term::App(Arc::new(term), Arc::new(self.lower_expr(a)));
-                }
-                term
-            }
-
-            hir::Expr::Let(binds, body) => {
-                let mut inner = self.lower_expr(body);
-                for bind in binds.iter().rev() {
-                    inner = self.lower_let_bind(bind, inner);
-                }
-                inner
-            }
-
-            hir::Expr::If(c, t, e) => Term::If(
-                Arc::new(self.lower_expr(c)),
-                Arc::new(self.lower_expr(t)),
-                Arc::new(self.lower_expr(e)),
-            ),
-
-            hir::Expr::Match(scrut, arms) => {
-                let s = self.lower_expr(scrut);
-                let arms = arms
-                    .iter()
-                    .map(|(p, e)| (self.lower_pat(p), self.lower_expr(e)))
-                    .collect();
-                Term::Case(Arc::new(s), arms)
-            }
-
-            hir::Expr::Tuple(items) => {
-                Term::Tuple(items.iter().map(|e| self.lower_expr(e)).collect())
-            }
-            hir::Expr::Array(items) => {
-                Term::Array(items.iter().map(|e| self.lower_expr(e)).collect())
-            }
-            // `[a; b; c]` is sugar for `Cons a (Cons b (Cons c Nil))` — `List` is
-            // an ordinary `Std` data type, so it lowers to plain constructors.
-            hir::Expr::List(items) => {
-                let nil = Term::Ctor(InternedString::from("List.Nil"), vec![]);
-                items.iter().rev().fold(nil, |acc, e| {
-                    let head = self.lower_expr(e);
-                    Term::Ctor(InternedString::from("List.Cons"), vec![head, acc])
-                })
-            }
-            hir::Expr::Cons(label, args) => {
-                let name = *label.value();
-                let lowered: Vec<Term> = args.iter().map(|e| self.lower_expr(e)).collect();
-                match (&*name, lowered.len()) {
-                    ("Bool.True", 0) => Term::Lit(Lit::Bool(true)),
-                    ("Bool.False", 0) => Term::Lit(Lit::Bool(false)),
-                    _ => self.ctor(name, lowered),
-                }
-            }
-
-            hir::Expr::Record(fields, base) => {
-                let lowered: Vec<(InternedString, Term)> = fields
-                    .iter()
-                    .map(|(l, e)| (*l.value(), self.lower_expr(e)))
-                    .collect();
-                match base {
-                    None => Term::Record(lowered),
-                    Some(b) => {
-                        let mut term = self.lower_expr(b);
-                        for (l, e) in lowered {
-                            term = Term::Extend(Arc::new(term), l, Arc::new(e));
-                        }
-                        term
-                    }
-                }
-            }
-            hir::Expr::Field(obj, label) => {
-                Term::Sel(Arc::new(self.lower_expr(obj)), *label.value())
-            }
-
-            hir::Expr::Handle(body, arms, ret) => {
-                let lbody = Arc::new(self.lower_expr(body));
-                let clauses = arms
-                    .iter()
-                    .map(|arm| {
-                        let (param, refutable) = self.pat_binder(&arm.param);
-                        let body = self.with_pat_prelude(param, refutable, &arm.body);
-                        HClause {
-                            effect: arm.effect,
-                            op: arm.op,
-                            param,
-                            resume: *arm.resume.value(),
-                            body,
-                        }
-                    })
-                    .collect();
-                let ret = ret.as_ref().map(|(pat, rbody)| {
-                    let (v, refutable) = self.pat_binder(pat);
-                    (v, Arc::new(self.with_pat_prelude(v, refutable, rbody)))
-                });
-                Term::Handle {
-                    body: lbody,
-                    clauses,
-                    ret,
-                }
-            }
-
-            hir::Expr::Error => Term::Error,
-        }
-    }
-
-    /// `(binder var, Some(pat) if the pattern is refutable / structured)`.
-    fn pat_binder<'p>(&mut self, pat: &'p hir::LPat) -> (Var, Option<&'p hir::LPat>) {
-        match pat.value() {
-            hir::Pat::Var(id) => (*id.value(), None),
-            hir::Pat::Wildcard => (self.vars.fresh(), None),
-            _ => (self.vars.fresh(), Some(pat)),
-        }
-    }
-
-    /// Lower `body`, prefixing `let`s that destructure `var` per `pat`.
-    fn with_pat_prelude(
-        &mut self,
-        var: Var,
-        pat: Option<&hir::LPat>,
-        body: &hir::LExpr,
-    ) -> Term {
-        let term = self.lower_expr(body);
-        self.with_pat_prelude_term(var, pat, term)
-    }
-
-    fn lower_let_bind(&mut self, bind: &hir::Bind, body: Term) -> Term {
-        match bind {
-            hir::Bind::Fun(name, params, _, fbody) => {
-                let term = self.curry_lam(params, fbody);
-                Term::LetRec(vec![(*name.value(), term)], Arc::new(body))
-            }
-            hir::Bind::Pat(pat, expr) => {
-                let rhs = self.lower_expr(expr);
-                match pat.value() {
-                    hir::Pat::Var(id) => {
-                        Term::Let(*id.value(), Arc::new(rhs), Arc::new(body))
-                    }
-                    hir::Pat::Wildcard => {
-                        Term::Let(self.vars.fresh(), Arc::new(rhs), Arc::new(body))
-                    }
-                    _ => Term::Case(Arc::new(rhs), vec![(self.lower_pat(pat), body)]),
-                }
-            }
-            hir::Bind::Error => body,
-        }
-    }
-
-    /// Build `(v, access)` pairs for every variable an irrefutable pattern binds,
-    /// where `access` is a term extracting that piece from `scrut`.
-    fn bind_pat(&mut self, scrut: Term, pat: &hir::LPat, out: &mut Vec<(Var, Term)>) {
-        match pat.value() {
-            hir::Pat::Wildcard | hir::Pat::Unit | hir::Pat::Lit(_) => {}
-            hir::Pat::Var(id) => out.push((*id.value(), scrut)),
-            // Types are erased here; the pattern under the annotation is all
-            // that binds anything.
-            hir::Pat::Ann(inner, _) => self.bind_pat(scrut, inner, out),
-            hir::Pat::As(id, sub) => {
-                out.push((*id.value(), scrut.clone()));
-                self.bind_pat(scrut, sub, out);
-            }
-            hir::Pat::Tuple(items) => {
-                for (i, p) in items.iter().enumerate() {
-                    self.bind_pat(Term::Proj(Arc::new(scrut.clone()), i), p, out);
-                }
-            }
-            hir::Pat::Record(fields, _) => {
-                for (label, p) in fields {
-                    self.bind_pat(Term::Sel(Arc::new(scrut.clone()), *label.value()), p, out);
-                }
-            }
-            hir::Pat::Error => {}
-            // Refutable in an irrefutable position: fall back to a single-arm Case.
-            hir::Pat::Cons(..) | hir::Pat::List(..) | hir::Pat::Array(..) => {
-                let mut inner = Vec::new();
-                collect_pat_vars(pat, &mut inner);
-                let core_pat = self.lower_pat(pat);
-                for v in inner {
-                    out.push((
-                        v,
-                        Term::Case(
-                            Arc::new(scrut.clone()),
-                            vec![(core_pat.clone(), Term::Var(v))],
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-
-    fn lower_pat(&mut self, pat: &hir::LPat) -> Pat {
-        match pat.value() {
-            hir::Pat::Wildcard => Pat::Wild,
-            hir::Pat::Unit => Pat::Lit(Lit::Unit),
-            hir::Pat::Var(id) => Pat::Var(*id.value()),
-            // Types are gone by here; the annotation did its work in inference.
-            hir::Pat::Ann(inner, _) => self.lower_pat(inner),
-            hir::Pat::As(id, sub) => Pat::As(*id.value(), Box::new(self.lower_pat(sub))),
-            hir::Pat::Lit(hir::Lit::Int(i)) => Pat::Lit(self.int_lit(pat.id, *i)),
-            hir::Pat::Lit(hir::Lit::Float(b)) => Pat::Lit(Lit::Float(f64::from_bits(*b))),
-            hir::Pat::Lit(hir::Lit::String(s)) => Pat::Lit(Lit::Str(*s)),
-            hir::Pat::Lit(hir::Lit::Char(c)) => Pat::Lit(Lit::Char(*c)),
-            hir::Pat::Tuple(items) => {
-                Pat::Tuple(items.iter().map(|p| self.lower_pat(p)).collect())
-            }
-            hir::Pat::Array(items) => {
-                Pat::Array(items.iter().map(|p| self.lower_pat(p)).collect())
-            }
-            // `[a; b; c]` — the same `Cons`/`Nil` chain as the expression form.
-            hir::Pat::List(items) => {
-                let nil = Pat::Ctor(InternedString::from("List.Nil"), vec![]);
-                items.iter().rev().fold(nil, |acc, p| {
-                    let head = self.lower_pat(p);
-                    Pat::Ctor(InternedString::from("List.Cons"), vec![head, acc])
-                })
-            }
-            hir::Pat::Cons(label, args) => {
-                let name = *label.value();
-                let lowered: Vec<Pat> = args.iter().map(|p| self.lower_pat(p)).collect();
-                match (&*name, lowered.len()) {
-                    ("Bool.True", 0) => Pat::Lit(Lit::Bool(true)),
-                    ("Bool.False", 0) => Pat::Lit(Lit::Bool(false)),
-                    _ => Pat::Ctor(name, lowered),
-                }
-            }
-            hir::Pat::Record(fields, _) => Pat::Record(
-                fields
-                    .iter()
-                    .map(|(l, p)| (*l.value(), self.lower_pat(p)))
-                    .collect(),
-            ),
-            hir::Pat::Error => Pat::Wild,
-        }
-    }
-
-    /// Build a constructor application, eta-expanding an under-applied one so a
-    /// bare `Cons` / `Just` can still be passed around as a function.
-    fn ctor(&mut self, name: InternedString, args: Vec<Term>) -> Term {
-        let arity = self.ctor_arity.get(&name).copied().unwrap_or(args.len());
-        if args.len() >= arity {
-            return Term::Ctor(name, args);
-        }
-        let extra: Vec<Var> = (args.len()..arity).map(|_| self.vars.fresh()).collect();
-        let mut all = args;
-        all.extend(extra.iter().map(|v| Term::Var(*v)));
-        let body = Term::Ctor(name, all);
-        extra
-            .into_iter()
-            .rev()
-            .fold(body, |acc, v| Term::Lam(v, Arc::new(acc)))
-    }
-
-    /// `\a. \b. prim(a, b)` — used when a primitive is referenced without (or with
-    /// the wrong number of) arguments.
-    fn eta_prim(&mut self, op: Prim) -> Term {
-        let vars: Vec<Var> = (0..op.arity()).map(|_| self.vars.fresh()).collect();
-        let body = Term::Prim(op, vars.iter().map(|v| Term::Var(*v)).collect());
-        vars.into_iter()
-            .rev()
-            .fold(body, |acc, v| Term::Lam(v, Arc::new(acc)))
-    }
-}
-
-fn collect_pat_vars(pat: &hir::LPat, out: &mut Vec<Var>) {
-    match pat.value() {
-        hir::Pat::Var(id) => out.push(*id.value()),
-        hir::Pat::As(id, sub) => {
-            out.push(*id.value());
-            collect_pat_vars(sub, out);
-        }
-        hir::Pat::Tuple(items)
-        | hir::Pat::List(items)
-        | hir::Pat::Array(items)
-        | hir::Pat::Cons(_, items) => {
-            items.iter().for_each(|p| collect_pat_vars(p, out))
-        }
-        hir::Pat::Record(fields, _) => {
-            fields.iter().for_each(|(_, p)| collect_pat_vars(p, out))
-        }
-        _ => {}
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1024,21 +901,39 @@ mod tests {
     }
 
     #[test]
-    fn pretty_renumbers_variables() {
+    fn pretty_renumbers_variables_and_shows_types() {
         let mut vars = hir::VarIdGen::starting_at(0);
         let a = vars.fresh();
         let b = vars.fresh();
+        // `forall t. t -> t`, with `t` a rigid variable — as `id` lowers.
+        let t = InferType::Var(7);
+        let poly = Poly {
+            binders: vec![TyVar { id: 7, kind: VarKind::Type }],
+            ty: InferType::Fun(
+                vec![t.clone()],
+                Box::new(t.clone()),
+                Box::new(InferType::RowEmpty),
+            ),
+        };
         let prog = Program {
             defs: vec![Def {
                 var: a,
-                name: "f".into(),
-                term: Term::Lam(b, Arc::new(Term::Var(b))),
+                name: "id".into(),
+                poly: poly.clone(),
+                term: Term::TyLam(
+                    poly.binders.clone(),
+                    Arc::new(Term::Lam(b, t, Arc::new(Term::Var(b)))),
+                ),
             }],
             entry: Some(a),
             ..Default::default()
         };
-        // `a` is seen first (as the def name) -> v0; `b` -> v1.
-        assert_eq!(prog.pretty(), "v0 = (\\v1. v1)\nentry: v0\n");
+        // `a` is seen first (as the def name) -> v0; `b` -> v1; the one rigid
+        // type variable -> a.
+        assert_eq!(
+            prog.pretty(),
+            "v0 : forall a. (a -> a)\nv0 = (/\\a. (\\(v1 : a). v1))\nentry: v0\n"
+        );
     }
 }
 

@@ -464,11 +464,7 @@ fn record_extension_has_no_surface_syntax_but_lowers() {
         Arc::new(Term::Lit(Lit::Int(9))),
     );
     let prog = core::Program {
-        defs: vec![Def {
-            var,
-            name: "main".into(),
-            term,
-        }],
+        defs: vec![Def::untyped(var, "main", term)],
         entry: Some(var),
         ctor_fields: Default::default(),
     };

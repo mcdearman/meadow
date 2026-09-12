@@ -846,7 +846,7 @@ impl Walk<'_> {
             }
             hir::TypeExpr::Tuple(ts) => ts.iter().for_each(|x| self.ty(x)),
             hir::TypeExpr::Vector(x) | hir::TypeExpr::List(x) => self.ty(x),
-            hir::TypeExpr::Var(_) => {}
+            hir::TypeExpr::Var(_) | hir::TypeExpr::Error => {}
         }
     }
 
@@ -1328,7 +1328,7 @@ fn occurrences(ty: &meadow_compiler::infer::Type, v: u32) -> usize {
     use meadow_compiler::infer::Type::*;
     match ty {
         Var(x) => usize::from(*x == v),
-        Bound(_) | RowEmpty => 0,
+        Bound(_) | RowEmpty | Error => 0,
         Con(_, args) | Tuple(args) => args.iter().map(|t| occurrences(t, v)).sum(),
         Fun(ps, r, e) => {
             ps.iter().map(|t| occurrences(t, v)).sum::<usize>()

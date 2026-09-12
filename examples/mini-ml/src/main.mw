@@ -24,7 +24,7 @@
 use Syntax (Expr)
 use Parser (parse)
 use Infer (typeOf)
-use Eval (Value, run, showValue)
+use Eval (run, showValue)
 use Std.Test (assertEq)
 use Std.Result (Result, Ok, Err, isErr)
 use Std.Console (prompt, withInput)
@@ -81,37 +81,23 @@ fun loop () =
 -- same `loop` that `main` calls.
 
 @test fun parsesArithmetic () =
-  assertEq (show (parse "1 + 2 * 3")) (show (Ok (Expr.Bin "+" (Expr.Int 1) (Expr.Bin "*" (Expr.Int 2) (Expr.Int 3))))) "precedence"
+  assertEq (show (parse "1 + 2 * 3")) (show (Ok (Bin "+" (Int 1) (Bin "*" (Int 2) (Int 3))))) "precedence"
 
 @test fun parsesLet () =
-  assertEq (show (parse "let x = 1 in x")) (show (Ok (Expr.Let "x" (Expr.Int 1) (Expr.Var "x")))) "let"
+  assertEq (show (parse "let x = 1 in x")) (show (Ok (Let "x" (Int 1) (Var "x")))) "let"
 
 @test fun parsesLambdaAndApp () =
   assertEq (show (parse "(fun x y -> x) 1 2"))
-           (show (Ok (Expr.App (Expr.App (Expr.Lam "x" (Expr.Lam "y" (Expr.Var "x"))) (Expr.Int 1)) (Expr.Int 2)))) "curried"
+           (show (Ok (App (App (Lam "x" (Lam "y" (Var "x"))) (Int 1)) (Int 2)))) "curried"
 
 @test fun parsesLetRec () =
   assertEq (show (parse "let rec f n = f n in f 1"))
-           (show (Ok (Expr.LetRec "f" "n" (Expr.App (Expr.Var "f") (Expr.Var "n")) (Expr.App (Expr.Var "f") (Expr.Int 1))))) "let rec"
+           (show (Ok (LetRec "f" "n" (App (Var "f") (Var "n")) (App (Var "f") (Int 1))))) "let rec"
 
 @test fun keywordsAreNotIdentifiers () =
-  assertEq (show (parse "letter")) (show (Ok (Expr.Var "letter"))) "`let` is a prefix of `letter`"
+  assertEq (show (parse "letter")) (show (Ok (Var "letter"))) "`let` is a prefix of `letter`"
 
 -- --- inference ----------------------------------------------------------------
-
--- Type-check, then run. Nothing reaches `eval` that did not type.
-@pub fun runSource src =
-  match parse src with
-  | Err e -> Err e
-  | Ok ast ->
-      match typeOf ast with
-      | Err e -> Err e
-      | Ok ty -> run ast
-
-fun typeOfSource src =
-  match parse src with
-  | Err e -> Err e
-  | Ok ast -> typeOf ast
 
 @test fun infersSimpleTypes () =
   let got = map typeOfSource ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"] in

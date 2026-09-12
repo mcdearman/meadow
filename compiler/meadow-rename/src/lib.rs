@@ -49,7 +49,34 @@ pub struct Resolver {
     /// Bare name -> canonical, for the constructors this module may write
     /// unqualified: the ones its own types declare, plus whatever a `use` of a
     /// type brought in. A name absent here must be written `Type.Ctor`.
+    ///
+    /// Only the *base* layer lives here once the scope is sealed -- the
+    /// builtins and what the dependencies flattened -- and a module's own and
+    /// `use`d constructors go in [`Resolver::module_ctors`] instead, where one
+    /// spelling may name several.
     visible_ctors: HashMap<InternedString, InternedString>,
+    /// Bare name -> every constructor of that spelling the current module
+    /// declares or explicitly imports. More than one is an overload, which
+    /// inference settles by type.
+    module_ctors: HashMap<InternedString, Vec<InternedString>>,
+    /// Whether [`Resolver::seal_base_scope`] has run: from then on, what comes
+    /// into scope is a module's own, and may overload rather than shadow.
+    sealed: bool,
+    /// Scope length once a module's own items and its `use`s are in: what is
+    /// below is the module layer (down to `base_scope`), what is above is local.
+    module_scope: usize,
+    /// Names written bare that have more than one meaning here -- see
+    /// [`hir::Overloads`].
+    overloads: hir::Overloads,
+    /// The module a dependency's value was imported from, for naming the
+    /// candidates of an overload.
+    origins: HashMap<VarId, InternedString>,
+    /// Where each top-level name of each module was first declared, so that a
+    /// second declaration can point at the first.
+    decl_spans: HashMap<(Vec<InternedString>, InternedString), Span>,
+    /// Where a second declaration of a name was written. Such a declaration is
+    /// dropped once reported -- see [`Resolver::resolve_bind`].
+    duplicates: std::collections::HashSet<Span>,
     /// Type -> its constructors, bare names, in declaration order. What `use`
     /// of a type consults, and what an exhaustiveness message would list.
     ctors_of: HashMap<InternedString, Vec<InternedString>>,
@@ -337,6 +364,13 @@ impl Resolver {
             tycons,
             ctors: HashMap::new(),
             visible_ctors: builtin_ctors(),
+            module_ctors: HashMap::new(),
+            sealed: false,
+            module_scope: 0,
+            overloads: HashMap::new(),
+            origins: HashMap::new(),
+            decl_spans: HashMap::new(),
+            duplicates: std::collections::HashSet::new(),
             ctors_of: HashMap::new(),
             effects: HashMap::new(),
             effect_ops: HashMap::new(),
@@ -389,6 +423,7 @@ impl Resolver {
         self.base_ctors = self.visible_ctors.clone();
         self.base_effects = self.effects.clone();
         self.base_effect_ops = self.effect_ops.clone();
+        self.sealed = true;
     }
 
     /// Begin resolving `path`: reset to the shared base, then lay this
@@ -400,6 +435,7 @@ impl Resolver {
         self.qualifiers.clear();
         self.tycons = self.base_tycons.clone();
         self.visible_ctors = self.base_ctors.clone();
+        self.module_ctors.clear();
         self.effects = self.base_effects.clone();
         self.effect_ops = self.base_effect_ops.clone();
         let frame = self.frames.get(path).cloned().unwrap_or_default();
@@ -427,7 +463,7 @@ impl Resolver {
         }
         for (bare, canonical, v) in &frame.ctors {
             if ok(*v) {
-                self.visible_ctors.insert(*bare, *canonical);
+                self.add_ctor(*bare, *canonical);
             }
         }
         for (n, a, v) in &frame.effects {
@@ -551,7 +587,7 @@ impl Resolver {
             }
             for (bare, canonical, v) in &frame.ctors {
                 if *bare == name && note(*v, &mut found, &mut hidden) {
-                    self.visible_ctors.insert(*bare, *canonical);
+                    self.add_ctor(*bare, *canonical);
                     sites.push(RefSite { span: want.span, what: NameRef::Ctor(*canonical) });
                 }
             }
@@ -594,12 +630,50 @@ impl Resolver {
         id
     }
 
+    /// The innermost binding of `name`, whatever layer it is in. Right for an
+    /// operator, which only the prelude defines, and for a `use` re-export.
     fn lookup(&self, name: InternedString) -> Option<VarId> {
         self.scope
             .iter()
             .rev()
             .find(|(n, _)| *n == name)
             .map(|(_, id)| *id)
+    }
+
+    /// Every meaning a bare `name` has here, in three layers.
+    ///
+    /// A local binding shadows everything, as lexical scope does. Below that is
+    /// the module layer -- its own top-level names and whatever its `use`s
+    /// brought in -- where two meanings of one spelling are not a conflict to
+    /// settle by import order but an overload for inference to settle by type.
+    /// Below that, the base: the prims and the prelude, which anything above
+    /// shadows. Overloading against the prelude would make every module that
+    /// defines its own `map` an ambiguity waiting for an untyped use.
+    fn lookup_all(&self, name: InternedString) -> Vec<VarId> {
+        let (base, module) = if self.sealed {
+            (self.base_scope, self.module_scope.max(self.base_scope))
+        } else {
+            (0, 0)
+        };
+        let locals = &self.scope[module.min(self.scope.len())..];
+        if let Some((_, id)) = locals.iter().rev().find(|(n, _)| *n == name) {
+            return vec![*id];
+        }
+        let mut found: Vec<VarId> = Vec::new();
+        for (n, id) in &self.scope[base.min(module)..module.min(self.scope.len())] {
+            if *n == name && !found.contains(id) {
+                found.push(*id);
+            }
+        }
+        if !found.is_empty() {
+            return found;
+        }
+        self.scope[..base.min(self.scope.len())]
+            .iter()
+            .rev()
+            .find(|(n, _)| *n == name)
+            .map(|(_, id)| vec![*id])
+            .unwrap_or_default()
     }
 
     /// At the top level, reuse a [`declare_toplevel`] id if there is one; otherwise
@@ -617,6 +691,13 @@ impl Resolver {
     pub fn import(&mut self, name: InternedString, id: VarId) {
         self.names.insert(id, name);
         self.scope.push((name, id));
+    }
+
+    /// [`Resolver::import`], remembering the module it came from so an
+    /// ambiguity involving it can say so.
+    pub fn import_from(&mut self, name: InternedString, id: VarId, module: InternedString) {
+        self.origins.insert(id, module);
+        self.import(name, id);
     }
 
     /// One past the last `VarId` this unit has handed out.
@@ -715,7 +796,7 @@ impl Resolver {
             if let ast::Decl::Bind(b) = base.value() {
                 match b {
                     ast::Bind::Fun(name, ..) => {
-                        self.predeclare(*name.value());
+                        self.predeclare_unique(name);
                     }
                     ast::Bind::Pat(pat, _) => self.predeclare_pat(pat),
                 }
@@ -782,6 +863,9 @@ impl Resolver {
                         }
                         // ops are top-level values (functions) — predeclare them
                         let id = self.predeclare(op);
+                        self.decl_spans
+                            .entry((self.current.clone(), op))
+                            .or_insert(op_field.name.span);
                         self.frame().effect_ops.push((op, name, vis));
                         self.effect_op_ids.insert(id, (name, op));
                     }
@@ -897,7 +981,7 @@ impl Resolver {
         self.ctors_of.entry(owner).or_default().push(name);
         let vis = self.vis;
         self.frame().ctors.push((name, canonical, vis));
-        self.visible_ctors.insert(name, canonical);
+        self.add_ctor(name, canonical);
     }
 
     fn check_dup_fields(&mut self, fields: &[ast::Field]) {
@@ -914,8 +998,66 @@ impl Resolver {
     }
 
     /// The canonical name a bare constructor refers to here, if any.
-    fn resolve_ctor_name(&self, name: InternedString) -> Option<InternedString> {
-        self.visible_ctors.get(&name).copied()
+    /// Every constructor a bare `name` could mean here, best layer first: the
+    /// module's own and imported ones if there are any (possibly several),
+    /// otherwise the base layer's one.
+    fn ctor_candidates(&self, name: InternedString) -> Vec<InternedString> {
+        match self.module_ctors.get(&name) {
+            Some(cs) if !cs.is_empty() => cs.clone(),
+            _ => self.visible_ctors.get(&name).copied().into_iter().collect(),
+        }
+    }
+
+    /// Make `bare` mean `canonical` in the current scope. Before the scope is
+    /// sealed that replaces whatever it meant; after, it adds a meaning.
+    fn add_ctor(&mut self, bare: InternedString, canonical: InternedString) {
+        if !self.sealed {
+            self.visible_ctors.insert(bare, canonical);
+            return;
+        }
+        let cs = self.module_ctors.entry(bare).or_default();
+        if !cs.contains(&canonical) {
+            cs.push(canonical);
+        }
+    }
+
+    /// Record that the name at `node` has several meanings.
+    fn overload(&mut self, node: hir::NodeId, alts: Vec<hir::Alt>) {
+        let candidates = alts
+            .into_iter()
+            .map(|alt| hir::Candidate {
+                alt,
+                name: match alt {
+                    hir::Alt::Value(id) => self.names.get(&id).copied().unwrap_or_default(),
+                    hir::Alt::Ctor(c) => bare_ctor(c),
+                },
+                origin: self.origin_of(alt),
+            })
+            .collect();
+        self.overloads.insert(node, candidates);
+    }
+
+    /// Where a candidate came from, for a person choosing between them.
+    fn origin_of(&self, alt: hir::Alt) -> Option<InternedString> {
+        let hir::Alt::Value(id) = alt else {
+            // A constructor's canonical name already says which type it is.
+            return None;
+        };
+        let home = self
+            .frames
+            .iter()
+            .find(|(_, f)| f.values.iter().any(|(_, v, _)| *v == id))
+            .map(|(path, _)| path.clone());
+        match home {
+            Some(path) if path == self.current => None,
+            Some(path) => Some(InternedString::from(dotted_path(&path))),
+            None => self.origins.get(&id).copied(),
+        }
+    }
+
+    /// Take the overloaded names found so far.
+    pub fn take_overloads(&mut self) -> hir::Overloads {
+        std::mem::take(&mut self.overloads)
     }
 
     /// The canonical name for an explicitly qualified `Ty.Ctor`.
@@ -929,7 +1071,11 @@ impl Resolver {
     }
 
     fn is_known_ctor(&self, name: InternedString) -> bool {
-        self.visible_ctors.contains_key(&name) || BUILTIN_CTORS.contains(&&*name)
+        self.module_ctors
+            .get(&name)
+            .is_some_and(|cs| !cs.is_empty())
+            || self.visible_ctors.contains_key(&name)
+            || BUILTIN_CTORS.contains(&&*name)
     }
 
     fn ctor_field_order(&self, name: InternedString) -> Option<Vec<InternedString>> {
@@ -946,7 +1092,7 @@ impl Resolver {
     pub fn use_type_ctors(&mut self, ty: InternedString) {
         let ctors = self.ctors_of.get(&ty).cloned().unwrap_or_default();
         for c in ctors {
-            self.visible_ctors.insert(c, canonical_ctor(ty, c));
+            self.add_ctor(c, canonical_ctor(ty, c));
         }
     }
 
@@ -973,13 +1119,51 @@ impl Resolver {
         id
     }
 
+    /// [`Resolver::predeclare`] a name written in a declaration, reporting it if
+    /// this module already declares one -- a second `fun f` would otherwise
+    /// silently share the first one's id, and only one body would survive.
+    ///
+    /// Two *modules* may each have an `f`; that is what overloading is for.
+    fn predeclare_unique(&mut self, name: &ast::Ident) -> VarId {
+        let key = (self.current.clone(), *name.value());
+        if self.predeclared.contains_key(&key) {
+            let first = self.decl_spans.get(&key).copied();
+            self.errors.push(Diagnostic {
+                msg: format!("`{}` is already defined in this module", name.value()),
+                filename: self.filename.clone(),
+                label: ("defined again here".to_string(), name.span),
+                extra_labels: first
+                    .map(|s| vec![("first defined here".to_string(), s)])
+                    .unwrap_or_default(),
+            });
+            self.duplicates.insert(name.span);
+        } else {
+            self.decl_spans.insert(key, name.span);
+        }
+        self.predeclare(*name.value())
+    }
+
+    /// Whether a top-level pattern binds a name [`Resolver::predeclare_unique`]
+    /// reported as a duplicate.
+    fn binds_duplicate(&self, pat: &ast::LPat) -> bool {
+        match pat.value() {
+            ast::Pat::Var(n) => self.duplicates.contains(&n.span),
+            ast::Pat::As(n, p) => self.duplicates.contains(&n.span) || self.binds_duplicate(p),
+            ast::Pat::Tuple(ps) | ast::Pat::List(ps) | ast::Pat::Vector(ps) | ast::Pat::Cons(_, ps) => {
+                ps.iter().any(|p| self.binds_duplicate(p))
+            }
+            ast::Pat::Record(fs, _) => fs.iter().any(|(_, p)| self.binds_duplicate(p)),
+            _ => false,
+        }
+    }
+
     fn predeclare_pat(&mut self, pat: &ast::LPat) {
         match pat.value() {
             ast::Pat::Var(n) => {
-                self.predeclare(*n.value());
+                self.predeclare_unique(n);
             }
             ast::Pat::As(n, p) => {
-                self.predeclare(*n.value());
+                self.predeclare_unique(n);
                 self.predeclare_pat(p);
             }
             ast::Pat::Tuple(ps)
@@ -996,6 +1180,9 @@ impl Resolver {
     /// Resolve a module's bodies. The caller must already have run
     /// [`declare_toplevel`] for this module (and any siblings).
     pub fn resolve_module(&mut self, module: &ast::LModule) -> hir::LModule {
+        // Everything in scope by now is the module's own or `use`d; what is
+        // bound from here on is local.
+        self.module_scope = self.scope.len();
         let decls = module
             .value()
             .decls
@@ -1251,42 +1438,58 @@ impl Resolver {
                     .rev()
                     .find(|(nm, _)| *nm == name)
                     .map(|(_, id)| *id)
-                    .unwrap_or_else(|| {
+                    .or_else(|| {
                         if self.open_tyvars {
                             let id = self.vars.fresh();
                             self.names.insert(id, name);
                             self.tyvars.push((name, id));
-                            return id;
+                            return Some(id);
                         }
                         self.error(
                             format!("unbound type variable `{name}`"),
                             "not a parameter of this type".to_string(),
                             n.span,
                         );
-                        self.vars.fresh()
+                        None
                     });
-                let v = self.node(id, n.span);
-                self.node(hir::TypeExpr::Var(v), t.span)
+                match id {
+                    Some(id) => {
+                        let v = self.node(id, n.span);
+                        self.node(hir::TypeExpr::Var(v), t.span)
+                    }
+                    None => self.node(hir::TypeExpr::Error, t.span),
+                }
             }
             ast::TypeExpr::Con(n, args) => {
                 let name = *n.value();
-                match self.tycons.get(&name).copied() {
-                    Some(arity) if arity == args.len() => {}
-                    Some(arity) => self.error(
-                        format!(
-                            "type `{name}` takes {arity} argument(s), got {}",
-                            args.len()
-                        ),
-                        "wrong number of type arguments".to_string(),
-                        n.span,
-                    ),
-                    None => self.error(
-                        format!("unknown type `{name}`"),
-                        "not defined".to_string(),
-                        n.span,
-                    ),
-                }
+                let ok = match self.tycons.get(&name).copied() {
+                    Some(arity) if arity == args.len() => true,
+                    Some(arity) => {
+                        self.error(
+                            format!(
+                                "type `{name}` takes {arity} argument(s), got {}",
+                                args.len()
+                            ),
+                            "wrong number of type arguments".to_string(),
+                            n.span,
+                        );
+                        false
+                    }
+                    None => {
+                        self.error(
+                            format!("unknown type `{name}`"),
+                            "not defined".to_string(),
+                            n.span,
+                        );
+                        false
+                    }
+                };
+                // Resolved either way, so a mistake inside the arguments is
+                // reported too.
                 let rargs = args.iter().map(|a| self.resolve_ty(a)).collect();
+                if !ok {
+                    return self.node(hir::TypeExpr::Error, t.span);
+                }
                 let con = self.node(name, n.span);
                 self.node(hir::TypeExpr::Con(con, rargs), t.span)
             }
@@ -1378,6 +1581,9 @@ impl Resolver {
                 self.toplevel = top;
                 let rpat = self.resolve_pat(pat);
                 self.toplevel = false;
+                if top && self.binds_duplicate(pat) {
+                    return hir::Bind::Error;
+                }
                 hir::Bind::Pat(rpat, rexpr)
             }
             ast::Bind::Fun(name, params, ret, body) => {
@@ -1398,6 +1604,12 @@ impl Resolver {
                 });
                 let rbody = self.resolve_expr(body);
                 self.reset(mark);
+                if top && self.duplicates.contains(&name.span) {
+                    // Reported already, and it shares the first definition's
+                    // id: inferring both would report the clash again as a
+                    // type error. Its body was still resolved, for its own.
+                    return hir::Bind::Error;
+                }
                 hir::Bind::Fun(name_node, rparams, rret, rbody)
             }
         }
@@ -1454,12 +1666,15 @@ impl Resolver {
         // is `Type.Ctor`, and the bare spelling is only how this module is
         // allowed to write it.
         let bare = *name.value();
-        let cname = self.resolve_ctor_name(bare).unwrap_or(bare);
+        let cands = self.ctor_candidates(bare);
+        let cname = cands.first().copied().unwrap_or(bare);
         if let [only] = args {
             if let ast::Expr::Record(fields, base) = only.value() {
                 if base.is_none() {
-                    if let Some(order) = self.ctor_field_order(cname) {
-                        return self.resolve_named_ctor(span, cname, name.span, fields, &order);
+                    let labels: Vec<InternedString> =
+                        fields.iter().map(|(l, _)| *l.value()).collect();
+                    if let Some((c, order)) = self.named_ctor(&cands, &labels, name) {
+                        return self.resolve_named_ctor(span, c, name.span, fields, &order);
                     }
                 }
             }
@@ -1472,6 +1687,9 @@ impl Resolver {
             );
         }
         let label = self.node(cname, name.span);
+        if cands.len() > 1 {
+            self.overload(label.id, cands.into_iter().map(hir::Alt::Ctor).collect());
+        }
         let ra = args.iter().map(|a| self.resolve_expr(a)).collect_vec();
         self.node(hir::Expr::Cons(label, ra), span)
     }
@@ -1494,8 +1712,12 @@ impl Resolver {
                 self.node(hir::Expr::Error, expr.span)
             }
             ast::Expr::Var(name) => {
-                if let Some(id) = self.lookup(*name.value()) {
-                    let v = self.node(id, name.span);
+                let ids = self.lookup_all(*name.value());
+                if let Some(&first) = ids.first() {
+                    let v = self.node(first, name.span);
+                    if ids.len() > 1 {
+                        self.overload(v.id, ids.into_iter().map(hir::Alt::Value).collect());
+                    }
                     self.node(hir::Expr::Var(v), expr.span)
                 } else {
                     self.error(
@@ -1710,11 +1932,13 @@ impl Resolver {
         // is `Type.Ctor`, and the bare spelling is only how this module is
         // allowed to write it.
         let bare = *name.value();
-        let cname = self.resolve_ctor_name(bare).unwrap_or(bare);
+        let cands = self.ctor_candidates(bare);
+        let cname = cands.first().copied().unwrap_or(bare);
         if let [only] = args {
             if let ast::Pat::Record(fields, _) = only.value() {
-                if let Some(order) = self.ctor_field_order(cname) {
-                    return self.resolve_named_ctor_pat(span, cname, name.span, fields, &order);
+                let labels: Vec<InternedString> = fields.iter().map(|(l, _)| *l.value()).collect();
+                if let Some((c, order)) = self.named_ctor(&cands, &labels, name) {
+                    return self.resolve_named_ctor_pat(span, c, name.span, fields, &order);
                 }
             }
         }
@@ -1726,8 +1950,54 @@ impl Resolver {
             );
         }
         let label = self.node(cname, name.span);
+        if cands.len() > 1 {
+            self.overload(label.id, cands.into_iter().map(hir::Alt::Ctor).collect());
+        }
         let ra = args.iter().map(|p| self.resolve_pat(p)).collect_vec();
         self.node(hir::Pat::Cons(label, ra), span)
+    }
+
+    /// Which candidate a named-field constructor `C { a = .., b = .. }` is, and
+    /// its field order.
+    ///
+    /// Named fields are reordered here, by the resolver, into the declared
+    /// positions -- so unlike a positional constructor this cannot wait for
+    /// inference to pick. The field names usually settle it; when they do not,
+    /// the constructor has to be written `Type.C`.
+    fn named_ctor(
+        &mut self,
+        cands: &[InternedString],
+        labels: &[InternedString],
+        name: &ast::Ident,
+    ) -> Option<(InternedString, Vec<InternedString>)> {
+        let named: Vec<(InternedString, Vec<InternedString>)> = cands
+            .iter()
+            .filter_map(|c| self.ctor_field_order(*c).map(|o| (*c, o)))
+            .collect();
+        if named.len() <= 1 {
+            return named.into_iter().next();
+        }
+        let fits: Vec<&(InternedString, Vec<InternedString>)> = named
+            .iter()
+            .filter(|(_, order)| labels.iter().all(|l| order.contains(l)))
+            .collect();
+        if let [one] = fits.as_slice() {
+            return Some((*one).clone());
+        }
+        let options = named
+            .iter()
+            .map(|(c, _)| format!("`{c}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.error(
+            format!(
+                "ambiguous constructor `{}`: could be {options}",
+                name.value()
+            ),
+            "write it qualified, as `Type.Ctor`".to_string(),
+            name.span,
+        );
+        named.into_iter().next()
     }
 
     fn resolve_pat(&mut self, pat: &ast::LPat) -> hir::LPat {

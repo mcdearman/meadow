@@ -36,7 +36,10 @@ use std::collections::HashMap;
 /// after it and two modules may be mutually recursive. Mutually recursive
 /// modules keep their source order relative to one another: there is no better
 /// answer, and source order is the predictable one.
-pub fn module_order<'a>(modules: impl IntoIterator<Item = &'a hir::Module>) -> Vec<usize> {
+pub fn module_order<'a>(
+    modules: impl IntoIterator<Item = &'a hir::Module>,
+    overloads: &hir::Overloads,
+) -> Vec<usize> {
     let modules: Vec<&hir::Module> = modules.into_iter().collect();
 
     // Which module defines which name.
@@ -58,7 +61,7 @@ pub fn module_order<'a>(modules: impl IntoIterator<Item = &'a hir::Module>) -> V
         let mut seen = Vec::new();
         for decl in &module.decls {
             if let hir::Decl::Bind(b) = decl.value() {
-                mentions(b, &owner, &mut seen);
+                mentions(b, &owner, overloads, &mut seen);
             }
         }
         seen.retain(|&d| d != m);
@@ -75,7 +78,7 @@ pub fn module_order<'a>(modules: impl IntoIterator<Item = &'a hir::Module>) -> V
 /// Non-binding declarations (`data`, `record`, `effect`, `use`, `mod`) keep
 /// their relative order and come first; they declare types and bring names into
 /// scope, neither of which is sequenced against the bindings.
-pub fn group_module(module: &mut hir::Module) {
+pub fn group_module(module: &mut hir::Module, overloads: &hir::Overloads) {
     let binds: Vec<usize> = (0..module.decls.len())
         .filter(|&i| matches!(module.decls[i].value(), hir::Decl::Bind(_)))
         .collect();
@@ -100,7 +103,7 @@ pub fn group_module(module: &mut hir::Module) {
     for (slot, &i) in binds.iter().enumerate() {
         if let hir::Decl::Bind(b) = module.decls[i].value() {
             let mut seen = Vec::new();
-            mentions(b, &owner, &mut seen);
+            mentions(b, &owner, overloads, &mut seen);
             seen.sort_unstable();
             seen.dedup();
             edges[slot] = seen;
@@ -138,57 +141,78 @@ pub fn group_module(module: &mut hir::Module) {
 }
 
 /// The slots of the top-level bindings a binding's body mentions.
-fn mentions(bind: &hir::Bind, owner: &HashMap<VarId, usize>, out: &mut Vec<usize>) {
+fn mentions(
+    bind: &hir::Bind,
+    owner: &HashMap<VarId, usize>,
+    ov: &hir::Overloads,
+    out: &mut Vec<usize>,
+) {
     match bind {
-        hir::Bind::Fun(_, _, _, body) => expr_mentions(body, owner, out),
-        hir::Bind::Pat(_, body) => expr_mentions(body, owner, out),
+        hir::Bind::Fun(_, _, _, body) => expr_mentions(body, owner, ov, out),
+        hir::Bind::Pat(_, body) => expr_mentions(body, owner, ov, out),
         hir::Bind::Error => {}
     }
 }
 
-fn expr_mentions(expr: &hir::LExpr, owner: &HashMap<VarId, usize>, out: &mut Vec<usize>) {
+fn expr_mentions(
+    expr: &hir::LExpr,
+    owner: &HashMap<VarId, usize>,
+    ov: &hir::Overloads,
+    out: &mut Vec<usize>,
+) {
     match expr.value() {
         hir::Expr::Var(id) => {
             if let Some(&slot) = owner.get(id.value()) {
                 out.push(slot);
             }
+            // An overloaded name depends on every candidate: inference has to
+            // be able to see all of their types to choose between them.
+            for c in ov.get(&id.id).into_iter().flatten() {
+                if let hir::Alt::Value(v) = c.alt
+                    && let Some(&slot) = owner.get(&v)
+                {
+                    out.push(slot);
+                }
+            }
         }
-        hir::Expr::Lam(_, body) => expr_mentions(body, owner, out),
+        hir::Expr::Lam(_, body) => expr_mentions(body, owner, ov, out),
         hir::Expr::App(f, args) => {
-            expr_mentions(f, owner, out);
-            args.iter().for_each(|a| expr_mentions(a, owner, out));
+            expr_mentions(f, owner, ov, out);
+            args.iter().for_each(|a| expr_mentions(a, owner, ov, out));
         }
         hir::Expr::Let(binds, body) => {
-            binds.iter().for_each(|b| mentions(b, owner, out));
-            expr_mentions(body, owner, out);
+            binds.iter().for_each(|b| mentions(b, owner, ov, out));
+            expr_mentions(body, owner, ov, out);
         }
         hir::Expr::If(c, t, e) => {
-            expr_mentions(c, owner, out);
-            expr_mentions(t, owner, out);
-            expr_mentions(e, owner, out);
+            expr_mentions(c, owner, ov, out);
+            expr_mentions(t, owner, ov, out);
+            expr_mentions(e, owner, ov, out);
         }
         hir::Expr::Match(scrut, arms) => {
-            expr_mentions(scrut, owner, out);
-            arms.iter().for_each(|(_, b)| expr_mentions(b, owner, out));
+            expr_mentions(scrut, owner, ov, out);
+            arms.iter()
+                .for_each(|(_, b)| expr_mentions(b, owner, ov, out));
         }
         hir::Expr::Tuple(xs)
         | hir::Expr::Array(xs)
         | hir::Expr::List(xs)
-        | hir::Expr::Cons(_, xs) => xs.iter().for_each(|x| expr_mentions(x, owner, out)),
+        | hir::Expr::Cons(_, xs) => xs.iter().for_each(|x| expr_mentions(x, owner, ov, out)),
         hir::Expr::Record(fields, base) => {
             fields
                 .iter()
-                .for_each(|(_, e)| expr_mentions(e, owner, out));
+                .for_each(|(_, e)| expr_mentions(e, owner, ov, out));
             if let Some(b) = base {
-                expr_mentions(b, owner, out);
+                expr_mentions(b, owner, ov, out);
             }
         }
-        hir::Expr::Field(o, _) => expr_mentions(o, owner, out),
+        hir::Expr::Field(o, _) => expr_mentions(o, owner, ov, out),
         hir::Expr::Handle(body, arms, ret) => {
-            expr_mentions(body, owner, out);
-            arms.iter().for_each(|a| expr_mentions(&a.body, owner, out));
+            expr_mentions(body, owner, ov, out);
+            arms.iter()
+                .for_each(|a| expr_mentions(&a.body, owner, ov, out));
             if let Some((_, b)) = ret {
-                expr_mentions(b, owner, out);
+                expr_mentions(b, owner, ov, out);
             }
         }
         hir::Expr::Lit(_) | hir::Expr::Unit | hir::Expr::Error => {}

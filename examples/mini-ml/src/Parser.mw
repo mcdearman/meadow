@@ -10,9 +10,9 @@
 -- `chunk` is atomic, but `let` is also a prefix of `letter`, so `keyword` checks
 -- that what follows is not another identifier byte.
 
--- The tree this parser builds, from the package's own `Syntax` module. Its
--- constructors are written `Expr.Int` and so on: `Expr` and `Ty` both have an
--- `Int`, and qualifying says which.
+-- The tree this parser builds, from the package's own `Syntax` module. Naming
+-- `Expr` brings its constructors in unqualified, and this file never mentions
+-- `Ty`, so its `Int` can only be `Expr.Int`.
 use Syntax (Expr)
 use Std.String.Parse as P
 use Std.String as S
@@ -63,12 +63,12 @@ def ident =
             if L.elem name reserved then P.fail "an identifier" else P.pure name))
 
 def intLit =
-  P.map (\bytes -> Expr.Int (unwrapOr 0 (S.toInt (S.fromBytes (V.toArray bytes)))))
+  P.map (\bytes -> Int (unwrapOr 0 (S.toInt (S.fromBytes (V.toArray bytes)))))
         (tok (P.takeWhile1P "a number" isDigitB))
 
 def boolLit =
-  P.alt (P.map (\_ -> Expr.Bool True) (keyword "true"))
-        (P.map (\_ -> Expr.Bool False) (keyword "false"))
+  P.alt (P.map (\_ -> Bool True) (keyword "true"))
+        (P.map (\_ -> Bool False) (keyword "false"))
 
 -- --- the grammar ----------------------------------------------------------
 --
@@ -81,7 +81,7 @@ def boolLit =
 fun appE () =
   P.bind (P.defer atomE)
          (\f -> P.bind (P.many (P.defer atomE))
-                       (\args -> P.pure (V.foldl (\g a -> Expr.App g a) f args)))
+                       (\args -> P.pure (V.foldl (\g a -> App g a) f args)))
 
 -- A chain of left-associative binary operators at one precedence level.
 fun binaryE ops next =
@@ -90,7 +90,7 @@ fun binaryE ops next =
            P.bind (P.many (P.lift2 (\o r -> (o, r))
                                     (P.choice (V.map (\o -> P.map (\_ -> o) (symbol o)) ops))
                                     (P.defer next)))
-                   (\rest -> P.pure (V.foldl (\l p -> Expr.Bin (fst p) l (snd p)) first rest)))
+                   (\rest -> P.pure (V.foldl (\l p -> Bin (fst p) l (snd p)) first rest)))
 
 fun mulE () = binaryE ["*", "/"] appE
 fun addE () = binaryE ["+", "-"] mulE
@@ -100,7 +100,7 @@ fun atomE () =
   P.choice
     [ intLit
       , boolLit
-      , P.map (\n -> Expr.Var n) ident
+      , P.map (\n -> Var n) ident
       , P.between (symbol "(") (symbol ")") (P.defer exprE)
     ]
 
@@ -109,17 +109,17 @@ fun lamE () =
   P.bind (P.skipThen (keyword "fun") (P.some ident))
          (\names ->
            P.bind (P.skipThen (symbol "->") (P.defer exprE))
-                   (\body -> P.pure (V.foldr (\n acc -> Expr.Lam n acc) body names)))
+                   (\body -> P.pure (V.foldr (\n acc -> Lam n acc) body names)))
 
 fun ifE () =
   P.bind (P.skipThen (keyword "if") (P.defer exprE))
          (\c -> P.bind (P.skipThen (keyword "then") (P.defer exprE))
            (\t -> P.bind (P.skipThen (keyword "else") (P.defer exprE))
-             (\e -> P.pure (Expr.If c t e))))
+             (\e -> P.pure (If c t e))))
 
 -- `let [rec] name args = rhs in body`.
 --
--- `let rec f x = e` becomes `Expr.LetRec f x e`; extra arguments curry into the
+-- `let rec f x = e` becomes `LetRec f x e`; extra arguments curry into the
 -- right-hand side, and `let rec` with no argument is rejected because a
 -- recursive value that is not a function has nothing to stand on.
 fun letE () =
@@ -130,13 +130,13 @@ fun letE () =
           P.bind (P.skipThen (symbol "=") (P.defer exprE)) (\rhs ->
             P.bind (P.skipThen (keyword "in") (P.defer exprE)) (\body ->
               match isRec with
-              | None -> P.pure (Expr.Let name (V.foldr (\a acc -> Expr.Lam a acc) rhs args) body)
+              | None -> P.pure (Let name (V.foldr (\a acc -> Lam a acc) rhs args) body)
               | Just r ->
                   match V.toList args with
                   | [;] -> P.fail "an argument after `let rec`"
                   | first :: more ->
-                      let inner = L.foldr (\a acc -> Expr.Lam a acc) rhs more in
-                      P.pure (Expr.LetRec name first inner body))))))
+                      let inner = L.foldr (\a acc -> Lam a acc) rhs more in
+                      P.pure (LetRec name first inner body))))))
 
 fun exprE () = P.choice [P.defer letE, P.defer lamE, P.defer ifE, P.defer cmpE]
 

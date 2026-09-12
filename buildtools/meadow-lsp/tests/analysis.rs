@@ -446,6 +446,29 @@ fn go_to_definition_finds_a_constructor() {
     }
 }
 
+/// An overloaded constructor goes to the candidate inference chose -- not to
+/// whichever the resolver happened to list first.
+#[test]
+fn go_to_definition_follows_the_overload_that_was_chosen() {
+    let head = "use Std.Maybe (Maybe, Just, None)\ndata Box = Just Int | Empty\n";
+
+    let src = format!("{head}fun unbox (b : Box) = match b with | Ju@st n -> n | Empty -> 0\n");
+    let (a, off) = at(&src, "@");
+    let loc = STD
+        .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
+        .expect("a definition for the local `Just`");
+    assert_eq!(loc.source.id, a.source_id, "this file's `Box.Just`");
+    let clean = src.replacen("@", "", 1);
+    assert_eq!(loc.span.start as usize, clean.find("Just Int").unwrap());
+
+    let src = format!("{head}fun orZero (m : Maybe Int) = match m with | Ju@st n -> n | None -> 0\n");
+    let (a, off) = at(&src, "@");
+    let loc = STD
+        .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
+        .expect("a definition for `Maybe.Just`");
+    assert_ne!(loc.source.id, a.source_id, "`Std.Maybe`'s `Just`");
+}
+
 /// A name that is both a type and a constructor resolves by where it is written.
 ///
 /// `data Pair = Pair Int Int` puts `Pair` in both namespaces at different

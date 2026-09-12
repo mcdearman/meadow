@@ -242,6 +242,9 @@ pub fn compile_unit_in_package(
         resolver.declare_toplevel(&m.ast.value().decls);
     }
 
+    // Names written bare that mean more than one thing, across the whole unit
+    // (node ids are unit-wide). Inference chooses; see `hir::Overloads`.
+    let mut overloads: hir::Overloads = HashMap::new();
     let mut typed: Vec<TypedModule> = modules
         .iter()
         .map(|m| {
@@ -260,10 +263,11 @@ pub fn compile_unit_in_package(
                 }
             }
             let mut hir = resolver.resolve_module(&m.ast);
+            overloads.extend(resolver.take_overloads());
             // Reorder the top-level bindings by dependency and record their
             // groups, so inference (and evaluation) never meets a name before the
             // thing that defines it.
-            scc::group_module(&mut hir.value);
+            scc::group_module(&mut hir.value, &overloads);
             TypedModule {
                 path: m.path.clone(),
                 name: m.name,
@@ -276,12 +280,13 @@ pub fn compile_unit_in_package(
     // Same again one level up: a unit's modules are discovered in alphabetical
     // order, which says nothing about what depends on what, so they need
     // sorting too.
-    let order = scc::module_order(typed.iter().map(|m| m.hir.value()));
+    let order = scc::module_order(typed.iter().map(|m| m.hir.value()), &overloads);
     typed = permute(typed, &order);
     diags.extend(resolver.take_errors());
 
     // --- type inference (one arena for the whole unit + dependency schemes)
     let mut infer = Infer::new(filename.clone(), resolver.id_count());
+    infer.set_overloads(overloads);
     infer.load_prelude(&resolver.prelude_bindings());
     let dep_schemes: Vec<(VarId, Scheme)> = deps
         .iter()
@@ -308,9 +313,15 @@ pub fn compile_unit_in_package(
         schemes,
         generalized,
         variants,
+        resolutions,
         errors,
     } = infer.finish();
     diags.extend(errors);
+    // From here on an overloaded name is whichever candidate inference chose,
+    // so nothing downstream has to know it was ever in question.
+    for m in &mut typed {
+        hir::apply_resolutions(&mut m.hir, &resolutions);
+    }
 
     // --- pattern coverage (needs the types; runs before lowering discards them)
     for m in &typed {
@@ -605,8 +616,9 @@ fn apply_use(
             let mut all: Vec<(InternedString, VarId)> =
                 map.iter().map(|(n, id)| (*n, *id)).collect();
             all.sort_by_key(|(n, _)| n.to_string());
+            let from = InternedString::from(dotted(&segs));
             for (name, id) in all {
-                resolver.import(name, id);
+                resolver.import_from(name, id, from);
             }
         }
         None => {}
@@ -616,7 +628,7 @@ fn apply_use(
     // elsewhere (`import_types`), so a miss here is not an error.
     for n in &u.names {
         if let Some(&id) = map.get(&*n.value()) {
-            resolver.import(*n.value(), id);
+            resolver.import_from(*n.value(), id, InternedString::from(dotted(&segs)));
             resolver.note_ref(n.span, NameRef::Value(id));
         } else if n.value().chars().next().is_some_and(|c| c.is_uppercase()) {
             // A type (or an effect): no id to carry, so it is named.

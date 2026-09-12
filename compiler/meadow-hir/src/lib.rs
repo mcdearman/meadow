@@ -242,6 +242,11 @@ pub enum TypeExpr {
     Vector(LTypeExpr),
     /// `[a;]` — a linked `List`.
     List(LTypeExpr),
+    /// A type the resolver could not make sense of: unknown, given the wrong
+    /// number of arguments, or an unbound variable. It has already been
+    /// reported, and inference reads it as the error type, which agrees with
+    /// everything, so the one mistake is not reported again further on.
+    Error,
 }
 
 /// A resolved effect annotation. `labels` names are effect constructors; `tail`
@@ -481,4 +486,144 @@ pub enum Lit {
     Float(u64),
     String(InternedString),
     Char(char),
+}
+
+// ===========================================================================
+// Overloaded names
+// ===========================================================================
+
+/// One thing a bare name could mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Alt {
+    /// A top-level value, by id.
+    Value(VarId),
+    /// A data constructor, by its canonical `Type.Ctor` name.
+    Ctor(InternedString),
+}
+
+/// A candidate for an overloaded name, with where it came from -- which a
+/// person needs in order to pick one when inference cannot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub alt: Alt,
+    /// The spelling that was written, which every candidate shares.
+    pub name: InternedString,
+    /// The module it was declared in, or `None` for the module being compiled.
+    pub origin: Option<InternedString>,
+}
+
+/// A bare name the resolver found more than one meaning for, keyed by the node
+/// the name was written at: the `Ident` of an `Expr::Var`, or the label of an
+/// `Expr::Cons` / `Pat::Cons`.
+///
+/// The HIR still holds *a* meaning at that node -- the first candidate -- so a
+/// pass that never looks at this table sees a well-formed tree. Inference
+/// decides which candidate the types allow, and [`apply_resolutions`] writes
+/// that one back.
+pub type Overloads = std::collections::HashMap<NodeId, Vec<Candidate>>;
+
+/// Replace each overloaded name with the candidate inference chose for it.
+pub fn apply_resolutions(module: &mut LModule, chosen: &std::collections::HashMap<NodeId, Alt>) {
+    if chosen.is_empty() {
+        return;
+    }
+    for decl in &mut module.value.decls {
+        if let Decl::Bind(b) = &mut *decl.value {
+            rewrite_bind(b, chosen);
+        }
+    }
+}
+
+fn rewrite_bind(b: &mut Bind, chosen: &std::collections::HashMap<NodeId, Alt>) {
+    match b {
+        Bind::Pat(p, e) => {
+            rewrite_pat(p, chosen);
+            rewrite_expr(e, chosen);
+        }
+        Bind::Fun(_, ps, _, e) => {
+            ps.iter_mut().for_each(|p| rewrite_pat(p, chosen));
+            rewrite_expr(e, chosen);
+        }
+        Bind::Error => {}
+    }
+}
+
+fn rewrite_expr(e: &mut LExpr, chosen: &std::collections::HashMap<NodeId, Alt>) {
+    match &mut *e.value {
+        Expr::Var(ident) => {
+            if let Some(Alt::Value(v)) = chosen.get(&ident.id) {
+                *ident.value = *v;
+            }
+        }
+        Expr::Cons(label, args) => {
+            if let Some(Alt::Ctor(c)) = chosen.get(&label.id) {
+                *label.value = *c;
+            }
+            args.iter_mut().for_each(|a| rewrite_expr(a, chosen));
+        }
+        Expr::Lam(ps, body) => {
+            ps.iter_mut().for_each(|p| rewrite_pat(p, chosen));
+            rewrite_expr(body, chosen);
+        }
+        Expr::App(f, args) => {
+            rewrite_expr(f, chosen);
+            args.iter_mut().for_each(|a| rewrite_expr(a, chosen));
+        }
+        Expr::Let(binds, body) => {
+            binds.iter_mut().for_each(|b| rewrite_bind(b, chosen));
+            rewrite_expr(body, chosen);
+        }
+        Expr::If(c, t, f) => {
+            rewrite_expr(c, chosen);
+            rewrite_expr(t, chosen);
+            rewrite_expr(f, chosen);
+        }
+        Expr::Match(s, arms) => {
+            rewrite_expr(s, chosen);
+            for (p, b) in arms {
+                rewrite_pat(p, chosen);
+                rewrite_expr(b, chosen);
+            }
+        }
+        Expr::Tuple(xs) | Expr::Array(xs) | Expr::List(xs) => {
+            xs.iter_mut().for_each(|x| rewrite_expr(x, chosen))
+        }
+        Expr::Record(fields, base) => {
+            fields.iter_mut().for_each(|(_, x)| rewrite_expr(x, chosen));
+            if let Some(b) = base {
+                rewrite_expr(b, chosen);
+            }
+        }
+        Expr::Field(o, _) => rewrite_expr(o, chosen),
+        Expr::Handle(body, arms, ret) => {
+            rewrite_expr(body, chosen);
+            for arm in arms {
+                rewrite_pat(&mut arm.param, chosen);
+                rewrite_expr(&mut arm.body, chosen);
+            }
+            if let Some((p, b)) = ret {
+                rewrite_pat(p, chosen);
+                rewrite_expr(b, chosen);
+            }
+        }
+        Expr::Lit(_) | Expr::Unit | Expr::Error => {}
+    }
+}
+
+fn rewrite_pat(p: &mut LPat, chosen: &std::collections::HashMap<NodeId, Alt>) {
+    match &mut *p.value {
+        Pat::Cons(label, args) => {
+            if let Some(Alt::Ctor(c)) = chosen.get(&label.id) {
+                *label.value = *c;
+            }
+            args.iter_mut().for_each(|a| rewrite_pat(a, chosen));
+        }
+        Pat::Ann(inner, _) => rewrite_pat(inner, chosen),
+        Pat::As(_, sub) => rewrite_pat(sub, chosen),
+        Pat::Tuple(ps) | Pat::Array(ps) | Pat::List(ps) => {
+            ps.iter_mut().for_each(|x| rewrite_pat(x, chosen))
+        }
+        Pat::Record(fields, _) => fields.iter_mut().for_each(|(_, x)| rewrite_pat(x, chosen)),
+        Pat::Wildcard | Pat::Unit | Pat::Var(_) | Pat::Lit(_) | Pat::Error => {}
+    }
 }

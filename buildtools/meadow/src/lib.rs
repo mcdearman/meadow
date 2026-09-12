@@ -13,6 +13,7 @@ pub mod package;
 pub mod editor;
 pub mod complete;
 pub mod format;
+pub mod init;
 pub mod runtime;
 pub mod test;
 pub mod pipeline;

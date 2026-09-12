@@ -52,9 +52,30 @@ pub enum Type {
     /// `label(field) | rest`. For a record row the `field` is the field's type; for
     /// an effect row it is `Tuple([..effect type args..])`.
     RowExtend(InternedString, Box<Type>, Box<Type>),
+    /// The type of something already reported as wrong: an undefined name, an
+    /// unknown constructor or type. It unifies with anything, and a mismatch
+    /// that involves it is not reported, which is what stops one mistake from
+    /// turning into a cascade. The same idea as rustc's `{type error}`.
+    Error,
 }
 
 impl Type {
+    /// Whether the error type appears anywhere in this (zonked) type.
+    pub fn references_error(&self) -> bool {
+        match self {
+            Type::Error => true,
+            Type::Var(_) | Type::Bound(_) | Type::RowEmpty => false,
+            Type::Con(_, args) | Type::Tuple(args) => args.iter().any(Type::references_error),
+            Type::Fun(ps, r, e) => {
+                ps.iter().any(Type::references_error)
+                    || r.references_error()
+                    || e.references_error()
+            }
+            Type::Record(r) => r.references_error(),
+            Type::RowExtend(_, f, rest) => f.references_error() || rest.references_error(),
+        }
+    }
+
     pub fn con(name: &str) -> Type {
         Type::Con(InternedString::from(name), vec![])
     }
@@ -181,6 +202,17 @@ enum UnifyError {
 pub struct Arena {
     slots: Vec<Slot>,
     level: u32,
+    /// The previous contents of every slot written since the oldest open
+    /// [`Snapshot`], so a trial unification can be taken back. Empty, and not
+    /// written to, while no snapshot is open.
+    trail: Vec<(u32, Slot)>,
+    snapshots: usize,
+}
+
+/// A point to roll the arena back to -- see [`Arena::snapshot`].
+struct Snapshot {
+    slots: usize,
+    trail: usize,
 }
 
 impl Arena {
@@ -188,6 +220,97 @@ impl Arena {
         Arena {
             slots: Vec::new(),
             level: 0,
+            trail: Vec::new(),
+            snapshots: 0,
+        }
+    }
+
+    /// Every slot write goes through here, so a snapshot can undo it.
+    fn set_slot(&mut self, id: u32, slot: Slot) {
+        if self.snapshots > 0 {
+            let old = std::mem::replace(&mut self.slots[id as usize], slot);
+            self.trail.push((id, old));
+        } else {
+            self.slots[id as usize] = slot;
+        }
+    }
+
+    /// The unbound variables in `ty`.
+    fn free_vars(&mut self, ty: &Type, out: &mut Vec<u32>) {
+        let ty = self.prune(ty.clone());
+        match ty {
+            Type::Var(id) => {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+            Type::Bound(_) | Type::RowEmpty | Type::Error => {}
+            Type::Con(_, args) | Type::Tuple(args) => {
+                args.iter().for_each(|a| self.free_vars(a, out))
+            }
+            Type::Fun(args, ret, eff) => {
+                args.iter().for_each(|a| self.free_vars(a, out));
+                self.free_vars(&ret, out);
+                self.free_vars(&eff, out);
+            }
+            Type::Record(row) => self.free_vars(&row, out),
+            Type::RowExtend(_, field, rest) => {
+                self.free_vars(&field, out);
+                self.free_vars(&rest, out);
+            }
+        }
+    }
+
+    /// Keep every variable still free in `ty` from generalizing past `level`.
+    fn hold_back(&mut self, ty: &Type, level: u32) {
+        let ty = self.prune(ty.clone());
+        match ty {
+            Type::Var(id) => {
+                if let Slot::Unbound { level: l, kind } = self.slots[id as usize].clone()
+                    && l > level
+                {
+                    self.set_slot(id, Slot::Unbound { level, kind });
+                }
+            }
+            Type::Bound(_) | Type::RowEmpty | Type::Error => {}
+            Type::Con(_, args) | Type::Tuple(args) => {
+                args.iter().for_each(|a| self.hold_back(a, level))
+            }
+            Type::Fun(args, ret, eff) => {
+                args.iter().for_each(|a| self.hold_back(a, level));
+                self.hold_back(&ret, level);
+                self.hold_back(&eff, level);
+            }
+            Type::Record(row) => self.hold_back(&row, level),
+            Type::RowExtend(_, field, rest) => {
+                self.hold_back(&field, level);
+                self.hold_back(&rest, level);
+            }
+        }
+    }
+
+    /// Start recording, for [`Arena::rollback`]. Unifying against each of an
+    /// overloaded name's candidates in turn is the one thing that needs it.
+    fn snapshot(&mut self) -> Snapshot {
+        self.snapshots += 1;
+        Snapshot {
+            slots: self.slots.len(),
+            trail: self.trail.len(),
+        }
+    }
+
+    /// Put every slot back as it was at `snap`, and drop the variables made since.
+    fn rollback(&mut self, snap: Snapshot) {
+        while self.trail.len() > snap.trail {
+            let (id, old) = self.trail.pop().expect("trail is longer than the snapshot");
+            if (id as usize) < self.slots.len() {
+                self.slots[id as usize] = old;
+            }
+        }
+        self.slots.truncate(snap.slots);
+        self.snapshots -= 1;
+        if self.snapshots == 0 {
+            self.trail.clear();
         }
     }
 
@@ -255,7 +378,7 @@ impl Arena {
                     Slot::Unbound { .. } => return Type::Var(id),
                 };
                 let p = self.prune(resolved);
-                self.slots[id as usize] = Slot::Bound(p.clone());
+                self.set_slot(id, Slot::Bound(p.clone()));
                 p
             }
             other => other,
@@ -266,7 +389,7 @@ impl Arena {
     pub fn zonk(&mut self, ty: &Type) -> Type {
         let ty = self.prune(ty.clone());
         match ty {
-            Type::Var(_) | Type::Bound(_) | Type::RowEmpty => ty,
+            Type::Var(_) | Type::Bound(_) | Type::RowEmpty | Type::Error => ty,
             Type::Con(name, args) => Type::Con(name, args.iter().map(|a| self.zonk(a)).collect()),
             Type::Fun(args, ret, eff) => Type::Fun(
                 args.iter().map(|a| self.zonk(a)).collect(),
@@ -300,7 +423,19 @@ impl Arena {
                     _ => self.bind_var(i, Type::Var(j)),
                 }
             }
+            // A type variable meeting the error type is poisoned along with
+            // it, so later uses of the same variable stay quiet too. Only a
+            // plain one: a row or a numeric literal's variable has a shape the
+            // error type cannot stand for, and is simply left alone.
+            (Type::Var(i), Type::Error) | (Type::Error, Type::Var(i)) => {
+                if self.slot_kind(i) == VarKind::Type {
+                    self.bind_var(i, Type::Error)
+                } else {
+                    Ok(())
+                }
+            }
             (Type::Var(i), t) | (t, Type::Var(i)) => self.bind_var(i, t),
+            (Type::Error, _) | (_, Type::Error) => Ok(()),
 
             (Type::Con(n1, a1), Type::Con(n2, a2)) if n1 == n2 && a1.len() == a2.len() => {
                 for (x, y) in a1.into_iter().zip(a2) {
@@ -343,7 +478,7 @@ impl Arena {
         if self.slot_kind(id) == VarKind::Num && !Self::num_compatible(&ty) {
             return Err(UnifyError::Mismatch(Type::con("Int"), ty));
         }
-        self.slots[id as usize] = Slot::Bound(ty);
+        self.set_slot(id, Slot::Bound(ty));
         Ok(())
     }
 
@@ -381,12 +516,14 @@ impl Arena {
                     return Err(UnifyError::Occurs(Type::Var(id), Type::Var(j)));
                 }
                 let min = self.slot_level(id).min(self.slot_level(j));
-                if let Slot::Unbound { level, .. } = &mut self.slots[j as usize] {
-                    *level = min;
+                if let Slot::Unbound { level, kind } = self.slots[j as usize].clone()
+                    && level != min
+                {
+                    self.set_slot(j, Slot::Unbound { level: min, kind });
                 }
                 Ok(())
             }
-            Type::Bound(_) | Type::RowEmpty => Ok(()),
+            Type::Bound(_) | Type::RowEmpty | Type::Error => Ok(()),
             Type::Con(_, args) | Type::Tuple(args) => {
                 for a in &args {
                     self.occurs_adjust(id, a)?;
@@ -429,10 +566,11 @@ impl Arena {
                 let new_rest = self.fresh_row();
                 let ext =
                     Type::RowExtend(label, Box::new(field.clone()), Box::new(new_rest.clone()));
-                self.slots[id as usize] = Slot::Bound(ext);
+                self.set_slot(id, Slot::Bound(ext));
                 Ok((field, new_rest))
             }
             Type::RowEmpty => Err(UnifyError::MissingLabel(label)),
+            Type::Error => Ok((Type::Error, Type::Error)),
             other => Err(UnifyError::Mismatch(other, Type::RowEmpty)),
         }
     }
@@ -440,12 +578,31 @@ impl Arena {
     // --- generalize / instantiate -------------------------------------------
 
     fn quantify(&self, ty: &Type, map: &mut HashMap<u32, u32>, kinds: &mut Vec<VarKind>) -> Type {
+        self.quantify_from(ty, Some(self.level), map, kinds)
+    }
+
+    /// [`Arena::quantify`], over every variable deeper than `level` -- or over
+    /// every variable at all, for `None`.
+    fn quantify_from(
+        &self,
+        ty: &Type,
+        level: Option<u32>,
+        map: &mut HashMap<u32, u32>,
+        kinds: &mut Vec<VarKind>,
+    ) -> Type {
         match ty {
             Type::Var(id) => {
                 // `Num` vars are never generalized — a numeric literal is not
                 // polymorphic. Left free here, then defaulted to `Int` in
                 // `finish` unless a use site pins it to `BigInt` first.
-                if self.slot_kind(*id) != VarKind::Num && self.slot_level(*id) > self.level {
+                if level.is_none() && self.slot_kind(*id) == VarKind::Num {
+                    // Closing a type only to print it: a literal nothing has
+                    // pinned is going to be an `Int`, so say that.
+                    return Type::int();
+                }
+                if self.slot_kind(*id) != VarKind::Num
+                    && level.is_none_or(|l| self.slot_level(*id) > l)
+                {
                     let idx = *map.entry(*id).or_insert_with(|| {
                         kinds.push(self.slot_kind(*id));
                         (kinds.len() - 1) as u32
@@ -457,23 +614,31 @@ impl Arena {
             }
             Type::Bound(i) => Type::Bound(*i),
             Type::RowEmpty => Type::RowEmpty,
+            Type::Error => Type::Error,
             Type::Con(name, args) => Type::Con(
                 *name,
-                args.iter().map(|a| self.quantify(a, map, kinds)).collect(),
+                args.iter()
+                    .map(|a| self.quantify_from(a, level, map, kinds))
+                    .collect(),
             ),
             Type::Fun(args, ret, eff) => Type::Fun(
-                args.iter().map(|a| self.quantify(a, map, kinds)).collect(),
-                Box::new(self.quantify(ret, map, kinds)),
-                Box::new(self.quantify(eff, map, kinds)),
+                args.iter()
+                    .map(|a| self.quantify_from(a, level, map, kinds))
+                    .collect(),
+                Box::new(self.quantify_from(ret, level, map, kinds)),
+                Box::new(self.quantify_from(eff, level, map, kinds)),
             ),
-            Type::Tuple(items) => {
-                Type::Tuple(items.iter().map(|a| self.quantify(a, map, kinds)).collect())
-            }
-            Type::Record(row) => Type::Record(Box::new(self.quantify(row, map, kinds))),
+            Type::Tuple(items) => Type::Tuple(
+                items
+                    .iter()
+                    .map(|a| self.quantify_from(a, level, map, kinds))
+                    .collect(),
+            ),
+            Type::Record(row) => Type::Record(Box::new(self.quantify_from(row, level, map, kinds))),
             Type::RowExtend(label, field, rest) => Type::RowExtend(
                 *label,
-                Box::new(self.quantify(field, map, kinds)),
-                Box::new(self.quantify(rest, map, kinds)),
+                Box::new(self.quantify_from(field, level, map, kinds)),
+                Box::new(self.quantify_from(rest, level, map, kinds)),
             ),
         }
     }
@@ -483,6 +648,7 @@ impl Arena {
             Type::Bound(i) => fresh[*i as usize].clone(),
             Type::Var(id) => Type::Var(*id),
             Type::RowEmpty => Type::RowEmpty,
+            Type::Error => Type::Error,
             Type::Con(name, args) => Type::Con(
                 *name,
                 args.iter().map(|a| Self::subst_bound(a, fresh)).collect(),
@@ -590,7 +756,37 @@ pub struct InferResult {
     pub generalized: HashMap<VarId, Generalized>,
     /// Every data / record type's constructors, for the exhaustiveness checker.
     pub variants: VariantEnv,
+    /// The candidate chosen for each overloaded name -- see [`hir::Overloads`]
+    /// and [`hir::apply_resolutions`].
+    pub resolutions: HashMap<NodeId, hir::Alt>,
     pub errors: Vec<Diagnostic>,
+}
+
+/// The state of [`Infer::search`].
+struct Search {
+    /// Every assignment found so far: a candidate index per group member.
+    solutions: Vec<Vec<usize>>,
+    /// Candidates left to try before giving up.
+    budget: usize,
+    truncated: bool,
+}
+
+/// An overloaded name inference has not chosen a meaning for yet.
+#[derive(Clone)]
+struct Pending {
+    /// The node the name was written at -- the key into [`hir::Overloads`].
+    node: NodeId,
+    candidates: Vec<hir::Candidate>,
+    /// The type the context wants the name to have; what a candidate must
+    /// unify with to be chosen.
+    ty: Type,
+    /// The level the name was mentioned at, which a chosen candidate is
+    /// instantiated at -- as it would have been had it been written alone.
+    level: u32,
+    span: Span,
+    filename: String,
+    /// Nodes to give the error type if no candidate is ever chosen.
+    poison: Vec<NodeId>,
 }
 
 /// A generalized binding, as lowering needs to see it.
@@ -650,6 +846,10 @@ pub struct Infer {
     /// introduced -- see [`Infer::annotation`]. Never scoped, because the
     /// resolver already scoped the `VarId`s it is keyed by.
     ann_tyvars: HashMap<VarId, Type>,
+    /// Names the resolver found several meanings for -- see [`Infer::defer`].
+    overloads: hir::Overloads,
+    pending: Vec<Pending>,
+    resolutions: HashMap<NodeId, hir::Alt>,
     errors: Vec<Diagnostic>,
 }
 
@@ -671,6 +871,9 @@ impl Infer {
             ctors: HashMap::new(),
             variants: HashMap::new(),
             ann_tyvars: HashMap::new(),
+            overloads: HashMap::new(),
+            pending: Vec::new(),
+            resolutions: HashMap::new(),
             record_fields: HashMap::new(),
             effects: HashMap::new(),
             cur_effect: Type::RowEmpty,
@@ -787,6 +990,9 @@ impl Infer {
             pure &= self.infer_group_member(bind, seed);
         }
 
+        // A top-level group settles its own names: its type is final once it
+        // generalizes, and an overload left open would leave it half-inferred.
+        self.solve_overloads(true);
         self.arena.exit_level();
 
         for seed in &seeds {
@@ -855,6 +1061,8 @@ impl Infer {
     }
 
     pub fn finish(mut self) -> InferResult {
+        // The whole unit has been seen: whatever is still ambiguous stays so.
+        self.solve_overloads(true);
         // Any numeric literal context never pinned to `BigInt` is an `Int`.
         self.arena.default_num_vars();
         self.table.zonk_all(&mut self.arena);
@@ -888,6 +1096,7 @@ impl Infer {
             schemes,
             generalized,
             variants: self.variants,
+            resolutions: self.resolutions,
             errors: self.errors,
         }
     }
@@ -947,6 +1156,9 @@ impl Infer {
                 let body_ty = self.infer_expr(body);
                 self.unify_at(body.span, ret, body_ty);
                 self.cur_effect = saved;
+                // A local function may leave a name to the body around it; a
+                // top-level one has nothing around it to wait for.
+                self.solve_overloads(toplevel);
                 self.arena.exit_level();
 
                 let scheme = self.generalize_named(Some(vid), &fn_ty);
@@ -967,6 +1179,7 @@ impl Infer {
                 let pty = self.infer_pat(pat, &mut bound);
                 self.unify_at(pat.span, pty, rhs);
                 self.cur_effect = saved;
+                self.solve_overloads(toplevel);
                 self.arena.exit_level();
 
                 // The value restriction, replaced: generalize a `let`/`def` binding
@@ -1013,6 +1226,11 @@ impl Infer {
             hir::Expr::Lit(hir::Lit::Char(_)) => Type::char(),
             hir::Expr::Unit => Type::unit(),
 
+            hir::Expr::Var(ident) if self.overloads.contains_key(&ident.id) => {
+                let ty = self.defer(ident.id, ident.span, vec![expr.id, ident.id]);
+                self.table.set(ident.id, ty.clone());
+                ty
+            }
             hir::Expr::Var(ident) => {
                 let ty = match self.env.get(&*ident.value()).cloned() {
                     Some(scheme) => self.instantiate(&scheme),
@@ -1132,7 +1350,12 @@ impl Infer {
 
             hir::Expr::Cons(label, args) => {
                 let name = *label.value();
-                match self.ctor_type(name) {
+                let known = if self.overloads.contains_key(&label.id) {
+                    Some(self.defer(label.id, label.span, vec![expr.id, label.id]))
+                } else {
+                    self.ctor_type(name)
+                };
+                match known {
                     Some(mut cty) => {
                         self.table.set(label.id, cty.clone());
                         // apply the constructor to its arguments, one at a time
@@ -1151,11 +1374,11 @@ impl Infer {
                         cty
                     }
                     None => {
-                        // Unknown constructor (no `data` decls yet) — infer args, give up.
+                        // Unknown constructor, which the resolver has reported.
                         for a in args {
                             self.infer_expr(a);
                         }
-                        self.arena.fresh()
+                        Type::Error
                     }
                 }
             }
@@ -1293,7 +1516,7 @@ impl Infer {
                 result
             }
 
-            hir::Expr::Error => self.arena.fresh(),
+            hir::Expr::Error => Type::Error,
         }
     }
 
@@ -1349,7 +1572,12 @@ impl Infer {
 
             hir::Pat::Cons(label, args) => {
                 let name = *label.value();
-                match self.ctor_type(name) {
+                let known = if self.overloads.contains_key(&label.id) {
+                    Some(self.defer(label.id, label.span, vec![pat.id, label.id]))
+                } else {
+                    self.ctor_type(name)
+                };
+                match known {
                     Some(mut cty) => {
                         for sub in args {
                             let sty = self.infer_pat(sub, bound);
@@ -1366,10 +1594,11 @@ impl Infer {
                         cty
                     }
                     None => {
+                        // Unknown constructor, which the resolver has reported.
                         for a in args {
                             self.infer_pat(a, bound);
                         }
-                        self.arena.fresh()
+                        Type::Error
                     }
                 }
             }
@@ -1410,7 +1639,7 @@ impl Infer {
                 Type::Record(Box::new(row))
             }
 
-            hir::Pat::Error => self.arena.fresh(),
+            hir::Pat::Error => Type::Error,
         }
     }
 
@@ -1607,6 +1836,13 @@ impl Infer {
     /// binds them and the annotations inside the binding's body mention them,
     /// so the two have to agree about which variable is which.
     fn generalize_named(&mut self, vid: Option<VarId>, ty: &Type) -> Scheme {
+        // A name still waiting on its overload has a type that is not settled,
+        // and generalizing over it would let each use pick differently.
+        let level = self.arena.level;
+        for i in 0..self.pending.len() {
+            let t = self.pending[i].ty.clone();
+            self.arena.hold_back(&t, level);
+        }
         let z = self.arena.zonk(ty);
         let mut map = HashMap::new();
         let mut kinds = Vec::new();
@@ -1633,6 +1869,375 @@ impl Infer {
             vid,
             Generalized { scheme: scheme.clone(), vars: Vec::new() },
         );
+    }
+
+    // --- overloaded names ------------------------------------------------------
+
+    /// Hand over the names the resolver found several meanings for. Call before
+    /// [`Infer::infer_module`].
+    pub fn set_overloads(&mut self, overloads: hir::Overloads) {
+        self.overloads = overloads;
+    }
+
+    /// Give an overloaded name a placeholder type and put off choosing its
+    /// meaning until the context has constrained that type.
+    ///
+    /// Choosing is settled by unification alone: a candidate *fits* when its
+    /// type unifies with everything the placeholder has been asked to be. The
+    /// set of fitting candidates can only shrink as constraints arrive, so the
+    /// moment one is left it is the answer, and the moment none is there never
+    /// will be one -- which is what lets [`Infer::solve_overloads`] decide
+    /// early, at each binding, rather than only at the end of the unit.
+    fn defer(&mut self, node: NodeId, span: Span, poison: Vec<NodeId>) -> Type {
+        let ty = self.arena.fresh();
+        let candidates = self.overloads.get(&node).cloned().unwrap_or_default();
+        self.pending.push(Pending {
+            node,
+            candidates,
+            ty: ty.clone(),
+            level: self.arena.level,
+            span,
+            filename: self.filename.clone(),
+            poison,
+        });
+        ty
+    }
+
+    /// Choose what can be chosen. `last` is the end of the unit, when a name
+    /// that several candidates still fit is reported as ambiguous.
+    fn solve_overloads(&mut self, last: bool) {
+        if self.pending.is_empty() {
+            return;
+        }
+        // Choosing one name can constrain another, so go round until nothing
+        // changes.
+        loop {
+            let mut progress = false;
+            let mut i = 0;
+            while i < self.pending.len() {
+                let fits = self.fitting(&self.pending[i].clone());
+                match fits.as_slice() {
+                    [] => {
+                        let p = self.pending.remove(i);
+                        self.report_overload(&p, &fits);
+                        progress = true;
+                    }
+                    [only] => {
+                        let p = self.pending.remove(i);
+                        self.choose(&p, *only);
+                        progress = true;
+                    }
+                    _ => i += 1,
+                }
+            }
+            // One name at a time is stuck. Names whose types are tied together
+            // may still have only one way to be read *together* --
+            // `size (Just 5)`, with two `size`s and two `Just`s, say.
+            if !progress {
+                progress = self.solve_jointly();
+            }
+            if !progress {
+                break;
+            }
+        }
+        if last {
+            for p in std::mem::take(&mut self.pending) {
+                let fits = self.fitting(&p);
+                self.report_overload(&p, &fits);
+            }
+        }
+    }
+
+    /// Settle what can be settled by reading tied-together names as a group.
+    ///
+    /// Pending names that share a type variable form a component, and each
+    /// component is searched for every combination of candidates that unifies
+    /// all at once. A name every such combination agrees on is decided; a
+    /// component with no combination at all is an error. The search backtracks
+    /// on snapshots and gives up past a fixed budget -- a component that large
+    /// is left to be reported as ambiguous rather than explored.
+    ///
+    /// Returns whether anything was decided.
+    fn solve_jointly(&mut self) -> bool {
+        let n = self.pending.len();
+        if n < 2 {
+            return false;
+        }
+        // Components, by shared free variables.
+        let vars: Vec<Vec<u32>> = (0..n)
+            .map(|i| {
+                let t = self.pending[i].ty.clone();
+                let mut out = Vec::new();
+                self.arena.free_vars(&t, &mut out);
+                out
+            })
+            .collect();
+        fn find(comp: &mut [usize], i: usize) -> usize {
+            if comp[i] != i {
+                let r = find(comp, comp[i]);
+                comp[i] = r;
+            }
+            comp[i]
+        }
+        let mut comp: Vec<usize> = (0..n).collect();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if vars[i].iter().any(|v| vars[j].contains(v)) {
+                    let (a, b) = (find(&mut comp, i), find(&mut comp, j));
+                    comp[a] = b;
+                }
+            }
+        }
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut root_of: HashMap<usize, usize> = HashMap::new();
+        for i in 0..n {
+            let root = find(&mut comp, i);
+            let g = *root_of.entry(root).or_insert_with(|| {
+                groups.push(Vec::new());
+                groups.len() - 1
+            });
+            groups[g].push(i);
+        }
+
+        let mut decided: Vec<(NodeId, usize)> = Vec::new();
+        let mut hopeless: Vec<Vec<NodeId>> = Vec::new();
+        for members in &groups {
+            if members.len() < 2 {
+                continue;
+            }
+            let group: Vec<Pending> = members.iter().map(|&i| self.pending[i].clone()).collect();
+            let mut search = Search { solutions: Vec::new(), budget: 512, truncated: false };
+            self.search(&group, &mut Vec::new(), &mut search);
+            if search.truncated {
+                continue;
+            }
+            if search.solutions.is_empty() {
+                hopeless.push(group.iter().map(|p| p.node).collect());
+                continue;
+            }
+            for (j, p) in group.iter().enumerate() {
+                let k = search.solutions[0][j];
+                if search.solutions.iter().all(|s| s[j] == k) {
+                    decided.push((p.node, k));
+                }
+            }
+        }
+
+        let progress = !decided.is_empty() || !hopeless.is_empty();
+        for (node, k) in decided {
+            if let Some(i) = self.pending.iter().position(|p| p.node == node) {
+                let p = self.pending.remove(i);
+                self.choose(&p, k);
+            }
+        }
+        for nodes in hopeless {
+            let group: Vec<Pending> = nodes
+                .iter()
+                .filter_map(|node| {
+                    let i = self.pending.iter().position(|p| p.node == *node)?;
+                    Some(self.pending.remove(i))
+                })
+                .collect();
+            self.report_combination(&group);
+        }
+        progress
+    }
+
+    /// Depth-first over the group's candidates, recording each full assignment
+    /// that unifies, until the budget runs out.
+    fn search(&mut self, group: &[Pending], chosen: &mut Vec<usize>, s: &mut Search) {
+        if s.truncated {
+            return;
+        }
+        let depth = chosen.len();
+        if depth == group.len() {
+            s.solutions.push(chosen.clone());
+            if s.solutions.len() > 64 {
+                s.truncated = true;
+            }
+            return;
+        }
+        let p = &group[depth];
+        for (k, c) in p.candidates.iter().enumerate() {
+            if s.budget == 0 {
+                s.truncated = true;
+                return;
+            }
+            s.budget -= 1;
+            let snap = self.arena.snapshot();
+            let outer = std::mem::replace(&mut self.arena.level, p.level);
+            let fits = match self.candidate_type(c.alt) {
+                Some(t) => self.arena.unify(p.ty.clone(), t).is_ok(),
+                None => true,
+            };
+            self.arena.level = outer;
+            if fits {
+                chosen.push(k);
+                self.search(group, chosen, s);
+                chosen.pop();
+            }
+            self.arena.rollback(snap);
+        }
+    }
+
+    /// Several names that each fit alone, but no reading of them fits together.
+    fn report_combination(&mut self, group: &[Pending]) {
+        let Some(first) = group.first() else { return };
+        let mut names: Vec<String> = Vec::new();
+        for p in group {
+            let name = format!("`{}`", p.candidates.first().map(|c| c.name).unwrap_or_default());
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        let mut lines = vec![
+            format!("no reading of {} fits here", names.join(" and ")),
+            "candidates in scope:".to_string(),
+        ];
+        for p in group {
+            for c in &p.candidates {
+                lines.push(self.candidate_line(c, ""));
+            }
+        }
+        self.errors.push(Diagnostic {
+            msg: lines.join("\n"),
+            filename: first.filename.clone(),
+            label: ("no combination of these candidates has a type".to_string(), first.span),
+            extra_labels: group[1..].iter().map(|p| ("and this".to_string(), p.span)).collect(),
+        });
+        for p in group {
+            for node in &p.poison {
+                self.table.set(*node, Type::Error);
+            }
+            let _ = self.arena.unify(p.ty.clone(), Type::Error);
+        }
+    }
+
+    /// One line of a candidate list: how to write it, its type, where it is from.
+    fn candidate_line(&self, c: &hir::Candidate, mark: &str) -> String {
+        let (spelled, scheme) = match c.alt {
+            hir::Alt::Ctor(ctor) => (ctor.to_string(), self.ctors.get(&ctor).cloned()),
+            hir::Alt::Value(v) => (c.name.to_string(), self.env.get(&v).cloned()),
+        };
+        let ty = match scheme {
+            Some(s) => show_scheme_body(&s),
+            None => "?".to_string(),
+        };
+        let from = match (c.alt, c.origin) {
+            (hir::Alt::Ctor(_), _) => String::new(),
+            (_, Some(m)) => format!(", from `{m}`"),
+            (_, None) => ", from this module".to_string(),
+        };
+        format!("  {spelled} : {ty}{from}{mark}")
+    }
+
+    /// The candidates of `p` whose type unifies with the one wanted, by index.
+    /// Each is tried against a snapshot and rolled back.
+    fn fitting(&mut self, p: &Pending) -> Vec<usize> {
+        let (want, level) = (p.ty.clone(), p.level);
+        let alts: Vec<hir::Alt> = p.candidates.iter().map(|c| c.alt).collect();
+        let mut out = Vec::new();
+        for (k, alt) in alts.into_iter().enumerate() {
+            let snap = self.arena.snapshot();
+            let outer = std::mem::replace(&mut self.arena.level, level);
+            let fits = match self.candidate_type(alt) {
+                Some(t) => self.arena.unify(want.clone(), t).is_ok(),
+                // Nothing known about it yet: it cannot be ruled out.
+                None => true,
+            };
+            self.arena.level = outer;
+            self.arena.rollback(snap);
+            if fits {
+                out.push(k);
+            }
+        }
+        out
+    }
+
+    /// A candidate's type, freshly instantiated -- or `None` for a value whose
+    /// type is not known yet, which only a dependency cycle leaves behind.
+    fn candidate_type(&mut self, alt: hir::Alt) -> Option<Type> {
+        match alt {
+            hir::Alt::Ctor(c) => self.ctor_type(c),
+            hir::Alt::Value(v) => {
+                let scheme = self.env.get(&v).cloned()?;
+                Some(self.instantiate(&scheme))
+            }
+        }
+    }
+
+    /// Commit to candidate `k`: unify for real and remember the choice.
+    fn choose(&mut self, p: &Pending, k: usize) {
+        let alt = p.candidates[k].alt;
+        let outer = std::mem::replace(&mut self.arena.level, p.level);
+        let ty = match self.candidate_type(alt) {
+            Some(t) => t,
+            None => {
+                // The same placeholder an unordered reference would get (see
+                // `Expr::Var`), so the definition still meets this use.
+                let hir::Alt::Value(v) = alt else {
+                    unreachable!("a constructor always has a type")
+                };
+                let t = self.arena.fresh_global();
+                self.env.insert(v, Scheme::mono(t.clone()));
+                t
+            }
+        };
+        self.arena.level = outer;
+        self.unify_at(p.span, p.ty.clone(), ty);
+        self.resolutions.insert(p.node, alt);
+    }
+
+    /// A wanted type as a person would write it: free variables lettered, and
+    /// an effect variable that says nothing left out, as a scheme prints.
+    fn show_wanted(&mut self, ty: &Type) -> String {
+        let z = self.arena.zonk(ty);
+        let (mut map, mut kinds) = (HashMap::new(), Vec::new());
+        let body = self.arena.quantify_from(&z, None, &mut map, &mut kinds);
+        show_scheme_body(&Scheme {
+            quant: kinds,
+            ty: body,
+        })
+    }
+
+    /// Say why a name could not be settled -- no candidate fits (`fits` is
+    /// empty), or more than one does -- and poison it so that is all that is said.
+    fn report_overload(&mut self, p: &Pending, fits: &[usize]) {
+        let want = self.show_wanted(&p.ty);
+        let name = p.candidates.first().map(|c| c.name).unwrap_or_default();
+        let (msg, label) = if fits.is_empty() {
+            (
+                format!("no `{name}` in scope has the type needed here, `{}`", want),
+                format!("none of the {} `{name}`s in scope fits", p.candidates.len()),
+            )
+        } else {
+            (
+                format!(
+                    "ambiguous `{name}`: {} of the candidates in scope fit `{}`",
+                    fits.len(),
+                    want
+                ),
+                "add a type annotation, or write the name qualified".to_string(),
+            )
+        };
+        let mut lines = vec![msg, "candidates in scope:".to_string()];
+        for (k, c) in p.candidates.iter().enumerate() {
+            let mark = if !fits.is_empty() && fits.contains(&k) { "  (fits)" } else { "" };
+            lines.push(self.candidate_line(c, mark));
+        }
+        let diag = Diagnostic {
+            msg: lines.join("\n"),
+            filename: p.filename.clone(),
+            label: (label, p.span),
+            extra_labels: vec![],
+        };
+        self.errors.push(diag);
+        // Unresolved, the node keeps the resolver's placeholder meaning, which
+        // is as likely to be wrong as right: nothing after this should trust it.
+        for n in &p.poison {
+            self.table.set(*n, Type::Error);
+        }
+        let _ = self.arena.unify(p.ty.clone(), Type::Error);
     }
 
     /// The declared result type of a binding, or a fresh variable when there is
@@ -1690,7 +2295,15 @@ impl Infer {
     }
 
     fn unify_at(&mut self, span: Span, a: Type, b: Type) {
+        let (whole_a, whole_b) = (a.clone(), b.clone());
         if let Err(err) = self.arena.unify(a, b) {
+            // Part of either side is already an error: the mismatch is that
+            // error seen again from here, not a new one.
+            if self.arena.zonk(&whole_a).references_error()
+                || self.arena.zonk(&whole_b).references_error()
+            {
+                return;
+            }
             let diag = self.unify_diagnostic(span, err);
             self.errors.push(diag);
         }
@@ -1753,7 +2366,7 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
     match t.value() {
         hir::TypeExpr::Var(v) => match params.get(v.value()) {
             Some(&i) => Type::Bound(i),
-            None => Type::unit(), // rename already reported the unbound tyvar
+            None => Type::Error, // rename already reported the unbound tyvar
         },
         hir::TypeExpr::Con(name, args) => {
             let args: Vec<Type> = args.iter().map(|a| ty_of(a, params)).collect();
@@ -1785,6 +2398,7 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
         // `[T]` type syntax now denotes the RRB `Vector`; write `List T` for a list.
         hir::TypeExpr::Vector(x) => Type::vector(ty_of(x, params)),
         hir::TypeExpr::List(x) => Type::list(ty_of(x, params)),
+        hir::TypeExpr::Error => Type::Error,
     }
 }
 
@@ -1960,6 +2574,18 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
 
 use std::collections::HashSet;
 
+/// A scheme without its `forall` -- how a candidate reads in a list of them,
+/// where the quantifiers are noise.
+fn show_scheme_body(s: &Scheme) -> String {
+    let full = s.to_string();
+    match full.strip_prefix("forall") {
+        Some(rest) => rest
+            .split_once(". ")
+            .map_or(full.clone(), |(_, body)| body.to_string()),
+        None => full,
+    }
+}
+
 fn show(ty: &Type) -> String {
     let mut namer = Namer::default();
     let mut s = String::new();
@@ -1976,7 +2602,7 @@ fn hidden_effect_vars(scheme: &Scheme) -> HashSet<u32> {
     fn walk(ty: &Type, count: &mut HashMap<u32, u32>, tails: &mut HashSet<u32>) {
         match ty {
             Type::Bound(i) => *count.entry(*i).or_default() += 1,
-            Type::Var(_) | Type::RowEmpty => {}
+            Type::Var(_) | Type::RowEmpty | Type::Error => {}
             Type::Con(_, args) | Type::Tuple(args) => {
                 args.iter().for_each(|a| walk(a, count, tails))
             }
@@ -2093,6 +2719,7 @@ fn write_type(
     match ty {
         Type::Var(id) => write!(out, "{}", namer.name(*id)),
         Type::Bound(i) => write!(out, "{}", namer.bound_name(*i)),
+        Type::Error => out.write_str("{error}"),
         // The unit type is written `()` — the same way its one value is, and
         // the same way an empty parameter list is.
         Type::Con(name, args) if args.is_empty() && &**name == "Unit" => out.write_str("()"),
@@ -2466,6 +3093,7 @@ fn collect_tyvars(t: &hir::LTypeExpr, out: &mut HashMap<VarId, u32>) {
         }
         hir::TypeExpr::Tuple(ts) => ts.iter().for_each(|x| collect_tyvars(x, out)),
         hir::TypeExpr::Vector(x) | hir::TypeExpr::List(x) => collect_tyvars(x, out),
+        hir::TypeExpr::Error => {}
     }
 }
 
@@ -2519,7 +3147,7 @@ impl Renderer {
 /// a type for agreeing with itself.
 pub fn normalize(ty: &Type) -> Type {
     match ty {
-        Type::Var(_) | Type::Bound(_) | Type::RowEmpty => ty.clone(),
+        Type::Var(_) | Type::Bound(_) | Type::RowEmpty | Type::Error => ty.clone(),
         Type::Con(n, args) => Type::Con(*n, args.iter().map(normalize).collect()),
         Type::Fun(args, ret, eff) => Type::Fun(
             args.iter().map(normalize).collect(),

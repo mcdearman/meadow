@@ -59,6 +59,8 @@ A full walkthrough of the language lives in [docs/TUTORIAL.md](docs/TUTORIAL.md)
 
 ```sh
 meadow                          # REPL
+meadow init                     # start a package here, named after the directory
+meadow init pkg --name myPkg    # ...or elsewhere, under a name you choose
 meadow run examples/euler       # build a package and run `main`
 meadow run --cek pkg            # ...on the CEK machine instead of the VM
 meadow build path/to/pkg        # type-check and link
@@ -71,9 +73,13 @@ meadow test                     # run the package's `@test` functions
 meadow test . parse             # ...only those whose name contains "parse"
 ```
 
-A package is a directory with a `meadow.toml` and a `src/`; `meadow run` also
-takes a single `.mw` file. The `Std` library is embedded in the binary, so
-there is nothing else to install.
+A package is a directory with a `meadow.toml` and a `src/`, which `meadow init`
+writes for you; `meadow run` also takes a single `.mw` file. The `Std` library
+is embedded in the binary, so there is nothing else to install.
+
+A package's name is the first segment of a `use` path, so it has to lex as one
+identifier — `meadow init` says so rather than letting a directory called
+`my-pkg` produce a package nothing can refer to.
 
 ### Two machines
 
@@ -202,7 +208,7 @@ fun total xs = match xs with
   | x :: rest -> x + total rest
 ```
 
-`[]` matches an empty `Vector` — the library keeps `VEmpty` the only
+`[]` matches an empty `Vector` — the library keeps `Vector.Empty` the only
 representation of one, so it matches a vector emptied at run time too. A
 *non-empty* `Vector` has no structural pattern (it is a balanced tree, not a
 cons list); match on `Vector.len` or convert with `Vector.toList`.
@@ -220,7 +226,7 @@ For VS Code, build and install the extension:
 
 ```sh
 editors/vscode/build.sh
-code --install-extension editors/vscode/meadow-0.2.1.vsix
+code --install-extension editors/vscode/meadow-0.2.2.vsix
 ```
 
 Each release also attaches a built `.vsix`.
@@ -302,6 +308,8 @@ core ──▶ AxCut ──▶ bytecode ──▶ VM
 scripts/check.sh                         # everything CI runs
 scripts/check.sh --strict                # ...plus rustfmt and clippy
 scripts/bench.sh                         # the benchmarks, on both runtimes
+scripts/install-local.sh                 # install this checkout the way a release installs
+scripts/install-local.sh --no-extension  # ...just `meadow`, not the VS Code extension
 cargo install --path buildtools/meadow   # install the CLI
 ```
 

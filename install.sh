@@ -17,6 +17,7 @@ ENV_FILE="$MEADOW_HOME/env"
 
 VERSION="latest"
 FROM_SOURCE=0
+LOCAL=""
 MODIFY_PATH=1
 UNINSTALL=0
 
@@ -70,6 +71,12 @@ parse_args() {
                 shift 2
                 ;;
             --from-source) FROM_SOURCE=1; shift ;;
+            --local)
+                [ $# -ge 2 ] || err "--local needs the path to a meadow checkout"
+                LOCAL="$2"
+                FROM_SOURCE=1
+                shift 2
+                ;;
             --no-modify-path) MODIFY_PATH=0; shift ;;
             --uninstall) UNINSTALL=1; shift ;;
             -h|--help) usage; exit 0 ;;
@@ -88,6 +95,7 @@ USAGE:
 OPTIONS:
         --version <tag>    Install a specific release (default: latest)
         --from-source      Build from source with cargo instead of downloading
+        --local <dir>      Build from this checkout instead of cloning one
         --no-modify-path   Do not touch your shell profile
         --uninstall        Remove meadow and its PATH entry
     -h, --help             Print this help
@@ -171,8 +179,21 @@ replace_binary() {
 
 install_from_source() {
     need_cmd cargo
-    need_cmd git
 
+    # A checkout already on disk: build it where it is, so a second run is an
+    # incremental build rather than a clean one, and install the result the same
+    # way a downloaded binary is installed.
+    if [ -n "$LOCAL" ]; then
+        [ -f "$LOCAL/buildtools/meadow/Cargo.toml" ] \
+            || err "$LOCAL does not look like a meadow checkout (no buildtools/meadow)"
+        say "building $LOCAL (release)"
+        cargo build --release --manifest-path "$LOCAL/buildtools/Cargo.toml" -p meadow \
+            || err "cargo build failed"
+        replace_binary "$LOCAL/buildtools/target/release/meadow"
+        return
+    fi
+
+    need_cmd git
     src="$MEADOW_HOME/src"
     say "fetching source into $src"
     if [ -d "$src/.git" ]; then
@@ -190,9 +211,9 @@ install_from_source() {
     fi
 
     say "building (this takes a minute)"
-    # The CLI lives in its own workspace; `--root` puts the binary in our bin dir
-    # rather than ~/.cargo/bin.
-    cargo install --path "$src/meadow" --root "$MEADOW_HOME" --force \
+    # The CLI lives in the `buildtools` workspace; `--root` puts the binary in our
+    # bin dir rather than ~/.cargo/bin.
+    cargo install --path "$src/buildtools/meadow" --root "$MEADOW_HOME" --force \
         || err "cargo install failed"
 }
 

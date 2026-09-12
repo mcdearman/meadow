@@ -386,7 +386,7 @@ pub fn is_unknown(ty: &Ty) -> bool {
 pub fn subst_bound(ty: &Ty, map: &HashMap<u32, Ty>) -> Ty {
     match ty {
         InferType::Bound(i) => map.get(i).cloned().unwrap_or_else(|| ty.clone()),
-        InferType::Var(_) | InferType::RowEmpty => ty.clone(),
+        InferType::Var(_) | InferType::RowEmpty | InferType::Error => ty.clone(),
         InferType::Con(n, args) => {
             InferType::Con(*n, args.iter().map(|a| subst_bound(a, map)).collect())
         }
@@ -411,7 +411,7 @@ pub fn subst_bound(ty: &Ty, map: &HashMap<u32, Ty>) -> Ty {
 pub fn subst_rigid(ty: &Ty, map: &HashMap<u32, Ty>) -> Ty {
     match ty {
         InferType::Var(v) => map.get(v).cloned().unwrap_or_else(|| ty.clone()),
-        InferType::Bound(_) | InferType::RowEmpty => ty.clone(),
+        InferType::Bound(_) | InferType::RowEmpty | InferType::Error => ty.clone(),
         InferType::Con(n, args) => InferType::Con(
             *n,
             args.iter().map(|a| subst_rigid(a, map)).collect(),
@@ -668,6 +668,7 @@ impl Printer {
             InferType::Var(v) => self.tyvar(*v),
             InferType::Bound(i) => format!("?{i}"),
             InferType::RowEmpty => "{}".to_string(),
+            InferType::Error => "{error}".to_string(),
             InferType::Con(n, args) if args.is_empty() => n.to_string(),
             InferType::Con(n, args) => {
                 let parts: Vec<String> = args.iter().map(|a| self.ty(a)).collect();

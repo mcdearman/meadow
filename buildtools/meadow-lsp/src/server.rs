@@ -9,7 +9,6 @@ use crate::analysis::{Analysis, HintPart, Loc, PackageLoader, Std};
 use crate::pos::LineIndex;
 use crate::tokens;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
-use meadow_compiler::{source::Source, span::Span, CompiledPackage};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
     Notification, PublishDiagnostics,
@@ -19,6 +18,7 @@ use lsp_types::request::{
     Request as LspRequest, SemanticTokensFullRequest,
 };
 use lsp_types::*;
+use meadow_compiler::{CompiledPackage, source::Source, span::Span};
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -129,8 +129,8 @@ fn server_capabilities() -> ServerCapabilities {
             prepare_provider: Some(true),
             work_done_progress_options: Default::default(),
         })),
-        semantic_tokens_provider: Some(
-            SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
                 legend: SemanticTokensLegend {
                     token_types: tokens::LEGEND
                         .iter()
@@ -140,8 +140,8 @@ fn server_capabilities() -> ServerCapabilities {
                 },
                 full: Some(SemanticTokensFullOptions::Bool(true)),
                 ..Default::default()
-            }),
-        ),
+            },
+        )),
         ..Default::default()
     }
 }
@@ -177,14 +177,15 @@ impl Server {
                 Message::Notification(note) => {
                     if let Some((uri, text)) = self.notification(note) {
                         let diagnostics = self.publish(&uri);
-                        c.sender.send(Message::Notification(lsp_server::Notification {
-                            method: PublishDiagnostics::METHOD.to_string(),
-                            params: serde_json::to_value(PublishDiagnosticsParams {
-                                uri,
-                                diagnostics,
-                                version: None,
-                            })?,
-                        }))?;
+                        c.sender
+                            .send(Message::Notification(lsp_server::Notification {
+                                method: PublishDiagnostics::METHOD.to_string(),
+                                params: serde_json::to_value(PublishDiagnosticsParams {
+                                    uri,
+                                    diagnostics,
+                                    version: None,
+                                })?,
+                            }))?;
                         let _ = text;
                     }
                 }
@@ -293,16 +294,18 @@ impl Server {
             GotoDefinition::METHOD => self.answer::<GotoDefinition, _>(req, |s, p| {
                 let here = p.text_document_position_params.text_document.uri.clone();
                 let (doc, offset) = s.at(&p.text_document_position_params)?;
-                let loc = doc
-                    .analysis
-                    .definition_at(offset, s.std.definitions(), s.std.declared_names())?;
+                let loc = doc.analysis.definition_at(
+                    offset,
+                    s.std.definitions(),
+                    s.std.declared_names(),
+                )?;
 
                 // The definition may be in a file that is not open — so the
                 // position has to be measured against *that* source's text, not
                 // this document's. The two agree only in the case this used to
                 // be able to answer.
-                let mine = (loc.source.id == doc.analysis.source_id)
-                    .then(|| doc.index.range(loc.span));
+                let mine =
+                    (loc.source.id == doc.analysis.source_id).then(|| doc.index.range(loc.span));
 
                 let (uri, (start, end)) = match mine {
                     Some(range) => (here, range),
@@ -337,11 +340,9 @@ impl Server {
                         // standard library", "that would read as a
                         // constructor" -- belongs in front of them as a
                         // message, which is what an error response becomes.
-                        Err(msg) => Response::new_err(
-                            id,
-                            lsp_server::ErrorCode::RequestFailed as i32,
-                            msg,
-                        ),
+                        Err(msg) => {
+                            Response::new_err(id, lsp_server::ErrorCode::RequestFailed as i32, msg)
+                        }
                     },
                     Err(e) => Response::new_err(
                         id,
@@ -353,7 +354,8 @@ impl Server {
             InlayHintRequest::METHOD => self.answer::<InlayHintRequest, _>(req, |s, p| {
                 let from = {
                     let doc = s.docs.get(&p.text_document.uri)?;
-                    doc.index.offset(p.range.start.line, p.range.start.character)
+                    doc.index
+                        .offset(p.range.start.line, p.range.start.character)
                 };
                 let to = {
                     let doc = s.docs.get(&p.text_document.uri)?;
@@ -451,11 +453,7 @@ impl Server {
     /// how an editor offers ctrl-click and a hover on something that is not in
     /// the file at all. A name with nowhere to go -- a builtin like `Int`, or a
     /// type variable -- stays plain text rather than becoming a dead link.
-    fn label_parts(
-        &mut self,
-        here: &Uri,
-        parts: &[HintPart],
-    ) -> Option<Vec<InlayHintLabelPart>> {
+    fn label_parts(&mut self, here: &Uri, parts: &[HintPart]) -> Option<Vec<InlayHintLabelPart>> {
         let mut out = Vec::with_capacity(parts.len());
         for part in parts {
             match part {
@@ -474,9 +472,8 @@ impl Server {
                     let mut p = plain(name.to_string());
                     if let Some(loc) = loc {
                         p.location = self.locate(here, loc);
-                        p.tooltip = Some(InlayHintLabelPartTooltip::String(format!(
-                            "type `{name}`"
-                        )));
+                        p.tooltip =
+                            Some(InlayHintLabelPartTooltip::String(format!("type `{name}`")));
                     }
                     out.push(p);
                 }
@@ -587,6 +584,12 @@ impl Server {
 }
 
 /// The filesystem path a `file://` URI names, or `None` for anything else.
+///
+/// The leading slash is the part that matters. A `file://` URI always has an
+/// absolute path after the authority, so a Windows path arrives as
+/// `file:///C:/x` and strips to `/C:/x` — which is not a path Windows can open,
+/// and every lookup built on it silently finds nothing rather than failing.
+/// That is [`path_to_uri`] read backwards, and the two have to agree.
 fn uri_to_path(uri: &Uri) -> Option<std::path::PathBuf> {
     let s = uri.as_str().strip_prefix("file://")?;
     // Percent-decoding, on bytes rather than characters: an editor escapes a
@@ -603,7 +606,21 @@ fn uri_to_path(uri: &Uri) -> Option<std::path::PathBuf> {
             out.push(b);
         }
     }
-    Some(std::path::PathBuf::from(String::from_utf8(out).ok()?))
+    let path = String::from_utf8(out).ok()?;
+    // `/C:/x` -> `C:/x`, and only there: a POSIX path keeps its root. After
+    // decoding, not before, because VS Code escapes the colon — it sends
+    // `file:///c%3A/x` — so a check on the raw text never sees a drive.
+    let path = match path.strip_prefix('/') {
+        Some(rest) if starts_with_drive(rest) => rest.to_string(),
+        _ => path,
+    };
+    Some(std::path::PathBuf::from(path))
+}
+
+/// `C:` or `c:` at the front of `s` — a Windows drive.
+fn starts_with_drive(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
 /// A `file://` URI for a path on this machine.
@@ -642,5 +659,66 @@ fn plain(value: String) -> InlayHintLabelPart {
         tooltip: None,
         location: None,
         command: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{path_to_uri, uri_to_path};
+    use lsp_types::Uri;
+    use std::path::PathBuf;
+
+    fn uri(s: &str) -> Uri {
+        s.parse().expect("a valid uri")
+    }
+
+    /// The URI an editor sends for a Windows file names a path Windows can open.
+    ///
+    /// The bug this exists for: `file:///C:/x` stripped to `/C:/x`, which is not a
+    /// Windows path, so finding the package a document belonged to silently
+    /// found nothing and every sibling `use` was reported as a missing module.
+    #[test]
+    fn a_windows_uri_loses_the_slash_before_its_drive() {
+        assert_eq!(
+            uri_to_path(&uri("file:///C:/Users/me/pkg/src/Eval.mw")),
+            Some(PathBuf::from("C:/Users/me/pkg/src/Eval.mw"))
+        );
+    }
+
+    /// VS Code's own spelling: lower-case drive, colon percent-encoded. A check
+    /// for the drive made *before* decoding sees `c%3A` and misses it, which is
+    /// the version of this bug that survives testing with hand-written URIs.
+    #[test]
+    fn the_drive_is_found_after_percent_decoding() {
+        assert_eq!(
+            uri_to_path(&uri("file:///c%3A/Users/me/pkg/src/Eval.mw")),
+            Some(PathBuf::from("c:/Users/me/pkg/src/Eval.mw"))
+        );
+    }
+
+    #[test]
+    fn a_posix_path_keeps_its_root() {
+        assert_eq!(
+            uri_to_path(&uri("file:///home/me/pkg/src/Eval.mw")),
+            Some(PathBuf::from("/home/me/pkg/src/Eval.mw"))
+        );
+    }
+
+    #[test]
+    fn escapes_elsewhere_in_the_path_still_decode() {
+        assert_eq!(
+            uri_to_path(&uri("file:///c%3A/Users/Bob%20Smith/pkg/main.mw")),
+            Some(PathBuf::from("c:/Users/Bob Smith/pkg/main.mw"))
+        );
+    }
+
+    /// `path_to_uri` and `uri_to_path` have to agree, or a location the server
+    /// hands out is one it cannot read back.
+    #[cfg(windows)]
+    #[test]
+    fn the_two_conversions_round_trip() {
+        let path = PathBuf::from(r"C:\Users\Bob Smith\pkg\src\Eval.mw");
+        let back = uri_to_path(&path_to_uri(&path).expect("a uri")).expect("a path");
+        assert_eq!(back, PathBuf::from("C:/Users/Bob Smith/pkg/src/Eval.mw"));
     }
 }

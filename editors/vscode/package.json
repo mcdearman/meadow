@@ -2,7 +2,7 @@
 	"name": "meadow",
 	"displayName": "Meadow",
 	"description": "Language support for Meadow: syntax highlighting, diagnostics, hover, go-to-definition, rename and inlay hints.",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"publisher": "ChrisMcDearman",
 	"repository": {
 		"type": "git",

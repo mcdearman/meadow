@@ -226,6 +226,12 @@ impl Checker<'_> {
     // --- hir::Pat -> P ------------------------------------------------------
 
     fn lower(&self, pat: &hir::LPat) -> P {
+        // A pattern inference gave the error type (an unknown constructor) is
+        // taken to match anything: whatever it was meant to cover, saying the
+        // `match` misses it would only repeat the error.
+        if matches!(self.types.get(pat.id), Some(Type::Error)) {
+            return P::Wild;
+        }
         match pat.value() {
             hir::Pat::Wildcard | hir::Pat::Var(_) | hir::Pat::Error => P::Wild,
             // An annotation constrains the type, never the shape.
@@ -360,6 +366,16 @@ impl Checker<'_> {
             return if rows.is_empty() { Some(vec![]) } else { None };
         }
         let ty = &col_types[0];
+        // A column of the error type (an undefined scrutinee, say) has no
+        // constructor set to be exhaustive over. Every row covers it, which
+        // drops the column and checks the rest.
+        if *ty == Type::Error {
+            let rest: Vec<Vec<P>> = rows.iter().map(|row| row[1..].to_vec()).collect();
+            let w = self.missing(&rest, &col_types[1..])?;
+            let mut out = vec![P::Wild];
+            out.extend(w);
+            return Some(out);
+        }
         let used: Vec<Con> = heads(rows);
         let all = self.ctors_of(ty);
         let complete = all
@@ -538,7 +554,7 @@ fn render_at(p: &P, nested: bool) -> String {
 fn max_bound(t: &Type) -> Option<u32> {
     match t {
         Type::Bound(i) => Some(*i),
-        Type::Var(_) | Type::RowEmpty => None,
+        Type::Var(_) | Type::RowEmpty | Type::Error => None,
         Type::Con(_, args) | Type::Tuple(args) => args.iter().filter_map(max_bound).max(),
         Type::Fun(ps, r, e) => ps
             .iter()

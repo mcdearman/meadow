@@ -6,8 +6,8 @@ mod repl;
 
 use clap::{Parser, Subcommand};
 use meadow::{
-    format, package::ProfileConfig, pipeline, runtime, test, update, Engine, OptLevel, Profile,
-    Resolved, Strictness,
+    format, init, package::ProfileConfig, pipeline, runtime, test, update, Engine, OptLevel,
+    Profile, Resolved, Strictness,
 };
 use std::path::PathBuf;
 
@@ -90,6 +90,15 @@ enum Cmd {
         /// Write the result to stdout instead of back to the file.
         #[arg(long)]
         stdout: bool,
+    },
+    /// Create a package: a `meadow.toml` and a `src/main.mw` that runs.
+    Init {
+        /// Where to put it, created if it does not exist.
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// The package's name. Defaults to the directory's.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
     },
     /// Replace this binary with the latest published release.
     Update {
@@ -264,6 +273,18 @@ fn main() {
                 }
             }
         }
+        Some(Cmd::Init { path, name }) => match init::run(&init::Options { path, name }) {
+            Ok(made) => {
+                println!("created package `{}` at {}", made.name, made.root.display());
+                for f in &made.files {
+                    println!("  {}", f.display());
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        },
         Some(Cmd::Update { version, force }) => {
             if let Err(e) = update::run(&update::Options { version, force }) {
                 eprintln!("error: {e}");
@@ -334,6 +355,29 @@ mod tests {
     #[test]
     fn the_cli_is_internally_consistent() {
         Cli::command().debug_assert();
+    }
+
+    /// `init` takes the current directory when told nothing, which is the way
+    /// it will usually be run.
+    #[test]
+    fn init_defaults_to_here() {
+        let parsed = Cli::try_parse_from(["meadow", "init"]).expect("bare `init`");
+        match parsed.cmd {
+            Some(Cmd::Init { path, name }) => {
+                assert_eq!(path, PathBuf::from("."));
+                assert_eq!(name, None);
+            }
+            other => panic!("expected `init`, got {:?}", other.is_some()),
+        }
+
+        let parsed = Cli::try_parse_from(["meadow", "init", "pkg", "--name", "myPkg"]).unwrap();
+        match parsed.cmd {
+            Some(Cmd::Init { path, name }) => {
+                assert_eq!(path, PathBuf::from("pkg"));
+                assert_eq!(name.as_deref(), Some("myPkg"));
+            }
+            _ => panic!("expected `init`"),
+        }
     }
 
     /// The arguments a language client actually launches us with.

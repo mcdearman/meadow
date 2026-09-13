@@ -75,6 +75,7 @@ use Std.Result.Result.*
   | Err Bool PError
 
 -- A parser is a function from the input and a position to a `Reply`.
+use Parser.*
 @pub data Parser t a = Parser (Vector t -> Int -> Reply a)
 
 -- Apply a parser -- the one place the wrapper is opened.

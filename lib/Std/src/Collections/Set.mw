@@ -6,6 +6,7 @@ use Std.Collections.Vector as V
 -- `[a, b]` desugars to a `vecFromArray` call.
 use Std.Collections.Vector (vecFromArray)
 
+use Set.*
 @pub data Set = Set (Tree Int)
 
 @pub def empty = Set Tree.empty

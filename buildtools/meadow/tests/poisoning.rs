@@ -40,7 +40,7 @@ fn unknown_constructor_in_a_match_arm() {
 #[test]
 fn undefined_scrutinee() {
     assert_eq!(
-        errors("data T = A | B\ndef main = match nope with | A -> 0\n"),
+        errors("use T.*\ndata T = A | B\ndef main = match nope with | A -> 0\n"),
         "undefined variable: nope"
     );
 }
@@ -114,7 +114,7 @@ fn an_error_beside_a_real_mismatch() {
 #[test]
 fn a_missing_case_is_still_missing() {
     assert_eq!(
-        errors("data T = A | B\ndef main = match A with | A -> 0\n"),
+        errors("use T.*\ndata T = A | B\ndef main = match A with | A -> 0\n"),
         "non-exhaustive patterns: `B` is not matched"
     );
 }

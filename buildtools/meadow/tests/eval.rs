@@ -92,7 +92,7 @@ fn list_map_builtin() {
 #[test]
 fn match_on_data() {
     insta::assert_snapshot!(eval_main(
-        "data Shape = Circle Int | Rect Int Int\n\
+        "use Shape.*\ndata Shape = Circle Int | Rect Int Int\n\
          fun area s = match s with | Circle r -> r * r | Rect w h -> w * h\n\
          def main = area (Rect 3 4) + area (Circle 5)\n"
     ));
@@ -101,7 +101,7 @@ fn match_on_data() {
 #[test]
 fn recursive_data() {
     insta::assert_snapshot!(eval_main(
-        "data Tree a = Tip | Branch (Tree a) a (Tree a)\n\
+        "use Tree.*\ndata Tree a = Tip | Branch (Tree a) a (Tree a)\n\
          fun sum t = match t with | Tip -> 0 | Branch l x r -> x + sum l + sum r\n\
          def main = sum (Branch (Branch Tip 3 Tip) 5 (Branch Tip 7 Tip))\n"
     ));

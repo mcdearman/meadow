@@ -124,6 +124,18 @@ impl Type {
     pub fn st_ref(state: Type, inner: Type) -> Type {
         Type::Con(InternedString::from("StRef"), vec![state, inner])
     }
+    /// `Task a` — a running green thread, and the result it will have.
+    pub fn task(result: Type) -> Type {
+        Type::Con(InternedString::from("Task"), vec![result])
+    }
+    /// `TVar a` — a transactional variable.
+    pub fn tvar(elem: Type) -> Type {
+        Type::Con(InternedString::from("TVar"), vec![elem])
+    }
+    /// `Channel a` — values passed between green threads.
+    pub fn channel(elem: Type) -> Type {
+        Type::Con(InternedString::from("Channel"), vec![elem])
+    }
     /// `Compact a` — a value copied into a compact region.
     pub fn compact(elem: Type) -> Type {
         Type::Con(InternedString::from("Compact"), vec![elem])
@@ -547,6 +559,7 @@ impl Arena {
             (Type::Record(r1), Type::Record(r2)) => self.unify(*r1, *r2),
 
             (Type::RowEmpty, Type::RowEmpty) => Ok(()),
+            (Type::RowEmpty, Type::RowExtend(l2, ..)) => Err(UnifyError::MissingLabel(l2)),
             (Type::RowExtend(l1, t1, rest1), row2 @ (Type::RowExtend(..) | Type::RowEmpty)) => {
                 let (t2, rest2) = self.rewrite_row(row2, l1, &t1)?;
                 self.unify(*t1, t2)?;
@@ -985,6 +998,10 @@ pub fn subst_bound(ty: &Type, args: &[Type]) -> Type {
 
 pub struct Infer {
     filename: String,
+    /// The definitions that are run rather than defined -- `main`, and the
+    /// REPL's or a debugger's stand-in for it: the top-level `def`s allowed to
+    /// perform effects. See [`Infer::check_pure_def`].
+    entries: Vec<VarId>,
     arena: Arena,
     /// `VarId` -> polytype. Populated from the prelude, dependency packages, and
     /// as we walk. `VarId`s are globally unique, so this never needs scoping.
@@ -1028,6 +1045,47 @@ pub struct Infer {
 impl Infer {
     /// Name the file diagnostics from here on point into — the driver moves
     /// this along as it walks the unit's modules.
+    /// Which bindings are run rather than defined -- see [`Infer::check_pure_def`].
+    pub fn set_entries(&mut self, entries: Vec<VarId>) {
+        self.entries = entries;
+    }
+
+    /// A top-level `def` has to be pure to evaluate.
+    ///
+    /// Its right-hand side is evaluated once, the first time anything needs it,
+    /// and the value is kept. That is only the same program as evaluating it
+    /// at every use -- or all at load, in order -- when evaluating it does
+    /// nothing a program can see. So effects belong inside functions, where they
+    /// happen each time the function is called: a `def` may be a function that
+    /// prints, but not a value whose making prints. `main` is the exception,
+    /// because running it once is running the program.
+    fn check_pure_def(&mut self, bound: &[VarId], rhs_eff: &Type, span: Span) {
+        if bound.iter().any(|v| self.entries.contains(v)) {
+            return;
+        }
+        let mut labels = Vec::new();
+        let mut row = self.arena.zonk(rhs_eff);
+        while let Type::RowExtend(l, _, rest) = row {
+            if !labels.contains(&l) {
+                labels.push(l);
+            }
+            row = *rest;
+        }
+        if labels.is_empty() {
+            return;
+        }
+        let list = labels.iter().map(|l| format!("`{l}`")).collect::<Vec<_>>().join(", ");
+        self.errors.push(Diagnostic {
+            msg: format!(
+                "a top-level `def` cannot perform effects, and this one performs {list}; \
+                 perform them inside a function instead -- `fun name () = ...` -- or in `main`"
+            ),
+            filename: self.filename.clone(),
+            label: (format!("performs {list}"), span),
+            extra_labels: vec![],
+        });
+    }
+
     pub fn set_filename(&mut self, filename: impl Into<String>) {
         self.filename = filename.into();
     }
@@ -1035,6 +1093,7 @@ impl Infer {
     pub fn new(filename: impl Into<String>, node_count: usize) -> Self {
         Infer {
             filename: filename.into(),
+            entries: Vec::new(),
             arena: Arena::new(),
             env: HashMap::new(),
             generalized: HashMap::new(),
@@ -1248,11 +1307,13 @@ impl Infer {
 
                 // `infer_pat` gave each name a fresh variable of its own; the group
                 // has been looking at the seed instead.
+                let vars: Vec<VarId> = bound.iter().map(|(v, _)| *v).collect();
                 for (vid, vty) in bound {
                     if let Some((_, seed_ty)) = seed.iter().find(|(v, _)| *v == vid) {
                         self.unify_at(pat.span, seed_ty.clone(), vty);
                     }
                 }
+                self.check_pure_def(&vars, &rhs_eff, expr.span);
                 matches!(self.arena.zonk(&rhs_eff), Type::RowEmpty | Type::Var(_))
             }
             hir::Bind::Error => true,
@@ -1415,6 +1476,9 @@ impl Infer {
                     // let the enclosing region see the rhs's effects
                     let region = self.cur_effect.clone();
                     self.join_effect_into(pat.span, region, rhs_eff);
+                } else if !pure {
+                    let vars: Vec<VarId> = bound.iter().map(|(v, _)| *v).collect();
+                    self.check_pure_def(&vars, &rhs_eff, expr.span);
                 }
 
                 for (vid, vty) in bound {
@@ -2730,6 +2794,12 @@ impl Infer {
                 ),
                 "arity mismatch".to_string(),
             ),
+            // The same row machinery serves records and effects, and the label
+            // says which: an effect is named like a type, a field like a value.
+            UnifyError::MissingLabel(l) if l.starts_with(|c: char| c.is_uppercase()) => (
+                format!("type mismatch: the effect `{l}` is not allowed here"),
+                format!("performs `{l}`"),
+            ),
             UnifyError::MissingLabel(l) => (
                 format!("record has no field `{l}`"),
                 format!("missing field `{l}`"),
@@ -2825,6 +2895,39 @@ fn mut_row(tail: u32) -> Type {
         Box::new(Type::Tuple(vec![])),
         Box::new(Type::Bound(tail)),
     )
+}
+
+/// The row `{ Thread | Bound(tail) }` -- what starting, waiting on or talking to
+/// a green thread costs.
+fn thread_row(tail: u32) -> Type {
+    Type::RowExtend(
+        InternedString::from("Thread"),
+        Box::new(Type::Tuple(vec![])),
+        Box::new(Type::Bound(tail)),
+    )
+}
+
+/// The effects a spawned thread may perform, as a closed row: what the runtime
+/// itself answers. A thread starts with no handlers, so anything else it
+/// performed would have nobody to answer it -- a handler in the thread that
+/// spawned it is on another heap, and may not even be running. An effect the
+/// function handles itself does not appear in its type, so it is allowed.
+pub const THREAD_EFFECTS: &[&str] =
+    &["Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut"];
+
+/// The row `{ Stm | Bound(tail) }` -- what a transaction operation costs.
+fn stm_row(tail: u32) -> Type {
+    Type::RowExtend(
+        InternedString::from("Stm"),
+        Box::new(Type::Tuple(vec![])),
+        Box::new(Type::Bound(tail)),
+    )
+}
+
+fn thread_body_row() -> Type {
+    THREAD_EFFECTS.iter().rev().fold(Type::RowEmpty, |rest, e| {
+        Type::RowExtend(InternedString::from(*e), Box::new(Type::Tuple(vec![])), Box::new(rest))
+    })
 }
 
 /// The row `{ St Bound(state) | Bound(tail) }` -- what touching local state costs.
@@ -3048,6 +3151,70 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "compactSize" => Scheme {
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Type::compact(Bound(0))], Type::int()),
+        },
+        "threadSpawn" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::Fun(vec![Type::unit()], Box::new(Bound(0)), Box::new(thread_body_row()))],
+                Type::task(Bound(0)),
+                thread_row(1),
+            ),
+        },
+        "threadAwait" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(vec![Type::task(Bound(0))], Bound(0), thread_row(1)),
+        },
+        "threadYield" => Scheme {
+            quant: vec![VarKind::Effect],
+            ty: Type::func_eff(vec![Type::unit()], Type::unit(), thread_row(0)),
+        },
+        "channelNew" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(vec![Type::unit()], Type::channel(Bound(0)), thread_row(1)),
+        },
+        "channelSend" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::channel(Bound(0)), Bound(0)],
+                Type::unit(),
+                thread_row(1),
+            ),
+        },
+        "channelReceive" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(vec![Type::channel(Bound(0))], Bound(0), thread_row(1)),
+        },
+        "stmNew" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(vec![Bound(0)], Type::tvar(Bound(0)), stm_row(1)),
+        },
+        "stmNewIO" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(vec![Bound(0)], Type::tvar(Bound(0)), thread_row(1)),
+        },
+        "stmRead" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::tvar(Bound(0))],
+                Type::Con(InternedString::from("Maybe"), vec![Bound(0)]),
+                stm_row(1),
+            ),
+        },
+        "stmWrite" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(vec![Type::tvar(Bound(0)), Bound(0)], Type::unit(), stm_row(1)),
+        },
+        "stmBegin" | "stmWait" => Scheme {
+            quant: vec![VarKind::Effect],
+            ty: Type::func_eff(vec![Type::unit()], Type::unit(), thread_row(0)),
+        },
+        "stmCommit" => Scheme {
+            quant: vec![VarKind::Effect],
+            ty: Type::func_eff(vec![Type::unit()], Type::bool(), thread_row(0)),
+        },
+        "stmNest" | "stmMerge" | "stmRollback" => Scheme {
+            quant: vec![VarKind::Effect],
+            ty: Type::func_eff(vec![Type::unit()], Type::unit(), stm_row(0)),
         },
         _ => return None,
     };

@@ -16,7 +16,7 @@ use meadow::Options;
 
 /// A module with its own `Just`, next to `Std.Maybe`'s.
 const BOX: &str = "use Std.Maybe.Maybe (Just, None)\n\
-                   data Box = Just Int | Empty\n\
+                   use Box.*\ndata Box = Just Int | Empty\n\
                    fun unbox (b : Box) = match b with | Just n -> n | Empty -> 0\n";
 
 fn errors(src: &str) -> String {
@@ -49,7 +49,7 @@ fn names_tied_together_are_chosen_together() {
     // has a type.
     let src = "use Std.Maybe.Maybe (Just, None)\n\
                use Std.Collections.Map (size)\n\
-               data Box = Just Int | Empty\n\
+               use Box.*\ndata Box = Just Int | Empty\n\
                fun size (b : Box) = match b with | Just n -> n | Empty -> 0\n\
                def main = size (Just 5)\n";
     assert_eq!(eval_main_std(src), "5");
@@ -58,11 +58,11 @@ fn names_tied_together_are_chosen_together() {
 
 #[test]
 fn a_value_clashing_across_modules_is_chosen_by_type() {
-    let shapes = "data Shape = Circle Int | Square Int\n\
+    let shapes = "use Shape.*\ndata Shape = Circle Int | Square Int\n\
                   fun size s = match s with | Circle r -> 3 * r * r | Square w -> w * w\n";
     let main = "use Shapes (Shape, size)\n\
                 use Shapes.Shape.*\n\
-                data Box = Box Int\n\
+                use Box.*\ndata Box = Box Int\n\
                 fun size b = match b with | Box n -> n\n\
                 def main = (size (Circle 2), size (Box 5))\n";
     assert_eq!(eval_unit(&[("Shapes", shapes), ("", main)]), "(12, 5)");
@@ -102,8 +102,8 @@ fn nothing_settling_it_is_ambiguous() {
         errors(&src),
         "ambiguous `Just`: 2 of the candidates in scope fit `a -> b`\n\
          candidates in scope:\n  \
-         Box.Just : Int -> Box  (fits)\n  \
-         Maybe.Just : a -> Maybe a  (fits)"
+         Maybe.Just : a -> Maybe a  (fits)\n  \
+         Box.Just : Int -> Box  (fits)"
     );
 }
 
@@ -127,8 +127,8 @@ fn no_candidate_fitting_names_the_type_wanted() {
         errors(&src),
         "no `Just` in scope has the type needed here, `n -> Bool`\n\
          candidates in scope:\n  \
-         Box.Just : Int -> Box\n  \
-         Maybe.Just : a -> Maybe a"
+         Maybe.Just : a -> Maybe a\n  \
+         Box.Just : Int -> Box"
     );
 }
 
@@ -138,7 +138,7 @@ fn one_name_settling_first_leaves_the_other_to_say_what_it_needed() {
     // `Maybe String`.
     let src = "use Std.Maybe.Maybe (Just, None)\n\
                use Std.Collections.Map (size)\n\
-               data Box = Just Int | Empty\n\
+               use Box.*\ndata Box = Just Int | Empty\n\
                fun size (b : Box) = match b with | Just n -> n | Empty -> 0\n\
                def main = size (Just \"no\")\n";
     let e = errors(src);
@@ -154,8 +154,8 @@ fn no_combination_fitting_is_one_error() {
     // makes *something* -- but no `size` takes what any `Just` makes.
     let src = "use Std.Maybe.Maybe (Just, None)\n\
                use Std.Collections.Map (size)\n\
-               data Box = Just Int | Empty\n\
-               data Shape = Circle Int\n\
+               use Box.*\ndata Box = Just Int | Empty\n\
+               use Shape.*\ndata Shape = Circle Int\n\
                fun size (s : Shape) = match s with | Circle r -> r\n\
                def main = size (Just 5)\n";
     let e = errors(src);
@@ -165,9 +165,9 @@ fn no_combination_fitting_is_one_error() {
 
 #[test]
 fn candidates_from_other_modules_say_where_they_are_from() {
-    let shapes = "data Shape = Circle Int\nfun size s = match s with | Circle r -> r\n";
+    let shapes = "use Shape.*\ndata Shape = Circle Int\nfun size s = match s with | Circle r -> r\n";
     let main = "use Shapes (Shape, size)\n\
-                data Box = Box Int\n\
+                use Box.*\ndata Box = Box Int\n\
                 fun size b = match b with | Box n -> n\n\
                 def main = \\x -> size x\n";
     let e = unit_errors(&[("Shapes", shapes), ("", main)]);

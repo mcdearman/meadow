@@ -14,6 +14,7 @@ use Std.Collections.Vector as V
 -- `[a, b]` desugars to a `vecFromArray` call.
 use Std.Collections.Vector (vecFromArray)
 
+use Either.*
 @pub data Either a b = Left a | Right b
 
 @pub fun isLeft e = match e with | Left a -> True | Right b -> False

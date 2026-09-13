@@ -562,7 +562,8 @@ impl Session {
             self.line as usize,
             vec![ast_mod],
             &deps,
-            self.opts,
+            // A bare expression is run, not defined, so it may do anything.
+            Options { entry_name: Some("it"), ..self.opts },
         );
 
         let had_error = !diags.is_empty();

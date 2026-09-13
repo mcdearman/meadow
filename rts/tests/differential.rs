@@ -267,14 +267,14 @@ fn a_deep_tail_call_does_not_grow_anything() {
 fn constructors_build_data() {
     assert_eq!(
         agree(
-            "data Shape = Circle Int | Rect Int Int
+            "use Shape.*\ndata Shape = Circle Int | Rect Int Int
              def main = Rect 3 4"
         ),
         "Rect(3, 4)"
     );
     assert_eq!(
         agree(
-            "data Shape = Circle Int | Rect Int Int
+            "use Shape.*\ndata Shape = Circle Int | Rect Int Int
              def main = Circle (1 + 2)"
         ),
         "Circle(3)"
@@ -295,7 +295,7 @@ fn tuples_are_data_too() {
 fn matching_on_a_constructor() {
     assert_eq!(
         agree(
-            "data Shape = Circle Int | Rect Int Int
+            "use Shape.*\ndata Shape = Circle Int | Rect Int Int
              fun area s = match s with
                | Circle r -> 3 * r * r
                | Rect w h -> w * h
@@ -327,7 +327,7 @@ fn nested_patterns_backtrack_into_the_next_arm() {
     // at it again. It is the case the failure-continuation chain exists for.
     assert_eq!(
         agree(
-            "data Opt = None | Some Int
+            "use Opt.*\ndata Opt = None | Some Int
              fun f x = match x with
                | Some 0 -> \"zero\"
                | Some n -> \"some\"
@@ -342,7 +342,7 @@ fn nested_patterns_backtrack_into_the_next_arm() {
 fn deeply_nested_constructor_patterns() {
     assert_eq!(
         agree(
-            "data Tree = Leaf | Node Tree Int Tree
+            "use Tree.*\ndata Tree = Leaf | Node Tree Int Tree
              fun sum t = match t with
                | Leaf -> 0
                | Node l v r -> sum l + v + sum r
@@ -365,7 +365,7 @@ fn tuple_and_as_patterns() {
     // An `as` pattern binds the whole and then keeps matching the part.
     assert_eq!(
         agree(
-            "data Opt = None | Some Int
+            "use Opt.*\ndata Opt = None | Some Int
              fun f x = match x with
                | Some n -> n
                | None -> 0
@@ -380,7 +380,7 @@ fn a_non_exhaustive_match_fails_the_same_way_everywhere() {
     // All three must *fail*, and `agree` only compares answers — so this one is
     // checked by hand.
     let prog = program(
-        "data Opt = None | Some Int
+        "use Opt.*\ndata Opt = None | Some Int
          fun f x = match x with | Some n -> n
          def main = f None",
     );
@@ -399,7 +399,7 @@ fn a_non_exhaustive_match_fails_the_same_way_everywhere() {
 fn a_recursive_data_type_end_to_end() {
     assert_eq!(
         agree(
-            "data Chain = Nil | Cons Int Chain
+            "use Chain.*\ndata Chain = Nil | Cons Int Chain
              fun range n = if n == 0 then Nil else Cons n (range (n - 1))
              fun total xs = match xs with
                | Nil -> 0
@@ -422,7 +422,7 @@ fn a_recursive_data_type_end_to_end() {
 fn a_lookalike_type_is_not_mistaken_for_the_builtin_list() {
     assert_eq!(
         agree(
-            "data Chain = Nil | Cons Int Chain
+            "use Chain.*\ndata Chain = Nil | Cons Int Chain
              def main = Cons 1 (Cons 2 (Cons 3 Nil))"
         ),
         "Cons(1, Cons(2, Cons(3, Nil)))"
@@ -661,8 +661,8 @@ fn nothing_in_core_is_left_untranslated() {
     // variant left and it means a bug upstream, so an empty set here is the
     // statement that this pass is complete.
     let prog = program(
-        "data Opt = None | Some Int
-         data Chain = Nil | Cons Int Chain
+        "use Opt.*\ndata Opt = None | Some Int
+         use Chain.*\ndata Chain = Nil | Cons Int Chain
          effect Ask { ask : () -> Int }
 
          fun chain n = if n == 0 then Nil else Cons n (chain (n - 1))
@@ -725,7 +725,7 @@ fn the_collector_runs_and_the_answer_survives_it() {
     // Builds a 200_000-element list and walks it. That is well past the initial
     // heap, so collection is not optional — and every one of them moves the list
     // the program is still holding.
-    let src = "data Chain = Nil | Cons Int Chain
+    let src = "use Chain.*\ndata Chain = Nil | Cons Int Chain
                fun build n = if n == 0 then Nil else Cons n (build (n - 1))
                fun total xs = match xs with
                  | Nil -> 0
@@ -795,19 +795,19 @@ fn a_deep_tail_loop_costs_the_vm_no_stack() {
 fn constructors_print_bare_and_agree() {
     // No `Std` here, so every constructor is one these cases declare.
     assert_eq!(
-        agree("data Box = Wrap Int\ndef main = Wrap 3"),
+        agree("use Box.*\ndata Box = Wrap Int\ndef main = Wrap 3"),
         "Wrap(3)"
     );
     assert_eq!(
-        agree("data Colour = Red | Green\ndef main = (Red, Green)"),
+        agree("use Colour.*\ndata Colour = Red | Green\ndef main = (Red, Green)"),
         "(Red, Green)"
     );
     // Two types owning one constructor name — the reason the qualified form
     // exists. Both print as themselves.
     assert_eq!(
         agree(
-            "data Tree = Leaf | Node Tree Tree\n\
-             data Rope = Leaf String | Node Rope Rope\n\
+            "use Tree.*\ndata Tree = Leaf | Node Tree Tree\n\
+             use Rope.*\ndata Rope = Leaf String | Node Rope Rope\n\
              def main = (Tree.Leaf, Rope.Leaf \"s\")"
         ),
         "(Leaf, Leaf(\"s\"))"
@@ -844,7 +844,7 @@ fn a_records_fields_select_by_name_everywhere() {
 #[test]
 fn hashes_agree_everywhere() {
     agree(
-        "data Shape = Circle Int | Rect Int Int\n\
+        "use Shape.*\ndata Shape = Circle Int | Rect Int Int\n\
          record Point = { x : Int, y : Int }\n\
          def main =\n\
          \x20 ( hash 0, hash (-7), hash 1.5, hash (-0.0), hash True, hash 'q'\n\
@@ -939,7 +939,7 @@ fn sized_integers_compare_and_match_by_value() {
 fn sized_numbers_are_stored_in_fields_and_arrays() {
     assert_eq!(
         agree(
-            "data P = P UInt8 Int16 Float32
+            "use P.*\ndata P = P UInt8 Int16 Float32
              fun total p = match p with | P a b c -> (toInt a + toInt b, c)
              def main = total (P (toUInt8 255) (toInt16 (0 - 5)) (toFloat32 0.5))"
         ),
@@ -982,7 +982,7 @@ fn equal_integers_hash_alike_whatever_their_type() {
 // value, `==`, `hash`, what is refused, and even `compactSize`, which the
 // reference-counted engines estimate by counting what the VM would copy.
 
-const CHAIN: &str = "data Chain = End | Link Int Chain
+const CHAIN: &str = "use Chain.*\ndata Chain = End | Link Int Chain
                      fun build n = if n == 0 then End else Link n (build (n - 1))
                      fun total xs = match xs with
                        | End -> 0
@@ -1056,7 +1056,7 @@ fn what_cannot_be_compacted_fails_the_same_way_everywhere() {
         ("Just (\\x -> x)", "a function"),
         ("#[stNewArray 2 0]", "a mutable array"),
     ] {
-        let prog = program(&format!("data Opt a = None | Just a\ndef main = compact ({value})"));
+        let prog = program(&format!("use Opt.*\ndata Opt a = None | Just a\ndef main = compact ({value})"));
         let cek = meadow_eval::run(&prog).expect_err("CEK should fail");
         let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
         let axcut = machine::Machine::run(&lowered.program, FUEL).expect_err("AxCut should fail");
@@ -1179,4 +1179,424 @@ fn a_float_literal_in_generic_code_takes_the_float_type() {
     let src = "fun third x = x /. 3.0
                def main = (third (toFloat32 1.0), third 1.0)";
     assert_eq!(agree(src), "(0.33333334, 0.3333333333333333)");
+}
+
+// --- green threads -----------------------------------------------------------
+
+// The sequent machine has no scheduler, so these compare the CEK machine -- one
+// thread at a time, in order -- against the VM at every optimization level,
+// on one OS thread and on several. Only programs whose answer does not depend
+// on the interleaving can agree, so that is what these are.
+
+/// Run `src` on the CEK machine and on the VM with 1 and 8 workers, require
+/// one answer -- or one failure -- from all of them, and return it.
+#[track_caller]
+fn threads_agree(src: &str) -> Result<String, String> {
+    let prog = program(src);
+    let want = meadow_eval::run(&prog).map(|v| v.to_string()).map_err(|e| e.msg);
+    for opt in LEVELS {
+        let lowered = meadow_seq::lower_program(&prog, opt);
+        assert!(lowered.unsupported.is_empty(), "{:?}", lowered.unsupported);
+        let image = meadow_codegen::compile(&lowered.program).expect("codegen");
+        for workers in [1, 8] {
+            let got = meadow_rts::sched::run_with(&image, image.entry.unwrap(), FUEL, workers)
+                .result
+                .map_err(|e| e.msg);
+            assert_eq!(want, got, "CEK vs VM at {} with {workers} workers\n{src}", opt.name());
+        }
+    }
+    want
+}
+
+const FIB_INT: &str = "fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)\n";
+
+#[test]
+fn a_spawned_thread_answers_through_await() {
+    let src = format!("{FIB_INT}def main = let t = threadSpawn (\\() -> fib 20) in threadAwait t");
+    assert_eq!(threads_agree(&src), Ok("6765".into()));
+}
+
+#[test]
+fn threads_run_side_by_side_and_are_awaited_in_any_order() {
+    let src = format!(
+        "{FIB_INT}use Ts.*\ndata Ts = Done | More (Task Int) Ts
+         fun spawnAll (n : Int) acc = if n == 0 then acc else spawnAll (n - 1) (More (threadSpawn (\\() -> fib n)) acc)
+         fun sumAll ts acc = match ts with | Done -> acc | More t rest -> sumAll rest (acc + threadAwait t)
+         def main = sumAll (spawnAll 20 Done) 0"
+    );
+    assert_eq!(threads_agree(&src), Ok("17710".into()));
+}
+
+#[test]
+fn a_channel_carries_values_between_threads_in_order() {
+    let src = "use L.*\ndata L = Nil | Cons Int L
+               def main =
+                 let ch = channelNew () in
+                 let producer = threadSpawn (\\() ->
+                   let rec go (i : Int) = if i > 5 then () else let _ = channelSend ch i in go (i + 1)
+                   in go 1) in
+                 let rec take (k : Int) acc = if k == 0 then acc else take (k - 1) (Cons (channelReceive ch) acc) in
+                 let got = take 5 Nil in
+                 let _ = threadAwait producer in
+                 got";
+    assert_eq!(threads_agree(src), Ok("Cons(5, Cons(4, Cons(3, Cons(2, Cons(1, Nil)))))".into()));
+}
+
+#[test]
+fn channels_and_threads_can_themselves_be_sent() {
+    // A worker is handed the channel to answer on, over another channel.
+    let src = "def main =
+                 let jobs = channelNew () in
+                 let worker = threadSpawn (\\() ->
+                   let job = channelReceive jobs in
+                   match job with
+                   | (n, reply) -> channelSend reply (n * 2)) in
+                 let reply = channelNew () in
+                 let _ = channelSend jobs (toInt 21, reply) in
+                 let answer = channelReceive reply in
+                 let _ = threadAwait worker in
+                 answer";
+    assert_eq!(threads_agree(src), Ok("42".into()));
+}
+
+#[test]
+fn every_thread_has_its_own_mutable_state() {
+    // Each thread makes a cell of its own and counts to a different number in
+    // it. Nothing is shared, so nothing is lost however they interleave.
+    let src = "fun count (n : Int) = let r = newRef (toInt 0) in
+                 let rec go (i : Int) = if i == 0 then getRef r else let _ = setRef r (getRef r + 1) in go (i - 1)
+                 in go n
+               def main =
+                 let a = threadSpawn (\\() -> count 3000) in
+                 let b = threadSpawn (\\() -> count 5000) in
+                 let c = threadSpawn (\\() -> count 7000) in
+                 (threadAwait a, threadAwait b, threadAwait c)";
+    assert_eq!(threads_agree(src), Ok("(3000, 5000, 7000)".into()));
+}
+
+#[test]
+fn many_producers_one_consumer() {
+    // Arrival order depends on scheduling; the total does not.
+    let src = "fun produce ch (from : Int) = let rec go (i : Int) = if i == 0 then () else
+                   let _ = channelSend ch (from + i) in go (i - 1) in go 100
+               fun spawnProducers ch (k : Int) = if k == 0 then () else
+                   let _ = threadSpawn (\\() -> produce ch (k * 1000)) in spawnProducers ch (k - 1)
+               fun consume ch (n : Int) acc = if n == 0 then acc else consume ch (n - 1) (acc + channelReceive ch)
+               def main = let ch = channelNew () in let _ = spawnProducers ch 16 in consume ch 1600 0";
+    assert_eq!(threads_agree(src), Ok("13680800".into()));
+}
+
+#[test]
+fn mutable_state_and_continuations_cannot_cross() {
+    for (value, what) in [("newRef 1", "a Ref"), ("stNewArray 2 0", "a mutable array")] {
+        let src = format!(
+            "use L.*\ndata L = Nil | Cons Int L
+             def main = let x = {value} in threadAwait (threadSpawn (\\() -> let y = x in 0))"
+        );
+        let src = src.replace("[;]", "Nil");
+        assert_eq!(threads_agree(&src), Err(meadow_core::thread::unsendable(what)), "{value}");
+    }
+    let src = "effect E { e : () -> Int }
+               def main = handle (let n = e () in n) with {
+                 e u k -> let _ = threadAwait (threadSpawn (\\() -> let j = k in 0)) in 0 }";
+    assert_eq!(threads_agree(src), Err(meadow_core::thread::unsendable("a continuation")));
+}
+
+#[test]
+fn a_ref_in_scope_but_unused_does_not_stop_a_spawn() {
+    // What crosses is what the function uses -- which the CEK machine, whose
+    // closures hold their whole environment, has to work out to agree.
+    let src = "def main = let r = newRef (toInt 1) in let x = toInt 41 in threadAwait (threadSpawn (\\() -> x + 1))";
+    assert_eq!(threads_agree(src), Ok("42".into()));
+}
+
+#[test]
+fn a_message_cannot_carry_a_ref_either() {
+    let src = "def main = let ch = channelNew () in channelSend ch (newRef (toInt 0))";
+    assert_eq!(threads_agree(src), Err(meadow_core::thread::unsendable("a Ref")));
+}
+
+#[test]
+fn a_failed_thread_fails_its_await_with_the_same_message() {
+    let src = "def main = let t = threadSpawn (\\() -> toInt 1 / toInt 0) in threadAwait t + 1";
+    assert_eq!(threads_agree(src), Err("division by zero".into()));
+    // Nobody waiting: the failure stays in the thread.
+    let src = "def main = let t = threadSpawn (\\() -> toInt 1 / toInt 0) in 7";
+    assert_eq!(threads_agree(src), Ok("7".into()));
+}
+
+#[test]
+fn waiting_on_what_can_never_answer_is_a_deadlock() {
+    let src = "def main = let ch = channelNew () in threadAwait (threadSpawn (\\() -> channelReceive ch + toInt 1))";
+    assert_eq!(threads_agree(src), Err(meadow_core::thread::DEADLOCK.into()));
+}
+
+#[test]
+fn a_thread_that_never_waits_does_not_starve_the_others() {
+    // `spin` would run forever; the answer comes from the other thread, and
+    // `main` ending ends the program.
+    let src = "fun spin (n : Int) = spin (n + 1)
+               def main = let _ = threadSpawn (\\() -> spin 0) in
+                 threadAwait (threadSpawn (\\() -> toInt 99))";
+    let prog = program(src);
+    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
+    let image = meadow_codegen::compile(&lowered.program).unwrap();
+    for workers in [1, 2] {
+        let got = meadow_rts::sched::run_with(&image, image.entry.unwrap(), FUEL, workers).result;
+        assert_eq!(got.map_err(|e| e.msg), Ok("99".into()), "{workers} workers");
+    }
+    assert_eq!(meadow_eval::run(&prog).map(|v| v.to_string()).map_err(|e| e.msg), Ok("99".into()));
+}
+
+#[test]
+fn threads_collect_their_own_heaps() {
+    // Every thread allocates enough to collect several times. The collections
+    // are each thread's own -- the stats count one heap per thread.
+    let src = "use L.*\ndata L = Nil | Cons Int L
+               fun build (n : Int) = if n == 0 then Nil else Cons n (build (n - 1))
+               fun len xs = match xs with | Nil -> toInt 0 | Cons _ r -> 1 + len r
+               fun churn (k : Int) acc = if k == 0 then acc else churn (k - 1) (acc + len (build 2000))
+               def main =
+                 let a = threadSpawn (\\() -> churn 50 0) in
+                 let b = threadSpawn (\\() -> churn 50 0) in
+                 threadAwait a + threadAwait b";
+    let prog = program(src);
+    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
+    let image = meadow_codegen::compile(&lowered.program).unwrap();
+    let out = meadow_rts::sched::run_with(&image, image.entry.unwrap(), FUEL, 4);
+    assert_eq!(out.result.map_err(|e| e.msg), Ok("200000".into()));
+    assert_eq!(out.stats.threads, 3, "main and two spawned");
+    assert!(out.stats.collections >= 2, "only {} collections", out.stats.collections);
+}
+
+// --- top-level values -------------------------------------------------------
+
+// A top-level `def` is evaluated once, when first needed, on every engine. The
+// VM used to evaluate one at every mention and the CEK machine all of them at
+// load, which nothing could see while defs were pure -- except `compactSize`,
+// which counts a region the mentions share or do not.
+
+#[test]
+fn a_top_level_value_is_evaluated_once() {
+    let src = format!(
+        "{CHAIN}def c = compact (build 100)
+         def main = let c2 = compactAdd c (Link 0 End) in (compactSize c, compactSize c2)"
+    );
+    // One region, grown by the add: both mentions of `c` are the same value.
+    let bytes = (1 + 100 * 3 + 3 + 1) * meadow_core::compact::SLOT_BYTES;
+    let (cek, vm) = (cek_and_vm(&src), format!("({bytes}, {bytes})"));
+    assert_eq!(cek, vm);
+}
+
+#[test]
+fn a_top_level_value_nobody_uses_is_never_evaluated() {
+    let src = "def boom = toInt 1 / toInt 0
+               def main = 7";
+    assert_eq!(agree(src), "7");
+}
+
+#[test]
+fn a_top_level_value_used_by_many_threads_is_the_same_value_in_each() {
+    let src = format!(
+        "{CHAIN}def big = build 1000
+         def main =
+           let a = threadSpawn (\\() -> total big) in
+           let b = threadSpawn (\\() -> total big) in
+           threadAwait a + threadAwait b + total big"
+    );
+    assert_eq!(threads_agree(&src), Ok("1501500".into()));
+}
+
+/// The CEK machine's answer, required to be the VM's too.
+#[track_caller]
+fn cek_and_vm(src: &str) -> String {
+    let prog = program(src);
+    let cek = meadow_eval::run(&prog).unwrap_or_else(|e| panic!("CEK: {}", e.msg)).to_string();
+    let vm = meadow_rts::run(&image(&prog), FUEL).unwrap_or_else(|e| panic!("VM: {}", e.msg));
+    assert_eq!(cek, vm, "CEK vs VM\n{src}");
+    cek
+}
+
+#[test]
+fn spawned_work_spreads_to_idle_workers() {
+    // Every thread is spawned by `main`, onto `main`'s worker. The others only
+    // get any by stealing -- so with CPU-bound work and idle workers, they must.
+    let src = format!(
+        "{FIB_INT}use Ts.*\ndata Ts = Done | More (Task Int) Ts
+         fun spawnAll (n : Int) acc = if n == 0 then acc else spawnAll (n - 1) (More (threadSpawn (\\() -> fib 22)) acc)
+         fun sumAll ts acc = match ts with | Done -> acc | More t rest -> sumAll rest (acc + threadAwait t)
+         def main = sumAll (spawnAll 16 Done) 0"
+    );
+    let prog = program(&src);
+    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
+    let image = meadow_codegen::compile(&lowered.program).unwrap();
+    let out = meadow_rts::sched::run_with(&image, image.entry.unwrap(), FUEL, 4);
+    assert_eq!(out.result.map_err(|e| e.msg), Ok((17711 * 16).to_string()));
+    assert!(out.stats.stolen > 0, "no worker took any work from main's");
+}
+
+#[test]
+fn a_compact_crosses_threads_without_being_copied() {
+    // On the VM the region is shared: the spawned threads read the chain where
+    // `main` compacted it. Every engine gives the same answer.
+    let src = format!(
+        "{CHAIN}def main =
+           let c = compact (build 5000) in
+           let a = threadSpawn (\\() -> total (getCompact c)) in
+           let b = threadSpawn (\\() -> compactSize c) in
+           let ch = channelNew () in
+           let _ = channelSend ch c in
+           let d = channelReceive ch in
+           (threadAwait a, threadAwait b == compactSize c, total (getCompact d))"
+    );
+    assert_eq!(threads_agree(&src), Ok("(12502500, true, 12502500)".into()));
+}
+
+#[test]
+fn a_compacted_value_sent_to_a_thread_is_not_copied_into_its_heap() {
+    // The same chain handed to a thread twice over: plain, it is copied into
+    // the thread's heap; compacted, the thread reads the shared region. The
+    // difference in what was allocated is the copy.
+    let run = |value: &str| {
+        let src = format!(
+            "{CHAIN}def main =
+               let c = {value} in
+               threadAwait (threadSpawn (\\() -> total (getCompact c)))"
+        );
+        let prog = program(&src);
+        let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
+        let image = meadow_codegen::compile(&lowered.program).unwrap();
+        let out = meadow_rts::sched::run_with(&image, image.entry.unwrap(), FUEL, 2);
+        assert_eq!(out.result.map_err(|e| e.msg), Ok("50005000".into()));
+        out.stats.allocated
+    };
+    // The second also hands the plain chain to a thread before compacting it,
+    // so it differs from the first only by that copy.
+    let compacted = run("compact (build 10000)");
+    let copied = run("compact (let x = build 10000 in let t = threadSpawn (\\() -> total x) in let _ = threadAwait t in x)");
+    assert!(
+        copied >= compacted + 30_000,
+        "sending the plain chain should have copied 30_000 slots more: {copied} vs {compacted}"
+    );
+}
+
+// --- software transactional memory ----------------------------------------
+
+// `Std.Stm`'s handlers, as the cases below need them: these programs are
+// compiled without the standard library.
+const STM: &str = "use Maybe.*\ndata Maybe a = None | Just a
+    effect Stm { retrySignal : () -> (), conflictSignal : () -> () }
+    use Attempt.*\ndata Attempt a = Done a | Retried | Conflicted
+    fun unreachable u = unreachable u
+    fun readTVar tv = match stmRead tv with | Just x -> x | None -> let _ = conflictSignal () in unreachable ()
+    fun retry u = let _ = retrySignal () in unreachable ()
+    fun orElse (first : () -> a ! { Stm }) (second : () -> a ! { Stm }) =
+      let _ = stmNest () in
+      match handle Done (first ()) with { retrySignal u k -> Retried, conflictSignal u k -> Conflicted } with
+      | Done x -> let _ = stmMerge () in x
+      | Retried -> let _ = stmRollback () in second ()
+      | Conflicted -> let _ = stmRollback () in let _ = conflictSignal () in unreachable ()
+    fun atomically (f : () -> a ! { Stm }) =
+      let _ = stmBegin () in
+      match handle Done (f ()) with { retrySignal u k -> Retried, conflictSignal u k -> Conflicted } with
+      | Done x -> if stmCommit () then x else atomically f
+      | Retried -> let _ = stmWait () in atomically f
+      | Conflicted -> atomically f\n";
+
+#[test]
+fn increments_from_many_threads_are_none_of_them_lost() {
+    // Sixteen threads each add one a thousand times to one `TVar`. On the VM
+    // they run in parallel and collide constantly; every collision is a
+    // transaction run again, and the total is still exact.
+    let src = format!(
+        "{STM}use Ts.*\ndata Ts = End | More (Task ()) Ts
+         fun bump tv (k : Int) = if k == 0 then () else
+           let _ = atomically (\\() -> stmWrite tv (readTVar tv + 1)) in bump tv (k - 1)
+         fun spawnAll tv (n : Int) acc = if n == 0 then acc else spawnAll tv (n - 1) (More (threadSpawn (\\() -> bump tv 1000)) acc)
+         fun awaitAll ts = match ts with | End -> () | More t rest -> let _ = threadAwait t in awaitAll rest
+         def main =
+           let tv = stmNewIO (toInt 0) in
+           let _ = awaitAll (spawnAll tv 16 End) in
+           atomically (\\() -> readTVar tv)"
+    );
+    assert_eq!(threads_agree(&src), Ok("16000".into()));
+}
+
+#[test]
+fn a_transaction_never_sees_half_of_another() {
+    // Two `TVar`s whose sum is always 100, moved between by one thread and read
+    // together by another. Any read that saw one side updated and not the other
+    // would count as a mismatch.
+    let src = format!(
+        "{STM}fun shuffle a b (k : Int) = if k == 0 then () else
+           let _ = atomically (\\() ->
+             let x = readTVar a in
+             let _ = stmWrite a (x - 1) in
+             stmWrite b (readTVar b + 1)) in shuffle a b (k - 1)
+         fun watch a b (k : Int) (bad : Int) = if k == 0 then bad else
+           let s = atomically (\\() -> readTVar a + readTVar b) in
+           watch a b (k - 1) (if s == 100 then bad else bad + 1)
+         def main =
+           let a = stmNewIO (toInt 100) in
+           let b = stmNewIO (toInt 0) in
+           let mover = threadSpawn (\\() -> shuffle a b 2000) in
+           let watcher = threadSpawn (\\() -> watch a b 2000 0) in
+           let _ = threadAwait mover in
+           (threadAwait watcher, atomically (\\() -> (readTVar a, readTVar b)))"
+    );
+    assert_eq!(threads_agree(&src), Ok("(0, (-1900, 2000))".into()));
+}
+
+#[test]
+fn retry_blocks_until_there_is_something_to_take() {
+    // A one-slot mailbox: `take` retries while it is empty, `put` while it is
+    // full. The consumer starts first and has to wait for every value.
+    let src = format!(
+        "{STM}fun take box = atomically (\\() -> match readTVar box with | Just x -> let _ = stmWrite box None in x | None -> retry ())
+         fun put box x = atomically (\\() -> match readTVar box with | None -> stmWrite box (Just x) | Just _ -> retry ())
+         fun consume box (k : Int) acc = if k == 0 then acc else consume box (k - 1) (acc + take box)
+         fun produce box (k : Int) = if k == 0 then () else let _ = put box k in produce box (k - 1)
+         def main =
+           let box = stmNewIO None in
+           let consumer = threadSpawn (\\() -> consume box 500 (toInt 0)) in
+           let producer = threadSpawn (\\() -> produce box 500) in
+           let _ = threadAwait producer in
+           threadAwait consumer"
+    );
+    assert_eq!(threads_agree(&src), Ok("125250".into()));
+}
+
+#[test]
+fn or_else_falls_back_and_keeps_only_what_succeeded() {
+    let src = format!(
+        "{STM}def main =
+           let tv = stmNewIO (toInt 1) in
+           let got = atomically (\\() ->
+             orElse (\\() -> let _ = stmWrite tv 50 in retry ()) (\\() -> let _ = stmWrite tv (readTVar tv + 1) in readTVar tv)) in
+           (got, atomically (\\() -> readTVar tv))"
+    );
+    assert_eq!(threads_agree(&src), Ok("(2, 2)".into()));
+}
+
+#[test]
+fn a_tvar_holds_only_what_a_compact_can() {
+    for (value, what) in [("newRef 1", "a Ref"), ("\\x -> x", "a function")] {
+        let src = format!("{STM}def main = let tv = stmNewIO ({value}) in 0");
+        assert_eq!(threads_agree(&src), Err(meadow_core::stm::unstorable(what)), "{value}");
+    }
+}
+
+#[test]
+fn a_transaction_operation_outside_atomically_says_so() {
+    let src = format!("{STM}def main = let tv = stmNewIO (toInt 1) in stmRead tv");
+    assert_eq!(threads_agree(&src), Err(meadow_core::stm::outside("readTVar")));
+}
+
+#[test]
+fn waiting_on_a_tvar_nobody_writes_is_a_deadlock() {
+    let src = format!(
+        "{STM}def main = let tv = stmNewIO (toInt 0) in
+           atomically (\\() -> if readTVar tv == 0 then retry () else readTVar tv)"
+    );
+    assert_eq!(threads_agree(&src), Err(meadow_core::thread::DEADLOCK.into()));
 }

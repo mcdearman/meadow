@@ -34,15 +34,18 @@ use Std.Bool (not)
 use Std.Yield (yield)
 
 -- How many entries, and the root.
+use HashMap.*
 @pub data HashMap k v = HashMap Int (HNode k v)
 
 -- A node: the bitmap of occupied slots and those slots, packed in slot order;
 -- or, below the last level, entries whose whole hash is the one given.
+use HNode.*
 @pub data HNode k v
   = Bitmap Int (Array (HSlot k v))
   | Collision Int (Array (k, v))
 
 -- An occupied slot: an entry with its key's hash, or the node below.
+use HSlot.*
 @pub data HSlot k v
   = Entry Int k v
   | Child (HNode k v)

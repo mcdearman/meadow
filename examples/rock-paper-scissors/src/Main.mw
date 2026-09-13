@@ -11,8 +11,10 @@ use Std.Random as R
 use Std.String as S
 use Std.Test (assertEq)
 
+use Choice.*
 data Choice = Rock | Paper | Scissors
 
+use Outcome.*
 data Outcome = Win | Lose | Draw
 
 fun choiceName c =

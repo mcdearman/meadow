@@ -73,8 +73,15 @@ cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test --std
 step "meadow test --std (CEK machine)"
 cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test --std --cek
 
+# Every example package, on the VM: they are what someone new runs first, so
+# they have to keep compiling and their own tests have to keep passing.
+for example in examples/*/; do
+  step "meadow test ${example%/}"
+  cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test "$example"
+done
+
 step "meadow fmt --check"
-cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- fmt --check lib/Std
+cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- fmt --check lib/Std examples
 
 # --- the editor extension ----------------------------------------------------
 #

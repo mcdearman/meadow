@@ -7,9 +7,9 @@
 
 #![allow(dead_code)]
 
+use meadow::Options;
 use meadow::linker::Linker;
 use meadow::pipeline::{self, CompiledPackage};
-use meadow::Options;
 use meadow_compiler::{
     lexer::tokenize,
     parser,
@@ -28,7 +28,11 @@ pub fn schemes(src: &str) -> String {
     let (cp, diags) = compile(src);
     let mut out = String::new();
     for e in &cp.exports {
-        out.push_str(&format!("{} : {}\n", meadow_compiler::hir::spell_name(&e.name), e.scheme));
+        out.push_str(&format!(
+            "{} : {}\n",
+            meadow_compiler::hir::spell_name(&e.name),
+            e.scheme
+        ));
     }
     for d in diags {
         out.push_str(&format!("!! {d}\n"));
@@ -53,7 +57,9 @@ pub fn compile_modules(modules: &[(&str, &str)]) -> (CompiledPackage, Vec<String
         let path: Vec<_> = if path.is_empty() {
             Vec::new()
         } else {
-            path.split('.').map(meadow_compiler::intern::InternedString::from).collect()
+            path.split('.')
+                .map(meadow_compiler::intern::InternedString::from)
+                .collect()
         };
         let mname = path.last().copied().unwrap_or(name);
         let source = Source::new(SourceKind::Interactive, (*src).into());
@@ -61,11 +67,15 @@ pub fn compile_modules(modules: &[(&str, &str)]) -> (CompiledPackage, Vec<String
         let (ast, perrs) = parser::parse(mname, source, &lex.tokens);
         diags.extend(perrs.iter().map(|e| format!("{e:?}")));
         if let Some(ast) = ast {
-            asts.push(meadow_compiler::AstModule { path, name: mname, ast, source });
+            asts.push(meadow_compiler::AstModule {
+                path,
+                name: mname,
+                ast,
+                source,
+            });
         }
     }
-    let (cp, unit_diags) =
-        meadow_compiler::compile_unit(name, 0, asts, &[], Options::debug());
+    let (cp, unit_diags) = meadow_compiler::compile_unit(name, 0, asts, &[], Options::debug());
     diags.extend(unit_diags.iter().map(|d| d.msg.clone()));
     (cp, diags)
 }
@@ -151,7 +161,11 @@ pub fn run_main_std(src: &str, engine: meadow::Engine) -> String {
     if !diags.is_empty() {
         return format!(
             "compile errors:\n{}",
-            diags.iter().map(|d| d.msg.clone()).collect::<Vec<_>>().join("\n")
+            diags
+                .iter()
+                .map(|d| d.msg.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
     match meadow::runtime::run(&program, engine, Options::debug().opt) {
@@ -191,7 +205,11 @@ pub fn schemes_std(src: &str) -> String {
         meadow_compiler::compile_unit("test".into(), 1, modules, &std_refs, Options::debug());
     let mut out = String::new();
     for e in &cp.exports {
-        out.push_str(&format!("{} : {}\n", meadow_compiler::hir::spell_name(&e.name), e.scheme));
+        out.push_str(&format!(
+            "{} : {}\n",
+            meadow_compiler::hir::spell_name(&e.name),
+            e.scheme
+        ));
     }
     for d in diags {
         out.push_str(&format!("!! {}\n", d.msg));

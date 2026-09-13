@@ -39,9 +39,12 @@
 
 pub mod compact;
 pub mod erase;
+pub mod globals;
 pub mod hash;
 pub mod num;
 pub mod specialize;
+pub mod stm;
+pub mod thread;
 pub mod lint;
 pub mod lower;
 pub use lower::Lowerer;
@@ -226,6 +229,54 @@ pub enum Prim {
     /// `compactSize : Compact a -> Int` -- bytes the region holds. Engine
     /// dependent: the VM counts its slots, the others estimate.
     CompactSize,
+    // --- green threads ---
+    /// `threadSpawn : (() -> a ! { Thread, Console, … }) -> Task a ! { Thread | e }`
+    /// -- start a green thread with a heap of its own, running a copy of the
+    /// function. What it may do is closed: the runtime's own effects, and
+    /// nothing a handler in the spawning thread would have to answer.
+    ThreadSpawn,
+    /// `threadAwait : Task a -> a ! { Thread | e }` -- wait for a thread to
+    /// finish, and take a copy of its result; its failure, if it failed.
+    ThreadAwait,
+    /// `threadYield : () -> () ! { Thread | e }` -- let other threads run.
+    ThreadYield,
+    /// `channelNew : () -> Channel a ! { Thread | e }`
+    ChannelNew,
+    /// `channelSend : Channel a -> a -> () ! { Thread | e }` -- a copy of the
+    /// value goes in; the sender never waits.
+    ChannelSend,
+    /// `channelReceive : Channel a -> a ! { Thread | e }` -- the oldest value
+    /// sent, waiting for one if there is none.
+    ChannelReceive,
+    // --- software transactional memory (see `stm`) ---
+    /// `stmNew : a -> TVar a ! { Stm | e }`, and `stmNewIO`, the same outside a
+    /// transaction with `Thread` instead.
+    StmNew,
+    /// `stmRead : TVar a -> Maybe a ! { Stm | e }` -- `None` is a conflict.
+    StmRead,
+    /// `stmWrite : TVar a -> a -> () ! { Stm | e }`, into the log.
+    StmWrite,
+    /// `stmBegin : () -> () ! { Thread | e }` -- a new, empty log.
+    StmBegin,
+    /// `stmCommit : () -> Bool ! { Thread | e }` -- publish the log, or say it
+    /// conflicted.
+    StmCommit,
+    /// `stmWait : () -> () ! { Thread | e }` -- wait until something the log
+    /// read is written.
+    StmWait,
+    /// `stmNest : () -> () ! { Stm | e }` -- a nested log, for `orElse`.
+    StmNest,
+    /// `stmMerge : () -> () ! { Stm | e }` -- keep the nested log's writes.
+    StmMerge,
+    /// `stmRollback : () -> () ! { Stm | e }` -- drop them, keeping its reads.
+    StmRollback,
+    // --- top-level definitions, cached (see `globals`; no source name) ---
+    /// `Int -> Bool` -- has this machine cached definition `i`?
+    GlobalReady,
+    /// `Int -> a` -- the cached value of definition `i`.
+    GlobalGet,
+    /// `Int -> a -> ()` -- cache the value of definition `i`.
+    GlobalSet,
     /// `String -> Maybe #[UInt8]` -- parse a hex string (either case, no
     /// separators, even length) into bytes. `None` on any malformed input.
     BytesFromHex,
@@ -342,6 +393,21 @@ impl Prim {
             "getCompact" => Prim::GetCompact,
             "compactAdd" => Prim::CompactAdd,
             "compactSize" => Prim::CompactSize,
+            "threadSpawn" => Prim::ThreadSpawn,
+            "threadAwait" => Prim::ThreadAwait,
+            "threadYield" => Prim::ThreadYield,
+            "channelNew" => Prim::ChannelNew,
+            "channelSend" => Prim::ChannelSend,
+            "channelReceive" => Prim::ChannelReceive,
+            "stmNew" | "stmNewIO" => Prim::StmNew,
+            "stmRead" => Prim::StmRead,
+            "stmWrite" => Prim::StmWrite,
+            "stmBegin" => Prim::StmBegin,
+            "stmCommit" => Prim::StmCommit,
+            "stmWait" => Prim::StmWait,
+            "stmNest" => Prim::StmNest,
+            "stmMerge" => Prim::StmMerge,
+            "stmRollback" => Prim::StmRollback,
             _ => return None,
         })
     }
@@ -379,7 +445,22 @@ impl Prim {
             | Prim::StThaw
             | Prim::Compact
             | Prim::GetCompact
-            | Prim::CompactSize => 1,
+            | Prim::CompactSize
+            | Prim::ThreadSpawn
+            | Prim::ThreadAwait
+            | Prim::ThreadYield
+            | Prim::ChannelNew
+            | Prim::ChannelReceive
+            | Prim::GlobalReady
+            | Prim::GlobalGet
+            | Prim::StmNew
+            | Prim::StmRead
+            | Prim::StmBegin
+            | Prim::StmCommit
+            | Prim::StmWait
+            | Prim::StmNest
+            | Prim::StmMerge
+            | Prim::StmRollback => 1,
             Prim::ArraySet | Prim::ArraySlice | Prim::ArrayGetOr | Prim::StSetArray => 3,
             _ => 2,
         }
@@ -1118,3 +1199,123 @@ impl OptLevel {
         matches!(self, OptLevel::O2)
     }
 }
+
+// ===========================================================================
+// Free variables
+// ===========================================================================
+
+/// Adds the free variables of `t` to `out`.
+pub fn free_vars_into(t: &Term, out: &mut std::collections::HashSet<Var>) {
+    fn go(t: &Term, bound: &mut Vec<Var>, out: &mut std::collections::HashSet<Var>) {
+        match t {
+            Term::TyLam(_, b) | Term::TyApp(b, _) | Term::Loc(_, b) => go(b, bound, out),
+            Term::Var(v) => {
+                if !bound.contains(v) {
+                    out.insert(*v);
+                }
+            }
+            Term::Lit(_) | Term::Error => {}
+            Term::Lam(p, _, b) => {
+                bound.push(*p);
+                go(b, bound, out);
+                bound.pop();
+            }
+            Term::App(f, a) => {
+                go(f, bound, out);
+                go(a, bound, out);
+            }
+            Term::Let(x, _, r, b) => {
+                go(r, bound, out);
+                bound.push(*x);
+                go(b, bound, out);
+                bound.pop();
+            }
+            Term::LetRec(binds, body) => {
+                for (v, _, _) in binds {
+                    bound.push(*v);
+                }
+                for (_, _, t) in binds {
+                    go(t, bound, out);
+                }
+                go(body, bound, out);
+                for _ in binds {
+                    bound.pop();
+                }
+            }
+            Term::If(a, b, c) => {
+                go(a, bound, out);
+                go(b, bound, out);
+                go(c, bound, out);
+            }
+            Term::Tuple(xs) | Term::Array(xs, _) => {
+                for x in xs {
+                    go(x, bound, out);
+                }
+            }
+            Term::Ctor(_, _, xs) | Term::Prim(_, xs, _) => {
+                for x in xs {
+                    go(x, bound, out);
+                }
+            }
+            Term::Proj(t, _) | Term::Sel(t, _, _) => go(t, bound, out),
+            Term::Extend(t, _, u) => {
+                go(t, bound, out);
+                go(u, bound, out);
+            }
+            Term::Record(fs) => {
+                for (_, t) in fs {
+                    go(t, bound, out);
+                }
+            }
+            Term::Perform(_, _, a, _) => go(a, bound, out),
+            Term::Case(s, arms, _) => {
+                go(s, bound, out);
+                for (p, t) in arms {
+                    let before = bound.len();
+                    pat_vars(p, bound);
+                    go(t, bound, out);
+                    bound.truncate(before);
+                }
+            }
+            Term::Handle { body, clauses, ret, .. } => {
+                go(body, bound, out);
+                for c in clauses {
+                    bound.push(c.param);
+                    bound.push(c.resume);
+                    go(&c.body, bound, out);
+                    bound.pop();
+                    bound.pop();
+                }
+                if let Some((v, _, t)) = ret {
+                    bound.push(*v);
+                    go(t, bound, out);
+                    bound.pop();
+                }
+            }
+        }
+    }
+    go(t, &mut Vec::new(), out);
+}
+
+/// The variables a pattern binds.
+pub fn pat_vars(p: &Pat, out: &mut Vec<Var>) {
+    match p {
+        Pat::Wild | Pat::Lit(_) => {}
+        Pat::Var(v, _) => out.push(*v),
+        Pat::As(v, _, sub) => {
+            out.push(*v);
+            pat_vars(sub, out);
+        }
+        Pat::Tuple(ps) | Pat::Array(ps) | Pat::Ctor(_, ps) => {
+            for p in ps {
+                pat_vars(p, out);
+            }
+        }
+        Pat::Record(fs) => {
+            for (_, p) in fs {
+                pat_vars(p, out);
+            }
+        }
+    }
+}
+

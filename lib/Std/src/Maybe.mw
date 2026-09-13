@@ -1,5 +1,6 @@
 -- Std.Maybe: optional values. Reach these as `Maybe.map` etc., or `use` them.
 
+use Maybe.*
 @pub data Maybe a = None | Just a
 
 @pub fun isSome o = match o with | None -> False | Just x -> True

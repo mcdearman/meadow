@@ -24,6 +24,7 @@ use Std.Maybe.Maybe.*
 -- Numbers are split into `Int` and `Float` rather than JSON's single number
 -- type, because meadow's `Int` and `Float` are separate and silently widening
 -- every integer to a float would lose precision no one asked to lose.
+use Json.*
 @pub data Json
   = Null
   | Bool Bool

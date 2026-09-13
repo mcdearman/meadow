@@ -111,7 +111,7 @@ fn tuple_and_record_parameters_are_irrefutable() {
 #[test]
 fn a_single_variant_constructor_parameter_is_irrefutable() {
     // `Wrapper` has exactly one constructor, so destructuring it cannot fail.
-    let src = "data Wrapper = Wrap Int\n\
+    let src = "use Wrapper.*\ndata Wrapper = Wrap Int\n\
                fun unwrap (Wrap n) = n\n\
                def main = unwrap (Wrap 7)\n";
     assert_eq!(errors_with(src, Options::debug()), "");
@@ -119,7 +119,7 @@ fn a_single_variant_constructor_parameter_is_irrefutable() {
 
 #[test]
 fn refutable_def_binding_is_an_error() {
-    let src = "data T = A Int | B\ndef (A n) = A 1\ndef main = n\n";
+    let src = "use T.*\ndata T = A Int | B\ndef (A n) = A 1\ndef main = n\n";
     assert_eq!(
         errors_with(src, Options::debug()),
         "refutable pattern in binding: `B` is not matched"

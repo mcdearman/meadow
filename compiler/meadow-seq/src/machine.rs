@@ -227,6 +227,9 @@ pub struct Machine<'p> {
     names: Vec<Name>,
     env: Vec<Value<'p>>,
     handlers: Vec<Frame<'p>>,
+    /// Top-level values evaluated so far, by definition -- see
+    /// `meadow_core::globals`.
+    globals: Vec<Option<Value<'p>>>,
     /// Transitions taken, for the fuel limit and for reporting.
     pub steps: u64,
 }
@@ -255,8 +258,36 @@ impl<'p> Machine<'p> {
             names: block.params.clone(),
             env: vec![Value::Halt],
             handlers: Vec::new(),
+            globals: Vec::new(),
             steps: 0,
         })
+    }
+
+    /// A primitive, with the few that need the machine answered here.
+    fn prim(&mut self, p: Prim, vals: &[Value<'p>]) -> Result<Value<'p>, Error> {
+        let index = |v: &Value| match v {
+            Value::Int(i) if *i >= 0 => Ok(*i as usize),
+            other => err(format!("a definition index is {other}")),
+        };
+        match p {
+            Prim::GlobalReady => {
+                let i = index(&vals[0])?;
+                Ok(Value::Bool(matches!(self.globals.get(i), Some(Some(_)))))
+            }
+            Prim::GlobalGet => match self.globals.get(index(&vals[0])?) {
+                Some(Some(v)) => Ok(v.clone()),
+                _ => err("a definition read before it was evaluated"),
+            },
+            Prim::GlobalSet => {
+                let i = index(&vals[0])?;
+                if self.globals.len() <= i {
+                    self.globals.resize(i + 1, None);
+                }
+                self.globals[i] = Some(vals[1].clone());
+                Ok(Value::Unit)
+            }
+            _ => prim(p, vals, &self.program.tags),
+        }
     }
 
     /// Run to completion, or until `fuel` transitions have been taken.
@@ -628,11 +659,11 @@ impl<'p> Machine<'p> {
                 unreachable!("handled above")
             }
             Extern::Lit(l) => literal(l),
-            Extern::Prim(p) => prim(*p, &vals, &self.program.tags)?,
+            Extern::Prim(p) => self.prim(*p, &vals)?,
             Extern::PrimK(p, l) => {
                 let mut vals = vals.clone();
                 vals.push(literal(l));
-                prim(*p, &vals, &self.program.tags)?
+                self.prim(*p, &vals)?
             }
             Extern::Array => Value::Array(Rc::new(vals)),
             Extern::Record(labels) => {
@@ -1283,6 +1314,15 @@ fn prim<'p>(
         CompactSize => Ok(Value::Int(
             (as_compact(&args[0])?.1.borrow().slots * meadow_core::compact::SLOT_BYTES) as i64,
         )),
+        // This machine checks the lowering one construct at a time, and has no
+        // scheduler. Green threads run on the bytecode VM and the CEK machine,
+        // which are checked against each other.
+        ThreadSpawn | ThreadAwait | ThreadYield | ChannelNew | ChannelSend | ChannelReceive => {
+            err("green threads are not supported by the sequent machine")
+        }
+        StmNew | StmRead | StmWrite | StmBegin | StmCommit | StmWait | StmNest | StmMerge
+        | StmRollback => err("transactions are not supported by the sequent machine"),
+        GlobalReady | GlobalGet | GlobalSet => err("a definition cache reached a primitive with no machine"),
     }
 }
 

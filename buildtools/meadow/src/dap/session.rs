@@ -37,10 +37,9 @@ use meadow_compiler::infer::Renderer;
 use meadow_compiler::intern::InternedString;
 use meadow_compiler::source::SourceKind;
 use meadow_rts::{Kind, Value, Vm};
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 /// A source file the program was built from.
 #[derive(Debug, Clone)]
@@ -178,7 +177,7 @@ pub struct Session {
     /// `breakpoint[pc]`: stop before running it.
     breakpoint: Vec<bool>,
     /// What `print` and `println` have written since the last look.
-    output: Rc<RefCell<String>>,
+    output: Arc<Mutex<String>>,
     mode: Mode,
     /// Where the running step began, for [`Mode::StepIn`] and [`Mode::StepOver`].
     step_from: Option<(u32, u32)>,
@@ -227,6 +226,8 @@ impl Session {
             .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
         let mut options = Resolved::new(Profile::Debug).options;
         options.debug_info = true;
+        // The entry below is run, like `main`, so it may perform effects.
+        options.entry_name = Some(ENTRY);
 
         // The entry is a definition added to the end of the function's own
         // module, so the expression sees exactly what that module sees --
@@ -337,10 +338,12 @@ impl Session {
             *slot = pc == 0 || debug.loc(pc as Pc - 1) != here;
         }
 
-        let output = Rc::new(RefCell::new(String::new()));
+        let output = Arc::new(Mutex::new(String::new()));
         let mut vm = Vm::new(image);
         let sink = output.clone();
-        vm.io.output = Some(Box::new(move |s: &str| sink.borrow_mut().push_str(s)));
+        vm.io.output = Some(Box::new(move |s: &str| {
+            sink.lock().unwrap_or_else(|p| p.into_inner()).push_str(s)
+        }));
         // Standard input is the protocol. A program that reads the console
         // under the debugger sees the end of input rather than stealing it.
         vm.io.input = Some(Box::new(|| None));
@@ -368,7 +371,7 @@ impl Session {
 
     /// What the program has written since the last call.
     pub fn take_output(&mut self) -> String {
-        std::mem::take(&mut *self.output.borrow_mut())
+        std::mem::take(&mut *self.output.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     pub fn is_finished(&self) -> bool {
@@ -924,6 +927,9 @@ impl Session {
         match heap.kind(a) {
             Kind::BigInt => out.push_str(&self.vm.show(v)),
             Kind::Resume => out.push_str("<resumption>"),
+            Kind::Channel => out.push_str("<channel>"),
+            Kind::Task => out.push_str("<thread>"),
+            Kind::TVar => out.push_str("<tvar>"),
             Kind::Ref => {
                 out.push_str("ref ");
                 self.nested(out, heap.field(a, 0), depth, budget);

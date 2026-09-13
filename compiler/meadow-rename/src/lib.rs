@@ -174,7 +174,7 @@ const BUILTIN_TYCONS: &[&str] =
     &[
         "Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array", "Ref", "StRef",
         "StArray", "Int64", "Int32", "Int16", "Int8", "UInt64", "UInt32", "UInt16", "UInt8",
-        "Float64", "Float32", "Compact",
+        "Float64", "Float32", "Compact", "Task", "Channel", "TVar",
     ];
 
 /// Split a declaration into its attributes and the bare declaration underneath.
@@ -297,7 +297,7 @@ fn builtin_tycons() -> HashMap<InternedString, usize> {
         ("UInt64", 0), ("UInt32", 0), ("UInt16", 0), ("UInt8", 0),
         ("Float64", 0), ("Float32", 0),
         ("Unit", 0), ("List", 1), ("Array", 1), ("Ref", 1), ("StRef", 2), ("StArray", 2),
-        ("Compact", 1),
+        ("Compact", 1), ("Task", 1), ("Channel", 1), ("TVar", 1),
     ]
     .into_iter()
     .map(|(n, a)| (InternedString::from(n), a))
@@ -399,7 +399,13 @@ impl Resolver {
             decl_spans: HashMap::new(),
             duplicates: std::collections::HashSet::new(),
             ctors_of: HashMap::new(),
-            effects: HashMap::new(),
+            // The effects the language has without a declaration: `Mut` for a
+            // `Ref`, `St s` for a `runSt`'s state, `Thread` for green threads.
+            // Primitives perform them, and naming one in an annotation is fine.
+            effects: [("Mut", 0), ("St", 1), ("Thread", 0)]
+                .into_iter()
+                .map(|(n, a)| (InternedString::from(n), a))
+                .collect(),
             effect_ops: HashMap::new(),
             effect_op_ids: HashMap::new(),
             frames: HashMap::new(),
@@ -486,16 +492,14 @@ impl Resolver {
         for (n, a, v) in &frame.tycons {
             if ok(*v) {
                 self.tycons.insert(*n, *a);
+                self.bring_struct_ctor(*n);
             }
         }
-        // Constructors live under their type. A module's own are written bare
-        // inside it; anyone else's arrive only through `use M.Type (C)` or
-        // `use M.Type.*` -- not by naming the type, and not with a glob.
-        if owner.is_none() {
-            for (bare, canonical, _) in &frame.ctors {
-                self.add_ctor(*bare, *canonical);
-            }
-        }
+        // Constructors live under their type, as a Rust enum's variants do --
+        // even in the module that declares it. `Ty.C` names one anywhere the
+        // type is visible; written bare it has to have been brought by
+        // `use Ty (C)` or `use Ty.*` (or `use M.Ty ...` from elsewhere). Neither
+        // declaring the type, naming it in a `use`, nor a module glob does.
         for (n, a, v) in &frame.effects {
             if ok(*v) {
                 self.effects.insert(*n, *a);
@@ -601,6 +605,7 @@ impl Resolver {
             for (n, a, v) in &frame.tycons {
                 if *n == name && note(*v, &mut found, &mut hidden) {
                     self.tycons.insert(*n, *a);
+                    self.bring_struct_ctor(*n);
                     sites.push(RefSite { span: want.span, what: NameRef::Type(*n) });
                 }
             }
@@ -1037,7 +1042,6 @@ impl Resolver {
         self.ctors_of.entry(owner).or_default().push(name);
         let vis = self.vis;
         self.frame().ctors.push((name, canonical, vis));
-        self.add_ctor(name, canonical);
     }
 
     fn check_dup_fields(&mut self, fields: &[ast::Field]) {
@@ -1143,6 +1147,68 @@ impl Resolver {
         self.ctors_of.keys().copied().collect()
     }
 
+    /// A constructor with its type's own name -- a `record`'s, or a one-case
+    /// `data Parser = Parser ...` -- comes with the type, as a Rust struct's does:
+    /// `Point { x = 1.0, y = 2.0 }` wherever `Point` is in scope. It is not
+    /// "namespaced under the type" in any useful sense, since `Point.Point` would
+    /// be the only other spelling.
+    fn bring_struct_ctor(&mut self, ty: InternedString) {
+        let canonical = canonical_ctor(ty, ty);
+        if self.ctors.contains_key(&canonical) {
+            self.add_ctor(ty, canonical);
+        }
+    }
+
+    /// Report a bare constructor that is not in scope -- and, when a type in
+    /// scope has one by that name, say that it lives there and how to write it.
+    /// That is nearly always what happened: the constructor exists, and only its
+    /// `use` is missing.
+    fn unknown_ctor(&mut self, bare: InternedString, span: Span) {
+        let here = self.current.clone();
+        let mut owners: Vec<InternedString> = self
+            .ctors_of
+            .iter()
+            .filter(|(ty, cs)| self.tycons.contains_key(*ty) && cs.contains(&bare))
+            .map(|(ty, _)| *ty)
+            .collect();
+        owners.sort_by_key(|t| t.to_string());
+        let (msg, label) = match owners.as_slice() {
+            [] => (format!("unknown constructor `{bare}`"), "not a known constructor".to_string()),
+            [ty] => {
+                // `use Ty.*` works for this module's own types and for a
+                // dependency's, which are in scope by name; a sibling module's
+                // needs its path.
+                let sibling = !self.module_has_type(&here, *ty)
+                    && self.frames.values().any(|f| f.tycons.iter().any(|(n, _, _)| n == ty));
+                let bring = if !sibling {
+                    format!("`use {ty}.*`")
+                } else {
+                    format!("a `use` of `{ty}`'s constructors")
+                };
+                (
+                    format!(
+                        "unknown constructor `{bare}`: it belongs to `{ty}`, so write `{ty}.{bare}`, \
+                         or bring it in with {bring}"
+                    ),
+                    format!("write `{ty}.{bare}`"),
+                )
+            }
+            many => {
+                let list = many.iter().map(|t| format!("`{t}.{bare}`")).join(", ");
+                (
+                    format!("unknown constructor `{bare}`: it could be {list}; say which, or `use` one"),
+                    "qualify it with its type".to_string(),
+                )
+            }
+        };
+        self.error(msg, label, span);
+    }
+
+    /// The module being resolved.
+    pub fn current_module(&self) -> &[InternedString] {
+        &self.current
+    }
+
     /// Does sibling module `path` declare a type called `ty`? Visible or not:
     /// the question is what a `use` path names, and [`Resolver::use_type`]
     /// reports a type it may not see.
@@ -1231,6 +1297,7 @@ impl Resolver {
             if let Some(arity) = alone {
                 self.tycons.insert(tyname, arity);
             }
+            self.bring_struct_ctor(tyname);
             return Vec::new();
         }
         let mut brought = Vec::new();
@@ -1263,13 +1330,11 @@ impl Resolver {
         self.add_ctor(bare_ctor(canonical), canonical);
     }
 
-    /// Bring a type's constructors into scope unqualified. Only for a unit
-    /// that flattens everything -- a REPL line's view of the ones before it.
-    pub fn use_type_ctors(&mut self, ty: InternedString) {
-        let ctors = self.ctors_of.get(&ty).cloned().unwrap_or_default();
-        for c in ctors {
-            self.add_ctor(c, canonical_ctor(ty, c));
-        }
+    /// Bring a known type's struct-like constructor -- one named like the type
+    /// -- into scope, as naming the type would. For a unit whose dependency's
+    /// types are all in scope: a REPL line's view of the ones before it.
+    pub fn use_struct_ctor(&mut self, ty: InternedString) {
+        self.bring_struct_ctor(ty);
     }
 
     /// Mint the `VarId` for a top-level name of the module being declared.
@@ -1856,11 +1921,7 @@ impl Resolver {
             }
         }
         if !self.is_known_ctor(bare) {
-            self.error(
-                format!("unknown constructor `{bare}`"),
-                "not a known constructor".to_string(),
-                name.span,
-            );
+            self.unknown_ctor(bare, name.span);
         }
         let label = self.node(cname, name.span);
         if cands.len() > 1 {
@@ -2119,11 +2180,7 @@ impl Resolver {
             }
         }
         if !self.is_known_ctor(bare) {
-            self.error(
-                format!("unknown constructor `{bare}`"),
-                "not a known constructor".to_string(),
-                name.span,
-            );
+            self.unknown_ctor(bare, name.span);
         }
         let label = self.node(cname, name.span);
         if cands.len() > 1 {

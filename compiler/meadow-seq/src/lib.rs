@@ -335,7 +335,7 @@ impl Program {
 }
 
 mod lower;
-pub use lower::{lower_program, Lowered, Unsupported};
+pub use lower::{Lowered, Unsupported, lower_program};
 
 pub mod machine;
 

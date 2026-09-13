@@ -64,6 +64,9 @@ pub fn run(program: &core::Program, engine: Engine, opt: OptLevel) -> Result<Str
 /// What the bytecode VM's collector did during a run.
 #[derive(Debug, Clone, Copy)]
 pub struct GcStats {
+    /// Green threads that finished, `main` included. Each had a heap of its
+    /// own, and the rest of these figures are summed over them.
+    pub threads: u64,
     pub collections: u64,
     /// Heap slots allocated and copied by collections, in total.
     pub allocated: u64,
@@ -85,10 +88,12 @@ impl fmt::Display for GcStats {
         };
         write!(
             f,
-            "gc: {} collections, {:.1} ms collecting ({share:.1}% of {:.1} ms)\n\
+            "gc: {} collections across {} thread{}, {:.1} ms collecting ({share:.1}% of {:.1} ms)\n\
              gc: {} allocated, {} copied by collections\n\
              gc: heap {}, compact regions {}",
             self.collections,
+            self.threads,
+            if self.threads == 1 { "" } else { "s" },
             self.gc_nanos as f64 / 1e6,
             self.run_nanos as f64 / 1e6,
             bytes(self.allocated),
@@ -128,19 +133,19 @@ pub fn run_with_stats(
                 return (Err("program has no entry point".to_string()), None);
             };
             let started = std::time::Instant::now();
-            let mut vm = meadow_rts::Vm::new(&image);
-            let result = vm.run(entry, UNBOUNDED).map(|v| vm.show(v)).map_err(|e| e.msg);
-            let heap = vm.heap();
+            let outcome = meadow_rts::sched::run(&image, entry, UNBOUNDED);
+            let s = outcome.stats;
             let stats = GcStats {
-                collections: heap.collections,
-                allocated: heap.allocated,
-                copied: heap.copied,
-                gc_nanos: heap.gc_nanos,
+                threads: s.threads,
+                collections: s.collections,
+                allocated: s.allocated,
+                copied: s.copied,
+                gc_nanos: s.gc_nanos,
                 run_nanos: started.elapsed().as_nanos() as u64,
-                heap_slots: heap.capacity(),
-                region_slots: heap.region_slots(),
+                heap_slots: s.heap_slots,
+                region_slots: s.region_slots,
             };
-            (result, Some(stats))
+            (outcome.result.map_err(|e| e.msg), Some(stats))
         }
     }
 }
@@ -198,11 +203,7 @@ pub fn run_tests(
                     let Some(&entry) = image.entries.get(base + i) else {
                         return Err("a test has no entry point".to_string());
                     };
-                    let mut vm = meadow_rts::Vm::new(&image);
-                    match vm.run(entry, UNBOUNDED) {
-                        Ok(v) => Ok(vm.show(v)),
-                        Err(e) => Err(e.msg),
-                    }
+                    meadow_rts::sched::run(&image, entry, UNBOUNDED).result.map_err(|e| e.msg)
                 })
                 .collect())
         }

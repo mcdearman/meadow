@@ -125,6 +125,59 @@ impl Vm<'_> {
         }
     }
 
+    /// The run's `TVar`s.
+    fn world(&self) -> Result<std::sync::Arc<crate::stm::World>, Error> {
+        match &self.world {
+            Some(w) => Ok(w.clone()),
+            None => err("transactions need the scheduler; this machine is running on its own"),
+        }
+    }
+
+    /// `v` put where every thread can read it: into `into` -- a region, whether
+    /// it is new, and how big a fresh copy of what it holds was -- or into a
+    /// new region. An immediate needs no region.
+    fn share(
+        &mut self,
+        v: Value,
+        into: Option<(std::sync::Arc<crate::region::Region>, bool, usize)>,
+    ) -> Result<crate::stm::Shared, Error> {
+        if !matches!(v, Value::Obj(_)) {
+            return Ok(crate::stm::Shared { region: None, root: v, fresh: 0 });
+        }
+        let (region, fresh_region, fresh) =
+            into.unwrap_or_else(|| (crate::region::Region::new(), true, 0));
+        self.heap.adopt(&region);
+        let root = match self.heap.compact_into(region.id, v) {
+            Ok(root) => root,
+            Err(why) => return err(meadow_core::stm::unstorable(why.describe())),
+        };
+        let fresh = if fresh_region { region.used() } else { fresh };
+        Ok(crate::stm::Shared { region: Some(region), root, fresh })
+    }
+
+    /// The transaction this thread is in, for `op`.
+    fn txn(&mut self, op: &str) -> Result<&mut crate::stm::Txn, Error> {
+        match &mut self.txn {
+            Some(t) => Ok(t),
+            None => err(meadow_core::stm::outside(op)),
+        }
+    }
+
+    /// `v` exported for another thread, or the error saying why it cannot be.
+    fn sendable(&self, v: Value) -> Result<crate::heap::Parcel, Error> {
+        self.heap
+            .export(v)
+            .or_else(|why| err(meadow_core::thread::unsendable(why.describe())))
+    }
+
+    /// The number of a channel or thread handle.
+    fn handle(&self, v: Value, kind: Kind, what: &str) -> Result<u32, Error> {
+        match v.addr().filter(|a| self.heap.kind(*a) == kind) {
+            Some(a) => Ok(self.heap.meta(a)),
+            None => err(format!("expected {what}, got {}", self.show(v))),
+        }
+    }
+
     fn compact_handle(&self, v: Value) -> Result<Addr, Error> {
         match v.addr().filter(|a| self.heap.kind(*a) == Kind::Compact) {
             Some(a) => Ok(a),
@@ -612,6 +665,131 @@ impl Vm<'_> {
             CompactSize => {
                 let region = self.heap.meta(self.compact_handle(arg(self, 0))?);
                 Value::Int((self.heap.region_used(region) * crate::heap::SLOT_BYTES) as i64)
+            }
+
+            // --- top-level values, evaluated once per thread -------------------
+            GlobalReady => {
+                let i = self.index(arg(self, 0))?;
+                Value::Bool(matches!(self.globals.get(i), Some(Some(_))))
+            }
+            GlobalGet => match self.globals.get(self.index(arg(self, 0))?) {
+                Some(Some(v)) => *v,
+                _ => return err("a definition read before it was evaluated"),
+            },
+            GlobalSet => {
+                let i = self.index(arg(self, 0))?;
+                if self.globals.len() <= i {
+                    self.globals.resize(i + 1, None);
+                }
+                self.globals[i] = Some(arg(self, 1));
+                Value::Unit
+            }
+
+            // --- software transactional memory --------------------------------
+            StmNew => {
+                let world = self.world()?;
+                let shared = self.share(arg(self, 0), None)?;
+                let id = world.new_tvar(shared);
+                self.ensure(1);
+                Value::Obj(self.heap.alloc(Kind::TVar, id, &[]))
+            }
+            StmRead => {
+                let id = self.handle(arg(self, 0), Kind::TVar, "a TVar")?;
+                let world = self.world()?;
+                let read = world.read(self.txn("readTVar")?, id);
+                match read {
+                    crate::stm::Read::Conflict => {
+                        self.ensure(1);
+                        let tag = self.ctor_tag("Maybe.None");
+                        Value::Obj(self.heap.alloc(Kind::Data, tag, &[]))
+                    }
+                    crate::stm::Read::Value(shared) => {
+                        // Room first: the region is adopted after, so the
+                        // collection that making room may run cannot let it go.
+                        self.ensure(2);
+                        if let Some(r) = &shared.region {
+                            self.heap.adopt(r);
+                        }
+                        let tag = self.ctor_tag("Maybe.Just");
+                        Value::Obj(self.heap.alloc(Kind::Data, tag, &[shared.root]))
+                    }
+                }
+            }
+            StmWrite => {
+                let id = self.handle(arg(self, 0), Kind::TVar, "a TVar")?;
+                let world = self.world()?;
+                let into = world.region_for_write(self.txn("writeTVar")?, id);
+                let shared = self.share(arg(self, 1), Some(into))?;
+                self.txn("writeTVar")?.write(id, shared);
+                Value::Unit
+            }
+            StmBegin => {
+                self.txn = Some(self.world()?.begin());
+                Value::Unit
+            }
+            StmNest => {
+                self.txn("orElse")?.writes.push(Vec::new());
+                Value::Unit
+            }
+            StmMerge => {
+                self.txn("orElse")?.merge();
+                Value::Unit
+            }
+            StmRollback => {
+                self.txn("orElse")?.rollback();
+                Value::Unit
+            }
+            StmCommit => {
+                self.txn("atomically")?;
+                self.request = Some(crate::vm::Request::StmCommit { dst });
+                Value::Unit
+            }
+            StmWait => {
+                self.txn("retry")?;
+                self.request = Some(crate::vm::Request::StmWait { dst });
+                Value::Unit
+            }
+
+            // --- green threads ------------------------------------------------
+            //
+            // None of these acts here. Each leaves a request for the scheduler,
+            // which owns the channels and the other threads, and puts a
+            // placeholder in `dst` that the answer overwrites. Anything that
+            // crosses to another thread is exported first, while this thread
+            // still has it -- see `meadow_core::thread`.
+            ThreadSpawn | ThreadAwait | ThreadYield | ChannelNew | ChannelSend | ChannelReceive
+                if !self.scheduled =>
+            {
+                return err("green threads need the scheduler; this machine is running on its own");
+            }
+            ThreadSpawn => {
+                let body = self.sendable(arg(self, 0))?;
+                self.request = Some(crate::vm::Request::Spawn { body, dst });
+                Value::Unit
+            }
+            ThreadAwait => {
+                let task = self.handle(arg(self, 0), Kind::Task, "a thread")?;
+                self.request = Some(crate::vm::Request::Await { task, dst });
+                Value::Unit
+            }
+            ThreadYield => {
+                self.request = Some(crate::vm::Request::Yield);
+                Value::Unit
+            }
+            ChannelNew => {
+                self.request = Some(crate::vm::Request::NewChannel { dst });
+                Value::Unit
+            }
+            ChannelSend => {
+                let channel = self.handle(arg(self, 0), Kind::Channel, "a channel")?;
+                let message = self.sendable(arg(self, 1))?;
+                self.request = Some(crate::vm::Request::Send { channel, message });
+                Value::Unit
+            }
+            ChannelReceive => {
+                let channel = self.handle(arg(self, 0), Kind::Channel, "a channel")?;
+                self.request = Some(crate::vm::Request::Receive { channel, dst });
+                Value::Unit
             }
         };
 

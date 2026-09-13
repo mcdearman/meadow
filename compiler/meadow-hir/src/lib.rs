@@ -120,7 +120,25 @@ pub const PRIMS: &[&str] = &[
     "compact",
     "getCompact",
     "compactAdd",
-    "compactSize",
+    "compactSize", //
+    // green threads, each with a heap of its own, and the channels between them
+    "threadSpawn",
+    "threadAwait",
+    "threadYield",
+    "channelNew",
+    "channelSend",
+    "channelReceive", //
+    // software transactional memory: the parts `Std.Stm` cannot write itself
+    "stmNew",
+    "stmNewIO",
+    "stmRead",
+    "stmWrite",
+    "stmBegin",
+    "stmCommit",
+    "stmWait",
+    "stmNest",
+    "stmMerge",
+    "stmRollback",
 ];
 use std::ops::Deref;
 

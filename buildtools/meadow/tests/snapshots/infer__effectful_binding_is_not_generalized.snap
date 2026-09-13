@@ -1,6 +1,6 @@
 ---
 source: meadow/tests/infer.rs
-expression: "schemes(\"def a = \\\\x -> x\\ndef b = newRef (\\\\y -> y)\\n\")"
+expression: "schemes(\"def a = \\\\x -> x\\nfun g u = let b = newRef (\\\\y -> y) in (b, b)\\n\")"
 ---
 a : forall a. a -> a
-b : Ref (a -> a ! b)
+g : forall a b e e1. a -> (Ref (b -> b ! e), Ref (b -> b ! e)) ! { Mut | e1 }

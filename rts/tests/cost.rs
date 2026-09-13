@@ -104,7 +104,7 @@ fn building_a_list_costs_the_list_and_little_else() {
     // Three slots per `Cons` — a header and two fields — and nothing per call on
     // top of it. Walking it back should allocate nothing at all.
     let (out, _, allocated) = cost(
-        "data Chain = Nil | Cons Int Chain
+        "use Chain.*\ndata Chain = Nil | Cons Int Chain
          fun build n = if n == 0 then Nil else Cons n (build (n - 1))
          fun total xs = match xs with | Nil -> 0 | Cons x r -> x + total r
          def main = total (build 10000)",
@@ -164,7 +164,7 @@ fn a_comparison_allocates_nothing() {
         // Structural equality over data, which walks the heap without touching
         // the allocator.
         (
-            "data Pair = Pair Int Int\n",
+            "use Pair.*\ndata Pair = Pair Int Int\n",
             "a == b",
             "(Pair 1 2) (Pair 1 2)",
         ),

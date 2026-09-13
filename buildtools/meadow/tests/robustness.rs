@@ -134,7 +134,7 @@ fn reading_a_cell_of_a_cell_is_fine() {
 #[test]
 fn a_failed_match_is_an_error_not_a_panic() {
     let out = eval_main_std(
-        "data T = A | B\nfun f x = match x with | A -> 1\ndef main = f B\n",
+        "use T.*\ndata T = A | B\nfun f x = match x with | A -> 1\ndef main = f B\n",
     );
     assert!(out.contains("non-exhaustive"), "got {out}");
 }

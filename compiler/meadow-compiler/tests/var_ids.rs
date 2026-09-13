@@ -48,7 +48,7 @@ fn compiling_a_unit_twice_gives_the_same_ids() {
 fn a_units_ids_lie_inside_the_range_it_reports() {
     let (pkg, diags) = compile_str(
         "t",
-        "data Colour = Red | Green\n\
+        "use Colour.*\ndata Colour = Red | Green\n\
          fun pick c = match c with | Red -> 1 | Green -> 2\n\
          fun curried a = add a\n\
          fun add a b = a + b\n\

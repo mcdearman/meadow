@@ -20,7 +20,7 @@ use meadow_core::num;
 use meadow_intern::InternedString;
 use num_bigint::BigInt;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -106,6 +106,49 @@ pub enum Value {
     /// bookkeeping that makes `compactSize` agree with the VM's. See
     /// `meadow_core::compact`.
     Compact(CompactCell),
+    /// A channel between green threads, by its number in the scheduler.
+    Channel(u32),
+    /// A green thread, as `threadSpawn` answers it.
+    Task(u32),
+    /// A `TVar`: one variable every thread shares, changed only by a commit.
+    TVar(Rc<TVarCell>),
+    /// A top-level value not evaluated yet: its definition. Only ever in the
+    /// root environment -- looking a name up forces it, and the value replaces
+    /// it there -- so a program never holds one. See `core::globals`.
+    Lazy(Arc<Term>),
+}
+
+/// A `TVar`'s state: the clock value of the commit that last wrote it, and
+/// what it holds. Values here are immutable and shared, so a commit only has to
+/// swap which one it is. See `meadow_core::stm`.
+#[derive(Debug)]
+pub struct TVarCell {
+    version: std::cell::Cell<u64>,
+    value: RefCell<Value>,
+}
+
+/// A transaction in progress: when it started, what it read and what it wrote,
+/// innermost `orElse` last.
+struct Txn {
+    start: u64,
+    reads: Vec<(Rc<TVarCell>, u64)>,
+    writes: Vec<Vec<(Rc<TVarCell>, Value)>>,
+}
+
+impl Txn {
+    fn write(&mut self, tv: &Rc<TVarCell>, v: Value) {
+        let frame = self.writes.last_mut().expect("a frame");
+        match frame.iter_mut().find(|(t, _)| Rc::ptr_eq(t, tv)) {
+            Some(slot) => slot.1 = v,
+            None => frame.push((tv.clone(), v)),
+        }
+    }
+}
+
+thread_local! {
+    /// Commits so far. This machine runs every thread on one OS thread, so the
+    /// clock can be this OS thread's.
+    static STM_CLOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// A `Compact`: the value, and the region it was put in.
@@ -212,6 +255,27 @@ fn define(env: &Env, var: Var, val: Value) {
     env.slots.borrow_mut().push((var, val));
 }
 
+/// Replace `var`'s value in whichever frame binds it.
+fn redefine(env: &Env, var: Var, val: Value) {
+    let mut cur = Some(env.clone());
+    while let Some(frame) = cur {
+        if let Some(slot) = frame.slots.borrow_mut().iter_mut().rev().find(|(k, _)| *k == var) {
+            slot.1 = val;
+            return;
+        }
+        cur = frame.parent.clone();
+    }
+}
+
+/// The outermost frame: where top-level definitions live.
+fn root_of(env: &Env) -> Env {
+    let mut cur = env.clone();
+    while let Some(parent) = cur.parent.clone() {
+        cur = parent;
+    }
+    cur
+}
+
 fn lookup(env: &Env, var: Var) -> Option<Value> {
     let mut cur = Some(env.clone());
     while let Some(frame) = cur {
@@ -313,6 +377,8 @@ pub enum K {
     },
     /// A handler boundary sitting on the stack.
     HandleMark(Rc<HandlerData>, Env),
+    /// A top-level value is being evaluated for the first time; keep it.
+    Cache { var: Var, root: Env },
 }
 
 enum Control {
@@ -324,14 +390,40 @@ struct Machine<'a> {
     ctrl: Control,
     kont: Vec<K>,
     fields: &'a FieldTable,
+    /// A thread operation just made, for the scheduler to carry out. The
+    /// machine stops as soon as one is here -- see [`schedule`].
+    request: Option<Request>,
+    /// What this thread was waiting on failed with this message, and so does
+    /// the thread, when it next runs.
+    failed: Option<String>,
+    /// The transaction this thread is in, if any.
+    txn: Option<Txn>,
+}
+
+/// What a thread operation asks of the scheduler.
+enum Request {
+    Spawn(Value),
+    Await(u32),
+    Yield,
+    NewChannel,
+    Send(u32, Value),
+    Receive(u32),
+    StmCommit,
+    StmWait,
+}
+
+impl<'a> Machine<'a> {
+    fn new(ctrl: Control, kont: Vec<K>, fields: &'a FieldTable) -> Machine<'a> {
+        Machine { ctrl, kont, fields, request: None, failed: None, txn: None }
+    }
 }
 
 pub fn run(program: &core::Program) -> Result<Value, RuntimeError> {
     let env = load(program)?;
     match program.entry {
-        Some(e) => lookup(&env, e).ok_or_else(|| RuntimeError {
-            msg: "entry point not found".into(),
-        }),
+        // Through a mention, so the entry point is evaluated the way any use
+        // of a top-level value is.
+        Some(e) => Machine::new(Control::Eval(Arc::new(Term::Var(e)), env), Vec::new(), &program.ctor_fields).run(),
         None => Ok(Value::Unit),
     }
 }
@@ -345,8 +437,7 @@ pub fn run_tests(
     program: &core::Program,
     tests: &[core::Var],
 ) -> Result<Vec<Result<Value, RuntimeError>>, RuntimeError> {
-    // Not the entry point: running the tests is not running the program.
-    let env = load_except(program, program.entry)?;
+    let env = load(program)?;
     Ok(tests
         .iter()
         .map(|&var| {
@@ -358,77 +449,193 @@ pub fn run_tests(
             // Start with the function already evaluated and `()` queued as its
             // argument — the same state the machine reaches part-way through an
             // `App`, so applying it needs no new machinery.
-            let m = Machine {
-                ctrl: Control::Ret(f),
-                kont: vec![K::EvalArg {
+            let m = Machine::new(
+                Control::Ret(f),
+                vec![K::EvalArg {
                     arg: Arc::new(core::Term::Lit(core::Lit::Unit)),
                     env: env.clone(),
                 }],
-                fields: &program.ctor_fields,
-            };
+                &program.ctor_fields,
+            );
             m.run()
         })
         .collect())
 }
 
-/// Evaluate every top-level definition into a fresh environment.
-fn load(program: &core::Program) -> Result<Env, RuntimeError> {
-    load_except(program, None)
-}
-
-/// Evaluate every top-level definition into a fresh environment, except `skip`.
+/// Every top-level definition, in a fresh environment.
 ///
-/// `skip` exists for the test runner. Definitions are evaluated eagerly here, so
-/// `def main = game ()` *runs the game* the moment the program loads — which is
-/// right for `meadow run` and wrong for `meadow test`, where it meant the suite
-/// played a round against whoever was watching, and blocked forever if that
-/// program read input. The bytecode VM never had the problem: it reaches a
-/// definition by jumping to it, so one nothing refers to is never evaluated.
-fn load_except(program: &core::Program, skip: Option<Var>) -> Result<Env, RuntimeError> {
+/// Nothing is evaluated here but functions, whose values are only closures. A
+/// top-level value is left [`Value::Lazy`] and evaluated the first time it is
+/// used, once -- which is what the other engines do, and what makes a
+/// definition nobody uses cost nothing and fail nothing. It is also why loading
+/// the program for `meadow test` does not run `main`.
+fn load(program: &core::Program) -> Result<Env, RuntimeError> {
     // This machine is untyped, like every other backend: core's type
     // abstractions come off first. One pass, once per program load.
     // Number-generic definitions are copied per number type first, while the
     // types that say which are still there -- see `core::specialize`.
     let program = &core::erase::program(&core::specialize::program(program));
     let env = root_env();
-    // Placeholders first so recursive top-level references resolve.
     for def in &program.defs {
-        define(&env, def.var, Value::Unit);
-    }
-    // Specialized copies come after everything in the program, but a definition
-    // before them may call one while it loads. Every copy is a function -- only
-    // a `fun` is generic over a number type -- so making them first is only
-    // making closures, and calls nothing.
-    let copies = program.defs.iter().filter(|d| d.var.0 >= core::specialize::SPECIALIZED_BASE);
-    let originals = program.defs.iter().filter(|d| d.var.0 < core::specialize::SPECIALIZED_BASE);
-    for def in copies.chain(originals) {
-        if Some(def.var) == skip {
-            continue;
-        }
-        let m = Machine {
-            ctrl: Control::Eval(Arc::new(def.term.clone()), env.clone()),
-            kont: Vec::new(),
-            fields: &program.ctor_fields,
+        let value = match peel(&def.term) {
+            Term::Lam(param, _, body) => Value::Closure { param: *param, body: body.clone(), env: env.clone() },
+            _ => Value::Lazy(Arc::new(def.term.clone())),
         };
-        let v = m.run()?;
-        define(&env, def.var, v);
+        define(&env, def.var, value);
     }
     Ok(env)
 }
 
-impl Machine<'_> {
-    fn run(mut self) -> Result<Value, RuntimeError> {
-        loop {
+/// A definition's term without the positions a debug build wraps it in.
+fn peel(t: &Term) -> &Term {
+    match t {
+        Term::Loc(_, inner) => peel(inner),
+        other => other,
+    }
+}
+
+/// Instructions -- steps, here -- a thread takes before another gets a turn.
+const SLICE: usize = 2048;
+
+/// Why a thread stopped running.
+enum Stop {
+    Done(Value),
+    Failed(RuntimeError),
+    Requested(Request),
+    Preempted,
+}
+
+impl<'a> Machine<'a> {
+    /// Run to the end as the main thread, with any threads it starts.
+    fn run(self) -> Result<Value, RuntimeError> {
+        schedule(self)
+    }
+
+    /// Run for a slice, or until the thread finishes, fails or asks for
+    /// something only the scheduler can do.
+    fn run_slice(&mut self) -> Stop {
+        if let Some(msg) = self.failed.take() {
+            return Stop::Failed(RuntimeError { msg });
+        }
+        for _ in 0..SLICE {
             if self.kont.is_empty() {
                 if let Control::Ret(_) = &self.ctrl {
                     match std::mem::replace(&mut self.ctrl, Control::Ret(Value::Unit)) {
-                        Control::Ret(v) => return Ok(v),
+                        Control::Ret(v) => return Stop::Done(v),
                         Control::Eval(..) => unreachable!(),
                     }
                 }
             }
-            self.step()?;
+            if let Err(e) = self.step() {
+                return Stop::Failed(e);
+            }
+            if let Some(r) = self.request.take() {
+                return Stop::Requested(r);
+            }
         }
+        Stop::Preempted
+    }
+
+    /// A saturated primitive. The thread operations only ask: see [`schedule`].
+    fn prim(&mut self, op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use core::Prim::*;
+        let handle = |v: &Value, what: &str, want: fn(&Value) -> Option<u32>| match want(v) {
+            Some(id) => Ok(id),
+            None => err(format!("expected {what}, got {v}")),
+        };
+        let request = match op {
+            ThreadSpawn => {
+                sendable(&args[0])?;
+                Request::Spawn(args[0].clone())
+            }
+            ThreadAwait => Request::Await(handle(&args[0], "a thread", |v| match v {
+                Value::Task(id) => Some(*id),
+                _ => None,
+            })?),
+            ThreadYield => Request::Yield,
+            ChannelNew => Request::NewChannel,
+            ChannelSend => {
+                let id = handle(&args[0], "a channel", |v| match v {
+                    Value::Channel(id) => Some(*id),
+                    _ => None,
+                })?;
+                sendable(&args[1])?;
+                Request::Send(id, args[1].clone())
+            }
+            ChannelReceive => Request::Receive(handle(&args[0], "a channel", |v| match v {
+                Value::Channel(id) => Some(*id),
+                _ => None,
+            })?),
+            StmNew => {
+                storable(&args[0])?;
+                return Ok(Value::TVar(Rc::new(TVarCell {
+                    version: std::cell::Cell::new(0),
+                    value: RefCell::new(args[0].clone()),
+                })));
+            }
+            StmRead => {
+                let tv = as_tvar(&args[0])?;
+                let txn = self.txn.as_mut().ok_or_else(|| RuntimeError { msg: core::stm::outside("readTVar") })?;
+                for frame in txn.writes.iter().rev() {
+                    if let Some((_, v)) = frame.iter().find(|(t, _)| Rc::ptr_eq(t, &tv)) {
+                        return Ok(Value::ctor("Maybe.Just".into(), vec![v.clone()]));
+                    }
+                }
+                if tv.version.get() > txn.start {
+                    return Ok(Value::ctor("Maybe.None".into(), vec![]));
+                }
+                if !txn.reads.iter().any(|(t, _)| Rc::ptr_eq(t, &tv)) {
+                    txn.reads.push((tv.clone(), tv.version.get()));
+                }
+                let v = tv.value.borrow().clone();
+                return Ok(Value::ctor("Maybe.Just".into(), vec![v]));
+            }
+            StmWrite => {
+                let tv = as_tvar(&args[0])?;
+                storable(&args[1])?;
+                let txn = self.txn.as_mut().ok_or_else(|| RuntimeError { msg: core::stm::outside("writeTVar") })?;
+                txn.write(&tv, args[1].clone());
+                return Ok(Value::Unit);
+            }
+            StmBegin => {
+                let start = STM_CLOCK.with(|c| c.get());
+                self.txn = Some(Txn { start, reads: Vec::new(), writes: vec![Vec::new()] });
+                return Ok(Value::Unit);
+            }
+            StmNest | StmMerge | StmRollback => {
+                let txn = self.txn.as_mut().ok_or_else(|| RuntimeError { msg: core::stm::outside("orElse") })?;
+                match op {
+                    StmNest => txn.writes.push(Vec::new()),
+                    StmMerge if txn.writes.len() > 1 => {
+                        let inner = txn.writes.pop().expect("a nested frame");
+                        for (tv, v) in inner {
+                            txn.write(&tv, v);
+                        }
+                    }
+                    StmRollback if txn.writes.len() > 1 => {
+                        txn.writes.pop();
+                    }
+                    _ => {}
+                }
+                return Ok(Value::Unit);
+            }
+            StmCommit => {
+                if self.txn.is_none() {
+                    return err(core::stm::outside("atomically"));
+                }
+                Request::StmCommit
+            }
+            StmWait => {
+                if self.txn.is_none() {
+                    return err(core::stm::outside("retry"));
+                }
+                Request::StmWait
+            }
+            _ => return run_prim(op, args),
+        };
+        self.request = Some(request);
+        // A placeholder: the scheduler replaces it with the answer.
+        Ok(Value::Unit)
     }
 
     fn step(&mut self) -> Result<(), RuntimeError> {
@@ -447,7 +654,16 @@ impl Machine<'_> {
                 let val = lookup(&env, *v).ok_or_else(|| RuntimeError {
                     msg: format!("unbound variable {v:?}"),
                 })?;
-                self.ctrl = Control::Ret(val);
+                match val {
+                    // The first use of a top-level value: evaluate it where
+                    // top-level definitions live, and keep the result.
+                    Value::Lazy(term) => {
+                        let root = root_of(&env);
+                        self.kont.push(K::Cache { var: *v, root: root.clone() });
+                        self.ctrl = Control::Eval(term, root);
+                    }
+                    val => self.ctrl = Control::Ret(val),
+                }
             }
             T::Lit(l) => self.ctrl = Control::Ret(lit_value(l)),
             // A position means nothing to a machine that cannot stop.
@@ -733,7 +949,7 @@ impl Machine<'_> {
                         });
                         self.ctrl = Control::Eval(Arc::new(next), env);
                     }
-                    None => self.ctrl = Control::Ret(run_prim(op, done)?),
+                    None => self.ctrl = Control::Ret(self.prim(op, done)?),
                 }
             }
             K::BuildRecord {
@@ -807,6 +1023,10 @@ impl Machine<'_> {
                 return err("non-exhaustive pattern match");
             }
             K::PerformWith { effect, op } => self.perform(effect, op, v)?,
+            K::Cache { var, root } => {
+                redefine(&root, var, v.clone());
+                self.ctrl = Control::Ret(v);
+            }
             K::HandleMark(data, henv) => {
                 // body returned normally — run the `return` clause (or identity)
                 match &data.ret {
@@ -832,7 +1052,7 @@ impl Machine<'_> {
             Value::Builtin { op, mut args } => {
                 args.push(arg);
                 self.ctrl = if args.len() >= op.arity() {
-                    Control::Ret(run_prim(op, args)?)
+                    Control::Ret(self.prim(op, args)?)
                 } else {
                     Control::Ret(Value::Builtin { op, args })
                 };
@@ -1083,6 +1303,10 @@ fn hash_value(v: &Value) -> Result<i64, RuntimeError> {
                 h.compact();
                 stack.push(Work::Val(c.0.clone()));
             }
+            Value::Channel(_) => return err(unhashable("a channel")),
+            Value::TVar(_) => return err(unhashable("a TVar")),
+            Value::Task(_) => return err(unhashable("a thread")),
+            Value::Lazy(_) => return err("hash: a top-level value that was never evaluated"),
         }
     }
     Ok(h.finish())
@@ -1257,18 +1481,27 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
         },
         Compact => {
             let region = Rc::new(RefCell::new(Region::default()));
-            compact_into(&region, &args[0])?;
+            compact_into(&region, &args[0], meadow_core::compact::uncompactable)?;
             Ok(Value::Compact(Rc::new((args[0].clone(), region))))
         }
         GetCompact => Ok(as_compact(&args[0])?.0.clone()),
         CompactAdd => {
             let region = as_compact(&args[0])?.1.clone();
-            compact_into(&region, &args[1])?;
+            compact_into(&region, &args[1], meadow_core::compact::uncompactable)?;
             Ok(Value::Compact(Rc::new((args[1].clone(), region))))
         }
         CompactSize => Ok(Value::Int(
             (as_compact(&args[0])?.1.borrow().slots * meadow_core::compact::SLOT_BYTES) as i64,
         )),
+        // Only the machine can carry these out -- see `Machine::prim`.
+        ThreadSpawn | ThreadAwait | ThreadYield | ChannelNew | ChannelSend | ChannelReceive => {
+            err("a thread operation reached a primitive with no machine to run it")
+        }
+        StmNew | StmRead | StmWrite | StmBegin | StmCommit | StmWait | StmNest | StmMerge
+        | StmRollback => err("a transaction operation reached a primitive with no machine to run it"),
+        // This machine keeps top-level values lazily in its environment and
+        // never runs the caching pass that produces these.
+        GlobalReady | GlobalGet | GlobalSet => err("a definition cache reached the CEK machine"),
         CharCode => match &args[0] {
             Value::Char(c) => Ok(Value::Int(*c as i64)),
             other => err(format!("charCode: expected a Char, got {other}")),
@@ -1879,6 +2112,8 @@ fn value_eq(a: &Value, b: &Value) -> bool {
             (Value::MutArray(x), Value::MutArray(y)) if Rc::ptr_eq(x, y) => {}
             // Immutable, so two are equal when what they hold is.
             (Value::Compact(x), Value::Compact(y)) => stack.push((x.0.clone(), y.0.clone())),
+            (Value::Channel(x), Value::Channel(y)) | (Value::Task(x), Value::Task(y)) if x == y => {}
+            (Value::TVar(x), Value::TVar(y)) if Rc::ptr_eq(x, y) => {}
             _ => return false,
         }
     }
@@ -1988,6 +2223,10 @@ impl fmt::Display for Value {
                 f.write_str("]")
             }
             Value::Compact(c) => write!(f, "compact {}", c.0),
+            Value::Channel(_) => f.write_str("<channel>"),
+            Value::TVar(_) => f.write_str("<tvar>"),
+            Value::Task(_) => f.write_str("<thread>"),
+            Value::Lazy(_) => f.write_str("<unevaluated>"),
         }
     }
 }
@@ -2006,8 +2245,11 @@ fn as_compact(v: &Value) -> Result<&CompactCell, RuntimeError> {
 ///
 /// A tuple or a record here is not shared behind an `Rc`, so it is counted each
 /// time it is reached; the VM would share it. The figure is an estimate.
-fn compact_into(region: &RefCell<Region>, v: &Value) -> Result<(), RuntimeError> {
-    use meadow_core::compact::uncompactable;
+fn compact_into(
+    region: &RefCell<Region>,
+    v: &Value,
+    uncompactable: fn(&str) -> String,
+) -> Result<(), RuntimeError> {
     let mut r = region.borrow_mut();
     let mut new: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
     let mut slots = 0usize;
@@ -2048,6 +2290,9 @@ fn compact_into(region: &RefCell<Region>, v: &Value) -> Result<(), RuntimeError>
             Value::Closure { .. } | Value::Builtin { .. } | Value::Cont(_) => {
                 return err(uncompactable("a function"));
             }
+            // A handle: one header slot on the VM, and nothing inside.
+            Value::Channel(_) | Value::Task(_) | Value::TVar(_) => slots += 1,
+            Value::Lazy(_) => return err("compact: a top-level value that was never evaluated"),
             Value::Int(_)
             | Value::Float(_)
             | Value::Word(..)
@@ -2420,4 +2665,273 @@ mod tests {
         assert!(value_eq(&a, &b));
         assert!(!value_eq(&a, &Value::Int(1)));
     }
+}
+
+// --- green threads ------------------------------------------------------------
+
+/// A thread waiting for an answer, and the thread's number.
+type Waiting<'a> = (Machine<'a>, u32);
+
+#[derive(Default)]
+struct TaskSlot<'a> {
+    outcome: Option<Result<Value, String>>,
+    waiters: Vec<Waiting<'a>>,
+}
+
+#[derive(Default)]
+struct ChannelSlot<'a> {
+    messages: VecDeque<Value>,
+    receivers: VecDeque<Waiting<'a>>,
+}
+
+/// Run `main` and every thread it starts, one at a time, until `main` finishes.
+///
+/// The specification of what the bytecode VM's scheduler does, minus the
+/// parallelism: threads take turns of [`SLICE`] steps in a fixed order, so a
+/// run here is always the same run. A value passed between threads is shared
+/// rather than copied -- values here are immutable and reference-counted, and
+/// [`sendable`] has already refused anything a copy would not be equal to.
+/// See `meadow_core::thread` for what the engines agree on.
+fn schedule(main: Machine<'_>) -> Result<Value, RuntimeError> {
+    let mut ready: VecDeque<(Machine, u32)> = VecDeque::from([(main, 0)]);
+    let mut tasks: Vec<TaskSlot> = vec![TaskSlot::default()];
+    let mut channels: Vec<ChannelSlot> = Vec::new();
+    // Threads parked by `retry`, and which `TVar`s -- by address -- each waits on.
+    let mut parked: Vec<Option<(Machine, u32)>> = Vec::new();
+    let mut stm_waiters: HashMap<usize, Vec<usize>> = HashMap::new();
+
+    while let Some((mut m, task)) = ready.pop_front() {
+        loop {
+            match m.run_slice() {
+                Stop::Preempted => {
+                    ready.push_back((m, task));
+                    break;
+                }
+                Stop::Done(v) => {
+                    if task == 0 {
+                        return Ok(v);
+                    }
+                    finish(&mut tasks, &mut ready, task, Ok(v));
+                    break;
+                }
+                Stop::Failed(e) => {
+                    if task == 0 {
+                        return Err(e);
+                    }
+                    finish(&mut tasks, &mut ready, task, Err(e.msg));
+                    break;
+                }
+                Stop::Requested(r) => match r {
+                    Request::Spawn(f) => {
+                        let id = tasks.len() as u32;
+                        tasks.push(TaskSlot::default());
+                        let child = Machine::new(
+                            Control::Ret(f),
+                            vec![K::EvalArg {
+                                arg: Arc::new(core::Term::Lit(core::Lit::Unit)),
+                                env: root_env(),
+                            }],
+                            m.fields,
+                        );
+                        ready.push_back((child, id));
+                        m.ctrl = Control::Ret(Value::Task(id));
+                    }
+                    Request::Await(t) => match tasks.get_mut(t as usize) {
+                        None => m.failed = Some(format!("await: there is no thread {t}")),
+                        Some(slot) => match &slot.outcome {
+                            Some(Ok(v)) => m.ctrl = Control::Ret(v.clone()),
+                            Some(Err(msg)) => m.failed = Some(msg.clone()),
+                            None => {
+                                slot.waiters.push((m, task));
+                                break;
+                            }
+                        },
+                    },
+                    Request::Yield => {
+                        m.ctrl = Control::Ret(Value::Unit);
+                        ready.push_back((m, task));
+                        break;
+                    }
+                    Request::NewChannel => {
+                        let id = channels.len() as u32;
+                        channels.push(ChannelSlot::default());
+                        m.ctrl = Control::Ret(Value::Channel(id));
+                    }
+                    Request::Send(c, v) => match channels.get_mut(c as usize) {
+                        None => m.failed = Some(format!("send: there is no channel {c}")),
+                        Some(ch) => {
+                            match ch.receivers.pop_front() {
+                                Some((mut r, rt)) => {
+                                    r.ctrl = Control::Ret(v);
+                                    ready.push_back((r, rt));
+                                }
+                                None => ch.messages.push_back(v),
+                            }
+                            m.ctrl = Control::Ret(Value::Unit);
+                        }
+                    },
+                    Request::StmCommit => {
+                        let txn = m.txn.take().expect("checked by the primitive");
+                        if txn.reads.iter().any(|(tv, version)| tv.version.get() != *version) {
+                            m.ctrl = Control::Ret(Value::Bool(false));
+                            continue;
+                        }
+                        let writes = txn.writes.into_iter().next().unwrap_or_default();
+                        if !writes.is_empty() {
+                            let version = STM_CLOCK.with(|c| {
+                                c.set(c.get() + 1);
+                                c.get()
+                            });
+                            for (tv, v) in writes {
+                                tv.version.set(version);
+                                *tv.value.borrow_mut() = v;
+                                for i in stm_waiters.remove(&(Rc::as_ptr(&tv) as usize)).unwrap_or_default() {
+                                    if let Some((mut w, wt)) = parked[i].take() {
+                                        w.ctrl = Control::Ret(Value::Unit);
+                                        ready.push_back((w, wt));
+                                    }
+                                }
+                            }
+                        }
+                        m.ctrl = Control::Ret(Value::Bool(true));
+                    }
+                    Request::StmWait => {
+                        let txn = m.txn.take().expect("checked by the primitive");
+                        if txn.reads.iter().any(|(tv, version)| tv.version.get() != *version) {
+                            m.ctrl = Control::Ret(Value::Unit);
+                            continue;
+                        }
+                        let slot = parked.len();
+                        for (tv, _) in &txn.reads {
+                            stm_waiters.entry(Rc::as_ptr(tv) as usize).or_default().push(slot);
+                        }
+                        parked.push(Some((m, task)));
+                        break;
+                    }
+                    Request::Receive(c) => match channels.get_mut(c as usize) {
+                        None => m.failed = Some(format!("receive: there is no channel {c}")),
+                        Some(ch) => match ch.messages.pop_front() {
+                            Some(v) => m.ctrl = Control::Ret(v),
+                            None => {
+                                ch.receivers.push_back((m, task));
+                                break;
+                            }
+                        },
+                    },
+                },
+            }
+        }
+    }
+    // The queue ran dry with `main` still waiting.
+    err(core::thread::DEADLOCK)
+}
+
+/// Record a thread's result, and wake whoever awaits it.
+fn finish<'a>(
+    tasks: &mut [TaskSlot<'a>],
+    ready: &mut VecDeque<(Machine<'a>, u32)>,
+    task: u32,
+    outcome: Result<Value, String>,
+) {
+    let slot = &mut tasks[task as usize];
+    for (mut w, wt) in slot.waiters.drain(..) {
+        match &outcome {
+            Ok(v) => w.ctrl = Control::Ret(v.clone()),
+            Err(msg) => w.failed = Some(msg.clone()),
+        }
+        ready.push_back((w, wt));
+    }
+    slot.outcome = Some(outcome);
+}
+
+/// Refuse a value another thread must not see: see `meadow_core::thread`.
+///
+/// A closure is judged by what its body uses, not by its whole environment,
+/// which here holds everything in scope where it was made. The bytecode VM's
+/// closures capture exactly what they use, so this is what makes the two
+/// engines refuse the same functions.
+fn sendable(v: &Value) -> Result<(), RuntimeError> {
+    use core::thread::unsendable;
+    let mut seen: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut stack = vec![v.clone()];
+    while let Some(v) = stack.pop() {
+        match &v {
+            Value::Ref(_) => return err(unsendable("a Ref")),
+            Value::MutArray(_) => return err(unsendable("a mutable array")),
+            Value::Cont(_) => return err(unsendable("a continuation")),
+            // Immutable and closed: shared as it is, as the VM shares a region.
+            Value::Compact(_) => {}
+            Value::Closure { param, body, env } => {
+                let key = (Arc::as_ptr(body) as usize, Rc::as_ptr(env) as usize);
+                if seen.insert(key) {
+                    for &var in free_vars(body).iter() {
+                        if var != *param {
+                            if let Some(x) = lookup(env, var) {
+                                stack.push(x);
+                            }
+                        }
+                    }
+                }
+            }
+            Value::Builtin { args, .. } => stack.extend(args.iter().cloned()),
+            Value::Ctor(_, fields) => {
+                if seen.insert((Rc::as_ptr(fields) as *const () as usize, 0)) {
+                    stack.extend(fields.iter().cloned());
+                }
+            }
+            Value::Array(xs) => {
+                if seen.insert((Rc::as_ptr(xs) as *const () as usize, 0)) {
+                    stack.extend(xs.iter().cloned());
+                }
+            }
+            Value::Tuple(xs) => stack.extend(xs.iter().cloned()),
+            Value::Record(fields) => stack.extend(fields.values().cloned()),
+            Value::Int(_)
+            | Value::BigInt(_)
+            | Value::Float(_)
+            | Value::Word(..)
+            | Value::Float32(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::Char(_)
+            | Value::Unit
+            | Value::Channel(_)
+            | Value::Task(_)
+            | Value::TVar(_) => {}
+            // A top-level value a closure mentions. It is pure, and the other
+            // thread evaluates its own copy when it needs it.
+            Value::Lazy(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The free variables of a function body, computed once per body.
+fn free_vars(body: &Arc<Term>) -> Rc<Vec<Var>> {
+    thread_local! {
+        static CACHE: RefCell<HashMap<usize, (Arc<Term>, Rc<Vec<Var>>)>> = RefCell::new(HashMap::new());
+    }
+    let key = Arc::as_ptr(body) as usize;
+    if let Some(found) = CACHE.with(|c| c.borrow().get(&key).map(|(_, v)| v.clone())) {
+        return found;
+    }
+    let mut out = std::collections::HashSet::new();
+    core::free_vars_into(body, &mut out);
+    let vars = Rc::new(out.into_iter().collect::<Vec<_>>());
+    // The body is kept alongside, so its address cannot be reused by another.
+    CACHE.with(|c| c.borrow_mut().insert(key, (body.clone(), vars.clone())));
+    vars
+}
+
+fn as_tvar(v: &Value) -> Result<Rc<TVarCell>, RuntimeError> {
+    match v {
+        Value::TVar(tv) => Ok(tv.clone()),
+        other => err(format!("expected a TVar, got {other}")),
+    }
+}
+
+/// Refuse what a `TVar` cannot hold -- the same as what a `Compact` cannot, so
+/// that on the VM its value can live in a shared region.
+fn storable(v: &Value) -> Result<(), RuntimeError> {
+    compact_into(&RefCell::new(Region::default()), v, core::stm::unstorable)
 }

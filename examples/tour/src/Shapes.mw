@@ -1,0 +1,45 @@
+-- Shapes: a module of the tour. What it marks `@pub` is what `Main` can use;
+-- `area'` below is its own business.
+
+use Std.Maybe.Maybe.*
+
+-- A sum type. Its constructors live under it: `Shape.Circle`, or bare after
+-- `use Shapes.Shape.*`.
+use Shape.*
+@pub data Shape
+  = Circle Float
+  | Rect Float Float
+  | Triangle Float Float Float
+
+-- A record with named fields.
+@pub record Point = { @pub x : Float, @pub y : Float }
+
+@pub fun area s = area' s
+
+fun area' s =
+  match s with
+  | Circle r -> 3.14159 *. r *. r
+  | Rect w h -> w *. h
+  | Triangle a b c ->
+      -- Heron's formula.
+      let p = (a +. b +. c) /. 2.0 in
+      sqrt (p *. (p -. a) *. (p -. b) *. (p -. c))
+
+-- Newton's method, since there is no `sqrt` primitive to reach for.
+fun sqrt x =
+  let rec go (guess : Float) (n : Int) = if n == 0 then guess else go ((guess +. x /. guess) /. 2.0) (n - 1)
+  in if x <=. 0.0 then 0.0 else go x 30
+
+-- `Just` the name of a shape with no area, if it is one.
+@pub fun degenerate s = if area s <=. 0.0 then Just (describe s) else None
+
+@pub fun describe s =
+  match s with
+  | Circle r -> "a circle"
+  | Rect w h -> if w == h then "a square" else "a rectangle"
+  | Triangle a b c -> "a triangle"
+
+@pub fun distance p q =
+  let dx = p.x -. q.x in
+  let dy = p.y -. q.y in
+  sqrt (dx *. dx +. dy *. dy)

@@ -272,6 +272,18 @@ def main = (double 21, add 1 2, four)
 Application is by juxtaposition — `add 1 2`, not `add(1, 2)` — so parentheses are
 only for grouping. `double 2 + 1` means `(double 2) + 1`.
 
+A top-level `def` is evaluated **once**, the first time something uses it, and
+the value is kept. `def table = buildTable 1000000` builds its table once however
+many functions read it, and a `def` nothing uses is never evaluated.
+
+That is only safe if evaluating a `def` does nothing a program could see, so a
+top-level `def` may not perform effects. `def greeting = let _ = println "hi" in
+"hi"` is an error: "a top-level `def` cannot perform effects". A `def` can still
+*be* a function with effects, such as `def shout = \s -> println s`: building
+the closure does nothing, and the printing happens at each call. Effects belong
+inside functions, which run every time they are called, or in `main`, which the
+runtime runs once as the program.
+
 ### Currying and partial application
 
 Every function of several arguments is really a chain of one-argument functions, so
@@ -476,6 +488,8 @@ Literals, `_`, variables, tuples, constructors, records, and the sequence forms:
 ```meadow
 data Shape = Circle Int | Rect Int Int
 
+use Shape.*
+
 fun area s =
   match s with
   | Circle r -> 3 * r * r
@@ -543,6 +557,9 @@ data Colour = Red | Green | Blue
 
 data Shrub a = Tip | Fork (Shrub a) a (Shrub a)
 
+use Colour.*
+use Shrub.*
+
 fun size t =
   match t with
   | Tip -> 0
@@ -557,10 +574,16 @@ def main = (size sample, Red == Red, Red == Blue)
 => (2, true, false)
 ```
 
-Constructors live in one global namespace, so `Red` is in scope everywhere the
-type is, without a qualifier. **Type names share that namespace too** — which is
-why the tree above is a `Shrub`: `Tree` is already taken by
-`Std.Collections.Tree`, and a clash is an error even if you never `use` it.
+**A constructor lives under its type**, as a variant does in Rust, even in the
+module that declares it. `Colour.Red` works anywhere `Colour` does. To write
+`Red` bare, bring it in: `use Colour.*` for every constructor, or
+`use Colour (Red, Blue)` for some. Without that, `Red` alone is an error:
+"unknown constructor `Red`". Keeping constructors under their type is what lets
+two types in one program both have a `Leaf`.
+
+One kind of constructor comes with its type: one named exactly like the type, as
+a `record`'s is (see below) and a one-case `data Parser = Parser ...` is. That is
+a Rust struct, and `Parser f` is written wherever `Parser` is in scope.
 
 ### The two you get for free
 
@@ -1069,7 +1092,8 @@ use myapp.Syntax.Expr.*          -- every constructor of `Expr`, unqualified
 Nothing else flattens them: not naming the type, and not a bare `use myapp.Syntax`,
 which brings the module's values, types and effects but leaves constructors under
 their types. `use myapp.Syntax (Int)` is an error that says where `Int` lives.
-Inside `Syntax.mw` itself they are always bare. The prelude re-exports
+That holds inside `Syntax.mw` too: it writes `Expr.Int`, or says `use Expr.*`
+once -- Rust's `use self::Expr::*` -- and then `Int`. The prelude re-exports
 `Just`, `None`, `Ok`, `Err` and `Ordering`'s three with `@pub use ... .*`, which is
 the only reason those need no `use` anywhere.
 
@@ -1542,8 +1566,8 @@ fun start () = handle work () with {
 }
 
 fun drive job seen = match job with
-  | Finished result -> (result, seen)
-  | Suspended pct resume -> drive (resume ()) (pushBack seen pct)
+  | Job.Finished result -> (result, seen)
+  | Job.Suspended pct resume -> drive (resume ()) (pushBack seen pct)
 
 def main = drive (start ()) []
 ```
@@ -2157,6 +2181,130 @@ def main = (didFail (\() -> assertEq 1 1 "same"), didFail (\() -> assertEq 1 2 "
 => (false, true)
 ```
 
+#### Thread — green threads and channels
+
+`Std.Thread` runs code at the same time as other code. A thread is cheap, so a
+program can have thousands, and the runtime spreads them over every core. You
+never deal with operating-system threads.
+
+```meadow
+use Std.Thread as Thread
+
+fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+def main =
+  let a = Thread.spawn (\() -> fib 20) in
+  let b = Thread.spawn (\() -> fib 21) in
+  (Thread.await a, Thread.await b, Thread.parMap (\n -> n * n) [1, 2, 3])
+```
+
+```
+=> (6765, 10946, [1, 4, 9])
+```
+
+`spawn` starts a thread and answers a `Task`; `await` waits for it and hands
+back its result. Threads also talk over channels: `send` puts a value in and
+never waits, `receive` takes the oldest value out and waits if there is none.
+
+```meadow
+use Std.Thread as Thread
+
+def main =
+  let requests = Thread.newChannel () in
+  let replies = Thread.newChannel () in
+  let server = Thread.spawn (\() ->
+    let rec serve (k : Int) =
+      if k == 0 then ()
+      else
+        let n = Thread.receive requests in
+        let _ = Thread.send replies (n * n) in
+        serve (k - 1)
+    in serve 2) in
+  let _ = Thread.send requests (toInt 7) in
+  let first = Thread.receive replies in
+  let _ = Thread.send requests (toInt 8) in
+  (first, Thread.receive replies)
+```
+
+```
+=> (49, 64)
+```
+
+The rules that make this safe:
+
+- **Every thread has its own heap.** A value reaches another thread only as a
+  copy: the function passed to `spawn` (with whatever it captures), a value
+  sent on a channel, and a result passed back by `await`. Copying immutable
+  data changes nothing a program can see, so you only notice when something
+  mutable would cross. A `Ref`, a mutable array or a continuation is refused at
+  run time. Threads can't share mutable state. A `Compact` crosses without
+  being copied, so compacting a large value is how threads share it cheaply.
+- **What a thread may do is in its type.** A thread starts with no handlers,
+  so its function may perform only what the runtime answers: `Console`, `Fs`,
+  `Process`, `Random`, `Time`, `Test`, `Mut` and `Thread`. Any other effect
+  must be handled inside the thread. `spawn (\() -> log "x")` with a `Log`
+  handled outside is a type error: "the effect `Log` is not allowed here".
+- **`main` ending ends the program**, as in Go. Threads still running are
+  stopped.
+- **A failure stays in its thread.** `await` on that thread fails with the
+  same message.
+- **If every thread is waiting and none can wake another, that is a
+  deadlock**, reported as an error.
+
+`Thread` is an effect in the types, but unlike the others here it cannot be
+handled: the operations are the runtime's. On the VM, threads run in parallel
+on every core (set `MEADOW_THREADS` to limit how many OS threads they use).
+Under `--cek` they take turns on one core in a fixed order, which makes a run
+repeatable.
+
+#### Stm — shared state that changes as one step
+
+Threads share nothing mutable, with one exception: a `TVar` from `Std.Stm`,
+which every thread can see and which changes only inside `atomically`. A
+transaction reads and writes as if it were alone. If another transaction
+commits something it read first, it quietly runs again, so no thread ever sees
+it half done.
+
+```meadow
+use Std.Stm as Stm
+use Std.Thread as Thread
+
+fun transfer from to (amount : Int) =
+  Stm.atomically (\() ->
+    let balance = Stm.readTVar from in
+    let _ = Stm.check (balance >= amount) in
+    let _ = Stm.writeTVar from (balance - amount) in
+    Stm.modifyTVar to (\b -> b + amount))
+
+def main =
+  let a = Stm.newTVarIO (toInt 0) in
+  let b = Stm.newTVarIO (toInt 0) in
+  let waiting = Thread.spawn (\() -> transfer a b 30) in
+  let _ = Stm.atomically (\() -> Stm.writeTVar a 100) in
+  let _ = Thread.await waiting in
+  Stm.atomically (\() -> (Stm.readTVar a, Stm.readTVar b))
+```
+
+```
+=> (70, 30)
+```
+
+`check` blocks the transfer until the money is there. It is `retry` underneath:
+the transaction waits until something it read changes, then runs again. `orElse`
+tries one transaction and, if it retries, runs another instead.
+
+A transaction is a function of type `() -> a ! { Stm }`, which rules out
+printing, spawning a thread, or touching a `Ref`. That is what makes running it
+again safe. A `println` inside one is a compile error ("the effect `Console` is
+not allowed here"), not a bug that shows up under load. For the same reason
+transactions can't nest: `atomically` itself performs `Thread`.
+
+A `TVar` holds what a `Compact` can: no `Ref`, mutable array or function. On the
+VM its value lives in a shared region, so every thread reads it in place, and
+updating a large value copies only the part that changed.
+`examples/stm` has more: an auditor that never sees a half-finished transfer,
+and bounded queues.
+
 ### Writing a handler for your own effect
 
 The shape is always the same. Declare the operations; write the code that
@@ -2335,7 +2483,7 @@ Also always available: `++` (`Std.String.concat`); `print` and `println`; `runSt
 ### The standard library
 
 `Bool` `Ordering` `Function` `Tuple` `Num` (`Int` `Bits`) `Maybe` `Char` `Result`
-`Either` `Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `St` `Compact` `Exn`
+`Either` `Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `St` `Compact` `Thread` `Stm` `Exn`
 `Stream` `Random` `Fs` `Process` `String` (`Parse`) `Path` `Json` `Time` `Test`
 
 `Std.String.Parse` is a megaparsec-style parser combinator library; `Std.Json` is

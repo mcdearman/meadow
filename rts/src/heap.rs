@@ -49,34 +49,28 @@
 //!
 //! A collection copies everything alive, so a large structure that lives a long
 //! time is paid for again at every one. `compact` moves such a structure out of
-//! the semispaces into a **region**: blocks of slots at addresses from
-//! [`REGION_BASE`] up, which the collector neither copies nor scans.
-//!
-//! Not scanning is sound because a region is **closed and immutable**. Copying
-//! into one follows every pointer, so nothing in it refers to the semispaces or
-//! to another region, and the kinds that can be written after they are built --
-//! a `Ref`, a mutable array, a resumption -- are refused, along with functions.
-//! So a region is one object as far as liveness goes: an address into it, or a
-//! [`Kind::Compact`] handle naming it, found while collecting marks the whole
-//! region live, and every region left unmarked afterwards is freed at once.
+//! the semispaces into a **region** -- see [`crate::region`] -- which no heap
+//! owns and no collector copies or scans. A heap only refers to the regions it
+//! has addresses into: an address into one, or a [`Kind::Compact`] handle naming
+//! it, found while collecting keeps the heap's reference, and a region the
+//! collection did not reach is let go. A region several heaps refer to is read
+//! by all of them, with no copying, which is what lets compacted data, and a
+//! `TVar`'s value, be shared between threads.
 //!
 //! Addresses tell the two apart with one comparison, which is all the ordinary
 //! field access pays.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use crate::region::{Block, Region};
 use crate::value::{Addr, Value};
 
-/// Addresses below this are the semispace; at or above it, a region.
-pub const REGION_BASE: Addr = 1 << 31;
+pub use crate::region::REGION_BASE;
 
 /// Bytes one slot takes -- what `compactSize` multiplies by. The other engines
 /// estimate with `meadow_core::compact::SLOT_BYTES`, which a test holds equal.
 pub const SLOT_BYTES: usize = std::mem::size_of::<Slot>();
-
-/// Slots in a region's first block. Later blocks double, so a region built by
-/// many small `compactAdd`s still has few blocks.
-const REGION_BLOCK: usize = 1 << 12;
 
 /// Why a value cannot go into a region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,32 +90,65 @@ impl Uncompactable {
     }
 }
 
-/// One contiguous run of region addresses. Allocated with its capacity
-/// reserved, so nothing in it ever moves.
-struct Block {
-    base: Addr,
-    /// Addresses reserved, `base..base + cap`. Kept rather than read from the
-    /// `Vec`, whose capacity may be larger than was asked for.
-    cap: usize,
+/// Why a value cannot be passed to another thread -- see `meadow_core::thread`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsendable {
+    Ref,
+    MutArray,
+    Continuation,
+}
+
+impl Unsendable {
+    pub fn describe(self) -> &'static str {
+        match self {
+            Unsendable::Ref => "a Ref",
+            Unsendable::MutArray => "a mutable array",
+            Unsendable::Continuation => "a continuation",
+        }
+    }
+}
+
+/// A value lifted out of one heap, to be put into another: the objects it
+/// reaches, laid out as they will be, with addresses counted from the start
+/// of the parcel. Holds nothing that belongs to a heap, so it can travel
+/// between OS threads. What it reaches in shared regions stays where it is,
+/// its addresses unchanged, and the parcel holds those regions alive.
+#[derive(Clone)]
+pub struct Parcel {
     slots: Vec<Slot>,
-    region: u32,
+    root: Value,
+    regions: Vec<Arc<Region>>,
 }
 
-/// What a region is, for liveness and for `compactSize`.
-struct Region {
-    /// Bases of its blocks, in the order they were filled.
-    blocks: Vec<Addr>,
-    /// Slots in use across them.
-    used: usize,
-    marked: bool,
+impl std::fmt::Debug for Parcel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Parcel({} slots, {} regions)",
+            self.slots.len(),
+            self.regions.len()
+        )
+    }
 }
 
-/// Where a region's contents ended, so a failed `compactAdd` can be undone.
-#[derive(Clone, Copy)]
-struct RegionEnd {
+impl Parcel {
+    /// Slots it takes in the heap it is imported into.
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+}
+
+/// A region a heap has addresses into.
+struct Adopted {
+    region: Arc<Region>,
+    /// How many of its blocks this heap has in [`Heap::blocks`]. A region only
+    /// grows, and what an address reached when it arrived was in these.
     blocks: usize,
-    last_len: usize,
-    used: usize,
+    marked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,11 +180,22 @@ pub enum Kind {
     /// value compacted into it. What keeps a region alive when the value itself
     /// is an immediate and points nowhere.
     Compact,
+    /// A channel between green threads: `meta` is its number in the scheduler,
+    /// and there are no fields. The channel itself lives outside every heap.
+    Channel,
+    /// A green thread, as `threadSpawn` answers it: `meta` is its number.
+    Task,
+    /// A `TVar`: `meta` is its number in the run's [`crate::stm::World`].
+    TVar,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum Slot {
-    Header { kind: Kind, len: u32, meta: u32 },
+    Header {
+        kind: Kind,
+        len: u32,
+        meta: u32,
+    },
     Val(Value),
     /// Left behind in from-space when an object has been copied.
     Forward(Addr),
@@ -166,6 +204,10 @@ pub enum Slot {
 /// How many slots a fresh heap starts with. It doubles whenever a collection
 /// leaves it more than half full.
 const INITIAL: usize = 1 << 16;
+
+/// How many a green thread's heap starts with. A thread may be one of very many,
+/// so it starts small and grows like any other heap.
+pub const THREAD_INITIAL: usize = 1 << 10;
 
 pub struct Heap {
     space: Vec<Slot>,
@@ -179,10 +221,11 @@ pub struct Heap {
     /// large live heap costs, and what compacting it saves.
     pub copied: u64,
     pub gc_nanos: u64,
-    /// Every region block, sorted by base address.
-    blocks: Vec<Block>,
-    /// Regions by id; a freed id is `None` until reused.
-    regions: Vec<Option<Region>>,
+    /// The blocks of every region this heap refers to, sorted by base address:
+    /// where a region address is looked up.
+    blocks: Vec<Arc<Block>>,
+    /// Those regions, by id.
+    regions: HashMap<u32, Adopted>,
     /// Region slots written since the last collection. Regions are only freed
     /// by collecting, so a program that compacts in a loop and allocates little
     /// else needs this to ask for a collection now and then.
@@ -197,8 +240,13 @@ impl Default for Heap {
 
 impl Heap {
     pub fn new() -> Heap {
+        Heap::with_capacity(INITIAL)
+    }
+
+    /// A heap of `slots` to begin with.
+    pub fn with_capacity(slots: usize) -> Heap {
         Heap {
-            space: vec![Slot::Val(Value::Unit); INITIAL],
+            space: vec![Slot::Val(Value::Unit); slots.max(64)],
             other: Vec::new(),
             top: 0,
             collections: 0,
@@ -206,7 +254,7 @@ impl Heap {
             copied: 0,
             gc_nanos: 0,
             blocks: Vec::new(),
-            regions: Vec::new(),
+            regions: HashMap::new(),
             region_growth: 0,
         }
     }
@@ -219,7 +267,7 @@ impl Heap {
 
     /// Slots held by live regions, in total.
     pub fn region_slots(&self) -> usize {
-        self.regions.iter().flatten().map(|r| r.used).sum()
+        self.regions.values().map(|r| r.region.used()).sum()
     }
 
     /// Slots in use, and slots there are.
@@ -241,7 +289,7 @@ impl Heap {
     /// whole heap, which a program building a big array does routinely.
     pub fn reserve(&mut self, slots: usize) {
         while self.top + slots > self.space.len() {
-            let bigger = (self.space.len() * 2).max(INITIAL);
+            let bigger = (self.space.len() * 2).max(64);
             self.space.resize(bigger, Slot::Val(Value::Unit));
         }
     }
@@ -266,28 +314,22 @@ impl Heap {
 
     /// The slot at `a`, in the semispace or in a region.
     #[inline]
-    fn slot(&self, a: Addr) -> &Slot {
+    fn slot(&self, a: Addr) -> Slot {
         if a < REGION_BASE {
-            &self.space[a as usize]
+            self.space[a as usize]
         } else {
-            let b = &self.blocks[self.block_of(a)];
-            &b.slots[(a - b.base) as usize]
+            self.blocks[Self::find_block(&self.blocks, a)].get(a)
         }
     }
 
-    /// The index of the block holding region address `a`.
-    fn block_of(&self, a: Addr) -> usize {
-        Self::find_block(&self.blocks, a)
-    }
-
-    fn find_block(blocks: &[Block], a: Addr) -> usize {
+    fn find_block(blocks: &[Arc<Block>], a: Addr) -> usize {
         let i = blocks.partition_point(|b| b.base <= a);
-        debug_assert!(i > 0, "{a} is below every region block");
+        debug_assert!(i > 0, "{a} is below every region block this heap knows");
         i - 1
     }
 
     fn head(&self, a: Addr) -> (Kind, u32, u32) {
-        match *self.slot(a) {
+        match self.slot(a) {
             Slot::Header { kind, len, meta } => (kind, len, meta),
             other => unreachable!("{a} is not an object header: {other:?}"),
         }
@@ -297,14 +339,15 @@ impl Heap {
     /// cannot vouch for; the machine itself never needs to ask.
     pub fn is_object(&self, a: Addr) -> bool {
         if a < REGION_BASE {
-            return (a as usize) < self.top && matches!(self.space[a as usize], Slot::Header { .. });
+            return (a as usize) < self.top
+                && matches!(self.space[a as usize], Slot::Header { .. });
         }
         let i = self.blocks.partition_point(|b| b.base <= a);
         if i == 0 {
             return false;
         }
         let b = &self.blocks[i - 1];
-        matches!(b.slots.get((a - b.base) as usize), Some(Slot::Header { .. }))
+        (a - b.base) < b.cap as Addr && matches!(b.get(a), Slot::Header { .. })
     }
 
     /// Is `a` an address in a compact region?
@@ -332,7 +375,7 @@ impl Heap {
     }
 
     pub fn field(&self, a: Addr, i: usize) -> Value {
-        match *self.slot(a + 1 + i as Addr) {
+        match self.slot(a + 1 + i as Addr) {
             Slot::Val(v) => v,
             other => unreachable!("field {i} of {a} is not a value: {other:?}"),
         }
@@ -364,7 +407,7 @@ impl Heap {
         self.other.clear();
         self.other.resize(capacity, Slot::Val(Value::Unit));
         let mut top = 0usize;
-        for r in self.regions.iter_mut().flatten() {
+        for r in self.regions.values_mut() {
             r.marked = false;
         }
         let mut gc = Gc {
@@ -402,196 +445,240 @@ impl Heap {
         self.top = top;
         self.copied += top as u64;
 
-        // A region nothing reached is garbage, all of it at once.
-        for id in 0..self.regions.len() {
-            if matches!(&self.regions[id], Some(r) if !r.marked) {
-                self.free_region(id as u32);
-            }
+        // A region nothing reached is no longer this heap's business. It is
+        // freed, all at once, when nothing else refers to it either.
+        let unreached: Vec<u32> = self
+            .regions
+            .iter()
+            .filter(|(_, r)| !r.marked)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in unreached {
+            self.free_region(id);
         }
         self.region_growth = 0;
 
         // More than half full after collecting means the next cycle would come
         // almost immediately. Grow instead, so collection stays amortised.
         if self.top * 2 > self.space.len() {
-            let bigger = (self.space.len() * 2).max(INITIAL);
+            let bigger = (self.space.len() * 2).max(64);
             self.space.resize(bigger, Slot::Val(Value::Unit));
         }
         self.gc_nanos += started.elapsed().as_nanos() as u64;
     }
 
+    // --- passing values between heaps ----------------------------------------
+
+    /// Lift `v` and everything it reaches out of this heap. The heap is only
+    /// read. Sharing inside `v` survives. What is in a shared region is not
+    /// copied: the parcel keeps the address, and holds the region.
+    pub fn export(&self, v: Value) -> Result<Parcel, Unsendable> {
+        let mut parcel = Parcel {
+            slots: Vec::new(),
+            root: v,
+            regions: Vec::new(),
+        };
+        let Value::Obj(a) = v else {
+            return Ok(parcel);
+        };
+        let mut copies: HashMap<Addr, Addr> = HashMap::new();
+        parcel.root = Value::Obj(self.export_object(a, &mut parcel, &mut copies)?);
+        // The parcel is its own queue, as to-space is for the collector.
+        let mut scan = 0usize;
+        while scan < parcel.slots.len() {
+            let len = match parcel.slots[scan] {
+                Slot::Header { len, .. } => len as usize,
+                other => unreachable!("parcel scan is not at a header: {other:?}"),
+            };
+            for f in 0..len {
+                if let Slot::Val(Value::Obj(x)) = parcel.slots[scan + 1 + f] {
+                    let to = self.export_object(x, &mut parcel, &mut copies)?;
+                    parcel.slots[scan + 1 + f] = Slot::Val(Value::Obj(to));
+                }
+            }
+            scan += 1 + len;
+        }
+        Ok(parcel)
+    }
+
+    fn export_object(
+        &self,
+        a: Addr,
+        parcel: &mut Parcel,
+        copies: &mut HashMap<Addr, Addr>,
+    ) -> Result<Addr, Unsendable> {
+        if a >= REGION_BASE {
+            let id = self.blocks[Self::find_block(&self.blocks, a)].region;
+            self.carry(parcel, id);
+            return Ok(a);
+        }
+        if let Some(&c) = copies.get(&a) {
+            return Ok(c);
+        }
+        let (kind, len, meta) = self.head(a);
+        match kind {
+            Kind::Ref => return Err(Unsendable::Ref),
+            Kind::MutArray => return Err(Unsendable::MutArray),
+            Kind::Resume => return Err(Unsendable::Continuation),
+            Kind::Compact => self.carry(parcel, meta),
+            _ => {}
+        }
+        let at = parcel.slots.len() as Addr;
+        parcel.slots.push(Slot::Header { kind, len, meta });
+        for i in 0..len as usize {
+            parcel.slots.push(Slot::Val(self.field(a, i)));
+        }
+        copies.insert(a, at);
+        Ok(at)
+    }
+
+    /// Make the parcel hold region `id`, once.
+    fn carry(&self, parcel: &mut Parcel, id: u32) {
+        if parcel.regions.iter().any(|r| r.id == id) {
+            return;
+        }
+        if let Some(r) = self.regions.get(&id) {
+            parcel.regions.push(r.region.clone());
+        }
+    }
+
+    /// Rebuild a parcel in this heap. The caller must have made room for
+    /// [`Parcel::len`] slots, as for any allocation.
+    pub fn import(&mut self, p: &Parcel) -> Value {
+        debug_assert!(self.room_for(p.slots.len()), "imported without room");
+        for r in &p.regions {
+            self.adopt(r);
+        }
+        let base = self.top as Addr;
+        let rebase = |x: Addr| if x < REGION_BASE { x + base } else { x };
+        for (i, s) in p.slots.iter().enumerate() {
+            self.space[self.top + i] = match *s {
+                Slot::Val(Value::Obj(x)) => Slot::Val(Value::Obj(rebase(x))),
+                other => other,
+            };
+        }
+        self.top += p.slots.len();
+        self.allocated += p.slots.len() as u64;
+        match p.root {
+            Value::Obj(x) => Value::Obj(rebase(x)),
+            v => v,
+        }
+    }
+
     // --- compact regions ----------------------------------------------------
 
-    /// A new, empty region.
-    pub fn new_region(&mut self) -> u32 {
-        let region = Region { blocks: Vec::new(), used: 0, marked: false };
-        match self.regions.iter().position(Option::is_none) {
-            Some(id) => {
-                self.regions[id] = Some(region);
-                id as u32
-            }
-            None => {
-                self.regions.push(Some(region));
-                (self.regions.len() - 1) as u32
-            }
+    /// Refer to `region`: from now on its addresses can be read here. Also how
+    /// a heap learns of blocks a region grew since it last looked.
+    pub fn adopt(&mut self, region: &Arc<Region>) {
+        let contents = region.lock();
+        let known = self.regions.get(&region.id).map_or(0, |r| r.blocks);
+        for b in &contents.blocks[known.min(contents.blocks.len())..] {
+            let at = self.blocks.partition_point(|x| x.base < b.base);
+            self.blocks.insert(at, b.clone());
         }
+        let blocks = contents.blocks.len().max(known);
+        drop(contents);
+        self.regions
+            .entry(region.id)
+            .and_modify(|r| r.blocks = blocks)
+            .or_insert(Adopted {
+                region: region.clone(),
+                blocks,
+                marked: false,
+            });
+    }
+
+    /// A new, empty region, referred to by this heap.
+    pub fn new_region(&mut self) -> u32 {
+        let region = Region::new();
+        self.adopt(&region);
+        region.id
+    }
+
+    /// The region `id`, if this heap refers to it.
+    pub fn region(&self, id: u32) -> Option<&Arc<Region>> {
+        self.regions.get(&id).map(|r| &r.region)
     }
 
     /// Slots in use by region `id`.
     pub fn region_used(&self, id: u32) -> usize {
-        self.regions[id as usize].as_ref().map_or(0, |r| r.used)
+        self.regions.get(&id).map_or(0, |r| r.region.used())
     }
 
-    /// Free region `id` now, rather than at the next collection. Only for a
-    /// region nothing can refer to -- one whose `compact` failed.
+    /// Stop referring to region `id`.
     pub fn free_region(&mut self, id: u32) {
-        if let Some(r) = self.regions[id as usize].take() {
-            self.blocks.retain(|b| !r.blocks.contains(&b.base));
+        if self.regions.remove(&id).is_some() {
+            self.blocks.retain(|b| b.region != id);
         }
-    }
-
-    fn region(&self, id: u32) -> &Region {
-        self.regions[id as usize].as_ref().expect("a live region")
-    }
-
-    fn region_mut(&mut self, id: u32) -> &mut Region {
-        self.regions[id as usize].as_mut().expect("a live region")
-    }
-
-    fn region_end(&self, id: u32) -> RegionEnd {
-        let r = self.region(id);
-        let last_len = match r.blocks.last() {
-            Some(&base) => self.blocks[self.block_of(base)].slots.len(),
-            None => 0,
-        };
-        RegionEnd { blocks: r.blocks.len(), last_len, used: r.used }
-    }
-
-    /// Undo everything written to region `id` after `end`.
-    fn truncate_region(&mut self, id: u32, end: RegionEnd) {
-        let extra: Vec<Addr> = self.region(id).blocks[end.blocks..].to_vec();
-        self.blocks.retain(|b| !extra.contains(&b.base));
-        let r = self.region_mut(id);
-        r.blocks.truncate(end.blocks);
-        r.used = end.used;
-        if let Some(&base) = r.blocks.last() {
-            let i = self.block_of(base);
-            self.blocks[i].slots.truncate(end.last_len);
-        }
-    }
-
-    /// Room for an object of `slots` slots at the end of region `id`: the base
-    /// of the block it goes in.
-    fn region_room(&mut self, id: u32, slots: usize) -> usize {
-        if let Some(&base) = self.region(id).blocks.last() {
-            let i = self.block_of(base);
-            let b = &self.blocks[i];
-            if b.slots.len() + slots <= b.cap {
-                return i;
-            }
-        }
-        let previous = self.region(id).blocks.last().map(|&base| self.blocks[self.block_of(base)].cap);
-        let cap = previous.map_or(REGION_BLOCK, |c| c * 2).max(slots);
-        let base = self.free_range(cap);
-        let block = Block { base, cap, slots: Vec::with_capacity(cap), region: id };
-        let at = self.blocks.partition_point(|b| b.base < base);
-        self.blocks.insert(at, block);
-        self.region_mut(id).blocks.push(base);
-        at
-    }
-
-    /// The lowest region address with `cap` free addresses after it.
-    fn free_range(&self, cap: usize) -> Addr {
-        let mut start = REGION_BASE as u64;
-        for b in &self.blocks {
-            if b.base as u64 >= start + cap as u64 {
-                break;
-            }
-            start = b.base as u64 + b.cap as u64;
-        }
-        assert!(
-            start + cap as u64 <= u32::MAX as u64,
-            "compact regions have used up the address space"
-        );
-        start as Addr
-    }
-
-    /// Append an object to region `id`, its fields as given.
-    fn region_alloc(&mut self, id: u32, kind: Kind, meta: u32, fields: &[Value]) -> Addr {
-        let i = self.region_room(id, 1 + fields.len());
-        let b = &mut self.blocks[i];
-        let at = b.base + b.slots.len() as Addr;
-        b.slots.push(Slot::Header { kind, len: fields.len() as u32, meta });
-        b.slots.extend(fields.iter().map(|v| Slot::Val(*v)));
-        self.region_mut(id).used += 1 + fields.len();
-        self.region_growth += 1 + fields.len();
-        at
     }
 
     /// Copy `v`, and everything it reaches, into region `id`, and answer the
     /// copy. What is already in `id` is shared rather than copied again, and
-    /// sharing inside `v` survives: each object is copied once.
+    /// sharing inside `v` survives: each object is copied once. What is in
+    /// another region is copied too, so a region never points outside itself.
     ///
     /// Iterative, as the collector is: the objects just appended to the region
     /// are the queue. If `v` reaches something that cannot be compacted, the
     /// region is put back exactly as it was.
     pub fn compact_into(&mut self, id: u32, v: Value) -> Result<Value, Uncompactable> {
-        let end = self.region_end(id);
-        let result = self.copy_into(id, v, end);
+        let region = self
+            .region(id)
+            .expect("a region this heap refers to")
+            .clone();
+        let mut contents = region.lock();
+        let end = contents.end();
+        let before = contents.used;
+        let result = self.copy_into(&mut contents, id, v, end);
         if result.is_err() {
-            self.truncate_region(id, end);
+            contents.truncate(end);
         }
+        self.region_growth += contents.used - before;
+        drop(contents);
+        self.adopt(&region);
         result
     }
 
-    fn copy_into(&mut self, id: u32, v: Value, end: RegionEnd) -> Result<Value, Uncompactable> {
+    fn copy_into(
+        &self,
+        contents: &mut crate::region::Contents,
+        id: u32,
+        v: Value,
+        end: crate::region::End,
+    ) -> Result<Value, Uncompactable> {
         let mut copies: HashMap<Addr, Addr> = HashMap::new();
         let root = match v {
-            Value::Obj(a) => Value::Obj(self.copy_object(id, a, &mut copies)?),
+            Value::Obj(a) => Value::Obj(self.copy_object(contents, id, a, &mut copies)?),
             other => other,
         };
-
-        // Scan what was appended, block by block, fixing each field to the copy
-        // of what it points at.
-        let mut block = end.blocks.saturating_sub(1);
-        let mut offset = if end.blocks == 0 { 0 } else { end.last_len };
-        loop {
-            let Some(&base) = self.region(id).blocks.get(block) else { break };
-            let bi = self.block_of(base);
-            if offset >= self.blocks[bi].slots.len() {
-                if block + 1 >= self.region(id).blocks.len() {
-                    break;
-                }
-                block += 1;
-                offset = 0;
-                continue;
-            }
-            let len = match self.blocks[bi].slots[offset] {
-                Slot::Header { len, .. } => len as usize,
-                other => unreachable!("region scan is not at a header: {other:?}"),
-            };
+        // Walk what was appended, fixing each field to the copy of what it
+        // points at. Copies made on the way are appended, and walked in turn.
+        let mut cursor = contents.cursor(end);
+        while let Some((at, len)) = contents.next(&mut cursor) {
+            let block = contents.block_of(at).expect("an appended object").clone();
             for f in 0..len {
-                let bi = self.block_of(base);
-                if let Slot::Val(Value::Obj(a)) = self.blocks[bi].slots[offset + 1 + f] {
-                    let to = self.copy_object(id, a, &mut copies)?;
-                    let bi = self.block_of(base);
-                    self.blocks[bi].slots[offset + 1 + f] = Slot::Val(Value::Obj(to));
+                if let Slot::Val(Value::Obj(a)) = block.get(at + 1 + f as Addr) {
+                    let to = self.copy_object(contents, id, a, &mut copies)?;
+                    contents.set_field(at, f, Value::Obj(to));
                 }
             }
-            offset += 1 + len;
         }
         Ok(root)
     }
 
     /// The copy of object `a` in region `id`, making it if there is none yet.
-    /// Its fields are copied as they are, to be fixed by the scan.
+    /// Its fields are copied as they are, to be fixed by the walk.
     fn copy_object(
-        &mut self,
+        &self,
+        contents: &mut crate::region::Contents,
         id: u32,
         a: Addr,
         copies: &mut HashMap<Addr, Addr>,
     ) -> Result<Addr, Uncompactable> {
-        if a >= REGION_BASE && self.blocks[self.block_of(a)].region == id {
-            return Ok(a);
+        if a >= REGION_BASE {
+            // In this region already, published or appended just now.
+            if contents.block_of(a).is_some() {
+                return Ok(a);
+            }
         }
         if let Some(&c) = copies.get(&a) {
             return Ok(c);
@@ -607,7 +694,7 @@ impl Heap {
             _ => meta,
         };
         let fields = self.fields(a);
-        let c = self.region_alloc(id, kind, meta, &fields);
+        let c = contents.alloc(kind, meta, &fields);
         copies.insert(a, c);
         Ok(c)
     }
@@ -618,8 +705,8 @@ struct Gc<'h> {
     from: &'h mut Vec<Slot>,
     to: &'h mut Vec<Slot>,
     top: &'h mut usize,
-    blocks: &'h [Block],
-    regions: &'h mut Vec<Option<Region>>,
+    blocks: &'h [Arc<Block>],
+    regions: &'h mut HashMap<u32, Adopted>,
 }
 
 impl Gc<'_> {
@@ -652,7 +739,7 @@ impl Gc<'_> {
     }
 
     fn mark(&mut self, region: u32) {
-        if let Some(Some(r)) = self.regions.get_mut(region as usize) {
+        if let Some(r) = self.regions.get_mut(&region) {
             r.marked = true;
         }
     }
@@ -713,7 +800,11 @@ mod tests {
             h.field(b, 0),
             "one copy of the shared object, not two"
         );
-        assert_eq!(h.field(cyc, 0), Value::Obj(cyc), "the cycle came back intact");
+        assert_eq!(
+            h.field(cyc, 0),
+            Value::Obj(cyc),
+            "the cycle came back intact"
+        );
     }
 
     #[test]
@@ -820,9 +911,9 @@ mod tests {
         h.collect(&mut []);
         assert_eq!(h.region_slots(), 0);
         assert!(h.blocks.is_empty(), "its blocks went with it");
-        // And its id and addresses are there to be used again.
-        let again = h.new_region();
-        assert_eq!(again, region);
+        // Nothing else refers to it, so it is gone: its addresses are free for
+        // the next region.
+        assert!(h.region(region).is_none());
     }
 
     #[test]
@@ -831,7 +922,11 @@ mod tests {
         let shared = h.alloc(Kind::Data, 1, &[Value::Int(7)]);
         let pair = h.alloc(Kind::Data, 2, &[Value::Obj(shared), Value::Obj(shared)]);
         let region = h.new_region();
-        let root = h.compact_into(region, Value::Obj(pair)).unwrap().addr().unwrap();
+        let root = h
+            .compact_into(region, Value::Obj(pair))
+            .unwrap()
+            .addr()
+            .unwrap();
         assert_eq!(h.field(root, 0), h.field(root, 1), "one copy, not two");
         assert_eq!(h.region_used(region), 3 + 2);
     }
@@ -860,10 +955,16 @@ mod tests {
 
         let cell = h.alloc(Kind::Ref, 0, &[Value::Int(1)]);
         let bad = h.alloc(Kind::Data, 1, &[Value::Int(0), Value::Obj(cell)]);
-        assert_eq!(h.compact_into(region, Value::Obj(bad)), Err(Uncompactable::Ref));
+        assert_eq!(
+            h.compact_into(region, Value::Obj(bad)),
+            Err(Uncompactable::Ref)
+        );
         assert_eq!(h.region_used(region), before);
         let f = h.alloc(Kind::Closure, 0, &[]);
-        assert_eq!(h.compact_into(region, Value::Obj(f)), Err(Uncompactable::Function));
+        assert_eq!(
+            h.compact_into(region, Value::Obj(f)),
+            Err(Uncompactable::Function)
+        );
     }
 
     #[test]
@@ -871,11 +972,11 @@ mod tests {
         // Bigger than the first block, so the copy has to continue its scan in
         // the next one.
         let mut h = Heap::new();
-        let big = chain(&mut h, REGION_BLOCK as i64);
+        let big = chain(&mut h, crate::region::FIRST_BLOCK as i64);
         let region = h.new_region();
         let root = h.compact_into(region, big).unwrap();
-        assert!(h.region(region).blocks.len() > 1);
-        assert_eq!(chain_len(&h, root), REGION_BLOCK);
+        assert!(h.region(region).unwrap().lock().blocks.len() > 1);
+        assert_eq!(chain_len(&h, root), crate::region::FIRST_BLOCK);
         // Everything in it points inside it.
         let mut v = root;
         while let Value::Obj(a) = v {
@@ -885,6 +986,56 @@ mod tests {
             }
             v = h.field(a, 1);
         }
+    }
+
+    #[test]
+    fn a_region_is_shared_between_heaps_without_copying() {
+        let mut a = Heap::new();
+        let big = chain(&mut a, 10_000);
+        let region = a.new_region();
+        let root = a.compact_into(region, big).unwrap();
+        let handle = a.alloc(Kind::Compact, region, &[root]);
+
+        // Across to another heap: the handle is copied, the chain is not.
+        let parcel = a.export(Value::Obj(handle)).unwrap();
+        assert_eq!(parcel.len(), 2, "one handle object; the region stays put");
+        let mut b = Heap::new();
+        b.reserve(parcel.len());
+        let got = b.import(&parcel);
+        drop(parcel);
+        let inner = b.field(got.addr().unwrap(), 0);
+        assert_eq!(inner, root, "the same address, in both heaps");
+
+        // The heap that made it lets go; the other still reads it.
+        let weak = std::sync::Arc::downgrade(a.region(region).unwrap());
+        a.collect(&mut []);
+        assert!(a.region(region).is_none());
+        assert_eq!(chain_len(&b, inner), 10_000);
+
+        // And when the last heap lets go, the region is freed.
+        let mut roots = [got];
+        b.collect(&mut roots);
+        assert!(weak.upgrade().is_some(), "still reachable from b");
+        b.collect(&mut []);
+        assert!(weak.upgrade().is_none(), "nobody refers to it any more");
+    }
+
+    #[test]
+    fn a_region_can_grow_while_another_heap_reads_it() {
+        let mut a = Heap::new();
+        let first = chain(&mut a, 100);
+        let region = a.new_region();
+        let root = a.compact_into(region, first).unwrap();
+        let mut b = Heap::new();
+        b.adopt(a.region(region).unwrap());
+
+        // `a` appends far past the first block; `b` keeps reading what it had.
+        let more = chain(&mut a, (crate::region::FIRST_BLOCK * 3) as i64);
+        let root2 = a.compact_into(region, more).unwrap();
+        assert_eq!(chain_len(&b, root), 100);
+        // `b` learns of the new blocks when it adopts the region again.
+        b.adopt(a.region(region).unwrap());
+        assert_eq!(chain_len(&b, root2), crate::region::FIRST_BLOCK * 3);
     }
 
     #[test]

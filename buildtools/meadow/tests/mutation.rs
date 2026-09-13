@@ -54,10 +54,22 @@ fn a_polymorphic_reference_is_rejected() {
 
 #[test]
 fn a_cell_binding_is_monomorphic() {
-    // Not an error — just not generalized. The `Ref` is usable, at one type.
+    // Not an error — just not generalized. The `Ref` is usable, at one type:
+    // writing `[1]` into it settles what it holds.
     assert_eq!(
-        schemes_std("def r = newRef []\nfun use1 u = setRef r [1]\n"),
-        "r : Ref [BigInt]\nuse1 : forall a e. a -> () ! { Mut | e }\n"
+        schemes_std("fun fresh u = let r = newRef [] in let _ = setRef r [toInt 1] in r\n"),
+        "fresh : forall a e. a -> Ref [Int] ! { Mut | e }\n"
+    );
+}
+
+#[test]
+fn a_cell_cannot_be_a_top_level_def() {
+    // A top-level value is evaluated once and kept, so making one may not do
+    // anything a program can see -- and allocating a cell is something it can.
+    let out = schemes_std("def r = newRef []\n");
+    assert!(
+        out.contains("a top-level `def` cannot perform effects, and this one performs `Mut`"),
+        "{out}"
     );
 }
 

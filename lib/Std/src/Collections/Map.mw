@@ -10,6 +10,7 @@ use Std.Tuple (fst, snd)
 use Std.Maybe (isSome)
 use Std.Maybe.Maybe.*
 
+use Map.*
 @pub data Map v = Tip | Node (Map v) Int v (Map v)
 
 @pub def empty = Tip

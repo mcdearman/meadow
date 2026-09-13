@@ -81,7 +81,7 @@ fn record_extension() {
 #[test]
 fn data_sum_type() {
     insta::assert_snapshot!(schemes(
-        "data Shape = Circle Int | Rect Int Int\n\
+        "use Shape.*\ndata Shape = Circle Int | Rect Int Int\n\
          fun area s = match s with | Circle r -> r * r | Rect w h -> w * h\n"
     ));
 }
@@ -89,7 +89,7 @@ fn data_sum_type() {
 #[test]
 fn data_polymorphic_recursive() {
     insta::assert_snapshot!(schemes(
-        "data Tree a = Tip | Branch (Tree a) a (Tree a)\n\
+        "use Tree.*\ndata Tree a = Tip | Branch (Tree a) a (Tree a)\n\
          fun size t = match t with | Tip -> 0 | Branch l x r -> 1 + size l + size r\n"
     ));
 }
@@ -106,7 +106,7 @@ fn nominal_record_and_field() {
 #[test]
 fn maybe_type() {
     insta::assert_snapshot!(schemes(
-        "data Maybe a = None | Some a\n\
+        "use Maybe.*\ndata Maybe a = None | Some a\n\
          fun orElse m d = match m with | None -> d | Some x -> x\n"
     ));
 }
@@ -138,8 +138,10 @@ fn effect_polymorphism_through_higher_order() {
 
 #[test]
 fn effectful_binding_is_not_generalized() {
-    // `def a` is pure ⇒ polymorphic; `def b` allocates a cell ⇒ monomorphic.
+    // `def a` is pure ⇒ polymorphic; `let b` allocates a cell ⇒ monomorphic, so
+    // both halves of the pair are the one cell at one type. (A top-level `def`
+    // may not allocate at all -- see `a_top_level_def_cannot_perform_effects`.)
     insta::assert_snapshot!(schemes(
-        "def a = \\x -> x\ndef b = newRef (\\y -> y)\n"
+        "def a = \\x -> x\nfun g u = let b = newRef (\\y -> y) in (b, b)\n"
     ));
 }

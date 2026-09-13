@@ -11,6 +11,7 @@ use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 use Std.Yield (yield)
 
+use Tree.*
 @pub data Tree a = Leaf | Node (Tree a) a (Tree a)
 
 @pub def empty = Leaf

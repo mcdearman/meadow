@@ -1,0 +1,173 @@
+-- Std.Stm: software transactional memory.
+--
+--   use Std.Stm as Stm
+--   use Std.Thread as Thread
+--
+--   fun transfer from to amount =
+--     Stm.atomically (\() ->
+--       let balance = Stm.readTVar from in
+--       let _ = Stm.check (balance >= amount) in
+--       let _ = Stm.writeTVar from (balance - amount) in
+--       Stm.modifyTVar to (\b -> b + amount))
+--
+-- A `TVar` is a variable every thread can see. It changes only inside
+-- `atomically`, and everything a transaction does happens as one step: no other
+-- thread sees `from` debited and `to` not yet credited, and two transfers out
+-- of the same account cannot both see the old balance.
+--
+-- A transaction is a function whose type allows it only `Stm`:
+--
+--   atomically : (() -> a ! { Stm }) -> a ! { Thread | e }
+--
+-- It cannot print, spawn, or touch a `Ref` from outside -- and that is what
+-- makes the rest work. Transactions run without locks, each in its own log, and
+-- when two collide one simply runs again, which is only safe because running
+-- it again cannot be observed. Local state inside is fine (`runSt` hides it),
+-- and a transaction that needs to do something effectful answers a value that
+-- says what, for the code around `atomically` to do.
+--
+-- `retry` gives up for now: the transaction waits until one of the `TVar`s it
+-- read is written, and then runs again. That is how a transaction blocks --
+-- `check (queue not empty)` is a receive that waits. `orElse` tries one
+-- transaction and, if it retries, another instead.
+--
+-- A transaction always sees one consistent moment: a `TVar` written since it
+-- started makes it run again at once rather than compute with a mixture of
+-- old and new. A `TVar` holds what a `Compact` can -- no `Ref`, mutable array
+-- or function -- because on the VM its value lives where every thread reads it
+-- in place, without copying.
+--
+-- `atomically` itself performs `Thread`, which a transaction may not, so
+-- transactions do not nest.
+--
+-- Most of this module is ordinary Meadow: the log, the clock and the commit
+-- are the runtime's (`stmRead`, `stmCommit`, ...), and everything else --
+-- running a transaction, `retry`, `orElse`, running again -- is handlers over
+-- the `Stm` effect below.
+
+use Std.Maybe.Maybe.*
+
+-- The control a transaction's body can give up with. Neither is resumed.
+@pub effect Stm {
+  retrySignal : () -> (),
+  conflictSignal : () -> (),
+}
+
+-- How an attempt at a transaction ended.
+use Attempt.*
+data Attempt a = Done a | Retried | Conflicted
+
+-- Never returns, at any type: what follows a signal that is not resumed.
+fun unreachable u = unreachable u
+
+-- A new `TVar`, inside a transaction.
+@pub fun newTVar x = stmNew x
+
+-- A new `TVar`, outside one.
+@pub fun newTVarIO x = stmNewIO x
+
+-- What `tv` holds, as this transaction sees it.
+@pub fun readTVar tv =
+  match stmRead tv with
+  | Just x -> x
+  | None -> let _ = conflictSignal () in unreachable ()
+
+-- Make `tv` hold `x` when this transaction commits.
+@pub fun writeTVar tv x = stmWrite tv x
+
+@pub fun modifyTVar tv f = writeTVar tv (f (readTVar tv))
+
+-- Give up for now: wait until something this transaction read changes, then
+-- run it again.
+@pub fun retry () = let _ = retrySignal () in unreachable ()
+
+-- Carry on only if `ok`; otherwise `retry`.
+@pub fun check ok = if ok then () else retry ()
+
+-- `first`, or `second` if `first` retries. What `first` wrote is dropped if it
+-- retries; what it read still counts, so if both retry the whole transaction
+-- waits for either to be able to go.
+@pub fun orElse (first : () -> a ! { Stm }) (second : () -> a ! { Stm }) =
+  let _ = stmNest () in
+  match handle Done (first ()) with {
+    retrySignal u k -> Retried,
+    conflictSignal u k -> Conflicted,
+  } with
+  | Done x -> let _ = stmMerge () in x
+  | Retried -> let _ = stmRollback () in second ()
+  | Conflicted -> let _ = stmRollback () in let _ = conflictSignal () in unreachable ()
+
+-- Run `f` as one transaction, as many times as it takes.
+@pub fun atomically (f : () -> a ! { Stm }) =
+  let _ = stmBegin () in
+  match handle Done (f ()) with {
+    retrySignal u k -> Retried,
+    conflictSignal u k -> Conflicted,
+  } with
+  | Done x -> if stmCommit () then x else atomically f
+  | Retried -> let _ = stmWait () in atomically f
+  | Conflicted -> atomically f
+
+-- What `tv` holds now, as a transaction of its own.
+@pub fun readTVarIO tv = atomically (\() -> readTVar tv)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+use Std.Thread as T
+
+@test fun aTransactionReadsWhatItWrote () =
+  let tv = newTVarIO (toInt 1) in
+  let got = atomically (\() -> let _ = writeTVar tv 41 in readTVar tv + 1) in
+  let _ = assertEq got 42 "its own write" in
+  assertEq (readTVarIO tv) 41 "and it was committed"
+
+@test fun aTransactionCanMakeTVars () =
+  let pair = atomically (\() -> let a = newTVar "left" in let b = newTVar "right" in (readTVar a, readTVar b)) in
+  assertEq pair ("left", "right") "made and read in one transaction"
+
+@test fun orElseTakesTheSecondWhenTheFirstRetries () =
+  let tv = newTVarIO (toInt 0) in
+  let got = atomically (\() ->
+    orElse (\() -> let _ = writeTVar tv 99 in let _ = retry () in "first") (\() -> "second")) in
+  let _ = assertEq got "second" "the second branch" in
+  assertEq (readTVarIO tv) 0 "the first branch's write was dropped"
+
+@test fun orElseKeepsTheFirstWhenItSucceeds () =
+  let tv = newTVarIO (toInt 0) in
+  let got = atomically (\() -> orElse (\() -> let _ = writeTVar tv 5 in "first") (\() -> "second")) in
+  assertEq (got, readTVarIO tv) ("first", 5) "the first branch and its write"
+
+@test fun retryWaitsForAnotherThread () =
+  let box = newTVarIO None in
+  let taker = T.spawn (\() ->
+    atomically (\() -> match readTVar box with | Just x -> x | None -> retry ())) in
+  let _ = T.yieldNow () in
+  let _ = atomically (\() -> writeTVar box (Just "delivered")) in
+  assertEq (T.await taker) "delivered" "woken by the write"
+
+fun move from to (n : Int) =
+  atomically (\() ->
+    let x = readTVar from in
+    let _ = writeTVar from (x - n) in
+    modifyTVar to (\y -> y + n))
+
+fun many from to (k : Int) = if k == 0 then () else let _ = move from to 1 in many from to (k - 1)
+
+@test fun concurrentTransfersKeepTheTotal () =
+  let a = newTVarIO (toInt 1000) in
+  let b = newTVarIO (toInt 1000) in
+  let t1 = T.spawn (\() -> many a b 300) in
+  let t2 = T.spawn (\() -> many b a 200) in
+  let _ = T.await t1 in
+  let _ = T.await t2 in
+  let (x, y) = atomically (\() -> (readTVar a, readTVar b)) in
+  let _ = assertEq (x + y) 2000 "nothing created or lost" in
+  assertEq x 900 "and every transfer happened"
+
+@test fun aTVarCanHoldALargeValue () =
+  let tv = newTVarIO (V.range (toInt 0) 10000) in
+  let _ = atomically (\() -> modifyTVar tv (\v -> V.pushBack v 10000)) in
+  assertEq (V.len (readTVarIO tv)) 10001 "all of it, after an update"

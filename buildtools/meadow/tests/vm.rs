@@ -160,6 +160,15 @@ fn the_axcut_machine_agrees_too() {
             let at = opt.name();
             match (&cek, &axcut) {
                 (Ok(a), Ok(b)) if a.to_string() == b.to_string() => checked += 1,
+                // This machine has no scheduler. Threads and transactions are
+                // checked between the CEK and the VM instead, in
+                // `rts/tests/differential.rs`.
+                (Ok(_), Err(e))
+                    if e.msg.contains("green threads are not supported")
+                        || e.msg.contains("transactions are not supported") =>
+                {
+                    checked += 1
+                }
                 (Err(_), Err(_)) => checked += 1,
                 (Ok(a), Err(e)) => panic!("{name} at {at}: CEK {a}, AxCut failed: {}", e.msg),
                 (Ok(a), Ok(b)) => panic!("{name} at {at}: CEK {a}, AxCut {b}"),

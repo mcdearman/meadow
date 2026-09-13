@@ -109,17 +109,50 @@ pub struct Vm<'p> {
     /// Where the program's console goes. `None` is the process's own stdin and
     /// stdout; a debugger speaking a protocol over those replaces both.
     pub io: Io,
+    /// A thread operation the program just made, for the scheduler to carry
+    /// out -- see [`crate::sched`]. The primitive leaves it here and the
+    /// machine stops, since what happens next may be another thread's turn.
+    pub(crate) request: Option<Request>,
+    /// Is a scheduler running this machine? Without one there is nobody to
+    /// carry out a request, and a thread operation is an error.
+    pub(crate) scheduled: bool,
+    /// Top-level values this thread has evaluated, by definition -- see
+    /// `meadow_core::globals`. Collector roots. Each thread has its own, as it
+    /// has its own heap.
+    pub(crate) globals: Vec<Option<Value>>,
+    /// Every `TVar` of the run, when a scheduler is running this machine.
+    pub(crate) world: Option<std::sync::Arc<crate::stm::World>>,
+    /// The transaction this thread is in, if it is in one. Its values are in
+    /// shared regions, not the heap, so nothing here is a collector root.
+    pub(crate) txn: Option<crate::stm::Txn>,
 }
 
-/// Replacements for the console — see [`Vm::io`].
+/// What a thread operation asks of the scheduler. `dst` is the register its
+/// answer goes in, once there is one.
+#[derive(Debug)]
+pub(crate) enum Request {
+    Spawn { body: crate::heap::Parcel, dst: Reg },
+    Await { task: u32, dst: Reg },
+    Yield,
+    NewChannel { dst: Reg },
+    Send { channel: u32, message: crate::heap::Parcel },
+    Receive { channel: u32, dst: Reg },
+    /// Commit the thread's transaction; `true` or `false` into `dst`.
+    StmCommit { dst: Reg },
+    /// Wait until something the thread's transaction read is written.
+    StmWait { dst: Reg },
+}
+
+/// Replacements for the console — see [`Vm::io`]. `Send`, since a green
+/// thread moves between OS threads.
 #[derive(Default)]
 pub struct Io {
     /// Receives what `Console.writeOutput` writes when no handler takes it --
     /// which is where `print` and `println` end up.
-    pub output: Option<Box<dyn FnMut(&str)>>,
+    pub output: Option<Box<dyn FnMut(&str) + Send>>,
     /// Answers `Console.readLine`: a line without its terminator, or `None` at
     /// the end of input.
-    pub input: Option<Box<dyn FnMut() -> Option<String>>>,
+    pub input: Option<Box<dyn FnMut() -> Option<String> + Send>>,
 }
 
 /// An installed handler, as [`Vm::handlers`] shows it.
@@ -141,13 +174,15 @@ pub fn run(program: &Program, fuel: u64) -> Result<String, Error> {
     let Some(entry) = program.entry else {
         return err("program has no entry point");
     };
-    let mut vm = Vm::new(program);
-    let v = vm.run(entry, fuel)?;
-    Ok(vm.show(v))
+    crate::sched::run(program, entry, fuel).result
 }
 
 impl<'p> Vm<'p> {
     pub fn new(program: &'p Program) -> Vm<'p> {
+        Vm::with_heap(program, Heap::new())
+    }
+
+    pub(crate) fn with_heap(program: &'p Program, heap: Heap) -> Vm<'p> {
         let false_tag = program
             .ctors
             .iter()
@@ -155,7 +190,7 @@ impl<'p> Vm<'p> {
             .map(|i| i as u32);
         Vm {
             program,
-            heap: Heap::new(),
+            heap,
             regs: Box::new([Value::Unit; REGISTERS + SCRATCH_LEN]),
             live: 0,
             handlers: Vec::new(),
@@ -164,7 +199,57 @@ impl<'p> Vm<'p> {
             false_tag,
             pinned: Vec::new(),
             io: Io::default(),
+            request: None,
+            scheduled: false,
+            globals: Vec::new(),
+            world: None,
+            txn: None,
         }
+    }
+
+    /// Put the machine at the start of a call: `f ()`, answering the halt
+    /// continuation. How a green thread begins -- `f` is the function it was
+    /// spawned with, rebuilt from `body` in this machine's own heap.
+    pub(crate) fn start_call(&mut self, body: &crate::heap::Parcel) -> Result<(), Error> {
+        self.handlers.clear();
+        self.live = 0;
+        self.heap.reserve(1 + body.len());
+        let halt = Value::Obj(self.heap.alloc(Kind::Closure, 0, &[]));
+        let f = self.heap.import(body);
+        let Some(a) = f.addr().filter(|a| self.heap.kind(*a) == Kind::Closure) else {
+            return err(format!("a thread was started with {}, not a function", f.kind()));
+        };
+        let table = self.heap.meta(a) as usize;
+        let Some(&pc) = self.program.methods.get(table).and_then(|t| t.first()) else {
+            return err("a thread's function has no method");
+        };
+        let ncap = self.heap.len(a);
+        if ncap + 2 > REGISTERS {
+            return err("a thread's function needs more than 256 registers");
+        }
+        for j in 0..ncap {
+            self.regs[j] = self.heap.field(a, j);
+        }
+        self.regs[ncap] = Value::Unit;
+        self.regs[ncap + 1] = halt;
+        self.live = ncap + 2;
+        self.pc = pc as usize;
+        Ok(())
+    }
+
+    /// Put `v`, rebuilt from `parcel`, in register `dst`: a thread operation's
+    /// answer arriving.
+    pub(crate) fn deliver_parcel(&mut self, dst: Reg, parcel: &crate::heap::Parcel) {
+        self.ensure(parcel.len());
+        let v = self.heap.import(parcel);
+        self.set(dst, v);
+    }
+
+    /// A new handle object -- a channel or a thread -- in register `dst`.
+    pub(crate) fn deliver_handle(&mut self, dst: Reg, kind: Kind, id: u32) {
+        self.ensure(1);
+        let a = self.heap.alloc(kind, id, &[]);
+        self.set(dst, Value::Obj(a));
     }
 
     /// Run from `entry` until the program halts or `fuel` instructions retire.
@@ -699,14 +784,16 @@ impl<'p> Vm<'p> {
     }
 
     fn collect(&mut self) {
-        let mut roots: Vec<Value> =
-            Vec::with_capacity(self.live + self.handlers.len() * 2 + self.pinned.len());
+        let mut roots: Vec<Value> = Vec::with_capacity(
+            self.live + self.handlers.len() * 2 + self.pinned.len() + self.globals.len(),
+        );
         roots.extend_from_slice(&self.regs[..self.live]);
         for f in &self.handlers {
             roots.push(f.handler);
             roots.push(f.ret_k);
         }
         roots.extend_from_slice(&self.pinned);
+        roots.extend(self.globals.iter().flatten().copied());
 
         self.heap.collect(&mut roots);
 
@@ -720,6 +807,9 @@ impl<'p> Vm<'p> {
         }
         for p in &mut self.pinned {
             *p = it.next().expect("root count");
+        }
+        for g in self.globals.iter_mut().flatten() {
+            *g = it.next().expect("root count");
         }
     }
 

@@ -26,19 +26,19 @@ fn occurs_check() {
 
 #[test]
 fn unknown_type_in_data() {
-    insta::assert_snapshot!(errors("data Bad = B Nope\n"));
+    insta::assert_snapshot!(errors("use Bad.*\ndata Bad = B Nope\n"));
 }
 
 #[test]
 fn wrong_type_arity() {
     insta::assert_snapshot!(errors(
-        "data Box a = Box a\ndata Bad = B Box\n"
+        "use Box.*\ndata Box a = Box a\ndata Bad = B Box\n"
     ));
 }
 
 #[test]
 fn unbound_type_variable() {
-    insta::assert_snapshot!(errors("data Bad a = B b\n"));
+    insta::assert_snapshot!(errors("use Bad.*\ndata Bad a = B b\n"));
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn unknown_constructor() {
 #[test]
 fn constructor_arg_mismatch() {
     insta::assert_snapshot!(errors(
-        "data T = C Int\ndef x = C \"str\"\n"
+        "use T.*\ndata T = C Int\ndef x = C \"str\"\n"
     ));
 }
 

@@ -251,10 +251,12 @@ pub fn compile_unit_in_package(
     }
     for dep in deps {
         match &dep.prelude_exports {
-            // A REPL prefix or an ad-hoc dep: everything is flat, ctors too.
+            // A REPL prefix or an ad-hoc dep: its values are flat, but its
+            // constructors are still under their types -- `Colour.Red`, or bare
+            // after `use Colour.*` -- except one named like its type.
             None => {
                 for ty in resolver.imported_type_names() {
-                    resolver.use_type_ctors(ty);
+                    resolver.use_struct_ctor(ty);
                 }
             }
             Some(_) => {
@@ -353,8 +355,32 @@ pub fn compile_unit_in_package(
     typed = permute(typed, &order);
     diags.extend(resolver.take_errors());
 
+    // The entry point, from the root module alone: a `main` in a submodule is
+    // an ordinary function that happens to be called `main`. Found before
+    // inference, which holds `main` to a different rule than every other `def`.
+    let main = InternedString::from("main");
+    let entry = typed
+        .iter()
+        .filter(|m| m.path.is_empty())
+        .flat_map(|m| m.hir.value().decls.iter())
+        .filter_map(|d| match d.value() {
+            hir::Decl::Bind(bind) => bind
+                .bound_vars()
+                .into_iter()
+                .find(|id| resolver.names().get(id) == Some(&main)),
+            _ => None,
+        })
+        .next();
+    // And whatever the caller runs in its place, in any module.
+    let mut runs: Vec<VarId> = entry.into_iter().collect();
+    if let Some(name) = opts.entry_name {
+        let name = InternedString::from(name);
+        runs.extend(resolver.names().iter().filter(|(_, n)| **n == name).map(|(id, _)| *id));
+    }
+
     // --- type inference (one arena for the whole unit + dependency schemes)
     let mut infer = Infer::new(filename.clone(), resolver.id_count());
+    infer.set_entries(runs);
     infer.set_overloads(overloads);
     infer.load_prelude(&resolver.prelude_bindings());
     let dep_schemes: Vec<(VarId, Scheme)> = deps
@@ -516,40 +542,13 @@ pub fn compile_unit_in_package(
         .cloned()
         .collect();
 
-    // Constructors a dependent may write bare.
-    //
-    // Deliberately narrow: a constructor re-exported by `@pub use M.Ty.*` is the
-    // package saying "this is part of my unqualified surface", which is exactly
-    // what the prelude does for `Maybe`, `Result` and `Ordering`. An ungated
-    // package (no visibility attribute anywhere) exports everything, so its own
-    // constructors go too.
-    if !gated {
-        for d in &data_decls {
-            match d.value() {
-                hir::Decl::Data(dd) => flat_ctors.extend(dd.variants.iter().map(|v| v.name)),
-                hir::Decl::Record(rd) => flat_ctors.push(rd.ctor),
-                _ => {}
-            }
-        }
-    }
+    // Constructors a dependent may write bare: only what a `@pub use M.Ty.*`
+    // re-exports, which is the package saying "this is part of my unqualified
+    // surface" -- exactly what the prelude does for `Maybe`, `Result` and
+    // `Ordering`. A package that marks nothing exports every *name*, but its
+    // constructors stay under their types like anyone's.
     flat_ctors.sort_by_key(|n| n.to_string());
     flat_ctors.dedup();
-
-    // The entry point, from the root module alone: a `main` in a submodule is
-    // an ordinary function that happens to be called `main`.
-    let main = InternedString::from("main");
-    let entry = typed
-        .iter()
-        .filter(|m| m.path.is_empty())
-        .flat_map(|m| m.hir.value().decls.iter())
-        .filter_map(|d| match d.value() {
-            hir::Decl::Bind(bind) => bind
-                .bound_vars()
-                .into_iter()
-                .find(|id| names.get(id) == Some(&main)),
-            _ => None,
-        })
-        .next();
 
     (
         CompiledPackage {
@@ -639,6 +638,21 @@ fn apply_use(
     let (ty, owner) = u.path.split_last().expect("a use path is never empty");
     let local_owner = &local[..local.len().saturating_sub(1)];
 
+    // `use Ty ...` for a type this very module declares -- Rust's
+    // `use self::Ty::*`, which is how a module writes its own constructors bare.
+    // Before modules, so a type named like its module -- `Maybe` in
+    // `Std.Maybe` -- is the type.
+    if segs.len() == 1 {
+        let here = resolver.current_module().to_vec();
+        if resolver.module_has_type(&here, *ty.value()) {
+            if let Some(a) = &u.alias {
+                report(format!("a type cannot be renamed with `as`"), "not a module", a.span);
+                return Vec::new();
+            }
+            return resolver.use_type(&here, ty, &u.names, u.glob);
+        }
+    }
+
     if u.glob && !local.is_empty() && resolver.has_module(&local) {
         let path = dotted(&segs);
         report(
@@ -671,6 +685,16 @@ fn apply_use(
     let Resolved { map, found } = resolve_module(pkg, &segs, deps);
 
     if !found {
+        // `use Ty.*` / `use Ty (C)` for a dependency's type already in scope by
+        // name -- an earlier REPL line's, say. Plain `use Ty` would bring nothing
+        // new, and is far more likely a module path gone wrong, which the error
+        // below can help with.
+        if segs.len() == 1
+            && (u.glob || !u.names.is_empty())
+            && resolver.imported_type_names().contains(ty.value())
+        {
+            return resolver.use_dep_type(ty, &u.names, u.glob);
+        }
         // `use Pkg.Mod.Ty ...` for a dependency's type.
         if segs.len() > 1 {
             let owner_segs: Vec<InternedString> = owner.iter().map(|s| *s.value()).collect();

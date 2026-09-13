@@ -248,7 +248,7 @@ fn arguments_arrive_in_the_order_they_were_written() {
 fn a_case_tree_picks_the_same_arm_the_chain_would() {
     let src = |v: &str| {
         format!(
-            "data Shape = Dot | Line Int | Box Int Int\n\
+            "use Shape.*\ndata Shape = Dot | Line Int | Box Int Int\n\
              fun name s =\n\
              \x20 match s with\n\
              \x20 | Line 0 -> \"degenerate line\"\n\
@@ -273,7 +273,7 @@ fn a_case_tree_picks_the_same_arm_the_chain_would() {
 fn a_wildcard_still_shadows_the_arms_after_it() {
     let src = |v: &str| {
         format!(
-            "data Shape = Dot | Line Int | Box Int Int\n\
+            "use Shape.*\ndata Shape = Dot | Line Int | Box Int Int\n\
              fun name s =\n\
              \x20 match s with\n\
              \x20 | Dot -> \"dot\"\n\
@@ -294,7 +294,7 @@ fn a_wildcard_still_shadows_the_arms_after_it() {
 #[test]
 fn a_binding_arm_sees_the_whole_scrutinee() {
     is(
-        "data Shape = Dot | Line Int\n\
+        "use Shape.*\ndata Shape = Dot | Line Int\n\
          fun size s = match s with | Dot -> 0 | other -> (match other with | Line n -> n | _ -> -1)\n\
          def main = size (Line 9)\n",
         "9",
@@ -307,8 +307,8 @@ fn a_binding_arm_sees_the_whole_scrutinee() {
 fn nested_matches_each_get_their_own_tree() {
     let src = |v: &str| {
         format!(
-            "data Inner = A | B Int\n\
-             data Outer = P Inner | Q Inner | R\n\
+            "use Inner.*\ndata Inner = A | B Int\n\
+             use Outer.*\ndata Outer = P Inner | Q Inner | R\n\
              fun go o =\n\
              \x20 match o with\n\
              \x20 | P A -> 1\n\
@@ -372,7 +372,7 @@ fn literal_patterns_match_every_literal_type() {
 /// error — the tree's fallback has to reach the same place the chain's did.
 #[test]
 fn a_non_exhaustive_match_fails_the_same_way_everywhere() {
-    let src = "data Shape = Dot | Line Int\n\
+    let src = "use Shape.*\ndata Shape = Dot | Line Int\n\
                fun name s = match s with | Dot -> \"dot\"\n\
                def main = name (Line 1)\n";
     let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());

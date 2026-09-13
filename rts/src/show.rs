@@ -227,6 +227,9 @@ impl Vm<'_> {
                     out.push_str("compact ");
                     self.render(out, self.heap.field(a, 0));
                 }
+                Kind::Channel => out.push_str("<channel>"),
+                Kind::Task => out.push_str("<thread>"),
+                Kind::TVar => out.push_str("<tvar>"),
                 Kind::Data => self.render_data(out, v, a),
             },
         }
@@ -384,6 +387,9 @@ impl Vm<'_> {
                     h.compact();
                     stack.push(Work::Val(self.heap.field(a, 0)));
                 }
+                Kind::Channel => return Err(Error { msg: unhashable("a channel") }),
+                Kind::Task => return Err(Error { msg: unhashable("a thread") }),
+                Kind::TVar => return Err(Error { msg: unhashable("a TVar") }),
             }
         }
         Ok(h.finish())
@@ -469,6 +475,12 @@ impl Vm<'_> {
                         (Kind::Compact, Kind::Compact) => {
                             stack.push((self.heap.field(x, 0), self.heap.field(y, 0)));
                         }
+                        // Handles copied between heaps are different objects
+                        // naming the same channel or thread.
+                        (Kind::Channel, Kind::Channel)
+                        | (Kind::Task, Kind::Task)
+                        | (Kind::TVar, Kind::TVar)
+                            if self.heap.meta(x) == self.heap.meta(y) => {}
                         // A `Ref` is a place, and two cells holding the same
                         // thing are still two cells. The address check above is
                         // the only way one compares equal.

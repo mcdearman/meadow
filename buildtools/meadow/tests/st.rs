@@ -73,7 +73,7 @@ fn a_body_passed_in_is_not_polymorphic_enough() {
 #[test]
 fn a_cell_cannot_be_used_after_its_run_st() {
     assert_eq!(
-        errors("fun f r = stGetRef r\ndef bad = f (runSt (\\() -> stNewRef 0))\n"),
+        errors("fun f r = stGetRef r\nfun bad u = f (runSt (\\() -> stNewRef 0))\n"),
         ESCAPES
     );
 }

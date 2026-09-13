@@ -1,5 +1,6 @@
 -- Three-way comparison.
 
+use Ordering.*
 @pub data Ordering = Less | Equal | Greater
 
 @pub fun compare a b =

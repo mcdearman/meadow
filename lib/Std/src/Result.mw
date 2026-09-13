@@ -1,6 +1,7 @@
 -- Std.Result: success-or-failure values. Reach these as `Result.map` etc.
 -- (`None` / `Just` / `Ok` / `Err` are constructors -- always in scope by name.)
 
+use Result.*
 @pub data Result e a = Err e | Ok a
 
 @pub fun isOk r = match r with | Err e -> False | Ok x -> True

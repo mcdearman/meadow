@@ -78,7 +78,7 @@ def main = do@uble 21
 
 #[test]
 fn hovering_a_constructor_shows_its_path_rather_than_its_type() {
-    let (a, off) = at("data Shape = Circle Int | Square Int\ndef main = Ci@rcle 2\n", "@");
+    let (a, off) = at("data Shape = Circle Int | Square Int\nuse Shape.*\ndef main = Ci@rcle 2\n", "@");
     let hover = a.hover_at(off).expect("hover");
     assert_eq!(hover, "```meadow\nShape.Circle\n```");
 }
@@ -474,8 +474,8 @@ fn go_to_definition_finds_a_type() {
 #[test]
 fn go_to_definition_finds_a_constructor() {
     for src in [
-        "data Colour = Red | Green\ndef main = Gre@en\n",
-        "data Colour = Red | Green\nfun f c = match c with | Gre@en -> 1 | Red -> 0\ndef main = f Red\n",
+        "data Colour = Red | Green\nuse Colour.*\ndef main = Gre@en\n",
+        "data Colour = Red | Green\nuse Colour.*\nfun f c = match c with | Gre@en -> 1 | Red -> 0\ndef main = f Red\n",
     ] {
         let (a, off) = at(src, "@");
         let loc = STD
@@ -492,7 +492,7 @@ fn go_to_definition_finds_a_constructor() {
 /// whichever the resolver happened to list first.
 #[test]
 fn go_to_definition_follows_the_overload_that_was_chosen() {
-    let head = "use Std.Maybe.Maybe (Just, None)\ndata Box = Just Int | Empty\n";
+    let head = "use Std.Maybe.Maybe (Just, None)\ndata Box = Just Int | Empty\nuse Box.*\n";
 
     let src = format!("{head}fun unbox (b : Box) = match b with | Ju@st n -> n | Empty -> 0\n");
     let (a, off) = at(&src, "@");

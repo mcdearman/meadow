@@ -52,6 +52,11 @@ pub struct Options {
     /// Not part of either profile: it is what `meadow dap` asks for, and it
     /// changes nothing a program does -- only what the compiler remembers.
     pub debug_info: bool,
+    /// A top-level definition, besides `main`, that is run rather than defined,
+    /// and so may perform effects: the REPL's `it`, a debugger's entry. A
+    /// `def` of any other name has to be pure -- see the type checker's
+    /// `check_pure_def`.
+    pub entry_name: Option<&'static str>,
 }
 
 impl Options {
@@ -70,6 +75,7 @@ impl Options {
             opt: OptLevel::O1,
             strictness: Strictness::Lenient,
             debug_info: false,
+            entry_name: None,
         }
     }
 
@@ -80,6 +86,7 @@ impl Options {
             opt: OptLevel::O2,
             strictness: Strictness::Strict,
             debug_info: false,
+            entry_name: None,
         }
     }
 }

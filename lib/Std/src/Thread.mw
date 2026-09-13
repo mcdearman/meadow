@@ -1,0 +1,148 @@
+-- Std.Thread: green threads, each with a heap of its own, and channels between
+-- them.
+--
+--   use Std.Thread as Thread
+--
+--   fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
+--
+--   def main =
+--     let a = Thread.spawn (\() -> fib 30) in
+--     let b = Thread.spawn (\() -> fib 31) in
+--     Thread.await a + Thread.await b
+--
+-- A thread is cheap -- a small heap and a register file -- so a program can
+-- have a great many. The runtime runs them on every core, moving each between
+-- OS threads as it likes; a program never sees an OS thread. A thread that runs
+-- for a long time without waiting is interrupted now and then so the others get
+-- a turn.
+--
+-- Threads share nothing mutable. Each has its own heap, and a value reaches
+-- another thread only as a copy: the function a thread is spawned with (and
+-- everything it captures), a message sent on a channel, and the result `await`
+-- hands back. Immutable data copies without anyone being able to tell, so
+-- this is invisible until something mutable would cross -- a `Ref`, a
+-- mutable array -- and that is refused at run time. So is a continuation.
+--
+-- To share a large value between threads cheaply, compact it: a `Compact` is
+-- not copied when it crosses. Its region belongs to no thread, and every thread
+-- that has it reads the same one.
+--
+-- What a thread may do is in its type. It starts with no handlers, so it may
+-- perform only what the runtime itself answers -- `Console`, `Fs`, `Process`,
+-- `Random`, `Time`, `Test`, `Mut` and `Thread` -- and any other effect it uses
+-- has to be handled inside the thread. A `spawn` whose function would perform
+-- one of the spawning thread's own effects is a type error, not a surprise
+-- later.
+--
+-- The program ends when `main` does. Threads still running then are stopped. If
+-- every thread is waiting -- on a channel nobody will send to, or on another
+-- waiting thread -- that is a deadlock, and an error.
+--
+-- A failure in a thread fails that thread, and `await` fails with the same
+-- message. Nothing else is affected.
+
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+
+-- Start running `f ()` on a thread of its own.
+@pub fun spawn f = threadSpawn f
+
+-- Wait for a thread to finish, and take a copy of its result. If the thread
+-- failed, so does this, with the same message. A thread may be awaited any
+-- number of times, by any number of threads.
+@pub fun await t = threadAwait t
+
+-- Let other threads run before this one carries on.
+@pub fun yieldNow () = threadYield ()
+
+-- A new channel. Any thread holding it may send and receive; values come out in
+-- the order they went in.
+@pub fun newChannel () = channelNew ()
+
+-- Send a copy of `x`. Never waits: a channel holds as many values as are sent.
+@pub fun send ch x = channelSend ch x
+
+-- The oldest value sent and not yet received, waiting for one if there is none.
+-- Each value goes to exactly one receiver.
+@pub fun receive ch = channelReceive ch
+
+-- --- built on those ------------------------------------------------------------
+
+-- Run both at once, and both answers.
+@pub fun both f g =
+  let a = spawn f in
+  let b = spawn g in
+  (await a, await b)
+
+-- Wait for every thread, in order.
+@pub fun awaitAll ts = V.map (\t -> await t) ts
+
+-- `map`, with each element on its own thread.
+@pub fun parMap f xs = awaitAll (V.map (\x -> spawn (\() -> f x)) xs)
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue)
+
+fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+@test fun aThreadAnswersThroughAwait () =
+  let t = spawn (\() -> fib 15) in
+  assertEq (await t) 610 "fib 15"
+
+@test fun awaitingTwiceGivesTheSameAnswer () =
+  let t = spawn (\() -> [1, 2, 3]) in
+  let a = await t in
+  assertEq (await t) a "the result is kept"
+
+@test fun bothRunsBoth () =
+  assertEq (both (\() -> fib 10) (\() -> "done")) (55, "done") "two answers"
+
+@test fun parMapKeepsTheOrder () =
+  assertEq (parMap (\n -> n * n) [1, 2, 3, 4, 5]) [1, 4, 9, 16, 25] "in order"
+
+@test fun aChannelDeliversInOrder () =
+  let ch = newChannel () in
+  let _ = send ch "a" in
+  let _ = send ch "b" in
+  let first = receive ch in
+  assertEq (first, receive ch) ("a", "b") "first in, first out"
+
+@test fun aReceiverWaitsForASender () =
+  let ch = newChannel () in
+  let reader = spawn (\() -> receive ch + receive ch) in
+  let _ = yieldNow () in
+  let _ = send ch (toInt 20) in
+  let _ = send ch (toInt 22) in
+  assertEq (await reader) 42 "sum of what arrived"
+
+@test fun threadsTalkBothWays () =
+  let requests = newChannel () in
+  let replies = newChannel () in
+  let server = spawn (\() ->
+    let rec serve (k : Int) = if k == 0 then () else
+      let n = receive requests in
+      let _ = send replies (n * 2) in
+      serve (k - 1)
+    in serve 3) in
+  let ask n = let _ = send requests n in receive replies in
+  let answers = [ask 1, ask 2, ask 3] in
+  let _ = await server in
+  assertEq answers [2, 4, 6] "each request answered"
+
+@test fun manyThreads () =
+  let ts = V.map (\i -> spawn (\() -> i + 1)) (V.range (toInt 0) 1000) in
+  assertEq (V.foldl (\acc t -> acc + await t) 0 ts) 500500 "a thousand threads"
+
+effect Tally { tally : Int -> () }
+
+fun countUp (n : Int) = if n == 0 then () else let _ = tally n in countUp (n - 1)
+
+@test fun aThreadMayHandleItsOwnEffects () =
+  -- `Tally` is not one the runtime answers, so the thread handles it itself,
+  -- and its type is none the wiser.
+  let t = spawn (\() ->
+    let total = newRef (toInt 0) in
+    let _ = handle countUp 4 with { tally n k -> let _ = setRef total (getRef total + n) in k () } in
+    getRef total) in
+  assertTrue (await t == 10) "handled inside the thread"

@@ -112,7 +112,9 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     //
     // Number-generic definitions are copied per number type first, while the
     // types that say which are still there -- see [`core::specialize`].
-    let program = &core::erase::program(&core::specialize::program(program));
+    // And each top-level value gets its cache, so it is evaluated once -- see
+    // [`core::globals`].
+    let program = &core::globals::program(&core::erase::program(&core::specialize::program(program)));
     let mut globals = HashMap::new();
     for (i, d) in program.defs.iter().enumerate() {
         globals.insert(d.var, (Label(i as u32), Vec::new()));
@@ -328,7 +330,7 @@ impl Lower {
     fn wants(&self, terms: &[&Term], bound: &[Var]) -> HashSet<Var> {
         let mut want = HashSet::new();
         for t in terms {
-            free_into(t, &mut want);
+            core::free_vars_into(t, &mut want);
         }
         for v in bound {
             want.remove(v);
@@ -1070,7 +1072,7 @@ impl Lower {
                 let mut want = HashSet::new();
                 for (p, body) in arms {
                     let mut bound = Vec::new();
-                    pat_vars(p, &mut bound);
+                    core::pat_vars(p, &mut bound);
                     want.extend(self.wants(&[body], &bound));
                 }
                 want.insert(k);
@@ -1640,121 +1642,6 @@ fn restrict(env: &[Name], want: &HashSet<Var>) -> Vec<Name> {
         .collect()
 }
 
-/// Free variables of `t`.
-fn free_into(t: &Term, out: &mut HashSet<Var>) {
-    fn go(t: &Term, bound: &mut Vec<Var>, out: &mut HashSet<Var>) {
-        match t {
-            Term::TyLam(_, b) | Term::TyApp(b, _) | Term::Loc(_, b) => go(b, bound, out),
-            Term::Var(v) => {
-                if !bound.contains(v) {
-                    out.insert(*v);
-                }
-            }
-            Term::Lit(_) | Term::Error => {}
-            Term::Lam(p, _, b) => {
-                bound.push(*p);
-                go(b, bound, out);
-                bound.pop();
-            }
-            Term::App(f, a) => {
-                go(f, bound, out);
-                go(a, bound, out);
-            }
-            Term::Let(x, _, r, b) => {
-                go(r, bound, out);
-                bound.push(*x);
-                go(b, bound, out);
-                bound.pop();
-            }
-            Term::LetRec(binds, body) => {
-                for (v, _, _) in binds {
-                    bound.push(*v);
-                }
-                for (_, _, t) in binds {
-                    go(t, bound, out);
-                }
-                go(body, bound, out);
-                for _ in binds {
-                    bound.pop();
-                }
-            }
-            Term::If(a, b, c) => {
-                go(a, bound, out);
-                go(b, bound, out);
-                go(c, bound, out);
-            }
-            Term::Tuple(xs) | Term::Array(xs, _) => {
-                for x in xs {
-                    go(x, bound, out);
-                }
-            }
-            Term::Ctor(_, _, xs) | Term::Prim(_, xs, _) => {
-                for x in xs {
-                    go(x, bound, out);
-                }
-            }
-            Term::Proj(t, _) | Term::Sel(t, _, _) => go(t, bound, out),
-            Term::Extend(t, _, u) => {
-                go(t, bound, out);
-                go(u, bound, out);
-            }
-            Term::Record(fs) => {
-                for (_, t) in fs {
-                    go(t, bound, out);
-                }
-            }
-            Term::Perform(_, _, a, _) => go(a, bound, out),
-            Term::Case(s, arms, _) => {
-                go(s, bound, out);
-                for (p, t) in arms {
-                    let before = bound.len();
-                    pat_vars(p, bound);
-                    go(t, bound, out);
-                    bound.truncate(before);
-                }
-            }
-            Term::Handle { body, clauses, ret, .. } => {
-                go(body, bound, out);
-                for c in clauses {
-                    bound.push(c.param);
-                    bound.push(c.resume);
-                    go(&c.body, bound, out);
-                    bound.pop();
-                    bound.pop();
-                }
-                if let Some((v, _, t)) = ret {
-                    bound.push(*v);
-                    go(t, bound, out);
-                    bound.pop();
-                }
-            }
-        }
-    }
-    go(t, &mut Vec::new(), out);
-}
-
-/// The variables a pattern binds.
-fn pat_vars(p: &Pat, out: &mut Vec<Var>) {
-    match p {
-        Pat::Wild | Pat::Lit(_) => {}
-        Pat::Var(v, _) => out.push(*v),
-        Pat::As(v, _, sub) => {
-            out.push(*v);
-            pat_vars(sub, out);
-        }
-        Pat::Tuple(ps) | Pat::Array(ps) | Pat::Ctor(_, ps) => {
-            for p in ps {
-                pat_vars(p, out);
-            }
-        }
-        Pat::Record(fs) => {
-            for (_, p) in fs {
-                pat_vars(p, out);
-            }
-        }
-    }
-}
-
 /// Every variable a term mentions, bound or free — only for sizing the fresh
 /// counter, where the distinction does not matter.
 fn mentions(t: &Term, out: &mut HashSet<Var>) {
@@ -1814,7 +1701,7 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
             mentions(s, out);
             for (p, t) in arms {
                 let mut vs = Vec::new();
-                pat_vars(p, &mut vs);
+                core::pat_vars(p, &mut vs);
                 out.extend(vs);
                 mentions(t, out);
             }

@@ -1,0 +1,1 @@
+Make sure to run rustfmt and the meadow fmt on their respective source files after you generate them.

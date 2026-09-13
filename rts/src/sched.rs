@@ -1,0 +1,730 @@
+//! The scheduler: green threads, each with a heap of its own, run M:N on a pool
+//! of OS threads.
+//!
+//! # What a green thread is
+//!
+//! A [`Vm`]: a register file, a program counter, a handler stack and a heap.
+//! The machine has no call stack, so that is all of it -- a thread that is not
+//! running is a value that can be put in a queue, and any OS thread can pick
+//! it up and carry on. The OS threads are workers and nothing else; a program
+//! never sees one.
+//!
+//! # The rule: a heap belongs to one thread
+//!
+//! Only the OS thread currently running a green thread touches that thread's
+//! heap. Values reach another thread in three ways -- the function it is
+//! spawned with, a message on a channel, the result `await` returns -- and each
+//! is exported to a [`Parcel`] by the thread that has the value, and imported by
+//! the thread that receives it, when it next runs. A parcel waiting in a channel
+//! belongs to no heap at all. So there is no shared mutable memory between
+//! threads, no locking in the machine, and each heap is collected on its own
+//! with nothing else stopping.
+//!
+//! # Work stealing
+//!
+//! Every worker has a run queue of its own. A thread it spawns, a thread it
+//! wakes -- by sending to a channel someone waits on, or by finishing a thread
+//! someone awaits -- and a thread of its own that used up its slice all go on
+//! *its* queue, so a thread keeps to the core it is on and its heap stays in
+//! that core's cache. A worker with nothing to do takes half of another
+//! worker's queue: work spreads to idle cores, and only to idle cores.
+//!
+//! A thread woken by a message or a result goes one better: into the worker's
+//! *next* slot, which is not stealable and runs as soon as the current thread
+//! stops. A send and the receive it answers then happen on one core, back to
+//! back, the way a pipeline wants -- where waking a sleeping core to carry every
+//! message across would cost more than the message. A worker is woken to steal
+//! only when a queue holds more than its owner will run next.
+//!
+//! One shared queue remains for fairness: a worker looks at it first every
+//! [`GLOBAL_EVERY`] turns. The locks are per queue, per channel and per thread
+//! handle, so workers that are not touching the same things do not wait on each
+//! other.
+//!
+//! # How a thread operation happens
+//!
+//! A primitive cannot carry one out: the channels and the other threads are
+//! here. It leaves a [`Request`] in the machine and returns, and the worker
+//! running the machine does what was asked, then either carries on with the
+//! same thread -- a send, a spawn, a new channel -- or parks it with whatever
+//! it is waiting for: a receive on an empty channel, an `await` on a thread
+//! still running. Whoever wakes it attaches the answer as a [`Wake`], and it is
+//! delivered into the thread's registers when it runs again.
+//!
+//! # Fairness, deadlock and the end
+//!
+//! A thread runs for [`SLICE`] instructions and then goes to the back of its
+//! worker's queue, so a loop that never waits cannot starve the others. The
+//! program ends when its first thread -- `main` -- does, as in Go; threads still
+//! running then are dropped.
+//!
+//! Only a running thread can wake a waiting one. So the scheduler counts the
+//! threads that are running or queued, and if that count reaches zero with
+//! `main` unfinished, every thread is waiting on another and none ever will
+//! stop: a deadlock, reported as an error.
+
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
+use std::time::Duration;
+
+use meadow_bytecode::{Pc, Program, Reg};
+
+use crate::heap::{Heap, Kind, Parcel, THREAD_INITIAL};
+use crate::vm::{Error, Request, Vm};
+
+/// Instructions a thread runs before another gets a turn.
+pub const SLICE: u64 = 2048;
+
+/// A worker looks at the shared queue before its own every this many turns, so
+/// what is there is never starved by a busy local queue.
+pub const GLOBAL_EVERY: u64 = 61;
+
+/// How a run ended, and what the collectors did along the way.
+pub struct Outcome {
+    /// The main thread's result, rendered, or why it failed.
+    pub result: Result<String, Error>,
+    pub stats: Stats,
+}
+
+/// The collectors' work, summed over every thread that finished.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Stats {
+    pub threads: u64,
+    pub collections: u64,
+    pub allocated: u64,
+    pub copied: u64,
+    pub gc_nanos: u64,
+    /// The main thread's heap and regions when it finished.
+    pub heap_slots: usize,
+    pub region_slots: usize,
+    /// Threads taken from another worker's queue.
+    pub stolen: u64,
+}
+
+impl Stats {
+    fn add(&mut self, heap: &Heap) {
+        self.threads += 1;
+        self.collections += heap.collections;
+        self.allocated += heap.allocated;
+        self.copied += heap.copied;
+        self.gc_nanos += heap.gc_nanos;
+    }
+}
+
+/// How many OS threads run green threads: `MEADOW_THREADS` if it is set, or one
+/// per core.
+pub fn workers() -> usize {
+    std::env::var("MEADOW_THREADS")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
+/// Run `program` from `entry` as its main thread, with [`workers`] OS threads,
+/// until it finishes or `fuel` instructions have run across every thread.
+pub fn run(program: &Program, entry: Pc, fuel: u64) -> Outcome {
+    run_with(program, entry, fuel, workers())
+}
+
+/// [`run`], with the number of OS threads given.
+pub fn run_with(program: &Program, entry: Pc, fuel: u64, workers: usize) -> Outcome {
+    let workers = workers.max(1);
+    let world = Arc::new(crate::stm::World::default());
+    let mut main = Box::new(Fiber {
+        vm: Vm::new(program),
+        task: 0,
+        wake: Wake::Entry(entry),
+    });
+    main.vm.scheduled = true;
+    main.vm.world = Some(world.clone());
+    let shared = Shared {
+        program,
+        fuel,
+        steps: AtomicU64::new(0),
+        locals: (0..workers).map(|_| Mutex::new(VecDeque::new())).collect(),
+        global: Mutex::new(VecDeque::new()),
+        channels: RwLock::new(Vec::new()),
+        tasks: RwLock::new(vec![Arc::new(Mutex::new(Task::default()))]),
+        world,
+        stm_waiters: Mutex::new(std::collections::HashMap::new()),
+        active: AtomicUsize::new(1),
+        sleeping: AtomicUsize::new(0),
+        sleep: Mutex::new(()),
+        wake: Condvar::new(),
+        done: AtomicBool::new(false),
+        finished: Mutex::new(None),
+        started: AtomicBool::new(false),
+        stats: Mutex::new(Stats::default()),
+    };
+    lock(&shared.locals[0]).push_back(main);
+    // The calling thread is worker 0. The others start with the first `spawn`,
+    // so a program that never spawns never makes an OS thread.
+    std::thread::scope(|scope| Worker::new(0, &shared).run(scope));
+    let result = lock(&shared.finished).take().unwrap_or_else(|| {
+        Err(Error {
+            msg: "the scheduler stopped".into(),
+        })
+    });
+    let stats = *lock(&shared.stats);
+    Outcome { result, stats }
+}
+
+/// A green thread, and what it gets when it next runs.
+struct Fiber<'p> {
+    vm: Vm<'p>,
+    /// Its number, which is where `await` finds its result. `0` is `main`.
+    task: u32,
+    wake: Wake,
+}
+
+/// What a thread is given when it runs again.
+enum Wake {
+    /// Nothing: carry on from where it stopped.
+    Go,
+    /// Start at a definition -- the main thread.
+    Entry(Pc),
+    /// Start by calling a function with `()` -- a spawned thread.
+    Start(Parcel),
+    /// The answer to what it was waiting for, into a register.
+    Deliver(Reg, Parcel),
+    /// A new channel or thread handle, into a register.
+    Handle(Reg, Kind, u32),
+    /// An immediate -- a commit's `Bool`, a wait's `()` -- into a register.
+    Set(Reg, crate::value::Value),
+    /// What it was waiting for failed, with this message: the thread it
+    /// awaited did.
+    Fail(String),
+}
+
+#[derive(Default)]
+struct Task<'p> {
+    /// Its result exported for whoever awaits it -- any number of times, so
+    /// kept -- or the message it failed with.
+    outcome: Option<Result<Parcel, String>>,
+    waiters: Vec<(Box<Fiber<'p>>, Reg)>,
+}
+
+#[derive(Default)]
+struct Channel<'p> {
+    messages: VecDeque<Parcel>,
+    receivers: VecDeque<(Box<Fiber<'p>>, Reg)>,
+}
+
+type Queue<'p> = Mutex<VecDeque<Box<Fiber<'p>>>>;
+
+/// A thread parked by `retry`: shared between every `TVar` it waits on, and
+/// taken out by whichever is written first.
+type WaitSlot<'p> = Arc<Mutex<Option<(Box<Fiber<'p>>, Reg)>>>;
+
+struct Shared<'p> {
+    program: &'p Program,
+    fuel: u64,
+    steps: AtomicU64,
+    /// One run queue per worker, stealable by the others.
+    locals: Vec<Queue<'p>>,
+    /// The queue every worker looks at now and then.
+    global: Queue<'p>,
+    channels: RwLock<Vec<Arc<Mutex<Channel<'p>>>>>,
+    tasks: RwLock<Vec<Arc<Mutex<Task<'p>>>>>,
+    /// Every `TVar`, and the threads waiting on each. A commit publishes its
+    /// writes first and then looks here; a thread checks nothing it read has
+    /// changed and parks itself, under this same lock -- so no write can fall
+    /// between the check and the parking.
+    world: Arc<crate::stm::World>,
+    stm_waiters: Mutex<std::collections::HashMap<u32, Vec<WaitSlot<'p>>>>,
+    /// Threads running or queued. Waiting ones are not counted -- see the
+    /// module docs on deadlock.
+    active: AtomicUsize,
+    /// Workers asleep, and what wakes them.
+    sleeping: AtomicUsize,
+    sleep: Mutex<()>,
+    wake: Condvar,
+    done: AtomicBool,
+    finished: Mutex<Option<Result<String, Error>>>,
+    /// Have the workers past the first been started?
+    started: AtomicBool,
+    stats: Mutex<Stats>,
+}
+
+/// A lock, carrying on past a panic elsewhere: the data behind these locks is
+/// queues and counters, which a panicking worker leaves consistent.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+impl<'p> Shared<'p> {
+    fn channel(&self, id: u32) -> Option<Arc<Mutex<Channel<'p>>>> {
+        self.channels
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id as usize)
+            .cloned()
+    }
+
+    fn task(&self, id: u32) -> Option<Arc<Mutex<Task<'p>>>> {
+        self.tasks
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id as usize)
+            .cloned()
+    }
+
+    /// End the run with `result`, unless something already has.
+    fn finish(&self, result: Result<String, Error>) {
+        let mut finished = lock(&self.finished);
+        if finished.is_none() {
+            *finished = Some(result);
+        }
+        drop(finished);
+        self.done.store(true, Ordering::SeqCst);
+        let _guard = lock(&self.sleep);
+        self.wake.notify_all();
+    }
+
+    /// A thread stopped counting as active: it finished, or it is waiting now.
+    /// Called with whatever it waits on still locked, so nothing can wake it
+    /// before it is counted out.
+    fn release(&self) {
+        if self.active.fetch_sub(1, Ordering::SeqCst) == 1 {
+            // Nothing running and nothing queued: nobody is left who could
+            // wake a waiting thread.
+            self.finish(Err(Error {
+                msg: meadow_core::thread::DEADLOCK.into(),
+            }));
+        }
+    }
+
+    /// Wake a sleeping worker, if there is one, to look for work.
+    fn nudge(&self) {
+        if self.sleeping.load(Ordering::SeqCst) > 0 {
+            let _guard = lock(&self.sleep);
+            self.wake.notify_one();
+        }
+    }
+
+    /// Is there anything in any queue?
+    fn any_work(&self) -> bool {
+        !lock(&self.global).is_empty() || self.locals.iter().any(|q| !lock(q).is_empty())
+    }
+}
+
+/// One OS thread's view of the scheduler.
+struct Worker<'s, 'p> {
+    index: usize,
+    shared: &'s Shared<'p>,
+    /// The thread to run as soon as the current one stops: the last one this
+    /// worker woke. Only this worker sees it, so it cannot be stolen.
+    next: Option<Box<Fiber<'p>>>,
+    turns: u64,
+    /// Where the next search for a victim starts, varied so that idle workers
+    /// do not all pile onto the same one.
+    rng: u64,
+}
+
+/// Why a thread stopped running.
+enum Stop {
+    Halted(crate::value::Value),
+    Failed(Error),
+    Requested(Request),
+    Preempted,
+    OutOfFuel,
+}
+
+impl<'s, 'p: 's> Worker<'s, 'p> {
+    fn new(index: usize, shared: &'s Shared<'p>) -> Self {
+        Worker {
+            index,
+            shared,
+            next: None,
+            turns: 0,
+            rng: 0x9E37_79B9_7F4A_7C15 ^ (index as u64 + 1),
+        }
+    }
+
+    /// Take a thread, run it until it stops, deal with why, repeat.
+    fn run(mut self, scope: &'s std::thread::Scope<'s, '_>) {
+        let sh = self.shared;
+        loop {
+            if sh.done.load(Ordering::SeqCst) {
+                return;
+            }
+            let Some(mut fiber) = self.find() else {
+                self.idle();
+                continue;
+            };
+            // Run it for as long as it keeps going. A request that does not make
+            // it wait comes straight back here.
+            loop {
+                let stop = run_slice(sh, &mut fiber);
+                match self.settle(scope, fiber, stop) {
+                    Some(f) => fiber = f,
+                    None => break,
+                }
+            }
+        }
+    }
+
+    /// The next thread to run: this worker's own, the shared queue's, or
+    /// another worker's.
+    fn find(&mut self) -> Option<Box<Fiber<'p>>> {
+        let sh = self.shared;
+        self.turns += 1;
+        if let Some(f) = self.next.take() {
+            return Some(f);
+        }
+        if self.turns % GLOBAL_EVERY == 0 {
+            if let Some(f) = lock(&sh.global).pop_front() {
+                return Some(f);
+            }
+        }
+        if let Some(f) = lock(&sh.locals[self.index]).pop_front() {
+            return Some(f);
+        }
+        if let Some(f) = lock(&sh.global).pop_front() {
+            return Some(f);
+        }
+        self.steal()
+    }
+
+    /// Take half of some other worker's queue, from the end it runs last.
+    fn steal(&mut self) -> Option<Box<Fiber<'p>>> {
+        let sh = self.shared;
+        let n = sh.locals.len();
+        if n == 1 {
+            return None;
+        }
+        // xorshift: enough to spread the victims, and no dependency.
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        let start = (self.rng % n as u64) as usize;
+        for k in 0..n {
+            let victim = (start + k) % n;
+            if victim == self.index {
+                continue;
+            }
+            let mut taken = {
+                let mut q = lock(&sh.locals[victim]);
+                let half = q.len().div_ceil(2);
+                let at = q.len() - half;
+                q.split_off(at)
+            };
+            if let Some(first) = taken.pop_front() {
+                if !taken.is_empty() {
+                    lock(&sh.locals[self.index]).extend(taken);
+                }
+                lock(&sh.stats).stolen += 1;
+                return Some(first);
+            }
+        }
+        None
+    }
+
+    /// Nothing to do: sleep until woken, or briefly, in case.
+    fn idle(&self) {
+        let sh = self.shared;
+        let guard = lock(&sh.sleep);
+        // Counted as asleep *before* the last look, so a thread queued after
+        // that look finds `sleeping` set and wakes this worker.
+        sh.sleeping.fetch_add(1, Ordering::SeqCst);
+        if !sh.done.load(Ordering::SeqCst) && !sh.any_work() {
+            let _ = sh.wake.wait_timeout(guard, Duration::from_millis(50));
+        }
+        sh.sleeping.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Put a new thread on this worker's queue, counted as active, where an
+    /// idle worker may take it.
+    fn schedule(&self, fiber: Box<Fiber<'p>>) {
+        self.shared.active.fetch_add(1, Ordering::SeqCst);
+        self.requeue(fiber);
+    }
+
+    /// Run a thread this worker just woke as soon as the current one stops,
+    /// counted as active. Whatever held the slot before goes on the queue.
+    fn schedule_next(&mut self, fiber: Box<Fiber<'p>>) {
+        self.shared.active.fetch_add(1, Ordering::SeqCst);
+        if let Some(bumped) = self.next.replace(fiber) {
+            self.requeue(bumped);
+        }
+    }
+
+    /// Put an already active thread back on this worker's queue, and wake a
+    /// worker to take it if this one has more than it can run.
+    fn requeue(&self, fiber: Box<Fiber<'p>>) {
+        let waiting = {
+            let mut q = lock(&self.shared.locals[self.index]);
+            q.push_back(fiber);
+            q.len()
+        };
+        if waiting > 1 || self.next.is_some() {
+            self.shared.nudge();
+        }
+    }
+
+    /// Start the other workers, the first time a thread is spawned.
+    fn start_workers(&self, scope: &'s std::thread::Scope<'s, '_>) {
+        let sh = self.shared;
+        if sh.started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        for index in 1..sh.locals.len() {
+            scope.spawn(move || Worker::new(index, sh).run(scope));
+        }
+    }
+
+    /// Act on why a thread stopped. `Some` hands it back to keep running.
+    fn settle(
+        &mut self,
+        scope: &'s std::thread::Scope<'s, '_>,
+        mut fiber: Box<Fiber<'p>>,
+        stop: Stop,
+    ) -> Option<Box<Fiber<'p>>> {
+        let sh = self.shared;
+        match stop {
+            Stop::Preempted => {
+                self.requeue(fiber);
+                None
+            }
+            Stop::OutOfFuel => {
+                sh.finish(Err(Error {
+                    msg: format!("ran for {} instructions without finishing", sh.fuel),
+                }));
+                None
+            }
+            Stop::Halted(v) => {
+                if fiber.task == 0 {
+                    let shown = fiber.vm.show(v);
+                    {
+                        let mut stats = lock(&sh.stats);
+                        stats.add(&fiber.vm.heap);
+                        stats.heap_slots = fiber.vm.heap.capacity();
+                        stats.region_slots = fiber.vm.heap.region_slots();
+                    }
+                    sh.finish(Ok(shown));
+                } else {
+                    // Exported with the thread's own heap, which goes away with it.
+                    let outcome = fiber
+                        .vm
+                        .heap
+                        .export(v)
+                        .map_err(|why| meadow_core::thread::unsendable(why.describe()));
+                    lock(&sh.stats).add(&fiber.vm.heap);
+                    self.complete(fiber.task, outcome);
+                    sh.release();
+                }
+                None
+            }
+            Stop::Failed(e) => {
+                lock(&sh.stats).add(&fiber.vm.heap);
+                if fiber.task == 0 {
+                    sh.finish(Err(e));
+                } else {
+                    self.complete(fiber.task, Err(e.msg));
+                    sh.release();
+                }
+                None
+            }
+            Stop::Requested(request) => match request {
+                Request::Spawn { body, dst } => {
+                    let mut child = Box::new(Fiber {
+                        vm: Vm::with_heap(sh.program, Heap::with_capacity(THREAD_INITIAL)),
+                        task: 0,
+                        wake: Wake::Start(body),
+                    });
+                    child.vm.scheduled = true;
+                    child.vm.world = Some(sh.world.clone());
+                    let id = {
+                        let mut tasks = sh.tasks.write().unwrap_or_else(|p| p.into_inner());
+                        tasks.push(Arc::new(Mutex::new(Task::default())));
+                        (tasks.len() - 1) as u32
+                    };
+                    child.task = id;
+                    self.start_workers(scope);
+                    self.schedule(child);
+                    fiber.wake = Wake::Handle(dst, Kind::Task, id);
+                    Some(fiber)
+                }
+                Request::Await { task, dst } => {
+                    let Some(slot) = sh.task(task) else {
+                        fiber.wake = Wake::Fail(format!("await: there is no thread {task}"));
+                        return Some(fiber);
+                    };
+                    let mut t = lock(&slot);
+                    match &t.outcome {
+                        Some(Ok(p)) => {
+                            fiber.wake = Wake::Deliver(dst, p.clone());
+                            Some(fiber)
+                        }
+                        Some(Err(msg)) => {
+                            fiber.wake = Wake::Fail(msg.clone());
+                            Some(fiber)
+                        }
+                        None => {
+                            t.waiters.push((fiber, dst));
+                            sh.release();
+                            None
+                        }
+                    }
+                }
+                Request::Yield => {
+                    self.requeue(fiber);
+                    None
+                }
+                Request::NewChannel { dst } => {
+                    let id = {
+                        let mut channels = sh.channels.write().unwrap_or_else(|p| p.into_inner());
+                        channels.push(Arc::new(Mutex::new(Channel::default())));
+                        (channels.len() - 1) as u32
+                    };
+                    fiber.wake = Wake::Handle(dst, Kind::Channel, id);
+                    Some(fiber)
+                }
+                Request::Send { channel, message } => {
+                    let Some(slot) = sh.channel(channel) else {
+                        fiber.wake = Wake::Fail(format!("send: there is no channel {channel}"));
+                        return Some(fiber);
+                    };
+                    let receiver = {
+                        let mut ch = lock(&slot);
+                        match ch.receivers.pop_front() {
+                            Some(r) => Some((r, message)),
+                            None => {
+                                ch.messages.push_back(message);
+                                None
+                            }
+                        }
+                    };
+                    if let Some(((mut r, dst), message)) = receiver {
+                        r.wake = Wake::Deliver(dst, message);
+                        self.schedule_next(r);
+                    }
+                    Some(fiber)
+                }
+                Request::StmCommit { dst } => {
+                    let Some(txn) = fiber.vm.txn.take() else {
+                        fiber.wake = Wake::Fail(meadow_core::stm::outside("atomically"));
+                        return Some(fiber);
+                    };
+                    let Some(written) = sh.world.commit(txn) else {
+                        fiber.wake = Wake::Set(dst, crate::value::Value::Bool(false));
+                        return Some(fiber);
+                    };
+                    let mut woken = Vec::new();
+                    if !written.is_empty() {
+                        let mut waiters = lock(&sh.stm_waiters);
+                        for id in written {
+                            for slot in waiters.remove(&id).unwrap_or_default() {
+                                if let Some(w) = lock(&slot).take() {
+                                    woken.push(w);
+                                }
+                            }
+                        }
+                    }
+                    for (mut w, wdst) in woken {
+                        w.wake = Wake::Set(wdst, crate::value::Value::Unit);
+                        self.schedule_next(w);
+                    }
+                    fiber.wake = Wake::Set(dst, crate::value::Value::Bool(true));
+                    Some(fiber)
+                }
+                Request::StmWait { dst } => {
+                    let Some(txn) = fiber.vm.txn.take() else {
+                        fiber.wake = Wake::Fail(meadow_core::stm::outside("retry"));
+                        return Some(fiber);
+                    };
+                    let mut waiters = lock(&sh.stm_waiters);
+                    if sh.world.changed(&txn.reads) {
+                        drop(waiters);
+                        fiber.wake = Wake::Set(dst, crate::value::Value::Unit);
+                        return Some(fiber);
+                    }
+                    let slot: WaitSlot<'p> = Arc::new(Mutex::new(Some((fiber, dst))));
+                    for (id, _) in &txn.reads {
+                        let list = waiters.entry(*id).or_default();
+                        list.retain(|w| lock(w).is_some());
+                        list.push(slot.clone());
+                    }
+                    // Counted out while still holding the lock a commit needs
+                    // to wake it -- see `Shared::release`.
+                    sh.release();
+                    None
+                }
+                Request::Receive { channel, dst } => {
+                    let Some(slot) = sh.channel(channel) else {
+                        fiber.wake = Wake::Fail(format!("receive: there is no channel {channel}"));
+                        return Some(fiber);
+                    };
+                    let mut ch = lock(&slot);
+                    match ch.messages.pop_front() {
+                        Some(message) => {
+                            fiber.wake = Wake::Deliver(dst, message);
+                            Some(fiber)
+                        }
+                        None => {
+                            ch.receivers.push_back((fiber, dst));
+                            sh.release();
+                            None
+                        }
+                    }
+                }
+            },
+        }
+    }
+
+    /// Record a spawned thread's result, and put whoever awaits it on this
+    /// worker's queue.
+    fn complete(&mut self, task: u32, outcome: Result<Parcel, String>) {
+        let Some(slot) = self.shared.task(task) else {
+            return;
+        };
+        let waiters = {
+            let mut t = lock(&slot);
+            t.outcome = Some(outcome.clone());
+            std::mem::take(&mut t.waiters)
+        };
+        for (mut w, dst) in waiters {
+            w.wake = match &outcome {
+                Ok(p) => Wake::Deliver(dst, p.clone()),
+                Err(msg) => Wake::Fail(msg.clone()),
+            };
+            self.schedule_next(w);
+        }
+    }
+}
+
+/// Deliver what the thread was woken with, then run it for a slice.
+fn run_slice(sh: &Shared, fiber: &mut Fiber) -> Stop {
+    let vm = &mut fiber.vm;
+    match std::mem::replace(&mut fiber.wake, Wake::Go) {
+        Wake::Go => {}
+        Wake::Entry(pc) => vm.start(pc),
+        Wake::Start(body) => {
+            if let Err(e) = vm.start_call(&body) {
+                return Stop::Failed(e);
+            }
+        }
+        Wake::Deliver(dst, parcel) => vm.deliver_parcel(dst, &parcel),
+        Wake::Handle(dst, kind, id) => vm.deliver_handle(dst, kind, id),
+        Wake::Set(dst, v) => vm.set(dst, v),
+        Wake::Fail(msg) => return Stop::Failed(Error { msg }),
+    }
+    for n in 0..SLICE {
+        match vm.step() {
+            Err(e) => return Stop::Failed(e),
+            Ok(Some(v)) => return Stop::Halted(v),
+            Ok(None) => {
+                if let Some(r) = vm.request.take() {
+                    sh.steps.fetch_add(n + 1, Ordering::Relaxed);
+                    return Stop::Requested(r);
+                }
+            }
+        }
+    }
+    if sh.steps.fetch_add(SLICE, Ordering::Relaxed) + SLICE > sh.fuel {
+        return Stop::OutOfFuel;
+    }
+    Stop::Preempted
+}

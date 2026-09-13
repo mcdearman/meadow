@@ -55,6 +55,23 @@ install.sh --uninstall
 
 A full walkthrough of the language lives in [docs/TUTORIAL.md](docs/TUTORIAL.md).
 
+## Examples
+
+Each is a package: `meadow run examples/<name>` runs it, `meadow test
+examples/<name>` runs its tests.
+
+| | |
+|---|---|
+| [`tour`](examples/tour) | the language in one program: data types, records, matching, numbers, modules, local mutation |
+| [`effects`](examples/effects) | one program under different handlers: logging, configuration, failure, state, a seeded random game, a tested interactive greeter |
+| [`streams`](examples/streams) | generators with `yield`: infinite streams, `take`, `filter`, `map` |
+| [`concurrency`](examples/concurrency) | green threads and channels: a worker pool, a pipeline, fan-out and fan-in |
+| [`parallel`](examples/parallel) | splitting work across every core, and sharing a compacted table between threads |
+| [`stm`](examples/stm) | transactional memory: a bank whose total never wavers, transfers that wait for funds, bounded queues |
+| [`mini-ml`](examples/mini-ml) | a small ML with Hindley-Milner inference and an interpreter, over four modules |
+| [`euler`](examples/euler) | Project Euler problems |
+| [`rock-paper-scissors`](examples/rock-paper-scissors) | an interactive game, tested by feeding it input |
+
 ## Use
 
 ```sh

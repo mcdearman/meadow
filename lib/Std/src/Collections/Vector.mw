@@ -52,11 +52,13 @@ fun vaFoldr f z xs =
 
 -- A middle-tree node. `Branch None` is radix-balanced; `Branch (Just s)` is
 -- relaxed and `s` holds cumulative child sizes.
+use VNode.*
 @pub data VNode a
   = Leaf (Array a)
   | Branch (Maybe (Array Int)) (Array (VNode a))
 
 -- fields of Full: len, shift, outerF, innerF, mid, innerB, outerB
+use Vector.*
 @pub data Vector a
   = Empty
   | Single (Array a)

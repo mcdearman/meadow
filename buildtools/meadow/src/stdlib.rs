@@ -66,6 +66,8 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Sort", include_str!("../../../lib/Std/src/Sort.mw")),
     ("Collections.HashMap", include_str!("../../../lib/Std/src/Collections/HashMap.mw")),
     ("Compact", include_str!("../../../lib/Std/src/Compact.mw")),
+    ("Thread", include_str!("../../../lib/Std/src/Thread.mw")),
+    ("Stm", include_str!("../../../lib/Std/src/Stm.mw")),
     ("State", include_str!("../../../lib/Std/src/State.mw")),
     ("Exn", include_str!("../../../lib/Std/src/Exn.mw")),
     ("Stream", include_str!("../../../lib/Std/src/Stream.mw")),

@@ -823,6 +823,33 @@ def main = (kind ' ', kind '\n', kind '4', kind 'x')
 => ("space", "newline", "digit", "other")
 ```
 
+### Maps keyed by anything
+
+`Std.Collections.HashMap` maps any key `==` can compare to a value: strings,
+tuples, records, vectors, constructors. Like `Vector` it is persistent, so an
+update gives a new map and leaves the old one as it was:
+
+```meadow
+use Std.Collections.HashMap as HashMap
+
+def ages = HashMap.fromVec [("ada", 36), ("grace", 45)]
+
+def older = HashMap.adjust "ada" (\n -> n + 1) ages
+
+def main = (HashMap.lookup "ada" ages, HashMap.lookup "ada" older, HashMap.size older)
+```
+
+```
+=> (Just(36), Just(37), 2)
+```
+
+Underneath it is a hash array mapped trie, as in Rust's `im` or Clojure: a
+lookup reads a handful of small nodes and an update copies one per level. Keys
+are found by the `hash` primitive, which is structural and agrees with `==` —
+`hash [1, 2]` is the same however that vector was built. A `Ref` or a function
+cannot be a key: `hash` refuses both. (`Std.Collections.Map` is the older,
+`Int`-keyed ordered map, for when the keys should come out sorted.)
+
 ---
 
 ## 8. Modules and packages
@@ -2112,7 +2139,7 @@ Without any `use`, from the prelude:
   `partition` `zip` `zipWith` `unzip` `maximum` `minimum` `toArray` `toList`
   `fromArray` `fromList`
 
-Also always available: `print` and `println`; the primitives (`show`, `display`,
+Also always available: `print` and `println`; the primitives (`show`, `display`, `hash`,
 `arrayLen`, `arrayGet`, `stringToBytes`, `stringToChars`, `charCode`, `bitAnd`,
 `toFloat`, `toBigInt`, …); and the constructors `Just`, `None`, `Ok`, `Err`,
 `Less`, `Equal`, `Greater`, `True`, `False`, `Nil` and `Cons`.
@@ -2120,7 +2147,7 @@ Also always available: `print` and `println`; the primitives (`show`, `display`,
 ### The standard library
 
 `Bool` `Ordering` `Function` `Tuple` `Int` `Maybe` `Char` `Result` `Either` `Bits`
-`Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map`) `State` `Exn`
+`Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `Exn`
 `Stream` `Random` `Fs` `Process` `String` (`Parse`) `Path` `Json` `Time` `Test`
 
 `Std.String.Parse` is a megaparsec-style parser combinator library; `Std.Json` is

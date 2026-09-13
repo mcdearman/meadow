@@ -837,3 +837,35 @@ fn a_records_fields_select_by_name_everywhere() {
         "(1, 2)"
     );
 }
+
+/// `hash` is one algorithm fed the same way by every engine, so all three give
+/// the same number for the same value -- and a program that prints one, or
+/// lays a table out by one, behaves the same wherever it runs.
+#[test]
+fn hashes_agree_everywhere() {
+    agree(
+        "data Shape = Circle Int | Rect Int Int\n\
+         record Point = { x : Int, y : Int }\n\
+         def main =\n\
+         \x20 ( hash 0, hash (-7), hash 1.5, hash (-0.0), hash True, hash 'q'\n\
+         \x20 , hash \"a string past eight bytes\", hash ()\n\
+         \x20 , hash (1, \"two\", 3.0), hash [1; 2; 3], hash #[4, 5]\n\
+         \x20 , hash (Rect 2 3), hash { a = 1, b = \"x\" }, hash (Point { x = 1, y = 2 })\n\
+         \x20 , hash (toBigInt 12345678901234) )",
+    );
+}
+
+/// Two values `==` calls equal hash alike, on every engine.
+#[test]
+fn equal_values_hash_alike() {
+    assert_eq!(
+        agree(
+            "def main =\n\
+             \x20 ( hash 0.0 == hash (-0.0)\n\
+             \x20 , hash { a = 1, b = 2 } == hash { b = 2, a = 1 }\n\
+             \x20 , hash (1 :: 2 :: [;]) == hash [1; 2]\n\
+             \x20 , hash 1 == hash 2 )"
+        ),
+        "(true, true, true, false)"
+    );
+}

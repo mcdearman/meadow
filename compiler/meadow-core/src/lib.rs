@@ -38,6 +38,7 @@
 //! can ask a question a type would answer.
 
 pub mod erase;
+pub mod hash;
 pub mod lint;
 pub mod lower;
 pub use lower::Lowerer;
@@ -91,6 +92,8 @@ pub enum Prim {
     /// A value as text the way output shows it: a `String` as itself,
     /// anything else as `show` renders it. What `print` and `println` write.
     Display,
+    /// A structural hash, consistent with `==` -- see [`hash`].
+    Hash,
     // --- floating point ---
     AddF,
     SubF,
@@ -228,6 +231,7 @@ impl Prim {
             ">=" => Prim::Ge,
             "neg" => Prim::Neg,
             "display" => Prim::Display,
+            "hash" => Prim::Hash,
             "+." => Prim::AddF,
             "-." => Prim::SubF,
             "*." => Prim::MulF,
@@ -286,6 +290,7 @@ impl Prim {
         match self {
             Prim::Neg
             | Prim::Display
+            | Prim::Hash
             | Prim::ToFloat
             | Prim::Floor
             | Prim::ToBig

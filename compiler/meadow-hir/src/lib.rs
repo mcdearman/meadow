@@ -25,6 +25,7 @@ use meadow_span::Span;
 /// function.
 pub const PRIMS: &[&str] = &[
     "display",
+    "hash",
     "+",
     "-",
     "*",

@@ -265,6 +265,7 @@ impl Vm<'_> {
             Eq => Value::Bool(self.value_eq(arg(self, 0), arg(self, 1))),
             Ne => Value::Bool(!self.value_eq(arg(self, 0), arg(self, 1))),
             Show => Value::Str(InternedString::from(self.show(arg(self, 0)))),
+            Hash => Value::Int(self.hash_value(arg(self, 0))?),
 
             // A `String` as its text; everything else the way `show` renders
             // it. See `meadow_eval::displayed` for why.

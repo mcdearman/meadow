@@ -2535,6 +2535,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "bytesToString" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
         "bytesToHex" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
         "show" | "display" => a1(Type::func(vec![Bound(0)], Type::string())),
+        "hash" => a1(Type::func(vec![Bound(0)], Type::int())),
         "charCode" => Scheme::mono(Type::func(vec![Type::char()], Type::int())),
         "charFromCode" => Scheme::mono(Type::func(vec![Type::int()], Type::char())),
         "stringToChars" => {

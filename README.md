@@ -233,7 +233,7 @@ For VS Code, build and install the extension:
 
 ```sh
 editors/vscode/build.sh
-code --install-extension editors/vscode/meadow-0.2.4.vsix
+code --install-extension editors/vscode/meadow-0.2.5.vsix
 ```
 
 Each release also attaches a built `.vsix`.

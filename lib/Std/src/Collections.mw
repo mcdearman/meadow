@@ -5,3 +5,4 @@
 @pub mod Tree
 @pub mod Set
 @pub mod Map
+@pub mod HashMap

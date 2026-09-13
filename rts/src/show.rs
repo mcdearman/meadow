@@ -17,6 +17,7 @@
 //! as it is long.
 
 use crate::heap::Kind;
+use crate::Error;
 use crate::value::Value;
 use crate::vm::Vm;
 
@@ -278,6 +279,102 @@ impl Vm<'_> {
     /// check at the top is what makes `xs == xs` on a long list O(1) rather than
     /// O(n) — the same short-circuit the CEK gets from `Rc::ptr_eq`, and here it
     /// is simply integer equality.
+    /// `hash`, fed to [`meadow_core::hash::Hasher`] in the order every engine
+    /// uses: a value's head, then its parts left to right.
+    pub fn hash_value(&self, v: Value) -> Result<i64, Error> {
+        use meadow_core::hash::{unhashable, Hasher};
+        enum Work {
+            Val(Value),
+            Label(String),
+        }
+        let mut h = Hasher::new();
+        let mut stack = vec![Work::Val(v)];
+        while let Some(w) = stack.pop() {
+            let v = match w {
+                Work::Label(l) => {
+                    h.str(&l);
+                    continue;
+                }
+                Work::Val(v) => v,
+            };
+            let a = match v {
+                Value::Int(n) => {
+                    h.int(n);
+                    continue;
+                }
+                Value::Float(x) => {
+                    h.float(x);
+                    continue;
+                }
+                Value::Bool(b) => {
+                    h.bool(b);
+                    continue;
+                }
+                Value::Char(c) => {
+                    h.char(c);
+                    continue;
+                }
+                Value::Str(s) => {
+                    h.str(&s);
+                    continue;
+                }
+                Value::Unit => {
+                    h.unit();
+                    continue;
+                }
+                Value::Obj(a) => a,
+            };
+            let n = self.heap.len(a);
+            match self.heap.kind(a) {
+                Kind::Data => {
+                    let name = self.program.ctor(self.heap.meta(a));
+                    let name = name.as_deref().unwrap_or("?");
+                    if is_vector_ctor(name) {
+                        let Some(xs) = self.vector_elems(v) else {
+                            let msg = format!("hash: a malformed vector ({name})");
+                            return Err(Error { msg });
+                        };
+                        h.vector(xs.len());
+                        stack.extend(xs.into_iter().rev().map(Work::Val));
+                    } else {
+                        h.data(name, n);
+                        stack.extend((0..n).rev().map(|i| Work::Val(self.heap.field(a, i))));
+                    }
+                }
+                Kind::Array => {
+                    h.array(n);
+                    stack.extend((0..n).rev().map(|i| Work::Val(self.heap.field(a, i))));
+                }
+                Kind::Record => {
+                    h.record(n / 2);
+                    let mut sorted: Vec<(String, Value)> = (0..n / 2)
+                        .map(|j| {
+                            let label = match self.heap.field(a, 2 * j) {
+                                Value::Str(l) => l.to_string(),
+                                _ => String::new(),
+                            };
+                            (label, self.heap.field(a, 2 * j + 1))
+                        })
+                        .collect();
+                    sorted.sort_by(|x, y| x.0.cmp(&y.0));
+                    for (label, value) in sorted.into_iter().rev() {
+                        stack.push(Work::Val(value));
+                        stack.push(Work::Label(label));
+                    }
+                }
+                Kind::BigInt => match self.bigint_at(v) {
+                    Some(b) => h.bigint(&b.to_signed_bytes_le()),
+                    None => return Err(Error { msg: "hash: a malformed BigInt".into() }),
+                },
+                Kind::Ref => return Err(Error { msg: unhashable("a Ref") }),
+                Kind::Closure | Kind::Resume => {
+                    return Err(Error { msg: unhashable("a function") });
+                }
+            }
+        }
+        Ok(h.finish())
+    }
+
     pub fn value_eq(&self, a: Value, b: Value) -> bool {
         let mut stack = vec![(a, b)];
         while let Some((a, b)) = stack.pop() {

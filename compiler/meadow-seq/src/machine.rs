@@ -928,6 +928,66 @@ pub fn value_eq<'p>(a: &Value<'p>, b: &Value<'p>) -> bool {
     true
 }
 
+/// `hash`, fed to [`meadow_core::hash::Hasher`] in the order every engine uses:
+/// a value's head, then its parts left to right.
+fn hash_value(v: &Value) -> Result<i64, Error> {
+    use meadow_core::hash::{unhashable, Hasher};
+    enum Work<'p> {
+        Val(Value<'p>),
+        Label(String),
+    }
+    let mut h = Hasher::new();
+    let mut stack = vec![Work::Val(v.clone())];
+    while let Some(w) = stack.pop() {
+        let v = match w {
+            Work::Label(l) => {
+                h.str(&l);
+                continue;
+            }
+            Work::Val(v) => v,
+        };
+        match &v {
+            Value::Int(n) => h.int(*n),
+            Value::BigInt(n) => h.bigint(&n.to_signed_bytes_le()),
+            Value::Float(x) => h.float(*x),
+            Value::Bool(b) => h.bool(*b),
+            Value::Char(c) => h.char(*c),
+            Value::Str(s) => h.str(s),
+            Value::Unit => h.unit(),
+            Value::Data(name, _, _) if is_vector_ctor(name) => {
+                let Some(xs) = vector_elems(&v) else {
+                    return err(format!("hash: a malformed vector ({name})"));
+                };
+                h.vector(xs.len());
+                stack.extend(xs.into_iter().rev().map(Work::Val));
+            }
+            Value::Data(name, _, fields) => {
+                h.data(name, fields.len());
+                stack.extend(fields.iter().rev().cloned().map(Work::Val));
+            }
+            Value::Array(xs) => {
+                h.array(xs.len());
+                stack.extend(xs.iter().rev().cloned().map(Work::Val));
+            }
+            Value::Record(fields) => {
+                h.record(fields.len());
+                let mut sorted: Vec<(String, Value)> =
+                    fields.iter().map(|(l, v)| (l.to_string(), v.clone())).collect();
+                sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                for (label, value) in sorted.into_iter().rev() {
+                    stack.push(Work::Val(value));
+                    stack.push(Work::Label(label));
+                }
+            }
+            Value::Ref(_) => return err(unhashable("a Ref")),
+            Value::Obj(_) | Value::Resume(_) | Value::Halt => {
+                return err(unhashable("a function"));
+            }
+        }
+    }
+    Ok(h.finish())
+}
+
 /// The primitives, mirroring `meadow_eval::run_prim` operation for operation —
 /// including the wrapping arithmetic and the two zero checks, because the
 /// differential tests compare answers and an overflow that panicked on one side
@@ -1072,6 +1132,7 @@ fn prim<'p>(
             Value::Int(x) => Ok(Value::Int(x.wrapping_neg())),
             other => err(format!("`neg` expects an Int, got {other}")),
         },
+        Hash => hash_value(&args[0]).map(Value::Int),
         Display => Ok(Value::Str(InternedString::from(match &args[0] {
             Value::Str(s) => s.to_string(),
             other => other.to_string(),

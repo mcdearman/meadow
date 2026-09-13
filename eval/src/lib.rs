@@ -970,6 +970,70 @@ fn displayed(v: &Value) -> String {
     }
 }
 
+/// `hash`, fed to [`meadow_core::hash::Hasher`] in the order every engine uses:
+/// a value's head, then its parts left to right.
+fn hash_value(v: &Value) -> Result<i64, RuntimeError> {
+    use meadow_core::hash::{unhashable, Hasher};
+    enum Work {
+        Val(Value),
+        Label(String),
+    }
+    let mut h = Hasher::new();
+    let mut stack = vec![Work::Val(v.clone())];
+    while let Some(w) = stack.pop() {
+        let v = match w {
+            Work::Label(l) => {
+                h.str(&l);
+                continue;
+            }
+            Work::Val(v) => v,
+        };
+        match &v {
+            Value::Int(n) => h.int(*n),
+            Value::BigInt(n) => h.bigint(&n.to_signed_bytes_le()),
+            Value::Float(x) => h.float(*x),
+            Value::Bool(b) => h.bool(*b),
+            Value::Char(c) => h.char(*c),
+            Value::Str(s) => h.str(s),
+            Value::Unit => h.unit(),
+            Value::Tuple(xs) => {
+                h.data("#tuple", xs.len());
+                stack.extend(xs.iter().rev().cloned().map(Work::Val));
+            }
+            Value::Ctor(name, _) if is_vector_ctor(name) => {
+                let Some(xs) = vector_elems(&v) else {
+                    return err(format!("hash: a malformed vector ({name})"));
+                };
+                h.vector(xs.len());
+                stack.extend(xs.into_iter().rev().map(Work::Val));
+            }
+            Value::Ctor(name, fields) => {
+                h.data(name, fields.len());
+                stack.extend(fields.iter().rev().cloned().map(Work::Val));
+            }
+            Value::Array(xs) => {
+                h.array(xs.len());
+                stack.extend(xs.iter().rev().cloned().map(Work::Val));
+            }
+            Value::Record(fields) => {
+                h.record(fields.len());
+                let mut sorted: Vec<(String, Value)> =
+                    fields.iter().map(|(l, v)| (l.to_string(), v.clone())).collect();
+                sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                for (label, value) in sorted.into_iter().rev() {
+                    stack.push(Work::Val(value));
+                    stack.push(Work::Label(label));
+                }
+            }
+            Value::Ref(_) => return err(unhashable("a Ref")),
+            Value::Closure { .. } | Value::Builtin { .. } | Value::Cont(_) => {
+                return err(unhashable("a function"));
+            }
+        }
+    }
+    Ok(h.finish())
+}
+
 fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
     use core::Prim::*;
 
@@ -1120,6 +1184,7 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             other => err(format!("`neg` expects an Int, got {other}")),
         },
         Display => Ok(Value::Str(InternedString::from(displayed(&args[0])))),
+        Hash => hash_value(&args[0]).map(Value::Int),
 
         // --- builtin `Array` -------------------------------------------------
         ArrayLen => Ok(Value::Int(as_array(&args[0])?.len() as i64)),

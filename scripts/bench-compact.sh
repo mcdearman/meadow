@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
-# What compacting a large live value does to the collector, measured.
+# What compacting a large live value does to the copying collector, measured.
+# (The generational one copies it once whatever you do; see the comments in
+# benches/compact.)
 #
 #   scripts/bench-compact.sh
 #
@@ -31,7 +33,7 @@ for part in plain compact cost; do
   esac
   echo "${bold}== $title${plain}"
   # The report goes to stderr, after the table.
-  MEADOW_BENCH_COMPACT=$part "$meadow" run --gc-stats benches/compact 2>&1 \
+  MEADOW_BENCH_COMPACT=$part "$meadow" run --gc copying --gc-stats benches/compact 2>&1 \
     | sed -n '/^benchmark /,$p' | grep -v '^=>'
   echo
 done

@@ -4,11 +4,17 @@
 --   scripts/bench-compact.sh          -- each in its own process, with what
 --                                     -- the collector did
 --
--- The collector copies everything alive whenever it runs. Garbage costs it
--- nothing, so a program that allocates a lot of short-lived data is cheap to
--- collect -- *unless* something big is alive at the same time, which is then
--- copied at every collection for as long as it lives. `compact` moves the big
--- thing out of the collected heap, and a collection pays one mark for it.
+-- The copying collector (`--gc copying`) copies everything alive whenever it
+-- runs. Garbage costs it nothing, so a program that allocates a lot of
+-- short-lived data is cheap to collect -- *unless* something big is alive at the
+-- same time, which is then copied at every collection for as long as it lives.
+-- `compact` moves the big thing out of the collected heap, and a collection pays
+-- one mark for it.
+--
+-- The generational collector, the default, copies the big thing once into its
+-- old generation and never again, so there compacting mostly saves memory and
+-- marking: the heap goes from 70 MiB to under 1 MiB, and the garbage benchmark
+-- is about as fast either way.
 --
 -- So every benchmark here runs twice beside the same 200_000-entry `HashMap`:
 -- once with the map in the heap, once with it compacted. Nothing else differs.
@@ -25,7 +31,7 @@
 -- On the CEK machine, which reference-counts, compacting copies nothing and
 -- both runs should come out the same.
 --
--- On this machine, from `scripts/bench-compact.sh`:
+-- On this machine, from `scripts/bench-compact.sh`, with the copying collector:
 --
 --                          in the heap     compacted
 --   garbage, median           39.3 us       31.7 us     1.24x

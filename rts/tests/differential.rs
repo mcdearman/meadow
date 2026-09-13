@@ -1074,19 +1074,28 @@ fn a_compacted_value_survives_collections_without_being_copied() {
     // collect many times over. Compacted, the collections copy almost nothing;
     // left in the heap, every one of them copies the whole chain.
     let churn = "fun churn n acc = if n == 0 then acc else churn (n - 1) (acc + total (build 50))";
-    let run = |keep: &str| {
+    use meadow_rts::heap::{Collector, GcConfig, Heap};
+    let run = |keep: &str, collector: Collector| {
         let src = format!(
             "{CHAIN}{churn}
              def main = let xs = {keep} in (churn 20000 0, total xs)"
         );
         let prog = program(&src);
         let img = image(&prog);
-        let mut vm = meadow_rts::Vm::new(&img);
+        let config = GcConfig {
+            collector,
+            ..GcConfig::from_env()
+        };
+        let mut vm = meadow_rts::Vm::with_heap(&img, Heap::with_config(1 << 16, config));
         let v = vm.run(img.entry.unwrap(), u64::MAX).unwrap_or_else(|e| panic!("{}", e.msg));
-        (vm.show(v), vm.heap().collections, vm.heap().copied, vm.heap().region_slots())
+        let h = vm.heap();
+        (vm.show(v), h.collections, h.copied, h.promoted, h.region_slots())
     };
-    let (plain, plain_gcs, plain_copied, _) = run("build 50000");
-    let (compacted, gcs, copied, region) = run("getCompact (compact (build 50000))");
+
+    // Copying: every collection copies the chain, unless it is compacted.
+    let (plain, plain_gcs, plain_copied, _, _) = run("build 50000", Collector::Copying);
+    let (compacted, gcs, copied, _, region) =
+        run("getCompact (compact (build 50000))", Collector::Copying);
     assert_eq!(plain, "(25500000, 1250025000)");
     assert_eq!(compacted, plain);
     assert!(plain_gcs > 5 && gcs > 5, "both should collect: {plain_gcs}, {gcs}");
@@ -1095,6 +1104,17 @@ fn a_compacted_value_survives_collections_without_being_copied() {
         copied * 4 < plain_copied,
         "compacting should spare most of the copying: {copied} slots against {plain_copied}"
     );
+
+    // Generational: the chain is promoted once, as it is built, and never
+    // copied again either way -- what compacting spares there is marking it at
+    // every cycle, which this program is too small to run. The same answer,
+    // and the chain where it should be.
+    let (plain, _, _, plain_promoted, _) = run("build 50000", Collector::Generational);
+    let (compacted, _, _, _, region) =
+        run("getCompact (compact (build 50000))", Collector::Generational);
+    assert_eq!(compacted, plain);
+    assert!(plain_promoted >= 50_000 * 3, "the chain outgrew the nursery");
+    assert_eq!(region, 1 + 50_000 * 3);
 }
 
 #[test]

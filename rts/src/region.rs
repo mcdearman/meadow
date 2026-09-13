@@ -18,7 +18,7 @@
 //!
 //! # Addresses
 //!
-//! Region addresses start at [`REGION_BASE`], above every semispace address,
+//! Region addresses start at [`REGION_BASE`], above every heap address,
 //! and are unique in the process: [`SPACE`] hands out ranges to blocks and takes
 //! them back when a block is freed. So an address means the same slot in every
 //! heap, which is what lets a pointer into a region be copied between heaps
@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::heap::{Kind, Slot};
 use crate::value::{Addr, Value};
 
-/// Addresses below this are a heap's semispace; at or above it, a region.
+/// Addresses below this are a heap's own; at or above it, a region.
 pub const REGION_BASE: Addr = 1 << 31;
 
 /// Slots in a region's first block. Later blocks double, so a region built by

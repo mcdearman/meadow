@@ -101,7 +101,10 @@ identifier — `meadow init` says so rather than letting a directory called
 
 ### Two machines
 
-Programs run on a **register bytecode VM** with a copying garbage collector.
+Programs run on a **register bytecode VM** with a generational garbage
+collector: each green thread's heap is collected in pauses of tens of
+microseconds, however much it keeps alive, because the old generation is marked
+on another OS thread while the program runs.
 Behind it, the compiler lowers to a sequent-calculus IR (AxCut) and then to
 straight-line instructions over a flat register file — with no call stack, since
 in that IR returning from a function is entering the continuation it was given.
@@ -366,7 +369,7 @@ The tree is five independent Cargo workspaces:
 |---|---|
 | `compiler/` | the front end and back end, one crate per pass — through `meadow-seq` (the AxCut IR and its reference machine) and `meadow-codegen` to `meadow-bytecode` |
 | `eval/` | the CEK machine — the specification of what a program means |
-| `rts/` | the runtime: a register bytecode VM with a Cheney semispace collector. It loads an image and knows nothing about the IR that produced it |
+| `rts/` | the runtime: a register bytecode VM, green threads, and a low-pause generational collector (a copying nursery, and an Immix old generation marked concurrently and evacuated a block at a time). It loads an image and knows nothing about the IR that produced it |
 | `buildtools/` | the tools you point at Meadow source: `meadow` (build system, CLI and REPL — the binary) and `meadow-fmt` (the formatter) |
 | `installer/` | `meadow-setup.exe`, the Windows installer |
 

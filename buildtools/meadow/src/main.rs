@@ -41,6 +41,11 @@ enum Cmd {
         /// many collections, how long they took, and how much they copied.
         #[arg(long)]
         gc_stats: bool,
+        /// Which collector the VM uses: `generational` (the default: a nursery,
+        /// and an old generation marked concurrently, for short pauses) or
+        /// `copying` (one space, copied whole). `MEADOW_GC` sets the same.
+        #[arg(long, value_parser = ["generational", "copying"])]
+        gc: Option<String>,
     },
     /// Build a package and run its `@test` functions.
     Test {
@@ -217,7 +222,19 @@ fn main() {
             profile,
             engine,
             gc_stats,
-        }) => build(&path, Some(engine.engine()), false, gc_stats, profile.resolve(&path)),
+            gc,
+        }) => {
+            if let Some(gc) = gc {
+                meadow_rts::heap::configure(meadow_rts::heap::GcConfig {
+                    collector: match gc.as_str() {
+                        "copying" => meadow_rts::heap::Collector::Copying,
+                        _ => meadow_rts::heap::Collector::Generational,
+                    },
+                    ..meadow_rts::heap::GcConfig::from_env()
+                });
+            }
+            build(&path, Some(engine.engine()), false, gc_stats, profile.resolve(&path))
+        }
         Some(Cmd::Dis { path, profile }) => disassemble(&path, profile.resolve(&path)),
         Some(Cmd::Test {
             path,

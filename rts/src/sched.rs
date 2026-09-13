@@ -88,7 +88,7 @@ pub struct Outcome {
 }
 
 /// The collectors' work, summed over every thread that finished.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Stats {
     pub threads: u64,
     pub collections: u64,
@@ -100,6 +100,20 @@ pub struct Stats {
     pub region_slots: usize,
     /// Threads taken from another worker's queue.
     pub stolen: u64,
+    pub pauses: crate::pauses::Pauses,
+    /// Slots promoted to old generations, marking cycles, and time spent
+    /// marking on any thread.
+    pub promoted: u64,
+    pub cycles: u64,
+    pub mark_nanos: u64,
+    /// Slots and blocks evacuated out of sparse old blocks.
+    pub evacuated: u64,
+    pub evacuated_blocks: u64,
+    /// The main thread's old generation when it finished: slots in its blocks,
+    /// and slots its last marking cycle found alive. The difference is what
+    /// fragmentation and the headroom before the next cycle cost.
+    pub old_slots: usize,
+    pub old_live: usize,
 }
 
 impl Stats {
@@ -109,6 +123,12 @@ impl Stats {
         self.allocated += heap.allocated;
         self.copied += heap.copied;
         self.gc_nanos += heap.gc_nanos;
+        self.pauses.merge(&heap.pauses);
+        self.promoted += heap.promoted;
+        self.cycles += heap.cycles;
+        self.mark_nanos += heap.mark_nanos;
+        self.evacuated += heap.evacuated;
+        self.evacuated_blocks += heap.evacuated_blocks;
     }
 }
 
@@ -167,7 +187,7 @@ pub fn run_with(program: &Program, entry: Pc, fuel: u64, workers: usize) -> Outc
             msg: "the scheduler stopped".into(),
         })
     });
-    let stats = *lock(&shared.stats);
+    let stats = lock(&shared.stats).clone();
     Outcome { result, stats }
 }
 
@@ -502,6 +522,8 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                         stats.add(&fiber.vm.heap);
                         stats.heap_slots = fiber.vm.heap.capacity();
                         stats.region_slots = fiber.vm.heap.region_slots();
+                        stats.old_slots = fiber.vm.heap.old_slots();
+                        stats.old_live = fiber.vm.heap.old_live();
                     }
                     sh.finish(Ok(shown));
                 } else {

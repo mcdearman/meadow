@@ -73,6 +73,22 @@ cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test --std
 step "meadow test --std (CEK machine)"
 cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test --std --cek
 
+# The collector again, under pressure: a nursery of 64 slots, so nearly
+# everything is promoted, and a marking cycle every few hundred slots, each one
+# checked against a whole trace (`MEADOW_GC_VERIFY`). Once with marking on its
+# own threads, once on the program's. A missed barrier or a race with the marker
+# shows up here as a panic naming the object it lost, long before it would show
+# up as a wrong answer.
+for mark_threads in 2 0; do
+  step "collector stress (marking threads: $mark_threads)"
+  export MEADOW_GC_NURSERY=64 MEADOW_GC_TRIGGER=256 MEADOW_GC_VERIFY=1 MEADOW_GC_MARK_THREADS=$mark_threads
+  (cd rts && cargo test --quiet)
+  cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test --std
+  cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test examples/concurrency
+  cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test examples/stm
+  unset MEADOW_GC_NURSERY MEADOW_GC_TRIGGER MEADOW_GC_VERIFY MEADOW_GC_MARK_THREADS
+done
+
 # Every example package, on the VM: they are what someone new runs first, so
 # they have to keep compiling and their own tests have to keep passing.
 for example in examples/*/; do

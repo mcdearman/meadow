@@ -945,15 +945,50 @@ are found by the `hash` primitive, which is structural and agrees with `==` —
 cannot be a key: `hash` refuses both. (`Std.Collections.Map` is the older,
 `Int`-keyed ordered map, for when the keys should come out sorted.)
 
+### The collector
+
+Each green thread has a heap of its own, and the VM collects it in short
+pauses that stop only that thread. New objects go into a small **nursery**,
+which is copied when it fills. Garbage costs nothing there, and what survives
+is small. What survives twice moves to the **old generation**, where objects
+never move. The old generation is marked on a separate OS thread while the
+program keeps running, and space nothing marked is reused; between cycles the
+emptiest blocks have their few survivors moved out, a block or two per pause,
+so the memory goes back. How much a program
+keeps alive has almost no effect on how long it is stopped: a server holding a
+map of half a million entries while it handles requests is stopped for tens of
+microseconds at a time, and its longest pause is well under a millisecond.
+
+`meadow run --gc-stats` reports what the collector did, pauses included:
+
+```sh
+$ meadow run --gc-stats benches/latency
+...
+200000 requests in 4658 ms; slowest 210 us; 0 over 1 ms; 500000 entries
+gc: 26952 collections across 1 thread, 832.1 ms paused (10.3% of 8077.5 ms)
+gc: 12.2 GiB allocated, 1.0 GiB copied in nurseries, 791.1 MiB promoted
+gc: 30 marking cycles, 409.0 ms marking, 10.7 MiB evacuated from 3077 blocks
+gc: old generation 219.8 MiB, 53.9 MiB alive when last marked
+gc: heap 220.2 MiB, compact regions 0 B
+gc: pauses p50 24.6 us, p99 81.9 us, p99.9 114.7 us, max 186.0 us
+```
+
+`--gc copying` (or `MEADOW_GC=copying`) switches to the simpler collector the
+VM used before: one space, all of it copied at every collection. Its pauses
+grow with the live data, into tens of milliseconds on that same server. It is
+there for comparison. `MEADOW_GC_EVACUATE=0` keeps the generational collector
+but stops it moving anything: a little more memory held, and a slightly shorter
+tail of pauses.
+
 ### Compact regions: big data the collector skips
 
-The VM's garbage collector copies everything that is alive each time it runs.
-That makes garbage free, and it makes a large structure that *stays* alive
-expensive: a map of a million entries is copied again at every collection for as
-long as the program holds it. `Std.Compact` moves such a value into a **compact
-region**, memory the collector neither copies nor looks inside. The collector
-treats the whole region as one object, and frees it all at once when nothing
-refers to it any more.
+Data that lives a long time still costs the collector something: it was copied
+into the old generation once, and every marking cycle walks it again.
+`Std.Compact` moves such a value into a **compact region**, memory the collector
+neither copies nor looks inside. The collector treats the whole region as one
+object, and frees it all at once when nothing refers to it any more. A region
+belongs to no thread's heap, so passing a compacted value to another thread
+copies nothing either.
 
 ```meadow
 use Std.Compact as C
@@ -983,15 +1018,13 @@ mutable array or a function.
 
 Compacting costs one copy of the value, so it pays for data built once and read
 for a long time: a parsed input, a lookup table, a cache that rarely changes.
-`meadow run --gc-stats` shows whether it is paying: how many collections ran,
-how long they took, and how much they copied.
+`meadow run --gc-stats` shows whether it is paying. In `benches/compact`, a
+200,000-entry map compacted takes the heap from 70 MiB to under 1 MiB:
 
 ```sh
 $ meadow run --gc-stats benches/compact
 ...
-gc: 263 collections, 337.9 ms collecting (13.5% of 2498.2 ms)
-gc: 3.6 GiB allocated, 1.1 GiB copied by collections
-gc: heap 64.0 MiB, compact regions 20.7 MiB
+gc: heap 832.0 KiB, compact regions 20.7 MiB
 ```
 
 On the CEK machine (`--cek`), which reference-counts, compacting checks the
@@ -2390,6 +2423,7 @@ In VS Code, the **▶ Test** link above a `@test` runs exactly that.
 | `meadow` | REPL |
 | `meadow run <path>` | build and evaluate `main` |
 | `meadow run --gc-stats <path>` | …and report what the garbage collector did |
+| `meadow run --gc copying <path>` | …with the copying collector instead of the generational one |
 | `meadow build <path>` | type-check and link |
 | `meadow build --annotations <path>` | …and dump every node's type |
 | `meadow test [<path>] [<filter>]` | run `@test` functions |

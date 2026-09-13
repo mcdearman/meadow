@@ -6,14 +6,13 @@
 --
 --   fun lookupSymbol name = HashMap.lookup name (C.get table)
 --
--- The bytecode VM's collector copies everything that is alive, every time it
--- runs. That makes garbage free and a large structure that stays alive
--- expensive: a map of a million entries is copied again at every collection for
--- as long as the program keeps it. `make` copies a value into a **compact
--- region** instead -- memory outside the collected heap, which the collector
--- neither copies nor looks inside. However big the region, a collection pays
--- one mark for it, and when nothing refers to the region any more it is freed
--- all at once.
+-- The bytecode VM's collector copies what survives the nursery into its old
+-- generation, and marks the old generation again at every cycle, for as long
+-- as the program keeps it. `make` copies a value into a **compact region**
+-- instead -- memory outside every heap, which the collector neither copies nor
+-- looks inside. However big the region, a collection pays one mark for it, and
+-- when nothing refers to the region any more it is freed all at once. A region
+-- belongs to no thread, so sending a compacted value to another copies nothing.
 --
 -- The value comes back unchanged: `C.get (C.make x) == x`, and a compacted
 -- value can be used anywhere the original could. Only speed and memory differ,

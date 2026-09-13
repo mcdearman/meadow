@@ -639,7 +639,7 @@ impl Vm<'_> {
 
             // --- compact regions --------------------------------------------
             //
-            // Copying into a region allocates nothing in the semispace, so the
+            // Copying into a region allocates nothing in the heap, so the
             // one `ensure` is for the handle, made before the copy and taken
             // after it -- nothing can move in between.
             Compact => {

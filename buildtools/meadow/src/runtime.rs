@@ -62,7 +62,7 @@ pub fn run(program: &core::Program, engine: Engine, opt: OptLevel) -> Result<Str
 }
 
 /// What the bytecode VM's collector did during a run.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct GcStats {
     /// Green threads that finished, `main` included. Each had a heap of its
     /// own, and the rest of these figures are summed over them.
@@ -73,9 +73,24 @@ pub struct GcStats {
     pub copied: u64,
     pub gc_nanos: u64,
     pub run_nanos: u64,
-    /// Semispace size, and slots held in compact regions, at the end.
+    /// The main thread's heap -- nursery and old generation -- and slots held in
+    /// compact regions, at the end.
     pub heap_slots: usize,
     pub region_slots: usize,
+    /// Every pause, across every thread.
+    pub pauses: meadow_rts::pauses::Pauses,
+    /// Slots promoted to old generations, marking cycles, and the time marking
+    /// took on any thread -- mostly not the program's.
+    pub promoted: u64,
+    pub cycles: u64,
+    pub mark_nanos: u64,
+    /// Slots and blocks moved out of sparse old blocks.
+    pub evacuated: u64,
+    pub evacuated_blocks: u64,
+    /// The main thread's old generation at the end, and what its last marking
+    /// cycle found alive in it.
+    pub old_slots: usize,
+    pub old_live: usize,
 }
 
 impl fmt::Display for GcStats {
@@ -88,9 +103,12 @@ impl fmt::Display for GcStats {
         };
         write!(
             f,
-            "gc: {} collections across {} thread{}, {:.1} ms collecting ({share:.1}% of {:.1} ms)\n\
-             gc: {} allocated, {} copied by collections\n\
-             gc: heap {}, compact regions {}",
+            "gc: {} collections across {} thread{}, {:.1} ms paused ({share:.1}% of {:.1} ms)\n\
+             gc: {} allocated, {} copied in nurseries, {} promoted\n\
+             gc: {} marking cycle{}, {:.1} ms marking, {} evacuated from {} block{}\n\
+             gc: old generation {}, {} alive when last marked\n\
+             gc: heap {}, compact regions {}\n\
+             gc: pauses {}",
             self.collections,
             self.threads,
             if self.threads == 1 { "" } else { "s" },
@@ -98,9 +116,43 @@ impl fmt::Display for GcStats {
             self.run_nanos as f64 / 1e6,
             bytes(self.allocated),
             bytes(self.copied),
+            bytes(self.promoted),
+            self.cycles,
+            if self.cycles == 1 { "" } else { "s" },
+            self.mark_nanos as f64 / 1e6,
+            bytes(self.evacuated),
+            self.evacuated_blocks,
+            if self.evacuated_blocks == 1 { "" } else { "s" },
+            bytes(self.old_slots as u64),
+            bytes(self.old_live as u64),
             bytes(self.heap_slots as u64),
             bytes(self.region_slots as u64),
+            pauses(&self.pauses),
         )
+    }
+}
+
+/// The pause percentiles worth knowing when latency matters: the typical one,
+/// the tail, and the worst.
+fn pauses(p: &meadow_rts::pauses::Pauses) -> String {
+    if p.count == 0 {
+        return "none".to_string();
+    }
+    format!(
+        "p50 {}, p99 {}, p99.9 {}, max {}",
+        human_nanos(p.percentile(0.5)),
+        human_nanos(p.percentile(0.99)),
+        human_nanos(p.percentile(0.999)),
+        human_nanos(p.max_nanos),
+    )
+}
+
+fn human_nanos(n: u64) -> String {
+    match n {
+        0..=999 => format!("{n} ns"),
+        1_000..=999_999 => format!("{:.1} us", n as f64 / 1e3),
+        1_000_000..=999_999_999 => format!("{:.2} ms", n as f64 / 1e6),
+        _ => format!("{:.2} s", n as f64 / 1e9),
     }
 }
 
@@ -144,6 +196,14 @@ pub fn run_with_stats(
                 run_nanos: started.elapsed().as_nanos() as u64,
                 heap_slots: s.heap_slots,
                 region_slots: s.region_slots,
+                pauses: s.pauses,
+                promoted: s.promoted,
+                cycles: s.cycles,
+                mark_nanos: s.mark_nanos,
+                evacuated: s.evacuated,
+                evacuated_blocks: s.evacuated_blocks,
+                old_slots: s.old_slots,
+                old_live: s.old_live,
             };
             (outcome.result.map_err(|e| e.msg), Some(stats))
         }

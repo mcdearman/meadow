@@ -1,6 +1,6 @@
 //! # The Meadow runtime system
 //!
-//! A register bytecode VM with a copying garbage collector. It loads a
+//! A register bytecode VM with a generational garbage collector. It loads a
 //! [`meadow_bytecode::Program`] and runs it, and that is the whole of its
 //! interface to the rest of the compiler.
 //!
@@ -50,19 +50,27 @@
 //!
 //! ## Memory
 //!
-//! [`heap`] is a Cheney semispace collector: allocation is a bounds check and a
-//! bump, and a collection costs what survives rather than what was allocated.
-//! Nothing is reference counted and no runtime value has a destructor, which
-//! removed two problems the CEK machine had to work around by hand — dropping a
-//! long list used to recurse once per element, and a cycle through a mutable
-//! cell could never be freed at all.
+//! [`heap`] is one per green thread, and built for short pauses: a copying
+//! nursery, where allocation is a bounds check and a bump and a collection costs
+//! what survives; an Immix old generation ([`old`]) where survivors stay put;
+//! marking of that old generation on other OS threads while the program runs
+//! ([`mark`]); and moving survivors out of its sparsest blocks a little per
+//! pause, to give memory back (`evacuate`). Pauses are measured, pause by pause, in [`pauses`]. Nothing is
+//! reference counted and no runtime value has a destructor, which removed two
+//! problems the CEK machine had to work around by hand — dropping a long list
+//! used to recurse once per element, and a cycle through a mutable cell could
+//! never be freed at all.
 //!
 //! The one allocation this crate does not manage is strings, which are interned
 //! for the life of the process. The CEK does the same.
 
+mod evacuate;
 pub mod heap;
 pub mod journal;
+pub mod mark;
 mod native;
+pub mod old;
+pub mod pauses;
 mod prims;
 pub mod region;
 pub mod sched;

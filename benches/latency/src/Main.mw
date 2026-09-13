@@ -1,0 +1,77 @@
+-- How long the collector stops a program that keeps a lot of data alive.
+--
+--   meadow run --gc-stats benches/latency
+--   scripts/bench-latency.sh           -- each collector, side by side
+--
+-- The shape of a server: a large map that lives for the whole run, and a
+-- stream of small requests, each of which builds some short-lived garbage and
+-- updates one entry of the map. The update is what makes this hard for a
+-- collector: the map is not just big, it changes, so the old generation keeps
+-- gaining new nodes and losing old ones for as long as the program runs.
+--
+-- Each request is timed, and the report is the slowest request and how many
+-- took longer than a millisecond. Those are what a user of the server would
+-- notice. `--gc-stats` shows the same from the collector's side: the pauses
+-- behind them, as percentiles.
+--
+-- `MEADOW_BENCH_ENTRIES` sets the map's size (default 500_000) and
+-- `MEADOW_BENCH_REQUESTS` how many requests to serve (default 200_000).
+
+use Std.Collections.HashMap as H
+use Std.Collections.List as L
+use Std.Console (println)
+use Std.Process (getEnv)
+use Std.Time (monotonic)
+use Std.String as S
+
+fun orElse (fallback : Int) m =
+  match m with
+  | Just n -> n
+  | None -> fallback
+
+fun setting name (fallback : Int) =
+  match getEnv name with
+  | Just s -> orElse fallback (S.toInt s)
+  | None -> fallback
+
+fun bigMap (n : Int) = foldl (\m i -> H.insert i i m) H.empty (range 0 n)
+
+-- One request: a short list built and summed, and one entry of the map changed.
+fun request m (i : Int) (entries : Int) =
+  let garbage = L.foldl (\a x -> a + x) 0 (L.range 0 50) in
+  let key = (i * 7919) % entries in
+  H.insert key (garbage + i) m
+
+fun serve m (i : Int) (n : Int) (entries : Int) (worst : Int) (slow : Int) =
+  if i == n then (m, worst, slow)
+  else
+    let start = monotonic () in
+    let m2 = request m i entries in
+    let took = monotonic () - start in
+    let slow2 = if took > 1000000 then slow + 1 else slow in
+    serve m2 (i + 1) n entries (max worst took) slow2
+
+def main =
+  let entries = setting "MEADOW_BENCH_ENTRIES" 500000 in
+  let requests = setting "MEADOW_BENCH_REQUESTS" 200000 in
+  let built = monotonic () in
+  let m = bigMap entries in
+  let _ = println ("built a map of " ++ S.fromInt entries ++ " entries in "
+  ++ S.fromInt ((monotonic () - built) / 1000000) ++ " ms") in
+  let started = monotonic () in
+  let result = serve m 0 requests entries 0 0 in
+  match result with
+  | (m2, worst, slow) ->
+      println (S.fromInt requests ++ " requests in "
+        ++ S.fromInt ((monotonic () - started) / 1000000) ++ " ms; slowest "
+        ++ S.fromInt (worst / 1000) ++ " us; " ++ S.fromInt slow
+        ++ " over 1 ms; " ++ S.fromInt (H.size m2) ++ " entries")
+
+-- --- tests --------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun aRequestUpdatesOneEntry u =
+  let m = bigMap 10 in
+  let m2 = request m 1 10 in
+  assertEq (H.getOr 0 9 m2) (1225 + 1) "key 7919 % 10, set to the sum plus i"

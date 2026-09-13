@@ -182,7 +182,8 @@ impl<'p> Vm<'p> {
         Vm::with_heap(program, Heap::new())
     }
 
-    pub(crate) fn with_heap(program: &'p Program, heap: Heap) -> Vm<'p> {
+    /// A machine whose heap is `heap` -- one made to collect a particular way.
+    pub fn with_heap(program: &'p Program, heap: Heap) -> Vm<'p> {
         let false_tag = program
             .ctors
             .iter()
@@ -775,7 +776,7 @@ impl<'p> Vm<'p> {
     /// handler stack when this is called — see the module docs.
     pub(crate) fn ensure(&mut self, slots: usize) {
         // Regions are freed only by collecting, so enough written to them asks
-        // for a collection even while the semispace has room.
+        // for a collection even while the nursery has room.
         if self.heap.room_for(slots) && !self.heap.wants_collection() {
             return;
         }

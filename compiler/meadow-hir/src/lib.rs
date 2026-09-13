@@ -94,7 +94,18 @@ pub const PRIMS: &[&str] = &[
     // the one mutable cell; every operation carries the `Mut` effect
     "newRef",
     "getRef",
-    "setRef",
+    "setRef", //
+    // local mutable state: cells and arrays that cannot outlive their `runSt`
+    "runSt",
+    "stNewRef",
+    "stGetRef",
+    "stSetRef",
+    "stNewArray",
+    "stGetArray",
+    "stSetArray",
+    "stArrayLen",
+    "stFreeze",
+    "stThaw",
 ];
 use std::ops::Deref;
 

@@ -62,8 +62,11 @@ pub enum Kind {
     /// A closure, a continuation or a handler — the IR does not distinguish
     /// them. `meta` is the method table; the fields are the captures.
     Closure,
-    /// A mutable cell: one field, and the only value with identity.
+    /// A mutable cell: one field, and a value with identity.
     Ref,
+    /// A mutable array, from `stNewArray`: its elements, written in place. The
+    /// other value with identity.
+    MutArray,
     /// `meta` is the sign (0 zero, 1 plus, 2 minus); the fields are base-2^32
     /// digits, least significant first, held as `Int`s.
     BigInt,

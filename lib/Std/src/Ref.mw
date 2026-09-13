@@ -22,8 +22,11 @@
 -- at another does not typecheck.
 --
 -- A `Ref` has identity: `==` on two of them compares cells, not contents, so
--- `newRef 1 == newRef 1` is `False`. Nothing else in the language behaves that
--- way, and it is the price of a real mutable cell.
+-- `newRef 1 == newRef 1` is `False`. Only mutable things behave that way, and it
+-- is the price of a real mutable cell.
+--
+-- Mutation that is only bookkeeping -- a counter, a scratch array -- need not
+-- leave `Mut` in anyone's type: do it inside a `runSt`, with `Std.St`.
 
 use Std.Test (assertEq, assertTrue, assertFalse)
 

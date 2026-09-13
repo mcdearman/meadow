@@ -60,6 +60,10 @@ pub enum Type {
 }
 
 impl Type {
+    pub fn is_fun(&self) -> bool {
+        matches!(self, Type::Fun(..))
+    }
+
     /// Whether the error type appears anywhere in this (zonked) type.
     pub fn references_error(&self) -> bool {
         match self {
@@ -115,6 +119,14 @@ impl Type {
     /// effect, so a function that mutates says so in its type.
     pub fn reference(inner: Type) -> Type {
         Type::Con(InternedString::from("Ref"), vec![inner])
+    }
+    /// `StRef s a` — a cell that belongs to one `runSt`, whose state `s` is.
+    pub fn st_ref(state: Type, inner: Type) -> Type {
+        Type::Con(InternedString::from("StRef"), vec![state, inner])
+    }
+    /// `StArray s a` — a mutable array that belongs to one `runSt`.
+    pub fn st_array(state: Type, elem: Type) -> Type {
+        Type::Con(InternedString::from("StArray"), vec![state, elem])
     }
     /// A curried **pure** function type: `func([a, b], r)` is `a -> b -> r`.
     pub fn func(args: Vec<Type>, ret: Type) -> Type {
@@ -192,6 +204,9 @@ enum Slot {
 #[derive(Debug, Clone)]
 enum UnifyError {
     Mismatch(Type, Type),
+    /// A `runSt`'s state type would reach a variable from outside that
+    /// `runSt` -- see [`Arena::fresh_skolem`].
+    Escape,
     Occurs(Type, Type),
     Arity(usize, usize),
     /// A required label is absent from a closed row.
@@ -207,6 +222,8 @@ pub struct Arena {
     /// written to, while no snapshot is open.
     trail: Vec<(u32, Slot)>,
     snapshots: usize,
+    /// Every rigid type made so far, by name, with the level it was made at.
+    skolems: HashMap<InternedString, u32>,
 }
 
 /// A point to roll the arena back to -- see [`Arena::snapshot`].
@@ -222,7 +239,44 @@ impl Arena {
             level: 0,
             trail: Vec::new(),
             snapshots: 0,
+            skolems: HashMap::new(),
         }
+    }
+
+    /// A rigid type made fresh for one `runSt`: the `s` in its
+    /// `forall s. () -> a ! { St s | e }`.
+    ///
+    /// It is a type constructor no program can name, so it unifies with itself
+    /// and nothing else, and it is made one level in from the `runSt`. That
+    /// level is the whole escape check: binding any variable from further out
+    /// to a type that mentions it is an error ([`Arena::occurs_adjust`]), and
+    /// everything the `runSt` hands back or shares with its surroundings --
+    /// its result, its leftover effects, a cell from outside it writes to --
+    /// is such a variable.
+    fn fresh_skolem(&mut self) -> Type {
+        let name = InternedString::from(format!("s#{}", self.skolems.len() + 1));
+        self.skolems.insert(name, self.level);
+        Type::Con(name, Vec::new())
+    }
+
+    fn is_skolem(&self, name: InternedString) -> bool {
+        self.skolems.contains_key(&name)
+    }
+
+    /// `row` without the `St s` labels at its front whose `s` was made deeper
+    /// than `level` -- the `runSt`s a variable at `level` is older than.
+    fn without_inner_state(&mut self, row: Type, level: u32) -> Type {
+        let row = self.prune(row);
+        if let Type::RowExtend(label, field, rest) = &row
+            && &**label == "St"
+            && let Type::Tuple(args) = self.zonk(field)
+            && let [Type::Con(name, targs)] = args.as_slice()
+            && targs.is_empty()
+            && self.skolems.get(name).is_some_and(|&l| l > level)
+        {
+            return self.without_inner_state((**rest).clone(), level);
+        }
+        row
     }
 
     /// Every slot write goes through here, so a snapshot can undo it.
@@ -464,7 +518,7 @@ impl Arena {
 
             (Type::RowEmpty, Type::RowEmpty) => Ok(()),
             (Type::RowExtend(l1, t1, rest1), row2 @ (Type::RowExtend(..) | Type::RowEmpty)) => {
-                let (t2, rest2) = self.rewrite_row(row2, l1)?;
+                let (t2, rest2) = self.rewrite_row(row2, l1, &t1)?;
                 self.unify(*t1, t2)?;
                 self.unify(*rest1, rest2)
             }
@@ -524,7 +578,18 @@ impl Arena {
                 Ok(())
             }
             Type::Bound(_) | Type::RowEmpty | Type::Error => Ok(()),
-            Type::Con(_, args) | Type::Tuple(args) => {
+            Type::Con(name, args) => {
+                if let Some(&level) = self.skolems.get(&name)
+                    && level > self.slot_level(id)
+                {
+                    return Err(UnifyError::Escape);
+                }
+                for a in &args {
+                    self.occurs_adjust(id, a)?;
+                }
+                Ok(())
+            }
+            Type::Tuple(args) => {
                 for a in &args {
                     self.occurs_adjust(id, a)?;
                 }
@@ -549,21 +614,37 @@ impl Arena {
     /// If the row ends in an unbound row var and lacks the label, the var is
     /// extended in place (standard rewrite-row; no lacks-predicates, so distinct
     /// labels are assumed).
+    ///
+    /// `want` is the field the label is being matched with. Labels are found by
+    /// name, first match first, except that two rigid state types that differ
+    /// are different effects: `{ St s1, St s2 | e }` is a row a `runSt` nested in
+    /// another can have, and the inner one's `St s2` has to find its own label
+    /// rather than fail against the outer one's.
     fn rewrite_row(
         &mut self,
         row: Type,
         label: InternedString,
+        want: &Type,
     ) -> Result<(Type, Type), UnifyError> {
         let row = self.prune(row);
         match row {
-            Type::RowExtend(l, field, rest) if l == label => Ok((*field, *rest)),
+            Type::RowExtend(l, field, rest) if l == label && !self.rigidly_distinct(&field, want) => {
+                Ok((*field, *rest))
+            }
             Type::RowExtend(l, field, rest) => {
-                let (found, rest2) = self.rewrite_row(*rest, label)?;
+                let (found, rest2) = self.rewrite_row(*rest, label, want)?;
                 Ok((found, Type::RowExtend(l, field, Box::new(rest2))))
             }
             Type::Var(id) => {
+                // At the row variable's own level, not the current one: the
+                // label is being added to a row that may belong further out,
+                // and what it carries must not be generalized -- or escape --
+                // more freely than the row itself.
+                let at = self.slot_level(id);
+                let saved = std::mem::replace(&mut self.level, at);
                 let field = self.fresh();
                 let new_rest = self.fresh_row();
+                self.level = saved;
                 let ext =
                     Type::RowExtend(label, Box::new(field.clone()), Box::new(new_rest.clone()));
                 self.set_slot(id, Slot::Bound(ext));
@@ -572,6 +653,24 @@ impl Arena {
             Type::RowEmpty => Err(UnifyError::MissingLabel(label)),
             Type::Error => Ok((Type::Error, Type::Error)),
             other => Err(UnifyError::Mismatch(other, Type::RowEmpty)),
+        }
+    }
+
+    /// Two effect fields that name different rigid state types, like the
+    /// `(s#1)` and `(s#2)` of two `St` labels.
+    fn rigidly_distinct(&mut self, a: &Type, b: &Type) -> bool {
+        let a = self.zonk(a);
+        let b = self.zonk(b);
+        let rigid = |t: &Type| match t {
+            Type::Tuple(args) => match args.as_slice() {
+                [Type::Con(name, targs)] if targs.is_empty() => Some(*name),
+                _ => None,
+            },
+            _ => None,
+        };
+        match (rigid(&a), rigid(&b)) {
+            (Some(x), Some(y)) => x != y && self.is_skolem(x) && self.is_skolem(y),
+            _ => false,
         }
     }
 
@@ -849,8 +948,14 @@ pub struct Infer {
     /// Names the resolver found several meanings for -- see [`Infer::defer`].
     overloads: hir::Overloads,
     pending: Vec<Pending>,
+    /// `(argument's effect, what the parameter allows, where)`: a function
+    /// passed as an argument may do less than the parameter's type permits.
+    /// Solved by [`Infer::solve_subsumptions`] -- see [`Infer::loosen_argument`].
+    subsumptions: Vec<(Type, Type, Span)>,
     resolutions: HashMap<NodeId, hir::Alt>,
     errors: Vec<Diagnostic>,
+    /// The `runSt` primitive's `VarId` in this unit -- see [`Infer::infer_run_st`].
+    run_st: Option<VarId>,
 }
 
 impl Infer {
@@ -873,11 +978,13 @@ impl Infer {
             ann_tyvars: HashMap::new(),
             overloads: HashMap::new(),
             pending: Vec::new(),
+            subsumptions: Vec::new(),
             resolutions: HashMap::new(),
             record_fields: HashMap::new(),
             effects: HashMap::new(),
             cur_effect: Type::RowEmpty,
             errors: Vec::new(),
+            run_st: None,
         }
     }
 
@@ -898,7 +1005,28 @@ impl Infer {
         if matches!(self.arena.zonk(&phi), Type::RowEmpty) {
             return;
         }
-        self.unify_at(span, self.cur_effect.clone(), phi);
+        let region = self.cur_effect.clone();
+        self.join_effect_into(span, region, phi);
+    }
+
+    /// [`Infer::join_effect`], into a region other than the current one.
+    ///
+    /// Joining is unification, which asks for *equal* rows where the truth is
+    /// only that `phi` is part of `region`. That difference matters inside a
+    /// `runSt`, whose region starts with its own `St s`: a function parameter's
+    /// effect variable, made outside, cannot be equal to a row naming `s` --
+    /// that is exactly an escape -- but it does not need to be. When `phi` is a
+    /// bare variable older than the `runSt`s at the front of the region, it is
+    /// tied to what follows them instead, which is everything it could stand for.
+    fn join_effect_into(&mut self, span: Span, region: Type, phi: Type) {
+        let target = match self.arena.zonk(&phi) {
+            Type::Var(id) => {
+                let level = self.arena.slot_level(id);
+                self.arena.without_inner_state(region, level)
+            }
+            _ => region,
+        };
+        self.unify_at(span, target, phi);
     }
 
     /// Seed the environment with the primitive operators. `prims` must be the
@@ -908,6 +1036,9 @@ impl Infer {
         for (name, id) in prims {
             if let Some(scheme) = prim_scheme(name) {
                 self.env.insert(*id, scheme);
+            }
+            if &**name == "runSt" {
+                self.run_st = Some(*id);
             }
         }
     }
@@ -1153,12 +1284,14 @@ impl Infer {
                 self.bind_mono(vid, &fn_ty, name.span);
                 self.table.set(name.id, fn_ty.clone());
 
+                let mark = self.subsumptions.len();
                 let body_ty = self.infer_expr(body);
                 self.unify_at(body.span, ret, body_ty);
                 self.cur_effect = saved;
                 // A local function may leave a name to the body around it; a
                 // top-level one has nothing around it to wait for.
                 self.solve_overloads(toplevel);
+                self.solve_subsumptions(mark);
                 self.arena.exit_level();
 
                 let scheme = self.generalize_named(Some(vid), &fn_ty);
@@ -1174,12 +1307,17 @@ impl Infer {
                 self.arena.enter_level();
                 let rhs_eff = self.arena.fresh_effect();
                 let saved = std::mem::replace(&mut self.cur_effect, rhs_eff.clone());
+                let mark = self.subsumptions.len();
                 let rhs = self.infer_expr(expr);
                 let mut bound = Vec::new();
                 let pty = self.infer_pat(pat, &mut bound);
                 self.unify_at(pat.span, pty, rhs);
                 self.cur_effect = saved;
                 self.solve_overloads(toplevel);
+                // Before the purity test below, which reads `rhs_eff`: an
+                // argument's effect still waiting to be tied in could make an
+                // effectful right-hand side look pure.
+                self.solve_subsumptions(mark);
                 self.arena.exit_level();
 
                 // The value restriction, replaced: generalize a `let`/`def` binding
@@ -1204,13 +1342,22 @@ impl Infer {
                 };
                 if !pure && !toplevel {
                     // let the enclosing region see the rhs's effects
-                    self.unify_at(pat.span, self.cur_effect.clone(), rhs_eff);
+                    let region = self.cur_effect.clone();
+                    self.join_effect_into(pat.span, region, rhs_eff);
                 }
 
                 for (vid, vty) in bound {
                     let scheme = if pure {
                         self.generalize_named(Some(vid), &vty)
                     } else {
+                        // Not generalized, so not the `let`'s own either: its
+                        // variables belong to the level around it. Left one
+                        // level in, they would look like they were made inside
+                        // anything that level is reused for -- a `runSt` among
+                        // them, which could then smuggle its state out through
+                        // this binding (`setRef outer [cell;]`).
+                        let level = self.arena.level;
+                        self.arena.hold_back(&vty, level);
                         let s = Scheme::mono(self.arena.zonk(&vty));
                         self.record_mono(vid, &s);
                         s
@@ -1291,17 +1438,39 @@ impl Infer {
                 // only its latent effect joins the current region; the intermediate
                 // arrows of a curried call just build closures and stay pure — which
                 // is also how every function type here is constructed (`func_eff`).
-                let mut fty = self.infer_expr(func);
+                let run_st = match func.value() {
+                    hir::Expr::Var(ident) => {
+                        Some(*ident.value()) == self.run_st && !args.is_empty()
+                    }
+                    _ => false,
+                };
+                let (mut fty, rest) = if run_st {
+                    let result = self.infer_run_st(expr.span, func, &args[0]);
+                    (result, &args[1..])
+                } else {
+                    (self.infer_expr(func), &args[..])
+                };
+                let args = rest;
                 let last = args.len().saturating_sub(1);
                 for (i, arg) in args.iter().enumerate() {
                     let aty = self.infer_expr(arg);
                     let ret = self.arena.fresh();
                     let phi = self.arena.fresh_effect();
-                    self.unify_at(
-                        expr.span,
-                        fty,
-                        Type::Fun(vec![aty], Box::new(ret.clone()), Box::new(phi.clone())),
-                    );
+                    match self.arena.zonk(&fty) {
+                        // A callee whose parameter is known to be a function:
+                        // the argument need only do less than it allows.
+                        Type::Fun(params, fret, feff) if params.len() == 1 && params[0].is_fun() => {
+                            let loose = self.loosen_parameter(arg.span, params[0].clone());
+                            self.unify_at(arg.span, aty, loose);
+                            self.unify_at(expr.span, *fret, ret.clone());
+                            self.unify_at(expr.span, *feff, phi.clone());
+                        }
+                        fty => self.unify_at(
+                            expr.span,
+                            fty,
+                            Type::Fun(vec![aty], Box::new(ret.clone()), Box::new(phi.clone())),
+                        ),
+                    }
                     if i == last {
                         self.join_effect(expr.span, phi);
                     } else {
@@ -2325,6 +2494,110 @@ impl Infer {
         Arena::subst_bound(&scheme.ty, &fresh)
     }
 
+    /// A function-typed parameter, with each latent effect replaced by a fresh
+    /// one for the argument to fill in.
+    ///
+    /// The fresh one is what the argument does; the original is what the callee
+    /// allows; [`Infer::solve_subsumptions`] requires only that the first be
+    /// part of the second. That is the sound direction -- a callee calling a
+    /// function that does less than it allowed for is fine -- and it is what
+    /// lets a `runSt` inside a library function call a caller's callback: the
+    /// callee's type says the callback may perform `{ St s | e }`, and a
+    /// callback from outside, whose effect cannot name `s`, is tied to the `e`.
+    ///
+    /// Everywhere else the two end up equal, as they would have by unifying
+    /// straight away -- only later, so the purity of a binding is decided after
+    /// they are ([`Infer::infer_bind`]).
+    fn loosen_parameter(&mut self, span: Span, ty: Type) -> Type {
+        match self.arena.zonk(&ty) {
+            Type::Fun(params, ret, eff) => {
+                let ret = self.loosen_parameter(span, *ret);
+                let actual = self.arena.fresh_effect();
+                self.subsumptions.push((actual.clone(), *eff, span));
+                Type::Fun(params, Box::new(ret), Box::new(actual))
+            }
+            other => other,
+        }
+    }
+
+    /// Tie each argument effect recorded since `mark` into what its parameter
+    /// allowed -- a join, so the `St` labels of deeper `runSt`s are left out.
+    fn solve_subsumptions(&mut self, mark: usize) {
+        let pending: Vec<_> = self.subsumptions.drain(mark..).collect();
+        for (actual, allowed, span) in pending {
+            self.join_effect_into(span, allowed, actual);
+        }
+    }
+
+    /// `runSt body`, applied directly: the one place a type is polymorphic in
+    /// its argument, which ordinary inference cannot express.
+    ///
+    /// The body must be a `() -> a ! { St s | e }` for a `s` made fresh here,
+    /// one level in, and rigid -- so nothing the body is given can depend on
+    /// which `runSt` it is, and nothing tied to `s` gets back out: the result
+    /// `a` and the leftover effects `e` are made outside, and binding them to
+    /// anything mentioning `s` fails ([`Arena::fresh_skolem`]). What the call
+    /// performs is the body's effects minus that one `St s`, which is how a
+    /// function doing all its mutation inside a `runSt` comes out pure.
+    ///
+    /// Written as a value rather than applied -- `map runSt bodies` -- it gets
+    /// its ordinary scheme instead, `(() -> a ! e) -> a ! e`, which discharges
+    /// nothing and so is sound without any of this.
+    fn infer_run_st(&mut self, span: Span, func: &hir::LExpr, body: &hir::LExpr) -> Type {
+        let result = self.arena.fresh();
+        let outside = self.arena.fresh_effect();
+        let mark = self.subsumptions.len();
+        self.arena.enter_level();
+        let state = self.arena.fresh_skolem();
+        let st_label = InternedString::from("St");
+        let body_ty = match body.value() {
+            // The usual shape, `runSt (\() -> ...)`: start the lambda's effect
+            // row with this `runSt`'s `St s` rather than discovering it at the
+            // end. A label is matched by name, first come first served, so a
+            // cell made in here meets this `St s` before any other -- and an
+            // outer `runSt`'s cell, used in here, meets it already rigid and
+            // is kept apart (`Arena::rigidly_distinct`). Inferring the body
+            // first and unifying afterwards would bind whichever cell's state
+            // came first, outer or not.
+            hir::Expr::Lam(params, lam_body) if params.len() == 1 => {
+                let mut bound = Vec::new();
+                let pty = self.infer_pat(&params[0], &mut bound);
+                self.unify_at(params[0].span, pty, Type::unit());
+                let tail = self.arena.fresh_effect();
+                let seeded = Type::RowExtend(
+                    st_label,
+                    Box::new(Type::Tuple(vec![state.clone()])),
+                    Box::new(tail),
+                );
+                let saved = std::mem::replace(&mut self.cur_effect, seeded.clone());
+                let result_ty = self.infer_expr(lam_body);
+                self.cur_effect = saved;
+                let fty = Type::func_eff(vec![Type::unit()], result_ty, seeded);
+                self.table.set(body.id, fty.clone());
+                fty
+            }
+            _ => self.infer_expr(body),
+        };
+        let body_row = Type::RowExtend(
+            st_label,
+            Box::new(Type::Tuple(vec![state])),
+            Box::new(outside.clone()),
+        );
+        let want = Type::func_eff(vec![Type::unit()], result.clone(), body_row);
+        self.unify_at(body.span, body_ty, want.clone());
+        // Everything the body passed along is settled while `s` is still this
+        // `runSt`'s, so an outer callback's effect can be told apart from it.
+        self.solve_subsumptions(mark);
+        self.arena.exit_level();
+        self.join_effect(span, outside);
+        if let hir::Expr::Var(ident) = func.value() {
+            let fty = Type::func(vec![want], result.clone());
+            self.table.set(ident.id, fty.clone());
+            self.table.set(func.id, fty);
+        }
+        result
+    }
+
     fn unify_at(&mut self, span: Span, a: Type, b: Type) {
         let (whole_a, whole_b) = (a.clone(), b.clone());
         if let Err(err) = self.arena.unify(a, b) {
@@ -2358,6 +2631,11 @@ impl Infer {
                     "recursive type".to_string(),
                 )
             }
+            UnifyError::Escape => (
+                "state from inside a `runSt` escapes it".to_string(),
+                "a cell, an array, or something that uses one, would outlive its `runSt`"
+                    .to_string(),
+            ),
             UnifyError::Arity(x, y) => (
                 format!(
                     "function applied to the wrong number of arguments: expected {x}, found {y}"
@@ -2457,6 +2735,15 @@ fn mut_row(tail: u32) -> Type {
     Type::RowExtend(
         InternedString::from("Mut"),
         Box::new(Type::Tuple(vec![])),
+        Box::new(Type::Bound(tail)),
+    )
+}
+
+/// The row `{ St Bound(state) | Bound(tail) }` -- what touching local state costs.
+fn st_row(state: u32, tail: u32) -> Type {
+    Type::RowExtend(
+        InternedString::from("St"),
+        Box::new(Type::Tuple(vec![Type::Bound(state)])),
         Box::new(Type::Bound(tail)),
     )
 }
@@ -2581,6 +2868,81 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
                 vec![Type::reference(Bound(0)), Bound(0)],
                 Type::unit(),
                 mut_row(1),
+            ),
+        },
+        // --- local state ---
+        //
+        // Everything below is tied to a state type `s` (`Bound(0)`) and carries
+        // `{ St s | e }`. Only `runSt` removes an `St`, and only when it is
+        // applied directly -- `Infer::infer_run_st` -- so this, its scheme as a
+        // mere value, is the ordinary application it is at run time.
+        "runSt" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::func_eff(vec![Type::unit()], Bound(0), Bound(1))],
+                Bound(0),
+                Bound(1),
+            ),
+        },
+        "stNewRef" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(vec![Bound(1)], Type::st_ref(Bound(0), Bound(1)), st_row(0, 2)),
+        },
+        "stGetRef" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(vec![Type::st_ref(Bound(0), Bound(1))], Bound(1), st_row(0, 2)),
+        },
+        "stSetRef" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::st_ref(Bound(0), Bound(1)), Bound(1)],
+                Type::unit(),
+                st_row(0, 2),
+            ),
+        },
+        "stNewArray" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::int(), Bound(1)],
+                Type::st_array(Bound(0), Bound(1)),
+                st_row(0, 2),
+            ),
+        },
+        "stGetArray" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::st_array(Bound(0), Bound(1)), Type::int()],
+                Bound(1),
+                st_row(0, 2),
+            ),
+        },
+        "stSetArray" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::st_array(Bound(0), Bound(1)), Type::int(), Bound(1)],
+                Type::unit(),
+                st_row(0, 2),
+            ),
+        },
+        // An array's length is fixed when it is made, so asking is pure.
+        "stArrayLen" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Type],
+            ty: Type::func(vec![Type::st_array(Bound(0), Bound(1))], Type::int()),
+        },
+        "stFreeze" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::st_array(Bound(0), Bound(1))],
+                Type::array(Bound(1)),
+                st_row(0, 2),
+            ),
+        },
+        "stThaw" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
+            ty: Type::func_eff(
+                vec![Type::array(Bound(1))],
+                Type::st_array(Bound(0), Bound(1)),
+                st_row(0, 2),
             ),
         },
         _ => return None,

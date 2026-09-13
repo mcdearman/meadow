@@ -1622,13 +1622,14 @@ covered under the standard library below.
 
 ### The standard library's effects
 
-`Std` ships nine, plus `Mut` for mutable cells. Each pairs a real implementation
+`Std` ships nine, plus `Mut` for mutable cells and `St` for mutation kept local. Each pairs a real implementation
 with a handler that fakes it — which is the point, since these are exactly the
 things that are otherwise hard to test.
 
 | Module | Operations | Unhandled | Handled with |
 |---|---|---|---|
 | `Std.Ref` (`Mut`) | via `newRef` / `getRef` / `setRef` | real cells | — |
+| `Std.St` (`St s`) | via `stNewRef`, `stNewArray`, … | — | `runSt` |
 | `Std.State` | `get`, `put` | — | `runState`, `evalState`, `execState` |
 | `Std.Console` | `writeOutput`, `readLine` | real stdout and stdin | `withOutput`, `withInput` |
 | `Std.Exn` | `throw` | aborts | `toResult`, `catch`, `withDefault`, `toMaybe` |
@@ -1673,8 +1674,70 @@ syntactic one — so `def r = newRef []` is never given `forall a. Ref [a]`, and
 classic trick of storing at one type and reading at another does not typecheck.
 
 One surprise worth knowing: a `Ref` has identity. `==` on two of them compares
-cells, not contents, so `newRef 1 == newRef 1` is `False`. Nothing else in the
-language behaves that way.
+cells, not contents, so `newRef 1 == newRef 1` is `False`. Only mutable things
+behave that way: `Ref`s, and the arrays in the next section.
+
+#### St — mutation that stays inside
+
+`Mut` never goes away: a function that uses a `Ref` for its own private
+bookkeeping still shows `! { Mut | e }` to every caller, forever. `runSt` is the
+way out. Mutation done inside it — on cells from `stNewRef`, or mutable arrays
+from `stNewArray` — cannot be seen from outside it, so the type of the whole
+thing is as pure as the result:
+
+```meadow
+use Std.St as St
+
+fun sumTo n =
+  runSt (\() ->
+    let total = St.newRef 0 in
+    let _ = St.forRange 1 (n + 1) (\i -> St.modifyRef total (\t -> t + i)) in
+    St.getRef total)
+
+fun fibs n =
+  runSt (\() ->
+    let a = St.newArray n 0 in
+    let _ = if n > 1 then St.set a 1 1 else () in
+    let _ = St.forRange 2 n (\i -> St.set a i (St.get a (i - 1) + St.get a (i - 2))) in
+    St.toVec a)
+
+def main = (sumTo 100, fibs 10)
+```
+
+```
+  sumTo : Int -> Int
+  fibs : Int -> [Int]
+=> (5050, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34])
+```
+
+No `Mut`, and no `St` either. What makes that safe is a check on the types, not
+on what the code happens to do. Each `runSt` gets its own state type `s`, which
+the checker invents for that `runSt` and nobody can name; everything made inside
+carries it (`StRef s Int`, `StArray s Int`), and so does every operation's effect
+(`! { St s | e }`). `runSt` takes the `St s` away, and in exchange nothing that
+mentions `s` may leave:
+
+```meadow
+def cell = runSt (\() -> stNewRef 0)
+```
+
+```
+state from inside a `runSt` escapes it
+```
+
+The same goes for a closure that reads a cell, a cell written into some `Ref`
+from outside, or a cell used after its `runSt` has returned. Everything that
+does not mention `s` passes through as usual: an inner `runSt` may use an outer
+one's cells, a `Log` performed inside stays in the type, and a callback handed
+in from outside keeps its own effects and nothing more. `Std.Sort.sortBy` works
+this way — it sorts a mutable array in place and is still
+`(a -> a -> Ordering ! e) -> [a] -> [a] ! e`.
+
+A `StArray` is written in place, so `St.set` is O(1) where `arraySet` copies the
+whole `Array`. `St.freeze` and `St.thaw` copy between the two, and `St.fromVec` /
+`St.toVec` do the same for vectors. `runSt` has to be applied to its body
+directly, `runSt (\() -> ...)`: that application is where the special typing
+happens.
 
 #### State — a value threaded for you
 
@@ -2139,7 +2202,7 @@ Without any `use`, from the prelude:
   `partition` `zip` `zipWith` `unzip` `maximum` `minimum` `toArray` `toList`
   `fromArray` `fromList`
 
-Also always available: `print` and `println`; the primitives (`show`, `display`, `hash`,
+Also always available: `print` and `println`; `runSt`; the primitives (`show`, `display`, `hash`,
 `arrayLen`, `arrayGet`, `stringToBytes`, `stringToChars`, `charCode`, `bitAnd`,
 `toFloat`, `toBigInt`, …); and the constructors `Just`, `None`, `Ok`, `Err`,
 `Less`, `Equal`, `Greater`, `True`, `False`, `Nil` and `Cons`.
@@ -2147,7 +2210,7 @@ Also always available: `print` and `println`; the primitives (`show`, `display`,
 ### The standard library
 
 `Bool` `Ordering` `Function` `Tuple` `Int` `Maybe` `Char` `Result` `Either` `Bits`
-`Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `Exn`
+`Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `St` `Exn`
 `Stream` `Random` `Fs` `Process` `String` (`Parse`) `Path` `Json` `Time` `Test`
 
 `Std.String.Parse` is a megaparsec-style parser combinator library; `Std.Json` is

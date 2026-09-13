@@ -13,11 +13,12 @@
 @pub mod Maybe
 @pub mod Char
 @pub mod Result
-@pub mod Either
 @pub mod Bits
 @pub mod Bytes
 @pub mod Yield
 @pub mod Collections
+@pub mod Either
+@pub mod St
 @pub mod Sort
 @pub mod State
 @pub mod Exn
@@ -29,5 +30,6 @@
 @pub mod Path
 @pub mod Json
 @pub mod Time
-@pub mod Test
-@pub mod prelude
+@pub mod Console
+@pub mod Bench
+@pub mod Prelude

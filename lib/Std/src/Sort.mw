@@ -6,9 +6,11 @@
 --
 -- Two sorts, and the choice between them is the usual one:
 --
---   `sortBy`        in place, unstable, no allocation beyond the cells.
---                   Carries the `Mut` effect.
---   `stableSortBy`  merge sort, stable, allocates. Pure -- no effect at all.
+--   `sortBy`        in place, unstable, one scratch array.
+--   `stableSortBy`  merge sort, stable, allocates as it goes.
+--
+-- Both are pure. `sortBy` mutates, but only an array it made inside a `runSt`,
+-- so the mutation stops at the `runSt` and never reaches the caller's type.
 --
 -- `sortBy` is an introsort: quicksort with a median-of-three pivot, insertion
 -- sort for short ranges, and a heapsort fallback once recursion gets too deep.
@@ -16,18 +18,18 @@
 -- input can make it quadratic -- including the almost-sorted and all-equal
 -- inputs that defeat a naive quicksort.
 --
--- --- why an array of cells ----------------------------------------------------
+-- --- why a mutable array -----------------------------------------------------
 --
 -- Sorting in place needs an O(1) swap, and meadow's `Array` is persistent:
--- `arraySet` returns a new array and copies unless it uniquely owns the buffer.
--- A `Ref (Array a)` would therefore copy on *every* write -- O(n) a swap, which
--- is no kind of in-place sort.
+-- `arraySet` returns a new array, copying the buffer. So the scratch space is an
+-- `StArray` -- a real mutable array, written in place, that belongs to the
+-- `runSt` in `sortBy`. The type system keeps it there: nothing tied to that
+-- `runSt` can be returned or stored anywhere that outlives it, which is what
+-- lets `sortBy` promise a pure result while its insides are anything but.
 --
--- So the scratch space is an `Array (Ref a)`: the array never changes, and each
--- element is its own cell. Swapping is two `setRef`s, O(1), and indexing stays
--- O(1). The cost is one allocation per element while sorting, which a real
--- mutable-array primitive would remove; this needs nothing the language does not
--- already have.
+-- (It used to be an `Array (Ref a)`, one cell per element: O(1) swaps with
+-- nothing but `Ref`, at the cost of an allocation per element and a `Mut` in
+-- every caller's type.)
 
 use Std.Ordering (compare, isLess, isGreater)
 use Std.Bits (countLeadingZeros)
@@ -44,10 +46,11 @@ def smallRange = 16
 
 -- Sort a `Vector` by a comparison. Unstable: equal elements may be reordered.
 @pub fun sortBy cmp v =
-  let cells = thaw v in
-  let n = arrayLen cells in
-  let ignored = introsort cmp cells 0 n (depthLimit n) in
-  freeze cells
+  runSt (\() ->
+    let cells = stThaw (V.toArray v) in
+    let n = stArrayLen cells in
+    let ignored = introsort cmp cells 0 n (depthLimit n) in
+    V.fromArray (stFreeze cells))
 
 -- Ascending, for the types `compare` handles.
 @pub fun sort v = sortBy compare v
@@ -136,20 +139,9 @@ fun sortedFrom cmp arr i =
 
 -- --- the scratch space --------------------------------------------------------
 
--- Built through `Vector`, not by `arrayPush` in a loop.
---
--- `arrayPush` copies the whole buffer on every call: the argument still holds a
--- reference while the primitive runs, so its copy-on-write can never find the
--- buffer uniquely owned. Accumulating an `n`-element `Array` that way is O(n^2),
--- which would swamp the sort itself. `Vector`'s map works on chunks of 32 and
--- concatenates them, so this is O(n).
-fun thaw v = V.toArray (V.map (\x -> newRef x) v)
+fun at cells i = stGetArray cells i
 
-fun freeze cells = V.map (\c -> getRef c) (V.fromArray cells)
-
-fun at cells i = getRef (arrayGet cells i)
-
-fun put cells i x = setRef (arrayGet cells i) x
+fun put cells i x = stSetArray cells i x
 
 fun swapAt cells i j =
   let a = at cells i in

@@ -193,6 +193,11 @@ impl Vm<'_> {
                     self.join(out, &self.heap.fields(a), ", ");
                     out.push(']');
                 }
+                Kind::MutArray => {
+                    out.push_str("mut #[");
+                    self.join(out, &self.heap.fields(a), ", ");
+                    out.push(']');
+                }
                 Kind::Record => {
                     out.push_str("{ ");
                     for j in 0..self.heap.len(a) / 2 {
@@ -367,6 +372,7 @@ impl Vm<'_> {
                     None => return Err(Error { msg: "hash: a malformed BigInt".into() }),
                 },
                 Kind::Ref => return Err(Error { msg: unhashable("a Ref") }),
+                Kind::MutArray => return Err(Error { msg: unhashable("a mutable array") }),
                 Kind::Closure | Kind::Resume => {
                     return Err(Error { msg: unhashable("a function") });
                 }

@@ -179,6 +179,24 @@ pub enum Prim {
     GetRef,
     /// `setRef : Ref a -> a -> () ! { Mut | e }`
     SetRef,
+    /// `runSt : (forall s. () -> a ! { St s | e }) -> a ! e` -- run a
+    /// computation whose mutable state cannot outlive it. Its type is the
+    /// checker's business (see `meadow_infer`); lowering turns `runSt f` into
+    /// `f ()`, so no engine ever meets this.
+    RunSt,
+    /// `stNewArray : Int -> a -> StArray s a ! { St s | e }` -- `n` copies of
+    /// a value, in a mutable array.
+    StNewArray,
+    /// `stGetArray : StArray s a -> Int -> a ! { St s | e }`
+    StGetArray,
+    /// `stSetArray : StArray s a -> Int -> a -> () ! { St s | e }` -- in place.
+    StSetArray,
+    /// `stArrayLen : StArray s a -> Int` -- fixed at allocation, so pure.
+    StArrayLen,
+    /// `stFreeze : StArray s a -> Array a ! { St s | e }` -- a copy.
+    StFreeze,
+    /// `stThaw : Array a -> StArray s a ! { St s | e }` -- a copy.
+    StThaw,
     /// `String -> Option (Array Int)` -- parse a hex string (either case, no
     /// separators, even length) into bytes. `None` on any malformed input.
     BytesFromHex,
@@ -282,6 +300,18 @@ impl Prim {
             "newRef" => Prim::NewRef,
             "getRef" => Prim::GetRef,
             "setRef" => Prim::SetRef,
+            // A cell tied to a `runSt` is an ordinary cell at run time; only
+            // its type differs.
+            "stNewRef" => Prim::NewRef,
+            "stGetRef" => Prim::GetRef,
+            "stSetRef" => Prim::SetRef,
+            "runSt" => Prim::RunSt,
+            "stNewArray" => Prim::StNewArray,
+            "stGetArray" => Prim::StGetArray,
+            "stSetArray" => Prim::StSetArray,
+            "stArrayLen" => Prim::StArrayLen,
+            "stFreeze" => Prim::StFreeze,
+            "stThaw" => Prim::StThaw,
             _ => return None,
         })
     }
@@ -309,8 +339,12 @@ impl Prim {
             | Prim::StringToChars
             | Prim::CharsToString
             | Prim::NewRef
-            | Prim::GetRef => 1,
-            Prim::ArraySet | Prim::ArraySlice | Prim::ArrayGetOr => 3,
+            | Prim::GetRef
+            | Prim::RunSt
+            | Prim::StArrayLen
+            | Prim::StFreeze
+            | Prim::StThaw => 1,
+            Prim::ArraySet | Prim::ArraySlice | Prim::ArrayGetOr | Prim::StSetArray => 3,
             _ => 2,
         }
     }

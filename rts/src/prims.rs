@@ -96,6 +96,13 @@ impl Vm<'_> {
         }
     }
 
+    fn mut_array(&self, v: Value) -> Result<Addr, Error> {
+        match v.addr().filter(|a| self.heap.kind(*a) == Kind::MutArray) {
+            Some(a) => Ok(a),
+            None => err(format!("expected a mutable array, got {}", self.show(v))),
+        }
+    }
+
     fn bytes(&self, v: Value, what: &str) -> Result<Vec<u8>, Error> {
         let a = self.array(v)?;
         let mut out = Vec::with_capacity(self.heap.len(a));
@@ -524,6 +531,57 @@ impl Vm<'_> {
                     ));
                 }
             },
+
+            // --- the mutable array ----------------------------------------
+            //
+            // Written in place, like a `Ref`. `runSt` never gets here: lowering
+            // applies its body.
+            RunSt => return err("runSt reached the VM; lowering applies its body"),
+            StNewArray => {
+                let n = match self.int(arg(self, 0))? {
+                    n if n >= 0 => n as usize,
+                    n => return err(format!("stNewArray: expected a length of zero or more, got {n}")),
+                };
+                self.ensure(1 + n);
+                let fill = vec![arg(self, 1); n];
+                Value::Obj(self.heap.alloc(Kind::MutArray, 0, &fill))
+            }
+            StGetArray => {
+                let a = self.mut_array(arg(self, 0))?;
+                let i = self.index(arg(self, 1))?;
+                let n = self.heap.len(a);
+                if i >= n {
+                    return err(format!("stGetArray: index {i} out of bounds (len {n})"));
+                }
+                self.heap.field(a, i)
+            }
+            StSetArray => {
+                let a = self.mut_array(arg(self, 0))?;
+                let i = self.index(arg(self, 1))?;
+                let n = self.heap.len(a);
+                if i >= n {
+                    return err(format!("stSetArray: index {i} out of bounds (len {n})"));
+                }
+                let v = arg(self, 2);
+                self.heap.set_field(a, i, v);
+                Value::Unit
+            }
+            StArrayLen => Value::Int(self.heap.len(self.mut_array(arg(self, 0))?) as i64),
+            StFreeze => {
+                let n = self.heap.len(self.mut_array(arg(self, 0))?);
+                self.ensure(1 + n);
+                // Re-read: making room may have moved it.
+                let a = self.mut_array(arg(self, 0))?;
+                let fields = self.heap.fields(a);
+                Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
+            }
+            StThaw => {
+                let n = self.heap.len(self.array(arg(self, 0))?);
+                self.ensure(1 + n);
+                let a = self.array(arg(self, 0))?;
+                let fields = self.heap.fields(a);
+                Value::Obj(self.heap.alloc(Kind::MutArray, 0, &fields))
+            }
         };
 
         self.set(dst, out);

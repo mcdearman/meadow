@@ -94,6 +94,9 @@ pub enum Value {
     /// equality on them compare pointers rather than contents — `newRef 1` twice
     /// gives two cells that hold the same thing and are not the same cell.
     Ref(Rc<RefCell<Value>>),
+    /// A mutable array, from `stNewArray`. Identity, like a [`Value::Ref`]: it
+    /// is changed in place, and two of them are equal only if they are one.
+    MutArray(Rc<RefCell<Vec<Value>>>),
 }
 
 impl Value {
@@ -1026,6 +1029,7 @@ fn hash_value(v: &Value) -> Result<i64, RuntimeError> {
                 }
             }
             Value::Ref(_) => return err(unhashable("a Ref")),
+            Value::MutArray(_) => return err(unhashable("a mutable array")),
             Value::Closure { .. } | Value::Builtin { .. } | Value::Cont(_) => {
                 return err(unhashable("a function"));
             }
@@ -1302,6 +1306,43 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             }
             other => err(format!("setRef: expected a Ref, got {other}")),
         },
+
+        // --- the mutable array -----------------------------------------------
+        RunSt => err("runSt reached the evaluator; lowering applies its body"),
+        StNewArray => match &args[0] {
+            Value::Int(n) if *n >= 0 => Ok(Value::MutArray(Rc::new(RefCell::new(vec![
+                args[1].clone();
+                *n as usize
+            ])))),
+            other => err(format!("stNewArray: expected a length of zero or more, got {other}")),
+        },
+        StGetArray => {
+            let cells = as_mut_array(&args[0])?;
+            let i = as_index(&args[1])?;
+            let cells = cells.borrow();
+            cells.get(i).cloned().ok_or_else(|| RuntimeError {
+                msg: format!("stGetArray: index {i} out of bounds (len {})", cells.len()),
+            })
+        }
+        StSetArray => {
+            let cells = as_mut_array(&args[0])?;
+            let i = as_index(&args[1])?;
+            let mut cells = cells.borrow_mut();
+            let n = cells.len();
+            match cells.get_mut(i) {
+                Some(slot) => {
+                    *slot = args[2].clone();
+                    Ok(Value::Unit)
+                }
+                None => err(format!("stSetArray: index {i} out of bounds (len {n})")),
+            }
+        }
+        StArrayLen => Ok(Value::Int(as_mut_array(&args[0])?.borrow().len() as i64)),
+        StFreeze => Ok(Value::Array(Rc::new(as_mut_array(&args[0])?.borrow().clone()))),
+        StThaw => match &args[0] {
+            Value::Array(xs) => Ok(Value::MutArray(Rc::new(RefCell::new((**xs).clone())))),
+            other => err(format!("stThaw: expected an Array, got {other}")),
+        },
         CharCode => match &args[0] {
             Value::Char(c) => Ok(Value::Int(*c as i64)),
             other => err(format!("charCode: expected a Char, got {other}")),
@@ -1398,6 +1439,13 @@ fn as_int(v: &Value) -> Result<i64, RuntimeError> {
     match v {
         Value::Int(i) => Ok(*i),
         other => err(format!("expected an Int, got {other}")),
+    }
+}
+
+fn as_mut_array(v: &Value) -> Result<&Rc<RefCell<Vec<Value>>>, RuntimeError> {
+    match v {
+        Value::MutArray(a) => Ok(a),
+        other => err(format!("expected a mutable array, got {other}")),
     }
 }
 
@@ -1840,6 +1888,7 @@ fn value_eq(a: &Value, b: &Value) -> bool {
             // them are equal when they look alike; a `Ref` is a *place*, and two
             // cells that happen to hold the same thing are still two cells.
             (Value::Ref(x), Value::Ref(y)) if Rc::ptr_eq(x, y) => {}
+            (Value::MutArray(x), Value::MutArray(y)) if Rc::ptr_eq(x, y) => {}
             _ => return false,
         }
     }
@@ -1936,6 +1985,16 @@ impl fmt::Display for Value {
             // The contents, not the address: a `Ref` prints as what it holds,
             // which is what a person debugging one wants to see.
             Value::Ref(cell) => write!(f, "ref {}", cell.borrow()),
+            Value::MutArray(cells) => {
+                f.write_str("mut #[")?;
+                for (i, v) in cells.borrow().iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{v}")?;
+                }
+                f.write_str("]")
+            }
         }
     }
 }

@@ -171,7 +171,7 @@ const BUILTIN_CTOR_OWNERS: &[(&str, &str)] =
 /// prelude is allowed to (re-)declare `List` / `Bool` without it counting as a
 /// duplicate-definition error.
 const BUILTIN_TYCONS: &[&str] =
-    &["Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array", "Ref"];
+    &["Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array", "Ref", "StRef", "StArray"];
 
 /// Split a declaration into its attributes and the bare declaration underneath.
 /// The parser only ever nests one `Attributed` layer.
@@ -289,7 +289,7 @@ fn is_ctor_name(name: &str) -> bool {
 fn builtin_tycons() -> HashMap<InternedString, usize> {
     [
         ("Int", 0), ("BigInt", 0), ("Float", 0), ("String", 0), ("Bool", 0),
-        ("Unit", 0), ("List", 1), ("Array", 1), ("Ref", 1),
+        ("Unit", 0), ("List", 1), ("Array", 1), ("Ref", 1), ("StRef", 2), ("StArray", 2),
     ]
     .into_iter()
     .map(|(n, a)| (InternedString::from(n), a))

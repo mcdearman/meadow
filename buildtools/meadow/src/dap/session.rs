@@ -809,7 +809,7 @@ impl Session {
             && heap.len(a) > 0
             && matches!(
                 heap.kind(a),
-                Kind::Data | Kind::Array | Kind::Record | Kind::Closure | Kind::Ref
+                Kind::Data | Kind::Array | Kind::MutArray | Kind::Record | Kind::Closure | Kind::Ref
             )
     }
 
@@ -832,7 +832,7 @@ impl Session {
                     self.row(label, pair.get(1).copied().unwrap_or(Value::Unit), None)
                 })
                 .collect(),
-            Kind::Array => fields
+            Kind::Array | Kind::MutArray => fields
                 .into_iter()
                 .enumerate()
                 .map(|(i, f)| self.row(format!("[{i}]"), f, None))
@@ -923,7 +923,10 @@ impl Session {
                     None => out.push_str("<function>"),
                 }
             }
-            Kind::Array => {
+            Kind::Array | Kind::MutArray => {
+                if heap.kind(a) == Kind::MutArray {
+                    out.push_str("mut ");
+                }
                 out.push_str("#[");
                 self.list(out, (0..n).map(|i| heap.field(a, i)), depth, budget);
                 out.push(']');

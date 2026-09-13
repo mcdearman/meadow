@@ -1,0 +1,146 @@
+-- Std.St: mutable state that cannot outlive the computation using it.
+--
+--   use Std.St as St
+--
+--   fun sumTo n =
+--     runSt (\() ->
+--       let total = St.newRef 0 in
+--       let _ = St.forRange 1 (n + 1) (\i -> St.modifyRef total (\t -> t + i)) in
+--       St.getRef total)
+--
+--   sumTo : Int -> Int
+--
+-- `sumTo` mutates a cell, and its type says nothing about it. That is the point
+-- of `runSt`: everything made inside one -- a cell, a mutable array -- is tied
+-- to it by a state type `s` the checker makes fresh for that `runSt` alone, and
+-- nothing mentioning `s` is allowed back out. Not the cell itself, not a
+-- closure that reads it, not a write into some longer-lived `Ref`. So once the
+-- `runSt` returns, nobody can observe that anything was ever mutable, and the
+-- result is as pure as if it had been computed without a single write.
+--
+-- Compare `Std.Ref`: a `Ref` is a real cell with no such boundary, and every
+-- function that touches one carries `Mut` in its type forever.
+--
+-- Inside a `runSt`, operations carry `{ St s | e }`; `runSt` takes that `St s`
+-- away. `runSt` itself is a primitive, always in scope, and it has to be
+-- applied to its body directly -- `runSt (\() -> ...)` -- since that is where
+-- its special typing happens. Passed around as a value it is only `f ()`, and
+-- discharges nothing.
+--
+-- A `StArray` is a fixed-length array written in place: `get` and `set` are
+-- O(1) with no copying, unlike `Array`, whose `arraySet` copies the buffer.
+-- `freeze` and `thaw` copy between the two.
+
+use Std.Collections.Vector as V
+-- `[a, b]` desugars to a `vecFromArray` call.
+use Std.Collections.Vector (vecFromArray)
+
+-- --- cells --------------------------------------------------------------------
+
+-- A new cell holding `x`.
+@pub fun newRef x = stNewRef x
+
+@pub fun getRef r = stGetRef r
+
+@pub fun setRef r x = stSetRef r x
+
+-- Apply `f` to what the cell holds.
+@pub fun modifyRef r f = stSetRef r (f (stGetRef r))
+
+-- --- arrays -------------------------------------------------------------------
+
+-- `n` copies of `x`.
+@pub fun newArray n x = stNewArray n x
+
+@pub fun get a i = stGetArray a i
+
+@pub fun set a i x = stSetArray a i x
+
+@pub fun length a = stArrayLen a
+
+@pub fun modify a i f = stSetArray a i (f (stGetArray a i))
+
+@pub fun swap a i j =
+  let x = stGetArray a i in
+  let _ = stSetArray a i (stGetArray a j) in
+  stSetArray a j x
+
+-- An immutable copy, as it is now.
+@pub fun freeze a = stFreeze a
+
+-- A mutable copy of an `Array`.
+@pub fun thaw xs = stThaw xs
+
+@pub fun fromVec v = stThaw (V.toArray v)
+
+@pub fun toVec a = V.fromArray (stFreeze a)
+
+-- --- loops --------------------------------------------------------------------
+
+-- `f lo`, `f (lo + 1)`, … up to but not including `hi`.
+@pub fun forRange lo hi f =
+  if lo >= hi then () else let _ = f lo in forRange (lo + 1) hi f
+
+-- Run `step` while `cond` holds.
+@pub fun while cond step = if cond () then let _ = step () in while cond step else ()
+
+-- --- tests --------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue)
+
+fun sumTo n =
+  runSt (\() ->
+    let total = newRef 0 in
+    let _ = forRange 1 (n + 1) (\i -> modifyRef total (\t -> t + i)) in
+    getRef total)
+
+fun reversed v =
+  runSt (\() ->
+    let a = fromVec v in
+    let n = length a in
+    let _ = forRange 0 (n / 2) (\i -> swap a i (n - 1 - i)) in
+    toVec a)
+
+fun fibs n =
+  runSt (\() ->
+    let a = newArray n 0 in
+    let _ = if n > 1 then set a 1 1 else () in
+    let _ = forRange 2 n (\i -> set a i (get a (i - 1) + get a (i - 2))) in
+    toVec a)
+
+@test fun aCellInsideRunStIsPure () =
+  assertEq (sumTo 100) 5050 "summed in a cell"
+
+@test fun arraysAreWrittenInPlace () =
+  let a = assertEq (reversed [1, 2, 3, 4, 5]) [5, 4, 3, 2, 1] "reversed in place" in
+  let b = assertEq (reversed []) [] "nothing to reverse" in
+  assertEq (fibs 10) [0, 1, 1, 2, 3, 5, 8, 13, 21, 34] "each from the two before"
+
+@test fun freezeAndThawCopy () =
+  let (frozen, after) =
+    runSt (\() ->
+      let a = thaw #[1, 2, 3] in
+      let snapshot = freeze a in
+      let _ = set a 0 99 in
+      (snapshot, freeze a))
+  in
+  let a = assertEq frozen #[1, 2, 3] "a later write does not reach a frozen copy" in
+  assertEq after #[99, 2, 3] "but does reach the array"
+
+@test fun runStNests () =
+  let got =
+    runSt (\() ->
+      let outer = newRef 1 in
+      let inner = runSt (\() -> let r = newRef 10 in let _ = modifyRef outer (\x -> x + 1) in getRef r) in
+      getRef outer + inner)
+  in
+  assertEq got 12 "an inner runSt may use the outer one's cells"
+
+@test fun whileLoops () =
+  let got =
+    runSt (\() ->
+      let i = newRef 0 in
+      let _ = while (\() -> getRef i < 5) (\() -> modifyRef i (\x -> x + 1)) in
+      getRef i)
+  in
+  assertEq got 5 "counted up"

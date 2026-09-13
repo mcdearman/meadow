@@ -869,3 +869,24 @@ fn equal_values_hash_alike() {
         "(true, true, true, false)"
     );
 }
+
+/// `runSt` and its mutable arrays behave alike everywhere: written in place,
+/// copied by `stFreeze` / `stThaw`, and printed as what they hold.
+#[test]
+fn mutable_arrays_agree_everywhere() {
+    assert_eq!(
+        agree(
+            "fun fill a i n = if i >= n then () else let _ = stSetArray a i (i * i) in fill a (i + 1) n\n\
+             def main = runSt (\\() ->\n\
+             \x20 let a = stNewArray 5 0 in\n\
+             \x20 let _ = fill a 0 5 in\n\
+             \x20 let frozen = stFreeze a in\n\
+             \x20 let b = stThaw frozen in\n\
+             \x20 let _ = stSetArray b 0 99 in\n\
+             \x20 let r = stNewRef 1 in\n\
+             \x20 let _ = stSetRef r (stGetRef r + stArrayLen b) in\n\
+             \x20 (frozen, stFreeze b, stGetRef r))"
+        ),
+        "(#[0, 1, 4, 9, 16], #[99, 1, 4, 9, 16], 6)"
+    );
+}

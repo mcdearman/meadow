@@ -60,6 +60,9 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
             _ => in_use_path = false,
         }
         let next_is_period = matches!(lex.tokens.get(i + 1).map(|n| n.value()), Some(Token::Period));
+        // `mod Int` declares a module, whatever else that spelling names -- in
+        // `Std`, `Int` is also a type and one of `Json`'s constructors.
+        let declares_module = i > 0 && matches!(lex.tokens[i - 1].value(), Token::Mod);
         let kind = match t.value() {
             Token::Mod
             | Token::Use
@@ -86,7 +89,9 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
             Token::String(_) | Token::Char(_) => "string",
             Token::UpperIdent(name) => {
                 let n = name.to_string();
-                if let Some(ns) = resolved.get(&t.span.start) {
+                if declares_module {
+                    "namespace"
+                } else if let Some(ns) = resolved.get(&t.span.start) {
                     // Resolution first, and it is the whole answer when there
                     // is one. Matching the *spelling* against known names is
                     // what coloured mini-ml's `Expr.Int` and `Expr.Bool` as

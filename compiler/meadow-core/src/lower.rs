@@ -359,6 +359,13 @@ impl<'a> Lowerer<'a> {
             hir::Expr::App(func, args) => {
                 if let hir::Expr::Var(id) = func.value() {
                     if let Some(&op) = self.prims.get(&*id.value()) {
+                        // `runSt f` is `f ()`: the rule that keeps its state
+                        // from escaping is all in the types.
+                        if op == Prim::RunSt && args.len() == 1 {
+                            let f = self.lower_expr(&args[0]);
+                            let call = Term::App(Arc::new(f), Arc::new(Term::Lit(Lit::Unit)));
+                            return self.at(expr.span, call);
+                        }
                         if op.arity() == args.len() {
                             let a = args.iter().map(|a| self.lower_expr(a)).collect();
                             return Term::Prim(op, a, self.ty(expr.id));
@@ -689,6 +696,13 @@ impl<'a> Lowerer<'a> {
     /// the wrong number of) arguments.
     fn eta_prim(&mut self, op: Prim, ty: Ty) -> Term {
         let (params, result) = peel_arrows(&ty, op.arity());
+        if op == Prim::RunSt {
+            // `\f -> f ()`, as the saturated case in `lower_expr` builds it.
+            let f = self.vars.fresh();
+            let fty = params.into_iter().next().unwrap_or_else(unknown);
+            let call = Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Lit(Lit::Unit)));
+            return Term::Lam(f, fty, Arc::new(call));
+        }
         let vars: Vec<Var> = (0..op.arity()).map(|_| self.vars.fresh()).collect();
         let body = Term::Prim(op, vars.iter().map(|v| Term::Var(*v)).collect(), result);
         vars.into_iter()

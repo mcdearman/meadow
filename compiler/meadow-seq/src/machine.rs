@@ -102,8 +102,10 @@ pub enum Value<'p> {
     /// The builtin `Array` — the only primitive collection.
     Array(Rc<Vec<Value<'p>>>),
     Record(Rc<BTreeMap<InternedString, Value<'p>>>),
-    /// A mutable cell — the only value with identity.
+    /// A mutable cell — a value with identity.
     Ref(Rc<RefCell<Value<'p>>>),
+    /// A mutable array, from `stNewArray` — the other value with identity.
+    MutArray(Rc<RefCell<Vec<Value<'p>>>>),
     /// Codata: captured values and a method table, which is a slice of the
     /// program rather than a copy of it.
     Obj(Rc<Object<'p>>),
@@ -754,6 +756,7 @@ fn kind(v: &Value) -> &'static str {
         Value::Array(_) => "Array",
         Value::Record(_) => "record",
         Value::Ref(_) => "Ref",
+        Value::MutArray(_) => "StArray",
         Value::Obj(_) => "codata",
         Value::Resume(_) => "resumption",
         Value::Halt => "halt",
@@ -922,6 +925,7 @@ pub fn value_eq<'p>(a: &Value<'p>, b: &Value<'p>) -> bool {
             // Identity, not contents: a `Ref` is a place, and two cells holding
             // the same thing are still two cells.
             (Value::Ref(x), Value::Ref(y)) if Rc::ptr_eq(x, y) => {}
+            (Value::MutArray(x), Value::MutArray(y)) if Rc::ptr_eq(x, y) => {}
             _ => return false,
         }
     }
@@ -980,6 +984,7 @@ fn hash_value(v: &Value) -> Result<i64, Error> {
                 }
             }
             Value::Ref(_) => return err(unhashable("a Ref")),
+            Value::MutArray(_) => return err(unhashable("a mutable array")),
             Value::Obj(_) | Value::Resume(_) | Value::Halt => {
                 return err(unhashable("a function"));
             }
@@ -1304,6 +1309,50 @@ fn prim<'p>(
             }
             other => err(format!("setRef: expected a Ref, got {other}")),
         },
+
+        // --- the mutable array ------------------------------------------------
+        RunSt => err("runSt reached the machine; lowering applies its body"),
+        StNewArray => match &args[0] {
+            Value::Int(n) if *n >= 0 => Ok(Value::MutArray(Rc::new(RefCell::new(vec![
+                args[1].clone();
+                *n as usize
+            ])))),
+            other => err(format!("stNewArray: expected a length of zero or more, got {other}")),
+        },
+        StGetArray => {
+            let cells = as_mut_array(&args[0])?;
+            let i = as_index(&args[1])?;
+            let cells = cells.borrow();
+            cells.get(i).cloned().ok_or_else(|| Error {
+                msg: format!("stGetArray: index {i} out of bounds (len {})", cells.len()),
+            })
+        }
+        StSetArray => {
+            let cells = as_mut_array(&args[0])?;
+            let i = as_index(&args[1])?;
+            let mut cells = cells.borrow_mut();
+            let n = cells.len();
+            match cells.get_mut(i) {
+                Some(slot) => {
+                    *slot = args[2].clone();
+                    Ok(Value::Unit)
+                }
+                None => err(format!("stSetArray: index {i} out of bounds (len {n})")),
+            }
+        }
+        StArrayLen => Ok(Value::Int(as_mut_array(&args[0])?.borrow().len() as i64)),
+        StFreeze => Ok(Value::Array(Rc::new(as_mut_array(&args[0])?.borrow().clone()))),
+        StThaw => match &args[0] {
+            Value::Array(xs) => Ok(Value::MutArray(Rc::new(RefCell::new((**xs).clone())))),
+            other => err(format!("stThaw: expected an Array, got {other}")),
+        },
+    }
+}
+
+fn as_mut_array<'a, 'p>(v: &'a Value<'p>) -> Result<&'a Rc<RefCell<Vec<Value<'p>>>>, Error> {
+    match v {
+        Value::MutArray(a) => Ok(a),
+        other => err(format!("expected a mutable array, got {other}")),
     }
 }
 
@@ -1425,6 +1474,16 @@ impl std::fmt::Display for Value<'_> {
                 f.write_str(")")
             }
             Value::Ref(cell) => write!(f, "ref {}", cell.borrow()),
+            Value::MutArray(cells) => {
+                f.write_str("mut #[")?;
+                for (i, v) in cells.borrow().iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{v}")?;
+                }
+                f.write_str("]")
+            }
             Value::Obj(_) => f.write_str("<closure>"),
             Value::Resume(_) => f.write_str("<continuation>"),
             Value::Halt => f.write_str("<halt>"),

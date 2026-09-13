@@ -1220,3 +1220,15 @@ fn a_use_of_a_types_constructors_colours_each_part() {
         ]
     );
 }
+
+/// A module is a namespace wherever it is written, even when its name is also a
+/// type and a constructor -- `Std`'s `Int` and `String` are all three. The
+/// declaration in `Lib.mw` was the one place that still coloured them by
+/// spelling.
+#[test]
+fn a_module_named_like_a_type_is_a_namespace() {
+    let src = "@pub mod Int\n@pub mod String\nuse Std.Int as I\nuse Std.String as String\ndef x = (I.max 1 2, String.concat \"a\" \"b\")\n";
+    let wrong: Vec<(String, &str)> =
+        colours(src).into_iter().filter(|(_, kind)| *kind != "namespace").collect();
+    assert!(wrong.is_empty(), "coloured as something other than a module: {wrong:?}");
+}

@@ -177,3 +177,26 @@ fn the_two_profiles_are_cached_separately() {
     assert_eq!(stdlib::compiles(meadow::Options::debug()), 1);
     assert_eq!(stdlib::compiles(meadow::Options::release()), 1);
 }
+
+/// `Lib.mw` declares every top-level `Std` module, by the name it is compiled
+/// under. Nothing else checks a `mod` declaration against a real module, which
+/// is how it came to list `Test` twice, miss three modules and spell `Prelude`
+/// in lower case.
+#[test]
+fn lib_declares_exactly_the_top_level_modules() {
+    let (_, lib) = meadow::stdlib::MODULES
+        .iter()
+        .find(|(name, _)| *name == "Lib")
+        .expect("Std has a Lib");
+    let declared: Vec<&str> = lib
+        .lines()
+        .filter_map(|l| l.strip_prefix("@pub mod "))
+        .map(str::trim)
+        .collect();
+    let compiled: Vec<&str> = meadow::stdlib::MODULES
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| *name != "Lib" && !name.contains('.'))
+        .collect();
+    assert_eq!(declared, compiled);
+}

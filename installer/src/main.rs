@@ -94,7 +94,7 @@ impl Args {
                     args.from = Some(PathBuf::from(v));
                 }
                 "--version" => {
-                    let v = it.next().ok_or("--version needs a tag, e.g. v0.1.0")?;
+                    let v = it.next().ok_or("--version needs a tag, e.g. v0.1.0-alpha")?;
                     args.version = Some(v);
                 }
                 other => return Err(format!("unknown option: {other}")),

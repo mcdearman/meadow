@@ -5,9 +5,10 @@
 # Asset names carry no version, so the installers can use the
 # `/releases/latest/download/...` redirect and never need to know the tag.
 #
-# Cut a release by pushing a tag:
+# Cut a release by pushing a tag. While the language is in alpha there is one
+# release, `v0.1.0-alpha`, republished by moving its tag:
 #
-#     git tag v0.1.0 && git push origin v0.1.0
+#     git tag -f v0.1.0-alpha && git push -f origin v0.1.0-alpha
 #
 # A manual run builds everything and leaves the archives as workflow artifacts
 # without publishing.
@@ -170,6 +171,14 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # A moved tag republishes: the release already there, with its old
+      # assets, goes first, so nothing from the previous build is left behind
+      # or collides with an upload. The tag itself stays -- it was just pushed.
+      - name: Replace an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "${{ github.ref_name }}" --repo "${{ github.repository }}" --yes || true
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -195,7 +204,7 @@ jobs:
             *Extensions: Install from VSIX…*, or:
 
             ```sh
-            code --install-extension meadow-0.2.0.vsix
+            code --install-extension meadow-0.1.0-alpha.vsix
             ```
 
             It gives you syntax highlighting on its own, and diagnostics, hover,

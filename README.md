@@ -38,13 +38,13 @@ so you can also unzip a release and install offline.
 ```
 meadow-setup.exe --dir <path>       install somewhere else
 meadow-setup.exe --from <path>      install a specific meadow.exe
-meadow-setup.exe --version v0.1.0   pin a release
+meadow-setup.exe --version v0.1.0-alpha   pin a release
 meadow-setup.exe --no-modify-path   leave PATH alone
 meadow-setup.exe --uninstall
 ```
 
 ```sh
-install.sh --version v0.1.0   # pin a release
+install.sh --version v0.1.0-alpha   # pin a release
 install.sh --from-source      # always build from source (needs cargo)
 install.sh --no-modify-path   # leave shell profiles alone
 install.sh --uninstall
@@ -233,7 +233,7 @@ For VS Code, build and install the extension:
 
 ```sh
 editors/vscode/build.sh
-code --install-extension editors/vscode/meadow-0.2.5.vsix
+code --install-extension editors/vscode/meadow-0.1.0-alpha.vsix
 ```
 
 Each release also attaches a built `.vsix`.
@@ -379,8 +379,13 @@ that does, which is the reason it exists.
 Push a tag; `.github/workflows/release.yml` cross-builds for Linux, macOS and
 Windows (x86-64 and arm64) and attaches the archives the installers look for.
 
+Until the language settles there is one release, `v0.1.0-alpha`, and a new
+build replaces it rather than adding another. Move the tag to the commit to
+publish and push it again; the workflow deletes the old release before making
+the new one:
+
 ```sh
-git tag v0.1.0 && git push origin v0.1.0
+git tag -f v0.1.0-alpha && git push -f origin v0.1.0-alpha
 ```
 
 The tag is gated on `scripts/check.sh --version <tag>`, which fails if the tag

@@ -86,6 +86,21 @@ function speaksLsp(exe) {
   }
 }
 
+/// Does this build have the `dap` subcommand? Asked the same way as
+/// [`speaksLsp`], and for the same reason: `--help` answers without serving.
+function speaksDap(exe) {
+  try {
+    const r = cp.spawnSync(exe, ["dap", "--help"], {
+      timeout: 5000,
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 /// The first candidate that exists on disk, ignoring whether it can serve.
 function resolve(configured, opts = {}) {
   const exists = opts.exists || executable;
@@ -117,4 +132,4 @@ function pick(configured, opts = {}) {
   return { command: found[0], lsp: false, found };
 }
 
-module.exports = { candidates, resolve, pick };
+module.exports = { candidates, resolve, pick, speaksLsp, speaksDap };

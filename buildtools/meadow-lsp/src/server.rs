@@ -14,7 +14,7 @@ use lsp_types::notification::{
     Notification, PublishDiagnostics,
 };
 use lsp_types::request::{
-    GotoDefinition, HoverRequest, InlayHintRequest, PrepareRenameRequest, Rename,
+    CodeLensRequest, GotoDefinition, HoverRequest, InlayHintRequest, PrepareRenameRequest, Rename,
     Request as LspRequest, SemanticTokensFullRequest,
 };
 use lsp_types::*;
@@ -122,6 +122,9 @@ fn server_capabilities() -> ServerCapabilities {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
+        code_lens_provider: Some(CodeLensOptions {
+            resolve_provider: Some(false),
+        }),
         // `prepare_provider` is what lets the editor put the cursor in a box
         // with the old name in it, and refuse before asking on something that
         // cannot be renamed.
@@ -351,6 +354,40 @@ impl Server {
                     ),
                 }
             }
+            // A "Debug" above each top-level definition. The command is the
+            // editor's to run -- it asks for arguments and starts `meadow dap`
+            // -- so the lens only has to say what it would be starting.
+            CodeLensRequest::METHOD => self.answer::<CodeLensRequest, _>(req, |s, p| {
+                let doc = s.docs.get(&p.text_document.uri)?;
+                let lenses = doc
+                    .analysis
+                    .functions
+                    .iter()
+                    .map(|f| {
+                        let (start, end) = doc.index.range(f.span);
+                        let range = Range {
+                            start: Position::new(start.0, start.1),
+                            end: Position::new(end.0, end.1),
+                        };
+                        CodeLens {
+                            range,
+                            command: Some(Command {
+                                title: "▶ Debug".to_string(),
+                                command: "meadow.debugFunction".to_string(),
+                                arguments: Some(vec![serde_json::json!({
+                                    "uri": p.text_document.uri.as_str(),
+                                    "name": f.name,
+                                    "params": f.params,
+                                    "signature": f.signature,
+                                    "line": start.0,
+                                })]),
+                            }),
+                            data: None,
+                        }
+                    })
+                    .collect();
+                Some(lenses)
+            }),
             InlayHintRequest::METHOD => self.answer::<InlayHintRequest, _>(req, |s, p| {
                 let from = {
                     let doc = s.docs.get(&p.text_document.uri)?;
@@ -630,11 +667,30 @@ fn starts_with_drive(s: &str) -> bool {
 /// needs its separators flipped and a leading slash before the drive letter,
 /// and anything outside the unreserved set has to be percent-encoded — an
 /// install under a user whose name contains a space is not exotic.
+///
+/// A third: `std::fs::canonicalize` on Windows answers in the verbatim form,
+/// `\\?\C:\...`, and the package loader canonicalizes. Encoded as it stands
+/// that became `file:////%3F/C:/...`, which VS Code refuses -- and a refused
+/// location in one inlay hint loses every hint in the reply, so a module whose
+/// hints named a sibling's type showed none at all.
 fn path_to_uri(path: &std::path::Path) -> Option<Uri> {
-    let text = path.to_str()?.replace('\\', "/");
-    let mut out = String::from("file://");
-    if !text.starts_with('/') {
-        out.push('/');
+    let raw = path.to_str()?;
+    let plain = match raw.strip_prefix(r"\\?\") {
+        // `\\?\UNC\server\share\x` is the share `\\server\share\x`.
+        Some(rest) => match rest.strip_prefix(r"UNC\") {
+            Some(unc) => format!(r"\\{unc}"),
+            None => rest.to_string(),
+        },
+        None => raw.to_string(),
+    };
+    let text = plain.replace('\\', "/");
+    let mut out = String::from("file:");
+    match text.strip_prefix("//") {
+        // A share: its server is the URI's authority, `file://server/share/x`.
+        Some(_) => {}
+        None if text.starts_with('/') => out.push_str("//"),
+        // A drive path: an empty authority, then `/C:/...`.
+        None => out.push_str("///"),
     }
     for b in text.bytes() {
         match b {
@@ -710,6 +766,31 @@ mod tests {
             uri_to_path(&uri("file:///c%3A/Users/Bob%20Smith/pkg/main.mw")),
             Some(PathBuf::from("c:/Users/Bob Smith/pkg/main.mw"))
         );
+    }
+
+    /// What `canonicalize` hands back on Windows is still an ordinary file URI.
+    #[test]
+    fn a_verbatim_path_becomes_an_ordinary_uri() {
+        let got = path_to_uri(std::path::Path::new(r"\\?\C:\Users\me\pkg\src\Syntax.mw"));
+        assert_eq!(got.map(|u| u.as_str().to_string()).as_deref(), Some("file:///C:/Users/me/pkg/src/Syntax.mw"));
+    }
+
+    #[test]
+    fn a_share_keeps_its_server_as_the_authority() {
+        for path in [r"\\?\UNC\server\share\pkg\main.mw", r"\\server\share\pkg\main.mw"] {
+            let got = path_to_uri(std::path::Path::new(path));
+            assert_eq!(
+                got.map(|u| u.as_str().to_string()).as_deref(),
+                Some("file://server/share/pkg/main.mw"),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_posix_path_becomes_a_uri_with_an_empty_authority() {
+        let got = path_to_uri(std::path::Path::new("/home/me/pkg/main.mw"));
+        assert_eq!(got.map(|u| u.as_str().to_string()).as_deref(), Some("file:///home/me/pkg/main.mw"));
     }
 
     /// `path_to_uri` and `uri_to_path` have to agree, or a location the server

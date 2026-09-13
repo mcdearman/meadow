@@ -36,7 +36,25 @@ pub struct BuildOutput {
 /// The embedded `Std` package (see [`crate::stdlib`]) is compiled first and made
 /// an implicit dependency of every package, so the prelude is always in scope.
 pub fn build(entry: &Path, opts: Options) -> BuildOutput {
-    let graph = match PackageGraph::build(entry) {
+    build_with(entry, opts, None)
+}
+
+/// Text to add to the end of one module before it is compiled -- how a
+/// debugger starts a program at a function instead of `main`: it appends a
+/// definition that calls it, in the function's own module so that everything
+/// the function can see, the definition can too.
+pub struct Addition<'a> {
+    /// The module's file.
+    pub file: &'a Path,
+    pub text: &'a str,
+}
+
+/// [`build`], with `addition` appended to one of the modules first.
+///
+/// Diagnostics from the added text point past the end of the file, which is
+/// how a caller can tell them from the file's own.
+pub fn build_with(entry: &Path, opts: Options, addition: Option<Addition<'_>>) -> BuildOutput {
+    let mut graph = match PackageGraph::build(entry) {
         Ok(g) => g,
         Err(d) => {
             return BuildOutput {
@@ -63,6 +81,34 @@ pub fn build(entry: &Path, opts: Options) -> BuildOutput {
                 extra_labels: vec![],
             }],
         };
+    }
+
+    if let Some(add) = addition {
+        let want = std::fs::canonicalize(add.file).unwrap_or_else(|_| add.file.to_path_buf());
+        let module = graph
+            .packages
+            .iter_mut()
+            .flat_map(|p| p.modules.iter_mut())
+            .find(|m| match m.source.kind {
+                SourceKind::File(name) => {
+                    let p = Path::new(&*name);
+                    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()) == want
+                }
+                SourceKind::Interactive => false,
+            });
+        let Some(module) = module else {
+            return BuildOutput {
+                linked: None,
+                diagnostics: vec![Diagnostic {
+                    msg: format!("{} is not a module of this package", add.file.display()),
+                    filename: add.file.display().to_string(),
+                    label: (String::new(), Span::from(0..0)),
+                    extra_labels: vec![],
+                }],
+            };
+        };
+        let text = format!("{}\n{}\n", &*module.source.content, add.text);
+        module.source = Source::new(module.source.kind, InternedString::from(text));
     }
 
     let (std_pkgs, mut diagnostics) = stdlib::std_packages(opts);

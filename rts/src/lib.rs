@@ -71,4 +71,4 @@ pub mod vm;
 pub use heap::{Heap, Kind};
 pub use journal::{Journal, Undo};
 pub use value::{Addr, Value};
-pub use vm::{run, Error, Vm};
+pub use vm::{run, Error, HandlerView, Io, Vm};

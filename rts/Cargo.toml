@@ -3,7 +3,7 @@
 [package]
 name = "meadow-rts"
 description = "The Meadow runtime system: a register bytecode VM with a Cheney semispace collector. It executes straight-line bytecode and knows nothing about the IR that produced it."
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 
 [lib]

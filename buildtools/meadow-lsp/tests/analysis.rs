@@ -983,3 +983,23 @@ fn a_new_name_has_to_be_one() {
     .expect_err("should refuse");
     assert!(err.contains("is not a name"), "got: {err}");
 }
+
+/// What the editor offers to debug: each top-level definition, with how many
+/// arguments it takes and its type -- private ones included, since those are
+/// most of what a person wants to try on its own.
+#[test]
+fn top_level_definitions_are_listed_for_debugging() {
+    let src = "fun double n = n * 2\n\nfun pair a b = (a, b)\n\ndef answer = 42\n\ndef (x, y) = (1, 2)\n";
+    let a = STD.with(|s| s.analyse(src));
+    let got: Vec<(&str, usize, &str)> = a
+        .functions
+        .iter()
+        .map(|f| (f.name.as_str(), f.params, f.signature.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [("double", 1, "Int -> Int"), ("pair", 2, "a -> b -> (a, b)"), ("answer", 0, "Int")]
+    );
+    let double = &a.functions[0];
+    assert_eq!(&src[double.span.start as usize..double.span.end as usize], "double");
+}

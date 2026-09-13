@@ -303,6 +303,79 @@ pub struct Program {
     pub entry: Option<Pc>,
     /// The most registers any block needs. Checked against 256 when built.
     pub regs: u16,
+    /// What a debugger needs to talk about this code in the program's own
+    /// terms. Only built when asked for -- see [`DebugInfo`].
+    pub debug: Option<Box<DebugInfo>>,
+}
+
+/// The source-level reading of an image: where each instruction came from, what
+/// each register holds, and which block is which.
+///
+/// Everything here is indexed the way the machine already is -- by pc, by
+/// register -- so a debugger stopped at an instruction answers "where am I" and
+/// "what is `x`" with a lookup, not a search.
+#[derive(Debug, Clone, Default)]
+pub struct DebugInfo {
+    /// Per instruction: the source position it was compiled from, if any.
+    pub locs: Vec<Option<meadow_core::Loc>>,
+    /// Per instruction: which of [`DebugInfo::envs`] holds while it runs.
+    pub env_of: Vec<u32>,
+    /// The environments the instructions run in, each stored once: which name
+    /// (a `VarId`'s number) lives in which register.
+    pub envs: Vec<Vec<(u32, Reg)>>,
+    /// Every separately addressed block, in address order.
+    pub regions: Vec<Region>,
+    /// The names that are a function's return continuation -- see
+    /// `meadow_seq::Program::returns`.
+    pub returns: std::collections::HashSet<u32>,
+    /// The continuations a function makes for its own calls -- see
+    /// `meadow_seq::Program::continuations`.
+    pub continuations: std::collections::HashSet<u32>,
+}
+
+/// One separately addressed block: a definition, a function body, a
+/// continuation, a handler clause.
+#[derive(Debug, Clone)]
+pub struct Region {
+    pub entry: Pc,
+    /// One past its last instruction.
+    pub end: Pc,
+    /// The top-level definition it was compiled from.
+    pub name: InternedString,
+    /// Its parameters, in register order: an object's captures and then its
+    /// arguments, which is how [`Op::Invoke`] lays them out.
+    pub params: Vec<u32>,
+    /// The source position in effect where the code that creates this block
+    /// was -- for a continuation, the call it is waiting on. `None` for a
+    /// definition, which nothing creates.
+    pub origin: Option<meadow_core::Loc>,
+}
+
+impl DebugInfo {
+    /// Where the instruction at `pc` came from.
+    pub fn loc(&self, pc: Pc) -> Option<meadow_core::Loc> {
+        self.locs.get(pc as usize).copied().flatten()
+    }
+
+    /// Which name is in which register at `pc`.
+    pub fn env(&self, pc: Pc) -> &[(u32, Reg)] {
+        self.env_of
+            .get(pc as usize)
+            .and_then(|&i| self.envs.get(i as usize))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// The block `pc` is in.
+    pub fn region(&self, pc: Pc) -> Option<&Region> {
+        let i = self.regions.partition_point(|r| r.entry <= pc);
+        self.regions.get(i.checked_sub(1)?).filter(|r| pc < r.end)
+    }
+
+    /// The block whose first instruction is `pc`.
+    pub fn region_at(&self, pc: Pc) -> Option<&Region> {
+        self.region(pc).filter(|r| r.entry == pc)
+    }
 }
 
 impl Program {

@@ -47,6 +47,11 @@ impl Strictness {
 pub struct Options {
     pub opt: OptLevel,
     pub strictness: Strictness,
+    /// Keep where each call, branch and body was written, for a debugger.
+    ///
+    /// Not part of either profile: it is what `meadow dap` asks for, and it
+    /// changes nothing a program does -- only what the compiler remembers.
+    pub debug_info: bool,
 }
 
 impl Options {
@@ -64,6 +69,7 @@ impl Options {
         Options {
             opt: OptLevel::O1,
             strictness: Strictness::Lenient,
+            debug_info: false,
         }
     }
 
@@ -73,6 +79,7 @@ impl Options {
         Options {
             opt: OptLevel::O2,
             strictness: Strictness::Strict,
+            debug_info: false,
         }
     }
 }

@@ -50,6 +50,9 @@ pub struct Lowerer<'a> {
     /// parameters -- and they belong to the unit being lowered, so this carries
     /// on from where resolution left off rather than starting anywhere.
     vars: hir::VarIdGen,
+    /// The source of the module being lowered, when positions are wanted --
+    /// see [`Term::Loc`]. `None`, the default, lowers exactly as before.
+    pub locations: Option<u32>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -73,6 +76,15 @@ impl<'a> Lowerer<'a> {
             schemes,
             ctor_fields: HashMap::new(),
             vars,
+            locations: None,
+        }
+    }
+
+    /// `term`, marked as written at `span` if positions are being kept.
+    fn at(&self, span: meadow_span::Span, term: Term) -> Term {
+        match self.locations {
+            Some(source) => Term::Loc(Loc { source, span }, Arc::new(term)),
+            None => term,
         }
     }
 
@@ -222,6 +234,13 @@ impl<'a> Lowerer<'a> {
             }
             hir::Bind::Pat(pat, expr) => {
                 let rhs = self.lower_expr(expr);
+                // Not around a lambda: a definition that is one gets a second,
+                // direct entry point, and the back end finds it by its shape.
+                let rhs = if matches!(rhs, Term::Lam(..)) {
+                    rhs
+                } else {
+                    self.at(expr.span, rhs)
+                };
                 match pat.value() {
                     hir::Pat::Var(id) => {
                         let v = *id.value();
@@ -273,7 +292,8 @@ impl<'a> Lowerer<'a> {
     /// the top of the body.
     fn curry_lam(&mut self, params: &[hir::LPat], body: &hir::LExpr) -> Term {
         let binders: Vec<_> = params.iter().map(|p| self.pat_binder(p)).collect();
-        let mut term = self.lower_expr(body);
+        let lowered = self.lower_expr(body);
+        let mut term = self.at(body.span, lowered);
         for (v, ty, structured) in binders.into_iter().rev() {
             term = self.with_pat_prelude_term(v, structured, term);
             term = Term::Lam(v, ty, Arc::new(term));
@@ -349,7 +369,7 @@ impl<'a> Lowerer<'a> {
                 for a in args {
                     term = Term::App(Arc::new(term), Arc::new(self.lower_expr(a)));
                 }
-                term
+                self.at(expr.span, term)
             }
 
             hir::Expr::Let(binds, body) => {
@@ -360,20 +380,31 @@ impl<'a> Lowerer<'a> {
                 for bind in binds.iter().rev() {
                     inner = self.lower_let_bind(bind, inner, &result);
                 }
-                inner
+                self.at(expr.span, inner)
             }
 
-            hir::Expr::If(c, t, e) => Term::If(
-                Arc::new(self.lower_expr(c)),
-                Arc::new(self.lower_expr(t)),
-                Arc::new(self.lower_expr(e)),
-            ),
+            // The branches, never the condition: a comparison there is fused
+            // into the branch that tests it, and has to stay recognisable.
+            hir::Expr::If(c, t, e) => {
+                let c = self.lower_expr(c);
+                let lt = self.lower_expr(t);
+                let le = self.lower_expr(e);
+                Term::If(
+                    Arc::new(c),
+                    Arc::new(self.at(t.span, lt)),
+                    Arc::new(self.at(e.span, le)),
+                )
+            }
 
             hir::Expr::Match(scrut, arms) => {
                 let s = self.lower_expr(scrut);
                 let arms = arms
                     .iter()
-                    .map(|(p, e)| (self.lower_pat(p), self.lower_expr(e)))
+                    .map(|(p, e)| {
+                        let pat = self.lower_pat(p);
+                        let body = self.lower_expr(e);
+                        (pat, self.at(e.span, body))
+                    })
                     .collect();
                 Term::Case(Arc::new(s), arms, self.ty(expr.id))
             }
@@ -493,7 +524,8 @@ impl<'a> Lowerer<'a> {
         pat: Option<&hir::LPat>,
         body: &hir::LExpr,
     ) -> Term {
-        let term = self.lower_expr(body);
+        let lowered = self.lower_expr(body);
+        let term = self.at(body.span, lowered);
         self.with_pat_prelude_term(var, pat, term)
     }
 

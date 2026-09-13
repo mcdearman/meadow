@@ -10,6 +10,7 @@
 const { workspace, window, commands } = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 const { pick } = require("./resolve");
+const { registerDebugger } = require("./debug");
 
 let client;
 
@@ -49,6 +50,11 @@ function start() {
     documentSelector: [{ scheme: "file", language: "meadow" }],
     synchronize: { fileEvents: workspace.createFileSystemWatcher("**/*.mw") },
     outputChannelName: "Meadow Language Server",
+    middleware: {
+      // The "Debug" lens above each definition, unless it has been turned off.
+      provideCodeLenses: (document, token, next) =>
+        workspace.getConfiguration("meadow").get("debug.codeLens", true) ? next(document, token) : [],
+    },
   };
 
   client = new LanguageClient("meadow", "Meadow Language Server", serverOptions, clientOptions);
@@ -88,6 +94,7 @@ async function stop() {
 
 function activate(context) {
   start();
+  registerDebugger(context);
   context.subscriptions.push(
     commands.registerCommand("meadow.restartServer", async () => {
       await stop();

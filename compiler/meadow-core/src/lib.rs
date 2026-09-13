@@ -500,6 +500,34 @@ pub enum Term {
     /// only exists in a unit that already has errors, and the checker has
     /// nothing useful to say about it.
     Error,
+    /// `e`, which was written at `loc` -- present only when the unit was
+    /// compiled for a debugger, and meaning exactly what `e` means.
+    ///
+    /// Only placed where a person would want to stop: a call, a `perform`, a
+    /// function's body, the branches of an `if` and the arms of a `match`.
+    /// Never around a literal or a condition, which the back end inspects to
+    /// fold a constant or fuse a comparison into its branch: a debug build
+    /// should run the program the ordinary build runs.
+    Loc(Loc, Arc<Term>),
+}
+
+/// Where a term was written: which source, and where in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Loc {
+    /// A [`meadow_source::Source`]'s id -- see `meadow_source::SourceId`.
+    pub source: u32,
+    pub span: meadow_span::Span,
+}
+
+impl Term {
+    /// The term under any [`Term::Loc`]s.
+    pub fn peel(&self) -> &Term {
+        let mut t = self;
+        while let Term::Loc(_, inner) = t {
+            t = inner;
+        }
+        t
+    }
 }
 
 impl Term {
@@ -842,6 +870,8 @@ impl Printer {
                 }
                 format!("(handle {} with {{ {} }})", self.term(body), parts.join("; "))
             }
+            // Transparent: a dump of a debug build reads like any other.
+            Term::Loc(_, inner) => self.term(inner),
             Term::Error => "<error>".to_string(),
         }
     }

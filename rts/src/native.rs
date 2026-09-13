@@ -431,6 +431,12 @@ impl Vm<'_> {
         Ok(Some(match op {
             "readLine" => {
                 let _ = arg;
+                if let Some(input) = &mut self.io.input {
+                    return Ok(Some(match input() {
+                        Some(line) => Build::Data("Maybe.Just", vec![Build::Str(line)]),
+                        None => Build::Data("Maybe.None", vec![]),
+                    }));
+                }
                 let mut line = String::new();
                 match std::io::stdin().lock().read_line(&mut line) {
                     // Zero bytes is end of input, not an empty line: an empty

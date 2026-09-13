@@ -45,7 +45,7 @@ fn type_args(pkg: &CompiledPackage) -> Vec<String> {
                 }
                 go(f, out);
             }
-            T::TyLam(_, b) | T::Lam(_, _, b) | T::Proj(b, _) | T::Sel(b, _, _) => go(b, out),
+            T::TyLam(_, b) | T::Lam(_, _, b) | T::Proj(b, _) | T::Sel(b, _, _) | T::Loc(_, b) => go(b, out),
             T::App(f, a) => {
                 go(f, out);
                 go(a, out);

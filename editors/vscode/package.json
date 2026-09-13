@@ -1,15 +1,16 @@
 {
 	"name": "meadow",
 	"displayName": "Meadow",
-	"description": "Language support for Meadow: syntax highlighting, diagnostics, hover, go-to-definition, rename and inlay hints.",
-	"version": "0.2.2",
+	"description": "Language support for Meadow: syntax highlighting, diagnostics, hover, go-to-definition, rename, inlay hints and a debugger.",
+	"version": "0.2.3",
 	"publisher": "ChrisMcDearman",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/mcdearman/meadow"
 	},
 	"categories": [
-		"Programming Languages"
+		"Programming Languages",
+		"Debuggers"
 	],
 	"engines": {
 		"vscode": "^1.75.0"
@@ -44,6 +45,11 @@
 					"default": "meadow",
 					"description": "Path to the `meadow` executable; the extension runs `meadow lsp`. Left at `meadow`, it searches your PATH first, then $MEADOW_HOME/bin, ~/.cargo/bin and ~/.meadow/bin — an editor launched from the Dock or the Start menu does not inherit your shell PATH. Whatever it finds is asked whether it understands `lsp` before being used."
 				},
+				"meadow.debug.codeLens": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show a \"Debug\" link above each top-level definition, which asks for its arguments and starts the debugger there."
+				},
 				"meadow.inlayHints.enabled": {
 					"type": "boolean",
 					"default": true,
@@ -65,6 +71,83 @@
 			{
 				"command": "meadow.restartServer",
 				"title": "Meadow: Restart Language Server"
+			},
+			{
+				"command": "meadow.debugFunction",
+				"title": "Meadow: Debug Function…",
+				"enablement": "editorLangId == meadow"
+			}
+		],
+		"menus": {
+			"editor/context": [
+				{
+					"command": "meadow.debugFunction",
+					"when": "editorLangId == meadow",
+					"group": "meadow@1"
+				}
+			]
+		},
+		"breakpoints": [
+			{
+				"language": "meadow"
+			}
+		],
+		"debuggers": [
+			{
+				"type": "meadow",
+				"label": "Meadow",
+				"languages": [
+					"meadow"
+				],
+				"configurationAttributes": {
+					"launch": {
+						"required": [
+							"program"
+						],
+						"properties": {
+							"program": {
+								"type": "string",
+								"description": "What to debug: a package directory (one with a meadow.toml) or a single .mw file.",
+								"default": "${workspaceFolder}"
+							},
+							"stopOnEntry": {
+								"type": "boolean",
+								"description": "Stop before the first line of `main` runs.",
+								"default": false
+							},
+							"entry": {
+								"type": "object",
+								"description": "Start at an expression instead of `main` -- what the \"Debug\" link above a definition fills in.",
+								"required": ["module", "expression"],
+								"properties": {
+									"module": { "type": "string", "description": "The .mw file the expression is written in; it sees what that module sees." },
+									"expression": { "type": "string", "description": "What to run, e.g. `eval [;] (Int 1)`." },
+									"function": { "type": "string", "description": "Stop as soon as this top-level definition of `module` is entered." }
+								}
+							}
+						}
+					}
+				},
+				"initialConfigurations": [
+					{
+						"type": "meadow",
+						"request": "launch",
+						"name": "Debug Meadow",
+						"program": "${workspaceFolder}"
+					}
+				],
+				"configurationSnippets": [
+					{
+						"label": "Meadow: Launch",
+						"description": "Debug a Meadow package or file.",
+						"body": {
+							"type": "meadow",
+							"request": "launch",
+							"name": "Debug Meadow",
+							"program": "^\"\\${workspaceFolder}\""
+						}
+					}
+				]
 			}
 		]
 	},

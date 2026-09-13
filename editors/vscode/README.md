@@ -15,6 +15,11 @@ Language support for [Meadow](https://github.com/mcdearman/meadow).
   spelling are told apart. A name from the standard library is refused, since
   its definition is not yours to edit.
 - **Inlay hints** — inferred types after parameters and `let` bindings.
+- **Debugging** (F5) — breakpoints, stepping, the call stack, and the locals,
+  registers, effect handlers and heap of a stopped program, through
+  `meadow dap`. With no `launch.json`, F5 debugs the package the open file
+  belongs to. A **▶ Debug** link above each definition runs just that function,
+  with the arguments you type.
 
 ## Requirements
 
@@ -46,4 +51,5 @@ so instead of going quiet.
 |---|---|
 | `meadow.server.path` | path to the `meadow` executable (default `meadow`) |
 | `meadow.inlayHints.enabled` | show inferred types inline |
+| `meadow.debug.codeLens` | show a "Debug" link above each top-level definition |
 | `meadow.trace.server` | log the LSP traffic, for debugging |

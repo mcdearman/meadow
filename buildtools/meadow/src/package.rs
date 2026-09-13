@@ -83,6 +83,7 @@ impl ProfileConfig {
         Options {
             opt: self.opt.unwrap_or(base.opt),
             strictness: self.strictness.unwrap_or(base.strictness),
+            debug_info: base.debug_info,
         }
     }
 }

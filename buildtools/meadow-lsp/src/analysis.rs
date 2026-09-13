@@ -256,6 +256,21 @@ pub struct Analysis {
     /// whose `Loc` names a different one is in another file.
     pub source_id: meadow_compiler::source::SourceId,
     pub ctors_in_scope: std::collections::HashSet<String>,
+    /// This document's top-level definitions, in source order -- what an
+    /// editor offers to run or debug on its own.
+    pub functions: Vec<Function>,
+}
+
+/// A top-level definition, as something to start a program at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Function {
+    pub name: String,
+    /// Where its name is written.
+    pub span: Span,
+    /// How many parameters it is written with: `0` for a `def`.
+    pub params: usize,
+    /// Its inferred type, as a hover would show it.
+    pub signature: String,
 }
 
 /// The files of one package on disk, as the editor should analyse them.
@@ -524,6 +539,7 @@ impl Std {
             wider_names: Default::default(),
             wider_refs: Vec::new(),
             wider_name_refs: Vec::new(),
+            functions: Vec::new(),
         };
         collect_names(
             &pkg.data_decls,
@@ -624,6 +640,7 @@ impl Std {
             wider_names: Default::default(),
             wider_refs: Vec::new(),
             wider_name_refs: Vec::new(),
+            functions: Vec::new(),
         };
         collect_names(
             &pkg.data_decls,
@@ -646,6 +663,25 @@ impl Std {
         }
         a
     }
+}
+
+/// `t` without a trailing `! e` whose variable is mentioned nowhere else.
+///
+/// A scheme prints without one (see `meadow_infer`'s rendering of `Scheme`),
+/// because an effect variable that occurs once constrains nothing; a node's
+/// type, which is all a definition that is not exported has, still carries it.
+fn without_lone_effect(t: &str) -> String {
+    if let Some((body, var)) = t.rsplit_once(" ! ") {
+        let lone = !var.is_empty()
+            && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '\'')
+            && !body
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '\''))
+                .any(|w| w == var);
+        if lone {
+            return body.to_string();
+        }
+    }
+    t.to_string()
 }
 
 /// Fold in the references the HIR does not carry: `use` lists, and the type
@@ -779,6 +815,7 @@ impl Walk<'_> {
                 // whole module would give unrelated functions different
                 // letters for no reason.
                 self.namer = meadow_compiler::infer::Renderer::new();
+                self.function(b);
                 self.bind_decl(b, false)
             }
 
@@ -852,6 +889,46 @@ impl Walk<'_> {
 
     /// `hint` is false at the top level: a `def`'s own name already shows its
     /// scheme on hover, and an inlay there would only repeat the signature.
+    /// Record a top-level definition as a place a program could start.
+    ///
+    /// Only for the document being analysed, which is the only one with types
+    /// to render, and only a `fun` or a `def` of a single name: `def (a, b) = …`
+    /// has nothing one could call.
+    fn function(&mut self, b: &hir::Bind) {
+        let Some(types) = self.types else { return };
+        let (ident, params) = match b {
+            hir::Bind::Fun(name, params, _, _) => (name, params.len()),
+            hir::Bind::Pat(p, _) => match p.value() {
+                hir::Pat::Var(id) => (id, 0),
+                _ => return,
+            },
+            hir::Bind::Error => return,
+        };
+        let text = &*self.source.content;
+        let Some(name) = text.get(ident.span.start as usize..ident.span.end as usize) else {
+            return;
+        };
+        let at = if params == 0 {
+            match b {
+                hir::Bind::Pat(p, _) => p.id,
+                _ => ident.id,
+            }
+        } else {
+            ident.id
+        };
+        let signature = types
+            .get(at)
+            .or_else(|| types.get(ident.id))
+            .map(|t| without_lone_effect(&meadow_compiler::infer::Renderer::new().render(t)))
+            .unwrap_or_default();
+        self.a.functions.push(Function {
+            name: name.to_string(),
+            span: ident.span,
+            params,
+            signature,
+        });
+    }
+
     fn bind_decl(&mut self, b: &hir::Bind, hint: bool) {
         match b {
             hir::Bind::Fun(name, params, declared, body) => {
@@ -1273,6 +1350,7 @@ impl Analysis {
             wider_names: Default::default(),
             wider_refs: Vec::new(),
             wider_name_refs: Vec::new(),
+            functions: Vec::new(),
             source_id: 0,
         }
     }

@@ -362,6 +362,7 @@ pub fn compile_unit_in_package(
     );
     let mut defs = Vec::new();
     for m in &typed {
+        lowerer.locations = opts.debug_info.then_some(m.source.id);
         defs.extend(lowerer.lower_module(&m.hir));
     }
     let var_end = lowerer.var_end();

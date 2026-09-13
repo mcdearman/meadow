@@ -159,6 +159,12 @@ impl Heap {
         }
     }
 
+    /// Is there an object header at `a`? For a debugger reading an address it
+    /// cannot vouch for; the machine itself never needs to ask.
+    pub fn is_object(&self, a: Addr) -> bool {
+        (a as usize) < self.top && matches!(self.space[a as usize], Slot::Header { .. })
+    }
+
     pub fn kind(&self, a: Addr) -> Kind {
         self.head(a).0
     }

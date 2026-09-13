@@ -269,11 +269,14 @@ impl Vm<'_> {
             // A `String` prints as its text; everything else prints the way
             // `show` renders it. See `meadow_eval::displayed` for why.
             Print => {
-                print!("{}", self.displayed(arg(self, 0)));
+                let s = self.displayed(arg(self, 0));
+                self.write_out(&s);
                 Value::Unit
             }
             Println => {
-                println!("{}", self.displayed(arg(self, 0)));
+                let mut s = self.displayed(arg(self, 0));
+                s.push('\n');
+                self.write_out(&s);
                 Value::Unit
             }
 

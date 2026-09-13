@@ -194,6 +194,10 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
         Statement::Error(msg) => {
             let _ = writeln!(out, "error {msg:?}");
         }
+        Statement::Mark(loc, inner) => {
+            let _ = writeln!(out, "-- at {}..{}", loc.span.start, loc.span.end);
+            stmt(out, inner, depth);
+        }
     }
 }
 

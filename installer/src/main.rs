@@ -465,7 +465,13 @@ mod path {
                 Ok((text, raw.vtype))
             }
             // No user PATH yet: create one.
-            Err(_) => Ok((String::new(), RegType::REG_EXPAND_SZ)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok((String::new(), RegType::REG_EXPAND_SZ))
+            }
+            // Anything else is a PATH that exists and could not be read.
+            // Carrying on as if it were empty would write `bin` back as the
+            // user's entire PATH, so refuse, and leave the value as it is.
+            Err(e) => Err(format!("could not read PATH: {e}")),
         }
     }
 

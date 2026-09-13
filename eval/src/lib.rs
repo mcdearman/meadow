@@ -417,6 +417,8 @@ impl Machine<'_> {
                 self.ctrl = Control::Ret(val);
             }
             T::Lit(l) => self.ctrl = Control::Ret(lit_value(l)),
+            // A position means nothing to a machine that cannot stop.
+            T::Loc(_, inner) => return self.eval(inner.clone(), env),
             // Erased by `load_except`; this machine never sees a type.
             T::TyLam(..) | T::TyApp(..) => {
                 unreachable!("a type abstraction reached the evaluator")

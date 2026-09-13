@@ -11,6 +11,7 @@
 pub mod linker;
 pub mod package;
 pub mod editor;
+pub mod dap;
 pub mod complete;
 pub mod format;
 pub mod init;

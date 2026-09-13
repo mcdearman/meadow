@@ -365,6 +365,7 @@ impl Lint<'_> {
                 Poly::mono(ty.clone())
             }
 
+            Term::Loc(_, inner) => self.synth(inner),
             Term::Error => Poly::mono(unknown()),
         }
     }

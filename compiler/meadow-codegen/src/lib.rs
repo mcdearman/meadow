@@ -92,6 +92,35 @@ pub fn compile(seq: &seq::Program) -> Result<Program, Error> {
     Gen::new(seq).run()
 }
 
+/// [`compile`], also recording the [`meadow_bytecode::DebugInfo`] a debugger
+/// reads. The code is the same instruction for instruction; only the image
+/// carries more.
+pub fn compile_with_debug_info(seq: &seq::Program) -> Result<Program, Error> {
+    let mut generator = Gen::new(seq);
+    generator.debug = Some(Recorder::default());
+    generator.run()
+}
+
+/// What [`compile_with_debug_info`] collects as it goes.
+#[derive(Default)]
+struct Recorder {
+    locs: Vec<Option<meadow_core::Loc>>,
+    env_of: Vec<u32>,
+    envs: Vec<Vec<(u32, Reg)>>,
+    env_ids: HashMap<Vec<(u32, Reg)>, u32>,
+    /// The environment the next instruction runs in.
+    env: u32,
+    /// The position the next instruction was written at.
+    loc: Option<meadow_core::Loc>,
+    /// Per region: the definition it belongs to, and the position in effect
+    /// where it was discovered. A continuation's first instructions belong to
+    /// the call that made it until they say otherwise.
+    region_name: Vec<InternedString>,
+    region_loc: Vec<Option<meadow_core::Loc>>,
+    /// The region being emitted.
+    current: usize,
+}
+
 /// One value in the environment: what the IR calls it, and where it is.
 type Env = Vec<(Name, Reg)>;
 
@@ -139,6 +168,7 @@ struct Gen<'a> {
     label_region: HashMap<Label, usize>,
 
     max_reg: usize,
+    debug: Option<Recorder>,
 }
 
 impl<'a> Gen<'a> {
@@ -160,6 +190,7 @@ impl<'a> Gen<'a> {
             method_tables: Vec::new(),
             label_region: HashMap::new(),
             max_reg: 1,
+            debug: None,
         }
     }
 
@@ -175,12 +206,19 @@ impl<'a> Gen<'a> {
         // label whose block has not been reached yet.
         for def in &self.seq.defs {
             let id = self.region(&def.block);
+            if let Some(d) = &mut self.debug {
+                d.region_name[id] = def.name;
+            }
             self.label_region.insert(def.label, id);
         }
 
         while let Some(id) = self.pending.pop() {
             let block = self.regions[id];
             self.region_pc[id] = Some(self.code.len() as Pc);
+            if let Some(d) = &mut self.debug {
+                d.current = id;
+                d.loc = d.region_loc[id];
+            }
             // A region is entered with its parameters in r0..rn — that is what
             // `jump` and `invoke` arrange.
             let vals: Vec<Reg> = (0..block.params.len() as u16)
@@ -248,7 +286,43 @@ impl<'a> Gen<'a> {
             .and_then(|l| self.label_region.get(&l).copied())
             .and_then(|id| self.region_pc[id]);
 
+        let debug = self.debug.take().map(|mut d| {
+            // Instruction 0, the halt, was emitted before anything was recorded.
+            d.locs.resize(self.code.len(), None);
+            d.env_of.resize(self.code.len(), 0);
+            if d.envs.is_empty() {
+                d.envs.push(Vec::new());
+            }
+            let mut starts: Vec<(Pc, usize)> = self
+                .region_pc
+                .iter()
+                .enumerate()
+                .filter_map(|(id, pc)| pc.map(|pc| (pc, id)))
+                .collect();
+            starts.sort();
+            let regions = starts
+                .iter()
+                .enumerate()
+                .map(|(i, &(entry, id))| meadow_bytecode::Region {
+                    entry,
+                    end: starts.get(i + 1).map_or(self.code.len() as Pc, |s| s.0),
+                    name: d.region_name[id],
+                    params: self.regions[id].params.iter().map(|n| n.0).collect(),
+                    origin: d.region_loc[id],
+                })
+                .collect();
+            Box::new(meadow_bytecode::DebugInfo {
+                locs: d.locs,
+                env_of: d.env_of,
+                envs: d.envs,
+                regions,
+                returns: self.seq.returns.iter().map(|n| n.0).collect(),
+                continuations: self.seq.continuations.iter().map(|n| n.0).collect(),
+            })
+        });
+
         Ok(Program {
+            debug,
             code: self.code,
             consts: self.consts,
             methods,
@@ -272,6 +346,11 @@ impl<'a> Gen<'a> {
         self.regions.push(block);
         self.region_pc.push(None);
         self.pending.push(id);
+        if let Some(d) = &mut self.debug {
+            let name = d.region_name.get(d.current).copied().unwrap_or_default();
+            d.region_name.push(name);
+            d.region_loc.push(d.loc);
+        }
         id
     }
 
@@ -320,6 +399,7 @@ impl<'a> Gen<'a> {
     }
 
     fn emit(&mut self, i: Instr) {
+        self.record();
         self.code.push(i);
     }
 
@@ -328,8 +408,34 @@ impl<'a> Gen<'a> {
     fn emit_to(&mut self, mut i: Instr, region: usize) {
         i.imm = 0;
         let at = self.code.len();
+        self.record();
         self.code.push(i);
         self.fixups.push((at, region));
+    }
+
+    /// Note, for the instruction about to be emitted, where it came from and
+    /// what the registers hold.
+    fn record(&mut self) {
+        let at = self.code.len();
+        if let Some(d) = &mut self.debug {
+            d.locs.resize(at, None);
+            d.env_of.resize(at, 0);
+            d.locs.push(d.loc);
+            d.env_of.push(d.env);
+        }
+    }
+
+    /// The environment the instructions emitted next run in.
+    fn note_env(&mut self, env: &Env) {
+        if let Some(d) = &mut self.debug {
+            let key: Vec<(u32, Reg)> = env.iter().map(|(n, r)| (n.0, *r)).collect();
+            let next = d.envs.len() as u32;
+            let id = *d.env_ids.entry(key.clone()).or_insert(next);
+            if id == next {
+                d.envs.push(key);
+            }
+            d.env = id;
+        }
     }
 
     // --- registers --------------------------------------------------------
@@ -443,7 +549,16 @@ impl<'a> Gen<'a> {
     }
 
     fn emit_stmt(&mut self, s: &'a Statement, env: Env) -> Result<(), Error> {
+        self.note_env(&env);
         match s {
+            Statement::Mark(loc, inner) => {
+                let outer = self.debug.as_mut().map(|d| d.loc.replace(*loc));
+                let done = self.emit_stmt(inner, env);
+                if let (Some(d), Some(outer)) = (&mut self.debug, outer) {
+                    d.loc = outer;
+                }
+                done
+            }
             // Pure renaming. The values are already where they are; the block
             // simply calls them something else.
             Statement::Substitute(sel, block) => {

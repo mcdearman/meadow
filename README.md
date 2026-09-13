@@ -226,7 +226,7 @@ For VS Code, build and install the extension:
 
 ```sh
 editors/vscode/build.sh
-code --install-extension editors/vscode/meadow-0.2.2.vsix
+code --install-extension editors/vscode/meadow-0.2.3.vsix
 ```
 
 Each release also attaches a built `.vsix`.
@@ -238,6 +238,55 @@ an editor launched from the Dock or the Start menu does not inherit your shell's
 `meadow` is skipped rather than started and left to fail. `meadow.server.path`
 overrides all of it. Without a server you still get syntax highlighting from the
 bundled TextMate grammar.
+
+### Debugging
+
+`meadow dap` is a debug adapter, and the VS Code extension registers it: open a
+`.mw` file and press F5, or add a `meadow` launch configuration naming a
+`program` (a package directory or a single file). You get breakpoints, step
+in / over / out, the call stack, and three views of a stopped program:
+
+- **Locals** — the names in scope with their inferred types, and values you can
+  open up: a `Just [1; 2]` expands into its list, a record into its fields, a
+  closure into what it captured.
+- **Registers** — the VM's raw register file, with the names the compiler put
+  in each, and the program counter and instruction count under **Heap**.
+- **Handlers** — the effect handlers installed, and what each one covers.
+
+A program need not start at `main`. Each top-level definition has a **▶ Debug**
+link above it (and **Meadow: Debug Function…** on the right-click menu) that asks
+for its arguments as Meadow expressions — showing its type while you type them,
+and remembering what you gave last time — then debugs a call to it, stopped as
+the function is entered. The call is compiled inside the function's own module,
+so a private helper can be debugged as easily as an exported one, and an
+argument of the wrong type is a compile error before anything runs. In
+`launch.json` the same thing is an `entry`:
+
+```json
+{
+  "type": "meadow",
+  "request": "launch",
+  "name": "Debug eval",
+  "program": "${workspaceFolder}/examples/mini-ml",
+  "entry": {
+    "module": "${workspaceFolder}/examples/mini-ml/src/Eval.mw",
+    "expression": "eval [;] (Expr.Int 1)",
+    "function": "eval"
+  }
+}
+```
+
+The machine has no call stack — returning is invoking a continuation on the
+heap — so the adapter reconstructs one from the continuation chain, using what
+the compiler records about which name is a function's return continuation. A
+call in tail position replaces its caller's frame, as it does at run time. The
+program's `print` output goes to the Debug Console; `Console.readLine` sees the
+end of input, since the adapter's own stdin is the protocol.
+
+A debug session compiles at `-O1` with source positions kept all the way to the
+bytecode. That changes where the compiler remembers things, not what the
+program does: the standard library's test suite runs identically either way,
+and recording the positions changes no instruction.
 
 ### Profiles
 

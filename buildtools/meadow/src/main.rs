@@ -80,6 +80,12 @@ enum Cmd {
         #[arg(long = "clientProcessId", value_name = "PID")]
         client_process_id: Option<String>,
     },
+    /// Run the debug adapter, speaking the Debug Adapter Protocol over stdin
+    /// and stdout.
+    ///
+    /// Editors start this when you debug a Meadow program; there is no reason
+    /// to run it by hand.
+    Dap,
     /// Re-indent `.mw` sources in place.
     Fmt {
         /// Files or directories to format. Defaults to the current directory.
@@ -224,6 +230,12 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some(Cmd::Dap) => {
+            if let Err(e) = meadow::dap::run() {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Cmd::Lsp { .. }) => {
             // Both shapes of the standard library: the bundle a package depends
             // on, and the modules it was bundled from — which is what lets a

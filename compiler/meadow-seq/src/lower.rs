@@ -125,6 +125,8 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         next_tag: 0,
         opt,
         unsupported: HashSet::new(),
+        returns: HashSet::new(),
+        continuations: HashSet::new(),
     };
 
     // A definition that is a lambda gets a second entry point, taking its
@@ -144,7 +146,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     let mut entry = None;
     for (i, d) in program.defs.iter().enumerate() {
         let label = Label(i as u32);
-        let k = lower.fresh();
+        let k = lower.function_return();
         let body = lower.expr(&d.term, &[k], k);
         lower.defs.push(Def {
             label,
@@ -160,7 +162,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         // partially applied, stored — where a real closure is the only answer.
         if let Some(&(worker, _)) = lower.workers.get(&d.var) {
             let (params, body) = lam_spine(&d.term);
-            let k = lower.fresh();
+            let k = lower.function_return();
             let mut block_params = params;
             block_params.push(k);
             let body = lower.expr(body, &block_params, k);
@@ -190,6 +192,12 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
             defs,
             entry,
             tags: lower.tags,
+            continuations: lower
+                .continuations
+                .difference(&lower.returns)
+                .copied()
+                .collect(),
+            returns: lower.returns,
         },
         unsupported: lower.unsupported,
     }
@@ -247,6 +255,10 @@ struct Lower {
     /// What the back end is allowed to do beyond the unconditional minimum.
     opt: OptLevel,
     unsupported: HashSet<Unsupported>,
+    /// See [`Program::returns`].
+    returns: HashSet<Name>,
+    /// See [`Program::continuations`].
+    continuations: HashSet<Name>,
 }
 
 /// The continuation of a [`Lower::bind`]: given the name the value was bound to
@@ -261,6 +273,14 @@ impl Lower {
         let v = VarId(self.next_name);
         self.next_name += 1;
         v
+    }
+
+    /// A fresh name for a function's own return continuation -- see
+    /// [`Program::returns`].
+    fn function_return(&mut self) -> Name {
+        let k = self.fresh();
+        self.returns.insert(k);
+        k
     }
 
     fn fresh_label(&mut self) -> Label {
@@ -399,6 +419,7 @@ impl Lower {
     /// compiler runs out of memory on real code.
     fn simple(&self, e: &Term, env: &[Name]) -> bool {
         match e {
+            Term::Loc(_, inner) => self.simple(inner, env),
             Term::Var(v) => env.contains(v),
             Term::Lit(_) => true,
             // Building a closure allocates, but it does not go anywhere.
@@ -430,6 +451,9 @@ impl Lower {
     /// truncates.
     fn direct(&mut self, e: &Term, env: &[Name], name: Option<Name>, f: Then<'_>) -> Statement {
         match e {
+            Term::Loc(loc, inner) => {
+                Statement::Mark(*loc, Box::new(self.direct(inner, env, name, f)))
+            }
             // Already a value. With no name forced there is nothing at all to
             // emit; with one, a `substitute` gives it its second name.
             Term::Var(v) => match name {
@@ -449,7 +473,7 @@ impl Lower {
             Term::Lam(param, _, body) => {
                 let want = self.wants(&[body], &[*param]);
                 let captures = restrict(env, &want);
-                let ik = self.fresh();
+                let ik = self.function_return();
                 let mut params = captures.clone();
                 params.push(*param);
                 params.push(ik);
@@ -713,7 +737,9 @@ impl Lower {
     /// `env` must be the exact environment the machine will have, in order, and
     /// must contain `k`.
     fn expr(&mut self, e: &Term, env: &[Name], k: Name) -> Statement {
+        self.continuations.insert(k);
         match e {
+            Term::Loc(loc, inner) => Statement::Mark(*loc, Box::new(self.expr(inner, env, k))),
             // `lower_program` erased these; nothing below AxCut has types.
             Term::TyLam(..) | Term::TyApp(..) => {
                 unreachable!("a type abstraction reached AxCut")
@@ -751,7 +777,7 @@ impl Lower {
                 let want = self.wants(&[body], &[*param]);
                 let captures = restrict(env, &want);
 
-                let ik = self.fresh();
+                let ik = self.function_return();
                 let mut params = captures.clone();
                 params.push(*param);
                 params.push(ik);
@@ -850,7 +876,7 @@ impl Lower {
                 }
 
                 for ((_, _, term), label) in binds.iter().zip(&labels) {
-                    let kk = self.fresh();
+                    let kk = self.function_return();
                     let mut params = fvs.clone();
                     params.push(kk);
                     let body = self.expr(term, &params, kk);
@@ -1522,7 +1548,7 @@ impl Lower {
         let mut methods = Vec::new();
         let mut ops = Vec::new();
         for c in clauses {
-            let kh = self.fresh();
+            let kh = self.function_return();
             let mut params = caps_h.clone();
             params.push(c.param);
             params.push(c.resume);
@@ -1614,7 +1640,7 @@ fn restrict(env: &[Name], want: &HashSet<Var>) -> Vec<Name> {
 fn free_into(t: &Term, out: &mut HashSet<Var>) {
     fn go(t: &Term, bound: &mut Vec<Var>, out: &mut HashSet<Var>) {
         match t {
-            Term::TyLam(_, b) | Term::TyApp(b, _) => go(b, bound, out),
+            Term::TyLam(_, b) | Term::TyApp(b, _) | Term::Loc(_, b) => go(b, bound, out),
             Term::Var(v) => {
                 if !bound.contains(v) {
                     out.insert(*v);
@@ -1729,7 +1755,7 @@ fn pat_vars(p: &Pat, out: &mut Vec<Var>) {
 /// counter, where the distinction does not matter.
 fn mentions(t: &Term, out: &mut HashSet<Var>) {
     match t {
-        Term::TyLam(_, b) | Term::TyApp(b, _) => mentions(b, out),
+        Term::TyLam(_, b) | Term::TyApp(b, _) | Term::Loc(_, b) => mentions(b, out),
         Term::Var(v) => {
             out.insert(*v);
         }
@@ -1820,10 +1846,12 @@ fn lam_spine(t: &Term) -> (Vec<Var>, &Term) {
 /// A call, flattened: `f a b c` is `App(App(App(f, a), b), c)`.
 fn call_spine(t: &Term) -> (&Term, Vec<&Term>) {
     let mut args = Vec::new();
-    let mut cur = t;
+    // Through positions: a debug build marks calls, and a call it marked
+    // should still be recognised as the known call it is.
+    let mut cur = t.peel();
     while let Term::App(f, a) = cur {
         args.push(&**a);
-        cur = f;
+        cur = f.peel();
     }
     args.reverse();
     (cur, args)

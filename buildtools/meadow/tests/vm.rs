@@ -295,8 +295,57 @@ fn switches(s: &meadow_seq::Statement) -> usize {
         }
         Invoke(..) => 0,
         Extern { blocks, .. } => blocks.iter().map(|b| switches(&b.body)).sum(),
-        Handle { rest, .. } | Unhandle { rest, .. } => switches(rest),
+        Handle { rest, .. } | Unhandle { rest, .. } | Mark(_, rest) => switches(rest),
         Perform { .. } => 0,
         Error(_) => 0,
     }
+}
+
+/// A debug build keeps source positions all the way to the bytecode, and must
+/// mean exactly what an ordinary build means: a debugger that changed the
+/// answer would be worse than none.
+#[test]
+fn a_debug_build_runs_the_standard_library_the_same() {
+    let plain = std_program();
+    let mut options = Options::debug();
+    options.debug_info = true;
+    let (packages, diags) = stdlib::std_packages(options);
+    assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| &d.msg).collect::<Vec<_>>());
+    let linked = Linker::link(packages);
+    let debug_tests: Vec<(String, core::Var)> = linked
+        .tests
+        .iter()
+        .map(|t| (format!("{}.{}", t.package, t.name), t.var))
+        .collect();
+    assert_eq!(
+        plain.tests.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        debug_tests.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let opt = options.opt;
+    let plain_vars: Vec<core::Var> = plain.tests.iter().map(|(_, v)| *v).collect();
+    let debug_vars: Vec<core::Var> = debug_tests.iter().map(|(_, v)| *v).collect();
+    let before = runtime::run_tests(&plain.program, &plain_vars, Engine::Vm, opt).expect("plain");
+    let after = runtime::run_tests(&linked.program, &debug_vars, Engine::Vm, opt).expect("debug");
+    let differ: Vec<String> = plain
+        .tests
+        .iter()
+        .zip(before.iter().zip(&after))
+        .filter(|(_, (a, b))| a != b)
+        .map(|((name, _), (a, b))| format!("{name}: {a:?} vs {b:?}"))
+        .collect();
+    assert!(differ.is_empty(), "a debug build changed the answer:\n{}", differ.join("\n"));
+
+    // And recording the debug information does not change a single instruction.
+    let lowered = meadow_seq::lower_program(&linked.program, opt);
+    let code = meadow_codegen::compile(&lowered.program).expect("compiles");
+    let with = meadow_codegen::compile_with_debug_info(&lowered.program).expect("compiles");
+    assert_eq!(code.code, with.code);
+    let debug = with.debug.expect("debug information");
+    assert_eq!(debug.locs.len(), with.code.len());
+    let known = debug.locs.iter().filter(|l| l.is_some()).count();
+    assert!(
+        known > with.code.len() / 2,
+        "most instructions should know where they came from"
+    );
 }

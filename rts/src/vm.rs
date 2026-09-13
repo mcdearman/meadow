@@ -102,6 +102,33 @@ pub struct Vm<'p> {
     /// branches on when a program builds a boolean by naming its constructor
     /// rather than writing a literal.
     false_tag: Option<u32>,
+    /// Values something outside the machine is holding on to — a debugger
+    /// remembering which frame a step started in. Collector roots, so they are
+    /// rewritten when what they point at moves. Empty unless someone asks.
+    pub pinned: Vec<Value>,
+    /// Where the program's console goes. `None` is the process's own stdin and
+    /// stdout; a debugger speaking a protocol over those replaces both.
+    pub io: Io,
+}
+
+/// Replacements for the console — see [`Vm::io`].
+#[derive(Default)]
+pub struct Io {
+    /// Receives what `print` and `println` write.
+    pub output: Option<Box<dyn FnMut(&str)>>,
+    /// Answers `Console.readLine`: a line without its terminator, or `None` at
+    /// the end of input.
+    pub input: Option<Box<dyn FnMut() -> Option<String>>>,
+}
+
+/// An installed handler, as [`Vm::handlers`] shows it.
+#[derive(Debug, Clone)]
+pub struct HandlerView {
+    /// The `(effect, operation)` pairs it covers.
+    pub covers: Vec<(InternedString, InternedString)>,
+    pub handler: Value,
+    /// Where the `handle` expression's value goes.
+    pub ret_k: Value,
 }
 
 /// Run `program` from its entry point and render the result the way the CEK
@@ -134,6 +161,8 @@ impl<'p> Vm<'p> {
             pc: 0,
             steps: 0,
             false_tag,
+            pinned: Vec::new(),
+            io: Io::default(),
         }
     }
 
@@ -645,12 +674,14 @@ impl<'p> Vm<'p> {
     }
 
     fn collect(&mut self) {
-        let mut roots: Vec<Value> = Vec::with_capacity(self.live + self.handlers.len() * 2);
+        let mut roots: Vec<Value> =
+            Vec::with_capacity(self.live + self.handlers.len() * 2 + self.pinned.len());
         roots.extend_from_slice(&self.regs[..self.live]);
         for f in &self.handlers {
             roots.push(f.handler);
             roots.push(f.ret_k);
         }
+        roots.extend_from_slice(&self.pinned);
 
         self.heap.collect(&mut roots);
 
@@ -661,6 +692,9 @@ impl<'p> Vm<'p> {
         for f in &mut self.handlers {
             f.handler = it.next().expect("root count");
             f.ret_k = it.next().expect("root count");
+        }
+        for p in &mut self.pinned {
+            *p = it.next().expect("root count");
         }
     }
 
@@ -737,6 +771,57 @@ impl<'p> Vm<'p> {
 
     pub fn pc(&self) -> usize {
         self.pc
+    }
+
+    /// The image being run.
+    pub fn program(&self) -> &'p Program {
+        self.program
+    }
+
+    /// How many registers are live: `r0..live` is what the collector keeps.
+    pub fn live(&self) -> usize {
+        self.live
+    }
+
+    /// The value in register `r`. Only `r0..live` is meaningful — above that a
+    /// register may hold an address the collector has since invalidated.
+    pub fn register(&self, r: usize) -> Value {
+        self.regs.get(r).copied().unwrap_or(Value::Unit)
+    }
+
+    /// The heap, to look inside objects. Check [`Heap::is_object`] before
+    /// reading an address that did not come from a live register.
+    pub fn heap(&self) -> &Heap {
+        &self.heap
+    }
+
+    /// The installed handlers, outermost first.
+    pub fn handlers(&self) -> Vec<HandlerView> {
+        self.handlers
+            .iter()
+            .map(|f| HandlerView {
+                covers: self
+                    .program
+                    .handled
+                    .get(f.handled as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+                handler: f.handler,
+                ret_k: f.ret_k,
+            })
+            .collect()
+    }
+
+    /// Write program output, wherever it is going.
+    pub(crate) fn write_out(&mut self, s: &str) {
+        match &mut self.io.output {
+            Some(out) => out(s),
+            None => {
+                use std::io::Write;
+                let mut stdout = std::io::stdout().lock();
+                let _ = stdout.write_all(s.as_bytes());
+            }
+        }
     }
 
     /// Collections so far and slots allocated in total.

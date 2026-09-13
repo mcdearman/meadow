@@ -226,6 +226,12 @@ pub enum Statement {
     /// Not in the paper. Reaching one is a runtime error, and it exists so that
     /// an untranslatable term is loud rather than silently missing.
     Error(&'static str),
+
+    /// Not in the paper either: `s`, which a person wrote at `loc`. It does
+    /// nothing. Code generation reads it to say which source position the
+    /// instructions for `s` came from -- see `meadow_core::Term::Loc`, which
+    /// is where it comes from and why it is only there in a debug build.
+    Mark(meadow_core::Loc, Box<Statement>),
 }
 
 /// What an [`Statement::Extern`] does.
@@ -298,6 +304,21 @@ pub struct Program {
     pub entry: Option<Label>,
     /// Constructor name -> tag, so `switch` arms and `let` agree on numbering.
     pub tags: std::collections::HashMap<InternedString, Tag>,
+    /// Every name that is a function's own *return continuation* -- the `k` a
+    /// definition, a lambda or a handler clause answers with.
+    ///
+    /// The machine has no call stack, and this is what lets a debugger draw
+    /// one anyway: code running in a function has its function's return
+    /// continuation in its environment, and the continuation that holds
+    /// captures the caller's. A name is fresh wherever it is bound, so a set of
+    /// them is unambiguous.
+    pub returns: std::collections::HashSet<Name>,
+    /// The other continuations: the ones a function makes for itself, to
+    /// receive the value of a call it is part-way through. One of these
+    /// capturing another is still the same activation -- `f (g x)` waits for
+    /// `g` and then for `f` -- where one capturing a [`Program::returns`] name
+    /// is the caller's.
+    pub continuations: std::collections::HashSet<Name>,
 }
 
 impl Program {

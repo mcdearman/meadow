@@ -13,3 +13,4 @@ num-traits.workspace = true
 meadow-hir.workspace = true
 meadow-infer.workspace = true
 meadow-intern.workspace = true
+meadow-span.workspace = true

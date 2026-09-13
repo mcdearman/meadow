@@ -243,7 +243,7 @@ fn walk(s: &Statement, f: &mut impl FnMut(&Statement)) {
             walk(rest, f);
             vec![]
         }
-        Statement::Unhandle { rest, .. } => {
+        Statement::Unhandle { rest, .. } | Statement::Mark(_, rest) => {
             walk(rest, f);
             vec![]
         }

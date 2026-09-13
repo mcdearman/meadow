@@ -390,6 +390,11 @@ impl<'p> Machine<'p> {
             }
 
             Statement::Error(msg) => err(*msg),
+
+            Statement::Mark(_, inner) => {
+                self.stmt = inner;
+                Ok(None)
+            }
         }
     }
 
@@ -1357,6 +1362,8 @@ mod tests {
 
     fn program(body: Statement) -> Program {
         Program {
+            returns: Default::default(),
+            continuations: Default::default(),
             defs: vec![Def {
                 label: Label(0),
                 name: InternedString::from("main"),

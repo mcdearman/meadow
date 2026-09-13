@@ -42,6 +42,7 @@ pub fn term(t: &Term) -> Term {
         Term::TyLam(_, body) => term(body),
         Term::TyApp(f, _) => term(f),
 
+        Term::Loc(l, inner) => Term::Loc(*l, Arc::new(term(inner))),
         Term::Var(_) | Term::Lit(_) | Term::Error => t.clone(),
         Term::Lam(v, ty, body) => Term::Lam(*v, ty.clone(), Arc::new(term(body))),
         Term::App(f, a) => Term::App(Arc::new(term(f)), Arc::new(term(a))),

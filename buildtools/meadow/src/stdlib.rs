@@ -88,14 +88,15 @@ pub const MODULES: &[(&str, &str)] = &[
 /// its own dependency, and the editor fills with `already defined`.
 pub fn std_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<Diagnostic>) {
     type Cache = OnceLock<(Vec<(&'static str, CompiledPackage)>, Vec<Diagnostic>)>;
-    static DEBUG: Cache = OnceLock::new();
-    static RELEASE: Cache = OnceLock::new();
-    // Keyed on strictness alone, and only on strictness: the optimisation
-    // level is a *back end* concern — decision trees happen in `meadow_seq`,
-    // after a `CompiledPackage` exists — so it cannot change what is cached
-    // here. If that ever stops being true this key has to grow, and the
-    // number of `Std` compiles per process grows with it.
-    let cell = if opts.check_exhaustive() { &RELEASE } else { &DEBUG };
+    static CACHE: [Cache; 4] = [const { OnceLock::new() }; 4];
+    // Keyed on strictness and on debug information, and only on those: the
+    // optimisation level is a *back end* concern — decision trees happen in
+    // `meadow_seq`, after a `CompiledPackage` exists — so it cannot change
+    // what is cached here. Debug information can: it is source positions in
+    // the lowered `core`. Anything else that changes a `CompiledPackage` has
+    // to join the key, and the number of `Std` compiles per process grows
+    // with it.
+    let cell = &CACHE[cache_key(opts)];
     let (modules, diags) = cell.get_or_init(|| {
         counter(opts).fetch_add(1, Ordering::Relaxed);
         compile_modules(opts)
@@ -115,10 +116,10 @@ pub fn std_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
 /// because linking consumes its packages — and cloning the compiled tree is
 /// about two orders of magnitude cheaper than rebuilding it.
 pub fn std_packages(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
-    static DEBUG: OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)> = OnceLock::new();
-    static RELEASE: OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)> = OnceLock::new();
-    // Strictness only, for the reason given on `std_modules`.
-    let cell = if opts.check_exhaustive() { &RELEASE } else { &DEBUG };
+    static CACHE: [OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)>; 4] =
+        [const { OnceLock::new() }; 4];
+    // The same key as `std_modules`, for the reason given there.
+    let cell = &CACHE[cache_key(opts)];
     let (packages, diags) = cell.get_or_init(|| {
         // Shares the one compile with `std_modules`, so asking for both costs
         // memory but not time.
@@ -145,11 +146,15 @@ pub fn module_path(dotted: &str) -> Vec<InternedString> {
     }
 }
 
+/// Which cached `Std` a set of options gets -- see [`std_modules`].
+fn cache_key(opts: Options) -> usize {
+    usize::from(opts.check_exhaustive()) * 2 + usize::from(opts.debug_info)
+}
+
 fn counter(opts: Options) -> &'static AtomicUsize {
-    static DEBUG: AtomicUsize = AtomicUsize::new(0);
-    static RELEASE: AtomicUsize = AtomicUsize::new(0);
-    // Strictness, for the same reason the caches are keyed on it.
-    if opts.check_exhaustive() { &RELEASE } else { &DEBUG }
+    static COUNTS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
+    // The same key the caches use.
+    &COUNTS[cache_key(opts)]
 }
 
 /// How many times [`std_packages`] has actually compiled `Std` for this profile.

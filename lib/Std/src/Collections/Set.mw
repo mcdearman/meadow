@@ -2,7 +2,9 @@
 -- Reach these as `Set.insert` etc.
 
 use Std.Collections.Tree as Tree
-use Std.Collections.List as List (foldl, filter, all)
+use Std.Collections.Vector as V
+-- `[a, b]` desugars to a `vecFromArray` call.
+use Std.Collections.Vector (vecFromArray)
 
 @pub data Set = Set (Tree Int)
 
@@ -20,6 +22,12 @@ fun unwrap s = match s with | Set t -> t
 
 @pub fun null s = Tree.null (unwrap s)
 
+-- Every element, ascending.
+@pub fun toVec s = Tree.toVec (unwrap s)
+
+@pub fun fromVec v = Set (Tree.fromVec v)
+
+-- The same, as a `List`.
 @pub fun toList s = Tree.toList (unwrap s)
 
 @pub fun fromList xs = Set (Tree.fromList xs)
@@ -28,26 +36,25 @@ fun unwrap s = match s with | Set t -> t
 
 @pub fun maxElem s = Tree.maxElem (unwrap s)
 
-@pub fun union a b = foldl (\acc x -> insert x acc) a (toList b)
+@pub fun union a b = V.foldl (\acc x -> insert x acc) a (toVec b)
 
-@pub fun diff a b = foldl (\acc x -> delete x acc) a (toList b)
+@pub fun diff a b = V.foldl (\acc x -> delete x acc) a (toVec b)
 
-@pub fun intersect a b =
-  fromList (filter (\x -> member x b) (toList a))
+@pub fun intersect a b = fromVec (V.filter (\x -> member x b) (toVec a))
 
-@pub fun subset a b = all (\x -> member x b) (toList a)
+@pub fun subset a b = V.all (\x -> member x b) (toVec a)
 
 -- Yield every element in ascending order, for `Std.Stream`.
-@pub fun toStream s = List.toStream (toList s)
+@pub fun toStream s = Tree.toStream (unwrap s)
 
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
-use Std.Maybe (Maybe)
+use Std.Maybe.Maybe.*
 
-def a = fromList [1; 2; 3]
+def a = fromVec [1, 2, 3]
 
-def b = fromList [3; 4]
+def b = fromVec [3, 4]
 
 @test fun insertAndMember () =
   let x = assertTrue (member 2 a) "member" in
@@ -55,20 +62,21 @@ def b = fromList [3; 4]
   assertTrue (member 9 (insert 9 a)) "inserted"
 
 @test fun setsDoNotHoldDuplicates () =
-  let x = assertEq (size (fromList [1; 1; 1])) 1 "fromList dedupes" in
+  let x = assertEq (size (fromVec [1, 1, 1])) 1 "fromVec dedupes" in
   assertEq (size (insert 1 a)) 3 "re-inserting changes nothing"
 
-@test fun toListIsSortedAndDistinct () =
-  let x = assertEq (toList a) [1; 2; 3] "sorted" in
-  assertEq (toList (fromList [3; 1; 3; 2])) [1; 2; 3] "sorted and deduped"
+@test fun toVecIsSortedAndDistinct () =
+  let x = assertEq (toVec a) [1, 2, 3] "sorted" in
+  let y = assertEq (toVec (fromVec [3, 1, 3, 2])) [1, 2, 3] "sorted and deduped" in
+  assertEq (toList (fromList [2; 1; 2])) [1; 2] "the List forms agree"
 
 @test fun unionDiffIntersect () =
-  let x = assertEq (toList (union a b)) [1; 2; 3; 4] "union" in
-  let y = assertEq (toList (diff a b)) [1; 2] "diff" in
-  assertEq (toList (intersect a b)) [3;] "intersect"
+  let x = assertEq (toVec (union a b)) [1, 2, 3, 4] "union" in
+  let y = assertEq (toVec (diff a b)) [1, 2] "diff" in
+  assertEq (toVec (intersect a b)) [3] "intersect"
 
 @test fun subsetAndEmptiness () =
-  let x = assertTrue (subset (fromList [1; 2]) a) "a subset" in
+  let x = assertTrue (subset (fromVec [1, 2]) a) "a subset" in
   let y = assertFalse (subset b a) "not a subset" in
   let z = assertTrue (subset empty a) "empty is a subset of anything" in
   assertTrue (null empty) "null"

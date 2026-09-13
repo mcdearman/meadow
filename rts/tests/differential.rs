@@ -813,3 +813,27 @@ fn constructors_print_bare_and_agree() {
         "(Leaf, Leaf(\"s\"))"
     );
 }
+
+/// `.field` on a `record` declaration's value, which is constructor data with
+/// named fields rather than an anonymous record. The CEK machine looked the
+/// name up in the constructor's field list; the VM and the sequent machine only
+/// knew anonymous records, and failed with "selected `.x` from object".
+#[test]
+fn a_records_fields_select_by_name_everywhere() {
+    assert_eq!(
+        agree(
+            "record Point = { x : Int, y : Int }\n\
+             def origin = Point { x = 3, y = 4 }\n\
+             def main = (origin.y, origin.x, (Point { x = 1, y = 2 }).y)"
+        ),
+        "(4, 3, 2)"
+    );
+    // Fields declared in a different order from the one they are written in.
+    assert_eq!(
+        agree(
+            "record Pair = { second : Int, first : Int }\n\
+             def main = let p = Pair { first = 1, second = 2 } in (p.first, p.second)"
+        ),
+        "(1, 2)"
+    );
+}

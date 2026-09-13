@@ -16,9 +16,8 @@ use Std.String as S
 use Std.String.Parse as P
 use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
-use Std.Collections.List (foldr)
 use Std.Tuple (fst, snd, pair)
-use Std.Maybe (Maybe, Just, None)
+use Std.Maybe.Maybe.*
 
 -- --- the tree -----------------------------------------------------------------
 
@@ -286,7 +285,7 @@ fun padLeft width s =
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
-use Std.Result (Result)
+use Std.Result.Result.*
 
 fun parsed text =
   match parse text with

@@ -98,18 +98,126 @@ fn a_type_is_as_visible_as_it_says() {
     );
 }
 
+// --- constructors live under their type -------------------------------------
+//
+// As in Rust: naming a type brings the type, and its constructors are written
+// `Type.Ctor` until a `use Module.Type (Ctor)` or `use Module.Type.*` says
+// otherwise. Neither naming the type nor a glob `use Module` puts them in
+// scope bare.
+
+const EXPR: (&str, &str) = ("Syntax", "@pub(pkg) data Expr = Lit Int | Neg Expr\n");
+
 #[test]
-fn a_pub_type_brings_its_constructors_with_it() {
+fn naming_a_type_leaves_its_constructors_under_it() {
+    let out = unit_errors(&[
+        EXPR,
+        ("", "use Syntax (Expr)\nfun eval e = match e with\n  | Lit n -> n\n  | Neg i -> 0 - eval i\ndef main = 1\n"),
+    ]);
+    assert!(out.contains("unknown constructor `Lit`"), "`Lit` came in with `Expr`: {out}");
+    assert!(out.contains("unknown constructor `Neg`"), "`Neg` came in with `Expr`: {out}");
+}
+
+#[test]
+fn a_named_type_qualifies_its_constructors() {
     assert_eq!(
         eval_unit(&[
-            ("Syntax", "@pub(pkg) data Expr = Lit Int | Neg Expr\n"),
+            EXPR,
             (
                 "",
-                "use Syntax (Expr)\nfun eval e = match e with\n  | Lit n -> n\n  | Neg i -> 0 - eval i\ndef main = eval (Neg (Lit 5))\n"
+                "use Syntax (Expr)\nfun eval e = match e with\n  | Expr.Lit n -> n\n  | Expr.Neg i -> 0 - eval i\ndef main = eval (Expr.Neg (Expr.Lit 5))\n"
             ),
         ]),
         "-5"
     );
+}
+
+#[test]
+fn a_type_path_imports_just_the_type() {
+    assert_eq!(
+        eval_unit(&[EXPR, ("", "use Syntax.Expr\ndef main = match Expr.Lit 5 with | Expr.Lit n -> n | Expr.Neg e -> 0\n")]),
+        "5"
+    );
+    let out = unit_errors(&[EXPR, ("", "use Syntax.Expr\ndef main = Lit 5\n")]);
+    assert!(out.contains("unknown constructor `Lit`"), "{out}");
+}
+
+#[test]
+fn a_type_path_with_a_list_imports_those_constructors() {
+    assert_eq!(
+        eval_unit(&[
+            EXPR,
+            ("", "use Syntax.Expr (Lit, Neg)\nfun eval e = match e with\n  | Lit n -> n\n  | Neg i -> 0 - eval i\ndef main = eval (Neg (Lit 5))\n"),
+        ]),
+        "-5"
+    );
+    // Only the ones listed.
+    let out = unit_errors(&[EXPR, ("", "use Syntax.Expr (Lit)\ndef main = Neg (Lit 5)\n")]);
+    assert!(out.contains("unknown constructor `Neg`"), "{out}");
+    assert!(!out.contains("`Lit`"), "{out}");
+}
+
+#[test]
+fn a_type_path_glob_imports_every_constructor() {
+    assert_eq!(
+        eval_unit(&[
+            EXPR,
+            ("", "use Syntax.Expr.*\nfun eval e = match e with\n  | Lit n -> n\n  | Neg i -> 0 - eval i\ndef main = eval (Neg (Lit 5))\n"),
+        ]),
+        "-5"
+    );
+}
+
+#[test]
+fn a_module_glob_does_not_flatten_constructors() {
+    let out = unit_errors(&[EXPR, ("", "use Syntax\ndef main = Lit 5\n")]);
+    assert!(out.contains("unknown constructor `Lit`"), "{out}");
+    assert_eq!(
+        eval_unit(&[EXPR, ("", "use Syntax\ndef main = match Expr.Lit 5 with | Expr.Lit n -> n | Expr.Neg e -> 0\n")]),
+        "5"
+    );
+}
+
+#[test]
+fn a_constructor_named_as_a_module_item_says_where_it_lives() {
+    let out = unit_errors(&[EXPR, ("", "use Syntax (Lit)\ndef main = 1\n")]);
+    assert_eq!(
+        out,
+        "`Lit` is a constructor of `Expr`, not an item of `Syntax`"
+    );
+}
+
+#[test]
+fn a_dependency_constructor_named_as_a_module_item_says_where_it_lives() {
+    let out = common::errors_std_with("use Std.Maybe (Maybe, Just)\ndef main = 1\n", meadow::Options::debug());
+    assert_eq!(out, "`Just` is a constructor of `Maybe`, not an item of `Std.Maybe`");
+}
+
+#[test]
+fn a_dependency_type_path_imports_its_constructors() {
+    let src = "use Std.Either.Either (Left)\n\
+               def main = match Left 1 with | Left n -> n | Either.Right s -> 0\n";
+    assert_eq!(common::eval_main_std(src), "1");
+}
+
+#[test]
+fn a_constructor_the_type_does_not_have_is_reported() {
+    let out = unit_errors(&[EXPR, ("", "use Syntax.Expr (Lit, Add)\ndef main = 1\n")]);
+    assert_eq!(out, "`Expr` has no constructor `Add`");
+}
+
+#[test]
+fn a_glob_on_a_module_is_reported() {
+    let out = unit_errors(&[EXPR, ("", "use Syntax.*\ndef main = 1\n")]);
+    assert_eq!(out, "`use Syntax.*` names a module; `.*` is for a type's constructors");
+}
+
+#[test]
+fn a_private_types_constructors_cannot_be_imported() {
+    let out = unit_errors(&[
+        ("Syntax", "data Expr = Lit Int\n@pub(pkg) fun lit n = Expr.Lit n\n"),
+        ("", "use Syntax.Expr.*\ndef main = 1\n"),
+    ]);
+    assert!(out.contains("`Expr` is private to module `Syntax`"), "{out}");
 }
 
 // --- the package boundary ----------------------------------------------------

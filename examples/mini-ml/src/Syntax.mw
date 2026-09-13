@@ -45,4 +45,4 @@
 
 -- A type scheme: `forall ids. ty`. The ids are the `Unbound` ids that were
 -- generalized; `instantiate` swaps each for a fresh variable.
-@pub(pkg) data Scheme = Forall (List Int) Ty
+@pub(pkg) data Scheme = Forall (Vector Int) Ty

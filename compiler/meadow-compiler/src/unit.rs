@@ -70,13 +70,13 @@ pub struct CompiledPackage {
     /// Caller-assigned id — the build system uses the package-graph index, the
     /// REPL uses the line number. Not interpreted here.
     pub id: usize,
-    /// Types whose constructors a dependent may write **unqualified**.
+    /// Constructors a dependent may write **unqualified**, by canonical name.
     ///
     /// A constructor's real name is `Type.Ctor`, so by default a dependent has
     /// to say which type it meant. This is the escape hatch the prelude uses:
-    /// `Maybe`, `Result`, `List` and friends are listed here, which is why
-    /// `Just` and `Nil` need no qualifier anywhere.
-    pub flat_ctor_types: Vec<InternedString>,
+    /// `@pub use Std.Maybe.Maybe.*` lists `Maybe.Just` and `Maybe.None` here,
+    /// which is why `Just` needs no qualifier anywhere.
+    pub flat_ctors: Vec<InternedString>,
     /// The `VarId` range this unit minted: `start..end`.
     ///
     /// A unit starts above everything its dependencies used, so the ranges of
@@ -244,8 +244,8 @@ pub fn compile_unit_in_package(
     // Every dependency's *types* are known here, so they can be named in an
     // annotation and their constructors written `Type.Ctor`. Which of those
     // constructors may be written *bare* is a separate question, and the
-    // answer is `flat_ctor_types` -- the prelude's list, plus anything a `use`
-    // brings in later.
+    // answer is `flat_ctors` -- the prelude's list, plus anything a
+    // `use M.Ty (C)` brings in later.
     for dep in deps {
         resolver.import_types(&dep.data_decls);
     }
@@ -258,8 +258,8 @@ pub fn compile_unit_in_package(
                 }
             }
             Some(_) => {
-                for ty in &dep.flat_ctor_types {
-                    resolver.use_type_ctors(*ty);
+                for c in &dep.flat_ctors {
+                    resolver.use_flat_ctor(*c);
                 }
             }
         }
@@ -303,6 +303,8 @@ pub fn compile_unit_in_package(
 
     // Names written bare that mean more than one thing, across the whole unit
     // (node ids are unit-wide). Inference chooses; see `hir::Overloads`.
+    // What `@pub use M.Ty.*` re-exports unqualified; see `flat_ctors` below.
+    let mut flat_ctors: Vec<InternedString> = Vec::new();
     let mut overloads: hir::Overloads = HashMap::new();
     let mut typed: Vec<TypedModule> = modules
         .iter()
@@ -318,7 +320,15 @@ pub fn compile_unit_in_package(
                     other => other,
                 };
                 if let ast::Decl::Use(u) = base {
-                    apply_use(&mut resolver, pkg, u, deps, &here, &mut diags);
+                    let brought = apply_use(&mut resolver, pkg, u, deps, &here, &mut diags);
+                    // `@pub use M.Ty.*`: the package's *unqualified* surface,
+                    // which is a claim about what a dependent may write bare.
+                    // Plain `@pub` only -- an argument only ever narrows it.
+                    if let ast::Decl::Attributed(attrs, _) = d.value() {
+                        if attrs.iter().any(|a| &**a.name.value() == "pub" && a.args.is_empty()) {
+                            flat_ctors.extend(brought);
+                        }
+                    }
                 }
             }
             let mut hir = resolver.resolve_module(&m.ast);
@@ -506,47 +516,24 @@ pub fn compile_unit_in_package(
         .cloned()
         .collect();
 
-    // Types whose constructors a dependent may write bare.
+    // Constructors a dependent may write bare.
     //
-    // Deliberately narrow: a type re-exported by `@pub use` is the package
-    // saying "this is part of my unqualified surface", which is exactly what
-    // the prelude does for `Maybe`, `Result` and `List`. An ungated package
-    // (no visibility attribute anywhere) exports everything, so its own types go too.
-    let mut flat_ctor_types: Vec<InternedString> = modules
-        .iter()
-        .flat_map(|m| m.ast.value().decls.iter())
-        .filter_map(|d| match d.value() {
-            ast::Decl::Attributed(attrs, inner) => match inner.value() {
-                // `@pub use M (T)`: the package's *unqualified* surface,
-                // which is a claim about what a dependent may write bare.
-                ast::Decl::Use(u)
-                    if attrs.iter().any(|a| {
-                        &**a.name.value() == "pub"
-                            // Plain `@pub`: an argument only ever narrows it.
-                            && a.args.is_empty()
-                    }) =>
-                {
-                    Some(u.names.clone())
-                }
-                _ => None,
-            },
-            _ => None,
-        })
-        .flatten()
-        .map(|n| *n.value())
-        .filter(|n| n.chars().next().is_some_and(|c| c.is_uppercase()))
-        .collect();
+    // Deliberately narrow: a constructor re-exported by `@pub use M.Ty.*` is the
+    // package saying "this is part of my unqualified surface", which is exactly
+    // what the prelude does for `Maybe`, `Result` and `Ordering`. An ungated
+    // package (no visibility attribute anywhere) exports everything, so its own
+    // constructors go too.
     if !gated {
         for d in &data_decls {
             match d.value() {
-                hir::Decl::Data(dd) => flat_ctor_types.push(dd.name),
-                hir::Decl::Record(rd) => flat_ctor_types.push(rd.name),
+                hir::Decl::Data(dd) => flat_ctors.extend(dd.variants.iter().map(|v| v.name)),
+                hir::Decl::Record(rd) => flat_ctors.push(rd.ctor),
                 _ => {}
             }
         }
     }
-    flat_ctor_types.sort_by_key(|n| n.to_string());
-    flat_ctor_types.dedup();
+    flat_ctors.sort_by_key(|n| n.to_string());
+    flat_ctors.dedup();
 
     // The entry point, from the root module alone: a `main` in a submodule is
     // an ordinary function that happens to be called `main`.
@@ -567,7 +554,7 @@ pub fn compile_unit_in_package(
     (
         CompiledPackage {
             id,
-            flat_ctor_types,
+            flat_ctors,
             vars: var_base..var_end,
             name: unit_name,
             entry,
@@ -609,10 +596,13 @@ fn collect_toplevel_vars(
     }
 }
 
-/// Resolve one `use` decl against the dependency packages and register the
-/// resulting module qualifier (+ any explicitly named unqualified imports).
-/// Bring the module a `use` names into scope, and report it if there is no such
+/// Bring what a `use` names into scope, and report it if there is no such
 /// module (or no such exported name).
+///
+/// The path ends in a module -- `use M`, `use M as C`, `use M (a, b)` -- or in a
+/// type declared by one: `use M.Ty` for the type, `use M.Ty (A, B)` or
+/// `use M.Ty.*` for its constructors unqualified. Returns the canonical
+/// constructors that last form brought, which a `@pub use` re-exports flat.
 fn apply_use(
     resolver: &mut Resolver,
     pkg: InternedString,
@@ -620,15 +610,23 @@ fn apply_use(
     deps: &[&CompiledPackage],
     filename: &str,
     diags: &mut Vec<Diagnostic>,
-) {
+) -> Vec<InternedString> {
     let segs: Vec<InternedString> = u.path.iter().map(|s| *s.value()).collect();
     if segs.is_empty() {
-        return;
+        return Vec::new();
     }
     let path_span = u
         .path
         .iter()
         .fold(u.path[0].span, |acc, s| acc.extend(s.span));
+    let mut report = |msg: String, label: &str, span| {
+        diags.push(Diagnostic {
+            msg,
+            filename: filename.to_string(),
+            label: (label.to_string(), span),
+            extra_labels: vec![],
+        })
+    };
 
     // `use Pack.Mod` — a sibling namespace of this very unit. The package is
     // the compilation unit and modules are namespaces inside it, so a sibling
@@ -638,6 +636,18 @@ fn apply_use(
     } else {
         segs.clone()
     };
+    let (ty, owner) = u.path.split_last().expect("a use path is never empty");
+    let local_owner = &local[..local.len().saturating_sub(1)];
+
+    if u.glob && !local.is_empty() && resolver.has_module(&local) {
+        let path = dotted(&segs);
+        report(
+            format!("`use {path}.*` names a module; `.*` is for a type's constructors"),
+            "a module",
+            path_span,
+        );
+        return Vec::new();
+    }
     if !local.is_empty() && resolver.has_module(&local) {
         match &u.alias {
             Some(a) => {
@@ -646,24 +656,50 @@ fn apply_use(
             }
             None => resolver.use_module(&local, &u.names),
         }
-        return;
+        return Vec::new();
+    }
+
+    // `use Pack.Mod.Ty ...` for a sibling's type.
+    if !local.is_empty() && resolver.module_has_type(local_owner, *ty.value()) {
+        if let Some(a) = &u.alias {
+            report(format!("a type cannot be renamed with `as`"), "not a module", a.span);
+            return Vec::new();
+        }
+        return resolver.use_type(local_owner, ty, &u.names, u.glob);
     }
 
     let Resolved { map, found } = resolve_module(pkg, &segs, deps);
 
     if !found {
+        // `use Pkg.Mod.Ty ...` for a dependency's type.
+        if segs.len() > 1 {
+            let owner_segs: Vec<InternedString> = owner.iter().map(|s| *s.value()).collect();
+            if resolve_module(pkg, &owner_segs, deps).found
+                && module_types(pkg, &owner_segs, deps).contains(ty.value())
+            {
+                if let Some(a) = &u.alias {
+                    report(format!("a type cannot be renamed with `as`"), "not a module", a.span);
+                    return Vec::new();
+                }
+                return resolver.use_dep_type(ty, &u.names, u.glob);
+            }
+        }
         let path = dotted(&segs);
         let mut msg = format!("no module `{path}`");
         if let Some(suggestion) = suggest_module(&segs, deps) {
             msg.push_str(&format!(" — did you mean `{suggestion}`?"));
         }
-        diags.push(Diagnostic {
-            msg,
-            filename: filename.to_string(),
-            label: ("not found".to_string(), path_span),
-            extra_labels: vec![],
-        });
-        return;
+        report(msg, "not found", path_span);
+        return Vec::new();
+    }
+    if u.glob {
+        let path = dotted(&segs);
+        report(
+            format!("`use {path}.*` names a module; `.*` is for a type's constructors"),
+            "a module",
+            path_span,
+        );
+        return Vec::new();
     }
 
     match &u.alias {
@@ -684,22 +720,73 @@ fn apply_use(
         }
         None => {}
     }
-    // Only *values* live in `map`. A selected name can also be a type, a data
-    // constructor or an effect operation, and those are imported wholesale
-    // elsewhere (`import_types`), so a miss here is not an error.
+    // Only *values* live in `map`. A selected name can also be a type or an
+    // effect operation, and those are imported wholesale elsewhere
+    // (`import_types`), so a miss here is not an error -- unless it is a
+    // constructor, which lives under its type and is never a module's item.
+    let types = module_types(pkg, &segs, deps);
     for n in &u.names {
-        if let Some(&id) = map.get(&*n.value()) {
-            resolver.import_from(*n.value(), id, InternedString::from(dotted(&segs)));
+        let name = *n.value();
+        if let Some(&id) = map.get(&name) {
+            resolver.import_from(name, id, InternedString::from(dotted(&segs)));
             resolver.note_ref(n.span, NameRef::Value(id));
-        } else if n.value().chars().next().is_some_and(|c| c.is_uppercase()) {
-            // A type (or an effect): no id to carry, so it is named.
-            resolver.note_ref(n.span, NameRef::Type(*n.value()));
+        } else if types.contains(&name) {
+            resolver.note_ref(n.span, NameRef::Type(name));
+        } else if let Some(owner) =
+            types.iter().find(|t| resolver.type_ctor_names(**t).contains(&name))
+        {
+            let module = dotted(&segs);
+            report(
+                format!("`{name}` is a constructor of `{owner}`, not an item of `{module}`"),
+                &format!("write `use {module}.{owner} ({name})`, or `{owner}.{name}`"),
+                n.span,
+            );
+        } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+            // An effect: no id to carry, so it is named.
+            resolver.note_ref(n.span, NameRef::Type(name));
         }
-        // `use M (Expr)` names a *type*, and naming a type brings its
-        // constructors into scope unqualified -- which is the only way to
-        // write `Int` rather than `Expr.Int`.
-        resolver.use_type_ctors(*n.value());
     }
+    Vec::new()
+}
+
+/// The exported `data` and `record` types a dependency module declares.
+fn module_types(
+    pkg: InternedString,
+    segs: &[InternedString],
+    deps: &[&CompiledPackage],
+) -> Vec<InternedString> {
+    let names = |decls: &mut dyn Iterator<Item = &hir::LDecl>| -> Vec<InternedString> {
+        decls
+            .filter_map(|d| match d.value() {
+                hir::Decl::Data(dd) => Some(dd.name),
+                hir::Decl::Record(rd) => Some(rd.name),
+                _ => None,
+            })
+            .collect()
+    };
+    let local: &[InternedString] = if segs.first() == Some(&pkg) { &segs[1..] } else { segs };
+    let mut out = Vec::new();
+    for dep in deps {
+        let exported = names(&mut dep.data_decls.iter());
+        // The module's path inside `dep`: a separately compiled sub-module is
+        // named by its own dotted path, and an external package by its first
+        // segment.
+        let wants: Vec<&[InternedString]> = [
+            (dotted(local) == *dep.name.to_string()).then_some(local),
+            (segs.first() == Some(&dep.name)).then(|| &segs[1..]),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        for m in dep.modules.iter().filter(|m| wants.contains(&m.path.as_slice())) {
+            out.extend(
+                names(&mut m.hir.value().decls.iter())
+                    .into_iter()
+                    .filter(|t| exported.contains(t)),
+            );
+        }
+    }
+    out
 }
 
 /// What a `use` path names: whether the module exists at all, and the values it

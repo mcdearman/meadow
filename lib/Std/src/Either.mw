@@ -1,6 +1,6 @@
 -- Std.Either: a value that is one of two things. Reach these as `Either.map`
--- etc., or `use` them. (`Left` / `Right` are constructors -- always in scope by
--- name.)
+-- etc., or `use` them. The constructors are `Either.Left` / `Either.Right`, or
+-- bare after `use Std.Either.Either.*`.
 --
 -- `Either` and `Result` are the same shape, and the difference is intent:
 -- `Result e a` says one side is a failure, and the whole module is written around
@@ -9,6 +9,10 @@
 -- choice has to be made anyway (`map`, `andThen`) this module follows `Result`
 -- and works on the `Right`, which is also what makes `toResult` the obvious
 -- conversion.
+
+use Std.Collections.Vector as V
+-- `[a, b]` desugars to a `vecFromArray` call.
+use Std.Collections.Vector (vecFromArray)
 
 @pub data Either a b = Left a | Right b
 
@@ -88,42 +92,29 @@
   | Just x -> Right x
 
 -- --- collections ------------------------------------------------------------
---
--- Over `List`, whose `Nil` / `Cons` are built in and so need no import. The
--- `Vector` equivalents belong in `Std.Collections.Vector`, which is compiled
--- after this module.
 
 @pub fun lefts es =
-  match es with
-  | [;] -> [;]
-  | e :: rest ->
-      match e with
-      | Left a -> a :: lefts rest
-      | Right b -> lefts rest
+  V.foldl (\acc e -> match e with | Left a -> V.pushBack acc a | Right b -> acc) V.empty es
 
 @pub fun rights es =
-  match es with
-  | [;] -> [;]
-  | e :: rest ->
-      match e with
-      | Left a -> rights rest
-      | Right b -> b :: rights rest
+  V.foldl (\acc e -> match e with | Left a -> acc | Right b -> V.pushBack acc b) V.empty es
 
 -- Both at once, in one pass, each side keeping its original order.
 @pub fun partitionEithers es =
-  match es with
-  | [;] -> ([;], [;])
-  | e :: rest ->
-      let (ls, rs) = partitionEithers rest in
+  V.foldl
+    (\acc e ->
+      let (ls, rs) = acc in
       match e with
-      | Left a -> (a :: ls, rs)
-      | Right b -> (ls, b :: rs)
+      | Left a -> (V.pushBack ls a, rs)
+      | Right b -> (ls, V.pushBack rs b))
+    (V.empty, V.empty)
+    es
 
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
-use Std.Maybe (Maybe)
-use Std.Result (Result)
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
 
 @test fun eitherCollapsesBothSides () =
   let a = assertEq (either (\n -> n + 1) (\s -> 0) (Left 5)) 6 "Left" in
@@ -156,8 +147,8 @@ use Std.Result (Result)
   assertEq (toResult (fromResult (Err "e"))) (Err "e") "round trip"
 
 @test fun leftsRightsAndPartitionKeepOrder () =
-  let es = [Left 1; Right "a"; Left 2; Right "b";] in
-  let a = assertEq (lefts es) [1; 2] "lefts" in
-  let b = assertEq (rights es) ["a"; "b"] "rights" in
-  let c = assertEq (partitionEithers es) ([1; 2], ["a"; "b"]) "partitionEithers" in
-  assertEq (partitionEithers [;]) ([;], [;]) "partition of nothing"
+  let es = [Left 1, Right "a", Left 2, Right "b"] in
+  let a = assertEq (lefts es) [1, 2] "lefts" in
+  let b = assertEq (rights es) ["a", "b"] "rights" in
+  let c = assertEq (partitionEithers es) ([1, 2], ["a", "b"]) "partitionEithers" in
+  assertEq (partitionEithers []) ([], []) "partition of nothing"

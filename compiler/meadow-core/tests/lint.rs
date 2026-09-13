@@ -269,7 +269,7 @@ fn effects_are_not_compared() {
         vec![int()],
         Box::new(int()),
         Box::new(Type::RowExtend(
-            "io".into(),
+            "Console".into(),
             Box::new(Type::Tuple(vec![])),
             Box::new(Type::RowEmpty),
         )),

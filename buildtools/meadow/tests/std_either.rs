@@ -8,7 +8,7 @@ fn e(body: &str) -> String {
     // and `Right` into scope unqualified. `Either` is not one of the handful
     // of types the prelude flattens, so a user writes this too.
     eval_main_std(&format!(
-        "use Std.Either as E\nuse Std.Either (Either)\ndef main = {body}\n"
+        "use Std.Either as E\nuse Std.Either.Either.*\ndef main = {body}\n"
     ))
 }
 
@@ -86,16 +86,16 @@ fn result_round_trips_through_either() {
 
 #[test]
 fn lefts_rights_and_partition_keep_their_order() {
-    let es = r#"[Left 1; Right "a"; Left 2; Right "b";]"#;
-    assert_eq!(e(&format!("E.lefts {es}")), "[1; 2]");
-    assert_eq!(e(&format!("E.rights {es}")), r#"["a"; "b"]"#);
+    let es = r#"[Left 1, Right "a", Left 2, Right "b"]"#;
+    assert_eq!(e(&format!("E.lefts {es}")), "[1, 2]");
+    assert_eq!(e(&format!("E.rights {es}")), r#"["a", "b"]"#);
     assert_eq!(
         e(&format!("E.partitionEithers {es}")),
-        r#"([1; 2], ["a"; "b"])"#
+        r#"([1, 2], ["a", "b"])"#
     );
     // Empty and one-sided inputs.
-    assert_eq!(e("E.partitionEithers [;]"), "([], [])");
-    assert_eq!(e("E.partitionEithers [Left 1;]"), "([1], [])");
+    assert_eq!(e("E.partitionEithers []"), "([], [])");
+    assert_eq!(e("E.partitionEithers [Left 1]"), "([1], [])");
 }
 
 // --- types -------------------------------------------------------------------
@@ -117,6 +117,6 @@ fn the_schemes_are_what_they_should_be() {
          c : forall a b e c. (a -> b ! e) -> Either a c -> Either b c ! e\n\
          d : forall a b e c d. (a -> b ! e) -> (c -> d ! e) -> Either a c -> Either b d ! e\n\
          e2 : forall a b. Either a b -> Either b a\n\
-         f2 : forall a b. List (Either a b) -> (List a, List b)\n"
+         f2 : forall a b. [Either a b] -> ([a], [b])\n"
     );
 }

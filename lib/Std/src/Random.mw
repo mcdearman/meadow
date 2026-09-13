@@ -140,13 +140,13 @@ fun swapAt v i j =
 use Std.Test (assertEq, assertTrue, assertFalse)
 -- `[a, b]` in the tests below desugars to a `vecFromArray` call.
 use Std.Collections.Vector (vecFromArray)
-use Std.Maybe (Maybe)
+use Std.Maybe.Maybe.*
 
 @test fun aSeedGivesTheSameRunTwice () =
   let a = assertEq (withSeed 42 (\u2 -> between 1 7)) (withSeed 42 (\u2 -> between 1 7)) "same seed" in
   assertEq
-    (withSeed 7 (\u2 -> V.toList (V.map (\i -> nextInt ()) [0, 1, 2])))
-    (withSeed 7 (\u2 -> V.toList (V.map (\i -> nextInt ()) [0, 1, 2])))
+    (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
+    (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
     "a whole sequence repeats"
 
 @test fun differentSeedsDiverge () =

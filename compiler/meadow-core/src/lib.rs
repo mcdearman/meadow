@@ -88,8 +88,9 @@ pub enum Prim {
     Le,
     Ge,
     Neg,
-    Print,
-    Println,
+    /// A value as text the way output shows it: a `String` as itself,
+    /// anything else as `show` renders it. What `print` and `println` write.
+    Display,
     // --- floating point ---
     AddF,
     SubF,
@@ -226,8 +227,7 @@ impl Prim {
             "<=" => Prim::Le,
             ">=" => Prim::Ge,
             "neg" => Prim::Neg,
-            "print" => Prim::Print,
-            "println" => Prim::Println,
+            "display" => Prim::Display,
             "+." => Prim::AddF,
             "-." => Prim::SubF,
             "*." => Prim::MulF,
@@ -285,8 +285,7 @@ impl Prim {
     pub fn arity(self) -> usize {
         match self {
             Prim::Neg
-            | Prim::Print
-            | Prim::Println
+            | Prim::Display
             | Prim::ToFloat
             | Prim::Floor
             | Prim::ToBig
@@ -719,10 +718,10 @@ impl Printer {
         }
     }
 
-    /// A row, record or effect: `{ x : Int, y : Int }`, `{ io, Mut | e }`.
+    /// A row, record or effect: `{ x : Int, y : Int }`, `{ Console, Mut | e }`.
     ///
     /// An effect's payload is the empty tuple when the effect takes no
-    /// parameters, and writing `io : ()` for that would be noise.
+    /// parameters, and writing `Console : ()` for that would be noise.
     fn row(&mut self, t: &Ty) -> String {
         let mut parts: Vec<String> = Vec::new();
         let mut cur = t;
@@ -915,8 +914,8 @@ mod tests {
     #[test]
     fn prim_name_roundtrip() {
         for name in [
-            "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "neg", "print",
-            "println", "+.", "-.", "*.", "/.", "<.", ">.", "<=.", ">=.", "toFloat", "floor",
+            "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "neg", "display",
+            "+.", "-.", "*.", "/.", "<.", ">.", "<=.", ">=.", "toFloat", "floor",
         ] {
             assert!(Prim::from_name(name).is_some(), "{name} should be a prim");
         }
@@ -927,7 +926,7 @@ mod tests {
     fn prim_arity() {
         assert_eq!(Prim::Add.arity(), 2);
         assert_eq!(Prim::Neg.arity(), 1);
-        assert_eq!(Prim::Println.arity(), 1);
+        assert_eq!(Prim::Display.arity(), 1);
         assert_eq!(Prim::Eq.arity(), 2);
     }
 

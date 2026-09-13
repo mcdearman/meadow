@@ -47,8 +47,9 @@ pub struct Resolver {
     /// what they receive is this name.
     ctors: HashMap<InternedString, CtorInfo>,
     /// Bare name -> canonical, for the constructors this module may write
-    /// unqualified: the ones its own types declare, plus whatever a `use` of a
-    /// type brought in. A name absent here must be written `Type.Ctor`.
+    /// unqualified: the ones its own types declare, plus whatever a
+    /// `use M.Type (C)` or `use M.Type.*` brought in. A name absent here must be
+    /// written `Type.Ctor`.
     ///
     /// Only the *base* layer lives here once the scope is sealed -- the
     /// builtins and what the dependencies flattened -- and a module's own and
@@ -317,6 +318,14 @@ fn canonical_ctor(ty: InternedString, ctor: InternedString) -> InternedString {
     InternedString::from(format!("{ty}.{ctor}"))
 }
 
+/// The type a canonical constructor belongs to: `Expr.Int` -> `Expr`.
+fn owner_of(canonical: InternedString) -> InternedString {
+    match canonical.rsplit_once('.') {
+        Some((ty, _)) => InternedString::from(ty),
+        None => canonical,
+    }
+}
+
 /// The bare spelling of a canonical name: `Expr.Int` -> `Int`.
 fn bare_ctor(canonical: InternedString) -> InternedString {
     match canonical.rsplit_once('.') {
@@ -471,8 +480,11 @@ impl Resolver {
                 self.tycons.insert(*n, *a);
             }
         }
-        for (bare, canonical, v) in &frame.ctors {
-            if ok(*v) {
+        // Constructors live under their type. A module's own are written bare
+        // inside it; anyone else's arrive only through `use M.Type (C)` or
+        // `use M.Type.*` -- not by naming the type, and not with a glob.
+        if owner.is_none() {
+            for (bare, canonical, _) in &frame.ctors {
                 self.add_ctor(*bare, *canonical);
             }
         }
@@ -538,8 +550,9 @@ impl Resolver {
     /// Bring a sibling module's declarations into the current scope.
     ///
     /// `names` empty means all of them, which is what a bare `use Pack.Mod`
-    /// asks for. A selected name may be a value, a type (whose constructors
-    /// come with it) or a constructor.
+    /// asks for. A selected name may be a value, a type or an effect operation.
+    /// Neither form brings constructors, which live under their type: see
+    /// [`Resolver::use_type`].
     ///
     /// A declaration the asking module is not allowed to see is skipped when
     /// the whole module was asked for, and an error when it was named: saying
@@ -580,8 +593,6 @@ impl Resolver {
             for (n, a, v) in &frame.tycons {
                 if *n == name && note(*v, &mut found, &mut hidden) {
                     self.tycons.insert(*n, *a);
-                    // Naming a type brings its constructors, as everywhere else.
-                    self.use_type_ctors(*n);
                     sites.push(RefSite { span: want.span, what: NameRef::Type(*n) });
                 }
             }
@@ -595,13 +606,22 @@ impl Resolver {
                     self.effect_ops.insert(*op, *eff);
                 }
             }
-            for (bare, canonical, v) in &frame.ctors {
-                if *bare == name && note(*v, &mut found, &mut hidden) {
-                    self.add_ctor(*bare, *canonical);
-                    sites.push(RefSite { span: want.span, what: NameRef::Ctor(*canonical) });
-                }
-            }
             self.extra_refs.extend(sites);
+            // A constructor is not a module's to hand out by itself; say where
+            // it lives rather than calling it undefined.
+            let owner = (!found)
+                .then(|| frame.ctors.iter().find(|(bare, _, _)| *bare == name))
+                .flatten()
+                .map(|(_, canonical, _)| owner_of(*canonical));
+            if let Some(ty) = owner {
+                let module = dotted_path(path);
+                self.error(
+                    format!("`{name}` is a constructor of `{ty}`, not an item of `{module}`"),
+                    format!("write `use {module}.{ty} ({name})`, or `{ty}.{name}`"),
+                    want.span,
+                );
+                continue;
+            }
             if !found {
                 if let Some(vis) = hidden {
                     let module = dotted_path(path);
@@ -1115,8 +1135,128 @@ impl Resolver {
         self.ctors_of.keys().copied().collect()
     }
 
-    /// Bring a type's constructors into scope unqualified -- what `use Expr`
-    /// does, and what importing a type name from another module does.
+    /// Does sibling module `path` declare a type called `ty`? Visible or not:
+    /// the question is what a `use` path names, and [`Resolver::use_type`]
+    /// reports a type it may not see.
+    pub fn module_has_type(&self, path: &[InternedString], ty: InternedString) -> bool {
+        self.frames.get(path).is_some_and(|f| f.tycons.iter().any(|(n, _, _)| *n == ty))
+    }
+
+    /// `use M.Ty`, `use M.Ty (A, B)` and `use M.Ty.*`, for a type declared in
+    /// sibling module `path`: the type alone, the named constructors, or all of
+    /// them. Returns the canonical constructors now in scope unqualified.
+    ///
+    /// This is Rust's `use m::Ty::{A, B}`. Naming the type anywhere else --
+    /// `use M (Ty)` -- brings only `Ty`, and its constructors are written
+    /// `Ty.A`.
+    pub fn use_type(
+        &mut self,
+        path: &[InternedString],
+        ty: &ast::Ident,
+        names: &[ast::Ident],
+        glob: bool,
+    ) -> Vec<InternedString> {
+        let Some(frame) = self.frames.get(path).cloned() else {
+            return Vec::new();
+        };
+        let tyname = *ty.value();
+        let Some(&(_, arity, vis)) = frame.tycons.iter().find(|(n, _, _)| *n == tyname) else {
+            return Vec::new();
+        };
+        if !self.sees(vis, path) {
+            let module = dotted_path(path);
+            self.error(
+                format!("`{tyname}` is {} `{module}`", vis.describe_in()),
+                format!("mark it `{}` to use it here", vis.wider()),
+                ty.span,
+            );
+            return Vec::new();
+        }
+        self.note_ref(ty.span, NameRef::Type(tyname));
+        let ctors: Vec<(InternedString, InternedString)> = frame
+            .ctors
+            .iter()
+            .filter(|(_, canonical, _)| owner_of(*canonical) == tyname)
+            .map(|(bare, canonical, _)| (*bare, *canonical))
+            .collect();
+        // `use M.Ty` on its own brings the type, as `use M (Ty)` would.
+        self.bring_ctors(tyname, &ctors, names, glob, Some(arity))
+    }
+
+    /// `use Pkg.M.Ty (A, B)` / `use Pkg.M.Ty.*` for a dependency's type, which
+    /// is already known (see [`Resolver::import_types`]); only its constructors'
+    /// scope changes.
+    pub fn use_dep_type(
+        &mut self,
+        ty: &ast::Ident,
+        names: &[ast::Ident],
+        glob: bool,
+    ) -> Vec<InternedString> {
+        let tyname = *ty.value();
+        self.note_ref(ty.span, NameRef::Type(tyname));
+        let ctors: Vec<(InternedString, InternedString)> = self
+            .ctors_of
+            .get(&tyname)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| (c, canonical_ctor(tyname, c)))
+            .collect();
+        self.bring_ctors(tyname, &ctors, names, glob, None)
+    }
+
+    fn bring_ctors(
+        &mut self,
+        tyname: InternedString,
+        ctors: &[(InternedString, InternedString)],
+        names: &[ast::Ident],
+        glob: bool,
+        alone: Option<usize>,
+    ) -> Vec<InternedString> {
+        if glob {
+            for (bare, canonical) in ctors {
+                self.add_ctor(*bare, *canonical);
+            }
+            return ctors.iter().map(|(_, c)| *c).collect();
+        }
+        if names.is_empty() {
+            if let Some(arity) = alone {
+                self.tycons.insert(tyname, arity);
+            }
+            return Vec::new();
+        }
+        let mut brought = Vec::new();
+        for want in names {
+            let name = *want.value();
+            match ctors.iter().find(|(bare, _)| *bare == name) {
+                Some((bare, canonical)) => {
+                    self.add_ctor(*bare, *canonical);
+                    self.note_ref(want.span, NameRef::Ctor(*canonical));
+                    brought.push(*canonical);
+                }
+                None => self.error(
+                    format!("`{tyname}` has no constructor `{name}`"),
+                    "not a constructor of this type".to_string(),
+                    want.span,
+                ),
+            }
+        }
+        brought
+    }
+
+    /// The bare constructors of a known type, in declaration order.
+    pub fn type_ctor_names(&self, ty: InternedString) -> Vec<InternedString> {
+        self.ctors_of.get(&ty).cloned().unwrap_or_default()
+    }
+
+    /// Make a dependency's constructor writable bare: the ones its package
+    /// re-exported with `@pub use M.Ty.*`, which is how `Just` needs no `use`.
+    pub fn use_flat_ctor(&mut self, canonical: InternedString) {
+        self.add_ctor(bare_ctor(canonical), canonical);
+    }
+
+    /// Bring a type's constructors into scope unqualified. Only for a unit
+    /// that flattens everything -- a REPL line's view of the ones before it.
     pub fn use_type_ctors(&mut self, ty: InternedString) {
         let ctors = self.ctors_of.get(&ty).cloned().unwrap_or_default();
         for c in ctors {

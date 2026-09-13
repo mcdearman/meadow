@@ -385,8 +385,7 @@ impl<'p> Machine<'p> {
                 arg,
                 k,
             } => {
-                self.perform(*effect, *op, *arg, *k)?;
-                Ok(None)
+                self.perform(*effect, *op, *arg, *k)
             }
 
             Statement::Error(msg) => err(*msg),
@@ -502,7 +501,7 @@ impl<'p> Machine<'p> {
         op: InternedString,
         arg: Name,
         k: Name,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<Value<'p>>, Error> {
         let matches = |f: &Frame| f.ops.iter().any(|(e, o)| *e == effect && *o == op);
         let Some(idx) = self.handlers.iter().rposition(matches) else {
             // The CEK discharges `Fs`, `Process`, `Random` and `Time` against
@@ -513,6 +512,17 @@ impl<'p> Machine<'p> {
             if &*effect == "Test" && &*op == "fail" {
                 let v = self.lookup(arg)?;
                 return err(v.to_string());
+            }
+            // Output is the other exception: printing has to reach the terminal
+            // on every engine, or a program that prints cannot be compared.
+            if &*effect == "Console" && &*op == "writeOutput" {
+                let v = self.lookup(arg)?;
+                match v {
+                    Value::Str(s) => print!("{s}"),
+                    other => print!("{other}"),
+                }
+                let kv = self.lookup(k)?;
+                return self.deliver(kv, Value::Unit);
             }
             return err(format!("unhandled effect {effect}.{op}"));
         };
@@ -544,7 +554,8 @@ impl<'p> Machine<'p> {
         vals.push(argv);
         vals.push(resumption);
         vals.push(ret_k);
-        self.enter(block, vals)
+        self.enter(block, vals)?;
+        Ok(None)
     }
 
     fn extern_op(
@@ -619,6 +630,19 @@ impl<'p> Machine<'p> {
                     Some(v) => v.clone(),
                     None => return err(format!("no field `{label}` on this record")),
                 },
+                // A `record` declaration's value: constructor data whose fields
+                // have names.
+                Value::Data(name, _, fields) => {
+                    let at = self
+                        .program
+                        .ctor_fields
+                        .get(name)
+                        .and_then(|fs| fs.iter().position(|f| f == label));
+                    match at.and_then(|i| fields.get(i)) {
+                        Some(v) => v.clone(),
+                        None => return err(format!("`{name}` has no field `{label}`")),
+                    }
+                }
                 other => return err(format!("selected `.{label}` from {}", kind(other))),
             },
             Extern::Extend(label) => match &vals[0] {
@@ -1048,14 +1072,10 @@ fn prim<'p>(
             Value::Int(x) => Ok(Value::Int(x.wrapping_neg())),
             other => err(format!("`neg` expects an Int, got {other}")),
         },
-        Print => {
-            print!("{}", args[0]);
-            Ok(Value::Unit)
-        }
-        Println => {
-            println!("{}", args[0]);
-            Ok(Value::Unit)
-        }
+        Display => Ok(Value::Str(InternedString::from(match &args[0] {
+            Value::Str(s) => s.to_string(),
+            other => other.to_string(),
+        }))),
 
         // --- the builtin `Array` ---------------------------------------------
         ArrayLen => Ok(Value::Int(as_array(&args[0])?.len() as i64)),
@@ -1364,6 +1384,7 @@ mod tests {
         Program {
             returns: Default::default(),
             continuations: Default::default(),
+            ctor_fields: Default::default(),
             defs: vec![Def {
                 label: Label(0),
                 name: InternedString::from("main"),

@@ -266,19 +266,9 @@ impl Vm<'_> {
             Ne => Value::Bool(!self.value_eq(arg(self, 0), arg(self, 1))),
             Show => Value::Str(InternedString::from(self.show(arg(self, 0)))),
 
-            // A `String` prints as its text; everything else prints the way
-            // `show` renders it. See `meadow_eval::displayed` for why.
-            Print => {
-                let s = self.displayed(arg(self, 0));
-                self.write_out(&s);
-                Value::Unit
-            }
-            Println => {
-                let mut s = self.displayed(arg(self, 0));
-                s.push('\n');
-                self.write_out(&s);
-                Value::Unit
-            }
+            // A `String` as its text; everything else the way `show` renders
+            // it. See `meadow_eval::displayed` for why.
+            Display => Value::Str(InternedString::from(self.displayed(arg(self, 0)))),
 
             // --- the builtin Array ----------------------------------------
             ArrayLen => Value::Int(self.heap.len(self.array(arg(self, 0))?) as i64),

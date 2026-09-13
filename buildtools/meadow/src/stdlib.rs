@@ -51,7 +51,6 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Maybe", include_str!("../../../lib/Std/src/Maybe.mw")),
     ("Char", include_str!("../../../lib/Std/src/Char.mw")),
     ("Result", include_str!("../../../lib/Std/src/Result.mw")),
-    ("Either", include_str!("../../../lib/Std/src/Either.mw")),
     ("Bits", include_str!("../../../lib/Std/src/Bits.mw")),
     ("Bytes", include_str!("../../../lib/Std/src/Bytes.mw")),
     ("Yield", include_str!("../../../lib/Std/src/Yield.mw")),
@@ -61,6 +60,7 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Collections.Tree", include_str!("../../../lib/Std/src/Collections/Tree.mw")),
     ("Collections.Set", include_str!("../../../lib/Std/src/Collections/Set.mw")),
     ("Collections.Map", include_str!("../../../lib/Std/src/Collections/Map.mw")),
+    ("Either", include_str!("../../../lib/Std/src/Either.mw")),
     ("Sort", include_str!("../../../lib/Std/src/Sort.mw")),
     ("State", include_str!("../../../lib/Std/src/State.mw")),
     ("Exn", include_str!("../../../lib/Std/src/Exn.mw")),
@@ -238,12 +238,12 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut exports: Vec<Export> = Vec::new();
     let mut prelude_names: Vec<InternedString> = Vec::new();
     // Unioned across the sub-units, which in practice means `Prelude.mw`'s:
-    // it is the only one that `@pub use`s a type.
-    let mut flat_ctor_types: Vec<InternedString> = Vec::new();
+    // it is the only one that `@pub use`s a type's constructors.
+    let mut flat_ctors: Vec<InternedString> = Vec::new();
     let mut tests = Vec::new();
 
     for sub in subs {
-        flat_ctor_types.extend(sub.flat_ctor_types.iter().copied());
+        flat_ctors.extend(sub.flat_ctors.iter().copied());
         defs.extend(sub.defs);
         modules.extend(sub.modules);
         ctor_fields.extend(sub.ctor_fields);
@@ -258,12 +258,12 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         }
     }
 
-    flat_ctor_types.sort_by_key(|n| n.to_string());
-    flat_ctor_types.dedup();
+    flat_ctors.sort_by_key(|n| n.to_string());
+    flat_ctors.dedup();
 
     CompiledPackage {
         id: 0,
-        flat_ctor_types,
+        flat_ctors,
         vars: lo..hi,
         name,
         // A library has no entry point, and `Std` least of all.

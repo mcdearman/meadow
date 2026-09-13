@@ -37,9 +37,32 @@ pub enum Build {
     Data(&'static str, Vec<Build>),
     Tuple(Vec<Build>),
     Record(Vec<(&'static str, Build)>),
-    /// A `Cons`/`Nil` chain, in order.
-    List(Vec<Build>),
+    /// A builtin `Array`, in order.
+    Array(Vec<Build>),
+    /// A `Std.Collections.Vector`, in the shape `Vector.fromArray` gives one --
+    /// see [`vector_shape`].
+    Vector(Vec<Build>),
 }
+
+/// How `Vector.fromArray` lays out `n` elements: nothing, one chunk, or a
+/// radix-balanced tree of chunks of [`VECTOR_WIDTH`] under a `Full` with empty
+/// side buffers. Returns the shift and, level by level from the leaves up, how
+/// many nodes each level has.
+///
+/// This is `vBuildTree` in `Std.Collections.Vector`, and has to stay it: a
+/// vector built here is taken apart by that module's code.
+pub(crate) fn vector_shape(n: usize) -> (i64, Vec<usize>) {
+    let mut levels = vec![n.div_ceil(VECTOR_WIDTH)];
+    let mut shift = 5;
+    while *levels.last().expect("never empty") > VECTOR_WIDTH {
+        levels.push(levels.last().expect("never empty").div_ceil(VECTOR_WIDTH));
+        shift += 5;
+    }
+    (shift, levels)
+}
+
+/// `vWidth` in `Std.Collections.Vector`.
+pub(crate) const VECTOR_WIDTH: usize = 32;
 
 impl Build {
     fn unit() -> Build {
@@ -68,8 +91,22 @@ impl Build {
             Build::Record(fs) => {
                 1 + 2 * fs.len() + fs.iter().map(|(_, b)| b.slots()).sum::<usize>()
             }
-            // One `Cons` of two fields per element, plus the `Nil`.
-            Build::List(xs) => 1 + 3 * xs.len() + xs.iter().map(Build::slots).sum::<usize>(),
+            Build::Array(xs) => 1 + xs.len() + xs.iter().map(Build::slots).sum::<usize>(),
+            Build::Vector(xs) => {
+                let inner = xs.iter().map(Build::slots).sum::<usize>();
+                if xs.len() <= VECTOR_WIDTH {
+                    // `Single` and its array, or a bare `Empty`.
+                    return 3 + xs.len() + inner;
+                }
+                let (_, levels) = vector_shape(xs.len());
+                // `Full` and its four empty buffers; every leaf a `Leaf` and an
+                // array of elements; every branch a `Branch`, a `None` and an
+                // array of children.
+                let leaves = levels[0];
+                let branches: usize = levels[1..].iter().sum::<usize>() + 1;
+                let children: usize = levels.iter().sum::<usize>();
+                8 + 4 + 3 * leaves + xs.len() + 4 * branches + children + inner
+            }
         }
     }
 }
@@ -109,15 +146,13 @@ impl Vm<'_> {
                 }
                 Value::Obj(self.heap.alloc(Kind::Record, 0, &fields))
             }
-            Build::List(xs) => {
+            Build::Array(xs) => {
                 let items: Vec<Value> = xs.into_iter().map(|x| self.build_here(x)).collect();
-                let nil = self.ctor_tag("List.Nil");
-                let cons = self.ctor_tag("List.Cons");
-                let mut tail = Value::Obj(self.heap.alloc(Kind::Data, nil, &[]));
-                for head in items.into_iter().rev() {
-                    tail = Value::Obj(self.heap.alloc(Kind::Data, cons, &[head, tail]));
-                }
-                tail
+                Value::Obj(self.heap.alloc(Kind::Array, 0, &items))
+            }
+            Build::Vector(xs) => {
+                let items: Vec<Value> = xs.into_iter().map(|x| self.build_here(x)).collect();
+                self.vector_here(items)
             }
         }
     }
@@ -150,10 +185,61 @@ impl Vm<'_> {
         }
     }
 
-    fn list_arg(&self, what: &str, v: Value) -> Result<Vec<Value>, Error> {
-        match self.list_items(v) {
+    fn vector_arg(&self, what: &str, v: Value) -> Result<Vec<Value>, Error> {
+        match self.vector_elems(v) {
             Some(xs) => Ok(xs),
-            None => err(format!("{what}: expected a List, got {}", self.show(v))),
+            None => err(format!("{what}: expected a Vector, got {}", self.show(v))),
+        }
+    }
+
+    /// Lay `items` out as `Vector.fromArray` would. Room must already have
+    /// been made -- see [`Build::slots`].
+    fn vector_here(&mut self, items: Vec<Value>) -> Value {
+        let data = |vm: &mut Vm, name: &str, fields: &[Value]| {
+            let tag = vm.ctor_tag(name);
+            Value::Obj(vm.heap.alloc(Kind::Data, tag, fields))
+        };
+        let array = |vm: &mut Vm, xs: &[Value]| Value::Obj(vm.heap.alloc(Kind::Array, 0, xs));
+        if items.is_empty() {
+            return data(self, "Vector.Empty", &[]);
+        }
+        if items.len() <= VECTOR_WIDTH {
+            let a = array(self, &items);
+            return data(self, "Vector.Single", &[a]);
+        }
+        let n = items.len();
+        let (shift, _) = vector_shape(n);
+        let mut nodes: Vec<Value> = items
+            .chunks(VECTOR_WIDTH)
+            .map(|chunk| {
+                let a = array(self, chunk);
+                data(self, "VNode.Leaf", &[a])
+            })
+            .collect();
+        loop {
+            let group = |vm: &mut Vm, kids: &[Value]| {
+                let none = data(vm, "Maybe.None", &[]);
+                let a = array(vm, kids);
+                data(vm, "VNode.Branch", &[none, a])
+            };
+            if nodes.len() <= VECTOR_WIDTH {
+                let root = group(self, &nodes);
+                let empties: Vec<Value> = (0..4).map(|_| array(self, &[])).collect();
+                return data(
+                    self,
+                    "Vector.Full",
+                    &[
+                        Value::Int(n as i64),
+                        Value::Int(shift),
+                        empties[0],
+                        empties[1],
+                        root,
+                        empties[2],
+                        empties[3],
+                    ],
+                );
+            }
+            nodes = nodes.chunks(VECTOR_WIDTH).map(|kids| group(self, kids)).collect();
         }
     }
 
@@ -214,7 +300,7 @@ impl Vm<'_> {
                 Err(e) => ioerr(e),
             },
             "readBytes" => match fs::read(&*one(self, arg)?) {
-                Ok(b) => Build::ok(Build::List(
+                Ok(b) => Build::ok(Build::Array(
                     b.into_iter().map(|x| Build::int(i64::from(x))).collect(),
                 )),
                 Err(e) => ioerr(e),
@@ -260,7 +346,7 @@ impl Vm<'_> {
                             Err(e) => return Ok(Some(ioerr(e))),
                         }
                     }
-                    Build::ok(Build::List(names))
+                    Build::ok(Build::Vector(names))
                 }
                 Err(e) => ioerr(e),
             },
@@ -295,13 +381,13 @@ impl Vm<'_> {
             let t = vm.tuple_arg(&what, v, 4)?;
             let program = vm.str_arg(&what, t[0])?;
             let mut cmd = Proc::new(&*program);
-            for a in vm.list_arg(&what, t[1])? {
+            for a in vm.vector_arg(&what, t[1])? {
                 cmd.arg(&*vm.str_arg(&what, a)?);
             }
             if let Some(dir) = vm.maybe_arg(&what, t[2])? {
                 cmd.current_dir(&*vm.str_arg(&what, dir)?);
             }
-            for e in vm.list_arg(&what, t[3])? {
+            for e in vm.vector_arg(&what, t[3])? {
                 let kv = vm.tuple_arg(&what, e, 2)?;
                 cmd.env(&*vm.str_arg(&what, kv[0])?, &*vm.str_arg(&what, kv[1])?);
             }
@@ -331,7 +417,7 @@ impl Vm<'_> {
                 }
             },
             "currentPid" => Build::int(std::process::id() as i64),
-            "argv" => Build::List(
+            "argv" => Build::Vector(
                 std::env::args()
                     .skip(1)
                     .map(Build::Str)
@@ -419,7 +505,8 @@ impl Vm<'_> {
         }))
     }
 
-    /// Real standard input.
+    /// Real standard output and input. Output goes wherever [`Vm::io`] sends it,
+    /// which is how a debugger shows a program's printing in its console.
     ///
     /// `readLine` strips the line terminator, including a `\r\n` pair, so a
     /// program reading a file piped in on Windows sees the same lines as one
@@ -429,6 +516,16 @@ impl Vm<'_> {
         use std::io::BufRead;
 
         Ok(Some(match op {
+            "writeOutput" => {
+                let Value::Str(s) = arg else {
+                    return err(format!(
+                        "Console.writeOutput: expected a String, got {}",
+                        self.show(arg)
+                    ));
+                };
+                self.write_out(&s);
+                Build::unit()
+            }
             "readLine" => {
                 let _ = arg;
                 if let Some(input) = &mut self.io.input {

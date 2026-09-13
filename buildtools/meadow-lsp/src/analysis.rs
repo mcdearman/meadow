@@ -259,6 +259,10 @@ pub struct Analysis {
     /// This document's top-level definitions, in source order -- what an
     /// editor offers to run or debug on its own.
     pub functions: Vec<Function>,
+    /// Every data constructor this document could mention, by canonical name
+    /// (`Tv.Link`), with the full path a `use` would spell it by:
+    /// `demo.Syntax.Tv.Link`, `Std.Maybe.Maybe.Just`. What a hover shows.
+    pub ctor_paths: std::collections::HashMap<InternedString, String>,
 }
 
 /// A top-level definition, as something to start a program at.
@@ -549,6 +553,7 @@ impl Std {
             wider_refs: Vec::new(),
             wider_name_refs: Vec::new(),
             functions: Vec::new(),
+            ctor_paths: Default::default(),
         };
         collect_names(
             &pkg.data_decls,
@@ -593,6 +598,7 @@ impl Std {
             }
         }
         mark_tests(&mut a, &pkg);
+        a.ctor_paths = ctor_paths(&pkg, Some(sources.name), &deps, None);
         Some(a)
     }
 
@@ -651,6 +657,7 @@ impl Std {
             wider_refs: Vec::new(),
             wider_name_refs: Vec::new(),
             functions: Vec::new(),
+            ctor_paths: Default::default(),
         };
         collect_names(
             &pkg.data_decls,
@@ -678,8 +685,57 @@ impl Std {
         if package.is_none() {
             mark_tests(&mut a, &pkg);
         }
+        // A throwaway single-file analysis is not a package anyone can name, so
+        // its own constructors are shown from the module down.
+        a.ctor_paths = ctor_paths(&pkg, package, deps, package);
         a
     }
+}
+
+/// The full path of every data constructor declared in `pkg` or its
+/// dependencies: package, module, type, constructor.
+///
+/// `own` names `pkg`, or is `None` when it has no name worth showing. A `Std`
+/// module analysed as itself depends on the modules before it, each a unit
+/// named by its dotted path rather than by the package; `sub_units_of` is the
+/// package those belong to.
+fn ctor_paths(
+    pkg: &CompiledPackage,
+    own: Option<InternedString>,
+    deps: &[&CompiledPackage],
+    sub_units_of: Option<InternedString>,
+) -> std::collections::HashMap<InternedString, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut add = |package: Option<InternedString>, module: &hir::LModule, path: &[InternedString]| {
+        let mut prefix: Vec<String> = package.into_iter().map(|p| p.to_string()).collect();
+        prefix.extend(path.iter().map(|s| s.to_string()));
+        for d in &module.value().decls {
+            let ctors: Vec<InternedString> = match d.value() {
+                hir::Decl::Data(dd) => dd.variants.iter().map(|v| v.name).collect(),
+                hir::Decl::Record(rd) => vec![rd.ctor],
+                _ => continue,
+            };
+            for c in ctors {
+                let mut full = prefix.clone();
+                full.push(c.to_string());
+                out.insert(c, full.join("."));
+            }
+        }
+    };
+    for dep in deps {
+        for m in &dep.modules {
+            let dotted: Vec<String> = m.path.iter().map(|s| s.to_string()).collect();
+            let package = match sub_units_of {
+                Some(p) if dep.name.to_string() == dotted.join(".") => p,
+                _ => dep.name,
+            };
+            add(Some(package), &m.hir, &m.path);
+        }
+    }
+    for m in &pkg.modules {
+        add(own, &m.hir, &m.path);
+    }
+    out
 }
 
 /// Mark which of the analysed functions are `@test`s, under the name
@@ -787,7 +843,7 @@ impl Walk<'_> {
     ///
     /// Read off the *function's* type rather than the body's, because an
     /// effect belongs to the arrow. `fun logIt x = let _ = println "hi" in x`
-    /// has a body of type `a` and a type of `a -> a ! { io | e }`; hinting the
+    /// has a body of type `a` and a type of `a -> a ! { Console | e }`; hinting the
     /// body would claim the function is pure.
     fn result_hint(&mut self, fn_id: hir::NodeId, arity: usize) -> Option<String> {
         let whole = self.types.and_then(|t| t.get(fn_id))?.clone();
@@ -1276,7 +1332,20 @@ impl Analysis {
     }
 
     /// Markdown for the hover: a signature, then any doc comment above it.
+    ///
+    /// A data constructor shows where it lives instead -- its full path, the
+    /// way a `use` would name it -- since which `Int` a bare `Int` is matters
+    /// more than a type the surrounding code already implies.
     pub fn hover_at(&self, offset: usize) -> Option<String> {
+        let innermost = self
+            .name_refs
+            .iter()
+            .filter(|(s, _, _)| covers(*s, offset))
+            .min_by_key(|(s, _, _)| s.end - s.start);
+        if let Some((_, name, Namespace::Ctor)) = innermost {
+            let path = self.ctor_paths.get(name).cloned().unwrap_or_else(|| name.to_string());
+            return Some(format!("```meadow\n{path}\n```"));
+        }
         let var = self.var_at(offset);
         let signature = match var.and_then(|v| self.schemes.get(&v)) {
             // A top-level binding shows its generalised scheme, which is more
@@ -1387,6 +1456,7 @@ impl Analysis {
             wider_refs: Vec::new(),
             wider_name_refs: Vec::new(),
             functions: Vec::new(),
+            ctor_paths: Default::default(),
             source_id: 0,
         }
     }

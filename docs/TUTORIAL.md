@@ -61,14 +61,15 @@ evaluated to. Trimmed to the interesting part:
 
 ```
 === package hello ===
-  main : () ! { io | e }
+  main : ()
 entry: main
 Hello, Meadow!
 => ()
 ```
 
-`main` has type `() ! { io | e }` — it produces nothing useful, and it performs
-the `io` effect. More on that in [chapter 9](#9-effects).
+`main` has type `()` — it produces nothing useful. Printing is something it
+*does* rather than something it returns, and a function's type records that
+too; [chapter 9](#9-effects) is about how.
 
 ### The REPL
 
@@ -546,8 +547,9 @@ def main = (safeDiv 10 2, safeDiv 10 0, parseAge "30", parseAge "x")
 => (Just(5), None, Ok(30), Err("not a number"))
 ```
 
-There is also `Either a b` (`Left` / `Right`) in `Std.Either`, for when neither
-side means "failure".
+There is also `Either a b` in `Std.Either`, for when neither side means
+"failure". Its constructors are written `Either.Left` / `Either.Right`, or bare
+after `use Std.Either.Either.*`.
 
 Note the `use Std.String as S` there: the prelude's bare `toInt` is the
 `BigInt -> Int` primitive, not string parsing. When a name feels like it should
@@ -637,11 +639,20 @@ Meadow has three sequence types, and one rule for telling them apart in source:
 | one element | `#[x]` | `[x]` | `[x;]` |
 | several | `#[x, y]` | `[x, y]` | `[x; y]` |
 | indexing | O(1) | O(log n) | O(n) |
-| use it for | primitives, interop | **most things** | recursion, pattern matching |
+| use it for | primitives, interop | **most things** | when O(1) access to the head is the point |
 
 `Vector` is the default: the bare `map`, `filter`, `foldl`, `len`, `range` … in the
 prelude are `Vector`'s. `List`'s equivalents need an explicit `use` — the prelude
 does not activate a `List.` qualifier for you.
+
+Reach for `List` when constant-time access to the head matters more than
+anything else: building by consing onto the front, sharing a tail between
+versions (an environment of bindings, say), or recursion that takes one element
+off at a time. For everything else a `Vector` does more operations well and
+keeps its elements close together in memory. The standard library follows the
+same rule — its functions take and return vectors, and a `List` appears only in
+the explicit `toList` / `fromList` conversions and where an algorithm is a list
+algorithm underneath, like `Std.Sort`'s merge sort.
 
 ```meadow
 use Std.Collections.List as List
@@ -877,8 +888,9 @@ use myapp.Math (double)      -- just `double`
 Because the namespaces are separate, two modules of one package may both define
 `map`, and a module that wants both can take one of them under an alias.
 
-Naming a **type** in a `use` brings its constructors with it — that is how
-`Expr.Int` becomes writable as `Int`:
+A constructor lives under its type, as a variant does in Rust. Naming a
+**type** in a `use` brings the type and nothing else, so outside the module
+that declares it a constructor is written `Expr.Int`:
 
 ```meadow
 -- src/Syntax.mw
@@ -887,12 +899,28 @@ Naming a **type** in a `use` brings its constructors with it — that is how
 
 ```meadow
 -- src/Eval.mw
-use myapp.Syntax (Expr)      -- the type, and `Int` / `Add` with it
+use myapp.Syntax (Expr)      -- the type; its constructors stay `Expr.Int`
 
 @pub(pkg) fun eval e = match e with
-  | Int n -> n
-  | Add a b -> eval a + eval b
+  | Expr.Int n -> n
+  | Expr.Add a b -> eval a + eval b
 ```
+
+To write them bare, put the type on the end of the path — Rust's
+`use Expr::{Int, Add}`:
+
+```meadow
+use myapp.Syntax.Expr            -- just the type, same as `use myapp.Syntax (Expr)`
+use myapp.Syntax.Expr (Int, Add) -- those two constructors, unqualified
+use myapp.Syntax.Expr.*          -- every constructor of `Expr`, unqualified
+```
+
+Nothing else flattens them: not naming the type, and not a bare `use myapp.Syntax`,
+which brings the module's values, types and effects but leaves constructors under
+their types. `use myapp.Syntax (Int)` is an error that says where `Int` lives.
+Inside `Syntax.mw` itself they are always bare. The prelude re-exports
+`Just`, `None`, `Ok`, `Err` and `Ordering`'s three with `@pub use ... .*`, which is
+the only reason those need no `use` anywhere.
 
 ### Visibility: `@pub`, `@pub(pkg)`, `@pub(super)`
 
@@ -919,7 +947,7 @@ fun fudge n = n + 1             -- this module only
 @pub fun triple n = n * 3       -- and anyone who depends on us
 ```
 
-Naming a type makes its constructors as visible as the type, and an effect's
+A type's constructors are exactly as visible as the type, and an effect's
 operations follow its effect.
 
 One escape hatch, for small programs: **a package that never mentions
@@ -937,10 +965,13 @@ remember is that **a qualifier comes only from `as`**:
 
 | Form | Effect |
 |---|---|
-| `use M` | every exported name, unqualified |
+| `use M` | every exported name, unqualified — constructors stay under their type |
 | `use M as C` | `C.name` only — nothing unqualified |
 | `use M (a, b)` | just `a` and `b`, unqualified |
 | `use M as C (a, b)` | both: `C.name`, plus `a` and `b` unqualified |
+| `use M.T` | the type `T`, its constructors written `T.C` |
+| `use M.T (C, D)` | constructors `C` and `D` of `T`, unqualified |
+| `use M.T.*` | every constructor of `T`, unqualified |
 
 ```meadow
 use Std.Collections.List              -- everything, unqualified
@@ -977,53 +1008,308 @@ boundary.
 
 ## 9. Effects
 
-This is Meadow's most distinctive feature. An **effect** is a set of operations a
-computation may perform; a **handler** decides what they mean. The type system
-tracks which effects an expression can perform, in the `! { ... }` row after the
-arrow.
+This is Meadow's most distinctive feature, and the one most worth reading slowly.
+It assumes nothing: if you have never met algebraic effects, or `! { ... }` in a
+type looks like line noise, start here.
 
-The payoff is worth stating up front, because it is the reason to bother: code
-that reads and writes the world is written *once*, and a handler decides whether
-"the world" is the real filesystem and the real clock, or a list of strings and
-the number 500. Nothing has to be written twice, and nothing has to be injected.
+The payoff first, because it is the reason to bother: code that talks to the
+world — asks a question, reads a file, looks at the clock, gives up halfway — is
+written *once*, and something outside it decides what "the world" is. The real
+filesystem, or a list of strings. The real clock, or the number 500. Nothing is
+written twice and nothing is passed in.
 
-### Declaring and performing
+### The problem effects solve
+
+Suppose a page greets whoever is signed in, and the name is only known at the
+very top of the program. The function that needs the name is three calls deep:
+
+```
+page  ──calls──▶  banner  ──calls──▶  greeting  (needs the name)
+```
+
+Without effects you have two options, and both are bad. Pass the name as a
+parameter through `page` and `banner`, which have no use for it themselves — and
+do it again for every other thing `greeting` might ever need. Or keep it in a
+global, and give up on calling `page` for two different people in one program.
+
+An effect is a third option. `greeting` *asks* for the name, and does not care
+who answers:
+
+```meadow
+use Std.String as S
+
+effect Ask { ask : String -> String }
+
+fun greeting () = S.concat "Hello, " (ask "name")
+
+fun banner () = S.concatAll ["*** ", greeting (), " ***"]
+
+fun page () = S.concat (banner ()) " Welcome back."
+
+def main =
+  ( handle page () with { ask question k -> k "Ada" }
+  , handle page () with { ask question k -> k "Grace" } )
+```
+
+```
+=> ("*** Hello, Ada *** Welcome back.", "*** Hello, Grace *** Welcome back.")
+```
+
+`banner` and `page` never mention a name, and the same `page` served two people.
+The rest of this chapter takes that program apart piece by piece.
+
+### Declaring and performing an operation
+
+```meadow
+effect Ask { ask : String -> String }
+```
+
+This declares an **effect** called `Ask` with one **operation**, `ask`. The type
+says what the operation takes and what it gives back — here a question in, an
+answer out — but, unlike a function, there is no body. Nothing here says *how*
+a question is answered.
+
+Calling `ask "name"` is called **performing** the operation. It looks exactly
+like a function call, and to the code calling it, it is one: it takes a
+`String` and evaluates to a `String`. The difference is where the answer comes
+from. The call is a request sent *outwards*, to whichever handler is in charge
+when it runs.
+
+An effect may declare several operations, and may take type parameters the way
+a `data` type does:
+
+```meadow
+effect State s { get : () -> s, put : s -> () }
+```
+
+An operation takes exactly one argument. For more than one, take a tuple — a
+handler can pattern-match it apart, as below.
+
+### Handling: answering the request
+
+```meadow
+handle page () with { ask question k -> k "Ada" }
+```
+
+`handle` runs the expression between `handle` and `with` — the **body** — and
+the braces list what to do about each operation it performs. One entry is a
+**clause**, and it reads left to right:
+
+| part | meaning |
+|---|---|
+| `ask` | which operation this clause answers |
+| `question` | a pattern for the operation's argument — here `"name"` |
+| `k` | the **continuation**: the rest of the body, waiting for an answer |
+| `k "Ada"` | resume the body, with `"Ada"` as the value `ask "name"` returns |
+
+Everything in that table is ordinary except `k`, which is the subject of the
+next section. In short: when `greeting` performs `ask`, it stops, the clause
+runs, and `k "Ada"` sends `"Ada"` back to the spot where `greeting` stopped, so
+`greeting` carries on as if `ask "name"` had simply returned `"Ada"`.
+
+A handler may also have a **`return` clause**, which transforms the body's
+final value on its way out. Leave it off and it is `return x -> x`:
+
+```meadow
+effect Ask { ask : () -> Int }
+
+def main =
+  ( handle ask () + ask () with { ask () k -> k 10 }
+  , handle 1 + 2 with { ask () k -> k 10, return x -> x * 100 } )
+```
+
+```
+=> (20, 300)
+```
+
+The first body asks twice and gets `10` both times. The second never asks at
+all; the `return` clause still runs, on `3`.
+
+If an operation is performed and nothing handles it, the program stops:
 
 ```meadow
 effect Log { log : String -> () }
 
-fun greet name =
-  let ignored = log name in
-  "done"
+def main = log "nobody is listening"
+```
+
+```
+unhandled effect Log.log
+```
+
+That is a *run-time* error, and it is the one place the types below do not
+protect you: the type of a top-level `def` does not list what running it
+performs, so nothing checks that `main` handled everything.
+
+### Reading the types
+
+Ask the compiler what the first program's functions are:
+
+```
+  ask : forall e. String -> String ! { Ask | e }
+  greeting : forall e. () -> String ! { Ask | e }
+  banner : forall e. () -> String ! { Ask | e }
+  page : forall e. () -> String ! { Ask | e }
+```
+
+After a function's result comes `!` and an **effect row** in braces: the effects
+calling the function may perform. `String -> String ! { Ask | e }` reads "takes
+a `String`, returns a `String`, and along the way may perform `Ask`". Nobody
+wrote those rows — they are inferred, and they spread from `ask` to every
+caller that does not handle it, which is how `page` ends up saying it needs an
+answer even though it never asks.
+
+The `| e` is a **row variable**, and it means "and possibly other effects too".
+It is what lets a function that performs `Ask` be called from one that also
+performs something else — the two rows are merged, not compared. A function
+that performs nothing has no `!` at all. A function performing two effects
+lists both:
+
+```meadow
+effect Log { log : String -> () }
+effect Ask { ask : String -> Int }
+
+fun work () =
+  let _ = log "starting" in
+  let n = ask "how many?" in
+  n * 2
+
+fun silenced () = handle work () with { log m k -> k () }
+
+fun answered () = handle silenced () with { ask q k -> k 21 }
+
+def main = answered ()
+```
+
+```
+  work : forall r. () -> Int ! { Log, Ask | r }
+  silenced : forall r. () -> Int ! { Ask | r }
+  answered : () -> Int
+=> 42
+```
+
+Each handler takes one label off the row. `silenced` still asks, so its type
+says so; `answered` handles the rest, and its type is plain `() -> Int` — the
+compiler's guarantee that calling it cannot perform anything.
+
+A function that takes a function takes on that function's effects, whatever they
+are:
+
+```meadow
+effect Log { log : String -> () }
+
+fun twice f = let _ = f () in f ()
+
+fun logTwice () = twice (\() -> log "hi")
+
+fun sumTwice () = twice (\() -> 1 + 1)
+```
+
+```
+  twice : forall a e. (() -> a ! e) -> a ! e
+  logTwice : forall e. () -> () ! { Log | e }
+  sumTwice : () -> Int
+```
+
+`twice` performs exactly what `f` performs — the row variable `e` appears on both
+sides. So `logTwice` performs `Log` and `sumTwice` performs nothing, and `twice`
+was written once. This is why `map`, `foldl` and every other higher-order
+function in `Std` works with effectful functions for free.
+
+### Continuations: what `k` is
+
+`k` is the heart of the whole mechanism, so here it is slowly.
+
+Take the body `ask () + 1`. At the moment `ask ()` is performed, the program has
+done some of its work and has some left. What is left is: *take whatever `ask`
+returns, add 1 to it, and finish the `handle`*. Write that leftover work with a
+hole where the answer goes:
+
+```
+□ + 1
+```
+
+That is the **continuation** — the rest of the computation, from the point the
+operation was performed to the end of the `handle` body. `k` is that hole, made
+into a function: `k 41` fills the hole with `41` and runs the rest, which here
+means `k 41` evaluates to `42`. In `page`, the continuation at the `ask` is "put
+the answer after `Hello, `, then finish building the banner, then finish the
+page" — three functions' worth of unfinished work, packaged as one value.
+
+It helps to picture the call stack. When `greeting` performs `ask`, the stack
+looks like this, innermost at the top:
+
+```
+│ greeting   waiting for ask's answer    ┐
+│ banner     waiting for greeting        │  this part becomes k
+│ page       waiting for banner          ┘
+│ handle ... with { ask question k -> k "Ada" }
+│ main
+```
+
+Performing `ask` searches downward for the nearest `handle` that has an `ask`
+clause. The frames above it — everything between the `handle` and the `ask` —
+are lifted off the stack and wrapped up as `k`. Then the clause runs, *in place
+of the whole `handle` expression*. What the clause evaluates to is what the
+`handle` evaluates to.
+
+Calling `k "Ada"` puts those frames back, with the handler still underneath
+them, and makes `ask "name"` return `"Ada"` inside `greeting`. The body carries
+on from there. When the body finally finishes, its value goes through the
+`return` clause, and *that* is what `k "Ada"` returns to the clause.
+
+That last point decides the order things happen in, so watch it happen:
+
+```meadow
+effect Ask { ask : () -> Int }
 
 def main =
-  handle greet "world" with {
-    log message k -> k (),
-    return x -> x
+  handle (
+    let _ = println "body: before ask" in
+    let x = ask () in
+    let _ = println "body: after ask" in
+    x + 1
+  ) with {
+    ask () k ->
+      let _ = println "handler: before k" in
+      let r = k 41 in
+      let _ = println "handler: after k" in
+      r,
+    return v ->
+      let _ = println "return clause" in
+      v
   }
 ```
 
 ```
-=> "done"
+body: before ask
+handler: before k
+body: after ask
+return clause
+handler: after k
+=> 42
 ```
 
-`effect` declares the operations. Calling `log` is just a function call — its type
-carries `! { Log | e }`, meaning "performs `Log`, and possibly other effects `e`".
+Read it as a conversation. The body runs until it asks, then pauses. The
+handler runs until it calls `k`, then *it* pauses while the body finishes —
+including the `return` clause. Only then does `k 41` return `42` to the handler,
+which prints its last line and makes `42` the value of the whole `handle`.
 
-### Handlers
+If you know exceptions, that is the one-sentence summary: **performing an
+operation is throwing an exception that the handler can choose to resume**. The
+jump to the handler is the same. What exceptions cannot do is jump *back*,
+and `k` is exactly that ability, handed to the handler as a value.
 
-`handle expr with { op param k -> ..., return x -> ... }`:
+### What a clause can do with `k`
 
-- Each **operation clause** binds the operation's argument (`param`) and the
-  continuation `k` — the rest of the computation, from the point `log` was called.
-- Calling `k v` resumes with `v`. **Not** calling it abandons the computation,
-  which is how early exit works.
-- The `return` clause transforms the final value.
+Because `k` is a value, a clause is free to decide what to do with it, and each
+choice is a different kind of program.
 
-Handlers are *deep* (they cover nested calls too) and *one-shot* (resume at most
-once).
+**Resume it right away** — `op x k -> k answer`. The body barely notices it was
+interrupted. That is `Ask` above, and most handlers.
 
-Because the handler decides, the same code can be run for real or faked:
+**Resume it, and use what it returns.** `k` returns the value of the rest of the
+body, so the clause can wrap it:
 
 ```meadow
 effect Log { log : String -> () }
@@ -1035,8 +1321,8 @@ fun work () =
 
 def collected =
   handle work () with {
-    log m k -> m :: k (),
-    return x -> [;]
+    log m k -> pushFront (k ()) m,
+    return x -> []
   }
 
 def counted =
@@ -1049,16 +1335,19 @@ def main = (collected, counted)
 ```
 
 ```
-=> (["step one"; "step two"], 2)
+=> (["step one", "step two"], 2)
 ```
 
-One handler collects the messages, the other counts them, and `work` knows about
+In `collected` the first `log` puts `"step one"` in front of whatever the rest of
+the run produces, and the rest of the run is the second `log` doing the same
+thing, and then the `return` clause throwing `42` away for an empty vector. One
+handler collects the messages, the other counts them, and `work` knows about
 neither.
 
-### Not resuming: early exit
-
-A clause that never calls `k` throws the rest of the computation away. That is the
-whole mechanism behind `Exn`, `Stream.take`, and any "stop now" you write yourself:
+**Never resume it.** If the clause does not call `k`, the rest of the body never
+runs: its frames are simply dropped, and the clause's value becomes the
+`handle`'s value. That is early exit, and it is the whole mechanism behind
+`Std.Exn`, `Stream.take` and any "stop now" you write yourself:
 
 ```meadow
 use Std.String as S
@@ -1078,36 +1367,231 @@ def main =
 => ("all non-negative", "found -2")
 ```
 
-Note there is no `break` in the language and none is needed: `forEach` does not
-know it can be interrupted, and is interrupted anyway.
+There is no `break` in the language and none is needed: `forEach` does not know
+it can be interrupted, and is interrupted anyway.
+
+**Keep it for later.** `k` can be returned, stored in data, and called long
+after the `handle` has finished. Here a job reports progress, and the handler
+turns each report into a paused job that someone else decides when to resume:
+
+```meadow
+effect Progress { report : Int -> () }
+
+data Job = Finished String | Suspended Int (() -> Job)
+
+fun work () =
+  let _ = report 25 in
+  let _ = report 50 in
+  let _ = report 75 in
+  "all done"
+
+fun start () = handle work () with {
+  report pct k -> Job.Suspended pct k,
+  return result -> Job.Finished result
+}
+
+fun drive job seen = match job with
+  | Finished result -> (result, seen)
+  | Suspended pct resume -> drive (resume ()) (pushBack seen pct)
+
+def main = drive (start ()) []
+```
+
+```
+=> ("all done", [25, 50, 75])
+```
+
+`start` returns as soon as `work` reports 25, with the rest of `work` inside the
+`Suspended`. Each `resume ()` runs `work` to its next report — still under the
+same handler, which wraps that report up the same way — until the `return`
+clause produces `Finished`. That is a generator, a coroutine or an async task,
+depending on who is calling `drive`, and `work` is none of them. It just reports.
+
+**Return a function, and thread a value through it.** If every clause and the
+`return` clause produce a *function*, the `handle` as a whole is a function too,
+and applying it to a starting value passes that value from one operation to the
+next:
+
+```meadow
+effect Counter { next : () -> Int }
+
+fun job () = let a = next () in let b = next () in let c = next () in [a; b; c]
+
+fun counting act =
+  (handle act () with {
+    next () k -> \n -> (k n) (n + 1),
+    return x -> \n -> x
+  }) 0
+
+def main = counting job
+```
+
+```
+=> [0; 1; 2]
+```
+
+`next () k -> \n -> (k n) (n + 1)` says: given the current count `n`, answer
+`n`, and hand `n + 1` to whatever comes next. `k n` resumes the body, and the
+body's remainder is itself one of these functions, waiting for its count. This
+is how `Std.State` threads state with no mutation anywhere, and its type says
+exactly what happened to the effect:
+
+```
+  counting : forall a e. (() -> a ! { Counter | e }) -> a ! e
+```
+
+**Not twice.** A continuation can be resumed at most once:
+
+```meadow
+effect Choose { choose : () -> Bool }
+
+def main =
+  handle (if choose () then 1 else 2) with {
+    choose () k -> k True + k False
+  }
+```
+
+```
+continuation resumed more than once
+```
+
+Handlers in Meadow are **one-shot**. Resuming moves the suspended frames back
+onto the stack instead of copying them, which is what keeps performing an
+operation cheap — and a second resume would find nothing left to move. Programs
+that want to explore several answers (backtracking, probability) have to be
+written as a loop that performs again rather than one that resumes twice.
+
+### The rules, collected
+
+**The innermost handler wins.** Performing searches outwards and stops at the
+first handler with a clause for the operation:
+
+```meadow
+effect Ask { ask : () -> Int }
+
+def main =
+  handle (
+    handle ask () with { ask () k -> k 1 }
+  ) with { ask () k -> k 100 }
+```
+
+```
+=> 1
+```
+
+**Handlers are deep.** Resuming `k` puts the body back *with its handler around
+it*, so every later operation in that body goes to the same handler — which is
+why `collected` saw both logs, and why `drive` kept getting `Suspended` jobs
+back. Nothing has to reinstall anything.
+
+**A clause runs outside its own handler.** An operation performed *inside* a
+clause goes to the next handler out, not back to the one the clause belongs to,
+so a handler can pass things along:
+
+```meadow
+effect Log { log : String -> () }
+
+use Std.String as S
+
+def main =
+  handle (
+    handle log "inner" with {
+      log m k -> let _ = log (S.concat "relayed: " m) in k (),
+      return x -> "done"
+    }
+  ) with {
+    log m k -> let _ = println (S.concat "outer handler saw: " m) in k (),
+    return x -> x
+  }
+```
+
+```
+outer handler saw: relayed: inner
+=> "done"
+```
+
+**One handler can answer several effects**, and a clause's argument can be any
+pattern — which is how an operation with a tuple argument is taken apart:
+
+```meadow
+effect Files { write : (String, String) -> () }
+effect Log { log : String -> () }
+
+fun save () =
+  let _ = log "saving" in
+  let _ = write ("a.txt", "hello") in
+  write ("b.txt", "world")
+
+def main =
+  handle save () with {
+    log m k -> k (),
+    write (path, text) k -> pushFront (k ()) path,
+    return x -> []
+  }
+```
+
+```
+=> ["a.txt", "b.txt"]
+```
+
+**An operation without a clause passes through** to the next handler out, and
+its effect stays in the type — a handler only takes an effect off the row when
+it answers every one of its operations:
+
+```meadow
+effect Counter { next : () -> Int, reset : () -> () }
+
+fun job () = let a = next () in let _ = reset () in let b = next () in (a, b)
+
+fun partial () = handle job () with { next () k -> k 7 }
+
+def main = handle partial () with { reset () k -> k () }
+```
+
+```
+  partial : forall e. () -> (Int, Int) ! { Counter | e }
+=> (7, 7)
+```
+
+The row names effects, not operations, so the type cannot say "`Counter`, but
+only `reset`". It errs toward saying too much.
 
 ### Which things are effects, and which are not
 
-A fair question is why `println` is not an effect when `readLine` is. Ask the
-compiler:
+Printing is an effect like any other:
 
 ```meadow
-def main = println "x"
+use Std.Console (withOutput)
+
+fun greet name = println name
+
+def main = withOutput (\() -> let _ = greet "Ada" in greet 42)
 ```
 
-```sh
-$ meadow build hello.mw
-  main : ()
+```
+  greet : forall a e. a -> () ! { Console | e }
+=> ((), "Ada\n42\n")
 ```
 
-No `!` row at all — `print` and `println` are plain primitives. Input is an effect
-and output is not, and the asymmetry is deliberate rather than an oversight:
+`print` and `println` are ordinary functions in `Std.Console`, re-exported by the
+prelude so they need no `use`. Underneath they perform one operation,
+`writeOutput : String -> ()`. Unhandled, that writes to the real terminal; under
+`withOutput`, as here, nothing is printed and the text comes back as a value.
+A value that is not a `String` is written the way `show` renders it, which is
+why `42` came out as `42`. `withOutput` answers only `writeOutput` and not
+`readLine`, so by the rule above `Console` stays in the type of anything that
+uses it.
 
-- **Reading** is the thing a test can never be allowed to do for real. A suite
-  that blocks waiting for someone to type is a suite that hangs. So `readLine` is
-  an operation, and `withInput` supplies a script.
-- **Writing** is harmless to let escape. A test that prints is noisy, not broken.
-  Making it an effect would put a `! { Console | e }` on the type of nearly every
-  function anyone writes, for very little.
+Reading works the same way — `Console.readLine`, answered by `withInput` — and
+so do the filesystem, the clock, randomness and subprocesses. Anything that
+touches the world is an operation a handler can stand in for, which is what
+lets a test run a program that prompts, prints and rolls dice without a
+terminal or an unpredictable number anywhere near it.
 
-So there is no `IO` effect in Meadow, and nothing to import to print. If you do
-want to capture output, wrap it in an effect of your own — the `Log` example above
-is exactly that, in nine lines.
+The one exception is `Mut`, for `Ref` cells. `newRef`, `getRef` and `setRef`
+carry it so that a function that mutates says so and a pure one still reads as
+pure, but it has no operations and nothing handles it: a cell is a cell. It is
+covered under the standard library below.
 
 ### The standard library's effects
 
@@ -1119,7 +1603,7 @@ things that are otherwise hard to test.
 |---|---|---|---|
 | `Std.Ref` (`Mut`) | via `newRef` / `getRef` / `setRef` | real cells | — |
 | `Std.State` | `get`, `put` | — | `runState`, `evalState`, `execState` |
-| `Std.Console` | `readLine` | real stdin | `withInput` |
+| `Std.Console` | `writeOutput`, `readLine` | real stdout and stdin | `withOutput`, `withInput` |
 | `Std.Exn` | `throw` | aborts | `toResult`, `catch`, `withDefault`, `toMaybe` |
 | `Std.Yield` | `yield` | — | everything in `Std.Stream` |
 | `Std.Random` | `nextInt`, `intBetween`, … | real entropy | `withSeed`, `withSeedFrom` |
@@ -1128,9 +1612,9 @@ things that are otherwise hard to test.
 | `Std.Process` | `spawn`, `status`, `argv`, … | real subprocesses | any `handle` |
 | `Std.Test` | `fail` | fails the test | `didFail` |
 
-The VM does **not** discharge an unhandled `Fs`, `Process`, `Random` or `Time`
-operation — those reach the real world only on the CEK machine. In practice that
-means a `meadow test` run cannot touch your filesystem by accident.
+Both engines answer an unhandled `Console`, `Fs`, `Process`, `Random` or `Time`
+operation for real, so a test that should not touch the filesystem has to handle
+`Fs` — which, for the same reason, is all it takes.
 
 #### Mut — the one mutable cell
 
@@ -1192,11 +1676,12 @@ Reach for `State` when the state is part of what a computation *means* and you
 want it out of the signatures; reach for `Mut` when you want a cell with identity,
 or speed.
 
-#### Console — input, and why it makes a program testable
+#### Console — the terminal, and why it makes a program testable
 
-`readLine` is the only operation; `prompt` is `print` then `readLine`. `None`
-means end of input — a closed pipe, or Ctrl-D — which is not an error, so a loop
-ends by matching it rather than by catching anything.
+Two operations: `writeOutput`, which `print` and `println` are built on, and
+`readLine`. `prompt` is `print` then `readLine`. `None` from `readLine` means
+end of input — a closed pipe, or Ctrl-D — which is not an error, so a loop ends
+by matching it rather than by catching anything.
 
 ```meadow
 use Std.Console (prompt, withInput, readLine)
@@ -1207,17 +1692,28 @@ fun greet () =
   | Just name -> S.concat "hello, " name
   | None -> "nobody there"
 
-def main = (withInput ["ada";] greet, withInput [;] greet)
+def main = (withInput ["ada"] greet, withInput [] greet)
 ```
 
 ```
 name: name: => ("hello, ada", "nobody there")
 ```
 
-The two `name: ` are real: `prompt` still *prints*, because printing is not the
-part a handler replaced. Only the reading was faked.
+The two `name: ` are real: `withInput` answers only `readLine`, so the `print`
+inside `prompt` went past it to the terminal. Add `withOutput` and the whole
+conversation stays inside the program:
 
-`withInput` feeds a list of lines and answers `None` once they run out, so the
+```meadow
+use Std.Console (prompt, withInput, withOutput)
+
+def main = withOutput (\() -> withInput ["ada"] (\() -> prompt "name: "))
+```
+
+```
+=> (Just("ada"), "name: ")
+```
+
+`withInput` feeds a vector of lines and answers `None` once they run out, so the
 same function covers both the interactive and the exhausted case.
 
 The example in `examples/rock-paper-scissors` is the whole point of this in
@@ -1228,7 +1724,7 @@ anywhere near it:
 ```meadow
 @test fun playsAFullRound () =
   let played =
-    R.withSeed 7 (\() -> withInput ["rock"; "nonsense"; "paper"; "quit"] game) in
+    R.withSeed 7 (\() -> withInput ["rock", "nonsense", "paper", "quit"] game) in
     assertEq played () "a full game plays through to the summary"
 ```
 
@@ -1250,7 +1746,7 @@ fun guess () =
   | None -> "no answer"
   | Just typed -> if S.trim typed == show secret then "right" else "wrong"
 
-def main = R.withSeed 1 (\() -> withInput ["3";] guess)
+def main = R.withSeed 1 (\() -> withInput ["3"] guess)
 ```
 
 ```
@@ -1298,11 +1794,11 @@ fun countdown n =
   if n <= 0 then ()
   else let _ = yield n in countdown (n - 1)
 
-def main = (St.toList (\() -> countdown 5), St.take 2 (\() -> countdown 100))
+def main = (St.toVec (\() -> countdown 5), St.take 2 (\() -> countdown 100))
 ```
 
 ```
-=> ([5; 4; 3; 2; 1], [100; 99])
+=> ([5, 4, 3, 2, 1], [100, 99])
 ```
 
 `take` is the interesting one: it simply stops resuming, which unwinds the
@@ -1315,16 +1811,17 @@ use Std.Stream as St
 
 def main =
   ( St.take 3 (\() -> St.range 0 1000000)
-  , St.toList (\() -> St.map (\x -> x * x) (\() -> St.range 1 5))
+  , St.toVec (\() -> St.map (\x -> x * x) (\() -> St.range 1 5))
   , St.sum (\() -> St.range 1 101) )
 ```
 
 ```
-=> ([0; 1; 2], [1; 4; 9; 16], 5050)
+=> ([0, 1, 2], [1, 4, 9, 16], 5050)
 ```
 
-Consumers: `toList`, `toVec`, `forEach`, `fold`, `count`, `sum`, `take`,
-`takeWhile`, `first`, `any`, `all`, `find`. Transformers, which are producers that
+Consumers: `toVec`, `toList`, `forEach`, `fold`, `count`, `sum`, `take`,
+`takeWhile`, `first`, `any`, `all`, `find` — the ones that collect build a
+`Vector`, except `toList`. Transformers, which are producers that
 consume: `map`, `filter`. Producers: `ofList`, `ofVec`, `range`, `repeat`,
 `iterate`. Every collection has `toStream`.
 
@@ -1396,7 +1893,9 @@ one you want depends on the test, so write it inline as above. Operations cover
 reading (`readToString`, `readBytes`, `readDir`, `metadata`), writing
 (`writeString`, `appendString`, `copy`, `rename`), directories (`createDir`,
 `createDirAll`, `removeDir`, `removeDirAll`) and predicates (`exists`, `isFile`,
-`isDir`). Convenience: `readToStringOr`, `tryReadDir`, `existsAll`.
+`isDir`). Convenience: `readToStringOr`, `tryReadDir`, `existsAll`. `readDir`
+answers a `Vector` of names; `readBytes` answers an `Array Int`, the byte-array
+type `Std.Bytes` works on.
 
 #### Process — subprocesses, argv and the environment
 
@@ -1408,7 +1907,7 @@ forms.
 use Std.Process as P
 
 fun versionOf tool =
-  match P.run tool ["--version";] with
+  match P.run tool ["--version"] with
   | Ok out -> P.outputStdout out
   | Err e -> e
 
@@ -1446,20 +1945,24 @@ def main = (didFail (\() -> assertEq 1 1 "same"), didFail (\() -> assertEq 1 2 "
 
 ### Writing a handler for your own effect
 
-The shape is always the same. Declare the operations, write the code that performs
-them without thinking about who answers, then write one handler per interpretation:
+The shape is always the same. Declare the operations; write the code that
+performs them without thinking about who answers; then write one handler per
+interpretation — the real one, and the one a test wants. Each clause is one of
+the choices from [What a clause can do with `k`](#what-a-clause-can-do-with-k):
 
-- **Resume with a value** — `op x k -> k answer`. The normal case; the
-  computation carries on.
-- **Resume with something computed from the rest** — `op x k -> f (k ())`. This is
-  how `collected` and `counted` above accumulate: the clause gets to see the result
-  of everything that follows.
-- **Do not resume** — `op x k -> something`. The rest is abandoned; `Exn`, `take`
-  and `Abort` all work this way.
-- **Return a function** — `op x k -> \state -> ...`, and make the `return` clause
-  `\state -> ...` too, then apply the whole `handle` to an initial value. This is
+- **Resume with an answer** — `op x k -> k answer`. The computation carries on.
+- **Resume, then use the result** — `op x k -> f (k ())`. The clause sees
+  everything that followed; `collected` and `counted` work this way.
+- **Do not resume** — `op x k -> value`. The rest is abandoned; `Exn`, `take` and
+  `Abort` work this way.
+- **Keep `k`** — store it or return it, and resume it later from somewhere else.
+  `Job.Suspended` works this way.
+- **Return a function** — `op x k -> \state -> ...`, with the `return` clause
+  `\state -> ...` too, then apply the whole `handle` to a starting value. This is
   how `State` threads a value and how `withInput` threads the remaining lines;
-  look at `Std.State.runState` for the smallest complete example.
+  `Std.State.runState` is the smallest complete example.
+
+And whichever you choose, resume at most once.
 
 ## 10. Testing
 
@@ -1609,11 +2112,10 @@ Without any `use`, from the prelude:
   `partition` `zip` `zipWith` `unzip` `maximum` `minimum` `toArray` `toList`
   `fromArray` `fromList`
 
-Also always available: the primitives (`println`, `print`, `show`, `arrayLen`,
-`arrayGet`, `stringToBytes`, `stringToChars`, `charCode`, `bitAnd`, `toFloat`,
-`toBigInt`, …) and the
-constructors of every `Std` type (`Just`, `None`, `Ok`, `Err`, `True`, `False`,
-`Left`, `Right`, `Nil`, `Cons`).
+Also always available: `print` and `println`; the primitives (`show`, `display`,
+`arrayLen`, `arrayGet`, `stringToBytes`, `stringToChars`, `charCode`, `bitAnd`,
+`toFloat`, `toBigInt`, …); and the constructors `Just`, `None`, `Ok`, `Err`,
+`Less`, `Equal`, `Greater`, `True`, `False`, `Nil` and `Cons`.
 
 ### The standard library
 

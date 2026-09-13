@@ -2,10 +2,14 @@
 -- `Tree.insert` etc.
 --
 -- `insert` / `member` / `delete` order elements with `<`, so they work on `Int`.
--- `map` / `foldr` / `toList` are element-agnostic.
+-- `map` / `foldr` / `toVec` are element-agnostic.
 
 use Std.Int (max)
-use Std.Collections.List as List (append, foldl)
+use Std.Collections.List as List
+use Std.Collections.Vector as V
+-- `[a, b]` desugars to a `vecFromArray` call.
+use Std.Collections.Vector (vecFromArray)
+use Std.Yield (yield)
 
 @pub data Tree a = Leaf | Node (Tree a) a (Tree a)
 
@@ -73,12 +77,20 @@ fun removeRoot l r =
       else if y < x then Node l y (delete x r)
       else removeRoot l r
 
-@pub fun toList t =
-  match t with
-  | Leaf -> Nil
-  | Node l x r -> append (toList l) (Cons x (toList r))
+-- Every element, in order.
+@pub fun toVec t = pushInOrder V.empty t
 
-@pub fun fromList xs = foldl (\acc x -> insert x acc) empty xs
+fun pushInOrder acc t =
+  match t with
+  | Leaf -> acc
+  | Node l x r -> pushInOrder (V.pushBack (pushInOrder acc l) x) r
+
+@pub fun fromVec v = V.foldl (\acc x -> insert x acc) empty v
+
+-- The same, as a `List`.
+@pub fun toList t = foldr (\x acc -> x :: acc) [;] t
+
+@pub fun fromList xs = List.foldl (\acc x -> insert x acc) empty xs
 
 @pub fun foldr f acc t =
   match t with
@@ -91,14 +103,20 @@ fun removeRoot l r =
   | Node l x r -> Node (map f l) (f x) (map f r)
 
 -- Yield every element in order, for `Std.Stream`.
-@pub fun toStream t = List.toStream (toList t)
+@pub fun toStream t =
+  match t with
+  | Leaf -> ()
+  | Node l x r ->
+      let _ = toStream l in
+      let _ = yield x in
+      toStream r
 
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
-use Std.Maybe (Maybe)
+use Std.Maybe.Maybe.*
 
-def sample = fromList [5; 3; 8; 1]
+def sample = fromVec [5, 3, 8, 1]
 
 @test fun insertAndMember () =
   let a = assertTrue (member 5 sample) "member of an inserted key" in
@@ -111,9 +129,11 @@ def sample = fromList [5; 3; 8; 1]
   -- Re-inserting an existing key is a no-op, not a duplicate.
   assertEq (size (insert 5 sample)) 4 "re-insert"
 
-@test fun toListIsSorted () =
-  let a = assertEq (toList sample) [1; 3; 5; 8] "in order regardless of insertion order" in
-  assertEq (toList empty) [;] "empty"
+@test fun toVecIsSorted () =
+  let a = assertEq (toVec sample) [1, 3, 5, 8] "in order regardless of insertion order" in
+  let b = assertEq (toVec empty) [] "empty" in
+  let c = assertEq (toList sample) [1; 3; 5; 8] "toList agrees" in
+  assertEq (toVec (fromList [2; 1])) [1, 2] "fromList"
 
 @test fun extremes () =
   let a = assertEq (minElem sample) (Just 1) "minElem" in
@@ -125,7 +145,7 @@ def sample = fromList [5; 3; 8; 1]
   let a = assertFalse (member 5 t) "deleted" in
   let b = assertTrue (member 3 t) "the others survive" in
   let c = assertEq (size t) 3 "size drops by one" in
-  assertEq (toList (delete 9 sample)) (toList sample) "deleting a missing key changes nothing"
+  assertEq (toVec (delete 9 sample)) (toVec sample) "deleting a missing key changes nothing"
 
 @test fun nullAndDepth () =
   let a = assertTrue (null empty) "null" in

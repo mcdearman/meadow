@@ -319,6 +319,10 @@ pub struct Program {
     /// `g` and then for `f` -- where one capturing a [`Program::returns`] name
     /// is the caller's.
     pub continuations: std::collections::HashSet<Name>,
+    /// Named-field order per constructor, carried from core. A `record` value
+    /// is constructor data rather than an anonymous record, and `.field` on one
+    /// is resolved against this at run time, as the CEK machine does.
+    pub ctor_fields: std::collections::HashMap<InternedString, Vec<InternedString>>,
 }
 
 impl Program {

@@ -3,7 +3,7 @@
 //! line means a diagnostic was produced.
 
 mod common;
-use common::schemes;
+use common::{schemes, schemes_std};
 
 #[test]
 fn literals_and_arithmetic() {
@@ -114,9 +114,18 @@ fn maybe_type() {
 // --- effect inference ---------------------------------------------------------
 
 #[test]
-fn io_effect_from_println() {
-    // `println` carries `{ io | e }`; a function that calls it is effectful.
-    insta::assert_snapshot!(schemes("fun greet name = println name\n"));
+fn printing_performs_console() {
+    // `println` is `Std.Console`'s `writeOutput` underneath, so a function that
+    // calls it performs `Console` -- and a handler can take that away.
+    assert_eq!(
+        schemes_std(
+            "use Std.Console (withOutput)\n\
+             fun greet name = println name\n\
+             fun captured name = withOutput (\\() -> greet name)\n"
+        ),
+        "greet : forall a e. a -> () ! { Console | e }\n\
+         captured : forall a e. a -> ((), String) ! { Console | e }\n"
+    );
 }
 
 #[test]
@@ -129,8 +138,8 @@ fn effect_polymorphism_through_higher_order() {
 
 #[test]
 fn effectful_binding_is_not_generalized() {
-    // `def a` is pure ⇒ polymorphic; `def b` performs io ⇒ monomorphic `()`.
+    // `def a` is pure ⇒ polymorphic; `def b` allocates a cell ⇒ monomorphic.
     insta::assert_snapshot!(schemes(
-        "def a = \\x -> x\ndef b = println \"hi\"\n"
+        "def a = \\x -> x\ndef b = newRef (\\y -> y)\n"
     ));
 }

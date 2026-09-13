@@ -295,6 +295,9 @@ pub struct Program {
     /// Constructor name per tag. Only for printing and for the structural
     /// equality a `Vector` needs — the machine itself compares tags.
     pub ctors: Vec<InternedString>,
+    /// Named-field order per constructor name, for `.field` on a `record`
+    /// value -- which is constructor data, not an anonymous record.
+    pub ctor_fields: std::collections::HashMap<InternedString, Vec<InternedString>>,
     /// What an [`Op::Error`] says.
     pub messages: Vec<String>,
     /// Entry point per top-level definition, in the compiler's label order. A

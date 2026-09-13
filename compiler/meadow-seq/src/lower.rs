@@ -198,6 +198,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
                 .copied()
                 .collect(),
             returns: lower.returns,
+            ctor_fields: program.ctor_fields.clone(),
         },
         unsupported: lower.unsupported,
     }

@@ -11,7 +11,7 @@ use common::eval_main_std;
 fn parse(body: &str) -> String {
     eval_main_std(&format!(
         "use Std.String.Parse as P\n\
-         use Std.Result (Result, Ok, Err)\n\
+         use Std.Result.Result.*\n\
          def isDigit = \\c -> c >= 48 and c <= 57\n\
          def number = P.map (\\ds -> foldl (\\a d -> a * 10 + (d - 48)) 0 ds) \
                             (P.takeWhile1P \"a digit\" isDigit)\n\

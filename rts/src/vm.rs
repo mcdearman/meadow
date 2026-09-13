@@ -114,7 +114,8 @@ pub struct Vm<'p> {
 /// Replacements for the console — see [`Vm::io`].
 #[derive(Default)]
 pub struct Io {
-    /// Receives what `print` and `println` write.
+    /// Receives what `Console.writeOutput` writes when no handler takes it --
+    /// which is where `print` and `println` end up.
     pub output: Option<Box<dyn FnMut(&str)>>,
     /// Answers `Console.readLine`: a line without its terminator, or `None` at
     /// the end of input.
@@ -321,12 +322,34 @@ impl<'p> Vm<'p> {
             Op::Select => {
                 let label = self.label(i.imm)?;
                 let v = self.reg(i.b);
-                let Some(a) = v.addr().filter(|a| self.heap.kind(*a) == Kind::Record) else {
+                let Some(a) = v.addr() else {
                     return err(format!("selected `.{label}` from {}", v.kind()));
                 };
-                match self.record_get(a, label) {
-                    Some(v) => self.set(i.a, v),
-                    None => return err(format!("no field `{label}` on this record")),
+                match self.heap.kind(a) {
+                    Kind::Record => match self.record_get(a, label) {
+                        Some(v) => self.set(i.a, v),
+                        None => return err(format!("no field `{label}` on this record")),
+                    },
+                    // A `record` declaration's value: constructor data whose
+                    // fields have names.
+                    Kind::Data => {
+                        let ctor = self.program.ctor(self.heap.meta(a));
+                        let at = ctor
+                            .and_then(|c| self.program.ctor_fields.get(&c))
+                            .and_then(|fs| fs.iter().position(|f| *f == label))
+                            .filter(|i| *i < self.heap.len(a));
+                        match at {
+                            Some(j) => {
+                                let f = self.heap.field(a, j);
+                                self.set(i.a, f);
+                            }
+                            None => {
+                                let name = ctor.map_or("?".to_string(), |c| c.to_string());
+                                return err(format!("`{name}` has no field `{label}`"));
+                            }
+                        }
+                    }
+                    _ => return err(format!("selected `.{label}` from {}", v.kind())),
                 }
             }
 

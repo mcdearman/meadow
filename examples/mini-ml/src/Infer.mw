@@ -17,14 +17,14 @@
 -- environment. That replaces the textbook "scan the environment for free
 -- variables", which is correct and quadratic.
 
--- `Expr` and `Ty` share constructor names (`Int`, `Bool`, `Var`), so this file
--- writes those qualified -- `Expr.Int`, `Ty.Int` -- and relies on the flat
--- spelling only for `Tv` and `Scheme`, which clash with nothing.
+-- Naming a type in a `use` brings the type, not its constructors, so every
+-- constructor here is written under its type: `Expr.Int`, `Ty.Int`, `Tv.Link`.
+-- That is not only the rule but a help -- `Expr` and `Ty` share `Int`, `Bool`
+-- and `Var`, and the qualifier says which one a line means.
 use Syntax (Expr, Ty, Tv, Scheme)
 use Std.Ref (modify)
 use Std.Collections.List as L
-use Std.Maybe (Maybe, Just, None)
-use Std.Result (Result, Ok, Err)
+use Std.Collections.Vector as V
 use Std.String as S
 use Std.Exn (raise, toResult)
 use Std.Bool (not)
@@ -37,7 +37,7 @@ use Std.Bool (not)
 fun newTv counter level =
   let n = getRef counter in
   let ignored = setRef counter (n + 1) in
-  Ty.Var (newRef (Unbound n level))
+  Ty.Var (newRef (Tv.Unbound n level))
 
 -- Follow links to whatever a type currently is. Not path compression -- a toy
 -- can afford the walk -- but the same idea.
@@ -45,8 +45,8 @@ fun force t =
   match t with
   | Ty.Var r ->
       (match getRef r with
-       | Link inner -> force inner
-       | Unbound n l -> t)
+       | Tv.Link inner -> force inner
+       | Tv.Unbound n l -> t)
   | other -> other
 
 -- --- unification ----------------------------------------------------------
@@ -58,8 +58,8 @@ fun typeName t =
   | Ty.Fun a b -> S.concatAll ["(", typeName a, " -> ", typeName b, ")"]
   | Ty.Var r ->
       (match getRef r with
-       | Unbound n l -> S.concat "t" (S.fromInt n)
-       | Link inner -> typeName inner)
+       | Tv.Unbound n l -> S.concat "t" (S.fromInt n)
+       | Tv.Link inner -> typeName inner)
 
 -- The occurs check, which also lowers levels.
 --
@@ -70,11 +70,11 @@ fun occursAdjust id level t =
   match force t with
   | Ty.Var r ->
       (match getRef r with
-       | Unbound n l ->
+       | Tv.Unbound n l ->
            if n == id then raise "occurs check: a type would contain itself"
-           else if l > level then setRef r (Unbound n level)
+           else if l > level then setRef r (Tv.Unbound n level)
            else ()
-       | Link inner -> occursAdjust id level inner)
+       | Tv.Link inner -> occursAdjust id level inner)
   | Ty.Fun a b -> let ignored = occursAdjust id level a in occursAdjust id level b
   | other -> ()
 
@@ -89,16 +89,16 @@ fun unify a b =
       if r1 == r2 then ()
       else
         (match getRef r1 with
-         | Unbound n l ->
+         | Tv.Unbound n l ->
              let ignored = occursAdjust n l (Ty.Var r2) in
-             setRef r1 (Link (Ty.Var r2))
-         | Link inner -> unify inner (Ty.Var r2))
+             setRef r1 (Tv.Link (Ty.Var r2))
+         | Tv.Link inner -> unify inner (Ty.Var r2))
   | (Ty.Var r, other) ->
       (match getRef r with
-       | Unbound n l ->
+       | Tv.Unbound n l ->
            let ignored = occursAdjust n l other in
-           setRef r (Link other)
-       | Link inner -> unify inner other)
+           setRef r (Tv.Link other)
+       | Tv.Link inner -> unify inner other)
   | (other, Ty.Var r) -> unify (Ty.Var r) other
   | (x, y) ->
       raise (S.concatAll ["cannot unify ", typeName x, " with ", typeName y])
@@ -111,12 +111,12 @@ fun freeAbove level t acc =
   match force t with
   | Ty.Var r ->
       (match getRef r with
-       | Unbound n l -> if l > level and not (L.elem n acc) then n :: acc else acc
-       | Link inner -> freeAbove level inner acc)
+       | Tv.Unbound n l -> if l > level and not (V.elem n acc) then V.pushBack acc n else acc
+       | Tv.Link inner -> freeAbove level inner acc)
   | Ty.Fun a b -> freeAbove level b (freeAbove level a acc)
   | other -> acc
 
-fun generalize level t = Forall (freeAbove level t [;]) t
+fun generalize level t = Scheme.Forall (freeAbove level t V.empty) t
 
 -- Replace each quantified id with a fresh variable. Everything else is shared,
 -- which is what makes instantiation cheap.
@@ -124,24 +124,28 @@ fun substitute pairs t =
   match force t with
   | Ty.Var r ->
       (match getRef r with
-       | Unbound n l ->
-           (match L.lookupAssoc n pairs with
-            | Just fresh -> fresh
+       | Tv.Unbound n l ->
+           (match V.find (\p -> fst p == n) pairs with
+            | Just (id, fresh) -> fresh
             | None -> t)
-       | Link inner -> substitute pairs inner)
+       | Tv.Link inner -> substitute pairs inner)
   | Ty.Fun a b -> Ty.Fun (substitute pairs a) (substitute pairs b)
   | other -> other
 
 fun instantiate counter level scheme =
   match scheme with
-  | Forall ids body ->
-      let pairs = L.map (\n -> (n, newTv counter level)) ids in
+  | Scheme.Forall ids body ->
+      let pairs = V.map (\n -> (n, newTv counter level)) ids in
       substitute pairs body
 
 -- --- inference ------------------------------------------------------------
 --
--- The environment is an association list, because `Std.Collections.Map` is
--- keyed by `Int` and these keys are names. A toy can afford the linear scan.
+-- The environment is an association `List` rather than a `Vector`, and on
+-- purpose: every binder pushes a name onto the front, a lookup wants the most
+-- recent binding of a name first, and a closure keeps the environment it was
+-- made in while the rest of the program carries on consing -- constant-time
+-- access to the head, and sharing the tail, is all it asks of a sequence.
+-- (`Std.Collections.Map` is keyed by `Int`, and these keys are names.)
 
 fun lookupVar env name =
   match L.lookupAssoc name env with
@@ -159,7 +163,7 @@ fun infer counter env level e =
   | Expr.Var name -> instantiate counter level (lookupVar env name)
   | Expr.Lam param body ->
       let argT = newTv counter level in
-      let bodyT = infer counter ((param, Forall [;] argT) :: env) level body in
+      let bodyT = infer counter ((param, Scheme.Forall V.empty argT) :: env) level body in
       Ty.Fun argT bodyT
   | Expr.App f a ->
       let fT = infer counter env level f in
@@ -183,7 +187,7 @@ fun infer counter env level e =
       let argT = newTv counter (level + 1) in
       let resT = newTv counter (level + 1) in
       let inner =
-        (param, Forall [;] argT) :: (name, Forall [;] fT) :: env in
+        (param, Scheme.Forall V.empty argT) :: (name, Scheme.Forall V.empty fT) :: env in
         let ignored = unify fT (Ty.Fun argT resT) in
         let bodyT = infer counter inner (level + 1) rhs in
         let ignored2 = unify resT bodyT in

@@ -52,6 +52,9 @@ pub struct UseDecl {
     pub path: Vec<Ident>,
     /// Selected names — `use a.b (x, y)`. Empty for a bare `use a.b`.
     pub names: Vec<Ident>,
+    /// A trailing `.*` — `use Syntax.Tv.*`, every constructor of a type
+    /// unqualified. Never set together with `names`.
+    pub glob: bool,
     /// `use a.b as C` — the name the module is qualified by at use sites.
     /// Defaults to the last path segment.
     pub alias: Option<Ident>,
@@ -85,7 +88,7 @@ pub enum TypeExpr {
     List(LType),
 }
 
-/// An effect annotation `! <row>`: `! io`, `! e`, `! { io, State Int | e }`.
+/// An effect annotation `! <row>`: `! Console`, `! e`, `! { Console, State Int | e }`.
 /// Closed iff `tail` is `None` and `labels` is non-empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectRow {

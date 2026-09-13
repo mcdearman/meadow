@@ -13,7 +13,7 @@ use Std.Bool (not)
 use Std.String as S
 use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
-use Std.Maybe (Maybe, Just, None)
+use Std.Maybe.Maybe.*
 
 @pub def separator = "/"
 

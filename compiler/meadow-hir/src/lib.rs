@@ -24,8 +24,7 @@ use meadow_span::Span;
 /// to `if` (that is what makes them short-circuit); `not` is a `Std.Bool`
 /// function.
 pub const PRIMS: &[&str] = &[
-    "print",
-    "println",
+    "display",
     "+",
     "-",
     "*",

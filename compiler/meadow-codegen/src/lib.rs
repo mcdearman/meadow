@@ -332,6 +332,7 @@ impl<'a> Gen<'a> {
             ops: self.ops,
             handled: self.handled,
             ctors,
+            ctor_fields: self.seq.ctor_fields.clone(),
             messages: self.messages,
             entries,
             entry,

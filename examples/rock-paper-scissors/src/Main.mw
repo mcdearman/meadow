@@ -118,5 +118,5 @@ def main = game ()
   -- moves and `Random` is seeded, so the transcript is fixed. This runs `game`
   -- itself -- if the loop, the tally or the parsing broke, this fails.
   let played =
-    R.withSeed 7 (\() -> withInput ["rock"; "nonsense"; "paper"; "quit"] game) in
+    R.withSeed 7 (\() -> withInput ["rock", "nonsense", "paper", "quit"] game) in
     assertEq played () "a full game plays through to the summary"

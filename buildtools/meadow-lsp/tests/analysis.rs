@@ -77,6 +77,47 @@ def main = do@uble 21
 }
 
 #[test]
+fn hovering_a_constructor_shows_its_path_rather_than_its_type() {
+    let (a, off) = at("data Shape = Circle Int | Square Int\ndef main = Ci@rcle 2\n", "@");
+    let hover = a.hover_at(off).expect("hover");
+    assert_eq!(hover, "```meadow\nShape.Circle\n```");
+}
+
+#[test]
+fn hovering_a_constructor_from_std_names_its_package_and_module() {
+    let (a, off) = at("def main = J@ust 1\n", "@");
+    assert_eq!(a.hover_at(off).expect("hover"), "```meadow\nStd.Maybe.Maybe.Just\n```");
+    let (a, off) = at("def main = match Just 1 with | N@one -> 0 | Just n -> n\n", "@");
+    assert_eq!(a.hover_at(off).expect("hover"), "```meadow\nStd.Maybe.Maybe.None\n```");
+}
+
+#[test]
+fn hovering_a_qualified_constructor_shows_its_path() {
+    let (a, off) = at("data Ty = Int | Bool\ndef main = Ty.I@nt\n", "@");
+    assert_eq!(a.hover_at(off).expect("hover"), "```meadow\nTy.Int\n```");
+}
+
+#[test]
+fn hovering_a_siblings_constructor_names_the_package_and_module() {
+    let root = package(
+        "ctorhover",
+        Some("[package]\nname = \"demo\"\n"),
+        &[
+            ("Syntax.mw", "@pub(pkg) data Tv = Unbound Int | Link Int\n"),
+            ("Main.mw", "use demo.Syntax (Tv)\ndef main = match Tv.Link 1 with | Tv.Link n -> n | Tv.Unbound n -> n\n"),
+        ],
+    );
+    let file = root.join("src").join("Main.mw");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let sources = meadow::editor::load_package(&file).expect("a package");
+    let a = STD
+        .with(|s| s.analyse_package(&sources, &file, &text))
+        .expect("analysis");
+    let off = text.find("Unbound n").unwrap() + 2;
+    assert_eq!(a.hover_at(off).expect("hover"), "```meadow\ndemo.Syntax.Tv.Unbound\n```");
+}
+
+#[test]
 fn go_to_definition_finds_the_binder() {
     let src = "fun double n = n * 2\ndef main = do@uble 21\n";
     let (a, off) = at(src, "@");
@@ -450,7 +491,7 @@ fn go_to_definition_finds_a_constructor() {
 /// whichever the resolver happened to list first.
 #[test]
 fn go_to_definition_follows_the_overload_that_was_chosen() {
-    let head = "use Std.Maybe (Maybe, Just, None)\ndata Box = Just Int | Empty\n";
+    let head = "use Std.Maybe.Maybe (Just, None)\ndata Box = Just Int | Empty\n";
 
     let src = format!("{head}fun unbox (b : Box) = match b with | Ju@st n -> n | Empty -> 0\n");
     let (a, off) = at(&src, "@");
@@ -614,13 +655,13 @@ fn go_to_definition_reaches_a_type_from_a_result_annotation() {
 ///
 /// An effect is a property of the arrow, so the body's type does not have it:
 /// `fun logIt x = let _ = println "hi" in x` has a body of type `a` and a type
-/// of `a -> a ! { io | e }`. Hinting the body reads as a claim that the
+/// of `a -> a ! { Console | e }`. Hinting the body reads as a claim that the
 /// function is pure, which is worse than not annotating it at all.
 #[test]
 fn a_result_hint_shows_the_effect() {
     assert_eq!(
         hinted("fun logIt x = let _ = println \"hi\" in x\n"),
-        "fun logIt (x : a) : a ! { io | b } = let _ = println \"hi\" in x\n"
+        "fun logIt (x : a) : a ! { Console | b } = let _ = println \"hi\" in x\n"
     );
     assert_eq!(
         hinted("fun bump r = setRef r 1\n"),
@@ -682,9 +723,9 @@ fn a_module_sees_its_siblings_through_a_use() {
             ),
             (
                 "Eval.mw",
-                "use demo.Syntax (Expr)\n\n@pub(pkg) fun eval e = match e with\n  | Int n -> n\n  | Add a b -> eval a + eval b\n",
+                "use demo.Syntax.Expr.*\n\n@pub(pkg) fun eval e = match e with\n  | Int n -> n\n  | Add a b -> eval a + eval b\n",
             ),
-            ("Main.mw", "use demo.Eval (eval)\ndef main = eval (Expr.Int 1)\n"),
+            ("Main.mw", "use demo.Eval (eval)\nuse demo.Syntax (Expr)\ndef main = eval (Expr.Int 1)\n"),
         ],
     );
     let file = root.join("src").join("Eval.mw");
@@ -1154,5 +1195,28 @@ fn a_module_path_is_a_namespace_whatever_it_is_called() {
         colours(src),
         [("Std", "namespace"), ("Bool", "namespace"), ("Std", "namespace"), ("String", "namespace"), ("S", "namespace"), ("S", "namespace")]
             .map(|(w, k)| (w.to_string(), k))
+    );
+}
+
+/// In `use Std.Either.Either (Left)` the modules are modules, the type is a type
+/// and the constructor is a constructor -- and a `use` ending in `.*` does not
+/// leave the next line reading as a path.
+#[test]
+fn a_use_of_a_types_constructors_colours_each_part() {
+    let src = "use Std.Either.Either (Left)\nuse Std.Maybe.Maybe.*\ndata Box = Full Int\n";
+    assert_eq!(
+        colours(src),
+        vec![
+            ("Std".to_string(), "namespace"),
+            ("Either".to_string(), "namespace"),
+            ("Either".to_string(), "type"),
+            ("Left".to_string(), "enumMember"),
+            ("Std".to_string(), "namespace"),
+            ("Maybe".to_string(), "namespace"),
+            ("Maybe".to_string(), "type"),
+            ("Box".to_string(), "type"),
+            ("Full".to_string(), "enumMember"),
+            ("Int".to_string(), "type"),
+        ]
     );
 }

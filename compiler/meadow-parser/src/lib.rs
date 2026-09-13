@@ -151,6 +151,14 @@ where
                 .at_least(1)
                 .collect::<Vec<_>>(),
         )
+        // `.*` — every constructor of the type the path ends in. The lexer
+        // reads `.*` as one operator token; `. *` spaced out is the same thing.
+        .then(
+            select! { Token::OpIdent(s) if &*s == ".*" => () }
+                .or(just(Token::Period).then(just(Token::Star)).ignored())
+                .or_not()
+                .map(|g| g.is_some()),
+        )
         // `as C` — rename the qualifier. Upper-case, because that is what a
         // qualified reference (`C.map`) can name.
         .then(just(Token::As).ignore_then(upper_ident()).or_not())
@@ -162,11 +170,12 @@ where
                 .delimited_by(just(Token::LParen), just(Token::RParen))
                 .or_not(),
         )
-        .map_with(|((path, alias), names), e| {
+        .map_with(|(((path, glob), alias), names), e| {
             LDecl::new(
                 Decl::Use(UseDecl {
                     path,
                     names: names.unwrap_or_default(),
+                    glob,
                     alias,
                 }),
                 e.span(),

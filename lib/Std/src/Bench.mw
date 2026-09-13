@@ -42,6 +42,7 @@
 --   being true this is the module that has to change first.
 
 use Std.Time (monotonic)
+use Std.Console (println)
 use Std.Collections.Vector (
   vecFromArray, empty, isEmpty, len, getOr, pushBack, map, forEach,
 )

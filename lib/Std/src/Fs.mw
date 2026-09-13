@@ -20,7 +20,7 @@
 
 @pub effect Fs {
   readToString : String -> Result String String,
-  readBytes : String -> Result String (List Int),
+  readBytes : String -> Result String (Array Int),
   writeString : (String, String) -> Result String (),
   appendString : (String, String) -> Result String (),
   removeFile : String -> Result String (),
@@ -30,7 +30,7 @@
   removeDirAll : String -> Result String (),
   rename : (String, String) -> Result String (),
   copy : (String, String) -> Result String Int,
-  readDir : String -> Result String (List String),
+  readDir : String -> Result String (Vector String),
   metadata : String -> Result String FileMeta,
   exists : String -> Bool,
   isFile : String -> Bool,
@@ -39,11 +39,12 @@
 
 -- Convenience wrappers ------------------------------------------------------
 
-use Std.Result (Result, unwrapOr)
-use Std.Collections.List (all)
+use Std.Result (unwrapOr)
+use Std.Result.Result.*
+use Std.Collections.Vector as V
 
 @pub fun readToStringOr default path = unwrapOr default (readToString path)
 
-@pub fun tryReadDir path = unwrapOr Nil (readDir path)
+@pub fun tryReadDir path = unwrapOr V.empty (readDir path)
 
-@pub fun existsAll paths = all exists paths
+@pub fun existsAll paths = V.all exists paths

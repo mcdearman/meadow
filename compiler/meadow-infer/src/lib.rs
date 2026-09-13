@@ -1186,7 +1186,22 @@ impl Infer {
                 // only when its right-hand side is pure. `def r = ref []` is
                 // effectful ⇒ `r` stays monomorphic (and can't be misused
                 // polymorphically); `def id = \x -> x` is pure ⇒ generalized.
-                let pure = matches!(self.arena.zonk(&rhs_eff), Type::RowEmpty | Type::Var(_));
+                //
+                // "Pure" is a closed empty row, or a row *variable* that nothing
+                // outside this binding can still constrain -- one whose level is
+                // above the current one, which is what an untouched fresh variable
+                // looks like. A variable is not pure in itself: in `let _ = f x`
+                // the rhs's row is unified with `f`'s latent effect, a variable
+                // that lives at the parameter's level and means "whatever `f`
+                // does". Counting that as pure dropped the effect from the
+                // enclosing function's type -- so a `Log`-performing call could
+                // pass for a pure one -- and generalized `let r = f ()` even when
+                // `f` turned out to allocate a `Ref`.
+                let pure = match self.arena.zonk(&rhs_eff) {
+                    Type::RowEmpty => true,
+                    Type::Var(id) => self.arena.slot_level(id) > self.arena.level,
+                    _ => false,
+                };
                 if !pure && !toplevel {
                     // let the enclosing region see the rhs's effects
                     self.unify_at(pat.span, self.cur_effect.clone(), rhs_eff);
@@ -1453,54 +1468,70 @@ impl Infer {
                 self.cur_effect = saved;
 
                 let result = self.arena.fresh();
-                let ename = arms.first().and_then(|a| self.op_effect(a.op));
 
-                match ename.and_then(|n| self.effects.get(&n).cloned().map(|i| (n, i))) {
-                    Some((ename, info)) => {
-                        let fresh_params: Vec<Type> =
-                            (0..info.params).map(|_| self.arena.fresh()).collect();
-                        let rho = self.arena.fresh_effect();
-                        let handled = Type::RowExtend(
-                            ename,
-                            Box::new(Type::Tuple(fresh_params.clone())),
-                            Box::new(rho.clone()),
-                        );
-                        self.unify_at(expr.span, body_eff, handled);
-                        // effects the handler lets through join the ambient region
-                        self.join_effect(expr.span, rho.clone());
+                // Every effect the clauses name, in order of first mention, each
+                // with fresh type arguments. One handler may answer operations of
+                // several effects.
+                let mut handled: Vec<(InternedString, EffectInfo, Vec<Type>)> = Vec::new();
+                for arm in arms {
+                    let Some(name) = self.op_effect(arm.op) else { continue };
+                    if handled.iter().any(|(n, ..)| *n == name) {
+                        continue;
+                    }
+                    if let Some(info) = self.effects.get(&name).cloned() {
+                        let params = (0..info.params).map(|_| self.arena.fresh()).collect();
+                        handled.push((name, info, params));
+                    }
+                }
 
-                        for arm in arms {
-                            let (arg_ty, ret_ty) = match info.ops.iter().find(|o| o.name == arm.op)
-                            {
-                                Some(o) => (
-                                    Arena::subst_bound(&o.arg, &fresh_params),
-                                    Arena::subst_bound(&o.ret, &fresh_params),
-                                ),
-                                None => (self.arena.fresh(), self.arena.fresh()),
-                            };
-                            let mut bound = Vec::new();
-                            let pty = self.infer_pat(&arm.param, &mut bound);
-                            self.unify_at(arm.param.span, pty, arg_ty);
-                            // resume : op-result -> handler-result ! ρ   (deep)
-                            let k_ty = Type::Fun(
-                                vec![ret_ty],
-                                Box::new(result.clone()),
-                                Box::new(rho.clone()),
-                            );
-                            self.env.insert(*arm.resume.value(), Scheme::mono(k_ty));
-                            let at = self.infer_expr(&arm.body);
-                            self.unify_at(arm.body.span, at, result.clone());
-                        }
-                    }
-                    None => {
-                        for arm in arms {
-                            let mut bound = Vec::new();
-                            self.infer_pat(&arm.param, &mut bound);
-                            let k = self.arena.fresh();
-                            self.env.insert(*arm.resume.value(), Scheme::mono(k));
-                            self.infer_expr(&arm.body);
-                        }
-                    }
+                // The body performs the handled effects and whatever else, `ρ`.
+                //
+                // What reaches the enclosing region is `ρ` plus every handled
+                // effect with an operation that has no clause here: at run time
+                // such an operation goes straight past this handler to the next
+                // one out, so the effect is still performed as far as anyone
+                // outside can tell. Dropping it -- or, before, dropping the whole
+                // body's row when there was no clause at all -- let an
+                // `unhandled effect` through a type that claimed to be pure.
+                let rho = self.arena.fresh_effect();
+                let row = |effects: &mut dyn Iterator<Item = &(InternedString, EffectInfo, Vec<Type>)>| {
+                    let effects: Vec<_> = effects.collect();
+                    effects.into_iter().rev().fold(rho.clone(), |tail, (name, _, params)| {
+                        Type::RowExtend(*name, Box::new(Type::Tuple(params.clone())), Box::new(tail))
+                    })
+                };
+                let inside = row(&mut handled.iter());
+                let outside = row(&mut handled.iter().filter(|(_, info, _)| {
+                    info.ops.iter().any(|o| !arms.iter().any(|a| a.op == o.name))
+                }));
+                self.unify_at(expr.span, body_eff, inside);
+                self.join_effect(expr.span, outside.clone());
+
+                for arm in arms {
+                    let op = handled.iter().find_map(|(_, info, params)| {
+                        info.ops.iter().find(|o| o.name == arm.op).map(|o| (o, params))
+                    });
+                    let (arg_ty, ret_ty) = match op {
+                        Some((o, params)) => (
+                            Arena::subst_bound(&o.arg, params),
+                            Arena::subst_bound(&o.ret, params),
+                        ),
+                        // An unknown operation, which the resolver has reported.
+                        None => (self.arena.fresh(), self.arena.fresh()),
+                    };
+                    let mut bound = Vec::new();
+                    let pty = self.infer_pat(&arm.param, &mut bound);
+                    self.unify_at(arm.param.span, pty, arg_ty);
+                    // resume : op-result -> handler-result ! outside   (deep: the
+                    // rest of the body runs under this same handler again)
+                    let k_ty = Type::Fun(
+                        vec![ret_ty],
+                        Box::new(result.clone()),
+                        Box::new(outside.clone()),
+                    );
+                    self.env.insert(*arm.resume.value(), Scheme::mono(k_ty));
+                    let at = self.infer_expr(&arm.body);
+                    self.unify_at(arm.body.span, at, result.clone());
                 }
 
                 match ret {
@@ -2503,7 +2534,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "stringToBytes" => Scheme::mono(Type::func(vec![Type::string()], Type::array(Type::int()))),
         "bytesToString" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
         "bytesToHex" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
-        "show" => a1(Type::func(vec![Bound(0)], Type::string())),
+        "show" | "display" => a1(Type::func(vec![Bound(0)], Type::string())),
         "charCode" => Scheme::mono(Type::func(vec![Type::char()], Type::int())),
         "charFromCode" => Scheme::mono(Type::func(vec![Type::int()], Type::char())),
         "stringToChars" => {
@@ -2523,7 +2554,6 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Bound(0), Bound(0)], Type::bool()),
         },
-        // `∀a e. a -> () ! { io | e }`
         // --- the mutable cell ---
         //
         // Every one of these carries `{ Mut | e }`, which is what makes mutation
@@ -2531,9 +2561,10 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         // generalized: the binding's right-hand side is no longer pure, and the
         // effect-based value restriction refuses to quantify it.
         //
-        // `Mut` is its own label rather than part of `io`. Rows are for telling
-        // effects apart, and "this touches memory" is not "this touches the
-        // outside world" — a caller can reasonably care about one and not the
+        // `Mut` is a label with no operations -- nothing handles it -- rather
+        // than an effect a handler could reinterpret. It is in the row so that
+        // "this touches memory" shows, and stays told apart from "this touches
+        // the outside world": a caller can reasonably care about one and not the
         // other.
         "newRef" => Scheme {
             quant: vec![VarKind::Type, VarKind::Effect],
@@ -2549,18 +2580,6 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
                 vec![Type::reference(Bound(0)), Bound(0)],
                 Type::unit(),
                 mut_row(1),
-            ),
-        },
-        "print" | "println" => Scheme {
-            quant: vec![VarKind::Type, VarKind::Effect],
-            ty: Type::func_eff(
-                vec![Bound(0)],
-                Type::unit(),
-                Type::RowExtend(
-                    InternedString::from("io"),
-                    Box::new(Type::Tuple(vec![])),
-                    Box::new(Bound(1)),
-                ),
             ),
         },
         _ => return None,
@@ -2800,8 +2819,9 @@ fn write_type(
 }
 
 /// Print ` ! e` after an arrow when its latent effect is non-pure. Effect rows
-/// read as `io`, `State Int`, `{ io, State Int }`, `{ io | e }` — a single closed
-/// label needs no braces; a lone `hidden` variable prints nothing.
+/// read as `Console`, `State Int`, `{ Console, State Int }`, `{ Console | e }`
+/// — a single closed label needs no braces; a lone `hidden` variable prints
+/// nothing.
 fn write_effect_suffix(
     out: &mut impl fmt::Write,
     eff: &Type,
@@ -3122,7 +3142,7 @@ impl Renderer {
     ///
     /// Needed because an effect is a property of the arrow, not of the type it
     /// returns. Rendering the body's type alone loses it, and a result that
-    /// silently drops `! { io | e }` is worse than no annotation at all —
+    /// silently drops `! { Console | e }` is worse than no annotation at all —
     /// it reads as a claim that the function is pure.
     pub fn render_result(&mut self, ret: &Type, eff: &Type) -> String {
         let mut out = self.render(ret);
@@ -3140,7 +3160,7 @@ impl Renderer {
 
 /// A type with every row written in one canonical order.
 ///
-/// A row is a *set* of labels: `{ io, Mut | e }` and `{ Mut, io | e }` are the
+/// A row is a *set* of labels: `{ Console, Mut | e }` and `{ Mut, Console | e }` are the
 /// same effect, and inference is free to build either. Anything that compares
 /// two types structurally — a rename check, the core type checker, the
 /// matcher below — has to put them in the same order first or it will reject

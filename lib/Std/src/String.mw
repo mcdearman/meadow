@@ -16,7 +16,7 @@
 
 use Std.Collections.Vector as V (vecFromArray)
 use Std.Int (min, max)
-use Std.Maybe (Maybe, Just, None)
+use Std.Maybe.Maybe.*
 
 -- ---------------------------------------------------------------------------
 -- Bytes in, bytes out

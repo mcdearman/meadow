@@ -22,14 +22,14 @@
 --   fun x -> x x                      -- rejected: occurs check
 
 use Syntax (Expr)
+use Syntax.Expr.*
 use Parser (parse)
 use Infer (typeOf)
 use Eval (run, showValue)
 use Std.Test (assertEq)
-use Std.Result (Result, Ok, Err, isErr)
+use Std.Result (isErr)
 use Std.Console (prompt, withInput)
 use Std.String as S
-use Std.Maybe (Maybe, Just, None)
 
 -- Type-check, then run. Nothing reaches `eval` that did not type.
 @pub(pkg) fun runSource src =
@@ -164,7 +164,7 @@ fun loop () =
 
 @test fun replRunsUnderWithInput () =
   -- `main`'s own loop, driven by the `Console` effect: no terminal involved.
-  assertEq (withInput ["1 + 1"; "let id = fun x -> x in id 41"; ":q"] loop) ()
+  assertEq (withInput ["1 + 1", "let id = fun x -> x in id 41", ":q"] loop) ()
            "a session plays through"
 
 @test fun levelsPreventUnsoundGeneralization () =

@@ -1,10 +1,14 @@
--- Std.Console: reading from the terminal, as an effect.
+-- Std.Console: the terminal, as an effect -- writing to it and reading from it.
 --
--- `print` and `println` go the other way and are plain primitives. Input needs
--- an effect because it is the one thing a test can never be allowed to do for
--- real: a suite that blocks waiting for someone to type is a suite that hangs.
+-- `print` and `println` are ordinary functions over one operation,
+-- `writeOutput`, and the prelude re-exports them, so printing needs no `use`.
+-- With no handler the runtime writes to real standard output and reads real
+-- standard input. A handler can stand in for either: `withInput` supplies the
+-- lines a program reads, and `withOutput` collects what it prints. That is what
+-- makes an interactive program testable -- a suite that blocks waiting for
+-- someone to type is a suite that hangs, and one that prints can now check what
+-- it printed.
 --
--- With no handler the runtime reads real standard input:
 --
 --   use Std.Console (readLine, prompt)
 --
@@ -13,25 +17,43 @@
 --     | Just name -> println (S.concat "hello, " name)
 --     | None -> println "nothing to read"
 --
--- With `withInput` it reads from a list you supply, which is what makes an
--- interactive program testable:
+-- With `withInput` it reads from a list you supply, and with `withOutput` it
+-- hands back what was printed:
 --
 --   @test fun greets () =
 --     assertEq (withInput ["ada"] (\() -> prompt "name: ")) (Just "ada") "reads"
+--
+--   @test fun saysHello () =
+--     assertEq (withOutput (\() -> println "hello")) ((), "hello\n") "prints"
 --
 -- `readLine` answers `None` at end of input -- a closed pipe, or Ctrl-D at a
 -- terminal. That is not an error, so a loop ends by pattern-matching it rather
 -- than by catching anything.
 
-use Std.Maybe (Maybe, unwrapOr)
+use Std.Maybe (unwrapOr)
+use Std.Maybe.Maybe.*
 use Std.Test (assertEq)
 use Std.String as S
-use Std.Collections.List as L
+use Std.Collections.Vector as V
+-- `[a, b]` desugars to a `vecFromArray` call.
+use Std.Collections.Vector (vecFromArray)
 
 @pub effect Console {
+  -- Write `text` exactly as given: no newline is added.
+  writeOutput : String -> (),
   -- The next line, without its line terminator. `None` at end of input.
   readLine : () -> Maybe String,
 }
+
+-- --- writing ------------------------------------------------------------------
+
+-- Write a value with no trailing newline. A `String` is written as its text;
+-- anything else the way `show` renders it, so `print 42` writes `42` and
+-- `print "hi"` writes `hi`, not `"hi"`.
+@pub fun print value = writeOutput (display value)
+
+-- `print`, then a newline.
+@pub fun println value = writeOutput (S.concat (display value) "\n")
 
 -- --- reading ------------------------------------------------------------------
 
@@ -65,64 +87,90 @@ use Std.Collections.List as L
           promptUntil message retry parse
 
 -- Every remaining line, in order.
-@pub fun readAll () = L.reverse (readAllLoop [;])
+@pub fun readAll () = readAllLoop V.empty
 
 fun readAllLoop acc =
   match readLine () with
   | None -> acc
-  | Just line -> readAllLoop (line :: acc)
+  | Just line -> readAllLoop (V.pushBack acc line)
 
 -- --- handling -----------------------------------------------------------------
 
--- Run `body` with `lines` as the input, so nothing touches the terminal. Once
--- the list is exhausted every `readLine` answers `None`.
+-- Run `body` with the `Vector` `lines` as the input, so nothing touches the
+-- terminal. Once they are exhausted every `readLine` answers `None`.
 @pub fun withInput lines body =
   let feed =
     handle body () with {
-      readLine () k -> \remaining ->
-        match remaining with
-        | [;] -> (k None) [;]
-        | line :: rest -> (k (Just line)) rest,
-      return x -> \remaining -> x
+      -- `get` is `None` past the end, which is exactly the answer wanted.
+      readLine () k -> \next -> (k (V.get lines next)) (next + 1),
+      return x -> \next -> x
     }
-  in feed lines
+  in feed 0
+
+-- Run `body` and collect everything it writes instead of printing it: the
+-- result, paired with the text. Reading is left alone, so this nests with
+-- `withInput` in either order.
+@pub fun withOutput body =
+  let collect =
+    handle body () with {
+      writeOutput text k -> \written -> (k ()) (S.concat written text),
+      return x -> \written -> (x, written)
+    }
+  in collect ""
 
 -- --- tests --------------------------------------------------------------------
 --
--- All of these go through `withInput`. A test that reached the real terminal
--- would block the suite waiting for someone to type, which is the reason input
--- is an effect at all.
+-- All of these go through `withInput` or `withOutput`. A test that reached the
+-- real terminal would block the suite waiting for someone to type, which is the
+-- reason the terminal is an effect at all.
+
+@test fun printAndPrintlnWriteTheirText () =
+  let got = withOutput (\() -> let _ = print "a" in let _ = println "b" in println 42) in
+  assertEq got ((), "ab\n42\n") "a String as itself, anything else as show renders it"
+
+@test fun withOutputKeepsTheResult () =
+  assertEq (withOutput (\() -> let _ = print "x" in 7)) (7, "x") "the value and the text"
+
+@test fun aPromptIsATranscript () =
+  -- Both halves of the conversation, with nothing touching the terminal.
+  let got = withOutput (\() -> withInput ["ada"] (\() -> prompt "name: ")) in
+  assertEq got (Just "ada", "name: ") "the question was written, the answer read"
+
+@test fun nothingWrittenIsTheEmptyString () =
+  assertEq (withOutput (\() -> 1)) (1, "") "no output"
 
 @test fun readsLinesInOrder () =
-  let got = withInput ["one"; "two"] (\() -> (readLine (), readLine ())) in
+  let got = withInput ["one", "two"] (\() -> (readLine (), readLine ())) in
   assertEq got (Just "one", Just "two") "two lines, in order"
 
 @test fun endOfInputIsNoneNotAnError () =
-  let got = withInput ["only";] (\() -> (readLine (), readLine (), readLine ())) in
+  let got = withInput ["only"] (\() -> (readLine (), readLine (), readLine ())) in
   assertEq got (Just "only", None, None) "None once the input runs out"
 
 @test fun emptyInputReadsNothing () =
-  assertEq (withInput [;] (\() -> readLine ())) None "nothing to read"
+  assertEq (withInput [] (\() -> readLine ())) None "nothing to read"
 
 @test fun readLineOrSubstitutesAtEndOfInput () =
-  let got = withInput ["here";] (\() -> (readLineOr "gone", readLineOr "gone")) in
+  let got = withInput ["here"] (\() -> (readLineOr "gone", readLineOr "gone")) in
   assertEq got ("here", "gone") "the fallback only applies at the end"
 
 @test fun readWordTrimsSurroundingSpace () =
   -- A person typing `rock ` should not give a different answer from `rock`.
-  assertEq (withInput ["  rock  ";] (\() -> readWord ())) (Just "rock") "trimmed"
+  assertEq (withInput ["  rock  "] (\() -> readWord ())) (Just "rock") "trimmed"
 
 @test fun readAllCollectsTheRest () =
-  let got = withInput ["a"; "b"; "c"] (\() -> (readLine (), readAll ())) in
-  assertEq got (Just "a", ["b"; "c"]) "the first line, then the rest"
+  let got = withInput ["a", "b", "c"] (\() -> (readLine (), readAll ())) in
+  assertEq got (Just "a", ["b", "c"]) "the first line, then the rest"
 
 @test fun promptUntilRetriesUntilItParses () =
   let parse = \s -> match s with | "yes" -> Just True | _ -> None in
-  let got = withInput ["no"; "maybe"; "yes"] (\() -> promptUntil "?" "again" parse) in
-  assertEq got (Just True) "keeps asking past the answers that do not parse"
+  let (got, written) =
+    withOutput (\() -> withInput ["no", "maybe", "yes"] (\() -> promptUntil "?" "again" parse)) in
+    let a = assertEq got (Just True) "keeps asking past the answers that do not parse" in
+    assertEq written "?again\n?again\n?" "asked three times, told off twice"
 
 @test fun promptUntilGivesUpAtEndOfInput () =
   -- Otherwise a piped-in file that never satisfies `parse` would spin forever.
   let parse = \s -> match s with | "yes" -> Just True | _ -> None in
-  let got = withInput ["no"; "no"] (\() -> promptUntil "?" "again" parse) in
+  let (got, written) = withOutput (\() -> withInput ["no", "no"] (\() -> promptUntil "?" "again" parse)) in
   assertEq got None "runs out rather than looping"

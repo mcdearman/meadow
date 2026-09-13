@@ -92,6 +92,15 @@ fn use_declaration() {
     insta::assert_snapshot!(parse_ast("use std.list.map\n"));
 }
 
+#[test]
+fn use_of_every_constructor_of_a_type() {
+    // `.*` lexes as one operator token; spaced out it is the same declaration.
+    let glued = parse_ast("use Syntax.Expr.*\n");
+    assert!(glued.contains("glob: true"), "{glued}");
+    let spaced = parse_ast("use Syntax.Expr . *\n");
+    assert_eq!(glued.replace("0..17", "0..19"), spaced);
+}
+
 // --- parser performance ------------------------------------------------------
 
 /// Nested `let` / `if`, `depth` levels deep.

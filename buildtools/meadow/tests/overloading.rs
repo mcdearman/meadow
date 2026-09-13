@@ -15,7 +15,7 @@ use common::{errors_std_with, eval_main_std, eval_unit, unit_errors};
 use meadow::Options;
 
 /// A module with its own `Just`, next to `Std.Maybe`'s.
-const BOX: &str = "use Std.Maybe (Maybe, Just, None)\n\
+const BOX: &str = "use Std.Maybe.Maybe (Just, None)\n\
                    data Box = Just Int | Empty\n\
                    fun unbox (b : Box) = match b with | Just n -> n | Empty -> 0\n";
 
@@ -47,7 +47,7 @@ fn a_pattern_is_chosen_by_the_scrutinee() {
 fn names_tied_together_are_chosen_together() {
     // Two `size`s and two `Just`s: no single name settles it, but only one pair
     // has a type.
-    let src = "use Std.Maybe (Maybe, Just, None)\n\
+    let src = "use Std.Maybe.Maybe (Just, None)\n\
                use Std.Collections.Map (size)\n\
                data Box = Just Int | Empty\n\
                fun size (b : Box) = match b with | Just n -> n | Empty -> 0\n\
@@ -61,6 +61,7 @@ fn a_value_clashing_across_modules_is_chosen_by_type() {
     let shapes = "data Shape = Circle Int | Square Int\n\
                   fun size s = match s with | Circle r -> 3 * r * r | Square w -> w * w\n";
     let main = "use Shapes (Shape, size)\n\
+                use Shapes.Shape.*\n\
                 data Box = Box Int\n\
                 fun size b = match b with | Box n -> n\n\
                 def main = (size (Circle 2), size (Box 5))\n";
@@ -135,7 +136,7 @@ fn no_candidate_fitting_names_the_type_wanted() {
 fn one_name_settling_first_leaves_the_other_to_say_what_it_needed() {
     // `Just "no"` can only be `Maybe.Just`, so it is; then no `size` takes a
     // `Maybe String`.
-    let src = "use Std.Maybe (Maybe, Just, None)\n\
+    let src = "use Std.Maybe.Maybe (Just, None)\n\
                use Std.Collections.Map (size)\n\
                data Box = Just Int | Empty\n\
                fun size (b : Box) = match b with | Just n -> n | Empty -> 0\n\
@@ -151,7 +152,7 @@ fn one_name_settling_first_leaves_the_other_to_say_what_it_needed() {
 fn no_combination_fitting_is_one_error() {
     // Each name fits alone -- either `size` takes *something*, either `Just`
     // makes *something* -- but no `size` takes what any `Just` makes.
-    let src = "use Std.Maybe (Maybe, Just, None)\n\
+    let src = "use Std.Maybe.Maybe (Just, None)\n\
                use Std.Collections.Map (size)\n\
                data Box = Just Int | Empty\n\
                data Shape = Circle Int\n\

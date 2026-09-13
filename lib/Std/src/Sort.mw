@@ -65,15 +65,20 @@ def smallRange = 16
 
 -- --- the stable sort ----------------------------------------------------------
 --
--- Merge sort over `List`. Stable, and pure -- nothing here mutates, so a caller
--- that uses it keeps an empty effect row.
+-- Merge sort, which is a list algorithm: it splits and merges by taking heads,
+-- so it works over `List` underneath and a `Vector` is converted on the way in
+-- and out. Stable, and pure -- nothing here mutates, so a caller that uses it
+-- keeps an empty effect row.
 
-@pub fun stableSortBy cmp xs = mergeSort cmp xs
+-- Sort a `Vector` by a comparison, keeping equal elements in their order.
+@pub fun stableSortBy cmp v = V.fromList (mergeSort cmp (V.toList v))
 
-@pub fun stableSort xs = mergeSort compare xs
+@pub fun stableSort v = stableSortBy compare v
 
--- Stable sort of a `Vector`, via `List`.
-@pub fun stableSortVecBy cmp v = V.fromList (mergeSort cmp (V.toList v))
+-- The same, for a `List`, with no conversion.
+@pub fun stableSortListBy cmp xs = mergeSort cmp xs
+
+@pub fun stableSortList xs = mergeSort compare xs
 
 fun mergeSort cmp xs =
   match xs with
@@ -324,21 +329,27 @@ fun siftDown cmp cells lo n i =
 @test fun theStableSortKeepsEqualElementsInOrder () =
   -- Sort pairs on the first component only: the second must come back in its
   -- original order. This is exactly what `sortBy` does not promise.
-  let ps = [(1, "a"); (0, "b"); (1, "c"); (0, "d"); (1, "e")] in
-  assertEq
-    (stableSortBy (\x y -> compare (fst x) (fst y)) ps)
+  let ps = [(1, "a"), (0, "b"), (1, "c"), (0, "d"), (1, "e")] in
+  let a =
+    assertEq
+      (stableSortBy (\x y -> compare (fst x) (fst y)) ps)
+      [(0, "b"), (0, "d"), (1, "a"), (1, "c"), (1, "e")]
+      "ties keep their original order" in
+    assertEq
+    (stableSortListBy (\x y -> compare (fst x) (fst y)) (V.toList ps))
     [(0, "b"); (0, "d"); (1, "a"); (1, "c"); (1, "e")]
-    "ties keep their original order"
+    "and the same for a List"
 
 @test fun theStableSortAgreesWithTheFastOneOnValues () =
   let v = V.map (\i -> (i * 31) % 97) (V.range 0 300) in
-  assertEq (V.toList (sort v)) (stableSort (V.toList v)) "same answer"
+  assertEq (sort v) (stableSort v) "same answer"
 
 @test fun theStableSortHandlesTheEdges () =
-  let a = assertEq (stableSort [;]) [;] "nothing" in
-  let b = assertEq (stableSort [1;]) [1;] "one" in
-  let c = assertEq (stableSort [2; 1]) [1; 2] "two" in
-  assertEq (stableSort [3; 1; 2]) [1; 2; 3] "three"
+  let a = assertEq (stableSort []) [] "nothing" in
+  let b = assertEq (stableSort [1]) [1] "one" in
+  let c = assertEq (stableSort [2, 1]) [1, 2] "two" in
+  let d = assertEq (stableSort [3, 1, 2]) [1, 2, 3] "three" in
+  assertEq (stableSortList [3; 1; 2]) [1; 2; 3] "three, as a List"
 
 @test fun sortingLeavesTheOriginalAlone () =
   -- The mutation is confined to the scratch cells; the vector handed in is a

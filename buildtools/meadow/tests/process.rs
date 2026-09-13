@@ -7,7 +7,7 @@ use common::eval_main_std;
 fn run_captures_output() {
     insta::assert_snapshot!(eval_main_std(
         "def main =\n\
-        \x20 match run \"echo\" (\"hi\" :: Nil) with\n\
+        \x20 match run \"echo\" [\"hi\"] with\n\
         \x20 | Ok o -> (outputStatus o, outputStdout o, succeeded o)\n\
         \x20 | Err e -> (0 - 1, e, False)\n"
     ), @"(0, \"hi\\n\", true)");
@@ -16,7 +16,7 @@ fn run_captures_output() {
 #[test]
 fn nonexistent_program_is_an_err() {
     insta::assert_snapshot!(eval_main_std(
-        "def main = match run \"this-program-does-not-exist-xyz\" Nil with | Ok o -> False | Err e -> True\n"
+        "def main = match run \"this-program-does-not-exist-xyz\" [] with | Ok o -> False | Err e -> True\n"
     ), @"true");
 }
 
@@ -25,7 +25,7 @@ fn effect_can_be_handled() {
     // a handler intercepts `Process` so the runtime never spawns anything
     insta::assert_snapshot!(eval_main_std(
         "def main =\n\
-        \x20 handle run \"real\" Nil with {\n\
+        \x20 handle run \"real\" [] with {\n\
         \x20   spawn cmd k -> k (Ok (0, \"mocked\", \"\")),\n\
         \x20   return x -> x\n\
         \x20 }\n"
@@ -55,4 +55,16 @@ fn env_roundtrip() {
         \x20 let d = removeEnv \"MEADOW_TEST_VAR_DOES_NOT_EXIST\" in\n\
         \x20 (a, c)\n"
     ), @"(None, Just(\"x\"))");
+}
+
+#[test]
+fn many_arguments_cross_the_boundary_as_a_vector() {
+    // Forty arguments is past one chunk, and `withArg` builds the vector by
+    // pushing, so the runtime reads a shape it did not build itself.
+    let src = "def cmd = V.foldl (\\c i -> withArg (show i) c) (command \"echo\") (V.range 0 40)\n\
+               def main = match spawn cmd with | Ok o -> String.byteLength (outputStdout o) | Err e -> 0\n";
+    let src = format!("use Std.Collections.Vector as V\nuse Std.String as String\n{src}");
+    // "0 1 ... 39\n": ten one-digit and thirty two-digit numbers, 39 spaces, a newline.
+    assert_eq!(eval_main_std(&src), "110");
+    assert_eq!(common::cek_main_std(&src), "110");
 }

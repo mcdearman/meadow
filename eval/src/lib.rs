@@ -1119,14 +1119,7 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             Value::Int(x) => Ok(Value::Int(x.wrapping_neg())),
             other => err(format!("`neg` expects an Int, got {other}")),
         },
-        Print => {
-            print!("{}", displayed(&args[0]));
-            Ok(Value::Unit)
-        }
-        Println => {
-            println!("{}", displayed(&args[0]));
-            Ok(Value::Unit)
-        }
+        Display => Ok(Value::Str(InternedString::from(displayed(&args[0])))),
 
         // --- builtin `Array` -------------------------------------------------
         ArrayLen => Ok(Value::Int(as_array(&args[0])?.len() as i64)),
@@ -1392,9 +1385,9 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             Err(e) => ioerr(e),
         },
         "readBytes" => match fs::read(&*one(&arg)?) {
-            Ok(b) => ok(list_value(
+            Ok(b) => ok(Value::Array(Rc::new(
                 b.into_iter().map(|x| Value::Int(i64::from(x))).collect(),
-            )),
+            ))),
             Err(e) => ioerr(e),
         },
         "writeString" => {
@@ -1436,7 +1429,7 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                         Err(e) => return Ok(ioerr(e)),
                     }
                 }
-                ok(list_value(names))
+                ok(vector_value(names))
             }
             Err(e) => ioerr(e),
         },
@@ -1481,10 +1474,10 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             other => err(format!("Process.{op}: expected a String, got {other}")),
         }
     };
-    fn as_list(op: &str, v: &Value) -> Result<Vec<Value>, RuntimeError> {
-        match list_items(v) {
+    fn as_vector(op: &str, v: &Value) -> Result<Vec<Value>, RuntimeError> {
+        match vector_elems(v) {
             Some(xs) => Ok(xs),
-            None => err(format!("Process.{op}: expected a List, got {v}")),
+            None => err(format!("Process.{op}: expected a Vector, got {v}")),
         }
     }
     let as_cwd = |v: &Value| -> Result<Option<InternedString>, RuntimeError> {
@@ -1505,13 +1498,13 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
         };
         let program = as_str(&t[0])?;
         let mut cmd = Proc::new(&*program);
-        for a in as_list(op, &t[1])? {
+        for a in as_vector(op, &t[1])? {
             cmd.arg(&*as_str(&a)?);
         }
         if let Some(dir) = as_cwd(&t[2])? {
             cmd.current_dir(&*dir);
         }
-        for e in as_list(op, &t[3])? {
+        for e in as_vector(op, &t[3])? {
             match e {
                 Value::Tuple(kv) if kv.len() == 2 => {
                     cmd.env(&*as_str(&kv[0])?, &*as_str(&kv[1])?);
@@ -1544,7 +1537,7 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             std::process::exit(code as i32);
         }
         "currentPid" => Value::Int(std::process::id() as i64),
-        "argv" => list_value(std::env::args().skip(1).map(sv).collect()),
+        "argv" => vector_value(std::env::args().skip(1).map(sv).collect()),
         "getEnv" => match std::env::var(&*as_str(&arg)?) {
             Ok(v) => just(sv(v)),
             Err(_) => none(),
@@ -1573,23 +1566,52 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     })
 }
 
-// --- `Std.Collections.List` marshalling -------------------------------------
+// --- `Std.Collections` marshalling ------------------------------------------
 //
-// `List` is an ordinary `Std` data type (`data List a = Nil | Cons a (List a)`),
-// so at runtime it is nothing but a chain of `Value::Ctor`s — the runtime has no
-// list of its own. Native operations whose declared signature mentions `List`
-// build and read that chain here, the same way `Bool` crosses the boundary as
+// `List` and `Vector` are ordinary `Std` data types, so at runtime they are
+// nothing but `Value::Ctor`s -- the runtime has no sequence of its own beyond
+// `Array`. Native operations whose declared signature mentions `Vector` build
+// and read that structure here, the same way `Bool` crosses the boundary as
 // `Value::Bool`.
 
-fn nil_value() -> Value {
-    Value::ctor(InternedString::from("List.Nil"), vec![])
-}
-
-/// Build a `Cons`/`Nil` chain from `items`, in order.
-fn list_value(items: Vec<Value>) -> Value {
-    items.into_iter().rfold(nil_value(), |tail, head| {
-        Value::ctor(InternedString::from("List.Cons"), vec![head, tail])
-    })
+/// `items` laid out as `Vector.fromArray` lays them out: `Empty`, one `Single`
+/// chunk, or a radix-balanced tree of 32-element chunks under a `Full` with
+/// empty side buffers. That module's code takes the result apart, so this has
+/// to stay `vBuildTree`.
+fn vector_value(items: Vec<Value>) -> Value {
+    const WIDTH: usize = 32;
+    let array = |xs: &[Value]| Value::Array(Rc::new(xs.to_vec()));
+    let ctor = |name: &str, fields: Vec<Value>| Value::ctor(InternedString::from(name), fields);
+    if items.is_empty() {
+        return ctor("Vector.Empty", vec![]);
+    }
+    if items.len() <= WIDTH {
+        return ctor("Vector.Single", vec![array(&items)]);
+    }
+    let mut nodes: Vec<Value> = items
+        .chunks(WIDTH)
+        .map(|chunk| ctor("VNode.Leaf", vec![array(chunk)]))
+        .collect();
+    let mut shift = 5;
+    let branch = |kids: &[Value]| {
+        ctor("VNode.Branch", vec![ctor("Maybe.None", vec![]), array(kids)])
+    };
+    while nodes.len() > WIDTH {
+        nodes = nodes.chunks(WIDTH).map(branch).collect();
+        shift += 5;
+    }
+    ctor(
+        "Vector.Full",
+        vec![
+            Value::Int(items.len() as i64),
+            Value::Int(shift),
+            array(&[]),
+            array(&[]),
+            branch(&nodes),
+            array(&[]),
+            array(&[]),
+        ],
+    )
 }
 
 /// Flatten a `Cons`/`Nil` chain to its elements. `None` if `v` is not a list.
@@ -1908,7 +1930,7 @@ fn native_random(op: &str, arg: Value) -> Result<Value, RuntimeError> {
 }
 
 /// The runtime's default handler for the `Std.Console` effect: real standard
-/// input.
+/// output and input.
 ///
 /// `readLine` strips the line terminator, including a `\r\n` pair, so a program
 /// reading a file piped in on Windows sees the same lines as one reading a
@@ -1918,6 +1940,16 @@ fn native_console(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     use std::io::BufRead;
 
     match op {
+        "writeOutput" => match arg {
+            Value::Str(s) => {
+                use std::io::Write;
+                let mut out = std::io::stdout().lock();
+                let _ = out.write_all(s.as_bytes());
+                let _ = out.flush();
+                Ok(Value::Unit)
+            }
+            other => err(format!("Console.writeOutput: expected a String, got {other}")),
+        },
         "readLine" => {
             let _ = arg;
             let mut line = String::new();
@@ -2194,8 +2226,8 @@ mod tests {
 
     #[test]
     fn structural_equality() {
-        let a = Value::Tuple(vec![Value::Int(1), list_value(vec![Value::Int(2)])]);
-        let b = Value::Tuple(vec![Value::Int(1), list_value(vec![Value::Int(2)])]);
+        let a = Value::Tuple(vec![Value::Int(1), vector_value(vec![Value::Int(2)])]);
+        let b = Value::Tuple(vec![Value::Int(1), vector_value(vec![Value::Int(2)])]);
         assert!(value_eq(&a, &b));
         assert!(!value_eq(&a, &Value::Int(1)));
     }

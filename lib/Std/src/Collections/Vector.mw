@@ -557,7 +557,7 @@ fun vPopChunkFront shift node =
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
-use Std.Maybe (Maybe)
+use Std.Maybe.Maybe.*
 
 @test fun buildingAndObserving () =
   let a = assertEq (len empty) 0 "len of empty" in

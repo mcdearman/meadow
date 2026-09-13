@@ -57,7 +57,7 @@ use Std.Tuple (fst, snd)
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
-use Std.Maybe (Maybe)
+use Std.Maybe.Maybe.*
 
 fun tick () =
   let n = get () in

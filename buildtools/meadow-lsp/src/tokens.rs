@@ -48,14 +48,16 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
         .map(|(span, _, ns)| (span.start, *ns))
         .collect();
 
-    // Inside `use a.b.c`, up to the import list: every capital there is a module.
+    // Inside `use a.b.c`, up to the import list: an unresolved capital there is
+    // a module. The path is over at its list, or at anything a path cannot
+    // contain -- `use M.Ty.*` has no list, and the next line is not a path.
     let mut in_use_path = false;
 
     for (i, t) in lex.tokens.iter().enumerate() {
         match t.value() {
             Token::Use => in_use_path = true,
-            Token::LParen => in_use_path = false,
-            _ => {}
+            Token::UpperIdent(_) | Token::LowerIdent(_) | Token::Period | Token::As => {}
+            _ => in_use_path = false,
         }
         let next_is_period = matches!(lex.tokens.get(i + 1).map(|n| n.value()), Some(Token::Period));
         let kind = match t.value() {
@@ -84,9 +86,7 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
             Token::String(_) | Token::Char(_) => "string",
             Token::UpperIdent(name) => {
                 let n = name.to_string();
-                if in_use_path {
-                    "namespace"
-                } else if let Some(ns) = resolved.get(&t.span.start) {
+                if let Some(ns) = resolved.get(&t.span.start) {
                     // Resolution first, and it is the whole answer when there
                     // is one. Matching the *spelling* against known names is
                     // what coloured mini-ml's `Expr.Int` and `Expr.Bool` as
@@ -97,6 +97,10 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
                         Namespace::Ctor => "enumMember",
                         Namespace::Type => "type",
                     }
+                } else if in_use_path {
+                    // `Ty` in `use M.Ty (C)` resolved above; the rest of a
+                    // path is modules.
+                    "namespace"
                 } else if next_is_period {
                     // Unresolved and qualifying something: a module or an
                     // alias (`S.concat`), whatever else that spelling means.

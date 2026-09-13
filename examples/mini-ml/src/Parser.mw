@@ -10,16 +10,15 @@
 -- `chunk` is atomic, but `let` is also a prefix of `letter`, so `keyword` checks
 -- that what follows is not another identifier byte.
 
--- The tree this parser builds, from the package's own `Syntax` module. Naming
--- `Expr` brings its constructors in unqualified, and this file never mentions
+-- The tree this parser builds, from the package's own `Syntax` module. The
+-- `.*` brings `Expr`'s constructors in unqualified, and this file never mentions
 -- `Ty`, so its `Int` can only be `Expr.Int`.
 use Syntax (Expr)
+use Syntax.Expr.*
 use Std.String.Parse as P
 use Std.String as S
 use Std.Collections.Vector as V
-use Std.Collections.List as L
-use Std.Maybe (Maybe, Just, None, unwrapOr)
-use Std.Result (Result, Ok, Err)
+use Std.Maybe (unwrapOr)
 use Std.Bool (not)
 
 -- --- bytes ---------------------------------------------------------------
@@ -45,7 +44,7 @@ fun keyword s =
   tok (P.try (P.thenSkip (P.chunk (P.fromString s))
                          (P.notFollowedBy (P.satisfy isIdentByte))))
 
-def reserved = ["let"; "rec"; "in"; "fun"; "if"; "then"; "else"; "true"; "false"]
+def reserved = ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"]
 
 -- An identifier, refusing the reserved words so `let` cannot be a variable.
 --
@@ -60,7 +59,7 @@ def ident =
                        (P.takeWhileP isIdentByte)))
          (\bytes ->
            let name = S.fromBytes (V.toArray bytes) in
-            if L.elem name reserved then P.fail "an identifier" else P.pure name))
+            if V.elem name reserved then P.fail "an identifier" else P.pure name))
 
 def intLit =
   P.map (\bytes -> Int (unwrapOr 0 (S.toInt (S.fromBytes (V.toArray bytes)))))
@@ -132,10 +131,10 @@ fun letE () =
               match isRec with
               | None -> P.pure (Let name (V.foldr (\a acc -> Lam a acc) rhs args) body)
               | Just r ->
-                  match V.toList args with
-                  | [;] -> P.fail "an argument after `let rec`"
-                  | first :: more ->
-                      let inner = L.foldr (\a acc -> Lam a acc) rhs more in
+                  match V.head args with
+                  | None -> P.fail "an argument after `let rec`"
+                  | Just first ->
+                      let inner = V.foldr (\a acc -> Lam a acc) rhs (V.drop args 1) in
                       P.pure (LetRec name first inner body))))))
 
 fun exprE () = P.choice [P.defer letE, P.defer lamE, P.defer ifE, P.defer cmpE]

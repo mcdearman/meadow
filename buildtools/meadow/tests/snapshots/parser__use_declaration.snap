@@ -1,5 +1,5 @@
 ---
-source: tests/parser.rs
+source: meadow/tests/parser.rs
 expression: "parse_ast(\"use std.list.map\\n\")"
 ---
 Module {
@@ -23,6 +23,7 @@ Module {
                         },
                     ],
                     names: [],
+                    glob: false,
                     alias: None,
                 },
             ),

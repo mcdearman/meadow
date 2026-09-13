@@ -20,11 +20,11 @@
 use Syntax (Expr)
 use Std.Ref (modify)
 use Std.Collections.List as L
-use Std.Maybe (Maybe, Just, None)
-use Std.Result (Result, Ok, Err)
 use Std.String as S
 use Std.Exn (raise, toResult)
 
+-- A closure's environment is a `List`, for the reason `Infer.mw` gives: binding
+-- conses onto the front, and a closure shares the tail it was made with.
 @pub(pkg) data Value
   = Int Int
   | Bool Bool

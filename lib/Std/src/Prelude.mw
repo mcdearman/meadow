@@ -1,6 +1,6 @@
 -- The Std prelude.
 --
--- It defines nothing. Every name below is `@pub(pack) use`-re-exported from another
+-- It defines nothing. Every name below is `@pub use`-re-exported from another
 -- module, which is what makes it available *unqualified* in every package that
 -- depends on `Std`. Anything not listed here is reached with a qualifier
 -- (`Maybe.map`, `List.foldr`, `Set.insert`, …) or an explicit `use`.
@@ -17,49 +17,49 @@
 -- `Just` / `None` / `Ok` / `Err` / `Less` reading as themselves is worth more
 -- than the consistency. `True` / `False` / `Nil` / `::` need no help: the
 -- language's own syntax depends on them, so they are always in scope.
-@pub(pack) use Std.Maybe (Maybe)
-@pub(pack) use Std.Result (Result)
-@pub(pack) use Std.Ordering (Ordering)
+@pub use Std.Maybe (Maybe)
+@pub use Std.Result (Result)
+@pub use Std.Ordering (Ordering)
 
-@pub(pack) use Std.Bool (not)
+@pub use Std.Bool (not)
 
-@pub(pack) use Std.Ordering (compare, isLess, isEqual, isGreater)
+@pub use Std.Ordering (compare, isLess, isEqual, isGreater)
 
-@pub(pack) use Std.Function (id, const, flip, compose, apply, twice)
+@pub use Std.Function (id, const, flip, compose, apply, twice)
 
-@pub(pack) use Std.Tuple (fst, snd, pair, swap, mapFst, mapSnd)
+@pub use Std.Tuple (fst, snd, pair, swap, mapFst, mapSnd)
 
-@pub(pack) use Std.Int (
+@pub use Std.Int (
   min, max, abs, signum, clamp, succ, pred, even, odd, gcd, lcm,
 )
 
-@pub(pack) use Std.Bits (
+@pub use Std.Bits (
   lowMask, lowBits, bit, testBit, setBit, clearBit, flipBit, byteOf, fromBytes4,
   countLeadingZeros, countTrailingZeros, rotateLeft, rotateRight,
 )
 
-@pub(pack) use Std.Bytes (
+@pub use Std.Bytes (
   bytesEmpty, bytesLength, bytesIsEmpty, bytesGet, bytesGetOr, bytesSet,
   bytesPush, bytesPop, bytesSlice, bytesConcat,
   bytesGetU16LE, bytesGetU16BE, bytesGetU32LE, bytesGetU32BE,
   bytesSetU16LE, bytesSetU16BE, bytesSetU32LE, bytesSetU32BE,
 )
 
-@pub(pack) use Std.Fs (
+@pub use Std.Fs (
   readToString, readBytes, writeString, appendString, removeFile,
   createDir, createDirAll, removeDir, removeDirAll, rename, copy, readDir,
   metadata, exists, isFile, isDir,
   readToStringOr, tryReadDir, existsAll,
 )
 
-@pub(pack) use Std.Process (
+@pub use Std.Process (
   command, withArg, withArgs, withCwd, withEnv, run, runInherit,
   outputStatus, outputStdout, outputStderr, succeeded,
   exit, currentPid, argv, getEnv, setEnv, removeEnv,
 )
 
 -- `Vector` is the default sequence.
-@pub(pack) use Std.Collections.Vector (
+@pub use Std.Collections.Vector (
   vecFromArray,
   empty, singleton, fromArray, fromList, toArray, toList,
   len, length, isEmpty, get, getOr, head, last, nth, set,

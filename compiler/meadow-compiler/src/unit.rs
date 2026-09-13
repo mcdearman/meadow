@@ -90,7 +90,7 @@ pub struct CompiledPackage {
     /// An entry point is not an export: nothing links against `main`, the
     /// runtime calls it. Finding it here rather than among the exports is what
     /// lets a program keep its declarations to itself — before this, adding
-    /// `@pub` anywhere in a package meant `main` needed it too or the linker
+    /// a visibility attribute anywhere in a package meant `main` needed one too or the linker
     /// would report no entry point at all.
     pub entry: Option<VarId>,
     pub modules: Vec<TypedModule>,
@@ -110,6 +110,65 @@ pub struct CompiledPackage {
     /// re-exports). `None` = flat-import everything (REPL prefixes, ad-hoc `deps`);
     /// `Some(list)` = only these are flat, the rest need `use`.
     pub prelude_exports: Option<Vec<InternedString>>,
+}
+
+/// A `@test` function, and the module it is declared in.
+#[derive(Debug, Clone)]
+pub struct TestSite {
+    /// The dotted path of the declaring module; empty for the package root.
+    pub module: Vec<InternedString>,
+    pub name: InternedString,
+    pub var: VarId,
+}
+
+impl TestSite {
+    /// How a test is named to someone choosing one: `Parser.handlesEmpty`, or
+    /// just `handlesEmpty` in the root module.
+    ///
+    /// The module is part of the name because modules are namespaces: two of
+    /// them may each declare a test called `works`, and a runner asked for one
+    /// by its bare name cannot tell which was meant. `meadow test` prints this
+    /// and matches against it, and the editor's Test lens asks for it, so the
+    /// spelling lives here and nowhere else.
+    pub fn qualified(&self) -> String {
+        if self.module.is_empty() {
+            return self.name.to_string();
+        }
+        let mut out = String::new();
+        for seg in &self.module {
+            out.push_str(seg);
+            out.push('.');
+        }
+        out.push_str(&self.name);
+        out
+    }
+}
+
+impl CompiledPackage {
+    /// Every `@test`, with its module, in declaration order.
+    ///
+    /// [`CompiledPackage::tests`] records only name and id, so the module is
+    /// recovered from which module's top-level bindings introduce the id.
+    pub fn test_sites(&self) -> Vec<TestSite> {
+        let mut module_of: HashMap<VarId, &[InternedString]> = HashMap::new();
+        for m in &self.modules {
+            for d in &m.hir.value().decls {
+                if let hir::Decl::Bind(b) = d.value() {
+                    for v in b.bound_vars() {
+                        module_of.insert(v, &m.path);
+                    }
+                }
+            }
+        }
+        self.tests
+            .iter()
+            .map(|&(name, var)| TestSite {
+                module: module_of.get(&var).map(|p| p.to_vec()).unwrap_or_default(),
+                name,
+                var,
+            })
+            .collect()
+    }
 }
 
 /// Compile a single source string as a one-module, dependency-free package.
@@ -392,7 +451,7 @@ pub fn compile_unit_in_package(
     // Drop the `&table` borrow held by `lowerer` before `table` is moved below.
     let ctor_fields = lowerer.ctor_fields;
 
-    // Export surface. If the unit used `@pub` anywhere, only the `@pub`
+    // Export surface. If the unit used a visibility attribute anywhere, only the `@pub`
     // declarations (and `@pub use` re-exports) are exported; otherwise everything.
     let gated = resolver.has_pub_markers();
     // Which module each top-level `VarId` was declared in (for `Export.module`).
@@ -452,18 +511,19 @@ pub fn compile_unit_in_package(
     // Deliberately narrow: a type re-exported by `@pub use` is the package
     // saying "this is part of my unqualified surface", which is exactly what
     // the prelude does for `Maybe`, `Result` and `List`. An ungated package
-    // (no `@pub` anywhere) exports everything, so its own types go too.
+    // (no visibility attribute anywhere) exports everything, so its own types go too.
     let mut flat_ctor_types: Vec<InternedString> = modules
         .iter()
         .flat_map(|m| m.ast.value().decls.iter())
         .filter_map(|d| match d.value() {
             ast::Decl::Attributed(attrs, inner) => match inner.value() {
-                // `@pub(pack) use M (T)`: the package's *unqualified* surface,
+                // `@pub use M (T)`: the package's *unqualified* surface,
                 // which is a claim about what a dependent may write bare.
                 ast::Decl::Use(u)
                     if attrs.iter().any(|a| {
                         &**a.name.value() == "pub"
-                            && a.args.first().is_some_and(|x| &**x.value() == "pack")
+                            // Plain `@pub`: an argument only ever narrows it.
+                            && a.args.is_empty()
                     }) =>
                 {
                     Some(u.names.clone())

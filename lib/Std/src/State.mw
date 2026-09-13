@@ -17,7 +17,7 @@
 
 use Std.Tuple (fst, snd)
 
-@pub(pack) effect State s {
+@pub effect State s {
   get : () -> s,
   put : s -> (),
 }
@@ -25,7 +25,7 @@ use Std.Tuple (fst, snd)
 -- --- running ------------------------------------------------------------------
 
 -- The result and the final state.
-@pub(pack) fun runState s0 act =
+@pub fun runState s0 act =
   handle act () with {
     get () k -> \s -> (k s) s,
     put s2 k -> \s -> (k ()) s2,
@@ -33,23 +33,23 @@ use Std.Tuple (fst, snd)
   } s0
 
 -- Just the result.
-@pub(pack) fun evalState s0 act = fst (runState s0 act)
+@pub fun evalState s0 act = fst (runState s0 act)
 
 -- Just the final state.
-@pub(pack) fun execState s0 act = snd (runState s0 act)
+@pub fun execState s0 act = snd (runState s0 act)
 
 -- --- derived operations -------------------------------------------------------
 
 -- Apply `f` to the state.
-@pub(pack) fun modify f =
+@pub fun modify f =
   let s = get () in
   put (f s)
 
 -- Read the state through `f` without changing it.
-@pub(pack) fun gets f = f (get ())
+@pub fun gets f = f (get ())
 
 -- Replace the state, returning the old one.
-@pub(pack) fun swap s2 =
+@pub fun swap s2 =
   let old = get () in
   let ignored = put s2 in
   old

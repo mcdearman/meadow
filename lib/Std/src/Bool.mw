@@ -1,8 +1,8 @@
 -- Booleans. `and` / `or` are built-in short-circuiting operators; `not` is here.
 
-@pub(pack) data Bool = False | True
+@pub data Bool = False | True
 
-@pub(pack) fun not b = if b then False else True
+@pub fun not b = if b then False else True
 
 -- --- tests -------------------------------------------------------------------
 

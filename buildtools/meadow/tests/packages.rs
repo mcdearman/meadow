@@ -1,5 +1,5 @@
 //! Multi-package builds: `meadow.toml` manifests, a local path dependency, and
-//! `@pub(pack)` gating between packages.
+//! `@pub` gating between packages.
 
 use meadow::{package::Manifest, pipeline};
 use meadow_eval as eval;
@@ -34,7 +34,7 @@ fn builds_app_against_a_path_dependency() {
 
 #[test]
 fn private_names_do_not_cross_package_boundaries() {
-    // `util` exports `double` / `scale` (both `@pub(pack)`) but not `secret`.
+    // `util` exports `double` / `scale` (both `@pub`) but not `secret`.
     let out = pipeline::build(Path::new(&format!("{WORKSPACE}/util")), meadow::Options::debug());
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     let linked = out.linked.unwrap();
@@ -61,7 +61,7 @@ fn without_pub_everything_is_still_exported() {
 
 #[test]
 fn modules_are_compiled_in_dependency_order() {
-    // `layers` has `Alpha.mw` (needs `Zeta`), `Zeta.mw` and `main.mw`. Modules are
+    // `layers` has `Alpha.mw` (needs `Zeta`), `Zeta.mw` and `Main.mw`. Modules are
     // discovered in filename order, so `Alpha` comes first and everything it uses
     // comes later — inference and evaluation both have to sort that out.
     let out = pipeline::build(Path::new(&format!("{WORKSPACE}/layers")), meadow::Options::debug());
@@ -84,7 +84,7 @@ fn a_manifest_configures_the_build_profiles() {
 
     let dir = std::env::temp_dir().join("meadow-profile-manifest");
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("src/main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
     std::fs::write(
         dir.join("meadow.toml"),
         "[package]\n\

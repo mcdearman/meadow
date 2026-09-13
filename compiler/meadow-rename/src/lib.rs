@@ -135,7 +135,7 @@ pub struct Resolver {
     /// Export bookkeeping. If `any_vis` stays false — no visibility attribute
     /// anywhere in the unit — everything is exported, which is what a script,
     /// a REPL line and an unannotated package all want. Otherwise only
-    /// `@pub(pack)` declarations are, plus `@pub(pack) use` re-exports.
+    /// `@pub` declarations are, plus `@pub use` re-exports.
     any_vis: bool,
     pub_vars: std::collections::HashSet<VarId>,
     pub_types: std::collections::HashSet<InternedString>,
@@ -183,17 +183,20 @@ fn peel(d: &ast::LDecl) -> (&[ast::Attr], &ast::LDecl) {
 
 /// How far out of its own module a declaration can be seen.
 ///
-/// Rust's arrangement, with the package in the place of the crate:
+/// Rust's arrangement, with the package in the place of the crate — spellings
+/// included, so `@pub(pkg)` is `pub(crate)` and a plain `@pub` is `pub`:
 ///
 /// | written            | seen by                                   |
 /// |--------------------|-------------------------------------------|
 /// | nothing            | its own module and the modules inside it  |
 /// | `@pub(super)`      | ...and its parent's subtree               |
-/// | `@pub`             | ...and every module of the package        |
-/// | `@pub(pack)`       | ...and whoever depends on the package     |
+/// | `@pub(pkg)`        | ...and every module of the package        |
+/// | `@pub`             | ...and whoever depends on the package     |
 ///
-/// So `@pub` is about leaving the *module*, and leaving the *package* is a
-/// separate, louder thing to say.
+/// A parenthesised argument always *narrows* `@pub`, as it does in Rust. It
+/// used to be the other way round — plain `@pub` stopped at the package and
+/// `@pub(pack)` was the public one — which read backwards to anyone coming from
+/// Rust, and made `(super)` narrow while `(pack)` widened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Vis {
     Private,
@@ -232,9 +235,9 @@ impl Vis {
     /// The attribute that would let one more layer of the program see it.
     fn wider(self) -> &'static str {
         match self {
-            Vis::Private => "@pub",
-            Vis::Super => "@pub",
-            Vis::Package | Vis::Exported => "@pub(pack)",
+            Vis::Private => "@pub(pkg)",
+            Vis::Super => "@pub(pkg)",
+            Vis::Package | Vis::Exported => "@pub",
         }
     }
 }
@@ -256,10 +259,17 @@ fn vis_of(attrs: &[ast::Attr]) -> (Vis, Option<(InternedString, Span)>) {
         return (Vis::Private, None);
     };
     match a.args.first() {
-        None => (Vis::Package, None),
+        None => (Vis::Exported, None),
         Some(arg) => match &**arg.value() {
-            "pack" => (Vis::Exported, None),
+            "pkg" => (Vis::Package, None),
             "super" => (Vis::Super, None),
+            // Reported by the caller, which knows how to say what it became.
+            // Treated as what it used to mean, so the one error is the only
+            // one: resolving it as anything narrower would add an "undefined"
+            // in every dependent that names it.
+            "pack" => (Vis::Exported, Some((*arg.value(), arg.span))),
+            // Package-wide for anything else unknown: narrower than a guess
+            // that it was meant to be public.
             _ => (Vis::Package, Some((*arg.value(), arg.span))),
         },
     }
@@ -486,7 +496,7 @@ impl Resolver {
     /// Can this module name a declaration of `owner`'s with visibility `vis`?
     ///
     /// A unit that never mentions visibility has none: a package with no
-    /// `@pub` anywhere is a script, a REPL line or a two-file program, and
+    /// visibility attribute anywhere is a script, a REPL line or a two-file program, and
     /// making it annotate itself to see across its own files buys nothing.
     /// It is the same rule the export surface uses -- say nothing and
     /// everything is public, say anything and only what you marked is.
@@ -772,15 +782,33 @@ impl Resolver {
     /// sibling module of the same package) can refer to each other regardless of
     /// order. Call once per module before resolving any bodies.
     /// Read a declaration's visibility off its attributes and make it the one
-    /// the recording machinery uses, reporting an argument that means nothing.
-    fn set_decl_vis(&mut self, attrs: &[ast::Attr]) -> Vis {
+    /// the recording machinery uses.
+    ///
+    /// `report` says whether to complain about an argument that means nothing.
+    /// A declaration is read three times -- the two declaring pre-passes and the
+    /// resolve pass -- and reporting from each printed every bad `@pub(…)`
+    /// three times; only the resolve pass reports.
+    fn set_decl_vis(&mut self, attrs: &[ast::Attr], report: bool) -> Vis {
         let (vis, bad) = vis_of(attrs);
-        if let Some((arg, span)) = bad {
-            self.error(
-                format!("unknown visibility `@pub({arg})`"),
-                "write `@pub`, `@pub(pack)` or `@pub(super)`".to_string(),
-                span,
-            );
+        if let Some((arg, span)) = bad.filter(|_| report) {
+            if &*arg == "pack" {
+                // The old spelling of "a dependent can see this", which is now
+                // plain `@pub`, as in Rust. Not `@pub(pkg)`: that is the old
+                // `@pub`, and suggesting it by resemblance would quietly hide a
+                // package's whole surface.
+                self.error(
+                    "`@pub(pack)` is now written `@pub`".to_string(),
+                    "`@pub` is visible to dependents; `@pub(pkg)` keeps a name inside this package"
+                        .to_string(),
+                    span,
+                );
+            } else {
+                self.error(
+                    format!("unknown visibility `@pub({arg})`"),
+                    "write `@pub`, `@pub(pkg)` or `@pub(super)`".to_string(),
+                    span,
+                );
+            }
         }
         if vis != Vis::Private {
             self.any_vis = true;
@@ -792,7 +820,7 @@ impl Resolver {
     pub fn declare_toplevel(&mut self, decls: &[ast::LDecl]) {
         for d in decls {
             let (attrs, base) = peel(d);
-            self.set_decl_vis(attrs);
+            self.set_decl_vis(attrs, false);
             if let ast::Decl::Bind(b) = base.value() {
                 match b {
                     ast::Bind::Fun(name, ..) => {
@@ -810,7 +838,7 @@ impl Resolver {
     pub fn declare_types(&mut self, decls: &[ast::LDecl]) {
         for d in decls {
             let (attrs, base) = peel(d);
-            self.set_decl_vis(attrs);
+            self.set_decl_vis(attrs, false);
             match base.value() {
                 ast::Decl::Data(dd) => {
                     self.declare_tycon(*dd.name.value(), dd.params.len(), dd.name.span);
@@ -1202,8 +1230,8 @@ impl Resolver {
 
     fn resolve_decl(&mut self, decl: &ast::LDecl) -> hir::LDecl {
         let (attrs, base) = peel(decl);
-        let vis = self.set_decl_vis(attrs);
-        // `@pub(pack) use M (a, b, c)` — re-export names this module can see.
+        let vis = self.set_decl_vis(attrs, true);
+        // `@pub use M (a, b, c)` — re-export names this module can see.
         // Only the package's own surface is re-exportable: a `use` brings a
         // name *here*, and a sibling asks this module for it by name anyway.
         if let ast::Decl::Use(u) = base.value() {
@@ -1254,7 +1282,7 @@ impl Resolver {
         }
     }
 
-    /// Record a `@pub(pack)` declaration's names in the export sets.
+    /// Record a `@pub` declaration's names in the export sets.
     fn mark_pub(&mut self, decl: &hir::LDecl) {
         match decl.value() {
             hir::Decl::Bind(hir::Bind::Fun(name, ..)) => {
@@ -1282,7 +1310,7 @@ impl Resolver {
     }
 
     /// `true` if the unit said anything about visibility at all — it then
-    /// exports only what is marked `@pub(pack)` instead of everything.
+    /// exports only what is marked `@pub` instead of everything.
     pub fn has_pub_markers(&self) -> bool {
         self.any_vis
     }

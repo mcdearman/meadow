@@ -12,7 +12,7 @@
 -- Note on ordering: every definition precedes its first use, because a forward
 -- reference between top-level bindings currently loses all type information.
 
-@pub(pack) mod Parse
+@pub mod Parse
 
 use Std.Collections.Vector as V (vecFromArray)
 use Std.Int (min, max)
@@ -23,29 +23,29 @@ use Std.Maybe (Maybe, Just, None)
 -- ---------------------------------------------------------------------------
 
 -- The UTF-8 bytes of `s`.
-@pub(pack) fun toBytes s = stringToBytes s
+@pub fun toBytes s = stringToBytes s
 
 -- A string from UTF-8 `bytes`.
-@pub(pack) fun fromBytes bytes = bytesToString bytes
+@pub fun fromBytes bytes = bytesToString bytes
 
 -- How many *bytes* `s` occupies.
-@pub(pack) fun byteLength s = arrayLen (stringToBytes s)
+@pub fun byteLength s = arrayLen (stringToBytes s)
 
-@pub(pack) fun isEmpty s = byteLength s == 0
+@pub fun isEmpty s = byteLength s == 0
 
 -- ---------------------------------------------------------------------------
 -- Building
 -- ---------------------------------------------------------------------------
 
 -- `a` followed by `b`.
-@pub(pack) fun concat a b = bytesToString (arrayConcat (stringToBytes a) (stringToBytes b))
+@pub fun concat a b = bytesToString (arrayConcat (stringToBytes a) (stringToBytes b))
 
 fun concatLoop acc i xs =
   if i >= V.len xs then acc
   else concatLoop (arrayConcat acc (stringToBytes (V.getOr "" xs i))) (i + 1) xs
 
 -- Every string in `xs`, run together.
-@pub(pack) fun concatAll xs = bytesToString (concatLoop #[] 0 xs)
+@pub fun concatAll xs = bytesToString (concatLoop #[] 0 xs)
 
 fun joinLoop sep acc i xs =
   if i >= V.len xs then acc
@@ -56,19 +56,19 @@ fun joinLoop sep acc i xs =
     joinLoop sep next (i + 1) xs
 
 -- Every string in `xs`, with `sep` between them.
-@pub(pack) fun join sep xs = bytesToString (joinLoop sep #[] 0 xs)
+@pub fun join sep xs = bytesToString (joinLoop sep #[] 0 xs)
 
 fun repeatLoop acc b n = if n <= 0 then acc else repeatLoop (arrayConcat acc b) b (n - 1)
 
 -- `s` repeated `n` times.
-@pub(pack) fun repeat s n = bytesToString (repeatLoop #[] (stringToBytes s) n)
+@pub fun repeat s n = bytesToString (repeatLoop #[] (stringToBytes s) n)
 
 -- ---------------------------------------------------------------------------
 -- Taking it apart
 -- ---------------------------------------------------------------------------
 
 -- The bytes of `s` from `from` up to (not including) `to`, clamped to the ends.
-@pub(pack) fun slice s from to =
+@pub fun slice s from to =
   let b = stringToBytes s in
   let n = arrayLen b in
   let lo = max 0 (min from n) in
@@ -76,13 +76,13 @@ fun repeatLoop acc b n = if n <= 0 then acc else repeatLoop (arrayConcat acc b) 
   bytesToString (arraySlice b lo hi)
 
 -- The first `n` bytes.
-@pub(pack) fun take s n = slice s 0 n
+@pub fun take s n = slice s 0 n
 
 -- Everything after the first `n` bytes.
-@pub(pack) fun drop s n = slice s n (byteLength s)
+@pub fun drop s n = slice s n (byteLength s)
 
 -- The byte at `i`, if there is one.
-@pub(pack) fun byteAt s i =
+@pub fun byteAt s i =
   let b = stringToBytes s in
   if i < 0 or i >= arrayLen b then None else Just (arrayGetOr 0 b i)
 
@@ -103,19 +103,19 @@ fun findFrom hay needle i =
 
 -- The byte offset of the first `needle` in `s`, if it is there. An empty needle
 -- is found at 0.
-@pub(pack) fun indexOf needle s = findFrom (stringToBytes s) (stringToBytes needle) 0
+@pub fun indexOf needle s = findFrom (stringToBytes s) (stringToBytes needle) 0
 
-@pub(pack) fun contains needle s =
+@pub fun contains needle s =
   match indexOf needle s with
   | None -> False
   | Just i -> True
 
-@pub(pack) fun startsWith prefix s =
+@pub fun startsWith prefix s =
   let p = stringToBytes prefix in
   let b = stringToBytes s in
   if arrayLen p > arrayLen b then False else matchesAt b p 0 0
 
-@pub(pack) fun endsWith suffix s =
+@pub fun endsWith suffix s =
   let p = stringToBytes suffix in
   let b = stringToBytes s in
   if arrayLen p > arrayLen b then False else matchesAt b p (arrayLen b - arrayLen p) 0
@@ -129,7 +129,7 @@ fun splitLoop hay needle i acc =
 
 -- `s` cut at every occurrence of `sep`. An empty `sep` yields `s` whole, since
 -- splitting on nothing has no useful answer.
-@pub(pack) fun split sep s =
+@pub fun split sep s =
   let n = stringToBytes sep in
   if arrayLen n == 0 then [s] else splitLoop (stringToBytes s) n 0 V.empty
 
@@ -138,7 +138,7 @@ fun splitLoop hay needle i acc =
 -- ---------------------------------------------------------------------------
 
 -- Space, tab, newline, carriage return.
-@pub(pack) fun isSpaceByte c = c == 32 or c == 9 or c == 10 or c == 13
+@pub fun isSpaceByte c = c == 32 or c == 9 or c == 10 or c == 13
 
 fun startOfText b i =
   if i >= arrayLen b then i
@@ -150,18 +150,18 @@ fun endOfText b i =
   else if isSpaceByte (arrayGetOr 0 b (i - 1)) then endOfText b (i - 1)
   else i
 
-@pub(pack) fun trimStart s =
+@pub fun trimStart s =
   let b = stringToBytes s in
   bytesToString (arraySlice b (startOfText b 0) (arrayLen b))
 
-@pub(pack) fun trimEnd s =
+@pub fun trimEnd s =
   let b = stringToBytes s in
   bytesToString (arraySlice b 0 (endOfText b (arrayLen b)))
 
-@pub(pack) fun trim s = trimEnd (trimStart s)
+@pub fun trim s = trimEnd (trimStart s)
 
 -- `s` split on newlines. A trailing newline does not produce a final empty line.
-@pub(pack) fun lines s = if isEmpty s then V.empty else split "\n" (trimTrailingNewline s)
+@pub fun lines s = if isEmpty s then V.empty else split "\n" (trimTrailingNewline s)
 
 fun trimTrailingNewline s = if endsWith "\n" s then take s (byteLength s - 1) else s
 
@@ -178,9 +178,9 @@ fun upperByte c = if c >= 97 and c <= 122 then c - 32 else c
 fun lowerByte c = if c >= 65 and c <= 90 then c + 32 else c
 
 -- ASCII letters only; anything else is left alone.
-@pub(pack) fun toUpper s = bytesToString (mapBytes upperByte (stringToBytes s) 0 #[])
+@pub fun toUpper s = bytesToString (mapBytes upperByte (stringToBytes s) 0 #[])
 
-@pub(pack) fun toLower s = bytesToString (mapBytes lowerByte (stringToBytes s) 0 #[])
+@pub fun toLower s = bytesToString (mapBytes lowerByte (stringToBytes s) 0 #[])
 
 -- ---------------------------------------------------------------------------
 -- Numbers
@@ -197,12 +197,12 @@ fun digitsToString n =
   bytesToString (reverseFrom ds (arrayLen ds - 1) #[])
 
 -- `n` in base ten.
-@pub(pack) fun fromInt n =
+@pub fun fromInt n =
   if n == 0 then "0"
   else if n < 0 then concat "-" (digitsToString (0 - n))
   else digitsToString n
 
-@pub(pack) fun isDigitByte c = c >= 48 and c <= 57
+@pub fun isDigitByte c = c >= 48 and c <= 57
 
 fun digitsFrom b i acc =
   if i >= arrayLen b then Just acc
@@ -212,7 +212,7 @@ fun digitsFrom b i acc =
 
 -- `s` read as a base-ten integer, with an optional leading `-`. `None` unless
 -- the whole string is digits.
-@pub(pack) fun toInt s =
+@pub fun toInt s =
   let b = stringToBytes s in
   if arrayLen b == 0 then None
   else if arrayGetOr 0 b 0 == 45 then negateParsed (digitsAfterSign b)
@@ -230,14 +230,14 @@ fun negateParsed m =
 -- Everything above counts bytes. These two are the bridge to `Std.Char`, which
 -- counts Unicode scalars: `chars` decodes the UTF-8, `fromChars` encodes it.
 
-@pub(pack) fun chars s = V.fromArray (stringToChars s)
+@pub fun chars s = V.fromArray (stringToChars s)
 
-@pub(pack) fun fromChars cs = charsToString (V.toArray cs)
+@pub fun fromChars cs = charsToString (V.toArray cs)
 
 -- The number of *characters*, which is `byteLength` only for ASCII.
-@pub(pack) fun charLength s = arrayLen (stringToChars s)
+@pub fun charLength s = arrayLen (stringToChars s)
 
-@pub(pack) fun charAt s i =
+@pub fun charAt s i =
   let cs = stringToChars s in
   if i < 0 or i >= arrayLen cs then None else Just (arrayGet cs i)
 

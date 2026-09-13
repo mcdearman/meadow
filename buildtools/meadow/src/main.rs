@@ -45,6 +45,10 @@ enum Cmd {
         path: PathBuf,
         /// Only run tests whose name contains this.
         filter: Option<String>,
+        /// Only the test whose name is exactly FILTER -- `Module.test`, or the
+        /// bare name in the root module.
+        #[arg(long, requires = "filter")]
+        exact: bool,
         /// Also run the standard library's own tests.
         #[arg(long)]
         std: bool,
@@ -97,7 +101,7 @@ enum Cmd {
         #[arg(long)]
         stdout: bool,
     },
-    /// Create a package: a `meadow.toml` and a `src/main.mw` that runs.
+    /// Create a package: a `meadow.toml` and a `src/Main.mw` that runs.
     Init {
         /// Where to put it, created if it does not exist.
         #[arg(default_value = ".")]
@@ -213,6 +217,7 @@ fn main() {
         Some(Cmd::Test {
             path,
             filter,
+            exact,
             std,
             profile,
             engine,
@@ -220,6 +225,7 @@ fn main() {
             profile: profile.resolve(&path),
             path,
             filter,
+            exact,
             std,
             engine: engine.engine(),
         }) {
@@ -252,7 +258,7 @@ fn main() {
             // anyway.
             let src_root = meadow::stdlib::extract_sources();
             if let Err(e) =
-                meadow_lsp::server::run(packages, modules, src_root, Some(meadow::editor::load_package))
+                meadow_lsp::server::run(packages, modules, src_root, Some(meadow::editor::find_package))
             {
                 eprintln!("error: {e}");
                 std::process::exit(1);

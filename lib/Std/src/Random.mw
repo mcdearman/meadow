@@ -19,7 +19,7 @@
 
 use Std.Collections.Vector as V
 
-@pub(pack) effect Random {
+@pub effect Random {
   -- A uniformly distributed `Int` across the whole 64-bit range.
   nextInt : () -> Int,
   -- `lo` inclusive, `hi` exclusive. Returns `lo` if the range is empty.
@@ -47,15 +47,15 @@ fun mix z0 =
   bitXor z2 (z2 >>> 31)
 
 -- One step: the next value and the state to continue from.
-@pub(pack) fun step s =
+@pub fun step s =
   let s2 = s + gamma in
   (mix s2, s2)
 
 -- A state to start from. Any `Int` will do; odd ones are traditional.
-@pub(pack) fun seed n = bitOr n 1
+@pub fun seed n = bitOr n 1
 
 -- `lo` inclusive, `hi` exclusive, from a pure state.
-@pub(pack) fun stepBetween lo hi s =
+@pub fun stepBetween lo hi s =
   match step s with
   | (v, s2) ->
       if hi <= lo
@@ -63,7 +63,7 @@ fun mix z0 =
       else (lo + posMod v (hi - lo), s2)
 
 -- In [0, 1), from the top 53 bits -- the ones a `Float` can hold exactly.
-@pub(pack) fun stepFloat s =
+@pub fun stepFloat s =
   match step s with
   | (v, s2) -> (toFloat (v >>> 11) /. 9007199254740992.0, s2)
 
@@ -77,7 +77,7 @@ fun posMod v m =
 
 -- Run `act` with the pure generator, starting from `n`. The same `n` gives the
 -- same numbers, on every machine and every run.
-@pub(pack) fun withSeed n act =
+@pub fun withSeed n act =
   handle act () with {
     nextInt () k -> \s -> match step s with | (v, s2) -> (k v) s2,
     nextSeed () k -> \s -> match step s with | (v, s2) -> (k v) s2,
@@ -90,7 +90,7 @@ fun posMod v m =
   } (seed n)
 
 -- Like `withSeed`, but also hands back the final state so a run can be continued.
-@pub(pack) fun withSeedFrom n act =
+@pub fun withSeedFrom n act =
   handle act () with {
     nextInt () k -> \s -> match step s with | (v, s2) -> (k v) s2,
     nextSeed () k -> \s -> match step s with | (v, s2) -> (k v) s2,
@@ -106,16 +106,16 @@ fun posMod v m =
 
 -- An effect operation takes exactly one argument, so `intBetween` takes a pair.
 -- This is the curried form to actually call.
-@pub(pack) fun between lo hi = intBetween (lo, hi)
+@pub fun between lo hi = intBetween (lo, hi)
 
-@pub(pack) fun bool () = between 0 2 == 1
+@pub fun bool () = between 0 2 == 1
 
 -- A uniformly chosen element, or `None` if the vector is empty.
-@pub(pack) fun choose v =
+@pub fun choose v =
   if V.isEmpty v then None else V.get v (between 0 (V.len v))
 
 -- Fisher-Yates, from the back.
-@pub(pack) fun shuffle v =
+@pub fun shuffle v =
   let n = V.len v in
   if n <= 1 then v else shuffleFrom (n - 1) v
 

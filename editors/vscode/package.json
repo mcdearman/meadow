@@ -1,7 +1,7 @@
 {
 	"name": "meadow",
 	"displayName": "Meadow",
-	"description": "Language support for Meadow: syntax highlighting, diagnostics, hover, go-to-definition, rename, inlay hints and a debugger.",
+	"description": "Language support for Meadow: syntax highlighting, diagnostics, hover, go-to-definition, rename, inlay hints, a test runner and a debugger.",
 	"version": "0.2.3",
 	"publisher": "ChrisMcDearman",
 	"repository": {
@@ -50,6 +50,11 @@
 					"default": true,
 					"description": "Show a \"Debug\" link above each top-level definition, which asks for its arguments and starts the debugger there."
 				},
+				"meadow.test.codeLens": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show a \"Test\" link above each `@test`, which runs that one test with `meadow test --exact`."
+				},
 				"meadow.inlayHints.enabled": {
 					"type": "boolean",
 					"default": true,
@@ -76,10 +81,20 @@
 				"command": "meadow.debugFunction",
 				"title": "Meadow: Debug Function…",
 				"enablement": "editorLangId == meadow"
+			},
+			{
+				"command": "meadow.testFunction",
+				"title": "Meadow: Run Test",
+				"enablement": "editorLangId == meadow"
 			}
 		],
 		"menus": {
 			"editor/context": [
+				{
+					"command": "meadow.testFunction",
+					"when": "editorLangId == meadow",
+					"group": "meadow@0"
+				},
 				{
 					"command": "meadow.debugFunction",
 					"when": "editorLangId == meadow",
@@ -87,6 +102,15 @@
 				}
 			]
 		},
+		"taskDefinitions": [
+			{
+				"type": "meadow",
+				"required": ["test"],
+				"properties": {
+					"test": { "type": "string", "description": "The qualified name of the test to run: `Module.test`, or the bare name in the root module." }
+				}
+			}
+		],
 		"breakpoints": [
 			{
 				"language": "meadow"

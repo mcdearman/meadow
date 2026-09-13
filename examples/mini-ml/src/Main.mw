@@ -32,7 +32,7 @@ use Std.String as S
 use Std.Maybe (Maybe, Just, None)
 
 -- Type-check, then run. Nothing reaches `eval` that did not type.
-@pub fun runSource src =
+@pub(pkg) fun runSource src =
   match parse src with
   | Err e -> Err e
   | Ok ast ->
@@ -48,7 +48,7 @@ fun typeOfSource src =
 -- What the REPL prints for one line: the type, then the value, or the first
 -- thing that went wrong. Separated out so a test can check it without a
 -- terminal.
-@pub fun replLine src =
+@pub(pkg) fun replLine src =
   match parse src with
   | Err e -> S.concat "parse error: " e
   | Ok ast ->
@@ -70,7 +70,7 @@ fun loop () =
         let ignored = println (replLine trimmed) in
         loop ()
 
-@pub def main =
+@pub(pkg) def main =
   let ignored = println "mini-ml. An expression per line, `:q` or Ctrl-D to stop." in
   loop ()
 

@@ -66,9 +66,9 @@ class AdapterFactory {
   }
 }
 
-/// The top-level definition the cursor is in, from the language server's
-/// "Debug" lenses: the last one that starts at or above the cursor's line.
-async function functionAtCursor(editor) {
+/// The lens of the given command nearest above the cursor -- the last one that
+/// starts at or above its line -- as that lens's argument.
+async function lensAtCursor(editor, command) {
   const lenses =
     (await vscode.commands.executeCommand(
       "vscode.executeCodeLensProvider",
@@ -78,7 +78,7 @@ async function functionAtCursor(editor) {
   let best;
   for (const lens of lenses) {
     const cmd = lens.command;
-    if (!cmd || cmd.command !== "meadow.debugFunction" || !cmd.arguments) continue;
+    if (!cmd || cmd.command !== command || !cmd.arguments) continue;
     if (lens.range.start.line <= line && (!best || lens.range.start.line > best.line)) {
       best = cmd.arguments[0];
     }
@@ -94,7 +94,7 @@ async function debugFunction(context, target) {
     if (!editor || editor.document.languageId !== "meadow") {
       return vscode.window.showInformationMessage("Put the cursor in a Meadow function to debug it.");
     }
-    target = await functionAtCursor(editor);
+    target = await lensAtCursor(editor, "meadow.debugFunction");
     if (!target) {
       return vscode.window.showInformationMessage(
         "No top-level definition here to debug. (Is the Meadow language server running?)"
@@ -141,4 +141,4 @@ function registerDebugger(context) {
   );
 }
 
-module.exports = { registerDebugger, packageRoot };
+module.exports = { registerDebugger, packageRoot, lensAtCursor };

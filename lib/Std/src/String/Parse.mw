@@ -58,10 +58,10 @@ use Std.Result (Result, Ok, Err)
 -- `expected` holds labels rather than tokens: a token is of whatever type the
 -- caller chose, and there is no way to render one generically. Index the input
 -- at `offset` to see what was actually sitting there.
-@pub(pack) record PError = {
-  @pub(pack) offset : Int,
-  @pub(pack) expected : Vector String,
-  @pub(pack) atEnd : Bool,
+@pub record PError = {
+  @pub offset : Int,
+  @pub expected : Vector String,
+  @pub atEnd : Bool,
 }
 
 -- The outcome of one parser: a value and the offset reached, or an error. The
@@ -70,29 +70,29 @@ use Std.Result (Result, Ok, Err)
 --
 -- Its constructors are always written `Reply.Ok` / `Reply.Err` here: this file
 -- also uses `Result`'s `Ok` and `Err`, and the bare spelling means those.
-@pub(pack) data Reply a
+@pub data Reply a
   = Ok Bool a Int
   | Err Bool PError
 
 -- A parser is a function from the input and a position to a `Reply`.
-@pub(pack) data Parser t a = Parser (Vector t -> Int -> Reply a)
+@pub data Parser t a = Parser (Vector t -> Int -> Reply a)
 
 -- Apply a parser -- the one place the wrapper is opened.
-@pub(pack) fun runP (Parser f) input off = f input off
+@pub fun runP (Parser f) input off = f input off
 
 -- The bytes of `s`, as parser input. `stringToBytes` hands back an `Array`,
 -- while a parser reads a `Vector`.
-@pub(pack) fun fromString s = V.fromArray (stringToBytes s)
+@pub fun fromString s = V.fromArray (stringToBytes s)
 
 -- ---------------------------------------------------------------------------
 -- Errors
 -- ---------------------------------------------------------------------------
 
-@pub(pack) fun errOffset (PError { offset = o }) = o
+@pub fun errOffset (PError { offset = o }) = o
 
-@pub(pack) fun errExpected (PError { expected = e }) = e
+@pub fun errExpected (PError { expected = e }) = e
 
-@pub(pack) fun errAtEnd (PError { atEnd = e }) = e
+@pub fun errAtEnd (PError { atEnd = e }) = e
 
 fun errAt off what = PError { offset = off, expected = [what], atEnd = False }
 
@@ -102,7 +102,7 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 
 -- Combine two failures. The one that got further along wins outright -- it is
 -- the more informative message; at the same offset the wish-lists are unioned.
-@pub(pack) fun mergeError a b =
+@pub fun mergeError a b =
   if errOffset a > errOffset b then a
   else if errOffset b > errOffset a then b
   else
@@ -117,17 +117,17 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 -- ---------------------------------------------------------------------------
 
 -- Succeed with `x`, consuming nothing.
-@pub(pack) fun pure x = Parser (\input off -> Reply.Ok False x off)
+@pub fun pure x = Parser (\input off -> Reply.Ok False x off)
 
 -- Fail without consuming, having wanted `what`.
-@pub(pack) fun fail what = Parser (\input off -> Reply.Err False (errAt off what))
+@pub fun fail what = Parser (\input off -> Reply.Err False (errAt off what))
 
 -- Fail without consuming and without an opinion about what was wanted. The
 -- identity of `choice`.
-@pub(pack) def empty = Parser (\input off -> Reply.Err False (errNone off))
+@pub def empty = Parser (\input off -> Reply.Err False (errNone off))
 
 -- Apply `f` to whatever `p` produces.
-@pub(pack) fun map f p =
+@pub fun map f p =
   Parser (\input off ->
     match runP p input off with
     | Reply.Ok c a off2 -> Reply.Ok c (f a) off2
@@ -137,7 +137,7 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 --
 -- Consumption is the union of the two halves, which is what lets `alt` see
 -- through a whole `bind` chain rather than just its first step.
-@pub(pack) fun bind p f =
+@pub fun bind p f =
   Parser (\input off ->
     match runP p input off with
     | Reply.Err c e -> Reply.Err c e
@@ -147,16 +147,16 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
          | Reply.Err c2 e -> Reply.Err (c or c2) e))
 
 -- `p` then `q`, keeping `q`'s value.
-@pub(pack) fun skipThen p q = bind p (\ignored -> q)
+@pub fun skipThen p q = bind p (\ignored -> q)
 
 -- `p` then `q`, keeping `p`'s value.
-@pub(pack) fun thenSkip p q = bind p (\a -> map (\ignored -> a) q)
+@pub fun thenSkip p q = bind p (\a -> map (\ignored -> a) q)
 
 -- Apply the function `pf` yields to the value `pa` yields.
-@pub(pack) fun apply pf pa = bind pf (\f -> map f pa)
+@pub fun apply pf pa = bind pf (\f -> map f pa)
 
 -- Run both, combining their results with `f`.
-@pub(pack) fun lift2 f p q = bind p (\a -> map (\b -> f a b) q)
+@pub fun lift2 f p q = bind p (\a -> map (\b -> f a b) q)
 
 -- ---------------------------------------------------------------------------
 -- Running
@@ -166,13 +166,13 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 --
 -- This does not require that everything was consumed; follow `p` with `eof`
 -- when a trailing remainder should be an error.
-@pub(pack) fun runParser p input =
+@pub fun runParser p input =
   match runP p input 0 with
   | Reply.Ok c a off -> Ok a
   | Reply.Err c e -> Err e
 
 -- As `runParser`, but also reports the offset where parsing stopped.
-@pub(pack) fun runParserPartial p input =
+@pub fun runParserPartial p input =
   match runP p input 0 with
   | Reply.Ok c a off -> Ok (pair a off)
   | Reply.Err c e -> Err e
@@ -185,7 +185,7 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 --
 -- A branch that consumed input commits: its failure is returned untouched.
 -- Reach for `try` when two alternatives share a prefix.
-@pub(pack) fun alt p q =
+@pub fun alt p q =
   Parser (\input off ->
     match runP p input off with
     | Reply.Ok c a off2 -> Reply.Ok c a off2
@@ -197,25 +197,25 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
            | Reply.Err c2 e2 -> if c2 then Reply.Err True e2 else Reply.Err False (mergeError e e2)))
 
 -- The first of `ps` that succeeds.
-@pub(pack) fun choice ps = V.foldl (\acc p -> alt acc p) empty ps
+@pub fun choice ps = V.foldl (\acc p -> alt acc p) empty ps
 
 -- Run `p`, but report no consumption if it fails, so `alt` will still consider
 -- the next branch. This is how you get arbitrary lookahead.
-@pub(pack) fun try p =
+@pub fun try p =
   Parser (\input off ->
     match runP p input off with
     | Reply.Ok c a off2 -> Reply.Ok c a off2
     | Reply.Err c e -> Reply.Err False e)
 
 -- Run `p` for its result but rewind the position either way.
-@pub(pack) fun lookAhead p =
+@pub fun lookAhead p =
   Parser (\input off ->
     match runP p input off with
     | Reply.Ok c a off2 -> Reply.Ok False a off
     | Reply.Err c e -> Reply.Err c e)
 
 -- Succeed only if `p` does *not* match here. Consumes nothing.
-@pub(pack) fun notFollowedBy p =
+@pub fun notFollowedBy p =
   Parser (\input off ->
     match runP p input off with
     | Reply.Ok c a off2 -> Reply.Err False (errAt off "no match here")
@@ -223,7 +223,7 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 
 -- Replace what `p` says it wanted, for errors raised before it consumed
 -- anything. The way to turn "a different token" into "an identifier".
-@pub(pack) fun label what p =
+@pub fun label what p =
   Parser (\input off ->
     match runP p input off with
     | Reply.Ok c a off2 -> Reply.Ok c a off2
@@ -234,7 +234,7 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
             (PError { offset = errOffset e, expected = [what], atEnd = errAtEnd e }))
 
 -- `Just` what `p` produced, or `None` if it failed without consuming.
-@pub(pack) fun optional p = alt (map Just p) (pure None)
+@pub fun optional p = alt (map Just p) (pure None)
 
 -- Build the parser only when it is run.
 --
@@ -243,21 +243,21 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 --
 --   fun expr () = alt (lift2 add term (skipThen plus (defer expr))) term
 --
-@pub(pack) fun defer f = Parser (\input off -> runP (f ()) input off)
+@pub fun defer f = Parser (\input off -> runP (f ()) input off)
 
 -- ---------------------------------------------------------------------------
 -- Tokens
 -- ---------------------------------------------------------------------------
 
 -- Any single token; fails only at the end of input.
-@pub(pack) def anySingle =
+@pub def anySingle =
   Parser (\input off ->
     match V.get input off with
     | None -> Reply.Err False (errEnd off "any token")
     | Just x -> Reply.Ok True x (off + 1))
 
 -- A token satisfying `f`.
-@pub(pack) fun satisfy f =
+@pub fun satisfy f =
   Parser (\input off ->
     match V.get input off with
     | None -> Reply.Err False (errEnd off "any token")
@@ -266,19 +266,19 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
         else Reply.Err False (errAt off "a different token"))
 
 -- Exactly this token.
-@pub(pack) fun single x = satisfy (\y -> y == x)
+@pub fun single x = satisfy (\y -> y == x)
 
 -- Any token except this one.
-@pub(pack) fun notSingle x = satisfy (\y -> not (y == x))
+@pub fun notSingle x = satisfy (\y -> not (y == x))
 
 -- Any one of `xs`.
-@pub(pack) fun oneOf xs = satisfy (\y -> V.elem y xs)
+@pub fun oneOf xs = satisfy (\y -> V.elem y xs)
 
 -- Any token not in `xs`.
-@pub(pack) fun noneOf xs = satisfy (\y -> V.notElem y xs)
+@pub fun noneOf xs = satisfy (\y -> V.notElem y xs)
 
 -- Exactly this run of tokens, or nothing consumed.
-@pub(pack) fun chunk want =
+@pub fun chunk want =
   Parser (\input off ->
     let n = V.len want in
     if off + n > V.len input then Reply.Err False (errEnd off "a longer input")
@@ -288,7 +288,7 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
       else Reply.Err False (errAt off "a specific sequence"))
 
 -- The end of the input.
-@pub(pack) def eof =
+@pub def eof =
   Parser (\input off ->
     if off >= V.len input then Reply.Ok False () off
     else Reply.Err False (errAt off "end of input"))
@@ -304,10 +304,10 @@ fun spanFrom f input off i =
 --
 -- Prefer this to `many (satisfy f)`: it slices the input once rather than
 -- accumulating a token at a time.
-@pub(pack) fun takeWhileP f = Parser (\input off -> spanFrom f input off off)
+@pub fun takeWhileP f = Parser (\input off -> spanFrom f input off off)
 
 -- As `takeWhileP`, but demanding at least one token, described by `what`.
-@pub(pack) fun takeWhile1P what f =
+@pub fun takeWhile1P what f =
   Parser (\input off ->
     match runP (takeWhileP f) input off with
     | Reply.Err c e -> Reply.Err c e
@@ -318,12 +318,12 @@ fun spanFrom f input off i =
 -- Position
 -- ---------------------------------------------------------------------------
 
-@pub(pack) def getOffset = Parser (\input off -> Reply.Ok False off off)
+@pub def getOffset = Parser (\input off -> Reply.Ok False off off)
 
-@pub(pack) def getInput = Parser (\input off -> Reply.Ok False input off)
+@pub def getInput = Parser (\input off -> Reply.Ok False input off)
 
 -- `p`'s result, with the offsets either side of it.
-@pub(pack) fun withSpan p =
+@pub fun withSpan p =
   bind getOffset (\from -> bind p (\a -> map (\to -> (a, from, to)) getOffset))
 
 -- ---------------------------------------------------------------------------
@@ -341,40 +341,40 @@ fun manyLoop p input acc off consumed =
 --
 -- A `p` that can succeed without consuming would spin forever, so that is
 -- reported as an error rather than hung on.
-@pub(pack) fun many p = Parser (\input off -> manyLoop p input V.empty off False)
+@pub fun many p = Parser (\input off -> manyLoop p input V.empty off False)
 
 -- One or more of `p`.
-@pub(pack) fun some p = lift2 (\x xs -> V.pushFront xs x) p (many p)
+@pub fun some p = lift2 (\x xs -> V.pushFront xs x) p (many p)
 
 -- `many`, discarding the results.
-@pub(pack) fun skipMany p = map (\xs -> ()) (many p)
+@pub fun skipMany p = map (\xs -> ()) (many p)
 
 -- `some`, discarding the results.
-@pub(pack) fun skipSome p = map (\xs -> ()) (some p)
+@pub fun skipSome p = map (\xs -> ()) (some p)
 
 fun countLoop n p acc =
   if n <= 0 then pure acc else bind p (\x -> countLoop (n - 1) p (V.pushBack acc x))
 
 -- Exactly `n` of `p`.
-@pub(pack) fun count n p = countLoop n p V.empty
+@pub fun count n p = countLoop n p V.empty
 
 -- One or more `p`, separated by `sep`.
-@pub(pack) fun sepBy1 p sep = lift2 (\x xs -> V.pushFront xs x) p (many (skipThen sep p))
+@pub fun sepBy1 p sep = lift2 (\x xs -> V.pushFront xs x) p (many (skipThen sep p))
 
 -- Zero or more `p`, separated by `sep`.
-@pub(pack) fun sepBy p sep = alt (sepBy1 p sep) (pure V.empty)
+@pub fun sepBy p sep = alt (sepBy1 p sep) (pure V.empty)
 
 -- Zero or more `p`, each followed by `sep`.
-@pub(pack) fun endBy p sep = many (thenSkip p sep)
+@pub fun endBy p sep = many (thenSkip p sep)
 
 -- One or more `p`, each followed by `sep`.
-@pub(pack) fun endBy1 p sep = some (thenSkip p sep)
+@pub fun endBy1 p sep = some (thenSkip p sep)
 
 -- Zero or more `p` separated by `sep`, allowing a trailing `sep`.
-@pub(pack) fun sepEndBy p sep = thenSkip (sepBy p sep) (optional sep)
+@pub fun sepEndBy p sep = thenSkip (sepBy p sep) (optional sep)
 
 -- `p` between `open` and `close`, keeping only the middle result.
-@pub(pack) fun between open close p = skipThen open (thenSkip p close)
+@pub fun between open close p = skipThen open (thenSkip p close)
 
 fun tillLoop p stop input acc off consumed =
   match runP stop input off with
@@ -389,7 +389,7 @@ fun tillLoop p stop input acc off consumed =
              else Reply.Err consumed (errAt off "a parser that consumes input"))
 
 -- `p` repeatedly until `stop` matches. The `stop` result is discarded.
-@pub(pack) fun manyTill p stop =
+@pub fun manyTill p stop =
   Parser (\input off -> tillLoop p stop input V.empty off False)
 
 -- ---------------------------------------------------------------------------
@@ -397,7 +397,7 @@ fun tillLoop p stop input acc off consumed =
 -- ---------------------------------------------------------------------------
 
 -- A one-line description: where it stopped, and what it wanted there.
-@pub(pack) fun showError e =
+@pub fun showError e =
   let place = S.concat "at offset " (S.fromInt (errOffset e)) in
   let note = if errAtEnd e then " (end of input)" else "" in
   let want = errExpected e in

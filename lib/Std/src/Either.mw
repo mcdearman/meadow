@@ -10,79 +10,79 @@
 -- and works on the `Right`, which is also what makes `toResult` the obvious
 -- conversion.
 
-@pub(pack) data Either a b = Left a | Right b
+@pub data Either a b = Left a | Right b
 
-@pub(pack) fun isLeft e = match e with | Left a -> True | Right b -> False
+@pub fun isLeft e = match e with | Left a -> True | Right b -> False
 
-@pub(pack) fun isRight e = match e with | Left a -> False | Right b -> True
+@pub fun isRight e = match e with | Left a -> False | Right b -> True
 
 -- Collapse both sides to one type: `either f g` is the `Either` eliminator, the
 -- way `match` would do it but as a value.
-@pub(pack) fun either onLeft onRight e =
+@pub fun either onLeft onRight e =
   match e with
   | Left a -> onLeft a
   | Right b -> onRight b
 
-@pub(pack) fun fromLeft fallback e =
+@pub fun fromLeft fallback e =
   match e with
   | Left a -> a
   | Right b -> fallback
 
-@pub(pack) fun fromRight fallback e =
+@pub fun fromRight fallback e =
   match e with
   | Left a -> fallback
   | Right b -> b
 
 -- Right-biased, like `Result.map`: a `Left` passes through untouched.
-@pub(pack) fun map f e =
+@pub fun map f e =
   match e with
   | Left a -> Left a
   | Right b -> Right (f b)
 
-@pub(pack) fun mapLeft f e =
+@pub fun mapLeft f e =
   match e with
   | Left a -> Left (f a)
   | Right b -> Right b
 
 -- Map both sides at once, each with its own function.
-@pub(pack) fun bimap f g e =
+@pub fun bimap f g e =
   match e with
   | Left a -> Left (f a)
   | Right b -> Right (g b)
 
-@pub(pack) fun andThen f e =
+@pub fun andThen f e =
   match e with
   | Left a -> Left a
   | Right b -> f b
 
-@pub(pack) fun swap e =
+@pub fun swap e =
   match e with
   | Left a -> Right a
   | Right b -> Left b
 
 -- --- conversions ------------------------------------------------------------
 
-@pub(pack) fun toMaybe e =
+@pub fun toMaybe e =
   match e with
   | Left a -> None
   | Right b -> Just b
 
-@pub(pack) fun leftToMaybe e =
+@pub fun leftToMaybe e =
   match e with
   | Left a -> Just a
   | Right b -> None
 
-@pub(pack) fun toResult e =
+@pub fun toResult e =
   match e with
   | Left a -> Err a
   | Right b -> Ok b
 
-@pub(pack) fun fromResult r =
+@pub fun fromResult r =
   match r with
   | Err e -> Left e
   | Ok x -> Right x
 
-@pub(pack) fun fromMaybe fallback o =
+@pub fun fromMaybe fallback o =
   match o with
   | None -> Left fallback
   | Just x -> Right x
@@ -93,7 +93,7 @@
 -- `Vector` equivalents belong in `Std.Collections.Vector`, which is compiled
 -- after this module.
 
-@pub(pack) fun lefts es =
+@pub fun lefts es =
   match es with
   | [;] -> [;]
   | e :: rest ->
@@ -101,7 +101,7 @@
       | Left a -> a :: lefts rest
       | Right b -> lefts rest
 
-@pub(pack) fun rights es =
+@pub fun rights es =
   match es with
   | [;] -> [;]
   | e :: rest ->
@@ -110,7 +110,7 @@
       | Right b -> b :: rights rest
 
 -- Both at once, in one pass, each side keeping its original order.
-@pub(pack) fun partitionEithers es =
+@pub fun partitionEithers es =
   match es with
   | [;] -> ([;], [;])
   | e :: rest ->

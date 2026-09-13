@@ -11,7 +11,7 @@
 -- has to have the name in scope, monomorphically, while checking the right-hand
 -- side. That distinction is the interesting part of Hindley-Milner, so it is
 -- worth having both rather than one clever case.
-@pub data Expr
+@pub(pkg) data Expr
   = Int Int
   | Bool Bool
   | Var String
@@ -25,7 +25,7 @@
 -- A type. `Ty.Var` is a *mutable cell*, which is what makes this Algorithm J
 -- rather than Algorithm W: unification writes the answer into the variable
 -- instead of building a substitution to apply later.
-@pub data Ty
+@pub(pkg) data Ty
   = Int
   | Bool
   | Fun Ty Ty
@@ -39,10 +39,10 @@
 -- generalized, which is checkable without scanning the environment.
 --
 -- `Link t` -- solved, and every reader follows the link.
-@pub data Tv
+@pub(pkg) data Tv
   = Unbound Int Int
   | Link Ty
 
 -- A type scheme: `forall ids. ty`. The ids are the `Unbound` ids that were
 -- generalized; `instantiate` swaps each for a fresh variable.
-@pub data Scheme = Forall (List Int) Ty
+@pub(pkg) data Scheme = Forall (List Int) Ty

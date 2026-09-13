@@ -25,12 +25,12 @@ use Std.Result (Result, Ok, Err)
 use Std.String as S
 use Std.Exn (raise, toResult)
 
-@pub data Value
+@pub(pkg) data Value
   = Int Int
   | Bool Bool
   | Closure String Expr (List (String, Ref Value))
 
-@pub fun showValue v =
+@pub(pkg) fun showValue v =
   match v with
   | Value.Int n -> S.fromInt n
   | Value.Bool b -> if b then "true" else "false"
@@ -89,4 +89,4 @@ fun eval env e =
   | Expr.Bin op l r -> applyOp op (eval env l) (eval env r)
 
 -- Run an expression. `Err` carries whatever `raise` travelled with.
-@pub fun run e = toResult (\() -> showValue (eval [;] e))
+@pub(pkg) fun run e = toResult (\() -> showValue (eval [;] e))

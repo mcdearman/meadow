@@ -50,42 +50,42 @@ use Std.String as S
 use Std.Sort (sort)
 use Std.Test (assertEq, assertTrue)
 
-@pub(pack) record BenchConfig = {
+@pub record BenchConfig = {
   -- Run for about this many nanoseconds before measuring anything.
-  @pub(pack) warmupNanos : Int,
+  @pub warmupNanos : Int,
   -- Aim for one sample to take about this long. Bigger is steadier and slower.
-  @pub(pack) sampleNanos : Int,
+  @pub sampleNanos : Int,
   -- How many samples to take once the count is settled.
-  @pub(pack) samples : Int,
+  @pub samples : Int,
 }
 
-@pub(pack) def defaultConfig =
+@pub def defaultConfig =
   { warmupNanos = 50000000, sampleNanos = 20000000, samples = 12 }
 
 -- A quicker, noisier configuration, for when you are iterating on the code
 -- rather than quoting a number.
-@pub(pack) def quickConfig =
+@pub def quickConfig =
   { warmupNanos = 5000000, sampleNanos = 2000000, samples = 5 }
 
-@pub(pack) record Report = {
-  @pub(pack) name : String,
+@pub record Report = {
+  @pub name : String,
   -- Calls per sample, chosen by calibration.
-  @pub(pack) iterations : Int,
-  @pub(pack) samples : Int,
+  @pub iterations : Int,
+  @pub samples : Int,
   -- Nanoseconds per call: the best sample, and the middle one.
-  @pub(pack) best : Int,
-  @pub(pack) median : Int,
+  @pub best : Int,
+  @pub median : Int,
   -- Median absolute deviation, in nanoseconds per call. Large next to `median`
   -- means the machine was busy and the number should not be quoted.
-  @pub(pack) spread : Int,
+  @pub spread : Int,
   -- Calls of the benchmark itself, per second.
-  @pub(pack) perSecond : Int,
+  @pub perSecond : Int,
   -- How much work one call does, in whatever unit the benchmark counts --
   -- Criterion's `Throughput`. `naiveFib 20` makes 21891 function calls, so
   -- reporting 88 of *those* per second says nothing useful; reporting 1.9
   -- million calls per second does. 1 means the call is the unit.
-  @pub(pack) unitsPerCall : Int,
-  @pub(pack) unitsPerSecond : Int,
+  @pub unitsPerCall : Int,
+  @pub unitsPerSecond : Int,
 }
 
 -- --- running ------------------------------------------------------------------
@@ -126,7 +126,7 @@ fun collect k n act acc =
   else collect (k - 1) n act (pushBack acc (timeLoop n act))
 
 -- Measure `act` under `config`, counting `units` of work per call.
-@pub(pack) fun benchUnitsWith config name units act =
+@pub fun benchUnitsWith config name units act =
   let _ = warmUp (monotonic () + config.warmupNanos) act in
   let n = calibrate 1 act config.sampleNanos in
   let overhead = loopOverhead n in
@@ -146,27 +146,27 @@ fun collect k n act acc =
   }
 
 -- Measure `act` under `config`.
-@pub(pack) fun benchWith config name act = benchUnitsWith config name 1 act
+@pub fun benchWith config name act = benchUnitsWith config name 1 act
 
 -- Measure `act` under `defaultConfig`.
-@pub(pack) fun bench name act = benchUnitsWith defaultConfig name 1 act
+@pub fun bench name act = benchUnitsWith defaultConfig name 1 act
 
 -- Measure `act` under `defaultConfig`, counting `units` of work per call. The
 -- throughput column then reports units rather than calls.
-@pub(pack) fun benchUnits name units act = benchUnitsWith defaultConfig name units act
+@pub fun benchUnits name units act = benchUnitsWith defaultConfig name units act
 
 -- --- statistics ---------------------------------------------------------------
 
 -- The middle value of an already-sorted vector, or 0 if it is empty. For an
 -- even count this takes the lower of the two middles rather than averaging
 -- them, which keeps the result an actual measurement.
-@pub(pack) fun middle sorted =
+@pub fun middle sorted =
   if isEmpty sorted then 0 else getOr 0 sorted (len sorted / 2)
 
 -- --- reporting ----------------------------------------------------------------
 
 -- A duration, in whichever unit reads best.
-@pub(pack) fun formatNanos ns =
+@pub fun formatNanos ns =
   if ns < 1000 then S.concatAll [S.fromInt ns, " ns"]
   else if ns < 1000000 then S.concatAll [scaled ns 1000, " us"]
   else if ns < 1000000000 then S.concatAll [scaled ns 1000000, " ms"]
@@ -182,7 +182,7 @@ fun scaled n unit =
 fun pad2 n = if n < 10 then S.concatAll ["0", S.fromInt n] else S.fromInt n
 
 -- A count, with thousands separated by `_` so the magnitude is readable.
-@pub(pack) fun formatCount n =
+@pub fun formatCount n =
   if n < 1000 then S.fromInt n
   else S.concatAll [formatCount (n / 1000), "_", pad3 (n % 1000)]
 
@@ -191,7 +191,7 @@ fun pad3 n =
   else if n < 100 then S.concatAll ["0", S.fromInt n]
   else S.fromInt n
 
-@pub(pack) fun formatReport r =
+@pub fun formatReport r =
   S.concatAll
     [ padTo 22 r.name
       , padTo 12 (formatNanos r.median)
@@ -202,14 +202,14 @@ fun pad3 n =
     ]
 
 -- Units per second where the benchmark counts them, calls per second otherwise.
-@pub(pack) fun throughput r =
+@pub fun throughput r =
   if r.unitsPerCall > 1 then r.unitsPerSecond else r.perSecond
 
 fun padTo width s =
   let n = S.byteLength s in
   if n >= width then S.concatAll [s, " "] else S.concatAll [s, S.repeat " " (width - n)]
 
-@pub(pack) def header =
+@pub def header =
   S.concatAll
     [ padTo 22 "benchmark"
       , padTo 12 "median"
@@ -220,7 +220,7 @@ fun padTo width s =
     ]
 
 -- Print a table of already-measured reports.
-@pub(pack) fun report reports =
+@pub fun report reports =
   let _ = println header in
   let _ = println (S.repeat "-" 78) in
   forEach (\r -> println (formatReport r)) reports
@@ -229,7 +229,7 @@ fun padTo width s =
 -- reads as one expression:
 --
 --   def main = runAll [bench "a" f, bench "b" g]
-@pub(pack) fun runAll reports = report reports
+@pub fun runAll reports = report reports
 
 -- --- tests --------------------------------------------------------------------
 --

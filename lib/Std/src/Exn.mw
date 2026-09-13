@@ -19,44 +19,44 @@
 
 use Std.Bool (not)
 
-@pub(pack) effect Exn e {
+@pub effect Exn e {
   throw : e -> (),
 }
 
 -- `throw` where a *value* is expected. An effect operation must declare a result
 -- type and `throw` declares `()`, so `if p then 1 else throw e` does not
 -- typecheck; `raise` is the same throw with a type that fits anywhere.
-@pub(pack) fun raise e = absurd (throw e)
+@pub fun raise e = absurd (throw e)
 
 -- --- handling -----------------------------------------------------------------
 
 -- `Ok` of the result, or `Err` of whatever was thrown.
-@pub(pack) fun toResult act =
+@pub fun toResult act =
   handle act () with {
     throw e k -> Err e,
     return x -> Ok x
   }
 
 -- Run `act`; if it throws, hand the error to `recover` and use that instead.
-@pub(pack) fun catch recover act =
+@pub fun catch recover act =
   handle act () with {
     throw e k -> recover e,
     return x -> x
   }
 
 -- Run `act`, falling back to a fixed value.
-@pub(pack) fun withDefault fallback act =
+@pub fun withDefault fallback act =
   catch (\e -> fallback) act
 
 -- `Just` the result, or `None` if it threw.
-@pub(pack) fun toMaybe act =
+@pub fun toMaybe act =
   handle act () with {
     throw e k -> None,
     return x -> Just x
   }
 
 -- Whether `act` threw. Mostly useful in tests.
-@pub(pack) fun threw act =
+@pub fun threw act =
   handle act () with {
     throw e k -> True,
     return x -> False
@@ -66,20 +66,20 @@ use Std.Bool (not)
 
 -- Turn a `Result` back into a throw, so `Result`-returning code can be used
 -- inside an `Exn` computation without a `match` at every call.
-@pub(pack) fun ofResult r =
+@pub fun ofResult r =
   match r with
   | Err e -> absurd (throw e)
   | Ok x -> x
 
-@pub(pack) fun ofMaybe e o =
+@pub fun ofMaybe e o =
   match o with
   | None -> absurd (throw e)
   | Just x -> x
 
 -- Throw unless the condition holds.
-@pub(pack) fun ensure cond e = if cond then () else throw e
+@pub fun ensure cond e = if cond then () else throw e
 
-@pub(pack) fun refute cond e = ensure (not cond) e
+@pub fun refute cond e = ensure (not cond) e
 
 -- An effect operation has to declare a result type, so `throw` claims `()` --
 -- but no handler in this module resumes it, so the value is never produced.

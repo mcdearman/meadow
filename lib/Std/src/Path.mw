@@ -15,55 +15,55 @@ use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 use Std.Maybe (Maybe, Just, None)
 
-@pub(pack) def separator = "/"
+@pub def separator = "/"
 
-@pub(pack) fun isSeparator b = b == 47 or b == 92
+@pub fun isSeparator b = b == 47 or b == 92
 
 -- --- joining ------------------------------------------------------------------
 
 -- `join "a" "b"` is `"a/b"`. An absolute `b` wins outright, as it does in Rust's
 -- `Path::join` -- joining onto it would silently produce a path nobody meant.
-@pub(pack) fun join a b =
+@pub fun join a b =
   if S.isEmpty a then b
   else if S.isEmpty b then a
   else if isAbsolute b then b
   else if endsWithSeparator a then S.concat a b
   else S.concatAll [a, separator, b]
 
-@pub(pack) fun joinAll parts = V.foldl (\acc p -> join acc p) "" parts
+@pub fun joinAll parts = V.foldl (\acc p -> join acc p) "" parts
 
 -- --- splitting ----------------------------------------------------------------
 
 -- Everything before the final separator: `parent "a/b/c"` is `"a/b"`. `None` when
 -- there is nothing above -- a bare name, or the root itself.
-@pub(pack) fun parent p =
+@pub fun parent p =
   let n = lastSeparator p in
   if n < 0 then None
   else if n == 0 then (if S.byteLength p == 1 then None else Just separator)
   else Just (S.slice p 0 n)
 
 -- The final component: `fileName "a/b/c.txt"` is `"c.txt"`.
-@pub(pack) fun fileName p =
+@pub fun fileName p =
   let n = lastSeparator p in
   if n < 0 then p else S.drop p (n + 1)
 
 -- The final component without its extension.
-@pub(pack) fun fileStem p =
+@pub fun fileStem p =
   let name = fileName p in
   let d = lastDot name in
   if d <= 0 then name else S.slice name 0 d
 
 -- The extension, without the dot, or `""` when there is none. A leading dot does
 -- not count -- `.gitignore` has no extension, it is a name.
-@pub(pack) fun extension p =
+@pub fun extension p =
   let name = fileName p in
   let d = lastDot name in
   if d <= 0 then "" else S.drop name (d + 1)
 
-@pub(pack) fun hasExtension p = not (S.isEmpty (extension p))
+@pub fun hasExtension p = not (S.isEmpty (extension p))
 
 -- Replace the extension (given without a dot); an empty `ext` removes it.
-@pub(pack) fun withExtension p ext =
+@pub fun withExtension p ext =
   let stem = fileStem p in
   let base = match parent p with
              | None -> stem
@@ -71,22 +71,22 @@ use Std.Maybe (Maybe, Just, None)
   in
   if S.isEmpty ext then base else S.concatAll [base, ".", ext]
 
-@pub(pack) fun withFileName p name =
+@pub fun withFileName p name =
   match parent p with
   | None -> name
   | Just d -> join d name
 
 -- Every non-empty component, separators discarded.
-@pub(pack) fun components p = V.filter (\c -> not (S.isEmpty c)) (splitAny p)
+@pub fun components p = V.filter (\c -> not (S.isEmpty c)) (splitAny p)
 
 -- --- classifying --------------------------------------------------------------
 
-@pub(pack) fun isAbsolute p =
+@pub fun isAbsolute p =
   if S.isEmpty p then False
   else if isSeparator (byteAt p 0) then True
   else hasDrive p
 
-@pub(pack) fun isRelative p = not (isAbsolute p)
+@pub fun isRelative p = not (isAbsolute p)
 
 -- `C:` and friends. Only the shape is checked, not the letter.
 fun hasDrive p =
@@ -97,7 +97,7 @@ fun hasDrive p =
 -- Resolve `.` and `..` textually and collapse repeated separators. Purely
 -- lexical: it never looks at the disk, so it cannot follow symlinks, and
 -- `normalize "a/../b"` is `"b"` even if `a` is a link somewhere else.
-@pub(pack) fun normalize p =
+@pub fun normalize p =
   let abs = isAbsolute p in
   let parts = V.foldl (\acc c -> pushPart abs acc c) [] (components p) in
   let body = S.join separator parts in

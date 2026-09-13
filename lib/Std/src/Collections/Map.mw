@@ -5,18 +5,18 @@ use Std.Collections.List as List (append, foldl)
 use Std.Tuple (fst, snd)
 use Std.Maybe (Maybe, isSome)
 
-@pub(pack) data Map v = Tip | Node (Map v) Int v (Map v)
+@pub data Map v = Tip | Node (Map v) Int v (Map v)
 
-@pub(pack) def empty = Tip
+@pub def empty = Tip
 
-@pub(pack) fun null m = match m with | Tip -> True | Node l k v r -> False
+@pub fun null m = match m with | Tip -> True | Node l k v r -> False
 
-@pub(pack) fun size m =
+@pub fun size m =
   match m with
   | Tip -> 0
   | Node l k v r -> 1 + size l + size r
 
-@pub(pack) fun insert k v m =
+@pub fun insert k v m =
   match m with
   | Tip -> Node Tip k v Tip
   | Node l key val r ->
@@ -24,7 +24,7 @@ use Std.Maybe (Maybe, isSome)
       else if key < k then Node l key val (insert k v r)
       else Node l k v r
 
-@pub(pack) fun lookup k m =
+@pub fun lookup k m =
   match m with
   | Tip -> None
   | Node l key val r ->
@@ -32,32 +32,32 @@ use Std.Maybe (Maybe, isSome)
       else if key < k then lookup k r
       else Just val
 
-@pub(pack) fun member k m = isSome (lookup k m)
+@pub fun member k m = isSome (lookup k m)
 
-@pub(pack) fun getOr default k m =
+@pub fun getOr default k m =
   match lookup k m with
   | None -> default
   | Just v -> v
 
-@pub(pack) fun toList m =
+@pub fun toList m =
   match m with
   | Tip -> Nil
   | Node l k v r -> append (toList l) (Cons (k, v) (toList r))
 
-@pub(pack) fun keys m = List.map fst (toList m)
+@pub fun keys m = List.map fst (toList m)
 
-@pub(pack) fun values m = List.map snd (toList m)
+@pub fun values m = List.map snd (toList m)
 
 fun insertPair p m = match p with | (k, v) -> insert k v m
 
-@pub(pack) fun fromList ps = foldl (\acc p -> insertPair p acc) empty ps
+@pub fun fromList ps = foldl (\acc p -> insertPair p acc) empty ps
 
-@pub(pack) fun map f m =
+@pub fun map f m =
   match m with
   | Tip -> Tip
   | Node l k v r -> Node (map f l) k (f v) (map f r)
 
-@pub(pack) fun minEntry m =
+@pub fun minEntry m =
   match m with
   | Tip -> None
   | Node l k v r -> if null l then Just (k, v) else minEntry l
@@ -78,7 +78,7 @@ fun removeRoot l r =
   | (ll, Tip) -> ll
   | (ll, rr) -> spliceMin ll rr
 
-@pub(pack) fun delete k m =
+@pub fun delete k m =
   match m with
   | Tip -> Tip
   | Node l key val r ->
@@ -87,7 +87,7 @@ fun removeRoot l r =
       else removeRoot l r
 
 -- Yield every `(key, value)` pair in key order, for `Std.Stream`.
-@pub(pack) fun toStream m = List.toStream (toList m)
+@pub fun toStream m = List.toStream (toList m)
 
 -- --- tests -------------------------------------------------------------------
 

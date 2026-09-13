@@ -1,35 +1,35 @@
 -- Std.Result: success-or-failure values. Reach these as `Result.map` etc.
 -- (`None` / `Just` / `Ok` / `Err` are constructors -- always in scope by name.)
 
-@pub(pack) data Result e a = Err e | Ok a
+@pub data Result e a = Err e | Ok a
 
-@pub(pack) fun isOk r = match r with | Err e -> False | Ok x -> True
+@pub fun isOk r = match r with | Err e -> False | Ok x -> True
 
-@pub(pack) fun isErr r = match r with | Err e -> True | Ok x -> False
+@pub fun isErr r = match r with | Err e -> True | Ok x -> False
 
-@pub(pack) fun unwrapOr fallback r = match r with | Err e -> fallback | Ok x -> x
+@pub fun unwrapOr fallback r = match r with | Err e -> fallback | Ok x -> x
 
-@pub(pack) fun map f r =
+@pub fun map f r =
   match r with
   | Err e -> Err e
   | Ok x -> Ok (f x)
 
-@pub(pack) fun mapErr f r =
+@pub fun mapErr f r =
   match r with
   | Err e -> Err (f e)
   | Ok x -> Ok x
 
-@pub(pack) fun andThen f r =
+@pub fun andThen f r =
   match r with
   | Err e -> Err e
   | Ok x -> f x
 
-@pub(pack) fun toMaybe r =
+@pub fun toMaybe r =
   match r with
   | Err e -> None
   | Ok x -> Just x
 
-@pub(pack) fun fromMaybe err o =
+@pub fun fromMaybe err o =
   match o with
   | None -> Err err
   | Just x -> Ok x

@@ -11,14 +11,14 @@
 -- rendering strings as data, quotes and all, which looked the same from the
 -- outside.)
 
-@pub(pack) record FileMeta = {
-  @pub(pack) isFile : Bool,
-  @pub(pack) isDir : Bool,
-  @pub(pack) len : Int,
-  @pub(pack) readonly : Bool,
+@pub record FileMeta = {
+  @pub isFile : Bool,
+  @pub isDir : Bool,
+  @pub len : Int,
+  @pub readonly : Bool,
 }
 
-@pub(pack) effect Fs {
+@pub effect Fs {
   readToString : String -> Result String String,
   readBytes : String -> Result String (List Int),
   writeString : (String, String) -> Result String (),
@@ -42,8 +42,8 @@
 use Std.Result (Result, unwrapOr)
 use Std.Collections.List (all)
 
-@pub(pack) fun readToStringOr default path = unwrapOr default (readToString path)
+@pub fun readToStringOr default path = unwrapOr default (readToString path)
 
-@pub(pack) fun tryReadDir path = unwrapOr Nil (readDir path)
+@pub fun tryReadDir path = unwrapOr Nil (readDir path)
 
-@pub(pack) fun existsAll paths = all exists paths
+@pub fun existsAll paths = all exists paths

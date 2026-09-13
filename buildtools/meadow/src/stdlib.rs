@@ -9,9 +9,9 @@
 //!
 //! There is no qualified `use` yet, so every top-level name across these modules
 //! shares one flat namespace and must be unique. Each module marks its public API
-//! `@pub(pack)`; `prelude` defines nothing and only `@pub(pack) use`-re-exports a curated set
+//! `@pub`; `Prelude` defines nothing and only `@pub use`-re-exports a curated set
 //! (including `map` / `filter` / `foldl` / `foldr` / … which are deliberately
-//! *not* `@pub(pack)` in `Std.Collections.List`, so re-export is what makes them
+//! *not* `@pub` in `Std.Collections.List`, so re-export is what makes them
 //! public).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,7 +36,7 @@ pub const PACKAGE_NAME: &str = "Std";
 
 /// `(dotted module path, source)`. Each is compiled as its own unit, in this
 /// order, with the earlier ones as dependencies — a module sees another only
-/// through an explicit `use`. `prelude` is last and only re-exports; its
+/// through an explicit `use`. `Prelude` is last and only re-exports; its
 /// re-exports are the names a dependent package gets unqualified.
 pub const MODULES: &[(&str, &str)] = &[
     ("Lib", include_str!("../../../lib/Std/src/Lib.mw")),
@@ -75,7 +75,7 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Time", include_str!("../../../lib/Std/src/Time.mw")),
     ("Console", include_str!("../../../lib/Std/src/Console.mw")),
     ("Bench", include_str!("../../../lib/Std/src/Bench.mw")),
-    ("prelude", include_str!("../../../lib/Std/src/prelude.mw")),
+    ("Prelude", include_str!("../../../lib/Std/src/Prelude.mw")),
 ];
 
 /// Each `Std` module compiled as its own unit, in dependency order, paired with
@@ -135,11 +135,11 @@ pub fn std_packages(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
 
 /// The module path a dotted name sits at within the package.
 ///
-/// `Lib` and `prelude` are at the root: they are what a dependent gets
+/// `Lib` and `Prelude` are at the root: they are what a dependent gets
 /// unqualified. Everything else is nested, so a sibling reaches it only through
 /// an explicit `use`.
 pub fn module_path(dotted: &str) -> Vec<InternedString> {
-    if dotted == "prelude" || dotted == "Lib" {
+    if dotted == "Prelude" || dotted == "Lib" {
         Vec::new()
     } else {
         dotted.split('.').map(InternedString::from).collect()
@@ -223,7 +223,7 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
     (subs, diags)
 }
 
-/// Fold the separately-compiled `Std` modules into one package. The `prelude`
+/// Fold the separately-compiled `Std` modules into one package. The `Prelude`
 /// module's exports (path `[]`) become the names a dependent gets unqualified.
 fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     // The sub-units were compiled in a chain, each above the last, so the
@@ -237,8 +237,8 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut types = TypeTable::default();
     let mut exports: Vec<Export> = Vec::new();
     let mut prelude_names: Vec<InternedString> = Vec::new();
-    // Unioned across the sub-units, which in practice means `prelude.mw`'s:
-    // it is the only one that `@pub(pack) use`s a type.
+    // Unioned across the sub-units, which in practice means `Prelude.mw`'s:
+    // it is the only one that `@pub use`s a type.
     let mut flat_ctor_types: Vec<InternedString> = Vec::new();
     let mut tests = Vec::new();
 

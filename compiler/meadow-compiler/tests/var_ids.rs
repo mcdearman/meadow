@@ -102,7 +102,7 @@ fn a_dependent_unit_does_not_overlap_its_dependency() {
         compile_unit(name, 0, modules, deps, Options::debug())
     };
 
-    let (base, d1) = unit("base", "@pub(pack) fun helper x = x + 1\n", &[]);
+    let (base, d1) = unit("base", "@pub fun helper x = x + 1\n", &[]);
     assert!(d1.is_empty(), "{:?}", d1.iter().map(|d| &d.msg).collect::<Vec<_>>());
     let (top, d2) = unit("top", "def main = helper 41\n", &[&base]);
     assert!(d2.is_empty(), "{:?}", d2.iter().map(|d| &d.msg).collect::<Vec<_>>());

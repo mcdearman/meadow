@@ -18,9 +18,20 @@ use std::path::PathBuf;
 /// analysed against the standard library alone, plus the siblings that make its
 /// own `use` lines resolve.
 pub fn load_package(file: &std::path::Path) -> Option<meadow_lsp::analysis::PackageSources> {
+    find_package(file)?.ok()
+}
+
+/// [`load_package`], saying why when the file is in a package that cannot be
+/// loaded. This is the one the server is given, so the reason reaches the editor.
+pub fn find_package(
+    file: &std::path::Path,
+) -> Option<Result<meadow_lsp::analysis::PackageSources, String>> {
     use meadow_compiler::source::SourceKind;
     let root = crate::package::enclosing_root(file)?;
-    let graph = crate::package::PackageGraph::build(&root).ok()?;
+    let graph = match crate::package::PackageGraph::build(&root) {
+        Ok(g) => g,
+        Err(d) => return Some(Err(d.msg)),
+    };
     let pkg = &graph.packages[graph.root()];
     let modules = pkg
         .modules
@@ -39,8 +50,8 @@ pub fn load_package(file: &std::path::Path) -> Option<meadow_lsp::analysis::Pack
             text: m.source.content.to_string(),
         })
         .collect();
-    Some(meadow_lsp::analysis::PackageSources {
+    Some(Ok(meadow_lsp::analysis::PackageSources {
         name: pkg.name,
         modules,
-    })
+    }))
 }

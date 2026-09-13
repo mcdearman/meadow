@@ -43,37 +43,37 @@ def smallRange = 16
 -- --- the public surface -------------------------------------------------------
 
 -- Sort a `Vector` by a comparison. Unstable: equal elements may be reordered.
-@pub(pack) fun sortBy cmp v =
+@pub fun sortBy cmp v =
   let cells = thaw v in
   let n = arrayLen cells in
   let ignored = introsort cmp cells 0 n (depthLimit n) in
   freeze cells
 
 -- Ascending, for the types `compare` handles.
-@pub(pack) fun sort v = sortBy compare v
+@pub fun sort v = sortBy compare v
 
-@pub(pack) fun sortDesc v = sortBy (\a b -> compare b a) v
+@pub fun sortDesc v = sortBy (\a b -> compare b a) v
 
 -- Sort by a projection: `sortOn length names`. The key is computed on every
 -- comparison rather than cached, so keep it cheap -- or use `sortBy`.
-@pub(pack) fun sortOn key v = sortBy (\a b -> compare (key a) (key b)) v
+@pub fun sortOn key v = sortBy (\a b -> compare (key a) (key b)) v
 
 -- The in-place sort itself, on a plain `Array`.
-@pub(pack) fun sortArrayBy cmp arr = V.toArray (sortBy cmp (V.fromArray arr))
+@pub fun sortArrayBy cmp arr = V.toArray (sortBy cmp (V.fromArray arr))
 
-@pub(pack) fun sortArray arr = sortArrayBy compare arr
+@pub fun sortArray arr = sortArrayBy compare arr
 
 -- --- the stable sort ----------------------------------------------------------
 --
 -- Merge sort over `List`. Stable, and pure -- nothing here mutates, so a caller
 -- that uses it keeps an empty effect row.
 
-@pub(pack) fun stableSortBy cmp xs = mergeSort cmp xs
+@pub fun stableSortBy cmp xs = mergeSort cmp xs
 
-@pub(pack) fun stableSort xs = mergeSort compare xs
+@pub fun stableSort xs = mergeSort compare xs
 
 -- Stable sort of a `Vector`, via `List`.
-@pub(pack) fun stableSortVecBy cmp v = V.fromList (mergeSort cmp (V.toList v))
+@pub fun stableSortVecBy cmp v = V.fromList (mergeSort cmp (V.toList v))
 
 fun mergeSort cmp xs =
   match xs with
@@ -118,9 +118,9 @@ fun reverseOnto acc xs =
 
 -- --- checking -----------------------------------------------------------------
 
-@pub(pack) fun isSortedBy cmp v = sortedFrom cmp (V.toArray v) 1
+@pub fun isSortedBy cmp v = sortedFrom cmp (V.toArray v) 1
 
-@pub(pack) fun isSorted v = isSortedBy compare v
+@pub fun isSorted v = isSortedBy compare v
 
 fun sortedFrom cmp arr i =
   if i >= arrayLen arr

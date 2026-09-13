@@ -21,7 +21,7 @@ use Std.Yield (yield)
 
 -- --- tuning ----------------------------------------------------------------
 
-@pub(pack) def vWidth = 32
+@pub def vWidth = 32
 def vBits = 5
 def vMask = 31
 
@@ -52,12 +52,12 @@ fun vaFoldr f z xs =
 
 -- A middle-tree node. `Branch None` is radix-balanced; `Branch (Just s)` is
 -- relaxed and `s` holds cumulative child sizes.
-@pub(pack) data VNode a
+@pub data VNode a
   = Leaf (Array a)
   | Branch (Maybe (Array Int)) (Array (VNode a))
 
 -- fields of Full: len, shift, outerF, innerF, mid, innerB, outerB
-@pub(pack) data Vector a
+@pub data Vector a
   = Empty
   | Single (Array a)
   | Full Int Int (Array a) (Array a) (VNode a) (Array a) (Array a)
@@ -242,11 +242,11 @@ fun vPushChunkFront shift node chunk =
 
 -- --- constructors -----------------------------------------------------
 
-@pub(pack) def empty = Empty
+@pub def empty = Empty
 
-@pub(pack) fun singleton x = Single #[x]
+@pub fun singleton x = Single #[x]
 
-@pub(pack) fun fromArray xs =
+@pub fun fromArray xs =
   let n = arrayLen xs in
   if n == 0 then Empty
   else if n <= vWidth then Single xs
@@ -256,13 +256,13 @@ fun vPushChunkFront shift node chunk =
 
 -- --- observation ----------------------------------------------------
 
-@pub(pack) fun len v =
+@pub fun len v =
   match v with
   | Empty -> 0
   | Single xs -> arrayLen xs
   | Full len sh oF iF mid iB oB -> len
 
-@pub(pack) fun isEmpty v = len v == 0
+@pub fun isEmpty v = len v == 0
 
 fun getU v i =
   match v with
@@ -285,21 +285,21 @@ fun getU v i =
             if i3 < c then arrayGet iB i3
             else arrayGet oB (i3 - c)
 
-@pub(pack) fun get v i =
+@pub fun get v i =
   if i < 0 then None
   else if i >= len v then None
   else Just (getU v i)
 
-@pub(pack) fun getOr d v i =
+@pub fun getOr d v i =
   if i < 0 then d
   else if i >= len v then d
   else getU v i
 
-@pub(pack) fun head v = get v 0
+@pub fun head v = get v 0
 
-@pub(pack) fun last v = get v (len v - 1)
+@pub fun last v = get v (len v - 1)
 
-@pub(pack) fun set v i x =
+@pub fun set v i x =
   if i < 0 then v
   else if i >= len v then v
   else match v with
@@ -324,7 +324,7 @@ fun getU v i =
 
 -- --- push / pop back ------------------------------------------------
 
-@pub(pack) fun pushBack v x =
+@pub fun pushBack v x =
   match v with
   | Empty -> Single #[x]
   | Single xs ->
@@ -347,7 +347,7 @@ fun vNormalize v =
       then Single (arrayConcat (arrayConcat (arrayConcat (arrayConcat oF iF) #[]) iB) oB)
       else v
 
-@pub(pack) fun popBack v =
+@pub fun popBack v =
   match v with
   | Empty -> Empty
   | Single xs -> vNormalize (Single (vaInit xs))
@@ -363,7 +363,7 @@ fun vNormalize v =
 
 -- --- push / pop front -----------------------------------------------
 
-@pub(pack) fun pushFront v x =
+@pub fun pushFront v x =
   match v with
   | Empty -> Single #[x]
   | Single xs ->
@@ -394,7 +394,7 @@ fun vPopChunkFront shift node =
           let kids2 = arraySet kids 0 first2 in
           (chunk, Branch (Just (vSizesOf shift kids2)) kids2)
 
-@pub(pack) fun popFront v =
+@pub fun popFront v =
   match v with
   | Empty -> Empty
   | Single xs -> vNormalize (Single (arraySlice xs 1 (arrayLen xs)))
@@ -410,47 +410,47 @@ fun vPopChunkFront shift node =
 
 -- --- conversion ---------------------------------------------------
 
-@pub(pack) fun toArray v =
+@pub fun toArray v =
   match v with
   | Empty -> #[]
   | Single xs -> xs
   | Full len sh oF iF mid iB oB ->
       arrayConcat (arrayConcat (arrayConcat (arrayConcat oF iF) (vNodeToArray mid)) iB) oB
 
-@pub(pack) fun fromList xs =
+@pub fun fromList xs =
   let rec go ys acc =
     match ys with
     | Nil -> acc
     | Cons h t -> go t (arrayPush acc h)
   in fromArray (go xs #[])
 
-@pub(pack) fun toList v =
+@pub fun toList v =
   let xs = toArray v in
   let rec go i acc = if i < 0 then acc else go (i - 1) (Cons (arrayGet xs i) acc) in
   go (arrayLen xs - 1) Nil
 
 -- --- bulk ops (chunk-wise / rebuild) ----------------------------------
 
-@pub(pack) fun append l r =
+@pub fun append l r =
   match l with
   | Empty -> r
   | Single _ -> vaFoldl (\v x -> pushBack v x) l (toArray r)
   | Full _ _ _ _ _ _ _ -> vaFoldl (\v x -> pushBack v x) l (toArray r)
 
-@pub(pack) fun splitAt v n =
+@pub fun splitAt v n =
   let xs = toArray v in
   let k = if n < 0 then 0 else if n > arrayLen xs then arrayLen xs else n in
   (fromArray (arraySlice xs 0 k), fromArray (arraySlice xs k (arrayLen xs)))
 
-@pub(pack) fun slice v from to =
+@pub fun slice v from to =
   let xs = toArray v in
   fromArray (arraySlice xs from to)
 
-@pub(pack) fun take v n = fst (splitAt v n)
+@pub fun take v n = fst (splitAt v n)
 
-@pub(pack) fun drop v n = snd (splitAt v n)
+@pub fun drop v n = snd (splitAt v n)
 
-@pub(pack) fun map f v =
+@pub fun map f v =
   match v with
   | Empty -> Empty
   | Single xs -> Single (vaMap f xs)
@@ -461,78 +461,78 @@ fun vPopChunkFront shift node =
         | Branch szs kids -> Branch szs (vaMap mapNode kids)
       in Full len sh (vaMap f oF) (vaMap f iF) (mapNode mid) (vaMap f iB) (vaMap f oB)
 
-@pub(pack) fun foldl f z v = vaFoldl f z (toArray v)
+@pub fun foldl f z v = vaFoldl f z (toArray v)
 
-@pub(pack) fun foldr f z v = vaFoldr f z (toArray v)
+@pub fun foldr f z v = vaFoldr f z (toArray v)
 
-@pub(pack) fun filter keep v =
+@pub fun filter keep v =
   fromArray (vaFoldl (\acc x -> if keep x then arrayPush acc x else acc) #[] (toArray v))
 
-@pub(pack) fun reverse v = fromArray (vaFoldr (\x acc -> arrayPush acc x) #[] (toArray v))
+@pub fun reverse v = fromArray (vaFoldr (\x acc -> arrayPush acc x) #[] (toArray v))
 
-@pub(pack) fun updateAt v i f =
+@pub fun updateAt v i f =
   match get v i with
   | None -> v
   | Just x -> set v i (f x)
 
-@pub(pack) fun forEach f v = vaFoldl (\u x -> f x) () (toArray v)
+@pub fun forEach f v = vaFoldl (\u x -> f x) () (toArray v)
 
 -- The `[…]`-literal target: `[1, 2, 3]` desugars to `vecFromArray #[1, 2, 3]`.
-@pub(pack) fun vecFromArray xs = fromArray xs
+@pub fun vecFromArray xs = fromArray xs
 
 -- --- derived helpers (the sequence API the prelude re-exports unqualified) ---
 
-@pub(pack) fun length v = len v
+@pub fun length v = len v
 
-@pub(pack) fun nth n v = get v n
+@pub fun nth n v = get v n
 
-@pub(pack) fun range lo hi =
+@pub fun range lo hi =
   let rec go i acc = if i >= hi then acc else go (i + 1) (pushBack acc i)
   in go lo empty
 
-@pub(pack) fun elem x v = vaFoldl (\found y -> if found then True else x == y) False (toArray v)
+@pub fun elem x v = vaFoldl (\found y -> if found then True else x == y) False (toArray v)
 
-@pub(pack) fun notElem x v = if elem x v then False else True
+@pub fun notElem x v = if elem x v then False else True
 
-@pub(pack) fun sum v = vaFoldl (\a x -> a + x) 0 (toArray v)
+@pub fun sum v = vaFoldl (\a x -> a + x) 0 (toArray v)
 
-@pub(pack) fun product v = vaFoldl (\a x -> a * x) 1 (toArray v)
+@pub fun product v = vaFoldl (\a x -> a * x) 1 (toArray v)
 
-@pub(pack) fun sumBy f v = vaFoldl (\a x -> a + f x) 0 (toArray v)
+@pub fun sumBy f v = vaFoldl (\a x -> a + f x) 0 (toArray v)
 
-@pub(pack) fun all keep v = vaFoldl (\ok x -> if ok then keep x else False) True (toArray v)
+@pub fun all keep v = vaFoldl (\ok x -> if ok then keep x else False) True (toArray v)
 
-@pub(pack) fun any keep v = vaFoldl (\hit x -> if hit then True else keep x) False (toArray v)
+@pub fun any keep v = vaFoldl (\hit x -> if hit then True else keep x) False (toArray v)
 
-@pub(pack) fun find keep v =
+@pub fun find keep v =
   vaFoldl (\acc x -> match acc with | Just _ -> acc | None -> if keep x then Just x else None)
           None (toArray v)
 
-@pub(pack) fun concat vs = vaFoldl (\acc v -> append acc v) empty (toArray vs)
+@pub fun concat vs = vaFoldl (\acc v -> append acc v) empty (toArray vs)
 
-@pub(pack) fun concatMap f v = concat (map f v)
+@pub fun concatMap f v = concat (map f v)
 
-@pub(pack) fun replicate n x =
+@pub fun replicate n x =
   let rec go k acc = if k <= 0 then acc else go (k - 1) (pushBack acc x)
   in go n empty
 
-@pub(pack) fun takeWhile keep v =
+@pub fun takeWhile keep v =
   fromArray (fst (vaFoldl
     (\p x -> match p with | (acc, live) ->
         if live then (if keep x then (arrayPush acc x, True) else (acc, False)) else (acc, False))
     (#[], True) (toArray v)))
 
-@pub(pack) fun dropWhile keep v =
+@pub fun dropWhile keep v =
   fromArray (fst (vaFoldl
     (\p x -> match p with | (acc, dropping) ->
         if dropping then (if keep x then (acc, True) else (arrayPush acc x, False))
         else (arrayPush acc x, False))
     (#[], True) (toArray v)))
 
-@pub(pack) fun partition keep v =
+@pub fun partition keep v =
   (filter keep v, filter (\x -> if keep x then False else True) v)
 
-@pub(pack) fun zipWith f a b =
+@pub fun zipWith f a b =
   let xs = toArray a in
   let ys = toArray b in
   let n = if arrayLen xs < arrayLen ys then arrayLen xs else arrayLen ys in
@@ -540,19 +540,19 @@ fun vPopChunkFront shift node =
     if i >= n then acc else go (i + 1) (pushBack acc (f (arrayGet xs i) (arrayGet ys i)))
   in go 0 empty
 
-@pub(pack) fun zip a b = zipWith (\x y -> (x, y)) a b
+@pub fun zip a b = zipWith (\x y -> (x, y)) a b
 
-@pub(pack) fun unzip v =
+@pub fun unzip v =
   (map (\p -> fst p) v, map (\p -> snd p) v)
 
-@pub(pack) fun maximum v =
+@pub fun maximum v =
   foldl (\acc x -> match acc with | None -> Just x | Just m -> if m < x then Just x else acc) None v
 
-@pub(pack) fun minimum v =
+@pub fun minimum v =
   foldl (\acc x -> match acc with | None -> Just x | Just m -> if x < m then Just x else acc) None v
 
 -- Yield every element, in order, for `Std.Stream`.
-@pub(pack) fun toStream v = forEach (\x -> yield x) v
+@pub fun toStream v = forEach (\x -> yield x) v
 
 -- --- tests -------------------------------------------------------------------
 

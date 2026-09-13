@@ -265,8 +265,13 @@ pub struct Analysis {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub name: String,
+    /// The binding, so a caller can ask the package about it.
+    pub var: VarId,
     /// Where its name is written.
     pub span: Span,
+    /// `Some(qualified name)` when it is a `@test` -- the name `meadow test
+    /// --exact` takes. `None` for anything else, and inside a `Std` module.
+    pub test: Option<String>,
     /// How many parameters it is written with: `0` for a `def`.
     pub params: usize,
     /// Its inferred type, as a hover would show it.
@@ -296,8 +301,12 @@ pub struct ModuleFile {
 }
 
 /// How the server finds the package a document belongs to: given any file
-/// inside it, the whole thing, or `None` if the file is not in a package.
-pub type PackageLoader = fn(&std::path::Path) -> Option<PackageSources>;
+/// inside it, the whole thing; `None` if the file is not in a package at all;
+/// or why a package it *is* in cannot be loaded -- a misnamed module file, a
+/// dependency that is not there. That last case used to be `None` too, and the
+/// document was silently analysed on its own, where every `use` of a sibling
+/// failed and nothing said the real reason.
+pub type PackageLoader = fn(&std::path::Path) -> Option<Result<PackageSources, String>>;
 
 /// The standard library, compiled once.
 pub struct Std {
@@ -322,13 +331,13 @@ pub struct Std {
 
 /// A `Std` module's path within the package.
 ///
-/// `Lib` and `prelude` sit at the root — they are what a dependent gets
+/// `Lib` and `Prelude` sit at the root — they are what a dependent gets
 /// unqualified — and everything else is nested by its dotted name. It mirrors
 /// `meadow::stdlib::module_path`, which this crate cannot call: `meadow` depends
 /// on it for the `lsp` subcommand, so the arrow only points one way. The test
 /// that analyses every module keeps the two honest.
 fn module_path(dotted: &str) -> Vec<InternedString> {
-    if dotted == "prelude" || dotted == "Lib" {
+    if dotted == "Prelude" || dotted == "Lib" {
         Vec::new()
     } else {
         dotted.split('.').map(InternedString::from).collect()
@@ -583,6 +592,7 @@ impl Std {
                 );
             }
         }
+        mark_tests(&mut a, &pkg);
         Some(a)
     }
 
@@ -661,7 +671,31 @@ impl Std {
             w.module(&m.hir);
             absorb_refs(&mut a, m);
         }
+        // Not in a `Std` module. The standard library is compiled into the
+        // binary, so `meadow test --std` runs that copy rather than this file --
+        // a Test lens here would report on code other than what is on screen,
+        // and after an edit could call a broken fix a pass.
+        if package.is_none() {
+            mark_tests(&mut a, &pkg);
+        }
         a
+    }
+}
+
+/// Mark which of the analysed functions are `@test`s, under the name
+/// `meadow test` knows each by.
+///
+/// The name is the qualified one from [`meadow_compiler::TestSite::qualified`],
+/// which the runner prints and matches with `--exact`; spelling it anywhere
+/// else would let the lens and the runner disagree about which test is which.
+fn mark_tests(a: &mut Analysis, pkg: &CompiledPackage) {
+    let sites: std::collections::HashMap<VarId, String> = pkg
+        .test_sites()
+        .into_iter()
+        .map(|t| (t.var, t.qualified()))
+        .collect();
+    for f in &mut a.functions {
+        f.test = sites.get(&f.var).cloned();
     }
 }
 
@@ -923,7 +957,9 @@ impl Walk<'_> {
             .unwrap_or_default();
         self.a.functions.push(Function {
             name: name.to_string(),
+            var: *ident.value(),
             span: ident.span,
+            test: None,
             params,
             signature,
         });

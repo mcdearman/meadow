@@ -28,7 +28,7 @@ use Std.Test (assertEq)
 use Std.String as S
 use Std.Collections.List as L
 
-@pub(pack) effect Console {
+@pub effect Console {
   -- The next line, without its line terminator. `None` at end of input.
   readLine : () -> Maybe String,
 }
@@ -36,17 +36,17 @@ use Std.Collections.List as L
 -- --- reading ------------------------------------------------------------------
 
 -- Write `message` with no trailing newline, then read a line.
-@pub(pack) fun prompt message =
+@pub fun prompt message =
   let _ = print message in
   readLine ()
 
 -- The next line, or `fallback` at end of input.
-@pub(pack) fun readLineOr fallback = unwrapOr fallback (readLine ())
+@pub fun readLineOr fallback = unwrapOr fallback (readLine ())
 
 -- The next line with surrounding whitespace removed, which is almost always what
 -- you want from a person typing: a stray space before `rock` should not be a
 -- different answer.
-@pub(pack) fun readWord () =
+@pub fun readWord () =
   match readLine () with
   | None -> None
   | Just line -> Just (S.trim line)
@@ -54,7 +54,7 @@ use Std.Collections.List as L
 -- Keep asking until the answer parses. `parse` returns `Maybe b`; a `None` is
 -- reported with `retry` and the question is put again. Ends as `None` only if
 -- input runs out, so a piped-in file cannot spin forever.
-@pub(pack) fun promptUntil message retry parse =
+@pub fun promptUntil message retry parse =
   match prompt message with
   | None -> None
   | Just line ->
@@ -65,7 +65,7 @@ use Std.Collections.List as L
           promptUntil message retry parse
 
 -- Every remaining line, in order.
-@pub(pack) fun readAll () = L.reverse (readAllLoop [;])
+@pub fun readAll () = L.reverse (readAllLoop [;])
 
 fun readAllLoop acc =
   match readLine () with
@@ -76,7 +76,7 @@ fun readAllLoop acc =
 
 -- Run `body` with `lines` as the input, so nothing touches the terminal. Once
 -- the list is exhausted every `readLine` answers `None`.
-@pub(pack) fun withInput lines body =
+@pub fun withInput lines body =
   let feed =
     handle body () with {
       readLine () k -> \remaining ->

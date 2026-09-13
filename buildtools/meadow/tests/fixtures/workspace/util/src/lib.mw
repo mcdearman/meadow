@@ -1,9 +1,0 @@
--- `util` package. Only `@pub(pack)` names are visible to dependents;
--- a plain `@pub` would reach this package's other modules and stop there.
-
-@pub(pack) fun double x = x * 2
-
-@pub(pack) fun scale factor xs = map (\x -> x * factor) xs
-
--- private helper: not exported, so `app` cannot see it
-fun secret x = x + 1

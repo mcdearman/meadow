@@ -8,10 +8,11 @@
 //! The extension still ships a TextMate grammar — it colours a file before the
 //! server has started, and comments never reach the lexer at all.
 
-use crate::analysis::Analysis;
+use crate::analysis::{Analysis, Namespace};
 use crate::pos::LineIndex;
 use meadow_compiler::lexer::{tokenize, Token};
 use meadow_compiler::source::{Source, SourceKind};
+use std::collections::HashMap;
 
 /// The legend, in the order the protocol indexes it.
 pub const LEGEND: &[&str] = &[
@@ -37,7 +38,26 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
     let idx = LineIndex::new(text);
     let mut out = Vec::new();
 
-    for t in &lex.tokens {
+    // What each capitalised word resolved to, by where it starts. The walk
+    // records a type or constructor reference with the span of that one word —
+    // in `Expr.Int`, `Expr` is a type and `Int` a constructor — so this is an
+    // answer about *this* occurrence, not about the spelling.
+    let resolved: HashMap<u32, Namespace> = analysis
+        .name_refs
+        .iter()
+        .map(|(span, _, ns)| (span.start, *ns))
+        .collect();
+
+    // Inside `use a.b.c`, up to the import list: every capital there is a module.
+    let mut in_use_path = false;
+
+    for (i, t) in lex.tokens.iter().enumerate() {
+        match t.value() {
+            Token::Use => in_use_path = true,
+            Token::LParen => in_use_path = false,
+            _ => {}
+        }
+        let next_is_period = matches!(lex.tokens.get(i + 1).map(|n| n.value()), Some(Token::Period));
         let kind = match t.value() {
             Token::Mod
             | Token::Use
@@ -64,7 +84,27 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
             Token::String(_) | Token::Char(_) => "string",
             Token::UpperIdent(name) => {
                 let n = name.to_string();
-                if analysis.ctors_in_scope.contains(&n) {
+                if in_use_path {
+                    "namespace"
+                } else if let Some(ns) = resolved.get(&t.span.start) {
+                    // Resolution first, and it is the whole answer when there
+                    // is one. Matching the *spelling* against known names is
+                    // what coloured mini-ml's `Expr.Int` and `Expr.Bool` as
+                    // constructors -- of `Std.Json`, which also has an `Int`
+                    // and a `Bool` -- while its `Lam` and `Var`, matching
+                    // nothing, fell through to `namespace`.
+                    match ns {
+                        Namespace::Ctor => "enumMember",
+                        Namespace::Type => "type",
+                    }
+                } else if next_is_period {
+                    // Unresolved and qualifying something: a module or an
+                    // alias (`S.concat`), whatever else that spelling means.
+                    "namespace"
+                } else if analysis.ctors_in_scope.contains(&n) {
+                    // Only a guess from here on, for a document whose analysis
+                    // did not get far enough to resolve it -- a parse error
+                    // mid-edit -- where a guess beats losing colour entirely.
                     "enumMember"
                 } else if analysis.types_in_scope.contains(&n) {
                     "type"

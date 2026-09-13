@@ -564,3 +564,44 @@ fn rename_refuses_a_name_from_the_standard_library() {
     let prepared = c.at("textDocument/prepareRename", 0, 12);
     assert_eq!(prepared, Value::Null, "offered a rename it cannot do");
 }
+
+/// A `@test` gets a "Test" lens, before its "Debug" one, naming the test the
+/// way `meadow test --exact` takes it. A plain function gets only "Debug".
+#[test]
+fn a_test_gets_a_test_lens_before_its_debug_lens() {
+    let mut c = Client::start();
+    c.set(
+        "use Std.Test (assertEq)\n\
+         \n\
+         fun helper x = x\n\
+         \n\
+         @test fun checks u = assertEq (helper 1) 1 \"x\"\n",
+    );
+    let lenses = c.request("textDocument/codeLens", json!({"textDocument": {"uri": URI}}));
+    let lenses = lenses.as_array().expect("lenses");
+
+    // (line, title, command) in the order the server gave them.
+    let shape: Vec<(u64, String, String)> = lenses
+        .iter()
+        .map(|l| {
+            (
+                l["range"]["start"]["line"].as_u64().unwrap(),
+                l["command"]["title"].as_str().unwrap().to_string(),
+                l["command"]["command"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            (2, "▶ Debug".to_string(), "meadow.debugFunction".to_string()),
+            (4, "▶ Test".to_string(), "meadow.testFunction".to_string()),
+            (4, "▶ Debug".to_string(), "meadow.debugFunction".to_string()),
+        ]
+    );
+
+    let test = &lenses[1]["command"]["arguments"][0];
+    assert_eq!(test["test"], json!("checks"), "{test}");
+    assert_eq!(test["name"], json!("checks"));
+    assert_eq!(test["uri"], json!(URI));
+}

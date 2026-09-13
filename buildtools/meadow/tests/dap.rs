@@ -353,12 +353,12 @@ fn a_package_of_several_modules_debugs_across_them() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::copy(root.join("meadow.toml"), dir.join("meadow.toml")).unwrap();
-    for f in ["Syntax.mw", "Parser.mw", "Infer.mw", "Eval.mw", "main.mw"] {
+    for f in ["Syntax.mw", "Parser.mw", "Infer.mw", "Eval.mw", "Main.mw"] {
         let mut text = std::fs::read_to_string(root.join("src").join(f)).unwrap();
-        if f == "main.mw" {
-            let at = text.find("@pub def main =").expect("main");
+        if f == "Main.mw" {
+            let at = text.find("@pub(pkg) def main =").expect("main");
             let end = text[at..].find("\n\n").map_or(text.len(), |e| at + e);
-            text.replace_range(at..end, "@pub def main = runSource \"(fun x -> x + 1) 41\"");
+            text.replace_range(at..end, "@pub(pkg) def main = runSource \"(fun x -> x + 1) 41\"");
         }
         std::fs::write(dir.join("src").join(f), text).unwrap();
     }
@@ -415,10 +415,10 @@ fn a_private_function_in_a_module_can_be_the_entry() {
     let dir = package(
         "entry",
         &[
-            ("src/main.mw", "use Maths (twice)\n\n@pub def main = twice 1\n"),
+            ("src/Main.mw", "use Maths (twice)\n\n@pub(pkg) def main = twice 1\n"),
             (
                 "src/Maths.mw",
-                "fun secret n =\n  n * 10\n\n@pub fun twice n = secret n + secret n\n",
+                "fun secret n =\n  n * 10\n\n@pub(pkg) fun twice n = secret n + secret n\n",
             ),
         ],
     );
@@ -441,8 +441,8 @@ fn a_private_function_in_a_module_can_be_the_entry() {
 
 #[test]
 fn a_package_with_no_main_can_still_be_debugged_at_a_function() {
-    let dir = package("nomain", &[("src/main.mw", "fun square n = n * n\n")]);
-    let main = dir.join("src/main.mw");
+    let dir = package("nomain", &[("src/Main.mw", "fun square n = n * n\n")]);
+    let main = dir.join("src/Main.mw");
     assert!(Session::launch(&dir).is_err(), "nothing to run without an entry");
     let mut s = Session::launch_at(&dir, Some(&entry(&main, "square 9"))).unwrap();
     assert_eq!(go(&mut s, Mode::Continue), Stop::Exited(Ok("81".to_string())));
@@ -450,8 +450,8 @@ fn a_package_with_no_main_can_still_be_debugged_at_a_function() {
 
 #[test]
 fn a_bad_argument_is_reported_as_the_arguments_fault() {
-    let dir = package("badarg", &[("src/main.mw", "fun square n = n * n\n")]);
-    let main = dir.join("src/main.mw");
+    let dir = package("badarg", &[("src/Main.mw", "fun square n = n * n\n")]);
+    let main = dir.join("src/Main.mw");
     let err = Session::launch_at(&dir, Some(&entry(&main, "square \"nine\"")))
         .err()
         .expect("a type error");

@@ -207,7 +207,7 @@ fun infer counter env level e =
 -- Infer the type of a whole expression. `Err` carries the message a failed
 -- unification or an unbound name raised -- `Exn` is doing the unwinding, so
 -- nothing between here and `raise` has to mention failure.
-@pub fun typeOf e =
+@pub(pkg) fun typeOf e =
   toResult (\() ->
     let counter = newRef 0 in
     typeName (infer counter [;] 0 e))

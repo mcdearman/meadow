@@ -18,7 +18,7 @@ use Std.Int (abs)
 use Std.String as S
 use Std.Collections.Vector (vecFromArray)
 
-@pub(pack) effect Time {
+@pub effect Time {
   now : () -> Int,
   monotonic : () -> Int,
   -- Do nothing for this many milliseconds. Zero or less returns at once.
@@ -27,38 +27,38 @@ use Std.Collections.Vector (vecFromArray)
 
 -- --- units --------------------------------------------------------------------
 
-@pub(pack) def millisPerSecond = 1000
+@pub def millisPerSecond = 1000
 
-@pub(pack) def millisPerMinute = 60000
+@pub def millisPerMinute = 60000
 
-@pub(pack) def millisPerHour = 3600000
+@pub def millisPerHour = 3600000
 
-@pub(pack) def millisPerDay = 86400000
+@pub def millisPerDay = 86400000
 
-@pub(pack) fun seconds n = n * millisPerSecond
+@pub fun seconds n = n * millisPerSecond
 
-@pub(pack) fun minutes n = n * millisPerMinute
+@pub fun minutes n = n * millisPerMinute
 
-@pub(pack) fun hours n = n * millisPerHour
+@pub fun hours n = n * millisPerHour
 
-@pub(pack) fun days n = n * millisPerDay
+@pub fun days n = n * millisPerDay
 
-@pub(pack) fun toSeconds ms = ms / millisPerSecond
+@pub fun toSeconds ms = ms / millisPerSecond
 
-@pub(pack) fun nanosToMillis ns = ns / 1000000
+@pub fun nanosToMillis ns = ns / 1000000
 
 -- --- measuring ----------------------------------------------------------------
 
 -- `(result, elapsed nanoseconds)`. Uses the monotonic clock, so a system clock
 -- adjustment part-way through cannot produce a negative duration.
-@pub(pack) fun timed act =
+@pub fun timed act =
   let start = monotonic () in
   let result = act () in
   let stop = monotonic () in
   (result, stop - start)
 
 -- Just the duration.
-@pub(pack) fun elapsed act =
+@pub fun elapsed act =
   match timed act with
   | (result, ns) -> ns
 
@@ -66,7 +66,7 @@ use Std.Collections.Vector (vecFromArray)
 
 -- Run `act` with the clock frozen at `t`: every `now` answers `t`, `monotonic`
 -- counts from zero, and `sleep` returns instantly.
-@pub(pack) fun withClock t act =
+@pub fun withClock t act =
   handle act () with {
     now () k -> k t,
     monotonic () k -> k 0,
@@ -77,7 +77,7 @@ use Std.Collections.Vector (vecFromArray)
 -- Run `act` with a clock that starts at `t` and advances by `tick` on every
 -- reading -- enough to test code that compares two `now`s, and to make `sleep`
 -- move the clock without waiting.
-@pub(pack) fun withTickingClock t tick act =
+@pub fun withTickingClock t tick act =
   handle act () with {
     now () k -> \s -> (k s) (s + tick),
     monotonic () k -> \s -> (k (s * 1000000)) (s + tick),
@@ -89,7 +89,7 @@ use Std.Collections.Vector (vecFromArray)
 
 -- `hh:mm:ss.mmm` of a duration in milliseconds. Not a date -- meadow has no
 -- calendar yet, and getting one right is a bigger job than it looks.
-@pub(pack) fun formatDuration ms =
+@pub fun formatDuration ms =
   let neg = ms < 0 in
   let n = abs ms in
   let body =

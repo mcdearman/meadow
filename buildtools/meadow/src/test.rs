@@ -16,8 +16,17 @@ use std::path::Path;
 pub struct Options {
     /// Package directory (or a single `.mw` file).
     pub path: std::path::PathBuf,
-    /// Run only tests whose name contains this.
+    /// Run only tests whose name contains this -- or, with `exact`, is it.
+    ///
+    /// The name is the qualified one, `Module.test`, so a bare name still
+    /// matches as a substring of it.
     pub filter: Option<String>,
+    /// Require the whole name to equal `filter`.
+    ///
+    /// What running *one* test needs: `parse` is contained in `parseInt`, and
+    /// in a package where two modules each declare `works` only the qualified
+    /// `A.works` picks one. The editor's Test lens always asks this way.
+    pub exact: bool,
     /// Also run the standard library's own tests.
     pub std: bool,
     pub profile: Resolved,
@@ -62,9 +71,14 @@ pub fn run(opts: &Options) -> Result<bool, String> {
         .iter()
         .filter(|t| opts.std || &*t.package != "Std")
         .filter(|t| {
-            opts.filter
-                .as_ref()
-                .is_none_or(|f| t.name.to_string().contains(f.as_str()))
+            opts.filter.as_ref().is_none_or(|f| {
+                let name = t.name.to_string();
+                if opts.exact {
+                    name == *f
+                } else {
+                    name.contains(f.as_str())
+                }
+            })
         })
         .collect();
 

@@ -1,16 +1,16 @@
 -- Pair helpers.
 
-@pub(pack) fun fst p = match p with | (a, b) -> a
+@pub fun fst p = match p with | (a, b) -> a
 
-@pub(pack) fun snd p = match p with | (a, b) -> b
+@pub fun snd p = match p with | (a, b) -> b
 
-@pub(pack) fun pair a b = (a, b)
+@pub fun pair a b = (a, b)
 
-@pub(pack) fun swap p = match p with | (a, b) -> (b, a)
+@pub fun swap p = match p with | (a, b) -> (b, a)
 
-@pub(pack) fun mapFst f p = match p with | (a, b) -> (f a, b)
+@pub fun mapFst f p = match p with | (a, b) -> (f a, b)
 
-@pub(pack) fun mapSnd f p = match p with | (a, b) -> (a, f b)
+@pub fun mapSnd f p = match p with | (a, b) -> (a, f b)
 
 -- --- tests -------------------------------------------------------------------
 

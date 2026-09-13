@@ -11,6 +11,7 @@ const { workspace, window, commands } = require("vscode");
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 const { pick } = require("./resolve");
 const { registerDebugger } = require("./debug");
+const { registerTesting } = require("./testing");
 
 let client;
 
@@ -51,9 +52,18 @@ function start() {
     synchronize: { fileEvents: workspace.createFileSystemWatcher("**/*.mw") },
     outputChannelName: "Meadow Language Server",
     middleware: {
-      // The "Debug" lens above each definition, unless it has been turned off.
-      provideCodeLenses: (document, token, next) =>
-        workspace.getConfiguration("meadow").get("debug.codeLens", true) ? next(document, token) : [],
+      // "Debug" above each definition and "Test" above each `@test`, each
+      // unless its own setting turns it off. Filtered by command rather than
+      // all-or-nothing: turning off the debugger's lens should not take the
+      // test runner's with it.
+      provideCodeLenses: async (document, token, next) => {
+        const config = workspace.getConfiguration("meadow");
+        const hidden = new Set();
+        if (!config.get("debug.codeLens", true)) hidden.add("meadow.debugFunction");
+        if (!config.get("test.codeLens", true)) hidden.add("meadow.testFunction");
+        const lenses = (await next(document, token)) || [];
+        return lenses.filter((l) => !(l.command && hidden.has(l.command.command)));
+      },
     },
   };
 
@@ -95,6 +105,7 @@ async function stop() {
 function activate(context) {
   start();
   registerDebugger(context);
+  registerTesting(context);
   context.subscriptions.push(
     commands.registerCommand("meadow.restartServer", async () => {
       await stop();

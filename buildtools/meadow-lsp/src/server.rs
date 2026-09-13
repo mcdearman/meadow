@@ -254,8 +254,26 @@ impl Server {
         // The same spelling the loader uses, or the open document will not
         // match the module it is.
         let path = std::fs::canonicalize(&path).unwrap_or(path);
-        let sources = load(&path)?;
-        self.std.analyse_package(&sources, &path, text)
+        match load(&path)? {
+            Ok(sources) => self.std.analyse_package(&sources, &path, text),
+            // In a package, but one that cannot be loaded. Analyse the file on
+            // its own so it keeps what colouring and hover it can, and put the
+            // reason first: otherwise every `use` of a sibling fails, and those
+            // errors are all anyone would see.
+            Err(why) => {
+                let mut a = self.std.analyse(text);
+                a.diagnostics.insert(
+                    0,
+                    meadow_compiler::diagnostics::Diagnostic {
+                        msg: why,
+                        filename: path.display().to_string(),
+                        label: ("this package cannot be loaded".to_string(), Span::new(0, 0)),
+                        extra_labels: vec![],
+                    },
+                );
+                Some(a)
+            }
+        }
     }
 
     fn publish(&self, uri: &Uri) -> Vec<Diagnostic> {
@@ -354,7 +372,8 @@ impl Server {
                     ),
                 }
             }
-            // A "Debug" above each top-level definition. The command is the
+            // A "Debug" above each top-level definition, and a "Test" above each
+            // `@test`. The command is the
             // editor's to run -- it asks for arguments and starts `meadow dap`
             // -- so the lens only has to say what it would be starting.
             CodeLensRequest::METHOD => self.answer::<CodeLensRequest, _>(req, |s, p| {
@@ -363,13 +382,30 @@ impl Server {
                     .analysis
                     .functions
                     .iter()
-                    .map(|f| {
+                    .flat_map(|f| {
                         let (start, end) = doc.index.range(f.span);
                         let range = Range {
                             start: Position::new(start.0, start.1),
                             end: Position::new(end.0, end.1),
                         };
-                        CodeLens {
+                        // A `@test` also gets "Test", first, the way a runner
+                        // lists running before debugging. It runs `meadow test`
+                        // itself, so it is exactly what the command line would
+                        // do -- same build, same engine, same output.
+                        let test = f.test.as_ref().map(|qualified| CodeLens {
+                            range,
+                            command: Some(Command {
+                                title: "▶ Test".to_string(),
+                                command: "meadow.testFunction".to_string(),
+                                arguments: Some(vec![serde_json::json!({
+                                    "uri": p.text_document.uri.as_str(),
+                                    "name": f.name,
+                                    "test": qualified,
+                                })]),
+                            }),
+                            data: None,
+                        });
+                        test.into_iter().chain(std::iter::once(CodeLens {
                             range,
                             command: Some(Command {
                                 title: "▶ Debug".to_string(),
@@ -383,7 +419,7 @@ impl Server {
                                 })]),
                             }),
                             data: None,
-                        }
+                        }))
                     })
                     .collect();
                 Some(lenses)

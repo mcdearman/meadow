@@ -141,7 +141,7 @@ fun letE () =
 fun exprE () = P.choice [P.defer letE, P.defer lamE, P.defer ifE, P.defer cmpE]
 
 -- Parse a whole program: an expression, and nothing after it.
-@pub fun parse src =
+@pub(pkg) fun parse src =
   match P.runParser (P.skipThen spaces (P.thenSkip (P.defer exprE) P.eof)) (P.fromString src) with
   | Ok e -> Ok e
   | Err err -> Err (P.showError err)

@@ -25,7 +25,7 @@ use Std.Maybe (Maybe, Just, None)
 -- Numbers are split into `Int` and `Float` rather than JSON's single number
 -- type, because meadow's `Int` and `Float` are separate and silently widening
 -- every integer to a float would lose precision no one asked to lose.
-@pub(pack) data Json
+@pub data Json
   = Null
   | Bool Bool
   | Int Int
@@ -36,52 +36,52 @@ use Std.Maybe (Maybe, Just, None)
 
 -- --- constructing --------------------------------------------------------------
 
-@pub(pack) fun jNull () = Null
+@pub fun jNull () = Null
 
-@pub(pack) fun jBool b = Bool b
+@pub fun jBool b = Bool b
 
-@pub(pack) fun jInt n = Int n
+@pub fun jInt n = Int n
 
-@pub(pack) fun jString s = String s
+@pub fun jString s = String s
 
-@pub(pack) fun jArray xs = Array xs
+@pub fun jArray xs = Array xs
 
-@pub(pack) fun jObject fields = Object fields
+@pub fun jObject fields = Object fields
 
 -- --- inspecting ---------------------------------------------------------------
 
-@pub(pack) fun isNull v = match v with | Null -> True | _ -> False
+@pub fun isNull v = match v with | Null -> True | _ -> False
 
-@pub(pack) fun asBool v = match v with | Bool b -> Just b | _ -> None
+@pub fun asBool v = match v with | Bool b -> Just b | _ -> None
 
-@pub(pack) fun asInt v = match v with | Int n -> Just n | _ -> None
+@pub fun asInt v = match v with | Int n -> Just n | _ -> None
 
-@pub(pack) fun asFloat v =
+@pub fun asFloat v =
   match v with
   | Float x -> Just x
   | Int n -> Just (toFloat n)
   | _ -> None
 
-@pub(pack) fun asString v = match v with | String s -> Just s | _ -> None
+@pub fun asString v = match v with | String s -> Just s | _ -> None
 
-@pub(pack) fun asArray v = match v with | Array xs -> Just xs | _ -> None
+@pub fun asArray v = match v with | Array xs -> Just xs | _ -> None
 
-@pub(pack) fun asObject v = match v with | Object fs -> Just fs | _ -> None
+@pub fun asObject v = match v with | Object fs -> Just fs | _ -> None
 
 -- The value at `key`, or `None` if this is not an object or has no such key.
-@pub(pack) fun get key v =
+@pub fun get key v =
   match v with
   | Object fields -> lookupField key fields
   | _ -> None
 
 -- The element at `i`, or `None`.
-@pub(pack) fun index i v =
+@pub fun index i v =
   match v with
   | Array xs -> V.get xs i
   | _ -> None
 
 -- Follow a chain of object keys: `path ["a", "b"] v` is `v.a.b`.
-@pub(pack) fun path keys v =
+@pub fun path keys v =
   V.foldl (\acc k -> maybeThen (\x -> get k x) acc) (Just v) keys
 
 fun maybeThen f o =
@@ -103,7 +103,7 @@ fun lookupField key fields =
 -- --- parsing ------------------------------------------------------------------
 
 -- `Ok` of the value, or `Err` of a message naming the byte offset.
-@pub(pack) fun parse text =
+@pub fun parse text =
   match P.runParser document (P.fromString text) with
   | Ok v -> Ok v
   | Err e -> Err (P.showError e)
@@ -211,7 +211,7 @@ fun bytesToText bytes = S.fromBytes (V.toArray bytes)
 -- --- rendering ----------------------------------------------------------------
 
 -- Compact: no spaces, no newlines. `renderIndented` is below.
-@pub(pack) fun render v =
+@pub fun render v =
   match v with
   | Null -> "null"
   | Bool b -> if b then "true" else "false"
@@ -226,7 +226,7 @@ fun renderMember entry =
 
 -- Two spaces per level, one element per line -- the shape `meadow fmt` uses for
 -- meadow itself.
-@pub(pack) fun renderIndented v = renderAt 0 v
+@pub fun renderIndented v = renderAt 0 v
 
 fun renderAt depth v =
   match v with
@@ -257,7 +257,7 @@ fun pad depth = S.repeat "  " depth
 
 -- --- escaping -----------------------------------------------------------------
 
-@pub(pack) fun quote s = S.concatAll ["\"", escapeAll s, "\""]
+@pub fun quote s = S.concatAll ["\"", escapeAll s, "\""]
 
 fun escapeAll s = S.fromBytes (V.toArray (V.concatMap escapeByte (V.fromArray (S.toBytes s))))
 

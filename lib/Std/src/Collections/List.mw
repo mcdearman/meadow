@@ -8,29 +8,29 @@ use Std.Int (min, max)
 -- `toStream` performs `yield`; see the note in `Std.Collections.Vector`.
 use Std.Yield (yield)
 
-@pub(pack) data List a = Nil | Cons a (List a)
+@pub data List a = Nil | Cons a (List a)
 
-@pub(pack) fun append xs ys =
+@pub fun append xs ys =
   match xs with
   | Nil -> ys
   | Cons x rest -> x :: append rest ys
 
-@pub(pack) fun map f xs =
+@pub fun map f xs =
   match xs with
   | Nil -> Nil
   | Cons x rest -> f x :: map f rest
 
-@pub(pack) fun filter keep xs =
+@pub fun filter keep xs =
   match xs with
   | Nil -> Nil
   | Cons x rest -> if keep x then x :: filter keep rest else filter keep rest
 
-@pub(pack) fun foldl f acc xs =
+@pub fun foldl f acc xs =
   match xs with
   | Nil -> acc
   | Cons x rest -> foldl f (f acc x) rest
 
-@pub(pack) fun foldr f acc xs =
+@pub fun foldr f acc xs =
   match xs with
   | Nil -> acc
   | Cons x rest -> f x (foldr f acc rest)
@@ -40,117 +40,117 @@ fun reverseOnto acc xs =
   | Nil -> acc
   | Cons x rest -> reverseOnto (x :: acc) rest
 
-@pub(pack) fun reverse xs = reverseOnto Nil xs
+@pub fun reverse xs = reverseOnto Nil xs
 
-@pub(pack) fun length xs =
+@pub fun length xs =
   match xs with
   | Nil -> 0
   | Cons x rest -> 1 + length rest
 
-@pub(pack) fun elem x xs =
+@pub fun elem x xs =
   match xs with
   | Nil -> False
   | Cons y rest -> if x == y then True else elem x rest
 
-@pub(pack) fun range lo hi = if lo < hi then lo :: range (lo + 1) hi else Nil
+@pub fun range lo hi = if lo < hi then lo :: range (lo + 1) hi else Nil
 
-@pub(pack) fun take n xs =
+@pub fun take n xs =
   match xs with
   | Nil -> Nil
   | Cons y rest -> if n < 1 then Nil else y :: take (n - 1) rest
 
-@pub(pack) fun drop n xs =
+@pub fun drop n xs =
   match xs with
   | Nil -> Nil
   | Cons y rest -> if n < 1 then xs else drop (n - 1) rest
 
-@pub(pack) fun concat xss = foldr append Nil xss
+@pub fun concat xss = foldr append Nil xss
 
 -- Public surface --------------------------------------------------------------
 
-@pub(pack) fun isEmpty xs = match xs with | Nil -> True | Cons x rest -> False
+@pub fun isEmpty xs = match xs with | Nil -> True | Cons x rest -> False
 
-@pub(pack) fun singleton x = Cons x Nil
+@pub fun singleton x = Cons x Nil
 
-@pub(pack) fun head xs = match xs with | Nil -> None | Cons x rest -> Just x
+@pub fun head xs = match xs with | Nil -> None | Cons x rest -> Just x
 
-@pub(pack) fun tail xs = match xs with | Nil -> None | Cons x rest -> Just rest
+@pub fun tail xs = match xs with | Nil -> None | Cons x rest -> Just rest
 
-@pub(pack) fun last xs =
+@pub fun last xs =
   match xs with
   | Nil -> None
   | Cons x Nil -> Just x
   | Cons x rest -> last rest
 
-@pub(pack) fun nth n xs =
+@pub fun nth n xs =
   match xs with
   | Nil -> None
   | Cons x rest -> if n < 1 then Just x else nth (n - 1) rest
 
-@pub(pack) fun notElem x xs = not (elem x xs)
+@pub fun notElem x xs = not (elem x xs)
 
-@pub(pack) fun replicate n x = if n < 1 then Nil else x :: replicate (n - 1) x
+@pub fun replicate n x = if n < 1 then Nil else x :: replicate (n - 1) x
 
-@pub(pack) fun sum xs = foldl (\a b -> a + b) 0 xs
+@pub fun sum xs = foldl (\a b -> a + b) 0 xs
 
-@pub(pack) fun product xs = foldl (\a b -> a * b) 1 xs
+@pub fun product xs = foldl (\a b -> a * b) 1 xs
 
-@pub(pack) fun maximum xs =
+@pub fun maximum xs =
   match xs with
   | Nil -> None
   | Cons x rest -> Just (foldl max x rest)
 
-@pub(pack) fun minimum xs =
+@pub fun minimum xs =
   match xs with
   | Nil -> None
   | Cons x rest -> Just (foldl min x rest)
 
-@pub(pack) fun all keep xs =
+@pub fun all keep xs =
   match xs with
   | Nil -> True
   | Cons x rest -> if keep x then all keep rest else False
 
-@pub(pack) fun any keep xs =
+@pub fun any keep xs =
   match xs with
   | Nil -> False
   | Cons x rest -> if keep x then True else any keep rest
 
-@pub(pack) fun find keep xs =
+@pub fun find keep xs =
   match xs with
   | Nil -> None
   | Cons x rest -> if keep x then Just x else find keep rest
 
-@pub(pack) fun takeWhile keep xs =
+@pub fun takeWhile keep xs =
   match xs with
   | Nil -> Nil
   | Cons x rest -> if keep x then x :: takeWhile keep rest else Nil
 
-@pub(pack) fun dropWhile keep xs =
+@pub fun dropWhile keep xs =
   match xs with
   | Nil -> Nil
   | Cons x rest -> if keep x then dropWhile keep rest else xs
 
-@pub(pack) fun partition keep xs = (filter keep xs, filter (\x -> not (keep x)) xs)
+@pub fun partition keep xs = (filter keep xs, filter (\x -> not (keep x)) xs)
 
-@pub(pack) fun concatMap f xs = concat (map f xs)
+@pub fun concatMap f xs = concat (map f xs)
 
-@pub(pack) fun zip xs ys =
+@pub fun zip xs ys =
   match (xs, ys) with
   | (Nil, bs) -> Nil
   | (Cons a arest, Nil) -> Nil
   | (Cons a arest, Cons b brest) -> (a, b) :: zip arest brest
 
-@pub(pack) fun zipWith f xs ys =
+@pub fun zipWith f xs ys =
   match (xs, ys) with
   | (Nil, bs) -> Nil
   | (Cons a arest, Nil) -> Nil
   | (Cons a arest, Cons b brest) -> f a b :: zipWith f arest brest
 
-@pub(pack) fun unzip ps = (map fst ps, map snd ps)
+@pub fun unzip ps = (map fst ps, map snd ps)
 
-@pub(pack) fun sumBy f xs = foldl (\acc x -> acc + f x) 0 xs
+@pub fun sumBy f xs = foldl (\acc x -> acc + f x) 0 xs
 
-@pub(pack) fun intercalate sep xs =
+@pub fun intercalate sep xs =
   match xs with
   | Nil -> Nil
   | Cons y Nil -> y
@@ -158,19 +158,19 @@ fun reverseOnto acc xs =
 
 -- Association lists: `[(key, value)]`, keys compared with `==`.
 
-@pub(pack) fun lookupAssoc key pairs =
+@pub fun lookupAssoc key pairs =
   match pairs with
   | Nil -> None
   | Cons (k, v) rest -> if k == key then Just v else lookupAssoc key rest
 
-@pub(pack) fun insertAssoc key val pairs =
+@pub fun insertAssoc key val pairs =
   match pairs with
   | Nil -> Cons (key, val) Nil
   | Cons (k, v) rest ->
       if k == key then Cons (key, val) rest
       else Cons (k, v) (insertAssoc key val rest)
 
-@pub(pack) fun removeAssoc key pairs =
+@pub fun removeAssoc key pairs =
   match pairs with
   | Nil -> Nil
   | Cons (k, v) rest ->
@@ -178,7 +178,7 @@ fun reverseOnto acc xs =
       else Cons (k, v) (removeAssoc key rest)
 
 -- Yield every element, in order, for `Std.Stream`.
-@pub(pack) fun toStream xs =
+@pub fun toStream xs =
   match xs with
   | [;] -> ()
   | x :: rest -> let ignored = yield x in toStream rest

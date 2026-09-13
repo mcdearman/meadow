@@ -191,7 +191,7 @@ impl Builder {
 
         self.stack.pop();
 
-        let modules = discover_modules(&canon, name).map_err(|e| io_diag(&canon, e))?;
+        let modules = discover_modules(&canon, name)?;
         let id = self.packages.len();
         self.packages.push(Package {
             id,
@@ -356,8 +356,29 @@ fn dep_path(value: &str) -> Option<&str> {
     }
 }
 
-fn discover_modules(root: &Path, pkg_name: InternedString) -> std::io::Result<Vec<ModuleSource>> {
-    // A single `.mw` file is a one-module package.
+fn discover_modules(root: &Path, pkg_name: InternedString) -> Result<Vec<ModuleSource>, Diagnostic> {
+    discover_modules_io(root, pkg_name).map_err(|e| match e {
+        Discovery::Io(e) => io_diag(root, e),
+        Discovery::Misnamed(d) => d,
+    })
+}
+
+enum Discovery {
+    Io(std::io::Error),
+    Misnamed(Diagnostic),
+}
+
+impl From<std::io::Error> for Discovery {
+    fn from(e: std::io::Error) -> Self {
+        Discovery::Io(e)
+    }
+}
+
+fn discover_modules_io(root: &Path, pkg_name: InternedString) -> Result<Vec<ModuleSource>, Discovery> {
+    // A single `.mw` file is a one-module package. Its name is exempt from the
+    // PascalCase rule below: it is the *package's* name, and a package may be
+    // lower-case (`meadow init` makes `app`), whereas a module in a package is a
+    // name a `use` has to write.
     if root.is_file() {
         return Ok(vec![module_from_file(root, &[], pkg_name)?]);
     }
@@ -368,6 +389,7 @@ fn discover_modules(root: &Path, pkg_name: InternedString) -> std::io::Result<Ve
     let mut files = Vec::new();
     collect_mw(&src_root, &mut files)?;
     files.sort();
+    check_module_names(&src_root, &files).map_err(Discovery::Misnamed)?;
 
     let mut modules = Vec::new();
     for file in files {
@@ -381,8 +403,8 @@ fn discover_modules(root: &Path, pkg_name: InternedString) -> std::io::Result<Ve
                     .collect()
             })
             .unwrap_or_default();
-        let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("mod");
-        if !matches!(stem, "main" | "lib" | "mod") {
+        let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("Mod");
+        if !ROOT_STEMS.contains(&stem) {
             segs.push(InternedString::from(stem));
         }
         let name = segs
@@ -393,10 +415,10 @@ fn discover_modules(root: &Path, pkg_name: InternedString) -> std::io::Result<Ve
     }
 
     if modules.is_empty() {
-        return Err(std::io::Error::new(
+        return Err(Discovery::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("no .mw modules under {}", src_root.display()),
-        ));
+        )));
     }
     Ok(modules)
 }
@@ -455,5 +477,109 @@ fn io_diag(root: &Path, e: std::io::Error) -> Diagnostic {
         filename: root.display().to_string(),
         label: ("here".to_string(), Default::default()),
         extra_labels: vec![],
+    }
+}
+
+/// File stems that make a module the package's *root* rather than a module of
+/// its own name.
+const ROOT_STEMS: &[&str] = &["Main", "Lib", "Mod"];
+
+/// Is `s` a module name — PascalCase, as a `use` path segment must be?
+///
+/// The rule is the lexer's for an upper-case identifier, less the `'` it also
+/// allows, which has no business in a file name.
+pub fn is_module_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c.is_ascii_uppercase()) && chars.all(|c| c.is_ascii_alphanumeric())
+}
+
+/// The PascalCase spelling of a name, for suggesting a rename: `main` -> `Main`,
+/// `p5` -> `P5`, `my-mod` and `my_mod` -> `MyMod`.
+fn pascal_case(s: &str) -> String {
+    s.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut cs = w.chars();
+            match cs.next() {
+                Some(c) => c.to_ascii_uppercase().to_string() + cs.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+/// Every module file, and every directory between it and the source root, has to
+/// be PascalCase.
+///
+/// Both are the same thing to the language: `src/Collections/Vector.mw` is the
+/// module `Collections.Vector`, and each segment is a name someone writes in a
+/// `use`. A lower-case file used to be accepted and even meant something —
+/// `main.mw` was the root — so the message names every offender and what to
+/// call it, rather than the first one found.
+fn check_module_names(src_root: &Path, files: &[PathBuf]) -> Result<(), Diagnostic> {
+    let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for file in files {
+        let rel = file.strip_prefix(src_root).unwrap_or(file);
+        let mut fixed = PathBuf::new();
+        let mut bad = false;
+        let parts: Vec<_> = rel.components().filter_map(|c| c.as_os_str().to_str()).collect();
+        for (i, part) in parts.iter().enumerate() {
+            let last = i + 1 == parts.len();
+            let name = if last { part.strip_suffix(".mw").unwrap_or(part) } else { part };
+            let good = if is_module_name(name) { name.to_string() } else {
+                bad = true;
+                pascal_case(name)
+            };
+            fixed.push(if last { format!("{good}.mw") } else { good });
+        }
+        if bad {
+            renames.push((rel.to_path_buf(), fixed));
+        }
+    }
+    if renames.is_empty() {
+        return Ok(());
+    }
+
+    // A directory shared by several files would otherwise be reported once per
+    // file; the files are what get renamed, so that is fine, but say it once.
+    renames.dedup();
+    let list = renames
+        .iter()
+        .map(|(from, to)| format!("`{}` to `{}`", from.display(), to.display()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (first, _) = &renames[0];
+    Err(Diagnostic {
+        msg: format!(
+            "module files and directories must be PascalCase, since each is a \
+             name in a `use` path — rename {list}"
+        ),
+        filename: src_root.join(first).display().to_string(),
+        label: ("not PascalCase".to_string(), Default::default()),
+        extra_labels: vec![],
+    })
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+
+    #[test]
+    fn a_module_name_is_pascal_case() {
+        for good in ["Main", "Lib", "Vector", "P5", "HttpServer"] {
+            assert!(is_module_name(good), "{good}");
+        }
+        for bad in ["main", "prelude", "p5", "my-mod", "My_Mod", "", "5p", "Don't"] {
+            assert!(!is_module_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_suggested_name_is_what_someone_would_have_meant() {
+        assert_eq!(pascal_case("main"), "Main");
+        assert_eq!(pascal_case("p5"), "P5");
+        assert_eq!(pascal_case("my-mod"), "MyMod");
+        assert_eq!(pascal_case("my_mod"), "MyMod");
+        assert_eq!(pascal_case("httpServer"), "HttpServer");
     }
 }

@@ -16,54 +16,54 @@
 -- cannot use `Std.String` for its messages -- hence `cat` below, built from the
 -- string primitives, rather than `String.concat`.
 
-@pub(pack) effect Test {
+@pub effect Test {
   -- Abandon the current test with this message. Never returns.
   fail : String -> (),
 }
 
 -- --- assertions --------------------------------------------------------------
 
-@pub(pack) fun assert cond msg =
+@pub fun assert cond msg =
   if cond then () else fail msg
 
-@pub(pack) fun refuteThat cond msg =
+@pub fun refuteThat cond msg =
   if cond then fail (cat "expected false: " msg) else ()
 
 -- Both equality and `show` are structural and work at any type, so this is the
 -- assertion to reach for: the message names what was being checked and the
 -- values speak for themselves.
-@pub(pack) fun assertEq actual expected msg =
+@pub fun assertEq actual expected msg =
   if actual == expected
   then ()
   else
     fail
       (cat (cat (cat (cat msg ": expected ") (show expected)) ", got ") (show actual))
 
-@pub(pack) fun assertNeq actual unexpected msg =
+@pub fun assertNeq actual unexpected msg =
   if actual != unexpected
   then ()
   else fail (cat (cat msg ": expected anything but ") (show unexpected))
 
-@pub(pack) fun assertTrue actual msg = assertEq actual True msg
+@pub fun assertTrue actual msg = assertEq actual True msg
 
-@pub(pack) fun assertFalse actual msg = assertEq actual False msg
+@pub fun assertFalse actual msg = assertEq actual False msg
 
 -- Fail unconditionally -- for the arm of a `match` that should be unreachable.
-@pub(pack) fun failWith msg = fail msg
+@pub fun failWith msg = fail msg
 
 -- --- checking that something fails -------------------------------------------
 
 -- Run `act` and report whether it failed an assertion. This is the one place the
 -- `Test` effect is handled rather than left to the runner, and it is what lets
 -- `Std.Test` test itself.
-@pub(pack) fun didFail act =
+@pub fun didFail act =
   handle act () with {
     fail msg k -> True,
     return x -> False
   }
 
 -- `act` must fail; if it succeeds, *this* is the failure.
-@pub(pack) fun assertFails act msg =
+@pub fun assertFails act msg =
   assert (didFail act) (cat "expected a failure: " msg)
 
 -- `String.concat`, spelled out from the primitives. `Std.String` is compiled

@@ -824,7 +824,7 @@ A package is a directory with a `meadow.toml` and a `src/`:
 myapp/
   meadow.toml
   src/
-    main.mw
+    Main.mw
     Math.mw
 ```
 
@@ -837,6 +837,11 @@ version = "0.1.0"
 `meadow run myapp` builds it and evaluates `main`. A single `.mw` file also counts
 as a package, which is why `meadow run hello.mw` works.
 
+Module files, and any directories under `src/`, are PascalCase: each is a name
+in a `use` path, so `src/Math.mw` is the module `Math`. `Main.mw` (or `Lib.mw`) is
+the package's root module. A lower-case module file is an error that says what
+to rename it to. A lone file run directly is exempt — its name is the package's.
+
 ### Modules inside one package are separate namespaces
 
 The package is the **compilation unit** — every module of it is resolved,
@@ -846,11 +851,11 @@ sibling's names arrive through a `use`, and never for free.
 
 ```meadow
 -- src/Math.mw
-@pub fun double n = n * 2
+@pub(pkg) fun double n = n * 2
 ```
 
 ```meadow
--- src/main.mw  (a second file in the same package)
+-- src/Main.mw  (a second file in the same package)
 use myapp.Math (double)       -- the package name, then the module
 
 def main = double 21
@@ -877,19 +882,19 @@ Naming a **type** in a `use` brings its constructors with it — that is how
 
 ```meadow
 -- src/Syntax.mw
-@pub data Expr = Int Int | Add Expr Expr
+@pub(pkg) data Expr = Int Int | Add Expr Expr
 ```
 
 ```meadow
 -- src/Eval.mw
 use myapp.Syntax (Expr)      -- the type, and `Int` / `Add` with it
 
-@pub fun eval e = match e with
+@pub(pkg) fun eval e = match e with
   | Int n -> n
   | Add a b -> eval a + eval b
 ```
 
-### Visibility: `@pub`, `@pub(pack)`, `@pub(super)`
+### Visibility: `@pub`, `@pub(pkg)`, `@pub(super)`
 
 Nothing is visible outside the module it is written in until it says so. Three
 attributes say so, each one layer wider:
@@ -898,18 +903,20 @@ attributes say so, each one layer wider:
 |---|---|
 | nothing | its own module, and the modules inside it |
 | `@pub(super)` | ...and its parent module's subtree |
-| `@pub` | ...and every module of this package |
-| `@pub(pack)` | ...and anyone who depends on this package |
+| `@pub(pkg)` | ...and every module of this package |
+| `@pub` | ...and anyone who depends on this package |
 
-So `@pub` is about leaving the **module**, and leaving the **package** is the
-louder thing to say. A library's surface is its `@pub(pack)` declarations; `@pub`
-is for the helper that two of your own modules share.
+This is Rust's arrangement, spellings included, with the package where the crate
+goes: a plain `@pub` is Rust's `pub`, and `@pub(pkg)` is `pub(crate)`. As in Rust,
+something in the parentheses only ever *narrows* `@pub`. A library's surface is
+its `@pub` declarations; `@pub(pkg)` is for the helper that two of your own
+modules share and nobody else should.
 
 ```meadow
 -- src/Math.mw
-fun fudge n = n + 1           -- this module only
-@pub fun double n = n * 2     -- the rest of the package
-@pub(pack) fun triple n = n * 3   -- and anyone who depends on us
+fun fudge n = n + 1             -- this module only
+@pub(pkg) fun double n = n * 2  -- the rest of the package
+@pub fun triple n = n * 3       -- and anyone who depends on us
 ```
 
 Naming a type makes its constructors as visible as the type, and an effect's
@@ -963,7 +970,7 @@ util = { path = "../util" }
 ```
 
 Then `use util` for all of it, `use util (double)` for one name, or
-`use util as U` to keep it behind a qualifier. Only `@pub(pack)` names cross the
+`use util as U` to keep it behind a qualifier. Only `@pub` names cross the
 boundary.
 
 ---
@@ -1501,6 +1508,12 @@ assertion five calls deep still stops the test and still names itself.
 `meadow test <path> <filter>` runs only tests whose name contains `<filter>`, and
 `meadow test --std` runs the standard library's own 154 tests.
 
+In a package of several modules a test is named by its module — `Parser.parses`
+rather than `parses` — since two modules may each have a test of that name.
+`--exact` runs only the test whose name is the filter, so
+`meadow test . Parser.parses --exact` is one test and never `Parser.parsesInts`.
+In VS Code, the **▶ Test** link above a `@test` runs exactly that.
+
 ---
 
 ## 11. Tooling
@@ -1616,7 +1629,7 @@ built on it and is worth reading as a worked example.
 - `%` follows the sign of the dividend: `(-7) % 3` is `-1`.
 - `[1..5]` is **inclusive**; `range 1 5` is **half-open**.
 - `Bool` prints lowercase but is written `True` / `False`.
-- `@pub` leaves the *module*; leaving the *package* is `@pub(pack)`.
+- `@pub` is public, as in Rust; `@pub(pkg)` stops at the package, like `pub(crate)`.
 - A package that marks nothing has no visibility rules at all — mark one thing
   and every module has to say what it shares.
 - Each module of a package is its own namespace; a sibling's names come by `use`.

@@ -71,6 +71,7 @@ meadow fmt src                  # re-indent .mw sources in place
 meadow fmt --check src          # ...or just report, and exit 1 if any differ
 meadow test                     # run the package's `@test` functions
 meadow test . parse             # ...only those whose name contains "parse"
+meadow test . Parser.parse --exact  # ...or exactly one
 ```
 
 A package is a directory with a `meadow.toml` and a `src/`, which `meadow init`
@@ -157,7 +158,13 @@ A test takes one argument (the runner calls it with `()`) and fails by
 performing `Std.Test`'s `Test` effect, which `assert` / `assertEq` do for you —
 so an assertion five calls deep still stops the test and still names itself.
 Both `==` and `show` are structural, so `assertEq` works at any type and prints
-what it actually got. `meadow test <path> <filter>` narrows by name.
+what it actually got.
+
+A test is named by its module — `Parser.handlesEmpty`, or just `handlesEmpty`
+in the package's root module — because two modules may each declare a test of
+the same name. `meadow test <path> <filter>` runs the tests whose name contains
+`<filter>`; add `--exact` to run only the one whose name *is* it, which is what
+the editor's **▶ Test** link above each `@test` does.
 
 ### Effects
 

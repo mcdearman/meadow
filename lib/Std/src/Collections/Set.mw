@@ -4,41 +4,41 @@
 use Std.Collections.Tree as Tree
 use Std.Collections.List as List (foldl, filter, all)
 
-@pub(pack) data Set = Set (Tree Int)
+@pub data Set = Set (Tree Int)
 
-@pub(pack) def empty = Set Tree.empty
+@pub def empty = Set Tree.empty
 
 fun unwrap s = match s with | Set t -> t
 
-@pub(pack) fun insert x s = Set (Tree.insert x (unwrap s))
+@pub fun insert x s = Set (Tree.insert x (unwrap s))
 
-@pub(pack) fun delete x s = Set (Tree.delete x (unwrap s))
+@pub fun delete x s = Set (Tree.delete x (unwrap s))
 
-@pub(pack) fun member x s = Tree.member x (unwrap s)
+@pub fun member x s = Tree.member x (unwrap s)
 
-@pub(pack) fun size s = Tree.size (unwrap s)
+@pub fun size s = Tree.size (unwrap s)
 
-@pub(pack) fun null s = Tree.null (unwrap s)
+@pub fun null s = Tree.null (unwrap s)
 
-@pub(pack) fun toList s = Tree.toList (unwrap s)
+@pub fun toList s = Tree.toList (unwrap s)
 
-@pub(pack) fun fromList xs = Set (Tree.fromList xs)
+@pub fun fromList xs = Set (Tree.fromList xs)
 
-@pub(pack) fun minElem s = Tree.minElem (unwrap s)
+@pub fun minElem s = Tree.minElem (unwrap s)
 
-@pub(pack) fun maxElem s = Tree.maxElem (unwrap s)
+@pub fun maxElem s = Tree.maxElem (unwrap s)
 
-@pub(pack) fun union a b = foldl (\acc x -> insert x acc) a (toList b)
+@pub fun union a b = foldl (\acc x -> insert x acc) a (toList b)
 
-@pub(pack) fun diff a b = foldl (\acc x -> delete x acc) a (toList b)
+@pub fun diff a b = foldl (\acc x -> delete x acc) a (toList b)
 
-@pub(pack) fun intersect a b =
+@pub fun intersect a b =
   fromList (filter (\x -> member x b) (toList a))
 
-@pub(pack) fun subset a b = all (\x -> member x b) (toList a)
+@pub fun subset a b = all (\x -> member x b) (toList a)
 
 -- Yield every element in ascending order, for `Std.Stream`.
-@pub(pack) fun toStream s = List.toStream (toList s)
+@pub fun toStream s = List.toStream (toList s)
 
 -- --- tests -------------------------------------------------------------------
 

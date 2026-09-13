@@ -7,51 +7,51 @@
 -- little-/big-endian multi-byte integer reads and writes on top of them.
 
 -- The empty byte array.
-@pub(pack) def bytesEmpty = #[]
+@pub def bytesEmpty = #[]
 
-@pub(pack) fun bytesLength b = arrayLen b
+@pub fun bytesLength b = arrayLen b
 
-@pub(pack) fun bytesIsEmpty b = arrayLen b == 0
+@pub fun bytesIsEmpty b = arrayLen b == 0
 
 -- `Just` the byte at `i`, or `None` if `i` is out of range.
-@pub(pack) fun bytesGet b i =
+@pub fun bytesGet b i =
   if i < 0 then None
   else if i >= arrayLen b then None
   else Just (arrayGet b i)
 
 -- The byte at `i`, or `default` when out of range.
-@pub(pack) fun bytesGetOr default b i = arrayGetOr default b i
+@pub fun bytesGetOr default b i = arrayGetOr default b i
 
 -- Persistently set byte `i` to the low 8 bits of `v`.
-@pub(pack) fun bytesSet b i v = arraySet b i (bitAnd v 255)
+@pub fun bytesSet b i v = arraySet b i (bitAnd v 255)
 
 -- Append the low 8 bits of `v`.
-@pub(pack) fun bytesPush b v = arrayPush b (bitAnd v 255)
+@pub fun bytesPush b v = arrayPush b (bitAnd v 255)
 
-@pub(pack) fun bytesPop b = arrayPop b
+@pub fun bytesPop b = arrayPop b
 
 -- The `[from, to)` sub-array, clamped to bounds.
-@pub(pack) fun bytesSlice b from to = arraySlice b from to
+@pub fun bytesSlice b from to = arraySlice b from to
 
-@pub(pack) fun bytesConcat a b = arrayConcat a b
+@pub fun bytesConcat a b = arrayConcat a b
 
 -- --- multi-byte integer reads (return 0 for bytes past the end) --------------
 
-@pub(pack) fun bytesGetU16LE b i =
+@pub fun bytesGetU16LE b i =
   bitOr (bytesGetOr 0 b i)
         (bytesGetOr 0 b (i + 1) << 8)
 
-@pub(pack) fun bytesGetU16BE b i =
+@pub fun bytesGetU16BE b i =
   bitOr (bytesGetOr 0 b i << 8)
         (bytesGetOr 0 b (i + 1))
 
-@pub(pack) fun bytesGetU32LE b i =
+@pub fun bytesGetU32LE b i =
   bitOr (bitOr (bytesGetOr 0 b i)
                (bytesGetOr 0 b (i + 1) << 8))
         (bitOr (bytesGetOr 0 b (i + 2) << 16)
                (bytesGetOr 0 b (i + 3) << 24))
 
-@pub(pack) fun bytesGetU32BE b i =
+@pub fun bytesGetU32BE b i =
   bitOr (bitOr (bytesGetOr 0 b i << 24)
                (bytesGetOr 0 b (i + 1) << 16))
         (bitOr (bytesGetOr 0 b (i + 2) << 8)
@@ -59,19 +59,19 @@
 
 -- --- multi-byte integer writes (each returns a new byte array) --------------
 
-@pub(pack) fun bytesSetU16LE b i v =
+@pub fun bytesSetU16LE b i v =
   bytesSet (bytesSet b i v) (i + 1) (v >> 8)
 
-@pub(pack) fun bytesSetU16BE b i v =
+@pub fun bytesSetU16BE b i v =
   bytesSet (bytesSet b i (v >> 8)) (i + 1) v
 
-@pub(pack) fun bytesSetU32LE b i v =
+@pub fun bytesSetU32LE b i v =
   bytesSet (bytesSet (bytesSet (bytesSet b i v)
                                (i + 1) (v >> 8))
                      (i + 2) (v >> 16))
            (i + 3) (v >> 24)
 
-@pub(pack) fun bytesSetU32BE b i v =
+@pub fun bytesSetU32BE b i v =
   bytesSet (bytesSet (bytesSet (bytesSet b i (v >> 24))
                                (i + 1) (v >> 16))
                      (i + 2) (v >> 8))

@@ -1,7 +1,7 @@
 -- Std.Collections: container data structures.
 
-@pub(pack) mod List
-@pub(pack) mod Vector
-@pub(pack) mod Tree
-@pub(pack) mod Set
-@pub(pack) mod Map
+@pub mod List
+@pub mod Vector
+@pub mod Tree
+@pub mod Set
+@pub mod Map

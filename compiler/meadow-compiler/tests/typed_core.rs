@@ -140,7 +140,7 @@ fn a_mention_across_a_unit_boundary_is_instantiated_too() {
     // The shape of a REPL line: this unit's mention refers to a binding whose
     // scheme arrived from somewhere else, so the type arguments have to be
     // recovered from that scheme rather than from anything local.
-    let base = unit("base", "@pub(pack) fun ident x = x\n", &[]);
+    let base = unit("base", "@pub fun ident x = x\n", &[]);
     let top = unit("top", "def n = ident 3\ndef s = ident \"hi\"\n", &[&base]);
     let args = type_args(&top);
     assert!(

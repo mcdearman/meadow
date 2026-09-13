@@ -15,63 +15,63 @@ use Std.Ordering (compare, isLess, isEqual, isGreater)
 -- --- codes --------------------------------------------------------------------
 
 -- The Unicode scalar value: `code 'A'` is 65.
-@pub(pack) fun code c = charCode c
+@pub fun code c = charCode c
 
 -- Fails at run time on a value that is not a scalar (a surrogate, or above
 -- U+10FFFF). `Std.Char.fromCodeSafe` checks first.
-@pub(pack) fun fromCode n = charFromCode n
+@pub fun fromCode n = charFromCode n
 
-@pub(pack) fun isScalar n =
+@pub fun isScalar n =
   n >= 0 and n <= 1114111 and (n < 55296 or n > 57343)
 
-@pub(pack) fun fromCodeSafe n = if isScalar n then Just (charFromCode n) else None
+@pub fun fromCodeSafe n = if isScalar n then Just (charFromCode n) else None
 
-@pub(pack) fun toString c = charsToString #[c]
+@pub fun toString c = charsToString #[c]
 
 -- --- classification (ASCII) ----------------------------------------------------
 
-@pub(pack) fun isAscii c = code c < 128
+@pub fun isAscii c = code c < 128
 
-@pub(pack) fun isDigit c = code c >= 48 and code c <= 57
+@pub fun isDigit c = code c >= 48 and code c <= 57
 
-@pub(pack) fun isHexDigit c =
+@pub fun isHexDigit c =
   isDigit c
   or (code c >= 97 and code c <= 102)
   or (code c >= 65 and code c <= 70)
 
-@pub(pack) fun isLower c = code c >= 97 and code c <= 122
+@pub fun isLower c = code c >= 97 and code c <= 122
 
-@pub(pack) fun isUpper c = code c >= 65 and code c <= 90
+@pub fun isUpper c = code c >= 65 and code c <= 90
 
-@pub(pack) fun isAlpha c = isLower c or isUpper c
+@pub fun isAlpha c = isLower c or isUpper c
 
-@pub(pack) fun isAlphaNum c = isAlpha c or isDigit c
+@pub fun isAlphaNum c = isAlpha c or isDigit c
 
 -- Space, tab, newline, carriage return, form feed, vertical tab.
-@pub(pack) fun isSpace c =
+@pub fun isSpace c =
   let n = code c in
   n == 32 or (n >= 9 and n <= 13)
 
 -- --- case ----------------------------------------------------------------------
 
-@pub(pack) fun toUpper c = if isLower c then charFromCode (code c - 32) else c
+@pub fun toUpper c = if isLower c then charFromCode (code c - 32) else c
 
-@pub(pack) fun toLower c = if isUpper c then charFromCode (code c + 32) else c
+@pub fun toLower c = if isUpper c then charFromCode (code c + 32) else c
 
 -- --- digits --------------------------------------------------------------------
 
 -- `'7'` to `7`; `None` for anything that is not a decimal digit.
-@pub(pack) fun digitToInt c = if isDigit c then Just (code c - 48) else None
+@pub fun digitToInt c = if isDigit c then Just (code c - 48) else None
 
 -- `0`..`15` to `'0'`..`'f'`; `None` outside that range.
-@pub(pack) fun fromHexDigit n =
+@pub fun fromHexDigit n =
   if n < 0 or n > 15
   then None
   else if n < 10
   then Just (charFromCode (48 + n))
   else Just (charFromCode (87 + n))
 
-@pub(pack) fun hexDigitToInt c =
+@pub fun hexDigitToInt c =
   let n = code c in
   if isDigit c then Just (n - 48)
   else if n >= 97 and n <= 102 then Just (n - 87)
@@ -81,9 +81,9 @@ use Std.Ordering (compare, isLess, isEqual, isGreater)
 -- --- ordering ------------------------------------------------------------------
 
 -- By code point. `==` already works at any type; this is for sorting and ranges.
-@pub(pack) fun cmp a b = compare (code a) (code b)
+@pub fun cmp a b = compare (code a) (code b)
 
-@pub(pack) fun isBetween lo hi c = code c >= code lo and code c <= code hi
+@pub fun isBetween lo hi c = code c >= code lo and code c <= code hi
 
 -- --- tests ---------------------------------------------------------------------
 

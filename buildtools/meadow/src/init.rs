@@ -1,7 +1,7 @@
 //! `meadow init` — write the smallest thing the rest of the tools will accept
 //! as a package.
 //!
-//! Which is not much: a `meadow.toml` naming the package, and a `src/main.mw`
+//! Which is not much: a `meadow.toml` naming the package, and a `src/Main.mw`
 //! with an entry point in it. [`crate::package`] would in fact accept a bare
 //! directory of `.mw` files and name the package after the directory, so what
 //! this really buys is the *name* — written down, rather than inferred from
@@ -55,7 +55,7 @@ pub fn run(opts: &Options) -> Result<Created, String> {
     write_new(&root.join("meadow.toml"), &manifest(&name), &mut files)?;
     // Left alone if it is already there: someone running this in a directory
     // that has sources wants the manifest, not a new `main`.
-    let main = src.join("main.mw");
+    let main = src.join("Main.mw");
     if !main.exists() {
         write_new(&main, MAIN, &mut files)?;
     }

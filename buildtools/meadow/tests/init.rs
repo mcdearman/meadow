@@ -60,7 +60,7 @@ fn the_directory_is_created_if_it_is_missing() {
     let made = init_at(&target, None).expect("init");
     assert_eq!(made.name, "nested");
     assert!(target.join("meadow.toml").is_file());
-    assert!(target.join("src").join("main.mw").is_file());
+    assert!(target.join("src").join("Main.mw").is_file());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -103,7 +103,7 @@ fn existing_sources_are_not_replaced() {
     let dir = scratch("existing");
     let target = dir.join("has-code");
     std::fs::create_dir_all(target.join("src")).unwrap();
-    let main = target.join("src").join("main.mw");
+    let main = target.join("src").join("Main.mw");
     std::fs::write(&main, "def main = 7\n").unwrap();
 
     init_at(&target, Some("hasCode")).expect("init");
@@ -150,8 +150,8 @@ fn a_generated_package_can_be_used_as_a_dependency() {
     init_at(&app, None).expect("app");
 
     std::fs::write(
-        util.join("src").join("main.mw"),
-        "@pub(pack) fun double x = x * 2\n",
+        util.join("src").join("Main.mw"),
+        "@pub fun double x = x * 2\n",
     )
     .unwrap();
     std::fs::write(
@@ -161,7 +161,7 @@ fn a_generated_package_can_be_used_as_a_dependency() {
     )
     .unwrap();
     std::fs::write(
-        app.join("src").join("main.mw"),
+        app.join("src").join("Main.mw"),
         "use util (double)\n\ndef main = double 21\n",
     )
     .unwrap();

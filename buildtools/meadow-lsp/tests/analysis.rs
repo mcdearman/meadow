@@ -243,12 +243,12 @@ fn a_std_module_recognises_itself_by_path() {
     for (uri, want) in [
         ("file:///c%3A/repos/meadow/lib/Std/src/Collections/Vector.mw", Some("Collections.Vector")),
         ("file:///home/u/meadow/lib/Std/src/Maybe.mw", Some("Maybe")),
-        ("file:///home/u/meadow/lib/Std/src/prelude.mw", Some("prelude")),
+        ("file:///home/u/meadow/lib/Std/src/Prelude.mw", Some("Prelude")),
         // Backslashes, as a Windows path reaches us.
         ("c:\\repos\\meadow\\lib\\Std\\src\\Json.mw", Some("Json")),
         // Not one of ours, however much it looks like one.
         ("file:///home/u/other/lib/Std/src/NotAModule.mw", None),
-        ("file:///home/u/meadow/examples/euler/src/main.mw", None),
+        ("file:///home/u/meadow/examples/euler/src/Main.mw", None),
     ] {
         let got = s.module_at(uri).map(|i| s.module_name(i));
         assert_eq!(got, want, "{uri}");
@@ -678,13 +678,13 @@ fn a_module_sees_its_siblings_through_a_use() {
         &[
             (
                 "Syntax.mw",
-                "@pub data Expr = Int Int | Add Expr Expr\n@pub fun zero u = Expr.Int 0\n",
+                "@pub(pkg) data Expr = Int Int | Add Expr Expr\n@pub(pkg) fun zero u = Expr.Int 0\n",
             ),
             (
                 "Eval.mw",
-                "use demo.Syntax (Expr)\n\n@pub fun eval e = match e with\n  | Int n -> n\n  | Add a b -> eval a + eval b\n",
+                "use demo.Syntax (Expr)\n\n@pub(pkg) fun eval e = match e with\n  | Int n -> n\n  | Add a b -> eval a + eval b\n",
             ),
-            ("main.mw", "use demo.Eval (eval)\ndef main = eval (Expr.Int 1)\n"),
+            ("Main.mw", "use demo.Eval (eval)\ndef main = eval (Expr.Int 1)\n"),
         ],
     );
     let file = root.join("src").join("Eval.mw");
@@ -703,11 +703,11 @@ fn only_this_documents_diagnostics_are_reported() {
         "diags",
         Some("[package]\nname = \"demo\"\n"),
         &[
-            ("Broken.mw", "@pub fun oops x = nosuchthing x\n"),
-            ("main.mw", "def main = 1\n"),
+            ("Broken.mw", "@pub(pkg) fun oops x = nosuchthing x\n"),
+            ("Main.mw", "def main = 1\n"),
         ],
     );
-    let file = root.join("src").join("main.mw");
+    let file = root.join("src").join("Main.mw");
     let text = std::fs::read_to_string(&file).unwrap();
     let sources = meadow::editor::load_package(&file).expect("a package");
     let a = STD
@@ -736,11 +736,11 @@ fn go_to_definition_crosses_to_another_module_of_the_package() {
         "goto",
         Some("[package]\nname = \"demo\"\n"),
         &[
-            ("Syntax.mw", "@pub data Expr = Int Int\n@pub fun zero u = Expr.Int 0\n"),
-            ("main.mw", "use demo.Syntax (Expr, zero)\ndef main = zero ()\n"),
+            ("Syntax.mw", "@pub(pkg) data Expr = Int Int\n@pub(pkg) fun zero u = Expr.Int 0\n"),
+            ("Main.mw", "use demo.Syntax (Expr, zero)\ndef main = zero ()\n"),
         ],
     );
-    let file = root.join("src").join("main.mw");
+    let file = root.join("src").join("Main.mw");
     let text = std::fs::read_to_string(&file).unwrap();
     let sources = meadow::editor::load_package(&file).expect("a package");
     let a = STD
@@ -774,7 +774,7 @@ fn the_mini_ml_example_is_clean_in_an_editor() {
     // others' types. Analysed one file at a time it was a screen of red.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/mini-ml/src");
-    for name in ["Syntax.mw", "Parser.mw", "Infer.mw", "Eval.mw", "main.mw"] {
+    for name in ["Syntax.mw", "Parser.mw", "Infer.mw", "Eval.mw", "Main.mw"] {
         let file = std::fs::canonicalize(root.join(name)).expect("the example");
         let text = std::fs::read_to_string(&file).unwrap();
         let sources = meadow::editor::load_package(&file).expect("a package");
@@ -793,11 +793,11 @@ fn a_bad_use_is_reported_in_the_file_that_wrote_it() {
         "baduse",
         Some("[package]\nname = \"demo\"\n"),
         &[
-            ("Other.mw", "use demo.Nowhere (thing)\n@pub def n = 1\n"),
-            ("main.mw", "def main = 1\n"),
+            ("Other.mw", "use demo.Nowhere (thing)\n@pub(pkg) def n = 1\n"),
+            ("Main.mw", "def main = 1\n"),
         ],
     );
-    for (name, wanted) in [("main.mw", false), ("Other.mw", true)] {
+    for (name, wanted) in [("Main.mw", false), ("Other.mw", true)] {
         let file = root.join("src").join(name);
         let text = std::fs::read_to_string(&file).unwrap();
         let sources = meadow::editor::load_package(&file).expect("a package");
@@ -872,17 +872,17 @@ fn renaming_reaches_every_module_of_the_package() {
     let out = renamed(
         "rename-cross",
         &[
-            ("Math.mw", "@pub fun dou$ble n = n * 2\n@pub fun quad n = double (double n)\n"),
-            ("main.mw", "use demo.Math (double)\ndef main = double 21\n"),
+            ("Math.mw", "@pub(pkg) fun dou$ble n = n * 2\n@pub(pkg) fun quad n = double (double n)\n"),
+            ("Main.mw", "use demo.Math (double)\ndef main = double 21\n"),
         ],
         "twice",
     )
     .expect("a rename");
     let math = &out.iter().find(|(n, _)| n == "Math.mw").unwrap().1;
-    let main = &out.iter().find(|(n, _)| n == "main.mw").unwrap().1;
+    let main = &out.iter().find(|(n, _)| n == "Main.mw").unwrap().1;
     assert_eq!(
         *math,
-        "@pub fun twice n = n * 2\n@pub fun quad n = twice (twice n)\n"
+        "@pub(pkg) fun twice n = n * 2\n@pub(pkg) fun quad n = twice (twice n)\n"
     );
     assert_eq!(*main, "use demo.Math (twice)\ndef main = twice 21\n");
 }
@@ -895,20 +895,20 @@ fn renaming_leaves_a_different_binding_of_the_same_name_alone() {
         "rename-shadow",
         &[
             (
-                "main.mw",
-                "@pub def x = 1\nfun f $x = let x = 2 in x + 1\nfun g y = x + y\n",
+                "Main.mw",
+                "@pub(pkg) def x = 1\nfun f $x = let x = 2 in x + 1\nfun g y = x + y\n",
             ),
-            ("Other.mw", "@pub def x = 99\n"),
+            ("Other.mw", "@pub(pkg) def x = 99\n"),
         ],
         "p",
     )
     .expect("a rename");
-    let main = &out.iter().find(|(n, _)| n == "main.mw").unwrap().1;
+    let main = &out.iter().find(|(n, _)| n == "Main.mw").unwrap().1;
     assert_eq!(
         *main,
-        "@pub def x = 1\nfun f p = let x = 2 in x + 1\nfun g y = x + y\n"
+        "@pub(pkg) def x = 1\nfun f p = let x = 2 in x + 1\nfun g y = x + y\n"
     );
-    assert_eq!(out.iter().find(|(n, _)| n == "Other.mw").unwrap().1, "@pub def x = 99\n");
+    assert_eq!(out.iter().find(|(n, _)| n == "Other.mw").unwrap().1, "@pub(pkg) def x = 99\n");
 }
 
 #[test]
@@ -916,9 +916,9 @@ fn renaming_a_type_takes_its_mentions_with_it() {
     let out = renamed(
         "rename-type",
         &[
-            ("Syntax.mw", "@pub data Ex$pr = Lit Int\n@pub fun lit n = Expr.Lit n\n"),
+            ("Syntax.mw", "@pub(pkg) data Ex$pr = Lit Int\n@pub(pkg) fun lit n = Expr.Lit n\n"),
             (
-                "main.mw",
+                "Main.mw",
                 "use demo.Syntax (Expr, lit)\nfun size e = match e with | Lit n -> n\ndef main = size (lit 1)\n",
             ),
         ],
@@ -927,10 +927,10 @@ fn renaming_a_type_takes_its_mentions_with_it() {
     .expect("a rename");
     assert_eq!(
         out.iter().find(|(n, _)| n == "Syntax.mw").unwrap().1,
-        "@pub data Term = Lit Int\n@pub fun lit n = Term.Lit n\n"
+        "@pub(pkg) data Term = Lit Int\n@pub(pkg) fun lit n = Term.Lit n\n"
     );
     assert_eq!(
-        out.iter().find(|(n, _)| n == "main.mw").unwrap().1,
+        out.iter().find(|(n, _)| n == "Main.mw").unwrap().1,
         "use demo.Syntax (Term, lit)\nfun size e = match e with | Lit n -> n\ndef main = size (lit 1)\n"
     );
 }
@@ -942,15 +942,15 @@ fn two_constructors_with_one_name_are_told_apart() {
     let out = renamed(
         "rename-ctor",
         &[(
-            "main.mw",
-            "@pub data Expr = I$nt Int\n@pub data Ty = Int\nfun a e = match e with | Expr.Int n -> n\nfun b t = match t with | Ty.Int -> 0\n",
+            "Main.mw",
+            "@pub(pkg) data Expr = I$nt Int\n@pub(pkg) data Ty = Int\nfun a e = match e with | Expr.Int n -> n\nfun b t = match t with | Ty.Int -> 0\n",
         )],
         "Lit",
     )
     .expect("a rename");
     assert_eq!(
         out[0].1,
-        "@pub data Expr = Lit Int\n@pub data Ty = Int\nfun a e = match e with | Expr.Lit n -> n\nfun b t = match t with | Ty.Int -> 0\n"
+        "@pub(pkg) data Expr = Lit Int\n@pub(pkg) data Ty = Int\nfun a e = match e with | Expr.Lit n -> n\nfun b t = match t with | Ty.Int -> 0\n"
     );
 }
 
@@ -958,7 +958,7 @@ fn two_constructors_with_one_name_are_told_apart() {
 fn a_standard_library_name_is_not_renamed() {
     let err = renamed(
         "rename-std",
-        &[("main.mw", "def main = ma$p (\\x -> x) [1, 2]\n")],
+        &[("Main.mw", "def main = ma$p (\\x -> x) [1, 2]\n")],
         "mapped",
     )
     .expect_err("should refuse");
@@ -969,7 +969,7 @@ fn a_standard_library_name_is_not_renamed() {
 fn a_new_name_has_to_be_one() {
     let err = renamed(
         "rename-bad",
-        &[("main.mw", "fun dou$ble n = n * 2\ndef main = double 1\n")],
+        &[("Main.mw", "fun dou$ble n = n * 2\ndef main = double 1\n")],
         "Double",
     )
     .expect_err("should refuse");
@@ -977,7 +977,7 @@ fn a_new_name_has_to_be_one() {
 
     let err = renamed(
         "rename-bad2",
-        &[("main.mw", "fun dou$ble n = n * 2\ndef main = double 1\n")],
+        &[("Main.mw", "fun dou$ble n = n * 2\ndef main = double 1\n")],
         "two words",
     )
     .expect_err("should refuse");
@@ -1002,4 +1002,157 @@ fn top_level_definitions_are_listed_for_debugging() {
     );
     let double = &a.functions[0];
     assert_eq!(&src[double.span.start as usize..double.span.end as usize], "double");
+}
+
+// --- the Test lens ------------------------------------------------------------
+
+/// A `@test` carries the name `meadow test --exact` knows it by, and the name
+/// is the one the runner actually uses — checked against the linker rather than
+/// against a spelling of our own, since the whole point is that the lens and the
+/// runner agree about which test is which.
+#[test]
+fn a_test_is_marked_with_the_name_the_runner_knows_it_by() {
+    let root = package(
+        "test-lens",
+        Some("[package]\nname = \"lens\"\n"),
+        &[
+            (
+                "A.mw",
+                "use Std.Test (assertEq)\n\nfun helper x = x\n\n@test fun works u = assertEq (helper 1) 1 \"a\"\n",
+            ),
+            // The same bare name in a sibling, which is why the name is qualified.
+            ("B.mw", "use Std.Test (assertEq)\n\n@test fun works u = assertEq 1 1 \"b\"\n"),
+            ("Main.mw", "def main = 0\n"),
+        ],
+    );
+    let file = root.join("src").join("A.mw");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let sources = meadow::editor::load_package(&file).expect("a package");
+    let a = STD
+        .with(|s| s.analyse_package(&sources, &file, &text))
+        .expect("analysis");
+
+    let marked: Vec<(&str, Option<&str>)> = a
+        .functions
+        .iter()
+        .map(|f| (f.name.as_str(), f.test.as_deref()))
+        .collect();
+    assert_eq!(marked, [("helper", None), ("works", Some("A.works"))]);
+
+    // And that is the name the runner will be asked for.
+    let out = meadow::pipeline::build(&root, meadow::Options::debug());
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics.iter().map(|d| &d.msg).collect::<Vec<_>>());
+    let runner: Vec<String> = out
+        .linked
+        .expect("linked")
+        .tests
+        .iter()
+        .filter(|t| &*t.package == "lens")
+        .map(|t| t.name.to_string())
+        .collect();
+    assert!(runner.contains(&"A.works".to_string()), "the runner knows: {runner:?}");
+    assert!(runner.contains(&"B.works".to_string()), "the runner knows: {runner:?}");
+}
+
+/// A file on its own is a package of one root module, so its tests have no
+/// qualifier — and `meadow test <file> --exact name` finds them by the bare name.
+#[test]
+fn a_test_in_a_lone_file_is_named_bare() {
+    let a = STD.with(|s| {
+        s.analyse("use Std.Test (assertEq)\n\n@test fun checks u = assertEq 1 1 \"x\"\n")
+    });
+    let f = a.functions.iter().find(|f| f.name == "checks").expect("listed");
+    assert_eq!(f.test.as_deref(), Some("checks"));
+}
+
+/// No Test lens in a `Std` source file. The library is compiled into the
+/// binary, so `meadow test --std` runs that copy and not the file on screen —
+/// after an edit, a lens here could call a broken fix a pass.
+#[test]
+fn a_std_module_offers_no_test_to_run() {
+    STD.with(|s| {
+        let i = s
+            .module_at("/anywhere/lib/Std/src/Char.mw")
+            .expect("Char is a Std module");
+        let text = meadow::stdlib::MODULES
+            .iter()
+            .find(|(d, _)| *d == "Char")
+            .expect("its source")
+            .1;
+        assert!(text.contains("@test"), "the premise: Char has tests of its own");
+        let a = s.analyse_module(i, text);
+        assert!(!a.functions.is_empty(), "its functions are still listed for debugging");
+        assert!(
+            a.functions.iter().all(|f| f.test.is_none()),
+            "but none is offered as a test to run"
+        );
+    });
+}
+
+// --- highlighting ---------------------------------------------------------------
+
+/// Each capitalised word, with the colour the server gives it.
+fn colours(src: &str) -> Vec<(String, &'static str)> {
+    let a = STD.with(|s| s.analyse(src));
+    let idx = LineIndex::new(src);
+    meadow_lsp::tokens::tokens(src, &a)
+        .into_iter()
+        .filter_map(|(line, ch, len, kind)| {
+            let at = idx.offset(line, ch);
+            let word = &src[at..at + len as usize];
+            word.starts_with(|c: char| c.is_ascii_uppercase())
+                .then(|| (word.to_string(), meadow_lsp::tokens::LEGEND[kind as usize]))
+        })
+        .collect()
+}
+
+/// A constructor is coloured as one by what it resolved to, not by its spelling.
+///
+/// mini-ml's `Expr` has constructors called `Int` and `Bool`, which are also
+/// types -- and `Std.Json` has constructors of those names too. Matching the word
+/// against known names coloured those two as `Json`'s constructors and left
+/// every other constructor of `Expr` (`Lam`, which matched nothing) as a
+/// namespace. The same word can be both in one line: `Int Int`.
+#[test]
+fn a_constructor_that_shares_a_types_name_is_still_a_constructor() {
+    let src = "data Expr = Int Int | Lam Expr\n\
+               data Ty = Int | Var Ty\n\
+               fun f e = match e with\n  | Expr.Int n -> Ty.Var Ty.Int\n  | Lam b -> Ty.Int\n";
+    assert_eq!(
+        colours(src),
+        [
+            ("Expr", "type"),
+            ("Int", "enumMember"),
+            ("Int", "type"),
+            ("Lam", "enumMember"),
+            ("Expr", "type"),
+            ("Ty", "type"),
+            ("Int", "enumMember"),
+            ("Var", "enumMember"),
+            ("Ty", "type"),
+            ("Expr", "type"),
+            ("Int", "enumMember"),
+            ("Ty", "type"),
+            ("Var", "enumMember"),
+            ("Ty", "type"),
+            ("Int", "enumMember"),
+            ("Lam", "enumMember"),
+            ("Ty", "type"),
+            ("Int", "enumMember"),
+        ]
+        .map(|(w, k)| (w.to_string(), k))
+    );
+}
+
+/// A module is a namespace wherever it is written, even when it is spelled like
+/// something else in scope: `Bool` in `use Std.Bool` is the module, not a type
+/// or a constructor, and an alias qualifying a call is too.
+#[test]
+fn a_module_path_is_a_namespace_whatever_it_is_called() {
+    let src = "use Std.Bool (not)\nuse Std.String as S\n\ndef main = S.concat \"a\" \"b\"\n";
+    assert_eq!(
+        colours(src),
+        [("Std", "namespace"), ("Bool", "namespace"), ("Std", "namespace"), ("String", "namespace"), ("S", "namespace"), ("S", "namespace")]
+            .map(|(w, k)| (w.to_string(), k))
+    );
 }

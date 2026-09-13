@@ -20,6 +20,8 @@ Language support for [Meadow](https://github.com/mcdearman/meadow).
   `meadow dap`. With no `launch.json`, F5 debugs the package the open file
   belongs to. A **▶ Debug** link above each definition runs just that function,
   with the arguments you type.
+- **Testing** — a **▶ Test** link above each `@test` runs that one test with
+  `meadow test --exact`, in a terminal, exactly as the command line would.
 
 ## Requirements
 
@@ -52,4 +54,5 @@ so instead of going quiet.
 | `meadow.server.path` | path to the `meadow` executable (default `meadow`) |
 | `meadow.inlayHints.enabled` | show inferred types inline |
 | `meadow.debug.codeLens` | show a "Debug" link above each top-level definition |
+| `meadow.test.codeLens` | show a "Test" link above each `@test` |
 | `meadow.trace.server` | log the LSP traffic, for debugging |

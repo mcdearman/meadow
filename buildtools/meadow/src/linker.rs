@@ -15,9 +15,12 @@ pub struct GlobalSymbol {
     pub scheme: Scheme,
 }
 
-/// A `@test` function, and the package it came from.
+/// A `@test` function, and the package and module it came from.
 pub struct TestCase {
     pub package: InternedString,
+    /// `Module.name`, or the bare name in the root module -- see
+    /// [`meadow_compiler::TestSite::qualified`]. What `meadow test` prints and
+    /// filters on.
     pub name: InternedString,
     pub var: VarId,
 }
@@ -43,10 +46,10 @@ impl Linker {
         for pkg in &packages {
             defs.extend(pkg.defs.iter().cloned());
             ctor_fields.extend(pkg.ctor_fields.clone());
-            tests.extend(pkg.tests.iter().map(|&(name, var)| TestCase {
+            tests.extend(pkg.test_sites().into_iter().map(|t| TestCase {
                 package: pkg.name,
-                name,
-                var,
+                name: InternedString::from(t.qualified()),
+                var: t.var,
             }));
             // A package's own `main`, which needs no export — see
             // `CompiledPackage::entry`. The last one wins, and packages arrive

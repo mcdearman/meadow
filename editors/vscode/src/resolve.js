@@ -101,6 +101,22 @@ function speaksDap(exe) {
   }
 }
 
+/// Can this build run exactly one test? Asked with the flag attached, the same
+/// way as [`speaksLsp`]: an old `meadow test` rejects `--exact` as unknown
+/// before it gets to `--help`, and a new one prints help and exits 0.
+function speaksExactTest(exe) {
+  try {
+    const r = cp.spawnSync(exe, ["test", "--exact", "--help"], {
+      timeout: 5000,
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 /// The first candidate that exists on disk, ignoring whether it can serve.
 function resolve(configured, opts = {}) {
   const exists = opts.exists || executable;
@@ -132,4 +148,4 @@ function pick(configured, opts = {}) {
   return { command: found[0], lsp: false, found };
 }
 
-module.exports = { candidates, resolve, pick, speaksLsp, speaksDap };
+module.exports = { candidates, resolve, pick, speaksLsp, speaksDap, speaksExactTest };

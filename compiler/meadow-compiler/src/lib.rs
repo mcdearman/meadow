@@ -71,5 +71,5 @@ pub use options::{Options, OptLevel, Strictness};
 mod unit;
 pub use unit::{
     compile_str, compile_str_with, compile_unit, compile_unit_in_package, resolve_module,
-    AstModule, CompiledPackage, Export, Resolved, TypedModule,
+    AstModule, CompiledPackage, Export, Resolved, TestSite, TypedModule,
 };

@@ -1,31 +1,31 @@
 -- Std.Maybe: optional values. Reach these as `Maybe.map` etc., or `use` them.
 
-@pub(pack) data Maybe a = None | Just a
+@pub data Maybe a = None | Just a
 
-@pub(pack) fun isSome o = match o with | None -> False | Just x -> True
+@pub fun isSome o = match o with | None -> False | Just x -> True
 
-@pub(pack) fun isNone o = match o with | None -> True | Just x -> False
+@pub fun isNone o = match o with | None -> True | Just x -> False
 
-@pub(pack) fun unwrapOr default o = match o with | None -> default | Just x -> x
+@pub fun unwrapOr default o = match o with | None -> default | Just x -> x
 
-@pub(pack) fun orElse fallback o = match o with | None -> fallback | Just x -> o
+@pub fun orElse fallback o = match o with | None -> fallback | Just x -> o
 
-@pub(pack) fun map f o =
+@pub fun map f o =
   match o with
   | None -> None
   | Just x -> Just (f x)
 
-@pub(pack) fun andThen f o =
+@pub fun andThen f o =
   match o with
   | None -> None
   | Just x -> f x
 
-@pub(pack) fun keepIf pred o =
+@pub fun keepIf pred o =
   match o with
   | None -> None
   | Just x -> if pred x then o else None
 
-@pub(pack) fun toList o =
+@pub fun toList o =
   match o with
   | None -> Nil
   | Just x -> Cons x Nil

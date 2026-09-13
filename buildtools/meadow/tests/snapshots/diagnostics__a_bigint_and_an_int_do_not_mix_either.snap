@@ -1,5 +1,5 @@
 ---
 source: meadow/tests/diagnostics.rs
-expression: "errors(\"def x = 1 +~ 2 == 1 + 2\\n\")"
+expression: "errors(\"def x = toBigInt 1 + 2 == toInt 1 + 2\\n\")"
 ---
 type mismatch: `BigInt` vs `Int`

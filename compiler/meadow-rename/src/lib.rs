@@ -171,7 +171,11 @@ const BUILTIN_CTOR_OWNERS: &[(&str, &str)] =
 /// prelude is allowed to (re-)declare `List` / `Bool` without it counting as a
 /// duplicate-definition error.
 const BUILTIN_TYCONS: &[&str] =
-    &["Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array", "Ref", "StRef", "StArray"];
+    &[
+        "Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array", "Ref", "StRef",
+        "StArray", "Int64", "Int32", "Int16", "Int8", "UInt64", "UInt32", "UInt16", "UInt8",
+        "Float64", "Float32",
+    ];
 
 /// Split a declaration into its attributes and the bare declaration underneath.
 /// The parser only ever nests one `Attributed` layer.
@@ -289,6 +293,9 @@ fn is_ctor_name(name: &str) -> bool {
 fn builtin_tycons() -> HashMap<InternedString, usize> {
     [
         ("Int", 0), ("BigInt", 0), ("Float", 0), ("String", 0), ("Bool", 0),
+        ("Int64", 0), ("Int32", 0), ("Int16", 0), ("Int8", 0),
+        ("UInt64", 0), ("UInt32", 0), ("UInt16", 0), ("UInt8", 0),
+        ("Float64", 0), ("Float32", 0),
         ("Unit", 0), ("List", 1), ("Array", 1), ("Ref", 1), ("StRef", 2), ("StArray", 2),
     ]
     .into_iter()
@@ -2009,7 +2016,7 @@ impl Resolver {
             }
             ast::Expr::BinOp(op, lhs, rhs) => {
                 let sym = InternedString::from(op.value().to_string());
-                let f = self.lookup(sym).expect("prelude never truncated");
+                let f = self.lookup(sym).expect("every operator is a prim, and prims are never truncated");
                 let rl = self.resolve_expr(lhs);
                 let rr = self.resolve_expr(rhs);
                 let fv = self.node(f, op.span);

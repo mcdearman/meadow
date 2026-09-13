@@ -737,6 +737,8 @@ impl<'p> Vm<'p> {
             Const::Bool(b) => Value::Bool(b),
             Const::Int(n) => Value::Int(n),
             Const::Float(x) => Value::Float(x),
+            Const::Word(w, b) => Value::Word(w, b),
+            Const::Float32(x) => Value::Float32(x),
             Const::Str(s) => Value::Str(s),
             Const::Char(c) => Value::Char(c),
             Const::BigInt(n) => self.alloc_bigint(num_bigint::BigInt::from(n)),

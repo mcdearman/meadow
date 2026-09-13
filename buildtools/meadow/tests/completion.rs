@@ -95,7 +95,11 @@ fn an_uppercase_word_in_a_term_completes_constructors() {
 #[test]
 fn a_type_position_completes_types() {
     let n = std_names();
-    assert_eq!(complete_at(&n, "record R = { x : In"), vec!["Int"]);
+    assert_eq!(
+        complete_at(&n, "record R = { x : In"),
+        vec!["Int", "Int16", "Int32", "Int64", "Int8"]
+    );
+    assert_eq!(complete_at(&n, "record R = { x : UInt8"), vec!["UInt8"]);
     assert!(complete_at(&n, "record R = { x : May").contains(&"Maybe".to_string()));
     // ...and not constructors.
     assert!(!complete_at(&n, "record R = { x : Jus").contains(&"Just".to_string()));

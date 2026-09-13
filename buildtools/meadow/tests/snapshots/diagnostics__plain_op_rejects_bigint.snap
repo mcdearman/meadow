@@ -1,5 +1,0 @@
----
-source: meadow/tests/diagnostics.rs
-expression: "errors(\"def x = toBigInt 3 + 4\\n\")"
----
-type mismatch: `Int` vs `BigInt`

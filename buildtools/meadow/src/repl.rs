@@ -503,7 +503,7 @@ impl Session {
         }
         for pkg in user {
             for e in &pkg.exports {
-                println!("{} : {}", e.name, e.scheme);
+                println!("{} : {}", hir::spell_name(&e.name), e.scheme);
             }
         }
     }
@@ -573,7 +573,7 @@ impl Session {
             // `def it = …` still prints as `it`.
             match &label {
                 Some(l) => println!("{} : {}", l, e.scheme),
-                None => println!("{} : {}", e.name, e.scheme),
+                None => println!("{} : {}", hir::spell_name(&e.name), e.scheme),
             }
         }
         if compiled.exports.is_empty() && !had_error {

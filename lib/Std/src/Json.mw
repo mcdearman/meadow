@@ -147,7 +147,7 @@ def member =
 
 def spaces = P.skipMany (P.satisfy isSpace)
 
-fun isSpace b = b == 32 or b == 9 or b == 10 or b == 13
+fun isSpace (b : UInt8) = b == 32 or b == 9 or b == 10 or b == 13
 
 fun lexeme p = P.thenSkip p spaces
 
@@ -162,7 +162,7 @@ def number =
           P.bind (P.optional (P.skipThen (P.single 46) (P.takeWhile1P "a digit" isDigit)))
             (\frac -> P.pure (buildNumber sign whole frac))))
 
-fun isDigit b = b >= 48 and b <= 57
+fun isDigit (b : UInt8) = b >= 48 and b <= 57
 
 fun buildNumber sign whole frac =
   let neg = match sign with | None -> False | Just s -> True in
@@ -174,7 +174,7 @@ fun applySign neg n = if neg then 0 - n else n
 
 fun applySignF neg x = if neg then 0.0 -. x else x
 
-fun digitsToInt bytes = V.foldl (\acc b -> acc * 10 + (b - 48)) 0 bytes
+fun digitsToInt bytes = V.foldl (\acc b -> acc * 10 + toInt (b - 48)) 0 bytes
 
 -- `.25` as a `Float`, by dividing the digits by the right power of ten.
 fun fraction bytes =

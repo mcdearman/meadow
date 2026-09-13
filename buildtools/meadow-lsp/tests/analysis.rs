@@ -32,7 +32,7 @@ thread_local! {
 fn hover_reports_the_type_at_a_position() {
     let (a, off) = at("fun double n = n * 2\ndef main = do@uble 21\n", "@");
     let hover = a.hover_at(off).expect("hover");
-    assert!(hover.contains("double : Int -> Int"), "got: {hover}");
+    assert!(hover.contains("double : forall n. n -> n"), "got: {hover}");
 }
 
 #[test]
@@ -174,11 +174,11 @@ fn hinted(src: &str) -> String {
 fn inlay_hints_read_as_a_writable_annotation() {
     assert_eq!(
         hinted("fun add a b = a + b\n"),
-        "fun add (a : Int) (b : Int) : Int = a + b\n"
+        "fun add (a : n) (b : n) : n = a + b\n"
     );
     assert_eq!(
-        hinted("fun f u = let n = 1 in n\n"),
-        "fun f (u : a) : Int = let (n : Int) = 1 in n\n"
+        hinted("fun f u = let k = toInt 1 in k\n"),
+        "fun f (u : a) : Int = let (k : Int) = toInt 1 in k\n"
     );
 }
 
@@ -202,15 +202,16 @@ fn a_parenthesised_parameter_still_gets_a_result_type() {
 
 #[test]
 fn a_lambda_gets_its_parameters_but_no_result_type() {
-    // `\(n : Int) -> …` is writable; a result type there is not.
-    assert_eq!(hinted("def f = \\n -> n + 1\n"), "def f = \\(n : Int) -> n + 1\n");
+    // `\(n : BigInt) -> …` is writable; a result type there is not. A `def`
+    // does not generalize a number class, so the literal defaults to `BigInt`.
+    assert_eq!(hinted("def f = \\n -> n + 1\n"), "def f = \\(n : BigInt) -> n + 1\n");
 }
 
 /// A type name in a hint is a part of its own, so the server can link it.
 #[test]
 fn a_hint_names_the_types_inside_it_separately() {
     use meadow_lsp::analysis::HintPart;
-    let a = STD.with(|s| s.analyse("fun pick m = match m with | Just v -> v | None -> 0\n"));
+    let a = STD.with(|s| s.analyse("fun pick m = match m with | Just v -> v | None -> toInt 0\n"));
     let names: Vec<String> = a
         .binders
         .iter()
@@ -622,14 +623,15 @@ fn go_to_definition_covers_effects_and_their_operations() {
 
 /// A result type that is written is not also hinted.
 ///
-/// The four spellings below differ only in how much the author typed; the line
+/// The four spellings below differ only in how much the author typed (each
+/// pins the number type somewhere); the line
 /// an editor shows is the same for all of them, which is the property that
 /// makes a hint and an annotation interchangeable.
 #[test]
 fn a_written_result_type_is_not_hinted_again() {
     let want = "fun f (x : Int) (y : Int) : Int = x + y\n";
-    assert_eq!(hinted("fun f x y = x + y\n"), want);
     assert_eq!(hinted("fun f (x : Int) y = x + y\n"), want);
+    assert_eq!(hinted("fun f x (y : Int) = x + y\n"), want);
     assert_eq!(hinted("fun f x y : Int = x + y\n"), want);
     assert_eq!(hinted("fun f (x : Int) (y : Int) : Int = x + y\n"), want);
 }
@@ -661,16 +663,16 @@ fn go_to_definition_reaches_a_type_from_a_result_annotation() {
 fn a_result_hint_shows_the_effect() {
     assert_eq!(
         hinted("fun logIt x = let _ = println \"hi\" in x\n"),
-        "fun logIt (x : a) : a ! { Console | b } = let _ = println \"hi\" in x\n"
+        "fun logIt (x : a) : a ! { Console | e } = let _ = println \"hi\" in x\n"
     );
     assert_eq!(
         hinted("fun bump r = setRef r 1\n"),
-        "fun bump (r : Ref Int) : () ! { Mut | a } = setRef r 1\n"
+        "fun bump (r : Ref n) : () ! { Mut | e } = setRef r 1\n"
     );
     // Shared with a parameter: the result carries whatever `f` does.
     assert_eq!(
         hinted("fun apply2 f x = f (f x)\n"),
-        "fun apply2 (f : a -> a ! b) (x : a) : a ! b = f (f x)\n"
+        "fun apply2 (f : a -> a ! e) (x : a) : a ! e = f (f x)\n"
     );
 }
 
@@ -678,12 +680,12 @@ fn a_result_hint_shows_the_effect() {
 ///
 /// It still *has* a latent effect variable — every arrow does — but one that
 /// is mentioned nowhere else says nothing, and the scheme printer hides it for
-/// the same reason. `Int ! a` on `a + b` would be noise on every line.
+/// the same reason. `n ! a` on `a + b` would be noise on every line.
 #[test]
 fn a_pure_function_is_not_decorated_with_an_empty_effect() {
     assert_eq!(
         hinted("fun add a b = a + b\n"),
-        "fun add (a : Int) (b : Int) : Int = a + b\n"
+        "fun add (a : n) (b : n) : n = a + b\n"
     );
 }
 
@@ -1039,7 +1041,7 @@ fn top_level_definitions_are_listed_for_debugging() {
         .collect();
     assert_eq!(
         got,
-        [("double", 1, "Int -> Int"), ("pair", 2, "a -> b -> (a, b)"), ("answer", 0, "Int")]
+        [("double", 1, "n -> n"), ("pair", 2, "a -> b -> (a, b)"), ("answer", 0, "BigInt")]
     );
     let double = &a.functions[0];
     assert_eq!(&src[double.span.start as usize..double.span.end as usize], "double");
@@ -1227,8 +1229,47 @@ fn a_use_of_a_types_constructors_colours_each_part() {
 /// spelling.
 #[test]
 fn a_module_named_like_a_type_is_a_namespace() {
-    let src = "@pub mod Int\n@pub mod String\nuse Std.Int as I\nuse Std.String as String\ndef x = (I.max 1 2, String.concat \"a\" \"b\")\n";
+    let src = "@pub mod Int\n@pub mod String\nuse Std.Num.Int as I\nuse Std.String as String\ndef x = (I.max 1 2, String.concat \"a\" \"b\")\n";
     let wrong: Vec<(String, &str)> =
         colours(src).into_iter().filter(|(_, kind)| *kind != "namespace").collect();
     assert!(wrong.is_empty(), "coloured as something other than a module: {wrong:?}");
+}
+
+/// `++` is a name, so the editor treats the operator like one: hovering it
+/// shows what it applies, and a binding of its own is spelled `(++)`, the way
+/// it is defined.
+#[test]
+fn hovering_a_user_operator_shows_its_binding() {
+    let (a, off) = at("def main = \"a\" @++ \"b\"\n", "@");
+    let hover = a.hover_at(off).expect("hover");
+    assert!(hover.contains("String -> String -> String"), "got: {hover}");
+
+    let (a, off) = at("fun (++) a b = (a, b)\ndef main = 1 @++ 2\n", "@");
+    let hover = a.hover_at(off).expect("hover");
+    assert!(hover.contains("(++) : forall a b. a -> b -> (a, b)"), "got: {hover}");
+}
+
+#[test]
+fn a_user_operator_goes_to_its_definition() {
+    let src = "fun (++) a b = (a, b)\ndef main = 1 @++ 2\n";
+    let (a, off) = at(src, "@");
+    let loc = STD
+        .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
+        .expect("a definition for `++`");
+    assert_eq!(loc.source.id, a.source_id);
+    assert_eq!(&src.replacen("@", "", 1)[loc.span.start as usize..loc.span.end as usize], "++");
+}
+
+/// An effect variable in a hint is named like one, `e`, as the scheme on hover
+/// names it -- not with the next free type-variable letter.
+#[test]
+fn a_hint_names_an_effect_variable_e() {
+    assert_eq!(
+        hinted("fun each f xs = forEach f xs\n"),
+        "fun each (f : a -> () ! e) (xs : [a]) : () ! e = forEach f xs\n"
+    );
+    assert_eq!(
+        hinted("fun twice f g x = f (g x)\n"),
+        "fun twice (f : a -> b ! e) (g : c -> a ! e) (x : c) : b ! e = f (g x)\n"
+    );
 }

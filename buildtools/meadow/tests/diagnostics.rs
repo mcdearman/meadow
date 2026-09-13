@@ -80,15 +80,20 @@ fn parse_error() {
 }
 
 #[test]
-fn plain_op_rejects_bigint() {
-    // A `BigInt` cannot flow into a plain `Int` operator (no implicit widening of
-    // a non-literal).
-    insta::assert_snapshot!(errors("def x = toBigInt 3 + 4\n"));
+fn two_integer_types_do_not_mix() {
+    // One operator, one type: a `UInt8` and an `Int` need a conversion, however
+    // obviously the answer would fit.
+    insta::assert_snapshot!(errors("def x = toUInt8 3 + toInt 4\n"));
 }
 
 #[test]
-fn int_and_bigint_results_dont_unify() {
-    // Literals coerce, but once `+~` has produced a `BigInt` it will not unify
-    // with an `Int` result.
-    insta::assert_snapshot!(errors("def x = 1 +~ 2 == 1 + 2\n"));
+fn a_bigint_and_an_int_do_not_mix_either() {
+    // A literal takes the type of what it meets; a value that already has one
+    // does not change it.
+    insta::assert_snapshot!(errors("def x = toBigInt 1 + 2 == toInt 1 + 2\n"));
+}
+
+#[test]
+fn an_integer_is_not_a_float() {
+    insta::assert_snapshot!(errors("def x = 1.5 + 2\n"));
 }

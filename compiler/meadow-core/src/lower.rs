@@ -32,8 +32,8 @@ pub struct Lowerer<'a> {
     /// Operation `VarId` -> `(effect, op)` — a reference to one lowers to
     /// `\x -> perform Effect.op x`.
     effect_ops: &'a HashMap<Var, (InternedString, InternedString)>,
-    /// Inferred types, keyed by `NodeId` — consulted so an integer literal whose
-    /// context coerced it to `BigInt` lowers to [`Lit::BigInt`], not [`Lit::Int`].
+    /// Inferred types, keyed by `NodeId` — consulted so an integer literal lowers
+    /// at the type its context gave it: [`Lit::BigInt`], [`Lit::Word`] or [`Lit::Int`].
     types: &'a TypeTable,
     /// Declared arity per data constructor, so an under-applied one can be
     /// eta-expanded into a function.
@@ -92,14 +92,6 @@ impl<'a> Lowerer<'a> {
     /// lowering together. The unit records it so the next one can stack above.
     pub fn var_end(&self) -> u32 {
         self.vars.end()
-    }
-
-    /// Is the node at `id` inferred to have type `BigInt`?
-    fn is_bigint(&self, id: hir::NodeId) -> bool {
-        matches!(
-            self.types.get(id),
-            Some(InferType::Con(n, args)) if args.is_empty() && &**n == "BigInt"
-        )
     }
 
     /// The type inference gave the node at `id`.
@@ -183,12 +175,34 @@ impl<'a> Lowerer<'a> {
         Term::TyApp(Arc::new(term), args)
     }
 
-    /// Lower an integer literal, choosing `Int` vs `BigInt` from its inferred type.
+    /// Lower an integer literal as the type inference gave it: `BigInt`, a sized
+    /// type (wrapped to it), or `Int`. A literal whose type is still a variable
+    /// -- one inside a function generic over its integer type -- is a
+    /// [`Lit::AnyInt`], which the primitives let take its neighbour's type
+    /// (`crate::num`).
     fn int_lit(&self, id: hir::NodeId, value: i64) -> Lit {
-        if self.is_bigint(id) {
-            Lit::BigInt(value)
-        } else {
-            Lit::Int(value)
+        match self.types.get(id) {
+            Some(InferType::Con(n, args)) if args.is_empty() => match &**n {
+                "BigInt" => Lit::BigInt(value),
+                name => match crate::num::Width::from_type(name) {
+                    Some(w) => Lit::Word(w, w.wrap(value as i128)),
+                    None => Lit::Int(value),
+                },
+            },
+            Some(InferType::Var(_)) => Lit::AnyInt(value),
+            _ => Lit::Int(value),
+        }
+    }
+
+    /// A float literal as its type: `Float32`, or `Float`.
+    fn float_lit(&self, id: hir::NodeId, bits: u64) -> Lit {
+        let x = f64::from_bits(bits);
+        match self.types.get(id) {
+            Some(InferType::Con(n, args)) if args.is_empty() && &**n == "Float32" => {
+                Lit::Float32(x as f32)
+            }
+            Some(InferType::Var(_)) => Lit::AnyFloat(x),
+            _ => Lit::Float(x),
         }
     }
 
@@ -321,7 +335,7 @@ impl<'a> Lowerer<'a> {
     fn lower_expr(&mut self, expr: &hir::LExpr) -> Term {
         match expr.value() {
             hir::Expr::Lit(hir::Lit::Int(i)) => Term::Lit(self.int_lit(expr.id, *i)),
-            hir::Expr::Lit(hir::Lit::Float(b)) => Term::Lit(Lit::Float(f64::from_bits(*b))),
+            hir::Expr::Lit(hir::Lit::Float(b)) => Term::Lit(self.float_lit(expr.id, *b)),
             hir::Expr::Lit(hir::Lit::String(s)) => Term::Lit(Lit::Str(*s)),
             hir::Expr::Lit(hir::Lit::Char(c)) => Term::Lit(Lit::Char(*c)),
             hir::Expr::Unit => Term::Lit(Lit::Unit),
@@ -517,7 +531,14 @@ impl<'a> Lowerer<'a> {
     /// underneath.
     fn pat_binder<'p>(&mut self, pat: &'p hir::LPat) -> (Var, Ty, Option<&'p hir::LPat>) {
         let ty = self.ty(pat.id);
-        match pat.value() {
+        // An annotation says nothing at run time, so `(n : Int)` binds exactly
+        // as `n` does -- rather than as a pattern to take apart, which cost an
+        // annotated parameter a closure and a match on every call.
+        let mut bare = pat;
+        while let hir::Pat::Ann(inner, _) = bare.value() {
+            bare = inner;
+        }
+        match bare.value() {
             hir::Pat::Var(id) => (*id.value(), ty, None),
             hir::Pat::Wildcard => (self.vars.fresh(), ty, None),
             _ => (self.vars.fresh(), ty, Some(pat)),
@@ -635,7 +656,7 @@ impl<'a> Lowerer<'a> {
                 Box::new(self.lower_pat(sub)),
             ),
             hir::Pat::Lit(hir::Lit::Int(i)) => Pat::Lit(self.int_lit(pat.id, *i)),
-            hir::Pat::Lit(hir::Lit::Float(b)) => Pat::Lit(Lit::Float(f64::from_bits(*b))),
+            hir::Pat::Lit(hir::Lit::Float(b)) => Pat::Lit(self.float_lit(pat.id, *b)),
             hir::Pat::Lit(hir::Lit::String(s)) => Pat::Lit(Lit::Str(*s)),
             hir::Pat::Lit(hir::Lit::Char(c)) => Pat::Lit(Lit::Char(*c)),
             hir::Pat::Tuple(items) => {

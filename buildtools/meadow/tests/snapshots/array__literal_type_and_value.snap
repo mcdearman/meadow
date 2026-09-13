@@ -2,5 +2,5 @@
 source: meadow/tests/array.rs
 expression: "schemes(\"def a = #[1, 2, 3]\\ndef e = #[]\\n\")"
 ---
-a : #[Int]
+a : #[BigInt]
 e : forall a. #[a]

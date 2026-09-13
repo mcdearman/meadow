@@ -220,18 +220,6 @@ pub enum BinOp {
     GtF,
     LeqF,
     GeqF,
-    /// Arbitrary-precision `+~ -~ *~ /~ %~ ^~` and `<~ >~ <=~ >=~` (operands are
-    /// `BigInt`).
-    AddB,
-    SubB,
-    MulB,
-    DivB,
-    ModB,
-    PowB,
-    LtB,
-    GtB,
-    LeqB,
-    GeqB,
 }
 
 impl ToString for BinOp {
@@ -259,16 +247,6 @@ impl ToString for BinOp {
             BinOp::GtF => ">.",
             BinOp::LeqF => "<=.",
             BinOp::GeqF => ">=.",
-            BinOp::AddB => "+~",
-            BinOp::SubB => "-~",
-            BinOp::MulB => "*~",
-            BinOp::DivB => "/~",
-            BinOp::ModB => "%~",
-            BinOp::PowB => "^~",
-            BinOp::LtB => "<~",
-            BinOp::GtB => ">~",
-            BinOp::LeqB => "<=~",
-            BinOp::GeqB => ">=~",
         }
         .to_string()
     }
@@ -322,8 +300,8 @@ pub type Ident = Located<InternedString>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lit {
-    /// Fixed-width integer — the default numeric literal (`Int`, i.e. i64). There
-    /// is no `BigInt` literal; use `toBigInt` and the `~`-suffixed operators.
+    /// An integer literal. Its type comes from context: any integer type, or
+    /// `BigInt` when nothing settles it.
     Int(i64),
     /// A floating-point literal, stored as its IEEE-754 bit pattern so the AST
     /// stays `Eq` / `Hash`; decode with `f64::from_bits`.

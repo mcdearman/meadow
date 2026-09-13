@@ -99,7 +99,7 @@ fn a_refutable_pattern_around_an_unknown_constructor() {
 fn two_unrelated_errors() {
     assert_eq!(
         errors("def a = nope\ndef b = 1 + \"s\"\n"),
-        "undefined variable: nope\ntype mismatch: `Int` vs `String`"
+        "undefined variable: nope\ntype mismatch: `String` is not an integer type"
     );
 }
 
@@ -107,7 +107,7 @@ fn two_unrelated_errors() {
 fn an_error_beside_a_real_mismatch() {
     assert_eq!(
         errors("def main = (nope, 1 + \"s\")\n"),
-        "undefined variable: nope\ntype mismatch: `Int` vs `String`"
+        "undefined variable: nope\ntype mismatch: `String` is not an integer type"
     );
 }
 

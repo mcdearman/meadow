@@ -366,6 +366,6 @@ pub fn commutes(p: Prim) -> bool {
     use Prim::*;
     matches!(
         p,
-        Add | Mul | Eq | Ne | AddF | MulF | AddB | MulB | BitAnd | BitOr | BitXor
+        Add | Mul | Eq | Ne | AddF | MulF | BitAnd | BitOr | BitXor
     )
 }

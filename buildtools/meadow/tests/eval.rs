@@ -136,17 +136,18 @@ fn non_exhaustive_match() {
 
 #[test]
 fn bigint_beyond_i64() {
-    // The default `Int` is i64; a `~` operator makes the expression `BigInt` and
-    // the literals coerce. `2 ^~ 100` overflows i64 but is exact here.
-    insta::assert_snapshot!(eval_expr("2 ^~ 100"));
+    // A number nothing pins down is a `BigInt`, so `2 ^ 100` is exact -- where
+    // an `Int` would wrap.
+    insta::assert_snapshot!(eval_expr("2 ^ 100"));
+    insta::assert_snapshot!(eval_expr("toInt 2 ^ 100"), @"0");
 }
 
 #[test]
 fn bigint_factorial() {
-    // `25!` overflows i64; the `~` operators put the whole computation in
-    // `BigInt` and every literal (`0`, `1`, `25`) coerces to match.
+    // `25!` overflows i64. `fact` is generic over its number type, and `25` in
+    // `main` is a `BigInt`, so every literal in `fact` becomes one too.
     insta::assert_snapshot!(eval_main(
-        "fun fact n = if n == 0 then 1 else n *~ fact (n -~ 1)\n\
+        "fun fact n = if n == 0 then 1 else n * fact (n - 1)\n\
          def main = fact 25\n"
     ));
 }

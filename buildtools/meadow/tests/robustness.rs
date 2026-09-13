@@ -30,10 +30,15 @@ fn division_and_modulo_by_zero_are_errors() {
 
 #[test]
 fn integer_overflow_wraps_rather_than_panicking() {
-    // Rust would panic on overflow in a debug build; these must wrap instead.
-    assert_eq!(eval_expr_std("9223372036854775807 + 1"), "-9223372036854775808");
-    assert_eq!(eval_expr_std("0 - 9223372036854775807 - 2"), "9223372036854775807");
-    assert_eq!(eval_expr_std("9223372036854775807 * 2"), "-2");
+    // Rust would panic on overflow in a debug build; an `Int` must wrap instead.
+    assert_eq!(eval_expr_std("toInt 9223372036854775807 + 1"), "-9223372036854775808");
+    assert_eq!(eval_expr_std("toInt 0 - 9223372036854775807 - 2"), "9223372036854775807");
+    assert_eq!(eval_expr_std("toInt 9223372036854775807 * 2"), "-2");
+    // And so must every fixed width, at its own.
+    assert_eq!(eval_expr_std("toUInt8 255 + 1"), "0");
+    assert_eq!(eval_expr_std("toInt32 2147483647 + 1"), "-2147483648");
+    // A `BigInt`, the default, does not overflow at all.
+    assert_eq!(eval_expr_std("9223372036854775807 + 1"), "9223372036854775808");
 }
 
 #[test]

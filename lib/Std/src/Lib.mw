@@ -9,11 +9,10 @@
 @pub mod Ordering
 @pub mod Function
 @pub mod Tuple
-@pub mod Int
+@pub mod Num
 @pub mod Maybe
 @pub mod Char
 @pub mod Result
-@pub mod Bits
 @pub mod Bytes
 @pub mod Yield
 @pub mod Collections

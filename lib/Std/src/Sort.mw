@@ -32,7 +32,7 @@
 -- every caller's type.)
 
 use Std.Ordering (compare, isLess, isGreater)
-use Std.Bits (countLeadingZeros)
+use Std.Num.Bits (countLeadingZeros)
 use Std.Tuple (fst, snd)
 use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)

@@ -270,6 +270,9 @@ pub enum Const {
     /// An integer literal whose inferred type is `BigInt`, widened at load.
     BigInt(i64),
     Float(f64),
+    /// A sized integer literal: its width and wrapped bits.
+    Word(meadow_core::num::Width, u64),
+    Float32(f32),
     Str(InternedString),
     Char(char),
 }

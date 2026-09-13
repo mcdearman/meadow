@@ -130,7 +130,7 @@ where
         // latter is just a value binding, so it takes the `Bind::Pat` path (and
         // its right-hand side is subject to the value restriction, like `def`).
         let fun_bind = just(Token::Fun)
-            .ignore_then(lower_ident())
+            .ignore_then(value_ident())
             .then(param_pat().repeated().collect::<Vec<_>>())
             .then(result_ty())
             .then_ignore(just(Token::Eq))
@@ -162,8 +162,12 @@ where
         // `as C` — rename the qualifier. Upper-case, because that is what a
         // qualified reference (`C.map`) can name.
         .then(just(Token::As).ignore_then(upper_ident()).or_not())
+        // An operator may be named bare in the list, `(concat, ++)`, or in
+        // its own parentheses, `((++))`, as it is written everywhere else.
         .then(
             path_seg()
+                .or(user_op())
+                .or(value_ident())
                 .separated_by(just(Token::Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>()
@@ -312,10 +316,22 @@ fn ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
                 }
             });
 
+        // `#[a]`, the builtin `Array` -- the way an array's type prints.
+        let array = just(Token::Hash)
+            .then(just(Token::LBrack))
+            .ignore_then(ty.clone())
+            .then_ignore(just(Token::RBrack))
+            .map_with(|t, e| {
+                Located::new(
+                    TypeExpr::Con(Ident::new(InternedString::from("Array"), e.span()), vec![t]),
+                    e.span(),
+                )
+            });
+
         let tvar = lower_ident().map_with(|n, e| Located::new(TypeExpr::Var(n), e.span()));
         let tcon0 = upper_ident().map_with(|n, e| Located::new(TypeExpr::Con(n, vec![]), e.span()));
 
-        let atom = choice((unit, seq, paren_or_tuple, tvar, tcon0));
+        let atom = choice((unit, array, seq, paren_or_tuple, tvar, tcon0));
 
         let app = upper_ident()
             .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
@@ -396,9 +412,20 @@ fn ty_atom<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
                 Located::new(TypeExpr::Tuple(ts), e.span())
             }
         });
+    // `#[a]`, the builtin `Array` -- the way an array's type prints.
+    let array = just(Token::Hash)
+        .then(just(Token::LBrack))
+        .ignore_then(inner.clone())
+        .then_ignore(just(Token::RBrack))
+        .map_with(|t, e| {
+            Located::new(
+                TypeExpr::Con(Ident::new(InternedString::from("Array"), e.span()), vec![t]),
+                e.span(),
+            )
+        });
     let tvar = lower_ident().map_with(|n, e| Located::new(TypeExpr::Var(n), e.span()));
     let tcon0 = upper_ident().map_with(|n, e| Located::new(TypeExpr::Con(n, vec![]), e.span()));
-    choice((unit, seq, paren_or_tuple, tvar, tcon0))
+    choice((unit, array, seq, paren_or_tuple, tvar, tcon0))
 }
 
 fn path_seg<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
@@ -417,7 +444,7 @@ where
 {
     recursive(|expr| {
         let lit_expr = located(lit().map(Expr::Lit));
-        let var_expr = located(lower_ident().map(Expr::Var));
+        let var_expr = located(value_ident().map(Expr::Var));
         let unit_expr = located(
             just(Token::LParen)
                 .then(just(Token::RParen))
@@ -792,6 +819,16 @@ where
                     )
                 },
             ),
+            // `a ++ b` -- a user operator, so an application of whatever `++`
+            // names in scope. Right-associative, beside `::`.
+            infix(
+                right(2),
+                user_op(),
+                |l: Located<Expr>, op: Ident, r: Located<Expr>, e| {
+                    let f = Located::new(Expr::Var(op.clone()), op.span);
+                    Located::new(Expr::App(f, vec![l, r]), e.span())
+                },
+            ),
             // Float operators: `*.` `/.` (tight), `+.` `-.` (loose), `<. >. <=. >=.`.
             infix(
                 left(4),
@@ -808,29 +845,7 @@ where
                 select! { Token::OpIdent(s) if matches!(&*s, "<." | ">." | "<=." | ">=.") => s },
                 |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| float_binop(&s, l, r, e.span()),
             ),
-            // BigInt operators: `*~` `/~` `%~` (tight), `+~` `-~` (loose), `^~`
-            // (right-assoc, tightest), `<~ >~ <=~ >=~` (non-assoc comparisons).
-            infix(
-                left(4),
-                select! { Token::OpIdent(s) if matches!(&*s, "*~" | "/~" | "%~") => s },
-                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| big_binop(&s, l, r, e.span()),
-            ),
-            infix(
-                left(3),
-                select! { Token::OpIdent(s) if matches!(&*s, "+~" | "-~") => s },
-                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| big_binop(&s, l, r, e.span()),
-            ),
-            infix(
-                right(5),
-                select! { Token::OpIdent(s) if &*s == "^~" => s },
-                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| big_binop(&s, l, r, e.span()),
-            ),
-            infix(
-                none(2),
-                select! { Token::OpIdent(s) if matches!(&*s, "<~" | ">~" | "<=~" | ">=~") => s },
-                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| big_binop(&s, l, r, e.span()),
-            ),
-            // Bit shifts on `Int` — same precedence as `+`/`-`, left-associative.
+            // Bit shifts, on any integer type — same precedence as `+`/`-`, left-associative.
             infix(
                 left(3),
                 select! { Token::OpIdent(s) if matches!(&*s, "<<" | ">>" | ">>>") => s },
@@ -1034,23 +1049,6 @@ fn float_binop(sym: &str, l: LExpr, r: LExpr, span: Span) -> LExpr {
     Located::new(Expr::BinOp(Located::new(op, span), l, r), span)
 }
 
-/// Build a BigInt-operator `BinOp` node from its symbol (`"+~"`, `"<=~"`, …).
-fn big_binop(sym: &str, l: LExpr, r: LExpr, span: Span) -> LExpr {
-    let op = match sym {
-        "+~" => BinOp::AddB,
-        "-~" => BinOp::SubB,
-        "*~" => BinOp::MulB,
-        "/~" => BinOp::DivB,
-        "%~" => BinOp::ModB,
-        "^~" => BinOp::PowB,
-        "<~" => BinOp::LtB,
-        ">~" => BinOp::GtB,
-        "<=~" => BinOp::LeqB,
-        ">=~" => BinOp::GeqB,
-        _ => unreachable!("big_binop: {sym}"),
-    };
-    Located::new(Expr::BinOp(Located::new(op, span), l, r), span)
-}
 
 /// Desugar a bit-shift operator (`<<` / `>>` / `>>>`) to a call of the
 /// corresponding `Int` primitive (`shl` / `shr` / `ushr`).
@@ -1269,7 +1267,7 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         let atom = qual_cons
             .or(cons)
             .or(record)
-            .or(lower_ident().map(|ident| Pat::Var(ident)))
+            .or(value_ident().map(|ident| Pat::Var(ident)))
             .or(just(Token::Wildcard).map(|_| Pat::Wildcard))
             .or(lit().map(Pat::Lit))
             .or(array)
@@ -1356,7 +1354,7 @@ fn param_pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         annotated,
         paren,
         record,
-        lower_ident().map_with(|n, e| LPat::new(Pat::Var(n), e.span())),
+        value_ident().map_with(|n, e| LPat::new(Pat::Var(n), e.span())),
         just(Token::Wildcard).map_with(|_, e| LPat::new(Pat::Wildcard, e.span())),
     ))
     .boxed()
@@ -1375,6 +1373,27 @@ fn lower_ident<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         Token::LowerIdent(name) => name
     }
     .map_with(|name, e| Ident::new(name, e.span()))
+}
+
+/// The operators a program can bind a value to, with `fun (++) a b = ...` or
+/// `def (++) = ...`, and then use infix. Every other operator is a primitive
+/// with a fixed meaning; these are ordinary names that happen to be written
+/// with symbols, so they are scoped, exported and imported like any other.
+pub const USER_OPERATORS: &[&str] = &["++"];
+
+/// A user-bindable operator token, as the name it binds.
+fn user_op<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    select! {
+        Token::OpIdent(name) if USER_OPERATORS.contains(&&*name) => name
+    }
+    .map_with(|name, e| Ident::new(name, e.span()))
+}
+
+/// A name a value is bound to: `x`, or an operator in parentheses, `(++)`.
+fn value_ident<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    lower_ident().or(user_op().delimited_by(just(Token::LParen), just(Token::RParen)))
 }
 
 fn upper_ident<'a, I: ValueInput<'a, Token = Token, Span = Span>>()

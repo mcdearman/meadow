@@ -13,7 +13,7 @@ fn parse(body: &str) -> String {
         "use Std.String.Parse as P\n\
          use Std.Result.Result.*\n\
          def isDigit = \\c -> c >= 48 and c <= 57\n\
-         def number = P.map (\\ds -> foldl (\\a d -> a * 10 + (d - 48)) 0 ds) \
+         def number = P.map (\\ds -> foldl (\\a d -> a * 10 + toInt (d - 48)) 0 ds) \
                             (P.takeWhile1P \"a digit\" isDigit)\n\
          def comma = P.single 44\n\
          fun describe r = match r with | Ok v -> \"ok\" | Err e -> P.showError e\n\
@@ -247,7 +247,7 @@ fn a_recursive_grammar_via_defer() {
     // while the definitions were being built.
     let src = "\
 use Std.String.Parse as P\n\
-def number = P.map (\\ds -> foldl (\\a d -> a * 10 + (d - 48)) 0 ds) \
+def number = P.map (\\ds -> foldl (\\a d -> a * 10 + toInt (d - 48)) 0 ds) \
                    (P.takeWhile1P \"a digit\" (\\c -> c >= 48 and c <= 57))\n\
 fun sum u = \
   P.lift2 (\\x xs -> foldl (\\a b -> a + b) x xs) \

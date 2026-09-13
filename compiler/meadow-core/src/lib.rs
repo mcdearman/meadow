@@ -39,6 +39,7 @@
 
 pub mod erase;
 pub mod hash;
+pub mod num;
 pub mod lint;
 pub mod lower;
 pub use lower::Lowerer;
@@ -57,6 +58,18 @@ pub enum Lit {
     /// widened to an arbitrary-precision value at runtime.
     BigInt(i64),
     Float(f64),
+    /// An integer literal whose inferred type is a sized one -- `UInt8`,
+    /// `Int16`, … -- already wrapped to it.
+    Word(num::Width, u64),
+    /// A float literal whose inferred type is `Float32`.
+    Float32(f32),
+    /// An integer literal whose type is still a variable -- inside a function
+    /// generic over its integer type, `fun succ n = n + 1`. It is an `Int` at run
+    /// time, and the primitives let it take the type of what it meets
+    /// ([`num`]); the core checker lets it stand for any type.
+    AnyInt(i64),
+    /// The same for a float literal: a `Float` at run time.
+    AnyFloat(f64),
     Str(InternedString),
     Char(char),
     Bool(bool),
@@ -94,7 +107,7 @@ pub enum Prim {
     Display,
     /// A structural hash, consistent with `==` -- see [`hash`].
     Hash,
-    // --- floating point ---
+    // --- floating point: `Float` and `Float32` ---
     AddF,
     SubF,
     MulF,
@@ -103,25 +116,23 @@ pub enum Prim {
     GtF,
     LeF,
     GeF,
-    /// `Int -> Float`
+    /// `toFloat : n -> Float` for any integer type, and `toFloat64 : f -> Float`
+    /// for either float type -- one conversion at run time.
     ToFloat,
-    /// `Float -> Int` (round toward negative infinity)
+    /// `toFloat32 : f -> Float32` for either float type.
+    ToFloat32,
+    /// `floor : f -> Int` (round toward negative infinity)
     Floor,
-    // --- arbitrary precision (`BigInt`) ---
-    AddB,
-    SubB,
-    MulB,
-    DivB,
-    ModB,
-    PowB,
-    LtB,
-    GtB,
-    LeB,
-    GeB,
-    /// `Int -> BigInt`
+    // --- integer conversions ---
+    /// `toBigInt : n -> BigInt` for any integer type.
     ToBig,
-    /// `BigInt -> Int` (fails at runtime if out of range)
+    /// `toInt : n -> Int` for any integer type, keeping the low 64 bits.
     ToInt,
+    /// `toInt8 : n -> Int8` and the rest of the sized types, keeping the low
+    /// bits likewise.
+    ToWord(num::Width),
+    /// `bitWidth : n -> Int` -- 64 for `Int`, 8 for `UInt8`; an error for `BigInt`.
+    BitWidth,
     // --- the builtin `Array` (a persistent, `Arc`-shared contiguous buffer) ---
     /// `Array a -> Int`
     ArrayLen,
@@ -139,28 +150,29 @@ pub enum Prim {
     ArraySlice,
     /// `Array a -> Array a -> Array a`
     ArrayConcat,
-    // --- bitwise ops on `Int` (i64) ---
-    /// `Int -> Int -> Int` — logical left shift (`x << n`, `n` masked to 0..63).
+    // --- bitwise ops on every integer type, at that type's width ---
+    /// `n -> Int -> n` — left shift (`x << k`).
     Shl,
-    /// `Int -> Int -> Int` — arithmetic right shift (`x >> n`, sign-extending).
+    /// `n -> Int -> n` — right shift (`x >> k`): sign-extending for a signed
+    /// type, zero-filling for an unsigned one.
     Shr,
-    /// `Int -> Int -> Int` — arithmetic-right-shift by an unsigned reading.
+    /// `n -> Int -> n` — zero-filling right shift (`x >>> k`) whatever the sign.
     Ushr,
     BitAnd,
     BitOr,
     BitXor,
-    /// `Int -> Int` — bitwise complement.
+    /// `n -> n` — bitwise complement.
     BitNot,
-    /// `Int -> Int` — number of set bits.
+    /// `n -> Int` — number of set bits (an error for a negative `BigInt`).
     PopCount,
     // --- bytes ---
-    /// `String -> Array Int` — the UTF-8 bytes of a string.
+    /// `String -> #[UInt8]` — the UTF-8 bytes of a string.
     StringToBytes,
-    /// `Array Int -> String` — decode UTF-8, replacing invalid sequences with
-    /// U+FFFD (never fails). Non-`Int` / out-of-range elements error at runtime.
+    /// `#[UInt8] -> String` — decode UTF-8, replacing invalid sequences with
+    /// U+FFFD. An element that is not a byte is an error at run time.
     BytesToString,
-    /// `Array Int -> String` -- lowercase hex, two chars per byte, no separator.
-    /// Non-`Int` / out-of-range (not 0..255) elements error at runtime.
+    /// `#[UInt8] -> String` -- lowercase hex, two chars per byte, no separator.
+    /// An element that is not a byte is an error at run time.
     BytesToHex,
     /// `show : forall a. a -> String` — the runtime's own rendering of a value,
     /// the same one the REPL prints. Structural, so it needs no per-type work.
@@ -197,7 +209,7 @@ pub enum Prim {
     StFreeze,
     /// `stThaw : Array a -> StArray s a ! { St s | e }` -- a copy.
     StThaw,
-    /// `String -> Option (Array Int)` -- parse a hex string (either case, no
+    /// `String -> Maybe #[UInt8]` -- parse a hex string (either case, no
     /// separators, even length) into bytes. `None` on any malformed input.
     BytesFromHex,
 }
@@ -226,10 +238,6 @@ impl Prim {
                 | GtF
                 | LeF
                 | GeF
-                | LtB
-                | GtB
-                | LeB
-                | GeB
         )
     }
 
@@ -258,20 +266,21 @@ impl Prim {
             ">." => Prim::GtF,
             "<=." => Prim::LeF,
             ">=." => Prim::GeF,
-            "toFloat" => Prim::ToFloat,
+            "toFloat" | "toFloat64" => Prim::ToFloat,
+            "toFloat32" => Prim::ToFloat32,
             "floor" => Prim::Floor,
-            "+~" => Prim::AddB,
-            "-~" => Prim::SubB,
-            "*~" => Prim::MulB,
-            "/~" => Prim::DivB,
-            "%~" => Prim::ModB,
-            "^~" => Prim::PowB,
-            "<~" => Prim::LtB,
-            ">~" => Prim::GtB,
-            "<=~" => Prim::LeB,
-            ">=~" => Prim::GeB,
             "toBigInt" => Prim::ToBig,
-            "toInt" => Prim::ToInt,
+            "toInt" | "toInt64" => Prim::ToInt,
+            "bitWidth" => Prim::BitWidth,
+            other => match other.strip_prefix("to").and_then(num::Width::from_type) {
+                Some(w) => Prim::ToWord(w),
+                None => return Self::from_name_rest(name),
+            },
+        })
+    }
+
+    fn from_name_rest(name: &str) -> Option<Prim> {
+        Some(match name {
             "arrayLen" => Prim::ArrayLen,
             "arrayGet" => Prim::ArrayGet,
             "arrayGetOr" => Prim::ArrayGetOr,
@@ -322,9 +331,12 @@ impl Prim {
             | Prim::Display
             | Prim::Hash
             | Prim::ToFloat
+            | Prim::ToFloat32
             | Prim::Floor
             | Prim::ToBig
             | Prim::ToInt
+            | Prim::ToWord(_)
+            | Prim::BitWidth
             | Prim::ArrayLen
             | Prim::ArrayPop
             | Prim::BitNot
@@ -817,6 +829,10 @@ impl Printer {
             Lit::Int(i) => i.to_string(),
             Lit::BigInt(i) => i.to_string(),
             Lit::Float(x) => fmt_float(*x),
+            Lit::Word(w, b) => format!("{}{}", w.value(*b), w.name()),
+            Lit::Float32(x) => format!("{}f32", num::fmt_float32(*x)),
+            Lit::AnyInt(i) => format!("{i}?"),
+            Lit::AnyFloat(x) => format!("{}?", fmt_float(*x)),
             Lit::Str(s) => format!("{:?}", &**s), // the string contents, quoted
             Lit::Char(c) => format!("{c:?}"),
             Lit::Bool(b) => b.to_string(),
@@ -959,6 +975,10 @@ mod tests {
             assert!(Prim::from_name(name).is_some(), "{name} should be a prim");
         }
         assert_eq!(Prim::from_name("map"), None);
+        assert_eq!(Prim::from_name("toUInt8"), Some(Prim::ToWord(num::Width::U8)));
+        assert_eq!(Prim::from_name("toInt64"), Some(Prim::ToInt));
+        assert_eq!(Prim::from_name("toString"), None);
+        assert_eq!(Prim::from_name("+~"), None, "BigInt shares `+` now");
     }
 
     #[test]

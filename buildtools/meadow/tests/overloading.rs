@@ -112,7 +112,7 @@ fn a_top_level_definition_settles_its_own_names() {
     // A later use does not reach back: `v`'s type is its own business.
     let src = format!("{BOX}def v = Just 7\ndef main = unbox v\n");
     assert!(
-        errors(&src).starts_with("ambiguous `Just`: 2 of the candidates in scope fit `Int -> a`"),
+        errors(&src).starts_with("ambiguous `Just`: 2 of the candidates in scope fit `n -> a`"),
         "{}",
         errors(&src)
     );
@@ -125,7 +125,7 @@ fn no_candidate_fitting_names_the_type_wanted() {
     let src = format!("{BOX}fun f (b : Bool) = b\ndef main = f (Just 1)\n");
     assert_eq!(
         errors(&src),
-        "no `Just` in scope has the type needed here, `Int -> Bool`\n\
+        "no `Just` in scope has the type needed here, `n -> Bool`\n\
          candidates in scope:\n  \
          Box.Just : Int -> Box\n  \
          Maybe.Just : a -> Maybe a"

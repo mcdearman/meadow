@@ -23,8 +23,8 @@ fn hex() {
 #[test]
 fn hex_prim_types() {
     insta::assert_snapshot!(schemes("def a = bytesToHex\ndef b = bytesFromHex\n"), @r"
-    a : #[Int] -> String
-    b : String -> Maybe #[Int]
+    a : #[UInt8] -> String
+    b : String -> Maybe #[UInt8]
     ");
 }
 

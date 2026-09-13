@@ -73,11 +73,11 @@
 //!   operation is an error here; the CEK discharges it against the real world.
 //!   `Test.fail` is the exception, because a test runner needs it.
 
+use meadow_core::num::{self, Arith, Bits, Cmp, IntTarget, Num, Width};
 use meadow_core::{Lit, Prim};
 use meadow_intern::InternedString;
 use crate::{Block, Extern, Name, Program, Statement, Tag};
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -93,6 +93,9 @@ pub enum Value<'p> {
     Int(i64),
     BigInt(Rc<BigInt>),
     Float(f64),
+    /// A sized integer: its width, and its bits masked to it.
+    Word(Width, u64),
+    Float32(f32),
     Bool(bool),
     Str(InternedString),
     Char(char),
@@ -733,9 +736,11 @@ impl<'p> Machine<'p> {
 
 fn literal<'p>(l: &Lit) -> Value<'p> {
     match l {
-        Lit::Int(n) => Value::Int(*n),
+        Lit::Int(n) | Lit::AnyInt(n) => Value::Int(*n),
         Lit::BigInt(n) => Value::BigInt(Rc::new(BigInt::from(*n))),
-        Lit::Float(x) => Value::Float(*x),
+        Lit::Float(x) | Lit::AnyFloat(x) => Value::Float(*x),
+        Lit::Word(w, b) => Value::Word(*w, *b),
+        Lit::Float32(x) => Value::Float32(*x),
         Lit::Str(s) => Value::Str(*s),
         Lit::Char(c) => Value::Char(*c),
         Lit::Bool(b) => Value::Bool(*b),
@@ -748,6 +753,8 @@ fn kind(v: &Value) -> &'static str {
         Value::Int(_) => "Int",
         Value::BigInt(_) => "BigInt",
         Value::Float(_) => "Float",
+        Value::Word(w, _) => w.name(),
+        Value::Float32(_) => "Float32",
         Value::Bool(_) => "Bool",
         Value::Str(_) => "String",
         Value::Char(_) => "Char",
@@ -881,9 +888,13 @@ pub fn value_eq<'p>(a: &Value<'p>, b: &Value<'p>) -> bool {
                     _ => return false,
                 }
             }
-            (Value::Int(x), Value::Int(y)) if x == y => {}
-            (Value::BigInt(x), Value::BigInt(y)) if x == y => {}
-            (Value::Float(x), Value::Float(y)) if x == y => {}
+            // Numbers by value, so a literal in generic code equals the value
+            // it stands beside -- see `meadow_core::num`.
+            (x, y) if to_num(x).is_some() && to_num(y).is_some() => {
+                if !num::num_eq(&to_num(x).expect("a number"), &to_num(y).expect("a number")) {
+                    return false;
+                }
+            }
             (Value::Bool(x), Value::Bool(y)) if x == y => {}
             (Value::Str(x), Value::Str(y)) if x == y => {}
             (Value::Char(x), Value::Char(y)) if x == y => {}
@@ -951,9 +962,9 @@ fn hash_value(v: &Value) -> Result<i64, Error> {
             Work::Val(v) => v,
         };
         match &v {
-            Value::Int(n) => h.int(*n),
-            Value::BigInt(n) => h.bigint(&n.to_signed_bytes_le()),
-            Value::Float(x) => h.float(*x),
+            Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Word(..) | Value::Float32(_) => {
+                num::hash_into(&mut h, &to_num(&v).expect("a number"));
+            }
             Value::Bool(b) => h.bool(*b),
             Value::Char(c) => h.char(*c),
             Value::Str(s) => h.str(s),
@@ -1005,24 +1016,11 @@ fn prim<'p>(
 ) -> Result<Value<'p>, Error> {
     use Prim::*;
 
-    let int2 = |a: &Value, b: &Value| -> Result<(i64, i64), Error> {
-        match (a, b) {
-            (Value::Int(x), Value::Int(y)) => Ok((*x, *y)),
-            _ => err(format!("expected two Ints, got {a} and {b}")),
-        }
-    };
-    let big2 = |a: &Value, b: &Value| -> Result<(BigInt, BigInt), Error> {
-        match (a, b) {
-            (Value::BigInt(x), Value::BigInt(y)) => Ok(((**x).clone(), (**y).clone())),
-            _ => err(format!("expected two BigInts, got {a} and {b}")),
-        }
-    };
-    let flt2 = |a: &Value, b: &Value| -> Result<(f64, f64), Error> {
-        match (a, b) {
-            (Value::Float(x), Value::Float(y)) => Ok((*x, *y)),
-            _ => err(format!("expected two Floats, got {a} and {b}")),
-        }
-    };
+    let n = |i: usize| to_num(&args[i]).ok_or_else(|| Error {
+        msg: format!("expected a number, got {}", args[i]),
+    });
+    let done = |r: Result<Num, String>| r.map(from_num).map_err(|msg| Error { msg });
+    let truth = |r: Result<bool, String>| r.map(Value::Bool).map_err(|msg| Error { msg });
     let data = |name: &str, fields: Vec<Value<'p>>| {
         let name = InternedString::from(name);
         // A constructor a primitive builds must carry the tag the program's
@@ -1033,110 +1031,20 @@ fn prim<'p>(
     };
 
     match op {
-        Add | Sub | Mul | Div | Mod | Pow => {
-            let (x, y) = int2(&args[0], &args[1])?;
-            let r = match op {
-                Add => x.wrapping_add(y),
-                Sub => x.wrapping_sub(y),
-                Mul => x.wrapping_mul(y),
-                Div if y == 0 => return err("division by zero"),
-                Div => x.wrapping_div(y),
-                Mod if y == 0 => return err("modulo by zero"),
-                Mod => x.wrapping_rem(y),
-                _ => {
-                    let e = u32::try_from(y).map_err(|_| Error {
-                        msg: format!("`^` exponent must fit in u32, got {y}"),
-                    })?;
-                    x.wrapping_pow(e)
-                }
-            };
-            Ok(Value::Int(r))
-        }
-        Lt | Gt | Le | Ge => {
-            let (x, y) = int2(&args[0], &args[1])?;
-            Ok(Value::Bool(match op {
-                Lt => x < y,
-                Gt => x > y,
-                Le => x <= y,
-                _ => x >= y,
-            }))
-        }
-        AddB | SubB | MulB | DivB | ModB | PowB => {
-            let (x, y) = big2(&args[0], &args[1])?;
-            let r = match op {
-                AddB => x + y,
-                SubB => x - y,
-                MulB => x * y,
-                DivB if y.is_zero() => return err("division by zero"),
-                DivB => x / y,
-                ModB if y.is_zero() => return err("modulo by zero"),
-                ModB => x % y,
-                _ => {
-                    let e = y.to_u32().ok_or_else(|| Error {
-                        msg: format!("`^~` exponent must fit in u32, got {y}"),
-                    })?;
-                    x.pow(e)
-                }
-            };
-            Ok(Value::BigInt(Rc::new(r)))
-        }
-        LtB | GtB | LeB | GeB => {
-            let (x, y) = big2(&args[0], &args[1])?;
-            Ok(Value::Bool(match op {
-                LtB => x < y,
-                GtB => x > y,
-                LeB => x <= y,
-                _ => x >= y,
-            }))
-        }
-        AddF | SubF | MulF | DivF => {
-            let (x, y) = flt2(&args[0], &args[1])?;
-            Ok(Value::Float(match op {
-                AddF => x + y,
-                SubF => x - y,
-                MulF => x * y,
-                _ => x / y,
-            }))
-        }
-        LtF | GtF | LeF | GeF => {
-            let (x, y) = flt2(&args[0], &args[1])?;
-            Ok(Value::Bool(match op {
-                LtF => x < y,
-                GtF => x > y,
-                LeF => x <= y,
-                _ => x >= y,
-            }))
-        }
-        ToFloat => match &args[0] {
-            Value::Int(x) => Ok(Value::Float(*x as f64)),
-            other => err(format!("`toFloat` expects an Int, got {other}")),
-        },
-        Floor => match &args[0] {
-            Value::Float(x) => {
-                let f = x.floor();
-                if !f.is_finite() {
-                    return err(format!("`floor` of a non-finite Float: {x}"));
-                }
-                Ok(Value::Int(f as i64))
-            }
-            other => err(format!("`floor` expects a Float, got {other}")),
-        },
-        ToBig => match &args[0] {
-            Value::Int(x) => Ok(Value::BigInt(Rc::new(BigInt::from(*x)))),
-            other => err(format!("`toBigInt` expects an Int, got {other}")),
-        },
-        ToInt => match &args[0] {
-            Value::BigInt(x) => x.to_i64().map(Value::Int).ok_or_else(|| Error {
-                msg: format!("`toInt`: {x} does not fit in Int"),
-            }),
-            other => err(format!("`toInt` expects a BigInt, got {other}")),
-        },
+        // --- numbers: see `meadow_core::num` --------------------------------
+        Add | Sub | Mul | Div | Mod | Pow => done(num::int_arith(arith(op), n(0)?, n(1)?)),
+        Lt | Gt | Le | Ge => truth(num::int_cmp(cmp(op), n(0)?, n(1)?)),
+        Neg => done(num::int_neg(n(0)?)),
+        AddF | SubF | MulF | DivF => done(num::float_arith(arith(op), n(0)?, n(1)?)),
+        LtF | GtF | LeF | GeF => truth(num::float_cmp(cmp(op), n(0)?, n(1)?)),
+        ToFloat => done(num::to_float(n(0)?).map(Num::Float)),
+        ToFloat32 => done(num::to_float32(n(0)?).map(Num::Float32)),
+        Floor => done(num::floor(n(0)?).map(Num::Int)),
+        ToBig => done(num::to_int(IntTarget::Big, n(0)?)),
+        ToInt => done(num::to_int(IntTarget::Int, n(0)?)),
+        ToWord(w) => done(num::to_int(IntTarget::Word(w), n(0)?)),
         Eq => Ok(Value::Bool(value_eq(&args[0], &args[1]))),
         Ne => Ok(Value::Bool(!value_eq(&args[0], &args[1]))),
-        Neg => match &args[0] {
-            Value::Int(x) => Ok(Value::Int(x.wrapping_neg())),
-            other => err(format!("`neg` expects an Int, got {other}")),
-        },
         Hash => hash_value(&args[0]).map(Value::Int),
         Display => Ok(Value::Str(InternedString::from(match &args[0] {
             Value::Str(s) => s.to_string(),
@@ -1206,24 +1114,15 @@ fn prim<'p>(
         }
 
         // --- bitwise ----------------------------------------------------------
-        Shl | Shr | Ushr | BitAnd | BitOr | BitXor => {
-            let (x, y) = int2(&args[0], &args[1])?;
-            Ok(Value::Int(match op {
-                Shl => x.wrapping_shl(y as u32),
-                Shr => x.wrapping_shr(y as u32),
-                Ushr => (x as u64).wrapping_shr(y as u32) as i64,
-                BitAnd => x & y,
-                BitOr => x | y,
-                _ => x ^ y,
-            }))
-        }
-        BitNot => Ok(Value::Int(!as_int(&args[0])?)),
-        PopCount => Ok(Value::Int(as_int(&args[0])?.count_ones() as i64)),
+        Shl | Shr | Ushr | BitAnd | BitOr | BitXor => done(num::int_bits(bits(op), n(0)?, n(1)?)),
+        BitNot => done(num::int_not(n(0)?)),
+        PopCount => done(num::pop_count(n(0)?).map(Num::Int)),
+        BitWidth => done(num::bit_width(&n(0)?).map(Num::Int)),
 
         // --- text and bytes ---------------------------------------------------
         StringToBytes => match &args[0] {
             Value::Str(s) => Ok(Value::Array(Rc::new(
-                s.bytes().map(|b| Value::Int(b as i64)).collect(),
+                s.bytes().map(|b| Value::Word(Width::U8, b as u64)).collect(),
             ))),
             other => err(format!("`stringToBytes` expects a String, got {other}")),
         },
@@ -1257,7 +1156,7 @@ fn prim<'p>(
                     (pair[0] as char).to_digit(16),
                     (pair[1] as char).to_digit(16),
                 ) {
-                    (Some(h), Some(l)) => out.push(Value::Int(((h << 4) | l) as i64)),
+                    (Some(h), Some(l)) => out.push(Value::Word(Width::U8, ((h << 4) | l) as u64)),
                     _ => return Ok(data("Maybe.None", vec![])),
                 }
             }
@@ -1363,6 +1262,58 @@ fn as_array<'a, 'p>(v: &'a Value<'p>) -> Result<&'a Rc<Vec<Value<'p>>>, Error> {
     }
 }
 
+fn to_num(v: &Value) -> Option<Num> {
+    Some(match v {
+        Value::Int(x) => Num::Int(*x),
+        Value::Word(w, b) => Num::Word(*w, *b),
+        Value::BigInt(x) => Num::Big((**x).clone()),
+        Value::Float(x) => Num::Float(*x),
+        Value::Float32(x) => Num::Float32(*x),
+        _ => return None,
+    })
+}
+
+fn from_num<'p>(n: Num) -> Value<'p> {
+    match n {
+        Num::Int(x) => Value::Int(x),
+        Num::Word(w, b) => Value::Word(w, b),
+        Num::Big(x) => Value::BigInt(Rc::new(x)),
+        Num::Float(x) => Value::Float(x),
+        Num::Float32(x) => Value::Float32(x),
+    }
+}
+
+fn arith(op: Prim) -> Arith {
+    match op {
+        Prim::Add | Prim::AddF => Arith::Add,
+        Prim::Sub | Prim::SubF => Arith::Sub,
+        Prim::Mul | Prim::MulF => Arith::Mul,
+        Prim::Div | Prim::DivF => Arith::Div,
+        Prim::Mod => Arith::Mod,
+        _ => Arith::Pow,
+    }
+}
+
+fn cmp(op: Prim) -> Cmp {
+    match op {
+        Prim::Lt | Prim::LtF => Cmp::Lt,
+        Prim::Gt | Prim::GtF => Cmp::Gt,
+        Prim::Le | Prim::LeF => Cmp::Le,
+        _ => Cmp::Ge,
+    }
+}
+
+fn bits(op: Prim) -> Bits {
+    match op {
+        Prim::Shl => Bits::Shl,
+        Prim::Shr => Bits::Shr,
+        Prim::Ushr => Bits::Ushr,
+        Prim::BitAnd => Bits::And,
+        Prim::BitOr => Bits::Or,
+        _ => Bits::Xor,
+    }
+}
+
 fn as_int(v: &Value) -> Result<i64, Error> {
     match v {
         Value::Int(i) => Ok(*i),
@@ -1382,8 +1333,11 @@ fn bytes_of(v: &Value, what: &str) -> Result<Vec<u8>, Error> {
     let mut buf = Vec::with_capacity(a.len());
     for x in a.iter() {
         match x {
+            Value::Word(Width::U8, b) => buf.push(*b as u8),
+            // A literal in code generic over its integer type -- see
+            // `meadow_core::num`.
             Value::Int(n) if (0..=255).contains(n) => buf.push(*n as u8),
-            other => return err(format!("`{what}`: not a byte (0..255): {other}")),
+            other => return err(format!("`{what}`: not a byte: {other}")),
         }
     }
     Ok(buf)
@@ -1398,6 +1352,8 @@ impl std::fmt::Display for Value<'_> {
             Value::Int(n) => write!(f, "{n}"),
             Value::BigInt(n) => write!(f, "{n}"),
             Value::Float(x) => f.write_str(&meadow_core::fmt_float(*x)),
+            Value::Word(w, b) => write!(f, "{}", w.value(*b)),
+            Value::Float32(x) => f.write_str(&num::fmt_float32(*x)),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Str(s) => write!(f, "{:?}", &**s),
             Value::Char(c) => write!(f, "{c:?}"),

@@ -14,7 +14,7 @@
 -- nanoseconds from an unspecified origin that only ever moves forward, which is
 -- what a duration should be measured with.
 
-use Std.Int (abs)
+use Std.Num.Int (abs)
 use Std.String as S
 use Std.Collections.Vector (vecFromArray)
 

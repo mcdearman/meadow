@@ -188,7 +188,7 @@ fn hover_shows_the_signature_and_the_doc_comment() {
     c.set(SRC);
     let hover = c.at("textDocument/hover", 3, 12);
     let text = hover["contents"]["value"].as_str().unwrap();
-    assert!(text.contains("double : Int -> Int"), "{text}");
+    assert!(text.contains("double : forall n. n -> n"), "{text}");
     assert!(text.contains("Doubles its argument."), "{text}");
 }
 
@@ -227,7 +227,7 @@ fn inlay_hints_annotate_parameters() {
     // The label is a *sequence* of parts, not a string: a type name in it has
     // to be able to carry a `location`, which is what an editor turns into a
     // ctrl-click. Flattened, the hints read as the annotation you could have
-    // written — `fun double (n : Int) : Int = n * 2`.
+    // written — `fun double (n : n) : n = n * 2`.
     let flat: Vec<(u64, u64, String)> = hints
         .iter()
         .map(|h| {
@@ -247,7 +247,7 @@ fn inlay_hints_annotate_parameters() {
     // `fun double n = n * 2` — an open paren before `n`, and the rest after it.
     assert!(flat.contains(&(1, 11, "(".to_string())), "got {flat:?}");
     assert!(
-        flat.contains(&(1, 12, " : Int) : Int".to_string())),
+        flat.contains(&(1, 12, " : n) : n".to_string())),
         "the closing paren and the result type share a position: {flat:?}"
     );
 }
@@ -258,7 +258,7 @@ fn inlay_hints_annotate_parameters() {
 fn a_type_name_in_a_hint_is_a_link() {
     let root = std_sources("hint-link");
     let mut c = Client::start_with(Some(root.clone()));
-    c.set("fun pick m = match m with | Just v -> v | None -> 0\n");
+    c.set("fun pick m = match m with | Just v -> v | None -> toInt 0\n");
     let hints = c.request(
         "textDocument/inlayHint",
         json!({

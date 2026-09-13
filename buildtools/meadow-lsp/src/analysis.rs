@@ -569,7 +569,7 @@ impl Std {
                 let mut w = Walk {
                     types: Some(&pkg.types),
                     source: m.source,
-                    namer: meadow_compiler::infer::Renderer::new(),
+                    namer: meadow_compiler::infer::Renderer::for_table(&pkg.types),
                     a: &mut a,
                 };
                 w.module(&m.hir);
@@ -672,7 +672,7 @@ impl Std {
             let mut w = Walk {
                 types: Some(&pkg.types),
                 source: m.source,
-                namer: meadow_compiler::infer::Renderer::new(),
+                namer: meadow_compiler::infer::Renderer::for_table(&pkg.types),
                 a: &mut a,
             };
             w.module(&m.hir);
@@ -904,7 +904,10 @@ impl Walk<'_> {
                 // to do with `a` in the next, and sharing the namer across a
                 // whole module would give unrelated functions different
                 // letters for no reason.
-                self.namer = meadow_compiler::infer::Renderer::new();
+                self.namer = match self.types {
+                    Some(types) => meadow_compiler::infer::Renderer::for_table(types),
+                    None => meadow_compiler::infer::Renderer::new(),
+                };
                 self.function(b);
                 self.bind_decl(b, false)
             }
@@ -1009,7 +1012,7 @@ impl Walk<'_> {
         let signature = types
             .get(at)
             .or_else(|| types.get(ident.id))
-            .map(|t| without_lone_effect(&meadow_compiler::infer::Renderer::new().render(t)))
+            .map(|t| without_lone_effect(&meadow_compiler::infer::Renderer::for_table(types).render(t)))
             .unwrap_or_default();
         self.a.functions.push(Function {
             name: name.to_string(),
@@ -1353,14 +1356,14 @@ impl Analysis {
             Some(scheme) => {
                 let name = var.and_then(|v| self.binding_names.get(&v));
                 match name {
-                    Some(n) => format!("{n} : {scheme}"),
+                    Some(n) => format!("{} : {scheme}", hir::spell_name(n)),
                     None => scheme.clone(),
                 }
             }
             None => {
                 let ty = self.type_at(offset)?;
                 match var.and_then(|v| self.binding_names.get(&v)) {
-                    Some(n) => format!("{n} : {ty}"),
+                    Some(n) => format!("{} : {ty}", hir::spell_name(n)),
                     None => ty.to_string(),
                 }
             }

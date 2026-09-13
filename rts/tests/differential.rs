@@ -890,3 +890,84 @@ fn mutable_arrays_agree_everywhere() {
         "(#[0, 1, 4, 9, 16], #[99, 1, 4, 9, 16], 6)"
     );
 }
+
+// --- sized numbers -------------------------------------------------------
+
+// A fixed-width integer is an unboxed word in every engine: in a register, in a
+// constructor field, and in an array slot. A disagreement in wrapping, sign,
+// display or equality between the three shows up here first.
+
+#[test]
+fn a_fixed_width_integer_wraps_at_its_width() {
+    assert_eq!(agree("def main = toUInt8 250 + toUInt8 10"), "4");
+    assert_eq!(agree("def main = toInt8 127 + toInt8 1"), "-128");
+    assert_eq!(agree("def main = toUInt16 0 - toUInt16 1"), "65535");
+    assert_eq!(agree("def main = toInt32 65536 * toInt32 65536"), "0");
+    assert_eq!(agree("def main = toUInt64 (toInt (0 - 1))"), "18446744073709551615");
+    // A conversion keeps the low bits, from a `BigInt` as from anything else.
+    assert_eq!(agree("def main = toUInt8 (2 ^ 100 + 5)"), "5");
+    assert_eq!(agree("def main = toInt16 40000"), "-25536");
+}
+
+#[test]
+fn an_unconstrained_literal_is_a_bigint_and_does_not_overflow() {
+    assert_eq!(agree("def main = 2 ^ 64"), "18446744073709551616");
+    assert_eq!(agree("def main = toInt 2 ^ 64"), "0");
+}
+
+#[test]
+fn shifts_and_bits_know_the_width_and_the_sign() {
+    assert_eq!(agree("def main = toUInt32 (0 - 1) >> 28"), "15");
+    assert_eq!(agree("def main = toInt32 (0 - 16) >> 2"), "-4");
+    assert_eq!(agree("def main = bitNot (toUInt8 0)"), "255");
+    assert_eq!(agree("def main = popCount (toInt16 (0 - 1))"), "16");
+    assert_eq!(agree("def main = bitWidth (toUInt64 0)"), "64");
+}
+
+#[test]
+fn sized_integers_compare_and_match_by_value() {
+    assert_eq!(agree("def main = if toUInt8 200 > 100 then 1 else 0"), "1");
+    assert_eq!(agree("def main = if toInt8 (0 - 1) < 0 then 1 else 0"), "1");
+    assert_eq!(agree("def main = if toUInt16 5 == 5 then 1 else 0"), "1");
+    assert_eq!(
+        agree("def main = match toUInt8 3 with | 2 -> 20 | 3 -> 30 | _ -> 0"),
+        "30"
+    );
+}
+
+#[test]
+fn sized_numbers_are_stored_in_fields_and_arrays() {
+    assert_eq!(
+        agree(
+            "data P = P UInt8 Int16 Float32
+             fun total p = match p with | P a b c -> (toInt a + toInt b, c)
+             def main = total (P (toUInt8 255) (toInt16 (0 - 5)) (toFloat32 0.5))"
+        ),
+        "(250, 0.5)"
+    );
+    assert_eq!(
+        agree("def main = let (b : #[UInt8]) = #[1, 255, 3] in (b, arrayGet b 1 + toUInt8 1)"),
+        "(#[1, 255, 3], 0)"
+    );
+}
+
+#[test]
+fn float32_keeps_single_precision() {
+    assert_eq!(agree("def main = toFloat32 1.5 +. toFloat32 0.25"), "1.75");
+    // Printed as the shortest text that reads back as the same `Float32`.
+    assert_eq!(agree("def main = toFloat32 0.1"), "0.1");
+    assert_eq!(agree("def main = toFloat64 (toFloat32 0.1)"), "0.10000000149011612");
+    assert_eq!(agree("def main = toFloat32 16777217.0"), "16777216.0");
+}
+
+#[test]
+fn equal_integers_hash_alike_whatever_their_type() {
+    assert_eq!(
+        agree("def main = if hash (toUInt8 7) == hash (toInt 7) then 1 else 0"),
+        "1"
+    );
+    assert_eq!(
+        agree("def main = if hash (toInt32 7) == hash (toBigInt 7) then 1 else 0"),
+        "1"
+    );
+}

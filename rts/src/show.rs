@@ -174,6 +174,10 @@ impl Vm<'_> {
                 let _ = write!(out, "{n}");
             }
             Value::Float(x) => out.push_str(&meadow_core::fmt_float(x)),
+            Value::Word(w, b) => {
+                let _ = write!(out, "{}", w.value(b));
+            }
+            Value::Float32(x) => out.push_str(&meadow_core::num::fmt_float32(x)),
             Value::Bool(b) => {
                 let _ = write!(out, "{b}");
             }
@@ -303,12 +307,8 @@ impl Vm<'_> {
                 Work::Val(v) => v,
             };
             let a = match v {
-                Value::Int(n) => {
-                    h.int(n);
-                    continue;
-                }
-                Value::Float(x) => {
-                    h.float(x);
+                Value::Int(_) | Value::Word(..) | Value::Float(_) | Value::Float32(_) => {
+                    meadow_core::num::hash_into(&mut h, &self.num(v)?);
                     continue;
                 }
                 Value::Bool(b) => {
@@ -368,7 +368,7 @@ impl Vm<'_> {
                     }
                 }
                 Kind::BigInt => match self.bigint_at(v) {
-                    Some(b) => h.bigint(&b.to_signed_bytes_le()),
+                    Some(b) => meadow_core::num::hash_into(&mut h, &meadow_core::num::Num::Big(b)),
                     None => return Err(Error { msg: "hash: a malformed BigInt".into() }),
                 },
                 Kind::Ref => return Err(Error { msg: unhashable("a Ref") }),
@@ -387,6 +387,14 @@ impl Vm<'_> {
             match (a, b) {
                 (Value::Int(x), Value::Int(y)) if x == y => {}
                 (Value::Float(x), Value::Float(y)) if x == y => {}
+                // Numbers by value, so a literal in generic code equals the
+                // value it stands beside -- see `meadow_core::num`.
+                (x, y) if is_number(x) || is_number(y) => {
+                    match (self.try_num(x), self.try_num(y)) {
+                        (Some(p), Some(q)) if meadow_core::num::num_eq(&p, &q) => {}
+                        _ => return false,
+                    }
+                }
                 (Value::Bool(x), Value::Bool(y)) if x == y => {}
                 (Value::Char(x), Value::Char(y)) if x == y => {}
                 (Value::Str(x), Value::Str(y)) if x == y => {}
@@ -460,4 +468,9 @@ impl Vm<'_> {
         }
         true
     }
+}
+
+/// An immediate number -- the cheap test, before a `BigInt` is ever read.
+fn is_number(v: Value) -> bool {
+    matches!(v, Value::Int(_) | Value::Word(..) | Value::Float(_) | Value::Float32(_))
 }

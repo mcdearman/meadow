@@ -789,6 +789,19 @@ impl Session {
     }
 
     fn row(&mut self, name: String, v: Value, ty: Option<String>) -> Variable {
+        // A generic function's variable has a type variable for its static
+        // type. The value knows what it is, for the kinds that carry it -- the
+        // numbers, which a function generic over its number type is full of.
+        let ty = match ty {
+            Some(t) if is_type_variable(&t) => match v {
+                Value::Obj(a) if self.vm.heap().is_object(a) && self.vm.heap().kind(a) == Kind::BigInt => {
+                    Some("BigInt".to_string())
+                }
+                Value::Obj(_) => Some(t),
+                other => Some(other.kind().to_string()),
+            },
+            other => other,
+        };
         let children = if self.has_children(v) {
             self.reference(Target::Value(v))
         } else {
@@ -1068,7 +1081,7 @@ impl Names<'_> {
         let ty = self
             .types
             .get(id.id)
-            .map(|t| Renderer::new().render(t))
+            .map(|t| Renderer::for_table(self.types).render(t))
             .unwrap_or_default();
         self.out.insert(
             id.value().0,
@@ -1104,7 +1117,7 @@ impl Names<'_> {
                         .types
                         .get(p.id)
                         .or_else(|| self.types.get(id.id))
-                        .map(|t| Renderer::new().render(t))
+                        .map(|t| Renderer::for_table(self.types).render(t))
                         .unwrap_or_default();
                     self.out.insert(
                         id.value().0,
@@ -1204,4 +1217,10 @@ pub fn plain_path(p: &str) -> String {
 
 fn path_display(p: &Path) -> String {
     plain_path(&p.display().to_string())
+}
+
+/// `a`, `n1`: a type that is only a variable.
+fn is_type_variable(ty: &str) -> bool {
+    let mut chars = ty.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase()) && chars.all(|c| c.is_ascii_alphanumeric())
 }

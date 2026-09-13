@@ -4,7 +4,7 @@
 
 use Std.Bool (not)
 use Std.Tuple (fst, snd)
-use Std.Int (min, max)
+use Std.Num.Int (min, max)
 -- `toStream` performs `yield`; see the note in `Std.Collections.Vector`.
 use Std.Yield (yield)
 

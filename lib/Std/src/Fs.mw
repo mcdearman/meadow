@@ -20,7 +20,7 @@
 
 @pub effect Fs {
   readToString : String -> Result String String,
-  readBytes : String -> Result String (Array Int),
+  readBytes : String -> Result String #[UInt8],
   writeString : (String, String) -> Result String (),
   appendString : (String, String) -> Result String (),
   removeFile : String -> Result String (),

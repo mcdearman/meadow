@@ -28,7 +28,7 @@ pub fn schemes(src: &str) -> String {
     let (cp, diags) = compile(src);
     let mut out = String::new();
     for e in &cp.exports {
-        out.push_str(&format!("{} : {}\n", e.name, e.scheme));
+        out.push_str(&format!("{} : {}\n", meadow_compiler::hir::spell_name(&e.name), e.scheme));
     }
     for d in diags {
         out.push_str(&format!("!! {d}\n"));
@@ -191,7 +191,7 @@ pub fn schemes_std(src: &str) -> String {
         meadow_compiler::compile_unit("test".into(), 1, modules, &std_refs, Options::debug());
     let mut out = String::new();
     for e in &cp.exports {
-        out.push_str(&format!("{} : {}\n", e.name, e.scheme));
+        out.push_str(&format!("{} : {}\n", meadow_compiler::hir::spell_name(&e.name), e.scheme));
     }
     for d in diags {
         out.push_str(&format!("!! {}\n", d.msg));

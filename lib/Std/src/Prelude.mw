@@ -24,6 +24,9 @@
 
 @pub use Std.Bool (not)
 
+-- `"a" ++ "b"`: string concatenation, `Std.String.concat` by another name.
+@pub use Std.String (++)
+
 -- Printing is `Std.Console`'s `writeOutput` underneath, so a handler can
 -- capture it; these two are in scope everywhere all the same.
 @pub use Std.Console (print, println)
@@ -34,11 +37,11 @@
 
 @pub use Std.Tuple (fst, snd, pair, swap, mapFst, mapSnd)
 
-@pub use Std.Int (
+@pub use Std.Num.Int (
   min, max, abs, signum, clamp, succ, pred, even, odd, gcd, lcm,
 )
 
-@pub use Std.Bits (
+@pub use Std.Num.Bits (
   lowMask, lowBits, bit, testBit, setBit, clearBit, flipBit, byteOf, fromBytes4,
   countLeadingZeros, countTrailingZeros, rotateLeft, rotateRight,
 )

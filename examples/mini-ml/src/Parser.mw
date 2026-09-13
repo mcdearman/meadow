@@ -23,13 +23,13 @@ use Std.Bool (not)
 
 -- --- bytes ---------------------------------------------------------------
 
-fun isDigitB c = c >= 48 and c <= 57
-fun isLowerB c = c >= 97 and c <= 122
-fun isUpperB c = c >= 65 and c <= 90
-fun isAlphaB c = isLowerB c or isUpperB c
-fun isIdentStart c = isAlphaB c or c == 95
-fun isIdentByte c = isIdentStart c or isDigitB c
-fun isSpaceB c = c == 32 or c == 9 or c == 10 or c == 13
+fun isDigitB (c : UInt8) = c >= 48 and c <= 57
+fun isLowerB (c : UInt8) = c >= 97 and c <= 122
+fun isUpperB (c : UInt8) = c >= 65 and c <= 90
+fun isAlphaB (c : UInt8) = isLowerB c or isUpperB c
+fun isIdentStart (c : UInt8) = isAlphaB c or c == 95
+fun isIdentByte (c : UInt8) = isIdentStart c or isDigitB c
+fun isSpaceB (c : UInt8) = c == 32 or c == 9 or c == 10 or c == 13
 
 def spaces = P.takeWhileP isSpaceB
 

@@ -120,9 +120,12 @@ def main = 1  -- so is this
 
 | Type | Literals | Notes |
 |---|---|---|
-| `Int` | `42`, `-7`, `0xff`, `0o17`, `0b1011` | 64-bit, wrapping |
-| `BigInt` | *(no literal)* | arbitrary precision, via `toBigInt` |
-| `Float` | `3.14`, `42.0` | 64-bit |
+| `BigInt` | `42`, `-7`, `0xff`, `0o17`, `0b1011` | arbitrary precision; what an integer literal is by default |
+| `Int` | *(same literals)* | 64-bit, wrapping; also spelled `Int64` |
+| `Int8` `Int16` `Int32` | *(same literals)* | signed, wrapping at their width |
+| `UInt8` `UInt16` `UInt32` `UInt64` | *(same literals)* | unsigned, wrapping at their width |
+| `Float` | `3.14`, `42.0` | 64-bit; also spelled `Float64` |
+| `Float32` | *(same literals)* | 32-bit |
 | `Bool` | `True`, `False` | constructors, capitalised |
 | `String` | `"hi"`, `"tab\there"` | a sequence of **bytes**; escapes `\n \t \r \\ \" \0` |
 | `Char` | `'a'`, `'é'`, `'\n'` | one Unicode **scalar**, not one byte |
@@ -131,30 +134,55 @@ def main = 1  -- so is this
 `Bool` values *print* as lowercase `true` / `false`, but you always write the
 constructors `True` and `False`.
 
-### Three numeric types, three sets of operators
+### One set of operators for every integer type
 
-This is the first thing that surprises people. Meadow has no numeric overloading,
-so each numeric type gets its own operators, distinguished by a suffix:
-
-| | `Int` | `Float` | `BigInt` |
-|---|---|---|---|
-| arithmetic | `+ - * / % ^` | `+. -. *. /.` | `+~ -~ *~ /~ %~ ^~` |
-| comparison | `< > <= >=` | `<. >. <=. >=.` | `<~ >~ <=~ >=~` |
+`+ - * / % ^` and `< > <= >=` work on **every** integer type. Both sides must
+have the same type, and a literal takes whichever type its context needs. When
+nothing settles it, an integer is a `BigInt`, so arithmetic you did not think
+about cannot overflow:
 
 ```meadow
-def ints   = 1 + 2 * 3
-def floats = 1.5 +. 2.5
-def bigs   = toBigInt 2 ^~ toBigInt 64
+def big   = 2 ^ 100
+def small = toInt 2 ^ 62
+def byte  = toUInt8 250 + 6
 
-def main = (ints, floats, bigs)
+def main = (big, small, byte)
 ```
 
 ```
-=> (7, 4.0, 18446744073709551616)
+=> (1267650600228229401496703205376, 4611686018427387904, 0)
 ```
 
-Equality is the exception: `==` and `!=` are **structural and work at any type** —
-tuples, lists, constructors, records, anything.
+The fixed-width types wrap at their width, as `byte` shows. Mixing two of them
+is a type error rather than a silent conversion: `toInt 1 + toInt32 1` does not
+compile. Say which one you mean with a conversion (below).
+
+Floating point keeps its own operators, `+. -. *. /.` and `<. >. <=. >=.`, which
+work on `Float` and `Float32`. A float literal nothing settles is a `Float`.
+
+A function written with the operators works on any integer type. Its type says
+so with a variable named `n`, which stands for "some integer type":
+
+```meadow
+fun square x = x * x
+
+def main = (square 12, square (toUInt8 20))
+```
+
+```
+=> (144, 144)
+```
+
+`square : forall n. n -> n`, and `20 * 20` wraps to `144` as a `UInt8`. Only
+`fun` is generic in this way: a `def` or a `let` has one number type, settled
+by how it is used, or `BigInt` if nothing uses it at a particular one.
+
+A `BigInt` costs more than a machine word. In a loop that runs millions of
+times, pin the counter to `Int` with an annotation — `fun go (i : Int) acc = ...`
+— and every literal it meets follows.
+
+Equality is different again: `==` and `!=` are **structural and work at any
+type** — tuples, lists, constructors, records, anything.
 
 ```meadow
 def main = ([1, 2] == [1, 2], Just 1 != None, "a" == "a")
@@ -170,19 +198,27 @@ tests by hand.
 
 ### Converting between them
 
+`toInt` (or `toInt64`), `toInt8`, `toInt16`, `toInt32`, `toUInt8` … `toUInt64` and
+`toBigInt` take any integer. Narrowing keeps the low bits, so `toInt8 200` is
+`-56`. `toFloat` turns an integer into a `Float`; `toFloat32` and `toFloat64`
+convert between the two float types; `floor` goes from a float to an `Int`.
+
 ```meadow
-def main = (toFloat 3, floor 3.9, toBigInt 5, toInt (toBigInt 5))
+def main = (toFloat 3, floor 3.9, toBigInt 5, toInt8 200, toFloat32 (toFloat 3))
 ```
 
 ```
-=> (3.0, 3, 5, 5)
+=> (3.0, 3, 5, -56, 3.0)
 ```
 
 ### Booleans and bit twiddling
 
-`and` and `or` short-circuit, and `not` is an ordinary function. Bit operators
-`<<`, `>>` (arithmetic) and `>>>` (unsigned) work on `Int`, alongside the
-`Std.Bits` helpers.
+`and` and `or` short-circuit, and `not` is an ordinary function. The bit
+operators `<<`, `>>` and `>>>`, and the primitives `bitAnd`, `bitOr`, `bitXor`,
+`bitNot`, `popCount` and `bitWidth`, work on every integer type at that type's
+width: `>>` is arithmetic on a signed type and logical on an unsigned one, and
+`>>>` is always logical. The amount shifted by is an `Int`. `Std.Num.Bits` adds
+helpers on top.
 
 ```meadow
 def main = (1 < 2 and 3 < 4, not True or True, 1 << 4, bitAnd 12 10)
@@ -552,7 +588,7 @@ There is also `Either a b` in `Std.Either`, for when neither side means
 after `use Std.Either.Either.*`.
 
 Note the `use Std.String as S` there: the prelude's bare `toInt` is the
-`BigInt -> Int` primitive, not string parsing. When a name feels like it should
+integer-conversion primitive, not string parsing. When a name feels like it should
 exist, check whether the prelude already means something else by it.
 
 ### `record` — named fields
@@ -782,6 +818,42 @@ def main = (S.concat "foo" "bar", S.split "," "a,b,c", S.toUpper "hi", S.toInt "
 ```
 => ("foobar", ["a", "b", "c"], "HI", Just(42))
 ```
+
+`concat` is common enough to have an operator. `a ++ b` is `S.concat a b`, and
+it is in the prelude, so it needs no `use`:
+
+```meadow
+def main = "n = " ++ show 42 ++ "!"
+```
+
+```
+=> "n = 42!"
+```
+
+`++` binds looser than application and tighter than `==`, and groups to the
+right. Unlike the arithmetic operators it is not a primitive but an ordinary
+name, bound with `fun (++) a b = ...` or `def (++) = ...`. It is imported,
+exported and shadowed like any other name, and written `(++)` wherever a name
+goes: `(++) "a" "b"`, `use Std.String ((++))`.
+
+Underneath, the bytes of a string are a `#[UInt8]`: `stringToBytes` and
+`bytesToString` convert, and `Std.Bytes` works on the array. A byte is a
+`UInt8`, so arithmetic on one stays a `UInt8` and wraps. Convert before you
+accumulate, or a digit fold quietly keeps only the low eight bits:
+
+```meadow
+fun digits acc bytes i =
+  if i >= arrayLen bytes then acc
+  else digits (acc * 10 + toInt (arrayGet bytes i - 48)) bytes (i + 1)
+
+def main = digits 0 (stringToBytes "1234") 0
+```
+
+```
+=> 1234
+```
+
+Without the `toInt`, `acc` would be a `UInt8` too, and the answer `210`.
 
 `Std.Char` classifies and converts single characters. Its predicates are
 **ASCII-only** by design — doing it properly means shipping the Unicode
@@ -1235,7 +1307,7 @@ fun sumTwice () = twice (\() -> 1 + 1)
 ```
   twice : forall a e. (() -> a ! e) -> a ! e
   logTwice : forall e. () -> () ! { Log | e }
-  sumTwice : () -> Int
+  sumTwice : forall n. () -> n
 ```
 
 `twice` performs exactly what `f` performs — the row variable `e` appears on both
@@ -1705,8 +1777,8 @@ def main = (sumTo 100, fibs 10)
 ```
 
 ```
-  sumTo : Int -> Int
-  fibs : Int -> [Int]
+  sumTo : forall n. n -> n
+  fibs : forall n. Int -> [n]
 => (5050, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34])
 ```
 
@@ -1984,7 +2056,7 @@ reading (`readToString`, `readBytes`, `readDir`, `metadata`), writing
 (`writeString`, `appendString`, `copy`, `rename`), directories (`createDir`,
 `createDirAll`, `removeDir`, `removeDirAll`) and predicates (`exists`, `isFile`,
 `isDir`). Convenience: `readToStringOr`, `tryReadDir`, `existsAll`. `readDir`
-answers a `Vector` of names; `readBytes` answers an `Array Int`, the byte-array
+answers a `Vector` of names; `readBytes` answers a `#[UInt8]`, the byte-array
 type `Std.Bytes` works on.
 
 #### Process — subprocesses, argv and the environment
@@ -2170,11 +2242,11 @@ the column you chose, so deliberate alignment survives.
 | `\|>` | pipe |
 | `or` | short-circuit |
 | `and` | short-circuit |
-| `==` `!=` `<` `>` `<=` `>=` (and `.` / `~` variants) | comparison |
-| `::` | cons, right-associative |
-| `+` `-` (and `+.` `-.` `+~` `-~`), `<<` `>>` `>>>` | |
-| `*` `/` `%` (and `*.` `/.` `*~` `/~` `%~`) | |
-| `^` `^~` | power, right-associative |
+| `==` `!=` `<` `>` `<=` `>=` (and `<.` `>.` `<=.` `>=.`) | comparison |
+| `::` `++` | cons, string concatenation; right-associative |
+| `+` `-` (and `+.` `-.`), `<<` `>>` `>>>` | |
+| `*` `/` `%` (and `*.` `/.`) | |
+| `^` | power, right-associative |
 | `-` (prefix) | negation |
 | *juxtaposition* | function application, tightest |
 
@@ -2186,12 +2258,12 @@ Without any `use`, from the prelude:
 - **Ordering** `compare` `isLess` `isEqual` `isGreater`
 - **Function** `id` `const` `flip` `compose` `apply` `twice`
 - **Tuple** `fst` `snd` `pair` `swap` `mapFst` `mapSnd`
-- **Int** `min` `max` `abs` `signum` `clamp` `succ` `pred` `even` `odd` `gcd` `lcm`
-- **Bits** `lowMask` `lowBits` `bit` `testBit` `setBit` `clearBit` `flipBit`
+- **Num.Int** `min` `max` `abs` `signum` `clamp` `succ` `pred` `even` `odd` `gcd` `lcm`
+- **Num.Bits** `lowMask` `lowBits` `bit` `testBit` `setBit` `clearBit` `flipBit`
   `byteOf` `fromBytes4` `countLeadingZeros` `countTrailingZeros` `rotateLeft`
   `rotateRight`
 - **Bytes** `bytesLength` `bytesGet` `bytesSet` `bytesPush` `bytesSlice`
-  `bytesConcat`, the `U16`/`U32` accessors, …
+  `bytesConcat`, the `U16`/`U32`/`U64` accessors, …
 - **Fs** `readToString` `writeString` `exists` `readDir` …
 - **Process** `command` `run` `exit` `argv` `getEnv` …
 - **Vector** `empty` `singleton` `len` `length` `isEmpty` `get` `getOr` `head`
@@ -2202,15 +2274,15 @@ Without any `use`, from the prelude:
   `partition` `zip` `zipWith` `unzip` `maximum` `minimum` `toArray` `toList`
   `fromArray` `fromList`
 
-Also always available: `print` and `println`; `runSt`; the primitives (`show`, `display`, `hash`,
+Also always available: `++` (`Std.String.concat`); `print` and `println`; `runSt`; the primitives (`show`, `display`, `hash`,
 `arrayLen`, `arrayGet`, `stringToBytes`, `stringToChars`, `charCode`, `bitAnd`,
-`toFloat`, `toBigInt`, …); and the constructors `Just`, `None`, `Ok`, `Err`,
+`toInt`, `toUInt8`, `toFloat`, `toBigInt`, …); and the constructors `Just`, `None`, `Ok`, `Err`,
 `Less`, `Equal`, `Greater`, `True`, `False`, `Nil` and `Cons`.
 
 ### The standard library
 
-`Bool` `Ordering` `Function` `Tuple` `Int` `Maybe` `Char` `Result` `Either` `Bits`
-`Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `St` `Exn`
+`Bool` `Ordering` `Function` `Tuple` `Num` (`Int` `Bits`) `Maybe` `Char` `Result`
+`Either` `Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `St` `Exn`
 `Stream` `Random` `Fs` `Process` `String` (`Parse`) `Path` `Json` `Time` `Test`
 
 `Std.String.Parse` is a megaparsec-style parser combinator library; `Std.Json` is
@@ -2219,6 +2291,12 @@ built on it and is worth reading as a worked example.
 ### Gotchas, collected
 
 - `%` follows the sign of the dividend: `(-7) % 3` is `-1`.
+- An integer literal nothing pins down is a `BigInt`; annotate a hot loop's
+  counter as `Int`.
+- A byte is a `UInt8`, and so is arithmetic on it: `toInt (b - 48)` before
+  accumulating digits.
+- `+` is for integers and `+.` for floats; two different integer types never mix
+  without a conversion.
 - `[1..5]` is **inclusive**; `range 1 5` is **half-open**.
 - `Bool` prints lowercase but is written `True` / `False`.
 - `@pub` is public, as in Rust; `@pub(pkg)` stops at the package, like `pub(crate)`.

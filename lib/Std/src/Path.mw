@@ -17,7 +17,7 @@ use Std.Maybe.Maybe.*
 
 @pub def separator = "/"
 
-@pub fun isSeparator b = b == 47 or b == 92
+@pub fun isSeparator (b : UInt8) = b == 47 or b == 92
 
 -- --- joining ------------------------------------------------------------------
 

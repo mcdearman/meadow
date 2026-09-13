@@ -1,7 +1,7 @@
 -- Std.String: operations on `String`.
 --
--- A `String` is opaque, so everything here goes through its UTF-8 bytes with the
--- `stringToBytes` / `bytesToString` primitives. Offsets and lengths are
+-- A `String` is opaque, so everything here goes through its UTF-8 bytes -- a
+-- `#[UInt8]` -- with the `stringToBytes` / `bytesToString` primitives. Offsets and lengths are
 -- therefore counted in **bytes**, not characters: exact for ASCII, and
 -- byte-oriented above U+007F. Slicing through the middle of a multi-byte
 -- character will produce invalid UTF-8, so `slice` and friends want offsets you
@@ -15,7 +15,7 @@
 @pub mod Parse
 
 use Std.Collections.Vector as V (vecFromArray)
-use Std.Int (min, max)
+use Std.Num.Int (min, max)
 use Std.Maybe.Maybe.*
 
 -- ---------------------------------------------------------------------------
@@ -40,14 +40,17 @@ use Std.Maybe.Maybe.*
 -- `a` followed by `b`.
 @pub fun concat a b = bytesToString (arrayConcat (stringToBytes a) (stringToBytes b))
 
-fun concatLoop acc i xs =
+-- `a ++ b` is `concat a b`. In the prelude, so it is in scope everywhere.
+@pub def (++) = concat
+
+fun concatLoop (acc : #[UInt8]) i xs =
   if i >= V.len xs then acc
   else concatLoop (arrayConcat acc (stringToBytes (V.getOr "" xs i))) (i + 1) xs
 
 -- Every string in `xs`, run together.
 @pub fun concatAll xs = bytesToString (concatLoop #[] 0 xs)
 
-fun joinLoop sep acc i xs =
+fun joinLoop sep (acc : #[UInt8]) i xs =
   if i >= V.len xs then acc
   else
     let piece = stringToBytes (V.getOr "" xs i) in
@@ -58,7 +61,7 @@ fun joinLoop sep acc i xs =
 -- Every string in `xs`, with `sep` between them.
 @pub fun join sep xs = bytesToString (joinLoop sep #[] 0 xs)
 
-fun repeatLoop acc b n = if n <= 0 then acc else repeatLoop (arrayConcat acc b) b (n - 1)
+fun repeatLoop (acc : #[UInt8]) (b : #[UInt8]) n = if n <= 0 then acc else repeatLoop (arrayConcat acc b) b (n - 1)
 
 -- `s` repeated `n` times.
 @pub fun repeat s n = bytesToString (repeatLoop #[] (stringToBytes s) n)
@@ -90,7 +93,7 @@ fun repeatLoop acc b n = if n <= 0 then acc else repeatLoop (arrayConcat acc b) 
 -- Searching
 -- ---------------------------------------------------------------------------
 
-fun matchesAt hay needle i j =
+fun matchesAt (hay : #[UInt8]) (needle : #[UInt8]) i j =
   if j >= arrayLen needle then True
   else if arrayGetOr 0 hay (i + j) == arrayGetOr 0 needle j then
     matchesAt hay needle i (j + 1)
@@ -138,14 +141,14 @@ fun splitLoop hay needle i acc =
 -- ---------------------------------------------------------------------------
 
 -- Space, tab, newline, carriage return.
-@pub fun isSpaceByte c = c == 32 or c == 9 or c == 10 or c == 13
+@pub fun isSpaceByte (c : UInt8) = c == 32 or c == 9 or c == 10 or c == 13
 
-fun startOfText b i =
+fun startOfText (b : #[UInt8]) i =
   if i >= arrayLen b then i
   else if isSpaceByte (arrayGetOr 0 b i) then startOfText b (i + 1)
   else i
 
-fun endOfText b i =
+fun endOfText (b : #[UInt8]) i =
   if i <= 0 then 0
   else if isSpaceByte (arrayGetOr 0 b (i - 1)) then endOfText b (i - 1)
   else i
@@ -169,13 +172,13 @@ fun trimTrailingNewline s = if endsWith "\n" s then take s (byteLength s - 1) el
 -- ASCII case
 -- ---------------------------------------------------------------------------
 
-fun mapBytes f b i acc =
+fun mapBytes f (b : #[UInt8]) i (acc : #[UInt8]) =
   if i >= arrayLen b then acc
   else mapBytes f b (i + 1) (arrayPush acc (f (arrayGetOr 0 b i)))
 
-fun upperByte c = if c >= 97 and c <= 122 then c - 32 else c
+fun upperByte (c : UInt8) = if c >= 97 and c <= 122 then c - 32 else c
 
-fun lowerByte c = if c >= 65 and c <= 90 then c + 32 else c
+fun lowerByte (c : UInt8) = if c >= 65 and c <= 90 then c + 32 else c
 
 -- ASCII letters only; anything else is left alone.
 @pub fun toUpper s = bytesToString (mapBytes upperByte (stringToBytes s) 0 #[])
@@ -186,11 +189,11 @@ fun lowerByte c = if c >= 65 and c <= 90 then c + 32 else c
 -- Numbers
 -- ---------------------------------------------------------------------------
 
-fun reverseFrom a i acc =
+fun reverseFrom (a : #[UInt8]) i (acc : #[UInt8]) =
   if i < 0 then acc else reverseFrom a (i - 1) (arrayPush acc (arrayGetOr 0 a i))
 
-fun collectDigits n acc =
-  if n == 0 then acc else collectDigits (n / 10) (arrayPush acc (48 + n % 10))
+fun collectDigits n (acc : #[UInt8]) =
+  if n == 0 then acc else collectDigits (n / 10) (arrayPush acc (toUInt8 (48 + n % 10)))
 
 fun digitsToString n =
   let ds = collectDigits n #[] in
@@ -202,13 +205,13 @@ fun digitsToString n =
   else if n < 0 then concat "-" (digitsToString (0 - n))
   else digitsToString n
 
-@pub fun isDigitByte c = c >= 48 and c <= 57
+@pub fun isDigitByte (c : UInt8) = c >= 48 and c <= 57
 
-fun digitsFrom b i acc =
+fun digitsFrom (b : #[UInt8]) i acc =
   if i >= arrayLen b then Just acc
   else
     let c = arrayGetOr 0 b i in
-    if isDigitByte c then digitsFrom b (i + 1) (acc * 10 + (c - 48)) else None
+    if isDigitByte c then digitsFrom b (i + 1) (acc * 10 + toInt64 (c - 48)) else None
 
 -- `s` read as a base-ten integer, with an optional leading `-`. `None` unless
 -- the whole string is digits.

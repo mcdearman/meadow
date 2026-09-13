@@ -147,7 +147,7 @@ impl Type {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VarKind {
     Type,
     /// A record row variable.
@@ -155,11 +155,20 @@ pub enum VarKind {
     /// An effect row variable — structurally a row, tracked separately so error
     /// messages and pretty-printing can tell effects from records.
     Effect,
-    /// A numeric-literal variable. Unifies only with `Int`, `BigInt`, a plain
-    /// type var (keeping the `Num`), or another `Num`; anything else is a type
-    /// error. Never generalized, never printed — any that survive inference
-    /// default to `Int` (see `Arena::default_num_vars`).
+    /// A variable standing for some **integer** type: `Int` (`Int64`),
+    /// `BigInt`, `Int8` … `Int32` or `UInt8` … `UInt64`. What an integer literal
+    /// and the integer operators have. Unifies with those types, a plain type
+    /// variable (which becomes one of these), or another `Num`.
+    ///
+    /// A `fun` generalizes over it -- `fun add a b = a + b` is
+    /// `forall n. n -> n -> n` -- and a `def` or `let` does not, so `def x = 5`
+    /// is one number rather than a family of them. One left over defaults to
+    /// `BigInt` (see `Arena::default_num_vars`). Printed `n`, `n1`, ….
     Num,
+    /// The same for **float** types, `Float` (`Float64`) and `Float32`: what a
+    /// float literal and `+.` and friends have. Defaults to `Float`. Printed
+    /// `f`, `f1`, ….
+    Frac,
 }
 
 /// A polytype: `quant` lists the kind of each quantified variable, and `ty` refers
@@ -207,6 +216,9 @@ enum UnifyError {
     /// A `runSt`'s state type would reach a variable from outside that
     /// `runSt` -- see [`Arena::fresh_skolem`].
     Escape,
+    /// A type that is not in a number class where one is needed: `true` is for
+    /// the integer class, `false` for the float class.
+    NotANumber(bool, Type),
     Occurs(Type, Type),
     Arity(usize, usize),
     /// A required label is absent from a closed row.
@@ -311,6 +323,17 @@ impl Arena {
             Type::RowExtend(_, field, rest) => {
                 self.free_vars(&field, out);
                 self.free_vars(&rest, out);
+            }
+        }
+    }
+
+    /// [`Arena::hold_back`], for the `Num` and `Frac` variables in `ty` only.
+    fn hold_back_classes(&mut self, ty: &Type, level: u32) {
+        let mut vars = Vec::new();
+        self.free_vars(ty, &mut vars);
+        for id in vars {
+            if matches!(self.slot_kind(id), VarKind::Num | VarKind::Frac) {
+                self.hold_back(&Type::Var(id), level);
             }
         }
     }
@@ -473,7 +496,10 @@ impl Arena {
                 // function stays numeric and later defaults, instead of the plain
                 // var winning and freezing the result as `∀a. a`.
                 match (self.slot_kind(i), self.slot_kind(j)) {
-                    (VarKind::Num, VarKind::Type) => self.bind_var(j, Type::Var(i)),
+                    (VarKind::Num | VarKind::Frac, VarKind::Type) => self.bind_var(j, Type::Var(i)),
+                    (VarKind::Num, VarKind::Frac) | (VarKind::Frac, VarKind::Num) => {
+                        Err(UnifyError::NotANumber(true, Type::float()))
+                    }
                     _ => self.bind_var(i, Type::Var(j)),
                 }
             }
@@ -529,32 +555,55 @@ impl Arena {
 
     fn bind_var(&mut self, id: u32, ty: Type) -> Result<(), UnifyError> {
         self.occurs_adjust(id, &ty)?;
-        if self.slot_kind(id) == VarKind::Num && !Self::num_compatible(&ty) {
-            return Err(UnifyError::Mismatch(Type::con("Int"), ty));
+        match self.slot_kind(id) {
+            VarKind::Num if !Self::is_integer_type(&ty) => {
+                return Err(UnifyError::NotANumber(true, ty));
+            }
+            VarKind::Frac if !Self::is_float_type(&ty) => {
+                return Err(UnifyError::NotANumber(false, ty));
+            }
+            _ => {}
         }
         self.set_slot(id, Slot::Bound(ty));
         Ok(())
     }
 
-    /// Can a `Num` (numeric-literal) var legally unify with this type? Only with
-    /// `Int` / `BigInt`, or another var (kept unresolved for now).
-    fn num_compatible(ty: &Type) -> bool {
+    /// Can a `Num` var stand for this type? An integer type, or a variable (a
+    /// plain one is bound to the `Num` rather than the other way round).
+    pub fn is_integer_type(ty: &Type) -> bool {
         match ty {
-            Type::Var(_) => true,
-            Type::Con(n, args) if args.is_empty() => matches!(&**n, "Int" | "BigInt"),
+            Type::Var(_) | Type::Error => true,
+            Type::Con(n, args) if args.is_empty() => {
+                matches!(&**n, "Int" | "BigInt") || meadow_num_width(n)
+            }
             _ => false,
         }
     }
 
-    /// Bind every still-unbound `Num` var to `Int` — a numeric literal that no
-    /// context ever pinned to `BigInt`. Run once, at the end of inference.
-    fn default_num_vars(&mut self) {
-        for slot in &mut self.slots {
-            if let Slot::Unbound {
-                kind: VarKind::Num, ..
-            } = slot
-            {
-                *slot = Slot::Bound(Type::con("Int"));
+    /// Can a `Frac` var stand for this type? `Float`, `Float32`, or a variable.
+    pub fn is_float_type(ty: &Type) -> bool {
+        match ty {
+            Type::Var(_) | Type::Error => true,
+            Type::Con(n, args) if args.is_empty() => matches!(&**n, "Float" | "Float32"),
+            _ => false,
+        }
+    }
+
+    /// Bind every still-unbound `Num` var to `BigInt` and `Frac` var to `Float`:
+    /// a number nothing ever pinned to a type. Run once, at the end of inference.
+    fn default_num_vars(&mut self, quantified: &HashSet<u32>) {
+        for (id, slot) in self.slots.iter_mut().enumerate() {
+            if quantified.contains(&(id as u32)) {
+                continue;
+            }
+            match slot {
+                Slot::Unbound { kind: VarKind::Num, .. } => {
+                    *slot = Slot::Bound(Type::con("BigInt"));
+                }
+                Slot::Unbound { kind: VarKind::Frac, .. } => {
+                    *slot = Slot::Bound(Type::float());
+                }
+                _ => {}
             }
         }
     }
@@ -676,8 +725,16 @@ impl Arena {
 
     // --- generalize / instantiate -------------------------------------------
 
-    fn quantify(&self, ty: &Type, map: &mut HashMap<u32, u32>, kinds: &mut Vec<VarKind>) -> Type {
-        self.quantify_from(ty, Some(self.level), map, kinds)
+    /// `classes`: whether `Num` and `Frac` variables may be quantified too --
+    /// yes for a `fun`, no for a `def` or `let` (see [`VarKind::Num`]).
+    fn quantify(
+        &self,
+        ty: &Type,
+        map: &mut HashMap<u32, u32>,
+        kinds: &mut Vec<VarKind>,
+        classes: bool,
+    ) -> Type {
+        self.quantify_from(ty, Some(self.level), map, kinds, classes)
     }
 
     /// [`Arena::quantify`], over every variable deeper than `level` -- or over
@@ -688,20 +745,12 @@ impl Arena {
         level: Option<u32>,
         map: &mut HashMap<u32, u32>,
         kinds: &mut Vec<VarKind>,
+        classes: bool,
     ) -> Type {
         match ty {
             Type::Var(id) => {
-                // `Num` vars are never generalized — a numeric literal is not
-                // polymorphic. Left free here, then defaulted to `Int` in
-                // `finish` unless a use site pins it to `BigInt` first.
-                if level.is_none() && self.slot_kind(*id) == VarKind::Num {
-                    // Closing a type only to print it: a literal nothing has
-                    // pinned is going to be an `Int`, so say that.
-                    return Type::int();
-                }
-                if self.slot_kind(*id) != VarKind::Num
-                    && level.is_none_or(|l| self.slot_level(*id) > l)
-                {
+                let class = matches!(self.slot_kind(*id), VarKind::Num | VarKind::Frac);
+                if (!class || classes) && level.is_none_or(|l| self.slot_level(*id) > l) {
                     let idx = *map.entry(*id).or_insert_with(|| {
                         kinds.push(self.slot_kind(*id));
                         (kinds.len() - 1) as u32
@@ -717,27 +766,27 @@ impl Arena {
             Type::Con(name, args) => Type::Con(
                 *name,
                 args.iter()
-                    .map(|a| self.quantify_from(a, level, map, kinds))
+                    .map(|a| self.quantify_from(a, level, map, kinds, classes))
                     .collect(),
             ),
             Type::Fun(args, ret, eff) => Type::Fun(
                 args.iter()
-                    .map(|a| self.quantify_from(a, level, map, kinds))
+                    .map(|a| self.quantify_from(a, level, map, kinds, classes))
                     .collect(),
-                Box::new(self.quantify_from(ret, level, map, kinds)),
-                Box::new(self.quantify_from(eff, level, map, kinds)),
+                Box::new(self.quantify_from(ret, level, map, kinds, classes)),
+                Box::new(self.quantify_from(eff, level, map, kinds, classes)),
             ),
             Type::Tuple(items) => Type::Tuple(
                 items
                     .iter()
-                    .map(|a| self.quantify_from(a, level, map, kinds))
+                    .map(|a| self.quantify_from(a, level, map, kinds, classes))
                     .collect(),
             ),
-            Type::Record(row) => Type::Record(Box::new(self.quantify_from(row, level, map, kinds))),
+            Type::Record(row) => Type::Record(Box::new(self.quantify_from(row, level, map, kinds, classes))),
             Type::RowExtend(label, field, rest) => Type::RowExtend(
                 *label,
-                Box::new(self.quantify_from(field, level, map, kinds)),
-                Box::new(self.quantify_from(rest, level, map, kinds)),
+                Box::new(self.quantify_from(field, level, map, kinds, classes)),
+                Box::new(self.quantify_from(rest, level, map, kinds, classes)),
             ),
         }
     }
@@ -777,12 +826,18 @@ impl Arena {
 #[derive(Debug, Clone, Default)]
 pub struct TypeTable {
     types: Vec<Option<Type>>,
+    /// The kind of every variable still free in these types that is not a
+    /// plain type variable -- so a renderer, which never sees the arena, names
+    /// it the way a scheme would: an integer variable `n` rather than a plain
+    /// `a` no one could write `+` on, an effect `e`, a record row `r`.
+    classes: HashMap<u32, VarKind>,
 }
 
 impl TypeTable {
     pub fn new(node_count: usize) -> Self {
         TypeTable {
             types: vec![None; node_count],
+            classes: HashMap::new(),
         }
     }
 
@@ -803,12 +858,20 @@ impl TypeTable {
     /// meaningful per module afterwards — this feeds the diagnostic dump.
     pub fn absorb(&mut self, other: TypeTable) {
         self.types.extend(other.types);
+        self.classes.extend(other.classes);
     }
 
     fn zonk_all(&mut self, arena: &mut Arena) {
         for slot in &mut self.types {
             if let Some(ty) = slot {
                 *ty = arena.zonk(ty);
+            }
+        }
+        for (id, slot) in arena.slots.iter().enumerate() {
+            if let Slot::Unbound { kind, .. } = slot
+                && *kind != VarKind::Type
+            {
+                self.classes.insert(id as u32, *kind);
             }
         }
     }
@@ -1126,10 +1189,11 @@ impl Infer {
         self.solve_overloads(true);
         self.arena.exit_level();
 
-        for seed in &seeds {
+        for ((bind, _), seed) in binds.iter().zip(&seeds) {
+            let classes = matches!(bind, hir::Bind::Fun(..));
             for (vid, ty) in seed {
                 let scheme = if pure {
-                    self.generalize_named(Some(*vid), ty)
+                    self.generalize_named(Some(*vid), ty, classes)
                 } else {
                     let s = Scheme::mono(self.arena.zonk(ty));
                     self.record_mono(*vid, &s);
@@ -1194,8 +1258,11 @@ impl Infer {
     pub fn finish(mut self) -> InferResult {
         // The whole unit has been seen: whatever is still ambiguous stays so.
         self.solve_overloads(true);
-        // Any numeric literal context never pinned to `BigInt` is an `Int`.
-        self.arena.default_num_vars();
+        // A variable some `fun` quantified over is that function's parameter,
+        // not a number waiting for a type: it stays a variable.
+        let quantified: HashSet<u32> =
+            self.generalized.values().flat_map(|g| g.vars.iter().copied()).collect();
+        self.arena.default_num_vars(&quantified);
         self.table.zonk_all(&mut self.arena);
         let mut schemes = HashMap::new();
         for id in self.exports.clone() {
@@ -1294,7 +1361,7 @@ impl Infer {
                 self.solve_subsumptions(mark);
                 self.arena.exit_level();
 
-                let scheme = self.generalize_named(Some(vid), &fn_ty);
+                let scheme = self.generalize_named(Some(vid), &fn_ty, true);
                 self.table.set(name.id, self.arena.zonk(&fn_ty));
                 self.env.insert(vid, scheme);
                 if toplevel {
@@ -1348,7 +1415,7 @@ impl Infer {
 
                 for (vid, vty) in bound {
                     let scheme = if pure {
-                        self.generalize_named(Some(vid), &vty)
+                        self.generalize_named(Some(vid), &vty, false)
                     } else {
                         // Not generalized, so not the `let`'s own either: its
                         // variables belong to the level around it. Left one
@@ -1383,7 +1450,7 @@ impl Infer {
     fn infer_expr_inner(&mut self, expr: &hir::LExpr) -> Type {
         match expr.value() {
             hir::Expr::Lit(hir::Lit::Int(_)) => self.arena.fresh_num(),
-            hir::Expr::Lit(hir::Lit::Float(_)) => Type::float(),
+            hir::Expr::Lit(hir::Lit::Float(_)) => self.arena.fresh_in(VarKind::Frac),
             hir::Expr::Lit(hir::Lit::String(_)) => Type::string(),
             hir::Expr::Lit(hir::Lit::Char(_)) => Type::char(),
             hir::Expr::Unit => Type::unit(),
@@ -1733,7 +1800,7 @@ impl Infer {
             hir::Pat::Wildcard => self.arena.fresh(),
             hir::Pat::Unit => Type::unit(),
             hir::Pat::Lit(hir::Lit::Int(_)) => self.arena.fresh_num(),
-            hir::Pat::Lit(hir::Lit::Float(_)) => Type::float(),
+            hir::Pat::Lit(hir::Lit::Float(_)) => self.arena.fresh_in(VarKind::Frac),
             hir::Pat::Lit(hir::Lit::String(_)) => Type::string(),
             hir::Pat::Lit(hir::Lit::Char(_)) => Type::char(),
 
@@ -2035,7 +2102,7 @@ impl Infer {
     /// The arena variables are kept, not just their count: a `TyLam` in core
     /// binds them and the annotations inside the binding's body mention them,
     /// so the two have to agree about which variable is which.
-    fn generalize_named(&mut self, vid: Option<VarId>, ty: &Type) -> Scheme {
+    fn generalize_named(&mut self, vid: Option<VarId>, ty: &Type, classes: bool) -> Scheme {
         // A name still waiting on its overload has a type that is not settled,
         // and generalizing over it would let each use pick differently.
         let level = self.arena.level;
@@ -2044,9 +2111,14 @@ impl Infer {
             self.arena.hold_back(&t, level);
         }
         let z = self.arena.zonk(ty);
+        if !classes {
+            // A `def` keeps its number type, so no later binding may generalize
+            // over it either: it belongs to this level from here on.
+            self.arena.hold_back_classes(&z, level);
+        }
         let mut map = HashMap::new();
         let mut kinds = Vec::new();
-        let body = self.arena.quantify(&z, &mut map, &mut kinds);
+        let body = self.arena.quantify(&z, &mut map, &mut kinds, classes);
         let scheme = Scheme {
             quant: kinds,
             ty: body,
@@ -2317,7 +2389,7 @@ impl Infer {
     fn candidate_line(&self, c: &hir::Candidate, mark: &str) -> String {
         let (spelled, scheme) = match c.alt {
             hir::Alt::Ctor(ctor) => (ctor.to_string(), self.ctors.get(&ctor).cloned()),
-            hir::Alt::Value(v) => (c.name.to_string(), self.env.get(&v).cloned()),
+            hir::Alt::Value(v) => (hir::spell_name(&c.name).into_owned(), self.env.get(&v).cloned()),
         };
         let ty = match scheme {
             Some(s) => show_scheme_body(&s),
@@ -2393,7 +2465,7 @@ impl Infer {
     fn show_wanted(&mut self, ty: &Type) -> String {
         let z = self.arena.zonk(ty);
         let (mut map, mut kinds) = (HashMap::new(), Vec::new());
-        let body = self.arena.quantify_from(&z, None, &mut map, &mut kinds);
+        let body = self.arena.quantify_from(&z, None, &mut map, &mut kinds, true);
         show_scheme_body(&Scheme {
             quant: kinds,
             ty: body,
@@ -2631,6 +2703,18 @@ impl Infer {
                     "recursive type".to_string(),
                 )
             }
+            UnifyError::NotANumber(integer, ty) => {
+                let ty = self.arena.zonk(&ty);
+                let (class, operators) = if integer {
+                    ("an integer type", "`+`, `<` and the rest")
+                } else {
+                    ("a float type", "`+.`, `<.` and the rest")
+                };
+                (
+                    format!("type mismatch: `{}` is not {class}", show(&ty)),
+                    format!("{operators} and literals like this one need {class}"),
+                )
+            }
             UnifyError::Escape => (
                 "state from inside a `runSt` escapes it".to_string(),
                 "a cell, an array, or something that uses one, would outlive its `runSt`"
@@ -2680,9 +2764,9 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
         hir::TypeExpr::Con(name, args) => {
             let args: Vec<Type> = args.iter().map(|a| ty_of(a, params)).collect();
             match &**name.value() {
-                "Int" => Type::int(),
+                "Int" | "Int64" => Type::int(),
                 "BigInt" => Type::bigint(),
-                "Float" => Type::float(),
+                "Float" | "Float64" => Type::float(),
                 "String" => Type::string(),
                 "Bool" => Type::bool(),
                 "Unit" => Type::unit(),
@@ -2755,33 +2839,28 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         quant: vec![VarKind::Type],
         ty,
     };
+    // The same over any integer type, and over either float type.
+    let num = |ty: Type| Scheme { quant: vec![VarKind::Num], ty };
+    let frac = |ty: Type| Scheme { quant: vec![VarKind::Frac], ty };
     let s = match name {
-        "+" | "-" | "*" | "/" | "%" | "^" => {
-            Scheme::mono(Type::func(vec![Type::int(), Type::int()], Type::int()))
+        // --- numbers ---
+        //
+        // One set of operators per family, over a `Num` (any integer type) or
+        // a `Frac` (either float type) -- see `VarKind::Num`.
+        "+" | "-" | "*" | "/" | "%" | "^" => num(Type::func(vec![Bound(0), Bound(0)], Bound(0))),
+        "<" | ">" | "<=" | ">=" => num(Type::func(vec![Bound(0), Bound(0)], Type::bool())),
+        "neg" => num(Type::func(vec![Bound(0)], Bound(0))),
+        "+." | "-." | "*." | "/." => frac(Type::func(vec![Bound(0), Bound(0)], Bound(0))),
+        "<." | ">." | "<=." | ">=." => frac(Type::func(vec![Bound(0), Bound(0)], Type::bool())),
+        "toFloat" => num(Type::func(vec![Bound(0)], Type::float())),
+        "toFloat64" => frac(Type::func(vec![Bound(0)], Type::float())),
+        "toFloat32" => frac(Type::func(vec![Bound(0)], Type::con("Float32"))),
+        "floor" => frac(Type::func(vec![Bound(0)], Type::int())),
+        "toBigInt" => num(Type::func(vec![Bound(0)], Type::bigint())),
+        "toInt" | "toInt64" => num(Type::func(vec![Bound(0)], Type::int())),
+        "toInt8" | "toInt16" | "toInt32" | "toUInt8" | "toUInt16" | "toUInt32" | "toUInt64" => {
+            num(Type::func(vec![Bound(0)], Type::con(&name[2..])))
         }
-        "<" | ">" | "<=" | ">=" => {
-            Scheme::mono(Type::func(vec![Type::int(), Type::int()], Type::bool()))
-        }
-        "+." | "-." | "*." | "/." => Scheme::mono(Type::func(
-            vec![Type::float(), Type::float()],
-            Type::float(),
-        )),
-        "<." | ">." | "<=." | ">=." => {
-            Scheme::mono(Type::func(vec![Type::float(), Type::float()], Type::bool()))
-        }
-        "+~" | "-~" | "*~" | "/~" | "%~" | "^~" => Scheme::mono(Type::func(
-            vec![Type::bigint(), Type::bigint()],
-            Type::bigint(),
-        )),
-        "<~" | ">~" | "<=~" | ">=~" => Scheme::mono(Type::func(
-            vec![Type::bigint(), Type::bigint()],
-            Type::bool(),
-        )),
-        "toFloat" => Scheme::mono(Type::func(vec![Type::int()], Type::float())),
-        "floor" => Scheme::mono(Type::func(vec![Type::float()], Type::int())),
-        "toBigInt" => Scheme::mono(Type::func(vec![Type::int()], Type::bigint())),
-        "toInt" => Scheme::mono(Type::func(vec![Type::bigint()], Type::int())),
-        "neg" => Scheme::mono(Type::func(vec![Type::int()], Type::int())),
         // --- builtin `Array` (all `∀a. …`) ---
         "arrayLen" => a1(Type::func(vec![Type::array(Bound(0))], Type::int())),
         "arrayGet" => a1(Type::func(
@@ -2812,15 +2891,18 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             vec![Type::array(Bound(0)), Type::array(Bound(0))],
             Type::array(Bound(0)),
         )),
-        // --- bitwise `Int` ops ---
-        "shl" | "shr" | "ushr" | "bitAnd" | "bitOr" | "bitXor" => {
-            Scheme::mono(Type::func(vec![Type::int(), Type::int()], Type::int()))
-        }
-        "bitNot" | "popCount" => Scheme::mono(Type::func(vec![Type::int()], Type::int())),
-        // --- bytes ---
-        "stringToBytes" => Scheme::mono(Type::func(vec![Type::string()], Type::array(Type::int()))),
-        "bytesToString" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
-        "bytesToHex" => Scheme::mono(Type::func(vec![Type::array(Type::int())], Type::string())),
+        // --- bitwise, on any integer type ---
+        // A shift amount is a bit position, which is an `Int` whatever is being
+        // shifted -- as in Rust.
+        "shl" | "shr" | "ushr" => num(Type::func(vec![Bound(0), Type::int()], Bound(0))),
+        "bitAnd" | "bitOr" | "bitXor" => num(Type::func(vec![Bound(0), Bound(0)], Bound(0))),
+        "bitWidth" => num(Type::func(vec![Bound(0)], Type::int())),
+        "bitNot" => num(Type::func(vec![Bound(0)], Bound(0))),
+        "popCount" => num(Type::func(vec![Bound(0)], Type::int())),
+        // --- bytes, which are `#[UInt8]` ---
+        "stringToBytes" => Scheme::mono(Type::func(vec![Type::string()], Type::array(Type::con("UInt8")))),
+        "bytesToString" => Scheme::mono(Type::func(vec![Type::array(Type::con("UInt8"))], Type::string())),
+        "bytesToHex" => Scheme::mono(Type::func(vec![Type::array(Type::con("UInt8"))], Type::string())),
         "show" | "display" => a1(Type::func(vec![Bound(0)], Type::string())),
         "hash" => a1(Type::func(vec![Bound(0)], Type::int())),
         "charCode" => Scheme::mono(Type::func(vec![Type::char()], Type::int())),
@@ -2835,7 +2917,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             vec![Type::string()],
             Type::Con(
                 InternedString::from("Maybe"),
-                vec![Type::array(Type::int())],
+                vec![Type::array(Type::con("UInt8"))],
             ),
         )),
         "==" | "!=" => Scheme {
@@ -3016,6 +3098,10 @@ fn hidden_effect_vars(scheme: &Scheme) -> HashSet<u32> {
 struct Namer {
     names: HashMap<u32, String>,
     next: u32,
+    /// The kinds of free variables that are not plain type variables, and how
+    /// many of each kind have been named -- see [`TypeTable`].
+    classes: HashMap<u32, VarKind>,
+    class_next: HashMap<VarKind, u32>,
     /// The enclosing scheme's `quant` kinds, so a `Bound(i)` of row/effect kind
     /// prints as `r` / `e` rather than a plain type-variable letter.
     bound_kinds: Vec<VarKind>,
@@ -3025,6 +3111,13 @@ impl Namer {
     fn name(&mut self, id: u32) -> String {
         if let Some(n) = self.names.get(&id) {
             return n.clone();
+        }
+        if let Some(&kind) = self.classes.get(&id) {
+            let rank = self.class_next.entry(kind).or_insert(0);
+            let n = kinded_var_name(kind, *rank);
+            *rank += 1;
+            self.names.insert(id, n.clone());
+            return n;
         }
         let n = var_name(self.next);
         self.next += 1;
@@ -3040,12 +3133,11 @@ impl Namer {
             .get(i as usize)
             .copied()
             .unwrap_or(VarKind::Type);
-        // Type-ish vars (`Type` / `Num`) share one `a, b, c…` sequence; rows and
-        // effects each get their own.
+        // Plain type vars share one `a, b, c…` sequence; rows, effects, and the
+        // two number classes each get their own.
         let same = |k: VarKind| match kind {
-            VarKind::Row => k == VarKind::Row,
-            VarKind::Effect => k == VarKind::Effect,
-            _ => k != VarKind::Row && k != VarKind::Effect,
+            VarKind::Type => k == VarKind::Type,
+            other => k == other,
         };
         let rank = self
             .bound_kinds
@@ -3055,6 +3147,11 @@ impl Namer {
             .count();
         kinded_var_name(kind, rank as u32)
     }
+}
+
+/// Whether a type name is one of the sized integer types.
+fn meadow_num_width(name: &str) -> bool {
+    matches!(name, "Int8" | "Int16" | "Int32" | "UInt8" | "UInt16" | "UInt32" | "UInt64")
 }
 
 fn var_name(mut n: u32) -> String {
@@ -3075,7 +3172,9 @@ fn kinded_var_name(kind: VarKind, rank: u32) -> String {
     let base = match kind {
         VarKind::Row => 'r',
         VarKind::Effect => 'e',
-        _ => return var_name(rank),
+        VarKind::Num => 'n',
+        VarKind::Frac => 'f',
+        VarKind::Type => return var_name(rank),
     };
     if rank == 0 {
         base.to_string()
@@ -3444,8 +3543,8 @@ mod tests {
         infer.arena.exit_level();
         let shallow = infer.arena.fresh();
 
-        assert_eq!(infer.generalize_named(None, &deep).quant.len(), 1);
-        assert_eq!(infer.generalize_named(None, &shallow).quant.len(), 0);
+        assert_eq!(infer.generalize_named(None, &deep, true).quant.len(), 1);
+        assert_eq!(infer.generalize_named(None, &shallow, true).quant.len(), 0);
     }
 }
 
@@ -3498,6 +3597,14 @@ pub struct Renderer {
 impl Renderer {
     pub fn new() -> Renderer {
         Renderer::default()
+    }
+
+    /// A renderer for types out of `table`, which knows which of their free
+    /// variables stand for numbers.
+    pub fn for_table(table: &TypeTable) -> Renderer {
+        let mut r = Renderer::default();
+        r.namer.classes = table.classes.clone();
+        r
     }
 
     /// A function's *result*, as it would read after the last arrow: the return

@@ -14,10 +14,10 @@ fn literals_and_arithmetic() {
 
 #[test]
 fn numeric_literals_coerce_by_context() {
-    // A bare integer literal is `Int` unless an operator / conversion pins it to
-    // `BigInt`; `def d` (unconstrained) defaults to `Int`.
+    // A literal takes the type of what it meets; one nothing pins down is a
+    // `BigInt`. A `def` keeps the one type it gets rather than generalizing.
     insta::assert_snapshot!(schemes(
-        "def a = 1 + 2\ndef b = 1 +~ 2\ndef c = 1 +~ toBigInt 2\ndef d = 5\n"
+        "def a = 1 + 2\ndef b = toUInt8 1 + 2\ndef c = 1 + toInt 2\ndef d = 5\ndef e = 1.5 +. 2.0\n"
     ));
 }
 

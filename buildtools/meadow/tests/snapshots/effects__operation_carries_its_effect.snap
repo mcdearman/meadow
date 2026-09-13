@@ -4,4 +4,4 @@ expression: "schemes(\"effect State s { get : () -> s, put : s -> () }\\n\\\n   
 ---
 get : forall a e. () -> a ! { State a | e }
 put : forall a e. a -> () ! { State a | e }
-tick : forall a e. a -> Int ! { State Int | e }
+tick : forall a n e. a -> n ! { State n | e }

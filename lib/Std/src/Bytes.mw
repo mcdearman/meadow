@@ -1,13 +1,17 @@
 -- Std.Bytes: working with byte arrays.
 --
--- A "byte array" is just an `Array Int` whose elements are each in 0..255 -- there
--- is no distinct `Bytes` type. The runtime bridge to `String` is the primitives
--- `stringToBytes` / `bytesToString` (lossy UTF-8) and `bytesToHex` /
--- `bytesFromHex`; this module adds construction, masking setters, and
--- little-/big-endian multi-byte integer reads and writes on top of them.
+-- A byte array is a `#[UInt8]`. The runtime bridges it to `String` with the
+-- primitives `stringToBytes` / `bytesToString` (lossy UTF-8) and `bytesToHex` /
+-- `bytesFromHex`; this module adds construction, setters that take any integer
+-- and keep its low 8 bits, and little- and big-endian reads and writes of the
+-- wider unsigned types.
+--
+-- A literal array is a byte array wherever one is expected:
+--
+--   let (header : #[UInt8]) = #[0x89, 0x50, 0x4E, 0x47] in ...
 
 -- The empty byte array.
-@pub def bytesEmpty = #[]
+@pub def bytesEmpty = stringToBytes ""
 
 @pub fun bytesLength b = arrayLen b
 
@@ -22,11 +26,11 @@
 -- The byte at `i`, or `default` when out of range.
 @pub fun bytesGetOr default b i = arrayGetOr default b i
 
--- Persistently set byte `i` to the low 8 bits of `v`.
-@pub fun bytesSet b i v = arraySet b i (bitAnd v 255)
+-- Persistently set byte `i` to the low 8 bits of `v`, which may be any integer.
+@pub fun bytesSet b i v = arraySet b i (toUInt8 v)
 
 -- Append the low 8 bits of `v`.
-@pub fun bytesPush b v = arrayPush b (bitAnd v 255)
+@pub fun bytesPush b v = arrayPush b (toUInt8 v)
 
 @pub fun bytesPop b = arrayPop b
 
@@ -35,47 +39,43 @@
 
 @pub fun bytesConcat a b = arrayConcat a b
 
--- --- multi-byte integer reads (return 0 for bytes past the end) --------------
+-- --- multi-byte reads (a byte past the end reads as 0) ------------------------
 
-@pub fun bytesGetU16LE b i =
-  bitOr (bytesGetOr 0 b i)
-        (bytesGetOr 0 b (i + 1) << 8)
+fun at b i = bytesGetOr (toUInt8 0) b i
 
-@pub fun bytesGetU16BE b i =
-  bitOr (bytesGetOr 0 b i << 8)
-        (bytesGetOr 0 b (i + 1))
+@pub fun bytesGetU16LE b i = bitOr (toUInt16 (at b i)) (toUInt16 (at b (i + 1)) << 8)
+
+@pub fun bytesGetU16BE b i = bitOr (toUInt16 (at b i) << 8) (toUInt16 (at b (i + 1)))
 
 @pub fun bytesGetU32LE b i =
-  bitOr (bitOr (bytesGetOr 0 b i)
-               (bytesGetOr 0 b (i + 1) << 8))
-        (bitOr (bytesGetOr 0 b (i + 2) << 16)
-               (bytesGetOr 0 b (i + 3) << 24))
+  bitOr
+    (bitOr (toUInt32 (at b i)) (toUInt32 (at b (i + 1)) << 8))
+    (bitOr (toUInt32 (at b (i + 2)) << 16) (toUInt32 (at b (i + 3)) << 24))
 
 @pub fun bytesGetU32BE b i =
-  bitOr (bitOr (bytesGetOr 0 b i << 24)
-               (bytesGetOr 0 b (i + 1) << 16))
-        (bitOr (bytesGetOr 0 b (i + 2) << 8)
-               (bytesGetOr 0 b (i + 3)))
+  bitOr
+    (bitOr (toUInt32 (at b i) << 24) (toUInt32 (at b (i + 1)) << 16))
+    (bitOr (toUInt32 (at b (i + 2)) << 8) (toUInt32 (at b (i + 3))))
 
--- --- multi-byte integer writes (each returns a new byte array) --------------
+@pub fun bytesGetU64LE b i =
+  bitOr (toUInt64 (bytesGetU32LE b i)) (toUInt64 (bytesGetU32LE b (i + 4)) << 32)
 
-@pub fun bytesSetU16LE b i v =
-  bytesSet (bytesSet b i v) (i + 1) (v >> 8)
+@pub fun bytesGetU64BE b i =
+  bitOr (toUInt64 (bytesGetU32BE b i) << 32) (toUInt64 (bytesGetU32BE b (i + 4)))
 
-@pub fun bytesSetU16BE b i v =
-  bytesSet (bytesSet b i (v >> 8)) (i + 1) v
+-- --- multi-byte writes (each returns a new byte array) ------------------------
 
-@pub fun bytesSetU32LE b i v =
-  bytesSet (bytesSet (bytesSet (bytesSet b i v)
-                               (i + 1) (v >> 8))
-                     (i + 2) (v >> 16))
-           (i + 3) (v >> 24)
+@pub fun bytesSetU16LE b i v = bytesSet (bytesSet b i v) (i + 1) (v >> 8)
 
-@pub fun bytesSetU32BE b i v =
-  bytesSet (bytesSet (bytesSet (bytesSet b i (v >> 24))
-                               (i + 1) (v >> 16))
-                     (i + 2) (v >> 8))
-           (i + 3) v
+@pub fun bytesSetU16BE b i v = bytesSet (bytesSet b i (v >> 8)) (i + 1) v
+
+@pub fun bytesSetU32LE b i v = bytesSetU16LE (bytesSetU16LE b i v) (i + 2) (v >> 16)
+
+@pub fun bytesSetU32BE b i v = bytesSetU16BE (bytesSetU16BE b i (v >> 16)) (i + 2) v
+
+@pub fun bytesSetU64LE b i v = bytesSetU32LE (bytesSetU32LE b i v) (i + 4) (v >> 32)
+
+@pub fun bytesSetU64BE b i v = bytesSetU32BE (bytesSetU32BE b i (v >> 32)) (i + 4) v
 
 -- --- tests -------------------------------------------------------------------
 
@@ -83,43 +83,55 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 use Std.Maybe.Maybe.*
 
 @test fun lengthAndEmptiness () =
+  let (three : #[UInt8]) = #[1, 2, 3] in
   let a = assertEq (bytesLength bytesEmpty) 0 "empty length" in
   let b = assertTrue (bytesIsEmpty bytesEmpty) "empty is empty" in
-  let c = assertEq (bytesLength #[1, 2, 3]) 3 "length" in
-  assertFalse (bytesIsEmpty #[1]) "one byte is not empty"
+  let c = assertEq (bytesLength three) 3 "length" in
+  assertFalse (bytesIsEmpty three) "three bytes are not empty"
 
 @test fun boundsCheckedAccess () =
-  let a = assertEq (bytesGet #[1, 2, 3] 1) (Just 2) "in range" in
-  let b = assertEq (bytesGet #[1, 2, 3] 3) None "past the end" in
-  let c = assertEq (bytesGet #[1, 2, 3] (0 - 1)) None "before the start" in
-  assertEq (bytesGetOr 0 #[1, 2, 3] 9) 0 "getOr past the end"
+  let (b : #[UInt8]) = #[1, 2, 3] in
+  let a = assertEq (bytesGet b 1) (Just (toUInt8 2)) "in range" in
+  let c = assertEq (bytesGet b 3) None "past the end" in
+  let d = assertEq (bytesGet b (0 - 1)) None "before the start" in
+  assertEq (bytesGetOr 0 b 9) (toUInt8 0) "getOr past the end"
 
 @test fun pushPopSetAndSlice () =
-  let a = assertEq (bytesPush #[1, 2] 3) #[1, 2, 3] "push" in
-  let b = assertEq (bytesPop #[1, 2, 3]) #[1, 2] "pop" in
-  let c = assertEq (bytesSet #[1, 2, 3] 1 9) #[1, 9, 3] "set" in
-  let d = assertEq (bytesSlice #[1, 2, 3, 4] 1 3) #[2, 3] "slice" in
-  assertEq (bytesConcat #[1] #[2]) #[1, 2] "concat"
+  let (b : #[UInt8]) = #[1, 2, 3] in
+  let (want : #[UInt8]) = #[1, 9, 3] in
+  let a = assertEq (bytesLength (bytesPush b 4)) 4 "push" in
+  let c = assertEq (bytesLength (bytesPop b)) 2 "pop" in
+  let d = assertEq (bytesSet b 1 9) want "set" in
+  let e = assertEq (bytesLength (bytesSlice b 1 3)) 2 "slice" in
+  assertEq (bytesLength (bytesConcat b b)) 6 "concat"
 
-@test fun bytesSetTruncatesToOneByte () =
-  -- Only the low 8 bits are stored, which is what makes this a *byte* array.
-  assertEq (bytesGetOr 0 (bytesSet #[0] 0 0x1FF) 0) 255 "0x1FF becomes 0xFF"
+@test fun aSetKeepsTheLowEightBits () =
+  -- Any integer goes in, and only its low byte is stored.
+  let (b : #[UInt8]) = #[0] in
+  let a = assertEq (bytesGetOr 0 (bytesSet b 0 0x1FF) 0) (toUInt8 0xFF) "0x1FF becomes 0xFF" in
+  assertEq (bytesGetOr 0 (bytesSet b 0 (0 - 1)) 0) (toUInt8 255) "-1 is all ones"
 
 @test fun multiByteReadsRespectEndianness () =
-  let b = #[0x34, 0x12] in
-  let a = assertEq (bytesGetU16LE b 0) 0x1234 "u16 little-endian" in
-  let c = assertEq (bytesGetU16BE b 0) 0x3412 "u16 big-endian" in
-  let d = #[0x78, 0x56, 0x34, 0x12] in
-  let e = assertEq (bytesGetU32LE d 0) 0x12345678 "u32 little-endian" in
-  assertEq (bytesGetU32BE d 0) 0x78563412 "u32 big-endian"
+  let (b : #[UInt8]) = #[0x34, 0x12] in
+  let a = assertEq (bytesGetU16LE b 0) (toUInt16 0x1234) "u16 little-endian" in
+  let c = assertEq (bytesGetU16BE b 0) (toUInt16 0x3412) "u16 big-endian" in
+  let (d : #[UInt8]) = #[0x78, 0x56, 0x34, 0x12] in
+  let e = assertEq (bytesGetU32LE d 0) (toUInt32 0x12345678) "u32 little-endian" in
+  assertEq (bytesGetU32BE d 0) (toUInt32 0x78563412) "u32 big-endian"
 
 @test fun multiByteReadsPastTheEndAreZero () =
   -- Documented behaviour: missing bytes read as 0 rather than failing.
-  assertEq (bytesGetU32LE #[1] 0) 1 "three bytes missing"
+  let (b : #[UInt8]) = #[1] in
+  assertEq (bytesGetU32LE b 0) (toUInt32 1) "three bytes missing"
 
 @test fun multiByteWritesRoundTrip () =
-  let a = assertEq (bytesGetU16LE (bytesSetU16LE #[0, 0] 0 0x1234) 0) 0x1234 "u16 LE" in
-  let b = assertEq (bytesGetU16BE (bytesSetU16BE #[0, 0] 0 0x1234) 0) 0x1234 "u16 BE" in
-  let z = #[0, 0, 0, 0] in
-  let c = assertEq (bytesGetU32LE (bytesSetU32LE z 0 0x12345678) 0) 0x12345678 "u32 LE" in
-  assertEq (bytesGetU32BE (bytesSetU32BE z 0 0x12345678) 0) 0x12345678 "u32 BE"
+  let (two : #[UInt8]) = #[0, 0] in
+  let (eight : #[UInt8]) = #[0, 0, 0, 0, 0, 0, 0, 0] in
+  let a = assertEq (bytesGetU16LE (bytesSetU16LE two 0 0x1234) 0) (toUInt16 0x1234) "u16 LE" in
+  let b = assertEq (bytesGetU16BE (bytesSetU16BE two 0 0x1234) 0) (toUInt16 0x1234) "u16 BE" in
+  let c = assertEq (bytesGetU32LE (bytesSetU32LE eight 0 0x12345678) 0) (toUInt32 0x12345678) "u32 LE" in
+  let d = assertEq (bytesGetU32BE (bytesSetU32BE eight 0 0x12345678) 0) (toUInt32 0x12345678) "u32 BE" in
+  -- The top bit set, so a signed read would show up as negative.
+  let big = toUInt64 0x7EDCBA9876543210 * 2 + 1 in
+  let e = assertEq (bytesGetU64LE (bytesSetU64LE eight 0 big) 0) big "u64 LE" in
+  assertEq (bytesGetU64BE (bytesSetU64BE eight 0 big) 0) big "u64 BE"

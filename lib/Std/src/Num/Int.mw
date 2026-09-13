@@ -1,4 +1,5 @@
--- Integer helpers.
+-- Std.Num.Int: helpers for every integer type -- `Int`, `BigInt`, `UInt8`, and the
+-- rest. `min (toUInt8 3) (toUInt8 7)` is a `UInt8`.
 
 @pub fun min a b = if a < b then a else b
 

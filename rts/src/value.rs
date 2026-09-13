@@ -28,7 +28,11 @@ pub enum Value {
     Unit,
     Bool(bool),
     Int(i64),
+    /// A sized integer -- its width and its bits, masked to it. Immediate like
+    /// an `Int`, so it lives in a register or a field with no allocation.
+    Word(meadow_core::num::Width, u64),
     Float(f64),
+    Float32(f32),
     Char(char),
     /// Interned, and therefore not on the collected heap. Strings the program
     /// builds at run time are interned too, so they accumulate for the life of
@@ -52,10 +56,22 @@ impl Value {
             Value::Unit => "()",
             Value::Bool(_) => "Bool",
             Value::Int(_) => "Int",
+            Value::Word(w, _) => w.name(),
             Value::Float(_) => "Float",
+            Value::Float32(_) => "Float32",
             Value::Char(_) => "Char",
             Value::Str(_) => "String",
             Value::Obj(_) => "object",
         }
+    }
+}
+
+#[cfg(test)]
+mod size {
+    /// Still two words with the sized numbers in it: everything the machine
+    /// copies, it copies by value.
+    #[test]
+    fn a_value_is_sixteen_bytes() {
+        assert_eq!(std::mem::size_of::<super::Value>(), 16);
     }
 }

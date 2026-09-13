@@ -16,6 +16,15 @@
 use meadow_intern::InternedString;
 use meadow_span::Span;
 
+/// A value's name as it is written where a name is expected: `x` as itself,
+/// an operator such as `++` in parentheses, `(++)`.
+pub fn spell_name(name: &str) -> std::borrow::Cow<'_, str> {
+    match name.chars().next() {
+        Some(c) if !(c.is_alphanumeric() || c == '_') => format!("({name})").into(),
+        _ => name.into(),
+    }
+}
+
 /// Primitive operators, in the order their [`VarId`]s are handed out by
 /// `rename::Resolver::with_prelude`. `infer` builds matching type schemes by
 /// index, and `core`/the linker map names to `Prim`s, so the order is load-bearing.
@@ -48,20 +57,21 @@ pub const PRIMS: &[&str] = &[
     "<=.",
     ">=.",
     "toFloat",
+    "toFloat64",
+    "toFloat32",
     "floor", //
-    // arbitrary-precision integer ops (operands `BigInt`) + Int/BigInt conversions
-    "+~",
-    "-~",
-    "*~",
-    "/~",
-    "%~",
-    "^~",
-    "<~",
-    ">~",
-    "<=~",
-    ">=~",
+    // conversions between the integer types
     "toBigInt",
-    "toInt", //
+    "toInt",
+    "toInt64",
+    "toInt8",
+    "toInt16",
+    "toInt32",
+    "toUInt8",
+    "toUInt16",
+    "toUInt32",
+    "toUInt64",
+    "bitWidth", //
     // the one builtin collection: `Array`
     "arrayLen",
     "arrayGet",

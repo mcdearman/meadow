@@ -96,7 +96,7 @@ fn a_let_after_a_parameter_call_is_not_generalized() {
     let src = "fun go f = let x = (let _ = f () in \\y -> y) in (x 1, x \"s\")\n";
     let errs = errors(src);
     assert!(
-        errs.contains("type mismatch: `Int` vs `String`"),
+        errs.contains("type mismatch: `String` is not an integer type"),
         "expected `x` to stay monomorphic, got: {errs:?}"
     );
 }
@@ -106,7 +106,7 @@ fn a_let_after_an_operation_is_not_generalized() {
     let src = format!("{LOG}fun go u = let x = (let _ = log \"hi\" in \\y -> y) in (x 1, x \"s\")\n");
     let errs = errors(&src);
     assert!(
-        errs.contains("type mismatch: `Int` vs `String`"),
+        errs.contains("type mismatch: `String` is not an integer type"),
         "expected `x` to stay monomorphic, got: {errs:?}"
     );
 }
@@ -116,7 +116,7 @@ fn a_pure_let_still_generalizes() {
     // The fix must not over-correct: nothing effectful happens here.
     let src = "fun go u = let id = \\y -> y in (id 1, id \"s\")\n";
     assert_eq!(errors(src), "");
-    assert_eq!(scheme_of(src, "go"), "forall a. a -> (Int, String)");
+    assert_eq!(scheme_of(src, "go"), "forall a n. a -> (n, String)");
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn a_resumed_continuation_still_performs_the_forwarded_effect() {
 #[test]
 fn a_handler_with_only_a_return_clause_handles_nothing() {
     let src = format!("{LOG}fun onlyReturn () = handle log \"x\" with {{ return x -> 1 }}\n");
-    assert_eq!(scheme_of(&src, "onlyReturn"), "forall e. () -> Int ! { Log | e }");
+    assert_eq!(scheme_of(&src, "onlyReturn"), "forall n e. () -> n ! { Log | e }");
 }
 
 const LOG_AND_ASK: &str = "effect Log { log : String -> () }\n\

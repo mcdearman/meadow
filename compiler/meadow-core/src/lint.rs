@@ -496,8 +496,13 @@ impl Lint<'_> {
 fn lit_ty(l: &Lit) -> Ty {
     match l {
         Lit::Int(_) => InferType::int(),
-        Lit::BigInt(_) => InferType::con("BigInt"),
         Lit::Float(_) => InferType::float(),
+        // A literal in a function generic over its number type -- see
+        // `Lowerer::int_lit`. Its type is whatever that function is applied at.
+        Lit::AnyInt(_) | Lit::AnyFloat(_) => unknown(),
+        Lit::BigInt(_) => InferType::con("BigInt"),
+        Lit::Word(w, _) => InferType::con(w.name()),
+        Lit::Float32(_) => InferType::con("Float32"),
         Lit::Str(_) => InferType::string(),
         Lit::Char(_) => InferType::char(),
         Lit::Bool(_) => InferType::bool(),

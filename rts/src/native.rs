@@ -301,7 +301,9 @@ impl Vm<'_> {
             },
             "readBytes" => match fs::read(&*one(self, arg)?) {
                 Ok(b) => Build::ok(Build::Array(
-                    b.into_iter().map(|x| Build::int(i64::from(x))).collect(),
+                    b.into_iter()
+                        .map(|x| Build::At(Value::Word(meadow_core::num::Width::U8, u64::from(x))))
+                        .collect(),
                 )),
                 Err(e) => ioerr(e),
             },

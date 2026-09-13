@@ -1,0 +1,63 @@
+-- Std.Num: the number types, and what is shared between them.
+--
+-- Integers:
+--
+--   BigInt                    as large as memory allows; never overflows
+--   Int (also Int64)          64-bit, signed
+--   Int32  Int16  Int8        signed, fixed width
+--   UInt64 UInt32 UInt16 UInt8 unsigned, fixed width
+--
+-- Floats: `Float` (also `Float64`) and `Float32`.
+--
+-- Every integer type shares `+ - * / % ^`, `< > <= >=`, `neg` and the bitwise
+-- operators; both float types share `+. -. *. /.` and `<. >. <=. >=.`. The two
+-- operands of one operator are always the same type -- a `UInt8` never meets an
+-- `Int` without a conversion. A fixed-width type wraps on overflow.
+--
+-- A literal takes its type from where it is used, and a function using these
+-- operators works at every type they do: `fun double n = n * 2` is
+-- `forall n. n -> n`. A number nothing pins down is a `BigInt`, or a `Float`.
+--
+-- Converting: `toInt`, `toBigInt`, `toInt8` … `toUInt64` from any integer type
+-- (keeping the low bits between fixed widths, as Rust's `as` does, and checked
+-- from a `BigInt`); `toFloat` from any integer; `toFloat32`, `toFloat64` and
+-- `floor` between and from the floats.
+--
+-- `Std.Num.Int` has helpers that work on every integer type (`min`, `abs`,
+-- `gcd`, …) and `Std.Num.Bits` the bit twiddling. This module holds the bounds
+-- of each fixed-width type.
+
+@pub mod Int
+@pub mod Bits
+
+@pub def minInt8 = toInt8 (0 - 128)
+@pub def maxInt8 = toInt8 127
+@pub def minInt16 = toInt16 (0 - 32768)
+@pub def maxInt16 = toInt16 32767
+@pub def minInt32 = toInt32 (0 - 2147483648)
+@pub def maxInt32 = toInt32 2147483647
+@pub def minInt = toInt (0 - 9223372036854775807 - 1)
+@pub def maxInt = toInt 9223372036854775807
+
+@pub def maxUInt8 = toUInt8 255
+@pub def maxUInt16 = toUInt16 65535
+@pub def maxUInt32 = toUInt32 4294967295
+-- All 64 bits set: `Int`'s -1, kept as bits.
+@pub def maxUInt64 = toUInt64 (toInt (0 - 1))
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue)
+
+@test fun theBoundsAreTheBounds () =
+  let a = assertEq (show maxUInt8) "255" "UInt8" in
+  let b = assertEq (show minInt8) "-128" "Int8" in
+  let c = assertEq (show maxUInt64) "18446744073709551615" "UInt64 prints unsigned" in
+  let d = assertEq (show (maxInt32 + toInt32 1)) "-2147483648" "Int32 wraps" in
+  let e = assertEq (maxUInt8 + 1) (toUInt8 0) "UInt8 wraps at the top" in
+  assertTrue (maxUInt64 > toUInt64 0) "UInt64 compares unsigned"
+
+@test fun literalsTakeTheirTypeFromUse () =
+  let a = assertEq (toUInt8 250 + 10) (toUInt8 4) "10 is a UInt8 here" in
+  let b = assertEq (toInt16 (0 - 1) * 2) (toInt16 (0 - 2)) "and an Int16 here" in
+  assertEq (toBigInt 2 ^ 100) (2 ^ 100) "a BigInt, and the default"

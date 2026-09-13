@@ -50,7 +50,7 @@ fn a_tail_recursive_loop_allocates_nothing() {
     // closure for the continuation of every operand, and another per curried
     // argument. Nothing here should allocate at all.
     let (out, steps, allocated) = cost(
-        "fun count n acc = if n == 0 then acc else count (n - 1) (acc + n)
+        "fun count (n : Int) acc = if n == 0 then acc else count (n - 1) (acc + n)
          def main = count 100000 0",
     );
     assert_eq!(out, "5000050000");
@@ -68,7 +68,7 @@ fn a_known_call_does_not_build_a_closure() {
     // the ordinary case does not pay for it.
     let (_, _, direct) = cost(
         "fun add a b = a + b
-         fun go n acc = if n == 0 then acc else go (n - 1) (add acc n)
+         fun go (n : Int) acc = if n == 0 then acc else go (n - 1) (add acc n)
          def main = go 1000 0",
     );
     // A real partial application — `(add acc)` is one argument short, so it has
@@ -77,7 +77,7 @@ fn a_known_call_does_not_build_a_closure() {
     let (_, _, curried) = cost(
         "fun add a b = a + b
          fun apply f x = f x
-         fun go n acc = if n == 0 then acc else go (n - 1) (apply (add acc) n)
+         fun go (n : Int) acc = if n == 0 then acc else go (n - 1) (apply (add acc) n)
          def main = go 1000 0",
     );
     // Three slots an iteration: one continuation object for the non-tail call,
@@ -146,12 +146,15 @@ fn a_closure_still_captures_what_it_should() {
 #[test]
 fn a_comparison_allocates_nothing() {
     let cases: &[(&str, &str, &str)] = &[
-        ("", "a < b", "3 4"),
-        ("", "a > b", "3 4"),
-        ("", "a <= b", "3 4"),
-        ("", "a >= b", "3 4"),
-        ("", "a == 3", "3 4"),
-        ("", "a != 3", "3 4"),
+        ("", "a < b", "(toInt 3) (toInt 4)"),
+        ("", "a > b", "(toInt 3) (toInt 4)"),
+        ("", "a <= b", "(toInt 3) (toInt 4)"),
+        ("", "a >= b", "(toInt 3) (toInt 4)"),
+        ("", "a == 3", "(toInt 3) (toInt 4)"),
+        ("", "a != 3", "(toInt 3) (toInt 4)"),
+        // A sized integer is as immediate as an `Int`.
+        ("", "a < b", "(toUInt8 3) (toUInt8 4)"),
+        ("", "a == 3", "(toInt16 3) (toInt16 4)"),
         ("", "a <. b", "1.5 2.5"),
         ("", "a >=. b", "1.5 2.5"),
         ("", "a == b", "'x' 'y'"),
@@ -165,14 +168,15 @@ fn a_comparison_allocates_nothing() {
             "a == b",
             "(Pair 1 2) (Pair 1 2)",
         ),
-        ("", "a <~ b", "(toBigInt 5) (toBigInt 9)"),
-        ("", "a >=~ b", "(toBigInt 5) (toBigInt 9)"),
+        // A `BigInt` is on the heap, and comparing two is reading them.
+        ("", "a < b", "(toBigInt 5) (toBigInt 9)"),
+        ("", "a >= b", "(toBigInt 5) (toBigInt 9)"),
     ];
 
     for (prelude, cond, args) in cases {
         let src = |n: i64| {
             format!(
-                "{prelude}fun go i acc a b =\n\
+                "{prelude}fun go (i : Int) (acc : Int) a b =\n\
                  \x20 if i == 0 then acc\n\
                  \x20 else if {cond} then go (i - 1) (acc + 1) a b else go (i - 1) acc a b\n\
                  def main = go {n} 0 {args}\n"

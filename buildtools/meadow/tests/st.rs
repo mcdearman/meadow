@@ -102,7 +102,7 @@ fn mutation_inside_run_st_leaves_a_pure_type() {
                \x20   let rec go i = if i > n then () else let _ = stSetRef total (stGetRef total + i) in go (i + 1) in\n\
                \x20   let _ = go 1 in\n\
                \x20   stGetRef total)\n";
-    assert_eq!(scheme_of(src, "sumTo"), "Int -> Int");
+    assert_eq!(scheme_of(src, "sumTo"), "forall n. n -> n");
     assert_eq!(both(&format!("{src}def main = sumTo 100\n")), "5050");
 }
 
@@ -110,7 +110,7 @@ fn mutation_inside_run_st_leaves_a_pure_type() {
 fn other_effects_pass_through() {
     // `St` is removed and nothing else is: a `Ref` touched inside keeps `Mut`.
     let src = "fun f u = runSt (\\() -> let r = stNewRef 0 in let c = newRef 5 in let _ = stSetRef r (getRef c) in stGetRef r)\n";
-    assert_eq!(scheme_of(src, "f"), "forall a r. a -> Int ! { Mut | r }");
+    assert_eq!(scheme_of(src, "f"), "forall a n r. a -> n ! { Mut | r }");
 }
 
 #[test]

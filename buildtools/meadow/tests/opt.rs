@@ -189,13 +189,16 @@ fn fusing_covers_the_other_numeric_types() {
     is("def x = 2.5\ndef main = if x <. 2.0 then \"lt\" else \"ge\"\n", "\"ge\"");
     is("def x = 2.0\ndef main = if x <=. 2.0 then \"le\" else \"gt\"\n", "\"le\"");
     is(
-        "def x = toBigInt 5\ndef main = if x <~ toBigInt 9 then \"lt\" else \"ge\"\n",
+        "def x = toBigInt 5\ndef main = if x < toBigInt 9 then \"lt\" else \"ge\"\n",
         "\"lt\"",
     );
     is(
-        "def x = toBigInt 50\ndef main = if x <~ toBigInt 9 then \"lt\" else \"ge\"\n",
+        "def x = toBigInt 50\ndef main = if x < toBigInt 9 then \"lt\" else \"ge\"\n",
         "\"ge\"",
     );
+    is("def x = toUInt8 200\ndef main = if x > 100 then \"gt\" else \"le\"\n", "\"gt\"");
+    is("def x = toInt8 (0 - 1)\ndef main = if x < 0 then \"lt\" else \"ge\"\n", "\"lt\"");
+    is("def x = toUInt64 (toInt (0 - 1))\ndef main = if x > 0 then \"gt\" else \"le\"\n", "\"gt\"");
 }
 
 // --- reading arguments where they already are ---------------------------------

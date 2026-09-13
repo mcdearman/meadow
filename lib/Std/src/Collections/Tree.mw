@@ -4,7 +4,7 @@
 -- `insert` / `member` / `delete` order elements with `<`, so they work on `Int`.
 -- `map` / `foldr` / `toVec` are element-agnostic.
 
-use Std.Int (max)
+use Std.Num.Int (max)
 use Std.Collections.List as List
 use Std.Collections.Vector as V
 -- `[a, b]` desugars to a `vecFromArray` call.

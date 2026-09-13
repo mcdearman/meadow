@@ -33,7 +33,7 @@ def main = addOne \"not a number\"
 fn a_forward_reference_gets_the_type_it_should() {
     assert_eq!(
         schemes("fun addOne n = helper n\nfun helper n = n + 1\n"),
-        "addOne : Int -> Int\nhelper : Int -> Int\n"
+        "addOne : forall n. n -> n\nhelper : forall n. n -> n\n"
     );
 }
 
@@ -66,7 +66,7 @@ fun wrap x = (x, x)
     assert_eq!(eval_main(src), "((1, 1), (\"s\", \"s\"))");
     assert_eq!(
         schemes("fun wrap x = (x, x)\nfun both = (wrap 1, wrap \"s\")\n"),
-        "wrap : forall a. a -> (a, a)\nboth : ((Int, Int), (String, String))\n"
+        "wrap : forall a. a -> (a, a)\nboth : ((BigInt, BigInt), (String, String))\n"
     );
 }
 
@@ -76,7 +76,7 @@ fun wrap x = (x, x)
 fn self_recursion_still_works() {
     assert_eq!(
         schemes("fun len xs = match xs with\n  | #[] -> 0\n  | _ -> 1\n"),
-        "len : forall a. #[a] -> Int\n"
+        "len : forall a n. #[a] -> n\n"
     );
     assert_eq!(
         eval_main("fun fact n = if n <= 1 then 1 else n * fact (n - 1)\ndef main = fact 5\n"),
@@ -91,7 +91,7 @@ fn mutual_recursion_is_inferred_as_one_group() {
 fun isEven n = if n == 0 then True else isOdd (n - 1)
 fun isOdd n = if n == 0 then False else isEven (n - 1)
 ";
-    assert_eq!(schemes_std(src), "isEven : Int -> Bool\nisOdd : Int -> Bool\n");
+    assert_eq!(schemes_std(src), "isEven : forall n. n -> Bool\nisOdd : forall n. n -> Bool\n");
     assert_eq!(eval_main_std(&format!("{src}def main = isEven 10\n")), "true");
 }
 

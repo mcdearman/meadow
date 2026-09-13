@@ -23,10 +23,40 @@
 use crate::heap::Kind;
 use crate::value::{Addr, Value};
 use crate::vm::{err, Error, Vm};
-use meadow_core::Prim;
+use meadow_core::{num, Prim};
 use meadow_intern::InternedString;
 use num_bigint::{BigInt, Sign};
-use num_traits::{ToPrimitive, Zero};
+
+fn arith(p: Prim) -> num::Arith {
+    match p {
+        Prim::Add | Prim::AddF => num::Arith::Add,
+        Prim::Sub | Prim::SubF => num::Arith::Sub,
+        Prim::Mul | Prim::MulF => num::Arith::Mul,
+        Prim::Div | Prim::DivF => num::Arith::Div,
+        Prim::Mod => num::Arith::Mod,
+        _ => num::Arith::Pow,
+    }
+}
+
+fn cmp(p: Prim) -> num::Cmp {
+    match p {
+        Prim::Lt | Prim::LtF => num::Cmp::Lt,
+        Prim::Gt | Prim::GtF => num::Cmp::Gt,
+        Prim::Le | Prim::LeF => num::Cmp::Le,
+        _ => num::Cmp::Ge,
+    }
+}
+
+fn bits(p: Prim) -> num::Bits {
+    match p {
+        Prim::Shl => num::Bits::Shl,
+        Prim::Shr => num::Bits::Shr,
+        Prim::Ushr => num::Bits::Ushr,
+        Prim::BitAnd => num::Bits::And,
+        Prim::BitOr => num::Bits::Or,
+        _ => num::Bits::Xor,
+    }
+}
 
 impl Vm<'_> {
     pub(crate) fn alloc_bigint(&mut self, n: BigInt) -> Value {
@@ -56,36 +86,35 @@ impl Vm<'_> {
         }
     }
 
-    fn int2(&self, a: Value, b: Value) -> Result<(i64, i64), Error> {
-        match (a, b) {
-            (Value::Int(x), Value::Int(y)) => Ok((x, y)),
-            _ => err(format!(
-                "expected two Ints, got {} and {}",
-                self.show(a),
-                self.show(b)
-            )),
+    /// A number, for `meadow_core::num`. A `BigInt` is read off the heap, which
+    /// allocates nothing there.
+    pub(crate) fn num(&self, v: Value) -> Result<num::Num, Error> {
+        match self.try_num(v) {
+            Some(n) => Ok(n),
+            None => err(format!("expected a number, got {}", self.show(v))),
         }
     }
 
-    fn float2(&self, a: Value, b: Value) -> Result<(f64, f64), Error> {
-        match (a, b) {
-            (Value::Float(x), Value::Float(y)) => Ok((x, y)),
-            _ => err(format!(
-                "expected two Floats, got {} and {}",
-                self.show(a),
-                self.show(b)
-            )),
-        }
+    /// [`Vm::num`], without building an error for something that is not one.
+    pub(crate) fn try_num(&self, v: Value) -> Option<num::Num> {
+        Some(match v {
+            Value::Int(x) => num::Num::Int(x),
+            Value::Word(w, b) => num::Num::Word(w, b),
+            Value::Float(x) => num::Num::Float(x),
+            Value::Float32(x) => num::Num::Float32(x),
+            other => num::Num::Big(self.bigint_at(other)?),
+        })
     }
 
-    fn big2(&self, a: Value, b: Value) -> Result<(BigInt, BigInt), Error> {
-        match (self.bigint_at(a), self.bigint_at(b)) {
-            (Some(x), Some(y)) => Ok((x, y)),
-            _ => err(format!(
-                "expected two BigInts, got {} and {}",
-                self.show(a),
-                self.show(b)
-            )),
+    /// A number as a value. Only a `BigInt` allocates, and `alloc_bigint` makes
+    /// its own room -- nothing heap-shaped may be held across this call.
+    fn from_num(&mut self, n: num::Num) -> Value {
+        match n {
+            num::Num::Int(x) => Value::Int(x),
+            num::Num::Word(w, b) => Value::Word(w, b),
+            num::Num::Big(x) => self.alloc_bigint(x),
+            num::Num::Float(x) => Value::Float(x),
+            num::Num::Float32(x) => Value::Float32(x),
         }
     }
 
@@ -108,12 +137,12 @@ impl Vm<'_> {
         let mut out = Vec::with_capacity(self.heap.len(a));
         for i in 0..self.heap.len(a) {
             match self.heap.field(a, i) {
+                Value::Word(num::Width::U8, b) => out.push(b as u8),
+                // A literal in code generic over its integer type -- see
+                // `meadow_core::num`.
                 Value::Int(n) if (0..=255).contains(&n) => out.push(n as u8),
                 other => {
-                    return err(format!(
-                        "`{what}`: not a byte (0..255): {}",
-                        self.show(other)
-                    ));
+                    return err(format!("`{what}`: not a byte: {}", self.show(other)));
                 }
             }
         }
@@ -145,10 +174,13 @@ impl Vm<'_> {
         let arg = |vm: &Vm, i: usize| vm.reg(srcs[i]);
 
         let out = match p {
-            // --- Int ------------------------------------------------------
-            Add | Sub | Mul | Div | Mod | Pow => {
-                let (x, y) = self.int2(arg(self, 0), arg(self, 1))?;
-                Value::Int(match p {
+            // --- numbers ---------------------------------------------------
+            //
+            // Two `Int`s -- by far the common case -- are handled inline; every
+            // other pairing goes through `meadow_core::num`, shared with the
+            // other engines.
+            Add | Sub | Mul | Div | Mod | Pow => match (arg(self, 0), arg(self, 1)) {
+                (Value::Int(x), Value::Int(y)) => Value::Int(match p {
                     Add => x.wrapping_add(y),
                     Sub => x.wrapping_sub(y),
                     Mul => x.wrapping_mul(y),
@@ -162,111 +194,63 @@ impl Vm<'_> {
                         })?;
                         x.wrapping_pow(e)
                     }
-                })
-            }
-            Lt | Gt | Le | Ge => {
-                let (x, y) = self.int2(arg(self, 0), arg(self, 1))?;
-                Value::Bool(match p {
+                }),
+                (a, b) => {
+                    let r = num::int_arith(arith(p), self.num(a)?, self.num(b)?);
+                    self.from_num(r.map_err(|msg| Error { msg })?)
+                }
+            },
+            // A fused comparison may not allocate (`Prim::compares`), and none
+            // of these does: a `BigInt` is read, not built.
+            Lt | Gt | Le | Ge => match (arg(self, 0), arg(self, 1)) {
+                (Value::Int(x), Value::Int(y)) => Value::Bool(match p {
                     Lt => x < y,
                     Gt => x > y,
                     Le => x <= y,
                     _ => x >= y,
-                })
-            }
+                }),
+                (a, b) => Value::Bool(
+                    num::int_cmp(cmp(p), self.num(a)?, self.num(b)?).map_err(|msg| Error { msg })?,
+                ),
+            },
             Neg => match arg(self, 0) {
                 Value::Int(x) => Value::Int(x.wrapping_neg()),
-                other => return err(format!("`neg` expects an Int, got {}", self.show(other))),
+                other => {
+                    let r = num::int_neg(self.num(other)?);
+                    self.from_num(r.map_err(|msg| Error { msg })?)
+                }
             },
-
-            // --- Float ----------------------------------------------------
-            AddF | SubF | MulF | DivF => {
-                let (x, y) = self.float2(arg(self, 0), arg(self, 1))?;
-                Value::Float(match p {
+            AddF | SubF | MulF | DivF => match (arg(self, 0), arg(self, 1)) {
+                (Value::Float(x), Value::Float(y)) => Value::Float(match p {
                     AddF => x + y,
                     SubF => x - y,
                     MulF => x * y,
                     _ => x / y,
-                })
-            }
-            LtF | GtF | LeF | GeF => {
-                let (x, y) = self.float2(arg(self, 0), arg(self, 1))?;
-                Value::Bool(match p {
-                    LtF => x < y,
-                    GtF => x > y,
-                    LeF => x <= y,
-                    _ => x >= y,
-                })
-            }
-            ToFloat => match arg(self, 0) {
-                Value::Int(x) => Value::Float(x as f64),
-                other => {
-                    return err(format!("`toFloat` expects an Int, got {}", self.show(other)));
+                }),
+                (a, b) => {
+                    let r = num::float_arith(arith(p), self.num(a)?, self.num(b)?);
+                    self.from_num(r.map_err(|msg| Error { msg })?)
                 }
             },
-            Floor => match arg(self, 0) {
-                Value::Float(x) => {
-                    let f = x.floor();
-                    if !f.is_finite() {
-                        return err(format!("`floor` of a non-finite Float: {x}"));
-                    }
-                    Value::Int(f as i64)
-                }
-                other => {
-                    return err(format!("`floor` expects a Float, got {}", self.show(other)));
-                }
-            },
-
-            // --- BigInt ---------------------------------------------------
-            AddB | SubB | MulB | DivB | ModB | PowB => {
-                let (x, y) = self.big2(arg(self, 0), arg(self, 1))?;
-                let r = match p {
-                    AddB => x + y,
-                    SubB => x - y,
-                    MulB => x * y,
-                    DivB if y.is_zero() => return err("division by zero"),
-                    DivB => x / y,
-                    ModB if y.is_zero() => return err("modulo by zero"),
-                    ModB => x % y,
-                    _ => {
-                        let e = y.to_u32().ok_or_else(|| Error {
-                            msg: format!("`^~` exponent must fit in u32, got {y}"),
-                        })?;
-                        x.pow(e)
-                    }
+            LtF | GtF | LeF | GeF => Value::Bool(
+                num::float_cmp(cmp(p), self.num(arg(self, 0))?, self.num(arg(self, 1))?)
+                    .map_err(|msg| Error { msg })?,
+            ),
+            ToFloat => Value::Float(num::to_float(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?),
+            ToFloat32 => {
+                Value::Float32(num::to_float32(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?)
+            }
+            Floor => Value::Int(num::floor(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?),
+            ToBig | ToInt | ToWord(_) => {
+                let target = match p {
+                    ToBig => num::IntTarget::Big,
+                    ToInt => num::IntTarget::Int,
+                    ToWord(w) => num::IntTarget::Word(w),
+                    _ => unreachable!("matched above"),
                 };
-                // Nothing heap-shaped is live across this: `r` is a Rust value.
-                self.alloc_bigint(r)
+                let r = num::to_int(target, self.num(arg(self, 0))?);
+                self.from_num(r.map_err(|msg| Error { msg })?)
             }
-            LtB | GtB | LeB | GeB => {
-                let (x, y) = self.big2(arg(self, 0), arg(self, 1))?;
-                Value::Bool(match p {
-                    LtB => x < y,
-                    GtB => x > y,
-                    LeB => x <= y,
-                    _ => x >= y,
-                })
-            }
-            ToBig => match arg(self, 0) {
-                Value::Int(x) => self.alloc_bigint(BigInt::from(x)),
-                other => {
-                    return err(format!(
-                        "`toBigInt` expects an Int, got {}",
-                        self.show(other)
-                    ));
-                }
-            },
-            ToInt => match self.bigint_at(arg(self, 0)) {
-                Some(x) => match x.to_i64() {
-                    Some(n) => Value::Int(n),
-                    None => return err(format!("`toInt`: {x} does not fit in Int")),
-                },
-                None => {
-                    return err(format!(
-                        "`toInt` expects a BigInt, got {}",
-                        self.show(arg(self, 0))
-                    ));
-                }
-            },
 
             // --- structural ----------------------------------------------
             Eq => Value::Bool(self.value_eq(arg(self, 0), arg(self, 1))),
@@ -357,24 +341,32 @@ impl Vm<'_> {
             }
 
             // --- bitwise --------------------------------------------------
-            Shl | Shr | Ushr | BitAnd | BitOr | BitXor => {
-                let (x, y) = self.int2(arg(self, 0), arg(self, 1))?;
-                Value::Int(match p {
+            Shl | Shr | Ushr | BitAnd | BitOr | BitXor => match (arg(self, 0), arg(self, 1)) {
+                (Value::Int(x), Value::Int(y)) => Value::Int(match p {
                     Shl => x.wrapping_shl(y as u32),
                     Shr => x.wrapping_shr(y as u32),
                     Ushr => (x as u64).wrapping_shr(y as u32) as i64,
                     BitAnd => x & y,
                     BitOr => x | y,
                     _ => x ^ y,
-                })
+                }),
+                (a, b) => {
+                    let r = num::int_bits(bits(p), self.num(a)?, self.num(b)?);
+                    self.from_num(r.map_err(|msg| Error { msg })?)
+                }
+            },
+            BitNot => {
+                let r = num::int_not(self.num(arg(self, 0))?);
+                self.from_num(r.map_err(|msg| Error { msg })?)
             }
-            BitNot => Value::Int(!self.int(arg(self, 0))?),
-            PopCount => Value::Int(self.int(arg(self, 0))?.count_ones() as i64),
+            PopCount => Value::Int(num::pop_count(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?),
+            BitWidth => Value::Int(num::bit_width(&self.num(arg(self, 0))?).map_err(|msg| Error { msg })?),
 
             // --- text and bytes -------------------------------------------
             StringToBytes => match arg(self, 0) {
                 Value::Str(s) => {
-                    let fields: Vec<Value> = s.bytes().map(|b| Value::Int(b as i64)).collect();
+                    let fields: Vec<Value> =
+                        s.bytes().map(|b| Value::Word(num::Width::U8, b as u64)).collect();
                     self.ensure(1 + fields.len());
                     Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
                 }
@@ -419,7 +411,9 @@ impl Vm<'_> {
                             (pair[0] as char).to_digit(16),
                             (pair[1] as char).to_digit(16),
                         ) {
-                            (Some(h), Some(l)) => out.push(Value::Int(((h << 4) | l) as i64)),
+                            (Some(h), Some(l)) => {
+                                out.push(Value::Word(num::Width::U8, ((h << 4) | l) as u64))
+                            }
                             _ => {
                                 ok = false;
                                 break;

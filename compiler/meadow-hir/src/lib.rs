@@ -115,7 +115,12 @@ pub const PRIMS: &[&str] = &[
     "stSetArray",
     "stArrayLen",
     "stFreeze",
-    "stThaw",
+    "stThaw", //
+    // compact regions: long-lived data the collector treats as one object
+    "compact",
+    "getCompact",
+    "compactAdd",
+    "compactSize",
 ];
 use std::ops::Deref;
 

@@ -109,7 +109,10 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     // AxCut is untyped. Core's type abstractions and applications go first,
     // in one pass, so that nothing below has to see through one — see
     // [`core::erase`].
-    let program = &core::erase::program(program);
+    //
+    // Number-generic definitions are copied per number type first, while the
+    // types that say which are still there -- see [`core::specialize`].
+    let program = &core::erase::program(&core::specialize::program(program));
     let mut globals = HashMap::new();
     for (i, d) in program.defs.iter().enumerate() {
         globals.insert(d.var, (Label(i as u32), Vec::new()));

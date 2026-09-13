@@ -174,7 +174,7 @@ const BUILTIN_TYCONS: &[&str] =
     &[
         "Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array", "Ref", "StRef",
         "StArray", "Int64", "Int32", "Int16", "Int8", "UInt64", "UInt32", "UInt16", "UInt8",
-        "Float64", "Float32",
+        "Float64", "Float32", "Compact",
     ];
 
 /// Split a declaration into its attributes and the bare declaration underneath.
@@ -297,6 +297,7 @@ fn builtin_tycons() -> HashMap<InternedString, usize> {
         ("UInt64", 0), ("UInt32", 0), ("UInt16", 0), ("UInt8", 0),
         ("Float64", 0), ("Float32", 0),
         ("Unit", 0), ("List", 1), ("Array", 1), ("Ref", 1), ("StRef", 2), ("StArray", 2),
+        ("Compact", 1),
     ]
     .into_iter()
     .map(|(n, a)| (InternedString::from(n), a))

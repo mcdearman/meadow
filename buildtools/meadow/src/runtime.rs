@@ -61,6 +61,90 @@ pub fn run(program: &core::Program, engine: Engine, opt: OptLevel) -> Result<Str
     }
 }
 
+/// What the bytecode VM's collector did during a run.
+#[derive(Debug, Clone, Copy)]
+pub struct GcStats {
+    pub collections: u64,
+    /// Heap slots allocated and copied by collections, in total.
+    pub allocated: u64,
+    pub copied: u64,
+    pub gc_nanos: u64,
+    pub run_nanos: u64,
+    /// Semispace size, and slots held in compact regions, at the end.
+    pub heap_slots: usize,
+    pub region_slots: usize,
+}
+
+impl fmt::Display for GcStats {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = |slots: u64| human_bytes(slots * meadow_rts::heap::SLOT_BYTES as u64);
+        let share = if self.run_nanos == 0 {
+            0.0
+        } else {
+            100.0 * self.gc_nanos as f64 / self.run_nanos as f64
+        };
+        write!(
+            f,
+            "gc: {} collections, {:.1} ms collecting ({share:.1}% of {:.1} ms)\n\
+             gc: {} allocated, {} copied by collections\n\
+             gc: heap {}, compact regions {}",
+            self.collections,
+            self.gc_nanos as f64 / 1e6,
+            self.run_nanos as f64 / 1e6,
+            bytes(self.allocated),
+            bytes(self.copied),
+            bytes(self.heap_slots as u64),
+            bytes(self.region_slots as u64),
+        )
+    }
+}
+
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut x = n as f64;
+    let mut unit = 0;
+    while x >= 1024.0 && unit + 1 < UNITS.len() {
+        x /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 { format!("{n} B") } else { format!("{x:.1} {}", UNITS[unit]) }
+}
+
+/// [`run`], and on the VM what its collector did. The CEK reference-counts,
+/// so it has nothing to report.
+pub fn run_with_stats(
+    program: &core::Program,
+    engine: Engine,
+    opt: OptLevel,
+) -> (Result<String, String>, Option<GcStats>) {
+    match engine {
+        Engine::Cek => (run(program, engine, opt), None),
+        Engine::Vm => {
+            let image = match compile(program, opt) {
+                Ok(image) => image,
+                Err(e) => return (Err(e), None),
+            };
+            let Some(entry) = image.entry else {
+                return (Err("program has no entry point".to_string()), None);
+            };
+            let started = std::time::Instant::now();
+            let mut vm = meadow_rts::Vm::new(&image);
+            let result = vm.run(entry, UNBOUNDED).map(|v| vm.show(v)).map_err(|e| e.msg);
+            let heap = vm.heap();
+            let stats = GcStats {
+                collections: heap.collections,
+                allocated: heap.allocated,
+                copied: heap.copied,
+                gc_nanos: heap.gc_nanos,
+                run_nanos: started.elapsed().as_nanos() as u64,
+                heap_slots: heap.capacity(),
+                region_slots: heap.region_slots(),
+            };
+            (result, Some(stats))
+        }
+    }
+}
+
 /// Call each of `tests` with `()`, in order, sharing one build.
 ///
 /// Each gets its own result: a failing test does not stop the rest.

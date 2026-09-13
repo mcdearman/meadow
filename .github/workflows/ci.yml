@@ -21,6 +21,9 @@ jobs:
   check:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # A clean run takes about ten minutes. The default is six hours, which is
+    # how long a hung step would otherwise hold a runner.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -41,20 +44,19 @@ jobs:
         with:
           node-version: "20"
 
-      # Five independent workspaces, so five target directories. Keyed on every
-      # `Cargo.lock` in the tree.
-      - uses: actions/cache@v4
+      # Five independent workspaces, so five target directories. `rust-cache`
+      # keeps only what the dependencies built and drops the workspace's own
+      # crates and test binaries, which are rebuilt on every change anyway.
+      # Caching whole target directories made the cache several gigabytes, and
+      # saving that on Windows took longer than the checks.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            compiler/target
-            rts/target
-            eval/target
-            buildtools/target
-            installer/target
-          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ matrix.os }}-cargo-
+          workspaces: |
+            compiler
+            rts
+            eval
+            buildtools
+            installer
 
       # Invoked through `bash` rather than executed: the tree is developed on
       # Windows, where `core.filemode` is off, so a script's executable bit is

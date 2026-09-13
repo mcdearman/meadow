@@ -37,9 +37,11 @@
 //! the bytecode machine and the CEK evaluator are all untyped: none of them
 //! can ask a question a type would answer.
 
+pub mod compact;
 pub mod erase;
 pub mod hash;
 pub mod num;
+pub mod specialize;
 pub mod lint;
 pub mod lower;
 pub use lower::Lowerer;
@@ -64,12 +66,14 @@ pub enum Lit {
     /// A float literal whose inferred type is `Float32`.
     Float32(f32),
     /// An integer literal whose type is still a variable -- inside a function
-    /// generic over its integer type, `fun succ n = n + 1`. It is an `Int` at run
-    /// time, and the primitives let it take the type of what it meets
-    /// ([`num`]); the core checker lets it stand for any type.
-    AnyInt(i64),
-    /// The same for a float literal: a `Float` at run time.
-    AnyFloat(f64),
+    /// generic over its integer type, `fun succ n = n + 1` -- and that variable.
+    /// [`specialize`] makes it the type a copy of the function is for; where
+    /// none can be known it is an `Int` at run time, and the primitives let it
+    /// take the type of what it meets ([`num`]). The core checker lets it stand
+    /// for any type.
+    AnyInt(i64, u32),
+    /// The same for a float literal: a `Float` where no type is known.
+    AnyFloat(f64, u32),
     Str(InternedString),
     Char(char),
     Bool(bool),
@@ -209,6 +213,19 @@ pub enum Prim {
     StFreeze,
     /// `stThaw : Array a -> StArray s a ! { St s | e }` -- a copy.
     StThaw,
+    // --- compact regions ---
+    /// `compact : a -> Compact a` -- copy a value, and all it reaches, into a
+    /// new region the bytecode VM's collector neither copies nor scans. An
+    /// error if the value reaches a `Ref`, a mutable array or a function.
+    Compact,
+    /// `getCompact : Compact a -> a` -- the value inside, without copying.
+    GetCompact,
+    /// `compactAdd : Compact b -> a -> Compact a` -- copy a value into the same
+    /// region, sharing whatever of it is there already.
+    CompactAdd,
+    /// `compactSize : Compact a -> Int` -- bytes the region holds. Engine
+    /// dependent: the VM counts its slots, the others estimate.
+    CompactSize,
     /// `String -> Maybe #[UInt8]` -- parse a hex string (either case, no
     /// separators, even length) into bytes. `None` on any malformed input.
     BytesFromHex,
@@ -321,6 +338,10 @@ impl Prim {
             "stArrayLen" => Prim::StArrayLen,
             "stFreeze" => Prim::StFreeze,
             "stThaw" => Prim::StThaw,
+            "compact" => Prim::Compact,
+            "getCompact" => Prim::GetCompact,
+            "compactAdd" => Prim::CompactAdd,
+            "compactSize" => Prim::CompactSize,
             _ => return None,
         })
     }
@@ -355,7 +376,10 @@ impl Prim {
             | Prim::RunSt
             | Prim::StArrayLen
             | Prim::StFreeze
-            | Prim::StThaw => 1,
+            | Prim::StThaw
+            | Prim::Compact
+            | Prim::GetCompact
+            | Prim::CompactSize => 1,
             Prim::ArraySet | Prim::ArraySlice | Prim::ArrayGetOr | Prim::StSetArray => 3,
             _ => 2,
         }
@@ -831,8 +855,8 @@ impl Printer {
             Lit::Float(x) => fmt_float(*x),
             Lit::Word(w, b) => format!("{}{}", w.value(*b), w.name()),
             Lit::Float32(x) => format!("{}f32", num::fmt_float32(*x)),
-            Lit::AnyInt(i) => format!("{i}?"),
-            Lit::AnyFloat(x) => format!("{}?", fmt_float(*x)),
+            Lit::AnyInt(i, _) => format!("{i}?"),
+            Lit::AnyFloat(x, _) => format!("{}?", fmt_float(*x)),
             Lit::Str(s) => format!("{:?}", &**s), // the string contents, quoted
             Lit::Char(c) => format!("{c:?}"),
             Lit::Bool(b) => b.to_string(),

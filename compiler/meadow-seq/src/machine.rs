@@ -117,6 +117,23 @@ pub enum Value<'p> {
     Resume(Rc<RefCell<Option<Captured<'p>>>>),
     /// The continuation the entry point is handed. Invoking it stops the machine.
     Halt,
+    /// A value in a compact region, and the region. Nothing moves here -- the
+    /// value is shared as it is -- so a region is only the bookkeeping that makes
+    /// `compactSize` agree with the VM's.
+    Compact(CompactCell<'p>),
+}
+
+/// A `Compact`: the value, and the region it was put in.
+pub type CompactCell<'p> = Rc<(Value<'p>, Rc<RefCell<Region<'p>>>)>;
+
+/// What a compact region holds, as far as sizing it goes: every value put in
+/// (which keeps each node alive, so an address counted is never reused), the
+/// nodes already counted, and the VM slots they add up to.
+#[derive(Debug, Default)]
+pub struct Region<'p> {
+    roots: Vec<Value<'p>>,
+    seen: std::collections::HashSet<*const ()>,
+    slots: usize,
 }
 
 /// A data value's fields.
@@ -736,9 +753,9 @@ impl<'p> Machine<'p> {
 
 fn literal<'p>(l: &Lit) -> Value<'p> {
     match l {
-        Lit::Int(n) | Lit::AnyInt(n) => Value::Int(*n),
+        Lit::Int(n) | Lit::AnyInt(n, _) => Value::Int(*n),
         Lit::BigInt(n) => Value::BigInt(Rc::new(BigInt::from(*n))),
-        Lit::Float(x) | Lit::AnyFloat(x) => Value::Float(*x),
+        Lit::Float(x) | Lit::AnyFloat(x, _) => Value::Float(*x),
         Lit::Word(w, b) => Value::Word(*w, *b),
         Lit::Float32(x) => Value::Float32(*x),
         Lit::Str(s) => Value::Str(*s),
@@ -767,6 +784,7 @@ fn kind(v: &Value) -> &'static str {
         Value::Obj(_) => "codata",
         Value::Resume(_) => "resumption",
         Value::Halt => "halt",
+        Value::Compact(_) => "Compact",
     }
 }
 
@@ -937,6 +955,8 @@ pub fn value_eq<'p>(a: &Value<'p>, b: &Value<'p>) -> bool {
             // the same thing are still two cells.
             (Value::Ref(x), Value::Ref(y)) if Rc::ptr_eq(x, y) => {}
             (Value::MutArray(x), Value::MutArray(y)) if Rc::ptr_eq(x, y) => {}
+            // Immutable, so two are equal when what they hold is.
+            (Value::Compact(x), Value::Compact(y)) => stack.push((x.0.clone(), y.0.clone())),
             _ => return false,
         }
     }
@@ -998,6 +1018,10 @@ fn hash_value(v: &Value) -> Result<i64, Error> {
             Value::MutArray(_) => return err(unhashable("a mutable array")),
             Value::Obj(_) | Value::Resume(_) | Value::Halt => {
                 return err(unhashable("a function"));
+            }
+            Value::Compact(c) => {
+                h.compact();
+                stack.push(Work::Val(c.0.clone()));
             }
         }
     }
@@ -1245,7 +1269,92 @@ fn prim<'p>(
             Value::Array(xs) => Ok(Value::MutArray(Rc::new(RefCell::new((**xs).clone())))),
             other => err(format!("stThaw: expected an Array, got {other}")),
         },
+        Compact => {
+            let region = Rc::new(RefCell::new(Region::default()));
+            compact_into(&region, &args[0])?;
+            Ok(Value::Compact(Rc::new((args[0].clone(), region))))
+        }
+        GetCompact => Ok(as_compact(&args[0])?.0.clone()),
+        CompactAdd => {
+            let region = as_compact(&args[0])?.1.clone();
+            compact_into(&region, &args[1])?;
+            Ok(Value::Compact(Rc::new((args[1].clone(), region))))
+        }
+        CompactSize => Ok(Value::Int(
+            (as_compact(&args[0])?.1.borrow().slots * meadow_core::compact::SLOT_BYTES) as i64,
+        )),
     }
+}
+
+fn as_compact<'a, 'p>(v: &'a Value<'p>) -> Result<&'a CompactCell<'p>, Error> {
+    match v {
+        Value::Compact(c) => Ok(c),
+        other => err(format!("expected a Compact, got {other}")),
+    }
+}
+
+/// Put `v` in a region: check that it can go in, and count the VM slots it
+/// adds -- each node once, and nothing the region holds already, as the VM
+/// shares what is in a region rather than copying it again. A refusal leaves
+/// the region as it was. See `meadow_core::compact`.
+fn compact_into<'p>(region: &RefCell<Region<'p>>, v: &Value<'p>) -> Result<(), Error> {
+    use meadow_core::compact::uncompactable;
+    let mut r = region.borrow_mut();
+    let mut new: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
+    let mut slots = 0usize;
+    let mut stack = vec![v.clone()];
+    while let Some(v) = stack.pop() {
+        // A node is counted, and its children visited, the first time only.
+        let mut first = |p: *const ()| !r.seen.contains(&p) && new.insert(p);
+        match &v {
+            Value::Data(_, _, fields) => {
+                if first(Rc::as_ptr(fields) as *const ()) {
+                    slots += 1 + fields.len();
+                    stack.extend(fields.iter().cloned());
+                }
+            }
+            Value::Array(xs) => {
+                if first(Rc::as_ptr(xs) as *const ()) {
+                    slots += 1 + xs.len();
+                    stack.extend(xs.iter().cloned());
+                }
+            }
+            Value::Record(fields) => {
+                if first(Rc::as_ptr(fields) as *const ()) {
+                    slots += 1 + 2 * fields.len();
+                    stack.extend(fields.values().cloned());
+                }
+            }
+            Value::BigInt(b) => {
+                if first(Rc::as_ptr(b) as *const ()) {
+                    slots += 1 + b.iter_u32_digits().count();
+                }
+            }
+            Value::Compact(c) => {
+                if first(Rc::as_ptr(c) as *const ()) {
+                    slots += 2;
+                    stack.push(c.0.clone());
+                }
+            }
+            Value::Ref(_) => return err(uncompactable("a Ref")),
+            Value::MutArray(_) => return err(uncompactable("a mutable array")),
+            Value::Obj(_) | Value::Resume(_) | Value::Halt => {
+                return err(uncompactable("a function"));
+            }
+            Value::Int(_)
+            | Value::Float(_)
+            | Value::Word(..)
+            | Value::Float32(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::Char(_)
+            | Value::Unit => {}
+        }
+    }
+    r.seen.extend(new);
+    r.slots += slots;
+    r.roots.push(v.clone());
+    Ok(())
 }
 
 fn as_mut_array<'a, 'p>(v: &'a Value<'p>) -> Result<&'a Rc<RefCell<Vec<Value<'p>>>>, Error> {
@@ -1443,6 +1552,7 @@ impl std::fmt::Display for Value<'_> {
             Value::Obj(_) => f.write_str("<closure>"),
             Value::Resume(_) => f.write_str("<continuation>"),
             Value::Halt => f.write_str("<halt>"),
+            Value::Compact(c) => write!(f, "compact {}", c.0),
         }
     }
 }

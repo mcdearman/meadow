@@ -822,7 +822,13 @@ impl Session {
             && heap.len(a) > 0
             && matches!(
                 heap.kind(a),
-                Kind::Data | Kind::Array | Kind::MutArray | Kind::Record | Kind::Closure | Kind::Ref
+                Kind::Data
+                    | Kind::Array
+                    | Kind::MutArray
+                    | Kind::Record
+                    | Kind::Closure
+                    | Kind::Ref
+                    | Kind::Compact
             )
     }
 
@@ -872,7 +878,7 @@ impl Session {
                     })
                     .collect()
             }
-            Kind::Ref => fields
+            Kind::Ref | Kind::Compact => fields
                 .into_iter()
                 .map(|f| self.row("contents".to_string(), f, None))
                 .collect(),
@@ -920,6 +926,10 @@ impl Session {
             Kind::Resume => out.push_str("<resumption>"),
             Kind::Ref => {
                 out.push_str("ref ");
+                self.nested(out, heap.field(a, 0), depth, budget);
+            }
+            Kind::Compact => {
+                out.push_str("compact ");
                 self.nested(out, heap.field(a, 0), depth, budget);
             }
             Kind::Closure => {

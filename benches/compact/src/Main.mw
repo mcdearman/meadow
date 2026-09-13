@@ -1,0 +1,98 @@
+-- What compacting a large, long-lived value buys on the bytecode VM.
+--
+--   meadow run benches/compact        -- both, one after the other
+--   scripts/bench-compact.sh          -- each in its own process, with what
+--                                     -- the collector did
+--
+-- The collector copies everything alive whenever it runs. Garbage costs it
+-- nothing, so a program that allocates a lot of short-lived data is cheap to
+-- collect -- *unless* something big is alive at the same time, which is then
+-- copied at every collection for as long as it lives. `compact` moves the big
+-- thing out of the collected heap, and a collection pays one mark for it.
+--
+-- So every benchmark here runs twice beside the same 200_000-entry `HashMap`:
+-- once with the map in the heap, once with it compacted. Nothing else differs.
+--
+-- * **garbage** -- builds and sums a short list, over and over, touching the
+--   map not at all. This is the one compacting is for: the work is identical
+--   and the difference is entirely what each collection has to copy.
+-- * **lookup** -- a thousand lookups in the map. Compacting should neither help
+--   nor hurt much: the path to a key is the same objects either way, just laid
+--   out once in the order they were copied.
+-- * **compact** -- the cost of compacting the map, which is one copy of it.
+--   Worth knowing before compacting something that changes often.
+--
+-- On the CEK machine, which reference-counts, compacting copies nothing and
+-- both runs should come out the same.
+--
+-- On this machine, from `scripts/bench-compact.sh`:
+--
+--                          in the heap     compacted
+--   garbage, median           39.3 us       31.7 us     1.24x
+--   garbage, best             29.4 us       30.3 us     the same
+--   lookup, median            3.44 ms       3.42 ms     the same
+--   collecting                 447 ms        338 ms     of about 2.4 s each
+--   copied by collections     1.7 GiB       1.1 GiB
+--   compacting the map        31.9 ms, about 6 million entries a second
+--
+-- Read the two garbage rows together. The best sample is the same either way,
+-- because the best sample is one no collection landed in; the median is where
+-- collections land, and there the map being copied shows. Most of what the
+-- compacted run still copies is from building the map, before it is compacted.
+--
+-- The difference is bounded by how the heap grows: it doubles whenever a
+-- collection leaves it more than half full, so a live value can cost at most
+-- about one slot copied per slot allocated. A bigger live value, or a program
+-- that allocates less between collections, sits nearer that bound.
+--
+-- `MEADOW_BENCH_COMPACT=plain`, `=compact` or `=cost` runs only that part,
+-- which is how the script gets a collector report for each on its own.
+
+use Std.Bench (benchUnits, runAll)
+use Std.Collections.HashMap as H
+use Std.Collections.List as L
+use Std.Process (getEnv)
+
+def entries = toInt 200000
+
+fun bigMap (n : Int) = foldl (\m i -> H.insert i i m) H.empty (range 0 n)
+
+-- Short-lived garbage: a 100-element list, built, summed and dropped.
+fun garbage (n : Int) = L.foldl (\a x -> a + x) 0 (L.range 0 n)
+
+fun probe m (i : Int) acc =
+  if i == 0 then acc else probe m (i - 1) (acc + H.getOr 0 (i * 97) m)
+
+-- The benchmarks, beside a map that `keep` has either left alone or compacted.
+fun beside label keep =
+  let m = keep (bigMap entries) in
+  [ benchUnits (label ++ ": garbage") 100 (\u -> let _ = H.size m in garbage 100)
+    , benchUnits (label ++ ": lookup") 1000 (\u -> probe m 1000 0)
+  ]
+
+fun plain () = beside "map" (\m -> m)
+
+fun compacted () = beside "compacted" (\m -> getCompact (compact m))
+
+-- Needs a map in the heap to copy. Every region it makes is dropped at once,
+-- so this is the copy plus freeing it again. Throughput is entries per second.
+fun cost () =
+  let m = bigMap entries in
+  [benchUnits "compact the map" entries (\u -> compact m)]
+
+def main =
+  match getEnv "MEADOW_BENCH_COMPACT" with
+  | Just "plain" -> runAll (plain ())
+  | Just "compact" -> runAll (compacted ())
+  | Just "cost" -> runAll (cost ())
+  | _ -> runAll (append (append (plain ()) (compacted ())) (cost ()))
+
+-- --- tests --------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun theWorkloadsComputeTheRightThing u =
+  let m = bigMap 100 in
+  let _ = assertEq (garbage 100) 4950 "0..99" in
+  let _ = assertEq (probe m 1 0) 97 "one lookup" in
+  assertEq (probe (getCompact (compact m)) 1 0) 97 "the same, compacted"

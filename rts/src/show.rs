@@ -223,6 +223,10 @@ impl Vm<'_> {
                 }
                 Kind::Closure => out.push_str("<closure>"),
                 Kind::Resume => out.push_str("<continuation>"),
+                Kind::Compact => {
+                    out.push_str("compact ");
+                    self.render(out, self.heap.field(a, 0));
+                }
                 Kind::Data => self.render_data(out, v, a),
             },
         }
@@ -376,6 +380,10 @@ impl Vm<'_> {
                 Kind::Closure | Kind::Resume => {
                     return Err(Error { msg: unhashable("a function") });
                 }
+                Kind::Compact => {
+                    h.compact();
+                    stack.push(Work::Val(self.heap.field(a, 0)));
+                }
             }
         }
         Ok(h.finish())
@@ -456,6 +464,10 @@ impl Vm<'_> {
                             if self.bigint_at(a) != self.bigint_at(b) {
                                 return false;
                             }
+                        }
+                        // Immutable, so two are equal when what they hold is.
+                        (Kind::Compact, Kind::Compact) => {
+                            stack.push((self.heap.field(x, 0), self.heap.field(y, 0)));
                         }
                         // A `Ref` is a place, and two cells holding the same
                         // thing are still two cells. The address check above is

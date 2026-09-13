@@ -1,0 +1,96 @@
+-- Std.Compact: long-lived data the garbage collector treats as one object.
+--
+--   use Std.Compact as C
+--
+--   def table = C.make (buildSymbolTable sources)
+--
+--   fun lookupSymbol name = HashMap.lookup name (C.get table)
+--
+-- The bytecode VM's collector copies everything that is alive, every time it
+-- runs. That makes garbage free and a large structure that stays alive
+-- expensive: a map of a million entries is copied again at every collection for
+-- as long as the program keeps it. `make` copies a value into a **compact
+-- region** instead -- memory outside the collected heap, which the collector
+-- neither copies nor looks inside. However big the region, a collection pays
+-- one mark for it, and when nothing refers to the region any more it is freed
+-- all at once.
+--
+-- The value comes back unchanged: `C.get (C.make x) == x`, and a compacted
+-- value can be used anywhere the original could. Only speed and memory differ,
+-- so these are pure functions.
+--
+-- What cannot go in. A region is never looked inside, so nothing in it may
+-- change or point back out: `make` fails at run time on a value that reaches a
+-- `Ref`, a mutable array (`StArray`) or a function. Data, arrays, records,
+-- strings, numbers and other `Compact`s are all fine.
+--
+-- When it pays. Compacting costs one copy of the value, so it is for data
+-- built once and then read for a long time -- a parsed input, a lookup table, a
+-- cache that changes rarely -- not for something rebuilt every few
+-- collections. `add` puts more into the same region, sharing whatever of the
+-- new value is already there, which suits a structure that grows by persistent
+-- updates: the unchanged parts are not copied again.
+--
+-- The same four operations are primitives, always in scope, as `compact`,
+-- `getCompact`, `compactAdd` and `compactSize`. On the CEK machine, which
+-- reference-counts, compacting checks the value and copies nothing.
+
+-- Copy `x` into a new compact region.
+@pub fun make x = compact x
+
+-- The value in the region. O(1): nothing is copied back.
+@pub fun get c = getCompact c
+
+-- Copy `x` into `c`'s region, sharing what of it is there already.
+@pub fun add c x = compactAdd c x
+
+-- Bytes the region holds -- all of it, so every `Compact` sharing a region
+-- reports the same. The VM's figure; other engines estimate it.
+@pub fun size c = compactSize c
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue)
+use Std.Collections.HashMap as H
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+use Std.Maybe.Maybe.*
+
+fun squares (n : Int) = V.foldl (\m i -> H.insert i (i * i) m) H.empty (V.range 0 n)
+
+@test fun theValueComesBackUnchanged () =
+  let m = squares 500 in
+  let c = make m in
+  let a = assertTrue (get c == m) "equal to the original" in
+  let b = assertEq (H.lookup 21 (get c)) (Just 441) "and usable as one" in
+  assertEq (H.size (get c)) 500 "all of it"
+
+@test fun compactsCompareByWhatTheyHold () =
+  let a = assertTrue (make [1, 2, 3] == make [1, 2, 3]) "equal contents" in
+  let b = assertTrue (make "x" != make "y") "different contents" in
+  assertEq (hash (make (Just 7))) (hash (make (Just 7))) "and hash alike"
+
+@test fun addingKeepsBothValues () =
+  let c = make (squares 100) in
+  let before = size c in
+  let bigger = add c (H.insert 1000 0 (get c)) in
+  let a = assertEq (H.size (get bigger)) 101 "the new value" in
+  let b = assertEq (H.size (get c)) 100 "the old one is untouched" in
+  -- Both are in one region, so both report its size, which has grown.
+  let d = assertTrue (size c > before) "the region grew" in
+  assertEq (size c) (size bigger) "one region, one size"
+
+@test fun sharingKeepsARegionSmall () =
+  -- One more entry on a compacted map copies a path, not the whole map again.
+  let c = make (squares 2000) in
+  let before = size c in
+  let grown = add c (H.insert 5000 1 (get c)) in
+  assertTrue (size grown - before < before / 4) "a path's worth, not a map's"
+
+@test fun aCompactCanHoldCompacts () =
+  let inner = make [1, 2] in
+  let outer = make (inner, "label") in
+  match get outer with | (i, _) -> assertEq (get i) [1, 2] "nested"
+
+@test fun anImmediateNeedsNoRoom () =
+  assertEq (size (make (toInt 42))) 0 "nothing to copy"

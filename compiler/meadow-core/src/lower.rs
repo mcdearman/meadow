@@ -189,7 +189,7 @@ impl<'a> Lowerer<'a> {
                     None => Lit::Int(value),
                 },
             },
-            Some(InferType::Var(_)) => Lit::AnyInt(value),
+            Some(InferType::Var(v)) => Lit::AnyInt(value, *v),
             _ => Lit::Int(value),
         }
     }
@@ -201,7 +201,7 @@ impl<'a> Lowerer<'a> {
             Some(InferType::Con(n, args)) if args.is_empty() && &**n == "Float32" => {
                 Lit::Float32(x as f32)
             }
-            Some(InferType::Var(_)) => Lit::AnyFloat(x),
+            Some(InferType::Var(v)) => Lit::AnyFloat(x, *v),
             _ => Lit::Float(x),
         }
     }

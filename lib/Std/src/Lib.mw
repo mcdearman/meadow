@@ -19,6 +19,7 @@
 @pub mod Either
 @pub mod St
 @pub mod Sort
+@pub mod Compact
 @pub mod State
 @pub mod Exn
 @pub mod Stream

@@ -125,6 +125,13 @@ impl Vm<'_> {
         }
     }
 
+    fn compact_handle(&self, v: Value) -> Result<Addr, Error> {
+        match v.addr().filter(|a| self.heap.kind(*a) == Kind::Compact) {
+            Some(a) => Ok(a),
+            None => err(format!("expected a Compact, got {}", self.show(v))),
+        }
+    }
+
     fn mut_array(&self, v: Value) -> Result<Addr, Error> {
         match v.addr().filter(|a| self.heap.kind(*a) == Kind::MutArray) {
             Some(a) => Ok(a),
@@ -575,6 +582,36 @@ impl Vm<'_> {
                 let a = self.array(arg(self, 0))?;
                 let fields = self.heap.fields(a);
                 Value::Obj(self.heap.alloc(Kind::MutArray, 0, &fields))
+            }
+
+            // --- compact regions --------------------------------------------
+            //
+            // Copying into a region allocates nothing in the semispace, so the
+            // one `ensure` is for the handle, made before the copy and taken
+            // after it -- nothing can move in between.
+            Compact => {
+                self.ensure(2);
+                let region = self.heap.new_region();
+                match self.heap.compact_into(region, arg(self, 0)) {
+                    Ok(root) => Value::Obj(self.heap.alloc(Kind::Compact, region, &[root])),
+                    Err(why) => {
+                        self.heap.free_region(region);
+                        return err(meadow_core::compact::uncompactable(why.describe()));
+                    }
+                }
+            }
+            GetCompact => self.heap.field(self.compact_handle(arg(self, 0))?, 0),
+            CompactAdd => {
+                self.ensure(2);
+                let region = self.heap.meta(self.compact_handle(arg(self, 0))?);
+                match self.heap.compact_into(region, arg(self, 1)) {
+                    Ok(root) => Value::Obj(self.heap.alloc(Kind::Compact, region, &[root])),
+                    Err(why) => return err(meadow_core::compact::uncompactable(why.describe())),
+                }
+            }
+            CompactSize => {
+                let region = self.heap.meta(self.compact_handle(arg(self, 0))?);
+                Value::Int((self.heap.region_used(region) * crate::heap::SLOT_BYTES) as i64)
             }
         };
 

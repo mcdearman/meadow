@@ -971,3 +971,212 @@ fn equal_integers_hash_alike_whatever_their_type() {
         "1"
     );
 }
+
+// --- compact regions -----------------------------------------------------
+
+// On the VM a compacted value lives outside the collected heap; on the other
+// two nothing moves. The cases bind with `let` rather than `def`: the sequent
+// machine evaluates a top-level `def` again at each use, so `def c = compact x`
+// would be a new region every time `c` is mentioned, and the sizes would count
+// that rather than what is being tested. Everything a program can see must still agree -- the
+// value, `==`, `hash`, what is refused, and even `compactSize`, which the
+// reference-counted engines estimate by counting what the VM would copy.
+
+const CHAIN: &str = "data Chain = End | Link Int Chain
+                     fun build n = if n == 0 then End else Link n (build (n - 1))
+                     fun total xs = match xs with
+                       | End -> 0
+                       | Link x rest -> x + total rest\n";
+
+#[test]
+fn a_compacted_value_is_the_value() {
+    let src = format!(
+        "{CHAIN}def main =
+           let xs = build 100 in
+           let c = compact xs in
+           (total (getCompact c), if getCompact c == xs then 1 else 0)"
+    );
+    assert_eq!(agree(&src), "(5050, 1)");
+    assert_eq!(agree("def main = compact (1, \"two\", #[3.0])"), "compact (1, \"two\", #[3.0])");
+}
+
+#[test]
+fn compacts_compare_and_hash_by_what_they_hold() {
+    let src = format!(
+        "{CHAIN}def a = compact (build 10)
+         def b = compact (build 10)
+         def main = (if a == b then 1 else 0, if hash a == hash b then 1 else 0,
+                     if compact (build 3) == a then 1 else 0)"
+    );
+    assert_eq!(agree(&src), "(1, 1, 0)");
+}
+
+#[test]
+fn adding_to_a_region_keeps_both_values_and_shares_the_old_one() {
+    let src = format!(
+        "{CHAIN}def main =
+           let c = compact (build 100) in
+           let before = compactSize c in
+           let c2 = compactAdd c (Link 0 (getCompact c)) in
+           (total (getCompact c), total (getCompact c2),
+            compactSize c2 - before, compactSize c == compactSize c2)"
+    );
+    // One `Link` is three slots, and that is all the add copied.
+    let bytes = 3 * meadow_core::compact::SLOT_BYTES;
+    assert_eq!(agree(&src), format!("(5050, 5050, {bytes}, true)"));
+}
+
+#[test]
+fn compact_size_is_the_same_on_every_engine() {
+    let src = format!(
+        "{CHAIN}def main =
+           let xs = build 1000 in
+           (compactSize (compact xs), compactSize (compact (xs, xs)),
+            compactSize (compact (toInt 7)), compactSize (compact #[xs, xs, xs]))"
+    );
+    agree(&src);
+}
+
+#[test]
+fn a_compact_can_hold_a_compact() {
+    let src = format!(
+        "{CHAIN}def main =
+           let inner = compact (build 4) in
+           let outer = compact (inner, inner) in
+           match getCompact outer with
+           | (a, b) -> (total (getCompact a), if a == b then 1 else 0)"
+    );
+    assert_eq!(agree(&src), "(10, 1)");
+}
+
+#[test]
+fn what_cannot_be_compacted_fails_the_same_way_everywhere() {
+    for (value, what) in [
+        ("(1, newRef 2)", "a Ref"),
+        ("Just (\\x -> x)", "a function"),
+        ("#[stNewArray 2 0]", "a mutable array"),
+    ] {
+        let prog = program(&format!("data Opt a = None | Just a\ndef main = compact ({value})"));
+        let cek = meadow_eval::run(&prog).expect_err("CEK should fail");
+        let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
+        let axcut = machine::Machine::run(&lowered.program, FUEL).expect_err("AxCut should fail");
+        let vm = meadow_rts::run(&image(&prog), FUEL).expect_err("the VM should fail");
+        let want = meadow_core::compact::uncompactable(what);
+        assert_eq!(cek.msg, want);
+        assert_eq!(axcut.msg, want);
+        assert_eq!(vm.msg, want);
+    }
+}
+
+#[test]
+fn a_compacted_value_survives_collections_without_being_copied() {
+    // A 50_000-link chain kept alive through a loop that allocates enough to
+    // collect many times over. Compacted, the collections copy almost nothing;
+    // left in the heap, every one of them copies the whole chain.
+    let churn = "fun churn n acc = if n == 0 then acc else churn (n - 1) (acc + total (build 50))";
+    let run = |keep: &str| {
+        let src = format!(
+            "{CHAIN}{churn}
+             def main = let xs = {keep} in (churn 20000 0, total xs)"
+        );
+        let prog = program(&src);
+        let img = image(&prog);
+        let mut vm = meadow_rts::Vm::new(&img);
+        let v = vm.run(img.entry.unwrap(), u64::MAX).unwrap_or_else(|e| panic!("{}", e.msg));
+        (vm.show(v), vm.heap().collections, vm.heap().copied, vm.heap().region_slots())
+    };
+    let (plain, plain_gcs, plain_copied, _) = run("build 50000");
+    let (compacted, gcs, copied, region) = run("getCompact (compact (build 50000))");
+    assert_eq!(plain, "(25500000, 1250025000)");
+    assert_eq!(compacted, plain);
+    assert!(plain_gcs > 5 && gcs > 5, "both should collect: {plain_gcs}, {gcs}");
+    assert_eq!(region, 1 + 50_000 * 3, "the chain is in a region, and nothing else is");
+    assert!(
+        copied * 4 < plain_copied,
+        "compacting should spare most of the copying: {copied} slots against {plain_copied}"
+    );
+}
+
+#[test]
+fn regions_nothing_refers_to_are_freed() {
+    // A thousand regions of a thousand links each, each dropped straight away.
+    // Kept, they would be three million slots; collecting frees them.
+    let src = format!(
+        "{CHAIN}fun again n acc = if n == 0 then acc
+                 else again (n - 1) (acc + total (getCompact (compact (build 1000))))
+         def main = again 1000 0"
+    );
+    let prog = program(&src);
+    let img = image(&prog);
+    let mut vm = meadow_rts::Vm::new(&img);
+    let v = vm.run(img.entry.unwrap(), u64::MAX).unwrap_or_else(|e| panic!("{}", e.msg));
+    assert_eq!(vm.show(v), "500500000");
+    assert!(vm.heap().collections > 0, "writing regions should have asked for a collection");
+    assert!(
+        vm.heap().region_slots() < 1_000_000,
+        "dead regions were kept: {} slots",
+        vm.heap().region_slots()
+    );
+}
+
+// --- number-generic code at a number type -----------------------------------
+
+// A function generic over its number type is copied for each type it is used
+// at (`meadow_core::specialize`), so its literals are made as that type. Before
+// that, a literal in generic code was an `Int` at run time whatever the call
+// said, and `fib 100` -- typed `BigInt` -- wrapped at 64 bits.
+
+const FIB: &str = "fun fib n =
+                     let rec loop a b i =
+                       if i == 0 then a
+                       else loop b (a + b) (i - 1)
+                     in loop 0 1 n\n";
+
+#[test]
+fn a_generic_function_computes_at_the_type_it_is_called_at() {
+    // `fib 100` defaults to `BigInt`: exact, not wrapped.
+    assert_eq!(agree(&format!("{FIB}def main = fib 100")), "354224848179261915075");
+    assert_eq!(
+        agree(&format!("{FIB}def main = (toInt 0 + fib 100, fib (toUInt8 13) + toUInt8 0)")),
+        "(3736710778780434371, 233)"
+    );
+}
+
+#[test]
+fn a_literal_in_generic_code_wraps_at_the_width_it_is_used_at() {
+    let src = "fun bump x = x + 200
+               def main = (bump (toUInt8 100), bump (toInt16 32600), bump 1)";
+    assert_eq!(agree(src), "(44, -32736, 201)");
+}
+
+#[test]
+fn a_generic_local_is_copied_for_each_type_in_its_scope() {
+    let src = "fun f u =
+                 let g x = x + 1 in
+                 (g (toUInt8 255), g (toInt8 127), g 9223372036854775807)
+               def main = f ()";
+    assert_eq!(agree(src), "(0, -128, 9223372036854775808)");
+}
+
+#[test]
+fn a_generic_function_passed_as_a_value_is_copied_too() {
+    let src = "fun addOne x = x + 1
+               fun apply f x = f x
+               def main = (apply addOne (toUInt8 255), apply addOne 9223372036854775807)";
+    assert_eq!(agree(src), "(0, 9223372036854775808)");
+}
+
+#[test]
+fn mutually_recursive_generic_functions_are_copied_together() {
+    let src = "fun countDown n acc = if n == 0 then acc else countUp (n - 1) (acc + 1)
+               fun countUp n acc = if n == 0 then acc else countDown (n - 1) (acc + 1)
+               def main = (countDown (toInt 5) (toUInt8 254), countUp 3 0)";
+    assert_eq!(agree(src), "(3, 3)");
+}
+
+#[test]
+fn a_float_literal_in_generic_code_takes_the_float_type() {
+    let src = "fun third x = x /. 3.0
+               def main = (third (toFloat32 1.0), third 1.0)";
+    assert_eq!(agree(src), "(0.33333334, 0.3333333333333333)");
+}

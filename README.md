@@ -364,6 +364,7 @@ core ──▶ AxCut ──▶ bytecode ──▶ VM
 scripts/check.sh                         # everything CI runs
 scripts/check.sh --strict                # ...plus rustfmt and clippy
 scripts/bench.sh                         # the benchmarks, on both runtimes
+scripts/bench-compact.sh                 # what compacting a large live value saves the collector
 scripts/install-local.sh                 # install this checkout the way a release installs
 scripts/install-local.sh --no-extension  # ...just `meadow`, not the VS Code extension
 cargo install --path buildtools/meadow   # install the CLI

@@ -959,9 +959,9 @@ fn order_moves(srcs: &[Reg], scratch: Reg) -> Vec<(Reg, Reg)> {
 
 fn constant(l: &Lit) -> Const {
     match l {
-        Lit::Int(n) | Lit::AnyInt(n) => Const::Int(*n),
+        Lit::Int(n) | Lit::AnyInt(n, _) => Const::Int(*n),
         Lit::BigInt(n) => Const::BigInt(*n),
-        Lit::Float(x) | Lit::AnyFloat(x) => Const::Float(*x),
+        Lit::Float(x) | Lit::AnyFloat(x, _) => Const::Float(*x),
         Lit::Word(w, b) => Const::Word(*w, *b),
         Lit::Float32(x) => Const::Float32(*x),
         Lit::Str(s) => Const::Str(*s),

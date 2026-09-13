@@ -37,6 +37,10 @@ enum Cmd {
         profile: ProfileArgs,
         #[command(flatten)]
         engine: EngineArgs,
+        /// After running, report what the garbage collector did (VM only): how
+        /// many collections, how long they took, and how much they copied.
+        #[arg(long)]
+        gc_stats: bool,
     },
     /// Build a package and run its `@test` functions.
     Test {
@@ -207,12 +211,13 @@ fn main() {
             path,
             annotations,
             profile,
-        }) => build(&path, None, annotations, profile.resolve(&path)),
+        }) => build(&path, None, annotations, false, profile.resolve(&path)),
         Some(Cmd::Run {
             path,
             profile,
             engine,
-        }) => build(&path, Some(engine.engine()), false, profile.resolve(&path)),
+            gc_stats,
+        }) => build(&path, Some(engine.engine()), false, gc_stats, profile.resolve(&path)),
         Some(Cmd::Dis { path, profile }) => disassemble(&path, profile.resolve(&path)),
         Some(Cmd::Test {
             path,
@@ -315,7 +320,13 @@ fn main() {
 /// Discover, compile and link the package at `path`; with `engine`, also
 /// evaluate its entry point. Exits non-zero if any diagnostic was produced or
 /// evaluation failed.
-fn build(path: &std::path::Path, engine: Option<Engine>, annotations: bool, profile: Resolved) {
+fn build(
+    path: &std::path::Path,
+    engine: Option<Engine>,
+    annotations: bool,
+    gc_stats: bool,
+    profile: Resolved,
+) {
     let out = pipeline::build(path, profile.options);
 
     for d in &out.diagnostics {
@@ -332,7 +343,14 @@ fn build(path: &std::path::Path, engine: Option<Engine>, annotations: bool, prof
     }
 
     if let Some(engine) = engine {
-        match runtime::run(&linked.program, engine, profile.opt()) {
+        let (result, stats) = runtime::run_with_stats(&linked.program, engine, profile.opt());
+        if gc_stats {
+            match stats {
+                Some(stats) => eprintln!("{stats}"),
+                None => eprintln!("gc: the CEK machine reference-counts, so there is nothing to report"),
+            }
+        }
+        match result {
             Ok(value) => println!("=> {value}"),
             Err(e) => {
                 eprintln!("{e}");

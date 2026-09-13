@@ -499,7 +499,7 @@ fn lit_ty(l: &Lit) -> Ty {
         Lit::Float(_) => InferType::float(),
         // A literal in a function generic over its number type -- see
         // `Lowerer::int_lit`. Its type is whatever that function is applied at.
-        Lit::AnyInt(_) | Lit::AnyFloat(_) => unknown(),
+        Lit::AnyInt(..) | Lit::AnyFloat(..) => unknown(),
         Lit::BigInt(_) => InferType::con("BigInt"),
         Lit::Word(w, _) => InferType::con(w.name()),
         Lit::Float32(_) => InferType::con("Float32"),

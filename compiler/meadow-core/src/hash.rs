@@ -43,6 +43,9 @@ pub enum Tag {
     Array = 10,
     /// A record: its field count, then each label followed by its value.
     Record = 11,
+    /// A compact region's handle: the value compacted, which follows. Equal
+    /// handles are equal values, so they hash as their contents do, tagged.
+    Compact = 12,
 }
 
 /// Accumulates one hash. FxHash's mixing step per word, and splitmix64's
@@ -131,6 +134,11 @@ impl Hasher {
                 self.word(arity as u64);
             }
         }
+    }
+
+    /// The head of a `Compact`; the value inside follows.
+    pub fn compact(&mut self) {
+        self.tag(Tag::Compact);
     }
 
     /// The head of a `Vector` of `len` elements, which follow.

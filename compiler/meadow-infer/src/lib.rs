@@ -124,6 +124,10 @@ impl Type {
     pub fn st_ref(state: Type, inner: Type) -> Type {
         Type::Con(InternedString::from("StRef"), vec![state, inner])
     }
+    /// `Compact a` — a value copied into a compact region.
+    pub fn compact(elem: Type) -> Type {
+        Type::Con(InternedString::from("Compact"), vec![elem])
+    }
     /// `StArray s a` — a mutable array that belongs to one `runSt`.
     pub fn st_array(state: Type, elem: Type) -> Type {
         Type::Con(InternedString::from("StArray"), vec![state, elem])
@@ -3026,6 +3030,24 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
                 Type::st_array(Bound(0), Bound(1)),
                 st_row(0, 2),
             ),
+        },
+        // Pure: a compacted value is equal to the original, and nothing about
+        // where it lives can be observed but `compactSize`.
+        "compact" => Scheme {
+            quant: vec![VarKind::Type],
+            ty: Type::func(vec![Bound(0)], Type::compact(Bound(0))),
+        },
+        "getCompact" => Scheme {
+            quant: vec![VarKind::Type],
+            ty: Type::func(vec![Type::compact(Bound(0))], Bound(0)),
+        },
+        "compactAdd" => Scheme {
+            quant: vec![VarKind::Type, VarKind::Type],
+            ty: Type::func(vec![Type::compact(Bound(0)), Bound(1)], Type::compact(Bound(1))),
+        },
+        "compactSize" => Scheme {
+            quant: vec![VarKind::Type],
+            ty: Type::func(vec![Type::compact(Bound(0))], Type::int()),
         },
         _ => return None,
     };

@@ -689,7 +689,9 @@ impl<'p> Vm<'p> {
     /// Everything reachable must be in a register below `live` or on the
     /// handler stack when this is called — see the module docs.
     pub(crate) fn ensure(&mut self, slots: usize) {
-        if self.heap.room_for(slots) {
+        // Regions are freed only by collecting, so enough written to them asks
+        // for a collection even while the semispace has room.
+        if self.heap.room_for(slots) && !self.heap.wants_collection() {
             return;
         }
         self.collect();

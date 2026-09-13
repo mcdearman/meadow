@@ -922,6 +922,58 @@ are found by the `hash` primitive, which is structural and agrees with `==` —
 cannot be a key: `hash` refuses both. (`Std.Collections.Map` is the older,
 `Int`-keyed ordered map, for when the keys should come out sorted.)
 
+### Compact regions: big data the collector skips
+
+The VM's garbage collector copies everything that is alive each time it runs.
+That makes garbage free, and it makes a large structure that *stays* alive
+expensive: a map of a million entries is copied again at every collection for as
+long as the program holds it. `Std.Compact` moves such a value into a **compact
+region**, memory the collector neither copies nor looks inside. The collector
+treats the whole region as one object, and frees it all at once when nothing
+refers to it any more.
+
+```meadow
+use Std.Compact as C
+use Std.Collections.HashMap as H
+
+fun squares (n : Int) = foldl (\m i -> H.insert i (i * i) m) H.empty (range 0 n)
+
+def table = C.make (squares 1000)
+
+def main = (H.lookup 12 (C.get table), C.get table == squares 1000)
+```
+
+```
+=> (Just(144), true)
+```
+
+`C.make` copies the value into a new region, and `C.get` hands it back without
+copying. The value is unchanged and works anywhere the original did, so both are
+pure. `C.add c x` copies `x` into `c`'s region, sharing whatever of `x` is
+already there: add one entry to a compacted map and only the path to that entry
+is copied. `C.size` is the region's size in bytes. The same four are primitives,
+always in scope, as `compact`, `getCompact`, `compactAdd` and `compactSize`.
+
+Because the collector never looks inside a region, nothing in one may change or
+point back out. `C.make` fails at run time on a value that reaches a `Ref`, a
+mutable array or a function.
+
+Compacting costs one copy of the value, so it pays for data built once and read
+for a long time: a parsed input, a lookup table, a cache that rarely changes.
+`meadow run --gc-stats` shows whether it is paying: how many collections ran,
+how long they took, and how much they copied.
+
+```sh
+$ meadow run --gc-stats benches/compact
+...
+gc: 263 collections, 337.9 ms collecting (13.5% of 2498.2 ms)
+gc: 3.6 GiB allocated, 1.1 GiB copied by collections
+gc: heap 64.0 MiB, compact regions 20.7 MiB
+```
+
+On the CEK machine (`--cek`), which reference-counts, compacting checks the
+value and copies nothing.
+
 ---
 
 ## 8. Modules and packages
@@ -2189,6 +2241,7 @@ In VS Code, the **▶ Test** link above a `@test` runs exactly that.
 |---|---|
 | `meadow` | REPL |
 | `meadow run <path>` | build and evaluate `main` |
+| `meadow run --gc-stats <path>` | …and report what the garbage collector did |
 | `meadow build <path>` | type-check and link |
 | `meadow build --annotations <path>` | …and dump every node's type |
 | `meadow test [<path>] [<filter>]` | run `@test` functions |
@@ -2282,7 +2335,7 @@ Also always available: `++` (`Std.String.concat`); `print` and `println`; `runSt
 ### The standard library
 
 `Bool` `Ordering` `Function` `Tuple` `Num` (`Int` `Bits`) `Maybe` `Char` `Result`
-`Either` `Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `St` `Exn`
+`Either` `Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `St` `Compact` `Exn`
 `Stream` `Random` `Fs` `Process` `String` (`Parse`) `Path` `Json` `Time` `Test`
 
 `Std.String.Parse` is a megaparsec-style parser combinator library; `Std.Json` is

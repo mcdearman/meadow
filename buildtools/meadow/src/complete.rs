@@ -23,7 +23,7 @@ use std::collections::HashMap;
 /// Types that exist without being declared anywhere (see `rename`'s tycon seed).
 const BUILTIN_TYPES: &[&str] = &[
     "Int", "BigInt", "Float", "String", "Bool", "Unit", "List", "Array", "Char", "Int8", "Int16",
-    "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64",
+    "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64", "Compact",
 ];
 
 /// Everything the REPL currently knows how to name, split by namespace.

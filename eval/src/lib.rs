@@ -101,6 +101,24 @@ pub enum Value {
     /// A mutable array, from `stNewArray`. Identity, like a [`Value::Ref`]: it
     /// is changed in place, and two of them are equal only if they are one.
     MutArray(Rc<RefCell<Vec<Value>>>),
+    /// A value in a compact region, and the region. Reference counting has no
+    /// collector to spare the work, so nothing is copied: a region is only the
+    /// bookkeeping that makes `compactSize` agree with the VM's. See
+    /// `meadow_core::compact`.
+    Compact(CompactCell),
+}
+
+/// A `Compact`: the value, and the region it was put in.
+pub type CompactCell = Rc<(Value, Rc<RefCell<Region>>)>;
+
+/// What a compact region holds, as far as sizing it goes: every value put in
+/// (which keeps each node alive, so an address counted is never reused), the
+/// nodes already counted, and the VM slots they add up to.
+#[derive(Debug, Default)]
+pub struct Region {
+    roots: Vec<Value>,
+    seen: std::collections::HashSet<*const ()>,
+    slots: usize,
 }
 
 impl Value {
@@ -369,13 +387,21 @@ fn load(program: &core::Program) -> Result<Env, RuntimeError> {
 fn load_except(program: &core::Program, skip: Option<Var>) -> Result<Env, RuntimeError> {
     // This machine is untyped, like every other backend: core's type
     // abstractions come off first. One pass, once per program load.
-    let program = &core::erase::program(program);
+    // Number-generic definitions are copied per number type first, while the
+    // types that say which are still there -- see `core::specialize`.
+    let program = &core::erase::program(&core::specialize::program(program));
     let env = root_env();
     // Placeholders first so recursive top-level references resolve.
     for def in &program.defs {
         define(&env, def.var, Value::Unit);
     }
-    for def in &program.defs {
+    // Specialized copies come after everything in the program, but a definition
+    // before them may call one while it loads. Every copy is a function -- only
+    // a `fun` is generic over a number type -- so making them first is only
+    // making closures, and calls nothing.
+    let copies = program.defs.iter().filter(|d| d.var.0 >= core::specialize::SPECIALIZED_BASE);
+    let originals = program.defs.iter().filter(|d| d.var.0 < core::specialize::SPECIALIZED_BASE);
+    for def in copies.chain(originals) {
         if Some(def.var) == skip {
             continue;
         }
@@ -909,9 +935,9 @@ enum SeqKind {
 
 fn lit_value(lit: &core::Lit) -> Value {
     match lit {
-        core::Lit::Int(i) | core::Lit::AnyInt(i) => Value::Int(*i),
+        core::Lit::Int(i) | core::Lit::AnyInt(i, _) => Value::Int(*i),
         core::Lit::BigInt(i) => Value::BigInt(BigInt::from(*i)),
-        core::Lit::Float(x) | core::Lit::AnyFloat(x) => Value::Float(*x),
+        core::Lit::Float(x) | core::Lit::AnyFloat(x, _) => Value::Float(*x),
         core::Lit::Word(w, b) => Value::Word(*w, *b),
         core::Lit::Float32(x) => Value::Float32(*x),
         core::Lit::Str(s) => Value::Str(*s),
@@ -942,8 +968,8 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
                 l @ (core::Lit::Int(_)
                 | core::Lit::BigInt(_)
                 | core::Lit::Float(_)
-                | core::Lit::AnyInt(_)
-                | core::Lit::AnyFloat(_)
+                | core::Lit::AnyInt(..)
+                | core::Lit::AnyFloat(..)
                 | core::Lit::Word(..)
                 | core::Lit::Float32(_)),
             ),
@@ -1052,6 +1078,10 @@ fn hash_value(v: &Value) -> Result<i64, RuntimeError> {
             Value::MutArray(_) => return err(unhashable("a mutable array")),
             Value::Closure { .. } | Value::Builtin { .. } | Value::Cont(_) => {
                 return err(unhashable("a function"));
+            }
+            Value::Compact(c) => {
+                h.compact();
+                stack.push(Work::Val(c.0.clone()));
             }
         }
     }
@@ -1225,6 +1255,20 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             Value::Array(xs) => Ok(Value::MutArray(Rc::new(RefCell::new((**xs).clone())))),
             other => err(format!("stThaw: expected an Array, got {other}")),
         },
+        Compact => {
+            let region = Rc::new(RefCell::new(Region::default()));
+            compact_into(&region, &args[0])?;
+            Ok(Value::Compact(Rc::new((args[0].clone(), region))))
+        }
+        GetCompact => Ok(as_compact(&args[0])?.0.clone()),
+        CompactAdd => {
+            let region = as_compact(&args[0])?.1.clone();
+            compact_into(&region, &args[1])?;
+            Ok(Value::Compact(Rc::new((args[1].clone(), region))))
+        }
+        CompactSize => Ok(Value::Int(
+            (as_compact(&args[0])?.1.borrow().slots * meadow_core::compact::SLOT_BYTES) as i64,
+        )),
         CharCode => match &args[0] {
             Value::Char(c) => Ok(Value::Int(*c as i64)),
             other => err(format!("charCode: expected a Char, got {other}")),
@@ -1833,6 +1877,8 @@ fn value_eq(a: &Value, b: &Value) -> bool {
             // cells that happen to hold the same thing are still two cells.
             (Value::Ref(x), Value::Ref(y)) if Rc::ptr_eq(x, y) => {}
             (Value::MutArray(x), Value::MutArray(y)) if Rc::ptr_eq(x, y) => {}
+            // Immutable, so two are equal when what they hold is.
+            (Value::Compact(x), Value::Compact(y)) => stack.push((x.0.clone(), y.0.clone())),
             _ => return false,
         }
     }
@@ -1941,8 +1987,81 @@ impl fmt::Display for Value {
                 }
                 f.write_str("]")
             }
+            Value::Compact(c) => write!(f, "compact {}", c.0),
         }
     }
+}
+
+fn as_compact(v: &Value) -> Result<&CompactCell, RuntimeError> {
+    match v {
+        Value::Compact(c) => Ok(c),
+        other => err(format!("expected a Compact, got {other}")),
+    }
+}
+
+/// Put `v` in a region: check that it can go in, and count the VM slots it
+/// adds -- each node once, and nothing the region holds already, as the VM
+/// shares what is in a region rather than copying it again. A refusal leaves
+/// the region as it was.
+///
+/// A tuple or a record here is not shared behind an `Rc`, so it is counted each
+/// time it is reached; the VM would share it. The figure is an estimate.
+fn compact_into(region: &RefCell<Region>, v: &Value) -> Result<(), RuntimeError> {
+    use meadow_core::compact::uncompactable;
+    let mut r = region.borrow_mut();
+    let mut new: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
+    let mut slots = 0usize;
+    let mut stack = vec![v.clone()];
+    while let Some(v) = stack.pop() {
+        // A node is counted, and its children visited, the first time only.
+        let mut first = |p: *const ()| !r.seen.contains(&p) && new.insert(p);
+        match &v {
+            Value::Ctor(_, fields) => {
+                if first(Rc::as_ptr(fields) as *const ()) {
+                    slots += 1 + fields.len();
+                    stack.extend(fields.iter().cloned());
+                }
+            }
+            Value::Tuple(xs) => {
+                slots += 1 + xs.len();
+                stack.extend(xs.iter().cloned());
+            }
+            Value::Array(xs) => {
+                if first(Rc::as_ptr(xs) as *const ()) {
+                    slots += 1 + xs.len();
+                    stack.extend(xs.iter().cloned());
+                }
+            }
+            Value::Record(fields) => {
+                slots += 1 + 2 * fields.len();
+                stack.extend(fields.values().cloned());
+            }
+            Value::BigInt(b) => slots += 1 + b.iter_u32_digits().count(),
+            Value::Compact(c) => {
+                if first(Rc::as_ptr(c) as *const ()) {
+                    slots += 2;
+                    stack.push(c.0.clone());
+                }
+            }
+            Value::Ref(_) => return err(uncompactable("a Ref")),
+            Value::MutArray(_) => return err(uncompactable("a mutable array")),
+            Value::Closure { .. } | Value::Builtin { .. } | Value::Cont(_) => {
+                return err(uncompactable("a function"));
+            }
+            Value::Int(_)
+            | Value::Float(_)
+            | Value::Word(..)
+            | Value::Float32(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::Char(_)
+            | Value::Unit => {}
+        }
+    }
+    r.seen.extend(new);
+    r.slots += slots;
+    r.roots.push(v.clone());
+    Ok(())
 }
 
 /// The runtime's default handler for the `Std.Random` effect.

@@ -345,6 +345,25 @@ impl<'p> Shared<'p> {
     }
 }
 
+/// Ends the run if the worker holding it panics.
+///
+/// A panic is the runtime's own bug -- a program's failures are `Err`s -- but it
+/// must not hang the run. The panicking worker's thread dies with it, still
+/// counted as active, so without this the other workers would wait for it
+/// forever and the scope would wait for them. Stopping everyone lets the scope
+/// finish, and it passes the panic on.
+struct StopOnPanic<'s, 'p>(&'s Shared<'p>);
+
+impl Drop for StopOnPanic<'_, '_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.finish(Err(Error {
+                msg: "the runtime panicked".into(),
+            }));
+        }
+    }
+}
+
 /// One OS thread's view of the scheduler.
 struct Worker<'s, 'p> {
     index: usize,
@@ -381,6 +400,7 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
     /// Take a thread, run it until it stops, deal with why, repeat.
     fn run(mut self, scope: &'s std::thread::Scope<'s, '_>) {
         let sh = self.shared;
+        let _stop_everyone = StopOnPanic(sh);
         loop {
             if sh.done.load(Ordering::SeqCst) {
                 return;

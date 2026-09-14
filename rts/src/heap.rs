@@ -527,6 +527,11 @@ impl Heap {
     /// [`Heap::reserve`]d — this is the bump, and it is the reason allocation is
     /// cheap enough not to think about.
     #[inline]
+    /// Is this heap checking its own work -- `MEADOW_GC_VERIFY`?
+    pub(crate) fn verifying(&self) -> bool {
+        self.config.verify
+    }
+
     pub fn alloc(&mut self, kind: Kind, meta: u32, fields: &[Value]) -> Addr {
         let at = self.top;
         let size = 1 + fields.len();

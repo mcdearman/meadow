@@ -23,7 +23,11 @@ fn run(src: &str) -> String {
     if !diags.is_empty() {
         return format!(
             "compile errors:\n{}",
-            diags.iter().map(|d| d.msg.clone()).collect::<Vec<_>>().join("\n")
+            diags
+                .iter()
+                .map(|d| d.msg.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
     match eval::run(&program) {
@@ -48,7 +52,9 @@ fn cons_sugar_builds_a_list() {
 #[test]
 fn cons_sugar_in_patterns() {
     assert_eq!(
-        run("fun swapFirstTwo xs =\n  match xs with\n  | a :: b :: rest -> b :: a :: rest\n  | other -> other\ndef main = swapFirstTwo [1; 2; 3; 4]\n"),
+        run(
+            "fun swapFirstTwo xs =\n  match xs with\n  | a :: b :: rest -> b :: a :: rest\n  | other -> other\ndef main = swapFirstTwo [1; 2; 3; 4]\n"
+        ),
         "[2; 1; 3; 4]"
     );
 }
@@ -73,7 +79,9 @@ fn foldl_and_filter() {
 #[test]
 fn option_helpers() {
     assert_eq!(
-        run("use Std.Maybe as Maybe\ndef main = Maybe.unwrapOr 0 (Maybe.map (\\x -> x + 1) (Just 41))\n"),
+        run(
+            "use Std.Maybe as Maybe\ndef main = Maybe.unwrapOr 0 (Maybe.map (\\x -> x + 1) (Just 41))\n"
+        ),
         "42"
     );
 }
@@ -81,7 +89,9 @@ fn option_helpers() {
 #[test]
 fn std_map_roundtrip() {
     assert_eq!(
-        run("use Std.Collections.Map as Map\ndef main =\n  let m = Map.insert 2 \"b\" (Map.insert 1 \"a\" Map.empty) in\n  Map.lookup 2 m\n"),
+        run(
+            "use Std.Collections.Map as Map\ndef main =\n  let m = Map.insert 2 \"b\" (Map.insert 1 \"a\" Map.empty) in\n  Map.lookup 2 m\n"
+        ),
         "Just(\"b\")"
     );
 }
@@ -89,7 +99,9 @@ fn std_map_roundtrip() {
 #[test]
 fn std_set_dedups() {
     assert_eq!(
-        run("use Std.Collections.Set as Set\ndef main = Set.size (Set.fromList [1; 2; 2; 3; 3; 3])\n"),
+        run(
+            "use Std.Collections.Set as Set\ndef main = Set.size (Set.fromList [1; 2; 2; 3; 3; 3])\n"
+        ),
         "3"
     );
 }
@@ -97,8 +109,7 @@ fn std_set_dedups() {
 #[test]
 fn fs_write_read_list_remove() {
     use std::path::PathBuf;
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("meadow_fs_test_{}", std::process::id()));
+    let dir: PathBuf = std::env::temp_dir().join(format!("meadow_fs_test_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("hello.txt").to_string_lossy().replace('\\', "/");
@@ -115,7 +126,7 @@ fn fs_write_read_list_remove() {
     );
     let got = run(&src);
     std::fs::remove_dir_all(&dir).ok();
-    assert_eq!(got, r#"(Ok("greetings"), true, ["hello.txt"], false)"#);
+    assert_eq!(got, r#"(Ok("greetings"), True, ["hello.txt"], False)"#);
 }
 
 #[test]
@@ -132,7 +143,9 @@ fn fs_effect_can_be_handled() {
 #[test]
 fn std_tree_sorts() {
     assert_eq!(
-        run("use Std.Collections.Tree as Tree\ndef main = Tree.toList (Tree.fromList [5; 3; 8; 1; 4; 7; 9; 2; 6])\n"),
+        run(
+            "use Std.Collections.Tree as Tree\ndef main = Tree.toList (Tree.fromList [5; 3; 8; 1; 4; 7; 9; 2; 6])\n"
+        ),
         "[1; 2; 3; 4; 5; 6; 7; 8; 9]"
     );
 }

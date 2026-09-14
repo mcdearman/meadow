@@ -2134,7 +2134,8 @@ impl fmt::Display for Value {
             Value::Float(x) => f.write_str(&fmt_float(*x)),
             Value::Word(w, b) => write!(f, "{}", w.value(*b)),
             Value::Float32(x) => f.write_str(&num::fmt_float32(*x)),
-            Value::Bool(b) => write!(f, "{b}"),
+            // Printed as the constructors a program names them by.
+            Value::Bool(b) => f.write_str(if *b { "True" } else { "False" }),
             // quote + escape, so a string is visually distinct from a bare ident
             Value::Str(s) => write!(f, "{:?}", &**s),
             Value::Char(c) => write!(f, "{c:?}"),
@@ -2612,7 +2613,7 @@ mod tests {
     #[test]
     fn value_display_forms() {
         assert_eq!(Value::Unit.to_string(), "()");
-        assert_eq!(Value::Bool(true).to_string(), "true");
+        assert_eq!(Value::Bool(true).to_string(), "True");
         assert_eq!(
             Value::ctor("Maybe.Just".into(), vec![Value::Int(3)]).to_string(),
             "Just(3)"

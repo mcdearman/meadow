@@ -37,7 +37,10 @@ fn a_cell_cannot_be_returned() {
 
 #[test]
 fn an_array_cannot_be_returned() {
-    assert_eq!(errors("def bad = runSt (\\() -> stNewArray 3 0)\n"), ESCAPES);
+    assert_eq!(
+        errors("def bad = runSt (\\() -> stNewArray 3 0)\n"),
+        ESCAPES
+    );
 }
 
 #[test]
@@ -84,12 +87,15 @@ fn a_callback_that_touches_the_state_cannot_leave_either() {
     // `Ref` from outside. Loosening a parameter's effect must not become a way
     // to launder one.
     let errs = errors(
-            "fun keep r f = let _ = setRef r f in f ()\n\
+        "fun keep r f = let _ = setRef r f in f ()\n\
              fun bad u =\n\
              \x20 let outer = newRef (\\() -> 0) in\n\
-             \x20 runSt (\\() -> let a = stNewArray 1 7 in keep outer (\\() -> stGetArray a 0))\n"
+             \x20 runSt (\\() -> let a = stNewArray 1 7 in keep outer (\\() -> stGetArray a 0))\n",
     );
-    assert!(!errs.is_empty() && errs.lines().all(|l| l == ESCAPES), "{errs}");
+    assert!(
+        !errs.is_empty() && errs.lines().all(|l| l == ESCAPES),
+        "{errs}"
+    );
 }
 
 // --- what must still be accepted -----------------------------------------------
@@ -119,7 +125,10 @@ fn a_callers_callback_keeps_its_own_effect() {
     // outside `runSt` cannot, and is tied to the rest of the row instead.
     let src = "fun loop cmp arr = cmp (stGetArray arr 1) (stGetArray arr 0)\n\
                fun viaHelper cmp v = runSt (\\() -> let c = stThaw v in let _ = loop cmp c in stFreeze c)\n";
-    assert_eq!(scheme_of(src, "viaHelper"), "forall a b e. (a -> a -> b ! e) -> #[a] -> #[a] ! e");
+    assert_eq!(
+        scheme_of(src, "viaHelper"),
+        "forall a b e. (a -> a -> b ! e) -> #[a] -> #[a] ! e"
+    );
 }
 
 #[test]
@@ -149,7 +158,10 @@ fn run_st_as_a_value_is_just_application() {
 #[test]
 fn std_sort_is_pure_now() {
     let src = "use Std.Sort (sortBy)\nfun g cmp v = sortBy cmp v\n";
-    assert_eq!(scheme_of(src, "g"), "forall a e. (a -> a -> Ordering ! e) -> [a] -> [a] ! e");
+    assert_eq!(
+        scheme_of(src, "g"),
+        "forall a e. (a -> a -> Ordering ! e) -> [a] -> [a] ! e"
+    );
 }
 
 // --- arrays at run time --------------------------------------------------------

@@ -16,7 +16,7 @@
 //! And the one `-O2` turns on: a `match` compiled to a decision tree, which must
 //! pick the same arm the chain would have, including when the arms overlap.
 
-use meadow::{pipeline, runtime, Engine, OptLevel, Options};
+use meadow::{Engine, OptLevel, Options, pipeline, runtime};
 
 /// Every level's answer, and the CEK's, when they agree — and a panic naming
 /// the culprit when they do not.
@@ -25,7 +25,11 @@ fn agreed(src: &str) -> String {
     assert!(
         diags.is_empty(),
         "compile errors in\n{src}\n{}",
-        diags.iter().map(|d| d.msg.clone()).collect::<Vec<_>>().join("\n")
+        diags
+            .iter()
+            .map(|d| d.msg.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
     let cek = runtime::run(&program, Engine::Cek, OptLevel::O1)
@@ -100,24 +104,24 @@ fn a_commutative_operation_folds_from_either_side() {
     is("def n = 10\ndef main = 3 + n\n", "13");
     is("def n = 10\ndef main = n * 3\n", "30");
     is("def n = 10\ndef main = 3 * n\n", "30");
-    is("def n = 10\ndef main = n == 10\n", "true");
-    is("def n = 10\ndef main = 10 == n\n", "true");
-    is("def n = 10\ndef main = n != 10\n", "false");
-    is("def n = 10\ndef main = 10 != n\n", "false");
+    is("def n = 10\ndef main = n == 10\n", "True");
+    is("def n = 10\ndef main = 10 == n\n", "True");
+    is("def n = 10\ndef main = n != 10\n", "False");
+    is("def n = 10\ndef main = 10 != n\n", "False");
 }
 
 /// Every literal type the constant table holds, on the folded path.
 #[test]
 fn a_folded_constant_can_be_any_literal() {
-    is("def c = 'a'\ndef main = c == 'a'\n", "true");
-    is("def s = \"hi\"\ndef main = s == \"hi\"\n", "true");
-    is("def s = \"hi\"\ndef main = s == \"ho\"\n", "false");
+    is("def c = 'a'\ndef main = c == 'a'\n", "True");
+    is("def s = \"hi\"\ndef main = s == \"hi\"\n", "True");
+    is("def s = \"hi\"\ndef main = s == \"ho\"\n", "False");
     is("def x = 1.5\ndef main = x +. 0.25\n", "1.75");
     is("def x = 1.5\ndef main = x -. 0.25\n", "1.25");
     is("def x = 0.25\ndef main = 1.5 -. x\n", "1.25");
-    is("def b = True\ndef main = b == True\n", "true");
+    is("def b = True\ndef main = b == True\n", "True");
     // `()` compares equal to itself and nothing else can be written.
-    is("def u = ()\ndef main = u == ()\n", "true");
+    is("def u = ()\ndef main = u == ()\n", "True");
 }
 
 // --- fusing a comparison into its branch --------------------------------------
@@ -163,10 +167,22 @@ fn a_fused_comparison_does_not_invert() {
 /// Two registers rather than a register and a literal — the other fused form.
 #[test]
 fn a_fused_comparison_of_two_variables() {
-    is("def a = 3\ndef b = 7\ndef main = if a < b then \"lt\" else \"ge\"\n", "\"lt\"");
-    is("def a = 7\ndef b = 3\ndef main = if a < b then \"lt\" else \"ge\"\n", "\"ge\"");
-    is("def a = 3\ndef b = 3\ndef main = if a < b then \"lt\" else \"ge\"\n", "\"ge\"");
-    is("def a = 3\ndef b = 3\ndef main = if a == b then \"eq\" else \"ne\"\n", "\"eq\"");
+    is(
+        "def a = 3\ndef b = 7\ndef main = if a < b then \"lt\" else \"ge\"\n",
+        "\"lt\"",
+    );
+    is(
+        "def a = 7\ndef b = 3\ndef main = if a < b then \"lt\" else \"ge\"\n",
+        "\"ge\"",
+    );
+    is(
+        "def a = 3\ndef b = 3\ndef main = if a < b then \"lt\" else \"ge\"\n",
+        "\"ge\"",
+    );
+    is(
+        "def a = 3\ndef b = 3\ndef main = if a == b then \"eq\" else \"ne\"\n",
+        "\"eq\"",
+    );
 }
 
 /// A condition that is not a comparison at all still has to work: `and` is not a
@@ -174,8 +190,14 @@ fn a_fused_comparison_of_two_variables() {
 #[test]
 fn a_condition_that_cannot_fuse_still_branches() {
     is("def b = True\ndef main = if b then 1 else 2\n", "1");
-    is("def n = 4\ndef main = if n > 0 and n < 10 then 1 else 2\n", "1");
-    is("def n = 40\ndef main = if n > 0 and n < 10 then 1 else 2\n", "2");
+    is(
+        "def n = 4\ndef main = if n > 0 and n < 10 then 1 else 2\n",
+        "1",
+    );
+    is(
+        "def n = 40\ndef main = if n > 0 and n < 10 then 1 else 2\n",
+        "2",
+    );
     is("def n = 4\ndef main = if not (n == 4) then 1 else 2\n", "2");
 }
 
@@ -185,9 +207,18 @@ fn a_condition_that_cannot_fuse_still_branches() {
 /// a fused primitive must not allocate. See `meadow_rts::vm::TEMP`.
 #[test]
 fn fusing_covers_the_other_numeric_types() {
-    is("def x = 1.5\ndef main = if x <. 2.0 then \"lt\" else \"ge\"\n", "\"lt\"");
-    is("def x = 2.5\ndef main = if x <. 2.0 then \"lt\" else \"ge\"\n", "\"ge\"");
-    is("def x = 2.0\ndef main = if x <=. 2.0 then \"le\" else \"gt\"\n", "\"le\"");
+    is(
+        "def x = 1.5\ndef main = if x <. 2.0 then \"lt\" else \"ge\"\n",
+        "\"lt\"",
+    );
+    is(
+        "def x = 2.5\ndef main = if x <. 2.0 then \"lt\" else \"ge\"\n",
+        "\"ge\"",
+    );
+    is(
+        "def x = 2.0\ndef main = if x <=. 2.0 then \"le\" else \"gt\"\n",
+        "\"le\"",
+    );
     is(
         "def x = toBigInt 5\ndef main = if x < toBigInt 9 then \"lt\" else \"ge\"\n",
         "\"lt\"",
@@ -196,9 +227,18 @@ fn fusing_covers_the_other_numeric_types() {
         "def x = toBigInt 50\ndef main = if x < toBigInt 9 then \"lt\" else \"ge\"\n",
         "\"ge\"",
     );
-    is("def x = toUInt8 200\ndef main = if x > 100 then \"gt\" else \"le\"\n", "\"gt\"");
-    is("def x = toInt8 (0 - 1)\ndef main = if x < 0 then \"lt\" else \"ge\"\n", "\"lt\"");
-    is("def x = toUInt64 (toInt (0 - 1))\ndef main = if x > 0 then \"gt\" else \"le\"\n", "\"gt\"");
+    is(
+        "def x = toUInt8 200\ndef main = if x > 100 then \"gt\" else \"le\"\n",
+        "\"gt\"",
+    );
+    is(
+        "def x = toInt8 (0 - 1)\ndef main = if x < 0 then \"lt\" else \"ge\"\n",
+        "\"lt\"",
+    );
+    is(
+        "def x = toUInt64 (toInt (0 - 1))\ndef main = if x > 0 then \"gt\" else \"le\"\n",
+        "\"gt\"",
+    );
 }
 
 // --- reading arguments where they already are ---------------------------------
@@ -331,15 +371,24 @@ fn nested_matches_each_get_their_own_tree() {
 /// own containers go through it constantly.
 #[test]
 fn matching_a_list_agrees_at_every_level() {
-    is("use Std.Collections.List as L
+    is(
+        "use Std.Collections.List as L
 def main = L.sum [1; 2; 3; 4]
-", "10");
+",
+        "10",
+    );
     expr_is(
         "match [1; 2; 3] with | [;] -> 0 | x :: [;] -> 1 | x :: y :: rest -> 2",
         "2",
     );
-    expr_is("match [9;] with | [;] -> 0 | x :: [;] -> 1 | x :: y :: rest -> 2", "1");
-    expr_is("match [;] with | [;] -> 0 | x :: [;] -> 1 | x :: y :: rest -> 2", "0");
+    expr_is(
+        "match [9;] with | [;] -> 0 | x :: [;] -> 1 | x :: y :: rest -> 2",
+        "1",
+    );
+    expr_is(
+        "match [;] with | [;] -> 0 | x :: [;] -> 1 | x :: y :: rest -> 2",
+        "0",
+    );
 }
 
 /// A literal pattern is a fused comparison against a constant, which is the same
@@ -347,7 +396,9 @@ def main = L.sum [1; 2; 3; 4]
 #[test]
 fn literal_patterns_match_every_literal_type() {
     let int = |v: &str| {
-        format!("fun f n = match n with | 0 -> \"zero\" | 1 -> \"one\" | _ -> \"many\"\ndef main = f {v}\n")
+        format!(
+            "fun f n = match n with | 0 -> \"zero\" | 1 -> \"one\" | _ -> \"many\"\ndef main = f {v}\n"
+        )
     };
     is(&int("0"), "\"zero\"");
     is(&int("1"), "\"one\"");

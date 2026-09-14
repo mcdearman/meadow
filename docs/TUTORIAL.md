@@ -131,8 +131,7 @@ def main = 1  -- so is this
 | `Char` | `'a'`, `'é'`, `'\n'` | one Unicode **scalar**, not one byte |
 | unit | `()` | one value, written the same way as its type |
 
-`Bool` values *print* as lowercase `true` / `false`, but you always write the
-constructors `True` and `False`.
+`Bool` values are written, and print, as the constructors `True` and `False`.
 
 ### One set of operators for every integer type
 
@@ -189,7 +188,7 @@ def main = ([1, 2] == [1, 2], Just 1 != None, "a" == "a")
 ```
 
 ```
-=> (true, true, true)
+=> (True, True, True)
 ```
 
 Integer division truncates, and `%` follows the sign of the *dividend* — so
@@ -225,7 +224,7 @@ def main = (1 < 2 and 3 < 4, not True or True, 1 << 4, bitAnd 12 10)
 ```
 
 ```
-=> (true, true, 16, 8)
+=> (True, True, 16, 8)
 ```
 
 ### Tuples
@@ -237,7 +236,7 @@ def main = (fst (1, 2), snd (1, 2), point)
 ```
 
 ```
-=> (1, 2, (1, "north", true))
+=> (1, 2, (1, "north", True))
 ```
 
 `fst` and `snd` only work on pairs. For anything wider, use pattern matching.
@@ -365,7 +364,7 @@ fun isOdd n = if n == 0 then False else isEven (n - 1)
 ```
 
 ```
-=> true
+=> True
 ```
 
 ---
@@ -571,7 +570,7 @@ def main = (size sample, Red == Red, Red == Blue)
 ```
 
 ```
-=> (2, true, false)
+=> (2, True, False)
 ```
 
 **A constructor lives under its type**, as a variant does in Rust, even in the
@@ -897,7 +896,7 @@ def main =
 ```
 
 ```
-=> (true, 'A', 65, 'a', Just(7), false)
+=> (True, 'A', 65, 'a', Just(7), False)
 ```
 
 Characters match like any other literal:
@@ -1002,7 +1001,7 @@ def main = (H.lookup 12 (C.get table), C.get table == squares 1000)
 ```
 
 ```
-=> (Just(144), true)
+=> (Just(144), True)
 ```
 
 `C.make` copies the value into a new region, and `C.get` hands it back without
@@ -2107,7 +2106,7 @@ def main = (rolls, rolls == R.withSeed 42 (\() -> [R.between 1 7; R.between 1 7;
 ```
 
 ```
-=> ([1; 4; 4], true)
+=> ([1; 4; 4], True)
 ```
 
 Same seed, same sequence — which is what makes a shuffle or a simulation testable.
@@ -2211,7 +2210,7 @@ def main = (didFail (\() -> assertEq 1 1 "same"), didFail (\() -> assertEq 1 2 "
 ```
 
 ```
-=> (false, true)
+=> (False, True)
 ```
 
 #### Thread — green threads and channels
@@ -2533,7 +2532,6 @@ built on it and is worth reading as a worked example.
 - `+` is for integers and `+.` for floats; two different integer types never mix
   without a conversion.
 - `[1..5]` is **inclusive**; `range 1 5` is **half-open**.
-- `Bool` prints lowercase but is written `True` / `False`.
 - `@pub` is public, as in Rust; `@pub(pkg)` stops at the package, like `pub(crate)`.
 - A package that marks nothing has no visibility rules at all — mark one thing
   and every module has to say what it shares.

@@ -31,7 +31,7 @@ fn a_char_holds_a_scalar_not_a_byte() {
 fn chars_compare_structurally() {
     assert_eq!(
         eval_main("def main = ('a' == 'a', 'a' == 'b', 'a' != 'b')\n"),
-        "(true, false, true)"
+        "(True, False, True)"
     );
 }
 
@@ -88,7 +88,10 @@ fn strings_decode_to_chars_and_back() {
 
 #[test]
 fn show_renders_a_char_as_its_literal() {
-    assert_eq!(eval_main("def main = (show 'x', show '\\n')\n"), r#"("'x'", "'\\n'")"#);
+    assert_eq!(
+        eval_main("def main = (show 'x', show '\\n')\n"),
+        r#"("'x'", "'\\n'")"#
+    );
 }
 
 // --- Std.Char ----------------------------------------------------------------
@@ -100,7 +103,7 @@ fn classification_is_ascii_only_and_says_so() {
             "use Std.Char as C\n\
              def main = (C.isAlpha 'a', C.isAlpha 'é', C.isAscii 'é', C.toUpper 'é')\n"
         ),
-        "(true, false, false, 'é')"
+        "(True, False, False, 'é')"
     );
 }
 

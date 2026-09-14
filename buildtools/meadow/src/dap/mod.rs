@@ -23,7 +23,7 @@
 
 pub mod session;
 
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 use session::{Mode, Session, Stop};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -249,12 +249,18 @@ impl Adapter {
 
             "launch" => {
                 let Some(program) = args["program"].as_str() else {
-                    return self.fail(&req, "`program` is required: a .mw file or a package directory");
+                    return self.fail(
+                        &req,
+                        "`program` is required: a .mw file or a package directory",
+                    );
                 };
                 self.stop_on_entry = args["stopOnEntry"].as_bool().unwrap_or(false);
                 // `entry`: start at an expression instead of `main`, and stop
                 // when the function it names is entered.
-                let entry = match (args["entry"]["module"].as_str(), args["entry"]["expression"].as_str()) {
+                let entry = match (
+                    args["entry"]["module"].as_str(),
+                    args["entry"]["expression"].as_str(),
+                ) {
                     (Some(module), Some(expression)) => Some(session::Entry {
                         module: PathBuf::from(module),
                         expression: expression.to_string(),
@@ -277,7 +283,10 @@ impl Adapter {
                         self.event("initialized", json!({}));
                     }
                     Err(e) => {
-                        self.event("output", json!({ "category": "stderr", "output": format!("{e}\n") }));
+                        self.event(
+                            "output",
+                            json!({ "category": "stderr", "output": format!("{e}\n") }),
+                        );
                         self.fail(&req, e);
                     }
                 }
@@ -337,7 +346,10 @@ impl Adapter {
                 }
             }
 
-            "threads" => self.respond(&req, json!({ "threads": [{ "id": THREAD, "name": "main" }] })),
+            "threads" => self.respond(
+                &req,
+                json!({ "threads": [{ "id": THREAD, "name": "main" }] }),
+            ),
 
             "stackTrace" => {
                 let start = args["startFrame"].as_u64().unwrap_or(0) as usize;
@@ -356,7 +368,9 @@ impl Adapter {
                     .skip(start)
                     .map(|(i, f)| {
                         let mut row = json!({ "id": i, "name": f.name, "line": 0, "column": 0 });
-                        if let Some((file, loc)) = f.loc.and_then(|l| s.file(l).map(|file| (file, l))) {
+                        if let Some((file, loc)) =
+                            f.loc.and_then(|l| s.file(l).map(|file| (file, l)))
+                        {
                             let (line, col) = file.position(loc.span.start);
                             row["line"] = json!(self.line_out(line));
                             row["column"] = json!(self.column_out(col));
@@ -420,7 +434,8 @@ impl Adapter {
                 let found = self.session.as_mut().and_then(|s| s.evaluate(frame, expr));
                 match found {
                     Some(v) => {
-                        let mut body = json!({ "result": v.value, "variablesReference": v.children });
+                        let mut body =
+                            json!({ "result": v.value, "variablesReference": v.children });
                         if let Some(ty) = v.ty.filter(|t| !t.is_empty()) {
                             body["type"] = json!(ty);
                         }
@@ -441,7 +456,10 @@ impl Adapter {
                     return self.fail(&req, "nothing is running");
                 };
                 if s.is_finished() {
-                    return self.fail(&req, "the program has stopped for good: it failed or finished");
+                    return self.fail(
+                        &req,
+                        "the program has stopped for good: it failed or finished",
+                    );
                 }
                 s.resume(mode);
                 self.running = true;

@@ -32,6 +32,13 @@
 //! below it may be stale, which retains a bounded amount of garbage and is the
 //! price of not emitting liveness metadata per instruction.
 //!
+//! Which of `r0..live` hold addresses is the compiler's to say. Every
+//! instruction that can collect carries a map ([`meadow_bytecode::GcMap`]) of
+//! the registers the program still names there and what each holds, and the
+//! collector roots exactly those. `MEADOW_GC_VERIFY` checks each map against
+//! the values actually in the registers, and overwrites every register the map
+//! leaves out, so a map that forgets something fails loudly instead of rarely.
+//!
 //! The rule the whole file obeys: **never hold an address across an
 //! allocation.** [`Vm::ensure`] is called first, with room for everything the
 //! operation will build, and arguments are read out of registers afterwards.
@@ -39,7 +46,7 @@
 
 use crate::heap::{Heap, Kind};
 use crate::value::{Addr, Value};
-use meadow_bytecode::{Const, Instr, Op, Pc, Program, Reg};
+use meadow_bytecode::{Const, Held, Instr, NO_MAP, Op, Pc, Program, Reg};
 use meadow_intern::InternedString;
 
 /// How many registers there are. The compiler refuses to emit a block needing
@@ -66,6 +73,10 @@ pub(crate) type Regs = [Value; REGISTERS + SCRATCH_LEN];
 /// allocator stops one short of the file so this slot stays free.
 pub(crate) const TEMP: Reg = (REGISTERS - 1) as Reg;
 
+/// [`Vm::at`] when no instruction has run: the machine is setting up a call,
+/// and every register below `live` is a root.
+pub(crate) const NO_PC: usize = usize::MAX;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     pub msg: String,
@@ -84,6 +95,10 @@ pub struct Vm<'p> {
     pub(crate) regs: Box<Regs>,
     live: usize,
     pub(crate) pc: usize,
+    /// The instruction being carried out, or last carried out: whose map says
+    /// what the registers hold if something collects. [`NO_PC`] before the
+    /// first.
+    pub(crate) at: usize,
     /// Instructions retired.
     pub steps: u64,
     /// The tag `False` has in this program, if it has one — what a conditional
@@ -125,16 +140,34 @@ pub struct Vm<'p> {
 /// answer goes in, once there is one.
 #[derive(Debug)]
 pub(crate) enum Request {
-    Spawn { body: crate::heap::Parcel, dst: Reg },
-    Await { task: u32, dst: Reg },
+    Spawn {
+        body: crate::heap::Parcel,
+        dst: Reg,
+    },
+    Await {
+        task: u32,
+        dst: Reg,
+    },
     Yield,
-    NewChannel { dst: Reg },
-    Send { channel: u32, message: crate::heap::Parcel },
-    Receive { channel: u32, dst: Reg },
+    NewChannel {
+        dst: Reg,
+    },
+    Send {
+        channel: u32,
+        message: crate::heap::Parcel,
+    },
+    Receive {
+        channel: u32,
+        dst: Reg,
+    },
     /// Commit the thread's transaction; `true` or `false` into `dst`.
-    StmCommit { dst: Reg },
+    StmCommit {
+        dst: Reg,
+    },
     /// Wait until something the thread's transaction read is written.
-    StmWait { dst: Reg },
+    StmWait {
+        dst: Reg,
+    },
 }
 
 /// Replacements for the console — see [`Vm::io`]. `Send`, since a green
@@ -179,6 +212,7 @@ impl<'p> Vm<'p> {
             regs: Box::new([Value::Unit; REGISTERS + SCRATCH_LEN]),
             live: 0,
             pc: 0,
+            at: NO_PC,
             steps: 0,
             false_tag,
             pinned: Vec::new(),
@@ -199,11 +233,18 @@ impl<'p> Vm<'p> {
     /// spawned with, rebuilt from `body` in this machine's own heap.
     pub(crate) fn start_call(&mut self, body: &crate::heap::Parcel) -> Result<(), Error> {
         self.live = 0;
-        self.heap.reserve(1 + body.len());
+        self.heap.reserve(2 + body.len());
         let halt = Value::Obj(self.heap.alloc(Kind::Closure, 0, &[]));
+        let none = match self.program.ctors.iter().position(|c| &**c == "#evnone") {
+            Some(tag) => Value::Obj(self.heap.alloc(Kind::Data, tag as u32, &[])),
+            None => return err("the program has no empty evidence to start a thread with"),
+        };
         let f = self.heap.import(body);
         let Some(a) = f.addr().filter(|a| self.heap.kind(*a) == Kind::Closure) else {
-            return err(format!("a thread was started with {}, not a function", f.kind()));
+            return err(format!(
+                "a thread was started with {}, not a function",
+                f.kind()
+            ));
         };
         let table = self.heap.meta(a) as usize;
         let Some(&pc) = self.program.methods.get(table).and_then(|t| t.first()) else {
@@ -217,12 +258,13 @@ impl<'p> Vm<'p> {
             self.regs[j] = self.heap.field(a, j);
         }
         // `f ()`, answering the halt continuation, under no handlers: a
-        // function takes the evidence as its last argument, and `()` is none.
+        // function takes the evidence as its last argument.
         self.regs[ncap] = Value::Unit;
         self.regs[ncap + 1] = halt;
-        self.regs[ncap + 2] = Value::Unit;
+        self.regs[ncap + 2] = none;
         self.live = ncap + 3;
         self.pc = pc as usize;
+        self.at = NO_PC;
         Ok(())
     }
 
@@ -271,6 +313,7 @@ impl<'p> Vm<'p> {
         self.regs[0] = Value::Obj(halt);
         self.live = 1;
         self.pc = entry as usize;
+        self.at = NO_PC;
     }
 
     /// One instruction. `Some` means the program halted.
@@ -278,6 +321,7 @@ impl<'p> Vm<'p> {
         let Some(&i) = self.program.code.get(self.pc) else {
             return err(format!("pc {} is outside the program", self.pc));
         };
+        self.at = self.pc;
         self.pc += 1;
         self.steps += 1;
         self.exec(i)
@@ -323,9 +367,7 @@ impl<'p> Vm<'p> {
             Op::JumpUnlessTag => {
                 let want = i.bc() as u32;
                 let hit = match self.reg(i.a) {
-                    Value::Obj(a) => {
-                        self.heap.kind(a) == Kind::Data && self.heap.meta(a) == want
-                    }
+                    Value::Obj(a) => self.heap.kind(a) == Kind::Data && self.heap.meta(a) == want,
                     _ => false,
                 };
                 if !hit {
@@ -349,7 +391,10 @@ impl<'p> Vm<'p> {
                 let n = i.c as usize;
                 self.ensure(1 + n);
                 let base = i.b as usize;
-                let a = { let Vm { heap, regs, .. } = self; heap.alloc(Kind::Data, i.imm, &regs[base..base + n]) };
+                let a = {
+                    let Vm { heap, regs, .. } = self;
+                    heap.alloc(Kind::Data, i.imm, &regs[base..base + n])
+                };
                 self.set(i.a, Value::Obj(a));
             }
 
@@ -357,7 +402,10 @@ impl<'p> Vm<'p> {
                 let n = i.c as usize;
                 self.ensure(1 + n);
                 let base = i.b as usize;
-                let a = { let Vm { heap, regs, .. } = self; heap.alloc(Kind::Array, 0, &regs[base..base + n]) };
+                let a = {
+                    let Vm { heap, regs, .. } = self;
+                    heap.alloc(Kind::Array, 0, &regs[base..base + n])
+                };
                 self.set(i.a, Value::Obj(a));
             }
 
@@ -479,7 +527,10 @@ impl<'p> Vm<'p> {
                 let n = i.c as usize;
                 self.ensure(1 + n);
                 let base = i.b as usize;
-                let a = { let Vm { heap, regs, .. } = self; heap.alloc(Kind::Closure, i.imm, &regs[base..base + n]) };
+                let a = {
+                    let Vm { heap, regs, .. } = self;
+                    heap.alloc(Kind::Closure, i.imm, &regs[base..base + n])
+                };
                 self.set(i.a, Value::Obj(a));
             }
 
@@ -538,7 +589,6 @@ impl<'p> Vm<'p> {
                     self.pc = i.imm as usize;
                 }
             }
-
 
             Op::Native => self.native_op(i)?,
         }
@@ -645,18 +695,18 @@ impl<'p> Vm<'p> {
     }
 
     fn collect(&mut self) {
-        let mut roots: Vec<Value> = Vec::with_capacity(
-            self.live + self.pinned.len() + self.globals.len(),
-        );
-        roots.extend_from_slice(&self.regs[..self.live]);
+        let registers = self.root_registers();
+        let mut roots: Vec<Value> =
+            Vec::with_capacity(registers.len() + self.pinned.len() + self.globals.len());
+        roots.extend(registers.iter().map(|r| self.regs[*r]));
         roots.extend_from_slice(&self.pinned);
         roots.extend(self.globals.iter().flatten().copied());
 
         self.heap.collect(&mut roots);
 
         let mut it = roots.into_iter();
-        for j in 0..self.live {
-            self.regs[j] = it.next().expect("root count");
+        for r in registers {
+            self.regs[r] = it.next().expect("root count");
         }
         for p in &mut self.pinned {
             *p = it.next().expect("root count");
@@ -664,6 +714,96 @@ impl<'p> Vm<'p> {
         for g in self.globals.iter_mut().flatten() {
             *g = it.next().expect("root count");
         }
+    }
+
+    /// The registers that may hold addresses now, by the map of the instruction
+    /// being carried out.
+    ///
+    /// A register the map calls a reference is one; a scalar is not; one whose
+    /// representation depends on a type variable is whatever its tag says,
+    /// until descriptors say it instead. With no instruction running -- a call
+    /// being set up -- or no maps at all, every live register is.
+    ///
+    /// Verifying, each map is checked against the tags, and the registers it
+    /// leaves out are overwritten with `()`: a map missing a register the
+    /// program reads again then shows up as a wrong value, not as a rare
+    /// dangling address.
+    fn root_registers(&mut self) -> Vec<usize> {
+        let map = self
+            .program
+            .gc_at
+            .get(self.at)
+            .copied()
+            .filter(|m| *m != NO_MAP);
+        let Some(map) = map else {
+            if self.heap.verifying() && self.at != NO_PC && !self.program.gc_at.is_empty() {
+                panic!(
+                    "a collection at pc {} ({:?}), which has no register map",
+                    self.at, self.program.code[self.at].op
+                );
+            }
+            return (0..self.live)
+                .filter(|j| self.regs[*j].addr().is_some())
+                .collect();
+        };
+        let map = &self.program.gc_maps[map as usize];
+        let verifying = self.heap.verifying();
+        let mut roots = Vec::with_capacity(map.regs.len());
+        let mut next = 0;
+        for &(r, held) in &map.regs {
+            let r = r as usize;
+            if r >= self.live {
+                if verifying {
+                    panic!(
+                        "pc {} maps r{r}, above the {} live registers",
+                        self.at, self.live
+                    );
+                }
+                continue;
+            }
+            if verifying {
+                while next < r {
+                    self.regs[next] = Value::Unit;
+                    next += 1;
+                }
+                next = r + 1;
+            }
+            let v = self.regs[r];
+            match held {
+                Held::Ref if v.addr().is_none() => {
+                    if verifying {
+                        panic!(
+                            "pc {} maps r{r} as a reference, but it holds {}",
+                            self.at,
+                            v.kind()
+                        );
+                    }
+                }
+                Held::Scalar if v.addr().is_some() => {
+                    if verifying {
+                        panic!(
+                            "pc {} maps r{r} as a scalar, but it holds an object",
+                            self.at
+                        );
+                    }
+                    // Wrong, but rooting it is the safe way to be wrong.
+                    roots.push(r);
+                }
+                Held::Scalar => {}
+                Held::Ref | Held::Var(_) => {
+                    if v.addr().is_some() {
+                        roots.push(r);
+                    }
+                }
+            }
+        }
+        if verifying {
+            while next < self.live {
+                self.regs[next] = Value::Unit;
+                next += 1;
+            }
+        }
+        roots
     }
 
     fn primitive(&self, id: u32) -> Result<meadow_core::Prim, Error> {

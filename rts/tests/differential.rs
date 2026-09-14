@@ -88,7 +88,11 @@ fn agree(src: &str) -> String {
         let image = meadow_codegen::compile(&lowered.program)
             .unwrap_or_else(|e| panic!("codegen at {at} failed: {}\n{src}", e.msg));
         let vm = meadow_rts::run(&image, FUEL).unwrap_or_else(|e| {
-            panic!("VM at {at} failed: {}\n{src}\n{}", e.msg, image.disassemble())
+            panic!(
+                "VM at {at} failed: {}\n{src}\n{}",
+                e.msg,
+                image.disassemble()
+            )
         });
 
         assert_eq!(want, axcut.to_string(), "CEK vs AxCut at {at}\n{src}");
@@ -245,7 +249,7 @@ fn recursion_needs_no_back_patching() {
              fun isOdd n = if n == 0 then 0 == 1 else isEven (n - 1)
              def main = isEven 100"
         ),
-        "true"
+        "True"
     );
 }
 
@@ -515,11 +519,11 @@ fn tuple_projection_does_not_need_the_arity() {
     // only an index, so it cannot become a `switch` arm — every arm would have
     // to name every field, and the arity is not in the term. It becomes a field
     // extern instead.
-    assert_eq!(agree("fun addPair (a, b) = a + b\ndef main = addPair (1, 2)"), "3");
     assert_eq!(
-        agree("def main = let (a, b, c) = (10, 20, 30) in b"),
-        "20"
+        agree("fun addPair (a, b) = a + b\ndef main = addPair (1, 2)"),
+        "3"
     );
+    assert_eq!(agree("def main = let (a, b, c) = (10, 20, 30) in b"), "20");
 }
 
 // --- effects --------------------------------------------------------------
@@ -737,7 +741,10 @@ fn the_collector_runs_and_the_answer_survives_it() {
                def main = total (build 200000)";
     let (out, collections, allocated) = run_on_vm(src);
     assert_eq!(out, "20000100000");
-    assert!(collections > 0, "the heap never filled — is the test too small?");
+    assert!(
+        collections > 0,
+        "the heap never filled — is the test too small?"
+    );
     assert!(allocated > 1_000_000, "only {allocated} slots allocated");
 
     // And the specification agrees, which is the point.
@@ -870,7 +877,7 @@ fn equal_values_hash_alike() {
              \x20 , hash (1 :: 2 :: [;]) == hash [1; 2]\n\
              \x20 , hash 1 == hash 2 )"
         ),
-        "(true, true, true, false)"
+        "(True, True, True, False)"
     );
 }
 
@@ -907,7 +914,10 @@ fn a_fixed_width_integer_wraps_at_its_width() {
     assert_eq!(agree("def main = toInt8 127 + toInt8 1"), "-128");
     assert_eq!(agree("def main = toUInt16 0 - toUInt16 1"), "65535");
     assert_eq!(agree("def main = toInt32 65536 * toInt32 65536"), "0");
-    assert_eq!(agree("def main = toUInt64 (toInt (0 - 1))"), "18446744073709551615");
+    assert_eq!(
+        agree("def main = toUInt64 (toInt (0 - 1))"),
+        "18446744073709551615"
+    );
     // A conversion keeps the low bits, from a `BigInt` as from anything else.
     assert_eq!(agree("def main = toUInt8 (2 ^ 100 + 5)"), "5");
     assert_eq!(agree("def main = toInt16 40000"), "-25536");
@@ -960,7 +970,10 @@ fn float32_keeps_single_precision() {
     assert_eq!(agree("def main = toFloat32 1.5 +. toFloat32 0.25"), "1.75");
     // Printed as the shortest text that reads back as the same `Float32`.
     assert_eq!(agree("def main = toFloat32 0.1"), "0.1");
-    assert_eq!(agree("def main = toFloat64 (toFloat32 0.1)"), "0.10000000149011612");
+    assert_eq!(
+        agree("def main = toFloat64 (toFloat32 0.1)"),
+        "0.10000000149011612"
+    );
     assert_eq!(agree("def main = toFloat32 16777217.0"), "16777216.0");
 }
 
@@ -1001,7 +1014,10 @@ fn a_compacted_value_is_the_value() {
            (total (getCompact c), if getCompact c == xs then 1 else 0)"
     );
     assert_eq!(agree(&src), "(5050, 1)");
-    assert_eq!(agree("def main = compact (1, \"two\", #[3.0])"), "compact (1, \"two\", #[3.0])");
+    assert_eq!(
+        agree("def main = compact (1, \"two\", #[3.0])"),
+        "compact (1, \"two\", #[3.0])"
+    );
 }
 
 #[test]
@@ -1027,7 +1043,7 @@ fn adding_to_a_region_keeps_both_values_and_shares_the_old_one() {
     );
     // One `Link` is three slots, and that is all the add copied.
     let bytes = 3 * meadow_core::compact::SLOT_BYTES;
-    assert_eq!(agree(&src), format!("(5050, 5050, {bytes}, true)"));
+    assert_eq!(agree(&src), format!("(5050, 5050, {bytes}, True)"));
 }
 
 #[test]
@@ -1060,7 +1076,9 @@ fn what_cannot_be_compacted_fails_the_same_way_everywhere() {
         ("Just (\\x -> x)", "a function"),
         ("#[stNewArray 2 0]", "a mutable array"),
     ] {
-        let prog = program(&format!("use Opt.*\ndata Opt a = None | Just a\ndef main = compact ({value})"));
+        let prog = program(&format!(
+            "use Opt.*\ndata Opt a = None | Just a\ndef main = compact ({value})"
+        ));
         let cek = meadow_eval::run(&prog).expect_err("CEK should fail");
         let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
         let axcut = machine::Machine::run(&lowered.program, FUEL).expect_err("AxCut should fail");
@@ -1091,9 +1109,17 @@ fn a_compacted_value_survives_collections_without_being_copied() {
             ..GcConfig::from_env()
         };
         let mut vm = meadow_rts::Vm::with_heap(&img, Heap::with_config(1 << 16, config));
-        let v = vm.run(img.entry.unwrap(), u64::MAX).unwrap_or_else(|e| panic!("{}", e.msg));
+        let v = vm
+            .run(img.entry.unwrap(), u64::MAX)
+            .unwrap_or_else(|e| panic!("{}", e.msg));
         let h = vm.heap();
-        (vm.show(v), h.collections, h.copied, h.promoted, h.region_slots())
+        (
+            vm.show(v),
+            h.collections,
+            h.copied,
+            h.promoted,
+            h.region_slots(),
+        )
     };
 
     // Copying: every collection copies the chain, unless it is compacted.
@@ -1102,8 +1128,15 @@ fn a_compacted_value_survives_collections_without_being_copied() {
         run("getCompact (compact (build 50000))", Collector::Copying);
     assert_eq!(plain, "(25500000, 1250025000)");
     assert_eq!(compacted, plain);
-    assert!(plain_gcs > 5 && gcs > 5, "both should collect: {plain_gcs}, {gcs}");
-    assert_eq!(region, 1 + 50_000 * 3, "the chain is in a region, and nothing else is");
+    assert!(
+        plain_gcs > 5 && gcs > 5,
+        "both should collect: {plain_gcs}, {gcs}"
+    );
+    assert_eq!(
+        region,
+        1 + 50_000 * 3,
+        "the chain is in a region, and nothing else is"
+    );
     assert!(
         copied * 4 < plain_copied,
         "compacting should spare most of the copying: {copied} slots against {plain_copied}"
@@ -1114,10 +1147,15 @@ fn a_compacted_value_survives_collections_without_being_copied() {
     // every cycle, which this program is too small to run. The same answer,
     // and the chain where it should be.
     let (plain, _, _, plain_promoted, _) = run("build 50000", Collector::Generational);
-    let (compacted, _, _, _, region) =
-        run("getCompact (compact (build 50000))", Collector::Generational);
+    let (compacted, _, _, _, region) = run(
+        "getCompact (compact (build 50000))",
+        Collector::Generational,
+    );
     assert_eq!(compacted, plain);
-    assert!(plain_promoted >= 50_000 * 3, "the chain outgrew the nursery");
+    assert!(
+        plain_promoted >= 50_000 * 3,
+        "the chain outgrew the nursery"
+    );
     assert_eq!(region, 1 + 50_000 * 3);
 }
 
@@ -1133,9 +1171,14 @@ fn regions_nothing_refers_to_are_freed() {
     let prog = program(&src);
     let img = image(&prog);
     let mut vm = meadow_rts::Vm::new(&img);
-    let v = vm.run(img.entry.unwrap(), u64::MAX).unwrap_or_else(|e| panic!("{}", e.msg));
+    let v = vm
+        .run(img.entry.unwrap(), u64::MAX)
+        .unwrap_or_else(|e| panic!("{}", e.msg));
     assert_eq!(vm.show(v), "500500000");
-    assert!(vm.heap().collections > 0, "writing regions should have asked for a collection");
+    assert!(
+        vm.heap().collections > 0,
+        "writing regions should have asked for a collection"
+    );
     assert!(
         vm.heap().region_slots() < 1_000_000,
         "dead regions were kept: {} slots",
@@ -1159,9 +1202,14 @@ const FIB: &str = "fun fib n =
 #[test]
 fn a_generic_function_computes_at_the_type_it_is_called_at() {
     // `fib 100` defaults to `BigInt`: exact, not wrapped.
-    assert_eq!(agree(&format!("{FIB}def main = fib 100")), "354224848179261915075");
     assert_eq!(
-        agree(&format!("{FIB}def main = (toInt 0 + fib 100, fib (toUInt8 13) + toUInt8 0)")),
+        agree(&format!("{FIB}def main = fib 100")),
+        "354224848179261915075"
+    );
+    assert_eq!(
+        agree(&format!(
+            "{FIB}def main = (toInt 0 + fib 100, fib (toUInt8 13) + toUInt8 0)"
+        )),
         "(3736710778780434371, 233)"
     );
 }
@@ -1217,7 +1265,9 @@ fn a_float_literal_in_generic_code_takes_the_float_type() {
 #[track_caller]
 fn threads_agree(src: &str) -> Result<String, String> {
     let prog = program(src);
-    let want = meadow_eval::run(&prog).map(|v| v.to_string()).map_err(|e| e.msg);
+    let want = meadow_eval::run(&prog)
+        .map(|v| v.to_string())
+        .map_err(|e| e.msg);
     for opt in LEVELS {
         let lowered = meadow_seq::lower_program(&prog, opt);
         assert!(lowered.unsupported.is_empty(), "{:?}", lowered.unsupported);
@@ -1226,7 +1276,12 @@ fn threads_agree(src: &str) -> Result<String, String> {
             let got = meadow_rts::sched::run_with(&image, image.entry.unwrap(), FUEL, workers)
                 .result
                 .map_err(|e| e.msg);
-            assert_eq!(want, got, "CEK vs VM at {} with {workers} workers\n{src}", opt.name());
+            assert_eq!(
+                want,
+                got,
+                "CEK vs VM at {} with {workers} workers\n{src}",
+                opt.name()
+            );
         }
     }
     want
@@ -1263,7 +1318,10 @@ fn a_channel_carries_values_between_threads_in_order() {
                  let got = take 5 Nil in
                  let _ = threadAwait producer in
                  got";
-    assert_eq!(threads_agree(src), Ok("Cons(5, Cons(4, Cons(3, Cons(2, Cons(1, Nil)))))".into()));
+    assert_eq!(
+        threads_agree(src),
+        Ok("Cons(5, Cons(4, Cons(3, Cons(2, Cons(1, Nil)))))".into())
+    );
 }
 
 #[test]
@@ -1318,12 +1376,19 @@ fn mutable_state_and_continuations_cannot_cross() {
              def main = let x = {value} in threadAwait (threadSpawn (\\() -> let y = x in 0))"
         );
         let src = src.replace("[;]", "Nil");
-        assert_eq!(threads_agree(&src), Err(meadow_core::thread::unsendable(what)), "{value}");
+        assert_eq!(
+            threads_agree(&src),
+            Err(meadow_core::thread::unsendable(what)),
+            "{value}"
+        );
     }
     let src = "effect E { e : () -> Int }
                def main = handle (let n = e () in n) with {
                  e u k -> let _ = threadAwait (threadSpawn (\\() -> let j = k in 0)) in 0 }";
-    assert_eq!(threads_agree(src), Err(meadow_core::thread::unsendable("a continuation")));
+    assert_eq!(
+        threads_agree(src),
+        Err(meadow_core::thread::unsendable("a continuation"))
+    );
 }
 
 #[test]
@@ -1337,7 +1402,10 @@ fn a_ref_in_scope_but_unused_does_not_stop_a_spawn() {
 #[test]
 fn a_message_cannot_carry_a_ref_either() {
     let src = "def main = let ch = channelNew () in channelSend ch (newRef (toInt 0))";
-    assert_eq!(threads_agree(src), Err(meadow_core::thread::unsendable("a Ref")));
+    assert_eq!(
+        threads_agree(src),
+        Err(meadow_core::thread::unsendable("a Ref"))
+    );
 }
 
 #[test]
@@ -1352,7 +1420,10 @@ fn a_failed_thread_fails_its_await_with_the_same_message() {
 #[test]
 fn waiting_on_what_can_never_answer_is_a_deadlock() {
     let src = "def main = let ch = channelNew () in threadAwait (threadSpawn (\\() -> channelReceive ch + toInt 1))";
-    assert_eq!(threads_agree(src), Err(meadow_core::thread::DEADLOCK.into()));
+    assert_eq!(
+        threads_agree(src),
+        Err(meadow_core::thread::DEADLOCK.into())
+    );
 }
 
 #[test]
@@ -1369,7 +1440,12 @@ fn a_thread_that_never_waits_does_not_starve_the_others() {
         let got = meadow_rts::sched::run_with(&image, image.entry.unwrap(), FUEL, workers).result;
         assert_eq!(got.map_err(|e| e.msg), Ok("99".into()), "{workers} workers");
     }
-    assert_eq!(meadow_eval::run(&prog).map(|v| v.to_string()).map_err(|e| e.msg), Ok("99".into()));
+    assert_eq!(
+        meadow_eval::run(&prog)
+            .map(|v| v.to_string())
+            .map_err(|e| e.msg),
+        Ok("99".into())
+    );
 }
 
 #[test]
@@ -1390,7 +1466,11 @@ fn threads_collect_their_own_heaps() {
     let out = meadow_rts::sched::run_with(&image, image.entry.unwrap(), FUEL, 4);
     assert_eq!(out.result.map_err(|e| e.msg), Ok("200000".into()));
     assert_eq!(out.stats.threads, 3, "main and two spawned");
-    assert!(out.stats.collections >= 2, "only {} collections", out.stats.collections);
+    assert!(
+        out.stats.collections >= 2,
+        "only {} collections",
+        out.stats.collections
+    );
 }
 
 // --- top-level values -------------------------------------------------------
@@ -1435,7 +1515,9 @@ fn a_top_level_value_used_by_many_threads_is_the_same_value_in_each() {
 #[track_caller]
 fn cek_and_vm(src: &str) -> String {
     let prog = program(src);
-    let cek = meadow_eval::run(&prog).unwrap_or_else(|e| panic!("CEK: {}", e.msg)).to_string();
+    let cek = meadow_eval::run(&prog)
+        .unwrap_or_else(|e| panic!("CEK: {}", e.msg))
+        .to_string();
     let vm = meadow_rts::run(&image(&prog), FUEL).unwrap_or_else(|e| panic!("VM: {}", e.msg));
     assert_eq!(cek, vm, "CEK vs VM\n{src}");
     cek
@@ -1473,7 +1555,7 @@ fn a_compact_crosses_threads_without_being_copied() {
            let d = channelReceive ch in
            (threadAwait a, threadAwait b == compactSize c, total (getCompact d))"
     );
-    assert_eq!(threads_agree(&src), Ok("(12502500, true, 12502500)".into()));
+    assert_eq!(threads_agree(&src), Ok("(12502500, True, 12502500)".into()));
 }
 
 #[test]
@@ -1497,7 +1579,9 @@ fn a_compacted_value_sent_to_a_thread_is_not_copied_into_its_heap() {
     // The second also hands the plain chain to a thread before compacting it,
     // so it differs from the first only by that copy.
     let compacted = run("compact (build 10000)");
-    let copied = run("compact (let x = build 10000 in let t = threadSpawn (\\() -> total x) in let _ = threadAwait t in x)");
+    let copied = run(
+        "compact (let x = build 10000 in let t = threadSpawn (\\() -> total x) in let _ = threadAwait t in x)",
+    );
     assert!(
         copied >= compacted + 30_000,
         "sending the plain chain should have copied 30_000 slots more: {copied} vs {compacted}"
@@ -1606,14 +1690,21 @@ fn or_else_falls_back_and_keeps_only_what_succeeded() {
 fn a_tvar_holds_only_what_a_compact_can() {
     for (value, what) in [("newRef 1", "a Ref"), ("\\x -> x", "a function")] {
         let src = format!("{STM}def main = let tv = stmNewIO ({value}) in 0");
-        assert_eq!(threads_agree(&src), Err(meadow_core::stm::unstorable(what)), "{value}");
+        assert_eq!(
+            threads_agree(&src),
+            Err(meadow_core::stm::unstorable(what)),
+            "{value}"
+        );
     }
 }
 
 #[test]
 fn a_transaction_operation_outside_atomically_says_so() {
     let src = format!("{STM}def main = let tv = stmNewIO (toInt 1) in stmRead tv");
-    assert_eq!(threads_agree(&src), Err(meadow_core::stm::outside("readTVar")));
+    assert_eq!(
+        threads_agree(&src),
+        Err(meadow_core::stm::outside("readTVar"))
+    );
 }
 
 #[test]
@@ -1622,5 +1713,8 @@ fn waiting_on_a_tvar_nobody_writes_is_a_deadlock() {
         "{STM}def main = let tv = stmNewIO (toInt 0) in
            atomically (\\() -> if readTVar tv == 0 then retry () else readTVar tv)"
     );
-    assert_eq!(threads_agree(&src), Err(meadow_core::thread::DEADLOCK.into()));
+    assert_eq!(
+        threads_agree(&src),
+        Err(meadow_core::thread::DEADLOCK.into())
+    );
 }

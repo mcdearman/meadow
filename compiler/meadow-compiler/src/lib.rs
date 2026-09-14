@@ -66,10 +66,10 @@ pub use meadow_source as source;
 pub use meadow_span as span;
 
 mod options;
-pub use options::{Options, OptLevel, Strictness};
+pub use options::{OptLevel, Options, Strictness};
 
 mod unit;
 pub use unit::{
-    compile_str, compile_str_with, compile_unit, compile_unit_in_package, resolve_module,
-    AstModule, CompiledPackage, Export, Resolved, TestSite, TypedModule,
+    AstModule, CompiledPackage, Export, Resolved, TestSite, TypedModule, compile_str,
+    compile_str_with, compile_unit, compile_unit_in_package, resolve_module,
 };

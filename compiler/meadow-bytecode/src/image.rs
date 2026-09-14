@@ -63,6 +63,22 @@ pub fn encode(program: &Program) -> Vec<u8> {
         None => w.0.push(0),
     }
     w.u16(program.regs);
+    w.u32(program.gc_maps.len() as u32);
+    for m in &program.gc_maps {
+        w.u32(m.regs.len() as u32);
+        for (r, held) in &m.regs {
+            w.0.push(*r);
+            match held {
+                crate::Held::Ref => w.0.push(0),
+                crate::Held::Scalar => w.0.push(1),
+                crate::Held::Var(v) => {
+                    w.0.push(2);
+                    w.u32(*v);
+                }
+            }
+        }
+    }
+    w.u32s(&program.gc_at);
     w.0
 }
 
@@ -118,6 +134,21 @@ pub fn decode(bytes: &[u8]) -> Result<Program, String> {
         _ => Some(r.u32()?),
     };
     p.regs = r.u16()?;
+    for _ in 0..r.u32()? {
+        let mut regs = Vec::new();
+        for _ in 0..r.u32()? {
+            let reg = r.take(1)?[0];
+            let held = match r.take(1)?[0] {
+                0 => crate::Held::Ref,
+                1 => crate::Held::Scalar,
+                2 => crate::Held::Var(r.u32()?),
+                t => return Err(format!("unknown register kind {t}")),
+            };
+            regs.push((reg, held));
+        }
+        p.gc_maps.push(crate::GcMap { regs });
+    }
+    p.gc_at = r.u32s()?;
     if r.at != bytes.len() {
         return Err("trailing bytes after the image".into());
     }
@@ -283,6 +314,14 @@ mod tests {
         p.entries = vec![0];
         p.entry = Some(0);
         p.regs = 12;
+        p.gc_maps = vec![crate::GcMap {
+            regs: vec![
+                (0, crate::Held::Ref),
+                (3, crate::Held::Var(9)),
+                (4, crate::Held::Scalar),
+            ],
+        }];
+        p.gc_at = vec![0, crate::NO_MAP];
         let back = decode(&encode(&p)).expect("decodes");
         assert_eq!(format!("{:?}", back.code), format!("{:?}", p.code));
         assert_eq!(back.consts, p.consts);
@@ -298,6 +337,7 @@ mod tests {
             (back.entries, back.entry, back.regs),
             (p.entries, p.entry, p.regs)
         );
+        assert_eq!((back.gc_maps, back.gc_at), (p.gc_maps, p.gc_at));
     }
 
     #[test]

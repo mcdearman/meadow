@@ -38,7 +38,7 @@ fn repeat_repeats() {
 #[test]
 fn byte_length_counts_bytes_not_characters() {
     assert_eq!(s(r#"S.byteLength "hello""#), "5");
-    assert_eq!(s(r#"S.isEmpty """#), "true");
+    assert_eq!(s(r#"S.isEmpty """#), "True");
     // "é" is two bytes in UTF-8 — the length is honest about that.
     assert_eq!(s("S.byteLength \"\u{e9}\""), "2");
 }
@@ -74,12 +74,12 @@ fn index_of_finds_the_first_occurrence() {
 
 #[test]
 fn contains_starts_and_ends() {
-    assert_eq!(s(r#"S.contains "ell" "hello""#), "true");
-    assert_eq!(s(r#"S.contains "z" "hello""#), "false");
-    assert_eq!(s(r#"S.startsWith "he" "hello""#), "true");
-    assert_eq!(s(r#"S.startsWith "hello!" "hello""#), "false");
-    assert_eq!(s(r#"S.endsWith "llo" "hello""#), "true");
-    assert_eq!(s(r#"S.endsWith "he" "hello""#), "false");
+    assert_eq!(s(r#"S.contains "ell" "hello""#), "True");
+    assert_eq!(s(r#"S.contains "z" "hello""#), "False");
+    assert_eq!(s(r#"S.startsWith "he" "hello""#), "True");
+    assert_eq!(s(r#"S.startsWith "hello!" "hello""#), "False");
+    assert_eq!(s(r#"S.endsWith "llo" "hello""#), "True");
+    assert_eq!(s(r#"S.endsWith "he" "hello""#), "False");
 }
 
 #[test]

@@ -7,9 +7,7 @@ use common::{schemes, schemes_std};
 
 #[test]
 fn literals_and_arithmetic() {
-    insta::assert_snapshot!(schemes(
-        "def n = 1 + 2 * 3\ndef s = \"hi\"\ndef u = ()\n"
-    ));
+    insta::assert_snapshot!(schemes("def n = 1 + 2 * 3\ndef s = \"hi\"\ndef u = ()\n"));
 }
 
 #[test]
@@ -28,9 +26,7 @@ fn identity_generalizes() {
 
 #[test]
 fn curried_functions() {
-    insta::assert_snapshot!(schemes(
-        "fun const a b = a\nfun compose f g x = f (g x)\n"
-    ));
+    insta::assert_snapshot!(schemes("fun const a b = a\nfun compose f g x = f (g x)\n"));
 }
 
 #[test]

@@ -301,6 +301,40 @@ pub struct Program {
     /// What a debugger needs to talk about this code in the program's own
     /// terms. Only built when asked for -- see [`DebugInfo`].
     pub debug: Option<Box<DebugInfo>>,
+    /// The register maps a collection reads -- see [`GcMap`] -- each stored
+    /// once.
+    pub gc_maps: Vec<GcMap>,
+    /// Per instruction: which of [`Program::gc_maps`] holds while it runs, or
+    /// [`NO_MAP`] for an instruction that cannot collect.
+    pub gc_at: Vec<u32>,
+}
+
+/// An instruction with no [`GcMap`]: it cannot allocate, so nothing collects
+/// while it runs.
+pub const NO_MAP: u32 = u32::MAX;
+
+/// What a register holds, as far as a collector cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Held {
+    /// A heap object's address.
+    Ref,
+    /// Anything else: a number, a character, a string, a boolean.
+    Scalar,
+    /// Whatever type variable `n` is at run time.
+    Var(u32),
+}
+
+/// The registers holding something at an instruction that may collect, and
+/// what each holds. A register below the machine's high-water mark that is not
+/// here holds nothing anyone will read again.
+///
+/// What makes values that do not say what they are possible: the collector
+/// knows which registers hold addresses from here rather than from the
+/// values.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct GcMap {
+    /// Sorted by register.
+    pub regs: Vec<(Reg, Held)>,
 }
 
 /// The source-level reading of an image: where each instruction came from, what
@@ -425,7 +459,10 @@ impl Program {
     pub fn show(&self, i: Instr) -> String {
         let name = format!("{:?}", i.op).to_lowercase();
         let k = |v: &Vec<InternedString>| {
-            v.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
+            v.iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         match i.op {
             Op::Nop => name,
@@ -467,7 +504,10 @@ impl Program {
             },
             Op::Extend => match self.labels.get(i.imm as usize) {
                 Some(l) => format!("{name:<14} r{} <- {{ r{} | {l} = r{} }}", i.a, i.b, i.c),
-                None => format!("{name:<14} r{} <- {{ r{} | l{} = r{} }}", i.a, i.b, i.imm, i.c),
+                None => format!(
+                    "{name:<14} r{} <- {{ r{} | l{} = r{} }}",
+                    i.a, i.b, i.imm, i.c
+                ),
             },
             Op::Closure => format!("{name:<14} r{} <- m{} [r{}..+{}]", i.a, i.imm, i.b, i.c),
             Op::Invoke => format!("{name:<14} r{}#{} (r{}..+{})", i.a, i.b, i.c, i.imm),

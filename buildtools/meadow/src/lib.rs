@@ -8,19 +8,19 @@
 //! between them. The `meadow` binary — CLI + REPL — is a thin shell over this
 //! crate.
 
-pub mod linker;
-pub mod package;
-pub mod editor;
-pub mod dap;
 pub mod complete;
+pub mod dap;
+pub mod editor;
 pub mod format;
 pub mod init;
-pub mod runtime;
-pub mod test;
+pub mod linker;
+pub mod package;
 pub mod pipeline;
 pub mod profile;
-pub mod update;
+pub mod runtime;
 pub mod stdlib;
+pub mod test;
+pub mod update;
 
 pub use meadow_compiler::{OptLevel, Options, Strictness};
 pub use profile::{Profile, Resolved};

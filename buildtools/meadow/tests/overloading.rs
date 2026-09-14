@@ -159,13 +159,21 @@ fn no_combination_fitting_is_one_error() {
                fun size (s : Shape) = match s with | Circle r -> r\n\
                def main = size (Just 5)\n";
     let e = errors(src);
-    assert!(e.starts_with("no reading of `size` and `Just` fits here"), "{e}");
-    assert_eq!(e.lines().filter(|l| !l.starts_with(' ')).count(), 2, "one error:\n{e}");
+    assert!(
+        e.starts_with("no reading of `size` and `Just` fits here"),
+        "{e}"
+    );
+    assert_eq!(
+        e.lines().filter(|l| !l.starts_with(' ')).count(),
+        2,
+        "one error:\n{e}"
+    );
 }
 
 #[test]
 fn candidates_from_other_modules_say_where_they_are_from() {
-    let shapes = "use Shape.*\ndata Shape = Circle Int\nfun size s = match s with | Circle r -> r\n";
+    let shapes =
+        "use Shape.*\ndata Shape = Circle Int\nfun size s = match s with | Circle r -> r\n";
     let main = "use Shapes (Shape, size)\n\
                 use Box.*\ndata Box = Box Int\n\
                 fun size b = match b with | Box n -> n\n\
@@ -191,7 +199,10 @@ fn a_def_and_a_fun_of_one_name_collide_too() {
 
 #[test]
 fn a_function_named_like_an_effect_operation_collides() {
-    let e = unit_errors(&[("", "effect Ask { ask : () -> Int }\nfun ask x = x\ndef main = 0\n")]);
+    let e = unit_errors(&[(
+        "",
+        "effect Ask { ask : () -> Int }\nfun ask x = x\ndef main = 0\n",
+    )]);
     assert_eq!(e, "`ask` is already defined in this module");
 }
 

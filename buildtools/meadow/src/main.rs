@@ -6,8 +6,8 @@ mod repl;
 
 use clap::{Parser, Subcommand};
 use meadow::{
-    format, init, package::ProfileConfig, pipeline, runtime, test, update, Engine, OptLevel,
-    Profile, Resolved, Strictness,
+    Engine, OptLevel, Profile, Resolved, Strictness, format, init, package::ProfileConfig,
+    pipeline, runtime, test, update,
 };
 use std::path::PathBuf;
 
@@ -233,7 +233,13 @@ fn main() {
                     ..meadow_rts::heap::GcConfig::from_env()
                 });
             }
-            build(&path, Some(engine.engine()), false, gc_stats, profile.resolve(&path))
+            build(
+                &path,
+                Some(engine.engine()),
+                false,
+                gc_stats,
+                profile.resolve(&path),
+            )
         }
         Some(Cmd::Dis { path, profile }) => disassemble(&path, profile.resolve(&path)),
         Some(Cmd::Test {
@@ -279,9 +285,12 @@ fn main() {
             // the edge of the open document, which is where it used to stop
             // anyway.
             let src_root = meadow::stdlib::extract_sources();
-            if let Err(e) =
-                meadow_lsp::server::run(packages, modules, src_root, Some(meadow::editor::find_package))
-            {
+            if let Err(e) = meadow_lsp::server::run(
+                packages,
+                modules,
+                src_root,
+                Some(meadow::editor::find_package),
+            ) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -364,7 +373,9 @@ fn build(
         if gc_stats {
             match stats {
                 Some(stats) => eprintln!("{stats}"),
-                None => eprintln!("gc: the CEK machine reference-counts, so there is nothing to report"),
+                None => {
+                    eprintln!("gc: the CEK machine reference-counts, so there is nothing to report")
+                }
             }
         }
         match result {
@@ -467,4 +478,3 @@ mod tests {
         assert!(Cli::try_parse_from(["meadow", "lsp", "--socket=9257"]).is_err());
     }
 }
-

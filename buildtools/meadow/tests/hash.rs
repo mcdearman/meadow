@@ -19,7 +19,7 @@ fn equal_vectors_hash_alike_whatever_their_shape() {
     // differently inside and still compare equal -- so they must hash alike.
     let src = "def pushed = foldl (\\v i -> pushBack v i) [] (range 0 100)\n\
                def main = (pushed == range 0 100, hash pushed == hash (range 0 100), hash [1, 2] == hash [2, 1])\n";
-    assert_eq!(both(src), "(true, true, false)");
+    assert_eq!(both(src), "(True, True, False)");
 }
 
 #[test]

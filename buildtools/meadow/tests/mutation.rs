@@ -128,7 +128,7 @@ fn cells_are_equal_by_identity_not_contents() {
     // a place, so two cells holding the same thing are still two cells.
     assert_eq!(
         eval_main_std("def main = let r = newRef 1 in (r == r, newRef 1 == newRef 1)\n"),
-        "(true, false)"
+        "(True, False)"
     );
 }
 

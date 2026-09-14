@@ -74,10 +74,7 @@ fn the_empty_bracket_forms_are_distinct() {
 
 #[test]
 fn a_trailing_semicolon_is_allowed() {
-    assert_eq!(
-        schemes_std("def a = [1; 2;]\n"),
-        "a : List BigInt\n"
-    );
+    assert_eq!(schemes_std("def a = [1; 2;]\n"), "a : List BigInt\n");
 }
 
 // --- patterns ----------------------------------------------------------------

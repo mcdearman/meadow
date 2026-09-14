@@ -71,6 +71,7 @@ pub unsafe extern "C" fn meadow_exec(vm: *mut c_void, pc: u32) -> u32 {
         return FAILED;
     };
     let next = pc as usize + 1;
+    vm.at = pc as usize;
     vm.pc = next;
     vm.steps += 1;
     match vm.exec(i) {

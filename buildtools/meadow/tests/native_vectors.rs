@@ -47,7 +47,7 @@ fn check(n: usize) {
     let dir = dir_with("dir", n);
     let src = program(&dir);
     let total: usize = (0..n).map(|i| format!("f{i}").len()).sum();
-    let want = format!("({n}, {total}, true, {})", n + 1);
+    let want = format!("({n}, {total}, True, {})", n + 1);
     assert_eq!(eval_main_std(&src), want, "VM, {n} entries");
     assert_eq!(cek_main_std(&src), want, "CEK, {n} entries");
     let _ = std::fs::remove_dir_all(&dir);
@@ -90,6 +90,6 @@ fn read_bytes_is_an_array() {
 #[test]
 fn argv_is_a_vector() {
     let src = "use Std.Collections.Vector as V\ndef main = V.len (argv ()) >= 0\n";
-    assert_eq!(eval_main_std(src), "true");
-    assert_eq!(cek_main_std(src), "true");
+    assert_eq!(eval_main_std(src), "True");
+    assert_eq!(cek_main_std(src), "True");
 }

@@ -31,9 +31,7 @@ fn unknown_type_in_data() {
 
 #[test]
 fn wrong_type_arity() {
-    insta::assert_snapshot!(errors(
-        "use Box.*\ndata Box a = Box a\ndata Bad = B Box\n"
-    ));
+    insta::assert_snapshot!(errors("use Box.*\ndata Box a = Box a\ndata Bad = B Box\n"));
 }
 
 #[test]
@@ -53,9 +51,7 @@ fn unknown_constructor() {
 
 #[test]
 fn constructor_arg_mismatch() {
-    insta::assert_snapshot!(errors(
-        "use T.*\ndata T = C Int\ndef x = C \"str\"\n"
-    ));
+    insta::assert_snapshot!(errors("use T.*\ndata T = C Int\ndef x = C \"str\"\n"));
 }
 
 #[test]

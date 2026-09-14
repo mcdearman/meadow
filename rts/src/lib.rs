@@ -64,8 +64,8 @@
 //! The one allocation this crate does not manage is strings, which are interned
 //! for the life of the process. The CEK does the same.
 
-mod evacuate;
 pub mod abi;
+mod evacuate;
 pub mod heap;
 pub mod journal;
 pub mod mark;
@@ -75,12 +75,12 @@ pub mod pauses;
 mod prims;
 pub mod region;
 pub mod sched;
-pub mod stm;
 mod show;
+pub mod stm;
 pub mod value;
 pub mod vm;
 
 pub use heap::{Heap, Kind};
 pub use journal::{Journal, Undo};
 pub use value::{Addr, Value};
-pub use vm::{run, Error, Io, Vm};
+pub use vm::{Error, Io, Vm, run};

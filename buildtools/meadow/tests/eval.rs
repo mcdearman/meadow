@@ -17,9 +17,7 @@ fn comparison_and_bool() {
 #[test]
 fn and_or_precedence_and_result() {
     // `and` binds tighter than `or`, both looser than `<`.
-    insta::assert_snapshot!(eval_expr(
-        "1 < 2 and 2 < 3 or 9 < 0"
-    ));
+    insta::assert_snapshot!(eval_expr("1 < 2 and 2 < 3 or 9 < 0"));
 }
 
 #[test]

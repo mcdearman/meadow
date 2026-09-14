@@ -22,8 +22,8 @@ fn either_collapses_both_sides() {
 
 #[test]
 fn the_side_tests_and_defaults() {
-    assert_eq!(e("E.isLeft (Left 1)"), "true");
-    assert_eq!(e("E.isRight (Left 1)"), "false");
+    assert_eq!(e("E.isLeft (Left 1)"), "True");
+    assert_eq!(e("E.isRight (Left 1)"), "False");
     assert_eq!(e("E.fromLeft 0 (Left 7)"), "7");
     assert_eq!(e("E.fromLeft 0 (Right 7)"), "0");
     assert_eq!(e("E.fromRight 0 (Right 7)"), "7");
@@ -43,15 +43,27 @@ fn map_is_right_biased_and_map_left_is_the_other_one() {
 #[test]
 fn bimap_maps_whichever_side_is_there() {
     assert_eq!(e(r#"E.bimap (\x -> x + 1) (\s -> 0) (Left 1)"#), "Left(2)");
-    assert_eq!(e(r#"E.bimap (\x -> x + 1) (\y -> y * 2) (Right 4)"#), "Right(8)");
+    assert_eq!(
+        e(r#"E.bimap (\x -> x + 1) (\y -> y * 2) (Right 4)"#),
+        "Right(8)"
+    );
 }
 
 #[test]
 fn and_then_chains_on_the_right_and_short_circuits_on_the_left() {
-    assert_eq!(e(r#"E.andThen (\x -> Right (x + 1)) (Right 1)"#), "Right(2)");
-    assert_eq!(e(r#"E.andThen (\x -> Right (x + 1)) (Left "no")"#), r#"Left("no")"#);
+    assert_eq!(
+        e(r#"E.andThen (\x -> Right (x + 1)) (Right 1)"#),
+        "Right(2)"
+    );
+    assert_eq!(
+        e(r#"E.andThen (\x -> Right (x + 1)) (Left "no")"#),
+        r#"Left("no")"#
+    );
     // A `Left` produced by the function is kept.
-    assert_eq!(e(r#"E.andThen (\x -> Left "no") (Right 1)"#), r#"Left("no")"#);
+    assert_eq!(
+        e(r#"E.andThen (\x -> Left "no") (Right 1)"#),
+        r#"Left("no")"#
+    );
 }
 
 #[test]

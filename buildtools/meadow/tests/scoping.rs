@@ -13,7 +13,10 @@ use common::{eval_main, eval_main_std};
 fn a_let_can_shadow_and_still_read_the_old_value() {
     // Previously this resolved `x` on the right to the `x` being defined, and
     // failed at run time with `unbound variable`.
-    assert_eq!(eval_main("def main = let x = 1 in let x = x + 1 in x\n"), "2");
+    assert_eq!(
+        eval_main("def main = let x = 1 in let x = x + 1 in x\n"),
+        "2"
+    );
 }
 
 #[test]
@@ -50,9 +53,7 @@ fn a_local_binding_with_parameters_is_recursive() {
     // No `rec` needed: parameters make it a function, and a function's own name
     // refers to itself. This is what shadowing must not break.
     assert_eq!(
-        eval_main(
-            "def main = let go n = if n == 0 then 0 else n + go (n - 1) in go 5\n"
-        ),
+        eval_main("def main = let go n = if n == 0 then 0 else n + go (n - 1) in go 5\n"),
         "15"
     );
 }
@@ -60,9 +61,7 @@ fn a_local_binding_with_parameters_is_recursive() {
 #[test]
 fn let_rec_is_accepted_as_the_same_thing() {
     assert_eq!(
-        eval_main(
-            "def main = let rec go n = if n == 0 then 0 else n + go (n - 1) in go 5\n"
-        ),
+        eval_main("def main = let rec go n = if n == 0 then 0 else n + go (n - 1) in go 5\n"),
         "15"
     );
 }
@@ -83,7 +82,7 @@ fn top_level_mutual_recursion_is_unaffected() {
              fun isOdd n = if n == 0 then False else isEven (n - 1)\n\
              def main = isEven 10\n"
         ),
-        "true"
+        "True"
     );
 }
 

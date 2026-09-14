@@ -7,7 +7,7 @@
 //! server a crash of the editor's backend.
 
 mod common;
-use common::{eval_main_std, eval_expr_std};
+use common::{eval_expr_std, eval_main_std};
 
 /// A runtime error, not a panic and not a wrong answer.
 fn fails_with(expr: &str, needle: &str) {
@@ -31,14 +31,23 @@ fn division_and_modulo_by_zero_are_errors() {
 #[test]
 fn integer_overflow_wraps_rather_than_panicking() {
     // Rust would panic on overflow in a debug build; an `Int` must wrap instead.
-    assert_eq!(eval_expr_std("toInt 9223372036854775807 + 1"), "-9223372036854775808");
-    assert_eq!(eval_expr_std("toInt 0 - 9223372036854775807 - 2"), "9223372036854775807");
+    assert_eq!(
+        eval_expr_std("toInt 9223372036854775807 + 1"),
+        "-9223372036854775808"
+    );
+    assert_eq!(
+        eval_expr_std("toInt 0 - 9223372036854775807 - 2"),
+        "9223372036854775807"
+    );
     assert_eq!(eval_expr_std("toInt 9223372036854775807 * 2"), "-2");
     // And so must every fixed width, at its own.
     assert_eq!(eval_expr_std("toUInt8 255 + 1"), "0");
     assert_eq!(eval_expr_std("toInt32 2147483647 + 1"), "-2147483648");
     // A `BigInt`, the default, does not overflow at all.
-    assert_eq!(eval_expr_std("9223372036854775807 + 1"), "9223372036854775808");
+    assert_eq!(
+        eval_expr_std("9223372036854775807 + 1"),
+        "9223372036854775808"
+    );
 }
 
 #[test]
@@ -133,18 +142,18 @@ fn reading_a_cell_of_a_cell_is_fine() {
 
 #[test]
 fn a_failed_match_is_an_error_not_a_panic() {
-    let out = eval_main_std(
-        "use T.*\ndata T = A | B\nfun f x = match x with | A -> 1\ndef main = f B\n",
-    );
+    let out =
+        eval_main_std("use T.*\ndata T = A | B\nfun f x = match x with | A -> 1\ndef main = f B\n");
     assert!(out.contains("non-exhaustive"), "got {out}");
 }
 
 #[test]
 fn an_unhandled_effect_names_itself() {
-    let out = eval_main_std(
-        "effect E { op : () -> Int }\ndef main = op ()\n",
+    let out = eval_main_std("effect E { op : () -> Int }\ndef main = op ()\n");
+    assert!(
+        out.contains("unhandled effect") && out.contains("op"),
+        "got {out}"
     );
-    assert!(out.contains("unhandled effect") && out.contains("op"), "got {out}");
 }
 
 #[test]
@@ -170,7 +179,10 @@ fn path_operations_survive_nonsense_input() {
     let src = "use Std.Path as P\n\
                def main = (P.extension \"\", P.fileName \"\", P.normalize \"\", P.join \"\" \"\")\n";
     let out = eval_main_std(src);
-    assert!(!out.contains("panic") && !out.contains("error"), "got {out}");
+    assert!(
+        !out.contains("panic") && !out.contains("error"),
+        "got {out}"
+    );
 }
 
 #[test]
@@ -180,7 +192,7 @@ fn json_rejects_deeply_nested_input_without_crashing() {
                use Std.String as S\n\
                fun nest n = if n <= 0 then \"1\" else S.concatAll [\"[\", nest (n - 1), \"]\"]\n\
                def main = match J.parse (nest 200) with | Ok v -> True | Err e -> True\n";
-    assert_eq!(eval_main_std(src), "true");
+    assert_eq!(eval_main_std(src), "True");
 }
 
 #[test]
@@ -193,7 +205,7 @@ fn sorting_pathological_input_terminates() {
                \x20 ( isSorted (sort (V.replicate 500 1))\n\
                \x20 , isSorted (sort (V.reverse (V.range 0 500)))\n\
                \x20 )\n";
-    assert_eq!(eval_main_std(src), "(true, true)");
+    assert_eq!(eval_main_std(src), "(True, True)");
 }
 
 // --- deep data structures ----------------------------------------------------
@@ -223,7 +235,7 @@ fn a_long_list_can_be_compared() {
 \n                 let a = L.range 0 50000 in
 \n                 (a == a, a == L.range 0 50000, a == L.range 0 49999)
 ";
-    assert_eq!(eval_main_std(src), "(true, true, false)");
+    assert_eq!(eval_main_std(src), "(True, True, False)");
 }
 
 #[test]
@@ -232,7 +244,7 @@ fn a_long_list_can_be_shown() {
 \n               use Std.String as S
 \n               def main = S.byteLength (show (L.range 0 20000)) > 0
 ";
-    assert_eq!(eval_main_std(src), "true");
+    assert_eq!(eval_main_std(src), "True");
 }
 
 #[test]

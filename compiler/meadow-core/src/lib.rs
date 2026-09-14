@@ -42,13 +42,13 @@ pub mod compact;
 pub mod erase;
 pub mod globals;
 pub mod hash;
+pub mod lint;
+pub mod lower;
 pub mod num;
+pub mod rewrite;
 pub mod specialize;
 pub mod stm;
 pub mod thread;
-pub mod lint;
-pub mod rewrite;
-pub mod lower;
 pub use lower::Lowerer;
 
 use meadow_hir as hir;
@@ -813,7 +813,10 @@ pub struct Poly {
 
 impl Poly {
     pub fn mono(ty: Ty) -> Poly {
-        Poly { binders: Vec::new(), ty }
+        Poly {
+            binders: Vec::new(),
+            ty,
+        }
     }
 
     pub fn is_mono(&self) -> bool {
@@ -882,10 +885,9 @@ pub fn subst_rigid(ty: &Ty, map: &HashMap<u32, Ty>) -> Ty {
     match ty {
         InferType::Var(v) => map.get(v).cloned().unwrap_or_else(|| ty.clone()),
         InferType::Bound(_) | InferType::RowEmpty | InferType::Error => ty.clone(),
-        InferType::Con(n, args) => InferType::Con(
-            *n,
-            args.iter().map(|a| subst_rigid(a, map)).collect(),
-        ),
+        InferType::Con(n, args) => {
+            InferType::Con(*n, args.iter().map(|a| subst_rigid(a, map)).collect())
+        }
         InferType::Fun(args, ret, eff) => InferType::Fun(
             args.iter().map(|a| subst_rigid(a, map)).collect(),
             Box::new(subst_rigid(ret, map)),
@@ -1292,8 +1294,7 @@ impl Printer {
                 format!("(\\({v} : {t}). {})", self.term(b))
             }
             Term::TyLam(binders, b) => {
-                let names: Vec<String> =
-                    binders.iter().map(|x| self.tyvar(x.id)).collect();
+                let names: Vec<String> = binders.iter().map(|x| self.tyvar(x.id)).collect();
                 format!("(/\\{}. {})", names.join(" "), self.term(b))
             }
             Term::TyApp(f, args) => {
@@ -1351,7 +1352,9 @@ impl Printer {
             Term::Perform(eff, op, arg, _) => {
                 format!("(perform {eff}.{op} {})", self.term(arg))
             }
-            Term::Handle { body, clauses, ret, .. } => {
+            Term::Handle {
+                body, clauses, ret, ..
+            } => {
                 let mut parts: Vec<String> = clauses
                     .iter()
                     .map(|c| {
@@ -1364,7 +1367,11 @@ impl Printer {
                     let v = self.var(*v);
                     parts.push(format!("return {v} -> {}", self.term(b)));
                 }
-                format!("(handle {} with {{ {} }})", self.term(body), parts.join("; "))
+                format!(
+                    "(handle {} with {{ {} }})",
+                    self.term(body),
+                    parts.join("; ")
+                )
             }
             // Transparent: a dump of a debug build reads like any other.
             Term::Loc(_, inner) => self.term(inner),
@@ -1373,7 +1380,10 @@ impl Printer {
     }
 
     fn terms(&mut self, ts: &[Term]) -> String {
-        ts.iter().map(|t| self.term(t)).collect::<Vec<_>>().join(" ")
+        ts.iter()
+            .map(|t| self.term(t))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     fn pat(&mut self, p: &Pat) -> String {
@@ -1403,7 +1413,6 @@ impl Printer {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1411,13 +1420,16 @@ mod tests {
     #[test]
     fn prim_name_roundtrip() {
         for name in [
-            "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "neg", "display",
-            "+.", "-.", "*.", "/.", "<.", ">.", "<=.", ">=.", "toFloat", "floor",
+            "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "neg", "display", "+.",
+            "-.", "*.", "/.", "<.", ">.", "<=.", ">=.", "toFloat", "floor",
         ] {
             assert!(Prim::from_name(name).is_some(), "{name} should be a prim");
         }
         assert_eq!(Prim::from_name("map"), None);
-        assert_eq!(Prim::from_name("toUInt8"), Some(Prim::ToWord(num::Width::U8)));
+        assert_eq!(
+            Prim::from_name("toUInt8"),
+            Some(Prim::ToWord(num::Width::U8))
+        );
         assert_eq!(Prim::from_name("toInt64"), Some(Prim::ToInt));
         assert_eq!(Prim::from_name("toString"), None);
         assert_eq!(Prim::from_name("+~"), None, "BigInt shares `+` now");
@@ -1452,7 +1464,10 @@ mod tests {
         // `forall t. t -> t`, with `t` a rigid variable — as `id` lowers.
         let t = InferType::Var(7);
         let poly = Poly {
-            binders: vec![TyVar { id: 7, kind: VarKind::Type }],
+            binders: vec![TyVar {
+                id: 7,
+                kind: VarKind::Type,
+            }],
             ty: InferType::Fun(
                 vec![t.clone()],
                 Box::new(t.clone()),
@@ -1627,7 +1642,9 @@ pub fn free_vars_into(t: &Term, out: &mut std::collections::HashSet<Var>) {
                     bound.truncate(before);
                 }
             }
-            Term::Handle { body, clauses, ret, .. } => {
+            Term::Handle {
+                body, clauses, ret, ..
+            } => {
                 go(body, bound, out);
                 for c in clauses {
                     bound.push(c.param);
@@ -1668,4 +1685,3 @@ pub fn pat_vars(p: &Pat, out: &mut Vec<Var>) {
         }
     }
 }
-

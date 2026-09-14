@@ -82,9 +82,7 @@ fn record_declaration() {
 
 #[test]
 fn function_type_in_field() {
-    insta::assert_snapshot!(parse_ast(
-        "data Thunk a = Thunk (() -> a)\n"
-    ));
+    insta::assert_snapshot!(parse_ast("data Thunk a = Thunk (() -> a)\n"));
 }
 
 #[test]

@@ -64,11 +64,11 @@
 //! that provably neither escapes nor outlives its call can live in registers.
 //! The second keeps the effects story intact and is the one worth doing.
 
-use meadow_bytecode::{Const, Instr, Op, Pc, Program, Reg};
+use meadow_bytecode::{Const, GcMap, Held, Instr, NO_MAP, Op, Pc, Program, Reg};
 use meadow_core::{Lit, Prim};
 use meadow_intern::InternedString;
 use meadow_seq as seq;
-use meadow_seq::{Block, Extern, Label, Name, Statement};
+use meadow_seq::{Block, Extern, Label, Name, Rep, Statement};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +168,11 @@ struct Gen<'a> {
 
     max_reg: usize,
     debug: Option<Recorder>,
+    /// Register maps for the instructions that may collect, each stored once.
+    gc_maps: Vec<GcMap>,
+    gc_index: HashMap<GcMap, u32>,
+    /// `(pc, map)` per such instruction.
+    gc_at: Vec<(usize, u32)>,
 }
 
 impl<'a> Gen<'a> {
@@ -189,6 +194,9 @@ impl<'a> Gen<'a> {
             label_region: HashMap::new(),
             max_reg: 1,
             debug: None,
+            gc_maps: Vec::new(),
+            gc_index: HashMap::new(),
+            gc_at: Vec::new(),
         }
     }
 
@@ -219,18 +227,15 @@ impl<'a> Gen<'a> {
             }
             // A region is entered with its parameters in r0..rn — that is what
             // `jump` and `invoke` arrange.
-            let vals: Vec<Reg> = (0..block.params.len() as u16)
-                .map(|i| i as Reg)
-                .collect();
+            let vals: Vec<Reg> = (0..block.params.len() as u16).map(|i| i as Reg).collect();
             self.track(block.params.len());
             self.emit_block(block, &vals)?;
         }
 
         for (at, region) in &self.fixups {
-            let pc = self.region_pc[*region]
-                .ok_or_else(|| Error {
-                    msg: "a block was referenced but never emitted".into(),
-                })?;
+            let pc = self.region_pc[*region].ok_or_else(|| Error {
+                msg: "a block was referenced but never emitted".into(),
+            })?;
             self.code[*at].imm = pc;
         }
 
@@ -320,8 +325,14 @@ impl<'a> Gen<'a> {
             })
         });
 
+        let mut gc_at = vec![NO_MAP; self.code.len()];
+        for (pc, map) in &self.gc_at {
+            gc_at[*pc] = *map;
+        }
         Ok(Program {
             debug,
+            gc_maps: self.gc_maps,
+            gc_at,
             code: self.code,
             consts: self.consts,
             methods,
@@ -336,6 +347,65 @@ impl<'a> Gen<'a> {
             entry,
             regs: self.max_reg as u16,
         })
+    }
+
+    // --- what registers hold ---------------------------------------------
+
+    /// What the value named `n` is, as the collector cares.
+    fn held(&self, n: Name) -> Held {
+        match self.seq.reps.get(&n) {
+            Some(Rep::Ref) => Held::Ref,
+            Some(Rep::Int | Rep::Float | Rep::Bits | Rep::Str) => Held::Scalar,
+            Some(Rep::Var(v)) => Held::Var(*v),
+            // A program lowered without representations, or a name the
+            // lowering could not type: the collector has to look.
+            Some(Rep::Unknown) | None => Held::Var(u32::MAX),
+        }
+    }
+
+    /// What register `r` holds, going by the name the environment gives it.
+    fn held_in(&self, env: &Env, r: Reg) -> Held {
+        env.iter()
+            .find(|(_, x)| *x == r)
+            .map_or(Held::Var(u32::MAX), |(n, _)| self.held(*n))
+    }
+
+    /// The window `gather` filled for `srcs` at `base`, if it had to: copies of
+    /// what the sources hold.
+    fn gathered(&self, env: &Env, srcs: &[Reg], base: Reg) -> Vec<(Reg, Held)> {
+        if run_of(srcs) == Some(base) {
+            return Vec::new();
+        }
+        srcs.iter()
+            .enumerate()
+            .map(|(i, s)| (base + i as Reg, self.held_in(env, *s)))
+            .collect()
+    }
+
+    /// The instruction just emitted may collect: record what every register
+    /// the environment names holds there, and `extra` -- a window gathered for
+    /// it, or a register it writes before it reads.
+    fn safepoint(&mut self, env: &Env, extra: &[(Reg, Held)]) {
+        let mut regs: std::collections::BTreeMap<Reg, Held> = std::collections::BTreeMap::new();
+        for (n, r) in env {
+            regs.insert(*r, self.held(*n));
+        }
+        for (r, h) in extra {
+            regs.insert(*r, *h);
+        }
+        let map = GcMap {
+            regs: regs.into_iter().collect(),
+        };
+        let id = match self.gc_index.get(&map) {
+            Some(id) => *id,
+            None => {
+                let id = self.gc_maps.len() as u32;
+                self.gc_index.insert(map.clone(), id);
+                self.gc_maps.push(map);
+                id
+            }
+        };
+        self.gc_at.push((self.code.len() - 1, id));
     }
 
     // --- tables -----------------------------------------------------------
@@ -598,6 +668,8 @@ impl<'a> Gen<'a> {
                 let dst = self.free(&env)?;
                 let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::MakeData, dst, base, n, *tag));
+                let window = self.gathered(&env, &srcs, base);
+                self.safepoint(&env, &window);
                 let mut env = env;
                 env.insert(0, (*name, dst));
                 self.emit_stmt(rest, env)
@@ -657,6 +729,8 @@ impl<'a> Gen<'a> {
                 let dst = self.free(&env)?;
                 let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::Closure, dst, base, ncap, table_id));
+                let window = self.gathered(&env, &srcs, base);
+                self.safepoint(&env, &window);
                 let mut env = env;
                 env.insert(0, (*name, dst));
                 self.emit_stmt(rest, env)
@@ -670,13 +744,7 @@ impl<'a> Gen<'a> {
                 let method = u8::try_from(*tag).map_err(|_| Error {
                     msg: format!("method {tag} does not fit an invoke operand"),
                 })?;
-                self.emit(Instr::new(
-                    Op::Invoke,
-                    obj,
-                    method,
-                    base,
-                    srcs.len() as u32,
-                ));
+                self.emit(Instr::new(Op::Invoke, obj, method, base, srcs.len() as u32));
                 Ok(())
             }
 
@@ -711,7 +779,10 @@ impl<'a> Gen<'a> {
             }
             Extern::BranchPrim(p) => {
                 let [x, y] = srcs else {
-                    return err(format!("a branch on {p:?} needs 2 arguments, got {}", srcs.len()));
+                    return err(format!(
+                        "a branch on {p:?} needs 2 arguments, got {}",
+                        srcs.len()
+                    ));
                 };
                 fusable(*p)?;
                 let id = self.prim(*p);
@@ -720,16 +791,25 @@ impl<'a> Gen<'a> {
             }
             Extern::BranchPrimK(p, l) => {
                 let [x] = srcs else {
-                    return err(format!("a branch on {p:?} needs 1 argument, got {}", srcs.len()));
+                    return err(format!(
+                        "a branch on {p:?} needs 1 argument, got {}",
+                        srcs.len()
+                    ));
                 };
                 fusable(*p)?;
                 let id = self.prim(*p);
                 let k = self.konst(constant(l));
+                // Loading the constant may allocate -- a `BigInt` -- so both
+                // ways can collect.
                 match u8::try_from(k) {
-                    Ok(k) => self.emit(Instr::new(Op::JumpUnlessPrimK, *x, k, prim_byte(id)?, 0)),
+                    Ok(k) => {
+                        self.emit(Instr::new(Op::JumpUnlessPrimK, *x, k, prim_byte(id)?, 0));
+                        self.safepoint(env, &[]);
+                    }
                     Err(_) => {
                         let tmp = self.free(env)?;
                         self.emit(Instr::ai(Op::Const, tmp, k));
+                        self.safepoint(env, &[]);
                         self.emit(Instr::new(Op::JumpUnlessPrim, *x, tmp, prim_byte(id)?, 0));
                     }
                 }
@@ -751,7 +831,10 @@ impl<'a> Gen<'a> {
         // environment.
         if op.is_branch() {
             let [on_false, on_true] = blocks else {
-                return err(format!("a branch needs 2 continuations, got {}", blocks.len()));
+                return err(format!(
+                    "a branch needs 2 continuations, got {}",
+                    blocks.len()
+                ));
             };
             let srcs = args
                 .iter()
@@ -783,6 +866,7 @@ impl<'a> Gen<'a> {
             Extern::Lit(l) => {
                 let k = self.konst(constant(l));
                 self.emit(Instr::ai(Op::Const, dst, k));
+                self.safepoint(&env, &[]);
             }
             Extern::Native(effect, op) => {
                 let [x] = srcs[..] else {
@@ -790,6 +874,7 @@ impl<'a> Gen<'a> {
                 };
                 let id = self.op(*effect, *op);
                 self.emit(Instr::new(Op::Native, dst, x, 0, id));
+                self.safepoint(&env, &[]);
             }
             Extern::Prim(p) => {
                 let id = self.prim(*p);
@@ -798,12 +883,20 @@ impl<'a> Gen<'a> {
                 // primitives — it is not worth a fourth operand field that
                 // every other instruction would carry unused.
                 match srcs[..] {
-                    [x] => self.emit(Instr::new(Op::Prim1, dst, x, 0, id)),
-                    [x, y] => self.emit(Instr::new(Op::Prim2, dst, x, y, id)),
+                    [x] => {
+                        self.emit(Instr::new(Op::Prim1, dst, x, 0, id));
+                        self.safepoint(&env, &[]);
+                    }
+                    [x, y] => {
+                        self.emit(Instr::new(Op::Prim2, dst, x, y, id));
+                        self.safepoint(&env, &[]);
+                    }
                     _ => {
                         let n = srcs.len() as u8;
                         let base = self.gather(&env, &srcs)?;
                         self.emit(Instr::new(Op::Prim, dst, base, n, id));
+                        let window = self.gathered(&env, &srcs, base);
+                        self.safepoint(&env, &window);
                     }
                 }
             }
@@ -826,7 +919,21 @@ impl<'a> Gen<'a> {
                 }
                 let id = self.prim(*p);
                 let k = self.konst(constant(l));
-                self.emit(Instr::new(Op::PrimK, dst, x, prim_byte(id)?, k));
+                if matches!(l, Lit::BigInt(_)) {
+                    // Loading a `BigInt` allocates, and the destination is not
+                    // written until it has: there is no register to hold it
+                    // then. So it gets a register of its own.
+                    let tmp = self.window(&env, 1)?;
+                    self.emit(Instr::ai(Op::Const, tmp, k));
+                    self.safepoint(&env, &[]);
+                    self.emit(Instr::new(Op::Prim2, dst, x, tmp, id));
+                    self.safepoint(&env, &[(tmp, Held::Ref)]);
+                } else {
+                    self.emit(Instr::new(Op::PrimK, dst, x, prim_byte(id)?, k));
+                    // The constant waits in the destination while the
+                    // primitive runs.
+                    self.safepoint(&env, &[(dst, Held::Scalar)]);
+                }
             }
             Extern::Array => {
                 let n = u8::try_from(srcs.len()).map_err(|_| Error {
@@ -834,6 +941,8 @@ impl<'a> Gen<'a> {
                 })?;
                 let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::MakeArray, dst, base, n, 0));
+                let window = self.gathered(&env, &srcs, base);
+                self.safepoint(&env, &window);
             }
             Extern::Record(fields) => {
                 let n = u8::try_from(srcs.len()).map_err(|_| Error {
@@ -843,6 +952,8 @@ impl<'a> Gen<'a> {
                 self.shapes.push(fields.clone());
                 let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::MakeRecord, dst, base, n, id));
+                let window = self.gathered(&env, &srcs, base);
+                self.safepoint(&env, &window);
             }
             Extern::Select(l) => {
                 let id = self.label(*l);
@@ -851,6 +962,7 @@ impl<'a> Gen<'a> {
             Extern::Extend(l) => {
                 let id = self.label(*l);
                 self.emit(Instr::new(Op::Extend, dst, srcs[0], srcs[1], id));
+                self.safepoint(&env, &[]);
             }
             Extern::Field(i) => {
                 self.emit(Instr::new(Op::Field, dst, srcs[0], 0, *i as u32));

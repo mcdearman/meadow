@@ -138,7 +138,7 @@ fn a_qualified_constructor_needs_no_use() {
          def main = (rank Colour.Blue, Colour.Red == Colour.Red)\n"
     );
     assert_eq!(errors(&src), "");
-    assert_eq!(eval_main(&src), "(3, true)");
+    assert_eq!(eval_main(&src), "(3, True)");
 }
 
 #[test]
@@ -334,7 +334,7 @@ fn a_dependencys_constructors_need_a_use_even_when_the_type_is_in_scope() {
 fn the_preludes_constructors_are_bare_everywhere() {
     let src = "fun f m = match m with | Just x -> Ok x | None -> Err \"none\"\n\
                def main = (f (Just 1), compare 1 2 == Less, True, [1; 2])\n";
-    assert_eq!(eval_main_std(src), "(Ok(1), true, true, [1; 2])");
+    assert_eq!(eval_main_std(src), "(Ok(1), True, True, [1; 2])");
 }
 
 #[test]

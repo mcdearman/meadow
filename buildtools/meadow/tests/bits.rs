@@ -39,8 +39,8 @@ fn a_shift_amount_is_an_int_whatever_is_shifted() {
 #[test]
 fn std_bits_helpers() {
     insta::assert_snapshot!(eval_expr_std("toInt (lowMask 8)"), @"255");
-    insta::assert_snapshot!(eval_expr_std("testBit 5 0"), @"true");
-    insta::assert_snapshot!(eval_expr_std("testBit 5 1"), @"false");
+    insta::assert_snapshot!(eval_expr_std("testBit 5 0"), @"True");
+    insta::assert_snapshot!(eval_expr_std("testBit 5 1"), @"False");
     insta::assert_snapshot!(eval_expr_std("setBit 0 3"), @"8");
     insta::assert_snapshot!(eval_expr_std("clearBit 15 1"), @"13");
     insta::assert_snapshot!(eval_expr_std("flipBit 0 5"), @"32");

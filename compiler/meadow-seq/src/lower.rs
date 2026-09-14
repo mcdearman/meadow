@@ -157,9 +157,8 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     // Types are *not* erased: a name's representation comes from its type,
     // and a call's type from the instantiation core wrote down. Lowering looks
     // through `TyLam` and `TyApp` itself -- see [`lam_spine`] and [`call_spine`].
-    let program = &core::globals::program(&core::bools::program(&core::specialize::program(
-        program,
-    )));
+    let program =
+        &core::globals::program(&core::bools::program(&core::specialize::program(program)));
     let mut globals = HashMap::new();
     for (i, d) in program.defs.iter().enumerate() {
         globals.insert(d.var, (Label(i as u32), Vec::new()));
@@ -190,6 +189,10 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         binders(&d.term, &mut lower.polys);
     }
     lower.ev = lower.fresh_ref();
+    // Always a constructor of the program, used or not: a runtime starting a
+    // function on a thread of its own has to hand it empty evidence, and
+    // finds the tag by name.
+    lower.tag_of(InternedString::from(EV_NONE));
 
     // A definition that is a lambda gets a second entry point, taking its
     // arguments directly. Registered before anything is lowered, so a call can
@@ -282,7 +285,6 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         }
     }
 
-
     // Lifted `letrec` blocks are pushed as they are discovered, so a definition
     // arrives after the blocks lifted out of it. Sorting by label puts the
     // table back in the order the labels read, which is what a dump should show.
@@ -348,7 +350,6 @@ fn const_operand(p: core::Prim, args: &[Term]) -> Option<(Term, core::Lit)> {
         _ => None,
     }
 }
-
 
 struct Lower {
     next_name: u32,
@@ -654,7 +655,9 @@ impl Lower {
                 xs.iter().any(|x| self.needs_ev(x))
             }
             Term::Record(fs) => fs.iter().any(|(_, x)| self.needs_ev(x)),
-            Term::Case(s, arms, _) => self.needs_ev(s) || arms.iter().any(|(_, b)| self.needs_ev(b)),
+            Term::Case(s, arms, _) => {
+                self.needs_ev(s) || arms.iter().any(|(_, b)| self.needs_ev(b))
+            }
         }
     }
 
@@ -781,10 +784,7 @@ impl Lower {
             // Erased before this pass runs.
             Term::TyLam(..) | Term::TyApp(..) => false,
             Term::Lam(..) => true,
-            Term::Prim(_, xs, _)
-            | Term::Ctor(_, _, xs)
-            | Term::Tuple(xs)
-            | Term::Array(xs, _) => {
+            Term::Prim(_, xs, _) | Term::Ctor(_, _, xs) | Term::Tuple(xs) | Term::Array(xs, _) => {
                 xs.iter().all(|x| self.simple(x, env))
             }
             Term::Record(fs) => fs.iter().all(|(_, t)| self.simple(t, env)),
@@ -1130,7 +1130,9 @@ impl Lower {
 
             Term::Lit(l) => {
                 let ty = Some(lit_type(l));
-                self.produces(Extern::Lit(l.clone()), vec![], env, ty, |this, x, _| this.ret(k, x))
+                self.produces(Extern::Lit(l.clone()), vec![], env, ty, |this, x, _| {
+                    this.ret(k, x)
+                })
             }
 
             // Codata with one method: the argument, and where to send the answer.
@@ -1156,18 +1158,23 @@ impl Lower {
                 let args: Vec<Term> = args.into_iter().cloned().collect();
                 let ev = self.worker_ev.contains(&f).then_some(self.ev);
                 let base: HashSet<Var> = [k].into_iter().chain(ev).collect();
-                self.bind_all(&args, env, &base, Box::new(move |_this, names, _env| {
-                    let mut sel = names;
-                    sel.push(k);
-                    sel.extend(ev);
-                    Statement::Substitute(
-                        sel.clone(),
-                        Box::new(Block {
-                            params: sel,
-                            body: Statement::Jump(worker),
-                        }),
-                    )
-                }))
+                self.bind_all(
+                    &args,
+                    env,
+                    &base,
+                    Box::new(move |_this, names, _env| {
+                        let mut sel = names;
+                        sel.push(k);
+                        sel.extend(ev);
+                        Statement::Substitute(
+                            sel.clone(),
+                            Box::new(Block {
+                                params: sel,
+                                body: Statement::Jump(worker),
+                            }),
+                        )
+                    }),
+                )
             }
 
             // Calling is arranging `[f, arg, k]` and invoking: the object drops
@@ -1373,7 +1380,9 @@ impl Lower {
             Term::Array(items, _) => {
                 let ty = self.type_of(e);
                 self.sequence(items, env, k, move |this, xs, env1| {
-                    this.produces(Extern::Array, xs, &env1, ty, |this, out, _| this.ret(k, out))
+                    this.produces(Extern::Array, xs, &env1, ty, |this, out, _| {
+                        this.ret(k, out)
+                    })
                 })
             }
 
@@ -1467,14 +1476,15 @@ impl Lower {
                 )
             }
 
-            Term::Handle { body, clauses, ret, .. } => self.handle(body, clauses, ret.as_ref(), env, k),
+            Term::Handle {
+                body, clauses, ret, ..
+            } => self.handle(body, clauses, ret.as_ref(), env, k),
 
             // A term the front end could not build. Lowering it to a statement
             // that fails is the faithful translation, not a gap.
             Term::Error => Statement::Error("ill-formed term"),
         }
     }
-
 
     /// Is this a saturated call to a definition with a direct entry point?
     ///
@@ -1514,13 +1524,7 @@ impl Lower {
     /// half-way through a nested pattern can restore the whole environment by
     /// invoking one object — including the scrutinee, which a `switch` in the
     /// middle of the arm will have consumed.
-    fn case(
-        &mut self,
-        s: Name,
-        arms: &[(Pat, Term)],
-        live: Vec<Name>,
-        k: Name,
-    ) -> Statement {
+    fn case(&mut self, s: Name, arms: &[(Pat, Term)], live: Vec<Name>, k: Name) -> Statement {
         if let Some(tree) = self
             .opt
             .case_trees()
@@ -1810,15 +1814,23 @@ impl Lower {
                         Some(((label, p), rest)) => {
                             let of = this.type_of_name(subject);
                             let ty = Lower::label_type(of.as_ref(), *label);
-                            this.produces(Extern::Select(*label), vec![subject], &env, ty, |this, x, env1| {
-                                this.match_pat(
-                                    p,
-                                    x,
-                                    env1,
-                                    fail,
-                                    Box::new(move |this, env2| go(this, rest, subject, env2, fail, ok)),
-                                )
-                            })
+                            this.produces(
+                                Extern::Select(*label),
+                                vec![subject],
+                                &env,
+                                ty,
+                                |this, x, env1| {
+                                    this.match_pat(
+                                        p,
+                                        x,
+                                        env1,
+                                        fail,
+                                        Box::new(move |this, env2| {
+                                            go(this, rest, subject, env2, fail, ok)
+                                        }),
+                                    )
+                                },
+                            )
                         }
                     }
                 }
@@ -1856,11 +1868,17 @@ impl Lower {
                 Some(core::Ty::Con(_, args)) => args.first().cloned(),
                 _ => None,
             };
-            this.produces(Extern::Field(i), vec![subject], &env, ty, move |this, x, env1| {
-                let mut got = got;
-                got.push((i, x));
-                go(this, subs, i + 1, subject, env1, got, fail, ok)
-            })
+            this.produces(
+                Extern::Field(i),
+                vec![subject],
+                &env,
+                ty,
+                move |this, x, env1| {
+                    let mut got = got;
+                    got.push((i, x));
+                    go(this, subs, i + 1, subject, env1, got, fail, ok)
+                },
+            )
         }
         go(self, subs, 0, subject, env, Vec::new(), fail, ok)
     }
@@ -1976,10 +1994,7 @@ impl Lower {
                 body: Statement::Switch {
                     scrutinee: e,
                     arms,
-                    default: Box::new(Block {
-                        params,
-                        body: none,
-                    }),
+                    default: Box::new(Block { params, body: none }),
                 },
             },
         });
@@ -2076,9 +2091,13 @@ impl Lower {
         env: &[Name],
         res_ty: Option<core::Ty>,
     ) -> Statement {
-        self.produces(Extern::Native(effect, op), vec![av], env, res_ty, |this, out, _| {
-            this.ret(k, out)
-        })
+        self.produces(
+            Extern::Native(effect, op),
+            vec![av],
+            env,
+            res_ty,
+            |this, out, _| this.ret(k, out),
+        )
     }
 
     /// The method of a resumption capturing `[taken, k, target]`, called with a
@@ -2179,8 +2198,7 @@ impl Lower {
                     (captures, params, body)
                 }
                 None => {
-                    let captures =
-                        restrict(&cur, &self.wants(&[&c.body], &[c.param, c.resume]));
+                    let captures = restrict(&cur, &self.wants(&[&c.body], &[c.param, c.resume]));
                     let kh = self.function_return();
                     let mut params = captures.clone();
                     params.push(c.param);
@@ -2314,15 +2332,19 @@ fn binders(t: &Term, out: &mut HashMap<Var, core::Poly>) {
                 out.insert(*v, core::Poly::mono(ty.clone()));
                 pat(sub, out);
             }
-            Pat::Tuple(ps) | Pat::Array(ps) | Pat::Ctor(_, ps) => ps.iter().for_each(|p| pat(p, out)),
+            Pat::Tuple(ps) | Pat::Array(ps) | Pat::Ctor(_, ps) => {
+                ps.iter().for_each(|p| pat(p, out))
+            }
             Pat::Record(fs) => fs.iter().for_each(|(_, p)| pat(p, out)),
         }
     }
     match t {
         Term::Var(_) | Term::Lit(_) | Term::Error => {}
-        Term::Loc(_, b) | Term::TyLam(_, b) | Term::TyApp(b, _) | Term::Proj(b, _) | Term::Sel(b, _, _) => {
-            binders(b, out)
-        }
+        Term::Loc(_, b)
+        | Term::TyLam(_, b)
+        | Term::TyApp(b, _)
+        | Term::Proj(b, _)
+        | Term::Sel(b, _, _) => binders(b, out),
         Term::Lam(v, ty, b) => {
             out.insert(*v, core::Poly::mono(ty.clone()));
             binders(b, out);
@@ -2360,7 +2382,9 @@ fn binders(t: &Term, out: &mut HashMap<Var, core::Poly>) {
                 binders(b, out);
             }
         }
-        Term::Handle { body, clauses, ret, .. } => {
+        Term::Handle {
+            body, clauses, ret, ..
+        } => {
             binders(body, out);
             for c in clauses {
                 out.insert(c.param, core::Poly::mono(c.param_ty.clone()));
@@ -2485,7 +2509,9 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
                 mentions(t, out);
             }
         }
-        Term::Handle { body, clauses, ret, .. } => {
+        Term::Handle {
+            body, clauses, ret, ..
+        } => {
             mentions(body, out);
             for c in clauses {
                 out.insert(c.param);

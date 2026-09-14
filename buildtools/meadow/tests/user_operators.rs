@@ -10,7 +10,10 @@ use common::{errors, eval_expr_std, eval_main, eval_main_std, parse_ast, schemes
 
 #[test]
 fn the_prelude_concatenates_strings_with_it() {
-    assert_eq!(eval_expr_std(r#""hello" ++ ", " ++ "world""#), r#""hello, world""#);
+    assert_eq!(
+        eval_expr_std(r#""hello" ++ ", " ++ "world""#),
+        r#""hello, world""#
+    );
     assert_eq!(eval_expr_std(r#"(++) "a" "b""#), r#""ab""#);
 }
 
@@ -19,7 +22,7 @@ fn it_binds_looser_than_application_and_tighter_than_comparison() {
     assert_eq!(eval_expr_std(r#""n=" ++ show 42"#), r#""n=42""#);
     assert_eq!(
         eval_expr_std(r#"("x" ++ "y" == "xy", "a" ++ "b" != "ab")"#),
-        "(true, false)"
+        "(True, False)"
     );
 }
 
@@ -48,7 +51,10 @@ fn it_is_imported_like_any_other_name() {
     // Bare in the list, or in its own parentheses.
     for list in ["(++)", "((++))"] {
         let user = format!("use Ops {list}\ndef main = 1 ++ 2\n");
-        assert_eq!(unit_errors(&[("", "mod Ops\n"), ("Ops", def), ("Main", &user)]), "");
+        assert_eq!(
+            unit_errors(&[("", "mod Ops\n"), ("Ops", def), ("Main", &user)]),
+            ""
+        );
     }
     // Not imported, not in scope.
     let user = "def main = 1 ++ 2\n";
@@ -68,5 +74,8 @@ fn without_a_definition_it_is_unbound() {
 fn other_operators_cannot_be_bound() {
     // Only the operators in `USER_OPERATORS` are names; the rest are primitives.
     let ast = parse_ast("fun (<>) a b = a\n");
-    assert!(ast.starts_with("parse failed") && ast.contains("<>"), "got: {ast}");
+    assert!(
+        ast.starts_with("parse failed") && ast.contains("<>"),
+        "got: {ast}"
+    );
 }

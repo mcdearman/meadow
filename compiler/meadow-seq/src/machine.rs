@@ -63,10 +63,10 @@
 //!   operation is an error here; the CEK discharges it against the real world.
 //!   `Test.fail` is the exception, because a test runner needs it.
 
+use crate::{Block, Extern, Name, Program, Rep, Statement, Tag};
 use meadow_core::num::{self, Arith, Bits, Cmp, IntTarget, Num, Width};
 use meadow_core::{Lit, Prim};
 use meadow_intern::InternedString;
-use crate::{Block, Extern, Name, Program, Rep, Statement, Tag};
 use num_bigint::BigInt;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -253,7 +253,10 @@ impl<'p> Machine<'p> {
             },
             Prim::Once => Ok(Value::Ref(Rc::new(RefCell::new(Value::Bool(false))))),
             Prim::TakeOnce => match &vals[0] {
-                Value::Ref(cell) => Ok(Value::Bool(!matches!(cell.replace(Value::Bool(true)), Value::Bool(true)))),
+                Value::Ref(cell) => Ok(Value::Bool(!matches!(
+                    cell.replace(Value::Bool(true)),
+                    Value::Bool(true)
+                ))),
                 other => err(format!("takeOnce: expected a flag, got {}", kind(other))),
             },
             Prim::GlobalSet => {
@@ -452,7 +455,10 @@ impl<'p> Machine<'p> {
         // environment, which is why `if` needs no statement of its own.
         if op.is_branch() {
             let [on_false, on_true] = blocks else {
-                return err(format!("a branch needs 2 continuations, got {}", blocks.len()));
+                return err(format!(
+                    "a branch needs 2 continuations, got {}",
+                    blocks.len()
+                ));
             };
             // The three forms differ only in where the boolean comes from: a
             // register, a comparison of two, or a comparison against a literal.
@@ -622,7 +628,10 @@ impl<'p> Machine<'p> {
             return Ok(());
         }
         let Some(&rep) = self.program.reps.get(&n) else {
-            return err(format!("{n:?} has no representation, and holds {}", kind(v)));
+            return err(format!(
+                "{n:?} has no representation, and holds {}",
+                kind(v)
+            ));
         };
         let fits = match rep {
             Rep::Ref => matches!(
@@ -668,7 +677,6 @@ impl<'p> Machine<'p> {
         out.push(']');
         out
     }
-
 }
 
 fn literal<'p>(l: &Lit) -> Value<'p> {
@@ -730,7 +738,9 @@ fn list_items<'p>(v: &Value<'p>) -> Option<Vec<Value<'p>>> {
     let mut cur = v.clone();
     loop {
         match cur {
-            Value::Data(ref n, _, ref fs) if &**n == "List.Nil" && fs.is_empty() => return Some(out),
+            Value::Data(ref n, _, ref fs) if &**n == "List.Nil" && fs.is_empty() => {
+                return Some(out);
+            }
             Value::Data(ref n, _, ref fs) if &**n == "List.Cons" && fs.len() == 2 => {
                 out.push(fs[0].clone());
                 let next = fs[1].clone();
@@ -885,7 +895,7 @@ pub fn value_eq<'p>(a: &Value<'p>, b: &Value<'p>) -> bool {
 /// `hash`, fed to [`meadow_core::hash::Hasher`] in the order every engine uses:
 /// a value's head, then its parts left to right.
 fn hash_value(v: &Value) -> Result<i64, Error> {
-    use meadow_core::hash::{unhashable, Hasher};
+    use meadow_core::hash::{Hasher, unhashable};
     enum Work<'p> {
         Val(Value<'p>),
         Label(String),
@@ -901,7 +911,11 @@ fn hash_value(v: &Value) -> Result<i64, Error> {
             Work::Val(v) => v,
         };
         match &v {
-            Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Word(..) | Value::Float32(_) => {
+            Value::Int(_)
+            | Value::BigInt(_)
+            | Value::Float(_)
+            | Value::Word(..)
+            | Value::Float32(_) => {
                 num::hash_into(&mut h, &to_num(&v).expect("a number"));
             }
             Value::Bool(b) => h.bool(*b),
@@ -925,8 +939,10 @@ fn hash_value(v: &Value) -> Result<i64, Error> {
             }
             Value::Record(fields) => {
                 h.record(fields.len());
-                let mut sorted: Vec<(String, Value)> =
-                    fields.iter().map(|(l, v)| (l.to_string(), v.clone())).collect();
+                let mut sorted: Vec<(String, Value)> = fields
+                    .iter()
+                    .map(|(l, v)| (l.to_string(), v.clone()))
+                    .collect();
                 sorted.sort_by(|a, b| a.0.cmp(&b.0));
                 for (label, value) in sorted.into_iter().rev() {
                     stack.push(Work::Val(value));
@@ -962,9 +978,11 @@ fn prim<'p>(
     // for knowing.
     let op = op.untyped();
 
-    let n = |i: usize| to_num(&args[i]).ok_or_else(|| Error {
-        msg: format!("expected a number, got {}", args[i]),
-    });
+    let n = |i: usize| {
+        to_num(&args[i]).ok_or_else(|| Error {
+            msg: format!("expected a number, got {}", args[i]),
+        })
+    };
     let done = |r: Result<Num, String>| r.map(from_num).map_err(|msg| Error { msg });
     let truth = |r: Result<bool, String>| r.map(Value::Bool).map_err(|msg| Error { msg });
     let data = |name: &str, fields: Vec<Value<'p>>| {
@@ -1068,7 +1086,9 @@ fn prim<'p>(
         // --- text and bytes ---------------------------------------------------
         StringToBytes => match &args[0] {
             Value::Str(s) => Ok(Value::Array(Rc::new(
-                s.bytes().map(|b| Value::Word(Width::U8, b as u64)).collect(),
+                s.bytes()
+                    .map(|b| Value::Word(Width::U8, b as u64))
+                    .collect(),
             ))),
             other => err(format!("`stringToBytes` expects a String, got {other}")),
         },
@@ -1133,7 +1153,9 @@ fn prim<'p>(
                 for v in xs.iter() {
                     match v {
                         Value::Char(c) => out.push(*c),
-                        other => return err(format!("charsToString: expected a Char, got {other}")),
+                        other => {
+                            return err(format!("charsToString: expected a Char, got {other}"));
+                        }
                     }
                 }
                 Ok(Value::Str(InternedString::from(out)))
@@ -1157,13 +1179,17 @@ fn prim<'p>(
 
         // --- the mutable array ------------------------------------------------
         RunSt => err("runSt reached the machine; lowering applies its body"),
-        StNewArray => match &args[0] {
-            Value::Int(n) if *n >= 0 => Ok(Value::MutArray(Rc::new(RefCell::new(vec![
+        StNewArray => {
+            match &args[0] {
+                Value::Int(n) if *n >= 0 => Ok(Value::MutArray(Rc::new(RefCell::new(vec![
                 args[1].clone();
                 *n as usize
             ])))),
-            other => err(format!("stNewArray: expected a length of zero or more, got {other}")),
-        },
+                other => err(format!(
+                    "stNewArray: expected a length of zero or more, got {other}"
+                )),
+            }
+        }
         StGetArray => {
             let cells = as_mut_array(&args[0])?;
             let i = as_index(&args[1])?;
@@ -1186,7 +1212,9 @@ fn prim<'p>(
             }
         }
         StArrayLen => Ok(Value::Int(as_mut_array(&args[0])?.borrow().len() as i64)),
-        StFreeze => Ok(Value::Array(Rc::new(as_mut_array(&args[0])?.borrow().clone()))),
+        StFreeze => Ok(Value::Array(Rc::new(
+            as_mut_array(&args[0])?.borrow().clone(),
+        ))),
         StThaw => match &args[0] {
             Value::Array(xs) => Ok(Value::MutArray(Rc::new(RefCell::new((**xs).clone())))),
             other => err(format!("stThaw: expected an Array, got {other}")),
@@ -1213,7 +1241,9 @@ fn prim<'p>(
         }
         StmNew | StmRead | StmWrite | StmBegin | StmCommit | StmWait | StmNest | StmMerge
         | StmRollback => err("transactions are not supported by the sequent machine"),
-        GlobalReady | GlobalGet | GlobalSet => err("a definition cache reached a primitive with no machine"),
+        GlobalReady | GlobalGet | GlobalSet => {
+            err("a definition cache reached a primitive with no machine")
+        }
         Once | TakeOnce => err("a resumption's flag reached a primitive with no machine"),
         IntAdd | IntSub | IntMul | IntDiv | IntMod | IntEq | IntNe | IntLt | IntLe | IntGt
         | IntGe | FloatAdd | FloatSub | FloatMul | FloatDiv | FloatEq | FloatNe | FloatLt
@@ -1398,7 +1428,7 @@ impl std::fmt::Display for Value<'_> {
             Value::Float(x) => f.write_str(&meadow_core::fmt_float(*x)),
             Value::Word(w, b) => write!(f, "{}", w.value(*b)),
             Value::Float32(x) => f.write_str(&num::fmt_float32(*x)),
-            Value::Bool(b) => write!(f, "{b}"),
+            Value::Bool(b) => f.write_str(if *b { "True" } else { "False" }),
             Value::Str(s) => write!(f, "{:?}", &**s),
             Value::Char(c) => write!(f, "{c:?}"),
             Value::Unit => f.write_str("()"),

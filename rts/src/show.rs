@@ -16,8 +16,8 @@
 //! which is the same reason the CEK's versions are iterative — a list is as deep
 //! as it is long.
 
-use crate::heap::Kind;
 use crate::Error;
+use crate::heap::Kind;
 use crate::value::Value;
 use crate::vm::Vm;
 
@@ -178,9 +178,8 @@ impl Vm<'_> {
                 let _ = write!(out, "{}", w.value(b));
             }
             Value::Float32(x) => out.push_str(&meadow_core::num::fmt_float32(x)),
-            Value::Bool(b) => {
-                let _ = write!(out, "{b}");
-            }
+            // Printed as the constructors a program names them by.
+            Value::Bool(b) => out.push_str(if b { "True" } else { "False" }),
             Value::Str(s) => {
                 let _ = write!(out, "{:?}", &*s);
             }
@@ -298,7 +297,7 @@ impl Vm<'_> {
     /// `hash`, fed to [`meadow_core::hash::Hasher`] in the order every engine
     /// uses: a value's head, then its parts left to right.
     pub fn hash_value(&self, v: Value) -> Result<i64, Error> {
-        use meadow_core::hash::{unhashable, Hasher};
+        use meadow_core::hash::{Hasher, unhashable};
         enum Work {
             Val(Value),
             Label(String),
@@ -376,20 +375,46 @@ impl Vm<'_> {
                 }
                 Kind::BigInt => match self.bigint_at(v) {
                     Some(b) => meadow_core::num::hash_into(&mut h, &meadow_core::num::Num::Big(b)),
-                    None => return Err(Error { msg: "hash: a malformed BigInt".into() }),
+                    None => {
+                        return Err(Error {
+                            msg: "hash: a malformed BigInt".into(),
+                        });
+                    }
                 },
-                Kind::Ref => return Err(Error { msg: unhashable("a Ref") }),
-                Kind::MutArray => return Err(Error { msg: unhashable("a mutable array") }),
+                Kind::Ref => {
+                    return Err(Error {
+                        msg: unhashable("a Ref"),
+                    });
+                }
+                Kind::MutArray => {
+                    return Err(Error {
+                        msg: unhashable("a mutable array"),
+                    });
+                }
                 Kind::Closure | Kind::Resume => {
-                    return Err(Error { msg: unhashable("a function") });
+                    return Err(Error {
+                        msg: unhashable("a function"),
+                    });
                 }
                 Kind::Compact => {
                     h.compact();
                     stack.push(Work::Val(self.heap.field(a, 0)));
                 }
-                Kind::Channel => return Err(Error { msg: unhashable("a channel") }),
-                Kind::Task => return Err(Error { msg: unhashable("a thread") }),
-                Kind::TVar => return Err(Error { msg: unhashable("a TVar") }),
+                Kind::Channel => {
+                    return Err(Error {
+                        msg: unhashable("a channel"),
+                    });
+                }
+                Kind::Task => {
+                    return Err(Error {
+                        msg: unhashable("a thread"),
+                    });
+                }
+                Kind::TVar => {
+                    return Err(Error {
+                        msg: unhashable("a TVar"),
+                    });
+                }
             }
         }
         Ok(h.finish())
@@ -496,5 +521,8 @@ impl Vm<'_> {
 
 /// An immediate number -- the cheap test, before a `BigInt` is ever read.
 fn is_number(v: Value) -> bool {
-    matches!(v, Value::Int(_) | Value::Word(..) | Value::Float(_) | Value::Float32(_))
+    matches!(
+        v,
+        Value::Int(_) | Value::Word(..) | Value::Float(_) | Value::Float32(_)
+    )
 }

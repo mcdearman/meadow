@@ -10,14 +10,14 @@ fn run_captures_output() {
         \x20 match run \"echo\" [\"hi\"] with\n\
         \x20 | Ok o -> (outputStatus o, outputStdout o, succeeded o)\n\
         \x20 | Err e -> (0 - 1, e, False)\n"
-    ), @"(0, \"hi\\n\", true)");
+    ), @"(0, \"hi\\n\", True)");
 }
 
 #[test]
 fn nonexistent_program_is_an_err() {
     insta::assert_snapshot!(eval_main_std(
         "def main = match run \"this-program-does-not-exist-xyz\" [] with | Ok o -> False | Err e -> True\n"
-    ), @"true");
+    ), @"True");
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn command_builder() {
 
 #[test]
 fn current_pid_is_positive() {
-    insta::assert_snapshot!(eval_main_std("def main = currentPid () > 0\n"), @"true");
+    insta::assert_snapshot!(eval_main_std("def main = currentPid () > 0\n"), @"True");
 }
 
 #[test]

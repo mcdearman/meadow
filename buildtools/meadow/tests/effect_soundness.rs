@@ -39,13 +39,19 @@ const LOG: &str = "effect Log { log : String -> () }\n";
 #[test]
 fn let_underscore_keeps_the_parameters_effect() {
     let src = "fun go f x = let _ = f x in ()\n";
-    assert_eq!(scheme_of(src, "go"), "forall a b e. (a -> b ! e) -> a -> () ! e");
+    assert_eq!(
+        scheme_of(src, "go"),
+        "forall a b e. (a -> b ! e) -> a -> () ! e"
+    );
 }
 
 #[test]
 fn a_named_let_keeps_the_parameters_effect() {
     let src = "fun go f x = let y = f x in ()\n";
-    assert_eq!(scheme_of(src, "go"), "forall a b e. (a -> b ! e) -> a -> () ! e");
+    assert_eq!(
+        scheme_of(src, "go"),
+        "forall a b e. (a -> b ! e) -> a -> () ! e"
+    );
 }
 
 #[test]
@@ -54,7 +60,10 @@ fn a_let_inside_a_match_arm_keeps_the_parameters_effect() {
                \x20 match xs with\n\
                \x20 | Nil -> ()\n\
                \x20 | Cons x r -> let _ = f x in each f r\n";
-    assert_eq!(scheme_of(src, "each"), "forall a b e. (a -> b ! e) -> List a -> () ! e");
+    assert_eq!(
+        scheme_of(src, "each"),
+        "forall a b e. (a -> b ! e) -> List a -> () ! e"
+    );
 }
 
 #[test]
@@ -67,7 +76,10 @@ fn a_caller_sees_the_effect_through_the_let() {
          \x20 | Cons x r -> let _ = f x in each f r\n\
          fun logAll xs = each (\\x -> log x) xs\n"
     );
-    assert_eq!(scheme_of(&src, "logAll"), "forall e. List String -> () ! { Log | e }");
+    assert_eq!(
+        scheme_of(&src, "logAll"),
+        "forall e. List String -> () ! { Log | e }"
+    );
 }
 
 #[test]
@@ -85,8 +97,14 @@ fn an_effectful_closure_is_not_accepted_as_a_pure_function() {
          def smuggled = Pure (\\xs -> each (\\x -> log x) xs)\n"
     );
     let errs = errors(&src);
-    assert!(errs.contains("type mismatch"), "expected a type error, got: {errs:?}");
-    assert!(errs.contains("Log"), "the error should name the effect, got: {errs:?}");
+    assert!(
+        errs.contains("type mismatch"),
+        "expected a type error, got: {errs:?}"
+    );
+    assert!(
+        errs.contains("Log"),
+        "the error should name the effect, got: {errs:?}"
+    );
 }
 
 #[test]
@@ -103,7 +121,8 @@ fn a_let_after_a_parameter_call_is_not_generalized() {
 
 #[test]
 fn a_let_after_an_operation_is_not_generalized() {
-    let src = format!("{LOG}fun go u = let x = (let _ = log \"hi\" in \\y -> y) in (x 1, x \"s\")\n");
+    let src =
+        format!("{LOG}fun go u = let x = (let _ = log \"hi\" in \\y -> y) in (x 1, x \"s\")\n");
     let errs = errors(&src);
     assert!(
         errs.contains("type mismatch: `String` is not an integer type"),
@@ -141,7 +160,10 @@ const COUNTER: &str = "effect Counter { next : () -> Int, reset : () -> () }\n\
 fn a_handler_missing_an_operation_leaves_its_effect_in_the_type() {
     // `reset` has no clause, so `partial` still performs `Counter`.
     let src = format!("{COUNTER}fun partial () = handle job () with {{ next () k -> k 7 }}\n");
-    assert_eq!(scheme_of(&src, "partial"), "forall e. () -> (Int, Int) ! { Counter | e }");
+    assert_eq!(
+        scheme_of(&src, "partial"),
+        "forall e. () -> (Int, Int) ! { Counter | e }"
+    );
 }
 
 #[test]
@@ -160,7 +182,10 @@ fn nested_partial_handlers_are_judged_one_at_a_time() {
     let src = format!(
         "{COUNTER}fun both () = handle (handle job () with {{ next () k -> k 7 }}) with {{ reset () k -> k () }}\n"
     );
-    assert_eq!(scheme_of(&src, "both"), "forall e. () -> (Int, Int) ! { Counter | e }");
+    assert_eq!(
+        scheme_of(&src, "both"),
+        "forall e. () -> (Int, Int) ! { Counter | e }"
+    );
 }
 
 #[test]
@@ -169,13 +194,19 @@ fn a_resumed_continuation_still_performs_the_forwarded_effect() {
     let src = format!(
         "{COUNTER}fun resumer () = handle job () with {{ next () k -> let r = k 1 in r }}\n"
     );
-    assert_eq!(scheme_of(&src, "resumer"), "forall e. () -> (Int, Int) ! { Counter | e }");
+    assert_eq!(
+        scheme_of(&src, "resumer"),
+        "forall e. () -> (Int, Int) ! { Counter | e }"
+    );
 }
 
 #[test]
 fn a_handler_with_only_a_return_clause_handles_nothing() {
     let src = format!("{LOG}fun onlyReturn () = handle log \"x\" with {{ return x -> 1 }}\n");
-    assert_eq!(scheme_of(&src, "onlyReturn"), "forall n e. () -> n ! { Log | e }");
+    assert_eq!(
+        scheme_of(&src, "onlyReturn"),
+        "forall n e. () -> n ! { Log | e }"
+    );
 }
 
 const LOG_AND_ASK: &str = "effect Log { log : String -> () }\n\
@@ -199,13 +230,19 @@ fn a_second_effects_clause_is_type_checked() {
         "{LOG_AND_ASK}fun wrong () = handle work () with {{ log m k -> k (), ask q k -> k (q + 1) }}\n"
     );
     let errs = errors(&src);
-    assert!(errs.contains("type mismatch"), "expected a type error, got: {errs:?}");
+    assert!(
+        errs.contains("type mismatch"),
+        "expected a type error, got: {errs:?}"
+    );
 }
 
 #[test]
 fn handling_one_effect_leaves_the_other() {
     let src = format!("{LOG_AND_ASK}fun quiet () = handle work () with {{ log m k -> k () }}\n");
-    assert_eq!(scheme_of(&src, "quiet"), "forall r. () -> Int ! { Ask | r }");
+    assert_eq!(
+        scheme_of(&src, "quiet"),
+        "forall r. () -> Int ! { Ask | r }"
+    );
 }
 
 #[test]

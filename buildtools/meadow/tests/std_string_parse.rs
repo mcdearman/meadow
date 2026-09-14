@@ -193,9 +193,7 @@ fn separated_and_bracketed() {
 #[test]
 fn many_till_stops_at_the_terminator() {
     assert_eq!(
-        parse(
-            "P.runParser (P.manyTill P.anySingle (P.single 59)) (P.fromString \"ab;\")"
-        ),
+        parse("P.runParser (P.manyTill P.anySingle (P.single 59)) (P.fromString \"ab;\")"),
         "Ok([97, 98])"
     );
 }
@@ -205,9 +203,7 @@ fn many_till_stops_at_the_terminator() {
 #[test]
 fn look_ahead_rewinds_on_success() {
     assert_eq!(
-        parse(
-            "P.runParserPartial (P.lookAhead (P.single 97)) (P.fromString \"ab\")"
-        ),
+        parse("P.runParserPartial (P.lookAhead (P.single 97)) (P.fromString \"ab\")"),
         "Ok((97, 0))"
     );
 }

@@ -20,4 +20,27 @@ pub fn uncompactable(what: &str) -> String {
 /// Bytes one VM heap slot takes, for the engines that can only estimate what
 /// `compactSize` would say: they count slots the way the VM lays objects out
 /// and multiply.
-pub const SLOT_BYTES: usize = 16;
+pub const SLOT_BYTES: usize = 8;
+
+/// Field descriptors a header's second word holds, before it needs more words.
+pub const INLINE_DESCS: usize = 8;
+
+/// Field descriptors in each further header word.
+pub const DESCS_PER_WORD: usize = 16;
+
+/// Slots an object of `len` fields takes in the VM: a header of two words,
+/// and -- unless all its fields share one descriptor (`uniform`: an array, a
+/// `BigInt`) -- a word of descriptors for every 16 fields past the eighth, then
+/// the fields.
+pub fn object_slots(uniform: bool, len: usize) -> usize {
+    header_slots(uniform, len) + len
+}
+
+/// The header alone: see [`object_slots`].
+pub fn header_slots(uniform: bool, len: usize) -> usize {
+    if uniform || len <= INLINE_DESCS {
+        2
+    } else {
+        2 + (len - INLINE_DESCS).div_ceil(DESCS_PER_WORD)
+    }
+}

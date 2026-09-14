@@ -40,7 +40,7 @@
 --
 -- What is left is structural rather than an oversight. A call in argument
 -- position still has to record where to come back to, and a machine with no
--- call stack has nowhere to put that but the heap -- three slots per non-tail
+-- call stack has nowhere to put that but the heap -- four words per non-tail
 -- call. Closing it needs an escape analysis, not another peephole.
 --
 -- For outside scale, the same `naiveFib 20` on the same machine on the same

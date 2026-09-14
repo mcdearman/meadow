@@ -70,6 +70,7 @@ pub mod heap;
 pub mod journal;
 pub mod mark;
 mod native;
+pub mod object;
 pub mod old;
 pub mod pauses;
 mod prims;

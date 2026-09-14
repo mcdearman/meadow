@@ -180,38 +180,42 @@ pub fn run_with_stats(
 ) -> (Result<String, String>, Option<GcStats>) {
     match engine {
         Engine::Cek => (run(program, engine, opt), None),
-        Engine::Vm => {
-            let image = match compile(program, opt) {
-                Ok(image) => image,
-                Err(e) => return (Err(e), None),
-            };
-            let Some(entry) = image.entry else {
-                return (Err("program has no entry point".to_string()), None);
-            };
-            let started = std::time::Instant::now();
-            let outcome = meadow_rts::sched::run(&image, entry, UNBOUNDED);
-            let s = outcome.stats;
-            let stats = GcStats {
-                threads: s.threads,
-                collections: s.collections,
-                allocated: s.allocated,
-                copied: s.copied,
-                gc_nanos: s.gc_nanos,
-                run_nanos: started.elapsed().as_nanos() as u64,
-                heap_slots: s.heap_slots,
-                region_slots: s.region_slots,
-                pauses: s.pauses,
-                promoted: s.promoted,
-                cycles: s.cycles,
-                mark_nanos: s.mark_nanos,
-                evacuated: s.evacuated,
-                evacuated_blocks: s.evacuated_blocks,
-                old_slots: s.old_slots,
-                old_live: s.old_live,
-            };
-            (outcome.result.map_err(|e| e.msg), Some(stats))
-        }
+        Engine::Vm => match compile(program, opt) {
+            Ok(image) => run_image_with_stats(&image),
+            Err(e) => (Err(e), None),
+        },
     }
+}
+
+/// Run a compiled image on the VM, and say what its collector did.
+pub fn run_image_with_stats(
+    image: &meadow_bytecode::Program,
+) -> (Result<String, String>, Option<GcStats>) {
+    let Some(entry) = image.entry else {
+        return (Err("program has no entry point".to_string()), None);
+    };
+    let started = std::time::Instant::now();
+    let outcome = meadow_rts::sched::run(image, entry, UNBOUNDED);
+    let s = outcome.stats;
+    let stats = GcStats {
+        threads: s.threads,
+        collections: s.collections,
+        allocated: s.allocated,
+        copied: s.copied,
+        gc_nanos: s.gc_nanos,
+        run_nanos: started.elapsed().as_nanos() as u64,
+        heap_slots: s.heap_slots,
+        region_slots: s.region_slots,
+        pauses: s.pauses,
+        promoted: s.promoted,
+        cycles: s.cycles,
+        mark_nanos: s.mark_nanos,
+        evacuated: s.evacuated,
+        evacuated_blocks: s.evacuated_blocks,
+        old_slots: s.old_slots,
+        old_live: s.old_live,
+    };
+    (outcome.result.map_err(|e| e.msg), Some(stats))
 }
 
 /// Call each of `tests` with `()`, in order, sharing one build.

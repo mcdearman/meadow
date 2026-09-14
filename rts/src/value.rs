@@ -1,8 +1,14 @@
 //! Runtime values.
 //!
-//! A `Value` is **`Copy` and 16 bytes**, and copying one never touches the heap.
-//! Everything with a payload is an [`Addr`], an index into [`crate::heap::Heap`],
-//! and the collector is what decides when the thing at that address goes away.
+//! What the machine stores is a [`Word`]: a register holds one, and so does
+//! every field of every object. A `Value` is a word *with what it is* -- the
+//! form the primitives, `show` and the natives work in -- made from a word and
+//! a descriptor ([`Value::from_bits`]) and back ([`Value::bits`]) where the
+//! compiler or an object header says what the word is.
+//!
+//! A `Value` is `Copy`, and copying one never touches the heap. Everything
+//! with a payload is an [`Addr`], an index into [`crate::heap::Heap`], and the
+//! collector is what decides when the thing at that address goes away.
 //!
 //! That is the whole difference from `meadow_eval`, which reference-counts. Two
 //! problems went away with the `Rc`s:
@@ -17,7 +23,12 @@
 //!
 //! What it costs is that a `Value` only means something *next to its heap*.
 
+use meadow_core::desc::Desc;
+use meadow_core::num::Width;
 use meadow_intern::InternedString;
+
+/// One machine word: what a heap slot holds.
+pub type Word = u64;
 
 /// An index into the heap's slot array. Not a pointer: the collector moves
 /// objects, and every live `Addr` is rewritten when it does.
@@ -25,9 +36,10 @@ pub type Addr = u32;
 
 /// # Layout
 ///
-/// Fixed, because native code reads and writes values directly: `repr(u8)`
-/// makes the variant's number the first byte, and each variant's fields follow
-/// at their C offsets -- see [`layout`]. 16 bytes whatever the variant.
+/// Fixed, for native code that is handed one: `repr(u8)` makes the variant's
+/// number the first byte, and each variant's fields follow at their C offsets
+/// -- see [`layout`]. 16 bytes whatever the variant. Registers and fields are
+/// not `Value`s but [`Word`]s.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum Value {
@@ -78,6 +90,62 @@ impl Value {
         }
     }
 
+    /// The descriptor of this value's representation -- see
+    /// [`meadow_core::desc`]. What a heap object records for each field, so
+    /// that the field can be one word.
+    pub fn desc(self) -> Desc {
+        use meadow_core::desc;
+        match self {
+            Value::Unit => desc::UNIT,
+            Value::Bool(_) => desc::BOOL,
+            Value::Int(_) => desc::INT,
+            Value::Word(w, _) => desc::word(w),
+            Value::Float(_) => desc::FLOAT,
+            Value::Float32(_) => desc::FLOAT32,
+            Value::Char(_) => desc::CHAR,
+            Value::Str(_) => desc::STR,
+            Value::Obj(_) => desc::REF,
+        }
+    }
+
+    /// The value as one word, with what it is left to its descriptor.
+    #[inline]
+    pub fn bits(self) -> Word {
+        match self {
+            Value::Unit => 0,
+            Value::Bool(b) => b as Word,
+            Value::Int(n) => n as Word,
+            Value::Word(_, bits) => bits,
+            Value::Float(x) => x.to_bits(),
+            Value::Float32(x) => x.to_bits() as Word,
+            Value::Char(c) => c as Word,
+            Value::Str(s) => s.to_raw() as Word,
+            Value::Obj(a) => a as Word,
+        }
+    }
+
+    /// The value word `w` is, as descriptor `d` says. [`Value::bits`] undone.
+    #[inline]
+    pub fn from_bits(w: Word, d: Desc) -> Value {
+        use meadow_core::desc;
+        match d {
+            desc::REF => Value::Obj(w as Addr),
+            desc::INT => Value::Int(w as i64),
+            desc::FLOAT => Value::Float(f64::from_bits(w)),
+            desc::STR => Value::Str(
+                InternedString::from_raw(w as u32).expect("a string's word is an interned key"),
+            ),
+            desc::UNIT => Value::Unit,
+            desc::BOOL => Value::Bool(w != 0),
+            desc::CHAR => Value::Char(char::from_u32(w as u32).expect("a character's word")),
+            desc::FLOAT32 => Value::Float32(f32::from_bits(w as u32)),
+            d if (desc::WORD..desc::WORD + Width::ALL.len() as Desc).contains(&d) => {
+                Value::Word(Width::ALL[(d - desc::WORD) as usize], w)
+            }
+            d => panic!("a word described as {}, which says nothing", desc::name(d)),
+        }
+    }
+
     /// A short tag for introspection — what a register dump shows per slot.
     pub fn kind(self) -> &'static str {
         match self {
@@ -90,6 +158,28 @@ impl Value {
             Value::Char(_) => "Char",
             Value::Str(_) => "String",
             Value::Obj(_) => "object",
+        }
+    }
+}
+
+#[cfg(test)]
+mod words {
+    use super::*;
+
+    #[test]
+    fn a_value_is_its_word_and_its_descriptor() {
+        for v in [
+            Value::Unit,
+            Value::Bool(true),
+            Value::Int(-5),
+            Value::Word(Width::I8, 0xFF),
+            Value::Float(-0.5),
+            Value::Float32(3.25),
+            Value::Char('λ'),
+            Value::Str("hello".into()),
+            Value::Obj(1234),
+        ] {
+            assert_eq!(Value::from_bits(v.bits(), v.desc()), v);
         }
     }
 }

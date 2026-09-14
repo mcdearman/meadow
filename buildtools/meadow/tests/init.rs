@@ -183,3 +183,67 @@ fn a_generated_package_can_be_used_as_a_dependency() {
     assert_eq!(meadow_eval::run(&linked.program).unwrap().to_string(), "42");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Builds write into `target`, so a new package ignores it from the start.
+#[test]
+fn a_new_package_ignores_its_target_directory() {
+    let dir = scratch("gitignore");
+    let made = init_at(&dir.join("demo"), None).expect("init");
+    let ignore = made.root.join(".gitignore");
+    assert_eq!(std::fs::read_to_string(&ignore).unwrap(), "/target/\n");
+    assert!(made.files.contains(&ignore), "and says it wrote it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `.gitignore` already there is someone's: the line is added, once, and
+/// nothing else changes.
+#[test]
+fn an_existing_gitignore_gains_the_line_and_keeps_the_rest() {
+    let dir = scratch("gitignore-existing");
+    let root = dir.join("demo");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join(".gitignore"), "*.log").unwrap();
+    init_at(&root, None).expect("init");
+    assert_eq!(
+        std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+        "*.log\n/target/\n"
+    );
+
+    let other = dir.join("ignores-already");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join(".gitignore"), "target\n").unwrap();
+    init_at(&other, Some("ignoresAlready")).expect("init");
+    assert_eq!(
+        std::fs::read_to_string(other.join(".gitignore")).unwrap(),
+        "target\n",
+        "a package that ignores `target` already is left alone"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `meadow run` leaves the image it ran in the package's own `target`
+/// directory, and that image is the program: loaded back, it runs the same.
+#[test]
+fn running_a_package_writes_its_image_under_target() {
+    let dir = scratch("target");
+    let made = init_at(&dir.join("demo"), None).expect("init");
+    std::fs::write(made.root.join("src").join("Main.mw"), "def main = 6 * 7\n").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_meadow"))
+        .arg("run")
+        .arg(&made.root)
+        .output()
+        .expect("the meadow binary runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let image = meadow::artifacts::image_path(&made.root, meadow::Profile::Debug, "demo");
+    let bytes = std::fs::read(&image).expect("the image is written");
+    let program = meadow_bytecode::image::decode(&bytes).expect("and decodes");
+    assert_eq!(
+        meadow_rts::run(&program, u64::MAX).map_err(|e| e.msg),
+        Ok("42".into())
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

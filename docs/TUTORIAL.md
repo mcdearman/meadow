@@ -2423,7 +2423,7 @@ In VS Code, the **▶ Test** link above a `@test` runs exactly that.
 | `meadow run <path>` | build and evaluate `main` |
 | `meadow run --gc-stats <path>` | …and report what the garbage collector did |
 | `meadow run --gc copying <path>` | …with the copying collector instead of the generational one |
-| `meadow build <path>` | type-check and link |
+| `meadow build <path>` | type-check, link, and write the bytecode image to `target/` |
 | `meadow build --annotations <path>` | …and dump every node's type |
 | `meadow test [<path>] [<filter>]` | run `@test` functions |
 | `meadow fmt <path>` | re-indent in place |
@@ -2431,8 +2431,11 @@ In VS Code, the **▶ Test** link above a `@test` runs exactly that.
 | `meadow lsp` | run the language server (editors start this) |
 | `meadow update` | replace the binary with the latest release |
 
-`--release` and `--debug` select a profile. Today the only difference is that
-release requires every `match` to be exhaustive.
+`--release` and `--debug` select a profile. Release requires every `match` to
+be exhaustive, compiles a `match` to a decision tree, and copies generic code
+once per representation it is used at (`Int`, `Float`, `String`, a reference,
+…), so it runs as fast as code written at those types. Debug compiles faster:
+generic code is compiled once and told what its values are as it runs.
 
 ### Editors
 

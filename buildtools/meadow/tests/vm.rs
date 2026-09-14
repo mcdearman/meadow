@@ -333,9 +333,10 @@ fn every_opt_level_agrees_with_the_cek() {
 
 /// `-O2` compiles a `match` to one `switch` rather than one per arm.
 ///
-/// Counting `switch` statements is the observable difference, and it is what
-/// would notice the gate being wired to nothing — which is the way an option
-/// like this usually fails.
+/// A switch testing several constructors is the observable difference, and it
+/// is what would notice the gate being wired to nothing — which is the way an
+/// option like this usually fails. Not the number of switches: `-O2` also
+/// copies generic code per representation, so it has more code to count.
 #[test]
 fn case_trees_are_what_o2_turns_on() {
     use meadow::OptLevel;
@@ -349,37 +350,46 @@ fn case_trees_are_what_o2_turns_on() {
                 .program
                 .defs
                 .iter()
-                .map(|d| switches(&d.block.body))
+                .map(|d| switches(&d.block.body, 3))
                 .sum()
         })
         .collect();
 
-    // A tree replaces N single-arm switches with one N-arm switch, so the
-    // *count* falls even though the same tags are tested.
+    // A chain tests one constructor a switch; a tree tests them all in one.
+    // (Every `perform`'s search block tests two, at every level.)
+    assert_eq!(counts[0], 0, "O1 builds decision trees");
     assert!(
-        counts[1] < counts[0],
-        "O1 has {} switches and O2 has {} — the gate is doing nothing",
-        counts[0],
-        counts[1]
+        counts[1] > 0,
+        "O2 builds no decision trees — the gate is doing nothing"
     );
 }
 
 /// How many `switch` statements a block contains, counting into every branch.
-fn switches(s: &meadow_seq::Statement) -> usize {
+/// The switches in `s` testing at least `least` constructors.
+fn switches(s: &meadow_seq::Statement, least: usize) -> usize {
     use meadow_seq::Statement::*;
     match s {
-        Substitute(_, b) => switches(&b.body),
+        Substitute(_, b) => switches(&b.body, least),
         Jump(_) => 0,
-        Let { rest, .. } => switches(rest),
+        Let { rest, .. } => switches(rest, least),
         Switch { arms, default, .. } => {
-            1 + arms.iter().map(|(_, b)| switches(&b.body)).sum::<usize>() + switches(&default.body)
+            usize::from(arms.len() >= least)
+                + arms
+                    .iter()
+                    .map(|(_, b)| switches(&b.body, least))
+                    .sum::<usize>()
+                + switches(&default.body, least)
         }
         New { methods, rest, .. } => {
-            methods.iter().map(|b| switches(&b.body)).sum::<usize>() + switches(rest)
+            methods
+                .iter()
+                .map(|b| switches(&b.body, least))
+                .sum::<usize>()
+                + switches(rest, least)
         }
         Invoke(..) => 0,
-        Extern { blocks, .. } => blocks.iter().map(|b| switches(&b.body)).sum(),
-        Mark(_, rest) => switches(rest),
+        Extern { blocks, .. } => blocks.iter().map(|b| switches(&b.body, least)).sum(),
+        Mark(_, rest) => switches(rest, least),
         Error(_) => 0,
     }
 }

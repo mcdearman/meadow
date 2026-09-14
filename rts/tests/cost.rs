@@ -61,8 +61,8 @@ fn a_tail_recursive_loop_allocates_nothing() {
     );
     assert_eq!(out, "5000050000");
     assert_eq!(
-        allocated, 1,
-        "a loop must not allocate; only the halt closure"
+        allocated, 3,
+        "a loop must not allocate; only the halt closure: two words of header, and the descriptor of the answer it waits for"
     );
     assert!(
         steps < 1_100_000,
@@ -89,11 +89,12 @@ fn a_known_call_does_not_build_a_closure() {
          fun go (n : Int) acc = if n == 0 then acc else go (n - 1) (apply (add acc) n)
          def main = go 1000 0",
     );
-    // Three slots an iteration: one continuation object for the non-tail call,
-    // which a machine with no call stack has to put somewhere. The curried form
-    // pays that *and* a closure per argument.
+    // Four words an iteration: one continuation object for the non-tail call
+    // -- a two-word header and two captures -- which a machine with no call
+    // stack has to put somewhere. The curried form pays that *and* a closure
+    // per argument.
     assert!(
-        direct <= 3 * 1000 + 1,
+        direct <= 4 * 1000 + 3,
         "{direct} slots for 1000 saturated calls"
     );
     assert!(
@@ -113,8 +114,8 @@ fn arithmetic_is_three_address() {
 
 #[test]
 fn building_a_list_costs_the_list_and_little_else() {
-    // Three slots per `Cons` — a header and two fields — and nothing per call on
-    // top of it. Walking it back should allocate nothing at all.
+    // Four words per `Cons` — two of header and two fields — and nothing per
+    // call on top of it. Walking it back should allocate nothing at all.
     let (out, _, allocated) = cost(
         "use Chain.*\ndata Chain = Nil | Cons Int Chain
          fun build n = if n == 0 then Nil else Cons n (build (n - 1))
@@ -122,10 +123,10 @@ fn building_a_list_costs_the_list_and_little_else() {
          def main = total (build 10000)",
     );
     assert_eq!(out, "50005000");
-    // 10_000 conses at 3 slots, one `Nil`, and the continuations `build` needs
-    // because it is *not* tail recursive. Well under twice the data itself.
+    // 10_000 conses at 4 words, one `Nil`, and the continuations `build` and
+    // `total` need because neither is tail recursive.
     assert!(
-        allocated < 260_000,
+        allocated < 270_000,
         "{allocated} slots to build and walk a 10_000-element list"
     );
 }

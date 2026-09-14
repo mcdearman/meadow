@@ -154,6 +154,113 @@ pub enum Op {
     /// generated -- the compiler passes them as evidence -- so everything else a
     /// `handle` or a `perform` does is ordinary objects and jumps.
     Native,
+
+    // --- typed: words the compiler knows the representation of -----------
+    //
+    // A primitive whose operands the compiler knows are both `Int`, or both
+    // `Float`, is one of these rather than a `prim`: the machine does the
+    // arithmetic on the words, with nothing to look up and nothing to decode.
+    // They are the instructions a native back end translates one for one.
+    //
+    // `Int` wraps; dividing it by zero fails, as `/` and `%` on two `Int`s do.
+    // `Float` is IEEE.
+    /// `r[a] = r[b] + r[c]`, as `Int`s.
+    AddI,
+    /// `r[a] = r[b] - r[c]`
+    SubI,
+    /// `r[a] = r[b] * r[c]`
+    MulI,
+    /// `r[a] = r[b] / r[c]`, failing on zero.
+    DivI,
+    /// `r[a] = r[b] % r[c]`, failing on zero.
+    ModI,
+    /// `r[a] = r[b] + imm`, `imm` a signed 32-bit `Int`.
+    AddIK,
+    /// `r[a] = r[b] - imm`
+    SubIK,
+    /// `r[a] = r[b] * imm`
+    MulIK,
+    /// `r[a] = r[b] + r[c]`, as `Float`s.
+    AddF,
+    /// `r[a] = r[b] - r[c]`
+    SubF,
+    /// `r[a] = r[b] * r[c]`
+    MulF,
+    /// `r[a] = r[b] / r[c]`
+    DivF,
+    /// `r[a] = cond[imm](r[b], r[c])`, a `Bool`. Equality compares the words,
+    /// which is what it is for every immediate but a float; order compares
+    /// them as `Int`s. See [`Cond`].
+    CmpI,
+    /// `r[a] = cond[c](r[b], imm)`, `imm` a signed 32-bit word.
+    CmpIK,
+    /// `r[a] = cond[imm](r[b], r[c])`, as `Float`s.
+    CmpF,
+    /// `if not cond[c](r[a], r[b]) then pc = imm` -- [`Op::CmpI`] and the
+    /// branch on it, with no `Bool` anywhere.
+    BrI,
+    /// `if not cond[c](r[a], b) then pc = imm`, `b` a signed byte: `n == 0`.
+    BrIK,
+    /// `if not cond[c](r[a], r[b]) then pc = imm`, as `Float`s.
+    BrF,
+}
+
+/// The comparison a typed compare or branch makes, as its operand byte or
+/// immediate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Cond {
+    Eq = 0,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl Cond {
+    pub const ALL: [Cond; 6] = [Cond::Eq, Cond::Ne, Cond::Lt, Cond::Le, Cond::Gt, Cond::Ge];
+
+    pub fn from_byte(b: u32) -> Option<Cond> {
+        Cond::ALL.get(b as usize).copied()
+    }
+
+    /// Does it hold of two words? Equal as words; ordered as `Int`s.
+    #[inline(always)]
+    pub fn words(self, x: u64, y: u64) -> bool {
+        match self {
+            Cond::Eq => x == y,
+            Cond::Ne => x != y,
+            Cond::Lt => (x as i64) < (y as i64),
+            Cond::Le => (x as i64) <= (y as i64),
+            Cond::Gt => (x as i64) > (y as i64),
+            Cond::Ge => (x as i64) >= (y as i64),
+        }
+    }
+
+    /// Does it hold of two `Float`s, IEEE's way?
+    #[inline(always)]
+    pub fn floats(self, x: f64, y: f64) -> bool {
+        match self {
+            Cond::Eq => x == y,
+            Cond::Ne => x != y,
+            Cond::Lt => x < y,
+            Cond::Le => x <= y,
+            Cond::Gt => x > y,
+            Cond::Ge => x >= y,
+        }
+    }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            Cond::Eq => "==",
+            Cond::Ne => "!=",
+            Cond::Lt => "<",
+            Cond::Le => "<=",
+            Cond::Gt => ">",
+            Cond::Ge => ">=",
+        }
+    }
 }
 
 impl Op {
@@ -183,6 +290,24 @@ impl Op {
         Op::JumpUnlessPrim,
         Op::JumpUnlessPrimK,
         Op::Native,
+        Op::AddI,
+        Op::SubI,
+        Op::MulI,
+        Op::DivI,
+        Op::ModI,
+        Op::AddIK,
+        Op::SubIK,
+        Op::MulIK,
+        Op::AddF,
+        Op::SubF,
+        Op::MulF,
+        Op::DivF,
+        Op::CmpI,
+        Op::CmpIK,
+        Op::CmpF,
+        Op::BrI,
+        Op::BrIK,
+        Op::BrF,
     ];
 
     fn from_byte(b: u8) -> Option<Op> {
@@ -307,6 +432,60 @@ pub struct Program {
     /// Per instruction: which of [`Program::gc_maps`] holds while it runs, or
     /// [`NO_MAP`] for an instruction that cannot collect.
     pub gc_at: Vec<u32>,
+    /// Per instruction that reads values it has to know the representation of
+    /// -- a primitive's operands, an object's fields -- where its operands'
+    /// descriptors start in [`Program::operands`]; [`NO_OPERANDS`] for one
+    /// that only moves words.
+    pub operands_at: Vec<u32>,
+    /// Operand descriptors, each where [`DescSrc`] says, in the order the
+    /// instruction reads its operands.
+    pub operands: Vec<DescSrc>,
+    /// The descriptor of what each of [`Program::entries`] answers, in the
+    /// same order, and of what [`Program::entry`] does.
+    pub results: Vec<meadow_core::desc::Desc>,
+    pub entry_result: meadow_core::desc::Desc,
+}
+
+/// Where an operand's descriptor is: below [`DESC_REG`], the descriptor
+/// itself; from it up, `DESC_REG + r` for the descriptor in register `r`.
+pub type DescSrc = u16;
+
+/// See [`DescSrc`].
+pub const DESC_REG: DescSrc = 16;
+
+/// An instruction with no operand descriptors.
+pub const NO_OPERANDS: u32 = u32::MAX;
+
+/// What a name's value is, for a debugger: its descriptor, or the name holding
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameDesc {
+    Known(meadow_core::desc::Desc),
+    /// Whatever the descriptor in this name says.
+    Var(u32),
+}
+
+impl Program {
+    /// The operand descriptors of the instruction at `pc`, from its first.
+    #[inline]
+    pub fn operands(&self, pc: usize) -> &[DescSrc] {
+        match self.operands_at.get(pc) {
+            Some(&at) if at != NO_OPERANDS => &self.operands[at as usize..],
+            _ => &[],
+        }
+    }
+
+    /// What the block starting at `pc` answers, if it is an entry point.
+    pub fn result_at(&self, pc: Pc) -> meadow_core::desc::Desc {
+        if self.entry == Some(pc) {
+            return self.entry_result;
+        }
+        self.entries
+            .iter()
+            .position(|e| *e == pc)
+            .and_then(|i| self.results.get(i).copied())
+            .unwrap_or(meadow_core::desc::ANY)
+    }
 }
 
 /// An instruction with no [`GcMap`]: it cannot allocate, so nothing collects
@@ -320,8 +499,13 @@ pub enum Held {
     Ref,
     /// Anything else: a number, a character, a string, a boolean.
     Scalar,
-    /// Whatever type variable `n` is at run time.
-    Var(u32),
+    /// A value of a type variable's type: whatever the descriptor in register
+    /// `r` says it is (`meadow_core::desc`).
+    Var(Reg),
+    /// Nothing says: the collector has to ask the value. Only a program
+    /// lowered without representations has these, and only while values say
+    /// what they are.
+    Any,
 }
 
 /// The registers holding something at an instruction that may collect, and
@@ -363,6 +547,9 @@ pub struct DebugInfo {
     /// Names that are copies of a variable in the source, and which -- see
     /// `meadow_seq::Program::origins`.
     pub origins: std::collections::HashMap<u32, u32>,
+    /// What each name holds, as far as it can be said without a descriptor
+    /// in hand -- a register is only a word.
+    pub descs: std::collections::HashMap<u32, NameDesc>,
 }
 
 /// One separately addressed block: a definition, a function body, a
@@ -543,6 +730,48 @@ impl Program {
                 Some((e, o)) => format!("{name:<14} r{} <- {e}.{o}(r{})", i.a, i.b),
                 None => format!("{name:<14} r{} <- o{}(r{})", i.a, i.imm, i.b),
             },
+            Op::AddI
+            | Op::SubI
+            | Op::MulI
+            | Op::DivI
+            | Op::ModI
+            | Op::AddF
+            | Op::SubF
+            | Op::MulF
+            | Op::DivF => {
+                let sym = match i.op {
+                    Op::AddI | Op::AddF => "+",
+                    Op::SubI | Op::SubF => "-",
+                    Op::MulI | Op::MulF => "*",
+                    Op::DivI | Op::DivF => "/",
+                    _ => "%",
+                };
+                format!("{name:<14} r{} <- r{} {sym} r{}", i.a, i.b, i.c)
+            }
+            Op::AddIK | Op::SubIK | Op::MulIK => {
+                let sym = match i.op {
+                    Op::AddIK => "+",
+                    Op::SubIK => "-",
+                    _ => "*",
+                };
+                format!("{name:<14} r{} <- r{} {sym} {}", i.a, i.b, i.imm as i32)
+            }
+            Op::CmpI | Op::CmpF => {
+                let c = Cond::from_byte(i.imm).map_or("?", Cond::symbol);
+                format!("{name:<14} r{} <- r{} {c} r{}", i.a, i.b, i.c)
+            }
+            Op::CmpIK => {
+                let c = Cond::from_byte(i.c as u32).map_or("?", Cond::symbol);
+                format!("{name:<14} r{} <- r{} {c} {}", i.a, i.b, i.imm as i32)
+            }
+            Op::BrI | Op::BrF => {
+                let c = Cond::from_byte(i.c as u32).map_or("?", Cond::symbol);
+                format!("{name:<14} r{} {c} r{} else @{}", i.a, i.b, i.imm)
+            }
+            Op::BrIK => {
+                let c = Cond::from_byte(i.c as u32).map_or("?", Cond::symbol);
+                format!("{name:<14} r{} {c} {} else @{}", i.a, i.b as i8, i.imm)
+            }
         }
     }
 }

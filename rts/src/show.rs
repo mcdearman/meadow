@@ -140,12 +140,8 @@ impl Vm<'_> {
             1 => Sign::Plus,
             _ => Sign::Minus,
         };
-        let digits: Vec<u32> = (0..self.heap.len(a))
-            .map(|i| match self.heap.field(a, i) {
-                Value::Int(n) => n as u32,
-                _ => 0,
-            })
-            .collect();
+        // Digits are `Int` words, all of them: read as the words they are.
+        let digits: Vec<u32> = self.heap.words(a).map(|w| w as u32).collect();
         Some(BigInt::from_slice(sign, &digits))
     }
 

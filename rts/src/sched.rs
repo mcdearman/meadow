@@ -220,7 +220,7 @@ enum Wake {
     /// Start at a definition -- the main thread.
     Entry(Pc),
     /// Start by calling a function with `()` -- a spawned thread.
-    Start(Parcel),
+    Start(Parcel, meadow_core::desc::Desc),
     /// The answer to what it was waiting for, into a register.
     Deliver(Reg, Parcel),
     /// A new channel or thread handle, into a register.
@@ -585,11 +585,11 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                 None
             }
             Stop::Requested(request) => match request {
-                Request::Spawn { body, dst } => {
+                Request::Spawn { body, answer, dst } => {
                     let mut child = Box::new(Fiber {
                         vm: Vm::with_heap(sh.program, Heap::with_capacity(THREAD_INITIAL)),
                         task: 0,
-                        wake: Wake::Start(body),
+                        wake: Wake::Start(body, answer),
                     });
                     child.vm.scheduled = true;
                     child.vm.native = sh.native;
@@ -759,8 +759,8 @@ fn run_slice(sh: &Shared, fiber: &mut Fiber) -> Stop {
     match std::mem::replace(&mut fiber.wake, Wake::Go) {
         Wake::Go => {}
         Wake::Entry(pc) => vm.start(pc),
-        Wake::Start(body) => {
-            if let Err(e) = vm.start_call(&body) {
+        Wake::Start(body, answer) => {
+            if let Err(e) = vm.start_call(&body, answer) {
                 return Stop::Failed(e);
             }
         }

@@ -28,6 +28,9 @@ pub use meadow_compiler::{
 pub struct BuildOutput {
     pub linked: Option<LinkedProgram>,
     pub diagnostics: Vec<Diagnostic>,
+    /// The package that was built: its directory and its name. What
+    /// [`crate::artifacts`] puts its `target` directory under.
+    pub package: Option<(std::path::PathBuf, InternedString)>,
 }
 
 /// Discover, compile and link the package rooted at `entry`.
@@ -59,6 +62,7 @@ pub fn build_with(entry: &Path, opts: Options, addition: Option<Addition<'_>>) -
             return BuildOutput {
                 linked: None,
                 diagnostics: vec![d],
+                package: None,
             };
         }
     };
@@ -83,6 +87,7 @@ pub fn build_with(entry: &Path, opts: Options, addition: Option<Addition<'_>>) -
                 label: (String::new(), Span::from(0..0)),
                 extra_labels: vec![],
             }],
+            package: None,
         };
     }
 
@@ -108,12 +113,15 @@ pub fn build_with(entry: &Path, opts: Options, addition: Option<Addition<'_>>) -
                     label: (String::new(), Span::from(0..0)),
                     extra_labels: vec![],
                 }],
+                package: None,
             };
         };
         let text = format!("{}\n{}\n", &*module.source.content, add.text);
         module.source = Source::new(module.source.kind, InternedString::from(text));
     }
 
+    let root = &graph.packages[graph.root()];
+    let package = Some((root.root.clone(), root.name));
     let (std_pkgs, mut diagnostics) = stdlib::std_packages(opts);
 
     let mut compiled: Vec<Option<CompiledPackage>> =
@@ -145,6 +153,7 @@ pub fn build_with(entry: &Path, opts: Options, addition: Option<Addition<'_>>) -
     BuildOutput {
         linked: Some(Linker::link(ordered)),
         diagnostics,
+        package,
     }
 }
 

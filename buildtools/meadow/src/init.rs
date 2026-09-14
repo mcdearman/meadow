@@ -6,6 +6,9 @@
 //! directory of `.mw` files and name the package after the directory, so what
 //! this really buys is the *name* — written down, rather than inferred from
 //! wherever the directory happens to sit — and a file that already runs.
+//!
+//! And a `.gitignore` for the `target` directory builds write into (see
+//! [`crate::artifacts`]), since nothing in it belongs in version control.
 
 use std::path::{Path, PathBuf};
 
@@ -60,6 +63,7 @@ pub fn run(opts: &Options) -> Result<Created, String> {
     if !main.exists() {
         write_new(&main, MAIN, &mut files)?;
     }
+    ignore_target(&root.join(".gitignore"), &mut files)?;
 
     Ok(Created {
         name,
@@ -73,6 +77,39 @@ fn write_new(path: &Path, contents: &str, files: &mut Vec<PathBuf>) -> Result<()
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
     files.push(path.to_path_buf());
     Ok(())
+}
+
+/// The line that keeps build output out of version control.
+const IGNORE_TARGET: &str = "/target/";
+
+/// Make `.gitignore` ignore the `target` directory: a new file saying only
+/// that, or -- when there is one already, which is someone else's -- the line
+/// added to the end of it, unless it already ignores `target`.
+fn ignore_target(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return write_new(path, &format!("{IGNORE_TARGET}\n"), files);
+        }
+        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+    };
+    let ignored = existing
+        .lines()
+        .map(str::trim)
+        .any(|l| matches!(l, "target" | "target/" | "/target" | "/target/"));
+    if ignored {
+        return Ok(());
+    }
+    let separator = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    write_new(
+        path,
+        &format!("{existing}{separator}{IGNORE_TARGET}\n"),
+        files,
+    )
 }
 
 fn manifest(name: &str) -> String {

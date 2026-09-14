@@ -30,7 +30,7 @@
 
 use crate::pipeline;
 use crate::profile::{Profile, Resolved};
-use meadow_bytecode::{DebugInfo, Pc, Program};
+use meadow_bytecode::{DebugInfo, NameDesc, Pc, Program, Reg};
 use meadow_compiler::core::Loc;
 use meadow_compiler::hir;
 use meadow_compiler::infer::Renderer;
@@ -587,7 +587,7 @@ impl Session {
             .env(pc)
             .iter()
             .find(|(name, _)| self.debug.returns.contains(name))
-            .map(|(_, r)| self.vm.register(*r as usize))
+            .and_then(|(_, r)| self.described(pc, *r))
     }
 
     /// The return continuation of whoever called the function `k` belongs to.
@@ -652,6 +652,23 @@ impl Session {
         self.failed_at.unwrap_or(self.vm.pc() as Pc)
     }
 
+    /// What register `r` holds at `pc`, when the debug information can say: a
+    /// register is only a word, and what it is comes from the name there and
+    /// that name's descriptor.
+    fn described(&self, pc: Pc, r: Reg) -> Option<Value> {
+        let env = self.debug.env(pc);
+        let (name, _) = env.iter().find(|(_, x)| *x == r)?;
+        let d = match *self.debug.descs.get(name)? {
+            NameDesc::Known(d) => d,
+            NameDesc::Var(held) => {
+                let (_, dr) = env.iter().find(|(n, _)| *n == held)?;
+                self.vm.register(*dr as usize) as meadow_compiler::core::desc::Desc
+            }
+        };
+        (d != meadow_compiler::core::desc::ANY && (0..16).contains(&d))
+            .then(|| self.vm.register_as(r as usize, d))
+    }
+
     // --- looking ------------------------------------------------------------
 
     /// The call stack, innermost first, at most `max` deep.
@@ -667,7 +684,7 @@ impl Session {
             loc: self.debug.loc(pc).or_else(|| self.nearest_loc(pc)),
             vars: env
                 .iter()
-                .map(|(n, r)| (*n, self.vm.register(*r as usize)))
+                .filter_map(|(n, r)| Some((*n, self.described(pc, *r)?)))
                 .collect(),
         });
         let mut k = self.current_return();
@@ -707,7 +724,9 @@ impl Session {
                         .is_some_and(|c| matches!(&**c, "#ev" | "#evt"))
             })
         };
-        let Some(mut at) = (0..self.vm.live()).find_map(|r| entry(self.vm.register(r))) else {
+        let pc = self.here();
+        let Some(mut at) = (0..self.vm.live()).find_map(|r| entry(self.described(pc, r as Reg)?))
+        else {
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -800,8 +819,15 @@ impl Session {
                             Some(info) => format!("r{r} ({})", info.name),
                             None => format!("r{r}"),
                         };
-                        let v = self.vm.register(r);
-                        self.row(label, v, None)
+                        match self.described(pc, r as Reg) {
+                            Some(v) => self.row(label, v, None),
+                            None => Variable {
+                                name: label,
+                                value: format!("{:#x}", self.vm.register(r)),
+                                ty: None,
+                                children: 0,
+                            },
+                        }
                     })
                     .collect()
             }

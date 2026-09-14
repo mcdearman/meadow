@@ -32,12 +32,30 @@
 //! below it may be stale, which retains a bounded amount of garbage and is the
 //! price of not emitting liveness metadata per instruction.
 //!
-//! Which of `r0..live` hold addresses is the compiler's to say. Every
-//! instruction that can collect carries a map ([`meadow_bytecode::GcMap`]) of
-//! the registers the program still names there and what each holds, and the
-//! collector roots exactly those. `MEADOW_GC_VERIFY` checks each map against
-//! the values actually in the registers, and overwrites every register the map
-//! leaves out, so a map that forgets something fails loudly instead of rarely.
+//! # A register is a word
+//!
+//! Nothing in a register says what it is: an `Int`, a `Float` and an address
+//! are all 64 bits. What the compiler knows about them it writes down beside
+//! the code, and the machine reads it where it needs it:
+//!
+//! * **what an operand is.** An instruction that has to know -- a primitive, an
+//!   object built from registers, a `halt` -- has operand descriptors
+//!   ([`meadow_bytecode::Program::operands`]): a descriptor, or the register
+//!   holding one when the value's type is a type variable. [`Vm::value`] reads
+//!   a register as the [`Value`] they say, and the primitives, `show` and the
+//!   natives go on working with values. An instruction that only moves a word
+//!   -- `move`, `field`, `invoke` -- never asks, and neither does a typed one
+//!   -- `addi`, `brf` -- whose opcode says what its operands are.
+//! * **which registers the collector follows.** Every instruction that can
+//!   collect carries a map ([`meadow_bytecode::GcMap`]) of the registers the
+//!   program still names there and what each holds -- a reference, a scalar,
+//!   or whatever the descriptor in another register says -- and the collector
+//!   roots exactly those. `MEADOW_GC_VERIFY` overwrites every register the map
+//!   leaves out, so a map that forgets something fails loudly instead of
+//!   rarely.
+//!
+//! Heap objects say what their fields are in their headers -- see
+//! [`crate::object`].
 //!
 //! The rule the whole file obeys: **never hold an address across an
 //! allocation.** [`Vm::ensure`] is called first, with room for everything the
@@ -45,8 +63,9 @@
 //! Registers are roots; Rust locals are not.
 
 use crate::heap::{Heap, Kind};
-use crate::value::{Addr, Value};
-use meadow_bytecode::{Const, Held, Instr, NO_MAP, Op, Pc, Program, Reg};
+use crate::value::{Addr, Value, Word};
+use meadow_bytecode::{Cond, Const, DESC_REG, DescSrc, Held, Instr, NO_MAP, Op, Pc, Program, Reg};
+use meadow_core::desc::{self, Desc};
 use meadow_intern::InternedString;
 
 /// How many registers there are. The compiler refuses to emit a block needing
@@ -60,8 +79,9 @@ pub const REGISTERS: usize = 256;
 pub(crate) const SCRATCH: usize = REGISTERS;
 const SCRATCH_LEN: usize = 256;
 
-/// The whole register file, as one fixed-size block.
-pub(crate) type Regs = [Value; REGISTERS + SCRATCH_LEN];
+/// The whole register file, as one fixed-size block of words. What a register
+/// holds is the program's to say: see [`Vm::operand`].
+pub(crate) type Regs = [Word; REGISTERS + SCRATCH_LEN];
 
 /// The one register the compiler will not use, kept for a value the program
 /// cannot name: the boolean a fused compare-and-branch tests and discards.
@@ -80,6 +100,14 @@ pub(crate) const NO_PC: usize = usize::MAX;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     pub msg: String,
+}
+
+/// The condition a typed compare or branch names.
+#[inline(always)]
+fn cond(b: u32) -> Result<Cond, Error> {
+    Cond::from_byte(b).ok_or_else(|| Error {
+        msg: format!("no condition {b}"),
+    })
 }
 
 pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T, Error> {
@@ -101,10 +129,6 @@ pub struct Vm<'p> {
     pub(crate) at: usize,
     /// Instructions retired.
     pub steps: u64,
-    /// The tag `False` has in this program, if it has one — what a conditional
-    /// branches on when a program builds a boolean by naming its constructor
-    /// rather than writing a literal.
-    false_tag: Option<u32>,
     /// Values something outside the machine is holding on to — a debugger
     /// remembering which frame a step started in. Collector roots, so they are
     /// rewritten when what they point at moves. Empty unless someone asks.
@@ -142,6 +166,8 @@ pub struct Vm<'p> {
 pub(crate) enum Request {
     Spawn {
         body: crate::heap::Parcel,
+        /// The descriptor of what the thread answers.
+        answer: Desc,
         dst: Reg,
     },
     Await {
@@ -201,20 +227,14 @@ impl<'p> Vm<'p> {
 
     /// A machine whose heap is `heap` -- one made to collect a particular way.
     pub fn with_heap(program: &'p Program, heap: Heap) -> Vm<'p> {
-        let false_tag = program
-            .ctors
-            .iter()
-            .position(|c| &**c == "False")
-            .map(|i| i as u32);
         Vm {
             program,
             heap,
-            regs: Box::new([Value::Unit; REGISTERS + SCRATCH_LEN]),
+            regs: Box::new([0; REGISTERS + SCRATCH_LEN]),
             live: 0,
             pc: 0,
             at: NO_PC,
             steps: 0,
-            false_tag,
             pinned: Vec::new(),
             io: Io::default(),
             request: None,
@@ -231,10 +251,18 @@ impl<'p> Vm<'p> {
     /// Put the machine at the start of a call: `f ()`, answering the halt
     /// continuation. How a green thread begins -- `f` is the function it was
     /// spawned with, rebuilt from `body` in this machine's own heap.
-    pub(crate) fn start_call(&mut self, body: &crate::heap::Parcel) -> Result<(), Error> {
+    ///
+    /// `answer` is the descriptor of what `f` answers, which the halt it
+    /// answers needs.
+    pub(crate) fn start_call(
+        &mut self,
+        body: &crate::heap::Parcel,
+        answer: Desc,
+    ) -> Result<(), Error> {
         self.live = 0;
-        self.heap.reserve(2 + body.len());
-        let halt = Value::Obj(self.heap.alloc(Kind::Closure, 0, &[]));
+        self.heap
+            .reserve(Heap::size_of(Kind::Closure, 1) + Heap::size_of(Kind::Data, 0) + body.len());
+        let halt = Value::Obj(self.heap.alloc(Kind::Closure, 0, &[Value::Int(answer)]));
         let none = match self.program.ctors.iter().position(|c| &**c == "#evnone") {
             Some(tag) => Value::Obj(self.heap.alloc(Kind::Data, tag as u32, &[])),
             None => return err("the program has no empty evidence to start a thread with"),
@@ -255,13 +283,13 @@ impl<'p> Vm<'p> {
             return err("a thread's function needs more than 256 registers");
         }
         for j in 0..ncap {
-            self.regs[j] = self.heap.field(a, j);
+            self.regs[j] = self.heap.field_word(a, j);
         }
         // `f ()`, answering the halt continuation, under no handlers: a
         // function takes the evidence as its last argument.
-        self.regs[ncap] = Value::Unit;
-        self.regs[ncap + 1] = halt;
-        self.regs[ncap + 2] = none;
+        self.regs[ncap] = Value::Unit.bits();
+        self.regs[ncap + 1] = halt.bits();
+        self.regs[ncap + 2] = none.bits();
         self.live = ncap + 3;
         self.pc = pc as usize;
         self.at = NO_PC;
@@ -278,7 +306,7 @@ impl<'p> Vm<'p> {
 
     /// A new handle object -- a channel or a thread -- in register `dst`.
     pub(crate) fn deliver_handle(&mut self, dst: Reg, kind: Kind, id: u32) {
-        self.ensure(1);
+        self.ensure(Heap::size_of(kind, 0));
         let a = self.heap.alloc(kind, id, &[]);
         self.set(dst, Value::Obj(a));
     }
@@ -304,13 +332,15 @@ impl<'p> Vm<'p> {
 
     /// Put the machine at `entry` with the halt continuation in `r0`.
     ///
-    /// Method table 0 holds instruction 0, which is `halt r0`. An entry block
-    /// takes one parameter — the continuation to answer with — so returning from
-    /// `main` needs no special case: it is an ordinary invoke that lands there.
+    /// Method table 0 holds instruction 0, the `halt`. An entry block takes one
+    /// parameter — the continuation to answer with — so returning from `main`
+    /// needs no special case: it is an ordinary invoke that lands there. The
+    /// continuation captures the descriptor of what `entry` answers.
     pub fn start(&mut self, entry: Pc) {
-        self.heap.reserve(1);
-        let halt = self.heap.alloc(Kind::Closure, 0, &[]);
-        self.regs[0] = Value::Obj(halt);
+        self.heap.reserve(Heap::size_of(Kind::Closure, 1));
+        let answer = self.program.result_at(entry);
+        let halt = self.heap.alloc(Kind::Closure, 0, &[Value::Int(answer)]);
+        self.regs[0] = Value::Obj(halt).bits();
         self.live = 1;
         self.pc = entry as usize;
         self.at = NO_PC;
@@ -344,8 +374,8 @@ impl<'p> Vm<'p> {
             Op::Nop => {}
 
             Op::Move => {
-                let v = self.reg(i.b);
-                self.set(i.a, v);
+                let w = self.reg(i.b);
+                self.set_word(i.a, w);
             }
 
             Op::Const => {
@@ -359,23 +389,26 @@ impl<'p> Vm<'p> {
             }
 
             Op::JumpUnless => {
-                if self.falsey(self.reg(i.a)) {
+                if self.reg(i.a) == 0 {
                     self.pc = i.imm as usize;
                 }
             }
 
             Op::JumpUnlessTag => {
                 let want = i.bc() as u32;
-                let hit = match self.reg(i.a) {
-                    Value::Obj(a) => self.heap.kind(a) == Kind::Data && self.heap.meta(a) == want,
-                    _ => false,
-                };
-                if !hit {
+                let a = self.reg(i.a) as Addr;
+                if !(self.heap.kind(a) == Kind::Data && self.heap.meta(a) == want) {
                     self.pc = i.imm as usize;
                 }
             }
 
-            Op::Halt => return Ok(Some(self.reg(i.a))),
+            Op::Halt => {
+                let d = self.operand(0);
+                if d == desc::ANY {
+                    return err("the program answered with a value nothing describes");
+                }
+                return Ok(Some(Value::from_bits(self.reg(i.a), d)));
+            }
 
             Op::Error => {
                 let msg = self
@@ -387,27 +420,8 @@ impl<'p> Vm<'p> {
                 return err(msg);
             }
 
-            Op::MakeData => {
-                let n = i.c as usize;
-                self.ensure(1 + n);
-                let base = i.b as usize;
-                let a = {
-                    let Vm { heap, regs, .. } = self;
-                    heap.alloc(Kind::Data, i.imm, &regs[base..base + n])
-                };
-                self.set(i.a, Value::Obj(a));
-            }
-
-            Op::MakeArray => {
-                let n = i.c as usize;
-                self.ensure(1 + n);
-                let base = i.b as usize;
-                let a = {
-                    let Vm { heap, regs, .. } = self;
-                    heap.alloc(Kind::Array, 0, &regs[base..base + n])
-                };
-                self.set(i.a, Value::Obj(a));
-            }
+            Op::MakeData => self.make(i, Kind::Data, i.imm),
+            Op::MakeArray => self.make(i, Kind::Array, 0),
 
             Op::MakeRecord => {
                 let n = i.c as usize;
@@ -420,13 +434,13 @@ impl<'p> Vm<'p> {
                         shape.len()
                     ));
                 }
-                self.ensure(1 + 2 * n);
+                self.ensure(Heap::size_of(Kind::Record, 2 * n));
                 // Sorted by label, so two records with the same fields are the
                 // same object however they were written.
                 let mut pairs: Vec<(InternedString, Value)> = self.program.shapes[i.imm as usize]
                     .iter()
                     .copied()
-                    .zip((0..n).map(|j| self.reg(i.b + j as Reg)))
+                    .zip((0..n).map(|j| self.value(i.b + j as Reg, j)))
                     .collect();
                 pairs.sort_by_key(|(l, _)| *l);
                 let mut fields = Vec::with_capacity(2 * n);
@@ -439,10 +453,7 @@ impl<'p> Vm<'p> {
             }
 
             Op::Field => {
-                let v = self.reg(i.b);
-                let Some(a) = v.addr() else {
-                    return err(format!("took field {} of {}", i.imm, v.kind()));
-                };
+                let a = self.reg(i.b) as Addr;
                 match self.heap.kind(a) {
                     Kind::Data | Kind::Array => {}
                     other => return err(format!("took field {} of a {other:?}", i.imm)),
@@ -451,16 +462,13 @@ impl<'p> Vm<'p> {
                 if (i.imm as usize) >= n {
                     return err(format!("field {} of an object with {n}", i.imm));
                 }
-                let f = self.heap.field(a, i.imm as usize);
-                self.set(i.a, f);
+                let f = self.heap.field_word(a, i.imm as usize);
+                self.set_word(i.a, f);
             }
 
             Op::Select => {
                 let label = self.label(i.imm)?;
-                let v = self.reg(i.b);
-                let Some(a) = v.addr() else {
-                    return err(format!("selected `.{label}` from {}", v.kind()));
-                };
+                let a = self.reg(i.b) as Addr;
                 match self.heap.kind(a) {
                     Kind::Record => match self.record_get(a, label) {
                         Some(v) => self.set(i.a, v),
@@ -485,22 +493,25 @@ impl<'p> Vm<'p> {
                             }
                         }
                     }
-                    _ => return err(format!("selected `.{label}` from {}", v.kind())),
+                    other => return err(format!("selected `.{label}` from a {other:?}")),
                 }
             }
 
             Op::Extend => {
                 let label = self.label(i.imm)?;
-                let src = self.reg(i.b);
-                let Some(a) = src.addr().filter(|a| self.heap.kind(*a) == Kind::Record) else {
-                    return err(format!("extended {} with `.{label}`", src.kind()));
-                };
+                let a = self.reg(i.b) as Addr;
+                if self.heap.kind(a) != Kind::Record {
+                    return err(format!(
+                        "extended a {:?} with `.{label}`",
+                        self.heap.kind(a)
+                    ));
+                }
                 // Measure, make room, then re-read: the collection `ensure` may
                 // run would move the record we are about to copy.
                 let existing = self.heap.len(a) / 2;
-                self.ensure(1 + 2 * (existing + 1));
-                let a = self.reg(i.b).addr().expect("still a record");
-                let value = self.reg(i.c);
+                self.ensure(Heap::size_of(Kind::Record, 2 * (existing + 1)));
+                let a = self.reg(i.b) as Addr;
+                let value = self.value(i.c, 1);
 
                 let mut pairs: Vec<(InternedString, Value)> = Vec::with_capacity(existing + 1);
                 for j in 0..self.heap.len(a) / 2 {
@@ -523,16 +534,7 @@ impl<'p> Vm<'p> {
                 self.set(i.a, Value::Obj(out));
             }
 
-            Op::Closure => {
-                let n = i.c as usize;
-                self.ensure(1 + n);
-                let base = i.b as usize;
-                let a = {
-                    let Vm { heap, regs, .. } = self;
-                    heap.alloc(Kind::Closure, i.imm, &regs[base..base + n])
-                };
-                self.set(i.a, Value::Obj(a));
-            }
+            Op::Closure => self.make(i, Kind::Closure, i.imm),
 
             Op::Invoke => return self.invoke(i),
 
@@ -585,14 +587,91 @@ impl<'p> Vm<'p> {
                 self.run_prim(p, srcs, TEMP)?;
                 let cond = self.reg(TEMP);
                 self.live = live;
-                if self.falsey(cond) {
+                if cond == 0 {
                     self.pc = i.imm as usize;
                 }
             }
 
             Op::Native => self.native_op(i)?,
+
+            // --- typed: arithmetic on words ------------------------------
+            Op::AddI => self.int2(i, i64::wrapping_add),
+            Op::SubI => self.int2(i, i64::wrapping_sub),
+            Op::MulI => self.int2(i, i64::wrapping_mul),
+            Op::DivI | Op::ModI => {
+                let (x, y) = (self.reg(i.b) as i64, self.reg(i.c) as i64);
+                if y == 0 {
+                    return err(if i.op == Op::DivI {
+                        "division by zero"
+                    } else {
+                        "modulo by zero"
+                    });
+                }
+                let r = if i.op == Op::DivI {
+                    x.wrapping_div(y)
+                } else {
+                    x.wrapping_rem(y)
+                };
+                self.set_word(i.a, r as Word);
+            }
+            Op::AddIK => self.int_k(i, i64::wrapping_add),
+            Op::SubIK => self.int_k(i, i64::wrapping_sub),
+            Op::MulIK => self.int_k(i, i64::wrapping_mul),
+            Op::AddF => self.float2(i, |x, y| x + y),
+            Op::SubF => self.float2(i, |x, y| x - y),
+            Op::MulF => self.float2(i, |x, y| x * y),
+            Op::DivF => self.float2(i, |x, y| x / y),
+            Op::CmpI => {
+                let holds = cond(i.imm)?.words(self.reg(i.b), self.reg(i.c));
+                self.set_word(i.a, holds as Word);
+            }
+            Op::CmpIK => {
+                let k = i.imm as i32 as i64 as Word;
+                let holds = cond(i.c as u32)?.words(self.reg(i.b), k);
+                self.set_word(i.a, holds as Word);
+            }
+            Op::CmpF => {
+                let (x, y) = (f64::from_bits(self.reg(i.b)), f64::from_bits(self.reg(i.c)));
+                let holds = cond(i.imm)?.floats(x, y);
+                self.set_word(i.a, holds as Word);
+            }
+            Op::BrI => {
+                if !cond(i.c as u32)?.words(self.reg(i.a), self.reg(i.b)) {
+                    self.pc = i.imm as usize;
+                }
+            }
+            Op::BrIK => {
+                let k = i.b as i8 as i64 as Word;
+                if !cond(i.c as u32)?.words(self.reg(i.a), k) {
+                    self.pc = i.imm as usize;
+                }
+            }
+            Op::BrF => {
+                let (x, y) = (f64::from_bits(self.reg(i.a)), f64::from_bits(self.reg(i.b)));
+                if !cond(i.c as u32)?.floats(x, y) {
+                    self.pc = i.imm as usize;
+                }
+            }
         }
         Ok(None)
+    }
+
+    #[inline(always)]
+    fn int2(&mut self, i: Instr, f: fn(i64, i64) -> i64) {
+        let r = f(self.reg(i.b) as i64, self.reg(i.c) as i64);
+        self.set_word(i.a, r as Word);
+    }
+
+    #[inline(always)]
+    fn int_k(&mut self, i: Instr, f: fn(i64, i64) -> i64) {
+        let r = f(self.reg(i.b) as i64, i.imm as i32 as i64);
+        self.set_word(i.a, r as Word);
+    }
+
+    #[inline(always)]
+    fn float2(&mut self, i: Instr, f: fn(f64, f64) -> f64) {
+        let r = f(f64::from_bits(self.reg(i.b)), f64::from_bits(self.reg(i.c)));
+        self.set_word(i.a, r.to_bits());
     }
 
     // --- control ----------------------------------------------------------
@@ -604,10 +683,7 @@ impl<'p> Vm<'p> {
     /// entry. Nothing is saved, because the only way back is a continuation the
     /// caller already passed as one of those arguments.
     fn invoke(&mut self, i: Instr) -> Result<Option<Value>, Error> {
-        let obj = self.reg(i.a);
-        let Some(a) = obj.addr() else {
-            return err(format!("invoked {}, which is not an object", obj.kind()));
-        };
+        let a = self.reg(i.a) as Addr;
         let base = i.c;
         let argc = i.imm as usize;
 
@@ -633,7 +709,7 @@ impl<'p> Vm<'p> {
                 let base = base as usize;
                 self.regs.copy_within(base..base + argc, SCRATCH);
                 for j in 0..ncap {
-                    self.regs[j] = self.heap.field(a, j);
+                    self.regs[j] = self.heap.field_word(a, j);
                 }
                 self.regs.copy_within(SCRATCH..SCRATCH + argc, ncap);
                 self.live = ncap + argc;
@@ -654,7 +730,7 @@ impl<'p> Vm<'p> {
         let Some(&(effect, op)) = self.program.ops.get(i.imm as usize) else {
             return err(format!("no operation {}", i.imm));
         };
-        let arg = self.reg(i.b);
+        let arg = self.value(i.b, 0);
         if &*effect == "Test" && &*op == "fail" {
             return err(self.show(arg));
         }
@@ -670,14 +746,71 @@ impl<'p> Vm<'p> {
     // --- registers and the heap -------------------------------------------
 
     #[inline]
-    pub(crate) fn reg(&self, r: Reg) -> Value {
+    pub(crate) fn reg(&self, r: Reg) -> Word {
         self.regs[r as usize]
     }
 
     #[inline]
     pub(crate) fn set(&mut self, r: Reg, v: Value) {
-        self.regs[r as usize] = v;
+        self.set_word(r, v.bits());
+    }
+
+    #[inline]
+    pub(crate) fn set_word(&mut self, r: Reg, w: Word) {
+        self.regs[r as usize] = w;
         self.live = self.live.max(r as usize + 1);
+    }
+
+    /// The descriptor of operand `k` of the instruction being carried out:
+    /// the compiler's, or the one it says a register holds.
+    #[inline]
+    pub(crate) fn operand(&self, k: usize) -> Desc {
+        let at = match self.program.operands_at.get(self.at) {
+            Some(&at) if at != meadow_bytecode::NO_OPERANDS => at as usize + k,
+            _ => return desc::ANY,
+        };
+        match self.program.operands.get(at) {
+            Some(&src) => self.desc_at(src),
+            None => desc::ANY,
+        }
+    }
+
+    #[inline]
+    fn desc_at(&self, src: DescSrc) -> Desc {
+        if src < DESC_REG {
+            src as Desc
+        } else {
+            self.regs[(src - DESC_REG) as usize] as Desc
+        }
+    }
+
+    /// The value in register `r`, which is operand `k` of the instruction being
+    /// carried out.
+    #[inline]
+    pub(crate) fn value(&self, r: Reg, k: usize) -> Value {
+        Value::from_bits(self.reg(r), self.operand(k))
+    }
+
+    /// `MakeData`, `MakeArray` and `Closure`: an object of the window's words,
+    /// described by the instruction's operands.
+    fn make(&mut self, i: Instr, kind: Kind, meta: u32) {
+        let n = i.c as usize;
+        self.ensure(Heap::size_of(kind, n));
+        let base = i.b as usize;
+        let operands = self.program.operands(self.at);
+        let a = {
+            let Vm { heap, regs, .. } = self;
+            let desc = |j: usize| {
+                let src = operands[j];
+                if src < DESC_REG {
+                    src as Desc
+                } else {
+                    regs[(src - DESC_REG) as usize] as Desc
+                }
+            };
+            heap.alloc_described(kind, meta, n, |j| regs[base + j], desc)
+        };
+        self.set(i.a, Value::Obj(a));
     }
 
     /// Make room for `slots`, collecting and growing as needed.
@@ -698,7 +831,7 @@ impl<'p> Vm<'p> {
         let registers = self.root_registers();
         let mut roots: Vec<Value> =
             Vec::with_capacity(registers.len() + self.pinned.len() + self.globals.len());
-        roots.extend(registers.iter().map(|r| self.regs[*r]));
+        roots.extend(registers.iter().map(|r| Value::Obj(self.regs[*r] as Addr)));
         roots.extend_from_slice(&self.pinned);
         roots.extend(self.globals.iter().flatten().copied());
 
@@ -706,7 +839,7 @@ impl<'p> Vm<'p> {
 
         let mut it = roots.into_iter();
         for r in registers {
-            self.regs[r] = it.next().expect("root count");
+            self.regs[r] = it.next().expect("root count").bits();
         }
         for p in &mut self.pinned {
             *p = it.next().expect("root count");
@@ -716,18 +849,17 @@ impl<'p> Vm<'p> {
         }
     }
 
-    /// The registers that may hold addresses now, by the map of the instruction
+    /// The registers that hold addresses now, by the map of the instruction
     /// being carried out.
     ///
     /// A register the map calls a reference is one; a scalar is not; one whose
-    /// representation depends on a type variable is whatever its tag says,
-    /// until descriptors say it instead. With no instruction running -- a call
-    /// being set up -- or no maps at all, every live register is.
+    /// representation depends on a type variable is what its descriptor, in
+    /// another register, says. Registers are words, so there is nothing else
+    /// to go by: a collection where there is no map is a compiler bug.
     ///
-    /// Verifying, each map is checked against the tags, and the registers it
-    /// leaves out are overwritten with `()`: a map missing a register the
-    /// program reads again then shows up as a wrong value, not as a rare
-    /// dangling address.
+    /// Verifying, the registers the map leaves out are zeroed, so a map missing
+    /// a register the program reads again shows up as a wrong value rather than
+    /// a rare dangling address.
     fn root_registers(&mut self) -> Vec<usize> {
         let map = self
             .program
@@ -736,15 +868,14 @@ impl<'p> Vm<'p> {
             .copied()
             .filter(|m| *m != NO_MAP);
         let Some(map) = map else {
-            if self.heap.verifying() && self.at != NO_PC && !self.program.gc_at.is_empty() {
-                panic!(
-                    "a collection at pc {} ({:?}), which has no register map",
-                    self.at, self.program.code[self.at].op
-                );
+            if self.live == 0 {
+                return Vec::new();
             }
-            return (0..self.live)
-                .filter(|j| self.regs[*j].addr().is_some())
-                .collect();
+            let op = self.program.code.get(self.at).map(|i| i.op);
+            panic!(
+                "a collection at pc {} ({op:?}), which has no register map",
+                self.at
+            );
         };
         let map = &self.program.gc_maps[map as usize];
         let verifying = self.heap.verifying();
@@ -763,43 +894,38 @@ impl<'p> Vm<'p> {
             }
             if verifying {
                 while next < r {
-                    self.regs[next] = Value::Unit;
+                    self.regs[next] = 0;
                     next += 1;
                 }
                 next = r + 1;
             }
-            let v = self.regs[r];
-            match held {
-                Held::Ref if v.addr().is_none() => {
-                    if verifying {
-                        panic!(
-                            "pc {} maps r{r} as a reference, but it holds {}",
-                            self.at,
-                            v.kind()
-                        );
-                    }
+            let pointer = match held {
+                Held::Ref => true,
+                Held::Scalar => false,
+                Held::Var(d) => {
+                    let code = self.regs[d as usize];
+                    assert!(
+                        code < 16,
+                        "pc {} describes r{r} by r{d}, which holds {code}, not a descriptor",
+                        self.at
+                    );
+                    assert_ne!(
+                        code as Desc,
+                        desc::ANY,
+                        "pc {}: r{r} holds a value nothing describes",
+                        self.at
+                    );
+                    code as Desc == desc::REF
                 }
-                Held::Scalar if v.addr().is_some() => {
-                    if verifying {
-                        panic!(
-                            "pc {} maps r{r} as a scalar, but it holds an object",
-                            self.at
-                        );
-                    }
-                    // Wrong, but rooting it is the safe way to be wrong.
-                    roots.push(r);
-                }
-                Held::Scalar => {}
-                Held::Ref | Held::Var(_) => {
-                    if v.addr().is_some() {
-                        roots.push(r);
-                    }
-                }
+                Held::Any => panic!("pc {}: r{r} holds a value nothing describes", self.at),
+            };
+            if pointer {
+                roots.push(r);
             }
         }
         if verifying {
             while next < self.live {
-                self.regs[next] = Value::Unit;
+                self.regs[next] = 0;
                 next += 1;
             }
         }
@@ -846,34 +972,19 @@ impl<'p> Vm<'p> {
         None
     }
 
-    /// What a conditional treats as false.
-    ///
-    /// The compiler lowers `True`/`False` patterns to boolean literals, but a
-    /// value built by naming the constructor arrives as data — so both spellings
-    /// are accepted, the same rule the CEK uses.
-    pub(crate) fn falsey(&self, v: Value) -> bool {
-        match v {
-            Value::Bool(b) => !b,
-            Value::Obj(a) => {
-                self.heap.kind(a) == Kind::Data
-                    && self.heap.len(a) == 0
-                    && Some(self.heap.meta(a)) == self.false_tag
-            }
-            _ => false,
-        }
-    }
-
     // --- introspection ----------------------------------------------------
 
     /// The live registers, named by number — what a stepper shows beside the
     /// disassembly.
+    ///
+    /// Registers are words; this shows each as the number it is.
     pub fn describe(&self) -> String {
         let mut out = String::from("[");
         for j in 0..self.live {
             if j > 0 {
                 out.push_str(", ");
             }
-            out.push_str(&format!("r{j} = {}", self.show(self.regs[j])));
+            out.push_str(&format!("r{j} = {:#x}", self.regs[j]));
         }
         out.push(']');
         out
@@ -893,10 +1004,15 @@ impl<'p> Vm<'p> {
         self.live
     }
 
-    /// The value in register `r`. Only `r0..live` is meaningful — above that a
+    /// The word in register `r`. Only `r0..live` is meaningful — above that a
     /// register may hold an address the collector has since invalidated.
-    pub fn register(&self, r: usize) -> Value {
-        self.regs.get(r).copied().unwrap_or(Value::Unit)
+    pub fn register(&self, r: usize) -> Word {
+        self.regs.get(r).copied().unwrap_or(0)
+    }
+
+    /// Register `r`'s word as a value of descriptor `d`.
+    pub fn register_as(&self, r: usize, d: Desc) -> Value {
+        Value::from_bits(self.register(r), d)
     }
 
     /// The heap, to look inside objects. Check [`Heap::is_object`] before

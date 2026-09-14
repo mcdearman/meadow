@@ -82,7 +82,8 @@ pub type Tag = u32;
 /// has one, in [`Program::reps`]: from the type core gave the value, or, for the
 /// names lowering invents, from what they are. `Var` is the one that is not
 /// known when the program is compiled: a value whose type is a type variable,
-/// whose representation is whatever the variable is instantiated to.
+/// whose representation is whatever the variable is instantiated to -- which
+/// the variable's *descriptor* says, at run time (`meadow_core::desc`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Rep {
     /// A heap object: data, a closure or continuation, an array, a record, a
@@ -93,33 +94,50 @@ pub enum Rep {
     /// A 64-bit `Float`.
     Float,
     /// Any other immediate: `()`, a `Bool`, a `Char`, a sized integer, a
-    /// `Float32`.
-    Bits,
+    /// `Float32` -- which one, as its descriptor.
+    Bits(meadow_core::desc::Desc),
     /// A `String`.
     Str,
-    /// The representation of type variable `n`, whatever that is.
+    /// Whatever the descriptor in the name `VarId(n)` says. Wherever a name
+    /// of this representation is in an environment that can collect, so is
+    /// that descriptor. [`NO_DESC`] when no abstraction binds the variable.
     Var(u32),
     /// A type the compiler could not work out -- only in a unit with errors.
     Unknown,
 }
 
+/// [`Rep::Var`] of a type variable no enclosing abstraction binds: nothing
+/// describes it, and no value of it is expected at run time.
+pub const NO_DESC: u32 = u32::MAX;
+
 impl Rep {
     /// The representation of a value of type `ty`.
     pub fn of(ty: &meadow_core::Ty) -> Rep {
-        use meadow_core::Ty as Type;
+        use meadow_core::desc;
         match ty {
-            Type::Con(n, args) if args.is_empty() => match &**n {
-                "Int" | "Int64" => Rep::Int,
-                "Float" | "Float64" => Rep::Float,
-                "String" => Rep::Str,
-                "Unit" | "Bool" | "Char" | "Float32" => Rep::Bits,
-                "?" => Rep::Unknown,
-                w if meadow_core::num::Width::from_type(w).is_some() => Rep::Bits,
-                _ => Rep::Ref,
+            meadow_core::Ty::Var(v) => Rep::Var(*v),
+            ty => match desc::of(ty) {
+                Some(desc::REF) => Rep::Ref,
+                Some(desc::INT) => Rep::Int,
+                Some(desc::FLOAT) => Rep::Float,
+                Some(desc::STR) => Rep::Str,
+                Some(desc::ANY) | None => Rep::Unknown,
+                Some(d) => Rep::Bits(d),
             },
-            Type::Con(..) | Type::Tuple(_) | Type::Record(_) | Type::Fun(..) => Rep::Ref,
-            Type::Var(v) => Rep::Var(*v),
-            _ => Rep::Unknown,
+        }
+    }
+
+    /// The descriptor of a value of this representation, when it is known
+    /// without looking at one.
+    pub fn desc(self) -> Option<meadow_core::desc::Desc> {
+        use meadow_core::desc;
+        match self {
+            Rep::Ref => Some(desc::REF),
+            Rep::Int => Some(desc::INT),
+            Rep::Float => Some(desc::FLOAT),
+            Rep::Str => Some(desc::STR),
+            Rep::Bits(d) => Some(d),
+            Rep::Var(_) | Rep::Unknown => None,
         }
     }
 }
@@ -339,6 +357,13 @@ pub struct Program {
     /// Names that are copies of a variable the program was written with, and
     /// which -- see `meadow_core::Program::origins`.
     pub origins: std::collections::HashMap<Name, Name>,
+    /// What a definition's block answers its continuation with, for the blocks
+    /// a runtime starts: each definition's, and a generic entry point's. A
+    /// runtime that has only a word back has to be told what it is.
+    pub results: std::collections::HashMap<Label, Rep>,
+    /// For a name holding a thread, a `Task a`: how `a` is represented, which
+    /// is what the thread answers with.
+    pub threads: std::collections::HashMap<Name, Rep>,
 }
 
 impl Program {
@@ -350,6 +375,7 @@ impl Program {
     }
 }
 
+mod describe;
 mod lower;
 pub use lower::{Lowered, Unsupported, lower_program};
 

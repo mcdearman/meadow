@@ -37,15 +37,14 @@ use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
-use crate::heap::Slot;
-use crate::value::{Addr, Value};
+use crate::value::{Addr, Word};
 
 /// Addresses from here up to [`crate::region::REGION_BASE`] are old; below it,
 /// the nursery.
 pub const OLD_BASE: Addr = 1 << 30;
 
 /// Slots in a line: 256 bytes, Immix's line.
-pub const LINE: usize = 16;
+pub const LINE: usize = 32;
 /// Lines in a block.
 pub const LINES: usize = 256;
 /// Slots in a block: 64 KiB.
@@ -63,7 +62,12 @@ const MAX_BLOCKS: usize = ((crate::region::REGION_BASE - OLD_BASE) as usize) / B
 /// One block. Its slots are read by the program and by the marker at once;
 /// see [`crate::mark`] for why that is safe.
 pub struct Block {
-    slots: Box<[UnsafeCell<Slot>]>,
+    slots: Box<[UnsafeCell<Word>]>,
+    /// Which slots hold an address, one bit each: what a slot's descriptor
+    /// says, kept where code that has only the slot's address -- the
+    /// remembered set, evacuation's recorded fields -- can read it. Only the
+    /// program touches these.
+    pointers: Box<[AtomicU64]>,
     /// The epoch each line was last marked or allocated in. 0 is never.
     lines: Box<[AtomicU32]>,
     /// Object mark bits, one per slot, for [`Block::mark_epoch`].
@@ -113,9 +117,8 @@ unsafe impl Send for Block {}
 impl Block {
     fn new() -> Block {
         Block {
-            slots: (0..BLOCK)
-                .map(|_| UnsafeCell::new(Slot::Val(Value::Unit)))
-                .collect(),
+            slots: (0..BLOCK).map(|_| UnsafeCell::new(0)).collect(),
+            pointers: (0..WORDS).map(|_| AtomicU64::new(0)).collect(),
             lines: (0..LINES).map(|_| AtomicU32::new(0)).collect(),
             marks: (0..WORDS).map(|_| AtomicU64::new(0)).collect(),
             mark_epoch: AtomicU32::new(0),
@@ -139,6 +142,7 @@ impl Block {
     fn nothing() -> Block {
         Block {
             slots: Box::new([]),
+            pointers: Box::new([]),
             lines: Box::new([]),
             marks: Box::new([]),
             mark_epoch: AtomicU32::new(0),
@@ -165,6 +169,9 @@ impl Block {
         for w in self.remembered.iter_mut() {
             *w.get_mut() = 0;
         }
+        for w in self.pointers.iter_mut() {
+            *w.get_mut() = 0;
+        }
         *self.mark_epoch.get_mut() = 0;
         *self.live.get_mut() = 0;
         *self.state.get_mut() = NORMAL;
@@ -177,15 +184,27 @@ impl Block {
     }
 
     #[inline]
-    pub fn get(&self, off: usize) -> Slot {
+    pub fn get(&self, off: usize) -> Word {
         // Safety: see the `Sync` impl.
         unsafe { *self.slots[off].get() }
     }
 
     #[inline]
-    fn put(&self, off: usize, s: Slot) {
+    fn put(&self, off: usize, w: Word, pointer: bool) {
         // Safety: see the `Sync` impl.
-        unsafe { *self.slots[off].get() = s }
+        unsafe { *self.slots[off].get() = w }
+        let bit = 1u64 << (off % 64);
+        let cell = &self.pointers[off / 64];
+        let was = cell.load(Ordering::Relaxed);
+        let now = if pointer { was | bit } else { was & !bit };
+        if now != was {
+            cell.store(now, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn is_pointer(&self, off: usize) -> bool {
+        self.pointers[off / 64].load(Ordering::Relaxed) & (1u64 << (off % 64)) != 0
     }
 
     pub fn line(&self, i: usize) -> u32 {
@@ -464,22 +483,37 @@ impl Old {
     }
 
     #[inline]
-    pub fn get(&self, a: Addr) -> Slot {
+    pub fn get(&self, a: Addr) -> Word {
         self.blocks[block_of(a)].get(offset_of(a))
     }
 
+    /// Write slot `a`: a header word, or a field that holds no address.
     #[inline]
-    pub fn put(&self, a: Addr, s: Slot) {
-        self.blocks[block_of(a)].put(offset_of(a), s)
+    pub fn put(&self, a: Addr, w: Word) {
+        self.blocks[block_of(a)].put(offset_of(a), w, false)
     }
 
-    /// Is there an object header at `a`, in a block that exists? For a
-    /// debugger; a dead object in a free line looks the same as a live one.
+    /// Write field slot `a`, which holds an address if `pointer`.
+    #[inline]
+    pub fn put_field(&self, a: Addr, w: Word, pointer: bool) {
+        self.blocks[block_of(a)].put(offset_of(a), w, pointer)
+    }
+
+    /// Did the last write to slot `a` put an address there?
+    #[inline]
+    pub fn is_pointer(&self, a: Addr) -> bool {
+        self.blocks[block_of(a)].is_pointer(offset_of(a))
+    }
+
+    /// Could there be an object header at `a`, in a block that exists? For a
+    /// debugger: a word that reads as a kind is all it can check, and a dead
+    /// object in a free line looks the same as a live one.
     pub fn is_object(&self, a: Addr) -> bool {
         let b = block_of(a);
         b < self.blocks.len()
             && !self.blocks[b].is_empty()
-            && matches!(self.get(a), Slot::Header { .. })
+            && !self.is_pointer(a)
+            && crate::heap::Kind::try_from_byte(self.get(a) as u8).is_some()
     }
 
     fn line_free(&self, stamp: u32) -> bool {
@@ -753,12 +787,14 @@ mod tests {
     use super::*;
     use crate::heap::Kind;
 
-    fn header(len: u32) -> Slot {
-        Slot::Header {
-            kind: Kind::Data,
-            len,
-            meta: 0,
-        }
+    /// Write the header of a data object of `len` fields at `a`.
+    fn header(old: &Old, a: Addr, len: u32) {
+        crate::object::write_header(
+            Kind::Data,
+            0,
+            std::iter::repeat_n(meadow_core::desc::INT, len as usize),
+            |k, w| old.put(a + k as Addr, w),
+        );
     }
 
     #[test]
@@ -775,11 +811,11 @@ mod tests {
     fn a_finished_cycle_frees_the_lines_it_did_not_mark() {
         let mut old = Old::default();
         let keep = old.alloc(3, false);
-        old.put(keep, header(2));
+        header(&old, keep, 1);
         // Fill the rest of the first line and into the next few.
         for _ in 0..40 {
             let a = old.alloc(3, false);
-            old.put(a, header(2));
+            header(&old, a, 1);
         }
         old.begin(2);
         // Only `keep` is found alive: its line is stamped with the new epoch.
@@ -821,7 +857,7 @@ mod tests {
         assert_eq!(block_of(big), 1);
         assert_eq!(old.real_blocks, 4);
         // Its last slot is addressable, in the third of its blocks.
-        old.put(big + (BLOCK * 2 + 4) as Addr, header(0));
+        old.put(big + (BLOCK * 2 + 4) as Addr, 0);
     }
 
     #[test]

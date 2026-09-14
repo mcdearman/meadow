@@ -259,7 +259,13 @@ fn define(env: &Env, var: Var, val: Value) {
 fn redefine(env: &Env, var: Var, val: Value) {
     let mut cur = Some(env.clone());
     while let Some(frame) = cur {
-        if let Some(slot) = frame.slots.borrow_mut().iter_mut().rev().find(|(k, _)| *k == var) {
+        if let Some(slot) = frame
+            .slots
+            .borrow_mut()
+            .iter_mut()
+            .rev()
+            .find(|(k, _)| *k == var)
+        {
             slot.1 = val;
             return;
         }
@@ -378,7 +384,10 @@ pub enum K {
     /// A handler boundary sitting on the stack.
     HandleMark(Rc<HandlerData>, Env),
     /// A top-level value is being evaluated for the first time; keep it.
-    Cache { var: Var, root: Env },
+    Cache {
+        var: Var,
+        root: Env,
+    },
 }
 
 enum Control {
@@ -414,7 +423,14 @@ enum Request {
 
 impl<'a> Machine<'a> {
     fn new(ctrl: Control, kont: Vec<K>, fields: &'a FieldTable) -> Machine<'a> {
-        Machine { ctrl, kont, fields, request: None, failed: None, txn: None }
+        Machine {
+            ctrl,
+            kont,
+            fields,
+            request: None,
+            failed: None,
+            txn: None,
+        }
     }
 }
 
@@ -423,7 +439,12 @@ pub fn run(program: &core::Program) -> Result<Value, RuntimeError> {
     match program.entry {
         // Through a mention, so the entry point is evaluated the way any use
         // of a top-level value is.
-        Some(e) => Machine::new(Control::Eval(Arc::new(Term::Var(e)), env), Vec::new(), &program.ctor_fields).run(),
+        Some(e) => Machine::new(
+            Control::Eval(Arc::new(Term::Var(e)), env),
+            Vec::new(),
+            &program.ctor_fields,
+        )
+        .run(),
         None => Ok(Value::Unit),
     }
 }
@@ -478,7 +499,11 @@ fn load(program: &core::Program) -> Result<Env, RuntimeError> {
     let env = root_env();
     for def in &program.defs {
         let value = match peel(&def.term) {
-            Term::Lam(param, _, body) => Value::Closure { param: *param, body: body.clone(), env: env.clone() },
+            Term::Lam(param, _, body) => Value::Closure {
+                param: *param,
+                body: body.clone(),
+                env: env.clone(),
+            },
             _ => Value::Lazy(Arc::new(def.term.clone())),
         };
         define(&env, def.var, value);
@@ -575,7 +600,9 @@ impl<'a> Machine<'a> {
             }
             StmRead => {
                 let tv = as_tvar(&args[0])?;
-                let txn = self.txn.as_mut().ok_or_else(|| RuntimeError { msg: core::stm::outside("readTVar") })?;
+                let txn = self.txn.as_mut().ok_or_else(|| RuntimeError {
+                    msg: core::stm::outside("readTVar"),
+                })?;
                 for frame in txn.writes.iter().rev() {
                     if let Some((_, v)) = frame.iter().find(|(t, _)| Rc::ptr_eq(t, &tv)) {
                         return Ok(Value::ctor("Maybe.Just".into(), vec![v.clone()]));
@@ -593,17 +620,25 @@ impl<'a> Machine<'a> {
             StmWrite => {
                 let tv = as_tvar(&args[0])?;
                 storable(&args[1])?;
-                let txn = self.txn.as_mut().ok_or_else(|| RuntimeError { msg: core::stm::outside("writeTVar") })?;
+                let txn = self.txn.as_mut().ok_or_else(|| RuntimeError {
+                    msg: core::stm::outside("writeTVar"),
+                })?;
                 txn.write(&tv, args[1].clone());
                 return Ok(Value::Unit);
             }
             StmBegin => {
                 let start = STM_CLOCK.with(|c| c.get());
-                self.txn = Some(Txn { start, reads: Vec::new(), writes: vec![Vec::new()] });
+                self.txn = Some(Txn {
+                    start,
+                    reads: Vec::new(),
+                    writes: vec![Vec::new()],
+                });
                 return Ok(Value::Unit);
             }
             StmNest | StmMerge | StmRollback => {
-                let txn = self.txn.as_mut().ok_or_else(|| RuntimeError { msg: core::stm::outside("orElse") })?;
+                let txn = self.txn.as_mut().ok_or_else(|| RuntimeError {
+                    msg: core::stm::outside("orElse"),
+                })?;
                 match op {
                     StmNest => txn.writes.push(Vec::new()),
                     StmMerge if txn.writes.len() > 1 => {
@@ -659,7 +694,10 @@ impl<'a> Machine<'a> {
                     // top-level definitions live, and keep the result.
                     Value::Lazy(term) => {
                         let root = root_of(&env);
-                        self.kont.push(K::Cache { var: *v, root: root.clone() });
+                        self.kont.push(K::Cache {
+                            var: *v,
+                            root: root.clone(),
+                        });
                         self.ctrl = Control::Eval(term, root);
                     }
                     val => self.ctrl = Control::Ret(val),
@@ -779,7 +817,9 @@ impl<'a> Machine<'a> {
                 });
                 self.ctrl = Control::Eval(arg.clone(), env);
             }
-            T::Handle { body, clauses, ret, .. } => {
+            T::Handle {
+                body, clauses, ret, ..
+            } => {
                 let data = Rc::new(HandlerData {
                     clauses: clauses.clone(),
                     ret: ret.clone(),
@@ -1202,16 +1242,18 @@ fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
         (P::Lit(core::Lit::Char(a)), Value::Char(b)) => a == b,
         (P::Lit(core::Lit::Bool(a)), Value::Bool(b)) => a == b,
         (P::Lit(core::Lit::Unit), Value::Unit) => true,
-        (P::Tuple(ps), Value::Tuple(vs)) if ps.len() == vs.len() => {
-            ps.iter().zip(vs.iter()).all(|(p, v)| match_pat(p, v, scope))
-        }
+        (P::Tuple(ps), Value::Tuple(vs)) if ps.len() == vs.len() => ps
+            .iter()
+            .zip(vs.iter())
+            .all(|(p, v)| match_pat(p, v, scope)),
         (P::Array(ps), Value::Array(vs)) if ps.len() == vs.len() => ps
             .iter()
             .zip(vs.iter())
             .all(|(p, v)| match_pat(p, v, scope)),
-        (P::Ctor(name, ps), Value::Ctor(vname, vs)) if name == vname && ps.len() == vs.len() => {
-            ps.iter().zip(vs.iter()).all(|(p, v)| match_pat(p, v, scope))
-        }
+        (P::Ctor(name, ps), Value::Ctor(vname, vs)) if name == vname && ps.len() == vs.len() => ps
+            .iter()
+            .zip(vs.iter())
+            .all(|(p, v)| match_pat(p, v, scope)),
         (P::Record(fields), Value::Record(map)) => fields
             .iter()
             .all(|(label, p)| map.get(label).is_some_and(|v| match_pat(p, v, scope))),
@@ -1242,7 +1284,7 @@ fn displayed(v: &Value) -> String {
 /// `hash`, fed to [`meadow_core::hash::Hasher`] in the order every engine uses:
 /// a value's head, then its parts left to right.
 fn hash_value(v: &Value) -> Result<i64, RuntimeError> {
-    use meadow_core::hash::{unhashable, Hasher};
+    use meadow_core::hash::{Hasher, unhashable};
     enum Work {
         Val(Value),
         Label(String),
@@ -1258,7 +1300,11 @@ fn hash_value(v: &Value) -> Result<i64, RuntimeError> {
             Work::Val(v) => v,
         };
         match &v {
-            Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Word(..) | Value::Float32(_) => {
+            Value::Int(_)
+            | Value::BigInt(_)
+            | Value::Float(_)
+            | Value::Word(..)
+            | Value::Float32(_) => {
                 num::hash_into(&mut h, &to_num(&v).expect("a number"));
             }
             Value::Bool(b) => h.bool(*b),
@@ -1286,8 +1332,10 @@ fn hash_value(v: &Value) -> Result<i64, RuntimeError> {
             }
             Value::Record(fields) => {
                 h.record(fields.len());
-                let mut sorted: Vec<(String, Value)> =
-                    fields.iter().map(|(l, v)| (l.to_string(), v.clone())).collect();
+                let mut sorted: Vec<(String, Value)> = fields
+                    .iter()
+                    .map(|(l, v)| (l.to_string(), v.clone()))
+                    .collect();
                 sorted.sort_by(|a, b| a.0.cmp(&b.0));
                 for (label, value) in sorted.into_iter().rev() {
                     stack.push(Work::Val(value));
@@ -1316,7 +1364,9 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
     use core::Prim::*;
 
     let n = |i: usize| {
-        to_num(&args[i]).ok_or_else(|| RuntimeError { msg: format!("expected a number, got {}", args[i]) })
+        to_num(&args[i]).ok_or_else(|| RuntimeError {
+            msg: format!("expected a number, got {}", args[i]),
+        })
     };
     let done = |r: Result<num::Num, String>| r.map(from_num).map_err(|msg| RuntimeError { msg });
     let truth = |r: Result<bool, String>| r.map(Value::Bool).map_err(|msg| RuntimeError { msg });
@@ -1410,7 +1460,9 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // --- bytes -----------------------------------------------------------
         StringToBytes => match &args[0] {
             Value::Str(s) => Ok(Value::Array(Rc::new(
-                s.bytes().map(|b| Value::Word(num::Width::U8, b as u64)).collect(),
+                s.bytes()
+                    .map(|b| Value::Word(num::Width::U8, b as u64))
+                    .collect(),
             ))),
             other => err(format!("`stringToBytes` expects a String, got {other}")),
         },
@@ -1445,13 +1497,17 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
 
         // --- the mutable array -----------------------------------------------
         RunSt => err("runSt reached the evaluator; lowering applies its body"),
-        StNewArray => match &args[0] {
-            Value::Int(n) if *n >= 0 => Ok(Value::MutArray(Rc::new(RefCell::new(vec![
+        StNewArray => {
+            match &args[0] {
+                Value::Int(n) if *n >= 0 => Ok(Value::MutArray(Rc::new(RefCell::new(vec![
                 args[1].clone();
                 *n as usize
             ])))),
-            other => err(format!("stNewArray: expected a length of zero or more, got {other}")),
-        },
+                other => err(format!(
+                    "stNewArray: expected a length of zero or more, got {other}"
+                )),
+            }
+        }
         StGetArray => {
             let cells = as_mut_array(&args[0])?;
             let i = as_index(&args[1])?;
@@ -1474,7 +1530,9 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             }
         }
         StArrayLen => Ok(Value::Int(as_mut_array(&args[0])?.borrow().len() as i64)),
-        StFreeze => Ok(Value::Array(Rc::new(as_mut_array(&args[0])?.borrow().clone()))),
+        StFreeze => Ok(Value::Array(Rc::new(
+            as_mut_array(&args[0])?.borrow().clone(),
+        ))),
         StThaw => match &args[0] {
             Value::Array(xs) => Ok(Value::MutArray(Rc::new(RefCell::new((**xs).clone())))),
             other => err(format!("stThaw: expected an Array, got {other}")),
@@ -1498,7 +1556,9 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             err("a thread operation reached a primitive with no machine to run it")
         }
         StmNew | StmRead | StmWrite | StmBegin | StmCommit | StmWait | StmNest | StmMerge
-        | StmRollback => err("a transaction operation reached a primitive with no machine to run it"),
+        | StmRollback => {
+            err("a transaction operation reached a primitive with no machine to run it")
+        }
         // This machine keeps top-level values lazily in its environment and
         // never runs the caching pass that produces these.
         GlobalReady | GlobalGet | GlobalSet => err("a definition cache reached the CEK machine"),
@@ -1565,7 +1625,9 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
                 let hi = (pair[0] as char).to_digit(16);
                 let lo = (pair[1] as char).to_digit(16);
                 match (hi, lo) {
-                    (Some(h), Some(l)) => out.push(Value::Word(num::Width::U8, ((h << 4) | l) as u64)),
+                    (Some(h), Some(l)) => {
+                        out.push(Value::Word(num::Width::U8, ((h << 4) | l) as u64))
+                    }
                     _ => return Ok(none()),
                 }
             }
@@ -1720,7 +1782,9 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
         },
         "readBytes" => match fs::read(&*one(&arg)?) {
             Ok(b) => ok(Value::Array(Rc::new(
-                b.into_iter().map(|x| Value::Word(num::Width::U8, u64::from(x))).collect(),
+                b.into_iter()
+                    .map(|x| Value::Word(num::Width::U8, u64::from(x)))
+                    .collect(),
             ))),
             Err(e) => ioerr(e),
         },
@@ -1928,7 +1992,10 @@ fn vector_value(items: Vec<Value>) -> Value {
         .collect();
     let mut shift = 5;
     let branch = |kids: &[Value]| {
-        ctor("VNode.Branch", vec![ctor("Maybe.None", vec![]), array(kids)])
+        ctor(
+            "VNode.Branch",
+            vec![ctor("Maybe.None", vec![]), array(kids)],
+        )
     };
     while nodes.len() > WIDTH {
         nodes = nodes.chunks(WIDTH).map(branch).collect();
@@ -2116,7 +2183,8 @@ fn value_eq(a: &Value, b: &Value) -> bool {
             (Value::MutArray(x), Value::MutArray(y)) if Rc::ptr_eq(x, y) => {}
             // Immutable, so two are equal when what they hold is.
             (Value::Compact(x), Value::Compact(y)) => stack.push((x.0.clone(), y.0.clone())),
-            (Value::Channel(x), Value::Channel(y)) | (Value::Task(x), Value::Task(y)) if x == y => {}
+            (Value::Channel(x), Value::Channel(y)) | (Value::Task(x), Value::Task(y)) if x == y => {
+            }
             (Value::TVar(x), Value::TVar(y)) if Rc::ptr_eq(x, y) => {}
             _ => return false,
         }
@@ -2265,28 +2333,30 @@ fn compact_into(
         match &v {
             Value::Ctor(_, fields) => {
                 if first(Rc::as_ptr(fields) as *const ()) {
-                    slots += 1 + fields.len();
+                    slots += meadow_core::compact::object_slots(false, fields.len());
                     stack.extend(fields.iter().cloned());
                 }
             }
             Value::Tuple(xs) => {
-                slots += 1 + xs.len();
+                slots += meadow_core::compact::object_slots(false, xs.len());
                 stack.extend(xs.iter().cloned());
             }
             Value::Array(xs) => {
                 if first(Rc::as_ptr(xs) as *const ()) {
-                    slots += 1 + xs.len();
+                    slots += meadow_core::compact::object_slots(true, xs.len());
                     stack.extend(xs.iter().cloned());
                 }
             }
             Value::Record(fields) => {
-                slots += 1 + 2 * fields.len();
+                slots += meadow_core::compact::object_slots(false, 2 * fields.len());
                 stack.extend(fields.values().cloned());
             }
-            Value::BigInt(b) => slots += 1 + b.iter_u32_digits().count(),
+            Value::BigInt(b) => {
+                slots += meadow_core::compact::object_slots(true, b.iter_u32_digits().count())
+            }
             Value::Compact(c) => {
                 if first(Rc::as_ptr(c) as *const ()) {
-                    slots += 2;
+                    slots += meadow_core::compact::object_slots(false, 1);
                     stack.push(c.0.clone());
                 }
             }
@@ -2295,8 +2365,10 @@ fn compact_into(
             Value::Closure { .. } | Value::Builtin { .. } | Value::Cont(_) => {
                 return err(uncompactable("a function"));
             }
-            // A handle: one header slot on the VM, and nothing inside.
-            Value::Channel(_) | Value::Task(_) | Value::TVar(_) => slots += 1,
+            // A handle: a header on the VM, and nothing inside.
+            Value::Channel(_) | Value::Task(_) | Value::TVar(_) => {
+                slots += meadow_core::compact::object_slots(false, 0)
+            }
             Value::Lazy(_) => return err("compact: a top-level value that was never evaluated"),
             Value::Int(_)
             | Value::Float(_)
@@ -2387,7 +2459,9 @@ fn native_console(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                 let _ = out.flush();
                 Ok(Value::Unit)
             }
-            other => err(format!("Console.writeOutput: expected a String, got {other}")),
+            other => err(format!(
+                "Console.writeOutput: expected a String, got {other}"
+            )),
         },
         "readLine" => {
             let _ = arg;
@@ -2518,7 +2592,7 @@ mod tests {
         let n = v();
         let lam = Term::lam(
             n,
-                Term::If(
+            Term::If(
                 Arc::new(Term::prim(
                     Prim::Eq,
                     vec![Term::Var(n), Term::Lit(Lit::Int(0))],
@@ -2539,10 +2613,7 @@ mod tests {
                 )),
             ),
         );
-        let term = Term::letrec(
-            vec![(f, lam)],
-            Term::App(Arc::new(Term::Var(f)), int(5)),
-        );
+        let term = Term::letrec(vec![(f, lam)], Term::App(Arc::new(Term::Var(f)), int(5)));
         assert_eq!(eval_term(term).unwrap().to_string(), "15");
     }
 
@@ -2777,7 +2848,11 @@ fn schedule(main: Machine<'_>) -> Result<Value, RuntimeError> {
                     },
                     Request::StmCommit => {
                         let txn = m.txn.take().expect("checked by the primitive");
-                        if txn.reads.iter().any(|(tv, version)| tv.version.get() != *version) {
+                        if txn
+                            .reads
+                            .iter()
+                            .any(|(tv, version)| tv.version.get() != *version)
+                        {
                             m.ctrl = Control::Ret(Value::Bool(false));
                             continue;
                         }
@@ -2790,7 +2865,10 @@ fn schedule(main: Machine<'_>) -> Result<Value, RuntimeError> {
                             for (tv, v) in writes {
                                 tv.version.set(version);
                                 *tv.value.borrow_mut() = v;
-                                for i in stm_waiters.remove(&(Rc::as_ptr(&tv) as usize)).unwrap_or_default() {
+                                for i in stm_waiters
+                                    .remove(&(Rc::as_ptr(&tv) as usize))
+                                    .unwrap_or_default()
+                                {
                                     if let Some((mut w, wt)) = parked[i].take() {
                                         w.ctrl = Control::Ret(Value::Unit);
                                         ready.push_back((w, wt));
@@ -2802,13 +2880,20 @@ fn schedule(main: Machine<'_>) -> Result<Value, RuntimeError> {
                     }
                     Request::StmWait => {
                         let txn = m.txn.take().expect("checked by the primitive");
-                        if txn.reads.iter().any(|(tv, version)| tv.version.get() != *version) {
+                        if txn
+                            .reads
+                            .iter()
+                            .any(|(tv, version)| tv.version.get() != *version)
+                        {
                             m.ctrl = Control::Ret(Value::Unit);
                             continue;
                         }
                         let slot = parked.len();
                         for (tv, _) in &txn.reads {
-                            stm_waiters.entry(Rc::as_ptr(tv) as usize).or_default().push(slot);
+                            stm_waiters
+                                .entry(Rc::as_ptr(tv) as usize)
+                                .or_default()
+                                .push(slot);
                         }
                         parked.push(Some((m, task)));
                         break;

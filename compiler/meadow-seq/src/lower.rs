@@ -87,7 +87,7 @@
 //! `#ev(key, clause, target, rest)` entries, newest first. `key` names the
 //! operation (`"State.get"`), `clause` is an object whose one method is that
 //! operation's clause, and `target` is a `Ref` holding where the whole `handle`
-//! expression's value goes. The empty list is `()`. A continuation does not
+//! expression's value goes. The empty list is a `#evnone` object. A continuation does not
 //! take it: it captures the evidence it needs like any other name, which is
 //! also why resuming a continuation needs no evidence restored.
 //!
@@ -117,11 +117,34 @@
 //!
 //! Clauses and the `return` clause capture the evidence from outside the
 //! handler, so an operation they perform goes past it, as it must.
+//!
+//! # Types: descriptors
+//!
+//! A value whose type is a type variable is represented however the variable
+//! is instantiated, and something at run time has to say how -- the collector,
+//! once values stop saying it themselves. So type abstraction and application,
+//! which erase to nothing in most compilers, pass *descriptors* here
+//! (`meadow_core::desc`): one per variable over types, none for rows and
+//! effects.
+//!
+//! * **A generic definition** takes its descriptors first, in both of its
+//!   blocks; a `letrec` binding takes them after what its group captures.
+//! * **A generic `let`** is an object whose one method takes the descriptors
+//!   and a continuation and evaluates the right-hand side -- once per
+//!   instantiation, which is unobservable because only a pure right-hand side
+//!   is generalized.
+//! * **An instantiation** `f [T, …]` passes a constant for each known type and
+//!   the descriptor in scope for each variable ([`Lower::with_descs`]).
+//!
+//! Every name's [`Rep::Var`] is the name of its variable's descriptor where it
+//! is bound. Liveness here ignores descriptors; [`crate::describe`] then adds
+//! each one to every environment holding a value it describes.
 
-use crate::{Block, Def, Extern, Label, Name, Program, Rep, Statement, Tag};
+use crate::{Block, Def, Extern, Label, NO_DESC, Name, Program, Rep, Statement, Tag};
 use meadow_core as core;
 use meadow_core::{OptLevel, Pat, Term, Var};
 use meadow_hir::VarId;
+use meadow_infer::VarKind;
 use meadow_intern::InternedString;
 use std::collections::{HashMap, HashSet};
 
@@ -154,11 +177,15 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     // And each top-level value gets its cache, so it is evaluated once -- see
     // [`core::globals`].
     //
-    // Types are *not* erased: a name's representation comes from its type,
-    // and a call's type from the instantiation core wrote down. Lowering looks
-    // through `TyLam` and `TyApp` itself -- see [`lam_spine`] and [`call_spine`].
-    let program =
-        &core::globals::program(&core::bools::program(&core::specialize::program(program)));
+    // Types are *not* erased: a name's representation comes from its type, a
+    // call's type from the instantiation core wrote down, and an abstraction
+    // over types takes descriptors -- see the module docs.
+    let specialized = if opt.specializes() {
+        core::specialize::release(program)
+    } else {
+        core::specialize::program(program)
+    };
+    let program = &core::globals::program(&core::bools::program(&specialized));
     let mut globals = HashMap::new();
     for (i, d) in program.defs.iter().enumerate() {
         globals.insert(d.var, (Label(i as u32), Vec::new()));
@@ -183,10 +210,21 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         types: HashMap::new(),
         reps: HashMap::new(),
         variants: program.variants.clone(),
+        tscope: Vec::new(),
+        tylams: HashMap::new(),
+        tyabs: HashMap::new(),
+        descs: HashSet::new(),
+        binder_reps: HashMap::new(),
+        origins: program.origins.clone(),
+        results: HashMap::new(),
+        threads: HashMap::new(),
     };
     for d in &program.defs {
         lower.polys.insert(d.var, d.poly.clone());
-        binders(&d.term, &mut lower.polys);
+        if let Some((_, vs, _)) = ty_abs(&d.term) {
+            lower.tyabs.insert(d.var, described(vs));
+        }
+        lower.scan(&d.term);
     }
     lower.ev = lower.fresh_ref();
     // Always a constructor of the program, used or not: a runtime starting a
@@ -232,11 +270,23 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     let mut entry = None;
     for (i, d) in program.defs.iter().enumerate() {
         let label = Label(i as u32);
+        // A generic definition takes its descriptors first, and its body is
+        // what is under the abstraction.
+        let (descs, term) = match ty_abs(&d.term) {
+            Some((node, _, body)) => (lower.tylams[&address(node)].clone(), body),
+            None => (Vec::new(), &d.term),
+        };
+        let desc_names: Vec<Name> = descs.iter().map(|(_, n)| *n).collect();
+        lower.tscope = descs;
         let k = lower.function_return();
-        let body = if lower.needs_ev(&d.term) {
+        let mut params = desc_names.clone();
+        params.push(k);
+        let body = if lower.needs_ev(term) {
             let ev = lower.fresh_ref();
             lower.ev = ev;
-            let body = lower.expr(&d.term, &[ev, k], k);
+            let mut env = vec![ev];
+            env.extend_from_slice(&params);
+            let body = lower.expr(term, &env, k);
             Statement::Let {
                 name: ev,
                 tag: lower.tag_of(InternedString::from(EV_NONE)),
@@ -245,16 +295,22 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
                 rest: Box::new(body),
             }
         } else {
-            lower.expr(&d.term, &[k], k)
+            lower.expr(term, &params, k)
         };
         lower.defs.push(Def {
             label,
             name: d.name,
-            block: Block {
-                params: vec![k],
-                body,
-            },
+            block: Block { params, body },
         });
+        // An untyped definition -- one built by hand -- says what it answers
+        // through its term, as far as that can be read.
+        let result = match known(Rep::of(&d.poly.ty)) {
+            Rep::Unknown => lower
+                .type_of(term)
+                .map_or(Rep::Unknown, |t| known(Rep::of(&t))),
+            rep => rep,
+        };
+        lower.results.insert(label, result);
 
         // The direct entry point. The block above still exists and is still
         // reached whenever the function is used as a *value* — passed to `map`,
@@ -264,7 +320,8 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
             let k = lower.function_return();
             let ev = lower.fresh_ref();
             lower.ev = ev;
-            let mut block_params = params;
+            let mut block_params = desc_names.clone();
+            block_params.extend(params);
             block_params.push(k);
             if lower.worker_ev.contains(&d.var) {
                 block_params.push(ev);
@@ -280,9 +337,53 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
             });
         }
 
+        lower.tscope.clear();
         if Some(d.var) == program.entry {
             entry = Some(label);
         }
+    }
+
+    // A generic entry point -- `def main = compact (Just (\x -> x))` -- is
+    // started like any other, with only a continuation, so it gets a block that
+    // instantiates it at no type in particular.
+    if let Some(i) = program
+        .defs
+        .iter()
+        .position(|d| Some(d.var) == program.entry)
+        && let Some(tys) = lower.described_args(program.defs[i].var, None)
+    {
+        let label = lower.fresh_label();
+        let k = lower.function_return();
+        let body = lower.with_descs(
+            &tys,
+            vec![k],
+            Box::new(move |_, ds, _| {
+                let mut sel = ds;
+                sel.push(k);
+                Statement::Substitute(
+                    sel.clone(),
+                    Box::new(Block {
+                        params: sel,
+                        body: Statement::Jump(Label(i as u32)),
+                    }),
+                )
+            }),
+        );
+        lower.defs.push(Def {
+            label,
+            name: program.defs[i].name,
+            block: Block {
+                params: vec![k],
+                body,
+            },
+        });
+        let generic = lower
+            .results
+            .get(&Label(i as u32))
+            .copied()
+            .unwrap_or(Rep::Unknown);
+        lower.results.insert(label, generic);
+        entry = Some(label);
     }
 
     // Lifted `letrec` blocks are pushed as they are discovered, so a definition
@@ -290,6 +391,29 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     // table back in the order the labels read, which is what a dump should show.
     let mut defs = lower.defs;
     defs.sort_by_key(|d| d.label);
+
+    let mut reps = lower.reps;
+    for (v, poly) in &lower.polys {
+        reps.entry(*v)
+            .or_insert_with(|| match lower.binder_reps.get(v) {
+                Some(rep) => *rep,
+                // A definition: a label, never a value.
+                None => match Rep::of(&poly.ty) {
+                    Rep::Var(_) => Rep::Var(NO_DESC),
+                    rep => rep,
+                },
+            });
+    }
+    let unmet = crate::describe::close(&mut defs, &reps, &lower.descs);
+    // A definition is entered knowing only its own descriptors.
+    let entered: HashSet<Label> = (0..program.defs.len() as u32)
+        .map(Label)
+        .chain(lower.workers.values().map(|(l, _)| *l))
+        .collect();
+    debug_assert!(
+        unmet.keys().all(|l| !entered.contains(l)),
+        "definitions needing descriptors they are not passed: {unmet:?}"
+    );
 
     Lowered {
         program: Program {
@@ -304,13 +428,9 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
             returns: lower.returns,
             ctor_fields: program.ctor_fields.clone(),
             origins: program.origins.clone(),
-            reps: {
-                let mut reps = lower.reps;
-                for (v, poly) in &lower.polys {
-                    reps.entry(*v).or_insert_with(|| Rep::of(&poly.ty));
-                }
-                reps
-            },
+            reps,
+            results: lower.results,
+            threads: lower.threads,
         },
         unsupported: lower.unsupported,
     }
@@ -390,6 +510,28 @@ struct Lower {
     reps: HashMap<Name, Rep>,
     /// Constructors' field types, for the fields a pattern binds.
     variants: meadow_infer::VariantEnv,
+    /// The descriptors of the type variables in scope where lowering has got
+    /// to, innermost last: which name holds each. See the module docs.
+    tscope: Vec<(u32, Name)>,
+    /// The names each type abstraction binds its descriptors to, by the
+    /// abstraction's address in the program being lowered.
+    tylams: HashMap<usize, Vec<(u32, Name)>>,
+    /// The bindings whose value is a type abstraction taking descriptors, and
+    /// which of their type arguments -- positions among the binders -- take
+    /// one.
+    tyabs: HashMap<Var, Vec<usize>>,
+    /// Every name a type abstraction binds a descriptor to.
+    descs: HashSet<Name>,
+    /// The representation of each variable the program binds, read from its
+    /// type in the scope it is bound in.
+    binder_reps: HashMap<Var, Rep>,
+    /// Names that are copies of another, and which: a specialized
+    /// definition's original, for the type a mention of it has.
+    origins: HashMap<Var, Var>,
+    /// See [`Program::results`].
+    results: HashMap<Label, Rep>,
+    /// See [`Program::threads`].
+    threads: HashMap<Name, Rep>,
 }
 
 /// The constructor of an evidence entry: `#ev(key, clause, target, rest)`.
@@ -455,7 +597,9 @@ impl Lower {
     fn set_type(&mut self, n: Name, ty: Option<core::Ty>) {
         match ty {
             Some(ty) => {
-                self.reps.insert(n, Rep::of(&ty));
+                let rep = self.resolve(Rep::of(&ty));
+                self.reps.insert(n, rep);
+                self.note_thread(n, &ty);
                 self.types.insert(n, ty);
             }
             None => {
@@ -480,7 +624,20 @@ impl Lower {
             Term::Loc(_, inner) | Term::TyLam(_, inner) => return self.type_of(inner),
             Term::Var(v) => self.polys.get(v)?.ty.clone(),
             Term::TyApp(f, args) => match f.peel() {
-                Term::Var(v) => self.polys.get(v)?.instantiate(args),
+                // A specialized copy, mentioned with the arguments of the
+                // definition it is a copy of: its type as that says.
+                Term::Var(v) => {
+                    let poly = self.polys.get(v)?;
+                    match self.origins.get(v).and_then(|o| self.polys.get(o)) {
+                        Some(original)
+                            if poly.binders.len() != args.len()
+                                && original.binders.len() == args.len() =>
+                        {
+                            original.instantiate(args)
+                        }
+                        _ => poly.instantiate(args),
+                    }
+                }
                 other => return self.type_of(other),
             },
             Term::Lit(l) => lit_type(l),
@@ -578,6 +735,289 @@ impl Lower {
         let l = Label(self.next_label);
         self.next_label += 1;
         l
+    }
+
+    // --- descriptors ------------------------------------------------------
+
+    /// `rep` with a type variable's representation made the name of the
+    /// descriptor in scope for it -- or [`NO_DESC`], for a variable no
+    /// enclosing abstraction binds.
+    fn resolve(&self, rep: Rep) -> Rep {
+        match rep {
+            Rep::Var(v) => match self.desc_name(v) {
+                Some(n) => Rep::Var(n.0),
+                None => Rep::Var(NO_DESC),
+            },
+            rep => rep,
+        }
+    }
+
+    /// If `n` holds a thread -- a `Task a` -- remember how `a` is represented.
+    fn note_thread(&mut self, n: Name, ty: &core::Ty) {
+        if let core::Ty::Con(name, args) = ty
+            && &**name == "Task"
+            && let [a] = args.as_slice()
+        {
+            let rep = self.resolve(Rep::of(a));
+            self.threads.insert(n, rep);
+        }
+    }
+
+    /// The name holding type variable `v`'s descriptor, where lowering is.
+    fn desc_name(&self, v: u32) -> Option<Name> {
+        self.tscope
+            .iter()
+            .rev()
+            .find(|(id, _)| *id == v)
+            .map(|(_, n)| *n)
+    }
+
+    /// Record `v`'s type, and its representation in the scope it is bound in.
+    fn bind_poly(&mut self, v: Var, poly: core::Poly) {
+        let rep = self.resolve(Rep::of(&poly.ty));
+        self.binder_reps.insert(v, rep);
+        self.note_thread(v, &poly.ty);
+        self.polys.insert(v, poly);
+    }
+
+    /// Every variable `t` binds, with its type and representation, and a name
+    /// for every descriptor a type abstraction in it binds.
+    fn scan(&mut self, t: &Term) {
+        match t {
+            Term::Var(_) | Term::Lit(_) | Term::Error => {}
+            Term::TyLam(vs, b) => {
+                let depth = self.tscope.len();
+                if vs.iter().any(|v| v.kind == VarKind::Type) {
+                    let names = match self.tylams.get(&address(t)) {
+                        Some(names) => names.clone(),
+                        None => {
+                            let names: Vec<(u32, Name)> = vs
+                                .iter()
+                                .filter(|v| v.kind == VarKind::Type)
+                                .map(|v| (v.id, self.fresh_as(Rep::Int)))
+                                .collect();
+                            self.descs.extend(names.iter().map(|(_, n)| *n));
+                            self.tylams.insert(address(t), names.clone());
+                            names
+                        }
+                    };
+                    self.tscope.extend(names);
+                }
+                self.scan(b);
+                self.tscope.truncate(depth);
+            }
+            Term::Loc(_, b) | Term::TyApp(b, _) | Term::Proj(b, _) | Term::Sel(b, _, _) => {
+                self.scan(b)
+            }
+            Term::Lam(v, ty, b) => {
+                self.bind_poly(*v, core::Poly::mono(ty.clone()));
+                self.scan(b);
+            }
+            Term::App(a, b) | Term::Extend(a, _, b) => {
+                self.scan(a);
+                self.scan(b);
+            }
+            Term::Let(v, poly, r, b) => {
+                self.bind_poly(*v, poly.clone());
+                // A generic value is an object that makes instances of it.
+                if let Some((_, vs, _)) = ty_abs(r) {
+                    self.tyabs.insert(*v, described(vs));
+                    self.binder_reps.insert(*v, Rep::Ref);
+                }
+                self.scan(r);
+                self.scan(b);
+            }
+            Term::LetRec(binds, body) => {
+                for (v, poly, t) in binds {
+                    self.bind_poly(*v, poly.clone());
+                    if let Some((_, vs, _)) = ty_abs(t) {
+                        self.tyabs.insert(*v, described(vs));
+                    }
+                    self.scan(t);
+                }
+                self.scan(body);
+            }
+            Term::If(a, b, c) => {
+                self.scan(a);
+                self.scan(b);
+                self.scan(c);
+            }
+            Term::Tuple(xs) | Term::Array(xs, _) | Term::Ctor(_, _, xs) | Term::Prim(_, xs, _) => {
+                xs.iter().for_each(|x| self.scan(x))
+            }
+            Term::Record(fs) => fs.iter().for_each(|(_, x)| self.scan(x)),
+            Term::Perform(_, _, a, _) => self.scan(a),
+            Term::Case(s, arms, _) => {
+                self.scan(s);
+                for (p, b) in arms {
+                    self.scan_pat(p);
+                    self.scan(b);
+                }
+            }
+            Term::Handle {
+                body, clauses, ret, ..
+            } => {
+                self.scan(body);
+                for c in clauses {
+                    self.bind_poly(c.param, core::Poly::mono(c.param_ty.clone()));
+                    // A resumption is a closure, whatever core managed to say its
+                    // type is.
+                    let resume = match &c.resume_ty {
+                        ty @ core::Ty::Fun(..) => ty.clone(),
+                        _ => core::Ty::Fun(
+                            vec![c.param_ty.clone()],
+                            Box::new(core::unknown()),
+                            Box::new(core::Ty::RowEmpty),
+                        ),
+                    };
+                    self.bind_poly(c.resume, core::Poly::mono(resume));
+                    self.scan(&c.body);
+                }
+                if let Some((v, ty, b)) = ret {
+                    self.bind_poly(*v, core::Poly::mono(ty.clone()));
+                    self.scan(b);
+                }
+            }
+        }
+    }
+
+    fn scan_pat(&mut self, p: &Pat) {
+        match p {
+            Pat::Wild | Pat::Lit(_) => {}
+            Pat::Var(v, ty) => self.bind_poly(*v, core::Poly::mono(ty.clone())),
+            Pat::As(v, ty, sub) => {
+                self.bind_poly(*v, core::Poly::mono(ty.clone()));
+                self.scan_pat(sub);
+            }
+            Pat::Tuple(ps) | Pat::Array(ps) | Pat::Ctor(_, ps) => {
+                ps.iter().for_each(|p| self.scan_pat(p))
+            }
+            Pat::Record(fs) => fs.iter().for_each(|(_, p)| self.scan_pat(p)),
+        }
+    }
+
+    /// Names holding the descriptors of `tys`, then `f` with them: a constant
+    /// for a type that is known, the descriptor in scope for a variable.
+    fn with_descs<'a>(
+        &mut self,
+        tys: &[core::Ty],
+        env: Vec<Name>,
+        f: Box<dyn FnOnce(&mut Lower, Vec<Name>, Vec<Name>) -> Statement + 'a>,
+    ) -> Statement {
+        let plan: Vec<Result<Name, core::desc::Desc>> = tys
+            .iter()
+            .map(|ty| match core::desc::of(ty) {
+                Some(d) => Err(d),
+                None => match ty {
+                    core::Ty::Var(v) => self.desc_name(*v).ok_or(core::desc::ANY),
+                    _ => Err(core::desc::ANY),
+                },
+            })
+            .collect();
+        self.emit_descs(plan, 0, env, Vec::new(), f)
+    }
+
+    fn emit_descs<'a>(
+        &mut self,
+        plan: Vec<Result<Name, core::desc::Desc>>,
+        i: usize,
+        env: Vec<Name>,
+        mut done: Vec<Name>,
+        f: Box<dyn FnOnce(&mut Lower, Vec<Name>, Vec<Name>) -> Statement + 'a>,
+    ) -> Statement {
+        match plan.get(i).copied() {
+            None => f(self, done, env),
+            Some(Ok(n)) => {
+                done.push(n);
+                self.emit_descs(plan, i + 1, env, done, f)
+            }
+            Some(Err(d)) => self.produces(
+                Extern::Lit(core::Lit::Int(d)),
+                vec![],
+                &env,
+                Some(con("Int")),
+                move |this, x, env1| {
+                    done.push(x);
+                    this.emit_descs(plan, i + 1, env1, done, f)
+                },
+            ),
+        }
+    }
+
+    /// The type arguments of `v`'s instantiation at `tys` that take
+    /// descriptors.
+    fn described_args(&self, v: Var, tys: Option<&Vec<core::Ty>>) -> Option<Vec<core::Ty>> {
+        let at = self.tyabs.get(&v)?;
+        Some(
+            at.iter()
+                .map(|i| {
+                    tys.and_then(|tys| tys.get(*i).cloned())
+                        .unwrap_or_else(core::unknown)
+                })
+                .collect(),
+        )
+    }
+
+    /// `v`, a binding that is a type abstraction, instantiated with the
+    /// descriptors `ds`, answering `k`.
+    fn instantiate(&mut self, v: Var, ds: Vec<Name>, env: &[Name], k: Name) -> Statement {
+        // A local one is an object: its method makes the instance.
+        if env.contains(&v) {
+            let mut sel = vec![v];
+            sel.extend(ds);
+            sel.push(k);
+            return Statement::Substitute(
+                sel.clone(),
+                Box::new(Block {
+                    params: sel,
+                    body: Statement::Invoke(v, 0),
+                }),
+            );
+        }
+        match self.globals.get(&v) {
+            Some((label, extra)) => {
+                let label = *label;
+                let mut sel = extra.clone();
+                sel.extend(ds);
+                sel.push(k);
+                if self.letrecs.contains(&v) {
+                    sel.push(self.ev);
+                }
+                Statement::Substitute(
+                    sel.clone(),
+                    Box::new(Block {
+                        params: sel,
+                        body: Statement::Jump(label),
+                    }),
+                )
+            }
+            None => {
+                self.unsupported.insert(Unsupported::UnboundVar);
+                Statement::Error("unbound variable")
+            }
+        }
+    }
+
+    /// A local type abstraction as an object: one method, taking the
+    /// descriptors and a continuation, which evaluates `body` under them.
+    fn ty_closure(&mut self, node: &Term, body: &Term, env: &[Name]) -> (Vec<Name>, Block) {
+        let captures = restrict(env, &self.wants(&[body], &[]));
+        let kk = self.function_return();
+        let names = self.tylams[&address(node)].clone();
+        let mut params = captures.clone();
+        params.extend(names.iter().map(|(_, n)| *n));
+        params.push(kk);
+        let depth = self.tscope.len();
+        self.tscope.extend(names);
+        let inner = self.expr(body, &params, kk);
+        self.tscope.truncate(depth);
+        (
+            captures,
+            Block {
+                params,
+                body: inner,
+            },
+        )
     }
 
     fn tag_of(&mut self, ctor: InternedString) -> Tag {
@@ -780,9 +1220,10 @@ impl Lower {
             Term::Loc(_, inner) => self.simple(inner, env),
             Term::Var(v) => env.contains(v),
             Term::Lit(_) => true,
-            // Building a closure allocates, but it does not go anywhere.
-            // Erased before this pass runs.
-            Term::TyLam(..) | Term::TyApp(..) => false,
+            // Building a closure allocates, but it does not go anywhere -- nor
+            // does the object a generic `let` is. Instantiating one calls it.
+            Term::TyLam(..) => ty_abs(e).is_some(),
+            Term::TyApp(..) => false,
             Term::Lam(..) => true,
             Term::Prim(_, xs, _) | Term::Ctor(_, _, xs) | Term::Tuple(xs) | Term::Array(xs, _) => {
                 xs.iter().all(|x| self.simple(x, env))
@@ -807,7 +1248,23 @@ impl Lower {
     fn direct(&mut self, e: &Term, env: &[Name], name: Option<Name>, f: Then<'_>) -> Statement {
         let ty = self.type_of(e);
         match e {
-            Term::TyLam(_, inner) | Term::TyApp(inner, _) => self.direct(inner, env, name, f),
+            Term::TyLam(_, inner) => match ty_abs(e) {
+                Some((node, _, body)) => {
+                    let (captures, method) = self.ty_closure(node, body, env);
+                    let x = name.unwrap_or_else(|| self.fresh_ref());
+                    let mut after: Vec<Name> = vec![x];
+                    after.extend_from_slice(env);
+                    let rest = f(self, x, after);
+                    Statement::New {
+                        name: x,
+                        captures,
+                        methods: vec![method],
+                        rest: Box::new(rest),
+                    }
+                }
+                None => self.direct(inner, env, name, f),
+            },
+            Term::TyApp(inner, _) => self.direct(inner, env, name, f),
             Term::Loc(loc, inner) => {
                 Statement::Mark(*loc, Box::new(self.direct(inner, env, name, f)))
             }
@@ -1098,9 +1555,35 @@ impl Lower {
         self.continuations.insert(k);
         match e {
             Term::Loc(loc, inner) => Statement::Mark(*loc, Box::new(self.expr(inner, env, k))),
-            // A type abstraction takes nothing at run time, and an instantiation
-            // passes nothing; the types they carry were read where they mattered.
-            Term::TyLam(_, inner) | Term::TyApp(inner, _) => self.expr(inner, env, k),
+            // A type abstraction over types takes their descriptors, and an
+            // instantiation of one passes them. One over rows or effects only
+            // takes nothing at run time.
+            Term::TyLam(_, inner) => match ty_abs(e) {
+                Some((node, _, body)) => {
+                    let (captures, method) = self.ty_closure(node, body, env);
+                    let f = self.fresh_ref();
+                    let rest = self.ret(k, f);
+                    Statement::New {
+                        name: f,
+                        captures,
+                        methods: vec![method],
+                        rest: Box::new(rest),
+                    }
+                }
+                None => self.expr(inner, env, k),
+            },
+            Term::TyApp(inner, tys) => match inner.peel() {
+                Term::Var(v) if self.tyabs.contains_key(v) => {
+                    let v = *v;
+                    let tys = self.described_args(v, Some(tys)).expect("checked");
+                    self.with_descs(
+                        &tys,
+                        env.to_vec(),
+                        Box::new(move |this, ds, env1| this.instantiate(v, ds, &env1, k)),
+                    )
+                }
+                _ => self.expr(inner, env, k),
+            },
             Term::Var(v) if env.contains(v) => self.ret(k, *v),
 
             // A label: arrange exactly what its block takes and jump. `jump`
@@ -1158,21 +1641,29 @@ impl Lower {
                 let args: Vec<Term> = args.into_iter().cloned().collect();
                 let ev = self.worker_ev.contains(&f).then_some(self.ev);
                 let base: HashSet<Var> = [k].into_iter().chain(ev).collect();
+                let tys = self.described_args(f, call_tys(e));
                 self.bind_all(
                     &args,
                     env,
                     &base,
-                    Box::new(move |_this, names, _env| {
-                        let mut sel = names;
-                        sel.push(k);
-                        sel.extend(ev);
-                        Statement::Substitute(
-                            sel.clone(),
-                            Box::new(Block {
-                                params: sel,
-                                body: Statement::Jump(worker),
-                            }),
-                        )
+                    Box::new(move |this, names, env1| {
+                        let jump = move |_this: &mut Lower, ds: Vec<Name>, _env: Vec<Name>| {
+                            let mut sel = ds;
+                            sel.extend(names);
+                            sel.push(k);
+                            sel.extend(ev);
+                            Statement::Substitute(
+                                sel.clone(),
+                                Box::new(Block {
+                                    params: sel,
+                                    body: Statement::Jump(worker),
+                                }),
+                            )
+                        };
+                        match tys {
+                            Some(tys) => this.with_descs(&tys, env1, Box::new(jump)),
+                            None => jump(this, Vec::new(), env1),
+                        }
                     }),
                 )
             }
@@ -1244,12 +1735,22 @@ impl Lower {
                 for ((_, _, term), label) in binds.iter().zip(&labels) {
                     let kk = self.function_return();
                     let iev = self.fresh_ref();
+                    // A generic binding's descriptors come after what the group
+                    // captures, from whoever refers to it.
+                    let (descs, term) = match ty_abs(term) {
+                        Some((node, _, body)) => (self.tylams[&address(node)].clone(), body),
+                        None => (Vec::new(), term),
+                    };
                     let mut params = fvs.clone();
+                    params.extend(descs.iter().map(|(_, n)| *n));
                     params.push(kk);
                     params.push(iev);
+                    let depth = self.tscope.len();
+                    self.tscope.extend(descs);
                     let outer = std::mem::replace(&mut self.ev, iev);
                     let body = self.expr(term, &params, kk);
                     self.ev = outer;
+                    self.tscope.truncate(depth);
                     self.defs.push(Def {
                         label: *label,
                         name: InternedString::from("<letrec>"),
@@ -2029,7 +2530,7 @@ impl Lower {
                 }),
             );
         }
-        let flag = self.fresh_as(Rep::Bits);
+        let flag = self.fresh_as(Rep::Bits(core::desc::UNIT));
         let taken = self.fresh_ref();
         let r = self.fresh_ref();
         let kh = self.fresh_ref();
@@ -2107,10 +2608,10 @@ impl Lower {
         let (v, c, ev) = (self.fresh_typed(ty), self.fresh_ref(), self.fresh_ref());
         self.returns.insert(c);
         let params = vec![taken, k, target, v, c, ev];
-        let first = self.fresh_as(Rep::Bits);
+        let first = self.fresh_as(Rep::Bits(core::desc::BOOL));
         let mut at_first = vec![first];
         at_first.extend_from_slice(&params);
-        let u = self.fresh_as(Rep::Bits);
+        let u = self.fresh_as(Rep::Bits(core::desc::UNIT));
         let mut at_u = vec![u];
         at_u.extend_from_slice(&at_first);
         let go = self.ret(k, v);
@@ -2320,92 +2821,53 @@ impl Lower {
     }
 }
 
-/// Every variable `t` binds, with its type.
-fn binders(t: &Term, out: &mut HashMap<Var, core::Poly>) {
-    fn pat(p: &Pat, out: &mut HashMap<Var, core::Poly>) {
-        match p {
-            Pat::Wild | Pat::Lit(_) => {}
-            Pat::Var(v, ty) => {
-                out.insert(*v, core::Poly::mono(ty.clone()));
-            }
-            Pat::As(v, ty, sub) => {
-                out.insert(*v, core::Poly::mono(ty.clone()));
-                pat(sub, out);
-            }
-            Pat::Tuple(ps) | Pat::Array(ps) | Pat::Ctor(_, ps) => {
-                ps.iter().for_each(|p| pat(p, out))
-            }
-            Pat::Record(fs) => fs.iter().for_each(|(_, p)| pat(p, out)),
-        }
+/// A type abstraction with at least one binder that takes a descriptor: the
+/// abstraction itself, its binders, and its body.
+fn ty_abs(t: &Term) -> Option<(&Term, &[core::TyVar], &Term)> {
+    let mut cur = t;
+    while let Term::Loc(_, inner) = cur {
+        cur = inner;
     }
-    match t {
-        Term::Var(_) | Term::Lit(_) | Term::Error => {}
-        Term::Loc(_, b)
-        | Term::TyLam(_, b)
-        | Term::TyApp(b, _)
-        | Term::Proj(b, _)
-        | Term::Sel(b, _, _) => binders(b, out),
-        Term::Lam(v, ty, b) => {
-            out.insert(*v, core::Poly::mono(ty.clone()));
-            binders(b, out);
+    match cur {
+        Term::TyLam(vs, body) if vs.iter().any(|v| v.kind == VarKind::Type) => {
+            Some((cur, vs.as_slice(), &**body))
         }
-        Term::App(a, b) | Term::Extend(a, _, b) => {
-            binders(a, out);
-            binders(b, out);
-        }
-        Term::Let(v, poly, r, b) => {
-            out.insert(*v, poly.clone());
-            binders(r, out);
-            binders(b, out);
-        }
-        Term::LetRec(binds, body) => {
-            for (v, poly, t) in binds {
-                out.insert(*v, poly.clone());
-                binders(t, out);
-            }
-            binders(body, out);
-        }
-        Term::If(a, b, c) => {
-            binders(a, out);
-            binders(b, out);
-            binders(c, out);
-        }
-        Term::Tuple(xs) | Term::Array(xs, _) | Term::Ctor(_, _, xs) | Term::Prim(_, xs, _) => {
-            xs.iter().for_each(|x| binders(x, out))
-        }
-        Term::Record(fs) => fs.iter().for_each(|(_, x)| binders(x, out)),
-        Term::Perform(_, _, a, _) => binders(a, out),
-        Term::Case(s, arms, _) => {
-            binders(s, out);
-            for (p, b) in arms {
-                pat(p, out);
-                binders(b, out);
-            }
-        }
-        Term::Handle {
-            body, clauses, ret, ..
-        } => {
-            binders(body, out);
-            for c in clauses {
-                out.insert(c.param, core::Poly::mono(c.param_ty.clone()));
-                // A resumption is a closure, whatever core managed to say its
-                // type is.
-                let resume = match &c.resume_ty {
-                    ty @ core::Ty::Fun(..) => ty.clone(),
-                    _ => core::Ty::Fun(
-                        vec![c.param_ty.clone()],
-                        Box::new(core::unknown()),
-                        Box::new(core::Ty::RowEmpty),
-                    ),
-                };
-                out.insert(c.resume, core::Poly::mono(resume));
-                binders(&c.body, out);
-            }
-            if let Some((v, ty, b)) = ret {
-                out.insert(*v, core::Poly::mono(ty.clone()));
-                binders(b, out);
-            }
-        }
+        _ => None,
+    }
+}
+
+/// A representation as a runtime starting a block knows it: with no
+/// descriptors to hand, a type variable's is not known.
+fn known(rep: Rep) -> Rep {
+    match rep {
+        Rep::Var(_) => Rep::Unknown,
+        rep => rep,
+    }
+}
+
+/// Which of `vs` take a descriptor: the ones over types, not rows or effects.
+fn described(vs: &[core::TyVar]) -> Vec<usize> {
+    vs.iter()
+        .enumerate()
+        .filter(|(_, v)| v.kind == VarKind::Type)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Where a term is, as a key: the program being lowered does not move.
+fn address(t: &Term) -> usize {
+    t as *const Term as usize
+}
+
+/// The type arguments of the instantiation at the head of a call.
+fn call_tys(t: &Term) -> Option<&Vec<core::Ty>> {
+    let mut cur = t.peel();
+    while let Term::App(f, _) = cur {
+        cur = f.peel();
+    }
+    match cur {
+        Term::TyApp(_, tys) => Some(tys),
+        _ => None,
     }
 }
 

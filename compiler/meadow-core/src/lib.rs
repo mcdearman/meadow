@@ -39,6 +39,7 @@
 
 pub mod bools;
 pub mod compact;
+pub mod desc;
 pub mod erase;
 pub mod globals;
 pub mod hash;
@@ -289,11 +290,13 @@ pub enum Prim {
     Once,
     /// `Once -> Bool` -- `true` the first time, and `false` ever after.
     TakeOnce,
-    // --- typed arithmetic (no source name; chosen by `select`) ---
+    // --- typed arithmetic (no source name) ---
     //
     // The operators above at a type core knows: both operands are `Int`, or
     // both `Float`, so no engine has to look at what it was given to decide
-    // what to do. `Int` wraps and dividing it by zero is an error, as `Add`
+    // what to do. Nothing in core chooses them yet; the bytecode back end
+    // picks its typed instructions from representations instead (see
+    // `meadow_codegen`). `Int` wraps and dividing it by zero is an error, as `Add`
     // and `Div` on two `Int`s are; `Float` is IEEE.
     IntAdd,
     IntSub,
@@ -1561,6 +1564,14 @@ impl OptLevel {
     /// gated because it is the trade the chain was avoiding — a tree duplicates
     /// the arms it shares, so the code grows.
     pub const fn case_trees(self) -> bool {
+        matches!(self, OptLevel::O2)
+    }
+
+    /// Copy generic code per representation it is used at, rather than pass
+    /// descriptors at run time -- see [`crate::specialize::release`]. The
+    /// program grows; generic code runs as fast as the code it was written
+    /// for. Gated because a debug build is the one being rebuilt constantly.
+    pub const fn specializes(self) -> bool {
         matches!(self, OptLevel::O2)
     }
 }

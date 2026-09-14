@@ -20,7 +20,7 @@
 //! as a value that is subtly the wrong object rather than as a crash — so the
 //! places it matters say so.
 
-use crate::heap::Kind;
+use crate::heap::{Heap, Kind};
 use crate::value::{Addr, Value};
 use crate::vm::{Error, Vm, err};
 use meadow_core::{Prim, num};
@@ -59,17 +59,31 @@ fn bits(p: Prim) -> num::Bits {
 }
 
 impl Vm<'_> {
+    /// An array -- or a mutable one -- of `words`, each a value of descriptor
+    /// `d`. Room must have been made.
+    fn array_of(&mut self, kind: Kind, words: &[u64], d: meadow_core::desc::Desc) -> Value {
+        Value::Obj(
+            self.heap
+                .alloc_described(kind, 0, words.len(), |i| words[i], |_| d),
+        )
+    }
+
     pub(crate) fn alloc_bigint(&mut self, n: BigInt) -> Value {
         let (sign, digits) = n.to_u32_digits();
         // Safe to `ensure` here: the number is a Rust value, not a heap address.
-        self.ensure(1 + digits.len());
+        self.ensure(Heap::size_of(Kind::BigInt, digits.len()));
         let meta = match sign {
             Sign::NoSign => 0,
             Sign::Plus => 1,
             Sign::Minus => 2,
         };
-        let fields: Vec<Value> = digits.iter().map(|d| Value::Int(*d as i64)).collect();
-        Value::Obj(self.heap.alloc(Kind::BigInt, meta, &fields))
+        Value::Obj(self.heap.alloc_described(
+            Kind::BigInt,
+            meta,
+            digits.len(),
+            |i| digits[i] as u64,
+            |_| meadow_core::desc::INT,
+        ))
     }
 
     fn int(&self, v: Value) -> Result<i64, Error> {
@@ -239,7 +253,9 @@ impl Vm<'_> {
     /// every benchmark.
     pub(crate) fn run_prim(&mut self, p: Prim, srcs: [u8; 3], dst: u8) -> Result<(), Error> {
         use Prim::*;
-        let arg = |vm: &Vm, i: usize| vm.reg(srcs[i]);
+        // What each operand is, once: a primitive may read one many times.
+        let descs = [self.operand(0), self.operand(1), self.operand(2)];
+        let arg = |vm: &Vm, i: usize| Value::from_bits(vm.reg(srcs[i]), descs[i]);
 
         // Typed primitives run as their untyped ones for now; the machine's
         // own instructions for them come with the typed bytecode.
@@ -362,40 +378,42 @@ impl Vm<'_> {
                 if i >= n {
                     return err(format!("arraySet: index {i} out of bounds (len {n})"));
                 }
-                self.ensure(1 + n);
+                self.ensure(Heap::size_of(Kind::Array, n));
                 // Re-read: the collection above moved the array.
                 let a = self.array(arg(self, 0))?;
-                let mut fields = self.heap.fields(a);
-                fields[i] = arg(self, 2);
-                Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
+                let v = arg(self, 2);
+                let mut words: Vec<u64> = self.heap.words(a).collect();
+                words[i] = v.bits();
+                self.array_of(Kind::Array, &words, v.desc())
             }
             ArrayPush => {
                 let n = self.heap.len(self.array(arg(self, 0))?);
-                self.ensure(2 + n);
+                self.ensure(Heap::size_of(Kind::Array, n + 1));
                 let a = self.array(arg(self, 0))?;
-                let mut fields = self.heap.fields(a);
-                fields.push(arg(self, 1));
-                Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
+                let v = arg(self, 1);
+                let mut words: Vec<u64> = self.heap.words(a).collect();
+                words.push(v.bits());
+                self.array_of(Kind::Array, &words, v.desc())
             }
             ArrayPop => {
                 let n = self.heap.len(self.array(arg(self, 0))?);
                 if n == 0 {
                     return err("arrayPop: empty array");
                 }
-                self.ensure(n);
+                self.ensure(Heap::size_of(Kind::Array, n - 1));
                 let a = self.array(arg(self, 0))?;
-                let mut fields = self.heap.fields(a);
-                fields.pop();
-                Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
+                let mut words: Vec<u64> = self.heap.words(a).collect();
+                words.pop();
+                self.array_of(Kind::Array, &words, self.heap.element_desc(a))
             }
             ArraySlice => {
                 let n = self.heap.len(self.array(arg(self, 0))?) as i64;
                 let from = self.int(arg(self, 1))?.clamp(0, n) as usize;
                 let to = self.int(arg(self, 2))?.clamp(from as i64, n) as usize;
-                self.ensure(1 + (to - from));
+                self.ensure(Heap::size_of(Kind::Array, to - from));
                 let a = self.array(arg(self, 0))?;
-                let fields: Vec<Value> = (from..to).map(|i| self.heap.field(a, i)).collect();
-                Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
+                let words: Vec<u64> = self.heap.words(a).skip(from).take(to - from).collect();
+                self.array_of(Kind::Array, &words, self.heap.element_desc(a))
             }
             ArrayConcat => {
                 let x = self.heap.len(self.array(arg(self, 0))?);
@@ -405,12 +423,12 @@ impl Vm<'_> {
                 } else if y == 0 {
                     arg(self, 0)
                 } else {
-                    self.ensure(1 + x + y);
+                    self.ensure(Heap::size_of(Kind::Array, x + y));
                     let a = self.array(arg(self, 0))?;
                     let b = self.array(arg(self, 1))?;
-                    let mut fields = self.heap.fields(a);
-                    fields.extend(self.heap.fields(b));
-                    Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
+                    let mut words: Vec<u64> = self.heap.words(a).collect();
+                    words.extend(self.heap.words(b));
+                    self.array_of(Kind::Array, &words, self.heap.element_desc(a))
                 }
             }
 
@@ -447,7 +465,7 @@ impl Vm<'_> {
                         .bytes()
                         .map(|b| Value::Word(num::Width::U8, b as u64))
                         .collect();
-                    self.ensure(1 + fields.len());
+                    self.ensure(Heap::size_of(Kind::Array, fields.len()));
                     Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
                 }
                 other => {
@@ -502,13 +520,15 @@ impl Vm<'_> {
                     }
                 }
                 if !ok {
-                    self.ensure(1);
+                    self.ensure(Heap::size_of(Kind::Data, 0));
                     self.data("Maybe.None", &[])
                 } else {
                     // The array first, then `Just` around it — with room for
                     // both reserved up front, so the array cannot move in
                     // between.
-                    self.ensure(2 + out.len() + 1);
+                    self.ensure(
+                        Heap::size_of(Kind::Array, out.len()) + Heap::size_of(Kind::Data, 1),
+                    );
                     let arr = Value::Obj(self.heap.alloc(Kind::Array, 0, &out));
                     self.data("Maybe.Just", &[arr])
                 }
@@ -539,7 +559,7 @@ impl Vm<'_> {
             StringToChars => match arg(self, 0) {
                 Value::Str(s) => {
                     let fields: Vec<Value> = s.chars().map(Value::Char).collect();
-                    self.ensure(1 + fields.len());
+                    self.ensure(Heap::size_of(Kind::Array, fields.len()));
                     Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
                 }
                 other => {
@@ -582,7 +602,7 @@ impl Vm<'_> {
             // The only place a value a program can still see is changed in
             // place. Everything else here builds something new.
             NewRef => {
-                self.ensure(2);
+                self.ensure(Heap::size_of(Kind::Ref, 1));
                 let v = arg(self, 0);
                 Value::Obj(self.heap.alloc(Kind::Ref, 0, &[v]))
             }
@@ -629,7 +649,7 @@ impl Vm<'_> {
                         ));
                     }
                 };
-                self.ensure(1 + n);
+                self.ensure(Heap::size_of(Kind::MutArray, n));
                 let fill = vec![arg(self, 1); n];
                 Value::Obj(self.heap.alloc(Kind::MutArray, 0, &fill))
             }
@@ -656,18 +676,18 @@ impl Vm<'_> {
             StArrayLen => Value::Int(self.heap.len(self.mut_array(arg(self, 0))?) as i64),
             StFreeze => {
                 let n = self.heap.len(self.mut_array(arg(self, 0))?);
-                self.ensure(1 + n);
+                self.ensure(Heap::size_of(Kind::Array, n));
                 // Re-read: making room may have moved it.
                 let a = self.mut_array(arg(self, 0))?;
-                let fields = self.heap.fields(a);
-                Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
+                let words: Vec<u64> = self.heap.words(a).collect();
+                self.array_of(Kind::Array, &words, self.heap.element_desc(a))
             }
             StThaw => {
                 let n = self.heap.len(self.array(arg(self, 0))?);
-                self.ensure(1 + n);
+                self.ensure(Heap::size_of(Kind::MutArray, n));
                 let a = self.array(arg(self, 0))?;
-                let fields = self.heap.fields(a);
-                Value::Obj(self.heap.alloc(Kind::MutArray, 0, &fields))
+                let words: Vec<u64> = self.heap.words(a).collect();
+                self.array_of(Kind::MutArray, &words, self.heap.element_desc(a))
             }
 
             // --- compact regions --------------------------------------------
@@ -676,7 +696,7 @@ impl Vm<'_> {
             // one `ensure` is for the handle, made before the copy and taken
             // after it -- nothing can move in between.
             Compact => {
-                self.ensure(2);
+                self.ensure(Heap::size_of(Kind::Compact, 1));
                 let region = self.heap.new_region();
                 match self.heap.compact_into(region, arg(self, 0)) {
                     Ok(root) => Value::Obj(self.heap.alloc(Kind::Compact, region, &[root])),
@@ -688,7 +708,7 @@ impl Vm<'_> {
             }
             GetCompact => self.heap.field(self.compact_handle(arg(self, 0))?, 0),
             CompactAdd => {
-                self.ensure(2);
+                self.ensure(Heap::size_of(Kind::Compact, 1));
                 let region = self.heap.meta(self.compact_handle(arg(self, 0))?);
                 match self.heap.compact_into(region, arg(self, 1)) {
                     Ok(root) => Value::Obj(self.heap.alloc(Kind::Compact, region, &[root])),
@@ -706,7 +726,7 @@ impl Vm<'_> {
             // passage to another thread or into a region is refused as the
             // continuation it is.
             Once => {
-                self.ensure(2);
+                self.ensure(Heap::size_of(Kind::Resume, 1));
                 Value::Obj(self.heap.alloc(Kind::Resume, 0, &[Value::Bool(false)]))
             }
             TakeOnce => match arg(self, 0)
@@ -748,7 +768,7 @@ impl Vm<'_> {
                 let world = self.world()?;
                 let shared = self.share(arg(self, 0), None)?;
                 let id = world.new_tvar(shared);
-                self.ensure(1);
+                self.ensure(Heap::size_of(Kind::TVar, 0));
                 Value::Obj(self.heap.alloc(Kind::TVar, id, &[]))
             }
             StmRead => {
@@ -757,14 +777,14 @@ impl Vm<'_> {
                 let read = world.read(self.txn("readTVar")?, id);
                 match read {
                     crate::stm::Read::Conflict => {
-                        self.ensure(1);
+                        self.ensure(Heap::size_of(Kind::Data, 0));
                         let tag = self.ctor_tag("Maybe.None");
                         Value::Obj(self.heap.alloc(Kind::Data, tag, &[]))
                     }
                     crate::stm::Read::Value(shared) => {
                         // Room first: the region is adopted after, so the
                         // collection that making room may run cannot let it go.
-                        self.ensure(2);
+                        self.ensure(Heap::size_of(Kind::Data, 1));
                         if let Some(r) = &shared.region {
                             self.heap.adopt(r);
                         }
@@ -822,7 +842,8 @@ impl Vm<'_> {
             }
             ThreadSpawn => {
                 let body = self.sendable(arg(self, 0))?;
-                self.request = Some(crate::vm::Request::Spawn { body, dst });
+                let answer = self.operand(1);
+                self.request = Some(crate::vm::Request::Spawn { body, answer, dst });
                 Value::Unit
             }
             ThreadAwait => {

@@ -31,11 +31,29 @@
 //!
 //! # Halting is an ordinary invoke
 //!
-//! Instruction 0 is `halt r0`, and the machine starts with `r0` holding a
+//! Instruction 0 is `halt r1`, and the machine starts with `r0` holding a
 //! closure whose one method is that instruction. A program's entry block takes
 //! one parameter — the continuation to answer with — so "return from `main`"
 //! needs no special case anywhere: it is the same `invoke` as every other
-//! return, and it happens to land on a `halt`.
+//! return, and it happens to land on a `halt`. The closure captures the
+//! descriptor of the answer, which arrives after it, in `r1`.
+//!
+//! # Typed instructions
+//!
+//! A primitive whose operands are both `Int`, or both `Float`, is emitted as a
+//! typed instruction -- `addi`, `cmpf`, `brik` -- that does its work on the
+//! words themselves, with no operand descriptors and nothing to decode. The
+//! representations come from the names (`meadow_seq::Rep`), so it is exactly
+//! the code whose types are known that gets them: generic code keeps the
+//! primitive, and specializing it is what turns it typed. See
+//! [`Gen::typed_value`] and [`Gen::typed_test`].
+//!
+//! # Saying what registers hold
+//!
+//! A register is a word, so everything the machine has to know about one is
+//! written beside the code: a register map at each instruction that can
+//! collect, and operand descriptors at each that has to read a value --
+//! see [`Gen::safepoint`] and [`Gen::operands_for`].
 //!
 //! # What is not done yet
 //!
@@ -55,7 +73,7 @@
 //! loop now allocates nothing at all. What remains is structural rather than an
 //! oversight: a call in argument position has to record where to come back to,
 //! and a machine with no call stack has nowhere to put that but the heap. It
-//! costs three slots a call, against zero for Lua, which spends a contiguous
+//! costs four words a call, against zero for Lua, which spends a contiguous
 //! stack to get it.
 //!
 //! Closing that gap means either giving the VM a call stack — and then paying
@@ -64,7 +82,11 @@
 //! that provably neither escapes nor outlives its call can live in registers.
 //! The second keeps the effects story intact and is the one worth doing.
 
-use meadow_bytecode::{Const, GcMap, Held, Instr, NO_MAP, Op, Pc, Program, Reg};
+use meadow_bytecode::{
+    Cond, Const, DESC_REG, DescSrc, GcMap, Held, Instr, NO_MAP, NO_OPERANDS, NameDesc, Op, Pc,
+    Program, Reg,
+};
+use meadow_core::desc::{self, Desc};
 use meadow_core::{Lit, Prim};
 use meadow_intern::InternedString;
 use meadow_seq as seq;
@@ -119,6 +141,12 @@ struct Recorder {
     region_loc: Vec<Option<meadow_core::Loc>>,
     /// The region being emitted.
     current: usize,
+    /// The environment last noted, and names from the environment around a
+    /// `substitute` that only hands control over -- still in their registers
+    /// until a move overwrites them, and what a debugger stopped there needs:
+    /// the descriptors of the values being handed over among them.
+    noted: Vec<(u32, Reg)>,
+    carry: Vec<(u32, Reg)>,
 }
 
 /// One value in the environment: what the IR calls it, and where it is.
@@ -173,6 +201,10 @@ struct Gen<'a> {
     gc_index: HashMap<GcMap, u32>,
     /// `(pc, map)` per such instruction.
     gc_at: Vec<(usize, u32)>,
+    /// Operand descriptors, and `(pc, where they start)` per instruction that
+    /// has them.
+    operands: Vec<DescSrc>,
+    operands_at: Vec<(usize, u32)>,
 }
 
 impl<'a> Gen<'a> {
@@ -197,6 +229,8 @@ impl<'a> Gen<'a> {
             gc_maps: Vec::new(),
             gc_index: HashMap::new(),
             gc_at: Vec::new(),
+            operands: Vec::new(),
+            operands_at: Vec::new(),
         }
     }
 
@@ -205,7 +239,12 @@ impl<'a> Gen<'a> {
         // holds it, and the machine starts with a closure over that table in
         // `r0` — so a program's entry block, which takes its continuation as its
         // one parameter, needs nothing special to return to.
-        self.code.push(Instr::a(Op::Halt, 0));
+        //
+        // The closure captures one thing: the descriptor of what the program
+        // answers, which the machine knows when it starts it and a `halt`
+        // cannot know from the instruction. So the answer arrives in `r1`.
+        self.code.push(Instr::a(Op::Halt, 1));
+        self.operands_for(&[DESC_REG]);
         self.method_tables.push(vec![usize::MAX]);
 
         // Every top-level definition gets a region up front: a `jump` may name a
@@ -281,7 +320,9 @@ impl<'a> Gen<'a> {
             })
             .collect();
         entries.sort_by_key(|(l, _)| *l);
+        let results: Vec<Desc> = entries.iter().map(|(l, _)| self.result(*l)).collect();
         let entries: Vec<Pc> = entries.into_iter().map(|(_, pc)| pc).collect();
+        let entry_result = self.seq.entry.map_or(desc::ANY, |l| self.result(l));
 
         let entry = self
             .seq
@@ -322,6 +363,18 @@ impl<'a> Gen<'a> {
                 returns: self.seq.returns.iter().map(|n| n.0).collect(),
                 continuations: self.seq.continuations.iter().map(|n| n.0).collect(),
                 origins: self.seq.origins.iter().map(|(c, o)| (c.0, o.0)).collect(),
+                descs: self
+                    .seq
+                    .reps
+                    .iter()
+                    .filter_map(|(n, rep)| {
+                        let d = match rep {
+                            Rep::Var(d) if *d != seq::NO_DESC => NameDesc::Var(*d),
+                            rep => NameDesc::Known(rep.desc()?),
+                        };
+                        Some((n.0, d))
+                    })
+                    .collect(),
             })
         });
 
@@ -329,10 +382,18 @@ impl<'a> Gen<'a> {
         for (pc, map) in &self.gc_at {
             gc_at[*pc] = *map;
         }
+        let mut operands_at = vec![NO_OPERANDS; self.code.len()];
+        for (pc, at) in &self.operands_at {
+            operands_at[*pc] = *at;
+        }
         Ok(Program {
             debug,
             gc_maps: self.gc_maps,
             gc_at,
+            operands_at,
+            operands: self.operands,
+            results,
+            entry_result,
             code: self.code,
             consts: self.consts,
             methods,
@@ -352,14 +413,25 @@ impl<'a> Gen<'a> {
     // --- what registers hold ---------------------------------------------
 
     /// What the value named `n` is, as the collector cares.
-    fn held(&self, n: Name) -> Held {
+    ///
+    /// A value of a type variable's type is described by a descriptor, which
+    /// lowering keeps in every environment such a value is in (see
+    /// `meadow_seq::describe`), so the map can say which register has it.
+    fn held(&self, env: &Env, n: Name) -> Held {
         match self.seq.reps.get(&n) {
             Some(Rep::Ref) => Held::Ref,
-            Some(Rep::Int | Rep::Float | Rep::Bits | Rep::Str) => Held::Scalar,
-            Some(Rep::Var(v)) => Held::Var(*v),
-            // A program lowered without representations, or a name the
-            // lowering could not type: the collector has to look.
-            Some(Rep::Unknown) | None => Held::Var(u32::MAX),
+            Some(Rep::Int | Rep::Float | Rep::Bits(_) | Rep::Str) => Held::Scalar,
+            Some(Rep::Var(d)) if *d != seq::NO_DESC => match env.iter().find(|(m, _)| m.0 == *d) {
+                Some((_, r)) => Held::Var(*r),
+                None => {
+                    debug_assert!(false, "{n:?} is here without its descriptor");
+                    Held::Any
+                }
+            },
+            // A program lowered without representations, a name the lowering
+            // could not type, or a type variable nothing binds: the collector
+            // has to look.
+            Some(Rep::Var(_) | Rep::Unknown) | None => Held::Any,
         }
     }
 
@@ -367,7 +439,7 @@ impl<'a> Gen<'a> {
     fn held_in(&self, env: &Env, r: Reg) -> Held {
         env.iter()
             .find(|(_, x)| *x == r)
-            .map_or(Held::Var(u32::MAX), |(n, _)| self.held(*n))
+            .map_or(Held::Any, |(n, _)| self.held(env, *n))
     }
 
     /// The window `gather` filled for `srcs` at `base`, if it had to: copies of
@@ -388,7 +460,7 @@ impl<'a> Gen<'a> {
     fn safepoint(&mut self, env: &Env, extra: &[(Reg, Held)]) {
         let mut regs: std::collections::BTreeMap<Reg, Held> = std::collections::BTreeMap::new();
         for (n, r) in env {
-            regs.insert(*r, self.held(*n));
+            regs.insert(*r, self.held(env, *n));
         }
         for (r, h) in extra {
             regs.insert(*r, *h);
@@ -406,6 +478,49 @@ impl<'a> Gen<'a> {
             }
         };
         self.gc_at.push((self.code.len() - 1, id));
+    }
+
+    // --- what operands are -----------------------------------------------
+
+    /// Where the descriptor of the value named `n` is, in `env`.
+    fn desc_src(&self, env: &Env, n: Name) -> DescSrc {
+        match self.seq.reps.get(&n) {
+            Some(Rep::Var(d)) if *d != seq::NO_DESC => match env.iter().find(|(m, _)| m.0 == *d) {
+                Some((_, r)) => DESC_REG + *r as DescSrc,
+                None => desc::ANY as DescSrc,
+            },
+            Some(rep) => rep.desc().unwrap_or(desc::ANY) as DescSrc,
+            None => desc::ANY as DescSrc,
+        }
+    }
+
+    /// The same for what register `r` holds.
+    fn desc_in(&self, env: &Env, r: Reg) -> DescSrc {
+        env.iter()
+            .find(|(_, x)| *x == r)
+            .map_or(desc::ANY as DescSrc, |(n, _)| self.desc_src(env, *n))
+    }
+
+    /// The operand descriptors of the instruction just emitted.
+    fn operands_for(&mut self, srcs: &[DescSrc]) {
+        let at = self.operands.len() as u32;
+        self.operands.extend_from_slice(srcs);
+        self.operands_at.push((self.code.len() - 1, at));
+    }
+
+    /// The descriptors of the values in registers `srcs`.
+    fn operands_in(&mut self, env: &Env, srcs: &[Reg]) {
+        let descs: Vec<DescSrc> = srcs.iter().map(|r| self.desc_in(env, *r)).collect();
+        self.operands_for(&descs);
+    }
+
+    /// What the block labelled `l` answers, as a runtime starting it knows.
+    fn result(&self, l: Label) -> Desc {
+        self.seq
+            .results
+            .get(&l)
+            .and_then(|rep| rep.desc())
+            .unwrap_or(desc::ANY)
     }
 
     // --- tables -----------------------------------------------------------
@@ -470,6 +585,14 @@ impl<'a> Gen<'a> {
     fn emit(&mut self, i: Instr) {
         self.record();
         self.code.push(i);
+        if i.op == Op::Move
+            && let Some(d) = &mut self.debug
+            && d.carry.iter().any(|(_, r)| *r == i.a)
+        {
+            d.carry.retain(|(_, r)| *r != i.a);
+            let noted = d.noted.clone();
+            Self::note(d, noted);
+        }
     }
 
     /// Emit an instruction whose immediate is a block's address, to be filled in
@@ -498,13 +621,24 @@ impl<'a> Gen<'a> {
     fn note_env(&mut self, env: &Env) {
         if let Some(d) = &mut self.debug {
             let key: Vec<(u32, Reg)> = env.iter().map(|(n, r)| (n.0, *r)).collect();
-            let next = d.envs.len() as u32;
-            let id = *d.env_ids.entry(key.clone()).or_insert(next);
-            if id == next {
-                d.envs.push(key);
-            }
-            d.env = id;
+            Self::note(d, key);
         }
+    }
+
+    fn note(d: &mut Recorder, env: Vec<(u32, Reg)>) {
+        let mut key = env.clone();
+        for &(n, r) in &d.carry {
+            if !key.iter().any(|(m, x)| *m == n || *x == r) {
+                key.push((n, r));
+            }
+        }
+        d.noted = env;
+        let next = d.envs.len() as u32;
+        let id = *d.env_ids.entry(key.clone()).or_insert(next);
+        if id == next {
+            d.envs.push(key);
+        }
+        d.env = id;
     }
 
     // --- registers --------------------------------------------------------
@@ -635,7 +769,18 @@ impl<'a> Gen<'a> {
                     .iter()
                     .map(|n| reg_of(&env, *n))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.emit_block(block, &vals)
+                let transfer = matches!(
+                    peel_marks(&block.body),
+                    Statement::Jump(_) | Statement::Invoke(..)
+                );
+                if transfer && let Some(d) = &mut self.debug {
+                    d.carry = env.iter().map(|(n, r)| (n.0, *r)).collect();
+                }
+                let done = self.emit_block(block, &vals);
+                if let Some(d) = &mut self.debug {
+                    d.carry.clear();
+                }
+                done
             }
 
             Statement::Jump(label) => {
@@ -668,6 +813,7 @@ impl<'a> Gen<'a> {
                 let dst = self.free(&env)?;
                 let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::MakeData, dst, base, n, *tag));
+                self.operands_in(&env, &srcs);
                 let window = self.gathered(&env, &srcs, base);
                 self.safepoint(&env, &window);
                 let mut env = env;
@@ -729,6 +875,7 @@ impl<'a> Gen<'a> {
                 let dst = self.free(&env)?;
                 let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::Closure, dst, base, ncap, table_id));
+                self.operands_in(&env, &srcs);
                 let window = self.gathered(&env, &srcs, base);
                 self.safepoint(&env, &window);
                 let mut env = env;
@@ -759,6 +906,112 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// The representation of the value named `n`.
+    fn rep_of(&self, n: Name) -> Rep {
+        self.seq.reps.get(&n).copied().unwrap_or(Rep::Unknown)
+    }
+
+    /// A value-producing primitive as a typed instruction into `dst`, if its
+    /// operands' representations allow one. False, having emitted nothing, if
+    /// not.
+    fn typed_value(
+        &mut self,
+        op: &Extern,
+        args: &[Name],
+        srcs: &[Reg],
+        dst: Reg,
+        env: &Env,
+    ) -> Result<bool, Error> {
+        match (op, args, srcs) {
+            (Extern::Prim(p), [x, y], [rx, ry]) => {
+                let Some(t) = typed(*p, self.rep_of(*x), self.rep_of(*y)) else {
+                    return Ok(false);
+                };
+                self.emit(match t {
+                    Typed::Int(op, _) | Typed::Float(op) => Instr::new(op, dst, *rx, *ry, 0),
+                    Typed::Cmp(c) => Instr::new(Op::CmpI, dst, *rx, *ry, c as u32),
+                    Typed::FloatCmp(c) => Instr::new(Op::CmpF, dst, *rx, *ry, c as u32),
+                });
+                Ok(true)
+            }
+            (Extern::PrimK(p, l), [x], [rx]) => {
+                let (lrep, bits) = lit_rep(l);
+                let Some(t) = typed(*p, self.rep_of(*x), lrep) else {
+                    return Ok(false);
+                };
+                let small = bits.and_then(|b| i32::try_from(b as i64).ok());
+                match (t, small) {
+                    (Typed::Int(_, Some(k)), Some(n)) => {
+                        self.emit(Instr::new(k, dst, *rx, 0, n as u32));
+                        return Ok(true);
+                    }
+                    (Typed::Cmp(c), Some(n)) => {
+                        self.emit(Instr::new(Op::CmpIK, dst, *rx, c as u8, n as u32));
+                        return Ok(true);
+                    }
+                    _ => {}
+                }
+                // The constant into a register of its own -- one the
+                // destination may be, which is safe: the operation reads both
+                // before it writes.
+                let tmp = self.window(env, 1)?;
+                let k = self.konst(constant(l));
+                self.emit(Instr::ai(Op::Const, tmp, k));
+                self.emit(match t {
+                    Typed::Int(op, _) | Typed::Float(op) => Instr::new(op, dst, *rx, tmp, 0),
+                    Typed::Cmp(c) => Instr::new(Op::CmpI, dst, *rx, tmp, c as u32),
+                    Typed::FloatCmp(c) => Instr::new(Op::CmpF, dst, *rx, tmp, c as u32),
+                });
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// A branching `extern` as a typed compare-and-branch, if its operands'
+    /// representations allow one: where its false jump is, to be patched.
+    fn typed_test(
+        &mut self,
+        op: &Extern,
+        args: &[Name],
+        srcs: &[Reg],
+        env: &Env,
+    ) -> Result<Option<usize>, Error> {
+        let (t, x, y) = match (op, args, srcs) {
+            (Extern::BranchPrim(p), [x, y], [rx, ry]) => {
+                let Some(t) = typed(*p, self.rep_of(*x), self.rep_of(*y)) else {
+                    return Ok(None);
+                };
+                (t, *rx, *ry)
+            }
+            (Extern::BranchPrimK(p, l), [x], [rx]) => {
+                let (lrep, bits) = lit_rep(l);
+                let Some(t) = typed(*p, self.rep_of(*x), lrep) else {
+                    return Ok(None);
+                };
+                if let (Typed::Cmp(c), Some(n)) =
+                    (t, bits.and_then(|b| i8::try_from(b as i64).ok()))
+                {
+                    self.emit(Instr::new(Op::BrIK, *rx, n as u8, c as u8, 0));
+                    return Ok(Some(self.code.len() - 1));
+                }
+                let tmp = self.free(env)?;
+                let k = self.konst(constant(l));
+                self.emit(Instr::ai(Op::Const, tmp, k));
+                (t, *rx, tmp)
+            }
+            _ => return Ok(None),
+        };
+        let instr = match t {
+            Typed::Cmp(c) => Instr::new(Op::BrI, x, y, c as u8, 0),
+            Typed::FloatCmp(c) => Instr::new(Op::BrF, x, y, c as u8, 0),
+            // Arithmetic is not a test.
+            Typed::Int(..) | Typed::Float(_) => return Ok(None),
+        };
+        self.emit(instr);
+        Ok(Some(self.code.len() - 1))
+    }
+
     /// Emit the test a branching `extern` performs, and answer where the jump
     /// that takes the false arm ended up — its immediate still has to be
     /// patched once that arm's address is known.
@@ -787,6 +1040,7 @@ impl<'a> Gen<'a> {
                 fusable(*p)?;
                 let id = self.prim(*p);
                 self.emit(Instr::new(Op::JumpUnlessPrim, *x, *y, prim_byte(id)?, 0));
+                self.operands_in(env, &[*x, *y]);
                 Ok(at(self))
             }
             Extern::BranchPrimK(p, l) => {
@@ -799,11 +1053,13 @@ impl<'a> Gen<'a> {
                 fusable(*p)?;
                 let id = self.prim(*p);
                 let k = self.konst(constant(l));
+                let operands = [self.desc_in(env, *x), const_desc(&constant(l)) as DescSrc];
                 // Loading the constant may allocate -- a `BigInt` -- so both
                 // ways can collect.
                 match u8::try_from(k) {
                     Ok(k) => {
                         self.emit(Instr::new(Op::JumpUnlessPrimK, *x, k, prim_byte(id)?, 0));
+                        self.operands_for(&operands);
                         self.safepoint(env, &[]);
                     }
                     Err(_) => {
@@ -811,6 +1067,7 @@ impl<'a> Gen<'a> {
                         self.emit(Instr::ai(Op::Const, tmp, k));
                         self.safepoint(env, &[]);
                         self.emit(Instr::new(Op::JumpUnlessPrim, *x, tmp, prim_byte(id)?, 0));
+                        self.operands_for(&operands);
                     }
                 }
                 Ok(at(self))
@@ -840,7 +1097,10 @@ impl<'a> Gen<'a> {
                 .iter()
                 .map(|n| reg_of(&env, *n))
                 .collect::<Result<Vec<_>, _>>()?;
-            let test = self.emit_test(op, &srcs, &env)?;
+            let test = match self.typed_test(op, args, &srcs, &env)? {
+                Some(test) => test,
+                None => self.emit_test(op, &srcs, &env)?,
+            };
             let vals = regs_of(&env);
             self.emit_block(on_true, &vals)?;
             self.code[test].imm = self.code.len() as u32;
@@ -859,6 +1119,12 @@ impl<'a> Gen<'a> {
             .collect::<Result<Vec<_>, _>>()?;
         let dst = self.free(&env)?;
 
+        if self.typed_value(op, args, &srcs, dst, &env)? {
+            let mut vals = vec![dst];
+            vals.extend(regs_of(&env));
+            return self.emit_block(block, &vals);
+        }
+
         match op {
             Extern::Branch | Extern::BranchPrim(_) | Extern::BranchPrimK(_, _) => {
                 unreachable!("handled above")
@@ -874,10 +1140,27 @@ impl<'a> Gen<'a> {
                 };
                 let id = self.op(*effect, *op);
                 self.emit(Instr::new(Op::Native, dst, x, 0, id));
+                self.operands_in(&env, &[x]);
                 self.safepoint(&env, &[]);
             }
             Extern::Prim(p) => {
                 let id = self.prim(*p);
+                let mut operands: Vec<DescSrc> =
+                    srcs.iter().map(|r| self.desc_in(&env, *r)).collect();
+                // A thread's function answers what the thread does, and the
+                // machine that runs it has to be told what that is.
+                if *p == Prim::ThreadSpawn {
+                    let out = block.params[0];
+                    let answer = match self.seq.threads.get(&out) {
+                        Some(Rep::Var(d)) if *d != seq::NO_DESC => env
+                            .iter()
+                            .find(|(m, _)| m.0 == *d)
+                            .map_or(desc::ANY as DescSrc, |(_, r)| DESC_REG + *r as DescSrc),
+                        Some(rep) => rep.desc().unwrap_or(desc::ANY) as DescSrc,
+                        None => desc::ANY as DescSrc,
+                    };
+                    operands.push(answer);
+                }
                 // One and two arguments name their registers directly. Only
                 // arity three still gathers a window, and there are four such
                 // primitives — it is not worth a fourth operand field that
@@ -885,16 +1168,19 @@ impl<'a> Gen<'a> {
                 match srcs[..] {
                     [x] => {
                         self.emit(Instr::new(Op::Prim1, dst, x, 0, id));
+                        self.operands_for(&operands);
                         self.safepoint(&env, &[]);
                     }
                     [x, y] => {
                         self.emit(Instr::new(Op::Prim2, dst, x, y, id));
+                        self.operands_for(&operands);
                         self.safepoint(&env, &[]);
                     }
                     _ => {
                         let n = srcs.len() as u8;
                         let base = self.gather(&env, &srcs)?;
                         self.emit(Instr::new(Op::Prim, dst, base, n, id));
+                        self.operands_for(&operands);
                         let window = self.gathered(&env, &srcs, base);
                         self.safepoint(&env, &window);
                     }
@@ -919,6 +1205,7 @@ impl<'a> Gen<'a> {
                 }
                 let id = self.prim(*p);
                 let k = self.konst(constant(l));
+                let operands = [self.desc_in(&env, x), const_desc(&constant(l)) as DescSrc];
                 if matches!(l, Lit::BigInt(_)) {
                     // Loading a `BigInt` allocates, and the destination is not
                     // written until it has: there is no register to hold it
@@ -927,9 +1214,11 @@ impl<'a> Gen<'a> {
                     self.emit(Instr::ai(Op::Const, tmp, k));
                     self.safepoint(&env, &[]);
                     self.emit(Instr::new(Op::Prim2, dst, x, tmp, id));
+                    self.operands_for(&operands);
                     self.safepoint(&env, &[(tmp, Held::Ref)]);
                 } else {
                     self.emit(Instr::new(Op::PrimK, dst, x, prim_byte(id)?, k));
+                    self.operands_for(&operands);
                     // The constant waits in the destination while the
                     // primitive runs.
                     self.safepoint(&env, &[(dst, Held::Scalar)]);
@@ -941,6 +1230,7 @@ impl<'a> Gen<'a> {
                 })?;
                 let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::MakeArray, dst, base, n, 0));
+                self.operands_in(&env, &srcs);
                 let window = self.gathered(&env, &srcs, base);
                 self.safepoint(&env, &window);
             }
@@ -952,6 +1242,7 @@ impl<'a> Gen<'a> {
                 self.shapes.push(fields.clone());
                 let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::MakeRecord, dst, base, n, id));
+                self.operands_in(&env, &srcs);
                 let window = self.gathered(&env, &srcs, base);
                 self.safepoint(&env, &window);
             }
@@ -962,6 +1253,7 @@ impl<'a> Gen<'a> {
             Extern::Extend(l) => {
                 let id = self.label(*l);
                 self.emit(Instr::new(Op::Extend, dst, srcs[0], srcs[1], id));
+                self.operands_in(&env, &[srcs[0], srcs[1]]);
                 self.safepoint(&env, &[]);
             }
             Extern::Field(i) => {
@@ -972,6 +1264,14 @@ impl<'a> Gen<'a> {
         let mut vals = vec![dst];
         vals.extend(regs_of(&env));
         self.emit_block(block, &vals)
+    }
+}
+
+/// A statement with the positions around it taken off.
+fn peel_marks(s: &Statement) -> &Statement {
+    match s {
+        Statement::Mark(_, inner) => peel_marks(inner),
+        s => s,
     }
 }
 
@@ -1037,6 +1337,96 @@ fn order_moves(srcs: &[Reg], scratch: Reg) -> Vec<(Reg, Reg)> {
         }
     }
     out
+}
+
+// --- typed instructions ------------------------------------------------------
+
+/// What a primitive on operands of known representation becomes.
+#[derive(Debug, Clone, Copy)]
+enum Typed {
+    /// An `Int` operation: the register form, and the one taking a constant.
+    Int(Op, Option<Op>),
+    Float(Op),
+    /// A comparison of words -- `Int` order, or equality of any immediate but a
+    /// float.
+    Cmp(Cond),
+    FloatCmp(Cond),
+}
+
+/// Can two values of representation `rep` be told equal by their words? Every
+/// immediate but a float: an interned string is its key, a sized integer its
+/// masked bits.
+fn word_equal(rep: Rep) -> bool {
+    match rep {
+        Rep::Int | Rep::Str => true,
+        Rep::Bits(d) => d != desc::FLOAT32,
+        _ => false,
+    }
+}
+
+/// The typed form of `p` on operands represented as `x` and `y`, if there is
+/// one.
+fn typed(p: Prim, x: Rep, y: Rep) -> Option<Typed> {
+    use Prim::*;
+    let p = p.untyped();
+    let ints = x == Rep::Int && y == Rep::Int;
+    let floats = x == Rep::Float && y == Rep::Float;
+    let cond = |p: Prim| match p {
+        Eq => Cond::Eq,
+        Ne => Cond::Ne,
+        Lt | LtF => Cond::Lt,
+        Le | LeF => Cond::Le,
+        Gt | GtF => Cond::Gt,
+        _ => Cond::Ge,
+    };
+    Some(match p {
+        Add if ints => Typed::Int(Op::AddI, Some(Op::AddIK)),
+        Sub if ints => Typed::Int(Op::SubI, Some(Op::SubIK)),
+        Mul if ints => Typed::Int(Op::MulI, Some(Op::MulIK)),
+        Div if ints => Typed::Int(Op::DivI, None),
+        Mod if ints => Typed::Int(Op::ModI, None),
+        AddF if floats => Typed::Float(Op::AddF),
+        SubF if floats => Typed::Float(Op::SubF),
+        MulF if floats => Typed::Float(Op::MulF),
+        DivF if floats => Typed::Float(Op::DivF),
+        Lt | Le | Gt | Ge if ints => Typed::Cmp(cond(p)),
+        LtF | LeF | GtF | GeF if floats => Typed::FloatCmp(cond(p)),
+        Eq | Ne if floats => Typed::FloatCmp(cond(p)),
+        Eq | Ne if x == y && word_equal(x) => Typed::Cmp(cond(p)),
+        _ => return None,
+    })
+}
+
+/// A literal's representation, where it is fixed; and its word, where that is
+/// the same in every process -- which an interned string's is not.
+fn lit_rep(l: &Lit) -> (Rep, Option<u64>) {
+    match l {
+        Lit::Int(n) => (Rep::Int, Some(*n as u64)),
+        Lit::Float(x) => (Rep::Float, Some(x.to_bits())),
+        Lit::Str(_) => (Rep::Str, None),
+        Lit::Char(c) => (Rep::Bits(desc::CHAR), Some(*c as u64)),
+        Lit::Bool(b) => (Rep::Bits(desc::BOOL), Some(*b as u64)),
+        Lit::Unit => (Rep::Bits(desc::UNIT), Some(0)),
+        Lit::Word(w, b) => (Rep::Bits(desc::word(*w)), Some(*b)),
+        Lit::BigInt(_) | Lit::AnyInt(..) | Lit::AnyFloat(..) | Lit::Float32(_) => {
+            (Rep::Unknown, None)
+        }
+    }
+}
+
+/// What a constant is.
+fn const_desc(c: &Const) -> Desc {
+    match c {
+        Const::Unit => desc::UNIT,
+        Const::Bool(_) => desc::BOOL,
+        Const::Int(_) => desc::INT,
+        Const::Float(_) => desc::FLOAT,
+        Const::Word(w, _) => desc::word(*w),
+        Const::Float32(_) => desc::FLOAT32,
+        Const::Str(_) => desc::STR,
+        Const::Char(_) => desc::CHAR,
+        Const::BigInt(_) => desc::REF,
+    }
 }
 
 fn constant(l: &Lit) -> Const {

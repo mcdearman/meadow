@@ -83,20 +83,23 @@ impl Build {
 
     /// How many heap slots the whole tree needs.
     fn slots(&self) -> usize {
+        let size = crate::heap::Heap::size_of;
         match self {
             Build::At(_) | Build::Str(_) => 0,
             Build::Data(_, xs) | Build::Tuple(xs) => {
-                1 + xs.len() + xs.iter().map(Build::slots).sum::<usize>()
+                size(Kind::Data, xs.len()) + xs.iter().map(Build::slots).sum::<usize>()
             }
             Build::Record(fs) => {
-                1 + 2 * fs.len() + fs.iter().map(|(_, b)| b.slots()).sum::<usize>()
+                size(Kind::Record, 2 * fs.len()) + fs.iter().map(|(_, b)| b.slots()).sum::<usize>()
             }
-            Build::Array(xs) => 1 + xs.len() + xs.iter().map(Build::slots).sum::<usize>(),
+            Build::Array(xs) => {
+                size(Kind::Array, xs.len()) + xs.iter().map(Build::slots).sum::<usize>()
+            }
             Build::Vector(xs) => {
                 let inner = xs.iter().map(Build::slots).sum::<usize>();
                 if xs.len() <= VECTOR_WIDTH {
                     // `Single` and its array, or a bare `Empty`.
-                    return 3 + xs.len() + inner;
+                    return size(Kind::Data, 1) + size(Kind::Array, xs.len()) + inner;
                 }
                 let (_, levels) = vector_shape(xs.len());
                 // `Full` and its four empty buffers; every leaf a `Leaf` and an
@@ -105,7 +108,13 @@ impl Build {
                 let leaves = levels[0];
                 let branches: usize = levels[1..].iter().sum::<usize>() + 1;
                 let children: usize = levels.iter().sum::<usize>();
-                8 + 4 + 3 * leaves + xs.len() + 4 * branches + children + inner
+                size(Kind::Data, 7)
+                    + 4 * size(Kind::Array, 0)
+                    + leaves * (size(Kind::Data, 1) + size(Kind::Array, 0))
+                    + xs.len()
+                    + branches * (size(Kind::Data, 2) + size(Kind::Data, 0) + size(Kind::Array, 0))
+                    + children
+                    + inner
             }
         }
     }

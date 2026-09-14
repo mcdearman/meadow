@@ -8,6 +8,7 @@
 //! between them. The `meadow` binary — CLI + REPL — is a thin shell over this
 //! crate.
 
+pub mod artifacts;
 pub mod complete;
 pub mod dap;
 pub mod editor;

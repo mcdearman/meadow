@@ -49,10 +49,11 @@
 
 use std::time::{Duration, Instant};
 
-use crate::heap::Slot;
+use crate::object::Head;
 use crate::old::{self, BLOCK, OLD_BASE, Old};
 use crate::region::REGION_BASE;
-use crate::value::{Addr, Value};
+use crate::value::{Addr, Value, Word};
+use meadow_core::desc;
 
 /// A block a quarter full or less is worth moving. Moving costs what is in the
 /// block and what points at it, and frees the whole block either way, so the
@@ -166,7 +167,7 @@ impl Evacuation {
     pub fn evacuate(
         &mut self,
         old: &mut Old,
-        nursery: &mut [Slot],
+        nursery: &mut [Word],
         roots: &mut [Value],
         remembered: &mut Vec<Addr>,
         budget: Option<(Duration, usize)>,
@@ -190,13 +191,16 @@ impl Evacuation {
             let mut to = vec![0 as Addr; BLOCK];
             let before = slots;
             for off in b.marked_offsets(epoch) {
-                let Slot::Header { len, .. } = b.get(off) else {
-                    unreachable!("a marked object in block {bi} has no header");
-                };
-                let size = 1 + len as usize;
+                let h = Head::read(b.get(off), b.get(off + 1));
+                let size = h.size();
                 let n = old.alloc_moved(size);
-                for i in 0..size {
-                    old.put(n + i as Addr, b.get(off + i));
+                for k in 0..h.header() {
+                    old.put(n + k as Addr, b.get(off + k));
+                }
+                for i in 0..h.len as usize {
+                    let pointer = h.desc(i, |k| b.get(off + k)) == desc::REF;
+                    let k = h.header() + i;
+                    old.put_field(n + k as Addr, b.get(off + k), pointer);
                 }
                 to[off] = n;
                 copies.push(n);
@@ -212,12 +216,13 @@ impl Evacuation {
                 if moving.has(s) || old.blocks[old::block_of(s)].is_empty() {
                     continue;
                 }
-                if let Slot::Val(Value::Obj(x)) = old.get(s)
+                let x = old.get(s) as Addr;
+                if old.is_pointer(s)
                     && (OLD_BASE..REGION_BASE).contains(&x)
                     && old::block_of(x) == bi
                     && let Some(n) = moving.forward(x)
                 {
-                    old.put(s, Slot::Val(Value::Obj(n)));
+                    old.put_field(s, n as Word, true);
                 }
             }
             // Another block only if one more, at the rate so far, still fits.
@@ -236,14 +241,17 @@ impl Evacuation {
         // The copies' own fields: into the moved blocks, the nursery, or other
         // chosen blocks, each kept track of as for any old field.
         for &n in &copies {
-            let Slot::Header { len, .. } = old.get(n) else {
-                unreachable!("a copy has no header");
-            };
-            for s in n + 1..n + 1 + len {
-                if let Slot::Val(Value::Obj(x)) = old.get(s) {
+            let h = Head::read(old.get(n), old.get(n + 1));
+            for i in 0..h.len as usize {
+                if h.desc(i, |k| old.get(n + k as Addr)) != desc::REF {
+                    continue;
+                }
+                let s = n + (h.header() + i) as Addr;
+                {
+                    let x = old.get(s) as Addr;
                     let x = match moving.has(x).then(|| moving.forward(x)).flatten() {
                         Some(to) => {
-                            old.put(s, Slot::Val(Value::Obj(to)));
+                            old.put_field(s, to as Word, true);
                             to
                         }
                         None => x,
@@ -270,18 +278,20 @@ impl Evacuation {
         }
         let mut at = 0;
         while at < nursery.len() {
-            let Slot::Header { len, .. } = nursery[at] else {
-                unreachable!("nursery walk is not at a header");
-            };
-            for f in &mut nursery[at + 1..at + 1 + len as usize] {
-                if let Slot::Val(Value::Obj(x)) = *f
-                    && moving.has(x)
+            let h = Head::read(nursery[at], nursery[at + 1]);
+            for i in 0..h.len as usize {
+                if h.desc(i, |k| nursery[at + k]) != desc::REF {
+                    continue;
+                }
+                let f = at + h.header() + i;
+                let x = nursery[f] as Addr;
+                if moving.has(x)
                     && let Some(to) = moving.forward(x)
                 {
-                    *f = Slot::Val(Value::Obj(to));
+                    nursery[f] = to as Word;
                 }
             }
-            at += 1 + len as usize;
+            at += h.size();
         }
         remembered.retain(|s| !moving.has(*s));
 

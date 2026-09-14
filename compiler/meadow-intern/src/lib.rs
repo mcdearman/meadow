@@ -21,6 +21,19 @@ pub struct InternedString {
     pub key: Spur,
 }
 
+impl InternedString {
+    /// The handle as a number, for storing in a machine word. Stable for the
+    /// life of the process, like the handle itself.
+    pub fn to_raw(self) -> u32 {
+        lasso::Key::into_usize(self.key) as u32
+    }
+
+    /// The handle [`InternedString::to_raw`] made `raw` from.
+    pub fn from_raw(raw: u32) -> Option<InternedString> {
+        <Spur as lasso::Key>::try_from_usize(raw as usize).map(|key| InternedString { key })
+    }
+}
+
 impl From<Spur> for InternedString {
     fn from(key: Spur) -> Self {
         Self { key }

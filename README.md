@@ -80,7 +80,7 @@ meadow init                     # start a package here, named after the director
 meadow init pkg --name myPkg    # ...or elsewhere, under a name you choose
 meadow run examples/euler       # build a package and run `main`
 meadow run --cek pkg            # ...on the CEK machine instead of the VM
-meadow build path/to/pkg        # type-check and link
+meadow build path/to/pkg        # type-check, link, and write the bytecode image
 meadow build --release pkg      # ...optimized, and `match` must be exhaustive
 meadow run -O2 pkg              # ...or just the optimization level
 meadow dis pkg                  # disassemble: the bytecode the VM would run
@@ -94,6 +94,11 @@ meadow test . Parser.parse --exact  # ...or exactly one
 A package is a directory with a `meadow.toml` and a `src/`, which `meadow init`
 writes for you; `meadow run` also takes a single `.mw` file. The `Std` library
 is embedded in the binary, so there is nothing else to install.
+
+What a build makes goes in the package's own `target/` directory, one directory
+per profile: the bytecode image at `target/debug/bytecode/<name>.mbc`, and
+native object code and binaries under `target/<profile>/native/`. `meadow init`
+writes a `.gitignore` that ignores it.
 
 A package's name is the first segment of a `use` path, so it has to lex as one
 identifier — `meadow init` says so rather than letting a directory called

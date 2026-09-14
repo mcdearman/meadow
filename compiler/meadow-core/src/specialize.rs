@@ -26,6 +26,24 @@
 //!
 //! A local binding generic over a number type -- `loop` above, when it is --
 //! is copied the same way, inside the scope it is bound in.
+//!
+//! # A release build: every value's representation
+//!
+//! [`release`] goes further, and copies on plain type variables too: what a
+//! debug build passes a descriptor for at run time (see [`crate::desc`]), a
+//! release build fixes when it compiles. The copies are keyed by
+//! *representation*, not by type -- `map` at `Int` is one copy and `map` at
+//! `String` another, but `map` at `List Int` and at `Maybe Char` share one,
+//! since code generic over a type does nothing with its values but move them.
+//! That copy is made at [`REF`], an opaque type every reference type stands
+//! for; the others at the scalar type itself, so that arithmetic on them is
+//! arithmetic on known types.
+//!
+//! There are finitely many representations, so this stops as the number case
+//! does, polymorphic recursion included. An instantiation at a type variable a
+//! surrounding generic binding binds is left as it is: that binding is the
+//! generic original, which keeps its descriptors. One at a variable nothing
+//! binds is at a type no value of has to exist, and is made at [`REF`].
 
 use crate::*;
 use std::collections::{HashSet, VecDeque};
@@ -34,28 +52,44 @@ use std::collections::{HashSet, VecDeque};
 /// synthetic definitions a test runner appends (`hir::SYNTHETIC_BASE` up).
 pub const SPECIALIZED_BASE: u32 = 0x7800_0000;
 
-/// Specialize a whole program. Copies are appended after the definitions it
-/// already has, so a definition's position -- which backends label by -- does
-/// not move.
+/// The type a copy at a reference representation is made at -- see the
+/// module docs. It names no declaration: nothing takes one apart.
+pub const REF: &str = "#Ref";
+
+/// Specialize a whole program on its number types. Copies are appended after
+/// the definitions it already has, so a definition's position -- which
+/// backends label by -- does not move.
 pub fn program(p: &Program) -> Program {
-    let tops: HashMap<Var, Vec<usize>> = p
+    specialize(p, false)
+}
+
+/// Specialize a whole program on every value's representation, for a release
+/// build -- see the module docs.
+pub fn release(p: &Program) -> Program {
+    specialize(p, true)
+}
+
+fn specialize(p: &Program, all: bool) -> Program {
+    let tops: HashMap<Var, Vec<(usize, VarKind)>> = p
         .defs
         .iter()
         .filter_map(|d| {
-            let positions = number_positions(&d.poly);
+            let positions = positions(&d.poly, all);
             (!positions.is_empty()).then_some((d.var, positions))
         })
         .collect();
-    if tops.is_empty() && !p.defs.iter().any(|d| mentions_generic_local(&d.term)) {
+    if tops.is_empty() && !p.defs.iter().any(|d| mentions_generic_local(&d.term, all)) {
         return p.clone();
     }
     let mut s = Specializer {
+        all,
         tops,
         instances: HashMap::new(),
         queue: VecDeque::new(),
         scopes: Vec::new(),
         next: SPECIALIZED_BASE,
         origins: HashMap::new(),
+        bound: Vec::new(),
     };
     let by_var: HashMap<Var, &Def> = p.defs.iter().map(|d| (d.var, d)).collect();
 
@@ -72,7 +106,7 @@ pub fn program(p: &Program) -> Program {
 
     while let Some((orig, key, var)) = s.queue.pop_front() {
         let d = by_var[&orig];
-        let (poly, sigma) = specialize_poly(&d.poly, &key);
+        let (poly, sigma) = specialize_poly(&d.poly, &key, all);
         let body = strip_number_binders(&d.term, &d.poly, &poly);
         let term = s.term(&body, &sigma);
         let term = s.freshen(&term);
@@ -98,15 +132,11 @@ pub fn program(p: &Program) -> Program {
 /// A shortcut for the common case: is there a generic local anywhere? Only
 /// consulted when no top-level definition is generic, since then nothing else
 /// could ask for a copy.
-fn mentions_generic_local(t: &Term) -> bool {
+fn mentions_generic_local(t: &Term, all: bool) -> bool {
     let mut found = false;
     walk(t, &mut |t| match t {
-        Term::Let(_, poly, _, _) if !number_positions(poly).is_empty() => found = true,
-        Term::LetRec(binds, _)
-            if binds
-                .iter()
-                .any(|(_, p, _)| !number_positions(p).is_empty()) =>
-        {
+        Term::Let(_, poly, _, _) if !positions(poly, all).is_empty() => found = true,
+        Term::LetRec(binds, _) if binds.iter().any(|(_, p, _)| !positions(p, all).is_empty()) => {
             found = true
         }
         _ => {}
@@ -155,13 +185,19 @@ fn walk(t: &Term, f: &mut impl FnMut(&Term)) {
     }
 }
 
-/// The positions of a polytype's number-class binders.
-fn number_positions(poly: &Poly) -> Vec<usize> {
+/// Is a binder of this kind specialized: a number class's, and with `all`, a
+/// plain type variable's too?
+fn specialized(kind: VarKind, all: bool) -> bool {
+    matches!(kind, VarKind::Num | VarKind::Frac) || (all && kind == VarKind::Type)
+}
+
+/// The positions and kinds of the binders of a polytype that are specialized.
+fn positions(poly: &Poly, all: bool) -> Vec<(usize, VarKind)> {
     poly.binders
         .iter()
         .enumerate()
-        .filter(|(_, b)| matches!(b.kind, VarKind::Num | VarKind::Frac))
-        .map(|(i, _)| i)
+        .filter(|(_, b)| specialized(b.kind, all))
+        .map(|(i, b)| (i, b.kind))
         .collect()
 }
 
@@ -189,12 +225,12 @@ fn number_type(ty: &Ty) -> Option<InternedString> {
 
 /// A polytype with its number binders filled in by `key`, in order: the binders
 /// left, and the substitution for the ones taken.
-fn specialize_poly(poly: &Poly, key: &[InternedString]) -> (Poly, HashMap<u32, Ty>) {
+fn specialize_poly(poly: &Poly, key: &[InternedString], all: bool) -> (Poly, HashMap<u32, Ty>) {
     let mut sigma = HashMap::new();
     let mut binders = Vec::new();
     let mut k = key.iter();
     for b in &poly.binders {
-        if matches!(b.kind, VarKind::Num | VarKind::Frac) {
+        if specialized(b.kind, all) {
             let name = k.next().expect("a type for every number binder");
             sigma.insert(b.id, InferType::Con(*name, Vec::new()));
         } else {
@@ -230,14 +266,16 @@ fn strip_number_binders(t: &Term, old: &Poly, new: &Poly) -> Term {
 /// the copies asked for so far.
 struct Local {
     var: Var,
-    positions: Vec<usize>,
+    positions: Vec<(usize, VarKind)>,
     wanted: Vec<(Vec<InternedString>, Var)>,
 }
 
 struct Specializer {
+    /// Whether plain type variables are specialized as well as number ones.
+    all: bool,
     /// Top-level definitions generic over a number type, and where their
     /// number binders are.
-    tops: HashMap<Var, Vec<usize>>,
+    tops: HashMap<Var, Vec<(usize, VarKind)>>,
     instances: HashMap<(Var, Vec<InternedString>), Var>,
     /// Top-level copies asked for and not yet made: the original, the types,
     /// and the copy's name.
@@ -247,6 +285,9 @@ struct Specializer {
     next: u32,
     /// Each renamed binder, and what it was a copy of.
     origins: HashMap<Var, Var>,
+    /// The type variables the abstractions around the term being rewritten
+    /// bind.
+    bound: Vec<u32>,
 }
 
 impl Specializer {
@@ -265,12 +306,18 @@ impl Specializer {
         };
         let key: Vec<InternedString> = positions
             .iter()
-            .map(|&i| args.get(i).and_then(number_type))
+            .map(|&(i, kind)| {
+                let t = args.get(i)?;
+                match kind {
+                    VarKind::Num | VarKind::Frac => number_type(t),
+                    _ => self.rep_type(t),
+                }
+            })
             .collect::<Option<_>>()?;
         let rest: Vec<Ty> = args
             .iter()
             .enumerate()
-            .filter(|(i, _)| !positions.contains(i))
+            .filter(|(i, _)| !positions.iter().any(|(p, _)| p == i))
             .map(|(_, t)| t.clone())
             .collect();
 
@@ -289,6 +336,29 @@ impl Specializer {
         self.instances.insert((x, key.clone()), v);
         self.queue.push_back((x, key, v));
         Some((v, rest))
+    }
+
+    /// The type a copy at `t`'s representation is made at: the scalar type
+    /// itself, or [`REF`]. `None` for a variable an abstraction around binds,
+    /// and a type with no representation to speak of.
+    fn rep_type(&self, t: &Ty) -> Option<InternedString> {
+        use crate::desc;
+        if let InferType::Var(v) = t {
+            return (!self.bound.contains(v)).then(|| InternedString::from(REF));
+        }
+        let name = match desc::of(t)? {
+            desc::REF => REF,
+            desc::INT => "Int",
+            desc::FLOAT => "Float",
+            desc::STR => "String",
+            desc::UNIT => "Unit",
+            desc::BOOL => "Bool",
+            desc::CHAR => "Char",
+            desc::FLOAT32 => "Float32",
+            desc::ANY => return None,
+            d => num::Width::ALL[(d - desc::WORD) as usize].name(),
+        };
+        Some(InternedString::from(name))
     }
 
     fn lit(&self, l: &Lit, sigma: &HashMap<u32, Ty>) -> Lit {
@@ -362,6 +432,15 @@ impl Specializer {
                 let args: Vec<Ty> = args.iter().map(|a| self.ty(a, sigma)).collect();
                 if let Term::Var(x) = &**f {
                     if let Some((copy, rest)) = self.instance(*x, &args) {
+                        // A copy at a representation has lost the types it
+                        // was asked for -- a reference copy says `#Ref` where
+                        // the caller has a tuple it takes apart. So the mention
+                        // keeps them, and says what the copy is a copy of,
+                        // which is where they read a type off.
+                        if self.all {
+                            self.origins.insert(copy, *x);
+                            return Term::TyApp(Arc::new(Term::Var(copy)), args);
+                        }
                         return if rest.is_empty() {
                             Term::Var(copy)
                         } else {
@@ -371,12 +450,18 @@ impl Specializer {
                 }
                 Term::TyApp(self.arc(f, sigma), args)
             }
-            Term::TyLam(binders, body) => Term::TyLam(binders.clone(), self.arc(body, sigma)),
+            Term::TyLam(binders, body) => {
+                let depth = self.bound.len();
+                self.bound.extend(binders.iter().map(|b| b.id));
+                let body = self.arc(body, sigma);
+                self.bound.truncate(depth);
+                Term::TyLam(binders.clone(), body)
+            }
             Term::Loc(l, inner) => Term::Loc(*l, self.arc(inner, sigma)),
             Term::Lam(v, ty, body) => Term::Lam(*v, self.ty(ty, sigma), self.arc(body, sigma)),
             Term::App(f, a) => Term::App(self.arc(f, sigma), self.arc(a, sigma)),
             Term::Let(v, poly, rhs, body) => {
-                let positions = number_positions(poly);
+                let positions = positions(poly, self.all);
                 if positions.is_empty() {
                     return Term::Let(
                         *v,
@@ -396,7 +481,7 @@ impl Specializer {
                 let local = self.scopes.pop().expect("the scope just pushed");
                 let mut out = body;
                 for (key, copy) in local.wanted.iter().rev() {
-                    let (p, mut inner) = specialize_poly(poly, key);
+                    let (p, mut inner) = specialize_poly(poly, key, self.all);
                     inner.extend(sigma.iter().map(|(k, v)| (*k, v.clone())));
                     let rhs = self.term(&strip_number_binders(rhs, poly, &p), &inner);
                     let rhs = self.freshen(&rhs);
@@ -481,13 +566,13 @@ impl Specializer {
         sigma: &HashMap<u32, Ty>,
     ) -> Term {
         let generic: Vec<usize> = (0..binds.len())
-            .filter(|&i| !number_positions(&binds[i].1).is_empty())
+            .filter(|&i| !positions(&binds[i].1, self.all).is_empty())
             .collect();
         let first = self.scopes.len();
         for &i in &generic {
             self.scopes.push(Local {
                 var: binds[i].0,
-                positions: number_positions(&binds[i].1),
+                positions: positions(&binds[i].1, self.all),
                 wanted: Vec::new(),
             });
         }
@@ -518,7 +603,7 @@ impl Specializer {
             for (i, key, copy) in pending {
                 made.insert(copy);
                 let (_, poly, rhs) = &binds[i];
-                let (p, mut inner) = specialize_poly(poly, &key);
+                let (p, mut inner) = specialize_poly(poly, &key, self.all);
                 inner.extend(sigma.iter().map(|(k, v)| (*k, v.clone())));
                 let rhs = self.term(&strip_number_binders(rhs, poly, &p), &inner);
                 let rhs = self.freshen(&rhs);

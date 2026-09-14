@@ -10,7 +10,7 @@ use crate::{Const, Instr, Program};
 use meadow_core::{Prim, num::Width};
 use meadow_intern::InternedString;
 
-const MAGIC: &[u8; 8] = b"MDWIMG01";
+const MAGIC: &[u8; 8] = b"MDWIMG02";
 
 /// `program`, as bytes [`decode`] reads back.
 pub fn encode(program: &Program) -> Vec<u8> {
@@ -71,14 +71,23 @@ pub fn encode(program: &Program) -> Vec<u8> {
             match held {
                 crate::Held::Ref => w.0.push(0),
                 crate::Held::Scalar => w.0.push(1),
-                crate::Held::Var(v) => {
+                crate::Held::Var(d) => {
                     w.0.push(2);
-                    w.u32(*v);
+                    w.0.push(*d);
                 }
+                crate::Held::Any => w.0.push(3),
             }
         }
     }
     w.u32s(&program.gc_at);
+    w.u32s(&program.operands_at);
+    w.u32(program.operands.len() as u32);
+    for d in &program.operands {
+        w.u16(*d);
+    }
+    w.u32(program.results.len() as u32);
+    w.0.extend(program.results.iter().map(|d| *d as u8));
+    w.0.push(program.entry_result as u8);
     w.0
 }
 
@@ -141,7 +150,8 @@ pub fn decode(bytes: &[u8]) -> Result<Program, String> {
             let held = match r.take(1)?[0] {
                 0 => crate::Held::Ref,
                 1 => crate::Held::Scalar,
-                2 => crate::Held::Var(r.u32()?),
+                2 => crate::Held::Var(r.take(1)?[0]),
+                3 => crate::Held::Any,
                 t => return Err(format!("unknown register kind {t}")),
             };
             regs.push((reg, held));
@@ -149,6 +159,18 @@ pub fn decode(bytes: &[u8]) -> Result<Program, String> {
         p.gc_maps.push(crate::GcMap { regs });
     }
     p.gc_at = r.u32s()?;
+    p.operands_at = r.u32s()?;
+    for _ in 0..r.u32()? {
+        let d = r.u16()?;
+        p.operands.push(d);
+    }
+    let n = r.u32()? as usize;
+    p.results = r
+        .take(n)?
+        .iter()
+        .map(|b| *b as meadow_core::desc::Desc)
+        .collect();
+    p.entry_result = r.take(1)?[0] as meadow_core::desc::Desc;
     if r.at != bytes.len() {
         return Err("trailing bytes after the image".into());
     }
@@ -318,10 +340,18 @@ mod tests {
             regs: vec![
                 (0, crate::Held::Ref),
                 (3, crate::Held::Var(9)),
+                (5, crate::Held::Any),
                 (4, crate::Held::Scalar),
             ],
         }];
         p.gc_at = vec![0, crate::NO_MAP];
+        p.operands_at = vec![crate::NO_OPERANDS, 0];
+        p.operands = vec![
+            meadow_core::desc::INT as crate::DescSrc,
+            crate::DESC_REG + 3,
+        ];
+        p.results = vec![meadow_core::desc::REF, meadow_core::desc::STR];
+        p.entry_result = meadow_core::desc::UNIT;
         let back = decode(&encode(&p)).expect("decodes");
         assert_eq!(format!("{:?}", back.code), format!("{:?}", p.code));
         assert_eq!(back.consts, p.consts);
@@ -338,6 +368,15 @@ mod tests {
             (p.entries, p.entry, p.regs)
         );
         assert_eq!((back.gc_maps, back.gc_at), (p.gc_maps, p.gc_at));
+        assert_eq!(
+            (
+                back.operands_at,
+                back.operands,
+                back.results,
+                back.entry_result
+            ),
+            (p.operands_at, p.operands, p.results, p.entry_result)
+        );
     }
 
     #[test]

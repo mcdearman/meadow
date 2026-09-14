@@ -65,19 +65,22 @@
 //!
 //! # Layout
 //!
-//! One header slot, then the fields:
+//! Every slot is one word. An object is a header, then its fields, each the
+//! bits of a value and nothing else; what each field holds is a descriptor in
+//! the header -- see [`crate::object`]:
 //!
 //! ```text
-//!   addr      Header { kind, len, meta }
-//!   addr+1    field 0
+//!   addr        kind, len, and for an array its one descriptor
+//!   addr+1      meta, and the first fields' descriptors
+//!   ...         more descriptors, for a wide object
+//!   addr+h      field 0
 //!   ...
-//!   addr+len  field len-1
 //! ```
 //!
-//! `meta` is per-kind: a constructor tag, a method table, a sign. Fields are
-//! always [`Value`]s — even a `BigInt`'s digits, which are `Int`s and simply
-//! contain no addresses for the scan to find. That costs memory and buys a
-//! collector with no per-kind tracing rules at all.
+//! `meta` is per-kind: a constructor tag, a method table, a sign. A collector
+//! finds addresses by descriptor, the same way for every kind, so there are no
+//! per-kind tracing rules. What this module hands out and takes in is still a
+//! [`Value`], which is a field's word and its descriptor together.
 //!
 //! An address says where it points by its range: below [`OLD_BASE`] the
 //! nursery, below [`REGION_BASE`] the old generation, and above that a region.
@@ -106,9 +109,11 @@ use std::time::{Duration, Instant};
 
 use crate::evacuate::Evacuation;
 use crate::mark;
+use crate::object::{self, Head, forward, forwarded, write_header};
 use crate::old::{self, OLD_BASE, Old};
 use crate::region::{Block, Region};
-use crate::value::{Addr, Value};
+use crate::value::{Addr, Value, Word};
+use meadow_core::desc;
 
 pub use crate::region::REGION_BASE;
 
@@ -118,7 +123,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Bytes one slot takes -- what `compactSize` multiplies by. The other engines
 /// estimate with `meadow_core::compact::SLOT_BYTES`, which a test holds equal.
-pub const SLOT_BYTES: usize = std::mem::size_of::<Slot>();
+pub const SLOT_BYTES: usize = std::mem::size_of::<Word>();
 
 // --- configuration ---------------------------------------------------------------
 
@@ -259,7 +264,7 @@ impl Unsendable {
 /// its addresses unchanged, and the parcel holds those regions alive.
 #[derive(Clone)]
 pub struct Parcel {
-    slots: Vec<Slot>,
+    slots: Vec<Word>,
     root: Value,
     regions: Vec<Arc<Region>>,
 }
@@ -296,6 +301,7 @@ struct Adopted {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Kind {
     /// A constructor. `meta` is its tag; a tuple is the constructor `#tuple`.
     Data,
@@ -336,23 +342,43 @@ pub enum Kind {
     TVar,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Slot {
-    Header {
-        kind: Kind,
-        len: u32,
-        meta: u32,
-    },
-    Val(Value),
-    /// Left behind in from-space when an object has been copied.
-    Forward(Addr),
+impl Kind {
+    const ALL: [Kind; 12] = [
+        Kind::Data,
+        Kind::Array,
+        Kind::Record,
+        Kind::Closure,
+        Kind::Ref,
+        Kind::MutArray,
+        Kind::BigInt,
+        Kind::Resume,
+        Kind::Compact,
+        Kind::Channel,
+        Kind::Task,
+        Kind::TVar,
+    ];
+
+    /// The kind a header's first byte names.
+    pub fn from_byte(b: u8) -> Kind {
+        Kind::try_from_byte(b).unwrap_or_else(|| panic!("{b} is not a kind of object"))
+    }
+
+    pub fn try_from_byte(b: u8) -> Option<Kind> {
+        Kind::ALL.get(b as usize).copied()
+    }
+
+    /// Does every field hold the same representation, so that one descriptor
+    /// describes them all? An array's elements, a `BigInt`'s digits.
+    pub fn is_uniform(self) -> bool {
+        matches!(self, Kind::Array | Kind::MutArray | Kind::BigInt)
+    }
 }
 
 pub struct Heap {
     config: GcConfig,
     /// The nursery, and its other half for collecting into.
-    space: Vec<Slot>,
-    other: Vec<Slot>,
+    space: Vec<Word>,
+    other: Vec<Word>,
     top: usize,
     /// Nursery objects below this have survived a collection already.
     aged: usize,
@@ -428,7 +454,7 @@ impl Heap {
         };
         Heap {
             config,
-            space: vec![Slot::Val(Value::Unit); slots.max(64)],
+            space: vec![0; slots.max(64)],
             other: Vec::new(),
             top: 0,
             aged: 0,
@@ -520,7 +546,7 @@ impl Heap {
         while self.top + slots > size {
             size = (size * 2).max(64);
         }
-        self.space.resize(size.min(limit), Slot::Val(Value::Unit));
+        self.space.resize(size.min(limit), 0);
     }
 
     /// Allocate. The caller must have checked [`Heap::room_for`], or
@@ -532,19 +558,54 @@ impl Heap {
         self.config.verify
     }
 
+    /// Slots an object of `kind` with `len` fields takes.
+    pub fn size_of(kind: Kind, len: usize) -> usize {
+        meadow_core::compact::object_slots(kind.is_uniform(), len)
+    }
+
     pub fn alloc(&mut self, kind: Kind, meta: u32, fields: &[Value]) -> Addr {
         let at = self.top;
-        let size = 1 + fields.len();
+        let header = meadow_core::compact::header_slots(kind.is_uniform(), fields.len());
+        let size = header + fields.len();
         if at + size > self.space.len() {
             return self.alloc_old(kind, meta, fields);
         }
-        self.space[at] = Slot::Header {
-            kind,
-            len: fields.len() as u32,
-            meta,
-        };
+        let space = &mut self.space;
+        write_header(kind, meta, fields.iter().map(|v| v.desc()), |k, w| {
+            space[at + k] = w
+        });
         for (i, v) in fields.iter().enumerate() {
-            self.space[at + 1 + i] = Slot::Val(*v);
+            space[at + header + i] = v.bits();
+        }
+        self.top += size;
+        self.allocated += size as u64;
+        at as Addr
+    }
+
+    /// Allocate an object of `len` fields, field `i` the word `word(i)` of
+    /// descriptor `desc(i)`: [`Heap::alloc`] for a caller holding words, which
+    /// need not be made values first.
+    pub fn alloc_described(
+        &mut self,
+        kind: Kind,
+        meta: u32,
+        len: usize,
+        word: impl Fn(usize) -> Word,
+        desc: impl Fn(usize) -> desc::Desc,
+    ) -> Addr {
+        let at = self.top;
+        let header = meadow_core::compact::header_slots(kind.is_uniform(), len);
+        let size = header + len;
+        if at + size > self.space.len() {
+            let fields: Vec<Value> = (0..len)
+                .map(|i| Value::from_bits(word(i), desc(i)))
+                .collect();
+            return self.alloc_old(kind, meta, &fields);
+        }
+        let space = &mut self.space;
+        write_header(kind, meta, (0..len).map(&desc), |k, w| space[at + k] = w);
+        for i in 0..len {
+            space[at + header + i] = word(i);
         }
         self.top += size;
         self.allocated += size as u64;
@@ -554,23 +615,20 @@ impl Heap {
     /// An object that does not fit in the nursery, in the old generation.
     #[cold]
     fn alloc_old(&mut self, kind: Kind, meta: u32, fields: &[Value]) -> Addr {
-        let size = 1 + fields.len();
+        let size = Heap::size_of(kind, fields.len());
         if self.config.collector == Collector::Copying {
             self.reserve(size);
             return self.alloc(kind, meta, fields);
         }
         self.promoting = true;
         let at = self.old.alloc(size, self.marking.is_some());
-        self.old.put(
-            at,
-            Slot::Header {
-                kind,
-                len: fields.len() as u32,
-                meta,
-            },
-        );
+        let old = &self.old;
+        write_header(kind, meta, fields.iter().map(|v| v.desc()), |k, w| {
+            old.put(at + k as Addr, w)
+        });
+        let header = (size - fields.len()) as Addr;
         for (i, v) in fields.iter().enumerate() {
-            self.init_old(at + 1 + i as Addr, *v);
+            self.init_old(at + header + i as Addr, *v);
         }
         self.allocated += size as u64;
         at
@@ -579,7 +637,7 @@ impl Heap {
     /// Write a field of an old object nothing else has seen yet: no marker can
     /// be reading it, and it held nothing to log.
     fn init_old(&mut self, s: Addr, v: Value) {
-        self.old.put(s, Slot::Val(v));
+        self.old.put_field(s, v.bits(), v.addr().is_some());
         self.barriers(s, v);
     }
 
@@ -599,8 +657,8 @@ impl Heap {
     }
 
     /// The slot at `a`, in the nursery, the old generation or a region.
-    #[inline]
-    fn slot(&self, a: Addr) -> Slot {
+    #[inline(always)]
+    fn slot(&self, a: Addr) -> Word {
         if a < OLD_BASE {
             self.space[a as usize]
         } else if a < REGION_BASE {
@@ -616,19 +674,28 @@ impl Heap {
         i - 1
     }
 
-    fn head(&self, a: Addr) -> (Kind, u32, u32) {
-        match self.slot(a) {
-            Slot::Header { kind, len, meta } => (kind, len, meta),
-            other => unreachable!("{a} is not an object header: {other:?}"),
+    #[inline(always)]
+    fn head(&self, a: Addr) -> Head {
+        // The nursery, where nearly every object read is, with one test.
+        if a < OLD_BASE {
+            let i = a as usize;
+            return Head::read(self.space[i], self.space[i + 1]);
         }
+        Head::read(self.slot(a), self.slot(a + 1))
     }
 
-    /// Is there an object header at `a`? For a debugger reading an address it
-    /// cannot vouch for; the machine itself never needs to ask.
+    /// Field `i`'s descriptor, in the object at `a` whose header is `h`.
+    #[inline]
+    fn desc(&self, a: Addr, h: &Head, i: usize) -> desc::Desc {
+        h.desc(i, |k| self.slot(a + k as Addr))
+    }
+
+    /// Is there an object at `a`? For a debugger reading an address it cannot
+    /// vouch for; the machine itself never needs to ask. Exact in the nursery,
+    /// which is walked to find out; elsewhere, whether a header could be there.
     pub fn is_object(&self, a: Addr) -> bool {
         if a < OLD_BASE {
-            return (a as usize) < self.top
-                && matches!(self.space[a as usize], Slot::Header { .. });
+            return self.nursery_objects().any(|at| at == a);
         }
         if a < REGION_BASE {
             return self.old.is_object(a);
@@ -638,7 +705,19 @@ impl Heap {
             return false;
         }
         let b = &self.blocks[i - 1];
-        (a - b.base) < b.cap as Addr && matches!(b.get(a), Slot::Header { .. })
+        (a - b.base) + 1 < b.cap as Addr && Kind::try_from_byte(b.get(a) as u8).is_some()
+    }
+
+    /// Where every object in the nursery starts, in order.
+    fn nursery_objects(&self) -> impl Iterator<Item = Addr> + '_ {
+        let mut at = 0usize;
+        std::iter::from_fn(move || {
+            (at < self.top).then(|| {
+                let here = at;
+                at += Head::read(self.space[at], self.space[at + 1]).size();
+                here as Addr
+            })
+        })
     }
 
     /// Is `a` an address in a compact region?
@@ -647,46 +726,97 @@ impl Heap {
     }
 
     pub fn kind(&self, a: Addr) -> Kind {
-        self.head(a).0
+        self.head(a).kind
     }
 
     pub fn len(&self, a: Addr) -> usize {
-        self.head(a).1 as usize
+        self.head(a).len as usize
     }
 
     pub fn meta(&self, a: Addr) -> u32 {
-        self.head(a).2
+        self.head(a).meta
     }
 
     pub fn field(&self, a: Addr, i: usize) -> Value {
-        match self.slot(a + 1 + i as Addr) {
-            Slot::Val(v) => v,
-            other => unreachable!("field {i} of {a} is not a value: {other:?}"),
-        }
+        let h = self.head(a);
+        debug_assert!(
+            i < h.len as usize,
+            "field {i} of a {:?} of {}",
+            h.kind,
+            h.len
+        );
+        let w = self.slot(a + (h.header() + i) as Addr);
+        Value::from_bits(w, self.desc(a, &h, i))
+    }
+
+    /// What an array's elements are: the one descriptor a uniform object
+    /// has for all of them.
+    pub fn element_desc(&self, a: Addr) -> desc::Desc {
+        let h = self.head(a);
+        debug_assert!(
+            h.kind.is_uniform(),
+            "a {:?} has no one element descriptor",
+            h.kind
+        );
+        self.desc(a, &h, 0)
+    }
+
+    /// Every field's word, in order, without saying what they are.
+    pub fn words(&self, a: Addr) -> impl Iterator<Item = Word> + '_ {
+        let h = self.head(a);
+        let base = a + h.header() as Addr;
+        (0..h.len).map(move |i| self.slot(base + i))
+    }
+
+    /// Field `i`'s word, without saying what it is.
+    #[inline]
+    pub fn field_word(&self, a: Addr, i: usize) -> Word {
+        let h = self.head(a);
+        self.slot(a + (h.header() + i) as Addr)
     }
 
     /// Overwrite a field. Only a `Ref`, a mutable array or a resumption is
     /// ever written after it is made, and this is where the barriers are: an
     /// old object's field that now points into the nursery is remembered, and
     /// while marking, the value it held is logged.
+    ///
+    /// A field of an array, whose one descriptor describes every element, keeps
+    /// its representation; any other can change it -- a `()` placeholder
+    /// replaced by an object -- and its descriptor changes with it, under the
+    /// same lock the marker reads a mutable object's descriptors under.
     pub fn set_field(&mut self, a: Addr, i: usize, v: Value) {
-        let s = a + 1 + i as Addr;
+        let h = self.head(a);
+        let s = a + (h.header() + i) as Addr;
+        let was = self.desc(a, &h, i);
+        assert!(
+            was == v.desc() || !h.kind.is_uniform(),
+            "a {:?} of {} given {}",
+            h.kind,
+            desc::name(was),
+            v.kind()
+        );
         if a < OLD_BASE {
-            self.space[s as usize] = Slot::Val(v);
+            self.space[s as usize] = v.bits();
+            if was != v.desc() {
+                let (k, w) = object::with_desc(i, v.desc(), |k| self.space[a as usize + k]);
+                self.space[a as usize + k] = w;
+            }
             return;
         }
         debug_assert!(a < REGION_BASE, "a region is immutable");
-        if self.marking.is_some() {
-            let _held = lock(&self.mutation);
-            if let Slot::Val(Value::Obj(x)) = self.old.get(s)
-                && x >= OLD_BASE
-            {
+        let _held = self.marking.is_some().then(|| lock(&self.mutation));
+        if self.marking.is_some() && was == desc::REF {
+            let x = self.old.get(s) as Addr;
+            if x >= OLD_BASE {
                 self.satb.push(x);
             }
-            self.old.put(s, Slot::Val(v));
-        } else {
-            self.old.put(s, Slot::Val(v));
         }
+        self.old.put_field(s, v.bits(), v.addr().is_some());
+        if was != v.desc() {
+            let (k, w) = object::with_desc(i, v.desc(), |k| self.old.get(a + k as Addr));
+            self.old.put(a + k as Addr, w);
+        }
+        drop(_held);
         self.barriers(s, v);
         if self.satb.len() >= SATB_FLUSH {
             self.flush_satb();
@@ -697,7 +827,11 @@ impl Heap {
     /// object and then allocate, which cannot hold heap references across the
     /// allocation.
     pub fn fields(&self, a: Addr) -> Vec<Value> {
-        (0..self.len(a)).map(|i| self.field(a, i)).collect()
+        let h = self.head(a);
+        let base = a + h.header() as Addr;
+        (0..h.len as usize)
+            .map(|i| Value::from_bits(self.slot(base + i as Addr), self.desc(a, &h, i)))
+            .collect()
     }
 
     // --- collecting -----------------------------------------------------------------
@@ -908,7 +1042,7 @@ impl Heap {
     fn minor(&mut self, roots: &mut [Value], promote_all: bool) {
         let mut to = std::mem::take(&mut self.other);
         to.clear();
-        to.resize(self.space.len(), Slot::Val(Value::Unit));
+        to.resize(self.space.len(), 0);
         // With nothing in the old generation, this collection sees everything,
         // and can tell which regions nothing reaches.
         let whole = self.old.is_empty() && self.marking.is_none();
@@ -946,17 +1080,17 @@ impl Heap {
             // A remembered field may be in an object the marker is reading.
             let _held = gc.black.then(|| lock(&self.mutation));
             for s in std::mem::take(&mut self.remembered) {
-                match gc.old.get(s) {
-                    Slot::Val(Value::Obj(x)) if x < OLD_BASE => {
-                        let n = gc.forward(x);
-                        gc.old.put(s, Slot::Val(Value::Obj(n)));
-                        if n < OLD_BASE {
-                            gc.remembered.push(s);
-                        } else {
-                            gc.old.forget(s);
-                        }
+                let x = gc.old.get(s) as Addr;
+                if gc.old.is_pointer(s) && x < OLD_BASE {
+                    let n = gc.forward(x);
+                    gc.old.put_field(s, n as Word, true);
+                    if n < OLD_BASE {
+                        gc.remembered.push(s);
+                    } else {
+                        gc.old.forget(s);
                     }
-                    _ => gc.old.forget(s),
+                } else {
+                    gc.old.forget(s);
                 }
             }
         }
@@ -965,35 +1099,36 @@ impl Heap {
         let mut scan = 0usize;
         loop {
             if scan < gc.top {
-                let len = match gc.to[scan] {
-                    Slot::Header { len, .. } => len as usize,
-                    other => unreachable!("scan is not at a header: {other:?}"),
-                };
-                for i in 0..len {
-                    if let Slot::Val(Value::Obj(a)) = gc.to[scan + 1 + i] {
-                        let n = gc.forward(a);
-                        gc.to[scan + 1 + i] = Slot::Val(Value::Obj(n));
+                let h = Head::read(gc.to[scan], gc.to[scan + 1]);
+                let base = scan + h.header();
+                if h.may_point() {
+                    for i in 0..h.len as usize {
+                        if h.desc(i, |k| gc.to[scan + k]) == desc::REF {
+                            let n = gc.forward(gc.to[base + i] as Addr);
+                            gc.to[base + i] = n as Word;
+                        }
                     }
                 }
-                scan += 1 + len;
+                scan += h.size();
             } else if let Some(p) = gc.promoted.pop() {
-                let len = match gc.old.get(p) {
-                    Slot::Header { len, .. } => len as Addr,
-                    other => unreachable!("promoted {p} is not a header: {other:?}"),
-                };
-                for s in p + 1..p + 1 + len {
-                    if let Slot::Val(Value::Obj(a)) = gc.old.get(s) {
-                        let n = gc.forward(a);
-                        if a < OLD_BASE {
-                            gc.old.put(s, Slot::Val(Value::Obj(n)));
+                let h = Head::read(gc.old.get(p), gc.old.get(p + 1));
+                let base = p + h.header() as Addr;
+                for i in 0..h.len as usize {
+                    if h.desc(i, |k| gc.old.get(p + k as Addr)) != desc::REF {
+                        continue;
+                    }
+                    let s = base + i as Addr;
+                    let a = gc.old.get(s) as Addr;
+                    let n = gc.forward(a);
+                    if a < OLD_BASE {
+                        gc.old.put_field(s, n as Word, true);
+                    }
+                    if n < OLD_BASE {
+                        if gc.old.remember(s) {
+                            gc.remembered.push(s);
                         }
-                        if n < OLD_BASE {
-                            if gc.old.remember(s) {
-                                gc.remembered.push(s);
-                            }
-                        } else {
-                            gc.evac.note(gc.old, s, n);
-                        }
+                    } else {
+                        gc.evac.note(gc.old, s, n);
                     }
                 }
             } else {
@@ -1035,10 +1170,10 @@ impl Heap {
                         bigger <= OLD_BASE as usize,
                         "the heap has used up its address space"
                     );
-                    self.space.resize(bigger, Slot::Val(Value::Unit));
+                    self.space.resize(bigger, 0);
                 }
                 Collector::Generational if bigger <= self.config.nursery => {
-                    self.space.resize(bigger, Slot::Val(Value::Unit));
+                    self.space.resize(bigger, 0);
                 }
                 Collector::Generational => self.promoting = true,
             }
@@ -1049,13 +1184,18 @@ impl Heap {
     /// should be: what moving objects has to leave true.
     fn verify_addresses(&self, roots: &[Value]) {
         let mut seen = std::collections::HashSet::new();
+        let young: std::collections::HashSet<Addr> = self.nursery_objects().collect();
         let mut stack: Vec<Addr> = roots.iter().filter_map(|r| r.addr()).collect();
         while let Some(a) = stack.pop() {
             if a >= REGION_BASE || !seen.insert(a) {
                 continue;
             }
             assert!(
-                self.is_object(a),
+                if a < OLD_BASE {
+                    young.contains(&a)
+                } else {
+                    self.old.is_object(a)
+                },
                 "{a} is reachable but is not an object: a pointer was not moved"
             );
             for i in 0..self.len(a) {
@@ -1084,13 +1224,14 @@ impl Heap {
             if !seen.insert(a) {
                 continue;
             }
-            let (kind, len, meta) = self.head(a);
+            let h = self.head(a);
+            let (kind, len, meta) = (h.kind, h.len, h.meta);
             if a >= OLD_BASE {
                 assert!(
                     self.old.is_marked(a, epoch),
                     "old object {a} ({kind:?}) is reachable but was not marked"
                 );
-                for s in a..a + 1 + len {
+                for s in a..a + h.size() as Addr {
                     let b = &self.old.blocks[old::block_of(s)];
                     assert_eq!(
                         b.line(old::offset_of(s) / old::LINE),
@@ -1132,17 +1273,16 @@ impl Heap {
         // The parcel is its own queue, as to-space is for the collector.
         let mut scan = 0usize;
         while scan < parcel.slots.len() {
-            let len = match parcel.slots[scan] {
-                Slot::Header { len, .. } => len as usize,
-                other => unreachable!("parcel scan is not at a header: {other:?}"),
-            };
-            for f in 0..len {
-                if let Slot::Val(Value::Obj(x)) = parcel.slots[scan + 1 + f] {
-                    let to = self.export_object(x, &mut parcel, &mut copies)?;
-                    parcel.slots[scan + 1 + f] = Slot::Val(Value::Obj(to));
+            let h = Head::read(parcel.slots[scan], parcel.slots[scan + 1]);
+            for f in 0..h.len as usize {
+                if h.desc(f, |k| parcel.slots[scan + k]) == desc::REF {
+                    let at = scan + h.header() + f;
+                    let to =
+                        self.export_object(parcel.slots[at] as Addr, &mut parcel, &mut copies)?;
+                    parcel.slots[at] = to as Word;
                 }
             }
-            scan += 1 + len;
+            scan += h.size();
         }
         Ok(parcel)
     }
@@ -1161,19 +1301,20 @@ impl Heap {
         if let Some(&c) = copies.get(&a) {
             return Ok(c);
         }
-        let (kind, len, meta) = self.head(a);
-        match kind {
+        let h = self.head(a);
+        match h.kind {
             Kind::Ref => return Err(Unsendable::Ref),
             Kind::MutArray => return Err(Unsendable::MutArray),
             Kind::Resume => return Err(Unsendable::Continuation),
-            Kind::Compact => self.carry(parcel, meta),
+            Kind::Compact => self.carry(parcel, h.meta),
             _ => {}
         }
+        // Copied word for word: the header's descriptors say what the fields
+        // are wherever the words go.
         let at = parcel.slots.len() as Addr;
-        parcel.slots.push(Slot::Header { kind, len, meta });
-        for i in 0..len as usize {
-            parcel.slots.push(Slot::Val(self.field(a, i)));
-        }
+        parcel
+            .slots
+            .extend((0..h.size()).map(|k| self.slot(a + k as Addr)));
         copies.insert(a, at);
         Ok(at)
     }
@@ -1199,11 +1340,18 @@ impl Heap {
         }
         let base = self.top as Addr;
         let rebase = |x: Addr| if x < REGION_BASE { x + base } else { x };
-        for (i, s) in p.slots.iter().enumerate() {
-            self.space[self.top + i] = match *s {
-                Slot::Val(Value::Obj(x)) => Slot::Val(Value::Obj(rebase(x))),
-                other => other,
-            };
+        let into = &mut self.space[self.top..self.top + p.slots.len()];
+        into.copy_from_slice(&p.slots);
+        let mut at = 0;
+        while at < into.len() {
+            let h = Head::read(into[at], into[at + 1]);
+            for f in 0..h.len as usize {
+                if h.desc(f, |k| into[at + k]) == desc::REF {
+                    let s = at + h.header() + f;
+                    into[s] = rebase(into[s] as Addr) as Word;
+                }
+            }
+            at += h.size();
         }
         self.top += p.slots.len();
         self.allocated += p.slots.len() as u64;
@@ -1218,36 +1366,51 @@ impl Heap {
     /// objects they point at went.
     fn import_scattered(&mut self, p: &Parcel) -> Value {
         let mut at = vec![0 as Addr; p.slots.len()];
-        let mut i = 0;
-        while i < p.slots.len() {
-            let Slot::Header { kind, len, meta } = p.slots[i] else {
-                unreachable!("parcel walk is not at a header");
-            };
-            at[i] = self.alloc(kind, meta, &vec![Value::Unit; len as usize]);
-            i += 1 + len as usize;
+        let heads: Vec<(usize, Head)> = {
+            let mut heads = Vec::new();
+            let mut i = 0;
+            while i < p.slots.len() {
+                let h = Head::read(p.slots[i], p.slots[i + 1]);
+                heads.push((i, h));
+                i += h.size();
+            }
+            heads
+        };
+        // Each object made first, holding what the parcel's fields hold, so
+        // that its descriptors are the parcel's; then its addresses fixed.
+        for &(i, h) in &heads {
+            let fields: Vec<Value> = (0..h.len as usize)
+                .map(|f| {
+                    let d = h.desc(f, |k| p.slots[i + k]);
+                    let w = p.slots[i + h.header() + f];
+                    // Not yet an address in this heap: nothing to trace.
+                    if d == desc::REF {
+                        Value::Obj(0)
+                    } else {
+                        Value::from_bits(w, d)
+                    }
+                })
+                .collect();
+            at[i] = self.alloc(h.kind, h.meta, &fields);
         }
         let rebase = |v: Value| match v {
             Value::Obj(x) if x < REGION_BASE => Value::Obj(at[x as usize]),
             v => v,
         };
-        let mut i = 0;
-        while i < p.slots.len() {
-            let Slot::Header { len, .. } = p.slots[i] else {
-                unreachable!("parcel walk is not at a header");
-            };
-            for f in 0..len as usize {
-                let Slot::Val(v) = p.slots[i + 1 + f] else {
-                    unreachable!("a parcel field is not a value");
-                };
-                let s = at[i] + 1 + f as Addr;
-                let v = rebase(v);
+        for &(i, h) in &heads {
+            let header = h.header() as Addr;
+            for f in 0..h.len as usize {
+                if h.desc(f, |k| p.slots[i + k]) != desc::REF {
+                    continue;
+                }
+                let v = rebase(Value::Obj(p.slots[i + h.header() + f] as Addr));
+                let s = at[i] + header + f as Addr;
                 if s < OLD_BASE {
-                    self.space[s as usize] = Slot::Val(v);
+                    self.space[s as usize] = v.bits();
                 } else {
                     self.init_old(s, v);
                 }
             }
-            i += 1 + len as usize;
         }
         rebase(p.root)
     }
@@ -1346,10 +1509,11 @@ impl Heap {
         // Walk what was appended, fixing each field to the copy of what it
         // points at. Copies made on the way are appended, and walked in turn.
         let mut cursor = contents.cursor(end);
-        while let Some((at, len)) = contents.next(&mut cursor) {
+        while let Some((at, h)) = contents.next(&mut cursor) {
             let block = contents.block_of(at).expect("an appended object").clone();
-            for f in 0..len {
-                if let Slot::Val(Value::Obj(a)) = block.get(at + 1 + f as Addr) {
+            for f in 0..h.len as usize {
+                if h.desc(f, |k| block.get(at + k as Addr)) == desc::REF {
+                    let a = block.get(at + (h.header() + f) as Addr) as Addr;
                     let to = self.copy_object(contents, id, a, &mut copies)?;
                     contents.set_field(at, f, Value::Obj(to));
                 }
@@ -1376,7 +1540,7 @@ impl Heap {
         if let Some(&c) = copies.get(&a) {
             return Ok(c);
         }
-        let (kind, _, meta) = self.head(a);
+        let Head { kind, meta, .. } = self.head(a);
         let meta = match kind {
             Kind::Ref => return Err(Uncompactable::Ref),
             Kind::MutArray => return Err(Uncompactable::MutArray),
@@ -1395,8 +1559,8 @@ impl Heap {
 
 /// A nursery collection in progress.
 struct Minor<'h> {
-    from: &'h mut Vec<Slot>,
-    to: &'h mut Vec<Slot>,
+    from: &'h mut Vec<Word>,
+    to: &'h mut Vec<Word>,
     top: usize,
     /// Nursery objects below this are old enough to promote.
     aged: usize,
@@ -1435,43 +1599,44 @@ impl Minor<'_> {
         if a >= OLD_BASE {
             return a;
         }
-        match self.from[a as usize] {
-            // Already moved: every other reference to it lands here and shares.
-            Slot::Forward(n) => n,
-            Slot::Header { kind, len, meta } => {
-                if self.whole && kind == Kind::Compact {
-                    self.mark(meta);
-                }
-                let size = 1 + len as usize;
-                let promote = self.promote
-                    && (self.promote_all
-                        || (a as usize) < self.aged
-                        || self.top + size > self.to.len());
-                let at = if promote {
-                    let at = self.old.alloc(size, self.black);
-                    self.old.put(at, Slot::Header { kind, len, meta });
-                    for i in 0..len as usize {
-                        self.old
-                            .put(at + 1 + i as Addr, self.from[a as usize + 1 + i]);
-                    }
-                    self.promoted.push(at);
-                    self.promoted_slots += size;
-                    at
-                } else {
-                    let at = self.top;
-                    self.to[at] = Slot::Header { kind, len, meta };
-                    for i in 0..len as usize {
-                        self.to[at + 1 + i] = self.from[a as usize + 1 + i];
-                    }
-                    self.top += size;
-                    self.copied += size;
-                    at as Addr
-                };
-                self.from[a as usize] = Slot::Forward(at);
-                at
-            }
-            other => unreachable!("{a} is not an object header: {other:?}"),
+        let a = a as usize;
+        // Already moved: every other reference to it lands here and shares.
+        if let Some(n) = forwarded(self.from[a]) {
+            return n;
         }
+        let h = Head::read(self.from[a], self.from[a + 1]);
+        if self.whole && h.kind == Kind::Compact {
+            self.mark(h.meta);
+        }
+        let size = h.size();
+        let promote =
+            self.promote && (self.promote_all || a < self.aged || self.top + size > self.to.len());
+        let at = if promote {
+            let at = self.old.alloc(size, self.black);
+            let header = h.header();
+            for k in 0..header {
+                self.old.put(at + k as Addr, self.from[a + k]);
+            }
+            for i in 0..h.len as usize {
+                let pointer = h.desc(i, |k| self.from[a + k]) == desc::REF;
+                self.old.put_field(
+                    at + (header + i) as Addr,
+                    self.from[a + header + i],
+                    pointer,
+                );
+            }
+            self.promoted.push(at);
+            self.promoted_slots += size;
+            at
+        } else {
+            let at = self.top;
+            self.to[at..at + size].copy_from_slice(&self.from[a..a + size]);
+            self.top += size;
+            self.copied += size;
+            at as Addr
+        };
+        self.from[a] = forward(at);
+        at
     }
 
     fn mark(&mut self, region: u32) {
@@ -1505,7 +1670,7 @@ mod tests {
         assert_eq!(h.meta(a), 7);
         assert_eq!(h.len(a), 2);
         assert_eq!(h.field(a, 1), Value::Int(2));
-        assert_eq!(h.used(), 3);
+        assert_eq!(h.used(), 4, "two words of header, and the fields");
     }
 
     #[test]
@@ -1513,12 +1678,12 @@ mod tests {
         let mut h = heap();
         let keep = h.alloc(Kind::Data, 1, &[Value::Int(42)]);
         let _drop = h.alloc(Kind::Data, 2, &[Value::Int(99)]);
-        assert_eq!(h.used(), 4);
+        assert_eq!(h.used(), 6);
 
         let mut roots = [Value::Obj(keep)];
         h.collect(&mut roots);
 
-        assert_eq!(h.used(), 2, "only the rooted object survived");
+        assert_eq!(h.used(), 3, "only the rooted object survived");
         let a = roots[0].addr().expect("still an object");
         assert_eq!(h.meta(a), 1);
         assert_eq!(h.field(a, 0), Value::Int(42));
@@ -1621,15 +1786,15 @@ mod tests {
         let region = h.new_region();
         let root = h.compact_into(region, big).unwrap();
         assert!(h.in_region(root.addr().unwrap()));
-        assert_eq!(h.region_used(region), 1 + 50_000 * 3);
+        assert_eq!(h.region_used(region), 2 + 50_000 * 4);
 
         let handle = h.alloc(Kind::Compact, region, &[root]);
         let mut roots = [Value::Obj(handle)];
         let copied = h.copied;
         h.collect(&mut roots);
         // Only the handle came across; the chain stayed where it was.
-        assert_eq!(h.copied - copied, 2);
-        assert_eq!(h.used(), 2);
+        assert_eq!(h.copied - copied, 3);
+        assert_eq!(h.used(), 3);
         let root = h.field(roots[0].addr().unwrap(), 0);
         assert_eq!(chain_len(&h, root), 50_000);
     }
@@ -1644,7 +1809,7 @@ mod tests {
         let holder = h.alloc(Kind::Data, 9, &[root]);
         let mut roots = [Value::Obj(holder)];
         h.collect(&mut roots);
-        assert_eq!(h.region_used(region), 1 + 100 * 3);
+        assert_eq!(h.region_used(region), 2 + 100 * 4);
         let root = h.field(roots[0].addr().unwrap(), 0);
         assert_eq!(chain_len(&h, root), 100);
     }
@@ -1676,7 +1841,7 @@ mod tests {
             .addr()
             .unwrap();
         assert_eq!(h.field(root, 0), h.field(root, 1), "one copy, not two");
-        assert_eq!(h.region_used(region), 3 + 2);
+        assert_eq!(h.region_used(region), 4 + 3);
     }
 
     #[test]
@@ -1689,7 +1854,7 @@ mod tests {
         // A new cell on top of the compacted chain: only the cell is copied.
         let longer = h.alloc(Kind::Data, 1, &[Value::Int(-1), root]);
         let root2 = h.compact_into(region, Value::Obj(longer)).unwrap();
-        assert_eq!(h.region_used(region), before + 3);
+        assert_eq!(h.region_used(region), before + 4);
         assert_eq!(chain_len(&h, root2), 1001);
     }
 
@@ -1746,7 +1911,7 @@ mod tests {
 
         // Across to another heap: the handle is copied, the chain is not.
         let parcel = a.export(Value::Obj(handle)).unwrap();
-        assert_eq!(parcel.len(), 2, "one handle object; the region stays put");
+        assert_eq!(parcel.len(), 3, "one handle object; the region stays put");
         let mut b = heap();
         b.reserve(parcel.len());
         let got = b.import(&parcel);

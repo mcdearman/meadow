@@ -36,8 +36,9 @@ use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::heap::{Kind, Slot};
-use crate::value::{Addr, Value};
+use crate::heap::Kind;
+use crate::object::{Head, write_header};
+use crate::value::{Addr, Value, Word};
 
 /// Addresses below this are a heap's own; at or above it, a region.
 pub const REGION_BASE: Addr = 1 << 31;
@@ -89,7 +90,7 @@ pub struct Block {
     pub cap: usize,
     /// The region it belongs to, for a collector marking what it reached.
     pub region: u32,
-    slots: Box<[UnsafeCell<Slot>]>,
+    slots: Box<[UnsafeCell<Word>]>,
 }
 
 // Slots are written only by the region's appender, under its lock, and only
@@ -100,9 +101,7 @@ unsafe impl Send for Block {}
 impl Block {
     fn new(region: u32, cap: usize) -> Block {
         let base = reserve(cap);
-        let slots = (0..cap)
-            .map(|_| UnsafeCell::new(Slot::Val(Value::Unit)))
-            .collect();
+        let slots = (0..cap).map(|_| UnsafeCell::new(0)).collect();
         Block {
             base,
             cap,
@@ -113,16 +112,21 @@ impl Block {
 
     /// The slot at address `a`, which must be in this block.
     #[inline]
-    pub fn get(&self, a: Addr) -> Slot {
+    pub fn get(&self, a: Addr) -> Word {
         // Safety: see the `Sync` impl -- a slot an address reaches is no
         // longer written.
         unsafe { *self.slots[(a - self.base) as usize].get() }
     }
 
     /// Write slot `i`. Only the appender does, and only past what is published.
-    fn put(&self, i: usize, s: Slot) {
+    fn put(&self, i: usize, w: Word) {
         // Safety: see the `Sync` impl.
-        unsafe { *self.slots[i].get() = s }
+        unsafe { *self.slots[i].get() = w }
+    }
+
+    /// The header of the object at `a`, which must be in this block.
+    pub fn head(&self, a: Addr) -> Head {
+        Head::read(self.get(a), self.get(a + 1))
     }
 }
 
@@ -209,7 +213,8 @@ impl Contents {
 
     /// Append an object, its fields as given, and answer its address.
     pub fn alloc(&mut self, kind: Kind, meta: u32, fields: &[Value]) -> Addr {
-        let size = 1 + fields.len();
+        let header = meadow_core::compact::header_slots(kind.is_uniform(), fields.len());
+        let size = header + fields.len();
         let fits = match (self.blocks.last(), self.lens.last()) {
             (Some(b), Some(&len)) => len + size <= b.cap,
             _ => false,
@@ -226,16 +231,11 @@ impl Contents {
         let b = self.blocks.last().expect("a block with room");
         let len = self.lens.last_mut().expect("a length per block");
         let at = *len;
-        b.put(
-            at,
-            Slot::Header {
-                kind,
-                len: fields.len() as u32,
-                meta,
-            },
-        );
+        write_header(kind, meta, fields.iter().map(|v| v.desc()), |k, w| {
+            b.put(at + k, w)
+        });
         for (i, v) in fields.iter().enumerate() {
-            b.put(at + 1 + i, Slot::Val(*v));
+            b.put(at + header + i, v.bits());
         }
         *len += size;
         self.used += size;
@@ -257,20 +257,16 @@ impl Contents {
     }
 
     /// The next object at or after `cursor`, and the cursor moved past it:
-    /// `(address, field count)`. Objects appended while walking are reached
+    /// its address and header. Objects appended while walking are reached
     /// too, which is what lets a copy use the region as its own work queue.
-    pub fn next(&self, cursor: &mut Cursor) -> Option<(Addr, usize)> {
+    pub fn next(&self, cursor: &mut Cursor) -> Option<(Addr, Head)> {
         while cursor.block < self.blocks.len() {
             let b = &self.blocks[cursor.block];
             if cursor.offset < self.lens[cursor.block] {
                 let at = b.base + cursor.offset as Addr;
-                return match b.get(at) {
-                    Slot::Header { len, .. } => {
-                        cursor.offset += 1 + len as usize;
-                        Some((at, len as usize))
-                    }
-                    other => unreachable!("region scan is not at a header: {other:?}"),
-                };
+                let head = b.head(at);
+                cursor.offset += head.size();
+                return Some((at, head));
             }
             cursor.block += 1;
             cursor.offset = 0;
@@ -285,9 +281,16 @@ impl Contents {
             .find(|b| b.base <= a && a < b.base + b.cap as Addr)
     }
 
-    /// Overwrite field `i` of the object at `a`, which this append made.
+    /// Overwrite field `i` of the object at `a`, which this append made, with
+    /// a value of the representation it holds already.
     pub fn set_field(&self, a: Addr, i: usize, v: Value) {
         let b = self.block_of(a).expect("an address in this region");
-        b.put((a - b.base) as usize + 1 + i, Slot::Val(v));
+        let head = b.head(a);
+        debug_assert_eq!(
+            head.desc(i, |k| b.get(a + k as Addr)),
+            v.desc(),
+            "a region field changing what it holds"
+        );
+        b.put((a - b.base) as usize + head.header() + i, v.bits());
     }
 }

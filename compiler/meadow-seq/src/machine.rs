@@ -407,12 +407,15 @@ impl<'p> Machine<'p> {
                 vals.len()
             ));
         }
-        for (n, v) in block.params.iter().zip(&vals) {
-            self.check(*n, v)?;
-        }
         self.names = block.params.clone();
         self.env = vals;
         self.stmt = &block.body;
+        // A block that only hands control over need not carry the descriptors
+        // of what it holds: nothing looks at them before the next block does.
+        let strict = crate::describe::transfer(&block.body).is_none();
+        for (n, v) in self.names.iter().zip(&self.env) {
+            self.check(*n, v, strict)?;
+        }
         Ok(())
     }
 
@@ -612,10 +615,9 @@ impl<'p> Machine<'p> {
     }
 
     fn push(&mut self, n: Name, v: Value<'p>) -> Result<(), Error> {
-        self.check(n, &v)?;
         self.names.insert(0, n);
         self.env.insert(0, v);
-        Ok(())
+        self.check(n, &self.env[0], true)
     }
 
     /// Does `v` fit the representation the program declares for `n`? Values
@@ -623,7 +625,10 @@ impl<'p> Machine<'p> {
     /// lowering's claims: every name's representation, compared with what
     /// actually arrives in it, at every binding the machine makes. See
     /// [`crate::Rep`]. A program that declares none is not checked.
-    fn check(&self, n: Name, v: &Value<'p>) -> Result<(), Error> {
+    ///
+    /// A value of a type variable's type is checked against its descriptor,
+    /// which has to be in the environment with it -- unless not `strict`.
+    fn check(&self, n: Name, v: &Value<'p>, strict: bool) -> Result<(), Error> {
         if self.program.reps.is_empty() {
             return Ok(());
         }
@@ -648,12 +653,35 @@ impl<'p> Machine<'p> {
             ),
             Rep::Int => matches!(v, Value::Int(_)),
             Rep::Float => matches!(v, Value::Float(_)),
-            Rep::Bits => matches!(
-                v,
-                Value::Unit | Value::Bool(_) | Value::Char(_) | Value::Word(..) | Value::Float32(_)
-            ),
+            Rep::Bits(d) => described(d, v),
             Rep::Str => matches!(v, Value::Str(_)),
-            Rep::Var(_) => true,
+            Rep::Var(d) if d == crate::NO_DESC => {
+                return err(format!(
+                    "{n:?} holds {}, of a type variable nothing describes",
+                    kind(v)
+                ));
+            }
+            Rep::Var(d) => match self.names.iter().position(|m| m.0 == d) {
+                Some(i) => match &self.env[i] {
+                    Value::Int(code) => described(*code, v),
+                    other => {
+                        return err(format!(
+                            "{n:?}'s descriptor {:?} holds {}, not a descriptor",
+                            crate::VarId(d),
+                            kind(other)
+                        ));
+                    }
+                },
+                None if strict => {
+                    return err(format!(
+                        "{n:?} holds {} without its descriptor {:?}: {}",
+                        kind(v),
+                        crate::VarId(d),
+                        self.describe()
+                    ));
+                }
+                None => true,
+            },
             Rep::Unknown => false,
         };
         if fits {
@@ -676,6 +704,34 @@ impl<'p> Machine<'p> {
         }
         out.push(']');
         out
+    }
+}
+
+/// Is `v` what descriptor `d` says?
+fn described(d: meadow_core::desc::Desc, v: &Value) -> bool {
+    use meadow_core::desc;
+    match d {
+        desc::REF => matches!(
+            v,
+            Value::Data(..)
+                | Value::Array(_)
+                | Value::Record(_)
+                | Value::Ref(_)
+                | Value::MutArray(_)
+                | Value::Obj(_)
+                | Value::Halt
+                | Value::Compact(_)
+                | Value::BigInt(_)
+        ),
+        desc::INT => matches!(v, Value::Int(_)),
+        desc::FLOAT => matches!(v, Value::Float(_)),
+        desc::STR => matches!(v, Value::Str(_)),
+        desc::UNIT => matches!(v, Value::Unit),
+        desc::BOOL => matches!(v, Value::Bool(_)),
+        desc::CHAR => matches!(v, Value::Char(_)),
+        desc::FLOAT32 => matches!(v, Value::Float32(_)),
+        desc::ANY => true,
+        d => matches!(v, Value::Word(w, _) if desc::word(*w) == d),
     }
 }
 
@@ -1274,30 +1330,30 @@ fn compact_into<'p>(region: &RefCell<Region<'p>>, v: &Value<'p>) -> Result<(), E
         match &v {
             Value::Data(_, _, fields) => {
                 if first(Rc::as_ptr(fields) as *const ()) {
-                    slots += 1 + fields.len();
+                    slots += meadow_core::compact::object_slots(false, fields.len());
                     stack.extend(fields.iter().cloned());
                 }
             }
             Value::Array(xs) => {
                 if first(Rc::as_ptr(xs) as *const ()) {
-                    slots += 1 + xs.len();
+                    slots += meadow_core::compact::object_slots(true, xs.len());
                     stack.extend(xs.iter().cloned());
                 }
             }
             Value::Record(fields) => {
                 if first(Rc::as_ptr(fields) as *const ()) {
-                    slots += 1 + 2 * fields.len();
+                    slots += meadow_core::compact::object_slots(false, 2 * fields.len());
                     stack.extend(fields.values().cloned());
                 }
             }
             Value::BigInt(b) => {
                 if first(Rc::as_ptr(b) as *const ()) {
-                    slots += 1 + b.iter_u32_digits().count();
+                    slots += meadow_core::compact::object_slots(true, b.iter_u32_digits().count());
                 }
             }
             Value::Compact(c) => {
                 if first(Rc::as_ptr(c) as *const ()) {
-                    slots += 2;
+                    slots += meadow_core::compact::object_slots(false, 1);
                     stack.push(c.0.clone());
                 }
             }
@@ -1537,6 +1593,8 @@ mod tests {
             ctor_fields: Default::default(),
             reps: Default::default(),
             origins: Default::default(),
+            results: Default::default(),
+            threads: Default::default(),
             defs: vec![Def {
                 label: Label(0),
                 name: InternedString::from("main"),

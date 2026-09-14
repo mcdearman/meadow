@@ -59,10 +59,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::heap::{Kind, Slot};
+use crate::heap::Kind;
+use crate::object::Head;
 use crate::old::{self, Block, OLD_BASE};
 use crate::region::{self, REGION_BASE};
-use crate::value::{Addr, Value};
+use crate::value::Addr;
+use meadow_core::desc;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -259,24 +261,34 @@ impl Job {
         if from == 0 && !b.mark(off, self.epoch) {
             return 1;
         }
-        let Slot::Header { kind, len, meta } = b.get(off) else {
-            unreachable!("marking {a}, which is not an object header");
+        let word = |k: usize| {
+            let s = a + k as Addr;
+            self.blocks[old::block_of(s)].get(old::offset_of(s))
         };
-        let len = len as usize;
+        // A mutable object's descriptors change as its fields do, under the
+        // mutation lock; its kind never does.
+        let kind = Kind::from_byte(word(0) as u8);
+        let _held =
+            matches!(kind, Kind::Ref | Kind::MutArray | Kind::Resume).then(|| lock(&self.mutation));
+        let h = Head::read(word(0), word(1));
+        let (len, meta) = (h.len as usize, h.meta);
         if from == 0 {
-            old::stamp_lines(&self.blocks, a, 1 + len, self.epoch);
-            b.add_live(1 + len);
-            *marked += 1 + len as u64;
+            old::stamp_lines(&self.blocks, a, h.size(), self.epoch);
+            b.add_live(h.size());
+            *marked += h.size() as u64;
             if kind == Kind::Compact {
                 found.push(meta);
             }
         }
         let end = len.min(from + chunk.max(1));
-        let _held =
-            matches!(kind, Kind::Ref | Kind::MutArray | Kind::Resume).then(|| lock(&self.mutation));
+        let header = h.header();
         for i in from..end {
-            let s = a + 1 + i as Addr;
-            if let Slot::Val(Value::Obj(x)) = self.blocks[old::block_of(s)].get(old::offset_of(s)) {
+            if h.desc(i, word) != desc::REF {
+                continue;
+            }
+            let s = a + (header + i) as Addr;
+            {
+                let x = word(header + i) as Addr;
                 if x >= REGION_BASE {
                     if let Some(id) = self.region_of(x)
                         && found.last() != Some(&id)

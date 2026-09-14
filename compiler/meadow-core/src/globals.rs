@@ -21,7 +21,9 @@
 //!
 //! A function needs none of this: its value is the closure, which is as cheap to
 //! make as to look up, and calling it is supposed to run it every time. Nor does
-//! a literal, or the entry point, which the runtime evaluates exactly once.
+//! a literal, or the entry point, which the runtime evaluates exactly once. A
+//! definition generic over a type cannot have it: its value is made from the
+//! descriptors of the types it is used at, which differ from use to use.
 //!
 //! The cache belongs to the machine running the code. On the bytecode VM that is
 //! one green thread, and each keeps its own -- a thread never reads another's
@@ -48,7 +50,11 @@ pub fn program(p: &Program) -> Program {
         .map(|(i, d)| {
             // The entry point runs once as the program; a literal costs nothing
             // to evaluate again.
-            if Some(d.var) == p.entry || is_function(&d.term) || is_literal(&d.term) {
+            if Some(d.var) == p.entry
+                || is_function(&d.term)
+                || is_literal(&d.term)
+                || is_generic(&d.term)
+            {
                 return d.clone();
             }
             let index = || Term::Lit(Lit::Int(i as i64));
@@ -92,6 +98,18 @@ pub fn program(p: &Program) -> Program {
         ctor_fields: p.ctor_fields.clone(),
         variants: p.variants.clone(),
         origins: p.origins.clone(),
+    }
+}
+
+/// Is this definition generic over a type? Then what it evaluates to depends
+/// on the descriptors it is instantiated with (`crate::desc`), so one cached
+/// value would answer every instantiation with the first one's. It is
+/// evaluated at each use instead, which purity makes unobservable.
+fn is_generic(t: &Term) -> bool {
+    match t {
+        Term::Loc(_, inner) => is_generic(inner),
+        Term::TyLam(vs, _) => vs.iter().any(|v| v.kind == meadow_infer::VarKind::Type),
+        _ => false,
     }
 }
 

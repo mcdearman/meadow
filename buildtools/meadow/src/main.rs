@@ -6,8 +6,8 @@ mod repl;
 
 use clap::{Parser, Subcommand};
 use meadow::{
-    Engine, OptLevel, Profile, Resolved, Strictness, format, init, package::ProfileConfig,
-    pipeline, runtime, test, update,
+    Engine, OptLevel, Profile, Resolved, Strictness, artifacts, format, init,
+    package::ProfileConfig, pipeline, runtime, test, update,
 };
 use std::path::PathBuf;
 
@@ -368,8 +368,32 @@ fn build(
         print!("{}", linked.annotations());
     }
 
+    // What the VM runs is written under the package's `target` directory
+    // whenever it is made: by `build`, and by `run` on the VM.
+    let image = match engine {
+        None | Some(Engine::Vm) => match runtime::compile(&linked.program, profile.opt()) {
+            Ok(image) => {
+                if let Some((root, name)) = &out.package
+                    && let Err(e) = artifacts::write_image(root, profile.profile, name, &image)
+                {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+                Some(image)
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        },
+        Some(Engine::Cek) => None,
+    };
+
     if let Some(engine) = engine {
-        let (result, stats) = runtime::run_with_stats(&linked.program, engine, profile.opt());
+        let (result, stats) = match &image {
+            Some(image) => runtime::run_image_with_stats(image),
+            None => runtime::run_with_stats(&linked.program, engine, profile.opt()),
+        };
         if gc_stats {
             match stats {
                 Some(stats) => eprintln!("{stats}"),

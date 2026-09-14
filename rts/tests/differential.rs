@@ -1041,8 +1041,9 @@ fn adding_to_a_region_keeps_both_values_and_shares_the_old_one() {
            (total (getCompact c), total (getCompact c2),
             compactSize c2 - before, compactSize c == compactSize c2)"
     );
-    // One `Link` is three slots, and that is all the add copied.
-    let bytes = 3 * meadow_core::compact::SLOT_BYTES;
+    // One `Link` is four slots -- two of header, two fields -- and that is all
+    // the add copied.
+    let bytes = meadow_core::compact::object_slots(false, 2) * meadow_core::compact::SLOT_BYTES;
     assert_eq!(agree(&src), format!("(5050, 5050, {bytes}, True)"));
 }
 
@@ -1134,7 +1135,7 @@ fn a_compacted_value_survives_collections_without_being_copied() {
     );
     assert_eq!(
         region,
-        1 + 50_000 * 3,
+        2 + 50_000 * 4,
         "the chain is in a region, and nothing else is"
     );
     assert!(
@@ -1153,10 +1154,10 @@ fn a_compacted_value_survives_collections_without_being_copied() {
     );
     assert_eq!(compacted, plain);
     assert!(
-        plain_promoted >= 50_000 * 3,
+        plain_promoted >= 50_000 * 4,
         "the chain outgrew the nursery"
     );
-    assert_eq!(region, 1 + 50_000 * 3);
+    assert_eq!(region, 2 + 50_000 * 4);
 }
 
 #[test]
@@ -1487,7 +1488,9 @@ fn a_top_level_value_is_evaluated_once() {
          def main = let c2 = compactAdd c (Link 0 End) in (compactSize c, compactSize c2)"
     );
     // One region, grown by the add: both mentions of `c` are the same value.
-    let bytes = (1 + 100 * 3 + 3 + 1) * meadow_core::compact::SLOT_BYTES;
+    let slots = meadow_core::compact::object_slots;
+    let bytes = (slots(false, 0) + 100 * slots(false, 2) + slots(false, 2) + slots(false, 0))
+        * meadow_core::compact::SLOT_BYTES;
     let (cek, vm) = (cek_and_vm(&src), format!("({bytes}, {bytes})"));
     assert_eq!(cek, vm);
 }
@@ -1717,4 +1720,109 @@ fn waiting_on_a_tvar_nobody_writes_is_a_deadlock() {
         threads_agree(&src),
         Err(meadow_core::thread::DEADLOCK.into())
     );
+}
+
+// --- typed instructions --------------------------------------------------------
+
+// Operands the compiler knows are both `Int`, or both `Float`, run as typed
+// instructions on words rather than as primitives. They have to mean exactly
+// what the primitives do, edges included.
+
+#[test]
+fn typed_int_arithmetic_wraps_and_compares_as_the_primitives_do() {
+    let src = "fun f (a : Int) (b : Int) =
+                 (a + b, a - b, a * b, a / b, a % b, a < b, a >= b, a == b, a != b)
+               fun g (a : Int) = (a + 5000000000, a * 3, a - 1, a < 2, a == 7, a > 3000000000)
+               def main = (f 9223372036854775807 3, f (0 - 7) 2, g 7, g 9223372036854775807)";
+    assert_eq!(
+        agree(src),
+        "((-9223372036854775806, 9223372036854775804, 9223372036854775805, 3074457345618258602, 1, False, True, False, True), \
+         (-5, -9, -14, -3, -1, True, False, False, True), \
+         (5000000007, 21, 6, False, True, False), \
+         (-9223372031854775809, 9223372036854775805, 9223372036854775806, False, False, True))"
+    );
+}
+
+#[test]
+fn typed_division_by_zero_fails_the_same_way_everywhere() {
+    for (op, what) in [("/", "division by zero"), ("%", "modulo by zero")] {
+        let prog = program(&format!(
+            "fun f (a : Int) (b : Int) = a {op} b\ndef main = f 1 0"
+        ));
+        let cek = meadow_eval::run(&prog).expect_err("CEK should fail");
+        let vm = meadow_rts::run(&image(&prog), FUEL).expect_err("the VM should fail");
+        assert!(cek.msg.contains(what), "{}", cek.msg);
+        assert_eq!(cek.msg, vm.msg);
+    }
+}
+
+#[test]
+fn typed_float_arithmetic_is_ieee() {
+    let src = "fun f (a : Float) (b : Float) =
+                 (a +. b, a -. b, a *. b, a /. b, a <. b, a >=. b, a == b, a != b)
+               def main = let nan = 0.0 /. 0.0 in (f 1.5 0.25, f nan nan, f 0.0 (0.0 -. 0.0))";
+    let out = agree(src);
+    assert!(
+        out.starts_with("((1.75, 1.25, 0.375, 6.0, False, True, False, True)"),
+        "{out}"
+    );
+}
+
+#[test]
+fn typed_literal_patterns_and_equality_on_immediates() {
+    let src = "fun c x = let _ = x == 'q' in match x with | 'a' -> 1 | 'λ' -> 2 | _ -> 0
+               fun s x = let _ = x == \"q\" in match x with | \"hi\" -> 1 | _ -> 0
+               fun b x = if x == (1 < 2) then 1 else 0
+               def main = (c 'a', c 'λ', c 'z', s \"hi\", s \"ho\", b (1 < 2), b (2 < 1), \"x\" == \"x\")";
+    assert_eq!(agree(src), "(1, 2, 0, 1, 0, 1, 0, True)");
+}
+
+// --- release specialization -----------------------------------------------------
+
+#[test]
+fn a_release_build_copies_generic_code_once_per_representation() {
+    // `id` is used at four types and three representations: `Int`, `String`,
+    // and two that are both references, which share a copy.
+    let src = "use L.*\ndata L = Nil | Cons Int L
+               fun id x = x
+               def main = (id (toInt 1), id \"s\", id (Cons 1 Nil), id (id 2, Nil))";
+    let prog = program(src);
+    let id = prog
+        .defs
+        .iter()
+        .find(|d| &*d.name == "id")
+        .map(|d| d.var)
+        .expect("an `id`");
+    let released = meadow_core::specialize::release(&prog);
+    let copies: Vec<&meadow_core::Def> = released
+        .defs
+        .iter()
+        .filter(|d| &*d.name == "id" && d.var != id)
+        .collect();
+    let mut at: Vec<String> = copies.iter().map(|d| format!("{:?}", d.poly.ty)).collect();
+    at.sort();
+    assert_eq!(copies.len(), 3, "{at:?}");
+    for d in &copies {
+        assert!(
+            d.poly
+                .binders
+                .iter()
+                .all(|b| b.kind != meadow_compiler::infer::VarKind::Type),
+            "a copy abstracts over no type: {:?}",
+            d.poly
+        );
+    }
+    assert!(
+        at.iter().any(|t| t.contains(meadow_core::specialize::REF)),
+        "{at:?}"
+    );
+    // And it means what it did.
+    for opt in LEVELS {
+        let lowered = meadow_seq::lower_program(&prog, opt);
+        let image = meadow_codegen::compile(&lowered.program).expect("codegen");
+        assert_eq!(
+            meadow_rts::run(&image, FUEL).map_err(|e| e.msg),
+            Ok("(1, \"s\", Cons(1, Nil), (2, Nil))".into())
+        );
+    }
 }

@@ -143,8 +143,9 @@ definition, a method entry, or the target of a jump or branch
 u32 block(Vm *vm);   // System V on every x86-64 OS, AAPCS64 on arm64
 ```
 
-The function runs from its pc until control leaves, sets `vm->pc`, and returns
-a status:
+The function runs from its pc until control leaves. Then, from O1, it jumps
+straight into the native function for the new pc if there is one (*chaining*,
+below); otherwise, or at O0, it sets `vm->pc` and returns a status:
 
 | status | meaning |
 |---|---|
@@ -155,8 +156,11 @@ a status:
 
 Native code reaches the machine only through fixed offsets into the `repr(C)`
 `Vm` and `Heap` (`codegen::layout`). It reaches the interpreter through a
-function pointer stored in the `Vm` (`vm->exec`), and it branches only within
-its own function. So **the code needs no relocations**. The same bytes work
+function pointer stored in the `Vm` (`vm->exec`). It branches within its own
+function, or, chaining, to another function: through the table the `Vm` points
+at (`vm->native_table`), or, in an AOT object, with a jump whose offset is
+known because every function is in the same code. So **the code needs no
+relocations**. The same bytes work
 whether they sit in an object file or were just copied into memory made
 executable. That's what lets the JIT compile one block at a time and put it
 anywhere.
@@ -198,7 +202,15 @@ same observable behavior:
   before a call into the interpreter, a return, a branch, or a join
   (`codegen::Book`). A run of arithmetic between two such points costs one
   addition to `steps` and at most one write to `live`. O1 also uses short
-  encodings for constant operands.
+  encodings for constant operands, and **chains**: where control leaves a
+  function for a pc that has native code -- a `Jump`, a branch or fall-through
+  out of the function, or `Invoke`'s fast path -- it writes pinned registers
+  back and jumps to that function's *warm entry*, just past the prologue that
+  builds the frame, instead of returning to `advance`. The frame, `steps` and
+  the loop count carry on. The target is a direct jump in an AOT object, and a
+  load from `vm->native_table` otherwise (null: return as before). A call and
+  its return therefore cost a few jumps rather than two trips through the
+  scheduler loop: `fib 35` runs 1.9x faster for it.
 - **O2** (release) adds two passes. **Regions** pull the loops a block belongs
   to into its function, so a loop that the bytecode lays out as several blocks
   goes round in machine code instead of returning to `advance` at every block.
@@ -207,8 +219,9 @@ same observable behavior:
   to memory before every call and return, and reloaded after every call.
 
 A loop inside one function counts its back edges, and after `BACK_EDGES`
-(4096) iterations the function returns anyway. That keeps any single call into
-native code bounded, so the scheduler always gets control back
+(4096) iterations the function returns anyway. Chained jumps are counted with
+them, and after `CHAINS` (256) the chain returns too. That keeps any single call
+into native code bounded, so the scheduler always gets control back
 ([section 6](#preemption)).
 
 Machine registers inside a block function:
@@ -218,7 +231,7 @@ Machine registers inside a block function:
 | the `Vm` | x19 | rbx |
 | its register file | x20 | r12 |
 | steps not yet added to the `Vm` | x21 | r13 |
-| back edges taken this call | x22 | r14 |
+| back edges and chained jumps this call | x22 | r14 |
 | scratch for the current instruction | x9–x17, d0, d1 | rax, rcx, rdx, rsi, rdi, xmm0, xmm1 |
 | pinned bytecode registers (O2) | x2–x8 | r8–r11, r15 |
 
@@ -457,9 +470,10 @@ cooperation with the collector beyond what the interpreter already does:
 - **After the call**, pinned registers are reloaded from the register file,
   which the collector has updated. Scratch machine registers are never live
   across a call.
-- **No native frame survives a block.** A block function returns to `advance`
-  whenever control leaves, so the native stack is one frame deep, and a deep
-  recursion grows only the heap.
+- **No native frame survives a block.** Control leaving a block function either
+  returns to `advance` or jumps into the next function, which reuses the same
+  frame. So the native stack is one frame deep, and a deep recursion grows only
+  the heap.
 
 The inline fast paths only read nursery objects and only allocate in the
 nursery, so they never need the old generation's mutation lock or barriers.
@@ -728,9 +742,9 @@ returned before its thread is suspended.
 
 A worker runs a thread for `SLICE` (2048) calls to `Vm::advance`, then puts it
 at the back of its queue. On the interpreter, a call runs one instruction. On
-native code, a call runs one block function: at least one instruction, and at
-most a whole loop nest, bounded by the `BACK_EDGES` (4096) iteration limit per
-call. Preemption therefore happens only at block boundaries, never in the middle
+native code, a call runs one block function and whatever it chains into: at
+least one instruction, and at most `CHAINS` (256) functions and `BACK_EDGES`
+(4096) loop iterations in all. Preemption therefore happens only at block boundaries, never in the middle
 of machine code. A native slice can run far more instructions than an
 interpreted one, but it is always bounded, so a loop that never waits can't
 starve other threads.

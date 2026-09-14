@@ -69,6 +69,8 @@ pub struct Asm {
     short: bool,
     /// Pinned bytecode registers, and the machine register each lives in.
     pins: Vec<(Reg, u32)>,
+    /// Go straight on to the next block's native code where there is some.
+    chain: bool,
 }
 
 impl Asm {
@@ -227,6 +229,20 @@ impl Asm {
         self.imm(X21, 0);
     }
 
+    /// On to `out` if this call has made [`super::CHAINS`] jumps into other
+    /// functions, counting this one.
+    fn budget(&mut self, out: Label) {
+        self.put(0x9100_0400 | X22 << 5 | X22); // add x22, x22, #1
+        self.put(0xF100_001F | super::CHAINS << 10 | X22 << 5); // cmp x22, #CHAINS
+        self.b_cond(HS, out);
+    }
+
+    /// Jump to the warm entry of the function whose start is in `x9`.
+    fn enter_warm(&mut self) {
+        self.put(0x9100_0000 | (Self::WARM as u32) << 10 | X9 << 5 | X9); // add x9, x9, #WARM
+        self.put(0xD61F_0000 | X9 << 5); // br x9
+    }
+
     /// Return `status` with the register file as it is in memory.
     fn ret_as_is(&mut self, status: u32) {
         self.flush_steps();
@@ -316,6 +332,7 @@ impl Asm {
 
 impl Emit for Asm {
     const PINS: usize = PIN_REGS.len();
+    const WARM: usize = 36;
 
     fn new() -> Asm {
         Asm {
@@ -326,6 +343,7 @@ impl Emit for Asm {
             defer_live: false,
             short: false,
             pins: Vec::new(),
+            chain: false,
         }
     }
 
@@ -345,10 +363,12 @@ impl Emit for Asm {
     fn configure(&mut self, opt: OptLevel, pins: &[Reg]) {
         self.defer_live = opt >= OptLevel::O1;
         self.short = opt >= OptLevel::O1;
+        self.chain = opt >= OptLevel::O1;
         self.pins = pins.iter().copied().zip(PIN_REGS).collect();
     }
 
-    fn prologue(&mut self) {
+    fn prologue(&mut self, warm: Option<Label>) {
+        let start = self.offset();
         self.put(0xA980_0000 | 0x7A << 15 | LR << 10 | SP << 5 | FP); // stp x29, x30, [sp, #-48]!
         self.put(0x9100_0000 | SP << 5 | FP); // add x29, sp, #0
         self.put(0xA900_0000 | 2 << 15 | X20 << 10 | SP << 5 | X19); // stp x19, x20, [sp, #16]
@@ -358,6 +378,12 @@ impl Emit for Asm {
         self.ldr(X20, X19, layout::REGS);
         self.imm(X21, 0);
         self.imm(X22, 0);
+        // A chained function arrives here, with the frame, the machine, its
+        // register file, the steps and the loop count of the one it came from.
+        assert_eq!(self.offset() - start, Self::WARM, "the warm entry moved");
+        if let Some(warm) = warm {
+            self.bind(warm);
+        }
         self.reload();
         self.ret_w0 = None;
     }
@@ -365,6 +391,30 @@ impl Emit for Asm {
     fn ret(&mut self, status: u32) {
         self.spill();
         self.ret_as_is(status);
+    }
+
+    fn chain(&mut self, pc: Pc, live: Option<u32>, to: Option<Label>) {
+        if let Some(live) = live {
+            self.imm(X9, live as u64);
+            self.str(X9, X19, layout::LIVE);
+        }
+        self.spill();
+        let out = self.label();
+        self.budget(out);
+        match to {
+            Some(to) => self.jump(to),
+            None => {
+                self.ldr(X9, X19, layout::NATIVE_TABLE);
+                self.imm(X10, pc as u64);
+                self.put(0xF860_7800 | X10 << 16 | X9 << 5 | X9); // ldr x9, [x9, x10, lsl #3]
+                self.at(out, Fixup::Imm19, 0xB400_0000 | X9); // cbz x9, out
+                self.enter_warm();
+            }
+        }
+        self.bind(out);
+        self.imm(X9, pc as u64);
+        self.str(X9, X19, layout::PC);
+        self.ret_as_is(crate::abi::JUMPED);
     }
 
     fn leave(&mut self, pc: Pc, live: Option<u32>) {
@@ -589,6 +639,15 @@ impl Emit for Asm {
         }
         self.put(0x9100_0000 | argc << 10 | X15 << 5 | X9); // add x9, x15, #argc
         self.str(X9, X19, layout::LIVE);
+        if self.chain {
+            let out = self.label();
+            self.budget(out);
+            self.ldr(X9, X19, layout::NATIVE_TABLE);
+            self.put(0xF860_7800 | X17 << 16 | X9 << 5 | X9); // ldr x9, [x9, x17, lsl #3]
+            self.at(out, Fixup::Imm19, 0xB400_0000 | X9); // cbz x9, out
+            self.enter_warm();
+            self.bind(out);
+        }
         self.str(X17, X19, layout::PC);
         self.ret_as_is(crate::abi::JUMPED);
     }

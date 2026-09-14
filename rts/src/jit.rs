@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 /// Native code for a program's blocks, by entry pc.
 pub struct Native<'p> {
-    table: Box<[AtomicPtr<c_void>]>,
+    pub(crate) table: Box<[AtomicPtr<c_void>]>,
     tier: Option<Tier<'p>>,
     /// The program's method tables, flattened for native code: see
     /// [`crate::Vm::use_native`].

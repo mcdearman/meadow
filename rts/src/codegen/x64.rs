@@ -50,6 +50,8 @@ pub struct Asm {
     short: bool,
     /// Pinned bytecode registers, and the machine register each lives in.
     pins: Vec<(Reg, u8)>,
+    /// Go straight on to the next block's native code where there is some.
+    chain: bool,
 }
 
 impl Asm {
@@ -210,6 +212,21 @@ impl Asm {
         self.bytes(&[0x45, 0x31, 0xED]); // xor r13d, r13d
     }
 
+    /// On to `out` if this call has made [`super::CHAINS`] jumps into other
+    /// functions, counting this one.
+    fn budget(&mut self, out: Label) {
+        self.bytes(&[0x49, 0xFF, 0xC6]); // inc r14
+        self.bytes(&[0x49, 0x81, 0xFE]); // cmp r14, CHAINS
+        self.bytes(&super::CHAINS.to_le_bytes());
+        self.jcc(CC_AE, out);
+    }
+
+    /// Jump to the warm entry of the function whose start is in `rax`.
+    fn enter_warm(&mut self) {
+        self.bytes(&[0x48, 0x83, 0xC0, Self::WARM as u8]); // add rax, WARM
+        self.bytes(&[0xFF, 0xE0]); // jmp rax
+    }
+
     /// Return `status` with the register file as it is in memory.
     fn ret_as_is(&mut self, status: u32) {
         self.flush_steps();
@@ -327,6 +344,7 @@ impl Asm {
 
 impl Emit for Asm {
     const PINS: usize = PIN_REGS.len();
+    const WARM: usize = 33;
 
     fn new() -> Asm {
         Asm {
@@ -337,6 +355,7 @@ impl Emit for Asm {
             defer_live: false,
             short: false,
             pins: Vec::new(),
+            chain: false,
         }
     }
 
@@ -356,10 +375,12 @@ impl Emit for Asm {
     fn configure(&mut self, opt: OptLevel, pins: &[Reg]) {
         self.defer_live = opt >= OptLevel::O1;
         self.short = opt >= OptLevel::O1;
+        self.chain = opt >= OptLevel::O1;
         self.pins = pins.iter().copied().zip(PIN_REGS).collect();
     }
 
-    fn prologue(&mut self) {
+    fn prologue(&mut self, warm: Option<Label>) {
+        let start = self.offset();
         // push rbp; mov rbp, rsp; push rbx; push r12; push r13; push r14;
         // push r15; sub rsp, 8 -- eight words on the stack with the return
         // address, so it stays aligned for the calls.
@@ -371,6 +392,12 @@ impl Emit for Asm {
         self.load(R12, RBX, layout::REGS);
         self.bytes(&[0x45, 0x31, 0xED]); // xor r13d, r13d
         self.bytes(&[0x45, 0x31, 0xF6]); // xor r14d, r14d
+        // A chained function arrives here, with the frame, the machine, its
+        // register file, the steps and the loop count of the one it came from.
+        assert_eq!(self.offset() - start, Self::WARM, "the warm entry moved");
+        if let Some(warm) = warm {
+            self.bind(warm);
+        }
         self.reload();
         self.ret_eax = None;
     }
@@ -378,6 +405,29 @@ impl Emit for Asm {
     fn ret(&mut self, status: u32) {
         self.spill();
         self.ret_as_is(status);
+    }
+
+    fn chain(&mut self, pc: Pc, live: Option<u32>, to: Option<Label>) {
+        if let Some(live) = live {
+            self.save_imm(RBX, layout::LIVE, live);
+        }
+        self.spill();
+        let out = self.label();
+        self.budget(out);
+        match to {
+            Some(to) => self.jump(to),
+            None => {
+                self.load(RAX, RBX, layout::NATIVE_TABLE);
+                self.bytes(&[0x48, 0x8B, 0x80]); // mov rax, [rax + pc*8]
+                self.bytes(&(pc * 8).to_le_bytes());
+                self.bytes(&[0x48, 0x85, 0xC0]); // test rax, rax
+                self.jcc(CC_E, out);
+                self.enter_warm();
+            }
+        }
+        self.bind(out);
+        self.save_imm(RBX, layout::PC, pc);
+        self.ret_as_is(crate::abi::JUMPED);
     }
 
     fn leave(&mut self, pc: Pc, live: Option<u32>) {
@@ -635,6 +685,16 @@ impl Emit for Asm {
         self.bytes(&[0x48, 0x8D, 0x87]); // lea rax, [rdi + argc]
         self.bytes(&argc.to_le_bytes());
         self.save(RAX, RBX, layout::LIVE);
+        if self.chain {
+            let out = self.label();
+            self.budget(out);
+            self.load(RAX, RBX, layout::NATIVE_TABLE);
+            self.bytes(&[0x48, 0x8B, 0x04, 0xF0]); // mov rax, [rax + rsi*8]
+            self.bytes(&[0x48, 0x85, 0xC0]); // test rax, rax
+            self.jcc(CC_E, out);
+            self.enter_warm();
+            self.bind(out);
+        }
         self.save(RSI, RBX, layout::PC);
         self.ret_as_is(crate::abi::JUMPED);
     }

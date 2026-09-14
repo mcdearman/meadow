@@ -39,7 +39,7 @@
 //!   encodings of instructions with a constant operand. A run of arithmetic
 //!   between two calls into the interpreter costs one addition to the step
 //!   counter and at most one write to `live`, where it cost one of each per
-//!   instruction.
+//!   instruction. And it *chains* -- see below.
 //! * [`OptLevel::O2`] adds two passes that trade code size for speed. A
 //!   block's function takes in the code that loops back into it (see
 //!   [`region`]), so a loop whose body the bytecode lays out as blocks of their
@@ -47,6 +47,27 @@
 //!   block. And the registers that function uses most live in machine
 //!   registers (see [`pins`]), in memory only where something other than the
 //!   function could look.
+//!
+//! # Chaining
+//!
+//! Every transfer of control in the bytecode is a tail call -- a jump to a
+//! block with its arguments in the registers, or an invoke of a closure,
+//! which is also how a function returns -- so nothing is left on the native
+//! stack when control leaves a block. Without chaining, native code returns to
+//! [`crate::Vm::advance`] there, which looks up the next block's function and
+//! calls it: a return, a trip round the scheduler's loop and a prologue for
+//! every call and every return in the program.
+//!
+//! Every function builds the same frame, so from [`OptLevel::O1`] one goes
+//! straight on to the next instead ([`Emit::chain`]): it writes its pinned
+//! registers back and jumps to the other function's *warm entry*, [`Emit::WARM`]
+//! bytes in, past the frame. The frame, the uncounted steps and the loop count
+//! carry on. In a whole program's code the target is a known label; for a
+//! function compiled on its own, and for an invoke's target, it is found in the
+//! machine's table of native functions ([`layout::NATIVE_TABLE`]) -- and where
+//! that has nothing yet, the function returns as before, and the JIT counts
+//! the entry. [`CHAINS`] such jumps in one call from the machine, and it
+//! returns anyway, so the scheduler still gets its turn.
 
 pub mod a64;
 pub mod object;
@@ -71,12 +92,14 @@ pub mod layout {
     pub const METHOD_PCS: u32 = 48;
     /// `*const u32`: where each table starts among them, and the last ends.
     pub const METHOD_STARTS: u32 = 56;
+    /// `*const *const u8`: the native function for each pc, or null.
+    pub const NATIVE_TABLE: u32 = 64;
     /// The heap's nursery, as `crate::heap::Heap` begins.
-    pub const BASE: u32 = 64;
-    pub const CAP: u32 = 72;
-    pub const TOP: u32 = 80;
-    pub const ALLOCATED: u32 = 88;
-    pub const REGION_GROWTH: u32 = 96;
+    pub const BASE: u32 = 72;
+    pub const CAP: u32 = 80;
+    pub const TOP: u32 = 88;
+    pub const ALLOCATED: u32 = 96;
+    pub const REGION_GROWTH: u32 = 104;
 }
 
 /// A target instruction set.
@@ -146,6 +169,10 @@ pub enum FloatOp {
 pub trait Emit {
     /// How many bytecode registers a function can keep in machine registers.
     const PINS: usize;
+    /// How far into every function its warm entry is: past the part of the
+    /// prologue that makes the frame, which a chained function shares with
+    /// the one it came from.
+    const WARM: usize;
 
     fn new() -> Self
     where
@@ -158,13 +185,19 @@ pub trait Emit {
     /// [`Emit::PINS`] of them -- in machine registers. Before
     /// [`Emit::prologue`].
     fn configure(&mut self, opt: OptLevel, pins: &[Reg]);
-    /// A function's entry: save what it uses, and find the register file.
-    fn prologue(&mut self);
+    /// A function's entry: save what it uses, and find the register file. The
+    /// warm entry is [`Emit::WARM`] in, and `warm`, if given, is bound there.
+    fn prologue(&mut self, warm: Option<Label>);
     /// Return `status`, having counted the steps taken.
     fn ret(&mut self, status: u32);
     /// Leave for `pc`: set the machine's pc -- and, for a jump, how many
     /// registers are live there -- then return [`crate::abi::JUMPED`].
     fn leave(&mut self, pc: Pc, live: Option<u32>);
+    /// Go on to the native function for `pc`, at its warm entry: straight to
+    /// `to` if that is given -- it is bound to the function in this same code
+    /// -- or through the machine's table. Leave for `pc` instead if it has no
+    /// function yet, or this call has made [`CHAINS`] such jumps.
+    fn chain(&mut self, pc: Pc, live: Option<u32>, to: Option<Label>);
     /// One instruction retired.
     fn step(&mut self);
     /// One fewer: the instruction is handed to the interpreter after all, and
@@ -209,8 +242,8 @@ pub trait Emit {
     /// `r[a] = ` field `i` of the data or array in `r[b]`.
     fn field(&mut self, a: Reg, b: Reg, i: u32, slow: Label);
     /// Enter method `method` of the closure in `r[obj]`, with the `argc`
-    /// arguments at `r[base]`, as `Op::Invoke` does -- and return, leaving
-    /// for it.
+    /// arguments at `r[base]`, as `Op::Invoke` does -- and go on to it, as
+    /// [`Emit::chain`] does from [`OptLevel::O1`], or return, leaving for it.
     fn invoke(&mut self, obj: Reg, method: u8, base: Reg, argc: u32, slow: Label);
     /// `r[a] = ` a new object whose header is `header` and whose fields are the
     /// `n` registers from `base`, bumped into the nursery if it has room.
@@ -229,6 +262,13 @@ pub trait Emit {
 /// inside one.
 pub const BACK_EDGES: u32 = 1 << 12;
 
+/// How many jumps from one native function straight into the next one call
+/// from the machine makes before it returns anyway, for the same reason as
+/// [`BACK_EDGES`] -- counted with them. Fewer, since a chained function is
+/// itself a slice's worth of work: the scheduler counts what it calls, and a
+/// chain of these is one call.
+pub const CHAINS: u32 = 1 << 8;
+
 /// Compile every block of `program` for `arch`, at `opt`.
 pub fn compile(program: &Program, arch: Arch, opt: OptLevel) -> Compiled {
     match arch {
@@ -242,7 +282,7 @@ pub fn compile(program: &Program, arch: Arch, opt: OptLevel) -> Compiled {
 pub fn compile_block(program: &Program, arch: Arch, entry: Pc, opt: OptLevel) -> Vec<u8> {
     fn with<E: Emit>(program: &Program, entry: Pc, opt: OptLevel) -> Vec<u8> {
         let mut asm = E::new();
-        block(&mut asm, program, entry, opt);
+        block(&mut asm, program, entry, opt, None);
         asm.finish()
     }
     match arch {
@@ -255,9 +295,13 @@ fn compile_with<E: Emit>(program: &Program, arch: Arch, opt: OptLevel) -> Compil
     let entries = crate::abi::block_entries(program);
     let mut asm = E::new();
     let mut blocks = Vec::with_capacity(entries.len());
+    let mut links = Links {
+        entries: entries.iter().map(|&pc| pc as usize).collect(),
+        warm: HashMap::new(),
+    };
     for &entry in &entries {
         blocks.push((entry, asm.offset() as u32));
-        block(&mut asm, program, entry, opt);
+        block(&mut asm, program, entry, opt, Some(&mut links));
     }
     Compiled {
         arch,
@@ -535,8 +579,26 @@ impl Book {
     }
 }
 
+/// Every block's warm entry in a whole program's code, for jumping straight to:
+/// the functions are all in one piece of code, so a jump from one to another
+/// needs no table.
+struct Links {
+    /// The pcs that have a function.
+    entries: std::collections::HashSet<usize>,
+    /// Each one's warm entry, made the first time it is wanted.
+    warm: HashMap<usize, Label>,
+}
+
+impl Links {
+    fn warm<E: Emit>(&mut self, asm: &mut E, pc: usize) -> Option<Label> {
+        self.entries
+            .contains(&pc)
+            .then(|| *self.warm.entry(pc).or_insert_with(|| asm.label()))
+    }
+}
+
 /// One function being compiled: its instructions in order, and where each is.
-struct Function {
+struct Function<'a> {
     order: Vec<usize>,
     /// Position in `order`, by pc.
     index: HashMap<usize, usize>,
@@ -546,9 +608,25 @@ struct Function {
     /// A branch's way to a pc it cannot jump straight to: `(label, from, pc)`,
     /// `from` being the branch's position.
     detours: Vec<(Label, usize, usize)>,
+    /// Go straight on to the next block's function, from [`OptLevel::O1`].
+    chain: bool,
+    /// How long the program is: a pc past the end has nowhere to chain to.
+    len: usize,
+    links: Option<&'a mut Links>,
 }
 
-impl Function {
+impl Function<'_> {
+    /// Leave the function for `pc`, having set `live` if it is given: on to
+    /// its native function, where there is one and the function chains.
+    fn depart<E: Emit>(&mut self, asm: &mut E, pc: usize, live: Option<u32>) {
+        if self.chain && pc < self.len {
+            let to = self.links.as_mut().and_then(|l| l.warm(asm, pc));
+            asm.chain(pc as Pc, live, to);
+        } else {
+            asm.leave(pc as Pc, live);
+        }
+    }
+
     /// A label that leaves for `pc`.
     fn exit<E: Emit>(&mut self, asm: &mut E, pc: usize) -> Label {
         let l = asm.label();
@@ -559,7 +637,7 @@ impl Function {
     /// Go from the instruction at position `from` to the one at `pc`: a jump,
     /// if the function holds it further on; a counted jump back, if it holds
     /// it earlier -- so that every loop in the function goes through one --
-    /// and otherwise, leave for it.
+    /// and otherwise, depart for it.
     fn goto<E: Emit>(&mut self, asm: &mut E, from: usize, pc: usize) {
         match self.index.get(&pc) {
             Some(&t) if t > from => asm.jump(self.labels[t]),
@@ -567,7 +645,7 @@ impl Function {
                 let over = self.exit(asm, pc);
                 asm.back_edge(self.labels[t], over);
             }
-            None => asm.leave(pc as Pc, None),
+            None => self.depart(asm, pc, None),
         }
     }
 
@@ -620,18 +698,29 @@ impl Function {
     }
 }
 
-/// One function: the instructions [`region`] gives `entry`, at `opt`.
-fn block<E: Emit>(asm: &mut E, program: &Program, entry: Pc, opt: OptLevel) {
+/// One function: the instructions [`region`] gives `entry`, at `opt` -- with
+/// `links` when every block is being compiled into the same code.
+fn block<E: Emit>(
+    asm: &mut E,
+    program: &Program,
+    entry: Pc,
+    opt: OptLevel,
+    mut links: Option<&mut Links>,
+) {
     let code = &program.code;
     let order = region(code, entry as usize, opt);
     let index = order.iter().enumerate().map(|(k, &pc)| (pc, k)).collect();
     let labels = order.iter().map(|_| asm.label()).collect();
+    let warm = links.as_mut().and_then(|l| l.warm(asm, entry as usize));
     let mut f = Function {
         order,
         index,
         labels,
         exits: Vec::new(),
         detours: Vec::new(),
+        chain: opt >= OptLevel::O1,
+        len: code.len(),
+        links,
     };
     let joins = f.joins(code);
     let pinned = if opt >= OptLevel::O2 {
@@ -644,7 +733,7 @@ fn block<E: Emit>(asm: &mut E, program: &Program, entry: Pc, opt: OptLevel) {
     let mut slows: Vec<(Label, usize)> = Vec::new();
 
     asm.configure(opt, &pinned);
-    asm.prologue();
+    asm.prologue(warm);
     let mut book = Book::new(opt);
     for k in 0..f.order.len() {
         let pc = f.order[k];
@@ -683,7 +772,7 @@ fn block<E: Emit>(asm: &mut E, program: &Program, entry: Pc, opt: OptLevel) {
                     book.set(i.a as u32);
                     f.goto(asm, k, to);
                 } else {
-                    asm.leave(i.imm, Some(i.a as u32));
+                    f.depart(asm, to, Some(i.a as u32));
                 }
             }
             Op::JumpUnless => {
@@ -948,6 +1037,7 @@ mod tests {
         assert_eq!(offset_of!(Vm, exec) as u32, EXEC);
         assert_eq!(offset_of!(Vm, method_pcs) as u32, METHOD_PCS);
         assert_eq!(offset_of!(Vm, method_starts) as u32, METHOD_STARTS);
+        assert_eq!(offset_of!(Vm, native_table) as u32, NATIVE_TABLE);
         let heap = offset_of!(Vm, heap) as u32;
         type Heap = crate::heap::Heap;
         assert_eq!(heap + offset_of!(Heap, base) as u32, BASE);

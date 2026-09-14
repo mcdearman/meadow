@@ -143,6 +143,11 @@ pub struct Vm<'p> {
     /// see [`crate::jit::Native`].
     pub(crate) method_pcs: *const u32,
     pub(crate) method_starts: *const u32,
+    /// The native function for each pc, or null: [`crate::jit::Native`]'s
+    /// table, where native code looks to go straight on to the next block
+    /// rather than return -- see `codegen`'s "Chaining". Null until there is
+    /// native code.
+    pub(crate) native_table: *const std::sync::atomic::AtomicPtr<std::ffi::c_void>,
     pub(crate) heap: Heap,
     pub(crate) program: &'p Program,
     /// Values something outside the machine is holding on to — a debugger
@@ -258,6 +263,7 @@ impl<'p> Vm<'p> {
             exec: crate::abi::meadow_exec,
             method_pcs: std::ptr::null(),
             method_starts: std::ptr::null(),
+            native_table: std::ptr::null(),
             pinned: Vec::new(),
             io: Io::default(),
             request: None,
@@ -278,10 +284,12 @@ impl<'p> Vm<'p> {
             Some(n) => {
                 self.method_pcs = n.method_pcs.as_ptr();
                 self.method_starts = n.method_starts.as_ptr();
+                self.native_table = n.table.as_ptr();
             }
             None => {
                 self.method_pcs = std::ptr::null();
                 self.method_starts = std::ptr::null();
+                self.native_table = std::ptr::null();
             }
         }
     }

@@ -2420,10 +2420,13 @@ In VS Code, the **▶ Test** link above a `@test` runs exactly that.
 | | |
 |---|---|
 | `meadow` | REPL |
-| `meadow run <path>` | build and evaluate `main` |
+| `meadow run <path>` | build and evaluate `main`, on the VM and its JIT |
+| `meadow run --release <path>` | …optimized, as an executable compiled ahead of time |
+| `meadow run --backend vm\|jit\|aot <path>` | …on the backend named (`--jit` and `--aot` for short) |
 | `meadow run --gc-stats <path>` | …and report what the garbage collector did |
 | `meadow run --gc copying <path>` | …with the copying collector instead of the generational one |
 | `meadow build <path>` | type-check, link, and write the bytecode image to `target/` |
+| `meadow build --release [--target x86_64] <path>` | …and an executable, under `target/release/native/` |
 | `meadow build --annotations <path>` | …and dump every node's type |
 | `meadow test [<path>] [<filter>]` | run `@test` functions |
 | `meadow fmt <path>` | re-indent in place |
@@ -2436,6 +2439,15 @@ be exhaustive, compiles a `match` to a decision tree, and copies generic code
 once per representation it is used at (`Int`, `Float`, `String`, a reference,
 …), so it runs as fast as code written at those types. Debug compiles faster:
 generic code is compiled once and told what its values are as it runs.
+
+Each profile also has a backend. Debug runs on the VM, which compiles a block
+to machine code once it has run often; release links an executable. A package
+can choose differently in its `meadow.toml`:
+
+```toml
+[profile.release]
+backend = "jit"   # "vm" | "jit" | "aot"
+```
 
 ### Editors
 

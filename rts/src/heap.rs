@@ -374,12 +374,24 @@ impl Kind {
     }
 }
 
+/// `repr(C)`, with what native code allocating in the nursery reads and writes
+/// first -- see [`crate::codegen::layout`].
+#[repr(C)]
 pub struct Heap {
+    /// `space`'s slots and length, kept equal to it for native code, which
+    /// cannot look inside a `Vec`: see [`Heap::sync`].
+    pub(crate) base: *mut Word,
+    pub(crate) cap: usize,
+    pub(crate) top: usize,
+    pub allocated: u64,
+    /// Region slots written since the last collection. Regions are only freed
+    /// by collecting, so a program that compacts in a loop and allocates little
+    /// else needs this to ask for a collection now and then.
+    pub(crate) region_growth: usize,
     config: GcConfig,
     /// The nursery, and its other half for collecting into.
     space: Vec<Word>,
     other: Vec<Word>,
-    top: usize,
     /// Nursery objects below this have survived a collection already.
     aged: usize,
     /// Whether survivors are promoted: once the nursery is as big as it gets.
@@ -395,10 +407,10 @@ pub struct Heap {
     /// Held to overwrite an old object's field while marking; see
     /// [`crate::mark`].
     mutation: Arc<Mutex<()>>,
-    /// Nursery collections so far, and slots allocated in total — the two
-    /// numbers worth knowing when a program is unexpectedly slow.
+    /// Nursery collections so far -- and, in `allocated`, slots allocated in
+    /// total: the two numbers worth knowing when a program is unexpectedly
+    /// slow.
     pub collections: u64,
-    pub allocated: u64,
     /// Slots copied within the nursery, and promoted out of it, in total.
     pub copied: u64,
     pub promoted: u64,
@@ -417,11 +429,10 @@ pub struct Heap {
     blocks: Vec<Arc<Block>>,
     /// Those regions, by id.
     regions: HashMap<u32, Adopted>,
-    /// Region slots written since the last collection. Regions are only freed
-    /// by collecting, so a program that compacts in a loop and allocates little
-    /// else needs this to ask for a collection now and then.
-    region_growth: usize,
 }
+
+// `base` points into the heap's own `space`, which moves with it.
+unsafe impl Send for Heap {}
 
 impl Default for Heap {
     fn default() -> Heap {
@@ -452,7 +463,9 @@ impl Heap {
             Collector::Copying => slots,
             Collector::Generational => slots.min(config.nursery),
         };
-        Heap {
+        let mut heap = Heap {
+            base: std::ptr::null_mut(),
+            cap: 0,
             config,
             space: vec![0; slots.max(64)],
             other: Vec::new(),
@@ -478,7 +491,17 @@ impl Heap {
             blocks: Vec::new(),
             regions: HashMap::new(),
             region_growth: 0,
-        }
+        };
+        heap.sync();
+        heap
+    }
+
+    /// Bring native code's view of the nursery up to date, after `space` may
+    /// have moved or grown.
+    #[inline]
+    fn sync(&mut self) {
+        self.base = self.space.as_mut_ptr();
+        self.cap = self.space.len();
     }
 
     /// Has enough gone into regions since the last collection that dead ones
@@ -547,6 +570,7 @@ impl Heap {
             size = (size * 2).max(64);
         }
         self.space.resize(size.min(limit), 0);
+        self.sync();
     }
 
     /// Allocate. The caller must have checked [`Heap::room_for`], or
@@ -1140,6 +1164,7 @@ impl Heap {
         let (copied, promoted) = (gc.copied, gc.promoted_slots);
         self.remembered = gc.remembered;
         self.other = std::mem::replace(&mut self.space, to);
+        self.sync();
         self.top = top;
         self.aged = top;
         self.copied += copied as u64;
@@ -1171,9 +1196,11 @@ impl Heap {
                         "the heap has used up its address space"
                     );
                     self.space.resize(bigger, 0);
+                    self.sync();
                 }
                 Collector::Generational if bigger <= self.config.nursery => {
                     self.space.resize(bigger, 0);
+                    self.sync();
                 }
                 Collector::Generational => self.promoting = true,
             }

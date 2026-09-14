@@ -97,8 +97,24 @@ fn agree(src: &str) -> String {
 
         assert_eq!(want, axcut.to_string(), "CEK vs AxCut at {at}\n{src}");
         assert_eq!(want, vm, "CEK vs VM at {at}\n{src}");
+        assert_eq!(
+            Ok(want.clone()),
+            jit(&image, 1),
+            "CEK vs JIT at {at}\n{src}"
+        );
     }
     want
+}
+
+/// Run `image` as native code compiled in this process, on `workers` threads.
+fn jit(image: &meadow_bytecode::Program, workers: usize) -> Result<String, String> {
+    // Every block that runs, compiled the first time it does: all of the code
+    // the program reaches runs natively.
+    let jit = meadow_rts::jit::Native::jit(image, 1)?;
+    let entry = image.entry.ok_or("no entry point")?;
+    meadow_rts::sched::run_native(image, Some(&jit), entry, FUEL, workers)
+        .result
+        .map_err(|e| e.msg)
 }
 
 /// Compile all the way down, for the cases that check a *failure* — where the
@@ -1281,6 +1297,12 @@ fn threads_agree(src: &str) -> Result<String, String> {
                 want,
                 got,
                 "CEK vs VM at {} with {workers} workers\n{src}",
+                opt.name()
+            );
+            assert_eq!(
+                want,
+                jit(&image, workers),
+                "CEK vs JIT at {} with {workers} workers\n{src}",
                 opt.name()
             );
         }

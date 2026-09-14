@@ -114,14 +114,18 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T, Error> {
     Err(Error { msg: msg.into() })
 }
 
+/// The machine.
+///
+/// `repr(C)`, and the fields native code reads and writes first, so that
+/// where they are is fixed by this declaration and nothing else -- see
+/// [`crate::codegen::layout`], which a test holds to it.
+#[repr(C)]
 pub struct Vm<'p> {
-    pub(crate) program: &'p Program,
-    pub(crate) heap: Heap,
     /// The register file: 256 the program can name, then a scratch area it
     /// cannot. A boxed array rather than a `Vec` so its length is a constant —
     /// which is what lets the bounds check on every register access fold away.
     pub(crate) regs: Box<Regs>,
-    live: usize,
+    pub(crate) live: usize,
     pub(crate) pc: usize,
     /// The instruction being carried out, or last carried out: whose map says
     /// what the registers hold if something collects. [`NO_PC`] before the
@@ -129,6 +133,18 @@ pub struct Vm<'p> {
     pub(crate) at: usize,
     /// Instructions retired.
     pub steps: u64,
+    /// [`crate::abi::meadow_exec`]: how native code has the interpreter carry
+    /// out an instruction it does not do itself. Here rather than linked
+    /// against, so native code needs no relocation to reach it.
+    pub(crate) exec: unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> u32,
+    /// Every method table's entry pcs, one after another, and where each table
+    /// starts among them (with one more, where the last ends): how native code
+    /// finds the method an `invoke` enters. Null until there is native code --
+    /// see [`crate::jit::Native`].
+    pub(crate) method_pcs: *const u32,
+    pub(crate) method_starts: *const u32,
+    pub(crate) heap: Heap,
+    pub(crate) program: &'p Program,
     /// Values something outside the machine is holding on to — a debugger
     /// remembering which frame a step started in. Collector roots, so they are
     /// rewritten when what they point at moves. Empty unless someone asks.
@@ -153,12 +169,16 @@ pub struct Vm<'p> {
     /// shared regions, not the heap, so nothing here is a collector root.
     pub(crate) txn: Option<crate::stm::Txn>,
     /// Native code for the program's blocks, by entry pc -- see [`crate::abi`].
-    pub native: Option<&'p crate::abi::NativeTable>,
+    pub native: Option<&'p crate::jit::Native<'p>>,
     /// What native code stopped with: a halt's value, or a failure. Handed
     /// across the boundary here rather than through it.
     pub(crate) halted: Option<Value>,
     pub(crate) failure: Option<Error>,
 }
+
+// The method table pointers point into the `Native` the machine was given,
+// which is borrowed for `'p`, and so outlives the machine.
+unsafe impl Send for Vm<'_> {}
 
 /// What a thread operation asks of the scheduler. `dst` is the register its
 /// answer goes in, once there is one.
@@ -235,6 +255,9 @@ impl<'p> Vm<'p> {
             pc: 0,
             at: NO_PC,
             steps: 0,
+            exec: crate::abi::meadow_exec,
+            method_pcs: std::ptr::null(),
+            method_starts: std::ptr::null(),
             pinned: Vec::new(),
             io: Io::default(),
             request: None,
@@ -245,6 +268,21 @@ impl<'p> Vm<'p> {
             native: None,
             halted: None,
             failure: None,
+        }
+    }
+
+    /// Run native code where `native` has some, from now on.
+    pub fn use_native(&mut self, native: Option<&'p crate::jit::Native<'p>>) {
+        self.native = native;
+        match native {
+            Some(n) => {
+                self.method_pcs = n.method_pcs.as_ptr();
+                self.method_starts = n.method_starts.as_ptr();
+            }
+            None => {
+                self.method_pcs = std::ptr::null();
+                self.method_starts = std::ptr::null();
+            }
         }
     }
 
@@ -362,7 +400,7 @@ impl<'p> Vm<'p> {
     /// instruction if not. `Some` means the program halted.
     #[inline]
     pub fn advance(&mut self) -> Result<Option<Value>, Error> {
-        match self.native.and_then(|t| t.get(self.pc).copied().flatten()) {
+        match self.native.and_then(|n| n.at(self.pc)) {
             Some(f) => crate::abi::enter(self, f),
             None => self.step(),
         }

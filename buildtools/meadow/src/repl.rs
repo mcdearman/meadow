@@ -430,7 +430,8 @@ impl Session {
             prefix: std_pkgs,
             std_len,
             uses: Vec::new(),
-            engine: meadow::Engine::default(),
+            // What a debug build runs on.
+            engine: meadow::Engine::Jit,
         }
     }
 
@@ -498,11 +499,11 @@ impl Session {
                             println!("(reset)");
                         }
                         ":module" => self.list_module(),
-                        ":vm" | ":cek" => {
-                            self.engine = if trimmed == ":cek" {
-                                meadow::Engine::Cek
-                            } else {
-                                meadow::Engine::Vm
+                        ":vm" | ":cek" | ":jit" => {
+                            self.engine = match trimmed {
+                                ":cek" => meadow::Engine::Cek,
+                                ":jit" => meadow::Engine::Jit,
+                                _ => meadow::Engine::Vm,
                             };
                             println!("(evaluating with the {})", self.engine);
                         }

@@ -78,10 +78,13 @@ examples/<name>` runs its tests.
 meadow                          # REPL
 meadow init                     # start a package here, named after the directory
 meadow init pkg --name myPkg    # ...or elsewhere, under a name you choose
-meadow run examples/euler       # build a package and run `main`
-meadow run --cek pkg            # ...on the CEK machine instead of the VM
+meadow run examples/euler       # build a package and run `main`, on the VM and its JIT
+meadow run --release pkg        # ...optimized, as an executable compiled ahead of time
+meadow run --backend vm pkg     # ...on the bytecode VM alone (or `jit`, `aot`)
+meadow run --cek pkg            # ...on the CEK machine
 meadow build path/to/pkg        # type-check, link, and write the bytecode image
-meadow build --release pkg      # ...optimized, and `match` must be exhaustive
+meadow build --release pkg      # ...optimized, `match` exhaustive, and an executable
+meadow build --aot --target x86_64 pkg  # an executable for another architecture
 meadow run -O2 pkg              # ...or just the optimization level
 meadow dis pkg                  # disassemble: the bytecode the VM would run
 meadow fmt src                  # re-indent .mw sources in place
@@ -97,8 +100,43 @@ is embedded in the binary, so there is nothing else to install.
 
 What a build makes goes in the package's own `target/` directory, one directory
 per profile: the bytecode image at `target/debug/bytecode/<name>.mbc`, and
-native object code and binaries under `target/<profile>/native/`. `meadow init`
-writes a `.gitignore` that ignores it.
+native object code and executables under `target/<profile>/native/`. `meadow
+init` writes a `.gitignore` that ignores it.
+
+### Native code
+
+Meadow compiles its bytecode to machine code itself, for **aarch64** and
+**x86-64**, with no LLVM or Cranelift: typed arithmetic, comparisons, branches,
+moves, constants and the common allocations run as machine instructions, and
+everything else calls back into the runtime. There are three backends, and the
+same code generator serves the two that use it:
+
+| backend | | default for |
+|---|---|---|
+| `jit` | the VM, compiling each block to machine code once it has run 16 times (`MEADOW_JIT_THRESHOLD`) | `--debug` |
+| `aot` | an executable: a Mach-O or ELF object holding the code and the program's image, linked by the system's C compiler against the runtime | `--release` |
+| `vm` | the bytecode interpreter alone | |
+
+`--backend <vm|jit|aot>` (or `--jit`, `--aot`) picks one for a command, and a
+package can pick one per profile in its manifest:
+
+```toml
+# meadow.toml
+[profile.debug]
+backend = "vm"
+
+[profile.release]
+backend = "jit"
+```
+
+`aot` links against the runtime built as a static library: `cargo build
+--release` in `rts`, or with `--target x86_64-apple-darwin` for the other Mac
+architecture; `MEADOW_RUNTIME` can name one. It has to be built from the same
+sources as `meadow`, and a program will not link against one that is not. When
+`aot` is only the release default and no executable can be made -- a lone `.mw`
+file, which has no `target/` to put one in, or no runtime library -- the JIT
+runs the program instead, with a warning; an `aot` that was asked for is an
+error. `meadow test` runs in-process, so it uses the JIT for both.
 
 A package's name is the first segment of a `use` path, so it has to lex as one
 identifier — `meadow init` says so rather than letting a directory called
@@ -329,6 +367,7 @@ options, not options themselves. There are two:
 |---|---|---|
 | optimization level | `-O1` | `-O2` |
 | non-exhaustive `match` | allowed | an error |
+| backend | `jit` | `aot` |
 
 ```sh
 $ meadow run --release missing.mw
@@ -360,6 +399,7 @@ opt-level = 2               # this package is slow to run, not slow to build
 
 [profile.release]
 strictness = "lenient"      # "lenient" | "strict"
+backend = "jit"             # "vm" | "jit" | "aot"
 ```
 
 A flag beats the manifest, and the manifest beats the profile's built-in

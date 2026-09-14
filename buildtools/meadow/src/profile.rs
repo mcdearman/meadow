@@ -20,6 +20,43 @@ use crate::package::{Manifest, ProfileConfig};
 use meadow_compiler::{OptLevel, Options, Strictness};
 use std::path::Path;
 
+/// How a built program is run.
+///
+/// Not a compiler option: the program is the same bytecode whichever runs it.
+/// Chosen by a profile, a package's `backend = ...` in `[profile.<name>]`, or
+/// `--backend` -- in that order of authority, as everything in a profile is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    /// The bytecode interpreter.
+    Vm,
+    /// The interpreter, compiling the blocks that run often to machine code as
+    /// it goes -- see `meadow_rts::jit`.
+    #[default]
+    Jit,
+    /// Machine code compiled ahead of time, linked into an executable -- see
+    /// [`crate::aot`].
+    Aot,
+}
+
+impl Backend {
+    pub fn parse(s: &str) -> Option<Backend> {
+        match s {
+            "vm" => Some(Backend::Vm),
+            "jit" => Some(Backend::Jit),
+            "aot" | "native" => Some(Backend::Aot),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Backend::Vm => "vm",
+            Backend::Jit => "jit",
+            Backend::Aot => "aot",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Profile {
     /// The edit-run loop: compile fast, check less.
@@ -44,6 +81,16 @@ impl Profile {
             Profile::Release => "release",
         }
     }
+
+    /// How this profile runs a program before a manifest or a flag says
+    /// otherwise: debug on the interpreter and the JIT, which start at once;
+    /// release as an executable, compiled ahead of time.
+    pub const fn backend(self) -> Backend {
+        match self {
+            Profile::Debug => Backend::Jit,
+            Profile::Release => Backend::Aot,
+        }
+    }
 }
 
 /// A profile plus the overrides that apply to it.
@@ -55,6 +102,11 @@ impl Profile {
 pub struct Resolved {
     pub profile: Profile,
     pub options: Options,
+    pub backend: Backend,
+    /// Whether a flag or the manifest named `backend`, rather than the profile
+    /// supplying it. A backend nobody asked for gives way when it cannot be
+    /// had -- see [`Resolved::fallback`].
+    pub backend_named: bool,
 }
 
 impl Resolved {
@@ -63,6 +115,8 @@ impl Resolved {
         Resolved {
             profile,
             options: profile.options(),
+            backend: profile.backend(),
+            backend_named: false,
         }
     }
 
@@ -76,10 +130,24 @@ impl Resolved {
         let from_manifest = Manifest::find(path)
             .map(|m| m.profile(profile.name()))
             .unwrap_or_default();
+        let named = flags.backend.or(from_manifest.backend);
         Resolved {
             profile,
             options: flags.apply(from_manifest.apply(profile.options())),
+            backend: named.unwrap_or(profile.backend()),
+            backend_named: named.is_some(),
         }
+    }
+
+    /// What runs the program when `backend` cannot -- `aot` without a package
+    /// to put an executable in, or without a linker or runtime library to make
+    /// one: the JIT, if the backend was only the profile's default, and
+    /// nothing, if someone asked for it.
+    pub fn fallback(self) -> Option<Resolved> {
+        (self.backend == Backend::Aot && !self.backend_named).then_some(Resolved {
+            backend: Backend::Jit,
+            ..self
+        })
     }
 
     pub const fn opt(self) -> OptLevel {
@@ -103,6 +171,7 @@ mod tests {
         let manifest = ProfileConfig {
             opt: Some(OptLevel::O2),
             strictness: None,
+            backend: None,
         };
         assert_eq!(manifest.apply(base).opt, OptLevel::O2);
         // Untouched by a section that says nothing about it.
@@ -111,6 +180,7 @@ mod tests {
         let flag = ProfileConfig {
             opt: Some(OptLevel::O0),
             strictness: None,
+            backend: None,
         };
         assert_eq!(flag.apply(manifest.apply(base)).opt, OptLevel::O0);
     }

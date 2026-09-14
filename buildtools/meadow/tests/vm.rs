@@ -146,6 +146,36 @@ fn the_vm_agrees_with_the_cek() {
     );
 }
 
+/// Native code compiled in the process answers every standard library test
+/// exactly as the bytecode it was compiled from does -- failures included,
+/// word for word -- at both levels a user builds at.
+#[test]
+fn the_jit_agrees_with_the_vm() {
+    let std = std_program();
+    let vars: Vec<core::Var> = std.tests.iter().map(|(_, v)| *v).collect();
+    for opt in [meadow::OptLevel::O1, meadow::OptLevel::O2] {
+        let vm = runtime::run_tests(&std.program, &vars, Engine::Vm, opt).expect("the VM runner");
+        // Every block that runs, compiled the first time it does.
+        let jit = runtime::run_tests_jit_at(&std.program, &vars, Engine::Jit, opt, 1)
+            .expect("the JIT runner");
+        let disagreed: Vec<String> = std
+            .tests
+            .iter()
+            .zip(vm.iter().zip(jit.iter()))
+            .filter(|(_, (a, b))| a != b)
+            .map(|((name, _), (a, b))| format!("{name}: VM {a:?}, JIT {b:?}"))
+            .collect();
+        assert!(
+            disagreed.is_empty(),
+            "at {}, {} of {} tests disagree:\n{}",
+            opt.name(),
+            disagreed.len(),
+            std.tests.len(),
+            disagreed.join("\n")
+        );
+    }
+}
+
 #[test]
 fn the_axcut_machine_agrees_too() {
     // The middle of the pipeline, so a disagreement above can be attributed.

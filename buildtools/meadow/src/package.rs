@@ -75,6 +75,8 @@ pub struct Manifest {
 pub struct ProfileConfig {
     pub opt: Option<OptLevel>,
     pub strictness: Option<Strictness>,
+    /// How the program runs -- see [`crate::profile::Backend`].
+    pub backend: Option<crate::profile::Backend>,
 }
 
 impl ProfileConfig {
@@ -316,6 +318,7 @@ fn parse_manifest(text: &str, dir: &Path) -> Manifest {
                 match key {
                     "opt-level" | "opt_level" => p.opt = OptLevel::parse(unquote(value)),
                     "strictness" => p.strictness = Strictness::parse(unquote(value)),
+                    "backend" => p.backend = crate::profile::Backend::parse(unquote(value)),
                     _ => {}
                 }
             }

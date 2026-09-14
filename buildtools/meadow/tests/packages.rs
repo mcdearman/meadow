@@ -132,6 +132,7 @@ fn a_manifest_configures_the_build_profiles() {
         ProfileConfig {
             opt: Some(OptLevel::O0),
             strictness: Some(Strictness::Strict),
+            backend: None,
         },
     );
     assert_eq!(flagged.opt(), OptLevel::O0);
@@ -144,6 +145,63 @@ fn a_manifest_configures_the_build_profiles() {
         ProfileConfig::default(),
     );
     assert_eq!(bare.options, Profile::Release.options());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Debug runs on the JIT and release as an executable, unless `meadow.toml` or
+/// a flag says otherwise -- and a release backend nobody named gives way to the
+/// JIT when there is no executable to be had.
+#[test]
+fn a_manifest_chooses_the_backend() {
+    use meadow::package::ProfileConfig;
+    use meadow::{Backend, Profile, Resolved};
+
+    let bare = Path::new("no/such/place");
+    let debug = Resolved::resolve(Profile::Debug, bare, ProfileConfig::default());
+    assert_eq!(debug.backend, Backend::Jit);
+    assert_eq!(debug.fallback(), None);
+    let release = Resolved::resolve(Profile::Release, bare, ProfileConfig::default());
+    assert_eq!(release.backend, Backend::Aot);
+    assert_eq!(release.fallback().map(|r| r.backend), Some(Backend::Jit));
+
+    let dir = std::env::temp_dir().join("meadow-backend-manifest");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(
+        dir.join("meadow.toml"),
+        "[package]\n\
+         name = \"chosen\"\n\
+         \n\
+         [profile.debug]\n\
+         backend = \"vm\"\n\
+         \n\
+         [profile.release]\n\
+         backend = \"aot\"\n",
+    )
+    .unwrap();
+
+    let m = Manifest::load(&dir).unwrap().expect("a manifest");
+    assert_eq!(m.profile("debug").backend, Some(Backend::Vm));
+    assert_eq!(m.profile("release").backend, Some(Backend::Aot));
+
+    let debug = Resolved::resolve(Profile::Debug, &dir, ProfileConfig::default());
+    assert_eq!(debug.backend, Backend::Vm);
+    // Named in the manifest, so it is what the package gets or an error.
+    let release = Resolved::resolve(Profile::Release, &dir, ProfileConfig::default());
+    assert_eq!(release.backend, Backend::Aot);
+    assert_eq!(release.fallback(), None);
+
+    // A flag beats the manifest.
+    let flagged = Resolved::resolve(
+        Profile::Release,
+        &dir,
+        ProfileConfig {
+            backend: Some(Backend::Jit),
+            ..ProfileConfig::default()
+        },
+    );
+    assert_eq!(flagged.backend, Backend::Jit);
 
     std::fs::remove_dir_all(&dir).ok();
 }

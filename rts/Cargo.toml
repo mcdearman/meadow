@@ -9,6 +9,9 @@ edition = "2024"
 [lib]
 name = "meadow_rts"
 path = "src/lib.rs"
+# A static library too, for a program compiled ahead of time to link against:
+# see `src/aot.rs`.
+crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 meadow-bytecode = { path = "../compiler/meadow-bytecode" }

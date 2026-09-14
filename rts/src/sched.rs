@@ -157,7 +157,7 @@ pub fn run_with(program: &Program, entry: Pc, fuel: u64, workers: usize) -> Outc
 /// every thread runs it where there is some, and the bytecode where not.
 pub fn run_native(
     program: &Program,
-    native: Option<&crate::abi::NativeTable>,
+    native: Option<&crate::jit::Native>,
     entry: Pc,
     fuel: u64,
     workers: usize,
@@ -171,7 +171,7 @@ pub fn run_native(
     });
     main.vm.scheduled = true;
     main.vm.world = Some(world.clone());
-    main.vm.native = native;
+    main.vm.use_native(native);
     let shared = Shared {
         program,
         native,
@@ -254,7 +254,7 @@ type WaitSlot<'p> = Arc<Mutex<Option<(Box<Fiber<'p>>, Reg)>>>;
 
 struct Shared<'p> {
     program: &'p Program,
-    native: Option<&'p crate::abi::NativeTable>,
+    native: Option<&'p crate::jit::Native<'p>>,
     fuel: u64,
     steps: AtomicU64,
     /// One run queue per worker, stealable by the others.
@@ -592,7 +592,7 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                         wake: Wake::Start(body, answer),
                     });
                     child.vm.scheduled = true;
-                    child.vm.native = sh.native;
+                    child.vm.use_native(sh.native);
                     child.vm.world = Some(sh.world.clone());
                     let id = {
                         let mut tasks = sh.tasks.write().unwrap_or_else(|p| p.into_inner());

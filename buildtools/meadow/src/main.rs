@@ -6,7 +6,7 @@ mod repl;
 
 use clap::{Parser, Subcommand};
 use meadow::{
-    Engine, OptLevel, Profile, Resolved, Strictness, artifacts, format, init,
+    Backend, Engine, OptLevel, Profile, Resolved, Strictness, aot, artifacts, format, init,
     package::ProfileConfig, pipeline, runtime, test, update,
 };
 use std::path::PathBuf;
@@ -29,6 +29,8 @@ enum Cmd {
         annotations: bool,
         #[command(flatten)]
         profile: ProfileArgs,
+        #[command(flatten)]
+        target: TargetArgs,
     },
     /// Build a package, then evaluate its `main` entry point.
     Run {
@@ -46,6 +48,8 @@ enum Cmd {
         /// `copying` (one space, copied whole). `MEADOW_GC` sets the same.
         #[arg(long, value_parser = ["generational", "copying"])]
         gc: Option<String>,
+        #[command(flatten)]
+        target: TargetArgs,
     },
     /// Build a package and run its `@test` functions.
     Test {
@@ -130,6 +134,24 @@ enum Cmd {
     },
 }
 
+/// `--target` -- what an `aot` build compiles for.
+#[derive(clap::Args)]
+struct TargetArgs {
+    /// The architecture an `aot` build compiles for: `aarch64` or `x86_64`.
+    /// The host's by default.
+    #[arg(long, value_name = "ARCH")]
+    target: Option<String>,
+}
+
+impl TargetArgs {
+    fn target(&self) -> Result<aot::Target, String> {
+        match &self.target {
+            Some(name) => aot::Target::named(name),
+            None => aot::Target::host(),
+        }
+    }
+}
+
 /// `--release` / `--debug` — the build profile — plus the individual switches
 /// that override whatever the profile chose.
 ///
@@ -153,6 +175,24 @@ struct ProfileArgs {
     /// Allow a non-exhaustive `match`, whatever the profile says.
     #[arg(long)]
     lenient: bool,
+    /// How the program runs: `vm` (the bytecode interpreter), `jit` (which
+    /// compiles what runs often to machine code as it goes) or `aot` (machine
+    /// code compiled ahead of time, into an executable). Debug builds default
+    /// to `jit` and release builds to `aot`; `backend = "..."` in a
+    /// `[profile.<name>]` of `meadow.toml` overrides that, and this overrides
+    /// both.
+    #[arg(long, value_name = "BACKEND", value_parser = backend, conflicts_with_all = ["jit", "aot"])]
+    backend: Option<Backend>,
+    /// `--backend jit`.
+    #[arg(long, conflicts_with = "aot")]
+    jit: bool,
+    /// `--backend aot`.
+    #[arg(long, visible_alias = "native")]
+    aot: bool,
+}
+
+fn backend(s: &str) -> Result<Backend, String> {
+    Backend::parse(s).ok_or_else(|| format!("expected vm, jit or aot, got `{s}`"))
 }
 
 fn opt_level(s: &str) -> Result<OptLevel, String> {
@@ -177,6 +217,10 @@ impl ProfileArgs {
                 (_, true) => Some(Strictness::Lenient),
                 _ => None,
             },
+            backend: self
+                .backend
+                .or(self.jit.then_some(Backend::Jit))
+                .or(self.aot.then_some(Backend::Aot)),
         }
     }
 
@@ -189,7 +233,7 @@ impl ProfileArgs {
 
 /// `--cek` — run on the CEK abstract machine instead of the bytecode VM.
 ///
-/// The VM is the default. The CEK is the specification of what a Meadow program
+/// The VM, with its JIT, is the default. The CEK is the specification of what a Meadow program
 /// means, so if the two disagree it is right and the VM has a bug; this flag is
 /// what makes that comparison available without a rebuild. It is also the only
 /// way to run a program that reaches the real world through an *unhandled*
@@ -198,13 +242,22 @@ impl ProfileArgs {
 #[derive(clap::Args)]
 struct EngineArgs {
     /// Evaluate with the CEK machine rather than the bytecode VM.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["jit", "aot", "backend"])]
     cek: bool,
 }
 
 impl EngineArgs {
-    fn engine(&self) -> Engine {
-        if self.cek { Engine::Cek } else { Engine::Vm }
+    /// The machine that runs a program in this process, for `backend`. An
+    /// `aot` backend's native code runs in a process of its own, so here --
+    /// where tests run -- it is the JIT's.
+    fn engine(&self, backend: Backend) -> Engine {
+        if self.cek {
+            return Engine::Cek;
+        }
+        match backend {
+            Backend::Vm => Engine::Vm,
+            Backend::Jit | Backend::Aot => Engine::Jit,
+        }
     }
 }
 
@@ -216,13 +269,22 @@ fn main() {
             path,
             annotations,
             profile,
-        }) => build(&path, None, annotations, false, profile.resolve(&path)),
+            target,
+        }) => build(
+            &path,
+            None,
+            annotations,
+            false,
+            profile.resolve(&path),
+            &target,
+        ),
         Some(Cmd::Run {
             path,
             profile,
             engine,
             gc_stats,
             gc,
+            target,
         }) => {
             if let Some(gc) = gc {
                 meadow_rts::heap::configure(meadow_rts::heap::GcConfig {
@@ -233,12 +295,14 @@ fn main() {
                     ..meadow_rts::heap::GcConfig::from_env()
                 });
             }
+            let profile = profile.resolve(&path);
             build(
                 &path,
-                Some(engine.engine()),
+                Some(engine.engine(profile.backend)),
                 false,
                 gc_stats,
-                profile.resolve(&path),
+                profile,
+                &target,
             )
         }
         Some(Cmd::Dis { path, profile }) => disassemble(&path, profile.resolve(&path)),
@@ -250,12 +314,12 @@ fn main() {
             profile,
             engine,
         }) => match test::run(&test::Options {
+            engine: engine.engine(profile.resolve(&path).backend),
             profile: profile.resolve(&path),
             path,
             filter,
             exact,
             std,
-            engine: engine.engine(),
         }) {
             Ok(true) => {}
             Ok(false) => std::process::exit(1),
@@ -352,6 +416,7 @@ fn build(
     annotations: bool,
     gc_stats: bool,
     profile: Resolved,
+    target: &TargetArgs,
 ) {
     let out = pipeline::build(path, profile.options);
 
@@ -371,27 +436,71 @@ fn build(
     // What the VM runs is written under the package's `target` directory
     // whenever it is made: by `build`, and by `run` on the VM.
     let image = match engine {
-        None | Some(Engine::Vm) => match runtime::compile(&linked.program, profile.opt()) {
-            Ok(image) => {
-                if let Some((root, name)) = &out.package
-                    && let Err(e) = artifacts::write_image(root, profile.profile, name, &image)
-                {
+        None | Some(Engine::Vm) | Some(Engine::Jit) => {
+            match runtime::compile(&linked.program, profile.opt()) {
+                Ok(image) => {
+                    if let Some((root, name)) = &out.package
+                        && let Err(e) = artifacts::write_image(root, profile.profile, name, &image)
+                    {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
+                    Some(image)
+                }
+                Err(e) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
-                Some(image)
+            }
+        }
+        Some(Engine::Cek) => None,
+    };
+
+    // Machine code, linked into an executable -- and, for `run`, run: what an
+    // `aot` backend is, unless `--cek` asked for the CEK machine.
+    let aot = profile.backend == Backend::Aot && engine != Some(Engine::Cek);
+    if let (true, Some(image)) = (aot, &image) {
+        let exe = target.target().and_then(|target| {
+            let (root, name) = out
+                .package
+                .as_ref()
+                .ok_or("a native executable needs a package to put it in")?;
+            aot::build(root, profile.profile, name, image, target)
+        });
+        match exe {
+            Ok(exe) if engine.is_none() => eprintln!("native: {}", exe.display()),
+            Ok(exe) => {
+                let status = std::process::Command::new(&exe)
+                    .status()
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: could not run {}: {e}", exe.display());
+                        std::process::exit(1);
+                    });
+                std::process::exit(status.code().unwrap_or(1));
+            }
+            // A release build of a lone file, or on a machine that cannot link
+            // one: the JIT runs it, unless `aot` was asked for by name.
+            Err(e) if profile.fallback().is_some() => {
+                if out.package.is_some() {
+                    eprintln!("warning: no native executable: {e}");
+                    if engine.is_some() {
+                        eprintln!("note: running on the JIT instead; `--aot` makes this an error");
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
-        },
-        Some(Engine::Cek) => None,
-    };
+        }
+    }
 
     if let Some(engine) = engine {
         let (result, stats) = match &image {
-            Some(image) => runtime::run_image_with_stats(image),
+            Some(image) => match runtime::native(image, engine) {
+                Ok(jit) => runtime::run_image_with_stats(image, jit.as_ref()),
+                Err(e) => (Err(e), None),
+            },
             None => runtime::run_with_stats(&linked.program, engine, profile.opt()),
         };
         if gc_stats {

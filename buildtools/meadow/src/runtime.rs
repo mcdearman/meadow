@@ -30,6 +30,9 @@ pub enum Engine {
     /// The CEK abstract machine — small, slow, and the definition of what a
     /// program means.
     Cek,
+    /// The VM, compiling each block to machine code once it has run often
+    /// enough -- see `meadow_rts::jit`.
+    Jit,
 }
 
 impl fmt::Display for Engine {
@@ -37,6 +40,7 @@ impl fmt::Display for Engine {
         f.write_str(match self {
             Engine::Vm => "vm",
             Engine::Cek => "cek",
+            Engine::Jit => "jit",
         })
     }
 }
@@ -54,10 +58,41 @@ pub fn run(program: &core::Program, engine: Engine, opt: OptLevel) -> Result<Str
         Engine::Cek => meadow_eval::run(program)
             .map(|v| v.to_string())
             .map_err(|e| e.msg),
-        Engine::Vm => {
+        Engine::Vm | Engine::Jit => {
             let image = compile(program, opt)?;
-            meadow_rts::run(&image, UNBOUNDED).map_err(|e| e.msg)
+            let native = native(&image, engine)?;
+            let entry = image.entry.ok_or("program has no entry point")?;
+            meadow_rts::sched::run_native(
+                &image,
+                native.as_ref(),
+                entry,
+                UNBOUNDED,
+                meadow_rts::sched::workers(),
+            )
+            .result
+            .map_err(|e| e.msg)
         }
+    }
+}
+
+/// With [`Engine::Jit`], a JIT for `image`, compiling what gets hot -- after
+/// `MEADOW_JIT_THRESHOLD` entries, or the default.
+pub fn native(
+    image: &meadow_bytecode::Program,
+    engine: Engine,
+) -> Result<Option<meadow_rts::jit::Native<'_>>, String> {
+    native_at(image, engine, meadow_rts::jit::Native::threshold_from_env())
+}
+
+/// [`native`], compiling a block the `threshold`th time it is entered.
+fn native_at(
+    image: &meadow_bytecode::Program,
+    engine: Engine,
+    threshold: u32,
+) -> Result<Option<meadow_rts::jit::Native<'_>>, String> {
+    match engine {
+        Engine::Jit => meadow_rts::jit::Native::jit(image, threshold).map(Some),
+        _ => Ok(None),
     }
 }
 
@@ -180,8 +215,11 @@ pub fn run_with_stats(
 ) -> (Result<String, String>, Option<GcStats>) {
     match engine {
         Engine::Cek => (run(program, engine, opt), None),
-        Engine::Vm => match compile(program, opt) {
-            Ok(image) => run_image_with_stats(&image),
+        Engine::Vm | Engine::Jit => match compile(program, opt) {
+            Ok(image) => match native(&image, engine) {
+                Ok(jit) => run_image_with_stats(&image, jit.as_ref()),
+                Err(e) => (Err(e), None),
+            },
             Err(e) => (Err(e), None),
         },
     }
@@ -190,12 +228,19 @@ pub fn run_with_stats(
 /// Run a compiled image on the VM, and say what its collector did.
 pub fn run_image_with_stats(
     image: &meadow_bytecode::Program,
+    native: Option<&meadow_rts::jit::Native>,
 ) -> (Result<String, String>, Option<GcStats>) {
     let Some(entry) = image.entry else {
         return (Err("program has no entry point".to_string()), None);
     };
     let started = std::time::Instant::now();
-    let outcome = meadow_rts::sched::run(image, entry, UNBOUNDED);
+    let outcome = meadow_rts::sched::run_native(
+        image,
+        native,
+        entry,
+        UNBOUNDED,
+        meadow_rts::sched::workers(),
+    );
     let s = outcome.stats;
     let stats = GcStats {
         threads: s.threads,
@@ -227,6 +272,19 @@ pub fn run_tests(
     engine: Engine,
     opt: OptLevel,
 ) -> Result<Vec<Result<String, String>>, String> {
+    let threshold = meadow_rts::jit::Native::threshold_from_env();
+    run_tests_jit_at(program, tests, engine, opt, threshold)
+}
+
+/// [`run_tests`], with the JIT compiling a block the `threshold`th time it is
+/// entered -- 1 to run all the code that runs natively.
+pub fn run_tests_jit_at(
+    program: &core::Program,
+    tests: &[core::Var],
+    engine: Engine,
+    opt: OptLevel,
+    threshold: u32,
+) -> Result<Vec<Result<String, String>>, String> {
     match engine {
         Engine::Cek => Ok(meadow_eval::run_tests(program, tests)
             .map_err(|e| e.msg)?
@@ -234,7 +292,7 @@ pub fn run_tests(
             .map(|r| r.map(|v| v.to_string()).map_err(|e| e.msg))
             .collect()),
 
-        Engine::Vm => {
+        Engine::Vm | Engine::Jit => {
             // One extra definition per test, whose body applies it to `()`. They
             // are compiled with everything else, so the image is built once and
             // each test is simply a different place to start.
@@ -263,6 +321,7 @@ pub fn run_tests(
                 origins: Default::default(),
             };
             let image = compile(&whole, opt)?;
+            let jit = native_at(&image, engine, threshold)?;
 
             Ok((0..tests.len())
                 .map(|i| {
@@ -272,9 +331,15 @@ pub fn run_tests(
                     let Some(&entry) = image.entries.get(base + i) else {
                         return Err("a test has no entry point".to_string());
                     };
-                    meadow_rts::sched::run(&image, entry, UNBOUNDED)
-                        .result
-                        .map_err(|e| e.msg)
+                    meadow_rts::sched::run_native(
+                        &image,
+                        jit.as_ref(),
+                        entry,
+                        UNBOUNDED,
+                        meadow_rts::sched::workers(),
+                    )
+                    .result
+                    .map_err(|e| e.msg)
                 })
                 .collect())
         }

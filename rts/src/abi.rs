@@ -42,9 +42,6 @@ use crate::vm::{Error, Vm};
 /// A block's native code. Its argument is the machine, as `*mut Vm`.
 pub type NativeFn = unsafe extern "C" fn(vm: *mut c_void) -> u32;
 
-/// Native code per pc: the function for a block starting there, if any.
-pub type NativeTable = [Option<NativeFn>];
-
 /// An instruction finished and control falls through to the next.
 pub const CONTINUE: u32 = 0;
 /// Control went elsewhere: a branch was taken, or a jump or an invoke set the pc.
@@ -113,7 +110,20 @@ pub fn block_entries(program: &meadow_bytecode::Program) -> Vec<Pc> {
         entries.extend(m.iter().copied());
     }
     for i in &program.code {
-        if i.op == Op::Jump {
+        // A jump's target, and a conditional branch's: native code that takes
+        // a branch out of its own function returns, and the machine enters
+        // whatever is there.
+        if matches!(
+            i.op,
+            Op::Jump
+                | Op::JumpUnless
+                | Op::JumpUnlessTag
+                | Op::JumpUnlessPrim
+                | Op::JumpUnlessPrimK
+                | Op::BrI
+                | Op::BrIK
+                | Op::BrF
+        ) {
             entries.push(i.imm);
         }
     }

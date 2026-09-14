@@ -65,8 +65,11 @@
 //! for the life of the process. The CEK does the same.
 
 pub mod abi;
+pub mod aot;
+pub mod codegen;
 mod evacuate;
 pub mod heap;
+pub mod jit;
 pub mod journal;
 pub mod mark;
 mod native;

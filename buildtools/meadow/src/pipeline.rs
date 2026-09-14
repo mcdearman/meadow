@@ -121,7 +121,9 @@ pub fn build_with(entry: &Path, opts: Options, addition: Option<Addition<'_>>) -
     }
 
     let root = &graph.packages[graph.root()];
-    let package = Some((root.root.clone(), root.name));
+    // A lone `.mw` file is compiled as a package of one, but has no directory
+    // of its own to keep a `target` in.
+    let package = root.root.is_dir().then(|| (root.root.clone(), root.name));
     let (std_pkgs, mut diagnostics) = stdlib::std_packages(opts);
 
     let mut compiled: Vec<Option<CompiledPackage>> =

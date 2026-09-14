@@ -54,6 +54,8 @@ install.sh --uninstall
 </details>
 
 A full walkthrough of the language lives in [docs/TUTORIAL.md](docs/TUTORIAL.md).
+How programs run -- the backends, the memory model, effects and threads -- is
+in [docs/RUNTIME.md](docs/RUNTIME.md).
 
 ## Examples
 

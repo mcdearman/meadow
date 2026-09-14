@@ -20,7 +20,11 @@ fn package(who: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("meadow-test-select-{}-{who}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src").join("Deep")).unwrap();
-    std::fs::write(dir.join("meadow.toml"), "[package]\nname = \"sel\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(
+        dir.join("meadow.toml"),
+        "[package]\nname = \"sel\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     std::fs::write(
         dir.join("src").join("Main.mw"),
         "use Std.Test (assertEq)\n\ndef main = 0\n\n@test fun root u = assertEq 1 1 \"root\"\n",
@@ -79,7 +83,14 @@ fn a_test_is_named_by_its_module() {
     let all = ran(&dir, &[]);
     assert_eq!(
         names(&all),
-        vec!["A.parse", "A.works", "B.parseInt", "B.works", "Deep.Er.nested", "root"]
+        vec![
+            "A.parse",
+            "A.works",
+            "B.parseInt",
+            "B.works",
+            "Deep.Er.nested",
+            "root"
+        ]
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -89,8 +100,14 @@ fn a_test_is_named_by_its_module() {
 #[test]
 fn exact_picks_one_of_two_tests_with_the_same_name() {
     let dir = package("same-name");
-    assert_eq!(ran(&dir, &["A.works", "--exact"]), vec![("A.works".to_string(), true)]);
-    assert_eq!(ran(&dir, &["B.works", "--exact"]), vec![("B.works".to_string(), false)]);
+    assert_eq!(
+        ran(&dir, &["A.works", "--exact"]),
+        vec![("A.works".to_string(), true)]
+    );
+    assert_eq!(
+        ran(&dir, &["B.works", "--exact"]),
+        vec![("B.works".to_string(), false)]
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -103,7 +120,10 @@ fn exact_does_not_match_a_longer_name() {
     assert!(ran(&dir, &["works", "--exact"]).is_empty());
     // Root-module tests have no qualifier to give.
     assert_eq!(names(&ran(&dir, &["root", "--exact"])), vec!["root"]);
-    assert_eq!(names(&ran(&dir, &["Deep.Er.nested", "--exact"])), vec!["Deep.Er.nested"]);
+    assert_eq!(
+        names(&ran(&dir, &["Deep.Er.nested", "--exact"])),
+        vec!["Deep.Er.nested"]
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -141,5 +161,8 @@ fn a_root_test_has_no_qualifier_and_a_nested_one_has_every_segment() {
     };
     assert_eq!(site(&[], "works").qualified(), "works");
     assert_eq!(site(&["A"], "works").qualified(), "A.works");
-    assert_eq!(site(&["Deep", "Er"], "nested").qualified(), "Deep.Er.nested");
+    assert_eq!(
+        site(&["Deep", "Er"], "nested").qualified(),
+        "Deep.Er.nested"
+    );
 }

@@ -7,7 +7,7 @@
 //! is that none of those reach the back end, and the point of these tests is
 //! that the checker is what stops them.
 
-use meadow_core::{lint, Def, Lit, Pat, Poly, Prim, Program, Term, Ty, TyVar};
+use meadow_core::{Def, Lit, Pat, Poly, Prim, Program, Term, Ty, TyVar, lint};
 use meadow_hir::VarId;
 use meadow_infer::{Scheme, Type, VarKind};
 use std::collections::HashMap;
@@ -32,7 +32,12 @@ fn fails(program: &Program, expect: &str) {
 
 fn def(var: VarId, poly: Poly, term: Term) -> Program {
     Program {
-        defs: vec![Def { var, name: "it".into(), poly, term }],
+        defs: vec![Def {
+            var,
+            name: "it".into(),
+            poly,
+            term,
+        }],
         entry: None,
         ..Default::default()
     }
@@ -46,7 +51,10 @@ fn int() -> Ty {
 fn ident_poly(id: u32) -> Poly {
     let a = Type::Var(id);
     Poly {
-        binders: vec![TyVar { id, kind: VarKind::Type }],
+        binders: vec![TyVar {
+            id,
+            kind: VarKind::Type,
+        }],
         ty: Type::Fun(vec![a.clone()], Box::new(a), Box::new(Type::RowEmpty)),
     }
 }
@@ -92,7 +100,11 @@ fn a_well_typed_definition_passes() {
 #[test]
 fn a_definition_whose_body_has_another_type_is_caught() {
     fails(
-        &def(VarId(1), Poly::mono(int()), Term::Lit(Lit::Str("no".into()))),
+        &def(
+            VarId(1),
+            Poly::mono(int()),
+            Term::Lit(Lit::Str("no".into())),
+        ),
         "definition's type is not what its body has",
     );
 }
@@ -104,7 +116,10 @@ fn applying_the_wrong_argument_type_is_caught() {
         Arc::new(Term::Lam(x, int(), Arc::new(Term::Var(x)))),
         Arc::new(Term::Lit(Lit::Str("s".into()))),
     );
-    fails(&def(VarId(1), Poly::mono(int()), term), "argument has the wrong type");
+    fails(
+        &def(VarId(1), Poly::mono(int()), term),
+        "argument has the wrong type",
+    );
 }
 
 #[test]
@@ -120,9 +135,7 @@ fn applying_something_that_is_not_a_function_is_caught() {
 fn a_polymorphic_mention_without_type_arguments_is_caught() {
     // What a pass does when it moves a mention and forgets its instantiation.
     fails(
-        &with_id(|f| {
-            Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Lit(Lit::Int(1))))
-        }),
+        &with_id(|f| Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Lit(Lit::Int(1))))),
         "without type arguments",
     );
 }

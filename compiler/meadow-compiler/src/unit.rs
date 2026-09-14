@@ -7,8 +7,8 @@
 //! standard library — lives in the `meadow` build crate.
 
 use crate::{
-    ast, core,
-    diagnostics::{from_parse_error, Diagnostic},
+    Options, ast, core,
+    diagnostics::{Diagnostic, from_parse_error},
     exhaust,
     hir::{self, VarId},
     infer::{Infer, InferResult, Scheme, TypeTable},
@@ -18,7 +18,6 @@ use crate::{
     rename::{self, NameRef, Resolver},
     scc,
     source::{Source, SourceKind},
-    Options,
 };
 use std::collections::HashMap;
 
@@ -330,7 +329,10 @@ pub fn compile_unit_in_package(
                     // which is a claim about what a dependent may write bare.
                     // Plain `@pub` only -- an argument only ever narrows it.
                     if let ast::Decl::Attributed(attrs, _) = d.value() {
-                        if attrs.iter().any(|a| &**a.name.value() == "pub" && a.args.is_empty()) {
+                        if attrs
+                            .iter()
+                            .any(|a| &**a.name.value() == "pub" && a.args.is_empty())
+                        {
                             flat_ctors.extend(brought);
                         }
                     }
@@ -378,7 +380,13 @@ pub fn compile_unit_in_package(
     let mut runs: Vec<VarId> = entry.into_iter().collect();
     if let Some(name) = opts.entry_name {
         let name = InternedString::from(name);
-        runs.extend(resolver.names().iter().filter(|(_, n)| **n == name).map(|(id, _)| *id));
+        runs.extend(
+            resolver
+                .names()
+                .iter()
+                .filter(|(_, n)| **n == name)
+                .map(|(id, _)| *id),
+        );
     }
 
     // --- type inference (one arena for the whole unit + dependency schemes)
@@ -578,7 +586,11 @@ pub fn compile_unit_in_package(
 
 /// Reorder `items` so that the element at `order[k]` ends up `k`th.
 fn permute<T>(items: Vec<T>, order: &[usize]) -> Vec<T> {
-    debug_assert_eq!(items.len(), order.len(), "permutation must cover every item");
+    debug_assert_eq!(
+        items.len(),
+        order.len(),
+        "permutation must cover every item"
+    );
     let mut slots: Vec<Option<T>> = items.into_iter().map(Some).collect();
     order
         .iter()
@@ -652,7 +664,11 @@ fn apply_use(
         let here = resolver.current_module().to_vec();
         if resolver.module_has_type(&here, *ty.value()) {
             if let Some(a) = &u.alias {
-                report(format!("a type cannot be renamed with `as`"), "not a module", a.span);
+                report(
+                    format!("a type cannot be renamed with `as`"),
+                    "not a module",
+                    a.span,
+                );
                 return Vec::new();
             }
             return resolver.use_type(&here, ty, &u.names, u.glob);
@@ -682,7 +698,11 @@ fn apply_use(
     // `use Pack.Mod.Ty ...` for a sibling's type.
     if !local.is_empty() && resolver.module_has_type(local_owner, *ty.value()) {
         if let Some(a) = &u.alias {
-            report(format!("a type cannot be renamed with `as`"), "not a module", a.span);
+            report(
+                format!("a type cannot be renamed with `as`"),
+                "not a module",
+                a.span,
+            );
             return Vec::new();
         }
         return resolver.use_type(local_owner, ty, &u.names, u.glob);
@@ -708,7 +728,11 @@ fn apply_use(
                 && module_types(pkg, &owner_segs, deps).contains(ty.value())
             {
                 if let Some(a) = &u.alias {
-                    report(format!("a type cannot be renamed with `as`"), "not a module", a.span);
+                    report(
+                        format!("a type cannot be renamed with `as`"),
+                        "not a module",
+                        a.span,
+                    );
                     return Vec::new();
                 }
                 return resolver.use_dep_type(ty, &u.names, u.glob);
@@ -762,8 +786,9 @@ fn apply_use(
             resolver.note_ref(n.span, NameRef::Value(id));
         } else if types.contains(&name) {
             resolver.note_ref(n.span, NameRef::Type(name));
-        } else if let Some(owner) =
-            types.iter().find(|t| resolver.type_ctor_names(**t).contains(&name))
+        } else if let Some(owner) = types
+            .iter()
+            .find(|t| resolver.type_ctor_names(**t).contains(&name))
         {
             let module = dotted(&segs);
             report(
@@ -794,7 +819,11 @@ fn module_types(
             })
             .collect()
     };
-    let local: &[InternedString] = if segs.first() == Some(&pkg) { &segs[1..] } else { segs };
+    let local: &[InternedString] = if segs.first() == Some(&pkg) {
+        &segs[1..]
+    } else {
+        segs
+    };
     let mut out = Vec::new();
     for dep in deps {
         let exported = names(&mut dep.data_decls.iter());
@@ -808,7 +837,11 @@ fn module_types(
         .into_iter()
         .flatten()
         .collect();
-        for m in dep.modules.iter().filter(|m| wants.contains(&m.path.as_slice())) {
+        for m in dep
+            .modules
+            .iter()
+            .filter(|m| wants.contains(&m.path.as_slice()))
+        {
             out.extend(
                 names(&mut m.hir.value().decls.iter())
                     .into_iter()

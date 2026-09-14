@@ -24,7 +24,7 @@
 //! ignored, and a floor on the number that *do* agree keeps the allowance from
 //! quietly swallowing everything.
 
-use meadow::{linker::Linker, runtime, stdlib, Engine, Options};
+use meadow::{Engine, Options, linker::Linker, runtime, stdlib};
 use meadow_compiler::core;
 
 struct Std {
@@ -72,8 +72,13 @@ fn the_whole_standard_library_lowers() {
 #[test]
 fn the_whole_standard_library_reaches_bytecode() {
     let std = std_program();
-    let image = runtime::compile(&std.program, Options::debug().opt).expect("the standard library should compile");
-    assert!(image.code.len() > 10_000, "only {} instructions", image.code.len());
+    let image = runtime::compile(&std.program, Options::debug().opt)
+        .expect("the standard library should compile");
+    assert!(
+        image.code.len() > 10_000,
+        "only {} instructions",
+        image.code.len()
+    );
     assert!(
         image.regs as usize <= 256,
         "a block wanted {} registers",
@@ -93,8 +98,10 @@ fn the_vm_agrees_with_the_cek() {
     let std = std_program();
     let vars: Vec<core::Var> = std.tests.iter().map(|(_, v)| *v).collect();
 
-    let cek = runtime::run_tests(&std.program, &vars, Engine::Cek, Options::debug().opt).expect("the CEK runner");
-    let vm = runtime::run_tests(&std.program, &vars, Engine::Vm, Options::debug().opt).expect("the VM runner");
+    let cek = runtime::run_tests(&std.program, &vars, Engine::Cek, Options::debug().opt)
+        .expect("the CEK runner");
+    let vm = runtime::run_tests(&std.program, &vars, Engine::Vm, Options::debug().opt)
+        .expect("the VM runner");
 
     let mut agreed = 0;
     let mut native = Vec::new();
@@ -213,26 +220,38 @@ fn every_standard_library_value_is_where_its_representation_says() {
     let mut ran = 0;
     for (i, (name, _)) in std.tests.iter().enumerate() {
         let label = meadow_seq::Label((base + i) as u32);
-        let result = meadow_seq::machine::Machine::at(&lowered.program, label).and_then(|mut m| loop {
-            if m.steps > 50_000_000 {
-                break Ok(());
-            }
-            match m.step() {
-                Ok(Some(_)) => break Ok(()),
-                Ok(None) => {}
-                Err(e) => break Err(e),
+        let result = meadow_seq::machine::Machine::at(&lowered.program, label).and_then(|mut m| {
+            loop {
+                if m.steps > 50_000_000 {
+                    break Ok(());
+                }
+                match m.step() {
+                    Ok(Some(_)) => break Ok(()),
+                    Ok(None) => {}
+                    Err(e) => break Err(e),
+                }
             }
         });
         match result {
             Ok(()) => ran += 1,
-            Err(e) if e.msg.contains(" is declared ") || e.msg.contains("has no representation") => {
+            Err(e)
+                if e.msg.contains(" is declared ") || e.msg.contains("has no representation") =>
+            {
                 wrong.push(format!("{name}: {}", e.msg))
             }
             Err(_) => {}
         }
     }
-    assert!(wrong.is_empty(), "{} tests hold a value against its representation:\n{}", wrong.len(), wrong.join("\n"));
-    assert!(ran > 150, "only {ran} tests ran to the end on the AxCut machine");
+    assert!(
+        wrong.is_empty(),
+        "{} tests hold a value against its representation:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    assert!(
+        ran > 150,
+        "only {ran} tests ran to the end on the AxCut machine"
+    );
 }
 
 /// A program whose entry point calls `test` with `()`, which is what the test
@@ -271,8 +290,8 @@ fn every_opt_level_agrees_with_the_cek() {
 
     let std = std_program();
     let vars: Vec<core::Var> = std.tests.iter().map(|(_, v)| *v).collect();
-    let cek = runtime::run_tests(&std.program, &vars, Engine::Cek, OptLevel::O1)
-        .expect("the CEK runner");
+    let cek =
+        runtime::run_tests(&std.program, &vars, Engine::Cek, OptLevel::O1).expect("the CEK runner");
 
     for opt in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
         let vm = runtime::run_tests(&std.program, &vars, Engine::Vm, opt)
@@ -353,8 +372,7 @@ fn switches(s: &meadow_seq::Statement) -> usize {
         Jump(_) => 0,
         Let { rest, .. } => switches(rest),
         Switch { arms, default, .. } => {
-            1 + arms.iter().map(|(_, b)| switches(&b.body)).sum::<usize>()
-                + switches(&default.body)
+            1 + arms.iter().map(|(_, b)| switches(&b.body)).sum::<usize>() + switches(&default.body)
         }
         New { methods, rest, .. } => {
             methods.iter().map(|b| switches(&b.body)).sum::<usize>() + switches(rest)
@@ -375,7 +393,11 @@ fn a_debug_build_runs_the_standard_library_the_same() {
     let mut options = Options::debug();
     options.debug_info = true;
     let (packages, diags) = stdlib::std_packages(options);
-    assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| &d.msg).collect::<Vec<_>>());
+    assert!(
+        diags.is_empty(),
+        "{:?}",
+        diags.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
     let linked = Linker::link(packages);
     let debug_tests: Vec<(String, core::Var)> = linked
         .tests
@@ -399,7 +421,11 @@ fn a_debug_build_runs_the_standard_library_the_same() {
         .filter(|(_, (a, b))| a != b)
         .map(|((name, _), (a, b))| format!("{name}: {a:?} vs {b:?}"))
         .collect();
-    assert!(differ.is_empty(), "a debug build changed the answer:\n{}", differ.join("\n"));
+    assert!(
+        differ.is_empty(),
+        "a debug build changed the answer:\n{}",
+        differ.join("\n")
+    );
 
     // And recording the debug information does not change a single instruction.
     let lowered = meadow_seq::lower_program(&linked.program, opt);

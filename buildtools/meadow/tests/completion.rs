@@ -25,7 +25,13 @@ fn parse_decl(src: &str) -> meadow_compiler::ast::LDecl {
     let lex = tokenize(source);
     let (module, errs) = parser::parse("t".into(), source, &lex.tokens);
     assert!(errs.is_empty(), "{src:?} should parse: {errs:?}");
-    module.expect("parsed").value.decls.into_iter().next().unwrap()
+    module
+        .expect("parsed")
+        .value
+        .decls
+        .into_iter()
+        .next()
+        .unwrap()
 }
 
 /// What Tab would offer for `line` (cursor at the end).
@@ -49,7 +55,9 @@ fn values_come_from_the_prelude() {
 #[test]
 fn types_include_builtins_and_std_declarations() {
     let n = std_names();
-    for t in ["Int", "BigInt", "Bool", "List", "Maybe", "Result", "Ordering"] {
+    for t in [
+        "Int", "BigInt", "Bool", "List", "Maybe", "Result", "Ordering",
+    ] {
         assert!(n.types.contains(&t.to_string()), "missing type {t}");
     }
 }

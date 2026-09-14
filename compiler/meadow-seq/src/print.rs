@@ -62,7 +62,12 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
     pad(out, depth);
     match s {
         Statement::Substitute(sel, block) => {
-            let _ = writeln!(out, "substitute [{}] in {}", names(sel), params(&block.params));
+            let _ = writeln!(
+                out,
+                "substitute [{}] in {}",
+                names(sel),
+                params(&block.params)
+            );
             stmt(out, &block.body, depth + 1);
         }
         Statement::Jump(l) => {
@@ -75,12 +80,7 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
             fields,
             rest,
         } => {
-            let _ = writeln!(
-                out,
-                "let {} = {ctor}#{tag}({});",
-                name(*n),
-                names(fields)
-            );
+            let _ = writeln!(out, "let {} = {ctor}#{tag}({});", name(*n), names(fields));
             stmt(out, rest, depth);
         }
         Statement::Switch {
@@ -143,7 +143,12 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
             };
             // One continuation is a sequence point, not a branch: write it flat.
             if let [only] = &blocks[..] {
-                let _ = writeln!(out, "extern {op}({}) -> {};", names(args), params(&only.params));
+                let _ = writeln!(
+                    out,
+                    "extern {op}({}) -> {};",
+                    names(args),
+                    params(&only.params)
+                );
                 stmt(out, &only.body, depth);
             } else {
                 let _ = writeln!(out, "extern {op}({}) {{", names(args));

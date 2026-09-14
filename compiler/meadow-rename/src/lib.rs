@@ -9,12 +9,12 @@
 //! refer to each other, the caller first [`Resolver::declare_toplevel`]s every
 //! module so the bodies resolve against the union of their top-level names.
 
+use itertools::Itertools;
 use meadow_ast as ast;
 use meadow_diagnostics::Diagnostic;
-use meadow_hir::{self as hir, NodeIdGen, VarIdGen, PRIMS, VarId};
+use meadow_hir::{self as hir, NodeIdGen, PRIMS, VarId, VarIdGen};
 use meadow_intern::InternedString;
 use meadow_span::Span;
-use itertools::Itertools;
 use std::collections::HashMap;
 
 /// What the resolver remembers about a data / record constructor, enough to
@@ -164,18 +164,21 @@ pub struct Resolver {
 const BUILTIN_CTORS: &[&str] = &["Nil", "Cons", "True", "False"];
 
 /// The same, paired with the type that owns them, to seed the scope.
-const BUILTIN_CTOR_OWNERS: &[(&str, &str)] =
-    &[("List", "Nil"), ("List", "Cons"), ("Bool", "True"), ("Bool", "False")];
+const BUILTIN_CTOR_OWNERS: &[(&str, &str)] = &[
+    ("List", "Nil"),
+    ("List", "Cons"),
+    ("Bool", "True"),
+    ("Bool", "False"),
+];
 
 /// Type constructors seeded into every resolver. Like [`BUILTIN_CTORS`], the
 /// prelude is allowed to (re-)declare `List` / `Bool` without it counting as a
 /// duplicate-definition error.
-const BUILTIN_TYCONS: &[&str] =
-    &[
-        "Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array", "Ref", "StRef",
-        "StArray", "Int64", "Int32", "Int16", "Int8", "UInt64", "UInt32", "UInt16", "UInt8",
-        "Float64", "Float32", "Compact", "Task", "Channel", "TVar",
-    ];
+const BUILTIN_TYCONS: &[&str] = &[
+    "Int", "BigInt", "Float", "String", "Char", "Bool", "Unit", "List", "Array", "Ref", "StRef",
+    "StArray", "Int64", "Int32", "Int16", "Int8", "UInt64", "UInt32", "UInt16", "UInt8", "Float64",
+    "Float32", "Compact", "Task", "Channel", "TVar",
+];
 
 /// Split a declaration into its attributes and the bare declaration underneath.
 /// The parser only ever nests one `Attributed` layer.
@@ -253,7 +256,10 @@ fn dotted_path(path: &[InternedString]) -> String {
     if path.is_empty() {
         "the root module".to_string()
     } else {
-        path.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(".")
+        path.iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(".")
     }
 }
 
@@ -292,12 +298,31 @@ fn is_ctor_name(name: &str) -> bool {
 /// The type constructors every module sees without asking.
 fn builtin_tycons() -> HashMap<InternedString, usize> {
     [
-        ("Int", 0), ("BigInt", 0), ("Float", 0), ("String", 0), ("Bool", 0),
-        ("Int64", 0), ("Int32", 0), ("Int16", 0), ("Int8", 0),
-        ("UInt64", 0), ("UInt32", 0), ("UInt16", 0), ("UInt8", 0),
-        ("Float64", 0), ("Float32", 0),
-        ("Unit", 0), ("List", 1), ("Array", 1), ("Ref", 1), ("StRef", 2), ("StArray", 2),
-        ("Compact", 1), ("Task", 1), ("Channel", 1), ("TVar", 1),
+        ("Int", 0),
+        ("BigInt", 0),
+        ("Float", 0),
+        ("String", 0),
+        ("Bool", 0),
+        ("Int64", 0),
+        ("Int32", 0),
+        ("Int16", 0),
+        ("Int8", 0),
+        ("UInt64", 0),
+        ("UInt32", 0),
+        ("UInt16", 0),
+        ("UInt8", 0),
+        ("Float64", 0),
+        ("Float32", 0),
+        ("Unit", 0),
+        ("List", 1),
+        ("Array", 1),
+        ("Ref", 1),
+        ("StRef", 2),
+        ("StArray", 2),
+        ("Compact", 1),
+        ("Task", 1),
+        ("Channel", 1),
+        ("TVar", 1),
     ]
     .into_iter()
     .map(|(n, a)| (InternedString::from(n), a))
@@ -599,14 +624,20 @@ impl Resolver {
             for (n, id, v) in &frame.values {
                 if *n == name && note(*v, &mut found, &mut hidden) {
                     self.scope.push((*n, *id));
-                    sites.push(RefSite { span: want.span, what: NameRef::Value(*id) });
+                    sites.push(RefSite {
+                        span: want.span,
+                        what: NameRef::Value(*id),
+                    });
                 }
             }
             for (n, a, v) in &frame.tycons {
                 if *n == name && note(*v, &mut found, &mut hidden) {
                     self.tycons.insert(*n, *a);
                     self.bring_struct_ctor(*n);
-                    sites.push(RefSite { span: want.span, what: NameRef::Type(*n) });
+                    sites.push(RefSite {
+                        span: want.span,
+                        what: NameRef::Type(*n),
+                    });
                 }
             }
             for (n, a, v) in &frame.effects {
@@ -954,7 +985,10 @@ impl Resolver {
                         // this HIR made it so), and `ctors_of` wants the bare
                         // spelling a `use` would let someone write.
                         self.ctors.insert(v.name, CtorInfo { arity, field_names });
-                        self.ctors_of.entry(dd.name).or_default().push(bare_ctor(v.name));
+                        self.ctors_of
+                            .entry(dd.name)
+                            .or_default()
+                            .push(bare_ctor(v.name));
                     }
                 }
                 hir::Decl::Record(rd) => {
@@ -1173,13 +1207,19 @@ impl Resolver {
             .collect();
         owners.sort_by_key(|t| t.to_string());
         let (msg, label) = match owners.as_slice() {
-            [] => (format!("unknown constructor `{bare}`"), "not a known constructor".to_string()),
+            [] => (
+                format!("unknown constructor `{bare}`"),
+                "not a known constructor".to_string(),
+            ),
             [ty] => {
                 // `use Ty.*` works for this module's own types and for a
                 // dependency's, which are in scope by name; a sibling module's
                 // needs its path.
                 let sibling = !self.module_has_type(&here, *ty)
-                    && self.frames.values().any(|f| f.tycons.iter().any(|(n, _, _)| n == ty));
+                    && self
+                        .frames
+                        .values()
+                        .any(|f| f.tycons.iter().any(|(n, _, _)| n == ty));
                 let bring = if !sibling {
                     format!("`use {ty}.*`")
                 } else {
@@ -1196,7 +1236,9 @@ impl Resolver {
             many => {
                 let list = many.iter().map(|t| format!("`{t}.{bare}`")).join(", ");
                 (
-                    format!("unknown constructor `{bare}`: it could be {list}; say which, or `use` one"),
+                    format!(
+                        "unknown constructor `{bare}`: it could be {list}; say which, or `use` one"
+                    ),
                     "qualify it with its type".to_string(),
                 )
             }
@@ -1213,7 +1255,9 @@ impl Resolver {
     /// the question is what a `use` path names, and [`Resolver::use_type`]
     /// reports a type it may not see.
     pub fn module_has_type(&self, path: &[InternedString], ty: InternedString) -> bool {
-        self.frames.get(path).is_some_and(|f| f.tycons.iter().any(|(n, _, _)| *n == ty))
+        self.frames
+            .get(path)
+            .is_some_and(|f| f.tycons.iter().any(|(n, _, _)| *n == ty))
     }
 
     /// `use M.Ty`, `use M.Ty (A, B)` and `use M.Ty.*`, for a type declared in
@@ -1390,9 +1434,10 @@ impl Resolver {
         match pat.value() {
             ast::Pat::Var(n) => self.duplicates.contains(&n.span),
             ast::Pat::As(n, p) => self.duplicates.contains(&n.span) || self.binds_duplicate(p),
-            ast::Pat::Tuple(ps) | ast::Pat::List(ps) | ast::Pat::Vector(ps) | ast::Pat::Cons(_, ps) => {
-                ps.iter().any(|p| self.binds_duplicate(p))
-            }
+            ast::Pat::Tuple(ps)
+            | ast::Pat::List(ps)
+            | ast::Pat::Vector(ps)
+            | ast::Pat::Cons(_, ps) => ps.iter().any(|p| self.binds_duplicate(p)),
             ast::Pat::Record(fs, _) => fs.iter().any(|(_, p)| self.binds_duplicate(p)),
             _ => false,
         }
@@ -1941,8 +1986,7 @@ impl Resolver {
             ast::Expr::Unit => self.node(hir::Expr::Unit, expr.span),
             ast::Expr::Hole => {
                 self.error(
-                    "`_` can only appear inside an operator section, e.g. `(_ + 1)`"
-                        .to_string(),
+                    "`_` can only appear inside an operator section, e.g. `(_ + 1)`".to_string(),
                     "stray hole".to_string(),
                     expr.span,
                 );
@@ -1975,7 +2019,9 @@ impl Resolver {
             // `Mod.Ctor a b` — a qualified constructor application.
             ast::Expr::App(func, args) if matches!(func.value(), ast::Expr::Qual(_, n) if is_ctor_name(n.value())) =>
             {
-                let ast::Expr::Qual(q, name) = func.value() else { unreachable!() };
+                let ast::Expr::Qual(q, name) = func.value() else {
+                    unreachable!()
+                };
                 if let Some(canonical) = self.qualified_type_ctor(q, *name.value()) {
                     let label = self.node(canonical, name.span);
                     let ra = args.iter().map(|a| self.resolve_expr(a)).collect_vec();
@@ -2010,9 +2056,7 @@ impl Resolver {
                         let msg = if self.qualifiers.contains_key(&qn) {
                             format!("`{nn}` is not exported by module `{qn}`")
                         } else {
-                            format!(
-                                "module `{qn}` is not in scope here (add `use <path> as {qn}`)"
-                            )
+                            format!("module `{qn}` is not in scope here (add `use <path> as {qn}`)")
                         };
                         self.error(msg, "unresolved".to_string(), expr.span);
                         self.node(hir::Expr::Error, expr.span)
@@ -2078,7 +2122,9 @@ impl Resolver {
             }
             ast::Expr::BinOp(op, lhs, rhs) => {
                 let sym = InternedString::from(op.value().to_string());
-                let f = self.lookup(sym).expect("every operator is a prim, and prims are never truncated");
+                let f = self
+                    .lookup(sym)
+                    .expect("every operator is a prim, and prims are never truncated");
                 let rl = self.resolve_expr(lhs);
                 let rr = self.resolve_expr(rhs);
                 let fv = self.node(f, op.span);
@@ -2159,12 +2205,7 @@ impl Resolver {
     // --- patterns ------------------------------------------------------------
 
     /// Resolve a constructor pattern `Name p…` (bare or the tail of `Mod.Name p…`).
-    fn resolve_ctor_pat(
-        &mut self,
-        span: Span,
-        name: &ast::Ident,
-        args: &[ast::LPat],
-    ) -> hir::LPat {
+    fn resolve_ctor_pat(&mut self, span: Span, name: &ast::Ident, args: &[ast::LPat]) -> hir::LPat {
         // Bare here, canonical from here on: a constructor's identity downstream
         // is `Type.Ctor`, and the bare spelling is only how this module is
         // allowed to write it.

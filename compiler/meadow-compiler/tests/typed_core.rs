@@ -8,9 +8,11 @@
 //! the shape every REPL line has.
 
 use meadow_compiler::{
-    compile_unit, core, intern::InternedString, lexer::tokenize, parser,
+    AstModule, CompiledPackage, Options, compile_unit, core,
+    intern::InternedString,
+    lexer::tokenize,
+    parser,
     source::{Source, SourceKind},
-    AstModule, CompiledPackage, Options,
 };
 
 fn unit(name: &str, src: &str, deps: &[&CompiledPackage]) -> CompiledPackage {
@@ -45,7 +47,9 @@ fn type_args(pkg: &CompiledPackage) -> Vec<String> {
                 }
                 go(f, out);
             }
-            T::TyLam(_, b) | T::Lam(_, _, b) | T::Proj(b, _) | T::Sel(b, _, _) | T::Loc(_, b) => go(b, out),
+            T::TyLam(_, b) | T::Lam(_, _, b) | T::Proj(b, _) | T::Sel(b, _, _) | T::Loc(_, b) => {
+                go(b, out)
+            }
             T::App(f, a) => {
                 go(f, out);
                 go(a, out);
@@ -78,7 +82,9 @@ fn type_args(pkg: &CompiledPackage) -> Vec<String> {
                 arms.iter().for_each(|(_, b)| go(b, out));
             }
             T::Perform(_, _, a, _) => go(a, out),
-            T::Handle { body, clauses, ret, .. } => {
+            T::Handle {
+                body, clauses, ret, ..
+            } => {
                 go(body, out);
                 clauses.iter().for_each(|c| go(&c.body, out));
                 if let Some((_, _, r)) = ret {

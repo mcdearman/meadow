@@ -5,7 +5,9 @@
 //! the `main` entry point. It also keeps the per-package type tables around so the
 //! driver can print a fully annotated tree.
 
-use meadow_compiler::{core, hir, hir::VarId, infer::Scheme, intern::InternedString, CompiledPackage};
+use meadow_compiler::{
+    CompiledPackage, core, hir, hir::VarId, infer::Scheme, intern::InternedString,
+};
 use std::fmt::Write;
 
 pub struct GlobalSymbol {
@@ -97,10 +99,7 @@ impl LinkedProgram {
             for sym in self.symbols.iter().filter(|s| s.package == pkg.name) {
                 let _ = writeln!(out, "  {} : {}", hir::spell_name(&sym.name), sym.scheme);
             }
-            let annotated = pkg
-                .types
-                .rendered()
-                .len();
+            let annotated = pkg.types.rendered().len();
             let _ = writeln!(out, "  ({annotated} annotated nodes)");
         }
         match self.program.entry {

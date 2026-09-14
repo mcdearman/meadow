@@ -14,18 +14,17 @@
 //! *not* `@pub` in `Std.Collections.List`, so re-export is what makes them
 //! public).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use meadow_compiler::{
-    compile_unit_in_package,
+    AstModule, CompiledPackage, Export, Options, compile_unit_in_package,
     diagnostics::{self, Diagnostic},
     infer::TypeTable,
     intern::InternedString,
     lexer::tokenize,
     parser,
     source::{Source, SourceKind},
-    AstModule, CompiledPackage, Export, Options,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -55,16 +54,37 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Num.Bits", include_str!("../../../lib/Std/src/Num/Bits.mw")),
     ("Bytes", include_str!("../../../lib/Std/src/Bytes.mw")),
     ("Yield", include_str!("../../../lib/Std/src/Yield.mw")),
-    ("Collections", include_str!("../../../lib/Std/src/Collections.mw")),
-    ("Collections.Vector", include_str!("../../../lib/Std/src/Collections/Vector.mw")),
-    ("Collections.List", include_str!("../../../lib/Std/src/Collections/List.mw")),
-    ("Collections.Tree", include_str!("../../../lib/Std/src/Collections/Tree.mw")),
-    ("Collections.Set", include_str!("../../../lib/Std/src/Collections/Set.mw")),
-    ("Collections.Map", include_str!("../../../lib/Std/src/Collections/Map.mw")),
+    (
+        "Collections",
+        include_str!("../../../lib/Std/src/Collections.mw"),
+    ),
+    (
+        "Collections.Vector",
+        include_str!("../../../lib/Std/src/Collections/Vector.mw"),
+    ),
+    (
+        "Collections.List",
+        include_str!("../../../lib/Std/src/Collections/List.mw"),
+    ),
+    (
+        "Collections.Tree",
+        include_str!("../../../lib/Std/src/Collections/Tree.mw"),
+    ),
+    (
+        "Collections.Set",
+        include_str!("../../../lib/Std/src/Collections/Set.mw"),
+    ),
+    (
+        "Collections.Map",
+        include_str!("../../../lib/Std/src/Collections/Map.mw"),
+    ),
     ("Either", include_str!("../../../lib/Std/src/Either.mw")),
     ("St", include_str!("../../../lib/Std/src/St.mw")),
     ("Sort", include_str!("../../../lib/Std/src/Sort.mw")),
-    ("Collections.HashMap", include_str!("../../../lib/Std/src/Collections/HashMap.mw")),
+    (
+        "Collections.HashMap",
+        include_str!("../../../lib/Std/src/Collections/HashMap.mw"),
+    ),
     ("Compact", include_str!("../../../lib/Std/src/Compact.mw")),
     ("Thread", include_str!("../../../lib/Std/src/Thread.mw")),
     ("Stm", include_str!("../../../lib/Std/src/Stm.mw")),
@@ -75,7 +95,10 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Fs", include_str!("../../../lib/Std/src/Fs.mw")),
     ("Process", include_str!("../../../lib/Std/src/Process.mw")),
     ("String", include_str!("../../../lib/Std/src/String.mw")),
-    ("String.Parse", include_str!("../../../lib/Std/src/String/Parse.mw")),
+    (
+        "String.Parse",
+        include_str!("../../../lib/Std/src/String/Parse.mw"),
+    ),
     ("Path", include_str!("../../../lib/Std/src/Path.mw")),
     ("Json", include_str!("../../../lib/Std/src/Json.mw")),
     ("Time", include_str!("../../../lib/Std/src/Time.mw")),
@@ -199,7 +222,10 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
         diags.extend(lex.errors);
 
         let path = module_path(dotted);
-        let mname = path.last().copied().unwrap_or_else(|| InternedString::from(*dotted));
+        let mname = path
+            .last()
+            .copied()
+            .unwrap_or_else(|| InternedString::from(*dotted));
 
         let (ast, perrs) = parser::parse(mname, source, &lex.tokens);
         for e in &perrs {
@@ -212,7 +238,12 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
             pkg,
             InternedString::from(*dotted),
             subs.len(),
-            vec![AstModule { path: path.clone(), name: mname, ast, source }],
+            vec![AstModule {
+                path: path.clone(),
+                name: mname,
+                ast,
+                source,
+            }],
             &dep_refs,
             opts,
         );

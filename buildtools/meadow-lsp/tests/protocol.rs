@@ -3,7 +3,7 @@
 
 use lsp_server::{Connection, Message, Notification, Request, Response};
 use lsp_types::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// A client talking to the server on a background thread.
 struct Client {
@@ -25,13 +25,14 @@ impl Client {
         let (server, client) = Connection::memory();
         let handle = std::thread::spawn(move || {
             let opts = meadow::Options::debug();
-        let (packages, _) = meadow::stdlib::std_packages(opts);
-        let modules = meadow::stdlib::std_modules(opts)
-            .0
-            .into_iter()
-            .map(|(dotted, pkg)| (dotted.to_string(), pkg))
-            .collect();
-            meadow_lsp::server::serve(&server, packages, modules, std_src_root, None).expect("server");
+            let (packages, _) = meadow::stdlib::std_packages(opts);
+            let modules = meadow::stdlib::std_modules(opts)
+                .0
+                .into_iter()
+                .map(|(dotted, pkg)| (dotted.to_string(), pkg))
+                .collect();
+            meadow_lsp::server::serve(&server, packages, modules, std_src_root, None)
+                .expect("server");
         });
 
         let mut c = Client {
@@ -165,7 +166,11 @@ fn diagnostics_arrive_on_open_and_update_on_every_edit() {
     // Break it: diagnostics must appear without any request being made.
     let broken = c.set("def main = 1 + \"oops\"\n");
     assert_eq!(broken.len(), 1);
-    assert!(broken[0].message.contains("type mismatch"), "{:?}", broken[0]);
+    assert!(
+        broken[0].message.contains("type mismatch"),
+        "{:?}",
+        broken[0]
+    );
     assert_eq!(broken[0].severity, Some(DiagnosticSeverity::ERROR));
     assert_eq!(broken[0].range.start.line, 0);
 
@@ -320,10 +325,7 @@ fn an_unknown_request_is_an_error_not_a_panic() {
         .unwrap();
     loop {
         if let Message::Response(r) = c.conn.receiver.recv().unwrap() {
-            assert!(
-                r.response_result.is_err(),
-                "should report method not found"
-            );
+            assert!(r.response_result.is_err(), "should report method not found");
             break;
         }
     }
@@ -472,7 +474,10 @@ fn a_request_before_initialized_is_answered_rather_than_dropped() {
     };
     drop(client);
     let _ = handle.join();
-    assert!(answered, "an early request should get an error, not silence");
+    assert!(
+        answered,
+        "an early request should get an error, not silence"
+    );
 }
 
 /// Go-to-definition answers with *another file's* URI.
@@ -548,7 +553,9 @@ fn rename_is_offered_and_answers_with_an_edit_per_occurrence() {
             "newName": "twice"
         }),
     );
-    let edits = edit["changes"][URI].as_array().expect("edits for this file");
+    let edits = edit["changes"][URI]
+        .as_array()
+        .expect("edits for this file");
     // The declaration and the one call.
     assert_eq!(edits.len(), 2, "{edit}");
     for e in edits {
@@ -577,7 +584,10 @@ fn a_test_gets_a_test_lens_before_its_debug_lens() {
          \n\
          @test fun checks u = assertEq (helper 1) 1 \"x\"\n",
     );
-    let lenses = c.request("textDocument/codeLens", json!({"textDocument": {"uri": URI}}));
+    let lenses = c.request(
+        "textDocument/codeLens",
+        json!({"textDocument": {"uri": URI}}),
+    );
     let lenses = lenses.as_array().expect("lenses");
 
     // (line, title, command) in the order the server gave them.

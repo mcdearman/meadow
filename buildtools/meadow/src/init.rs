@@ -49,7 +49,8 @@ pub fn run(opts: &Options) -> Result<Created, String> {
     }
 
     let src = root.join("src");
-    std::fs::create_dir_all(&src).map_err(|e| format!("could not create {}: {e}", src.display()))?;
+    std::fs::create_dir_all(&src)
+        .map_err(|e| format!("could not create {}: {e}", src.display()))?;
 
     let mut files = Vec::new();
     write_new(&root.join("meadow.toml"), &manifest(&name), &mut files)?;
@@ -68,7 +69,8 @@ pub fn run(opts: &Options) -> Result<Created, String> {
 }
 
 fn write_new(path: &Path, contents: &str, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    std::fs::write(path, contents).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    std::fs::write(path, contents)
+        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
     files.push(path.to_path_buf());
     Ok(())
 }

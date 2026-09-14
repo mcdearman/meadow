@@ -9,21 +9,20 @@
 use crate::linker::{LinkedProgram, Linker};
 use crate::package::{Package, PackageGraph};
 use crate::stdlib;
+use chumsky::error::Rich;
 use meadow_compiler::{
-    core,
+    Options, core,
     diagnostics::Diagnostic,
     intern::InternedString,
-    lexer::{tokenize, Token},
+    lexer::{Token, tokenize},
     parser,
     source::{Source, SourceKind},
     span::Span,
-    Options,
 };
-use chumsky::error::Rich;
 use std::path::Path;
 
 pub use meadow_compiler::{
-    compile_str, compile_unit, AstModule, CompiledPackage, Export, TypedModule,
+    AstModule, CompiledPackage, Export, TypedModule, compile_str, compile_unit,
 };
 
 pub struct BuildOutput {
@@ -60,7 +59,7 @@ pub fn build_with(entry: &Path, opts: Options, addition: Option<Addition<'_>>) -
             return BuildOutput {
                 linked: None,
                 diagnostics: vec![d],
-            }
+            };
         }
     };
 
@@ -68,7 +67,11 @@ pub fn build_with(entry: &Path, opts: Options, addition: Option<Addition<'_>>) -
     // the tree on disk would declare every one of its names twice. Say that,
     // rather than emitting a hundred `already defined` errors that name the
     // symptom instead of the cause.
-    if graph.packages.iter().any(|p| &*p.name == stdlib::PACKAGE_NAME) {
+    if graph
+        .packages
+        .iter()
+        .any(|p| &*p.name == stdlib::PACKAGE_NAME)
+    {
         return BuildOutput {
             linked: None,
             diagnostics: vec![Diagnostic {

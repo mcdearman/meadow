@@ -396,7 +396,12 @@ pub fn pop_count(a: Num) -> Result<i64, String> {
             return Err(format!("`popCount` of a negative BigInt: {x}"));
         }
         Num::Big(x) => x.magnitude().count_ones() as i64,
-        other => return Err(format!("`popCount` expects an integer, got {}", show(&other))),
+        other => {
+            return Err(format!(
+                "`popCount` expects an integer, got {}",
+                show(&other)
+            ));
+        }
     })
 }
 
@@ -407,7 +412,12 @@ pub fn bit_width(a: &Num) -> Result<i64, String> {
         Num::Int(_) => 64,
         Num::Word(w, _) => w.bits() as i64,
         Num::Big(_) => return Err("`bitWidth` of a BigInt, which has no fixed width".into()),
-        other => return Err(format!("`bitWidth` expects an integer, got {}", show(other))),
+        other => {
+            return Err(format!(
+                "`bitWidth` expects an integer, got {}",
+                show(other)
+            ));
+        }
     })
 }
 
@@ -609,28 +619,60 @@ mod tests {
 
     #[test]
     fn fixed_widths_wrap() {
-        assert_eq!(int_arith(Arith::Add, w(Width::U8, 250), w(Width::U8, 10)), Ok(w(Width::U8, 4)));
-        assert_eq!(int_arith(Arith::Add, w(Width::I8, 127), w(Width::I8, 1)), Ok(w(Width::I8, -128)));
-        assert_eq!(int_arith(Arith::Sub, w(Width::U32, 0), w(Width::U32, 1)), Ok(w(Width::U32, u32::MAX as i128)));
-        assert_eq!(int_arith(Arith::Div, w(Width::I8, -128), w(Width::I8, -1)), Ok(w(Width::I8, -128)));
         assert_eq!(
-            int_arith(Arith::Mul, w(Width::U64, u64::MAX as i128), w(Width::U64, 2)),
+            int_arith(Arith::Add, w(Width::U8, 250), w(Width::U8, 10)),
+            Ok(w(Width::U8, 4))
+        );
+        assert_eq!(
+            int_arith(Arith::Add, w(Width::I8, 127), w(Width::I8, 1)),
+            Ok(w(Width::I8, -128))
+        );
+        assert_eq!(
+            int_arith(Arith::Sub, w(Width::U32, 0), w(Width::U32, 1)),
+            Ok(w(Width::U32, u32::MAX as i128))
+        );
+        assert_eq!(
+            int_arith(Arith::Div, w(Width::I8, -128), w(Width::I8, -1)),
+            Ok(w(Width::I8, -128))
+        );
+        assert_eq!(
+            int_arith(
+                Arith::Mul,
+                w(Width::U64, u64::MAX as i128),
+                w(Width::U64, 2)
+            ),
             Ok(w(Width::U64, (u64::MAX - 1) as i128))
         );
     }
 
     #[test]
     fn unsigned_compares_as_unsigned() {
-        assert_eq!(int_cmp(Cmp::Gt, w(Width::U64, u64::MAX as i128), w(Width::U64, 1)), Ok(true));
-        assert_eq!(int_cmp(Cmp::Lt, w(Width::I8, -1), w(Width::I8, 1)), Ok(true));
-        assert_eq!(show(&w(Width::U64, u64::MAX as i128)), "18446744073709551615");
+        assert_eq!(
+            int_cmp(Cmp::Gt, w(Width::U64, u64::MAX as i128), w(Width::U64, 1)),
+            Ok(true)
+        );
+        assert_eq!(
+            int_cmp(Cmp::Lt, w(Width::I8, -1), w(Width::I8, 1)),
+            Ok(true)
+        );
+        assert_eq!(
+            show(&w(Width::U64, u64::MAX as i128)),
+            "18446744073709551615"
+        );
     }
 
     #[test]
     fn a_generic_literal_takes_its_neighbours_type() {
-        assert_eq!(int_arith(Arith::Add, w(Width::U8, 255), Num::Int(1)), Ok(w(Width::U8, 0)));
         assert_eq!(
-            int_arith(Arith::Add, Num::Big(BigInt::from(1u64 << 62)), Num::Int(1 << 62)),
+            int_arith(Arith::Add, w(Width::U8, 255), Num::Int(1)),
+            Ok(w(Width::U8, 0))
+        );
+        assert_eq!(
+            int_arith(
+                Arith::Add,
+                Num::Big(BigInt::from(1u64 << 62)),
+                Num::Int(1 << 62)
+            ),
             Ok(Num::Big(BigInt::from(1u64 << 63)))
         );
         assert!(num_eq(&w(Width::I16, -3), &Num::Int(-3)));
@@ -640,24 +682,54 @@ mod tests {
 
     #[test]
     fn shifts_and_bits_respect_the_width() {
-        assert_eq!(int_bits(Bits::Shl, w(Width::U8, 0b1000_0001), w(Width::U8, 1)), Ok(w(Width::U8, 0b10)));
-        assert_eq!(int_bits(Bits::Shr, w(Width::I8, -128), w(Width::I8, 7)), Ok(w(Width::I8, -1)));
-        assert_eq!(int_bits(Bits::Ushr, w(Width::I8, -128), w(Width::I8, 7)), Ok(w(Width::I8, 1)));
+        assert_eq!(
+            int_bits(Bits::Shl, w(Width::U8, 0b1000_0001), w(Width::U8, 1)),
+            Ok(w(Width::U8, 0b10))
+        );
+        assert_eq!(
+            int_bits(Bits::Shr, w(Width::I8, -128), w(Width::I8, 7)),
+            Ok(w(Width::I8, -1))
+        );
+        assert_eq!(
+            int_bits(Bits::Ushr, w(Width::I8, -128), w(Width::I8, 7)),
+            Ok(w(Width::I8, 1))
+        );
         assert_eq!(int_not(w(Width::U8, 0)), Ok(w(Width::U8, 255)));
         assert_eq!(pop_count(w(Width::I8, -1)), Ok(8));
     }
 
     #[test]
     fn conversions_keep_the_low_bits() {
-        assert_eq!(to_int(IntTarget::Word(Width::U8), Num::Int(300)), Ok(w(Width::U8, 44)));
-        assert_eq!(to_int(IntTarget::Word(Width::I8), w(Width::U8, 255)), Ok(w(Width::I8, -1)));
-        assert_eq!(to_int(IntTarget::Int, w(Width::U32, u32::MAX as i128)), Ok(Num::Int(u32::MAX as i64)));
-        assert_eq!(to_int(IntTarget::Word(Width::U8), Num::Big(BigInt::from(300))), Ok(w(Width::U8, 44)));
-        assert_eq!(to_int(IntTarget::Word(Width::U8), Num::Big(BigInt::from(-1))), Ok(w(Width::U8, 255)));
+        assert_eq!(
+            to_int(IntTarget::Word(Width::U8), Num::Int(300)),
+            Ok(w(Width::U8, 44))
+        );
+        assert_eq!(
+            to_int(IntTarget::Word(Width::I8), w(Width::U8, 255)),
+            Ok(w(Width::I8, -1))
+        );
+        assert_eq!(
+            to_int(IntTarget::Int, w(Width::U32, u32::MAX as i128)),
+            Ok(Num::Int(u32::MAX as i64))
+        );
+        assert_eq!(
+            to_int(IntTarget::Word(Width::U8), Num::Big(BigInt::from(300))),
+            Ok(w(Width::U8, 44))
+        );
+        assert_eq!(
+            to_int(IntTarget::Word(Width::U8), Num::Big(BigInt::from(-1))),
+            Ok(w(Width::U8, 255))
+        );
         // Past 64 bits, only the low ones count.
         let big = (BigInt::from(1) << 100usize) + BigInt::from(7);
         assert_eq!(to_int(IntTarget::Int, Num::Big(big)), Ok(Num::Int(7)));
-        assert_eq!(to_int(IntTarget::Int, Num::Big(-(BigInt::from(1) << 70usize) - BigInt::from(1))), Ok(Num::Int(-1)));
+        assert_eq!(
+            to_int(
+                IntTarget::Int,
+                Num::Big(-(BigInt::from(1) << 70usize) - BigInt::from(1))
+            ),
+            Ok(Num::Int(-1))
+        );
     }
 
     #[test]

@@ -5,23 +5,25 @@
 //! (`Path`, `Json`). Running it here means the standard library's own behaviour is
 //! checked *through* the test runner, so both are covered at once.
 
-use meadow::{linker::Linker, pipeline, test, Options};
+use meadow::{Options, linker::Linker, pipeline, test};
 use std::path::Path;
 
 const WORKSPACE: &str = "tests/fixtures/workspace";
 
 /// Build the `effects` fixture and run its tests. Returns `(name, failure)` pairs.
 fn run_fixture() -> Vec<(String, Option<String>)> {
-    let out = pipeline::build(
-        Path::new(&format!("{WORKSPACE}/effects")),
-        Options::debug(),
-    );
+    let out = pipeline::build(Path::new(&format!("{WORKSPACE}/effects")), Options::debug());
     assert!(
         out.diagnostics.is_empty(),
         "fixture should compile cleanly: {:?}",
         out.diagnostics.iter().map(|d| &d.msg).collect::<Vec<_>>()
     );
-    test::run_linked(out.linked.expect("linked"), meadow::Engine::default(), meadow::Options::debug().opt).expect("the runner itself should not fail")
+    test::run_linked(
+        out.linked.expect("linked"),
+        meadow::Engine::default(),
+        meadow::Options::debug().opt,
+    )
+    .expect("the runner itself should not fail")
 }
 
 #[test]
@@ -31,7 +33,11 @@ fn every_test_in_the_fixture_passes() {
         .iter()
         .filter_map(|(name, err)| err.as_ref().map(|e| format!("{name}: {e}")))
         .collect();
-    assert!(failures.is_empty(), "failing tests:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "failing tests:\n{}",
+        failures.join("\n")
+    );
     // A count, so deleting the fixture's contents cannot make this pass vacuously.
     assert!(
         results.len() >= 20,
@@ -52,7 +58,11 @@ fn the_standard_librarys_tests_are_not_the_packages() {
 
 fn tests_of(src: &str) -> Vec<String> {
     let (cp, diags) = meadow_compiler::compile_str("t", src);
-    assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| &d.msg).collect::<Vec<_>>());
+    assert!(
+        diags.is_empty(),
+        "{:?}",
+        diags.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
     cp.tests.iter().map(|(n, _)| n.to_string()).collect()
 }
 
@@ -75,7 +85,8 @@ fn a_test_must_be_callable() {
     let (_, diags) = meadow_compiler::compile_str("t", "@test def x = 1\n");
     let msgs: Vec<_> = diags.iter().map(|d| d.msg.clone()).collect();
     assert!(
-        msgs.iter().any(|m| m.contains("`@test` must be a function")),
+        msgs.iter()
+            .any(|m| m.contains("`@test` must be a function")),
         "expected a diagnostic, got {msgs:?}"
     );
 }
@@ -106,17 +117,25 @@ fn run_src(src: &str) -> Vec<(String, Option<String>)> {
         .unwrap_or_default();
     let (cp, diags) =
         meadow_compiler::compile_unit("t".into(), 1, modules, &std_refs, Options::debug());
-    assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| &d.msg).collect::<Vec<_>>());
+    assert!(
+        diags.is_empty(),
+        "{:?}",
+        diags.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
     let mut pkgs: Vec<_> = std_pkgs;
     pkgs.push(cp);
-    test::run_linked(Linker::link(pkgs), meadow::Engine::default(), meadow::Options::debug().opt).expect("runner")
+    test::run_linked(
+        Linker::link(pkgs),
+        meadow::Engine::default(),
+        meadow::Options::debug().opt,
+    )
+    .expect("runner")
 }
 
 #[test]
 fn a_failed_assertion_reports_both_values() {
-    let results = run_src(
-        "use Std.Test (assertEq)\n@test fun wrong u = assertEq (2 + 2) 5 \"arithmetic\"\n",
-    );
+    let results =
+        run_src("use Std.Test (assertEq)\n@test fun wrong u = assertEq (2 + 2) 5 \"arithmetic\"\n");
     assert_eq!(results.len(), 1);
     let msg = results[0].1.clone().expect("should have failed");
     assert!(
@@ -133,7 +152,10 @@ fn one_failure_does_not_stop_the_others() {
          @test fun b u = assertEq 1 1 \"b\"\n\
          @test fun c u = assertEq 3 4 \"c\"\n",
     );
-    let ok: Vec<_> = results.iter().map(|(n, e)| (n.as_str(), e.is_none())).collect();
+    let ok: Vec<_> = results
+        .iter()
+        .map(|(n, e)| (n.as_str(), e.is_none()))
+        .collect();
     assert_eq!(ok, vec![("a", false), ("b", true), ("c", false)]);
 }
 
@@ -141,9 +163,11 @@ fn one_failure_does_not_stop_the_others() {
 fn show_renders_values_of_any_type() {
     // `assertEq`'s message goes through the `show` primitive, which is what makes
     // the assertion useful for types that are not `Int`.
-    let results = run_src(
-        "use Std.Test (assertEq)\n@test fun t u = assertEq [1; 2] [1; 3] \"lists\"\n",
-    );
+    let results =
+        run_src("use Std.Test (assertEq)\n@test fun t u = assertEq [1; 2] [1; 3] \"lists\"\n");
     let msg = results[0].1.clone().expect("should have failed");
-    assert!(msg.contains("[1; 3]") && msg.contains("[1; 2]"), "got: {msg}");
+    assert!(
+        msg.contains("[1; 3]") && msg.contains("[1; 2]"),
+        "got: {msg}"
+    );
 }

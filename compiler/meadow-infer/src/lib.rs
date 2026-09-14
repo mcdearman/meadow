@@ -614,10 +614,15 @@ impl Arena {
                 continue;
             }
             match slot {
-                Slot::Unbound { kind: VarKind::Num, .. } => {
+                Slot::Unbound {
+                    kind: VarKind::Num, ..
+                } => {
                     *slot = Slot::Bound(Type::con("BigInt"));
                 }
-                Slot::Unbound { kind: VarKind::Frac, .. } => {
+                Slot::Unbound {
+                    kind: VarKind::Frac,
+                    ..
+                } => {
                     *slot = Slot::Bound(Type::float());
                 }
                 _ => {}
@@ -694,7 +699,9 @@ impl Arena {
     ) -> Result<(Type, Type), UnifyError> {
         let row = self.prune(row);
         match row {
-            Type::RowExtend(l, field, rest) if l == label && !self.rigidly_distinct(&field, want) => {
+            Type::RowExtend(l, field, rest)
+                if l == label && !self.rigidly_distinct(&field, want) =>
+            {
                 Ok((*field, *rest))
             }
             Type::RowExtend(l, field, rest) => {
@@ -799,7 +806,9 @@ impl Arena {
                     .map(|a| self.quantify_from(a, level, map, kinds, classes))
                     .collect(),
             ),
-            Type::Record(row) => Type::Record(Box::new(self.quantify_from(row, level, map, kinds, classes))),
+            Type::Record(row) => Type::Record(Box::new(
+                self.quantify_from(row, level, map, kinds, classes),
+            )),
             Type::RowExtend(label, field, rest) => Type::RowExtend(
                 *label,
                 Box::new(self.quantify_from(field, level, map, kinds, classes)),
@@ -1074,7 +1083,11 @@ impl Infer {
         if labels.is_empty() {
             return;
         }
-        let list = labels.iter().map(|l| format!("`{l}`")).collect::<Vec<_>>().join(", ");
+        let list = labels
+            .iter()
+            .map(|l| format!("`{l}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
         self.errors.push(Diagnostic {
             msg: format!(
                 "a top-level `def` cannot perform effects, and this one performs {list}; \
@@ -1325,8 +1338,11 @@ impl Infer {
         self.solve_overloads(true);
         // A variable some `fun` quantified over is that function's parameter,
         // not a number waiting for a type: it stays a variable.
-        let quantified: HashSet<u32> =
-            self.generalized.values().flat_map(|g| g.vars.iter().copied()).collect();
+        let quantified: HashSet<u32> = self
+            .generalized
+            .values()
+            .flat_map(|g| g.vars.iter().copied())
+            .collect();
         self.arena.default_num_vars(&quantified);
         self.table.zonk_all(&mut self.arena);
         let mut schemes = HashMap::new();
@@ -1594,7 +1610,9 @@ impl Infer {
                     match self.arena.zonk(&fty) {
                         // A callee whose parameter is known to be a function:
                         // the argument need only do less than it allows.
-                        Type::Fun(params, fret, feff) if params.len() == 1 && params[0].is_fun() => {
+                        Type::Fun(params, fret, feff)
+                            if params.len() == 1 && params[0].is_fun() =>
+                        {
                             let loose = self.loosen_parameter(arg.span, params[0].clone());
                             self.unify_at(arg.span, aty, loose);
                             self.unify_at(expr.span, *fret, ret.clone());
@@ -1778,7 +1796,9 @@ impl Infer {
                 // several effects.
                 let mut handled: Vec<(InternedString, EffectInfo, Vec<Type>)> = Vec::new();
                 for arm in arms {
-                    let Some(name) = self.op_effect(arm.op) else { continue };
+                    let Some(name) = self.op_effect(arm.op) else {
+                        continue;
+                    };
                     if handled.iter().any(|(n, ..)| *n == name) {
                         continue;
                     }
@@ -1798,22 +1818,36 @@ impl Infer {
                 // body's row when there was no clause at all -- let an
                 // `unhandled effect` through a type that claimed to be pure.
                 let rho = self.arena.fresh_effect();
-                let row = |effects: &mut dyn Iterator<Item = &(InternedString, EffectInfo, Vec<Type>)>| {
+                let row = |effects: &mut dyn Iterator<
+                    Item = &(InternedString, EffectInfo, Vec<Type>),
+                >| {
                     let effects: Vec<_> = effects.collect();
-                    effects.into_iter().rev().fold(rho.clone(), |tail, (name, _, params)| {
-                        Type::RowExtend(*name, Box::new(Type::Tuple(params.clone())), Box::new(tail))
-                    })
+                    effects
+                        .into_iter()
+                        .rev()
+                        .fold(rho.clone(), |tail, (name, _, params)| {
+                            Type::RowExtend(
+                                *name,
+                                Box::new(Type::Tuple(params.clone())),
+                                Box::new(tail),
+                            )
+                        })
                 };
                 let inside = row(&mut handled.iter());
                 let outside = row(&mut handled.iter().filter(|(_, info, _)| {
-                    info.ops.iter().any(|o| !arms.iter().any(|a| a.op == o.name))
+                    info.ops
+                        .iter()
+                        .any(|o| !arms.iter().any(|a| a.op == o.name))
                 }));
                 self.unify_at(expr.span, body_eff, inside);
                 self.join_effect(expr.span, outside.clone());
 
                 for arm in arms {
                     let op = handled.iter().find_map(|(_, info, params)| {
-                        info.ops.iter().find(|o| o.name == arm.op).map(|o| (o, params))
+                        info.ops
+                            .iter()
+                            .find(|o| o.name == arm.op)
+                            .map(|o| (o, params))
                     });
                     let (arg_ty, ret_ty) = match op {
                         Some((o, params)) => (
@@ -2199,7 +2233,13 @@ impl Infer {
             for (&var, &idx) in &map {
                 vars[idx as usize] = var;
             }
-            self.generalized.insert(vid, Generalized { scheme: scheme.clone(), vars });
+            self.generalized.insert(
+                vid,
+                Generalized {
+                    scheme: scheme.clone(),
+                    vars,
+                },
+            );
         }
         scheme
     }
@@ -2209,7 +2249,10 @@ impl Infer {
     fn record_mono(&mut self, vid: VarId, scheme: &Scheme) {
         self.generalized.insert(
             vid,
-            Generalized { scheme: scheme.clone(), vars: Vec::new() },
+            Generalized {
+                scheme: scheme.clone(),
+                vars: Vec::new(),
+            },
         );
     }
 
@@ -2348,7 +2391,11 @@ impl Infer {
                 continue;
             }
             let group: Vec<Pending> = members.iter().map(|&i| self.pending[i].clone()).collect();
-            let mut search = Search { solutions: Vec::new(), budget: 512, truncated: false };
+            let mut search = Search {
+                solutions: Vec::new(),
+                budget: 512,
+                truncated: false,
+            };
             self.search(&group, &mut Vec::new(), &mut search);
             if search.truncated {
                 continue;
@@ -2427,7 +2474,10 @@ impl Infer {
         let Some(first) = group.first() else { return };
         let mut names: Vec<String> = Vec::new();
         for p in group {
-            let name = format!("`{}`", p.candidates.first().map(|c| c.name).unwrap_or_default());
+            let name = format!(
+                "`{}`",
+                p.candidates.first().map(|c| c.name).unwrap_or_default()
+            );
             if !names.contains(&name) {
                 names.push(name);
             }
@@ -2444,8 +2494,14 @@ impl Infer {
         self.errors.push(Diagnostic {
             msg: lines.join("\n"),
             filename: first.filename.clone(),
-            label: ("no combination of these candidates has a type".to_string(), first.span),
-            extra_labels: group[1..].iter().map(|p| ("and this".to_string(), p.span)).collect(),
+            label: (
+                "no combination of these candidates has a type".to_string(),
+                first.span,
+            ),
+            extra_labels: group[1..]
+                .iter()
+                .map(|p| ("and this".to_string(), p.span))
+                .collect(),
         });
         for p in group {
             for node in &p.poison {
@@ -2459,7 +2515,10 @@ impl Infer {
     fn candidate_line(&self, c: &hir::Candidate, mark: &str) -> String {
         let (spelled, scheme) = match c.alt {
             hir::Alt::Ctor(ctor) => (ctor.to_string(), self.ctors.get(&ctor).cloned()),
-            hir::Alt::Value(v) => (hir::spell_name(&c.name).into_owned(), self.env.get(&v).cloned()),
+            hir::Alt::Value(v) => (
+                hir::spell_name(&c.name).into_owned(),
+                self.env.get(&v).cloned(),
+            ),
         };
         let ty = match scheme {
             Some(s) => show_scheme_body(&s),
@@ -2535,7 +2594,9 @@ impl Infer {
     fn show_wanted(&mut self, ty: &Type) -> String {
         let z = self.arena.zonk(ty);
         let (mut map, mut kinds) = (HashMap::new(), Vec::new());
-        let body = self.arena.quantify_from(&z, None, &mut map, &mut kinds, true);
+        let body = self
+            .arena
+            .quantify_from(&z, None, &mut map, &mut kinds, true);
         show_scheme_body(&Scheme {
             quant: kinds,
             ty: body,
@@ -2564,7 +2625,11 @@ impl Infer {
         };
         let mut lines = vec![msg, "candidates in scope:".to_string()];
         for (k, c) in p.candidates.iter().enumerate() {
-            let mark = if !fits.is_empty() && fits.contains(&k) { "  (fits)" } else { "" };
+            let mark = if !fits.is_empty() && fits.contains(&k) {
+                "  (fits)"
+            } else {
+                ""
+            };
             lines.push(self.candidate_line(c, mark));
         }
         let diag = Diagnostic {
@@ -2914,8 +2979,9 @@ fn thread_row(tail: u32) -> Type {
 /// performed would have nobody to answer it -- a handler in the thread that
 /// spawned it is on another heap, and may not even be running. An effect the
 /// function handles itself does not appear in its type, so it is allowed.
-pub const THREAD_EFFECTS: &[&str] =
-    &["Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut"];
+pub const THREAD_EFFECTS: &[&str] = &[
+    "Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut",
+];
 
 /// The row `{ Stm | Bound(tail) }` -- what a transaction operation costs.
 fn stm_row(tail: u32) -> Type {
@@ -2928,7 +2994,11 @@ fn stm_row(tail: u32) -> Type {
 
 fn thread_body_row() -> Type {
     THREAD_EFFECTS.iter().rev().fold(Type::RowEmpty, |rest, e| {
-        Type::RowExtend(InternedString::from(*e), Box::new(Type::Tuple(vec![])), Box::new(rest))
+        Type::RowExtend(
+            InternedString::from(*e),
+            Box::new(Type::Tuple(vec![])),
+            Box::new(rest),
+        )
     })
 }
 
@@ -2949,8 +3019,14 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         ty,
     };
     // The same over any integer type, and over either float type.
-    let num = |ty: Type| Scheme { quant: vec![VarKind::Num], ty };
-    let frac = |ty: Type| Scheme { quant: vec![VarKind::Frac], ty };
+    let num = |ty: Type| Scheme {
+        quant: vec![VarKind::Num],
+        ty,
+    };
+    let frac = |ty: Type| Scheme {
+        quant: vec![VarKind::Frac],
+        ty,
+    };
     let s = match name {
         // --- numbers ---
         //
@@ -3009,9 +3085,18 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "bitNot" => num(Type::func(vec![Bound(0)], Bound(0))),
         "popCount" => num(Type::func(vec![Bound(0)], Type::int())),
         // --- bytes, which are `#[UInt8]` ---
-        "stringToBytes" => Scheme::mono(Type::func(vec![Type::string()], Type::array(Type::con("UInt8")))),
-        "bytesToString" => Scheme::mono(Type::func(vec![Type::array(Type::con("UInt8"))], Type::string())),
-        "bytesToHex" => Scheme::mono(Type::func(vec![Type::array(Type::con("UInt8"))], Type::string())),
+        "stringToBytes" => Scheme::mono(Type::func(
+            vec![Type::string()],
+            Type::array(Type::con("UInt8")),
+        )),
+        "bytesToString" => Scheme::mono(Type::func(
+            vec![Type::array(Type::con("UInt8"))],
+            Type::string(),
+        )),
+        "bytesToHex" => Scheme::mono(Type::func(
+            vec![Type::array(Type::con("UInt8"))],
+            Type::string(),
+        )),
         "show" | "display" => a1(Type::func(vec![Bound(0)], Type::string())),
         "hash" => a1(Type::func(vec![Bound(0)], Type::int())),
         "charCode" => Scheme::mono(Type::func(vec![Type::char()], Type::int())),
@@ -3077,11 +3162,19 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         },
         "stNewRef" => Scheme {
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
-            ty: Type::func_eff(vec![Bound(1)], Type::st_ref(Bound(0), Bound(1)), st_row(0, 2)),
+            ty: Type::func_eff(
+                vec![Bound(1)],
+                Type::st_ref(Bound(0), Bound(1)),
+                st_row(0, 2),
+            ),
         },
         "stGetRef" => Scheme {
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
-            ty: Type::func_eff(vec![Type::st_ref(Bound(0), Bound(1))], Bound(1), st_row(0, 2)),
+            ty: Type::func_eff(
+                vec![Type::st_ref(Bound(0), Bound(1))],
+                Bound(1),
+                st_row(0, 2),
+            ),
         },
         "stSetRef" => Scheme {
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
@@ -3148,7 +3241,10 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         },
         "compactAdd" => Scheme {
             quant: vec![VarKind::Type, VarKind::Type],
-            ty: Type::func(vec![Type::compact(Bound(0)), Bound(1)], Type::compact(Bound(1))),
+            ty: Type::func(
+                vec![Type::compact(Bound(0)), Bound(1)],
+                Type::compact(Bound(1)),
+            ),
         },
         "compactSize" => Scheme {
             quant: vec![VarKind::Type],
@@ -3157,7 +3253,11 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "threadSpawn" => Scheme {
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
-                vec![Type::Fun(vec![Type::unit()], Box::new(Bound(0)), Box::new(thread_body_row()))],
+                vec![Type::Fun(
+                    vec![Type::unit()],
+                    Box::new(Bound(0)),
+                    Box::new(thread_body_row()),
+                )],
                 Type::task(Bound(0)),
                 thread_row(1),
             ),
@@ -3204,7 +3304,11 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         },
         "stmWrite" => Scheme {
             quant: vec![VarKind::Type, VarKind::Effect],
-            ty: Type::func_eff(vec![Type::tvar(Bound(0)), Bound(0)], Type::unit(), stm_row(1)),
+            ty: Type::func_eff(
+                vec![Type::tvar(Bound(0)), Bound(0)],
+                Type::unit(),
+                stm_row(1),
+            ),
         },
         "stmBegin" | "stmWait" => Scheme {
             quant: vec![VarKind::Effect],
@@ -3342,7 +3446,10 @@ impl Namer {
 
 /// Whether a type name is one of the sized integer types.
 fn meadow_num_width(name: &str) -> bool {
-    matches!(name, "Int8" | "Int16" | "Int32" | "UInt8" | "UInt16" | "UInt32" | "UInt64")
+    matches!(
+        name,
+        "Int8" | "Int16" | "Int32" | "UInt8" | "UInt16" | "UInt32" | "UInt64"
+    )
 }
 
 fn var_name(mut n: u32) -> String {
@@ -3900,9 +4007,7 @@ fn match_ty(pat: &Type, conc: &Type, out: &mut HashMap<u32, Type>) -> bool {
         (Type::Var(a), Type::Var(b)) => a == b,
         (Type::RowEmpty, Type::RowEmpty) => true,
         (Type::Con(n1, a1), Type::Con(n2, a2)) => {
-            n1 == n2
-                && a1.len() == a2.len()
-                && a1.iter().zip(a2).all(|(x, y)| match_ty(x, y, out))
+            n1 == n2 && a1.len() == a2.len() && a1.iter().zip(a2).all(|(x, y)| match_ty(x, y, out))
         }
         (Type::Fun(p1, r1, e1), Type::Fun(p2, r2, e2)) => {
             p1.len() == p2.len()
@@ -3980,7 +4085,13 @@ impl Wrapper<'_> {
         struct Show<'a>(&'a Type, std::cell::RefCell<&'a mut Namer>);
         impl fmt::Display for Show<'_> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write_type(f, self.0, &mut self.1.borrow_mut(), Prec::Top, &HashSet::new())
+                write_type(
+                    f,
+                    self.0,
+                    &mut self.1.borrow_mut(),
+                    Prec::Top,
+                    &HashSet::new(),
+                )
             }
         }
         use fmt::Write;

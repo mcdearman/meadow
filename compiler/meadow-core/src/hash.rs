@@ -64,7 +64,9 @@ impl Default for Hasher {
 
 impl Hasher {
     pub fn new() -> Hasher {
-        Hasher { h: 0x6a09_e667_f3bc_c908 }
+        Hasher {
+            h: 0x6a09_e667_f3bc_c908,
+        }
     }
 
     pub fn word(&mut self, w: u64) {
@@ -220,9 +222,14 @@ mod tests {
         // into 1024 slots by a uniform random function fill about 647 of them;
         // a hash that let neighbouring keys share bits would fill far fewer.
         for shift in [0, 5, 10, 30] {
-            let slots: std::collections::HashSet<i64> =
-                (0..1024).map(|n| (of(|h| h.int(n)) >> shift) & 1023).collect();
-            assert!(slots.len() > 600, "{} distinct slots of 1024 at shift {shift}", slots.len());
+            let slots: std::collections::HashSet<i64> = (0..1024)
+                .map(|n| (of(|h| h.int(n)) >> shift) & 1023)
+                .collect();
+            assert!(
+                slots.len() > 600,
+                "{} distinct slots of 1024 at shift {shift}",
+                slots.len()
+            );
         }
     }
 }

@@ -117,14 +117,20 @@ impl<'a> Lowerer<'a> {
                     .vars
                     .iter()
                     .zip(&g.scheme.quant)
-                    .map(|(id, kind)| TyVar { id: *id, kind: *kind })
+                    .map(|(id, kind)| TyVar {
+                        id: *id,
+                        kind: *kind,
+                    })
                     .collect();
                 let map: HashMap<u32, Ty> = binders
                     .iter()
                     .enumerate()
                     .map(|(i, b)| (i as u32, InferType::Var(b.id)))
                     .collect();
-                Poly { ty: subst_bound(&g.scheme.ty, &map), binders }
+                Poly {
+                    ty: subst_bound(&g.scheme.ty, &map),
+                    binders,
+                }
             }
             None => Poly::mono(self.ty(fallback)),
         }
@@ -316,12 +322,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Prefix `term` with the `let`s that destructure `var` according to `pat`.
-    fn with_pat_prelude_term(
-        &mut self,
-        var: Var,
-        pat: Option<&hir::LPat>,
-        mut term: Term,
-    ) -> Term {
+    fn with_pat_prelude_term(&mut self, var: Var, pat: Option<&hir::LPat>, mut term: Term) -> Term {
         if let Some(p) = pat {
             let mut binds = Vec::new();
             self.bind_pat(Term::Var(var), p, &mut binds);
@@ -356,12 +357,7 @@ impl<'a> Lowerer<'a> {
                     Term::Lam(
                         x,
                         arg,
-                        Arc::new(Term::Perform(
-                            eff,
-                            opname,
-                            Arc::new(Term::Var(x)),
-                            ret,
-                        )),
+                        Arc::new(Term::Perform(eff, opname, Arc::new(Term::Var(x)), ret)),
                     )
                 } else {
                     self.mention(v, id.id)
@@ -435,9 +431,7 @@ impl<'a> Lowerer<'a> {
             }
             hir::Expr::Array(items) => {
                 let elem = match self.ty(expr.id) {
-                    InferType::Con(n, args) if &*n == "Array" && args.len() == 1 => {
-                        args[0].clone()
-                    }
+                    InferType::Con(n, args) if &*n == "Array" && args.len() == 1 => args[0].clone(),
                     _ => unknown(),
                 };
                 Term::Array(items.iter().map(|e| self.lower_expr(e)).collect(), elem)
@@ -546,12 +540,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lower `body`, prefixing `let`s that destructure `var` per `pat`.
-    fn with_pat_prelude(
-        &mut self,
-        var: Var,
-        pat: Option<&hir::LPat>,
-        body: &hir::LExpr,
-    ) -> Term {
+    fn with_pat_prelude(&mut self, var: Var, pat: Option<&hir::LPat>, body: &hir::LExpr) -> Term {
         let lowered = self.lower_expr(body);
         let term = self.at(body.span, lowered);
         self.with_pat_prelude_term(var, pat, term)
@@ -613,11 +602,7 @@ impl<'a> Lowerer<'a> {
             }
             hir::Pat::Record(fields, _) => {
                 for (label, p) in fields {
-                    let field = Term::Sel(
-                        Arc::new(scrut.clone()),
-                        *label.value(),
-                        self.ty(p.id),
-                    );
+                    let field = Term::Sel(Arc::new(scrut.clone()), *label.value(), self.ty(p.id));
                     self.bind_pat(field, p, out);
                 }
             }
@@ -650,21 +635,15 @@ impl<'a> Lowerer<'a> {
             hir::Pat::Var(id) => Pat::Var(*id.value(), self.ty(pat.id)),
             // Types are gone by here; the annotation did its work in inference.
             hir::Pat::Ann(inner, _) => self.lower_pat(inner),
-            hir::Pat::As(id, sub) => Pat::As(
-                *id.value(),
-                self.ty(pat.id),
-                Box::new(self.lower_pat(sub)),
-            ),
+            hir::Pat::As(id, sub) => {
+                Pat::As(*id.value(), self.ty(pat.id), Box::new(self.lower_pat(sub)))
+            }
             hir::Pat::Lit(hir::Lit::Int(i)) => Pat::Lit(self.int_lit(pat.id, *i)),
             hir::Pat::Lit(hir::Lit::Float(b)) => Pat::Lit(self.float_lit(pat.id, *b)),
             hir::Pat::Lit(hir::Lit::String(s)) => Pat::Lit(Lit::Str(*s)),
             hir::Pat::Lit(hir::Lit::Char(c)) => Pat::Lit(Lit::Char(*c)),
-            hir::Pat::Tuple(items) => {
-                Pat::Tuple(items.iter().map(|p| self.lower_pat(p)).collect())
-            }
-            hir::Pat::Array(items) => {
-                Pat::Array(items.iter().map(|p| self.lower_pat(p)).collect())
-            }
+            hir::Pat::Tuple(items) => Pat::Tuple(items.iter().map(|p| self.lower_pat(p)).collect()),
+            hir::Pat::Array(items) => Pat::Array(items.iter().map(|p| self.lower_pat(p)).collect()),
             // `[a; b; c]` — the same `Cons`/`Nil` chain as the expression form.
             hir::Pat::List(items) => {
                 let nil = Pat::Ctor(InternedString::from("List.Nil"), vec![]);
@@ -745,12 +724,8 @@ fn collect_pat_vars(pat: &hir::LPat, out: &mut Vec<(Var, hir::NodeId)>) {
         hir::Pat::Tuple(items)
         | hir::Pat::List(items)
         | hir::Pat::Array(items)
-        | hir::Pat::Cons(_, items) => {
-            items.iter().for_each(|p| collect_pat_vars(p, out))
-        }
-        hir::Pat::Record(fields, _) => {
-            fields.iter().for_each(|(_, p)| collect_pat_vars(p, out))
-        }
+        | hir::Pat::Cons(_, items) => items.iter().for_each(|p| collect_pat_vars(p, out)),
+        hir::Pat::Record(fields, _) => fields.iter().for_each(|(_, p)| collect_pat_vars(p, out)),
         _ => {}
     }
 }

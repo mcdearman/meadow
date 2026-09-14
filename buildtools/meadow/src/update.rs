@@ -181,12 +181,8 @@ fn scratch_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!(
-        "{prefix}-{}-{nonce:08x}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&dir)
-        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nonce:08x}", std::process::id()));
+    std::fs::create_dir(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     Ok(dir)
 }
 
@@ -204,8 +200,7 @@ fn latest_tag() -> Result<String, String> {
         ));
     }
     let body = String::from_utf8_lossy(&out.stdout);
-    field(&body, "tag_name")
-        .ok_or_else(|| "the releases API returned no `tag_name`".to_string())
+    field(&body, "tag_name").ok_or_else(|| "the releases API returned no `tag_name`".to_string())
 }
 
 /// Pull `"<name>": "<value>"` out of a JSON blob.
@@ -226,7 +221,11 @@ fn curl() -> &'static str {
 }
 
 fn exe_name() -> &'static str {
-    if cfg!(windows) { "meadow.exe" } else { "meadow" }
+    if cfg!(windows) {
+        "meadow.exe"
+    } else {
+        "meadow"
+    }
 }
 
 fn archive_ext() -> &'static str {
@@ -247,7 +246,7 @@ fn target_triple() -> Result<&'static str, String> {
             return Err(format!(
                 "no release builds for {os}/{arch} — build from source instead:\n\
                  \x20   cargo install --path meadow"
-            ))
+            ));
         }
     };
     Ok(triple)
@@ -292,7 +291,13 @@ mod tests {
     }
     #[test]
     fn ordinary_release_tags_are_accepted() {
-        for tag in ["v0.1.0", "0.1.0", "v1.2.3-rc.1", "v1.0.0+build.2", "nightly_2024"] {
+        for tag in [
+            "v0.1.0",
+            "0.1.0",
+            "v1.2.3-rc.1",
+            "v1.0.0+build.2",
+            "nightly_2024",
+        ] {
             assert!(valid_tag(tag), "should accept {tag}");
         }
     }

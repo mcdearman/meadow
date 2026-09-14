@@ -135,7 +135,10 @@ enum Line {
     Blank,
     /// A comment-only line; its indent is settled in a second pass.
     Comment(String),
-    Code { text: String, indent: usize },
+    Code {
+        text: String,
+        indent: usize,
+    },
 }
 
 struct Indenter {
@@ -237,7 +240,11 @@ impl Indenter {
         // without touching it: `update` walks this line's tokens in a moment and
         // pops the bracket there, and popping it twice would take the enclosing
         // frames with it.
-        if let Some(close) = first.chars().next().filter(|c| matches!(c, ')' | ']' | '}')) {
+        if let Some(close) = first
+            .chars()
+            .next()
+            .filter(|c| matches!(c, ')' | ']' | '}'))
+        {
             return self
                 .stack
                 .iter()
@@ -421,8 +428,8 @@ impl Indenter {
         // not: code inside brackets is routinely aligned under the opener or under
         // an argument, and no rule this small reproduces that — so the author's
         // own column is the better answer there.
-        self.opened = self.stack.len() > before
-            && !matches!(self.stack.last(), Some(Frame::Open { .. }));
+        self.opened =
+            self.stack.len() > before && !matches!(self.stack.last(), Some(Frame::Open { .. }));
     }
 
     /// Reduce a line to just its code: comments dropped, and each string or
@@ -531,15 +538,24 @@ fn tokens(code: &str) -> Vec<Tok<'_>> {
             while i < bytes.len() && is_word(bytes[i] as char) {
                 i += 1;
             }
-            out.push(Tok { col: start, text: &code[start..i] });
+            out.push(Tok {
+                col: start,
+                text: &code[start..i],
+            });
         } else if OP.contains(c) {
             let start = i;
             while i < bytes.len() && OP.contains(bytes[i] as char) {
                 i += 1;
             }
-            out.push(Tok { col: start, text: &code[start..i] });
+            out.push(Tok {
+                col: start,
+                text: &code[start..i],
+            });
         } else {
-            out.push(Tok { col: i, text: &code[i..i + 1] });
+            out.push(Tok {
+                col: i,
+                text: &code[i..i + 1],
+            });
             i += 1;
         }
     }
@@ -581,7 +597,10 @@ mod tests {
 
     #[test]
     fn blank_line_runs_collapse_and_the_file_ends_once() {
-        assert_eq!(f("\n\ndef a = 1\n\n\n\ndef b = 2\n\n\n"), "def a = 1\n\ndef b = 2\n");
+        assert_eq!(
+            f("\n\ndef a = 1\n\n\n\ndef b = 2\n\n\n"),
+            "def a = 1\n\ndef b = 2\n"
+        );
     }
 
     #[test]
@@ -606,7 +625,8 @@ mod tests {
 
     #[test]
     fn an_arm_body_on_its_own_line_hangs_two_units() {
-        let src = "fun f xs =\nmatch xs with\n| Nil -> 0\n| Cons x r ->\nmatch r with\n| Nil -> 1\n";
+        let src =
+            "fun f xs =\nmatch xs with\n| Nil -> 0\n| Cons x r ->\nmatch r with\n| Nil -> 1\n";
         assert_eq!(
             f(src),
             "fun f xs =\n  match xs with\n  | Nil -> 0\n  | Cons x r ->\n      match r with\n      | Nil -> 1\n"
@@ -616,13 +636,19 @@ mod tests {
     #[test]
     fn then_and_else_line_up_with_their_if() {
         let src = "fun f n =\nif n == 0\nthen 1\nelse\nn * 2\n";
-        assert_eq!(f(src), "fun f n =\n  if n == 0\n  then 1\n  else\n    n * 2\n");
+        assert_eq!(
+            f(src),
+            "fun f n =\n  if n == 0\n  then 1\n  else\n    n * 2\n"
+        );
     }
 
     #[test]
     fn a_trailing_then_opens_a_block_and_else_closes_it() {
         let src = "fun f n =\nif n == 0 then\n1\nelse\n2\n";
-        assert_eq!(f(src), "fun f n =\n  if n == 0 then\n    1\n  else\n    2\n");
+        assert_eq!(
+            f(src),
+            "fun f n =\n  if n == 0 then\n    1\n  else\n    2\n"
+        );
     }
 
     #[test]

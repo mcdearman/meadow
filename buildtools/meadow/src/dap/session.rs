@@ -76,7 +76,10 @@ impl SourceFile {
         let line = self.line_starts.partition_point(|&s| s <= offset).max(1) - 1;
         let start = self.line_starts[line] as usize;
         let end = (offset as usize).min(self.content.len());
-        let col = self.content.get(start..end).map_or(0, |s| s.chars().count());
+        let col = self
+            .content
+            .get(start..end)
+            .map_or(0, |s| s.chars().count());
         (line as u32 + 1, col as u32 + 1)
     }
 
@@ -236,10 +239,12 @@ impl Session {
         let original_len = entry
             .and_then(|e| std::fs::read_to_string(&e.module).ok())
             .map_or(usize::MAX, |t| t.len());
-        let addition = entry.zip(added.as_deref()).map(|(e, text)| pipeline::Addition {
-            file: &e.module,
-            text,
-        });
+        let addition = entry
+            .zip(added.as_deref())
+            .map(|(e, text)| pipeline::Addition {
+                file: &e.module,
+                text,
+            });
         let out = pipeline::build_with(&path, options, addition);
         if !out.diagnostics.is_empty() {
             let shown: Vec<String> = out
@@ -249,7 +254,11 @@ impl Session {
                 .map(|d| {
                     // Past the end of the file is the text we added.
                     if d.label.1.start as usize >= original_len {
-                        format!("in `{}`: {}", entry.map_or("", |e| e.expression.as_str()), d.msg)
+                        format!(
+                            "in `{}`: {}",
+                            entry.map_or("", |e| e.expression.as_str()),
+                            d.msg
+                        )
                     } else {
                         format!("{}: {}", plain_path(&d.filename), d.msg)
                     }
@@ -277,7 +286,10 @@ impl Session {
         }
         let lowered = meadow_seq::lower_program(&linked.program, options.opt);
         if !lowered.unsupported.is_empty() {
-            return Err(format!("the back end cannot compile this program: {:?}", lowered.unsupported));
+            return Err(format!(
+                "the back end cannot compile this program: {:?}",
+                lowered.unsupported
+            ));
         }
         let image = meadow_codegen::compile_with_debug_info(&lowered.program).map_err(|e| e.msg)?;
         Session::new(image, &linked.packages)
@@ -413,7 +425,9 @@ impl Session {
             if !b {
                 continue;
             }
-            let Some(loc) = self.debug.loc(pc as Pc) else { continue };
+            let Some(loc) = self.debug.loc(pc as Pc) else {
+                continue;
+            };
             if !ids.contains(&loc.source) {
                 continue;
             }
@@ -435,7 +449,8 @@ impl Session {
         lines
             .iter()
             .map(|&line| {
-                let (landed, pcs) = (line..line + 3).find_map(|l| by_line.get(&l).map(|p| (l, p)))?;
+                let (landed, pcs) =
+                    (line..line + 3).find_map(|l| by_line.get(&l).map(|p| (l, p)))?;
                 for &pc in pcs {
                     self.breakpoint[pc as usize] = true;
                 }
@@ -538,7 +553,9 @@ impl Session {
                 && self.debug.loc(pc).is_some_and(|l| l.source == source))
             .then_some(Stop::Entry),
             Mode::StepIn => {
-                let other_frame = self.current_return().is_some_and(|k| k != self.vm.pinned[0]);
+                let other_frame = self
+                    .current_return()
+                    .is_some_and(|k| k != self.vm.pinned[0]);
                 (moved || other_frame).then_some(Stop::Step)
             }
             Mode::StepOver => {
@@ -557,7 +574,10 @@ impl Session {
     /// The source and line of the instruction at `pc`.
     fn line_at(&self, pc: Pc) -> Option<(u32, u32)> {
         let loc = self.debug.loc(pc)?;
-        Some((loc.source, self.files.get(&loc.source)?.line_of(loc.span.start)))
+        Some((
+            loc.source,
+            self.files.get(&loc.source)?.line_of(loc.span.start),
+        ))
     }
 
     /// The continuation the code at the current instruction will answer.
@@ -598,13 +618,13 @@ impl Session {
             }
             k = match named(&self.debug.continuations) {
                 Some(inner) => inner,
-                None => (0..heap.len(a))
-                    .map(|i| heap.field(a, i))
-                    .find_map(|f| {
-                        let r = f.addr().filter(|r| heap.is_object(*r) && heap.kind(*r) == Kind::Ref)?;
-                        let target = heap.field(r, 0);
-                        self.continuation(target).map(|_| target)
-                    })?,
+                None => (0..heap.len(a)).map(|i| heap.field(a, i)).find_map(|f| {
+                    let r = f
+                        .addr()
+                        .filter(|r| heap.is_object(*r) && heap.kind(*r) == Kind::Ref)?;
+                    let target = heap.field(r, 0);
+                    self.continuation(target).map(|_| target)
+                })?,
             };
         }
         None
@@ -640,9 +660,15 @@ impl Session {
         let mut out = Vec::new();
         let env = self.debug.env(pc);
         out.push(Frame {
-            name: self.debug.region(pc).map_or("?".to_string(), |r| display_name(&r.name)),
+            name: self
+                .debug
+                .region(pc)
+                .map_or("?".to_string(), |r| display_name(&r.name)),
             loc: self.debug.loc(pc).or_else(|| self.nearest_loc(pc)),
-            vars: env.iter().map(|(n, r)| (*n, self.vm.register(*r as usize))).collect(),
+            vars: env
+                .iter()
+                .map(|(n, r)| (*n, self.vm.register(*r as usize)))
+                .collect(),
         });
         let mut k = self.current_return();
         while out.len() < max {
@@ -754,7 +780,9 @@ impl Session {
                 let mut rows = Vec::new();
                 // Newest first, so a shadowed name shows its current binding.
                 for (name, value) in f.vars {
-                    let Some(info) = self.vars.get(&name).cloned() else { continue };
+                    let Some(info) = self.vars.get(&name).cloned() else {
+                        continue;
+                    };
                     if !seen.insert(info.name.clone()) {
                         continue;
                     }
@@ -818,7 +846,11 @@ impl Session {
             .vars
             .iter()
             .find(|(n, _)| self.vars.get(n).is_some_and(|i| i.name == name))?;
-        let ty = self.vars.values().find(|i| i.name == name).map(|i| i.ty.clone());
+        let ty = self
+            .vars
+            .values()
+            .find(|i| i.name == name)
+            .map(|i| i.ty.clone());
         Some(self.row(name.to_string(), *value, ty))
     }
 
@@ -828,7 +860,9 @@ impl Session {
         // numbers, which a function generic over its number type is full of.
         let ty = match ty {
             Some(t) if is_type_variable(&t) => match v {
-                Value::Obj(a) if self.vm.heap().is_object(a) && self.vm.heap().kind(a) == Kind::BigInt => {
+                Value::Obj(a)
+                    if self.vm.heap().is_object(a) && self.vm.heap().kind(a) == Kind::BigInt =>
+                {
                     Some("BigInt".to_string())
                 }
                 Value::Obj(_) => Some(t),
@@ -1009,7 +1043,11 @@ impl Session {
                 out.push_str(" }");
             }
             Kind::Data => {
-                let ctor = self.image.ctor(heap.meta(a)).map(|c| c.to_string()).unwrap_or_default();
+                let ctor = self
+                    .image
+                    .ctor(heap.meta(a))
+                    .map(|c| c.to_string())
+                    .unwrap_or_default();
                 let bare = ctor.rsplit('.').next().unwrap_or(&ctor).to_string();
                 if ctor == "#tuple" {
                     out.push('(');
@@ -1020,7 +1058,10 @@ impl Session {
                     let mut cur = a;
                     let mut first = true;
                     while heap.is_object(cur)
-                        && self.image.ctor(heap.meta(cur)).is_some_and(|c| &*c == "List.Cons")
+                        && self
+                            .image
+                            .ctor(heap.meta(cur))
+                            .is_some_and(|c| &*c == "List.Cons")
                     {
                         if !first {
                             out.push_str("; ");
@@ -1180,9 +1221,10 @@ impl Names<'_> {
                 self.pat(sub);
             }
             hir::Pat::Ann(inner, _) => self.pat(inner),
-            hir::Pat::Cons(_, ps) | hir::Pat::Tuple(ps) | hir::Pat::Array(ps) | hir::Pat::List(ps) => {
-                ps.iter().for_each(|x| self.pat(x))
-            }
+            hir::Pat::Cons(_, ps)
+            | hir::Pat::Tuple(ps)
+            | hir::Pat::Array(ps)
+            | hir::Pat::List(ps) => ps.iter().for_each(|x| self.pat(x)),
             hir::Pat::Record(fs, _) => fs.iter().for_each(|(_, x)| self.pat(x)),
             hir::Pat::Wildcard | hir::Pat::Unit | hir::Pat::Lit(_) | hir::Pat::Error => {}
         }
@@ -1226,9 +1268,10 @@ impl Names<'_> {
                 self.expr(t);
                 self.expr(f);
             }
-            hir::Expr::Tuple(xs) | hir::Expr::Array(xs) | hir::Expr::List(xs) | hir::Expr::Cons(_, xs) => {
-                xs.iter().for_each(|x| self.expr(x))
-            }
+            hir::Expr::Tuple(xs)
+            | hir::Expr::Array(xs)
+            | hir::Expr::List(xs)
+            | hir::Expr::Cons(_, xs) => xs.iter().for_each(|x| self.expr(x)),
             hir::Expr::Record(fs, base) => {
                 fs.iter().for_each(|(_, x)| self.expr(x));
                 if let Some(b) = base {

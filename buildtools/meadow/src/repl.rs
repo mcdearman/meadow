@@ -5,26 +5,25 @@
 //! entries (plus, transitively, whatever they depended on). The "repl prefix" is
 //! literally handed back to the compiler as ordinary dependency packages.
 
+use itertools::Either;
+use meadow::runtime;
 use meadow::{complete, stdlib};
 use meadow_compiler::{
-    ast, core, compile_unit, diagnostics, hir,
+    AstModule, CompiledPackage, Options, ast, compile_unit, core, diagnostics, hir,
     intern::InternedString,
     lexer::tokenize,
     parser,
     source::{Source, SourceKind},
     span::{Located, Span},
-    AstModule, CompiledPackage, Options,
 };
-use meadow::runtime;
 use meadow_fmt as fmt;
-use itertools::Either;
 use rustyline::{
+    Cmd, CompletionType, ConditionalEventHandler, Config, Editor, Event, EventContext,
+    EventHandler, Helper, Hinter, KeyCode, KeyEvent, Modifiers, RepeatCount,
     completion::{Completer, Pair},
     error::ReadlineError,
     highlight::Highlighter,
     validate::{ValidationResult, Validator},
-    Cmd, CompletionType, Config, ConditionalEventHandler, Editor, Event, EventContext,
-    EventHandler, Helper, Hinter, KeyCode, KeyEvent, Modifiers, RepeatCount,
 };
 use std::borrow::Cow;
 
@@ -181,7 +180,12 @@ fn needs_continuation(input: &str) -> bool {
     let multiline = input.contains('\n');
     // A blank line submits a multi-line entry. "Blank" has to mean whitespace,
     // not just empty: auto-indent puts spaces on the line before you press Enter.
-    if multiline && input.rsplit('\n').next().is_none_or(|l| l.trim().is_empty()) {
+    if multiline
+        && input
+            .rsplit('\n')
+            .next()
+            .is_none_or(|l| l.trim().is_empty())
+    {
         return false;
     }
     if !multiline {
@@ -202,9 +206,34 @@ fn needs_continuation(input: &str) -> bool {
     }
     if matches!(
         code.split_whitespace().last().unwrap_or(""),
-        "->" | "=" | "==" | "!=" | "<=" | ">=" | "&&" | "||"
-            | "let" | "in" | "if" | "then" | "else" | "match" | "with" | "fun" | "def"
-            | "|" | "\\" | "+" | "-" | "*" | "/" | "%" | "^" | "<" | ">" | "." | ","
+        "->" | "="
+            | "=="
+            | "!="
+            | "<="
+            | ">="
+            | "&&"
+            | "||"
+            | "let"
+            | "in"
+            | "if"
+            | "then"
+            | "else"
+            | "match"
+            | "with"
+            | "fun"
+            | "def"
+            | "|"
+            | "\\"
+            | "+"
+            | "-"
+            | "*"
+            | "/"
+            | "%"
+            | "^"
+            | "<"
+            | ">"
+            | "."
+            | ","
     ) {
         return true;
     }
@@ -321,7 +350,10 @@ const COMMANDS: &[(&str, &str)] = &[
     (":t <expr>", "type-check without evaluating"),
     (":module", "list the bindings in scope"),
     (":reset", "forget everything defined so far"),
-    (":vm / :cek", "switch machines (the bytecode VM is the default)"),
+    (
+        ":vm / :cek",
+        "switch machines (the bytecode VM is the default)",
+    ),
 ];
 
 /// Print the startup banner.
@@ -520,7 +552,11 @@ impl Session {
         // Surface lex / parse problems with a source snippet, then bail if the
         // entry didn't parse at all.
         let mut front_errors = lex.errors.clone();
-        front_errors.extend(perrs.iter().map(|e| diagnostics::from_parse_error("repl", e)));
+        front_errors.extend(
+            perrs
+                .iter()
+                .map(|e| diagnostics::from_parse_error("repl", e)),
+        );
         diagnostics::emit(&front_errors, "repl", input);
         let Some(item) = parsed else { return };
 
@@ -563,7 +599,10 @@ impl Session {
             vec![ast_mod],
             &deps,
             // A bare expression is run, not defined, so it may do anything.
-            Options { entry_name: Some("it"), ..self.opts },
+            Options {
+                entry_name: Some("it"),
+                ..self.opts
+            },
         );
 
         let had_error = !diags.is_empty();
@@ -620,11 +659,7 @@ impl Session {
         }
     }
 
-    fn program_for(
-        &self,
-        current: &CompiledPackage,
-        entry: Option<core::Var>,
-    ) -> core::Program {
+    fn program_for(&self, current: &CompiledPackage, entry: Option<core::Var>) -> core::Program {
         let mut defs = Vec::new();
         let mut ctor_fields = std::collections::HashMap::new();
         let mut variants = std::collections::HashMap::new();
@@ -671,7 +706,10 @@ mod tests {
         // Tests do not run on a TTY, so ask for colour explicitly.
         yansi::whenever(yansi::Condition::ALWAYS);
         let got = h.highlight_prompt("> ", true);
-        assert!(got.starts_with('\x1b'), "expected an escape sequence: {got:?}");
+        assert!(
+            got.starts_with('\x1b'),
+            "expected an escape sequence: {got:?}"
+        );
         assert!(got.ends_with("\x1b[0m"), "must reset: {got:?}");
         // Colour must not change the *visible* width, or the cursor drifts.
         assert_eq!(strip_ansi(&got), "> ");
@@ -681,7 +719,10 @@ mod tests {
 
         // rustyline's own prompts are never ours to style.
         yansi::whenever(yansi::Condition::ALWAYS);
-        assert_eq!(h.highlight_prompt("(i-search)`': ", false), "(i-search)`': ");
+        assert_eq!(
+            h.highlight_prompt("(i-search)`': ", false),
+            "(i-search)`': "
+        );
     }
 
     #[test]
@@ -834,8 +875,5 @@ fn synth_def(name: &str, expr: ast::LExpr) -> ast::LDecl {
         ast::Pat::Var(Located::new(InternedString::from(name), span)),
         span,
     );
-    Located::new(
-        ast::Decl::Bind(ast::Bind::Pat(pat, expr)),
-        span,
-    )
+    Located::new(ast::Decl::Bind(ast::Bind::Pat(pat, expr)), span)
 }

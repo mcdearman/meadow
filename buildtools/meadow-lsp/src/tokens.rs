@@ -10,7 +10,7 @@
 
 use crate::analysis::{Analysis, Namespace};
 use crate::pos::LineIndex;
-use meadow_compiler::lexer::{tokenize, Token};
+use meadow_compiler::lexer::{Token, tokenize};
 use meadow_compiler::source::{Source, SourceKind};
 use std::collections::HashMap;
 
@@ -59,7 +59,10 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
             Token::UpperIdent(_) | Token::LowerIdent(_) | Token::Period | Token::As => {}
             _ => in_use_path = false,
         }
-        let next_is_period = matches!(lex.tokens.get(i + 1).map(|n| n.value()), Some(Token::Period));
+        let next_is_period = matches!(
+            lex.tokens.get(i + 1).map(|n| n.value()),
+            Some(Token::Period)
+        );
         // `mod Int` declares a module, whatever else that spelling names -- in
         // `Std`, `Int` is also a type and one of `Json`'s constructors.
         let declares_module = i > 0 && matches!(lex.tokens[i - 1].value(), Token::Mod);

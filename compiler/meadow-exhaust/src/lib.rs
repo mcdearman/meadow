@@ -23,7 +23,7 @@
 
 use meadow_diagnostics::Diagnostic;
 use meadow_hir as hir;
-use meadow_infer::{subst_bound, Type, TypeTable, VariantEnv};
+use meadow_infer::{Type, TypeTable, VariantEnv, subst_bound};
 use meadow_intern::InternedString;
 use meadow_span::Span;
 
@@ -197,7 +197,10 @@ impl Checker<'_> {
 
     fn require_irrefutable(&mut self, pat: &hir::LPat, what: &str) {
         // A bare variable or `_` is irrefutable by construction; skip the work.
-        if matches!(pat.value(), hir::Pat::Var(_) | hir::Pat::Wildcard | hir::Pat::Error) {
+        if matches!(
+            pat.value(),
+            hir::Pat::Var(_) | hir::Pat::Wildcard | hir::Pat::Error
+        ) {
             return;
         }
         let Some(ty) = self.types.get(pat.id).cloned() else {
@@ -320,7 +323,11 @@ impl Checker<'_> {
                     // after a resolver error on purpose, to collect more than
                     // one problem per compile. So: treat a type whose arity does
                     // not add up as opaque, and let the reported error stand.
-                    let arity = vs.iter().flat_map(|v| &v.fields).filter_map(max_bound).max();
+                    let arity = vs
+                        .iter()
+                        .flat_map(|v| &v.fields)
+                        .filter_map(max_bound)
+                        .max();
                     if arity.is_some_and(|n| n as usize >= args.len()) {
                         return None;
                     }
@@ -339,7 +346,10 @@ impl Checker<'_> {
                 // and is compiled before `Std.Collections.List`.
                 let con = |n: &str| Con::Variant(InternedString::from(n));
                 match &**name {
-                    "Bool" => Some(vec![(con("Bool.False"), vec![]), (con("Bool.True"), vec![])]),
+                    "Bool" => Some(vec![
+                        (con("Bool.False"), vec![]),
+                        (con("Bool.True"), vec![]),
+                    ]),
                     "List" => {
                         let elem = args.first().cloned().unwrap_or(Type::RowEmpty);
                         Some(vec![
@@ -537,11 +547,7 @@ fn render_at(p: &P, nested: bool) -> String {
             Con::Variant(name) => {
                 let parts: Vec<String> = args.iter().map(|a| render_at(a, true)).collect();
                 let s = format!("{} {}", bare_ctor(name), parts.join(" "));
-                if nested {
-                    format!("({s})")
-                } else {
-                    s
-                }
+                if nested { format!("({s})") } else { s }
             }
         },
     }
@@ -556,11 +562,7 @@ fn max_bound(t: &Type) -> Option<u32> {
         Type::Bound(i) => Some(*i),
         Type::Var(_) | Type::RowEmpty | Type::Error => None,
         Type::Con(_, args) | Type::Tuple(args) => args.iter().filter_map(max_bound).max(),
-        Type::Fun(ps, r, e) => ps
-            .iter()
-            .chain([&**r, &**e])
-            .filter_map(max_bound)
-            .max(),
+        Type::Fun(ps, r, e) => ps.iter().chain([&**r, &**e]).filter_map(max_bound).max(),
         Type::Record(r) => max_bound(r),
         Type::RowExtend(_, f, rest) => [&**f, &**rest].into_iter().filter_map(max_bound).max(),
     }

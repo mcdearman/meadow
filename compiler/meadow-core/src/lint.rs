@@ -38,7 +38,7 @@
 //!   one's consequences helps nobody.
 
 use crate::*;
-use meadow_infer::{normalize, VariantEnv};
+use meadow_infer::{VariantEnv, normalize};
 
 /// Rigid ids for an imported scheme's quantifiers are allocated up here, where
 /// they cannot collide with this unit's (which are inference arena indices).
@@ -53,10 +53,7 @@ pub fn check(
     ctors: &VariantEnv,
     imported: &HashMap<Var, Scheme>,
 ) -> Vec<String> {
-    let mut globals: HashMap<Var, Poly> = imported
-        .iter()
-        .map(|(v, s)| (*v, import(s)))
-        .collect();
+    let mut globals: HashMap<Var, Poly> = imported.iter().map(|(v, s)| (*v, import(s))).collect();
     for d in &program.defs {
         globals.insert(d.var, d.poly.clone());
     }
@@ -190,7 +187,9 @@ impl Lint<'_> {
                     }
                     other if is_unknown(&other) => Poly::mono(unknown()),
                     other => {
-                        self.say(format!("applied something that is not a function: {other:?}"));
+                        self.say(format!(
+                            "applied something that is not a function: {other:?}"
+                        ));
                         Poly::mono(unknown())
                     }
                 }
@@ -260,10 +259,13 @@ impl Lint<'_> {
                 ))
             }
             Term::Record(fields) => {
-                let row = fields.iter().rev().fold(InferType::RowEmpty, |acc, (l, x)| {
-                    let ty = self.synth_mono(x);
-                    InferType::RowExtend(*l, Box::new(ty), Box::new(acc))
-                });
+                let row = fields
+                    .iter()
+                    .rev()
+                    .fold(InferType::RowEmpty, |acc, (l, x)| {
+                        let ty = self.synth_mono(x);
+                        InferType::RowExtend(*l, Box::new(ty), Box::new(acc))
+                    });
                 Poly::mono(InferType::Record(Box::new(row)))
             }
             Term::Sel(x, _, ty) => {
@@ -471,11 +473,7 @@ impl Lint<'_> {
             InferType::Con(n, args) => (*n, args.clone()),
             _ => return None,
         };
-        let sig = self
-            .ctors
-            .get(&owner)?
-            .iter()
-            .find(|v| v.name == name)?;
+        let sig = self.ctors.get(&owner)?.iter().find(|v| v.name == name)?;
         Some(
             sig.fields
                 .iter()
@@ -559,9 +557,7 @@ fn same(a: &Ty, b: &Ty) -> bool {
         }
         // The effect row is the third component, and it is not compared.
         (InferType::Fun(p1, r1, _), InferType::Fun(p2, r2, _)) => {
-            p1.len() == p2.len()
-                && p1.iter().zip(p2).all(|(x, y)| same(x, y))
-                && same(r1, r2)
+            p1.len() == p2.len() && p1.iter().zip(p2).all(|(x, y)| same(x, y)) && same(r1, r2)
         }
         (InferType::Tuple(x), InferType::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same(p, q))

@@ -76,7 +76,12 @@ pub fn program(p: &Program) -> Program {
         let body = strip_number_binders(&d.term, &d.poly, &poly);
         let term = s.term(&body, &sigma);
         let term = s.freshen(&term);
-        defs.push(Def { var, name: d.name, poly, term });
+        defs.push(Def {
+            var,
+            name: d.name,
+            poly,
+            term,
+        });
     }
 
     let mut origins = p.origins.clone();
@@ -97,7 +102,11 @@ fn mentions_generic_local(t: &Term) -> bool {
     let mut found = false;
     walk(t, &mut |t| match t {
         Term::Let(_, poly, _, _) if !number_positions(poly).is_empty() => found = true,
-        Term::LetRec(binds, _) if binds.iter().any(|(_, p, _)| !number_positions(p).is_empty()) => {
+        Term::LetRec(binds, _)
+            if binds
+                .iter()
+                .any(|(_, p, _)| !number_positions(p).is_empty()) =>
+        {
             found = true
         }
         _ => {}
@@ -134,7 +143,9 @@ fn walk(t: &Term, f: &mut impl FnMut(&Term)) {
             walk(s, f);
             arms.iter().for_each(|(_, b)| walk(b, f));
         }
-        Term::Handle { body, clauses, ret, .. } => {
+        Term::Handle {
+            body, clauses, ret, ..
+        } => {
             walk(body, f);
             clauses.iter().for_each(|c| walk(&c.body, f));
             if let Some((_, _, b)) = ret {
@@ -159,8 +170,17 @@ fn number_type(ty: &Ty) -> Option<InternedString> {
     match ty {
         InferType::Con(n, args) if args.is_empty() => matches!(
             &**n,
-            "Int" | "BigInt" | "Float" | "Float32" | "Int8" | "Int16" | "Int32" | "UInt8"
-                | "UInt16" | "UInt32" | "UInt64"
+            "Int"
+                | "BigInt"
+                | "Float"
+                | "Float32"
+                | "Int8"
+                | "Int16"
+                | "Int32"
+                | "UInt8"
+                | "UInt16"
+                | "UInt32"
+                | "UInt64"
         )
         .then_some(*n),
         _ => None,
@@ -181,7 +201,13 @@ fn specialize_poly(poly: &Poly, key: &[InternedString]) -> (Poly, HashMap<u32, T
             binders.push(*b);
         }
     }
-    (Poly { binders, ty: subst_rigid(&poly.ty, &sigma) }, sigma)
+    (
+        Poly {
+            binders,
+            ty: subst_rigid(&poly.ty, &sigma),
+        },
+        sigma,
+    )
 }
 
 /// The body of a generic binding, its `TyLam` rebuilt with only the binders the
@@ -237,8 +263,10 @@ impl Specializer {
             Some(local) => local.positions.clone(),
             None => self.tops.get(&x)?.clone(),
         };
-        let key: Vec<InternedString> =
-            positions.iter().map(|&i| args.get(i).and_then(number_type)).collect::<Option<_>>()?;
+        let key: Vec<InternedString> = positions
+            .iter()
+            .map(|&i| args.get(i).and_then(number_type))
+            .collect::<Option<_>>()?;
         let rest: Vec<Ty> = args
             .iter()
             .enumerate()
@@ -285,11 +313,18 @@ impl Specializer {
     }
 
     fn ty(&self, t: &Ty, sigma: &HashMap<u32, Ty>) -> Ty {
-        if sigma.is_empty() { t.clone() } else { subst_rigid(t, sigma) }
+        if sigma.is_empty() {
+            t.clone()
+        } else {
+            subst_rigid(t, sigma)
+        }
     }
 
     fn poly(&self, p: &Poly, sigma: &HashMap<u32, Ty>) -> Poly {
-        Poly { binders: p.binders.clone(), ty: self.ty(&p.ty, sigma) }
+        Poly {
+            binders: p.binders.clone(),
+            ty: self.ty(&p.ty, sigma),
+        }
     }
 
     fn pat(&self, p: &Pat, sigma: &HashMap<u32, Ty>) -> Pat {
@@ -343,11 +378,20 @@ impl Specializer {
             Term::Let(v, poly, rhs, body) => {
                 let positions = number_positions(poly);
                 if positions.is_empty() {
-                    return Term::Let(*v, self.poly(poly, sigma), self.arc(rhs, sigma), self.arc(body, sigma));
+                    return Term::Let(
+                        *v,
+                        self.poly(poly, sigma),
+                        self.arc(rhs, sigma),
+                        self.arc(body, sigma),
+                    );
                 }
                 // The body says which copies it wants; each is the right-hand
                 // side made again at those types, bound around the body.
-                self.scopes.push(Local { var: *v, positions, wanted: Vec::new() });
+                self.scopes.push(Local {
+                    var: *v,
+                    positions,
+                    wanted: Vec::new(),
+                });
                 let body = self.term(body, sigma);
                 let local = self.scopes.pop().expect("the scope just pushed");
                 let mut out = body;
@@ -359,31 +403,54 @@ impl Specializer {
                     out = Term::Let(*copy, self.poly(&p, &inner), Arc::new(rhs), Arc::new(out));
                 }
                 let original = self.term(rhs, sigma);
-                Term::Let(*v, self.poly(poly, sigma), Arc::new(original), Arc::new(out))
+                Term::Let(
+                    *v,
+                    self.poly(poly, sigma),
+                    Arc::new(original),
+                    Arc::new(out),
+                )
             }
             Term::LetRec(binds, body) => self.let_rec(binds, body, sigma),
-            Term::If(c, a, b) => Term::If(self.arc(c, sigma), self.arc(a, sigma), self.arc(b, sigma)),
+            Term::If(c, a, b) => {
+                Term::If(self.arc(c, sigma), self.arc(a, sigma), self.arc(b, sigma))
+            }
             Term::Tuple(xs) => Term::Tuple(xs.iter().map(|x| self.term(x, sigma)).collect()),
             Term::Proj(x, i) => Term::Proj(self.arc(x, sigma), *i),
-            Term::Array(xs, ty) => {
-                Term::Array(xs.iter().map(|x| self.term(x, sigma)).collect(), self.ty(ty, sigma))
-            }
-            Term::Record(fs) => Term::Record(fs.iter().map(|(l, x)| (*l, self.term(x, sigma))).collect()),
-            Term::Sel(x, l, ty) => Term::Sel(self.arc(x, sigma), *l, self.ty(ty, sigma)),
-            Term::Extend(x, l, v) => Term::Extend(self.arc(x, sigma), *l, self.arc(v, sigma)),
-            Term::Ctor(n, ty, xs) => {
-                Term::Ctor(*n, self.ty(ty, sigma), xs.iter().map(|x| self.term(x, sigma)).collect())
-            }
-            Term::Case(s, arms, ty) => Term::Case(
-                self.arc(s, sigma),
-                arms.iter().map(|(p, b)| (self.pat(p, sigma), self.term(b, sigma))).collect(),
+            Term::Array(xs, ty) => Term::Array(
+                xs.iter().map(|x| self.term(x, sigma)).collect(),
                 self.ty(ty, sigma),
             ),
-            Term::Prim(op, xs, ty) => {
-                Term::Prim(*op, xs.iter().map(|x| self.term(x, sigma)).collect(), self.ty(ty, sigma))
+            Term::Record(fs) => {
+                Term::Record(fs.iter().map(|(l, x)| (*l, self.term(x, sigma))).collect())
             }
-            Term::Perform(e, op, a, ty) => Term::Perform(*e, *op, self.arc(a, sigma), self.ty(ty, sigma)),
-            Term::Handle { body, clauses, ret, ty } => Term::Handle {
+            Term::Sel(x, l, ty) => Term::Sel(self.arc(x, sigma), *l, self.ty(ty, sigma)),
+            Term::Extend(x, l, v) => Term::Extend(self.arc(x, sigma), *l, self.arc(v, sigma)),
+            Term::Ctor(n, ty, xs) => Term::Ctor(
+                *n,
+                self.ty(ty, sigma),
+                xs.iter().map(|x| self.term(x, sigma)).collect(),
+            ),
+            Term::Case(s, arms, ty) => Term::Case(
+                self.arc(s, sigma),
+                arms.iter()
+                    .map(|(p, b)| (self.pat(p, sigma), self.term(b, sigma)))
+                    .collect(),
+                self.ty(ty, sigma),
+            ),
+            Term::Prim(op, xs, ty) => Term::Prim(
+                *op,
+                xs.iter().map(|x| self.term(x, sigma)).collect(),
+                self.ty(ty, sigma),
+            ),
+            Term::Perform(e, op, a, ty) => {
+                Term::Perform(*e, *op, self.arc(a, sigma), self.ty(ty, sigma))
+            }
+            Term::Handle {
+                body,
+                clauses,
+                ret,
+                ty,
+            } => Term::Handle {
                 body: self.arc(body, sigma),
                 clauses: clauses
                     .iter()
@@ -397,7 +464,9 @@ impl Specializer {
                         body: self.term(&c.body, sigma),
                     })
                     .collect(),
-                ret: ret.as_ref().map(|(v, t, b)| (*v, self.ty(t, sigma), self.arc(b, sigma))),
+                ret: ret
+                    .as_ref()
+                    .map(|(v, t, b)| (*v, self.ty(t, sigma), self.arc(b, sigma))),
                 ty: self.ty(ty, sigma),
             },
         }
@@ -405,9 +474,15 @@ impl Specializer {
 
     /// A recursive group: the body, then every copy any of them asked for --
     /// including copies the copies ask for -- in one group with the originals.
-    fn let_rec(&mut self, binds: &[(Var, Poly, Term)], body: &Term, sigma: &HashMap<u32, Ty>) -> Term {
-        let generic: Vec<usize> =
-            (0..binds.len()).filter(|&i| !number_positions(&binds[i].1).is_empty()).collect();
+    fn let_rec(
+        &mut self,
+        binds: &[(Var, Poly, Term)],
+        body: &Term,
+        sigma: &HashMap<u32, Ty>,
+    ) -> Term {
+        let generic: Vec<usize> = (0..binds.len())
+            .filter(|&i| !number_positions(&binds[i].1).is_empty())
+            .collect();
         let first = self.scopes.len();
         for &i in &generic {
             self.scopes.push(Local {
@@ -417,8 +492,10 @@ impl Specializer {
             });
         }
         let body = self.term(body, sigma);
-        let mut out: Vec<(Var, Poly, Term)> =
-            binds.iter().map(|(v, p, t)| (*v, self.poly(p, sigma), self.term(t, sigma))).collect();
+        let mut out: Vec<(Var, Poly, Term)> = binds
+            .iter()
+            .map(|(v, p, t)| (*v, self.poly(p, sigma), self.term(t, sigma)))
+            .collect();
 
         // Make copies until none is new.
         let mut made: HashSet<Var> = HashSet::new();
@@ -474,9 +551,11 @@ fn freshen_pat(p: &Pat, s: &mut Specializer, names: &mut HashMap<Var, Var>) -> P
         Pat::Tuple(ps) => Pat::Tuple(ps.iter().map(|x| freshen_pat(x, s, names)).collect()),
         Pat::Array(ps) => Pat::Array(ps.iter().map(|x| freshen_pat(x, s, names)).collect()),
         Pat::Ctor(c, ps) => Pat::Ctor(*c, ps.iter().map(|x| freshen_pat(x, s, names)).collect()),
-        Pat::Record(fs) => {
-            Pat::Record(fs.iter().map(|(l, x)| (*l, freshen_pat(x, s, names))).collect())
-        }
+        Pat::Record(fs) => Pat::Record(
+            fs.iter()
+                .map(|(l, x)| (*l, freshen_pat(x, s, names)))
+                .collect(),
+        ),
     }
 }
 
@@ -520,9 +599,10 @@ fn freshen(t: &Term, s: &mut Specializer, names: &mut HashMap<Var, Var>) -> Term
         }
         Term::Tuple(xs) => Term::Tuple(xs.iter().map(|x| freshen(x, s, names)).collect()),
         Term::Proj(x, i) => Term::Proj(go(x, s, names), *i),
-        Term::Array(xs, ty) => {
-            Term::Array(xs.iter().map(|x| freshen(x, s, names)).collect(), ty.clone())
-        }
+        Term::Array(xs, ty) => Term::Array(
+            xs.iter().map(|x| freshen(x, s, names)).collect(),
+            ty.clone(),
+        ),
         Term::Record(fs) => {
             Term::Record(fs.iter().map(|(l, x)| (*l, freshen(x, s, names))).collect())
         }
@@ -531,9 +611,11 @@ fn freshen(t: &Term, s: &mut Specializer, names: &mut HashMap<Var, Var>) -> Term
             let x = go(x, s, names);
             Term::Extend(x, *l, go(v, s, names))
         }
-        Term::Ctor(c, ty, xs) => {
-            Term::Ctor(*c, ty.clone(), xs.iter().map(|x| freshen(x, s, names)).collect())
-        }
+        Term::Ctor(c, ty, xs) => Term::Ctor(
+            *c,
+            ty.clone(),
+            xs.iter().map(|x| freshen(x, s, names)).collect(),
+        ),
         Term::Case(scrut, arms, ty) => {
             let scrut = go(scrut, s, names);
             let arms = arms
@@ -545,11 +627,18 @@ fn freshen(t: &Term, s: &mut Specializer, names: &mut HashMap<Var, Var>) -> Term
                 .collect();
             Term::Case(scrut, arms, ty.clone())
         }
-        Term::Prim(op, xs, ty) => {
-            Term::Prim(*op, xs.iter().map(|x| freshen(x, s, names)).collect(), ty.clone())
-        }
+        Term::Prim(op, xs, ty) => Term::Prim(
+            *op,
+            xs.iter().map(|x| freshen(x, s, names)).collect(),
+            ty.clone(),
+        ),
         Term::Perform(e, op, a, ty) => Term::Perform(*e, *op, go(a, s, names), ty.clone()),
-        Term::Handle { body, clauses, ret, ty } => {
+        Term::Handle {
+            body,
+            clauses,
+            ret,
+            ty,
+        } => {
             let body = go(body, s, names);
             let clauses = clauses
                 .iter()
@@ -568,7 +657,12 @@ fn freshen(t: &Term, s: &mut Specializer, names: &mut HashMap<Var, Var>) -> Term
                 let n = rename(*v, s, names);
                 (n, ty.clone(), go(b, s, names))
             });
-            Term::Handle { body, clauses, ret, ty: ty.clone() }
+            Term::Handle {
+                body,
+                clauses,
+                ret,
+                ty: ty.clone(),
+            }
         }
     }
 }

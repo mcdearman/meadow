@@ -20,7 +20,9 @@ fn the_standard_library_is_already_formatted() {
                 .find(|(_, (a, b))| a != b)
                 .map(|(i, (a, b))| (i + 1, a.to_string(), b.to_string()))
                 .unwrap_or((0, "<length>".into(), "<length>".into()));
-            panic!("Std.{name} line {line} would be reformatted:\n  is:   {want:?}\n  want: {got:?}");
+            panic!(
+                "Std.{name} line {line} would be reformatted:\n  is:   {want:?}\n  want: {got:?}"
+            );
         }
     }
 }

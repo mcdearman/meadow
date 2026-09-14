@@ -39,10 +39,10 @@
 //! both.
 
 use meadow_compiler::{
+    OptLevel, Options, Strictness,
     diagnostics::Diagnostic,
     intern::InternedString,
     source::{Source, SourceKind},
-    OptLevel, Options, Strictness,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -156,7 +156,10 @@ impl Builder {
             return Err(Diagnostic {
                 msg: format!("packages cannot be mutually recursive: {chain}"),
                 filename: canon.display().to_string(),
-                label: ("dependency cycle starts here".to_string(), Default::default()),
+                label: (
+                    "dependency cycle starts here".to_string(),
+                    Default::default(),
+                ),
                 extra_labels: vec![],
             });
         }
@@ -307,7 +310,9 @@ fn parse_manifest(text: &str, dir: &Path) -> Manifest {
             // rejected: a manifest written for a later version of the compiler
             // should still build.
             _ if section.starts_with("profile.") => {
-                let p = profiles.entry(section["profile.".len()..].to_string()).or_default();
+                let p = profiles
+                    .entry(section["profile.".len()..].to_string())
+                    .or_default();
                 match key {
                     "opt-level" | "opt_level" => p.opt = OptLevel::parse(unquote(value)),
                     "strictness" => p.strictness = Strictness::parse(unquote(value)),
@@ -357,7 +362,10 @@ fn dep_path(value: &str) -> Option<&str> {
     }
 }
 
-fn discover_modules(root: &Path, pkg_name: InternedString) -> Result<Vec<ModuleSource>, Diagnostic> {
+fn discover_modules(
+    root: &Path,
+    pkg_name: InternedString,
+) -> Result<Vec<ModuleSource>, Diagnostic> {
     discover_modules_io(root, pkg_name).map_err(|e| match e {
         Discovery::Io(e) => io_diag(root, e),
         Discovery::Misnamed(d) => d,
@@ -375,7 +383,10 @@ impl From<std::io::Error> for Discovery {
     }
 }
 
-fn discover_modules_io(root: &Path, pkg_name: InternedString) -> Result<Vec<ModuleSource>, Discovery> {
+fn discover_modules_io(
+    root: &Path,
+    pkg_name: InternedString,
+) -> Result<Vec<ModuleSource>, Discovery> {
     // A single `.mw` file is a one-module package. Its name is exempt from the
     // PascalCase rule below: it is the *package's* name, and a package may be
     // lower-case (`meadow init` makes `app`), whereas a module in a package is a
@@ -408,10 +419,7 @@ fn discover_modules_io(root: &Path, pkg_name: InternedString) -> Result<Vec<Modu
         if !ROOT_STEMS.contains(&stem) {
             segs.push(InternedString::from(stem));
         }
-        let name = segs
-            .last()
-            .copied()
-            .unwrap_or(pkg_name);
+        let name = segs.last().copied().unwrap_or(pkg_name);
         modules.push(module_from_file(&file, &segs, name)?);
     }
 
@@ -523,11 +531,20 @@ fn check_module_names(src_root: &Path, files: &[PathBuf]) -> Result<(), Diagnost
         let rel = file.strip_prefix(src_root).unwrap_or(file);
         let mut fixed = PathBuf::new();
         let mut bad = false;
-        let parts: Vec<_> = rel.components().filter_map(|c| c.as_os_str().to_str()).collect();
+        let parts: Vec<_> = rel
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .collect();
         for (i, part) in parts.iter().enumerate() {
             let last = i + 1 == parts.len();
-            let name = if last { part.strip_suffix(".mw").unwrap_or(part) } else { part };
-            let good = if is_module_name(name) { name.to_string() } else {
+            let name = if last {
+                part.strip_suffix(".mw").unwrap_or(part)
+            } else {
+                part
+            };
+            let good = if is_module_name(name) {
+                name.to_string()
+            } else {
                 bad = true;
                 pascal_case(name)
             };
@@ -570,7 +587,9 @@ mod naming_tests {
         for good in ["Main", "Lib", "Vector", "P5", "HttpServer"] {
             assert!(is_module_name(good), "{good}");
         }
-        for bad in ["main", "prelude", "p5", "my-mod", "My_Mod", "", "5p", "Don't"] {
+        for bad in [
+            "main", "prelude", "p5", "my-mod", "My_Mod", "", "5p", "Don't",
+        ] {
             assert!(!is_module_name(bad), "{bad}");
         }
     }

@@ -9,11 +9,11 @@
 //! win over the catch-all `OpIdent` regex (which covers user-defined operator
 //! names); this is why the regex must *not* include letters.
 
+use logos::Logos;
 use meadow_diagnostics::Diagnostic;
 use meadow_intern::InternedString;
 use meadow_source::Source;
 use meadow_span::{Located, Span};
-use logos::Logos;
 use std::fmt::Display;
 
 pub type LToken = Located<Token>;
@@ -406,8 +406,19 @@ mod tests {
     fn operators_are_distinct_tokens_not_op_idents() {
         // `==` and `->` must win over the generic `OpIdent` regex.
         use Token::*;
-        assert_eq!(kinds("a == b"), vec![LowerIdent("a".into()), EqEq, LowerIdent("b".into())]);
-        assert_eq!(kinds("\\x -> x"), vec![Backslash, LowerIdent("x".into()), RArrow, LowerIdent("x".into())]);
+        assert_eq!(
+            kinds("a == b"),
+            vec![LowerIdent("a".into()), EqEq, LowerIdent("b".into())]
+        );
+        assert_eq!(
+            kinds("\\x -> x"),
+            vec![
+                Backslash,
+                LowerIdent("x".into()),
+                RArrow,
+                LowerIdent("x".into())
+            ]
+        );
     }
 
     #[test]
@@ -421,10 +432,7 @@ mod tests {
         use Token::*;
         // string literals are unquoted and unescaped by the lexer
         assert_eq!(kinds("42 \"hi\""), vec![Int(42), String("hi".into())]);
-        assert_eq!(
-            kinds(r#""a\tb\n""#),
-            vec![String("a\tb\n".into())]
-        );
+        assert_eq!(kinds(r#""a\tb\n""#), vec![String("a\tb\n".into())]);
     }
 
     #[test]

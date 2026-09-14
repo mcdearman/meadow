@@ -21,7 +21,10 @@ fn manifest_parses_cargo_style() {
 
 #[test]
 fn builds_app_against_a_path_dependency() {
-    let out = pipeline::build(Path::new(&format!("{WORKSPACE}/app")), meadow::Options::debug());
+    let out = pipeline::build(
+        Path::new(&format!("{WORKSPACE}/app")),
+        meadow::Options::debug(),
+    );
     assert!(
         out.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
@@ -35,7 +38,10 @@ fn builds_app_against_a_path_dependency() {
 #[test]
 fn private_names_do_not_cross_package_boundaries() {
     // `util` exports `double` / `scale` (both `@pub`) but not `secret`.
-    let out = pipeline::build(Path::new(&format!("{WORKSPACE}/util")), meadow::Options::debug());
+    let out = pipeline::build(
+        Path::new(&format!("{WORKSPACE}/util")),
+        meadow::Options::debug(),
+    );
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     let linked = out.linked.unwrap();
     let mut names: Vec<_> = linked
@@ -64,7 +70,10 @@ fn modules_are_compiled_in_dependency_order() {
     // `layers` has `Alpha.mw` (needs `Zeta`), `Zeta.mw` and `Main.mw`. Modules are
     // discovered in filename order, so `Alpha` comes first and everything it uses
     // comes later — inference and evaluation both have to sort that out.
-    let out = pipeline::build(Path::new(&format!("{WORKSPACE}/layers")), meadow::Options::debug());
+    let out = pipeline::build(
+        Path::new(&format!("{WORKSPACE}/layers")),
+        meadow::Options::debug(),
+    );
     assert!(
         out.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
@@ -129,7 +138,11 @@ fn a_manifest_configures_the_build_profiles() {
     assert_eq!(flagged.strictness(), Strictness::Strict);
 
     // A package with no manifest at all is just the profile.
-    let bare = Resolved::resolve(Profile::Release, Path::new("no/such/place"), ProfileConfig::default());
+    let bare = Resolved::resolve(
+        Profile::Release,
+        Path::new("no/such/place"),
+        ProfileConfig::default(),
+    );
     assert_eq!(bare.options, Profile::Release.options());
 
     std::fs::remove_dir_all(&dir).ok();

@@ -5,7 +5,7 @@
 //! the library is covered by the normal build, and means the language's test
 //! machinery is exercised by something bigger than a fixture.
 
-use meadow::{linker::Linker, stdlib, test, Engine, Options};
+use meadow::{Engine, Options, linker::Linker, stdlib, test};
 
 fn run() -> Vec<(String, Option<String>)> {
     let (packages, diags) = stdlib::std_packages(Options::debug());
@@ -14,7 +14,13 @@ fn run() -> Vec<(String, Option<String>)> {
         "the standard library should compile cleanly: {:?}",
         diags.iter().map(|d| &d.msg).collect::<Vec<_>>()
     );
-    test::run_linked_in(Linker::link(packages), "Std", Engine::default(), Options::debug().opt).expect("the runner should not itself fail")
+    test::run_linked_in(
+        Linker::link(packages),
+        "Std",
+        Engine::default(),
+        Options::debug().opt,
+    )
+    .expect("the runner should not itself fail")
 }
 
 #[test]
@@ -65,10 +71,7 @@ fn the_standard_library_cannot_be_built_as_a_package() {
     // Pointing the build system at `lib/Std` used to produce a hundred
     // `already defined` errors — the embedded copy is injected alongside the
     // one on disk. The cause is worth naming; the symptoms are not.
-    let out = meadow::pipeline::build(
-        std::path::Path::new("../../lib/Std"),
-        Options::debug(),
-    );
+    let out = meadow::pipeline::build(std::path::Path::new("../../lib/Std"), Options::debug());
     assert!(out.linked.is_none(), "it should not link");
     let msgs: Vec<_> = out.diagnostics.iter().map(|d| d.msg.clone()).collect();
     assert_eq!(msgs.len(), 1, "one diagnostic, not a hundred: {msgs:?}");

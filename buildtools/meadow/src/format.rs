@@ -37,8 +37,7 @@ pub fn run(opts: &Options) -> Result<usize, String> {
 
     let mut changed = 0;
     for file in &files {
-        let src = std::fs::read_to_string(file)
-            .map_err(|e| format!("{}: {e}", file.display()))?;
+        let src = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
         let out = fmt::format(&src);
 
         if opts.stdout {

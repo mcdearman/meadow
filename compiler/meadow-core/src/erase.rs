@@ -48,12 +48,9 @@ pub fn term(t: &Term) -> Term {
         Term::Var(_) | Term::Lit(_) | Term::Error => t.clone(),
         Term::Lam(v, ty, body) => Term::Lam(*v, ty.clone(), Arc::new(term(body))),
         Term::App(f, a) => Term::App(Arc::new(term(f)), Arc::new(term(a))),
-        Term::Let(v, p, rhs, body) => Term::Let(
-            *v,
-            p.clone(),
-            Arc::new(term(rhs)),
-            Arc::new(term(body)),
-        ),
+        Term::Let(v, p, rhs, body) => {
+            Term::Let(*v, p.clone(), Arc::new(term(rhs)), Arc::new(term(body)))
+        }
         Term::LetRec(binds, body) => Term::LetRec(
             binds
                 .iter()
@@ -61,35 +58,21 @@ pub fn term(t: &Term) -> Term {
                 .collect(),
             Arc::new(term(body)),
         ),
-        Term::If(c, a, b) => Term::If(
-            Arc::new(term(c)),
-            Arc::new(term(a)),
-            Arc::new(term(b)),
-        ),
+        Term::If(c, a, b) => Term::If(Arc::new(term(c)), Arc::new(term(a)), Arc::new(term(b))),
         Term::Tuple(xs) => Term::Tuple(xs.iter().map(term).collect()),
         Term::Proj(x, i) => Term::Proj(Arc::new(term(x)), *i),
         Term::Array(xs, ty) => Term::Array(xs.iter().map(term).collect(), ty.clone()),
-        Term::Record(fs) => {
-            Term::Record(fs.iter().map(|(l, x)| (*l, term(x))).collect())
-        }
+        Term::Record(fs) => Term::Record(fs.iter().map(|(l, x)| (*l, term(x))).collect()),
         Term::Sel(x, l, ty) => Term::Sel(Arc::new(term(x)), *l, ty.clone()),
-        Term::Extend(x, l, v) => {
-            Term::Extend(Arc::new(term(x)), *l, Arc::new(term(v)))
-        }
-        Term::Ctor(n, ty, xs) => {
-            Term::Ctor(*n, ty.clone(), xs.iter().map(term).collect())
-        }
+        Term::Extend(x, l, v) => Term::Extend(Arc::new(term(x)), *l, Arc::new(term(v))),
+        Term::Ctor(n, ty, xs) => Term::Ctor(*n, ty.clone(), xs.iter().map(term).collect()),
         Term::Case(s, arms, ty) => Term::Case(
             Arc::new(term(s)),
             arms.iter().map(|(p, b)| (p.clone(), term(b))).collect(),
             ty.clone(),
         ),
-        Term::Prim(op, xs, ty) => {
-            Term::Prim(*op, xs.iter().map(term).collect(), ty.clone())
-        }
-        Term::Perform(e, op, a, ty) => {
-            Term::Perform(*e, *op, Arc::new(term(a)), ty.clone())
-        }
+        Term::Prim(op, xs, ty) => Term::Prim(*op, xs.iter().map(term).collect(), ty.clone()),
+        Term::Perform(e, op, a, ty) => Term::Perform(*e, *op, Arc::new(term(a)), ty.clone()),
         Term::Handle {
             body,
             clauses,

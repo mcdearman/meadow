@@ -22,8 +22,8 @@
 
 use crate::heap::Kind;
 use crate::value::{Addr, Value};
-use crate::vm::{err, Error, Vm};
-use meadow_core::{num, Prim};
+use crate::vm::{Error, Vm, err};
+use meadow_core::{Prim, num};
 use meadow_intern::InternedString;
 use num_bigint::{BigInt, Sign};
 
@@ -142,7 +142,11 @@ impl Vm<'_> {
         into: Option<(std::sync::Arc<crate::region::Region>, bool, usize)>,
     ) -> Result<crate::stm::Shared, Error> {
         if !matches!(v, Value::Obj(_)) {
-            return Ok(crate::stm::Shared { region: None, root: v, fresh: 0 });
+            return Ok(crate::stm::Shared {
+                region: None,
+                root: v,
+                fresh: 0,
+            });
         }
         let (region, fresh_region, fresh) =
             into.unwrap_or_else(|| (crate::region::Region::new(), true, 0));
@@ -152,7 +156,11 @@ impl Vm<'_> {
             Err(why) => return err(meadow_core::stm::unstorable(why.describe())),
         };
         let fresh = if fresh_region { region.used() } else { fresh };
-        Ok(crate::stm::Shared { region: Some(region), root, fresh })
+        Ok(crate::stm::Shared {
+            region: Some(region),
+            root,
+            fresh,
+        })
     }
 
     /// The transaction this thread is in, for `op`.
@@ -273,7 +281,8 @@ impl Vm<'_> {
                     _ => x >= y,
                 }),
                 (a, b) => Value::Bool(
-                    num::int_cmp(cmp(p), self.num(a)?, self.num(b)?).map_err(|msg| Error { msg })?,
+                    num::int_cmp(cmp(p), self.num(a)?, self.num(b)?)
+                        .map_err(|msg| Error { msg })?,
                 ),
             },
             Neg => match arg(self, 0) {
@@ -299,10 +308,12 @@ impl Vm<'_> {
                 num::float_cmp(cmp(p), self.num(arg(self, 0))?, self.num(arg(self, 1))?)
                     .map_err(|msg| Error { msg })?,
             ),
-            ToFloat => Value::Float(num::to_float(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?),
-            ToFloat32 => {
-                Value::Float32(num::to_float32(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?)
+            ToFloat => {
+                Value::Float(num::to_float(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?)
             }
+            ToFloat32 => Value::Float32(
+                num::to_float32(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?,
+            ),
             Floor => Value::Int(num::floor(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?),
             ToBig | ToInt | ToWord(_) => {
                 let target = match p {
@@ -422,14 +433,20 @@ impl Vm<'_> {
                 let r = num::int_not(self.num(arg(self, 0))?);
                 self.from_num(r.map_err(|msg| Error { msg })?)
             }
-            PopCount => Value::Int(num::pop_count(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?),
-            BitWidth => Value::Int(num::bit_width(&self.num(arg(self, 0))?).map_err(|msg| Error { msg })?),
+            PopCount => {
+                Value::Int(num::pop_count(self.num(arg(self, 0))?).map_err(|msg| Error { msg })?)
+            }
+            BitWidth => {
+                Value::Int(num::bit_width(&self.num(arg(self, 0))?).map_err(|msg| Error { msg })?)
+            }
 
             // --- text and bytes -------------------------------------------
             StringToBytes => match arg(self, 0) {
                 Value::Str(s) => {
-                    let fields: Vec<Value> =
-                        s.bytes().map(|b| Value::Word(num::Width::U8, b as u64)).collect();
+                    let fields: Vec<Value> = s
+                        .bytes()
+                        .map(|b| Value::Word(num::Width::U8, b as u64))
+                        .collect();
                     self.ensure(1 + fields.len());
                     Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
                 }
@@ -533,7 +550,10 @@ impl Vm<'_> {
                 }
             },
             CharsToString => {
-                let a = match arg(self, 0).addr().filter(|a| self.heap.kind(*a) == Kind::Array) {
+                let a = match arg(self, 0)
+                    .addr()
+                    .filter(|a| self.heap.kind(*a) == Kind::Array)
+                {
                     Some(a) => a,
                     None => {
                         return err(format!(
@@ -566,7 +586,10 @@ impl Vm<'_> {
                 let v = arg(self, 0);
                 Value::Obj(self.heap.alloc(Kind::Ref, 0, &[v]))
             }
-            GetRef => match arg(self, 0).addr().filter(|a| self.heap.kind(*a) == Kind::Ref) {
+            GetRef => match arg(self, 0)
+                .addr()
+                .filter(|a| self.heap.kind(*a) == Kind::Ref)
+            {
                 Some(a) => self.heap.field(a, 0),
                 None => {
                     return err(format!(
@@ -575,7 +598,10 @@ impl Vm<'_> {
                     ));
                 }
             },
-            SetRef => match arg(self, 0).addr().filter(|a| self.heap.kind(*a) == Kind::Ref) {
+            SetRef => match arg(self, 0)
+                .addr()
+                .filter(|a| self.heap.kind(*a) == Kind::Ref)
+            {
                 Some(a) => {
                     let v = arg(self, 1);
                     self.heap.set_field(a, 0, v);
@@ -597,7 +623,11 @@ impl Vm<'_> {
             StNewArray => {
                 let n = match self.int(arg(self, 0))? {
                     n if n >= 0 => n as usize,
-                    n => return err(format!("stNewArray: expected a length of zero or more, got {n}")),
+                    n => {
+                        return err(format!(
+                            "stNewArray: expected a length of zero or more, got {n}"
+                        ));
+                    }
                 };
                 self.ensure(1 + n);
                 let fill = vec![arg(self, 1); n];
@@ -679,7 +709,10 @@ impl Vm<'_> {
                 self.ensure(2);
                 Value::Obj(self.heap.alloc(Kind::Resume, 0, &[Value::Bool(false)]))
             }
-            TakeOnce => match arg(self, 0).addr().filter(|a| self.heap.kind(*a) == Kind::Resume) {
+            TakeOnce => match arg(self, 0)
+                .addr()
+                .filter(|a| self.heap.kind(*a) == Kind::Resume)
+            {
                 Some(a) if self.heap.field(a, 0) == Value::Bool(false) => {
                     self.heap.set_field(a, 0, Value::Bool(true));
                     Value::Bool(true)

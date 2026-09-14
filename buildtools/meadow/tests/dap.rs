@@ -69,7 +69,10 @@ def main =
 #[test]
 fn it_runs_to_the_end_with_nothing_set() {
     let (mut s, _) = launch("end", PROGRAM);
-    assert_eq!(go(&mut s, Mode::Continue), Stop::Exited(Ok("48".to_string())));
+    assert_eq!(
+        go(&mut s, Mode::Continue),
+        Stop::Exited(Ok("48".to_string()))
+    );
 }
 
 #[test]
@@ -79,7 +82,10 @@ fn a_breakpoint_stops_with_the_caller_underneath() {
     assert_eq!(go(&mut s, Mode::Continue), Stop::Breakpoint);
     let st = stack(&s);
     assert_eq!(st[0], ("double".to_string(), 2), "{st:?}");
-    assert_eq!(st[1].0, "main", "the caller, waiting for the answer: {st:?}");
+    assert_eq!(
+        st[1].0, "main",
+        "the caller, waiting for the answer: {st:?}"
+    );
     assert_eq!(st[1].1, 10, "it resumes at the call: {st:?}");
 
     // `double` is generic over its number type, so `n`'s own type is a
@@ -146,7 +152,10 @@ fn stepping_over_a_call_stays_in_the_function() {
 #[test]
 fn output_is_captured_rather_than_printed() {
     let (mut s, _) = launch("out", "def main =\n  let u = println \"hello\" in\n  1\n");
-    assert_eq!(go(&mut s, Mode::Continue), Stop::Exited(Ok("1".to_string())));
+    assert_eq!(
+        go(&mut s, Mode::Continue),
+        Stop::Exited(Ok("1".to_string()))
+    );
     assert_eq!(s.take_output(), "hello\n");
 }
 
@@ -196,7 +205,7 @@ fn the_raw_machine_is_there_too() {
 mod protocol {
     use super::*;
     use meadow::dap::Adapter;
-    use serde_json::{json, Value as Json};
+    use serde_json::{Value as Json, json};
     use std::cell::RefCell;
     use std::io::Write;
     use std::rc::Rc;
@@ -232,7 +241,8 @@ mod protocol {
     }
 
     fn event<'a>(msgs: &'a [Json], name: &str) -> Option<&'a Json> {
-        msgs.iter().find(|m| m["type"] == "event" && m["event"] == name)
+        msgs.iter()
+            .find(|m| m["type"] == "event" && m["event"] == name)
     }
 
     fn response<'a>(msgs: &'a [Json], command: &str) -> &'a Json {
@@ -261,12 +271,19 @@ mod protocol {
         assert_eq!(response(&msgs, "launch")["success"], true, "{msgs:?}");
         assert!(event(&msgs, "initialized").is_some());
 
-        a.handle(request(3, "setBreakpoints", json!({
-            "source": { "path": path },
-            "breakpoints": [{ "line": 2 }],
-        })));
+        a.handle(request(
+            3,
+            "setBreakpoints",
+            json!({
+                "source": { "path": path },
+                "breakpoints": [{ "line": 2 }],
+            }),
+        ));
         let msgs = sink.take();
-        assert_eq!(response(&msgs, "setBreakpoints")["body"]["breakpoints"][0]["verified"], true);
+        assert_eq!(
+            response(&msgs, "setBreakpoints")["body"]["breakpoints"][0]["verified"],
+            true
+        );
 
         a.handle(request(4, "configurationDone", json!({})));
         a.settle();
@@ -279,12 +296,21 @@ mod protocol {
         let frames = &response(&msgs, "stackTrace")["body"]["stackFrames"];
         assert_eq!(frames[0]["name"], "double");
         assert_eq!(frames[0]["line"], 2);
-        assert!(frames[0]["source"]["path"].as_str().unwrap().ends_with("main.mw"));
+        assert!(
+            frames[0]["source"]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("main.mw")
+        );
 
         a.handle(request(6, "scopes", json!({ "frameId": 0 })));
         let msgs = sink.take();
         let locals = response(&msgs, "scopes")["body"]["scopes"][0]["variablesReference"].clone();
-        a.handle(request(7, "variables", json!({ "variablesReference": locals })));
+        a.handle(request(
+            7,
+            "variables",
+            json!({ "variablesReference": locals }),
+        ));
         let msgs = sink.take();
         let vars = &response(&msgs, "variables")["body"]["variables"];
         assert_eq!(vars[0]["name"], "n");
@@ -312,11 +338,21 @@ mod protocol {
 
         let sink = Sink::default();
         let mut a = Adapter::new(Box::new(sink.clone()));
-        a.handle(request(1, "launch", json!({ "program": file.display().to_string() })));
+        a.handle(request(
+            1,
+            "launch",
+            json!({ "program": file.display().to_string() }),
+        ));
         let msgs = sink.take();
         let r = response(&msgs, "launch");
         assert_eq!(r["success"], false);
-        assert!(r["message"].as_str().unwrap().contains("undefined variable"), "{r}");
+        assert!(
+            r["message"]
+                .as_str()
+                .unwrap()
+                .contains("undefined variable"),
+            "{r}"
+        );
     }
 
     #[allow(dead_code)]
@@ -361,7 +397,10 @@ fn a_package_of_several_modules_debugs_across_them() {
         if f == "Main.mw" {
             let at = text.find("@pub(pkg) def main =").expect("main");
             let end = text[at..].find("\n\n").map_or(text.len(), |e| at + e);
-            text.replace_range(at..end, "@pub(pkg) def main = runSource \"(fun x -> x + 1) 41\"");
+            text.replace_range(
+                at..end,
+                "@pub(pkg) def main = runSource \"(fun x -> x + 1) 41\"",
+            );
         }
         std::fs::write(dir.join("src").join(f), text).unwrap();
     }
@@ -387,7 +426,10 @@ fn a_package_of_several_modules_debugs_across_them() {
     assert!(e.value.starts_with("Lam \"x\""), "{e:?}");
     assert_eq!(e.ty.as_deref(), Some("Expr"));
 
-    assert_eq!(go(&mut s, Mode::Continue), Stop::Exited(Ok("Ok(\"42\")".to_string())));
+    assert_eq!(
+        go(&mut s, Mode::Continue),
+        Stop::Exited(Ok("Ok(\"42\")".to_string()))
+    );
 }
 
 // --- starting at a function --------------------------------------------------------
@@ -397,7 +439,11 @@ fn package(who: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("meadow-dap-{}-{who}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("meadow.toml"), format!("[package]\nname = \"{who}\"\nversion = \"0.1.0\"\n")).unwrap();
+    std::fs::write(
+        dir.join("meadow.toml"),
+        format!("[package]\nname = \"{who}\"\nversion = \"0.1.0\"\n"),
+    )
+    .unwrap();
     for (path, text) in files {
         let p = dir.join(path);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -418,7 +464,10 @@ fn a_private_function_in_a_module_can_be_the_entry() {
     let dir = package(
         "entry",
         &[
-            ("src/Main.mw", "use Maths (twice)\n\n@pub(pkg) def main = twice 1\n"),
+            (
+                "src/Main.mw",
+                "use Maths (twice)\n\n@pub(pkg) def main = twice 1\n",
+            ),
             (
                 "src/Maths.mw",
                 "fun secret n =\n  n * 10\n\n@pub(pkg) fun twice n = secret n + secret n\n",
@@ -439,16 +488,25 @@ fn a_private_function_in_a_module_can_be_the_entry() {
     // The entry is a call in tail position, so `secret` is the whole stack.
     assert_eq!(st.len(), 1, "{st:?}");
     assert_eq!(local(&mut s, 0, "n").value, "4");
-    assert_eq!(go(&mut s, Mode::Continue), Stop::Exited(Ok("40".to_string())));
+    assert_eq!(
+        go(&mut s, Mode::Continue),
+        Stop::Exited(Ok("40".to_string()))
+    );
 }
 
 #[test]
 fn a_package_with_no_main_can_still_be_debugged_at_a_function() {
     let dir = package("nomain", &[("src/Main.mw", "fun square n = n * n\n")]);
     let main = dir.join("src/Main.mw");
-    assert!(Session::launch(&dir).is_err(), "nothing to run without an entry");
+    assert!(
+        Session::launch(&dir).is_err(),
+        "nothing to run without an entry"
+    );
     let mut s = Session::launch_at(&dir, Some(&entry(&main, "square 9"))).unwrap();
-    assert_eq!(go(&mut s, Mode::Continue), Stop::Exited(Ok("81".to_string())));
+    assert_eq!(
+        go(&mut s, Mode::Continue),
+        Stop::Exited(Ok("81".to_string()))
+    );
 }
 
 #[test]
@@ -475,6 +533,13 @@ fn mini_ml_eval_can_be_debugged_without_touching_main() {
         }
     };
     assert_eq!(stop, Stop::Entry);
-    assert!(local(&mut s, 0, "e").value.starts_with("App (Lam"), "{:?}", locals(&mut s, 0));
-    assert_eq!(go(&mut s, Mode::Continue), Stop::Exited(Ok("Int(7)".to_string())));
+    assert!(
+        local(&mut s, 0, "e").value.starts_with("App (Lam"),
+        "{:?}",
+        locals(&mut s, 0)
+    );
+    assert_eq!(
+        go(&mut s, Mode::Continue),
+        Stop::Exited(Ok("Int(7)".to_string()))
+    );
 }

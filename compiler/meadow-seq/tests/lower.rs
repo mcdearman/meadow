@@ -10,7 +10,7 @@
 
 use meadow_core::{Def, Lit, Prim, Program, Term};
 use meadow_hir::VarId;
-use meadow_seq::{lower_program, Block, Statement};
+use meadow_seq::{Block, Statement, lower_program};
 use std::sync::Arc;
 
 fn main_def(term: Term) -> Program {
@@ -26,7 +26,10 @@ fn main_def(term: Term) -> Program {
 
 #[test]
 fn a_literal_is_an_extern_and_a_return() {
-    let lowered = lower_program(&main_def(Term::Lit(Lit::Int(42))), meadow_core::OptLevel::default());
+    let lowered = lower_program(
+        &main_def(Term::Lit(Lit::Int(42))),
+        meadow_core::OptLevel::default(),
+    );
     assert!(lowered.unsupported.is_empty());
     let text = lowered.program.pretty();
     // The literal producer, then the universal return sequence: arrange the
@@ -47,7 +50,10 @@ fn every_block_binds_the_whole_environment() {
     let term = Term::prim(
         Prim::Mul,
         vec![
-            Term::prim(Prim::Add, vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(2))]),
+            Term::prim(
+                Prim::Add,
+                vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(2))],
+            ),
             Term::Lit(Lit::Int(3)),
         ],
     );
@@ -139,7 +145,10 @@ fn a_variable_from_nowhere_is_reported() {
     // Every `core` construct lowers now, so the only thing left to report is a
     // variable that is neither in scope nor a definition — a bug upstream. It
     // still has to be *said* rather than turned into a plausible statement.
-    let lowered = lower_program(&main_def(Term::Var(VarId(999))), meadow_core::OptLevel::default());
+    let lowered = lower_program(
+        &main_def(Term::Var(VarId(999))),
+        meadow_core::OptLevel::default(),
+    );
     assert!(
         lowered
             .unsupported
@@ -220,7 +229,12 @@ fn a_letrec_becomes_labels_sharing_one_parameter_list() {
     assert!(lowered.unsupported.is_empty());
 
     // One definition for `main`, one per `letrec` binding.
-    assert_eq!(lowered.program.defs.len(), 3, "{}", lowered.program.pretty());
+    assert_eq!(
+        lowered.program.defs.len(),
+        3,
+        "{}",
+        lowered.program.pretty()
+    );
     for def in &lowered.program.defs[1..] {
         assert_eq!(
             def.block.params,
@@ -253,9 +267,7 @@ fn walk(s: &Statement, f: &mut impl FnMut(&Statement)) {
             walk(rest, f);
             vec![]
         }
-        Statement::Jump(_)
-        | Statement::Invoke(..)
-        | Statement::Error(_) => vec![],
+        Statement::Jump(_) | Statement::Invoke(..) | Statement::Error(_) => vec![],
     };
     for b in blocks {
         walk(&b.body, f);
@@ -287,12 +299,14 @@ fn a_literal_operand_is_folded_into_the_primitive() {
     // The `7` is still produced — only the right operand folds — and the
     // subtraction takes it as its one argument.
     assert!(
-        ops.iter()
-            .any(|(op, n)| matches!(op, meadow_seq::Extern::PrimK(Prim::Sub, Lit::Int(1))) && *n == 1),
+        ops.iter().any(
+            |(op, n)| matches!(op, meadow_seq::Extern::PrimK(Prim::Sub, Lit::Int(1))) && *n == 1
+        ),
         "expected a folded `Sub .. 1`, got {ops:?}"
     );
     assert!(
-        !ops.iter().any(|(op, _)| matches!(op, meadow_seq::Extern::Prim(Prim::Sub))),
+        !ops.iter()
+            .any(|(op, _)| matches!(op, meadow_seq::Extern::Prim(Prim::Sub))),
         "the unfolded form should be gone: {ops:?}"
     );
 }
@@ -346,10 +360,7 @@ fn case_trees_replace_the_chain_at_o2() {
         Term::Var(x),
         vec![
             (Pat::Ctor("Nothing".into(), vec![]), Term::Lit(Lit::Int(0))),
-            (
-                Pat::Ctor("Just".into(), vec![Pat::var(y)]),
-                Term::Var(y),
-            ),
+            (Pat::Ctor("Just".into(), vec![Pat::var(y)]), Term::Var(y)),
             (Pat::Wild, Term::Lit(Lit::Int(0))),
         ],
     );

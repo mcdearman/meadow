@@ -52,7 +52,10 @@ pub enum Undo {
     HandlerLen { len: usize },
     /// A handler frame was popped by an `unhandle`, or several were detached by
     /// a `perform`; putting them back undoes it.
-    HandlerRestore { at: usize, handlers: Vec<(u32, Value, Value)> },
+    HandlerRestore {
+        at: usize,
+        handlers: Vec<(u32, Value, Value)>,
+    },
     /// The program counter, recorded once per step so a step boundary is
     /// findable when walking backwards.
     Step { pc: u32 },

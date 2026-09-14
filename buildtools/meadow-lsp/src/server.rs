@@ -808,12 +808,18 @@ mod tests {
     #[test]
     fn a_verbatim_path_becomes_an_ordinary_uri() {
         let got = path_to_uri(std::path::Path::new(r"\\?\C:\Users\me\pkg\src\Syntax.mw"));
-        assert_eq!(got.map(|u| u.as_str().to_string()).as_deref(), Some("file:///C:/Users/me/pkg/src/Syntax.mw"));
+        assert_eq!(
+            got.map(|u| u.as_str().to_string()).as_deref(),
+            Some("file:///C:/Users/me/pkg/src/Syntax.mw")
+        );
     }
 
     #[test]
     fn a_share_keeps_its_server_as_the_authority() {
-        for path in [r"\\?\UNC\server\share\pkg\main.mw", r"\\server\share\pkg\main.mw"] {
+        for path in [
+            r"\\?\UNC\server\share\pkg\main.mw",
+            r"\\server\share\pkg\main.mw",
+        ] {
             let got = path_to_uri(std::path::Path::new(path));
             assert_eq!(
                 got.map(|u| u.as_str().to_string()).as_deref(),
@@ -826,7 +832,10 @@ mod tests {
     #[test]
     fn a_posix_path_becomes_a_uri_with_an_empty_authority() {
         let got = path_to_uri(std::path::Path::new("/home/me/pkg/main.mw"));
-        assert_eq!(got.map(|u| u.as_str().to_string()).as_deref(), Some("file:///home/me/pkg/main.mw"));
+        assert_eq!(
+            got.map(|u| u.as_str().to_string()).as_deref(),
+            Some("file:///home/me/pkg/main.mw")
+        );
     }
 
     /// `path_to_uri` and `uri_to_path` have to agree, or a location the server

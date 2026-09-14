@@ -11,8 +11,7 @@ fn editor_file(rel: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../editors/vscode")
         .join(rel);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
@@ -61,8 +60,7 @@ fn the_grammar_is_valid_and_matches_the_declared_scope() {
     let grammar = editor_file("syntaxes/meadow.tmLanguage.json");
     let pkg = editor_file("package.json");
     assert_eq!(
-        grammar["scopeName"],
-        pkg["contributes"]["grammars"][0]["scopeName"],
+        grammar["scopeName"], pkg["contributes"]["grammars"][0]["scopeName"],
         "the grammar's scope must be the one the manifest declares"
     );
     // Every `include` has to name a rule that exists, or highlighting silently

@@ -23,7 +23,7 @@
 
 use crate::heap::Kind;
 use crate::value::Value;
-use crate::vm::{err, Error, Vm};
+use crate::vm::{Error, Vm, err};
 use meadow_intern::InternedString;
 
 /// A result to build, described before any of it exists.
@@ -162,7 +162,10 @@ impl Vm<'_> {
     fn str_arg(&self, what: &str, v: Value) -> Result<InternedString, Error> {
         match v {
             Value::Str(s) => Ok(s),
-            other => err(format!("{what}: expected a String, got {}", self.show(other))),
+            other => err(format!(
+                "{what}: expected a String, got {}",
+                self.show(other)
+            )),
         }
     }
 
@@ -239,7 +242,10 @@ impl Vm<'_> {
                     ],
                 );
             }
-            nodes = nodes.chunks(VECTOR_WIDTH).map(|kids| group(self, kids)).collect();
+            nodes = nodes
+                .chunks(VECTOR_WIDTH)
+                .map(|kids| group(self, kids))
+                .collect();
         }
     }
 
@@ -248,9 +254,16 @@ impl Vm<'_> {
         let Some(a) = v.addr().filter(|a| self.heap.kind(*a) == Kind::Data) else {
             return err(format!("{what}: expected a Maybe, got {}", self.show(v)));
         };
-        match self.program.ctor(self.heap.meta(a)).as_deref().map(|s| s.to_string()) {
+        match self
+            .program
+            .ctor(self.heap.meta(a))
+            .as_deref()
+            .map(|s| s.to_string())
+        {
             Some(n) if n == "Maybe.None" && self.heap.len(a) == 0 => Ok(None),
-            Some(n) if n == "Maybe.Just" && self.heap.len(a) == 1 => Ok(Some(self.heap.field(a, 0))),
+            Some(n) if n == "Maybe.Just" && self.heap.len(a) == 1 => {
+                Ok(Some(self.heap.field(a, 0)))
+            }
             _ => err(format!("{what}: expected a Maybe, got {}", self.show(v))),
         }
     }
@@ -342,9 +355,8 @@ impl Vm<'_> {
                     let mut names = Vec::new();
                     for e in entries {
                         match e {
-                            Ok(en) => {
-                                names.push(Build::Str(en.file_name().to_string_lossy().into_owned()))
-                            }
+                            Ok(en) => names
+                                .push(Build::Str(en.file_name().to_string_lossy().into_owned())),
                             Err(e) => return Ok(Some(ioerr(e))),
                         }
                     }
@@ -419,12 +431,7 @@ impl Vm<'_> {
                 }
             },
             "currentPid" => Build::int(std::process::id() as i64),
-            "argv" => Build::Vector(
-                std::env::args()
-                    .skip(1)
-                    .map(Build::Str)
-                    .collect::<Vec<_>>(),
-            ),
+            "argv" => Build::Vector(std::env::args().skip(1).map(Build::Str).collect::<Vec<_>>()),
             "getEnv" => match std::env::var(&*self.str_arg(&what, arg)?) {
                 Ok(v) => Build::Data("Maybe.Just", vec![Build::Str(v)]),
                 Err(_) => Build::Data("Maybe.None", vec![]),
@@ -481,9 +488,7 @@ impl Vm<'_> {
         Ok(Some(match op {
             "nextInt" | "nextSeed" => Build::int(next() as i64),
             // [0, 1) from the top 53 bits, which is what an f64 holds exactly.
-            "nextFloat" => Build::At(Value::Float(
-                (next() >> 11) as f64 / (1u64 << 53) as f64,
-            )),
+            "nextFloat" => Build::At(Value::Float((next() >> 11) as f64 / (1u64 << 53) as f64)),
             "intBetween" => {
                 let t = self.tuple_arg(&format!("Random.{op}"), arg, 2)?;
                 match (t[0], t[1]) {
@@ -571,9 +576,9 @@ impl Vm<'_> {
             ),
             // Monotonic, for measuring a duration: unaffected by the clock
             // changing under it.
-            "monotonic" => Build::int(ORIGIN.with(|o| {
-                o.get_or_init(Instant::now).elapsed().as_nanos() as i64
-            })),
+            "monotonic" => {
+                Build::int(ORIGIN.with(|o| o.get_or_init(Instant::now).elapsed().as_nanos() as i64))
+            }
             "sleep" => match arg {
                 Value::Int(ms) if ms > 0 => {
                     std::thread::sleep(Duration::from_millis(ms as u64));

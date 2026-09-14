@@ -16,7 +16,11 @@ const SRC: &str = "fun add x y = x + y\nfun twice f v = f (f v)\ndef main = add 
 #[test]
 fn compiling_a_unit_twice_gives_the_same_ids() {
     let (first, d1) = compile_str("t", SRC);
-    assert!(d1.is_empty(), "{:?}", d1.iter().map(|d| &d.msg).collect::<Vec<_>>());
+    assert!(
+        d1.is_empty(),
+        "{:?}",
+        d1.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
 
     // Compile something else in between, to use up ids if anything still can.
     let _ = compile_str("noise", "fun a b = b\nfun c d = d\ndef main = 0\n");
@@ -54,7 +58,11 @@ fn a_units_ids_lie_inside_the_range_it_reports() {
          fun add a b = a + b\n\
          def main = pick Red\n",
     );
-    assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| &d.msg).collect::<Vec<_>>());
+    assert!(
+        diags.is_empty(),
+        "{:?}",
+        diags.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
     assert!(!pkg.vars.is_empty(), "a unit that minted nothing");
 
     for e in &pkg.exports {
@@ -83,9 +91,11 @@ fn a_units_ids_lie_inside_the_range_it_reports() {
 #[test]
 fn a_dependent_unit_does_not_overlap_its_dependency() {
     use meadow_compiler::{
-        compile_unit, intern::InternedString, lexer::tokenize, parser,
+        AstModule, Options, compile_unit,
+        intern::InternedString,
+        lexer::tokenize,
+        parser,
         source::{Source, SourceKind},
-        AstModule, Options,
     };
 
     let unit = |name: &str, src: &str, deps: &[&meadow_compiler::CompiledPackage]| {
@@ -103,9 +113,17 @@ fn a_dependent_unit_does_not_overlap_its_dependency() {
     };
 
     let (base, d1) = unit("base", "@pub fun helper x = x + 1\n", &[]);
-    assert!(d1.is_empty(), "{:?}", d1.iter().map(|d| &d.msg).collect::<Vec<_>>());
+    assert!(
+        d1.is_empty(),
+        "{:?}",
+        d1.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
     let (top, d2) = unit("top", "def main = helper 41\n", &[&base]);
-    assert!(d2.is_empty(), "{:?}", d2.iter().map(|d| &d.msg).collect::<Vec<_>>());
+    assert!(
+        d2.is_empty(),
+        "{:?}",
+        d2.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
 
     assert!(
         top.vars.start >= base.vars.end,
@@ -124,7 +142,11 @@ fn synthetic_ids_cannot_collide_with_a_unit() {
     let (pkg, _) = compile_str("t", SRC);
     let s = VarId::synthetic(0);
     assert!(s.is_synthetic());
-    assert!(!pkg.vars.contains(&s.0), "{:?} reaches the synthetic range", pkg.vars);
+    assert!(
+        !pkg.vars.contains(&s.0),
+        "{:?} reaches the synthetic range",
+        pkg.vars
+    );
     // Indexed, not counted: asking twice gives the same id.
     assert_eq!(VarId::synthetic(7), VarId::synthetic(7));
 }

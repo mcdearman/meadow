@@ -6,7 +6,7 @@
 //! that could appear in a `use` path. A template that produced something the
 //! compiler then rejected would be worse than no template.
 
-use meadow::{init, package::Manifest, pipeline, Options};
+use meadow::{Options, init, package::Manifest, pipeline};
 use std::path::{Path, PathBuf};
 
 /// A directory of our own, named after the test so concurrent ones do not
@@ -83,7 +83,8 @@ fn an_existing_package_is_refused_rather_than_overwritten() {
 
     // Something worth losing, in the file that would be overwritten.
     let manifest = target.join("meadow.toml");
-    let before = std::fs::read_to_string(&manifest).unwrap() + "\n[dependencies]\nutil = \"../u\"\n";
+    let before =
+        std::fs::read_to_string(&manifest).unwrap() + "\n[dependencies]\nutil = \"../u\"\n";
     std::fs::write(&manifest, &before).unwrap();
 
     let err = init_at(&target, None).expect_err("the second one");
@@ -112,7 +113,10 @@ fn existing_sources_are_not_replaced() {
         "def main = 7\n",
         "the existing `main` should survive"
     );
-    assert!(target.join("meadow.toml").is_file(), "but the manifest arrives");
+    assert!(
+        target.join("meadow.toml").is_file(),
+        "but the manifest arrives"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -124,7 +128,10 @@ fn a_name_the_language_could_not_refer_to_is_refused() {
     let dir = scratch("badname");
     let err = init_at(&dir.join("my-pkg"), None).expect_err("hyphen");
     assert!(err.contains("my-pkg"), "{err}");
-    assert!(err.contains("try `_`"), "the message should say what to do: {err}");
+    assert!(
+        err.contains("try `_`"),
+        "the message should say what to do: {err}"
+    );
     assert!(
         !dir.join("my-pkg").join("meadow.toml").exists(),
         "nothing should be written when the name is refused"

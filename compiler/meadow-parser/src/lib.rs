@@ -11,12 +11,6 @@
 //!
 //! [`Diagnostic`]: meadow_diagnostics::Diagnostic
 
-use meadow_ast::*;
-use meadow_intern::InternedString;
-use meadow_lexer::{LToken, Token};
-use meadow_source::Source;
-use meadow_span::{Located, Span};
-use itertools::Either;
 use chumsky::{
     IterParser, Parser,
     error::Rich,
@@ -27,6 +21,12 @@ use chumsky::{
     recursive::recursive,
     select,
 };
+use itertools::Either;
+use meadow_ast::*;
+use meadow_intern::InternedString;
+use meadow_lexer::{LToken, Token};
+use meadow_source::Source;
+use meadow_span::{Located, Span};
 
 /// Parse a whole module.
 pub fn parse<'src>(
@@ -44,10 +44,7 @@ pub fn parse_repl<'src>(
     tokens: &'src [LToken],
 ) -> (Option<Either<LDecl, LExpr>>, Vec<Rich<'src, Token, Span>>) {
     let stream = tokens.split_spanned(Span::from(0..src.len()));
-    let p = choice((
-        decl().map(Either::Left),
-        expr().map(Either::Right),
-    ));
+    let p = choice((decl().map(Either::Left), expr().map(Either::Right)));
     p.parse(stream).into_output_errors()
 }
 
@@ -240,10 +237,7 @@ where
         .then(lower_ident().repeated().collect::<Vec<_>>())
         .then(field_list())
         .map_with(|((name, params), ops), e| {
-            LDecl::new(
-                Decl::Effect(EffectDecl { name, params, ops }),
-                e.span(),
-            )
+            LDecl::new(Decl::Effect(EffectDecl { name, params, ops }), e.span())
         });
 
     choice((
@@ -341,8 +335,7 @@ fn ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 
         // effect annotation after `!` — reuses the local `atom` for label args,
         // so it must live inside this `recursive` closure (no separate fn).
-        let eff_label = upper_ident()
-            .then(atom.clone().repeated().collect::<Vec<_>>());
+        let eff_label = upper_ident().then(atom.clone().repeated().collect::<Vec<_>>());
         let eff_braced = eff_label
             .clone()
             .separated_by(just(Token::Comma))
@@ -464,7 +457,10 @@ where
         // desugared to `range lo (hi + 1)`.
         let range_list = expr
             .clone()
-            .then(choice((just(Token::DoublePeriod), just(Token::DoublePeriodEq))))
+            .then(choice((
+                just(Token::DoublePeriod),
+                just(Token::DoublePeriodEq),
+            )))
             .then(expr.clone())
             .delimited_by(just(Token::LBrack), just(Token::RBrack))
             .map_with(|((lo, _), hi), e| {
@@ -610,9 +606,7 @@ where
         let record_field = lower_ident()
             .then(just(Token::Eq).ignore_then(expr.clone()).or_not())
             .map(|(name, val)| {
-                let val = val.unwrap_or_else(|| {
-                    Located::new(Expr::Var(name.clone()), name.span)
-                });
+                let val = val.unwrap_or_else(|| Located::new(Expr::Var(name.clone()), name.span));
                 (name, val)
             });
 
@@ -620,11 +614,7 @@ where
             .separated_by(just(Token::Comma))
             .allow_trailing()
             .collect::<Vec<_>>()
-            .then(
-                just(Token::Bar)
-                    .ignore_then(expr.clone())
-                    .or_not(),
-            )
+            .then(just(Token::Bar).ignore_then(expr.clone()).or_not())
             .delimited_by(just(Token::LBrace), just(Token::RBrace))
             .map_with(|(fields, base), e| Located::new(Expr::Record(fields, base), e.span()))
             .boxed();
@@ -685,8 +675,7 @@ where
             .map_with(|(q, n), e| Located::new(Expr::Qual(q, n), e.span()));
 
         // `_` — an operator-section hole (see `desugar_section`).
-        let hole_expr = just(Token::Wildcard)
-            .map_with(|_, e| Located::new(Expr::Hole, e.span()));
+        let hole_expr = just(Token::Wildcard).map_with(|_, e| Located::new(Expr::Hole, e.span()));
 
         // `( e )` — grouping, but if `e` contains `_` holes it's an operator
         // section and desugars to a lambda: `(_ + 1)` is `\h -> h + 1`.
@@ -726,9 +715,9 @@ where
                     .collect::<Vec<_>>(),
             )
             .map_with(|(obj, fields), e| {
-                fields
-                    .into_iter()
-                    .fold(obj, |o, field| Located::new(Expr::Field(o, field), e.span()))
+                fields.into_iter().fold(obj, |o, field| {
+                    Located::new(Expr::Field(o, field), e.span())
+                })
             })
             .boxed();
 
@@ -979,10 +968,7 @@ where
         let bin = |op: BinOp| {
             move |l: Located<Expr>, r: Located<Expr>| {
                 let span = l.span.extend(r.span);
-                Located::new(
-                    Expr::BinOp(Located::new(op.clone(), span), l, r),
-                    span,
-                )
+                Located::new(Expr::BinOp(Located::new(op.clone(), span), l, r), span)
             }
         };
         let and_expr = ops
@@ -1049,7 +1035,6 @@ fn float_binop(sym: &str, l: LExpr, r: LExpr, span: Span) -> LExpr {
     Located::new(Expr::BinOp(Located::new(op, span), l, r), span)
 }
 
-
 /// Desugar a bit-shift operator (`<<` / `>>` / `>>>`) to a call of the
 /// corresponding `Int` primitive (`shl` / `shr` / `ushr`).
 fn bit_binop(sym: &str, l: LExpr, r: LExpr, span: Span) -> LExpr {
@@ -1081,7 +1066,10 @@ fn desugar_section(inner: LExpr) -> LExpr {
     let params = (0..n)
         .map(|i| {
             Located::new(
-                Pat::Var(Located::new(InternedString::from(format!("_hole{i}")), span)),
+                Pat::Var(Located::new(
+                    InternedString::from(format!("_hole{i}")),
+                    span,
+                )),
                 span,
             )
         })
@@ -1105,18 +1093,13 @@ fn fill_holes(e: LExpr, n: &mut usize) -> LExpr {
         Expr::Unit => Expr::Unit,
         // A nested lambda owns any holes in its body.
         Expr::Lam(ps, b) => Expr::Lam(ps, b),
-        Expr::App(f, args) => Expr::App(
-            go(f, n),
-            args.into_iter().map(|a| go(a, n)).collect(),
-        ),
+        Expr::App(f, args) => Expr::App(go(f, n), args.into_iter().map(|a| go(a, n)).collect()),
         Expr::UnOp(op, x) => Expr::UnOp(op, go(x, n)),
         Expr::BinOp(op, l, r) => Expr::BinOp(op, go(l, n), go(r, n)),
         Expr::Tuple(xs) => Expr::Tuple(xs.into_iter().map(|x| go(x, n)).collect()),
         Expr::Array(xs) => Expr::Array(xs.into_iter().map(|x| go(x, n)).collect()),
         Expr::List(xs) => Expr::List(xs.into_iter().map(|x| go(x, n)).collect()),
-        Expr::Cons(name, xs) => {
-            Expr::Cons(name, xs.into_iter().map(|x| go(x, n)).collect())
-        }
+        Expr::Cons(name, xs) => Expr::Cons(name, xs.into_iter().map(|x| go(x, n)).collect()),
         Expr::Qual(q, name) => Expr::Qual(q, name),
         Expr::Field(o, l) => Expr::Field(go(o, n), l),
         Expr::Record(fields, base) => Expr::Record(
@@ -1256,11 +1239,7 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
                     .allow_trailing()
                     .collect::<Vec<_>>(),
             )
-            .then(
-                just(Token::Bar)
-                    .ignore_then(just(Token::Wildcard))
-                    .or_not(),
-            )
+            .then(just(Token::Bar).ignore_then(just(Token::Wildcard)).or_not())
             .then_ignore(just(Token::RBrace))
             .map(|(fields, open)| Pat::Record(fields, open.is_some()));
 
@@ -1280,11 +1259,7 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 
         // `head :: tail` — sugar for the `Cons head tail` pattern (right-assoc).
         atom.clone()
-            .then(
-                just(Token::ColonColon)
-                    .ignore_then(pat.clone())
-                    .or_not(),
-            )
+            .then(just(Token::ColonColon).ignore_then(pat.clone()).or_not())
             .map_with(|(head, tail), e| match tail {
                 Some(tail) => LPat::new(
                     Pat::Cons(
@@ -1342,11 +1317,7 @@ fn param_pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         .separated_by(just(Token::Comma))
         .allow_trailing()
         .collect::<Vec<_>>()
-        .then(
-            just(Token::Bar)
-                .ignore_then(just(Token::Wildcard))
-                .or_not(),
-        )
+        .then(just(Token::Bar).ignore_then(just(Token::Wildcard)).or_not())
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
         .map_with(|(fields, open), e| LPat::new(Pat::Record(fields, open.is_some()), e.span()));
 

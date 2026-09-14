@@ -15,15 +15,16 @@
 //! The entry up to the cursor is lexed, and [`context`] walks those tokens.
 
 use meadow_compiler::intern::InternedString;
-use meadow_compiler::lexer::{tokenize, Token};
+use meadow_compiler::lexer::{Token, tokenize};
 use meadow_compiler::source::{Source, SourceKind};
-use meadow_compiler::{ast, hir, CompiledPackage};
+use meadow_compiler::{CompiledPackage, ast, hir};
 use std::collections::HashMap;
 
 /// Types that exist without being declared anywhere (see `rename`'s tycon seed).
 const BUILTIN_TYPES: &[&str] = &[
     "Int", "BigInt", "Float", "String", "Bool", "Unit", "List", "Array", "Char", "Int8", "Int16",
-    "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64", "Compact", "Task", "Channel", "TVar",
+    "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64", "Float32", "Float64", "Compact",
+    "Task", "Channel", "TVar",
 ];
 
 /// Everything the REPL currently knows how to name, split by namespace.
@@ -98,9 +99,7 @@ pub fn context(head: &str) -> Ctx {
     let leads_with_attr = matches!(toks.first(), Some(Token::At));
     let head_toks: Vec<Token> = if leads_with_attr {
         toks.iter()
-            .skip_while(|t| {
-                !matches!(t, Token::Data | Token::Record | Token::Effect | Token::Use)
-            })
+            .skip_while(|t| !matches!(t, Token::Data | Token::Record | Token::Effect | Token::Use))
             .cloned()
             .collect()
     } else {
@@ -109,9 +108,7 @@ pub fn context(head: &str) -> Ctx {
 
     match head_toks.first() {
         Some(Token::Use) => use_context(&head_toks),
-        Some(Token::Data) | Some(Token::Record) | Some(Token::Effect) => {
-            decl_context(&head_toks)
-        }
+        Some(Token::Data) | Some(Token::Record) | Some(Token::Effect) => decl_context(&head_toks),
         // Still choosing a keyword after `@pub`.
         None if leads_with_attr => Ctx::Nothing,
         // Term position — and *only* here does `Mod.` mean a qualified reference.
@@ -155,10 +152,12 @@ fn decl_context(toks: &[Token]) -> Ctx {
 
     // `record R = { f : <type> }` and `effect E { op : <type> }` — a type starts
     // after `:` and ends at the next `,` or `}`.
-    if let Some(colon) = toks
-        .iter()
-        .rposition(|t| matches!(t, Token::Colon | Token::Comma | Token::LBrace | Token::RBrace))
-    {
+    if let Some(colon) = toks.iter().rposition(|t| {
+        matches!(
+            t,
+            Token::Colon | Token::Comma | Token::LBrace | Token::RBrace
+        )
+    }) {
         if matches!(toks[colon], Token::Colon) {
             return Ctx::Type;
         }
@@ -205,7 +204,9 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
     // contributes just that list.
     for pkg in prefix {
         match &pkg.prelude_exports {
-            None => n.values.extend(pkg.exports.iter().map(|e| e.name.to_string())),
+            None => n
+                .values
+                .extend(pkg.exports.iter().map(|e| e.name.to_string())),
             Some(flat) => n.values.extend(
                 pkg.exports
                     .iter()
@@ -263,8 +264,7 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
         if segs.is_empty() {
             continue;
         }
-        let resolved =
-            meadow_compiler::resolve_module(InternedString::from("repl"), &segs, &deps);
+        let resolved = meadow_compiler::resolve_module(InternedString::from("repl"), &segs, &deps);
 
         match &u.alias {
             // `use M as C` — `C.name`, and nothing unqualified.
@@ -314,9 +314,11 @@ impl Names {
                 }
             }
             Ctx::Qualified(q) => self.qualified.get(q).cloned().unwrap_or_default(),
-            Ctx::UseNames(path) => {
-                self.modules.get(&path.join(".")).cloned().unwrap_or_default()
-            }
+            Ctx::UseNames(path) => self
+                .modules
+                .get(&path.join("."))
+                .cloned()
+                .unwrap_or_default(),
             // One segment at a time: given `Std.Coll`, offer what sits directly
             // under `Std`. `path` is the segments already completed.
             Ctx::ModulePath(path) => self.module_segments(path),
@@ -420,7 +422,10 @@ mod tests {
 
     #[test]
     fn attributes_are_transparent() {
-        assert_eq!(context("@pub use Std."), Ctx::ModulePath(vec!["Std".to_string()]));
+        assert_eq!(
+            context("@pub use Std."),
+            Ctx::ModulePath(vec!["Std".to_string()])
+        );
         assert_eq!(context("@pub record R = { x : In"), Ctx::Type);
     }
 

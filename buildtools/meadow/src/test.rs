@@ -10,7 +10,7 @@
 //! error and one failing test does not stop the others.
 
 use crate::runtime::{self, Engine};
-use crate::{pipeline, Resolved};
+use crate::{Resolved, pipeline};
 use std::path::Path;
 
 pub struct Options {
@@ -165,7 +165,11 @@ pub fn run_linked(
     engine: Engine,
     opt: meadow_compiler::OptLevel,
 ) -> Result<Vec<(String, Option<String>)>, String> {
-    let cases: Vec<_> = linked.tests.iter().filter(|t| &*t.package != "Std").collect();
+    let cases: Vec<_> = linked
+        .tests
+        .iter()
+        .filter(|t| &*t.package != "Std")
+        .collect();
     let vars: Vec<_> = cases.iter().map(|t| t.var).collect();
     let results = runtime::run_tests(&linked.program, &vars, engine, opt)?;
     Ok(cases

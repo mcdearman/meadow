@@ -17,6 +17,7 @@
 //! nothing is reused between one edit and the next.
 
 use meadow_compiler::{
+    AstModule, CompiledPackage, Options,
     diagnostics::Diagnostic,
     hir::{self, VarId},
     infer::TypeTable,
@@ -25,7 +26,6 @@ use meadow_compiler::{
     parser,
     source::{Source, SourceKind},
     span::Span,
-    AstModule, CompiledPackage, Options,
 };
 
 /// Where something is defined: which source, and where in it.
@@ -178,7 +178,9 @@ impl Target {
     /// so it is refused with the reason rather than attempted.
     fn check_new_name(&self, new: &str) -> Result<(), String> {
         let mut chars = new.chars();
-        let first = chars.next().ok_or_else(|| "a name cannot be empty".to_string())?;
+        let first = chars
+            .next()
+            .ok_or_else(|| "a name cannot be empty".to_string())?;
         if !(first.is_alphabetic() || first == '_')
             || !chars.all(|c| c.is_alphanumeric() || c == '_' || c == '\'')
         {
@@ -453,8 +455,7 @@ impl Std {
         let path = module_path(dotted);
         let unit = InternedString::from(dotted.as_str());
         let name = path.last().copied().unwrap_or(unit);
-        let deps: Vec<&CompiledPackage> =
-            self.modules[..index].iter().map(|(_, p)| p).collect();
+        let deps: Vec<&CompiledPackage> = self.modules[..index].iter().map(|(_, p)| p).collect();
         // Compiled *inside* the package, not merely against it. `Bool` says
         // `use Std.Test (assertEq)`, and a unit that does not know it belongs to
         // `Std` cannot resolve that.
@@ -622,7 +623,14 @@ impl Std {
         }
 
         let modules = ast
-            .map(|ast| vec![AstModule { path, name, ast, source }])
+            .map(|ast| {
+                vec![AstModule {
+                    path,
+                    name,
+                    ast,
+                    source,
+                }]
+            })
             .unwrap_or_default();
 
         let (pkg, mut unit_diags) = match package {
@@ -706,22 +714,23 @@ fn ctor_paths(
     sub_units_of: Option<InternedString>,
 ) -> std::collections::HashMap<InternedString, String> {
     let mut out = std::collections::HashMap::new();
-    let mut add = |package: Option<InternedString>, module: &hir::LModule, path: &[InternedString]| {
-        let mut prefix: Vec<String> = package.into_iter().map(|p| p.to_string()).collect();
-        prefix.extend(path.iter().map(|s| s.to_string()));
-        for d in &module.value().decls {
-            let ctors: Vec<InternedString> = match d.value() {
-                hir::Decl::Data(dd) => dd.variants.iter().map(|v| v.name).collect(),
-                hir::Decl::Record(rd) => vec![rd.ctor],
-                _ => continue,
-            };
-            for c in ctors {
-                let mut full = prefix.clone();
-                full.push(c.to_string());
-                out.insert(c, full.join("."));
+    let mut add =
+        |package: Option<InternedString>, module: &hir::LModule, path: &[InternedString]| {
+            let mut prefix: Vec<String> = package.into_iter().map(|p| p.to_string()).collect();
+            prefix.extend(path.iter().map(|s| s.to_string()));
+            for d in &module.value().decls {
+                let ctors: Vec<InternedString> = match d.value() {
+                    hir::Decl::Data(dd) => dd.variants.iter().map(|v| v.name).collect(),
+                    hir::Decl::Record(rd) => vec![rd.ctor],
+                    _ => continue,
+                };
+                for c in ctors {
+                    let mut full = prefix.clone();
+                    full.push(c.to_string());
+                    out.insert(c, full.join("."));
+                }
             }
-        }
-    };
+        };
     for dep in deps {
         for m in &dep.modules {
             let dotted: Vec<String> = m.path.iter().map(|s| s.to_string()).collect();
@@ -1012,7 +1021,9 @@ impl Walk<'_> {
         let signature = types
             .get(at)
             .or_else(|| types.get(ident.id))
-            .map(|t| without_lone_effect(&meadow_compiler::infer::Renderer::for_table(types).render(t)))
+            .map(|t| {
+                without_lone_effect(&meadow_compiler::infer::Renderer::for_table(types).render(t))
+            })
             .unwrap_or_default();
         self.a.functions.push(Function {
             name: name.to_string(),
@@ -1071,9 +1082,9 @@ impl Walk<'_> {
                 self.bind(ident, ident.id, hint);
                 self.pat(sub, false);
             }
-            hir::Pat::Tuple(ps)
-            | hir::Pat::List(ps)
-            | hir::Pat::Array(ps) => ps.iter().for_each(|q| self.pat(q, hint)),
+            hir::Pat::Tuple(ps) | hir::Pat::List(ps) | hir::Pat::Array(ps) => {
+                ps.iter().for_each(|q| self.pat(q, hint))
+            }
             hir::Pat::Cons(name, ps) => {
                 self.a
                     .name_refs
@@ -1346,7 +1357,11 @@ impl Analysis {
             .filter(|(s, _, _)| covers(*s, offset))
             .min_by_key(|(s, _, _)| s.end - s.start);
         if let Some((_, name, Namespace::Ctor)) = innermost {
-            let path = self.ctor_paths.get(name).cloned().unwrap_or_else(|| name.to_string());
+            let path = self
+                .ctor_paths
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| name.to_string());
             return Some(format!("```meadow\n{path}\n```"));
         }
         let var = self.var_at(offset);
@@ -1370,8 +1385,10 @@ impl Analysis {
         };
 
         let mut out = format!("```meadow\n{signature}\n```");
-        if let Some(doc) = var.and_then(|v| self.defs.get(&v))
-            .and_then(|l| self.doc_above(l.span)) {
+        if let Some(doc) = var
+            .and_then(|v| self.defs.get(&v))
+            .and_then(|l| self.doc_above(l.span))
+        {
             out.push_str("\n\n---\n\n");
             out.push_str(&doc);
         }

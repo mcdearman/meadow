@@ -18,7 +18,7 @@
 //! library, by design — is unaffected, and one that reads a file is not, so that
 //! is what `--cek` is for until the natives are ported.
 
-use meadow_compiler::{core, OptLevel};
+use meadow_compiler::{OptLevel, core};
 use std::fmt;
 
 /// Which machine to use.
@@ -164,7 +164,11 @@ fn human_bytes(n: u64) -> String {
         x /= 1024.0;
         unit += 1;
     }
-    if unit == 0 { format!("{n} B") } else { format!("{x:.1} {}", UNITS[unit]) }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{x:.1} {}", UNITS[unit])
+    }
 }
 
 /// [`run`], and on the VM what its collector did. The CEK reference-counts,
@@ -264,7 +268,9 @@ pub fn run_tests(
                     let Some(&entry) = image.entries.get(base + i) else {
                         return Err("a test has no entry point".to_string());
                     };
-                    meadow_rts::sched::run(&image, entry, UNBOUNDED).result.map_err(|e| e.msg)
+                    meadow_rts::sched::run(&image, entry, UNBOUNDED)
+                        .result
+                        .map_err(|e| e.msg)
                 })
                 .collect())
         }

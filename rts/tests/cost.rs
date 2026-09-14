@@ -17,7 +17,11 @@ fn program(src: &str) -> core::Program {
     let (pkg, diags) = compile_str("cost", src);
     let msgs: Vec<_> = diags.iter().map(|d| d.msg.clone()).collect();
     assert!(msgs.is_empty(), "{}", msgs.join("\n"));
-    let entry = pkg.exports.iter().find(|e| &*e.name == "main").map(|e| e.var);
+    let entry = pkg
+        .exports
+        .iter()
+        .find(|e| &*e.name == "main")
+        .map(|e| e.var);
     core::Program {
         defs: pkg.defs.clone(),
         entry,
@@ -56,7 +60,10 @@ fn a_tail_recursive_loop_allocates_nothing() {
          def main = count 100000 0",
     );
     assert_eq!(out, "5000050000");
-    assert_eq!(allocated, 1, "a loop must not allocate; only the halt closure");
+    assert_eq!(
+        allocated, 1,
+        "a loop must not allocate; only the halt closure"
+    );
     assert!(
         steps < 1_100_000,
         "{steps} instructions for 100_000 iterations — about 9 is right"
@@ -85,7 +92,10 @@ fn a_known_call_does_not_build_a_closure() {
     // Three slots an iteration: one continuation object for the non-tail call,
     // which a machine with no call stack has to put somewhere. The curried form
     // pays that *and* a closure per argument.
-    assert!(direct <= 3 * 1000 + 1, "{direct} slots for 1000 saturated calls");
+    assert!(
+        direct <= 3 * 1000 + 1,
+        "{direct} slots for 1000 saturated calls"
+    );
     assert!(
         curried > direct,
         "a partial application has to build more than a saturated call: {curried} vs {direct}"

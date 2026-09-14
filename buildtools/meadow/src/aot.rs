@@ -168,9 +168,27 @@ fn link(
         }
     }
     cmd.args(target.format.system_libs());
-    let out = cmd
-        .output()
-        .map_err(|e| format!("could not run `{cc}` to link: {e}"))?;
+    // On Windows the executable a run just made can stay open for a moment
+    // after it exits -- a virus scanner looking at it -- and the linker cannot
+    // replace it (LNK1104). That goes away by itself: wait for it, a little.
+    let mut out;
+    let mut tries = 0;
+    loop {
+        out = cmd
+            .output()
+            .map_err(|e| format!("could not run `{cc}` to link: {e}"))?;
+        let said = String::from_utf8_lossy(&out.stdout);
+        let locked = target.format == Format::Coff
+            && !out.status.success()
+            && said
+                .lines()
+                .any(|l| l.contains("LNK1104") && l.contains(&*exe.to_string_lossy()));
+        if !locked || tries == 20 {
+            break;
+        }
+        tries += 1;
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
     if !out.status.success() {
         // The Microsoft tools say what went wrong on standard output.
         return Err(format!(

@@ -570,10 +570,10 @@ impl Vm<'_> {
     fn native_time(&mut self, op: &str, arg: Value) -> Result<Option<Build>, Error> {
         use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
         // A process-wide origin, so `monotonic` is a small number that fits an
-        // `Int` and counts from the program's own start.
-        thread_local! {
-            static ORIGIN: std::cell::OnceCell<Instant> = const { std::cell::OnceCell::new() };
-        }
+        // `Int` and counts from the program's own start -- one origin for every
+        // OS thread, since a green thread can start a measurement on one worker
+        // and finish it on another.
+        static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
         Ok(Some(match op {
             // Wall clock, milliseconds since the Unix epoch.
@@ -585,9 +585,7 @@ impl Vm<'_> {
             ),
             // Monotonic, for measuring a duration: unaffected by the clock
             // changing under it.
-            "monotonic" => {
-                Build::int(ORIGIN.with(|o| o.get_or_init(Instant::now).elapsed().as_nanos() as i64))
-            }
+            "monotonic" => Build::int(ORIGIN.get_or_init(Instant::now).elapsed().as_nanos() as i64),
             "sleep" => match arg {
                 Value::Int(ms) if ms > 0 => {
                     std::thread::sleep(Duration::from_millis(ms as u64));

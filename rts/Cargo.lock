@@ -389,6 +389,7 @@ dependencies = [
 name = "meadow-rts"
 version = "0.1.0-alpha"
 dependencies = [
+ "find-msvc-tools",
  "meadow-bytecode",
  "meadow-codegen",
  "meadow-compiler",

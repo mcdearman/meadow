@@ -107,14 +107,26 @@ fn agree(src: &str) -> String {
 }
 
 /// Run `image` as native code compiled in this process, on `workers` threads.
+///
+/// At every level the code generator has, which must all answer alike: the
+/// passes above `O0` change what native code costs, never what it does.
+#[track_caller]
 fn jit(image: &meadow_bytecode::Program, workers: usize) -> Result<String, String> {
-    // Every block that runs, compiled the first time it does: all of the code
-    // the program reaches runs natively.
-    let jit = meadow_rts::jit::Native::jit(image, 1)?;
     let entry = image.entry.ok_or("no entry point")?;
-    meadow_rts::sched::run_native(image, Some(&jit), entry, FUEL, workers)
-        .result
-        .map_err(|e| e.msg)
+    let mut answer = None;
+    for opt in LEVELS {
+        // Every block that runs, compiled the first time it does: all of the
+        // code the program reaches runs natively.
+        let jit = meadow_rts::jit::Native::jit(image, 1, opt)?;
+        let got = meadow_rts::sched::run_native(image, Some(&jit), entry, FUEL, workers)
+            .result
+            .map_err(|e| e.msg);
+        match &answer {
+            None => answer = Some(got),
+            Some(want) => assert_eq!(want, &got, "JIT at O0 vs {}", opt.name()),
+        }
+    }
+    answer.expect("a level")
 }
 
 /// Compile all the way down, for the cases that check a *failure* — where the

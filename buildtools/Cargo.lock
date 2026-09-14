@@ -609,6 +609,7 @@ dependencies = [
  "chumsky",
  "clap",
  "env_logger",
+ "find-msvc-tools",
  "insta",
  "itertools",
  "meadow-bytecode",

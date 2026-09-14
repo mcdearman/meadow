@@ -60,7 +60,7 @@ pub fn run(program: &core::Program, engine: Engine, opt: OptLevel) -> Result<Str
             .map_err(|e| e.msg),
         Engine::Vm | Engine::Jit => {
             let image = compile(program, opt)?;
-            let native = native(&image, engine)?;
+            let native = native(&image, engine, opt)?;
             let entry = image.entry.ok_or("program has no entry point")?;
             meadow_rts::sched::run_native(
                 &image,
@@ -80,8 +80,14 @@ pub fn run(program: &core::Program, engine: Engine, opt: OptLevel) -> Result<Str
 pub fn native(
     image: &meadow_bytecode::Program,
     engine: Engine,
+    opt: OptLevel,
 ) -> Result<Option<meadow_rts::jit::Native<'_>>, String> {
-    native_at(image, engine, meadow_rts::jit::Native::threshold_from_env())
+    native_at(
+        image,
+        engine,
+        meadow_rts::jit::Native::threshold_from_env(),
+        opt,
+    )
 }
 
 /// [`native`], compiling a block the `threshold`th time it is entered.
@@ -89,9 +95,10 @@ fn native_at(
     image: &meadow_bytecode::Program,
     engine: Engine,
     threshold: u32,
+    opt: OptLevel,
 ) -> Result<Option<meadow_rts::jit::Native<'_>>, String> {
     match engine {
-        Engine::Jit => meadow_rts::jit::Native::jit(image, threshold).map(Some),
+        Engine::Jit => meadow_rts::jit::Native::jit(image, threshold, opt).map(Some),
         _ => Ok(None),
     }
 }
@@ -216,7 +223,7 @@ pub fn run_with_stats(
     match engine {
         Engine::Cek => (run(program, engine, opt), None),
         Engine::Vm | Engine::Jit => match compile(program, opt) {
-            Ok(image) => match native(&image, engine) {
+            Ok(image) => match native(&image, engine, opt) {
                 Ok(jit) => run_image_with_stats(&image, jit.as_ref()),
                 Err(e) => (Err(e), None),
             },
@@ -321,7 +328,7 @@ pub fn run_tests_jit_at(
                 origins: Default::default(),
             };
             let image = compile(&whole, opt)?;
-            let jit = native_at(&image, engine, threshold)?;
+            let jit = native_at(&image, engine, threshold, opt)?;
 
             Ok((0..tests.len())
                 .map(|i| {

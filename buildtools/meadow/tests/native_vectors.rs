@@ -39,8 +39,14 @@ fn program(dir: &std::path::Path) -> String {
          \x20     let ends = V.get names 0 != None and V.get names (V.len names - 1) != None in\n\
          \x20     let pushed = V.pushBack names \"extra\" in\n\
          \x20     (V.len names, total, ends or V.len names == 0, V.len (V.reverse pushed))\n",
-        dir.display()
+        literal(dir)
     )
+}
+
+/// A path inside a Meadow string literal: with `/` for a separator, which
+/// Windows takes as well as `\` and which is not an escape.
+fn literal(path: &std::path::Path) -> String {
+    path.display().to_string().replace('\\', "/")
 }
 
 fn check(n: usize) {
@@ -80,7 +86,7 @@ fn read_bytes_is_an_array() {
     std::fs::write(&file, [104u8, 105, 255]).unwrap();
     let src = format!(
         "def main = match readBytes \"{}\" with | Ok b -> (arrayLen b, arrayGet b 2) | Err e -> (0, 0)\n",
-        file.display()
+        literal(&file)
     );
     assert_eq!(eval_main_std(&src), "(3, 255)");
     assert_eq!(cek_main_std(&src), "(3, 255)");

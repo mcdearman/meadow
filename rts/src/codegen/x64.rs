@@ -3,11 +3,17 @@
 //! Machine registers during a block function: `rbx` the machine, `r12` its
 //! register file, `r13` steps not yet counted in the machine -- saved by the
 //! callee, so they survive the calls into the interpreter -- `r14` the loop
-//! iterations this call has made, and `rax`, `rcx`,
-//! `rdx`, `xmm0` and `xmm1` for the instruction being done.
+//! iterations this call has made, and `rax`, `rcx`, `rdx`, `rsi`, `rdi`,
+//! `xmm0` and `xmm1` for the instruction being done.
+//!
+//! `r8` to `r11` and `r15` hold the bytecode registers a function pins (see
+//! [`super::Emit::configure`]): loaded after the prologue, written to memory
+//! before every call and return, and loaded again after every call. Nothing
+//! else touches them.
 
 use super::{Emit, FloatOp, IntOp, Label, Operand, layout};
 use meadow_bytecode::{Cond, Pc, Reg};
+use meadow_core::OptLevel;
 
 const RAX: u8 = 0;
 const RCX: u8 = 1;
@@ -15,6 +21,9 @@ const RBX: u8 = 3;
 const RSI: u8 = 6;
 const R12: u8 = 12;
 const R13: u8 = 13;
+
+/// Where pinned registers live, in the order they are handed out.
+const PIN_REGS: [u8; 5] = [8, 9, 10, 11, 15];
 
 // Condition codes, as the low nibble of `jcc` and `setcc`.
 const CC_BE: u8 = 0x6;
@@ -35,6 +44,12 @@ pub struct Asm {
     /// Where a 32-bit displacement to a label is, measured from the end of it.
     fixups: Vec<(usize, Label)>,
     ret_eax: Option<Label>,
+    /// Writing a register leaves `live` to the caller (see `codegen::Book`).
+    defer_live: bool,
+    /// Constant operands encoded into the instruction, where they fit.
+    short: bool,
+    /// Pinned bytecode registers, and the machine register each lives in.
+    pins: Vec<(Reg, u8)>,
 }
 
 impl Asm {
@@ -75,6 +90,14 @@ impl Asm {
         self.mem(reg, base, disp);
     }
 
+    /// `dst = src`, 64 bits.
+    fn mov_rr(&mut self, dst: u8, src: u8) {
+        if dst != src {
+            self.rex_w(src, dst);
+            self.bytes(&[0x89, 0xC0 | (src & 7) << 3 | (dst & 7)]);
+        }
+    }
+
     /// `reg = imm`, 64 bits.
     fn imm(&mut self, reg: u8, imm: u64) {
         self.bytes(&[0x48 | (reg >> 3), 0xB8 + (reg & 7)]);
@@ -89,22 +112,83 @@ impl Asm {
         self.bytes(&imm.to_le_bytes());
     }
 
-    fn slot(r: Reg) -> u32 {
-        r as u32 * 8
+    fn slot(r: u32) -> u32 {
+        r * 8
+    }
+
+    /// The machine register bytecode register `r` is pinned to, if it is.
+    fn pinned(&self, r: u32) -> Option<u8> {
+        self.pins
+            .iter()
+            .find(|&&(p, _)| p as u32 == r)
+            .map(|&(_, m)| m)
+    }
+
+    /// `reg = r[r]`
+    fn get(&mut self, reg: u8, r: u32) {
+        match self.pinned(r) {
+            Some(m) => self.mov_rr(reg, m),
+            None => self.load(reg, R12, Self::slot(r)),
+        }
+    }
+
+    /// `r[r] = reg`
+    fn put(&mut self, reg: u8, r: u32) {
+        match self.pinned(r) {
+            Some(m) => self.mov_rr(m, reg),
+            None => self.save(reg, R12, Self::slot(r)),
+        }
+    }
+
+    /// Every pinned register, to memory.
+    fn spill(&mut self) {
+        for (r, m) in self.pins.clone() {
+            self.save(m, R12, Self::slot(r as u32));
+        }
+    }
+
+    /// Every pinned register, from memory.
+    fn reload(&mut self) {
+        for (r, m) in self.pins.clone() {
+            self.load(m, R12, Self::slot(r as u32));
+        }
     }
 
     /// `rcx = c`
     fn operand(&mut self, c: Operand) {
         match c {
-            Operand::Reg(r) => self.load(RCX, R12, Self::slot(r)),
+            Operand::Reg(r) => self.get(RCX, r as u32),
             Operand::Imm(n) => self.imm(RCX, n as u64),
         }
     }
 
-    fn raise_live(&mut self, a: Reg) {
+    /// `c` as a sign-extended 32-bit immediate, where that is how it is
+    /// encoded.
+    fn short_imm(&self, c: Operand) -> Option<i32> {
+        match c {
+            Operand::Imm(n) if self.short => i32::try_from(n).ok(),
+            _ => None,
+        }
+    }
+
+    /// `cmp rax, c`
+    fn cmp_rax(&mut self, c: Operand) {
+        match self.short_imm(c) {
+            Some(k) => {
+                self.bytes(&[0x48, 0x3D]);
+                self.bytes(&k.to_le_bytes());
+            }
+            None => {
+                self.operand(c);
+                self.bytes(&[0x48, 0x39, 0xC8]); // cmp rax, rcx
+            }
+        }
+    }
+
+    fn raise(&mut self, n: u32) {
         self.load(RCX, RBX, layout::LIVE);
-        self.bytes(&[0xBA]); // mov edx, a + 1
-        self.bytes(&(a as u32 + 1).to_le_bytes());
+        self.bytes(&[0xBA]); // mov edx, n
+        self.bytes(&n.to_le_bytes());
         self.bytes(&[0x48, 0x39, 0xD1]); // cmp rcx, rdx
         self.bytes(&[0x48, 0x0F, 0x42, 0xCA]); // cmovb rcx, rdx
         self.save(RCX, RBX, layout::LIVE);
@@ -112,8 +196,10 @@ impl Asm {
 
     /// `r[a] = rax`, raising `live`.
     fn store(&mut self, a: Reg) {
-        self.save(RAX, R12, Self::slot(a));
-        self.raise_live(a);
+        self.put(RAX, a as u32);
+        if !self.defer_live {
+            self.raise(a as u32 + 1);
+        }
     }
 
     fn flush_steps(&mut self) {
@@ -124,8 +210,19 @@ impl Asm {
         self.bytes(&[0x45, 0x31, 0xED]); // xor r13d, r13d
     }
 
+    /// Return `status` with the register file as it is in memory.
+    fn ret_as_is(&mut self, status: u32) {
+        self.flush_steps();
+        self.bytes(&[0xB8]); // mov eax, status
+        self.bytes(&status.to_le_bytes());
+        self.restore_and_return();
+    }
+
     fn restore_and_return(&mut self) {
-        self.bytes(&[0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5B, 0x5D, 0xC3]);
+        self.bytes(&[0x48, 0x83, 0xC4, 0x08]); // add rsp, 8
+        self.bytes(&[
+            0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5B, 0x5D, 0xC3,
+        ]);
     }
 
     fn jcc(&mut self, cc: u8, to: Label) {
@@ -185,7 +282,7 @@ impl Asm {
     /// `rax = r[x]`, and on to `slow` unless that is a nursery address; then
     /// `rdx` the object's first slot, `rsi` its first word, `ecx` its kind.
     fn nursery(&mut self, x: Reg, slow: Label) {
-        self.load(RAX, R12, Self::slot(x));
+        self.get(RAX, x as u32);
         self.bytes(&[0x48, 0x3D]); // cmp rax, OLD_BASE
         self.bytes(&crate::old::OLD_BASE.to_le_bytes());
         self.jcc(CC_AE, slow);
@@ -200,20 +297,46 @@ impl Asm {
         self.bytes(&[0x48, 0x89, 0xF7, 0x48, 0xC1, 0xEF, 0x20]);
     }
 
-    /// `movsd xmm, [r12 + slot]`, or the store the other way.
-    fn movsd(&mut self, xmm: u8, r: Reg, store: bool) {
-        self.bytes(&[0xF2, 0x41, 0x0F, if store { 0x11 } else { 0x10 }]);
-        self.mem(xmm, R12, Self::slot(r));
+    /// `xmm = r[r]`
+    fn get_float(&mut self, xmm: u8, r: Reg) {
+        match self.pinned(r as u32) {
+            // movq xmm, m
+            Some(m) => self.bytes(&[0x66, 0x48 | (m >> 3), 0x0F, 0x6E, 0xC0 | xmm << 3 | (m & 7)]),
+            None => {
+                self.bytes(&[0xF2, 0x41, 0x0F, 0x10]); // movsd xmm, [r12 + slot]
+                self.mem(xmm, R12, Self::slot(r as u32));
+            }
+        }
+    }
+
+    /// `r[a] = xmm0`, raising `live`.
+    fn store_float(&mut self, a: Reg) {
+        match self.pinned(a as u32) {
+            // movq m, xmm0
+            Some(m) => self.bytes(&[0x66, 0x48 | (m >> 3), 0x0F, 0x7E, 0xC0 | (m & 7)]),
+            None => {
+                self.bytes(&[0xF2, 0x41, 0x0F, 0x11]); // movsd [r12 + slot], xmm0
+                self.mem(0, R12, Self::slot(a as u32));
+            }
+        }
+        if !self.defer_live {
+            self.raise(a as u32 + 1);
+        }
     }
 }
 
 impl Emit for Asm {
+    const PINS: usize = PIN_REGS.len();
+
     fn new() -> Asm {
         Asm {
             code: Vec::new(),
             labels: Vec::new(),
             fixups: Vec::new(),
             ret_eax: None,
+            defer_live: false,
+            short: false,
+            pins: Vec::new(),
         }
     }
 
@@ -230,25 +353,31 @@ impl Emit for Asm {
         self.labels[l.0] = Some(self.code.len());
     }
 
+    fn configure(&mut self, opt: OptLevel, pins: &[Reg]) {
+        self.defer_live = opt >= OptLevel::O1;
+        self.short = opt >= OptLevel::O1;
+        self.pins = pins.iter().copied().zip(PIN_REGS).collect();
+    }
+
     fn prologue(&mut self) {
-        // push rbp; mov rbp, rsp; push rbx; push r12; push r13; push r14 --
-        // six words on the stack with the return address, so it stays aligned
-        // for the calls.
+        // push rbp; mov rbp, rsp; push rbx; push r12; push r13; push r14;
+        // push r15; sub rsp, 8 -- eight words on the stack with the return
+        // address, so it stays aligned for the calls.
         self.bytes(&[
-            0x55, 0x48, 0x89, 0xE5, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+            0x55, 0x48, 0x89, 0xE5, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
+            0x83, 0xEC, 0x08,
         ]);
         self.bytes(&[0x48, 0x89, 0xFB]); // mov rbx, rdi
         self.load(R12, RBX, layout::REGS);
         self.bytes(&[0x45, 0x31, 0xED]); // xor r13d, r13d
         self.bytes(&[0x45, 0x31, 0xF6]); // xor r14d, r14d
+        self.reload();
         self.ret_eax = None;
     }
 
     fn ret(&mut self, status: u32) {
-        self.flush_steps();
-        self.bytes(&[0xB8]); // mov eax, status
-        self.bytes(&status.to_le_bytes());
-        self.restore_and_return();
+        self.spill();
+        self.ret_as_is(status);
     }
 
     fn leave(&mut self, pc: Pc, live: Option<u32>) {
@@ -270,109 +399,151 @@ impl Emit for Asm {
         self.bytes(&[0x49, 0xFF, 0xC5]); // inc r13
     }
 
+    fn unstep(&mut self) {
+        self.bytes(&[0x49, 0xFF, 0xCD]); // dec r13
+    }
+
+    fn add_steps(&mut self, n: u32) {
+        if n == 1 {
+            self.step();
+        } else {
+            self.bytes(&[0x49, 0x81, 0xC5]); // add r13, n
+            self.bytes(&n.to_le_bytes());
+        }
+    }
+
     fn jump(&mut self, to: Label) {
         self.bytes(&[0xE9]);
         self.rel32(to);
     }
 
     fn mov(&mut self, a: Reg, b: Reg) {
-        self.load(RAX, R12, Self::slot(b));
+        self.get(RAX, b as u32);
         self.store(a);
     }
 
     fn word(&mut self, a: Reg, w: u64) {
-        self.imm(RAX, w);
+        match u32::try_from(w) {
+            Ok(w) if self.short => {
+                self.bytes(&[0xB8]); // mov eax, w
+                self.bytes(&w.to_le_bytes());
+            }
+            _ => self.imm(RAX, w),
+        }
         self.store(a);
     }
 
     fn int(&mut self, op: IntOp, a: Reg, b: Reg, c: Operand, zero: Label) {
-        self.load(RAX, R12, Self::slot(b));
-        self.operand(c);
-        match op {
-            IntOp::Add => self.bytes(&[0x48, 0x01, 0xC8]), // add rax, rcx
-            IntOp::Sub => self.bytes(&[0x48, 0x29, 0xC8]), // sub rax, rcx
-            IntOp::Mul => self.bytes(&[0x48, 0x0F, 0xAF, 0xC1]), // imul rax, rcx
-            IntOp::Div | IntOp::Rem => {
-                self.bytes(&[0x48, 0x85, 0xC9]); // test rcx, rcx
-                self.jcc(CC_E, zero);
-                // `idiv` traps on MIN / -1, where `wrapping_div` gives MIN and
-                // `wrapping_rem` 0 -- which is `-x` and `0` for any `x`.
-                let normal = self.label();
-                let done = self.label();
-                self.bytes(&[0x48, 0x83, 0xF9, 0xFF]); // cmp rcx, -1
-                self.jcc(CC_NE, normal);
-                if op == IntOp::Div {
-                    self.bytes(&[0x48, 0xF7, 0xD8]); // neg rax
-                } else {
-                    self.bytes(&[0x31, 0xC0]); // xor eax, eax
+        self.get(RAX, b as u32);
+        match (op, self.short_imm(c)) {
+            (IntOp::Add, Some(k)) => {
+                self.bytes(&[0x48, 0x05]); // add rax, k
+                self.bytes(&k.to_le_bytes());
+            }
+            (IntOp::Sub, Some(k)) => {
+                self.bytes(&[0x48, 0x2D]); // sub rax, k
+                self.bytes(&k.to_le_bytes());
+            }
+            (IntOp::Mul, Some(k)) => {
+                self.bytes(&[0x48, 0x69, 0xC0]); // imul rax, rax, k
+                self.bytes(&k.to_le_bytes());
+            }
+            _ => {
+                self.operand(c);
+                match op {
+                    IntOp::Add => self.bytes(&[0x48, 0x01, 0xC8]), // add rax, rcx
+                    IntOp::Sub => self.bytes(&[0x48, 0x29, 0xC8]), // sub rax, rcx
+                    IntOp::Mul => self.bytes(&[0x48, 0x0F, 0xAF, 0xC1]), // imul rax, rcx
+                    IntOp::Div | IntOp::Rem => {
+                        self.bytes(&[0x48, 0x85, 0xC9]); // test rcx, rcx
+                        self.jcc(CC_E, zero);
+                        // `idiv` traps on MIN / -1, where `wrapping_div` gives
+                        // MIN and `wrapping_rem` 0 -- which is `-x` and `0` for
+                        // any `x`.
+                        let normal = self.label();
+                        let done = self.label();
+                        self.bytes(&[0x48, 0x83, 0xF9, 0xFF]); // cmp rcx, -1
+                        self.jcc(CC_NE, normal);
+                        if op == IntOp::Div {
+                            self.bytes(&[0x48, 0xF7, 0xD8]); // neg rax
+                        } else {
+                            self.bytes(&[0x31, 0xC0]); // xor eax, eax
+                        }
+                        self.jump(done);
+                        self.bind(normal);
+                        self.bytes(&[0x48, 0x99]); // cqo
+                        self.bytes(&[0x48, 0xF7, 0xF9]); // idiv rcx
+                        if op == IntOp::Rem {
+                            self.bytes(&[0x48, 0x89, 0xD0]); // mov rax, rdx
+                        }
+                        self.bind(done);
+                    }
                 }
-                self.jump(done);
-                self.bind(normal);
-                self.bytes(&[0x48, 0x99]); // cqo
-                self.bytes(&[0x48, 0xF7, 0xF9]); // idiv rcx
-                if op == IntOp::Rem {
-                    self.bytes(&[0x48, 0x89, 0xD0]); // mov rax, rdx
-                }
-                self.bind(done);
             }
         }
         self.store(a);
     }
 
     fn float(&mut self, op: FloatOp, a: Reg, b: Reg, c: Reg) {
-        self.movsd(0, b, false);
+        self.get_float(0, b);
         let opcode = match op {
             FloatOp::Add => 0x58,
             FloatOp::Sub => 0x5C,
             FloatOp::Mul => 0x59,
             FloatOp::Div => 0x5E,
         };
-        self.bytes(&[0xF2, 0x41, 0x0F, opcode]); // xmm0 op= [r12 + c]
-        self.mem(0, R12, Self::slot(c));
-        self.movsd(0, a, true);
-        self.raise_live(a);
+        if self.pinned(c as u32).is_some() {
+            self.get_float(1, c);
+            self.bytes(&[0xF2, 0x0F, opcode, 0xC1]); // xmm0 op= xmm1
+        } else {
+            self.bytes(&[0xF2, 0x41, 0x0F, opcode]); // xmm0 op= [r12 + c]
+            self.mem(0, R12, Self::slot(c as u32));
+        }
+        self.store_float(a);
     }
 
     fn cmp_int(&mut self, cond: Cond, a: Reg, b: Reg, c: Operand) {
-        self.load(RAX, R12, Self::slot(b));
-        self.operand(c);
-        self.bytes(&[0x48, 0x39, 0xC8]); // cmp rax, rcx
+        self.get(RAX, b as u32);
+        self.cmp_rax(c);
         self.bytes(&[0x0F, 0x90 | Self::int_cc(cond), 0xC0]); // setcc al
         self.bytes(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.store(a);
     }
 
     fn cmp_float(&mut self, cond: Cond, a: Reg, b: Reg, c: Reg) {
-        self.movsd(0, b, false);
-        self.movsd(1, c, false);
+        self.get_float(0, b);
+        self.get_float(1, c);
         self.float_bool(cond);
         self.bytes(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
         self.store(a);
     }
 
     fn branch_int(&mut self, cond: Cond, x: Reg, y: Operand, to: Label) {
-        self.load(RAX, R12, Self::slot(x));
-        self.operand(y);
-        self.bytes(&[0x48, 0x39, 0xC8]); // cmp rax, rcx
+        self.get(RAX, x as u32);
+        self.cmp_rax(y);
         self.jcc(Self::int_cc(cond) ^ 1, to);
     }
 
     fn branch_float(&mut self, cond: Cond, x: Reg, y: Reg, to: Label) {
-        self.movsd(0, x, false);
-        self.movsd(1, y, false);
+        self.get_float(0, x);
+        self.get_float(1, y);
         self.float_bool(cond);
         self.bytes(&[0x84, 0xC0]); // test al, al
         self.jcc(CC_E, to);
     }
 
     fn branch_zero(&mut self, x: Reg, to: Label) {
-        self.load(RAX, R12, Self::slot(x));
+        self.get(RAX, x as u32);
         self.bytes(&[0x48, 0x85, 0xC0]); // test rax, rax
         self.jcc(CC_E, to);
     }
 
     fn set_live(&mut self, n: u32) {
         self.save_imm(RBX, layout::LIVE, n);
+    }
+
+    fn raise_live_to(&mut self, n: u32) {
+        self.raise(n);
     }
 
     fn back_edge(&mut self, to: Label, over: Label) {
@@ -382,10 +553,6 @@ impl Emit for Asm {
         self.bytes(&super::BACK_EDGES.to_le_bytes());
         self.jcc(CC_AE, over);
         self.jump(to);
-    }
-
-    fn unstep(&mut self) {
-        self.bytes(&[0x49, 0xFF, 0xCD]); // dec r13
     }
 
     fn tag_test(&mut self, x: Reg, tag: u32, miss: Label, slow: Label) {
@@ -422,6 +589,8 @@ impl Emit for Asm {
             self.jump(slow);
             return;
         }
+        // The register file is rebuilt in memory below.
+        self.spill();
         self.nursery(obj, slow);
         self.bytes(&[0x83, 0xF9, crate::heap::Kind::Closure as u8]); // cmp ecx, Closure
         self.jcc(CC_NE, slow);
@@ -430,23 +599,21 @@ impl Emit for Asm {
         self.jcc(CC_A, slow);
         // The method's pc: table `meta`, entry `method`, if it has one.
         self.bytes(&[0x8B, 0x4A, 0x08]); // mov ecx, [rdx + 8]
-        self.bytes(&[0x4C, 0x8B, 0x83]); // mov r8, [rbx + METHOD_STARTS]
-        self.bytes(&layout::METHOD_STARTS.to_le_bytes());
-        self.bytes(&[0x41, 0x8B, 0x04, 0x88]); // mov eax, [r8 + rcx*4]
-        self.bytes(&[0x45, 0x8B, 0x4C, 0x88, 0x04]); // mov r9d, [r8 + rcx*4 + 4]
-        self.bytes(&[0x41, 0x29, 0xC1]); // sub r9d, eax
-        self.bytes(&[0x41, 0x81, 0xF9]); // cmp r9d, method
+        self.load(RSI, RBX, layout::METHOD_STARTS);
+        self.bytes(&[0x8B, 0x04, 0x8E]); // mov eax, [rsi + rcx*4]
+        self.bytes(&[0x8B, 0x4C, 0x8E, 0x04]); // mov ecx, [rsi + rcx*4 + 4]
+        self.bytes(&[0x29, 0xC1]); // sub ecx, eax
+        self.bytes(&[0x81, 0xF9]); // cmp ecx, method
         self.bytes(&(method as u32).to_le_bytes());
         self.jcc(CC_BE, slow);
         self.bytes(&[0x05]); // add eax, method
         self.bytes(&(method as u32).to_le_bytes());
-        self.bytes(&[0x4C, 0x8B, 0x83]); // mov r8, [rbx + METHOD_PCS]
-        self.bytes(&layout::METHOD_PCS.to_le_bytes());
-        self.bytes(&[0x45, 0x8B, 0x14, 0x80]); // mov r10d, [r8 + rax*4]
+        self.load(RSI, RBX, layout::METHOD_PCS);
+        self.bytes(&[0x8B, 0x34, 0x86]); // mov esi, [rsi + rax*4]
         // The arguments out of the way, the captures in, the arguments after.
         let scratch = crate::vm::SCRATCH as u32;
         for j in 0..argc {
-            self.load(RAX, R12, Self::slot(base) + j * 8);
+            self.load(RAX, R12, Self::slot(base as u32 + j));
             self.save(RAX, R12, (scratch + j) * 8);
         }
         let top = self.label();
@@ -468,9 +635,8 @@ impl Emit for Asm {
         self.bytes(&[0x48, 0x8D, 0x87]); // lea rax, [rdi + argc]
         self.bytes(&argc.to_le_bytes());
         self.save(RAX, RBX, layout::LIVE);
-        self.bytes(&[0x4C, 0x89, 0x93]); // mov [rbx + PC], r10
-        self.bytes(&layout::PC.to_le_bytes());
-        self.ret(crate::abi::JUMPED);
+        self.save(RSI, RBX, layout::PC);
+        self.ret_as_is(crate::abi::JUMPED);
     }
 
     fn alloc(&mut self, a: Reg, header: [u64; 2], base: Reg, n: u32, slow: Label) {
@@ -493,7 +659,7 @@ impl Emit for Asm {
         self.imm(RSI, header[1]);
         self.bytes(&[0x48, 0x89, 0x72, 0x08]); // mov [rdx + 8], rsi
         for j in 0..n {
-            self.load(RSI, R12, Self::slot(base) + j * 8);
+            self.get(RSI, base as u32 + j);
             self.bytes(&[0x48, 0x89, 0xB2]); // mov [rdx + (2 + j) * 8], rsi
             self.bytes(&((2 + j) * 8).to_le_bytes());
         }
@@ -506,6 +672,7 @@ impl Emit for Asm {
 
     fn exec(&mut self, pc: Pc) {
         self.flush_steps();
+        self.spill();
         self.bytes(&[0x48, 0x89, 0xDF]); // mov rdi, rbx
         self.bytes(&[0xB8 + RSI]); // mov esi, pc
         self.bytes(&pc.to_le_bytes());
@@ -521,6 +688,7 @@ impl Emit for Asm {
             }
         };
         self.jcc(CC_NE, ret);
+        self.reload();
     }
 
     fn finish(mut self) -> Vec<u8> {

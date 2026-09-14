@@ -25,5 +25,9 @@ yansi = { version = "1.0", features = ["detect-tty", "detect-env"] }
 serde_json = "1"
 rustyline = { version = "18.0.0", features = ["with-file-history", "derive", "custom-bindings"] }
 
+[target.'cfg(windows)'.dependencies]
+# Finds Visual Studio's `cl.exe` to link a native executable with, as `cc` does.
+find-msvc-tools = "0.1"
+
 [dev-dependencies]
 insta = "1.47.2"

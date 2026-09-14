@@ -136,7 +136,7 @@ pub struct Vm<'p> {
     /// [`crate::abi::meadow_exec`]: how native code has the interpreter carry
     /// out an instruction it does not do itself. Here rather than linked
     /// against, so native code needs no relocation to reach it.
-    pub(crate) exec: unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> u32,
+    pub(crate) exec: crate::abi::ExecFn,
     /// Every method table's entry pcs, one after another, and where each table
     /// starts among them (with one more, where the last ends): how native code
     /// finds the method an `invoke` enters. Null until there is native code --

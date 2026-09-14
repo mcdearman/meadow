@@ -1,6 +1,9 @@
 //! Programs compiled ahead of time: to native code, into an object file, linked
 //! with the system's C compiler against this runtime, and run as a process.
 //! Each must answer what the bytecode VM answers.
+//!
+//! `MEADOW_CC` names the C compiler, `MEADOW_RUNTIME` the runtime library, and
+//! `MEADOW_AOT_RUNNER` what runs the result, for testing under an emulator.
 
 use meadow_compiler::{compile_str, core};
 use meadow_rts::codegen::{self, Arch, object};
@@ -41,6 +44,10 @@ fn scratch(name: &str) -> PathBuf {
 /// The runtime as a static library for `arch`, as this build of it made it:
 /// the host's from `cargo build`, another from `cargo build --target`.
 fn runtime(arch: Arch) -> Option<PathBuf> {
+    // Named outright, for the host: built for a target this is emulating.
+    if let Some(lib) = std::env::var_os("MEADOW_RUNTIME") {
+        return (Some(arch) == Arch::host()).then(|| PathBuf::from(lib));
+    }
     let profile = if cfg!(debug_assertions) {
         "debug"
     } else {
@@ -55,7 +62,12 @@ fn runtime(arch: Arch) -> Option<PathBuf> {
         target.join(triple(arch)?).join(profile)
     };
     fresh(arch, &target);
-    Some(dir.join("libmeadow_rts.a")).filter(|lib| lib.exists())
+    let lib = if cfg!(windows) {
+        "meadow_rts.lib"
+    } else {
+        "libmeadow_rts.a"
+    };
+    Some(dir.join(lib)).filter(|lib| lib.exists())
 }
 
 /// Bring the static library for `arch` up to date, once per run: `cargo test`
@@ -108,44 +120,66 @@ fn triple(arch: Arch) -> Option<&'static str> {
 fn native(name: &str, src: &str, opt: meadow_core::OptLevel, arch: Arch) -> Option<(String, bool)> {
     let runtime = runtime(arch)?;
     let image = image(src, opt);
-    let compiled = codegen::compile(&image, arch);
+    let compiled = codegen::compile(&image, arch, opt);
     let bytes = meadow_bytecode::image::encode(&image);
     let dir = scratch(name);
-    let obj = dir.join("program.o");
-    std::fs::write(
-        &obj,
-        object::write(&compiled, &bytes, object::Format::host()),
-    )
-    .unwrap();
+    let format = object::Format::host();
+    let obj = dir.join(format!("program.{}", format.object_extension()));
+    std::fs::write(&obj, object::write(&compiled, &bytes, format)).unwrap();
     let main = dir.join("main.c");
     std::fs::write(&main, object::main_c()).unwrap();
-    let exe = dir.join("program");
-    let mut cc = Command::new("cc");
-    cc.arg(&main).arg(&obj).arg(runtime).arg("-o").arg(&exe);
-    if cfg!(target_os = "macos") {
-        let arch = match arch {
-            Arch::Aarch64 => "arm64",
-            Arch::X86_64 => "x86_64",
-        };
-        cc.args(["-arch", arch, "-liconv", "-lSystem", "-lc", "-lm"]);
-    } else {
-        cc.args([
-            "-lgcc_s",
-            "-lutil",
-            "-lrt",
-            "-lpthread",
-            "-lm",
-            "-ldl",
-            "-lc",
-        ]);
+    let exe = dir.join(format!("program{}", format.exe_suffix()));
+    let mut cc;
+    #[cfg(windows)]
+    {
+        cc = find_msvc_tools::find(
+            match arch {
+                Arch::Aarch64 => "aarch64-pc-windows-msvc",
+                Arch::X86_64 => "x86_64-pc-windows-msvc",
+            },
+            "cl.exe",
+        )
+        .expect("Visual Studio's C compiler");
+        cc.current_dir(&dir)
+            .args(["/nologo", "/MD"])
+            .arg(&main)
+            .arg(&obj)
+            .arg(runtime)
+            .arg(format!("/Fe{}", exe.display()));
     }
+    #[cfg(not(windows))]
+    {
+        cc = Command::new(std::env::var("MEADOW_CC").unwrap_or_else(|_| "cc".into()));
+        cc.arg(&main).arg(&obj).arg(runtime).arg("-o").arg(&exe);
+        if cfg!(target_os = "macos") {
+            let arch = match arch {
+                Arch::Aarch64 => "arm64",
+                Arch::X86_64 => "x86_64",
+            };
+            cc.args(["-arch", arch]);
+        }
+    }
+    cc.args(format.system_libs());
     let linked = cc.output().expect("a C compiler");
     assert!(
         linked.status.success(),
-        "linking failed:\n{}",
+        "linking failed:\n{}{}",
+        String::from_utf8_lossy(&linked.stdout),
         String::from_utf8_lossy(&linked.stderr)
     );
-    let run = Command::new(&exe).output().expect("the program runs");
+    // `MEADOW_AOT_RUNNER`, for an executable this machine runs through an
+    // emulator: `qemu-aarch64 -L <sysroot>`, say.
+    let run = match std::env::var("MEADOW_AOT_RUNNER") {
+        Ok(runner) => {
+            let mut words = runner.split_whitespace();
+            let mut cmd = Command::new(words.next().expect("a runner"));
+            cmd.args(words).arg(&exe);
+            cmd
+        }
+        Err(_) => Command::new(&exe),
+    }
+    .output()
+    .expect("the program runs");
     let _ = std::fs::remove_dir_all(&dir);
     let out = if run.status.success() {
         String::from_utf8_lossy(&run.stdout).trim_end().to_string()
@@ -161,7 +195,11 @@ fn native(name: &str, src: &str, opt: meadow_core::OptLevel, arch: Arch) -> Opti
 fn agrees(name: &str, src: &str) -> String {
     let mut want = None;
     for arch in [Arch::Aarch64, Arch::X86_64] {
-        for opt in [meadow_core::OptLevel::O0, meadow_core::OptLevel::O2] {
+        for opt in [
+            meadow_core::OptLevel::O0,
+            meadow_core::OptLevel::O1,
+            meadow_core::OptLevel::O2,
+        ] {
             let vm = meadow_rts::run(&image(src, opt), u64::MAX).map_err(|e| e.msg);
             let at = format!("{name}-{arch:?}-{}", opt.name());
             let Some((got, ok)) = native(&at, src, opt, arch) else {

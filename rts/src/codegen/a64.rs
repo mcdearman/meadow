@@ -3,11 +3,17 @@
 //! Machine registers during a block function: `x19` the machine, `x20` its
 //! register file, `x21` steps not yet counted in the machine -- all saved by
 //! the callee, so they survive the calls into the interpreter -- `x22` the
-//! loop iterations this call has made, and `x9`
-//! through `x11`, `d0` and `d1` for the instruction being done.
+//! loop iterations this call has made, and `x9` through `x17`, `d0` and `d1`
+//! for the instruction being done.
+//!
+//! `x2` to `x8` hold the bytecode registers a function pins (see
+//! [`super::Emit::configure`]): loaded after the prologue, written to memory
+//! before every call and return, and loaded again after every call. Nothing
+//! else touches them.
 
 use super::{Emit, FloatOp, IntOp, Label, Operand, layout};
 use meadow_bytecode::{Cond, Pc, Reg};
+use meadow_core::OptLevel;
 
 const X0: u32 = 0;
 const X1: u32 = 1;
@@ -27,6 +33,9 @@ const X22: u32 = 22;
 const FP: u32 = 29;
 const LR: u32 = 30;
 const SP: u32 = 31;
+
+/// Where pinned registers live, in the order they are handed out.
+const PIN_REGS: [u32; 7] = [2, 3, 4, 5, 6, 7, 8];
 
 // Condition codes.
 const EQ: u32 = 0;
@@ -54,6 +63,12 @@ pub struct Asm {
     fixups: Vec<(usize, Label, Fixup)>,
     /// The current function's return of what the interpreter said.
     ret_w0: Option<Label>,
+    /// Writing a register leaves `live` to the caller (see `codegen::Book`).
+    defer_live: bool,
+    /// Constant operands encoded into the instruction, where they fit.
+    short: bool,
+    /// Pinned bytecode registers, and the machine register each lives in.
+    pins: Vec<(Reg, u32)>,
 }
 
 impl Asm {
@@ -112,22 +127,85 @@ impl Asm {
     }
 
     /// Bytecode register `r`'s slot.
-    fn slot(r: Reg) -> u32 {
-        r as u32 * 8
+    fn slot(r: u32) -> u32 {
+        r * 8
+    }
+
+    /// The machine register bytecode register `r` is pinned to, if it is.
+    fn pinned(&self, r: u32) -> Option<u32> {
+        self.pins
+            .iter()
+            .find(|&&(p, _)| p as u32 == r)
+            .map(|&(_, m)| m)
+    }
+
+    /// `xt = r[r]`
+    fn get(&mut self, t: u32, r: u32) {
+        match self.pinned(r) {
+            Some(m) if m != t => self.mov_x(t, m),
+            Some(_) => {}
+            None => self.ldr(t, X20, Self::slot(r)),
+        }
+    }
+
+    /// `r[r] = xt`
+    fn set(&mut self, t: u32, r: u32) {
+        match self.pinned(r) {
+            Some(m) if m != t => self.mov_x(m, t),
+            Some(_) => {}
+            None => self.str(t, X20, Self::slot(r)),
+        }
+    }
+
+    /// Every pinned register, to memory.
+    fn spill(&mut self) {
+        for (r, m) in self.pins.clone() {
+            self.str(m, X20, Self::slot(r as u32));
+        }
+    }
+
+    /// Every pinned register, from memory.
+    fn reload(&mut self) {
+        for (r, m) in self.pins.clone() {
+            self.ldr(m, X20, Self::slot(r as u32));
+        }
     }
 
     /// `x10 = c`
     fn operand(&mut self, c: Operand) {
         match c {
-            Operand::Reg(r) => self.ldr(X10, X20, Self::slot(r)),
+            Operand::Reg(r) => self.get(X10, r as u32),
             Operand::Imm(n) => self.imm(X10, n as u64),
         }
     }
 
-    /// `live = max(live, a + 1)`
-    fn raise_live(&mut self, a: Reg) {
+    /// `c` as the magnitude of a 12-bit immediate, and whether it is
+    /// negative, where that is how it is encoded.
+    fn short_imm(&self, c: Operand) -> Option<(u32, bool)> {
+        match c {
+            Operand::Imm(n) if self.short && (0..4096).contains(&n) => Some((n as u32, false)),
+            Operand::Imm(n) if self.short && (-4095..0).contains(&n) => Some(((-n) as u32, true)),
+            _ => None,
+        }
+    }
+
+    /// `cmp x9, c`
+    fn cmp_x9(&mut self, c: Operand) {
+        match self.short_imm(c) {
+            // cmp x9, #k -- or cmn, for a negative one.
+            Some((k, false)) => self.put(0xF100_001F | k << 10 | X9 << 5),
+            Some((k, true)) => self.put(0xB100_001F | k << 10 | X9 << 5),
+            None => {
+                self.operand(c);
+                self.cmp(X9, X10);
+            }
+        }
+    }
+
+    /// `live = max(live, n)`
+    fn raise(&mut self, n: u32) {
         self.ldr(X10, X19, layout::LIVE);
-        self.imm(X11, a as u64 + 1);
+        self.imm(X11, n as u64);
         self.cmp(X10, X11);
         // csel x10, x10, x11, hs
         self.put(0x9A80_0000 | X11 << 16 | HS << 12 | X10 << 5 | X10);
@@ -136,8 +214,10 @@ impl Asm {
 
     /// Store `x9` in `r[a]`, raising `live`.
     fn store(&mut self, a: Reg) {
-        self.str(X9, X20, Self::slot(a));
-        self.raise_live(a);
+        self.set(X9, a as u32);
+        if !self.defer_live {
+            self.raise(a as u32 + 1);
+        }
     }
 
     fn flush_steps(&mut self) {
@@ -145,6 +225,13 @@ impl Asm {
         self.put(0x8B00_0000 | X21 << 16 | X9 << 5 | X9); // add x9, x9, x21
         self.str(X9, X19, layout::STEPS);
         self.imm(X21, 0);
+    }
+
+    /// Return `status` with the register file as it is in memory.
+    fn ret_as_is(&mut self, status: u32) {
+        self.flush_steps();
+        self.put(0x5280_0000 | status << 5); // movz w0, #status
+        self.restore_and_return();
     }
 
     fn restore_and_return(&mut self) {
@@ -182,7 +269,7 @@ impl Asm {
     /// `x9 = r[x]`, and on to `slow` unless that is a nursery address; then
     /// `x12` the object's first slot, `x13` its first word, and `w14` its kind.
     fn nursery(&mut self, x: Reg, slow: Label) {
-        self.ldr(X9, X20, Self::slot(x));
+        self.get(X9, x as u32);
         self.imm(X10, crate::old::OLD_BASE as u64);
         self.cmp(X9, X10);
         self.b_cond(HS, slow);
@@ -202,19 +289,43 @@ impl Asm {
         self.put(0xD360_FC00 | X13 << 5 | X15);
     }
 
+    /// `dt = r[r]`
+    fn get_float(&mut self, t: u32, r: Reg) {
+        match self.pinned(r as u32) {
+            Some(m) => self.put(0x9E67_0000 | m << 5 | t), // fmov dt, xm
+            None => self.ldr_d(t, X20, Self::slot(r as u32)),
+        }
+    }
+
     fn load_floats(&mut self, b: Reg, c: Reg) {
-        self.ldr_d(0, X20, Self::slot(b));
-        self.ldr_d(1, X20, Self::slot(c));
+        self.get_float(0, b);
+        self.get_float(1, c);
+    }
+
+    /// `r[a] = d0`, raising `live`.
+    fn store_float(&mut self, a: Reg) {
+        match self.pinned(a as u32) {
+            Some(m) => self.put(0x9E66_0000 | m), // fmov xm, d0
+            None => self.str_d(0, X20, Self::slot(a as u32)),
+        }
+        if !self.defer_live {
+            self.raise(a as u32 + 1);
+        }
     }
 }
 
 impl Emit for Asm {
+    const PINS: usize = PIN_REGS.len();
+
     fn new() -> Asm {
         Asm {
             code: Vec::new(),
             labels: Vec::new(),
             fixups: Vec::new(),
             ret_w0: None,
+            defer_live: false,
+            short: false,
+            pins: Vec::new(),
         }
     }
 
@@ -231,6 +342,12 @@ impl Emit for Asm {
         self.labels[l.0] = Some(self.code.len());
     }
 
+    fn configure(&mut self, opt: OptLevel, pins: &[Reg]) {
+        self.defer_live = opt >= OptLevel::O1;
+        self.short = opt >= OptLevel::O1;
+        self.pins = pins.iter().copied().zip(PIN_REGS).collect();
+    }
+
     fn prologue(&mut self) {
         self.put(0xA980_0000 | 0x7A << 15 | LR << 10 | SP << 5 | FP); // stp x29, x30, [sp, #-48]!
         self.put(0x9100_0000 | SP << 5 | FP); // add x29, sp, #0
@@ -241,13 +358,13 @@ impl Emit for Asm {
         self.ldr(X20, X19, layout::REGS);
         self.imm(X21, 0);
         self.imm(X22, 0);
+        self.reload();
         self.ret_w0 = None;
     }
 
     fn ret(&mut self, status: u32) {
-        self.flush_steps();
-        self.put(0x5280_0000 | status << 5); // movz w0, #status
-        self.restore_and_return();
+        self.spill();
+        self.ret_as_is(status);
     }
 
     fn leave(&mut self, pc: Pc, live: Option<u32>) {
@@ -273,12 +390,25 @@ impl Emit for Asm {
         self.put(0x9100_0400 | X21 << 5 | X21); // add x21, x21, #1
     }
 
+    fn unstep(&mut self) {
+        self.put(0xD100_0400 | X21 << 5 | X21); // sub x21, x21, #1
+    }
+
+    fn add_steps(&mut self, n: u32) {
+        if n < 4096 {
+            self.put(0x9100_0000 | n << 10 | X21 << 5 | X21); // add x21, x21, #n
+        } else {
+            self.imm(X9, n as u64);
+            self.put(0x8B00_0000 | X9 << 16 | X21 << 5 | X21); // add x21, x21, x9
+        }
+    }
+
     fn jump(&mut self, to: Label) {
         self.at(to, Fixup::B, 0x1400_0000);
     }
 
     fn mov(&mut self, a: Reg, b: Reg) {
-        self.ldr(X9, X20, Self::slot(b));
+        self.get(X9, b as u32);
         self.store(a);
     }
 
@@ -288,7 +418,15 @@ impl Emit for Asm {
     }
 
     fn int(&mut self, op: IntOp, a: Reg, b: Reg, c: Operand, zero: Label) {
-        self.ldr(X9, X20, Self::slot(b));
+        self.get(X9, b as u32);
+        if let (IntOp::Add | IntOp::Sub, Some((k, negative))) = (op, self.short_imm(c)) {
+            // add x9, x9, #k, or sub -- the other, for a negative constant.
+            let sub = (op == IntOp::Sub) != negative;
+            let base = if sub { 0xD100_0000 } else { 0x9100_0000 };
+            self.put(base | k << 10 | X9 << 5 | X9);
+            self.store(a);
+            return;
+        }
         self.operand(c);
         let (n, m) = (X9, X10);
         match op {
@@ -319,14 +457,12 @@ impl Emit for Asm {
             FloatOp::Div => 0x1E60_1800,
         };
         self.put(base | 1 << 16); // d0 = d0 op d1
-        self.str_d(0, X20, Self::slot(a));
-        self.raise_live(a);
+        self.store_float(a);
     }
 
     fn cmp_int(&mut self, cond: Cond, a: Reg, b: Reg, c: Operand) {
-        self.ldr(X9, X20, Self::slot(b));
-        self.operand(c);
-        self.cmp(X9, X10);
+        self.get(X9, b as u32);
+        self.cmp_x9(c);
         self.cset(X9, Self::int_cond(cond));
         self.store(a);
     }
@@ -339,9 +475,8 @@ impl Emit for Asm {
     }
 
     fn branch_int(&mut self, cond: Cond, x: Reg, y: Operand, to: Label) {
-        self.ldr(X9, X20, Self::slot(x));
-        self.operand(y);
-        self.cmp(X9, X10);
+        self.get(X9, x as u32);
+        self.cmp_x9(y);
         self.b_cond(Self::int_cond(cond) ^ 1, to);
     }
 
@@ -352,7 +487,7 @@ impl Emit for Asm {
     }
 
     fn branch_zero(&mut self, x: Reg, to: Label) {
-        self.ldr(X9, X20, Self::slot(x));
+        self.get(X9, x as u32);
         self.at(to, Fixup::Imm19, 0xB400_0000 | X9);
     }
 
@@ -361,16 +496,16 @@ impl Emit for Asm {
         self.str(X9, X19, layout::LIVE);
     }
 
+    fn raise_live_to(&mut self, n: u32) {
+        self.raise(n);
+    }
+
     fn back_edge(&mut self, to: Label, over: Label) {
         self.put(0x9100_0400 | X22 << 5 | X22); // add x22, x22, #1
         self.imm(X9, super::BACK_EDGES as u64);
         self.cmp(X22, X9);
         self.b_cond(HS, over);
         self.jump(to);
-    }
-
-    fn unstep(&mut self) {
-        self.put(0xD100_0400 | X21 << 5 | X21); // sub x21, x21, #1
     }
 
     fn tag_test(&mut self, x: Reg, tag: u32, miss: Label, slow: Label) {
@@ -409,6 +544,8 @@ impl Emit for Asm {
             self.jump(slow);
             return;
         }
+        // The register file is rebuilt in memory below.
+        self.spill();
         self.nursery(obj, slow);
         self.cmp_kind(crate::heap::Kind::Closure as u32);
         self.b_cond(NE, slow);
@@ -430,7 +567,7 @@ impl Emit for Asm {
         // The arguments out of the way, the captures in, the arguments after.
         let scratch = crate::vm::SCRATCH as u32;
         for j in 0..argc {
-            self.ldr(X9, X20, Self::slot(base) + j * 8);
+            self.ldr(X9, X20, Self::slot(base as u32 + j));
             self.str(X9, X20, (scratch + j) * 8);
         }
         let top = self.label();
@@ -453,7 +590,7 @@ impl Emit for Asm {
         self.put(0x9100_0000 | argc << 10 | X15 << 5 | X9); // add x9, x15, #argc
         self.str(X9, X19, layout::LIVE);
         self.str(X17, X19, layout::PC);
-        self.ret(crate::abi::JUMPED);
+        self.ret_as_is(crate::abi::JUMPED);
     }
 
     fn alloc(&mut self, a: Reg, header: [u64; 2], base: Reg, n: u32, slow: Label) {
@@ -474,7 +611,7 @@ impl Emit for Asm {
         self.imm(X15, header[1]);
         self.str(X15, X14, 8);
         for j in 0..n {
-            self.ldr(X15, X20, Self::slot(base) + j * 8);
+            self.get(X15, base as u32 + j);
             self.str(X15, X14, (2 + j) * 8);
         }
         self.str(X10, X19, layout::TOP);
@@ -486,6 +623,7 @@ impl Emit for Asm {
 
     fn exec(&mut self, pc: Pc) {
         self.flush_steps();
+        self.spill();
         self.mov_x(X0, X19);
         self.put(0x5280_0000 | (pc & 0xFFFF) << 5 | X1); // movz w1
         if pc >> 16 != 0 {
@@ -502,6 +640,7 @@ impl Emit for Asm {
             }
         };
         self.at(ret, Fixup::Imm19, 0x3500_0000 | X0); // cbnz w0, ret
+        self.reload();
     }
 
     fn finish(mut self) -> Vec<u8> {

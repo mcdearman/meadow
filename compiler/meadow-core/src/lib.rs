@@ -1514,22 +1514,24 @@ mod tests {
 /// | | adds | costs |
 /// |---|---|---|
 /// | `O0` | nothing | — |
-/// | `O1` | nothing yet | — |
-/// | `O2` | `match` compiled to a decision tree | code size, compile time |
+/// | `O1` | native code keeps the machine's books only where they are observed, with short encodings | — |
+/// | `O2` | `match` compiled to a decision tree; generic code specialized; native loops kept inside one function, hot registers in machine registers | code size, compile time |
 ///
-/// `O1` adding nothing over `O0` today is deliberate rather than an oversight:
-/// `O1` is the default, and it is where a pass lands that is worth doing on
-/// every keystroke. `O0` exists so that a suspected miscompilation can be
-/// bisected against a compiler doing the least it is allowed to.
+/// The native rows are the code generator's (`meadow_rts::codegen`), which the
+/// JIT and ahead-of-time executables share. `O1` is the default, and it is
+/// where a pass lands that is worth doing on every keystroke. `O0` exists so
+/// that a suspected miscompilation can be bisected against a compiler doing
+/// the least it is allowed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum OptLevel {
     /// Nothing optional at all.
     ///
-    /// Which today is the same code as [`OptLevel::O1`]: everything below `O2`
-    /// is unconditional, because it is not a trade. A known call becoming a
-    /// jump, a literal folding into the instruction that uses it — those make
+    /// The bytecode is the same as at [`OptLevel::O1`]: everything below `O2`
+    /// there is unconditional, because it is not a trade. A known call becoming
+    /// a jump, a literal folding into the instruction that uses it — those make
     /// debug builds smaller and faster and cost nothing to read, so there is
-    /// nothing to turn off. `O0` exists for the first pass that changes that.
+    /// nothing to turn off. Native code differs: at `O0` it is the literal
+    /// translation of each instruction.
     O0,
     /// The default: everything cheap enough to want while editing.
     #[default]

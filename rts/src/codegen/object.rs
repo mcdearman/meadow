@@ -23,6 +23,8 @@ pub enum Format {
     MachO,
     /// Linux, and the rest.
     Elf,
+    /// Windows.
+    Coff,
 }
 
 impl Format {
@@ -30,8 +32,53 @@ impl Format {
     pub fn host() -> Format {
         if cfg!(target_os = "macos") {
             Format::MachO
+        } else if cfg!(windows) {
+            Format::Coff
         } else {
             Format::Elf
+        }
+    }
+
+    /// What an object file in this format is called.
+    pub fn object_extension(self) -> &'static str {
+        match self {
+            Format::Coff => "obj",
+            Format::MachO | Format::Elf => "o",
+        }
+    }
+
+    /// What an executable in this format is called after its name.
+    pub fn exe_suffix(self) -> &'static str {
+        match self {
+            Format::Coff => ".exe",
+            Format::MachO | Format::Elf => "",
+        }
+    }
+
+    /// The system libraries the runtime library leans on, as this format's
+    /// linker takes them: what `rustc --print native-static-libs` says, less
+    /// what the C compiler links anyway. The Windows ones assume a `main`
+    /// compiled against the DLL C runtime (`cl /MD`), as Rust's own `std` is.
+    pub fn system_libs(self) -> &'static [&'static str] {
+        match self {
+            Format::MachO => &["-liconv", "-lSystem", "-lc", "-lm"],
+            Format::Elf => &[
+                "-lgcc_s",
+                "-lutil",
+                "-lrt",
+                "-lpthread",
+                "-lm",
+                "-ldl",
+                "-lc",
+            ],
+            Format::Coff => &[
+                "legacy_stdio_definitions.lib",
+                "kernel32.lib",
+                "ntdll.lib",
+                "userenv.lib",
+                "ws2_32.lib",
+                "dbghelp.lib",
+            ],
         }
     }
 }
@@ -63,6 +110,7 @@ pub fn write(compiled: &Compiled, image: &[u8], format: Format) -> Vec<u8> {
     match format {
         Format::MachO => macho(compiled.arch, &compiled.code, &data),
         Format::Elf => elf(compiled.arch, &compiled.code, &data),
+        Format::Coff => coff(compiled.arch, &compiled.code, &data),
     }
 }
 
@@ -305,6 +353,70 @@ fn elf(arch: Arch, code: &[u8], data: &[u8]) -> Vec<u8> {
         o.u64(align);
         o.u64(entsize);
     }
+    o.0
+}
+
+/// A COFF object, as the Microsoft linker takes: `.text` and `.rdata`, and a
+/// symbol table whose two names are too long for the eight bytes a symbol has,
+/// so live in the string table after it.
+fn coff(arch: Arch, code: &[u8], data: &[u8]) -> Vec<u8> {
+    const HEADER: usize = 20;
+    const SECTION: usize = 40;
+    const SYMBOL: usize = 18;
+    let (machine, text_align): (u16, u32) = match arch {
+        Arch::Aarch64 => (0xAA64, 0x0030_0000),
+        Arch::X86_64 => (0x8664, 0x0050_0000),
+    };
+    let text_off = HEADER + 2 * SECTION;
+    let rdata_off = text_off + code.len();
+    let symtab_off = rdata_off + data.len();
+    // The string table starts with its own length, which the offsets count.
+    let strings = format!("{CODE}\0{DATA}\0");
+
+    let mut o = Out(Vec::new());
+    o.u16(machine);
+    o.u16(2); // sections
+    o.u32(0); // timestamp: none, so the same program makes the same object
+    o.u32(symtab_off as u32);
+    o.u32(2); // symbols
+    o.u16(0); // no optional header in an object
+    o.u16(0);
+
+    // CNT_CODE | MEM_EXECUTE | MEM_READ, and CNT_INITIALIZED_DATA | ALIGN_8BYTES
+    // | MEM_READ.
+    for (name, size, off, flags) in [
+        (".text", code.len(), text_off, 0x6000_0020 | text_align),
+        (".rdata", data.len(), rdata_off, 0x4040_0040u32),
+    ] {
+        o.name(name, 8);
+        o.u32(0);
+        o.u32(0);
+        o.u32(size as u32);
+        o.u32(off as u32);
+        o.u32(0);
+        o.u32(0);
+        o.u16(0);
+        o.u16(0);
+        o.u32(flags);
+    }
+
+    o.0.extend_from_slice(code);
+    o.0.extend_from_slice(data);
+    debug_assert_eq!(o.0.len(), symtab_off);
+    // Name by string table offset, value, section, type (a function, or not),
+    // IMAGE_SYM_CLASS_EXTERNAL, no auxiliary records.
+    for (strx, section, ty) in [(4u32, 1u16, 0x20u16), (4 + CODE.len() as u32 + 1, 2, 0)] {
+        o.u32(0);
+        o.u32(strx);
+        o.u32(0);
+        o.u16(section);
+        o.u16(ty);
+        o.u8(2);
+        o.u8(0);
+    }
+    debug_assert_eq!(o.0.len(), symtab_off + 2 * SYMBOL);
+    o.u32(4 + strings.len() as u32);
+    o.0.extend_from_slice(strings.as_bytes());
     o.0
 }
 

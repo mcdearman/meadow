@@ -465,7 +465,7 @@ fn build(
                 .package
                 .as_ref()
                 .ok_or("a native executable needs a package to put it in")?;
-            aot::build(root, profile.profile, name, image, target)
+            aot::build(root, profile.profile, profile.opt(), name, image, target)
         });
         match exe {
             Ok(exe) if engine.is_none() => eprintln!("native: {}", exe.display()),
@@ -497,7 +497,7 @@ fn build(
 
     if let Some(engine) = engine {
         let (result, stats) = match &image {
-            Some(image) => match runtime::native(image, engine) {
+            Some(image) => match runtime::native(image, engine, profile.opt()) {
                 Ok(jit) => runtime::run_image_with_stats(image, jit.as_ref()),
                 Err(e) => (Err(e), None),
             },

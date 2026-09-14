@@ -372,7 +372,7 @@ fn read_only(path: &std::path::Path) {
 
 /// Where Meadow keeps things that are not the binary. Mirrors the installer's
 /// `default_home`, including the `MEADOW_HOME` override.
-fn home() -> Option<PathBuf> {
+pub(crate) fn home() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("MEADOW_HOME") {
         return Some(PathBuf::from(dir));
     }

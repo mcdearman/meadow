@@ -29,11 +29,13 @@
 //! thread writing it, for as long as it writes -- other threads go on running
 //! what is there -- and on Apple silicon the processor's cached copy of the
 //! instructions is told they changed. Elsewhere each compiled function gets
-//! pages of its own: written, then made read-and-execute.
+//! pages of its own: written, then made read-and-execute -- `mmap` and
+//! `mprotect` on Linux, `VirtualAlloc` and `VirtualProtect` on Windows.
 
 use crate::abi::NativeFn;
 use crate::codegen::{self, Arch};
 use meadow_bytecode::{Pc, Program};
+use meadow_core::OptLevel;
 use std::ffi::c_void;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
@@ -65,6 +67,7 @@ fn methods(program: &Program) -> (Box<[u32]>, Box<[u32]>) {
 struct Tier<'p> {
     program: &'p Program,
     arch: Arch,
+    opt: OptLevel,
     /// Which pcs start a block.
     entry: Box<[bool]>,
     counts: Box<[AtomicU32]>,
@@ -101,10 +104,10 @@ impl<'p> Native<'p> {
         }
     }
 
-    /// Compile `program`'s blocks as they get hot: each the `threshold`th time
-    /// the machine enters it. A threshold of 1 compiles every block that runs,
-    /// when it first does.
-    pub fn jit(program: &'p Program, threshold: u32) -> Result<Native<'p>, String> {
+    /// Compile `program`'s blocks as they get hot, at `opt`: each the
+    /// `threshold`th time the machine enters it. A threshold of 1 compiles every
+    /// block that runs, when it first does.
+    pub fn jit(program: &'p Program, threshold: u32, opt: OptLevel) -> Result<Native<'p>, String> {
         let arch = Arch::host().ok_or("the JIT is for aarch64 and x86-64 only")?;
         let len = program.code.len();
         let mut entry = vec![false; len].into_boxed_slice();
@@ -121,6 +124,7 @@ impl<'p> Native<'p> {
             tier: Some(Tier {
                 program,
                 arch,
+                opt,
                 entry,
                 counts: (0..len).map(|_| AtomicU32::new(0)).collect(),
                 threshold: threshold.max(1),
@@ -130,9 +134,9 @@ impl<'p> Native<'p> {
         })
     }
 
-    /// Every block of `program`, compiled now.
-    pub fn eager(program: &'p Program) -> Result<Native<'p>, String> {
-        let native = Native::jit(program, 1)?;
+    /// Every block of `program`, compiled now, at `opt`.
+    pub fn eager(program: &'p Program, opt: OptLevel) -> Result<Native<'p>, String> {
+        let native = Native::jit(program, 1, opt)?;
         let tier = native.tier.as_ref().expect("a JIT has a tier");
         for pc in crate::abi::block_entries(program) {
             native.compile(tier, pc as usize);
@@ -184,7 +188,7 @@ impl<'p> Native<'p> {
             // Another thread got here first.
             return Some(unsafe { std::mem::transmute::<*mut c_void, NativeFn>(p) });
         }
-        let code = codegen::compile_block(tier.program, tier.arch, pc as Pc);
+        let code = codegen::compile_block(tier.program, tier.arch, pc as Pc, tier.opt);
         let Some(at) = arena.put(&code, tier.arch) else {
             // No memory to put it in: interpret it, and stop asking.
             tier.counts[pc].store(0, Ordering::Relaxed);
@@ -217,9 +221,27 @@ impl Drop for Arena {
             // Safety: mappings this arena made, which nothing runs once the
             // `Native` holding it is gone.
             unsafe {
-                munmap(p as *mut c_void, len);
+                unmap(p, len);
             }
         }
+    }
+}
+
+/// Give back a mapping [`Arena`] made.
+#[cfg(unix)]
+unsafe fn unmap(p: *mut u8, len: usize) {
+    // Safety: the caller's.
+    unsafe {
+        munmap(p as *mut c_void, len);
+    }
+}
+
+#[cfg(windows)]
+unsafe fn unmap(p: *mut u8, _len: usize) {
+    // Safety: the caller's. `MEM_RELEASE` takes the whole reservation, and
+    // wants a size of zero to do it.
+    unsafe {
+        VirtualFree(p as *mut c_void, 0, MEM_RELEASE);
     }
 }
 
@@ -263,7 +285,36 @@ impl Arena {
     }
 
     /// `code`, somewhere executable: where it starts.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    fn put(&mut self, code: &[u8], _arch: Arch) -> Option<*mut u8> {
+        let page = 4096;
+        let len = code.len().max(1).div_ceil(page) * page;
+        // Safety: fresh pages, written and then made executable before anyone
+        // is told where they are.
+        unsafe {
+            let p = VirtualAlloc(
+                std::ptr::null_mut(),
+                len,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            ) as *mut u8;
+            if p.is_null() {
+                return None;
+            }
+            std::ptr::copy_nonoverlapping(code.as_ptr(), p, code.len());
+            let mut old = 0u32;
+            if VirtualProtect(p as *mut c_void, len, PAGE_EXECUTE_READ, &mut old) == 0 {
+                VirtualFree(p as *mut c_void, 0, MEM_RELEASE);
+                return None;
+            }
+            FlushInstructionCache(GetCurrentProcess(), p as *const c_void, code.len());
+            self.maps.push((p, len));
+            Some(p)
+        }
+    }
+
+    /// `code`, somewhere executable: where it starts.
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn put(&mut self, code: &[u8], _arch: Arch) -> Option<*mut u8> {
         let page = 4096;
         let len = code.len().max(1).div_ceil(page) * page;
@@ -284,32 +335,59 @@ impl Arena {
     }
 }
 
+#[cfg(windows)]
+const MEM_COMMIT: u32 = 0x1000;
+#[cfg(windows)]
+const MEM_RESERVE: u32 = 0x2000;
+#[cfg(windows)]
+const MEM_RELEASE: u32 = 0x8000;
+#[cfg(windows)]
+const PAGE_READWRITE: u32 = 0x04;
+#[cfg(windows)]
+const PAGE_EXECUTE_READ: u32 = 0x20;
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn VirtualAlloc(addr: *mut c_void, size: usize, kind: u32, protect: u32) -> *mut c_void;
+    fn VirtualProtect(addr: *mut c_void, size: usize, protect: u32, old: *mut u32) -> i32;
+    fn VirtualFree(addr: *mut c_void, size: usize, kind: u32) -> i32;
+    fn FlushInstructionCache(process: *mut c_void, base: *const c_void, size: usize) -> i32;
+    fn GetCurrentProcess() -> *mut c_void;
+}
+
+#[cfg(unix)]
 const PROT_READ: i32 = 1;
+#[cfg(unix)]
 const PROT_WRITE: i32 = 2;
+#[cfg(unix)]
 const PROT_EXEC: i32 = 4;
+#[cfg(unix)]
 const MAP_PRIVATE: i32 = 0x0002;
 #[cfg(target_os = "macos")]
 const MAP_ANON: i32 = 0x1000;
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 const MAP_ANON: i32 = 0x20;
 #[cfg(target_os = "macos")]
 const MAP_JIT: i32 = 0x0800;
 
+#[cfg(unix)]
 unsafe extern "C" {
     fn mmap(addr: *mut c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64)
     -> *mut c_void;
     fn munmap(addr: *mut c_void, len: usize) -> i32;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn mprotect(addr: *mut c_void, len: usize, prot: i32) -> i32;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn pthread_jit_write_protect_np(enabled: i32);
     #[cfg(target_os = "macos")]
     fn sys_icache_invalidate(start: *mut c_void, len: usize);
-    #[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
+    #[cfg(all(unix, not(target_os = "macos"), target_arch = "aarch64"))]
     fn __clear_cache(start: *mut c_void, end: *mut c_void);
 }
 
 /// An anonymous private mapping of `len` bytes.
+#[cfg(unix)]
 unsafe fn map(len: usize, prot: i32, flags: i32) -> Option<*mut u8> {
     // Safety: asked for in full, and checked.
     let p = unsafe {

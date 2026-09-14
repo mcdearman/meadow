@@ -102,6 +102,11 @@ jobs:
           "$bin" --version
           echo 'def main = 6 * 7' > /tmp/smoke.mw
           "$bin" run /tmp/smoke.mw | tail -1 | grep -q '=> 42'
+          # A release build is a native executable, linked against the runtime
+          # built into the binary; `--aot` makes falling back an error.
+          bin="$PWD/$bin"
+          "$bin" init "$RUNNER_TEMP/smokepkg"
+          (cd "$RUNNER_TEMP/smokepkg" && "$bin" run --release --aot . | tail -1 | grep -q 'Hello, world!')
 
       # The double-clickable installer. Windows only — `install.sh` covers the
       # rest — and its own workspace, so it builds separately.

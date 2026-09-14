@@ -36,3 +36,7 @@ meadow-bytecode = { path = "../compiler/meadow-bytecode" }
 [profile.release]
 lto = true
 codegen-units = 1
+
+[target.'cfg(windows)'.dev-dependencies]
+# Finds Visual Studio's `cl.exe`, for the ahead-of-time tests to link with.
+find-msvc-tools = "0.1"

@@ -40,7 +40,23 @@ use crate::value::Value;
 use crate::vm::{Error, Vm};
 
 /// A block's native code. Its argument is the machine, as `*mut Vm`.
+///
+/// On x86-64 the System V convention on every platform, Windows included: the
+/// code generator has one encoding of a call and a return, and Rust calls a
+/// `sysv64` function from Windows as readily as from Linux. Windows' own
+/// convention would mean a second prologue, other argument registers, shadow
+/// space and more saved registers, for no difference anyone could observe.
+#[cfg(target_arch = "x86_64")]
+pub type NativeFn = unsafe extern "sysv64" fn(vm: *mut c_void) -> u32;
+#[cfg(not(target_arch = "x86_64"))]
 pub type NativeFn = unsafe extern "C" fn(vm: *mut c_void) -> u32;
+
+/// What native code calls to have the interpreter do an instruction: see
+/// [`meadow_exec`]. In the same convention as [`NativeFn`], for the same reason.
+#[cfg(target_arch = "x86_64")]
+pub type ExecFn = unsafe extern "sysv64" fn(vm: *mut c_void, pc: u32) -> u32;
+#[cfg(not(target_arch = "x86_64"))]
+pub type ExecFn = unsafe extern "C" fn(vm: *mut c_void, pc: u32) -> u32;
 
 /// An instruction finished and control falls through to the next.
 pub const CONTINUE: u32 = 0;
@@ -57,7 +73,27 @@ pub const REQUESTED: u32 = 4;
 /// # Safety
 ///
 /// `vm` must be the machine the calling native code was entered with.
+#[cfg(target_arch = "x86_64")]
+pub unsafe extern "sysv64" fn meadow_exec(vm: *mut c_void, pc: u32) -> u32 {
+    // Safety: passed on as it came.
+    unsafe { exec(vm, pc) }
+}
+
+/// [`meadow_exec`], in the platform's C convention where that is the one.
+///
+/// # Safety
+///
+/// As [`meadow_exec`].
+#[cfg(not(target_arch = "x86_64"))]
 pub unsafe extern "C" fn meadow_exec(vm: *mut c_void, pc: u32) -> u32 {
+    // Safety: passed on as it came.
+    unsafe { exec(vm, pc) }
+}
+
+/// # Safety
+///
+/// As [`meadow_exec`].
+unsafe fn exec(vm: *mut c_void, pc: u32) -> u32 {
     // Safety: native code only ever passes back the machine it was entered
     // with, and holds no other reference to it.
     let vm = unsafe { &mut *(vm as *mut Vm<'static>) };

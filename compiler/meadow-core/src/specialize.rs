@@ -55,6 +55,7 @@ pub fn program(p: &Program) -> Program {
         queue: VecDeque::new(),
         scopes: Vec::new(),
         next: SPECIALIZED_BASE,
+        origins: HashMap::new(),
     };
     let by_var: HashMap<Var, &Def> = p.defs.iter().map(|d| (d.var, d)).collect();
 
@@ -74,10 +75,19 @@ pub fn program(p: &Program) -> Program {
         let (poly, sigma) = specialize_poly(&d.poly, &key);
         let body = strip_number_binders(&d.term, &d.poly, &poly);
         let term = s.term(&body, &sigma);
+        let term = s.freshen(&term);
         defs.push(Def { var, name: d.name, poly, term });
     }
 
-    Program { defs, entry: p.entry, ctor_fields: p.ctor_fields.clone() }
+    let mut origins = p.origins.clone();
+    origins.extend(s.origins);
+    Program {
+        defs,
+        entry: p.entry,
+        ctor_fields: p.ctor_fields.clone(),
+        variants: p.variants.clone(),
+        origins,
+    }
 }
 
 /// A shortcut for the common case: is there a generic local anywhere? Only
@@ -209,6 +219,8 @@ struct Specializer {
     /// Generic locals in scope, innermost last.
     scopes: Vec<Local>,
     next: u32,
+    /// Each renamed binder, and what it was a copy of.
+    origins: HashMap<Var, Var>,
 }
 
 impl Specializer {
@@ -280,6 +292,28 @@ impl Specializer {
         Poly { binders: p.binders.clone(), ty: self.ty(&p.ty, sigma) }
     }
 
+    fn pat(&self, p: &Pat, sigma: &HashMap<u32, Ty>) -> Pat {
+        if sigma.is_empty() {
+            return p.clone();
+        }
+        crate::rewrite::pattern(p, &mut |p| match p {
+            Pat::Var(v, ty) => Pat::Var(v, subst_rigid(&ty, sigma)),
+            Pat::As(v, ty, sub) => Pat::As(v, subst_rigid(&ty, sigma), sub),
+            other => other,
+        })
+    }
+
+    /// `t` with every variable it binds renamed to a fresh one.
+    ///
+    /// A copy is made from the same term as the original and every other copy,
+    /// and so binds the same variables -- at different types. Everything below
+    /// core takes a variable to name one binding, and reads its type from where
+    /// it is bound, so each copy gets names of its own.
+    fn freshen(&mut self, t: &Term) -> Term {
+        let mut names = HashMap::new();
+        freshen(t, self, &mut names)
+    }
+
     fn arc(&mut self, t: &Term, sigma: &HashMap<u32, Ty>) -> Arc<Term> {
         Arc::new(self.term(t, sigma))
     }
@@ -321,6 +355,7 @@ impl Specializer {
                     let (p, mut inner) = specialize_poly(poly, key);
                     inner.extend(sigma.iter().map(|(k, v)| (*k, v.clone())));
                     let rhs = self.term(&strip_number_binders(rhs, poly, &p), &inner);
+                    let rhs = self.freshen(&rhs);
                     out = Term::Let(*copy, self.poly(&p, &inner), Arc::new(rhs), Arc::new(out));
                 }
                 let original = self.term(rhs, sigma);
@@ -341,7 +376,7 @@ impl Specializer {
             }
             Term::Case(s, arms, ty) => Term::Case(
                 self.arc(s, sigma),
-                arms.iter().map(|(p, b)| (p.clone(), self.term(b, sigma))).collect(),
+                arms.iter().map(|(p, b)| (self.pat(p, sigma), self.term(b, sigma))).collect(),
                 self.ty(ty, sigma),
             ),
             Term::Prim(op, xs, ty) => {
@@ -409,11 +444,131 @@ impl Specializer {
                 let (p, mut inner) = specialize_poly(poly, &key);
                 inner.extend(sigma.iter().map(|(k, v)| (*k, v.clone())));
                 let rhs = self.term(&strip_number_binders(rhs, poly, &p), &inner);
+                let rhs = self.freshen(&rhs);
                 let p = self.poly(&p, &inner);
                 out.push((copy, p, rhs));
             }
         }
         self.scopes.truncate(first);
         Term::LetRec(out, Arc::new(body))
+    }
+}
+
+/// A fresh name for binder `v`, remembered for the variables that mention it.
+fn rename(v: Var, s: &mut Specializer, names: &mut HashMap<Var, Var>) -> Var {
+    let n = s.fresh();
+    names.insert(v, n);
+    let origin = s.origins.get(&v).copied().unwrap_or(v);
+    s.origins.insert(n, origin);
+    n
+}
+
+fn freshen_pat(p: &Pat, s: &mut Specializer, names: &mut HashMap<Var, Var>) -> Pat {
+    match p {
+        Pat::Wild | Pat::Lit(_) => p.clone(),
+        Pat::Var(v, ty) => Pat::Var(rename(*v, s, names), ty.clone()),
+        Pat::As(v, ty, sub) => {
+            let n = rename(*v, s, names);
+            Pat::As(n, ty.clone(), Box::new(freshen_pat(sub, s, names)))
+        }
+        Pat::Tuple(ps) => Pat::Tuple(ps.iter().map(|x| freshen_pat(x, s, names)).collect()),
+        Pat::Array(ps) => Pat::Array(ps.iter().map(|x| freshen_pat(x, s, names)).collect()),
+        Pat::Ctor(c, ps) => Pat::Ctor(*c, ps.iter().map(|x| freshen_pat(x, s, names)).collect()),
+        Pat::Record(fs) => {
+            Pat::Record(fs.iter().map(|(l, x)| (*l, freshen_pat(x, s, names))).collect())
+        }
+    }
+}
+
+/// See [`Specializer::freshen`].
+fn freshen(t: &Term, s: &mut Specializer, names: &mut HashMap<Var, Var>) -> Term {
+    let go = |x: &Term, s: &mut Specializer, names: &mut HashMap<Var, Var>| {
+        Arc::new(freshen(x, s, names))
+    };
+    match t {
+        Term::Var(v) => Term::Var(names.get(v).copied().unwrap_or(*v)),
+        Term::Lit(_) | Term::Error => t.clone(),
+        Term::Loc(l, b) => Term::Loc(*l, go(b, s, names)),
+        Term::TyLam(bs, b) => Term::TyLam(bs.clone(), go(b, s, names)),
+        Term::TyApp(f, tys) => Term::TyApp(go(f, s, names), tys.clone()),
+        Term::Lam(v, ty, b) => {
+            let n = rename(*v, s, names);
+            Term::Lam(n, ty.clone(), go(b, s, names))
+        }
+        Term::App(f, a) => {
+            let f = go(f, s, names);
+            Term::App(f, go(a, s, names))
+        }
+        Term::Let(v, poly, rhs, body) => {
+            let rhs = go(rhs, s, names);
+            let n = rename(*v, s, names);
+            Term::Let(n, poly.clone(), rhs, go(body, s, names))
+        }
+        Term::LetRec(binds, body) => {
+            let fresh: Vec<Var> = binds.iter().map(|(v, _, _)| rename(*v, s, names)).collect();
+            let binds = binds
+                .iter()
+                .zip(fresh)
+                .map(|((_, poly, t), n)| (n, poly.clone(), freshen(t, s, names)))
+                .collect();
+            Term::LetRec(binds, go(body, s, names))
+        }
+        Term::If(c, a, b) => {
+            let c = go(c, s, names);
+            let a = go(a, s, names);
+            Term::If(c, a, go(b, s, names))
+        }
+        Term::Tuple(xs) => Term::Tuple(xs.iter().map(|x| freshen(x, s, names)).collect()),
+        Term::Proj(x, i) => Term::Proj(go(x, s, names), *i),
+        Term::Array(xs, ty) => {
+            Term::Array(xs.iter().map(|x| freshen(x, s, names)).collect(), ty.clone())
+        }
+        Term::Record(fs) => {
+            Term::Record(fs.iter().map(|(l, x)| (*l, freshen(x, s, names))).collect())
+        }
+        Term::Sel(x, l, ty) => Term::Sel(go(x, s, names), *l, ty.clone()),
+        Term::Extend(x, l, v) => {
+            let x = go(x, s, names);
+            Term::Extend(x, *l, go(v, s, names))
+        }
+        Term::Ctor(c, ty, xs) => {
+            Term::Ctor(*c, ty.clone(), xs.iter().map(|x| freshen(x, s, names)).collect())
+        }
+        Term::Case(scrut, arms, ty) => {
+            let scrut = go(scrut, s, names);
+            let arms = arms
+                .iter()
+                .map(|(p, b)| {
+                    let p = freshen_pat(p, s, names);
+                    (p, freshen(b, s, names))
+                })
+                .collect();
+            Term::Case(scrut, arms, ty.clone())
+        }
+        Term::Prim(op, xs, ty) => {
+            Term::Prim(*op, xs.iter().map(|x| freshen(x, s, names)).collect(), ty.clone())
+        }
+        Term::Perform(e, op, a, ty) => Term::Perform(*e, *op, go(a, s, names), ty.clone()),
+        Term::Handle { body, clauses, ret, ty } => {
+            let body = go(body, s, names);
+            let clauses = clauses
+                .iter()
+                .map(|c| {
+                    let param = rename(c.param, s, names);
+                    let resume = rename(c.resume, s, names);
+                    HClause {
+                        param,
+                        resume,
+                        body: freshen(&c.body, s, names),
+                        ..c.clone()
+                    }
+                })
+                .collect();
+            let ret = ret.as_ref().map(|(v, ty, b)| {
+                let n = rename(*v, s, names);
+                (n, ty.clone(), go(b, s, names))
+            });
+            Term::Handle { body, clauses, ret, ty: ty.clone() }
+        }
     }
 }

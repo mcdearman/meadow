@@ -239,6 +239,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut defs = Vec::new();
     let mut modules = Vec::new();
     let mut ctor_fields = HashMap::new();
+    let mut variants = HashMap::new();
     let mut data_decls = Vec::new();
     let mut types = TypeTable::default();
     let mut exports: Vec<Export> = Vec::new();
@@ -253,6 +254,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         defs.extend(sub.defs);
         modules.extend(sub.modules);
         ctor_fields.extend(sub.ctor_fields);
+        variants.extend(sub.variants);
         data_decls.extend(sub.data_decls);
         tests.extend(sub.tests);
         types.absorb(sub.types);
@@ -279,6 +281,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         exports,
         defs,
         ctor_fields,
+        variants,
         data_decls,
         tests,
         prelude_exports: Some(prelude_names),

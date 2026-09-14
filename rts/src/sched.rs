@@ -150,6 +150,18 @@ pub fn run(program: &Program, entry: Pc, fuel: u64) -> Outcome {
 
 /// [`run`], with the number of OS threads given.
 pub fn run_with(program: &Program, entry: Pc, fuel: u64, workers: usize) -> Outcome {
+    run_native(program, None, entry, fuel, workers)
+}
+
+/// [`run_with`], with native code for some or all of the program's blocks --
+/// every thread runs it where there is some, and the bytecode where not.
+pub fn run_native(
+    program: &Program,
+    native: Option<&crate::abi::NativeTable>,
+    entry: Pc,
+    fuel: u64,
+    workers: usize,
+) -> Outcome {
     let workers = workers.max(1);
     let world = Arc::new(crate::stm::World::default());
     let mut main = Box::new(Fiber {
@@ -159,8 +171,10 @@ pub fn run_with(program: &Program, entry: Pc, fuel: u64, workers: usize) -> Outc
     });
     main.vm.scheduled = true;
     main.vm.world = Some(world.clone());
+    main.vm.native = native;
     let shared = Shared {
         program,
+        native,
         fuel,
         steps: AtomicU64::new(0),
         locals: (0..workers).map(|_| Mutex::new(VecDeque::new())).collect(),
@@ -240,6 +254,7 @@ type WaitSlot<'p> = Arc<Mutex<Option<(Box<Fiber<'p>>, Reg)>>>;
 
 struct Shared<'p> {
     program: &'p Program,
+    native: Option<&'p crate::abi::NativeTable>,
     fuel: u64,
     steps: AtomicU64,
     /// One run queue per worker, stealable by the others.
@@ -557,6 +572,7 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                         wake: Wake::Start(body),
                     });
                     child.vm.scheduled = true;
+                    child.vm.native = sh.native;
                     child.vm.world = Some(sh.world.clone());
                     let id = {
                         let mut tasks = sh.tasks.write().unwrap_or_else(|p| p.into_inner());
@@ -734,7 +750,7 @@ fn run_slice(sh: &Shared, fiber: &mut Fiber) -> Stop {
         Wake::Fail(msg) => return Stop::Failed(Error { msg }),
     }
     for n in 0..SLICE {
-        match vm.step() {
+        match vm.advance() {
             Err(e) => return Stop::Failed(e),
             Ok(Some(v)) => return Stop::Halted(v),
             Ok(None) => {

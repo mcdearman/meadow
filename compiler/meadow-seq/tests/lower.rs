@@ -19,6 +19,8 @@ fn main_def(term: Term) -> Program {
         defs: vec![Def::untyped(var, "main", term)],
         entry: Some(var),
         ctor_fields: Default::default(),
+        variants: Default::default(),
+        origins: Default::default(),
     }
 }
 
@@ -73,7 +75,9 @@ fn every_block_binds_the_whole_environment() {
 #[test]
 fn calling_a_lambda_is_a_permutation_and_a_branch() {
     // `(\x -> x) 1`. The call site should end in exactly the two statements the
-    // IR promises: rearrange the registers, then jump into the method.
+    // IR promises: rearrange the registers, then jump into the method. The
+    // registers are the function, its argument, the continuation, and the
+    // evidence -- the handlers the callee runs under.
     let x = VarId(1);
     let term = Term::App(
         Arc::new(Term::lam(x, (Term::Var(x)))),
@@ -86,7 +90,7 @@ fn calling_a_lambda_is_a_permutation_and_a_branch() {
     for def in &lowered.program.defs {
         walk(&def.block.body, &mut |s| {
             if let Statement::Substitute(sel, block) = s
-                && sel.len() == 3
+                && sel.len() == 4
                 && matches!(block.body, Statement::Invoke(f, 0) if f == sel[0])
             {
                 found = true;
@@ -95,7 +99,7 @@ fn calling_a_lambda_is_a_permutation_and_a_branch() {
     }
     assert!(
         found,
-        "expected `substitute [f, arg, k] in {{ invoke f#0 }}`\n{}",
+        "expected `substitute [f, arg, k, ev] in {{ invoke f#0 }}`\n{}",
         lowered.program.pretty()
     );
 }
@@ -111,6 +115,8 @@ fn a_global_reference_is_a_jump_with_the_environment_untouched() {
         ],
         entry: Some(m),
         ctor_fields: Default::default(),
+        variants: Default::default(),
+        origins: Default::default(),
     };
     let lowered = lower_program(&program, meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
@@ -185,7 +191,7 @@ fn a_match_becomes_a_switch_with_a_default() {
 fn a_letrec_becomes_labels_sharing_one_parameter_list() {
     // `let n = 1 in letrec f = \x -> g x; g = \x -> f n in f 0`
     //
-    // Both bindings capture `n`, so both blocks take `[n, k]` and a reference to
+    // Both bindings capture `n`, so both blocks take `[n, k, ev]` and a reference to
     // either is a substitute of that shape followed by a jump. The point is that
     // mutual recursion needs no object pointing at itself.
     let n = VarId(1);
@@ -218,8 +224,8 @@ fn a_letrec_becomes_labels_sharing_one_parameter_list() {
     for def in &lowered.program.defs[1..] {
         assert_eq!(
             def.block.params,
-            vec![n, def.block.params[1]],
-            "a lifted binding takes the group's captures, then the continuation"
+            vec![n, def.block.params[1], def.block.params[2]],
+            "a lifted binding takes the group's captures, then the continuation and the evidence"
         );
     }
 }
@@ -239,17 +245,16 @@ fn walk(s: &Statement, f: &mut impl FnMut(&Statement)) {
             walk(rest, f);
             methods.iter().collect()
         }
-        Statement::Let { rest, .. } | Statement::Handle { rest, .. } => {
+        Statement::Let { rest, .. } => {
             walk(rest, f);
             vec![]
         }
-        Statement::Unhandle { rest, .. } | Statement::Mark(_, rest) => {
+        Statement::Mark(_, rest) => {
             walk(rest, f);
             vec![]
         }
         Statement::Jump(_)
         | Statement::Invoke(..)
-        | Statement::Perform { .. }
         | Statement::Error(_) => vec![],
     };
     for b in blocks {

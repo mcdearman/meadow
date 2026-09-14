@@ -233,6 +233,9 @@ impl Vm<'_> {
         use Prim::*;
         let arg = |vm: &Vm, i: usize| vm.reg(srcs[i]);
 
+        // Typed primitives run as their untyped ones for now; the machine's
+        // own instructions for them come with the typed bytecode.
+        let p = p.untyped();
         let out = match p {
             // --- numbers ---------------------------------------------------
             //
@@ -666,6 +669,28 @@ impl Vm<'_> {
                 let region = self.heap.meta(self.compact_handle(arg(self, 0))?);
                 Value::Int((self.heap.region_used(region) * crate::heap::SLOT_BYTES) as i64)
             }
+
+            // --- resumptions --------------------------------------------------
+            //
+            // The flag is its own kind, not a `Ref`, so a resumption refused
+            // passage to another thread or into a region is refused as the
+            // continuation it is.
+            Once => {
+                self.ensure(2);
+                Value::Obj(self.heap.alloc(Kind::Resume, 0, &[Value::Bool(false)]))
+            }
+            TakeOnce => match arg(self, 0).addr().filter(|a| self.heap.kind(*a) == Kind::Resume) {
+                Some(a) if self.heap.field(a, 0) == Value::Bool(false) => {
+                    self.heap.set_field(a, 0, Value::Bool(true));
+                    Value::Bool(true)
+                }
+                Some(_) => Value::Bool(false),
+                None => return err("takeOnce: expected a resumption's flag"),
+            },
+
+            IntAdd | IntSub | IntMul | IntDiv | IntMod | IntEq | IntNe | IntLt | IntLe | IntGt
+            | IntGe | FloatAdd | FloatSub | FloatMul | FloatDiv | FloatEq | FloatNe | FloatLt
+            | FloatLe | FloatGt | FloatGe => unreachable!("made untyped above"),
 
             // --- top-level values, evaluated once per thread -------------------
             GlobalReady => {

@@ -239,9 +239,8 @@ pub fn run_tests(
                     // same program always produce the same image.
                     var: meadow_compiler::hir::VarId::synthetic(i as u32),
                     name: "<test>".into(),
-                    // Whatever the test returns; nothing reads it, and this
-                    // definition is built after type checking is over.
-                    poly: core::Poly::mono(core::unknown()),
+                    // Whatever the test returns: what calling it has.
+                    poly: program.result_of_calling(*var),
                     term: core::Term::App(
                         std::sync::Arc::new(core::Term::Var(*var)),
                         std::sync::Arc::new(core::Term::Lit(core::Lit::Unit)),
@@ -252,6 +251,8 @@ pub fn run_tests(
                 defs,
                 entry: program.entry,
                 ctor_fields: program.ctor_fields.clone(),
+                variants: program.variants.clone(),
+                origins: Default::default(),
             };
             let image = compile(&whole, opt)?;
 

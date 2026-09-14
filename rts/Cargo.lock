@@ -413,6 +413,7 @@ version = "0.1.0-alpha"
 dependencies = [
  "meadow-core",
  "meadow-hir",
+ "meadow-infer",
  "meadow-intern",
  "num-bigint",
  "num-traits",

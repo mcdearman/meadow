@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 meadow-core.workspace = true
 meadow-hir.workspace = true
+meadow-infer.workspace = true
 meadow-intern.workspace = true
 num-bigint.workspace = true
 num-traits.workspace = true

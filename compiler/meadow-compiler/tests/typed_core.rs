@@ -164,6 +164,8 @@ fn erasure_removes_every_type_abstraction() {
         defs: pkg.defs.clone(),
         entry: None,
         ctor_fields: pkg.ctor_fields.clone(),
+        variants: pkg.variants.clone(),
+        origins: Default::default(),
     };
     let erased = core::erase::program(&program);
     fn any_types(t: &core::Term) -> bool {

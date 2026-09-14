@@ -320,6 +320,12 @@ impl Session {
                 collect_names(&m.hir, &m.source.content, &pkg.types, &mut vars);
             }
         }
+        // A specialized copy's variables go by the names of the originals.
+        for (copy, original) in &debug.origins {
+            if let Some(info) = vars.get(original).cloned() {
+                vars.insert(*copy, info);
+            }
+        }
 
         let n = image.code.len();
         let mut boundary = vec![false; n];
@@ -449,7 +455,7 @@ impl Session {
         self.vm.pinned.clear();
         if mode != Mode::Continue {
             let here = self.current_return();
-            let parent = here.and_then(|k| self.parent_return(k, &mut self.handler_returns()));
+            let parent = here.and_then(|k| self.parent_return(k));
             self.vm.pinned.push(here.unwrap_or(Value::Unit));
             self.vm.pinned.push(parent.unwrap_or(Value::Unit));
         }
@@ -572,11 +578,10 @@ impl Session {
     /// before it waits for `f` -- so the walk goes through it.
     ///
     /// One that captures neither is the body of a `handle`: where its value
-    /// goes is on the handler frame, not in the continuation, because a
-    /// resumption can move it. `handlers` is the handler stack's return
-    /// continuations; a walk outwards meets the `handle` bodies in the same
-    /// order the frames are stacked, so it takes them from the top.
-    fn parent_return(&self, k: Value, handlers: &mut Vec<Value>) -> Option<Value> {
+    /// goes is in a `Ref` it captures, not in the continuation itself, because
+    /// a resumption can move it -- see the evidence passing in `meadow_seq`.
+    /// The walk goes on from whatever that `Ref` holds.
+    fn parent_return(&self, k: Value) -> Option<Value> {
         let mut k = k;
         // A chain within one call is as long as its nesting, so this is bounded
         // by the program's shape; the cap is for a cycle nothing should build.
@@ -593,7 +598,13 @@ impl Session {
             }
             k = match named(&self.debug.continuations) {
                 Some(inner) => inner,
-                None => return handlers.pop(),
+                None => (0..heap.len(a))
+                    .map(|i| heap.field(a, i))
+                    .find_map(|f| {
+                        let r = f.addr().filter(|r| heap.is_object(*r) && heap.kind(*r) == Kind::Ref)?;
+                        let target = heap.field(r, 0);
+                        self.continuation(target).map(|_| target)
+                    })?,
             };
         }
         None
@@ -634,7 +645,6 @@ impl Session {
             vars: env.iter().map(|(n, r)| (*n, self.vm.register(*r as usize))).collect(),
         });
         let mut k = self.current_return();
-        let mut handlers = self.handler_returns();
         while out.len() < max {
             let Some((region, a)) = k.and_then(|k| self.continuation(k)) else {
                 break;
@@ -650,15 +660,42 @@ impl Session {
                 loc: region.origin.or_else(|| self.nearest_loc(region.entry)),
                 vars,
             });
-            k = self.parent_return(k.expect("walked above"), &mut handlers);
+            k = self.parent_return(k.expect("walked above"));
         }
         out
     }
 
-    /// Where each installed handler's `handle` expression returns to,
-    /// innermost last -- the order a walk outwards uses them up in.
-    fn handler_returns(&self) -> Vec<Value> {
-        self.vm.handlers().into_iter().map(|h| h.ret_k).collect()
+    /// The operations the handlers in scope answer, innermost first: the
+    /// evidence the running code was handed, which is a list of `#ev(key,
+    /// clause, target, rest)` entries in one of its registers.
+    fn handled(&self) -> Vec<(String, Value)> {
+        let heap = self.vm.heap();
+        let entry = |v: Value| {
+            v.addr().filter(|a| {
+                heap.is_object(*a)
+                    && heap.kind(*a) == Kind::Data
+                    && self
+                        .image
+                        .ctors
+                        .get(heap.meta(*a) as usize)
+                        .is_some_and(|c| matches!(&**c, "#ev" | "#evt"))
+            })
+        };
+        let Some(mut at) = (0..self.vm.live()).find_map(|r| entry(self.vm.register(r))) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        loop {
+            let key = match heap.field(at, 0) {
+                Value::Str(s) => s.to_string(),
+                other => other.kind().to_string(),
+            };
+            out.push((key, heap.field(at, 1)));
+            match entry(heap.field(at, 3)) {
+                Some(next) => at = next,
+                None => return out,
+            }
+        }
     }
 
     /// The first position at or after `pc` in its block.
@@ -740,22 +777,16 @@ impl Session {
                     })
                     .collect()
             }
-            Target::Handlers => {
-                let handlers = self.vm.handlers();
-                handlers
-                    .into_iter()
-                    .enumerate()
-                    .rev()
-                    .map(|(i, h)| {
-                        let covers: Vec<String> =
-                            h.covers.iter().map(|(e, o)| format!("{e}.{o}")).collect();
-                        let v = h.handler;
-                        let mut row = self.row(format!("#{i}"), v, None);
-                        row.value = format!("handles {}", covers.join(", "));
-                        row
-                    })
-                    .collect()
-            }
+            Target::Handlers => self
+                .handled()
+                .into_iter()
+                .enumerate()
+                .map(|(i, (key, clause))| {
+                    let mut row = self.row(format!("#{i}"), clause, None);
+                    row.value = format!("handles {key}");
+                    row
+                })
+                .collect(),
             Target::Heap => {
                 let heap = self.vm.heap();
                 let (collections, allocated) = (heap.collections, heap.allocated);

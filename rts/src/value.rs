@@ -23,23 +23,51 @@ use meadow_intern::InternedString;
 /// objects, and every live `Addr` is rewritten when it does.
 pub type Addr = u32;
 
+/// # Layout
+///
+/// Fixed, because native code reads and writes values directly: `repr(u8)`
+/// makes the variant's number the first byte, and each variant's fields follow
+/// at their C offsets -- see [`layout`]. 16 bytes whatever the variant.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
 pub enum Value {
-    Unit,
-    Bool(bool),
-    Int(i64),
+    Unit = layout::UNIT,
+    Bool(bool) = layout::BOOL,
+    Int(i64) = layout::INT,
     /// A sized integer -- its width and its bits, masked to it. Immediate like
     /// an `Int`, so it lives in a register or a field with no allocation.
-    Word(meadow_core::num::Width, u64),
-    Float(f64),
-    Float32(f32),
-    Char(char),
+    Word(meadow_core::num::Width, u64) = layout::WORD,
+    Float(f64) = layout::FLOAT,
+    Float32(f32) = layout::FLOAT32,
+    Char(char) = layout::CHAR,
     /// Interned, and therefore not on the collected heap. Strings the program
     /// builds at run time are interned too, so they accumulate for the life of
     /// the process — the same as in the CEK machine, and the one allocation this
     /// runtime does not manage.
-    Str(InternedString),
-    Obj(Addr),
+    Str(InternedString) = layout::STR,
+    Obj(Addr) = layout::OBJ,
+}
+
+/// Where a [`Value`]'s parts are, for code that reads them as bytes.
+pub mod layout {
+    /// The variant, as its first byte.
+    pub const TAG: usize = 0;
+    pub const UNIT: u8 = 0;
+    pub const BOOL: u8 = 1;
+    pub const INT: u8 = 2;
+    pub const WORD: u8 = 3;
+    pub const FLOAT: u8 = 4;
+    pub const FLOAT32: u8 = 5;
+    pub const CHAR: u8 = 6;
+    pub const STR: u8 = 7;
+    pub const OBJ: u8 = 8;
+    /// A `Bool`'s byte, and a `Word`'s width.
+    pub const BYTE: usize = 1;
+    /// A `Float32`, a `Char`, a `Str`'s key and an `Obj`'s address: 32 bits.
+    pub const HALF: usize = 4;
+    /// An `Int`, a `Float`, and a `Word`'s bits: 64 bits.
+    pub const WIDE: usize = 8;
+    pub const SIZE: usize = 16;
 }
 
 impl Value {
@@ -72,6 +100,36 @@ mod size {
     /// copies, it copies by value.
     #[test]
     fn a_value_is_sixteen_bytes() {
-        assert_eq!(std::mem::size_of::<super::Value>(), 16);
+        assert_eq!(std::mem::size_of::<super::Value>(), super::layout::SIZE);
+    }
+
+    /// What native code assumes about where things are, checked against what
+    /// the compiler actually did.
+    #[test]
+    fn the_layout_is_where_native_code_looks() {
+        use super::{Value, layout::*};
+        use meadow_core::num::Width;
+        let bytes = |v: Value| -> [u8; 16] {
+            // Safety: a `Value` is 16 bytes of plain data.
+            unsafe { std::mem::transmute(v) }
+        };
+        let at8 = |b: [u8; 16]| u64::from_le_bytes(b[WIDE..WIDE + 8].try_into().unwrap());
+        let at4 = |b: [u8; 16]| u32::from_le_bytes(b[HALF..HALF + 4].try_into().unwrap());
+        assert_eq!(bytes(Value::Unit)[TAG], UNIT);
+        let b = bytes(Value::Bool(true));
+        assert_eq!((b[TAG], b[BYTE]), (BOOL, 1));
+        let b = bytes(Value::Int(-2));
+        assert_eq!((b[TAG], at8(b)), (INT, (-2i64) as u64));
+        let b = bytes(Value::Word(Width::U16, 0xBEEF));
+        assert_eq!((b[TAG], b[BYTE], at8(b)), (WORD, Width::U16 as u8, 0xBEEF));
+        let b = bytes(Value::Float(1.5));
+        assert_eq!((b[TAG], at8(b)), (FLOAT, 1.5f64.to_bits()));
+        let b = bytes(Value::Float32(2.5));
+        assert_eq!((b[TAG], at4(b)), (FLOAT32, 2.5f32.to_bits()));
+        let b = bytes(Value::Char('λ'));
+        assert_eq!((b[TAG], at4(b)), (CHAR, 'λ' as u32));
+        let b = bytes(Value::Obj(77));
+        assert_eq!((b[TAG], at4(b)), (OBJ, 77));
+        assert_eq!(bytes(Value::Str("x".into()))[TAG], STR);
     }
 }

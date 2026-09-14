@@ -154,7 +154,6 @@ struct Gen<'a> {
     shapes: Vec<Vec<InternedString>>,
     prims: Vec<Prim>,
     ops: Vec<(InternedString, InternedString)>,
-    handled: Vec<Vec<(InternedString, InternedString)>>,
     messages: Vec<String>,
 
     /// Blocks that need their own address, in discovery order.
@@ -181,7 +180,6 @@ impl<'a> Gen<'a> {
             shapes: Vec::new(),
             prims: Vec::new(),
             ops: Vec::new(),
-            handled: Vec::new(),
             messages: Vec::new(),
             regions: Vec::new(),
             region_pc: Vec::new(),
@@ -318,6 +316,7 @@ impl<'a> Gen<'a> {
                 regions,
                 returns: self.seq.returns.iter().map(|n| n.0).collect(),
                 continuations: self.seq.continuations.iter().map(|n| n.0).collect(),
+                origins: self.seq.origins.iter().map(|(c, o)| (c.0, o.0)).collect(),
             })
         });
 
@@ -330,7 +329,6 @@ impl<'a> Gen<'a> {
             labels: self.labels,
             prims: self.prims,
             ops: self.ops,
-            handled: self.handled,
             ctors,
             ctor_fields: self.seq.ctor_fields.clone(),
             messages: self.messages,
@@ -684,41 +682,6 @@ impl<'a> Gen<'a> {
 
             Statement::Extern { op, args, blocks } => self.emit_extern(op, args, blocks, env),
 
-            Statement::Handle {
-                handler,
-                ops,
-                k,
-                rest,
-            } => {
-                let h = reg_of(&env, *handler)?;
-                let kr = reg_of(&env, *k)?;
-                let id = self.handled.len() as u32;
-                self.handled.push(ops.clone());
-                self.emit(Instr::new(Op::Handle, h, kr, 0, id));
-                self.emit_stmt(rest, env)
-            }
-
-            Statement::Unhandle { k, rest } => {
-                let dst = self.free(&env)?;
-                self.emit(Instr::a(Op::Unhandle, dst));
-                let mut env = env;
-                env.insert(0, (*k, dst));
-                self.emit_stmt(rest, env)
-            }
-
-            Statement::Perform {
-                effect,
-                op,
-                arg,
-                k,
-            } => {
-                let a = reg_of(&env, *arg)?;
-                let kr = reg_of(&env, *k)?;
-                let id = self.op(*effect, *op);
-                self.emit(Instr::new(Op::Perform, a, kr, 0, id));
-                Ok(())
-            }
-
             Statement::Error(msg) => {
                 let id = self.messages.len() as u32;
                 self.messages.push((*msg).to_string());
@@ -820,6 +783,13 @@ impl<'a> Gen<'a> {
             Extern::Lit(l) => {
                 let k = self.konst(constant(l));
                 self.emit(Instr::ai(Op::Const, dst, k));
+            }
+            Extern::Native(effect, op) => {
+                let [x] = srcs[..] else {
+                    return err(format!("{effect}.{op} takes 1 argument"));
+                };
+                let id = self.op(*effect, *op);
+                self.emit(Instr::new(Op::Native, dst, x, 0, id));
             }
             Extern::Prim(p) => {
                 let id = self.prim(*p);

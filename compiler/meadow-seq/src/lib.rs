@@ -37,16 +37,18 @@
 //!                                        continuations
 //! ```
 //!
-//! Three more — `handle`, `unhandle` and `perform` — are **not** from the paper.
-//! AxCut has no handlers because Effekt compiles effects away before reaching
-//! it, and Meadow does not. They are grouped separately below so a reader knows
-//! which is which.
+//! Like the paper's, this AxCut has **no effect handlers**. Effekt compiles
+//! effects away before reaching it, and so does Meadow now: `handle` and
+//! `perform` lower to evidence passing -- objects, data and jumps -- and an
+//! operation no handler answers becomes an [`Extern::Native`]. See
+//! `lower`'s module docs.
 //!
 //! Data (`let` / `switch`) and codata (`new` / `invoke`) are exact duals, which
 //! is the "duality" of the title. A closure is codata with one method. A
 //! *continuation* is also codata with one method — which is why returning from a
 //! function is `invoke ret#0` and needs no separate mechanism, and why an effect
-//! handler is an ordinary object rather than a special form.
+//! handler's clauses and resumptions are ordinary objects rather than special
+//! forms.
 //!
 //! # Linearity
 //!
@@ -72,6 +74,55 @@ pub use meadow_hir::VarId;
 
 /// Which constructor of a data type, or which method of a codata object.
 pub type Tag = u32;
+
+/// How the value a name holds is represented at run time.
+///
+/// What a collector has to know about a register -- whether it holds a pointer
+/// -- and what native code has to know to read one. Every name a program binds
+/// has one, in [`Program::reps`]: from the type core gave the value, or, for the
+/// names lowering invents, from what they are. `Var` is the one that is not
+/// known when the program is compiled: a value whose type is a type variable,
+/// whose representation is whatever the variable is instantiated to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Rep {
+    /// A heap object: data, a closure or continuation, an array, a record, a
+    /// `BigInt`, a `Ref` -- anything the collector follows.
+    Ref,
+    /// A 64-bit `Int`.
+    Int,
+    /// A 64-bit `Float`.
+    Float,
+    /// Any other immediate: `()`, a `Bool`, a `Char`, a sized integer, a
+    /// `Float32`.
+    Bits,
+    /// A `String`.
+    Str,
+    /// The representation of type variable `n`, whatever that is.
+    Var(u32),
+    /// A type the compiler could not work out -- only in a unit with errors.
+    Unknown,
+}
+
+impl Rep {
+    /// The representation of a value of type `ty`.
+    pub fn of(ty: &meadow_core::Ty) -> Rep {
+        use meadow_core::Ty as Type;
+        match ty {
+            Type::Con(n, args) if args.is_empty() => match &**n {
+                "Int" | "Int64" => Rep::Int,
+                "Float" | "Float64" => Rep::Float,
+                "String" => Rep::Str,
+                "Unit" | "Bool" | "Char" | "Float32" => Rep::Bits,
+                "?" => Rep::Unknown,
+                w if meadow_core::num::Width::from_type(w).is_some() => Rep::Bits,
+                _ => Rep::Ref,
+            },
+            Type::Con(..) | Type::Tuple(_) | Type::Record(_) | Type::Fun(..) => Rep::Ref,
+            Type::Var(v) => Rep::Var(*v),
+            _ => Rep::Unknown,
+        }
+    }
+}
 
 /// A top-level block, reachable by [`Statement::Jump`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -178,51 +229,6 @@ pub enum Statement {
         blocks: Vec<Block>,
     },
 
-    // --- beyond the paper: algebraic effects -----------------------------
-    //
-    // AxCut has no handlers. Effekt, the language it was built for, compiles
-    // effects away *before* reaching it. Meadow's `core` still has `perform` and
-    // `handle`, and rather than pretend otherwise these three statements add a
-    // handler stack to the machine — the same shape `meadow_rts::stack` already
-    // commits to for the bytecode VM.
-    //
-    // They are separated out because they are the part a reader should not
-    // attribute to the paper, and because a later handler-passing transform
-    // could remove them and leave the seven statements above intact.
-    /// Install `handler` for the given operations; `k` is where the whole
-    /// `handle` expression's value goes. The environment is unchanged.
-    Handle {
-        handler: Name,
-        /// `(effect, operation)` per method of the handler object, in order.
-        ops: Vec<(InternedString, InternedString)>,
-        k: Name,
-        rest: Box<Statement>,
-    },
-
-    /// Pop the innermost installed handler and bind its continuation as `k` —
-    /// what the body's normal return does before running the `return` clause.
-    ///
-    /// Binding rather than popping is the point. The frame's continuation is
-    /// **not** the one the `handle` was written next to: a resumption rebinds it
-    /// to the `resume` call site, so that a body which was suspended and
-    /// restarted returns into the middle of the clause that restarted it. The
-    /// only way to reach the right one is to read it off the frame.
-    Unhandle { k: Name, rest: Box<Statement> },
-
-    /// `perform E.op arg` answering `k`.
-    ///
-    /// Unwinds to the innermost handler with a clause for `E.op`, hands its
-    /// clause the argument, a one-shot resumption, and the handler's own
-    /// continuation. The resumption carries `k` *and* the handler frames that
-    /// were unwound past — including the handler's own, which is what makes
-    /// handlers deep.
-    Perform {
-        effect: InternedString,
-        op: InternedString,
-        arg: Name,
-        k: Name,
-    },
-
     /// Not in the paper. Reaching one is a runtime error, and it exists so that
     /// an untranslatable term is loud rather than silently missing.
     Error(&'static str),
@@ -280,6 +286,11 @@ pub enum Extern {
     /// Build the builtin `Array` from its arguments.
     Array,
 
+    /// An effect operation no handler in the program answers, for the runtime
+    /// to: `Console.writeOutput`, `Fs.readFile`, `Test.fail`. One argument; one
+    /// continuation, which binds the result.
+    Native(InternedString, InternedString),
+
     /// Field `i` of a data value, tuple or array.
     ///
     /// The paper would use `switch` for this, and for a `match` arm so does the
@@ -323,6 +334,11 @@ pub struct Program {
     /// is constructor data rather than an anonymous record, and `.field` on one
     /// is resolved against this at run time, as the CEK machine does.
     pub ctor_fields: std::collections::HashMap<InternedString, Vec<InternedString>>,
+    /// What every name holds -- see [`Rep`].
+    pub reps: std::collections::HashMap<Name, Rep>,
+    /// Names that are copies of a variable the program was written with, and
+    /// which -- see `meadow_core::Program::origins`.
+    pub origins: std::collections::HashMap<Name, Name>,
 }
 
 impl Program {

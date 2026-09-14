@@ -139,6 +139,7 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
                 Extern::Extend(l) => format!("extend .{l}"),
                 Extern::Array => "array".to_string(),
                 Extern::Field(i) => format!("field {i}"),
+                Extern::Native(e, o) => format!("native {e}.{o}"),
             };
             // One continuation is a sequence point, not a branch: write it flat.
             if let [only] = &blocks[..] {
@@ -154,42 +155,6 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
                 pad(out, depth);
                 out.push_str("}\n");
             }
-        }
-        Statement::Handle {
-            handler,
-            ops,
-            k,
-            rest,
-        } => {
-            let ops = ops
-                .iter()
-                .map(|(e, o)| format!("{e}.{o}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let _ = writeln!(
-                out,
-                "handle {} [{ops}] answering {};",
-                name(*handler),
-                name(*k)
-            );
-            stmt(out, rest, depth);
-        }
-        Statement::Unhandle { k, rest } => {
-            let _ = writeln!(out, "unhandle -> {};", name(*k));
-            stmt(out, rest, depth);
-        }
-        Statement::Perform {
-            effect,
-            op,
-            arg,
-            k,
-        } => {
-            let _ = writeln!(
-                out,
-                "perform {effect}.{op}({}) -> {}",
-                name(*arg),
-                name(*k)
-            );
         }
         Statement::Error(msg) => {
             let _ = writeln!(out, "error {msg:?}");

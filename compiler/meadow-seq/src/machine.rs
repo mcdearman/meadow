@@ -40,20 +40,10 @@
 //!
 //! # Effects
 //!
-//! The one piece of state that is not the environment. `handle` pushes a frame
-//! naming a handler object, the operations it covers, and where the whole
-//! `handle` expression's value goes; `perform` unwinds to the innermost frame
-//! that covers the operation, and hands the clause three things: the argument, a
-//! one-shot resumption, and that frame's continuation.
-//!
-//! The resumption carries the performing continuation *and the frames unwound
-//! past, including the handler's own*. Putting the handler's frame back is what
-//! makes handlers deep. One detail is easy to get wrong and worth naming: the
-//! restored handler's continuation is **not** the one it was installed with. It
-//! becomes the continuation of the `resume` call, so that when the body finally
-//! returns, its value flows into the middle of the clause that resumed it —
-//! which is why `handle (perform op + 1) with { op _ r -> r 5 + 100 }` is 106 and
-//! not 6.
+//! Nothing here knows about them. The lowering has turned `handle` and
+//! `perform` into evidence passing -- ordinary objects, data and jumps -- so
+//! the only effect this machine meets is an [`Extern::Native`], an operation no
+//! handler in the program answers.
 //!
 //! # Divergences from the CEK machine
 //!
@@ -76,7 +66,7 @@
 use meadow_core::num::{self, Arith, Bits, Cmp, IntTarget, Num, Width};
 use meadow_core::{Lit, Prim};
 use meadow_intern::InternedString;
-use crate::{Block, Extern, Name, Program, Statement, Tag};
+use crate::{Block, Extern, Name, Program, Rep, Statement, Tag};
 use num_bigint::BigInt;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -112,9 +102,6 @@ pub enum Value<'p> {
     /// Codata: captured values and a method table, which is a slice of the
     /// program rather than a copy of it.
     Obj(Rc<Object<'p>>),
-    /// A one-shot resumption: the continuation a `perform` was cut from, and the
-    /// handler frames to put back.
-    Resume(Rc<RefCell<Option<Captured<'p>>>>),
     /// The continuation the entry point is handed. Invoking it stops the machine.
     Halt,
     /// A value in a compact region, and the region. Nothing moves here -- the
@@ -191,23 +178,6 @@ pub struct Object<'p> {
     pub methods: &'p [Block],
 }
 
-/// An installed handler.
-#[derive(Debug, Clone)]
-pub struct Frame<'p> {
-    ops: &'p [(InternedString, InternedString)],
-    handler: Rc<Object<'p>>,
-    /// Where the `handle` expression's value goes. Rebound when a resumption
-    /// puts this frame back — see the module docs.
-    ret_k: Value<'p>,
-}
-
-/// What a resumption holds: where the `perform` was, and what to reinstall.
-#[derive(Debug)]
-pub struct Captured<'p> {
-    k: Value<'p>,
-    frames: Vec<Frame<'p>>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     pub msg: String,
@@ -217,7 +187,7 @@ fn err<T>(msg: impl Into<String>) -> Result<T, Error> {
     Err(Error { msg: msg.into() })
 }
 
-/// The machine: where we are, what is in scope, and which handlers are up.
+/// The machine: where we are, and what is in scope.
 pub struct Machine<'p> {
     program: &'p Program,
     stmt: &'p Statement,
@@ -226,7 +196,6 @@ pub struct Machine<'p> {
     /// is what lets a statement say `invoke f#0` instead of counting.
     names: Vec<Name>,
     env: Vec<Value<'p>>,
-    handlers: Vec<Frame<'p>>,
     /// Top-level values evaluated so far, by definition -- see
     /// `meadow_core::globals`.
     globals: Vec<Option<Value<'p>>>,
@@ -243,6 +212,11 @@ impl<'p> Machine<'p> {
         let Some(entry) = program.entry else {
             return err("program has no entry point");
         };
+        Machine::at(program, entry)
+    }
+
+    /// Start at the definition labelled `entry` instead -- a test, say.
+    pub fn at(program: &'p Program, entry: crate::Label) -> Result<Self, Error> {
         let Some(block) = program.block(entry) else {
             return err(format!("entry label {entry:?} is not defined"));
         };
@@ -257,7 +231,6 @@ impl<'p> Machine<'p> {
             stmt: &block.body,
             names: block.params.clone(),
             env: vec![Value::Halt],
-            handlers: Vec::new(),
             globals: Vec::new(),
             steps: 0,
         })
@@ -277,6 +250,11 @@ impl<'p> Machine<'p> {
             Prim::GlobalGet => match self.globals.get(index(&vals[0])?) {
                 Some(Some(v)) => Ok(v.clone()),
                 _ => err("a definition read before it was evaluated"),
+            },
+            Prim::Once => Ok(Value::Ref(Rc::new(RefCell::new(Value::Bool(false))))),
+            Prim::TakeOnce => match &vals[0] {
+                Value::Ref(cell) => Ok(Value::Bool(!matches!(cell.replace(Value::Bool(true)), Value::Bool(true)))),
+                other => err(format!("takeOnce: expected a flag, got {}", kind(other))),
             },
             Prim::GlobalSet => {
                 let i = index(&vals[0])?;
@@ -343,7 +321,7 @@ impl<'p> Machine<'p> {
             } => {
                 let vals = self.lookup_all(fields)?;
                 let v = Value::Data(*ctor, *tag, Rc::new(Fields(vals)));
-                self.push(*name, v);
+                self.push(*name, v)?;
                 self.stmt = rest;
                 Ok(None)
             }
@@ -392,7 +370,7 @@ impl<'p> Machine<'p> {
                     captures: captured,
                     methods,
                 }));
-                self.push(*name, obj);
+                self.push(*name, obj)?;
                 self.stmt = rest;
                 Ok(None)
             }
@@ -400,46 +378,6 @@ impl<'p> Machine<'p> {
             Statement::Invoke(target, tag) => self.invoke(*target, *tag),
 
             Statement::Extern { op, args, blocks } => self.extern_op(op, args, blocks),
-
-            Statement::Handle {
-                handler,
-                ops,
-                k,
-                rest,
-            } => {
-                let h = self.lookup(*handler)?;
-                let Value::Obj(obj) = h else {
-                    return err(format!("handler is {}, not codata", kind(&h)));
-                };
-                let ret_k = self.lookup(*k)?;
-                self.handlers.push(Frame {
-                    ops,
-                    handler: obj,
-                    ret_k,
-                });
-                self.stmt = rest;
-                Ok(None)
-            }
-
-            // Where the body's value goes is on the frame, not in the
-            // environment: a resumption rebinds it to the `resume` site.
-            Statement::Unhandle { k, rest } => {
-                let Some(frame) = self.handlers.pop() else {
-                    return err("unhandle with no handler installed");
-                };
-                self.push(*k, frame.ret_k);
-                self.stmt = rest;
-                Ok(None)
-            }
-
-            Statement::Perform {
-                effect,
-                op,
-                arg,
-                k,
-            } => {
-                self.perform(*effect, *op, *arg, *k)
-            }
 
             Statement::Error(msg) => err(*msg),
 
@@ -465,6 +403,9 @@ impl<'p> Machine<'p> {
                 block.params.len(),
                 vals.len()
             ));
+        }
+        for (n, v) in block.params.iter().zip(&vals) {
+            self.check(*n, v)?;
         }
         self.names = block.params.clone();
         self.env = vals;
@@ -497,118 +438,8 @@ impl<'p> Machine<'p> {
                 self.enter(block, vals)?;
                 Ok(None)
             }
-            // Resuming is an ordinary call from the program's point of view, so
-            // it arrives here: `substitute [r, v, k]; invoke r#0`.
-            Value::Resume(cell) => {
-                if tag != 0 {
-                    return err(format!("a resumption has no method #{tag}"));
-                }
-                let Some(captured) = cell.borrow_mut().take() else {
-                    return err("continuation resumed more than once");
-                };
-                let mut rest = self.without(target);
-                if rest.len() != 2 {
-                    return err(format!(
-                        "resuming takes a value and a continuation, got {} values",
-                        rest.len()
-                    ));
-                }
-                let here = rest.pop().expect("checked");
-                let arg = rest.pop().expect("checked");
-
-                // Put the handler frames back, with the cut one now answering
-                // the resume site rather than where it was installed.
-                let mut frames = captured.frames;
-                if let Some(f) = frames.first_mut() {
-                    f.ret_k = here;
-                }
-                self.handlers.append(&mut frames);
-                self.deliver(captured.k, arg)
-            }
             other => err(format!("invoked a non-object value ({})", kind(&other))),
         }
-    }
-
-    /// Hand `v` to the continuation `k` — the machine-side spelling of `ret`.
-    fn deliver(&mut self, k: Value<'p>, v: Value<'p>) -> Result<Option<Value<'p>>, Error> {
-        match k {
-            Value::Halt => Ok(Some(v)),
-            Value::Obj(obj) => {
-                let methods = obj.methods;
-                let Some(block) = methods.first() else {
-                    return err("a continuation with no method");
-                };
-                let mut vals = obj.captures.clone();
-                vals.push(v);
-                self.enter(block, vals)?;
-                Ok(None)
-            }
-            other => err(format!("{} is not a continuation", kind(&other))),
-        }
-    }
-
-    /// Unwind to the innermost handler covering `effect.op` and enter its clause.
-    fn perform(
-        &mut self,
-        effect: InternedString,
-        op: InternedString,
-        arg: Name,
-        k: Name,
-    ) -> Result<Option<Value<'p>>, Error> {
-        let matches = |f: &Frame| f.ops.iter().any(|(e, o)| *e == effect && *o == op);
-        let Some(idx) = self.handlers.iter().rposition(matches) else {
-            // The CEK discharges `Fs`, `Process`, `Random` and `Time` against
-            // the real world here. This machine does not, and says so rather
-            // than inventing an answer. `Test.fail` is the exception: a failed
-            // assertion is a runtime error with the assertion's own message,
-            // which is what a test runner reads.
-            if &*effect == "Test" && &*op == "fail" {
-                let v = self.lookup(arg)?;
-                return err(v.to_string());
-            }
-            // Output is the other exception: printing has to reach the terminal
-            // on every engine, or a program that prints cannot be compared.
-            if &*effect == "Console" && &*op == "writeOutput" {
-                let v = self.lookup(arg)?;
-                match v {
-                    Value::Str(s) => print!("{s}"),
-                    other => print!("{other}"),
-                }
-                let kv = self.lookup(k)?;
-                return self.deliver(kv, Value::Unit);
-            }
-            return err(format!("unhandled effect {effect}.{op}"));
-        };
-
-        let argv = self.lookup(arg)?;
-        let kv = self.lookup(k)?;
-
-        let frames = self.handlers.split_off(idx);
-        let obj = frames[0].handler.clone();
-        let ret_k = frames[0].ret_k.clone();
-        let method = frames[0]
-            .ops
-            .iter()
-            .position(|(e, o)| *e == effect && *o == op)
-            .expect("matched above");
-
-        let resumption = Value::Resume(Rc::new(RefCell::new(Some(Captured {
-            k: kv,
-            frames,
-        }))));
-
-        let methods = obj.methods;
-        let Some(block) = methods.get(method) else {
-            return err(format!(
-                "handler for {effect}.{op} has no method #{method}"
-            ));
-        };
-        let mut vals = obj.captures.clone();
-        vals.push(argv);
-        vals.push(resumption);
-        vals.push(ret_k);
-        self.enter(block, vals)?;
-        Ok(None)
     }
 
     fn extern_op(
@@ -659,6 +490,24 @@ impl<'p> Machine<'p> {
                 unreachable!("handled above")
             }
             Extern::Lit(l) => literal(l),
+            // The CEK discharges `Fs`, `Process`, `Random` and `Time` against
+            // the real world. This machine does not, and says so rather than
+            // inventing an answer. `Test.fail` is the exception: a failed
+            // assertion is a runtime error with the assertion's own message,
+            // which is what a test runner reads. Output is the other: printing
+            // has to reach the terminal on every engine, or a program that
+            // prints cannot be compared.
+            Extern::Native(effect, op) => match (&**effect, &**op, &vals[..]) {
+                ("Test", "fail", [v]) => return err(v.to_string()),
+                ("Console", "writeOutput", [v]) => {
+                    match v {
+                        Value::Str(s) => print!("{s}"),
+                        other => print!("{other}"),
+                    }
+                    Value::Unit
+                }
+                _ => return err(format!("unhandled effect {effect}.{op}")),
+            },
             Extern::Prim(p) => self.prim(*p, &vals)?,
             Extern::PrimK(p, l) => {
                 let mut vals = vals.clone();
@@ -756,9 +605,53 @@ impl<'p> Machine<'p> {
         env
     }
 
-    fn push(&mut self, n: Name, v: Value<'p>) {
+    fn push(&mut self, n: Name, v: Value<'p>) -> Result<(), Error> {
+        self.check(n, &v)?;
         self.names.insert(0, n);
         self.env.insert(0, v);
+        Ok(())
+    }
+
+    /// Does `v` fit the representation the program declares for `n`? Values
+    /// here still say what they are, which is what makes this a check of the
+    /// lowering's claims: every name's representation, compared with what
+    /// actually arrives in it, at every binding the machine makes. See
+    /// [`crate::Rep`]. A program that declares none is not checked.
+    fn check(&self, n: Name, v: &Value<'p>) -> Result<(), Error> {
+        if self.program.reps.is_empty() {
+            return Ok(());
+        }
+        let Some(&rep) = self.program.reps.get(&n) else {
+            return err(format!("{n:?} has no representation, and holds {}", kind(v)));
+        };
+        let fits = match rep {
+            Rep::Ref => matches!(
+                v,
+                Value::Data(..)
+                    | Value::Array(_)
+                    | Value::Record(_)
+                    | Value::Ref(_)
+                    | Value::MutArray(_)
+                    | Value::Obj(_)
+                    | Value::Halt
+                    | Value::Compact(_)
+                    | Value::BigInt(_)
+            ),
+            Rep::Int => matches!(v, Value::Int(_)),
+            Rep::Float => matches!(v, Value::Float(_)),
+            Rep::Bits => matches!(
+                v,
+                Value::Unit | Value::Bool(_) | Value::Char(_) | Value::Word(..) | Value::Float32(_)
+            ),
+            Rep::Str => matches!(v, Value::Str(_)),
+            Rep::Var(_) => true,
+            Rep::Unknown => false,
+        };
+        if fits {
+            Ok(())
+        } else {
+            err(format!("{n:?} is declared {rep:?} but holds {}", kind(v)))
+        }
     }
 
     // --- introspection ----------------------------------------------------
@@ -776,10 +669,6 @@ impl<'p> Machine<'p> {
         out
     }
 
-    /// How many handlers are installed — the depth a `perform` may have to walk.
-    pub fn handler_depth(&self) -> usize {
-        self.handlers.len()
-    }
 }
 
 fn literal<'p>(l: &Lit) -> Value<'p> {
@@ -813,7 +702,6 @@ fn kind(v: &Value) -> &'static str {
         Value::Ref(_) => "Ref",
         Value::MutArray(_) => "StArray",
         Value::Obj(_) => "codata",
-        Value::Resume(_) => "resumption",
         Value::Halt => "halt",
         Value::Compact(_) => "Compact",
     }
@@ -1047,7 +935,7 @@ fn hash_value(v: &Value) -> Result<i64, Error> {
             }
             Value::Ref(_) => return err(unhashable("a Ref")),
             Value::MutArray(_) => return err(unhashable("a mutable array")),
-            Value::Obj(_) | Value::Resume(_) | Value::Halt => {
+            Value::Obj(_) | Value::Halt => {
                 return err(unhashable("a function"));
             }
             Value::Compact(c) => {
@@ -1070,6 +958,9 @@ fn prim<'p>(
     tags: &HashMap<InternedString, Tag>,
 ) -> Result<Value<'p>, Error> {
     use Prim::*;
+    // A typed primitive is its untyped one, at a type this machine has no use
+    // for knowing.
+    let op = op.untyped();
 
     let n = |i: usize| to_num(&args[i]).ok_or_else(|| Error {
         msg: format!("expected a number, got {}", args[i]),
@@ -1323,6 +1214,10 @@ fn prim<'p>(
         StmNew | StmRead | StmWrite | StmBegin | StmCommit | StmWait | StmNest | StmMerge
         | StmRollback => err("transactions are not supported by the sequent machine"),
         GlobalReady | GlobalGet | GlobalSet => err("a definition cache reached a primitive with no machine"),
+        Once | TakeOnce => err("a resumption's flag reached a primitive with no machine"),
+        IntAdd | IntSub | IntMul | IntDiv | IntMod | IntEq | IntNe | IntLt | IntLe | IntGt
+        | IntGe | FloatAdd | FloatSub | FloatMul | FloatDiv | FloatEq | FloatNe | FloatLt
+        | FloatLe | FloatGt | FloatGe => unreachable!("made untyped above"),
     }
 }
 
@@ -1378,7 +1273,7 @@ fn compact_into<'p>(region: &RefCell<Region<'p>>, v: &Value<'p>) -> Result<(), E
             }
             Value::Ref(_) => return err(uncompactable("a Ref")),
             Value::MutArray(_) => return err(uncompactable("a mutable array")),
-            Value::Obj(_) | Value::Resume(_) | Value::Halt => {
+            Value::Obj(_) | Value::Halt => {
                 return err(uncompactable("a function"));
             }
             Value::Int(_)
@@ -1590,7 +1485,6 @@ impl std::fmt::Display for Value<'_> {
                 f.write_str("]")
             }
             Value::Obj(_) => f.write_str("<closure>"),
-            Value::Resume(_) => f.write_str("<continuation>"),
             Value::Halt => f.write_str("<halt>"),
             Value::Compact(c) => write!(f, "compact {}", c.0),
         }
@@ -1611,6 +1505,8 @@ mod tests {
             returns: Default::default(),
             continuations: Default::default(),
             ctor_fields: Default::default(),
+            reps: Default::default(),
+            origins: Default::default(),
             defs: vec![Def {
                 label: Label(0),
                 name: InternedString::from("main"),

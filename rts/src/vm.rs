@@ -1,7 +1,10 @@
 //! The virtual machine.
 //!
-//! A program counter, a flat register file, a collected heap, and a stack of
-//! installed handlers. That is the whole of it — there is **no call stack**.
+//! A program counter, a flat register file and a collected heap. That is the
+//! whole of it — there is **no call stack**, and no handler stack either: the
+//! compiler passes effect handlers as evidence, so a `handle` and a `perform`
+//! arrive here as ordinary objects and jumps, and only an operation no handler
+//! answers reaches the machine, as [`Op::Native`].
 //!
 //! # Why there is no call stack
 //!
@@ -72,20 +75,6 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T, Error> {
     Err(Error { msg: msg.into() })
 }
 
-/// An installed handler.
-#[derive(Debug, Clone, Copy)]
-struct Frame {
-    /// Which entry of [`Program::handled`] says what this covers.
-    handled: u32,
-    handler: Value,
-    /// Where the `handle` expression's value goes.
-    ///
-    /// Not fixed: a resumption rebinds it to the point it was resumed from, so
-    /// that a body which was suspended and restarted returns into the middle of
-    /// the clause that restarted it.
-    ret_k: Value,
-}
-
 pub struct Vm<'p> {
     pub(crate) program: &'p Program,
     pub(crate) heap: Heap,
@@ -94,8 +83,7 @@ pub struct Vm<'p> {
     /// which is what lets the bounds check on every register access fold away.
     pub(crate) regs: Box<Regs>,
     live: usize,
-    handlers: Vec<Frame>,
-    pc: usize,
+    pub(crate) pc: usize,
     /// Instructions retired.
     pub steps: u64,
     /// The tag `False` has in this program, if it has one — what a conditional
@@ -125,6 +113,12 @@ pub struct Vm<'p> {
     /// The transaction this thread is in, if it is in one. Its values are in
     /// shared regions, not the heap, so nothing here is a collector root.
     pub(crate) txn: Option<crate::stm::Txn>,
+    /// Native code for the program's blocks, by entry pc -- see [`crate::abi`].
+    pub native: Option<&'p crate::abi::NativeTable>,
+    /// What native code stopped with: a halt's value, or a failure. Handed
+    /// across the boundary here rather than through it.
+    pub(crate) halted: Option<Value>,
+    pub(crate) failure: Option<Error>,
 }
 
 /// What a thread operation asks of the scheduler. `dst` is the register its
@@ -153,16 +147,6 @@ pub struct Io {
     /// Answers `Console.readLine`: a line without its terminator, or `None` at
     /// the end of input.
     pub input: Option<Box<dyn FnMut() -> Option<String> + Send>>,
-}
-
-/// An installed handler, as [`Vm::handlers`] shows it.
-#[derive(Debug, Clone)]
-pub struct HandlerView {
-    /// The `(effect, operation)` pairs it covers.
-    pub covers: Vec<(InternedString, InternedString)>,
-    pub handler: Value,
-    /// Where the `handle` expression's value goes.
-    pub ret_k: Value,
 }
 
 /// Run `program` from its entry point and render the result the way the CEK
@@ -194,7 +178,6 @@ impl<'p> Vm<'p> {
             heap,
             regs: Box::new([Value::Unit; REGISTERS + SCRATCH_LEN]),
             live: 0,
-            handlers: Vec::new(),
             pc: 0,
             steps: 0,
             false_tag,
@@ -205,6 +188,9 @@ impl<'p> Vm<'p> {
             globals: Vec::new(),
             world: None,
             txn: None,
+            native: None,
+            halted: None,
+            failure: None,
         }
     }
 
@@ -212,7 +198,6 @@ impl<'p> Vm<'p> {
     /// continuation. How a green thread begins -- `f` is the function it was
     /// spawned with, rebuilt from `body` in this machine's own heap.
     pub(crate) fn start_call(&mut self, body: &crate::heap::Parcel) -> Result<(), Error> {
-        self.handlers.clear();
         self.live = 0;
         self.heap.reserve(1 + body.len());
         let halt = Value::Obj(self.heap.alloc(Kind::Closure, 0, &[]));
@@ -225,15 +210,18 @@ impl<'p> Vm<'p> {
             return err("a thread's function has no method");
         };
         let ncap = self.heap.len(a);
-        if ncap + 2 > REGISTERS {
+        if ncap + 3 > REGISTERS {
             return err("a thread's function needs more than 256 registers");
         }
         for j in 0..ncap {
             self.regs[j] = self.heap.field(a, j);
         }
+        // `f ()`, answering the halt continuation, under no handlers: a
+        // function takes the evidence as its last argument, and `()` is none.
         self.regs[ncap] = Value::Unit;
         self.regs[ncap + 1] = halt;
-        self.live = ncap + 2;
+        self.regs[ncap + 2] = Value::Unit;
+        self.live = ncap + 3;
         self.pc = pc as usize;
         Ok(())
     }
@@ -266,7 +254,7 @@ impl<'p> Vm<'p> {
             if self.steps >= limit {
                 return err(format!("ran for {fuel} instructions without finishing"));
             }
-            if let Some(v) = self.step()? {
+            if let Some(v) = self.advance()? {
                 return Ok(v);
             }
         }
@@ -282,7 +270,6 @@ impl<'p> Vm<'p> {
         let halt = self.heap.alloc(Kind::Closure, 0, &[]);
         self.regs[0] = Value::Obj(halt);
         self.live = 1;
-        self.handlers.clear();
         self.pc = entry as usize;
     }
 
@@ -293,7 +280,22 @@ impl<'p> Vm<'p> {
         };
         self.pc += 1;
         self.steps += 1;
+        self.exec(i)
+    }
 
+    /// Move the machine on: through native code for the block at the pc, if
+    /// there is some -- which runs until control leaves the block -- or one
+    /// instruction if not. `Some` means the program halted.
+    #[inline]
+    pub fn advance(&mut self) -> Result<Option<Value>, Error> {
+        match self.native.and_then(|t| t.get(self.pc).copied().flatten()) {
+            Some(f) => crate::abi::enter(self, f),
+            None => self.step(),
+        }
+    }
+
+    /// Carry out `i`, the instruction before the pc -- which a jump moves.
+    pub(crate) fn exec(&mut self, i: Instr) -> Result<Option<Value>, Error> {
         match i.op {
             Op::Nop => {}
 
@@ -538,24 +540,7 @@ impl<'p> Vm<'p> {
             }
 
 
-            Op::Handle => {
-                let handler = self.reg(i.a);
-                let ret_k = self.reg(i.b);
-                self.handlers.push(Frame {
-                    handled: i.imm,
-                    handler,
-                    ret_k,
-                });
-            }
-
-            Op::Unhandle => {
-                let Some(frame) = self.handlers.pop() else {
-                    return err("unhandle with no handler installed");
-                };
-                self.set(i.a, frame.ret_k);
-            }
-
-            Op::Perform => self.perform(i)?,
+            Op::Native => self.native_op(i)?,
         }
         Ok(None)
     }
@@ -606,155 +591,30 @@ impl<'p> Vm<'p> {
                 Ok(None)
             }
 
-            // Resuming is an ordinary call from the program's point of view, so
-            // it arrives here: `invoke r#0 (value, continuation)`.
-            Kind::Resume => {
-                if i.b != 0 {
-                    return err(format!("a resumption has no method #{}", i.b));
-                }
-                if argc != 2 {
-                    return err(format!(
-                        "resuming takes a value and a continuation, got {argc} arguments"
-                    ));
-                }
-                if self.heap.field(a, 0) == Value::Bool(true) {
-                    return err("continuation resumed more than once");
-                }
-                self.heap.set_field(a, 0, Value::Bool(true));
-
-                let value = self.reg(base);
-                let here = self.reg(base + 1);
-                let k = self.heap.field(a, 1);
-
-                // Put the handler frames back, with the one this resumption was
-                // cut from now answering the resume site.
-                let n = (self.heap.len(a) - 2) / 3;
-                for j in 0..n {
-                    let handled = match self.heap.field(a, 2 + 3 * j) {
-                        Value::Int(x) => x as u32,
-                        other => return err(format!("resumption frame is {}", other.kind())),
-                    };
-                    let handler = self.heap.field(a, 3 + 3 * j);
-                    let ret_k = if j == 0 {
-                        here
-                    } else {
-                        self.heap.field(a, 4 + 3 * j)
-                    };
-                    self.handlers.push(Frame {
-                        handled,
-                        handler,
-                        ret_k,
-                    });
-                }
-                self.deliver(k, value)?;
-                Ok(None)
-            }
-
             other => err(format!("invoked a {other:?}")),
         }
     }
 
-    /// Hand `v` to the continuation `k`.
-    fn deliver(&mut self, k: Value, v: Value) -> Result<(), Error> {
-        let Some(a) = k.addr().filter(|a| self.heap.kind(*a) == Kind::Closure) else {
-            return err(format!("{} is not a continuation", k.kind()));
-        };
-        let table = self.heap.meta(a) as usize;
-        let Some(&pc) = self.program.methods.get(table).and_then(|t| t.first()) else {
-            return err("a continuation with no method");
-        };
-        let ncap = self.heap.len(a);
-        if ncap + 1 > REGISTERS {
-            return err("a continuation needs more than 256 registers");
-        }
-        for j in 0..ncap {
-            self.regs[j] = self.heap.field(a, j);
-        }
-        self.regs[ncap] = v;
-        self.live = ncap + 1;
-        self.pc = pc as usize;
-        Ok(())
-    }
-
-    /// Unwind to the innermost handler covering the operation and enter its
-    /// clause.
-    fn perform(&mut self, i: Instr) -> Result<(), Error> {
+    /// An effect operation no handler in the program answers: `Fs`,
+    /// `Process`, `Random`, `Time` and `Console` reach the real world (see
+    /// [`crate::native`]), and `Test.fail` is a failed assertion, which is a
+    /// runtime error carrying the assertion's own message for a test runner to
+    /// read.
+    fn native_op(&mut self, i: Instr) -> Result<(), Error> {
         let Some(&(effect, op)) = self.program.ops.get(i.imm as usize) else {
             return err(format!("no operation {}", i.imm));
         };
-        let covers = |f: &Frame| {
-            self.program.handled[f.handled as usize]
-                .iter()
-                .any(|(e, o)| *e == effect && *o == op)
-        };
-        let Some(idx) = self.handlers.iter().rposition(covers) else {
-            // No handler. A few effects mean something anyway: `Fs`, `Process`,
-            // `Random` and `Time` reach the real world (see [`crate::native`]),
-            // and `Test.fail` is a failed assertion, which is a runtime error
-            // carrying the assertion's own message for a test runner to read.
-            if &*effect == "Test" && &*op == "fail" {
-                let v = self.reg(i.a);
-                return err(self.show(v));
+        let arg = self.reg(i.b);
+        if &*effect == "Test" && &*op == "fail" {
+            return err(self.show(arg));
+        }
+        match self.native(&effect, &op, arg)? {
+            Some(v) => {
+                self.set(i.a, v);
+                Ok(())
             }
-            let arg = self.reg(i.a);
-            if let Some(v) = self.native(&effect, &op, arg)? {
-                // Read the continuation back out of its register: building the
-                // result may have collected, and registers are what the
-                // collector updates.
-                let k = self.reg(i.b);
-                return self.deliver(k, v);
-            }
-            return err(format!("unhandled effect {effect}.{op}"));
-        };
-
-        // Make room while everything is still rooted: the argument and the
-        // continuation are in registers, and the frames are still on the stack.
-        let nframes = self.handlers.len() - idx;
-        self.ensure(1 + 2 + 3 * nframes);
-
-        let arg = self.reg(i.a);
-        let k = self.reg(i.b);
-        let frames = self.handlers.split_off(idx);
-        let handler = frames[0].handler;
-        let ret_k = frames[0].ret_k;
-        let method = self.program.handled[frames[0].handled as usize]
-            .iter()
-            .position(|(e, o)| *e == effect && *o == op)
-            .expect("matched above");
-
-        // The resumption carries the performing continuation *and* the frames
-        // unwound past — including the handler's own, which is what makes
-        // handlers deep.
-        let mut fields = Vec::with_capacity(2 + 3 * nframes);
-        fields.push(Value::Bool(false));
-        fields.push(k);
-        for f in &frames {
-            fields.push(Value::Int(f.handled as i64));
-            fields.push(f.handler);
-            fields.push(f.ret_k);
+            None => err(format!("unhandled effect {effect}.{op}")),
         }
-        let resumption = Value::Obj(self.heap.alloc(Kind::Resume, 0, &fields));
-
-        let Some(ha) = handler.addr().filter(|a| self.heap.kind(*a) == Kind::Closure) else {
-            return err(format!("handler is {}, not an object", handler.kind()));
-        };
-        let table = self.heap.meta(ha) as usize;
-        let Some(&pc) = self.program.methods.get(table).and_then(|t| t.get(method)) else {
-            return err(format!("handler for {effect}.{op} has no clause #{method}"));
-        };
-        let ncap = self.heap.len(ha);
-        if ncap + 3 > REGISTERS {
-            return err("a handler clause needs more than 256 registers");
-        }
-        for j in 0..ncap {
-            self.regs[j] = self.heap.field(ha, j);
-        }
-        self.regs[ncap] = arg;
-        self.regs[ncap + 1] = resumption;
-        self.regs[ncap + 2] = ret_k;
-        self.live = ncap + 3;
-        self.pc = pc as usize;
-        Ok(())
     }
 
     // --- registers and the heap -------------------------------------------
@@ -786,13 +646,9 @@ impl<'p> Vm<'p> {
 
     fn collect(&mut self) {
         let mut roots: Vec<Value> = Vec::with_capacity(
-            self.live + self.handlers.len() * 2 + self.pinned.len() + self.globals.len(),
+            self.live + self.pinned.len() + self.globals.len(),
         );
         roots.extend_from_slice(&self.regs[..self.live]);
-        for f in &self.handlers {
-            roots.push(f.handler);
-            roots.push(f.ret_k);
-        }
         roots.extend_from_slice(&self.pinned);
         roots.extend(self.globals.iter().flatten().copied());
 
@@ -801,10 +657,6 @@ impl<'p> Vm<'p> {
         let mut it = roots.into_iter();
         for j in 0..self.live {
             self.regs[j] = it.next().expect("root count");
-        }
-        for f in &mut self.handlers {
-            f.handler = it.next().expect("root count");
-            f.ret_k = it.next().expect("root count");
         }
         for p in &mut self.pinned {
             *p = it.next().expect("root count");
@@ -913,23 +765,6 @@ impl<'p> Vm<'p> {
         &self.heap
     }
 
-    /// The installed handlers, outermost first.
-    pub fn handlers(&self) -> Vec<HandlerView> {
-        self.handlers
-            .iter()
-            .map(|f| HandlerView {
-                covers: self
-                    .program
-                    .handled
-                    .get(f.handled as usize)
-                    .cloned()
-                    .unwrap_or_default(),
-                handler: f.handler,
-                ret_k: f.ret_k,
-            })
-            .collect()
-    }
-
     /// Write program output, wherever it is going.
     pub(crate) fn write_out(&mut self, s: &str) {
         match &mut self.io.output {
@@ -945,10 +780,5 @@ impl<'p> Vm<'p> {
     /// Collections so far and slots allocated in total.
     pub fn heap_stats(&self) -> (u64, u64) {
         (self.heap.collections, self.heap.allocated)
-    }
-
-    /// How many handlers are installed — the depth a `perform` may have to walk.
-    pub fn handler_depth(&self) -> usize {
-        self.handlers.len()
     }
 }

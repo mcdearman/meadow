@@ -1502,6 +1502,10 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // This machine keeps top-level values lazily in its environment and
         // never runs the caching pass that produces these.
         GlobalReady | GlobalGet | GlobalSet => err("a definition cache reached the CEK machine"),
+        Once | TakeOnce => err("a resumption's flag reached the CEK machine"),
+        IntAdd | IntSub | IntMul | IntDiv | IntMod | IntEq | IntNe | IntLt | IntLe | IntGt
+        | IntGe | FloatAdd | FloatSub | FloatMul | FloatDiv | FloatEq | FloatNe | FloatLt
+        | FloatLe | FloatGt | FloatGe => err("a typed primitive reached the CEK machine"),
         CharCode => match &args[0] {
             Value::Char(c) => Ok(Value::Int(*c as i64)),
             other => err(format!("charCode: expected a Char, got {other}")),

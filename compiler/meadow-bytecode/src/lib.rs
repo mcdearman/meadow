@@ -39,6 +39,8 @@
 //! heap, and a stack of installed handlers. Recursion does not grow anything the
 //! VM owns; it grows the heap, which is collected.
 
+pub mod image;
+
 use meadow_core::Prim;
 use meadow_intern::InternedString;
 use std::fmt;
@@ -145,22 +147,13 @@ pub enum Op {
     JumpUnlessPrimK,
 
     // --- effects ---------------------------------------------------------
-    /// Install the handler in `r[a]`, covering `handled[imm]`, whose value goes
-    /// to the continuation in `r[b]`.
-    Handle,
-    /// Pop the innermost handler; `r[a]` becomes its continuation.
+    /// `r[a] <- ops[imm](r[b])` -- an effect operation no handler in the
+    /// program answers, which the runtime does: `Console`, `Fs`, `Test.fail`.
     ///
-    /// A resumption rebinds that continuation to the point it was resumed from,
-    /// so this reads it off the frame rather than from a register the compiler
-    /// captured earlier.
-    Unhandle,
-    /// Perform `ops[imm]` with argument `r[a]`, answering the continuation in
-    /// `r[b]`.
-    ///
-    /// Unwinds to the innermost handler covering the operation and enters its
-    /// clause with the argument, a one-shot resumption, and the handler's own
-    /// continuation.
-    Perform,
+    /// The only effect instruction. Handlers are gone before code is
+    /// generated -- the compiler passes them as evidence -- so everything else a
+    /// `handle` or a `perform` does is ordinary objects and jumps.
+    Native,
 }
 
 impl Op {
@@ -189,9 +182,7 @@ impl Op {
         Op::PrimK,
         Op::JumpUnlessPrim,
         Op::JumpUnlessPrimK,
-        Op::Handle,
-        Op::Unhandle,
-        Op::Perform,
+        Op::Native,
     ];
 
     fn from_byte(b: u8) -> Option<Op> {
@@ -291,10 +282,8 @@ pub struct Program {
     pub labels: Vec<InternedString>,
     /// Which primitive an [`Op::Prim`] runs.
     pub prims: Vec<Prim>,
-    /// `(effect, operation)` for [`Op::Perform`].
+    /// `(effect, operation)` for [`Op::Native`].
     pub ops: Vec<(InternedString, InternedString)>,
-    /// What each [`Op::Handle`] covers, in the order of the handler's methods.
-    pub handled: Vec<Vec<(InternedString, InternedString)>>,
     /// Constructor name per tag. Only for printing and for the structural
     /// equality a `Vector` needs — the machine itself compares tags.
     pub ctors: Vec<InternedString>,
@@ -337,6 +326,9 @@ pub struct DebugInfo {
     /// The continuations a function makes for its own calls -- see
     /// `meadow_seq::Program::continuations`.
     pub continuations: std::collections::HashSet<u32>,
+    /// Names that are copies of a variable in the source, and which -- see
+    /// `meadow_seq::Program::origins`.
+    pub origins: std::collections::HashMap<u32, u32>,
 }
 
 /// One separately addressed block: a definition, a function body, a
@@ -507,11 +499,9 @@ impl Program {
                 let c = self.const_name(i.b as u32);
                 format!("{name:<14} {p}(r{}, {c}) else @{}", i.a, i.imm)
             }
-            Op::Handle => format!("{name:<14} r{} covering h{} -> r{}", i.a, i.imm, i.b),
-            Op::Unhandle => format!("{name:<14} r{}", i.a),
-            Op::Perform => match self.ops.get(i.imm as usize) {
-                Some((e, o)) => format!("{name:<14} {e}.{o}(r{}) -> r{}", i.a, i.b),
-                None => format!("{name:<14} o{}(r{}) -> r{}", i.imm, i.a, i.b),
+            Op::Native => match self.ops.get(i.imm as usize) {
+                Some((e, o)) => format!("{name:<14} r{} <- {e}.{o}(r{})", i.a, i.b),
+                None => format!("{name:<14} r{} <- o{}(r{})", i.a, i.imm, i.b),
             },
         }
     }

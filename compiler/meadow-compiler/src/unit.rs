@@ -100,6 +100,9 @@ pub struct CompiledPackage {
     pub defs: Vec<core::Def>,
     /// Named-field order per constructor declared in this package.
     pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
+    /// Constructors' field types, by type name: this package's and its
+    /// dependencies' -- see `core::Program::variants`.
+    pub variants: meadow_infer::VariantEnv,
     /// This package's resolved `data` / `record` / `effect` declarations,
     /// re-imported by dependents (and by later REPL lines).
     pub data_decls: Vec<hir::LDecl>,
@@ -475,6 +478,8 @@ pub fn compile_unit_in_package(
             defs: defs.clone(),
             entry: None,
             ctor_fields: lowerer.ctor_fields.clone(),
+            variants: variants.clone(),
+            origins: Default::default(),
         };
         let imported: HashMap<VarId, Scheme> = dep_schemes.iter().cloned().collect();
         let problems = core::lint::check(&program, &variants, &imported);
@@ -562,6 +567,7 @@ pub fn compile_unit_in_package(
             exports,
             defs,
             ctor_fields,
+            variants,
             data_decls,
             tests: resolver.test_vars().to_vec(),
             prelude_exports: None,

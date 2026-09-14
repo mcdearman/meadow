@@ -43,6 +43,8 @@ fn program(src: &str) -> core::Program {
         defs: pkg.defs.clone(),
         entry,
         ctor_fields: pkg.ctor_fields.clone(),
+        variants: pkg.variants.clone(),
+        origins: Default::default(),
     }
 }
 
@@ -467,6 +469,8 @@ fn record_extension_has_no_surface_syntax_but_lowers() {
         defs: vec![Def::untyped(var, "main", term)],
         entry: Some(var),
         ctor_fields: Default::default(),
+        variants: Default::default(),
+        origins: Default::default(),
     };
 
     let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());

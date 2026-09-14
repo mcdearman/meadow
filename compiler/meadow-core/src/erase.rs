@@ -32,6 +32,8 @@ pub fn program(p: &Program) -> Program {
             .collect(),
         entry: p.entry,
         ctor_fields: p.ctor_fields.clone(),
+        variants: p.variants.clone(),
+        origins: p.origins.clone(),
     }
 }
 

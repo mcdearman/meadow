@@ -37,6 +37,7 @@
 //! the bytecode machine and the CEK evaluator are all untyped: none of them
 //! can ask a question a type would answer.
 
+pub mod bools;
 pub mod compact;
 pub mod erase;
 pub mod globals;
@@ -46,6 +47,7 @@ pub mod specialize;
 pub mod stm;
 pub mod thread;
 pub mod lint;
+pub mod rewrite;
 pub mod lower;
 pub use lower::Lowerer;
 
@@ -280,6 +282,305 @@ pub enum Prim {
     /// `String -> Maybe #[UInt8]` -- parse a hex string (either case, no
     /// separators, even length) into bytes. `None` on any malformed input.
     BytesFromHex,
+    // --- resumptions (no source name; made by lowering handlers) ---
+    /// `a -> Once` -- a fresh one-shot flag, what a resumption checks. Its
+    /// argument is ignored. Not a `Ref`, so that a resumption sent to another
+    /// thread or compacted is refused as the continuation it is.
+    Once,
+    /// `Once -> Bool` -- `true` the first time, and `false` ever after.
+    TakeOnce,
+    // --- typed arithmetic (no source name; chosen by `select`) ---
+    //
+    // The operators above at a type core knows: both operands are `Int`, or
+    // both `Float`, so no engine has to look at what it was given to decide
+    // what to do. `Int` wraps and dividing it by zero is an error, as `Add`
+    // and `Div` on two `Int`s are; `Float` is IEEE.
+    IntAdd,
+    IntSub,
+    IntMul,
+    IntDiv,
+    IntMod,
+    IntEq,
+    IntNe,
+    IntLt,
+    IntLe,
+    IntGt,
+    IntGe,
+    FloatAdd,
+    FloatSub,
+    FloatMul,
+    FloatDiv,
+    FloatEq,
+    FloatNe,
+    FloatLt,
+    FloatLe,
+    FloatGt,
+    FloatGe,
+}
+
+impl Prim {
+    /// A number for this primitive, stable for as long as the list of
+    /// primitives is: what an image written to a file names one by. See
+    /// [`Prim::from_code`].
+    pub const fn code(self) -> u16 {
+        match self {
+            Prim::Add => 0,
+            Prim::Sub => 1,
+            Prim::Mul => 2,
+            Prim::Div => 3,
+            Prim::Mod => 4,
+            Prim::Pow => 5,
+            Prim::Eq => 6,
+            Prim::Ne => 7,
+            Prim::Lt => 8,
+            Prim::Gt => 9,
+            Prim::Le => 10,
+            Prim::Ge => 11,
+            Prim::Neg => 12,
+            Prim::Display => 13,
+            Prim::Hash => 14,
+            Prim::AddF => 15,
+            Prim::SubF => 16,
+            Prim::MulF => 17,
+            Prim::DivF => 18,
+            Prim::LtF => 19,
+            Prim::GtF => 20,
+            Prim::LeF => 21,
+            Prim::GeF => 22,
+            Prim::ToFloat => 23,
+            Prim::ToFloat32 => 24,
+            Prim::Floor => 25,
+            Prim::ToBig => 26,
+            Prim::ToInt => 27,
+            Prim::ToWord(w) => 28 + w as u16,
+            Prim::BitWidth => 35,
+            Prim::ArrayLen => 36,
+            Prim::ArrayGet => 37,
+            Prim::ArrayGetOr => 38,
+            Prim::ArraySet => 39,
+            Prim::ArrayPush => 40,
+            Prim::ArrayPop => 41,
+            Prim::ArraySlice => 42,
+            Prim::ArrayConcat => 43,
+            Prim::Shl => 44,
+            Prim::Shr => 45,
+            Prim::Ushr => 46,
+            Prim::BitAnd => 47,
+            Prim::BitOr => 48,
+            Prim::BitXor => 49,
+            Prim::BitNot => 50,
+            Prim::PopCount => 51,
+            Prim::StringToBytes => 52,
+            Prim::BytesToString => 53,
+            Prim::BytesToHex => 54,
+            Prim::Show => 55,
+            Prim::CharCode => 56,
+            Prim::CharFromCode => 57,
+            Prim::StringToChars => 58,
+            Prim::CharsToString => 59,
+            Prim::NewRef => 60,
+            Prim::GetRef => 61,
+            Prim::SetRef => 62,
+            Prim::RunSt => 63,
+            Prim::StNewArray => 64,
+            Prim::StGetArray => 65,
+            Prim::StSetArray => 66,
+            Prim::StArrayLen => 67,
+            Prim::StFreeze => 68,
+            Prim::StThaw => 69,
+            Prim::Compact => 70,
+            Prim::GetCompact => 71,
+            Prim::CompactAdd => 72,
+            Prim::CompactSize => 73,
+            Prim::ThreadSpawn => 74,
+            Prim::ThreadAwait => 75,
+            Prim::ThreadYield => 76,
+            Prim::ChannelNew => 77,
+            Prim::ChannelSend => 78,
+            Prim::ChannelReceive => 79,
+            Prim::StmNew => 80,
+            Prim::StmRead => 81,
+            Prim::StmWrite => 82,
+            Prim::StmBegin => 83,
+            Prim::StmCommit => 84,
+            Prim::StmWait => 85,
+            Prim::StmNest => 86,
+            Prim::StmMerge => 87,
+            Prim::StmRollback => 88,
+            Prim::GlobalReady => 89,
+            Prim::GlobalGet => 90,
+            Prim::GlobalSet => 91,
+            Prim::BytesFromHex => 92,
+            Prim::Once => 93,
+            Prim::TakeOnce => 94,
+            Prim::IntAdd => 95,
+            Prim::IntSub => 96,
+            Prim::IntMul => 97,
+            Prim::IntDiv => 98,
+            Prim::IntMod => 99,
+            Prim::IntEq => 100,
+            Prim::IntNe => 101,
+            Prim::IntLt => 102,
+            Prim::IntLe => 103,
+            Prim::IntGt => 104,
+            Prim::IntGe => 105,
+            Prim::FloatAdd => 106,
+            Prim::FloatSub => 107,
+            Prim::FloatMul => 108,
+            Prim::FloatDiv => 109,
+            Prim::FloatEq => 110,
+            Prim::FloatNe => 111,
+            Prim::FloatLt => 112,
+            Prim::FloatLe => 113,
+            Prim::FloatGt => 114,
+            Prim::FloatGe => 115,
+        }
+    }
+
+    /// The primitive [`Prim::code`] numbered `c`, if any.
+    pub fn from_code(c: u16) -> Option<Prim> {
+        Some(match c {
+            0 => Prim::Add,
+            1 => Prim::Sub,
+            2 => Prim::Mul,
+            3 => Prim::Div,
+            4 => Prim::Mod,
+            5 => Prim::Pow,
+            6 => Prim::Eq,
+            7 => Prim::Ne,
+            8 => Prim::Lt,
+            9 => Prim::Gt,
+            10 => Prim::Le,
+            11 => Prim::Ge,
+            12 => Prim::Neg,
+            13 => Prim::Display,
+            14 => Prim::Hash,
+            15 => Prim::AddF,
+            16 => Prim::SubF,
+            17 => Prim::MulF,
+            18 => Prim::DivF,
+            19 => Prim::LtF,
+            20 => Prim::GtF,
+            21 => Prim::LeF,
+            22 => Prim::GeF,
+            23 => Prim::ToFloat,
+            24 => Prim::ToFloat32,
+            25 => Prim::Floor,
+            26 => Prim::ToBig,
+            27 => Prim::ToInt,
+            28..=34 => Prim::ToWord(num::Width::ALL[(c - 28) as usize]),
+            35 => Prim::BitWidth,
+            36 => Prim::ArrayLen,
+            37 => Prim::ArrayGet,
+            38 => Prim::ArrayGetOr,
+            39 => Prim::ArraySet,
+            40 => Prim::ArrayPush,
+            41 => Prim::ArrayPop,
+            42 => Prim::ArraySlice,
+            43 => Prim::ArrayConcat,
+            44 => Prim::Shl,
+            45 => Prim::Shr,
+            46 => Prim::Ushr,
+            47 => Prim::BitAnd,
+            48 => Prim::BitOr,
+            49 => Prim::BitXor,
+            50 => Prim::BitNot,
+            51 => Prim::PopCount,
+            52 => Prim::StringToBytes,
+            53 => Prim::BytesToString,
+            54 => Prim::BytesToHex,
+            55 => Prim::Show,
+            56 => Prim::CharCode,
+            57 => Prim::CharFromCode,
+            58 => Prim::StringToChars,
+            59 => Prim::CharsToString,
+            60 => Prim::NewRef,
+            61 => Prim::GetRef,
+            62 => Prim::SetRef,
+            63 => Prim::RunSt,
+            64 => Prim::StNewArray,
+            65 => Prim::StGetArray,
+            66 => Prim::StSetArray,
+            67 => Prim::StArrayLen,
+            68 => Prim::StFreeze,
+            69 => Prim::StThaw,
+            70 => Prim::Compact,
+            71 => Prim::GetCompact,
+            72 => Prim::CompactAdd,
+            73 => Prim::CompactSize,
+            74 => Prim::ThreadSpawn,
+            75 => Prim::ThreadAwait,
+            76 => Prim::ThreadYield,
+            77 => Prim::ChannelNew,
+            78 => Prim::ChannelSend,
+            79 => Prim::ChannelReceive,
+            80 => Prim::StmNew,
+            81 => Prim::StmRead,
+            82 => Prim::StmWrite,
+            83 => Prim::StmBegin,
+            84 => Prim::StmCommit,
+            85 => Prim::StmWait,
+            86 => Prim::StmNest,
+            87 => Prim::StmMerge,
+            88 => Prim::StmRollback,
+            89 => Prim::GlobalReady,
+            90 => Prim::GlobalGet,
+            91 => Prim::GlobalSet,
+            92 => Prim::BytesFromHex,
+            93 => Prim::Once,
+            94 => Prim::TakeOnce,
+            95 => Prim::IntAdd,
+            96 => Prim::IntSub,
+            97 => Prim::IntMul,
+            98 => Prim::IntDiv,
+            99 => Prim::IntMod,
+            100 => Prim::IntEq,
+            101 => Prim::IntNe,
+            102 => Prim::IntLt,
+            103 => Prim::IntLe,
+            104 => Prim::IntGt,
+            105 => Prim::IntGe,
+            106 => Prim::FloatAdd,
+            107 => Prim::FloatSub,
+            108 => Prim::FloatMul,
+            109 => Prim::FloatDiv,
+            110 => Prim::FloatEq,
+            111 => Prim::FloatNe,
+            112 => Prim::FloatLt,
+            113 => Prim::FloatLe,
+            114 => Prim::FloatGt,
+            115 => Prim::FloatGe,
+            _ => return None,
+        })
+    }
+
+    /// The untyped primitive a typed one is an instance of -- what an engine
+    /// that does not care to be fast can run instead.
+    pub const fn untyped(self) -> Prim {
+        use Prim::*;
+        match self {
+            IntAdd => Add,
+            IntSub => Sub,
+            IntMul => Mul,
+            IntDiv => Div,
+            IntMod => Mod,
+            IntEq | FloatEq => Eq,
+            IntNe | FloatNe => Ne,
+            IntLt => Lt,
+            IntLe => Le,
+            IntGt => Gt,
+            IntGe => Ge,
+            FloatAdd => AddF,
+            FloatSub => SubF,
+            FloatMul => MulF,
+            FloatDiv => DivF,
+            FloatLt => LtF,
+            FloatLe => LeF,
+            FloatGt => GtF,
+            FloatGe => GeF,
+            other => other,
+        }
+    }
 }
 
 impl Prim {
@@ -298,6 +599,18 @@ impl Prim {
         matches!(
             self,
             Eq | Ne
+                | IntEq
+                | IntNe
+                | IntLt
+                | IntLe
+                | IntGt
+                | IntGe
+                | FloatEq
+                | FloatNe
+                | FloatLt
+                | FloatLe
+                | FloatGt
+                | FloatGe
                 | Lt
                 | Gt
                 | Le
@@ -460,7 +773,9 @@ impl Prim {
             | Prim::StmWait
             | Prim::StmNest
             | Prim::StmMerge
-            | Prim::StmRollback => 1,
+            | Prim::StmRollback
+            | Prim::Once
+            | Prim::TakeOnce => 1,
             Prim::ArraySet | Prim::ArraySlice | Prim::ArrayGetOr | Prim::StSetArray => 3,
             _ => 2,
         }
@@ -750,6 +1065,22 @@ impl Pat {
     }
 }
 
+impl Program {
+    /// The type of calling definition `f` with `()` -- what a test runner's
+    /// stand-in for an entry point has, since that is all it does.
+    pub fn result_of_calling(&self, f: Var) -> Poly {
+        let ty = self
+            .defs
+            .iter()
+            .find(|d| d.var == f)
+            .and_then(|d| match &d.poly.ty {
+                InferType::Fun(_, ret, _) => Some((**ret).clone()),
+                _ => None,
+            });
+        Poly::mono(ty.unwrap_or_else(unknown))
+    }
+}
+
 impl Def {
     /// A definition with no type worth stating — see [`Term::lam`] and friends.
     pub fn untyped(var: Var, name: impl Into<InternedString>, term: Term) -> Def {
@@ -794,6 +1125,12 @@ pub struct Program {
     /// Named-field order for each data/record constructor, so `.field` selection
     /// works on `Value::Ctor` at runtime.
     pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
+    /// Every data and record type's constructors and their field types, by type
+    /// name: what a backend needs to know what is in a field it did not name.
+    pub variants: meadow_infer::VariantEnv,
+    /// Variables a pass made as copies of others, and which: what a debugger
+    /// needs to call a specialized copy's variables by their names.
+    pub origins: HashMap<Var, Var>,
 }
 
 impl Program {
@@ -1084,6 +1421,19 @@ mod tests {
         assert_eq!(Prim::from_name("toInt64"), Some(Prim::ToInt));
         assert_eq!(Prim::from_name("toString"), None);
         assert_eq!(Prim::from_name("+~"), None, "BigInt shares `+` now");
+    }
+
+    #[test]
+    fn every_primitive_has_a_code_that_comes_back() {
+        for c in 0..u16::MAX {
+            match Prim::from_code(c) {
+                Some(p) => assert_eq!(p.code(), c, "{p:?}"),
+                None => {
+                    assert!(Prim::from_code(c + 1).is_none(), "codes are dense");
+                    break;
+                }
+            }
+        }
     }
 
     #[test]

@@ -54,24 +54,27 @@ pub fn program(p: &Program) -> Program {
             let index = || Term::Lit(Lit::Int(i as i64));
             let value = fresh();
             let ignored = fresh();
-            let ty = || unknown();
+            // Typed like everything else: below core, what a name holds is read
+            // from its type.
+            let ty = || d.poly.ty.clone();
+            let con = |n: &str| InferType::Con(InternedString::from(n), Vec::new());
             let compute = Term::Let(
                 value,
                 Poly::mono(ty()),
                 Arc::new(d.term.clone()),
                 Arc::new(Term::Let(
                     ignored,
-                    Poly::mono(ty()),
+                    Poly::mono(con("Unit")),
                     Arc::new(Term::Prim(
                         Prim::GlobalSet,
                         vec![index(), Term::Var(value)],
-                        ty(),
+                        con("Unit"),
                     )),
                     Arc::new(Term::Var(value)),
                 )),
             );
             let term = Term::If(
-                Arc::new(Term::Prim(Prim::GlobalReady, vec![index()], ty())),
+                Arc::new(Term::Prim(Prim::GlobalReady, vec![index()], con("Bool"))),
                 Arc::new(Term::Prim(Prim::GlobalGet, vec![index()], ty())),
                 Arc::new(compute),
             );
@@ -87,6 +90,8 @@ pub fn program(p: &Program) -> Program {
         defs,
         entry: p.entry,
         ctor_fields: p.ctor_fields.clone(),
+        variants: p.variants.clone(),
+        origins: p.origins.clone(),
     }
 }
 

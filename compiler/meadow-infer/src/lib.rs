@@ -1833,6 +1833,8 @@ impl Infer {
                         Box::new(result.clone()),
                         Box::new(outside.clone()),
                     );
+                    // Recorded, so that lowering can give the variable its type.
+                    self.table.set(arm.resume.id, k_ty.clone());
                     self.env.insert(*arm.resume.value(), Scheme::mono(k_ty));
                     let at = self.infer_expr(&arm.body);
                     self.unify_at(arm.body.span, at, result.clone());

@@ -318,7 +318,10 @@ pub enum Kind {
     /// `meta` is the sign (0 zero, 1 plus, 2 minus); the fields are base-2^32
     /// digits, least significant first, held as `Int`s.
     BigInt,
-    /// A one-shot resumption: `[taken, k, (handled, handler, ret_k)…]`.
+    /// A resumption's one-shot flag: `[taken]`. The resumption itself is a
+    /// closure capturing it first -- see `meadow_seq`'s lowering -- so a
+    /// resumption refused passage to another thread or into a region is refused
+    /// as a continuation.
     Resume,
     /// A handle on a compact region: `meta` is the region, the one field is the
     /// value compacted into it. What keeps a region alive when the value itself

@@ -65,6 +65,7 @@
 //! for the life of the process. The CEK does the same.
 
 mod evacuate;
+pub mod abi;
 pub mod heap;
 pub mod journal;
 pub mod mark;
@@ -82,4 +83,4 @@ pub mod vm;
 pub use heap::{Heap, Kind};
 pub use journal::{Journal, Undo};
 pub use value::{Addr, Value};
-pub use vm::{run, Error, HandlerView, Io, Vm};
+pub use vm::{run, Error, Io, Vm};

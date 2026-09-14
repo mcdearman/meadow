@@ -627,16 +627,21 @@ impl Session {
     ) -> core::Program {
         let mut defs = Vec::new();
         let mut ctor_fields = std::collections::HashMap::new();
+        let mut variants = std::collections::HashMap::new();
         for p in &self.prefix {
             defs.extend(p.defs.iter().cloned());
             ctor_fields.extend(p.ctor_fields.clone());
+            variants.extend(p.variants.clone());
         }
         defs.extend(current.defs.iter().cloned());
         ctor_fields.extend(current.ctor_fields.clone());
+        variants.extend(current.variants.clone());
         core::Program {
             defs,
             entry,
             ctor_fields,
+            variants,
+            origins: Default::default(),
         }
     }
 }

@@ -180,6 +180,61 @@ fn the_axcut_machine_agrees_too() {
     }
 }
 
+/// Every value the standard library's tests put anywhere is represented the
+/// way the lowering says it is.
+///
+/// The AxCut machine's values still carry what they are, so it can compare each
+/// binding with the name's declared [`meadow_seq::Rep`] -- which is what the
+/// collector and native code will go by once values stop carrying it. A test
+/// the machine cannot run at all (a thread, a file) is not a failure here; a
+/// value in the wrong representation is.
+#[test]
+fn every_standard_library_value_is_where_its_representation_says() {
+    let std = std_program();
+    let base = std.program.defs.len();
+    let mut defs = std.program.defs.clone();
+    for (i, (_, var)) in std.tests.iter().enumerate() {
+        defs.push(core::Def {
+            var: meadow_compiler::hir::VarId::synthetic(i as u32),
+            name: "<test>".into(),
+            poly: std.program.result_of_calling(*var),
+            term: core::Term::App(
+                std::sync::Arc::new(core::Term::Var(*var)),
+                std::sync::Arc::new(core::Term::Lit(core::Lit::Unit)),
+            ),
+        });
+    }
+    let whole = core::Program {
+        defs,
+        ..std.program.clone()
+    };
+    let lowered = meadow_seq::lower_program(&whole, Options::debug().opt);
+    let mut wrong = Vec::new();
+    let mut ran = 0;
+    for (i, (name, _)) in std.tests.iter().enumerate() {
+        let label = meadow_seq::Label((base + i) as u32);
+        let result = meadow_seq::machine::Machine::at(&lowered.program, label).and_then(|mut m| loop {
+            if m.steps > 50_000_000 {
+                break Ok(());
+            }
+            match m.step() {
+                Ok(Some(_)) => break Ok(()),
+                Ok(None) => {}
+                Err(e) => break Err(e),
+            }
+        });
+        match result {
+            Ok(()) => ran += 1,
+            Err(e) if e.msg.contains(" is declared ") || e.msg.contains("has no representation") => {
+                wrong.push(format!("{name}: {}", e.msg))
+            }
+            Err(_) => {}
+        }
+    }
+    assert!(wrong.is_empty(), "{} tests hold a value against its representation:\n{}", wrong.len(), wrong.join("\n"));
+    assert!(ran > 150, "only {ran} tests ran to the end on the AxCut machine");
+}
+
 /// A program whose entry point calls `test` with `()`, which is what the test
 /// runner does.
 fn calling(program: &core::Program, test: core::Var) -> core::Program {
@@ -188,7 +243,7 @@ fn calling(program: &core::Program, test: core::Var) -> core::Program {
     defs.push(core::Def {
         var: entry,
         name: "<test>".into(),
-        poly: core::Poly::mono(core::unknown()),
+        poly: program.result_of_calling(test),
         term: core::Term::App(
             std::sync::Arc::new(core::Term::Var(test)),
             std::sync::Arc::new(core::Term::Lit(core::Lit::Unit)),
@@ -198,6 +253,8 @@ fn calling(program: &core::Program, test: core::Var) -> core::Program {
         defs,
         entry: Some(entry),
         ctor_fields: program.ctor_fields.clone(),
+        variants: program.variants.clone(),
+        origins: Default::default(),
     }
 }
 
@@ -304,8 +361,7 @@ fn switches(s: &meadow_seq::Statement) -> usize {
         }
         Invoke(..) => 0,
         Extern { blocks, .. } => blocks.iter().map(|b| switches(&b.body)).sum(),
-        Handle { rest, .. } | Unhandle { rest, .. } | Mark(_, rest) => switches(rest),
-        Perform { .. } => 0,
+        Mark(_, rest) => switches(rest),
         Error(_) => 0,
     }
 }

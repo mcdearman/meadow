@@ -641,6 +641,11 @@ impl Vm<'_> {
                     }
                 }
             }
+            StringCompare => {
+                let a = self.text_addr(arg(self, 0), "stringCompare")?;
+                let b = self.text_addr(arg(self, 1), "stringCompare")?;
+                Value::Int(self.heap.packed_compare(a, b))
+            }
             StringIndexOf => {
                 let hay = self.text_addr(arg(self, 0), "stringIndexOf")?;
                 let needle = self.text_bytes(arg(self, 1), "stringIndexOf")?;

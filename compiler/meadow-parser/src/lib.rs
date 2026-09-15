@@ -273,13 +273,37 @@ where
             LDecl::new(Decl::Effect(EffectDecl { name, params, ops }), e.span())
         });
 
+    let type_decl = just(Token::Type)
+        .ignore_then(upper_ident())
+        .then(lower_ident().repeated().collect::<Vec<_>>())
+        .then_ignore(just(Token::Eq))
+        .then(ty())
+        .map_with(|((name, params), ty), e| {
+            LDecl::new(
+                Decl::TypeAlias(TypeAliasDecl { name, params, ty }),
+                e.span(),
+            )
+        });
+
+    // `fun f : T` / `def x : T` -- a binding's type with no `=` after it: the
+    // definition is elsewhere. Tried after a binding, which is what the same
+    // start with an `=` is.
+    let sig_decl = just(Token::Fun)
+        .or(just(Token::Def))
+        .ignore_then(value_ident())
+        .then_ignore(just(Token::Colon))
+        .then(ty())
+        .map_with(|(name, ty), e| LDecl::new(Decl::Sig(name, ty), e.span()));
+
     choice((
         mod_decl,
         use_decl,
         data_decl,
         record_decl,
         effect_decl,
+        type_decl,
         bind_decl.map_with(|bind, e| LDecl::new(Decl::Bind(bind), e.span())),
+        sig_decl,
     ))
 }
 
@@ -646,6 +670,26 @@ where
                 (name, val)
             });
 
+        // `{ r | x = e, y = e }`: `r` with those fields replaced. Tried before the
+        // `{ x = e | r }` extension, which it can only be mistaken for when its
+        // fields have no `=`, and then it is not this.
+        let update_field = lower_ident()
+            .then_ignore(just(Token::Eq))
+            .then(expr.clone());
+        let update_expr = expr
+            .clone()
+            .then_ignore(just(Token::Bar))
+            .then(
+                update_field
+                    .separated_by(just(Token::Comma))
+                    .allow_trailing()
+                    .at_least(1)
+                    .collect::<Vec<_>>(),
+            )
+            .delimited_by(just(Token::LBrace), just(Token::RBrace))
+            .map_with(|(base, fields), e| Located::new(Expr::Update(base, fields), e.span()))
+            .boxed();
+
         let record_expr = record_field
             .separated_by(just(Token::Comma))
             .allow_trailing()
@@ -752,6 +796,7 @@ where
             var_expr,
             hole_expr,
             ctor_atom,
+            update_expr,
             record_expr,
             handle_expr,
             let_expr,
@@ -1165,6 +1210,10 @@ fn fill_holes(e: LExpr, n: &mut usize) -> LExpr {
         Expr::Cons(name, xs) => Expr::Cons(name, xs.into_iter().map(|x| go(x, n)).collect()),
         Expr::Qual(q, name) => Expr::Qual(q, name),
         Expr::Field(o, l) => Expr::Field(go(o, n), l),
+        Expr::Update(base, fields) => Expr::Update(
+            go(base, n),
+            fields.into_iter().map(|(l, v)| (l, go(v, n))).collect(),
+        ),
         Expr::Record(fields, base) => Expr::Record(
             fields.into_iter().map(|(l, v)| (l, go(v, n))).collect(),
             base.map(|b| go(b, n)),

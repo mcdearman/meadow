@@ -44,6 +44,10 @@ pub struct Lowerer<'a> {
     /// Every polymorphic name in scope, this unit's and its dependencies',
     /// so a mention of one can be given its type arguments.
     schemes: &'a HashMap<Var, Scheme>,
+    /// Every type's constructors and their fields, from inference: what a
+    /// record update rebuilds its value with. Without it, an update of a
+    /// record type lowers as an anonymous record's would.
+    pub variants: Option<&'a VariantEnv>,
     /// Named-field order per constructor, accumulated across `lower_module` calls.
     pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
     /// Desugaring invents variables -- a scrutinee to bind, an eta-expansion's
@@ -74,6 +78,7 @@ impl<'a> Lowerer<'a> {
             ctor_arity,
             generalized,
             schemes,
+            variants: None,
             ctor_fields: HashMap::new(),
             vars,
             locations: None,
@@ -481,6 +486,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
+            hir::Expr::Update(base, fields) => self.lower_update(base, fields),
             hir::Expr::Field(obj, label) => Term::Sel(
                 Arc::new(self.lower_expr(obj)),
                 *label.value(),
@@ -694,6 +700,66 @@ impl<'a> Lowerer<'a> {
             .zip(params)
             .rev()
             .fold(body, |acc, (v, t)| Term::Lam(v, t, Arc::new(acc)))
+    }
+
+    /// `{ base | x = v }`.
+    ///
+    /// A record type's value is built again: `let b = base; let x' = v in
+    /// T { x = x', y = b.y }` -- the values in the order they were written, and
+    /// every other field read from the one value. An anonymous record's
+    /// fields are replaced one after another, as extending it with a field it
+    /// has does.
+    fn lower_update(&mut self, base: &hir::LExpr, fields: &[(hir::Label, hir::LExpr)]) -> Term {
+        let bty = self.ty(base.id);
+        let lbase = self.lower_expr(base);
+        let sig = match (&bty, self.variants) {
+            (InferType::Con(tyname, _), Some(variants)) => match variants.get(tyname) {
+                Some(vs) if vs.len() == 1 && vs[0].labels.is_some() => Some(vs[0].clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(sig) = sig else {
+            return fields.iter().fold(lbase, |term, (l, e)| {
+                Term::Extend(Arc::new(term), *l.value(), Arc::new(self.lower_expr(e)))
+            });
+        };
+        let InferType::Con(_, targs) = &bty else {
+            unreachable!("only a named type has constructors")
+        };
+        let map: HashMap<u32, Ty> = targs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i as u32, t.clone()))
+            .collect();
+        let b = self.vars.fresh();
+        let values: Vec<(InternedString, Var, Ty, Term)> = fields
+            .iter()
+            .map(|(l, e)| {
+                (
+                    *l.value(),
+                    self.vars.fresh(),
+                    self.ty(l.id),
+                    self.lower_expr(e),
+                )
+            })
+            .collect();
+        let labels = sig.labels.clone().unwrap_or_default();
+        let args = labels
+            .iter()
+            .zip(&sig.fields)
+            .map(
+                |(name, fty)| match values.iter().find(|(n, ..)| n == name) {
+                    Some((_, v, ..)) => Term::Var(*v),
+                    None => Term::Sel(Arc::new(Term::Var(b)), *name, subst_bound(fty, &map)),
+                },
+            )
+            .collect();
+        let rebuilt = Term::Ctor(sig.name, bty.clone(), args);
+        let body = values.into_iter().rev().fold(rebuilt, |acc, (_, v, t, e)| {
+            Term::Let(v, Poly::mono(t), Arc::new(e), Arc::new(acc))
+        });
+        Term::Let(b, Poly::mono(bty), Arc::new(lbase), Arc::new(body))
     }
 
     /// `\a. \b. prim(a, b)` — used when a primitive is referenced without (or with

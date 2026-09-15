@@ -299,8 +299,9 @@ def main = (fst (1, 2), snd (1, 2), point)
 
 ### Defining them
 
-`fun` defines a function; `def` binds a value. There are no type annotations on
-either — the types you saw above were inferred.
+`fun` defines a function; `def` binds a value. Neither needs a type written on
+it — the types you saw above were inferred — though you can write one; see
+[Signatures](#signatures).
 
 The two are not interchangeable: **`def` takes no parameters.** It binds a
 *pattern* to the value of an expression, so `def square x = x * x` is a parse
@@ -418,6 +419,75 @@ fun isOdd n = if n == 0 then False else isEven (n - 1)
 ```
 => True
 ```
+
+### Signatures
+
+Types are inferred, but you can write them down, in two places. Inline, a
+parameter pattern takes `(p : T)`, and the result type goes before the `=`:
+
+```meadow
+fun area (w : Int) (h : Int) : Int = w * h
+
+def main = area 3 4
+```
+
+```
+=> 12
+```
+
+Or on a line of its own, as a *signature*: `fun name : T`, or `def name : T` for
+a value. It goes anywhere in the module that defines the name -- before the
+definition, after it, or with the others at the top of the file.
+
+```meadow
+fun swap : (a, b) -> (b, a)
+fun swap (x, y) = (y, x)
+
+def small : Int8
+def small = 5
+
+def main = (swap (1, "one"), small)
+```
+
+```
+=> (("one", 1), 5)
+```
+
+A signature is held to in both directions. The definition has to have the type
+it gives -- a body that returns a `String` where the signature says `Int` is a
+type mismatch -- and it has to be *as general*: a lowercase name in a signature
+is a type variable, a promise that the function works whatever type it stands
+for.
+
+```
+fun same : a -> a
+fun same x = x + 1
+  -- this definition needs a number where its signature `a -> a` has a type
+  -- variable: it is `n -> n`
+```
+
+A function's effects are part of its type, written after `!` the way types print
+(see [Reading the types](#reading-the-types)). An arrow without a `!` is pure,
+so a signature also says what a function is allowed to do:
+
+```meadow
+fun greet : String -> () ! Console
+fun greet name = println ("hello, " ++ name)
+
+fun apply : (a -> b ! e) -> a -> b ! e
+fun apply f x = f x
+
+def main = apply greet "Ann"
+```
+
+```
+hello, Ann
+=> ()
+```
+
+A signature tells the checker a parameter's type before it reads the body, which
+is what lets `p.x` select from a nominal record (see [`record`](#record--named-fields)).
+`@pub` and `@test` belong on the definition, not the signature.
 
 ---
 
@@ -766,9 +836,10 @@ def main = (origin, origin.x, origin.y)
 => (Point(0, 0), 0, 0)
 ```
 
-> **The catch.** Field selection always infers the *structural* row type
-> `{ x : Int | a }`, and that does not unify with a nominal type. So a function
-> that selects a field cannot be applied to a nominal record:
+> **The catch.** Selecting a field needs the record's type known by the time the
+> `.` is reached. When nothing has said what it is, selection infers the
+> *structural* row type `{ x : Int | a }`, and that does not unify with a nominal
+> type:
 >
 > ```
 > fun magnitudeSquared p = p.x * p.x + p.y * p.y
@@ -776,28 +847,81 @@ def main = (origin, origin.x, origin.y)
 >   -- type mismatch: `{ x : Int | a }` vs `Point`
 > ```
 >
-> Write the function by pattern-matching instead — which works, and reads fine:
+> Say what `p` is -- with a [signature](#signatures), or `(p : Point)` -- or
+> pattern-match on it:
 
 ```meadow
 record Point = { x : Int, y : Int }
 
-fun magnitudeSquared p =
+fun magnitudeSquared : Point -> Int
+fun magnitudeSquared p = p.x * p.x + p.y * p.y
+
+fun manhattan p =
   match p with
-  | Point { x = a, y = b } -> a * a + b * b
+  | Point { x = a, y = b } -> abs a + abs b
 
-def main = magnitudeSquared (Point { x = 3, y = 4 })
+def main = (magnitudeSquared (Point { x = 3, y = 4 }), manhattan (Point { x = 3, y = -4 }))
 ```
 
 ```
-=> 25
+=> (25, 7)
 ```
 
 In short: use anonymous records when you want lightweight structural data and
-generic accessors; use `record` when you want a named type, and reach into it by
-matching.
+generic accessors; use `record` when you want a named type, and give it its
+type where you reach into it.
 
-> **Not supported:** there is no record *update* syntax. `{ p | x = 9 }` does not
-> parse; rebuild the record explicitly.
+### Updating a record
+
+`{ r | x = v, y = w }` is `r` with the fields named replaced: a new record, with
+`r` itself unchanged. Each field named has to be one `r` has, and keeps its type.
+
+```meadow
+record Person = { name : String, age : Int }
+
+fun birthday : Person -> Person
+fun birthday p = { p | age = p.age + 1 }
+
+def ann = Person { name = "Ann", age = 41 }
+
+def main = (birthday ann, ann.age, { { x = 1, y = 2 } | y = 5 })
+```
+
+```
+=> (Person("Ann", 42), 41, { x = 1, y = 5 })
+```
+
+The record is evaluated first, then the new values in the order they are
+written. As with selection, a nominal record's type has to be known where it is
+updated, and a `data` type with several constructors has no one record to
+update -- match on it. The field-first form, `{ x = v | r }`, is something else:
+it *extends* an anonymous record with a field.
+
+### `type` — another name for a type
+
+```meadow
+type Point = (Int, Int)
+type Pair a = (a, a)
+
+fun add : Point -> Point -> Point
+fun add (a, b) (c, d) = (a + c, b + d)
+
+fun swapPair : Pair a -> Pair a
+fun swapPair (x, y) = (y, x)
+
+def main = (add (1, 2) (10, 20), swapPair ("l", "r"))
+```
+
+```
+=> ((11, 22), ("r", "l"))
+```
+
+An alias *is* what it stands for: a `Point` is an `(Int, Int)` everywhere, with
+nothing to convert, and types print with it expanded. When you want a type that
+is distinct from what it is made of, declare it with `data` or `record`. An
+alias is given all of its arguments wherever it is used, and cannot refer to
+itself -- a recursive type is a `data`. It is as visible as any other type:
+`@pub type`, `@pub(pkg) type`, or private to its module.
 
 ---
 
@@ -967,6 +1091,22 @@ def main = "n = " ++ show 42 ++ "!"
 
 ```
 => "n = 42!"
+```
+
+Strings are ordered byte by byte, which for UTF-8 is the order of their code
+points. `<` is for numbers; `S.compare` gives a string's `Ordering`, and
+`S.lessThan`, `S.lessOrEqual`, `S.greaterThan`, `S.greaterOrEqual`, `S.minOf` and
+`S.maxOf` the rest:
+
+```meadow
+use Std.String as S
+use Std.Sort (sortBy)
+
+def main = (S.compare "apple" "banana", S.lessThan "app" "apple", sortBy S.compare ["pear", "Fig", "apple"])
+```
+
+```
+=> (Less, True, ["Fig", "apple", "pear"])
 ```
 
 `++` binds looser than application and tighter than `==`, and groups to the
@@ -2842,9 +2982,12 @@ In VS Code, the **▶ Test** link above a `@test` runs exactly that.
 | `meadow run <path> -- <args>` | …passing `<args>` to the program, which `Process.argv` reads |
 | `meadow exec <image.mbc> [--backend vm\|jit] [-- <args>]` | run a bytecode image, like the one `meadow build` writes |
 | `meadow link <image.mbc> [-o <exe>] [--target <arch>]` | compile a bytecode image into a native executable |
+| `meadow link --emit asm <image.mbc>` | …or into the text of its native code, `<image>.s` |
 | `meadow build <path>` | type-check, link, and write the bytecode image to `target/` |
 | `meadow build --release [--target x86_64] <path>` | …and an executable, under `target/release/native/` |
 | `meadow build --annotations <path>` | …and dump every node's type |
+| `meadow build --emit bytecode,asm <path>` | write text in place of the binaries: `bytecode/<name>.mbc.txt`, `native/<name>.s`; `image` and `exe` are the binaries |
+| `meadow dis [--asm [--target <arch>]] <path>` | print the bytecode the VM runs, or the native code it compiles to |
 | `meadow run --cfg fast --cfg feature=gpu <path>` | …with flags on for `@cfg` ([conditional compilation](#conditional-compilation-cfg)); `run`, `build` and `test` take them |
 | `meadow test [<path>] [<filter>]` | run `@test` functions |
 | `meadow build -p app`, `meadow test --workspace [--exclude app]` | in a [workspace](#workspaces): the members named, or all of them; `run`, `build`, `test` and `dis` take these |
@@ -2973,9 +3116,11 @@ built on it and is worth reading as a worked example.
 - Each module of a package is its own namespace; a sibling's names come by `use`.
 - Exhaustiveness is only checked under `--release`.
 - `def` takes no parameters — `def f x = ...` is a parse error; use `fun`.
-- A function that selects a field (`p.x`) cannot be applied to a *nominal* record;
-  match on it instead.
-- No record update, no block comments.
+- Selecting a field (`p.x`) or updating one (`{ p | x = 1 }`) of a *nominal*
+  record needs `p`'s type known there: give the function a signature, annotate
+  `(p : Point)`, or match.
+- A signature has to be as general as it says: `fun f : a -> a` cannot add one.
+- No block comments.
 - A guarded `match` arm counts for nothing in the exhaustiveness check.
 - `Std.Char`'s predicates are ASCII-only; `String` counts bytes, `Char` counts
   scalars.

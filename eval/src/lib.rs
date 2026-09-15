@@ -1690,6 +1690,14 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
                 to,
             ))))
         }
+        StringCompare => {
+            let a = text_arg(&args[0], "stringCompare")?;
+            let b = text_arg(&args[1], "stringCompare")?;
+            Ok(Value::Int(meadow_core::text::compare(
+                a.as_bytes(),
+                b.as_bytes(),
+            )))
+        }
         StringIndexOf => {
             let hay = text_arg(&args[0], "stringIndexOf")?;
             let needle = text_arg(&args[1], "stringIndexOf")?;

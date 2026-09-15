@@ -67,6 +67,13 @@ pub enum Decl {
     Record(RecordDecl),
     /// `effect State s { get : () -> s, put : s -> () }`
     Effect(EffectDecl),
+    /// `type Span = (Int, Int)` -- another name for a type, which means exactly
+    /// what it stands for.
+    TypeAlias(TypeAliasDecl),
+    /// `fun name : T` / `def name : T` -- the type of a top-level binding,
+    /// declared on a line of its own. Its variables are the binding's to be
+    /// general in, as a Haskell signature's are.
+    Sig(Ident, LType),
     /// One or more `@attr` lines in front of another declaration.
     Attributed(Vec<Attr>, Box<LDecl>),
 }
@@ -158,6 +165,13 @@ pub enum VariantFields {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeAliasDecl {
+    pub name: Ident,
+    pub params: Vec<Ident>,
+    pub ty: LType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordDecl {
     pub name: Ident,
     pub params: Vec<Ident>,
@@ -193,6 +207,9 @@ pub enum Expr {
     Qual(Ident, Ident),
     /// `{ x = e, y = e | base }` — trailing expr is the record being extended.
     Record(Vec<(Ident, LExpr)>, Option<LExpr>),
+    /// `{ e | x = v, y = w }` -- `e`, a record, with the fields named replaced.
+    /// Each must be one it has, and keep its type.
+    Update(LExpr, Vec<(Ident, LExpr)>),
     /// `e.label`
     Field(LExpr, Ident),
     /// `handle e with { op p k -> …, return x -> … }`

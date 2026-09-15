@@ -177,6 +177,10 @@ impl Checker<'_> {
                 }
             }
             hir::Expr::Field(o, _) => self.expr(o),
+            hir::Expr::Update(base, fields) => {
+                self.expr(base);
+                fields.iter().for_each(|(_, e)| self.expr(e));
+            }
             hir::Expr::Var(_) | hir::Expr::Lit(_) | hir::Expr::Unit | hir::Expr::Error => {}
         }
     }

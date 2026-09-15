@@ -71,6 +71,29 @@ impl Vm<'_> {
 }
 
 impl Heap {
+    /// -1, 0 or 1 as the string at `a` sorts before, with or after the one at
+    /// `b`, byte by byte -- a word at a time, read big-endian so that the word
+    /// comparison is the bytes'. A word's spare bytes are zero, which only ties
+    /// with real zero bytes, and then the shorter string comes first.
+    pub fn packed_compare(&self, a: Addr, b: Addr) -> i64 {
+        let (la, lb) = (self.packed_len(a), self.packed_len(b));
+        let words = la.min(lb).div_ceil(8);
+        for (x, y) in self.words_in(a, 0, words).zip(self.words_in(b, 0, words)) {
+            if x != y {
+                return if x.swap_bytes() < y.swap_bytes() {
+                    -1
+                } else {
+                    1
+                };
+            }
+        }
+        match la.cmp(&lb) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        }
+    }
+
     /// Where `needle` first occurs in the string at `a` at or after byte
     /// `from`, or -1 -- reading the string in place, so that a scanner calling
     /// it again and again does not copy the whole of it each time.

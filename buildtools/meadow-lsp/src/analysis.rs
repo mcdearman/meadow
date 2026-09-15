@@ -944,6 +944,15 @@ impl Walk<'_> {
                     self.ty(t);
                 }
             }
+            hir::Decl::Alias(ad) => {
+                self.declare(Namespace::Type, ad.name, ad.name_span);
+                self.ty(&ad.ty);
+            }
+            // The name in a signature is a use of the binding it describes.
+            hir::Decl::Sig(ident, t) => {
+                self.a.refs.push((ident.span, *ident.value()));
+                self.ty(t);
+            }
 
             hir::Decl::Mod(_) | hir::Decl::Use(_) | hir::Decl::Error => {}
         }
@@ -1146,6 +1155,10 @@ impl Walk<'_> {
                 }
             }
             hir::Expr::Field(x, _) => self.expr(x),
+            hir::Expr::Update(base, fs) => {
+                self.expr(base);
+                fs.iter().for_each(|(_, x)| self.expr(x));
+            }
             hir::Expr::Handle(body, arms, ret) => {
                 self.expr(body);
                 for arm in arms {
@@ -1452,6 +1465,9 @@ fn collect_names(
             }
             hir::Decl::Effect(ed) => {
                 types.insert(ed.name.to_string());
+            }
+            hir::Decl::Alias(ad) => {
+                types.insert(ad.name.to_string());
             }
             _ => {}
         }

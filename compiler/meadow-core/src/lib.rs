@@ -56,7 +56,7 @@ pub mod thread;
 pub use lower::Lowerer;
 
 use meadow_hir as hir;
-use meadow_infer::{Generalized, Scheme, Type as InferType, TypeTable, VarKind};
+use meadow_infer::{Generalized, Scheme, Type as InferType, TypeTable, VarKind, VariantEnv};
 use meadow_intern::InternedString;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -220,6 +220,10 @@ pub enum Prim {
     /// `stringIndexOf : String -> String -> Int -> Int` -- where `needle` next
     /// occurs in `hay` at or after byte `from`, or -1.
     StringIndexOf,
+    /// `stringCompare : String -> String -> Int` -- -1, 0 or 1 as `a` sorts
+    /// before, with or after `b`, byte by byte: for UTF-8, the order of the
+    /// code points.
+    StringCompare,
     /// `newRef : a -> Ref a ! { Mut | e }` — allocate a mutable cell.
     NewRef,
     /// `getRef : Ref a -> a ! { Mut | e }`
@@ -467,6 +471,7 @@ impl Prim {
             Prim::StringByteAt => 118,
             Prim::StringSlice => 119,
             Prim::StringIndexOf => 120,
+            Prim::StringCompare => 121,
         }
     }
 
@@ -588,6 +593,7 @@ impl Prim {
             118 => Prim::StringByteAt,
             119 => Prim::StringSlice,
             120 => Prim::StringIndexOf,
+            121 => Prim::StringCompare,
             _ => return None,
         })
     }
@@ -730,6 +736,7 @@ impl Prim {
             "stringByteAt" => Prim::StringByteAt,
             "stringSlice" => Prim::StringSlice,
             "stringIndexOf" => Prim::StringIndexOf,
+            "stringCompare" => Prim::StringCompare,
             "newRef" => Prim::NewRef,
             "getRef" => Prim::GetRef,
             "setRef" => Prim::SetRef,

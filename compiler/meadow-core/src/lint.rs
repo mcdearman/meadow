@@ -532,6 +532,24 @@ fn row_field(ty: &Ty, label: InternedString) -> Option<Ty> {
     }
 }
 
+/// A row with each label's shadowed repeats taken out, keeping the first --
+/// the one a selection sees.
+fn visible_row(row: &Ty) -> Ty {
+    let mut seen = Vec::new();
+    let mut labels = Vec::new();
+    let mut cur = row;
+    while let InferType::RowExtend(l, f, rest) = cur {
+        if !seen.contains(l) {
+            seen.push(*l);
+            labels.push((*l, (**f).clone()));
+        }
+        cur = rest;
+    }
+    labels.into_iter().rev().fold(cur.clone(), |acc, (l, f)| {
+        InferType::RowExtend(l, Box::new(f), Box::new(acc))
+    })
+}
+
 /// Are two polytypes the same? Their binders have to line up in kind, and
 /// their bodies have to agree once one's binders are renamed to the other's.
 fn poly_same(a: &Poly, b: &Poly) -> bool {
@@ -569,8 +587,11 @@ fn same(a: &Ty, b: &Ty) -> bool {
         }
         (InferType::Record(x), InferType::Record(y)) => same(x, y),
         (InferType::RowExtend(..), InferType::RowExtend(..)) => {
-            // Rows are sets; compare them in one order.
-            match (normalize(a), normalize(b)) {
+            // Rows are sets; compare them in one order. A label a later one
+            // shadows is gone for good -- extending a record with a field it
+            // has replaces the field, and nothing can take the new one off
+            // again -- so `{ x : String, x : Int }` is `{ x : String }`.
+            match (visible_row(&normalize(a)), visible_row(&normalize(b))) {
                 (InferType::RowExtend(l1, f1, r1), InferType::RowExtend(l2, f2, r2)) => {
                     l1 == l2 && same(&f1, &f2) && same(&r1, &r2)
                 }

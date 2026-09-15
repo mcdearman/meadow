@@ -7,6 +7,7 @@ mod repl;
 use clap::{Parser, Subcommand};
 use meadow::{
     Backend, Engine, OptLevel, Profile, Resolved, Strictness, aot, artifacts, format, init,
+    listing::{self, Emit},
     package::ProfileConfig,
     pipeline, runtime, test, update,
     workspace::{Selected, Selection},
@@ -30,6 +31,12 @@ enum Cmd {
         /// Also print every node's inferred type.
         #[arg(long)]
         annotations: bool,
+        /// What to write, in place of what a build writes by default -- the
+        /// bytecode image, and for an `aot` build an executable: `image`,
+        /// `bytecode` (the image as text), `asm` (the native code as text) or
+        /// `exe`. Comma-separated, or repeated.
+        #[arg(long, value_name = "KIND", value_delimiter = ',', value_parser = emit)]
+        emit: Vec<Emit>,
         #[command(flatten)]
         packages: PackageArgs,
         #[command(flatten)]
@@ -87,9 +94,13 @@ enum Cmd {
     Link {
         /// The `.mbc` file.
         image: PathBuf,
-        /// The executable to write. The image's name beside it, by default.
+        /// The file to write. The image's name beside it, by default.
         #[arg(short = 'o', long = "output", value_name = "FILE")]
         output: Option<PathBuf>,
+        /// `exe` (the default), or `asm`: the native code as text, in place of
+        /// the executable.
+        #[arg(long, value_name = "KIND", value_parser = ["exe", "asm"], default_value = "exe")]
+        emit: String,
         /// Optimization level: 0, 1 or 2 (the default).
         #[arg(short = 'O', long = "opt-level", value_name = "LEVEL", value_parser = opt_level)]
         opt: Option<OptLevel>,
@@ -122,10 +133,15 @@ enum Cmd {
         /// Package directory (or a single `.mw` file).
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// The native code an `aot` build compiles the bytecode to, instead.
+        #[arg(long)]
+        asm: bool,
         #[command(flatten)]
         packages: PackageArgs,
         #[command(flatten)]
         profile: ProfileArgs,
+        #[command(flatten)]
+        target: TargetArgs,
     },
     /// Run the language server, speaking LSP over stdin and stdout.
     ///
@@ -300,6 +316,10 @@ struct ProfileArgs {
     no_prune: bool,
 }
 
+fn emit(s: &str) -> Result<Emit, String> {
+    Emit::parse(s).ok_or_else(|| format!("expected image, bytecode, asm or exe, got `{s}`"))
+}
+
 fn backend(s: &str) -> Result<Backend, String> {
     Backend::parse(s).ok_or_else(|| format!("expected vm, jit or aot, got `{s}`"))
 }
@@ -386,6 +406,7 @@ fn main() {
         Some(Cmd::Build {
             path,
             annotations,
+            emit,
             packages,
             profile,
             target,
@@ -393,8 +414,8 @@ fn main() {
             let selected = select(&packages.selection(), &path);
             let profile = profile.resolve(&path);
             match &selected.paths[..] {
-                [one] => build(one, None, annotations, false, profile, &target),
-                many => build_many(many, annotations, profile, &target),
+                [one] => build(one, None, annotations, false, &emit, profile, &target),
+                many => build_many(many, annotations, &emit, profile, &target),
             }
         }
         Some(Cmd::Run {
@@ -432,6 +453,7 @@ fn main() {
                 Some(engine.engine(profile.backend)),
                 false,
                 gc_stats,
+                &[],
                 profile,
                 &target,
             )
@@ -452,16 +474,26 @@ fn main() {
         Some(Cmd::Link {
             image,
             output,
+            emit,
             opt,
             target,
-        }) => link(&image, output, opt.unwrap_or(OptLevel::O2), &target),
+        }) => link(
+            &image,
+            output,
+            emit == "asm",
+            opt.unwrap_or(OptLevel::O2),
+            &target,
+        ),
         Some(Cmd::Dis {
             path,
+            asm,
             packages,
             profile,
+            target,
         }) => {
             let selected = select(&packages.selection(), &path);
-            disassemble(&selected.paths, profile.resolve(&path))
+            let arch = asm.then(|| exit_on_error(target.target()).arch);
+            disassemble(&selected.paths, profile.resolve(&path), arch)
         }
         Some(Cmd::Test {
             path,
@@ -585,6 +617,19 @@ fn main() {
     }
 }
 
+/// A path as a person would write it: without Windows' `\?\` prefix.
+fn shown(path: &std::path::Path) -> String {
+    meadow::dap::session::plain_path(&path.to_string_lossy())
+}
+
+/// `result`'s value, or its error said and the process ended.
+fn exit_on_error<T>(result: Result<T, String>) -> T {
+    result.unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    })
+}
+
 /// `path` as seen from the current directory, when it is inside it: `init`
 /// finds a workspace by its full path, and says so more briefly.
 fn nearby(path: &std::path::Path) -> PathBuf {
@@ -610,6 +655,7 @@ fn build(
     engine: Option<Engine>,
     annotations: bool,
     gc_stats: bool,
+    emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
 ) {
@@ -641,6 +687,7 @@ fn build(
         engine,
         annotations,
         gc_stats,
+        emit,
         profile,
         target,
     );
@@ -672,17 +719,29 @@ fn exec(path: &std::path::Path, backend: Backend, opt: OptLevel) {
     }
 }
 
-/// `meadow link`: the image at `path`, as an executable.
-fn link(path: &std::path::Path, output: Option<PathBuf>, opt: OptLevel, target: &TargetArgs) {
+/// `meadow link`: the image at `path`, as an executable -- or, with `asm`, as
+/// the text of the native code the executable would be linked from.
+fn link(
+    path: &std::path::Path,
+    output: Option<PathBuf>,
+    asm: bool,
+    opt: OptLevel,
+    target: &TargetArgs,
+) {
     let image = read_image(path);
     let made = target.target().and_then(|target| {
+        if asm {
+            let out = output.unwrap_or_else(|| path.with_extension("s"));
+            let text = listing::asm(&image, target.arch, opt);
+            return artifacts::write_text(&out, &text).map(|()| ("asm", out));
+        }
         let exe = output.unwrap_or_else(|| {
             path.with_extension(target.format.exe_suffix().trim_start_matches('.'))
         });
-        aot::link_image(&image, opt, target, &exe).map(|()| exe)
+        aot::link_image(&image, opt, target, &exe).map(|()| ("native", exe))
     });
     match made {
-        Ok(exe) => eprintln!("native: {}", exe.display()),
+        Ok((what, file)) => eprintln!("{what}: {}", file.display()),
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
@@ -703,7 +762,13 @@ fn read_image(path: &std::path::Path) -> meadow_bytecode::Program {
 
 /// [`build`] for several packages of a workspace, sharing what they have in
 /// common. Nothing runs: `run` takes one package.
-fn build_many(paths: &[PathBuf], annotations: bool, profile: Resolved, target: &TargetArgs) {
+fn build_many(
+    paths: &[PathBuf],
+    annotations: bool,
+    emit: &[Emit],
+    profile: Resolved,
+    target: &TargetArgs,
+) {
     let profile = for_target(profile, target);
     let paths: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
     let out = pipeline::build_each(&paths, profile.options);
@@ -731,6 +796,7 @@ fn build_many(paths: &[PathBuf], annotations: bool, profile: Resolved, target: &
             None,
             annotations,
             false,
+            emit,
             profile,
             target,
         );
@@ -755,13 +821,15 @@ fn for_target(mut profile: Resolved, target: &TargetArgs) -> Resolved {
 }
 
 /// Everything [`build`] does once a package is linked: print it, write its
-/// image and executable, and -- with `engine` -- run it.
+/// image and executable -- or what `emit` asks for instead -- and, with
+/// `engine`, run it.
 fn finish(
     linked: meadow::linker::LinkedProgram,
     package: &Option<(PathBuf, meadow_compiler::intern::InternedString)>,
     engine: Option<Engine>,
     annotations: bool,
     gc_stats: bool,
+    emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
 ) {
@@ -769,6 +837,22 @@ fn finish(
     if annotations {
         print!("{}", linked.annotations());
     }
+    if !emit.is_empty() && package.is_none() {
+        eprintln!(
+            "error: `--emit` writes under a package's `target` directory, and a lone file has none; \
+             `meadow dis` prints its bytecode, and `meadow dis --asm` its native code"
+        );
+        std::process::exit(1);
+    }
+    let aot = profile.backend == Backend::Aot && engine != Some(Engine::Cek);
+    // What is written: what was asked for, or else the image -- and for an
+    // `aot` build, its executable.
+    let wants = |kind: Emit| match kind {
+        _ if !emit.is_empty() => emit.contains(&kind),
+        Emit::Image => true,
+        Emit::Exe => aot,
+        Emit::Bytecode | Emit::Asm => false,
+    };
 
     // What runs: the entry point and what it reaches, unless the profile says
     // to keep everything.
@@ -780,11 +864,35 @@ fn finish(
         None | Some(Engine::Vm) | Some(Engine::Jit) => {
             match runtime::compile(&program, profile.opt()) {
                 Ok(image) => {
-                    if let Some((root, name)) = package
-                        && let Err(e) = artifacts::write_image(root, profile.profile, name, &image)
-                    {
-                        eprintln!("error: {e}");
-                        std::process::exit(1);
+                    if let Some((root, name)) = package {
+                        let written = (|| {
+                            if wants(Emit::Image) {
+                                artifacts::write_image(root, profile.profile, name, &image)?;
+                            }
+                            if wants(Emit::Bytecode) {
+                                let path =
+                                    artifacts::bytecode_text_path(root, profile.profile, name);
+                                artifacts::write_text(&path, &listing::bytecode(&image))?;
+                                eprintln!("bytecode: {}", shown(&path));
+                            }
+                            if wants(Emit::Asm) {
+                                let t = target.target()?;
+                                let path = aot::write_asm(
+                                    root,
+                                    profile.profile,
+                                    profile.opt(),
+                                    name,
+                                    &image,
+                                    t,
+                                )?;
+                                eprintln!("asm: {}", shown(&path));
+                            }
+                            Ok::<(), String>(())
+                        })();
+                        if let Err(e) = written {
+                            eprintln!("error: {e}");
+                            std::process::exit(1);
+                        }
                     }
                     Some(image)
                 }
@@ -799,8 +907,11 @@ fn finish(
 
     // Machine code, linked into an executable -- and, for `run`, run: what an
     // `aot` backend is, unless `--cek` asked for the CEK machine.
-    let aot = profile.backend == Backend::Aot && engine != Some(Engine::Cek);
-    if let (true, Some(image)) = (aot, &image) {
+    let exe = match engine {
+        None => wants(Emit::Exe),
+        Some(_) => aot,
+    };
+    if let (true, Some(image)) = (exe, &image) {
         let exe = target.target().and_then(|target| {
             let (root, name) = package
                 .as_ref()
@@ -821,7 +932,7 @@ fn finish(
             }
             // A release build of a lone file, or on a machine that cannot link
             // one: the JIT runs it, unless `aot` was asked for by name.
-            Err(e) if profile.fallback().is_some() => {
+            Err(e) if profile.fallback().is_some() && emit.is_empty() => {
                 if package.is_some() {
                     eprintln!("warning: no native executable: {e}");
                     if engine.is_some() {
@@ -863,8 +974,9 @@ fn finish(
 }
 
 /// Print the bytecode the VM would run — the back end's output, addresses and
-/// all — for each package in `paths`.
-fn disassemble(paths: &[PathBuf], profile: Resolved) {
+/// all — for each package in `paths`; or, for `arch`, the native code an
+/// `aot` build compiles it to.
+fn disassemble(paths: &[PathBuf], profile: Resolved, arch: Option<meadow_rts::codegen::Arch>) {
     let refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
     let out = pipeline::build_each(&refs, profile.options);
     for d in &out.diagnostics {
@@ -880,7 +992,10 @@ fn disassemble(paths: &[PathBuf], profile: Resolved) {
             println!("=== {name} ===");
         }
         match runtime::compile(&profile.program(&linked.program), profile.opt()) {
-            Ok(image) => print!("{}", image.disassemble()),
+            Ok(image) => match arch {
+                Some(arch) => print!("{}", listing::asm(&image, arch, profile.opt())),
+                None => print!("{}", listing::bytecode(&image)),
+            },
             Err(e) => {
                 eprintln!("error: {e}");
                 std::process::exit(1);

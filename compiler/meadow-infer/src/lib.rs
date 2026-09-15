@@ -1038,6 +1038,13 @@ pub struct Infer {
     /// introduced -- see [`Infer::annotation`]. Never scoped, because the
     /// resolver already scoped the `VarId`s it is keyed by.
     ann_tyvars: HashMap<VarId, Type>,
+    /// Every `type` alias known, this unit's and its dependencies'.
+    aliases: Aliases,
+    /// The standalone signature of each top-level binding that has one.
+    sigs: HashMap<VarId, hir::LTypeExpr>,
+    /// Bindings whose signature did not even unify with them: reported once,
+    /// so not checked for generality as well.
+    sig_failed: HashSet<VarId>,
     /// Names the resolver found several meanings for -- see [`Infer::defer`].
     overloads: hir::Overloads,
     pending: Vec<Pending>,
@@ -1115,6 +1122,9 @@ impl Infer {
             ctors: HashMap::new(),
             variants: HashMap::new(),
             ann_tyvars: HashMap::new(),
+            aliases: HashMap::new(),
+            sigs: HashMap::new(),
+            sig_failed: HashSet::new(),
             overloads: HashMap::new(),
             pending: Vec::new(),
             subsumptions: Vec::new(),
@@ -1202,6 +1212,9 @@ impl Infer {
         // table has no holes.
         for decl in &module.decls {
             self.table.set(decl.id, Type::unit());
+            if let hir::Decl::Sig(name, t) = decl.value() {
+                self.sigs.insert(*name.value(), t.clone());
+            }
         }
         if module.groups.is_empty() {
             // Ungrouped HIR (the SCC pass didn't run): source order is all we have.
@@ -1247,6 +1260,7 @@ impl Infer {
                 .map(|vid| {
                     let ty = self.arena.fresh();
                     self.bind_mono(vid, &ty, *span);
+                    self.seed_sig(vid, &ty);
                     (vid, ty)
                 })
                 .collect();
@@ -1275,6 +1289,7 @@ impl Infer {
                     self.record_mono(*vid, &s);
                     s
                 };
+                self.check_sig(*vid, &scheme);
                 self.env.insert(*vid, scheme);
                 self.exports.push(*vid);
             }
@@ -1430,6 +1445,7 @@ impl Infer {
                 let fn_ty = Type::func_eff(param_tys, ret.clone(), body_eff);
                 // Bind the name monomorphically first so the body can recurse.
                 self.bind_mono(vid, &fn_ty, name.span);
+                self.seed_sig(vid, &fn_ty);
                 self.table.set(name.id, fn_ty.clone());
 
                 let mark = self.subsumptions.len();
@@ -1443,6 +1459,7 @@ impl Infer {
                 self.arena.exit_level();
 
                 let scheme = self.generalize_named(Some(vid), &fn_ty, true);
+                self.check_sig(vid, &scheme);
                 self.table.set(name.id, self.arena.zonk(&fn_ty));
                 self.env.insert(vid, scheme);
                 if toplevel {
@@ -1460,6 +1477,9 @@ impl Infer {
                 let mut bound = Vec::new();
                 let pty = self.infer_pat(pat, &mut bound);
                 self.unify_at(pat.span, pty, rhs);
+                for (vid, vty) in &bound {
+                    self.seed_sig(*vid, vty);
+                }
                 self.cur_effect = saved;
                 self.solve_overloads(toplevel);
                 // Before the purity test below, which reads `rhs_eff`: an
@@ -1513,6 +1533,7 @@ impl Infer {
                         self.record_mono(vid, &s);
                         s
                     };
+                    self.check_sig(vid, &scheme);
                     self.env.insert(vid, scheme);
                     if toplevel {
                         self.exports.push(vid);
@@ -1741,6 +1762,8 @@ impl Infer {
                 }
                 Type::Record(Box::new(row))
             }
+
+            hir::Expr::Update(base, fields) => self.infer_update(base, fields),
 
             hir::Expr::Field(obj, label) => {
                 let ot = self.infer_expr(obj);
@@ -2063,6 +2086,40 @@ impl Infer {
     /// Populate `ctors` / `record_fields` from `data` / `record` declarations.
     /// Call before `infer_module`.
     pub fn register_types(&mut self, decls: &[hir::LDecl]) {
+        // Aliases before everything else, which may be written in terms of them.
+        let mut added = Vec::new();
+        for d in decls {
+            if let hir::Decl::Alias(ad) = d.value() {
+                self.aliases.insert(
+                    ad.name,
+                    AliasDef {
+                        params: param_map(&ad.params),
+                        body: ad.ty.clone(),
+                    },
+                );
+                added.push((ad.name, ad.name_span));
+            }
+        }
+        for (name, span) in added {
+            if alias_reaches(&self.aliases, name, name, &mut Vec::new()) {
+                self.errors.push(Diagnostic {
+                    msg: format!("type alias `{name}` refers to itself"),
+                    filename: self.filename.clone(),
+                    label: (
+                        "an alias is only another name; use `data` for a recursive type"
+                            .to_string(),
+                        span,
+                    ),
+                    extra_labels: vec![],
+                });
+                // Expanded, it would never end; as the error type it agrees
+                // with everything, so nothing else is reported for it.
+                if let Some(def) = self.aliases.get_mut(&name) {
+                    let (id, at) = (def.body.id, def.body.span);
+                    def.body = hir::Node::new(id, hir::TypeExpr::Error, at);
+                }
+            }
+        }
         for d in decls {
             match d.value() {
                 hir::Decl::Data(dd) => {
@@ -2074,12 +2131,13 @@ impl Infer {
                     );
                     for v in &dd.variants {
                         let fields: Vec<(Option<InternedString>, Type)> = match &v.fields {
-                            hir::VariantFields::Positional(ts) => {
-                                ts.iter().map(|t| (None, ty_of(t, &params))).collect()
-                            }
+                            hir::VariantFields::Positional(ts) => ts
+                                .iter()
+                                .map(|t| (None, ty_of(t, &params, &self.aliases)))
+                                .collect(),
                             hir::VariantFields::Named(fs) => fs
                                 .iter()
-                                .map(|(n, t)| (Some(*n), ty_of(t, &params)))
+                                .map(|(n, t)| (Some(*n), ty_of(t, &params, &self.aliases)))
                                 .collect(),
                         };
                         self.record_ctor(dd.name, v.name, &quant, &head, &fields);
@@ -2095,7 +2153,7 @@ impl Infer {
                     let fields: Vec<(Option<InternedString>, Type)> = rd
                         .fields
                         .iter()
-                        .map(|(n, t)| (Some(*n), ty_of(t, &params)))
+                        .map(|(n, t)| (Some(*n), ty_of(t, &params, &self.aliases)))
                         .collect();
                     self.record_ctor(rd.name, rd.ctor, &quant, &head, &fields);
                 }
@@ -2106,7 +2164,7 @@ impl Infer {
                     let head_args: Vec<Type> = (0..n as u32).map(Type::Bound).collect();
                     let mut ops = Vec::new();
                     for (opname, opvar, opty) in &ed.ops {
-                        let t = ty_of(opty, &params);
+                        let t = ty_of(opty, &params, &self.aliases);
                         let (arg, ret) = match &t {
                             Type::Fun(a, r, _) => (a[0].clone(), (**r).clone()),
                             _ => (Type::unit(), t.clone()),
@@ -2203,6 +2261,174 @@ impl Infer {
                 );
             }
         }
+    }
+
+    /// A standalone signature as a polytype: each of its variables quantified,
+    /// the ones standing for an effect as effects.
+    fn sig_scheme(&self, t: &hir::LTypeExpr) -> Scheme {
+        let mut vars = HashMap::new();
+        collect_tyvars(t, &mut vars);
+        let ty = ty_of(t, &vars, &self.aliases);
+        let mut quant = vec![VarKind::Type; vars.len()];
+        mark_effect_vars(&ty, &mut quant);
+        Scheme { quant, ty }
+    }
+
+    /// Tie a binding about to be inferred to its signature, if it has one, so
+    /// its body is checked against the types the signature gives -- the
+    /// signature's variables still flexible here; [`Infer::check_sig`] holds
+    /// the binding to them once it has been generalized.
+    fn seed_sig(&mut self, vid: VarId, ty: &Type) {
+        let Some(t) = self.sigs.get(&vid).cloned() else {
+            return;
+        };
+        let scheme = self.sig_scheme(&t);
+        let inst = self.instantiate(&scheme);
+        if let Err(err) = self.arena.unify(ty.clone(), inst) {
+            self.sig_failed.insert(vid);
+            let mut diag = self.unify_diagnostic(t.span, err);
+            diag.msg = format!(
+                "this definition does not have the type its signature gives, `{}`: {}",
+                show_scheme_body(&scheme),
+                diag.msg
+            );
+            diag.label.0 = "the signature".to_string();
+            self.errors.push(diag);
+        }
+    }
+
+    /// Is the generalized `scheme` of `vid` as general as its signature says?
+    ///
+    /// Seeded with the signature, the binding can only have come out as it or
+    /// as an instance of it -- `a -> a` made `Int -> Int` by a body that adds
+    /// one. The signature with its variables made rigid is an instance of the
+    /// scheme exactly when the scheme is no less general.
+    fn check_sig(&mut self, vid: VarId, scheme: &Scheme) {
+        let Some(t) = self.sigs.get(&vid).cloned() else {
+            return;
+        };
+        if self.sig_failed.contains(&vid) || scheme.ty.references_error() {
+            return;
+        }
+        let sig = self.sig_scheme(&t);
+        let rigid: Vec<Type> = (0..sig.quant.len())
+            .map(|i| Type::Con(InternedString::from(format!("'sig{i}")), vec![]))
+            .collect();
+        let want = Arena::subst_bound(&sig.ty, &rigid);
+        let have = self.normalize_scheme(scheme);
+        let fail = |this: &mut Self, why: String| {
+            this.errors.push(Diagnostic {
+                msg: why,
+                filename: this.filename.clone(),
+                label: ("the signature".to_string(), t.span),
+                extra_labels: vec![],
+            });
+        };
+        match match_scheme(&have, &want) {
+            None => fail(
+                self,
+                format!(
+                    "this definition is less general than its signature: the signature says `{}`, and the definition is `{}`",
+                    show_scheme_body(&sig),
+                    show_scheme_body(&have)
+                ),
+            ),
+            Some(args) => {
+                let numeric = have.quant.iter().zip(&args).any(|(k, a)| {
+                    matches!(k, VarKind::Num | VarKind::Frac)
+                        && matches!(a, Type::Con(n, _) if n.starts_with("'sig"))
+                });
+                if numeric {
+                    fail(
+                        self,
+                        format!(
+                            "this definition needs a number where its signature `{}` has a type variable: it is `{}`",
+                            show_scheme_body(&sig),
+                            show_scheme_body(&have)
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// `{ base | x = v, … }`.
+    ///
+    /// A value of a record type -- one constructor, with named fields -- keeps
+    /// its type, and each value has to have its field's. Otherwise it is an
+    /// anonymous record, which must already have every field named, each at
+    /// the type it is being given.
+    fn infer_update(&mut self, base: &hir::LExpr, fields: &[(hir::Label, hir::LExpr)]) -> Type {
+        let bt = self.infer_expr(base);
+        let pruned = self.arena.zonk(&bt);
+        if let Type::Con(tyname, _) = &pruned
+            && let Some(accessors) = self.record_fields.get(tyname).cloned()
+        {
+            let one = self.variants.get(tyname).is_some_and(|vs| vs.len() == 1);
+            if !one {
+                self.errors.push(Diagnostic {
+                    msg: format!(
+                        "`{tyname}` has more than one constructor, so there is no one record to update"
+                    ),
+                    filename: self.filename.clone(),
+                    label: (format!("a value of `{tyname}`"), base.span),
+                    extra_labels: vec![],
+                });
+                for (label, val) in fields {
+                    self.infer_expr(val);
+                    self.table.set(label.id, Type::Error);
+                }
+                return pruned;
+            }
+            for (label, val) in fields {
+                let vt = self.infer_expr(val);
+                let Some(scheme) = accessors.get(label.value()) else {
+                    self.errors.push(Diagnostic {
+                        msg: format!("`{tyname}` has no field `{}`", label.value()),
+                        filename: self.filename.clone(),
+                        label: ("not one of its fields".to_string(), label.span),
+                        extra_labels: vec![],
+                    });
+                    self.table.set(label.id, Type::Error);
+                    continue;
+                };
+                let accessor = self.instantiate(scheme);
+                let field = self.arena.fresh();
+                let eff = self.arena.fresh_effect();
+                self.unify_at(
+                    label.span,
+                    accessor,
+                    Type::Fun(vec![pruned.clone()], Box::new(field.clone()), Box::new(eff)),
+                );
+                self.unify_at(val.span, field.clone(), vt);
+                self.table.set(label.id, field);
+            }
+            return pruned;
+        }
+        // One type per field named, however often: the resolver has reported a
+        // repeat, and a row naming the label twice would report it again.
+        let mut named: Vec<(InternedString, Type)> = Vec::new();
+        for (label, _) in fields {
+            if !named.iter().any(|(l, _)| l == label.value()) {
+                named.push((*label.value(), self.arena.fresh()));
+            }
+        }
+        let rest = self.arena.fresh_row();
+        let row = named.iter().rev().fold(rest, |acc, (l, t)| {
+            Type::RowExtend(*l, Box::new(t.clone()), Box::new(acc))
+        });
+        self.unify_at(base.span, bt.clone(), Type::Record(Box::new(row)));
+        for (label, val) in fields {
+            let vt = self.infer_expr(val);
+            let t = named
+                .iter()
+                .find(|(l, _)| l == label.value())
+                .map(|(_, t)| t.clone())
+                .unwrap_or(Type::Error);
+            self.unify_at(val.span, t.clone(), vt);
+            self.table.set(label.id, t);
+        }
+        bt
     }
 
     /// Generalize, and record what was quantified under `vid`.
@@ -2693,7 +2919,7 @@ impl Infer {
             };
             fresh[*i as usize] = meta;
         }
-        Arena::subst_bound(&ty_of(t, &vars), &fresh)
+        Arena::subst_bound(&ty_of(t, &vars, &self.aliases), &fresh)
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
@@ -2898,16 +3124,99 @@ fn param_map(params: &[hir::Ident]) -> HashMap<VarId, u32> {
         .collect()
 }
 
+/// A `type` alias: its parameters, numbered, and what it stands for.
+#[derive(Debug, Clone)]
+struct AliasDef {
+    params: HashMap<VarId, u32>,
+    body: hir::LTypeExpr,
+}
+
+type Aliases = HashMap<InternedString, AliasDef>;
+
+/// Does expanding alias `from` ever come back to `target`?
+fn alias_reaches(
+    aliases: &Aliases,
+    from: InternedString,
+    target: InternedString,
+    seen: &mut Vec<InternedString>,
+) -> bool {
+    fn names(t: &hir::LTypeExpr, out: &mut Vec<InternedString>) {
+        match t.value() {
+            hir::TypeExpr::Con(n, args) => {
+                out.push(*n.value());
+                args.iter().for_each(|a| names(a, out));
+            }
+            hir::TypeExpr::Fun(ps, r, eff) => {
+                ps.iter().for_each(|p| names(p, out));
+                names(r, out);
+                for (_, args) in eff.iter().flat_map(|e| &e.labels) {
+                    args.iter().for_each(|a| names(a, out));
+                }
+            }
+            hir::TypeExpr::Tuple(ts) => ts.iter().for_each(|x| names(x, out)),
+            hir::TypeExpr::Vector(x) | hir::TypeExpr::List(x) => names(x, out),
+            hir::TypeExpr::Var(_) | hir::TypeExpr::Error => {}
+        }
+    }
+    let Some(def) = aliases.get(&from) else {
+        return false;
+    };
+    let mut mentioned = Vec::new();
+    names(&def.body, &mut mentioned);
+    for n in mentioned {
+        if n == target {
+            return true;
+        }
+        if aliases.contains_key(&n) && !seen.contains(&n) {
+            seen.push(n);
+            if alias_reaches(aliases, n, target, seen) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Mark as effects the quantifiers of `ty` that stand where an effect goes: the
+/// latent effect of an arrow, or the tail of its row.
+fn mark_effect_vars(ty: &Type, quant: &mut [VarKind]) {
+    match ty {
+        Type::Fun(args, ret, eff) => {
+            args.iter().for_each(|a| mark_effect_vars(a, quant));
+            mark_effect_vars(ret, quant);
+            let mut row = &**eff;
+            while let Type::RowExtend(_, field, rest) = row {
+                mark_effect_vars(field, quant);
+                row = rest;
+            }
+            if let Type::Bound(i) = row
+                && let Some(k) = quant.get_mut(*i as usize)
+            {
+                *k = VarKind::Effect;
+            }
+        }
+        Type::Con(_, args) | Type::Tuple(args) => {
+            args.iter().for_each(|a| mark_effect_vars(a, quant))
+        }
+        Type::Record(row) => mark_effect_vars(row, quant),
+        Type::RowExtend(_, field, rest) => {
+            mark_effect_vars(field, quant);
+            mark_effect_vars(rest, quant);
+        }
+        Type::Var(_) | Type::Bound(_) | Type::RowEmpty | Type::Error => {}
+    }
+}
+
 /// Convert a resolved HIR type expression into an inference [`Type`], with the
-/// declaration's parameters as `Bound` variables.
-fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
+/// declaration's parameters as `Bound` variables and every alias expanded.
+fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>, aliases: &Aliases) -> Type {
     match t.value() {
         hir::TypeExpr::Var(v) => match params.get(v.value()) {
             Some(&i) => Type::Bound(i),
             None => Type::Error, // rename already reported the unbound tyvar
         },
         hir::TypeExpr::Con(name, args) => {
-            let args: Vec<Type> = args.iter().map(|a| ty_of(a, params)).collect();
+            let args: Vec<Type> = args.iter().map(|a| ty_of(a, params, aliases)).collect();
             match &**name.value() {
                 "Int" | "Int64" => Type::int(),
                 "BigInt" => Type::bigint(),
@@ -2918,30 +3227,40 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>) -> Type {
                 "List" => Type::list(args.into_iter().next().unwrap_or_else(Type::unit)),
                 "Array" => Type::array(args.into_iter().next().unwrap_or_else(Type::unit)),
                 "Ref" => Type::reference(args.into_iter().next().unwrap_or_else(Type::unit)),
-                _ => Type::Con(*name.value(), args),
+                _ => match aliases.get(name.value()) {
+                    // What it stands for, with the arguments in place of its
+                    // parameters. The resolver has checked there are as many.
+                    Some(def) if def.params.len() == args.len() => {
+                        Arena::subst_bound(&ty_of(&def.body, &def.params, aliases), &args)
+                    }
+                    Some(_) => Type::Error,
+                    None => Type::Con(*name.value(), args),
+                },
             }
         }
         hir::TypeExpr::Fun(ps, r, eff) => {
             let effty = match eff {
-                Some(row) => eff_of(row, params),
+                Some(row) => eff_of(row, params, aliases),
                 None => Type::RowEmpty,
             };
             Type::func_eff(
-                ps.iter().map(|p| ty_of(p, params)).collect(),
-                ty_of(r, params),
+                ps.iter().map(|p| ty_of(p, params, aliases)).collect(),
+                ty_of(r, params, aliases),
                 effty,
             )
         }
-        hir::TypeExpr::Tuple(ts) => Type::Tuple(ts.iter().map(|x| ty_of(x, params)).collect()),
+        hir::TypeExpr::Tuple(ts) => {
+            Type::Tuple(ts.iter().map(|x| ty_of(x, params, aliases)).collect())
+        }
         // `[T]` type syntax now denotes the RRB `Vector`; write `List T` for a list.
-        hir::TypeExpr::Vector(x) => Type::vector(ty_of(x, params)),
-        hir::TypeExpr::List(x) => Type::list(ty_of(x, params)),
+        hir::TypeExpr::Vector(x) => Type::vector(ty_of(x, params, aliases)),
+        hir::TypeExpr::List(x) => Type::list(ty_of(x, params, aliases)),
         hir::TypeExpr::Error => Type::Error,
     }
 }
 
 /// Convert a resolved effect row into an effect [`Type`].
-fn eff_of(row: &hir::EffectRow, params: &HashMap<VarId, u32>) -> Type {
+fn eff_of(row: &hir::EffectRow, params: &HashMap<VarId, u32>, aliases: &Aliases) -> Type {
     let tail = match &row.tail {
         Some(v) => params
             .get(v.value())
@@ -2950,7 +3269,7 @@ fn eff_of(row: &hir::EffectRow, params: &HashMap<VarId, u32>) -> Type {
         None => Type::RowEmpty,
     };
     row.labels.iter().rev().fold(tail, |rest, (name, args)| {
-        let argtup = Type::Tuple(args.iter().map(|a| ty_of(a, params)).collect());
+        let argtup = Type::Tuple(args.iter().map(|a| ty_of(a, params, aliases)).collect());
         Type::RowExtend(*name, Box::new(argtup), Box::new(rest))
     })
 }
@@ -3123,6 +3442,10 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "stringSlice" => Scheme::mono(Type::func(
             vec![Type::string(), Type::int(), Type::int()],
             Type::string(),
+        )),
+        "stringCompare" => Scheme::mono(Type::func(
+            vec![Type::string(), Type::string()],
+            Type::int(),
         )),
         "stringIndexOf" => Scheme::mono(Type::func(
             vec![Type::string(), Type::string(), Type::int()],

@@ -18,6 +18,7 @@ pub mod format;
 pub mod incremental;
 pub mod init;
 pub mod linker;
+pub mod listing;
 pub mod package;
 pub mod pipeline;
 pub mod profile;

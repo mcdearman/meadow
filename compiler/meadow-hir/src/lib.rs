@@ -146,6 +146,7 @@ pub const PRIMS: &[&str] = &[
     "stringByteAt",
     "stringSlice",
     "stringIndexOf",
+    "stringCompare",
 ];
 use std::ops::Deref;
 
@@ -276,7 +277,22 @@ pub enum Decl {
     Record(RecordDecl),
     /// `effect State s { … }`
     Effect(EffectDecl),
+    /// `type Span = (Int, Int)` -- a name for a type. Inference expands it
+    /// wherever it is written; nothing after that knows it was there.
+    Alias(AliasDecl),
+    /// `fun f : T` -- the declared type of the top-level binding `f`, which it
+    /// must be at least as general as.
+    Sig(Ident, LTypeExpr),
     Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AliasDecl {
+    pub name: InternedString,
+    /// Where the name was written — see [`DataDecl::name_span`].
+    pub name_span: Span,
+    pub params: Vec<Ident>,
+    pub ty: LTypeExpr,
 }
 
 pub type LTypeExpr = Node<TypeExpr>;
@@ -397,6 +413,9 @@ pub enum Expr {
     Record(Vec<(Label, LExpr)>, Option<LExpr>),
     /// `e.label`
     Field(LExpr, Label),
+    /// `{ e | x = v }` -- `e` with the fields named replaced, each keeping its
+    /// type.
+    Update(LExpr, Vec<(Label, LExpr)>),
     /// `handle e with { … }`
     Handle(LExpr, Vec<HandlerArm>, Option<(LPat, LExpr)>),
     Unit,
@@ -654,6 +673,10 @@ fn rewrite_expr(e: &mut LExpr, chosen: &std::collections::HashMap<NodeId, Alt>) 
             }
         }
         Expr::Field(o, _) => rewrite_expr(o, chosen),
+        Expr::Update(base, fields) => {
+            rewrite_expr(base, chosen);
+            fields.iter_mut().for_each(|(_, x)| rewrite_expr(x, chosen));
+        }
         Expr::Handle(body, arms, ret) => {
             rewrite_expr(body, chosen);
             for arm in arms {

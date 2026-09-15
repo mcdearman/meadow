@@ -499,6 +499,7 @@ pub fn compile_unit_above(
         &all_schemes,
         resolver.var_gen(),
     );
+    lowerer.variants = Some(&variants);
     let mut defs = Vec::new();
     for m in &typed {
         lowerer.locations = opts.debug_info.then_some(m.source.id);
@@ -583,6 +584,7 @@ pub fn compile_unit_above(
             hir::Decl::Data(dd) => !gated || resolver.is_pub_type(dd.name),
             hir::Decl::Record(rd) => !gated || resolver.is_pub_type(rd.name),
             hir::Decl::Effect(ed) => !gated || resolver.is_pub_type(ed.name),
+            hir::Decl::Alias(ad) => !gated || resolver.is_pub_type(ad.name),
             _ => false,
         })
         .cloned()
@@ -848,6 +850,7 @@ fn module_types(
             .filter_map(|d| match d.value() {
                 hir::Decl::Data(dd) => Some(dd.name),
                 hir::Decl::Record(rd) => Some(rd.name),
+                hir::Decl::Alias(ad) => Some(ad.name),
                 _ => None,
             })
             .collect()

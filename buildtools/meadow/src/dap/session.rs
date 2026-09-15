@@ -1335,6 +1335,10 @@ impl Names<'_> {
                 }
             }
             hir::Expr::Field(o, _) => self.expr(o),
+            hir::Expr::Update(base, fs) => {
+                self.expr(base);
+                fs.iter().for_each(|(_, e)| self.expr(e));
+            }
             hir::Expr::Var(_) | hir::Expr::Lit(_) | hir::Expr::Unit | hir::Expr::Error => {}
         }
     }

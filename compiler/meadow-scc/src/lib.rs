@@ -211,6 +211,12 @@ fn expr_mentions(
             }
         }
         hir::Expr::Field(o, _) => expr_mentions(o, owner, ov, out),
+        hir::Expr::Update(base, fields) => {
+            expr_mentions(base, owner, ov, out);
+            fields
+                .iter()
+                .for_each(|(_, e)| expr_mentions(e, owner, ov, out));
+        }
         hir::Expr::Handle(body, arms, ret) => {
             expr_mentions(body, owner, ov, out);
             arms.iter()

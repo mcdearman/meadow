@@ -750,6 +750,7 @@ impl Session {
                 match d.value() {
                     hir::Decl::Data(dd) => println!("defined type {}", dd.name),
                     hir::Decl::Record(rd) => println!("defined type {}", rd.name),
+                    hir::Decl::Alias(ad) => println!("defined type {}", ad.name),
                     _ => {}
                 }
             }

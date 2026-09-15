@@ -563,7 +563,7 @@ impl Indenter {
 /// Whether these tokens begin a top-level declaration.
 fn starts_declaration(toks: &[Tok<'_>]) -> bool {
     match toks.first_text() {
-        "mod" | "use" | "def" | "fun" | "data" | "record" | "effect" => true,
+        "mod" | "use" | "def" | "fun" | "data" | "record" | "effect" | "type" => true,
         // `@pub`, `@attr(…)` — an attribute, not a user-defined `@` operator.
         "@" => toks
             .get(1)
@@ -691,6 +691,16 @@ mod tests {
     #[test]
     fn a_declaration_body_indents_one_unit() {
         assert_eq!(f("fun f x =\nx + 1\n"), "fun f x =\n  x + 1\n");
+    }
+
+    /// A `type` alias and a signature start declarations of their own, rather
+    /// than continuing the body before them.
+    #[test]
+    fn an_alias_and_a_signature_are_declarations() {
+        assert_eq!(
+            f("fun f x =\nx + 1\ntype P = (Int, Int)\nfun g : P -> Int\nfun g p =\nf 1\n"),
+            "fun f x =\n  x + 1\ntype P = (Int, Int)\nfun g : P -> Int\nfun g p =\n  f 1\n"
+        );
     }
 
     /// A guard is an `if` with no `else` to wait for: an arm having one is

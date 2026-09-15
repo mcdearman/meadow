@@ -89,17 +89,38 @@ pub fn build(
     image: &meadow_bytecode::Program,
     target: Target,
 ) -> Result<PathBuf, String> {
-    // The host's executable where `run` looks; another target's beside it,
-    // under its triple -- and without `\\?\`, which `cl` takes for the start of
-    // a file name.
+    let exe =
+        native_dir(root, profile, target).join(format!("{name}{}", target.format.exe_suffix()));
+    link_image(image, opt, target, &exe)?;
+    Ok(exe)
+}
+
+/// Where what is compiled for `target` goes: the host's where `run` looks;
+/// another target's beside it, under its triple -- and without `\\?\`, which
+/// `cl` takes for the start of a file name.
+pub fn native_dir(root: &Path, profile: Profile, target: Target) -> PathBuf {
     let native = artifacts::native_dir(root, profile);
     let mut dir = PathBuf::from(crate::dap::session::plain_path(&native.to_string_lossy()));
     if Target::host().ok() != Some(target) {
         dir = dir.join(target.triple());
     }
-    let exe = dir.join(format!("{name}{}", target.format.exe_suffix()));
-    link_image(image, opt, target, &exe)?;
-    Ok(exe)
+    dir
+}
+
+/// Write the native code `image` compiles to for `target` at `opt` as text,
+/// under package `name`'s native directory, answering where it went -- what
+/// `--emit asm` makes in place of an executable.
+pub fn write_asm(
+    root: &Path,
+    profile: Profile,
+    opt: meadow_compiler::OptLevel,
+    name: &str,
+    image: &meadow_bytecode::Program,
+    target: Target,
+) -> Result<PathBuf, String> {
+    let path = native_dir(root, profile, target).join(format!("{name}.s"));
+    artifacts::write_text(&path, &crate::listing::asm(image, target.arch, opt))?;
+    Ok(path)
 }
 
 /// Compile `image` for `target` at `opt` and link it into the executable

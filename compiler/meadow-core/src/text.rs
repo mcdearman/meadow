@@ -20,6 +20,15 @@ pub fn clamp(len: usize, from: i64, to: i64) -> (usize, usize) {
     (lo as usize, hi as usize)
 }
 
+/// -1, 0 or 1 as `a` sorts before, with or after `b`, byte by byte.
+pub fn compare(a: &[u8], b: &[u8]) -> i64 {
+    match a.cmp(b) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
 /// Where `needle` first occurs in `hay` at or after byte `from`, or -1. An
 /// empty needle is found wherever the search starts, up to the end.
 pub fn index_of(hay: &[u8], needle: &[u8], from: i64) -> i64 {

@@ -89,9 +89,12 @@ meadow build --release pkg      # ...optimized, `match` exhaustive, and an execu
 meadow build --aot --target x86_64 pkg  # an executable for another architecture
 meadow run -O2 pkg              # ...or just the optimization level
 meadow dis pkg                  # disassemble: the bytecode the VM would run
+meadow dis --asm pkg            # ...or the native code it compiles to
+meadow build --emit bytecode,asm pkg  # write those as text, in place of the binaries
 meadow run pkg -- in.txt -v     # pass the program arguments, which `Process.argv` reads
 meadow exec target/debug/bytecode/pkg.mbc   # run a bytecode image
 meadow link pkg.mbc -o pkg      # ...or compile one into an executable
+meadow link --emit asm pkg.mbc  # ...or into the text of its native code
 meadow fmt src                  # re-indent .mw sources in place
 meadow fmt --check src          # ...or just report, and exit 1 if any differ
 meadow test                     # run the package's `@test` functions
@@ -108,7 +111,9 @@ is embedded in the binary, so there is nothing else to install.
 
 What a build makes goes in the package's own `target/` directory, one directory
 per profile: the bytecode image at `target/debug/bytecode/<name>.mbc`, and
-native object code and executables under `target/<profile>/native/`. `meadow
+native object code and executables under `target/<profile>/native/`. `--emit`
+chooses what is written: `image` and `exe` are the binaries, `bytecode` the image
+as text (`<name>.mbc.txt`) and `asm` the native code as text (`<name>.s`). `meadow
 init` writes a `.gitignore` that ignores it.
 
 Builds are **incremental**. Every package that compiles cleanly, and the

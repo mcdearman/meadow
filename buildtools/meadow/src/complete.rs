@@ -99,7 +99,12 @@ pub fn context(head: &str) -> Ctx {
     let leads_with_attr = matches!(toks.first(), Some(Token::At));
     let head_toks: Vec<Token> = if leads_with_attr {
         toks.iter()
-            .skip_while(|t| !matches!(t, Token::Data | Token::Record | Token::Effect | Token::Use))
+            .skip_while(|t| {
+                !matches!(
+                    t,
+                    Token::Data | Token::Record | Token::Effect | Token::Type | Token::Use
+                )
+            })
             .cloned()
             .collect()
     } else {
@@ -109,6 +114,17 @@ pub fn context(head: &str) -> Ctx {
     match head_toks.first() {
         Some(Token::Use) => use_context(&head_toks),
         Some(Token::Data) | Some(Token::Record) | Some(Token::Effect) => decl_context(&head_toks),
+        // `type T a = <type>`.
+        Some(Token::Type) if head_toks.iter().any(|t| matches!(t, Token::Eq)) => Ctx::Type,
+        Some(Token::Type) => Ctx::Nothing,
+        // `fun f : <type>` / `def x : <type>`: a signature, or the declared
+        // type before a definition's `=`.
+        Some(Token::Fun) | Some(Token::Def)
+            if head_toks.iter().any(|t| matches!(t, Token::Colon))
+                && !head_toks.iter().any(|t| matches!(t, Token::Eq)) =>
+        {
+            Ctx::Type
+        }
         // Still choosing a keyword after `@pub`.
         None if leads_with_attr => Ctx::Nothing,
         // Term position — and *only* here does `Mod.` mean a qualified reference.
@@ -234,6 +250,7 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
                     n.ctors.push(rd.name.to_string());
                 }
                 hir::Decl::Effect(ed) => n.types.push(ed.name.to_string()),
+                hir::Decl::Alias(ad) => n.types.push(ad.name.to_string()),
                 _ => {}
             }
         }

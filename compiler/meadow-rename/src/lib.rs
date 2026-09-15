@@ -123,6 +123,9 @@ pub struct Resolver {
     /// scoped to the enclosing declaration, which is what makes the two `a`s in
     /// `fun twice (f : a -> a) (x : a)` the same variable.
     open_tyvars: bool,
+    /// The bindings a standalone signature has been given, so a second one is
+    /// reported.
+    sigs: std::collections::HashSet<VarId>,
     ids: NodeIdGen,
     /// This unit's `VarId`s. Seeded by the driver from a base that clears the
     /// unit's dependencies -- see [`meadow_hir::VarIdGen`].
@@ -442,6 +445,7 @@ impl Resolver {
             base_scope: 0,
             tyvars: Vec::new(),
             open_tyvars: false,
+            sigs: std::collections::HashSet::new(),
             ids: NodeIdGen::new(),
             vars: VarIdGen::starting_at(var_base),
             toplevel: false,
@@ -973,6 +977,9 @@ impl Resolver {
                         self.effect_op_ids.insert(id, (name, op));
                     }
                 }
+                ast::Decl::TypeAlias(ad) => {
+                    self.declare_tycon(*ad.name.value(), ad.params.len(), ad.name.span);
+                }
                 _ => {}
             }
         }
@@ -1022,6 +1029,9 @@ impl Resolver {
                         // bring the operation value into scope under its own id
                         self.import(*opname, *op.value());
                     }
+                }
+                hir::Decl::Alias(ad) => {
+                    self.tycons.insert(ad.name, ad.params.len());
                 }
                 _ => {}
             }
@@ -1522,6 +1532,17 @@ impl Resolver {
             }
         }
 
+        if let ast::Decl::Sig(name, _) = base.value()
+            && (vis != Vis::Private || has_test(attrs))
+        {
+            // What a binding is -- exported, a test -- is said once, where it
+            // is defined; a signature only says its type.
+            self.error(
+                format!("a signature cannot carry `@pub` or `@test`"),
+                format!("put it on the definition of `{}`", name.value()),
+                decl.span,
+            );
+        }
         let hir = self.resolve_bare_decl(base);
         if vis == Vis::Exported {
             self.mark_pub(&hir);
@@ -1573,6 +1594,9 @@ impl Resolver {
                 for (_, op, _) in &ed.ops {
                     self.pub_vars.insert(*op.value());
                 }
+            }
+            hir::Decl::Alias(ad) => {
+                self.pub_types.insert(ad.name);
             }
             _ => {}
         }
@@ -1706,6 +1730,50 @@ impl Resolver {
                     }),
                     decl.span,
                 )
+            }
+            ast::Decl::TypeAlias(ad) => {
+                self.tyvars.clear();
+                let params = self.bind_tyvars(&ad.params);
+                let ty = self.resolve_ty(&ad.ty);
+                self.tyvars.clear();
+                self.node(
+                    hir::Decl::Alias(hir::AliasDecl {
+                        name: *ad.name.value(),
+                        name_span: ad.name.span,
+                        params,
+                        ty,
+                    }),
+                    decl.span,
+                )
+            }
+            ast::Decl::Sig(name, ty) => {
+                let n = *name.value();
+                let id = self.predeclared.get(&(self.current.clone(), n)).copied();
+                // Its variables are its own: `a` here is not an `a` of the
+                // definition's annotations, and is general where that is not.
+                self.tyvars.clear();
+                let was = std::mem::replace(&mut self.open_tyvars, true);
+                let rty = self.resolve_ty(ty);
+                self.open_tyvars = was;
+                self.tyvars.clear();
+                let Some(id) = id else {
+                    self.error(
+                        format!("a signature for `{n}`, which is not defined in this module"),
+                        format!("define `{n}` here, after or before its signature"),
+                        name.span,
+                    );
+                    return self.node(hir::Decl::Error, decl.span);
+                };
+                if !self.sigs.insert(id) {
+                    self.error(
+                        format!("`{n}` already has a signature"),
+                        "a second signature".to_string(),
+                        name.span,
+                    );
+                    return self.node(hir::Decl::Error, decl.span);
+                }
+                let ident = self.node(id, name.span);
+                self.node(hir::Decl::Sig(ident, rty), decl.span)
             }
         }
     }
@@ -1842,6 +1910,12 @@ impl Resolver {
                 .find(|(nm, _)| *nm == name)
                 .map(|(_, id)| *id)
                 .unwrap_or_else(|| {
+                    if self.open_tyvars {
+                        let id = self.vars.fresh();
+                        self.names.insert(id, name);
+                        self.tyvars.push((name, id));
+                        return id;
+                    }
                     self.error(
                         format!("unbound effect variable `{name}`"),
                         "not a parameter of this declaration".to_string(),
@@ -2199,6 +2273,26 @@ impl Resolver {
                     .collect_vec();
                 let rbase = base.as_ref().map(|b| self.resolve_expr(b));
                 self.node(hir::Expr::Record(rfields, rbase), expr.span)
+            }
+            ast::Expr::Update(base, fields) => {
+                let rbase = self.resolve_expr(base);
+                let mut seen = Vec::new();
+                let rfields = fields
+                    .iter()
+                    .map(|(label, val)| {
+                        if seen.contains(label.value()) {
+                            self.error(
+                                format!("field `{}` is updated twice", label.value()),
+                                "already updated".to_string(),
+                                label.span,
+                            );
+                        }
+                        seen.push(*label.value());
+                        let l = self.node(*label.value(), label.span);
+                        (l, self.resolve_expr(val))
+                    })
+                    .collect_vec();
+                self.node(hir::Expr::Update(rbase, rfields), expr.span)
             }
             ast::Expr::Field(obj, label) => {
                 let o = self.resolve_expr(obj);

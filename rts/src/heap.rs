@@ -2655,6 +2655,38 @@ mod tests {
         }
     }
 
+    /// Word-at-a-time comparison agrees with comparing the bytes, across word
+    /// boundaries, for prefixes, and for real zero bytes against a word's
+    /// zero padding.
+    #[test]
+    fn strings_compare_as_their_bytes_do() {
+        let mut h = heap();
+        let texts: [&[u8]; 12] = [
+            b"",
+            b"a",
+            b"abcdefgh",
+            b"abcdefgh\0",
+            b"abcdefghi",
+            b"abcdefgi",
+            b"abcdefg",
+            b"\0",
+            b"\0\0",
+            b"Zebra",
+            "é".as_bytes(),
+            "z—more than two words of text".as_bytes(),
+        ];
+        let addrs: Vec<_> = texts.iter().map(|t| h.alloc_str(t)).collect();
+        for (i, a) in texts.iter().enumerate() {
+            for (j, b) in texts.iter().enumerate() {
+                assert_eq!(
+                    h.packed_compare(addrs[i], addrs[j]),
+                    meadow_core::text::compare(a, b),
+                    "{a:?} against {b:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn an_array_of_bytes_takes_a_byte_an_element() {
         assert_eq!(

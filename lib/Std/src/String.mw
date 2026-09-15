@@ -19,6 +19,7 @@
 use Std.Collections.Vector as V (vecFromArray)
 use Std.Num.Int (min, max)
 use Std.Maybe.Maybe.*
+use Std.Ordering.Ordering.*
 
 -- ---------------------------------------------------------------------------
 -- Bytes in, bytes out
@@ -114,6 +115,32 @@ fun splitLoop s sep i acc =
 -- splitting on nothing has no useful answer.
 @pub fun split sep s =
   if isEmpty sep then [s] else splitLoop s sep 0 V.empty
+
+-- ---------------------------------------------------------------------------
+-- Ordering
+-- ---------------------------------------------------------------------------
+
+-- How `a` sorts against `b`: byte by byte, which for UTF-8 is the order of the
+-- characters' code points, and a prefix before what it prefixes. What
+-- `Std.Sort.sortBy S.compare` and an ordered map keyed by names want.
+@pub fun compare a b =
+  match stringCompare a b with
+  | n if n < 0 -> Less
+  | 0 -> Equal
+  | _ -> Greater
+
+@pub fun lessThan a b = stringCompare a b < 0
+
+@pub fun lessOrEqual a b = stringCompare a b <= 0
+
+@pub fun greaterThan a b = stringCompare a b > 0
+
+@pub fun greaterOrEqual a b = stringCompare a b >= 0
+
+-- The one that sorts first, and the one that sorts last.
+@pub fun minOf a b = if stringCompare b a < 0 then b else a
+
+@pub fun maxOf a b = if stringCompare b a > 0 then b else a
 
 -- ---------------------------------------------------------------------------
 -- Whitespace
@@ -305,6 +332,19 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let d = assertEq (charAt "hi" 9) None "past the end" in
   let e = assertEq (fromChars (chars "round trip é")) "round trip é" "round trip" in
   assertEq (chars "hi") ['h', 'i'] "chars"
+
+@test fun stringsSortByteByByte () =
+  let a = assertEq (compare "apple" "banana") Less "a before b" in
+  let b = assertEq (compare "b" "apple") Greater "b after apple" in
+  let c = assertEq (compare "same" "same") Equal "equal" in
+  let d = assertTrue (lessThan "app" "apple") "a prefix sorts first" in
+  let e = assertTrue (lessThan "" "a") "the empty string sorts first" in
+  let f = assertTrue (lessThan "Zebra" "apple") "upper case before lower" in
+  let g = assertTrue (lessThan "abcdefgh" "abcdefgi") "across a word" in
+  let h = assertTrue (lessThan "abcdefgh" "abcdefgh\0") "a real zero byte after" in
+  let i = assertTrue (lessThan "z" "é") "by code point" in
+  let j = assertEq (minOf "pear" "fig") "fig" "minOf" in
+  assertEq (maxOf "pear" "fig") "pear" "maxOf"
 
 @test fun bytesRoundTrip () =
   let a = assertEq (fromBytes (toBytes "hello")) "hello" "round trip" in

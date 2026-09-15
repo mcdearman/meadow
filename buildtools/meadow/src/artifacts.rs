@@ -5,7 +5,9 @@
 //!
 //! ```text
 //!   <package>/target/debug/bytecode/<name>.mbc     the image the VM runs
+//!   <package>/target/debug/bytecode/<name>.mbc.txt the image as text (`--emit bytecode`)
 //!   <package>/target/debug/native/                 object code and binaries
+//!   <package>/target/debug/native/<name>.s         native code as text (`--emit asm`)
 //!   <package>/target/debug/incremental/            compiled packages, to reuse
 //!   <package>/target/release/...
 //! ```
@@ -35,6 +37,13 @@ pub fn image_path(root: &Path, profile: Profile, name: &str) -> PathBuf {
         .join(format!("{name}.{IMAGE_EXTENSION}"))
 }
 
+/// Where the image of package `name` goes as text -- `--emit bytecode`.
+pub fn bytecode_text_path(root: &Path, profile: Profile, name: &str) -> PathBuf {
+    profile_dir(root, profile)
+        .join("bytecode")
+        .join(format!("{name}.{IMAGE_EXTENSION}.txt"))
+}
+
 /// Where native object code and binaries go.
 pub fn native_dir(root: &Path, profile: Profile) -> PathBuf {
     profile_dir(root, profile).join("native")
@@ -57,6 +66,11 @@ pub fn write_image(
     let path = image_path(root, profile, name);
     write(&path, &meadow_bytecode::image::encode(image))?;
     Ok(path)
+}
+
+/// Write `text` to `path`, making the directories on the way.
+pub fn write_text(path: &Path, text: &str) -> Result<(), String> {
+    write(path, text.as_bytes())
 }
 
 /// Write `bytes` to `path`, making the directories on the way.
@@ -82,6 +96,10 @@ mod tests {
         assert_eq!(
             native_dir(root, Profile::Release),
             Path::new("/p/target/release/native")
+        );
+        assert_eq!(
+            bytecode_text_path(root, Profile::Debug, "demo"),
+            Path::new("/p/target/debug/bytecode/demo.mbc.txt")
         );
     }
 }

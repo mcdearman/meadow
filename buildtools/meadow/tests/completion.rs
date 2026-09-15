@@ -111,6 +111,13 @@ fn a_type_position_completes_types() {
     assert!(complete_at(&n, "record R = { x : May").contains(&"Maybe".to_string()));
     // ...and not constructors.
     assert!(!complete_at(&n, "record R = { x : Jus").contains(&"Just".to_string()));
+    // An alias's right-hand side, and a signature.
+    assert!(complete_at(&n, "type Names = [May").contains(&"Maybe".to_string()));
+    assert!(complete_at(&n, "@pub type T = Resu").contains(&"Result".to_string()));
+    assert!(complete_at(&n, "fun f : Int -> May").contains(&"Maybe".to_string()));
+    assert!(complete_at(&n, "def x : Stri").contains(&"String".to_string()));
+    // Past the `=`, a term again.
+    assert!(!complete_at(&n, "def x : Int = May").contains(&"Maybe".to_string()));
 }
 
 #[test]

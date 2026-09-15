@@ -14,8 +14,8 @@ use lsp_types::notification::{
     Notification, PublishDiagnostics,
 };
 use lsp_types::request::{
-    CodeLensRequest, GotoDefinition, HoverRequest, InlayHintRequest, PrepareRenameRequest, Rename,
-    Request as LspRequest, SemanticTokensFullRequest,
+    CodeLensRequest, Formatting, GotoDefinition, HoverRequest, InlayHintRequest,
+    PrepareRenameRequest, Rename, Request as LspRequest, SemanticTokensFullRequest,
 };
 use lsp_types::*;
 use meadow_compiler::{CompiledPackage, source::Source, span::Span};
@@ -121,6 +121,8 @@ fn server_capabilities() -> ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
+        // What an editor's format-on-save asks for.
+        document_formatting_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
         code_lens_provider: Some(CodeLensOptions {
             resolve_provider: Some(false),
@@ -302,6 +304,14 @@ impl Server {
     fn request(&mut self, req: Request) -> Response {
         let id = req.id.clone();
         match req.method.as_str() {
+            // `meadow fmt`, on the document as the editor holds it. The
+            // formatter has no settings, so the client's tab size and
+            // spaces-or-tabs are not consulted: a file formats the same way
+            // in every editor and on the command line.
+            Formatting::METHOD => self.answer::<Formatting, _>(req, |s, p| {
+                let doc = s.docs.get(&p.text_document.uri)?;
+                Some(crate::format::edits(&doc.text))
+            }),
             HoverRequest::METHOD => self.answer::<HoverRequest, _>(req, |s, p| {
                 let (doc, offset) = s.at(&p.text_document_position_params)?;
                 Some(Hover {

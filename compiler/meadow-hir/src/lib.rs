@@ -311,6 +311,9 @@ pub enum TypeExpr {
     Vector(LTypeExpr),
     /// `[a;]` — a linked `List`.
     List(LTypeExpr),
+    /// `{ name : String | r }` — a structural record, closed when `tail` is
+    /// `None`. The tail is a row variable.
+    Record(Vec<(Label, LTypeExpr)>, Option<Ident>),
     /// A type the resolver could not make sense of: unknown, given the wrong
     /// number of arguments, or an unbound variable. It has already been
     /// reported, and inference reads it as the error type, which agrees with

@@ -136,13 +136,18 @@ impl Vm<'_> {
             return None;
         }
         let sign = match self.heap.meta(a) {
-            0 => Sign::NoSign,
-            1 => Sign::Plus,
+            crate::prims::big::ZERO => Sign::NoSign,
+            crate::prims::big::PLUS => Sign::Plus,
             _ => Sign::Minus,
         };
-        // Digits are `Int` words, all of them: read as the words they are.
-        let digits: Vec<u32> = self.heap.words(a).map(|w| w as u32).collect();
-        Some(BigInt::from_slice(sign, &digits))
+        // 64-bit limbs, least significant first. num-bigint builds from `u32`
+        // digits or from bytes, and bytes are the one of the two that takes
+        // the limbs as they are rather than splitting each in half.
+        let mut bytes = Vec::with_capacity(self.heap.len(a) * 8);
+        for limb in self.heap.words(a) {
+            bytes.extend_from_slice(&limb.to_le_bytes());
+        }
+        Some(BigInt::from_bytes_le(sign, &bytes))
     }
 
     /// How `print` and `println` render a value: a `String` as its text,
@@ -513,8 +518,12 @@ impl Vm<'_> {
                                 return false;
                             }
                         }
+                        // One representation per number -- normalized limbs, the
+                        // sign apart -- so equal numbers have equal words.
                         (Kind::BigInt, Kind::BigInt) => {
-                            if self.bigint_at(a) != self.bigint_at(b) {
+                            if self.heap.meta(x) != self.heap.meta(y)
+                                || !self.heap.words(x).eq(self.heap.words(y))
+                            {
                                 return false;
                             }
                         }

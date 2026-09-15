@@ -298,6 +298,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut data_decls = Vec::new();
     let mut types = TypeTable::default();
     let mut exports: Vec<Export> = Vec::new();
+    let mut generalized = HashMap::new();
     let mut prelude_names: Vec<InternedString> = Vec::new();
     // Unioned across the sub-units, which in practice means `Prelude.mw`'s:
     // it is the only one that `@pub use`s a type's constructors.
@@ -313,6 +314,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         data_decls.extend(sub.data_decls);
         tests.extend(sub.tests);
         types.absorb(sub.types);
+        generalized.extend(sub.generalized);
         for e in sub.exports {
             if e.module.is_empty() {
                 prelude_names.push(e.name);
@@ -334,6 +336,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         modules,
         types,
         exports,
+        generalized,
         defs,
         ctor_fields,
         variants,

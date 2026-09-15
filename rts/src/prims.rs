@@ -68,21 +68,91 @@ impl Vm<'_> {
     }
 
     pub(crate) fn alloc_bigint(&mut self, n: BigInt) -> Value {
-        let (sign, digits) = n.to_u32_digits();
-        // Safe to `ensure` here: the number is a Rust value, not a heap address.
-        self.ensure(Heap::size_of(Kind::BigInt, digits.len()));
-        let meta = match sign {
-            Sign::NoSign => 0,
-            Sign::Plus => 1,
-            Sign::Minus => 2,
+        let meta = match n.sign() {
+            Sign::NoSign => big::ZERO,
+            Sign::Plus => big::PLUS,
+            Sign::Minus => big::MINUS,
         };
+        let limbs = n.magnitude().to_u64_digits();
+        self.alloc_limbs(meta, &limbs)
+    }
+
+    /// A `BigInt` of sign `meta` and magnitude `limbs`: 64-bit limbs, least
+    /// significant first, with no zero limb at the top -- the one
+    /// representation each number has, which is what lets equality compare
+    /// words.
+    ///
+    /// Makes its own room. The limbs are Rust memory, so nothing can move them.
+    pub(crate) fn alloc_limbs(&mut self, meta: u32, limbs: &[u64]) -> Value {
+        debug_assert!(limbs.last() != Some(&0), "a BigInt with a zero top limb");
+        let meta = if limbs.is_empty() { big::ZERO } else { meta };
+        self.ensure(Heap::size_of(Kind::BigInt, limbs.len()));
         Value::Obj(self.heap.alloc_described(
             Kind::BigInt,
             meta,
-            digits.len(),
-            |i| digits[i] as u64,
+            limbs.len(),
+            |i| limbs[i],
             |_| meadow_core::desc::INT,
         ))
+    }
+
+    /// An integer operand as sign and magnitude, for [`big`]: a `BigInt`'s own
+    /// limbs, borrowed where they lie when they lie in the nursery, or an
+    /// `Int`'s one limb. `None` for anything else.
+    fn limbs_of(&self, v: Value) -> Option<(i8, std::borrow::Cow<'_, [u64]>)> {
+        use std::borrow::Cow;
+        match v {
+            Value::Int(0) => Some((0, Cow::Borrowed(&[]))),
+            Value::Int(x) => Some((x.signum() as i8, Cow::Owned(vec![x.unsigned_abs()]))),
+            Value::Obj(a) if self.heap.kind(a) == Kind::BigInt => {
+                let sign = match self.heap.meta(a) {
+                    big::ZERO => 0,
+                    big::PLUS => 1,
+                    _ => -1,
+                };
+                let limbs = match self.heap.nursery_words(a) {
+                    Some(slice) => Cow::Borrowed(slice),
+                    None => Cow::Owned(self.heap.words(a).collect()),
+                };
+                Some((sign, limbs))
+            }
+            _ => None,
+        }
+    }
+
+    /// `a + b` or `a - b` where one side is a `BigInt` and the other a `BigInt`
+    /// or an `Int`, done on the limbs where they are. `None` when the operands
+    /// are not that, for the general path to handle.
+    ///
+    /// The point is what it does not do. The general path reads each operand
+    /// off the heap into a `num_bigint::BigInt`, adds, and writes the answer
+    /// back -- and on a loop adding 70,000-bit numbers that conversion was 80%
+    /// of the run and the addition 9%.
+    fn big_add_sub(&mut self, subtract: bool, a: Value, b: Value) -> Option<Value> {
+        if !matches!((a, b), (Value::Obj(_), _) | (_, Value::Obj(_))) {
+            return None;
+        }
+        let (sign, limbs) = {
+            let (sa, la) = self.limbs_of(a)?;
+            let (sb, lb) = self.limbs_of(b)?;
+            let sb = if subtract { -sb } else { sb };
+            big::add(sa, &la, sb, &lb)
+        };
+        // Computed into Rust memory before any room is made, so the collector
+        // moving the operands cannot matter: nothing below reads them.
+        let meta = if sign < 0 { big::MINUS } else { big::PLUS };
+        Some(self.alloc_limbs(meta, &limbs))
+    }
+
+    /// `a` against `b`, for an integer comparison with a `BigInt` on either
+    /// side. Reads and never allocates, as a fused comparison must not.
+    fn big_cmp(&self, a: Value, b: Value) -> Option<std::cmp::Ordering> {
+        if !matches!((a, b), (Value::Obj(_), _) | (_, Value::Obj(_))) {
+            return None;
+        }
+        let (sa, la) = self.limbs_of(a)?;
+        let (sb, lb) = self.limbs_of(b)?;
+        Some(big::cmp(sa, &la, sb, &lb))
     }
 
     fn int(&self, v: Value) -> Result<i64, Error> {
@@ -285,10 +355,13 @@ impl Vm<'_> {
                         x.wrapping_pow(e)
                     }
                 }),
-                (a, b) => {
-                    let r = num::int_arith(arith(p), self.num(a)?, self.num(b)?);
-                    self.from_num(r.map_err(|msg| Error { msg })?)
-                }
+                (a, b) => match p {
+                    Add | Sub if let Some(v) = self.big_add_sub(p == Sub, a, b) => v,
+                    _ => {
+                        let r = num::int_arith(arith(p), self.num(a)?, self.num(b)?);
+                        self.from_num(r.map_err(|msg| Error { msg })?)
+                    }
+                },
             },
             // A fused comparison may not allocate (`Prim::compares`), and none
             // of these does: a `BigInt` is read, not built.
@@ -299,10 +372,16 @@ impl Vm<'_> {
                     Le => x <= y,
                     _ => x >= y,
                 }),
-                (a, b) => Value::Bool(
-                    num::int_cmp(cmp(p), self.num(a)?, self.num(b)?)
+                (a, b) => Value::Bool(match self.big_cmp(a, b) {
+                    Some(o) => match p {
+                        Lt => o.is_lt(),
+                        Gt => o.is_gt(),
+                        Le => o.is_le(),
+                        _ => o.is_ge(),
+                    },
+                    None => num::int_cmp(cmp(p), self.num(a)?, self.num(b)?)
                         .map_err(|msg| Error { msg })?,
-                ),
+                }),
             },
             Neg => match arg(self, 0) {
                 Value::Int(x) => Value::Int(x.wrapping_neg()),
@@ -930,5 +1009,148 @@ impl Vm<'_> {
 
         self.set(dst, out);
         Ok(())
+    }
+}
+
+/// Arithmetic on `BigInt` magnitudes as the heap holds them: 64-bit limbs,
+/// least significant first, no zero limb at the top, and the sign kept apart.
+pub(crate) mod big {
+    use std::cmp::Ordering;
+
+    /// A `BigInt`'s `meta`: its sign.
+    pub const ZERO: u32 = 0;
+    pub const PLUS: u32 = 1;
+    pub const MINUS: u32 = 2;
+
+    /// `sa·a + sb·b`, as a sign (-1, 0 or 1) and a normalized magnitude.
+    pub fn add(sa: i8, a: &[u64], sb: i8, b: &[u64]) -> (i8, Vec<u64>) {
+        if sb == 0 {
+            return (sa, a.to_vec());
+        }
+        if sa == 0 {
+            return (sb, b.to_vec());
+        }
+        if sa == sb {
+            return (sa, add_mag(a, b));
+        }
+        match cmp_mag(a, b) {
+            Ordering::Equal => (0, Vec::new()),
+            Ordering::Greater => (sa, sub_mag(a, b)),
+            Ordering::Less => (sb, sub_mag(b, a)),
+        }
+    }
+
+    /// `sa·a` against `sb·b`.
+    pub fn cmp(sa: i8, a: &[u64], sb: i8, b: &[u64]) -> Ordering {
+        match sa.cmp(&sb) {
+            Ordering::Equal if sa < 0 => cmp_mag(b, a),
+            Ordering::Equal => cmp_mag(a, b),
+            other => other,
+        }
+    }
+
+    /// Magnitudes compared. Normalized, so the longer one is the larger.
+    pub fn cmp_mag(a: &[u64], b: &[u64]) -> Ordering {
+        a.len()
+            .cmp(&b.len())
+            .then_with(|| a.iter().rev().cmp(b.iter().rev()))
+    }
+
+    pub fn add_mag(a: &[u64], b: &[u64]) -> Vec<u64> {
+        let (long, short) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+        let mut out = Vec::with_capacity(long.len() + 1);
+        let mut carry = false;
+        for (i, &x) in long.iter().enumerate() {
+            let y = short.get(i).copied().unwrap_or(0);
+            let (s, c1) = x.overflowing_add(y);
+            let (s, c2) = s.overflowing_add(carry as u64);
+            out.push(s);
+            carry = c1 | c2;
+        }
+        if carry {
+            out.push(1);
+        }
+        out
+    }
+
+    /// `a - b`, for `a >= b`.
+    pub fn sub_mag(a: &[u64], b: &[u64]) -> Vec<u64> {
+        debug_assert!(cmp_mag(a, b) != Ordering::Less);
+        let mut out = Vec::with_capacity(a.len());
+        let mut borrow = false;
+        for (i, &x) in a.iter().enumerate() {
+            let y = b.get(i).copied().unwrap_or(0);
+            let (d, b1) = x.overflowing_sub(y);
+            let (d, b2) = d.overflowing_sub(borrow as u64);
+            out.push(d);
+            borrow = b1 | b2;
+        }
+        while out.last() == Some(&0) {
+            out.pop();
+        }
+        out
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use num_bigint::BigInt;
+        use num_traits::Zero;
+
+        fn as_limbs(n: &BigInt) -> (i8, Vec<u64>) {
+            let s = if n.is_zero() {
+                0
+            } else if n.sign() == num_bigint::Sign::Minus {
+                -1
+            } else {
+                1
+            };
+            (s, n.magnitude().to_u64_digits())
+        }
+
+        fn from_limbs(s: i8, l: &[u64]) -> BigInt {
+            let bytes: Vec<u8> = l.iter().flat_map(|w| w.to_le_bytes()).collect();
+            let m = BigInt::from(num_bigint::BigUint::from_bytes_le(&bytes));
+            if s < 0 { -m } else { m }
+        }
+
+        /// Every sign combination, carries across limbs, borrows that empty
+        /// the top limbs, and cancellation to zero -- against num-bigint, which
+        /// is what the general path uses and what these have to agree with.
+        #[test]
+        fn limb_arithmetic_agrees_with_num_bigint() {
+            let two64 = BigInt::from(1u128 << 64);
+            let samples: Vec<BigInt> = vec![
+                BigInt::zero(),
+                BigInt::from(1),
+                BigInt::from(-1),
+                BigInt::from(u64::MAX),
+                -BigInt::from(u64::MAX),
+                two64.clone(),
+                -two64.clone(),
+                &two64 * &two64 - 1,
+                -(&two64 * &two64) + 1,
+                BigInt::from(i64::MIN),
+                BigInt::parse_bytes(b"123456789012345678901234567890123456789", 10).unwrap(),
+                -BigInt::parse_bytes(b"123456789012345678901234567890123456788", 10).unwrap(),
+            ];
+            for x in &samples {
+                for y in &samples {
+                    let (sx, lx) = as_limbs(x);
+                    let (sy, ly) = as_limbs(y);
+                    let (s, l) = add(sx, &lx, sy, &ly);
+                    assert_eq!(from_limbs(s, &l), x + y, "{x} + {y}");
+                    assert!(l.last() != Some(&0), "{x} + {y} left a zero top limb");
+                    assert_eq!(
+                        s == 0,
+                        l.is_empty(),
+                        "{x} + {y}: sign and magnitude disagree"
+                    );
+                    let (s, l) = add(sx, &lx, -sy, &ly);
+                    assert_eq!(from_limbs(s, &l), x - y, "{x} - {y}");
+                    assert_eq!(cmp(sx, &lx, sy, &ly), x.cmp(y), "{x} <=> {y}");
+                }
+            }
+        }
     }
 }

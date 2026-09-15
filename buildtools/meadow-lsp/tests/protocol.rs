@@ -154,7 +154,65 @@ fn the_handshake_advertises_what_we_implement() {
     assert_eq!(s["definitionProvider"], json!(true));
     assert_eq!(s["inlayHintProvider"], json!(true));
     assert!(s["semanticTokensProvider"].is_object());
+    assert_eq!(s["documentFormattingProvider"], json!(true));
     assert_eq!(s["textDocumentSync"], json!(1), "full sync");
+}
+
+/// `textDocument/formatting` -- what format-on-save sends -- answers with the
+/// edits `meadow fmt` would make, computed from the document as the editor
+/// holds it rather than as it is on disk.
+#[test]
+fn formatting_answers_with_what_meadow_fmt_would_do() {
+    let mut c = Client::start();
+    let messy = "fun f x =\n        x + 1\n\n\n\ndef main =   \n   f 1\n";
+    c.set(messy);
+    let edits = c.request(
+        "textDocument/formatting",
+        json!({
+            "textDocument": {"uri": URI},
+            "options": {"tabSize": 8, "insertSpaces": false}
+        }),
+    );
+    let edits = edits.as_array().expect("an array of edits");
+    assert_eq!(
+        edits.len(),
+        1,
+        "one edit, over the lines that change: {edits:?}"
+    );
+
+    // Applied the way an editor applies it.
+    let e = &edits[0];
+    let line_start = |line: u64| {
+        messy
+            .split_inclusive('\n')
+            .take(line as usize)
+            .map(str::len)
+            .sum::<usize>()
+    };
+    let at = |p: &Value| {
+        line_start(p["line"].as_u64().unwrap()) + p["character"].as_u64().unwrap() as usize
+    };
+    let mut applied = messy.to_string();
+    applied.replace_range(
+        at(&e["range"]["start"])..at(&e["range"]["end"]),
+        e["newText"].as_str().unwrap(),
+    );
+    assert_eq!(applied, meadow_fmt::format(messy));
+    assert_eq!(
+        e["range"]["start"]["line"],
+        json!(1),
+        "the first line was already right"
+    );
+
+    // Once formatted, saving again asks for nothing -- and a client sending a
+    // different tab size and tab preference changes nothing either: a file
+    // formats one way, in any editor and on the command line.
+    c.set(&applied);
+    let again = c.request(
+        "textDocument/formatting",
+        json!({"textDocument": {"uri": URI}, "options": {"tabSize": 2, "insertSpaces": true}}),
+    );
+    assert_eq!(again, json!([]));
 }
 
 #[test]

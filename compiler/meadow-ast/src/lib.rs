@@ -117,6 +117,10 @@ pub enum TypeExpr {
     /// `[a;]` — a linked `List`. The `;` marks it, exactly as it does in the
     /// `[x; y]` literal and for the same reason: brackets alone mean `Vector`.
     List(LType),
+    /// `{ name : String, age : Int }`, closed, or `{ name : String | r }`, open
+    /// over the rest of its fields -- a structural record, the type a record
+    /// literal has, written the way a hover prints one.
+    Record(Vec<(Ident, LType)>, Option<Ident>),
 }
 
 /// An effect annotation `! <row>`: `! Console`, `! e`, `! { Console, State Int | e }`.

@@ -1259,6 +1259,42 @@ fn a_generic_function_computes_at_the_type_it_is_called_at() {
     );
 }
 
+/// `BigInt` arithmetic as the runtime does it: on the heap's own limbs for
+/// `+`, `-` and comparison, through num-bigint for the rest -- and the same
+/// answer as the CEK machine either way.
+///
+/// The numbers are chosen to run across limbs and through every sign case the
+/// limb code has to get right: carries out of the top limb, borrows that empty
+/// it, a result of exactly zero, a negative minus a larger negative, and an
+/// `Int` on either side of a `BigInt`.
+#[test]
+fn big_integers_agree_across_every_sign_and_limb_boundary() {
+    let src = format!(
+        "{FIB}def big = fib 400
+         def neg = toBigInt 0 - big
+         def two64 = toBigInt 9223372036854775807 * toBigInt 2 + toBigInt 2
+         def main =
+           ( ( big - big, neg + big, big - (big + toBigInt 1), neg - neg
+             , two64 - toBigInt 1, two64 * two64 - toBigInt 1, neg - big )
+           , ( 7 + big - big, big + 9223372036854775807 - big, (big * big) / big == big
+             , big % toBigInt 1000000007, neg / toBigInt 3 )
+           , ( neg < big, big > neg, big <= big, neg >= big, neg < neg - toBigInt 1
+             , two64 > two64 - toBigInt 1, big == fib 400, neg == toBigInt 0 - fib 400 ) )"
+    );
+    let got = agree(&src);
+    // Not only agreeing: right. `fib 400` has 84 digits, so it spans limbs.
+    assert!(
+        got.contains(
+            "(0, 0, -1, 0, 18446744073709551615, 340282366920938463463374607431768211455, -"
+        ),
+        "{got}"
+    );
+    assert!(
+        got.ends_with("(True, True, True, False, False, True, True, True))"),
+        "{got}"
+    );
+}
+
 #[test]
 fn a_literal_in_generic_code_wraps_at_the_width_it_is_used_at() {
     let src = "fun bump x = x + 200

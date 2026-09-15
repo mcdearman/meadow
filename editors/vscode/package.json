@@ -17,6 +17,11 @@
 	},
 	"main": "./src/extension.js",
 	"contributes": {
+		"configurationDefaults": {
+			"[meadow]": {
+				"editor.formatOnSave": true
+			}
+		},
 		"languages": [
 			{
 				"id": "meadow",

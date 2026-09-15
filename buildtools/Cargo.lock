@@ -875,6 +875,7 @@ dependencies = [
  "lsp-types",
  "meadow",
  "meadow-compiler",
+ "meadow-fmt",
  "serde",
  "serde_json",
 ]

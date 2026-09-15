@@ -381,8 +381,9 @@ fn ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 
         let tvar = lower_ident().map_with(|n, e| Located::new(TypeExpr::Var(n), e.span()));
         let tcon0 = upper_ident().map_with(|n, e| Located::new(TypeExpr::Con(n, vec![]), e.span()));
+        let record = record_ty(ty.clone());
 
-        let atom = choice((unit, array, seq, paren_or_tuple, tvar, tcon0));
+        let atom = choice((unit, array, seq, paren_or_tuple, record, tvar, tcon0));
 
         let app = upper_ident()
             .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
@@ -475,7 +476,33 @@ fn ty_atom<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         });
     let tvar = lower_ident().map_with(|n, e| Located::new(TypeExpr::Var(n), e.span()));
     let tcon0 = upper_ident().map_with(|n, e| Located::new(TypeExpr::Con(n, vec![]), e.span()));
-    choice((unit, array, seq, paren_or_tuple, tvar, tcon0))
+    // A variant's own `{ ... }` is its named fields, and `variant` tries that
+    // first; a positional field of record type is written in parentheses.
+    let record = record_ty(inner.clone());
+    choice((unit, array, seq, paren_or_tuple, record, tvar, tcon0))
+}
+
+/// `{ name : String, age : Int }` or `{ name : String | r }` -- a structural
+/// record type, spelled the way one is printed.
+///
+/// `{}` is the empty record, and `{ | r }` is any record at all. The tail is a
+/// row variable, told apart from an ordinary one only by standing here.
+fn record_ty<'a, I, P>(
+    ty: P,
+) -> impl Parser<'a, I, LType, extra::Err<Rich<'a, Token, Span>>> + Clone
+where
+    I: ValueInput<'a, Token = Token, Span = Span>,
+    P: Parser<'a, I, LType, extra::Err<Rich<'a, Token, Span>>> + Clone,
+{
+    lower_ident()
+        .then_ignore(just(Token::Colon))
+        .then(ty)
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .then(just(Token::Bar).ignore_then(lower_ident()).or_not())
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .map_with(|(fields, tail), e| Located::new(TypeExpr::Record(fields, tail), e.span()))
 }
 
 fn path_seg<'a, I: ValueInput<'a, Token = Token, Span = Span>>()

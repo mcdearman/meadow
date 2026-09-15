@@ -228,6 +228,101 @@ fn a_signature_belongs_to_one_definition() {
     );
 }
 
+// --- record types ----------------------------------------------------------------
+
+/// `{ name : String | r }` is written the way a hover prints it, and means the
+/// row a record literal already has -- in a signature, an annotation, a result
+/// type or an alias.
+#[test]
+fn a_record_type_can_be_written_wherever_a_type_can() {
+    is(
+        "fun getName : { name : String | r } -> String = \\p -> p.name\n\
+         fun byParam (p : { name : String | r }) : String = p.name\n\
+         fun mk (s : String) : { name : String } = { name = s }\n\
+         type Person = { name : String, home : { city : String } }\n\
+         fun city (p : Person) : String = p.home.city\n\
+         def main = (getName { name = \"ada\", age = 36 }, byParam { name = \"bo\" }, \
+                     (mk \"cy\").name, city { name = \"di\", home = { city = \"Rome\" } })\n",
+        r#"("ada", "bo", "cy", "Rome")"#,
+    );
+    // The same as a standalone signature, and inside another type.
+    is(
+        "fun getName : { name : String | r } -> String\n\
+         fun getName p = p.name\n\
+         fun first : Maybe { name : String | r } -> String\n\
+         fun first m = match m with | Just p -> p.name | None -> \"\"\n\
+         def main = (getName { name = \"x\", y = 1 }, first (Just { name = \"q\", z = 2 }))\n",
+        r#"("x", "q")"#,
+    );
+}
+
+/// The row variable is one variable: what comes in with the named field keeps
+/// every other field it had, and the result says so.
+#[test]
+fn a_row_variable_carries_the_fields_it_stands_for() {
+    is(
+        "fun keep : { name : String | r } -> { name : String | r }\n\
+         fun keep p = p\n\
+         def main = (keep { name = \"d\", age = 4 }).age\n",
+        "4",
+    );
+    let out = errors(
+        "fun keep : { name : String | r } -> { name : String | r }\n\
+         fun keep p = { name = p.name }\n\
+         def main = 0\n",
+    );
+    assert!(out.contains("less general than its signature"), "{out}");
+}
+
+/// Closed means closed, open still needs the fields it names, and a row cannot
+/// say one label twice.
+#[test]
+fn a_record_type_is_checked_like_one() {
+    let out = errors(
+        "fun f : { name : String } -> String = \\p -> p.name\ndef main = f { name = \"a\", age = 1 }\n",
+    );
+    assert!(out.contains("no field `age`"), "{out}");
+    let out = errors(
+        "fun f : { name : String | r } -> String = \\p -> p.name\ndef main = f { age = 1 }\n",
+    );
+    assert!(out.contains("no field `name`"), "{out}");
+    let out = errors("fun f (p : { x : Int, x : Bool }) : Int = 1\ndef main = 0\n");
+    assert!(out.contains("field `x` appears twice"), "{out}");
+    is("fun unit (u : {}) : Int = 1\ndef main = unit {}\n", "1");
+}
+
+/// A variant's own braces are its named fields; a positional field of record
+/// type is parenthesised, and both still mean what they did.
+#[test]
+fn a_variants_braces_are_still_its_fields() {
+    is(
+        "data Shape = Rect { w : Int, h : Int }\n\
+         data Box = Box ({ w : Int })\n\
+         fun area (s : Shape) : Int = match s with | Shape.Rect { w, h } -> w * h\n\
+         fun width (b : Box) : Int = match b with | Box.Box r -> r.w\n\
+         def main = (area (Shape.Rect { w = 2, h = 3 }), width (Box.Box { w = 7 }))\n",
+        "(6, 7)",
+    );
+}
+
+/// `Shape.Rect { w = 2, h = 3 }` names the fields as the unqualified spelling
+/// does, building and matching alike. The qualified path used to resolve the
+/// constructor and then take the braces as one positional record argument --
+/// and qualified is how a constructor is written unless its type is `use`d.
+#[test]
+fn a_qualified_constructor_takes_named_fields() {
+    is(
+        "data Shape = Rect { w : Int, h : Int }\n\
+         fun area (s : Shape) : Int = match s with | Shape.Rect { h, w } -> w - h\n\
+         def main = (area (Shape.Rect { h = 3, w = 10 }), area (Shape.Rect { w = 5, h = 1 }))\n",
+        "(7, 4)",
+    );
+    let out = errors(
+        "data Shape = Rect { w : Int, h : Int }\ndef main = Shape.Rect { w = 2, depth = 3 }\n",
+    );
+    assert!(out.contains("no field `depth`"), "{out}");
+}
+
 // --- record update --------------------------------------------------------------
 
 #[test]

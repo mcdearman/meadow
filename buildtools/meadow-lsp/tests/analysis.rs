@@ -1420,3 +1420,46 @@ fn a_hint_names_an_effect_variable_e() {
         "fun twice (f : a -> b ! e) (g : c -> a ! e) (x : c) : b ! e = f (g x)\n"
     );
 }
+
+/// A local `let rec` hovers as its scheme, the way a top-level `fun` does.
+///
+/// It used to hover as the type its binder node was given, which still has its
+/// variables free -- and a free effect variable prints as `! c` even when
+/// nothing constrains it, so a pure loop looked effectful.
+#[test]
+fn a_local_function_hovers_as_its_scheme() {
+    let src = "fun fib (n : Int) : Int =\n  let rec @loop a b i =\n    if i == 0 then a else loop b (a + b) (i - 1)\n  in loop 0 1 n\n";
+    let (a, off) = at(src, "@");
+    let hover = a.hover_at(off).expect("hover");
+    assert!(hover.contains("loop : forall"), "{hover}");
+    assert!(!hover.contains('!'), "a pure loop has no effect: {hover}");
+
+    let top = "fun @loop a b i = if i == 0 then a else loop b (a + b) (i - 1)\n";
+    let (t, off) = at(top, "@");
+    let top_hover = t.hover_at(off).expect("hover");
+    assert_eq!(
+        hover.replace("fib", ""),
+        top_hover,
+        "the same body should hover the same, local or not"
+    );
+}
+
+/// ...but an effect a local function shares with its surroundings is shown.
+///
+/// This is why the fix is the scheme and not "hide an effect variable that
+/// appears once": in `g`'s type, `h`'s effect appears once, and hiding it would
+/// say `g` is pure when it does whatever `h` does. A scheme hides only what it
+/// quantified, and `g` cannot quantify over a variable that came from outside.
+#[test]
+fn an_effect_from_outside_a_local_function_still_shows() {
+    let (a, off) = at("fun app h x =\n  let @g y = h y in g x\n", "@");
+    let hover = a.hover_at(off).expect("hover");
+    assert!(hover.contains('!'), "g performs whatever h does: {hover}");
+
+    let (a, off) = at(
+        "fun f (u : Unit) =\n  let @g s = println s in g \"hi\"\n",
+        "@",
+    );
+    let hover = a.hover_at(off).expect("hover");
+    assert!(hover.contains("Console"), "{hover}");
+}

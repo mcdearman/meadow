@@ -461,6 +461,45 @@ impl Default for Heap {
     }
 }
 
+/// An object's words, in order: see [`Heap::words_in`].
+pub enum Words<'h> {
+    /// A nursery object, read as the run of memory it is.
+    Slice(std::slice::Iter<'h, Word>),
+    /// Anywhere else, a slot at a time.
+    Slots { heap: &'h Heap, at: Addr, end: Addr },
+}
+
+impl Iterator for Words<'_> {
+    type Item = Word;
+
+    #[inline]
+    fn next(&mut self) -> Option<Word> {
+        match self {
+            Words::Slice(it) => it.next().copied(),
+            Words::Slots { heap, at, end } => {
+                if at < end {
+                    let w = heap.slot(*at);
+                    *at += 1;
+                    Some(w)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = match self {
+            Words::Slice(it) => it.len(),
+            Words::Slots { at, end, .. } => end.saturating_sub(*at) as usize,
+        };
+        (n, Some(n))
+    }
+}
+
+impl ExactSizeIterator for Words<'_> {}
+
 impl Drop for Heap {
     fn drop(&mut self) {
         if let Some(job) = &self.marking {
@@ -825,10 +864,22 @@ impl Heap {
     }
 
     /// Every field's word, in order, without saying what they are.
-    pub fn words(&self, a: Addr) -> impl Iterator<Item = Word> + '_ {
+    pub fn words(&self, a: Addr) -> Words<'_> {
+        self.words_in(a, 0, usize::MAX)
+    }
+
+    /// The fields of the object at `a`, in place -- when it is in the nursery,
+    /// which is where nearly every object a program is computing with lives.
+    /// `None` in the old generation or a region, where the slots are not one
+    /// run of memory to borrow.
+    #[inline]
+    pub fn nursery_words(&self, a: Addr) -> Option<&[Word]> {
+        if a >= OLD_BASE {
+            return None;
+        }
         let h = self.head(a);
-        let base = a + h.header() as Addr;
-        (0..h.len).map(move |i| self.slot(base + i))
+        let base = a as usize + h.header();
+        self.space.get(base..base + h.len as usize)
     }
 
     // --- strings and bytes -------------------------------------------------------
@@ -989,11 +1040,26 @@ impl Heap {
     /// Fields `from..to` of `a`'s words. Not `words(a).skip(from)`, which
     /// reads every field before `from` to throw it away -- and made slicing a
     /// long array cost its whole length each time.
-    pub fn words_in(&self, a: Addr, from: usize, to: usize) -> impl Iterator<Item = Word> + '_ {
+    ///
+    /// A nursery object is read as the slice it is. Going through `slot` for
+    /// each word -- a range test and a bounds check apiece -- was 44% of adding
+    /// two large `BigInt`s, and it is the same loop string comparison runs.
+    pub fn words_in(&self, a: Addr, from: usize, to: usize) -> Words<'_> {
         let h = self.head(a);
+        let to = to.min(h.len as usize);
+        let from = from.min(to);
+        if a < OLD_BASE {
+            let base = a as usize + h.header();
+            if let Some(slice) = self.space.get(base + from..base + to) {
+                return Words::Slice(slice.iter());
+            }
+        }
         let base = a + h.header() as Addr;
-        let to = to.min(h.len as usize) as Addr;
-        (from as Addr..to).map(move |i| self.slot(base + i))
+        Words::Slots {
+            heap: self,
+            at: base + from as Addr,
+            end: base + to as Addr,
+        }
     }
 
     /// Field `i`'s word, without saying what it is.

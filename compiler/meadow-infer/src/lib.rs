@@ -2907,19 +2907,24 @@ impl Infer {
         collect_tyvars(t, &mut vars);
         // Index them for `ty_of`, then map each `Bound` to the meta this
         // declaration has already agreed on for that variable.
+        let ty = ty_of(t, &vars, &self.aliases);
+        // What each one stands for, by where it stands: a row tail has to be a
+        // row variable, or it could not absorb the rest of a record's fields.
+        let mut kinds = vec![VarKind::Type; vars.len()];
+        mark_effect_vars(&ty, &mut kinds);
         let mut fresh = vec![Type::unit(); vars.len()];
         for (var, i) in &vars {
             let meta = match self.ann_tyvars.get(var) {
                 Some(t) => t.clone(),
                 None => {
-                    let t = self.arena.fresh();
+                    let t = self.arena.fresh_of(kinds[*i as usize]);
                     self.ann_tyvars.insert(*var, t.clone());
                     t
                 }
             };
             fresh[*i as usize] = meta;
         }
-        Arena::subst_bound(&ty_of(t, &vars, &self.aliases), &fresh)
+        Arena::subst_bound(&ty, &fresh)
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
@@ -3155,6 +3160,7 @@ fn alias_reaches(
             }
             hir::TypeExpr::Tuple(ts) => ts.iter().for_each(|x| names(x, out)),
             hir::TypeExpr::Vector(x) | hir::TypeExpr::List(x) => names(x, out),
+            hir::TypeExpr::Record(fs, _) => fs.iter().for_each(|(_, x)| names(x, out)),
             hir::TypeExpr::Var(_) | hir::TypeExpr::Error => {}
         }
     }
@@ -3177,8 +3183,11 @@ fn alias_reaches(
     false
 }
 
-/// Mark as effects the quantifiers of `ty` that stand where an effect goes: the
-/// latent effect of an arrow, or the tail of its row.
+/// Mark the quantifiers of `ty` that stand for a row rather than a type: the
+/// latent effect of an arrow or the tail of its row as an effect, and the tail
+/// of a record's row as a record row. A variable is told apart only by where it
+/// stands, so this is how a written `{ name : String | r }` gets an `r` that
+/// can absorb the rest of a record's fields.
 fn mark_effect_vars(ty: &Type, quant: &mut [VarKind]) {
     match ty {
         Type::Fun(args, ret, eff) => {
@@ -3198,7 +3207,18 @@ fn mark_effect_vars(ty: &Type, quant: &mut [VarKind]) {
         Type::Con(_, args) | Type::Tuple(args) => {
             args.iter().for_each(|a| mark_effect_vars(a, quant))
         }
-        Type::Record(row) => mark_effect_vars(row, quant),
+        Type::Record(row) => {
+            let mut row = &**row;
+            while let Type::RowExtend(_, field, rest) = row {
+                mark_effect_vars(field, quant);
+                row = rest;
+            }
+            if let Type::Bound(i) = row
+                && let Some(k) = quant.get_mut(*i as usize)
+            {
+                *k = VarKind::Row;
+            }
+        }
         Type::RowExtend(_, field, rest) => {
             mark_effect_vars(field, quant);
             mark_effect_vars(rest, quant);
@@ -3255,6 +3275,24 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>, aliases: &Aliases) ->
         // `[T]` type syntax now denotes the RRB `Vector`; write `List T` for a list.
         hir::TypeExpr::Vector(x) => Type::vector(ty_of(x, params, aliases)),
         hir::TypeExpr::List(x) => Type::list(ty_of(x, params, aliases)),
+        // Built in written order, as a record literal's type is: unification
+        // compares rows up to reordering, so the order is only what prints.
+        hir::TypeExpr::Record(fields, tail) => {
+            let rest = match tail {
+                Some(v) => params
+                    .get(v.value())
+                    .map_or(Type::Error, |&i| Type::Bound(i)),
+                None => Type::RowEmpty,
+            };
+            let row = fields.iter().rev().fold(rest, |rest, (label, ft)| {
+                Type::RowExtend(
+                    *label.value(),
+                    Box::new(ty_of(ft, params, aliases)),
+                    Box::new(rest),
+                )
+            });
+            Type::Record(Box::new(row))
+        }
         hir::TypeExpr::Error => Type::Error,
     }
 }
@@ -4217,6 +4255,13 @@ fn collect_tyvars(t: &hir::LTypeExpr, out: &mut HashMap<VarId, u32>) {
         }
         hir::TypeExpr::Tuple(ts) => ts.iter().for_each(|x| collect_tyvars(x, out)),
         hir::TypeExpr::Vector(x) | hir::TypeExpr::List(x) => collect_tyvars(x, out),
+        hir::TypeExpr::Record(fields, tail) => {
+            fields.iter().for_each(|(_, x)| collect_tyvars(x, out));
+            if let Some(tail) = tail {
+                let next = out.len() as u32;
+                out.entry(*tail.value()).or_insert(next);
+            }
+        }
         hir::TypeExpr::Error => {}
     }
 }

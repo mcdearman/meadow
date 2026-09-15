@@ -266,10 +266,15 @@ impl<'a> Lowerer<'a> {
                 } else {
                     self.at(expr.span, rhs)
                 };
-                match pat.value() {
+                // `fun f : a -> a = e` is the binding `(f : a -> a) = e`: the
+                // annotation has to be seen through here, or a polymorphic
+                // definition is taken apart as a pattern and loses the type
+                // abstraction every mention of it supplies arguments to.
+                let bare = unannotated(pat);
+                match bare.value() {
                     hir::Pat::Var(id) => {
                         let v = *id.value();
-                        let poly = self.poly_of(v, pat.id);
+                        let poly = self.poly_of(v, bare.id);
                         out.push(Def {
                             var: v,
                             name: self.name_of(v),
@@ -538,11 +543,7 @@ impl<'a> Lowerer<'a> {
         // An annotation says nothing at run time, so `(n : Int)` binds exactly
         // as `n` does -- rather than as a pattern to take apart, which cost an
         // annotated parameter a closure and a match on every call.
-        let mut bare = pat;
-        while let hir::Pat::Ann(inner, _) = bare.value() {
-            bare = inner;
-        }
-        match bare.value() {
+        match unannotated(pat).value() {
             hir::Pat::Var(id) => (*id.value(), ty, None),
             hir::Pat::Wildcard => (self.vars.fresh(), ty, None),
             _ => (self.vars.fresh(), ty, Some(pat)),
@@ -566,10 +567,11 @@ impl<'a> Lowerer<'a> {
             }
             hir::Bind::Pat(pat, expr) => {
                 let rhs = self.lower_expr(expr);
-                match pat.value() {
+                let bare = unannotated(pat);
+                match bare.value() {
                     hir::Pat::Var(id) => {
                         let v = *id.value();
-                        let poly = self.poly_of(v, pat.id);
+                        let poly = self.poly_of(v, bare.id);
                         let rhs = Self::ty_lam(&poly, rhs);
                         Term::Let(v, poly, Arc::new(rhs), Arc::new(body))
                     }
@@ -821,4 +823,17 @@ fn peel_arrows(ty: &Ty, n: usize) -> (Vec<Ty>, Ty) {
         }
     }
     (params, rest)
+}
+
+/// `pat` with its annotations taken off: `((n : Int) : Int)` is `n`.
+///
+/// An annotation constrains inference and means nothing afterwards, so every
+/// question lowering asks of a pattern's *shape* -- is it one variable? -- is
+/// asked of what is under it.
+fn unannotated(pat: &hir::LPat) -> &hir::LPat {
+    let mut bare = pat;
+    while let hir::Pat::Ann(inner, _) = bare.value() {
+        bare = inner;
+    }
+    bare
 }

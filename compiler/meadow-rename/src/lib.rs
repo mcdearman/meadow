@@ -1793,38 +1793,43 @@ impl Resolver {
             .collect()
     }
 
+    /// A type variable, in the scope of the declaration being resolved: one of
+    /// its parameters, one an annotation already introduced, or -- inside an
+    /// annotation -- a new one. `None` once the unbound one is reported.
+    ///
+    /// Shared by a plain variable and a record's row tail, so that the `r` in
+    /// `(p : { name : String | r })` and in `r -> Int` are one variable.
+    fn type_var(&mut self, n: &ast::Ident) -> Option<hir::Ident> {
+        let name = *n.value();
+        let id = self
+            .tyvars
+            .iter()
+            .rev()
+            .find(|(nm, _)| *nm == name)
+            .map(|(_, id)| *id)
+            .or_else(|| {
+                if self.open_tyvars {
+                    let id = self.vars.fresh();
+                    self.names.insert(id, name);
+                    self.tyvars.push((name, id));
+                    return Some(id);
+                }
+                self.error(
+                    format!("unbound type variable `{name}`"),
+                    "not a parameter of this type".to_string(),
+                    n.span,
+                );
+                None
+            })?;
+        Some(self.node(id, n.span))
+    }
+
     fn resolve_ty(&mut self, t: &ast::LType) -> hir::LTypeExpr {
         match t.value() {
-            ast::TypeExpr::Var(n) => {
-                let name = *n.value();
-                let id = self
-                    .tyvars
-                    .iter()
-                    .rev()
-                    .find(|(nm, _)| *nm == name)
-                    .map(|(_, id)| *id)
-                    .or_else(|| {
-                        if self.open_tyvars {
-                            let id = self.vars.fresh();
-                            self.names.insert(id, name);
-                            self.tyvars.push((name, id));
-                            return Some(id);
-                        }
-                        self.error(
-                            format!("unbound type variable `{name}`"),
-                            "not a parameter of this type".to_string(),
-                            n.span,
-                        );
-                        None
-                    });
-                match id {
-                    Some(id) => {
-                        let v = self.node(id, n.span);
-                        self.node(hir::TypeExpr::Var(v), t.span)
-                    }
-                    None => self.node(hir::TypeExpr::Error, t.span),
-                }
-            }
+            ast::TypeExpr::Var(n) => match self.type_var(n) {
+                Some(v) => self.node(hir::TypeExpr::Var(v), t.span),
+                None => self.node(hir::TypeExpr::Error, t.span),
+            },
             ast::TypeExpr::Con(n, args) => {
                 let name = *n.value();
                 let ok = match self.tycons.get(&name).copied() {
@@ -1875,6 +1880,32 @@ impl Resolver {
             ast::TypeExpr::List(x) => {
                 let rx = self.resolve_ty(x);
                 self.node(hir::TypeExpr::List(rx), t.span)
+            }
+            ast::TypeExpr::Record(fields, tail) => {
+                let mut seen: Vec<InternedString> = Vec::with_capacity(fields.len());
+                let rfields = fields
+                    .iter()
+                    .map(|(label, ft)| {
+                        let name = *label.value();
+                        // A row may not say one label twice: `{ x : Int, x : Bool }`
+                        // has no value, so it is a mistake rather than a type.
+                        if seen.contains(&name) {
+                            self.error(
+                                format!("field `{name}` appears twice in this record type"),
+                                "already named".to_string(),
+                                label.span,
+                            );
+                        }
+                        seen.push(name);
+                        let rt = self.resolve_ty(ft);
+                        (self.node(name, label.span), rt)
+                    })
+                    .collect();
+                let rtail = tail.as_ref().and_then(|v| self.type_var(v));
+                if tail.is_some() && rtail.is_none() {
+                    return self.node(hir::TypeExpr::Error, t.span);
+                }
+                self.node(hir::TypeExpr::Record(rfields, rtail), t.span)
             }
         }
     }
@@ -2139,6 +2170,15 @@ impl Resolver {
                     unreachable!()
                 };
                 if let Some(canonical) = self.qualified_type_ctor(q, *name.value()) {
+                    // `Shape.Rect { w = 2, h = 3 }`: the braces are the
+                    // constructor's named fields, exactly as they are unqualified.
+                    if let [only] = args.as_slice()
+                        && let ast::Expr::Record(fields, None) = only.value()
+                        && let Some(order) = self.ctor_field_order(canonical)
+                    {
+                        return self
+                            .resolve_named_ctor(expr.span, canonical, name.span, fields, &order);
+                    }
                     let label = self.node(canonical, name.span);
                     let ra = args.iter().map(|a| self.resolve_expr(a)).collect_vec();
                     return self.node(hir::Expr::Cons(label, ra), expr.span);
@@ -2444,6 +2484,15 @@ impl Resolver {
             ast::Pat::Cons(name, args) => self.resolve_ctor_pat(pat.span, name, args),
             ast::Pat::QualCons(q, name, args) => {
                 if let Some(canonical) = self.qualified_type_ctor(q, *name.value()) {
+                    // `Shape.Rect { w, h }` -- named fields, as they are unqualified.
+                    if let [only] = args.as_slice()
+                        && let ast::Pat::Record(fields, _) = only.value()
+                        && let Some(order) = self.ctor_field_order(canonical)
+                    {
+                        return self.resolve_named_ctor_pat(
+                            pat.span, canonical, name.span, fields, &order,
+                        );
+                    }
                     let label = self.node(canonical, name.span);
                     let ra = args.iter().map(|p| self.resolve_pat(p)).collect_vec();
                     return self.node(hir::Pat::Cons(label, ra), pat.span);

@@ -96,6 +96,16 @@ pub struct CompiledPackage {
     /// Whole-package node -> type table (node ids are dense across the package).
     pub types: TypeTable,
     pub exports: Vec<Export>,
+    /// The scheme of every binding this unit generalized: its top-level
+    /// bindings, exported or not, and its local `let`s and `let rec`s.
+    ///
+    /// The type table records what each *node* was, which for a local binding
+    /// is a type with its variables still free -- and a free effect variable
+    /// prints as `! c`, even when nothing constrains it. The scheme is what
+    /// the binding generalized to, and a quantifier that appears once is
+    /// shown for what it is: nothing. An editor showing a local binding the way
+    /// it shows a top-level one needs this.
+    pub generalized: HashMap<VarId, Scheme>,
     pub defs: Vec<core::Def>,
     /// Named-field order per constructor declared in this package.
     pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
@@ -608,6 +618,10 @@ pub fn compile_unit_above(
             modules: typed,
             types: table,
             exports,
+            generalized: generalized
+                .into_iter()
+                .map(|(var, g)| (var, g.scheme))
+                .collect(),
             defs,
             ctor_fields,
             variants,

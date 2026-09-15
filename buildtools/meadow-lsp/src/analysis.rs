@@ -565,6 +565,13 @@ impl Std {
             a.binding_names.insert(e.var, e.name.to_string());
             a.schemes.insert(e.var, e.scheme.to_string());
         }
+        // Every other binding that was generalized -- private top-level ones,
+        // and local `let`s -- hovers as its scheme too, rather than as the type
+        // its binder node happened to have. See `CompiledPackage::generalized`
+        // for why the difference shows: a local `let rec` read `! c`.
+        for (var, scheme) in &pkg.generalized {
+            a.schemes.entry(*var).or_insert_with(|| scheme.to_string());
+        }
         for m in &pkg.modules {
             if m.source.id == here.id {
                 let mut w = Walk {
@@ -675,6 +682,13 @@ impl Std {
         for e in &pkg.exports {
             a.binding_names.insert(e.var, e.name.to_string());
             a.schemes.insert(e.var, e.scheme.to_string());
+        }
+        // Every other binding that was generalized -- private top-level ones,
+        // and local `let`s -- hovers as its scheme too, rather than as the type
+        // its binder node happened to have. See `CompiledPackage::generalized`
+        // for why the difference shows: a local `let rec` read `! c`.
+        for (var, scheme) in &pkg.generalized {
+            a.schemes.entry(*var).or_insert_with(|| scheme.to_string());
         }
         for m in &pkg.modules {
             let mut w = Walk {
@@ -994,6 +1008,7 @@ impl Walk<'_> {
             }
             hir::TypeExpr::Tuple(ts) => ts.iter().for_each(|x| self.ty(x)),
             hir::TypeExpr::Vector(x) | hir::TypeExpr::List(x) => self.ty(x),
+            hir::TypeExpr::Record(fields, _) => fields.iter().for_each(|(_, x)| self.ty(x)),
             hir::TypeExpr::Var(_) | hir::TypeExpr::Error => {}
         }
     }
@@ -1385,9 +1400,20 @@ impl Analysis {
             // A top-level binding shows its generalised scheme, which is more
             // informative than the type at this particular use site.
             Some(scheme) => {
-                let name = var.and_then(|v| self.binding_names.get(&v));
+                // A local binding is named by its binder, which is in this very
+                // document -- the exports only name the top-level ones.
+                let local = || {
+                    let loc = self.defs.get(&var?)?;
+                    let name = self
+                        .source
+                        .get(loc.span.start as usize..loc.span.end as usize)?;
+                    Some(name.to_string())
+                };
+                let name = var
+                    .and_then(|v| self.binding_names.get(&v).cloned())
+                    .or_else(local);
                 match name {
-                    Some(n) => format!("{} : {scheme}", hir::spell_name(n)),
+                    Some(n) => format!("{} : {scheme}", hir::spell_name(&n)),
                     None => scheme.clone(),
                 }
             }

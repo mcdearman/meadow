@@ -116,9 +116,18 @@ fn build_writes_text_in_place_of_binaries() {
     std::fs::write(root.join("meadow.toml"), "[package]\nname = \"fact\"\n").unwrap();
     std::fs::write(root.join("src/Main.mw"), PROGRAM).unwrap();
 
+    // Whichever architecture this machine is not: code for the host goes
+    // straight into `native/`, and it is another target's that is written
+    // beside it under its triple -- the layout this is here to check. Naming
+    // `aarch64` outright passed on x86-64 and failed on Apple silicon.
+    let foreign = if cfg!(target_arch = "aarch64") {
+        "x86_64"
+    } else {
+        "aarch64"
+    };
     let (ok, err) = meadow(
         &root,
-        &["build", "--emit", "bytecode,asm", "--target", "aarch64"],
+        &["build", "--emit", "bytecode,asm", "--target", foreign],
     );
     assert!(ok, "{err}");
     let debug = root.join("target/debug");
@@ -133,10 +142,10 @@ fn build_writes_text_in_place_of_binaries() {
         .flatten()
         .map(|e| e.path())
         .find(|p| p.is_dir())
-        .expect("aarch64's code beside the host's, under its triple");
+        .unwrap_or_else(|| panic!("{foreign}'s code beside the host's, under its triple"));
     let asm = std::fs::read_to_string(native.join("fact.s")).unwrap();
     assert!(
-        asm.starts_with("; meadow native code: aarch64, -O1"),
+        asm.starts_with(&format!("; meadow native code: {foreign}, -O1")),
         "{asm}"
     );
     assert!(err.contains("bytecode: ") && err.contains("asm: "), "{err}");

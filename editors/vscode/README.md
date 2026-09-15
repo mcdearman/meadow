@@ -15,6 +15,9 @@ Language support for [Meadow](https://github.com/mcdearman/meadow).
   spelling are told apart. A name from the standard library is refused, since
   its definition is not yours to edit.
 - **Inlay hints** — inferred types after parameters and `let` bindings.
+- **Formatting** — `meadow fmt`, applied on save by default, and on
+  Format Document (⇧⌥F). It formats what is in the editor, unsaved changes
+  included, and only replaces the lines that change.
 - **Debugging** (F5) — breakpoints, stepping, the call stack, and the locals,
   registers, effect handlers and heap of a stopped program, through
   `meadow dap`. With no `launch.json`, F5 debugs the package the open file
@@ -56,3 +59,10 @@ so instead of going quiet.
 | `meadow.debug.codeLens` | show a "Debug" link above each top-level definition |
 | `meadow.test.codeLens` | show a "Test" link above each `@test` |
 | `meadow.trace.server` | log the LSP traffic, for debugging |
+
+Format on save is on for Meadow files through VS Code's own setting, so it is
+turned off the same way:
+
+```json
+"[meadow]": { "editor.formatOnSave": false }
+```

@@ -31,7 +31,7 @@
 @pub mod String
 @pub mod Path
 @pub mod Json
-@pub mod Time
 @pub mod Console
+@pub mod Time
 @pub mod Bench
 @pub mod Prelude

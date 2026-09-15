@@ -4,6 +4,15 @@
 //! as a throwaway one-module package whose dependencies are all the previous
 //! entries (plus, transitively, whatever they depended on). The "repl prefix" is
 //! literally handed back to the compiler as ordinary dependency packages.
+//!
+//! Running an entry is the same trick one level down: its program is every
+//! definition in the prefix and its own. But only the definitions the entry
+//! reaches are lowered and compiled (see `meadow_core::prune`), so a
+//! line costs what it uses -- a handful of definitions, where the whole prefix
+//! is the thousand in `Std` and everything typed since. What finding those
+//! needs from the prefix -- each definition's references, and the constructor
+//! tables -- is kept in a [`Prefix`], built for `Std` once and added to as
+//! entries join.
 
 use itertools::Either;
 use meadow::runtime;
@@ -255,32 +264,92 @@ fn parses_ok(input: &str) -> bool {
     parsed.is_some() && errors.is_empty()
 }
 
+/// What a string literal being skipped is in the middle of.
+#[derive(Clone, Copy)]
+enum Lit {
+    /// The text of a `"…"` literal.
+    Text,
+    /// A `${…}` hole of one, this many braces deep.
+    Hole(usize),
+    /// A raw string, `r#"…"#`, closed by a quote and this many `#`s.
+    Raw(usize),
+}
+
+/// How many `#`s the raw string starting at `i` opens with, if one does.
+fn opens_raw(chars: &[char], i: usize) -> Option<usize> {
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '\'';
+    if chars.get(i) != Some(&'r') || (i > 0 && word(chars[i - 1])) {
+        return None;
+    }
+    let hashes = chars[i + 1..].iter().take_while(|&&c| c == '#').count();
+    (chars.get(i + 1 + hashes) == Some(&'"')).then_some(hashes)
+}
+
 fn strip_strings_and_comments(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
     let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => {
-                out.push(' ');
-                while let Some(d) = chars.next() {
-                    if d == '\\' {
-                        chars.next();
-                    } else if d == '"' {
-                        break;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // A string literal -- with the `${…}` holes in it, whose braces and
+        // strings are their own and do not end it -- or a raw string, blanked.
+        let opened = match c {
+            '"' => Some((Lit::Text, 1)),
+            'r' => opens_raw(&chars, i).map(|h| (Lit::Raw(h), 2 + h)),
+            _ => None,
+        };
+        if let Some((first, skip)) = opened {
+            out.push(' ');
+            i += skip;
+            let mut nest = vec![first];
+            while let (Some(&top), Some(&d)) = (nest.last(), chars.get(i)) {
+                i += 1;
+                match (top, d) {
+                    (Lit::Raw(h), '"')
+                        if chars
+                            .get(i..i + h)
+                            .is_some_and(|s| s.iter().all(|&c| c == '#')) =>
+                    {
+                        nest.pop();
+                        i += h;
                     }
-                }
-                out.push(' ');
-            }
-            '-' if chars.peek() == Some(&'-') => {
-                while let Some(&d) = chars.peek() {
-                    if d == '\n' {
-                        break;
+                    (Lit::Raw(_), _) => {}
+                    (Lit::Text, '\\') => i += 1,
+                    (Lit::Text, '"') => {
+                        nest.pop();
                     }
-                    chars.next();
+                    (Lit::Text, '$') if chars.get(i) == Some(&'{') => {
+                        i += 1;
+                        nest.push(Lit::Hole(0));
+                    }
+                    (Lit::Hole(_), '"') => nest.push(Lit::Text),
+                    (Lit::Hole(_), 'r') if let Some(h) = opens_raw(&chars, i - 1) => {
+                        i += 1 + h;
+                        nest.push(Lit::Raw(h));
+                    }
+                    (Lit::Hole(depth), '{') => {
+                        *nest.last_mut().expect("in a hole") = Lit::Hole(depth + 1)
+                    }
+                    (Lit::Hole(0), '}') => {
+                        nest.pop();
+                    }
+                    (Lit::Hole(depth), '}') => {
+                        *nest.last_mut().expect("in a hole") = Lit::Hole(depth - 1)
+                    }
+                    _ => {}
                 }
             }
-            _ => out.push(c),
+            out.push(' ');
+            continue;
         }
+        if c == '-' && chars.get(i + 1) == Some(&'-') {
+            while chars.get(i).is_some_and(|&d| d != '\n') {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(c);
+        i += 1;
     }
     out
 }
@@ -351,9 +420,11 @@ const COMMANDS: &[(&str, &str)] = &[
     (":module", "list the bindings in scope"),
     (":reset", "forget everything defined so far"),
     (
-        ":vm / :cek",
-        "switch machines (the bytecode VM is the default)",
+        ":jit / :vm / :cek",
+        "switch machines (the JIT is the default)",
     ),
+    (":time", "time every entry from now on, or stop"),
+    (":time <expr>", "time just this entry"),
 ];
 
 /// Print the startup banner.
@@ -376,7 +447,7 @@ fn print_banner() {
     for (cmd, what) in COMMANDS {
         // Pad *before* styling: a width applies to the whole formatted value,
         // escape bytes included, so padding afterwards would misalign the column.
-        println!("  {}  {}", format!("{cmd:<10}").cyan().bold(), what);
+        println!("  {}  {}", format!("{cmd:<17}").cyan().bold(), what);
     }
     println!();
     println!(
@@ -411,6 +482,37 @@ pub struct Session {
     /// Which machine evaluates a line. `:cek` and `:vm` switch it, which is the
     /// quickest way to decide whether something odd is the language or the VM.
     engine: meadow::Engine,
+    /// Report how long every entry took -- `:time` turns it on and off.
+    timing: bool,
+    /// What building an entry's program needs from the prefix, kept up with it.
+    cache: Prefix,
+    /// The same for `Std` alone, which `:reset` goes back to.
+    std_cache: Prefix,
+}
+
+/// What every entry's program is built from, kept between entries: the
+/// references of each definition in the prefix, and its constructor tables
+/// merged. So building the next program walks the edges the entry reaches,
+/// rather than the whole prefix.
+#[derive(Clone, Default)]
+struct Prefix {
+    /// How many of the prefix's packages this has taken in.
+    packages: usize,
+    deps: core::prune::Deps,
+    ctor_fields: std::collections::HashMap<InternedString, Vec<InternedString>>,
+    variants: meadow_compiler::infer::VariantEnv,
+}
+
+impl Prefix {
+    /// Take in the packages of `prefix` not yet seen.
+    fn catch_up(&mut self, prefix: &[CompiledPackage]) {
+        for p in &prefix[self.packages.min(prefix.len())..] {
+            self.deps.add(&p.defs);
+            self.ctor_fields.extend(p.ctor_fields.clone());
+            self.variants.extend(p.variants.clone());
+        }
+        self.packages = prefix.len();
+    }
 }
 
 impl Session {
@@ -424,6 +526,8 @@ impl Session {
             }
         }
         let std_len = std_pkgs.len();
+        let mut std_cache = Prefix::default();
+        std_cache.catch_up(&std_pkgs);
         Session {
             line: std_len as u32,
             opts,
@@ -432,6 +536,9 @@ impl Session {
             uses: Vec::new(),
             // What a debug build runs on.
             engine: meadow::Engine::Jit,
+            timing: false,
+            cache: std_cache.clone(),
+            std_cache,
         }
     }
 
@@ -494,6 +601,7 @@ impl Session {
                         ":q" | ":quit" => break,
                         ":reset" => {
                             self.prefix.truncate(self.std_len);
+                            self.cache = self.std_cache.clone();
                             self.line = self.std_len as u32;
                             self.uses.clear();
                             println!("(reset)");
@@ -507,10 +615,18 @@ impl Session {
                             };
                             println!("(evaluating with the {})", self.engine);
                         }
-                        _ if trimmed.starts_with(":t ") || trimmed.starts_with(":t\n") => {
-                            self.handle(trimmed[2..].trim(), Mode::TypeOnly);
+                        ":time" => {
+                            self.timing = !self.timing;
+                            let now = if self.timing { "on" } else { "off" };
+                            println!("(timing every entry: {now})");
                         }
-                        _ => self.handle(trimmed, Mode::Run),
+                        _ if trimmed.starts_with(":time ") || trimmed.starts_with(":time\n") => {
+                            self.handle(trimmed[5..].trim(), Mode::Run, true);
+                        }
+                        _ if trimmed.starts_with(":t ") || trimmed.starts_with(":t\n") => {
+                            self.handle(trimmed[2..].trim(), Mode::TypeOnly, false);
+                        }
+                        _ => self.handle(trimmed, Mode::Run, self.timing),
                     }
                     // A new `def`, `data` or `use` should be completable now.
                     if let Some(h) = rl.helper_mut() {
@@ -541,7 +657,10 @@ impl Session {
         }
     }
 
-    fn handle(&mut self, input: &str, mode: Mode) {
+    /// Check, compile and -- in [`Mode::Run`] -- run one entry, and with `timed`
+    /// say how long each of those took.
+    fn handle(&mut self, input: &str, mode: Mode, timed: bool) {
+        let started = std::time::Instant::now();
         let src = Source::new(
             SourceKind::Interactive,
             InternedString::from(input.to_string()),
@@ -631,12 +750,17 @@ impl Session {
             let entry = compiled.exports.last().map(|e| e.var);
             if entry.is_some() {
                 let program = self.program_for(&compiled, entry);
+                let checked = started.elapsed();
                 // Every line is compiled and run as a whole program, so the REPL
                 // gets the bytecode VM for free — and `:cek` switches it, the
                 // same as the flag on `meadow run`.
-                match runtime::run(&program, self.engine, self.opts.opt) {
+                let (result, times) = runtime::run_timed(&program, self.engine, self.opts.opt);
+                match result {
                     Ok(value) => println!("= {value}"),
                     Err(e) => eprintln!("{e}"),
+                }
+                if timed {
+                    println!("{}", timing_line(checked, times));
                 }
             }
         }
@@ -660,17 +784,27 @@ impl Session {
         }
     }
 
-    fn program_for(&self, current: &CompiledPackage, entry: Option<core::Var>) -> core::Program {
-        let mut defs = Vec::new();
-        let mut ctor_fields = std::collections::HashMap::new();
-        let mut variants = std::collections::HashMap::new();
-        for p in &self.prefix {
-            defs.extend(p.defs.iter().cloned());
-            ctor_fields.extend(p.ctor_fields.clone());
-            variants.extend(p.variants.clone());
-        }
-        defs.extend(current.defs.iter().cloned());
+    /// The program that runs `entry`: the definitions of the prefix and of
+    /// `current` that it reaches, in order, and every constructor table.
+    fn program_for(
+        &mut self,
+        current: &CompiledPackage,
+        entry: Option<core::Var>,
+    ) -> core::Program {
+        self.cache.catch_up(&self.prefix);
+        let own = core::prune::Deps::new(&current.defs);
+        let keep = core::prune::reach_all(&[&own, &self.cache.deps], entry);
+        let defs = self
+            .prefix
+            .iter()
+            .flat_map(|p| &p.defs)
+            .chain(&current.defs)
+            .filter(|d| keep.contains(&d.var))
+            .cloned()
+            .collect();
+        let mut ctor_fields = self.cache.ctor_fields.clone();
         ctor_fields.extend(current.ctor_fields.clone());
+        let mut variants = self.cache.variants.clone();
         variants.extend(current.variants.clone());
         core::Program {
             defs,
@@ -686,6 +820,24 @@ impl Default for Session {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// `time: 12.3ms (check 1.20ms, compile 3.45ms, run 7.65ms)` -- the whole
+/// entry, then its parts: the front end, lowering and code generation where
+/// the machine has them, and the program running.
+fn timing_line(check: std::time::Duration, times: runtime::Timings) -> String {
+    use yansi::Paint as _;
+    let total = check + times.compile.unwrap_or_default() + times.run;
+    let mut parts = vec![format!("check {}", runtime::format_duration(check))];
+    if let Some(compile) = times.compile {
+        parts.push(format!("compile {}", runtime::format_duration(compile)));
+    }
+    parts.push(format!("run {}", runtime::format_duration(times.run)));
+    format!(
+        "{} {}",
+        format!("time: {}", runtime::format_duration(total)).bold(),
+        format!("({})", parts.join(", ")).dim()
+    )
 }
 
 #[derive(PartialEq)]
@@ -816,6 +968,15 @@ mod tests {
         assert_eq!(press_enter("1 + 2"), None);
         assert_eq!(press_enter("def x = 1"), None);
         assert_eq!(press_enter(":t map"), None);
+        // The quote and bracket inside the hole do not leave anything open.
+        assert_eq!(press_enter(r#""a ${f "(" [1]} b""#), None);
+        // Nor do the quote and bracket in a raw string, which escapes nothing.
+        assert_eq!(press_enter(r##"r#"C:\ "(" "#"##), None);
+    }
+
+    #[test]
+    fn an_unclosed_hole_keeps_the_entry_open() {
+        assert!(press_enter(r#"def x = "sum: ${1 +"#).is_some());
     }
 
     #[test]

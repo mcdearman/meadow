@@ -596,6 +596,33 @@ impl Vm<'_> {
                 }
                 Value::Str(InternedString::from(s))
             }
+            ConcatStrings => {
+                let a = match arg(self, 0)
+                    .addr()
+                    .filter(|a| self.heap.kind(*a) == Kind::Array)
+                {
+                    Some(a) => a,
+                    None => {
+                        return err(format!(
+                            "concatStrings: expected an Array, got {}",
+                            self.show(arg(self, 0))
+                        ));
+                    }
+                };
+                let mut s = String::new();
+                for i in 0..self.heap.len(a) {
+                    match self.heap.field(a, i) {
+                        Value::Str(part) => s.push_str(&part),
+                        other => {
+                            return err(format!(
+                                "concatStrings: expected a String, got {}",
+                                self.show(other)
+                            ));
+                        }
+                    }
+                }
+                Value::Str(InternedString::from(s))
+            }
 
             // --- the mutable cell -----------------------------------------
             //

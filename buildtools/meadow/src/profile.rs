@@ -107,6 +107,13 @@ pub struct Resolved {
     /// supplying it. A backend nobody asked for gives way when it cannot be
     /// had -- see [`Resolved::fallback`].
     pub backend_named: bool,
+    /// Compile only the definitions the entry point reaches, rather than every
+    /// definition of the package and its dependencies -- `Std` included, which
+    /// a small program otherwise carries whole (see `meadow_core::prune`). On
+    /// in every profile; `prune = false` in a `[profile.<name>]`, or
+    /// `--no-prune`, turns it off. `meadow test` and the debugger never prune:
+    /// they start from more places than one.
+    pub prune: bool,
 }
 
 impl Resolved {
@@ -117,6 +124,7 @@ impl Resolved {
             options: profile.options(),
             backend: profile.backend(),
             backend_named: false,
+            prune: true,
         }
     }
 
@@ -136,6 +144,7 @@ impl Resolved {
             options: flags.apply(from_manifest.apply(profile.options())),
             backend: named.unwrap_or(profile.backend()),
             backend_named: named.is_some(),
+            prune: flags.prune.or(from_manifest.prune).unwrap_or(true),
         }
     }
 
@@ -157,6 +166,19 @@ impl Resolved {
     pub const fn strictness(self) -> Strictness {
         self.options.strictness
     }
+
+    /// `program`, pruned to what its entry point reaches if this profile
+    /// prunes, and as it is if not.
+    pub fn program<'a>(
+        self,
+        program: &'a meadow_compiler::core::Program,
+    ) -> std::borrow::Cow<'a, meadow_compiler::core::Program> {
+        if self.prune {
+            std::borrow::Cow::Owned(meadow_compiler::core::prune::prune(program))
+        } else {
+            std::borrow::Cow::Borrowed(program)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -172,6 +194,7 @@ mod tests {
             opt: Some(OptLevel::O2),
             strictness: None,
             backend: None,
+            prune: None,
         };
         assert_eq!(manifest.apply(base).opt, OptLevel::O2);
         // Untouched by a section that says nothing about it.
@@ -181,6 +204,7 @@ mod tests {
             opt: Some(OptLevel::O0),
             strictness: None,
             backend: None,
+            prune: None,
         };
         assert_eq!(flag.apply(manifest.apply(base)).opt, OptLevel::O0);
     }

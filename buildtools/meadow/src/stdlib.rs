@@ -101,8 +101,9 @@ pub const MODULES: &[(&str, &str)] = &[
     ),
     ("Path", include_str!("../../../lib/Std/src/Path.mw")),
     ("Json", include_str!("../../../lib/Std/src/Json.mw")),
-    ("Time", include_str!("../../../lib/Std/src/Time.mw")),
     ("Console", include_str!("../../../lib/Std/src/Console.mw")),
+    // After `Console`, so `time` can print what it measured.
+    ("Time", include_str!("../../../lib/Std/src/Time.mw")),
     ("Bench", include_str!("../../../lib/Std/src/Bench.mw")),
     ("Prelude", include_str!("../../../lib/Std/src/Prelude.mw")),
 ];

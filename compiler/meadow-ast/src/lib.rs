@@ -146,6 +146,10 @@ pub type LExpr = Located<Expr>;
 pub enum Expr {
     Var(Ident),
     Lit(Lit),
+    /// `"a ${x} b ${y}"` -- a string literal with expressions in it: its text,
+    /// unescaped, and its holes, alternating. There is one more piece of text
+    /// than there are holes; any piece may be empty.
+    Interp(Vec<InternedString>, Vec<LExpr>),
     Lam(Vec<LPat>, LExpr),
     App(LExpr, Vec<LExpr>),
     Let(Vec<Bind>, LExpr),

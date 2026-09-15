@@ -386,6 +386,12 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         entry = Some(label);
     }
 
+    // After everything else, so the program's own constructors keep the tags
+    // they had.
+    for ctor in RUNTIME_CTORS {
+        lower.tag_of(InternedString::from(*ctor));
+    }
+
     // Lifted `letrec` blocks are pushed as they are discovered, so a definition
     // arrives after the blocks lifted out of it. Sorting by label puts the
     // table back in the order the labels read, which is what a dump should show.
@@ -540,6 +546,27 @@ const EV: &str = "#ev";
 /// The evidence with no handlers in it: an object, so that evidence is always
 /// a reference, whatever it holds.
 pub const EV_NONE: &str = "#evnone";
+
+/// The constructors a runtime builds values of by name, without the program
+/// having built one: what a native answers (`Result.Ok`, `Maybe.Just`, a
+/// tuple, a `List` or a `Vector` it made), and what reading a line gives back.
+/// Every program gets a tag for each, whether or not its own code uses them --
+/// a pruned program (see `meadow_core::prune`) may well not, and a runtime
+/// that asks for a tag the program never assigned has nothing to build with.
+pub const RUNTIME_CTORS: &[&str] = &[
+    "#tuple",
+    "Maybe.None",
+    "Maybe.Just",
+    "Result.Ok",
+    "Result.Err",
+    "List.Nil",
+    "List.Cons",
+    "Vector.Empty",
+    "Vector.Single",
+    "Vector.Full",
+    "VNode.Leaf",
+    "VNode.Branch",
+];
 
 /// The same for a tail-resumptive clause -- `op x k -> k e` -- whose object
 /// takes the argument and the performing code's own continuation, and so

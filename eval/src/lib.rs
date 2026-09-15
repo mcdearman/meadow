@@ -1601,6 +1601,21 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             }
             other => err(format!("charsToString: expected an Array, got {other}")),
         },
+        ConcatStrings => match &args[0] {
+            Value::Array(xs) => {
+                let mut out = String::new();
+                for v in xs.iter() {
+                    match v {
+                        Value::Str(s) => out.push_str(s),
+                        other => {
+                            return err(format!("concatStrings: expected a String, got {other}"));
+                        }
+                    }
+                }
+                Ok(Value::Str(InternedString::from(out)))
+            }
+            other => err(format!("concatStrings: expected an Array, got {other}")),
+        },
         BytesToHex => {
             let buf = bytes_of(&args[0], "bytesToHex")?;
             let mut s = String::with_capacity(buf.len() * 2);

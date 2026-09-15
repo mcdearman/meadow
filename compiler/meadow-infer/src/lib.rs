@@ -3107,6 +3107,10 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "charsToString" => {
             Scheme::mono(Type::func(vec![Type::array(Type::char())], Type::string()))
         }
+        "concatStrings" => Scheme::mono(Type::func(
+            vec![Type::array(Type::string())],
+            Type::string(),
+        )),
         "bytesFromHex" => Scheme::mono(Type::func(
             vec![Type::string()],
             Type::Con(

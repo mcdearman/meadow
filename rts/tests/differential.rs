@@ -145,6 +145,22 @@ fn image(prog: &core::Program) -> meadow_bytecode::Program {
 // `if` branches on anyway.
 
 #[test]
+fn interpolated_strings() {
+    assert_eq!(
+        agree(r#"def main = "a ${1 + 2} b ${"c"} ${'d'} ${(1, 2.5)} \${e}""#),
+        r#""a 3 b c 'd' (1, 2.5) ${e}""#
+    );
+    // Holes in holes, and a hole with nothing around it.
+    assert_eq!(
+        agree(
+            r#"fun f (n : Int) = "<${n}>"
+                 def main = "${f 1}${"${f 2}${f 3}"}""#
+        ),
+        r#""<1><2><3>""#
+    );
+}
+
+#[test]
 fn literals() {
     assert_eq!(agree("def main = 42"), "42");
     assert_eq!(agree("def main = ()"), "()");

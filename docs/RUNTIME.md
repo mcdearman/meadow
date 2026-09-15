@@ -287,6 +287,19 @@ argv)`, and the system C compiler links it with `libmeadow_rts.a`.
 `meadow_aot_main` decodes the image, fills a `Native` table from the block list
 (`Native::ahead_of_time`), and runs the same scheduler as `meadow run`.
 
+The image holds **only what `main` reaches** (`meadow_core::prune`): every
+definition of the package and its dependencies is in the program the front end
+links, `Std` included, and pruning drops the ones no path from the entry point
+names before anything is lowered. A program that prints `fib 30` is a 1 MB
+executable with a 1 KB image rather than 23 MB and 3 MB, and builds in half the
+time. `meadow run` and `meadow dis` prune the same way, and so does every REPL
+entry. `prune = false` in a `[profile.<name>]`, or `--no-prune`, keeps
+everything; `meadow test` and the debugger never prune, since they start from
+more places than one. The runtime builds a few constructors by name
+(`Maybe.Just`, `Result.Ok`, tuples, `List` and `Vector` shapes); lowering gives
+those a tag in every program (`RUNTIME_CTORS`), so a pruned program that never
+names them can still receive them.
+
 So an executable **still contains the interpreter and the bytecode**. Native
 code needs them for every instruction it hands back, and for any pc that isn't
 a block entry, such as the instruction after a thread operation returns (see

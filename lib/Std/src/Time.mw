@@ -13,9 +13,22 @@
 -- UTC) and can jump backwards if the system clock is adjusted; `monotonic` is
 -- nanoseconds from an unspecified origin that only ever moves forward, which is
 -- what a duration should be measured with.
+--
+-- Timing something is one line:
+--
+--   use Std.Time (time)
+--
+--   def main = time "sorting" (\() -> sort xs)      -- prints `sorting: 12.3ms`
+--
+-- and durations and dates print the way a person reads them -- see `formatNanos`
+-- and `formatTimestamp`. For measurements worth quoting, with warm-up and many
+-- samples, use `Std.Bench`.
 
+use Std.Num (minInt, maxInt)
 use Std.Num.Int (abs)
 use Std.String as S
+use Std.Console (println)
+use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 
 @pub effect Time {
@@ -35,6 +48,12 @@ use Std.Collections.Vector (vecFromArray)
 
 @pub def millisPerDay = 86400000
 
+@pub def nanosPerMicro = 1000
+
+@pub def nanosPerMilli = 1000000
+
+@pub def nanosPerSecond = 1000000000
+
 @pub fun seconds n = n * millisPerSecond
 
 @pub fun minutes n = n * millisPerMinute
@@ -45,7 +64,11 @@ use Std.Collections.Vector (vecFromArray)
 
 @pub fun toSeconds ms = ms / millisPerSecond
 
-@pub fun nanosToMillis ns = ns / 1000000
+@pub fun nanosToMicros ns = ns / nanosPerMicro
+
+@pub fun nanosToMillis ns = ns / nanosPerMilli
+
+@pub fun millisToNanos ms = ms * nanosPerMilli
 
 -- --- measuring ----------------------------------------------------------------
 
@@ -61,6 +84,29 @@ use Std.Collections.Vector (vecFromArray)
 @pub fun elapsed act =
   match timed act with
   | (result, ns) -> ns
+
+-- Run `act`, print how long it took as `label: 1.23ms`, and answer its result.
+@pub fun time label act =
+  let (result, ns) = timed act in
+  let _ = println (S.concatAll [label, ": ", formatNanos ns]) in
+  result
+
+-- Run `act` `n` times and print the total and the time per run, as
+-- `label: 1.23s for 1_000 runs, 1.23ms each`. Answers the last run's result.
+-- Handy for something too quick to time once; `Std.Bench` is the tool for a
+-- number worth quoting.
+@pub fun timeRuns label (n : Int) act =
+  let runs = if n < 1 then 1 else n in
+  let (result, ns) = timed (\() -> repeatRuns runs act) in
+  let line =
+    S.concatAll [
+      label, ": ", formatNanos ns, " for ", groupDigits runs, " runs, ", formatNanos (ns / runs), " each",
+    ]
+  in
+  let _ = println line in
+  result
+
+fun repeatRuns (n : Int) act = if n <= 1 then act () else let _ = act () in repeatRuns (n - 1) act
 
 -- --- handling -----------------------------------------------------------------
 
@@ -85,10 +131,52 @@ use Std.Collections.Vector (vecFromArray)
     return x -> \s -> x
   } t
 
--- --- rendering ----------------------------------------------------------------
+-- --- durations ----------------------------------------------------------------
 
--- `hh:mm:ss.mmm` of a duration in milliseconds. Not a date -- meadow has no
--- calendar yet, and getting one right is a bigger job than it looks.
+-- A duration in nanoseconds, in the unit that reads best, to three significant
+-- figures: `742ns`, `1.23µs`, `45.6ms`, `3.21s`, then `2m 05.3s`, `1h 02m 03s`
+-- and `3d 04h 05m`. Rounded, not truncated -- `999.6µs` is `1.00ms` -- and
+-- negative durations keep their sign.
+@pub fun formatNanos (ns : Int) : String =
+  if ns < 0 then S.concat "-" (formatNanos (if ns == minInt then maxInt else 0 - ns))
+  else if ns < 1000 then S.concat (S.fromInt ns) "ns"
+  else if ns < 999500 then S.concat (threeFigures ns nanosPerMicro) "µs"
+  else if ns < 999500000 then S.concat (threeFigures ns nanosPerMilli) "ms"
+  else if ns < 59950000000 then S.concat (threeFigures ns nanosPerSecond) "s"
+  else if ns < 3599950000000 then
+    let tenths = (ns + 50000000) / 100000000 in
+    S.concatAll [S.fromInt (tenths / 600), "m ", pad2 (tenths % 600 / 10), ".", S.fromInt (tenths % 10), "s"]
+  else if ns < 86399500000000 then
+    let secs = (ns + 500000000) / nanosPerSecond in
+    S.concatAll [S.fromInt (secs / 3600), "h ", pad2 (secs % 3600 / 60), "m ", pad2 (secs % 60), "s"]
+  else formatMinutes (roundDiv ns 60000000000)
+
+-- A duration in milliseconds, as `formatNanos` writes it. Good for any
+-- duration a clock can show: past about 292 years, where nanoseconds stop
+-- fitting an `Int`, it counts in minutes instead.
+@pub fun formatMillis (ms : Int) : String =
+  if ms < 0 then S.concat "-" (formatMillis (if ms == minInt then maxInt else 0 - ms))
+  else if ms < 9223372036854 then formatNanos (ms * nanosPerMilli)
+  else formatMinutes (roundDiv ms 60000)
+
+-- `3d 04h 05m`.
+fun formatMinutes (mins : Int) =
+  S.concatAll [
+    groupDigits (mins / 1440), "d ", pad2 (mins % 1440 / 60), "h ", pad2 (mins % 60), "m",
+  ]
+
+-- `ns` in `unit`s, rounded to three significant figures: `1.23`, `12.3` or
+-- `123`. The caller has made sure it is under `999.5` of them.
+fun threeFigures (ns : Int) (unit : Int) =
+  let hundredths = (ns * 100 + unit / 2) / unit in
+  if hundredths < 1000 then S.concatAll [S.fromInt (hundredths / 100), ".", pad2 (hundredths % 100)]
+  else
+    let tenths = (ns * 10 + unit / 2) / unit in
+    if tenths < 1000 then S.concatAll [S.fromInt (tenths / 10), ".", S.fromInt (tenths % 10)]
+    else S.fromInt ((ns + unit / 2) / unit)
+
+-- `hh:mm:ss.mmm` of a duration in milliseconds, the way a stopwatch shows it.
+-- Hours keep counting past a day.
 @pub fun formatDuration ms =
   let neg = ms < 0 in
   let n = abs ms in
@@ -102,12 +190,130 @@ use Std.Collections.Vector (vecFromArray)
   in
   if neg then S.concat "-" body else body
 
-fun pad2 n = if n < 10 then S.concat "0" (S.fromInt n) else S.fromInt n
+-- --- dates --------------------------------------------------------------------
+--
+-- Civil dates and times in UTC, from a count of milliseconds since the Unix
+-- epoch -- what `now` answers. Proleptic Gregorian, so it is right for any day
+-- an `Int` can reach, before 1970 as well as after. There are no time zones:
+-- the runtime has no zone data to read, and a date that silently used the
+-- wrong one would be worse than one that says it is UTC.
 
-fun pad3 n =
-  if n < 10
-  then S.concat "00" (S.fromInt n)
-  else if n < 100 then S.concat "0" (S.fromInt n) else S.fromInt n
+-- The UTC date and time `ms` milliseconds after the Unix epoch, taken apart:
+--
+--   { year, month, day, hour, minute, second, millis, weekday }
+--
+-- all `Int`s, `month` and `day` counting from 1, and `weekday` ISO's: 1 is
+-- Monday and 7 is Sunday. An anonymous record, so `(utc ms).year` reads a field.
+@pub fun utc (ms : Int) =
+  let days = floorDiv ms millisPerDay in
+  let inDay = ms - days * millisPerDay in
+  -- Howard Hinnant's `civil_from_days`: count in 400-year eras starting on
+  -- 1 March, so the leap day falls at the end of the year.
+  let z = days + 719468 in
+  let era = floorDiv z 146097 in
+  let doe = z - era * 146097 in
+  let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365 in
+  let doy = doe - (365 * yoe + yoe / 4 - yoe / 100) in
+  let mp = (5 * doy + 2) / 153 in
+  let day = doy - (153 * mp + 2) / 5 + 1 in
+  let month = if mp < 10 then mp + 3 else mp - 9 in
+  let year = yoe + era * 400 + (if month <= 2 then 1 else 0) in
+  -- 1970-01-01 was a Thursday.
+  let weekday = floorMod (days + 3) 7 + 1 in
+  { year = year,
+    month = month,
+    day = day,
+    hour = inDay / millisPerHour,
+    minute = inDay % millisPerHour / millisPerMinute,
+    second = inDay % millisPerMinute / millisPerSecond,
+    millis = inDay % millisPerSecond,
+    weekday = weekday }
+
+-- ISO 8601, in UTC: `2026-09-14T17:04:05.123Z`.
+@pub fun formatTimestamp (ms : Int) : String =
+  let t = utc ms in
+  S.concatAll [dateOf t, "T", clockOf t, "Z"]
+
+-- The UTC date alone: `2026-09-14`.
+@pub fun formatDate (ms : Int) : String = dateOf (utc ms)
+
+-- The UTC time of day alone: `17:04:05.123`.
+@pub fun formatTimeOfDay (ms : Int) : String = clockOf (utc ms)
+
+-- For people rather than parsers: `Mon 14 Sep 2026 17:04:05 UTC`.
+@pub fun formatReadable (ms : Int) : String =
+  let t = utc ms in
+  S.concatAll [
+    S.slice (weekdayName t.weekday) 0 3, " ", S.fromInt t.day, " ", S.slice (monthName t.month) 0 3, " ",
+    yearOf t.year, " ", pad2 t.hour, ":", pad2 t.minute, ":", pad2 t.second, " UTC",
+  ]
+
+-- How long ago `past` was, as of `at` -- both from `now` -- to the unit that
+-- matters: `just now`, `42s ago`, `5m ago`, `3h ago`, `2d ago`, or `in 5m` for
+-- a moment still to come.
+@pub fun formatAgo (at : Int) (past : Int) : String =
+  let d = at - past in
+  if abs d < millisPerSecond then "just now"
+  else if d > 0 then S.concat (coarse d) " ago"
+  else S.concat "in " (coarse (0 - d))
+
+-- The largest whole unit of a positive duration in milliseconds.
+fun coarse (ms : Int) =
+  if ms < millisPerMinute then S.concat (S.fromInt (ms / millisPerSecond)) "s"
+  else if ms < millisPerHour then S.concat (S.fromInt (ms / millisPerMinute)) "m"
+  else if ms < millisPerDay then S.concat (S.fromInt (ms / millisPerHour)) "h"
+  else S.concat (groupDigits (ms / millisPerDay)) "d"
+
+@pub fun monthName (m : Int) : String = V.getOr "?" monthNames (m - 1)
+
+def monthNames = [
+  "January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+  "November", "December",
+]
+
+-- The name of ISO weekday `w`: 1 is Monday.
+@pub fun weekdayName (w : Int) : String = V.getOr "?" weekdayNames (w - 1)
+
+def weekdayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+fun dateOf t = S.concatAll [yearOf t.year, "-", pad2 t.month, "-", pad2 t.day]
+
+fun clockOf t =
+  S.concatAll [pad2 t.hour, ":", pad2 t.minute, ":", pad2 t.second, ".", pad3 t.millis]
+
+-- Four digits at least, and a sign before the year 0.
+fun yearOf (y : Int) =
+  if y < 0 then S.concat "-" (padTo 4 (0 - y)) else padTo 4 y
+
+-- --- arithmetic and digits ----------------------------------------------------
+
+-- Division rounding down, where `/` rounds towards zero: what a date before
+-- 1970 needs.
+fun floorDiv (a : Int) (b : Int) =
+  let q = a / b in
+  if a % b != 0 and ((a < 0 and b > 0) or (a > 0 and b < 0)) then q - 1 else q
+
+-- `n / d` rounded to the nearest, for `n` and `d` above zero, without the
+-- overflow of adding half of `d` first.
+fun roundDiv (n : Int) (d : Int) = n / d + (if n % d >= d - n % d then 1 else 0)
+
+fun floorMod (a : Int) (b : Int) = a - floorDiv a b * b
+
+fun pad2 (n : Int) = padTo 2 n
+
+fun pad3 (n : Int) = padTo 3 n
+
+-- `n`, with leading zeros to at least `width` digits.
+fun padTo (width : Int) (n : Int) =
+  let s = S.fromInt n in
+  let short = width - S.byteLength s in
+  if short > 0 then S.concat (S.repeat "0" short) s else s
+
+-- `1_234_567`, so a big count reads at a glance.
+fun groupDigits (n : Int) =
+  if n < 0 then S.concat "-" (groupDigits (0 - n))
+  else if n < 1000 then S.fromInt n
+  else S.concatAll [groupDigits (n / 1000), "_", pad3 (n % 1000)]
 
 -- --- tests -------------------------------------------------------------------
 --
@@ -123,6 +329,8 @@ use Std.Maybe.Maybe.*
   let c = assertEq (hours 1) 3600000 "hours" in
   let d = assertEq (days 1) 86400000 "days" in
   let e = assertEq (toSeconds 1500) 1 "toSeconds truncates" in
+  let f = assertEq (nanosToMicros 2500) 2 "nanosToMicros" in
+  let g = assertEq (millisToNanos 3) 3000000 "millisToNanos" in
   assertEq (nanosToMillis 2500000) 2 "nanosToMillis"
 
 @test fun aFrozenClockAlwaysAnswersTheSame () =
@@ -149,3 +357,50 @@ use Std.Maybe.Maybe.*
   let c = assertEq (formatDuration (seconds 3661)) "01:01:01.000" "an hour, a minute, a second" in
   let d = assertEq (formatDuration 90061001) "25:01:01.001" "past a day, hours keep counting" in
   assertEq (formatDuration (0 - 1500)) "-00:00:01.500" "negative"
+
+@test fun nanosPickTheirUnit () =
+  let a = assertEq (formatNanos 0) "0ns" "zero" in
+  let b = assertEq (formatNanos 742) "742ns" "nanoseconds" in
+  let c = assertEq (formatNanos 1234) "1.23µs" "microseconds" in
+  let d = assertEq (formatNanos 45678000) "45.7ms" "milliseconds, rounded" in
+  let e = assertEq (formatNanos 321000000) "321ms" "three figures, no decimals" in
+  let f = assertEq (formatNanos 3210000000) "3.21s" "seconds" in
+  let g = assertEq (formatNanos 125300000000) "2m 05.3s" "minutes" in
+  let h = assertEq (formatNanos 3723000000000) "1h 02m 03s" "hours" in
+  let i = assertEq (formatNanos 273900000000000) "3d 04h 05m" "days" in
+  assertEq (formatNanos (0 - 1500)) "-1.50µs" "negative"
+
+@test fun roundingCarriesIntoTheNextUnit () =
+  let a = assertEq (formatNanos 999) "999ns" "the last nanosecond" in
+  let b = assertEq (formatNanos 999499) "999µs" "just under" in
+  let c = assertEq (formatNanos 999500) "1.00ms" "rounds up into milliseconds" in
+  let d = assertEq (formatNanos 9995) "10.0µs" "rounds up a digit" in
+  let e = assertEq (formatNanos 59950000000) "1m 00.0s" "a minute, not 60.0s" in
+  assertEq (formatNanos (0 - 9223372036854775807 - 1)) "-106_751d 23h 47m" "the most negative Int"
+
+@test fun millisFormatToo () =
+  let a = assertEq (formatMillis 1500) "1.50s" "seconds" in
+  let b = assertEq (formatMillis (hours 26)) "1d 02h 00m" "a day and more" in
+  assertEq (formatMillis 9223372036854775807) "106_751_991_167d 07h 13m" "further than nanoseconds reach"
+
+@test fun datesAreUtcCivilDates () =
+  let a = assertEq (formatTimestamp 0) "1970-01-01T00:00:00.000Z" "the epoch" in
+  let b = assertEq (formatTimestamp 951782400000) "2000-02-29T00:00:00.000Z" "a leap day in a 400-year leap year" in
+  let c = assertEq (formatTimestamp 1789405445123) "2026-09-14T17:04:05.123Z" "milliseconds and all" in
+  let d = assertEq (formatTimestamp (0 - 1)) "1969-12-31T23:59:59.999Z" "before the epoch rounds down" in
+  let e = assertEq (formatDate 4107542400000) "2100-03-01" "2100 is not a leap year" in
+  assertEq (formatTimeOfDay 1789405445123) "17:04:05.123" "time of day"
+
+@test fun datesKnowTheirWeekday () =
+  let epoch = utc 0 in
+  let later = utc 1789405445123 in
+  let a = assertEq epoch.weekday 4 "1970-01-01 was a Thursday" in
+  let b = assertEq (weekdayName later.weekday) "Monday" "2026-09-14 is a Monday" in
+  let c = assertEq (monthName later.month) "September" "and in September" in
+  assertEq (formatReadable 1789405445123) "Mon 14 Sep 2026 17:04:05 UTC" "readable"
+
+@test fun agoRoundsToTheUnitThatMatters () =
+  let a = assertEq (formatAgo 10000 9500) "just now" "under a second" in
+  let b = assertEq (formatAgo (minutes 10) (minutes 5)) "5m ago" "minutes" in
+  let c = assertEq (formatAgo (days 3) 0) "3d ago" "days" in
+  assertEq (formatAgo 0 (hours 2)) "in 2h" "the future"

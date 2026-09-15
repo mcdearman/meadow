@@ -211,5 +211,5 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   assertEq (normalize "/../a") "/a" "root has no parent"
 
 @test fun windowsSeparatorsAreAcceptedOnInput () =
-  let a = assertEq (fileName "a\b\c.txt") "c.txt" "backslash" in
-  assertEq (normalize "a\b") "a/b" "output is always forward slashes"
+  let a = assertEq (fileName r"a\b\c.txt") "c.txt" "backslash" in
+  assertEq (normalize r"a\b") "a/b" "output is always forward slashes"

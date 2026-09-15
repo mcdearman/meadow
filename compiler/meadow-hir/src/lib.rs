@@ -138,7 +138,9 @@ pub const PRIMS: &[&str] = &[
     "stmWait",
     "stmNest",
     "stmMerge",
-    "stmRollback",
+    "stmRollback", //
+    // the strings of an array, one after another: what `"a ${b} c"` becomes
+    "concatStrings",
 ];
 use std::ops::Deref;
 

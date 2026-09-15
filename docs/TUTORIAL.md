@@ -96,6 +96,8 @@ commands:
 | `:t <expr>` | show the type without evaluating |
 | `:module` | list everything in scope |
 | `:reset` | forget everything defined so far |
+| `:time` | time every entry from now on (`:time` again stops) |
+| `:time <expr>` | time just this entry |
 | `:q` | quit |
 
 Tab completes names, and knows whether the cursor wants a value, a type or a `use`
@@ -127,7 +129,7 @@ def main = 1  -- so is this
 | `Float` | `3.14`, `42.0` | 64-bit; also spelled `Float64` |
 | `Float32` | *(same literals)* | 32-bit |
 | `Bool` | `True`, `False` | constructors, capitalised |
-| `String` | `"hi"`, `"tab\there"` | a sequence of **bytes**; escapes `\n \t \r \\ \" \0` |
+| `String` | `"hi"`, `"tab\there"`, `"hi ${name}"`, `r"C:\dir"` | a sequence of **bytes**; `${…}` interpolates; escapes and raw strings [below](#strings-and-interpolation) |
 | `Char` | `'a'`, `'é'`, `'\n'` | one Unicode **scalar**, not one byte |
 | unit | `()` | one value, written the same way as its type |
 
@@ -208,6 +210,56 @@ def main = (toFloat 3, floor 3.9, toBigInt 5, toInt8 200, toFloat32 (toFloat 3))
 
 ```
 => (3.0, 3, 5, -56, 3.0)
+```
+
+### Strings and interpolation
+
+A `${…}` inside a string literal is an expression, and the string holds what it
+renders to: any type at all, the way the REPL prints it, except that a string
+goes in without its quotes. A hole can hold anything an expression can,
+including strings with holes of their own. `\$` is a dollar sign that does not
+start a hole, and a `$` not followed by `{` needs no escape.
+
+```meadow
+fun describe (name : String) (items : [Int]) =
+  "${name} has ${len items} items, the first is ${getOr 0 items 0}"
+
+def main =
+  ( describe "cart" [3, 1, 4],
+    "maybe: ${Just 2}, quoted: ${show "hi"}",
+    "a price: \$${9}, and \${literal} braces" )
+```
+
+```
+=> ("cart has 3 items, the first is 3", "maybe: Just(2), quoted: \"hi\"", "a price: $9, and ${literal} braces")
+```
+
+A hole renders its value with `display`; `show` keeps the quotes on a string,
+for when you want to see them. Formatting a value some other way is a function
+call away: with `use Std.Time as T`, `"took ${T.formatNanos ns}"`.
+
+The escapes are the usual ones, in strings and character literals alike:
+
+| escape | means |
+|---|---|
+| `\n` `\r` `\t` `\0` | newline, carriage return, tab, NUL |
+| `\\` `\"` `\'` `\$` | the character itself |
+| `\a` `\b` `\f` `\v` `\e` | bell, backspace, form feed, vertical tab, escape (as terminal colour codes start) |
+| `\x41` | an ASCII character by its two hex digits, up to `\x7F` |
+| `\u{1F600}` | any Unicode character, by one to six hex digits |
+| `\` at the end of a line | joins the next line on, without the line break or its leading spaces |
+
+Anything else after a backslash is an error, not a backslash. For text full of
+backslashes or quotes, a **raw string** takes everything between its quotes as it
+is: no escapes and no `${…}`. `r"…"` cannot contain a `"`; `r#"…"#` can, and ends
+at `"#`; add `#`s until the text does not contain the closing sequence.
+
+```meadow
+def main = (r"C:\Users\${name}", r#"she said "hi""#, "caf\u{e9} \x41\tB")
+```
+
+```
+=> ("C:\\Users\\${name}", "she said \"hi\"", "café A\tB")
 ```
 
 ### Booleans and bit twiddling
@@ -2135,6 +2187,32 @@ every read, which is how you test a timeout without waiting for one. `sleep`
 returns immediately under either. There are helpers for units (`seconds`,
 `minutes`, `hours`, `days`, `toSeconds`) and `timed` / `elapsed` for measuring a
 computation with the monotonic clock.
+
+To time something and see the answer, wrap it: `T.time "sort" (() -> sort xs)`
+prints `sort: 12.3ms` and returns the sorted vector, and `T.timeRuns "parse" 1000
+(() -> parse s)` runs it a thousand times and prints the total and the time per
+run. (In the REPL, `:time` does this for every entry.) Durations and dates print
+the way a person reads them:
+
+```meadow
+use Std.Time as T
+
+def main =
+  ( T.formatNanos 1234567,
+    T.formatMillis (T.minutes 90),
+    T.formatTimestamp 1789405445123,
+    T.formatReadable 1789405445123,
+    T.formatAgo (T.hours 5) (T.hours 2) )
+```
+
+```
+=> ("1.23ms", "1h 30m 00s", "2026-09-14T17:04:05.123Z", "Mon 14 Sep 2026 17:04:05 UTC", "3h ago")
+```
+
+`formatNanos` picks the unit and keeps three significant figures; `utc ms` takes a
+moment apart into `{ year, month, day, hour, minute, second, millis, weekday }`,
+and `formatDate`, `formatTimeOfDay`, `monthName` and `weekdayName` are there for
+building your own. Dates are UTC: there are no time zones yet.
 
 #### Fs — the filesystem, or a pretend one
 

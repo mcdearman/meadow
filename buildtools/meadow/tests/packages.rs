@@ -133,6 +133,7 @@ fn a_manifest_configures_the_build_profiles() {
             opt: Some(OptLevel::O0),
             strictness: Some(Strictness::Strict),
             backend: None,
+            prune: None,
         },
     );
     assert_eq!(flagged.opt(), OptLevel::O0);
@@ -202,6 +203,43 @@ fn a_manifest_chooses_the_backend() {
         },
     );
     assert_eq!(flagged.backend, Backend::Jit);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Pruning is on in every profile; a manifest can turn it off for one, and a
+/// flag beats the manifest.
+#[test]
+fn prune_is_on_unless_a_manifest_or_a_flag_says_otherwise() {
+    use meadow::package::ProfileConfig;
+    use meadow::profile::{Profile, Resolved};
+
+    let dir = std::env::temp_dir().join("meadow-prune-manifest");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(
+        dir.join("meadow.toml"),
+        "[package]\n\
+         name = \"pruned\"\n\
+         \n\
+         [profile.release]\n\
+         prune = false\n",
+    )
+    .unwrap();
+
+    let debug = Resolved::resolve(Profile::Debug, &dir, ProfileConfig::default());
+    assert!(debug.prune, "on when nothing says otherwise");
+    let release = Resolved::resolve(Profile::Release, &dir, ProfileConfig::default());
+    assert!(!release.prune, "off where the manifest says so");
+    let flagged = Resolved::resolve(
+        Profile::Debug,
+        &dir,
+        ProfileConfig {
+            prune: Some(false),
+            ..ProfileConfig::default()
+        },
+    );
+    assert!(!flagged.prune, "off where a flag says so");
 
     std::fs::remove_dir_all(&dir).ok();
 }

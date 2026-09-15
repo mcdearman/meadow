@@ -89,7 +89,11 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
             | Token::And
             | Token::Or => "keyword",
             Token::Int(_) | Token::Real(_) => "number",
-            Token::String(_) | Token::Char(_) => "string",
+            Token::String(_)
+            | Token::InterpStart(_)
+            | Token::InterpMid(_)
+            | Token::InterpEnd(_)
+            | Token::Char(_) => "string",
             Token::UpperIdent(name) => {
                 let n = name.to_string();
                 if declares_module {

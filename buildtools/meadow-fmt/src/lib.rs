@@ -141,10 +141,21 @@ enum Line {
     },
 }
 
+/// Where a line starts or ends up inside a string literal: in its text, or in
+/// a `${…}` hole of it, how many braces deep.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Nest {
+    Text,
+    Hole(usize),
+    /// A raw string, `r#"…"#`, closed by a quote and this many `#`s.
+    Raw(usize),
+}
+
 struct Indenter {
     stack: Vec<Frame>,
-    /// Carried across lines: a string literal may span them.
-    in_string: bool,
+    /// Carried across lines: a string literal may span them, and so may the
+    /// holes in it -- which hold strings of their own. Empty in code.
+    nest: Vec<Nest>,
     /// Whether the line before this one opened a frame — which makes the next
     /// line the first of a block, and so structurally anchored.
     opened: bool,
@@ -154,7 +165,7 @@ impl Indenter {
     fn new() -> Self {
         Self {
             stack: Vec::new(),
-            in_string: false,
+            nest: Vec::new(),
             opened: true,
         }
     }
@@ -198,7 +209,7 @@ impl Indenter {
     fn line(&mut self, raw: &str) -> Line {
         // Inside a string literal every byte is content, including the leading
         // whitespace and the blank lines. Reproduce the line exactly.
-        if self.in_string {
+        if !self.nest.is_empty() {
             self.code(raw);
             return Line::Code {
                 text: raw.to_string(),
@@ -442,24 +453,65 @@ impl Indenter {
         let mut i = 0;
         while i < bytes.len() {
             let c = bytes[i];
-            if self.in_string {
+            // Inside a literal everything is its content, holes included: a
+            // hole's braces and strings are never structure here, but they do
+            // decide where the literal ends.
+            if let Some(&top) = self.nest.last() {
                 out.push(' ');
-                if c == '\\' {
-                    i += 2;
-                    out.push(' ');
-                    continue;
-                }
-                if c == '"' {
-                    self.in_string = false;
+                match (top, c) {
+                    (Nest::Raw(hashes), '"') if closes_raw(&bytes, i, hashes) => {
+                        self.nest.pop();
+                        out.push_str(&" ".repeat(hashes));
+                        i += 1 + hashes;
+                        continue;
+                    }
+                    (Nest::Raw(_), _) => {}
+                    (Nest::Hole(_), 'r') if let Some(hashes) = opens_raw(&bytes, i) => {
+                        self.nest.push(Nest::Raw(hashes));
+                        out.push_str(&" ".repeat(1 + hashes));
+                        i += 2 + hashes;
+                        continue;
+                    }
+                    (Nest::Text, '\\') => {
+                        i += 2;
+                        out.push(' ');
+                        continue;
+                    }
+                    (Nest::Text, '"') => {
+                        self.nest.pop();
+                    }
+                    (Nest::Text, '$') if bytes.get(i + 1) == Some(&'{') => {
+                        self.nest.push(Nest::Hole(0));
+                        out.push(' ');
+                        i += 2;
+                        continue;
+                    }
+                    (Nest::Hole(_), '"') => self.nest.push(Nest::Text),
+                    (Nest::Hole(depth), '{') => {
+                        *self.nest.last_mut().expect("in a hole") = Nest::Hole(depth + 1)
+                    }
+                    (Nest::Hole(0), '}') => {
+                        self.nest.pop();
+                    }
+                    (Nest::Hole(depth), '}') => {
+                        *self.nest.last_mut().expect("in a hole") = Nest::Hole(depth - 1)
+                    }
+                    _ => {}
                 }
                 i += 1;
                 continue;
             }
             match c {
                 '"' => {
-                    self.in_string = true;
+                    self.nest.push(Nest::Text);
                     out.push('"');
                     i += 1;
+                }
+                'r' if let Some(hashes) = opens_raw(&bytes, i) => {
+                    self.nest.push(Nest::Raw(hashes));
+                    out.push('"');
+                    out.push_str(&" ".repeat(1 + hashes));
+                    i += 2 + hashes;
                 }
                 // `--` always starts a comment: the lexer prefers the comment rule
                 // over the operator one, so there is no `--` operator to confuse.
@@ -507,6 +559,22 @@ fn starts_declaration(toks: &[Tok<'_>]) -> bool {
             .is_some_and(|t| t.text.starts_with(|c: char| c.is_alphabetic())),
         _ => false,
     }
+}
+
+/// How many `#`s the raw string starting at `i` opens with, if one does: an `r`
+/// that is not the end of a longer name, `#`s, and a quote.
+fn opens_raw(line: &[char], i: usize) -> Option<usize> {
+    if line.get(i) != Some(&'r') || (i > 0 && is_word(line[i - 1])) {
+        return None;
+    }
+    let hashes = line[i + 1..].iter().take_while(|&&c| c == '#').count();
+    (line.get(i + 1 + hashes) == Some(&'"')).then_some(hashes)
+}
+
+/// Whether the quote at `i` closes a raw string opened with `hashes` `#`s.
+fn closes_raw(line: &[char], i: usize, hashes: usize) -> bool {
+    line.get(i + 1..i + 1 + hashes)
+        .is_some_and(|h| h.iter().all(|&c| c == '#'))
 }
 
 fn is_word(c: char) -> bool {
@@ -702,6 +770,27 @@ mod tests {
     fn comments_and_strings_are_never_parsed_as_code() {
         // The `{` and `match` here are text, not structure.
         let src = "def a = \"{ match with\"\n-- a comment with ( and | in it\ndef b = 2\n";
+        assert_eq!(f(src), src);
+    }
+
+    #[test]
+    fn an_interpolated_string_ends_where_its_holes_let_it() {
+        // The quotes and braces inside the holes are the holes', so the literal
+        // ends at the last quote and `def b` is back at the top level.
+        let src = "def a = \"x ${f \"}\" { y = 1 }} (\"\ndef b = 2\n";
+        assert_eq!(f(src), src);
+        // A hole that spans lines keeps its lines as they are.
+        let src = "def a = \"sum: ${\n    1 +\n  2\n}\"\ndef b = 2\n";
+        assert_eq!(f(src), src);
+    }
+
+    #[test]
+    fn a_raw_string_ends_only_at_its_own_closing() {
+        // The `"` and `{` inside are text; the literal ends at `"#`.
+        let src = "def a = r#\"x \" { (\"#\ndef b = 2\n";
+        assert_eq!(f(src), src);
+        // Across lines, its lines are kept as they are.
+        let src = "def a = r\"one\n   two {\"\ndef b = 2\n";
         assert_eq!(f(src), src);
     }
 

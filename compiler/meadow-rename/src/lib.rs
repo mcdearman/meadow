@@ -706,6 +706,17 @@ impl Resolver {
 
     /// The innermost binding of `name`, whatever layer it is in. Right for an
     /// operator, which only the prelude defines, and for a `use` re-export.
+    /// Primitive `name` itself, whatever else is called that in scope: the
+    /// prims are bound first (see [`Resolver::with_prelude`]), in [`PRIMS`]
+    /// order.
+    fn prim(&self, name: &str) -> Option<VarId> {
+        let i = PRIMS.iter().position(|p| *p == name)?;
+        self.scope
+            .get(i)
+            .filter(|(n, _)| &**n == name)
+            .map(|(_, id)| *id)
+    }
+
     fn lookup(&self, name: InternedString) -> Option<VarId> {
         self.scope
             .iter()
@@ -1984,6 +1995,37 @@ impl Resolver {
                 self.node(hir::Expr::Lit(l), expr.span)
             }
             ast::Expr::Unit => self.node(hir::Expr::Unit, expr.span),
+            // `"a ${x} b"` is `concatStrings #["a ", display x, " b"]`, naming
+            // the two primitives themselves: a `display` the program defines
+            // is not what a string literal means.
+            ast::Expr::Interp(texts, holes) => {
+                let (Some(concat), Some(display)) =
+                    (self.prim("concatStrings"), self.prim("display"))
+                else {
+                    self.error(
+                        "string interpolation needs the primitives".to_string(),
+                        "no prelude here".to_string(),
+                        expr.span,
+                    );
+                    return self.node(hir::Expr::Error, expr.span);
+                };
+                let mut parts = Vec::with_capacity(texts.len() + holes.len());
+                for (i, text) in texts.iter().enumerate() {
+                    if !text.is_empty() {
+                        parts.push(self.node(hir::Expr::Lit(hir::Lit::String(*text)), expr.span));
+                    }
+                    if let Some(hole) = holes.get(i) {
+                        let value = self.resolve_expr(hole);
+                        let f = self.node(display, hole.span);
+                        let callee = self.node(hir::Expr::Var(f), hole.span);
+                        parts.push(self.node(hir::Expr::App(callee, vec![value]), hole.span));
+                    }
+                }
+                let f = self.node(concat, expr.span);
+                let callee = self.node(hir::Expr::Var(f), expr.span);
+                let array = self.node(hir::Expr::Array(parts), expr.span);
+                self.node(hir::Expr::App(callee, vec![array]), expr.span)
+            }
             ast::Expr::Hole => {
                 self.error(
                     "`_` can only appear inside an operator section, e.g. `(_ + 1)`".to_string(),

@@ -189,6 +189,11 @@ struct ProfileArgs {
     /// `--backend aot`.
     #[arg(long, visible_alias = "native")]
     aot: bool,
+    /// Compile every definition of the package and its dependencies, not only
+    /// what `main` reaches. `prune = false` in a `[profile.<name>]` of
+    /// `meadow.toml` does the same.
+    #[arg(long)]
+    no_prune: bool,
 }
 
 fn backend(s: &str) -> Result<Backend, String> {
@@ -221,6 +226,7 @@ impl ProfileArgs {
                 .backend
                 .or(self.jit.then_some(Backend::Jit))
                 .or(self.aot.then_some(Backend::Aot)),
+            prune: self.no_prune.then_some(false),
         }
     }
 
@@ -433,11 +439,15 @@ fn build(
         print!("{}", linked.annotations());
     }
 
+    // What runs: the entry point and what it reaches, unless the profile says
+    // to keep everything.
+    let program = profile.program(&linked.program);
+
     // What the VM runs is written under the package's `target` directory
     // whenever it is made: by `build`, and by `run` on the VM.
     let image = match engine {
         None | Some(Engine::Vm) | Some(Engine::Jit) => {
-            match runtime::compile(&linked.program, profile.opt()) {
+            match runtime::compile(&program, profile.opt()) {
                 Ok(image) => {
                     if let Some((root, name)) = &out.package
                         && let Err(e) = artifacts::write_image(root, profile.profile, name, &image)
@@ -501,7 +511,7 @@ fn build(
                 Ok(jit) => runtime::run_image_with_stats(image, jit.as_ref()),
                 Err(e) => (Err(e), None),
             },
-            None => runtime::run_with_stats(&linked.program, engine, profile.opt()),
+            None => runtime::run_with_stats(&program, engine, profile.opt()),
         };
         if gc_stats {
             match stats {
@@ -535,7 +545,7 @@ fn disassemble(path: &std::path::Path, profile: Resolved) {
     let Some(linked) = out.linked else {
         std::process::exit(1);
     };
-    match runtime::compile(&linked.program, profile.opt()) {
+    match runtime::compile(&profile.program(&linked.program), profile.opt()) {
         Ok(image) => print!("{}", image.disassemble()),
         Err(e) => {
             eprintln!("error: {e}");

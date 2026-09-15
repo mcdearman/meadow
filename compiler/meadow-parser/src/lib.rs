@@ -674,6 +674,29 @@ where
             .then(choice((lower_ident(), upper_ident())))
             .map_with(|(q, n), e| Located::new(Expr::Qual(q, n), e.span()));
 
+        // `"a ${e} b"` -- the lexer has already split the literal into its text
+        // and the tokens of each hole.
+        let interp_expr = select! { Token::InterpStart(s) => s }
+            .then(expr.clone())
+            .then(
+                select! { Token::InterpMid(s) => s }
+                    .then(expr.clone())
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .then(select! { Token::InterpEnd(s) => s })
+            .map_with(|(((first, hole), rest), last), e| {
+                let mut texts = vec![first];
+                let mut holes = vec![hole];
+                for (text, hole) in rest {
+                    texts.push(text);
+                    holes.push(hole);
+                }
+                texts.push(last);
+                Located::new(Expr::Interp(texts, holes), e.span())
+            })
+            .boxed();
+
         // `_` — an operator-section hole (see `desugar_section`).
         let hole_expr = just(Token::Wildcard).map_with(|_, e| Located::new(Expr::Hole, e.span()));
 
@@ -689,6 +712,7 @@ where
             qual_atom,
             unit_expr,
             lit_expr,
+            interp_expr,
             var_expr,
             hole_expr,
             ctor_atom,
@@ -1090,6 +1114,9 @@ fn fill_holes(e: LExpr, n: &mut usize) -> LExpr {
         }
         Expr::Var(v) => Expr::Var(v),
         Expr::Lit(l) => Expr::Lit(l),
+        Expr::Interp(texts, holes) => {
+            Expr::Interp(texts, holes.into_iter().map(|x| go(x, n)).collect())
+        }
         Expr::Unit => Expr::Unit,
         // A nested lambda owns any holes in its body.
         Expr::Lam(ps, b) => Expr::Lam(ps, b),

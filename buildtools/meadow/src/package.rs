@@ -32,6 +32,8 @@
 //! [profile.release]
 //! opt-level = 2
 //! strictness = "strict"    # "lenient" | "strict"
+//! backend = "aot"          # "vm" | "jit" | "aot"
+//! prune = true             # compile only what `main` reaches
 //! ```
 //!
 //! Only the keys that are present are overridden; the rest keep the profile's
@@ -77,6 +79,9 @@ pub struct ProfileConfig {
     pub strictness: Option<Strictness>,
     /// How the program runs -- see [`crate::profile::Backend`].
     pub backend: Option<crate::profile::Backend>,
+    /// Whether to compile only what the entry point reaches -- see
+    /// [`crate::profile::Resolved::prune`].
+    pub prune: Option<bool>,
 }
 
 impl ProfileConfig {
@@ -319,6 +324,13 @@ fn parse_manifest(text: &str, dir: &Path) -> Manifest {
                     "opt-level" | "opt_level" => p.opt = OptLevel::parse(unquote(value)),
                     "strictness" => p.strictness = Strictness::parse(unquote(value)),
                     "backend" => p.backend = crate::profile::Backend::parse(unquote(value)),
+                    "prune" => {
+                        p.prune = match unquote(value) {
+                            "true" => Some(true),
+                            "false" => Some(false),
+                            _ => None,
+                        }
+                    }
                     _ => {}
                 }
             }

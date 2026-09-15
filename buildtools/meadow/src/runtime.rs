@@ -75,6 +75,106 @@ pub fn run(program: &core::Program, engine: Engine, opt: OptLevel) -> Result<Str
     }
 }
 
+/// How long [`run_timed`] spent getting a program ready, and running it.
+#[derive(Debug, Clone, Copy)]
+pub struct Timings {
+    /// Lowering and code generation: `core` to bytecode. `None` on the CEK
+    /// machine, which runs `core` as it is.
+    pub compile: Option<std::time::Duration>,
+    /// The program itself, from its first instruction to its answer -- JIT
+    /// compilation included, since that happens as it runs.
+    pub run: std::time::Duration,
+}
+
+/// [`run`], saying how long each part took.
+pub fn run_timed(
+    program: &core::Program,
+    engine: Engine,
+    opt: OptLevel,
+) -> (Result<String, String>, Timings) {
+    use std::time::Instant;
+    match engine {
+        Engine::Cek => {
+            let start = Instant::now();
+            let result = run(program, engine, opt);
+            let run = start.elapsed();
+            (result, Timings { compile: None, run })
+        }
+        Engine::Vm | Engine::Jit => {
+            let start = Instant::now();
+            let image = compile(program, opt);
+            let compile = Some(start.elapsed());
+            let start = Instant::now();
+            let result = image.and_then(|image| {
+                let native = native(&image, engine, opt)?;
+                let entry = image.entry.ok_or("program has no entry point")?;
+                meadow_rts::sched::run_native(
+                    &image,
+                    native.as_ref(),
+                    entry,
+                    UNBOUNDED,
+                    meadow_rts::sched::workers(),
+                )
+                .result
+                .map_err(|e| e.msg)
+            });
+            let run = start.elapsed();
+            (result, Timings { compile, run })
+        }
+    }
+}
+
+/// A duration the way `Std.Time.formatNanos` writes one: three significant
+/// figures in the unit that reads best -- `742ns`, `1.23µs`, `45.7ms`, `3.21s`
+/// -- then `2m 05.3s`, `1h 02m 03s` and `3d 04h 05m`.
+pub fn format_duration(d: std::time::Duration) -> String {
+    let ns = u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+    let three = |unit: u64| {
+        let hundredths = (ns * 100 + unit / 2) / unit;
+        if hundredths < 1000 {
+            return format!("{}.{:02}", hundredths / 100, hundredths % 100);
+        }
+        let tenths = (ns * 10 + unit / 2) / unit;
+        if tenths < 1000 {
+            return format!("{}.{}", tenths / 10, tenths % 10);
+        }
+        ((ns + unit / 2) / unit).to_string()
+    };
+    match ns {
+        0..1_000 => format!("{ns}ns"),
+        1_000..999_500 => format!("{}µs", three(1_000)),
+        999_500..999_500_000 => format!("{}ms", three(1_000_000)),
+        999_500_000..59_950_000_000 => format!("{}s", three(1_000_000_000)),
+        59_950_000_000..3_599_950_000_000 => {
+            let tenths = (ns + 50_000_000) / 100_000_000;
+            format!(
+                "{}m {:02}.{}s",
+                tenths / 600,
+                tenths % 600 / 10,
+                tenths % 10
+            )
+        }
+        3_599_950_000_000..86_399_500_000_000 => {
+            let secs = (ns + 500_000_000) / 1_000_000_000;
+            format!(
+                "{}h {:02}m {:02}s",
+                secs / 3600,
+                secs % 3600 / 60,
+                secs % 60
+            )
+        }
+        _ => {
+            let mins = ns / 60_000_000_000 + u64::from(ns % 60_000_000_000 >= 30_000_000_000);
+            format!(
+                "{}d {:02}h {:02}m",
+                mins / 1440,
+                mins % 1440 / 60,
+                mins % 60
+            )
+        }
+    }
+}
+
 /// With [`Engine::Jit`], a JIT for `image`, compiling what gets hot -- after
 /// `MEADOW_JIT_THRESHOLD` entries, or the default.
 pub fn native(
@@ -363,4 +463,35 @@ pub fn compile(program: &core::Program, opt: OptLevel) -> Result<meadow_bytecode
         ));
     }
     meadow_codegen::compile(&lowered.program).map_err(|e| e.msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// The same cases as `Std.Time`'s own tests of `formatNanos`, so the REPL's
+    /// timings and a program's read alike.
+    #[test]
+    fn durations_format_as_std_time_does() {
+        let cases: &[(u64, &str)] = &[
+            (0, "0ns"),
+            (742, "742ns"),
+            (999, "999ns"),
+            (1234, "1.23µs"),
+            (9995, "10.0µs"),
+            (999_499, "999µs"),
+            (999_500, "1.00ms"),
+            (45_678_000, "45.7ms"),
+            (321_000_000, "321ms"),
+            (3_210_000_000, "3.21s"),
+            (59_950_000_000, "1m 00.0s"),
+            (125_300_000_000, "2m 05.3s"),
+            (3_723_000_000_000, "1h 02m 03s"),
+            (273_900_000_000_000, "3d 04h 05m"),
+        ];
+        for &(ns, want) in cases {
+            assert_eq!(format_duration(Duration::from_nanos(ns)), want, "{ns}ns");
+        }
+    }
 }

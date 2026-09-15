@@ -1218,6 +1218,21 @@ fn prim<'p>(
             }
             other => err(format!("charsToString: expected an Array, got {other}")),
         },
+        ConcatStrings => match &args[0] {
+            Value::Array(xs) => {
+                let mut out = String::new();
+                for v in xs.iter() {
+                    match v {
+                        Value::Str(s) => out.push_str(s),
+                        other => {
+                            return err(format!("concatStrings: expected a String, got {other}"));
+                        }
+                    }
+                }
+                Ok(Value::Str(InternedString::from(out)))
+            }
+            other => err(format!("concatStrings: expected an Array, got {other}")),
+        },
 
         // --- the mutable cell -------------------------------------------------
         NewRef => Ok(Value::Ref(Rc::new(RefCell::new(args[0].clone())))),

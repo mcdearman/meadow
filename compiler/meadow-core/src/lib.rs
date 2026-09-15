@@ -46,6 +46,7 @@ pub mod hash;
 pub mod lint;
 pub mod lower;
 pub mod num;
+pub mod prune;
 pub mod rewrite;
 pub mod specialize;
 pub mod stm;
@@ -195,6 +196,10 @@ pub enum Prim {
     StringToChars,
     /// `Array Char -> String`.
     CharsToString,
+    /// `concatStrings : Array String -> String` -- every string of the array,
+    /// one after another, in one allocation. What an interpolated string
+    /// literal is compiled to.
+    ConcatStrings,
     /// `newRef : a -> Ref a ! { Mut | e }` — allocate a mutable cell.
     NewRef,
     /// `getRef : Ref a -> a ! { Mut | e }`
@@ -437,6 +442,7 @@ impl Prim {
             Prim::FloatLe => 113,
             Prim::FloatGt => 114,
             Prim::FloatGe => 115,
+            Prim::ConcatStrings => 116,
         }
     }
 
@@ -553,6 +559,7 @@ impl Prim {
             113 => Prim::FloatLe,
             114 => Prim::FloatGt,
             115 => Prim::FloatGe,
+            116 => Prim::ConcatStrings,
             _ => return None,
         })
     }
@@ -690,6 +697,7 @@ impl Prim {
             "charFromCode" => Prim::CharFromCode,
             "stringToChars" => Prim::StringToChars,
             "charsToString" => Prim::CharsToString,
+            "concatStrings" => Prim::ConcatStrings,
             "newRef" => Prim::NewRef,
             "getRef" => Prim::GetRef,
             "setRef" => Prim::SetRef,
@@ -753,6 +761,7 @@ impl Prim {
             | Prim::CharFromCode
             | Prim::StringToChars
             | Prim::CharsToString
+            | Prim::ConcatStrings
             | Prim::NewRef
             | Prim::GetRef
             | Prim::RunSt

@@ -373,8 +373,17 @@ pub enum K {
         rec: Value,
     },
     Match {
-        arms: Rc<Vec<(core::Pat, Term)>>,
+        arms: Arms,
         env: Env,
+    },
+    /// An arm's pattern matched and its guard is being evaluated, in `scope`:
+    /// its body next if the guard holds, and arm `next` on `scrutinee` if not.
+    Guard {
+        arms: Arms,
+        env: Env,
+        next: usize,
+        scrutinee: Value,
+        scope: Env,
     },
     /// `Perform`: the operation argument is evaluated; unwind to a handler.
     PerformWith {
@@ -875,6 +884,40 @@ impl<'a> Machine<'a> {
     }
 
     /// A value came back; pop the top frame and combine.
+    /// Match `v` against the arms from `from` on: the first whose pattern
+    /// matches, and whose guard -- evaluated next, if it has one -- holds.
+    fn try_arms(
+        &mut self,
+        arms: Arms,
+        env: Env,
+        from: usize,
+        v: Value,
+    ) -> Result<(), RuntimeError> {
+        for i in from..arms.len() {
+            let (pat, guard, body) = &arms[i];
+            let scope = child(&env);
+            if !match_pat(pat, &v, &scope) {
+                continue;
+            }
+            match guard {
+                None => self.ctrl = Control::Eval(Arc::new(body.clone()), scope),
+                Some(g) => {
+                    let g = Arc::new(g.clone());
+                    self.kont.push(K::Guard {
+                        arms: arms.clone(),
+                        env,
+                        next: i + 1,
+                        scrutinee: v,
+                        scope: scope.clone(),
+                    });
+                    self.ctrl = Control::Eval(g, scope);
+                }
+            }
+            return Ok(());
+        }
+        err("non-exhaustive pattern match")
+    }
+
     fn ret(&mut self, v: Value) -> Result<(), RuntimeError> {
         let Some(frame) = self.kont.pop() else {
             self.ctrl = Control::Ret(v);
@@ -1052,16 +1095,21 @@ impl<'a> Machine<'a> {
                 }
                 other => return err(format!("cannot extend non-record {other}")),
             },
-            K::Match { arms, env } => {
-                for (pat, body) in arms.iter() {
-                    let scope = child(&env);
-                    if match_pat(pat, &v, &scope) {
-                        self.ctrl = Control::Eval(Arc::new(body.clone()), scope);
-                        return Ok(());
-                    }
+            K::Match { arms, env } => self.try_arms(arms, env, 0, v)?,
+            K::Guard {
+                arms,
+                env,
+                next,
+                scrutinee,
+                scope,
+            } => match v {
+                Value::Bool(true) => {
+                    let body = arms[next - 1].2.clone();
+                    self.ctrl = Control::Eval(Arc::new(body), scope);
                 }
-                return err("non-exhaustive pattern match");
-            }
+                Value::Bool(false) => self.try_arms(arms, env, next, scrutinee)?,
+                other => return err(format!("a `match` guard is not a Bool: {other}")),
+            },
             K::PerformWith { effect, op } => self.perform(effect, op, v)?,
             K::Cache { var, root } => {
                 redefine(&root, var, v.clone());
@@ -1208,6 +1256,9 @@ fn lit_value(lit: &core::Lit) -> Value {
 }
 
 // --- pattern matching ------------------------------------------------------
+
+/// A `case`'s arms: pattern, guard, body.
+type Arms = Rc<Vec<(core::Pat, Option<Term>, Term)>>;
 
 fn match_pat(pat: &core::Pat, value: &Value, scope: &Env) -> bool {
     use core::Pat as P;

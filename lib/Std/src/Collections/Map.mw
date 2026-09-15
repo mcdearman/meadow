@@ -79,12 +79,14 @@ fun consInOrder acc m =
 @pub fun minEntry m =
   match m with
   | Tip -> None
-  | Node l k v r -> if null l then Just (k, v) else minEntry l
+  | Node Tip k v _ -> Just (k, v)
+  | Node l _ _ _ -> minEntry l
 
 fun deleteMin m =
   match m with
   | Tip -> Tip
-  | Node l k v r -> if null l then r else Node (deleteMin l) k v r
+  | Node Tip _ _ r -> r
+  | Node l k v r -> Node (deleteMin l) k v r
 
 fun spliceMin l r =
   match minEntry r with

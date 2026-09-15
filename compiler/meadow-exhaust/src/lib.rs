@@ -132,7 +132,10 @@ impl Checker<'_> {
             }
             hir::Expr::Match(scrut, arms) => {
                 self.expr(scrut);
-                for (_, body) in arms {
+                for (_, guard, body) in arms {
+                    if let Some(g) = guard {
+                        self.expr(g);
+                    }
                     self.expr(body);
                 }
                 if self.check_matches {
@@ -180,11 +183,22 @@ impl Checker<'_> {
 
     // --- the two checks -----------------------------------------------------
 
-    fn check_match(&mut self, span: Span, scrut: &hir::LExpr, arms: &[(hir::LPat, hir::LExpr)]) {
+    fn check_match(
+        &mut self,
+        span: Span,
+        scrut: &hir::LExpr,
+        arms: &[(hir::LPat, Option<hir::LExpr>, hir::LExpr)],
+    ) {
         let Some(ty) = self.types.get(scrut.id).cloned() else {
             return; // untyped (an earlier error) — nothing reliable to say
         };
-        let rows: Vec<Vec<P>> = arms.iter().map(|(p, _)| vec![self.lower(p)]).collect();
+        // A guarded arm covers nothing: whether it is taken is not a question
+        // about the pattern, so the arms after it have to cover its cases too.
+        let rows: Vec<Vec<P>> = arms
+            .iter()
+            .filter(|(_, guard, _)| guard.is_none())
+            .map(|(p, _, _)| vec![self.lower(p)])
+            .collect();
         if let Some(w) = self.missing(&rows, &[ty]) {
             let witness = render(&w[0]);
             self.error(

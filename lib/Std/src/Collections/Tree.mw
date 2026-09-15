@@ -47,17 +47,20 @@ use Tree.*
 @pub fun minElem t =
   match t with
   | Leaf -> None
-  | Node l x r -> if null l then Just x else minElem l
+  | Node Leaf x _ -> Just x
+  | Node l _ _ -> minElem l
 
 @pub fun maxElem t =
   match t with
   | Leaf -> None
-  | Node l x r -> if null r then Just x else maxElem r
+  | Node _ x Leaf -> Just x
+  | Node _ _ r -> maxElem r
 
 fun deleteMin t =
   match t with
   | Leaf -> Leaf
-  | Node l x r -> if null l then r else Node (deleteMin l) x r
+  | Node Leaf _ r -> r
+  | Node l x r -> Node (deleteMin l) x r
 
 fun spliceMin l r =
   match minElem r with

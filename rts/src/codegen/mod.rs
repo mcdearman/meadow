@@ -973,6 +973,10 @@ fn header(
         if descs.windows(2).any(|w| w[0] != w[1]) {
             return None;
         }
+        // An array of bytes is packed, which the interpreter does.
+        if kind == crate::heap::Kind::Array && descs.first() == Some(&crate::heap::Heap::BYTE) {
+            return None;
+        }
     } else if n > meadow_core::compact::INLINE_DESCS {
         return None;
     }

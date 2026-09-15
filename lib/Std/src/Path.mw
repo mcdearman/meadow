@@ -110,8 +110,9 @@ fun pushPart abs acc c =
   else if c != ".." then V.pushBack acc c
   else
     match V.last acc with
-    | None -> if abs then acc else V.pushBack acc c
-    | Just prev -> if prev == ".." then V.pushBack acc c else V.popBack acc
+    | None if abs -> acc
+    | Just prev if prev != ".." -> V.popBack acc
+    | _ -> V.pushBack acc c
 
 -- --- helpers ------------------------------------------------------------------
 

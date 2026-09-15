@@ -918,6 +918,7 @@ impl Session {
                 heap.kind(a),
                 Kind::Data
                     | Kind::Array
+                    | Kind::Bytes
                     | Kind::MutArray
                     | Kind::Record
                     | Kind::Closure
@@ -933,7 +934,12 @@ impl Session {
             return Vec::new();
         }
         let n = heap.len(a);
-        let fields: Vec<Value> = (0..n.min(1000)).map(|i| heap.field(a, i)).collect();
+        let fields: Vec<Value> = match heap.kind(a) {
+            Kind::Array | Kind::Bytes => (0..heap.array_len(a).min(1000))
+                .map(|i| heap.array_value(a, i))
+                .collect(),
+            _ => (0..n.min(1000)).map(|i| heap.field(a, i)).collect(),
+        };
         match heap.kind(a) {
             Kind::Record => fields
                 .chunks(2)
@@ -945,7 +951,7 @@ impl Session {
                     self.row(label, pair.get(1).copied().unwrap_or(Value::Unit), None)
                 })
                 .collect(),
-            Kind::Array | Kind::MutArray => fields
+            Kind::Array | Kind::Bytes | Kind::MutArray => fields
                 .into_iter()
                 .enumerate()
                 .map(|(i, f)| self.row(format!("[{i}]"), f, None))
@@ -1017,7 +1023,7 @@ impl Session {
         let n = heap.len(a);
         match heap.kind(a) {
             Kind::Str => {
-                let bytes = heap.str_bytes_in(a, 0, 4 * 80);
+                let bytes = heap.packed_bytes_in(a, 0, 4 * 80);
                 let text: String = String::from_utf8_lossy(&bytes).chars().take(80).collect();
                 out.push_str(&format!("{text:?}"));
             }
@@ -1048,12 +1054,28 @@ impl Session {
                     None => out.push_str("<function>"),
                 }
             }
-            Kind::Array | Kind::MutArray => {
+            Kind::Array | Kind::Bytes | Kind::MutArray => {
                 if heap.kind(a) == Kind::MutArray {
                     out.push_str("mut ");
                 }
                 out.push_str("#[");
-                self.list(out, (0..n).map(|i| heap.field(a, i)), depth, budget);
+                let n = if heap.kind(a) == Kind::MutArray {
+                    n
+                } else {
+                    heap.array_len(a)
+                };
+                self.list(
+                    out,
+                    (0..n).map(|i| {
+                        if heap.kind(a) == Kind::MutArray {
+                            heap.field(a, i)
+                        } else {
+                            heap.array_value(a, i)
+                        }
+                    }),
+                    depth,
+                    budget,
+                );
                 out.push(']');
             }
             Kind::Record => {
@@ -1273,8 +1295,11 @@ impl Names<'_> {
             }
             hir::Expr::Match(s, arms) => {
                 self.expr(s);
-                for (p, b) in arms {
+                for (p, g, b) in arms {
                     self.pat(p);
+                    if let Some(g) = g {
+                        self.expr(g);
+                    }
                     self.expr(b);
                 }
             }

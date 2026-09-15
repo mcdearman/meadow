@@ -98,18 +98,19 @@ fun lookupHashed h k m = match m with | HashMap n root -> lookupIn h 0 k root
 
 fun lookupIn h shift k node =
   match node with
-  | Collision ch pairs ->
-      if ch != h then None
-      else (match pairIndex k pairs with
-            | Just i -> Just (snd (arrayGet pairs i))
-            | None -> None)
   | Bitmap bitmap slots ->
       let bit = bitAt h shift in
       if bitAnd bitmap bit == 0 then None
       else
-        match arrayGet slots (slotIndex bitmap bit) with
-        | Entry eh ek ev -> if eh == h and ek == k then Just ev else None
-        | Child sub -> lookupIn h (shift + bitsPerLevel) k sub
+        (match arrayGet slots (slotIndex bitmap bit) with
+         | Child sub -> lookupIn h (shift + bitsPerLevel) k sub
+         | Entry eh ek ev if eh == h and ek == k -> Just ev
+         | Entry _ _ _ -> None)
+  | Collision ch pairs if ch == h ->
+      (match pairIndex k pairs with
+       | Just i -> Just (snd (arrayGet pairs i))
+       | None -> None)
+  | Collision _ _ -> None
 
 @pub fun member k m =
   match lookup k m with
@@ -147,14 +148,14 @@ fun insertIn h shift k v node =
         (Bitmap (bitOr bitmap bit) (arrayInsert slots i (Entry h k v)), True)
       else
         match arrayGet slots i with
-        | Entry eh ek ev ->
-            if eh == h and ek == k then (Bitmap bitmap (arraySet slots i (Entry h k v)), False)
-            else
-              let below = split (shift + bitsPerLevel) eh ek ev h k v in
-              (Bitmap bitmap (arraySet slots i (Child below)), True)
         | Child sub ->
             let (sub2, added) = insertIn h (shift + bitsPerLevel) k v sub in
             (Bitmap bitmap (arraySet slots i (Child sub2)), added)
+        | Entry eh ek _ if eh == h and ek == k ->
+            (Bitmap bitmap (arraySet slots i (Entry h k v)), False)
+        | Entry eh ek ev ->
+            let below = split (shift + bitsPerLevel) eh ek ev h k v in
+            (Bitmap bitmap (arraySet slots i (Child below)), True)
 
 -- A node holding two entries with different keys whose hashes agree up to
 -- `shift`: one level per shared five bits, then a collision node once the
@@ -190,9 +191,9 @@ fun deleteIn h shift k node =
       else
         let i = slotIndex bitmap bit in
         match arrayGet slots i with
-        | Entry eh ek ev ->
-            if eh == h and ek == k then (Bitmap (bitXor bitmap bit) (arrayRemove slots i), True)
-            else (node, False)
+        | Entry eh ek _ if eh == h and ek == k ->
+            (Bitmap (bitXor bitmap bit) (arrayRemove slots i), True)
+        | Entry _ _ _ -> (node, False)
         | Child sub ->
             let (sub2, removed) = deleteIn h (shift + bitsPerLevel) k sub in
             if not removed then (node, False)
@@ -204,16 +205,13 @@ fun deleteIn h shift k node =
 -- keeps a map's shape a function of its contents.
 fun collapse node =
   match node with
-  | Collision ch pairs ->
-      if arrayLen pairs == 1 then
-        (match arrayGet pairs 0 with | (k, v) -> Entry ch k v)
-      else Child node
-  | Bitmap bitmap slots ->
-      if arrayLen slots != 1 then Child node
-      else
-        match arrayGet slots 0 with
-        | Entry eh ek ev -> Entry eh ek ev
-        | Child sub -> Child node
+  | Collision ch pairs if arrayLen pairs == 1 ->
+      (match arrayGet pairs 0 with | (k, v) -> Entry ch k v)
+  | Bitmap _ slots if arrayLen slots == 1 ->
+      (match arrayGet slots 0 with
+       | Entry _ _ _ as entry -> entry
+       | Child _ -> Child node)
+  | _ -> Child node
 
 -- Apply `f` to what `k` holds, if it holds anything.
 @pub fun adjust k f m =

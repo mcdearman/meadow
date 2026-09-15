@@ -417,10 +417,14 @@ impl<'a> Lowerer<'a> {
                 let s = self.lower_expr(scrut);
                 let arms = arms
                     .iter()
-                    .map(|(p, e)| {
+                    .map(|(p, g, e)| {
                         let pat = self.lower_pat(p);
+                        let guard = g.as_ref().map(|g| {
+                            let lowered = self.lower_expr(g);
+                            self.at(g.span, lowered)
+                        });
                         let body = self.lower_expr(e);
-                        (pat, self.at(e.span, body))
+                        (pat, guard, self.at(e.span, body))
                     })
                     .collect();
                 Term::Case(Arc::new(s), arms, self.ty(expr.id))
@@ -573,7 +577,7 @@ impl<'a> Lowerer<'a> {
                     // whatever the body does.
                     _ => Term::Case(
                         Arc::new(rhs),
-                        vec![(self.lower_pat(pat), body)],
+                        vec![(self.lower_pat(pat), None, body)],
                         result.clone(),
                     ),
                 }
@@ -619,7 +623,7 @@ impl<'a> Lowerer<'a> {
                         ty.clone(),
                         Term::Case(
                             Arc::new(scrut.clone()),
-                            vec![(core_pat.clone(), Term::Var(v))],
+                            vec![(core_pat.clone(), None, Term::Var(v))],
                             ty,
                         ),
                     ));

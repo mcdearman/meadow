@@ -355,9 +355,18 @@ impl Indenter {
         // The column of an `else` immediately before an `if`, so an `else if`
         // chain stays in one column instead of stepping right each rung.
         let mut chain: Option<usize> = None;
+        // Between an arm's `|` and its `->`: where an `if` is the arm's guard,
+        // which has no `else` to wait for.
+        let mut in_arm_head = false;
         for tok in toks {
             if open_here.is_empty() {
                 match tok.text {
+                    "|" => in_arm_head = true,
+                    "->" => in_arm_head = false,
+                    _ => {}
+                }
+                match tok.text {
+                    "if" if in_arm_head => chain = None,
                     "if" => {
                         pending_if = Some(chain.unwrap_or(tok.col));
                         chain = None;
@@ -682,6 +691,20 @@ mod tests {
     #[test]
     fn a_declaration_body_indents_one_unit() {
         assert_eq!(f("fun f x =\nx + 1\n"), "fun f x =\n  x + 1\n");
+    }
+
+    /// A guard is an `if` with no `else` to wait for: an arm having one is
+    /// laid out exactly as the same arm without.
+    #[test]
+    fn a_guard_is_not_an_if_waiting_for_its_else() {
+        for plain in [
+            "fun f n =\n  match n with\n  | x -> 1\n  | _ ->\n    let y = 2 in\n    y\n",
+            "fun f n =\nmatch n with\n| x ->\nif x > 5\nthen 1\nelse 2\n| _ ->\nif n < 0\nthen 3\nelse 4\n",
+            "fun f n =\n  match n with\n  | x -> 1\n  | _ -> 0\n\ndef g =\n  if True\n  then 1\n  else 2\n",
+        ] {
+            let guard = |s: &str| s.replacen("| x ->", "| x if x > 0 ->", 1);
+            assert_eq!(f(&guard(plain)), guard(&f(plain)), "{plain}");
+        }
     }
 
     #[test]

@@ -71,3 +71,22 @@ fn slicing_a_long_array_costs_the_slice() {
         started.elapsed()
     );
 }
+
+/// Building arrays of *references* while the collector runs: every array
+/// primitive copies the elements into a new array, and the elements are
+/// addresses the collection that makes room for the copy moves. A copy taken
+/// before making room keeps the old addresses, which the next collection reads
+/// as garbage.
+#[test]
+fn arrays_of_references_survive_the_collections_that_build_them() {
+    let src = "fun build acc i = if i == 0 then acc else build (arrayPush acc (Just (i, show i))) (i - 1)\n\n\
+        fun check a i ok = if i >= arrayLen a then ok else check a (i + 1) (ok and arrayGet a i == Just (arrayLen a - i, show (arrayLen a - i)))\n\n\
+        def main =\n\
+          let a = build #[] 3000 in\n\
+          let b = arraySet (arraySlice (arrayConcat a a) 1 3001) 0 (Just (3000, show 3000)) in\n\
+          (check a 0 True, arrayLen b, arrayGet b 0, arrayGet b 2999, arrayPop b == arraySlice b 0 2999)\n";
+    let want = "(True, 3000, Just((3000, \"3000\")), Just((3000, \"3000\")), True)";
+    assert_eq!(common::eval_main_std(src), want);
+    assert_eq!(common::run_main_std(src, meadow::Engine::Jit), want);
+    assert_eq!(common::cek_main_std(src), want);
+}

@@ -79,7 +79,12 @@ fn type_args(pkg: &CompiledPackage) -> Vec<String> {
             }
             T::Case(s, arms, _) => {
                 go(s, out);
-                arms.iter().for_each(|(_, b)| go(b, out));
+                arms.iter().for_each(|(_, g, b)| {
+                    if let Some(g) = g {
+                        go(g, out);
+                    }
+                    go(b, out)
+                });
             }
             T::Perform(_, _, a, _) => go(a, out),
             T::Handle {

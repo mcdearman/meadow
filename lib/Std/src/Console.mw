@@ -81,7 +81,7 @@ use Std.Collections.Vector (vecFromArray)
   | None -> None
   | Just line ->
       match parse (S.trim line) with
-      | Just value -> Just value
+      | Just _ as parsed -> parsed
       | None ->
           let _ = println retry in
           promptUntil message retry parse

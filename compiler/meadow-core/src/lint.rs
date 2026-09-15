@@ -309,9 +309,13 @@ impl Lint<'_> {
 
             Term::Case(scrut, arms, ty) => {
                 let sty = self.synth_mono(scrut);
-                for (pat, body) in arms {
+                for (pat, guard, body) in arms {
                     let mark = self.locals.len();
                     self.check_pat(pat, &sty);
+                    if let Some(g) = guard {
+                        let got = self.synth_mono(g);
+                        self.expect(&InferType::bool(), &got, "guard of `case`");
+                    }
                     let got = self.synth_mono(body);
                     self.expect(ty, &got, "arm of `case`");
                     self.locals.truncate(mark);

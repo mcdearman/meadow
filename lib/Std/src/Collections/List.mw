@@ -23,7 +23,8 @@ use Std.Yield (yield)
 @pub fun filter keep xs =
   match xs with
   | Nil -> Nil
-  | Cons x rest -> if keep x then x :: filter keep rest else filter keep rest
+  | Cons x rest if keep x -> x :: filter keep rest
+  | Cons _ rest -> filter keep rest
 
 @pub fun foldl f acc xs =
   match xs with
@@ -50,19 +51,20 @@ fun reverseOnto acc xs =
 @pub fun elem x xs =
   match xs with
   | Nil -> False
-  | Cons y rest -> if x == y then True else elem x rest
+  | Cons y _ if x == y -> True
+  | Cons _ rest -> elem x rest
 
 @pub fun range lo hi = if lo < hi then lo :: range (lo + 1) hi else Nil
 
 @pub fun take n xs =
   match xs with
-  | Nil -> Nil
-  | Cons y rest -> if n < 1 then Nil else y :: take (n - 1) rest
+  | Cons y rest if n >= 1 -> y :: take (n - 1) rest
+  | _ -> Nil
 
 @pub fun drop n xs =
   match xs with
-  | Nil -> Nil
-  | Cons y rest -> if n < 1 then xs else drop (n - 1) rest
+  | Cons _ rest if n >= 1 -> drop (n - 1) rest
+  | _ -> xs
 
 @pub fun concat xss = foldr append Nil xss
 
@@ -85,7 +87,8 @@ fun reverseOnto acc xs =
 @pub fun nth n xs =
   match xs with
   | Nil -> None
-  | Cons x rest -> if n < 1 then Just x else nth (n - 1) rest
+  | Cons x _ if n < 1 -> Just x
+  | Cons _ rest -> nth (n - 1) rest
 
 @pub fun notElem x xs = not (elem x xs)
 
@@ -108,27 +111,30 @@ fun reverseOnto acc xs =
 @pub fun all keep xs =
   match xs with
   | Nil -> True
-  | Cons x rest -> if keep x then all keep rest else False
+  | Cons x rest if keep x -> all keep rest
+  | Cons _ _ -> False
 
 @pub fun any keep xs =
   match xs with
   | Nil -> False
-  | Cons x rest -> if keep x then True else any keep rest
+  | Cons x _ if keep x -> True
+  | Cons _ rest -> any keep rest
 
 @pub fun find keep xs =
   match xs with
   | Nil -> None
-  | Cons x rest -> if keep x then Just x else find keep rest
+  | Cons x _ if keep x -> Just x
+  | Cons _ rest -> find keep rest
 
 @pub fun takeWhile keep xs =
   match xs with
-  | Nil -> Nil
-  | Cons x rest -> if keep x then x :: takeWhile keep rest else Nil
+  | Cons x rest if keep x -> x :: takeWhile keep rest
+  | _ -> Nil
 
 @pub fun dropWhile keep xs =
   match xs with
-  | Nil -> Nil
-  | Cons x rest -> if keep x then dropWhile keep rest else xs
+  | Cons x rest if keep x -> dropWhile keep rest
+  | _ -> xs
 
 @pub fun partition keep xs = (filter keep xs, filter (\x -> not (keep x)) xs)
 
@@ -161,21 +167,20 @@ fun reverseOnto acc xs =
 @pub fun lookupAssoc key pairs =
   match pairs with
   | Nil -> None
-  | Cons (k, v) rest -> if k == key then Just v else lookupAssoc key rest
+  | Cons (k, v) _ if k == key -> Just v
+  | Cons _ rest -> lookupAssoc key rest
 
 @pub fun insertAssoc key val pairs =
   match pairs with
   | Nil -> Cons (key, val) Nil
-  | Cons (k, v) rest ->
-      if k == key then Cons (key, val) rest
-      else Cons (k, v) (insertAssoc key val rest)
+  | Cons (k, _) rest if k == key -> Cons (key, val) rest
+  | Cons pair rest -> Cons pair (insertAssoc key val rest)
 
 @pub fun removeAssoc key pairs =
   match pairs with
   | Nil -> Nil
-  | Cons (k, v) rest ->
-      if k == key then rest
-      else Cons (k, v) (removeAssoc key rest)
+  | Cons (k, _) rest if k == key -> rest
+  | Cons pair rest -> Cons pair (removeAssoc key rest)
 
 -- Yield every element, in order, for `Std.Stream`.
 @pub fun toStream xs =
@@ -218,6 +223,23 @@ use Std.Maybe.Maybe.*
   let b = assertFalse (elem 9 [1; 2; 3]) "not elem" in
   let c = assertEq (range 1 4) [1; 2; 3] "range is half-open" in
   assertEq (range 4 1) [;] "an empty range"
+
+@test fun searchingStopsAtTheFirst () =
+  let a = assertEq (nth 1 [7; 8; 9]) (Just 8) "nth" in
+  let b = assertEq (nth 5 [7;]) None "nth past the end" in
+  let c = assertTrue (all (\n -> n > 0) [1; 2]) "all" in
+  let d = assertFalse (all (\n -> n > 1) [1; 2]) "not all" in
+  let e = assertTrue (any (\n -> n > 1) [1; 2]) "any" in
+  let f = assertEq (find (\n -> n > 1) [1; 2; 3]) (Just 2) "find" in
+  let g = assertEq (takeWhile (\n -> n < 3) [1; 2; 3; 1]) [1; 2] "takeWhile" in
+  assertEq (dropWhile (\n -> n < 3) [1; 2; 3; 1]) [3; 1] "dropWhile"
+
+@test fun associationLists () =
+  let pairs = insertAssoc "b" 2 (insertAssoc "a" 1 [;]) in
+  let a = assertEq (lookupAssoc "b" pairs) (Just 2) "lookup" in
+  let b = assertEq (lookupAssoc "a" (insertAssoc "a" 9 pairs)) (Just 9) "replace" in
+  let c = assertEq (lookupAssoc "a" (removeAssoc "a" pairs)) None "remove" in
+  assertEq (length (insertAssoc "a" 9 pairs)) 2 "replacing keeps one"
 
 @test fun isEmptyAndToStream () =
   let a = assertTrue (isEmpty [;]) "isEmpty" in

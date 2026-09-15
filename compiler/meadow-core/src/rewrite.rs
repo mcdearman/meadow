@@ -52,7 +52,13 @@ pub fn term(t: &Term, f: &mut dyn FnMut(Term) -> Term, p: &mut dyn FnMut(Pat) ->
             let s = go(s, f, p);
             let arms = arms
                 .iter()
-                .map(|(pt, b)| (pattern(pt, p), term(b, f, p)))
+                .map(|(pt, g, b)| {
+                    (
+                        pattern(pt, p),
+                        g.as_ref().map(|g| term(g, f, p)),
+                        term(b, f, p),
+                    )
+                })
                 .collect();
             Term::Case(s, arms, ty.clone())
         }

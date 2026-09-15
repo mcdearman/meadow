@@ -384,7 +384,8 @@ pub enum Expr {
     App(LExpr, Vec<LExpr>),
     Let(Vec<Bind>, LExpr),
     If(LExpr, LExpr, LExpr),
-    Match(LExpr, Vec<(LPat, LExpr)>),
+    /// Each arm a pattern, the guard it is taken on if any, and its body.
+    Match(LExpr, Vec<(LPat, Option<LExpr>, LExpr)>),
     Tuple(Vec<LExpr>),
     /// `#[e, ...]` -- a builtin `Array` literal.
     Array(Vec<LExpr>),
@@ -635,8 +636,11 @@ fn rewrite_expr(e: &mut LExpr, chosen: &std::collections::HashMap<NodeId, Alt>) 
         }
         Expr::Match(s, arms) => {
             rewrite_expr(s, chosen);
-            for (p, b) in arms {
+            for (p, g, b) in arms {
                 rewrite_pat(p, chosen);
+                if let Some(g) = g {
+                    rewrite_expr(g, chosen);
+                }
                 rewrite_expr(b, chosen);
             }
         }

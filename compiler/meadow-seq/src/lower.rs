@@ -594,6 +594,9 @@ type Then<'a> = Box<dyn FnOnce(&mut Lower, Name, Vec<Name>) -> Statement + 'a>;
 /// What to do once a pattern has matched, in the environment it left behind.
 type Success<'a> = Box<dyn FnOnce(&mut Lower, Vec<Name>) -> Statement + 'a>;
 
+/// A `case` arm: its pattern, its guard, and its body.
+type Arm = (Pat, Option<Term>, Term);
+
 impl Lower {
     fn fresh(&mut self) -> Name {
         let v = VarId(self.next_name);
@@ -876,8 +879,11 @@ impl Lower {
             Term::Perform(_, _, a, _) => self.scan(a),
             Term::Case(s, arms, _) => {
                 self.scan(s);
-                for (p, b) in arms {
+                for (p, g, b) in arms {
                     self.scan_pat(p);
+                    if let Some(g) = g {
+                        self.scan(g);
+                    }
                     self.scan(b);
                 }
             }
@@ -1123,7 +1129,10 @@ impl Lower {
             }
             Term::Record(fs) => fs.iter().any(|(_, x)| self.needs_ev(x)),
             Term::Case(s, arms, _) => {
-                self.needs_ev(s) || arms.iter().any(|(_, b)| self.needs_ev(b))
+                self.needs_ev(s)
+                    || arms.iter().any(|(_, g, b)| {
+                        g.as_ref().is_some_and(|g| self.needs_ev(g)) || self.needs_ev(b)
+                    })
             }
         }
     }
@@ -1974,10 +1983,13 @@ impl Lower {
 
             Term::Case(scrutinee, arms, _) => {
                 let mut want = HashSet::new();
-                for (p, body) in arms {
+                for (p, guard, body) in arms {
                     let mut bound = Vec::new();
                     core::pat_vars(p, &mut bound);
                     want.extend(self.wants(&[body], &bound));
+                    if let Some(g) = guard {
+                        want.extend(self.wants(&[g], &bound));
+                    }
                 }
                 want.insert(k);
                 let keep = restrict(env, &want);
@@ -2052,7 +2064,7 @@ impl Lower {
     /// half-way through a nested pattern can restore the whole environment by
     /// invoking one object — including the scrutinee, which a `switch` in the
     /// middle of the arm will have consumed.
-    fn case(&mut self, s: Name, arms: &[(Pat, Term)], live: Vec<Name>, k: Name) -> Statement {
+    fn case(&mut self, s: Name, arms: &[Arm], live: Vec<Name>, k: Name) -> Statement {
         if let Some(tree) = self
             .opt
             .case_trees()
@@ -2080,22 +2092,21 @@ impl Lower {
     /// Returns `None` when there is nothing to gain: fewer than two arms would
     /// join the switch.
     ///
+    /// An arm with a guard stays in the switch, and failing its guard is
+    /// failing its sub-patterns: the shared fallback. That skips the rest of
+    /// the prefix, which is right because none of it could match -- each arm
+    /// there is for a different constructor.
+    ///
     /// This is the trade [`OptLevel::case_trees`] gates. Nested patterns are not
     /// distributed across the arms — `Just (Cons x xs)` still falls back to the
     /// chain when its inner pattern fails, and so retests the outer `Just` —
     /// because that is where a real decision tree starts duplicating the code
     /// its arms share.
-    fn case_tree(
-        &mut self,
-        s: Name,
-        arms: &[(Pat, Term)],
-        live: &[Name],
-        k: Name,
-    ) -> Option<Statement> {
+    fn case_tree(&mut self, s: Name, arms: &[Arm], live: &[Name], k: Name) -> Option<Statement> {
         let mut seen: HashSet<InternedString> = HashSet::new();
         let n = arms
             .iter()
-            .take_while(|(p, _)| match p {
+            .take_while(|(p, _, _)| match p {
                 Pat::Ctor(name, _) => seen.insert(*name),
                 _ => false,
             })
@@ -2117,7 +2128,7 @@ impl Lower {
         env.extend_from_slice(live);
 
         let mut switch_arms = Vec::with_capacity(n);
-        for (pat, term) in &arms[..n] {
+        for (pat, guard, term) in &arms[..n] {
             let Pat::Ctor(ctor, subs) = pat else {
                 unreachable!("the prefix is constructor patterns");
             };
@@ -2130,7 +2141,10 @@ impl Lower {
                 pairs,
                 arm_env.clone(),
                 rest,
-                Box::new(move |this, env1| this.expr(term, &env1, k)),
+                Box::new(move |this, env1| match guard {
+                    None => this.expr(term, &env1, k),
+                    Some(g) => this.guarded(g, term, rest, &env1, k),
+                }),
             );
             switch_arms.push((
                 tag,
@@ -2167,13 +2181,7 @@ impl Lower {
         })
     }
 
-    fn case_chain<'t>(
-        &mut self,
-        s: Name,
-        arms: &'t [(Pat, Term)],
-        live: Vec<Name>,
-        k: Name,
-    ) -> Statement {
+    fn case_chain<'t>(&mut self, s: Name, arms: &'t [Arm], live: Vec<Name>, k: Name) -> Statement {
         let n = arms.len();
         let fails: Vec<Name> = (0..=n).map(|_| self.fresh_ref()).collect();
 
@@ -2192,13 +2200,16 @@ impl Lower {
                 let fail = fails[i + 1];
                 let mut caps = live.clone();
                 caps.push(fail);
-                let (pat, term) = &arms[i];
+                let (pat, guard, term) = &arms[i];
                 let body = self.match_pat(
                     pat,
                     s,
                     caps.clone(),
                     fail,
-                    Box::new(move |this, env| this.expr(term, &env, k)),
+                    Box::new(move |this, env| match guard {
+                        None => this.expr(term, &env, k),
+                        Some(g) => this.guarded(g, term, fail, &env, k),
+                    }),
                 );
                 (caps, body)
             };
@@ -2213,6 +2224,45 @@ impl Lower {
             };
         }
         stmt
+    }
+
+    /// An arm whose pattern has matched, in `env`: `term` if `guard` holds,
+    /// and the next arm -- by invoking `fail`, exactly as a pattern that did
+    /// not match does -- if it does not.
+    fn guarded(
+        &mut self,
+        guard: &Term,
+        term: &Term,
+        fail: Name,
+        env: &[Name],
+        k: Name,
+    ) -> Statement {
+        let keep = self.keep(env, &[term], &[k, fail]);
+        let term = term.clone();
+        self.bind(
+            guard,
+            env,
+            &keep,
+            None,
+            Box::new(move |this, cv, env1| {
+                let taken = this.expr(&term, &env1, k);
+                let passed = this.enter(fail);
+                Statement::Extern {
+                    op: Extern::Branch,
+                    args: vec![cv],
+                    blocks: vec![
+                        Block {
+                            params: env1.clone(),
+                            body: passed,
+                        },
+                        Block {
+                            params: env1,
+                            body: taken,
+                        },
+                    ],
+                }
+            }),
+        )
     }
 
     /// Match `p` against `subject`; on success run `ok`, on failure invoke
@@ -2992,10 +3042,13 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
         Term::Perform(_, _, a, _) => mentions(a, out),
         Term::Case(s, arms, _) => {
             mentions(s, out);
-            for (p, t) in arms {
+            for (p, g, t) in arms {
                 let mut vs = Vec::new();
                 core::pat_vars(p, &mut vs);
                 out.extend(vs);
+                if let Some(g) = g {
+                    mentions(g, out);
+                }
                 mentions(t, out);
             }
         }

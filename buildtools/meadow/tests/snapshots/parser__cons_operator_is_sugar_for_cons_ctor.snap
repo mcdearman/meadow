@@ -130,6 +130,7 @@ Module {
                                         ),
                                         span: 53..62,
                                     },
+                                    None,
                                     Located {
                                         value: Var(
                                             Located {
@@ -151,6 +152,7 @@ Module {
                                         ),
                                         span: 70..73,
                                     },
+                                    None,
                                     Located {
                                         value: Lit(
                                             Int(

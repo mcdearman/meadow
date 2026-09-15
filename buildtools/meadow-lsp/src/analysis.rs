@@ -1122,8 +1122,11 @@ impl Walk<'_> {
             }
             hir::Expr::Match(scrut, arms) => {
                 self.expr(scrut);
-                for (p, arm) in arms {
+                for (p, guard, arm) in arms {
                     self.pat(p, true);
+                    if let Some(g) = guard {
+                        self.expr(g);
+                    }
                     self.expr(arm);
                 }
             }

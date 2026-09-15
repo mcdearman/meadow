@@ -78,7 +78,7 @@ mod tests {
         };
         assert_eq!(*s, Term::Lit(Lit::Bool(true)));
         assert_eq!(arms[0].0, Pat::Lit(Lit::Bool(false)));
-        assert_eq!(arms[0].1, Term::Lit(Lit::Bool(false)));
+        assert_eq!(arms[0].2, Term::Lit(Lit::Bool(false)));
         // A constructor with fields that happens to be called `True` is left
         // alone -- only `Bool`'s are nullary.
         assert_eq!(

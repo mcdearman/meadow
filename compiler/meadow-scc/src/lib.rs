@@ -191,8 +191,12 @@ fn expr_mentions(
         }
         hir::Expr::Match(scrut, arms) => {
             expr_mentions(scrut, owner, ov, out);
-            arms.iter()
-                .for_each(|(_, b)| expr_mentions(b, owner, ov, out));
+            for (_, g, b) in arms {
+                if let Some(g) = g {
+                    expr_mentions(g, owner, ov, out);
+                }
+                expr_mentions(b, owner, ov, out);
+            }
         }
         hir::Expr::Tuple(xs)
         | hir::Expr::Array(xs)

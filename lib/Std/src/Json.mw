@@ -214,7 +214,8 @@ fun bytesToText bytes = S.fromBytes (V.toArray bytes)
 @pub fun render v =
   match v with
   | Null -> "null"
-  | Bool b -> if b then "true" else "false"
+  | Bool True -> "true"
+  | Bool False -> "false"
   | Int n -> S.fromInt n
   | Float x -> showFloat x
   | String s -> quote s

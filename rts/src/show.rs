@@ -124,10 +124,10 @@ impl Vm<'_> {
 
     fn array_elems(&self, v: Value) -> Option<Vec<Value>> {
         let a = v.addr()?;
-        if self.heap.kind(a) != Kind::Array {
+        if !self.heap.kind(a).is_array() {
             return None;
         }
-        Some(self.heap.fields(a))
+        Some(self.heap.array_values(a))
     }
 
     pub(crate) fn bigint_at(&self, v: Value) -> Option<BigInt> {
@@ -187,9 +187,9 @@ impl Vm<'_> {
                 Kind::BigInt => {
                     let _ = write!(out, "{}", self.bigint_at(v).expect("a bigint"));
                 }
-                Kind::Array => {
+                Kind::Array | Kind::Bytes => {
                     out.push_str("#[");
-                    self.join(out, &self.heap.fields(a), ", ");
+                    self.join(out, &self.heap.array_values(a), ", ");
                     out.push(']');
                 }
                 Kind::MutArray => {
@@ -226,7 +226,7 @@ impl Vm<'_> {
                 Kind::Task => out.push_str("<thread>"),
                 Kind::TVar => out.push_str("<tvar>"),
                 Kind::Str => {
-                    let text = String::from_utf8_lossy(&self.heap.str_bytes(a)).into_owned();
+                    let text = String::from_utf8_lossy(&self.heap.packed_bytes(a)).into_owned();
                     let _ = write!(out, "{text:?}");
                 }
                 Kind::Data => self.render_data(out, v, a),
@@ -337,6 +337,11 @@ impl Vm<'_> {
             };
             let n = self.heap.len(a);
             match self.heap.kind(a) {
+                Kind::Bytes => {
+                    let n = self.heap.array_len(a);
+                    h.array(n);
+                    stack.extend((0..n).rev().map(|i| Work::Val(self.heap.array_value(a, i))));
+                }
                 Kind::Data => {
                     let name = self.program.ctor(self.heap.meta(a));
                     let name = name.as_deref().unwrap_or("?");
@@ -416,7 +421,7 @@ impl Vm<'_> {
                     });
                 }
                 Kind::Str => {
-                    h.str(&String::from_utf8_lossy(&self.heap.str_bytes(a)));
+                    h.str(&String::from_utf8_lossy(&self.heap.packed_bytes(a)));
                 }
             }
         }
@@ -472,12 +477,21 @@ impl Vm<'_> {
                                 stack.push((self.heap.field(x, i), self.heap.field(y, i)));
                             }
                         }
-                        (Kind::Array, Kind::Array) => {
-                            if self.heap.len(x) != self.heap.len(y) {
+                        (Kind::Bytes, Kind::Bytes) => {
+                            if !self.heap.packed_eq(x, y) {
                                 return false;
                             }
-                            for i in 0..self.heap.len(x) {
-                                stack.push((self.heap.field(x, i), self.heap.field(y, i)));
+                        }
+                        (kx, ky) if kx.is_array() && ky.is_array() => {
+                            let n = self.heap.array_len(x);
+                            if n != self.heap.array_len(y) {
+                                return false;
+                            }
+                            for i in 0..n {
+                                stack.push((
+                                    self.heap.array_value(x, i),
+                                    self.heap.array_value(y, i),
+                                ));
                             }
                         }
                         (Kind::Record, Kind::Record) => {
@@ -495,7 +509,7 @@ impl Vm<'_> {
                             }
                         }
                         (Kind::Str, Kind::Str) => {
-                            if !self.heap.str_eq(x, y) {
+                            if !self.heap.packed_eq(x, y) {
                                 return false;
                             }
                         }

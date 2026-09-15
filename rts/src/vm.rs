@@ -506,15 +506,18 @@ impl<'p> Vm<'p> {
 
             Op::Field => {
                 let a = self.reg(i.b) as Addr;
-                match self.heap.kind(a) {
-                    Kind::Data | Kind::Array => {}
+                let n = match self.heap.kind(a) {
+                    Kind::Data => self.heap.len(a),
+                    Kind::Array | Kind::Bytes => self.heap.array_len(a),
                     other => return err(format!("took field {} of a {other:?}", i.imm)),
-                }
-                let n = self.heap.len(a);
+                };
                 if (i.imm as usize) >= n {
                     return err(format!("field {} of an object with {n}", i.imm));
                 }
-                let f = self.heap.field_word(a, i.imm as usize);
+                let f = match self.heap.kind(a) {
+                    Kind::Data => self.heap.field_word(a, i.imm as usize),
+                    _ => self.heap.array_word(a, i.imm as usize),
+                };
                 self.set_word(i.a, f);
             }
 
@@ -860,7 +863,13 @@ impl<'p> Vm<'p> {
                     regs[(src - DESC_REG) as usize] as Desc
                 }
             };
-            heap.alloc_described(kind, meta, n, |j| regs[base + j], desc)
+            // An array of bytes is kept a byte to an element.
+            if kind == Kind::Array && n > 0 && (0..n).all(|j| desc(j) == Heap::BYTE) {
+                let words: Vec<Word> = (0..n).map(|j| regs[base + j]).collect();
+                heap.alloc_array(&words, Heap::BYTE)
+            } else {
+                heap.alloc_described(kind, meta, n, |j| regs[base + j], desc)
+            }
         };
         self.set(i.a, Value::Obj(a));
     }

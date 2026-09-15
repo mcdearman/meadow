@@ -1653,10 +1653,14 @@ impl Infer {
             hir::Expr::Match(scrut, arms) => {
                 let st = self.infer_expr(scrut);
                 let result = self.arena.fresh();
-                for (pat, arm) in arms {
+                for (pat, guard, arm) in arms {
                     let mut bound = Vec::new();
                     let pt = self.infer_pat(pat, &mut bound);
                     self.unify_at(pat.span, pt, st.clone());
+                    if let Some(g) = guard {
+                        let gt = self.infer_expr(g);
+                        self.unify_at(g.span, gt, Type::bool());
+                    }
                     let at = self.infer_expr(arm);
                     self.unify_at(arm.span, at, result.clone());
                 }

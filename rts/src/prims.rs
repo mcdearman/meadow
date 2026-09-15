@@ -131,8 +131,9 @@ impl Vm<'_> {
         }
     }
 
+    /// The array `v` is, kept either way -- see `Kind::Bytes`.
     fn array(&self, v: Value) -> Result<Addr, Error> {
-        match v.addr().filter(|a| self.heap.kind(*a) == Kind::Array) {
+        match v.addr().filter(|a| self.heap.kind(*a).is_array()) {
             Some(a) => Ok(a),
             None => err(format!("expected an Array, got {}", self.show(v))),
         }
@@ -215,6 +216,9 @@ impl Vm<'_> {
 
     pub(crate) fn bytes(&self, v: Value, what: &str) -> Result<Vec<u8>, Error> {
         let a = self.array(v)?;
+        if self.heap.kind(a) == Kind::Bytes {
+            return Ok(self.heap.packed_bytes(a));
+        }
         let mut out = Vec::with_capacity(self.heap.len(a));
         for i in 0..self.heap.len(a) {
             match self.heap.field(a, i) {
@@ -358,71 +362,75 @@ impl Vm<'_> {
             }
 
             // --- the builtin Array ----------------------------------------
-            ArrayLen => Value::Int(self.heap.len(self.array(arg(self, 0))?) as i64),
+            // An array of bytes is kept a byte to an element (`Kind::Bytes`),
+            // anything else a word; each reads either, and what each builds
+            // is kept however its elements say. Room is made *before* anything
+            // is copied out: the elements may be addresses, and making room
+            // moves what they point at. So each measures, makes room, and
+            // only then reads its arguments.
+            ArrayLen => Value::Int(self.heap.array_len(self.array(arg(self, 0))?) as i64),
             ArrayGet => {
                 let a = self.array(arg(self, 0))?;
                 let i = self.index(arg(self, 1))?;
-                let n = self.heap.len(a);
+                let n = self.heap.array_len(a);
                 if i >= n {
                     return err(format!("arrayGet: index {i} out of bounds (len {n})"));
                 }
-                self.heap.field(a, i)
+                self.heap.array_value(a, i)
             }
             ArrayGetOr => {
                 let a = self.array(arg(self, 1))?;
                 let i = self.index(arg(self, 2))?;
-                if i < self.heap.len(a) {
-                    self.heap.field(a, i)
+                if i < self.heap.array_len(a) {
+                    self.heap.array_value(a, i)
                 } else {
                     arg(self, 0)
                 }
             }
             ArraySet => {
-                let n = self.heap.len(self.array(arg(self, 0))?);
+                let n = self.heap.array_len(self.array(arg(self, 0))?);
                 let i = self.index(arg(self, 1))?;
                 if i >= n {
                     return err(format!("arraySet: index {i} out of bounds (len {n})"));
                 }
                 self.ensure(Heap::size_of(Kind::Array, n));
-                // Re-read: the collection above moved the array.
                 let a = self.array(arg(self, 0))?;
                 let v = arg(self, 2);
-                let mut words: Vec<u64> = self.heap.words(a).collect();
+                let mut words = self.heap.array_words(a, 0, n);
                 words[i] = v.bits();
-                self.array_of(Kind::Array, &words, v.desc())
+                Value::Obj(self.heap.alloc_array(&words, v.desc()))
             }
             ArrayPush => {
-                let n = self.heap.len(self.array(arg(self, 0))?);
+                let n = self.heap.array_len(self.array(arg(self, 0))?);
                 self.ensure(Heap::size_of(Kind::Array, n + 1));
                 let a = self.array(arg(self, 0))?;
                 let v = arg(self, 1);
-                let mut words: Vec<u64> = self.heap.words(a).collect();
+                let mut words = self.heap.array_words(a, 0, n);
                 words.push(v.bits());
-                self.array_of(Kind::Array, &words, v.desc())
+                Value::Obj(self.heap.alloc_array(&words, v.desc()))
             }
             ArrayPop => {
-                let n = self.heap.len(self.array(arg(self, 0))?);
+                let n = self.heap.array_len(self.array(arg(self, 0))?);
                 if n == 0 {
                     return err("arrayPop: empty array");
                 }
                 self.ensure(Heap::size_of(Kind::Array, n - 1));
                 let a = self.array(arg(self, 0))?;
-                let mut words: Vec<u64> = self.heap.words(a).collect();
-                words.pop();
-                self.array_of(Kind::Array, &words, self.heap.element_desc(a))
+                let words = self.heap.array_words(a, 0, n - 1);
+                Value::Obj(self.heap.alloc_array(&words, self.heap.array_desc(a)))
             }
             ArraySlice => {
-                let n = self.heap.len(self.array(arg(self, 0))?) as i64;
+                let n = self.heap.array_len(self.array(arg(self, 0))?) as i64;
                 let from = self.int(arg(self, 1))?.clamp(0, n) as usize;
                 let to = self.int(arg(self, 2))?.clamp(from as i64, n) as usize;
                 self.ensure(Heap::size_of(Kind::Array, to - from));
                 let a = self.array(arg(self, 0))?;
-                let words: Vec<u64> = self.heap.words_in(a, from, to).collect();
-                self.array_of(Kind::Array, &words, self.heap.element_desc(a))
+                let words = self.heap.array_words(a, from, to);
+                Value::Obj(self.heap.alloc_array(&words, self.heap.array_desc(a)))
             }
             ArrayConcat => {
-                let x = self.heap.len(self.array(arg(self, 0))?);
-                let y = self.heap.len(self.array(arg(self, 1))?);
+                let x = self.heap.array_len(self.array(arg(self, 0))?);
+                let y = self.heap.array_len(self.array(arg(self, 1))?);
                 if x == 0 {
                     arg(self, 1)
                 } else if y == 0 {
@@ -431,9 +439,9 @@ impl Vm<'_> {
                     self.ensure(Heap::size_of(Kind::Array, x + y));
                     let a = self.array(arg(self, 0))?;
                     let b = self.array(arg(self, 1))?;
-                    let mut words: Vec<u64> = self.heap.words(a).collect();
-                    words.extend(self.heap.words(b));
-                    self.array_of(Kind::Array, &words, self.heap.element_desc(a))
+                    let mut words = self.heap.array_words(a, 0, x);
+                    words.extend(self.heap.array_words(b, 0, y));
+                    Value::Obj(self.heap.alloc_array(&words, self.heap.array_desc(a)))
                 }
             }
 
@@ -465,13 +473,9 @@ impl Vm<'_> {
 
             // --- text and bytes -------------------------------------------
             StringToBytes => {
-                let fields: Vec<Value> = self
-                    .text_bytes(arg(self, 0), "stringToBytes")?
-                    .into_iter()
-                    .map(|b| Value::Word(num::Width::U8, b as u64))
-                    .collect();
-                self.ensure(Heap::size_of(Kind::Array, fields.len()));
-                Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
+                let bytes = self.text_bytes(arg(self, 0), "stringToBytes")?;
+                self.ensure(Heap::packed_slots(bytes.len()) + Heap::size_of(Kind::Array, 0));
+                Value::Obj(self.heap.alloc_bytes(&bytes))
             }
             BytesToString => {
                 let buf = self.bytes(arg(self, 0), "bytesToString")?;
@@ -517,7 +521,8 @@ impl Vm<'_> {
                     self.ensure(
                         Heap::size_of(Kind::Array, out.len()) + Heap::size_of(Kind::Data, 1),
                     );
-                    let arr = Value::Obj(self.heap.alloc(Kind::Array, 0, &out));
+                    let words: Vec<u64> = out.iter().map(|v| v.bits()).collect();
+                    let arr = Value::Obj(self.heap.alloc_array(&words, Heap::BYTE));
                     self.data("Maybe.Just", &[arr])
                 }
             }
@@ -594,7 +599,7 @@ impl Vm<'_> {
                 for i in 0..self.heap.len(a) {
                     let part = self.heap.field(a, i);
                     match (part, self.text_at(part)) {
-                        (_, Some(p)) => out.extend(self.heap.str_bytes(p)),
+                        (_, Some(p)) => out.extend(self.heap.packed_bytes(p)),
                         (Value::Str(sym), None) => out.extend_from_slice(sym.as_bytes()),
                         (other, None) => {
                             return err(format!(
@@ -609,14 +614,14 @@ impl Vm<'_> {
             }
             StringByteLength => {
                 let a = self.text_addr(arg(self, 0), "stringByteLength")?;
-                Value::Int(self.heap.str_len(a) as i64)
+                Value::Int(self.heap.packed_len(a) as i64)
             }
             StringByteAt => {
                 let a = self.text_addr(arg(self, 0), "stringByteAt")?;
                 let i = self.int(arg(self, 1))?;
-                let len = self.heap.str_len(a);
+                let len = self.heap.packed_len(a);
                 match usize::try_from(i).ok().filter(|at| *at < len) {
-                    Some(at) => Value::Word(num::Width::U8, self.heap.str_byte(a, at) as u64),
+                    Some(at) => Value::Word(num::Width::U8, self.heap.packed_byte(a, at) as u64),
                     None => {
                         return err(format!("stringByteAt: index {i} out of bounds (len {len})"));
                     }
@@ -625,9 +630,9 @@ impl Vm<'_> {
             StringSlice => {
                 let a = self.text_addr(arg(self, 0), "stringSlice")?;
                 let (from, to) = (self.int(arg(self, 1))?, self.int(arg(self, 2))?);
-                let (lo, hi) = meadow_core::text::clamp(self.heap.str_len(a), from, to);
+                let (lo, hi) = meadow_core::text::clamp(self.heap.packed_len(a), from, to);
                 // Copied out before making room, which moves the string.
-                let bytes = self.heap.str_bytes_in(a, lo, hi);
+                let bytes = self.heap.packed_bytes_in(a, lo, hi);
                 match std::str::from_utf8(&bytes) {
                     Ok(_) => self.new_text(&bytes),
                     Err(_) => {
@@ -640,7 +645,7 @@ impl Vm<'_> {
                 let hay = self.text_addr(arg(self, 0), "stringIndexOf")?;
                 let needle = self.text_bytes(arg(self, 1), "stringIndexOf")?;
                 let from = self.int(arg(self, 2))?;
-                Value::Int(self.heap.str_find(hay, &needle, from))
+                Value::Int(self.heap.packed_find(hay, &needle, from))
             }
 
             // --- the mutable cell -----------------------------------------
@@ -726,14 +731,14 @@ impl Vm<'_> {
                 // Re-read: making room may have moved it.
                 let a = self.mut_array(arg(self, 0))?;
                 let words: Vec<u64> = self.heap.words(a).collect();
-                self.array_of(Kind::Array, &words, self.heap.element_desc(a))
+                Value::Obj(self.heap.alloc_array(&words, self.heap.element_desc(a)))
             }
             StThaw => {
-                let n = self.heap.len(self.array(arg(self, 0))?);
+                let n = self.heap.array_len(self.array(arg(self, 0))?);
                 self.ensure(Heap::size_of(Kind::MutArray, n));
                 let a = self.array(arg(self, 0))?;
-                let words: Vec<u64> = self.heap.words(a).collect();
-                self.array_of(Kind::MutArray, &words, self.heap.element_desc(a))
+                let words = self.heap.array_words(a, 0, n);
+                self.array_of(Kind::MutArray, &words, self.heap.array_desc(a))
             }
 
             // --- compact regions --------------------------------------------

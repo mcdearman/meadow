@@ -346,10 +346,15 @@ pub enum Kind {
     /// Uniform, and never an address, so a collector copies one without
     /// looking inside.
     Str,
+    /// An `Array` of `UInt8`, a byte to an element: laid out as [`Kind::Str`]
+    /// is, `meta` its length. An array is kept this way whenever it has
+    /// elements and they are bytes -- see [`Heap::alloc_array`] -- and
+    /// everything that reads an array reads either.
+    Bytes,
 }
 
 impl Kind {
-    const ALL: [Kind; 13] = [
+    const ALL: [Kind; 14] = [
         Kind::Data,
         Kind::Array,
         Kind::Record,
@@ -363,6 +368,7 @@ impl Kind {
         Kind::Task,
         Kind::TVar,
         Kind::Str,
+        Kind::Bytes,
     ];
 
     /// The kind a header's first byte names.
@@ -376,10 +382,15 @@ impl Kind {
 
     /// Does every field hold the same representation, so that one descriptor
     /// describes them all? An array's elements, a `BigInt`'s digits.
+    /// Is this one of the two ways an `Array` is kept?
+    pub fn is_array(self) -> bool {
+        matches!(self, Kind::Array | Kind::Bytes)
+    }
+
     pub fn is_uniform(self) -> bool {
         matches!(
             self,
-            Kind::Array | Kind::MutArray | Kind::BigInt | Kind::Str
+            Kind::Array | Kind::MutArray | Kind::BigInt | Kind::Str | Kind::Bytes
         )
     }
 }
@@ -820,15 +831,31 @@ impl Heap {
         (0..h.len).map(move |i| self.slot(base + i))
     }
 
-    // --- strings ---------------------------------------------------------------
+    // --- strings and bytes -------------------------------------------------------
+    //
+    // A string and a byte array are laid out alike: bytes packed eight to a
+    // word, the length in `meta`. What reads one reads the other.
 
-    /// Slots a string of `len` bytes takes.
-    pub fn str_slots(len: usize) -> usize {
+    /// Slots `len` packed bytes take.
+    pub fn packed_slots(len: usize) -> usize {
         Heap::size_of(Kind::Str, len.div_ceil(8))
     }
 
     /// A string holding `bytes`, which must be UTF-8 -- see [`Kind::Str`].
     pub fn alloc_str(&mut self, bytes: &[u8]) -> Addr {
+        self.alloc_packed(Kind::Str, bytes)
+    }
+
+    /// `bytes` as an `Array` of `UInt8` -- see [`Kind::Bytes`]. Empty, it is an
+    /// ordinary empty array, which is what every empty array is.
+    pub fn alloc_bytes(&mut self, bytes: &[u8]) -> Addr {
+        if bytes.is_empty() {
+            return self.alloc(Kind::Array, 0, &[]);
+        }
+        self.alloc_packed(Kind::Bytes, bytes)
+    }
+
+    fn alloc_packed(&mut self, kind: Kind, bytes: &[u8]) -> Addr {
         let words = bytes.len().div_ceil(8);
         let word = |i: usize| {
             let chunk = &bytes[8 * i..bytes.len().min(8 * i + 8)];
@@ -836,16 +863,91 @@ impl Heap {
             w[..chunk.len()].copy_from_slice(chunk);
             Word::from_le_bytes(w)
         };
-        self.alloc_described(Kind::Str, bytes.len() as u32, words, word, |_| desc::INT)
+        self.alloc_described(kind, bytes.len() as u32, words, word, |_| desc::INT)
     }
 
-    /// The length in bytes of the string at `a`.
-    pub fn str_len(&self, a: Addr) -> usize {
+    // --- arrays, either way they are kept -------------------------------------------
+
+    /// Slots an array of `n` elements described by `d` takes.
+    pub fn array_slots(n: usize, d: desc::Desc) -> usize {
+        if n > 0 && d == Heap::BYTE {
+            Heap::packed_slots(n)
+        } else {
+            Heap::size_of(Kind::Array, n)
+        }
+    }
+
+    /// The descriptor of a `UInt8`, whose arrays are packed.
+    pub const BYTE: desc::Desc = desc::WORD + 3;
+
+    /// An array of `words`, each described by `d`: packed, if they are bytes.
+    pub fn alloc_array(&mut self, words: &[Word], d: desc::Desc) -> Addr {
+        if !words.is_empty() && d == Heap::BYTE {
+            let bytes: Vec<u8> = words.iter().map(|w| *w as u8).collect();
+            return self.alloc_packed(Kind::Bytes, &bytes);
+        }
+        self.alloc_described(Kind::Array, 0, words.len(), |i| words[i], |_| d)
+    }
+
+    /// How many elements the array at `a` has.
+    pub fn array_len(&self, a: Addr) -> usize {
+        let h = self.head(a);
+        match h.kind {
+            Kind::Bytes => h.meta as usize,
+            _ => h.len as usize,
+        }
+    }
+
+    /// What every element of the array at `a` is.
+    pub fn array_desc(&self, a: Addr) -> desc::Desc {
+        match self.kind(a) {
+            Kind::Bytes => Heap::BYTE,
+            _ => self.element_desc(a),
+        }
+    }
+
+    /// Element `i` of the array at `a`, which has one, as a word.
+    pub fn array_word(&self, a: Addr, i: usize) -> Word {
+        match self.kind(a) {
+            Kind::Bytes => self.packed_byte(a, i) as Word,
+            _ => self.field_word(a, i),
+        }
+    }
+
+    /// Element `i` of the array at `a`, which has one.
+    pub fn array_value(&self, a: Addr, i: usize) -> Value {
+        match self.kind(a) {
+            Kind::Bytes => Value::Word(meadow_core::num::Width::U8, self.packed_byte(a, i) as u64),
+            _ => self.field(a, i),
+        }
+    }
+
+    /// Elements `from..to` of the array at `a`, as words.
+    pub fn array_words(&self, a: Addr, from: usize, to: usize) -> Vec<Word> {
+        match self.kind(a) {
+            Kind::Bytes => self
+                .packed_bytes_in(a, from, to)
+                .into_iter()
+                .map(Word::from)
+                .collect(),
+            _ => self.words_in(a, from, to).collect(),
+        }
+    }
+
+    /// Every element of the array at `a`.
+    pub fn array_values(&self, a: Addr) -> Vec<Value> {
+        (0..self.array_len(a))
+            .map(|i| self.array_value(a, i))
+            .collect()
+    }
+
+    /// The length in bytes of the string or byte array at `a`.
+    pub fn packed_len(&self, a: Addr) -> usize {
         self.head(a).meta as usize
     }
 
-    /// Byte `i` of the string at `a`, which has one.
-    pub fn str_byte(&self, a: Addr, i: usize) -> u8 {
+    /// Byte `i` of the string or byte array at `a`, which has one.
+    pub fn packed_byte(&self, a: Addr, i: usize) -> u8 {
         let h = self.head(a);
         debug_assert!(i < h.meta as usize, "byte {i} of a string of {}", h.meta);
         let w = self.slot(a + (h.header() + i / 8) as Addr);
@@ -853,7 +955,7 @@ impl Heap {
     }
 
     /// Bytes `from..to` of the string at `a`, copied out.
-    pub fn str_bytes_in(&self, a: Addr, from: usize, to: usize) -> Vec<u8> {
+    pub fn packed_bytes_in(&self, a: Addr, from: usize, to: usize) -> Vec<u8> {
         let h = self.head(a);
         let to = to.min(h.meta as usize);
         let from = from.min(to);
@@ -871,12 +973,12 @@ impl Heap {
     }
 
     /// All of the string at `a`'s bytes.
-    pub fn str_bytes(&self, a: Addr) -> Vec<u8> {
-        self.str_bytes_in(a, 0, usize::MAX)
+    pub fn packed_bytes(&self, a: Addr) -> Vec<u8> {
+        self.packed_bytes_in(a, 0, usize::MAX)
     }
 
     /// Whether the strings at `a` and `b` hold the same bytes.
-    pub fn str_eq(&self, a: Addr, b: Addr) -> bool {
+    pub fn packed_eq(&self, a: Addr, b: Addr) -> bool {
         let (ha, hb) = (self.head(a), self.head(b));
         ha.meta == hb.meta
             && self
@@ -2530,27 +2632,68 @@ mod tests {
             let a = h.alloc_str(text.as_bytes());
             let empty = h.alloc_str(b"");
             assert_eq!(h.kind(a), Kind::Str);
-            assert_eq!(h.str_len(a), text.len());
-            assert_eq!(h.str_len(empty), 0);
+            assert_eq!(h.packed_len(a), text.len());
+            assert_eq!(h.packed_len(empty), 0);
             let mut roots = [Value::Obj(a), Value::Obj(empty)];
             h.collect(&mut roots);
             let (a, empty) = (roots[0].addr().unwrap(), roots[1].addr().unwrap());
-            assert_eq!(h.str_bytes(a), text.as_bytes());
-            assert_eq!(h.str_bytes(empty), b"");
-            assert_eq!(h.str_bytes_in(a, 1, 3), "é".as_bytes());
-            assert_eq!(h.str_byte(a, 6), b',');
-            assert_eq!(h.str_find(a, "wörld".as_bytes(), 0), 8);
+            assert_eq!(h.packed_bytes(a), text.as_bytes());
+            assert_eq!(h.packed_bytes(empty), b"");
+            assert_eq!(h.packed_bytes_in(a, 1, 3), "é".as_bytes());
+            assert_eq!(h.packed_byte(a, 6), b',');
+            assert_eq!(h.packed_find(a, "wörld".as_bytes(), 0), 8);
             assert_eq!(
-                h.str_find(a, b"o", 9),
+                h.packed_find(a, b"o", 9),
                 text[9..].find('o').map_or(-1, |i| (i + 9) as i64)
             );
-            assert_eq!(h.str_find(a, b"zzz", 0), -1);
+            assert_eq!(h.packed_find(a, b"zzz", 0), -1);
             let same = h.alloc_str(text.as_bytes());
             let other = h.alloc_str("héllo, wörld -- more than one word of iT".as_bytes());
-            assert!(h.str_eq(a, same));
-            assert!(!h.str_eq(a, other));
-            assert!(!h.str_eq(a, empty));
+            assert!(h.packed_eq(a, same));
+            assert!(!h.packed_eq(a, other));
+            assert!(!h.packed_eq(a, empty));
         }
+    }
+
+    #[test]
+    fn an_array_of_bytes_takes_a_byte_an_element() {
+        assert_eq!(
+            Heap::BYTE,
+            desc::word(meadow_core::num::Width::U8),
+            "the descriptor packing is keyed on"
+        );
+        let mut h = generational(64, usize::MAX, 0);
+        let words: Vec<Word> = (0..1000u64).map(|i| i % 256).collect();
+        let before = h.used();
+        let a = h.alloc_array(&words, Heap::BYTE);
+        assert_eq!(h.kind(a), Kind::Bytes);
+        assert!(
+            h.used() - before <= 2 + 125,
+            "1000 bytes in {} slots",
+            h.used() - before
+        );
+        assert_eq!(h.array_len(a), 1000);
+        assert_eq!(h.array_desc(a), Heap::BYTE);
+        assert_eq!(
+            h.array_value(a, 257),
+            Value::Word(meadow_core::num::Width::U8, 1)
+        );
+        assert_eq!(h.array_words(a, 254, 258), [254, 255, 0, 1]);
+        let mut roots = [Value::Obj(a)];
+        h.collect(&mut roots);
+        let a = roots[0].addr().unwrap();
+        assert_eq!(
+            h.array_words(a, 0, 1000),
+            words,
+            "and it survives a collection"
+        );
+
+        // Nothing to pack, or not bytes: an ordinary array.
+        let empty = h.alloc_array(&[], Heap::BYTE);
+        assert_eq!((h.kind(empty), h.array_len(empty)), (Kind::Array, 0));
+        let ints = h.alloc_array(&[1, 2], desc::INT);
+        assert_eq!(h.kind(ints), Kind::Array);
+        assert_eq!(h.array_value(ints, 1), Value::Int(2));
     }
 
     #[test]

@@ -178,7 +178,9 @@ pub enum Expr {
     App(LExpr, Vec<LExpr>),
     Let(Vec<Bind>, LExpr),
     If(LExpr, LExpr, LExpr),
-    Match(LExpr, Vec<(LPat, LExpr)>),
+    /// `match e with | p if guard -> body | …`: each arm a pattern, the
+    /// condition it is taken on if it has one, and its body.
+    Match(LExpr, Vec<(LPat, Option<LExpr>, LExpr)>),
     UnOp(LUnOp, LExpr),
     BinOp(LBinOp, LExpr, LExpr),
     Tuple(Vec<LExpr>),
@@ -305,6 +307,7 @@ pub enum Pat {
     /// belongs to `x` or to `f`.
     Ann(Box<LPat>, LType),
     Lit(Lit),
+    /// `p as x` -- `p`, with the whole of what it matched also named `x`.
     As(Ident, LPat),
     Cons(Ident, Vec<LPat>),
     /// `Mod.Ctor p q` — a constructor pattern qualified by a `use`d module.

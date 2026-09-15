@@ -191,7 +191,11 @@ fn a_non_boolean_condition_is_caught() {
 fn an_arm_that_does_not_produce_the_case_type_is_caught() {
     let term = Term::Case(
         Arc::new(Term::Lit(Lit::Int(0))),
-        vec![(Pat::Var(VarId(2), int()), Term::Lit(Lit::Str("s".into())))],
+        vec![(
+            Pat::Var(VarId(2), int()),
+            None,
+            Term::Lit(Lit::Str("s".into())),
+        )],
         int(),
     );
     fails(&def(VarId(1), Poly::mono(int()), term), "arm of `case`");
@@ -202,7 +206,11 @@ fn a_pattern_variable_bound_at_the_wrong_type_is_caught() {
     let term = Term::Case(
         Arc::new(Term::Lit(Lit::Int(0))),
         // Matching an `Int` and calling the binding a `String`.
-        vec![(Pat::Var(VarId(2), Type::string()), Term::Lit(Lit::Int(1)))],
+        vec![(
+            Pat::Var(VarId(2), Type::string()),
+            None,
+            Term::Lit(Lit::Int(1)),
+        )],
         int(),
     );
     fails(&def(VarId(1), Poly::mono(int()), term), "pattern variable");

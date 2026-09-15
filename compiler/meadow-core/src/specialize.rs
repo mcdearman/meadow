@@ -171,7 +171,12 @@ fn walk(t: &Term, f: &mut impl FnMut(&Term)) {
         Term::Record(fs) => fs.iter().for_each(|(_, x)| walk(x, f)),
         Term::Case(s, arms, _) => {
             walk(s, f);
-            arms.iter().for_each(|(_, b)| walk(b, f));
+            for (_, g, b) in arms {
+                if let Some(g) = g {
+                    walk(g, f);
+                }
+                walk(b, f);
+            }
         }
         Term::Handle {
             body, clauses, ret, ..
@@ -518,7 +523,13 @@ impl Specializer {
             Term::Case(s, arms, ty) => Term::Case(
                 self.arc(s, sigma),
                 arms.iter()
-                    .map(|(p, b)| (self.pat(p, sigma), self.term(b, sigma)))
+                    .map(|(p, g, b)| {
+                        (
+                            self.pat(p, sigma),
+                            g.as_ref().map(|g| self.term(g, sigma)),
+                            self.term(b, sigma),
+                        )
+                    })
                     .collect(),
                 self.ty(ty, sigma),
             ),
@@ -705,9 +716,10 @@ fn freshen(t: &Term, s: &mut Specializer, names: &mut HashMap<Var, Var>) -> Term
             let scrut = go(scrut, s, names);
             let arms = arms
                 .iter()
-                .map(|(p, b)| {
+                .map(|(p, g, b)| {
                     let p = freshen_pat(p, s, names);
-                    (p, freshen(b, s, names))
+                    let g = g.as_ref().map(|g| freshen(g, s, names));
+                    (p, g, freshen(b, s, names))
                 })
                 .collect();
             Term::Case(scrut, arms, ty.clone())

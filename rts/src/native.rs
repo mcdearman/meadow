@@ -37,8 +37,8 @@ pub enum Build {
     Data(&'static str, Vec<Build>),
     Tuple(Vec<Build>),
     Record(Vec<(&'static str, Build)>),
-    /// A builtin `Array`, in order.
-    Array(Vec<Build>),
+    /// An `Array` of `UInt8`, a byte to an element.
+    Bytes(Vec<u8>),
     /// A `Std.Collections.Vector`, in the shape `Vector.fromArray` gives one --
     /// see [`vector_shape`].
     Vector(Vec<Build>),
@@ -86,16 +86,14 @@ impl Build {
         let size = crate::heap::Heap::size_of;
         match self {
             Build::At(_) => 0,
-            Build::Str(s) => crate::heap::Heap::str_slots(s.len()),
+            Build::Str(s) => crate::heap::Heap::packed_slots(s.len()),
             Build::Data(_, xs) | Build::Tuple(xs) => {
                 size(Kind::Data, xs.len()) + xs.iter().map(Build::slots).sum::<usize>()
             }
             Build::Record(fs) => {
                 size(Kind::Record, 2 * fs.len()) + fs.iter().map(|(_, b)| b.slots()).sum::<usize>()
             }
-            Build::Array(xs) => {
-                size(Kind::Array, xs.len()) + xs.iter().map(Build::slots).sum::<usize>()
-            }
+            Build::Bytes(b) => crate::heap::Heap::packed_slots(b.len()) + size(Kind::Array, 0),
             Build::Vector(xs) => {
                 let inner = xs.iter().map(Build::slots).sum::<usize>();
                 if xs.len() <= VECTOR_WIDTH {
@@ -156,10 +154,7 @@ impl Vm<'_> {
                 }
                 Value::Obj(self.heap.alloc(Kind::Record, 0, &fields))
             }
-            Build::Array(xs) => {
-                let items: Vec<Value> = xs.into_iter().map(|x| self.build_here(x)).collect();
-                Value::Obj(self.heap.alloc(Kind::Array, 0, &items))
-            }
+            Build::Bytes(b) => Value::Obj(self.heap.alloc_bytes(&b)),
             Build::Vector(xs) => {
                 let items: Vec<Value> = xs.into_iter().map(|x| self.build_here(x)).collect();
                 self.vector_here(items)
@@ -317,11 +312,7 @@ impl Vm<'_> {
                 Err(e) => ioerr(e),
             },
             "readBytes" => match fs::read(&*one(self, arg)?) {
-                Ok(b) => Build::ok(Build::Array(
-                    b.into_iter()
-                        .map(|x| Build::At(Value::Word(meadow_core::num::Width::U8, u64::from(x))))
-                        .collect(),
-                )),
+                Ok(b) => Build::ok(Build::Bytes(b)),
                 Err(e) => ioerr(e),
             },
             "writeString" => {

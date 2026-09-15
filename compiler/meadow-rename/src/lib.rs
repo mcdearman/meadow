@@ -2122,12 +2122,14 @@ impl Resolver {
                 let rs = self.resolve_expr(scrut);
                 let rarms = arms
                     .iter()
-                    .map(|(pat, arm)| {
+                    .map(|(pat, guard, arm)| {
                         let mark = self.mark();
                         let rp = self.resolve_pat(pat);
+                        // The guard sees what the pattern binds, as the body does.
+                        let rg = guard.as_ref().map(|g| self.resolve_expr(g));
                         let ra = self.resolve_expr(arm);
                         self.reset(mark);
-                        (rp, ra)
+                        (rp, rg, ra)
                     })
                     .collect_vec();
                 self.node(hir::Expr::Match(rs, rarms), expr.span)

@@ -1003,8 +1003,11 @@ pub enum Term {
     /// A saturated constructor application, with the type it builds — from
     /// which the checker instantiates the constructor's field types.
     Ctor(InternedString, Ty, Vec<Term>),
-    /// `case scrut of …` and the type every arm has to produce.
-    Case(Arc<Term>, Vec<(Pat, Term)>, Ty),
+    /// `case scrut of …` and the type every arm has to produce. An arm is its
+    /// pattern, a guard -- a `Bool`, in the scope of the pattern's variables --
+    /// that must also hold for it to be taken, and its body. An arm whose guard
+    /// is false is passed over for the next, as if its pattern had not matched.
+    Case(Arc<Term>, Vec<(Pat, Option<Term>, Term)>, Ty),
     Prim(Prim, Vec<Term>, Ty),
     /// `perform Effect.op arg` — an algebraic-effect operation call, and the
     /// type it resumes with.
@@ -1087,6 +1090,7 @@ impl Term {
     }
 
     pub fn case(scrut: Term, arms: Vec<(Pat, Term)>) -> Term {
+        let arms = arms.into_iter().map(|(p, b)| (p, None, b)).collect();
         Term::Case(Arc::new(scrut), arms, unknown())
     }
 
@@ -1395,7 +1399,12 @@ impl Printer {
             Term::Case(s, arms, _) => {
                 let parts: Vec<String> = arms
                     .iter()
-                    .map(|(p, b)| format!("{} -> {}", self.pat(p), self.term(b)))
+                    .map(|(p, g, b)| match g {
+                        Some(g) => {
+                            format!("{} if {} -> {}", self.pat(p), self.term(g), self.term(b))
+                        }
+                        None => format!("{} -> {}", self.pat(p), self.term(b)),
+                    })
                     .collect();
                 format!("(case {} of {})", self.term(s), parts.join("; "))
             }
@@ -1696,9 +1705,12 @@ pub fn free_vars_into(t: &Term, out: &mut std::collections::HashSet<Var>) {
             Term::Perform(_, _, a, _) => go(a, bound, out),
             Term::Case(s, arms, _) => {
                 go(s, bound, out);
-                for (p, t) in arms {
+                for (p, g, t) in arms {
                     let before = bound.len();
                     pat_vars(p, bound);
+                    if let Some(g) = g {
+                        go(g, bound, out);
+                    }
                     go(t, bound, out);
                     bound.truncate(before);
                 }

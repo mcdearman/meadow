@@ -622,10 +622,13 @@ where
             .map_with(|e, ex| Located::new(e, ex.span()))
             .boxed();
 
+        // `| p -> e`, or `| p if guard -> e`, taken only where the guard holds.
         let match_arm = just(Token::Bar)
             .ignore_then(pat())
+            .then(just(Token::If).ignore_then(expr.clone()).or_not())
             .then_ignore(just(Token::RArrow))
-            .then(expr.clone());
+            .then(expr.clone())
+            .map(|((p, guard), body)| (p, guard, body));
 
         let match_expr = just(Token::Match)
             .ignore_then(expr.clone())
@@ -1169,7 +1172,9 @@ fn fill_holes(e: LExpr, n: &mut usize) -> LExpr {
         Expr::If(c, t, f) => Expr::If(go(c, n), go(t, n), go(f, n)),
         Expr::Match(s, arms) => Expr::Match(
             go(s, n),
-            arms.into_iter().map(|(p, b)| (p, go(b, n))).collect(),
+            arms.into_iter()
+                .map(|(p, g, b)| (p, g.map(|g| go(g, n)), go(b, n)))
+                .collect(),
         ),
         Expr::Let(binds, body) => Expr::Let(
             binds
@@ -1274,17 +1279,6 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
                 _ => Pat::Tuple(patterns),
             });
 
-        // `Mod.Ctor p q` — a constructor pattern qualified by a `use`d module.
-        let qual_cons = upper_ident()
-            .then_ignore(just(Token::Period))
-            .then(upper_ident())
-            .then(pat.clone().repeated().collect::<Vec<_>>())
-            .map(|((q, name), args)| Pat::QualCons(q, name, args));
-
-        let cons = upper_ident()
-            .then(pat.clone().repeated().collect::<Vec<_>>())
-            .map(|(name, args)| Pat::Cons(name, args));
-
         let record_field = lower_ident()
             .then(just(Token::Eq).ignore_then(pat.clone()).or_not())
             .map(|(name, p)| {
@@ -1303,8 +1297,15 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .then_ignore(just(Token::RBrace))
             .map(|(fields, open)| Pat::Record(fields, open.is_some()));
 
-        let atom = qual_cons
-            .or(cons)
+        // What can stand on its own, and so be a constructor's argument: a
+        // constructor written there takes no arguments of its own, so
+        // `Node Leaf x r` is `Node` applied to three patterns, as in Haskell.
+        // A constructor that does take some is parenthesized, `Just (Cons x r)`.
+        let argument = upper_ident()
+            .then_ignore(just(Token::Period))
+            .then(upper_ident())
+            .map(|(q, name)| Pat::QualCons(q, name, Vec::new()))
+            .or(upper_ident().map(|name| Pat::Cons(name, Vec::new())))
             .or(record)
             .or(value_ident().map(|ident| Pat::Var(ident)))
             .or(just(Token::Wildcard).map(|_| Pat::Wildcard))
@@ -1317,18 +1318,59 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .map_with(|kind, e| LPat::new(kind, e.span()))
             .boxed();
 
-        // `head :: tail` — sugar for the `Cons head tail` pattern (right-assoc).
-        atom.clone()
-            .then(just(Token::ColonColon).ignore_then(pat.clone()).or_not())
-            .map_with(|(head, tail), e| match tail {
-                Some(tail) => LPat::new(
-                    Pat::Cons(
-                        Located::new(InternedString::from("Cons"), e.span()),
-                        vec![head, tail],
-                    ),
-                    e.span(),
-                ),
-                None => head,
+        // `Mod.Ctor p q` — a constructor pattern qualified by a `use`d module.
+        let qual_cons = upper_ident()
+            .then_ignore(just(Token::Period))
+            .then(upper_ident())
+            .then(argument.clone().repeated().at_least(1).collect::<Vec<_>>())
+            .map(|((q, name), args)| Pat::QualCons(q, name, args));
+
+        let cons = upper_ident()
+            .then(argument.clone().repeated().at_least(1).collect::<Vec<_>>())
+            .map(|(name, args)| Pat::Cons(name, args));
+
+        let atom = qual_cons
+            .or(cons)
+            .map_with(|kind, e| LPat::new(kind, e.span()))
+            .or(argument)
+            .boxed();
+
+        // `a :: b :: rest` — sugar for `Cons a (Cons b rest)`, grouping to the
+        // right. Its parts are atoms rather than whole patterns, so that an
+        // `as` after the tail names the whole chain rather than the tail.
+        let consed = atom
+            .clone()
+            .separated_by(just(Token::ColonColon))
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .map(|mut parts| {
+                let mut tail = parts.pop().expect("at least one");
+                while let Some(head) = parts.pop() {
+                    let span = Span::from(head.span.start as usize..tail.span.end as usize);
+                    tail = LPat::new(
+                        Pat::Cons(
+                            Located::new(InternedString::from("Cons"), span),
+                            vec![head, tail],
+                        ),
+                        span,
+                    );
+                }
+                tail
+            });
+
+        // `p as x` binds loosest, as in OCaml: `x :: rest as whole` names the
+        // whole list, and `(x as y) :: rest` a part of it.
+        consed
+            .then(
+                just(Token::As)
+                    .ignore_then(value_ident())
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map_with(|(p, names), e| {
+                names
+                    .into_iter()
+                    .fold(p, |p, name| LPat::new(Pat::As(name, p), e.span()))
             })
             .boxed()
     })

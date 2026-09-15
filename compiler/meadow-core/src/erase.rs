@@ -68,7 +68,9 @@ pub fn term(t: &Term) -> Term {
         Term::Ctor(n, ty, xs) => Term::Ctor(*n, ty.clone(), xs.iter().map(term).collect()),
         Term::Case(s, arms, ty) => Term::Case(
             Arc::new(term(s)),
-            arms.iter().map(|(p, b)| (p.clone(), term(b))).collect(),
+            arms.iter()
+                .map(|(p, g, b)| (p.clone(), g.as_ref().map(term), term(b)))
+                .collect(),
             ty.clone(),
         ),
         Term::Prim(op, xs, ty) => Term::Prim(*op, xs.iter().map(term).collect(), ty.clone()),

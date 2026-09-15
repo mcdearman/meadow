@@ -586,13 +586,78 @@ $ meadow run --release incomplete.mw
 incomplete: non-exhaustive patterns: `G` is not matched
 ```
 
-### What is *not* supported
+### Guards
 
-Two things you may reach for out of habit and will not find:
+An arm can add a condition after its pattern: `| p if condition -> body`. The
+arm is taken only when the pattern matches **and** the condition is `True`;
+otherwise matching goes on with the next arm, as if the pattern had not matched.
+The condition sees everything the pattern binds.
 
-- **No guards.** `| n if n > 3 -> ...` does not parse. Use nested `if` in the arm.
-- **No `as`-patterns.** `| x :: rest as whole -> ...` does not parse. (`as` is only
-  used for `use ... as`.) Rebuild the value in the arm instead.
+```meadow
+data Shape = Circle Int | Rect Int Int
+
+use Shape.*
+
+fun classify n =
+  match n with
+  | x if x < 0 -> "negative"
+  | 0 -> "zero"
+  | x if x > 100 -> "big"
+  | _ -> "positive"
+
+fun area s =
+  match s with
+  | Circle r if r > 10 -> 999
+  | Circle r -> 3 * r * r
+  | Rect w h if w == h -> w * w
+  | Rect w h -> w * h
+
+def main = (classify (0 - 5), classify 500, area (Circle 20), area (Rect 3 3), area (Rect 2 5))
+```
+
+```
+=> ("negative", "big", 999, 9, 10)
+```
+
+A guard is an ordinary expression: it can call functions and perform effects,
+and it runs only for an arm whose pattern matched. Because whether an arm is
+taken is no longer a question about its pattern alone, **a guarded arm covers
+nothing** for the exhaustiveness check: something after it has to handle the
+values its guard turns away.
+
+### `as`-patterns
+
+`p as x` matches `p` and also names the whole of what it matched `x`. It binds
+loosest of all, so `x :: rest as whole` names the whole list; parenthesize to
+name a part.
+
+```meadow
+fun dup xs =
+  match xs with
+  | x :: rest as whole -> (x, whole, rest)
+  | [;] as whole -> (0, whole, whole)
+
+fun pairUp p =
+  match p with
+  | ((a, b) as inner, c) if a + b == c -> Just inner
+  | _ -> None
+
+def main = (dup [1; 2; 3], pairUp ((1, 2), 3))
+```
+
+```
+=> ((1, [1; 2; 3], [2; 3]), Just((1, 2)))
+```
+
+It saves rebuilding a value only to return it, which also saves the allocation:
+`| Just _ as found -> found` hands back the very value that was matched.
+
+### Constructor arguments
+
+A constructor's arguments are written after it, and each is an atom: a variable,
+`_`, a literal, a bracketed or parenthesized pattern, or a constructor **with no
+arguments of its own**. So `Node Leaf x r` is `Node` applied to three patterns,
+and a constructor that takes arguments needs parentheses: `Just (Cons x rest)`.
 
 ---
 
@@ -911,7 +976,9 @@ exported and shadowed like any other name, and written `(++)` wherever a name
 goes: `(++) "a" "b"`, `use Std.String ((++))`.
 
 Underneath, the bytes of a string are a `#[UInt8]`: `stringToBytes` and
-`bytesToString` convert, and `Std.Bytes` works on the array. A byte is a
+`bytesToString` convert, and `Std.Bytes` works on the array. An array of
+`UInt8` takes one byte of memory per element, as a string does, so a file read
+with `readBytes` costs its size and no more. A byte is a
 `UInt8`, so arithmetic on one stays a `UInt8` and wraps. Convert before you
 accumulate, or a digit fold quietly keeps only the low eight bits:
 
@@ -2908,7 +2975,8 @@ built on it and is worth reading as a worked example.
 - `def` takes no parameters — `def f x = ...` is a parse error; use `fun`.
 - A function that selects a field (`p.x`) cannot be applied to a *nominal* record;
   match on it instead.
-- No guards, no `as`-patterns, no record update, no block comments.
+- No record update, no block comments.
+- A guarded `match` arm counts for nothing in the exhaustiveness check.
 - `Std.Char`'s predicates are ASCII-only; `String` counts bytes, `Char` counts
   scalars.
 - `Std.Test` is not in the prelude — `use Std.Test (assertEq)`.

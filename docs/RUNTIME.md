@@ -331,7 +331,10 @@ heap (`THREAD_INITIAL`, 1,024 slots) that grows as needed.
 
 A `String` is an ordinary object on the heap, collected like any other: its
 UTF-8 bytes packed eight to a word, with its length in the header
-(`rts/src/text.rs`). A string literal is made the first time a thread loads it,
+(`rts/src/text.rs`). An array of `UInt8` is kept the same way, a byte to an
+element (`Kind::Bytes`), whenever it has elements: every array primitive reads
+either kind, and the one that builds an array packs it if its elements are
+bytes. A string literal is made the first time a thread loads it,
 and that thread keeps it for every later load.
 
 Two kinds of memory are outside every heap:

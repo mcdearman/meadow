@@ -341,13 +341,12 @@ fun getU v i =
 
 fun vNormalize v =
   match v with
+  | Single xs if arrayLen xs == 0 -> Empty
+  | Full len _ _ _ _ _ _ if len == 0 -> Empty
+  | Full len sh oF iF mid iB oB if len <= vWidth and vNodeLen sh mid == 0 ->
+      Single (arrayConcat (arrayConcat (arrayConcat (arrayConcat oF iF) #[]) iB) oB)
   | Empty -> Empty
-  | Single xs -> if arrayLen xs == 0 then Empty else v
-  | Full len sh oF iF mid iB oB ->
-      if len == 0 then Empty
-      else if len <= vWidth and vNodeLen sh mid == 0
-      then Single (arrayConcat (arrayConcat (arrayConcat (arrayConcat oF iF) #[]) iB) oB)
-      else v
+  | _ -> v
 
 @pub fun popBack v =
   match v with

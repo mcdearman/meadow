@@ -23,8 +23,8 @@ use Maybe.*
 
 @pub fun keepIf pred o =
   match o with
-  | None -> None
-  | Just x -> if pred x then o else None
+  | Just x if pred x -> o
+  | _ -> None
 
 @pub fun toList o =
   match o with

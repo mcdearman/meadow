@@ -26,7 +26,7 @@ impl Vm<'_> {
             std::str::from_utf8(bytes).is_ok(),
             "a string that is not UTF-8"
         );
-        self.ensure(Heap::str_slots(bytes.len()));
+        self.ensure(Heap::packed_slots(bytes.len()));
         Value::Obj(self.heap.alloc_str(bytes))
     }
 
@@ -48,7 +48,7 @@ impl Vm<'_> {
     pub(crate) fn text_bytes(&self, v: Value, what: &str) -> Result<Vec<u8>, Error> {
         match v {
             Value::Str(s) => Ok(s.as_bytes().to_vec()),
-            v => Ok(self.heap.str_bytes(self.text_addr(v, what)?)),
+            v => Ok(self.heap.packed_bytes(self.text_addr(v, what)?)),
         }
     }
 
@@ -65,7 +65,7 @@ impl Vm<'_> {
             Value::Str(s) => Some(s.to_string()),
             v => self
                 .text_at(v)
-                .map(|a| String::from_utf8_lossy(&self.heap.str_bytes(a)).into_owned()),
+                .map(|a| String::from_utf8_lossy(&self.heap.packed_bytes(a)).into_owned()),
         }
     }
 }
@@ -74,8 +74,8 @@ impl Heap {
     /// Where `needle` first occurs in the string at `a` at or after byte
     /// `from`, or -1 -- reading the string in place, so that a scanner calling
     /// it again and again does not copy the whole of it each time.
-    pub fn str_find(&self, a: Addr, needle: &[u8], from: i64) -> i64 {
-        let len = self.str_len(a);
+    pub fn packed_find(&self, a: Addr, needle: &[u8], from: i64) -> i64 {
+        let len = self.packed_len(a);
         let start = from.max(0) as usize;
         if start > len {
             return -1;
@@ -90,8 +90,8 @@ impl Heap {
         let last = len - needle.len();
         let mut i = start;
         while i <= last {
-            if self.str_byte(a, i) == first
-                && (1..needle.len()).all(|k| self.str_byte(a, i + k) == needle[k])
+            if self.packed_byte(a, i) == first
+                && (1..needle.len()).all(|k| self.packed_byte(a, i + k) == needle[k])
             {
                 return i as i64;
             }

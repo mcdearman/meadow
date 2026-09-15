@@ -20,6 +20,7 @@ fn scratch(who: &str) -> PathBuf {
 
 fn init_at(path: &Path, name: Option<&str>) -> Result<init::Created, String> {
     init::run(&init::Options {
+        workspace: false,
         path: path.to_path_buf(),
         name: name.map(|s| s.to_string()),
     })

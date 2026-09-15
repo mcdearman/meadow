@@ -12,7 +12,9 @@ use std::{
     ops::{Index, Range},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, Default, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Default, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct Span {
     pub start: u32,
     pub end: u32,

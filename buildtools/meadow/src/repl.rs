@@ -323,7 +323,8 @@ fn strip_strings_and_comments(input: &str) -> String {
                         nest.push(Lit::Hole(0));
                     }
                     (Lit::Hole(_), '"') => nest.push(Lit::Text),
-                    (Lit::Hole(_), 'r') if let Some(h) = opens_raw(&chars, i - 1) => {
+                    (Lit::Hole(_), 'r') if opens_raw(&chars, i - 1).is_some() => {
+                        let h = opens_raw(&chars, i - 1).expect("just checked");
                         i += 1 + h;
                         nest.push(Lit::Raw(h));
                     }
@@ -721,6 +722,14 @@ impl Session {
             // A bare expression is run, not defined, so it may do anything.
             Options {
                 entry_name: Some("it"),
+                cfg: meadow_compiler::Cfg {
+                    backend: match self.engine {
+                        meadow::Engine::Vm => "vm",
+                        meadow::Engine::Cek => "cek",
+                        meadow::Engine::Jit => "jit",
+                    },
+                    ..self.opts.cfg
+                },
                 ..self.opts
             },
         );

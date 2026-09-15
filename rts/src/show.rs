@@ -151,9 +151,9 @@ impl Vm<'_> {
     /// `println "hello"` used to write `"hello"`, quotes and all, because these
     /// are polymorphic and fell through to the display used for data.
     pub fn displayed(&self, v: Value) -> String {
-        match v {
-            Value::Str(s) => s.to_string(),
-            other => self.show(other),
+        match self.text_of(v) {
+            Some(text) => text,
+            None => self.show(v),
         }
     }
 
@@ -225,6 +225,10 @@ impl Vm<'_> {
                 Kind::Channel => out.push_str("<channel>"),
                 Kind::Task => out.push_str("<thread>"),
                 Kind::TVar => out.push_str("<tvar>"),
+                Kind::Str => {
+                    let text = String::from_utf8_lossy(&self.heap.str_bytes(a)).into_owned();
+                    let _ = write!(out, "{text:?}");
+                }
                 Kind::Data => self.render_data(out, v, a),
             },
         }
@@ -411,6 +415,9 @@ impl Vm<'_> {
                         msg: unhashable("a TVar"),
                     });
                 }
+                Kind::Str => {
+                    h.str(&String::from_utf8_lossy(&self.heap.str_bytes(a)));
+                }
             }
         }
         Ok(h.finish())
@@ -485,6 +492,11 @@ impl Vm<'_> {
                                     Some(w) => stack.push((self.heap.field(x, 2 * j + 1), w)),
                                     None => return false,
                                 }
+                            }
+                        }
+                        (Kind::Str, Kind::Str) => {
+                            if !self.heap.str_eq(x, y) {
+                                return false;
                             }
                         }
                         (Kind::BigInt, Kind::BigInt) => {

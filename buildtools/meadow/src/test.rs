@@ -10,7 +10,9 @@
 //! error and one failing test does not stop the others.
 
 use crate::runtime::{self, Engine};
+use crate::workspace::Selection;
 use crate::{Resolved, pipeline};
+use meadow_compiler::intern::InternedString;
 use std::path::Path;
 
 pub struct Options {
@@ -29,6 +31,9 @@ pub struct Options {
     pub exact: bool,
     /// Also run the standard library's own tests.
     pub std: bool,
+    /// Which workspace members to test -- see [`Selection::select`]. Only the
+    /// selected packages' tests run, not their dependencies'.
+    pub packages: Selection,
     pub profile: Resolved,
     /// Which machine runs them. The bytecode VM by default; `--cek` for the
     /// specification.
@@ -41,17 +46,22 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     // package to hang it off — `meadow test --std` from anywhere should work.
     // Without this, the default path of `.` would sweep every `.mw` file below
     // the working directory into one package and fail in a hundred ways.
-    let linked = if opts.std && !is_package(Path::new(&opts.path)) {
-        let (packages, diags) = crate::stdlib::std_packages(opts.profile.options);
+    // `@cfg(test)` holds while testing.
+    let mut options = opts.profile.options;
+    options.cfg.test = true;
+    let (linked, tested) = if opts.std && !is_package(Path::new(&opts.path)) {
+        let (packages, diags) = crate::stdlib::std_packages(options);
         for d in &diags {
             eprintln!("{}: {}", d.filename, d.msg);
         }
         if !diags.is_empty() {
             return Err("the standard library did not compile".into());
         }
-        crate::linker::Linker::link(packages)
+        (crate::linker::Linker::link(packages), Vec::new())
     } else {
-        let out = pipeline::build(Path::new(&opts.path), opts.profile.options);
+        let selected = opts.packages.select(&opts.path)?;
+        let paths: Vec<&Path> = selected.paths.iter().map(|p| p.as_path()).collect();
+        let (out, names) = pipeline::build_together(&paths, options);
         for d in &out.diagnostics {
             eprintln!("{}: {}", d.filename, d.msg);
         }
@@ -61,18 +71,31 @@ pub fn run(opts: &Options) -> Result<bool, String> {
         if !out.diagnostics.is_empty() {
             return Err("build failed".into());
         }
-        linked
+        (linked, names)
     };
 
-    // The standard library carries its own tests. A package build should not be
-    // made to wait on them unless they were asked for.
+    // The packages asked for, and not what they depend on -- the standard
+    // library least of all, which carries tests of its own that a package
+    // build should not be made to wait on unless they were asked for.
+    //
+    // Several packages' tests are told apart by the package's name in front,
+    // which makes the name the `use` path of the test: `util.Parse.works`.
+    let qualify = tested.len() > 1;
     let cases: Vec<_> = linked
         .tests
         .iter()
-        .filter(|t| opts.std || &*t.package != "Std")
-        .filter(|t| {
+        .filter(|t| tested.contains(&t.package) || (opts.std && &*t.package == "Std"))
+        .map(|t| {
+            let name = if qualify && &*t.package != "Std" {
+                InternedString::from(format!("{}.{}", t.package, t.name))
+            } else {
+                t.name
+            };
+            (name, t.var)
+        })
+        .filter(|(name, _)| {
             opts.filter.as_ref().is_none_or(|f| {
-                let name = t.name.to_string();
+                let name = name.to_string();
                 if opts.exact {
                     name == *f
                 } else {
@@ -90,18 +113,18 @@ pub fn run(opts: &Options) -> Result<bool, String> {
         return Ok(true);
     }
 
-    let vars: Vec<_> = cases.iter().map(|t| t.var).collect();
+    let vars: Vec<_> = cases.iter().map(|(_, var)| *var).collect();
     let opt = opts.profile.options.opt;
     let results = runtime::run_tests(&linked.program, &vars, opts.engine, opt)?;
 
     let mut failures = Vec::new();
-    for (case, result) in cases.iter().zip(&results) {
+    for ((name, _), result) in cases.iter().zip(&results) {
         match result {
-            Ok(_) => println!("test {} ... ok", case.name),
+            Ok(_) => println!("test {name} ... ok"),
             Err(msg) => {
-                println!("test {} ... FAILED", case.name);
+                println!("test {name} ... FAILED");
                 // The message alone: a failed assertion is not a "runtime error".
-                failures.push((case.name, msg.clone()));
+                failures.push((*name, msg.clone()));
             }
         }
     }

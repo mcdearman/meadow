@@ -29,7 +29,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 
 /// A sized integer type other than `Int` itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Width {
     I8,
     I16,

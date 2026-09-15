@@ -1206,7 +1206,7 @@ impl<'a> Gen<'a> {
                 let id = self.prim(*p);
                 let k = self.konst(constant(l));
                 let operands = [self.desc_in(&env, x), const_desc(&constant(l)) as DescSrc];
-                if matches!(l, Lit::BigInt(_)) {
+                if matches!(l, Lit::BigInt(_) | Lit::Str(_)) {
                     // Loading a `BigInt` allocates, and the destination is not
                     // written until it has: there is no register to hold it
                     // then. So it gets a register of its own.
@@ -1354,7 +1354,7 @@ enum Typed {
 }
 
 /// Can two values of representation `rep` be told equal by their words? Every
-/// immediate but a float: an interned string is its key, a sized integer its
+/// immediate but a float: an interned symbol is its key, a sized integer its
 /// masked bits.
 fn word_equal(rep: Rep) -> bool {
     match rep {
@@ -1398,12 +1398,14 @@ fn typed(p: Prim, x: Rep, y: Rep) -> Option<Typed> {
 }
 
 /// A literal's representation, where it is fixed; and its word, where that is
-/// the same in every process -- which an interned string's is not.
+/// the same in every process -- which an interned symbol's is not, and a
+/// string's, an address, never is.
 fn lit_rep(l: &Lit) -> (Rep, Option<u64>) {
     match l {
         Lit::Int(n) => (Rep::Int, Some(*n as u64)),
         Lit::Float(x) => (Rep::Float, Some(x.to_bits())),
-        Lit::Str(_) => (Rep::Str, None),
+        Lit::Str(_) => (Rep::Ref, None),
+        Lit::Sym(_) => (Rep::Str, None),
         Lit::Char(c) => (Rep::Bits(desc::CHAR), Some(*c as u64)),
         Lit::Bool(b) => (Rep::Bits(desc::BOOL), Some(*b as u64)),
         Lit::Unit => (Rep::Bits(desc::UNIT), Some(0)),
@@ -1425,7 +1427,7 @@ fn const_desc(c: &Const) -> Desc {
         Const::Float32(_) => desc::FLOAT32,
         Const::Str(_) => desc::STR,
         Const::Char(_) => desc::CHAR,
-        Const::BigInt(_) => desc::REF,
+        Const::BigInt(_) | Const::Text(_) => desc::REF,
     }
 }
 
@@ -1436,7 +1438,8 @@ fn constant(l: &Lit) -> Const {
         Lit::Float(x) | Lit::AnyFloat(x, _) => Const::Float(*x),
         Lit::Word(w, b) => Const::Word(*w, *b),
         Lit::Float32(x) => Const::Float32(*x),
-        Lit::Str(s) => Const::Str(*s),
+        Lit::Str(s) => Const::Text(*s),
+        Lit::Sym(s) => Const::Str(*s),
         Lit::Char(c) => Const::Char(*c),
         Lit::Bool(b) => Const::Bool(*b),
         Lit::Unit => Const::Unit,

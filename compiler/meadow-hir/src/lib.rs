@@ -141,6 +141,11 @@ pub const PRIMS: &[&str] = &[
     "stmRollback", //
     // the strings of an array, one after another: what `"a ${b} c"` becomes
     "concatStrings",
+    // a string's bytes, read in place
+    "stringByteLength",
+    "stringByteAt",
+    "stringSlice",
+    "stringIndexOf",
 ];
 use std::ops::Deref;
 
@@ -149,7 +154,9 @@ use std::ops::Deref;
 /// Ids are dense and allocated per program by [`NodeIdGen`], so downstream passes
 /// (type inference in particular) can keep their results in cheap `Vec`-backed
 /// side tables indexed by `NodeId.0` and hand back a fully annotated tree.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct NodeId(pub u32);
 
 #[derive(Debug, Clone)]
@@ -187,7 +194,7 @@ impl Default for NodeIdGen {
 }
 
 /// HIR spine wrapper: like `span::Located` but additionally carries a [`NodeId`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Node<T> {
     pub id: NodeId,
     pub span: Span,
@@ -226,7 +233,7 @@ pub type LModule = Node<Module>;
 /// a plain name rather than a resolved variable.
 pub type Label = Node<InternedString>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Module {
     pub name: InternedString,
     pub decls: Vec<LDecl>,
@@ -245,7 +252,7 @@ pub struct Module {
 /// it is. Ordering the groups by dependency means every binding a group refers
 /// to is already generalized by the time the group is inferred, which is what
 /// makes a helper usable at two different types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BindGroup {
     /// Indices into [`Module::decls`]. Every one names a [`Decl::Bind`].
     pub members: Vec<usize>,
@@ -256,7 +263,7 @@ pub struct BindGroup {
 
 pub type LDecl = Node<Decl>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Decl {
     Bind(Bind),
     /// `mod Foo` — declares a child module. Consumed by the driver; inert here.
@@ -277,7 +284,7 @@ pub type LTypeExpr = Node<TypeExpr>;
 /// A resolved type expression from a `data` / `record` declaration. Type-variable
 /// names are resolved to [`VarId`]s (fresh per declaration); type-constructor names
 /// stay interned strings and are validated against the tycon environment.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TypeExpr {
     Var(Ident),
     Con(Label, Vec<LTypeExpr>),
@@ -297,13 +304,13 @@ pub enum TypeExpr {
 
 /// A resolved effect annotation. `labels` names are effect constructors; `tail`
 /// (if any) is a resolved type variable.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EffectRow {
     pub labels: Vec<(InternedString, Vec<LTypeExpr>)>,
     pub tail: Option<Ident>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EffectDecl {
     pub name: InternedString,
     /// Where the name was written — see [`DataDecl::name_span`].
@@ -314,7 +321,7 @@ pub struct EffectDecl {
     pub ops: Vec<(InternedString, Ident, LTypeExpr)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HandlerArm {
     /// The effect this operation belongs to (resolved from `op`).
     pub effect: InternedString,
@@ -324,7 +331,7 @@ pub struct HandlerArm {
     pub body: LExpr,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DataDecl {
     pub name: InternedString,
     /// Where the name was written.
@@ -338,7 +345,7 @@ pub struct DataDecl {
     pub variants: Vec<Variant>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Variant {
     pub name: InternedString,
     /// Where the name was written — see [`DataDecl::name_span`].
@@ -346,13 +353,13 @@ pub struct Variant {
     pub fields: VariantFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum VariantFields {
     Positional(Vec<LTypeExpr>),
     Named(Vec<(InternedString, LTypeExpr)>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RecordDecl {
     pub name: InternedString,
     /// The canonical name of this record's one constructor -- `Person.Person`.
@@ -369,7 +376,7 @@ pub struct RecordDecl {
 
 pub type LExpr = Node<Expr>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Expr {
     Var(Ident),
     Lit(Lit),
@@ -395,7 +402,7 @@ pub enum Expr {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Bind {
     Pat(LPat, LExpr),
     /// `fun f a (x, y) = e` — parameters are irrefutable patterns.
@@ -437,7 +444,7 @@ pub fn pat_vars(pat: &LPat, out: &mut Vec<VarId>) {
 
 pub type LPat = Node<Pat>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Pat {
     Wildcard,
     Var(Ident),
@@ -468,7 +475,9 @@ pub type Ident = Node<VarId>;
 /// and must not collide with one.
 pub const SYNTHETIC_BASE: u32 = 0x7000_0000;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct VarId(pub u32);
 
 impl VarId {
@@ -524,7 +533,7 @@ impl VarIdGen {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Lit {
     /// Fixed-width integer (`Int`, i.e. i64). No `BigInt` literal — see [`PRIMS`].
     Int(i64),

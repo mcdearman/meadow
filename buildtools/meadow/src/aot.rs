@@ -89,7 +89,6 @@ pub fn build(
     image: &meadow_bytecode::Program,
     target: Target,
 ) -> Result<PathBuf, String> {
-    let runtimes = runtimes(target)?;
     // The host's executable where `run` looks; another target's beside it,
     // under its triple -- and without `\\?\`, which `cl` takes for the start of
     // a file name.
@@ -98,8 +97,31 @@ pub fn build(
     if Target::host().ok() != Some(target) {
         dir = dir.join(target.triple());
     }
+    let exe = dir.join(format!("{name}{}", target.format.exe_suffix()));
+    link_image(image, opt, target, &exe)?;
+    Ok(exe)
+}
+
+/// Compile `image` for `target` at `opt` and link it into the executable
+/// `exe`, with the object file and `main` it is linked from beside it --
+/// what `meadow link` does with an image from anywhere.
+pub fn link_image(
+    image: &meadow_bytecode::Program,
+    opt: meadow_compiler::OptLevel,
+    target: Target,
+    exe: &Path,
+) -> Result<(), String> {
+    let runtimes = runtimes(target)?;
+    let dir = match exe.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let name = exe
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("{} is not a file name", exe.display()))?;
 
     let compiled = codegen::compile(image, target.arch, opt);
     let bytes = meadow_bytecode::image::encode(image);
@@ -110,12 +132,11 @@ pub fn build(
     )?;
     let main = dir.join(format!("{name}-main.c"));
     write(&main, codegen::object::main_c().as_bytes())?;
-    let exe = dir.join(format!("{name}{}", target.format.exe_suffix()));
 
     let mut stale = Vec::new();
     for runtime in &runtimes {
         match link(&main, &object, runtime, &exe, target) {
-            Ok(()) => return Ok(exe),
+            Ok(()) => return Ok(()),
             Err(e) if e.contains(&codegen::object::runtime_symbol()) => stale.push(runtime),
             Err(e) => return Err(e),
         }

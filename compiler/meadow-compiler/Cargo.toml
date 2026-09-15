@@ -21,3 +21,4 @@ meadow-infer.workspace = true
 meadow-core.workspace = true
 meadow-exhaust.workspace = true
 meadow-scc.workspace = true
+serde.workspace = true

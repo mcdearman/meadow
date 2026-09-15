@@ -52,10 +52,11 @@ pub enum Value {
     Float(f64) = layout::FLOAT,
     Float32(f32) = layout::FLOAT32,
     Char(char) = layout::CHAR,
-    /// Interned, and therefore not on the collected heap. Strings the program
-    /// builds at run time are interned too, so they accumulate for the life of
-    /// the process — the same as in the CEK machine, and the one allocation this
-    /// runtime does not manage.
+    /// An interned name: a record's label, or the key an effect operation is
+    /// dispatched on. Not a `String`, which is an object on the heap -- see
+    /// [`crate::heap::Kind::Str`]. There are only as many of these as the
+    /// program's source names, so keeping them for the life of the process
+    /// costs nothing that grows.
     Str(InternedString) = layout::STR,
     Obj(Addr) = layout::OBJ,
 }

@@ -329,10 +329,16 @@ or the collector, and a collection pauses only the thread that owns the heap
 ([section 6](#no-shared-mutable-heap)). A spawned thread starts with a small
 heap (`THREAD_INITIAL`, 1,024 slots) that grows as needed.
 
+A `String` is an ordinary object on the heap, collected like any other: its
+UTF-8 bytes packed eight to a word, with its length in the header
+(`rts/src/text.rs`). A string literal is made the first time a thread loads it,
+and that thread keeps it for every later load.
+
 Two kinds of memory are outside every heap:
 
-- **Interned strings**, kept for the life of the process. A `String` word is
-  the intern id.
+- **Interned names**, kept for the life of the process: record labels and the
+  keys effect operations are dispatched on. Their word is the intern id. There
+  are only as many as the program's source names.
 - **Compact regions**, which are shared, read-only and reference-counted
   ([below](#compact-regions)).
 

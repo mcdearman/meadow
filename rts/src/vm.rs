@@ -168,6 +168,11 @@ pub struct Vm<'p> {
     /// `meadow_core::globals`. Collector roots. Each thread has its own, as it
     /// has its own heap.
     pub(crate) globals: Vec<Option<Value>>,
+    /// The string each string literal made the first time it was loaded, by
+    /// constant: a literal is immutable, so every load can answer the same
+    /// one, and a loop comparing against `"let"` allocates nothing. Collector
+    /// roots, like `globals`, and per thread for the same reason.
+    pub(crate) literals: Vec<Option<Value>>,
     /// Every `TVar` of the run, when a scheduler is running this machine.
     pub(crate) world: Option<std::sync::Arc<crate::stm::World>>,
     /// The transaction this thread is in, if it is in one. Its values are in
@@ -269,6 +274,7 @@ impl<'p> Vm<'p> {
             request: None,
             scheduled: false,
             globals: Vec::new(),
+            literals: Vec::new(),
             world: None,
             txn: None,
             native: None,
@@ -880,8 +886,13 @@ impl<'p> Vm<'p> {
         roots.extend(registers.iter().map(|r| Value::Obj(self.regs[*r] as Addr)));
         roots.extend_from_slice(&self.pinned);
         roots.extend(self.globals.iter().flatten().copied());
+        roots.extend(self.literals.iter().flatten().copied());
 
-        self.heap.collect(&mut roots);
+        if self.heap.overdue() {
+            self.heap.collect_all(&mut roots);
+        } else {
+            self.heap.collect(&mut roots);
+        }
 
         let mut it = roots.into_iter();
         for r in registers {
@@ -892,6 +903,9 @@ impl<'p> Vm<'p> {
         }
         for g in self.globals.iter_mut().flatten() {
             *g = it.next().expect("root count");
+        }
+        for l in self.literals.iter_mut().flatten() {
+            *l = it.next().expect("root count");
         }
     }
 
@@ -999,6 +1013,18 @@ impl<'p> Vm<'p> {
             Const::Str(s) => Value::Str(s),
             Const::Char(c) => Value::Char(c),
             Const::BigInt(n) => self.alloc_bigint(num_bigint::BigInt::from(n)),
+            Const::Text(s) => {
+                let at = id as usize;
+                if let Some(Some(made)) = self.literals.get(at) {
+                    return Ok(*made);
+                }
+                let made = self.new_text(s.as_bytes());
+                if self.literals.len() <= at {
+                    self.literals.resize(at + 1, None);
+                }
+                self.literals[at] = Some(made);
+                made
+            }
         })
     }
 

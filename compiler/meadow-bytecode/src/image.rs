@@ -10,7 +10,7 @@ use crate::{Const, Instr, Program};
 use meadow_core::{Prim, num::Width};
 use meadow_intern::InternedString;
 
-const MAGIC: &[u8; 8] = b"MDWIMG02";
+const MAGIC: &[u8; 8] = b"MDWIMG03";
 
 /// `program`, as bytes [`decode`] reads back.
 pub fn encode(program: &Program) -> Vec<u8> {
@@ -241,6 +241,10 @@ impl Writer {
                 self.0.push(8);
                 self.u32(*ch as u32);
             }
+            Const::Text(s) => {
+                self.0.push(9);
+                self.str(s);
+            }
         }
     }
 }
@@ -299,6 +303,7 @@ impl Reader<'_> {
             6 => Const::Float32(f32::from_bits(self.u32()?)),
             7 => Const::Str(self.str()?),
             8 => Const::Char(char::from_u32(self.u32()?).ok_or("not a char")?),
+            9 => Const::Text(self.str()?),
             t => return Err(format!("unknown constant tag {t}")),
         })
     }

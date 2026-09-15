@@ -1200,7 +1200,7 @@ fn lit_value(lit: &core::Lit) -> Value {
         core::Lit::Float(x) | core::Lit::AnyFloat(x, _) => Value::Float(*x),
         core::Lit::Word(w, b) => Value::Word(*w, *b),
         core::Lit::Float32(x) => Value::Float32(*x),
-        core::Lit::Str(s) => Value::Str(*s),
+        core::Lit::Str(s) | core::Lit::Sym(s) => Value::Str(*s),
         core::Lit::Char(c) => Value::Char(*c),
         core::Lit::Bool(b) => Value::Bool(*b),
         core::Lit::Unit => Value::Unit,
@@ -1616,6 +1616,38 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
             }
             other => err(format!("concatStrings: expected an Array, got {other}")),
         },
+        StringByteLength => Ok(Value::Int(
+            text_arg(&args[0], "stringByteLength")?.len() as i64
+        )),
+        StringByteAt => {
+            let s = text_arg(&args[0], "stringByteAt")?;
+            let i = as_int(&args[1])?;
+            match usize::try_from(i).ok().and_then(|at| s.as_bytes().get(at)) {
+                Some(b) => Ok(Value::Word(num::Width::U8, u64::from(*b))),
+                None => err(format!(
+                    "stringByteAt: index {i} out of bounds (len {})",
+                    s.len()
+                )),
+            }
+        }
+        StringSlice => {
+            let s = text_arg(&args[0], "stringSlice")?;
+            let (from, to) = (as_int(&args[1])?, as_int(&args[2])?);
+            Ok(Value::Str(InternedString::from(meadow_core::text::slice(
+                s.as_bytes(),
+                from,
+                to,
+            ))))
+        }
+        StringIndexOf => {
+            let hay = text_arg(&args[0], "stringIndexOf")?;
+            let needle = text_arg(&args[1], "stringIndexOf")?;
+            Ok(Value::Int(meadow_core::text::index_of(
+                hay.as_bytes(),
+                needle.as_bytes(),
+                as_int(&args[2])?,
+            )))
+        }
         BytesToHex => {
             let buf = bytes_of(&args[0], "bytesToHex")?;
             let mut s = String::with_capacity(buf.len() * 2);
@@ -1733,6 +1765,14 @@ fn as_array<'a>(v: &'a Value) -> Result<&'a Rc<Vec<Value>>, RuntimeError> {
     }
 }
 
+/// A string argument of primitive `what`.
+fn text_arg(v: &Value, what: &str) -> Result<InternedString, RuntimeError> {
+    match v {
+        Value::Str(s) => Ok(*s),
+        other => err(format!("{what}: expected a String, got {other}")),
+    }
+}
+
 fn as_int(v: &Value) -> Result<i64, RuntimeError> {
     match v {
         Value::Int(i) => Ok(*i),
@@ -1807,6 +1847,31 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             let (p, c) = two(&arg)?;
             unit(fs::write(&*p, c.as_bytes()))
         }
+        "writeBytes" => match &arg {
+            Value::Tuple(xs) if xs.len() == 2 => {
+                let path = one(&xs[0])?;
+                let Value::Array(bytes) = &xs[1] else {
+                    return err(format!(
+                        "Fs.writeBytes: expected an array of bytes, got {}",
+                        xs[1]
+                    ));
+                };
+                let mut out = Vec::with_capacity(bytes.len());
+                for b in bytes.iter() {
+                    match b {
+                        Value::Word(num::Width::U8, x) => out.push(*x as u8),
+                        Value::Int(n) if (0..=255).contains(n) => out.push(*n as u8),
+                        other => return err(format!("Fs.writeBytes: not a byte: {other}")),
+                    }
+                }
+                unit(fs::write(&*path, out))
+            }
+            other => {
+                return err(format!(
+                    "Fs.writeBytes: expected a (String, #[UInt8]) pair, got {other}"
+                ));
+            }
+        },
         "appendString" => {
             use std::io::Write;
             let (p, c) = two(&arg)?;
@@ -1950,7 +2015,7 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             std::process::exit(code as i32);
         }
         "currentPid" => Value::Int(std::process::id() as i64),
-        "argv" => vector_value(std::env::args().skip(1).map(sv).collect()),
+        "argv" => vector_value(meadow_core::args::get().into_iter().map(sv).collect()),
         "getEnv" => match std::env::var(&*as_str(&arg)?) {
             Ok(v) => just(sv(v)),
             Err(_) => none(),

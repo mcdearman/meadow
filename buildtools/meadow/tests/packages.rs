@@ -134,6 +134,7 @@ fn a_manifest_configures_the_build_profiles() {
             strictness: Some(Strictness::Strict),
             backend: None,
             prune: None,
+            cfg: None,
         },
     );
     assert_eq!(flagged.opt(), OptLevel::O0);

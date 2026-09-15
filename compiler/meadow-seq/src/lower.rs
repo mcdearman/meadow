@@ -2477,7 +2477,7 @@ impl Lower {
         let label = self.fresh_label();
         let (e, a, kk) = (self.fresh_ref(), self.fresh_typed(arg_ty), self.fresh_ref());
         let params = vec![e, a, kk];
-        let key = core::Lit::Str(Self::key(effect, op));
+        let key = core::Lit::Sym(Self::key(effect, op));
         let mut arms = Vec::new();
         for (ctor, tail) in [(EV, false), (EV_TAIL, true)] {
             let ekey = self.fresh_as(Rep::Str);
@@ -2828,7 +2828,7 @@ impl Lower {
                     }
                 }
                 Step::Key(n, key) => Statement::Extern {
-                    op: Extern::Lit(core::Lit::Str(key)),
+                    op: Extern::Lit(core::Lit::Sym(key)),
                     args: vec![],
                     blocks: vec![Block {
                         params: with(n),
@@ -2915,6 +2915,7 @@ fn lit_type(l: &core::Lit) -> core::Ty {
         Lit::Float32(_) => con("Float32"),
         Lit::AnyInt(_, v) | Lit::AnyFloat(_, v) => Ty::Var(*v),
         Lit::Str(_) => con("String"),
+        Lit::Sym(_) => con(core::desc::SYMBOL_TYPE),
         Lit::Char(_) => con("Char"),
         Lit::Bool(_) => con("Bool"),
         Lit::Unit => con("Unit"),

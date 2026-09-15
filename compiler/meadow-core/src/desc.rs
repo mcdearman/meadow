@@ -26,6 +26,9 @@ pub type Desc = i64;
 pub const REF: Desc = 0;
 pub const INT: Desc = 1;
 pub const FLOAT: Desc = 2;
+/// An interned name, whose word is its key: what an effect operation is
+/// dispatched on, and a record's labels. Not a `String` -- a `String` is an
+/// object on the heap, and [`REF`].
 pub const STR: Desc = 3;
 pub const UNIT: Desc = 4;
 pub const BOOL: Desc = 5;
@@ -46,6 +49,9 @@ pub fn word(w: Width) -> Desc {
     WORD + place as Desc
 }
 
+/// The type [`STR`] describes, which no program can name.
+pub const SYMBOL_TYPE: &str = "#Symbol";
+
 /// The descriptor of values of type `ty`, or `None` for a type variable, whose
 /// descriptor is whatever the abstraction binding it was given.
 pub fn of(ty: &Ty) -> Option<Desc> {
@@ -54,7 +60,7 @@ pub fn of(ty: &Ty) -> Option<Desc> {
         Ty::Con(n, args) if args.is_empty() => match &**n {
             "Int" | "Int64" => INT,
             "Float" | "Float64" => FLOAT,
-            "String" => STR,
+            SYMBOL_TYPE => STR,
             "Unit" => UNIT,
             "Bool" => BOOL,
             "Char" => CHAR,
@@ -76,7 +82,7 @@ pub fn name(d: Desc) -> String {
         REF => "a reference".into(),
         INT => "Int".into(),
         FLOAT => "Float".into(),
-        STR => "String".into(),
+        STR => "a symbol".into(),
         UNIT => "Unit".into(),
         BOOL => "Bool".into(),
         CHAR => "Char".into(),

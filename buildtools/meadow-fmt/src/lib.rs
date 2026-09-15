@@ -466,7 +466,8 @@ impl Indenter {
                         continue;
                     }
                     (Nest::Raw(_), _) => {}
-                    (Nest::Hole(_), 'r') if let Some(hashes) = opens_raw(&bytes, i) => {
+                    (Nest::Hole(_), 'r') if opens_raw(&bytes, i).is_some() => {
+                        let hashes = opens_raw(&bytes, i).expect("just checked");
                         self.nest.push(Nest::Raw(hashes));
                         out.push_str(&" ".repeat(1 + hashes));
                         i += 2 + hashes;
@@ -507,7 +508,8 @@ impl Indenter {
                     out.push('"');
                     i += 1;
                 }
-                'r' if let Some(hashes) = opens_raw(&bytes, i) => {
+                'r' if opens_raw(&bytes, i).is_some() => {
+                    let hashes = opens_raw(&bytes, i).expect("just checked");
                     self.nest.push(Nest::Raw(hashes));
                     out.push('"');
                     out.push_str(&" ".repeat(1 + hashes));

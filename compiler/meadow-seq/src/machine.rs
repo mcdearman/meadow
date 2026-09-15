@@ -650,6 +650,9 @@ impl<'p> Machine<'p> {
                     | Value::Halt
                     | Value::Compact(_)
                     | Value::BigInt(_)
+                    // A string is an object to the bytecode machine; this one
+                    // keeps it interned.
+                    | Value::Str(_)
             ),
             Rep::Int => matches!(v, Value::Int(_)),
             Rep::Float => matches!(v, Value::Float(_)),
@@ -722,6 +725,7 @@ fn described(d: meadow_core::desc::Desc, v: &Value) -> bool {
                 | Value::Halt
                 | Value::Compact(_)
                 | Value::BigInt(_)
+                | Value::Str(_)
         ),
         desc::INT => matches!(v, Value::Int(_)),
         desc::FLOAT => matches!(v, Value::Float(_)),
@@ -742,7 +746,7 @@ fn literal<'p>(l: &Lit) -> Value<'p> {
         Lit::Float(x) | Lit::AnyFloat(x, _) => Value::Float(*x),
         Lit::Word(w, b) => Value::Word(*w, *b),
         Lit::Float32(x) => Value::Float32(*x),
-        Lit::Str(s) => Value::Str(*s),
+        Lit::Str(s) | Lit::Sym(s) => Value::Str(*s),
         Lit::Char(c) => Value::Char(*c),
         Lit::Bool(b) => Value::Bool(*b),
         Lit::Unit => Value::Unit,
@@ -1233,6 +1237,38 @@ fn prim<'p>(
             }
             other => err(format!("concatStrings: expected an Array, got {other}")),
         },
+        StringByteLength => Ok(Value::Int(
+            text_arg(&args[0], "stringByteLength")?.len() as i64
+        )),
+        StringByteAt => {
+            let s = text_arg(&args[0], "stringByteAt")?;
+            let i = as_int(&args[1])?;
+            match usize::try_from(i).ok().and_then(|at| s.as_bytes().get(at)) {
+                Some(b) => Ok(Value::Word(num::Width::U8, u64::from(*b))),
+                None => err(format!(
+                    "stringByteAt: index {i} out of bounds (len {})",
+                    s.len()
+                )),
+            }
+        }
+        StringSlice => {
+            let s = text_arg(&args[0], "stringSlice")?;
+            let (from, to) = (as_int(&args[1])?, as_int(&args[2])?);
+            Ok(Value::Str(InternedString::from(meadow_core::text::slice(
+                s.as_bytes(),
+                from,
+                to,
+            ))))
+        }
+        StringIndexOf => {
+            let hay = text_arg(&args[0], "stringIndexOf")?;
+            let needle = text_arg(&args[1], "stringIndexOf")?;
+            Ok(Value::Int(meadow_core::text::index_of(
+                hay.as_bytes(),
+                needle.as_bytes(),
+                as_int(&args[2])?,
+            )))
+        }
 
         // --- the mutable cell -------------------------------------------------
         NewRef => Ok(Value::Ref(Rc::new(RefCell::new(args[0].clone())))),
@@ -1456,6 +1492,14 @@ fn bits(op: Prim) -> Bits {
         Prim::BitAnd => Bits::And,
         Prim::BitOr => Bits::Or,
         _ => Bits::Xor,
+    }
+}
+
+/// A string argument of primitive `what`.
+fn text_arg(v: &Value, what: &str) -> Result<InternedString, Error> {
+    match v {
+        Value::Str(s) => Ok(*s),
+        other => err(format!("{what}: expected a String, got {other}")),
     }
 }
 

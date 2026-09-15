@@ -1,4 +1,5 @@
-//! The Meadow **build system**: filesystem package discovery ([`package`]), the
+//! The Meadow **build system**: filesystem package discovery ([`package`],
+//! [`workspace`]), the
 //! per-unit compile [`pipeline`], the [`linker`], and the embedded standard
 //! library ([`stdlib`]).
 //!
@@ -14,6 +15,7 @@ pub mod complete;
 pub mod dap;
 pub mod editor;
 pub mod format;
+pub mod incremental;
 pub mod init;
 pub mod linker;
 pub mod package;
@@ -23,6 +25,7 @@ pub mod runtime;
 pub mod stdlib;
 pub mod test;
 pub mod update;
+pub mod workspace;
 
 pub use meadow_compiler::{OptLevel, Options, Strictness};
 pub use profile::{Backend, Profile, Resolved};

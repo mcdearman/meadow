@@ -37,6 +37,7 @@
 //! the bytecode machine and the CEK evaluator are all untyped: none of them
 //! can ask a question a type would answer.
 
+pub mod args;
 pub mod bools;
 pub mod compact;
 pub mod desc;
@@ -50,6 +51,7 @@ pub mod prune;
 pub mod rewrite;
 pub mod specialize;
 pub mod stm;
+pub mod text;
 pub mod thread;
 pub use lower::Lowerer;
 
@@ -59,7 +61,7 @@ use meadow_intern::InternedString;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Lit {
     /// Fixed-width integer (`Int`, i.e. i64).
     Int(i64),
@@ -82,6 +84,11 @@ pub enum Lit {
     /// The same for a float literal: a `Float` where no type is known.
     AnyFloat(f64, u32),
     Str(InternedString),
+    /// An interned name, compared by its word rather than its text: the key
+    /// an effect operation is dispatched on. No program writes one -- only
+    /// lowering to the bytecode machine makes them -- and its type is
+    /// [`desc::SYMBOL_TYPE`], not `String`.
+    Sym(InternedString),
     Char(char),
     Bool(bool),
     Unit,
@@ -98,7 +105,7 @@ pub fn fmt_float(x: f64) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Prim {
     Add,
     Sub,
@@ -200,6 +207,19 @@ pub enum Prim {
     /// one after another, in one allocation. What an interpolated string
     /// literal is compiled to.
     ConcatStrings,
+    /// `stringByteLength : String -> Int` -- the bytes a string takes, without
+    /// copying them out.
+    StringByteLength,
+    /// `stringByteAt : String -> Int -> UInt8` -- one byte; an error at run
+    /// time past either end.
+    StringByteAt,
+    /// `stringSlice : String -> Int -> Int -> String` -- bytes `from` up to
+    /// `to`, both clamped to the string. A cut through a character leaves
+    /// U+FFFD where its bytes were.
+    StringSlice,
+    /// `stringIndexOf : String -> String -> Int -> Int` -- where `needle` next
+    /// occurs in `hay` at or after byte `from`, or -1.
+    StringIndexOf,
     /// `newRef : a -> Ref a ! { Mut | e }` — allocate a mutable cell.
     NewRef,
     /// `getRef : Ref a -> a ! { Mut | e }`
@@ -443,6 +463,10 @@ impl Prim {
             Prim::FloatGt => 114,
             Prim::FloatGe => 115,
             Prim::ConcatStrings => 116,
+            Prim::StringByteLength => 117,
+            Prim::StringByteAt => 118,
+            Prim::StringSlice => 119,
+            Prim::StringIndexOf => 120,
         }
     }
 
@@ -560,6 +584,10 @@ impl Prim {
             114 => Prim::FloatGt,
             115 => Prim::FloatGe,
             116 => Prim::ConcatStrings,
+            117 => Prim::StringByteLength,
+            118 => Prim::StringByteAt,
+            119 => Prim::StringSlice,
+            120 => Prim::StringIndexOf,
             _ => return None,
         })
     }
@@ -698,6 +726,10 @@ impl Prim {
             "stringToChars" => Prim::StringToChars,
             "charsToString" => Prim::CharsToString,
             "concatStrings" => Prim::ConcatStrings,
+            "stringByteLength" => Prim::StringByteLength,
+            "stringByteAt" => Prim::StringByteAt,
+            "stringSlice" => Prim::StringSlice,
+            "stringIndexOf" => Prim::StringIndexOf,
             "newRef" => Prim::NewRef,
             "getRef" => Prim::GetRef,
             "setRef" => Prim::SetRef,
@@ -762,6 +794,7 @@ impl Prim {
             | Prim::StringToChars
             | Prim::CharsToString
             | Prim::ConcatStrings
+            | Prim::StringByteLength
             | Prim::NewRef
             | Prim::GetRef
             | Prim::RunSt
@@ -788,7 +821,12 @@ impl Prim {
             | Prim::StmRollback
             | Prim::Once
             | Prim::TakeOnce => 1,
-            Prim::ArraySet | Prim::ArraySlice | Prim::ArrayGetOr | Prim::StSetArray => 3,
+            Prim::ArraySet
+            | Prim::ArraySlice
+            | Prim::ArrayGetOr
+            | Prim::StSetArray
+            | Prim::StringSlice
+            | Prim::StringIndexOf => 3,
             _ => 2,
         }
     }
@@ -809,7 +847,7 @@ pub type Ty = InferType;
 
 /// A rigid type variable: its id, and what sort of thing it ranges over
 /// (an ordinary type, a record row, an effect row).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TyVar {
     pub id: u32,
     pub kind: VarKind,
@@ -817,7 +855,7 @@ pub struct TyVar {
 
 /// A polytype — `forall (a : k) …. t` — as a definition or a `let` binder
 /// carries it. Monomorphic when `binders` is empty, which is the common case.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Poly {
     pub binders: Vec<TyVar>,
     pub ty: Ty,
@@ -917,7 +955,7 @@ pub fn subst_rigid(ty: &Ty, map: &HashMap<u32, Ty>) -> Ty {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Pat {
     Wild,
     /// A bound variable and the type it is bound at. Annotated like every other
@@ -936,7 +974,7 @@ pub enum Pat {
 /// Core terms. Recursive positions are `Arc<Term>` (not `Box`) so the CEK
 /// interpreter (the `meadow-eval` crate) can share subterms freely — a captured
 /// continuation is just a slice of `Arc`-holding stack frames.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Term {
     Var(Var),
     Lit(Lit),
@@ -996,7 +1034,7 @@ pub enum Term {
 }
 
 /// Where a term was written: which source, and where in it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Loc {
     /// A [`meadow_source::Source`]'s id -- see `meadow_source::SourceId`.
     pub source: u32,
@@ -1109,7 +1147,7 @@ impl Def {
 
 /// One operation clause of a handler: `op param resume -> body`. `resume` is bound
 /// to the (one-shot, deep) continuation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HClause {
     pub effect: InternedString,
     pub op: InternedString,
@@ -1122,7 +1160,7 @@ pub struct HClause {
     pub body: Term,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Def {
     pub var: Var,
     pub name: InternedString,
@@ -1290,6 +1328,7 @@ impl Printer {
             Lit::AnyInt(i, _) => format!("{i}?"),
             Lit::AnyFloat(x, _) => format!("{}?", fmt_float(*x)),
             Lit::Str(s) => format!("{:?}", &**s), // the string contents, quoted
+            Lit::Sym(s) => format!("#{s}"),
             Lit::Char(c) => format!("{c:?}"),
             Lit::Bool(b) => b.to_string(),
             Lit::Unit => "()".to_string(),

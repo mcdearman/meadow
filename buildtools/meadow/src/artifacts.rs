@@ -6,6 +6,7 @@
 //! ```text
 //!   <package>/target/debug/bytecode/<name>.mbc     the image the VM runs
 //!   <package>/target/debug/native/                 object code and binaries
+//!   <package>/target/debug/incremental/            compiled packages, to reuse
 //!   <package>/target/release/...
 //! ```
 //!
@@ -37,6 +38,13 @@ pub fn image_path(root: &Path, profile: Profile, name: &str) -> PathBuf {
 /// Where native object code and binaries go.
 pub fn native_dir(root: &Path, profile: Profile) -> PathBuf {
     profile_dir(root, profile).join("native")
+}
+
+/// Where compiled packages are kept for the next build to reuse -- see
+/// [`crate::incremental`]. By the profile's name, which the compiler options
+/// carry.
+pub fn incremental_dir(root: &Path, profile: &str) -> PathBuf {
+    root.join(TARGET).join(profile).join("incremental")
 }
 
 /// Write `image` for package `name`, answering where it went.

@@ -22,6 +22,8 @@
   readToString : String -> Result String String,
   readBytes : String -> Result String #[UInt8],
   writeString : (String, String) -> Result String (),
+  -- Write exactly these bytes, which need not be text.
+  writeBytes : (String, #[UInt8]) -> Result String (),
   appendString : (String, String) -> Result String (),
   removeFile : String -> Result String (),
   createDir : String -> Result String (),

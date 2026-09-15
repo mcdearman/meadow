@@ -24,7 +24,6 @@ use crate::heap::{Heap, Kind};
 use crate::value::{Addr, Value};
 use crate::vm::{Error, Vm, err};
 use meadow_core::{Prim, num};
-use meadow_intern::InternedString;
 use num_bigint::{BigInt, Sign};
 
 fn arith(p: Prim) -> num::Arith {
@@ -214,7 +213,7 @@ impl Vm<'_> {
         }
     }
 
-    fn bytes(&self, v: Value, what: &str) -> Result<Vec<u8>, Error> {
+    pub(crate) fn bytes(&self, v: Value, what: &str) -> Result<Vec<u8>, Error> {
         let a = self.array(v)?;
         let mut out = Vec::with_capacity(self.heap.len(a));
         for i in 0..self.heap.len(a) {
@@ -345,12 +344,18 @@ impl Vm<'_> {
             // --- structural ----------------------------------------------
             Eq => Value::Bool(self.value_eq(arg(self, 0), arg(self, 1))),
             Ne => Value::Bool(!self.value_eq(arg(self, 0), arg(self, 1))),
-            Show => Value::Str(InternedString::from(self.show(arg(self, 0)))),
+            Show => {
+                let text = self.show(arg(self, 0));
+                self.new_text(text.as_bytes())
+            }
             Hash => Value::Int(self.hash_value(arg(self, 0))?),
 
             // A `String` as its text; everything else the way `show` renders
             // it. See `meadow_eval::displayed` for why.
-            Display => Value::Str(InternedString::from(self.displayed(arg(self, 0)))),
+            Display => {
+                let text = self.displayed(arg(self, 0));
+                self.new_text(text.as_bytes())
+            }
 
             // --- the builtin Array ----------------------------------------
             ArrayLen => Value::Int(self.heap.len(self.array(arg(self, 0))?) as i64),
@@ -412,7 +417,7 @@ impl Vm<'_> {
                 let to = self.int(arg(self, 2))?.clamp(from as i64, n) as usize;
                 self.ensure(Heap::size_of(Kind::Array, to - from));
                 let a = self.array(arg(self, 0))?;
-                let words: Vec<u64> = self.heap.words(a).skip(from).take(to - from).collect();
+                let words: Vec<u64> = self.heap.words_in(a, from, to).collect();
                 self.array_of(Kind::Array, &words, self.heap.element_desc(a))
             }
             ArrayConcat => {
@@ -459,27 +464,19 @@ impl Vm<'_> {
             }
 
             // --- text and bytes -------------------------------------------
-            StringToBytes => match arg(self, 0) {
-                Value::Str(s) => {
-                    let fields: Vec<Value> = s
-                        .bytes()
-                        .map(|b| Value::Word(num::Width::U8, b as u64))
-                        .collect();
-                    self.ensure(Heap::size_of(Kind::Array, fields.len()));
-                    Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
-                }
-                other => {
-                    return err(format!(
-                        "`stringToBytes` expects a String, got {}",
-                        self.show(other)
-                    ));
-                }
-            },
+            StringToBytes => {
+                let fields: Vec<Value> = self
+                    .text_bytes(arg(self, 0), "stringToBytes")?
+                    .into_iter()
+                    .map(|b| Value::Word(num::Width::U8, b as u64))
+                    .collect();
+                self.ensure(Heap::size_of(Kind::Array, fields.len()));
+                Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
+            }
             BytesToString => {
                 let buf = self.bytes(arg(self, 0), "bytesToString")?;
-                Value::Str(InternedString::from(
-                    String::from_utf8_lossy(&buf).into_owned(),
-                ))
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                self.new_text(text.as_bytes())
             }
             BytesToHex => {
                 let buf = self.bytes(arg(self, 0), "bytesToHex")?;
@@ -488,19 +485,10 @@ impl Vm<'_> {
                     s.push(char::from_digit((b >> 4) as u32, 16).expect("nibble"));
                     s.push(char::from_digit((b & 0xf) as u32, 16).expect("nibble"));
                 }
-                Value::Str(InternedString::from(s))
+                self.new_text(s.as_bytes())
             }
             BytesFromHex => {
-                let s = match arg(self, 0) {
-                    Value::Str(s) => s,
-                    other => {
-                        return err(format!(
-                            "`bytesFromHex` expects a String, got {}",
-                            self.show(other)
-                        ));
-                    }
-                };
-                let bytes = s.as_bytes();
+                let bytes = self.text_bytes(arg(self, 0), "bytesFromHex")?;
                 let mut out = Vec::with_capacity(bytes.len() / 2);
                 let mut ok = bytes.len() % 2 == 0;
                 if ok {
@@ -556,19 +544,12 @@ impl Vm<'_> {
                     ));
                 }
             },
-            StringToChars => match arg(self, 0) {
-                Value::Str(s) => {
-                    let fields: Vec<Value> = s.chars().map(Value::Char).collect();
-                    self.ensure(Heap::size_of(Kind::Array, fields.len()));
-                    Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
-                }
-                other => {
-                    return err(format!(
-                        "stringToChars: expected a String, got {}",
-                        self.show(other)
-                    ));
-                }
-            },
+            StringToChars => {
+                let text = self.text(arg(self, 0), "stringToChars")?;
+                let fields: Vec<Value> = text.chars().map(Value::Char).collect();
+                self.ensure(Heap::size_of(Kind::Array, fields.len()));
+                Value::Obj(self.heap.alloc(Kind::Array, 0, &fields))
+            }
             CharsToString => {
                 let a = match arg(self, 0)
                     .addr()
@@ -594,7 +575,7 @@ impl Vm<'_> {
                         }
                     }
                 }
-                Value::Str(InternedString::from(s))
+                self.new_text(s.as_bytes())
             }
             ConcatStrings => {
                 let a = match arg(self, 0)
@@ -609,11 +590,13 @@ impl Vm<'_> {
                         ));
                     }
                 };
-                let mut s = String::new();
+                let mut out = Vec::new();
                 for i in 0..self.heap.len(a) {
-                    match self.heap.field(a, i) {
-                        Value::Str(part) => s.push_str(&part),
-                        other => {
+                    let part = self.heap.field(a, i);
+                    match (part, self.text_at(part)) {
+                        (_, Some(p)) => out.extend(self.heap.str_bytes(p)),
+                        (Value::Str(sym), None) => out.extend_from_slice(sym.as_bytes()),
+                        (other, None) => {
                             return err(format!(
                                 "concatStrings: expected a String, got {}",
                                 self.show(other)
@@ -621,7 +604,43 @@ impl Vm<'_> {
                         }
                     }
                 }
-                Value::Str(InternedString::from(s))
+                // Every part is whole UTF-8, so what they make is too.
+                self.new_text(&out)
+            }
+            StringByteLength => {
+                let a = self.text_addr(arg(self, 0), "stringByteLength")?;
+                Value::Int(self.heap.str_len(a) as i64)
+            }
+            StringByteAt => {
+                let a = self.text_addr(arg(self, 0), "stringByteAt")?;
+                let i = self.int(arg(self, 1))?;
+                let len = self.heap.str_len(a);
+                match usize::try_from(i).ok().filter(|at| *at < len) {
+                    Some(at) => Value::Word(num::Width::U8, self.heap.str_byte(a, at) as u64),
+                    None => {
+                        return err(format!("stringByteAt: index {i} out of bounds (len {len})"));
+                    }
+                }
+            }
+            StringSlice => {
+                let a = self.text_addr(arg(self, 0), "stringSlice")?;
+                let (from, to) = (self.int(arg(self, 1))?, self.int(arg(self, 2))?);
+                let (lo, hi) = meadow_core::text::clamp(self.heap.str_len(a), from, to);
+                // Copied out before making room, which moves the string.
+                let bytes = self.heap.str_bytes_in(a, lo, hi);
+                match std::str::from_utf8(&bytes) {
+                    Ok(_) => self.new_text(&bytes),
+                    Err(_) => {
+                        let text = String::from_utf8_lossy(&bytes).into_owned();
+                        self.new_text(text.as_bytes())
+                    }
+                }
+            }
+            StringIndexOf => {
+                let hay = self.text_addr(arg(self, 0), "stringIndexOf")?;
+                let needle = self.text_bytes(arg(self, 1), "stringIndexOf")?;
+                let from = self.int(arg(self, 2))?;
+                Value::Int(self.heap.str_find(hay, &needle, from))
             }
 
             // --- the mutable cell -----------------------------------------

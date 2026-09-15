@@ -56,6 +56,31 @@ impl From<String> for InternedString {
     }
 }
 
+/// Written as its text, since a handle means nothing to another process: a
+/// compiled package saved by one build and read back by the next is interned
+/// again as it is read.
+impl serde::Serialize for InternedString {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(INTERNER.resolve(&self.key))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for InternedString {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Text;
+        impl serde::de::Visitor<'_> for Text {
+            type Value = InternedString;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a string")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<InternedString, E> {
+                Ok(InternedString::from(v))
+            }
+        }
+        d.deserialize_str(Text)
+    }
+}
+
 impl Debug for InternedString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "InternedString({})", INTERNER.resolve(&self.key))

@@ -38,7 +38,7 @@ pub struct AstModule {
 }
 
 /// A resolved module, paired with its position in the package.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TypedModule {
     pub path: Vec<InternedString>,
     pub name: InternedString,
@@ -55,7 +55,7 @@ pub struct TypedModule {
 /// An exported top-level binding: its name, its `VarId`, its inferred scheme, and
 /// the dotted path of the module it was declared in (empty for a single-module
 /// package). A dependent reaches it as `<pkg>.<module path>.<name>` via `use`.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Export {
     pub name: InternedString,
     pub var: VarId,
@@ -64,7 +64,7 @@ pub struct Export {
 }
 
 /// The output of [`compile_unit`]: one package, fully typed and lowered.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CompiledPackage {
     /// Caller-assigned id — the build system uses the package-graph index, the
     /// REPL uses the line number. Not interpreted here.
@@ -235,13 +235,46 @@ pub fn compile_unit_in_package(
     deps: &[&CompiledPackage],
     opts: Options,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
+    compile_unit_above(pkg, unit_name, id, modules, deps, opts, 0)
+}
+
+/// [`compile_unit_in_package`], minting no variable below `floor`.
+///
+/// Starting above the unit's own dependencies keeps it apart from them, but
+/// not from a package beside it: two packages that both depend only on `util`
+/// would start at the same id, and linking both into one program -- `app`
+/// depending on each, or a workspace testing both -- has one overwrite the
+/// other's definitions. A build compiling many packages passes the end of
+/// everything it has compiled so far.
+pub fn compile_unit_above(
+    pkg: InternedString,
+    unit_name: InternedString,
+    id: usize,
+    modules: Vec<AstModule>,
+    deps: &[&CompiledPackage],
+    opts: Options,
+    floor: u32,
+) -> (CompiledPackage, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     let filename = unit_name.to_string();
+
+    // `@cfg(…)`: what does not apply to this build is gone before anything
+    // else looks.
+    let mut modules = modules;
+    for m in &mut modules {
+        let here = module_filename(&filename, m.source);
+        crate::cfg::strip(&mut m.ast.value, opts, &here, &mut diags);
+    }
 
     // --- name resolution (whole unit at once, so modules may be mutually recursive)
     // Start above every dependency, so no two units can mint the same id and
     // an id can be traced back to the unit that owns it.
-    let var_base = deps.iter().map(|d| d.vars.end).max().unwrap_or(0);
+    let var_base = deps
+        .iter()
+        .map(|d| d.vars.end)
+        .max()
+        .unwrap_or(0)
+        .max(floor);
     let mut resolver = Resolver::with_prelude(filename.clone(), var_base);
     // Every dependency's *types* are known here, so they can be named in an
     // annotation and their constructors written `Type.Ctor`. Which of those

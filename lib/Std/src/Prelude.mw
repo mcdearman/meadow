@@ -54,7 +54,7 @@
 )
 
 @pub use Std.Fs (
-  readToString, readBytes, writeString, appendString, removeFile,
+  readToString, readBytes, writeString, writeBytes, appendString, removeFile,
   createDir, createDirAll, removeDir, removeDirAll, rename, copy, readDir,
   metadata, exists, isFile, isDir,
   readToStringOr, tryReadDir, existsAll,

@@ -1,11 +1,13 @@
 -- Std.String: operations on `String`.
 --
--- A `String` is opaque, so everything here goes through its UTF-8 bytes -- a
--- `#[UInt8]` -- with the `stringToBytes` / `bytesToString` primitives. Offsets and lengths are
--- therefore counted in **bytes**, not characters: exact for ASCII, and
--- byte-oriented above U+007F. Slicing through the middle of a multi-byte
--- character will produce invalid UTF-8, so `slice` and friends want offsets you
--- got from `indexOf` or from a parser, not ones you guessed.
+-- A `String` is UTF-8 text on the heap. Offsets and lengths are counted in
+-- **bytes**, not characters: exact for ASCII, and byte-oriented above U+007F.
+-- The primitives underneath -- `stringByteLength`, `stringByteAt`,
+-- `stringSlice`, `stringIndexOf`, `concatStrings` -- read a string where it
+-- is, so a length or a byte costs nothing and a slice costs what it takes.
+-- A slice through the middle of a character comes out with U+FFFD in its
+-- place, so `slice` and friends want offsets you got from `indexOf` or from a
+-- parser, not ones you guessed.
 --
 -- `Std.String.Parse` builds parser combinators on top of this.
 --
@@ -29,7 +31,7 @@ use Std.Maybe.Maybe.*
 @pub fun fromBytes bytes = bytesToString bytes
 
 -- How many *bytes* `s` occupies.
-@pub fun byteLength s = arrayLen (stringToBytes s)
+@pub fun byteLength s = stringByteLength s
 
 @pub fun isEmpty s = byteLength s == 0
 
@@ -38,45 +40,35 @@ use Std.Maybe.Maybe.*
 -- ---------------------------------------------------------------------------
 
 -- `a` followed by `b`.
-@pub fun concat a b = bytesToString (arrayConcat (stringToBytes a) (stringToBytes b))
+@pub fun concat a b = concatStrings #[a, b]
 
 -- `a ++ b` is `concat a b`. In the prelude, so it is in scope everywhere.
 @pub def (++) = concat
 
-fun concatLoop (acc : #[UInt8]) i xs =
-  if i >= V.len xs then acc
-  else concatLoop (arrayConcat acc (stringToBytes (V.getOr "" xs i))) (i + 1) xs
+-- Every string in `xs`, run together, in one allocation.
+@pub fun concatAll xs = concatStrings (V.toArray xs)
 
--- Every string in `xs`, run together.
-@pub fun concatAll xs = bytesToString (concatLoop #[] 0 xs)
-
-fun joinLoop sep (acc : #[UInt8]) i xs =
+fun joinLoop sep acc i xs =
   if i >= V.len xs then acc
   else
-    let piece = stringToBytes (V.getOr "" xs i) in
-    let next = if i == 0 then arrayConcat acc piece
-               else arrayConcat (arrayConcat acc (stringToBytes sep)) piece in
+    let piece = V.getOr "" xs i in
+    let next = if i == 0 then V.pushBack acc piece else V.pushBack (V.pushBack acc sep) piece in
     joinLoop sep next (i + 1) xs
 
 -- Every string in `xs`, with `sep` between them.
-@pub fun join sep xs = bytesToString (joinLoop sep #[] 0 xs)
+@pub fun join sep xs = concatStrings (V.toArray (joinLoop sep V.empty 0 xs))
 
-fun repeatLoop (acc : #[UInt8]) (b : #[UInt8]) n = if n <= 0 then acc else repeatLoop (arrayConcat acc b) b (n - 1)
+fun repeatLoop acc s n = if n <= 0 then acc else repeatLoop (V.pushBack acc s) s (n - 1)
 
 -- `s` repeated `n` times.
-@pub fun repeat s n = bytesToString (repeatLoop #[] (stringToBytes s) n)
+@pub fun repeat s n = concatStrings (V.toArray (repeatLoop V.empty s n))
 
 -- ---------------------------------------------------------------------------
 -- Taking it apart
 -- ---------------------------------------------------------------------------
 
 -- The bytes of `s` from `from` up to (not including) `to`, clamped to the ends.
-@pub fun slice s from to =
-  let b = stringToBytes s in
-  let n = arrayLen b in
-  let lo = max 0 (min from n) in
-  let hi = max lo (min to n) in
-  bytesToString (arraySlice b lo hi)
+@pub fun slice s from to = stringSlice s from to
 
 -- The first `n` bytes.
 @pub fun take s n = slice s 0 n
@@ -86,55 +78,42 @@ fun repeatLoop (acc : #[UInt8]) (b : #[UInt8]) n = if n <= 0 then acc else repea
 
 -- The byte at `i`, if there is one.
 @pub fun byteAt s i =
-  let b = stringToBytes s in
-  if i < 0 or i >= arrayLen b then None else Just (arrayGetOr 0 b i)
+  if i < 0 or i >= byteLength s then None else Just (stringByteAt s i)
 
 -- ---------------------------------------------------------------------------
 -- Searching
 -- ---------------------------------------------------------------------------
 
-fun matchesAt (hay : #[UInt8]) (needle : #[UInt8]) i j =
-  if j >= arrayLen needle then True
-  else if arrayGetOr 0 hay (i + j) == arrayGetOr 0 needle j then
-    matchesAt hay needle i (j + 1)
-  else False
-
-fun findFrom hay needle i =
-  if i + arrayLen needle > arrayLen hay then None
-  else if matchesAt hay needle i 0 then Just i
-  else findFrom hay needle (i + 1)
+-- The byte offset of the first `needle` in `s` at or after byte `from`, if it
+-- is there.
+@pub fun indexOfFrom needle s from =
+  let i = stringIndexOf s needle from in
+  if i < 0 then None else Just i
 
 -- The byte offset of the first `needle` in `s`, if it is there. An empty needle
 -- is found at 0.
-@pub fun indexOf needle s = findFrom (stringToBytes s) (stringToBytes needle) 0
+@pub fun indexOf needle s = indexOfFrom needle s 0
 
-@pub fun contains needle s =
-  match indexOf needle s with
-  | None -> False
-  | Just i -> True
+@pub fun contains needle s = stringIndexOf s needle 0 >= 0
 
 @pub fun startsWith prefix s =
-  let p = stringToBytes prefix in
-  let b = stringToBytes s in
-  if arrayLen p > arrayLen b then False else matchesAt b p 0 0
+  let n = byteLength prefix in
+  if n > byteLength s then False else slice s 0 n == prefix
 
 @pub fun endsWith suffix s =
-  let p = stringToBytes suffix in
-  let b = stringToBytes s in
-  if arrayLen p > arrayLen b then False else matchesAt b p (arrayLen b - arrayLen p) 0
+  let n = byteLength suffix in
+  let m = byteLength s in
+  if n > m then False else slice s (m - n) m == suffix
 
-fun splitLoop hay needle i acc =
-  match findFrom hay needle i with
-  | None -> V.pushBack acc (bytesToString (arraySlice hay i (arrayLen hay)))
-  | Just k ->
-      splitLoop hay needle (k + arrayLen needle)
-                (V.pushBack acc (bytesToString (arraySlice hay i k)))
+fun splitLoop s sep i acc =
+  let k = stringIndexOf s sep i in
+  if k < 0 then V.pushBack acc (slice s i (byteLength s))
+  else splitLoop s sep (k + byteLength sep) (V.pushBack acc (slice s i k))
 
 -- `s` cut at every occurrence of `sep`. An empty `sep` yields `s` whole, since
 -- splitting on nothing has no useful answer.
 @pub fun split sep s =
-  let n = stringToBytes sep in
-  if arrayLen n == 0 then [s] else splitLoop (stringToBytes s) n 0 V.empty
+  if isEmpty sep then [s] else splitLoop s sep 0 V.empty
 
 -- ---------------------------------------------------------------------------
 -- Whitespace
@@ -143,23 +122,19 @@ fun splitLoop hay needle i acc =
 -- Space, tab, newline, carriage return.
 @pub fun isSpaceByte (c : UInt8) = c == 32 or c == 9 or c == 10 or c == 13
 
-fun startOfText (b : #[UInt8]) i =
-  if i >= arrayLen b then i
-  else if isSpaceByte (arrayGetOr 0 b i) then startOfText b (i + 1)
+fun startOfText s i =
+  if i >= byteLength s then i
+  else if isSpaceByte (stringByteAt s i) then startOfText s (i + 1)
   else i
 
-fun endOfText (b : #[UInt8]) i =
+fun endOfText s i =
   if i <= 0 then 0
-  else if isSpaceByte (arrayGetOr 0 b (i - 1)) then endOfText b (i - 1)
+  else if isSpaceByte (stringByteAt s (i - 1)) then endOfText s (i - 1)
   else i
 
-@pub fun trimStart s =
-  let b = stringToBytes s in
-  bytesToString (arraySlice b (startOfText b 0) (arrayLen b))
+@pub fun trimStart s = slice s (startOfText s 0) (byteLength s)
 
-@pub fun trimEnd s =
-  let b = stringToBytes s in
-  bytesToString (arraySlice b 0 (endOfText b (arrayLen b)))
+@pub fun trimEnd s = slice s 0 (endOfText s (byteLength s))
 
 @pub fun trim s = trimEnd (trimStart s)
 
@@ -207,21 +182,20 @@ fun digitsToString n =
 
 @pub fun isDigitByte (c : UInt8) = c >= 48 and c <= 57
 
-fun digitsFrom (b : #[UInt8]) i acc =
-  if i >= arrayLen b then Just acc
+fun digitsFrom s i acc =
+  if i >= byteLength s then Just acc
   else
-    let c = arrayGetOr 0 b i in
-    if isDigitByte c then digitsFrom b (i + 1) (acc * 10 + toInt64 (c - 48)) else None
+    let c = stringByteAt s i in
+    if isDigitByte c then digitsFrom s (i + 1) (acc * 10 + toInt64 (c - 48)) else None
 
 -- `s` read as a base-ten integer, with an optional leading `-`. `None` unless
 -- the whole string is digits.
 @pub fun toInt s =
-  let b = stringToBytes s in
-  if arrayLen b == 0 then None
-  else if arrayGetOr 0 b 0 == 45 then negateParsed (digitsAfterSign b)
-  else digitsFrom b 0 0
+  if byteLength s == 0 then None
+  else if stringByteAt s 0 == 45 then negateParsed (digitsAfterSign s)
+  else digitsFrom s 0 0
 
-fun digitsAfterSign b = if arrayLen b == 1 then None else digitsFrom b 1 0
+fun digitsAfterSign s = if byteLength s == 1 then None else digitsFrom s 1 0
 
 fun negateParsed m =
   match m with
@@ -283,6 +257,8 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let b = assertEq (indexOf "lo" "hello") (Just 3) "a longer needle" in
   let c = assertEq (indexOf "z" "hello") None "absent" in
   let d = assertEq (indexOf "" "hello") (Just 0) "an empty needle is at the start" in
+  let d2 = assertEq (indexOfFrom "l" "hello" 3) (Just 3) "from an offset" in
+  let d3 = assertEq (indexOfFrom "l" "hello" 4) None "past the last" in
   let e = assertTrue (contains "ell" "hello") "contains" in
   let f = assertTrue (startsWith "he" "hello") "startsWith" in
   let g = assertFalse (startsWith "hello!" "hello") "a needle longer than the haystack" in
@@ -332,4 +308,17 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 
 @test fun bytesRoundTrip () =
   let a = assertEq (fromBytes (toBytes "hello")) "hello" "round trip" in
+  let b = assertEq (fromBytes #[0xff, 0x41]) "\u{FFFD}A" "what is not UTF-8 becomes U+FFFD" in
   assertEq (toBytes "abc") #[97, 98, 99] "toBytes"
+
+@test fun slicingThroughACharacter () =
+  let a = assertEq (slice "é" 0 1) "\u{FFFD}" "half a character" in
+  let b = assertEq (byteAt "é" 1) (Just 169) "its second byte" in
+  assertEq (slice "aéb" 1 3) "é" "a whole one"
+
+@test fun longStringsAreCheapToTakeApart () =
+  let big = repeat "abcdefgh" 100000 in
+  let a = assertEq (byteLength big) 800000 "long" in
+  let b = assertEq (slice big 799998 800000) "gh" "the end" in
+  let c = assertEq (indexOfFrom "h" big 799990) (Just 799991) "found near the end" in
+  assertEq (byteAt big 400003) (Just 100) "a byte in the middle"

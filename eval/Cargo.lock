@@ -184,6 +184,7 @@ dependencies = [
  "meadow-span",
  "num-bigint",
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -213,6 +214,7 @@ dependencies = [
  "meadow-span",
  "num-bigint",
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -223,6 +225,7 @@ dependencies = [
  "meadow-hir",
  "meadow-intern",
  "meadow-span",
+ "serde",
 ]
 
 [[package]]
@@ -231,6 +234,7 @@ version = "0.1.0-alpha"
 dependencies = [
  "lasso",
  "once_cell",
+ "serde",
 ]
 
 [[package]]
@@ -238,6 +242,7 @@ name = "meadow-span"
 version = "0.1.0-alpha"
 dependencies = [
  "chumsky",
+ "serde",
 ]
 
 [[package]]

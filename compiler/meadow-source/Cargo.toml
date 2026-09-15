@@ -11,3 +11,4 @@ path = "src/lib.rs"
 meadow-intern.workspace = true
 meadow-span.workspace = true
 ariadne.workspace = true
+serde.workspace = true

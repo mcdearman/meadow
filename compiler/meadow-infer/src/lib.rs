@@ -28,7 +28,7 @@ use std::fmt;
 // Types
 // ===========================================================================
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Type {
     /// Meta variable: an index into [`Arena::slots`].
     Var(u32),
@@ -163,7 +163,7 @@ impl Type {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum VarKind {
     Type,
     /// A record row variable.
@@ -189,7 +189,7 @@ pub enum VarKind {
 
 /// A polytype: `quant` lists the kind of each quantified variable, and `ty` refers
 /// to them as `Type::Bound(i)`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Scheme {
     pub quant: Vec<VarKind>,
     pub ty: Type,
@@ -849,7 +849,7 @@ impl Arena {
 // Side table: NodeId -> Type
 // ===========================================================================
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct TypeTable {
     types: Vec<Option<Type>>,
     /// The kind of every variable still free in these types that is not a
@@ -990,7 +990,7 @@ pub struct Generalized {
 pub type VariantEnv = HashMap<InternedString, Vec<VariantSig>>;
 
 /// One constructor of a data / record type.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VariantSig {
     pub name: InternedString,
     /// Field types, written over the type's parameters as `Type::Bound(i)` —
@@ -3110,6 +3110,19 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         "concatStrings" => Scheme::mono(Type::func(
             vec![Type::array(Type::string())],
             Type::string(),
+        )),
+        "stringByteLength" => Scheme::mono(Type::func(vec![Type::string()], Type::int())),
+        "stringByteAt" => Scheme::mono(Type::func(
+            vec![Type::string(), Type::int()],
+            Type::con("UInt8"),
+        )),
+        "stringSlice" => Scheme::mono(Type::func(
+            vec![Type::string(), Type::int(), Type::int()],
+            Type::string(),
+        )),
+        "stringIndexOf" => Scheme::mono(Type::func(
+            vec![Type::string(), Type::string(), Type::int()],
+            Type::int(),
         )),
         "bytesFromHex" => Scheme::mono(Type::func(
             vec![Type::string()],

@@ -1,5 +1,5 @@
 ---
-source: tests/parser.rs
+source: meadow/tests/parser.rs
 expression: "parse_ast(\"@pub\\n@attr(Some, Set, Of, Attributes)\\nfun f x = x\\n\\\n         @pub record Person = { @pub name : String, age : Int }\\n\")"
 ---
 Module {
@@ -14,6 +14,7 @@ Module {
                             span: 1..4,
                         },
                         args: [],
+                        meta: [],
                     },
                     Attr {
                         name: Located {
@@ -37,6 +38,32 @@ Module {
                                 value: InternedString(Attributes),
                                 span: 26..36,
                             },
+                        ],
+                        meta: [
+                            Word(
+                                Located {
+                                    value: InternedString(Some),
+                                    span: 11..15,
+                                },
+                            ),
+                            Word(
+                                Located {
+                                    value: InternedString(Set),
+                                    span: 17..20,
+                                },
+                            ),
+                            Word(
+                                Located {
+                                    value: InternedString(Of),
+                                    span: 22..24,
+                                },
+                            ),
+                            Word(
+                                Located {
+                                    value: InternedString(Attributes),
+                                    span: 26..36,
+                                },
+                            ),
                         ],
                     },
                 ],
@@ -84,6 +111,7 @@ Module {
                             span: 51..54,
                         },
                         args: [],
+                        meta: [],
                     },
                 ],
                 Located {
@@ -103,6 +131,7 @@ Module {
                                                 span: 74..77,
                                             },
                                             args: [],
+                                            meta: [],
                                         },
                                     ],
                                     name: Located {

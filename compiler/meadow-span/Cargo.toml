@@ -9,3 +9,4 @@ path = "src/lib.rs"
 
 [dependencies]
 chumsky.workspace = true
+serde.workspace = true

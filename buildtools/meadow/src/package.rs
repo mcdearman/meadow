@@ -34,11 +34,17 @@
 //! strictness = "strict"    # "lenient" | "strict"
 //! backend = "aot"          # "vm" | "jit" | "aot"
 //! prune = true             # compile only what `main` reaches
+//! cfg = "fast, feature=gpu" # flags `@cfg(…)` can test
 //! ```
 //!
 //! Only the keys that are present are overridden; the rest keep the profile's
 //! built-in meaning (see [`crate::Profile`]). A command-line flag wins over
 //! both.
+//!
+//! Several packages can share one root manifest as a **workspace** -- one
+//! `target`, one set of profiles, versions and dependencies written once. A
+//! member takes those with `version.workspace = true` and
+//! `util = { workspace = true }`; see [`crate::workspace`].
 
 use meadow_compiler::{
     OptLevel, Options, Strictness,
@@ -63,9 +69,39 @@ pub struct ModuleSource {
 pub struct Manifest {
     pub name: String,
     pub version: String,
+    /// Each dependency's name and path, relative to the manifest -- or
+    /// absolute, for one inherited from a workspace.
     pub deps: Vec<(String, PathBuf)>,
     /// `[profile.<name>]` sections, keyed by profile name.
     pub profiles: HashMap<String, ProfileConfig>,
+    /// Whether the manifest describes a package. Only a workspace's root
+    /// manifest can say no: one with a `[workspace]` and no `[package]` is
+    /// *virtual*, the members' and nobody else's.
+    pub is_package: bool,
+    /// The `[workspace]` sections, when this is a workspace's root.
+    pub workspace: Option<WorkspaceManifest>,
+    /// What is wrong with it, beyond what a line-based reader skips: something
+    /// inherited from a workspace that does not have it.
+    pub problems: Vec<String>,
+}
+
+/// What a workspace's root manifest says about the workspace -- see
+/// [`crate::workspace`].
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceManifest {
+    /// `members = ["app", "libs/*"]`: directories, relative to the root, where
+    /// `*` and `?` match within one path segment.
+    pub members: Vec<String>,
+    /// Directories under the root that are not members, even when a pattern
+    /// or a path dependency would make them one.
+    pub exclude: Vec<String>,
+    /// What a command run at the root means when no package is named.
+    pub default_members: Vec<String>,
+    /// `[workspace.package]` `version`, for `version.workspace = true`.
+    pub version: Option<String>,
+    /// `[workspace.dependencies]`, relative to the root, for
+    /// `name = { workspace = true }`.
+    pub deps: Vec<(String, PathBuf)>,
 }
 
 /// What one `[profile.<name>]` section says.
@@ -82,6 +118,9 @@ pub struct ProfileConfig {
     /// Whether to compile only what the entry point reaches -- see
     /// [`crate::profile::Resolved::prune`].
     pub prune: Option<bool>,
+    /// Flags for `@cfg(…)` to test, comma-separated: `cfg = "fast, feature=gpu"`.
+    /// Added to whatever the layer below turned on.
+    pub cfg: Option<InternedString>,
 }
 
 impl ProfileConfig {
@@ -92,6 +131,10 @@ impl ProfileConfig {
             strictness: self.strictness.unwrap_or(base.strictness),
             debug_info: base.debug_info,
             entry_name: base.entry_name,
+            cfg: match self.cfg {
+                Some(flags) => base.cfg.with_flags(&flags),
+                None => base.cfg,
+            },
         }
     }
 }
@@ -110,6 +153,8 @@ pub struct PackageGraph {
     pub packages: Vec<Package>,
     /// Topological order: every package appears after all of its dependencies.
     order: Vec<PackageId>,
+    /// The packages asked for, in the order they were asked for.
+    roots: Vec<PackageId>,
 }
 
 impl PackageGraph {
@@ -117,22 +162,58 @@ impl PackageGraph {
         &self.order
     }
 
+    /// The package asked for -- the first, if several were.
     pub fn root(&self) -> PackageId {
-        *self.order.last().expect("at least one package")
+        self.roots[0]
+    }
+
+    /// Every package asked for, in the order they were asked for.
+    pub fn roots(&self) -> &[PackageId] {
+        &self.roots
+    }
+
+    /// `root` and everything it depends on, dependencies first.
+    pub fn closure(&self, root: PackageId) -> Vec<PackageId> {
+        let mut wanted = vec![false; self.packages.len()];
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if !std::mem::replace(&mut wanted[id], true) {
+                stack.extend(&self.packages[id].deps);
+            }
+        }
+        self.order
+            .iter()
+            .copied()
+            .filter(|&id| wanted[id])
+            .collect()
     }
 
     /// Discover the package rooted at `entry` and everything it depends on.
     pub fn build(entry: &Path) -> Result<PackageGraph, Diagnostic> {
+        PackageGraph::build_all(&[entry])
+    }
+
+    /// Discover several packages and everything they depend on, each package
+    /// once however many of them depend on it -- a workspace's members.
+    pub fn build_all(entries: &[&Path]) -> Result<PackageGraph, Diagnostic> {
         let mut builder = Builder {
             packages: Vec::new(),
             by_root: HashMap::new(),
             order: Vec::new(),
             stack: Vec::new(),
         };
-        builder.visit(entry)?;
+        let mut roots = Vec::new();
+        for entry in entries {
+            let id = builder.visit(entry)?;
+            if !roots.contains(&id) {
+                roots.push(id);
+            }
+        }
+        assert!(!roots.is_empty(), "a package graph needs a package");
         Ok(PackageGraph {
             packages: builder.packages,
             order: builder.order,
+            roots,
         })
     }
 }
@@ -172,6 +253,25 @@ impl Builder {
         }
 
         let manifest = Manifest::load(&canon).map_err(|e| io_diag(&canon, e))?;
+        if let Some(m) = &manifest {
+            let problem = if !m.is_package {
+                Some(format!(
+                    "{} is a workspace with no package of its own: build its members \
+                     with `--workspace`, or one of them with `-p NAME`",
+                    crate::workspace::shown(&canon)
+                ))
+            } else {
+                (!m.problems.is_empty()).then(|| m.problems.join("; "))
+            };
+            if let Some(msg) = problem {
+                return Err(Diagnostic {
+                    msg,
+                    filename: crate::workspace::shown(&canon.join("meadow.toml")),
+                    label: ("here".to_string(), Default::default()),
+                    extra_labels: vec![],
+                });
+            }
+        }
         let name = manifest
             .as_ref()
             .map(|m| InternedString::from(m.name.as_str()))
@@ -230,7 +330,51 @@ impl Manifest {
             return Ok(None);
         };
         let text = std::fs::read_to_string(&file)?;
-        Ok(Some(parse_manifest(&text, dir)))
+        let (mut manifest, inherits) = parse_manifest(&text, dir);
+        if inherits.version || !inherits.deps.is_empty() {
+            manifest.inherit(dir, inherits);
+        }
+        Ok(Some(manifest))
+    }
+
+    /// Fill in what `inherits` says comes from the workspace `dir` is in.
+    fn inherit(&mut self, dir: &Path, inherits: Inherits) {
+        let found = canonical(dir).ancestors().find_map(|a| {
+            let (m, _) = parse_manifest(&read_manifest(a)?, a);
+            m.workspace.map(|w| (a.to_path_buf(), w))
+        });
+        let Some((root, ws)) = found else {
+            self.problems.push(format!(
+                "`{}` inherits from a workspace, but is not in one: no `meadow.toml` \
+                 with a `[workspace]` above {}",
+                self.name,
+                crate::workspace::shown(dir)
+            ));
+            return;
+        };
+        let root_manifest = root.join("meadow.toml");
+        if inherits.version {
+            match ws.version {
+                Some(v) => self.version = v,
+                None => self.problems.push(format!(
+                    "`{}` says `version.workspace = true`, but {} has no `version` \
+                     under `[workspace.package]`",
+                    self.name,
+                    crate::workspace::shown(&root_manifest)
+                )),
+            }
+        }
+        for name in inherits.deps {
+            match ws.deps.iter().find(|(n, _)| *n == name) {
+                Some((_, path)) => self.deps.push((name, root.join(path))),
+                None => self.problems.push(format!(
+                    "`{}` depends on `{name}` from the workspace, but {} has no \
+                     `{name}` under `[workspace.dependencies]`",
+                    self.name,
+                    crate::workspace::shown(&root_manifest)
+                )),
+            }
+        }
     }
 
     /// The manifest governing `path`, which may be a package directory or a
@@ -277,22 +421,49 @@ pub fn enclosing_root(file: &Path) -> Option<PathBuf> {
     }
 }
 
+/// The text of the manifest in `dir`, if it has one that can be read.
+fn read_manifest(dir: &Path) -> Option<String> {
+    MANIFEST_NAMES
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+        .and_then(|p| std::fs::read_to_string(p).ok())
+}
+
+/// What a manifest takes from its workspace, still to be looked up.
+#[derive(Default)]
+struct Inherits {
+    /// `version.workspace = true`.
+    version: bool,
+    /// `name = { workspace = true }` or `name.workspace = true`.
+    deps: Vec<String>,
+}
+
 /// A deliberately small line-based TOML reader — enough for `[package]` /
-/// `[dependencies]` with string or `{ path = "…" }` values.
-fn parse_manifest(text: &str, dir: &Path) -> Manifest {
+/// `[dependencies]` with string or `{ path = "…" }` values, the `[profile.*]`
+/// and `[workspace*]` sections, and arrays of strings, which may run over
+/// several lines.
+fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
     let mut name = package_name(dir).to_string();
     let mut version = "0.0.0".to_string();
     let mut deps = Vec::new();
     let mut profiles: HashMap<String, ProfileConfig> = HashMap::new();
     let mut section = String::new();
+    let mut says_package = false;
+    let mut workspace: Option<WorkspaceManifest> = None;
+    let mut inherits = Inherits::default();
 
-    for raw in text.lines() {
-        let line = strip_comment(raw).trim();
-        if line.is_empty() {
-            continue;
-        }
+    for line in logical_lines(text) {
+        let line = line.as_str();
         if let Some(inner) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
             section = inner.trim().to_string();
+            match section.as_str() {
+                "package" => says_package = true,
+                "workspace" | "workspace.package" | "workspace.dependencies" => {
+                    workspace.get_or_insert_default();
+                }
+                _ => {}
+            }
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
@@ -300,18 +471,62 @@ fn parse_manifest(text: &str, dir: &Path) -> Manifest {
         };
         let key = key.trim();
         let value = value.trim();
+        // `key.workspace = true`, TOML's dotted spelling of
+        // `key = { workspace = true }`.
+        let from_workspace = |key: &str| {
+            key.strip_suffix(".workspace")
+                .map(str::trim)
+                .filter(|_| unquote(value) == "true")
+                .map(str::to_string)
+        };
 
         match section.as_str() {
             "dependencies" => {
-                if let Some(path) = dep_path(value) {
+                if let Some(dep) = from_workspace(key) {
+                    inherits.deps.push(dep);
+                } else if inline_flag(value, "workspace") {
+                    inherits.deps.push(key.to_string());
+                } else if let Some(path) = dep_path(value) {
                     deps.push((key.to_string(), PathBuf::from(path)));
                 }
             }
-            "package" | "" => match key {
-                "name" => name = unquote(value).to_string(),
-                "version" => version = unquote(value).to_string(),
-                _ => {}
-            },
+            "package" | "" => {
+                if section.is_empty() && matches!(key, "name" | "version") {
+                    says_package = true;
+                }
+                match key {
+                    "name" => name = unquote(value).to_string(),
+                    "version" if inline_flag(value, "workspace") => inherits.version = true,
+                    "version" => version = unquote(value).to_string(),
+                    _ if from_workspace(key).as_deref() == Some("version") => {
+                        inherits.version = true
+                    }
+                    _ => {}
+                }
+            }
+            "workspace" => {
+                let ws = workspace.get_or_insert_default();
+                let list = string_array(value);
+                match key {
+                    "members" => ws.members = list,
+                    "exclude" => ws.exclude = list,
+                    "default-members" | "default_members" => ws.default_members = list,
+                    _ => {}
+                }
+            }
+            "workspace.package" => {
+                if key == "version" {
+                    workspace.get_or_insert_default().version = Some(unquote(value).to_string());
+                }
+            }
+            "workspace.dependencies" => {
+                if let Some(path) = dep_path(value) {
+                    workspace
+                        .get_or_insert_default()
+                        .deps
+                        .push((key.to_string(), PathBuf::from(path)));
+                }
+            }
             // `[profile.release]`, `[profile.debug]`, or any other name a
             // driver might come to know. An unknown key is ignored rather than
             // rejected: a manifest written for a later version of the compiler
@@ -324,6 +539,7 @@ fn parse_manifest(text: &str, dir: &Path) -> Manifest {
                     "opt-level" | "opt_level" => p.opt = OptLevel::parse(unquote(value)),
                     "strictness" => p.strictness = Strictness::parse(unquote(value)),
                     "backend" => p.backend = crate::profile::Backend::parse(unquote(value)),
+                    "cfg" => p.cfg = Some(InternedString::from(unquote(value))),
                     "prune" => {
                         p.prune = match unquote(value) {
                             "true" => Some(true),
@@ -338,12 +554,86 @@ fn parse_manifest(text: &str, dir: &Path) -> Manifest {
         }
     }
 
-    Manifest {
+    let manifest = Manifest {
         name,
         version,
         deps,
         profiles,
+        // A manifest with no `[workspace]` is a package's whatever it says,
+        // as it always was: the name comes from the directory otherwise.
+        is_package: says_package || workspace.is_none(),
+        workspace,
+        problems: Vec::new(),
+    };
+    (manifest, inherits)
+}
+
+/// `text` as whole statements, comments gone: a header, or a `key = value`
+/// whose array has been joined onto one line if it ran over several.
+fn logical_lines(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut open = 0i32;
+    for raw in text.lines() {
+        let line = strip_comment(raw).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let continuing = open > 0;
+        // Brackets count only in a value: a `[section]` header balances.
+        let counted = if continuing {
+            line
+        } else {
+            line.split_once('=').map_or("", |(_, v)| v)
+        };
+        let mut in_str = false;
+        for c in counted.chars() {
+            match c {
+                '"' => in_str = !in_str,
+                '[' if !in_str => open += 1,
+                ']' if !in_str => open -= 1,
+                _ => {}
+            }
+        }
+        match out.last_mut() {
+            Some(last) if continuing => {
+                last.push(' ');
+                last.push_str(line);
+            }
+            _ => out.push(line.to_string()),
+        }
     }
+    out
+}
+
+/// `["a", "b"]` as its strings. Anything else is an empty list.
+fn string_array(value: &str) -> Vec<String> {
+    let Some(inner) = value
+        .trim()
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+    else {
+        return Vec::new();
+    };
+    inner
+        .split(',')
+        .map(unquote)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether `value` is an inline table saying `key = true`.
+fn inline_flag(value: &str, key: &str) -> bool {
+    value
+        .trim()
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .is_some_and(|inner| {
+            inner
+                .split(',')
+                .filter_map(|kv| kv.split_once('='))
+                .any(|(k, v)| k.trim() == key && unquote(v) == "true")
+        })
 }
 
 fn strip_comment(line: &str) -> &str {

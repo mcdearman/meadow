@@ -473,6 +473,13 @@ impl Old {
         self.real_blocks * BLOCK
     }
 
+    /// Has the generation used half the addresses it can ever have? Past
+    /// here a program allocating faster than the marker frees would run out
+    /// -- see `Heap::overdue`.
+    pub fn half_full(&self) -> bool {
+        2 * self.blocks.len() > MAX_BLOCKS
+    }
+
     pub fn epoch(&self) -> u32 {
         self.alloc_epoch
     }

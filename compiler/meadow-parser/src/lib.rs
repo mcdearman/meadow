@@ -61,8 +61,8 @@ where
         .map_with(move |decls, e| Located::new(Module { name, decls }, e.span()))
 }
 
-/// `@pub`, `@attr(A, B, C)` — a `@` then a name then an optional parenthesised
-/// list of argument names.
+/// `@pub`, `@attr(A, B, C)`, `@cfg(all(unix, os = "linux"))` — a `@`, a name,
+/// and an optional parenthesised list of arguments (see [`meta`]).
 fn attr<'tokens, I>()
 -> impl Parser<'tokens, I, Attr, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
@@ -71,17 +71,50 @@ where
     just(Token::At)
         .ignore_then(path_seg())
         .then(
-            path_seg()
+            meta()
                 .separated_by(just(Token::Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LParen), just(Token::RParen))
                 .or_not(),
         )
-        .map(|(name, args)| Attr {
-            name,
-            args: args.unwrap_or_default(),
+        .map(|(name, meta)| {
+            let meta = meta.unwrap_or_default();
+            let args = meta
+                .iter()
+                .filter_map(|m| match m {
+                    Meta::Word(n) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect();
+            Attr { name, args, meta }
         })
+}
+
+/// An attribute argument: `name`, `name = "text"`, or `name(arg, …)`.
+fn meta<'tokens, I>()
+-> impl Parser<'tokens, I, Meta, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
+{
+    recursive(|meta| {
+        let value = just(Token::Eq)
+            .ignore_then(select! { Token::String(s) => s })
+            .map_with(|s, e| Either::Left(Ident::new(s, e.span())));
+        let list = meta
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .map(Either::Right);
+        path_seg()
+            .then(choice((value, list)).or_not())
+            .map(|(name, rest)| match rest {
+                None => Meta::Word(name),
+                Some(Either::Left(v)) => Meta::Value(name, v),
+                Some(Either::Right(args)) => Meta::List(name, args),
+            })
+    })
 }
 
 fn decl<'tokens, I>()

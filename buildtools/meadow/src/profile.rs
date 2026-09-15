@@ -9,7 +9,8 @@
 //! Three layers, each overriding the one before it:
 //!
 //! 1. the profile's built-in meaning — [`Profile::options`];
-//! 2. the package's `[profile.<name>]` section, if it has a manifest;
+//! 2. the package's `[profile.<name>]` section, if it has a manifest -- or its
+//!    workspace root's, if it is in a workspace;
 //! 3. flags on the command line.
 //!
 //! [`Resolved`] is what that produces. The built-in layer is what makes a
@@ -119,9 +120,12 @@ pub struct Resolved {
 impl Resolved {
     /// Just the built-in meaning of `profile`.
     pub const fn new(profile: Profile) -> Resolved {
+        let mut options = profile.options();
+        options.cfg.profile = profile.name();
+        options.cfg.backend = profile.backend().name();
         Resolved {
             profile,
-            options: profile.options(),
+            options,
             backend: profile.backend(),
             backend_named: false,
             prune: true,
@@ -134,15 +138,27 @@ impl Resolved {
     /// `path` is whatever the user named on the command line — a package
     /// directory or a single `.mw` file. A package with no manifest, or one
     /// that says nothing about this profile, simply keeps the built-in meaning.
+    ///
+    /// In a workspace the manifest is the workspace root's, whichever member
+    /// `path` names: every member builds with the same profiles.
     pub fn resolve(profile: Profile, path: &Path, flags: ProfileConfig) -> Resolved {
-        let from_manifest = Manifest::find(path)
+        let from_manifest = crate::workspace::Workspace::find(path)
+            .ok()
+            .flatten()
+            .map(|ws| ws.manifest)
+            .or_else(|| Manifest::find(path))
             .map(|m| m.profile(profile.name()))
             .unwrap_or_default();
         let named = flags.backend.or(from_manifest.backend);
+        let backend = named.unwrap_or(profile.backend());
+        let mut options = flags.apply(from_manifest.apply(profile.options()));
+        // What `@cfg(profile = …)` and `@cfg(backend = …)` see: this build's.
+        options.cfg.profile = profile.name();
+        options.cfg.backend = backend.name();
         Resolved {
             profile,
-            options: flags.apply(from_manifest.apply(profile.options())),
-            backend: named.unwrap_or(profile.backend()),
+            options,
+            backend,
             backend_named: named.is_some(),
             prune: flags.prune.or(from_manifest.prune).unwrap_or(true),
         }
@@ -195,6 +211,7 @@ mod tests {
             strictness: None,
             backend: None,
             prune: None,
+            cfg: None,
         };
         assert_eq!(manifest.apply(base).opt, OptLevel::O2);
         // Untouched by a section that says nothing about it.
@@ -205,6 +222,7 @@ mod tests {
             strictness: None,
             backend: None,
             prune: None,
+            cfg: None,
         };
         assert_eq!(flag.apply(manifest.apply(base)).opt, OptLevel::O0);
     }

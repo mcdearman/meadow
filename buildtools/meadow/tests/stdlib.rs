@@ -179,6 +179,20 @@ fn std_packages_is_cached() {
     );
 }
 
+/// `@cfg` flags, the backend and testing change what a package compiles to,
+/// but not `Std`, which sees only the platform: one compile serves them all.
+#[test]
+fn cfg_flags_do_not_recompile_std() {
+    let mut flagged = meadow::Options::debug();
+    flagged.cfg = flagged.cfg.with_flags("fast, feature=gpu");
+    flagged.cfg.backend = "cek";
+    flagged.cfg.test = true;
+    let (plain, _) = stdlib::std_packages(meadow::Options::debug());
+    let (other, _) = stdlib::std_packages(flagged);
+    assert_eq!(plain.len(), other.len());
+    assert_eq!(stdlib::compiles(meadow::Options::debug()), 1);
+}
+
 #[test]
 fn the_two_profiles_are_cached_separately() {
     // `--release` turns on the exhaustiveness check, so the two can disagree

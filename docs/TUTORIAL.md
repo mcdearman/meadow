@@ -929,6 +929,32 @@ def main = digits 0 (stringToBytes "1234") 0
 
 Without the `toInt`, `acc` would be a `UInt8` too, and the answer `210`.
 
+A string is not copied to be read. Its length, a byte of it, a slice of it and
+a search in it cost what they touch, however long the string is, so a lexer can
+walk a whole file byte by byte:
+
+```meadow
+use Std.String as S
+
+def text = S.repeat "let x = 1\n" 100000
+
+fun countLines s i n =
+  if i >= S.byteLength s then n
+  else countLines s (i + 1) (if stringByteAt s i == 10 then n + 1 else n)
+
+def main = (S.byteLength text, countLines text 0 0, S.slice text 4 5, S.indexOfFrom "x" text 5)
+```
+
+```
+=> (1000000, 100000, "x", Just(14))
+```
+
+`stringByteAt s i` is the byte, an error past either end; `S.byteAt` is the same
+answering `Maybe`. `S.indexOfFrom needle s from` searches from an offset, which
+is what a scanner that keeps its place wants. Strings a program builds are
+collected like anything else, so making millions of them costs memory only
+while they are in use.
+
 `Std.Char` classifies and converts single characters. Its predicates are
 **ASCII-only** by design — doing it properly means shipping the Unicode
 character database — so a non-ASCII character answers `False` rather than being
@@ -1262,6 +1288,243 @@ util = { path = "../util" }
 Then `use util` for all of it, `use util (double)` for one name, or
 `use util as U` to keep it behind a qualifier. Only `@pub` names cross the
 boundary.
+
+### Workspaces
+
+Several packages developed together can form a **workspace**, as in Cargo: one
+`meadow.toml` at the top lists them, and they share a `target` directory, their
+build profiles, and whatever they declare there once.
+
+```
+shop/
+  meadow.toml          the workspace
+  app/
+    meadow.toml
+    src/Main.mw
+  libs/
+    text/  meadow.toml  src/Lib.mw
+    util/  meadow.toml  src/Lib.mw
+```
+
+```toml
+# shop/meadow.toml
+[workspace]
+members = ["app", "libs/*"]
+
+[workspace.package]
+version = "0.3.0"
+
+[workspace.dependencies]
+util = { path = "libs/util" }
+text = { path = "libs/text" }
+
+[profile.release]
+opt-level = 2
+```
+
+`members` lists directories, and `*` or `?` matches within one segment of the
+path, so `libs/*` is every package under `libs`. A member takes what the
+workspace declares by saying `workspace = true`:
+
+```toml
+# shop/app/meadow.toml
+[package]
+name = "app"
+version.workspace = true
+
+[dependencies]
+util = { workspace = true }
+text.workspace = true         # the same thing, spelled the other way
+```
+
+```meadow
+-- libs/util/src/Lib.mw
+use Std.Test
+
+@pub fun double x = x * 2
+
+@test
+fun doubles () = assertEq (double 4) 8 "double 4"
+```
+
+```meadow
+-- libs/text/src/Lib.mw
+use util (double)
+
+@pub fun label s = "${s} x${double 1}"
+```
+
+```meadow
+-- app/src/Main.mw
+use util (double)
+use text (label)
+
+def main = (double 21, label "b")
+```
+
+Commands work from anywhere inside the workspace, and three flags pick the
+packages:
+
+```sh
+$ meadow run -p app              # a member, by name
+=> (42, "b x2")
+$ cd app && meadow run           # or the member you are in
+=> (42, "b x2")
+$ meadow test --workspace        # every member
+running 1 test
+test util.doubles ... ok
+
+test result: ok. 1 passed; 0 failed
+$ meadow build --workspace --exclude app
+```
+
+- `-p NAME` (or `--package`) names a member, and can be repeated.
+- `--workspace` (or `--all`) is every member; `--exclude NAME` leaves one out.
+- With neither, a command at the root means the members listed in
+  `default-members = ["app"]` if there is one, and otherwise every member.
+  `meadow run` needs exactly one, and says which to choose from if it is given
+  more.
+
+Testing several packages names each test after its package, `util.doubles`,
+which is its `use` path. Only the chosen packages' tests run, never those of
+what they depend on: `meadow test` in `app` runs `app`'s.
+
+What being a member changes:
+
+- **One `target`.** Everything builds into `shop/target`, and a library two
+  members use is compiled once when they are built together. Later builds
+  reuse it too, as described next.
+- **One set of profiles.** `[profile.*]` is read from the workspace's
+  `meadow.toml`. A member's own `[profile]` sections are ignored, with a warning
+  that says so.
+- **Membership is checked.** A package under the workspace directory that is
+  not a member is an error, because it would build with the wrong profiles into
+  the wrong `target`. List it in `exclude = ["scratch"]` to keep it a package of
+  its own. A path dependency of a member that lives inside the workspace is a
+  member without being listed.
+
+The top-level `meadow.toml` can be a package as well, with a `[package]` of its
+own. Then it is a member too, and it is what a command at the root means.
+Without one it is only the workspace, and building it directly says to use
+`-p` or `--workspace`.
+
+`meadow init --workspace shop` writes an empty workspace, and `meadow init`
+inside one adds the new package to `members`, unless a pattern like `libs/*`
+already covers it:
+
+```sh
+$ meadow init --workspace shop && cd shop
+$ meadow init app
+created package `app` at app
+  app/meadow.toml
+  app/src/Main.mw
+  meadow.toml
+added `app` to the members of .
+```
+
+### Incremental builds
+
+A package is compiled as a whole, so it is also the unit a build reuses. A
+package that compiles without errors is saved under
+`target/<profile>/incremental`. The next build reads it back instead of compiling
+it again, as long as nothing it was compiled from has changed:
+
+- its modules: their names, their files and their text;
+- the compiler, and the options: the profile, `-O`, `--strict`, and every `@cfg`
+  condition and flag;
+- the packages it depends on.
+
+That last point is what makes it work across a workspace. A change reaches
+exactly the packages downstream of it. Edit `app` and only `app` is compiled.
+Edit `util` and `util`, `text` and `app` are compiled, but not a member that
+does not use `util`. The embedded standard library is saved there too, which
+is most of what a small program's build used to spend its time on.
+
+What is read back is what compiling would have made: the types, the code and the
+program are identical. A package with errors is never saved, so its errors are
+reported on every build. `meadow run` and `meadow test` keep separate copies,
+since `@cfg(test)` makes them different builds. Deleting `target` starts again
+from nothing, and `MEADOW_INCREMENTAL=0` turns reuse off for a command without
+deleting anything.
+
+### Conditional compilation: `@cfg`
+
+`@cfg(condition)` in front of a declaration compiles it only where the condition
+holds, as `#[cfg]` does in Rust. Where it does not hold, the declaration is gone
+before the compiler looks at anything else: it is not type-checked, and nothing
+can name it. So two definitions of one name are fine, as long as no build keeps
+both.
+
+```meadow
+@cfg(windows)
+def newline = "\r\n"
+
+@cfg(not(windows))
+def newline = "\n"
+
+@cfg(feature = "fancy")
+fun greet name = "** Hello, ${name}! **"
+
+@cfg(not(feature = "fancy"))
+fun greet name = "Hello, ${name}."
+
+@cfg(debug)
+fun log msg = println "[debug] ${msg}"
+
+@cfg(not(debug))
+fun log msg = ()
+
+def main =
+  let _ = log "starting" in
+  greet "Ann"
+```
+
+`meadow run` prints `[debug] starting` and answers `"Hello, Ann."`;
+`meadow run --cfg feature=fancy` answers `"** Hello, Ann! **"`; and
+`meadow run --release` skips the log line.
+
+The conditions a build knows:
+
+| condition | holds when |
+|---|---|
+| `os = "windows"`, `"linux"`, `"macos"` | the program is built for that system |
+| `arch = "x86_64"`, `"aarch64"` | …for that processor (`--target` sets it for an executable) |
+| `family = "unix"`, `"windows"`, or bare `unix` / `windows` | …for that family of systems |
+| `profile = "debug"`, `"release"`, or bare `debug` / `release` | the build profile |
+| `backend = "vm"`, `"jit"`, `"aot"`, `"cek"` | what runs the program |
+| `opt_level = "0"`, `"1"`, `"2"` | the optimization level |
+| bare `test` | `meadow test` is building it |
+| any other name, or `name = "value"` | the build turned that flag on |
+
+`all(…)`, `any(…)` and `not(…)` combine conditions, and several `@cfg`s on one
+declaration must all hold: `@cfg(all(unix, not(test)))`.
+
+**Flags** are yours to name. Turn one on with `--cfg fast` or `--cfg feature=gpu`
+(repeat `--cfg` for more), or for a profile in `meadow.toml`:
+
+```toml
+[profile.debug]
+cfg = "fast, feature=gpu"
+```
+
+A flag nobody turned on is simply off. A built-in name given a value it can never
+have, like `os = "linx"`, is an error, so a typo there cannot silently turn code
+off.
+
+`@cfg` works on any top-level declaration (`fun`, `def`, `data`, `record`,
+`effect`, `use`, and `@test` functions), and on the fields of a record, the named
+fields of a constructor, and the operations of an effect:
+
+```meadow
+record Settings = {
+  name : String,
+  @cfg(windows)
+  registryKey : String,
+}
+```
+
+The standard library can use `@cfg` too, but it only sees the platform (`os`,
+`arch`, `family`): it is compiled once for every profile and flag.
 
 ---
 
@@ -2239,7 +2502,7 @@ def main =
 No file was touched. `Fs` has no bundled fake — a handler is a few lines and the
 one you want depends on the test, so write it inline as above. Operations cover
 reading (`readToString`, `readBytes`, `readDir`, `metadata`), writing
-(`writeString`, `appendString`, `copy`, `rename`), directories (`createDir`,
+(`writeString`, `writeBytes`, `appendString`, `copy`, `rename`), directories (`createDir`,
 `createDirAll`, `removeDir`, `removeDirAll`) and predicates (`exists`, `isFile`,
 `isDir`). Convenience: `readToStringOr`, `tryReadDir`, `existsAll`. `readDir`
 answers a `Vector` of names; `readBytes` answers a `#[UInt8]`, the byte-array
@@ -2274,6 +2537,11 @@ def main =
 apart with `outputStatus` / `outputStdout` / `outputStderr`, or ask `succeeded`.
 `status` inherits the parent's stdio and yields only the exit code. Also here:
 `exit`, `currentPid`, `argv`, `getEnv`, `setEnv`, `removeEnv`.
+
+`argv ()` is the program's own arguments, not including its name. A native
+executable gets them from its command line; under `meadow run` they are what
+follows `--`, so `meadow run . -- input.txt -v` hands the program
+`["input.txt"; "-v"]`, not `meadow`'s arguments.
 
 #### Test — an assertion is an effect too
 
@@ -2481,7 +2749,8 @@ A test fails by performing `Std.Test`'s effect rather than returning a value, so
 assertion five calls deep still stops the test and still names itself.
 
 `meadow test <path> <filter>` runs only tests whose name contains `<filter>`, and
-`meadow test --std` runs the standard library's own 154 tests.
+`meadow test --std` runs the standard library's own 154 tests. A package's tests
+are its own: those of the packages it depends on run when you test them.
 
 In a package of several modules a test is named by its module — `Parser.parses`
 rather than `parses` — since two modules may each have a test of that name.
@@ -2503,10 +2772,16 @@ In VS Code, the **▶ Test** link above a `@test` runs exactly that.
 | `meadow run --backend vm\|jit\|aot <path>` | …on the backend named (`--jit` and `--aot` for short) |
 | `meadow run --gc-stats <path>` | …and report what the garbage collector did |
 | `meadow run --gc copying <path>` | …with the copying collector instead of the generational one |
+| `meadow run <path> -- <args>` | …passing `<args>` to the program, which `Process.argv` reads |
+| `meadow exec <image.mbc> [--backend vm\|jit] [-- <args>]` | run a bytecode image, like the one `meadow build` writes |
+| `meadow link <image.mbc> [-o <exe>] [--target <arch>]` | compile a bytecode image into a native executable |
 | `meadow build <path>` | type-check, link, and write the bytecode image to `target/` |
 | `meadow build --release [--target x86_64] <path>` | …and an executable, under `target/release/native/` |
 | `meadow build --annotations <path>` | …and dump every node's type |
+| `meadow run --cfg fast --cfg feature=gpu <path>` | …with flags on for `@cfg` ([conditional compilation](#conditional-compilation-cfg)); `run`, `build` and `test` take them |
 | `meadow test [<path>] [<filter>]` | run `@test` functions |
+| `meadow build -p app`, `meadow test --workspace [--exclude app]` | in a [workspace](#workspaces): the members named, or all of them; `run`, `build`, `test` and `dis` take these |
+| `meadow init [--workspace] <path>` | create a package, or a workspace; a package made inside a workspace joins it |
 | `meadow fmt <path>` | re-indent in place |
 | `meadow fmt --check <path>` | report, exit 1 if anything differs |
 | `meadow lsp` | run the language server (editors start this) |

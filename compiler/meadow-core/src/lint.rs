@@ -502,6 +502,7 @@ fn lit_ty(l: &Lit) -> Ty {
         Lit::Word(w, _) => InferType::con(w.name()),
         Lit::Float32(_) => InferType::con("Float32"),
         Lit::Str(_) => InferType::string(),
+        Lit::Sym(_) => InferType::con(crate::desc::SYMBOL_TYPE),
         Lit::Char(_) => InferType::char(),
         Lit::Bool(_) => InferType::bool(),
         Lit::Unit => InferType::unit(),

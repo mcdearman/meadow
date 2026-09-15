@@ -65,11 +65,12 @@ pub use meadow_scc as scc;
 pub use meadow_source as source;
 pub use meadow_span as span;
 
+pub mod cfg;
 mod options;
-pub use options::{OptLevel, Options, Strictness};
+pub use options::{Cfg, OptLevel, Options, Strictness};
 
 mod unit;
 pub use unit::{
     AstModule, CompiledPackage, Export, Resolved, TestSite, TypedModule, compile_str,
-    compile_str_with, compile_unit, compile_unit_in_package, resolve_module,
+    compile_str_with, compile_unit, compile_unit_above, compile_unit_in_package, resolve_module,
 };

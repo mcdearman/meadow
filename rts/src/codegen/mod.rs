@@ -1017,7 +1017,8 @@ fn immediate(program: &Program, k: u32) -> Option<u64> {
         Const::Word(w, b) => Value::Word(*w, *b),
         Const::Float32(x) => Value::Float32(*x),
         Const::Char(c) => Value::Char(*c),
-        Const::Str(_) | Const::BigInt(_) => return None,
+        // Interned, and a key only in this process; or made on the heap.
+        Const::Str(_) | Const::BigInt(_) | Const::Text(_) => return None,
     };
     Some(v.bits())
 }

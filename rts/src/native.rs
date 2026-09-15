@@ -85,7 +85,8 @@ impl Build {
     fn slots(&self) -> usize {
         let size = crate::heap::Heap::size_of;
         match self {
-            Build::At(_) | Build::Str(_) => 0,
+            Build::At(_) => 0,
+            Build::Str(s) => crate::heap::Heap::str_slots(s.len()),
             Build::Data(_, xs) | Build::Tuple(xs) => {
                 size(Kind::Data, xs.len()) + xs.iter().map(Build::slots).sum::<usize>()
             }
@@ -131,7 +132,7 @@ impl Vm<'_> {
     fn build_here(&mut self, b: Build) -> Value {
         match b {
             Build::At(v) => v,
-            Build::Str(s) => Value::Str(InternedString::from(s)),
+            Build::Str(s) => Value::Obj(self.heap.alloc_str(s.as_bytes())),
             Build::Data(name, xs) => {
                 let fields: Vec<Value> = xs.into_iter().map(|x| self.build_here(x)).collect();
                 let tag = self.ctor_tag(name);
@@ -168,14 +169,8 @@ impl Vm<'_> {
 
     // --- reading an argument ---------------------------------------------
 
-    fn str_arg(&self, what: &str, v: Value) -> Result<InternedString, Error> {
-        match v {
-            Value::Str(s) => Ok(s),
-            other => err(format!(
-                "{what}: expected a String, got {}",
-                self.show(other)
-            )),
-        }
+    fn str_arg(&self, what: &str, v: Value) -> Result<String, Error> {
+        self.text(v, what)
     }
 
     /// The fields of a tuple of exactly `n`.
@@ -311,7 +306,7 @@ impl Vm<'_> {
             Err(e) => ioerr(e),
         };
         let one = |vm: &Vm, v: Value| vm.str_arg(&what, v);
-        let two = |vm: &Vm, v: Value| -> Result<(InternedString, InternedString), Error> {
+        let two = |vm: &Vm, v: Value| -> Result<(String, String), Error> {
             let t = vm.tuple_arg(&what, v, 2)?;
             Ok((vm.str_arg(&what, t[0])?, vm.str_arg(&what, t[1])?))
         };
@@ -332,6 +327,12 @@ impl Vm<'_> {
             "writeString" => {
                 let (p, c) = two(self, arg)?;
                 unit(fs::write(&*p, c.as_bytes()))
+            }
+            "writeBytes" => {
+                let t = self.tuple_arg(&what, arg, 2)?;
+                let path = self.str_arg(&what, t[0])?;
+                let bytes = self.bytes(t[1], &what)?;
+                unit(fs::write(&*path, bytes))
             }
             "appendString" => {
                 use std::io::Write;
@@ -440,7 +441,12 @@ impl Vm<'_> {
                 }
             },
             "currentPid" => Build::int(std::process::id() as i64),
-            "argv" => Build::Vector(std::env::args().skip(1).map(Build::Str).collect::<Vec<_>>()),
+            "argv" => Build::Vector(
+                meadow_core::args::get()
+                    .into_iter()
+                    .map(Build::Str)
+                    .collect(),
+            ),
             "getEnv" => match std::env::var(&*self.str_arg(&what, arg)?) {
                 Ok(v) => Build::Data("Maybe.Just", vec![Build::Str(v)]),
                 Err(_) => Build::Data("Maybe.None", vec![]),
@@ -533,12 +539,7 @@ impl Vm<'_> {
 
         Ok(Some(match op {
             "writeOutput" => {
-                let Value::Str(s) = arg else {
-                    return err(format!(
-                        "Console.writeOutput: expected a String, got {}",
-                        self.show(arg)
-                    ));
-                };
+                let s = self.text(arg, "Console.writeOutput")?;
                 self.write_out(&s);
                 Build::unit()
             }

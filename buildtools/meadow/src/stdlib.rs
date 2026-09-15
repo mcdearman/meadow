@@ -146,19 +146,36 @@ pub fn std_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
 /// because linking consumes its packages — and cloning the compiled tree is
 /// about two orders of magnitude cheaper than rebuilding it.
 pub fn std_packages(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
+    std_packages_in(opts, None)
+}
+
+/// [`std_packages`], reading `Std` back from `saved` when the process has not
+/// compiled it yet and a build with this compiler has -- and saving it there
+/// when it compiles it instead. See [`crate::incremental`].
+pub fn std_packages_in(
+    opts: Options,
+    saved: Option<&crate::incremental::Cache>,
+) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
     static CACHE: [OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)>; 4] =
         [const { OnceLock::new() }; 4];
     // The same key as `std_modules`, for the reason given there.
     let cell = &CACHE[cache_key(opts)];
     let (packages, diags) = cell.get_or_init(|| {
+        if let Some(package) = saved.and_then(|c| c.load_std()) {
+            counter(opts).fetch_add(1, Ordering::Relaxed);
+            return (vec![package], Vec::new());
+        }
         // Shares the one compile with `std_modules`, so asking for both costs
         // memory but not time.
         let (modules, diags) = std_modules(opts);
         let subs = modules.into_iter().map(|(_, p)| p).collect();
-        (
-            vec![bundle(InternedString::from(PACKAGE_NAME), subs)],
-            diags,
-        )
+        let package = bundle(InternedString::from(PACKAGE_NAME), subs);
+        if let Some(cache) = saved
+            && diags.is_empty()
+        {
+            cache.store_std(&package);
+        }
+        (vec![package], diags)
     });
     (packages.clone(), diags.clone())
 }
@@ -187,7 +204,8 @@ fn counter(opts: Options) -> &'static AtomicUsize {
     &COUNTS[cache_key(opts)]
 }
 
-/// How many times [`std_packages`] has actually compiled `Std` for this profile.
+/// How many times [`std_packages`] has actually compiled `Std` for this profile
+/// -- or read it back from an earlier process's, which is the same work saved.
 ///
 /// At most one, for the life of the process — that is the whole point of the
 /// cache, and it is what `tests/stdlib.rs` asserts. It used to assert it by
@@ -246,7 +264,12 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
                 source,
             }],
             &dep_refs,
-            opts,
+            // One `Std` serves every build in the process, so it sees the
+            // platform and nothing else: no profile, backend, test or flag.
+            Options {
+                cfg: opts.cfg.platform(),
+                ..opts
+            },
         );
         diags.extend(unit_diags);
         // A sibling reaches this module only via `use`, never flat.

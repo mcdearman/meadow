@@ -7,7 +7,9 @@ mod repl;
 use clap::{Parser, Subcommand};
 use meadow::{
     Backend, Engine, OptLevel, Profile, Resolved, Strictness, aot, artifacts, format, init,
-    package::ProfileConfig, pipeline, runtime, test, update,
+    package::ProfileConfig,
+    pipeline, runtime, test, update,
+    workspace::{Selected, Selection},
 };
 use std::path::PathBuf;
 
@@ -22,11 +24,14 @@ struct Cli {
 enum Cmd {
     /// Type-check and link a package, printing the annotated result.
     Build {
-        /// Package directory (or a single `.mw` file).
+        /// Package directory (or a single `.mw` file), or a workspace.
+        #[arg(default_value = ".")]
         path: PathBuf,
         /// Also print every node's inferred type.
         #[arg(long)]
         annotations: bool,
+        #[command(flatten)]
+        packages: PackageArgs,
         #[command(flatten)]
         profile: ProfileArgs,
         #[command(flatten)]
@@ -34,7 +39,12 @@ enum Cmd {
     },
     /// Build a package, then evaluate its `main` entry point.
     Run {
+        /// Package directory (or a single `.mw` file), or a workspace.
+        #[arg(default_value = ".")]
         path: PathBuf,
+        /// In a workspace: the member to run.
+        #[arg(short = 'p', long = "package", value_name = "NAME")]
+        package: Option<String>,
         #[command(flatten)]
         profile: ProfileArgs,
         #[command(flatten)]
@@ -48,6 +58,41 @@ enum Cmd {
         /// `copying` (one space, copied whole). `MEADOW_GC` sets the same.
         #[arg(long, value_parser = ["generational", "copying"])]
         gc: Option<String>,
+        #[command(flatten)]
+        target: TargetArgs,
+        /// Arguments for the program, after `--`: what `Process.argv` gives
+        /// it. `meadow run . -- in.mw -o out` passes `in.mw -o out`.
+        #[arg(last = true, value_name = "ARGS")]
+        args: Vec<String>,
+    },
+    /// Run a bytecode image: what `meadow build` writes under
+    /// `target/<profile>/bytecode/`, or what a compiler written in Meadow
+    /// emits.
+    Exec {
+        /// The `.mbc` file.
+        image: PathBuf,
+        /// `vm` (the interpreter alone) or `jit` (the default). For an
+        /// executable, `meadow link` the image.
+        #[arg(long, value_name = "BACKEND", value_parser = backend)]
+        backend: Option<Backend>,
+        /// Optimization level for the JIT: 0, 1 or 2.
+        #[arg(short = 'O', long = "opt-level", value_name = "LEVEL", value_parser = opt_level)]
+        opt: Option<OptLevel>,
+        /// Arguments for the program, after `--`.
+        #[arg(last = true, value_name = "ARGS")]
+        args: Vec<String>,
+    },
+    /// Compile a bytecode image to machine code and link it into an
+    /// executable.
+    Link {
+        /// The `.mbc` file.
+        image: PathBuf,
+        /// The executable to write. The image's name beside it, by default.
+        #[arg(short = 'o', long = "output", value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Optimization level: 0, 1 or 2 (the default).
+        #[arg(short = 'O', long = "opt-level", value_name = "LEVEL", value_parser = opt_level)]
+        opt: Option<OptLevel>,
         #[command(flatten)]
         target: TargetArgs,
     },
@@ -66,6 +111,8 @@ enum Cmd {
         #[arg(long)]
         std: bool,
         #[command(flatten)]
+        packages: PackageArgs,
+        #[command(flatten)]
         profile: ProfileArgs,
         #[command(flatten)]
         engine: EngineArgs,
@@ -75,6 +122,8 @@ enum Cmd {
         /// Package directory (or a single `.mw` file).
         #[arg(default_value = ".")]
         path: PathBuf,
+        #[command(flatten)]
+        packages: PackageArgs,
         #[command(flatten)]
         profile: ProfileArgs,
     },
@@ -115,6 +164,8 @@ enum Cmd {
         stdout: bool,
     },
     /// Create a package: a `meadow.toml` and a `src/Main.mw` that runs.
+    ///
+    /// Inside a workspace, the new package is added to its `members`.
     Init {
         /// Where to put it, created if it does not exist.
         #[arg(default_value = ".")]
@@ -122,6 +173,10 @@ enum Cmd {
         /// The package's name. Defaults to the directory's.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Create a workspace instead: a `meadow.toml` with an empty
+        /// `[workspace]`, for packages made inside it to join.
+        #[arg(long, conflicts_with = "name")]
+        workspace: bool,
     },
     /// Replace this binary with the latest published release.
     Update {
@@ -132,6 +187,51 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+}
+
+/// `-p`, `--workspace` and `--exclude` -- which members of a workspace a
+/// command means.
+#[derive(clap::Args)]
+struct PackageArgs {
+    /// In a workspace: the member to use, by name. Repeat it for more.
+    #[arg(short = 'p', long = "package", value_name = "NAME")]
+    package: Vec<String>,
+    /// Every member of the workspace.
+    #[arg(long, visible_alias = "all", conflicts_with = "package")]
+    workspace: bool,
+    /// With `--workspace`: leave this member out. Repeat it for more.
+    #[arg(long, value_name = "NAME", requires = "workspace")]
+    exclude: Vec<String>,
+}
+
+impl PackageArgs {
+    fn selection(&self) -> Selection {
+        Selection {
+            packages: self.package.clone(),
+            workspace: self.workspace,
+            exclude: self.exclude.clone(),
+        }
+    }
+}
+
+/// What `selection` means at `path`, exiting with the reason when it means
+/// nothing -- after warning about any member profile the workspace ignores.
+fn select(selection: &Selection, path: &std::path::Path) -> Selected {
+    let selected = selection.select(path).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    if let Some(ws) = &selected.workspace {
+        for m in ws.ignored_profiles(&selected.paths) {
+            eprintln!(
+                "warning: the `[profile]` sections of `{}` are ignored: a workspace member \
+                 builds with the profiles in {}",
+                m.name,
+                meadow::workspace::shown(&ws.root.join("meadow.toml"))
+            );
+        }
+    }
+    selected
 }
 
 /// `--target` -- what an `aot` build compiles for.
@@ -189,6 +289,10 @@ struct ProfileArgs {
     /// `--backend aot`.
     #[arg(long, visible_alias = "native")]
     aot: bool,
+    /// Turn on a flag for `@cfg(…)` to test: `--cfg fast`, `--cfg feature=gpu`.
+    /// Repeat it for more; a manifest's `cfg = "…"` adds to these.
+    #[arg(long = "cfg", value_name = "FLAG")]
+    cfg: Vec<String>,
     /// Compile every definition of the package and its dependencies, not only
     /// what `main` reaches. `prune = false` in a `[profile.<name>]` of
     /// `meadow.toml` does the same.
@@ -227,6 +331,8 @@ impl ProfileArgs {
                 .or(self.jit.then_some(Backend::Jit))
                 .or(self.aot.then_some(Backend::Aot)),
             prune: self.no_prune.then_some(false),
+            cfg: (!self.cfg.is_empty())
+                .then(|| meadow_compiler::intern::InternedString::from(self.cfg.join(","))),
         }
     }
 
@@ -241,10 +347,7 @@ impl ProfileArgs {
 ///
 /// The VM, with its JIT, is the default. The CEK is the specification of what a Meadow program
 /// means, so if the two disagree it is right and the VM has a bug; this flag is
-/// what makes that comparison available without a rebuild. It is also the only
-/// way to run a program that reaches the real world through an *unhandled*
-/// `Fs`, `Process`, `Random` or `Time` operation, which the VM does not
-/// discharge yet.
+/// what makes that comparison available without a rebuild.
 #[derive(clap::Args)]
 struct EngineArgs {
     /// Evaluate with the CEK machine rather than the bytecode VM.
@@ -253,6 +356,15 @@ struct EngineArgs {
 }
 
 impl EngineArgs {
+    /// `profile`, told whether the CEK machine runs the program -- which
+    /// `@cfg(backend = "cek")` asks.
+    fn resolve(&self, mut profile: Resolved) -> Resolved {
+        if self.cek {
+            profile.options.cfg.backend = "cek";
+        }
+        profile
+    }
+
     /// The machine that runs a program in this process, for `backend`. An
     /// `aot` backend's native code runs in a process of its own, so here --
     /// where tests run -- it is the JIT's.
@@ -274,24 +386,28 @@ fn main() {
         Some(Cmd::Build {
             path,
             annotations,
+            packages,
             profile,
             target,
-        }) => build(
-            &path,
-            None,
-            annotations,
-            false,
-            profile.resolve(&path),
-            &target,
-        ),
+        }) => {
+            let selected = select(&packages.selection(), &path);
+            let profile = profile.resolve(&path);
+            match &selected.paths[..] {
+                [one] => build(one, None, annotations, false, profile, &target),
+                many => build_many(many, annotations, profile, &target),
+            }
+        }
         Some(Cmd::Run {
             path,
+            package,
             profile,
             engine,
             gc_stats,
             gc,
             target,
+            args,
         }) => {
+            meadow_compiler::core::args::set(args);
             if let Some(gc) = gc {
                 meadow_rts::heap::configure(meadow_rts::heap::GcConfig {
                     collector: match gc.as_str() {
@@ -301,9 +417,18 @@ fn main() {
                     ..meadow_rts::heap::GcConfig::from_env()
                 });
             }
-            let profile = profile.resolve(&path);
+            let selection = Selection {
+                packages: package.into_iter().collect(),
+                ..Selection::default()
+            };
+            let selected = select(&selection, &path);
+            let one = selected.one("run").unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let profile = engine.resolve(profile.resolve(&path));
             build(
-                &path,
+                one,
                 Some(engine.engine(profile.backend)),
                 false,
                 gc_stats,
@@ -311,17 +436,45 @@ fn main() {
                 &target,
             )
         }
-        Some(Cmd::Dis { path, profile }) => disassemble(&path, profile.resolve(&path)),
+        Some(Cmd::Exec {
+            image,
+            backend,
+            opt,
+            args,
+        }) => {
+            meadow_compiler::core::args::set(args);
+            exec(
+                &image,
+                backend.unwrap_or(Backend::Jit),
+                opt.unwrap_or(OptLevel::O1),
+            );
+        }
+        Some(Cmd::Link {
+            image,
+            output,
+            opt,
+            target,
+        }) => link(&image, output, opt.unwrap_or(OptLevel::O2), &target),
+        Some(Cmd::Dis {
+            path,
+            packages,
+            profile,
+        }) => {
+            let selected = select(&packages.selection(), &path);
+            disassemble(&selected.paths, profile.resolve(&path))
+        }
         Some(Cmd::Test {
             path,
             filter,
             exact,
             std,
+            packages,
             profile,
             engine,
         }) => match test::run(&test::Options {
+            packages: packages.selection(),
             engine: engine.engine(profile.resolve(&path).backend),
-            profile: profile.resolve(&path),
+            profile: engine.resolve(profile.resolve(&path)),
             path,
             filter,
             exact,
@@ -392,11 +545,30 @@ fn main() {
                 }
             }
         }
-        Some(Cmd::Init { path, name }) => match init::run(&init::Options { path, name }) {
+        Some(Cmd::Init {
+            path,
+            name,
+            workspace,
+        }) => match init::run(&init::Options {
+            path,
+            name,
+            workspace,
+        }) {
             Ok(made) => {
-                println!("created package `{}` at {}", made.name, made.root.display());
+                if workspace {
+                    println!("created a workspace at {}", made.root.display());
+                } else {
+                    println!("created package `{}` at {}", made.name, made.root.display());
+                }
                 for f in &made.files {
-                    println!("  {}", f.display());
+                    println!("  {}", nearby(f).display());
+                }
+                if let Some(ws) = &made.joined {
+                    println!(
+                        "added `{}` to the members of {}",
+                        made.name,
+                        nearby(ws).display()
+                    );
                 }
             }
             Err(e) => {
@@ -413,6 +585,23 @@ fn main() {
     }
 }
 
+/// `path` as seen from the current directory, when it is inside it: `init`
+/// finds a workspace by its full path, and says so more briefly.
+fn nearby(path: &std::path::Path) -> PathBuf {
+    let here = std::env::current_dir()
+        .ok()
+        .and_then(|d| std::fs::canonicalize(d).ok());
+    let full = std::fs::canonicalize(path).ok();
+    match (here, full) {
+        (Some(here), Some(full)) => match full.strip_prefix(&here) {
+            Ok(rest) if rest.as_os_str().is_empty() => PathBuf::from("."),
+            Ok(rest) => rest.to_path_buf(),
+            Err(_) => path.to_path_buf(),
+        },
+        _ => path.to_path_buf(),
+    }
+}
+
 /// Discover, compile and link the package at `path`; with `engine`, also
 /// evaluate its entry point. Exits non-zero if any diagnostic was produced or
 /// evaluation failed.
@@ -424,6 +613,7 @@ fn build(
     profile: Resolved,
     target: &TargetArgs,
 ) {
+    let profile = for_target(profile, target);
     let out = pipeline::build(path, profile.options);
 
     for d in &out.diagnostics {
@@ -433,7 +623,148 @@ fn build(
     let Some(linked) = out.linked else {
         std::process::exit(1);
     };
+    // A program with errors is not run, and nothing is written for it: what
+    // it would do is not what was written. What was worked out is still worth
+    // showing a build.
+    if !out.diagnostics.is_empty() {
+        if engine.is_none() {
+            print!("{}", linked.dump());
+            if annotations {
+                print!("{}", linked.annotations());
+            }
+        }
+        std::process::exit(1);
+    }
+    finish(
+        linked,
+        &out.package,
+        engine,
+        annotations,
+        gc_stats,
+        profile,
+        target,
+    );
+}
 
+/// `meadow exec`: run the image at `path` on `backend`.
+fn exec(path: &std::path::Path, backend: Backend, opt: OptLevel) {
+    let image = read_image(path);
+    let engine = match backend {
+        Backend::Vm => Engine::Vm,
+        Backend::Jit => Engine::Jit,
+        Backend::Aot => {
+            eprintln!(
+                "error: an image runs on `vm` or `jit`; `meadow link` makes it an executable"
+            );
+            std::process::exit(1);
+        }
+    };
+    let result = match runtime::native(&image, engine, opt) {
+        Ok(jit) => runtime::run_image_with_stats(&image, jit.as_ref()).0,
+        Err(e) => Err(e),
+    };
+    match result {
+        Ok(value) => println!("=> {value}"),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `meadow link`: the image at `path`, as an executable.
+fn link(path: &std::path::Path, output: Option<PathBuf>, opt: OptLevel, target: &TargetArgs) {
+    let image = read_image(path);
+    let made = target.target().and_then(|target| {
+        let exe = output.unwrap_or_else(|| {
+            path.with_extension(target.format.exe_suffix().trim_start_matches('.'))
+        });
+        aot::link_image(&image, opt, target, &exe).map(|()| exe)
+    });
+    match made {
+        Ok(exe) => eprintln!("native: {}", exe.display()),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn read_image(path: &std::path::Path) -> meadow_bytecode::Program {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| {
+        eprintln!("error: could not read {}: {e}", path.display());
+        std::process::exit(1);
+    });
+    meadow_bytecode::image::decode(&bytes).unwrap_or_else(|e| {
+        eprintln!("error: {}: {e}", path.display());
+        std::process::exit(1);
+    })
+}
+
+/// [`build`] for several packages of a workspace, sharing what they have in
+/// common. Nothing runs: `run` takes one package.
+fn build_many(paths: &[PathBuf], annotations: bool, profile: Resolved, target: &TargetArgs) {
+    let profile = for_target(profile, target);
+    let paths: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
+    let out = pipeline::build_each(&paths, profile.options);
+    for d in &out.diagnostics {
+        eprintln!("{}: {}", d.filename, d.msg);
+    }
+    if out.each.is_empty() {
+        std::process::exit(1);
+    }
+    if !out.diagnostics.is_empty() {
+        for built in &out.each {
+            let linked = built.linked.as_ref().expect("each is linked");
+            print!("{}", linked.dump());
+            if annotations {
+                print!("{}", linked.annotations());
+            }
+        }
+        std::process::exit(1);
+    }
+    for built in out.each {
+        let linked = built.linked.expect("each is linked");
+        finish(
+            linked,
+            &built.package,
+            None,
+            annotations,
+            false,
+            profile,
+            target,
+        );
+    }
+    if !out.diagnostics.is_empty() {
+        std::process::exit(1);
+    }
+}
+
+/// `profile`, told the architecture an executable for another is compiled
+/// for: that is the `arch` its `@cfg(…)` sees.
+fn for_target(mut profile: Resolved, target: &TargetArgs) -> Resolved {
+    if profile.backend == Backend::Aot
+        && let Ok(t) = target.target()
+    {
+        profile.options.cfg.arch = match t.arch {
+            meadow_rts::codegen::Arch::Aarch64 => "aarch64",
+            meadow_rts::codegen::Arch::X86_64 => "x86_64",
+        };
+    }
+    profile
+}
+
+/// Everything [`build`] does once a package is linked: print it, write its
+/// image and executable, and -- with `engine` -- run it.
+fn finish(
+    linked: meadow::linker::LinkedProgram,
+    package: &Option<(PathBuf, meadow_compiler::intern::InternedString)>,
+    engine: Option<Engine>,
+    annotations: bool,
+    gc_stats: bool,
+    profile: Resolved,
+    target: &TargetArgs,
+) {
     print!("{}", linked.dump());
     if annotations {
         print!("{}", linked.annotations());
@@ -449,7 +780,7 @@ fn build(
         None | Some(Engine::Vm) | Some(Engine::Jit) => {
             match runtime::compile(&program, profile.opt()) {
                 Ok(image) => {
-                    if let Some((root, name)) = &out.package
+                    if let Some((root, name)) = package
                         && let Err(e) = artifacts::write_image(root, profile.profile, name, &image)
                     {
                         eprintln!("error: {e}");
@@ -471,8 +802,7 @@ fn build(
     let aot = profile.backend == Backend::Aot && engine != Some(Engine::Cek);
     if let (true, Some(image)) = (aot, &image) {
         let exe = target.target().and_then(|target| {
-            let (root, name) = out
-                .package
+            let (root, name) = package
                 .as_ref()
                 .ok_or("a native executable needs a package to put it in")?;
             aot::build(root, profile.profile, profile.opt(), name, image, target)
@@ -481,6 +811,7 @@ fn build(
             Ok(exe) if engine.is_none() => eprintln!("native: {}", exe.display()),
             Ok(exe) => {
                 let status = std::process::Command::new(&exe)
+                    .args(meadow_compiler::core::args::get())
                     .status()
                     .unwrap_or_else(|e| {
                         eprintln!("error: could not run {}: {e}", exe.display());
@@ -491,7 +822,7 @@ fn build(
             // A release build of a lone file, or on a machine that cannot link
             // one: the JIT runs it, unless `aot` was asked for by name.
             Err(e) if profile.fallback().is_some() => {
-                if out.package.is_some() {
+                if package.is_some() {
                     eprintln!("warning: no native executable: {e}");
                     if engine.is_some() {
                         eprintln!("note: running on the JIT instead; `--aot` makes this an error");
@@ -529,28 +860,35 @@ fn build(
             }
         }
     }
-
-    if !out.diagnostics.is_empty() {
-        std::process::exit(1);
-    }
 }
 
 /// Print the bytecode the VM would run — the back end's output, addresses and
-/// all.
-fn disassemble(path: &std::path::Path, profile: Resolved) {
-    let out = pipeline::build(path, profile.options);
+/// all — for each package in `paths`.
+fn disassemble(paths: &[PathBuf], profile: Resolved) {
+    let refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
+    let out = pipeline::build_each(&refs, profile.options);
     for d in &out.diagnostics {
         eprintln!("{}: {}", d.filename, d.msg);
     }
-    let Some(linked) = out.linked else {
+    if out.each.is_empty() {
         std::process::exit(1);
-    };
-    match runtime::compile(&profile.program(&linked.program), profile.opt()) {
-        Ok(image) => print!("{}", image.disassemble()),
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
+    }
+    let several = out.each.len() > 1;
+    for built in out.each {
+        let linked = built.linked.expect("each is linked");
+        if several && let Some((_, name)) = &built.package {
+            println!("=== {name} ===");
         }
+        match runtime::compile(&profile.program(&linked.program), profile.opt()) {
+            Ok(image) => print!("{}", image.disassemble()),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if !out.diagnostics.is_empty() {
+        std::process::exit(1);
     }
 }
 
@@ -570,7 +908,7 @@ mod tests {
     fn init_defaults_to_here() {
         let parsed = Cli::try_parse_from(["meadow", "init"]).expect("bare `init`");
         match parsed.cmd {
-            Some(Cmd::Init { path, name }) => {
+            Some(Cmd::Init { path, name, .. }) => {
                 assert_eq!(path, PathBuf::from("."));
                 assert_eq!(name, None);
             }
@@ -579,7 +917,7 @@ mod tests {
 
         let parsed = Cli::try_parse_from(["meadow", "init", "pkg", "--name", "myPkg"]).unwrap();
         match parsed.cmd {
-            Some(Cmd::Init { path, name }) => {
+            Some(Cmd::Init { path, name, .. }) => {
                 assert_eq!(path, PathBuf::from("pkg"));
                 assert_eq!(name.as_deref(), Some("myPkg"));
             }

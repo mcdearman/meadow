@@ -81,6 +81,7 @@ pub mod region;
 pub mod sched;
 mod show;
 pub mod stm;
+mod text;
 pub mod value;
 pub mod vm;
 

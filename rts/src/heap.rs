@@ -340,10 +340,16 @@ pub enum Kind {
     Task,
     /// A `TVar`: `meta` is its number in the run's [`crate::stm::World`].
     TVar,
+    /// A `String`: `meta` is its length in bytes, and the fields are its UTF-8
+    /// bytes packed eight to a word, little-endian, with the last word's spare
+    /// bytes zero -- so two strings are equal exactly when their words are.
+    /// Uniform, and never an address, so a collector copies one without
+    /// looking inside.
+    Str,
 }
 
 impl Kind {
-    const ALL: [Kind; 12] = [
+    const ALL: [Kind; 13] = [
         Kind::Data,
         Kind::Array,
         Kind::Record,
@@ -356,6 +362,7 @@ impl Kind {
         Kind::Channel,
         Kind::Task,
         Kind::TVar,
+        Kind::Str,
     ];
 
     /// The kind a header's first byte names.
@@ -370,7 +377,10 @@ impl Kind {
     /// Does every field hold the same representation, so that one descriptor
     /// describes them all? An array's elements, a `BigInt`'s digits.
     pub fn is_uniform(self) -> bool {
-        matches!(self, Kind::Array | Kind::MutArray | Kind::BigInt)
+        matches!(
+            self,
+            Kind::Array | Kind::MutArray | Kind::BigInt | Kind::Str
+        )
     }
 }
 
@@ -507,7 +517,25 @@ impl Heap {
     /// Has enough gone into regions since the last collection that dead ones
     /// should be looked for, even though the nursery has room?
     pub fn wants_collection(&self) -> bool {
-        self.region_growth > self.space.len()
+        self.region_growth > self.space.len() || self.overdue()
+    }
+
+    /// Has the old generation outrun its marking so far that the next
+    /// collection has to finish a whole cycle, pause or not?
+    ///
+    /// Marking runs beside the program, and what is allocated while a cycle
+    /// marks is kept until the next one. A program making objects too large
+    /// for the nursery -- each goes straight to the old generation -- can make
+    /// them faster than a cycle frees them, and used to run the generation out
+    /// of addresses and abort with most of it garbage. A long pause is the
+    /// better answer.
+    pub fn overdue(&self) -> bool {
+        if self.config.collector != Collector::Generational || self.old.is_empty() {
+            return false;
+        }
+        let live = self.old.live as usize;
+        let trigger = (2 * live).max(self.config.min_trigger);
+        self.old.half_full() || self.old.allocated as usize > 4 * trigger
     }
 
     /// Slots held by live regions, in total.
@@ -790,6 +818,80 @@ impl Heap {
         let h = self.head(a);
         let base = a + h.header() as Addr;
         (0..h.len).map(move |i| self.slot(base + i))
+    }
+
+    // --- strings ---------------------------------------------------------------
+
+    /// Slots a string of `len` bytes takes.
+    pub fn str_slots(len: usize) -> usize {
+        Heap::size_of(Kind::Str, len.div_ceil(8))
+    }
+
+    /// A string holding `bytes`, which must be UTF-8 -- see [`Kind::Str`].
+    pub fn alloc_str(&mut self, bytes: &[u8]) -> Addr {
+        let words = bytes.len().div_ceil(8);
+        let word = |i: usize| {
+            let chunk = &bytes[8 * i..bytes.len().min(8 * i + 8)];
+            let mut w = [0u8; 8];
+            w[..chunk.len()].copy_from_slice(chunk);
+            Word::from_le_bytes(w)
+        };
+        self.alloc_described(Kind::Str, bytes.len() as u32, words, word, |_| desc::INT)
+    }
+
+    /// The length in bytes of the string at `a`.
+    pub fn str_len(&self, a: Addr) -> usize {
+        self.head(a).meta as usize
+    }
+
+    /// Byte `i` of the string at `a`, which has one.
+    pub fn str_byte(&self, a: Addr, i: usize) -> u8 {
+        let h = self.head(a);
+        debug_assert!(i < h.meta as usize, "byte {i} of a string of {}", h.meta);
+        let w = self.slot(a + (h.header() + i / 8) as Addr);
+        (w >> (8 * (i % 8))) as u8
+    }
+
+    /// Bytes `from..to` of the string at `a`, copied out.
+    pub fn str_bytes_in(&self, a: Addr, from: usize, to: usize) -> Vec<u8> {
+        let h = self.head(a);
+        let to = to.min(h.meta as usize);
+        let from = from.min(to);
+        let base = a + h.header() as Addr;
+        let mut out = Vec::with_capacity(to - from);
+        let mut i = from;
+        while i < to {
+            let w = self.slot(base + (i / 8) as Addr).to_le_bytes();
+            let k = i % 8;
+            let take = (8 - k).min(to - i);
+            out.extend_from_slice(&w[k..k + take]);
+            i += take;
+        }
+        out
+    }
+
+    /// All of the string at `a`'s bytes.
+    pub fn str_bytes(&self, a: Addr) -> Vec<u8> {
+        self.str_bytes_in(a, 0, usize::MAX)
+    }
+
+    /// Whether the strings at `a` and `b` hold the same bytes.
+    pub fn str_eq(&self, a: Addr, b: Addr) -> bool {
+        let (ha, hb) = (self.head(a), self.head(b));
+        ha.meta == hb.meta
+            && self
+                .words_in(a, 0, ha.len as usize)
+                .eq(self.words_in(b, 0, hb.len as usize))
+    }
+
+    /// Fields `from..to` of `a`'s words. Not `words(a).skip(from)`, which
+    /// reads every field before `from` to throw it away -- and made slicing a
+    /// long array cost its whole length each time.
+    pub fn words_in(&self, a: Addr, from: usize, to: usize) -> impl Iterator<Item = Word> + '_ {
+        let h = self.head(a);
+        let base = a + h.header() as Addr;
+        let to = to.min(h.len as usize) as Addr;
+        (from as Addr..to).map(move |i| self.slot(base + i))
     }
 
     /// Field `i`'s word, without saying what it is.
@@ -2417,5 +2519,82 @@ mod tests {
         assert!(holder >= OLD_BASE, "promoted");
         assert!(well_formed(&h, h.field(holder, 0), n));
         assert!(well_formed(&h, roots[0], 40_000));
+    }
+
+    // --- strings ------------------------------------------------------------------
+
+    #[test]
+    fn a_string_holds_its_bytes_through_a_collection() {
+        for mut h in [heap(), generational(64, usize::MAX, 0)] {
+            let text = "héllo, wörld -- more than one word of it";
+            let a = h.alloc_str(text.as_bytes());
+            let empty = h.alloc_str(b"");
+            assert_eq!(h.kind(a), Kind::Str);
+            assert_eq!(h.str_len(a), text.len());
+            assert_eq!(h.str_len(empty), 0);
+            let mut roots = [Value::Obj(a), Value::Obj(empty)];
+            h.collect(&mut roots);
+            let (a, empty) = (roots[0].addr().unwrap(), roots[1].addr().unwrap());
+            assert_eq!(h.str_bytes(a), text.as_bytes());
+            assert_eq!(h.str_bytes(empty), b"");
+            assert_eq!(h.str_bytes_in(a, 1, 3), "é".as_bytes());
+            assert_eq!(h.str_byte(a, 6), b',');
+            assert_eq!(h.str_find(a, "wörld".as_bytes(), 0), 8);
+            assert_eq!(
+                h.str_find(a, b"o", 9),
+                text[9..].find('o').map_or(-1, |i| (i + 9) as i64)
+            );
+            assert_eq!(h.str_find(a, b"zzz", 0), -1);
+            let same = h.alloc_str(text.as_bytes());
+            let other = h.alloc_str("héllo, wörld -- more than one word of iT".as_bytes());
+            assert!(h.str_eq(a, same));
+            assert!(!h.str_eq(a, other));
+            assert!(!h.str_eq(a, empty));
+        }
+    }
+
+    #[test]
+    fn a_range_of_words_reads_only_that_range() {
+        let mut h = heap();
+        let fields: Vec<Value> = (0..100).map(Value::Int).collect();
+        let a = h.alloc(Kind::Array, 0, &fields);
+        let words: Vec<u64> = h.words_in(a, 95, 200).collect();
+        assert_eq!(words, [95, 96, 97, 98, 99]);
+        assert_eq!(h.words_in(a, 10, 10).count(), 0);
+    }
+
+    /// Objects too large for the nursery go straight to the old generation,
+    /// and while a cycle is marking they are kept until the next one. A
+    /// program making them faster than marking finishes used to grow the
+    /// generation until it ran out of addresses; an overdue heap collects
+    /// everything instead.
+    #[test]
+    fn large_garbage_made_while_marking_does_not_pile_up() {
+        let mut h = generational(1 << 10, 64, 0);
+        h.config.verify = false;
+        let mut roots = Vec::new();
+        // Enough live data that a cycle takes many pauses to mark.
+        let live = rooted_chain(&mut h, &mut roots, 60_000);
+        roots.push(live);
+        let big = 1 << 14;
+        let fields = vec![Value::Int(7); big];
+        for _ in 0..400 {
+            if !h.room_for(Heap::size_of(Kind::Array, big)) || h.wants_collection() {
+                if h.overdue() {
+                    h.collect_all(&mut roots);
+                } else {
+                    h.collect(&mut roots);
+                }
+                h.reserve(Heap::size_of(Kind::Array, big));
+            }
+            h.alloc(Kind::Array, 0, &fields);
+        }
+        assert!(well_formed(&h, roots[0], 60_000));
+        // 400 of them made is 6.5 million slots; kept, they would all be here.
+        assert!(
+            h.old_slots() < 3_000_000,
+            "the old generation grew to {} slots",
+            h.old_slots()
+        );
     }
 }

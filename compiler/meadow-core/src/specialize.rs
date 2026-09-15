@@ -350,7 +350,7 @@ impl Specializer {
             desc::REF => REF,
             desc::INT => "Int",
             desc::FLOAT => "Float",
-            desc::STR => "String",
+            desc::STR => desc::SYMBOL_TYPE,
             desc::UNIT => "Unit",
             desc::BOOL => "Bool",
             desc::CHAR => "Char",

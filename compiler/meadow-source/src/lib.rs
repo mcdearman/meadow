@@ -41,6 +41,21 @@ pub struct Source {
 
 static SOURCE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// A source is saved as where it came from and what it says. Its id is only
+/// unique within the process that made it, so one read back gets a new id.
+impl serde::Serialize for Source {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (self.kind, self.content).serialize(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Source {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (kind, content) = <(SourceKind, InternedString)>::deserialize(d)?;
+        Ok(Source::new(kind, content))
+    }
+}
+
 impl Source {
     pub fn new(kind: SourceKind, content: InternedString) -> Self {
         let id = SOURCE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -76,7 +91,7 @@ impl Index<Span> for Source {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SourceKind {
     File(InternedString),
     Interactive,

@@ -14,6 +14,7 @@ Module {
                             span: 1..4,
                         },
                         args: [],
+                        meta: [],
                     },
                 ],
                 Located {

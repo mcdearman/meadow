@@ -14,3 +14,4 @@ meadow-hir.workspace = true
 meadow-infer.workspace = true
 meadow-intern.workspace = true
 meadow-span.workspace = true
+serde.workspace = true

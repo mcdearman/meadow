@@ -21,12 +21,36 @@ pub struct Module {
 
 pub type LDecl = Located<Decl>;
 
-/// An attribute: `@pub`, `@attr(A, B, C)`. Attached to a declaration (via
-/// [`Decl::Attributed`]) or a record / named-variant field (see [`Field`]).
+/// An attribute: `@pub`, `@attr(A, B, C)`, `@cfg(all(unix, not(test)))`.
+/// Attached to a declaration (via [`Decl::Attributed`]) or a record /
+/// named-variant field or effect operation (see [`Field`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attr {
     pub name: Ident,
+    /// The arguments that are plain names, in order: `pkg` of `@pub(pkg)`.
     pub args: Vec<Ident>,
+    /// Every argument as written, names and the rest: what `@cfg` reads.
+    pub meta: Vec<Meta>,
+}
+
+/// One argument of an attribute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Meta {
+    /// `unix`
+    Word(Ident),
+    /// `os = "linux"`
+    Value(Ident, Ident),
+    /// `not(test)`, `all(a, b)`
+    List(Ident, Vec<Meta>),
+}
+
+impl Meta {
+    /// The name it starts with: `os` of `os = "linux"`, `all` of `all(…)`.
+    pub fn name(&self) -> &Ident {
+        match self {
+            Meta::Word(n) | Meta::Value(n, _) | Meta::List(n, _) => n,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -53,3 +53,21 @@ fn pattern_match_on_array() {
          def main = (sum3 #[10, 20, 30], sum3 #[1, 2])\n"
     ), @"(60, 0)");
 }
+
+/// Slicing near the end of a long array costs the slice, not the whole array
+/// before it: it used to read every element up to `from` and throw them away,
+/// which made a lexer cutting words out of a file quadratic.
+#[test]
+fn slicing_a_long_array_costs_the_slice() {
+    let src = "use Std.String as S\n\n\
+        fun go a i acc = if i == 0 then acc else go a (i - 1) (acc + arrayLen (arraySlice a 399990 400000))\n\n\
+        def main = go (S.toBytes (S.repeat \"ab\" 200000)) 20000 0\n";
+    let started = std::time::Instant::now();
+    assert_eq!(common::eval_main_std(src), "200000");
+    // Quadratic, this is 8 billion reads: minutes, even optimized.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "took {:?}",
+        started.elapsed()
+    );
+}

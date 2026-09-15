@@ -10,6 +10,7 @@
 //! which is a diagnostic and not an optimisation at all.
 
 pub use meadow_core::OptLevel;
+use meadow_intern::InternedString;
 
 /// How much the compiler insists on before it will build.
 ///
@@ -57,6 +58,99 @@ pub struct Options {
     /// `def` of any other name has to be pure -- see the type checker's
     /// `check_pure_def`.
     pub entry_name: Option<&'static str>,
+    /// What `@cfg(…)` is tested against -- see [`crate::cfg`].
+    pub cfg: Cfg,
+}
+
+/// The facts a `@cfg(…)` condition can ask about: the platform the program is
+/// built for, how it is built, and any flags the build turned on by name.
+///
+/// Every field is a plain value, so options stay `Copy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Cfg {
+    /// `os = "…"`: `"windows"`, `"linux"` or `"macos"`.
+    pub os: &'static str,
+    /// `arch = "…"`: `"x86_64"` or `"aarch64"`.
+    pub arch: &'static str,
+    /// `profile = "…"`, and the bare `debug` or `release`.
+    pub profile: &'static str,
+    /// `backend = "…"`: `"vm"`, `"jit"`, `"aot"`, or `"cek"`.
+    pub backend: &'static str,
+    /// The bare `test`: on while `meadow test` builds.
+    pub test: bool,
+    /// Flags a build turned on itself -- `fast`, `feature=gpu` -- written the
+    /// way `--cfg` takes them and joined with commas. `None` when there are
+    /// none.
+    pub flags: Option<InternedString>,
+}
+
+impl Cfg {
+    /// This machine, in the given profile and backend, with no flags.
+    pub const fn host(profile: &'static str, backend: &'static str) -> Cfg {
+        Cfg {
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+            profile,
+            backend,
+            test: false,
+            flags: None,
+        }
+    }
+
+    /// Just the platform: what `Std` is compiled against, so that one
+    /// compile of it serves every profile, backend and flag.
+    pub const fn platform(self) -> Cfg {
+        Cfg::host("debug", "jit").on(self.os, self.arch)
+    }
+
+    /// The same, for a program built for `os` on `arch`.
+    pub const fn on(mut self, os: &'static str, arch: &'static str) -> Cfg {
+        self.os = os;
+        self.arch = arch;
+        self
+    }
+
+    /// `"unix"` or `"windows"`: `family = "…"`, and the bare `unix` or
+    /// `windows`.
+    pub fn family(&self) -> &'static str {
+        if self.os == "windows" {
+            "windows"
+        } else {
+            "unix"
+        }
+    }
+
+    /// Whether the build turned on flag `flag`: `fast`, or `feature=gpu`.
+    pub fn has_flag(&self, flag: &str) -> bool {
+        self.flags
+            .is_some_and(|fs| fs.split(',').any(|f| f.trim() == flag))
+    }
+
+    /// These flags as well: a comma-separated list, as `--cfg` and a
+    /// manifest's `cfg = "…"` write them.
+    pub fn with_flags(mut self, more: &str) -> Cfg {
+        let mut all: Vec<String> = self
+            .flags
+            .map(|fs| fs.split(',').map(|f| f.trim().to_string()).collect())
+            .unwrap_or_default();
+        for f in more
+            .split(',')
+            .map(|f| f.split('=').map(str::trim).collect::<Vec<_>>().join("="))
+        {
+            if !f.is_empty() && !all.contains(&f) {
+                all.push(f);
+            }
+        }
+        all.sort();
+        self.flags = (!all.is_empty()).then(|| InternedString::from(all.join(",")));
+        self
+    }
+}
+
+impl Default for Cfg {
+    fn default() -> Cfg {
+        Cfg::host("debug", "jit")
+    }
 }
 
 impl Options {
@@ -76,6 +170,7 @@ impl Options {
             strictness: Strictness::Lenient,
             debug_info: false,
             entry_name: None,
+            cfg: Cfg::host("debug", "jit"),
         }
     }
 
@@ -87,6 +182,7 @@ impl Options {
             strictness: Strictness::Strict,
             debug_info: false,
             entry_name: None,
+            cfg: Cfg::host("release", "aot"),
         }
     }
 }

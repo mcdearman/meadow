@@ -374,7 +374,7 @@ fn bare_ctor(canonical: InternedString) -> InternedString {
 /// names listed in a `use`, and the qualifier of a `Expr.Ctor` — because
 /// neither means anything after resolution. An editor still has to know they
 /// are references to the same thing, or a rename would leave them behind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NameRef {
     Value(VarId),
     Type(InternedString),
@@ -383,7 +383,7 @@ pub enum NameRef {
 }
 
 /// Where a [`NameRef`] was written.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct RefSite {
     pub span: Span,
     pub what: NameRef,

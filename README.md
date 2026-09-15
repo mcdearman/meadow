@@ -89,11 +89,17 @@ meadow build --release pkg      # ...optimized, `match` exhaustive, and an execu
 meadow build --aot --target x86_64 pkg  # an executable for another architecture
 meadow run -O2 pkg              # ...or just the optimization level
 meadow dis pkg                  # disassemble: the bytecode the VM would run
+meadow run pkg -- in.txt -v     # pass the program arguments, which `Process.argv` reads
+meadow exec target/debug/bytecode/pkg.mbc   # run a bytecode image
+meadow link pkg.mbc -o pkg      # ...or compile one into an executable
 meadow fmt src                  # re-indent .mw sources in place
 meadow fmt --check src          # ...or just report, and exit 1 if any differ
 meadow test                     # run the package's `@test` functions
 meadow test . parse             # ...only those whose name contains "parse"
 meadow test . Parser.parse --exact  # ...or exactly one
+meadow init --workspace shop    # a workspace; `meadow init` inside it adds a member
+meadow run -p app               # in a workspace: a member, by name
+meadow test --workspace         # ...or every member (`--exclude NAME` leaves one out)
 ```
 
 A package is a directory with a `meadow.toml` and a `src/`, which `meadow init`
@@ -104,6 +110,20 @@ What a build makes goes in the package's own `target/` directory, one directory
 per profile: the bytecode image at `target/debug/bytecode/<name>.mbc`, and
 native object code and executables under `target/<profile>/native/`. `meadow
 init` writes a `.gitignore` that ignores it.
+
+Builds are **incremental**. Every package that compiles cleanly, and the
+embedded `Std`, is kept under `target/<profile>/incremental/` with a
+fingerprint of its sources, the compiler and its options, and the packages it
+depends on. The next build reads back each one whose fingerprint still matches,
+so an edit recompiles only the package changed and those downstream of it.
+`MEADOW_INCREMENTAL=0` turns this off.
+
+Packages developed together can be a **workspace**, as in Cargo: a root
+`meadow.toml` with `[workspace] members = ["app", "libs/*"]`, whose members
+share one `target/`, the root's `[profile.*]`, and a version and dependencies
+declared once under `[workspace.package]` and `[workspace.dependencies]`
+(`util = { workspace = true }` in a member). The
+[tutorial](docs/TUTORIAL.md#workspaces) has the details.
 
 ### Native code
 

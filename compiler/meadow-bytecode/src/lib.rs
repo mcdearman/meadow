@@ -389,8 +389,12 @@ pub enum Const {
     /// A sized integer literal: its width and wrapped bits.
     Word(meadow_core::num::Width, u64),
     Float32(f32),
+    /// An interned name, loaded as its key: an effect operation's -- see
+    /// `meadow_core::Lit::Sym`.
     Str(InternedString),
     Char(char),
+    /// A string literal, loaded as a string on the heap.
+    Text(InternedString),
 }
 
 /// A loadable image: the code, and every table an instruction's immediate

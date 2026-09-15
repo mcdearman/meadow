@@ -1831,8 +1831,9 @@ fn typed_literal_patterns_and_equality_on_immediates() {
 
 #[test]
 fn a_release_build_copies_generic_code_once_per_representation() {
-    // `id` is used at four types and three representations: `Int`, `String`,
-    // and two that are both references, which share a copy.
+    // `id` is used at four types and two representations: `Int`, and three
+    // that are references and share a copy -- a `String` among them, since a
+    // string is an object on the heap.
     let src = "use L.*\ndata L = Nil | Cons Int L
                fun id x = x
                def main = (id (toInt 1), id \"s\", id (Cons 1 Nil), id (id 2, Nil))";
@@ -1851,7 +1852,7 @@ fn a_release_build_copies_generic_code_once_per_representation() {
         .collect();
     let mut at: Vec<String> = copies.iter().map(|d| format!("{:?}", d.poly.ty)).collect();
     at.sort();
-    assert_eq!(copies.len(), 3, "{at:?}");
+    assert_eq!(copies.len(), 2, "{at:?}");
     for d in &copies {
         assert!(
             d.poly

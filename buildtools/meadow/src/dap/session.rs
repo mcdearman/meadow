@@ -1016,6 +1016,11 @@ impl Session {
         }
         let n = heap.len(a);
         match heap.kind(a) {
+            Kind::Str => {
+                let bytes = heap.str_bytes_in(a, 0, 4 * 80);
+                let text: String = String::from_utf8_lossy(&bytes).chars().take(80).collect();
+                out.push_str(&format!("{text:?}"));
+            }
             Kind::BigInt => out.push_str(&self.vm.show(v)),
             Kind::Resume => out.push_str("<resumption>"),
             Kind::Channel => out.push_str("<channel>"),

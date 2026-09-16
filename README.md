@@ -16,9 +16,9 @@ def main = classify 42
 
 ## Install
 
-**Windows** — download `meadow-setup-x86_64.exe` from the
+**Windows** — download `meadowup-x86_64.exe` from the
 [latest release](https://github.com/mcdearman/meadow/releases/latest) and run
-it. (Take `meadow-setup-aarch64.exe` on an ARM machine.)
+it. (Take `meadowup-aarch64.exe` on an ARM machine.)
 
 **macOS / Linux**
 
@@ -45,34 +45,32 @@ meadowup uninstall   # remove it and undo the PATH entry
 <details>
 <summary>Options</summary>
 
-`meadow-setup.exe` installs the `meadow.exe` sitting next to it if there is one,
-so you can also unzip a release and install offline.
+`meadowup` is the only installer, on every platform. Downloading it is all
+either route does: `install.sh` fetches it and hands over, and the `.exe` puts
+itself in place when you run it. There is no separate bootstrap program — as
+with `rustup-init`, the installer *is* the tool.
 
+```sh
+meadowup install --version v0.1.0-alpha   # pin a release
+meadowup update                           # bring the toolchain forward
+meadowup update --force                   # install again even if current
+meadowup install --no-modify-path         # leave profiles and PATH alone
+meadowup show                             # what is installed, and where
+meadowup uninstall
 ```
-meadow-setup.exe --dir <path>       install somewhere else
-meadow-setup.exe --from <path>      install a specific meadow.exe
-meadow-setup.exe --version v0.1.0-alpha   pin a release
-meadow-setup.exe --no-modify-path   leave PATH alone
-meadow-setup.exe --uninstall
-```
+
+`install.sh` passes its options straight through, and can build from source
+where there is no release for your platform:
 
 ```sh
 install.sh --version v0.1.0-alpha   # pin a release
-install.sh --from-source      # always build from source (needs cargo)
+install.sh --from-source      # build with cargo instead of downloading
+install.sh --local <path>     # ...from a checkout already on disk
 install.sh --no-modify-path   # leave shell profiles alone
 install.sh --uninstall
 ```
 
-Once installed, `meadowup` does this job on every platform:
-
-```sh
-meadowup install --version v0.1.0-alpha   # pin a release
-meadowup update --force                   # install again anyway
-meadowup install --no-modify-path         # leave profiles and PATH alone
-meadowup uninstall
-```
-
-`MEADOW_HOME` overrides the install directory for all of them.
+`MEADOW_HOME` overrides the install directory for both.
 </details>
 
 A full walkthrough of the language lives in [docs/TUTORIAL.md](docs/TUTORIAL.md).
@@ -497,7 +495,7 @@ The tree is five independent Cargo workspaces:
 | `eval/` | the CEK machine — the specification of what a program means |
 | `rts/` | the runtime: a register bytecode VM, green threads, and a low-pause generational collector (a copying nursery, and an Immix old generation marked concurrently and evacuated a block at a time). It loads an image and knows nothing about the IR that produced it |
 | `buildtools/` | the tools you point at Meadow source: `meadow` (build system, CLI and REPL — the binary) and `meadow-fmt` (the formatter) |
-| `installer/` | `meadow-setup.exe`, the Windows installer |
+| `installer/` | `meadowup`, which installs and updates the toolchain |
 
 ```
 core ──▶ AxCut ──▶ bytecode ──▶ VM

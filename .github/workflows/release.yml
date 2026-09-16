@@ -1,5 +1,5 @@
 # Build `meadow` for every supported platform and attach the archives to a
-# GitHub Release, plus `meadow-setup-*.exe` — the double-clickable Windows
+# GitHub Release, plus `meadowup-*.exe` — the double-clickable Windows
 # installer built from `installer/`.
 #
 # Asset names carry no version, so the installers can use the
@@ -117,9 +117,12 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
 
-      # Both binaries in one archive: `meadowup update` replaces itself along
-      # with the build tool, so a machine can never be left holding a meadowup
-      # too old to update the thing it manages.
+      # Two things are published per target. `meadowup-<target>` on its own is
+      # what a person downloads, and what `install.sh` fetches: it is small, and
+      # it is the only thing needed to get started. The archive beside it is the
+      # whole toolchain, which `meadowup install` pulls -- with meadowup in it
+      # too, so an update replaces meadowup along with the build tool and a
+      # machine cannot be left holding one too old to update what it manages.
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
         run: |
@@ -128,20 +131,22 @@ jobs:
           cp "buildtools/target/${{ matrix.target }}/release/meadow" "$staging/"
           cp "installer/target/${{ matrix.target }}/release/meadowup" "$staging/"
           tar -czf "$GITHUB_WORKSPACE/meadow-${{ matrix.target }}.tar.gz" -C "$staging" meadow meadowup
+          cp "$staging/meadowup" "$GITHUB_WORKSPACE/meadowup-${{ matrix.target }}"
 
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          # The zip the installer downloads: the build tool and meadowup.
+          # The archive `meadowup install` pulls: the build tool and meadowup.
           Compress-Archive `
             -Path buildtools/target/${{ matrix.target }}/release/meadow.exe, `
                   installer/target/${{ matrix.target }}/release/meadowup.exe `
             -DestinationPath meadow-${{ matrix.target }}.zip
-          # The installer itself, under a name a person can recognise.
+          # And meadowup on its own -- the thing to download and double-click,
+          # under a name that says which machine it is for.
           $arch = '${{ matrix.target }}'.Split('-')[0]
-          Copy-Item installer/target/${{ matrix.target }}/release/meadow-setup.exe `
-            "meadow-setup-$arch.exe"
+          Copy-Item installer/target/${{ matrix.target }}/release/meadowup.exe `
+            "meadowup-$arch.exe"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -149,7 +154,8 @@ jobs:
           path: |
             meadow-${{ matrix.target }}.tar.gz
             meadow-${{ matrix.target }}.zip
-            meadow-setup-*.exe
+            meadowup-${{ matrix.target }}
+            meadowup-*.exe
           if-no-files-found: error
 
   # The VS Code extension. Platform-independent, so it is built once rather than
@@ -202,9 +208,10 @@ jobs:
           body: |
             ## Install
 
-            **Windows** — download **`meadow-setup-x86_64.exe`** below and run
-            it. (On an ARM machine take `meadow-setup-aarch64.exe`.) It installs
-            `meadow` and adds it to your `PATH`; open a new terminal afterwards.
+            **Windows** — download **`meadowup-x86_64.exe`** below and run it.
+            (On an ARM machine take `meadowup-aarch64.exe`.) It installs itself
+            and the toolchain, and adds them to your `PATH`; open a new terminal
+            afterwards.
 
             **macOS / Linux**
 
@@ -212,8 +219,9 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | sh
             ```
 
-            Then `meadow` starts the REPL, and `meadow run <path>` builds and
-            runs a package.
+            Then `meadow` starts the REPL and `meadow run <path>` builds and runs
+            a package, while `meadowup update` brings the toolchain forward --
+            the two split the way `cargo` and `rustup` do.
 
             **VS Code** — download **`meadow-*.vsix`** below and install it with
             *Extensions: Install from VSIX…*, or:

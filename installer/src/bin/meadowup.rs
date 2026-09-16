@@ -24,14 +24,29 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    match run(&std::env::args().skip(1).collect::<Vec<_>>()) {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // Double-clicked with no arguments is someone who downloaded this to
+    // install Meadow, so that is what it does -- and the window is held open
+    // afterwards, or everything printed would vanish with it.
+    let clicked = meadowup::launched_by_double_click();
+    let argv = if clicked && argv.is_empty() {
+        vec!["install".to_string()]
+    } else {
+        argv
+    };
+
+    let code = match run(&argv) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!();
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    };
+    if clicked {
+        meadowup::wait_for_enter();
     }
+    code
 }
 
 struct Args {
@@ -129,9 +144,9 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
         "{} {tag} for {target}",
         if updating { " Updating" } else { "Installing" }
     );
-    let unpacked = release::fetch(&tag, target, "meadowup-install")?;
-
     std::fs::create_dir_all(&bin).map_err(|e| format!("could not make {}: {e}", bin.display()))?;
+
+    let unpacked = release::fetch(&tag, target, "meadowup-install")?;
 
     // The build tool, and this program: a release carries both, and leaving
     // meadowup behind would strand the machine on a version that cannot update
@@ -159,9 +174,14 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
             exe_name()
         ));
     }
-    // Absent from older releases, which is not an error: those simply predate
-    // meadowup, and the next release will carry it.
-    let _ = put(up_name(), &bin.join(up_name()))?;
+    // meadowup itself. The release's copy is preferred over the running one --
+    // it is the one being installed, and on an update it is the newer. A
+    // release that predates meadowup carries none, and then the program that is
+    // running puts itself in place instead, which is what makes a downloaded
+    // meadowup all anyone needs to fetch.
+    if !put(up_name(), &bin.join(up_name()))? {
+        install_self(&bin)?;
+    }
     let _ = std::fs::remove_dir_all(&unpacked);
 
     if args.modify_path {
@@ -196,6 +216,31 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
     } else {
         println!("Add this to your PATH: {}", bin.display());
     }
+    Ok(())
+}
+
+/// Put the running program in `bin`, unless it is already the one there.
+///
+/// A downloaded `meadowup` installs itself first and the toolchain after, so
+/// one download is all it takes -- and an update that goes on to replace this
+/// file with a newer one simply overwrites what was just written.
+fn install_self(bin: &Path) -> Result<(), String> {
+    let Ok(running) = std::env::current_exe() else {
+        return Ok(());
+    };
+    let dest = bin.join(up_name());
+    // Already in place: `meadowup update` run from the installed copy.
+    if std::fs::canonicalize(&running).ok() == std::fs::canonicalize(&dest).ok() {
+        return Ok(());
+    }
+    let backup = meadowup::displace(&dest);
+    std::fs::copy(&running, &dest)
+        .map_err(|e| format!("could not write {}: {e}", dest.display()))?;
+    make_runnable(&dest);
+    if let Some(backup) = backup {
+        let _ = std::fs::remove_file(backup);
+    }
+    println!("  Installed {}", dest.display());
     Ok(())
 }
 

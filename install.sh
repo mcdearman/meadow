@@ -3,61 +3,49 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/install.sh | sh
 #
-# Downloads a prebuilt `meadow` for this platform from GitHub Releases and puts
-# it in ~/.meadow/bin. If there is no release build for this platform (or you
-# pass --from-source) it builds from source instead, which needs a Rust
-# toolchain. Run with --help for the options.
+# This script does one thing: get `meadowup` onto the machine. Everything after
+# that is meadowup's job -- it installs itself into ~/.meadow/bin, fetches the
+# toolchain, and edits your PATH. That is why this file is short, and why the
+# same program does the work on Windows, where there is no shell script at all.
+#
+# Run with --help for the options.
 
 set -eu
 
 REPO="mcdearman/meadow"
 MEADOW_HOME="${MEADOW_HOME:-$HOME/.meadow}"
 BIN_DIR="$MEADOW_HOME/bin"
-ENV_FILE="$MEADOW_HOME/env"
 
 VERSION="latest"
 FROM_SOURCE=0
 LOCAL=""
-MODIFY_PATH=1
 UNINSTALL=0
+# Passed through to meadowup, which is what actually edits the PATH.
+PASS_THROUGH=""
 
 main() {
     parse_args "$@"
 
-    if [ "$UNINSTALL" -eq 1 ]; then
-        uninstall
-        return
-    fi
-
-    say "installing meadow to $BIN_DIR"
-    mkdir -p "$BIN_DIR"
-
     if [ "$FROM_SOURCE" -eq 1 ]; then
-        install_from_source
+        build_meadowup
     else
         target="$(detect_target)"
-        if ! install_prebuilt "$target"; then
-            say "no prebuilt binary for $target — building from source"
-            install_from_source
+        if ! fetch_meadowup "$target"; then
+            say "no prebuilt meadowup for $target — building from source"
+            build_meadowup
         fi
     fi
 
-    write_env
-    [ "$MODIFY_PATH" -eq 1 ] && add_to_path
-
-    installed="$("$BIN_DIR/meadow" --version 2>/dev/null || echo meadow)"
-    say ""
-    say "installed $installed"
-    say ""
-    say "  meadow                 start the REPL"
-    say "  meadow run <path>      build and run a package"
-    say "  meadow add <url>       add a dependency"
-    say "  meadowup update        bring the toolchain up to date"
-    say ""
-    if [ "$MODIFY_PATH" -eq 1 ]; then
-        say "Open a new shell, or run:  . \"$ENV_FILE\""
+    # From here it is meadowup's. `uninstall` is handed over too, so there is
+    # one implementation of it rather than this script's and meadowup's
+    # disagreeing about what to remove.
+    if [ "$UNINSTALL" -eq 1 ]; then
+        exec "$BIN_DIR/meadowup" uninstall $PASS_THROUGH
+    fi
+    if [ "$VERSION" = "latest" ]; then
+        exec "$BIN_DIR/meadowup" install $PASS_THROUGH
     else
-        say "Add to your PATH:  . \"$ENV_FILE\""
+        exec "$BIN_DIR/meadowup" install --version "$VERSION" $PASS_THROUGH
     fi
 }
 
@@ -78,64 +66,45 @@ parse_args() {
                 FROM_SOURCE=1
                 shift 2
                 ;;
-            --no-modify-path) MODIFY_PATH=0; shift ;;
+            --no-modify-path) PASS_THROUGH="$PASS_THROUGH --no-modify-path"; shift ;;
+            --force) PASS_THROUGH="$PASS_THROUGH --force"; shift ;;
             --uninstall) UNINSTALL=1; shift ;;
-            -h|--help) usage; exit 0 ;;
+            --help|-h) usage; exit 0 ;;
             *) err "unknown option: $1 (try --help)" ;;
         esac
     done
 }
 
 usage() {
-    cat <<EOF
-Install meadow.
+    cat <<'EOF'
+Installs meadowup, which installs the rest of the Meadow toolchain.
 
-USAGE:
-    install.sh [OPTIONS]
+    install.sh [options]
 
-OPTIONS:
-        --version <tag>    Install a specific release (default: latest)
-        --from-source      Build from source with cargo instead of downloading
-        --local <dir>      Build from this checkout instead of cloning one
-        --no-modify-path   Do not touch your shell profile
-        --uninstall        Remove meadow and its PATH entry
-    -h, --help             Print this help
+    --version <TAG>    a particular release, not the newest
+    --from-source      build meadowup with cargo instead of downloading it
+    --local <PATH>     build from a checkout already on disk
+    --no-modify-path   do not touch your shell profiles
+    --force            install again even if it is already here
+    --uninstall        remove Meadow and undo the PATH entry
 
-ENVIRONMENT:
-    MEADOW_HOME    Where to install (default: \$HOME/.meadow)
+Afterwards, `meadowup` does this job on its own:
+
+    meadowup update       bring the toolchain up to date
+    meadowup show         what is installed, and where
+    meadowup uninstall
+
+MEADOW_HOME overrides where everything goes.
 EOF
 }
 
-# --- platform detection -----------------------------------------------------
+# --- getting meadowup -------------------------------------------------------
 
-# Print the Rust target triple for this machine, or fail if it is not one we
-# publish binaries for.
-detect_target() {
-    os="$(uname -s)"
-    arch="$(uname -m)"
-
-    case "$os" in
-        Linux)  os_part="unknown-linux-gnu" ;;
-        Darwin) os_part="apple-darwin" ;;
-        *) err "unsupported OS: $os (try --from-source)" ;;
-    esac
-
-    case "$arch" in
-        x86_64|amd64)  arch_part="x86_64" ;;
-        arm64|aarch64) arch_part="aarch64" ;;
-        *) err "unsupported architecture: $arch (try --from-source)" ;;
-    esac
-
-    echo "${arch_part}-${os_part}"
-}
-
-# --- installing -------------------------------------------------------------
-
-# Download and unpack the release archive for $1. Returns non-zero (without
-# exiting) when there is no such asset, so the caller can fall back to source.
-install_prebuilt() {
+# Download meadowup for $1. Returns non-zero (without exiting) when there is no
+# such asset, so the caller can fall back to building it.
+fetch_meadowup() {
     target="$1"
-    asset="meadow-${target}.tar.gz"
+    asset="meadowup-${target}"
     if [ "$VERSION" = "latest" ]; then
         url="https://github.com/$REPO/releases/latest/download/$asset"
     else
@@ -147,58 +116,32 @@ install_prebuilt() {
     # shellcheck disable=SC2064
     trap "rm -rf \"$tmp\"" EXIT
 
-    if ! download "$url" "$tmp/$asset"; then
+    if ! download "$url" "$tmp/meadowup"; then
         rm -rf "$tmp"
         trap - EXIT
         return 1
     fi
 
-    tar -xzf "$tmp/$asset" -C "$tmp" || err "could not unpack $asset"
-    [ -f "$tmp/meadow" ] || err "$asset did not contain a meadow binary"
-
-    replace_binary "$tmp/meadow" meadow
-    # `meadowup` manages the toolchain from here on; this script only has to
-    # get it onto the machine once. Releases before it have no such file, which
-    # is not an error -- the next `meadowup update` will bring one.
-    [ -f "$tmp/meadowup" ] && replace_binary "$tmp/meadowup" meadowup
+    mkdir -p "$BIN_DIR"
+    chmod 755 "$tmp/meadowup"
+    replace_binary "$tmp/meadowup" meadowup
 
     rm -rf "$tmp"
     trap - EXIT
 }
 
-# Put `$1` at $BIN_DIR/$2, replacing whatever is there.
-#
-# The old binary is renamed out of the way first: writing over an executable that
-# is currently running fails on Linux (ETXTBSY), while renaming it never does, so
-# an upgrade works even with a REPL open elsewhere. Unlinking a busy file is fine
-# on Unix, so the leftover goes immediately.
-replace_binary() {
-    dest="$BIN_DIR/$2"
-    if [ -f "$dest" ]; then
-        rm -f "$dest.old"
-        mv "$dest" "$dest.old" 2>/dev/null || true
-    fi
-    install -m 755 "$1" "$dest" 2>/dev/null \
-        || { cp "$1" "$dest" && chmod 755 "$dest"; }
-    rm -f "$dest.old"
-}
-
-install_from_source() {
+build_meadowup() {
     need_cmd cargo
+    mkdir -p "$BIN_DIR"
 
     # A checkout already on disk: build it where it is, so a second run is an
-    # incremental build rather than a clean one, and install the result the same
-    # way a downloaded binary is installed.
+    # incremental build rather than a clean one.
     if [ -n "$LOCAL" ]; then
-        [ -f "$LOCAL/buildtools/meadow/Cargo.toml" ] \
-            || err "$LOCAL does not look like a meadow checkout (no buildtools/meadow)"
-        say "building $LOCAL (release)"
-        cargo build --release --manifest-path "$LOCAL/buildtools/Cargo.toml" -p meadow \
-            || err "cargo build failed"
-        replace_binary "$LOCAL/buildtools/target/release/meadow" meadow
-        # meadowup is its own workspace, and depends on no meadow crate.
+        [ -f "$LOCAL/installer/Cargo.toml" ] \
+            || err "$LOCAL does not look like a meadow checkout (no installer/)"
+        say "building meadowup from $LOCAL"
         cargo build --release --manifest-path "$LOCAL/installer/Cargo.toml" --bin meadowup \
-            || err "cargo build failed (meadowup)"
+            || err "cargo build failed"
         replace_binary "$LOCAL/installer/target/release/meadowup" meadowup
         return
     fi
@@ -220,70 +163,72 @@ install_from_source() {
         fi
     fi
 
-    say "building (this takes a minute)"
-    # The CLI lives in the `buildtools` workspace; `--root` puts the binary in our
-    # bin dir rather than ~/.cargo/bin.
+    say "building meadowup"
+    cargo build --release --manifest-path "$src/installer/Cargo.toml" --bin meadowup \
+        || err "cargo build failed"
+    replace_binary "$src/installer/target/release/meadowup" meadowup
+
+    # Built from source, so the toolchain is built from the same source rather
+    # than downloaded -- a platform with no release build has none to download.
+    say "building the toolchain (this takes a minute)"
     cargo install --path "$src/buildtools/meadow" --root "$MEADOW_HOME" --force \
         || err "cargo install failed"
-    # And the toolchain manager, from its own workspace.
-    cargo install --path "$src/installer" --bin meadowup --root "$MEADOW_HOME" --force \
-        || err "cargo install failed (meadowup)"
+    # meadowup has nothing left to fetch, so stop here rather than hand over.
+    VERSION="already-built"
+    finish_from_source
 }
 
-# --- PATH -------------------------------------------------------------------
-
-write_env() {
-    cat > "$ENV_FILE" <<EOF
-#!/bin/sh
-# Adds meadow to PATH. Sourced from your shell profile by the installer.
-case ":\${PATH}:" in
-    *:"$BIN_DIR":*) ;;
-    *) export PATH="$BIN_DIR:\$PATH" ;;
-esac
-EOF
-    chmod 644 "$ENV_FILE"
+# What meadowup would have printed, for the from-source path that skips it.
+finish_from_source() {
+    "$BIN_DIR/meadowup" install --no-modify-path >/dev/null 2>&1 || true
+    say ""
+    say "installed $("$BIN_DIR/meadow" --version 2>/dev/null || echo meadow)"
+    say ""
+    say "  meadow                 start the REPL"
+    say "  meadow run <path>      build and run a package"
+    say "  meadowup update        bring the toolchain up to date"
+    say ""
+    say "Add to your PATH:  . \"$MEADOW_HOME/env\""
+    exit 0
 }
 
-# Source the env file from every shell profile the user actually has, once.
-add_to_path() {
-    line=". \"$ENV_FILE\""
-    added=0
-    for profile in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zshenv"; do
-        [ -f "$profile" ] || continue
-        if ! grep -Fqs "$ENV_FILE" "$profile"; then
-            printf '\n# added by the meadow installer\n%s\n' "$line" >> "$profile"
-            say "added meadow to $profile"
-            added=1
-        fi
-    done
-    # No profile at all: make one, so a new shell still finds meadow.
-    if [ "$added" -eq 0 ] && [ ! -f "$HOME/.profile" ]; then
-        printf '\n# added by the meadow installer\n%s\n' "$line" >> "$HOME/.profile"
-        say "added meadow to $HOME/.profile"
+# Put `$1` at $BIN_DIR/$2, replacing whatever is there.
+#
+# The old binary is renamed out of the way first: writing over an executable that
+# is currently running fails on Linux (ETXTBSY), while renaming it never does, so
+# an upgrade works even with one open elsewhere. Unlinking a busy file is fine on
+# Unix, so the leftover goes immediately.
+replace_binary() {
+    dest="$BIN_DIR/$2"
+    if [ -f "$dest" ]; then
+        rm -f "$dest.old"
+        mv "$dest" "$dest.old" 2>/dev/null || true
     fi
-}
-
-uninstall() {
-    [ -d "$MEADOW_HOME" ] || err "meadow is not installed at $MEADOW_HOME"
-    for profile in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zshenv"; do
-        [ -f "$profile" ] || continue
-        grep -Fqs "$ENV_FILE" "$profile" || continue
-        tmp="$(mktemp)"
-        # Drop our two lines, then trim trailing blanks so the blank line we
-        # printed ahead of them does not pile up over install/uninstall cycles.
-        grep -Fv "$ENV_FILE" "$profile" \
-            | grep -Fv "# added by the meadow installer" \
-            | awk 'NF {last = NR} {line[NR] = $0} END {for (i = 1; i <= last; i++) print line[i]}' \
-            > "$tmp"
-        cat "$tmp" > "$profile"
-        rm -f "$tmp"
-        say "removed meadow from $profile"
-    done
-    rm -rf "$MEADOW_HOME"
-    say "removed $MEADOW_HOME"
+    install -m 755 "$1" "$dest" 2>/dev/null \
+        || { cp "$1" "$dest" && chmod 755 "$dest"; }
+    rm -f "$dest.old"
 }
 
 # --- helpers ----------------------------------------------------------------
+
+detect_target() {
+    os="$(uname -s)"
+    arch="$(uname -m)"
+
+    case "$os" in
+        Darwin) os_part="apple-darwin" ;;
+        Linux)  os_part="unknown-linux-gnu" ;;
+        *) err "unsupported OS: $os (try --from-source)" ;;
+    esac
+
+    case "$arch" in
+        x86_64|amd64)  arch_part="x86_64" ;;
+        arm64|aarch64) arch_part="aarch64" ;;
+        *) err "unsupported architecture: $arch (try --from-source)" ;;
+    esac
+
+    echo "${arch_part}-${os_part}"
+}
 
 download() {
     if command -v curl >/dev/null 2>&1; then
@@ -291,16 +236,21 @@ download() {
     elif command -v wget >/dev/null 2>&1; then
         wget -q "$1" -O "$2"
     else
-        err "need curl or wget to download"
+        err "need curl or wget"
     fi
 }
 
 need_cmd() {
-    command -v "$1" >/dev/null 2>&1 || err "need '$1' (not found)
-  install it, or install a Rust toolchain from https://rustup.rs"
+    command -v "$1" >/dev/null 2>&1 || err "need $1"
 }
 
-say() { echo "meadow: $1"; }
-err() { echo "meadow: error: $1" >&2; exit 1; }
+say() {
+    echo "$1"
+}
+
+err() {
+    echo "error: $1" >&2
+    exit 1
+}
 
 main "$@"

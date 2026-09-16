@@ -1,10 +1,11 @@
-//! The Meadow toolchain's installer, shared by `meadowup` and `meadow-setup`.
+//! The Meadow toolchain's installer, behind `meadowup`.
 //!
 //! Everything here is about *getting Meadow onto a machine*: where it goes,
 //! how a release is fetched, and how the `bin` directory joins the `PATH`.
 //! Neither the compiler nor the build tool depends on any of it -- `meadowup`
 //! has to work before Meadow is installed at all, which is why it is a separate
-//! program with no Meadow crates behind it.
+//! program with no Meadow crates behind it, and why it is the thing people
+//! download rather than something the toolchain carries.
 //!
 //! Downloading goes through `curl` and `tar`, which ship with macOS, essentially
 //! every Linux, and Windows 10 1803 and later. That is deliberate: a tool whose
@@ -132,6 +133,35 @@ pub fn version_of(exe: &Path) -> Option<String> {
 }
 
 pub mod release;
+
+/// True when this process owns its console, which on Windows means it was
+/// double-clicked rather than run from a shell.
+///
+/// The window would vanish along with the output, so the caller holds it open.
+/// Always false elsewhere: nobody double-clicks a Unix binary expecting a
+/// terminal to stay.
+#[cfg(windows)]
+pub fn launched_by_double_click() -> bool {
+    use windows_sys::Win32::System::Console::GetConsoleProcessList;
+    let mut pids = [0u32; 4];
+    let count = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32) };
+    count == 1
+}
+
+#[cfg(not(windows))]
+pub fn launched_by_double_click() -> bool {
+    false
+}
+
+/// Wait for a keypress, so that what was printed can be read.
+pub fn wait_for_enter() {
+    use std::io::Write;
+    println!();
+    print!("Press Enter to close this window...");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+}
 
 /// Adding and removing the `bin` directory from the user's `PATH`.
 ///

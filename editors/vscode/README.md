@@ -37,7 +37,7 @@ It is looked for in this order, so an ordinary install needs no configuration:
 1. your `PATH`;
 2. `$MEADOW_HOME/bin`, if that is set — both installers honour it;
 3. `~/.cargo/bin` (`cargo install`);
-4. `~/.meadow/bin` (`install.sh` and the Windows installer).
+4. `~/.meadow/bin` (where `meadowup` installs it).
 
 `PATH` is searched first because what you put there is what you meant, and the
 last three are searched at all because a VS Code launched from the Dock or the

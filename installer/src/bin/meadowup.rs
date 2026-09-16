@@ -57,6 +57,9 @@ struct Args {
     /// Leave shell profiles and the registry alone.
     modify_path: bool,
     home: PathBuf,
+    /// Take the binaries from this directory instead of fetching a release:
+    /// what `install.sh` passes after building them from source.
+    from: Option<PathBuf>,
 }
 
 fn run(argv: &[String]) -> Result<(), String> {
@@ -94,6 +97,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         force: false,
         modify_path: true,
         home: home(),
+        from: None,
     };
     let mut it = argv.iter();
     while let Some(a) = it.next() {
@@ -107,6 +111,12 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             }
             "--force" => args.force = true,
             "--no-modify-path" => args.modify_path = false,
+            "--from" => {
+                args.from = Some(PathBuf::from(
+                    it.next()
+                        .ok_or("`--from` needs a directory holding the binaries")?,
+                ));
+            }
             other => return Err(format!("`{other}` is not an option here")),
         }
     }
@@ -118,35 +128,47 @@ fn parse(argv: &[String]) -> Result<Args, String> {
 /// `updating` only changes what is *said*: installing and updating do the same
 /// thing, which is to make the newest release the one that is here.
 fn install(args: &Args, updating: bool) -> Result<(), String> {
-    let target = meadowup::target_triple()?;
     let bin = bin_dir(&args.home);
     let meadow = bin.join(exe_name());
 
-    let tag = match &args.version {
-        Some(t) => t.clone(),
+    // `--from` is a directory that already holds the binaries -- built from
+    // source, or an unpacked archive. Nothing is looked up and nothing is
+    // fetched, so this is the offline install too.
+    let (unpacked, fetched, what) = match &args.from {
+        Some(dir) => {
+            if !dir.is_dir() {
+                return Err(format!("{} is not a directory", dir.display()));
+            }
+            println!("Installing from {}", dir.display());
+            (dir.clone(), false, "what was built".to_string())
+        }
         None => {
-            println!("  Checking for the latest release");
-            release::latest_tag()?
+            let target = meadowup::target_triple()?;
+            let tag = match &args.version {
+                Some(t) => t.clone(),
+                None => {
+                    println!("  Checking for the latest release");
+                    release::latest_tag()?
+                }
+            };
+            // Already this version: say so rather than downloading it again.
+            if !args.force
+                && let Some(have) = version_of(&meadow)
+                && have.split_whitespace().nth(1) == Some(tag.trim_start_matches('v'))
+            {
+                println!("  Unchanged {have} is already installed");
+                println!("            use `--force` to install it again");
+                return Ok(());
+            }
+            println!(
+                "{} {tag} for {target}",
+                if updating { " Updating" } else { "Installing" }
+            );
+            (release::fetch(&tag, target, "meadowup-install")?, true, tag)
         }
     };
 
-    // Already this version: say so rather than downloading it again.
-    if !args.force
-        && let Some(have) = version_of(&meadow)
-        && have.split_whitespace().nth(1) == Some(tag.trim_start_matches('v'))
-    {
-        println!("  Unchanged {have} is already installed");
-        println!("            use `--force` to install it again");
-        return Ok(());
-    }
-
-    println!(
-        "{} {tag} for {target}",
-        if updating { " Updating" } else { "Installing" }
-    );
     std::fs::create_dir_all(&bin).map_err(|e| format!("could not make {}: {e}", bin.display()))?;
-
-    let unpacked = release::fetch(&tag, target, "meadowup-install")?;
 
     // The build tool, and this program: a release carries both, and leaving
     // meadowup behind would strand the machine on a version that cannot update
@@ -170,7 +192,7 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
 
     if !put(exe_name(), &meadow)? {
         return Err(format!(
-            "the {tag} archive holds no {}, so there is nothing to install",
+            "{what} holds no {}, so there is nothing to install",
             exe_name()
         ));
     }
@@ -182,7 +204,11 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
     if !put(up_name(), &bin.join(up_name()))? {
         install_self(&bin)?;
     }
-    let _ = std::fs::remove_dir_all(&unpacked);
+    // Only what was downloaded is cleared away; a `--from` directory is the
+    // caller's, and removing it would take their build with it.
+    if fetched {
+        let _ = std::fs::remove_dir_all(&unpacked);
+    }
 
     if args.modify_path {
         match path::add(&bin) {
@@ -195,7 +221,7 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
     println!();
     match version_of(&meadow) {
         Some(v) => println!("Installed {v}"),
-        None => println!("Installed {tag}"),
+        None => println!("Installed {what}"),
     }
     println!();
     println!("  meadow                   start the REPL");
@@ -331,6 +357,7 @@ fn help() {
     println!();
     println!("OPTIONS");
     println!("  --version <TAG>      a particular release, not the newest");
+    println!("  --from <DIR>         take the binaries from here, fetching nothing");
     println!("  --force              install again even if it is already here");
     println!("  --no-modify-path     leave shell profiles and the registry alone");
     println!();

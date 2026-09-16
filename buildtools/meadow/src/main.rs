@@ -716,7 +716,7 @@ fn main() {
             eprintln!("is not installed yet, re-run the installer:");
             eprintln!();
             eprintln!(
-                "  curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/install.sh | sh"
+                "  curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/install.sh | sh"
             );
             std::process::exit(1);
         }

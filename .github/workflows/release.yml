@@ -216,7 +216,7 @@ jobs:
             **macOS / Linux**
 
             ```sh
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/scripts/install.sh | sh
             ```
 
             Then `meadow` starts the REPL and `meadow run <path>` builds and runs

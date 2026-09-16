@@ -34,7 +34,7 @@ Grab a build from the [releases page](https://github.com/mcdearman/meadow/releas
 — `meadow-setup-x86_64.exe` on Windows, or:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/install.sh | sh
 ```
 
 Either way you get a self-contained `meadow` in `~/.meadow/bin`. From a checkout,

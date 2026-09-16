@@ -517,10 +517,7 @@ fun f a 0 = a
 def main = f 1 0
 "#,
     );
-    assert!(
-        e.contains("takes 1 argument, but the first takes 2"),
-        "{e}"
-    );
+    assert!(e.contains("takes 1 argument, but the first takes 2"), "{e}");
 }
 
 #[test]

@@ -23,7 +23,7 @@ it. (Take `meadowup-aarch64.exe` on an ARM machine.)
 **macOS / Linux**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/install.sh | sh
 ```
 
 Either way you get `meadow` and `meadowup` in `~/.meadow/bin`, added to your
@@ -59,16 +59,22 @@ meadowup show                             # what is installed, and where
 meadowup uninstall
 ```
 
-`install.sh` passes its options straight through, and can build from source
-where there is no release for your platform:
+`install.sh` **builds the toolchain from source** and hands the binaries to
+meadowup, which installs them — so installing, and editing your `PATH`, is the
+same code either way. Building needs a Rust toolchain and takes a few minutes.
 
 ```sh
-install.sh --version v0.1.0-alpha   # pin a release
-install.sh --from-source      # build with cargo instead of downloading
-install.sh --local <path>     # ...from a checkout already on disk
+install.sh --from-release     # download prebuilt binaries instead, which is
+                              # quick but only as new as the last release
+install.sh --version v0.1.0-alpha   # that tag, rather than the newest
+install.sh --local <path>     # build from a checkout already on disk
 install.sh --no-modify-path   # leave shell profiles alone
 install.sh --uninstall
 ```
+
+`meadowup install --from <dir>` takes binaries from a directory rather than
+fetching any, which is what `install.sh` uses and what installs from an
+unpacked archive with no network at all.
 
 `MEADOW_HOME` overrides the install directory for both.
 </details>
@@ -509,8 +515,8 @@ scripts/check.sh                         # everything CI runs
 scripts/check.sh --strict                # ...plus rustfmt and clippy
 scripts/bench.sh                         # the benchmarks, on both runtimes
 scripts/bench-compact.sh                 # what compacting a large live value saves the collector
-scripts/install-local.sh                 # install this checkout the way a release installs
-scripts/install-local.sh --no-extension  # ...just `meadow`, not the VS Code extension
+scripts/install.sh --local .             # install this checkout the way a release installs
+scripts/install.sh --local . --with-extension   # ...and the VS Code extension with it
 cargo install --path buildtools/meadow   # install the CLI
 ```
 

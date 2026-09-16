@@ -51,7 +51,8 @@ main() {
     say ""
     say "  meadow                 start the REPL"
     say "  meadow run <path>      build and run a package"
-    say "  meadow build --release build with release checks"
+    say "  meadow add <url>       add a dependency"
+    say "  meadowup update        bring the toolchain up to date"
     say ""
     if [ "$MODIFY_PATH" -eq 1 ]; then
         say "Open a new shell, or run:  . \"$ENV_FILE\""
@@ -155,26 +156,31 @@ install_prebuilt() {
     tar -xzf "$tmp/$asset" -C "$tmp" || err "could not unpack $asset"
     [ -f "$tmp/meadow" ] || err "$asset did not contain a meadow binary"
 
-    replace_binary "$tmp/meadow"
+    replace_binary "$tmp/meadow" meadow
+    # `meadowup` manages the toolchain from here on; this script only has to
+    # get it onto the machine once. Releases before it have no such file, which
+    # is not an error -- the next `meadowup update` will bring one.
+    [ -f "$tmp/meadowup" ] && replace_binary "$tmp/meadowup" meadowup
 
     rm -rf "$tmp"
     trap - EXIT
 }
 
-# Put `$1` at $BIN_DIR/meadow, replacing whatever is there.
+# Put `$1` at $BIN_DIR/$2, replacing whatever is there.
 #
 # The old binary is renamed out of the way first: writing over an executable that
 # is currently running fails on Linux (ETXTBSY), while renaming it never does, so
 # an upgrade works even with a REPL open elsewhere. Unlinking a busy file is fine
 # on Unix, so the leftover goes immediately.
 replace_binary() {
-    if [ -f "$BIN_DIR/meadow" ]; then
-        rm -f "$BIN_DIR/meadow.old"
-        mv "$BIN_DIR/meadow" "$BIN_DIR/meadow.old" 2>/dev/null || true
+    dest="$BIN_DIR/$2"
+    if [ -f "$dest" ]; then
+        rm -f "$dest.old"
+        mv "$dest" "$dest.old" 2>/dev/null || true
     fi
-    install -m 755 "$1" "$BIN_DIR/meadow" 2>/dev/null \
-        || { cp "$1" "$BIN_DIR/meadow" && chmod 755 "$BIN_DIR/meadow"; }
-    rm -f "$BIN_DIR/meadow.old"
+    install -m 755 "$1" "$dest" 2>/dev/null \
+        || { cp "$1" "$dest" && chmod 755 "$dest"; }
+    rm -f "$dest.old"
 }
 
 install_from_source() {
@@ -189,7 +195,11 @@ install_from_source() {
         say "building $LOCAL (release)"
         cargo build --release --manifest-path "$LOCAL/buildtools/Cargo.toml" -p meadow \
             || err "cargo build failed"
-        replace_binary "$LOCAL/buildtools/target/release/meadow"
+        replace_binary "$LOCAL/buildtools/target/release/meadow" meadow
+        # meadowup is its own workspace, and depends on no meadow crate.
+        cargo build --release --manifest-path "$LOCAL/installer/Cargo.toml" --bin meadowup \
+            || err "cargo build failed (meadowup)"
+        replace_binary "$LOCAL/installer/target/release/meadowup" meadowup
         return
     fi
 
@@ -215,6 +225,9 @@ install_from_source() {
     # bin dir rather than ~/.cargo/bin.
     cargo install --path "$src/buildtools/meadow" --root "$MEADOW_HOME" --force \
         || err "cargo install failed"
+    # And the toolchain manager, from its own workspace.
+    cargo install --path "$src/installer" --bin meadowup --root "$MEADOW_HOME" --force \
+        || err "cargo install failed (meadowup)"
 }
 
 # --- PATH -------------------------------------------------------------------

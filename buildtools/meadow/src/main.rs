@@ -9,7 +9,7 @@ use meadow::{
     Backend, Engine, OptLevel, Profile, Resolved, Strictness, aot, artifacts, format, init,
     listing::{self, Emit},
     package::ProfileConfig,
-    pipeline, runtime, test, update,
+    pipeline, runtime, test,
     workspace::{Selected, Selection},
 };
 use std::path::PathBuf;
@@ -19,6 +19,15 @@ use std::path::PathBuf;
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
+    /// Never fetch a dependency. What is already in the cache is used; anything
+    /// else is an error saying what would have had to be fetched.
+    #[arg(long, global = true)]
+    offline: bool,
+    /// Refuse anything that would change `meadow.lock`. What CI wants: a build
+    /// that quietly re-pins a dependency is a build of something nobody
+    /// reviewed.
+    #[arg(long, global = true)]
+    locked: bool,
 }
 
 #[derive(Subcommand)]
@@ -194,14 +203,53 @@ enum Cmd {
         #[arg(long, conflicts_with = "name")]
         workspace: bool,
     },
-    /// Replace this binary with the latest published release.
+    /// Add a dependency to a package's manifest.
+    ///
+    /// Takes a git URL, a GitHub `owner/name`, or a directory. There is no
+    /// registry to look a name up in, so the repository is fetched and its own
+    /// `meadow.toml` says what the package is called.
+    Add {
+        /// `https://github.com/owner/name`, `owner/name`, or `../a/directory`.
+        #[arg(value_name = "WHAT")]
+        what: String,
+        /// Take this branch. Without one, the repository's default branch.
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["tag", "rev"])]
+        branch: Option<String>,
+        /// Take this tag.
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["branch", "rev"])]
+        tag: Option<String>,
+        /// Take this commit, which cannot come to mean anything else.
+        #[arg(long, value_name = "COMMIT", conflicts_with_all = ["branch", "tag"])]
+        rev: Option<String>,
+        /// Call it this, rather than what it calls itself.
+        #[arg(long, value_name = "NAME")]
+        rename: Option<String>,
+        /// The package to add it to.
+        #[arg(long, default_value = ".", value_name = "DIR")]
+        path: PathBuf,
+    },
+    /// Bring a package's dependencies forward to what their branches and tags
+    /// now name, rewriting `meadow.lock`.
+    ///
+    /// The manifest is not touched: a dependency keeps the branch or tag it
+    /// follows. Updating the toolchain is `meadow self update`.
     Update {
-        /// Install a specific release tag instead of the newest.
-        #[arg(long, value_name = "TAG")]
-        version: Option<String>,
-        /// Re-install even if this is already the latest version.
+        /// Only these, by name. Without any, every git dependency.
+        #[arg(value_name = "NAME")]
+        only: Vec<String>,
+        /// The package, or a member of the workspace holding the lockfile.
+        #[arg(long, default_value = ".", value_name = "DIR")]
+        path: PathBuf,
+        /// Say what would change without changing it.
         #[arg(long)]
-        force: bool,
+        dry_run: bool,
+    },
+    /// Where toolchain management went. Hidden: it is here only to say so to
+    /// anyone whose fingers still type it.
+    #[command(name = "self", hide = true)]
+    Toolchain {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
     },
 }
 
@@ -400,7 +448,18 @@ impl EngineArgs {
 }
 
 fn main() {
-    match Cli::parse().cmd {
+    let cli = Cli::parse();
+    // Said once, before anything resolves a dependency.
+    meadow::package::set_policy(meadow::package::Policy {
+        net: if cli.offline {
+            meadow::git::Net::Offline
+        } else {
+            meadow::git::Net::Allowed
+        },
+        locked: cli.locked,
+        update: false,
+    });
+    match cli.cmd {
         // No subcommand → interactive REPL.
         None => repl::Session::new().run(),
         Some(Cmd::Build {
@@ -577,6 +636,30 @@ fn main() {
                 }
             }
         }
+        Some(Cmd::Add {
+            what,
+            branch,
+            tag,
+            rev,
+            rename,
+            path,
+        }) => {
+            let reference = match (branch, tag, rev) {
+                (Some(b), _, _) => meadow::package::GitRef::Branch(b),
+                (_, Some(t), _) => meadow::package::GitRef::Tag(t),
+                (_, _, Some(r)) => meadow::package::GitRef::Rev(r),
+                _ => meadow::package::GitRef::Default,
+            };
+            if let Err(e) = meadow::add::run(&meadow::add::Options {
+                what,
+                reference,
+                rename,
+                dir: path,
+            }) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Cmd::Init {
             path,
             name,
@@ -608,11 +691,34 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Some(Cmd::Update { version, force }) => {
-            if let Err(e) = update::run(&update::Options { version, force }) {
+        Some(Cmd::Update {
+            only,
+            path,
+            dry_run,
+        }) => {
+            if let Err(e) = meadow::update::run(&meadow::update::Options {
+                dir: path,
+                only,
+                dry_run,
+            }) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
+        }
+        Some(Cmd::Toolchain { rest }) => {
+            let what = rest.first().map(String::as_str).unwrap_or("update");
+            eprintln!("error: `meadow` no longer manages the toolchain; `meadowup` does.");
+            eprintln!();
+            eprintln!("  meadowup {what}");
+            eprintln!();
+            eprintln!("`meadow` is the build system, as `cargo` is, and `meadowup` looks");
+            eprintln!("after which version of it you have, as `rustup` does. If meadowup");
+            eprintln!("is not installed yet, re-run the installer:");
+            eprintln!();
+            eprintln!(
+                "  curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/install.sh | sh"
+            );
+            std::process::exit(1);
         }
     }
 }

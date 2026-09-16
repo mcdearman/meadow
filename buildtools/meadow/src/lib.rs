@@ -9,16 +9,19 @@
 //! between them. The `meadow` binary — CLI + REPL — is a thin shell over this
 //! crate.
 
+pub mod add;
 pub mod aot;
 pub mod artifacts;
 pub mod complete;
 pub mod dap;
 pub mod editor;
 pub mod format;
+pub mod git;
 pub mod incremental;
 pub mod init;
 pub mod linker;
 pub mod listing;
+pub mod lock;
 pub mod package;
 pub mod pipeline;
 pub mod profile;

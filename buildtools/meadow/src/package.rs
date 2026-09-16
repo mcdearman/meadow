@@ -65,13 +65,70 @@ pub struct ModuleSource {
     pub source: Source,
 }
 
+/// Which commit of a git dependency to build.
+///
+/// Only [`GitRef::Rev`] names one outright. A branch moves, and a tag *can* be
+/// moved, which is why what was resolved is written to the lockfile rather than
+/// worked out afresh on every build.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum GitRef {
+    /// Whatever the remote's `HEAD` points at -- its default branch.
+    #[default]
+    Default,
+    Branch(String),
+    Tag(String),
+    /// A commit, which cannot mean anything else later.
+    Rev(String),
+}
+
+impl GitRef {
+    /// How this reads in a manifest and a lock entry: `branch=main`, `tag=v1`.
+    pub fn written(&self) -> Option<String> {
+        match self {
+            GitRef::Default => None,
+            GitRef::Branch(b) => Some(format!("branch={b}")),
+            GitRef::Tag(t) => Some(format!("tag={t}")),
+            GitRef::Rev(r) => Some(format!("rev={r}")),
+        }
+    }
+
+    /// What to ask `git` to fetch.
+    pub fn refspec(&self) -> &str {
+        match self {
+            GitRef::Default => "HEAD",
+            GitRef::Branch(b) => b,
+            GitRef::Tag(t) => t,
+            GitRef::Rev(r) => r,
+        }
+    }
+}
+
+/// Where a dependency's source is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DepSource {
+    /// `util = { path = "../util" }` -- a directory, relative to the manifest,
+    /// or absolute for one inherited from a workspace.
+    Path(PathBuf),
+    /// `json = { git = "https://github.com/…", tag = "v1.2.0" }`
+    Git { url: String, reference: GitRef },
+}
+
+/// One entry of `[dependencies]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dependency {
+    pub name: String,
+    pub source: DepSource,
+}
+
 #[derive(Debug, Clone)]
 pub struct Manifest {
     pub name: String,
     pub version: String,
-    /// Each dependency's name and path, relative to the manifest -- or
-    /// absolute, for one inherited from a workspace.
-    pub deps: Vec<(String, PathBuf)>,
+    /// Each dependency, in the order it was written.
+    pub deps: Vec<Dependency>,
+    /// What is wrong with the manifest but not wrong enough to stop the build:
+    /// a spelling on its way out, say. Printed once, by whoever built it.
+    pub warnings: Vec<String>,
     /// `[profile.<name>]` sections, keyed by profile name.
     pub profiles: HashMap<String, ProfileConfig>,
     /// Whether the manifest describes a package. Only a workspace's root
@@ -99,9 +156,9 @@ pub struct WorkspaceManifest {
     pub default_members: Vec<String>,
     /// `[workspace.package]` `version`, for `version.workspace = true`.
     pub version: Option<String>,
-    /// `[workspace.dependencies]`, relative to the root, for
-    /// `name = { workspace = true }`.
-    pub deps: Vec<(String, PathBuf)>,
+    /// `[workspace.dependencies]`, for `name = { workspace = true }`. A path
+    /// in one is relative to the workspace root, not to the member.
+    pub deps: Vec<Dependency>,
 }
 
 /// What one `[profile.<name>]` section says.
@@ -155,11 +212,19 @@ pub struct PackageGraph {
     order: Vec<PackageId>,
     /// The packages asked for, in the order they were asked for.
     roots: Vec<PackageId>,
+    /// What the manifests read along the way had to say that did not stop the
+    /// build. Each is reported once, however many packages share a manifest.
+    warnings: Vec<String>,
 }
 
 impl PackageGraph {
     pub fn order(&self) -> &[PackageId] {
         &self.order
+    }
+
+    /// What reading the manifests had to say: a spelling on its way out, say.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// The package asked for -- the first, if several were.
@@ -196,11 +261,23 @@ impl PackageGraph {
     /// Discover several packages and everything they depend on, each package
     /// once however many of them depend on it -- a workspace's members.
     pub fn build_all(entries: &[&Path]) -> Result<PackageGraph, Diagnostic> {
+        let mut resolver = Resolver::for_entry(entries.first().copied().unwrap_or(Path::new(".")));
+        PackageGraph::build_all_with(entries, &mut resolver)
+    }
+
+    /// The same, with control over how dependencies are fetched and what is
+    /// pinned. Whoever passes the resolver owns writing the lockfile back.
+    pub fn build_all_with(
+        entries: &[&Path],
+        resolver: &mut Resolver,
+    ) -> Result<PackageGraph, Diagnostic> {
         let mut builder = Builder {
+            resolver,
             packages: Vec::new(),
             by_root: HashMap::new(),
             order: Vec::new(),
             stack: Vec::new(),
+            warnings: Vec::new(),
         };
         let mut roots = Vec::new();
         for entry in entries {
@@ -214,19 +291,129 @@ impl PackageGraph {
             packages: builder.packages,
             order: builder.order,
             roots,
+            warnings: builder.warnings,
         })
     }
 }
 
-struct Builder {
+/// How a dependency becomes a directory.
+///
+/// A path dependency already is one. A git dependency is fetched, at the commit
+/// [`crate::lock`] pinned when there is one -- which is what makes a second
+/// build of an unchanged project touch the network not at all.
+pub struct Resolver {
+    pub lock: crate::lock::Lock,
+    pub net: crate::git::Net,
+    /// Refuse anything that would change the lockfile. What CI wants: a build
+    /// that quietly re-pins is a build of something nobody reviewed.
+    pub locked: bool,
+    /// Ignore what is pinned and take what the manifest's reference names now.
+    /// `meadow update`.
+    pub update: bool,
+    /// With `update`, only these dependencies by name. Empty means all of them,
+    /// which is what `meadow update` with no names does.
+    pub only: Vec<String>,
+    /// What was resolved, so that entries nothing wants any more can be
+    /// dropped when the lockfile is written.
+    pub seen: Vec<(String, String)>,
+    /// Where fetched repositories are kept. Held here rather than looked up,
+    /// so a test can point it somewhere of its own.
+    pub cache: PathBuf,
+}
+
+/// How a run resolves dependencies: `--offline`, `--locked`, and whether this
+/// is an update.
+///
+/// A property of the invocation rather than of any one package, so it is set
+/// once from the command line before anything is built, and read wherever a
+/// dependency is resolved. Threading it through every build entry point would
+/// say the same thing in more places.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Policy {
+    pub net: crate::git::Net,
+    pub locked: bool,
+    pub update: bool,
+}
+
+static POLICY: std::sync::OnceLock<Policy> = std::sync::OnceLock::new();
+
+/// Say how this run resolves. Only the first call counts, which is the one the
+/// command line makes before any work starts.
+pub fn set_policy(p: Policy) {
+    let _ = POLICY.set(p);
+}
+
+pub fn policy() -> Policy {
+    POLICY.get().copied().unwrap_or_default()
+}
+
+impl Resolver {
+    /// A resolver that reads the lockfile for a build rooted at `entry` and may
+    /// fetch. It does not write: saving is the caller's, once the whole graph
+    /// has resolved.
+    pub fn for_entry(entry: &Path) -> Resolver {
+        let p = policy();
+        Resolver {
+            lock: crate::lock::Lock::load(&crate::lock::dir_for(entry)),
+            net: p.net,
+            locked: p.locked,
+            update: p.update,
+            only: Vec::new(),
+            seen: Vec::new(),
+            cache: crate::git::default_cache().unwrap_or_default(),
+        }
+    }
+
+    /// Where `dep`, written in the manifest in `from`, can be read.
+    fn resolve(&mut self, dep: &Dependency, from: &Path) -> Result<PathBuf, String> {
+        let DepSource::Git { url, reference } = &dep.source else {
+            let DepSource::Path(rel) = &dep.source else {
+                unreachable!("a dependency is a path or a git repository")
+            };
+            return Ok(from.join(rel));
+        };
+        let source = crate::lock::source_id(&dep.source).expect("a git source has an id");
+        // Updating means ignoring what was pinned, so that the reference is
+        // looked at afresh. Naming dependencies narrows that to those: the
+        // rest keep the commits they had, which is the point of updating one
+        // thing rather than everything.
+        let refresh =
+            self.update && (self.only.is_empty() || self.only.iter().any(|n| *n == dep.name));
+        let pinned = if refresh {
+            None
+        } else {
+            self.lock.find(&dep.name, &source).map(|l| l.rev.clone())
+        };
+        if self.locked && pinned.is_none() {
+            return Err(crate::lock::changed(&format!(
+                "`{}` from {}",
+                dep.name,
+                crate::lock::describes(&source)
+            )));
+        }
+        let got = crate::git::ensure(&self.cache, url, reference, pinned.as_deref(), self.net)?;
+        self.seen.push((dep.name.clone(), source.clone()));
+        self.lock.insert(crate::lock::Locked {
+            name: dep.name.clone(),
+            source,
+            rev: got.rev,
+            tree: got.tree,
+        });
+        Ok(got.path)
+    }
+}
+
+struct Builder<'r> {
+    resolver: &'r mut Resolver,
     packages: Vec<Package>,
     by_root: HashMap<PathBuf, PackageId>,
     order: Vec<PackageId>,
     /// Roots currently being visited, for cycle reporting.
     stack: Vec<(PathBuf, InternedString)>,
+    warnings: Vec<String>,
 }
 
-impl Builder {
+impl Builder<'_> {
     fn visit(&mut self, path: &Path) -> Result<PackageId, Diagnostic> {
         let canon = canonical(path);
         if let Some(id) = self.by_root.get(&canon) {
@@ -272,6 +459,15 @@ impl Builder {
                 });
             }
         }
+        if let Some(m) = &manifest {
+            let where_ = crate::workspace::shown(&canon.join("meadow.toml"));
+            for w in &m.warnings {
+                let said = format!("{where_}: {w}");
+                if !self.warnings.contains(&said) {
+                    self.warnings.push(said);
+                }
+            }
+        }
         let name = manifest
             .as_ref()
             .map(|m| InternedString::from(m.name.as_str()))
@@ -282,13 +478,25 @@ impl Builder {
         // resolve dependencies first so `order` ends up topologically sorted
         let mut dep_ids = Vec::new();
         if let Some(m) = &manifest {
-            for (dep_name, rel) in &m.deps {
-                let dep_path = canon.join(rel);
+            for dep in &m.deps {
+                let dep_path = match self.resolver.resolve(dep, &canon) {
+                    Ok(p) => p,
+                    Err(msg) => {
+                        self.stack.pop();
+                        return Err(Diagnostic {
+                            msg: format!("dependency `{}` of `{name}`: {msg}", dep.name),
+                            filename: crate::workspace::shown(&canon.join("meadow.toml")),
+                            label: ("declared here".to_string(), Default::default()),
+                            extra_labels: vec![],
+                        });
+                    }
+                };
                 if !dep_path.exists() {
                     self.stack.pop();
                     return Err(Diagnostic {
                         msg: format!(
-                            "dependency `{dep_name}` of `{name}` not found at {}",
+                            "dependency `{}` of `{name}` not found at {}",
+                            dep.name,
                             dep_path.display()
                         ),
                         filename: canon.display().to_string(),
@@ -319,6 +527,14 @@ impl Builder {
 
 /// Manifest file names, in precedence order.
 const MANIFEST_NAMES: &[&str] = &["meadow.toml", "meadow.pkg"];
+
+/// The manifest file in `dir`, whichever name it goes by.
+pub fn manifest_path(dir: &Path) -> Option<PathBuf> {
+    MANIFEST_NAMES
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+}
 
 impl Manifest {
     pub fn load(dir: &Path) -> std::io::Result<Option<Manifest>> {
@@ -365,8 +581,16 @@ impl Manifest {
             }
         }
         for name in inherits.deps {
-            match ws.deps.iter().find(|(n, _)| *n == name) {
-                Some((_, path)) => self.deps.push((name, root.join(path))),
+            match ws.deps.iter().find(|d| d.name == name) {
+                // A path is the root's to resolve; a git source means the same
+                // thing wherever it is read from.
+                Some(dep) => self.deps.push(Dependency {
+                    name,
+                    source: match &dep.source {
+                        DepSource::Path(p) => DepSource::Path(root.join(p)),
+                        git => git.clone(),
+                    },
+                }),
                 None => self.problems.push(format!(
                     "`{}` depends on `{name}` from the workspace, but {} has no \
                      `{name}` under `[workspace.dependencies]`",
@@ -446,7 +670,8 @@ struct Inherits {
 fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
     let mut name = package_name(dir).to_string();
     let mut version = "0.0.0".to_string();
-    let mut deps = Vec::new();
+    let mut deps: Vec<Dependency> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     let mut profiles: HashMap<String, ProfileConfig> = HashMap::new();
     let mut section = String::new();
     let mut says_package = false;
@@ -486,8 +711,11 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
                     inherits.deps.push(dep);
                 } else if inline_flag(value, "workspace") {
                     inherits.deps.push(key.to_string());
-                } else if let Some(path) = dep_path(value) {
-                    deps.push((key.to_string(), PathBuf::from(path)));
+                } else if let Some(source) = dep_source(value, key, &mut |w| warnings.push(w)) {
+                    deps.push(Dependency {
+                        name: key.to_string(),
+                        source,
+                    });
                 }
             }
             "package" | "" => {
@@ -520,11 +748,11 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
                 }
             }
             "workspace.dependencies" => {
-                if let Some(path) = dep_path(value) {
-                    workspace
-                        .get_or_insert_default()
-                        .deps
-                        .push((key.to_string(), PathBuf::from(path)));
+                if let Some(source) = dep_source(value, key, &mut |w| warnings.push(w)) {
+                    workspace.get_or_insert_default().deps.push(Dependency {
+                        name: key.to_string(),
+                        source,
+                    });
                 }
             }
             // `[profile.release]`, `[profile.debug]`, or any other name a
@@ -555,6 +783,7 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
     }
 
     let manifest = Manifest {
+        warnings,
         name,
         version,
         deps,
@@ -654,17 +883,71 @@ fn unquote(v: &str) -> &str {
 }
 
 /// A dependency value is either `"path"` or `{ path = "path" }`.
-fn dep_path(value: &str) -> Option<&str> {
+/// The fields of an inline table, `{ git = "…", tag = "v1" }`.
+///
+/// Values are quoted, so a `,` inside one would confuse this split. No key a
+/// manifest has takes a value with a comma in it -- a URL may, in a query
+/// string, but not one that names a repository.
+fn inline_fields(value: &str) -> Option<Vec<(&str, &str)>> {
     let v = value.trim();
-    if let Some(inner) = v.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+    let inner = v.strip_prefix('{').and_then(|s| s.strip_suffix('}'))?;
+    Some(
         inner
             .split(',')
             .filter_map(|kv| kv.split_once('='))
-            .find(|(k, _)| k.trim() == "path")
-            .map(|(_, p)| unquote(p))
-    } else {
-        Some(unquote(v))
+            .map(|(k, v)| (k.trim(), unquote(v)))
+            .collect(),
+    )
+}
+
+/// Read one `[dependencies]` value.
+///
+/// `warn` is told about a spelling that still works but should not be used, so
+/// that the manifest can be corrected before it means something else.
+fn dep_source(value: &str, key: &str, warn: &mut impl FnMut(String)) -> Option<DepSource> {
+    let Some(fields) = inline_fields(value) else {
+        // A bare string is a path today. Cargo reads one as a *version*, and
+        // Meadow will too once packages can be named rather than located -- so
+        // say now, while the two cannot be confused, rather than changing what
+        // this manifest means later.
+        let path = unquote(value.trim());
+        warn(format!(
+            "`{key} = \"{path}\"` will mean a version once packages can be \
+             named; write `{key} = {{ path = \"{path}\" }}` for a directory"
+        ));
+        return Some(DepSource::Path(PathBuf::from(path)));
+    };
+    let field = |want: &str| {
+        fields
+            .iter()
+            .find(|(k, _)| *k == want)
+            .map(|(_, v)| (*v).to_string())
+    };
+    if let Some(url) = field("git") {
+        // At most one of these; naming two is a contradiction rather than a
+        // precedence question, so it is refused.
+        let named: Vec<(&str, String)> = [("branch", "branch"), ("tag", "tag"), ("rev", "rev")]
+            .iter()
+            .filter_map(|(k, _)| field(k).map(|v| (*k, v)))
+            .collect();
+        let reference = match named.as_slice() {
+            [] => GitRef::Default,
+            [("branch", b)] => GitRef::Branch(b.clone()),
+            [("tag", t)] => GitRef::Tag(t.clone()),
+            [("rev", r)] => GitRef::Rev(r.clone()),
+            many => {
+                let which: Vec<&str> = many.iter().map(|(k, _)| *k).collect();
+                warn(format!(
+                    "dependency `{key}` names both `{}` -- only one of `branch`, \
+                     `tag` and `rev` can be meant, so it was ignored",
+                    which.join("` and `")
+                ));
+                return None;
+            }
+        };
+        return Some(DepSource::Git { url, reference });
     }
+    field("path").map(|p| DepSource::Path(PathBuf::from(p)))
 }
 
 fn discover_modules(

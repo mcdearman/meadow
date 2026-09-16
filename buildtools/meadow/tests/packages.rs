@@ -1,9 +1,12 @@
 //! Multi-package builds: `meadow.toml` manifests, a local path dependency, and
 //! `@pub` gating between packages.
 
-use meadow::{package::Manifest, pipeline};
+use meadow::{
+    package::{DepSource, Manifest},
+    pipeline,
+};
 use meadow_eval as eval;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const WORKSPACE: &str = "tests/fixtures/workspace";
 
@@ -15,8 +18,8 @@ fn manifest_parses_cargo_style() {
     assert_eq!(m.name, "app");
     assert_eq!(m.version, "0.1.0");
     assert_eq!(m.deps.len(), 1);
-    assert_eq!(m.deps[0].0, "util");
-    assert_eq!(m.deps[0].1, Path::new("../util"));
+    assert_eq!(m.deps[0].name, "util");
+    assert_eq!(m.deps[0].source, DepSource::Path(PathBuf::from("../util")));
 }
 
 #[test]

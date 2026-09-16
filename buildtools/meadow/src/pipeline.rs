@@ -47,6 +47,16 @@ pub fn build(entry: &Path, opts: Options) -> BuildOutput {
     build_with(entry, opts, None)
 }
 
+/// [`build`], resolving dependencies with `resolver` rather than the one the
+/// command line set up.
+pub fn build_resolved(
+    entry: &Path,
+    opts: Options,
+    resolver: &mut crate::package::Resolver,
+) -> BuildOutput {
+    build_inner(entry, opts, None, Some(resolver))
+}
+
 /// Text to add to the end of one module before it is compiled -- how a
 /// debugger starts a program at a function instead of `main`: it appends a
 /// definition that calls it, in the function's own module so that everything
@@ -62,7 +72,20 @@ pub struct Addition<'a> {
 /// Diagnostics from the added text point past the end of the file, which is
 /// how a caller can tell them from the file's own.
 pub fn build_with(entry: &Path, opts: Options, addition: Option<Addition<'_>>) -> BuildOutput {
-    let mut graph = match discover(&[entry]) {
+    build_inner(entry, opts, addition, None)
+}
+
+fn build_inner(
+    entry: &Path,
+    opts: Options,
+    addition: Option<Addition<'_>>,
+    resolver: Option<&mut crate::package::Resolver>,
+) -> BuildOutput {
+    let found = match resolver {
+        Some(r) => discover_with(&[entry], r),
+        None => discover(&[entry]),
+    };
+    let mut graph = match found {
         Ok(g) => g,
         Err(d) => return BuildOutput::failed(d),
     };
@@ -228,6 +251,17 @@ pub fn build_together(entries: &[&Path], opts: Options) -> (BuildOutput, Vec<Int
 /// The graph of `entries` and everything they depend on -- or why there is
 /// none.
 fn discover(entries: &[&Path]) -> Result<PackageGraph, Diagnostic> {
+    let lock_dir = crate::lock::dir_for(entries.first().copied().unwrap_or(Path::new(".")));
+    let mut resolver = crate::package::Resolver::for_entry(&lock_dir);
+    discover_with(entries, &mut resolver)
+}
+
+/// [`discover`], with a resolver of the caller's: how a test fetches into a
+/// cache of its own, and how `meadow update` re-resolves.
+fn discover_with(
+    entries: &[&Path],
+    resolver: &mut crate::package::Resolver,
+) -> Result<PackageGraph, Diagnostic> {
     // A package inside a workspace it is not a member of would build with the
     // wrong profiles into the wrong `target`: say so instead.
     for entry in entries {
@@ -240,7 +274,22 @@ fn discover(entries: &[&Path]) -> Result<PackageGraph, Diagnostic> {
             });
         }
     }
-    let graph = PackageGraph::build_all(entries)?;
+    // Dependencies are resolved against the lockfile, and what was resolved is
+    // written back -- so a first build pins what it found, and every build
+    // after it uses those commits until `meadow update` says otherwise.
+    let lock_dir = crate::lock::dir_for(entries.first().copied().unwrap_or(Path::new(".")));
+    let graph = PackageGraph::build_all_with(entries, resolver)?;
+    // Said before anything is compiled, so that a manifest on its way out is
+    // seen whether or not the build goes on to succeed.
+    for w in graph.warnings() {
+        eprintln!("warning: {w}");
+    }
+    if !resolver.seen.is_empty() {
+        resolver.lock.retain(&resolver.seen);
+        if let Err(e) = resolver.lock.save(&lock_dir) {
+            eprintln!("warning: could not write {}: {e}", crate::lock::FILE);
+        }
+    }
 
     // `Std` is embedded and injected below as an implicit dependency, so building
     // the tree on disk would declare every one of its names twice. Say that,

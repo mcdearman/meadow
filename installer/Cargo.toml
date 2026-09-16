@@ -1,11 +1,24 @@
 [workspace]
 
 [package]
-name = "meadow-setup"
+name = "meadowup"
 version = "0.1.0-alpha"
 edition = "2024"
-description = "Installer for the Meadow language toolchain"
+description = "Installs and updates the Meadow language toolchain"
 
+# The shared installer: where things go, how a release is fetched, and how the
+# `bin` directory joins the PATH. Neither binary here depends on a Meadow crate
+# -- this has to work before Meadow is installed at all.
+[lib]
+name = "meadowup"
+path = "src/lib.rs"
+
+# The toolchain manager, as `rustup` is to `cargo`.
+[[bin]]
+name = "meadowup"
+path = "src/bin/meadowup.rs"
+
+# The double-clickable Windows bootstrap, as `rustup-init` is to `rustup`.
 [[bin]]
 name = "meadow-setup"
 path = "src/main.rs"

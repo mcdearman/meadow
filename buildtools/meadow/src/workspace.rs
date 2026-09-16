@@ -116,7 +116,12 @@ impl Workspace {
                     .map_err(|e| format!("could not read {}: {e}", shown(&dir)))?
                     .ok_or_else(|| format!("{} has no meadow.toml", shown(&dir)))?
             };
-            for (_, rel) in &m.deps {
+            for d in &m.deps {
+                // Only a path dependency can be a member of this workspace; a
+                // git one lives somewhere else by definition.
+                let crate::package::DepSource::Path(rel) = &d.source else {
+                    continue;
+                };
                 let dep = canonical(&dir.join(rel));
                 if dep.starts_with(&root) && !excluded.contains(&dep) && has_manifest(&dep) {
                     push_new(&mut dirs, dep);
@@ -381,13 +386,13 @@ fn push_new(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
     }
 }
 
-fn has_manifest(dir: &Path) -> bool {
+pub(crate) fn has_manifest(dir: &Path) -> bool {
     dir.join("meadow.toml").is_file() || dir.join("meadow.pkg").is_file()
 }
 
 /// Whether `dir` holds a manifest with a `[workspace]` section -- without the
 /// whole of [`Workspace::load`], since every ancestor of every path asks.
-fn declares_workspace(dir: &Path) -> bool {
+pub(crate) fn declares_workspace(dir: &Path) -> bool {
     Manifest::load(dir)
         .ok()
         .flatten()

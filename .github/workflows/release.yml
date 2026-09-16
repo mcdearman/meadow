@@ -108,25 +108,35 @@ jobs:
           "$bin" init "$RUNNER_TEMP/smokepkg"
           (cd "$RUNNER_TEMP/smokepkg" && "$bin" run --release --aot . | tail -1 | grep -q 'Hello, world!')
 
-      # The double-clickable installer. Windows only — `install.sh` covers the
-      # rest — and its own workspace, so it builds separately.
-      - name: Build installer
-        if: matrix.os == 'windows-latest'
+      # `meadowup`, the toolchain manager, and on Windows the double-clickable
+      # bootstrap beside it. Its own workspace -- it depends on no Meadow crate,
+      # since it has to work before Meadow is installed at all.
+      - name: Build meadowup
         working-directory: installer
         run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
 
+      # Both binaries in one archive: `meadowup update` replaces itself along
+      # with the build tool, so a machine can never be left holding a meadowup
+      # too old to update the thing it manages.
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
-        working-directory: buildtools/target/${{ matrix.target }}/release
-        run: tar -czf "$GITHUB_WORKSPACE/meadow-${{ matrix.target }}.tar.gz" meadow
+        run: |
+          staging="$RUNNER_TEMP/pkg"
+          mkdir -p "$staging"
+          cp "buildtools/target/${{ matrix.target }}/release/meadow" "$staging/"
+          cp "installer/target/${{ matrix.target }}/release/meadowup" "$staging/"
+          tar -czf "$GITHUB_WORKSPACE/meadow-${{ matrix.target }}.tar.gz" -C "$staging" meadow meadowup
 
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          # The zip the installer downloads.
+          # The zip the installer downloads: the build tool and meadowup.
           Compress-Archive `
-            -Path buildtools/target/${{ matrix.target }}/release/meadow.exe `
+            -Path buildtools/target/${{ matrix.target }}/release/meadow.exe, `
+                  installer/target/${{ matrix.target }}/release/meadowup.exe `
             -DestinationPath meadow-${{ matrix.target }}.zip
           # The installer itself, under a name a person can recognise.
           $arch = '${{ matrix.target }}'.Split('-')[0]

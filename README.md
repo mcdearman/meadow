@@ -26,8 +26,21 @@ it. (Take `meadow-setup-aarch64.exe` on an ARM machine.)
 curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/install.sh | sh
 ```
 
-Either way you get a self-contained `meadow` in `~/.meadow/bin`, added to your
+Either way you get `meadow` and `meadowup` in `~/.meadow/bin`, added to your
 `PATH` — open a new terminal and run `meadow`.
+
+The two split the way Rust's do:
+
+| | |
+|---|---|
+| `meadow` | the build system — `build`, `run`, `test`, `add`, `update`, `fmt` |
+| `meadowup` | the toolchain — which version of Meadow you have, and where |
+
+```sh
+meadowup update      # bring the toolchain up to date
+meadowup show        # what is installed, and where
+meadowup uninstall   # remove it and undo the PATH entry
+```
 
 <details>
 <summary>Options</summary>
@@ -50,7 +63,16 @@ install.sh --no-modify-path   # leave shell profiles alone
 install.sh --uninstall
 ```
 
-`MEADOW_HOME` overrides the install directory for both.
+Once installed, `meadowup` does this job on every platform:
+
+```sh
+meadowup install --version v0.1.0-alpha   # pin a release
+meadowup update --force                   # install again anyway
+meadowup install --no-modify-path         # leave profiles and PATH alone
+meadowup uninstall
+```
+
+`MEADOW_HOME` overrides the install directory for all of them.
 </details>
 
 A full walkthrough of the language lives in [docs/TUTORIAL.md](docs/TUTORIAL.md).
@@ -104,7 +126,38 @@ meadow test . Parser.parse --exact  # ...or exactly one
 meadow init --workspace shop    # a workspace; `meadow init` inside it adds a member
 meadow run -p app               # in a workspace: a member, by name
 meadow test --workspace         # ...or every member (`--exclude NAME` leaves one out)
+meadow add owner/repo           # add a dependency from GitHub
+meadow add owner/repo --tag v1  # ...at a tag (or `--branch`, `--rev`)
+meadow add ../util              # ...or a directory
+meadow update                   # bring dependencies forward, rewriting meadow.lock
+meadow update json --dry-run    # ...one of them, and only say what would change
+meadow build --locked           # fail rather than change meadow.lock (what CI wants)
+meadow build --offline          # never fetch; use what is already cached
 ```
+
+### Dependencies
+
+There is no central registry yet, so a dependency is the repository it lives in:
+
+```toml
+[dependencies]
+json = { git = "https://github.com/someone/meadow-json", tag = "v1.2.0" }
+util = { path = "../util" }
+```
+
+`git` takes an optional `branch`, `tag` or `rev`. `meadow add` writes these for
+you, and finds the package's name by reading its own manifest rather than
+guessing it from the URL.
+
+What was actually used goes in **`meadow.lock`** — the commit, and a hash of its
+source tree. Commit that file: it is what makes a build on another machine the
+build you tested. A branch moves, and a tag *can* be moved, so a build follows
+the lockfile and never the reference; `meadow update` is how the lockfile
+changes. If a tag comes to name a different commit than the one locked, the
+build stops and says so rather than quietly compiling something else.
+
+Repositories are fetched into `~/.meadow/git`, one checkout per commit, shared
+by every package on the machine.
 
 A package is a directory with a `meadow.toml` and a `src/`, which `meadow init`
 writes for you; `meadow run` also takes a single `.mw` file. The `Std` library

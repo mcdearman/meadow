@@ -113,10 +113,10 @@ fn a_root_manifest_says_what_the_workspace_is() {
     assert!(text.problems.is_empty(), "{:?}", text.problems);
     assert_eq!(text.version, "0.3.0");
     assert_eq!(text.deps.len(), 1);
-    assert_eq!(
-        std::fs::canonicalize(&text.deps[0].1).unwrap(),
-        root.join("libs/util")
-    );
+    let meadow::package::DepSource::Path(p) = &text.deps[0].source else {
+        panic!("a path dependency, got {:?}", text.deps[0].source);
+    };
+    assert_eq!(std::fs::canonicalize(p).unwrap(), root.join("libs/util"));
     let app = Manifest::load(&root.join("app")).unwrap().unwrap();
     assert_eq!(app.version, "0.3.0");
     assert_eq!(app.deps.len(), 2);

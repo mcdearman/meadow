@@ -1,0 +1,529 @@
+//! Fetching a dependency out of a git repository.
+//!
+//! There is no central registry yet, so a dependency is named by the repository
+//! it lives in:
+//!
+//! ```toml
+//! [dependencies]
+//! json = { git = "https://github.com/someone/meadow-json", tag = "v1.2.0" }
+//! ```
+//!
+//! This shells out to `git` rather than linking a git library. That is one
+//! fewer dependency, and it inherits the user's ssh keys and credential helper,
+//! so a private repository works without Meadow knowing anything about
+//! authentication.
+//!
+//! # What is kept where
+//!
+//! Under `$MEADOW_HOME/git`, so that one fetch serves every project:
+//!
+//! ```text
+//! db/<slug>/           a bare clone, fetched into
+//! checkouts/<slug>/<rev>/   one directory per commit, never written again
+//! ```
+//!
+//! A checkout is named by the commit, so it never has to be updated -- a
+//! different commit is a different directory. That is what lets a build with a
+//! lockfile touch the network not at all.
+//!
+//! # Why the commit is written down
+//!
+//! `branch = "main"` moves, and a tag *can* be moved -- `git push --force`
+//! rewrites what `v1.2.0` means. So what a build resolved is recorded in
+//! `meadow.lock` and checked on the way back: if a tag now names a different
+//! commit, that is an error rather than a silently different program. This is
+//! the integrity check for a git dependency, and git computes it for us, since
+//! a commit name *is* a hash of everything reachable from it.
+
+use crate::package::GitRef;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Whether a build may reach the network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Net {
+    /// Fetch when what is asked for is not already here.
+    #[default]
+    Allowed,
+    /// Never fetch. What is already cached is used; anything else is an error
+    /// saying what would have had to be fetched.
+    Offline,
+}
+
+/// A git dependency, resolved to something on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkout {
+    /// The directory holding the dependency's source.
+    pub path: PathBuf,
+    /// The commit it is, in full.
+    pub rev: String,
+    /// The hash of the source tree at that commit. Two commits with identical
+    /// contents share one, which is what makes it a *content* check rather
+    /// than a history check.
+    pub tree: String,
+}
+
+/// Make `url` at `reference` available on disk.
+///
+/// `pinned` is the commit a lockfile already recorded. When it is given and
+/// already checked out, nothing is fetched at all -- that is the ordinary case
+/// for a build of an unchanged project. When it is given and what `reference`
+/// now names is a *different* commit, that is refused: see the module note.
+pub fn ensure(
+    cache: &Path,
+    url: &str,
+    reference: &GitRef,
+    pinned: Option<&str>,
+    net: Net,
+) -> Result<Checkout, String> {
+    let root = cache;
+    let slug = slug(url);
+    let db = root.join("db").join(&slug);
+
+    // The fast path: the commit is known and already unpacked.
+    if let Some(rev) = pinned {
+        let path = root.join("checkouts").join(&slug).join(rev);
+        if path.is_dir() {
+            let tree = tree_of(&db, rev).unwrap_or_default();
+            return Ok(Checkout {
+                path,
+                rev: rev.to_string(),
+                tree,
+            });
+        }
+    }
+
+    if net == Net::Offline {
+        let what = match reference.written() {
+            Some(r) => format!("{url} ({r})"),
+            None => url.to_string(),
+        };
+        return Err(format!(
+            "`{what}` is not in the cache, and this build is offline.\n\
+             Run it without `--offline` once to fetch it."
+        ));
+    }
+
+    fetch(&db, url, reference)?;
+
+    let rev = match pinned {
+        // A pinned commit is asked for by name: it need not still be what the
+        // branch or tag points at, and asking for it directly is what lets an
+        // old lockfile keep building.
+        Some(rev) => {
+            let found = rev_parse(&db, rev).map_err(|_| {
+                format!(
+                    "`{url}` has no commit {rev}, which meadow.lock says to use.\n\
+                     The history it was on may have been rewritten."
+                )
+            })?;
+            // A branch or tag that has moved is reported rather than followed.
+            if let Ok(now) = rev_parse(&db, reference.refspec())
+                && now != found
+                && !matches!(reference, GitRef::Default | GitRef::Branch(_))
+            {
+                return Err(format!(
+                    "`{}` of `{url}` now names commit {}, but meadow.lock says {}.\n\
+                     A tag that moves is a different program under the same name. \
+                     Run `meadow update` to take the new one deliberately.",
+                    reference.written().unwrap_or_else(|| "HEAD".to_string()),
+                    short(&now),
+                    short(&found)
+                ));
+            }
+            found
+        }
+        None => rev_parse(&db, reference.refspec()).map_err(|e| {
+            format!(
+                "`{url}` has no {}: {e}",
+                reference
+                    .written()
+                    .unwrap_or_else(|| "default branch".to_string())
+            )
+        })?,
+    };
+
+    let path = root.join("checkouts").join(&slug).join(&rev);
+    if !path.is_dir() {
+        unpack(&db, &rev, &path)?;
+    }
+    let tree = tree_of(&db, &rev)?;
+    Ok(Checkout { path, rev, tree })
+}
+
+/// The commit `reference` names right now, without checking anything out.
+/// What `meadow update` asks to decide whether there is something newer.
+pub fn latest(cache: &Path, url: &str, reference: &GitRef, net: Net) -> Result<String, String> {
+    if net == Net::Offline {
+        return Err(format!("cannot look at `{url}` while offline"));
+    }
+    let db = cache.join("db").join(slug(url));
+    fetch(&db, url, reference)?;
+    rev_parse(&db, reference.refspec())
+        .map_err(|e| format!("`{url}` has no {}: {e}", reference.refspec()))
+}
+
+// --- the git commands ---------------------------------------------------------
+
+/// Clone `url` into `db` if it is not there, then fetch into it.
+fn fetch(db: &Path, url: &str, reference: &GitRef) -> Result<(), String> {
+    if !db.join("HEAD").is_file() {
+        if let Some(parent) = db.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("could not make {}: {e}", parent.display()))?;
+        }
+        // A partial clone left by an interrupted run would never complete.
+        let _ = std::fs::remove_dir_all(db);
+        git(
+            None,
+            &["clone", "--bare", "--quiet", url, &db.display().to_string()],
+        )?;
+        return Ok(());
+    }
+    // `+` on both sides: a force-moved tag is brought over so that it can be
+    // *reported* as moved rather than silently missed.
+    let refs = [
+        "+refs/heads/*:refs/heads/*".to_string(),
+        "+refs/tags/*:refs/tags/*".to_string(),
+    ];
+    let mut args = vec!["fetch", "--quiet", "--force", "--prune", url];
+    args.extend(refs.iter().map(String::as_str));
+    let _ = reference;
+    git(Some(db), &args).map(|_| ())
+}
+
+/// The commit `what` names, in full.
+fn rev_parse(db: &Path, what: &str) -> Result<String, String> {
+    // `^{commit}` so that an annotated tag gives the commit it points at rather
+    // than the tag object, which is what a checkout needs.
+    let out = git(
+        Some(db),
+        &["rev-parse", "--verify", &format!("{what}^{{commit}}")],
+    )?;
+    Ok(out.trim().to_string())
+}
+
+/// The hash of the source tree at `rev`.
+fn tree_of(db: &Path, rev: &str) -> Result<String, String> {
+    let out = git(Some(db), &["rev-parse", &format!("{rev}^{{tree}}")])?;
+    Ok(out.trim().to_string())
+}
+
+/// Put the source at `rev` into `path`.
+///
+/// Written beside where it belongs and then moved, so that an interrupted run
+/// cannot leave a half-written checkout that later builds would trust.
+fn unpack(db: &Path, rev: &str, path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("could not make {}: {e}", parent.display()))?;
+    let staging = parent.join(format!(".{rev}.part"));
+    let _ = std::fs::remove_dir_all(&staging);
+
+    // `--local` hardlinks the objects instead of copying them, so a checkout
+    // costs about what its working tree costs.
+    git(
+        None,
+        &[
+            "clone",
+            "--quiet",
+            "--local",
+            "--no-checkout",
+            &db.display().to_string(),
+            &staging.display().to_string(),
+        ],
+    )?;
+    git(Some(&staging), &["checkout", "--quiet", "--detach", rev])?;
+
+    match std::fs::rename(&staging, path) {
+        Ok(()) => Ok(()),
+        // Another build may have unpacked the same commit first, which is fine:
+        // the contents are the same by construction.
+        Err(_) if path.is_dir() => {
+            let _ = std::fs::remove_dir_all(&staging);
+            Ok(())
+        }
+        Err(e) => Err(format!("could not put {} in place: {e}", path.display())),
+    }
+}
+
+/// Run `git`, answering its output or what it said went wrong.
+fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    if let Some(d) = dir {
+        // `-C`, not `--git-dir`: this runs against the bare cache *and* against
+        // a checkout, whose git directory is `.git` inside it rather than the
+        // directory itself. Letting git find the repository handles both.
+        cmd.arg("-C").arg(d);
+    }
+    cmd.args(args);
+    // Never stop for a password prompt: a build that hangs waiting for input
+    // nobody is watching is worse than one that fails.
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    let out = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "`git` is not installed, and a git dependency needs it".to_string()
+        } else {
+            format!("could not run git: {e}")
+        }
+    })?;
+    if !out.status.success() {
+        let said = String::from_utf8_lossy(&out.stderr);
+        let said = said.trim();
+        return Err(if said.is_empty() {
+            format!("git {} failed", args.first().unwrap_or(&""))
+        } else {
+            said.to_string()
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+// --- where things are kept ----------------------------------------------------
+
+/// Where fetched repositories are kept when nothing says otherwise:
+/// `$MEADOW_HOME/git`.
+///
+/// Passed in rather than looked up inside [`ensure`], so that a test can fetch
+/// into a directory of its own without setting an environment variable that
+/// every other part of the build also reads.
+pub fn default_cache() -> Result<PathBuf, String> {
+    crate::stdlib::home()
+        .map(|h| h.join("git"))
+        .ok_or_else(|| "no home directory to cache git dependencies in".to_string())
+}
+
+/// `url` with the endings that do not change where it points removed, so that
+/// the spellings of one repository are one repository.
+fn normalise(url: &str) -> &str {
+    url.trim_end_matches('/')
+        .trim_end_matches(".git")
+        .trim_end_matches('/')
+}
+
+/// A directory name for `url`: readable, and unique.
+///
+/// The last path segment makes it recognisable when looking through the cache;
+/// the hash of the whole URL is what actually keeps two repositories of the
+/// same name apart. Both are taken from the normalised URL, so a trailing `/`
+/// or `.git` does not make a second copy of what is already here.
+fn slug(url: &str) -> String {
+    let url = normalise(url);
+    let name = url
+        .rsplit(['/', ':'])
+        .find(|s| !s.is_empty())
+        .unwrap_or("repo");
+    let name: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut h = std::hash::DefaultHasher::new();
+    std::hash::Hasher::write(&mut h, url.as_bytes());
+    format!("{name}-{:016x}", std::hash::Hasher::finish(&h))
+}
+
+/// A commit, short enough to read.
+pub fn short(rev: &str) -> &str {
+    &rev[..rev.len().min(9)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_slug_is_readable_and_keeps_two_urls_apart() {
+        let a = slug("https://github.com/someone/meadow-json");
+        let b = slug("https://github.com/other/meadow-json");
+        assert!(a.starts_with("meadow-json-"), "{a}");
+        assert!(b.starts_with("meadow-json-"), "{b}");
+        assert_ne!(a, b, "two repositories of one name must not share a slug");
+    }
+
+    #[test]
+    fn a_slug_ignores_the_spellings_that_mean_one_repository() {
+        // A trailing slash or `.git` names the same place, and should not make
+        // a second copy in the cache.
+        let plain = slug("https://github.com/someone/meadow-json");
+        assert_eq!(slug("https://github.com/someone/meadow-json/"), plain);
+        assert_eq!(slug("https://github.com/someone/meadow-json.git"), plain);
+    }
+
+    #[test]
+    fn an_ssh_url_still_gets_a_name() {
+        let s = slug("git@github.com:someone/meadow-json.git");
+        assert!(s.starts_with("meadow-json-"), "{s}");
+    }
+
+    #[test]
+    fn a_slug_has_nothing_in_it_a_path_would_mind() {
+        let s = slug("https://example.com/a b/c?d=e#f");
+        assert!(
+            s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "{s}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod live {
+    use super::*;
+    use crate::package::GitRef;
+
+    /// A repository made on the spot, so these need no network.
+    fn repo(which: &str) -> Option<PathBuf> {
+        let dir =
+            std::env::temp_dir().join(format!("meadow-git-src-{}-{which}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).ok()?;
+        std::fs::write(
+            dir.join("meadow.toml"),
+            "[package]\nname = \"greet\"\nversion = \"0.1.0\"\n",
+        )
+        .ok()?;
+        std::fs::write(dir.join("src/Lib.mw"), "@pub fun greeting = \"hi\"\n").ok()?;
+        let d = dir.display().to_string();
+        for args in [
+            vec!["init", "--quiet", "-b", "main", &d],
+            vec!["-C", &d, "add", "-A"],
+            vec![
+                "-C",
+                &d,
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "--quiet",
+                "-m",
+                "first",
+            ],
+            vec!["-C", &d, "tag", "v1.0.0"],
+        ] {
+            let ok = Command::new("git")
+                .args(&args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !ok {
+                return None;
+            }
+        }
+        Some(dir)
+    }
+
+    /// An empty cache directory. Naming one stands for a machine: two different
+    /// names are two machines that share a lockfile and nothing else.
+    ///
+    /// A directory rather than `MEADOW_HOME`, so these run beside anything
+    /// else: that variable also says where the runtime library and the
+    /// extracted standard library live, and setting it would move those too.
+    fn cache(which: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("meadow-git-cache-{}-{which}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// Run `git` in `dir`, asserting it worked.
+    fn run(dir: &str, args: &[&str]) {
+        let mut all = vec!["-C", dir];
+        all.extend_from_slice(args);
+        let out = Command::new("git").args(&all).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
+
+    #[test]
+    fn a_tag_is_fetched_checked_out_and_pinned() {
+        let Some(src) = repo("one") else {
+            eprintln!("skipped: no usable git");
+            return;
+        };
+        let url = src.display().to_string();
+        let cache = cache("one");
+        let tag = GitRef::Tag("v1.0.0".into());
+
+        let got = ensure(&cache, &url, &tag, None, Net::Allowed).expect("the tag is there");
+        assert!(
+            got.path.join("meadow.toml").is_file(),
+            "no manifest in the checkout"
+        );
+        assert_eq!(got.rev.len(), 40, "a full commit name");
+        assert!(!got.tree.is_empty(), "a tree hash");
+
+        // Asking again with the commit pinned must not need the network.
+        let again =
+            ensure(&cache, &url, &tag, Some(&got.rev), Net::Offline).expect("already cached");
+        assert_eq!(again.rev, got.rev);
+        assert_eq!(again.path, got.path);
+    }
+
+    #[test]
+    fn a_tag_that_moved_is_refused_rather_than_followed() {
+        let Some(src) = repo("moved") else {
+            eprintln!("skipped: no usable git");
+            return;
+        };
+        let url = src.display().to_string();
+        let d = src.display().to_string();
+        let tag = GitRef::Tag("v1.0.0".into());
+
+        // One machine locks the tag.
+        let first =
+            ensure(&cache("before"), &url, &tag, None, Net::Allowed).expect("the tag is there");
+
+        // The tag is then moved, as a force-push would move it.
+        std::fs::write(
+            src.join("src/Lib.mw"),
+            "@pub fun greeting = \"different\"\n",
+        )
+        .unwrap();
+        run(&d, &["add", "-A"]);
+        run(
+            &d,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "--quiet",
+                "-m",
+                "second",
+            ],
+        );
+        run(&d, &["tag", "-f", "v1.0.0"]);
+
+        // Another machine builds from that lockfile with nothing cached -- what
+        // CI does. It has to fetch, and what it fetches is not what was locked.
+        //
+        // A warm cache would not notice, and should not: the lock says take
+        // that commit, and taking it is what it already has.
+        let err = ensure(&cache("after"), &url, &tag, Some(&first.rev), Net::Allowed)
+            .expect_err("a moved tag must not be followed silently");
+        assert!(err.contains("now names commit"), "{err}");
+    }
+
+    #[test]
+    fn being_offline_says_what_it_would_have_fetched() {
+        let err = ensure(
+            &cache("offline"),
+            "https://example.invalid/nothing",
+            &GitRef::Tag("v9".into()),
+            None,
+            Net::Offline,
+        )
+        .expect_err("offline and not cached");
+        assert!(err.contains("offline"), "{err}");
+        assert!(err.contains("tag=v9"), "{err}");
+    }
+}

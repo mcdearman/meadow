@@ -55,7 +55,8 @@ install.sh --uninstall
 
 A full walkthrough of the language lives in [docs/TUTORIAL.md](docs/TUTORIAL.md).
 How programs run -- the backends, the memory model, effects and threads -- is
-in [docs/RUNTIME.md](docs/RUNTIME.md).
+in [docs/RUNTIME.md](docs/RUNTIME.md). The macro system being built is designed
+in [docs/MACROS.md](docs/MACROS.md).
 
 ## Examples
 

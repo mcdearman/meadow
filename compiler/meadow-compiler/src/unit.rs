@@ -269,11 +269,14 @@ pub fn compile_unit_above(
     let filename = unit_name.to_string();
 
     // `@cfg(…)`: what does not apply to this build is gone before anything
-    // else looks.
+    // else looks. Then macros, on what is left -- a call under a `@cfg` that
+    // does not hold is never expanded, and one a macro produces is read here.
     let mut modules = modules;
     for m in &mut modules {
         let here = module_filename(&filename, m.source);
         crate::cfg::strip(&mut m.ast.value, opts, &here, &mut diags);
+        let text = m.source.content.to_string();
+        crate::expand::expand(&mut m.ast.value, &text, &here, &mut diags);
     }
 
     // --- name resolution (whole unit at once, so modules may be mutually recursive)

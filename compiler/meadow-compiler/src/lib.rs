@@ -66,6 +66,7 @@ pub use meadow_source as source;
 pub use meadow_span as span;
 
 pub mod cfg;
+pub mod expand;
 mod options;
 pub use options::{Cfg, OptLevel, Options, Strictness};
 

@@ -738,7 +738,24 @@ impl Resolver {
     /// Below that, the base: the prims and the prelude, which anything above
     /// shadows. Overloading against the prelude would make every module that
     /// defines its own `map` an ambiguity waiting for an untyped use.
+    /// Every binding `name` could mean, nearest first.
+    ///
+    /// A name a macro template wrote carries a hygiene mark (see
+    /// [`ast::hygiene`]): `tmp#3` rather than `tmp`. A marked name that nothing
+    /// bound is the template naming something outside itself -- an ordinary
+    /// function, say -- so the mark comes off and it is looked up again. That
+    /// is what makes local bindings hygienic and items not: a local the
+    /// template introduced *is* bound under its mark and is found on the first
+    /// look, while a name it only mentions falls through to the second.
     fn lookup_all(&self, name: InternedString) -> Vec<VarId> {
+        let found = self.lookup_marked(name);
+        if found.is_empty() && ast::hygiene::is_marked(name) {
+            return self.lookup_all(ast::hygiene::strip(name));
+        }
+        found
+    }
+
+    fn lookup_marked(&self, name: InternedString) -> Vec<VarId> {
         let (base, module) = if self.sealed {
             (self.base_scope, self.module_scope.max(self.base_scope))
         } else {
@@ -1629,6 +1646,20 @@ impl Resolver {
 
     fn resolve_bare_decl(&mut self, decl: &ast::LDecl) -> hir::LDecl {
         match decl.value() {
+            ast::Decl::MacCall(m) => {
+                self.unexpanded(m, decl.span);
+                self.node(hir::Decl::Error, decl.span)
+            }
+            // Expansion reads macro definitions and drops them: a macro is not
+            // a value, and there is nowhere past here to put one.
+            ast::Decl::Macro(m) => {
+                self.error(
+                    format!("the macro `{}!` was never expanded away", m.name.value()),
+                    "this definition reached name resolution".to_string(),
+                    decl.span,
+                );
+                self.node(hir::Decl::Error, decl.span)
+            }
             ast::Decl::Attributed(_, inner) => self.resolve_bare_decl(inner),
             ast::Decl::Bind(bind) => {
                 self.toplevel = true;
@@ -2131,6 +2162,10 @@ impl Resolver {
                 let array = self.node(hir::Expr::Array(parts), expr.span);
                 self.node(hir::Expr::App(callee, vec![array]), expr.span)
             }
+            ast::Expr::MacCall(m) => {
+                self.unexpanded(m, expr.span);
+                self.node(hir::Expr::Error, expr.span)
+            }
             ast::Expr::Hole => {
                 self.error(
                     "`_` can only appear inside an operator section, e.g. `(_ + 1)`".to_string(),
@@ -2148,8 +2183,11 @@ impl Resolver {
                     }
                     self.node(hir::Expr::Var(v), expr.span)
                 } else {
+                    // Without its hygiene mark: a name a macro wrote is
+                    // `tmp#3` inside the compiler, and `tmp` is what was
+                    // written and what the reader can look for.
                     self.error(
-                        format!("undefined variable: {}", name.value()),
+                        format!("undefined variable: {}", ast::hygiene::strip(*name.value())),
                         "not found in this scope".to_string(),
                         name.span,
                     );
@@ -2454,6 +2492,10 @@ impl Resolver {
 
     fn resolve_pat(&mut self, pat: &ast::LPat) -> hir::LPat {
         match pat.value() {
+            ast::Pat::MacCall(m) => {
+                self.unexpanded(m, pat.span);
+                self.node(hir::Pat::Error, pat.span)
+            }
             ast::Pat::Wildcard => self.node(hir::Pat::Wildcard, pat.span),
             ast::Pat::Unit => self.node(hir::Pat::Unit, pat.span),
             ast::Pat::Var(name) => {
@@ -2648,6 +2690,21 @@ impl Resolver {
             label: (label, span),
             extra_labels: vec![],
         });
+    }
+
+    /// A macro call that expansion left behind.
+    ///
+    /// Expansion runs before this and either replaces a call or reports why it
+    /// could not, so reaching here is the compiler's own fault rather than the
+    /// program's. Said as a diagnostic and not a panic: an editor asks for a
+    /// tree on every keystroke, and one bad module must not take the server
+    /// down with it.
+    fn unexpanded(&mut self, call: &ast::MacCall, span: Span) {
+        self.error(
+            format!("the macro `{}!` was never expanded", call.name()),
+            "this call reached name resolution".to_string(),
+            span,
+        );
     }
 }
 

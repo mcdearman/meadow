@@ -154,7 +154,8 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
             | Token::LPipe
             | Token::RPipe
             | Token::Backslash
-            | Token::At => "operator",
+            | Token::At
+            | Token::Dollar => "operator",
             _ => continue,
         };
 

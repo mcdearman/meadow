@@ -9,9 +9,84 @@
 //! [`Span`]: meadow_span::Span
 
 use meadow_intern::InternedString;
-use meadow_span::Located;
+use meadow_lexer::tt::Group;
+use meadow_span::{Located, Span};
+
+/// **Hygiene marks**: how a name a macro template wrote is told from a name the
+/// call site wrote.
+///
+/// A marked name is `tmp#3`, the number being the expansion's. The `#` is what
+/// makes it safe: an identifier cannot contain one, so no source can spell a
+/// marked name and no two expansions collide. See
+/// [`meadow_compiler::expand::hygiene`] for what the marks are for; this is
+/// only how they are written, kept here so that the resolver can read one
+/// without depending on the expander.
+pub mod hygiene {
+    use meadow_intern::InternedString;
+
+    /// Not lexable inside an identifier, so a marked name is unforgeable.
+    const MARK: char = '#';
+
+    /// `name` as the expansion `id` wrote it.
+    pub fn mark(name: InternedString, id: u32) -> InternedString {
+        InternedString::from(format!("{name}{MARK}{id}"))
+    }
+
+    /// Whether this name came from a template.
+    pub fn is_marked(name: InternedString) -> bool {
+        name.contains(MARK)
+    }
+
+    /// `name` without its mark, or `name` when it has none. A name marked by
+    /// nested expansions loses one mark at a time, outermost first.
+    pub fn strip(name: InternedString) -> InternedString {
+        match name.rfind(MARK) {
+            Some(i) => InternedString::from(&name[..i]),
+            None => name,
+        }
+    }
+}
 
 pub type LModule = Located<Module>;
+
+/// An **unexpanded macro call**: `assertEq!(got, want)`, `vec![1; 2]`,
+/// `config! { name = "demo" }`.
+///
+/// The argument is token trees, not a parsed anything: the parser stops at the
+/// brackets and the expander decides what the tokens mean. One of these in the
+/// tree means expansion has not run yet -- nothing past [`meadow_rename`] ever
+/// sees one, because expansion either replaces it or reports why it could not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacCall {
+    /// The name, qualified if it was written that way: `Std.Test.assertEq!` is
+    /// three segments. Never empty.
+    pub path: Vec<Ident>,
+    /// What was between the brackets, and which brackets they were.
+    pub arg: Group,
+}
+
+impl MacCall {
+    /// The name as written, for a message and for finding the macro:
+    /// `assertEq`, `Std.Test.assertEq`.
+    ///
+    /// Hygiene marks come off: a macro is an item, so a template that calls
+    /// another macro -- or itself, which is how a recursive one is written --
+    /// means the macro of that name and not one private to the expansion.
+    pub fn name(&self) -> String {
+        self.path
+            .iter()
+            .map(|s| hygiene::strip(*s.value()).to_string())
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+
+    /// Where the name was written -- the whole path, without the argument. What
+    /// an "unknown macro" points at.
+    pub fn path_span(&self) -> Span {
+        let first = self.path.first().expect("a call has a name").span;
+        self.path.last().map_or(first, |l| first.extend(l.span))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Module {
@@ -76,6 +151,32 @@ pub enum Decl {
     Sig(Ident, LType),
     /// One or more `@attr` lines in front of another declaration.
     Attributed(Vec<Attr>, Box<LDecl>),
+    /// `derive! { Show for Colour }` -- a macro call standing where a
+    /// declaration goes, until it is expanded into some.
+    MacCall(MacCall),
+    /// `macro swap | ($a, $b) -> { ($b, $a) }` -- a macro definition. Read by
+    /// expansion and gone before name resolution: a macro is not a value, and
+    /// nothing downstream has anywhere to put one.
+    Macro(MacroDef),
+}
+
+/// A `macro` declaration: a name and the rules tried in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroDef {
+    pub name: Ident,
+    pub rules: Vec<MacroRule>,
+}
+
+/// One arm of a macro: `| ⟨matcher⟩ -> { ⟨template⟩ }`.
+///
+/// Both sides are token trees, and the outer brackets of each are only how it
+/// is written: the three brackets mean the same thing at a call, so a matcher
+/// written with `( )` matches a call written with `[ ]`. What is matched, and
+/// what is spliced in, is what lies inside them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroRule {
+    pub matcher: Group,
+    pub template: Group,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +324,9 @@ pub enum Expr {
     /// `( … )`, where the parser rewrites the section into a lambda; anywhere
     /// else the resolver reports it.
     Hole,
+    /// `vec![1; 2]` -- a macro call standing where an expression goes, until it
+    /// is expanded into one.
+    MacCall(MacCall),
 }
 
 pub type LUnOp = Located<UnOp>;
@@ -346,6 +450,9 @@ pub enum Pat {
     /// `{ x, y = p | _ }` — `open` (the trailing `| _`) is the bool.
     Record(Vec<(Ident, LPat)>, bool),
     Unit,
+    /// A macro call standing where a pattern goes, until it is expanded into
+    /// one.
+    MacCall(MacCall),
 }
 
 pub type Ident = Located<InternedString>;

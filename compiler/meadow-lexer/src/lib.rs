@@ -9,6 +9,8 @@
 //! win over the catch-all `OpIdent` regex (which covers user-defined operator
 //! names); this is why the regex must *not* include letters.
 
+pub mod tt;
+
 use logos::Logos;
 use meadow_diagnostics::Diagnostic;
 use meadow_intern::InternedString;
@@ -131,7 +133,7 @@ fn escape(rest: &str) -> Result<(Option<char>, usize), (String, usize)> {
     }
 }
 
-#[derive(Logos, Debug, Clone, PartialEq)]
+#[derive(Logos, Debug, Clone, PartialEq, Eq)]
 #[logos(subpattern alpha = r"[a-zA-Z]+")]
 pub enum Token {
     Eof,
@@ -148,12 +150,15 @@ pub enum Token {
         priority = 3
     )]
     Int(i64),
+    /// A floating-point literal, as its IEEE-754 bit pattern -- so that a token,
+    /// and the token trees a macro carries, are `Eq` like the rest of the AST.
+    /// Decode with [`f64::from_bits`].
     #[regex(
-        r"([0-9]*[.])?[0-9]+", 
-        |lex| lex.slice().parse().ok(),
+        r"([0-9]*[.])?[0-9]+",
+        |lex| lex.slice().parse::<f64>().ok().map(f64::to_bits),
         priority = 2
     )]
-    Real(f64),
+    Real(u64),
     // #[regex(
     //     r"-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0))(/-?((0b[0-1]+)|(0o[0-7]+)|(0x[0-9a-fA-F]+)|([1-9]\d*|0)))",
     //     |lex| lex.slice().parse().ok())]
@@ -180,9 +185,12 @@ pub enum Token {
     LowerIdent(InternedString),
     #[regex(r"[A-Z][a-zA-Z0-9']*", |lex| InternedString::from(lex.slice()))]
     UpperIdent(InternedString),
-    #[regex(r"[!$%&*+./<=>?@|^~:\-]+", |lex| InternedString::from(lex.slice()), priority = 1)]
+    // `$` is not in either operator charset: it is the macro system's splice
+    // (see `docs/MACROS.md`), so it must lex on its own even when it abuts an
+    // operator -- `$x`, `$$`, `$( … ),*`.
+    #[regex(r"[!%&*+./<=>?@|^~:\-]+", |lex| InternedString::from(lex.slice()), priority = 1)]
     OpIdent(InternedString),
-    #[regex(r":[!$%&*+./<=>?@|^~:\-]+", |lex| InternedString::from(lex.slice()))]
+    #[regex(r":[!%&*+./<=>?@|^~:\-]+", |lex| InternedString::from(lex.slice()))]
     ConOpIdent(InternedString),
 
     // Punctuation
@@ -264,6 +272,10 @@ pub enum Token {
     At,
     #[token("`")]
     Backtick,
+    /// The macro splice: `$x`, `$( … ),*`, `$$`, `$pkg`. Outside a macro it is
+    /// not part of any form, so a stray one is the parser's error to report.
+    #[token("$")]
+    Dollar,
 
     // Keywords
     #[token("mod")]
@@ -306,7 +318,156 @@ pub enum Token {
     Instance,
     #[token("as")]
     As,
+    #[token("macro")]
+    Macro,
     Error,
+}
+
+/// `text` in a string or character literal, with the escapes that make it one
+/// again: the inverse of [`escape`], for the ones that have to be written back.
+fn quote(text: &str, out: &mut String) {
+    for c in text.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            // Only before a `{`, where it would otherwise start a hole.
+            '$' => out.push_str("\\$"),
+            c => out.push(c),
+        }
+    }
+}
+
+impl Token {
+    /// How this token is written in source.
+    ///
+    /// What a macro's `stringify!` answers, and how a token appears in a
+    /// message. Lexing the result gives the token back, with one exception:
+    /// [`Token::Error`] stands for text that did not lex at all, and there is
+    /// nothing to write for it.
+    pub fn text(&self) -> String {
+        // `Token::String` shadows the type inside this match, so the few places
+        // that build one name it through the alias.
+        use Token::*;
+        use std::string::String as Str;
+        let owned = |s: &str| s.to_string();
+        match self {
+            Eof | Whitespace | Comment | Error => Str::new(),
+            Int(i) => i.to_string(),
+            Real(bits) => {
+                let n = f64::from_bits(*bits);
+                // `1.0` must not come back as `1`, which would lex as an `Int`.
+                if n.fract() == 0.0 && n.is_finite() {
+                    format!("{n:.1}")
+                } else {
+                    n.to_string()
+                }
+            }
+            String(s) => {
+                let mut out = Str::from('"');
+                quote(s, &mut out);
+                out.push('"');
+                out
+            }
+            // The three pieces of an interpolated literal carry the `${` and `}`
+            // around them, so that the pieces and the holes' own tokens between
+            // them write the literal back exactly.
+            InterpStart(s) => {
+                let mut out = Str::from('"');
+                quote(s, &mut out);
+                out.push_str("${");
+                out
+            }
+            InterpMid(s) => {
+                let mut out = Str::from('}');
+                quote(s, &mut out);
+                out.push_str("${");
+                out
+            }
+            InterpEnd(s) => {
+                let mut out = Str::from('}');
+                quote(s, &mut out);
+                out.push('"');
+                out
+            }
+            Quote => owned("\""),
+            Char(c) => {
+                let mut out = Str::from('\'');
+                if *c == '\'' {
+                    out.push_str("\\'");
+                } else {
+                    quote(&c.to_string(), &mut out);
+                }
+                out.push('\'');
+                out
+            }
+            LowerIdent(s) | UpperIdent(s) | OpIdent(s) | ConOpIdent(s) => s.to_string(),
+            Wildcard => owned("_"),
+            Backslash => owned("\\"),
+            LArrow => owned("<-"),
+            RArrow => owned("->"),
+            Plus => owned("+"),
+            Minus => owned("-"),
+            Star => owned("*"),
+            Slash => owned("/"),
+            Percent => owned("%"),
+            Caret => owned("^"),
+            And => owned("and"),
+            Or => owned("or"),
+            Eq => owned("="),
+            EqEq => owned("=="),
+            Neq => owned("!="),
+            Lt => owned("<"),
+            Gt => owned(">"),
+            Leq => owned("<="),
+            Geq => owned(">="),
+            Bang => owned("!"),
+            Comma => owned(","),
+            Period => owned("."),
+            DoublePeriod => owned(".."),
+            DoublePeriodEq => owned("..="),
+            ColonColon => owned("::"),
+            Colon => owned(":"),
+            SemiColon => owned(";"),
+            LParen => owned("("),
+            RParen => owned(")"),
+            LBrace => owned("{"),
+            RBrace => owned("}"),
+            LBrack => owned("["),
+            RBrack => owned("]"),
+            Hash => owned("#"),
+            Bar => owned("|"),
+            LPipe => owned("<|"),
+            RPipe => owned("|>"),
+            At => owned("@"),
+            Backtick => owned("`"),
+            Dollar => owned("$"),
+            Mod => owned("mod"),
+            End => owned("end"),
+            Use => owned("use"),
+            Def => owned("def"),
+            Fun => owned("fun"),
+            Let => owned("let"),
+            In => owned("in"),
+            Match => owned("match"),
+            With => owned("with"),
+            If => owned("if"),
+            Then => owned("then"),
+            Else => owned("else"),
+            Data => owned("data"),
+            Record => owned("record"),
+            Effect => owned("effect"),
+            Handle => owned("handle"),
+            Type => owned("type"),
+            Class => owned("class"),
+            Instance => owned("instance"),
+            As => owned("as"),
+            Macro => owned("macro"),
+        }
+    }
 }
 
 impl<'a> Display for Token {
@@ -317,7 +478,7 @@ impl<'a> Display for Token {
             Comment => write!(f, "Comment"),
             Whitespace => write!(f, "Whitespace"),
             Int(i) => write!(f, "Int({})", i),
-            Real(r) => write!(f, "Real({})", r),
+            Real(r) => write!(f, "Real({})", f64::from_bits(*r)),
             String(s) => write!(f, "InternedString({})", s),
             InterpStart(s) => write!(f, "InterpStart({})", s),
             InterpMid(s) => write!(f, "InterpMid({})", s),
@@ -368,6 +529,7 @@ impl<'a> Display for Token {
             RPipe => write!(f, "RPipe"),
             At => write!(f, "At"),
             Backtick => write!(f, "Backtick"),
+            Dollar => write!(f, "Dollar"),
 
             Mod => write!(f, "Mod"),
             End => write!(f, "End"),
@@ -389,6 +551,7 @@ impl<'a> Display for Token {
             Class => write!(f, "Class"),
             Instance => write!(f, "Instance"),
             As => write!(f, "As"),
+            Macro => write!(f, "Macro"),
             Error => write!(f, "Error"),
         }
     }

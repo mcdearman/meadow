@@ -24,7 +24,7 @@ use chumsky::{
 use itertools::Either;
 use meadow_ast::*;
 use meadow_intern::InternedString;
-use meadow_lexer::{LToken, Token};
+use meadow_lexer::{LToken, Token, tt};
 use meadow_source::Source;
 use meadow_span::{Located, Span};
 
@@ -46,6 +46,42 @@ pub fn parse_repl<'src>(
     let stream = tokens.split_spanned(Span::from(0..src.len()));
     let p = choice((decl().map(Either::Left), expr().map(Either::Right)));
     p.parse(stream).into_output_errors()
+}
+
+/// Parse one expression, and nothing else.
+///
+/// `eoi` is where errors point when the tokens run out early. The three
+/// `parse_*` entry points below exist for macro expansion, which parses what a
+/// template produced with the entry point for the position the call was in (see
+/// `docs/MACROS.md`); the tokens are then not a source file, so there is no
+/// [`Source`] to take that span from.
+pub fn parse_expr<'src>(
+    tokens: &'src [LToken],
+    eoi: Span,
+) -> (Option<LExpr>, Vec<Rich<'src, Token, Span>>) {
+    expr().parse(tokens.split_spanned(eoi)).into_output_errors()
+}
+
+/// Parse one pattern, and nothing else. See [`parse_expr`].
+pub fn parse_pat<'src>(
+    tokens: &'src [LToken],
+    eoi: Span,
+) -> (Option<LPat>, Vec<Rich<'src, Token, Span>>) {
+    pat().parse(tokens.split_spanned(eoi)).into_output_errors()
+}
+
+/// Parse a run of declarations -- what a module body is, without the module.
+/// Unlike [`parse`] this accepts none, since a macro may expand to nothing. See
+/// [`parse_expr`].
+pub fn parse_decls<'src>(
+    tokens: &'src [LToken],
+    eoi: Span,
+) -> (Option<Vec<LDecl>>, Vec<Rich<'src, Token, Span>>) {
+    decl()
+        .repeated()
+        .collect::<Vec<_>>()
+        .parse(tokens.split_spanned(eoi))
+        .into_output_errors()
 }
 
 fn module<'tokens, I>(
@@ -302,6 +338,10 @@ where
         record_decl,
         effect_decl,
         type_decl,
+        macro_decl().map_with(|m, e| LDecl::new(Decl::Macro(m), e.span())),
+        // Before `sig_decl`, which also starts with a name: `derive! { … }`
+        // would otherwise be read as the start of `derive : T`.
+        mac_call().map_with(|m, e| LDecl::new(Decl::MacCall(m), e.span())),
         bind_decl.map_with(|bind, e| LDecl::new(Decl::Bind(bind), e.span())),
         sig_decl,
     ))
@@ -512,6 +552,109 @@ fn path_seg<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         Token::UpperIdent(name) => name,
     }
     .map_with(|name, e| Ident::new(name, e.span()))
+}
+
+/// A bracketed run of token trees, and where its brackets were.
+fn group<'a, I, P>(
+    tree: P,
+    delim: tt::Delim,
+) -> impl Parser<'a, I, tt::Group, extra::Err<Rich<'a, Token, Span>>> + Clone
+where
+    I: ValueInput<'a, Token = Token, Span = Span>,
+    P: Parser<'a, I, tt::TokenTree, extra::Err<Rich<'a, Token, Span>>> + Clone,
+{
+    just(delim.open())
+        .map_with(|_, e| e.span())
+        .then(tree.repeated().collect::<Vec<_>>())
+        .then(just(delim.close()).map_with(|_, e| e.span()))
+        .map(move |((open, trees), close)| tt::Group {
+            delim,
+            trees,
+            open,
+            close,
+        })
+}
+
+/// One token tree: a token, or a bracketed run of them.
+///
+/// Balanced brackets are the only structure required of a macro's argument, so
+/// this accepts any token that is not one — the argument need not be an
+/// expression, or mean anything at all until the macro is expanded.
+fn token_tree<'a, I>()
+-> impl Parser<'a, I, tt::TokenTree, extra::Err<Rich<'a, Token, Span>>> + Clone
+where
+    I: ValueInput<'a, Token = Token, Span = Span>,
+{
+    recursive(|tree| {
+        let bracketed = choice((
+            group(tree.clone(), tt::Delim::Paren),
+            group(tree.clone(), tt::Delim::Brack),
+            group(tree, tt::Delim::Brace),
+        ))
+        .map(tt::TokenTree::Group);
+        let single = any()
+            .filter(|t: &Token| {
+                tt::Delim::opened_by(t).is_none() && tt::Delim::closed_by(t).is_none()
+            })
+            .map_with(|t, e| tt::TokenTree::Token(LToken::new(t, e.span())));
+        bracketed.or(single)
+    })
+}
+
+/// A bracketed run of token trees in any of the three brackets: what both
+/// sides of a macro rule are written with, and what a call's argument is.
+fn any_group<'a, I>() -> impl Parser<'a, I, tt::Group, extra::Err<Rich<'a, Token, Span>>> + Clone
+where
+    I: ValueInput<'a, Token = Token, Span = Span>,
+{
+    choice((
+        group(token_tree(), tt::Delim::Paren),
+        group(token_tree(), tt::Delim::Brack),
+        group(token_tree(), tt::Delim::Brace),
+    ))
+}
+
+/// A macro definition:
+///
+/// ```text
+/// macro swap
+///   | ($a, $b) -> { ($b, $a) }
+/// ```
+///
+/// Rules are written the way a `match`'s arms are, and are tried in the same
+/// order. Both sides are token trees, so nothing here reads what they mean.
+fn macro_decl<'a, I>() -> impl Parser<'a, I, MacroDef, extra::Err<Rich<'a, Token, Span>>> + Clone
+where
+    I: ValueInput<'a, Token = Token, Span = Span>,
+{
+    let rule = just(Token::Bar)
+        .ignore_then(any_group())
+        .then_ignore(just(Token::RArrow))
+        .then(any_group())
+        .map(|(matcher, template)| MacroRule { matcher, template });
+    just(Token::Macro)
+        .ignore_then(lower_ident())
+        .then(rule.repeated().at_least(1).collect::<Vec<_>>())
+        .map(|(name, rules)| MacroDef { name, rules })
+}
+
+/// A macro call: `assertEq!(got, want)`, `vec![1; 2]`, `config! { … }`, and
+/// qualified, `Std.Test.assertEq!(…)`.
+///
+/// The three brackets mean the same thing; which one to use is a question of
+/// how the call reads. Nothing here looks inside them.
+fn mac_call<'a, I>() -> impl Parser<'a, I, MacCall, extra::Err<Rich<'a, Token, Span>>> + Clone
+where
+    I: ValueInput<'a, Token = Token, Span = Span>,
+{
+    path_seg()
+        .separated_by(just(Token::Period))
+        .at_least(1)
+        .collect::<Vec<_>>()
+        // `!=` is one token, so `foo != x` can never be mistaken for a call.
+        .then_ignore(just(Token::Bang))
+        .then(any_group())
+        .map(|(path, arg)| MacCall { path, arg })
 }
 
 fn expr<'tokens, I>()
@@ -816,6 +959,10 @@ where
             .boxed();
 
         let atom = choice((
+            // Before every name: a call is a name, so the alternatives that
+            // read one would take the name and leave the `!`. The probe costs
+            // a token or two and never descends into a nested expression.
+            located(mac_call().map(Expr::MacCall)),
             qual_atom,
             unit_expr,
             lit_expr,
@@ -1222,6 +1369,9 @@ fn fill_holes(e: LExpr, n: &mut usize) -> LExpr {
         }
         Expr::Var(v) => Expr::Var(v),
         Expr::Lit(l) => Expr::Lit(l),
+        // The argument is tokens, not expressions: a `_` in there is the
+        // macro's to make sense of once it has expanded.
+        Expr::MacCall(m) => Expr::MacCall(m),
         Expr::Interp(texts, holes) => {
             Expr::Interp(texts, holes.into_iter().map(|x| go(x, n)).collect())
         }
@@ -1377,10 +1527,12 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         // constructor written there takes no arguments of its own, so
         // `Node Leaf x r` is `Node` applied to three patterns, as in Haskell.
         // A constructor that does take some is parenthesized, `Just (Cons x r)`.
-        let argument = upper_ident()
-            .then_ignore(just(Token::Period))
-            .then(upper_ident())
-            .map(|(q, name)| Pat::QualCons(q, name, Vec::new()))
+        let argument = mac_call()
+            .map(Pat::MacCall)
+            .or(upper_ident()
+                .then_ignore(just(Token::Period))
+                .then(upper_ident())
+                .map(|(q, name)| Pat::QualCons(q, name, Vec::new())))
             .or(upper_ident().map(|name| Pat::Cons(name, Vec::new())))
             .or(record)
             .or(value_ident().map(|ident| Pat::Var(ident)))
@@ -1557,7 +1709,7 @@ fn lit<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, Lit, extra::Err<Rich<'a, Token, Span>>> + Clone {
     select! {
         Token::Int(i) => Lit::Int(i),
-        Token::Real(x) => Lit::Float(x.to_bits()),
+        Token::Real(bits) => Lit::Float(bits),
         Token::String(s) => Lit::String(s),
         Token::Char(c) => Lit::Char(c),
     }

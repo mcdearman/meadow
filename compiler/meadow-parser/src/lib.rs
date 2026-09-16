@@ -195,13 +195,26 @@ where
         // `fun f a (x, y) = e`, or point-free `fun f = e` (no parameters) — the
         // latter is just a value binding, so it takes the `Bind::Pat` path (and
         // its right-hand side is subject to the value restriction, like `def`).
+        // `| gcd a b = …`: another equation for the same function. The name is
+        // written again, as it is in Haskell, so that a typo in it is caught
+        // rather than quietly defining something else.
+        let clause = just(Token::Bar)
+            .ignore_then(value_ident())
+            .then(param_pat().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::Eq))
+            .then(expr())
+            .map(|((name, args), body)| Clause { name, args, body });
+
         let fun_bind = just(Token::Fun)
             .ignore_then(value_ident())
             .then(param_pat().repeated().collect::<Vec<_>>())
             .then(result_ty())
             .then_ignore(just(Token::Eq))
             .then(expr())
-            .map(|(((name, args), ret), body)| bind_of(name, args, ret, body));
+            .then(clause.repeated().collect::<Vec<_>>())
+            .validate(|((((name, args), ret), body), rest), e, emitter| {
+                equations(name, args, ret, body, rest, e.span(), emitter)
+            });
 
         fun_bind.or(pat_bind)
     };
@@ -1609,6 +1622,17 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 /// application. Anything richer goes in parentheses — `fun f (Just x) = e`
 /// parses fine and is then rejected by the irrefutability check, which is where
 /// the useful error lives (see `meadow-exhaust`).
+///
+/// Atomic includes literals and constructors that take nothing, which is what a
+/// function written as several equations matches on:
+///
+/// ```text
+/// fun gcd a 0 = a
+///   | gcd a b = gcd b (a % b)
+/// ```
+///
+/// A single equation may use them too, and is then simply refutable, which the
+/// exhaustiveness check reports.
 fn param_pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, LPat, extra::Err<Rich<'a, Token, Span>>> + Clone {
     let inner = pat();
@@ -1651,10 +1675,34 @@ fn param_pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
         .map_with(|(fields, open), e| LPat::new(Pat::Record(fields, open.is_some()), e.span()));
 
+    // `0`, `"x"`, `'c'`. A literal cannot be the head of an application, so it
+    // is as atomic as a name is -- and it is what a function written as several
+    // equations matches on.
+    let literal = lit().map_with(|l, e| LPat::new(Pat::Lit(l), e.span()));
+
+    // `Nothing`, `Maybe.Nothing` -- a constructor taking nothing. One that takes
+    // something is written `(Just x)`, exactly as in Haskell, and for the same
+    // reason: bare, it would read as two parameters.
+    let nullary = upper_ident()
+        .then_ignore(just(Token::Period))
+        .then(upper_ident())
+        .map_with(|(q, n), e| LPat::new(Pat::QualCons(q, n, Vec::new()), e.span()))
+        .or(upper_ident().map_with(|n, e| LPat::new(Pat::Cons(n, Vec::new()), e.span())));
+
+    // `[;]`, `[x; xs]`, `[]`, `#[a, b]`. Brackets say where these end, so the
+    // whole pattern grammar can be used inside them without ambiguity.
+    let bracketed = just(Token::LBrack)
+        .or(just(Token::Hash))
+        .rewind()
+        .ignore_then(inner.clone());
+
     choice((
         annotated,
         paren,
         record,
+        bracketed,
+        nullary,
+        literal,
         value_ident().map_with(|n, e| LPat::new(Pat::Var(n), e.span())),
         just(Token::Wildcard).map_with(|_, e| LPat::new(Pat::Wildcard, e.span())),
     ))
@@ -1729,6 +1777,133 @@ where
 fn result_ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, Option<LType>, extra::Err<Rich<'a, Token, Span>>> + Clone {
     just(Token::Colon).ignore_then(ty()).or_not()
+}
+
+/// One equation of a function written in several: `| gcd a b = …`.
+struct Clause {
+    name: Ident,
+    args: Vec<LPat>,
+    body: LExpr,
+}
+
+/// Assemble a function written as several equations.
+///
+/// ```text
+/// fun gcd a 0 = a
+///   | gcd a b = gcd b (a % b)
+/// ```
+///
+/// becomes one function whose body matches on its arguments:
+///
+/// ```text
+/// fun gcd _arg0 _arg1 =
+///   match (_arg0, _arg1) with
+///   | (a, 0) -> a
+///   | (a, b) -> gcd b (a % b)
+/// ```
+///
+/// which is sugar and nothing more -- so the equations are checked for
+/// exhaustiveness, and overlap, exactly as the `match` a person would have
+/// written by hand. One equation is left alone, and compiles to what it always
+/// did.
+fn equations<'a>(
+    name: Ident,
+    args: Vec<LPat>,
+    ret: Option<LType>,
+    body: LExpr,
+    rest: Vec<Clause>,
+    span: Span,
+    emitter: &mut chumsky::input::Emitter<Rich<'a, Token, Span>>,
+) -> Bind {
+    if rest.is_empty() {
+        return bind_of(name, args, ret, body);
+    }
+    // Nothing to match on, so the equations could not be told apart.
+    if args.is_empty() {
+        emitter.emit(Rich::custom(
+            span,
+            format!(
+                "`{}` is written as several equations but takes no arguments, so there is nothing to tell them apart by",
+                name.value()
+            ),
+        ));
+        return bind_of(name, args, ret, body);
+    }
+    for c in &rest {
+        if c.name.value() != name.value() {
+            emitter.emit(Rich::custom(
+                c.name.span,
+                format!(
+                    "this equation defines `{}`, but the ones above it define `{}`",
+                    c.name.value(),
+                    name.value()
+                ),
+            ));
+        }
+        if c.args.len() != args.len() {
+            emitter.emit(Rich::custom(
+                c.name.span,
+                format!(
+                    "this equation of `{}` takes {} argument{}, but the first takes {}",
+                    name.value(),
+                    c.args.len(),
+                    if c.args.len() == 1 { "" } else { "s" },
+                    args.len()
+                ),
+            ));
+        }
+    }
+
+    // One fresh name per argument, to match on. A name a person could write
+    // would be shadowed by whatever each equation binds, so these need not be
+    // unforgeable -- only unlikely, and `_` keeps them out of the way.
+    let params: Vec<LPat> = (0..args.len())
+        .map(|i| {
+            Located::new(
+                Pat::Var(Ident::new(
+                    InternedString::from(format!("_arg{i}")),
+                    name.span,
+                )),
+                name.span,
+            )
+        })
+        .collect();
+    let scrutinee = tuple_of(
+        params
+            .iter()
+            .map(|p| match p.value() {
+                Pat::Var(n) => Located::new(Expr::Var(n.clone()), n.span),
+                _ => unreachable!("the parameters just made are variables"),
+            })
+            .collect(),
+        name.span,
+    );
+
+    let arm = |pats: Vec<LPat>, body: LExpr| {
+        let span = body.span;
+        (pat_tuple_of(pats, span), None, body)
+    };
+    let mut arms = vec![arm(args, body)];
+    arms.extend(rest.into_iter().map(|c| arm(c.args, c.body)));
+
+    let matched = Located::new(Expr::Match(scrutinee, arms), span);
+    Bind::Fun(name, params, ret, matched)
+}
+
+/// One expression, or a tuple of several.
+fn tuple_of(mut xs: Vec<LExpr>, span: Span) -> LExpr {
+    match xs.len() {
+        1 => xs.pop().expect("one"),
+        _ => Located::new(Expr::Tuple(xs), span),
+    }
+}
+
+/// The same, for patterns.
+fn pat_tuple_of(mut ps: Vec<LPat>, span: Span) -> LPat {
+    match ps.len() {
+        1 => ps.pop().expect("one"),
+        _ => Located::new(Pat::Tuple(ps), span),
+    }
 }
 
 /// Assemble a binding, which is a function only when it takes arguments.

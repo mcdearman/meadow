@@ -389,3 +389,178 @@ fn an_update_keeps_every_field_and_its_type() {
     let out = errors("def main = { { x = 1 } | y = 2 }\n");
     assert!(out.contains("record has no field `y`"), "{out}");
 }
+
+// --- functions written as several equations ----------------------------------
+
+#[test]
+fn a_function_may_be_written_as_several_equations() {
+    is(
+        r#"
+fun gcd a 0 = a
+  | gcd a b = gcd b (a % b)
+
+def main = gcd 48 18
+"#,
+        "6",
+    );
+}
+
+#[test]
+fn equations_are_tried_in_the_order_they_are_written() {
+    is(
+        r#"
+fun describe 0 = "zero"
+  | describe 1 = "one"
+  | describe n = "many"
+
+def main = (describe 0, describe 1, describe 7)
+"#,
+        r#"("zero", "one", "many")"#,
+    );
+}
+
+#[test]
+fn an_equation_may_match_a_constructor_that_takes_nothing() {
+    is(
+        r#"
+use Std.Maybe.Maybe.*
+
+fun orElse d None     = d
+  | orElse _ (Just x) = x
+
+def main = (orElse 9 None, orElse 9 (Just 1))
+"#,
+        "(9, 1)",
+    );
+}
+
+#[test]
+fn equations_may_match_lists() {
+    is(
+        r#"
+fun len [;]       = 0
+  | len (_ :: xs) = 1 + len xs
+
+def main = len [1; 2; 3]
+"#,
+        "3",
+    );
+}
+
+#[test]
+fn a_match_in_the_body_is_not_read_as_more_equations() {
+    // The arms of a `match` begin with `|` too. They are told apart by shape:
+    // an equation is a name, patterns and `=`, and an arm is a pattern and `->`.
+    is(
+        r#"
+fun classify n = match compare n 0 with
+  | Less    -> "neg"
+  | Equal   -> "zero"
+  | Greater -> "pos"
+
+def main = (classify (-5), classify 0, classify 5)
+"#,
+        r#"("neg", "zero", "pos")"#,
+    );
+}
+
+#[test]
+fn several_equations_can_be_recursive_and_polymorphic() {
+    is(
+        r#"
+fun count [;]       = 0
+  | count (_ :: xs) = 1 + count xs
+
+def main = (count [1; 2], count ["a"; "b"; "c"])
+"#,
+        "(2, 3)",
+    );
+}
+
+#[test]
+fn a_declared_type_still_applies_to_every_equation() {
+    is(
+        r#"
+fun gcd a b : Int = gcd' a b
+fun gcd' a 0 = a
+  | gcd' a b = gcd' b (a % b)
+
+def main = gcd 48 18
+"#,
+        "6",
+    );
+}
+
+#[test]
+fn one_equation_that_names_something_else_is_reported() {
+    let e = errors(
+        r#"
+fun f a 0 = a
+  | g a b = b
+
+def main = f 1 0
+"#,
+    );
+    assert!(
+        e.contains("this equation defines `g`, but the ones above it define `f`"),
+        "{e}"
+    );
+}
+
+#[test]
+fn equations_that_take_different_numbers_of_arguments_are_reported() {
+    let e = errors(
+        r#"
+fun f a 0 = a
+  | f a = a
+
+def main = f 1 0
+"#,
+    );
+    assert!(
+        e.contains("takes 1 argument, but the first takes 2"),
+        "{e}"
+    );
+}
+
+#[test]
+fn equations_with_nothing_to_match_on_are_reported() {
+    let e = errors(
+        r#"
+fun f = 1
+  | f = 2
+
+def main = f
+"#,
+    );
+    assert!(e.contains("takes no arguments"), "{e}");
+}
+
+#[test]
+fn equations_that_do_not_cover_everything_are_reported() {
+    // The sugar is a `match`, so it is checked like one.
+    let e = common::errors_std_with(
+        r#"
+fun describe 0 = "zero"
+  | describe 1 = "one"
+
+def main = describe 0
+"#,
+        Options::release(),
+    );
+    assert!(e.contains("non-exhaustive"), "{e}");
+}
+
+#[test]
+fn a_single_equation_may_still_match_a_literal() {
+    // It is then refutable, which is the irrefutability check's to report --
+    // a better error than the parse failure this used to be.
+    let e = common::errors_std_with(
+        r#"
+fun f 0 = "zero"
+def main = f 0
+"#,
+        Options::release(),
+    );
+    assert!(e.contains("refutable pattern in function parameter"), "{e}");
+}

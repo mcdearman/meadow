@@ -140,7 +140,7 @@ pub mod release;
 /// file they source rather than a line this writes into each of them.
 pub mod path {
     #[cfg(windows)]
-    mod imp {
+    pub(crate) mod imp {
 
         use std::path::Path;
         use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, RegType};

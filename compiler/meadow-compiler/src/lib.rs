@@ -9,7 +9,7 @@
 //! * **`buildtools/`** — everything you point *at* Meadow source: `meadow`, the
 //!   build system (package discovery, pipeline, linker, embedded stdlib) plus
 //!   the CLI and REPL, and `meadow-fmt`, the formatter behind `meadow fmt`.
-//! * **`installer/`** — `meadow-setup.exe`.
+//! * **`installer/`** — `meadowup`, which installs and updates the toolchain.
 //!
 //! ## The pipeline
 //!

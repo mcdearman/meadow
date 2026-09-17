@@ -1,7 +1,12 @@
 #!/bin/sh
-# Meadow installer for macOS and Linux.
+# Builds Meadow from source and installs it, on macOS and Linux.
 #
-#   curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/install.sh | sh
+#   scripts/install.sh --local .
+#
+# This is for working on Meadow, or for a machine with no release build. To
+# install a release, use scripts/meadowup-init.sh instead:
+#
+#   curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
 #
 # Builds the whole toolchain from source -- `meadow`, the build system, and
 # `meadowup`, which looks after which version of Meadow you have -- and installs
@@ -67,9 +72,8 @@ parse_args() {
             # working.
             --from-source) shift ;;
             --from-release)
-                err "this script only builds from source. To install a release,
-       download meadowup and run \`meadowup install\`:
-       https://github.com/$REPO/releases/latest"
+                err "this script only builds from source. To install a release:
+       curl -fsSL https://raw.githubusercontent.com/$REPO/master/scripts/meadowup-init.sh | sh"
                 ;;
             --with-extension) EXTENSION=1; shift ;;
             --no-modify-path) PASS_THROUGH="$PASS_THROUGH --no-modify-path"; shift ;;
@@ -105,7 +109,8 @@ Afterwards, `meadowup` looks after the installation:
     meadowup show         what is installed, and where
     meadowup uninstall
 
-MEADOW_HOME overrides where everything goes.
+MEADOW_HOME overrides where everything goes. To install a release rather
+than build one, use scripts/meadowup-init.sh.
 EOF
 }
 

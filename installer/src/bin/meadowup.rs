@@ -58,7 +58,7 @@ struct Args {
     modify_path: bool,
     home: PathBuf,
     /// Take the binaries from this directory instead of fetching a release:
-    /// what `install.sh` passes after building them from source.
+    /// what `scripts/install.sh` passes after building them from source.
     from: Option<PathBuf>,
 }
 

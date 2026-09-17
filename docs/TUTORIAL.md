@@ -30,15 +30,18 @@ repository.
 
 ### Installing
 
-Grab a build from the [releases page](https://github.com/mcdearman/meadow/releases/latest)
-— `meadow-setup-x86_64.exe` on Windows, or:
+On macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
 ```
 
-Either way you get a self-contained `meadow` in `~/.meadow/bin`. From a checkout,
-`cargo install --path buildtools/meadow` does the same job.
+On Windows, download `meadowup-x86_64.exe` from the
+[releases page](https://github.com/mcdearman/meadow/releases/latest) and run it.
+
+Either way, `meadowup` installs itself and `meadow` into `~/.meadow/bin`, and
+`meadowup update` keeps them current. To build from a checkout instead, run
+`scripts/install.sh --local .`.
 
 ### Your first program
 

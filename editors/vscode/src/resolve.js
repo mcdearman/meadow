@@ -7,7 +7,7 @@
 //
 //  1. **Not finding it.** A GUI-launched VS Code does not inherit your shell's
 //     `PATH`: on macOS it gets the system default unless `launchctl setenv` says
-//     otherwise, and neither `cargo install` (`~/.cargo/bin`) nor `install.sh`
+//     otherwise, and neither `cargo install` (`~/.cargo/bin`) nor meadowup
 //     (`~/.meadow/bin`) writes anywhere on it. So those are searched too, along
 //     with `$MEADOW_HOME/bin` if that is set, since both installers honour it.
 //

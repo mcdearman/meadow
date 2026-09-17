@@ -23,7 +23,7 @@ it. (Take `meadowup-aarch64.exe` on an ARM machine.)
 **macOS / Linux**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
 ```
 
 Either way you get `meadow` and `meadowup` in `~/.meadow/bin`, added to your
@@ -45,10 +45,18 @@ meadowup uninstall   # remove it and undo the PATH entry
 <details>
 <summary>Options</summary>
 
-`meadowup` is the only installer, on every platform. Downloading it is all
-either route does: `install.sh` fetches it and hands over, and the `.exe` puts
-itself in place when you run it. There is no separate bootstrap program — as
-with `rustup-init`, the installer *is* the tool.
+On every platform, the installer is `meadowup`. `meadowup-init.sh` downloads
+it for your machine and runs `meadowup install`, and the Windows `.exe` is
+`meadowup` itself. `meadowup` then copies itself into `~/.meadow/bin` and
+fetches the rest of the toolchain. As with `rustup-init`, there is no separate
+installer program.
+
+Options after `sh -s --` are passed to `meadowup install`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh \
+  | sh -s -- --version v0.1.0-alpha --no-modify-path
+```
 
 ```sh
 meadowup install --version v0.1.0-alpha   # pin a release
@@ -59,29 +67,28 @@ meadowup show                             # what is installed, and where
 meadowup uninstall
 ```
 
-`scripts/install.sh` **builds everything from source** — `meadow` and
-`meadowup` both — and downloads nothing but the source. What it installs is laid
-out exactly as a release would be, because the meadowup it just built does the
-installing; and since meadowup is installed too, `meadowup update` moves a source
-build on to the next release like any other install. Building needs a Rust
-toolchain and takes a few minutes.
+**Building from source.** `scripts/install.sh` is for local installs only. It
+builds `meadow` and `meadowup` from a checkout and downloads nothing. The
+`meadowup` it builds then installs both binaries in the same layout a release
+uses, so afterwards `meadowup update` moves the source build on to the next
+release like any other install. You need a Rust toolchain, and the build takes a
+few minutes.
 
 ```sh
-install.sh --version v0.1.0-alpha   # build that tag, rather than the newest source
-install.sh --local <path>     # build a checkout already on disk
-install.sh --no-modify-path   # leave shell profiles alone
-install.sh --uninstall
+git clone https://github.com/mcdearman/meadow && cd meadow
+scripts/install.sh --local .                   # build and install this checkout
+scripts/install.sh --local . --with-extension  # ...and the VS Code extension
+scripts/install.sh --no-modify-path            # leave shell profiles alone
+scripts/install.sh --uninstall
 ```
 
-For a prebuilt release instead, download `meadowup` from the
-[releases page](https://github.com/mcdearman/meadow/releases/latest) and run
-`meadowup install`. `meadowup show` says which kind you have: a local build shares
-its version number with the release it followed, and `meadowup update --force`
-swaps it for the release.
+`meadowup show` tells you whether you have a release or a local build. A local
+build has the same version number as the release it followed, and
+`meadowup update --force` replaces it with that release.
 
-`meadowup install --from <dir>` takes binaries from a directory rather than
-fetching any, which is what `install.sh` uses and what installs from an
-unpacked archive with no network at all.
+`meadowup install --from <dir>` installs binaries from a directory instead of
+downloading them. `install.sh` uses it, and it also installs an unpacked
+archive with no network access at all.
 
 `MEADOW_HOME` overrides the install directory for both.
 </details>

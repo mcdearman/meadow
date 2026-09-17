@@ -118,7 +118,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
 
       # Two things are published per target. `meadowup-<target>` on its own is
-      # what a person downloads, and what `install.sh` fetches: it is small, and
+      # what a person downloads, and what `meadowup-init.sh` fetches: it is small, and
       # it is the only thing needed to get started. The archive beside it is the
       # whole toolchain, which `meadowup install` pulls -- with meadowup in it
       # too, so an update replaces meadowup along with the build tool and a
@@ -216,7 +216,7 @@ jobs:
             **macOS / Linux**
 
             ```sh
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/scripts/install.sh | sh
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/scripts/meadowup-init.sh | sh
             ```
 
             Then `meadow` starts the REPL and `meadow run <path>` builds and runs

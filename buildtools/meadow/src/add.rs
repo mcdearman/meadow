@@ -18,6 +18,7 @@
 use crate::git;
 use crate::lock::{self, Lock};
 use crate::package::{DepSource, GitRef, Manifest};
+use crate::status;
 use std::path::{Path, PathBuf};
 
 pub struct Options {
@@ -38,16 +39,15 @@ pub fn run(opts: &Options) -> Result<(), String> {
 
     // What the dependency calls itself, unless told otherwise. Fetching to find
     // out is the point: the manifest is what knows, not the URL.
-    let (name, pinned) = match &source {
+    let (name, version, pinned) = match &source {
         DepSource::Path(rel) => {
             let at = opts.dir.join(rel);
             let m = Manifest::load(&at)
                 .map_err(|e| format!("could not read {}: {e}", crate::workspace::shown(&at)))?
                 .ok_or_else(|| format!("{} has no meadow.toml", crate::workspace::shown(&at)))?;
-            (m.name, None)
+            (m.name, m.version, None)
         }
         DepSource::Git { url, reference } => {
-            println!("  Fetching {url}");
             let cache = git::default_cache()?;
             let got = git::ensure(&cache, url, reference, None, crate::package::policy().net)?;
             let m = Manifest::load(&got.path)
@@ -55,7 +55,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 .ok_or_else(|| {
                     format!("{url} has no meadow.toml, so it is not a Meadow package")
                 })?;
-            (m.name, Some(got))
+            (m.name, m.version, Some(got))
         }
     };
     let name = opts.rename.clone().unwrap_or(name);
@@ -68,7 +68,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
         .unwrap_or_default();
     if let Some(had) = existing.iter().find(|d| d.name == name) {
         if had.source == source {
-            println!("  Unchanged {name} is already a dependency");
+            status::note("Unchanged", format!("{name} is already a dependency"));
             return Ok(());
         }
         return Err(format!(
@@ -106,13 +106,25 @@ pub fn run(opts: &Options) -> Result<(), String> {
             tree: got.tree.clone(),
         });
         if let Err(e) = lock.save(&dir) {
-            eprintln!("warning: could not write {}: {e}", lock::FILE);
+            status::warning(format!("could not write {}: {e}", lock::FILE));
         }
     }
 
-    match &pinned {
-        Some(got) => println!("     Added {name} at {}", git::short(&got.rev)),
-        None => println!("     Added {name}"),
+    // As cargo says it: what went into the manifest, then what was pinned.
+    status::status("Adding", format!("{name} v{version} to dependencies"));
+    if let (Some(got), DepSource::Git { url, reference }) = (&pinned, &source) {
+        status::status("Locking", "1 package");
+        status::status(
+            "Adding",
+            format!(
+                "{name} v{version} ({url}{}#{})",
+                reference
+                    .written()
+                    .map(|r| format!("?{r}"))
+                    .unwrap_or_default(),
+                git::short(&got.rev)
+            ),
+        );
     }
     Ok(())
 }

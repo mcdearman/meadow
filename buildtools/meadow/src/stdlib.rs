@@ -167,6 +167,10 @@ pub fn std_packages_in(
         }
         // Shares the one compile with `std_modules`, so asking for both costs
         // memory but not time.
+        crate::status::status(
+            "Compiling",
+            format!("{PACKAGE_NAME} v{} (embedded)", env!("CARGO_PKG_VERSION")),
+        );
         let (modules, diags) = std_modules(opts);
         let subs = modules.into_iter().map(|(_, p)| p).collect();
         let package = bundle(InternedString::from(PACKAGE_NAME), subs);
@@ -231,7 +235,12 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
     // dependencies. Each sub-unit gets `prelude_exports = Some([])` so a later
     // sibling only reaches it through `use`.
     let mut subs: Vec<(&'static str, CompiledPackage)> = Vec::new();
+    // Compiling the standard library is the slowest thing a first build does,
+    // so it gets a bar of its own, a module at a time.
+    let mut bar = crate::status::Building::new(MODULES.len());
     for (dotted, src) in MODULES {
+        bar.working_on(&format!("{PACKAGE_NAME}.{dotted}"));
+        bar.step();
         let filename = format!("Std/{}.mw", dotted.replace('.', "/"));
         let source = Source::new(
             SourceKind::File(InternedString::from(filename.as_str())),

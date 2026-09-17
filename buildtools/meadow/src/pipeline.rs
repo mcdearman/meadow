@@ -9,6 +9,7 @@
 use crate::incremental::{self, Cache};
 use crate::linker::{LinkedProgram, Linker};
 use crate::package::{Package, PackageGraph};
+use crate::status;
 use crate::stdlib;
 use crate::workspace::Workspace;
 use chumsky::error::Rich;
@@ -357,6 +358,9 @@ fn compile_graph(graph: &PackageGraph, opts: Options, cache: Option<&Cache>) -> 
     // every package after it, which would make each of them a change.
     let mut floor = incremental::align(std.iter().map(|p| p.vars.end).max().unwrap_or(0));
 
+    // The bar counts every package in the graph. One found up to date moves it
+    // on without a line of its own, as cargo does with a crate that is fresh.
+    let mut bar = status::Building::new(graph.order().len());
     for &pid in graph.order() {
         let pkg = &graph.packages[pid];
         let dep_prints: Vec<u64> = pkg.deps.iter().map(|&d| fingerprints[d]).collect();
@@ -369,6 +373,16 @@ fn compile_graph(graph: &PackageGraph, opts: Options, cache: Option<&Cache>) -> 
                 cp
             }
             None => {
+                let version = pkg
+                    .version
+                    .as_deref()
+                    .map(|v| format!(" v{v}"))
+                    .unwrap_or_default();
+                status::status(
+                    "Compiling",
+                    format!("{}{version} ({})", pkg.name, pkg.origin),
+                );
+                bar.working_on(&pkg.name);
                 let mut deps: Vec<&CompiledPackage> = std.iter().collect();
                 deps.extend(
                     pkg.deps
@@ -390,7 +404,9 @@ fn compile_graph(graph: &PackageGraph, opts: Options, cache: Option<&Cache>) -> 
         fingerprints[pid] = fingerprint;
         floor = incremental::align(floor.max(cp.vars.end));
         packages[pid] = Some(cp);
+        bar.step();
     }
+    drop(bar);
     Compiled {
         std,
         packages,

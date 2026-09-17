@@ -21,6 +21,7 @@
 use crate::git;
 use crate::lock::{self, Lock};
 use crate::package::{PackageGraph, Resolver};
+use crate::status;
 use std::path::{Path, PathBuf};
 
 pub struct Options {
@@ -87,26 +88,47 @@ pub fn run(opts: &Options) -> Result<(), String> {
     }
 
     let moved = changes(&before, &resolver.lock);
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    status::status(
+        "Locking",
+        format!(
+            "{} package{} to the latest commit{}",
+            moved.len(),
+            plural(moved.len()),
+            plural(moved.len())
+        ),
+    );
     if moved.is_empty() {
-        println!("  Unchanged everything is already at the latest commit");
+        status::note("Unchanged", "every git dependency is already current");
         return Ok(());
     }
 
     for m in &moved {
         match &m.from {
-            Some(from) => println!(
-                "   Updating {} {} -> {}",
-                m.name,
-                git::short(from),
-                git::short(&m.to)
+            Some(from) => status::status(
+                "Updating",
+                format!(
+                    "{} {} -> {} ({})",
+                    m.name,
+                    git::short(from),
+                    git::short(&m.to),
+                    lock::describes(&m.source)
+                ),
             ),
-            None => println!("     Adding {} at {}", m.name, git::short(&m.to)),
+            None => status::status(
+                "Adding",
+                format!(
+                    "{} {} ({})",
+                    m.name,
+                    git::short(&m.to),
+                    lock::describes(&m.source)
+                ),
+            ),
         }
-        println!("            {}", lock::describes(&m.source));
     }
 
     if opts.dry_run {
-        println!("  Dry run {} would change, nothing written", lock::FILE);
+        status::warning("not updating the lockfile, as this is a dry run");
         return Ok(());
     }
     resolver.lock.retain(&resolver.seen);

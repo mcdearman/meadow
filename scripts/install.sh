@@ -3,19 +3,21 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/install.sh | sh
 #
-# Builds the whole toolchain from source and installs it: `meadowup`, which
-# looks after which version of Meadow you have, and `meadow`, the build system.
-# That needs a Rust toolchain and takes a few minutes. Pass --from-release to
-# download prebuilt binaries instead, which is quick but only as new as the last
-# release.
+# Builds the whole toolchain from source -- `meadow`, the build system, and
+# `meadowup`, which looks after which version of Meadow you have -- and installs
+# both. Nothing is downloaded but the source. It needs a Rust toolchain and takes
+# a few minutes.
 #
-# Installing is meadowup's job either way -- this script builds, then hands the
-# binaries over -- so there is one implementation of where things go and how
-# your PATH is edited, rather than two that can come to disagree.
+# What ends up on disk is exactly what `meadowup install` would have put there:
+# the binaries in ~/.meadow/bin, and your PATH edited to find them. That is
+# because meadowup does the installing -- the one just built is handed the
+# binaries beside it rather than fetching any -- so there is one implementation
+# of where things go, whichever way they were made. And since meadowup is
+# installed too, `meadowup update` moves a source build on to the next release
+# like any other install.
 #
-# Working on Meadow itself? `--local .` builds this checkout and installs it
-# the way a release would, and `--with-extension` builds and installs the VS
-# Code extension alongside it -- so what you test is how it would be installed.
+# Working on Meadow itself? `--local .` builds this checkout, and
+# `--with-extension` builds and installs the VS Code extension alongside it.
 #
 # Run with --help for the options.
 
@@ -26,9 +28,6 @@ MEADOW_HOME="${MEADOW_HOME:-$HOME/.meadow}"
 BIN_DIR="$MEADOW_HOME/bin"
 
 VERSION="latest"
-# Source is the default: a release is only as new as the last one cut, and
-# someone running this from a checkout wants what is in front of them.
-FROM_RELEASE=0
 LOCAL=""
 UNINSTALL=0
 EXTENSION=0
@@ -45,18 +44,6 @@ main() {
         exec "$BIN_DIR/meadowup" uninstall $PASS_THROUGH
     fi
 
-    if [ "$FROM_RELEASE" -eq 1 ]; then
-        target="$(detect_target)"
-        if fetch_meadowup "$target"; then
-            if [ "$VERSION" = "latest" ]; then
-                exec "$BIN_DIR/meadowup" install $PASS_THROUGH
-            else
-                exec "$BIN_DIR/meadowup" install --version "$VERSION" $PASS_THROUGH
-            fi
-        fi
-        say "no prebuilt meadowup for $target — building from source"
-    fi
-
     build_everything
 }
 
@@ -70,19 +57,25 @@ parse_args() {
                 VERSION="$2"
                 shift 2
                 ;;
-            --from-release) FROM_RELEASE=1; shift ;;
-            # Kept because it was the flag that meant this, and it still does:
-            # building from source is now what happens anyway.
-            --from-source) FROM_RELEASE=0; shift ;;
             --local)
                 [ $# -ge 2 ] || err "--local needs the path to a meadow checkout"
                 LOCAL="$2"
-                FROM_RELEASE=0
                 shift 2
                 ;;
-            --no-modify-path) PASS_THROUGH="$PASS_THROUGH --no-modify-path"; shift ;;
-            --force) PASS_THROUGH="$PASS_THROUGH --force"; shift ;;
+            # Building from source is all this does now; the flag that used to
+            # ask for it is still accepted, so a script that passes it keeps
+            # working.
+            --from-source) shift ;;
+            --from-release)
+                err "this script only builds from source. To install a release,
+       download meadowup and run \`meadowup install\`:
+       https://github.com/$REPO/releases/latest"
+                ;;
             --with-extension) EXTENSION=1; shift ;;
+            --no-modify-path) PASS_THROUGH="$PASS_THROUGH --no-modify-path"; shift ;;
+            # Meaningless for a build, which always installs; accepted so that
+            # a script passing it keeps working.
+            --force) shift ;;
             --uninstall) UNINSTALL=1; shift ;;
             --help|-h) usage; exit 0 ;;
             *) err "unknown option: $1 (try --help)" ;;
@@ -96,20 +89,19 @@ Builds the Meadow toolchain from source and installs it.
 
     scripts/install.sh [options]
 
-    --from-release     download prebuilt binaries instead of building
-    --version <TAG>    that tag, rather than the newest
-    --local <PATH>     build from a checkout already on disk
+    --version <TAG>    build that tag, rather than the newest source
+    --local <PATH>     build a checkout already on disk
     --with-extension   also build and install the VS Code extension
     --no-modify-path   do not touch your shell profiles
-    --force            install again even if it is already here
     --uninstall        remove Meadow and undo the PATH entry
 
-Building needs a Rust toolchain and takes a few minutes; --from-release is
-quick, but only as new as the last release.
+Both `meadow` and `meadowup` are built and installed, laid out exactly as
+`meadowup install` would lay them out. Building needs a Rust toolchain and
+takes a few minutes.
 
-Afterwards, `meadowup` does this job on its own:
+Afterwards, `meadowup` looks after the installation:
 
-    meadowup update       bring the toolchain up to date
+    meadowup update       move on to the latest release
     meadowup show         what is installed, and where
     meadowup uninstall
 
@@ -117,43 +109,14 @@ MEADOW_HOME overrides where everything goes.
 EOF
 }
 
-# --- getting meadowup -------------------------------------------------------
-
-# Download meadowup for $1. Returns non-zero (without exiting) when there is no
-# such asset, so the caller can fall back to building it.
-fetch_meadowup() {
-    target="$1"
-    asset="meadowup-${target}"
-    if [ "$VERSION" = "latest" ]; then
-        url="https://github.com/$REPO/releases/latest/download/$asset"
-    else
-        url="https://github.com/$REPO/releases/download/$VERSION/$asset"
-    fi
-
-    say "downloading $url"
-    tmp="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf \"$tmp\"" EXIT
-
-    if ! download "$url" "$tmp/meadowup"; then
-        rm -rf "$tmp"
-        trap - EXIT
-        return 1
-    fi
-
-    mkdir -p "$BIN_DIR"
-    chmod 755 "$tmp/meadowup"
-    replace_binary "$tmp/meadowup" meadowup
-
-    rm -rf "$tmp"
-    trap - EXIT
-}
+# --- building ---------------------------------------------------------------
 
 # Build the whole toolchain and install it.
 #
-# Both binaries are built, staged in one directory, and handed to the meadowup
-# that was just built -- so installing them, and editing the PATH, is the same
-# code that runs when they are downloaded instead.
+# Both binaries are built and staged in one directory, and the meadowup just
+# built is told to install from there. `--from` means it fetches nothing: it only
+# does what it does with a downloaded release once it has one -- put each binary
+# in place, itself included, and edit the PATH.
 build_everything() {
     need_cmd cargo
     src="$(toolchain_source)"
@@ -166,22 +129,26 @@ build_everything() {
     cargo build --release --manifest-path "$src/buildtools/Cargo.toml" -p meadow \
         || err "could not build meadow"
 
+    built="$src/installer/target/release/meadowup"
+
+    # A meadowup older than this script would not know `--from`, which happens
+    # when the two come from different commits -- an old `--version`, say. Say
+    # that, rather than letting it fail on an option it has never heard of.
+    if ! "$built" help 2>/dev/null | grep -q -- "--from"; then
+        err "the meadowup built from $src predates installing from a directory,
+       so this script cannot install it. Build a newer version, or a checkout
+       of this one:  scripts/install.sh --local <path-to-this-checkout>"
+    fi
+
     staging="$(mktemp -d)"
     # shellcheck disable=SC2064
     trap "rm -rf \"$staging\"" EXIT
-    cp "$src/installer/target/release/meadowup" "$staging/meadowup"
+    cp "$built" "$staging/meadowup"
     cp "$src/buildtools/target/release/meadow" "$staging/meadow"
 
-    # An older meadowup than this script would not know `--from`, which happens
-    # when the two come from different commits. Say that, rather than letting it
-    # fail with an option it has never heard of.
-    built="$src/installer/target/release/meadowup"
-    if ! "$built" help 2>/dev/null | grep -q -- "--from"; then
-        err "the meadowup built from $src is older than this script and cannot be
-       handed binaries to install. Run it against a matching checkout:
-       scripts/install.sh --local <path-to-this-checkout>"
-    fi
-
+    # Always installed, even over a release with the same version number:
+    # `--from` never skips what is already there, since what was just built is
+    # not that release.
     "$built" install --from "$staging" $PASS_THROUGH \
         || err "could not install what was built"
 
@@ -220,9 +187,9 @@ install_extension() {
     fi
 }
 
-# Where to build from: a checkout named with --local, or one fetched into
-# $MEADOW_HOME/src. Fetching into the same place each time means a second run is
-# an incremental build rather than a clean one.
+# Where to build from: a checkout named with --local, the checkout this script
+# is in, or one fetched into $MEADOW_HOME/src. Fetching into the same place each
+# time means a second run is an incremental build rather than a clean one.
 toolchain_source() {
     if [ -n "$LOCAL" ]; then
         [ -f "$LOCAL/installer/Cargo.toml" ] \
@@ -251,9 +218,18 @@ toolchain_source() {
 
     need_cmd git
     src="$MEADOW_HOME/src"
-    say "fetching source into $src" >&2
+    if [ "$VERSION" = "latest" ]; then
+        ref="HEAD"
+        say "fetching the latest source into $src" >&2
+    else
+        ref="$VERSION"
+        say "fetching $VERSION into $src" >&2
+    fi
     if [ -d "$src/.git" ]; then
-        git -C "$src" fetch --depth 1 origin >/dev/null 2>&1 || err "git fetch failed"
+        # The ref asked for, not whatever the clone last had: a second run with
+        # a different `--version` must build that version.
+        git -C "$src" fetch --depth 1 origin "$ref" >/dev/null 2>&1 \
+            || err "git fetch failed (no such tag: $VERSION?)"
         git -C "$src" reset --hard FETCH_HEAD >/dev/null 2>&1 || err "git reset failed"
     else
         rm -rf "$src"
@@ -268,54 +244,7 @@ toolchain_source() {
     echo "$src"
 }
 
-
-# Put `$1` at $BIN_DIR/$2, replacing whatever is there.
-#
-# The old binary is renamed out of the way first: writing over an executable that
-# is currently running fails on Linux (ETXTBSY), while renaming it never does, so
-# an upgrade works even with one open elsewhere. Unlinking a busy file is fine on
-# Unix, so the leftover goes immediately.
-replace_binary() {
-    dest="$BIN_DIR/$2"
-    if [ -f "$dest" ]; then
-        rm -f "$dest.old"
-        mv "$dest" "$dest.old" 2>/dev/null || true
-    fi
-    install -m 755 "$1" "$dest" 2>/dev/null \
-        || { cp "$1" "$dest" && chmod 755 "$dest"; }
-    rm -f "$dest.old"
-}
-
 # --- helpers ----------------------------------------------------------------
-
-detect_target() {
-    os="$(uname -s)"
-    arch="$(uname -m)"
-
-    case "$os" in
-        Darwin) os_part="apple-darwin" ;;
-        Linux)  os_part="unknown-linux-gnu" ;;
-        *) err "unsupported OS: $os (try --from-source)" ;;
-    esac
-
-    case "$arch" in
-        x86_64|amd64)  arch_part="x86_64" ;;
-        arm64|aarch64) arch_part="aarch64" ;;
-        *) err "unsupported architecture: $arch (try --from-source)" ;;
-    esac
-
-    echo "${arch_part}-${os_part}"
-}
-
-download() {
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$1" -o "$2"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q "$1" -O "$2"
-    else
-        err "need curl or wget"
-    fi
-}
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1 || err "need $1"

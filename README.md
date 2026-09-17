@@ -59,18 +59,25 @@ meadowup show                             # what is installed, and where
 meadowup uninstall
 ```
 
-`install.sh` **builds the toolchain from source** and hands the binaries to
-meadowup, which installs them — so installing, and editing your `PATH`, is the
-same code either way. Building needs a Rust toolchain and takes a few minutes.
+`scripts/install.sh` **builds everything from source** — `meadow` and
+`meadowup` both — and downloads nothing but the source. What it installs is laid
+out exactly as a release would be, because the meadowup it just built does the
+installing; and since meadowup is installed too, `meadowup update` moves a source
+build on to the next release like any other install. Building needs a Rust
+toolchain and takes a few minutes.
 
 ```sh
-install.sh --from-release     # download prebuilt binaries instead, which is
-                              # quick but only as new as the last release
-install.sh --version v0.1.0-alpha   # that tag, rather than the newest
-install.sh --local <path>     # build from a checkout already on disk
+install.sh --version v0.1.0-alpha   # build that tag, rather than the newest source
+install.sh --local <path>     # build a checkout already on disk
 install.sh --no-modify-path   # leave shell profiles alone
 install.sh --uninstall
 ```
+
+For a prebuilt release instead, download `meadowup` from the
+[releases page](https://github.com/mcdearman/meadow/releases/latest) and run
+`meadowup install`. `meadowup show` says which kind you have: a local build shares
+its version number with the release it followed, and `meadowup update --force`
+swaps it for the release.
 
 `meadowup install --from <dir>` takes binaries from a directory rather than
 fetching any, which is what `install.sh` uses and what installs from an
@@ -108,6 +115,7 @@ meadow                          # REPL
 meadow init                     # start a package here, named after the directory
 meadow init pkg --name myPkg    # ...or elsewhere, under a name you choose
 meadow run examples/euler       # build a package and run `main`, on the VM and its JIT
+meadow run --types pkg          # ...printing every top-level binding's type first
 meadow run --release pkg        # ...optimized, as an executable compiled ahead of time
 meadow run --backend vm pkg     # ...on the bytecode VM alone (or `jit`, `aot`)
 meadow run --cek pkg            # ...on the CEK machine

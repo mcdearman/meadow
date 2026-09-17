@@ -167,6 +167,7 @@ pub fn latest(cache: &Path, url: &str, reference: &GitRef, net: Net) -> Result<S
 
 /// Clone `url` into `db` if it is not there, then fetch into it.
 fn fetch(db: &Path, url: &str, reference: &GitRef) -> Result<(), String> {
+    crate::status::status("Updating", format!("git repository `{url}`"));
     if !db.join("HEAD").is_file() {
         if let Some(parent) = db.parent() {
             std::fs::create_dir_all(parent)
@@ -174,10 +175,7 @@ fn fetch(db: &Path, url: &str, reference: &GitRef) -> Result<(), String> {
         }
         // A partial clone left by an interrupted run would never complete.
         let _ = std::fs::remove_dir_all(db);
-        git(
-            None,
-            &["clone", "--bare", "--quiet", url, &db.display().to_string()],
-        )?;
+        git_fetching(None, &["clone", "--bare", url, &db.display().to_string()])?;
         return Ok(());
     }
     // `+` on both sides: a force-moved tag is brought over so that it can be
@@ -186,10 +184,85 @@ fn fetch(db: &Path, url: &str, reference: &GitRef) -> Result<(), String> {
         "+refs/heads/*:refs/heads/*".to_string(),
         "+refs/tags/*:refs/tags/*".to_string(),
     ];
-    let mut args = vec!["fetch", "--quiet", "--force", "--prune", url];
+    let mut args = vec!["fetch", "--force", "--prune", url];
     args.extend(refs.iter().map(String::as_str));
     let _ = reference;
-    git(Some(db), &args).map(|_| ())
+    git_fetching(Some(db), &args)
+}
+
+/// Run a `git` that transfers something, showing how far it has got.
+///
+/// With nobody watching -- a test, the language server -- this is just [`git`]
+/// with `--quiet`. Otherwise `--progress` makes git report as it goes, even
+/// though its stderr is a pipe, and those reports drive the fetch bar.
+fn git_fetching(dir: Option<&Path>, args: &[&str]) -> Result<(), String> {
+    let quiet = !crate::status::enabled();
+    let mut all: Vec<&str> = vec![args[0], if quiet { "--quiet" } else { "--progress" }];
+    all.extend_from_slice(&args[1..]);
+    if quiet {
+        return git(dir, &all).map(|_| ());
+    }
+
+    let mut cmd = Command::new("git");
+    if let Some(d) = dir {
+        cmd.arg("-C").arg(d);
+    }
+    cmd.args(&all)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "`git` is not installed, and a git dependency needs it".to_string()
+        } else {
+            format!("could not run git: {e}")
+        }
+    })?;
+
+    // git ends a progress line with `\r` and redraws it, and ends every other
+    // line with `\n`; either finishes a line here.
+    let mut said = String::new();
+    let mut bar = crate::status::Fetching::new();
+    if let Some(mut err) = child.stderr.take() {
+        use std::io::Read;
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        while matches!(err.read(&mut byte), Ok(1)) {
+            if byte[0] == b'\r' || byte[0] == b'\n' {
+                let text = String::from_utf8_lossy(&line).into_owned();
+                if let Some((percent, rate)) = crate::status::git_progress(&text) {
+                    bar.update(percent, rate.as_deref());
+                } else if !text.trim().is_empty() {
+                    said.push_str(&text);
+                    said.push('\n');
+                }
+                line.clear();
+            } else {
+                line.push(byte[0]);
+            }
+        }
+    }
+    drop(bar);
+    let status = child
+        .wait()
+        .map_err(|e| format!("could not wait for git: {e}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    // Only what explains the failure: git's own chatter about what it was
+    // doing is not the reason it stopped.
+    let reason: Vec<&str> = said
+        .lines()
+        .filter(|l| {
+            let l = l.trim_start();
+            l.starts_with("fatal:") || l.starts_with("error:") || l.starts_with("remote: ")
+        })
+        .collect();
+    Err(if reason.is_empty() {
+        format!("git {} failed", args[0])
+    } else {
+        reason.join("\n")
+    })
 }
 
 /// The commit `what` names, in full.

@@ -56,8 +56,25 @@ Save that as `hello.mw` and run it:
 $ meadow run hello.mw
 ```
 
-`meadow run` prints the type of every top-level binding, then the value `main`
-evaluated to. Trimmed to the interesting part:
+`meadow run` says what it compiles, runs `main`, and prints the value it
+evaluated to:
+
+```
+   Compiling Std v0.1.0-alpha (embedded)
+   Compiling hello (/home/you/hello.mw)
+    Finished `debug` profile [O1, jit] in 0.41s
+     Running `main` on the JIT
+Hello, Meadow!
+=> ()
+```
+
+The lines about compiling go to stderr, so a program's own output is all there
+is on stdout. To see the type of every top-level binding as well, pass
+`--types`:
+
+```sh
+$ meadow run --types hello.mw
+```
 
 ```
 === package hello ===

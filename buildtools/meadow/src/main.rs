@@ -9,7 +9,7 @@ use meadow::{
     Backend, Engine, OptLevel, Profile, Resolved, Strictness, aot, artifacts, format, init,
     listing::{self, Emit},
     package::ProfileConfig,
-    pipeline, runtime, test,
+    pipeline, runtime, status, test,
     workspace::{Selected, Selection},
 };
 use std::path::PathBuf;
@@ -37,6 +37,9 @@ enum Cmd {
         /// Package directory (or a single `.mw` file), or a workspace.
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Print the type of every top-level binding in your packages.
+        #[arg(long)]
+        types: bool,
         /// Also print every node's inferred type.
         #[arg(long)]
         annotations: bool,
@@ -58,6 +61,9 @@ enum Cmd {
         /// Package directory (or a single `.mw` file), or a workspace.
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Print the type of every top-level binding in your packages first.
+        #[arg(long)]
+        types: bool,
         /// In a workspace: the member to run.
         #[arg(short = 'p', long = "package", value_name = "NAME")]
         package: Option<String>,
@@ -459,11 +465,19 @@ fn main() {
         locked: cli.locked,
         update: false,
     });
+    // Say what is being done -- `Compiling`, `Finished` -- except where the
+    // terminal is not ours to write to: the REPL's, and an editor's, whose
+    // language server and debugger would pour it into an output panel on every
+    // keystroke.
+    if !matches!(&cli.cmd, None | Some(Cmd::Lsp { .. }) | Some(Cmd::Dap)) {
+        meadow::status::enable();
+    }
     match cli.cmd {
         // No subcommand → interactive REPL.
         None => repl::Session::new().run(),
         Some(Cmd::Build {
             path,
+            types,
             annotations,
             emit,
             packages,
@@ -473,12 +487,27 @@ fn main() {
             let selected = select(&packages.selection(), &path);
             let profile = profile.resolve(&path);
             match &selected.paths[..] {
-                [one] => build(one, None, annotations, false, &emit, profile, &target),
-                many => build_many(many, annotations, &emit, profile, &target),
+                [one] => build(
+                    one,
+                    None,
+                    Listing { types, annotations },
+                    false,
+                    &emit,
+                    profile,
+                    &target,
+                ),
+                many => build_many(
+                    many,
+                    Listing { types, annotations },
+                    &emit,
+                    profile,
+                    &target,
+                ),
             }
         }
         Some(Cmd::Run {
             path,
+            types,
             package,
             profile,
             engine,
@@ -510,7 +539,10 @@ fn main() {
             build(
                 one,
                 Some(engine.engine(profile.backend)),
-                false,
+                Listing {
+                    types,
+                    annotations: false,
+                },
                 gc_stats,
                 &[],
                 profile,
@@ -656,7 +688,7 @@ fn main() {
                 rename,
                 dir: path,
             }) {
-                eprintln!("error: {e}");
+                status::error(e);
                 std::process::exit(1);
             }
         }
@@ -701,7 +733,7 @@ fn main() {
                 only,
                 dry_run,
             }) {
-                eprintln!("error: {e}");
+                status::error(e);
                 std::process::exit(1);
             }
         }
@@ -759,44 +791,100 @@ fn nearby(path: &std::path::Path) -> PathBuf {
 fn build(
     path: &std::path::Path,
     engine: Option<Engine>,
-    annotations: bool,
+    listing: Listing,
     gc_stats: bool,
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
 ) {
     let profile = for_target(profile, target);
+    let started = std::time::Instant::now();
     let out = pipeline::build(path, profile.options);
 
     for d in &out.diagnostics {
-        eprintln!("{}: {}", d.filename, d.msg);
+        status::error(format!("{}: {}", d.filename, d.msg));
     }
+    let name = out
+        .package
+        .as_ref()
+        .map(|(_, n)| n.to_string())
+        .unwrap_or_else(|| shown(path));
 
     let Some(linked) = out.linked else {
+        could_not_compile(&name, out.diagnostics.len().max(1));
         std::process::exit(1);
     };
     // A program with errors is not run, and nothing is written for it: what
     // it would do is not what was written. What was worked out is still worth
-    // showing a build.
+    // showing a build that asked for it.
     if !out.diagnostics.is_empty() {
         if engine.is_none() {
-            print!("{}", linked.dump());
-            if annotations {
-                print!("{}", linked.annotations());
-            }
+            listing.print(&linked);
         }
+        could_not_compile(&name, out.diagnostics.len());
         std::process::exit(1);
     }
+    finished(&profile, started);
     finish(
         linked,
         &out.package,
         engine,
-        annotations,
+        listing,
         gc_stats,
         emit,
         profile,
         target,
     );
+}
+
+/// How a run names what it runs: the package's `main`.
+fn linked_entry(package: &Option<String>) -> String {
+    match package {
+        Some(name) => format!("{name}::main"),
+        None => "main".to_string(),
+    }
+}
+
+/// What a build prints on stdout besides the program's own output.
+#[derive(Clone, Copy)]
+struct Listing {
+    /// Every top-level binding's type, in the packages being built.
+    types: bool,
+    /// Every node's type.
+    annotations: bool,
+}
+
+impl Listing {
+    fn print(self, linked: &meadow::linker::LinkedProgram) {
+        if self.types || self.annotations {
+            print!("{}", linked.dump());
+        }
+        if self.annotations {
+            print!("{}", linked.annotations());
+        }
+    }
+}
+
+/// `    Finished `debug` profile [O1, jit] in 0.42s`
+fn finished(profile: &Resolved, started: std::time::Instant) {
+    status::status(
+        "Finished",
+        format!(
+            "`{}` profile [{}, {}] in {}",
+            profile.profile.name(),
+            profile.opt().name(),
+            profile.backend.name(),
+            status::elapsed(started.elapsed())
+        ),
+    );
+}
+
+/// `error: could not compile `app` due to 2 previous errors`
+fn could_not_compile(name: &str, errors: usize) {
+    status::error(format!(
+        "could not compile `{name}` due to {errors} previous error{}",
+        if errors == 1 { "" } else { "s" }
+    ));
 }
 
 /// `meadow exec`: run the image at `path` on `backend`.
@@ -870,37 +958,38 @@ fn read_image(path: &std::path::Path) -> meadow_bytecode::Program {
 /// common. Nothing runs: `run` takes one package.
 fn build_many(
     paths: &[PathBuf],
-    annotations: bool,
+    listing: Listing,
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
 ) {
     let profile = for_target(profile, target);
+    let started = std::time::Instant::now();
     let paths: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
     let out = pipeline::build_each(&paths, profile.options);
     for d in &out.diagnostics {
-        eprintln!("{}: {}", d.filename, d.msg);
+        status::error(format!("{}: {}", d.filename, d.msg));
     }
     if out.each.is_empty() {
+        could_not_compile("the workspace", out.diagnostics.len().max(1));
         std::process::exit(1);
     }
     if !out.diagnostics.is_empty() {
         for built in &out.each {
             let linked = built.linked.as_ref().expect("each is linked");
-            print!("{}", linked.dump());
-            if annotations {
-                print!("{}", linked.annotations());
-            }
+            listing.print(linked);
         }
+        could_not_compile("the workspace", out.diagnostics.len());
         std::process::exit(1);
     }
+    finished(&profile, started);
     for built in out.each {
         let linked = built.linked.expect("each is linked");
         finish(
             linked,
             &built.package,
             None,
-            annotations,
+            listing,
             false,
             emit,
             profile,
@@ -933,16 +1022,13 @@ fn finish(
     linked: meadow::linker::LinkedProgram,
     package: &Option<(PathBuf, meadow_compiler::intern::InternedString)>,
     engine: Option<Engine>,
-    annotations: bool,
+    listing: Listing,
     gc_stats: bool,
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
 ) {
-    print!("{}", linked.dump());
-    if annotations {
-        print!("{}", linked.annotations());
-    }
+    listing.print(&linked);
     if !emit.is_empty() && package.is_none() {
         eprintln!(
             "error: `--emit` writes under a package's `target` directory, and a lone file has none; \
@@ -1025,8 +1111,11 @@ fn finish(
             aot::build(root, profile.profile, profile.opt(), name, image, target)
         });
         match exe {
-            Ok(exe) if engine.is_none() => eprintln!("native: {}", exe.display()),
+            Ok(exe) if engine.is_none() => {
+                status::note("Executable", shown(&exe));
+            }
             Ok(exe) => {
+                status::status("Running", format!("`{}`", shown(&exe)));
                 let status = std::process::Command::new(&exe)
                     .args(meadow_compiler::core::args::get())
                     .status()
@@ -1040,20 +1129,32 @@ fn finish(
             // one: the JIT runs it, unless `aot` was asked for by name.
             Err(e) if profile.fallback().is_some() && emit.is_empty() => {
                 if package.is_some() {
-                    eprintln!("warning: no native executable: {e}");
+                    status::warning(format!("no native executable: {e}"));
                     if engine.is_some() {
-                        eprintln!("note: running on the JIT instead; `--aot` makes this an error");
+                        status::note("Falling back", "to the JIT; `--aot` makes this an error");
                     }
                 }
             }
             Err(e) => {
-                eprintln!("error: {e}");
+                status::error(e);
                 std::process::exit(1);
             }
         }
     }
 
     if let Some(engine) = engine {
+        let entry = linked_entry(&package.as_ref().map(|(_, n)| n.to_string()));
+        status::status(
+            "Running",
+            format!(
+                "`{entry}` on the {}",
+                match engine {
+                    Engine::Cek => "CEK machine",
+                    Engine::Vm => "VM",
+                    Engine::Jit => "JIT",
+                }
+            ),
+        );
         let (result, stats) = match &image {
             Some(image) => match runtime::native(image, engine, profile.opt()) {
                 Ok(jit) => runtime::run_image_with_stats(image, jit.as_ref()),

@@ -4,9 +4,12 @@
 //! essentially every Linux, and Windows 10 1803 and later, and a program whose
 //! only job is to install another one should not carry a TLS stack to do it.
 
+use super::ui::Progress;
 use super::{REPO, archive_ext, scratch_dir, valid_tag};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// The tag of the newest release.
 pub fn latest_tag() -> Result<String, String> {
@@ -26,8 +29,12 @@ pub fn latest_tag() -> Result<String, String> {
 }
 
 /// Download and unpack the release `tag` for `target`, answering the directory
-/// it was unpacked into.
-pub fn fetch(tag: &str, target: &str, into: &str) -> Result<PathBuf, String> {
+/// it was unpacked into and how many bytes were fetched.
+///
+/// The download is drawn as a progress bar. `curl` does the fetching and this
+/// watches the file grow -- which is all a bar needs, and keeps an HTTP library
+/// out of a program whose only job is installing another one.
+pub fn fetch(tag: &str, target: &str, into: &str) -> Result<(PathBuf, u64), String> {
     if !valid_tag(tag) {
         return Err(format!("`{tag}` is not a release tag"));
     }
@@ -38,20 +45,78 @@ pub fn fetch(tag: &str, target: &str, into: &str) -> Result<PathBuf, String> {
     let dir = scratch_dir(into)?;
     let archive = dir.join(&name);
 
-    let out = Command::new(curl())
+    let total = content_length(&url);
+    let mut child = Command::new(curl())
         .args(["-fsSL", "-o"])
         .arg(&archive)
         .arg(&url)
-        .output()
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("could not run curl: {e}"))?;
-    if !out.status.success() {
+
+    let mut bar = Progress::new(total);
+    let grown = || std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                bar.update(grown());
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                bar.abandon();
+                return Err(format!("could not wait for curl: {e}"));
+            }
+        }
+    };
+    if !status.success() {
+        bar.abandon();
+        let mut said = String::new();
+        if let Some(mut err) = child.stderr.take() {
+            let _ = err.read_to_string(&mut said);
+        }
         return Err(format!(
             "no build of {tag} for {target}.\n\
-             Looked for {name}"
+             Looked for {name}{}",
+            match said.trim() {
+                "" => String::new(),
+                s => format!(" ({s})"),
+            }
         ));
     }
+    let fetched = grown();
+    bar.finish(fetched);
     unpack(&archive, &dir)?;
-    Ok(dir)
+    Ok((dir, fetched))
+}
+
+/// How long the file at `url` is, when the server says.
+///
+/// A release asset redirects to storage elsewhere, so the length that counts is
+/// the last response's -- the first is the redirect's own, which is nothing.
+fn content_length(url: &str) -> Option<u64> {
+    let out = Command::new(curl())
+        .args(["-sIL", url])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    lengths(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The last non-zero `Content-Length` among a run of response headers.
+fn lengths(headers: &str) -> Option<u64> {
+    headers
+        .lines()
+        .rev()
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| v.trim().parse::<u64>().ok())
+                .flatten()
+        })
+        .find(|&n| n > 0)
 }
 
 /// Unpack `archive` into `dir`.
@@ -136,6 +201,21 @@ mod tests {
         let json = r#"{"name":"a \"quoted\" thing","tag_name":"v1"}"#;
         assert_eq!(field(json, "name").as_deref(), Some("a \"quoted\" thing"));
         assert_eq!(field(json, "tag_name").as_deref(), Some("v1"));
+    }
+
+    #[test]
+    fn the_length_that_counts_is_the_one_after_the_redirects() {
+        let headers = "HTTP/2 302\r\nlocation: https://objects.example/x\r\ncontent-length: 0\r\n\r\n\
+                       HTTP/2 200\r\nContent-Length: 13043907\r\ncontent-type: application/octet-stream\r\n";
+        assert_eq!(lengths(headers), Some(13_043_907));
+    }
+
+    #[test]
+    fn no_length_is_none_rather_than_zero() {
+        assert_eq!(
+            lengths("HTTP/2 200\r\ntransfer-encoding: chunked\r\n"),
+            None
+        );
     }
 
     #[test]

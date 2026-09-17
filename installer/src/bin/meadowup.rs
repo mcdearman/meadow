@@ -19,7 +19,8 @@
 //! Everything lives under `$MEADOW_HOME` (`~/.meadow`), and `bin` inside it is
 //! what joins the `PATH`.
 
-use meadowup::{bin_dir, exe_name, home, path, release, up_name, version_of};
+use meadowup::ui::{self, bold};
+use meadowup::{Provenance, bin_dir, exe_name, home, path, release, up_name, version_of};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -38,8 +39,7 @@ fn main() -> ExitCode {
     let code = match run(&argv) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!();
-            eprintln!("error: {e}");
+            ui::error(e);
             ExitCode::FAILURE
         }
     };
@@ -123,60 +123,97 @@ fn parse(argv: &[String]) -> Result<Args, String> {
     Ok(args)
 }
 
+/// The version in what `meadow --version` says: `0.1.0-alpha` of
+/// `meadow 0.1.0-alpha`.
+fn number(said: &str) -> &str {
+    said.split_whitespace().nth(1).unwrap_or(said)
+}
+
 /// Put the toolchain in place.
 ///
 /// `updating` only changes what is *said*: installing and updating do the same
 /// thing, which is to make the newest release the one that is here.
+///
+/// What it says follows rustup: what it is about to do, the download as a
+/// progress bar, each component as it goes in, and a line at the end saying
+/// what changed.
 fn install(args: &Args, updating: bool) -> Result<(), String> {
     let bin = bin_dir(&args.home);
     let meadow = bin.join(exe_name());
+    let before = version_of(&meadow);
 
     // `--from` is a directory that already holds the binaries -- built from
     // source, or an unpacked archive. Nothing is looked up and nothing is
     // fetched, so this is the offline install too.
-    let (unpacked, fetched, what) = match &args.from {
+    let (unpacked, fetched, provenance) = match &args.from {
         Some(dir) => {
             if !dir.is_dir() {
                 return Err(format!("{} is not a directory", dir.display()));
             }
-            println!("Installing from {}", dir.display());
-            (dir.clone(), false, "what was built".to_string())
+            ui::info(format!("installing from {}", dir.display()));
+            (dir.clone(), false, Provenance::Local)
         }
         None => {
             let target = meadowup::target_triple()?;
             let tag = match &args.version {
                 Some(t) => t.clone(),
                 None => {
-                    println!("  Checking for the latest release");
-                    release::latest_tag()?
+                    ui::info("checking for the latest release");
+                    let tag = release::latest_tag()?;
+                    ui::info(format!("latest release is {}", bold(&tag)));
+                    tag
                 }
             };
+            let wanted = tag.trim_start_matches('v');
             // Already this version: say so rather than downloading it again.
             if !args.force
-                && let Some(have) = version_of(&meadow)
-                && have.split_whitespace().nth(1) == Some(tag.trim_start_matches('v'))
+                && let Some(have) = &before
+                && number(have) == wanted
             {
-                println!("  Unchanged {have} is already installed");
-                println!("            use `--force` to install it again");
+                println!();
+                println!("  {} unchanged - {have}", bold("meadow"));
+                // A build from source shares its version with the release it
+                // followed, so "unchanged" alone would hide which is here.
+                if meadowup::provenance(&args.home) == Some(Provenance::Local) {
+                    println!();
+                    ui::info(format!(
+                        "this is a local build, not the {tag} release; \
+                         `meadowup update --force` replaces it with the release"
+                    ));
+                }
+                println!();
                 return Ok(());
             }
-            println!(
-                "{} {tag} for {target}",
-                if updating { " Updating" } else { "Installing" }
-            );
-            (release::fetch(&tag, target, "meadowup-install")?, true, tag)
+            match &before {
+                Some(have) => ui::info(format!(
+                    "{} meadow {} -> {}",
+                    if updating { "updating" } else { "replacing" },
+                    number(have),
+                    bold(wanted)
+                )),
+                None => ui::info(format!("installing meadow {}", bold(wanted))),
+            }
+            ui::info(format!("downloading toolchain for {}", bold(target)));
+            let (dir, _) = release::fetch(&tag, target, "meadowup-install")?;
+            (dir, true, Provenance::Release(tag))
         }
     };
 
     std::fs::create_dir_all(&bin).map_err(|e| format!("could not make {}: {e}", bin.display()))?;
 
-    // The build tool, and this program: a release carries both, and leaving
-    // meadowup behind would strand the machine on a version that cannot update
-    // itself.
-    let put = |name: &str, dest: &Path| -> Result<bool, String> {
-        let Some(found) = release::find(&unpacked, name) else {
+    // Each component the toolchain has, and where it goes. A release carries
+    // both; leaving meadowup behind would strand the machine on a version that
+    // cannot update itself.
+    let put = |component: &str, file: &str, dest: &Path| -> Result<bool, String> {
+        let Some(found) = release::find(&unpacked, file) else {
             return Ok(false);
         };
+        let len = std::fs::metadata(&found).map(|m| m.len()).unwrap_or(0);
+        ui::info(format!(
+            "installing component '{}' ({})",
+            bold(component),
+            ui::size(len)
+        ));
         let backup = meadowup::displace(dest);
         std::fs::copy(&found, dest)
             .map_err(|e| format!("could not write {}: {e}", dest.display()))?;
@@ -186,13 +223,13 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
         if let Some(backup) = backup {
             let _ = std::fs::remove_file(backup);
         }
-        println!("  Installed {}", dest.display());
         Ok(true)
     };
 
-    if !put(exe_name(), &meadow)? {
+    if !put("meadow", exe_name(), &meadow)? {
         return Err(format!(
-            "{what} holds no {}, so there is nothing to install",
+            "{} holds no {}, so there is nothing to install",
+            unpacked.display(),
             exe_name()
         ));
     }
@@ -201,7 +238,7 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
     // release that predates meadowup carries none, and then the program that is
     // running puts itself in place instead, which is what makes a downloaded
     // meadowup all anyone needs to fetch.
-    if !put(up_name(), &bin.join(up_name()))? {
+    if !put("meadowup", up_name(), &bin.join(up_name()))? {
         install_self(&bin)?;
     }
     // Only what was downloaded is cleared away; a `--from` directory is the
@@ -209,38 +246,57 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
     if fetched {
         let _ = std::fs::remove_dir_all(&unpacked);
     }
+    if let Err(e) = meadowup::record(&args.home, &provenance) {
+        ui::warn(format!("could not record what was installed: {e}"));
+    }
 
     if args.modify_path {
         match path::add(&bin) {
-            Ok(true) => println!("  Added {} to your PATH", bin.display()),
-            Ok(false) => println!("  Unchanged {} is already on your PATH", bin.display()),
-            Err(e) => println!("  warning: could not update PATH: {e}"),
+            Ok(true) => ui::info(format!("added {} to your PATH", bin.display())),
+            Ok(false) => {}
+            Err(e) => ui::warn(format!("could not update PATH: {e}")),
         }
     }
 
+    // What changed, in one line, as rustup ends.
+    let after = version_of(&meadow);
+    let from = match &provenance {
+        Provenance::Local => " (local build)",
+        Provenance::Release(_) => "",
+    };
     println!();
-    match version_of(&meadow) {
-        Some(v) => println!("Installed {v}"),
-        None => println!("Installed {what}"),
+    match (&before, &after) {
+        (Some(b), Some(a)) if number(b) != number(a) => {
+            println!(
+                "  {} updated - {a}{from} (from {})",
+                bold("meadow"),
+                number(b)
+            )
+        }
+        (Some(_), Some(a)) => println!("  {} reinstalled - {a}{from}", bold("meadow")),
+        (None, Some(a)) => println!("  {} installed - {a}{from}", bold("meadow")),
+        (_, None) => println!("  {} installed", bold("meadow")),
     }
     println!();
-    println!("  meadow                   start the REPL");
-    println!("  meadow run <path>        build and run a package");
-    println!("  meadow add <url>         add a dependency");
-    println!("  meadow test              run a package's @test functions");
-    println!("  meadowup update          bring the toolchain up to date");
-    println!();
-    if args.modify_path {
-        if cfg!(windows) {
-            println!("Open a new terminal, then run `meadow`.");
+    if before.is_none() {
+        println!("  meadow                   start the REPL");
+        println!("  meadow run <path>        build and run a package");
+        println!("  meadow add <url>         add a dependency");
+        println!("  meadow test              run a package's @test functions");
+        println!("  meadowup update          bring the toolchain up to date");
+        println!();
+        if args.modify_path {
+            if cfg!(windows) {
+                println!("Open a new terminal, then run `meadow`.");
+            } else {
+                println!(
+                    "Open a new shell, or run:  . \"{}\"",
+                    meadowup::env_file(&args.home).display()
+                );
+            }
         } else {
-            println!(
-                "Open a new shell, or run:  . \"{}\"",
-                meadowup::env_file(&args.home).display()
-            );
+            println!("Add this to your PATH: {}", bin.display());
         }
-    } else {
-        println!("Add this to your PATH: {}", bin.display());
     }
     Ok(())
 }
@@ -266,7 +322,7 @@ fn install_self(bin: &Path) -> Result<(), String> {
     if let Some(backup) = backup {
         let _ = std::fs::remove_file(backup);
     }
-    println!("  Installed {}", dest.display());
+    ui::info(format!("installing component '{}'", bold("meadowup")));
     Ok(())
 }
 
@@ -278,13 +334,23 @@ fn show(args: &Args) -> Result<(), String> {
         "target     {}",
         meadowup::target_triple().unwrap_or("unknown")
     );
+    println!(
+        "source     {}",
+        match meadowup::provenance(&args.home) {
+            Some(Provenance::Release(tag)) => format!("release {tag}"),
+            Some(Provenance::Local) => "a local build".to_string(),
+            None => "unknown".to_string(),
+        }
+    );
     println!();
-    for name in [exe_name(), up_name()] {
-        let at = bin.join(name);
+    println!("{}", bold("installed components"));
+    println!("--------------------");
+    for (component, file) in [("meadow", exe_name()), ("meadowup", up_name())] {
+        let at = bin.join(file);
         match version_of(&at) {
             Some(v) => println!("{v}"),
-            None if at.exists() => println!("{name} (would not say its version)"),
-            None => println!("{name} is not installed"),
+            None if at.exists() => println!("{component} (would not say its version)"),
+            None => println!("{component} (not installed)"),
         }
     }
     Ok(())
@@ -311,16 +377,23 @@ fn uninstall(args: &Args) -> Result<(), String> {
     }
     if args.modify_path {
         match path::remove(&bin_dir(&args.home)) {
-            Ok(true) => println!("  Removed the PATH entry"),
-            Ok(false) => println!("  Unchanged there was no PATH entry"),
-            Err(e) => println!("  warning: could not update PATH: {e}"),
+            Ok(true) => ui::info("removing the PATH entry"),
+            Ok(false) => {}
+            Err(e) => ui::warn(format!("could not update PATH: {e}")),
+        }
+    }
+    for (component, file) in [("meadow", exe_name()), ("meadowup", up_name())] {
+        if bin_dir(&args.home).join(file).exists() {
+            ui::info(format!("removing component '{}'", bold(component)));
         }
     }
     std::fs::remove_dir_all(&args.home)
         .map_err(|e| format!("could not remove {}: {e}", args.home.display()))?;
-    println!("  Removed {}", args.home.display());
+    ui::info(format!("removing {}", args.home.display()));
     println!();
-    println!("Meadow is uninstalled. Open a new shell for the PATH change to take.");
+    println!("  {} uninstalled", bold("meadow"));
+    println!();
+    println!("Open a new shell for the PATH change to take.");
     Ok(())
 }
 

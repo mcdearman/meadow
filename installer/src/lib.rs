@@ -46,6 +46,48 @@ pub fn home() -> PathBuf {
     Path::new(&base).join(".meadow")
 }
 
+/// Where the toolchain in `home` came from, as the last install recorded it.
+///
+/// A build from source has the same version number as the release it was
+/// built after, so the number alone cannot say which is installed -- and
+/// `meadowup update` has to, to say why it did nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Provenance {
+    /// A published release, by tag.
+    Release(String),
+    /// Binaries handed over with `--from`: built from source, or unpacked by
+    /// hand.
+    Local,
+}
+
+fn provenance_file(home: &Path) -> PathBuf {
+    home.join("toolchain")
+}
+
+/// What the last install into `home` said it was. `None` for an install that
+/// predates the record.
+pub fn provenance(home: &Path) -> Option<Provenance> {
+    let text = std::fs::read_to_string(provenance_file(home)).ok()?;
+    let line = text.lines().next()?.trim();
+    match line.split_once(' ') {
+        Some(("release", tag)) => Some(Provenance::Release(tag.trim().to_string())),
+        _ if line == "local" => Some(Provenance::Local),
+        _ => None,
+    }
+}
+
+/// Record what was just installed into `home`.
+pub fn record(home: &Path, what: &Provenance) -> std::io::Result<()> {
+    let line = match what {
+        Provenance::Release(tag) => format!("release {tag}"),
+        Provenance::Local => "local".to_string(),
+    };
+    std::fs::write(
+        provenance_file(home),
+        format!("{line}\n# Written by meadowup: where the installed toolchain came from.\n"),
+    )
+}
+
 /// Where the binaries go, and what joins the `PATH`.
 pub fn bin_dir(home: &Path) -> PathBuf {
     home.join("bin")
@@ -133,6 +175,7 @@ pub fn version_of(exe: &Path) -> Option<String> {
 }
 
 pub mod release;
+pub mod ui;
 
 /// True when this process owns its console, which on Windows means it was
 /// double-clicked rather than run from a shell.
@@ -441,6 +484,28 @@ pub mod path {
     }
 
     pub use imp::{add, remove};
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+
+    #[test]
+    fn what_is_recorded_is_read_back() {
+        let home = std::env::temp_dir().join(format!("meadowup-prov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        assert_eq!(provenance(&home), None, "nothing recorded yet");
+
+        record(&home, &Provenance::Release("v0.1.0-alpha".into())).unwrap();
+        assert_eq!(
+            provenance(&home),
+            Some(Provenance::Release("v0.1.0-alpha".into()))
+        );
+
+        record(&home, &Provenance::Local).unwrap();
+        assert_eq!(provenance(&home), Some(Provenance::Local));
+    }
 }
 
 #[cfg(all(test, not(windows)))]

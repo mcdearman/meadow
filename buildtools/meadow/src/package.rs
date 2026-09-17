@@ -200,6 +200,12 @@ impl ProfileConfig {
 pub struct Package {
     pub id: PackageId,
     pub name: InternedString,
+    /// The manifest's `version`. A lone file has no manifest, and so no
+    /// version to report.
+    pub version: Option<String>,
+    /// Where the package came from, as a build reports it: its directory, or
+    /// for a git dependency the repository and commit.
+    pub origin: String,
     pub root: PathBuf,
     pub modules: Vec<ModuleSource>,
     pub deps: Vec<PackageId>,
@@ -319,6 +325,9 @@ pub struct Resolver {
     /// Where fetched repositories are kept. Held here rather than looked up,
     /// so a test can point it somewhere of its own.
     pub cache: PathBuf,
+    /// For each checkout a git dependency resolved to, how a build should name
+    /// where it came from: `https://…#a1b2c3d4`.
+    pub origins: HashMap<PathBuf, String>,
 }
 
 /// How a run resolves dependencies: `--offline`, `--locked`, and whether this
@@ -361,6 +370,7 @@ impl Resolver {
             only: Vec::new(),
             seen: Vec::new(),
             cache: crate::git::default_cache().unwrap_or_default(),
+            origins: HashMap::new(),
         }
     }
 
@@ -377,8 +387,7 @@ impl Resolver {
         // looked at afresh. Naming dependencies narrows that to those: the
         // rest keep the commits they had, which is the point of updating one
         // thing rather than everything.
-        let refresh =
-            self.update && (self.only.is_empty() || self.only.iter().any(|n| *n == dep.name));
+        let refresh = self.update && (self.only.is_empty() || self.only.contains(&dep.name));
         let pinned = if refresh {
             None
         } else {
@@ -392,6 +401,10 @@ impl Resolver {
             )));
         }
         let got = crate::git::ensure(&self.cache, url, reference, pinned.as_deref(), self.net)?;
+        self.origins.insert(
+            canonical(&got.path),
+            format!("{url}#{}", &got.rev[..8.min(got.rev.len())]),
+        );
         self.seen.push((dep.name.clone(), source.clone()));
         self.lock.insert(crate::lock::Locked {
             name: dep.name.clone(),
@@ -512,9 +525,18 @@ impl Builder<'_> {
 
         let modules = discover_modules(&canon, name)?;
         let id = self.packages.len();
+        let version = manifest.as_ref().map(|m| m.version.clone());
+        let origin = self
+            .resolver
+            .origins
+            .get(&canon)
+            .cloned()
+            .unwrap_or_else(|| crate::workspace::shown(&canon));
         self.packages.push(Package {
             id,
             name,
+            version,
+            origin,
             root: canon.clone(),
             modules,
             deps: dep_ids,

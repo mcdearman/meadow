@@ -10,6 +10,7 @@
 //! error and one failing test does not stop the others.
 
 use crate::runtime::{self, Engine};
+use crate::status;
 use crate::workspace::Selection;
 use crate::{Resolved, pipeline};
 use meadow_compiler::intern::InternedString;
@@ -49,10 +50,11 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     // `@cfg(test)` holds while testing.
     let mut options = opts.profile.options;
     options.cfg.test = true;
+    let started = std::time::Instant::now();
     let (linked, tested) = if opts.std && !is_package(Path::new(&opts.path)) {
         let (packages, diags) = crate::stdlib::std_packages(options);
         for d in &diags {
-            eprintln!("{}: {}", d.filename, d.msg);
+            status::error(format!("{}: {}", d.filename, d.msg));
         }
         if !diags.is_empty() {
             return Err("the standard library did not compile".into());
@@ -63,7 +65,7 @@ pub fn run(opts: &Options) -> Result<bool, String> {
         let paths: Vec<&Path> = selected.paths.iter().map(|p| p.as_path()).collect();
         let (out, names) = pipeline::build_together(&paths, options);
         for d in &out.diagnostics {
-            eprintln!("{}: {}", d.filename, d.msg);
+            status::error(format!("{}: {}", d.filename, d.msg));
         }
         let Some(linked) = out.linked else {
             return Err("could not build the package".into());
@@ -106,10 +108,31 @@ pub fn run(opts: &Options) -> Result<bool, String> {
         .collect();
 
     let total = cases.len();
+    // As cargo closes a build before it runs anything.
+    status::status(
+        "Finished",
+        format!(
+            "`test` profile [{}, {}] in {}",
+            opts.profile.opt().name(),
+            match opts.engine {
+                Engine::Cek => "cek",
+                Engine::Vm => "vm",
+                Engine::Jit => "jit",
+            },
+            status::elapsed(started.elapsed())
+        ),
+    );
+    status::status(
+        "Running",
+        format!("{total} test{}", if total == 1 { "" } else { "s" }),
+    );
     println!("running {total} test{}", if total == 1 { "" } else { "s" });
     if total == 0 {
         println!();
-        println!("test result: ok. 0 passed; 0 failed");
+        println!(
+            "test result: {}. 0 passed; 0 failed",
+            status::paint("ok", "32")
+        );
         return Ok(true);
     }
 
@@ -120,9 +143,9 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     let mut failures = Vec::new();
     for ((name, _), result) in cases.iter().zip(&results) {
         match result {
-            Ok(_) => println!("test {name} ... ok"),
+            Ok(_) => println!("test {name} ... {}", status::paint("ok", "32")),
             Err(msg) => {
-                println!("test {name} ... FAILED");
+                println!("test {name} ... {}", status::paint("FAILED", "31"));
                 // The message alone: a failed assertion is not a "runtime error".
                 failures.push((*name, msg.clone()));
             }
@@ -144,7 +167,11 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     println!();
     println!(
         "test result: {}. {passed} passed; {} failed",
-        if failures.is_empty() { "ok" } else { "FAILED" },
+        if failures.is_empty() {
+            status::paint("ok", "32")
+        } else {
+            status::paint("FAILED", "31")
+        },
         failures.len()
     );
     Ok(failures.is_empty())

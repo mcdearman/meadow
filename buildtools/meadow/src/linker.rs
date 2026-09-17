@@ -94,7 +94,13 @@ impl LinkedProgram {
     /// how many HIR nodes each package managed to annotate, plus the entry point.
     pub fn dump(&self) -> String {
         let mut out = String::new();
-        for pkg in &self.packages {
+        // The embedded standard library is left out: it is hundreds of lines of
+        // signatures nobody here wrote.
+        for pkg in self
+            .packages
+            .iter()
+            .filter(|p| &*p.name != crate::stdlib::PACKAGE_NAME)
+        {
             let _ = writeln!(out, "=== package {} ===", pkg.name);
             for sym in self.symbols.iter().filter(|s| s.package == pkg.name) {
                 let _ = writeln!(out, "  {} : {}", hir::spell_name(&sym.name), sym.scheme);

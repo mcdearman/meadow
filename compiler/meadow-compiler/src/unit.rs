@@ -93,6 +93,11 @@ pub struct CompiledPackage {
     /// one pass for the other. Messages never show this: `hir::spelling` takes
     /// the name off the front.
     pub ident: InternedString,
+    /// Files this package embedded with `includeStr`, and what each hashed to.
+    ///
+    /// Inputs to the build that its own sources do not mention: without them a
+    /// cached build would be reused after an embedded file had changed.
+    pub embedded: Vec<(String, u64)>,
     /// This package's `main`, if its root module declares one.
     ///
     /// An entry point is not an export: nothing links against `main`, the
@@ -710,6 +715,7 @@ fn compile_unit_inner(
             vars: var_base..var_end,
             name: unit_name,
             ident,
+            embedded: resolver.embedded().to_vec(),
             entry,
             modules: typed,
             types: table,

@@ -316,8 +316,11 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     // it is the only one that `@pub use`s a type's constructors.
     let mut flat_ctors: Vec<InternedString> = Vec::new();
     let mut tests = Vec::new();
+    // What the library itself embedded, so a build notices those files too.
+    let mut embedded: Vec<(String, u64)> = Vec::new();
 
     for sub in subs {
+        embedded.extend(sub.embedded.iter().cloned());
         flat_ctors.extend(sub.flat_ctors.iter().copied());
         defs.extend(sub.defs);
         modules.extend(sub.modules);
@@ -346,6 +349,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         // The standard library is one package, at one version, in every build:
         // nothing has to tell two copies of it apart.
         ident: name,
+        embedded,
         // A library has no entry point, and `Std` least of all.
         entry: None,
         modules,

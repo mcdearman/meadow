@@ -133,7 +133,31 @@ fn read(path: &Path, fingerprint: u64) -> Option<CompiledPackage> {
     if u64::from_le_bytes(*saved) != fingerprint {
         return None;
     }
-    postcard::from_bytes(payload).ok()
+    let package: CompiledPackage = postcard::from_bytes(payload).ok()?;
+    // A file embedded with `includeStr` is an input the fingerprint could not
+    // have known about: which files a module embeds is only clear once it has
+    // been compiled. They are checked here instead, so that editing one is a
+    // rebuild like editing the module itself.
+    if package
+        .embedded
+        .iter()
+        .any(|(file, digest)| digest_of(file) != Some(*digest))
+    {
+        return None;
+    }
+    Some(package)
+}
+
+/// The hash of `file` as it is now, or `None` if it cannot be read -- which
+/// counts as changed, since what was embedded can no longer be confirmed.
+fn digest_of(file: &str) -> Option<u64> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    Some(h)
 }
 
 fn write(path: &Path, package: &CompiledPackage, fingerprint: u64) {

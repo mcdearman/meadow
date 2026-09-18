@@ -1757,6 +1757,34 @@ since `@cfg(test)` makes them different builds. Deleting `target` starts again
 from nothing, and `MEADOW_INCREMENTAL=0` turns reuse off for a command without
 deleting anything.
 
+### Embedding a file: `includeStr`
+
+`includeStr "path"` is the text of that file, read while the program is
+compiled and left in it as a string. Nothing is read at run time, so the file
+need not be anywhere when the program runs.
+
+```meadow
+def licence = includeStr "LICENSE"
+
+def grammar = includeStr "grammar/meadow.ebnf"
+```
+
+The path is taken **beside the file that wrote it**, as an editor would read
+it: `src/Main.mw` saying `"note.txt"` means `src/note.txt`, whatever directory
+the build was started from. An absolute path is taken as it is.
+
+It is read before the program exists, so the path has to be written out in
+full: a name, however constant it looks, is a value the program computes, and
+`includeStr where` is an error. A file that is not there is an error too, and
+says which path it looked for.
+
+The file counts as an input to the build. Editing it compiles the package
+again, even though no `.mw` file changed — a package records what it embedded,
+and a cached build is only reused while those files still hash the same.
+
+`includeStr` is not a binding, so a definition of your own by that name simply
+wins, as it would over anything else in scope.
+
 ### Conditional compilation: `@cfg`
 
 `@cfg(condition)` in front of a declaration compiles it only where the condition

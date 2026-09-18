@@ -29,6 +29,11 @@ pub struct CtorInfo {
 #[derive(Debug, Clone)]
 pub struct Resolver {
     filename: String,
+    /// Files embedded with `includeStr`, and what each hashed to when it was
+    /// read. A build cannot know these from a module's own text -- what it
+    /// embeds is only clear once it has been resolved -- so they are reported
+    /// for the cache to check next time.
+    embedded: Vec<(String, u64)>,
     /// Lexical scope stack: `(name, id)`, innermost last.
     scope: Vec<(InternedString, VarId)>,
     /// Every id we've ever bound, for debugging / pretty-printing.
@@ -419,6 +424,17 @@ fn owner_of(canonical: InternedString) -> InternedString {
 }
 
 /// The bare spelling of a canonical name: `Expr.Int` -> `Int`.
+/// FNV-1a of a file's text: what says whether an embedded file has changed.
+/// Stable across runs, which `DefaultHasher` does not promise.
+fn digest(text: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
 fn bare_ctor(canonical: InternedString) -> InternedString {
     match canonical.rsplit_once('.') {
         Some((_, c)) => InternedString::from(c),
@@ -472,6 +488,7 @@ impl Resolver {
             .collect();
         Resolver {
             filename: filename.into(),
+            embedded: Vec::new(),
             scope: Vec::new(),
             names: HashMap::new(),
             predeclared: HashMap::new(),
@@ -533,6 +550,66 @@ impl Resolver {
     /// A unit is resolved as a whole but its modules are separate files, and an
     /// error has to say which one it is in — so the driver moves this along as
     /// it goes.
+    /// The files this unit embedded, with their hashes.
+    pub fn embedded(&self) -> &[(String, u64)] {
+        &self.embedded
+    }
+
+    /// `includeStr "path"` as the text of that file.
+    ///
+    /// The path is taken beside the file that wrote it, as an editor would
+    /// read it, and the file is read now: what ends up in the program is a
+    /// string literal, with no trace at run time that it came from anywhere.
+    fn include_str(&mut self, args: &[ast::LExpr], span: Span) -> hir::LExpr {
+        let [only] = args else {
+            self.error(
+                "`includeStr` takes one argument: the file to embed".to_string(),
+                format!("{} given", args.len()),
+                span,
+            );
+            return self.node(hir::Expr::Error, span);
+        };
+        let ast::Expr::Lit(ast::Lit::String(path)) = only.value() else {
+            self.error(
+                "`includeStr` takes a path written out in full".to_string(),
+                "not a string literal".to_string(),
+                only.span,
+            );
+            return self.node(hir::Expr::Error, span);
+        };
+        let at = self.beside(&path.to_string());
+        match std::fs::read_to_string(&at) {
+            Ok(text) => {
+                self.embedded
+                    .push((at.display().to_string(), digest(&text)));
+                let lit = hir::Lit::String(InternedString::from(text));
+                self.node(hir::Expr::Lit(lit), span)
+            }
+            Err(e) => {
+                self.error(
+                    format!("cannot embed `{}`: {e}", at.display()),
+                    "no such file".to_string(),
+                    only.span,
+                );
+                self.node(hir::Expr::Error, span)
+            }
+        }
+    }
+
+    /// `path` as written, taken beside the file that wrote it.
+    fn beside(&self, path: &str) -> std::path::PathBuf {
+        let given = std::path::Path::new(path);
+        if given.is_absolute() {
+            return given.to_path_buf();
+        }
+        match std::path::Path::new(&self.filename).parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.join(given),
+            // A document with no directory of its own -- the REPL, an editor's
+            // scratch buffer -- reads relative to wherever it is running.
+            _ => given.to_path_buf(),
+        }
+    }
+
     pub fn set_filename(&mut self, filename: impl Into<String>) {
         self.filename = filename.into();
     }
@@ -2437,6 +2514,15 @@ impl Resolver {
                 }
                 self.check_qualifier(q);
                 self.resolve_ctor_app(expr.span, name, args)
+            }
+            // `includeStr "path"`, which is read at compile time. Only when
+            // nothing of that name is in scope: a binding of one's own wins,
+            // as it does over anything else.
+            ast::Expr::App(func, args)
+                if matches!(func.value(), ast::Expr::Var(n)
+                    if &**n.value() == "includeStr" && self.lookup_all(*n.value()).is_empty()) =>
+            {
+                self.include_str(args, expr.span)
             }
             ast::Expr::App(func, args) => {
                 let rf = self.resolve_expr(func);

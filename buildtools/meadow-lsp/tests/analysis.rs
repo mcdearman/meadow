@@ -1667,3 +1667,125 @@ fn a_literal_is_piped_as_what_it_is_not_as_what_it_desugars_to() {
         );
     }
 }
+
+// --- paths -------------------------------------------------------------------
+
+/// What the cursor at the end of `src` offers, as the server would answer it.
+fn path_offers(src: &str) -> Vec<meadow_lsp::complete::Offer> {
+    use meadow_lsp::complete::{
+        Ask, ask, member, repaired, use_names, use_path, without_line, word_start,
+    };
+    let offset = src.len();
+    let start = word_start(src, offset);
+    match ask(src, offset) {
+        Ask::Member { qualifier, word } => {
+            let a = STD.with(|s| s.analyse(&repaired(src, start, offset)));
+            member(&a, &qualifier, &word)
+        }
+        Ask::UsePath { segments, word } => {
+            let a = STD.with(|s| s.analyse(&without_line(src, start)));
+            use_path(&a, &segments, &word)
+        }
+        Ask::UseNames { segments, word } => {
+            let a = STD.with(|s| s.analyse(&without_line(src, start)));
+            use_names(&a, &segments, &word)
+        }
+        other => panic!("not a path: {other:?}"),
+    }
+}
+
+#[test]
+fn a_type_offers_its_constructors() {
+    let offers = path_offers("data Shape = Circle Int | Square Int\n\ndef main = Shape.");
+    assert_eq!(names_of(&offers), vec!["Circle", "Square"]);
+}
+
+#[test]
+fn a_type_from_the_library_offers_its_constructors() {
+    // `Maybe` is a module *and* the type inside it. Only the type is something
+    // a constructor can follow, so that is the one this means.
+    let offers = path_offers("def main = Maybe.");
+    assert_eq!(names_of(&offers), vec!["Just", "None"]);
+}
+
+#[test]
+fn a_half_written_constructor_narrows_the_list() {
+    let offers = path_offers("data Shape = Circle Int | Square Int\n\ndef main = Shape.Ci");
+    assert_eq!(names_of(&offers), vec!["Circle"]);
+}
+
+#[test]
+fn a_qualifier_that_names_nothing_offers_nothing() {
+    assert!(path_offers("def main = Nowhere.").is_empty());
+}
+
+#[test]
+fn an_alias_reaches_the_module_it_names() {
+    let offers = path_offers("use Std.Maybe as M\n\ndef main = M.");
+    let names = names_of(&offers);
+    // Its values, and the constructors of the type it declares -- both of which
+    // `M.` reaches, as the compiler resolves it.
+    assert!(names.contains(&"unwrapOr"), "{names:?}");
+    assert!(names.contains(&"andThen"), "{names:?}");
+    assert!(names.contains(&"Just"), "{names:?}");
+    // Nothing from anywhere else.
+    assert!(!names.contains(&"println"), "{names:?}");
+}
+
+#[test]
+fn a_use_offers_the_packages_and_then_what_is_under_them() {
+    let offers = path_offers("use ");
+    let names = names_of(&offers);
+    assert!(names.contains(&"Std"), "{names:?}");
+
+    let offers = path_offers("use Std.");
+    let names = names_of(&offers);
+    assert!(names.contains(&"Maybe"), "{names:?}");
+    assert!(names.contains(&"Collections"), "{names:?}");
+
+    let offers = path_offers("use Std.Collections.");
+    let names = names_of(&offers);
+    assert!(names.contains(&"Vector"), "{names:?}");
+    assert!(names.contains(&"HashMap"), "{names:?}");
+}
+
+#[test]
+fn a_use_path_narrows_as_a_segment_is_typed() {
+    let offers = path_offers("use Std.Coll");
+    assert_eq!(names_of(&offers), vec!["Collections"]);
+}
+
+#[test]
+fn a_type_is_offered_at_the_end_of_a_use_path() {
+    // `use Std.Maybe.Maybe.*` is how a type's constructors are brought in, so a
+    // type belongs in a path as much as a module does.
+    let offers = path_offers("use Std.Maybe.");
+    let names = names_of(&offers);
+    assert!(names.contains(&"Maybe"), "{names:?}");
+}
+
+#[test]
+fn the_list_of_a_use_offers_what_the_module_exports() {
+    let offers = path_offers("use Std.Maybe (");
+    let names = names_of(&offers);
+    assert!(names.contains(&"unwrapOr"), "{names:?}");
+    assert!(names.contains(&"Maybe"), "{names:?}");
+    assert!(!names.contains(&"println"), "{names:?}");
+
+    // And narrows as it is typed.
+    let offers = path_offers("use Std.Maybe (unwrap");
+    assert_eq!(names_of(&offers), vec!["unwrapOr"]);
+}
+
+#[test]
+fn an_offer_says_what_kind_of_name_it_is() {
+    use meadow_lsp::analysis::PathKind;
+    let offers = path_offers("use Std.");
+    let module = offers
+        .iter()
+        .find(|o| o.name == "Collections")
+        .expect("a module");
+    assert_eq!(module.kind, PathKind::Module);
+    let offers = path_offers("def main = Maybe.");
+    assert_eq!(offers[0].kind, PathKind::Ctor);
+}

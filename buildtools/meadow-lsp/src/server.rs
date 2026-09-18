@@ -5,7 +5,7 @@
 //! and a cancellation protocol would be more machinery than the problem needs.
 //! `Std` is compiled once at startup, which is the only slow part.
 
-use crate::analysis::{Analysis, HintPart, Loc, PackageLoader, Std};
+use crate::analysis::{Analysis, HintPart, Loc, PackageLoader, PathKind, Std};
 use crate::pos::LineIndex;
 use crate::tokens;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
@@ -126,9 +126,10 @@ fn server_capabilities() -> ServerCapabilities {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         // `|>` is a trigger of its own: an editor asks after `>`, which is
         // where the list stops being every name and starts being what this
-        // value can be piped into.
+        // value can be piped into. A `.` is the same thing for a path -- after
+        // it the list is what sits under whatever was named.
         completion_provider: Some(CompletionOptions {
-            trigger_characters: Some(vec![">".to_string(), " ".to_string()]),
+            trigger_characters: Some(vec![">".to_string(), " ".to_string(), ".".to_string()]),
             ..Default::default()
         }),
         definition_provider: Some(OneOf::Left(true)),
@@ -333,6 +334,26 @@ impl Server {
         };
         let offers = match crate::complete::ask(&doc.text, offset) {
             crate::complete::Ask::Name { word } => crate::complete::names(&doc.analysis, &word),
+            // A name is being invented, or a record field selected -- neither is
+            // something this knows a list for.
+            crate::complete::Ask::Nothing { .. } => Vec::new(),
+            // `Q.` parses once the name after it is there, so the placeholder
+            // that stands in for the half-written word is repair enough.
+            crate::complete::Ask::Member { qualifier, word } => {
+                let repaired = crate::complete::repaired(&doc.text, start, offset);
+                let analysis = self.analysed(&p.text_document.uri, &repaired);
+                crate::complete::member(&analysis, &qualifier, &word)
+            }
+            crate::complete::Ask::UsePath { segments, word } => {
+                let text = crate::complete::without_line(&doc.text, start);
+                let analysis = self.analysed(&p.text_document.uri, &text);
+                crate::complete::use_path(&analysis, &segments, &word)
+            }
+            crate::complete::Ask::UseNames { segments, word } => {
+                let text = crate::complete::without_line(&doc.text, start);
+                let analysis = self.analysed(&p.text_document.uri, &text);
+                crate::complete::use_names(&analysis, &segments, &word)
+            }
             crate::complete::Ask::Piped { pipe_at, word } => {
                 // The half-written pipe is finished where the *word* starts, so
                 // that what has been typed of the function's name is not part
@@ -399,7 +420,12 @@ impl Server {
                                 description: Some(o.from),
                                 ..Default::default()
                             }),
-                            kind: Some(CompletionItemKind::FUNCTION),
+                            kind: Some(match o.kind {
+                                PathKind::Value => CompletionItemKind::FUNCTION,
+                                PathKind::Module => CompletionItemKind::MODULE,
+                                PathKind::Type => CompletionItemKind::STRUCT,
+                                PathKind::Ctor => CompletionItemKind::ENUM_MEMBER,
+                            }),
                             // Say what is being replaced. Without a range the
                             // editor guesses, and a guess that disagrees is a
                             // list that empties as soon as anyone types.

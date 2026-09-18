@@ -387,6 +387,8 @@ pub struct Analysis {
     /// (`Tv.Link`), with the full path a `use` would spell it by:
     /// `demo.Syntax.Tv.Link`, `Std.Maybe.Maybe.Just`. What a hover shows.
     pub ctor_paths: std::collections::HashMap<InternedString, String>,
+    /// What every dotted path reaches, for completing one.
+    pub paths: PathIndex,
 }
 
 /// A top-level definition, as something to start a program at.
@@ -690,6 +692,7 @@ impl Std {
             wider_name_refs: Vec::new(),
             functions: Vec::new(),
             ctor_paths: Default::default(),
+            paths: Default::default(),
         };
         collect_names(
             &pkg.data_decls,
@@ -743,6 +746,7 @@ impl Std {
         }
         mark_tests(&mut a, &pkg);
         a.ctor_paths = ctor_paths(&pkg, Some(sources.name), &deps, None);
+        a.paths = path_index(&pkg, Some(sources.name), &deps, None);
         Some(a)
     }
 
@@ -816,6 +820,7 @@ impl Std {
             wider_name_refs: Vec::new(),
             functions: Vec::new(),
             ctor_paths: Default::default(),
+            paths: Default::default(),
         };
         collect_names(
             &pkg.data_decls,
@@ -854,8 +859,206 @@ impl Std {
         // A throwaway single-file analysis is not a package anyone can name, so
         // its own constructors are shown from the module down.
         a.ctor_paths = ctor_paths(&pkg, package, deps, package);
+        a.paths = path_index(&pkg, package, deps, package);
         a
     }
+}
+
+/// What a path segment names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PathKind {
+    Module,
+    Type,
+    /// A data constructor, which lives under the type that owns it.
+    Ctor,
+    Value,
+}
+
+/// One name that may follow a path.
+#[derive(Clone, Debug)]
+pub struct PathEntry {
+    pub name: String,
+    pub kind: PathKind,
+    /// The type, for something that has one; for a constructor, the type it
+    /// builds.
+    pub detail: String,
+}
+
+/// What sits directly under each dotted path.
+///
+/// One index answers every question about a qualified name, because they are
+/// all the same question asked at a different depth. `use Std.` wants the
+/// modules under `Std`; `use Std.Maybe (` wants what that module exports; `M.`
+/// in an expression wants the same thing, under whatever `M` was aliased to;
+/// and `Shape.` wants a type's constructors -- a type being a path like any
+/// other, with its constructors under it.
+#[derive(Default, Clone)]
+pub struct PathIndex {
+    under: std::collections::HashMap<String, Vec<PathEntry>>,
+}
+
+impl PathIndex {
+    /// The names directly under `path`. The empty path is the top: the
+    /// packages, and whatever the open document declares for itself.
+    pub fn under(&self, path: &str) -> &[PathEntry] {
+        self.under.get(path).map(|v| &v[..]).unwrap_or(&[])
+    }
+
+    /// Every path whose last segments are `written`.
+    ///
+    /// A name is rarely written in full. A type is named bare in an expression
+    /// -- `Maybe.Just`, never `Std.Maybe.Maybe.Just` -- and a `use` inside a
+    /// package may leave the package off, so what was typed is matched as a
+    /// suffix and the shortest match wins.
+    pub fn ending_in(&self, written: &str) -> Vec<&str> {
+        let want: Vec<&str> = written.split('.').collect();
+        let mut out: Vec<&str> = self
+            .under
+            .keys()
+            .filter(|k| {
+                let segs: Vec<&str> = k.split('.').collect();
+                segs.len() >= want.len() && segs[segs.len() - want.len()..] == want[..]
+            })
+            .map(|k| k.as_str())
+            .collect();
+        out.sort_by_key(|k| (k.len(), *k));
+        out
+    }
+
+    fn add(&mut self, path: String, entry: PathEntry) {
+        let under = self.under.entry(path).or_default();
+        if !under
+            .iter()
+            .any(|e| e.name == entry.name && e.kind == entry.kind)
+        {
+            under.push(entry);
+        }
+    }
+
+    /// Record one module: the path that reaches it, what it declares, and what
+    /// it exports.
+    fn module(
+        &mut self,
+        package: Option<InternedString>,
+        m: &hir::LModule,
+        path: &[InternedString],
+        pkg: &CompiledPackage,
+        // Whether `pkg` is this module compiled on its own, in which case
+        // everything it exports is this module's rather than some other's.
+        alone: bool,
+    ) {
+        let mut segs: Vec<String> = package.into_iter().map(|p| p.to_string()).collect();
+        segs.extend(path.iter().map(|s| s.to_string()));
+        // Every step of the way down, not just the last: a package whose
+        // intermediate module holds nothing but `mod` declarations is still
+        // something to offer on the way to what is under it.
+        for i in 0..segs.len() {
+            self.add(
+                segs[..i].join("."),
+                PathEntry {
+                    name: segs[i].clone(),
+                    kind: PathKind::Module,
+                    detail: String::new(),
+                },
+            );
+        }
+        let here = segs.join(".");
+        for d in &m.value().decls {
+            let (name, ctors): (String, Vec<(String, String)>) = match d.value() {
+                hir::Decl::Data(dd) => {
+                    let ty = hir::spelling(&dd.name).to_string();
+                    let ctors = dd
+                        .variants
+                        .iter()
+                        .map(|v| (bare_ctor(hir::spelling(&v.name)), ty.clone()))
+                        .collect();
+                    (ty, ctors)
+                }
+                hir::Decl::Record(rd) => {
+                    let ty = hir::spelling(&rd.name).to_string();
+                    (ty.clone(), vec![(ty.clone(), ty)])
+                }
+                hir::Decl::Effect(ed) => (hir::spelling(&ed.name).to_string(), Vec::new()),
+                hir::Decl::Alias(ad) => (hir::spelling(&ad.name).to_string(), Vec::new()),
+                _ => continue,
+            };
+            self.add(
+                here.clone(),
+                PathEntry {
+                    name: name.clone(),
+                    kind: PathKind::Type,
+                    detail: String::new(),
+                },
+            );
+            let owner = join(&here, &name);
+            for (ctor, of) in ctors {
+                self.add(
+                    owner.clone(),
+                    PathEntry {
+                        name: ctor,
+                        kind: PathKind::Ctor,
+                        detail: of,
+                    },
+                );
+            }
+        }
+        for e in &pkg.exports {
+            if alone || e.module.as_slice() == path {
+                self.add(
+                    here.clone(),
+                    PathEntry {
+                        name: e.name.to_string(),
+                        kind: PathKind::Value,
+                        detail: e.scheme.to_string(),
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// `a.b` from `a` and `b`, where an empty `a` is the top.
+fn join(path: &str, name: &str) -> String {
+    if path.is_empty() {
+        name.to_string()
+    } else {
+        format!("{path}.{name}")
+    }
+}
+
+/// A variant's name as the source writes it: the HIR's is canonical
+/// (`Maybe.Just`), and what is typed after the dot is only its last segment.
+fn bare_ctor(spelled: &str) -> String {
+    spelled
+        .rsplit_once('.')
+        .map(|(_, c)| c.to_string())
+        .unwrap_or_else(|| spelled.to_string())
+}
+
+/// Every path in `pkg` and its dependencies. The arguments are
+/// [`ctor_paths`]'s, and mean the same thing.
+fn path_index(
+    pkg: &CompiledPackage,
+    own: Option<InternedString>,
+    deps: &[&CompiledPackage],
+    sub_units_of: Option<InternedString>,
+) -> PathIndex {
+    let mut out = PathIndex::default();
+    for dep in deps {
+        for m in &dep.modules {
+            let dotted: Vec<String> = m.path.iter().map(|s| s.to_string()).collect();
+            let alone = sub_units_of.is_some() && dep.name.to_string() == dotted.join(".");
+            let package = match sub_units_of {
+                Some(p) if alone => p,
+                _ => dep.name,
+            };
+            out.module(Some(package), &m.hir, &m.path, dep, alone);
+        }
+    }
+    for m in &pkg.modules {
+        out.module(own, &m.hir, &m.path, pkg, false);
+    }
+    out
 }
 
 /// The full path of every data constructor declared in `pkg` or its
@@ -1671,6 +1874,7 @@ impl Analysis {
             wider_name_refs: Vec::new(),
             functions: Vec::new(),
             ctor_paths: Default::default(),
+            paths: Default::default(),
             source_id: 0,
         }
     }

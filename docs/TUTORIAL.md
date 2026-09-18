@@ -3187,6 +3187,37 @@ value goes in first or last is the *last* thing considered: both are ordinary,
 so ranking by it would bury `map`, `filter` and `foldl` under every function
 that happens to take its argument the other way round.
 
+**Completion after a dot** is the other half of the same idea. A dot names a
+path, and what follows it is whatever sits under what was named:
+
+```meadow
+use Std.
+--      ^ Collections, Maybe, String, …
+
+use Std.Maybe (
+--             ^ map, unwrapOr, andThen, Maybe, …
+
+use Std.Maybe as M
+
+data Shape = Circle Int | Square Int
+
+def main = Shape.
+--               ^ Circle, Square
+
+def first = M.
+--            ^ map, unwrapOr, …, and Just and None
+```
+
+A type is a path too, with its constructors under it — so `Shape.` offers
+`Circle` and `Square`. `Maybe` is both a module and the type inside it, and
+only the type is something a constructor can follow, so `Maybe.` offers `Just`
+and `None`. A module is reached qualified only through `use … as`, which is why
+`M.` offers what `M` was pointed at and a module nothing has aliased offers
+nothing: writing it would not compile.
+
+A dot after a value — `point.` — selects a field. That is a question about the
+value's type rather than about a path, and nothing is offered there yet.
+
 Only names you can write *here* are offered. A function that would need a `use`
 first is left out rather than inserted as something that does not compile.
 

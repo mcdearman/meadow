@@ -772,3 +772,57 @@ fn an_offer_replaces_the_half_written_name() {
         "the editor must ask again"
     );
 }
+
+/// A path completes like a name: the list is what sits under what was written,
+/// and taking an offer replaces only the segment being typed.
+#[test]
+fn completion_after_a_dot_offers_what_is_under_the_path() {
+    let mut c = Client::start();
+    c.set("data Shape = Circle Int | Square Int\n\ndef main = Shape.Ci");
+    let got = c.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": URI},
+            "position": {"line": 2, "character": 19},
+        }),
+    );
+    let items = got["items"].as_array().expect("items");
+    let labels: Vec<&str> = items
+        .iter()
+        .map(|i| i["label"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(labels, vec!["Circle"], "{labels:?}");
+    let circle = &items[0];
+    // The dot stays: only `Ci` is replaced.
+    assert_eq!(
+        circle["textEdit"]["range"]["start"],
+        json!({"line": 2, "character": 17}),
+        "{circle}"
+    );
+    assert_eq!(
+        circle["textEdit"]["range"]["end"],
+        json!({"line": 2, "character": 19}),
+        "{circle}"
+    );
+}
+
+#[test]
+fn completion_in_a_use_offers_the_modules_under_the_path() {
+    let mut c = Client::start();
+    c.set("use Std.\n\ndef main = 1");
+    let got = c.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": URI},
+            "position": {"line": 0, "character": 8},
+        }),
+    );
+    let labels: Vec<String> = got["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|i| i["label"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(labels.contains(&"Collections".to_string()), "{labels:?}");
+    assert!(labels.contains(&"Maybe".to_string()), "{labels:?}");
+}

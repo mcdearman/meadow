@@ -635,6 +635,7 @@ fn main() {
                 packages,
                 modules,
                 src_root,
+                meadow::stdlib::MODULES,
                 Some(meadow::editor::find_package),
             ) {
                 eprintln!("error: {e}");

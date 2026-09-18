@@ -4643,3 +4643,249 @@ impl Wrapper<'_> {
         write!(self.0, "{}", Show(ty, std::cell::RefCell::new(namer)))
     }
 }
+
+// --- what a value can be piped into ------------------------------------------
+
+/// Where a value piped into a function lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Piped {
+    /// `x |> f` is `f x`: the value is the function's first parameter.
+    First,
+    /// `x |> f a b`: the value is its last parameter, and `n` come before it,
+    /// which the caller has to supply. This is what a library written to chain
+    /// looks like -- `table |> setWidth 40` is `setWidth 40 table`.
+    Last(usize),
+}
+
+/// How a value of one type fits a function it is piped into.
+#[derive(Debug, Clone)]
+pub struct PipeFit {
+    pub how: Piped,
+    /// The parameter it fits was a type variable, so this function fits every
+    /// value rather than this one. `id` and `const` are the reason to know.
+    pub generic: bool,
+    /// What the call gives back once the value is piped in -- for ranking a
+    /// candidate against the type the surrounding expression wants.
+    pub result: Type,
+    /// Applying it performs an effect. A pipeline is usually a chain of plain
+    /// transformations, and reading a file in the middle of one is deliberate
+    /// rather than routine, so this is worth knowing when ordering a menu.
+    pub effectful: bool,
+}
+
+/// Whether a value of type `subject` can be piped into `scheme`, and how.
+///
+/// Both are instantiated afresh, so nothing here touches the arena that
+/// inferred them: the free variables of `subject` become variables of their
+/// own, which is what makes a `Vector a` fit a `Vector b -> Int`.
+pub fn pipes_into(scheme: &Scheme, subject: &Type) -> Option<PipeFit> {
+    let mut arena = Arena::new();
+    let subject = freshen(&mut arena, subject);
+    let fresh: Vec<Type> = scheme.quant.iter().map(|k| arena.fresh_of(*k)).collect();
+    let ty = Arena::subst_bound(&scheme.ty, &fresh);
+    let (params, _) = parameters(&ty);
+    if params.is_empty() {
+        return None;
+    }
+    let generic = |t: &Type| matches!(t, Type::Var(_) | Type::Bound(_));
+    // `x |> f` is `f x`, so the first parameter is the one it lands in.
+    // What a full call performs, from this parameter on: in a curried type the
+    // effect sits on the arrow that completes the application, so
+    // `String -> String -> String ! Fs` performs `Fs` however early the value
+    // goes in.
+    let performs = |at: usize| {
+        let (with, _) = parameters_with_effects(&ty);
+        with[at..]
+            .iter()
+            .any(|(_, eff)| !matches!(arena_free(eff), Type::RowEmpty))
+    };
+    if let Some(result) = fits(&mut arena, &ty, 0, &subject) {
+        return Some(PipeFit {
+            how: Piped::First,
+            generic: generic(&params[0]),
+            result,
+            effectful: performs(0),
+        });
+    }
+    // A function written to chain takes its subject last, and everything
+    // before it is supplied at the call: `setWidth 40`.
+    let last = params.len() - 1;
+    if last > 0
+        && let Some(result) = fits(&mut arena, &ty, last, &subject)
+    {
+        return Some(PipeFit {
+            how: Piped::Last(last),
+            generic: generic(&params[last]),
+            result,
+            effectful: performs(last),
+        });
+    }
+    None
+}
+
+/// The parameters of a curried type, in order, and what is left after them.
+fn parameters(ty: &Type) -> (Vec<Type>, Type) {
+    let (with, rest) = parameters_with_effects(ty);
+    (with.into_iter().map(|(p, _)| p).collect(), rest)
+}
+
+/// The same, keeping what each arrow performs.
+fn parameters_with_effects(ty: &Type) -> (Vec<(Type, Type)>, Type) {
+    let mut params = Vec::new();
+    let mut rest = ty.clone();
+    while let Type::Fun(args, ret, eff) = rest {
+        for a in args {
+            params.push((a, (*eff).clone()));
+        }
+        rest = *ret;
+    }
+    (params, rest)
+}
+
+/// Unify parameter `at` with `subject`, and give what the function returns
+/// once that parameter is supplied -- or `None`, leaving the arena as it was.
+fn fits(arena: &mut Arena, ty: &Type, at: usize, subject: &Type) -> Option<Type> {
+    let snap = arena.snapshot();
+    let (params, result) = parameters(ty);
+    let ok = arena.unify(params[at].clone(), subject.clone()).is_ok();
+    if !ok {
+        arena.rollback(snap);
+        return None;
+    }
+    // What is left: the parameters after this one, then the result.
+    let mut out = arena.zonk(&result);
+    for p in params[at + 1..].iter().rev() {
+        out = Type::Fun(vec![arena.zonk(p)], Box::new(out), Box::new(Type::RowEmpty));
+    }
+    arena.rollback(snap);
+    Some(out)
+}
+
+/// An effect row as written, for asking whether there is one: a row that is
+/// still a variable constrains nothing, and counts as none.
+fn arena_free(eff: &Type) -> Type {
+    match eff {
+        Type::Var(_) => Type::RowEmpty,
+        other => other.clone(),
+    }
+}
+
+/// `ty` with every free variable replaced by one of `arena`'s, so that a type
+/// inferred elsewhere can be unified here.
+fn freshen(arena: &mut Arena, ty: &Type) -> Type {
+    fn walk(arena: &mut Arena, ty: &Type, seen: &mut HashMap<u32, Type>) -> Type {
+        match ty {
+            Type::Var(id) => seen.entry(*id).or_insert_with(|| arena.fresh()).clone(),
+            Type::Bound(_) | Type::RowEmpty | Type::Error => ty.clone(),
+            Type::Con(n, args) => {
+                Type::Con(*n, args.iter().map(|a| walk(arena, a, seen)).collect())
+            }
+            Type::Fun(args, ret, eff) => Type::Fun(
+                args.iter().map(|a| walk(arena, a, seen)).collect(),
+                Box::new(walk(arena, ret, seen)),
+                Box::new(walk(arena, eff, seen)),
+            ),
+            Type::Tuple(items) => Type::Tuple(items.iter().map(|a| walk(arena, a, seen)).collect()),
+            Type::Record(row) => Type::Record(Box::new(walk(arena, row, seen))),
+            Type::RowExtend(l, t, rest) => Type::RowExtend(
+                *l,
+                Box::new(walk(arena, t, seen)),
+                Box::new(walk(arena, rest, seen)),
+            ),
+        }
+    }
+    let mut seen = HashMap::new();
+    walk(arena, ty, &mut seen)
+}
+
+#[cfg(test)]
+mod pipe_tests {
+    use super::*;
+
+    fn con(name: &str) -> Type {
+        Type::con(name)
+    }
+
+    /// `a -> b -> c`, curried as the language writes it.
+    fn arrows(params: &[Type], ret: Type) -> Type {
+        let mut out = ret;
+        for p in params.iter().rev() {
+            out = Type::Fun(vec![p.clone()], Box::new(out), Box::new(Type::RowEmpty));
+        }
+        out
+    }
+
+    fn mono(ty: Type) -> Scheme {
+        Scheme {
+            quant: Vec::new(),
+            ty,
+        }
+    }
+
+    #[test]
+    fn a_value_pipes_into_a_function_of_its_type() {
+        let width = mono(arrows(&[con("String")], con("Int")));
+        let fit = pipes_into(&width, &con("String")).expect("it fits");
+        assert_eq!(fit.how, Piped::First);
+        assert!(!fit.generic);
+        assert!(equal(&fit.result, &con("Int")), "{:?}", fit.result);
+    }
+
+    #[test]
+    fn a_value_does_not_pipe_into_a_function_of_another_type() {
+        let width = mono(arrows(&[con("String")], con("Int")));
+        assert!(pipes_into(&width, &con("Int")).is_none());
+    }
+
+    #[test]
+    fn a_function_written_to_chain_takes_it_last() {
+        // `setWidth : Int -> Table -> Table`, so `table |> setWidth 40`.
+        let set_width = mono(arrows(&[con("Int"), con("Table")], con("Table")));
+        let fit = pipes_into(&set_width, &con("Table")).expect("it fits");
+        assert_eq!(fit.how, Piped::Last(1));
+        // What is left to write is the one argument before it.
+        assert!(equal(&fit.result, &con("Table")), "{:?}", fit.result);
+    }
+
+    #[test]
+    fn the_first_parameter_wins_when_both_would_fit() {
+        // `append : Table -> Table -> Table` fits either way; piping means the
+        // first, which is what `x |> f` does.
+        let append = mono(arrows(&[con("Table"), con("Table")], con("Table")));
+        let fit = pipes_into(&append, &con("Table")).expect("it fits");
+        assert_eq!(fit.how, Piped::First);
+    }
+
+    #[test]
+    fn a_function_of_a_type_variable_fits_everything_and_says_so() {
+        // `id : forall a. a -> a`
+        let id = Scheme {
+            quant: vec![VarKind::Type],
+            ty: arrows(&[Type::Bound(0)], Type::Bound(0)),
+        };
+        let fit = pipes_into(&id, &con("String")).expect("it fits");
+        assert!(fit.generic, "a bare variable fits anything");
+        assert!(equal(&fit.result, &con("String")), "{:?}", fit.result);
+    }
+
+    #[test]
+    fn a_generic_container_fits_a_function_over_it() {
+        // `len : forall a. Vector a -> Int` takes a `Vector String`.
+        let len = Scheme {
+            quant: vec![VarKind::Type],
+            ty: arrows(
+                &[Type::Con("Vector".into(), vec![Type::Bound(0)])],
+                con("Int"),
+            ),
+        };
+        let subject = Type::Con("Vector".into(), vec![con("String")]);
+        let fit = pipes_into(&len, &subject).expect("it fits");
+        assert_eq!(fit.how, Piped::First);
+        assert!(!fit.generic, "the parameter is a `Vector`, not a variable");
+    }
+
+    #[test]
+    fn a_value_is_not_piped_into_something_that_is_not_a_function() {
+        assert!(pipes_into(&mono(con("Int")), &con("Int")).is_none());
+    }
+}

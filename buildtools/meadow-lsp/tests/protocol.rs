@@ -31,8 +31,15 @@ impl Client {
                 .into_iter()
                 .map(|(dotted, pkg)| (dotted.to_string(), pkg))
                 .collect();
-            meadow_lsp::server::serve(&server, packages, modules, std_src_root, None)
-                .expect("server");
+            meadow_lsp::server::serve(
+                &server,
+                packages,
+                modules,
+                std_src_root,
+                meadow::stdlib::MODULES,
+                None,
+            )
+            .expect("server");
         });
 
         let mut c = Client {
@@ -403,7 +410,14 @@ fn survives_chatter_before_initialized(chatter: &[(&str, Value)]) -> bool {
             .into_iter()
             .map(|(dotted, pkg)| (dotted.to_string(), pkg))
             .collect();
-        let _ = meadow_lsp::server::serve(&server, packages, modules, None, None);
+        let _ = meadow_lsp::server::serve(
+            &server,
+            packages,
+            modules,
+            None,
+            meadow::stdlib::MODULES,
+            None,
+        );
     });
 
     client
@@ -503,7 +517,14 @@ fn a_request_before_initialized_is_answered_rather_than_dropped() {
             .into_iter()
             .map(|(dotted, pkg)| (dotted.to_string(), pkg))
             .collect();
-        let _ = meadow_lsp::server::serve(&server, packages, modules, None, None);
+        let _ = meadow_lsp::server::serve(
+            &server,
+            packages,
+            modules,
+            None,
+            meadow::stdlib::MODULES,
+            None,
+        );
     });
     client
         .sender
@@ -672,4 +693,82 @@ fn a_test_gets_a_test_lens_before_its_debug_lens() {
     assert_eq!(test["test"], json!("checks"), "{test}");
     assert_eq!(test["name"], json!("checks"));
     assert_eq!(test["uri"], json!(URI));
+}
+
+/// What an editor actually does after `|>`: ask, then ask again with each
+/// letter typed. The list has to narrow rather than empty.
+#[test]
+fn completion_after_a_pipe_narrows_as_the_name_is_typed() {
+    let mut c = Client::start();
+    let ask = |c: &mut Client, text: &str| -> Value {
+        c.set(text);
+        let last = text.lines().count() - 1;
+        let character = text.lines().next_back().unwrap().chars().count();
+        c.request(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": URI},
+                "position": {"line": last, "character": character},
+            }),
+        )
+    };
+    let names = |v: &Value| -> Vec<String> {
+        let items = v["items"].as_array().cloned().unwrap_or_default();
+        items
+            .iter()
+            .map(|i| i["label"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+
+    let empty = ask(&mut c, "def xs = [11..20]\n\ndef main = xs |> ");
+    let all = names(&empty);
+    assert!(!all.is_empty(), "a pipe offers something");
+    assert!(all.contains(&"foldl".to_string()), "{all:?}");
+
+    // Each keystroke: the editor asks again, because the list said it was
+    // incomplete, and what comes back still has the name in it.
+    for typed in ["f", "fo", "fol", "fold", "foldl"] {
+        let got = ask(
+            &mut c,
+            &format!("def xs = [11..20]\n\ndef main = xs |> {typed}"),
+        );
+        let names = names(&got);
+        assert!(
+            names.contains(&"foldl".to_string()),
+            "after typing {typed:?}: {names:?}"
+        );
+    }
+}
+
+/// The edit an offer carries replaces the word being typed, and nothing else.
+#[test]
+fn an_offer_replaces_the_half_written_name() {
+    let mut c = Client::start();
+    let text = "def xs = [11..20]\n\ndef main = xs |> fol";
+    c.set(text);
+    let got = c.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": URI},
+            "position": {"line": 2, "character": 20},
+        }),
+    );
+    let items = got["items"].as_array().expect("items");
+    let foldl = items
+        .iter()
+        .find(|i| i["label"] == json!("foldl"))
+        .unwrap_or_else(|| panic!("no foldl among {:?}", items.len()));
+    let range = &foldl["textEdit"]["range"];
+    assert_eq!(
+        range["start"],
+        json!({"line": 2, "character": 17}),
+        "{foldl}"
+    );
+    assert_eq!(range["end"], json!({"line": 2, "character": 20}), "{foldl}");
+    assert_eq!(foldl["filterText"], json!("foldl"));
+    assert_eq!(
+        got["isIncomplete"],
+        json!(true),
+        "the editor must ask again"
+    );
 }

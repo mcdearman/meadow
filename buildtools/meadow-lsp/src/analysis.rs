@@ -209,6 +209,123 @@ fn outside(known: bool) -> String {
     }
 }
 
+/// Everything a completion could name, nearest first: this document's own
+/// bindings, then the rest of the package, then its dependencies, then the
+/// standard library.
+///
+/// A name is worth offering only if something can be said about it, so this
+/// takes the bindings that have a scheme -- which is every top-level one.
+fn gather_candidates(a: &mut Analysis, pkg: &CompiledPackage, deps: &[&CompiledPackage]) {
+    let mut add =
+        |name: String, scheme: meadow_compiler::infer::Scheme, distance: u8, from: String| {
+            if name.starts_with(|c: char| c.is_uppercase()) {
+                return;
+            }
+            let common = corpus().and_then(|c| c.get(&name).copied()).unwrap_or(0);
+            a.candidates.push(Candidate {
+                name,
+                scheme,
+                distance,
+                from,
+                common,
+            });
+        };
+    for e in &pkg.exports {
+        let module = if e.module.is_empty() {
+            "this package".to_string()
+        } else {
+            e.module
+                .iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
+                .join(".")
+        };
+        add(e.name.to_string(), e.scheme.clone(), 0, module);
+    }
+    for dep in deps {
+        // The standard library is everywhere, so it sits behind anything the
+        // project itself brought in.
+        let distance = if dep.name.to_string().starts_with("Std") {
+            3
+        } else {
+            2
+        };
+        let from = dep.name.to_string();
+        for e in &dep.exports {
+            // Only what can be written here without a qualifier. A name that
+            // needs a `use` first would be offered as something that does not
+            // compile, which is worse than not offering it.
+            if let Some(flat) = &dep.prelude_exports
+                && !flat.contains(&e.name)
+            {
+                continue;
+            }
+            add(e.name.to_string(), e.scheme.clone(), distance, from.clone());
+        }
+    }
+    // The same function reached twice is one candidate; two *different*
+    // functions of one name are two, and which of them fits is a question for
+    // the type rather than for this. `map` is both `Vector`'s and `Maybe`'s,
+    // and dropping either would take a real answer out of the list.
+    a.candidates.sort_by(|x, y| {
+        x.name
+            .cmp(&y.name)
+            .then_with(|| x.distance.cmp(&y.distance))
+            .then_with(|| x.scheme.to_string().cmp(&y.scheme.to_string()))
+    });
+    a.candidates
+        .dedup_by(|x, y| x.name == y.name && x.scheme.to_string() == y.scheme.to_string());
+}
+
+/// A value a completion could offer: what it is called, what it is, and where
+/// it came from.
+#[derive(Clone)]
+pub struct Candidate {
+    pub name: String,
+    pub scheme: meadow_compiler::infer::Scheme,
+    /// How near it is: 0 for this document's own bindings, 1 for the rest of
+    /// this package, 2 for a dependency, 3 for the standard library.
+    pub distance: u8,
+    /// The package or module it came from, for the editor's detail line.
+    pub from: String,
+    /// How often the standard library's own source writes this name.
+    ///
+    /// A corpus of idiomatic Meadow that every install has, counted rather
+    /// than curated: `map` and `foldl` are written constantly there and
+    /// `splitAt` hardly ever, which is what a menu should reflect when it has
+    /// nothing else to go on.
+    pub common: u32,
+}
+
+/// How often each name appears in the standard library's source, counted once.
+static CORPUS: std::sync::OnceLock<std::collections::HashMap<String, u32>> =
+    std::sync::OnceLock::new();
+
+fn corpus_from(sources: &[(&str, &str)]) -> &'static std::collections::HashMap<String, u32> {
+    CORPUS.get_or_init(|| {
+        let mut out: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        for (_, source) in sources {
+            let mut word = String::new();
+            for c in source.chars() {
+                if c.is_alphanumeric() || c == '_' {
+                    word.push(c);
+                } else if !word.is_empty() {
+                    *out.entry(std::mem::take(&mut word)).or_default() += 1;
+                }
+            }
+            if !word.is_empty() {
+                *out.entry(std::mem::take(&mut word)).or_default() += 1;
+            }
+        }
+        out
+    })
+}
+
+/// What was counted, or nothing when the library's source never arrived.
+fn corpus() -> Option<&'static std::collections::HashMap<String, u32>> {
+    CORPUS.get()
+}
+
 /// Everything the server knows about one document.
 pub struct Analysis {
     pub source: String,
@@ -216,6 +333,11 @@ pub struct Analysis {
     /// Every typed node, innermost last — so a position lookup can take the
     /// *smallest* span that contains it by scanning for the tightest match.
     pub typed: Vec<(Span, String)>,
+    /// The same nodes, with the type itself rather than its rendering: what
+    /// completion unifies against to find what a value can be piped into.
+    pub typed_nodes: Vec<(Span, meadow_compiler::infer::Type)>,
+    /// Every value a completion could name, with what it is.
+    pub candidates: Vec<Candidate>,
     /// Where each binding *in this document* is introduced. Local on purpose:
     /// [`Analysis::var_at`] matches these spans against this document's offsets,
     /// so a definition in another file has no business here. The wider index is
@@ -364,7 +486,13 @@ impl Std {
         packages: Vec<CompiledPackage>,
         modules: Vec<(String, CompiledPackage)>,
         src_root: Option<std::path::PathBuf>,
+        // The library's own source, which completion counts names in: what
+        // idiomatic Meadow reaches for, measured rather than curated. It lives
+        // in the crate that embeds the library, which is the one that starts
+        // this, so it arrives from there.
+        sources: &[(&str, &str)],
     ) -> Std {
+        let _ = corpus_from(sources);
         let mut types = std::collections::HashSet::new();
         let mut ctors = std::collections::HashSet::new();
         for p in &packages {
@@ -545,6 +673,8 @@ impl Std {
             source_id: here.id,
             diagnostics,
             typed: Vec::new(),
+            typed_nodes: Vec::new(),
+            candidates: Vec::new(),
             defs: Default::default(),
             refs: Vec::new(),
             binders: Vec::new(),
@@ -570,6 +700,7 @@ impl Std {
             a.binding_names.insert(e.var, e.name.to_string());
             a.schemes.insert(e.var, e.scheme.to_string());
         }
+        gather_candidates(&mut a, &pkg, &deps);
         // Every other binding that was generalized -- private top-level ones,
         // and local `let`s -- hovers as its scheme too, rather than as the type
         // its binder node happened to have. See `CompiledPackage::generalized`
@@ -668,6 +799,8 @@ impl Std {
             source_id: source.id,
             diagnostics,
             typed: Vec::new(),
+            typed_nodes: Vec::new(),
+            candidates: Vec::new(),
             defs: Default::default(),
             refs: Vec::new(),
             binders: Vec::new(),
@@ -693,6 +826,7 @@ impl Std {
             a.binding_names.insert(e.var, e.name.to_string());
             a.schemes.insert(e.var, e.scheme.to_string());
         }
+        gather_candidates(&mut a, &pkg, deps);
         // Every other binding that was generalized -- private top-level ones,
         // and local `let`s -- hovers as its scheme too, rather than as the type
         // its binder node happened to have. See `CompiledPackage::generalized`
@@ -863,6 +997,7 @@ impl Walk<'_> {
     fn record(&mut self, span: Span, id: hir::NodeId) {
         if let Some(ty) = self.types.and_then(|t| t.get(id)) {
             let rendered = ty.to_string();
+            self.a.typed_nodes.push((span, ty.clone()));
             self.a.typed.push((span, rendered));
         }
     }
@@ -1519,6 +1654,8 @@ impl Analysis {
             source: String::new(),
             diagnostics: Vec::new(),
             typed: Vec::new(),
+            typed_nodes: Vec::new(),
+            candidates: Vec::new(),
             defs: Default::default(),
             refs: Vec::new(),
             name_refs: Vec::new(),

@@ -23,7 +23,12 @@ fn std() -> Std {
         .into_iter()
         .map(|(dotted, pkg)| (dotted.to_string(), pkg))
         .collect();
-    Std::new(meadow::stdlib::std_packages(opts).0, modules, None)
+    Std::new(
+        meadow::stdlib::std_packages(opts).0,
+        modules,
+        None,
+        meadow::stdlib::MODULES,
+    )
 }
 
 thread_local! {
@@ -1462,4 +1467,203 @@ fn an_effect_from_outside_a_local_function_still_shows() {
     );
     let hover = a.hover_at(off).expect("hover");
     assert!(hover.contains("Console"), "{hover}");
+}
+
+// --- completion --------------------------------------------------------------
+
+/// What the pipe at the end of `src` offers, best first.
+fn piped(src: &str) -> Vec<meadow_lsp::complete::Offer> {
+    let offset = src.len();
+    let meadow_lsp::complete::Ask::Piped { pipe_at, word } = meadow_lsp::complete::ask(src, offset)
+    else {
+        panic!("not a pipe: {src:?}");
+    };
+    let word_start = meadow_lsp::complete::word_start(src, offset);
+    let repaired = meadow_lsp::complete::repaired(src, word_start, offset);
+    let a = STD.with(|s| s.analyse(&repaired));
+    let subject = meadow_lsp::complete::subject(&a, pipe_at)
+        .unwrap_or_else(|| panic!("no type for the value piped in {src:?}"))
+        .clone();
+    meadow_lsp::complete::piped(&a, &subject, &word)
+}
+
+fn names_of(offers: &[meadow_lsp::complete::Offer]) -> Vec<&str> {
+    offers.iter().map(|o| o.name.as_str()).collect()
+}
+
+#[test]
+fn a_pipe_offers_what_the_value_can_be_piped_into() {
+    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let names = names_of(&offers);
+    // Functions of a vector, and nothing that wants something else.
+    assert!(names.contains(&"len"), "{names:?}");
+    assert!(names.contains(&"head"), "{names:?}");
+    assert!(names.contains(&"reverse"), "{names:?}");
+    assert!(
+        !names.contains(&"even"),
+        "an `Int -> Bool` does not take a vector: {names:?}"
+    );
+}
+
+#[test]
+fn what_is_typed_after_the_pipe_narrows_it() {
+    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> le");
+    let names = names_of(&offers);
+    assert!(names.contains(&"len"), "{names:?}");
+    assert!(names.iter().all(|n| n.starts_with("le")), "{names:?}");
+}
+
+#[test]
+fn a_name_that_would_need_a_use_first_is_not_offered() {
+    // `toUpper` is `Std.String`'s, which this document has not brought in:
+    // offering it would write something that does not compile.
+    let offers = piped("def greeting = \"hello\"\n\ndef main = greeting |> ");
+    let names = names_of(&offers);
+    assert!(!names.contains(&"toUpper"), "{names:?}");
+    // What the prelude does have for a `String` is still there.
+    assert!(names.contains(&"++"), "{names:?}");
+}
+
+#[test]
+fn a_function_that_takes_the_value_directly_comes_before_one_that_fits_anything() {
+    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let names = names_of(&offers);
+    let at = |want: &str| names.iter().position(|n| *n == want);
+    // `id : a -> a` fits every value, so it is not what the menu leads with.
+    if let (Some(len), Some(any)) = (at("len"), at("id")) {
+        assert!(len < any, "{names:?}");
+    }
+}
+
+#[test]
+fn what_performs_no_effect_comes_first() {
+    let offers = piped("def path = \"notes.txt\"\n\ndef main = path |> ");
+    let names = names_of(&offers);
+    let at = |want: &str| names.iter().position(|n| *n == want);
+    // Reading a file in the middle of a pipeline is deliberate; joining two
+    // strings is routine.
+    if let (Some(joined), Some(read)) = (at("++"), at("readToString")) {
+        assert!(joined < read, "{names:?}");
+    }
+}
+
+#[test]
+fn what_the_file_already_uses_comes_first() {
+    // Two functions fit equally; the one this file already reaches for wins.
+    let src = "def xs = [1, 2, 3]\n\ndef n = len xs\n\ndef main = xs |> ";
+    let offers = piped(src);
+    let names = names_of(&offers);
+    let at = |want: &str| names.iter().position(|n| *n == want);
+    if let (Some(len), Some(other)) = (at("len"), at("last")) {
+        assert!(len < other, "`len` is used above: {names:?}");
+    }
+}
+
+#[test]
+fn a_function_written_to_chain_is_offered_partly_applied() {
+    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let snippets: Vec<&str> = offers
+        .iter()
+        .filter(|o| o.snippet)
+        .map(|o| o.insert.as_str())
+        .collect();
+    assert!(
+        snippets.iter().all(|s| s.contains("${1}")),
+        "a partly applied offer leaves a hole: {snippets:?}"
+    );
+}
+
+#[test]
+fn an_offer_says_what_it_is_and_where_it_came_from() {
+    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let len = offers
+        .iter()
+        .find(|o| o.name == "len")
+        .expect("len is offered");
+    assert!(len.detail.contains("Int"), "{}", len.detail);
+    assert!(!len.from.is_empty());
+}
+
+#[test]
+fn the_editors_own_ordering_cannot_undo_this_one() {
+    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let sorts: Vec<&str> = offers.iter().map(|o| o.sort.as_str()).collect();
+    let mut sorted = sorts.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorts, sorted, "sortText is in the order offered");
+}
+
+#[test]
+fn typing_the_name_keeps_it_in_the_list() {
+    // What the euler example reaches for: fold a range into a number. Typing
+    // more of the name narrows the list rather than emptying it.
+    for src in [
+        "def xs = [11..20]\n\ndef main = xs |> ",
+        "def xs = [11..20]\n\ndef main = xs |> f",
+        "def xs = [11..20]\n\ndef main = xs |> fol",
+        "def xs = [11..20]\n\ndef main = xs |> foldl",
+    ] {
+        let offers = piped(src);
+        let names = names_of(&offers);
+        assert!(
+            names.contains(&"foldl"),
+            "{:?} lost it: {names:?}",
+            src.lines().last().unwrap()
+        );
+    }
+}
+
+#[test]
+fn the_ways_of_taking_a_collection_are_all_near_the_top() {
+    // `len v` takes it first and `map f v` takes it last; both are ordinary,
+    // so neither convention is buried under the other.
+    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let names = names_of(&offers);
+    for want in ["map", "filter", "foldl"] {
+        assert!(names.contains(&want), "{want} is missing: {names:?}");
+    }
+}
+
+#[test]
+fn what_idiomatic_meadow_reaches_for_comes_first() {
+    // With nothing in this file to go on, the order is what the standard
+    // library's own source does: `map` and `foldl` constantly, `splitAt`
+    // hardly ever.
+    let offers = piped("def xs = [11..20]\n\ndef main = xs |> ");
+    let names = names_of(&offers);
+    let at = |want: &str| {
+        names
+            .iter()
+            .position(|n| *n == want)
+            .unwrap_or_else(|| panic!("{want} is missing: {names:?}"))
+    };
+    for want in ["map", "len", "foldl"] {
+        assert!(at(want) < 8, "{want} is at {}: {names:?}", at(want));
+    }
+    assert!(at("splitAt") > at("foldl"), "{names:?}");
+}
+
+#[test]
+fn a_literal_is_piped_as_what_it_is_not_as_what_it_desugars_to() {
+    // `[11..20]` is written once but becomes a call, the function called, and
+    // its arguments -- all spanning the same text. The value piped is the
+    // outermost of them, so this offers what can be done with a vector rather
+    // than what can be done with an `Int`.
+    for src in [
+        "def e5 = [11..20] |> ",
+        "def e5 = [1, 2, 3] |> ",
+        "def xs = [1, 2, 3]\n\ndef e5 = xs |> ",
+    ] {
+        let offers = piped(src);
+        let names = names_of(&offers);
+        assert!(
+            names.contains(&"foldl") && names.contains(&"len"),
+            "{:?} offers {names:?}",
+            src.lines().last().unwrap()
+        );
+        assert!(
+            !names.contains(&"fromArray"),
+            "`#[a] -> [a]` takes an array, not a vector: {names:?}"
+        );
+    }
 }

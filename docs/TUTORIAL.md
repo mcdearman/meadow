@@ -3129,7 +3129,38 @@ backend = "jit"   # "vm" | "jit" | "aot"
 `meadow lsp` speaks the Language Server Protocol over stdin and stdout, so any
 LSP client can use it. It gives you diagnostics as you type, hover showing the
 inferred type and the `--` comment above the definition, go-to-definition,
-rename, inlay hints for parameters and `let` bindings, and semantic tokens.
+rename, completion, inlay hints for parameters and `let` bindings, and semantic
+tokens.
+
+**Completion after `|>`** is the one worth knowing about. Where an
+object-oriented language offers a menu after a full stop, Meadow can offer one
+after a pipe, and for the same reason: by then it knows what the value *is*.
+
+```meadow
+def main = [1, 2, 3] |>
+--                      ^ len, head, reverse, drop ⟨…⟩, …
+```
+
+The list is what that value can be piped into, so nothing that wants another
+type is in it. Two shapes fit, and both are offered:
+
+* `x |> f` is `f x`, so a function whose **first** parameter takes the value;
+* a library written to chain takes its subject **last** —
+  `table |> setWidth 40` is `setWidth 40 table` — so a function whose last
+  parameter takes it, offered with holes for the arguments that come first.
+
+What comes first in the list: a parameter of that very type, before one that is
+a type variable and so fits everything; something that performs no effect,
+before something that does, since a pipeline is usually a chain of plain
+transformations; then what this file already uses; then what the standard
+library's own source uses most, which is counted rather than curated — `map`
+and `foldl` are written constantly there, `splitAt` hardly ever. Whether the
+value goes in first or last is the *last* thing considered: both are ordinary,
+so ranking by it would bury `map`, `filter` and `foldl` under every function
+that happens to take its argument the other way round.
+
+Only names you can write *here* are offered. A function that would need a `use`
+first is left out rather than inserted as something that does not compile.
 
 A file inside a package is analysed as part of that package, so a `use` of a
 sibling module resolves exactly as it does in a build, and go-to-definition and

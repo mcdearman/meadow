@@ -14,7 +14,7 @@ use lsp_types::notification::{
     Notification, PublishDiagnostics,
 };
 use lsp_types::request::{
-    CodeLensRequest, Formatting, GotoDefinition, HoverRequest, InlayHintRequest,
+    CodeLensRequest, Completion, Formatting, GotoDefinition, HoverRequest, InlayHintRequest,
     PrepareRenameRequest, Rename, Request as LspRequest, SemanticTokensFullRequest,
 };
 use lsp_types::*;
@@ -26,6 +26,7 @@ pub fn run(
     std_packages: Vec<CompiledPackage>,
     std_modules: Vec<(String, CompiledPackage)>,
     std_src_root: Option<std::path::PathBuf>,
+    std_sources: &[(&str, &str)],
     load_package: Option<PackageLoader>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let (connection, io_threads) = Connection::stdio();
@@ -34,6 +35,7 @@ pub fn run(
         std_packages,
         std_modules,
         std_src_root,
+        std_sources,
         load_package,
     )?;
     // The writer thread runs until its channel disconnects, which only happens
@@ -56,13 +58,15 @@ pub fn serve(
     // Where the embedded `Std` sources were written out, if anywhere — what
     // makes a definition inside the library a file an editor can open.
     std_src_root: Option<std::path::PathBuf>,
+    // The library's own source, which completion counts names in.
+    std_sources: &[(&str, &str)],
     // How to find the rest of the package a document belongs to. `None` — as in
     // a test that has no files — analyses every document on its own.
     load_package: Option<PackageLoader>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     handshake(connection)?;
     let mut server = Server {
-        std: Std::new(std_packages, std_modules, std_src_root),
+        std: Std::new(std_packages, std_modules, std_src_root, std_sources),
         docs: HashMap::new(),
         indexes: HashMap::new(),
         load_package,
@@ -120,6 +124,13 @@ fn server_capabilities() -> ServerCapabilities {
         // applying incremental edits ourselves would buy nothing.
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        // `|>` is a trigger of its own: an editor asks after `>`, which is
+        // where the list stops being every name and starts being what this
+        // value can be piped into.
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec![">".to_string(), " ".to_string()]),
+            ..Default::default()
+        }),
         definition_provider: Some(OneOf::Left(true)),
         // What an editor's format-on-save asks for.
         document_formatting_provider: Some(OneOf::Left(true)),
@@ -301,6 +312,55 @@ impl Server {
             .collect()
     }
 
+    /// What to offer at a position.
+    ///
+    /// After a `|>` the document does not parse, and one that does not parse
+    /// has no types, so the value being piped would have none either. The text
+    /// is repaired -- a placeholder where the function will go -- and analysed
+    /// again for this one question; that analysis is thrown away, so nothing
+    /// the editor sees is built on a document nobody wrote.
+    fn completions(&self, p: &TextDocumentPositionParams) -> (Vec<crate::complete::Offer>, Range) {
+        let Some(doc) = self.docs.get(&p.text_document.uri) else {
+            return (Vec::new(), Range::default());
+        };
+        let offset = doc.index.offset(p.position.line, p.position.character);
+        // What an offer replaces: the word typed so far, which may be empty.
+        let start = crate::complete::word_start(&doc.text, offset);
+        let (line, character) = doc.index.position(start);
+        let range = Range {
+            start: Position { line, character },
+            end: p.position,
+        };
+        let offers = match crate::complete::ask(&doc.text, offset) {
+            crate::complete::Ask::Name { word } => crate::complete::names(&doc.analysis, &word),
+            crate::complete::Ask::Piped { pipe_at, word } => {
+                // The half-written pipe is finished where the *word* starts, so
+                // that what has been typed of the function's name is not part
+                // of the repaired document: `xs |> fol` asks the same question
+                // as `xs |> `.
+                let repaired = crate::complete::repaired(&doc.text, start, offset);
+                let analysis = self.analysed(&p.text_document.uri, &repaired);
+                match crate::complete::subject(&analysis, pipe_at) {
+                    Some(subject) => crate::complete::piped(&analysis, &subject.clone(), &word),
+                    // Nothing is known about the value -- an expression with an
+                    // error in it, say. Every name is still better than none.
+                    None => crate::complete::names(&analysis, &word),
+                }
+            }
+        };
+        (offers, range)
+    }
+
+    /// `text` analysed as the document at `uri` would be.
+    fn analysed(&self, uri: &Uri, text: &str) -> Analysis {
+        match self.std.module_at(uri.as_str()) {
+            Some(i) => self.std.analyse_module(i, text),
+            None => self
+                .in_package(uri, text)
+                .unwrap_or_else(|| self.std.analyse(text)),
+        }
+    }
+
     fn request(&mut self, req: Request) -> Response {
         let id = req.id.clone();
         match req.method.as_str() {
@@ -321,6 +381,43 @@ impl Server {
                     }),
                     range: None,
                 })
+            }),
+            Completion::METHOD => self.answer::<Completion, _>(req, |s, p| {
+                let position = &p.text_document_position;
+                let (offers, range) = s.completions(position);
+                Some(CompletionResponse::List(CompletionList {
+                    // The list depends on what is being typed -- a longer word
+                    // reaches different functions -- so the editor asks again
+                    // rather than filtering the first answer for ever.
+                    is_incomplete: true,
+                    items: offers
+                        .into_iter()
+                        .map(|o| CompletionItem {
+                            label: o.name.clone(),
+                            detail: Some(o.detail),
+                            label_details: Some(CompletionItemLabelDetails {
+                                description: Some(o.from),
+                                ..Default::default()
+                            }),
+                            kind: Some(CompletionItemKind::FUNCTION),
+                            // Say what is being replaced. Without a range the
+                            // editor guesses, and a guess that disagrees is a
+                            // list that empties as soon as anyone types.
+                            filter_text: Some(o.name),
+                            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                                range,
+                                new_text: o.insert,
+                            })),
+                            insert_text_format: Some(if o.snippet {
+                                InsertTextFormat::SNIPPET
+                            } else {
+                                InsertTextFormat::PLAIN_TEXT
+                            }),
+                            sort_text: Some(o.sort),
+                            ..Default::default()
+                        })
+                        .collect(),
+                }))
             }),
             GotoDefinition::METHOD => self.answer::<GotoDefinition, _>(req, |s, p| {
                 let here = p.text_document_position_params.text_document.uri.clone();

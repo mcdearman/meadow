@@ -296,6 +296,16 @@ fn repeat_of(
 }
 
 /// The name of an identifier token, if it is one.
+/// A package's name as a token: which identifier it is follows its case, as
+/// everything in Meadow does.
+fn package_token(pkg: InternedString) -> Token {
+    if pkg.to_string().starts_with(|c: char| c.is_uppercase()) {
+        Token::UpperIdent(pkg)
+    } else {
+        Token::LowerIdent(pkg)
+    }
+}
+
 fn ident_of(t: &Token) -> Option<InternedString> {
     match t {
         Token::LowerIdent(s) | Token::UpperIdent(s) => Some(*s),
@@ -332,6 +342,13 @@ impl Matcher {
         // A name bound twice would make substitution ambiguous.
         let mut names = Vec::new();
         bound_by(&pieces, &mut names);
+        if let Some(n) = names.iter().find(|n| &***n == "pkg") {
+            return Err(invalid(
+                format!("`${n}` is the package a macro was written in"),
+                "this name is taken",
+                span_of(&pieces).unwrap_or_default(),
+            ));
+        }
         for (i, n) in names.iter().enumerate() {
             if names[..i].contains(n) {
                 return Err(invalid(
@@ -673,10 +690,11 @@ pub fn substitute(
     template: &[tt::TokenTree],
     bound: &Bindings,
     at: Span,
+    pkg: InternedString,
     mark: &dyn Fn(&Token) -> Token,
 ) -> Result<Vec<LToken>, Invalid> {
     let mut out = Vec::new();
-    write(template, bound, at, mark, &mut out)?;
+    write(template, bound, at, pkg, mark, &mut out)?;
     Ok(out)
 }
 
@@ -684,6 +702,7 @@ fn write(
     template: &[tt::TokenTree],
     bound: &Bindings,
     at: Span,
+    pkg: InternedString,
     mark: &dyn Fn(&Token) -> Token,
     out: &mut Vec<LToken>,
 ) -> Result<(), Invalid> {
@@ -692,12 +711,12 @@ fn write(
         match &template[i] {
             tt::TokenTree::Group(g) => {
                 out.push(LToken::new(g.delim.open(), at));
-                write(&g.trees, bound, at, mark, out)?;
+                write(&g.trees, bound, at, pkg, mark, out)?;
                 out.push(LToken::new(g.delim.close(), at));
                 i += 1;
             }
             tt::TokenTree::Token(t) if *t.value() == Token::Dollar => {
-                i += splice(template, i, bound, at, mark, out, t.span)?;
+                i += splice(template, i, bound, at, pkg, mark, out, t.span)?;
             }
             tt::TokenTree::Token(t) => {
                 out.push(LToken::new(mark(t.value()), at));
@@ -714,6 +733,7 @@ fn splice(
     i: usize,
     bound: &Bindings,
     at: Span,
+    pkg: InternedString,
     mark: &dyn Fn(&Token) -> Token,
     out: &mut Vec<LToken>,
     span: Span,
@@ -722,6 +742,13 @@ fn splice(
         // `$$` is one `$`.
         Some(tt::TokenTree::Token(t)) if *t.value() == Token::Dollar => {
             out.push(LToken::new(Token::Dollar, at));
+            let _ = t;
+            Ok(2)
+        }
+        // `$pkg` -- the package the macro was written in, so that what a
+        // template names resolves where the macro is, not where it lands.
+        Some(tt::TokenTree::Token(t)) if ident_of(t.value()).is_some_and(|n| &*n == "pkg") => {
+            out.push(LToken::new(package_token(pkg), at));
             let _ = t;
             Ok(2)
         }
@@ -788,7 +815,7 @@ fn splice(
                         pass.insert(*n, v[k].clone());
                     }
                 }
-                write(&g.trees, &pass, at, mark, out)?;
+                write(&g.trees, &pass, at, pkg, mark, out)?;
             }
             Ok(used)
         }

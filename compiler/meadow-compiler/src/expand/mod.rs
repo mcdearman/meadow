@@ -28,6 +28,7 @@
 //! | `concat!(a, b, …)` | its literal arguments, joined into one string |
 
 mod hygiene;
+pub mod proc;
 mod rules;
 
 use meadow_ast as ast;
@@ -46,27 +47,168 @@ const MAX_DEPTH: usize = 128;
 /// The macros a built-in name takes, which a `macro` may not.
 const BUILT_IN: &[&str] = &["line", "file", "stringify", "concat"];
 
+/// A macro as it is stored and shared: its rules as token trees, unread.
+///
+/// A dependent expands a macro without re-parsing the package it came from, so
+/// what crosses a package boundary is the tokens the rules were written with.
+/// Reading them into matchers is cheap and happens wherever they are used.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Rules {
+    pub name: InternedString,
+    /// The module it is written in, as a path within its package.
+    pub module: Vec<InternedString>,
+    /// The package it is written in: what `$pkg` stands for, and what a
+    /// dependent names it by.
+    pub package: InternedString,
+    pub vis: Vis,
+    /// `(matcher, template)` for each rule, in the order they are tried.
+    pub rules: Vec<(tt::Group, tt::Group)>,
+}
+
+/// How far a macro can be seen. The same four a declaration has, read from the
+/// same `@pub` attribute -- a macro is a declaration like any other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Vis {
+    /// Its own module, and nowhere else.
+    Private,
+    /// The module that holds the one it is in, and below.
+    Super,
+    /// Anywhere in its package.
+    Package,
+    /// Anywhere at all.
+    Exported,
+}
+
+impl Rules {
+    /// Whether a module at `path` in package `pkg` may name this.
+    fn visible_to(&self, pkg: InternedString, path: &[InternedString]) -> bool {
+        match self.vis {
+            Vis::Exported => true,
+            Vis::Package => pkg == self.package,
+            Vis::Super => {
+                pkg == self.package && path.starts_with(&self.module[..self.module.len() - 1])
+            }
+            Vis::Private => pkg == self.package && path == self.module,
+        }
+    }
+}
+
+/// One expansion that happened: what a diagnostic landing in it came from.
+///
+/// Every token a template produced carries the call's span, so a later pass
+/// reports at the call -- which is the only place it *can* report, the
+/// expansion not being in the file. What that leaves out is which macro wrote
+/// it, and this is what says so.
+#[derive(Debug, Clone)]
+pub struct Expansion {
+    /// The span the produced tokens carry: the call's argument.
+    pub at: Span,
+    /// The module the call is in.
+    pub filename: String,
+    /// The macro, as the call names it.
+    pub name: String,
+}
+
+/// Say which macro wrote the code a diagnostic is about.
+///
+/// A diagnostic whose label is *exactly* an expansion's span is about what the
+/// template produced: an argument keeps its own, narrower span, so an error in
+/// one is still reported as the caller's own and is left alone here.
+pub fn blame(diags: &mut [Diagnostic], expansions: &[Expansion]) {
+    for d in diags {
+        let mut from: Vec<&Expansion> = expansions
+            .iter()
+            .filter(|e| e.at == d.label.1 && e.filename == d.filename)
+            .collect();
+        // Innermost first: `outer!` expanding to `inner!` blames `inner!`, and
+        // then says where that came from.
+        from.reverse();
+        for e in from.iter().take(3) {
+            d.extra_labels
+                .push((format!("`{}!` wrote this", e.name), e.at));
+        }
+    }
+}
+
 /// A macro definition, with its matchers read and checked.
 struct Macro {
     name: InternedString,
+    /// The package that wrote it, which is what `$pkg` stands for in its
+    /// template -- the point of `$pkg` being that it means the same thing
+    /// wherever the macro is expanded.
+    package: InternedString,
     rules: Vec<(Matcher, tt::Group)>,
 }
 
 /// Expand every macro call in `module`.
 ///
-/// `text` is the module's source, for the macros that ask where they are;
-/// `filename` names it in diagnostics.
-pub fn expand(module: &mut ast::Module, text: &str, filename: &str, diags: &mut Vec<Diagnostic>) {
-    let mut ex = Expander {
-        text,
-        filename,
-        diags,
-        depth: 0,
-        macros: HashMap::new(),
-        expansions: 0,
-    };
-    ex.collect(&mut module.decls);
-    ex.decls(&mut module.decls);
+/// Every module of the unit at once, because a macro may be used in a module
+/// other than the one that wrote it: the definitions are read from all of them
+/// first, and only then is anything expanded.
+///
+/// `deps` are the packages this one depends on, each with the macros it
+/// exports, under the name this unit calls it by. What comes back is the
+/// unit's own macros, for its [`CompiledPackage`](crate::CompiledPackage) to
+/// carry, and a record of every expansion, for [`blame`].
+pub fn expand_unit(
+    package: InternedString,
+    modules: &mut [crate::AstModule],
+    deps: &[crate::Dep<'_>],
+    procs: Option<&dyn proc::Runner>,
+    filename: &str,
+    diags: &mut Vec<Diagnostic>,
+) -> (Vec<Rules>, Vec<Expansion>) {
+    // Visibility works as it does for everything else: a unit that never says
+    // `@pub` exports all of it, and one that says it anywhere means it
+    // everywhere.
+    let gated = modules.iter().any(|m| says_pub(&m.ast.value));
+    let mut mine: Vec<Rules> = Vec::new();
+    let mut from: Vec<Expansion> = Vec::new();
+    for m in modules.iter_mut() {
+        let here = crate::unit::module_filename(filename, m.source);
+        let text = m.source.content.to_string();
+        let mut ex = Expander {
+            text: &text,
+            filename: &here,
+            diags,
+            depth: 0,
+            macros: HashMap::new(),
+            expansions: 0,
+            from: Vec::new(),
+            package,
+            procs,
+            proc_macros: HashMap::new(),
+        };
+        ex.collect(&mut m.ast.value.decls, &m.path, gated, &mut mine);
+    }
+    for m in modules.iter_mut() {
+        let here = crate::unit::module_filename(filename, m.source);
+        let text = m.source.content.to_string();
+        let mut ex = Expander {
+            text: &text,
+            filename: &here,
+            diags,
+            depth: 0,
+            macros: HashMap::new(),
+            expansions: 0,
+            from: Vec::new(),
+            package,
+            procs,
+            proc_macros: HashMap::new(),
+        };
+        ex.import(&m.ast.value, &m.path, &mine, deps);
+        ex.decls(&mut m.ast.value.decls);
+        from.extend(ex.from);
+    }
+    (mine, from)
+}
+
+/// Whether anything in `module` carries a `@pub`.
+fn says_pub(module: &ast::Module) -> bool {
+    module.decls.iter().any(|d| match &*d.value {
+        ast::Decl::Attributed(attrs, _) => attrs.iter().any(|a| &**a.name.value() == "pub"),
+        _ => false,
+    })
 }
 
 struct Expander<'a> {
@@ -74,41 +216,67 @@ struct Expander<'a> {
     filename: &'a str,
     diags: &'a mut Vec<Diagnostic>,
     depth: usize,
-    macros: HashMap<InternedString, Macro>,
+    /// The package being compiled, for `$pkg` in a macro of its own.
+    package: InternedString,
+    /// What a call may name here, by the name it is called by: `vec` for one
+    /// this module can see plainly, `V.vec` for one reached through a `use …
+    /// as V`.
+    macros: HashMap<String, Macro>,
     /// How many expansions have happened, which is where a mark comes from:
     /// two expansions of the same macro must not share one.
     expansions: u32,
+    /// What each of them was, for the diagnostics that land in one.
+    from: Vec<Expansion>,
+    /// What can run a procedural macro, when anything can.
+    procs: Option<&'a dyn proc::Runner>,
+    /// The procedural macros in scope: the package that exports each, and the
+    /// name it is exported under.
+    proc_macros: HashMap<String, (InternedString, InternedString)>,
 }
 
 impl Expander<'_> {
     // --- reading the definitions --------------------------------------------
 
-    /// Take every `macro` declaration out of `decls` and read its rules.
-    fn collect(&mut self, decls: &mut Vec<ast::LDecl>) {
+    /// Take every `macro` declaration out of `decls`, check its rules, and add
+    /// it to the unit's.
+    fn collect(
+        &mut self,
+        decls: &mut Vec<ast::LDecl>,
+        path: &[InternedString],
+        gated: bool,
+        into: &mut Vec<Rules>,
+    ) {
         let mut kept = Vec::with_capacity(decls.len());
         for d in std::mem::take(decls) {
-            // A macro may carry attributes like anything else; `@cfg` has
-            // already had its say, and visibility waits for export.
-            let def = match &*d.value {
-                ast::Decl::Macro(m) => Some(m),
-                ast::Decl::Attributed(_, inner) => match &*inner.value {
-                    ast::Decl::Macro(m) => Some(m),
-                    _ => None,
+            // A macro carries attributes like anything else: `@cfg` has already
+            // had its say, and `@pub` is read here.
+            let (attrs, def) = match &*d.value {
+                ast::Decl::Macro(m) => (&[][..], Some(m)),
+                ast::Decl::Attributed(attrs, inner) => match &*inner.value {
+                    ast::Decl::Macro(m) => (&attrs[..], Some(m)),
+                    _ => (&attrs[..], None),
                 },
-                _ => None,
+                _ => (&[][..], None),
             };
             let Some(def) = def else {
                 kept.push(d);
                 continue;
             };
-            self.define(def, d.span);
+            self.define(def, d.span, path, vis_of(attrs, gated), into);
         }
         *decls = kept;
     }
 
-    /// Read one definition into the table, reporting a rule that could not work
-    /// where it is written rather than at every call.
-    fn define(&mut self, def: &ast::MacroDef, span: Span) {
+    /// Read one definition, reporting a rule that could not work where it is
+    /// written rather than at every call.
+    fn define(
+        &mut self,
+        def: &ast::MacroDef,
+        span: Span,
+        path: &[InternedString],
+        vis: Vis,
+        into: &mut Vec<Rules>,
+    ) {
         let name = *def.name.value();
         if BUILT_IN.contains(&&*name.to_string()) {
             self.error(
@@ -119,8 +287,10 @@ impl Expander<'_> {
             );
             return;
         }
-        if let Some(had) = self.macros.get(&name) {
-            let _ = had;
+        if into
+            .iter()
+            .any(|r| r.name == name && r.module == path && r.package == self.package)
+        {
             self.error(
                 format!("the macro `{name}!` is defined twice"),
                 "this module already has one with this name".to_string(),
@@ -129,17 +299,195 @@ impl Expander<'_> {
             );
             return;
         }
-        let mut rules = Vec::with_capacity(def.rules.len());
+        // Read once here so that a matcher that could never work is reported
+        // where it was written. What is stored is the tokens, which is what a
+        // dependent gets.
         for rule in &def.rules {
-            match Matcher::read(&rule.matcher.trees) {
-                Ok(m) => rules.push((m, rule.template.clone())),
-                Err(bad) => {
-                    self.invalid(bad, span);
-                    return;
+            if let Err(bad) = Matcher::read(&rule.matcher.trees) {
+                self.invalid(bad, span);
+                return;
+            }
+        }
+        into.push(Rules {
+            name,
+            module: path.to_vec(),
+            package: self.package,
+            vis,
+            rules: def
+                .rules
+                .iter()
+                .map(|r| (r.matcher.clone(), r.template.clone()))
+                .collect(),
+        });
+    }
+
+    /// Work out what this module may call, by the name it calls it by.
+    ///
+    /// Its own macros are there without asking; everything else arrives through
+    /// a `use`, exactly as a value does -- a bare `use M` brings what `M` can
+    /// show it, `use M (vec!)` brings that one, and `use M as V` puts them
+    /// behind `V.`.
+    fn import(
+        &mut self,
+        module: &ast::Module,
+        path: &[InternedString],
+        mine: &[Rules],
+        deps: &[crate::Dep<'_>],
+    ) {
+        for r in mine {
+            if r.package == self.package && r.module == path {
+                self.take(r, r.name.to_string());
+            }
+        }
+        for d in &module.decls {
+            let Some(u) = peel_use(d) else { continue };
+            let segs: Vec<InternedString> = u.path.iter().map(|s| *s.value()).collect();
+            let there = self.module_at(&segs, mine, deps);
+            let reachable: Vec<&Rules> = there
+                .into_iter()
+                .filter(|r| r.visible_to(self.package, path))
+                .collect();
+            let under = |r: &Rules| match &u.alias {
+                Some(a) => format!("{}.{}", a.value(), r.name),
+                None => r.name.to_string(),
+            };
+            // A function whose type is a macro's is one too: that is all a
+            // procedural macro is.
+            let written: Vec<(InternedString, InternedString, &meadow_infer::Scheme)> =
+                self.procs_at(&segs, deps);
+            if u.macros.is_empty() {
+                // A bare `use M` brings every name; one that selects values
+                // says nothing about macros.
+                if u.names.is_empty() && !u.glob {
+                    for r in reachable {
+                        self.take(r, under(r));
+                    }
+                    for (pkg, name, scheme) in &written {
+                        if proc::signature(scheme).is_ok() {
+                            let called = match &u.alias {
+                                Some(a) => format!("{}.{}", a.value(), name),
+                                None => name.to_string(),
+                            };
+                            self.proc_macros.insert(called, (*pkg, *name));
+                        }
+                    }
+                }
+                continue;
+            }
+            for want in &u.macros {
+                let name = *want.value();
+                if let Some(r) = reachable.iter().find(|r| r.name == name) {
+                    self.take(r, under(r));
+                    continue;
+                }
+                if let Some((pkg, _, scheme)) = written.iter().find(|(_, n, _)| *n == name) {
+                    match proc::signature(scheme) {
+                        Ok(()) => {
+                            let called = match &u.alias {
+                                Some(a) => format!("{}.{name}", a.value()),
+                                None => name.to_string(),
+                            };
+                            self.proc_macros.insert(called, (*pkg, name));
+                        }
+                        Err(why) => self.error(
+                            format!("`{name}` cannot be a macro: {why}"),
+                            "a macro is `[TokenTree] -> [TokenTree]`".to_string(),
+                            want.span,
+                            vec![],
+                        ),
+                    }
+                    continue;
+                }
+                self.error(
+                    format!(
+                        "`{}` does not export a macro `{}!`",
+                        dotted(&segs),
+                        want.value()
+                    ),
+                    "no such macro".to_string(),
+                    want.span,
+                    vec![],
+                );
+            }
+        }
+    }
+
+    /// The macros of the module a `use` path names, wherever it lives.
+    fn module_at<'r>(
+        &self,
+        segs: &[InternedString],
+        mine: &'r [Rules],
+        deps: &'r [crate::Dep<'_>],
+    ) -> Vec<&'r Rules> {
+        if segs.is_empty() {
+            return Vec::new();
+        }
+        // `use Pkg.a.b` inside `Pkg` is the local module `a.b`, and so is a
+        // bare `use a.b` -- the same rule module resolution itself follows.
+        let local = if segs[0] == self.package {
+            &segs[1..]
+        } else {
+            segs
+        };
+        let mut out: Vec<&Rules> = mine.iter().filter(|r| r.module == local).collect();
+        for d in deps {
+            let name = d.spelled.to_string();
+            if dotted(local) == name || dotted(segs) == name {
+                // A module of this package compiled as a unit of its own, named
+                // by its path rather than by the package -- how `Std` is built.
+                out.extend(d.macros.iter());
+            } else if segs[0] == d.spelled {
+                out.extend(d.macros.iter().filter(|r| r.module == segs[1..]));
+            }
+        }
+        out
+    }
+
+    /// The functions exported by the module a `use` path names, with the
+    /// package each belongs to: the candidates for a procedural macro.
+    fn procs_at<'d>(
+        &self,
+        segs: &[InternedString],
+        deps: &'d [crate::Dep<'_>],
+    ) -> Vec<(InternedString, InternedString, &'d meadow_infer::Scheme)> {
+        let local = if segs[0] == self.package {
+            &segs[1..]
+        } else {
+            segs
+        };
+        let mut out = Vec::new();
+        for d in deps {
+            let name = d.spelled.to_string();
+            // A sub-unit of this package is named by its module path; anything
+            // else by the package, with the module after it.
+            let whole = dotted(local) == name || dotted(segs) == name;
+            for e in &d.exports {
+                if whole || (segs[0] == d.spelled && e.module == segs[1..]) {
+                    out.push((d.name, e.name, &e.scheme));
                 }
             }
         }
-        self.macros.insert(name, Macro { name, rules });
+        out
+    }
+
+    /// Put a macro in the table under the name a call would write.
+    fn take(&mut self, r: &Rules, called: String) {
+        let mut rules = Vec::with_capacity(r.rules.len());
+        for (matcher, template) in &r.rules {
+            // A macro that is here at all was checked where it was written.
+            let Ok(m) = Matcher::read(&matcher.trees) else {
+                return;
+            };
+            rules.push((m, template.clone()));
+        }
+        self.macros.insert(
+            called,
+            Macro {
+                name: r.name,
+                package: r.package,
+                rules,
+            },
+        );
     }
 
     /// Report something wrong with how a macro is written.
@@ -182,16 +530,57 @@ impl Expander<'_> {
                 let text = self.concat(call)?;
                 one(Token::String(InternedString::from(text)))
             }
-            _ => self.run_rules(call),
+            _ => match self.proc_macros.get(&call.name()).copied() {
+                Some((pkg, name)) => self.run_proc(call, pkg, name),
+                None => self.run_rules(call),
+            },
         }
     }
 
-    /// Run a `macro` this module declared: the first rule whose matcher fits
-    /// the call's argument, with its template written out.
+    /// Run a procedural macro: a function, compiled, called with the tokens of
+    /// this call and answering with the tokens that replace it.
+    fn run_proc(
+        &mut self,
+        call: &ast::MacCall,
+        pkg: InternedString,
+        name: InternedString,
+    ) -> Option<Vec<LToken>> {
+        let at = call.arg.span();
+        let Some(runner) = self.procs else {
+            self.error(
+                format!(
+                    "`{}!` is a procedural macro, which cannot run here",
+                    call.name()
+                ),
+                "running one means building the package that defines it".to_string(),
+                call.path_span(),
+                vec![],
+            );
+            return None;
+        };
+        self.from.push(Expansion {
+            at,
+            filename: self.filename.to_string(),
+            name: call.name(),
+        });
+        match runner.run(pkg, name, &call.arg.trees, at) {
+            Ok(trees) => Some(tt::flatten(&trees)),
+            Err(why) => {
+                self.error(
+                    format!("`{}!` did not answer: {why}", call.name()),
+                    "this call is what it was given".to_string(),
+                    at,
+                    vec![],
+                );
+                None
+            }
+        }
+    }
+
+    /// Run a `macro`: the first rule whose matcher fits the call's argument,
+    /// with its template written out.
     fn run_rules(&mut self, call: &ast::MacCall) -> Option<Vec<LToken>> {
-        // A qualified name waits for macros that can be exported, which is what
-        // there would be to qualify.
-        let name = InternedString::from(call.name().as_str());
+        let name = call.name();
         let Some(mac) = self.macros.get(&name) else {
             let known = self.known();
             self.error(
@@ -207,10 +596,16 @@ impl Expander<'_> {
         self.expansions += 1;
         let id = self.expansions;
         let at = call.arg.span();
+        self.from.push(Expansion {
+            at,
+            filename: self.filename.to_string(),
+            name: name.clone(),
+        });
 
         // Cloned out of the table: writing the template is `&mut self` work,
         // since a failure in it is reported.
         let rules: Vec<_> = mac.rules.iter().map(|(_, t)| t.clone()).collect();
+        let package = mac.package;
         let matched = mac
             .rules
             .iter()
@@ -226,7 +621,9 @@ impl Expander<'_> {
             );
             return None;
         };
-        match rules::substitute(&rules[i].trees, &bound, at, &|t| hygiene::mark(t, id)) {
+        match rules::substitute(&rules[i].trees, &bound, at, package, &|t| {
+            hygiene::mark(t, id)
+        }) {
             Ok(tokens) => Some(tokens),
             Err(bad) => {
                 self.invalid(bad, at);
@@ -239,8 +636,9 @@ impl Expander<'_> {
     fn known(&self) -> String {
         let mut names: Vec<String> = self
             .macros
-            .values()
-            .map(|m| format!("`{}!`", m.name))
+            .keys()
+            .chain(self.proc_macros.keys())
+            .map(|called| format!("`{called}!`"))
             .collect();
         names.sort();
         for b in BUILT_IN {
@@ -370,6 +768,14 @@ impl Expander<'_> {
                     self.decls(&mut made);
                     out.extend(made);
                 }
+                // `@derive(Show)`: the declaration stays as it is, and what
+                // the macro wrote about it follows.
+                ast::Decl::Attributed(attrs, _) if attrs.iter().any(is_derive) => {
+                    let made = self.derived(&d);
+                    self.decl(&mut d);
+                    out.push(strip_derives(d));
+                    out.extend(made);
+                }
                 _ => {
                     self.decl(&mut d);
                     out.push(d);
@@ -377,6 +783,119 @@ impl Expander<'_> {
             }
         }
         *decls = out;
+    }
+
+    /// Run every `@derive` on `d`, with the declaration itself as the argument.
+    ///
+    /// The tokens are taken from the source rather than written back out of
+    /// the tree, so a macro sees exactly what was written -- attributes and
+    /// all, on the declaration and on its variants, which is where a derive of
+    /// any substance keeps what it needs.
+    fn derived(&mut self, d: &ast::LDecl) -> Vec<ast::LDecl> {
+        let ast::Decl::Attributed(attrs, inner) = &*d.value else {
+            return Vec::new();
+        };
+        let Some(argument) = self.source_trees(d.span) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for want in attrs.iter().filter(|a| is_derive(a)).flat_map(|a| &a.args) {
+            let Some((pkg, name)) = self.deriving(want) else {
+                continue;
+            };
+            let Some(runner) = self.procs else {
+                self.error(
+                    format!(
+                        "`{}` is a procedural macro, which cannot run here",
+                        want.value()
+                    ),
+                    "running one means building the package that defines it".to_string(),
+                    want.span,
+                    vec![],
+                );
+                continue;
+            };
+            self.from.push(Expansion {
+                at: inner.span,
+                filename: self.filename.to_string(),
+                name: want.value().to_string(),
+            });
+            match runner.run(pkg, name, &argument, inner.span) {
+                Ok(trees) => {
+                    let tokens = tt::flatten(&trees);
+                    let (parsed, errs) = meadow_parser::parse_decls(&tokens, inner.span);
+                    match parsed {
+                        Some(mut made) if errs.is_empty() => {
+                            self.decls(&mut made);
+                            out.extend(made);
+                        }
+                        _ => self.error(
+                            format!("`{}` did not write declarations", want.value()),
+                            "a derive writes what goes beside the declaration".to_string(),
+                            want.span,
+                            vec![],
+                        ),
+                    }
+                }
+                Err(why) => self.error(
+                    format!("`{}` did not answer: {why}", want.value()),
+                    "this declaration is what it was given".to_string(),
+                    want.span,
+                    vec![],
+                ),
+            }
+        }
+        out
+    }
+
+    /// The macro a `@derive(Name)` names.
+    ///
+    /// A macro is a function and functions are lower-case, so `@derive(Lexer)`
+    /// finds `lexer`; the name as written is tried first, for a derive that
+    /// was written the way it is defined.
+    fn deriving(&mut self, want: &ast::Ident) -> Option<(InternedString, InternedString)> {
+        let written = want.value().to_string();
+        let mut lower = written.clone();
+        lower.replace_range(..1, &written[..1].to_lowercase());
+        for name in [&written, &lower] {
+            if let Some(found) = self.proc_macros.get(name.as_str()) {
+                return Some(*found);
+            }
+        }
+        self.error(
+            format!("there is no macro to derive `{written}` with"),
+            format!("nothing in scope is `{lower}!`"),
+            want.span,
+            vec![],
+        );
+        None
+    }
+
+    /// The token trees of the source between `span`, as they were written.
+    fn source_trees(&mut self, span: Span) -> Option<Vec<tt::TokenTree>> {
+        let text = self
+            .text
+            .get(span.start as usize..span.end as usize)?
+            .to_string();
+        let src = meadow_source::Source::new(
+            meadow_source::SourceKind::Interactive,
+            InternedString::from(text),
+        );
+        let lexed = meadow_lexer::tokenize(src);
+        // Every token stands where it was written, so an error in one is
+        // reported there.
+        let moved: Vec<LToken> = lexed
+            .tokens
+            .iter()
+            .map(|t| {
+                LToken::new(
+                    t.value().clone(),
+                    Span::new(span.start + t.span.start, span.start + t.span.end),
+                )
+            })
+            .collect();
+        let (trees, _) = tt::trees(&moved, self.filename);
+        Some(trees)
     }
 
     fn decl(&mut self, d: &mut ast::LDecl) {
@@ -579,6 +1098,62 @@ impl Expander<'_> {
 }
 
 /// The 1-based line `at` is on in `text`.
+/// The `use` inside a declaration, looking through any `@attr` wrapper.
+fn peel_use(decl: &ast::LDecl) -> Option<&ast::UseDecl> {
+    match &*decl.value {
+        ast::Decl::Use(u) => Some(u),
+        ast::Decl::Attributed(_, inner) => peel_use(inner),
+        _ => None,
+    }
+}
+
+/// How far a `@pub` says a macro can be seen. `gated` is false when the unit
+/// never says `@pub` at all, and then everything is exported -- the rule the
+/// rest of a package's surface follows.
+fn vis_of(attrs: &[ast::Attr], gated: bool) -> Vis {
+    if !gated {
+        return Vis::Exported;
+    }
+    let Some(a) = attrs.iter().find(|a| &**a.name.value() == "pub") else {
+        return Vis::Private;
+    };
+    match a.args.first().map(|arg| arg.value().to_string()) {
+        None => Vis::Exported,
+        Some(w) if w == "super" => Vis::Super,
+        // `pkg`, and anything unknown: narrower than guessing it was public.
+        Some(_) => Vis::Package,
+    }
+}
+
+/// Whether an attribute is a `@derive`.
+fn is_derive(a: &ast::Attr) -> bool {
+    &**a.name.value() == "derive"
+}
+
+/// `d` without its `@derive`s: they have had their say, and nothing after this
+/// knows what one is.
+fn strip_derives(d: ast::LDecl) -> ast::LDecl {
+    let span = d.span;
+    match *d.value {
+        ast::Decl::Attributed(attrs, inner) => {
+            let kept: Vec<ast::Attr> = attrs.into_iter().filter(|a| !is_derive(a)).collect();
+            if kept.is_empty() {
+                *inner
+            } else {
+                ast::LDecl::new(ast::Decl::Attributed(kept, inner), span)
+            }
+        }
+        other => ast::LDecl::new(other, span),
+    }
+}
+
+fn dotted(segs: &[InternedString]) -> String {
+    segs.iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 fn line_of(text: &str, at: u32) -> usize {
     let at = (at as usize).min(text.len());
     text[..at].bytes().filter(|&b| b == b'\n').count() + 1

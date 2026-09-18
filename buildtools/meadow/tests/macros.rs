@@ -8,6 +8,7 @@
 
 mod common;
 use meadow::{Engine, OptLevel, Options, pipeline, runtime};
+use std::path::{Path, PathBuf};
 
 /// What `src` evaluates to, required to be the same on every engine -- a macro
 /// is gone by the time anything runs, so all of them must agree.
@@ -826,5 +827,426 @@ macro discard
 def main = discard!(1, 2 + 3)
 "#,
         "5",
+    );
+}
+
+// --- macros that cross a module or a package ----------------------------------
+
+/// A package written out in a directory of its own. What a macro can be seen
+/// from only means something across a boundary, so these tests need real ones.
+fn package(what: &str, manifest: &str, files: &[(&str, &str)]) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("meadow-macro-{}-{what}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).expect("a scratch package");
+    std::fs::write(dir.join("meadow.toml"), manifest).expect("a manifest");
+    for (name, text) in files {
+        std::fs::write(dir.join("src").join(name), text).expect("a module");
+    }
+    dir
+}
+
+/// What the package at `dir` evaluates to, or the diagnostics that stopped it.
+fn build(dir: &Path) -> Result<String, Vec<String>> {
+    let out = pipeline::build(dir, Options::debug());
+    if !out.diagnostics.is_empty() {
+        return Err(out.diagnostics.iter().map(|d| d.msg.clone()).collect());
+    }
+    let linked = out.linked.expect("a linked program");
+    Ok(meadow_eval::run(&linked.program)
+        .expect("the program runs")
+        .to_string())
+}
+
+#[test]
+fn a_macro_is_reached_from_another_module_of_its_package() {
+    let dir = package(
+        "sibling",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        &[
+            (
+                "Helpers.mw",
+                "@pub macro twice\n  | ($e : expr) -> { ($e, $e) }\n",
+            ),
+            (
+                "Lib.mw",
+                "mod Helpers\n\nuse demo.Helpers (twice!)\n\ndef main = twice!(1 + 1)\n",
+            ),
+        ],
+    );
+    assert_eq!(build(&dir).expect("it builds"), "(2, 2)");
+}
+
+#[test]
+fn a_macro_reached_through_an_alias_is_written_with_it() {
+    let dir = package(
+        "alias",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        &[
+            (
+                "Helpers.mw",
+                "@pub macro twice\n  | ($e : expr) -> { ($e, $e) }\n",
+            ),
+            (
+                "Lib.mw",
+                "mod Helpers\n\nuse demo.Helpers as H\n\ndef main = H.twice!(3)\n",
+            ),
+        ],
+    );
+    assert_eq!(build(&dir).expect("it builds"), "(3, 3)");
+}
+
+#[test]
+fn a_macro_that_is_not_public_stays_in_its_module() {
+    let dir = package(
+        "private",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        &[
+            (
+                "Helpers.mw",
+                "@pub macro shown\n  | () -> { 1 }\n\nmacro hidden\n  | () -> { 2 }\n",
+            ),
+            (
+                "Lib.mw",
+                "mod Helpers\n\nuse demo.Helpers (hidden!)\n\ndef main = hidden!()\n",
+            ),
+        ],
+    );
+    let errs = build(&dir).expect_err("it does not build");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("does not export a macro `hidden!`")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn a_macro_crosses_into_a_package_that_depends_on_it() {
+    let lib = package(
+        "dep",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        &[
+            (
+                "Helpers.mw",
+                "@pub macro twice\n  | ($e : expr) -> { ($e, $e) }\n",
+            ),
+            ("Lib.mw", "mod Helpers\n"),
+        ],
+    );
+    let app = package(
+        "dependent",
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndemo = {{ path = \"{}\" }}\n",
+            lib.display()
+        ),
+        &[(
+            "Lib.mw",
+            "use demo.Helpers (twice!)\n\ndef main = twice!(2)\n",
+        )],
+    );
+    assert_eq!(build(&app).expect("it builds"), "(2, 2)");
+}
+
+#[test]
+fn pkg_is_the_package_the_macro_was_written_in() {
+    // Not the one it was expanded in: that is the whole point of `$pkg`.
+    let lib = package(
+        "pkg-lib",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        &[
+            (
+                "Helpers.mw",
+                "@pub macro whereFrom\n  | () -> { stringify!($pkg) }\n",
+            ),
+            ("Lib.mw", "mod Helpers\n"),
+        ],
+    );
+    let app = package(
+        "pkg-app",
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndemo = {{ path = \"{}\" }}\n",
+            lib.display()
+        ),
+        &[(
+            "Lib.mw",
+            "use demo.Helpers (whereFrom!)\n\ndef main = whereFrom!()\n",
+        )],
+    );
+    assert_eq!(build(&app).expect("it builds"), r#""demo""#);
+}
+
+#[test]
+fn a_metavariable_may_not_be_called_pkg() {
+    let e = errors(
+        r#"
+macro wrong
+  | ($pkg : expr) -> { $pkg }
+
+def main = wrong!(1)
+"#,
+    );
+    assert!(e.contains("is the package a macro was written in"), "{e}");
+}
+
+#[test]
+fn a_use_that_selects_a_macro_selects_nothing_else() {
+    // `use M (twice!)` names one macro. It is not a bare `use M`, which would
+    // bring in every value the module has.
+    let dir = package(
+        "selective",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        &[
+            (
+                "Helpers.mw",
+                "@pub macro twice\n  | ($e : expr) -> { ($e, $e) }\n\n@pub fun helper x = x\n",
+            ),
+            (
+                "Lib.mw",
+                "mod Helpers\n\nuse demo.Helpers (twice!)\n\ndef main = helper (twice!(1))\n",
+            ),
+        ],
+    );
+    let errs = build(&dir).expect_err("`helper` was not imported");
+    assert!(errs.iter().any(|e| e.contains("helper")), "{errs:?}");
+}
+
+#[test]
+fn a_template_reaches_its_own_packages_helpers_through_pkg() {
+    // The dependent has never heard of `demo.Text`, and does not have to: the
+    // `use` the template writes says where `shout` comes from.
+    let lib = package(
+        "helper-lib",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        &[
+            ("Text.mw", "@pub fun shout s = s ++ \"!\"\n"),
+            (
+                "Helpers.mw",
+                "@pub macro withShout\n  | ($( $d : item );*) -> {\n      use $pkg.Text (shout)\n      $( $d );*\n    }\n",
+            ),
+            ("Lib.mw", "mod Helpers\nmod Text\n"),
+        ],
+    );
+    let app = package(
+        "helper-app",
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndemo = {{ path = \"{}\" }}\n",
+            lib.display()
+        ),
+        &[(
+            "Lib.mw",
+            "use demo.Helpers (withShout!)\n\nwithShout! {\n  def greeting = shout \"hello\"\n}\n\ndef main = greeting\n",
+        )],
+    );
+    assert_eq!(build(&app).expect("it builds"), r#""hello!""#);
+}
+
+// --- what an error in expanded code says --------------------------------------
+
+#[test]
+fn an_error_in_what_a_macro_wrote_names_the_macro() {
+    // The mistake is in the template, and the template is not in the file, so
+    // the error is at the call -- which is where the reader has to look, and
+    // says nothing on its own about why the code there is wrong.
+    let e = errors_in_full(
+        r#"
+macro addOne
+  | ($e : expr) -> { $e + notANumber }
+
+def main = addOne!(1)
+"#,
+    );
+    assert!(e.contains("`addOne!` wrote this"), "{e}");
+}
+
+#[test]
+fn an_error_in_an_argument_is_the_callers_own() {
+    // An argument keeps the span it was written with, so this is reported where
+    // it was written and is nobody else's doing.
+    let e = errors_in_full(
+        r#"
+macro twice
+  | ($e : expr) -> { ($e, $e) }
+
+def main = twice!(notANumber)
+"#,
+    );
+    assert!(e.contains("notANumber"), "{e}");
+    assert!(!e.contains("`twice!` wrote this"), "{e}");
+}
+
+#[test]
+fn a_nested_expansion_names_both_macros() {
+    let e = errors_in_full(
+        r#"
+macro inner
+  | ($e : expr) -> { $e + notANumber }
+
+macro outer
+  | ($e : expr) -> { inner!($e) }
+
+def main = outer!(1)
+"#,
+    );
+    assert!(e.contains("`inner!` wrote this"), "{e}");
+    assert!(e.contains("`outer!` wrote this"), "{e}");
+}
+
+// --- procedural macros ---------------------------------------------------------
+
+/// A package holding a procedural macro, and one that calls it.
+fn with_macro(what: &str, macro_src: &str, caller: &str) -> PathBuf {
+    let lib = package(
+        &format!("{what}-lib"),
+        "[package]\nname = \"maker\"\nversion = \"0.1.0\"\n",
+        &[("Lib.mw", macro_src)],
+    );
+    package(
+        &format!("{what}-app"),
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmaker = {{ path = \"{}\" }}\n",
+            lib.display()
+        ),
+        &[("Lib.mw", caller)],
+    )
+}
+
+const SHOUT: &str = r#"
+use Std.Macro (spaced)
+use Std.Macro.TokenTree.*
+
+@pub fun shout ts = [Code "\"${spaced ts}!\""]
+"#;
+
+#[test]
+fn a_procedural_macro_is_a_function_run_while_its_caller_is_compiled() {
+    let app = with_macro(
+        "proc",
+        SHOUT,
+        "use maker (shout!)\n\ndef main = shout!(hello there)\n",
+    );
+    assert_eq!(build(&app).expect("it builds"), r#""hello there!""#);
+}
+
+#[test]
+fn a_procedural_macro_may_not_perform_an_effect() {
+    // A macro runs during a build, so anything it could learn about the world
+    // would make the build depend on when it ran.
+    let app = with_macro(
+        "effectful",
+        r#"
+use Std.Macro.TokenTree.*
+use Std.Fs (readToString)
+
+@pub fun peek ts =
+  match readToString "/etc/hosts" with
+  | Ok s -> [Code "1"]
+  | Err e -> [Code "2"]
+"#,
+        "use maker (peek!)\n\ndef main = peek!()\n",
+    );
+    let errs = build(&app).expect_err("it does not build");
+    assert!(
+        errs.iter().any(|e| e.contains("it performs `Fs`")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn a_function_that_is_not_a_macro_is_not_one() {
+    let app = with_macro(
+        "wrong-shape",
+        "@pub fun double x = x + x\n",
+        "use maker (double!)\n\ndef main = double!(2)\n",
+    );
+    let errs = build(&app).expect_err("it does not build");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("it is not `[TokenTree] -> [TokenTree]`")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn a_macro_that_does_not_stop_runs_out_of_the_budget_it_is_given() {
+    // A macro runs while its caller is compiled, so one that never finishes
+    // has to fail the build rather than hang it. The budget is what does that;
+    // this is it, at the size a test can wait for.
+    let (program, diags) = pipeline::compile_str_with_std(
+        "test",
+        "fun spin n = spin (n + 1)\n\ndef main = spin 0\n",
+        Options::debug(),
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+    let entry = program.entry.expect("an entry point");
+    let failed = meadow_eval::eval_with_fuel(
+        &program,
+        std::sync::Arc::new(meadow_compiler::core::Term::Var(entry)),
+        100_000,
+    )
+    .expect_err("it never finishes");
+    assert!(
+        failed.msg.contains("did not finish within"),
+        "{}",
+        failed.msg
+    );
+}
+
+#[test]
+fn a_derive_writes_what_goes_beside_the_declaration() {
+    let app = with_macro(
+        "derive",
+        r#"
+use Std.Macro (text)
+use Std.Macro.TokenTree.*
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe.Maybe.*
+
+@pub fun naming ts =
+  let ctors = V.drop (V.filter isUpperWord ts) 1 in
+  [Code "fun nameOf x = match x with ${V.foldl (\acc c -> acc ++ arm c) "" ctors}"]
+
+fun isUpperWord t =
+  match t with
+  | Word w -> (match S.byteAt w 0 with | Just b -> b >= 65 and b <= 90 | None -> False)
+  | _ -> False
+
+fun arm c = "| ${text c} -> \"${text c}\" "
+"#,
+        "use maker (naming!)\n\n@derive(Naming)\ndata Colour = Red | Green | Blue\n\nuse Colour.*\n\ndef main = nameOf Green\n",
+    );
+    assert_eq!(build(&app).expect("it builds"), r#""Green""#);
+}
+
+#[test]
+fn a_derive_is_given_the_declaration_as_it_was_written() {
+    // Attributes on the variants and all: that is where a derive of any
+    // substance keeps what it needs.
+    let app = with_macro(
+        "derive-attrs",
+        r#"
+use Std.Macro (spaced)
+use Std.Macro.TokenTree.*
+
+@pub fun echo ts = [Code "def given =", Str (spaced ts)]
+"#,
+        "use maker (echo!)\n\n@derive(Echo)\ndata Token = @token(\"+\") Plus | @regex(\"[0-9]+\") Number\n\ndef main = given\n",
+    );
+    let given = build(&app).expect("it builds");
+    assert!(given.contains("@ token (\\\"+\\\") Plus"), "{given}");
+    assert!(given.contains("@ regex (\\\"[0-9]+\\\") Number"), "{given}");
+}
+
+#[test]
+fn a_derive_that_names_nothing_is_reported() {
+    let app = with_macro(
+        "derive-missing",
+        SHOUT,
+        "use maker (shout!)\n\n@derive(Nothing)\ndata Colour = Red\n\ndef main = 1\n",
+    );
+    let errs = build(&app).expect_err("it does not build");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("there is no macro to derive `Nothing` with")),
+        "{errs:?}"
     );
 }

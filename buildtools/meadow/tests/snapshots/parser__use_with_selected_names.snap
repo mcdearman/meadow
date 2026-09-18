@@ -48,6 +48,7 @@ Module {
                                     span: 44..49,
                                 },
                             ],
+                            macros: [],
                             glob: false,
                             alias: None,
                         },

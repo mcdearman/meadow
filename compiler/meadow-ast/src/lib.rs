@@ -113,6 +113,9 @@ pub struct Attr {
 pub enum Meta {
     /// `unix`
     Word(Ident),
+    /// `"+"` -- a string on its own, as `@token("+")` writes one. What it
+    /// means is whatever reads the attribute; nothing in the language does.
+    Text(Ident),
     /// `os = "linux"`
     Value(Ident, Ident),
     /// `not(test)`, `all(a, b)`
@@ -121,9 +124,10 @@ pub enum Meta {
 
 impl Meta {
     /// The name it starts with: `os` of `os = "linux"`, `all` of `all(…)`.
+    /// A bare string has no name of its own and answers with its text.
     pub fn name(&self) -> &Ident {
         match self {
-            Meta::Word(n) | Meta::Value(n, _) | Meta::List(n, _) => n,
+            Meta::Word(n) | Meta::Value(n, _) | Meta::List(n, _) | Meta::Text(n) => n,
         }
     }
 }
@@ -184,6 +188,11 @@ pub struct UseDecl {
     pub path: Vec<Ident>,
     /// Selected names — `use a.b (x, y)`. Empty for a bare `use a.b`.
     pub names: Vec<Ident>,
+    /// Selected macros — `use a.b (vec!)`. Macros have a namespace of their
+    /// own, so `vec` and `vec!` are two names and the `!` is what says which
+    /// one is meant. Read by expansion, which is over before the rest of a
+    /// `use` means anything.
+    pub macros: Vec<Ident>,
     /// A trailing `.*` — `use Syntax.Tv.*`, every constructor of a type
     /// unqualified. Never set together with `names`.
     pub glob: bool,
@@ -257,6 +266,10 @@ pub struct DataDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variant {
+    /// What was written above or before it: `@token("+")` on a variant of a
+    /// lexer's token type. Nothing in the language reads these -- they are for
+    /// whatever `@derive`s over the declaration.
+    pub attrs: Vec<Attr>,
     pub name: Ident,
     pub fields: VariantFields,
 }

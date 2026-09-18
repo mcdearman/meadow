@@ -143,13 +143,19 @@ where
             .collect::<Vec<_>>()
             .delimited_by(just(Token::LParen), just(Token::RParen))
             .map(Either::Right);
-        path_seg()
-            .then(choice((value, list)).or_not())
-            .map(|(name, rest)| match rest {
-                None => Meta::Word(name),
-                Some(Either::Left(v)) => Meta::Value(name, v),
-                Some(Either::Right(args)) => Meta::List(name, args),
-            })
+        // A string on its own: `@token("+")`, which is how an attribute that
+        // takes one thing reads.
+        let text =
+            select! { Token::String(s) => s }.map_with(|s, e| Meta::Text(Ident::new(s, e.span())));
+        let named =
+            path_seg()
+                .then(choice((value, list)).or_not())
+                .map(|(name, rest)| match rest {
+                    None => Meta::Word(name),
+                    Some(Either::Left(v)) => Meta::Value(name, v),
+                    Some(Either::Right(args)) => Meta::List(name, args),
+                });
+        choice((text, named))
     })
 }
 
@@ -242,22 +248,29 @@ where
         // qualified reference (`C.map`) can name.
         .then(just(Token::As).ignore_then(upper_ident()).or_not())
         // An operator may be named bare in the list, `(concat, ++)`, or in
-        // its own parentheses, `((++))`, as it is written everywhere else.
+        // its own parentheses, `((++))`, as it is written everywhere else. A
+        // trailing `!` names a macro, which lives in a namespace of its own.
         .then(
             path_seg()
                 .or(user_op())
                 .or(value_ident())
+                .then(just(Token::Bang).or_not())
                 .separated_by(just(Token::Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LParen), just(Token::RParen))
                 .or_not(),
         )
-        .map_with(|(((path, glob), alias), names), e| {
+        .map_with(|(((path, glob), alias), selected), e| {
+            let (macros, names): (Vec<_>, Vec<_>) = selected
+                .unwrap_or_default()
+                .into_iter()
+                .partition(|(_, bang)| bang.is_some());
             LDecl::new(
                 Decl::Use(UseDecl {
                     path,
-                    names: names.unwrap_or_default(),
+                    names: names.into_iter().map(|(n, _)| n).collect(),
+                    macros: macros.into_iter().map(|(n, _)| n).collect(),
                     glob,
                     alias,
                 }),
@@ -265,7 +278,10 @@ where
             )
         });
 
-    let variant = upper_ident()
+    let variant = attr()
+        .repeated()
+        .collect::<Vec<_>>()
+        .then(upper_ident())
         .then(choice((
             field_list().map(VariantFields::Named),
             ty_atom()
@@ -273,7 +289,11 @@ where
                 .collect::<Vec<_>>()
                 .map(VariantFields::Positional),
         )))
-        .map(|(name, fields)| Variant { name, fields });
+        .map(|((attrs, name), fields)| Variant {
+            attrs,
+            name,
+            fields,
+        });
 
     let data_decl = just(Token::Data)
         .ignore_then(upper_ident())
@@ -1063,7 +1083,21 @@ where
             })
             .boxed();
 
-        let ops = choice((qual, cons, app)).clone().pratt((
+        // A macro call with whatever it is applied to, before `qual`: a
+        // qualified call reads as a qualified name until the `!`, and `qual`
+        // would take the name and leave the `!` behind.
+        let mac_app = located(mac_call().map(Expr::MacCall))
+            .then(atom.clone().repeated().collect::<Vec<_>>())
+            .map_with(|(base, args), e| {
+                if args.is_empty() {
+                    base
+                } else {
+                    Located::new(Expr::App(base, args), e.span())
+                }
+            })
+            .boxed();
+
+        let ops = choice((mac_app, qual, cons, app)).clone().pratt((
             prefix(6, just(Token::Minus), |_op: Token, exp: Located<Expr>, e| {
                 let span = e.span();
                 let inner_span = exp.span;

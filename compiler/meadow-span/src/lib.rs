@@ -118,7 +118,7 @@ impl<T> WrappingSpan<T> for Span {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Located<T> {
     pub value: Box<T>,
     pub span: Span,

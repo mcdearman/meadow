@@ -23,6 +23,7 @@ Module {
                         },
                     ],
                     names: [],
+                    macros: [],
                     glob: false,
                     alias: None,
                 },

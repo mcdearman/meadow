@@ -20,6 +20,7 @@ Module {
                     ],
                     variants: [
                         Variant {
+                            attrs: [],
                             name: Located {
                                 value: InternedString(Tip),
                                 span: 16..19,
@@ -29,6 +30,7 @@ Module {
                             ),
                         },
                         Variant {
+                            attrs: [],
                             name: Located {
                                 value: InternedString(Branch),
                                 span: 24..30,

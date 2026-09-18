@@ -19,7 +19,7 @@ use std::fmt::Display;
 
 /// Which pair of brackets a [`Group`] is written with. The three mean the same
 /// thing to a macro; which one to use is a question of how the call reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Delim {
     /// `( … )`
     Paren,
@@ -80,7 +80,7 @@ impl Display for Delim {
 }
 
 /// A bracketed run of token trees, and where its brackets are.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Group {
     pub delim: Delim,
     pub trees: Vec<TokenTree>,
@@ -100,7 +100,7 @@ impl Group {
 }
 
 /// A token, or a bracketed run of token trees.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TokenTree {
     Token(LToken),
     Group(Group),

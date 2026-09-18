@@ -352,6 +352,7 @@ dependencies = [
  "meadow-span",
  "num-bigint",
  "num-traits",
+ "serde",
 ]
 
 [[package]]

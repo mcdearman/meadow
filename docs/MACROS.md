@@ -110,9 +110,24 @@ Two more forms:
 | `$$` | a literal `$` in the output |
 | `$pkg` | the package the macro was defined in |
 
-`$pkg` is Rust's `$crate`. An exported macro whose template calls a helper
-writes `$pkg.Text.escape`, and that resolves wherever the macro is expanded
-rather than wherever it happens to land.
+`$pkg` is Rust's `$crate`: it writes the name of the package the macro was
+defined in, so a path a template writes reaches what the macro can see rather
+than whatever happens to be in scope where it lands.
+
+Where Rust writes `$crate::text::escape` in an expression, Meadow cannot — a
+qualified expression has one segment before the dot — so what `$pkg` is for is
+the `use` a template writes, which reaches a helper in the macro's own package
+from a package that has never heard of it:
+
+```meadow
+@pub macro withShout
+  | ($( $d : item );*) -> {
+      use $pkg.Text (shout)
+      $( $d );*
+    }
+```
+
+A metavariable may not be called `pkg`, since the name is taken.
 
 ## 4. Fragments and repetition
 
@@ -238,10 +253,21 @@ is for once [export](#8-exporting-and-incremental-builds) arrives.
 
 A token that came from the call site keeps its own span, so an error in an
 argument is reported where the argument was written. A token the template
-produced is given the call's span plus an **expansion id**, and a side table
-says which macro, which call and which definition it came from. An error in
-expanded code is reported at the call, with a note naming the macro it came
-from.
+produced is given the call's span, and a side table says which macro wrote it.
+An error in expanded code is therefore reported at the call — the only place in
+the file there is to point at — with a label naming the macro:
+
+```
+error: type mismatch: `String` vs `Int`
+  ╭─[ main.mw:4:12 ]
+4 │ def main = addOne!(1)
+  │            ─────┬────
+  │                 ╰──── `addOne!` wrote this
+```
+
+An expansion inside an expansion names both, innermost first. And because an
+argument keeps its own, narrower span, an error in one is still reported as the
+caller's own and says nothing about the macro: it is the caller's mistake.
 
 This is also what the editor needs: hover and go-to-definition keep working on
 the arguments of a call, because those tokens never lost their spans.
@@ -250,6 +276,23 @@ the arguments of a call, because those tokens never lost their spans.
 
 A macro's rules are stored in its `CompiledPackage` as token trees, so a
 dependent expands it without re-parsing the dependency's source.
+
+A macro is a declaration, so it is seen as far as its `@pub` says: `@pub`
+anywhere, `@pub(pkg)` within its package, `@pub(super)` in the module above it
+and below, and nothing at all without one — with the same fallback the rest of
+the surface has, that a unit which never says `@pub` exports all of it.
+
+A `use` names one the way it names anything else, with the `!` saying which
+namespace is meant:
+
+```meadow
+use Std.Collections.Vector (vec!)   -- that macro, and nothing else
+use demo.Helpers                    -- every name it has, macros included
+use demo.Helpers as H               -- H.twice!(…)
+```
+
+A `use` that names only macros brings in only those: it is not a bare `use`,
+which would bring in every value as well.
 
 Incremental builds need nothing new for declarative macros. A package's
 fingerprint already covers its module sources and its dependencies'
@@ -278,12 +321,51 @@ A proc macro lives in a package of its own, as it does in Rust, which with
 workspaces is just another member. It is given a fuel budget, so a macro that
 loops forever fails the build instead of hanging it.
 
-`Std.Macro` provides the `TokenTree` type, spans, and `quote`, which is built
-into the compiler rather than written in the library: it is what attaches
-hygiene contexts to the tokens it produces.
+`Std.Macro` provides the `TokenTree` type: a `Word`, a `Punct` by the text it is
+written with, a literal, a bracketed `Group` — and `Code`, which holds Meadow as
+text for the compiler to lex where the call was. That last one is what a macro
+that *writes* code uses, and it is why there is no `quote` yet: a macro that
+generates a function writes the function, as anyone would.
 
-`@derive(Show)` is then an attribute proc macro over a `data` declaration, using
-the attribute syntax that already exists.
+```meadow
+-- in its own package, and an ordinary exported function
+@pub fun shout ts = [Code "\"${spaced ts}!\""]
+```
+
+```meadow
+use shouty (shout!)
+
+def main = println shout!(hello there)   -- "hello there!"
+```
+
+What may be one is decided by its type, and nothing else: a function
+`[TokenTree] -> [TokenTree]` named with a `!` is a macro. The argument is
+allowed to be looser — a macro that ignores it never constrains it — but the
+answer is exactly tokens.
+
+The sandbox is that same signature. A macro may not perform `Fs`, `Process`,
+`Random`, `Time`, `Thread` or `Stm`, which the effect system checks where the
+macro is imported, so nothing it answers can depend on when it ran. That is what
+makes the answers cacheable, and they are cached, on exactly the tokens it was
+given. It runs with a step budget (`MEADOW_MACRO_FUEL` to change it), so a macro
+that does not stop fails the build rather than hanging it.
+
+### `@derive`
+
+`@derive(Show)` runs a macro over a declaration and puts what it wrote beside
+it. The declaration is passed **as it was written**, from the source rather than
+from the tree, so a derive sees the attributes on the variants:
+
+```meadow
+@derive(Lexer)
+data Token
+  = @token("+") Plus
+  | @regex("[0-9]+") Number
+```
+
+Nothing in the language reads `@token` or `@regex`; they are there for whatever
+derives over the declaration. A macro is a function and functions are
+lower-case, so `@derive(Lexer)` finds the macro `lexer!`.
 
 ## 10. Macros that talk to each other
 
@@ -389,12 +471,18 @@ Each step is useful on its own and none commits to the next.
 4. **Done.** **`expr` / `pat` / `item` fragments**, with the follow rules
    above, checked where the macro is written.
    ([`rules.rs`](../compiler/meadow-compiler/src/expand/rules.rs))
-5. **Export**: the macro namespace, visibility, storage in `CompiledPackage`,
-   `$pkg`.
-6. **Diagnostics and the editor**: expansion ids, notes naming the macro, and an
-   editor that can still hover an argument.
-7. **Procedural macros**: `Std.Macro`, `quote`, running on the VM under an
-   effect bound and a fuel budget, cached on input — then `@derive`.
+5. **Done.** **Export**: the macro namespace, visibility, storage in
+   `CompiledPackage`, `$pkg`.
+   ([`expand/mod.rs`](../compiler/meadow-compiler/src/expand/mod.rs))
+6. **Done.** **Diagnostics**: an error in what a macro wrote is reported at the
+   call, labelled with the macro that wrote it.
+   ([`expand/mod.rs`](../compiler/meadow-compiler/src/expand/mod.rs))
+7. **Done.** **Procedural macros**: `Std.Macro`, running on the VM under an
+   effect bound and a fuel budget, cached on input, and `@derive`. `quote` is
+   the one piece left out — a macro writes code as text and the compiler lexes
+   it, which is what `Code` is for.
+   ([`expand/proc.rs`](../compiler/meadow-compiler/src/expand/proc.rs),
+   [`proc.rs`](../buildtools/meadow/src/proc.rs))
 8. **Compile-time bindings** ([section 10](#10-macros-that-talk-to-each-other)):
    `@compileTime def`, `lookup`, and demand-driven expansion. This is what an
    embedded language needs, and it is last because it rests on every step

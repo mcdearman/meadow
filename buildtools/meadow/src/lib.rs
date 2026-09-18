@@ -24,6 +24,7 @@ pub mod listing;
 pub mod lock;
 pub mod package;
 pub mod pipeline;
+pub mod proc;
 pub mod profile;
 pub mod runtime;
 pub mod semver;

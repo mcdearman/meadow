@@ -133,7 +133,7 @@ fn escape(rest: &str) -> Result<(Option<char>, usize), (String, usize)> {
     }
 }
 
-#[derive(Logos, Debug, Clone, PartialEq, Eq)]
+#[derive(Logos, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[logos(subpattern alpha = r"[a-zA-Z]+")]
 pub enum Token {
     Eof,

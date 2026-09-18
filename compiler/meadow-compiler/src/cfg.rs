@@ -115,6 +115,8 @@ fn enabled(attrs: &[ast::Attr], opts: &Options, report: &mut impl FnMut(String, 
 pub fn holds(condition: &ast::Meta, opts: &Options) -> Result<bool, (String, Span)> {
     let cfg = &opts.cfg;
     match condition {
+        // `@cfg("…")` says nothing: a condition is a name, not a string.
+        ast::Meta::Text(t) => Err((format!("`\"{}\"` is not a condition", t.value()), t.span)),
         ast::Meta::Word(name) => Ok(match &**name.value() {
             "unix" | "windows" => cfg.family() == &**name.value(),
             "debug" | "release" => cfg.profile == &**name.value(),

@@ -1,0 +1,120 @@
+-- The tokens a procedural macro is given, and the tokens it answers with.
+--
+-- A procedural macro is an ordinary function, `[TokenTree] -> [TokenTree]`,
+-- compiled like anything else and run by the compiler while it compiles
+-- whoever calls it. There is no library to link against and no ABI: what
+-- crosses is this type, built by the compiler from the call's argument and
+-- read back from the answer.
+--
+-- A token is what the lexer produced, not what it meant. `Word` is any
+-- identifier or keyword, `Punct` is everything else by the text it is written
+-- with, and a bracketed run is a `Group` with what was inside it. That is the
+-- whole language a macro sees: brackets balance, and nothing else is promised.
+--
+-- `Code` is the way out of spelling everything: it holds Meadow as text, and
+-- the compiler lexes it where the call was. A macro that generates code writes
+-- it the way anyone writes code, and one that inspects its argument still gets
+-- the tokens.
+
+use Std.String as S
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+use Std.Maybe.Maybe.*
+use TokenTree.*
+use Delim.*
+
+@pub data Delim = Paren | Bracket | Brace
+
+@pub data TokenTree
+  = Word String
+  | Punct String
+  | Str String
+  | Chr String
+  | Num Int
+  | Real Float
+  | Group Delim [TokenTree]
+  | Code String
+  -- Not tokens at all: what is wrong. A macro that is given something it
+  -- cannot work with answers with this, and the compiler reports it at the
+  -- call rather than writing code that fails for a reason nobody can read.
+  | Fail String
+
+-- Meadow written out as text, for the compiler to lex where the call was.
+@pub fun code text = Code text
+
+-- What a macro answers when it cannot do what it was asked: the whole answer,
+-- since there is nothing else worth writing.
+@pub fun fail why = [Fail why]
+
+-- The text of a token, as it would be written.
+@pub fun text t =
+  match t with
+  | Word w -> w
+  | Punct p -> p
+  | Str s -> "\"${s}\""
+  | Chr c -> "'${c}'"
+  | Num n -> show n
+  | Real r -> show r
+  | Code c -> c
+  | Fail why -> why
+  | Group d ts -> "${opening d}${spaced ts}${closing d}"
+
+-- Every token written out, separated by spaces: what a macro that reads its
+-- argument as text starts from.
+@pub fun spaced ts = S.join " " (V.map text ts)
+
+@pub fun opening d = match d with | Paren -> "(" | Bracket -> "[" | Brace -> "{"
+
+@pub fun closing d = match d with | Paren -> ")" | Bracket -> "]" | Brace -> "}"
+
+-- Whether this is the word `w`.
+@pub fun isWord w t = match t with | Word x -> x == w | _ -> False
+
+-- Whether this is the punctuation `p`.
+@pub fun isPunct p t = match t with | Punct x -> x == p | _ -> False
+
+-- The trees inside a group, or none if it is not one.
+@pub fun inside t = match t with | Group _ ts -> Just ts | _ -> None
+
+-- The word a token is, or none.
+@pub fun word t = match t with | Word w -> Just w | _ -> None
+
+-- The string a token is, or none.
+@pub fun string t = match t with | Str s -> Just s | _ -> None
+
+-- `ts` split on the punctuation `p`, which is dropped.
+--
+-- What a macro's argument usually needs first: `a, b, c` as three runs of
+-- tokens. Only the top level is split, so what is inside brackets is left as
+-- it was written.
+@pub fun splitOn p ts = splitting p (V.toList ts) V.empty V.empty
+
+fun splitting p ts run acc =
+  match ts with
+  | Nil -> V.pushBack acc run
+  | Cons t rest ->
+      if isPunct p t then
+        splitting p rest V.empty (V.pushBack acc run)
+      else
+        splitting p rest (V.pushBack run t) acc
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun textWritesATokenBack () =
+  let a = assertEq (text (Word "fun")) "fun" "a word" in
+  let b = assertEq (text (Str "hi")) "\"hi\"" "a string keeps its quotes" in
+  let c = assertEq (text (Group Paren [Num 1, Punct "+", Num 2])) "(1 + 2)" "a group" in
+  assertEq (text (Code "def x = 1")) "def x = 1" "code is itself"
+
+@test fun splitOnCutsAtTheTopLevelOnly () =
+  let ts = [Word "a", Punct ",", Group Paren [Word "b", Punct ",", Word "c"]] in
+  let parts = splitOn "," ts in
+  let a = assertEq (V.len parts) 2 "two parts" in
+  assertEq (V.map spaced parts) ["a", "(b , c)"] "the bracketed comma is left alone"
+
+@test fun isWordAndIsPunctSayWhatATokenIs () =
+  let a = assertTrue (isWord "data" (Word "data")) "a word" in
+  let b = assertFalse (isWord "data" (Punct "data")) "not a word" in
+  assertTrue (isPunct "->" (Punct "->")) "punctuation"

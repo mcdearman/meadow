@@ -428,7 +428,10 @@ fn compile_graph(graph: &PackageGraph, opts: Options, cache: Option<&Cache>) -> 
                         packages[*d].as_ref().expect("topological order"),
                     )
                 }));
-                let (cp, mut d) = compile_package(pkg, idents[pid], &deps, opts, floor);
+                // What a procedural macro would be run with: everything
+                // compiled so far. Nothing is linked unless one is called.
+                let runner = crate::proc::Macros::new(deps.iter().map(|d| d.pkg).collect());
+                let (cp, mut d) = compile_package(pkg, idents[pid], &deps, opts, floor, &runner);
                 clean[pid] = d.is_empty() && pkg.deps.iter().all(|&d| clean[d]);
                 diagnostics.append(&mut d);
                 if clean[pid]
@@ -460,6 +463,7 @@ fn compile_package(
     deps: &[meadow_compiler::Dep<'_>],
     opts: Options,
     floor: u32,
+    procs: &dyn meadow_compiler::expand::proc::Runner,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     let mut modules = Vec::new();
@@ -481,8 +485,8 @@ fn compile_package(
         }
     }
 
-    let (cp, unit_diags) = meadow_compiler::compile_unit_as(
-        pkg.name, ident, pkg.name, pkg.id, modules, deps, opts, floor,
+    let (cp, unit_diags) = meadow_compiler::compile_unit_with_procs(
+        pkg.name, ident, pkg.name, pkg.id, modules, deps, opts, floor, procs,
     );
     diags.extend(unit_diags);
     (cp, diags)

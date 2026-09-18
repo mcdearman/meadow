@@ -93,6 +93,11 @@ pub struct CompiledPackage {
     /// one pass for the other. Messages never show this: `hir::spelling` takes
     /// the name off the front.
     pub ident: InternedString,
+    /// The macros this package lets others see, as the token trees they were
+    /// written with. A dependent expands one without re-parsing this package's
+    /// source, which is the whole reason they are stored rather than the
+    /// matchers they read as.
+    pub macros: Vec<crate::expand::Rules>,
     /// Files this package embedded with `includeStr`, and what each hashed to.
     ///
     /// Inputs to the build that its own sources do not mention: without them a
@@ -312,7 +317,7 @@ pub fn compile_unit_as(
     opts: Options,
     floor: u32,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
-    compile_unit_inner(pkg, ident, unit_name, id, modules, deps, opts, floor)
+    compile_unit_inner(pkg, ident, unit_name, id, modules, deps, opts, floor, None)
 }
 
 /// [`compile_unit_in_package`], minting no variable below `floor`.
@@ -332,7 +337,39 @@ pub fn compile_unit_above(
     opts: Options,
     floor: u32,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
-    compile_unit_inner(pkg, pkg, unit_name, id, modules, deps, opts, floor)
+    compile_unit_inner(pkg, pkg, unit_name, id, modules, deps, opts, floor, None)
+}
+
+/// [`compile_unit_as`], with something that can run a procedural macro.
+///
+/// Running one means linking a program and evaluating it, which is not
+/// something this crate does -- so a build hands in a
+/// [`Runner`](crate::expand::proc::Runner) and everything else compiles
+/// without one. A unit that calls a procedural macro where there is no runner
+/// is told so, rather than compiled as if the call were not there.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_unit_with_procs(
+    pkg: InternedString,
+    ident: InternedString,
+    unit_name: InternedString,
+    id: usize,
+    modules: Vec<AstModule>,
+    deps: &[Dep<'_>],
+    opts: Options,
+    floor: u32,
+    procs: &dyn crate::expand::proc::Runner,
+) -> (CompiledPackage, Vec<Diagnostic>) {
+    compile_unit_inner(
+        pkg,
+        ident,
+        unit_name,
+        id,
+        modules,
+        deps,
+        opts,
+        floor,
+        Some(procs),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -345,6 +382,7 @@ fn compile_unit_inner(
     deps: &[Dep<'_>],
     opts: Options,
     floor: u32,
+    procs: Option<&dyn crate::expand::proc::Runner>,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     let filename = unit_name.to_string();
@@ -369,11 +407,9 @@ fn compile_unit_inner(
         }
     }
     modules.retain(|m| !dropped.iter().any(|d| m.path.starts_with(d)));
-    for m in &mut modules {
-        let here = module_filename(&filename, m.source);
-        let text = m.source.content.to_string();
-        crate::expand::expand(&mut m.ast.value, &text, &here, &mut diags);
-    }
+    // Macros: read from every module of the unit, then expanded in each.
+    let (macros, expansions) =
+        crate::expand::expand_unit(pkg, &mut modules, deps, procs, &filename, &mut diags);
 
     // --- name resolution (whole unit at once, so modules may be mutually recursive)
     // Start above every dependency, so no two units can mint the same id and
@@ -708,6 +744,10 @@ fn compile_unit_inner(
     flat_ctors.sort_by_key(|n| n.to_string());
     flat_ctors.dedup();
 
+    // What a macro wrote is reported at the call, which is the only place in
+    // the file there is to point at. This is what says which macro.
+    crate::expand::blame(&mut diags, &expansions);
+
     (
         CompiledPackage {
             id,
@@ -715,6 +755,7 @@ fn compile_unit_inner(
             vars: var_base..var_end,
             name: unit_name,
             ident,
+            macros,
             embedded: resolver.embedded().to_vec(),
             entry,
             modules: typed,
@@ -799,6 +840,12 @@ fn apply_use(
 ) -> Vec<InternedString> {
     let segs: Vec<InternedString> = u.path.iter().map(|s| *s.value()).collect();
     if segs.is_empty() {
+        return Vec::new();
+    }
+    // `use M (vec!)` selects a macro and nothing else. Expansion has already
+    // taken it, and what is left must not be read as a bare `use M`, which
+    // would bring in every name the module has.
+    if u.names.is_empty() && !u.macros.is_empty() && !u.glob {
         return Vec::new();
     }
     let path_span = u
@@ -1152,7 +1199,7 @@ fn suggest_module(segs: &[InternedString], deps: &[Dep<'_>]) -> Option<String> {
 /// A unit is compiled as a whole, but its modules are separate files and an
 /// error has to name the one it is in. Interactive text — the REPL, a
 /// `compile_str` — has no file, so it keeps the unit's name.
-fn module_filename(unit: &str, source: Source) -> String {
+pub(crate) fn module_filename(unit: &str, source: Source) -> String {
     match source.kind {
         SourceKind::File(name) => name.to_string(),
         SourceKind::Interactive => unit.to_string(),

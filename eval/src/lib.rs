@@ -458,6 +458,43 @@ pub fn run(program: &core::Program) -> Result<Value, RuntimeError> {
     }
 }
 
+/// Evaluate `term` against `program`'s definitions, giving up after `fuel`
+/// steps.
+///
+/// What a procedural macro is run with. A macro runs while its caller is being
+/// compiled, so two things have to be true of it that are not true of a
+/// program: it must stop, and it must not start anything -- a thread or a
+/// transaction is refused rather than scheduled, since there is no program
+/// here for one to belong to.
+pub fn eval_with_fuel(
+    program: &core::Program,
+    term: Arc<Term>,
+    fuel: u64,
+) -> Result<Value, RuntimeError> {
+    let env = load(program)?;
+    let mut m = Machine::new(Control::Eval(term, env), Vec::new(), &program.ctor_fields);
+    let mut used: u64 = 0;
+    loop {
+        match m.run_slice() {
+            Stop::Done(v) => return Ok(v),
+            Stop::Failed(e) => return Err(e),
+            Stop::Preempted => {
+                used = used.saturating_add(SLICE as u64);
+                if used >= fuel {
+                    return Err(RuntimeError {
+                        msg: format!("did not finish within {fuel} steps"),
+                    });
+                }
+            }
+            Stop::Requested(_) => {
+                return Err(RuntimeError {
+                    msg: "started a thread or a transaction, which it may not".into(),
+                });
+            }
+        }
+    }
+}
+
 /// Load the program, then call each of `tests` with `()`, in order.
 ///
 /// One load for the whole run, so top-level definitions are evaluated once and

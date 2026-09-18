@@ -15,3 +15,4 @@ meadow-source.workspace = true
 meadow-span.workspace = true
 meadow-diagnostics.workspace = true
 logos.workspace = true
+serde.workspace = true

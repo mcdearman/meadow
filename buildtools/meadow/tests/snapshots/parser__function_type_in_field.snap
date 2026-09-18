@@ -20,6 +20,7 @@ Module {
                     ],
                     variants: [
                         Variant {
+                            attrs: [],
                             name: Located {
                                 value: InternedString(Thunk),
                                 span: 15..20,

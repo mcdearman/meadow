@@ -101,6 +101,8 @@ pub const MODULES: &[(&str, &str)] = &[
     ),
     ("Path", include_str!("../../../lib/Std/src/Path.mw")),
     ("Json", include_str!("../../../lib/Std/src/Json.mw")),
+    // After `String`, whose `join` it writes tokens with.
+    ("Macro", include_str!("../../../lib/Std/src/Macro.mw")),
     ("Console", include_str!("../../../lib/Std/src/Console.mw")),
     // After `Console`, so `time` can print what it measured.
     ("Time", include_str!("../../../lib/Std/src/Time.mw")),
@@ -318,9 +320,12 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut tests = Vec::new();
     // What the library itself embedded, so a build notices those files too.
     let mut embedded: Vec<(String, u64)> = Vec::new();
+    // The macros of every module, which in the bundle are the library's.
+    let mut macros = Vec::new();
 
     for sub in subs {
         embedded.extend(sub.embedded.iter().cloned());
+        macros.extend(sub.macros.iter().cloned());
         flat_ctors.extend(sub.flat_ctors.iter().copied());
         defs.extend(sub.defs);
         modules.extend(sub.modules);
@@ -349,6 +354,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         // The standard library is one package, at one version, in every build:
         // nothing has to tell two copies of it apart.
         ident: name,
+        macros,
         embedded,
         // A library has no entry point, and `Std` least of all.
         entry: None,

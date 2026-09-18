@@ -740,7 +740,9 @@ fn ctor_paths(
                 };
                 for c in ctors {
                     let mut full = prefix.clone();
-                    full.push(c.to_string());
+                    // The name carries the package past the resolver; the path
+                    // already names it, and a hover spells it as the source does.
+                    full.push(hir::spelling(&c.to_string()).to_string());
                     out.insert(c, full.join("."));
                 }
             }
@@ -1392,7 +1394,7 @@ impl Analysis {
                 .ctor_paths
                 .get(name)
                 .cloned()
-                .unwrap_or_else(|| name.to_string());
+                .unwrap_or_else(|| hir::spelling(&name.to_string()).to_string());
             return Some(format!("```meadow\n{path}\n```"));
         }
         let var = self.var_at(offset);
@@ -1477,7 +1479,7 @@ fn collect_names(
     for d in decls {
         match d.value() {
             hir::Decl::Data(dd) => {
-                types.insert(dd.name.to_string());
+                types.insert(hir::spelling(&dd.name).to_string());
                 // Canonical in the HIR (`Maybe.Just`); highlighting matches
                 // against the bare word the source actually contains.
                 ctors.extend(dd.variants.iter().map(|v| {
@@ -1486,14 +1488,14 @@ fn collect_names(
                 }));
             }
             hir::Decl::Record(rd) => {
-                types.insert(rd.name.to_string());
-                ctors.insert(rd.name.to_string());
+                types.insert(hir::spelling(&rd.name).to_string());
+                ctors.insert(hir::spelling(&rd.name).to_string());
             }
             hir::Decl::Effect(ed) => {
-                types.insert(ed.name.to_string());
+                types.insert(hir::spelling(&ed.name).to_string());
             }
             hir::Decl::Alias(ad) => {
-                types.insert(ad.name.to_string());
+                types.insert(hir::spelling(&ad.name).to_string());
             }
             _ => {}
         }

@@ -41,6 +41,21 @@ fn state_effect_runs() {
 }
 
 #[test]
+fn a_primitive_passed_as_a_value_keeps_its_effect_open() {
+    // `charCode` is pure, and handing it to `apply` inside code that performs
+    // `log` must not pin the call's effect to exactly nothing.
+    assert_eq!(
+        eval_main(
+            "effect Log { log : String -> () }\n\
+             fun apply f x = f x\n\
+             fun logged u = let a = log \"x\" in apply charCode 'b'\n\
+             def main = handle logged () with { log s k -> k (), return x -> x }\n"
+        ),
+        "98"
+    );
+}
+
+#[test]
 fn effect_polymorphism_through_map() {
     // `map` over an effectful function keeps that function's effect
     insta::assert_snapshot!(schemes(
@@ -89,4 +104,21 @@ fn unknown_operation_in_handler() {
         "effect E { a : () -> Int }\n\
          fun run act = handle act () with { nope x k -> k 0 }\n"
     ));
+}
+
+#[test]
+fn a_call_through_a_closed_row_leaves_room_for_other_effects() {
+    // `run` is declared to perform exactly `Tick`; calling it says the caller
+    // performs `Tick`, not that `Tick` is all the caller may perform.
+    assert_eq!(
+        eval_main(
+            "effect Tick { tick : () -> Int }\n\
+             effect Log { log : String -> () }\n\
+             record Job = { run : () -> Int ! Tick }\n\
+             fun both (j : Job) = let n = j.run () in let _ = log \"ran\" in n\n\
+             def main = handle (handle both (Job { run = \\u -> tick () }) with { tick u k -> k 5, return x -> x }) \
+             with { log s k -> k (), return x -> x }\n"
+        ),
+        "5"
+    );
 }

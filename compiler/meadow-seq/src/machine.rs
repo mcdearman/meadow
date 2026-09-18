@@ -515,7 +515,10 @@ impl<'p> Machine<'p> {
                     }
                     Value::Unit
                 }
-                _ => return err(format!("unhandled effect {effect}.{op}")),
+                _ => {
+                    let effect = effect.rsplit("::").next().unwrap_or_default();
+                    return err(format!("unhandled effect {effect}.{op}"));
+                }
             },
             Extern::Prim(p) => self.prim(*p, &vals)?,
             Extern::PrimK(p, l) => {
@@ -551,7 +554,10 @@ impl<'p> Machine<'p> {
                         .and_then(|fs| fs.iter().position(|f| f == label));
                     match at.and_then(|i| fields.get(i)) {
                         Some(v) => v.clone(),
-                        None => return err(format!("`{name}` has no field `{label}`")),
+                        None => {
+                            let name = name.rsplit("::").next().unwrap_or_default();
+                            return err(format!("`{name}` has no field `{label}`"));
+                        }
                     }
                 }
                 other => return err(format!("selected `.{label}` from {}", kind(other))),

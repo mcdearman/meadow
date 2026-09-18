@@ -181,3 +181,23 @@ fn an_index_out_of_bounds_is_an_error_not_a_crash() {
     let out = both("def main = runSt (\\() -> let a = stNewArray 2 0 in stGetArray a 5)\n");
     assert!(out.contains("out of bounds"), "{out}");
 }
+
+#[test]
+fn a_parameter_called_under_a_let_keeps_its_own_effect() {
+    // `same` is called under a `let` inside the `runSt`. Its effect must stay
+    // its own, and not become the `let`'s region, which later performs `St s`.
+    assert_eq!(
+        both(
+            "fun probe same n =\n\
+               runSt (\\() ->\n\
+                 let r = stNewRef 0 in\n\
+                 let rec go i =\n\
+                   if i > n then () else let v = same i in let _ = stSetRef r v in go (i + 1)\n\
+                 in\n\
+                 let _ = go 0 in\n\
+                 stGetRef r)\n\
+             def main = probe (\\i -> i + 1) 4\n"
+        ),
+        "5"
+    );
+}

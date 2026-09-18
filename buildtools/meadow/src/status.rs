@@ -109,6 +109,18 @@ pub fn error(msg: impl AsRef<str>) {
     above_bar(&format!("{} {}", label("error:", "31"), msg.as_ref()));
 }
 
+/// A compile error: its message, and where it is in the file, when that file
+/// can be read -- as a snippet with the place underlined.
+pub fn diagnostic(d: &meadow_compiler::diagnostics::Diagnostic) {
+    match std::fs::read_to_string(&d.filename) {
+        Ok(text) if (d.label.1.end as usize) <= text.len() => {
+            let rendered = meadow_compiler::diagnostics::render(d, &text, colour());
+            above_bar(rendered.trim_end());
+        }
+        _ => error(format!("{}: {}", d.filename, d.msg)),
+    }
+}
+
 /// `text` in the colour `code`, for something written to **stdout** -- a test's
 /// `ok` or `FAILED` -- and so coloured only when stdout is a terminal.
 pub fn paint(text: &str, code: &str) -> String {

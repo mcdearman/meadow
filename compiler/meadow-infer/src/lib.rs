@@ -1056,6 +1056,10 @@ pub struct Infer {
     errors: Vec<Diagnostic>,
     /// The `runSt` primitive's `VarId` in this unit -- see [`Infer::infer_run_st`].
     run_st: Option<VarId>,
+    /// The levels of the `runSt`s being inferred, innermost last. While one
+    /// is open, an older effect variable is not tied to a region that is still
+    /// only a variable: see [`Infer::join_effect_into`].
+    st_levels: Vec<u32>,
 }
 
 impl Infer {
@@ -1092,7 +1096,7 @@ impl Infer {
         }
         let list = labels
             .iter()
-            .map(|l| format!("`{l}`"))
+            .map(|l| format!("`{}`", hir::spelling(l)))
             .collect::<Vec<_>>()
             .join(", ");
         self.errors.push(Diagnostic {
@@ -1134,6 +1138,7 @@ impl Infer {
             cur_effect: Type::RowEmpty,
             errors: Vec::new(),
             run_st: None,
+            st_levels: Vec::new(),
         }
     }
 
@@ -1158,6 +1163,31 @@ impl Infer {
         self.join_effect_into(span, region, phi);
     }
 
+    /// `row` with a fresh variable for its end, if it is a closed row of at
+    /// least one effect; otherwise `row`.
+    fn open_row_end(&mut self, row: Type) -> Type {
+        fn rebuild(row: Type, tail: &Type) -> Type {
+            match row {
+                Type::RowExtend(label, field, rest) => {
+                    Type::RowExtend(label, field, Box::new(rebuild(*rest, tail)))
+                }
+                _ => tail.clone(),
+            }
+        }
+        let zonked = self.arena.zonk(&row);
+        let mut end = &zonked;
+        while let Type::RowExtend(_, _, rest) = end {
+            end = rest;
+        }
+        match (&zonked, end) {
+            (Type::RowExtend(..), Type::RowEmpty) => {
+                let tail = self.arena.fresh_effect();
+                rebuild(zonked, &tail)
+            }
+            _ => row,
+        }
+    }
+
     /// [`Infer::join_effect`], into a region other than the current one.
     ///
     /// Joining is unification, which asks for *equal* rows where the truth is
@@ -1167,15 +1197,49 @@ impl Infer {
     /// that is exactly an escape -- but it does not need to be. When `phi` is a
     /// bare variable older than the `runSt`s at the front of the region, it is
     /// tied to what follows them instead, which is everything it could stand for.
+    ///
+    /// Inside such a `runSt`, a region may still be a bare variable -- a
+    /// `let`'s, before anything in it has performed `St s`. Tying an older
+    /// variable to it then would make the two one, and the `St s` the region
+    /// gains later would land in the older one, which is an escape. So the
+    /// join waits, as a subsumption, until the region has taken shape; the
+    /// `runSt` settles what is left before it closes.
     fn join_effect_into(&mut self, span: Span, region: Type, phi: Type) {
+        // A closed row -- `a -> b ! { Random }`, say, from an annotation --
+        // lists what a call performs, not all the region may: the region
+        // holds it and possibly more, so it is joined with its end left open.
+        let phi = self.open_row_end(phi);
         let target = match self.arena.zonk(&phi) {
             Type::Var(id) => {
                 let level = self.arena.slot_level(id);
+                let inside_newer_run_st = self.st_levels.iter().any(|&l| l > level);
+                if inside_newer_run_st
+                    && let Type::Var(rid) = self.arena.zonk(&region)
+                    && rid != id
+                    && self.arena.slot_level(rid) >= self.st_levels.last().copied().unwrap_or(0)
+                {
+                    self.subsumptions.push((phi, region, span));
+                    return;
+                }
                 self.arena.without_inner_state(region, level)
             }
             _ => region,
         };
         self.unify_at(span, target, phi);
+    }
+
+    /// Whether a join into `region` is still waiting, from `mark` on.
+    fn has_pending_join(&mut self, mark: usize, region: &Type) -> bool {
+        let Type::Var(rid) = self.arena.zonk(region) else {
+            return false;
+        };
+        let pending: Vec<Type> = self.subsumptions[mark..]
+            .iter()
+            .map(|(_, r, _)| r.clone())
+            .collect();
+        pending
+            .iter()
+            .any(|r| matches!(self.arena.zonk(r), Type::Var(id) if id == rid))
     }
 
     /// Seed the environment with the primitive operators. `prims` must be the
@@ -1184,7 +1248,7 @@ impl Infer {
         debug_assert_eq!(prims.len(), PRIMS.len(), "prelude binding count mismatch");
         for (name, id) in prims {
             if let Some(scheme) = prim_scheme(name) {
-                self.env.insert(*id, scheme);
+                self.env.insert(*id, open_effects(scheme));
             }
             if &**name == "runSt" {
                 self.run_st = Some(*id);
@@ -1503,11 +1567,13 @@ impl Infer {
                 // enclosing function's type -- so a `Log`-performing call could
                 // pass for a pure one -- and generalized `let r = f ()` even when
                 // `f` turned out to allocate a `Ref`.
-                let pure = match self.arena.zonk(&rhs_eff) {
-                    Type::RowEmpty => true,
-                    Type::Var(id) => self.arena.slot_level(id) > self.arena.level,
-                    _ => false,
-                };
+                let waiting = self.has_pending_join(mark, &rhs_eff);
+                let pure = !waiting
+                    && match self.arena.zonk(&rhs_eff) {
+                        Type::RowEmpty => true,
+                        Type::Var(id) => self.arena.slot_level(id) > self.arena.level,
+                        _ => false,
+                    };
                 if !pure && !toplevel {
                     // let the enclosing region see the rhs's effects
                     let region = self.cur_effect.clone();
@@ -1646,7 +1712,22 @@ impl Infer {
                         ),
                     }
                     if i == last {
-                        self.join_effect(expr.span, phi);
+                        // A callee from an enclosing level -- a function
+                        // parameter, called inside a `let` or a `runSt` -- does
+                        // what its caller passed, which is only *part* of this
+                        // region. Tie it in once the region is known, as an
+                        // argument's effect is, so that a `St s` the region
+                        // gains later is not taken for part of the callback.
+                        let outer = match self.arena.zonk(&phi) {
+                            Type::Var(id) => self.arena.slot_level(id) < self.arena.level,
+                            _ => false,
+                        };
+                        if outer {
+                            let region = self.cur_effect.clone();
+                            self.subsumptions.push((phi, region, expr.span));
+                        } else {
+                            self.join_effect(expr.span, phi);
+                        }
                     } else {
                         self.unify_at(expr.span, phi, Type::RowEmpty);
                     }
@@ -2103,7 +2184,7 @@ impl Infer {
         for (name, span) in added {
             if alias_reaches(&self.aliases, name, name, &mut Vec::new()) {
                 self.errors.push(Diagnostic {
-                    msg: format!("type alias `{name}` refers to itself"),
+                    msg: format!("type alias `{}` refers to itself", hir::spelling(&name)),
                     filename: self.filename.clone(),
                     label: (
                         "an alias is only another name; use `data` for a recursive type"
@@ -2368,10 +2449,14 @@ impl Infer {
             if !one {
                 self.errors.push(Diagnostic {
                     msg: format!(
-                        "`{tyname}` has more than one constructor, so there is no one record to update"
+                        "`{}` has more than one constructor, so there is no one record to update",
+                        hir::spelling(tyname)
                     ),
                     filename: self.filename.clone(),
-                    label: (format!("a value of `{tyname}`"), base.span),
+                    label: (
+                        format!("a value of `{}`", hir::spelling(&tyname)),
+                        base.span,
+                    ),
                     extra_labels: vec![],
                 });
                 for (label, val) in fields {
@@ -2384,7 +2469,11 @@ impl Infer {
                 let vt = self.infer_expr(val);
                 let Some(scheme) = accessors.get(label.value()) else {
                     self.errors.push(Diagnostic {
-                        msg: format!("`{tyname}` has no field `{}`", label.value()),
+                        msg: format!(
+                            "`{}` has no field `{}`",
+                            hir::spelling(tyname),
+                            label.value()
+                        ),
                         filename: self.filename.clone(),
                         label: ("not one of its fields".to_string(), label.span),
                         extra_labels: vec![],
@@ -2744,7 +2833,10 @@ impl Infer {
     /// One line of a candidate list: how to write it, its type, where it is from.
     fn candidate_line(&self, c: &hir::Candidate, mark: &str) -> String {
         let (spelled, scheme) = match c.alt {
-            hir::Alt::Ctor(ctor) => (ctor.to_string(), self.ctors.get(&ctor).cloned()),
+            hir::Alt::Ctor(ctor) => (
+                hir::spelling(&ctor.to_string()).to_string(),
+                self.ctors.get(&ctor).cloned(),
+            ),
             hir::Alt::Value(v) => (
                 hir::spell_name(&c.name).into_owned(),
                 self.env.get(&v).cloned(),
@@ -2990,6 +3082,7 @@ impl Infer {
         let outside = self.arena.fresh_effect();
         let mark = self.subsumptions.len();
         self.arena.enter_level();
+        self.st_levels.push(self.arena.level);
         let state = self.arena.fresh_skolem();
         let st_label = InternedString::from("St");
         let body_ty = match body.value() {
@@ -3030,6 +3123,10 @@ impl Infer {
         // Everything the body passed along is settled while `s` is still this
         // `runSt`'s, so an outer callback's effect can be told apart from it.
         self.solve_subsumptions(mark);
+        // What still waits has a region that never took shape: nothing in it
+        // performed this `runSt`'s `St s`, so it is safe to tie now.
+        self.st_levels.pop();
+        self.solve_subsumptions(mark);
         self.arena.exit_level();
         self.join_effect(span, outside);
         if let hir::Expr::Var(ident) = func.value() {
@@ -3060,8 +3157,22 @@ impl Infer {
             UnifyError::Mismatch(a, b) => {
                 let a = self.arena.zonk(&a);
                 let b = self.arena.zonk(&b);
+                let (sa, sb) = (show(&a), show(&b));
+                // Two packages' types of one name print alike: say whose each is.
+                let whose = |t: &Type, shown: String| match t {
+                    Type::Con(name, _) => match hir::type_package(name) {
+                        Some(p) => format!("{shown}` (from `{p}`)"),
+                        None => format!("{shown}` (from `Std`)"),
+                    },
+                    _ => format!("{shown}`"),
+                };
+                let (ta, tb) = if sa == sb {
+                    (whose(&a, sa), whose(&b, sb))
+                } else {
+                    (format!("{sa}`"), format!("{sb}`"))
+                };
                 (
-                    format!("type mismatch: `{}` vs `{}`", show(&a), show(&b)),
+                    format!("type mismatch: `{ta} vs `{tb}"),
                     "types do not unify here".to_string(),
                 )
             }
@@ -3098,10 +3209,17 @@ impl Infer {
             ),
             // The same row machinery serves records and effects, and the label
             // says which: an effect is named like a type, a field like a value.
-            UnifyError::MissingLabel(l) if l.starts_with(|c: char| c.is_uppercase()) => (
-                format!("type mismatch: the effect `{l}` is not allowed here"),
-                format!("performs `{l}`"),
-            ),
+            UnifyError::MissingLabel(l)
+                if hir::spelling(&l).starts_with(|c: char| c.is_uppercase()) =>
+            {
+                (
+                    format!(
+                        "type mismatch: the effect `{}` is not allowed here",
+                        hir::spelling(&l)
+                    ),
+                    format!("performs `{}`", hir::spelling(&l)),
+                )
+            }
             UnifyError::MissingLabel(l) => (
                 format!("record has no field `{l}`"),
                 format!("missing field `{l}`"),
@@ -3370,6 +3488,44 @@ fn st_row(state: u32, tail: u32) -> Type {
         Box::new(Type::Tuple(vec![Type::Bound(state)])),
         Box::new(Type::Bound(tail)),
     )
+}
+
+/// `scheme` with the effect of each arrow on its result spine left open: a
+/// closed row `{ E1, E2 }` becomes `{ E1, E2 | e }` for a fresh quantified `e`.
+///
+/// A primitive's type is written with closed rows, but a function a user
+/// writes is generalized over its effect -- `fun f x = x` is
+/// `a -> a ! e` -- and the two have to behave alike when passed around: a
+/// primitive handed to a higher-order function inside a `@test` must not force
+/// the call's effect to be exactly `{}` while the test performs `Test`.
+/// Parameters keep their rows as written, since a primitive that demands a
+/// pure callback must go on demanding one.
+fn open_effects(scheme: Scheme) -> Scheme {
+    fn open_tail(row: Type, quant: &mut Vec<VarKind>) -> Type {
+        match row {
+            Type::RowEmpty => {
+                quant.push(VarKind::Effect);
+                Type::Bound((quant.len() - 1) as u32)
+            }
+            Type::RowExtend(label, field, rest) => {
+                Type::RowExtend(label, field, Box::new(open_tail(*rest, quant)))
+            }
+            other => other,
+        }
+    }
+    fn go(ty: Type, quant: &mut Vec<VarKind>) -> Type {
+        match ty {
+            Type::Fun(params, ret, eff) => {
+                let ret = go(*ret, quant);
+                let eff = open_tail(*eff, quant);
+                Type::Fun(params, Box::new(ret), Box::new(eff))
+            }
+            other => other,
+        }
+    }
+    let Scheme { mut quant, ty } = scheme;
+    let ty = go(ty, &mut quant);
+    Scheme { quant, ty }
 }
 
 fn prim_scheme(name: &str) -> Option<Scheme> {
@@ -3884,7 +4040,7 @@ fn write_type(
         // The unit type is written `()` — the same way its one value is, and
         // the same way an empty parameter list is.
         Type::Con(name, args) if args.is_empty() && &**name == "Unit" => out.write_str("()"),
-        Type::Con(name, args) if args.is_empty() => write!(out, "{name}"),
+        Type::Con(name, args) if args.is_empty() => out.write_str(hir::spelling(name)),
         // `[T]` now prints the RRB `Vector`; `List T` prints as a plain application.
         Type::Con(name, args) if &**name == "Vector" && args.len() == 1 => {
             out.write_char('[')?;
@@ -3901,7 +4057,7 @@ fn write_type(
             if wrap {
                 out.write_char('(')?;
             }
-            write!(out, "{name}")?;
+            out.write_str(hir::spelling(name))?;
             for a in args {
                 out.write_char(' ')?;
                 write_type(out, a, namer, Prec::App, hidden)?;
@@ -4013,7 +4169,7 @@ fn write_effect_suffix(
         if i > 0 {
             out.write_str(", ")?;
         }
-        write!(out, "{name}")?;
+        out.write_str(hir::spelling(name))?;
         for a in *args {
             out.write_char(' ')?;
             write_type(out, a, namer, Prec::App, hidden)?;

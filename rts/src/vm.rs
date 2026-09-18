@@ -543,7 +543,9 @@ impl<'p> Vm<'p> {
                                 self.set(i.a, f);
                             }
                             None => {
-                                let name = ctor.map_or("?".to_string(), |c| c.to_string());
+                                let name = ctor.map_or("?".to_string(), |c| {
+                                    c.rsplit("::").next().unwrap_or_default().to_string()
+                                });
                                 return err(format!("`{name}` has no field `{label}`"));
                             }
                         }
@@ -794,7 +796,10 @@ impl<'p> Vm<'p> {
                 self.set(i.a, v);
                 Ok(())
             }
-            None => err(format!("unhandled effect {effect}.{op}")),
+            None => {
+                let effect = effect.rsplit("::").next().unwrap_or_default();
+                err(format!("unhandled effect {effect}.{op}"))
+            }
         }
     }
 

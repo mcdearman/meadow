@@ -272,9 +272,24 @@ pub fn compile_unit_above(
     // else looks. Then macros, on what is left -- a call under a `@cfg` that
     // does not hold is never expanded, and one a macro produces is read here.
     let mut modules = modules;
+    // A child whose `mod` its parent declares only under a `@cfg` that does not
+    // hold is not part of this build either, and nor is anything below it --
+    // `@cfg(test) mod Tests` leaves `Tests.mw` out of an ordinary build.
+    let mut dropped: Vec<Vec<InternedString>> = Vec::new();
     for m in &mut modules {
         let here = module_filename(&filename, m.source);
+        let before = declared_mods(&m.ast.value);
         crate::cfg::strip(&mut m.ast.value, opts, &here, &mut diags);
+        let after = declared_mods(&m.ast.value);
+        for name in before.difference(&after) {
+            let mut child = m.path.clone();
+            child.push(*name);
+            dropped.push(child);
+        }
+    }
+    modules.retain(|m| !dropped.iter().any(|d| m.path.starts_with(d)));
+    for m in &mut modules {
+        let here = module_filename(&filename, m.source);
         let text = m.source.content.to_string();
         crate::expand::expand(&mut m.ast.value, &text, &here, &mut diags);
     }
@@ -289,6 +304,7 @@ pub fn compile_unit_above(
         .unwrap_or(0)
         .max(floor);
     let mut resolver = Resolver::with_prelude(filename.clone(), var_base);
+    resolver.set_package(pkg);
     // Every dependency's *types* are known here, so they can be named in an
     // annotation and their constructors written `Type.Ctor`. Which of those
     // constructors may be written *bare* is a separate question, and the
@@ -650,6 +666,24 @@ fn permute<T>(items: Vec<T>, order: &[usize]) -> Vec<T> {
         .collect()
 }
 
+/// The children `module` declares with `mod`, attributed or not.
+fn declared_mods(module: &ast::Module) -> std::collections::BTreeSet<InternedString> {
+    module
+        .decls
+        .iter()
+        .filter_map(|d| {
+            let base = match d.value() {
+                ast::Decl::Attributed(_, inner) => inner.value(),
+                other => other,
+            };
+            match base {
+                ast::Decl::Mod(name) => Some(*name.value()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// Record which module each top-level binding lives in.
 fn collect_toplevel_vars(
     module: &hir::LModule,
@@ -736,7 +770,10 @@ fn apply_use(
         );
         return Vec::new();
     }
-    if !local.is_empty() && resolver.has_module(&local) {
+    // `use Pack` alone is the package's root module -- Rust's `use crate::…`
+    // -- whose path is empty.
+    let names_module = !local.is_empty() || segs[0] == pkg;
+    if names_module && resolver.has_module(&local) {
         match &u.alias {
             Some(a) => {
                 let values = resolver.module_values(&local);
@@ -767,17 +804,44 @@ fn apply_use(
         // name -- an earlier REPL line's, say. Plain `use Ty` would bring nothing
         // new, and is far more likely a module path gone wrong, which the error
         // below can help with.
-        if segs.len() == 1
-            && (u.glob || !u.names.is_empty())
-            && resolver.imported_type_names().contains(ty.value())
-        {
-            return resolver.use_dep_type(ty, &u.names, u.glob);
+        if segs.len() == 1 && (u.glob || !u.names.is_empty()) {
+            let known = resolver.imported_type_names();
+            let spelled: Vec<InternedString> = resolver
+                .types_spelled(*ty.value())
+                .into_iter()
+                .filter(|c| known.contains(c))
+                .collect();
+            match spelled.as_slice() {
+                [canonical] => return resolver.use_dep_type(ty, *canonical, &u.names, u.glob),
+                [] => {}
+                many => {
+                    let owners: Vec<String> = many
+                        .iter()
+                        .map(|c| format!("`{}`", hir::type_package(c).unwrap_or("Std")))
+                        .collect();
+                    report(
+                        format!(
+                            "`{}` could be the type of any of {}; write the package's path, \
+                             as in `use pkg.{}.*`",
+                            ty.value(),
+                            owners.join(", "),
+                            ty.value()
+                        ),
+                        "ambiguous type",
+                        ty.span,
+                    );
+                    return Vec::new();
+                }
+            }
         }
         // `use Pkg.Mod.Ty ...` for a dependency's type.
         if segs.len() > 1 {
             let owner_segs: Vec<InternedString> = owner.iter().map(|s| *s.value()).collect();
-            if resolve_module(pkg, &owner_segs, deps).found
-                && module_types(pkg, &owner_segs, deps).contains(ty.value())
+            let canonical = module_types(pkg, &owner_segs, deps)
+                .into_iter()
+                .find(|t| hir::spelling(t) == &**ty.value());
+            if let (true, Some(canonical)) =
+                (resolve_module(pkg, &owner_segs, deps).found, canonical)
             {
                 if let Some(a) = &u.alias {
                     report(
@@ -787,7 +851,7 @@ fn apply_use(
                     );
                     return Vec::new();
                 }
-                return resolver.use_dep_type(ty, &u.names, u.glob);
+                return resolver.use_dep_type(ty, canonical, &u.names, u.glob);
             }
         }
         let path = dotted(&segs);
@@ -806,6 +870,28 @@ fn apply_use(
             path_span,
         );
         return Vec::new();
+    }
+
+    // A package's root re-exports constructors flat with `@pub use M.Ty.*`,
+    // as a Rust crate root does with `pub use Ty::*`: `use pkg` brings them
+    // all, and `use pkg (C)` the ones it names.
+    let flat: Vec<InternedString> = if segs.len() == 1 {
+        deps.iter()
+            .filter(|d| d.name == segs[0] && d.prelude_exports.is_none())
+            .flat_map(|d| d.flat_ctors.iter().copied())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let flat_named = |name: InternedString| {
+        flat.iter()
+            .copied()
+            .find(|c| c.rsplit_once('.').map_or(&**c, |(_, b)| b) == &*name)
+    };
+    if u.alias.is_none() && u.names.is_empty() {
+        for c in &flat {
+            resolver.use_flat_ctor(*c);
+        }
     }
 
     match &u.alias {
@@ -836,13 +922,19 @@ fn apply_use(
         if let Some(&id) = map.get(&name) {
             resolver.import_from(name, id, InternedString::from(dotted(&segs)));
             resolver.note_ref(n.span, NameRef::Value(id));
-        } else if types.contains(&name) {
-            resolver.note_ref(n.span, NameRef::Type(name));
+        } else if let Some(&canonical) = types.iter().find(|t| hir::spelling(t) == &*name) {
+            // Naming a type in a `use` is what settles which one a spelling
+            // shared by several packages means.
+            resolver.use_named_type(canonical);
+            resolver.note_ref(n.span, NameRef::Type(canonical));
+        } else if let Some(c) = flat_named(name) {
+            resolver.use_flat_ctor(c);
         } else if let Some(owner) = types
             .iter()
             .find(|t| resolver.type_ctor_names(**t).contains(&name))
         {
             let module = dotted(&segs);
+            let owner = hir::spelling(owner);
             report(
                 format!("`{name}` is a constructor of `{owner}`, not an item of `{module}`"),
                 &format!("write `use {module}.{owner} ({name})`, or `{owner}.{name}`"),

@@ -11,6 +11,20 @@ fn a_char_literal_has_type_char() {
 }
 
 #[test]
+fn char_can_be_named_as_a_type() {
+    // In a signature, an annotation, and a constructor's field.
+    assert_eq!(
+        eval_main_std(
+            "data Key = Press Char | Release Char\n\
+             fun code : Key -> Int\n\
+             fun code k = match k with | Key.Press c -> charCode c | Key.Release c -> 0 - charCode c\n\
+             def main = let (b : Char) = 'b' in (code (Key.Press 'a'), code (Key.Release b))\n"
+        ),
+        "(97, -98)"
+    );
+}
+
+#[test]
 fn escapes_are_decoded_not_taken_literally() {
     // The character inside `'\n'` is a newline, not a backslash — which is what
     // taking the second character of the literal outright would give.

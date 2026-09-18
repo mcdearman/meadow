@@ -65,7 +65,7 @@ pub fn run(opts: &Options) -> Result<bool, String> {
         let paths: Vec<&Path> = selected.paths.iter().map(|p| p.as_path()).collect();
         let (out, names) = pipeline::build_together(&paths, options);
         for d in &out.diagnostics {
-            status::error(format!("{}: {}", d.filename, d.msg));
+            status::diagnostic(d);
         }
         let Some(linked) = out.linked else {
             return Err("could not build the package".into());

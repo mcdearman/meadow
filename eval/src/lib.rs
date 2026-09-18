@@ -1078,7 +1078,10 @@ impl<'a> Machine<'a> {
                         // rather than moving the whole thing out.
                         .and_then(|i| vals.get(i).cloned())
                         .ok_or_else(|| RuntimeError {
-                            msg: format!("`{cname}` has no field `{label}`"),
+                            msg: format!(
+                                "`{}` has no field `{label}`",
+                                cname.rsplit("::").next().unwrap_or_default()
+                            ),
                         })?,
                     other => return err(format!("cannot select `.{label}` from {other}")),
                 };
@@ -1208,6 +1211,7 @@ impl<'a> Machine<'a> {
                 self.ctrl = Control::Ret(result);
                 return Ok(());
             }
+            let effect = effect.rsplit("::").next().unwrap_or_default();
             return err(format!("unhandled effect {effect}.{op}"));
         };
 

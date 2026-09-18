@@ -802,7 +802,7 @@ fn build(
     let out = pipeline::build(path, profile.options);
 
     for d in &out.diagnostics {
-        status::error(format!("{}: {}", d.filename, d.msg));
+        status::diagnostic(d);
     }
     let name = out
         .package
@@ -968,7 +968,7 @@ fn build_many(
     let paths: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
     let out = pipeline::build_each(&paths, profile.options);
     for d in &out.diagnostics {
-        status::error(format!("{}: {}", d.filename, d.msg));
+        status::diagnostic(d);
     }
     if out.each.is_empty() {
         could_not_compile("the workspace", out.diagnostics.len().max(1));

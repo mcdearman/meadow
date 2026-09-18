@@ -247,3 +247,169 @@ fn prune_is_on_unless_a_manifest_or_a_flag_says_otherwise() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// --- constructors a package re-exports -----------------------------------------
+
+/// A library whose root re-exports a sibling module's type and constructors,
+/// and an app using it as `main` says.
+fn reexporting_pair(what: &str, main: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("meadow-reexport-{}-{what}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let lib = dir.join("shapes");
+    let app = dir.join("app");
+    for (path, text) in [
+        (
+            lib.join("meadow.toml"),
+            "[package]\nname = \"shapes\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            lib.join("src/Lib.mw"),
+            "mod Kinds\n@pub use shapes.Kinds (Shape, area)\n@pub use shapes.Kinds.Shape.*\n",
+        ),
+        (
+            lib.join("src/Kinds.mw"),
+            "@pub data Shape = Square Int | Rect Int Int\n\n\
+             @pub fun area s = match s with\n  | Shape.Square n -> n * n\n  | Shape.Rect w h -> w * h\n",
+        ),
+        (
+            app.join("meadow.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nshapes = { path = \"../shapes\" }\n",
+        ),
+        (app.join("src/Main.mw"), main),
+    ] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    app
+}
+
+fn run_app(app: &Path) -> String {
+    let out = pipeline::build(app, meadow::Options::debug());
+    if !out.diagnostics.is_empty() {
+        return out
+            .diagnostics
+            .iter()
+            .map(|d| d.msg.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    eval::run(&out.linked.expect("linked").program)
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn a_package_root_can_re_export_constructors_flat() {
+    // Named in the `use`, as `use shapes::Square` would be in Rust.
+    let named = reexporting_pair(
+        "named",
+        "use shapes (area, Square)\ndef main = area (Square 4)\n",
+    );
+    assert_eq!(run_app(&named), "16");
+    // A bare `use` brings every one.
+    let all = reexporting_pair("all", "use shapes\ndef main = area (Rect 2 3)\n");
+    assert_eq!(run_app(&all), "6");
+    // Without either, they stay under their type.
+    let qualified = reexporting_pair(
+        "qualified",
+        "use shapes (area, Shape)\ndef main = area (Shape.Square 3)\n",
+    );
+    assert_eq!(run_app(&qualified), "9");
+    let unnamed = reexporting_pair("unnamed", "use shapes (area)\ndef main = area (Square 4)\n");
+    assert!(
+        run_app(&unnamed).contains("unknown constructor `Square`"),
+        "{}",
+        run_app(&unnamed)
+    );
+}
+
+/// Two libraries, `shapes` and `figures`, each with its own `Shape`, and an
+/// app using both.
+fn two_shapes(what: &str, main: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("meadow-two-shapes-{}-{what}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let app = dir.join("app");
+    let mut files = vec![
+        (
+            app.join("meadow.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nshapes = { path = \"../shapes\" }\nfigures = { path = \"../figures\" }\n"
+                .to_string(),
+        ),
+        (app.join("src/Main.mw"), main.to_string()),
+    ];
+    for (lib, ctor, area) in [
+        ("shapes", "Square", "n * n"),
+        ("figures", "Circle", "3 * n * n"),
+    ] {
+        let root = dir.join(lib);
+        files.push((
+            root.join("meadow.toml"),
+            format!("[package]\nname = \"{lib}\"\nversion = \"0.1.0\"\n"),
+        ));
+        files.push((
+            root.join("src/Lib.mw"),
+            format!(
+                "@pub data Shape = {ctor} Int\n\n\
+                 @pub fun {lib}Area (s : Shape) = match s with\n  | Shape.{ctor} n -> {area}\n\n\
+                 @pub def {lib}Unit = Shape.{ctor} 1\n"
+            ),
+        ));
+    }
+    for (path, text) in files {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    app
+}
+
+#[test]
+fn two_packages_may_each_declare_a_type_of_one_name() {
+    // Each package's `Shape` is its own: both work side by side.
+    let both = two_shapes(
+        "both",
+        "use shapes (shapesArea, shapesUnit)\nuse figures (figuresArea, figuresUnit)\n\
+         def main = (shapesArea shapesUnit, figuresArea figuresUnit)\n",
+    );
+    assert_eq!(run_app(&both), "(1, 3)");
+    // One package's value is no value of the other's type: this used to
+    // type-check, and fail with a non-exhaustive match when run.
+    let crossed = two_shapes(
+        "crossed",
+        "use shapes (shapesArea)\nuse figures (figuresUnit)\n\
+         def main = shapesArea figuresUnit\n",
+    );
+    let got = run_app(&crossed);
+    assert!(
+        got.contains("type mismatch: `Shape` (from `shapes`) vs `Shape` (from `figures`)")
+            || got.contains("type mismatch: `Shape` (from `figures`) vs `Shape` (from `shapes`)"),
+        "{got}"
+    );
+    // Named bare, `Shape` could be either, until a `use` says which.
+    let ambiguous = two_shapes("ambiguous", "fun f (s : Shape) = s\ndef main = 1\n");
+    assert!(
+        run_app(&ambiguous).contains("`Shape` could be the type of any of"),
+        "{}",
+        run_app(&ambiguous)
+    );
+    let chosen = two_shapes(
+        "chosen",
+        "use shapes (Shape, shapesArea)\nfun f (s : Shape) = shapesArea s\n\
+         def main = f (Shape.Square 5)\n",
+    );
+    assert_eq!(run_app(&chosen), "25");
+}
+
+#[test]
+fn a_type_of_the_package_itself_shadows_one_of_the_same_name_elsewhere() {
+    // `Shape` here is the app's, whatever its dependencies declare -- and so
+    // is `Parser`, which the standard library's prelude declares too.
+    let local = two_shapes(
+        "local",
+        "data Shape = Dot\ndata Parser = Parser Int\n\
+         fun f (s : Shape) = match s with | Shape.Dot -> 7\n\
+         def main = (f Shape.Dot, match Parser 2 with | Parser n -> n)\n",
+    );
+    assert_eq!(run_app(&local), "(7, 2)");
+}

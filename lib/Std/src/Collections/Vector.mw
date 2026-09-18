@@ -198,14 +198,20 @@ fun vPopChunkBack shift node =
   match node with
   | Leaf xs -> (xs, vEmptyNode)
   | Branch szs kids ->
+      -- A relaxed node stays relaxed: its size table is what indexes it.
+      let rebuilt = \kids2 ->
+        match szs with
+        | None -> Branch None kids2
+        | Just _ -> Branch (Just (vSizesOf shift kids2)) kids2
+      in
       if shift == vBits then
         let chunk = match vaLast kids with | Leaf xs -> xs | Branch _ _ -> #[] in
-        (chunk, Branch None (vaInit kids))
+        (chunk, rebuilt (vaInit kids))
       else
         let (chunk, last2) = vPopChunkBack (shift - vBits) (vaLast kids) in
         if vNodeLen (shift - vBits) last2 == 0
-        then (chunk, Branch None (vaInit kids))
-        else (chunk, Branch None (vaSetLast kids last2))
+        then (chunk, rebuilt (vaInit kids))
+        else (chunk, rebuilt (vaSetLast kids last2))
 
 fun vShrinkRoot shift node =
   match node with
@@ -253,8 +259,12 @@ fun vPushChunkFront shift node chunk =
   if n == 0 then Empty
   else if n <= vWidth then Single xs
   else
-    let (sh, tree) = vBuildTree xs in
-    Full n sh #[] #[] tree #[] #[]
+    -- Only whole chunks go into the tree, which indexes by radix on the
+    -- understanding that every leaf but the last is full, and that the
+    -- chunks pushed after it will be too. The rest waits at the back.
+    let whole = n - n % vWidth in
+    let (sh, tree) = vBuildTree (arraySlice xs 0 whole) in
+    Full n sh #[] #[] tree #[] (arraySlice xs whole n)
 
 -- --- observation ----------------------------------------------------
 
@@ -354,12 +364,14 @@ fun vNormalize v =
   | Single xs -> vNormalize (Single (vaInit xs))
   | Full len sh oF iF mid iB oB ->
       if arrayLen oB > 0 then vNormalize (Full (len - 1) sh oF iF mid iB (vaInit oB))
-      else if arrayLen iB > 0 then vNormalize (Full (len - 1) sh oF iF mid (vaInit iB) #[])
+      -- A buffer one short is no chunk: it moves to the outer slot, since
+      -- whatever sits in an inner one is pushed into the tree whole.
+      else if arrayLen iB > 0 then vNormalize (Full (len - 1) sh oF iF mid #[] (vaInit iB))
       else if vNodeLen sh mid > 0 then
         let (chunk, mid2) = vPopChunkBack sh mid in
         let (sh2, mid3) = vShrinkRoot sh mid2 in
         vNormalize (Full (len - 1) sh2 oF iF mid3 #[] (vaInit chunk))
-      else if arrayLen iF > 0 then vNormalize (Full (len - 1) sh oF (vaInit iF) mid #[] #[])
+      else if arrayLen iF > 0 then vNormalize (Full (len - 1) sh oF #[] mid #[] (vaInit iF))
       else vNormalize (Full (len - 1) sh (vaInit oF) #[] mid #[] #[])
 
 -- --- push / pop front -----------------------------------------------

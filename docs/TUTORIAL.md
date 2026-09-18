@@ -1384,7 +1384,9 @@ def main = double 21
 ```
 
 The path starts with the package's own name, which is what `meadow.toml` says —
-`use myapp.Math`. The plain `use Math (double)` works too and means the same
+`use myapp.Math`. The name on its own is the root module (`Main.mw` or `Lib.mw`),
+as `crate` is in Rust: a child module writes `use myapp (helper)` to reach
+something the root declares. The plain `use Math (double)` works too and means the same
 thing; the longer form is the one to write when it is not obvious that `Math` is
 next door rather than a dependency.
 
@@ -1433,6 +1435,11 @@ That holds inside `Syntax.mw` too: it writes `Expr.Int`, or says `use Expr.*`
 once -- Rust's `use self::Expr::*` -- and then `Int`. The prelude re-exports
 `Just`, `None`, `Ok`, `Err` and `Ordering`'s three with `@pub use ... .*`, which is
 the only reason those need no `use` anywhere.
+
+A package's root module can do the same for its users, as a Rust crate root does
+with `pub use Ty::*`. After `@pub use mylib.Shapes.Shape.*` in `mylib`'s
+`Lib.mw`, a dependent writes `use mylib (Square)` to bring in one constructor,
+or a bare `use mylib` to bring in all of them.
 
 ### Visibility: `@pub`, `@pub(pkg)`, `@pub(super)`
 
@@ -1515,6 +1522,20 @@ util = { path = "../util" }
 Then `use util` for all of it, `use util (double)` for one name, or
 `use util as U` to keep it behind a qualifier. Only `@pub` names cross the
 boundary.
+
+A dependency's types can be named without a `use`, and each package's types
+are its own. If `shapes` and `figures` both declare a `Shape`, they are two
+types: a value of one is not a value of the other, and a program may use both.
+A type mismatch between them says which package each one comes from:
+
+```
+type mismatch: `Shape` (from `shapes`) vs `Shape` (from `figures`)
+```
+
+Written bare, such a name could be either one, so it is an error until a `use`
+picks one: `use shapes (Shape)`. A type your own package declares needs no
+`use`: it shadows any other type of the same name, including one from the
+prelude, so a program may declare its own `Parser`.
 
 ### Workspaces
 
@@ -1748,6 +1769,15 @@ record Settings = {
   @cfg(windows)
   registryKey : String,
 }
+```
+
+On a `mod`, it leaves out the whole module file and everything under it. That
+is where a package's test-only modules go, like Rust's `#[cfg(test)] mod tests`:
+
+```meadow
+-- src/Lib.mw
+@cfg(test)
+mod Tests      -- src/Tests.mw is compiled by `meadow test`, and only then
 ```
 
 The standard library can use `@cfg` too, but it only sees the platform (`os`,

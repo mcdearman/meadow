@@ -1252,10 +1252,10 @@ impl Printer {
             InferType::Bound(i) => format!("?{i}"),
             InferType::RowEmpty => "{}".to_string(),
             InferType::Error => "{error}".to_string(),
-            InferType::Con(n, args) if args.is_empty() => n.to_string(),
+            InferType::Con(n, args) if args.is_empty() => hir::spelling(n).to_string(),
             InferType::Con(n, args) => {
                 let parts: Vec<String> = args.iter().map(|a| self.ty(a)).collect();
-                format!("({n} {})", parts.join(" "))
+                format!("({} {})", hir::spelling(n), parts.join(" "))
             }
             InferType::Fun(args, ret, eff) => {
                 let parts: Vec<String> = args.iter().map(|a| self.ty(a)).collect();
@@ -1401,7 +1401,7 @@ impl Printer {
             }
             Term::Ctor(n, t, args) => {
                 let t = self.ty(t);
-                format!("({n} {} : {t})", self.terms(args))
+                format!("({} {} : {t})", hir::spelling(n), self.terms(args))
             }
             Term::Case(s, arms, _) => {
                 let parts: Vec<String> = arms
@@ -1427,7 +1427,8 @@ impl Printer {
                     .map(|c| {
                         let p = self.var(c.param);
                         let k = self.var(c.resume);
-                        format!("{}.{} {p} {k} -> {}", c.effect, c.op, self.term(&c.body))
+                        let effect = hir::spelling(&c.effect.to_string()).to_string();
+                        format!("{effect}.{} {p} {k} -> {}", c.op, self.term(&c.body))
                     })
                     .collect();
                 if let Some((v, _, b)) = ret {
@@ -1464,7 +1465,7 @@ impl Printer {
             Pat::Lit(l) => Self::lit(l),
             Pat::Tuple(ps) => format!("(tup {})", self.pats(ps)),
             Pat::Array(ps) => format!("#[{}]", self.pats(ps)),
-            Pat::Ctor(n, ps) => format!("({n} {})", self.pats(ps)),
+            Pat::Ctor(n, ps) => format!("({} {})", hir::spelling(n), self.pats(ps)),
             Pat::Record(fields) => {
                 let parts: Vec<String> = fields
                     .iter()

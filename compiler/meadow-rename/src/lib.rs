@@ -36,8 +36,18 @@ pub struct Resolver {
     /// Top-level names bound ahead of time by [`declare_toplevel`], so mutually
     /// recursive definitions resolve to a single id.
     predeclared: HashMap<(Vec<InternedString>, InternedString), VarId>,
-    /// Type constructors in scope: name -> arity. Seeded with the builtins.
-    tycons: HashMap<InternedString, usize>,
+    /// Type constructors in scope: the name as written -> what it means.
+    /// Seeded with the builtins.
+    tycons: HashMap<InternedString, Named>,
+    /// The package whose types this unit declares, which qualifies their
+    /// canonical names: `None` for the standard library. See [`Resolver::qualify`].
+    package: Option<InternedString>,
+    /// Canonical names of the types this unit declares, for the duplicate check.
+    declared_types: std::collections::HashSet<InternedString>,
+    /// Every type known to the unit, in scope or not: canonical name -> arity.
+    all_types: HashMap<InternedString, usize>,
+    /// Every effect known to the unit: canonical name -> arity.
+    all_effects: HashMap<InternedString, usize>,
     /// Every constructor known here, keyed by its **canonical** name --
     /// `Type.Ctor`, the one thing about it that is unique across a program.
     ///
@@ -81,9 +91,9 @@ pub struct Resolver {
     /// Type -> its constructors, bare names, in declaration order. What `use`
     /// of a type consults, and what an exhaustiveness message would list.
     ctors_of: HashMap<InternedString, Vec<InternedString>>,
-    /// Declared effects: name -> parameter count.
-    effects: HashMap<InternedString, usize>,
-    /// Operation name -> the effect it belongs to.
+    /// Effects in scope: the name as written -> what it means.
+    effects: HashMap<InternedString, Named>,
+    /// Operation name -> the effect it belongs to, by canonical name.
     effect_ops: HashMap<InternedString, InternedString>,
     /// Operation `VarId` -> `(effect, operation)`. Keyed by id, not name: an
     /// ordinary value can share an operation's name and shadow it in scope —
@@ -102,9 +112,9 @@ pub struct Resolver {
     /// What every module of the unit starts from: the builtins plus whatever
     /// the dependencies brought in, snapshotted by [`Resolver::seal_base_scope`].
     /// A module's own declarations are laid on top of this and nothing else.
-    base_tycons: HashMap<InternedString, usize>,
+    base_tycons: HashMap<InternedString, Named>,
     base_ctors: HashMap<InternedString, InternedString>,
-    base_effects: HashMap<InternedString, usize>,
+    base_effects: HashMap<InternedString, Named>,
     base_effect_ops: HashMap<InternedString, InternedString>,
     /// The module being declared into, or resolved.
     current: Vec<InternedString>,
@@ -305,6 +315,7 @@ fn builtin_tycons() -> HashMap<InternedString, usize> {
         ("BigInt", 0),
         ("Float", 0),
         ("String", 0),
+        ("Char", 0),
         ("Bool", 0),
         ("Int64", 0),
         ("Int32", 0),
@@ -342,6 +353,51 @@ fn builtin_ctors() -> HashMap<InternedString, InternedString> {
             (c, canonical_ctor(InternedString::from(*ty), c))
         })
         .collect()
+}
+
+/// Types and effects the compiler and the runtimes know by name, which are
+/// never qualified by a package: see [`Resolver::qualify`].
+const LANGUAGE_NAMES: &[&str] = &[
+    // Types a primitive's scheme or the back end names.
+    "Int", "BigInt", "Float", "String", "Char", "Bool", "Int64", "Int32", "Int16", "Int8", "UInt64",
+    "UInt32", "UInt16", "UInt8", "Float64", "Float32", "Unit", "List", "Array", "Ref", "StRef",
+    "StArray", "Compact", "Task", "Channel", "TVar", "Vector", "VNode", "Maybe", "Result",
+    // Effects the runtimes answer, or a primitive performs.
+    "Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut", "Stm", "St",
+];
+
+/// What a type's (or an effect's) name, as written, means in a scope.
+#[derive(Debug, Clone, PartialEq)]
+enum Named {
+    /// One type: its canonical name, and how many parameters it takes.
+    One(InternedString, usize),
+    /// Types of several packages, seen without a `use`, share this spelling:
+    /// naming it bare has to wait for a `use` that says which. Canonical names.
+    Ambiguous(Vec<InternedString>),
+}
+
+/// Offer `canonical` under its spelling in `table`, as the types a unit sees
+/// without asking are offered: a second, different type of the same spelling
+/// makes the spelling ambiguous rather than replacing the first.
+fn offer(table: &mut HashMap<InternedString, Named>, canonical: InternedString, arity: usize) {
+    let spelled = InternedString::from(hir::spelling(&canonical));
+    let next = match table.remove(&spelled) {
+        None => Named::One(canonical, arity),
+        Some(Named::One(c, a)) if c == canonical => Named::One(c, a),
+        Some(Named::One(c, _)) => Named::Ambiguous(vec![c, canonical]),
+        Some(Named::Ambiguous(mut cs)) => {
+            if !cs.contains(&canonical) {
+                cs.push(canonical);
+            }
+            Named::Ambiguous(cs)
+        }
+    };
+    table.insert(spelled, next);
+}
+
+/// How a person names the package a canonical type belongs to.
+fn package_of(canonical: InternedString) -> String {
+    hir::type_package(&canonical).unwrap_or("Std").to_string()
 }
 
 /// A constructor's canonical name: `Type.Ctor`.
@@ -410,13 +466,20 @@ struct ModuleFrame {
 
 impl Resolver {
     pub fn new(filename: impl Into<String>, var_base: u32) -> Self {
-        let tycons = builtin_tycons();
+        let tycons = builtin_tycons()
+            .into_iter()
+            .map(|(n, a)| (n, Named::One(n, a)))
+            .collect();
         Resolver {
             filename: filename.into(),
             scope: Vec::new(),
             names: HashMap::new(),
             predeclared: HashMap::new(),
             tycons,
+            package: None,
+            declared_types: std::collections::HashSet::new(),
+            all_types: HashMap::new(),
+            all_effects: HashMap::new(),
             ctors: HashMap::new(),
             visible_ctors: builtin_ctors(),
             module_ctors: HashMap::new(),
@@ -432,7 +495,10 @@ impl Resolver {
             // Primitives perform them, and naming one in an annotation is fine.
             effects: [("Mut", 0), ("St", 1), ("Thread", 0)]
                 .into_iter()
-                .map(|(n, a)| (InternedString::from(n), a))
+                .map(|(n, a)| {
+                    let n = InternedString::from(n);
+                    (n, Named::One(n, a))
+                })
                 .collect(),
             effect_ops: HashMap::new(),
             effect_op_ids: HashMap::new(),
@@ -469,6 +535,35 @@ impl Resolver {
     /// it goes.
     pub fn set_filename(&mut self, filename: impl Into<String>) {
         self.filename = filename.into();
+    }
+
+    /// The package this unit belongs to: its types are known by it as well as
+    /// by their names, as `package::Name`. The standard library's are not --
+    /// the compiler knows several of them by name.
+    pub fn set_package(&mut self, package: InternedString) {
+        self.package = (&*package != "Std").then_some(package);
+    }
+
+    /// The canonical name of a type or effect this unit declares as `name`.
+    ///
+    /// A name the compiler itself knows -- one a primitive's type mentions, or
+    /// one the runtime answers -- stays as it is, wherever it is declared: the
+    /// standard library declares those, and a program built without it
+    /// declares its own.
+    fn qualify(&self, name: InternedString) -> InternedString {
+        match self.package {
+            Some(p) if !LANGUAGE_NAMES.contains(&&*name) => {
+                InternedString::from(format!("{p}::{name}"))
+            }
+            _ => name,
+        }
+    }
+
+    /// Whether `canonical` is a type this module can name.
+    fn type_in_scope(&self, canonical: InternedString) -> bool {
+        self.tycons
+            .values()
+            .any(|n| matches!(n, Named::One(c, _) if *c == canonical))
     }
 
     /// Declarations from here on belong to `path`.
@@ -520,8 +615,9 @@ impl Resolver {
         };
         for (n, a, v) in &frame.tycons {
             if ok(*v) {
-                self.tycons.insert(*n, *a);
-                self.bring_struct_ctor(*n);
+                let canonical = self.qualify(*n);
+                self.tycons.insert(*n, Named::One(canonical, *a));
+                self.bring_struct_ctor(canonical);
             }
         }
         // Constructors live under their type, as a Rust enum's variants do --
@@ -531,12 +627,12 @@ impl Resolver {
         // declaring the type, naming it in a `use`, nor a module glob does.
         for (n, a, v) in &frame.effects {
             if ok(*v) {
-                self.effects.insert(*n, *a);
+                self.effects.insert(*n, Named::One(self.qualify(*n), *a));
             }
         }
         for (op, eff, v) in &frame.effect_ops {
             if ok(*v) {
-                self.effect_ops.insert(*op, *eff);
+                self.effect_ops.insert(*op, self.qualify(*eff));
             }
         }
         for (n, id, v) in &frame.values {
@@ -636,22 +732,23 @@ impl Resolver {
             }
             for (n, a, v) in &frame.tycons {
                 if *n == name && note(*v, &mut found, &mut hidden) {
-                    self.tycons.insert(*n, *a);
-                    self.bring_struct_ctor(*n);
+                    let canonical = self.qualify(*n);
+                    self.tycons.insert(*n, Named::One(canonical, *a));
+                    self.bring_struct_ctor(canonical);
                     sites.push(RefSite {
                         span: want.span,
-                        what: NameRef::Type(*n),
+                        what: NameRef::Type(canonical),
                     });
                 }
             }
             for (n, a, v) in &frame.effects {
                 if *n == name && note(*v, &mut found, &mut hidden) {
-                    self.effects.insert(*n, *a);
+                    self.effects.insert(*n, Named::One(self.qualify(*n), *a));
                 }
             }
             for (op, eff, v) in &frame.effect_ops {
                 if *op == name && note(*v, &mut found, &mut hidden) {
-                    self.effect_ops.insert(*op, *eff);
+                    self.effect_ops.insert(*op, self.qualify(*eff));
                 }
             }
             self.extra_refs.extend(sites);
@@ -662,6 +759,7 @@ impl Resolver {
                 .flatten()
                 .map(|(_, canonical, _)| owner_of(*canonical));
             if let Some(ty) = owner {
+                let ty = InternedString::from(hir::spelling(&ty));
                 let module = dotted_path(path);
                 self.error(
                     format!("`{name}` is a constructor of `{ty}`, not an item of `{module}`"),
@@ -970,15 +1068,18 @@ impl Resolver {
                 }
                 ast::Decl::Effect(ed) => {
                     let name = *ed.name.value();
+                    let canonical = self.qualify(name);
                     // an effect name is also a type constructor of its parameters
                     self.declare_tycon(name, ed.params.len(), ed.name.span);
-                    self.effects.insert(name, ed.params.len());
+                    self.effects
+                        .insert(name, Named::One(canonical, ed.params.len()));
+                    self.all_effects.insert(canonical, ed.params.len());
                     let vis = self.vis;
                     self.frame().effects.push((name, ed.params.len(), vis));
                     for op_field in &ed.ops {
                         let op = *op_field.name.value();
                         let already = self.predeclared.contains_key(&(self.current.clone(), op));
-                        if self.effect_ops.insert(op, name).is_some() || already {
+                        if self.effect_ops.insert(op, canonical).is_some() || already {
                             self.error(
                                 format!("operation `{op}` is already defined"),
                                 "duplicate operation".to_string(),
@@ -991,7 +1092,7 @@ impl Resolver {
                             .entry((self.current.clone(), op))
                             .or_insert(op_field.name.span);
                         self.frame().effect_ops.push((op, name, vis));
-                        self.effect_op_ids.insert(id, (name, op));
+                        self.effect_op_ids.insert(id, (canonical, op));
                     }
                 }
                 ast::Decl::TypeAlias(ad) => {
@@ -1008,7 +1109,8 @@ impl Resolver {
         for d in decls {
             match d.value() {
                 hir::Decl::Data(dd) => {
-                    self.tycons.insert(dd.name, dd.params.len());
+                    offer(&mut self.tycons, dd.name, dd.params.len());
+                    self.all_types.insert(dd.name, dd.params.len());
                     for v in &dd.variants {
                         let (arity, field_names) = match &v.fields {
                             hir::VariantFields::Positional(ts) => (ts.len(), None),
@@ -1027,7 +1129,8 @@ impl Resolver {
                     }
                 }
                 hir::Decl::Record(rd) => {
-                    self.tycons.insert(rd.name, rd.params.len());
+                    offer(&mut self.tycons, rd.name, rd.params.len());
+                    self.all_types.insert(rd.name, rd.params.len());
                     self.ctors.insert(
                         rd.ctor,
                         CtorInfo {
@@ -1035,11 +1138,16 @@ impl Resolver {
                             field_names: Some(rd.fields.iter().map(|(n, _)| *n).collect()),
                         },
                     );
-                    self.ctors_of.entry(rd.name).or_default().push(rd.name);
+                    self.ctors_of
+                        .entry(rd.name)
+                        .or_default()
+                        .push(InternedString::from(hir::spelling(&rd.name)));
                 }
                 hir::Decl::Effect(ed) => {
-                    self.tycons.insert(ed.name, ed.params.len());
-                    self.effects.insert(ed.name, ed.params.len());
+                    offer(&mut self.tycons, ed.name, ed.params.len());
+                    offer(&mut self.effects, ed.name, ed.params.len());
+                    self.all_types.insert(ed.name, ed.params.len());
+                    self.all_effects.insert(ed.name, ed.params.len());
                     for (opname, op, _) in &ed.ops {
                         self.effect_ops.insert(*opname, ed.name);
                         self.effect_op_ids.insert(*op.value(), (ed.name, *opname));
@@ -1048,7 +1156,8 @@ impl Resolver {
                     }
                 }
                 hir::Decl::Alias(ad) => {
-                    self.tycons.insert(ad.name, ad.params.len());
+                    offer(&mut self.tycons, ad.name, ad.params.len());
+                    self.all_types.insert(ad.name, ad.params.len());
                 }
                 _ => {}
             }
@@ -1075,7 +1184,15 @@ impl Resolver {
         // check needs to see every module's.
         let vis = self.vis;
         self.frame().tycons.push((name, arity, vis));
-        if self.tycons.insert(name, arity).is_some() && !BUILTIN_TYCONS.contains(&&*name) {
+        let canonical = self.qualify(name);
+        // A package's types are its own, so only its other declarations can
+        // clash with one -- except in the standard library, whose names are
+        // not qualified, and so must also stay clear of its other units'.
+        let clash = canonical == name && self.type_in_scope(canonical);
+        let again = !self.declared_types.insert(canonical);
+        self.all_types.insert(canonical, arity);
+        self.tycons.insert(name, Named::One(canonical, arity));
+        if (again || clash) && !BUILTIN_TYCONS.contains(&&*name) {
             self.error(
                 format!("type `{name}` is already defined"),
                 "duplicate type".to_string(),
@@ -1098,6 +1215,7 @@ impl Resolver {
         field_names: Option<Vec<InternedString>>,
         span: Span,
     ) {
+        let owner = self.qualify(owner);
         let canonical = canonical_ctor(owner, name);
         if self
             .ctors
@@ -1106,7 +1224,10 @@ impl Resolver {
             && !BUILTIN_CTORS.contains(&&*name)
         {
             self.error(
-                format!("constructor `{owner}.{name}` is already defined"),
+                format!(
+                    "constructor `{}.{name}` is already defined",
+                    hir::spelling(&owner)
+                ),
                 "duplicate constructor".to_string(),
                 span,
             );
@@ -1198,8 +1319,26 @@ impl Resolver {
         ty: InternedString,
         name: InternedString,
     ) -> Option<InternedString> {
-        let canonical = canonical_ctor(ty, name);
+        let owner = match self.tycons.get(&ty) {
+            Some(Named::One(c, _)) => *c,
+            _ => return None,
+        };
+        let canonical = canonical_ctor(owner, name);
         self.ctors.contains_key(&canonical).then_some(canonical)
+    }
+
+    /// Report a bare type name that several packages' types share.
+    fn ambiguous_type(&mut self, name: InternedString, cs: &[InternedString], span: Span) {
+        let mut owners: Vec<String> = cs.iter().map(|c| format!("`{}`", package_of(*c))).collect();
+        owners.sort();
+        self.error(
+            format!(
+                "`{name}` could be the type of any of {}; `use` the package's `{name}` you mean",
+                owners.join(", ")
+            ),
+            "ambiguous type".to_string(),
+            span,
+        );
     }
 
     fn is_known_ctor(&self, name: InternedString) -> bool {
@@ -1225,9 +1364,10 @@ impl Resolver {
     /// "namespaced under the type" in any useful sense, since `Point.Point` would
     /// be the only other spelling.
     fn bring_struct_ctor(&mut self, ty: InternedString) {
-        let canonical = canonical_ctor(ty, ty);
+        let spelled = InternedString::from(hir::spelling(&ty));
+        let canonical = canonical_ctor(ty, spelled);
         if self.ctors.contains_key(&canonical) {
-            self.add_ctor(ty, canonical);
+            self.add_ctor(spelled, canonical);
         }
     }
 
@@ -1240,10 +1380,11 @@ impl Resolver {
         let mut owners: Vec<InternedString> = self
             .ctors_of
             .iter()
-            .filter(|(ty, cs)| self.tycons.contains_key(*ty) && cs.contains(&bare))
+            .filter(|(ty, cs)| self.type_in_scope(**ty) && cs.contains(&bare))
             .map(|(ty, _)| *ty)
             .collect();
         owners.sort_by_key(|t| t.to_string());
+        let spell = |t: &InternedString| InternedString::from(hir::spelling(t));
         let (msg, label) = match owners.as_slice() {
             [] => (
                 format!("unknown constructor `{bare}`"),
@@ -1253,7 +1394,10 @@ impl Resolver {
                 // `use Ty.*` works for this module's own types and for a
                 // dependency's, which are in scope by name; a sibling module's
                 // needs its path.
-                let sibling = !self.module_has_type(&here, *ty)
+                let own = self.qualify(spell(ty)) == *ty;
+                let ty = &spell(ty);
+                let sibling = own
+                    && !self.module_has_type(&here, *ty)
                     && self
                         .frames
                         .values()
@@ -1272,7 +1416,10 @@ impl Resolver {
                 )
             }
             many => {
-                let list = many.iter().map(|t| format!("`{t}.{bare}`")).join(", ");
+                let list = many
+                    .iter()
+                    .map(|t| format!("`{}.{bare}`", spell(t)))
+                    .join(", ");
                 (
                     format!(
                         "unknown constructor `{bare}`: it could be {list}; say which, or `use` one"
@@ -1328,27 +1475,33 @@ impl Resolver {
             );
             return Vec::new();
         }
-        self.note_ref(ty.span, NameRef::Type(tyname));
+        let canonical_ty = self.qualify(tyname);
+        self.note_ref(ty.span, NameRef::Type(canonical_ty));
         let ctors: Vec<(InternedString, InternedString)> = frame
             .ctors
             .iter()
-            .filter(|(_, canonical, _)| owner_of(*canonical) == tyname)
+            .filter(|(_, canonical, _)| owner_of(*canonical) == canonical_ty)
             .map(|(bare, canonical, _)| (*bare, *canonical))
             .collect();
         // `use M.Ty` on its own brings the type, as `use M (Ty)` would.
-        self.bring_ctors(tyname, &ctors, names, glob, Some(arity))
+        self.bring_ctors(canonical_ty, &ctors, names, glob, Some(arity))
     }
 
     /// `use Pkg.M.Ty (A, B)` / `use Pkg.M.Ty.*` for a dependency's type, which
     /// is already known (see [`Resolver::import_types`]); only its constructors'
     /// scope changes.
+    ///
+    /// `canonical` is the type the `use` names; it comes into scope under its
+    /// spelling, as naming it would bring it.
     pub fn use_dep_type(
         &mut self,
         ty: &ast::Ident,
+        canonical: InternedString,
         names: &[ast::Ident],
         glob: bool,
     ) -> Vec<InternedString> {
-        let tyname = *ty.value();
+        let tyname = canonical;
+        self.use_named_type(canonical);
         self.note_ref(ty.span, NameRef::Type(tyname));
         let ctors: Vec<(InternedString, InternedString)> = self
             .ctors_of
@@ -1377,7 +1530,8 @@ impl Resolver {
         }
         if names.is_empty() {
             if let Some(arity) = alone {
-                self.tycons.insert(tyname, arity);
+                let spelled = InternedString::from(hir::spelling(&tyname));
+                self.tycons.insert(spelled, Named::One(tyname, arity));
             }
             self.bring_struct_ctor(tyname);
             return Vec::new();
@@ -1392,7 +1546,7 @@ impl Resolver {
                     brought.push(*canonical);
                 }
                 None => self.error(
-                    format!("`{tyname}` has no constructor `{name}`"),
+                    format!("`{}` has no constructor `{name}`", hir::spelling(&tyname)),
                     "not a constructor of this type".to_string(),
                     want.span,
                 ),
@@ -1417,6 +1571,42 @@ impl Resolver {
     /// types are all in scope: a REPL line's view of the ones before it.
     pub fn use_struct_ctor(&mut self, ty: InternedString) {
         self.bring_struct_ctor(ty);
+    }
+
+    /// Name a dependency's type in this module, as `use pkg (Ty)` does: its
+    /// spelling now means it, whatever else of that spelling is about.
+    pub fn use_named_type(&mut self, canonical: InternedString) {
+        let spelled = InternedString::from(hir::spelling(&canonical));
+        if let Some(arity) = self.imported_arity(canonical) {
+            self.tycons.insert(spelled, Named::One(canonical, arity));
+            self.bring_struct_ctor(canonical);
+        }
+        if let Some(Named::Ambiguous(cs)) = self.effects.get(&spelled).cloned() {
+            if cs.contains(&canonical) {
+                let arity = self.imported_effect_arity(canonical).unwrap_or(0);
+                self.effects.insert(spelled, Named::One(canonical, arity));
+            }
+        }
+    }
+
+    /// The canonical names of the known types spelled `spelled`.
+    pub fn types_spelled(&self, spelled: InternedString) -> Vec<InternedString> {
+        let mut out: Vec<InternedString> = self
+            .all_types
+            .keys()
+            .copied()
+            .filter(|c| hir::spelling(c) == &*spelled)
+            .collect();
+        out.sort_by_key(|c| c.to_string());
+        out
+    }
+
+    fn imported_arity(&self, canonical: InternedString) -> Option<usize> {
+        self.all_types.get(&canonical).copied()
+    }
+
+    fn imported_effect_arity(&self, canonical: InternedString) -> Option<usize> {
+        self.all_effects.get(&canonical).copied()
     }
 
     /// Mint the `VarId` for a top-level name of the module being declared.
@@ -1536,8 +1726,9 @@ impl Resolver {
                     let name = *n.value();
                     if let Some(id) = self.lookup(name) {
                         self.pub_vars.insert(id);
-                    } else if self.tycons.contains_key(&name) {
-                        self.pub_types.insert(name);
+                    } else if let Some(Named::One(canonical, _)) = self.tycons.get(&name) {
+                        let canonical = *canonical;
+                        self.pub_types.insert(canonical);
                     } else {
                         self.error(
                             format!("cannot re-export `{name}`: not found in this scope"),
@@ -1698,7 +1889,7 @@ impl Resolver {
                             // exhaustiveness checker and the back end's tag
                             // table all key on this, and all three need two
                             // types to be able to own a `Leaf`.
-                            name: canonical_ctor(*dd.name.value(), *v.name.value()),
+                            name: canonical_ctor(self.qualify(*dd.name.value()), *v.name.value()),
                             name_span: v.name.span,
                             fields,
                         }
@@ -1707,7 +1898,7 @@ impl Resolver {
                 self.tyvars.clear();
                 self.node(
                     hir::Decl::Data(hir::DataDecl {
-                        name: *dd.name.value(),
+                        name: self.qualify(*dd.name.value()),
                         name_span: dd.name.span,
                         params,
                         variants,
@@ -1725,8 +1916,8 @@ impl Resolver {
                 self.tyvars.clear();
                 self.node(
                     hir::Decl::Record(hir::RecordDecl {
-                        name: *rd.name.value(),
-                        ctor: canonical_ctor(*rd.name.value(), *rd.name.value()),
+                        name: self.qualify(*rd.name.value()),
+                        ctor: canonical_ctor(self.qualify(*rd.name.value()), *rd.name.value()),
                         name_span: rd.name.span,
                         params,
                         fields,
@@ -1754,7 +1945,7 @@ impl Resolver {
                 self.tyvars.clear();
                 self.node(
                     hir::Decl::Effect(hir::EffectDecl {
-                        name: *ed.name.value(),
+                        name: self.qualify(*ed.name.value()),
                         name_span: ed.name.span,
                         params,
                         ops,
@@ -1769,7 +1960,7 @@ impl Resolver {
                 self.tyvars.clear();
                 self.node(
                     hir::Decl::Alias(hir::AliasDecl {
-                        name: *ad.name.value(),
+                        name: self.qualify(*ad.name.value()),
                         name_span: ad.name.span,
                         params,
                         ty,
@@ -1863,9 +2054,18 @@ impl Resolver {
             },
             ast::TypeExpr::Con(n, args) => {
                 let name = *n.value();
-                let ok = match self.tycons.get(&name).copied() {
-                    Some(arity) if arity == args.len() => true,
-                    Some(arity) => {
+                let found = self.tycons.get(&name).cloned();
+                let canonical = match &found {
+                    Some(Named::One(c, _)) => *c,
+                    _ => name,
+                };
+                let ok = match found {
+                    Some(Named::One(_, arity)) if arity == args.len() => true,
+                    Some(Named::Ambiguous(cs)) => {
+                        self.ambiguous_type(name, &cs, n.span);
+                        false
+                    }
+                    Some(Named::One(_, arity)) => {
                         self.error(
                             format!(
                                 "type `{name}` takes {arity} argument(s), got {}",
@@ -1891,7 +2091,7 @@ impl Resolver {
                 if !ok {
                     return self.node(hir::TypeExpr::Error, t.span);
                 }
-                let con = self.node(name, n.span);
+                let con = self.node(canonical, n.span);
                 self.node(hir::TypeExpr::Con(con, rargs), t.span)
             }
             ast::TypeExpr::Fun(ps, r, eff) => {
@@ -1947,20 +2147,26 @@ impl Resolver {
             .iter()
             .map(|(name, args)| {
                 let n = *name.value();
-                match self.effects.get(&n).copied() {
-                    Some(arity) if arity == args.len() => {}
-                    Some(arity) => self.error(
+                let found = self.effects.get(&n).cloned();
+                let label = match &found {
+                    Some(Named::One(c, _)) => *c,
+                    _ => n,
+                };
+                match found {
+                    Some(Named::One(_, arity)) if arity == args.len() => {}
+                    Some(Named::One(_, arity)) => self.error(
                         format!("effect `{n}` takes {arity} argument(s), got {}", args.len()),
                         "wrong number of effect arguments".to_string(),
                         name.span,
                     ),
+                    Some(Named::Ambiguous(cs)) => self.ambiguous_type(n, &cs, name.span),
                     None => self.error(
                         format!("unknown effect `{n}`"),
                         "not declared".to_string(),
                         name.span,
                     ),
                 }
-                (n, args.iter().map(|a| self.resolve_ty(a)).collect())
+                (label, args.iter().map(|a| self.resolve_ty(a)).collect())
             })
             .collect();
         let tail = row.tail.as_ref().map(|t| {
@@ -2064,10 +2270,18 @@ impl Resolver {
         q: &ast::Ident,
         name: InternedString,
     ) -> Option<InternedString> {
+        if let Some(Named::Ambiguous(cs)) = self.tycons.get(&*q.value()).cloned() {
+            let known = cs
+                .iter()
+                .any(|c| self.ctors.contains_key(&canonical_ctor(*c, name)));
+            if known {
+                self.ambiguous_type(*q.value(), &cs, q.span);
+            }
+        }
         let canonical = self.resolve_qualified_ctor(*q.value(), name)?;
         // The qualifier *is* the type, written out — so it is a reference to
         // it, and a rename of the type has to rewrite it.
-        self.note_ref(q.span, NameRef::Type(*q.value()));
+        self.note_ref(q.span, NameRef::Type(owner_of(canonical)));
         Some(canonical)
     }
 
@@ -2629,7 +2843,7 @@ impl Resolver {
         }
         for extra in provided.keys() {
             self.error(
-                format!("`{name}` has no field `{extra}`"),
+                format!("`{}` has no field `{extra}`", bare_ctor(name)),
                 "unknown field".to_string(),
                 name_span,
             );
@@ -2665,7 +2879,7 @@ impl Resolver {
         }
         for extra in provided.keys() {
             self.error(
-                format!("`{name}` has no field `{extra}`"),
+                format!("`{}` has no field `{extra}`", bare_ctor(name)),
                 "unknown field".to_string(),
                 name_span,
             );

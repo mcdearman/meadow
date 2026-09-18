@@ -239,18 +239,18 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
         for d in &pkg.data_decls {
             match d.value() {
                 hir::Decl::Data(dd) => {
-                    n.types.push(dd.name.to_string());
+                    n.types.push(hir::spelling(&dd.name).to_string());
                     // A variant's name is canonical (`Maybe.Just`); a person
                     // completing one types the bare spelling.
                     n.ctors
                         .extend(dd.variants.iter().map(|v| bare_ctor(&v.name.to_string())));
                 }
                 hir::Decl::Record(rd) => {
-                    n.types.push(rd.name.to_string());
-                    n.ctors.push(rd.name.to_string());
+                    n.types.push(hir::spelling(&rd.name).to_string());
+                    n.ctors.push(hir::spelling(&rd.name).to_string());
                 }
-                hir::Decl::Effect(ed) => n.types.push(ed.name.to_string()),
-                hir::Decl::Alias(ad) => n.types.push(ad.name.to_string()),
+                hir::Decl::Effect(ed) => n.types.push(hir::spelling(&ed.name).to_string()),
+                hir::Decl::Alias(ad) => n.types.push(hir::spelling(&ad.name).to_string()),
                 _ => {}
             }
         }

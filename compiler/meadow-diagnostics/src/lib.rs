@@ -56,11 +56,23 @@ pub fn parse_report<'src, T: Display>(
 }
 
 pub fn build_report<'src>(diag: Diagnostic) -> Report<'src, (String, Range<usize>)> {
+    build_report_with(diag, true)
+}
+
+/// [`build_report`], coloured only if `colour`. Spans are byte offsets, which
+/// is what the lexer hands out.
+pub fn build_report_with<'src>(
+    diag: Diagnostic,
+    colour: bool,
+) -> Report<'src, (String, Range<usize>)> {
+    let config = ariadne::Config::default()
+        .with_color(colour)
+        .with_index_type(ariadne::IndexType::Byte);
     Report::build(
         ReportKind::Error,
         (diag.filename.clone(), Range::from(diag.label.1)),
     )
-    .with_config(ariadne::Config::default())
+    .with_config(config)
     .with_message(diag.msg)
     .with_label(
         Label::new((diag.filename.clone(), Range::from(diag.label.1)))
@@ -105,4 +117,14 @@ pub fn emit(diags: &[Diagnostic], label: &str, text: &str) {
         let report = build_report(d);
         let _ = report.eprint((label.to_string(), source.clone()));
     }
+}
+
+/// `diag` rendered as text, with a snippet of `text` -- the whole of the file
+/// it points into -- under the message: what a build prints for an error.
+pub fn render(diag: &Diagnostic, text: &str, colour: bool) -> String {
+    let source = ariadne::Source::from(text.to_string());
+    let mut out = Vec::new();
+    let _ =
+        build_report_with(diag.clone(), colour).write((diag.filename.clone(), source), &mut out);
+    String::from_utf8_lossy(&out).into_owned()
 }

@@ -667,7 +667,7 @@ impl Program {
             Op::JumpUnlessTag => {
                 let ctor = self
                     .ctor(i.bc() as Tag)
-                    .map(|s| s.to_string())
+                    .map(spelled)
                     .unwrap_or_else(|| format!("#{}", i.bc()));
                 format!("{name:<14} r{} is {ctor} else @{}", i.a, i.imm)
             }
@@ -679,7 +679,7 @@ impl Program {
             Op::MakeData => {
                 let ctor = self
                     .ctor(i.imm)
-                    .map(|s| s.to_string())
+                    .map(spelled)
                     .unwrap_or_else(|| format!("#{}", i.imm));
                 format!("{name:<14} r{} <- {ctor}(r{}..+{})", i.a, i.b, i.c)
             }
@@ -835,5 +835,16 @@ mod tests {
             let i = Instr::i(Op::Jump, imm);
             assert_eq!(Instr::decode(i.encode()).unwrap().imm, imm);
         }
+    }
+}
+
+/// A constructor's name as the source writes it. A type declared outside the
+/// standard library is known past the resolver by its package as well, which
+/// a disassembly has no reason to repeat.
+fn spelled(name: InternedString) -> String {
+    let name = name.to_string();
+    match name.rfind("::") {
+        Some(at) => name[at + 2..].to_string(),
+        None => name,
     }
 }

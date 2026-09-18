@@ -25,6 +25,27 @@ pub fn spell_name(name: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// A type's or effect's name as a person writes it.
+///
+/// A type declared outside the standard library is known past the resolver by
+/// its package as well -- `anstyle::Color` -- so that two packages may each
+/// declare a `Color`, and a program may use both. Messages, hovers and printed
+/// types show the name without the package, as the source spells it; a
+/// constructor's `Type.Ctor` keeps its type part: `anstyle::Color.Red` is
+/// `Color.Red`.
+pub fn spelling(name: &str) -> &str {
+    match name.rfind("::") {
+        Some(at) => &name[at + 2..],
+        None => name,
+    }
+}
+
+/// The package a type's canonical name says it belongs to, if any: `None` for
+/// the standard library's and the builtins', which have none.
+pub fn type_package(name: &str) -> Option<&str> {
+    name.rfind("::").map(|at| &name[..at])
+}
+
 /// Primitive operators, in the order their [`VarId`]s are handed out by
 /// `rename::Resolver::with_prelude`. `infer` builds matching type schemes by
 /// index, and `core`/the linker map names to `Prim`s, so the order is load-bearing.

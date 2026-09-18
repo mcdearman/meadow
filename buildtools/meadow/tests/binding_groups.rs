@@ -248,3 +248,63 @@ fn a_sibling_can_be_taken_under_an_alias() {
         "42"
     );
 }
+
+#[test]
+fn a_child_can_use_the_package_root() {
+    // `use test` is the root module, as `use crate::…` is in Rust.
+    assert_eq!(
+        eval_unit(&[
+            (
+                "",
+                "@pub mod Child\nuse test.Child (quad)\n@pub fun double n = n * 2\ndef main = quad 5\n"
+            ),
+            (
+                "Child",
+                "use test (double)\n@pub fun quad n = double (double n)\n"
+            ),
+        ]),
+        "20"
+    );
+    assert_eq!(
+        eval_unit(&[
+            (
+                "",
+                "@pub mod Child\nuse test.Child (quad)\n@pub fun double n = n * 2\ndef main = quad 5\n"
+            ),
+            (
+                "Child",
+                "use test as R\n@pub fun quad n = R.double (R.double n)\n"
+            ),
+        ]),
+        "20"
+    );
+}
+
+#[test]
+fn a_module_declared_under_a_false_cfg_is_left_out() {
+    // `test` is off here, so `Tests` and everything below it are not compiled:
+    // their references to what does not exist are never looked at.
+    assert_eq!(
+        eval_unit(&[
+            (
+                "",
+                "@cfg(test)\nmod Tests\nmod Kept\nuse test.Kept (one)\ndef main = one\n"
+            ),
+            ("Tests", "def broken = nowhere\n"),
+            ("Tests.Deep", "def broken = alsoNowhere\n"),
+            ("Kept", "@pub def one = 1\n"),
+        ]),
+        "1"
+    );
+    // Declared both ways, it is kept whichever holds.
+    assert_eq!(
+        eval_unit(&[
+            (
+                "",
+                "@cfg(test)\nmod Impl\n@cfg(not(test))\nmod Impl\nuse test.Impl (two)\ndef main = two\n"
+            ),
+            ("Impl", "@pub def two = 2\n"),
+        ]),
+        "2"
+    );
+}

@@ -84,6 +84,15 @@ pub struct CompiledPackage {
     /// and because a unit stacked on this one needs `end` to start from.
     pub vars: std::ops::Range<u32>,
     pub name: InternedString,
+    /// Who this package *is*, for naming the types and effects it declares:
+    /// `name@version`, or just the name when there is no version to add.
+    ///
+    /// Two copies of one package at different versions are different packages,
+    /// so their types are different types. The name alone cannot say that --
+    /// both call themselves `json` -- and conflating them would let a value of
+    /// one pass for the other. Messages never show this: `hir::spelling` takes
+    /// the name off the front.
+    pub ident: InternedString,
     /// This package's `main`, if its root module declares one.
     ///
     /// An entry point is not an export: nothing links against `main`, the
@@ -153,6 +162,42 @@ impl TestSite {
         }
         out.push_str(&self.name);
         out
+    }
+}
+
+/// A dependency as the package being compiled knows it.
+///
+/// `spelled` is what this package writes in a `use` -- the name in its
+/// `[dependencies]`, which `meadow add --rename` may have changed. The package
+/// itself may call itself something else, and two dependencies may call
+/// themselves the same thing, so what a `use` names is asked of this rather
+/// than of the package.
+#[derive(Clone, Copy)]
+pub struct Dep<'a> {
+    pub spelled: InternedString,
+    pub pkg: &'a CompiledPackage,
+}
+
+impl<'a> Dep<'a> {
+    /// A dependency known by the name it calls itself.
+    pub fn new(pkg: &'a CompiledPackage) -> Dep<'a> {
+        Dep {
+            spelled: pkg.name,
+            pkg,
+        }
+    }
+
+    /// The same, under a name the dependent chose.
+    pub fn named(spelled: InternedString, pkg: &'a CompiledPackage) -> Dep<'a> {
+        Dep { spelled, pkg }
+    }
+}
+
+impl<'a> std::ops::Deref for Dep<'a> {
+    type Target = CompiledPackage;
+
+    fn deref(&self) -> &CompiledPackage {
+        self.pkg
     }
 }
 
@@ -228,7 +273,7 @@ pub fn compile_unit(
     unit_name: InternedString,
     id: usize,
     modules: Vec<AstModule>,
-    deps: &[&CompiledPackage],
+    deps: &[Dep<'_>],
     opts: Options,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
     compile_unit_in_package(unit_name, unit_name, id, modules, deps, opts)
@@ -242,10 +287,27 @@ pub fn compile_unit_in_package(
     unit_name: InternedString,
     id: usize,
     modules: Vec<AstModule>,
-    deps: &[&CompiledPackage],
+    deps: &[Dep<'_>],
     opts: Options,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
     compile_unit_above(pkg, unit_name, id, modules, deps, opts, 0)
+}
+
+/// [`compile_unit_above`], for a package that is one of several copies of
+/// itself: `ident` is who it is (`name@version`), which is what its types are
+/// named after, while `pkg` stays what its own modules call it.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_unit_as(
+    pkg: InternedString,
+    ident: InternedString,
+    unit_name: InternedString,
+    id: usize,
+    modules: Vec<AstModule>,
+    deps: &[Dep<'_>],
+    opts: Options,
+    floor: u32,
+) -> (CompiledPackage, Vec<Diagnostic>) {
+    compile_unit_inner(pkg, ident, unit_name, id, modules, deps, opts, floor)
 }
 
 /// [`compile_unit_in_package`], minting no variable below `floor`.
@@ -261,7 +323,21 @@ pub fn compile_unit_above(
     unit_name: InternedString,
     id: usize,
     modules: Vec<AstModule>,
-    deps: &[&CompiledPackage],
+    deps: &[Dep<'_>],
+    opts: Options,
+    floor: u32,
+) -> (CompiledPackage, Vec<Diagnostic>) {
+    compile_unit_inner(pkg, pkg, unit_name, id, modules, deps, opts, floor)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_unit_inner(
+    pkg: InternedString,
+    ident: InternedString,
+    unit_name: InternedString,
+    id: usize,
+    modules: Vec<AstModule>,
+    deps: &[Dep<'_>],
     opts: Options,
     floor: u32,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
@@ -304,7 +380,7 @@ pub fn compile_unit_above(
         .unwrap_or(0)
         .max(floor);
     let mut resolver = Resolver::with_prelude(filename.clone(), var_base);
-    resolver.set_package(pkg);
+    resolver.set_package(ident);
     // Every dependency's *types* are known here, so they can be named in an
     // annotation and their constructors written `Type.Ctor`. Which of those
     // constructors may be written *bare* is a separate question, and the
@@ -633,6 +709,7 @@ pub fn compile_unit_above(
             flat_ctors,
             vars: var_base..var_end,
             name: unit_name,
+            ident,
             entry,
             modules: typed,
             types: table,
@@ -710,7 +787,7 @@ fn apply_use(
     resolver: &mut Resolver,
     pkg: InternedString,
     u: &ast::UseDecl,
-    deps: &[&CompiledPackage],
+    deps: &[Dep<'_>],
     filename: &str,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<InternedString> {
@@ -877,7 +954,7 @@ fn apply_use(
     // all, and `use pkg (C)` the ones it names.
     let flat: Vec<InternedString> = if segs.len() == 1 {
         deps.iter()
-            .filter(|d| d.name == segs[0] && d.prelude_exports.is_none())
+            .filter(|d| d.spelled == segs[0] && d.prelude_exports.is_none())
             .flat_map(|d| d.flat_ctors.iter().copied())
             .collect()
     } else {
@@ -952,7 +1029,7 @@ fn apply_use(
 fn module_types(
     pkg: InternedString,
     segs: &[InternedString],
-    deps: &[&CompiledPackage],
+    deps: &[Dep<'_>],
 ) -> Vec<InternedString> {
     let names = |decls: &mut dyn Iterator<Item = &hir::LDecl>| -> Vec<InternedString> {
         decls
@@ -976,8 +1053,8 @@ fn module_types(
         // named by its own dotted path, and an external package by its first
         // segment.
         let wants: Vec<&[InternedString]> = [
-            (dotted(local) == *dep.name.to_string()).then_some(local),
-            (segs.first() == Some(&dep.name)).then(|| &segs[1..]),
+            (dotted(local) == *dep.spelled.to_string()).then_some(local),
+            (segs.first() == Some(&dep.spelled)).then(|| &segs[1..]),
         ]
         .into_iter()
         .flatten()
@@ -1011,11 +1088,7 @@ pub struct Resolved {
 /// Look up the module a `use` path names among `deps`. Shared by `use`
 /// resolution and by the REPL's completer, so the two cannot disagree about
 /// what is in scope.
-pub fn resolve_module(
-    pkg: InternedString,
-    segs: &[InternedString],
-    deps: &[&CompiledPackage],
-) -> Resolved {
+pub fn resolve_module(pkg: InternedString, segs: &[InternedString], deps: &[Dep<'_>]) -> Resolved {
     let mut map = HashMap::new();
     let mut found = false;
     if segs.is_empty() {
@@ -1027,7 +1100,7 @@ pub fn resolve_module(
     for dep in deps {
         // intra-batch sub-module: dep is named by its dotted module path
         let dep_is_local_module =
-            dotted(local) == &*dep.name.to_string() || dotted(segs) == &*dep.name.to_string();
+            dotted(local) == &*dep.spelled.to_string() || dotted(segs) == &*dep.spelled.to_string();
         if dep_is_local_module {
             found = true;
             for e in &dep.exports {
@@ -1036,7 +1109,7 @@ pub fn resolve_module(
             continue;
         }
         // external package: first segment is the package name, rest is module path
-        if segs[0] == dep.name {
+        if segs[0] == dep.spelled {
             let want = &segs[1..];
             if dep.modules.iter().any(|m| m.path == want) {
                 found = true;
@@ -1054,12 +1127,12 @@ pub fn resolve_module(
 /// A module elsewhere whose last segment matches the one asked for, rendered as
 /// the full path it should have been written as — so `use List` can point at
 /// `Std.Collections.List`.
-fn suggest_module(segs: &[InternedString], deps: &[&CompiledPackage]) -> Option<String> {
+fn suggest_module(segs: &[InternedString], deps: &[Dep<'_>]) -> Option<String> {
     let last = segs.last()?;
     for dep in deps {
         for m in &dep.modules {
             if m.path.last() == Some(last) && m.path.as_slice() != segs {
-                let mut full = vec![dep.name];
+                let mut full = vec![dep.spelled];
                 full.extend(m.path.iter().copied());
                 return Some(dotted(&full));
             }

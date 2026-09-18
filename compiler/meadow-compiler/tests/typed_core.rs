@@ -27,7 +27,12 @@ fn unit(name: &str, src: &str, deps: &[&CompiledPackage]) -> CompiledPackage {
         ast: ast.expect("parses"),
         source,
     }];
-    let (pkg, diags) = compile_unit(name, 0, modules, deps, Options::debug());
+    let deps: Vec<meadow_compiler::Dep<'_>> = deps
+        .iter()
+        .copied()
+        .map(meadow_compiler::Dep::new)
+        .collect();
+    let (pkg, diags) = compile_unit(name, 0, modules, &deps, Options::debug());
     assert!(
         diags.is_empty(),
         "{:?}",

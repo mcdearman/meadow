@@ -98,7 +98,8 @@ fn run_src(src: &str) -> Vec<(String, Option<String>)> {
     // `compile_str_with_std` returns only a linked program, and the test list
     // lives on the package — so compile the unit directly against `Std`.
     let (std_pkgs, _) = meadow::stdlib::std_packages(Options::debug());
-    let std_refs: Vec<_> = std_pkgs.iter().collect();
+    let std_deps: Vec<meadow_compiler::Dep<'_>> =
+        std_pkgs.iter().map(meadow_compiler::Dep::new).collect();
     let source = meadow_compiler::source::Source::new(
         meadow_compiler::source::SourceKind::Interactive,
         src.into(),
@@ -116,7 +117,7 @@ fn run_src(src: &str) -> Vec<(String, Option<String>)> {
         })
         .unwrap_or_default();
     let (cp, diags) =
-        meadow_compiler::compile_unit("t".into(), 1, modules, &std_refs, Options::debug());
+        meadow_compiler::compile_unit("t".into(), 1, modules, &std_deps, Options::debug());
     assert!(
         diags.is_empty(),
         "{:?}",

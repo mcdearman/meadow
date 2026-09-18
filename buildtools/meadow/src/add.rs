@@ -104,6 +104,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
             source: id,
             rev: got.rev.clone(),
             tree: got.tree.clone(),
+            version: None,
         });
         if let Err(e) = lock.save(&dir) {
             status::warning(format!("could not write {}: {e}", lock::FILE));
@@ -152,10 +153,41 @@ fn source_of(what: &str, reference: &GitRef, from: &Path) -> Result<DepSource, S
         };
         return Ok(DepSource::Path(rel));
     }
-    Ok(DepSource::Git {
-        url: url_of(what)?,
-        reference: reference.clone(),
-    })
+    let url = url_of(what)?;
+    // Nothing was asked for by name, so the dependency takes the release the
+    // repository is at -- and, from then on, whatever later release does not
+    // break it. A repository with no releases has only its default branch.
+    let reference = match reference {
+        GitRef::Default => match release_now(&url)? {
+            Some(req) => GitRef::Version(req),
+            None => GitRef::Default,
+        },
+        chosen => chosen.clone(),
+    };
+    Ok(DepSource::Git { url, reference })
+}
+
+/// The newest release the repository has tagged, as a requirement to write
+/// into the manifest -- or `None` when it has tagged none.
+fn release_now(url: &str) -> Result<Option<crate::semver::Req>, String> {
+    let cache = git::default_cache()?;
+    let have = git::releases(&cache, url, crate::package::policy().net)?;
+    let newest = have
+        .iter()
+        .map(|(v, _)| v)
+        .filter(|v| !v.is_prerelease())
+        .max()
+        .or_else(|| have.iter().map(|(v, _)| v).max());
+    match newest {
+        Some(v) => Ok(Some(crate::semver::Req { least: v.clone() })),
+        None => {
+            status::note(
+                "Note",
+                format!("{url} has tagged no releases, so this follows its default branch"),
+            );
+            Ok(None)
+        }
+    }
 }
 
 /// The URL `what` means.
@@ -206,6 +238,7 @@ fn written(source: &DepSource) -> String {
             GitRef::Branch(b) => format!("{{ git = \"{url}\", branch = \"{b}\" }}"),
             GitRef::Tag(t) => format!("{{ git = \"{url}\", tag = \"{t}\" }}"),
             GitRef::Rev(r) => format!("{{ git = \"{url}\", rev = \"{r}\" }}"),
+            GitRef::Version(req) => format!("{{ git = \"{url}\", version = \"{req}\" }}"),
         },
     }
 }

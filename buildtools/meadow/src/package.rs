@@ -79,6 +79,10 @@ pub enum GitRef {
     Tag(String),
     /// A commit, which cannot mean anything else later.
     Rev(String),
+    /// `version = "1.2.0"`: the newest release the repository has tagged that
+    /// does not break that one. Which release that is depends on what else the
+    /// build wants, so it is decided while resolving rather than here.
+    Version(crate::semver::Req),
 }
 
 impl GitRef {
@@ -89,6 +93,10 @@ impl GitRef {
             GitRef::Branch(b) => Some(format!("branch={b}")),
             GitRef::Tag(t) => Some(format!("tag={t}")),
             GitRef::Rev(r) => Some(format!("rev={r}")),
+            // The requirement, not the release it resolved to: this is how a
+            // lock entry is found again, and a resolution that moved within
+            // the requirement must still find the entry it is replacing.
+            GitRef::Version(req) => Some(format!("version={req}")),
         }
     }
 
@@ -99,6 +107,9 @@ impl GitRef {
             GitRef::Branch(b) => b,
             GitRef::Tag(t) => t,
             GitRef::Rev(r) => r,
+            // A requirement is resolved to a tag before anything is fetched
+            // for it; `refspec` is never reached with one.
+            GitRef::Version(_) => "HEAD",
         }
     }
 }
@@ -209,6 +220,24 @@ pub struct Package {
     pub root: PathBuf,
     pub modules: Vec<ModuleSource>,
     pub deps: Vec<PackageId>,
+    /// What this package calls each of its dependencies -- the key in its
+    /// `[dependencies]`, which is not always what the dependency calls itself.
+    /// Parallel to `deps`.
+    pub dep_names: Vec<InternedString>,
+}
+
+impl Package {
+    /// Who the package is, for naming the types and effects it declares.
+    ///
+    /// Two copies of one package at different versions are different packages,
+    /// and their types are different types, so the version is part of who it
+    /// is. A package with no manifest has only its name.
+    pub fn ident(&self) -> String {
+        match &self.version {
+            Some(v) => format!("{}@{v}", self.name),
+            None => self.name.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +306,22 @@ impl PackageGraph {
         entries: &[&Path],
         resolver: &mut Resolver,
     ) -> Result<PackageGraph, Diagnostic> {
+        // Resolving a version requirement can raise a release something
+        // earlier in the walk already resolved against. When it does, the walk
+        // is made again, now that the decision is known -- so that one copy of
+        // the package serves everything that can share it. Each pass raises at
+        // least one release, so this settles.
+        for _ in 0..8 {
+            resolver.reresolve = false;
+            let graph = PackageGraph::walk(entries, resolver)?;
+            if !resolver.reresolve {
+                return Ok(graph);
+            }
+        }
+        PackageGraph::walk(entries, resolver)
+    }
+
+    fn walk(entries: &[&Path], resolver: &mut Resolver) -> Result<PackageGraph, Diagnostic> {
         let mut builder = Builder {
             resolver,
             packages: Vec::new(),
@@ -328,6 +373,17 @@ pub struct Resolver {
     /// For each checkout a git dependency resolved to, how a build should name
     /// where it came from: `https://…#a1b2c3d4`.
     pub origins: HashMap<PathBuf, String>,
+    /// Which release each `version = "…"` dependency resolved to, by
+    /// repository and the digit that breaks compatibility.
+    ///
+    /// Everything in a build that can share one copy of a package does: two
+    /// packages wanting `1.2` and `1.4` get `1.4`, and only a requirement that
+    /// *cannot* be met alongside another -- `2.0` beside `1.4` -- becomes a
+    /// second copy.
+    pub releases: HashMap<(String, (u64, u64)), crate::semver::Version>,
+    /// Set when a decision already made had to be raised, so that whatever the
+    /// earlier requirement resolved to is resolved again.
+    pub reresolve: bool,
 }
 
 /// How a run resolves dependencies: `--offline`, `--locked`, and whether this
@@ -371,16 +427,100 @@ impl Resolver {
             seen: Vec::new(),
             cache: crate::git::default_cache().unwrap_or_default(),
             origins: HashMap::new(),
+            releases: HashMap::new(),
+            reresolve: false,
         }
     }
 
     /// Where `dep`, written in the manifest in `from`, can be read.
+    /// Which release of `url` meets `req`, given what the rest of the build
+    /// already settled on.
+    ///
+    /// The newest release that meets every requirement in its compatibility
+    /// group wins. Raising a group's release after something resolved against
+    /// the old one asks for the graph to be built again, so that everything
+    /// ends up on the one copy.
+    fn release_for(
+        &mut self,
+        name: &str,
+        url: &str,
+        req: &crate::semver::Req,
+    ) -> Result<(String, crate::semver::Version), String> {
+        let group = (url.to_string(), req.least.breaking());
+        if let Some(chosen) = self.releases.get(&group)
+            && req.allows(chosen)
+        {
+            let chosen = chosen.clone();
+            return Ok((self.tag_of(url, &chosen), chosen));
+        }
+        let have = crate::git::releases(&self.cache, url, self.net)?;
+        let versions: Vec<crate::semver::Version> = have.iter().map(|(v, _)| v.clone()).collect();
+        // A group's requirements are met together or not at all: the newest
+        // release that meets this one must also meet what was decided before.
+        let want = match self.releases.get(&group) {
+            Some(earlier) => req.strictest(&crate::semver::Req {
+                least: earlier.clone(),
+            }),
+            None => req.clone(),
+        };
+        let Some(best) = want.best(&versions) else {
+            let listed: Vec<String> = have
+                .iter()
+                .rev()
+                .take(5)
+                .map(|(v, _)| v.to_string())
+                .collect();
+            return Err(if listed.is_empty() {
+                format!(
+                    "`{name}` at {url} has no releases: nothing there is tagged `v1.2.3`.\n                     Depend on a branch instead -- `{{ git = \"{url}\" }}` -- or tag a release."
+                )
+            } else {
+                format!(
+                    "no release of `{name}` at {url} is {want}; it has {}",
+                    listed.join(", ")
+                )
+            });
+        };
+        let best = best.clone();
+        if self.releases.insert(group, best.clone()).is_some() {
+            self.reresolve = true;
+        }
+        Ok((self.tag_of(url, &best), best))
+    }
+
+    /// The tag a release was written as: `v1.2.0` or `1.2.0`, as the
+    /// repository spells it.
+    fn tag_of(&self, url: &str, version: &crate::semver::Version) -> String {
+        crate::git::releases(&self.cache, url, crate::git::Net::Offline)
+            .ok()
+            .and_then(|have| {
+                have.into_iter()
+                    .find(|(v, _)| v == version)
+                    .map(|(_, tag)| tag)
+            })
+            .unwrap_or_else(|| format!("v{version}"))
+    }
+
     fn resolve(&mut self, dep: &Dependency, from: &Path) -> Result<PathBuf, String> {
         let DepSource::Git { url, reference } = &dep.source else {
             let DepSource::Path(rel) = &dep.source else {
                 unreachable!("a dependency is a path or a git repository")
             };
             return Ok(from.join(rel));
+        };
+        // A requirement is not a reference until it is decided which release
+        // meets it -- here, and once for everything in the build that can
+        // share the release.
+        let resolved;
+        let mut resolved_version = None;
+        let reference = match reference {
+            GitRef::Version(req) => {
+                let (tag, version) = self.release_for(&dep.name, url, req)?;
+                resolved_version = Some(version.to_string());
+                resolved = GitRef::Tag(tag);
+                &resolved
+            }
+            other => other,
         };
         let source = crate::lock::source_id(&dep.source).expect("a git source has an id");
         // Updating means ignoring what was pinned, so that the reference is
@@ -411,6 +551,7 @@ impl Resolver {
             source,
             rev: got.rev,
             tree: got.tree,
+            version: resolved_version,
         });
         Ok(got.path)
     }
@@ -490,6 +631,7 @@ impl Builder<'_> {
 
         // resolve dependencies first so `order` ends up topologically sorted
         let mut dep_ids = Vec::new();
+        let mut dep_names: Vec<InternedString> = Vec::new();
         if let Some(m) = &manifest {
             for dep in &m.deps {
                 let dep_path = match self.resolver.resolve(dep, &canon) {
@@ -518,6 +660,7 @@ impl Builder<'_> {
                     });
                 }
                 dep_ids.push(self.visit(&dep_path)?);
+                dep_names.push(InternedString::from(dep.name.as_str()));
             }
         }
 
@@ -540,6 +683,7 @@ impl Builder<'_> {
             root: canon.clone(),
             modules,
             deps: dep_ids,
+            dep_names,
         });
         self.by_root.insert(canon, id);
         self.order.push(id);
@@ -948,12 +1092,26 @@ fn dep_source(value: &str, key: &str, warn: &mut impl FnMut(String)) -> Option<D
     if let Some(url) = field("git") {
         // At most one of these; naming two is a contradiction rather than a
         // precedence question, so it is refused.
-        let named: Vec<(&str, String)> = [("branch", "branch"), ("tag", "tag"), ("rev", "rev")]
-            .iter()
-            .filter_map(|(k, _)| field(k).map(|v| (*k, v)))
-            .collect();
+        let named: Vec<(&str, String)> = [
+            ("branch", "branch"),
+            ("tag", "tag"),
+            ("rev", "rev"),
+            ("version", "version"),
+        ]
+        .iter()
+        .filter_map(|(k, _)| field(k).map(|v| (*k, v)))
+        .collect();
         let reference = match named.as_slice() {
             [] => GitRef::Default,
+            [("version", v)] => match crate::semver::Req::parse(v) {
+                Some(req) => GitRef::Version(req),
+                None => {
+                    warn(format!(
+                        "dependency `{key}` wants version `{v}`, which is not a release                          like `1.2.0`, so it was ignored"
+                    ));
+                    return None;
+                }
+            },
             [("branch", b)] => GitRef::Branch(b.clone()),
             [("tag", t)] => GitRef::Tag(t.clone()),
             [("rev", r)] => GitRef::Rev(r.clone()),

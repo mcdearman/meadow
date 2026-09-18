@@ -39,6 +39,10 @@ struct Moved {
     source: String,
     from: Option<String>,
     to: String,
+    /// The releases, when the dependency asked for a version: what a person
+    /// reads instead of two commits.
+    was: Option<String>,
+    now: Option<String>,
 }
 
 pub fn run(opts: &Options) -> Result<(), String> {
@@ -110,8 +114,12 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 format!(
                     "{} {} -> {} ({})",
                     m.name,
-                    git::short(from),
-                    git::short(&m.to),
+                    m.was
+                        .clone()
+                        .unwrap_or_else(|| git::short(from).to_string()),
+                    m.now
+                        .clone()
+                        .unwrap_or_else(|| git::short(&m.to).to_string()),
                     lock::describes(&m.source)
                 ),
             ),
@@ -120,7 +128,9 @@ pub fn run(opts: &Options) -> Result<(), String> {
                 format!(
                     "{} {} ({})",
                     m.name,
-                    git::short(&m.to),
+                    m.now
+                        .clone()
+                        .unwrap_or_else(|| git::short(&m.to).to_string()),
                     lock::describes(&m.source)
                 ),
             ),
@@ -153,6 +163,8 @@ fn changes(before: &Lock, after: &Lock) -> Vec<Moved> {
                     source: now.source.clone(),
                     from: had.map(|h| h.rev.clone()),
                     to: now.rev.clone(),
+                    was: had.and_then(|h| h.version.clone()),
+                    now: now.version.clone(),
                 }),
             }
         })
@@ -172,6 +184,7 @@ mod tests {
             source: format!("git+https://e.com/{name}?branch=main"),
             rev: rev.to_string(),
             tree: "t".to_string(),
+            version: None,
         }
     }
 

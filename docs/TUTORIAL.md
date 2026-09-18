@@ -1529,13 +1529,75 @@ types: a value of one is not a value of the other, and a program may use both.
 A type mismatch between them says which package each one comes from:
 
 ```
-type mismatch: `Shape` (from `shapes`) vs `Shape` (from `figures`)
+type mismatch: `Shape` (from `shapes@0.1.0`) vs `Shape` (from `figures@0.1.0`)
 ```
 
 Written bare, such a name could be either one, so it is an error until a `use`
 picks one: `use shapes (Shape)`. A type your own package declares needs no
 `use`: it shadows any other type of the same name, including one from the
 prelude, so a program may declare its own `Parser`.
+
+### Depending on a released package
+
+A package published as a git repository is depended on by URL, and `meadow add`
+writes the entry for you:
+
+```sh
+meadow add mcdearman/meadow-unicode-width
+```
+
+```toml
+[dependencies]
+unicodeWidth = { git = "https://github.com/mcdearman/meadow-unicode-width", version = "0.1.0" }
+```
+
+A package's **releases** are the tags that read as versions: `v1.2.0`, or
+`1.2.0` without the `v`. `meadow add` takes the newest release there is and
+writes it down, and that entry means *that release, or any later one that does
+not break it*:
+
+| written | means |
+| --- | --- |
+| `version = "1.2.0"` | `>=1.2.0, <2.0.0` |
+| `version = "0.3.1"` | `>=0.3.1, <0.4.0` |
+
+Below `1.0` the minor is the breaking digit, as Cargo reads it: a package still
+finding its shape changes it there. A pre-release (`1.0.0-rc1`) is only ever
+chosen by a requirement that asks for one.
+
+Which release a build actually used is in `meadow.lock`, with the commit:
+
+```toml
+[[package]]
+name = "unicodeWidth"
+source = "git+https://github.com/mcdearman/meadow-unicode-width?version=0.1.0"
+version = "0.1.4"
+rev = "fa95092300d547891f5e1ecbd100b7e2438e1058"
+```
+
+The manifest is what you will take; the lockfile is what you took. Building
+again takes the same thing, however many releases have happened since —
+`meadow update` is what looks for a newer one, and it says so in versions:
+
+```
+Updating widget 0.1.3 -> 0.1.4
+```
+
+It never crosses a break: a `version = "0.1.0"` dependency does not move to
+`0.2.0`, however new that is. Moving across one is editing the manifest, or
+`meadow add` again — a decision, not an update.
+
+A repository with no releases at all is followed by its default branch, which
+is what `{ git = "…" }` with no version means. `--branch`, `--tag` and `--rev`
+still say exactly what to take, and a dependency pinned with `rev` cannot move.
+
+**Two versions at once.** Two packages in one build may want releases that
+cannot be met together — `0.1` and `0.2` of the same package. Both are built,
+and each gets the one it asked for. They are then *different packages*: their
+types are different types, and a value of one does not pass for the other.
+That is what the version in `Shape (from shapes@0.1.0)` is saying. Anything
+that *can* share a release does: two packages wanting `1.0` and `1.2` both get
+`1.2`, and the build holds one copy.
 
 ### Workspaces
 

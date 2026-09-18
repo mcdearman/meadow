@@ -713,7 +713,8 @@ impl Session {
             source: src,
         };
 
-        let deps: Vec<&CompiledPackage> = self.prefix.iter().collect();
+        let deps: Vec<meadow_compiler::Dep<'_>> =
+            self.prefix.iter().map(meadow_compiler::Dep::new).collect();
         let (compiled, diags) = compile_unit(
             InternedString::from(format!("repl:{}", self.line)),
             self.line as usize,

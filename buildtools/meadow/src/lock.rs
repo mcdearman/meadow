@@ -10,6 +10,7 @@
 //! [[package]]
 //! name = "json"
 //! source = "git+https://github.com/someone/meadow-json?tag=v1.2.0"
+//! version = "1.2.0"
 //! rev = "a1b2c3d4e5f6…"
 //! tree = "4842b356d40d…"
 //! ```
@@ -44,6 +45,10 @@ pub struct Locked {
     pub rev: String,
     /// The hash of the source tree at that commit.
     pub tree: String,
+    /// The release this resolved to, when the manifest asked for a version
+    /// rather than a reference. What moved is then a version in a diff, not a
+    /// commit nobody can read.
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -85,6 +90,7 @@ impl Lock {
                     source: String::new(),
                     rev: String::new(),
                     tree: String::new(),
+                    version: None,
                 });
                 continue;
             }
@@ -98,6 +104,7 @@ impl Lock {
                 (Some(p), "source") => p.source = value,
                 (Some(p), "rev") => p.rev = value,
                 (Some(p), "tree") => p.tree = value,
+                (Some(p), "version") => p.version = Some(value),
                 _ => {}
             }
         }
@@ -150,6 +157,9 @@ impl Lock {
             out.push_str("\n[[package]]\n");
             out.push_str(&format!("name = \"{}\"\n", p.name));
             out.push_str(&format!("source = \"{}\"\n", p.source));
+            if let Some(v) = &p.version {
+                out.push_str(&format!("version = \"{v}\"\n"));
+            }
             out.push_str(&format!("rev = \"{}\"\n", p.rev));
             if !p.tree.is_empty() {
                 out.push_str(&format!("tree = \"{}\"\n", p.tree));
@@ -241,6 +251,7 @@ mod tests {
             source: format!("git+https://example.com/{name}?tag=v1"),
             rev: rev.to_string(),
             tree: "tree0".to_string(),
+            version: None,
         }
     }
 

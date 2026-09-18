@@ -184,7 +184,8 @@ pub fn schemes_std(src: &str) -> String {
     // `compile_str_with_std` only returns a linked `Program`, so re-run the
     // unit compile with the std package as a dep to recover export schemes.
     let (std_pkgs, _) = meadow::stdlib::std_packages(Options::debug());
-    let std_refs: Vec<&CompiledPackage> = std_pkgs.iter().collect();
+    let std_deps: Vec<meadow_compiler::Dep<'_>> =
+        std_pkgs.iter().map(meadow_compiler::Dep::new).collect();
     let source = meadow_compiler::source::Source::new(
         meadow_compiler::source::SourceKind::Interactive,
         src.into(),
@@ -202,7 +203,7 @@ pub fn schemes_std(src: &str) -> String {
         })
         .unwrap_or_default();
     let (cp, diags) =
-        meadow_compiler::compile_unit("test".into(), 1, modules, &std_refs, Options::debug());
+        meadow_compiler::compile_unit("test".into(), 1, modules, &std_deps, Options::debug());
     let mut out = String::new();
     for e in &cp.exports {
         out.push_str(&format!(

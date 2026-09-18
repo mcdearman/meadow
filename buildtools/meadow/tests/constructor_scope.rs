@@ -372,8 +372,13 @@ fn against(lib: &str, src: &str) -> String {
         ast: ast.expect("parsed"),
         source,
     };
-    let (_, diags) =
-        meadow_compiler::compile_unit(name, 1, vec![module], &[&dep], meadow::Options::debug());
+    let (_, diags) = meadow_compiler::compile_unit(
+        name,
+        1,
+        vec![module],
+        &[meadow_compiler::Dep::new(&dep)],
+        meadow::Options::debug(),
+    );
     diags
         .iter()
         .map(|d| d.msg.clone())

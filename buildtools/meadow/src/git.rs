@@ -76,6 +76,28 @@ pub fn ensure(
     pinned: Option<&str>,
     net: Net,
 ) -> Result<Checkout, String> {
+    // A requirement names a release rather than a reference. Resolving it here
+    // is for whoever asks for one directly -- `meadow add`; a build decides
+    // between the requirements it has first and asks for the release it chose.
+    let resolved;
+    let reference = match reference {
+        GitRef::Version(req) => {
+            let have = releases(cache, url, net)?;
+            let versions: Vec<crate::semver::Version> =
+                have.iter().map(|(v, _)| v.clone()).collect();
+            let Some(best) = req.best(&versions) else {
+                return Err(format!("no release of `{url}` is {req}"));
+            };
+            let tag = have
+                .iter()
+                .find(|(v, _)| v == best)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| format!("v{best}"));
+            resolved = GitRef::Tag(tag);
+            &resolved
+        }
+        other => other,
+    };
     let root = cache;
     let slug = slug(url);
     let db = root.join("db").join(&slug);
@@ -161,6 +183,38 @@ pub fn latest(cache: &Path, url: &str, reference: &GitRef, net: Net) -> Result<S
     fetch(&db, url, reference)?;
     rev_parse(&db, reference.refspec())
         .map_err(|e| format!("`{url}` has no {}: {e}", reference.refspec()))
+}
+
+/// Every release the repository has: a tag that reads as a version, with the
+/// tag it was written as, newest last.
+///
+/// A tag that is not a version -- `nightly`, `v1.2` -- is not a release and is
+/// passed over. Offline, what was fetched before is used: a build that has
+/// resolved once can resolve again with no network.
+pub fn releases(
+    cache: &Path,
+    url: &str,
+    net: Net,
+) -> Result<Vec<(crate::semver::Version, String)>, String> {
+    let db = cache.join("db").join(slug(url));
+    if net == Net::Offline {
+        if !db.join("HEAD").is_file() {
+            return Err(format!(
+                "cannot look for the releases of `{url}` while offline"
+            ));
+        }
+    } else {
+        fetch(&db, url, &GitRef::Default)?;
+    }
+    let out = git(Some(&db), &["tag", "--list"])?;
+    let mut found: Vec<(crate::semver::Version, String)> = out
+        .lines()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| crate::semver::Version::parse(t).map(|v| (v, t.to_string())))
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(found)
 }
 
 // --- the git commands ---------------------------------------------------------

@@ -522,12 +522,17 @@ impl Std {
         }
         let here = here?;
 
+        let views: Vec<meadow_compiler::Dep<'_>> = deps
+            .iter()
+            .copied()
+            .map(meadow_compiler::Dep::new)
+            .collect();
         let (pkg, unit_diags) = meadow_compiler::compile_unit_in_package(
             sources.name,
             sources.name,
             1,
             modules,
-            &deps,
+            &views,
             Options::debug(),
         );
         // A diagnostic names the file it is in, so the ones for the rest of the
@@ -640,16 +645,21 @@ impl Std {
             })
             .unwrap_or_default();
 
+        let views: Vec<meadow_compiler::Dep<'_>> = deps
+            .iter()
+            .copied()
+            .map(meadow_compiler::Dep::new)
+            .collect();
         let (pkg, mut unit_diags) = match package {
             Some(p) => meadow_compiler::compile_unit_in_package(
                 p,
                 unit,
                 id,
                 modules,
-                deps,
+                &views,
                 Options::debug(),
             ),
-            None => meadow_compiler::compile_unit(name, id, modules, deps, Options::debug()),
+            None => meadow_compiler::compile_unit(name, id, modules, &views, Options::debug()),
         };
         diagnostics.append(&mut unit_diags);
 

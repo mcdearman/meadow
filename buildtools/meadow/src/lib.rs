@@ -26,6 +26,7 @@ pub mod package;
 pub mod pipeline;
 pub mod profile;
 pub mod runtime;
+pub mod semver;
 pub mod status;
 pub mod stdlib;
 pub mod test;

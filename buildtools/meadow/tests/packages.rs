@@ -381,9 +381,14 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
          def main = shapesArea figuresUnit\n",
     );
     let got = run_app(&crossed);
+    // A package is named with its version, since two copies of one package at
+    // different versions are two packages.
     assert!(
-        got.contains("type mismatch: `Shape` (from `shapes`) vs `Shape` (from `figures`)")
-            || got.contains("type mismatch: `Shape` (from `figures`) vs `Shape` (from `shapes`)"),
+        got.contains(
+            "type mismatch: `Shape` (from `shapes@0.1.0`) vs `Shape` (from `figures@0.1.0`)"
+        ) || got.contains(
+            "type mismatch: `Shape` (from `figures@0.1.0`) vs `Shape` (from `shapes@0.1.0`)"
+        ),
         "{got}"
     );
     // Named bare, `Shape` could be either, until a `use` says which.

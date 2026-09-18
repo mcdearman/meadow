@@ -72,6 +72,7 @@ pub use options::{Cfg, OptLevel, Options, Strictness};
 
 mod unit;
 pub use unit::{
-    AstModule, CompiledPackage, Export, Resolved, TestSite, TypedModule, compile_str,
-    compile_str_with, compile_unit, compile_unit_above, compile_unit_in_package, resolve_module,
+    AstModule, CompiledPackage, Dep, Export, Resolved, TestSite, TypedModule, compile_str,
+    compile_str_with, compile_unit, compile_unit_above, compile_unit_as, compile_unit_in_package,
+    resolve_module,
 };

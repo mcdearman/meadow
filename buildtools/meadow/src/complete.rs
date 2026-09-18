@@ -281,7 +281,12 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
         if segs.is_empty() {
             continue;
         }
-        let resolved = meadow_compiler::resolve_module(InternedString::from("repl"), &segs, &deps);
+        let views: Vec<meadow_compiler::Dep<'_>> = deps
+            .iter()
+            .copied()
+            .map(meadow_compiler::Dep::new)
+            .collect();
+        let resolved = meadow_compiler::resolve_module(InternedString::from("repl"), &segs, &views);
 
         match &u.alias {
             // `use M as C` — `C.name`, and nothing unqualified.

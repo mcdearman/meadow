@@ -261,7 +261,10 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
         }
         let Some(ast) = ast else { continue };
 
-        let dep_refs: Vec<&CompiledPackage> = subs.iter().map(|(_, p)| p).collect();
+        let dep_refs: Vec<meadow_compiler::Dep<'_>> = subs
+            .iter()
+            .map(|(_, p)| meadow_compiler::Dep::new(p))
+            .collect();
         let (mut cp, unit_diags) = compile_unit_in_package(
             pkg,
             InternedString::from(*dotted),
@@ -340,6 +343,9 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         flat_ctors,
         vars: lo..hi,
         name,
+        // The standard library is one package, at one version, in every build:
+        // nothing has to tell two copies of it apart.
+        ident: name,
         // A library has no entry point, and `Std` least of all.
         entry: None,
         modules,

@@ -109,7 +109,12 @@ fn a_dependent_unit_does_not_overlap_its_dependency() {
             ast: ast.expect("parses"),
             source,
         }];
-        compile_unit(name, 0, modules, deps, Options::debug())
+        let deps: Vec<meadow_compiler::Dep<'_>> = deps
+            .iter()
+            .copied()
+            .map(meadow_compiler::Dep::new)
+            .collect();
+        compile_unit(name, 0, modules, &deps, Options::debug())
     };
 
     let (base, d1) = unit("base", "@pub fun helper x = x + 1\n", &[]);

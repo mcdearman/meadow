@@ -14,7 +14,7 @@ use crate::stdlib;
 use crate::workspace::Workspace;
 use chumsky::error::Rich;
 use meadow_compiler::{
-    Options, compile_unit_above, core,
+    Options, core,
     diagnostics::Diagnostic,
     intern::InternedString,
     lexer::{Token, tokenize},
@@ -339,6 +339,38 @@ struct Compiled {
     compiled: Vec<InternedString>,
 }
 
+/// Who each package of `graph` is, for naming the types and effects it
+/// declares.
+///
+/// `name@version` tells two copies of one package apart, which is what makes
+/// their types different types rather than one type with two definitions. Two
+/// copies of the *same* version -- the same package from two places -- take
+/// where they came from as well, since nothing else distinguishes them.
+fn identities(graph: &PackageGraph) -> Vec<InternedString> {
+    let plain: Vec<String> = graph.packages.iter().map(|p| p.ident()).collect();
+    graph
+        .packages
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let shared = plain
+                .iter()
+                .enumerate()
+                .any(|(j, other)| j != i && *other == plain[i]);
+            if shared {
+                let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+                for b in p.origin.bytes() {
+                    h ^= u64::from(b);
+                    h = h.wrapping_mul(0x0100_0000_01b3);
+                }
+                InternedString::from(format!("{}#{:08x}", plain[i], h as u32))
+            } else {
+                InternedString::from(plain[i].as_str())
+            }
+        })
+        .collect()
+}
+
 /// Compile every package of `graph`, dependencies first -- reading back from
 /// `cache` each one whose inputs are what they were when it was saved.
 fn compile_graph(graph: &PackageGraph, opts: Options, cache: Option<&Cache>) -> Compiled {
@@ -357,6 +389,8 @@ fn compile_graph(graph: &PackageGraph, opts: Options, cache: Option<&Cache>) -> 
     // On a slot boundary, so that one package growing does not move the ids of
     // every package after it, which would make each of them a change.
     let mut floor = incremental::align(std.iter().map(|p| p.vars.end).max().unwrap_or(0));
+
+    let idents = identities(graph);
 
     // The bar counts every package in the graph. One found up to date moves it
     // on without a line of its own, as cargo does with a crate that is fresh.
@@ -383,13 +417,18 @@ fn compile_graph(graph: &PackageGraph, opts: Options, cache: Option<&Cache>) -> 
                     format!("{}{version} ({})", pkg.name, pkg.origin),
                 );
                 bar.working_on(&pkg.name);
-                let mut deps: Vec<&CompiledPackage> = std.iter().collect();
-                deps.extend(
-                    pkg.deps
-                        .iter()
-                        .map(|d| packages[*d].as_ref().expect("topological order")),
-                );
-                let (cp, mut d) = compile_package(pkg, &deps, opts, floor);
+                // The standard library is known by its own name; every other
+                // dependency by the name *this* package calls it, which is what
+                // its `use` lines say and need not be what it calls itself.
+                let mut deps: Vec<meadow_compiler::Dep<'_>> =
+                    std.iter().map(meadow_compiler::Dep::new).collect();
+                deps.extend(pkg.deps.iter().zip(&pkg.dep_names).map(|(d, alias)| {
+                    meadow_compiler::Dep::named(
+                        *alias,
+                        packages[*d].as_ref().expect("topological order"),
+                    )
+                }));
+                let (cp, mut d) = compile_package(pkg, idents[pid], &deps, opts, floor);
                 clean[pid] = d.is_empty() && pkg.deps.iter().all(|&d| clean[d]);
                 diagnostics.append(&mut d);
                 if clean[pid]
@@ -417,7 +456,8 @@ fn compile_graph(graph: &PackageGraph, opts: Options, cache: Option<&Cache>) -> 
 
 fn compile_package(
     pkg: &Package,
-    deps: &[&CompiledPackage],
+    ident: InternedString,
+    deps: &[meadow_compiler::Dep<'_>],
     opts: Options,
     floor: u32,
 ) -> (CompiledPackage, Vec<Diagnostic>) {
@@ -441,8 +481,9 @@ fn compile_package(
         }
     }
 
-    let (cp, unit_diags) =
-        compile_unit_above(pkg.name, pkg.name, pkg.id, modules, deps, opts, floor);
+    let (cp, unit_diags) = meadow_compiler::compile_unit_as(
+        pkg.name, ident, pkg.name, pkg.id, modules, deps, opts, floor,
+    );
     diags.extend(unit_diags);
     (cp, diags)
 }
@@ -474,7 +515,8 @@ pub fn compile_str_with_std(
             }]
         })
         .unwrap_or_default();
-    let deps: Vec<&CompiledPackage> = std_pkgs.iter().collect();
+    let deps: Vec<meadow_compiler::Dep<'_>> =
+        std_pkgs.iter().map(meadow_compiler::Dep::new).collect();
     let (cp, unit_diags) = compile_unit(name, std_pkgs.len(), modules, &deps, opts);
     diags.extend(unit_diags);
 

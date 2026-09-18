@@ -540,7 +540,7 @@ fn a_fragment_kind_that_does_not_exist_is_reported() {
     let e = errors(
         r#"
 macro wrong
-  | ($a : expr) -> { $a }
+  | ($a : ty) -> { $a }
 
 def main = wrong!(1)
 "#,
@@ -673,5 +673,158 @@ macro lastOf
 def main = lastOf!( ; 9)
 "#,
         "(9, [])",
+    );
+}
+
+// --- fragments the parser reads -----------------------------------------------
+
+#[test]
+fn an_expr_fragment_takes_a_whole_expression() {
+    is(
+        r#"
+macro twice
+  | ($e : expr) -> { ($e, $e) }
+
+def main = twice!(1 + 2)
+"#,
+        "(3, 3)",
+    );
+}
+
+#[test]
+fn an_expr_fragment_stays_one_thing_where_it_is_written() {
+    // Application is juxtaposition, so a fragment written into a template has
+    // to hold together: `show $x` with `$x` bound to `1 + 2` is `show (1 + 2)`,
+    // which is what was passed, and not `(show 1) + 2`.
+    is(
+        r#"
+macro call
+  | ($f : expr, $x : expr) -> { $f $x }
+
+def main = call!(show, 1 + 2)
+"#,
+        r#""3""#,
+    );
+}
+
+#[test]
+fn a_pat_fragment_takes_a_pattern() {
+    is(
+        r#"
+macro matches
+  | ($e : expr, $p : pat) -> { match $e with | $p -> True | _ -> False }
+
+def main = (matches!(Just 1, Just x), matches!(None, Just x))
+"#,
+        "(True, False)",
+    );
+}
+
+#[test]
+fn an_item_fragment_takes_a_declaration() {
+    is(
+        r#"
+macro alsoDefine
+  | ($d : item) -> { $d }
+
+alsoDefine! { def seven = 7 }
+
+def main = seven
+"#,
+        "7",
+    );
+}
+
+#[test]
+fn a_fragment_the_parser_cannot_read_does_not_match() {
+    let e = errors(
+        r#"
+macro twice
+  | ($e : expr) -> { ($e, $e) }
+
+def main = twice!(let)
+"#,
+    );
+    assert!(e.contains("no rule of `twice!` matches"), "{e}");
+}
+
+#[test]
+fn a_fragment_runs_to_the_token_the_matcher_says_follows_it() {
+    // The `,` that ends the first fragment is the one at the top: the one
+    // inside the brackets is part of the expression.
+    is(
+        r#"
+macro pair
+  | ($a : expr, $b : expr) -> { ($a, $b) }
+
+def main = pair!(fst (1, 2), 3)
+"#,
+        "(1, 3)",
+    );
+}
+
+#[test]
+fn a_run_of_fragments_is_separated_as_the_matcher_says() {
+    is(
+        r#"
+macro total
+  | ($( $e : expr ),*) -> { foldl (\a b -> a + b) 0 [$( $e ),*] }
+
+def main = total!(1 + 1, 2, 3)
+"#,
+        "7",
+    );
+}
+
+#[test]
+fn a_matcher_that_does_not_say_where_a_fragment_ends_is_reported() {
+    let e = errors(
+        r#"
+macro wrong
+  | ($f : expr $x : expr) -> { $f $x }
+
+def main = wrong!(id 1)
+"#,
+    );
+    assert!(e.contains("nothing says where `$f : expr` ends"), "{e}");
+}
+
+#[test]
+fn a_fragment_followed_by_something_that_could_continue_it_is_reported() {
+    // `+` could be part of the expression, so it does not end one.
+    let e = errors(
+        r#"
+macro wrong
+  | ($a : expr + $b : expr) -> { $a + $b }
+
+def main = wrong!(1 + 2)
+"#,
+    );
+    assert!(e.contains("nothing says where `$a : expr` ends"), "{e}");
+}
+
+#[test]
+fn a_repeated_fragment_with_nothing_between_is_reported() {
+    let e = errors(
+        r#"
+macro wrong
+  | ($( $e : expr )*) -> { [$( $e );*] }
+
+def main = wrong!(1 2)
+"#,
+    );
+    assert!(e.contains("nothing says where `$e : expr` ends"), "{e}");
+}
+
+#[test]
+fn a_fragment_at_the_end_of_a_matcher_is_ended_by_the_bracket() {
+    is(
+        r#"
+macro discard
+  | ($a : expr, $b : expr) -> { $b }
+
+def main = discard!(1, 2 + 3)
+"#,
+        "5",
     );
 }

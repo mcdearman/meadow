@@ -145,9 +145,26 @@ fragment stops.
 so an expression does not end where a Rust one would: in `($f : expr $x : expr)`
 the first fragment swallows the second, and no amount of care in the matcher
 changes that. So a fragment may only be followed by a token that cannot continue
-it: `,` `;` `->` a closing bracket, or one of `then`, `else`, `in`, `with`. A
+it: `,` `;` `->` `|` a closing bracket, or one of `then`, `else`, `in`, `with`. A
 matcher that puts anything else after an `expr` is rejected where it is written,
 not where it is called.
+
+That rule is what says where a fragment *ends*, and matching uses it directly:
+the fragment runs to the first such token at the top level of the argument —
+brackets are already grouped, so a `,` inside one is not a candidate — and that
+run is handed to the parser. A run the parser cannot read is not a fragment of
+that kind, so the rule does not match and the next is tried, exactly as a
+mismatched token does.
+
+A fragment written into a template comes out **parenthesised**, so that it stays
+one thing: `$x` bound to `1 + 2` under `show $x` is `show (1 + 2)`, which is what
+was passed, and not `(show 1) + 2`. Rust uses an invisible bracket for the same
+purpose; a real one costs nothing and is honest in `stringify!`. Declarations are
+not parenthesised, since a declaration is never part of something larger.
+
+The same rule applies inside a repetition, where the separator is what ends each
+pass: `$( $e : expr ),*` is fine, and `$( $e : expr )*` is refused, because
+nothing says where one expression stops and the next begins.
 
 Repetition is `$( … )` with a separator and a count, as in Rust:
 
@@ -369,7 +386,9 @@ Each step is useful on its own and none commits to the next.
    repetition, local hygiene, use within one module.
    ([`rules.rs`](../compiler/meadow-compiler/src/expand/rules.rs),
    [`hygiene.rs`](../compiler/meadow-compiler/src/expand/hygiene.rs))
-4. **`expr` / `pat` / `item` fragments**, with the follow rules above.
+4. **Done.** **`expr` / `pat` / `item` fragments**, with the follow rules
+   above, checked where the macro is written.
+   ([`rules.rs`](../compiler/meadow-compiler/src/expand/rules.rs))
 5. **Export**: the macro namespace, visibility, storage in `CompiledPackage`,
    `$pkg`.
 6. **Diagnostics and the editor**: expansion ids, notes naming the macro, and an

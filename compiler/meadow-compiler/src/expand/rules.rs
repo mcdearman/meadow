@@ -21,9 +21,10 @@ use std::collections::HashMap;
 /// What may stand where a metavariable is written.
 ///
 /// `tt`, `ident` and `lit` need no parser: they are a count of token trees and
-/// a check on the token. The rest -- `expr`, `pat`, `item` -- wait for the
-/// follow rules in `docs/MACROS.md`, which is what makes them safe to match by
-/// calling the parser.
+/// a check on the token. `expr`, `pat` and `item` are read by the parser
+/// itself, which is safe only because of the follow rules below: they say where
+/// the fragment stops, so the parser is handed a run of tokens rather than
+/// asked to stop on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fragment {
     /// One token tree, whatever it is.
@@ -32,6 +33,12 @@ pub enum Fragment {
     Ident,
     /// One literal: a number, a string, or a character.
     Lit,
+    /// An expression.
+    Expr,
+    /// A pattern.
+    Pat,
+    /// One declaration.
+    Item,
 }
 
 impl Fragment {
@@ -40,22 +47,68 @@ impl Fragment {
             "tt" => Some(Fragment::Tt),
             "ident" => Some(Fragment::Ident),
             "lit" => Some(Fragment::Lit),
+            "expr" => Some(Fragment::Expr),
+            "pat" => Some(Fragment::Pat),
+            "item" => Some(Fragment::Item),
             _ => None,
         }
     }
 
+    /// Whether this is read by the parser, and so runs until something says it
+    /// has ended rather than taking one tree.
+    fn parsed(self) -> bool {
+        matches!(self, Fragment::Expr | Fragment::Pat | Fragment::Item)
+    }
+
     /// Whether `t` is the sort of token this stands for. `Tt` takes any tree,
-    /// so it never gets this far.
+    /// so it never gets this far, and neither does anything the parser reads.
     fn accepts(self, t: &Token) -> bool {
         match self {
-            Fragment::Tt => true,
             Fragment::Ident => matches!(t, Token::LowerIdent(_) | Token::UpperIdent(_)),
             Fragment::Lit => matches!(
                 t,
                 Token::Int(_) | Token::Real(_) | Token::String(_) | Token::Char(_)
             ),
+            _ => true,
         }
     }
+
+    /// The word it is written with, for a message about it.
+    fn name(self) -> &'static str {
+        match self {
+            Fragment::Tt => "tt",
+            Fragment::Ident => "ident",
+            Fragment::Lit => "lit",
+            Fragment::Expr => "expr",
+            Fragment::Pat => "pat",
+            Fragment::Item => "item",
+        }
+    }
+}
+
+/// What may follow a fragment the parser reads.
+///
+/// Application in Meadow is juxtaposition, so an expression does not end where
+/// a Rust one would: in `($f : expr $x : expr)` the first fragment would
+/// swallow the second, and no care in the matcher changes that. So a fragment
+/// may only be followed by a token that cannot be part of it, and a matcher
+/// that puts anything else after one is refused where it is written rather than
+/// where it is called.
+const FOLLOW: &[Token] = &[
+    Token::Comma,
+    Token::SemiColon,
+    Token::RArrow,
+    Token::Bar,
+    Token::Then,
+    Token::Else,
+    Token::In,
+    Token::With,
+];
+
+/// How the follow rule reads in a message.
+fn follows() -> String {
+    let each: Vec<String> = FOLLOW.iter().map(|t| format!("`{}`", t.text())).collect();
+    format!("{}, or a closing bracket", each.join(", "))
 }
 
 /// How many times a repetition may occur.
@@ -173,7 +226,7 @@ fn dollar(trees: &[tt::TokenTree], i: usize, at: Span) -> Result<(Piece, usize),
             let Some(kind) = ident_of(k.value()).and_then(|n| Fragment::of(&n)) else {
                 return Err(invalid(
                     format!("`{}` is not a fragment kind", k.value().text()),
-                    "the kinds are `tt`, `ident` and `lit`",
+                    "the kinds are `tt`, `ident`, `lit`, `expr`, `pat` and `item`",
                     k.span,
                 ));
             };
@@ -273,6 +326,9 @@ impl Matcher {
     /// Read `trees` as a matcher.
     pub fn read(trees: &[tt::TokenTree]) -> Result<Self, Invalid> {
         let pieces = pieces(trees)?;
+        // Where every parsed fragment ends has to be clear from the matcher
+        // alone, and that is decided here rather than at a call.
+        check_follow(&pieces, Ends::Bracket)?;
         // A name bound twice would make substitution ambiguous.
         let mut names = Vec::new();
         bound_by(&pieces, &mut names);
@@ -293,6 +349,66 @@ impl Matcher {
     pub fn match_trees(&self, arg: &[tt::TokenTree]) -> Option<Bindings> {
         let mut out = Bindings::new();
         match_pieces(&self.pieces, arg, &mut out).then_some(out)
+    }
+}
+
+/// What comes after a run of pieces, for a fragment written at the end of it.
+#[derive(Clone, Copy)]
+enum Ends<'a> {
+    /// A closing bracket, which ends anything.
+    Bracket,
+    /// A repetition's separator.
+    Separator(&'a Token),
+    /// Nothing that could end a fragment.
+    Nothing,
+}
+
+/// Check that every fragment the parser reads is followed by something that
+/// says where it ends.
+fn check_follow(pieces: &[Piece], after: Ends<'_>) -> Result<(), Invalid> {
+    for (i, piece) in pieces.iter().enumerate() {
+        match piece {
+            Piece::Group(_, inner, _) => check_follow(inner, Ends::Bracket)?,
+            Piece::Repeat { inner, sep, .. } => {
+                // Every pass of a repetition but the last ends at its
+                // separator, and the last ends at whatever follows the
+                // repetition -- so a fragment written at the end of one needs
+                // both of those to be able to end it.
+                let between = match sep {
+                    Some(t) if FOLLOW.contains(t) => Ends::Separator(t),
+                    _ => Ends::Nothing,
+                };
+                let ends = match (between, ended_after(pieces, i, after)) {
+                    (Ends::Separator(t), true) => Ends::Separator(t),
+                    _ => Ends::Nothing,
+                };
+                check_follow(inner, ends)?;
+            }
+            Piece::Var(name, kind, span) if kind.parsed() && !ended_after(pieces, i, after) => {
+                return Err(invalid(
+                    format!("nothing says where `${name} : {}` ends", kind.name()),
+                    format!("follow it with {}", follows()),
+                    *span,
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Whether what comes after the piece at `i` can end a fragment.
+fn ended_after(pieces: &[Piece], i: usize, after: Ends<'_>) -> bool {
+    match pieces.get(i + 1) {
+        None => match after {
+            Ends::Bracket => true,
+            Ends::Separator(t) => FOLLOW.contains(t),
+            Ends::Nothing => false,
+        },
+        Some(Piece::Exact(t, _)) => FOLLOW.contains(t),
+        // A group, another fragment or a repetition: whatever that matched
+        // could have been part of this one instead.
+        Some(_) => false,
     }
 }
 
@@ -339,6 +455,25 @@ fn match_pieces(pieces: &[Piece], trees: &[tt::TokenTree], out: &mut Bindings) -
                     return false;
                 }
                 at += 1;
+            }
+            Piece::Var(name, kind, _) if kind.parsed() => {
+                // The fragment runs to the token the matcher says follows it --
+                // which the follow rules guarantee cannot be part of it -- or
+                // to the end of what is being matched.
+                let end = match follow_token(pieces, i) {
+                    Some(t) => match trees[at..].iter().position(|tr| is_token(tr, t)) {
+                        Some(n) => at + n,
+                        None => return false,
+                    },
+                    None => trees.len(),
+                };
+                let Some(bound) = fragment(*kind, &trees[at..end]) else {
+                    // Not that sort of fragment after all, so this rule does not
+                    // match and the next is tried.
+                    return false;
+                };
+                out.insert(*name, Binding::One(bound));
+                at = end;
             }
             Piece::Var(name, kind, _) => {
                 let Some(tree) = trees.get(at) else {
@@ -387,6 +522,69 @@ fn match_pieces(pieces: &[Piece], trees: &[tt::TokenTree], out: &mut Bindings) -
         }
     }
     at == trees.len()
+}
+
+/// The token that ends the fragment at `i`, or `None` when what ends it is the
+/// end of the run. Which of the two it is was settled by [`check_follow`] when
+/// the macro was defined.
+fn follow_token(pieces: &[Piece], i: usize) -> Option<&Token> {
+    match pieces.get(i + 1) {
+        Some(Piece::Exact(t, _)) => Some(t),
+        _ => None,
+    }
+}
+
+fn is_token(tree: &tt::TokenTree, want: &Token) -> bool {
+    matches!(tree, tt::TokenTree::Token(t) if t.value() == want)
+}
+
+/// `trees` as a fragment of this kind, as it will be written back.
+///
+/// The parser is what decides: a run that does not parse is not that kind of
+/// fragment, and the rule simply does not match. An expression and a pattern
+/// come back **parenthesised**, because a fragment has to stay one thing when
+/// it is written into a template -- `$x` bound to `a + b` under `f $x` is
+/// `f (a + b)`, which is what was passed, and not `(f a) + b`. Rust uses an
+/// invisible bracket for this; a real one costs nothing here and is visible in
+/// `stringify!`, where showing it is no worse than hiding it.
+fn fragment(kind: Fragment, trees: &[tt::TokenTree]) -> Option<Vec<tt::TokenTree>> {
+    if trees.is_empty() {
+        return None;
+    }
+    let tokens = tt::flatten(trees);
+    let eoi = trees[0].span().extend(trees[trees.len() - 1].span());
+    let parses = match kind {
+        Fragment::Expr => {
+            let (out, errs) = meadow_parser::parse_expr(&tokens, eoi);
+            out.is_some() && errs.is_empty()
+        }
+        Fragment::Pat => {
+            let (out, errs) = meadow_parser::parse_pat(&tokens, eoi);
+            out.is_some() && errs.is_empty()
+        }
+        Fragment::Item => {
+            let (out, errs) = meadow_parser::parse_decls(&tokens, eoi);
+            errs.is_empty() && out.is_some_and(|ds| ds.len() == 1)
+        }
+        _ => true,
+    };
+    if !parses {
+        return None;
+    }
+    Some(match kind {
+        // A declaration is never a part of something larger, so nothing has to
+        // hold it together.
+        Fragment::Item => trees.to_vec(),
+        _ => vec![tt::TokenTree::Group(tt::Group {
+            delim: tt::Delim::Paren,
+            trees: trees.to_vec(),
+            // The brackets are not in the source, so they stand where the
+            // fragment does: an error inside one still points at what was
+            // written.
+            open: Span::new(eoi.start, eoi.start),
+            close: Span::new(eoi.end, eoi.end),
+        })],
+    })
 }
 
 /// Match `inner` as many times as it fits, separated by `sep`, leaving enough

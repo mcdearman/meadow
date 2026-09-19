@@ -154,6 +154,15 @@ fn walk(t: &Term, f: &mut impl FnMut(&Term)) {
             walk(a, f);
             walk(b, f);
         }
+        // Join points reach this pass only if something starts making them
+        // before it -- `joins` runs inside `meadow_seq::lower_program`, well
+        // after. Handled so that the day one does, it is a traversal and not a
+        // silent omission.
+        Term::Join { rhs, body, .. } => {
+            walk(rhs, f);
+            walk(body, f);
+        }
+        Term::Jump(_, args, _) => args.iter().for_each(|a| walk(a, f)),
         Term::LetRec(binds, body) => {
             for (_, _, t) in binds {
                 walk(t, f);
@@ -433,6 +442,27 @@ impl Specializer {
         match t {
             Term::Lit(l) => Term::Lit(self.lit(l, sigma)),
             Term::Var(_) | Term::Error => t.clone(),
+            Term::Join {
+                var,
+                params,
+                ty,
+                rhs,
+                body,
+            } => Term::Join {
+                var: *var,
+                params: params
+                    .iter()
+                    .map(|(v, t)| (*v, self.ty(t, sigma)))
+                    .collect(),
+                ty: self.ty(ty, sigma),
+                rhs: self.arc(rhs, sigma),
+                body: self.arc(body, sigma),
+            },
+            Term::Jump(j, args, ty) => Term::Jump(
+                *j,
+                args.iter().map(|a| self.term(a, sigma)).collect(),
+                self.ty(ty, sigma),
+            ),
             Term::TyApp(f, args) => {
                 let args: Vec<Ty> = args.iter().map(|a| self.ty(a, sigma)).collect();
                 if let Term::Var(x) = &**f {
@@ -666,6 +696,32 @@ fn freshen(t: &Term, s: &mut Specializer, names: &mut HashMap<Var, Var>) -> Term
         Term::Loc(l, b) => Term::Loc(*l, go(b, s, names)),
         Term::TyLam(bs, b) => Term::TyLam(bs.clone(), go(b, s, names)),
         Term::TyApp(f, tys) => Term::TyApp(go(f, s, names), tys.clone()),
+        Term::Join {
+            var,
+            params,
+            ty,
+            rhs,
+            body,
+        } => {
+            let ps: Vec<(Var, Ty)> = params
+                .iter()
+                .map(|(v, t)| (rename(*v, s, names), t.clone()))
+                .collect();
+            let rhs = go(rhs, s, names);
+            let n = rename(*var, s, names);
+            Term::Join {
+                var: n,
+                params: ps,
+                ty: ty.clone(),
+                rhs,
+                body: go(body, s, names),
+            }
+        }
+        Term::Jump(j, args, ty) => Term::Jump(
+            names.get(j).copied().unwrap_or(*j),
+            args.iter().map(|a| freshen(a, s, names)).collect(),
+            ty.clone(),
+        ),
         Term::Lam(v, ty, b) => {
             let n = rename(*v, s, names);
             Term::Lam(n, ty.clone(), go(b, s, names))

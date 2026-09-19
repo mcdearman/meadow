@@ -48,6 +48,20 @@ pub fn term(t: &Term) -> Term {
         Term::Var(_) | Term::Lit(_) | Term::Error => t.clone(),
         Term::Lam(v, ty, body) => Term::Lam(*v, ty.clone(), Arc::new(term(body))),
         Term::App(f, a) => Term::App(Arc::new(term(f)), Arc::new(term(a))),
+        Term::Join {
+            var,
+            params,
+            ty,
+            rhs,
+            body,
+        } => Term::Join {
+            var: *var,
+            params: params.clone(),
+            ty: ty.clone(),
+            rhs: Arc::new(term(rhs)),
+            body: Arc::new(term(body)),
+        },
+        Term::Jump(j, args, ty) => Term::Jump(*j, args.iter().map(term).collect(), ty.clone()),
         Term::Let(v, p, rhs, body) => {
             Term::Let(*v, p.clone(), Arc::new(term(rhs)), Arc::new(term(body)))
         }

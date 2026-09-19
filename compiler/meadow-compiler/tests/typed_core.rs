@@ -63,6 +63,11 @@ fn type_args(pkg: &CompiledPackage) -> Vec<String> {
                 go(r, out);
                 go(b, out);
             }
+            T::Join { rhs, body, .. } => {
+                go(rhs, out);
+                go(body, out);
+            }
+            T::Jump(_, args, _) => args.iter().for_each(|a| go(a, out)),
             T::LetRec(binds, b) => {
                 for (_, _, r) in binds {
                     go(r, out);

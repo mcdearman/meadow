@@ -793,6 +793,35 @@ impl<'a> Machine<'a> {
                 });
                 self.ctrl = Control::Eval(rhs.clone(), env);
             }
+            // A join point is a `letrec` binding that happens to be entered only
+            // by tail calls, and a jump is one of those calls. The CEK is the
+            // reference semantics, so it runs them as exactly that rather than
+            // refusing: a program that has been through `joins` means what it
+            // meant before, and this is where that is checked.
+            //
+            // Nothing the machine does with the closure it makes here depends
+            // on the promise a join point carries. The promise is for the back
+            // end, which turns one into a label instead of an object.
+            T::Join {
+                var,
+                params,
+                ty,
+                rhs,
+                body,
+            } => {
+                let lam = params.iter().rev().fold((**rhs).clone(), |b, (v, t)| {
+                    T::Lam(*v, t.clone(), Arc::new(b))
+                });
+                let bind = (*var, core::Poly::mono(ty.clone()), lam);
+                let as_letrec = T::LetRec(vec![bind], body.clone());
+                self.eval(Arc::new(as_letrec), env)?;
+            }
+            T::Jump(j, args, _) => {
+                let call = args
+                    .iter()
+                    .fold(T::Var(*j), |f, a| T::App(Arc::new(f), Arc::new(a.clone())));
+                self.eval(Arc::new(call), env)?;
+            }
             T::LetRec(binds, body) => {
                 let scope = child(&env);
                 for (v, _, _) in binds {

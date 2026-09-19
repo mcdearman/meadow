@@ -143,6 +143,38 @@ impl Lint<'_> {
             },
             Term::Lit(l) => Poly::mono(lit_ty(l)),
 
+            // A join point is checked as what it produces. Its parameters are
+            // in scope in its right-hand side, and its *name* is bound at the
+            // type it produces rather than at a function type -- which is the
+            // point: nothing may use it as a value, only jump to it.
+            Term::Join {
+                var,
+                params,
+                ty,
+                rhs,
+                body,
+            } => {
+                let outer = self.locals.len();
+                for (v, t) in params {
+                    self.locals.push((*v, Poly::mono(t.clone())));
+                }
+                let _ = self.synth_mono(rhs);
+                self.locals.truncate(outer);
+                self.locals.push((*var, Poly::mono(ty.clone())));
+                let out = self.synth_mono(body);
+                self.locals.truncate(outer);
+                Poly::mono(out)
+            }
+            Term::Jump(j, args, ty) => {
+                if self.lookup(*j).is_none() {
+                    self.say(format!("jump to an unbound join point {j:?}"));
+                }
+                for a in args {
+                    let _ = self.synth_mono(a);
+                }
+                Poly::mono(ty.clone())
+            }
+
             Term::TyLam(binders, body) => {
                 let inner = self.synth_mono(body);
                 Poly {

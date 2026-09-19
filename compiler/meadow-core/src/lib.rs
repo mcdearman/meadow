@@ -44,6 +44,7 @@ pub mod desc;
 pub mod erase;
 pub mod globals;
 pub mod hash;
+pub mod joins;
 pub mod lint;
 pub mod lower;
 pub mod num;
@@ -1028,6 +1029,37 @@ pub enum Term {
         /// What the whole `handle` produces.
         ty: Ty,
     },
+    /// `join j (x : T)… = rhs in body` — a binding that is only ever *jumped*
+    /// to, never called.
+    ///
+    /// A join point is a `let` with a promise: every mention of `j` in `body`
+    /// is a saturated [`Term::Jump`] in tail position, so `j` never escapes,
+    /// never needs a closure, and never needs its free variables captured —
+    /// they are still in scope where it is entered. It is a name for a
+    /// continuation that several places share.
+    ///
+    /// That is what makes it worth having. Transformations that push a context
+    /// inwards -- case-of-case above all -- otherwise have to choose between
+    /// copying the context into every branch, which can square the size of a
+    /// program, and building a closure for it, which allocates. A join point
+    /// is the third answer: name it once, jump to it from each branch, and let
+    /// the back end make it a label. `meadow_seq` does exactly that, and its
+    /// IR has had labels all along.
+    ///
+    /// The promise is not checked by the type system here. It is *established*
+    /// by [`crate::joins`], which only makes a join point where it holds, and
+    /// preserved by construction because nothing else creates one.
+    Join {
+        var: Var,
+        params: Vec<(Var, Ty)>,
+        /// What entering it produces, which is what `body` produces.
+        ty: Ty,
+        rhs: Arc<Term>,
+        body: Arc<Term>,
+    },
+    /// `jump j a…` — entering a join point. Always saturated, always in tail
+    /// position. The type is what it produces, which is the `Join`'s.
+    Jump(Var, Vec<Term>, Ty),
     /// A term that failed to compile. Well-typed at any type, on purpose: it
     /// only exists in a unit that already has errors, and the checker has
     /// nothing useful to say about it.
@@ -1355,6 +1387,26 @@ impl Printer {
                 let t = self.ty(t);
                 format!("(\\({v} : {t}). {})", self.term(b))
             }
+            Term::Join {
+                var,
+                params,
+                rhs,
+                body,
+                ..
+            } => {
+                let j = self.var(*var);
+                let ps: Vec<String> = params
+                    .iter()
+                    .map(|(v, t)| format!("({} : {})", self.var(*v), self.ty(t)))
+                    .collect();
+                let rhs = self.term(rhs);
+                format!("(join {j} {} = {rhs} in {})", ps.join(" "), self.term(body))
+            }
+            Term::Jump(j, args, _) => {
+                let j = self.var(*j);
+                let args: Vec<String> = args.iter().map(|a| self.term(a)).collect();
+                format!("(jump {j} {})", args.join(" "))
+            }
             Term::TyLam(binders, b) => {
                 let names: Vec<String> = binders.iter().map(|x| self.tyvar(x.id)).collect();
                 format!("(/\\{}. {})", names.join(" "), self.term(b))
@@ -1658,6 +1710,29 @@ pub fn free_vars_into(t: &Term, out: &mut std::collections::HashSet<Var>) {
                 }
             }
             Term::Lit(_) | Term::Error => {}
+            Term::Join {
+                var,
+                params,
+                rhs,
+                body,
+                ..
+            } => {
+                let depth = bound.len();
+                bound.extend(params.iter().map(|(v, _)| *v));
+                go(rhs, bound, out);
+                bound.truncate(depth);
+                bound.push(*var);
+                go(body, bound, out);
+                bound.truncate(depth);
+            }
+            Term::Jump(j, args, _) => {
+                if !bound.contains(j) {
+                    out.insert(*j);
+                }
+                for a in args {
+                    go(a, bound, out);
+                }
+            }
             Term::Lam(p, _, b) => {
                 bound.push(*p);
                 go(b, bound, out);

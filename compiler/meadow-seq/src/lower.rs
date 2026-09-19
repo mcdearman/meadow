@@ -185,9 +185,13 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     } else {
         core::specialize::program(program)
     };
-    let program = &core::globals::program(&core::globals::inline_literals(&core::bools::program(
-        &specialized,
+    // `joins` before `globals`: a mention of a global becomes a jump to its
+    // definition there, and a join point wants to be found while the calls to
+    // it still look like calls.
+    let program = &core::globals::program(&core::joins::program(&core::globals::inline_literals(
+        &core::bools::program(&specialized),
     )));
+
     let mut globals = HashMap::new();
     for (i, d) in program.defs.iter().enumerate() {
         globals.insert(d.var, (Label(i as u32), Vec::new()));
@@ -198,6 +202,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         next_label: program.defs.len() as u32,
         globals,
         workers: HashMap::new(),
+        joins: HashMap::new(),
         defs: Vec::new(),
         tags: HashMap::new(),
         next_tag: 0,
@@ -489,6 +494,11 @@ struct Lower {
     /// takes its arguments directly instead of returning a closure per argument.
     /// `(label, arity)` — a call with exactly that many arguments becomes a jump.
     workers: HashMap<Var, (Label, usize)>,
+    /// A join point in scope: where to jump, and what its block takes before
+    /// its own parameters. A [`core::Term::Jump`] is a `substitute` into that
+    /// shape and a `jump` -- no object and no invoke, because a join point
+    /// never escapes the body it is written in and so is never a value.
+    joins: HashMap<Var, (Label, Vec<Name>)>,
     defs: Vec<Def>,
     tags: HashMap<InternedString, Tag>,
     next_tag: Tag,
@@ -686,6 +696,7 @@ impl Lower {
                 _ => return None,
             },
             Term::Let(_, _, _, body) | Term::LetRec(_, body) => return self.type_of(body),
+            Term::Join { ty, .. } | Term::Jump(_, _, ty) => ty.clone(),
             Term::If(_, then, _) => return self.type_of(then),
             Term::Tuple(items) => Ty::Tuple(
                 items
@@ -859,6 +870,21 @@ impl Lower {
                 self.scan(r);
                 self.scan(b);
             }
+            Term::Join {
+                var,
+                params,
+                ty,
+                rhs,
+                body,
+            } => {
+                for (v, t) in params {
+                    self.bind_poly(*v, core::Poly::mono(t.clone()));
+                }
+                self.bind_poly(*var, core::Poly::mono(ty.clone()));
+                self.scan(rhs);
+                self.scan(body);
+            }
+            Term::Jump(_, args, _) => args.iter().for_each(|a| self.scan(a)),
             Term::LetRec(binds, body) => {
                 for (v, poly, t) in binds {
                     self.bind_poly(*v, poly.clone());
@@ -1117,6 +1143,9 @@ impl Lower {
                 _ => true,
             },
             Term::Perform(..) | Term::Handle { .. } | Term::LetRec(..) => true,
+            // A jump reaches a block that takes the evidence from whoever
+            // enters it, exactly as a call to a `letrec` binding does.
+            Term::Join { .. } | Term::Jump(..) => true,
             Term::Var(v) => self.letrecs.contains(v),
             Term::Lam(..) | Term::Lit(_) | Term::Error => false,
             Term::TyLam(_, b)
@@ -1753,6 +1782,79 @@ impl Lower {
 
             // Lambda lifting: one label per binding, all sharing the group's
             // captured environment. See the module docs.
+            // A join point is a block and nothing else. It captures nothing:
+            // it is entered only from inside the body it was written in, so
+            // whatever it needs from around it is still in the environment
+            // there and is passed at the jump, like a `letrec` binding's.
+            //
+            // The continuation goes in its parameters too. Every jump is in
+            // tail position of the body, so every jump answers the same `k`
+            // the body would have -- which is what makes this a *join*.
+            Term::Join {
+                var,
+                params,
+                rhs,
+                body,
+                ..
+            } => {
+                let ps: Vec<Var> = params.iter().map(|(v, _)| *v).collect();
+                let mut want = self.wants(&[rhs], &ps);
+                want.remove(&self.ev);
+                let fvs = restrict(env, &want);
+
+                let label = self.fresh_label();
+                self.joins.insert(*var, (label, fvs.clone()));
+
+                let kk = self.function_return();
+                let iev = self.fresh_ref();
+                let mut block: Vec<Name> = fvs.clone();
+                block.extend(ps.iter().copied());
+                block.push(kk);
+                block.push(iev);
+                let outer = std::mem::replace(&mut self.ev, iev);
+                let made = self.expr(rhs, &block, kk);
+                self.ev = outer;
+                self.defs.push(Def {
+                    label,
+                    name: InternedString::from("<join>"),
+                    block: Block {
+                        params: block,
+                        body: made,
+                    },
+                });
+
+                self.expr(body, env, k)
+            }
+
+            // Entering one: put the environment into the shape its block
+            // expects, then jump. No object is made and none is invoked.
+            Term::Jump(j, args, _) => {
+                let Some((label, fvs)) = self.joins.get(j).cloned() else {
+                    return Statement::Error("a jump to a join point not in scope");
+                };
+                let ev = self.ev;
+                let args: Vec<Term> = args.clone();
+                let base: HashSet<Var> = [k, ev].into_iter().chain(fvs.iter().copied()).collect();
+                self.bind_all(
+                    &args,
+                    env,
+                    &base,
+                    Box::new(move |_this, names, _env1| {
+                        let mut sel = fvs;
+                        sel.extend(names);
+                        sel.push(k);
+                        sel.push(ev);
+                        Statement::Substitute(
+                            sel.clone(),
+                            Box::new(Block {
+                                params: sel,
+                                body: Statement::Jump(label),
+                            }),
+                        )
+                    }),
+                )
+            }
+
             Term::LetRec(binds, body) => {
                 let bound: Vec<Var> = binds.iter().map(|(v, _, _)| *v).collect();
                 let rhs: Vec<&Term> = binds.iter().map(|(_, _, t)| t).collect();
@@ -3008,6 +3110,22 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
             out.insert(*x);
             mentions(r, out);
             mentions(b, out);
+        }
+        Term::Join {
+            var,
+            params,
+            rhs,
+            body,
+            ..
+        } => {
+            out.insert(*var);
+            out.extend(params.iter().map(|(v, _)| *v));
+            mentions(rhs, out);
+            mentions(body, out);
+        }
+        Term::Jump(j, args, _) => {
+            out.insert(*j);
+            args.iter().for_each(|a| mentions(a, out));
         }
         Term::LetRec(binds, body) => {
             for (v, _, t) in binds {

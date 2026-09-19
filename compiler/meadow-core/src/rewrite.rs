@@ -31,6 +31,25 @@ pub fn term(t: &Term, f: &mut dyn FnMut(Term) -> Term, p: &mut dyn FnMut(Pat) ->
                 .collect();
             Term::LetRec(binds, go(body, f, p))
         }
+        Term::Join {
+            var,
+            params,
+            ty,
+            rhs,
+            body,
+        } => {
+            let rhs = go(rhs, f, p);
+            Term::Join {
+                var: *var,
+                params: params.clone(),
+                ty: ty.clone(),
+                rhs,
+                body: go(body, f, p),
+            }
+        }
+        Term::Jump(j, args, ty) => {
+            Term::Jump(*j, args.iter().map(|x| term(x, f, p)).collect(), ty.clone())
+        }
         Term::If(c, a, b) => {
             let c = go(c, f, p);
             let a = go(a, f, p);

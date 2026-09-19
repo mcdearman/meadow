@@ -86,7 +86,7 @@ fn calling_a_lambda_is_a_permutation_and_a_branch() {
     // evidence -- the handlers the callee runs under.
     let x = VarId(1);
     let term = Term::App(
-        Arc::new(Term::lam(x, (Term::Var(x)))),
+        Arc::new(Term::lam(x, Term::Var(x))),
         Arc::new(Term::Lit(Lit::Int(1))),
     );
     let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
@@ -183,6 +183,47 @@ fn a_global_literal_is_put_where_it_is_mentioned() {
         format!("{main:?}").contains("Lit(Int(7))"),
         "expected the literal itself, got {main:?}"
     );
+}
+
+/// A `let`-bound function that is only tail-called becomes a block and a jump,
+/// not a closure and an invoke.
+///
+/// `core::joins` finds it and `lower` gives it a label. Both branches of the
+/// `if` enter the same block, which is the whole point: the continuation is
+/// named once instead of copied into each branch or built as an object.
+#[test]
+fn a_join_point_becomes_a_label_and_jumps_to_it() {
+    let f = VarId(60);
+    let x = VarId(61);
+
+    let call = |n: i64| Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Lit(Lit::Int(n))));
+    let body = Term::If(
+        Arc::new(Term::Lit(Lit::Bool(true))),
+        Arc::new(call(1)),
+        Arc::new(call(2)),
+    );
+    let term = Term::Let(
+        f,
+        meadow_core::Poly::mono(meadow_core::unknown()),
+        Arc::new(Term::Lam(x, meadow_core::unknown(), Arc::new(Term::Var(x)))),
+        Arc::new(body),
+    );
+    let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
+    assert!(lowered.unsupported.is_empty());
+
+    let joins: Vec<_> = lowered
+        .program
+        .defs
+        .iter()
+        .filter(|d| &*d.name == "<join>")
+        .collect();
+    assert_eq!(joins.len(), 1, "one block for the join point");
+
+    // And both branches jump to it, rather than making an object and invoking.
+    let label = joins[0].label;
+    let text = lowered.program.pretty();
+    let jumps = text.matches(&format!("jump #{}", label.0)).count();
+    assert!(jumps >= 2, "both branches jump to it:\n{text}");
 }
 
 #[test]

@@ -24,27 +24,27 @@ fn append(path: &Path, text: &str) {
     std::fs::write(path, old + text).unwrap();
 }
 
-/// A workspace of `app`, which uses `text`, which uses `util`, and `other`,
+/// A workspace of `App`, which uses `Text`, which uses `Util`, and `Other`,
 /// which uses nothing.
 fn workspace(who: &str) -> PathBuf {
     let root = scratch(who).join("ws");
     write(
         &root.join("Meadow.toml"),
-        "[workspace]\nmembers = [\"app\", \"libs/*\"]\n\n[workspace.dependencies]\n\
-         util = { path = \"libs/util\" }\ntext = { path = \"libs/text\" }\n",
+        "[workspace]\nmembers = [\"App\", \"libs/*\"]\n\n[workspace.dependencies]\n\
+         Util = { path = \"libs/Util\" }\nText = { path = \"libs/Text\" }\n",
     );
     for (name, deps, src) in [
-        ("libs/util", "", "@pub fun double x = x * 2\n"),
+        ("libs/Util", "", "@pub fun double x = x * 2\n"),
         (
-            "libs/text",
-            "util = { workspace = true }\n",
-            "use util (double)\n\n@pub fun label s = \"${s} x${double 1}\"\n",
+            "libs/Text",
+            "Util = { workspace = true }\n",
+            "use Util (double)\n\n@pub fun label s = \"${s} x${double 1}\"\n",
         ),
-        ("libs/other", "", "@pub fun triple x = x * 3\n"),
+        ("libs/Other", "", "@pub fun triple x = x * 3\n"),
         (
-            "app",
-            "util = { workspace = true }\ntext = { workspace = true }\n",
-            "use util (double)\nuse text (label)\n\ndef main = (double 21, label \"b\")\n",
+            "App",
+            "Util = { workspace = true }\nText = { workspace = true }\n",
+            "use Util (double)\nuse Text (label)\n\ndef main = (double 21, label \"b\")\n",
         ),
     ] {
         let short = name.rsplit('/').next().unwrap();
@@ -55,21 +55,21 @@ fn workspace(who: &str) -> PathBuf {
                 meadow::package::as_package_name(short)
             ),
         );
-        let file = if name == "app" { "Main.mw" } else { "Lib.mw" };
+        let file = if name == "App" { "Main.mw" } else { "Lib.mw" };
         write(&root.join(name).join("src").join(file), src);
     }
     root
 }
 
 fn members(root: &Path) -> Vec<PathBuf> {
-    ["App", "libs/other"].iter().map(|m| root.join(m)).collect()
+    ["App", "libs/Other"].iter().map(|m| root.join(m)).collect()
 }
 
 fn options(root: &Path) -> meadow::Options {
     Resolved::resolve(Profile::Debug, root, ProfileConfig::default()).options
 }
 
-/// Build `app` and `other` together, answering what was compiled.
+/// Build `App` and `Other` together, answering what was compiled.
 fn build(root: &Path, opts: meadow::Options) -> (Vec<String>, pipeline::ManyOutput) {
     let paths = members(root);
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
@@ -118,8 +118,8 @@ fn nothing_changed_compiles_nothing_and_builds_the_same() {
 }
 
 /// Reusing a package trusts that its dependency, compiled again from the same
-/// inputs, mints the same ids and says the same things: a saved `app` refers
-/// to `util`'s variables by number. Every hash map in a process is seeded
+/// inputs, mints the same ids and says the same things: a saved `App` refers
+/// to `Util`'s variables by number. Every hash map in a process is seeded
 /// differently, so two compiles in one process disagree wherever an order
 /// comes from one.
 #[test]
@@ -183,21 +183,21 @@ fn a_change_recompiles_the_package_and_what_depends_on_it() {
     let opts = options(&root);
     build(&root, opts);
 
-    append(&root.join("app/src/Main.mw"), "\n-- a comment\n");
+    append(&root.join("App/src/Main.mw"), "\n-- a comment\n");
     assert_eq!(build(&root, opts).0, ["App"]);
 
-    append(&root.join("libs/text/src/Lib.mw"), "\n@pub def more = 1\n");
+    append(&root.join("libs/Text/src/Lib.mw"), "\n@pub def more = 1\n");
     assert_eq!(build(&root, opts).0, ["Text", "App"]);
 
-    append(&root.join("libs/util/src/Lib.mw"), "\n-- util\n");
+    append(&root.join("libs/Util/src/Lib.mw"), "\n-- Util\n");
     assert_eq!(build(&root, opts).0, ["Util", "Text", "App"]);
 
-    append(&root.join("libs/other/src/Lib.mw"), "\n-- other\n");
+    append(&root.join("libs/Other/src/Lib.mw"), "\n-- Other\n");
     assert_eq!(build(&root, opts).0, ["Other"]);
     assert!(build(&root, opts).0.is_empty());
 }
 
-/// `other` is compiled after `app`'s libraries, so its variables start above
+/// `Other` is compiled after `App`'s libraries, so its variables start above
 /// theirs. A library growing must not move them, or every edit anywhere would
 /// be a change to everything built after it.
 #[test]
@@ -208,7 +208,7 @@ fn a_package_growing_does_not_recompile_the_packages_beside_it() {
     let many: String = (0..200)
         .map(|i| format!("@pub fun f{i} x = x + {i}\n"))
         .collect();
-    append(&root.join("libs/util/src/Lib.mw"), &many);
+    append(&root.join("libs/Util/src/Lib.mw"), &many);
     let (compiled, out) = build(&root, opts);
     assert_eq!(compiled, ["Util", "Text", "App"]);
     assert!(everything(&out.each[0]).ends_with(r#"(42, "b x2")"#));
@@ -234,7 +234,7 @@ fn a_package_with_errors_is_compiled_every_time() {
     let opts = options(&root);
     build(&root, opts);
     append(
-        &root.join("libs/text/src/Lib.mw"),
+        &root.join("libs/Text/src/Lib.mw"),
         "\ndef broken = 1 + \"one\"\n",
     );
     let paths = members(&root);
@@ -276,7 +276,7 @@ fn renaming_a_package_is_a_change() {
     let opts = options(&root);
     build(&root, opts);
     write(
-        &root.join("libs/other/Meadow.toml"),
+        &root.join("libs/Other/Meadow.toml"),
         "[package]\nname = \"Another\"\n",
     );
     assert_eq!(build(&root, opts).0, ["Another"]);
@@ -303,7 +303,7 @@ fn the_cache_can_be_turned_off() {
     assert!(run("0").contains(r#"=> (42, "b x2")"#));
     assert!(!dir.exists(), "nothing is written");
     assert!(run("1").contains(r#"=> (42, "b x2")"#));
-    // `Std`, `util`, `text` and `app`.
+    // `Std`, `Util`, `Text` and `App`.
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 4);
     assert!(run("1").contains(r#"=> (42, "b x2")"#), "and read back");
 }

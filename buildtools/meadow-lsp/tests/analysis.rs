@@ -120,12 +120,12 @@ fn hovering_a_qualified_constructor_shows_its_path() {
 fn hovering_a_siblings_constructor_names_the_package_and_module() {
     let root = package(
         "ctorhover",
-        Some("[package]\nname = \"demo\"\n"),
+        Some("[package]\nname = \"Demo\"\n"),
         &[
             ("Syntax.mw", "@pub(pkg) data Tv = Unbound Int | Link Int\n"),
             (
                 "Main.mw",
-                "use demo.Syntax (Tv)\ndef main = match Tv.Link 1 with | Tv.Link n -> n | Tv.Unbound n -> n\n",
+                "use Demo.Syntax (Tv)\ndef main = match Tv.Link 1 with | Tv.Link n -> n | Tv.Unbound n -> n\n",
             ),
         ],
     );
@@ -138,7 +138,7 @@ fn hovering_a_siblings_constructor_names_the_package_and_module() {
     let off = text.find("Unbound n").unwrap() + 2;
     assert_eq!(
         a.hover_at(off).expect("hover"),
-        "```meadow\ndemo.Syntax.Tv.Unbound\n```"
+        "```meadow\nDemo.Syntax.Tv.Unbound\n```"
     );
 }
 
@@ -790,7 +790,7 @@ fn package(dir: &str, manifest: Option<&str>, files: &[(&str, &str)]) -> std::pa
 fn a_module_sees_its_siblings_through_a_use() {
     let root = package(
         "siblings",
-        Some("[package]\nname = \"demo\"\n"),
+        Some("[package]\nname = \"Demo\"\n"),
         &[
             (
                 "Syntax.mw",
@@ -798,11 +798,11 @@ fn a_module_sees_its_siblings_through_a_use() {
             ),
             (
                 "Eval.mw",
-                "use demo.Syntax.Expr.*\n\n@pub(pkg) fun eval e = match e with\n  | Int n -> n\n  | Add a b -> eval a + eval b\n",
+                "use Demo.Syntax.Expr.*\n\n@pub(pkg) fun eval e = match e with\n  | Int n -> n\n  | Add a b -> eval a + eval b\n",
             ),
             (
                 "Main.mw",
-                "use demo.Eval (eval)\nuse demo.Syntax (Expr)\ndef main = eval (Expr.Int 1)\n",
+                "use Demo.Eval (eval)\nuse Demo.Syntax (Expr)\ndef main = eval (Expr.Int 1)\n",
             ),
         ],
     );
@@ -823,7 +823,7 @@ fn a_module_sees_its_siblings_through_a_use() {
 fn only_this_documents_diagnostics_are_reported() {
     let root = package(
         "diags",
-        Some("[package]\nname = \"demo\"\n"),
+        Some("[package]\nname = \"Demo\"\n"),
         &[
             ("Broken.mw", "@pub(pkg) fun oops x = nosuchthing x\n"),
             ("Main.mw", "def main = 1\n"),
@@ -859,7 +859,7 @@ fn only_this_documents_diagnostics_are_reported() {
 fn go_to_definition_crosses_to_another_module_of_the_package() {
     let root = package(
         "goto",
-        Some("[package]\nname = \"demo\"\n"),
+        Some("[package]\nname = \"Demo\"\n"),
         &[
             (
                 "Syntax.mw",
@@ -867,7 +867,7 @@ fn go_to_definition_crosses_to_another_module_of_the_package() {
             ),
             (
                 "Main.mw",
-                "use demo.Syntax (Expr, zero)\ndef main = zero ()\n",
+                "use Demo.Syntax (Expr, zero)\ndef main = zero ()\n",
             ),
         ],
     );
@@ -920,11 +920,11 @@ fn the_mini_ml_example_is_clean_in_an_editor() {
 fn a_bad_use_is_reported_in_the_file_that_wrote_it() {
     let root = package(
         "baduse",
-        Some("[package]\nname = \"demo\"\n"),
+        Some("[package]\nname = \"Demo\"\n"),
         &[
             (
                 "Other.mw",
-                "use demo.Nowhere (thing)\n@pub(pkg) def n = 1\n",
+                "use Demo.Nowhere (thing)\n@pub(pkg) def n = 1\n",
             ),
             ("Main.mw", "def main = 1\n"),
         ],
@@ -966,7 +966,7 @@ fn renamed(
         .iter()
         .map(|(n, t)| (n.as_str(), t.as_str()))
         .collect();
-    let root = package(dir, Some("[package]\nname = \"demo\"\n"), &refs);
+    let root = package(dir, Some("[package]\nname = \"Demo\"\n"), &refs);
     let (open_name, open_text) = &cleaned[0];
     let offset = files[0].1.find('$').expect("a cursor marker");
     let file = root.join("src").join(open_name);
@@ -1016,7 +1016,7 @@ fn renaming_reaches_every_module_of_the_package() {
                 "Math.mw",
                 "@pub(pkg) fun dou$ble n = n * 2\n@pub(pkg) fun quad n = double (double n)\n",
             ),
-            ("Main.mw", "use demo.Math (double)\ndef main = double 21\n"),
+            ("Main.mw", "use Demo.Math (double)\ndef main = double 21\n"),
         ],
         "twice",
     )
@@ -1027,7 +1027,7 @@ fn renaming_reaches_every_module_of_the_package() {
         *math,
         "@pub(pkg) fun twice n = n * 2\n@pub(pkg) fun quad n = twice (twice n)\n"
     );
-    assert_eq!(*main, "use demo.Math (twice)\ndef main = twice 21\n");
+    assert_eq!(*main, "use Demo.Math (twice)\ndef main = twice 21\n");
 }
 
 #[test]
@@ -1065,7 +1065,7 @@ fn renaming_a_type_takes_its_mentions_with_it() {
             ("Syntax.mw", "@pub(pkg) data Ex$pr = Lit Int\n@pub(pkg) fun lit n = Expr.Lit n\n"),
             (
                 "Main.mw",
-                "use demo.Syntax (Expr, lit)\nfun size e = match e with | Lit n -> n\ndef main = size (lit 1)\n",
+                "use Demo.Syntax (Expr, lit)\nfun size e = match e with | Lit n -> n\ndef main = size (lit 1)\n",
             ),
         ],
         "Term",
@@ -1077,7 +1077,7 @@ fn renaming_a_type_takes_its_mentions_with_it() {
     );
     assert_eq!(
         out.iter().find(|(n, _)| n == "Main.mw").unwrap().1,
-        "use demo.Syntax (Term, lit)\nfun size e = match e with | Lit n -> n\ndef main = size (lit 1)\n"
+        "use Demo.Syntax (Term, lit)\nfun size e = match e with | Lit n -> n\ndef main = size (lit 1)\n"
     );
 }
 
@@ -1168,7 +1168,7 @@ fn top_level_definitions_are_listed_for_debugging() {
 fn a_test_is_marked_with_the_name_the_runner_knows_it_by() {
     let root = package(
         "test-lens",
-        Some("[package]\nname = \"lens\"\n"),
+        Some("[package]\nname = \"Lens\"\n"),
         &[
             (
                 "A.mw",
@@ -1208,7 +1208,7 @@ fn a_test_is_marked_with_the_name_the_runner_knows_it_by() {
         .expect("linked")
         .tests
         .iter()
-        .filter(|t| &*t.package == "lens")
+        .filter(|t| &*t.package == "Lens")
         .map(|t| t.name.to_string())
         .collect();
     assert!(

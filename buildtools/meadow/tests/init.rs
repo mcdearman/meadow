@@ -253,7 +253,7 @@ fn running_a_package_writes_its_image_under_target() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let image = meadow::artifacts::image_path(&made.root, meadow::Profile::Debug, "demo");
+    let image = meadow::artifacts::image_path(&made.root, meadow::Profile::Debug, &made.name);
     let bytes = std::fs::read(&image).expect("the image is written");
     let program = meadow_bytecode::image::decode(&bytes).expect("and decodes");
     assert_eq!(

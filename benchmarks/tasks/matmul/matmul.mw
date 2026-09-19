@@ -1,0 +1,31 @@
+-- Three nested loops over flat arrays of doubles: the shape of numerical code,
+-- and of nothing else.
+--
+-- `i k j` order, so the innermost loop walks both `b` and `c` in order. That is
+-- the one optimization here, and every language does the same.
+--
+-- Every value is a whole number small enough to be exact in a double, so the
+-- answer does not depend on whether a compiler fuses a multiply and an add.
+-- Otherwise this would measure which compilers emit FMA, not which are fast.
+
+use Std.Console (println)
+use Std.St as St
+
+def n : Int = 256
+
+def main =
+  let total = runSt (\() ->
+    let a = St.newArray (n * n) 0.0 in
+    let b = St.newArray (n * n) 0.0 in
+    let c = St.newArray (n * n) 0.0 in
+    let _ = St.forRange 0 n (\i -> St.forRange 0 n (\j ->
+      let _ = St.set a (i * n + j) (toFloat ((i + j) % 10)) in
+      St.set b (i * n + j) (toFloat ((i * j) % 10)))) in
+    let _ = St.forRange 0 n (\i ->
+      St.forRange 0 n (\k ->
+        let aik = St.get a (i * n + k) in
+        St.forRange 0 n (\j ->
+          St.set c (i * n + j) (St.get c (i * n + j) +. aik *. St.get b (k * n + j))))) in
+    let rec diag i acc = if i >= n then acc else diag (i + 1) (acc +. St.get c (i * n + i)) in
+    diag 0 0.0)
+in println (floor total)

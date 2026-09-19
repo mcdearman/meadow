@@ -1,0 +1,26 @@
+-- Strings, a hash map and a sort: count the words of a 3MB file and report the
+-- ten commonest, count first and then the word, so ties are broken the same way
+-- everywhere.
+
+use Std.Console (println)
+use Std.Fs as Fs
+use Std.String as Str
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as HM
+use Std.Sort as Sort
+
+fun countLine (m : HashMap String Int) (line : String) =
+  V.foldl
+    (\acc w -> if Str.isEmpty w then acc else HM.insertWith (\a b -> a + b) w 1 acc)
+    m
+    (Str.split " " line)
+
+fun rank a b =
+  match (a, b) with
+  | ((wa, ca), (wb, cb)) -> if ca == cb then Str.compare wa wb else compare cb ca
+
+def main =
+  let text = Fs.readToStringOr "" "work/corpus.txt" in
+  let counts = V.foldl countLine HM.empty (Str.lines text) in
+  let top = V.take (Sort.sortBy rank (HM.toVec counts)) 10 in
+  println (Str.join " " (V.map (\p -> match p with | (w, c) -> "${w}:${c}") top))

@@ -1,0 +1,25 @@
+-- Message passing: four producer threads each send fifty thousand numbers into
+-- one channel, and the main thread receives all two hundred thousand and adds
+-- them up.
+--
+-- What this measures is the cost of handing a value from one thread to another
+-- -- the queue, the waking, and whatever the runtime does to keep a value from
+-- being seen by two threads at once.
+
+use Std.Console (println)
+use Std.Thread as Thread
+use Std.Collections.Vector as V
+
+def producers : Int = 4
+def each : Int = 50000
+
+fun send ch (base : Int) (i : Int) =
+  if i >= each then () else let _ = Thread.send ch (base + i) in send ch base (i + 1)
+
+fun drain ch (n : Int) (acc : Int) : Int =
+  if n == 0 then acc else drain ch (n - 1) (acc + Thread.receive ch)
+
+def main =
+  let ch = Thread.newChannel () in
+  let _ = V.map (\p -> Thread.spawn (\() -> send ch (p * each) 0)) [0..producers - 1] in
+  println (drain ch (producers * each) 0)

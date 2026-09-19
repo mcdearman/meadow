@@ -1,0 +1,10 @@
+-- fib n, the naive way: two calls and an addition per node, nothing else.
+--
+-- `Int` throughout -- an unannotated literal in Meadow is a BigInt, which is a
+-- different benchmark.
+
+use Std.Console (println)
+
+fun fib (n : Int) : Int = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+def main = println (fib 32)

@@ -1,0 +1,32 @@
+-- Data parallelism: a 2000x2000 grid of independent float work, split between
+-- threads by taking every Nth row, so no thread gets all the cheap ones.
+--
+-- The answer is the total number of iterations over the whole grid, which does
+-- not depend on how the rows were shared out -- so every language may use as
+-- many threads as it likes and still has to agree.
+
+use Std.Console (println)
+use Std.Thread as Thread
+use Std.Collections.Vector as V
+
+def side : Int = 2000
+def limit : Int = 100
+def workers : Int = 8
+
+fun escape (cx : Float) (cy : Float) (i : Int) (x : Float) (y : Float) : Int =
+  if i >= limit then limit
+  else if x *. x +. y *. y >. 4.0 then i
+  else escape cx cy (i + 1) (x *. x -. y *. y +. cx) (2.0 *. x *. y +. cy)
+
+fun row (cy : Float) (i : Int) (acc : Int) : Int =
+  if i >= side then acc
+  else
+    let cx = toFloat i /. toFloat side *. 3.0 -. 2.0 in
+    row cy (i + 1) (acc + escape cx cy 0 0.0 0.0)
+
+fun band (j : Int) (acc : Int) : Int =
+  if j >= side then acc
+  else band (j + workers) (acc + row (toFloat j /. toFloat side *. 3.0 -. 1.5) 0 0)
+
+def main =
+  println (V.foldl (\a b -> a + b) 0 (Thread.parMap (\w -> band w 0) [0..workers - 1]))

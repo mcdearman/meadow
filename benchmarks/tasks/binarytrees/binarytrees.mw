@@ -1,0 +1,33 @@
+-- Allocation and collection: build a small tree, walk it, discard it, tens of
+-- millions of nodes over, with one long-lived tree kept alive throughout.
+--
+-- Each tip carries the iteration it was built in, so no two trees are alike.
+-- Without that a compiler is free to notice the tree is the same every time
+-- round the loop and build it once -- GHC does, and then the benchmark
+-- measures nothing.
+
+use Std.Console (println)
+
+data Tree = Tip Int | Fork Tree Tree
+
+use Tree.*
+
+fun build (v : Int) (d : Int) : Tree =
+  if d <= 0 then Tip v else Fork (build v (d - 1)) (build (v + 1) (d - 1))
+
+fun check (t : Tree) : Int =
+  match t with
+  | Tip v -> v
+  | Fork l r -> check l + check r
+
+fun trees (d : Int) (n : Int) (acc : Int) : Int =
+  if n == 0 then acc else trees d (n - 1) (acc + check (build n d))
+
+fun depths (d : Int) (top : Int) (acc : Int) : Int =
+  if d > top then acc
+  else depths (d + 2) top (acc + trees d (2 ^ (top - d + 4)) 0)
+
+def main =
+  let top : Int = 18 in
+  let lasting = build 1 top in
+  println (depths 4 top 0 + check lasting)

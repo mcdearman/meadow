@@ -1,0 +1,42 @@
+-- Threads contending for shared mutable state: eight of them moving money
+-- between sixteen accounts, a hundred and fifty thousand transfers in all, every
+-- transfer having to read two accounts and write two as one indivisible step.
+--
+-- A transfer is unconditional, so the final balances do not depend on the order
+-- the threads got their turns -- which makes the printed balances a real check
+-- that every transfer landed exactly once, and not merely a timing.
+--
+-- Meadow's answer to this is software transactional memory: no locks, no lock
+-- ordering, and a transaction that conflicts is simply run again.
+
+use Std.Console (println)
+use Std.Thread as Thread
+use Std.Stm as Stm
+use Std.String as Str
+use Std.Collections.Vector as V
+
+def accounts : Int = 16
+def workers : Int = 8
+def moves : Int = 20000
+
+fun step at (s : Int) (n : Int) =
+  if n == 0 then ()
+  else
+    let s2 = s * 48271 % 2147483647 in
+    let a = s2 % accounts in
+    let b = s2 / accounts % accounts in
+    let amt = 1 + s2 % 10 in
+    let _ =
+      if a == b then ()
+      else
+        Stm.atomically (\() ->
+          let _ = Stm.modifyTVar (at a) (\x -> x - amt) in
+          Stm.modifyTVar (at b) (\x -> x + amt))
+    in step at s2 (n - 1)
+
+def main =
+  let tvs = V.map (\i -> Stm.newTVarIO 1000) [0..accounts - 1] in
+  let spare = Stm.newTVarIO 0 in
+  let at = \i -> V.getOr spare tvs i in
+  let _ = Thread.parMap (\w -> step at (w + 1) moves) [0..workers - 1] in
+  println (Str.join "," (V.map (\tv -> show (Stm.readTVarIO tv)) tvs))

@@ -1,0 +1,3 @@
+use Std.Console (println)
+
+def main = println "0"

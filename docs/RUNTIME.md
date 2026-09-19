@@ -36,7 +36,7 @@ reference semantics, and every backend is tested against it.
 
 ```text
   source ─► parse, rename, infer ─► core
-                                     │  meadow-core: specialize, globals, lower
+                                     │  meadow-core: specialize, joins, globals, lower
                                      ▼
                                    AxCut (meadow-seq)       seven statements, no expressions
                                      │  meadow-codegen
@@ -75,6 +75,20 @@ deactivation releases, and `substitute` adjusts reference counts — so an AxCut
 program frees its own memory. Meadow does not take that half: it has a
 generational collector (section 4), so `switch` and `invoke` release nothing and
 the linear environment is not enforced. What Meadow takes is the *shape*.
+
+Before the lowering, `meadow_core::joins` names the continuations that several
+places share. A `let f = \x -> … in …` where every mention of `f` is a
+saturated call in tail position is not a function -- nothing can hold it,
+nothing can pass it anywhere, and nothing runs after it answers. It becomes a
+`Term::Join`, and lowering gives it a labelled block that captures nothing:
+what it needs from around it is still in the environment where it is entered,
+so it is passed at the jump. Both branches of an `if` then *jump* to one block
+instead of each building an object and invoking it.
+
+The saving today is that object. The reason to have the form is case-of-case,
+which has to put the context it pushes inwards somewhere: copied into every
+branch a program can square in size, and built as a closure it allocates.
+Naming it is the third answer, and it is why GHC has join points.
 
 In AxCut a function receives the continuation to answer, and *returning is
 invoking that continuation*. A closure, a continuation and an effect handler are

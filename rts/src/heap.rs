@@ -140,6 +140,25 @@ pub enum Collector {
 pub struct GcConfig {
     pub collector: Collector,
     /// The nursery's largest size, in slots: what bounds a nursery pause.
+    ///
+    /// The default, 2 MiB, is a measured compromise and not an obvious number.
+    /// A nursery collection costs what *survives* it, so a bigger nursery buys
+    /// throughput -- fewer collections -- and spends tail latency, and past a
+    /// point it spends throughput too, because a long-lived object sitting in a
+    /// large nursery is copied again at every collection instead of being
+    /// promoted out of it. On `benches/Latency` and `benchmarks/binarytrees`:
+    ///
+    /// ```text
+    ///   nursery   Latency p99   over 1 ms   binarytrees   copied
+    ///    256 KiB       115 us           0        3.72 s   926 MiB
+    ///      2 MiB       459 us           0        2.75 s     -
+    ///      8 MiB      1.31 ms           0        2.14 s   450 MiB
+    ///     32 MiB      5.24 ms          79        3.40 s   5.3 GiB
+    /// ```
+    ///
+    /// 2 MiB is the largest that keeps every pause well under a millisecond,
+    /// which is the property `docs/RUNTIME.md` claims. `MEADOW_GC_NURSERY`
+    /// moves it, in slots, for a program that would rather have the throughput.
     pub nursery: usize,
     /// OS threads marking old generations. With 0, each heap marks a slice at
     /// a time on its own thread, during nursery collections.
@@ -173,7 +192,7 @@ impl GcConfig {
                 Ok("copying") => Collector::Copying,
                 _ => Collector::Generational,
             },
-            nursery: num("MEADOW_GC_NURSERY").unwrap_or(1 << 15).max(64),
+            nursery: num("MEADOW_GC_NURSERY").unwrap_or(1 << 18).max(64),
             mark_threads: num("MEADOW_GC_MARK_THREADS").unwrap_or((cores / 4).max(1)),
             min_trigger: num("MEADOW_GC_TRIGGER").unwrap_or(1 << 18),
             verify: std::env::var_os("MEADOW_GC_VERIFY").is_some(),
@@ -1335,8 +1354,27 @@ impl Heap {
     /// with `promote_all` promote everything, leaving it empty.
     fn minor(&mut self, roots: &mut [Value], promote_all: bool) {
         let mut to = std::mem::take(&mut self.other);
-        to.clear();
-        to.resize(self.space.len(), 0);
+        // As long as the from-space, and deliberately *not* zeroed. Every slot
+        // below `top` is written by the copy below, and nothing reads above it:
+        // `nursery_objects` and the verifier both stop at `top`, allocation
+        // writes every slot it bumps past, and `alloc_packed` zeroes its own
+        // padding word rather than trusting the heap to be clear.
+        //
+        // Zeroing it cost a memset of the whole nursery on every collection, so
+        // a pause cost what the nursery *is* rather than what survived it --
+        // which is the wrong scaling for a copying collector, and what stopped
+        // the nursery being made bigger for throughput.
+        //
+        // The length has to match the from-space exactly, not merely be enough:
+        // `Minor::forward` decides whether to promote by `to.len()`, so a to-space
+        // left over from a larger nursery would quietly promote less.
+        let want = self.space.len();
+        if to.len() < want {
+            to.resize(want, 0);
+        } else {
+            // No write: `truncate` on a `Copy` element only moves the length.
+            to.truncate(want);
+        }
         // With nothing in the old generation, this collection sees everything,
         // and can tell which regions nothing reaches.
         let whole = self.old.is_empty() && self.marking.is_none();

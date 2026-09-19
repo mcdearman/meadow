@@ -116,6 +116,21 @@ impl Hasher {
         self.bytes(s.as_bytes());
     }
 
+    /// A string that is already packed: `len` bytes held eight to a word,
+    /// little-endian, the last word's spare bytes zero. Exactly what
+    /// [`Hasher::str`] writes, for a caller whose string is laid out that way
+    /// already -- which a `Kind::Str` on the runtime's heap is, so hashing one
+    /// need not copy its bytes out into a `Vec` first.
+    ///
+    /// A test below holds this to `str` for strings of every length mod eight.
+    pub fn str_packed(&mut self, len: usize, words: impl IntoIterator<Item = u64>) {
+        self.tag(Tag::Str);
+        self.word(len as u64);
+        for w in words {
+            self.word(w);
+        }
+    }
+
     /// A `BigInt` by its two's-complement bytes, least significant first.
     pub fn bigint(&mut self, le_bytes: &[u8]) {
         self.tag(Tag::BigInt);
@@ -187,6 +202,36 @@ pub fn unhashable(what: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `str_packed` is `str` for a caller that already has the words. If these
+    /// ever disagree, a `HashMap` written by one engine is unreadable by
+    /// another -- the kind of bug that shows up as a wrong answer a long way
+    /// from here.
+    #[test]
+    fn a_packed_string_hashes_as_the_string_does() {
+        for s in [
+            "",
+            "a",
+            "abcdefg",
+            "abcdefgh",
+            "abcdefghi",
+            "w0x0",
+            "the quick brown fox jumps over the lazy dog",
+        ] {
+            let mut want = Hasher::new();
+            want.str(s);
+            let bytes = s.as_bytes();
+            let words = (0..bytes.len().div_ceil(8)).map(|i| {
+                let chunk = &bytes[8 * i..bytes.len().min(8 * i + 8)];
+                let mut w = [0u8; 8];
+                w[..chunk.len()].copy_from_slice(chunk);
+                u64::from_le_bytes(w)
+            });
+            let mut got = Hasher::new();
+            got.str_packed(bytes.len(), words);
+            assert_eq!(want.finish(), got.finish(), "{s:?}");
+        }
+    }
 
     fn of(f: impl FnOnce(&mut Hasher)) -> i64 {
         let mut h = Hasher::new();

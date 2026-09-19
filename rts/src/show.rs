@@ -299,6 +299,77 @@ impl Vm<'_> {
     /// check at the top is what makes `xs == xs` on a long list O(1) rather than
     /// O(n) — the same short-circuit the CEK gets from `Rc::ptr_eq`, and here it
     /// is simply integer equality.
+    /// Hash a `Kind::Str` from the heap without copying its bytes out.
+    ///
+    /// A `Kind::Str` holds its bytes eight to a little-endian word with the
+    /// last word's spare bytes zero, which is the very layout
+    /// [`meadow_core::hash::Hasher::str`] hashes -- so the words go straight in
+    /// and the result is the same as if they had been made a `String` first.
+    fn hash_packed(&self, a: crate::value::Addr, h: &mut meadow_core::hash::Hasher) {
+        let len = self.heap.meta(a) as usize;
+        h.str_packed(
+            len,
+            (0..len.div_ceil(8)).map(|i| self.heap.field_word(a, i)),
+        );
+    }
+
+    /// Hash `v` into `h` if it has no parts, answering whether it did.
+    ///
+    /// `false` means the value is a data value, an array, a record or a compact
+    /// -- something with children, which [`Vm::hash_value`] walks with a work
+    /// stack. An `Err` is a value that cannot be hashed at all, which is the
+    /// same answer either way and is better given without allocating first.
+    fn hash_flat(&self, v: Value, h: &mut meadow_core::hash::Hasher) -> Result<bool, Error> {
+        use meadow_core::hash::unhashable;
+        match v {
+            Value::Int(_) | Value::Word(..) | Value::Float(_) | Value::Float32(_) => {
+                meadow_core::num::hash_into(h, &self.num(v)?)
+            }
+            Value::Bool(b) => h.bool(b),
+            Value::Char(c) => h.char(c),
+            Value::Str(s) => h.str(&s),
+            Value::Unit => h.unit(),
+            Value::Obj(a) => {
+                return match self.heap.kind(a) {
+                    Kind::Str => {
+                        self.hash_packed(a, h);
+                        Ok(true)
+                    }
+                    Kind::BigInt => match self.bigint_at(v) {
+                        Some(b) => {
+                            meadow_core::num::hash_into(h, &meadow_core::num::Num::Big(b));
+                            Ok(true)
+                        }
+                        None => Err(Error {
+                            msg: "hash: a malformed BigInt".into(),
+                        }),
+                    },
+                    Kind::Ref => Err(Error {
+                        msg: unhashable("a Ref"),
+                    }),
+                    Kind::MutArray => Err(Error {
+                        msg: unhashable("a mutable array"),
+                    }),
+                    Kind::Closure | Kind::Resume => Err(Error {
+                        msg: unhashable("a function"),
+                    }),
+                    Kind::Channel => Err(Error {
+                        msg: unhashable("a channel"),
+                    }),
+                    Kind::Task => Err(Error {
+                        msg: unhashable("a thread"),
+                    }),
+                    Kind::TVar => Err(Error {
+                        msg: unhashable("a TVar"),
+                    }),
+                    // Has parts: the caller walks it.
+                    _ => Ok(false),
+                };
+            }
+        }
+        Ok(true)
+    }
+
     /// `hash`, fed to [`meadow_core::hash::Hasher`] in the order every engine
     /// uses: a value's head, then its parts left to right.
     pub fn hash_value(&self, v: Value) -> Result<i64, Error> {
@@ -308,6 +379,14 @@ impl Vm<'_> {
             Label(String),
         }
         let mut h = Hasher::new();
+        // A value with no parts needs no work stack, and the work stack is a
+        // `Vec` -- a call to the allocator on the way in and another on the way
+        // out. The keys people actually hash are all here: a string, an
+        // integer, a character. `wordfreq` hashes a string twice per word, so
+        // this was two million allocations it did not need.
+        if self.hash_flat(v, &mut h)? {
+            return Ok(h.finish());
+        }
         let mut stack = vec![Work::Val(v)];
         while let Some(w) = stack.pop() {
             let v = match w {
@@ -425,9 +504,7 @@ impl Vm<'_> {
                         msg: unhashable("a TVar"),
                     });
                 }
-                Kind::Str => {
-                    h.str(&String::from_utf8_lossy(&self.heap.packed_bytes(a)));
-                }
+                Kind::Str => self.hash_packed(a, &mut h),
             }
         }
         Ok(h.finish())

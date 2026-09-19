@@ -48,12 +48,14 @@ struct Cell {
     value: Shared,
 }
 
-/// Every `TVar` of one run, the clock, and the commit lock. Threads waiting on a
-/// `TVar` are the scheduler's to keep: it parks them after checking
-/// [`World::changed`], and wakes them with what [`World::commit`] wrote.
+/// Every `TVar` of one run and the clock. Threads waiting on a `TVar` are the
+/// scheduler's to keep: it parks them after checking [`World::changed`], and
+/// wakes them with what [`World::commit`] wrote.
+///
+/// No lock over commits: [`World::commit`] locks the `TVar`s a transaction
+/// touched, in order, and that is the whole of the mutual exclusion.
 pub struct World {
     clock: AtomicU64,
-    commit: Mutex<()>,
     tvars: RwLock<Vec<Arc<TVar>>>,
 }
 
@@ -61,7 +63,6 @@ impl Default for World {
     fn default() -> Self {
         World {
             clock: AtomicU64::new(0),
-            commit: Mutex::new(()),
             tvars: RwLock::new(Vec::new()),
         }
     }
@@ -92,8 +93,16 @@ impl World {
         (tvars.len() - 1) as u32
     }
 
-    fn tvar(&self, id: u32) -> Arc<TVar> {
-        self.tvars.read().unwrap_or_else(|p| p.into_inner())[id as usize].clone()
+    /// Every `TVar`, borrowed. Held for as long as the caller needs them, which
+    /// is the point: taking the lock once and indexing it costs one atomic, and
+    /// taking it per `TVar` and cloning the `Arc` out cost three, on cache lines
+    /// every thread in the run is already fighting over. `World::tvar` used to
+    /// be the largest single cost of a contended transaction.
+    ///
+    /// Safe to hold while locking cells: nothing that holds a cell makes a
+    /// `TVar`, so this never waits on [`World::new_tvar`] while it waits here.
+    fn all(&self) -> std::sync::RwLockReadGuard<'_, Vec<Arc<TVar>>> {
+        self.tvars.read().unwrap_or_else(|p| p.into_inner())
     }
 
     pub fn begin(&self) -> Txn {
@@ -112,8 +121,8 @@ impl World {
                 return Read::Value(s.clone());
             }
         }
-        let tvar = self.tvar(id);
-        let cell = lock(&tvar.cell);
+        let tvars = self.all();
+        let cell = lock(&tvars[id as usize].cell);
         if cell.version > txn.start {
             return Read::Conflict;
         }
@@ -132,7 +141,7 @@ impl World {
             .iter()
             .rev()
             .find_map(|f| f.iter().find(|(t, _)| *t == id).map(|(_, s)| s.clone()))
-            .unwrap_or_else(|| lock(&self.tvar(id).cell).value.clone());
+            .unwrap_or_else(|| lock(&self.all()[id as usize].cell).value.clone());
         match current.region {
             Some(r) if r.used() <= 4 * current.fresh.max(1024) => (r, false, current.fresh),
             _ => (Region::new(), true, 0),
@@ -146,7 +155,19 @@ impl World {
             reads, mut writes, ..
         } = txn;
         let writes = writes.drain(..).next().unwrap_or_default();
-        let _commit = lock(&self.commit);
+        // Every `TVar` this transaction read *or* wrote, locked in one order.
+        //
+        // That is two-phase locking over the whole read and write set, which is
+        // all serializability needs, and sorting is what stops two transactions
+        // touching the same `TVar`s from deadlocking on each other. There is no
+        // lock over commits as a whole: two transactions touching disjoint
+        // `TVar`s have nothing to say to each other and commit at once.
+        //
+        // There used to be one, and it cost more than it looked. Eight threads
+        // moving money between sixteen accounts took three times as long as one
+        // thread doing all the same transfers, because every commit queued
+        // behind every other and the threads spent their time being parked and
+        // woken rather than working.
         let mut ids: Vec<u32> = reads
             .iter()
             .map(|(t, _)| *t)
@@ -154,8 +175,11 @@ impl World {
             .collect();
         ids.sort_unstable();
         ids.dedup();
-        let tvars: Vec<Arc<TVar>> = ids.iter().map(|id| self.tvar(*id)).collect();
-        let mut cells: Vec<MutexGuard<'_, Cell>> = tvars.iter().map(|t| lock(&t.cell)).collect();
+        let tvars = self.all();
+        let mut cells: Vec<MutexGuard<'_, Cell>> = ids
+            .iter()
+            .map(|id| lock(&tvars[*id as usize].cell))
+            .collect();
         let at = |id: u32| ids.binary_search(&id).expect("a locked TVar");
         if reads
             .iter()
@@ -184,7 +208,7 @@ impl World {
     pub fn changed(&self, reads: &[(u32, u64)]) -> bool {
         reads
             .iter()
-            .any(|(id, version)| lock(&self.tvar(*id).cell).version != *version)
+            .any(|(id, version)| lock(&self.all()[*id as usize].cell).version != *version)
     }
 }
 

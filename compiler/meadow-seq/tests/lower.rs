@@ -114,9 +114,20 @@ fn calling_a_lambda_is_a_permutation_and_a_branch() {
 fn a_global_reference_is_a_jump_with_the_environment_untouched() {
     let g = VarId(50);
     let m = VarId(51);
+    // Not a literal: `globals::inline_literals` would put one at the mention
+    // and there would be no reference left to be a jump. See
+    // `a_global_literal_is_put_where_it_is_mentioned`.
     let program = Program {
         defs: vec![
-            Def::untyped(g, "g", Term::Lit(Lit::Int(7))),
+            Def::untyped(
+                g,
+                "g",
+                Term::Prim(
+                    Prim::Add,
+                    vec![Term::Lit(Lit::Int(3)), Term::Lit(Lit::Int(4))],
+                    meadow_core::unknown(),
+                ),
+            ),
             Def::untyped(m, "main", Term::Var(g)),
         ],
         entry: Some(m),
@@ -138,6 +149,40 @@ fn a_global_reference_is_a_jump_with_the_environment_untouched() {
         }
         other => panic!("expected a substitute and a jump, got {other:?}"),
     }
+}
+
+/// A global whose value is a literal is not a jump at all: the literal goes
+/// where the mention was.
+///
+/// This is what lets a bound written `def limit : Int = 100` be fused into the
+/// branch that tests it. Without it, reading one in a loop condition costs two
+/// heap-allocated continuations and an unfused compare every time round.
+#[test]
+fn a_global_literal_is_put_where_it_is_mentioned() {
+    let g = VarId(50);
+    let m = VarId(51);
+    let program = Program {
+        defs: vec![
+            Def::untyped(g, "g", Term::Lit(Lit::Int(7))),
+            Def::untyped(m, "main", Term::Var(g)),
+        ],
+        entry: Some(m),
+        ctor_fields: Default::default(),
+        variants: Default::default(),
+        origins: Default::default(),
+    };
+    let lowered = lower_program(&program, meadow_core::OptLevel::default());
+    assert!(lowered.unsupported.is_empty());
+
+    let main = &lowered.program.defs[1].block.body;
+    assert!(
+        !matches!(main, Statement::Substitute(_, b) if matches!(b.body, Statement::Jump(_))),
+        "the literal should be here, not behind a jump: {main:?}"
+    );
+    assert!(
+        format!("{main:?}").contains("Lit(Int(7))"),
+        "expected the literal itself, got {main:?}"
+    );
 }
 
 #[test]

@@ -22,6 +22,26 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use crate::region::Region;
 use crate::value::Value;
 
+/// Take a `TVar`'s cell.
+///
+/// A plain mutex, and two cleverer things were tried here and are both
+/// measurably worse on `benchmarks/contention` -- eight threads moving money
+/// between sixteen accounts, which is about as much contention as a program is
+/// likely to arrange:
+///
+/// * **Spinning before waiting**, at every budget from 16 to 4096 tries:
+///   504ms, 506ms, 526ms, 636ms for 0, 16, 64 and 256. A profile of this
+///   benchmark is mostly `__psynch_mutexwait`, which looks like lock overhead
+///   and is not: the transactions really do conflict, and a waiter that spins
+///   is a waiter holding a core the thread it waits on could have used.
+/// * **An `RwLock` per cell**, so that reads -- which only compare a version
+///   and copy a pointer -- need not take turns: 729ms against 581ms. Rust's
+///   `RwLock` costs more to acquire either way than a `Mutex`, and the readers
+///   were contending on the same word regardless.
+///
+/// The remaining cost is not here. It is the per-transaction machinery:
+/// `World::read`, `World::region_for_write` and `World::commit` each allocate,
+/// and `Std.Stm` runs the control as effect handlers.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }

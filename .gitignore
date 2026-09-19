@@ -14,3 +14,11 @@ editors/vscode/node_modules/
 editors/vscode/*.vsix
 .metals
 work/
+.koka/
+*.s
+*.o
+*.so
+*.a
+*.cmx
+*.cmi
+*.cma

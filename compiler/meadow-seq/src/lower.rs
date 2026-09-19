@@ -185,7 +185,9 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     } else {
         core::specialize::program(program)
     };
-    let program = &core::globals::program(&core::bools::program(&specialized));
+    let program = &core::globals::program(&core::globals::inline_literals(&core::bools::program(
+        &specialized,
+    )));
     let mut globals = HashMap::new();
     for (i, d) in program.defs.iter().enumerate() {
         globals.insert(d.var, (Label(i as u32), Vec::new()));

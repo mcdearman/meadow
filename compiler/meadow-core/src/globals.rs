@@ -36,6 +36,68 @@ use crate::*;
 /// and of specialized copies.
 pub const GLOBALS_BASE: u32 = 0x7C00_0000;
 
+/// Replace every mention of a top-level definition whose value is a literal
+/// with the literal itself.
+///
+/// A mention of a global is a *jump* to its definition (see
+/// `meadow_seq::lower`), and a jump is a transfer of control. That is fine for
+/// a table built once, and ruinous for a bound written as
+/// `def limit : Int = 100` and then read in a loop condition, because lowering
+/// only fuses a comparison into the branch that tests it when the comparison
+/// cannot transfer control. So this
+///
+/// ```text
+///   def limit : Int = 100
+///   fun loop (i : Int) acc = if i >= limit then acc else loop (i + 1) (acc + i)
+/// ```
+///
+/// compiled to two heap-allocated continuations and an unfused compare *per
+/// iteration*, where the same loop over a parameter compiled to a single
+/// `bri`. Inlining the literal makes the two identical.
+///
+/// Only literals: they cost nothing to evaluate, cannot fail, and cannot
+/// observe anything, so a mention is worth exactly as much as the definition.
+/// A generic definition is left alone -- its value is made from the descriptors
+/// of the types it is used at.
+///
+/// The definitions stay; `prune` drops the ones nothing mentions any more, and
+/// the ones a package exports have to remain.
+pub fn inline_literals(p: &Program) -> Program {
+    let mut lits: HashMap<Var, Term> = HashMap::new();
+    for d in &p.defs {
+        if Some(d.var) == p.entry || is_generic(&d.term) {
+            continue;
+        }
+        if let Some(l) = literal(&d.term) {
+            lits.insert(d.var, l);
+        }
+    }
+    if lits.is_empty() {
+        return p.clone();
+    }
+    let put = &mut |t: Term| match &t {
+        Term::Var(v) => lits.get(v).cloned().unwrap_or(t),
+        // A mention of a binding is written `e [T, …]`, and a literal has
+        // nothing to instantiate.
+        Term::TyApp(inner, _) if matches!(&**inner, Term::Lit(_)) => (**inner).clone(),
+        _ => t,
+    };
+    let mut out = p.clone();
+    for d in &mut out.defs {
+        d.term = crate::rewrite::term(&d.term, put, &mut |q| q);
+    }
+    out
+}
+
+/// The literal a definition's body is, under any number of source positions.
+fn literal(t: &Term) -> Option<Term> {
+    match t {
+        Term::Loc(_, inner) => literal(inner),
+        Term::Lit(_) => Some(t.clone()),
+        _ => None,
+    }
+}
+
 pub fn program(p: &Program) -> Program {
     let mut next = GLOBALS_BASE;
     let mut fresh = || {

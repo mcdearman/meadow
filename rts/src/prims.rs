@@ -284,6 +284,21 @@ impl Vm<'_> {
         }
     }
 
+    /// A mutable array and its header, read once: the kind check, the length
+    /// and the field offset all come out of the same two slot reads.
+    fn mut_array_head(&self, v: Value) -> Result<(Addr, crate::object::Head), Error> {
+        match v.addr() {
+            Some(a) => {
+                let h = self.heap.head(a);
+                if h.kind == Kind::MutArray {
+                    return Ok((a, h));
+                }
+                err(format!("expected a mutable array, got {}", self.show(v)))
+            }
+            None => err(format!("expected a mutable array, got {}", self.show(v))),
+        }
+    }
+
     pub(crate) fn bytes(&self, v: Value, what: &str) -> Result<Vec<u8>, Error> {
         let a = self.array(v)?;
         if self.heap.kind(a) == Kind::Bytes {
@@ -788,27 +803,33 @@ impl Vm<'_> {
                 let fill = vec![arg(self, 1); n];
                 Value::Obj(self.heap.alloc(Kind::MutArray, 0, &fill))
             }
+            // These two read the header *once*. Reading it is two slot reads,
+            // and a slot read of an old-generation object is a block lookup --
+            // so asking for the kind, then the length, then the field, each
+            // through an accessor that reads the header again, cost six block
+            // lookups per element of a promoted array. A matrix multiply is
+            // nothing but this.
             StGetArray => {
-                let a = self.mut_array(arg(self, 0))?;
+                let (a, h) = self.mut_array_head(arg(self, 0))?;
                 let i = self.index(arg(self, 1))?;
-                let n = self.heap.len(a);
+                let n = h.len as usize;
                 if i >= n {
                     return err(format!("stGetArray: index {i} out of bounds (len {n})"));
                 }
-                self.heap.field(a, i)
+                self.heap.field_of(a, &h, i)
             }
             StSetArray => {
-                let a = self.mut_array(arg(self, 0))?;
+                let (a, h) = self.mut_array_head(arg(self, 0))?;
                 let i = self.index(arg(self, 1))?;
-                let n = self.heap.len(a);
+                let n = h.len as usize;
                 if i >= n {
                     return err(format!("stSetArray: index {i} out of bounds (len {n})"));
                 }
                 let v = arg(self, 2);
-                self.heap.set_field(a, i, v);
+                self.heap.set_field_of(a, &h, i, v);
                 Value::Unit
             }
-            StArrayLen => Value::Int(self.heap.len(self.mut_array(arg(self, 0))?) as i64),
+            StArrayLen => Value::Int(self.mut_array_head(arg(self, 0))?.1.len as i64),
             StFreeze => {
                 let n = self.heap.len(self.mut_array(arg(self, 0))?);
                 self.ensure(Heap::size_of(Kind::Array, n));

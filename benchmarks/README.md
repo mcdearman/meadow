@@ -137,25 +137,25 @@ figure in brackets is how many times slower than the fastest in that row.
 
 | task | meadow | rust | c | go | haskell | java | ocaml | koka | python | js |
 |---|---|---|---|---|---|---|---|---|---|---|
-| fib | 49ms (5.3×) | **9ms** | 10ms (1.1×) | 11ms (1.1×) | 30ms (3.3×) | 36ms (3.9×) | 11ms (1.2×) | 10ms (1.1×) | 210ms (22.8×) | 72ms (7.8×) |
-| binarytrees | 2.72s (9.1×) | 1.54s (5.1×) | 1.62s (5.4×) | 779ms (2.6×) | 413ms (1.4×) | **299ms** | 550ms (1.8×) | 333ms (1.1×) | 5.73s (19.2×) | 868ms (2.9×) |
-| matmul | 2.74s (523.1×) | 6ms (1.1×) | **5ms** | 12ms (2.4×) | 29ms (5.6×) | 40ms (7.7×) | 25ms (4.9×) | 201ms (38.4×) | 764ms (146.1×) | 80ms (15.3×) |
-| wordfreq | 1.28s (105.4×) | 14ms (1.2×) | **12ms** | 17ms (1.4×) | 135ms (11.2×) | 130ms (10.8×) | 51ms (4.2×) | — | 53ms (4.4×) | 116ms (9.6×) |
-| ⇉ mandelbrot | 425ms (13.8×) | **31ms** | 36ms (1.2×) | 32ms (1.0×) | 76ms (2.5×) | 89ms (2.9×) | — | — | 1.21s (39.1×) | 127ms (4.1×) |
-| ⇉ contention | 581ms (123.0×) | 7ms (1.5×) | **5ms** | 17ms (3.6×) | 41ms (8.6×) | 59ms (12.6×) | — | — | 59ms (12.4×) | 138ms (29.2×) |
-| ⇉ pipeline | 61ms (3.4×) | 18ms (1.0×) | 32ms (1.8×) | **18ms** | 280ms (15.9×) | 62ms (3.5×) | — | — | 175ms (9.9×) | 160ms (9.1×) |
-| _startup_ | 4ms | 2ms | 2ms | 4ms | 18ms | 30ms | 4ms | — | 18ms | 56ms |
+| fib | 50ms (5.7×) | 11ms (1.2×) | **9ms** | 11ms (1.3×) | 30ms (3.4×) | 38ms (4.3×) | 11ms (1.2×) | 13ms (1.4×) | 215ms (24.2×) | 76ms (8.5×) |
+| binarytrees | 2.76s (8.6×) | 1.57s (4.9×) | 1.66s (5.1×) | 813ms (2.5×) | 438ms (1.4×) | **323ms** | 555ms (1.7×) | 334ms (1.0×) | 5.79s (17.9×) | 830ms (2.6×) |
+| matmul | 1.67s (275.1×) | 7ms (1.1×) | **6ms** | 13ms (2.1×) | 30ms (4.9×) | 40ms (6.5×) | 26ms (4.3×) | 200ms (33.0×) | 761ms (125.4×) | 80ms (13.2×) |
+| wordfreq | 1.21s (94.7×) | 14ms (1.1×) | **13ms** | 17ms (1.4×) | 146ms (11.4×) | 132ms (10.3×) | 52ms (4.1×) | — | 53ms (4.1×) | 113ms (8.8×) |
+| ⇉ mandelbrot | 198ms (6.3×) | **32ms** | 36ms (1.1×) | 33ms (1.0×) | 77ms (2.4×) | 85ms (2.7×) | — | — | 1.20s (37.7×) | 132ms (4.2×) |
+| ⇉ contention | 498ms (98.5×) | 7ms (1.4×) | **5ms** | 18ms (3.6×) | 40ms (8.0×) | 65ms (12.9×) | — | — | 61ms (12.0×) | 139ms (27.5×) |
+| ⇉ pipeline | 57ms (3.2×) | 22ms (1.3×) | 31ms (1.8×) | **18ms** | 815ms (46.3×) | 63ms (3.6×) | — | — | 175ms (9.9×) | 159ms (9.0×) |
+| _startup_ | 3ms | 3ms | 3ms | 3ms | 18ms | 34ms | 3ms | — | 21ms | 62ms |
 
-Where Meadow was when this suite was first written, and where three runtime
-changes have taken it (see [What was fixed](#what-was-fixed)):
+Where Meadow was when this suite was written, and where the changes in
+[What was fixed](#what-was-fixed) have taken it:
 
 | task | before | after | |
 |---|---|---|---|
-| binarytrees | 3.77s | **2.72s** | 1.39× |
-| contention | 683ms | **581ms** | 1.18× |
-| wordfreq | 1.44s | **1.28s** | 1.13× |
-| matmul | 2.79s | 2.74s | 1.02× |
-| mandelbrot | 433ms | 425ms | 1.02× |
+| mandelbrot | 433ms | **198ms** | 2.19× |
+| matmul | 2.79s | **1.67s** | 1.67× |
+| contention | 683ms | **498ms** | 1.37× |
+| binarytrees | 3.77s | **2.76s** | 1.37× |
+| wordfreq | 1.44s | **1.21s** | 1.19× |
 | fib, pipeline | — | — | unchanged |
 
 ## What this says
@@ -166,8 +166,9 @@ more than where the column sits on average.
 
 The three languages worth measuring against are OCaml, Koka and Haskell: compiled
 functional languages with a managed heap, which is what Meadow is. Against those,
-Meadow is currently **4–5× on `fib`, 5–8× on `binarytrees`, 25× on `wordfreq` and
-100× on `matmul`.**
+Meadow is currently **4–5× on `fib`, 5–8× on `binarytrees`, 23× on `wordfreq` and
+8× on `matmul` against Koka** (64× against OCaml, whose arrays are unboxed and
+whose loops are native).
 
 `pipeline` at 3.4× the fastest is the strongest result. It is behind Go, the
 language whose reputation rests on this one thing, and behind Rust's `mpsc`, but
@@ -183,21 +184,33 @@ closest thing here to a measurement of the compiler on its own. The gap to OCaml
 and Koka (both 10–11ms) is the cost of allocating a continuation for each of the
 two non-tail calls per node.
 
-`matmul` at 523× is the worst number in the suite and has a specific cause.
+`matmul` at 275× is the worst number in the suite and has a specific cause.
 `St.get` and `St.set` are primitives, and native code does not implement
 primitives: it hands them back to the interpreter through `meadow_exec`. Every
 element read and written in the innermost loop leaves machine code, does a type
 check and a bounds check, and returns. Note that **Koka is 38× off C here too** —
 array-heavy numeric code is hard for a reference-counted functional runtime as
-well — so the gap Meadow has to close to reach its own weight class is 14×, not
-500×.
+well — so the gap Meadow has to close to reach its own weight class is 8×, not
+275×.
 
-`contention` at 123× is a comparison of two software transactional memories:
-GHC's runs the identical algorithm in 41ms. The remaining cost is now mutex
-parking — threads blocking on cell locks whose critical sections are a few
-nanoseconds — which wants an adaptive spin-then-park lock.
+What is left there is the **interpreter round trip itself**, and that is now
+measured rather than assumed. Keeping the arrays in the nursery, so that every
+address is a plain index and no block lookup happens at all, moves the benchmark
+by 3% (1711ms to 1659ms). The cost is not reaching the memory; it is leaving
+native code, dispatching through `Vm::exec` and `run_prim`, building a `Value`
+and coming back. Only inlining the access into native code removes it.
 
-`wordfreq` at 105× is the persistent HAMT doing the work a mutable hash table
+`contention` at 99× is a comparison of two software transactional memories:
+GHC's runs the identical algorithm in 40ms. A profile of it is mostly
+`__psynch_mutexwait`, which looks like lock overhead and is not: two attempts to
+remove it — spinning before waiting, and an `RwLock` per cell so readers need
+not take turns — are both measurably *worse*, and the note in `rts/src/stm.rs`
+records the numbers. The transactions really do conflict. What is left is the
+per-transaction machinery: `World::read`, `World::region_for_write` and
+`World::commit` each allocate, and `Std.Stm` runs the control as effect
+handlers.
+
+`wordfreq` at 95× is the persistent HAMT doing the work a mutable hash table
 does elsewhere. OCaml's `Hashtbl` at 51ms is the number to aim at.
 
 `binarytrees` is worth reading for its own sake, and it is where **Koka earns its
@@ -254,6 +267,20 @@ a fresh `Vec` first. A `Kind::Str` is already laid out exactly as the hasher
 consumes a string — packed eight bytes to a little-endian word — so its words now
 go straight in. `wordfreq` hashes a string twice per word; that was two million
 allocations it did not need.
+
+**A top-level `def` of a literal was a jump.** A mention of a global lowers to a
+jump to its definition, and lowering only fuses a comparison into the branch
+that tests it when the comparison cannot transfer control. So a bound written
+`def limit : Int = 100` and read in a loop condition cost *two heap-allocated
+continuations and an unfused compare per iteration*, where the same loop over a
+parameter cost a single `bri`. `globals::inline_literals` puts the literal at
+the mention. This was the largest single change in the suite's history, and it
+moved every benchmark that reads a size or a bound from a top-level `def`.
+
+**Each `St` array access read the object header three times** — once for the
+kind, once for the length, once for the field. Now once. Worth 2%, and worth
+less than it looks, because the cost of an array access is the round trip and
+not the memory.
 
 **The STM serialised every commit on one mutex**, and looked up each `TVar`
 through an `RwLock` and an `Arc` clone on every read and every commit.

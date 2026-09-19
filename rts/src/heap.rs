@@ -796,7 +796,14 @@ impl Heap {
     }
 
     #[inline(always)]
-    fn head(&self, a: Addr) -> Head {
+    /// An object's header.
+    ///
+    /// Cheap for a nursery object -- two slot reads -- and not at all cheap for
+    /// an old one, where every slot read is a block lookup. A caller that needs
+    /// the kind, then the length, then a field should read this once and use
+    /// [`Heap::field_of`] and [`Heap::set_field_of`], rather than three
+    /// accessors that each read it again. See `prims.rs`.
+    pub fn head(&self, a: Addr) -> Head {
         // The nursery, where nearly every object read is, with one test.
         if a < OLD_BASE {
             let i = a as usize;
@@ -859,7 +866,11 @@ impl Heap {
     }
 
     pub fn field(&self, a: Addr, i: usize) -> Value {
-        let h = self.head(a);
+        self.field_of(a, &self.head(a), i)
+    }
+
+    /// [`Heap::field`], for a caller that has already read the header.
+    pub fn field_of(&self, a: Addr, h: &Head, i: usize) -> Value {
         debug_assert!(
             i < h.len as usize,
             "field {i} of a {:?} of {}",
@@ -867,7 +878,7 @@ impl Heap {
             h.len
         );
         let w = self.slot(a + (h.header() + i) as Addr);
-        Value::from_bits(w, self.desc(a, &h, i))
+        Value::from_bits(w, self.desc(a, h, i))
     }
 
     /// What an array's elements are: the one descriptor a uniform object
@@ -1098,7 +1109,12 @@ impl Heap {
     /// replaced by an object -- and its descriptor changes with it, under the
     /// same lock the marker reads a mutable object's descriptors under.
     pub fn set_field(&mut self, a: Addr, i: usize, v: Value) {
-        let h = self.head(a);
+        self.set_field_of(a, &self.head(a), i, v)
+    }
+
+    /// [`Heap::set_field`], for a caller that has already read the header.
+    pub fn set_field_of(&mut self, a: Addr, h: &Head, i: usize, v: Value) {
+        let h = *h;
         let s = a + (h.header() + i) as Addr;
         let was = self.desc(a, &h, i);
         assert!(

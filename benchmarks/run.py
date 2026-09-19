@@ -138,6 +138,23 @@ def interpreted(argv):
     return go
 
 
+def ocaml_build(lang, task):
+    """Compile a copy of the source inside `work/`.
+
+    `ocamlopt` writes `.cmi`, `.cmx` and `.o` beside the *source file*, and no
+    combination of `-I` and `-o` moves them. Compiling a copy is what keeps the
+    task directories holding nothing but the programs.
+    """
+    out = lang.out_dir(task)
+    out.mkdir(parents=True, exist_ok=True)
+    src = out / lang.source(task).name
+    shutil.copyfile(lang.source(task), src)
+    return [
+        "ocamlfind", "ocamlopt", "-package", "unix", "-linkpkg", "-O3",
+        "-w", "-a", "-o", str(out / "out"), str(src),
+    ]
+
+
 def java_build(lang, task):
     out = lang.out_dir(task)
     out.mkdir(parents=True, exist_ok=True)
@@ -179,6 +196,23 @@ LANGS = [
     Lang(
         "java", ".java", "javac", java_build, java_run, stem=cap,
         note="`javac`, default JVM settings",
+    ),
+    Lang(
+        "ocaml", ".ml", "ocamlfind", ocaml_build, run_out,
+        note="`ocamlopt -O3`, native code",
+    ),
+    Lang(
+        "mlton", ".sml", "mlton",
+        simple(["mlton", "-output", "{out}", "{src}"]), run_out,
+        note="`mlton`, whole-program compilation",
+    ),
+    Lang(
+        "koka", ".kk", "koka",
+        simple([
+            "koka", "-O2", "--no-debug", "--builddir", "{objs}",
+            "-o", "{out}", "{src}",
+        ]), run_out,
+        note="`koka -O2`, Perceus reference counting",
     ),
     Lang(
         "python", ".py", "python3", lambda l, t: None,
@@ -236,6 +270,9 @@ STARTUP = {
     "c": '#include <stdio.h>\nint main(void) { printf("0\\n"); return 0; }\n',
     "go": 'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println(0) }\n',
     "haskell": "main :: IO ()\nmain = putStrLn \"0\"\n",
+    "ocaml": 'let () = print_endline "0"\n',
+    "mlton": 'val () = print "0\\n"\n',
+    "koka": 'fun main()\n  println("0")\n',
     "java": 'public class Startup { public static void main(String[] a) { System.out.println(0); } }\n',
     "python": 'print(0)\n',
     "js": 'console.log(0);\n',
@@ -368,6 +405,10 @@ def main():
                     )
                     print(f"  {task:<12} {lang.name:<8} build failed")
                     continue
+                # Koka writes its executable without the execute bit.
+                built = Path(lang.run(task)[0])
+                if built.is_file() and not os.access(built, os.X_OK):
+                    built.chmod(built.stat().st_mode | 0o111)
             out, secs = measure(lang.run(task), HERE, args.reps)
             results[(task, lang.name)] = (out, secs)
             if out is None:

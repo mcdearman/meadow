@@ -1,0 +1,5 @@
+(* fib n, the naive way: two calls and an addition per node, nothing else. *)
+
+fun fib (n : int) : int = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+val () = print (Int.toString (fib 32) ^ "\n")

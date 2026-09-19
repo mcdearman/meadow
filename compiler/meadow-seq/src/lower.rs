@@ -51,7 +51,7 @@
 //! once, the way the CEK machine does it. For a right-hand side that is a lambda
 //! or a literal — nearly all of them — that is unobservable. For one that
 //! performs an effect it is not, and fixing it means giving each definition a
-//! memoising thunk. See the note in `meadow_rts::axcut`.
+//! memoising thunk. See the note in [`crate::machine`].
 //!
 //! # Pattern matching
 //!

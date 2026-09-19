@@ -57,11 +57,29 @@ Three decisions made before the runtime sees anything shape everything after.
 
 ### There is no call stack
 
-The backend IR is **AxCut**, a sequent calculus with cuts already eliminated
-(`compiler/meadow-seq/src/lib.rs`). In AxCut a function receives the
-continuation to answer, and *returning is invoking that continuation*. A
-closure, a continuation and an effect handler are all the same kind of heap
-object: codata with a method table and captured values.
+The backend IR is **AxCut** (`compiler/meadow-seq/src/lib.rs`), from Schuster,
+Müller, Ostermann and Brachthäuser, *Compiling Classical Sequent Calculus to
+Stock Hardware* (OOPSLA 2025).
+
+AxCut is a classical sequent calculus in a normal form, and it does **not**
+eliminate cuts — it restricts them. A cut is a redex, so cut elimination is the
+reduction relation itself and a program with no cuts has already run. What the
+normal form does is push every cut until a variable — an axiom — stands on one
+side, which is what the name says. There is no `Cut` node in the grammar because
+each of the seven statements *is* a cut with the rule it meets folded in: `let`
+and `new` are cuts against an activation rule, `switch` and `invoke` cuts against
+an axiom.
+
+In the paper that pairing is also the memory discipline — activation acquires,
+deactivation releases, and `substitute` adjusts reference counts — so an AxCut
+program frees its own memory. Meadow does not take that half: it has a
+generational collector (section 4), so `switch` and `invoke` release nothing and
+the linear environment is not enforced. What Meadow takes is the *shape*.
+
+In AxCut a function receives the continuation to answer, and *returning is
+invoking that continuation*. A closure, a continuation and an effect handler are
+all the same kind of heap object: codata with a method table and captured
+values.
 
 So the bytecode has no `call` or `ret` and no frame pointer. `Op::Invoke` is
 the whole calling convention: rebuild the register file as the object's

@@ -3,15 +3,39 @@
 //! From Schuster, Müller, Ostermann and Brachthäuser, *Compiling Classical
 //! Sequent Calculus to Stock Hardware: The Duality of Compilation* (OOPSLA
 //! 2025). The grammar below follows the artifact's `Syntax.idr`; the abstract
-//! machine in `meadow_rts::axcut` follows its `Semantics.idr`.
+//! machine in [`crate::machine`] follows its `Semantics.idr`.
 //!
 //! # What makes it a machine language
 //!
 //! A textbook sequent calculus (λμμ̃ — the one in "Grokking the Sequent
 //! Calculus") has producers, consumers, and a *cut* `⟨p | c⟩` that runs one
-//! against the other. AxCut is what you get after cut elimination: there is no
-//! `Cut` constructor at all, because every cut has already been reduced away.
-//! What remains is seven statements and no expressions whatsoever.
+//! against the other. A cut is a redex. Cut elimination is not a pass that runs
+//! before the program does — it *is* the reduction relation, and a program with
+//! no cuts left in it is a program that has already finished.
+//!
+//! So AxCut does not remove cuts. It **restricts** them. There is no `Cut`
+//! constructor because a cut is never a node of its own here: every one of the
+//! seven statements below *is* a cut, with the rule it cuts against fused into
+//! it. The paper's normal form is reached by pushing cuts until a variable — an
+//! axiom — stands on one side, which is what the name says: `Ax` for the axiom
+//! rule, `Cut` for the cut that meets it.
+//!
+//! Which rule a cut meets is also what decides memory, and that pairing is the
+//! paper's central trick:
+//!
+//! ```text
+//!   let, new         a cut against an *activation* rule    acquires memory
+//!   switch, invoke   a cut against an *axiom* (deactivation)  releases it
+//! ```
+//!
+//! `substitute` is the structural rules written down. In the paper, duplicating
+//! a name shares the memory behind it and dropping one erases it — a pair of
+//! reference-count operations — so a well-typed AxCut program manages its own
+//! memory and needs no collector at all. **Meadow takes neither half of that**:
+//! it collects instead of counting, so `switch` and `invoke` free nothing and
+//! `substitute` counts nothing. See [Linearity](#linearity).
+//!
+//! What remains either way is seven statements and no expressions whatsoever.
 //!
 //! The consequence that matters, and the reason for the whole exercise:
 //!
@@ -54,9 +78,19 @@
 //!
 //! The paper's environment is linear: a statement consumes exactly the names it
 //! mentions, and `Substitute` is what duplicates, drops and reorders. This crate
-//! **does not yet enforce that** — see [`Statement::Substitute`]. Names are
-//! checked for scope, not for use count. Getting there is what would let the
-//! register allocator read its answer off the IR instead of computing it.
+//! **does not enforce that** — see [`Statement::Substitute`]. Names are checked
+//! for scope, not for use count.
+//!
+//! That is one deviation with two consequences, and it is worth being plain
+//! about which is which. The paper spends its linearity on *memory*: because
+//! every name is used once, a cut against an axiom knows the object it leaves
+//! behind is dead and can release it there and then. Meadow does not want that
+//! half — it has a generational collector, green threads with a heap each, and
+//! [`Statement::Switch`] deliberately keeps its scrutinee so that
+//! `match o with | Just x -> o` works. The half it does want is *register
+//! allocation*: with use counts on the IR the allocator could read its answer
+//! off `Substitute` instead of computing it. So linearity here would be an
+//! optimization, not the memory discipline it is in the paper.
 
 use meadow_core::Prim;
 use meadow_intern::InternedString;
@@ -175,6 +209,13 @@ pub enum Statement {
     Jump(Label),
 
     /// `let x = tag(fields); rest` — build a data value and bind it.
+    ///
+    /// The paper's `let` *consumes* its fields — they are the front of the
+    /// linear environment and the new value replaces them. This one reads them
+    /// and leaves them, for the reason set out on [`Statement::Switch`]:
+    /// without a duplication pass, consuming would break `let p = Pair x y`
+    /// followed by any further use of `x`. [`Statement::Invoke`] is the only
+    /// statement here that consumes what it names.
     Let {
         name: Name,
         /// Which constructor. The name is kept alongside for readable output and
@@ -215,6 +256,9 @@ pub enum Statement {
     /// A closure, a continuation and an effect handler are all this. The methods
     /// run with the captured environment restored, plus whatever the caller
     /// arranged.
+    ///
+    /// Like [`Statement::Let`], and unlike the paper, this reads its captures
+    /// rather than consuming them.
     New {
         name: Name,
         captures: Vec<Name>,

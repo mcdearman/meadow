@@ -31,6 +31,7 @@ pub mod semver;
 pub mod status;
 pub mod stdlib;
 pub mod test;
+pub mod tour;
 pub mod update;
 pub mod workspace;
 

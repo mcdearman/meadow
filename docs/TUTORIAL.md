@@ -108,17 +108,39 @@ _ : Int
 = 49
 ```
 
-An expression is labelled `_`; a declaration is labelled with its own name. Useful
-commands:
+An expression is labelled `_`; a declaration is labelled with its own name.
+
+Each entry is compiled as a unit of its own, which is why **defining a name
+twice shadows rather than replaces**: what was written before the second
+definition goes on using the first, and only new mentions reach the new one.
+`:module` lists both and marks the one that has been shadowed.
+
+Useful commands:
 
 | | |
 |---|---|
 | `:t <expr>` | show the type without evaluating |
-| `:module` | list everything in scope |
+| `:module` | list what is defined, and what a later definition shadowed |
 | `:reset` | forget everything defined so far |
 | `:time` | time every entry from now on (`:time` again stops) |
 | `:time <expr>` | time just this entry |
+| `:tour` | a guided tour of the language, a step at a time |
 | `:q` | quit |
+
+**The tour** is this document's shorter cousin, taken at the prompt rather than
+read: `:tour` shows what it covers, `:next` and `:back` move through it, and
+`:try` puts a step's example *on the prompt* so it can be edited before it is
+run. It is not a mode — between steps the prompt is the ordinary one, so
+anything can be tried, and whatever you define along the way is still there at
+the end.
+
+It comes in two parts. **The basics** are the language: expressions,
+definitions, data, matching, collections, records, `Maybe`, effects, modules.
+**Going further** is optional and waits to be asked for — threads,
+parallelism, channels, transactions, mutation that cannot escape, failure that
+travels, and writing an effect of your own. `:tour advanced` starts it,
+`:tour 14` goes to a step, and the end of the basics stops rather than sliding
+into it.
 
 Tab completes names, and knows whether the cursor wants a value, a type or a `use`
 path. For multi-line entries, an unfinished line (open bracket, dangling operator,

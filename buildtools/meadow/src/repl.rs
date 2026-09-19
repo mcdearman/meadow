@@ -16,6 +16,7 @@
 
 use itertools::Either;
 use meadow::runtime;
+use meadow::tour;
 use meadow::{complete, stdlib};
 use meadow_compiler::{
     AstModule, CompiledPackage, Options, ast, compile_unit, core, diagnostics, hir,
@@ -418,7 +419,10 @@ const LOGO: &str = r#"      __  ___               __
 const COMMANDS: &[(&str, &str)] = &[
     (":q", "quit"),
     (":t <expr>", "type-check without evaluating"),
-    (":module", "list the bindings in scope"),
+    (
+        ":module",
+        "list what is defined, and what a later definition shadowed",
+    ),
     (":reset", "forget everything defined so far"),
     (
         ":jit / :vm / :cek",
@@ -426,6 +430,11 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     (":time", "time every entry from now on, or stop"),
     (":time <expr>", "time just this entry"),
+    (":tour", "a guided tour of the language, one step at a time"),
+    (
+        ":next / :back",
+        "move through it; `:try` puts its example on the prompt",
+    ),
 ];
 
 /// Print the startup banner.
@@ -485,6 +494,16 @@ pub struct Session {
     engine: meadow::Engine,
     /// Report how long every entry took -- `:time` turns it on and off.
     timing: bool,
+    /// Which step of the tour is showing, if any. The tour is not a mode: the
+    /// prompt between steps is the ordinary one, and this is only what `:next`
+    /// counts from.
+    tour: Option<usize>,
+    /// Text to put on the prompt rather than an empty line -- what `:try`
+    /// leaves there, ready to be read, edited and run.
+    pending: Option<String>,
+    /// How many of the current step's lines `:try` has handed over, so that
+    /// the next one is the next one.
+    tried: usize,
     /// What building an entry's program needs from the prefix, kept up with it.
     cache: Prefix,
     /// The same for `Std` alone, which `:reset` goes back to.
@@ -538,9 +557,88 @@ impl Session {
             // What a debug build runs on.
             engine: meadow::Engine::Jit,
             timing: false,
+            tour: None,
+            pending: None,
+            tried: 0,
             cache: std_cache.clone(),
             std_cache,
         }
+    }
+
+    /// What the tour has to offer: its sections, and where each begins.
+    ///
+    /// Shown by `:tour` before anything has started, because a tour whose
+    /// shape you cannot see is one you have to take in order.
+    fn tour_contents(&mut self) {
+        use yansi::Paint as _;
+        println!();
+        println!("  {}", "A tour of the language".green().bold());
+        println!();
+        for section in [tour::Section::Basics, tour::Section::Advanced] {
+            let steps: Vec<(usize, &tour::Step)> = tour::STEPS
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.section == section)
+                .collect();
+            let Some((first, _)) = steps.first() else {
+                continue;
+            };
+            println!(
+                "  {} {} steps, from {}",
+                format!("{:<14}", section.title()).cyan().bold(),
+                steps.len(),
+                format!(":tour {}", first + 1).cyan()
+            );
+            for (i, step) in &steps {
+                println!("    {:>3}. {}", i + 1, step.title);
+            }
+            println!();
+        }
+        println!(
+            "  {} starts at the beginning; {} goes straight to the second part.",
+            ":next".cyan(),
+            ":tour advanced".cyan()
+        );
+        println!();
+    }
+
+    /// Show step `at`, and remember that it is where we are.
+    ///
+    /// What follows is the ordinary prompt: a step is something to read and
+    /// then try, not a question to answer.
+    fn show_tour(&mut self, at: usize) {
+        use yansi::Paint as _;
+        let step = &tour::STEPS[at];
+        println!();
+        println!(
+            "  {}  {}",
+            tour::heading(at).green().bold(),
+            format!("({})", step.section.title()).dim()
+        );
+        println!();
+        for line in step.text {
+            if line.is_empty() {
+                println!();
+            } else {
+                println!("  {line}");
+            }
+        }
+        println!();
+        for (i, line) in step.code.iter().enumerate() {
+            // Numbered, because `:try` hands them over one at a time and the
+            // order is the point: define, then run.
+            println!("  {} {line}", format!("{}.", i + 1).cyan().bold());
+        }
+        println!();
+        println!(
+            "  {} puts the next of those on the prompt, {} moves on, {} goes back.",
+            ":try".cyan(),
+            ":next".cyan(),
+            ":back".cyan()
+        );
+        println!();
+        self.tour = Some(at);
+        self.tried = 0;
     }
 
     pub fn run(&mut self) {
@@ -588,7 +686,13 @@ impl Session {
         print_banner();
 
         loop {
-            match rl.readline(PROMPT) {
+            // `:try` leaves an example on the prompt instead of running it, so
+            // that it can be read and changed before it is.
+            let read = match self.pending.take() {
+                Some(text) => rl.readline_with_initial(PROMPT, (&text, "")),
+                None => rl.readline(PROMPT),
+            };
+            match read {
                 Ok(line) => {
                     if line.trim().is_empty() {
                         continue;
@@ -621,6 +725,74 @@ impl Session {
                             let now = if self.timing { "on" } else { "off" };
                             println!("(timing every entry: {now})");
                         }
+                        ":tour" => match self.tour {
+                            Some(at) => self.show_tour(at),
+                            None => self.tour_contents(),
+                        },
+                        ":next" | ":n" => match self.tour {
+                            // The end of a section is somewhere to stop: what
+                            // follows the basics is there for whoever wants it,
+                            // and is not the rest of a queue.
+                            Some(at)
+                                if at + 1 < tour::STEPS.len()
+                                    && tour::STEPS[at + 1].section != tour::STEPS[at].section =>
+                            {
+                                let next = tour::STEPS[at + 1].section;
+                                self.tour = None;
+                                println!(
+                                    "(that is {}. `:tour advanced` carries on with {}, and \
+                                     everything you defined is still here)",
+                                    tour::STEPS[at].section.title(),
+                                    next.title()
+                                );
+                            }
+                            Some(at) if at + 1 < tour::STEPS.len() => self.show_tour(at + 1),
+                            Some(_) => {
+                                self.tour = None;
+                                println!("(that was the last step; the tour is over)");
+                            }
+                            None => self.show_tour(0),
+                        },
+                        ":back" | ":b" => match self.tour {
+                            Some(at) if at > 0 => self.show_tour(at - 1),
+                            _ => self.show_tour(0),
+                        },
+                        ":try" => match self.tour {
+                            Some(at) => {
+                                let step = &tour::STEPS[at];
+                                match step.code.get(self.tried) {
+                                    Some(line) => {
+                                        self.tried += 1;
+                                        self.pending = Some((*line).to_string());
+                                    }
+                                    // Round again rather than refusing: a step
+                                    // is worth running twice.
+                                    None => {
+                                        self.tried = 1;
+                                        self.pending = step.code.first().map(|l| (*l).to_string());
+                                    }
+                                }
+                            }
+                            None => println!("(`:tour` first, and `:try` will offer what to type)"),
+                        },
+                        ":tour off" | ":tour end" => {
+                            self.tour = None;
+                            println!("(the tour is over; everything you defined is still here)");
+                        }
+                        _ if trimmed.starts_with(":tour ") => {
+                            let what = trimmed[6..].trim();
+                            // A section, a step, or a word that is neither.
+                            match (tour::Section::named(what), what.parse::<usize>()) {
+                                (Some(section), _) => match section.first() {
+                                    Some(at) => self.show_tour(at),
+                                    None => println!("(that section has no steps)"),
+                                },
+                                (_, Ok(n)) if n >= 1 && n <= tour::STEPS.len() => {
+                                    self.show_tour(n - 1)
+                                }
+                                _ => self.tour_contents(),
+                            }
+                        }
                         _ if trimmed.starts_with(":time ") || trimmed.starts_with(":time\n") => {
                             self.handle(trimmed[5..].trim(), Mode::Run, true);
                         }
@@ -646,16 +818,54 @@ impl Session {
     }
 
     fn list_module(&self) {
-        let user = &self.prefix[self.std_len.min(self.prefix.len())..];
-        if user.is_empty() {
+        use yansi::Paint as _;
+        let listed = self.bindings();
+        if listed.is_empty() {
             println!("(no bindings yet)");
             return;
         }
-        for pkg in user {
-            for e in &pkg.exports {
-                println!("{} : {}", hir::spell_name(&e.name), e.scheme);
+        let shadowed = listed.iter().filter(|(_, _, s)| *s).count();
+        for (name, scheme, is_shadowed) in &listed {
+            if *is_shadowed {
+                println!("{}", format!("{name} : {scheme}  (shadowed)").dim());
+            } else {
+                println!("{name} : {scheme}");
             }
         }
+        if shadowed > 0 {
+            println!();
+            println!(
+                "({} definition{} shadowed: a name defined again is a new one, and \
+                 what was written before it goes on using the old)",
+                shadowed,
+                if shadowed == 1 { " is" } else { "s are" }
+            );
+        }
+    }
+
+    /// Everything defined so far: its name, its type, and whether a later
+    /// definition has taken the name.
+    ///
+    /// Each entry is a compiled unit of its own, so defining a name twice does
+    /// not replace the first -- it shadows it. What was compiled against the
+    /// first still uses the first, which is why the older one is listed rather
+    /// than quietly dropped.
+    fn bindings(&self) -> Vec<(String, String, bool)> {
+        let user = &self.prefix[self.std_len.min(self.prefix.len())..];
+        let mut out: Vec<(String, String, bool)> = Vec::new();
+        for pkg in user {
+            for e in &pkg.exports {
+                let name = hir::spell_name(&e.name).to_string();
+                // Anything of this name already listed is now behind this one.
+                for (had, _, shadowed) in out.iter_mut() {
+                    if *had == name {
+                        *shadowed = true;
+                    }
+                }
+                out.push((name, e.scheme.to_string(), false));
+            }
+        }
+        out
     }
 
     /// Check, compile and -- in [`Mode::Run`] -- run one entry, and with `timed`
@@ -860,6 +1070,26 @@ enum Mode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name defined twice is two definitions, and `:module` says which one a
+    /// new mention would reach.
+    ///
+    /// The older one is not dead: anything compiled against it still uses it,
+    /// which is the thing worth knowing and the reason it is listed at all.
+    #[test]
+    fn a_redefined_name_is_listed_as_shadowing_the_first() {
+        let mut session = Session::new();
+        session.handle("def answer = 1", Mode::Run, false);
+        session.handle("fun useAnswer u = answer", Mode::Run, false);
+        session.handle("def answer = 2", Mode::Run, false);
+
+        let listed = session.bindings();
+        let answers: Vec<&(String, String, bool)> =
+            listed.iter().filter(|(n, _, _)| n == "answer").collect();
+        assert_eq!(answers.len(), 2, "both definitions are there: {listed:?}");
+        assert!(answers[0].2, "the first is shadowed");
+        assert!(!answers[1].2, "the second is what a new mention reaches");
+    }
 
     /// Both colour states in one test: `yansi::whenever` is process-global, so
     /// splitting these would let them race under the default parallel runner.

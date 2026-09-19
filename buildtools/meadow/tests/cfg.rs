@@ -13,7 +13,7 @@ fn package(name: &str, manifest_profiles: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
+        dir.join("Meadow.toml"),
         format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n{manifest_profiles}"),
     )
     .unwrap();
@@ -49,7 +49,7 @@ fn answer(dir: &std::path::Path, resolved: Resolved) -> String {
 
 #[test]
 fn the_profile_and_backend_are_conditions() {
-    let dir = package("profiles", "");
+    let dir = package("Profiles", "");
     let debug = Resolved::resolve(Profile::Debug, &dir, ProfileConfig::default());
     assert_eq!(
         answer(&dir, debug),
@@ -65,7 +65,7 @@ fn the_profile_and_backend_are_conditions() {
 
 #[test]
 fn flags_come_from_the_manifest_and_the_command_line_together() {
-    let dir = package("flags", "[profile.debug]\ncfg = \"fast\"\n");
+    let dir = package("Flags", "[profile.debug]\ncfg = \"fast\"\n");
     let manifest_only = Resolved::resolve(Profile::Debug, &dir, ProfileConfig::default());
     assert_eq!(
         answer(&dir, manifest_only),

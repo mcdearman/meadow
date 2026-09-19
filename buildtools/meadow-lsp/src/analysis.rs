@@ -419,6 +419,17 @@ pub struct PackageSources {
     /// naming one of its own modules.
     pub name: InternedString,
     pub modules: Vec<ModuleFile>,
+    /// What it depends on, compiled, each under the name this package calls
+    /// it -- which is what its `use` lines say and need not be what the
+    /// dependency calls itself.
+    ///
+    /// Compiled by whoever loaded the package, because building one is not
+    /// something this crate knows how to do. Without them every name a
+    /// dependency provides is undefined, which is what an editor used to show.
+    pub deps: Vec<(InternedString, std::rc::Rc<CompiledPackage>)>,
+    /// What can run a procedural macro one of them exports. `None` where
+    /// nothing can, and then a call is reported rather than quietly ignored.
+    pub procs: Option<std::rc::Rc<dyn meadow_compiler::expand::proc::Runner>>,
 }
 
 /// One `.mw` file of a package.
@@ -652,19 +663,40 @@ impl Std {
         }
         let here = here?;
 
-        let views: Vec<meadow_compiler::Dep<'_>> = deps
+        // The standard library, and then what this package itself depends on,
+        // each under the name it calls it by.
+        let mut views: Vec<meadow_compiler::Dep<'_>> = deps
             .iter()
             .copied()
             .map(meadow_compiler::Dep::new)
             .collect();
-        let (pkg, unit_diags) = meadow_compiler::compile_unit_in_package(
-            sources.name,
-            sources.name,
-            1,
-            modules,
-            &views,
-            Options::debug(),
+        views.extend(
+            sources
+                .deps
+                .iter()
+                .map(|(alias, pkg)| meadow_compiler::Dep::named(*alias, pkg.as_ref())),
         );
+        let (pkg, unit_diags) = match &sources.procs {
+            Some(procs) => meadow_compiler::compile_unit_with_procs(
+                sources.name,
+                sources.name,
+                sources.name,
+                1,
+                modules,
+                &views,
+                Options::debug(),
+                0,
+                procs.as_ref(),
+            ),
+            None => meadow_compiler::compile_unit_in_package(
+                sources.name,
+                sources.name,
+                1,
+                modules,
+                &views,
+                Options::debug(),
+            ),
+        };
         // A diagnostic names the file it is in, so the ones for the rest of the
         // package are simply not this document's to report.
         let mine = here.name().to_string();

@@ -257,10 +257,7 @@ fn git_fetching(dir: Option<&Path>, args: &[&str]) -> Result<(), String> {
         return git(dir, &all).map(|_| ());
     }
 
-    let mut cmd = Command::new("git");
-    if let Some(d) = dir {
-        cmd.arg("-C").arg(d);
-    }
+    let mut cmd = git_command(dir);
     cmd.args(&all)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(std::process::Stdio::null())
@@ -377,14 +374,29 @@ fn unpack(db: &Path, rev: &str, path: &Path) -> Result<(), String> {
 }
 
 /// Run `git`, answering its output or what it said went wrong.
-fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
+/// A `git` told what it needs to be told before anything else.
+///
+/// `core.longpaths` is the one that matters, and only on Windows: git there
+/// refuses a path over 260 characters -- "Filename too long" -- and a
+/// dependency's cache sits under a package's own directory, which on a build
+/// machine is already deep. Set for the invocation rather than in anyone's
+/// configuration: it is this build's business, not theirs.
+fn git_command(dir: Option<&Path>) -> Command {
     let mut cmd = Command::new("git");
+    if cfg!(windows) {
+        cmd.args(["-c", "core.longpaths=true"]);
+    }
+    // `-C`, not `--git-dir`: this runs against the bare cache *and* against a
+    // checkout, whose git directory is `.git` inside it rather than the
+    // directory itself. Letting git find the repository handles both.
     if let Some(d) = dir {
-        // `-C`, not `--git-dir`: this runs against the bare cache *and* against
-        // a checkout, whose git directory is `.git` inside it rather than the
-        // directory itself. Letting git find the repository handles both.
         cmd.arg("-C").arg(d);
     }
+    cmd
+}
+
+fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
+    let mut cmd = git_command(dir);
     cmd.args(args);
     // Never stop for a password prompt: a build that hangs waiting for input
     // nobody is watching is worse than one that fails.
@@ -513,7 +525,7 @@ mod live {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).ok()?;
         std::fs::write(
-            dir.join("meadow.toml"),
+            dir.join("Meadow.toml"),
             "[package]\nname = \"greet\"\nversion = \"0.1.0\"\n",
         )
         .ok()?;
@@ -581,7 +593,7 @@ mod live {
 
         let got = ensure(&cache, &url, &tag, None, Net::Allowed).expect("the tag is there");
         assert!(
-            got.path.join("meadow.toml").is_file(),
+            got.path.join("Meadow.toml").is_file(),
             "no manifest in the checkout"
         );
         assert_eq!(got.rev.len(), 40, "a full commit name");

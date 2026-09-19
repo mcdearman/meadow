@@ -1,4 +1,4 @@
-//! Multi-package builds: `meadow.toml` manifests, a local path dependency, and
+//! Multi-package builds: `Meadow.toml` manifests, a local path dependency, and
 //! `@pub` gating between packages.
 
 use meadow::{
@@ -12,20 +12,20 @@ const WORKSPACE: &str = "tests/fixtures/workspace";
 
 #[test]
 fn manifest_parses_cargo_style() {
-    let m = Manifest::load(Path::new(&format!("{WORKSPACE}/app")))
+    let m = Manifest::load(Path::new(&format!("{WORKSPACE}/App")))
         .unwrap()
         .expect("app has a manifest");
-    assert_eq!(m.name, "app");
+    assert_eq!(m.name, "App");
     assert_eq!(m.version, "0.1.0");
     assert_eq!(m.deps.len(), 1);
-    assert_eq!(m.deps[0].name, "util");
-    assert_eq!(m.deps[0].source, DepSource::Path(PathBuf::from("../util")));
+    assert_eq!(m.deps[0].name, "Util");
+    assert_eq!(m.deps[0].source, DepSource::Path(PathBuf::from("../Util")));
 }
 
 #[test]
 fn builds_app_against_a_path_dependency() {
     let out = pipeline::build(
-        Path::new(&format!("{WORKSPACE}/app")),
+        Path::new(&format!("{WORKSPACE}/App")),
         meadow::Options::debug(),
     );
     assert!(
@@ -42,7 +42,7 @@ fn builds_app_against_a_path_dependency() {
 fn private_names_do_not_cross_package_boundaries() {
     // `util` exports `double` / `scale` (both `@pub`) but not `secret`.
     let out = pipeline::build(
-        Path::new(&format!("{WORKSPACE}/util")),
+        Path::new(&format!("{WORKSPACE}/Util")),
         meadow::Options::debug(),
     );
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
@@ -50,7 +50,7 @@ fn private_names_do_not_cross_package_boundaries() {
     let mut names: Vec<_> = linked
         .symbols
         .iter()
-        .filter(|s| &*s.package == "util")
+        .filter(|s| &*s.package == "Util")
         .map(|s| s.name.to_string())
         .collect();
     names.sort();
@@ -98,9 +98,9 @@ fn a_manifest_configures_the_build_profiles() {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
+        dir.join("Meadow.toml"),
         "[package]\n\
-         name = \"tuned\"\n\
+         name = \"Tuned\"\n\
          \n\
          [profile.debug]\n\
          opt-level = 2      # fast builds are not what this package wants\n\
@@ -154,7 +154,7 @@ fn a_manifest_configures_the_build_profiles() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Debug runs on the JIT and release as an executable, unless `meadow.toml` or
+/// Debug runs on the JIT and release as an executable, unless `Meadow.toml` or
 /// a flag says otherwise -- and a release backend nobody named gives way to the
 /// JIT when there is no executable to be had.
 #[test]
@@ -174,9 +174,9 @@ fn a_manifest_chooses_the_backend() {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
+        dir.join("Meadow.toml"),
         "[package]\n\
-         name = \"chosen\"\n\
+         name = \"Chosen\"\n\
          \n\
          [profile.debug]\n\
          backend = \"vm\"\n\
@@ -222,9 +222,9 @@ fn prune_is_on_unless_a_manifest_or_a_flag_says_otherwise() {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
+        dir.join("Meadow.toml"),
         "[package]\n\
-         name = \"pruned\"\n\
+         name = \"Pruned\"\n\
          \n\
          [profile.release]\n\
          prune = false\n",
@@ -259,12 +259,12 @@ fn reexporting_pair(what: &str, main: &str) -> PathBuf {
     let app = dir.join("app");
     for (path, text) in [
         (
-            lib.join("meadow.toml"),
-            "[package]\nname = \"shapes\"\nversion = \"0.1.0\"\n",
+            lib.join("Meadow.toml"),
+            "[package]\nname = \"Shapes\"\nversion = \"0.1.0\"\n",
         ),
         (
             lib.join("src/Lib.mw"),
-            "mod Kinds\n@pub use shapes.Kinds (Shape, area)\n@pub use shapes.Kinds.Shape.*\n",
+            "mod Kinds\n@pub use Shapes.Kinds (Shape, area)\n@pub use Shapes.Kinds.Shape.*\n",
         ),
         (
             lib.join("src/Kinds.mw"),
@@ -272,9 +272,9 @@ fn reexporting_pair(what: &str, main: &str) -> PathBuf {
              @pub fun area s = match s with\n  | Shape.Square n -> n * n\n  | Shape.Rect w h -> w * h\n",
         ),
         (
-            app.join("meadow.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
-             [dependencies]\nshapes = { path = \"../shapes\" }\n",
+            app.join("Meadow.toml"),
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nShapes = { path = \"../shapes\" }\n",
         ),
         (app.join("src/Main.mw"), main),
     ] {
@@ -301,22 +301,22 @@ fn run_app(app: &Path) -> String {
 
 #[test]
 fn a_package_root_can_re_export_constructors_flat() {
-    // Named in the `use`, as `use shapes::Square` would be in Rust.
+    // Named in the `use`, as `use Shapes::Square` would be in Rust.
     let named = reexporting_pair(
         "named",
-        "use shapes (area, Square)\ndef main = area (Square 4)\n",
+        "use Shapes (area, Square)\ndef main = area (Square 4)\n",
     );
     assert_eq!(run_app(&named), "16");
     // A bare `use` brings every one.
-    let all = reexporting_pair("all", "use shapes\ndef main = area (Rect 2 3)\n");
+    let all = reexporting_pair("all", "use Shapes\ndef main = area (Rect 2 3)\n");
     assert_eq!(run_app(&all), "6");
     // Without either, they stay under their type.
     let qualified = reexporting_pair(
         "qualified",
-        "use shapes (area, Shape)\ndef main = area (Shape.Square 3)\n",
+        "use Shapes (area, Shape)\ndef main = area (Shape.Square 3)\n",
     );
     assert_eq!(run_app(&qualified), "9");
-    let unnamed = reexporting_pair("unnamed", "use shapes (area)\ndef main = area (Square 4)\n");
+    let unnamed = reexporting_pair("unnamed", "use Shapes (area)\ndef main = area (Square 4)\n");
     assert!(
         run_app(&unnamed).contains("unknown constructor `Square`"),
         "{}",
@@ -332,9 +332,9 @@ fn two_shapes(what: &str, main: &str) -> PathBuf {
     let app = dir.join("app");
     let mut files = vec![
         (
-            app.join("meadow.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
-             [dependencies]\nshapes = { path = \"../shapes\" }\nfigures = { path = \"../figures\" }\n"
+            app.join("Meadow.toml"),
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nShapes = { path = \"../shapes\" }\nFigures = { path = \"../figures\" }\n"
                 .to_string(),
         ),
         (app.join("src/Main.mw"), main.to_string()),
@@ -343,10 +343,11 @@ fn two_shapes(what: &str, main: &str) -> PathBuf {
         ("shapes", "Square", "n * n"),
         ("figures", "Circle", "3 * n * n"),
     ] {
+        let name = meadow::package::as_package_name(lib);
         let root = dir.join(lib);
         files.push((
-            root.join("meadow.toml"),
-            format!("[package]\nname = \"{lib}\"\nversion = \"0.1.0\"\n"),
+            root.join("Meadow.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
         ));
         files.push((
             root.join("src/Lib.mw"),
@@ -369,7 +370,7 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
     // Each package's `Shape` is its own: both work side by side.
     let both = two_shapes(
         "both",
-        "use shapes (shapesArea, shapesUnit)\nuse figures (figuresArea, figuresUnit)\n\
+        "use Shapes (shapesArea, shapesUnit)\nuse Figures (figuresArea, figuresUnit)\n\
          def main = (shapesArea shapesUnit, figuresArea figuresUnit)\n",
     );
     assert_eq!(run_app(&both), "(1, 3)");
@@ -377,7 +378,7 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
     // type-check, and fail with a non-exhaustive match when run.
     let crossed = two_shapes(
         "crossed",
-        "use shapes (shapesArea)\nuse figures (figuresUnit)\n\
+        "use Shapes (shapesArea)\nuse Figures (figuresUnit)\n\
          def main = shapesArea figuresUnit\n",
     );
     let got = run_app(&crossed);
@@ -385,9 +386,9 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
     // different versions are two packages.
     assert!(
         got.contains(
-            "type mismatch: `Shape` (from `shapes@0.1.0`) vs `Shape` (from `figures@0.1.0`)"
+            "type mismatch: `Shape` (from `Shapes@0.1.0`) vs `Shape` (from `Figures@0.1.0`)"
         ) || got.contains(
-            "type mismatch: `Shape` (from `figures@0.1.0`) vs `Shape` (from `shapes@0.1.0`)"
+            "type mismatch: `Shape` (from `Figures@0.1.0`) vs `Shape` (from `Shapes@0.1.0`)"
         ),
         "{got}"
     );
@@ -400,7 +401,7 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
     );
     let chosen = two_shapes(
         "chosen",
-        "use shapes (Shape, shapesArea)\nfun f (s : Shape) = shapesArea s\n\
+        "use Shapes (Shape, shapesArea)\nfun f (s : Shape) = shapesArea s\n\
          def main = f (Shape.Square 5)\n",
     );
     assert_eq!(run_app(&chosen), "25");

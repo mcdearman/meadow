@@ -1,6 +1,6 @@
 //! **Workspaces**: several packages developed together, as in Cargo.
 //!
-//! A workspace is a directory whose `meadow.toml` has a `[workspace]` section
+//! A workspace is a directory whose `Meadow.toml` has a `[workspace]` section
 //! naming its members:
 //!
 //! ```toml
@@ -69,12 +69,12 @@ impl Workspace {
     pub fn load(root: &Path) -> Result<Workspace, String> {
         let root = canonical(root);
         let manifest = Manifest::load(&root)
-            .map_err(|e| format!("could not read {}: {e}", shown(&root.join("meadow.toml"))))?
-            .ok_or_else(|| format!("{} has no meadow.toml", shown(&root)))?;
+            .map_err(|e| format!("could not read {}: {e}", shown(&root.join("Meadow.toml"))))?
+            .ok_or_else(|| format!("{} has no Meadow.toml", shown(&root)))?;
         let Some(ws) = manifest.workspace.clone() else {
             return Err(format!(
                 "{} has no `[workspace]` section",
-                shown(&root.join("meadow.toml"))
+                shown(&root.join("Meadow.toml"))
             ));
         };
         let excluded: Vec<PathBuf> = ws.exclude.iter().flat_map(|p| expand(&root, p)).collect();
@@ -96,7 +96,7 @@ impl Workspace {
                     push_new(&mut dirs, dir);
                 } else if !is_pattern(pattern) {
                     return Err(format!(
-                        "workspace member `{pattern}` has no meadow.toml at {}",
+                        "workspace member `{pattern}` has no Meadow.toml at {}",
                         shown(&dir)
                     ));
                 }
@@ -114,7 +114,7 @@ impl Workspace {
             } else {
                 Manifest::load(&dir)
                     .map_err(|e| format!("could not read {}: {e}", shown(&dir)))?
-                    .ok_or_else(|| format!("{} has no meadow.toml", shown(&dir)))?
+                    .ok_or_else(|| format!("{} has no Meadow.toml", shown(&dir)))?
             };
             for d in &m.deps {
                 // Only a path dependency can be a member of this workspace; a
@@ -387,7 +387,7 @@ fn push_new(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
 }
 
 pub(crate) fn has_manifest(dir: &Path) -> bool {
-    dir.join("meadow.toml").is_file() || dir.join("meadow.pkg").is_file()
+    dir.join("Meadow.toml").is_file() || dir.join("Meadow.pkg").is_file()
 }
 
 /// Whether `dir` holds a manifest with a `[workspace]` section -- without the

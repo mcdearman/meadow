@@ -83,6 +83,27 @@ fn above_bar(line: &str) {
     let _ = err.flush();
 }
 
+/// Write `line` to standard output, over the bar rather than through it.
+///
+/// What a test run reports belongs on standard output -- it is the answer, not
+/// narration about how the answer is coming along -- and the bar lives on
+/// standard error. So one is taken off the screen while the other is written,
+/// and put back afterwards.
+pub fn say(line: &str) {
+    let bar = BAR.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, width)) = bar.as_ref() {
+        let mut err = std::io::stderr().lock();
+        let _ = write!(err, "\r{}\r", " ".repeat(*width));
+        let _ = err.flush();
+    }
+    println!("{line}");
+    if let Some((text, _)) = bar.as_ref() {
+        let mut err = std::io::stderr().lock();
+        let _ = write!(err, "{text}");
+        let _ = err.flush();
+    }
+}
+
 /// `   Compiling app v0.1.0 (/home/me/app)`, in bold green.
 pub fn status(word: &str, msg: impl AsRef<str>) {
     if enabled() {
@@ -203,6 +224,44 @@ pub fn building_line(done: usize, total: usize, current: &str, colour: bool) -> 
     format!("{word} {} {done}/{total}{tail}", bar(fraction, colour))
 }
 
+/// `     Testing [=====>      ] 12/40: Vector.mapKeepsLength`
+///
+/// The count of what has failed is shown only once something has: a run that
+/// is going well should say so by not mentioning it.
+pub fn testing_line(
+    done: usize,
+    total: usize,
+    failed: usize,
+    current: &str,
+    colour: bool,
+) -> String {
+    let fraction = if total == 0 {
+        1.0
+    } else {
+        done as f64 / total as f64
+    };
+    let word = format!("{:>12}", "Testing");
+    let word = if colour {
+        format!("\x1b[1;36m{word}\x1b[0m")
+    } else {
+        word
+    };
+    let failed = match failed {
+        0 => String::new(),
+        n if colour => format!(" \x1b[1;31m{n} failed\x1b[0m"),
+        n => format!(" {n} failed"),
+    };
+    let tail = if current.is_empty() {
+        String::new()
+    } else {
+        format!(": {current}")
+    };
+    format!(
+        "{word} {} {done}/{total}{failed}{tail}",
+        bar(fraction, colour)
+    )
+}
+
 /// `       Fetch [=====>      ]  45.00%, 1.2 MiB/s`
 pub fn fetch_line(percent: f64, rate: Option<&str>, colour: bool) -> String {
     let word = format!("{:>12}", "Fetch");
@@ -265,6 +324,48 @@ impl Building {
 }
 
 impl Drop for Building {
+    fn drop(&mut self) {
+        clear_bar();
+    }
+}
+
+/// The bar a test run shows while it works through its tests.
+pub struct Testing {
+    total: usize,
+    done: usize,
+    failed: usize,
+}
+
+impl Testing {
+    pub fn new(total: usize) -> Testing {
+        Testing {
+            total,
+            done: 0,
+            failed: 0,
+        }
+    }
+
+    /// `name` is running.
+    pub fn working_on(&mut self, name: &str) {
+        show_bar(testing_line(
+            self.done,
+            self.total,
+            self.failed,
+            name,
+            colour(),
+        ));
+    }
+
+    /// One more test is finished, and whether it passed.
+    pub fn step(&mut self, passed: bool) {
+        self.done += 1;
+        if !passed {
+            self.failed += 1;
+        }
+    }
+}
+
+impl Drop for Testing {
     fn drop(&mut self) {
         clear_bar();
     }

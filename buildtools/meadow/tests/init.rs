@@ -31,14 +31,14 @@ fn init_at(path: &Path, name: Option<&str>) -> Result<init::Created, String> {
 fn what_init_writes_is_a_package_that_builds() {
     let dir = scratch("builds");
     let made = init_at(&dir.join("demo"), None).expect("init");
-    assert_eq!(made.name, "demo", "the name comes from the directory");
+    assert_eq!(made.name, "Demo", "the name comes from the directory");
 
     // It parses back as a manifest, with the name written down rather than
     // inferred — which is the thing a bare directory of sources would not have.
     let m = Manifest::load(&made.root)
         .expect("readable")
         .expect("a manifest");
-    assert_eq!(m.name, "demo");
+    assert_eq!(m.name, "Demo");
     assert_eq!(m.version, "0.1.0");
     assert!(m.deps.is_empty());
 
@@ -59,8 +59,8 @@ fn the_directory_is_created_if_it_is_missing() {
     let dir = scratch("mkdir");
     let target = dir.join("deep").join("nested");
     let made = init_at(&target, None).expect("init");
-    assert_eq!(made.name, "nested");
-    assert!(target.join("meadow.toml").is_file());
+    assert_eq!(made.name, "Nested");
+    assert!(target.join("Meadow.toml").is_file());
     assert!(target.join("src").join("Main.mw").is_file());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -68,9 +68,9 @@ fn the_directory_is_created_if_it_is_missing() {
 #[test]
 fn a_name_can_be_given_when_the_directory_is_not_one() {
     let dir = scratch("named");
-    let made = init_at(&dir.join("my-app"), Some("myApp")).expect("init");
-    assert_eq!(made.name, "myApp");
-    assert_eq!(Manifest::load(&made.root).unwrap().unwrap().name, "myApp");
+    let made = init_at(&dir.join("my-app"), Some("MyApp")).expect("init");
+    assert_eq!(made.name, "MyApp");
+    assert_eq!(Manifest::load(&made.root).unwrap().unwrap().name, "MyApp");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -83,7 +83,7 @@ fn an_existing_package_is_refused_rather_than_overwritten() {
     init_at(&target, None).expect("the first one");
 
     // Something worth losing, in the file that would be overwritten.
-    let manifest = target.join("meadow.toml");
+    let manifest = target.join("Meadow.toml");
     let before =
         std::fs::read_to_string(&manifest).unwrap() + "\n[dependencies]\nutil = \"../u\"\n";
     std::fs::write(&manifest, &before).unwrap();
@@ -108,37 +108,51 @@ fn existing_sources_are_not_replaced() {
     let main = target.join("src").join("Main.mw");
     std::fs::write(&main, "def main = 7\n").unwrap();
 
-    init_at(&target, Some("hasCode")).expect("init");
+    init_at(&target, Some("HasCode")).expect("init");
     assert_eq!(
         std::fs::read_to_string(&main).unwrap(),
         "def main = 7\n",
         "the existing `main` should survive"
     );
     assert!(
-        target.join("meadow.toml").is_file(),
+        target.join("Meadow.toml").is_file(),
         "but the manifest arrives"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The name has to lex as one identifier, because it is the first segment of a
-/// `use` path. A hyphen is what every other ecosystem spells a multi-word
-/// package with, so it is what someone will type — and it cannot work here.
+/// A directory called `my-pkg` is what someone will type, and `my-pkg` is not
+/// a package name -- so it becomes one rather than being refused for a
+/// spelling nobody chose.
+#[test]
+fn a_directory_that_is_not_a_package_name_becomes_one() {
+    let dir = scratch("frompath");
+    let made = init_at(&dir.join("my-pkg"), None).expect("a name is made from it");
+    assert_eq!(made.name, "MyPkg");
+    assert!(dir.join("my-pkg").join("Meadow.toml").is_file());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A name that *was* asked for, on the other hand, is taken at its word -- and
+/// refused when the language could not refer to it.
 #[test]
 fn a_name_the_language_could_not_refer_to_is_refused() {
     let dir = scratch("badname");
-    let err = init_at(&dir.join("my-pkg"), None).expect_err("hyphen");
-    assert!(err.contains("my-pkg"), "{err}");
+    let err = init_at(&dir.join("z"), Some("My-Pkg")).expect_err("hyphen");
+    assert!(err.contains("My-Pkg"), "{err}");
     assert!(
-        err.contains("try `_`"),
+        err.contains("run the words together"),
         "the message should say what to do: {err}"
     );
+    // And one that does not start with a capital is told which name to use.
+    let err = init_at(&dir.join("z"), Some("my-pkg")).expect_err("lower case");
+    assert!(err.contains("`MyPkg`"), "{err}");
     assert!(
-        !dir.join("my-pkg").join("meadow.toml").exists(),
+        !dir.join("z").join("Meadow.toml").exists(),
         "nothing should be written when the name is refused"
     );
 
-    for bad in ["2fast", "a b", "My_App"] {
+    for bad in ["2fast", "a b", "My_App", "myApp"] {
         assert!(
             init_at(&dir.join("z"), Some(bad)).is_err(),
             "{bad} should be refused"
@@ -163,8 +177,8 @@ fn a_generated_package_can_be_used_as_a_dependency() {
     )
     .unwrap();
     std::fs::write(
-        app.join("meadow.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+        app.join("Meadow.toml"),
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
          [dependencies]\nutil = { path = \"../util\" }\n",
     )
     .unwrap();
@@ -213,7 +227,7 @@ fn an_existing_gitignore_gains_the_line_and_keeps_the_rest() {
     let other = dir.join("ignores-already");
     std::fs::create_dir_all(&other).unwrap();
     std::fs::write(other.join(".gitignore"), "target\n").unwrap();
-    init_at(&other, Some("ignoresAlready")).expect("init");
+    init_at(&other, Some("IgnoresAlready")).expect("init");
     assert_eq!(
         std::fs::read_to_string(other.join(".gitignore")).unwrap(),
         "target\n",

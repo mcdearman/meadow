@@ -1,0 +1,143 @@
+-- Effects: one program, many meanings.
+--
+--   meadow run examples/Effects
+--   meadow test examples/Effects
+--
+-- An effect is an operation a function performs without deciding what it
+-- does. The code that *calls* the function decides, with a handler. So the same
+-- `checkout` below logs to the terminal in `main` and into a list in a test, reads
+-- a real config in one place and a made-up one in another, and fails with an
+-- error value rather than a crash -- without a single argument added to it.
+--
+-- What is in here:
+--
+-- * a `Log` effect, handled by printing and by collecting;
+-- * an `Ask` effect for configuration -- dependency injection with no container;
+-- * `Std.Exn` for failure that travels to the nearest handler;
+-- * `Std.State` for a counter threaded through the computation;
+-- * `Std.Random` and `Std.Time`, made deterministic by their handlers;
+-- * `Std.Console`, with an interactive program tested by feeding it input.
+--
+-- A function's type says which effects it performs, so `checkout`'s type is the
+-- list of everything it depends on, checked by the compiler.
+
+use Std.Exn (raise, toResult)
+use Std.State (get, put, runState)
+use Std.Random (between, withSeed)
+use Std.Time (now, withClock)
+use Std.Console (withInput, withOutput, readLine)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe.Maybe.*
+
+-- --- our own effects ----------------------------------------------------------
+
+effect Log {
+  log : String -> (),
+}
+
+effect Ask {
+  -- A configuration value by name.
+  setting : String -> Int,
+}
+
+-- Logging to the terminal.
+fun printingLogs act =
+  handle act () with {
+    log line k -> let _ = println (S.concat "[log] " line) in k (),
+  }
+
+-- Logging into a list, returned beside the result.
+fun collectingLogs act =
+  handle act () with {
+    log line k -> \lines -> (k ()) (V.pushBack lines line),
+    return x -> \lines -> (x, lines)
+  } V.empty
+
+-- Settings from a table.
+fun withSettings table act =
+  handle act () with {
+    setting name k -> k (V.foldl (\found kv -> match kv with | (key, v) -> if key == name then v else found) 0 table),
+  }
+
+-- --- a program written against them -----------------------------------------
+
+-- Price a basket: look up the tax rate and the limit, log what happens, count
+-- the items seen, and fail if the order is too big.
+fun checkout basket =
+  let rate = setting "taxPercent" in
+  let limit = setting "limit" in
+  let subtotal = V.foldl (\total item ->
+    let _ = put (get () + 1) in
+    let _ = log (S.concatAll ["item ", S.fromInt item]) in
+    total + item) 0 basket in
+  let _ = if subtotal > limit then raise (S.concatAll ["order of ", S.fromInt subtotal, " is over the limit"]) else 0 in
+  let total = subtotal + subtotal * rate / 100 in
+  let _ = log (S.concatAll ["total ", S.fromInt total]) in
+  total
+
+-- Every handler at once: settings, logging, a counter, and failure as a value.
+fun runCheckout table basket =
+  collectingLogs (\() -> withSettings table (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout basket))))
+
+-- --- effects the standard library already has -------------------------------
+
+-- A dice game that depends on randomness and the clock.
+fun roll () = between 1 7
+
+fun game () =
+  let start = now () in
+  let rolls = V.map (\i -> roll ()) (V.range 0 5) in
+  (rolls, now () - start)
+
+-- An interactive greeter.
+fun greeter () =
+  let _ = println "What is your name?" in
+  match readLine () with
+  | None -> println "Nobody there."
+  | Just name -> println (S.concatAll ["Hello, ", name, "!"])
+
+-- --- main --------------------------------------------------------------------
+
+def settings = [("taxPercent", toInt 20), ("limit", 100)]
+
+def main =
+  let _ = println "== checkout, printing its log" in
+  let result = printingLogs (\() -> withSettings settings (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout [10, 20, 30])))) in
+  let _ = println (S.concat "result and items counted: " (show result)) in
+
+  let _ = println "== the same checkout, collecting its log instead" in
+  let (outcome, lines) = runCheckout settings [50, 60] in
+  let _ = println (S.concat "outcome: " (show outcome)) in
+  let _ = println (S.concat "log: " (show lines)) in
+
+  let _ = println "== a dice game with a seed and a frozen clock: the same every run" in
+  let _ = println (withClock 1000 (\() -> withSeed 42 (\() -> game ()))) in
+
+  let _ = println "== the greeter, fed its input and with its output captured" in
+  let (u, printed) = withOutput (\() -> withInput ["Ada"] (\() -> greeter ())) in
+  println (S.concat "it printed: " (show printed))
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun aCheckoutUnderTheLimitSucceeds () =
+  let (outcome, lines) = runCheckout settings [10, 20] in
+  let _ = assertEq outcome (Ok 36, 2) "30 plus 20% tax, two items" in
+  assertEq lines ["item 10", "item 20", "total 36"] "every step logged"
+
+@test fun aCheckoutOverTheLimitFailsWithAValue () =
+  let (outcome, lines) = runCheckout [("limit", toInt 5)] [3, 4] in
+  assertEq outcome (Err "order of 7 is over the limit", 2) "a value, not a crash"
+
+@test fun theSameSeedGivesTheSameGame () =
+  assertEq (withSeed 7 (\() -> V.map (\i -> roll ()) (V.range 0 5))) (withSeed 7 (\() -> V.map (\i -> roll ()) (V.range 0 5))) "reproducible"
+
+@test fun theGreeterGreets () =
+  let (u, printed) = withOutput (\() -> withInput ["Grace"] (\() -> greeter ())) in
+  assertEq printed "What is your name?\nHello, Grace!\n" "one question, one greeting"
+
+@test fun theGreeterCopesWithNoInput () =
+  let (u, printed) = withOutput (\() -> withInput [] (\() -> greeter ())) in
+  assertEq printed "What is your name?\nNobody there.\n" "end of input is not an error"

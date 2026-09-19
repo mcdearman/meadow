@@ -12,12 +12,12 @@ const path = require("path");
 const { pick, speaksDap } = require("./resolve");
 
 /// The package a file belongs to: the nearest directory above it with a
-/// `meadow.toml`. Debugging one module of a package means building all of it,
+/// `Meadow.toml`. Debugging one module of a package means building all of it,
 /// so that is what a launch should name.
 function packageRoot(file) {
   let dir = path.dirname(file);
   for (;;) {
-    if (fs.existsSync(path.join(dir, "meadow.toml"))) return dir;
+    if (fs.existsSync(path.join(dir, "Meadow.toml"))) return dir;
     const up = path.dirname(dir);
     if (up === dir) return undefined;
     dir = up;

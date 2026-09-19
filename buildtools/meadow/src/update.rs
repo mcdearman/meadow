@@ -51,7 +51,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
     // helps more than complaining about missing modules.
     if crate::package::manifest_path(&opts.dir).is_none() {
         return Err(format!(
-            "{} is not a package: it has no meadow.toml.\n\
+            "{} is not a package: it has no Meadow.toml.\n\
              \n\
              `meadow update` brings a package's dependencies forward. To update\n\
              the toolchain itself, that is `meadowup update`.",

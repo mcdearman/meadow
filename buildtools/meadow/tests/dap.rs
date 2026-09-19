@@ -387,11 +387,11 @@ fn stepping_in_can_reach_the_standard_library() {
 /// itself reads its console, which a debugger answers with end of input.
 #[test]
 fn a_package_of_several_modules_debugs_across_them() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/mini-ml");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/MiniML");
     let dir = std::env::temp_dir().join(format!("meadow-dap-{}-miniml", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::copy(root.join("meadow.toml"), dir.join("meadow.toml")).unwrap();
+    std::fs::copy(root.join("Meadow.toml"), dir.join("Meadow.toml")).unwrap();
     for f in ["Syntax.mw", "Parser.mw", "Infer.mw", "Eval.mw", "Main.mw"] {
         let mut text = std::fs::read_to_string(root.join("src").join(f)).unwrap();
         if f == "Main.mw" {
@@ -440,7 +440,7 @@ fn package(who: &str, files: &[(&str, &str)]) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
+        dir.join("Meadow.toml"),
         format!("[package]\nname = \"{who}\"\nversion = \"0.1.0\"\n"),
     )
     .unwrap();
@@ -462,7 +462,7 @@ fn entry(module: &Path, expression: &str) -> meadow::dap::session::Entry {
 #[test]
 fn a_private_function_in_a_module_can_be_the_entry() {
     let dir = package(
-        "entry",
+        "Entry",
         &[
             (
                 "src/Main.mw",
@@ -496,7 +496,7 @@ fn a_private_function_in_a_module_can_be_the_entry() {
 
 #[test]
 fn a_package_with_no_main_can_still_be_debugged_at_a_function() {
-    let dir = package("nomain", &[("src/Main.mw", "fun square n = n * n\n")]);
+    let dir = package("NoMain", &[("src/Main.mw", "fun square n = n * n\n")]);
     let main = dir.join("src/Main.mw");
     assert!(
         Session::launch(&dir).is_err(),
@@ -511,7 +511,7 @@ fn a_package_with_no_main_can_still_be_debugged_at_a_function() {
 
 #[test]
 fn a_bad_argument_is_reported_as_the_arguments_fault() {
-    let dir = package("badarg", &[("src/Main.mw", "fun square n = n * n\n")]);
+    let dir = package("BadArg", &[("src/Main.mw", "fun square n = n * n\n")]);
     let main = dir.join("src/Main.mw");
     let err = Session::launch_at(&dir, Some(&entry(&main, "square \"nine\"")))
         .err()
@@ -522,7 +522,7 @@ fn a_bad_argument_is_reported_as_the_arguments_fault() {
 
 #[test]
 fn mini_ml_eval_can_be_debugged_without_touching_main() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/mini-ml");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/MiniML");
     let eval = root.join("src/Eval.mw");
     let expr = "eval [;] (Expr.App (Expr.Lam \"x\" (Expr.Var \"x\")) (Expr.Int 7))";
     let mut s = Session::launch_at(&root, Some(&entry(&eval, expr))).unwrap();

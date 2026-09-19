@@ -4,7 +4,7 @@
 //! is a hard error, exactly like cargo crates.
 //!
 //! Discovery is filesystem-based. A package root optionally carries a
-//! `meadow.toml` manifest, in a Cargo-like format:
+//! `Meadow.toml` manifest, in a Cargo-like format:
 //!
 //! ```toml
 //! [package]
@@ -17,7 +17,7 @@
 //! ```
 //!
 //! `[package]` name/version may also be given at the top level, and the legacy
-//! file name `meadow.pkg` is still accepted. Without a manifest the directory (or
+//! file name `Meadow.pkg` is still accepted. Without a manifest the directory (or
 //! single `.mw` file) is a standalone package named after its stem. The embedded
 //! `Std` package (see [`crate::stdlib`]) is always an implicit dependency and
 //! never needs to be listed.
@@ -607,14 +607,14 @@ impl Builder<'_> {
             if let Some(msg) = problem {
                 return Err(Diagnostic {
                     msg,
-                    filename: crate::workspace::shown(&canon.join("meadow.toml")),
+                    filename: crate::workspace::shown(&canon.join("Meadow.toml")),
                     label: ("here".to_string(), Default::default()),
                     extra_labels: vec![],
                 });
             }
         }
         if let Some(m) = &manifest {
-            let where_ = crate::workspace::shown(&canon.join("meadow.toml"));
+            let where_ = crate::workspace::shown(&canon.join("Meadow.toml"));
             for w in &m.warnings {
                 let said = format!("{where_}: {w}");
                 if !self.warnings.contains(&said) {
@@ -640,7 +640,7 @@ impl Builder<'_> {
                         self.stack.pop();
                         return Err(Diagnostic {
                             msg: format!("dependency `{}` of `{name}`: {msg}", dep.name),
-                            filename: crate::workspace::shown(&canon.join("meadow.toml")),
+                            filename: crate::workspace::shown(&canon.join("Meadow.toml")),
                             label: ("declared here".to_string(), Default::default()),
                             extra_labels: vec![],
                         });
@@ -692,27 +692,109 @@ impl Builder<'_> {
 }
 
 /// Manifest file names, in precedence order.
-const MANIFEST_NAMES: &[&str] = &["meadow.toml", "meadow.pkg"];
+const MANIFEST_NAMES: &[&str] = &["Meadow.toml", "Meadow.pkg"];
 
 /// The manifest file in `dir`, whichever name it goes by.
 pub fn manifest_path(dir: &Path) -> Option<PathBuf> {
-    MANIFEST_NAMES
-        .iter()
-        .map(|n| dir.join(n))
-        .find(|p| p.is_file())
+    named(dir).exact
+}
+
+/// A manifest in `dir` whose name is spelled differently -- `Meadow.toml` for
+/// `Meadow.toml`. Worth finding, because a file system that does not tell the
+/// two apart will hand one over for the other, and one that does will say the
+/// package is not a package at all.
+pub fn misnamed_manifest(dir: &Path) -> Option<PathBuf> {
+    named(dir).misspelled
+}
+
+struct Named {
+    exact: Option<PathBuf>,
+    misspelled: Option<PathBuf>,
+}
+
+/// What `dir` holds that could be a manifest, by how it is spelled.
+///
+/// The directory is read rather than a path asked about: `Path::is_file` goes
+/// through the file system, and most of them answer `Meadow.toml` for a file
+/// called `Meadow.toml`.
+fn named(dir: &Path) -> Named {
+    let mut out = Named {
+        exact: None,
+        misspelled: None,
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        for want in MANIFEST_NAMES {
+            if name == *want {
+                out.exact.get_or_insert_with(|| entry.path());
+            } else if name.eq_ignore_ascii_case(want) {
+                out.misspelled.get_or_insert_with(|| entry.path());
+            }
+        }
+    }
+    out
+}
+
+/// Whether `name` is a package name.
+///
+/// PascalCase, because a package is named where modules are: the first segment
+/// of a `use` path is the package and every segment after it is a module, and
+/// one rule for both is easier to hold than two.
+pub fn is_package_name(name: &str) -> bool {
+    let mut cs = name.chars();
+    cs.next().is_some_and(|c| c.is_ascii_uppercase()) && cs.all(|c| c.is_ascii_alphanumeric())
+}
+
+/// `name` as a package name, for suggesting one: each run of letters and
+/// digits capitalised, and everything else dropped. An initialism comes out as
+/// a word -- `mini-ml` as `MiniMl` -- which a person may want to write
+/// `MiniML` instead.
+pub fn as_package_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut starting = true;
+    for c in name.chars() {
+        if !c.is_ascii_alphanumeric() {
+            starting = true;
+            continue;
+        }
+        if starting {
+            out.extend(c.to_uppercase());
+            starting = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 impl Manifest {
     pub fn load(dir: &Path) -> std::io::Result<Option<Manifest>> {
-        let Some(file) = MANIFEST_NAMES
-            .iter()
-            .map(|n| dir.join(n))
-            .find(|p| p.is_file())
-        else {
+        let found = named(dir);
+        let Some(file) = found.exact.clone().or_else(|| found.misspelled.clone()) else {
             return Ok(None);
         };
         let text = std::fs::read_to_string(&file)?;
         let (mut manifest, inherits) = parse_manifest(&text, dir);
+        if found.exact.is_none()
+            && let Some(name) = file.file_name().and_then(|n| n.to_str())
+        {
+            manifest.problems.push(format!(
+                "a package's manifest is `Meadow.toml`; this one is `{name}`"
+            ));
+        }
+        if !is_package_name(&manifest.name.to_string()) {
+            manifest.problems.push(format!(
+                "`{}` is not a package name: a package is written where a module is, \
+                 so it is `{}` rather than `{}`",
+                manifest.name,
+                as_package_name(&manifest.name.to_string()),
+                manifest.name
+            ));
+        }
         if inherits.version || !inherits.deps.is_empty() {
             manifest.inherit(dir, inherits);
         }
@@ -727,14 +809,14 @@ impl Manifest {
         });
         let Some((root, ws)) = found else {
             self.problems.push(format!(
-                "`{}` inherits from a workspace, but is not in one: no `meadow.toml` \
+                "`{}` inherits from a workspace, but is not in one: no `Meadow.toml` \
                  with a `[workspace]` above {}",
                 self.name,
                 crate::workspace::shown(dir)
             ));
             return;
         };
-        let root_manifest = root.join("meadow.toml");
+        let root_manifest = root.join("Meadow.toml");
         if inherits.version {
             match ws.version {
                 Some(v) => self.version = v,
@@ -789,7 +871,7 @@ impl Manifest {
 }
 
 /// The package directory a file belongs to: the nearest ancestor holding a
-/// `meadow.toml`, or — for a package that has no manifest — the parent of the
+/// `Meadow.toml`, or — for a package that has no manifest — the parent of the
 /// `src` directory it sits under.
 ///
 /// `None` when the file is not in a package at all, which is an ordinary thing
@@ -797,7 +879,7 @@ impl Manifest {
 pub fn enclosing_root(file: &Path) -> Option<PathBuf> {
     let mut dir = file.parent()?;
     loop {
-        if dir.join("meadow.toml").is_file() {
+        if manifest_path(dir).is_some() {
             return Some(dir.to_path_buf());
         }
         // No manifest anywhere above: `src/` is the other thing that marks a
@@ -1245,7 +1327,7 @@ fn package_name(root: &Path) -> InternedString {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("package");
-    InternedString::from(stem)
+    InternedString::from(as_package_name(stem))
 }
 
 fn io_diag(root: &Path, e: std::io::Error) -> Diagnostic {

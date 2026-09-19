@@ -91,8 +91,57 @@ pub fn build(
 ) -> Result<PathBuf, String> {
     let exe =
         native_dir(root, profile, target).join(format!("{name}{}", target.format.exe_suffix()));
+    // An executable that is already the one this image makes is left alone --
+    // and that matters more than it sounds. Linking is the slow part of an
+    // `aot` build, and on macOS the *first* run of a newly written binary pays
+    // for its signature to be checked, which is slower still. Relinking an
+    // unchanged program therefore cost about a fifth of a second every time it
+    // was run, against twenty milliseconds for the same program on the JIT.
+    let stamp = exe.with_extension("stamp");
+    let want = made_from(image, opt, target);
+    if exe.exists() && std::fs::read_to_string(&stamp).is_ok_and(|had| had == want) {
+        return Ok(exe);
+    }
     link_image(image, opt, target, &exe)?;
+    // After linking, so that a link that failed half-way is not taken for a
+    // finished one.
+    let _ = std::fs::write(&stamp, &want);
     Ok(exe)
+}
+
+/// What an executable was made from, as one line: the image, how it was
+/// compiled, what for, and which runtime it was linked against. Anything that
+/// would change the executable changes this.
+fn made_from(
+    image: &meadow_bytecode::Program,
+    opt: meadow_compiler::OptLevel,
+    target: Target,
+) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    feed(&meadow_bytecode::image::encode(image));
+    feed(opt.name().as_bytes());
+    feed(target.triple().as_bytes());
+    // The runtime is linked in, so a new one makes a new executable. Its name
+    // carries this compiler's identity (see `link_image`), and its file says
+    // whether it has been rebuilt since.
+    feed(codegen::object::runtime_symbol().as_bytes());
+    for runtime in runtimes(target).unwrap_or_default() {
+        if let Ok(meta) = std::fs::metadata(&runtime) {
+            feed(&meta.len().to_le_bytes());
+            if let Ok(t) = meta.modified()
+                && let Ok(d) = t.duration_since(std::time::UNIX_EPOCH)
+            {
+                feed(&d.as_nanos().to_le_bytes());
+            }
+        }
+    }
+    format!("{h:016x}")
 }
 
 /// Where what is compiled for `target` goes: the host's where `run` looks;

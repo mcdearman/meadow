@@ -1,7 +1,7 @@
 //! **Where a build puts what it makes.**
 //!
 //! Everything a build writes goes under the package's own `target` directory,
-//! beside its `meadow.toml`, one directory per profile:
+//! beside its `Meadow.toml`, one directory per profile:
 //!
 //! ```text
 //!   <package>/target/debug/bytecode/<name>.mbc     the image the VM runs

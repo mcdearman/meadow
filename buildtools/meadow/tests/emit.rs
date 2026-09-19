@@ -113,7 +113,7 @@ fn build_writes_text_in_place_of_binaries() {
     let dir = scratch("build");
     let root = dir.join("fact");
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("meadow.toml"), "[package]\nname = \"fact\"\n").unwrap();
+    std::fs::write(root.join("Meadow.toml"), "[package]\nname = \"Fact\"\n").unwrap();
     std::fs::write(root.join("src/Main.mw"), PROGRAM).unwrap();
 
     // Whichever architecture this machine is not: code for the host goes
@@ -209,4 +209,76 @@ fn a_lone_file_has_nowhere_to_emit_to() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("; meadow native code: x86_64"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- not relinking what is already there -------------------------------------
+
+/// A package whose executable can be built twice over.
+fn buildable(what: &str, body: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("meadow-aot-{}-{what}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).expect("a scratch package");
+    std::fs::write(
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"Prog\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("a manifest");
+    std::fs::write(dir.join("src/Lib.mw"), body).expect("a module");
+    dir
+}
+
+/// Build `dir` as a native executable, answering where it went and when it was
+/// last written.
+fn link_once(dir: &Path) -> (PathBuf, std::time::SystemTime) {
+    let out = pipeline::build(dir, meadow::profile::Profile::Release.options());
+    assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
+    let linked = out.linked.expect("a linked program");
+    let image = runtime::compile(&linked.program, OptLevel::O2).expect("an image");
+    let exe = meadow::aot::build(
+        dir,
+        meadow::profile::Profile::Release,
+        OptLevel::O2,
+        "prog",
+        &image,
+        meadow::aot::Target::host().expect("a host target"),
+    )
+    .expect("it links");
+    let when = std::fs::metadata(&exe)
+        .expect("it exists")
+        .modified()
+        .unwrap();
+    (exe, when)
+}
+
+#[test]
+fn an_executable_is_not_relinked_when_nothing_has_changed() {
+    // Linking is the slow part of a native build, and on some systems running a
+    // newly written binary costs more still -- so a `run` that changed nothing
+    // used to be an order of magnitude slower than the same program on the JIT.
+    let dir = buildable("fresh", "def main = 1 + 1\n");
+    let (first, when) = link_once(&dir);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let (again, and_then) = link_once(&dir);
+    assert_eq!(first, again);
+    assert_eq!(when, and_then, "it was written a second time");
+}
+
+#[test]
+fn an_executable_is_relinked_when_the_program_changes() {
+    let dir = buildable("stale", "def main = 1 + 1\n");
+    let (exe, when) = link_once(&dir);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(dir.join("src/Lib.mw"), "def main = 2 + 2\n").expect("a module");
+    let (again, and_then) = link_once(&dir);
+    assert_eq!(exe, again);
+    assert_ne!(when, and_then, "a different program, the same executable");
+}
+
+#[test]
+fn an_executable_that_is_gone_is_linked_again() {
+    let dir = buildable("deleted", "def main = 1 + 1\n");
+    let (exe, _) = link_once(&dir);
+    std::fs::remove_file(&exe).expect("it was there");
+    let (again, _) = link_once(&dir);
+    assert!(again.exists(), "it came back");
 }

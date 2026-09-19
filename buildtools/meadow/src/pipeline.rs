@@ -330,13 +330,13 @@ fn target_of(graph: &PackageGraph, id: usize) -> Option<(std::path::PathBuf, Int
 }
 
 /// Every package of a graph, compiled.
-struct Compiled {
-    std: Vec<CompiledPackage>,
+pub(crate) struct Compiled {
+    pub(crate) std: Vec<CompiledPackage>,
     /// Indexed by package id.
-    packages: Vec<Option<CompiledPackage>>,
-    diagnostics: Vec<Diagnostic>,
+    pub(crate) packages: Vec<Option<CompiledPackage>>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
     /// Which were compiled rather than read back from the cache.
-    compiled: Vec<InternedString>,
+    pub(crate) compiled: Vec<InternedString>,
 }
 
 /// Who each package of `graph` is, for naming the types and effects it
@@ -373,7 +373,11 @@ fn identities(graph: &PackageGraph) -> Vec<InternedString> {
 
 /// Compile every package of `graph`, dependencies first -- reading back from
 /// `cache` each one whose inputs are what they were when it was saved.
-fn compile_graph(graph: &PackageGraph, opts: Options, cache: Option<&Cache>) -> Compiled {
+pub(crate) fn compile_graph(
+    graph: &PackageGraph,
+    opts: Options,
+    cache: Option<&Cache>,
+) -> Compiled {
     let (std, mut diagnostics) = stdlib::std_packages_in(opts, cache);
     let n = graph.packages.len();
     let mut packages: Vec<Option<CompiledPackage>> = (0..n).map(|_| None).collect();

@@ -105,15 +105,15 @@ examples/<name>` runs its tests.
 
 | | |
 |---|---|
-| [`tour`](examples/tour) | the language in one program: data types, records, matching, numbers, modules, local mutation |
-| [`effects`](examples/effects) | one program under different handlers: logging, configuration, failure, state, a seeded random game, a tested interactive greeter |
-| [`streams`](examples/streams) | generators with `yield`: infinite streams, `take`, `filter`, `map` |
-| [`concurrency`](examples/concurrency) | green threads and channels: a worker pool, a pipeline, fan-out and fan-in |
-| [`parallel`](examples/parallel) | splitting work across every core, and sharing a compacted table between threads |
-| [`stm`](examples/stm) | transactional memory: a bank whose total never wavers, transfers that wait for funds, bounded queues |
-| [`mini-ml`](examples/mini-ml) | a small ML with Hindley-Milner inference and an interpreter, over four modules |
-| [`euler`](examples/euler) | Project Euler problems |
-| [`rock-paper-scissors`](examples/rock-paper-scissors) | an interactive game, tested by feeding it input |
+| [`tour`](examples/Tour) | the language in one program: data types, records, matching, numbers, modules, local mutation |
+| [`effects`](examples/Effects) | one program under different handlers: logging, configuration, failure, state, a seeded random game, a tested interactive greeter |
+| [`streams`](examples/Streams) | generators with `yield`: infinite streams, `take`, `filter`, `map` |
+| [`concurrency`](examples/Concurrency) | green threads and channels: a worker pool, a pipeline, fan-out and fan-in |
+| [`parallel`](examples/Parallel) | splitting work across every core, and sharing a compacted table between threads |
+| [`stm`](examples/Stm) | transactional memory: a bank whose total never wavers, transfers that wait for funds, bounded queues |
+| [`mini-ml`](examples/MiniML) | a small ML with Hindley-Milner inference and an interpreter, over four modules |
+| [`euler`](examples/Euler) | Project Euler problems |
+| [`rock-paper-scissors`](examples/RockPaperScissors) | an interactive game, tested by feeding it input |
 
 ## Use
 
@@ -121,7 +121,7 @@ examples/<name>` runs its tests.
 meadow                          # REPL
 meadow init                     # start a package here, named after the directory
 meadow init pkg --name myPkg    # ...or elsewhere, under a name you choose
-meadow run examples/euler       # build a package and run `main`, on the VM and its JIT
+meadow run examples/Euler       # build a package and run `main`, on the VM and its JIT
 meadow run --types pkg          # ...printing every top-level binding's type first
 meadow run --release pkg        # ...optimized, as an executable compiled ahead of time
 meadow run --backend vm pkg     # ...on the bytecode VM alone (or `jit`, `aot`)
@@ -178,7 +178,7 @@ build stops and says so rather than quietly compiling something else.
 Repositories are fetched into `~/.meadow/git`, one checkout per commit, shared
 by every package on the machine.
 
-A package is a directory with a `meadow.toml` and a `src/`, which `meadow init`
+A package is a directory with a `Meadow.toml` and a `src/`, which `meadow init`
 writes for you; `meadow run` also takes a single `.mw` file. The `Std` library
 is embedded in the binary, so there is nothing else to install.
 
@@ -197,7 +197,7 @@ so an edit recompiles only the package changed and those downstream of it.
 `MEADOW_INCREMENTAL=0` turns this off.
 
 Packages developed together can be a **workspace**, as in Cargo: a root
-`meadow.toml` with `[workspace] members = ["app", "libs/*"]`, whose members
+`Meadow.toml` with `[workspace] members = ["app", "libs/*"]`, whose members
 share one `target/`, the root's `[profile.*]`, and a version and dependencies
 declared once under `[workspace.package]` and `[workspace.dependencies]`
 (`util = { workspace = true }` in a member). The
@@ -221,7 +221,7 @@ same code generator serves the two that use it:
 package can pick one per profile in its manifest:
 
 ```toml
-# meadow.toml
+# Meadow.toml
 [profile.debug]
 backend = "vm"
 
@@ -437,9 +437,9 @@ argument of the wrong type is a compile error before anything runs. In
   "type": "meadow",
   "request": "launch",
   "name": "Debug eval",
-  "program": "${workspaceFolder}/examples/mini-ml",
+  "program": "${workspaceFolder}/examples/MiniML",
   "entry": {
-    "module": "${workspaceFolder}/examples/mini-ml/src/Eval.mw",
+    "module": "${workspaceFolder}/examples/MiniML/src/Eval.mw",
     "expression": "eval [;] (Expr.Int 1)",
     "function": "eval"
   }
@@ -493,7 +493,7 @@ meadow build --strict pkg   # check exhaustiveness without optimizing
 ```
 
 ```toml
-# meadow.toml
+# Meadow.toml
 [profile.debug]
 opt-level = 2               # this package is slow to run, not slow to build
 

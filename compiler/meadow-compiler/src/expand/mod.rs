@@ -132,7 +132,6 @@ pub fn blame(diags: &mut [Diagnostic], expansions: &[Expansion]) {
 
 /// A macro definition, with its matchers read and checked.
 struct Macro {
-    name: InternedString,
     /// The package that wrote it, which is what `$pkg` stands for in its
     /// template -- the point of `$pkg` being that it means the same thing
     /// wherever the macro is expanded.
@@ -162,6 +161,13 @@ pub fn expand_unit(
     // `@pub` exports all of it, and one that says it anywhere means it
     // everywhere.
     let gated = modules.iter().any(|m| says_pub(&m.ast.value));
+    // Read off the source rather than from anything resolved: this runs before
+    // resolution, and all it is for is a better error.
+    let own_macros: Vec<InternedString> = modules
+        .iter()
+        .flat_map(|m| m.ast.value.decls.iter())
+        .filter_map(marked_macro)
+        .collect();
     let mut mine: Vec<Rules> = Vec::new();
     let mut from: Vec<Expansion> = Vec::new();
     for m in modules.iter_mut() {
@@ -178,6 +184,7 @@ pub fn expand_unit(
             package,
             procs,
             proc_macros: HashMap::new(),
+            own_macros: own_macros.clone(),
         };
         ex.collect(&mut m.ast.value.decls, &m.path, gated, &mut mine);
     }
@@ -195,6 +202,7 @@ pub fn expand_unit(
             package,
             procs,
             proc_macros: HashMap::new(),
+            own_macros: own_macros.clone(),
         };
         ex.import(&m.ast.value, &m.path, &mine, deps);
         ex.decls(&mut m.ast.value.decls);
@@ -232,6 +240,9 @@ struct Expander<'a> {
     /// The procedural macros in scope: the package that exports each, and the
     /// name it is exported under.
     proc_macros: HashMap<String, (InternedString, InternedString)>,
+    /// What this unit marks `@macro` of its own -- which cannot be run here,
+    /// but is worth recognising to say why.
+    own_macros: Vec<InternedString>,
 }
 
 impl Expander<'_> {
@@ -398,6 +409,33 @@ impl Expander<'_> {
                     }
                     continue;
                 }
+                // A function of that name, but not marked: that is the
+                // likely mistake, and it is fixed where the function is.
+                if self.exported_plainly(&segs, name, deps) {
+                    self.error(
+                        format!("`{name}` is not a macro"),
+                        format!(
+                            "mark it `@macro` where it is defined, in `{}`",
+                            dotted(&segs)
+                        ),
+                        want.span,
+                        vec![],
+                    );
+                    continue;
+                }
+                // One in this very unit: a macro has to be compiled before it
+                // can run, so it cannot be one of its own package's.
+                if self.own_macros.contains(&name) {
+                    self.error(
+                        format!("`{name}` is a macro of this package"),
+                        "a macro has to be compiled before it can run, so it belongs to a \
+                         package the one using it depends on"
+                            .to_string(),
+                        want.span,
+                        vec![],
+                    );
+                    continue;
+                }
                 self.error(
                     format!(
                         "`{}` does not export a macro `{}!`",
@@ -462,12 +500,35 @@ impl Expander<'_> {
             // else by the package, with the module after it.
             let whole = dotted(local) == name || dotted(segs) == name;
             for e in &d.exports {
-                if whole || (segs[0] == d.spelled && e.module == segs[1..]) {
+                if e.is_macro && (whole || (segs[0] == d.spelled && e.module == segs[1..])) {
                     out.push((d.name, e.name, &e.scheme));
                 }
             }
         }
         out
+    }
+
+    /// Whether the module a `use` path names exports `want` as an ordinary
+    /// function -- which is what a `use … (name!)` that found nothing was
+    /// probably reaching for.
+    fn exported_plainly(
+        &self,
+        segs: &[InternedString],
+        want: InternedString,
+        deps: &[crate::Dep<'_>],
+    ) -> bool {
+        let local = if segs[0] == self.package {
+            &segs[1..]
+        } else {
+            segs
+        };
+        deps.iter().any(|d| {
+            let name = d.spelled.to_string();
+            let whole = dotted(local) == name || dotted(segs) == name;
+            d.exports.iter().any(|e| {
+                e.name == want && (whole || (segs[0] == d.spelled && e.module == segs[1..]))
+            })
+        })
     }
 
     /// Put a macro in the table under the name a call would write.
@@ -483,7 +544,6 @@ impl Expander<'_> {
         self.macros.insert(
             called,
             Macro {
-                name: r.name,
                 package: r.package,
                 rules,
             },
@@ -1122,6 +1182,20 @@ fn vis_of(attrs: &[ast::Attr], gated: bool) -> Vis {
         Some(w) if w == "super" => Vis::Super,
         // `pkg`, and anything unknown: narrower than guessing it was public.
         Some(_) => Vis::Package,
+    }
+}
+
+/// The name of a function written `@macro`, if that is what `d` is.
+fn marked_macro(d: &ast::LDecl) -> Option<InternedString> {
+    let ast::Decl::Attributed(attrs, inner) = &*d.value else {
+        return None;
+    };
+    if !attrs.iter().any(|a| &**a.name.value() == "macro") {
+        return None;
+    }
+    match &*inner.value {
+        ast::Decl::Bind(ast::Bind::Fun(name, ..)) => Some(*name.value()),
+        _ => None,
     }
 }
 

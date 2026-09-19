@@ -61,6 +61,10 @@ pub struct Export {
     pub var: VarId,
     pub scheme: Scheme,
     pub module: Vec<InternedString>,
+    /// Whether it was written `@macro`, and so may be called as one by a
+    /// package that imports it with a `!`. A macro is an ordinary function and
+    /// nothing about its type makes it one: saying so is what does.
+    pub is_macro: bool,
 }
 
 /// The output of [`compile_unit`]: one package, fully typed and lowered.
@@ -680,6 +684,25 @@ fn compile_unit_inner(
     // Drop the `&table` borrow held by `lowerer` before `table` is moved below.
     let ctor_fields = lowerer.ctor_fields;
 
+    // `@macro`: what a package offers as a procedural macro. Its type is what
+    // makes it runnable, and it is checked here -- where the macro is written,
+    // rather than in whoever imports it and finds out the hard way.
+    let macro_vars: HashMap<VarId, meadow_span::Span> =
+        resolver.macro_vars().iter().copied().collect();
+    for (var, span) in &macro_vars {
+        let Some(scheme) = schemes.get(var) else {
+            continue;
+        };
+        if let Err(why) = crate::expand::proc::signature(scheme) {
+            diags.push(Diagnostic {
+                msg: format!("this cannot be a macro: {why}"),
+                filename: filename.clone(),
+                label: ("a macro is `[TokenTree] -> [TokenTree]`".to_string(), *span),
+                extra_labels: vec![],
+            });
+        }
+    }
+
     // Export surface. If the unit used a visibility attribute anywhere, only the `@pub`
     // declarations (and `@pub use` re-exports) are exported; otherwise everything.
     let gated = resolver.has_pub_markers();
@@ -700,6 +723,7 @@ fn compile_unit_inner(
             var: *var,
             scheme: scheme.clone(),
             module: var_module.get(var).cloned().unwrap_or_default(),
+            is_macro: macro_vars.contains_key(var),
         });
     }
     // `@pub use M (x)` re-exports: `x` is defined in a dependency, so its scheme
@@ -717,6 +741,7 @@ fn compile_unit_inner(
                     var,
                     scheme: scheme.clone(),
                     module: Vec::new(),
+                    is_macro: macro_vars.contains_key(&var),
                 });
             }
         }

@@ -1266,7 +1266,7 @@ microseconds at a time, and its longest pause is well under a millisecond.
 `meadow run --gc-stats` reports what the collector did, pauses included:
 
 ```sh
-$ meadow run --gc-stats benches/latency
+$ meadow run --gc-stats benches/Latency
 ...
 200000 requests in 4658 ms; slowest 210 us; 0 over 1 ms; 500000 entries
 gc: 26952 collections across 1 thread, 832.1 ms paused (10.3% of 8077.5 ms)
@@ -1322,11 +1322,11 @@ mutable array or a function.
 
 Compacting costs one copy of the value, so it pays for data built once and read
 for a long time: a parsed input, a lookup table, a cache that rarely changes.
-`meadow run --gc-stats` shows whether it is paying. In `benches/compact`, a
+`meadow run --gc-stats` shows whether it is paying. In `benches/Compact`, a
 200,000-entry map compacted takes the heap from 70 MiB to under 1 MiB:
 
 ```sh
-$ meadow run --gc-stats benches/compact
+$ meadow run --gc-stats benches/Compact
 ...
 gc: heap 832.0 KiB, compact regions 20.7 MiB
 ```
@@ -1340,11 +1340,11 @@ value and copies nothing.
 
 ### A package
 
-A package is a directory with a `meadow.toml` and a `src/`:
+A package is a directory with a `Meadow.toml` and a `src/`:
 
 ```
 myapp/
-  meadow.toml
+  Meadow.toml
   src/
     Main.mw
     Math.mw
@@ -1383,7 +1383,7 @@ use myapp.Math (double)       -- the package name, then the module
 def main = double 21
 ```
 
-The path starts with the package's own name, which is what `meadow.toml` says —
+The path starts with the package's own name, which is what `Meadow.toml` says —
 `use myapp.Math`. The name on its own is the root module (`Main.mw` or `Lib.mw`),
 as `crate` is in Rust: a child module writes `use myapp (helper)` to reach
 something the root declares. The plain `use Math (double)` works too and means the same
@@ -1602,22 +1602,22 @@ that *can* share a release does: two packages wanting `1.0` and `1.2` both get
 ### Workspaces
 
 Several packages developed together can form a **workspace**, as in Cargo: one
-`meadow.toml` at the top lists them, and they share a `target` directory, their
+`Meadow.toml` at the top lists them, and they share a `target` directory, their
 build profiles, and whatever they declare there once.
 
 ```
 shop/
-  meadow.toml          the workspace
+  Meadow.toml          the workspace
   app/
-    meadow.toml
+    Meadow.toml
     src/Main.mw
   libs/
-    text/  meadow.toml  src/Lib.mw
-    util/  meadow.toml  src/Lib.mw
+    text/  Meadow.toml  src/Lib.mw
+    util/  Meadow.toml  src/Lib.mw
 ```
 
 ```toml
-# shop/meadow.toml
+# shop/Meadow.toml
 [workspace]
 members = ["app", "libs/*"]
 
@@ -1637,7 +1637,7 @@ path, so `libs/*` is every package under `libs`. A member takes what the
 workspace declares by saying `workspace = true`:
 
 ```toml
-# shop/app/meadow.toml
+# shop/app/Meadow.toml
 [package]
 name = "app"
 version.workspace = true
@@ -1705,7 +1705,7 @@ What being a member changes:
   members use is compiled once when they are built together. Later builds
   reuse it too, as described next.
 - **One set of profiles.** `[profile.*]` is read from the workspace's
-  `meadow.toml`. A member's own `[profile]` sections are ignored, with a warning
+  `Meadow.toml`. A member's own `[profile]` sections are ignored, with a warning
   that says so.
 - **Membership is checked.** A package under the workspace directory that is
   not a member is an error, because it would build with the wrong profiles into
@@ -1713,7 +1713,7 @@ What being a member changes:
   its own. A path dependency of a member that lives inside the workspace is a
   member without being listed.
 
-The top-level `meadow.toml` can be a package as well, with a `[package]` of its
+The top-level `Meadow.toml` can be a package as well, with a `[package]` of its
 own. Then it is a member too, and it is what a command at the root means.
 Without one it is only the workspace, and building it directly says to use
 `-p` or `--workspace`.
@@ -1726,9 +1726,9 @@ already covers it:
 $ meadow init --workspace shop && cd shop
 $ meadow init app
 created package `app` at app
-  app/meadow.toml
+  app/Meadow.toml
   app/src/Main.mw
-  meadow.toml
+  Meadow.toml
 added `app` to the members of .
 ```
 
@@ -1838,7 +1838,7 @@ The conditions a build knows:
 declaration must all hold: `@cfg(all(unix, not(test)))`.
 
 **Flags** are yours to name. Turn one on with `--cfg fast` or `--cfg feature=gpu`
-(repeat `--cfg` for more), or for a profile in `meadow.toml`:
+(repeat `--cfg` for more), or for a profile in `Meadow.toml`:
 
 ```toml
 [profile.debug]
@@ -2648,7 +2648,7 @@ def main = withOutput (\() -> withInput ["ada"] (\() -> prompt "name: "))
 `withInput` feeds a vector of lines and answers `None` once they run out, so the
 same function covers both the interactive and the exhausted case.
 
-The example in `examples/rock-paper-scissors` is the whole point of this in
+The example in `examples/RockPaperScissors` is the whole point of this in
 practice. It is an interactive terminal game — it prompts, it loops, it keeps a
 tally — and its test plays a *complete game* with no terminal and no entropy
 anywhere near it:
@@ -3027,7 +3027,7 @@ transactions can't nest: `atomically` itself performs `Thread`.
 A `TVar` holds what a `Compact` can: no `Ref`, mutable array or function. On the
 VM its value lives in a shared region, so every thread reads it in place, and
 updating a large value copies only the part that changed.
-`examples/stm` has more: an auditor that never sees a half-finished transfer,
+`examples/Stm` has more: an auditor that never sees a half-finished transfer,
 and bounded queues.
 
 ### Writing a handler for your own effect
@@ -3145,7 +3145,7 @@ generic code is compiled once and told what its values are as it runs.
 
 Each profile also has a backend. Debug runs on the VM, which compiles a block
 to machine code once it has run often; release links an executable. A package
-can choose differently in its `meadow.toml`:
+can choose differently in its `Meadow.toml`:
 
 ```toml
 [profile.release]

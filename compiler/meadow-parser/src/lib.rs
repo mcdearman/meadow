@@ -105,7 +105,12 @@ where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
     just(Token::At)
-        .ignore_then(path_seg())
+        // `@macro` names an attribute, and `macro` is a keyword: they are
+        // different namespaces and nothing else is written after an `@`, so the
+        // word is taken as it is spelled.
+        .ignore_then(path_seg().or(
+            just(Token::Macro).map_with(|_, e| Ident::new(InternedString::from("macro"), e.span())),
+        ))
         .then(
             meta()
                 .separated_by(just(Token::Comma))

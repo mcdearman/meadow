@@ -136,7 +136,7 @@
 						"properties": {
 							"program": {
 								"type": "string",
-								"description": "What to debug: a package directory (one with a meadow.toml) or a single .mw file.",
+								"description": "What to debug: a package directory (one with a Meadow.toml) or a single .mw file.",
 								"default": "${workspaceFolder}"
 							},
 							"stopOnEntry": {

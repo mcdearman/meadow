@@ -504,10 +504,23 @@ pub fn run_tests(
     program: &core::Program,
     tests: &[core::Var],
 ) -> Result<Vec<Result<Value, RuntimeError>>, RuntimeError> {
+    run_tests_watched(program, tests, &mut |_, _| {})
+}
+
+/// [`run_tests`], telling `each` about a result as it lands.
+///
+/// A run of a thousand tests says nothing for a minute otherwise, and what it
+/// is doing is exactly what someone waiting wants to know.
+pub fn run_tests_watched(
+    program: &core::Program,
+    tests: &[core::Var],
+    each: &mut dyn FnMut(usize, &Result<Value, RuntimeError>),
+) -> Result<Vec<Result<Value, RuntimeError>>, RuntimeError> {
     let env = load(program)?;
     Ok(tests
         .iter()
-        .map(|&var| {
+        .enumerate()
+        .map(|(i, &var)| {
             let Some(f) = lookup(&env, var) else {
                 return Err(RuntimeError {
                     msg: "test not found".into(),
@@ -524,7 +537,9 @@ pub fn run_tests(
                 }],
                 &program.ctor_fields,
             );
-            m.run()
+            let out = m.run();
+            each(i, &out);
+            out
         })
         .collect())
 }

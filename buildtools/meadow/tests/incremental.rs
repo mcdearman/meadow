@@ -29,7 +29,7 @@ fn append(path: &Path, text: &str) {
 fn workspace(who: &str) -> PathBuf {
     let root = scratch(who).join("ws");
     write(
-        &root.join("meadow.toml"),
+        &root.join("Meadow.toml"),
         "[workspace]\nmembers = [\"app\", \"libs/*\"]\n\n[workspace.dependencies]\n\
          util = { path = \"libs/util\" }\ntext = { path = \"libs/text\" }\n",
     );
@@ -49,8 +49,11 @@ fn workspace(who: &str) -> PathBuf {
     ] {
         let short = name.rsplit('/').next().unwrap();
         write(
-            &root.join(name).join("meadow.toml"),
-            &format!("[package]\nname = \"{short}\"\n\n[dependencies]\n{deps}"),
+            &root.join(name).join("Meadow.toml"),
+            &format!(
+                "[package]\nname = \"{}\"\n\n[dependencies]\n{deps}",
+                meadow::package::as_package_name(short)
+            ),
         );
         let file = if name == "app" { "Main.mw" } else { "Lib.mw" };
         write(&root.join(name).join("src").join(file), src);
@@ -59,7 +62,7 @@ fn workspace(who: &str) -> PathBuf {
 }
 
 fn members(root: &Path) -> Vec<PathBuf> {
-    ["app", "libs/other"].iter().map(|m| root.join(m)).collect()
+    ["App", "libs/other"].iter().map(|m| root.join(m)).collect()
 }
 
 fn options(root: &Path) -> meadow::Options {
@@ -102,7 +105,7 @@ fn nothing_changed_compiles_nothing_and_builds_the_same() {
     let root = workspace("same");
     let opts = options(&root);
     let (first, fresh) = build(&root, opts);
-    assert_eq!(first, ["util", "text", "app", "other"]);
+    assert_eq!(first, ["Util", "Text", "App", "Other"]);
     let (second, reused) = build(&root, opts);
     assert!(second.is_empty(), "{second:?}");
     for (a, b) in fresh.each.iter().zip(&reused.each) {
@@ -121,7 +124,7 @@ fn nothing_changed_compiles_nothing_and_builds_the_same() {
 /// comes from one.
 #[test]
 fn compiling_the_same_package_twice_gives_the_same_package() {
-    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/mini-ml");
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/MiniML");
     let main = example.join("src/Main.mw");
     let describe = || {
         // An addition keeps the cache out of it: both are compiled.
@@ -181,16 +184,16 @@ fn a_change_recompiles_the_package_and_what_depends_on_it() {
     build(&root, opts);
 
     append(&root.join("app/src/Main.mw"), "\n-- a comment\n");
-    assert_eq!(build(&root, opts).0, ["app"]);
+    assert_eq!(build(&root, opts).0, ["App"]);
 
     append(&root.join("libs/text/src/Lib.mw"), "\n@pub def more = 1\n");
-    assert_eq!(build(&root, opts).0, ["text", "app"]);
+    assert_eq!(build(&root, opts).0, ["Text", "App"]);
 
     append(&root.join("libs/util/src/Lib.mw"), "\n-- util\n");
-    assert_eq!(build(&root, opts).0, ["util", "text", "app"]);
+    assert_eq!(build(&root, opts).0, ["Util", "Text", "App"]);
 
     append(&root.join("libs/other/src/Lib.mw"), "\n-- other\n");
-    assert_eq!(build(&root, opts).0, ["other"]);
+    assert_eq!(build(&root, opts).0, ["Other"]);
     assert!(build(&root, opts).0.is_empty());
 }
 
@@ -207,7 +210,7 @@ fn a_package_growing_does_not_recompile_the_packages_beside_it() {
         .collect();
     append(&root.join("libs/util/src/Lib.mw"), &many);
     let (compiled, out) = build(&root, opts);
-    assert_eq!(compiled, ["util", "text", "app"]);
+    assert_eq!(compiled, ["Util", "Text", "App"]);
     assert!(everything(&out.each[0]).ends_with(r#"(42, "b x2")"#));
 }
 
@@ -240,7 +243,7 @@ fn a_package_with_errors_is_compiled_every_time() {
         let out = pipeline::build_each(&refs, opts);
         assert!(!out.diagnostics.is_empty(), "the error is reported again");
         let compiled: Vec<String> = out.compiled.iter().map(|n| n.to_string()).collect();
-        assert_eq!(compiled, ["text", "app"]);
+        assert_eq!(compiled, ["Text", "App"]);
     }
 }
 
@@ -254,14 +257,16 @@ fn a_damaged_cache_is_compiled_over() {
     for entry in std::fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        if name.starts_with("util-") {
-            std::fs::write(&path, b"MWPKG\0\0\x01 not a package").unwrap();
+        if name.starts_with("Util-") {
+            // The magic this compiler writes, and then rubbish: the file is
+            // damaged, not somebody else's.
+            std::fs::write(&path, b"MWPKG\0\0\x02 not a package").unwrap();
             files += 1;
         }
     }
     assert_eq!(files, 1);
     let (compiled, out) = build(&root, opts);
-    assert_eq!(compiled, ["util"], "its dependents' inputs did not change");
+    assert_eq!(compiled, ["Util"], "its dependents' inputs did not change");
     assert!(everything(&out.each[0]).ends_with(r#"(42, "b x2")"#));
 }
 
@@ -271,10 +276,10 @@ fn renaming_a_package_is_a_change() {
     let opts = options(&root);
     build(&root, opts);
     write(
-        &root.join("libs/other/meadow.toml"),
-        "[package]\nname = \"another\"\n",
+        &root.join("libs/other/Meadow.toml"),
+        "[package]\nname = \"Another\"\n",
     );
-    assert_eq!(build(&root, opts).0, ["another"]);
+    assert_eq!(build(&root, opts).0, ["Another"]);
 }
 
 #[test]
@@ -283,7 +288,7 @@ fn the_cache_can_be_turned_off() {
     let run = |incremental: &str| {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_meadow"))
             .current_dir(&root)
-            .args(["run", "-p", "app"])
+            .args(["run", "-p", "App"])
             .env("MEADOW_INCREMENTAL", incremental)
             .output()
             .unwrap();

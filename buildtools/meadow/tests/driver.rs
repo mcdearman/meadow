@@ -12,13 +12,17 @@ fn scratch(who: &str) -> PathBuf {
     dir
 }
 
-/// A package at `dir/name` whose `main` is `main`.
+/// A package at `dir/name` whose `main` is `main`. The directory is called
+/// what this test calls it; the package is called what a package is called.
 fn package(dir: &Path, name: &str, main: &str) -> PathBuf {
     let root = dir.join(name);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
-        root.join("meadow.toml"),
-        format!("[package]\nname = \"{name}\"\n"),
+        root.join("Meadow.toml"),
+        format!(
+            "[package]\nname = \"{}\"\n",
+            meadow::package::as_package_name(name)
+        ),
     )
     .unwrap();
     std::fs::write(root.join("src/Main.mw"), main).unwrap();
@@ -102,7 +106,7 @@ fn an_image_runs_on_its_own() {
     let root = package(&dir, "img", ARGS);
     let (ok, _, err) = meadow(&root, &["build", "."]);
     assert!(ok, "{err}");
-    let image = root.join("target/debug/bytecode/img.mbc");
+    let image = root.join("target/debug/bytecode/Img.mbc");
     assert!(image.is_file());
     let image = image.to_string_lossy().into_owned();
     for backend in ["jit", "vm"] {
@@ -110,7 +114,7 @@ fn an_image_runs_on_its_own() {
         assert!(ok, "{err}");
         assert_eq!(answer(&out), r#"=> ["x"]"#);
     }
-    let (ok, _, err) = meadow(&dir, &["exec", &root.join("meadow.toml").to_string_lossy()]);
+    let (ok, _, err) = meadow(&dir, &["exec", &root.join("Meadow.toml").to_string_lossy()]);
     assert!(!ok);
     assert!(err.contains("not a Meadow image"), "{err}");
 

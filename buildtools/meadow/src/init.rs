@@ -1,7 +1,7 @@
 //! `meadow init` — write the smallest thing the rest of the tools will accept
 //! as a package.
 //!
-//! Which is not much: a `meadow.toml` naming the package, and a `src/Main.mw`
+//! Which is not much: a `Meadow.toml` naming the package, and a `src/Main.mw`
 //! with an entry point in it. [`crate::package`] would in fact accept a bare
 //! directory of `.mw` files and name the package after the directory, so what
 //! this really buys is the *name* — written down, rather than inferred from
@@ -44,7 +44,7 @@ pub fn run(opts: &Options) -> Result<Created, String> {
     // Refuse rather than merge. A manifest is the one file that says "this is
     // already a package", and overwriting someone's dependency list to put a
     // template there is not a thing to do by accident.
-    for existing in ["meadow.toml", "meadow.pkg"] {
+    for existing in ["Meadow.toml", "Meadow.pkg"] {
         let p = root.join(existing);
         if p.exists() {
             return Err(format!(
@@ -92,7 +92,7 @@ pub fn run(opts: &Options) -> Result<Created, String> {
         .map_err(|e| format!("could not create {}: {e}", src.display()))?;
 
     let mut files = Vec::new();
-    write_new(&root.join("meadow.toml"), &manifest(&name), &mut files)?;
+    write_new(&root.join("Meadow.toml"), &manifest(&name), &mut files)?;
     // Left alone if it is already there: someone running this in a directory
     // that has sources wants the manifest, not a new `main`.
     let main = src.join("Main.mw");
@@ -122,7 +122,7 @@ pub fn run(opts: &Options) -> Result<Created, String> {
 /// the `.gitignore` for the one `target` every member builds into.
 fn init_workspace(root: &Path) -> Result<Created, String> {
     let mut files = Vec::new();
-    write_new(&root.join("meadow.toml"), WORKSPACE, &mut files)?;
+    write_new(&root.join("Meadow.toml"), WORKSPACE, &mut files)?;
     ignore_target(&root.join(".gitignore"), &mut files)?;
     Ok(Created {
         name: directory_name(root)?,
@@ -158,7 +158,7 @@ fn refuse_nesting(root: &Path) -> Result<(), String> {
 fn enclosing_workspace(dir: &Path) -> Result<Option<Workspace>, String> {
     let mut dir = Some(dir);
     while let Some(d) = dir {
-        if d.join("meadow.toml").is_file() {
+        if d.join("Meadow.toml").is_file() {
             let manifest = crate::package::Manifest::load(d).ok().flatten();
             if manifest.is_some_and(|m| m.workspace.is_some()) {
                 return Workspace::load(d).map(Some);
@@ -185,7 +185,7 @@ fn join(ws: &Workspace, root: &Path, files: &mut Vec<PathBuf>) -> Result<Option<
         .filter_map(|c| c.as_os_str().to_str())
         .collect::<Vec<_>>()
         .join("/");
-    let manifest = ws.root.join("meadow.toml");
+    let manifest = ws.root.join("Meadow.toml");
     let text = std::fs::read_to_string(&manifest)
         .map_err(|e| format!("could not read {}: {e}", manifest.display()))?;
     std::fs::write(&manifest, crate::workspace::add_member(&text, &rel))
@@ -247,7 +247,11 @@ const MAIN: &str = "\
 def main = println \"Hello, world!\"
 ";
 
-/// The name a directory implies: what it is called, not the path to it.
+/// The name a directory implies: what it is called, as a package name.
+///
+/// A directory called `my-app` is perfectly ordinary and `my-app` is not a
+/// package name, so it becomes `MyApp` rather than an error about a name
+/// nobody chose.
 fn directory_name(root: &Path) -> Result<String, String> {
     // Canonicalised first, because `.` and `..` are ordinary requests and
     // neither has a file name of its own.
@@ -255,7 +259,8 @@ fn directory_name(root: &Path) -> Result<String, String> {
         .map_err(|e| format!("could not read {}: {e}", root.display()))?;
     full.file_name()
         .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
+        .map(crate::package::as_package_name)
+        .filter(|n| !n.is_empty())
         .ok_or_else(|| {
             format!(
                 "cannot tell what to call a package at {} — pass --name",
@@ -267,30 +272,26 @@ fn directory_name(root: &Path) -> Result<String, String> {
 /// Reject a name the language could not refer to.
 ///
 /// A package name is not decoration: it is the first segment of a `use` path
-/// (`use Std.Collections.List`), so it has to lex as one identifier. A
-/// directory called `my-package` is perfectly ordinary and would produce a
-/// package nobody could name, and the moment to say so is now rather than at
-/// the first `use`.
-///
-/// The rule is the lexer's, including the detail that an upper-case identifier
-/// admits no underscore.
+/// (`use Std.Collections.List`), so it is written the way every other segment
+/// is — PascalCase, one identifier, no separators. A directory called
+/// `my-package` is perfectly ordinary and would produce a package nobody could
+/// name, and the moment to say so is now rather than at the first `use`.
 fn check_name(name: &str) -> Result<(), String> {
     let bad = |why: &str| Err(format!("`{name}` is not a usable package name: {why}"));
 
     let Some(first) = name.chars().next() else {
         return bad("it is empty");
     };
-    if !first.is_ascii_alphabetic() {
-        return bad("a package name starts with a letter");
+    if !first.is_ascii_uppercase() {
+        return bad(&format!(
+            "a package is named where a module is, so it starts with a capital — `{}`",
+            crate::package::as_package_name(name)
+        ));
     }
-    let upper = first.is_ascii_uppercase();
     for c in name.chars() {
-        let ok = c.is_ascii_alphanumeric() || c == '\'' || (c == '_' && !upper);
-        if !ok {
-            let hint = if c == '-' {
-                " — try `_` or run the words together"
-            } else if c == '_' {
-                " — a capitalised name takes no underscore"
+        if !c.is_ascii_alphanumeric() {
+            let hint = if c == '-' || c == '_' {
+                " — run the words together instead"
             } else {
                 ""
             };
@@ -308,21 +309,24 @@ mod tests {
     use super::check_name;
 
     #[test]
-    fn a_name_has_to_lex_as_one_identifier() {
-        for good in ["app", "myApp", "my_app", "Std", "App2", "x"] {
+    fn a_name_is_written_the_way_a_module_is() {
+        for good in ["App", "MyApp", "Std", "App2", "X"] {
             assert!(check_name(good).is_ok(), "{good} should be allowed");
         }
-        for bad in ["my-app", "2fast", "", "my app", "my.app", "My_App"] {
+        for bad in [
+            "app", "myApp", "my-app", "my_app", "2fast", "", "my app", "my.app", "My_App",
+        ] {
             assert!(check_name(bad).is_err(), "{bad} should be refused");
         }
     }
 
-    /// The hyphen is the one worth a hint: it is what every other ecosystem
-    /// spells a multi-word package with, so it is what someone will type.
+    /// The two mistakes worth a hint: a name that reads like a value, and the
+    /// hyphen every other ecosystem spells a multi-word package with.
     #[test]
-    fn a_hyphen_says_what_to_do_instead() {
+    fn a_refused_name_says_what_to_write_instead() {
         let e = check_name("my-app").unwrap_err();
-        assert!(e.contains('`'), "{e}");
-        assert!(e.contains("try `_`"), "{e}");
+        assert!(e.contains("`MyApp`"), "{e}");
+        let e = check_name("My-App").unwrap_err();
+        assert!(e.contains("run the words together"), "{e}");
     }
 }

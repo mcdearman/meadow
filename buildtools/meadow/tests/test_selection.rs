@@ -21,8 +21,8 @@ fn package(who: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src").join("Deep")).unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
-        "[package]\nname = \"sel\"\nversion = \"0.1.0\"\n",
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"Sel\"\nversion = \"0.1.0\"\n",
     )
     .unwrap();
     std::fs::write(

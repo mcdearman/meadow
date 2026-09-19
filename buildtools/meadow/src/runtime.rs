@@ -379,8 +379,23 @@ pub fn run_tests(
     engine: Engine,
     opt: OptLevel,
 ) -> Result<Vec<Result<String, String>>, String> {
+    run_tests_watched(program, tests, engine, opt, &mut |_, _| {})
+}
+
+/// [`run_tests`], telling `each` about a result as it lands: which test, by
+/// position, and how it went.
+///
+/// What a progress bar is made of, and what lets a run report a test the
+/// moment it finishes rather than the whole lot at the end.
+pub fn run_tests_watched(
+    program: &core::Program,
+    tests: &[core::Var],
+    engine: Engine,
+    opt: OptLevel,
+    each: &mut dyn FnMut(usize, &Result<String, String>),
+) -> Result<Vec<Result<String, String>>, String> {
     let threshold = meadow_rts::jit::Native::threshold_from_env();
-    run_tests_jit_at(program, tests, engine, opt, threshold)
+    run_tests_jit_at_watched(program, tests, engine, opt, threshold, each)
 }
 
 /// [`run_tests`], with the JIT compiling a block the `threshold`th time it is
@@ -392,12 +407,30 @@ pub fn run_tests_jit_at(
     opt: OptLevel,
     threshold: u32,
 ) -> Result<Vec<Result<String, String>>, String> {
+    run_tests_jit_at_watched(program, tests, engine, opt, threshold, &mut |_, _| {})
+}
+
+/// [`run_tests_jit_at`], watched. See [`run_tests_watched`].
+pub fn run_tests_jit_at_watched(
+    program: &core::Program,
+    tests: &[core::Var],
+    engine: Engine,
+    opt: OptLevel,
+    threshold: u32,
+    each: &mut dyn FnMut(usize, &Result<String, String>),
+) -> Result<Vec<Result<String, String>>, String> {
     match engine {
-        Engine::Cek => Ok(meadow_eval::run_tests(program, tests)
-            .map_err(|e| e.msg)?
-            .into_iter()
-            .map(|r| r.map(|v| v.to_string()).map_err(|e| e.msg))
-            .collect()),
+        Engine::Cek => Ok(meadow_eval::run_tests_watched(program, tests, &mut |i, r| {
+            let told = match r {
+                Ok(v) => Ok(v.to_string()),
+                Err(e) => Err(e.msg.clone()),
+            };
+            each(i, &told);
+        })
+        .map_err(|e| e.msg)?
+        .into_iter()
+        .map(|r| r.map(|v| v.to_string()).map_err(|e| e.msg))
+        .collect()),
 
         Engine::Vm | Engine::Jit => {
             // One extra definition per test, whose body applies it to `()`. They
@@ -438,7 +471,7 @@ pub fn run_tests_jit_at(
                     let Some(&entry) = image.entries.get(base + i) else {
                         return Err("a test has no entry point".to_string());
                     };
-                    meadow_rts::sched::run_native(
+                    let out = meadow_rts::sched::run_native(
                         &image,
                         jit.as_ref(),
                         entry,
@@ -446,7 +479,9 @@ pub fn run_tests_jit_at(
                         meadow_rts::sched::workers(),
                     )
                     .result
-                    .map_err(|e| e.msg)
+                    .map_err(|e| e.msg);
+                    each(i, &out);
+                    out
                 })
                 .collect())
         }

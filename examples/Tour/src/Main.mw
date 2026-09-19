@@ -1,0 +1,90 @@
+-- A tour of the language, in one runnable program.
+--
+--   meadow run examples/Tour
+--   meadow test examples/Tour
+--
+-- Each section is short and self-contained. The tutorial (`docs/TUTORIAL.md`)
+-- says more about all of it.
+--
+-- * data types, records and pattern matching -- in `Shapes.mw`, a module of its
+--   own;
+-- * numbers: `BigInt` by default, sized integers when you ask, and generic code
+--   that works on any of them;
+-- * sequences and maps;
+-- * local mutation that does not leak, with `runSt`;
+-- * strings, and `++`.
+
+mod Shapes
+
+use Shapes (Shape, area, describe, degenerate, distance)
+use Shapes.Shape.*
+use Std.St as St
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.String as S
+use Std.Maybe.Maybe.*
+
+-- --- numbers -----------------------------------------------------------------
+
+-- Written once, for any integer type: `forall n. n -> n`.
+fun factorial n = if n == 0 then 1 else n * factorial (n - 1)
+
+-- --- local mutation ----------------------------------------------------------
+
+-- A sieve over a mutable array. The array is made, filled and read inside
+-- `runSt`, so nothing outside can see it change, and the type of `primesBelow`
+-- is as pure as if no array had ever been written.
+fun primesBelow (n : Int) =
+  runSt (\() ->
+    let marks = St.newArray n True in
+    let _ = St.forRange 2 n (\i ->
+      if St.get marks i then St.forRange 2 (n / i + 1) (\j -> if i * j < n then St.set marks (i * j) False else ())
+      else ()) in
+    V.filter (\i -> i >= 2 and St.get marks i) (V.range 0 n))
+
+-- --- sequences and maps ------------------------------------------------------
+
+-- How often each word appears.
+fun wordCounts text =
+  V.foldl (\counts w -> H.insert w (H.getOr 0 w counts + 1) counts) H.empty (S.split " " text)
+
+-- --- main --------------------------------------------------------------------
+
+def main =
+  let _ = println "== shapes: data types, records, matching" in
+  let shapes = [Circle 1.0, Rect 2.0 3.0, Rect 2.0 2.0, Triangle 3.0 4.0 5.0, Rect 0.0 4.0] in
+  let _ = V.forEach (\s -> println (describe s ++ " with area " ++ show (area s))) shapes in
+  let _ = println ("degenerate: " ++ show (V.filter (\d -> d != None) (V.map degenerate shapes))) in
+  let _ = println ("distance from (0, 0) to (3, 4): " ++ show (distance { x = 0.0, y = 0.0 } { x = 3.0, y = 4.0 })) in
+
+  let _ = println "== numbers" in
+  let _ = println ("factorial 30, a BigInt: " ++ show (factorial 30)) in
+  let _ = println ("factorial 30 as an Int, wrapping: " ++ show (factorial (toInt 30))) in
+  let _ = println ("200 + 100 as a UInt8: " ++ show (toUInt8 200 + 100)) in
+  let _ = println ("a third as a Float32 and a Float: " ++ show (toFloat32 1.0 /. 3.0, 1.0 /. 3.0)) in
+
+  let _ = println "== local mutation" in
+  let _ = println ("primes below 50: " ++ show (primesBelow 50)) in
+
+  let _ = println "== sequences and maps" in
+  let counts = wordCounts "the cat and the hat and the bat" in
+  println ("\"the\" appears " ++ show (H.getOr 0 "the" counts) ++ " times, \"cat\" " ++ show (H.getOr 0 "cat" counts))
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue)
+
+@test fun areasAreRight () =
+  let _ = assertEq (area (Rect 2.0 3.0)) 6.0 "a rectangle" in
+  assertTrue (area (Triangle 3.0 4.0 5.0) -. 6.0 <. 0.000001) "a 3-4-5 triangle has area 6"
+
+@test fun factorialIsGenericOverItsNumberType () =
+  let _ = assertEq (show (factorial 25)) "15511210043330985984000000" "exact as a BigInt" in
+  assertEq (factorial (toUInt8 5)) (toUInt8 120) "and fine as a UInt8 while it fits"
+
+@test fun theSieveFindsThePrimes () =
+  assertEq (primesBelow 20) [2, 3, 5, 7, 11, 13, 17, 19] "below 20"
+
+@test fun wordsAreCounted () =
+  let counts = wordCounts "a b a c a" in
+  assertEq (H.getOr 0 "a" counts, H.getOr 0 "b" counts, H.getOr 0 "z" counts) (3, 1, 0) "missing words count 0"

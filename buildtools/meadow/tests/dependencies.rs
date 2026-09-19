@@ -33,8 +33,8 @@ fn dependency_repo(what: &str, answer: &str) -> Option<PathBuf> {
     let dir = scratch(what);
     std::fs::create_dir_all(dir.join("src")).ok()?;
     std::fs::write(
-        dir.join("meadow.toml"),
-        "[package]\nname = \"greet\"\nversion = \"0.1.0\"\n",
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"Greet\"\nversion = \"0.1.0\"\n",
     )
     .ok()?;
     std::fs::write(
@@ -66,10 +66,10 @@ fn app_using(what: &str, repo: &Path) -> PathBuf {
     let dir = scratch(what);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
+        dir.join("Meadow.toml"),
         format!(
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
-             [dependencies]\ngreet = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nGreet = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
             repo.display()
         ),
     )
@@ -114,7 +114,7 @@ fn a_git_dependency_is_fetched_built_against_and_pinned() {
     let lock = Lock::load(&app);
     assert_eq!(lock.packages.len(), 1, "{:?}", lock.packages);
     let pinned = &lock.packages[0];
-    assert_eq!(pinned.name, "greet");
+    assert_eq!(pinned.name, "Greet");
     assert!(pinned.source.starts_with("git+"), "{}", pinned.source);
     assert!(pinned.source.ends_with("?tag=v1.0.0"), "{}", pinned.source);
     assert_eq!(pinned.rev.len(), 40, "a full commit name");
@@ -145,7 +145,7 @@ fn a_second_build_needs_no_network() {
     let graph = PackageGraph::build_all_with(&[&app], &mut resolver)
         .expect("an offline build of what is already cached");
     assert!(
-        graph.packages.iter().any(|p| &*p.name == "greet"),
+        graph.packages.iter().any(|p| &*p.name == "Greet"),
         "the dependency is in the graph"
     );
 }
@@ -220,8 +220,8 @@ fn a_path_dependency_is_not_pinned() {
     let dep = dir.join("util");
     std::fs::create_dir_all(dep.join("src")).unwrap();
     std::fs::write(
-        dep.join("meadow.toml"),
-        "[package]\nname = \"util\"\nversion = \"0.1.0\"\n",
+        dep.join("Meadow.toml"),
+        "[package]\nname = \"Util\"\nversion = \"0.1.0\"\n",
     )
     .unwrap();
     std::fs::write(dep.join("src/Lib.mw"), "@pub fun answer = 42\n").unwrap();
@@ -229,9 +229,9 @@ fn a_path_dependency_is_not_pinned() {
     let app = dir.join("app");
     std::fs::create_dir_all(app.join("src")).unwrap();
     std::fs::write(
-        app.join("meadow.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
-         [dependencies]\nutil = { path = \"../util\" }\n",
+        app.join("Meadow.toml"),
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nUtil = { path = \"../util\" }\n",
     )
     .unwrap();
     std::fs::write(app.join("src/Main.mw"), "def main = answer\n").unwrap();
@@ -248,8 +248,8 @@ fn a_path_dependency_is_not_pinned() {
 fn a_manifest_can_name_every_way_of_choosing_a_commit() {
     let dir = scratch("manifest");
     std::fs::write(
-        dir.join("meadow.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
          a = { git = \"https://e.com/a\" }\n\
          b = { git = \"https://e.com/b\", branch = \"dev\" }\n\
          c = { git = \"https://e.com/c\", tag = \"v1\" }\n\
@@ -276,8 +276,8 @@ fn naming_two_ways_of_choosing_a_commit_is_refused() {
     // Which was meant cannot be guessed, so it is said rather than picked.
     let dir = scratch("conflict");
     std::fs::write(
-        dir.join("meadow.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
          a = { git = \"https://e.com/a\", branch = \"main\", tag = \"v1\" }\n",
     )
     .unwrap();
@@ -300,10 +300,10 @@ fn update_moves_a_branch_forward_and_a_build_does_not() {
     let app = scratch("app5");
     std::fs::create_dir_all(app.join("src")).unwrap();
     std::fs::write(
-        app.join("meadow.toml"),
+        app.join("Meadow.toml"),
         format!(
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
-             [dependencies]\ngreet = {{ git = \"{}\", branch = \"main\" }}\n",
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nGreet = {{ git = \"{}\", branch = \"main\" }}\n",
             repo.display()
         ),
     )
@@ -375,8 +375,8 @@ fn released_repo(what: &str, releases: &[&str]) -> Option<PathBuf> {
     }
     for release in releases {
         std::fs::write(
-            dir.join("meadow.toml"),
-            format!("[package]\nname = \"widget\"\nversion = \"{release}\"\n"),
+            dir.join("Meadow.toml"),
+            format!("[package]\nname = \"Widget\"\nversion = \"{release}\"\n"),
         )
         .ok()?;
         std::fs::write(
@@ -411,17 +411,17 @@ fn app_wanting(what: &str, repo: &Path, version: &str) -> PathBuf {
     let dir = scratch(what);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
+        dir.join("Meadow.toml"),
         format!(
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
-             [dependencies]\nwidget = {{ git = \"{}\", version = \"{version}\" }}\n",
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nWidget = {{ git = \"{}\", version = \"{version}\" }}\n",
             repo.display()
         ),
     )
     .unwrap();
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use widget (label)\n\ndef main = label\n",
+        "use Widget (label)\n\ndef main = label\n",
     )
     .unwrap();
     dir
@@ -456,7 +456,7 @@ fn the_release_a_version_resolved_to_is_written_to_the_lockfile() {
     let entry = lock
         .packages
         .iter()
-        .find(|p| p.name == "widget")
+        .find(|p| p.name == "Widget")
         .expect("a locked widget");
     assert_eq!(entry.version.as_deref(), Some("1.1.0"));
     assert!(entry.source.ends_with("?version=1.0.0"), "{}", entry.source);
@@ -470,7 +470,7 @@ fn a_version_with_no_release_to_meet_it_says_what_there_is() {
     let app = app_wanting("rel-none-app", &repo, "3.0.0");
     let out = build_in(&app, "rel-none", |_| {});
     let said = format!("{:?}", out.diagnostics);
-    assert!(said.contains("no release of `widget`"), "{said}");
+    assert!(said.contains("no release of `Widget`"), "{said}");
     assert!(said.contains("0.2.0"), "{said}");
 }
 
@@ -484,10 +484,10 @@ fn a_repository_with_no_releases_says_so_rather_than_guessing() {
     let dir = scratch("rel-untagged-app");
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
+        dir.join("Meadow.toml"),
         format!(
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
-             [dependencies]\ngreet = {{ git = \"{}\", version = \"2.0.0\" }}\n",
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nGreet = {{ git = \"{}\", version = \"2.0.0\" }}\n",
             repo.display()
         ),
     )
@@ -495,7 +495,7 @@ fn a_repository_with_no_releases_says_so_rather_than_guessing() {
     std::fs::write(dir.join("src/Main.mw"), "def main = greeting\n").unwrap();
     let out = build_in(&dir, "rel-untagged", |_| {});
     let said = format!("{:?}", out.diagnostics);
-    assert!(said.contains("no release of `greet`"), "{said}");
+    assert!(said.contains("no release of `Greet`"), "{said}");
 }
 
 #[test]
@@ -506,34 +506,34 @@ fn everything_that_can_share_a_release_shares_one() {
     // Two libraries want different releases of one package, and both are met
     // by the newest: the build takes one copy, not two.
     let dir = scratch("rel-share-app");
-    for (lib, want) in [("one", "1.0.0"), ("two", "1.2.0")] {
+    for (lib, name, want) in [("one", "One", "1.0.0"), ("two", "Two", "1.2.0")] {
         let at = dir.join(lib);
         std::fs::create_dir_all(at.join("src")).unwrap();
         std::fs::write(
-            at.join("meadow.toml"),
+            at.join("Meadow.toml"),
             format!(
-                "[package]\nname = \"{lib}\"\nversion = \"0.1.0\"\n\n\
-                 [dependencies]\nwidget = {{ git = \"{}\", version = \"{want}\" }}\n",
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
+                 [dependencies]\nWidget = {{ git = \"{}\", version = \"{want}\" }}\n",
                 repo.display()
             ),
         )
         .unwrap();
         std::fs::write(
             at.join("src/Lib.mw"),
-            format!("use widget (label)\n\n@pub def {lib}Label = label\n"),
+            format!("use Widget (label)\n\n@pub def {lib}Label = label\n"),
         )
         .unwrap();
     }
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
-         [dependencies]\none = { path = \"one\" }\ntwo = { path = \"two\" }\n",
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nOne = { path = \"one\" }\nTwo = { path = \"two\" }\n",
     )
     .unwrap();
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use one (oneLabel)\nuse two (twoLabel)\n\ndef main = (oneLabel, twoLabel)\n",
+        "use One (oneLabel)\nuse Two (twoLabel)\n\ndef main = (oneLabel, twoLabel)\n",
     )
     .unwrap();
     let out = build_in(&dir, "rel-share", |_| {});
@@ -543,7 +543,7 @@ fn everything_that_can_share_a_release_shares_one() {
     let copies = graph
         .packages
         .iter()
-        .filter(|p| p.name.to_string() == "widget")
+        .filter(|p| p.name.to_string() == "Widget")
         .count();
     assert_eq!(copies, 1, "one release serves both");
 }
@@ -554,34 +554,34 @@ fn requirements_that_cannot_meet_take_a_copy_each() {
         return;
     };
     let dir = scratch("rel-two-app");
-    for (lib, want) in [("old", "0.1.0"), ("new", "0.2.0")] {
+    for (lib, name, want) in [("old", "Old", "0.1.0"), ("new", "New", "0.2.0")] {
         let at = dir.join(lib);
         std::fs::create_dir_all(at.join("src")).unwrap();
         std::fs::write(
-            at.join("meadow.toml"),
+            at.join("Meadow.toml"),
             format!(
-                "[package]\nname = \"{lib}\"\nversion = \"0.1.0\"\n\n\
-                 [dependencies]\nwidget = {{ git = \"{}\", version = \"{want}\" }}\n",
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n\
+                 [dependencies]\nWidget = {{ git = \"{}\", version = \"{want}\" }}\n",
                 repo.display()
             ),
         )
         .unwrap();
         std::fs::write(
             at.join("src/Lib.mw"),
-            format!("use widget (label)\n\n@pub def {lib}Label = label\n"),
+            format!("use Widget (label)\n\n@pub def {lib}Label = label\n"),
         )
         .unwrap();
     }
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
-         [dependencies]\nold = { path = \"old\" }\nnew = { path = \"new\" }\n",
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nOld = { path = \"old\" }\nNew = { path = \"new\" }\n",
     )
     .unwrap();
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use old (oldLabel)\nuse new (newLabel)\n\ndef main = (oldLabel, newLabel)\n",
+        "use Old (oldLabel)\nuse New (newLabel)\n\ndef main = (oldLabel, newLabel)\n",
     )
     .unwrap();
     let out = build_in(&dir, "rel-two", |_| {});
@@ -599,44 +599,44 @@ fn two_copies_of_a_package_declare_two_types() {
     let dir = scratch("rel-types-app");
     std::fs::create_dir_all(dir.join("maker/src")).unwrap();
     std::fs::write(
-        dir.join("maker/meadow.toml"),
+        dir.join("maker/Meadow.toml"),
         format!(
-            "[package]\nname = \"maker\"\nversion = \"0.1.0\"\n\n\
-             [dependencies]\nwidget = {{ git = \"{}\", version = \"0.1.0\" }}\n",
+            "[package]\nname = \"Maker\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nWidget = {{ git = \"{}\", version = \"0.1.0\" }}\n",
             repo.display()
         ),
     )
     .unwrap();
     std::fs::write(
         dir.join("maker/src/Lib.mw"),
-        "use widget (Tag)\nuse widget.Tag.*\n\n@pub def aTag = Tag 1\n",
+        "use Widget (Tag)\nuse Widget.Tag.*\n\n@pub def aTag = Tag 1\n",
     )
     .unwrap();
     std::fs::create_dir_all(dir.join("taker/src")).unwrap();
     std::fs::write(
-        dir.join("taker/meadow.toml"),
+        dir.join("taker/Meadow.toml"),
         format!(
-            "[package]\nname = \"taker\"\nversion = \"0.1.0\"\n\n\
-             [dependencies]\nwidget = {{ git = \"{}\", version = \"0.2.0\" }}\n",
+            "[package]\nname = \"Taker\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nWidget = {{ git = \"{}\", version = \"0.2.0\" }}\n",
             repo.display()
         ),
     )
     .unwrap();
     std::fs::write(
         dir.join("taker/src/Lib.mw"),
-        "use widget (Tag)\n\n@pub fun takeTag (t : Tag) = 1\n",
+        "use Widget (Tag)\n\n@pub fun takeTag (t : Tag) = 1\n",
     )
     .unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("meadow.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
-         [dependencies]\nmaker = { path = \"maker\" }\ntaker = { path = \"taker\" }\n",
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nMaker = { path = \"maker\" }\nTaker = { path = \"taker\" }\n",
     )
     .unwrap();
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use maker (aTag)\nuse taker (takeTag)\n\ndef main = takeTag aTag\n",
+        "use Maker (aTag)\nuse Taker (takeTag)\n\ndef main = takeTag aTag\n",
     )
     .unwrap();
     let out = build_in(&dir, "rel-types", |_| {});
@@ -644,16 +644,16 @@ fn two_copies_of_a_package_declare_two_types() {
     // One package's `Tag` is not the other's, and the message says which is
     // which by version.
     assert!(said.contains("type mismatch"), "{said}");
-    assert!(said.contains("widget@0.1.0"), "{said}");
-    assert!(said.contains("widget@0.2.0"), "{said}");
+    assert!(said.contains("Widget@0.1.0"), "{said}");
+    assert!(said.contains("Widget@0.2.0"), "{said}");
 }
 
 #[test]
 fn a_version_dependency_reads_back_as_one() {
     let dir = scratch("rel-manifest");
     std::fs::write(
-        dir.join("meadow.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
          a = { git = \"https://e.com/a\", version = \"1.2.0\" }\n",
     )
     .unwrap();

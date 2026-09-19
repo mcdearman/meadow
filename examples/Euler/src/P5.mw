@@ -1,0 +1,6 @@
+-- Project Euler #5: smallest number divisible by every integer 1..20.
+-- 2520 is already lcm(1..10), so we only fold in 11..20.
+
+def e5 : Int = [11..20] |> foldl lcm 2520
+
+def main = e5

@@ -84,8 +84,8 @@ for mark_threads in 2 0; do
   export MEADOW_GC_NURSERY=64 MEADOW_GC_TRIGGER=256 MEADOW_GC_VERIFY=1 MEADOW_GC_MARK_THREADS=$mark_threads
   (cd rts && cargo test --quiet)
   cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test --std
-  cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test examples/concurrency
-  cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test examples/stm
+  cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test examples/Concurrency
+  cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test examples/Stm
   unset MEADOW_GC_NURSERY MEADOW_GC_TRIGGER MEADOW_GC_VERIFY MEADOW_GC_MARK_THREADS
 done
 

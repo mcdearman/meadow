@@ -1,0 +1,146 @@
+-- Software transactional memory: shared state without locks.
+--
+--   meadow run examples/Stm
+--   meadow test examples/Stm
+--
+-- Threads share nothing mutable -- except `TVar`s, which change only inside
+-- `Stm.atomically`. A transaction reads and writes as if it were alone; if
+-- another commits something it read first, it quietly runs again. Nothing can
+-- see it half done.
+--
+-- Three things this makes easy that locks make hard:
+--
+-- * **Invariants hold everywhere.** A transfer debits one account and credits
+--   another as one step, so an auditor reading every balance always sees the
+--   same total, however many transfers are running.
+-- * **Waiting composes.** `Stm.check (balance >= amount)` blocks the transfer
+--   until the money is there -- `retry` under the hood: the transaction sleeps
+--   until something it read changes, then tries again.
+-- * **Choices compose.** `orElse` takes from whichever of two queues has work,
+--   and waits on both if neither does.
+--
+-- A transaction's type is `() -> a ! { Stm }`: it cannot print or spawn or
+-- touch a `Ref`, which is exactly what makes running it again safe. Try adding
+-- a `println` inside one: it is a type error, not a subtle bug.
+
+use Std.Stm as Stm
+use Std.Thread as Thread
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Maybe.Maybe.*
+
+-- --- a bank ------------------------------------------------------------------
+
+-- Move `amount`, waiting until `from` can afford it.
+fun transfer from to (amount : Int) =
+  Stm.atomically (\() ->
+    let balance = Stm.readTVar from in
+    let _ = Stm.check (balance >= amount) in
+    let _ = Stm.writeTVar from (balance - amount) in
+    Stm.modifyTVar to (\b -> b + amount))
+
+-- Every balance, read as one moment.
+fun balances accounts = Stm.atomically (\() -> V.map (\a -> Stm.readTVar a) accounts)
+
+fun total accounts = V.foldl (\a b -> a + b) 0 (balances accounts)
+
+-- `rounds` transfers of 1 from account `i` to the next one round.
+fun shuffle accounts (i : Int) (rounds : Int) =
+  match (V.get accounts i, V.get accounts ((i + 1) % V.len accounts)) with
+  | (Just from, Just to) ->
+      let rec go (k : Int) = if k == 0 then () else let _ = transfer from to 1 in go (k - 1) in
+      go rounds
+  | _ -> ()
+
+-- Read the total `times` times while the shuffling goes on; answer how many
+-- readings were not the total there should be. Always none.
+fun audit accounts (expected : Int) (times : Int) =
+  let rec go (k : Int) (wrong : Int) =
+    if k == 0 then wrong else go (k - 1) (if total accounts == expected then wrong else wrong + 1)
+  in go times 0
+
+-- --- a bounded queue ---------------------------------------------------------
+
+-- At most `capacity` values, oldest first.
+record Queue a = { items : TVar [a], capacity : Int }
+
+fun newQueue (capacity : Int) = { items = Stm.newTVarIO [], capacity = capacity }
+
+-- Add `x`, waiting while the queue is full.
+fun push q x =
+  let items = Stm.readTVar q.items in
+  let _ = Stm.check (V.len items < q.capacity) in
+  Stm.writeTVar q.items (V.pushBack items x)
+
+-- Take the oldest value, waiting while the queue is empty.
+fun pop q =
+  let items = Stm.readTVar q.items in
+  match V.head items with
+  | None -> Stm.retry ()
+  | Just x -> let _ = Stm.writeTVar q.items (V.popFront items) in x
+
+-- From whichever queue has something -- the first if both do.
+fun popEither a b = Stm.orElse (\() -> pop a) (\() -> pop b)
+
+-- --- main --------------------------------------------------------------------
+
+def main =
+  let _ = println "== a bank: 4 accounts, 4 threads shuffling money round, 1 auditor" in
+  let accounts = V.map (\i -> Stm.newTVarIO (toInt 100)) (V.range 0 4) in
+  let movers = V.map (\i -> Thread.spawn (\() -> shuffle accounts i 2000)) (V.range 0 4) in
+  let auditor = Thread.spawn (\() -> audit accounts 400 500) in
+  let _ = Thread.awaitAll movers in
+  let _ = println (S.concatAll ["readings with the wrong total: ", S.fromInt (Thread.await auditor)]) in
+  let _ = println (S.concatAll ["balances at the end: ", show (balances accounts)]) in
+
+  let _ = println "== a transfer that waits for the money" in
+  let poor = Stm.newTVarIO (toInt 0) in
+  let rich = Stm.newTVarIO (toInt 0) in
+  let waiting = Thread.spawn (\() -> transfer poor rich 50) in
+  let _ = Stm.atomically (\() -> Stm.writeTVar poor 80) in
+  let _ = Thread.await waiting in
+  let _ = println (S.concatAll ["after the deposit it went through: ", show (balances [poor, rich])]) in
+
+  let _ = println "== two bounded queues, one consumer taking from either" in
+  let urgent = newQueue 2 in
+  let normal = newQueue 2 in
+  let producer = Thread.spawn (\() ->
+    V.forEach (\i -> Stm.atomically (\() -> push (if i % 3 == 0 then urgent else normal) i)) (V.range 1 10)) in
+  let taken = V.map (\i -> Stm.atomically (\() -> popEither urgent normal)) (V.range 1 10) in
+  let _ = Thread.await producer in
+  println (S.concatAll ["took, in the order they came: ", show taken])
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun transfersKeepTheTotal () =
+  let accounts = V.map (\i -> Stm.newTVarIO (toInt 50)) (V.range 0 3) in
+  let movers = V.map (\i -> Thread.spawn (\() -> shuffle accounts i 300)) (V.range 0 3) in
+  let _ = Thread.awaitAll movers in
+  assertEq (total accounts) 150 "money moved, none made or lost"
+
+@test fun theAuditorNeverSeesAHalfDoneTransfer () =
+  -- Money goes both ways round, so neither account runs dry for long.
+  let accounts = V.map (\i -> Stm.newTVarIO (toInt 10)) (V.range 0 2) in
+  let there = Thread.spawn (\() -> shuffle accounts 0 500) in
+  let back = Thread.spawn (\() -> shuffle accounts 1 500) in
+  let wrong = audit accounts 20 200 in
+  let _ = Thread.await there in
+  let _ = Thread.await back in
+  assertEq wrong 0 "every reading adds up"
+
+@test fun aTransferWaitsForFunds () =
+  let a = Stm.newTVarIO (toInt 0) in
+  let b = Stm.newTVarIO (toInt 0) in
+  let t = Thread.spawn (\() -> transfer a b 5) in
+  let _ = Stm.atomically (\() -> Stm.writeTVar a 5) in
+  let _ = Thread.await t in
+  assertEq (balances [a, b]) [0, 5] "moved once there was enough"
+
+@test fun aQueueGivesEverythingBackInOrder () =
+  let q = newQueue 3 in
+  let producer = Thread.spawn (\() -> V.forEach (\i -> Stm.atomically (\() -> push q i)) (V.range 0 10)) in
+  let got = V.map (\i -> Stm.atomically (\() -> pop q)) (V.range 0 10) in
+  let _ = Thread.await producer in
+  assertEq got (V.range 0 10) "first in, first out, despite the capacity"

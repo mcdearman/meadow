@@ -27,7 +27,7 @@ fn write(path: &Path, text: &str) {
 fn shop(who: &str) -> PathBuf {
     let root = scratch(who).join("shop");
     write(
-        &root.join("meadow.toml"),
+        &root.join("Meadow.toml"),
         r#"[workspace]
 members = [
     "app",   # the program
@@ -38,16 +38,16 @@ members = [
 version = "0.3.0"
 
 [workspace.dependencies]
-util = { path = "libs/util" }
-text = { path = "libs/text" }
+Util = { path = "libs/util" }
+Text = { path = "libs/text" }
 
 [profile.debug]
 cfg = "shop"
 "#,
     );
     write(
-        &root.join("libs/util/meadow.toml"),
-        "[package]\nname = \"util\"\nversion.workspace = true\n",
+        &root.join("libs/util/Meadow.toml"),
+        "[package]\nname = \"Util\"\nversion.workspace = true\n",
     );
     write(
         &root.join("libs/util/src/Lib.mw"),
@@ -55,8 +55,8 @@ cfg = "shop"
          @test\nfun doubles u = assertEq (double 4) 8 \"doubles\"\n",
     );
     write(
-        &root.join("libs/text/meadow.toml"),
-        "[package]\nname = \"text\"\nversion = { workspace = true }\n\n\
+        &root.join("libs/text/Meadow.toml"),
+        "[package]\nname = \"Text\"\nversion = { workspace = true }\n\n\
          [dependencies]\nutil.workspace = true\n",
     );
     write(
@@ -65,9 +65,9 @@ cfg = "shop"
          @test\nfun labels u = assertEq (label \"a\") \"a x2\" \"labels\"\n",
     );
     write(
-        &root.join("app/meadow.toml"),
-        "[package]\nname = \"app\"\nversion.workspace = true\n\n[dependencies]\n\
-         util = { workspace = true }\ntext = { workspace = true }\n",
+        &root.join("app/Meadow.toml"),
+        "[package]\nname = \"App\"\nversion.workspace = true\n\n[dependencies]\n\
+         util = { workspace = true }\nText = { workspace = true }\n",
     );
     write(
         &root.join("app/src/Main.mw"),
@@ -127,13 +127,13 @@ fn members_come_from_patterns_and_path_dependencies() {
     let root = shop("members");
     // A library the app depends on, under the root but in no pattern.
     write(
-        &root.join("vendor/extra/meadow.toml"),
-        "[package]\nname = \"extra\"\n",
+        &root.join("vendor/extra/Meadow.toml"),
+        "[package]\nname = \"Extra\"\n",
     );
     write(&root.join("vendor/extra/src/Lib.mw"), "@pub def one = 1\n");
     write(
-        &root.join("app/meadow.toml"),
-        "[package]\nname = \"app\"\n\n[dependencies]\nutil = { workspace = true }\n\
+        &root.join("app/Meadow.toml"),
+        "[package]\nname = \"App\"\n\n[dependencies]\nUtil = { workspace = true }\n\
          text = { workspace = true }\nextra = \"../vendor/extra\"\n",
     );
     // A directory a pattern matches that is not a package.
@@ -148,8 +148,8 @@ fn members_come_from_patterns_and_path_dependencies() {
 fn a_package_inside_a_workspace_must_be_a_member() {
     let root = shop("stray");
     write(
-        &root.join("stray/meadow.toml"),
-        "[package]\nname = \"stray\"\n",
+        &root.join("stray/Meadow.toml"),
+        "[package]\nname = \"Stray\"\n",
     );
     write(&root.join("stray/src/Main.mw"), "def main = 1\n");
 
@@ -160,9 +160,9 @@ fn a_package_inside_a_workspace_must_be_a_member() {
     assert!(out.diagnostics[0].msg.contains("not a member"));
 
     // Unless it is excluded, when it is a package of its own.
-    let manifest = std::fs::read_to_string(root.join("meadow.toml")).unwrap();
+    let manifest = std::fs::read_to_string(root.join("Meadow.toml")).unwrap();
     write(
-        &root.join("meadow.toml"),
+        &root.join("Meadow.toml"),
         &manifest.replace(
             "[workspace.package]",
             "exclude = [\"stray\"]\n\n[workspace.package]",
@@ -237,9 +237,9 @@ fn what_a_command_selects() {
     assert!(err.contains("-p NAME"), "{err}");
 
     // `default-members` is what the root means.
-    let manifest = std::fs::read_to_string(root.join("meadow.toml")).unwrap();
+    let manifest = std::fs::read_to_string(root.join("Meadow.toml")).unwrap();
     write(
-        &root.join("meadow.toml"),
+        &root.join("Meadow.toml"),
         &manifest.replace(
             "[workspace.package]",
             "default-members = [\"app\"]\n\n[workspace.package]",
@@ -274,8 +274,8 @@ fn members_build_together_into_one_target() {
 fn every_member_builds_with_the_root_profiles() {
     let root = shop("profiles");
     write(
-        &root.join("app/meadow.toml"),
-        "[package]\nname = \"app\"\n\n[dependencies]\nutil = { workspace = true }\n\
+        &root.join("app/Meadow.toml"),
+        "[package]\nname = \"App\"\n\n[dependencies]\nUtil = { workspace = true }\n\
          text = { workspace = true }\n\n[profile.debug]\ncfg = \"mine\"\n",
     );
     let resolved = Resolved::resolve(Profile::Debug, &root.join("app"), ProfileConfig::default());
@@ -343,8 +343,8 @@ fn a_virtual_root_is_not_a_package() {
 fn inheriting_what_the_workspace_lacks_is_an_error() {
     let root = shop("inherit");
     write(
-        &root.join("app/meadow.toml"),
-        "[package]\nname = \"app\"\n\n[dependencies]\nhttp = { workspace = true }\n",
+        &root.join("app/Meadow.toml"),
+        "[package]\nname = \"App\"\n\n[dependencies]\nhttp = { workspace = true }\n",
     );
     let out = pipeline::build(&root.join("app"), Options::debug());
     assert!(out.linked.is_none());
@@ -356,8 +356,8 @@ fn inheriting_what_the_workspace_lacks_is_an_error() {
 
     let lone = scratch("inherit-lone").join("lone");
     write(
-        &lone.join("meadow.toml"),
-        "[package]\nname = \"lone\"\nversion.workspace = true\n",
+        &lone.join("Meadow.toml"),
+        "[package]\nname = \"Lone\"\nversion.workspace = true\n",
     );
     let m = Manifest::load(&lone).unwrap().unwrap();
     assert!(m.problems[0].contains("not in one"), "{:?}", m.problems);
@@ -391,13 +391,13 @@ fn init_makes_a_workspace_and_members_join_it() {
     );
     member(root.join("libs").join("util"));
     assert_eq!(
-        std::fs::read_to_string(root.join("meadow.toml")).unwrap(),
+        std::fs::read_to_string(root.join("Meadow.toml")).unwrap(),
         "[workspace]\nmembers = [\"app\", \"libs/util\"]\n"
     );
 
     // A pattern that already covers a new package leaves the manifest be.
     write(
-        &root.join("meadow.toml"),
+        &root.join("Meadow.toml"),
         "[workspace]\nmembers = [\"app\", \"libs/*\"]\n",
     );
     let text = member(root.join("libs").join("text"));
@@ -438,14 +438,17 @@ fn packages_beside_each_other_keep_their_own_definitions() {
         ("b", "@pub fun fb x = x * 100\n@pub def vb = fb 3\n"),
     ] {
         write(
-            &dir.join(name).join("meadow.toml"),
-            &format!("[package]\nname = \"{name}\"\n"),
+            &dir.join(name).join("Meadow.toml"),
+            &format!(
+                "[package]\nname = \"{}\"\n",
+                meadow::package::as_package_name(name)
+            ),
         );
         write(&dir.join(name).join("src/Lib.mw"), body);
     }
     write(
-        &dir.join("app/meadow.toml"),
-        "[package]\nname = \"app\"\n\n[dependencies]\na = \"../a\"\nb = \"../b\"\n",
+        &dir.join("app/Meadow.toml"),
+        "[package]\nname = \"App\"\n\n[dependencies]\na = \"../a\"\nb = \"../b\"\n",
     );
     write(
         &dir.join("app/src/Main.mw"),

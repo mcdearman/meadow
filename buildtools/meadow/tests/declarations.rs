@@ -130,8 +130,8 @@ fn write(path: &Path, text: &str) {
 fn a_pub_alias_crosses_the_package() {
     let root = scratch("pkg");
     write(
-        &root.join("geo/meadow.toml"),
-        "[package]\nname = \"geo\"\nversion = \"0.1.0\"\n",
+        &root.join("geo/Meadow.toml"),
+        "[package]\nname = \"Geo\"\nversion = \"0.1.0\"\n",
     );
     write(
         &root.join("geo/src/Lib.mw"),
@@ -140,13 +140,13 @@ fn a_pub_alias_crosses_the_package() {
     );
     let app = |main: &str| {
         write(
-            &root.join("app/meadow.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ngeo = { path = \"../geo\" }\n",
+            &root.join("app/Meadow.toml"),
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nGeo = { path = \"../geo\" }\n",
         );
         write(&root.join("app/src/Main.mw"), main);
         pipeline::build(&root.join("app"), Options::debug())
     };
-    let out = app("use geo (norm)\ndef p : Point = (3, 4)\ndef main = norm p\n");
+    let out = app("use Geo (norm)\ndef p : Point = (3, 4)\ndef main = norm p\n");
     assert!(
         out.diagnostics.is_empty(),
         "{:?}",
@@ -223,7 +223,7 @@ fn a_signature_belongs_to_one_definition() {
     assert!(out.contains("`f` already has a signature"), "{out}");
     let out = errors("@pub fun f : Int -> Int\nfun f x = x\ndef main = f 1\n");
     assert!(
-        out.contains("a signature cannot carry `@pub` or `@test`"),
+        out.contains("a signature cannot carry `@pub`, `@test` or `@macro`"),
         "{out}"
     );
 }

@@ -138,17 +138,40 @@ pub fn run(opts: &Options) -> Result<bool, String> {
 
     let vars: Vec<_> = cases.iter().map(|(_, var)| *var).collect();
     let opt = opts.profile.options.opt;
-    let results = runtime::run_tests(&linked.program, &vars, opts.engine, opt)?;
+    // Each test is reported the moment it finishes, with a bar saying how far
+    // through the run is and what it is on. A thousand tests otherwise say
+    // nothing at all until the last one is done.
+    let mut bar = status::Testing::new(total);
+    let names: Vec<String> = cases.iter().map(|(name, _)| name.to_string()).collect();
+    if let Some(first) = names.first() {
+        bar.working_on(first);
+    }
+    let results = runtime::run_tests_watched(
+        &linked.program,
+        &vars,
+        opts.engine,
+        opt,
+        &mut |i, result| {
+            let name = names.get(i).map(String::as_str).unwrap_or("?");
+            // The bar moves on first, so that writing the line puts back a bar
+            // that is already about the test now running rather than the one
+            // just reported.
+            bar.step(result.is_ok());
+            // The one now running, or nothing once the last has finished.
+            bar.working_on(names.get(i + 1).map(String::as_str).unwrap_or(""));
+            status::say(&match result {
+                Ok(_) => format!("test {name} ... {}", status::paint("ok", "32")),
+                Err(_) => format!("test {name} ... {}", status::paint("FAILED", "31")),
+            });
+        },
+    )?;
+    drop(bar);
 
     let mut failures = Vec::new();
     for ((name, _), result) in cases.iter().zip(&results) {
-        match result {
-            Ok(_) => println!("test {name} ... {}", status::paint("ok", "32")),
-            Err(msg) => {
-                println!("test {name} ... {}", status::paint("FAILED", "31"));
-                // The message alone: a failed assertion is not a "runtime error".
-                failures.push((*name, msg.clone()));
-            }
+        if let Err(msg) = result {
+            // The message alone: a failed assertion is not a "runtime error".
+            failures.push((*name, msg.clone()));
         }
     }
 
@@ -183,7 +206,7 @@ fn is_package(path: &Path) -> bool {
     if path.extension().is_some_and(|e| e == "mw") {
         return true;
     }
-    path.join("meadow.toml").is_file() || path.join("src").is_dir()
+    path.join("Meadow.toml").is_file() || path.join("src").is_dir()
 }
 
 /// Link a set of packages without building from disk — used by the integration

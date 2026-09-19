@@ -52,7 +52,7 @@ pub fn align(floor: u32) -> u32 {
 
 /// What a saved package starts with, so that some other file is not taken for
 /// one.
-const MAGIC: &[u8; 8] = b"MWPKG\x00\x00\x01";
+const MAGIC: &[u8; 8] = b"MWPKG\x00\x00\x02";
 
 /// Where the compiled packages of one build configuration live:
 /// `target/<profile>/incremental`.

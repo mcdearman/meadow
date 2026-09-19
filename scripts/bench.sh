@@ -3,7 +3,7 @@
 # Run the benchmarks on both runtimes and compare them.
 #
 #   scripts/bench.sh                 # the `benches` package
-#   scripts/bench.sh examples/euler  # anything with a `main` that runs benchmarks
+#   scripts/bench.sh examples/Euler  # anything with a `main` that runs benchmarks
 #
 # This is what Criterion's saved baseline does for a single program, pointed at
 # the question Meadow actually has: the bytecode VM and the CEK machine are two

@@ -163,6 +163,10 @@ pub struct Resolver {
     extra_refs: Vec<RefSite>,
     /// `@test` functions, in declaration order — `meadow test` runs these.
     test_vars: Vec<(InternedString, VarId)>,
+    /// The `@macro` declarations: what a call may name with a `!`, and where
+    /// each was written, so that a function whose type could never be a
+    /// macro's is reported there rather than where someone tries to use it.
+    macro_vars: Vec<(VarId, Span)>,
     /// Active module qualifiers: `Foo` -> its exported value names. Populated by the
     /// driver from this module's `mod` children and `use`d modules; consulted when
     /// resolving `Foo.name`.
@@ -306,6 +310,10 @@ fn vis_of(attrs: &[ast::Attr]) -> (Vis, Option<(InternedString, Span)>) {
 
 fn has_test(attrs: &[ast::Attr]) -> bool {
     attrs.iter().any(|a| &**a.name.value() == "test")
+}
+
+fn has_macro(attrs: &[ast::Attr]) -> bool {
+    attrs.iter().any(|a| &**a.name.value() == "macro")
 }
 
 /// A name is a constructor iff it starts with an uppercase letter.
@@ -538,6 +546,7 @@ impl Resolver {
             pub_types: std::collections::HashSet::new(),
             extra_refs: Vec::new(),
             test_vars: Vec::new(),
+            macro_vars: Vec::new(),
             qualifiers: HashMap::new(),
             errors: Vec::new(),
         }
@@ -1818,12 +1827,12 @@ impl Resolver {
         }
 
         if let ast::Decl::Sig(name, _) = base.value()
-            && (vis != Vis::Private || has_test(attrs))
+            && (vis != Vis::Private || has_test(attrs) || has_macro(attrs))
         {
             // What a binding is -- exported, a test -- is said once, where it
             // is defined; a signature only says its type.
             self.error(
-                format!("a signature cannot carry `@pub` or `@test`"),
+                "a signature cannot carry `@pub`, `@test` or `@macro`".to_string(),
                 format!("put it on the definition of `{}`", name.value()),
                 decl.span,
             );
@@ -1835,7 +1844,30 @@ impl Resolver {
         if has_test(attrs) {
             self.mark_test(&hir, base.span);
         }
+        if has_macro(attrs) {
+            self.mark_macro(&hir, base.span);
+        }
         hir
+    }
+
+    /// Record a `@macro` declaration: a function that may be called as a macro
+    /// by whoever imports it with a `!`.
+    ///
+    /// Only the *shape* is checked here -- that it is a function at all. What
+    /// its type has to be is checked once inference has one, which is where
+    /// the interesting mistake gets caught.
+    fn mark_macro(&mut self, decl: &hir::LDecl, span: Span) {
+        match decl.value() {
+            hir::Decl::Bind(hir::Bind::Fun(name, params, _, _)) if params.len() == 1 => {
+                self.macro_vars.push((*name.value(), span));
+            }
+            _ => self.error(
+                "`@macro` must be a function of one argument".to_string(),
+                "write `@macro fun name tokens = …`, which the compiler calls with the call's tokens"
+                    .to_string(),
+                span,
+            ),
+        }
     }
 
     /// Record a `@test` declaration. A test is a function of no interest to
@@ -1904,6 +1936,11 @@ impl Resolver {
     }
 
     /// Every `@test` function of this unit, in declaration order.
+    /// The `@macro` declarations, with where each was written.
+    pub fn macro_vars(&self) -> &[(VarId, Span)] {
+        &self.macro_vars
+    }
+
     pub fn test_vars(&self) -> &[(InternedString, VarId)] {
         &self.test_vars
     }

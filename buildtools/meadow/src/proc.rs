@@ -41,13 +41,34 @@ fn fuel() -> u64 {
         .unwrap_or(FUEL)
 }
 
+/// Where the packages came from.
+///
+/// A build has them to hand and lends them for as long as the compile takes; a
+/// language server holds a runner for as long as a package is open, which is
+/// longer than anything it could borrow from. Cloning is why this is a choice
+/// and not a rule: a build compiles many packages and would pay for it every
+/// time.
+enum Held<'a> {
+    Borrowed(Vec<&'a CompiledPackage>),
+    Owned(Vec<CompiledPackage>),
+}
+
+impl Held<'_> {
+    fn packages(&self) -> Vec<&CompiledPackage> {
+        match self {
+            Held::Borrowed(ps) => ps.clone(),
+            Held::Owned(ps) => ps.iter().collect(),
+        }
+    }
+}
+
 /// The macros a build can run: every package compiled so far, linked on demand.
 ///
-/// Borrowed, and linked only when a macro is actually called -- which in most
-/// builds is never, and linking is not free.
+/// Linked only when a macro is actually called -- which in most builds is
+/// never, and linking is not free.
 pub struct Macros<'a> {
     /// The packages a macro could live in, and what it needs to run.
-    packages: Vec<&'a CompiledPackage>,
+    packages: Held<'a>,
     /// How many steps any one of them may take.
     fuel: u64,
     /// The linked program, built the first time a macro is actually called --
@@ -61,7 +82,18 @@ pub struct Macros<'a> {
 impl<'a> Macros<'a> {
     pub fn new(packages: Vec<&'a CompiledPackage>) -> Macros<'a> {
         Macros {
-            packages,
+            packages: Held::Borrowed(packages),
+            fuel: fuel(),
+            program: RefCell::new(None),
+            answers: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// The same, holding the packages itself: what something that outlives the
+    /// compile -- a language server -- needs.
+    pub fn owning(packages: Vec<CompiledPackage>) -> Macros<'static> {
+        Macros {
+            packages: Held::Owned(packages),
             fuel: fuel(),
             program: RefCell::new(None),
             answers: RefCell::new(HashMap::new()),
@@ -83,7 +115,7 @@ impl<'a> Macros<'a> {
             return p.clone();
         }
         let linked =
-            crate::linker::Linker::link(self.packages.iter().map(|p| (*p).clone()).collect());
+            crate::linker::Linker::link(self.packages.packages().into_iter().cloned().collect());
         let p = Arc::new(linked.program);
         *self.program.borrow_mut() = Some(p.clone());
         p
@@ -92,7 +124,8 @@ impl<'a> Macros<'a> {
     /// The variable a package exports under `name`.
     fn exported(&self, package: InternedString, name: InternedString) -> Option<core::Var> {
         self.packages
-            .iter()
+            .packages()
+            .into_iter()
             .filter(|p| p.name == package || p.ident == package)
             .flat_map(|p| p.exports.iter())
             .find(|e| e.name == name)
@@ -104,7 +137,8 @@ impl<'a> Macros<'a> {
         let want: Vec<InternedString> = module.iter().map(|m| InternedString::from(*m)).collect();
         let name = InternedString::from(name);
         self.packages
-            .iter()
+            .packages()
+            .into_iter()
             .flat_map(|p| p.exports.iter())
             .find(|e| e.name == name && e.module == want)
             .map(|e| e.var)
@@ -114,7 +148,8 @@ impl<'a> Macros<'a> {
     /// the package that declared it and so cannot be written out here.
     fn ctor(&self, spelled: &str) -> Option<InternedString> {
         self.packages
-            .iter()
+            .packages()
+            .into_iter()
             .flat_map(|p| p.variants.values())
             .flat_map(|vs| vs.iter())
             .map(|v| v.name)

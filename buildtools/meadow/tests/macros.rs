@@ -838,7 +838,7 @@ fn package(what: &str, manifest: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("meadow-macro-{}-{what}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).expect("a scratch package");
-    std::fs::write(dir.join("meadow.toml"), manifest).expect("a manifest");
+    std::fs::write(dir.join("Meadow.toml"), manifest).expect("a manifest");
     for (name, text) in files {
         std::fs::write(dir.join("src").join(name), text).expect("a module");
     }
@@ -861,7 +861,7 @@ fn build(dir: &Path) -> Result<String, Vec<String>> {
 fn a_macro_is_reached_from_another_module_of_its_package() {
     let dir = package(
         "sibling",
-        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        "[package]\nname = \"Demo\"\nversion = \"0.1.0\"\n",
         &[
             (
                 "Helpers.mw",
@@ -869,7 +869,7 @@ fn a_macro_is_reached_from_another_module_of_its_package() {
             ),
             (
                 "Lib.mw",
-                "mod Helpers\n\nuse demo.Helpers (twice!)\n\ndef main = twice!(1 + 1)\n",
+                "mod Helpers\n\nuse Demo.Helpers (twice!)\n\ndef main = twice!(1 + 1)\n",
             ),
         ],
     );
@@ -880,7 +880,7 @@ fn a_macro_is_reached_from_another_module_of_its_package() {
 fn a_macro_reached_through_an_alias_is_written_with_it() {
     let dir = package(
         "alias",
-        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        "[package]\nname = \"Demo\"\nversion = \"0.1.0\"\n",
         &[
             (
                 "Helpers.mw",
@@ -888,7 +888,7 @@ fn a_macro_reached_through_an_alias_is_written_with_it() {
             ),
             (
                 "Lib.mw",
-                "mod Helpers\n\nuse demo.Helpers as H\n\ndef main = H.twice!(3)\n",
+                "mod Helpers\n\nuse Demo.Helpers as H\n\ndef main = H.twice!(3)\n",
             ),
         ],
     );
@@ -899,7 +899,7 @@ fn a_macro_reached_through_an_alias_is_written_with_it() {
 fn a_macro_that_is_not_public_stays_in_its_module() {
     let dir = package(
         "private",
-        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        "[package]\nname = \"Demo\"\nversion = \"0.1.0\"\n",
         &[
             (
                 "Helpers.mw",
@@ -907,7 +907,7 @@ fn a_macro_that_is_not_public_stays_in_its_module() {
             ),
             (
                 "Lib.mw",
-                "mod Helpers\n\nuse demo.Helpers (hidden!)\n\ndef main = hidden!()\n",
+                "mod Helpers\n\nuse Demo.Helpers (hidden!)\n\ndef main = hidden!()\n",
             ),
         ],
     );
@@ -923,7 +923,7 @@ fn a_macro_that_is_not_public_stays_in_its_module() {
 fn a_macro_crosses_into_a_package_that_depends_on_it() {
     let lib = package(
         "dep",
-        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        "[package]\nname = \"Demo\"\nversion = \"0.1.0\"\n",
         &[
             (
                 "Helpers.mw",
@@ -935,12 +935,12 @@ fn a_macro_crosses_into_a_package_that_depends_on_it() {
     let app = package(
         "dependent",
         &format!(
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndemo = {{ path = \"{}\" }}\n",
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nDemo = {{ path = \"{}\" }}\n",
             lib.display()
         ),
         &[(
             "Lib.mw",
-            "use demo.Helpers (twice!)\n\ndef main = twice!(2)\n",
+            "use Demo.Helpers (twice!)\n\ndef main = twice!(2)\n",
         )],
     );
     assert_eq!(build(&app).expect("it builds"), "(2, 2)");
@@ -951,7 +951,7 @@ fn pkg_is_the_package_the_macro_was_written_in() {
     // Not the one it was expanded in: that is the whole point of `$pkg`.
     let lib = package(
         "pkg-lib",
-        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        "[package]\nname = \"Demo\"\nversion = \"0.1.0\"\n",
         &[
             (
                 "Helpers.mw",
@@ -963,15 +963,15 @@ fn pkg_is_the_package_the_macro_was_written_in() {
     let app = package(
         "pkg-app",
         &format!(
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndemo = {{ path = \"{}\" }}\n",
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nDemo = {{ path = \"{}\" }}\n",
             lib.display()
         ),
         &[(
             "Lib.mw",
-            "use demo.Helpers (whereFrom!)\n\ndef main = whereFrom!()\n",
+            "use Demo.Helpers (whereFrom!)\n\ndef main = whereFrom!()\n",
         )],
     );
-    assert_eq!(build(&app).expect("it builds"), r#""demo""#);
+    assert_eq!(build(&app).expect("it builds"), r#""Demo""#);
 }
 
 #[test]
@@ -993,7 +993,7 @@ fn a_use_that_selects_a_macro_selects_nothing_else() {
     // bring in every value the module has.
     let dir = package(
         "selective",
-        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        "[package]\nname = \"Demo\"\nversion = \"0.1.0\"\n",
         &[
             (
                 "Helpers.mw",
@@ -1001,7 +1001,7 @@ fn a_use_that_selects_a_macro_selects_nothing_else() {
             ),
             (
                 "Lib.mw",
-                "mod Helpers\n\nuse demo.Helpers (twice!)\n\ndef main = helper (twice!(1))\n",
+                "mod Helpers\n\nuse Demo.Helpers (twice!)\n\ndef main = helper (twice!(1))\n",
             ),
         ],
     );
@@ -1015,7 +1015,7 @@ fn a_template_reaches_its_own_packages_helpers_through_pkg() {
     // `use` the template writes says where `shout` comes from.
     let lib = package(
         "helper-lib",
-        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        "[package]\nname = \"Demo\"\nversion = \"0.1.0\"\n",
         &[
             ("Text.mw", "@pub fun shout s = s ++ \"!\"\n"),
             (
@@ -1028,12 +1028,12 @@ fn a_template_reaches_its_own_packages_helpers_through_pkg() {
     let app = package(
         "helper-app",
         &format!(
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ndemo = {{ path = \"{}\" }}\n",
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nDemo = {{ path = \"{}\" }}\n",
             lib.display()
         ),
         &[(
             "Lib.mw",
-            "use demo.Helpers (withShout!)\n\nwithShout! {\n  def greeting = shout \"hello\"\n}\n\ndef main = greeting\n",
+            "use Demo.Helpers (withShout!)\n\nwithShout! {\n  def greeting = shout \"hello\"\n}\n\ndef main = greeting\n",
         )],
     );
     assert_eq!(build(&app).expect("it builds"), r#""hello!""#);
@@ -1096,13 +1096,13 @@ def main = outer!(1)
 fn with_macro(what: &str, macro_src: &str, caller: &str) -> PathBuf {
     let lib = package(
         &format!("{what}-lib"),
-        "[package]\nname = \"maker\"\nversion = \"0.1.0\"\n",
+        "[package]\nname = \"Maker\"\nversion = \"0.1.0\"\n",
         &[("Lib.mw", macro_src)],
     );
     package(
         &format!("{what}-app"),
         &format!(
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nmaker = {{ path = \"{}\" }}\n",
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nMaker = {{ path = \"{}\" }}\n",
             lib.display()
         ),
         &[("Lib.mw", caller)],
@@ -1113,6 +1113,7 @@ const SHOUT: &str = r#"
 use Std.Macro (spaced)
 use Std.Macro.TokenTree.*
 
+@macro
 @pub fun shout ts = [Code "\"${spaced ts}!\""]
 "#;
 
@@ -1121,7 +1122,7 @@ fn a_procedural_macro_is_a_function_run_while_its_caller_is_compiled() {
     let app = with_macro(
         "proc",
         SHOUT,
-        "use maker (shout!)\n\ndef main = shout!(hello there)\n",
+        "use Maker (shout!)\n\ndef main = shout!(hello there)\n",
     );
     assert_eq!(build(&app).expect("it builds"), r#""hello there!""#);
 }
@@ -1136,12 +1137,13 @@ fn a_procedural_macro_may_not_perform_an_effect() {
 use Std.Macro.TokenTree.*
 use Std.Fs (readToString)
 
+@macro
 @pub fun peek ts =
   match readToString "/etc/hosts" with
   | Ok s -> [Code "1"]
   | Err e -> [Code "2"]
 "#,
-        "use maker (peek!)\n\ndef main = peek!()\n",
+        "use Maker (peek!)\n\ndef main = peek!()\n",
     );
     let errs = build(&app).expect_err("it does not build");
     assert!(
@@ -1151,16 +1153,64 @@ use Std.Fs (readToString)
 }
 
 #[test]
-fn a_function_that_is_not_a_macro_is_not_one() {
+fn a_function_is_a_macro_only_if_it_says_so() {
+    // Nothing about a function's type makes it a macro: `@macro` does, and a
+    // package that means one to be used that way has to say it.
     let app = with_macro(
-        "wrong-shape",
-        "@pub fun double x = x + x\n",
-        "use maker (double!)\n\ndef main = double!(2)\n",
+        "unmarked",
+        r#"
+use Std.Macro (spaced)
+use Std.Macro.TokenTree.*
+
+@pub fun shout ts = [Code "\"${spaced ts}!\""]
+"#,
+        "use Maker (shout!)\n\ndef main = shout!(hi)\n",
     );
     let errs = build(&app).expect_err("it does not build");
     assert!(
+        errs.iter().any(|e| e.contains("`shout` is not a macro")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn a_macro_whose_type_could_never_run_is_reported_where_it_is_written() {
+    // Not where someone imports it and finds out the hard way.
+    let lib = package(
+        "bad-shape",
+        "[package]\nname = \"Maker\"\nversion = \"0.1.0\"\n",
+        &[("Lib.mw", "@macro\n@pub fun double x = x + x\n")],
+    );
+    let errs = build(&lib).expect_err("it does not build");
+    assert!(
         errs.iter()
-            .any(|e| e.contains("it is not `[TokenTree] -> [TokenTree]`")),
+            .any(|e| e.contains("this cannot be a macro: it is not `[TokenTree] -> [TokenTree]`")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn a_macro_of_ones_own_package_cannot_be_run_there() {
+    // It has to be compiled before it can run, and a package is not compiled
+    // while it is being compiled.
+    let lib = package(
+        "own-macro",
+        "[package]\nname = \"Maker\"\nversion = \"0.1.0\"\n",
+        &[
+            (
+                "Mac.mw",
+                "use Std.Macro.TokenTree.*\n\n@macro\n@pub fun one ts = [Code \"1\"]\n",
+            ),
+            (
+                "Lib.mw",
+                "mod Mac\n\nuse Maker.Mac (one!)\n\ndef main = one!()\n",
+            ),
+        ],
+    );
+    let errs = build(&lib).expect_err("it does not build");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("`one` is a macro of this package")),
         "{errs:?}"
     );
 }
@@ -1201,6 +1251,7 @@ use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe.Maybe.*
 
+@macro
 @pub fun naming ts =
   let ctors = V.drop (V.filter isUpperWord ts) 1 in
   [Code "fun nameOf x = match x with ${V.foldl (\acc c -> acc ++ arm c) "" ctors}"]
@@ -1212,7 +1263,7 @@ fun isUpperWord t =
 
 fun arm c = "| ${text c} -> \"${text c}\" "
 "#,
-        "use maker (naming!)\n\n@derive(Naming)\ndata Colour = Red | Green | Blue\n\nuse Colour.*\n\ndef main = nameOf Green\n",
+        "use Maker (naming!)\n\n@derive(Naming)\ndata Colour = Red | Green | Blue\n\nuse Colour.*\n\ndef main = nameOf Green\n",
     );
     assert_eq!(build(&app).expect("it builds"), r#""Green""#);
 }
@@ -1227,9 +1278,10 @@ fn a_derive_is_given_the_declaration_as_it_was_written() {
 use Std.Macro (spaced)
 use Std.Macro.TokenTree.*
 
+@macro
 @pub fun echo ts = [Code "def given =", Str (spaced ts)]
 "#,
-        "use maker (echo!)\n\n@derive(Echo)\ndata Token = @token(\"+\") Plus | @regex(\"[0-9]+\") Number\n\ndef main = given\n",
+        "use Maker (echo!)\n\n@derive(Echo)\ndata Token = @token(\"+\") Plus | @regex(\"[0-9]+\") Number\n\ndef main = given\n",
     );
     let given = build(&app).expect("it builds");
     assert!(given.contains("@ token (\\\"+\\\") Plus"), "{given}");
@@ -1241,7 +1293,7 @@ fn a_derive_that_names_nothing_is_reported() {
     let app = with_macro(
         "derive-missing",
         SHOUT,
-        "use maker (shout!)\n\n@derive(Nothing)\ndata Colour = Red\n\ndef main = 1\n",
+        "use Maker (shout!)\n\n@derive(Nothing)\ndata Colour = Red\n\ndef main = 1\n",
     );
     let errs = build(&app).expect_err("it does not build");
     assert!(

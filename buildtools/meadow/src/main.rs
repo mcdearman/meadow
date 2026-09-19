@@ -194,7 +194,7 @@ enum Cmd {
         #[arg(long)]
         stdout: bool,
     },
-    /// Create a package: a `meadow.toml` and a `src/Main.mw` that runs.
+    /// Create a package: a `Meadow.toml` and a `src/Main.mw` that runs.
     ///
     /// Inside a workspace, the new package is added to its `members`.
     Init {
@@ -204,7 +204,7 @@ enum Cmd {
         /// The package's name. Defaults to the directory's.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
-        /// Create a workspace instead: a `meadow.toml` with an empty
+        /// Create a workspace instead: a `Meadow.toml` with an empty
         /// `[workspace]`, for packages made inside it to join.
         #[arg(long, conflicts_with = "name")]
         workspace: bool,
@@ -213,7 +213,7 @@ enum Cmd {
     ///
     /// Takes a git URL, a GitHub `owner/name`, or a directory. There is no
     /// registry to look a name up in, so the repository is fetched and its own
-    /// `meadow.toml` says what the package is called.
+    /// `Meadow.toml` says what the package is called.
     Add {
         /// `https://github.com/owner/name`, `owner/name`, or `../a/directory`.
         #[arg(value_name = "WHAT")]
@@ -297,7 +297,7 @@ fn select(selection: &Selection, path: &std::path::Path) -> Selected {
                 "warning: the `[profile]` sections of `{}` are ignored: a workspace member \
                  builds with the profiles in {}",
                 m.name,
-                meadow::workspace::shown(&ws.root.join("meadow.toml"))
+                meadow::workspace::shown(&ws.root.join("Meadow.toml"))
             );
         }
     }
@@ -327,7 +327,7 @@ impl TargetArgs {
 ///
 /// Debug is the default: `-O1`, and no exhaustiveness check, so a half-written
 /// `match` still runs. Release is `-O2` and strict. Either can be overridden
-/// per switch, here or in the package's `meadow.toml`.
+/// per switch, here or in the package's `Meadow.toml`.
 #[derive(clap::Args)]
 struct ProfileArgs {
     /// Build with the release profile: `-O2`, and `match` must be exhaustive.
@@ -349,7 +349,7 @@ struct ProfileArgs {
     /// compiles what runs often to machine code as it goes) or `aot` (machine
     /// code compiled ahead of time, into an executable). Debug builds default
     /// to `jit` and release builds to `aot`; `backend = "..."` in a
-    /// `[profile.<name>]` of `meadow.toml` overrides that, and this overrides
+    /// `[profile.<name>]` of `Meadow.toml` overrides that, and this overrides
     /// both.
     #[arg(long, value_name = "BACKEND", value_parser = backend, conflicts_with_all = ["jit", "aot"])]
     backend: Option<Backend>,
@@ -365,7 +365,7 @@ struct ProfileArgs {
     cfg: Vec<String>,
     /// Compile every definition of the package and its dependencies, not only
     /// what `main` reaches. `prune = false` in a `[profile.<name>]` of
-    /// `meadow.toml` does the same.
+    /// `Meadow.toml` does the same.
     #[arg(long)]
     no_prune: bool,
 }
@@ -410,7 +410,7 @@ impl ProfileArgs {
         }
     }
 
-    /// The profile, the package's `meadow.toml`, and these flags, in that order
+    /// The profile, the package's `Meadow.toml`, and these flags, in that order
     /// of increasing authority.
     fn resolve(&self, path: &std::path::Path) -> Resolved {
         Resolved::resolve(self.profile(), path, self.overrides())

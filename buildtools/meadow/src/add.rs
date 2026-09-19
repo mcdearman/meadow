@@ -7,7 +7,7 @@
 //! ```
 //!
 //! There is no registry to look a name up in, but there does not need to be
-//! one: the repository is fetched, and its own `meadow.toml` says what the
+//! one: the repository is fetched, and its own `Meadow.toml` says what the
 //! package is called. That is the name written into `[dependencies]`, so it is
 //! the name the dependency actually has rather than one guessed from a URL.
 //!
@@ -27,13 +27,13 @@ pub struct Options {
     pub reference: GitRef,
     /// Use this name instead of the one the dependency calls itself.
     pub rename: Option<String>,
-    /// The package to add to. Its directory, holding `meadow.toml`.
+    /// The package to add to. Its directory, holding `Meadow.toml`.
     pub dir: PathBuf,
 }
 
 pub fn run(opts: &Options) -> Result<(), String> {
     let manifest_path = crate::package::manifest_path(&opts.dir)
-        .ok_or_else(|| format!("{} has no meadow.toml", crate::workspace::shown(&opts.dir)))?;
+        .ok_or_else(|| format!("{} has no Meadow.toml", crate::workspace::shown(&opts.dir)))?;
 
     let source = source_of(&opts.what, &opts.reference, &opts.dir)?;
 
@@ -44,7 +44,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
             let at = opts.dir.join(rel);
             let m = Manifest::load(&at)
                 .map_err(|e| format!("could not read {}: {e}", crate::workspace::shown(&at)))?
-                .ok_or_else(|| format!("{} has no meadow.toml", crate::workspace::shown(&at)))?;
+                .ok_or_else(|| format!("{} has no Meadow.toml", crate::workspace::shown(&at)))?;
             (m.name, m.version, None)
         }
         DepSource::Git { url, reference } => {
@@ -53,7 +53,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
             let m = Manifest::load(&got.path)
                 .map_err(|e| format!("could not read the dependency's manifest: {e}"))?
                 .ok_or_else(|| {
-                    format!("{url} has no meadow.toml, so it is not a Meadow package")
+                    format!("{url} has no Meadow.toml, so it is not a Meadow package")
                 })?;
             (m.name, m.version, Some(got))
         }

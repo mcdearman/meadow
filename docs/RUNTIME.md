@@ -30,7 +30,7 @@ difference is how much of the work happens in machine code.
 | `aot` | an executable: machine code for every block, the bytecode image, and the runtime, linked together | `--release` |
 
 `--backend`, `--jit` and `--aot` choose a backend for one command, and
-`backend = "..."` under `[profile.<name>]` in `meadow.toml` chooses one for a
+`backend = "..."` under `[profile.<name>]` in `Meadow.toml` chooses one for a
 package. The CEK machine (`--cek`, in `eval/`) is separate. It is the
 reference semantics, and every backend is tested against it.
 
@@ -824,7 +824,7 @@ The export refuses a `Ref`, a mutable array or a continuation (a `Resume` flag)
 with a runtime error. Immutable data copies invisibly. **Compact regions and
 `TVar` values aren't copied at all**: the parcel keeps their addresses, which
 are the same in every heap, and holds a reference count on the region. This is
-how `examples/parallel` lets eight threads read one prime table.
+how `examples/Parallel` lets eight threads read one prime table.
 
 The rule has three consequences:
 

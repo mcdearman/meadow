@@ -328,7 +328,8 @@ that *writes* code uses, and it is why there is no `quote` yet: a macro that
 generates a function writes the function, as anyone would.
 
 ```meadow
--- in its own package, and an ordinary exported function
+-- in its own package: an ordinary exported function that says what it is
+@macro
 @pub fun shout ts = [Code "\"${spaced ts}!\""]
 ```
 
@@ -338,10 +339,16 @@ use shouty (shout!)
 def main = println shout!(hello there)   -- "hello there!"
 ```
 
-What may be one is decided by its type, and nothing else: a function
-`[TokenTree] -> [TokenTree]` named with a `!` is a macro. The argument is
-allowed to be looser — a macro that ignores it never constrains it — but the
-answer is exactly tokens.
+**`@macro` is what makes one.** Nothing about a function's type does: a package
+that means a function to be called as a macro says so, which is what lets you
+find a package's macros by looking, and what lets the type be checked where the
+macro is *written* rather than in whoever imports it. That type is
+`[TokenTree] -> [TokenTree]`; the argument may be looser, since a macro that
+ignores it never constrains it, but the answer is exactly tokens.
+
+A macro has to be compiled before it can run, so it belongs to a package the
+one using it depends on — as in Rust, and for the same reason. A `use` of one
+in its own package is refused, and says why.
 
 The sandbox is that same signature. A macro may not perform `Fs`, `Process`,
 `Random`, `Time`, `Thread` or `Stm`, which the effect system checks where the
@@ -477,8 +484,8 @@ Each step is useful on its own and none commits to the next.
 6. **Done.** **Diagnostics**: an error in what a macro wrote is reported at the
    call, labelled with the macro that wrote it.
    ([`expand/mod.rs`](../compiler/meadow-compiler/src/expand/mod.rs))
-7. **Done.** **Procedural macros**: `Std.Macro`, running on the VM under an
-   effect bound and a fuel budget, cached on input, and `@derive`. `quote` is
+7. **Done.** **Procedural macros**: `@macro`, `Std.Macro`, running on the VM
+   under an effect bound and a fuel budget, cached on input, and `@derive`. `quote` is
    the one piece left out — a macro writes code as text and the compiler lexes
    it, which is what `Code` is for.
    ([`expand/proc.rs`](../compiler/meadow-compiler/src/expand/proc.rs),

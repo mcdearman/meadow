@@ -22,8 +22,8 @@ fn write(path: &Path, text: &str) {
 fn package(who: &str, main: &str, note: &str) -> PathBuf {
     let root = scratch(who).join("app");
     write(
-        &root.join("meadow.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        &root.join("Meadow.toml"),
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n",
     );
     write(&root.join("src/Main.mw"), main);
     write(&root.join("src/note.txt"), note);

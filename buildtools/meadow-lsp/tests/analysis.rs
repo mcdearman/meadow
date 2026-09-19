@@ -335,7 +335,7 @@ fn a_std_module_recognises_itself_by_path() {
         ("c:\\repos\\meadow\\lib\\Std\\src\\Json.mw", Some("Json")),
         // Not one of ours, however much it looks like one.
         ("file:///home/u/other/lib/Std/src/NotAModule.mw", None),
-        ("file:///home/u/meadow/examples/euler/src/Main.mw", None),
+        ("file:///home/u/meadow/examples/Euler/src/Main.mw", None),
     ] {
         let got = s.module_at(uri).map(|i| s.module_name(i));
         assert_eq!(got, want, "{uri}");
@@ -774,7 +774,7 @@ fn package(dir: &str, manifest: Option<&str>, files: &[(&str, &str)]) -> std::pa
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("src")).expect("mkdir");
     if let Some(m) = manifest {
-        std::fs::write(root.join("meadow.toml"), m).expect("manifest");
+        std::fs::write(root.join("Meadow.toml"), m).expect("manifest");
     }
     for (name, text) in files {
         let path = root.join("src").join(name);
@@ -903,7 +903,7 @@ fn a_file_outside_a_package_is_still_analysed_alone() {
 fn the_mini_ml_example_is_clean_in_an_editor() {
     // The example that prompted all of this: five modules, each importing the
     // others' types. Analysed one file at a time it was a screen of red.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/mini-ml/src");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/MiniML/src");
     for name in ["Syntax.mw", "Parser.mw", "Infer.mw", "Eval.mw", "Main.mw"] {
         let file = std::fs::canonicalize(root.join(name)).expect("the example");
         let text = std::fs::read_to_string(&file).unwrap();

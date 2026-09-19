@@ -151,7 +151,7 @@ fn a_program_that_does_not_compile_is_not_run() {
     let (ok, _, _) = meadow(&root, &["build", "."]);
     assert!(!ok);
     assert!(
-        !root.join("target/debug/bytecode/broken.mbc").exists(),
+        !root.join("target/debug/bytecode/Broken.mbc").exists(),
         "and no image is written for it"
     );
     let _ = std::fs::remove_dir_all(&dir);

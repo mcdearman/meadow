@@ -132,10 +132,10 @@ fn build_writes_text_in_place_of_binaries() {
     assert!(ok, "{err}");
     let debug = root.join("target/debug");
     assert!(
-        !debug.join("bytecode/fact.mbc").exists(),
+        !debug.join("bytecode/Fact.mbc").exists(),
         "the image was written though only text was asked for"
     );
-    let bytecode = std::fs::read_to_string(debug.join("bytecode/fact.mbc.txt")).unwrap();
+    let bytecode = std::fs::read_to_string(debug.join("bytecode/Fact.mbc.txt")).unwrap();
     assert_eq!(bytecode, image_text(&root));
     let native = std::fs::read_dir(debug.join("native"))
         .unwrap()
@@ -143,7 +143,7 @@ fn build_writes_text_in_place_of_binaries() {
         .map(|e| e.path())
         .find(|p| p.is_dir())
         .unwrap_or_else(|| panic!("{foreign}'s code beside the host's, under its triple"));
-    let asm = std::fs::read_to_string(native.join("fact.s")).unwrap();
+    let asm = std::fs::read_to_string(native.join("Fact.s")).unwrap();
     assert!(
         asm.starts_with(&format!("; meadow native code: {foreign}, -O1")),
         "{asm}"
@@ -153,7 +153,7 @@ fn build_writes_text_in_place_of_binaries() {
     // Both kinds of `--emit`, and the image an ordinary build writes.
     let (ok, err) = meadow(&root, &["build", "--emit", "image", "--emit", "bytecode"]);
     assert!(ok, "{err}");
-    assert!(debug.join("bytecode/fact.mbc").exists());
+    assert!(debug.join("bytecode/Fact.mbc").exists());
 
     // `link` takes an image to text as it would to an executable.
     let (ok, err) = meadow(
@@ -164,11 +164,11 @@ fn build_writes_text_in_place_of_binaries() {
             "asm",
             "--target",
             "x86_64",
-            "target/debug/bytecode/fact.mbc",
+            "target/debug/bytecode/Fact.mbc",
         ],
     );
     assert!(ok, "{err}");
-    let asm = std::fs::read_to_string(debug.join("bytecode/fact.s")).unwrap();
+    let asm = std::fs::read_to_string(debug.join("bytecode/Fact.s")).unwrap();
     assert!(
         asm.starts_with("; meadow native code: x86_64, -O2"),
         "{asm}"

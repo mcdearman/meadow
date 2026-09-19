@@ -11,7 +11,7 @@
 //! before every call and return, and loaded again after every call. Nothing
 //! else touches them.
 
-use super::{Emit, FloatOp, IntOp, Label, Operand, layout};
+use super::{Emit, FloatOp, IntOp, Label, Operand, layout, thin};
 use meadow_bytecode::{Cond, Pc, Reg};
 use meadow_core::OptLevel;
 
@@ -460,6 +460,27 @@ impl Emit for Asm {
             self.bytes(&[0x49, 0x81, 0xC5]); // add r13, n
             self.bytes(&n.to_le_bytes());
         }
+    }
+
+    /// Not implemented here: every run goes straight to `slow`, which is the
+    /// interpreter, which is where these instructions went before the thin
+    /// layer existed. So x86-64 is exactly as correct and exactly as fast as
+    /// it was, and aarch64 is faster.
+    ///
+    /// Writing it is **one method**, and then every expansion works here too --
+    /// that is the whole point of the layer. What it needs, against the helpers
+    /// already in this file: `add`, `and` and `cmp` between two registers
+    /// (`REX.W 01 /r`, `21 /r`, `39 /r`), `shr` by an immediate
+    /// (`REX.W C1 /5 ib`), and a heap load, which is `load(dst, base, 0)` after
+    /// the slot has been shifted and added into a register -- no SIB needed.
+    /// `jcc` and the condition inversion are already here.
+    ///
+    /// It is left undone because it cannot be *run* on the machine this was
+    /// written on, and an instruction encoded wrong here would corrupt a heap
+    /// quietly rather than fail loudly. `codegen::thin`'s tests check the
+    /// expansions and say nothing about the encoding of them.
+    fn steps(&mut self, _run: &[thin::Step], slow: Label) {
+        self.jump(slow);
     }
 
     fn jump(&mut self, to: Label) {

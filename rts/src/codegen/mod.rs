@@ -71,6 +71,7 @@
 
 pub mod a64;
 pub mod object;
+pub mod thin;
 pub mod x64;
 
 use crate::value::Value;
@@ -239,6 +240,14 @@ pub trait Emit {
     /// Fall through if `r[x]` is data tagged `tag`; `miss` if it is some other
     /// nursery object.
     fn tag_test(&mut self, x: Reg, tag: u32, miss: Label, slow: Label);
+    /// Carry out a run of [`thin::Step`]s, jumping to `slow` at the first
+    /// guard that does not hold -- having written nothing, so the interpreter
+    /// can be asked for the instruction instead.
+    ///
+    /// This is the *only* method an architecture has to write for the thin
+    /// layer, and it is what keeps adding an expansion from costing any
+    /// assembly: a new one is a new run of the same seven kinds of step.
+    fn steps(&mut self, run: &[thin::Step], slow: Label);
     /// `r[a] = ` field `i` of the data or array in `r[b]`.
     fn field(&mut self, a: Reg, b: Reg, i: u32, slow: Label);
     /// Enter method `method` of the closure in `r[obj]`, with the `argc`
@@ -894,11 +903,23 @@ fn block<E: Emit>(
                 }
             }
             // Everything else that touches the heap, the tables or the
-            // scheduler.
-            _ => {
-                book.sync(asm);
-                asm.exec(pc32);
-            }
+            // scheduler. A few of these have an expansion into thin steps and
+            // are done here after all; the rest go to the interpreter, as they
+            // always have. See [`thin`].
+            _ => match thin::expand(program, i) {
+                Some(run) => {
+                    let slow = asm.label();
+                    book.step(asm);
+                    book.sync(asm);
+                    asm.steps(&run, slow);
+                    book.wrote(i.a);
+                    slows.push((slow, k));
+                }
+                None => {
+                    book.sync(asm);
+                    asm.exec(pc32);
+                }
+            },
         }
         fall_through(asm, &mut book, &mut f, code, k);
     }

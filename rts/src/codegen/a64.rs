@@ -11,7 +11,7 @@
 //! before every call and return, and loaded again after every call. Nothing
 //! else touches them.
 
-use super::{Emit, FloatOp, IntOp, Label, Operand, layout};
+use super::{Emit, FloatOp, IntOp, Label, Operand, layout, thin};
 use meadow_bytecode::{Cond, Pc, Reg};
 use meadow_core::OptLevel;
 
@@ -568,6 +568,66 @@ impl Emit for Asm {
         self.b_cond(NE, miss);
     }
 
+    fn steps(&mut self, run: &[thin::Step], slow: Label) {
+        use thin::Step;
+        debug_assert!(thin::temporaries(run) <= thin::TEMPORARIES);
+        for s in run {
+            match *s {
+                Step::Set(t, src) => self.thin_src(TMP + t as u32, src),
+                Step::Add(t, a, b) => {
+                    self.thin_src(WORK_A, a);
+                    self.thin_src(WORK_B, b);
+                    self.put(0x8B00_0000 | WORK_B << 16 | WORK_A << 5 | (TMP + t as u32));
+                }
+                Step::And(t, a, mask) => {
+                    self.thin_src(WORK_A, a);
+                    self.imm(WORK_B, mask);
+                    self.put(0x8A00_0000 | WORK_B << 16 | WORK_A << 5 | (TMP + t as u32));
+                }
+                Step::Shr(t, a, n) => {
+                    self.thin_src(WORK_A, a);
+                    self.thin_shr(TMP + t as u32, WORK_A, n);
+                }
+                Step::Load(t, at) => {
+                    self.thin_src(WORK_A, at);
+                    self.thin_load(TMP + t as u32, WORK_A);
+                }
+                Step::Store(at, v) => {
+                    self.thin_src(WORK_A, at);
+                    self.ldr(WORK_B, X19, layout::BASE);
+                    self.put(0x8B00_0000 | WORK_A << 16 | 3 << 10 | WORK_B << 5 | WORK_A);
+                    self.thin_src(WORK_B, v);
+                    self.str(WORK_B, WORK_A, 0);
+                }
+                // Branch away on the *negation*: the guard holding is the
+                // ordinary case and falls through. Unsigned throughout, which
+                // is what makes one `u <` reject a negative index as well as
+                // one past the end.
+                Step::Guard(c, a, b) => {
+                    self.thin_src(WORK_A, a);
+                    self.thin_src(WORK_B, b);
+                    self.cmp(WORK_A, WORK_B);
+                    let fails = match c {
+                        Cond::Eq => NE,
+                        Cond::Ne => EQ,
+                        Cond::Lt => HS,
+                        Cond::Le => HI,
+                        Cond::Gt => LS,
+                        Cond::Ge => LO,
+                    };
+                    self.b_cond(fails, slow);
+                }
+                Step::Put(r, src) => {
+                    self.thin_src(WORK_A, src);
+                    self.set(WORK_A, r as u32);
+                    if !self.defer_live {
+                        self.raise(r as u32 + 1);
+                    }
+                }
+            }
+        }
+    }
+
     fn field(&mut self, a: Reg, b: Reg, i: u32, slow: Label) {
         if i >= 4000 {
             self.jump(slow);
@@ -720,5 +780,37 @@ impl Emit for Asm {
             self.code[at..at + 4].copy_from_slice(&word.to_le_bytes());
         }
         self.code
+    }
+}
+
+/// Unsigned lower, which the conditions above do not otherwise need.
+const LO: u32 = 3;
+
+/// The scratch registers a run of thin steps keeps its temporaries in, and the
+/// two the emitter works in. See [`crate::codegen::thin`].
+const TMP: u32 = X9;
+const WORK_A: u32 = X14;
+const WORK_B: u32 = X15;
+
+impl Asm {
+    /// `xd = src`.
+    fn thin_src(&mut self, d: u32, src: thin::Src) {
+        match src {
+            thin::Src::Reg(r) => self.get(d, r as u32),
+            thin::Src::Tmp(t) => self.mov_x(d, TMP + t as u32),
+            thin::Src::Imm(w) => self.imm(d, w),
+        }
+    }
+
+    /// `xd = xn >> sh`, unsigned: `lsr`, which is `ubfm xd, xn, #sh, #63`.
+    fn thin_shr(&mut self, d: u32, n: u32, sh: u32) {
+        self.put(0xD340_0000 | sh << 16 | 63 << 10 | n << 5 | d);
+    }
+
+    /// `xd = ` the heap word at slot `xn`.
+    fn thin_load(&mut self, d: u32, n: u32) {
+        self.ldr(WORK_B, X19, layout::BASE);
+        self.put(0x8B00_0000 | n << 16 | 3 << 10 | WORK_B << 5 | WORK_A); // add x14, x15, xn, lsl #3
+        self.ldr(d, WORK_A, 0);
     }
 }

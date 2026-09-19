@@ -779,6 +779,14 @@ impl Heap {
 
     /// The slot at `a`, in the nursery, the old generation or a region.
     #[inline(always)]
+    /// The heap word at slot `a`, wherever it lives.
+    ///
+    /// For [`crate::codegen::thin`], whose steps address the heap as the array
+    /// of words the machine holds it as.
+    pub fn word_at(&self, a: Addr) -> Word {
+        self.slot(a)
+    }
+
     fn slot(&self, a: Addr) -> Word {
         if a < OLD_BASE {
             self.space[a as usize]

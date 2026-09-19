@@ -49,8 +49,8 @@ interfered with least.
 
 **Wall clock for the whole process**, startup included. That is unfair to the
 runtimes that have one, so the table's last row is the same measurement for a
-program that only prints — the floor each language cannot go below. Java's 32ms
-and Node's 59ms are in every number in their columns.
+program that only prints — the floor each language cannot go below. Java's 28ms
+and Node's 56ms are in every number in their columns.
 
 ## The tasks
 
@@ -117,35 +117,37 @@ measured here, and `benches/` is where those get compared.
 On a 10-core Apple silicon machine, macOS 26.3.1, minimum of five runs. The
 figure in brackets is how many times slower than the fastest in that row.
 
-| task | meadow | rust | c | haskell | java | python | js |
-|---|---|---|---|---|---|---|---|
-| fib | 51ms (5.0×) | 10ms (1.0×) | **10ms** | 29ms (2.9×) | 35ms (3.4×) | 210ms (20.7×) | 74ms (7.3×) |
-| binarytrees | 3.78s (12.2×) | 1.57s (5.1×) | 1.63s (5.3×) | 410ms (1.3×) | **310ms** | 5.78s (18.7×) | 847ms (2.7×) |
-| matmul | 2.79s (550.5×) | 7ms (1.4×) | **5ms** | 29ms (5.7×) | 39ms (7.7×) | 761ms (150.1×) | 79ms (15.5×) |
-| wordfreq | 1.44s (140.0×) | 14ms (1.4×) | **10ms** | 137ms (13.3×) | 130ms (12.7×) | 52ms (5.1×) | 114ms (11.1×) |
-| ⇉ mandelbrot | 426ms (13.1×) | **32ms** | 36ms (1.1×) | 77ms (2.4×) | 90ms (2.8×) | 1.21s (37.5×) | 136ms (4.2×) |
-| ⇉ contention | 685ms (147.6×) | 6ms (1.3×) | **5ms** | 40ms (8.7×) | 61ms (13.1×) | 60ms (12.9×) | 137ms (29.5×) |
-| ⇉ pipeline | 63ms (3.3×) | **19ms** | 33ms (1.7×) | 872ms (45.7×) | 76ms (4.0×) | 183ms (9.6×) | 156ms (8.2×) |
-| _startup_ | 3ms | 2ms | 2ms | 16ms | 32ms | 21ms | 59ms |
+| task | meadow | rust | c | go | haskell | java | python | js |
+|---|---|---|---|---|---|---|---|---|
+| fib | 51ms (5.0×) | 10ms (1.0×) | 10ms (1.0×) | **10ms** | 28ms (2.8×) | 35ms (3.4×) | 209ms (20.6×) | 72ms (7.1×) |
+| binarytrees | 3.77s (12.1×) | 1.53s (4.9×) | 1.64s (5.3×) | 805ms (2.6×) | 414ms (1.3×) | **311ms** | 5.87s (18.9×) | 885ms (2.8×) |
+| matmul | 2.85s (463.7×) | **6ms** | 7ms (1.2×) | 12ms (2.0×) | 28ms (4.6×) | 43ms (6.9×) | 756ms (122.9×) | 79ms (12.9×) |
+| wordfreq | 1.44s (119.2×) | 14ms (1.2×) | **12ms** | 17ms (1.4×) | 143ms (11.8×) | 132ms (10.9×) | 55ms (4.6×) | 114ms (9.5×) |
+| ⇉ mandelbrot | 433ms (13.1×) | 39ms (1.2×) | 37ms (1.1×) | **33ms** | 75ms (2.3×) | 88ms (2.6×) | 1.24s (37.4×) | 125ms (3.8×) |
+| ⇉ contention | 684ms (148.6×) | 5ms (1.2×) | **5ms** | 17ms (3.8×) | 41ms (8.8×) | 60ms (12.9×) | 59ms (12.8×) | 136ms (29.5×) |
+| ⇉ pipeline | 58ms (3.4×) | 20ms (1.1×) | 34ms (1.9×) | **17ms** | 564ms (32.8×) | 68ms (4.0×) | 174ms (10.1×) | 158ms (9.2×) |
+| _startup_ | 3ms | 3ms | 2ms | 4ms | 17ms | 28ms | 18ms | 56ms |
 
 ## What this says
 
 **Meadow's calls and its channels are good; its arrays and its transactions are
 not.** That is the whole table in one sentence, and the spread inside Meadow's
-own column — 3.3× on `pipeline`, 550× on `matmul` — matters far more than where
+own column — 3.4× on `pipeline`, 464× on `matmul` — matters far more than where
 the column sits on average.
 
-`pipeline` at 3.3× the fastest, ahead of Java, Node, Python and forty times
-ahead of GHC's `Chan`, is a real result. Handing a value between green threads
-is what the scheduler in `rts/src/sched.rs` was built for — a thread woken by a
-message goes into the receiving worker's non-stealable next slot, so a send and
-the receive answering it happen on one core back to back — and it shows.
+`pipeline` at 3.4× the fastest is a real result. It is behind Go, which is the
+language whose whole reputation rests on this one thing, and behind Rust's
+`mpsc`, but ahead of C's mutex and condition variables, ahead of Java, Node and
+Python, and ten times ahead of GHC's `Chan`. Handing a value between green threads is what the scheduler in
+`rts/src/sched.rs` was built for — a thread woken by a message goes into the
+receiving worker's non-stealable next slot, so a send and the receive answering
+it happen on one core back to back — and it shows.
 
-`fib` at 5× C says the calling convention and the native backend are sound. This
+`fib` at 5× says the calling convention and the native backend are sound. This
 is the one task with no allocation, no arrays and no runtime services, so it is
 the closest thing here to a measurement of the compiler on its own.
 
-`matmul` at 550× is the worst number in the suite and it has a specific cause.
+`matmul` at 464× is the worst number in the suite and it has a specific cause.
 `St.get` and `St.set` are primitives, and native code does not implement
 primitives: it hands them back to the interpreter through `meadow_exec`. So
 every element read and every element written in the innermost loop leaves
@@ -153,56 +155,56 @@ machine code, enters the interpreter, does a type check and a bounds check, and
 returns. C and Rust are auto-vectorizing the same loop. The gap is roughly two
 orders of magnitude of interpreter round-trip and one of vectorization, and it
 would take inlining array access into the native backend to close any of it.
-(C and Rust here are within a few milliseconds of their process-startup floor,
-so their true ratio is larger than 550×, not smaller.)
+(Rust, C and Go here are within ten milliseconds of their process-startup floor,
+so their true ratio is larger than 464×, not smaller.)
 
-`contention` at 147× is the second worst, and is a straight comparison of two
-software transactional memories: GHC's runs the identical algorithm in 40ms and
-Meadow's in 685ms, a 17× gap between implementations of the same idea. Nothing
+`contention` at 149× is the second worst, and is a straight comparison of two
+software transactional memories: GHC's runs the identical algorithm in 41ms and
+Meadow's in 684ms, a 17× gap between implementations of the same idea. Nothing
 about the design forces that.
 
-`wordfreq` at 140× is the persistent HAMT doing the work a mutable hash table
+`wordfreq` at 119× is the persistent HAMT doing the work a mutable hash table
 does elsewhere. Some of that is inherent to keeping the map persistent and some
 is not; the interesting question is which.
 
 `binarytrees` at 12× is the mildest of Meadow's bad results, and the row is
-worth reading for its own sake: the three generational collectors with bump
-allocators (Java, GHC, V8) beat `malloc`/`free` in C and `Box` in Rust by four
-to five times. This is the classic finding of this benchmark and it reproduces
-cleanly.
+worth reading for its own sake: every generational collector with a bump
+allocator — Java, GHC, Go, V8 — beats `malloc`/`free` in C and `Box` in Rust,
+Java and GHC by four to five times and Go and V8 by about two. This is the
+classic finding of this benchmark and it reproduces cleanly.
+
+**Go is the most consistent column in the table.** It wins or ties four of the
+seven tasks, is never worse than 3.8×, and has no entry anywhere near the
+disasters the other columns each contain somewhere. It is not the fastest at
+anything by much, which is rather the point of it.
 
 **Two results are about the other languages, not Meadow.** Python's `wordfreq`
-at 52ms beats Haskell, Java and Node, because `str.split` and `collections.Counter`
-are C and the Python in that program is four lines of glue — idiomatic Python is
-often a thin wrapper over someone else's C, and that is a genuine property of
-the language rather than a cheat. And GHC's `Chan` at 872ms on `pipeline`, forty
-times behind everyone, is a boxed linked structure with an `MVar` per cell doing
-what a ring buffer does elsewhere.
+at 55ms beats Haskell, Java and Node, because `str.split` and
+`collections.Counter` are C and the Python in that program is four lines of glue
+— idiomatic Python is often a thin wrapper over someone else's C, and that is a
+genuine property of the language rather than a cheat. And GHC's `Chan` at 564ms
+on `pipeline`, thirty times behind everyone, is a boxed linked structure with an
+`MVar` per cell doing what a ring buffer does elsewhere.
 
 ## Caveats, in order of how much they matter
 
-1. **Go is written but has never been run.** There is no Go toolchain on this
-   machine, so `go build` has never seen `tasks/*/*.go`. The programs were
-   written to the same specification as the rest and may well have typos.
-   `brew install go` and `./run.py` will say. Every other language's numbers
-   above come from a run that produced the agreed checksum.
-2. **One machine, one run of the suite.** These numbers are from a 10-core
+1. **One machine, one run of the suite.** These numbers are from a 10-core
    Apple silicon laptop that was not otherwise idle. Ratios within a row are
    more trustworthy than absolute times, and nothing here is a claim about
    other hardware.
-3. **Startup is inside every number.** Node pays 59ms and Java 32ms before
+2. **Startup is inside every number.** Node pays 56ms and Java 28ms before
    their first instruction. On `fib`, where the fastest is 10ms, that is most
    of what separates the columns. Subtract the last row before drawing
    conclusions about short tasks.
-4. **`matmul` in Python is lists, not numpy.** Anybody multiplying matrices in
+3. **`matmul` in Python is lists, not numpy.** Anybody multiplying matrices in
    Python calls numpy and is then timing a BLAS written in C and Fortran. That
    is a fair thing to know and not a thing this suite measures, so the Python
    entry is the loops written out.
-5. **`contention` in JavaScript is not idiomatic.** JavaScript has no shared
+4. **`contention` in JavaScript is not idiomatic.** JavaScript has no shared
    mutable object across workers, so the accounts are a `SharedArrayBuffer` and
    the atomic step is held by a lock built from `Atomics.wait`. It is the only
    way to write the task and no working JavaScript programmer would enjoy it.
    The absence is the finding.
-6. **`tasks/startup/` is generated** by the harness and overwritten on each run.
+5. **`tasks/startup/` is generated** by the harness and overwritten on each run.
    `work/` holds build outputs, the generated corpus and `results.json`, and is
    not checked in.

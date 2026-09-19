@@ -57,21 +57,21 @@ cfg = "shop"
     write(
         &root.join("libs/text/Meadow.toml"),
         "[package]\nname = \"Text\"\nversion = { workspace = true }\n\n\
-         [dependencies]\nutil.workspace = true\n",
+         [dependencies]\nUtil.workspace = true\n",
     );
     write(
         &root.join("libs/text/src/Lib.mw"),
-        "use Std.Test\nuse util (double)\n\n@pub fun label s = \"${s} x${double 1}\"\n\n\
+        "use Std.Test\nuse Util (double)\n\n@pub fun label s = \"${s} x${double 1}\"\n\n\
          @test\nfun labels u = assertEq (label \"a\") \"a x2\" \"labels\"\n",
     );
     write(
         &root.join("app/Meadow.toml"),
         "[package]\nname = \"App\"\nversion.workspace = true\n\n[dependencies]\n\
-         util = { workspace = true }\nText = { workspace = true }\n",
+         Util = { workspace = true }\nText = { workspace = true }\n",
     );
     write(
         &root.join("app/src/Main.mw"),
-        "use Std.Test\nuse util (double, place)\nuse text (label)\n\n\
+        "use Std.Test\nuse Util (double, place)\nuse Text (label)\n\n\
          def main = (double 21, label \"b\", place)\n\n@test\nfun works u = assertEq (double 1) 2 \"works\"\n",
     );
     root
@@ -134,13 +134,13 @@ fn members_come_from_patterns_and_path_dependencies() {
     write(
         &root.join("app/Meadow.toml"),
         "[package]\nname = \"App\"\n\n[dependencies]\nUtil = { workspace = true }\n\
-         text = { workspace = true }\nextra = \"../vendor/extra\"\n",
+         Text = { workspace = true }\nExtra = \"../vendor/extra\"\n",
     );
     // A directory a pattern matches that is not a package.
     std::fs::create_dir_all(root.join("libs/notes")).unwrap();
 
     let ws = Workspace::load(&root).unwrap();
-    assert_eq!(names(&ws), ["app", "text", "util", "extra"]);
+    assert_eq!(names(&ws), ["App", "Text", "Util", "Extra"]);
     assert!(ws.default_members.is_empty());
 }
 
@@ -204,13 +204,13 @@ fn what_a_command_selects() {
 
     // `-p` from anywhere, `--workspace` less `--exclude`.
     let p = Selection {
-        packages: vec!["text".into()],
+        packages: vec!["Text".into()],
         ..Selection::default()
     };
     assert_eq!(dirs(&p, &root.join("app/src")), [root.join("libs/text")]);
     let all_but_app = Selection {
         workspace: true,
-        exclude: vec!["app".into()],
+        exclude: vec!["App".into()],
         ..Selection::default()
     };
     assert_eq!(
@@ -224,7 +224,7 @@ fn what_a_command_selects() {
     };
     let err = unknown.select(&root).unwrap_err();
     assert!(
-        err.contains("no member `nope`") && err.contains("`app`"),
+        err.contains("no member `nope`") && err.contains("`App`"),
         "{err}"
     );
 
@@ -260,14 +260,14 @@ fn members_build_together_into_one_target() {
 
     // The root's `cfg = "shop"` reached `util`, which only `app` asked for.
     assert_eq!(run(&out.each[0]), r#"(42, "b x2", "shop")"#);
-    for (built, name) in out.each.iter().zip(["app", "text"]) {
+    for (built, name) in out.each.iter().zip(["App", "Text"]) {
         let (dir, pkg) = built.package.clone().unwrap();
         assert_eq!(dir, root, "{name} builds into the workspace's target");
         assert_eq!(&*pkg, name);
     }
     // `text` is linked with what it depends on and nothing else.
     let text = out.each[1].linked.as_ref().unwrap();
-    assert!(text.packages.iter().all(|p| &*p.name != "app"));
+    assert!(text.packages.iter().all(|p| &*p.name != "App"));
 }
 
 #[test]
@@ -276,7 +276,7 @@ fn every_member_builds_with_the_root_profiles() {
     write(
         &root.join("app/Meadow.toml"),
         "[package]\nname = \"App\"\n\n[dependencies]\nUtil = { workspace = true }\n\
-         text = { workspace = true }\n\n[profile.debug]\ncfg = \"mine\"\n",
+         Text = { workspace = true }\n\n[profile.debug]\ncfg = \"mine\"\n",
     );
     let resolved = Resolved::resolve(Profile::Debug, &root.join("app"), ProfileConfig::default());
     assert!(resolved.options.cfg.has_flag("shop"));
@@ -285,11 +285,11 @@ fn every_member_builds_with_the_root_profiles() {
         "a member's own is ignored"
     );
 
-    let (ok, output) = meadow(&root, &["run", "-p", "app"]);
+    let (ok, output) = meadow(&root, &["run", "-p", "App"]);
     assert!(ok, "{output}");
     assert!(output.contains(r#"=> (42, "b x2", "shop")"#), "{output}");
-    assert!(output.contains("warning: the `[profile]` sections of `app` are ignored"));
-    assert!(root.join("target/debug/bytecode/app.mbc").is_file());
+    assert!(output.contains("warning: the `[profile]` sections of `App` are ignored"));
+    assert!(root.join("target/debug/bytecode/App.mbc").is_file());
     assert!(!root.join("app/target").exists());
 }
 
@@ -299,7 +299,7 @@ fn testing_runs_the_selected_packages_tests() {
     let (ok, output) = meadow(&root, &["test"]);
     assert!(ok, "{output}");
     assert!(output.contains("running 3 tests"), "{output}");
-    for name in ["app.works", "text.labels", "util.doubles"] {
+    for name in ["App.works", "Text.labels", "Util.doubles"] {
         assert!(output.contains(&format!("test {name} ... ok")), "{output}");
     }
 
@@ -311,11 +311,11 @@ fn testing_runs_the_selected_packages_tests() {
 
     let (ok, output) = meadow(
         &root,
-        &["test", "--workspace", "--exclude", "app", ".", "labels"],
+        &["test", "--workspace", "--exclude", "App", ".", "labels"],
     );
     assert!(ok, "{output}");
     assert!(output.contains("running 1 test\n"), "{output}");
-    assert!(output.contains("test text.labels ... ok"), "{output}");
+    assert!(output.contains("test Text.labels ... ok"), "{output}");
 
     // And a failure in one member fails the run.
     let lib = root.join("libs/util/src/Lib.mw");
@@ -323,8 +323,8 @@ fn testing_runs_the_selected_packages_tests() {
     write(&lib, &source.replace("(double 4) 8", "(double 4) 9"));
     let (ok, output) = meadow(&root, &["test", "--workspace"]);
     assert!(!ok, "{output}");
-    assert!(output.contains("test util.doubles ... FAILED"), "{output}");
-    assert!(output.contains("test app.works ... ok"), "{output}");
+    assert!(output.contains("test Util.doubles ... FAILED"), "{output}");
+    assert!(output.contains("test App.works ... ok"), "{output}");
 }
 
 #[test]
@@ -403,7 +403,7 @@ fn init_makes_a_workspace_and_members_join_it() {
     let text = member(root.join("libs").join("text"));
     assert!(text.joined.is_none());
     let ws = Workspace::load(&root).unwrap();
-    assert_eq!(names(&ws), ["app", "text", "util"]);
+    assert_eq!(names(&ws), ["App", "Text", "Util"]);
 
     // No workspace inside a workspace, and no second member of a name.
     let err = init::run(&init::Options {
@@ -415,11 +415,11 @@ fn init_makes_a_workspace_and_members_join_it() {
     assert!(err.contains("do not nest"), "{err}");
     let err = init::run(&init::Options {
         path: root.join("other"),
-        name: Some("app".into()),
+        name: Some("App".into()),
         workspace: false,
     })
     .unwrap_err();
-    assert!(err.contains("already has a member called `app`"), "{err}");
+    assert!(err.contains("already has a member called `App`"), "{err}");
 
     // And what `init` made builds.
     let (ok, output) = meadow(&root, &["build", "--workspace"]);

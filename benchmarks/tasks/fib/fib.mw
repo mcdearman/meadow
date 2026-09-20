@@ -1,7 +1,7 @@
 -- fib n, the naive way: two calls and an addition per node, nothing else.
 --
--- `Int` throughout -- an unannotated literal in Meadow is a BigInt, which is a
--- different benchmark.
+-- `Int` throughout, said outright. It is what an unannotated literal is too,
+-- and saying so keeps this the same benchmark whatever the default does.
 
 use Std.Console (println)
 

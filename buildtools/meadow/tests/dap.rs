@@ -89,10 +89,10 @@ fn a_breakpoint_stops_with_the_caller_underneath() {
     assert_eq!(st[1].1, 10, "it resumes at the call: {st:?}");
 
     // `double` is generic over its number type, so `n`'s own type is a
-    // variable; the value says what it is -- a `BigInt`, since `21` in `main`
+    // variable; the value says what it is -- an `Int`, since `21` in `main`
     // is pinned to nothing else.
     let n = local(&mut s, 0, "n");
-    assert_eq!((n.value.as_str(), n.ty.as_deref()), ("21", Some("BigInt")));
+    assert_eq!((n.value.as_str(), n.ty.as_deref()), ("21", Some("Int")));
 }
 
 #[test]

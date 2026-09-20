@@ -1,8 +1,9 @@
 //! Bit-shift operators, the bitwise primitives, and `Std.Num.Bits`.
 //!
 //! The bitwise operators work on every integer type, at that type's width. A
-//! literal nothing pins down is a `BigInt`, which has no width at all -- so the
-//! cases below that care about one say which type they mean.
+//! literal nothing pins down is an `Int`, sixty-four bits -- so the cases
+//! below that care about another width, or about having none, say which type
+//! they mean.
 
 mod common;
 use common::{eval_expr, eval_expr_std, schemes};

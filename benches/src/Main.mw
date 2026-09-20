@@ -22,21 +22,26 @@
 -- look like a free win. On this machine, against the CEK machine the bytecode
 -- VM is:
 --
---   tailFib                     14.2x - 14.4x    pure looping
---   sumList / naiveFib          10.3x - 10.6x
---   ack                          9.2x -  9.4x    deep recursion
---   buildVector / joinNumbers    7.1x -  8.0x    allocation-heavy
+--   tailFib                     340x - 470x      pure looping
+--   ack                         210x - 230x      deep recursion
+--   naiveFib                     95x             calls and nothing else
+--   sumList                      57x
+--   buildVector / joinNumbers    11x -  13x      allocation-heavy
 --
--- That ordering is the reverse of what it was, and the reversal is the finding.
--- The VM used to win *only* where a benchmark allocated data -- a copying
--- collector against reference counting -- and barely at all where it made
--- calls, because every non-trivial subexpression got a continuation object and
--- a call-heavy loop gave back what registers bought. Now a saturated call to a
--- known function is a jump, a literal folds into the instruction that uses it,
--- and a comparison fuses into the branch that tests it -- so calls and loops
--- are where the VM is furthest ahead, and allocation is its *narrowest* margin.
--- The collector was already the advantage there, and the interpreter's own work
--- is the smaller share of that benchmark.
+-- Read the ordering, not the absolute ratios. Calls and loops are where the VM
+-- is furthest ahead and allocation is its narrowest margin: the collector was
+-- always the advantage there, and the interpreter's own work is the smaller
+-- share of that benchmark.
+--
+-- These figures are 20x to 80x what this comment carried before, and the
+-- reason is not the VM: it is that an integer literal nothing pins down is now
+-- an `Int`, where it was a `BigInt`. Everything here is written without
+-- annotations, so every counter and accumulator used to be a heap-allocated
+-- number and every `+` a primitive call; now they are machine words and typed
+-- instructions. The earlier figures -- and a "regression" against still
+-- earlier ones that could not be bisected -- were measuring the default, not
+-- the machine. `naiveFib 20` is 0.15 ms, against 4.00 ms then and 1350 us in
+-- the oldest note below.
 --
 -- What is left is structural rather than an oversight. A call in argument
 -- position still has to record where to come back to, and a machine with no
@@ -47,19 +52,25 @@
 -- day. Those harnesses are not in this repository -- they need toolchains
 -- Meadow does not:
 --
---                           time     calls/s    vs Meadow
---   C (gcc -O2)             5.7 us    3.9 G        239x
---   Rust (rustc -O)        11.7 us    1.9 G        116x
---   Node 18 (V8)           37.4 us    586 M         36x
---   CPython 3.11          578   us   37.9 M        2.3x
---   Meadow VM            1350   us   16.2 M          1x
+--                           time     calls/s
+--   C (gcc -O2)             5.7 us    3.9 G
+--   Rust (rustc -O)        11.7 us    1.9 G
+--   Node 18 (V8)           37.4 us    586 M
+--   CPython 3.11          578   us   37.9 M
+--   Meadow VM            1350   us   16.2 M
+--
+-- The Meadow row is stale: the same benchmark measures 0.15 ms today (see
+-- above), and the other four rows have not been re-run, so the ratios that used
+-- to be in this table have been taken out rather than recomputed against
+-- numbers from a different day. `cargo run -p meadow -- run benches` prints the
+-- current figure; the rest need toolchains and a morning.
 --
 -- Two ways that table will mislead you. C and Rust do not make 21891 calls --
 -- their compilers inline levels of the recursion away -- so read the time and
 -- not the rate; the work is still exponential, since the times track `fib n`
 -- exactly out to n = 30. And both Python and Node here are from 2022; current
--- CPython is meaningfully faster on call-heavy code, so 2.3x is the friendly
--- reading of that gap. A scalar loop measured the same way agrees: 100 ns an
+-- CPython is meaningfully faster on call-heavy code, so the gap to it is the
+-- friendly reading. A scalar loop measured the same way agrees: 100 ns an
 -- iteration against CPython's 50 and C's ~1.
 --
 -- CPython is still the comparison worth having, because both are bytecode

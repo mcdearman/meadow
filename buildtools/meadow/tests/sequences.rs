@@ -60,7 +60,7 @@ fn one_semicolon_is_enough_to_make_a_list() {
     // one-element vector.
     assert_eq!(
         schemes_std("def a = [7;]\ndef b = [7]\ndef c = [1; 2; 3]\ndef d = [1, 2, 3]\n"),
-        "a : List BigInt\nb : [BigInt]\nc : List BigInt\nd : [BigInt]\n"
+        "a : List Int\nb : [Int]\nc : List Int\nd : [Int]\n"
     );
 }
 
@@ -74,7 +74,7 @@ fn the_empty_bracket_forms_are_distinct() {
 
 #[test]
 fn a_trailing_semicolon_is_allowed() {
-    assert_eq!(schemes_std("def a = [1; 2;]\n"), "a : List BigInt\n");
+    assert_eq!(schemes_std("def a = [1; 2;]\n"), "a : List Int\n");
 }
 
 // --- patterns ----------------------------------------------------------------

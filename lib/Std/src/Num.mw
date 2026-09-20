@@ -16,7 +16,9 @@
 --
 -- A literal takes its type from where it is used, and a function using these
 -- operators works at every type they do: `fun double n = n * 2` is
--- `forall n. n -> n`. A number nothing pins down is a `BigInt`, or a `Float`.
+-- `forall n. n -> n`. A number nothing pins down is an `Int`, or a `Float`: a
+-- machine word, which wraps past 2^63. Ask for a `BigInt` where a result has
+-- to be exact past that -- `toBigInt 2 ^ 100` -- or an annotation.
 --
 -- Converting: `toInt`, `toBigInt`, `toInt8` … `toUInt64` from any integer type
 -- (keeping the low bits between fixed widths, as Rust's `as` does, and checked
@@ -60,4 +62,5 @@ use Std.Test (assertEq, assertTrue)
 @test fun literalsTakeTheirTypeFromUse () =
   let a = assertEq (toUInt8 250 + 10) (toUInt8 4) "10 is a UInt8 here" in
   let b = assertEq (toInt16 (0 - 1) * 2) (toInt16 (0 - 2)) "and an Int16 here" in
-  assertEq (toBigInt 2 ^ 100) (2 ^ 100) "a BigInt, and the default"
+  let c = assertEq (show (toBigInt 2 ^ 100)) "1267650600228229401496703205376" "a BigInt where asked" in
+  assertEq (2 ^ 63) (0 - 2 ^ 63) "and an Int, which wraps, where not"

@@ -164,8 +164,8 @@ def main = 1  -- so is this
 
 | Type | Literals | Notes |
 |---|---|---|
-| `BigInt` | `42`, `-7`, `0xff`, `0o17`, `0b1011` | arbitrary precision; what an integer literal is by default |
-| `Int` | *(same literals)* | 64-bit, wrapping; also spelled `Int64` |
+| `Int` | `42`, `-7`, `0xff`, `0o17`, `0b1011` | 64-bit, wrapping; what an integer literal is by default; also spelled `Int64` |
+| `BigInt` | *(same literals)* | arbitrary precision, never overflows; ask for it with `toBigInt` or an annotation |
 | `Int8` `Int16` `Int32` | *(same literals)* | signed, wrapping at their width |
 | `UInt8` `UInt16` `UInt32` `UInt64` | *(same literals)* | unsigned, wrapping at their width |
 | `Float` | `3.14`, `42.0` | 64-bit; also spelled `Float64` |
@@ -181,12 +181,12 @@ def main = 1  -- so is this
 
 `+ - * / % ^` and `< > <= >=` work on **every** integer type. Both sides must
 have the same type, and a literal takes whichever type its context needs. When
-nothing settles it, an integer is a `BigInt`, so arithmetic you did not think
-about cannot overflow:
+nothing settles it, an integer is an `Int`: a 64-bit machine word, which wraps
+past 2^63. Where a result has to be exact beyond that, say `BigInt`:
 
 ```meadow
-def big   = 2 ^ 100
-def small = toInt 2 ^ 62
+def big   = toBigInt 2 ^ 100
+def small = 2 ^ 62
 def byte  = toUInt8 250 + 6
 
 def main = (big, small, byte)
@@ -196,9 +196,10 @@ def main = (big, small, byte)
 => (1267650600228229401496703205376, 4611686018427387904, 0)
 ```
 
-The fixed-width types wrap at their width, as `byte` shows. Mixing two of them
-is a type error rather than a silent conversion: `toInt 1 + toInt32 1` does not
-compile. Say which one you mean with a conversion (below).
+Every fixed-width type wraps at its width, as `byte` shows and as `2 ^ 64`
+would. Mixing two of them is a type error rather than a silent conversion:
+`toInt 1 + toInt32 1` does not compile. Say which one you mean with a
+conversion (below).
 
 Floating point keeps its own operators, `+. -. *. /.` and `<. >. <=. >=.`, which
 work on `Float` and `Float32`. A float literal nothing settles is a `Float`.
@@ -218,11 +219,12 @@ def main = (square 12, square (toUInt8 20))
 
 `square : forall n. n -> n`, and `20 * 20` wraps to `144` as a `UInt8`. Only
 `fun` is generic in this way: a `def` or a `let` has one number type, settled
-by how it is used, or `BigInt` if nothing uses it at a particular one.
+by how it is used, or `Int` if nothing uses it at a particular one.
 
-A `BigInt` costs more than a machine word. In a loop that runs millions of
-times, pin the counter to `Int` with an annotation — `fun go (i : Int) acc = ...`
-— and every literal it meets follows.
+A `BigInt` costs more than a machine word — it lives on the heap — which is why
+it is not the default. Where a computation must not wrap, pin it with an
+annotation — `fun fact (n : BigInt) = ...` — and every literal it meets
+follows.
 
 Equality is different again: `==` and `!=` are **structural and work at any
 type** — tuples, lists, constructors, records, anything.
@@ -3327,8 +3329,8 @@ built on it and is worth reading as a worked example.
 ### Gotchas, collected
 
 - `%` follows the sign of the dividend: `(-7) % 3` is `-1`.
-- An integer literal nothing pins down is a `BigInt`; annotate a hot loop's
-  counter as `Int`.
+- An integer literal nothing pins down is an `Int`, which wraps at 64 bits;
+  annotate a result that must be exact past 2^63 as `BigInt`.
 - A byte is a `UInt8`, and so is arithmetic on it: `toInt (b - 48)` before
   accumulating digits.
 - `+` is for integers and `+.` for floats; two different integer types never mix

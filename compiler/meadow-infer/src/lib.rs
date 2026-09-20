@@ -179,7 +179,7 @@ pub enum VarKind {
     /// A `fun` generalizes over it -- `fun add a b = a + b` is
     /// `forall n. n -> n -> n` -- and a `def` or `let` does not, so `def x = 5`
     /// is one number rather than a family of them. One left over defaults to
-    /// `BigInt` (see `Arena::default_num_vars`). Printed `n`, `n1`, ….
+    /// `Int` (see `Arena::default_num_vars`). Printed `n`, `n1`, ….
     Num,
     /// The same for **float** types, `Float` (`Float64`) and `Float32`: what a
     /// float literal and `+.` and friends have. Defaults to `Float`. Printed
@@ -606,8 +606,18 @@ impl Arena {
         }
     }
 
-    /// Bind every still-unbound `Num` var to `BigInt` and `Frac` var to `Float`:
-    /// a number nothing ever pinned to a type. Run once, at the end of inference.
+    /// Bind every still-unbound `Num` var to `Int` and `Frac` var to `Float`: a
+    /// number nothing ever pinned to a type. Run once, at the end of inference.
+    ///
+    /// `Int`, not `BigInt`. It was `BigInt` -- the type that cannot overflow --
+    /// on the grounds that a program that never says what its numbers are
+    /// should at least get the right answer. The cost was that every program
+    /// that never says what its numbers are ran on heap-allocated integers:
+    /// `def work = [30, 30, 30]` was a list of `BigInt`s, and a loop over it
+    /// was an allocation and a primitive call per step where a machine word
+    /// would have done. A number that needs to be exact past 2^63 says so with
+    /// `toBigInt` or an annotation, the same way one that needs to be eight
+    /// bits does.
     fn default_num_vars(&mut self, quantified: &HashSet<u32>) {
         for (id, slot) in self.slots.iter_mut().enumerate() {
             if quantified.contains(&(id as u32)) {
@@ -617,7 +627,7 @@ impl Arena {
                 Slot::Unbound {
                     kind: VarKind::Num, ..
                 } => {
-                    *slot = Slot::Bound(Type::con("BigInt"));
+                    *slot = Slot::Bound(Type::int());
                 }
                 Slot::Unbound {
                     kind: VarKind::Frac,

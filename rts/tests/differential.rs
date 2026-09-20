@@ -967,10 +967,18 @@ fn a_fixed_width_integer_wraps_at_its_width() {
     assert_eq!(agree("def main = toInt16 40000"), "-25536");
 }
 
+/// A number nothing pins down is an `Int`, and an `Int` wraps: `2 ^ 64` is
+/// `0`. Where a result has to be exact past 2^63 the program says `BigInt`,
+/// and gets it. (It was the other way round: the default was `BigInt`, and
+/// every program that never said what its numbers were paid for the heap.)
 #[test]
-fn an_unconstrained_literal_is_a_bigint_and_does_not_overflow() {
-    assert_eq!(agree("def main = 2 ^ 64"), "18446744073709551616");
-    assert_eq!(agree("def main = toInt 2 ^ 64"), "0");
+fn an_unconstrained_literal_is_an_int_and_wraps() {
+    assert_eq!(agree("def main = 2 ^ 64"), "0");
+    assert_eq!(agree("def main = toBigInt 2 ^ 64"), "18446744073709551616");
+    assert_eq!(
+        agree("def big : BigInt = 2 ^ 64\ndef main = big"),
+        "18446744073709551616"
+    );
 }
 
 #[test]
@@ -1246,14 +1254,15 @@ const FIB: &str = "fun fib n =
 
 #[test]
 fn a_generic_function_computes_at_the_type_it_is_called_at() {
-    // `fib 100` defaults to `BigInt`: exact, not wrapped.
+    // `fib 100` defaults to `Int`: wrapped. Where its answer meets a
+    // `BigInt`, it is computed as one: exact.
     assert_eq!(
-        agree(&format!("{FIB}def main = fib 100")),
+        agree(&format!("{FIB}def main = toBigInt 0 + fib 100")),
         "354224848179261915075"
     );
     assert_eq!(
         agree(&format!(
-            "{FIB}def main = (toInt 0 + fib 100, fib (toUInt8 13) + toUInt8 0)"
+            "{FIB}def main = (fib 100, fib (toUInt8 13) + toUInt8 0)"
         )),
         "(3736710778780434371, 233)"
     );
@@ -1306,17 +1315,20 @@ fn a_literal_in_generic_code_wraps_at_the_width_it_is_used_at() {
 fn a_generic_local_is_copied_for_each_type_in_its_scope() {
     let src = "fun f u =
                  let g x = x + 1 in
-                 (g (toUInt8 255), g (toInt8 127), g 9223372036854775807)
+                 (g (toUInt8 255), g (toInt8 127), g (toBigInt 9223372036854775807), g 9223372036854775807)
                def main = f ()";
-    assert_eq!(agree(src), "(0, -128, 9223372036854775808)");
+    assert_eq!(
+        agree(src),
+        "(0, -128, 9223372036854775808, -9223372036854775808)"
+    );
 }
 
 #[test]
 fn a_generic_function_passed_as_a_value_is_copied_too() {
     let src = "fun addOne x = x + 1
                fun apply f x = f x
-               def main = (apply addOne (toUInt8 255), apply addOne 9223372036854775807)";
-    assert_eq!(agree(src), "(0, 9223372036854775808)");
+               def main = (apply addOne (toUInt8 255), apply addOne (toBigInt 9223372036854775807), apply addOne 9223372036854775807)";
+    assert_eq!(agree(src), "(0, 9223372036854775808, -9223372036854775808)");
 }
 
 #[test]

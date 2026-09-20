@@ -43,9 +43,13 @@ fn integer_overflow_wraps_rather_than_panicking() {
     // And so must every fixed width, at its own.
     assert_eq!(eval_expr_std("toUInt8 255 + 1"), "0");
     assert_eq!(eval_expr_std("toInt32 2147483647 + 1"), "-2147483648");
-    // A `BigInt`, the default, does not overflow at all.
+    // An `Int`, the default, wraps too; a `BigInt` does not overflow at all.
     assert_eq!(
         eval_expr_std("9223372036854775807 + 1"),
+        "-9223372036854775808"
+    );
+    assert_eq!(
+        eval_expr_std("toBigInt 9223372036854775807 + 1"),
         "9223372036854775808"
     );
 }

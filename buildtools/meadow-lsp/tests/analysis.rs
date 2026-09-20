@@ -237,11 +237,11 @@ fn a_parenthesised_parameter_still_gets_a_result_type() {
 
 #[test]
 fn a_lambda_gets_its_parameters_but_no_result_type() {
-    // `\(n : BigInt) -> …` is writable; a result type there is not. A `def`
-    // does not generalize a number class, so the literal defaults to `BigInt`.
+    // `\(n : Int) -> …` is writable; a result type there is not. A `def`
+    // does not generalize a number class, so the literal defaults to `Int`.
     assert_eq!(
         hinted("def f = \\n -> n + 1\n"),
-        "def f = \\(n : BigInt) -> n + 1\n"
+        "def f = \\(n : Int) -> n + 1\n"
     );
 }
 
@@ -1148,7 +1148,7 @@ fn top_level_definitions_are_listed_for_debugging() {
         [
             ("double", 1, "n -> n"),
             ("pair", 2, "a -> b -> (a, b)"),
-            ("answer", 0, "BigInt")
+            ("answer", 0, "Int")
         ]
     );
     let double = &a.functions[0];

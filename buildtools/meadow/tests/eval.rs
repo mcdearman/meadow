@@ -134,19 +134,19 @@ fn non_exhaustive_match() {
 
 #[test]
 fn bigint_beyond_i64() {
-    // A number nothing pins down is a `BigInt`, so `2 ^ 100` is exact -- where
-    // an `Int` would wrap.
-    insta::assert_snapshot!(eval_expr("2 ^ 100"));
-    insta::assert_snapshot!(eval_expr("toInt 2 ^ 100"), @"0");
+    // A number nothing pins down is an `Int`, which wraps; asked for, a
+    // `BigInt` is exact.
+    insta::assert_snapshot!(eval_expr("toBigInt 2 ^ 100"));
+    insta::assert_snapshot!(eval_expr("2 ^ 100"), @"0");
 }
 
 #[test]
 fn bigint_factorial() {
     // `25!` overflows i64. `fact` is generic over its number type, and `25` in
-    // `main` is a `BigInt`, so every literal in `fact` becomes one too.
+    // `main` is made a `BigInt`, so every literal in `fact` becomes one too.
     insta::assert_snapshot!(eval_main(
         "fun fact n = if n == 0 then 1 else n * fact (n - 1)\n\
-         def main = fact 25\n"
+         def main = fact (toBigInt 25)\n"
     ));
 }
 

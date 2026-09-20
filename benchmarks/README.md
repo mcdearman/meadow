@@ -335,6 +335,26 @@ promotes trees and closures and reads them natively. And a wrong encoding for
 with the system assembler and comparing bytes, which is how they are all
 checked now.
 
+### A change to the language: `Int` is the default
+
+An integer literal nothing pins down was a `BigInt`; it is now an `Int`. This
+suite is unmoved by it, because every program here annotates its numbers -- the
+benchmark was written to measure the compiler, not the default. Unannotated
+code is another matter. A program of the shape a person writes first --
+
+```meadow
+fun fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+fun sumTo n acc = if n == 0 then acc else sumTo (n - 1) (acc + n)
+def work = [30, 30, 30, 30]
+```
+
+-- ran in **6.3s** under the old default and runs in **0.09s** under the new
+one: 70×, from having machine words instead of heap-allocated numbers and typed
+instructions instead of primitive calls. `benches/`, the VM-against-CEK package,
+is unannotated too, and its ratios rose 20–80× for the same reason. What was
+given up is that `2 ^ 64` is now `0` unless the program says `BigInt`, which
+`docs/TUTORIAL.md` now says in the same place it used to say the opposite.
+
 ### The second round: the compiler
 
 **Registers were never reused.** A name got a register when it was bound and

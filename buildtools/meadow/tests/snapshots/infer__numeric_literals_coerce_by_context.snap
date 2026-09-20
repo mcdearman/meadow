@@ -2,8 +2,8 @@
 source: meadow/tests/infer.rs
 expression: "schemes(\"def a = 1 + 2\\ndef b = toUInt8 1 + 2\\ndef c = 1 + toInt 2\\ndef d = 5\\ndef e = 1.5 +. 2.0\\n\")"
 ---
-a : BigInt
+a : Int
 b : UInt8
 c : Int
-d : BigInt
+d : Int
 e : Float

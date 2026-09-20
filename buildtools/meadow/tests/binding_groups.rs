@@ -69,7 +69,7 @@ fun wrap x = (x, x)
     assert_eq!(eval_main(src), "((1, 1), (\"s\", \"s\"))");
     assert_eq!(
         schemes("fun wrap x = (x, x)\nfun both = (wrap 1, wrap \"s\")\n"),
-        "wrap : forall a. a -> (a, a)\nboth : ((BigInt, BigInt), (String, String))\n"
+        "wrap : forall a. a -> (a, a)\nboth : ((Int, Int), (String, String))\n"
     );
 }
 

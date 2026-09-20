@@ -33,7 +33,7 @@ The two split the way Rust's do:
 
 | | |
 |---|---|
-| `meadow` | the build system — `build`, `run`, `test`, `add`, `update`, `fmt` |
+| `meadow` | the build system — `build`, `run`, `test`, `add`, `update`, `fmt`, `clean` |
 | `meadowup` | the toolchain — which version of Meadow you have, and where |
 
 ```sh

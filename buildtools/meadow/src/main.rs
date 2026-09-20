@@ -75,6 +75,15 @@ enum Cmd {
         /// many collections, how long they took, and how much they copied.
         #[arg(long)]
         gc_stats: bool,
+        /// Sample where the program spends itself and write folded stacks to
+        /// this file, for `flamegraph.pl` or speedscope. Needs a build that
+        /// carries debug info, which is what a debug build is.
+        #[arg(long, value_name = "FILE")]
+        profile_to: Option<std::path::PathBuf>,
+        /// Block entries between samples, with `--profile-to`. Fewer is a
+        /// finer profile and a slower run.
+        #[arg(long, value_name = "N", default_value_t = meadow_rts::profile::EVERY)]
+        sample_every: u64,
         /// Which collector the VM uses: `generational` (the default: a nursery,
         /// and an old generation marked concurrently, for short pauses) or
         /// `copying` (one space, copied whole). `MEADOW_GC` sets the same.
@@ -233,6 +242,22 @@ enum Cmd {
         /// The package to add it to.
         #[arg(long, default_value = ".", value_name = "DIR")]
         path: PathBuf,
+    },
+    /// Remove what a build wrote: the package's `target` directory, with the
+    /// images, executables and incremental cache in it.
+    ///
+    /// Sources, `Meadow.toml` and `meadow.lock` are not touched, and neither is
+    /// anything fetched into the dependency cache, which other packages share.
+    Clean {
+        /// The package, or a workspace, whose `target` to remove.
+        #[arg(default_value = ".", value_name = "PATH")]
+        path: PathBuf,
+        /// Only this profile's, rather than all of them.
+        #[arg(long, value_name = "NAME")]
+        profile: Option<String>,
+        /// Say what would be removed without removing it.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Bring a package's dependencies forward to what their branches and tags
     /// now name, rewriting `meadow.lock`.
@@ -407,6 +432,8 @@ impl ProfileArgs {
             prune: self.no_prune.then_some(false),
             cfg: (!self.cfg.is_empty())
                 .then(|| meadow_compiler::intern::InternedString::from(self.cfg.join(","))),
+            // Asked for on the command line with `--profile-to`, not here.
+            profile: None,
         }
     }
 
@@ -492,6 +519,7 @@ fn main() {
                     None,
                     Listing { types, annotations },
                     false,
+                    None,
                     &emit,
                     profile,
                     &target,
@@ -512,6 +540,8 @@ fn main() {
             profile,
             engine,
             gc_stats,
+            profile_to,
+            sample_every,
             gc,
             target,
             args,
@@ -544,6 +574,7 @@ fn main() {
                     annotations: false,
                 },
                 gc_stats,
+                profile_to.map(|to| (to, sample_every)),
                 &[],
                 profile,
                 &target,
@@ -724,6 +755,28 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Some(Cmd::Clean {
+            path,
+            profile,
+            dry_run,
+        }) => match meadow::clean::run(&path, profile.as_deref(), dry_run) {
+            Ok(out) if out.removed.is_empty() => {
+                status::status("Clean", "nothing to remove".to_string());
+            }
+            Ok(out) => {
+                let what = if dry_run { "Would remove" } else { "Removed" };
+                for dir in &out.removed {
+                    status::status(
+                        what,
+                        format!("{} ({})", dir.display(), meadow::clean::bytes(out.bytes)),
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        },
         Some(Cmd::Update {
             only,
             path,
@@ -794,6 +847,7 @@ fn build(
     engine: Option<Engine>,
     listing: Listing,
     gc_stats: bool,
+    sampling: Option<(PathBuf, u64)>,
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
@@ -832,6 +886,7 @@ fn build(
         engine,
         listing,
         gc_stats,
+        sampling,
         emit,
         profile,
         target,
@@ -992,6 +1047,7 @@ fn build_many(
             None,
             listing,
             false,
+            None,
             emit,
             profile,
             target,
@@ -1025,6 +1081,7 @@ fn finish(
     engine: Option<Engine>,
     listing: Listing,
     gc_stats: bool,
+    sampling: Option<(PathBuf, u64)>,
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
@@ -1156,6 +1213,66 @@ fn finish(
                 }
             ),
         );
+        // Sampling wants an image that carries debug info, which is what its
+        // frames are named by, so it compiles its own -- the same instructions,
+        // and more in the image beside them.
+        // `--profile-to` says where; `profile = true` in the manifest asks for
+        // one without saying, and gets it beside the build.
+        let sampling = sampling.or_else(|| {
+            profile.sample.then(|| {
+                let to = match package {
+                    Some((root, _)) => root
+                        .join("target")
+                        .join(profile.profile.name())
+                        .join("profile.folded"),
+                    None => std::path::PathBuf::from("profile.folded"),
+                };
+                (to, meadow_rts::profile::EVERY)
+            })
+        });
+        if let Some((to, every)) = sampling {
+            let result = match runtime::compile_for_profile(&program, profile.opt()) {
+                Err(e) => Err(e),
+                Ok(image) => match runtime::native(&image, engine, profile.opt()) {
+                    Err(e) => Err(e),
+                    Ok(jit) => {
+                        let (result, profile, stats) =
+                            runtime::run_image_sampled(&image, jit.as_ref(), every);
+                        #[cfg(feature = "profile-alloc")]
+                        if !stats.sites.is_empty() {
+                            // Beside the samples: where the garbage came from.
+                            let beside = to.with_extension("alloc");
+                            let text = meadow::samples::allocation(&stats.sites, &image);
+                            if std::fs::write(&beside, text).is_ok() {
+                                status::status("Allocation", beside.display().to_string());
+                            }
+                        }
+                        let _ = &stats;
+                        match profile {
+                            None => eprintln!("profile: nothing was sampled"),
+                            Some(p) => {
+                                eprintln!("{}", meadow::samples::summary(&p));
+                                let folded = meadow::samples::folded(&p, &image);
+                                match std::fs::write(&to, folded) {
+                                    Ok(()) => status::status("Profile", to.display().to_string()),
+                                    Err(e) => eprintln!("profile: {}: {e}", to.display()),
+                                }
+                            }
+                        }
+                        result
+                    }
+                },
+            };
+            match result {
+                Ok(value) => println!("=> {value}"),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+
         let (result, stats) = match &image {
             Some(image) => match runtime::native(image, engine, profile.opt()) {
                 Ok(jit) => runtime::run_image_with_stats(image, jit.as_ref()),

@@ -138,6 +138,7 @@ fn a_manifest_configures_the_build_profiles() {
             backend: None,
             prune: None,
             cfg: None,
+            profile: None,
         },
     );
     assert_eq!(flagged.opt(), OptLevel::O0);
@@ -213,6 +214,39 @@ fn a_manifest_chooses_the_backend() {
 
 /// Pruning is on in every profile; a manifest can turn it off for one, and a
 /// flag beats the manifest.
+/// `profile = true` in a `[profile.<name>]` asks for the run to be sampled,
+/// and keeps the debug info a profile's frames are named by -- which an
+/// optimizing build would otherwise drop.
+#[test]
+fn a_profile_section_can_ask_to_be_profiled() {
+    use meadow::package::ProfileConfig;
+    use meadow::profile::{Profile, Resolved};
+
+    let dir = std::env::temp_dir().join("meadow-profiled-manifest");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(
+        dir.join("Meadow.toml"),
+        "[package]\n\
+         name = \"Watched\"\n\
+         \n\
+         [profile.debug]\n\
+         profile = true\n",
+    )
+    .unwrap();
+
+    let debug = Resolved::resolve(Profile::Debug, &dir, ProfileConfig::default());
+    assert!(debug.sample, "the manifest asked to be profiled");
+    assert!(
+        debug.options.debug_info,
+        "which is what names a profile's frames"
+    );
+
+    // And a profile that did not ask is left alone.
+    let release = Resolved::resolve(Profile::Release, &dir, ProfileConfig::default());
+    assert!(!release.sample);
+}
+
 #[test]
 fn prune_is_on_unless_a_manifest_or_a_flag_says_otherwise() {
     use meadow::package::ProfileConfig;

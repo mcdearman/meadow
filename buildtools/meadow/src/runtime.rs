@@ -489,6 +489,61 @@ pub fn run_tests_jit_at_watched(
 }
 
 /// `core` → AxCut → bytecode.
+/// [`compile`], also recording the debug info a profile's frames are named by.
+///
+/// The code is the same instruction for instruction -- see
+/// [`meadow_codegen::compile_with_debug_info`] -- so a profile of this is a
+/// profile of the program that would have run without it.
+pub fn compile_for_profile(
+    program: &core::Program,
+    opt: OptLevel,
+) -> Result<meadow_bytecode::Program, String> {
+    let lowered = meadow_seq::lower_program(program, opt);
+    if !lowered.unsupported.is_empty() {
+        return Err(format!(
+            "the back end cannot translate {:?} yet; try --cek",
+            lowered.unsupported
+        ));
+    }
+    meadow_codegen::compile_with_debug_info(&lowered.program).map_err(|e| e.msg)
+}
+
+/// Run `image` taking a sample every `every` blocks entered, and hand back what
+/// the samples came to along with the result.
+pub fn run_image_sampled(
+    image: &meadow_bytecode::Program,
+    native: Option<&meadow_rts::jit::Native>,
+    every: u64,
+) -> (
+    Result<String, String>,
+    Option<meadow_rts::profile::Profile>,
+    meadow_rts::sched::Stats,
+) {
+    let Some(entry) = image.entry else {
+        return (
+            Err("program has no entry point".to_string()),
+            None,
+            Default::default(),
+        );
+    };
+    let outcome = meadow_rts::sched::run_sampled(
+        image,
+        native,
+        entry,
+        UNBOUNDED,
+        meadow_rts::sched::workers(),
+        Some(meadow_rts::sched::Sampling {
+            every,
+            depth: meadow_rts::profile::DEPTH,
+        }),
+    );
+    (
+        outcome.result.map_err(|e| e.msg),
+        outcome.profile,
+        outcome.stats,
+    )
+}
+
 pub fn compile(program: &core::Program, opt: OptLevel) -> Result<meadow_bytecode::Program, String> {
     let lowered = meadow_seq::lower_program(program, opt);
     if !lowered.unsupported.is_empty() {

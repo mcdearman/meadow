@@ -893,7 +893,79 @@ The rule has three consequences:
 | shared data | compact regions and `TVar`s, read in place by every thread |
 | communication | copy-on-send parcels over channels, `await` results |
 
-## 7. Where to read next
+## 7. Profiling
+
+```sh
+meadow run --backend vm --profile-to out.folded --sample-every 5000 mypkg
+```
+
+writes **folded stacks** -- one line per stack, outermost frame first, frames
+separated by `;`, then a count -- which `flamegraph.pl` and speedscope both
+read, and which is legible on its own:
+
+```text
+row;escape 323904
+band;row 25001
+row 4812
+```
+
+### Where a stack comes from, when the machine has none
+
+There is no call stack ([section 2](#there-is-no-call-stack)). There is a chain
+of continuation objects: the function running holds the one it will answer,
+that one captured the one *its* caller will answer, down to the `halt`. So the
+stack is on the heap, and walking the chain is walking it.
+
+Three things make the walk possible, and all three were already there for the
+debugger: `DebugInfo::env_of`/`envs` say which name is in which register at a
+pc, `returns` says which name is a function's *own* return continuation (as
+against `continuations`, the ones it makes for calls it makes), and a closure
+keeps its captures in fields `0..len` in the order its method takes them -- so
+the register a name sits in at a method's entry is the field it was captured
+into. Each link's method-0 entry pc is a return address, which is the frame
+below.
+
+### What it measures, and what it does not
+
+Samples are taken where the machine enters a block, so what is counted is
+instructions rather than seconds; time in the collector is not here, and
+`--gc-stats` is where that lives.
+
+**Use `--backend vm` to profile.** Native code goes from one block to the next
+without returning to the machine -- that is the point of chaining -- so a JIT or
+ahead-of-time run is sampled far too rarely to say anything. The interpreter
+enters the machine at every instruction, and what is hot in a program is the
+same either way: a profile answers *which of my functions*, not *which of my
+machine instructions*.
+
+A package can ask for this instead of remembering the flags, in its
+`Meadow.toml`:
+
+```toml
+[profile.debug]
+profile = true
+```
+
+which keeps the debug info and samples every run into
+`target/debug/profile.folded`.
+
+A profile needs debug info to name anything, so `--profile-to` compiles its own
+image with it. The code is the same instruction for instruction
+(`meadow_codegen::compile_with_debug_info`), so what is measured is the program
+that would have run.
+
+### Where the garbage comes from
+
+```sh
+cargo build --features profile-alloc      # in rts/
+```
+
+charges every allocation to the instruction that asked for it
+(`profile::Sites`). It is off by default and compiled out entirely when it is:
+the accounting sits on the bump allocator, which is the fast path the
+generational collector exists to have.
+
+## 8. Where to read next
 
 | topic | file |
 |---|---|
@@ -902,6 +974,7 @@ The rule has three consequences:
 | register allocation, GC maps, typed ops | `compiler/meadow-codegen/src/lib.rs` |
 | the instruction set and image format | `compiler/meadow-bytecode/src/lib.rs`, `image.rs` |
 | specialization | `compiler/meadow-core/src/specialize.rs` |
+| the thin instruction set | `rts/src/codegen/thin.rs` |
 | the interpreter | `rts/src/vm.rs`, `prims.rs` |
 | the native ABI | `rts/src/abi.rs` |
 | the code generator | `rts/src/codegen/mod.rs`, `a64.rs`, `x64.rs` |
@@ -912,5 +985,7 @@ The rule has three consequences:
 | old generation, marking, evacuation | `rts/src/old.rs`, `mark.rs`, `evacuate.rs` |
 | regions and STM | `rts/src/region.rs`, `stm.rs` |
 | the scheduler | `rts/src/sched.rs` |
+| profiling, and the stack the machine has not got | `rts/src/profile.rs`, `buildtools/meadow/src/samples.rs` |
+| join points | `compiler/meadow-core/src/joins.rs` |
 | unhandled effects | `rts/src/native.rs` |
 | what may cross threads | `compiler/meadow-core/src/thread.rs`, `compact.rs`, `stm.rs` |

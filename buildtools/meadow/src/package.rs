@@ -189,6 +189,10 @@ pub struct ProfileConfig {
     /// Flags for `@cfg(…)` to test, comma-separated: `cfg = "fast, feature=gpu"`.
     /// Added to whatever the layer below turned on.
     pub cfg: Option<InternedString>,
+    /// `profile = true`: build so this can be profiled, and sample it when it
+    /// runs -- see [`crate::profile::Resolved::sample`]. Carries the debug info
+    /// a profile's frames are named by, which an ordinary release build drops.
+    pub profile: Option<bool>,
 }
 
 impl ProfileConfig {
@@ -197,7 +201,9 @@ impl ProfileConfig {
         Options {
             opt: self.opt.unwrap_or(base.opt),
             strictness: self.strictness.unwrap_or(base.strictness),
-            debug_info: base.debug_info,
+            // A profile's frames are named by the debug info, so asking to
+            // profile is asking to keep it.
+            debug_info: base.debug_info || self.profile.unwrap_or(false),
             entry_name: base.entry_name,
             cfg: match self.cfg {
                 Some(flags) => base.cfg.with_flags(&flags),
@@ -1018,6 +1024,13 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
                     "cfg" => p.cfg = Some(InternedString::from(unquote(value))),
                     "prune" => {
                         p.prune = match unquote(value) {
+                            "true" => Some(true),
+                            "false" => Some(false),
+                            _ => None,
+                        }
+                    }
+                    "profile" => {
+                        p.profile = match unquote(value) {
                             "true" => Some(true),
                             "false" => Some(false),
                             _ => None,

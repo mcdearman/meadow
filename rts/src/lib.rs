@@ -77,6 +77,7 @@ pub mod object;
 pub mod old;
 pub mod pauses;
 mod prims;
+pub mod profile;
 pub mod region;
 pub mod sched;
 mod show;

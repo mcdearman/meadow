@@ -184,6 +184,11 @@ pub struct Vm<'p> {
     /// across the boundary here rather than through it.
     pub(crate) halted: Option<Value>,
     pub(crate) failure: Option<Error>,
+    /// Samples, when someone asked for them. `None` costs one branch at each
+    /// block the machine enters and nothing else -- see
+    /// [`crate::profile`]. Last, because native code reaches the fields above
+    /// by fixed offsets and must not be made to care about this one.
+    pub profile: Option<Box<crate::profile::Profile>>,
 }
 
 // The method table pointers point into the `Native` the machine was given,
@@ -280,6 +285,7 @@ impl<'p> Vm<'p> {
             native: None,
             halted: None,
             failure: None,
+            profile: None,
         }
     }
 
@@ -404,6 +410,13 @@ impl<'p> Vm<'p> {
             return err(format!("pc {} is outside the program", self.pc));
         };
         self.at = self.pc;
+        #[cfg(feature = "profile-alloc")]
+        {
+            // So the heap can charge what it bumps to the instruction that
+            // asked for it. One store per instruction, and only when someone
+            // asked for an allocation profile.
+            self.heap.at = self.pc as meadow_bytecode::Pc;
+        }
         self.pc += 1;
         self.steps += 1;
         self.exec(i)
@@ -414,10 +427,83 @@ impl<'p> Vm<'p> {
     /// instruction if not. `Some` means the program halted.
     #[inline]
     pub fn advance(&mut self) -> Result<Option<Value>, Error> {
+        if self.profile.is_some() {
+            self.sample();
+        }
         match self.native.and_then(|n| n.at(self.pc)) {
             Some(f) => crate::abi::enter(self, f),
             None => self.step(),
         }
+    }
+
+    /// Take a sample, if this entry is one.
+    ///
+    /// Split from the walk so that the borrow of the profile ends before the
+    /// machine is read: the walk wants all of `self`.
+    fn sample(&mut self) {
+        let depth = match &mut self.profile {
+            Some(p) => {
+                if !p.due() {
+                    return;
+                }
+                p.depth()
+            }
+            None => return,
+        };
+        let stack = self.stack(depth);
+        if let Some(p) = &mut self.profile {
+            p.record(stack);
+        }
+    }
+
+    /// The pcs on the machine's stack, innermost first.
+    ///
+    /// There is no stack; there is a chain of continuations, and walking it is
+    /// the same walk. See [`crate::profile`] for why each link's method-0 entry
+    /// pc is the frame below.
+    ///
+    /// Answers one frame -- where the machine is -- when the program carries no
+    /// debug info, or when the chain runs into something that is not a closure,
+    /// which is how it ends: the bottom of every chain is the `halt`.
+    pub fn stack(&self, depth: usize) -> Vec<meadow_bytecode::Pc> {
+        let mut out = Vec::with_capacity(8);
+        out.push(self.pc as meadow_bytecode::Pc);
+        let Some(debug) = self.program.debug.as_deref() else {
+            return out;
+        };
+        let Some(reg) = crate::profile::continuation_reg(debug, self.pc) else {
+            return out;
+        };
+        let mut at = self.reg(reg) as crate::value::Addr;
+
+        while out.len() < depth {
+            if !self.heap.holds_object(at) || self.heap.kind(at) != Kind::Closure {
+                break;
+            }
+            let table = self.heap.meta(at) as usize;
+            let Some(&entry) = self
+                .program
+                .methods
+                .get(table)
+                .and_then(|methods| methods.first())
+            else {
+                break;
+            };
+            out.push(entry);
+            // The link below: the capture that is *that* function's return
+            // continuation. A closure's captures are its method's first
+            // parameters, in order, so the register a name is in at the
+            // method's entry is the field it was captured into.
+            let captures = self.heap.len(at);
+            let Some(next) = crate::profile::continuation_reg(debug, entry as usize) else {
+                break;
+            };
+            if next as usize >= captures {
+                break;
+            }
+            at = self.heap.field_word(at, next as usize) as crate::value::Addr;
+        }
+        out
     }
 
     /// Carry out `i`, the instruction before the pc -- which a jump moves.

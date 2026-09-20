@@ -12,6 +12,7 @@
 pub mod add;
 pub mod aot;
 pub mod artifacts;
+pub mod clean;
 pub mod complete;
 pub mod dap;
 pub mod editor;
@@ -27,6 +28,7 @@ pub mod pipeline;
 pub mod proc;
 pub mod profile;
 pub mod runtime;
+pub mod samples;
 pub mod semver;
 pub mod status;
 pub mod stdlib;

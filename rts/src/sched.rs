@@ -85,6 +85,8 @@ pub struct Outcome {
     /// The main thread's result, rendered, or why it failed.
     pub result: Result<String, Error>,
     pub stats: Stats,
+    /// Every thread's samples, merged. `None` unless the run was sampled.
+    pub profile: Option<crate::profile::Profile>,
 }
 
 /// The collectors' work, summed over every thread that finished.
@@ -101,6 +103,10 @@ pub struct Stats {
     /// Threads taken from another worker's queue.
     pub stolen: u64,
     pub pauses: crate::pauses::Pauses,
+    /// What each instruction allocated, summed over every thread. Only under
+    /// `--features profile-alloc` -- see [`crate::profile::Sites`].
+    #[cfg(feature = "profile-alloc")]
+    pub sites: crate::profile::Sites,
     /// Slots promoted to old generations, marking cycles, and time spent
     /// marking on any thread.
     pub promoted: u64,
@@ -129,6 +135,8 @@ impl Stats {
         self.mark_nanos += heap.mark_nanos;
         self.evacuated += heap.evacuated;
         self.evacuated_blocks += heap.evacuated_blocks;
+        #[cfg(feature = "profile-alloc")]
+        self.sites.merge(&heap.sites);
     }
 }
 
@@ -153,6 +161,17 @@ pub fn run_with(program: &Program, entry: Pc, fuel: u64, workers: usize) -> Outc
     run_native(program, None, entry, fuel, workers)
 }
 
+/// How often to sample a run, and how deep -- see [`crate::profile`].
+///
+/// Every green thread gets its own [`crate::profile::Profile`], because every
+/// green thread is its own machine with its own stack of continuations, and a
+/// run's profile is all of them merged.
+#[derive(Debug, Clone, Copy)]
+pub struct Sampling {
+    pub every: u64,
+    pub depth: usize,
+}
+
 /// [`run_with`], with native code for some or all of the program's blocks --
 /// every thread runs it where there is some, and the bytecode where not.
 pub fn run_native(
@@ -161,6 +180,18 @@ pub fn run_native(
     entry: Pc,
     fuel: u64,
     workers: usize,
+) -> Outcome {
+    run_sampled(program, native, entry, fuel, workers, None)
+}
+
+/// [`run_native`], sampled.
+pub fn run_sampled(
+    program: &Program,
+    native: Option<&crate::jit::Native>,
+    entry: Pc,
+    fuel: u64,
+    workers: usize,
+    sampling: Option<Sampling>,
 ) -> Outcome {
     let workers = workers.max(1);
     let world = Arc::new(crate::stm::World::default());
@@ -172,6 +203,9 @@ pub fn run_native(
     main.vm.scheduled = true;
     main.vm.world = Some(world.clone());
     main.vm.use_native(native);
+    if let Some(s) = sampling {
+        main.vm.profile = Some(Box::new(crate::profile::Profile::new(s.every, s.depth)));
+    }
     let shared = Shared {
         program,
         native,
@@ -191,6 +225,8 @@ pub fn run_native(
         finished: Mutex::new(None),
         started: AtomicBool::new(false),
         stats: Mutex::new(Stats::default()),
+        sampling,
+        profile: Mutex::new(None),
     };
     lock(&shared.locals[0]).push_back(main);
     // The calling thread is worker 0. The others start with the first `spawn`,
@@ -202,7 +238,12 @@ pub fn run_native(
         })
     });
     let stats = lock(&shared.stats).clone();
-    Outcome { result, stats }
+    let profile = lock(&shared.profile).take();
+    Outcome {
+        result,
+        stats,
+        profile,
+    }
 }
 
 /// A green thread, and what it gets when it next runs.
@@ -281,6 +322,10 @@ struct Shared<'p> {
     /// Have the workers past the first been started?
     started: AtomicBool,
     stats: Mutex<Stats>,
+    /// What a new thread's machine is given, and where every finished thread's
+    /// samples are added up.
+    sampling: Option<Sampling>,
+    profile: Mutex<Option<crate::profile::Profile>>,
 }
 
 /// A lock, carrying on past a panic elsewhere: the data behind these locks is
@@ -530,6 +575,23 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
         }
     }
 
+    /// Take a finished thread's samples into the run's.
+    ///
+    /// Every thread that stops for good, not only `main`: a green thread is its
+    /// own machine with its own chain of continuations, so a run's profile is
+    /// all of them. Missing this is how a profile of a program that does its
+    /// work on spawned threads comes back empty.
+    fn collect(sh: &Shared<'p>, fiber: &mut Fiber<'p>) {
+        let Some(p) = fiber.vm.profile.take() else {
+            return;
+        };
+        let mut into = lock(&sh.profile);
+        match &mut *into {
+            Some(all) => all.merge(&p),
+            None => *into = Some(*p),
+        }
+    }
+
     /// Act on why a thread stopped. `Some` hands it back to keep running.
     fn settle(
         &mut self,
@@ -550,6 +612,7 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                 None
             }
             Stop::Halted(v) => {
+                Self::collect(sh, &mut fiber);
                 if fiber.task == 0 {
                     let shown = fiber.vm.show(v);
                     {
@@ -575,6 +638,7 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                 None
             }
             Stop::Failed(e) => {
+                Self::collect(sh, &mut fiber);
                 lock(&sh.stats).add(&fiber.vm.heap);
                 if fiber.task == 0 {
                     sh.finish(Err(e));
@@ -594,6 +658,10 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                     child.vm.scheduled = true;
                     child.vm.use_native(sh.native);
                     child.vm.world = Some(sh.world.clone());
+                    if let Some(s) = sh.sampling {
+                        child.vm.profile =
+                            Some(Box::new(crate::profile::Profile::new(s.every, s.depth)));
+                    }
                     let id = {
                         let mut tasks = sh.tasks.write().unwrap_or_else(|p| p.into_inner());
                         tasks.push(Arc::new(Mutex::new(Task::default())));

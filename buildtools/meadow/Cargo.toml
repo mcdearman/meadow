@@ -36,3 +36,8 @@ find-msvc-tools = "0.1"
 
 [dev-dependencies]
 insta = "1.47.2"
+
+[features]
+# Pass through to the runtime: charge allocation to the instruction that asked
+# for it, and render it beside the sampling profile.
+profile-alloc = ["meadow-rts/profile-alloc"]

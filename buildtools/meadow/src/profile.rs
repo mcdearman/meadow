@@ -115,6 +115,10 @@ pub struct Resolved {
     /// `--no-prune`, turns it off. `meadow test` and the debugger never prune:
     /// they start from more places than one.
     pub prune: bool,
+    /// `profile = true` in the manifest's `[profile.<name>]`: sample the run
+    /// and write folded stacks beside the build. `--profile-to` says where
+    /// instead, and asking for one on the command line does not need this.
+    pub sample: bool,
 }
 
 impl Resolved {
@@ -129,6 +133,7 @@ impl Resolved {
             backend: profile.backend(),
             backend_named: false,
             prune: true,
+            sample: false,
         }
     }
 
@@ -161,6 +166,7 @@ impl Resolved {
             backend,
             backend_named: named.is_some(),
             prune: flags.prune.or(from_manifest.prune).unwrap_or(true),
+            sample: from_manifest.profile.unwrap_or(false),
         }
     }
 
@@ -212,6 +218,7 @@ mod tests {
             backend: None,
             prune: None,
             cfg: None,
+            profile: None,
         };
         assert_eq!(manifest.apply(base).opt, OptLevel::O2);
         // Untouched by a section that says nothing about it.
@@ -223,6 +230,7 @@ mod tests {
             backend: None,
             prune: None,
             cfg: None,
+            profile: None,
         };
         assert_eq!(flag.apply(manifest.apply(base)).opt, OptLevel::O0);
     }

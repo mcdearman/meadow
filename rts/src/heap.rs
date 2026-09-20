@@ -469,6 +469,19 @@ pub struct Heap {
     blocks: Vec<Arc<Block>>,
     /// Those regions, by id.
     regions: HashMap<u32, Adopted>,
+    /// The instruction the machine is carrying out, so that an allocation can
+    /// be charged to it. Kept by [`crate::Vm`], which is the only thing that
+    /// knows -- the heap is handed sizes, not program counters.
+    ///
+    /// Last, with `sites`, and that matters: native code reaches `base`, `cap`,
+    /// `top`, `allocated` and `region_growth` by fixed offsets from the start
+    /// of this struct (see [`crate::codegen::layout`]), so a field added ahead
+    /// of them moves them. `the_layout_is_where_the_machine_is` says so.
+    #[cfg(feature = "profile-alloc")]
+    pub at: meadow_bytecode::Pc,
+    /// What each instruction has allocated. See [`crate::profile::Sites`].
+    #[cfg(feature = "profile-alloc")]
+    pub sites: crate::profile::Sites,
 }
 
 // `base` points into the heap's own `space`, which moves with it.
@@ -569,6 +582,10 @@ impl Heap {
             pauses: Default::default(),
             blocks: Vec::new(),
             regions: HashMap::new(),
+            #[cfg(feature = "profile-alloc")]
+            at: 0,
+            #[cfg(feature = "profile-alloc")]
+            sites: crate::profile::Sites::default(),
             region_growth: 0,
         };
         heap.sync();
@@ -700,6 +717,8 @@ impl Heap {
         }
         self.top += size;
         self.allocated += size as u64;
+        #[cfg(feature = "profile-alloc")]
+        self.sites.note(self.at, size);
         at as Addr
     }
 
@@ -730,6 +749,8 @@ impl Heap {
         }
         self.top += size;
         self.allocated += size as u64;
+        #[cfg(feature = "profile-alloc")]
+        self.sites.note(self.at, size);
         at as Addr
     }
 
@@ -779,6 +800,28 @@ impl Heap {
 
     /// The slot at `a`, in the nursery, the old generation or a region.
     #[inline(always)]
+    /// Is `a` somewhere an object could be?
+    ///
+    /// For [`crate::profile`], which follows a chain of continuations and must
+    /// never fault while doing it: a profile that can bring down the program it
+    /// is watching is worse than no profile. Conservative -- it says only that
+    /// reading the header will not go outside the heap, not that anybody put an
+    /// object there.
+    pub fn holds_object(&self, a: Addr) -> bool {
+        if a < OLD_BASE {
+            let i = a as usize;
+            // In the part of the nursery that has been allocated, and starting
+            // with a byte that names a kind. Both are needed: a chain of
+            // continuations ends at something that is not one, and what that
+            // something is depends on where the chain was walked from.
+            return i + 1 < self.top && Kind::try_from_byte(self.space[i] as u8).is_some();
+        }
+        if a < REGION_BASE {
+            return self.old.is_object(a);
+        }
+        false
+    }
+
     /// The heap word at slot `a`, wherever it lives.
     ///
     /// For [`crate::codegen::thin`], whose steps address the heap as the array

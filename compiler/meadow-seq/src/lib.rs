@@ -458,6 +458,37 @@ pub fn commutes(p: Prim) -> bool {
 
 /// The names `s` still needs from the environment it starts in.
 ///
+/// # What this is for, and why nothing uses it yet
+///
+/// `fib` retires two `move` instructions in every call, a quarter of
+/// everything it runs, and they are all one shape: a continuation captures the
+/// names the frame will not need again, and `meadow_codegen` gives the next
+/// value the lowest register *no name is sitting in* -- so the dead names hold
+/// the low registers, the live values are pushed above them, and the
+/// `substitute` before the call has to move them back down.
+///
+/// Knowing which names are dead is this function. Acting on it is a pass that
+/// is not written, because two other things assume an environment never
+/// shrinks:
+///
+/// * `meadow_codegen` enters a block by zipping its parameters against the
+///   registers of the environment, so a shorter environment is a block entered
+///   with the wrong arity. Leaving the dead name in and reusing its register is
+///   worse: the GC map at the next safepoint would still say a reference lives
+///   there, over a register holding something else.
+/// * [`crate::describe`] splices a descriptor into an environment *by
+///   position*, and asserts that a continuation's parameters end with exactly
+///   the environment it continues. Narrowing an environment in `lower` trips
+///   that assert.
+///
+/// So the shape of the work is a **late pass over the whole program**, after
+/// `describe`, which narrows every block's parameters to what its body reads
+/// and fixes up each entry point to match -- a `substitute`'s selection, a
+/// `new`'s captures, a `switch` arm, an `extern`'s continuation, and every
+/// `jump` to a label, which share one parameter list and must agree.
+///
+/// # What it counts
+///
 /// Not the names it *mentions*: a block's parameter list names the whole
 /// environment, because that is what an AxCut block takes, so mentioning
 /// proves nothing. This is the smaller question a register allocator wants --

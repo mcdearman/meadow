@@ -455,3 +455,191 @@ pub fn commutes(p: Prim) -> bool {
         Add | Mul | Eq | Ne | AddF | MulF | BitAnd | BitOr | BitXor
     )
 }
+
+/// The names `s` still needs from the environment it starts in.
+///
+/// Not the names it *mentions*: a block's parameter list names the whole
+/// environment, because that is what an AxCut block takes, so mentioning
+/// proves nothing. This is the smaller question a register allocator wants --
+/// which of the values in registers now will be read again.
+///
+/// Three rules carry the weight:
+///
+/// * A [`Statement::New`]'s **methods are not counted**. They run later, in an
+///   activation of their own, from the captures -- which *are* counted, because
+///   copying them out is a use here and now. This is the whole point: a
+///   continuation captures the names its frame will not need again, and once it
+///   has, their registers are free.
+/// * A [`Statement::Switch`]'s arms and a [`Statement::Extern`]'s blocks **are**
+///   counted. They are continuations within the same activation, running on the
+///   same registers, so what they read is read here.
+/// * A [`Statement::Jump`] needs nothing of its own. The environment it carries
+///   is the one a [`Statement::Substitute`] just built, and that selection is
+///   where those names were used.
+pub fn still_used(s: &Statement) -> std::collections::HashSet<Name> {
+    let mut out = std::collections::HashSet::new();
+    gather_uses(s, &mut out);
+    out
+}
+
+fn gather_uses(s: &Statement, out: &mut std::collections::HashSet<Name>) {
+    match s {
+        Statement::Substitute(sel, block) => {
+            out.extend(sel.iter().copied());
+            gather_uses(&block.body, out);
+        }
+        // Whatever it carries, a `substitute` chose and has already been counted.
+        Statement::Jump(_) => {}
+        Statement::Let { fields, rest, .. } => {
+            out.extend(fields.iter().copied());
+            gather_uses(rest, out);
+        }
+        Statement::New { captures, rest, .. } => {
+            out.extend(captures.iter().copied());
+            gather_uses(rest, out);
+        }
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            out.insert(*scrutinee);
+            for (_, block) in arms {
+                gather_uses(&block.body, out);
+            }
+            gather_uses(&default.body, out);
+        }
+        Statement::Invoke(target, _) => {
+            out.insert(*target);
+        }
+        Statement::Extern { args, blocks, .. } => {
+            out.extend(args.iter().copied());
+            for block in blocks {
+                gather_uses(&block.body, out);
+            }
+        }
+        Statement::Mark(_, inner) => gather_uses(inner, out),
+        Statement::Error(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod still_used_tests {
+    use super::*;
+    use meadow_hir::VarId;
+
+    fn n(i: u32) -> Name {
+        VarId(i)
+    }
+
+    fn block(params: Vec<Name>, body: Statement) -> Block {
+        Block { params, body }
+    }
+
+    /// A continuation's captures are a use *here*; what its methods do with
+    /// them later is not, because they have been copied into the object. This
+    /// is the rule the whole analysis exists for: once a frame has captured the
+    /// names it will not need again, their registers are free.
+    #[test]
+    fn capturing_a_name_is_the_last_use_of_it() {
+        // new k2 { (a, b) => invoke a#0 } capturing [a, b]; invoke k2#0
+        let s = Statement::New {
+            name: n(10),
+            captures: vec![n(1), n(2)],
+            methods: vec![block(vec![n(1), n(2)], Statement::Invoke(n(1), 0))],
+            rest: Box::new(Statement::Invoke(n(10), 0)),
+        };
+        let used = still_used(&s);
+        assert!(used.contains(&n(1)), "captured, so read here");
+        assert!(used.contains(&n(2)));
+        assert!(used.contains(&n(10)), "and the object is invoked");
+
+        // What the frame needs *after* the capture is only the object.
+        let after = still_used(&Statement::Invoke(n(10), 0));
+        assert!(
+            !after.contains(&n(1)),
+            "the method's use is not this frame's"
+        );
+        assert!(!after.contains(&n(2)));
+    }
+
+    /// A `switch` arm and an `extern`'s continuation run on the same registers
+    /// in the same activation, so what they read is read here.
+    #[test]
+    fn an_arm_reads_in_the_frame_it_is_in() {
+        let s = Statement::Switch {
+            scrutinee: n(1),
+            arms: vec![(0, block(vec![n(5)], Statement::Invoke(n(2), 0)))],
+            default: Box::new(block(vec![], Statement::Invoke(n(3), 0))),
+        };
+        let used = still_used(&s);
+        for name in [1, 2, 3] {
+            assert!(used.contains(&n(name)), "{name} is read here");
+        }
+    }
+
+    /// A `jump` carries the environment a `substitute` just chose, and that
+    /// choice is where those names were used. Counting the jump as well would
+    /// make every name live for ever.
+    #[test]
+    fn a_jump_needs_nothing_the_substitute_did_not_name() {
+        let jump = Statement::Substitute(
+            vec![n(7), n(8)],
+            Box::new(block(vec![n(7), n(8)], Statement::Jump(Label(3)))),
+        );
+        let used = still_used(&jump);
+        assert_eq!(used.len(), 2);
+        assert!(used.contains(&n(7)) && used.contains(&n(8)));
+        assert!(still_used(&Statement::Jump(Label(3))).is_empty());
+    }
+
+    /// The shape that motivated this: a continuation is built, an argument is
+    /// computed, and the frame jumps. After the capture, neither the old
+    /// continuation nor the value it captured is needed -- which is two
+    /// registers, and on `fib` two `move` instructions per call.
+    #[test]
+    fn a_call_stops_needing_what_its_continuation_took() {
+        // new kk capturing [n, k, ev]; extern sub(n) { (m, ...) =>
+        //   substitute [m, kk, ev] in jump L }
+        let jump = Statement::Substitute(
+            vec![n(20), n(10), n(3)],
+            Box::new(block(vec![n(20), n(10), n(3)], Statement::Jump(Label(0)))),
+        );
+        let after_capture = Statement::Extern {
+            op: Extern::Prim(meadow_core::Prim::Sub),
+            args: vec![n(1)],
+            blocks: vec![block(vec![n(20), n(1), n(2), n(3)], jump)],
+        };
+        let s = Statement::New {
+            name: n(10),
+            captures: vec![n(1), n(2), n(3)],
+            methods: vec![block(
+                vec![n(1), n(2), n(3), n(21)],
+                Statement::Invoke(n(2), 0),
+            )],
+            rest: Box::new(after_capture.clone()),
+        };
+
+        // At the `new`, `k` (2) has been captured and is not read again.
+        let at_new = still_used(&s);
+        assert!(
+            at_new.contains(&n(1)),
+            "n is still the subtraction's operand"
+        );
+        assert!(at_new.contains(&n(2)), "k is captured, which is a read");
+
+        // After it, `k` is gone -- its register is free.
+        let rest = still_used(&after_capture);
+        assert!(!rest.contains(&n(2)), "k is dead once captured");
+        assert!(rest.contains(&n(1)), "n is not, yet");
+
+        // And after the subtraction, `n` is gone too.
+        let Statement::Extern { blocks, .. } = &after_capture else {
+            unreachable!()
+        };
+        let at_jump = still_used(&blocks[0].body);
+        assert!(!at_jump.contains(&n(1)), "n is dead after the subtraction");
+        assert!(!at_jump.contains(&n(2)));
+        assert_eq!(at_jump.len(), 3, "only what the jump carries");
+    }
+}

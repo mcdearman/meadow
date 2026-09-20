@@ -171,7 +171,12 @@ pub fn run_with(program: &Program, entry: Pc, fuel: u64, workers: usize) -> Outc
 /// run's profile is all of them merged.
 #[derive(Debug, Clone, Copy)]
 pub struct Sampling {
-    pub every: u64,
+    /// Block entries between samples for a profile of work, or `None` for a
+    /// profile of time -- see [`crate::profile::When`] by way of
+    /// [`crate::profile::Ticker`].
+    pub every: Option<u64>,
+    /// Samples a second, when `every` is `None`.
+    pub hz: u64,
     pub depth: usize,
 }
 
@@ -197,6 +202,13 @@ pub fn run_sampled(
     sampling: Option<Sampling>,
 ) -> Outcome {
     let workers = workers.max(1);
+    // One clock for the run. Every machine samples on it, so a thread that is
+    // running contributes a sample per tick and a thread that is waiting
+    // contributes none -- which is what makes the counts come out proportional
+    // to processor time.
+    let ticker = sampling
+        .filter(|s| s.every.is_none())
+        .map(|s| crate::profile::Ticker::at(s.hz));
     let world = Arc::new(crate::stm::World::default());
     let mut main = Box::new(Fiber {
         vm: Vm::new(program),
@@ -207,7 +219,10 @@ pub fn run_sampled(
     main.vm.world = Some(world.clone());
     main.vm.use_native(native);
     if let Some(s) = sampling {
-        main.vm.profile = Some(Box::new(crate::profile::Profile::new(s.every, s.depth)));
+        main.vm.profile = Some(Box::new(match (&ticker, s.every) {
+            (Some(t), _) => t.profile(s.depth),
+            (None, every) => crate::profile::Profile::new(every.unwrap_or(1), s.depth),
+        }));
     }
     let shared = Shared {
         program,
@@ -229,6 +244,7 @@ pub fn run_sampled(
         started: AtomicBool::new(false),
         stats: Mutex::new(Stats::default()),
         sampling,
+        ticker,
         profile: Mutex::new(None),
     };
     lock(&shared.locals[0]).push_back(main);
@@ -328,6 +344,9 @@ struct Shared<'p> {
     /// What a new thread's machine is given, and where every finished thread's
     /// samples are added up.
     sampling: Option<Sampling>,
+    /// The run's clock, when it is being profiled for time. Held here so it
+    /// outlives every thread that samples on it, and stops when the run does.
+    ticker: Option<crate::profile::Ticker>,
     profile: Mutex<Option<crate::profile::Profile>>,
 }
 
@@ -664,8 +683,12 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                     child.vm.use_native(sh.native);
                     child.vm.world = Some(sh.world.clone());
                     if let Some(s) = sh.sampling {
-                        child.vm.profile =
-                            Some(Box::new(crate::profile::Profile::new(s.every, s.depth)));
+                        child.vm.profile = Some(Box::new(match (&sh.ticker, s.every) {
+                            (Some(t), _) => t.profile(s.depth),
+                            (None, every) => {
+                                crate::profile::Profile::new(every.unwrap_or(1), s.depth)
+                            }
+                        }));
                     }
                     let id = {
                         let mut tasks = sh.tasks.write().unwrap_or_else(|p| p.into_inner());

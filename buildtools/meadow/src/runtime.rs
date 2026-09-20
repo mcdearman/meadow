@@ -513,7 +513,7 @@ pub fn compile_for_profile(
 pub fn run_image_sampled(
     image: &meadow_bytecode::Program,
     native: Option<&meadow_rts::jit::Native>,
-    every: u64,
+    sampling: meadow_rts::sched::Sampling,
 ) -> (
     Result<String, String>,
     Option<meadow_rts::profile::Profile>,
@@ -532,10 +532,7 @@ pub fn run_image_sampled(
         entry,
         UNBOUNDED,
         meadow_rts::sched::workers(),
-        Some(meadow_rts::sched::Sampling {
-            every,
-            depth: meadow_rts::profile::DEPTH,
-        }),
+        Some(sampling),
     );
     (
         outcome.result.map_err(|e| e.msg),

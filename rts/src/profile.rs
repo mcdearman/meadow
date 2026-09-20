@@ -45,12 +45,87 @@ pub const EVERY: u64 = 1000;
 /// show, bounded because a chain can be as long as a program is recursive.
 pub const DEPTH: usize = 64;
 
+/// Times a second to sample, unless asked for another.
+pub const HZ: u64 = 1000;
+
+/// What makes a block entry a sample.
+///
+/// Two profiles, and they answer different questions. Counting entries gives a
+/// profile of *work*: deterministic, the same twice for the same program, and
+/// blind to anything that costs seconds without retiring instructions.
+/// Counting ticks gives a profile of *time*: it sees a cache miss and a
+/// collection, and it is the one to trust about which of two changes was
+/// worth making.
+///
+/// A tick does not interrupt anything. A thread sleeps and moves a counter,
+/// and each machine notices at the next block it enters -- so the walk happens
+/// where the machine is consistent, and there is no signal handler reading a
+/// half-built stack. Every machine running at the time takes one sample per
+/// tick, which is what makes the counts come out proportional to processor
+/// time rather than wall-clock.
+#[derive(Debug, Clone)]
+enum When {
+    /// Every `n` block entries, counting down.
+    Entries { every: u64, countdown: u64 },
+    /// Once per tick of a shared clock, which somebody else is moving.
+    Ticks {
+        clock: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        seen: u64,
+    },
+}
+
+/// A clock that moves on its own, for a profile of time.
+///
+/// Stops when it is dropped, so a run's profile cannot outlive the run and
+/// leave a thread behind.
+pub struct Ticker {
+    clock: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Ticker {
+    /// A clock moving `hz` times a second.
+    pub fn at(hz: u64) -> Ticker {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        let clock = std::sync::Arc::new(AtomicU64::new(0));
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let (c, s) = (clock.clone(), stop.clone());
+        let period = std::time::Duration::from_nanos(1_000_000_000 / hz.max(1));
+        std::thread::spawn(move || {
+            while !s.load(Ordering::Relaxed) {
+                std::thread::sleep(period);
+                c.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        Ticker { clock, stop }
+    }
+
+    /// A profile that samples on this clock.
+    pub fn profile(&self, depth: usize) -> Profile {
+        Profile {
+            when: When::Ticks {
+                clock: self.clock.clone(),
+                seen: 0,
+            },
+            depth: depth.max(1),
+            stacks: HashMap::new(),
+            taken: 0,
+            shallow: 0,
+        }
+    }
+}
+
+impl Drop for Ticker {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Samples, by the stack they landed on.
 #[derive(Debug, Clone)]
 pub struct Profile {
-    every: u64,
+    when: When,
     depth: usize,
-    countdown: u64,
     /// Innermost frame first, as a profile is usually read.
     stacks: HashMap<Vec<Pc>, u64>,
     taken: u64,
@@ -60,15 +135,23 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// A profile that samples every `every` block entries.
     pub fn new(every: u64, depth: usize) -> Profile {
         Profile {
-            every: every.max(1),
+            when: When::Entries {
+                every: every.max(1),
+                countdown: every.max(1),
+            },
             depth: depth.max(1),
-            countdown: every.max(1),
             stacks: HashMap::new(),
             taken: 0,
             shallow: 0,
         }
+    }
+
+    /// Does this profile measure time rather than work?
+    pub fn is_timed(&self) -> bool {
+        matches!(self.when, When::Ticks { .. })
     }
 
     /// How deep a sample walks.
@@ -78,12 +161,24 @@ impl Profile {
 
     /// Is this block entry a sample? Counts down either way.
     pub fn due(&mut self) -> bool {
-        self.countdown -= 1;
-        if self.countdown > 0 {
-            return false;
+        match &mut self.when {
+            When::Entries { every, countdown } => {
+                *countdown -= 1;
+                if *countdown > 0 {
+                    return false;
+                }
+                *countdown = *every;
+                true
+            }
+            When::Ticks { clock, seen } => {
+                let now = clock.load(std::sync::atomic::Ordering::Relaxed);
+                if now == *seen {
+                    return false;
+                }
+                *seen = now;
+                true
+            }
         }
-        self.countdown = self.every;
-        true
     }
 
     pub fn record(&mut self, stack: Vec<Pc>) {
@@ -250,6 +345,50 @@ mod tests {
         let mut p = Profile::new(3, 8);
         let due: Vec<bool> = (0..7).map(|_| p.due()).collect();
         assert_eq!(due, [false, false, true, false, false, true, false]);
+    }
+
+    /// A timed profile samples when the clock moves, not when instructions
+    /// do -- so a machine that enters a great many blocks between two ticks
+    /// contributes one sample, and one that enters two contributes one as well.
+    #[test]
+    fn a_timed_profile_samples_when_the_clock_moves() {
+        let ticker = Ticker::at(1000);
+        let mut p = ticker.profile(8);
+        assert!(p.is_timed());
+
+        // Nothing has ticked past what it has seen yet, so nothing is due --
+        // however many blocks go by.
+        let before = (0..1000).filter(|_| p.due()).count();
+        assert!(before <= 1, "at most the first tick: {before}");
+
+        // Once the clock has moved, exactly one entry is a sample, and the
+        // next is not until it moves again.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert!(p.due(), "the clock moved");
+        assert!(!p.due(), "and has not moved again");
+    }
+
+    /// The clock stops with the profile that was taken on it, so a run cannot
+    /// leave a thread behind.
+    #[test]
+    fn a_ticker_stops_when_it_is_dropped() {
+        let clock = {
+            let ticker = Ticker::at(2000);
+            let clock = ticker.clock.clone();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            assert!(
+                clock.load(std::sync::atomic::Ordering::Relaxed) > 0,
+                "it ran"
+            );
+            clock
+        };
+        let at_drop = clock.load(std::sync::atomic::Ordering::Relaxed);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let after = clock.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            after <= at_drop + 1,
+            "kept ticking after the drop: {at_drop} then {after}"
+        );
     }
 
     #[test]

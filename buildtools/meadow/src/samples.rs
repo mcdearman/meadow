@@ -88,7 +88,8 @@ pub fn summary(profile: &Profile) -> String {
     if taken == 0 {
         return "profile: no samples -- the program did not run long enough".into();
     }
-    let mut out = format!("profile: {taken} samples");
+    let kind = if profile.is_timed() { "time" } else { "work" };
+    let mut out = format!("profile: {taken} samples of {kind}");
     if profile.shallow() * 2 > taken {
         out.push_str(&format!(
             "\nprofile: {} of them saw one frame -- was this built with debug info?",

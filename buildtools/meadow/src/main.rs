@@ -80,10 +80,15 @@ enum Cmd {
         /// carries debug info, which is what a debug build is.
         #[arg(long, value_name = "FILE")]
         profile_to: Option<std::path::PathBuf>,
-        /// Block entries between samples, with `--profile-to`. Fewer is a
-        /// finer profile and a slower run.
-        #[arg(long, value_name = "N", default_value_t = meadow_rts::profile::EVERY)]
-        sample_every: u64,
+        /// Block entries between samples, with `--profile-to`: a profile of
+        /// *work*, the same twice for the same program. Without it the profile
+        /// is of *time*, which is what sees a cache miss or a collection.
+        #[arg(long, value_name = "N")]
+        sample_every: Option<u64>,
+        /// Samples a second, for the profile of time. Ignored with
+        /// `--sample-every`.
+        #[arg(long, value_name = "HZ", default_value_t = meadow_rts::profile::HZ)]
+        sample_hz: u64,
         /// Which collector the VM uses: `generational` (the default: a nursery,
         /// and an old generation marked concurrently, for short pauses) or
         /// `copying` (one space, copied whole). `MEADOW_GC` sets the same.
@@ -542,6 +547,7 @@ fn main() {
             gc_stats,
             profile_to,
             sample_every,
+            sample_hz,
             gc,
             target,
             args,
@@ -574,7 +580,16 @@ fn main() {
                     annotations: false,
                 },
                 gc_stats,
-                profile_to.map(|to| (to, sample_every)),
+                profile_to.map(|to| {
+                    (
+                        to,
+                        meadow_rts::sched::Sampling {
+                            every: sample_every,
+                            hz: sample_hz,
+                            depth: meadow_rts::profile::DEPTH,
+                        },
+                    )
+                }),
                 &[],
                 profile,
                 &target,
@@ -847,7 +862,7 @@ fn build(
     engine: Option<Engine>,
     listing: Listing,
     gc_stats: bool,
-    sampling: Option<(PathBuf, u64)>,
+    sampling: Option<(PathBuf, meadow_rts::sched::Sampling)>,
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
@@ -1081,7 +1096,7 @@ fn finish(
     engine: Option<Engine>,
     listing: Listing,
     gc_stats: bool,
-    sampling: Option<(PathBuf, u64)>,
+    sampling: Option<(PathBuf, meadow_rts::sched::Sampling)>,
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
@@ -1227,17 +1242,24 @@ fn finish(
                         .join("profile.folded"),
                     None => std::path::PathBuf::from("profile.folded"),
                 };
-                (to, meadow_rts::profile::EVERY)
+                (
+                    to,
+                    meadow_rts::sched::Sampling {
+                        every: None,
+                        hz: meadow_rts::profile::HZ,
+                        depth: meadow_rts::profile::DEPTH,
+                    },
+                )
             })
         });
-        if let Some((to, every)) = sampling {
+        if let Some((to, how)) = sampling {
             let result = match runtime::compile_for_profile(&program, profile.opt()) {
                 Err(e) => Err(e),
                 Ok(image) => match runtime::native(&image, engine, profile.opt()) {
                     Err(e) => Err(e),
                     Ok(jit) => {
                         let (result, profile, stats) =
-                            runtime::run_image_sampled(&image, jit.as_ref(), every);
+                            runtime::run_image_sampled(&image, jit.as_ref(), how);
                         #[cfg(feature = "profile-alloc")]
                         eprint!("{}", meadow::samples::instructions(&stats.ops));
                         #[cfg(feature = "profile-alloc")]

@@ -121,6 +121,59 @@ impl Profile {
     }
 }
 
+/// How many of each instruction a run retired.
+///
+/// Exact rather than sampled -- the interpreter passes through one place -- and
+/// under the same feature as [`Sites`], because it is a counter on the hottest
+/// loop in the runtime. What it answers is the question a stack profile cannot:
+/// a program that is all in one function still spends its time on *something*,
+/// and a calling convention that costs more than the arithmetic it carries
+/// shows up here and nowhere else.
+#[cfg(feature = "profile-alloc")]
+#[derive(Debug, Clone)]
+pub struct Ops {
+    counts: Vec<u64>,
+}
+
+#[cfg(feature = "profile-alloc")]
+impl Default for Ops {
+    fn default() -> Ops {
+        Ops {
+            counts: vec![0; 256],
+        }
+    }
+}
+
+#[cfg(feature = "profile-alloc")]
+impl Ops {
+    pub fn note(&mut self, op: meadow_bytecode::Op) {
+        self.counts[op as usize] += 1;
+    }
+
+    pub fn merge(&mut self, other: &Ops) {
+        for (a, b) in self.counts.iter_mut().zip(&other.counts) {
+            *a += b;
+        }
+    }
+
+    pub fn total(&self) -> u64 {
+        self.counts.iter().sum()
+    }
+
+    /// Every instruction that ran at least once, most first.
+    pub fn each(&self) -> Vec<(meadow_bytecode::Op, u64)> {
+        let mut out: Vec<(meadow_bytecode::Op, u64)> = meadow_bytecode::Op::ALL
+            .iter()
+            .filter_map(|op| {
+                let n = self.counts[*op as usize];
+                (n > 0).then_some((*op, n))
+            })
+            .collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1));
+        out
+    }
+}
+
 /// The register holding the function's own return continuation at `pc`.
 ///
 /// `returns` less `continuations`: the first is where *this* function goes when

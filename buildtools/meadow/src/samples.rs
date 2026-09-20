@@ -122,6 +122,29 @@ pub fn allocation(sites: &meadow_rts::profile::Sites, image: &Program) -> String
     out
 }
 
+/// What a run spent its instructions on, most first.
+///
+/// Only under `meadow-rts/profile-alloc`, and exact rather than sampled. A
+/// stack profile says which function; this says what that function was made
+/// of, which is the difference between "the loop is hot" and "the calling
+/// convention is".
+#[cfg(feature = "profile-alloc")]
+pub fn instructions(ops: &meadow_rts::profile::Ops) -> String {
+    let total = ops.total();
+    if total == 0 {
+        return String::new();
+    }
+    let mut out = format!("instructions: {total} retired\n");
+    for (op, n) in ops.each() {
+        let share = n as f64 * 100.0 / total as f64;
+        if share < 0.5 {
+            continue;
+        }
+        out.push_str(&format!("  {:>5.1}%  {:>12}  {op:?}\n", share, n));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

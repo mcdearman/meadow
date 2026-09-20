@@ -107,6 +107,9 @@ pub struct Stats {
     /// `--features profile-alloc` -- see [`crate::profile::Sites`].
     #[cfg(feature = "profile-alloc")]
     pub sites: crate::profile::Sites,
+    /// How many of each instruction the run retired.
+    #[cfg(feature = "profile-alloc")]
+    pub ops: crate::profile::Ops,
     /// Slots promoted to old generations, marking cycles, and time spent
     /// marking on any thread.
     pub promoted: u64,
@@ -582,6 +585,8 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
     /// all of them. Missing this is how a profile of a program that does its
     /// work on spawned threads comes back empty.
     fn collect(sh: &Shared<'p>, fiber: &mut Fiber<'p>) {
+        #[cfg(feature = "profile-alloc")]
+        lock(&sh.stats).ops.merge(&fiber.vm.ops);
         let Some(p) = fiber.vm.profile.take() else {
             return;
         };

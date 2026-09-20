@@ -189,6 +189,10 @@ pub struct Vm<'p> {
     /// [`crate::profile`]. Last, because native code reaches the fields above
     /// by fixed offsets and must not be made to care about this one.
     pub profile: Option<Box<crate::profile::Profile>>,
+    /// How many of each instruction this machine retired. See
+    /// [`crate::profile::Ops`].
+    #[cfg(feature = "profile-alloc")]
+    pub ops: crate::profile::Ops,
 }
 
 // The method table pointers point into the `Native` the machine was given,
@@ -286,6 +290,8 @@ impl<'p> Vm<'p> {
             halted: None,
             failure: None,
             profile: None,
+            #[cfg(feature = "profile-alloc")]
+            ops: crate::profile::Ops::default(),
         }
     }
 
@@ -412,6 +418,7 @@ impl<'p> Vm<'p> {
         self.at = self.pc;
         #[cfg(feature = "profile-alloc")]
         {
+            self.ops.note(i.op);
             // So the heap can charge what it bumps to the instruction that
             // asked for it. One store per instruction, and only when someone
             // asked for an allocation profile.

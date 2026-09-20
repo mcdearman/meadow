@@ -1239,6 +1239,8 @@ fn finish(
                         let (result, profile, stats) =
                             runtime::run_image_sampled(&image, jit.as_ref(), every);
                         #[cfg(feature = "profile-alloc")]
+                        eprint!("{}", meadow::samples::instructions(&stats.ops));
+                        #[cfg(feature = "profile-alloc")]
                         if !stats.sites.is_empty() {
                             // Beside the samples: where the garbage came from.
                             let beside = to.with_extension("alloc");

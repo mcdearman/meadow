@@ -73,6 +73,17 @@ pub unsafe extern "C" fn meadow_aot_main(
         u64::MAX,
         crate::sched::workers(),
     );
+    if crate::abi::traps::on() {
+        let all = crate::abi::traps::report();
+        let total: u64 = all.iter().map(|(_, c)| c).sum();
+        eprintln!("traps: {total} instructions handed to the interpreter, by pc:");
+        for ((pc, op), c) in all.iter().take(25) {
+            eprintln!(
+                "  {c:>12}  {:5.1}%  pc {pc:<6} {op:?}",
+                100.0 * *c as f64 / total as f64
+            );
+        }
+    }
     match outcome.result {
         Ok(answer) => {
             if answer != "()" {

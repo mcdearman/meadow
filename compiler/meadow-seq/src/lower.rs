@@ -187,9 +187,12 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     };
     // `joins` before `globals`: a mention of a global becomes a jump to its
     // definition there, and a join point wants to be found while the calls to
-    // it still look like calls.
-    let program = &core::globals::program(&core::joins::program(&core::globals::inline_literals(
-        &core::bools::program(&specialized),
+    // it still look like calls. `simplify` between the two, for the same
+    // reason on one side -- it needs join points to put a pushed-in context in
+    // -- and because on the other a jump to a definition is not a term it can
+    // look into.
+    let program = &core::globals::program(&core::simplify::program(&core::joins::program(
+        &core::globals::inline_literals(&core::bools::program(&specialized)),
     )));
 
     let mut globals = HashMap::new();

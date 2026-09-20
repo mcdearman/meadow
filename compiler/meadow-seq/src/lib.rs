@@ -507,27 +507,35 @@ pub fn commutes(p: Prim) -> bool {
 /// * A [`Statement::Jump`] needs nothing of its own. The environment it carries
 ///   is the one a [`Statement::Substitute`] just built, and that selection is
 ///   where those names were used.
-pub fn still_used(s: &Statement) -> std::collections::HashSet<Name> {
+pub fn still_used(s: &Statement) -> Option<std::collections::HashSet<Name>> {
     let mut out = std::collections::HashSet::new();
-    gather_uses(s, &mut out);
-    out
+    gather_uses(s, &mut out).then_some(out)
 }
 
-fn gather_uses(s: &Statement, out: &mut std::collections::HashSet<Name>) {
+/// Collects into `out`; `false` means the statement hands its whole
+/// environment on and nothing may be dropped.
+fn gather_uses(s: &Statement, out: &mut std::collections::HashSet<Name>) -> bool {
     match s {
-        Statement::Substitute(sel, block) => {
+        // A `substitute` is the complete interface to what follows it: the
+        // block it enters gets exactly this selection and nothing else, so
+        // there is no need to look inside, and looking inside would be wrong
+        // for a block that gives its parameters other names.
+        Statement::Substitute(sel, _) => {
             out.extend(sel.iter().copied());
-            gather_uses(&block.body, out);
+            true
         }
-        // Whatever it carries, a `substitute` chose and has already been counted.
-        Statement::Jump(_) => {}
+        // These two hand the environment on whole -- a `jump` to the block it
+        // names, an `invoke` to the method as its arguments -- so nothing in it
+        // can be called dead. Both are reached through a `substitute` that has
+        // already said what they need, which is where the narrowing happens.
+        Statement::Jump(_) | Statement::Invoke(..) => false,
         Statement::Let { fields, rest, .. } => {
             out.extend(fields.iter().copied());
-            gather_uses(rest, out);
+            gather_uses(rest, out)
         }
         Statement::New { captures, rest, .. } => {
             out.extend(captures.iter().copied());
-            gather_uses(rest, out);
+            gather_uses(rest, out)
         }
         Statement::Switch {
             scrutinee,
@@ -535,22 +543,22 @@ fn gather_uses(s: &Statement, out: &mut std::collections::HashSet<Name>) {
             default,
         } => {
             out.insert(*scrutinee);
+            let mut ok = gather_uses(&default.body, out);
             for (_, block) in arms {
-                gather_uses(&block.body, out);
+                ok &= gather_uses(&block.body, out);
             }
-            gather_uses(&default.body, out);
-        }
-        Statement::Invoke(target, _) => {
-            out.insert(*target);
+            ok
         }
         Statement::Extern { args, blocks, .. } => {
             out.extend(args.iter().copied());
+            let mut ok = true;
             for block in blocks {
-                gather_uses(&block.body, out);
+                ok &= gather_uses(&block.body, out);
             }
+            ok
         }
         Statement::Mark(_, inner) => gather_uses(inner, out),
-        Statement::Error(_) => {}
+        Statement::Error(_) => true,
     }
 }
 
@@ -573,20 +581,26 @@ mod still_used_tests {
     /// names it will not need again, their registers are free.
     #[test]
     fn capturing_a_name_is_the_last_use_of_it() {
-        // new k2 { (a, b) => invoke a#0 } capturing [a, b]; invoke k2#0
+        // new k2 { (a, b) => invoke a#0 } capturing [a, b];
+        //   substitute [k2] in jump L
+        let onwards = Statement::Substitute(
+            vec![n(10)],
+            Box::new(block(vec![n(10)], Statement::Jump(Label(0)))),
+        );
         let s = Statement::New {
             name: n(10),
             captures: vec![n(1), n(2)],
             methods: vec![block(vec![n(1), n(2)], Statement::Invoke(n(1), 0))],
-            rest: Box::new(Statement::Invoke(n(10), 0)),
+            rest: Box::new(onwards.clone()),
         };
-        let used = still_used(&s);
+        let used = still_used(&s).expect("narrowable");
         assert!(used.contains(&n(1)), "captured, so read here");
         assert!(used.contains(&n(2)));
-        assert!(used.contains(&n(10)), "and the object is invoked");
+        assert!(used.contains(&n(10)), "and the object is handed on");
 
-        // What the frame needs *after* the capture is only the object.
-        let after = still_used(&Statement::Invoke(n(10), 0));
+        // After the capture the frame wants only the object. What the method
+        // does with `a` and `b` later is the method's business; they are in it.
+        let after = still_used(&onwards).expect("narrowable");
         assert!(
             !after.contains(&n(1)),
             "the method's use is not this frame's"
@@ -594,16 +608,40 @@ mod still_used_tests {
         assert!(!after.contains(&n(2)));
     }
 
+    /// A bare `jump` or `invoke` hands the environment on whole -- one to the
+    /// block it names, the other to the method as its arguments -- so nothing
+    /// in it can be called dead.
+    #[test]
+    fn handing_the_environment_on_whole_narrows_nothing() {
+        assert!(still_used(&Statement::Jump(Label(1))).is_none());
+        assert!(still_used(&Statement::Invoke(n(4), 0)).is_none());
+        // And it carries: a statement that ends in one narrows nothing either.
+        let ends_in_invoke = Statement::Let {
+            name: n(9),
+            tag: 0,
+            ctor: meadow_intern::InternedString::from("K"),
+            fields: vec![n(1)],
+            rest: Box::new(Statement::Invoke(n(9), 0)),
+        };
+        assert!(still_used(&ends_in_invoke).is_none());
+    }
+
     /// A `switch` arm and an `extern`'s continuation run on the same registers
     /// in the same activation, so what they read is read here.
     #[test]
     fn an_arm_reads_in_the_frame_it_is_in() {
+        let go = |to: Name| {
+            Statement::Substitute(
+                vec![to],
+                Box::new(block(vec![to], Statement::Jump(Label(0)))),
+            )
+        };
         let s = Statement::Switch {
             scrutinee: n(1),
-            arms: vec![(0, block(vec![n(5)], Statement::Invoke(n(2), 0)))],
-            default: Box::new(block(vec![], Statement::Invoke(n(3), 0))),
+            arms: vec![(0, block(vec![n(5)], go(n(2))))],
+            default: Box::new(block(vec![], go(n(3)))),
         };
-        let used = still_used(&s);
+        let used = still_used(&s).expect("narrowable");
         for name in [1, 2, 3] {
             assert!(used.contains(&n(name)), "{name} is read here");
         }
@@ -618,10 +656,13 @@ mod still_used_tests {
             vec![n(7), n(8)],
             Box::new(block(vec![n(7), n(8)], Statement::Jump(Label(3)))),
         );
-        let used = still_used(&jump);
-        assert_eq!(used.len(), 2);
+        let used = still_used(&jump).expect("narrowable");
+        assert_eq!(used.len(), 2, "exactly what the selection named");
         assert!(used.contains(&n(7)) && used.contains(&n(8)));
-        assert!(still_used(&Statement::Jump(Label(3))).is_empty());
+        assert!(
+            still_used(&Statement::Jump(Label(3))).is_none(),
+            "a bare jump carries the environment whole"
+        );
     }
 
     /// The shape that motivated this: a continuation is built, an argument is
@@ -652,7 +693,7 @@ mod still_used_tests {
         };
 
         // At the `new`, `k` (2) has been captured and is not read again.
-        let at_new = still_used(&s);
+        let at_new = still_used(&s).expect("narrowable");
         assert!(
             at_new.contains(&n(1)),
             "n is still the subtraction's operand"
@@ -660,7 +701,7 @@ mod still_used_tests {
         assert!(at_new.contains(&n(2)), "k is captured, which is a read");
 
         // After it, `k` is gone -- its register is free.
-        let rest = still_used(&after_capture);
+        let rest = still_used(&after_capture).expect("narrowable");
         assert!(!rest.contains(&n(2)), "k is dead once captured");
         assert!(rest.contains(&n(1)), "n is not, yet");
 
@@ -668,7 +709,7 @@ mod still_used_tests {
         let Statement::Extern { blocks, .. } = &after_capture else {
             unreachable!()
         };
-        let at_jump = still_used(&blocks[0].body);
+        let at_jump = still_used(&blocks[0].body).expect("narrowable");
         assert!(!at_jump.contains(&n(1)), "n is dead after the subtraction");
         assert!(!at_jump.contains(&n(2)));
         assert_eq!(at_jump.len(), 3, "only what the jump carries");

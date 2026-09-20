@@ -134,6 +134,21 @@ impl Block {
 
     /// A table entry with no memory behind it: a block that was freed, or not
     /// yet needed. No live address reaches one.
+    /// The first slot, for native code, which reads a block through the table
+    /// [`Old::bases`] publishes rather than through this struct.
+    ///
+    /// A block with no memory answers [`zero_block`] instead of the dangling
+    /// pointer an empty `Box<[_]>` has, so that a table entry is always safe
+    /// to load through. What is read there is zero, which is not a valid
+    /// object header, so a run of steps gives up on it and the interpreter --
+    /// which checks properly -- says what went wrong.
+    pub(crate) fn base(&self) -> *mut Word {
+        if self.slots.is_empty() {
+            return zero_block();
+        }
+        self.slots.as_ptr() as *mut Word
+    }
+
     fn empty() -> Arc<Block> {
         static EMPTY: LazyLock<Arc<Block>> = LazyLock::new(|| Arc::new(Block::nothing()));
         EMPTY.clone()
@@ -392,6 +407,17 @@ fn addr(block: usize, off: usize) -> Addr {
     OLD_BASE + (block * BLOCK + off) as Addr
 }
 
+/// One block of zeros, shared by every table entry with no block behind it.
+///
+/// Native code indexes the table without checking, because checking would cost
+/// a guard on every heap read for a case that cannot arise in a correct
+/// program. This is what makes not checking safe: an entry always points at a
+/// whole block that can be read.
+fn zero_block() -> *mut Word {
+    static ZERO: LazyLock<Box<[Word]>> = LazyLock::new(|| vec![0; BLOCK].into_boxed_slice());
+    ZERO.as_ptr() as *mut Word
+}
+
 /// Stamp every line the `size` slots at `a` cover with `epoch`, across blocks
 /// if they go that far.
 pub fn stamp_lines(blocks: &[Arc<Block>], a: Addr, size: usize, epoch: u32) {
@@ -405,6 +431,15 @@ pub fn stamp_lines(blocks: &[Arc<Block>], a: Addr, size: usize, epoch: u32) {
 /// The old generation, as its heap sees it.
 pub struct Old {
     pub blocks: Vec<Arc<Block>>,
+    /// The first slot of each block, for native code -- which cannot follow an
+    /// `Arc` or index a `Vec`, and reads a heap word as `bases[block][offset]`.
+    ///
+    /// In lockstep with `blocks`, which is only changed in three places:
+    /// [`Old::fresh_blocks`], [`Old::free_block`] and `Drop`. `Heap` publishes
+    /// this array's address after any of them, and native code loads it afresh
+    /// at every access, so a `Vec` that reallocates cannot leave a stale
+    /// pointer behind.
+    bases: Vec<*mut Word>,
     /// Lines stamped with this are in use: the last cycle to finish.
     live_epoch: u32,
     /// What allocation stamps lines with: `live_epoch`, or while marking, the
@@ -439,6 +474,7 @@ impl Drop for Old {
         for b in self.blocks.drain(..) {
             give_back(b);
         }
+        self.bases.clear();
     }
 }
 
@@ -446,6 +482,7 @@ impl Default for Old {
     fn default() -> Old {
         Old {
             blocks: Vec::new(),
+            bases: Vec::new(),
             live_epoch: 1,
             alloc_epoch: 1,
             cursor: 0,
@@ -618,8 +655,26 @@ impl Old {
     /// Give block `i` back, empty.
     pub fn free_block(&mut self, i: usize) {
         give_back(std::mem::replace(&mut self.blocks[i], Block::empty()));
+        self.bases[i] = self.blocks[i].base();
         self.real_blocks -= 1;
         self.empty_entries += 1;
+    }
+
+    /// Where native code reads the blocks. See [`Old::bases`].
+    pub(crate) fn bases_ptr(&self) -> *const *mut Word {
+        debug_assert_eq!(
+            self.bases.len(),
+            self.blocks.len(),
+            "the block table and the blocks have come apart"
+        );
+        debug_assert!(
+            self.bases
+                .iter()
+                .zip(&self.blocks)
+                .all(|(p, b)| *p == b.base()),
+            "a block table entry points at the wrong block"
+        );
+        self.bases.as_ptr()
     }
 
     fn stamp_run(&self, from: Addr, slots: usize) {
@@ -700,6 +755,7 @@ impl Old {
                 );
                 while self.blocks.len() < need {
                     self.blocks.push(Block::empty());
+                    self.bases.push(zero_block());
                     self.empty_entries += 1;
                 }
                 first
@@ -707,6 +763,7 @@ impl Old {
         };
         for i in first..first + n {
             self.blocks[i] = Arc::new(take_spare());
+            self.bases[i] = self.blocks[i].base();
             self.real_blocks += 1;
             self.empty_entries -= 1;
         }

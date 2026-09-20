@@ -11,7 +11,7 @@
 //! before every call and return, and loaded again after every call. Nothing
 //! else touches them.
 
-use super::{Emit, FloatOp, IntOp, Label, Operand, layout, thin};
+use super::{Emit, FloatOp, IntOp, Label, Operand, UnaryOp, layout, thin};
 use meadow_bytecode::{Cond, Pc, Reg};
 use meadow_core::OptLevel;
 
@@ -284,13 +284,39 @@ impl Asm {
 
     /// `x9 = r[x]`, and on to `slow` unless that is a nursery address; then
     /// `x12` the object's first slot, `x13` its first word, and `w14` its kind.
+    /// Reach the object in `r[x]`: `x9` its address, `x12` where its first
+    /// slot is in memory, `x13` its first header word and `w14` its kind. A
+    /// compact region goes to `slow`.
+    ///
+    /// Two paths, chosen by the address's generation bit. A nursery object is
+    /// one load off the nursery base, as it always was; an old one is the
+    /// block-table walk [`Asm::thin_where`] does. It used to be that an old
+    /// object went to `slow` here, and *every* object a long-lived structure is
+    /// made of is old: `binarytrees` handed 55 million field reads and tag
+    /// tests to the interpreter for that, on trees that native code had built.
+    /// The branch keeps the young path at its old cost, which matters because
+    /// young objects are the majority everywhere else.
+    ///
+    /// A field or capture is read at an offset from `x12`, which is only right
+    /// if it is in the same block as the header. It is: an object bigger than
+    /// a line takes a run of lines *within* a block, and one bigger than a
+    /// block starts at a block's first slot and takes whole blocks -- and
+    /// nothing here reads past the first 4000 slots of one.
     fn nursery(&mut self, x: Reg, slow: Label) {
         self.get(X9, x as u32);
-        self.imm(X10, crate::old::OLD_BASE as u64);
-        self.cmp(X9, X10);
-        self.b_cond(HS, slow);
+        let old = self.label();
+        let found = self.label();
+        self.thin_shr(X10, X9, super::addr::GEN_SHIFT);
+        self.at(old, Fixup::Imm19, 0xB500_0000 | X10); // cbnz x10, old
         self.ldr(X11, X19, layout::BASE);
         self.put(0x8B00_0000 | X9 << 16 | 3 << 10 | X11 << 5 | X12); // add x12, x11, x9, lsl #3
+        self.jump(found);
+        self.bind(old);
+        // Not a region: bit 31 clear, so the generation bit was the old one.
+        self.thin_shr(X10, X9, super::addr::GEN_SHIFT + 1);
+        self.at(slow, Fixup::Imm19, 0xB500_0000 | X10); // cbnz x10, slow
+        self.thin_where(X12, X9);
+        self.bind(found);
         self.ldr(X13, X12, 0);
         self.put(0x1200_1C00 | X13 << 5 | X14); // and w14, w13, #0xff
     }
@@ -483,6 +509,14 @@ impl Emit for Asm {
             IntOp::Add => self.put(0x8B00_0000 | m << 16 | n << 5 | X9),
             IntOp::Sub => self.put(0xCB00_0000 | m << 16 | n << 5 | X9),
             IntOp::Mul => self.put(0x9B00_7C00 | m << 16 | n << 5 | X9),
+            // lslv / asrv x9, x9, x10 -- both take the count modulo 64, which
+            // is what `wrapping_shl` does, so the interpreter and this agree
+            // without a range check.
+            IntOp::Shl => self.put(0x9AC0_2000 | m << 16 | n << 5 | X9),
+            IntOp::Shr => self.put(0x9AC0_2800 | m << 16 | n << 5 | X9),
+            IntOp::Ushr => self.put(0x9AC0_2400 | m << 16 | n << 5 | X9), // lsrv
+            // and x9, x9, x10
+            IntOp::And => self.put(0x8A00_0000 | m << 16 | n << 5 | X9),
             IntOp::Div | IntOp::Rem => {
                 self.at(zero, Fixup::Imm19, 0xB400_0000 | X10); // cbz x10, zero
                 // `sdiv` wraps, as `i64::wrapping_div` does: MIN / -1 is MIN.
@@ -496,6 +530,27 @@ impl Emit for Asm {
             }
         }
         self.store(a);
+    }
+
+    fn unary(&mut self, op: UnaryOp, a: Reg, b: Reg) {
+        self.get(X9, b as u32);
+        match op {
+            // scvtf d0, x9; the bits of d0 are what the register then holds.
+            UnaryOp::ToFloat => {
+                self.put(0x9E62_0000 | X9 << 5);
+                self.store_float(a);
+            }
+            // No scalar popcount before ARMv8.9, so through the vector unit,
+            // as every compiler does it: fmov d0, x9; cnt v0.8b, v0.8b; addv
+            // b0, v0.8b; fmov w9, s0.
+            UnaryOp::PopCount => {
+                self.put(0x9E67_0000 | X9 << 5);
+                self.put(0x0E20_5800);
+                self.put(0x0E31_B800);
+                self.put(0x1E26_0000 | X9);
+                self.store(a);
+            }
+        }
     }
 
     fn float(&mut self, op: FloatOp, a: Reg, b: Reg, c: Reg) {
@@ -572,41 +627,72 @@ impl Emit for Asm {
         use thin::Step;
         debug_assert!(thin::temporaries(run) <= thin::TEMPORARIES);
         for s in run {
+            let dst = |t: u8| TMP + t as u32;
             match *s {
-                Step::Set(t, src) => self.thin_src(TMP + t as u32, src),
+                Step::Set(t, src) => self.thin_src(dst(t), src),
                 Step::Add(t, a, b) => {
-                    self.thin_src(WORK_A, a);
-                    self.thin_src(WORK_B, b);
-                    self.put(0x8B00_0000 | WORK_B << 16 | WORK_A << 5 | (TMP + t as u32));
+                    let n = self.thin_operand(a, WORK_A);
+                    match small_imm(b) {
+                        Some(k) => self.put(0x9100_0000 | k << 10 | n << 5 | dst(t)),
+                        None => {
+                            let m = self.thin_operand(b, WORK_B);
+                            self.put(0x8B00_0000 | m << 16 | n << 5 | dst(t));
+                        }
+                    }
                 }
                 Step::And(t, a, mask) => {
-                    self.thin_src(WORK_A, a);
-                    self.imm(WORK_B, mask);
-                    self.put(0x8A00_0000 | WORK_B << 16 | WORK_A << 5 | (TMP + t as u32));
+                    let n = self.thin_operand(a, WORK_A);
+                    match low_bits(mask) {
+                        // and xd, xn, #(2^k - 1): N = 1, immr = 0, imms = k - 1.
+                        Some(k) => self.put(0x9240_0000 | (k - 1) << 10 | n << 5 | dst(t)),
+                        None => {
+                            self.imm(WORK_B, mask);
+                            self.put(0x8A00_0000 | WORK_B << 16 | n << 5 | dst(t));
+                        }
+                    }
                 }
                 Step::Shr(t, a, n) => {
-                    self.thin_src(WORK_A, a);
-                    self.thin_shr(TMP + t as u32, WORK_A, n);
+                    let a = self.thin_operand(a, WORK_A);
+                    self.thin_shr(dst(t), a, n);
                 }
                 Step::Load(t, at) => {
-                    self.thin_src(WORK_A, at);
-                    self.thin_load(TMP + t as u32, WORK_A);
+                    let at = self.thin_operand(at, WORK_A);
+                    self.thin_where(WORK_B, at);
+                    self.ldr(dst(t), WORK_B, 0);
                 }
                 Step::Store(at, v) => {
-                    self.thin_src(WORK_A, at);
-                    self.ldr(WORK_B, X19, layout::BASE);
-                    self.put(0x8B00_0000 | WORK_A << 16 | 3 << 10 | WORK_B << 5 | WORK_A);
-                    self.thin_src(WORK_B, v);
-                    self.str(WORK_B, WORK_A, 0);
+                    let at = self.thin_operand(at, WORK_A);
+                    self.thin_where(WORK_B, at);
+                    let v = self.thin_operand(v, WORK_A);
+                    self.str(v, WORK_B, 0);
                 }
                 // Branch away on the *negation*: the guard holding is the
                 // ordinary case and falls through. Unsigned throughout, which
                 // is what makes one `u <` reject a negative index as well as
                 // one past the end.
                 Step::Guard(c, a, b) => {
-                    self.thin_src(WORK_A, a);
-                    self.thin_src(WORK_B, b);
-                    self.cmp(WORK_A, WORK_B);
+                    // `a < 2^k` is "no bit at or above k", which is a shift and
+                    // a test rather than a constant to build and compare
+                    // against. The one that matters is the first guard of every
+                    // expansion, whose bound is 2^31 and needs two instructions
+                    // to materialize.
+                    if let (Cond::Lt, thin::Src::Imm(w)) = (c, b)
+                        && let Some(k) = log2(w)
+                    {
+                        let n = self.thin_operand(a, WORK_A);
+                        self.thin_shr(WORK_B, n, k);
+                        self.at(slow, Fixup::Imm19, 0xB500_0000 | WORK_B); // cbnz
+                        continue;
+                    }
+                    let n = self.thin_operand(a, WORK_A);
+                    match small_imm(b) {
+                        // cmp xn, #imm, which is subs xzr, xn, #imm.
+                        Some(k) => self.put(0xF100_001F | k << 10 | n << 5),
+                        None => {
+                            let m = self.thin_operand(b, WORK_B);
+                            self.cmp(n, m);
+                        }
+                    }
                     let fails = match c {
                         Cond::Eq => NE,
                         Cond::Ne => EQ,
@@ -618,11 +704,8 @@ impl Emit for Asm {
                     self.b_cond(fails, slow);
                 }
                 Step::Put(r, src) => {
-                    self.thin_src(WORK_A, src);
-                    self.set(WORK_A, r as u32);
-                    if !self.defer_live {
-                        self.raise(r as u32 + 1);
-                    }
+                    let v = self.thin_operand(src, WORK_A);
+                    self.set(v, r as u32);
                 }
             }
         }
@@ -784,6 +867,26 @@ impl Emit for Asm {
 }
 
 /// Unsigned lower, which the conditions above do not otherwise need.
+/// `src` as an `imm12`, which `add` and `cmp` take directly.
+fn small_imm(src: thin::Src) -> Option<u32> {
+    match src {
+        thin::Src::Imm(w) if w < 4096 => Some(w as u32),
+        _ => None,
+    }
+}
+
+/// `k` where `mask` is the low `k` bits, which `and` takes as a logical
+/// immediate. Every mask an expansion uses is one of these -- a kind byte, a
+/// descriptor nibble, a flag -- so the general encoding is not worth writing.
+fn low_bits(mask: u64) -> Option<u32> {
+    (mask != 0 && mask != u64::MAX && (mask & (mask + 1)) == 0).then(|| mask.count_ones())
+}
+
+/// `k` where `w` is `2^k`, and `k` is a shift a 64-bit register can take.
+fn log2(w: u64) -> Option<u32> {
+    (w != 0 && w & (w - 1) == 0 && w.trailing_zeros() < 64).then(|| w.trailing_zeros())
+}
+
 const LO: u32 = 3;
 
 /// The scratch registers a run of thin steps keeps its temporaries in, and the
@@ -794,6 +897,29 @@ const WORK_B: u32 = X15;
 
 impl Asm {
     /// `xd = src`.
+    /// Where `src` already is, or `scratch` with it put there.
+    ///
+    /// A temporary is a register of its own, and a pinned bytecode register is
+    /// in one too, so neither has to be moved anywhere first. That matters
+    /// because a run of steps is a dozen of these: moving each one into a
+    /// working register cost more instructions than the work did.
+    fn thin_operand(&mut self, src: thin::Src, scratch: u32) -> u32 {
+        match src {
+            thin::Src::Tmp(t) => TMP + t as u32,
+            thin::Src::Reg(r) => match self.pinned(r as u32) {
+                Some(m) => m,
+                None => {
+                    self.get(scratch, r as u32);
+                    scratch
+                }
+            },
+            thin::Src::Imm(w) => {
+                self.imm(scratch, w);
+                scratch
+            }
+        }
+    }
+
     fn thin_src(&mut self, d: u32, src: thin::Src) {
         match src {
             thin::Src::Reg(r) => self.get(d, r as u32),
@@ -807,10 +933,46 @@ impl Asm {
         self.put(0xD340_0000 | sh << 16 | 63 << 10 | n << 5 | d);
     }
 
+    /// `xd = ` the slot address `xn`, as a machine address.
+    ///
+    /// Three loads: the generation's table, the block's first slot, and -- left
+    /// to the caller -- the slot itself. That is what it costs to reach the old
+    /// generation at all, whose blocks are separate allocations with nothing
+    /// contiguous to index; the nursery pays the same because a run of steps
+    /// has no branch to tell the two apart with, and it is still two loads
+    /// fewer than leaving native code.
+    ///
+    /// `xn` is left alone, so a caller that needs it again (a store, which
+    /// wants the address and then the value) may keep it.
+    fn thin_where(&mut self, d: u32, n: u32) {
+        use super::addr::*;
+        // x16 = &vm.heap.tables; x17 = addr >> 30, the generation.
+        self.put(0x9100_0000 | layout::TABLES << 10 | X19 << 5 | X16); // add x16, x19, #TABLES
+        self.thin_shr(X17, n, GEN_SHIFT);
+        self.ldr_idx(X16, X16, X17); // ldr x16, [x16, x17, lsl #3]
+        // x17 = (addr >> 13) & 0x1FFFF, the block; x16 = its first slot.
+        self.ubfx(X17, n, BLOCK_SHIFT, BLOCK_MASK.count_ones());
+        self.ldr_idx(X16, X16, X17); // ldr x16, [x16, x17, lsl #3]
+        // d = that slot's address plus the offset within the block.
+        self.ubfx(X17, n, 0, SLOT_MASK.count_ones());
+        self.put(0x8B00_0000 | X17 << 16 | 3 << 10 | X16 << 5 | d); // add d, x16, x17, lsl #3
+    }
+
     /// `xd = ` the heap word at slot `xn`.
     fn thin_load(&mut self, d: u32, n: u32) {
-        self.ldr(WORK_B, X19, layout::BASE);
-        self.put(0x8B00_0000 | n << 16 | 3 << 10 | WORK_B << 5 | WORK_A); // add x14, x15, xn, lsl #3
+        self.thin_where(WORK_A, n);
         self.ldr(d, WORK_A, 0);
+    }
+
+    /// `xd = xn` bits `lsb ..< lsb + width`, zero-extended: `ubfx`, which is
+    /// `ubfm xd, xn, #lsb, #(lsb + width - 1)`.
+    fn ubfx(&mut self, d: u32, n: u32, lsb: u32, width: u32) {
+        debug_assert!(width > 0 && lsb + width <= 64);
+        self.put(0xD340_0000 | lsb << 16 | (lsb + width - 1) << 10 | n << 5 | d);
+    }
+
+    /// `ldr xt, [xn, xm, lsl #3]` -- word `xm` of the array at `xn`.
+    fn ldr_idx(&mut self, t: u32, n: u32, m: u32) {
+        self.put(0xF860_7800 | m << 16 | n << 5 | t);
     }
 }

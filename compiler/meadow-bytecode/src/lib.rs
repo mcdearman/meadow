@@ -203,6 +203,35 @@ pub enum Op {
     BrIK,
     /// `if not cond[c](r[a], r[b]) then pc = imm`, as `Float`s.
     BrF,
+    // The bitwise three, on the same footing as the arithmetic above. They are
+    // here because `core::simplify` turns a multiply or a divide by a power of
+    // two into one -- which is only cheaper if the machine has the instruction,
+    // and until it did, strength reduction made `matmul` 45% *slower* by
+    // dropping its index arithmetic out of the native path and into the
+    // interpreter.
+    //
+    // The shift count is taken modulo 64, which is what `i64::wrapping_shl`
+    // does and what the hardware does, so all three engines agree.
+    /// `r[a] = r[b] << r[c]`, as `Int`s.
+    ShlI,
+    /// `r[a] = r[b] >> r[c]`, arithmetic: the sign is carried in.
+    ShrI,
+    /// `r[a] = r[b] & r[c]`
+    AndI,
+    /// `r[a] = r[b] << imm`
+    ShlIK,
+    /// `r[a] = r[b] >> imm`, arithmetic.
+    ShrIK,
+    /// `r[a] = r[b] & imm`, `imm` a signed 32-bit word.
+    AndIK,
+    /// `r[a] = r[b] >>> r[c]`, logical: zeros come in. Count modulo 64.
+    UshrI,
+    /// `r[a] = r[b] >>> imm`
+    UshrIK,
+    /// `r[a] = ` the number of set bits in `r[b]`, as an `Int`.
+    PopI,
+    /// `r[a] = r[b]` as a `Float`: the `Int` converted, rounding to nearest.
+    ItoF,
 }
 
 /// The comparison a typed compare or branch makes, as its operand byte or
@@ -308,9 +337,19 @@ impl Op {
         Op::BrI,
         Op::BrIK,
         Op::BrF,
+        Op::ShlI,
+        Op::ShrI,
+        Op::AndI,
+        Op::ShlIK,
+        Op::ShrIK,
+        Op::AndIK,
+        Op::UshrI,
+        Op::UshrIK,
+        Op::PopI,
+        Op::ItoF,
     ];
 
-    fn from_byte(b: u8) -> Option<Op> {
+    pub fn from_byte(b: u8) -> Option<Op> {
         Op::ALL.get(b as usize).copied()
     }
 }
@@ -742,20 +781,40 @@ impl Program {
             | Op::AddF
             | Op::SubF
             | Op::MulF
-            | Op::DivF => {
+            | Op::DivF
+            | Op::ShlI
+            | Op::ShrI
+            | Op::AndI
+            | Op::UshrI => {
                 let sym = match i.op {
                     Op::AddI | Op::AddF => "+",
                     Op::SubI | Op::SubF => "-",
                     Op::MulI | Op::MulF => "*",
                     Op::DivI | Op::DivF => "/",
+                    Op::ShlI => "<<",
+                    Op::ShrI => ">>",
+                    Op::AndI => "&",
+                    Op::UshrI => ">>>",
                     _ => "%",
                 };
                 format!("{name:<14} r{} <- r{} {sym} r{}", i.a, i.b, i.c)
             }
-            Op::AddIK | Op::SubIK | Op::MulIK => {
+            Op::PopI | Op::ItoF => {
+                let what = if i.op == Op::PopI {
+                    "popCount"
+                } else {
+                    "toFloat"
+                };
+                format!("{name:<14} r{} <- {what}(r{})", i.a, i.b)
+            }
+            Op::AddIK | Op::SubIK | Op::MulIK | Op::ShlIK | Op::ShrIK | Op::AndIK | Op::UshrIK => {
                 let sym = match i.op {
                     Op::AddIK => "+",
                     Op::SubIK => "-",
+                    Op::ShlIK => "<<",
+                    Op::ShrIK => ">>",
+                    Op::AndIK => "&",
+                    Op::UshrIK => ">>>",
                     _ => "*",
                 };
                 format!("{name:<14} r{} <- r{} {sym} {}", i.a, i.b, i.imm as i32)

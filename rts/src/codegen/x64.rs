@@ -11,7 +11,7 @@
 //! before every call and return, and loaded again after every call. Nothing
 //! else touches them.
 
-use super::{Emit, FloatOp, IntOp, Label, Operand, layout, thin};
+use super::{Emit, FloatOp, IntOp, Label, Operand, UnaryOp, layout, thin};
 use meadow_bytecode::{Cond, Pc, Reg};
 use meadow_core::OptLevel;
 
@@ -525,6 +525,13 @@ impl Emit for Asm {
                     IntOp::Add => self.bytes(&[0x48, 0x01, 0xC8]), // add rax, rcx
                     IntOp::Sub => self.bytes(&[0x48, 0x29, 0xC8]), // sub rax, rcx
                     IntOp::Mul => self.bytes(&[0x48, 0x0F, 0xAF, 0xC1]), // imul rax, rcx
+                    // The count has to be in `cl`, and `operand` put it in
+                    // `rcx`. A 64-bit shift takes it modulo 64, as
+                    // `wrapping_shl` does, so no range check is needed.
+                    IntOp::Shl => self.bytes(&[0x48, 0xD3, 0xE0]), // shl rax, cl
+                    IntOp::Shr => self.bytes(&[0x48, 0xD3, 0xF8]), // sar rax, cl
+                    IntOp::Ushr => self.bytes(&[0x48, 0xD3, 0xE8]), // shr rax, cl
+                    IntOp::And => self.bytes(&[0x48, 0x21, 0xC8]), // and rax, rcx
                     IntOp::Div | IntOp::Rem => {
                         self.bytes(&[0x48, 0x85, 0xC9]); // test rcx, rcx
                         self.jcc(CC_E, zero);
@@ -553,6 +560,20 @@ impl Emit for Asm {
             }
         }
         self.store(a);
+    }
+
+    fn unary(&mut self, op: UnaryOp, a: Reg, b: Reg) {
+        self.get(RAX, b as u32);
+        match op {
+            UnaryOp::ToFloat => {
+                self.bytes(&[0xF2, 0x48, 0x0F, 0x2A, 0xC0]); // cvtsi2sd xmm0, rax
+                self.store_float(a);
+            }
+            UnaryOp::PopCount => {
+                self.bytes(&[0xF3, 0x48, 0x0F, 0xB8, 0xC0]); // popcnt rax, rax
+                self.store(a);
+            }
+        }
     }
 
     fn float(&mut self, op: FloatOp, a: Reg, b: Reg, c: Reg) {

@@ -764,6 +764,24 @@ impl<'p> Vm<'p> {
                 };
                 self.set_word(i.a, r as Word);
             }
+            // `wrapping_shl` takes the count modulo 64, as the hardware
+            // does, so the typed instruction and `num::int_bits` agree.
+            Op::ShlI => self.int2(i, |x, y| x.wrapping_shl(y as u32)),
+            Op::ShrI => self.int2(i, |x, y| x.wrapping_shr(y as u32)),
+            Op::AndI => self.int2(i, |x, y| x & y),
+            Op::ShlIK => self.int_k(i, |x, y| x.wrapping_shl(y as u32)),
+            Op::ShrIK => self.int_k(i, |x, y| x.wrapping_shr(y as u32)),
+            Op::AndIK => self.int_k(i, |x, y| x & y),
+            Op::UshrI => self.int2(i, |x, y| ((x as u64).wrapping_shr(y as u32)) as i64),
+            Op::UshrIK => self.int_k(i, |x, y| ((x as u64).wrapping_shr(y as u32)) as i64),
+            Op::PopI => {
+                let n = self.reg(i.b).count_ones() as Word;
+                self.set_word(i.a, n);
+            }
+            Op::ItoF => {
+                let x = self.reg(i.b) as i64 as f64;
+                self.set_word(i.a, x.to_bits());
+            }
             Op::AddIK => self.int_k(i, i64::wrapping_add),
             Op::SubIK => self.int_k(i, i64::wrapping_sub),
             Op::MulIK => self.int_k(i, i64::wrapping_mul),

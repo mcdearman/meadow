@@ -137,17 +137,25 @@ figure in brackets is how many times slower than the fastest in that row.
 
 | task | meadow | rust | c | go | haskell | java | ocaml | koka | python | js |
 |---|---|---|---|---|---|---|---|---|---|---|
-| fib | 50ms (5.7×) | 11ms (1.2×) | **9ms** | 11ms (1.3×) | 30ms (3.4×) | 38ms (4.3×) | 11ms (1.2×) | 13ms (1.4×) | 215ms (24.2×) | 76ms (8.5×) |
-| binarytrees | 2.76s (8.6×) | 1.57s (4.9×) | 1.66s (5.1×) | 813ms (2.5×) | 438ms (1.4×) | **323ms** | 555ms (1.7×) | 334ms (1.0×) | 5.79s (17.9×) | 830ms (2.6×) |
-| matmul | 1.67s (275.1×) | 7ms (1.1×) | **6ms** | 13ms (2.1×) | 30ms (4.9×) | 40ms (6.5×) | 26ms (4.3×) | 200ms (33.0×) | 761ms (125.4×) | 80ms (13.2×) |
-| wordfreq | 1.21s (94.7×) | 14ms (1.1×) | **13ms** | 17ms (1.4×) | 146ms (11.4×) | 132ms (10.3×) | 52ms (4.1×) | — | 53ms (4.1×) | 113ms (8.8×) |
-| ⇉ mandelbrot | 198ms (6.3×) | **32ms** | 36ms (1.1×) | 33ms (1.0×) | 77ms (2.4×) | 85ms (2.7×) | — | — | 1.20s (37.7×) | 132ms (4.2×) |
-| ⇉ contention | 498ms (98.5×) | 7ms (1.4×) | **5ms** | 18ms (3.6×) | 40ms (8.0×) | 65ms (12.9×) | — | — | 61ms (12.0×) | 139ms (27.5×) |
-| ⇉ pipeline | 57ms (3.2×) | 22ms (1.3×) | 31ms (1.8×) | **18ms** | 815ms (46.3×) | 63ms (3.6×) | — | — | 175ms (9.9×) | 159ms (9.0×) |
-| _startup_ | 3ms | 3ms | 3ms | 3ms | 18ms | 34ms | 3ms | — | 21ms | 62ms |
+| fib | 47ms (4.9×) | 11ms (1.1×) | 10ms (1.1×) | **10ms** | 29ms (3.0×) | 35ms (3.6×) | 13ms (1.3×) | 10ms (1.1×) | 205ms (21.3×) | 72ms (7.5×) |
+| binarytrees | 1.87s (6.3×) | 1.51s (5.1×) | 1.59s (5.4×) | 775ms (2.6×) | 414ms (1.4×) | **297ms** | 523ms (1.8×) | 330ms (1.1×) | 5.70s (19.2×) | 833ms (2.8×) |
+| matmul | 687ms (146.9×) | 5ms (1.1×) | **5ms** | 13ms (2.8×) | 29ms (6.2×) | 41ms (8.7×) | 25ms (5.3×) | 201ms (43.0×) | 755ms (161.6×) | 77ms (16.5×) |
+| wordfreq | 880ms (72.6×) | 14ms (1.1×) | **12ms** | 17ms (1.4×) | 142ms (11.7×) | 130ms (10.7×) | 53ms (4.4×) | — | 54ms (4.5×) | 118ms (9.8×) |
+| ⇉ mandelbrot | 176ms (5.6×) | 34ms (1.1×) | 36ms (1.1×) | **32ms** | 76ms (2.4×) | 90ms (2.8×) | — | — | 1.21s (38.1×) | 131ms (4.1×) |
+| ⇉ contention | 517ms (108.4×) | 5ms (1.1×) | **5ms** | 17ms (3.5×) | 41ms (8.6×) | 60ms (12.6×) | — | — | 59ms (12.4×) | 136ms (28.6×) |
+| ⇉ pipeline | 61ms (4.3×) | 20ms (1.4×) | 31ms (2.2×) | **14ms** | 771ms (54.6×) | 63ms (4.5×) | — | — | 175ms (12.4×) | 160ms (11.3×) |
+| _startup_ | 4ms | 2ms | 2ms | 3ms | 16ms | 29ms | 3ms | — | 20ms | 59ms |
 
-Where Meadow was when this suite was written, and where the changes in
-[What was fixed](#what-was-fixed) have taken it:
+**Absolute times move about 20% between runs of the whole suite on this
+machine**, so do not read one run against another: this one has Rust, C and Go
+all slower than the previous one by roughly that much, which says the machine
+was busier and nothing about any compiler. Ratios *within* a row are taken in
+the same conditions and are the trustworthy part. Where a change to Meadow is
+claimed below, it was measured by alternating two compilers back to back on an
+otherwise idle machine rather than by comparing two runs of this table.
+
+Where Meadow was when this suite was written, and where the first round of
+changes in [What was fixed](#what-was-fixed) took it:
 
 | task | before | after | |
 |---|---|---|---|
@@ -158,19 +166,54 @@ Where Meadow was when this suite was written, and where the changes in
 | wordfreq | 1.44s | **1.21s** | 1.19× |
 | fib, pipeline | — | — | unchanged |
 
+The second round — [register reuse](#what-was-fixed), the simplifier and the
+shift instructions — alternated against the compiler before it, two rounds of
+five runs each:
+
+| task | before | after | |
+|---|---|---|---|
+| wordfreq | 1.30s | **1.17s** | 1.11× |
+| fib | 50ms | **47ms** | 1.07× |
+| mandelbrot | 244ms | **238ms** | 1.03× |
+| binarytrees | 3.06s | **3.01s** | 1.02× |
+| matmul, contention, pipeline | — | — | unchanged |
+
+Smaller than the first round, and the reason is worth stating: the first round
+removed things the machine was doing *per iteration of a loop* — a jump and two
+continuations for reading a global, eight thousand collections, two allocations
+per hash. This round removes instructions. `contention` and `pipeline` vary by
+±20% run to run whatever is compiled, so nothing below that is claimed for them.
+
+The third round — [native code reaching the whole heap](#the-third-round-the-native-back-end)
+— alternated the same way:
+
+| task | before | after | |
+|---|---|---|---|
+| matmul | 1.78s | **692ms** | 2.57× |
+| binarytrees | 2.98s | **1.89s** | 1.57× |
+| wordfreq | 1.07s | **893ms** | 1.19× |
+| mandelbrot | 200ms | **178ms** | 1.13× |
+| fib, contention, pipeline | — | — | unchanged |
+
+Back to loop-shaped wins, and it says where they come from: the instructions in
+a hot loop that native code was *handing back to the interpreter*. Statically
+those were 3–9% of each program; dynamically they were 62% of `matmul`'s time
+and 55 million of `binarytrees`' instructions. A counter in the runtime
+(`MEADOW_TRAPS=1`, see `docs/RUNTIME.md`) now says exactly which ones, by pc.
+
 ## What this says
 
-**Meadow's calls and its channels are good; its arrays are not.** The spread
-inside Meadow's own column — 3.4× on `pipeline`, 523× on `matmul` — matters far
-more than where the column sits on average.
+**Meadow's calls and its channels are good; its arrays are getting there.**
+The spread inside Meadow's own column — 4.3× on `pipeline`, 147× on `matmul` —
+matters far more than where the column sits on average.
 
 The three languages worth measuring against are OCaml, Koka and Haskell: compiled
 functional languages with a managed heap, which is what Meadow is. Against those,
-Meadow is currently **4–5× on `fib`, 5–8× on `binarytrees`, 23× on `wordfreq` and
-8× on `matmul` against Koka** (64× against OCaml, whose arrays are unboxed and
-whose loops are native).
+Meadow is currently **3.6–4.7× on `fib`, 3.6–5.7× on `binarytrees`, 17× on
+`wordfreq` and 3.4× on `matmul` against Koka** (27× against OCaml, whose arrays
+are unboxed and whose loops are native).
 
-`pipeline` at 3.4× the fastest is the strongest result. It is behind Go, the
+`pipeline` at 4.3× the fastest is the strongest result. It is behind Go, the
 language whose reputation rests on this one thing, and behind Rust's `mpsc`, but
 ahead of C's mutex and condition variables, ahead of Java and Node, and several
 times ahead of GHC's `Chan`. Handing a value between green threads is what the
@@ -178,20 +221,26 @@ scheduler in `rts/src/sched.rs` was built for — a thread woken by a message go
 into the receiving worker's non-stealable next slot, so a send and the receive
 answering it happen on one core back to back — and it shows.
 
-`fib` at 5× says the calling convention and the native backend are sound. It is
-the one task with no allocation, no arrays and no runtime services, so it is the
-closest thing here to a measurement of the compiler on its own. The gap to OCaml
-and Koka (both 10–11ms) is the cost of allocating a continuation for each of the
-two non-tail calls per node.
+`fib` at 4.9× says the calling convention and the native backend are sound. It
+is the one task with no allocation, no arrays and no runtime services, so it is
+the closest thing here to a measurement of the compiler on its own — which is
+why it is the row register reuse moved most (7%). The gap to OCaml and Koka
+(10–13ms) is the cost of allocating a continuation for each of the two
+non-tail calls per node.
 
-`matmul` at 275× is the worst number in the suite and has a specific cause.
-`St.get` and `St.set` are primitives, and native code does not implement
-primitives: it hands them back to the interpreter through `meadow_exec`. Every
-element read and written in the innermost loop leaves machine code, does a type
-check and a bounds check, and returns. Note that **Koka is 38× off C here too** —
+`matmul` at 147× is still the worst number in the suite, and it used to be 366×
+with a specific cause. `St.get` and `St.set` are primitives, and native code did
+not implement primitives: it handed them back to the interpreter through
+`meadow_exec`. Every element read and written in the innermost loop left machine
+code, did a type check and a bounds check, and returned. Sampling the executable
+put 62% of its time inside that call. Both are now compiled inline (see [the
+third round](#the-third-round-the-native-back-end)), and the same sampling puts
+0.6% there. What remains is the quality of the inline code: three array
+accesses per iteration, each four guards and two table walks, all of which are
+loop-invariant and none of which are hoisted yet. Note that **Koka is 38× off C here too** —
 array-heavy numeric code is hard for a reference-counted functional runtime as
-well — so the gap Meadow has to close to reach its own weight class is 8×, not
-275×.
+well — so the gap Meadow has to close to reach its own weight class is 3.4×,
+not 147×.
 
 What is left there is the **interpreter round trip itself**, and that is now
 measured rather than assumed. Keeping the arrays in the nursery, so that every
@@ -200,8 +249,9 @@ by 3% (1711ms to 1659ms). The cost is not reaching the memory; it is leaving
 native code, dispatching through `Vm::exec` and `run_prim`, building a `Value`
 and coming back. Only inlining the access into native code removes it.
 
-`contention` at 99× is a comparison of two software transactional memories:
-GHC's runs the identical algorithm in 40ms. A profile of it is mostly
+`contention` at 108× is a comparison of two software transactional memories:
+GHC's runs the identical algorithm in 41ms. (This row moves ±20% between runs of
+the same binary; 403ms and 517ms are both this compiler.) A profile of it is mostly
 `__psynch_mutexwait`, which looks like lock overhead and is not: two attempts to
 remove it — spinning before waiting, and an `RwLock` per cell so readers need
 not take turns — are both measurably *worse*, and the note in `rts/src/stm.rs`
@@ -210,11 +260,15 @@ per-transaction machinery: `World::read`, `World::region_for_write` and
 `World::commit` each allocate, and `Std.Stm` runs the control as effect
 handlers.
 
-`wordfreq` at 95× is the persistent HAMT doing the work a mutable hash table
-does elsewhere. OCaml's `Hashtbl` at 51ms is the number to aim at.
+`wordfreq` at 73× is the persistent HAMT doing the work a mutable hash table
+does elsewhere. OCaml's `Hashtbl` at 53ms is the number to aim at. Its remaining
+interpreter traffic is known to the instruction: closures with more than eight
+captures (which the native allocator and `invoke` do not yet handle), and the
+string primitives, which are Rust and always will be — what they need is a
+cheaper way to be called.
 
 `binarytrees` is worth reading for its own sake, and it is where **Koka earns its
-place in this table**: Perceus reference counting at 333ms is second only to
+place in this table**: Perceus reference counting at 330ms is second only to
 Java's collector and ahead of GHC, Go and V8, on the benchmark that is nothing
 but allocate-walk-discard. Every generational collector with a bump allocator
 beats `malloc`/`free` in C and `Box` in Rust by two to five times. The received
@@ -226,7 +280,7 @@ than 3.6×, and has none of the one-task disasters every other column contains
 somewhere.
 
 **Two results are about the other languages, not Meadow.** Python's `wordfreq` at
-53ms beats Haskell, Java and Node, because `str.split` and `collections.Counter`
+53ms ties OCaml and beats Haskell, Java and Node, because `str.split` and `collections.Counter`
 are C and the Python is four lines of glue. And GHC's `Chan` on `pipeline` is a
 boxed linked structure with an `MVar` per cell doing what a ring buffer does
 elsewhere; it is also the noisiest measurement in the suite, varying between
@@ -234,8 +288,96 @@ elsewhere; it is also the noisiest measurement in the suite, varying between
 
 ## What was fixed
 
-Three changes to the runtime came out of profiling this suite. Each was measured
+Changes that came out of profiling this suite, in two rounds. Each was measured
 before and after, and the numbers are in [Results](#results).
+
+### The third round: the native back end
+
+Everything here came out of one question, answered by measurement instead of
+inference: *which instructions does native code hand back to the interpreter,
+and how often?* Static counts said 3–9%. A sampler on the executable said
+`matmul` spent 62% of its time in `meadow_exec`. A per-pc counter in the
+runtime then said exactly which ones.
+
+**Native code could not reach the old generation.** The nursery is one flat
+array, so a heap word was one load off its base; the old generation is Immix
+blocks, each a separate allocation, so a promoted object's fields were
+unreachable from machine code and every instruction touching one bailed to the
+interpreter. `binarytrees` keeps a long-lived tree and many medium-lived ones,
+all promoted: **55 million** `Field` and `JumpUnlessTag` traps on trees that
+native code itself had built. The heap now publishes a **block table** per
+generation (`Heap::tables`, at `layout::TABLES`); a heap word is
+`tables[a >> 30][(a >> 13) & 0x1FFFF][a & 8191]`, three dependent loads. The
+object instructions branch on the generation bit, so a young object still costs
+one load. 55 million traps became 4,467; `binarytrees` 2.98s → 1.89s.
+
+**Arrays went the same way**, and were the matmul number. `stGetArray`,
+`arrayGet` and `stSetArray` expand into `codegen::thin` steps that the back end
+emits inline, with the nursery-only guard replaced by "not a compact region",
+and the emitter tightened to use immediate forms instead of building each
+constant. `matmul` 1.78s → 692ms; 62% in the interpreter → 0.6%. A store is
+only taken for an array whose elements are not references: that is what lets
+it skip the marker's mutation lock, the snapshot barrier and the remembered
+set, and the reasoning is written beside the expansion.
+
+**Four instructions the machine did not have.** `toFloat` on an `Int` was
+16 million traps a run of `mandelbrot` (twice per pixel, for the coordinates);
+`popCount` and `>>>` are what a hash trie finds a child with. They are one
+instruction each on every machine this targets and now are here too, with
+`Ushr`'s folded-constant form.
+
+**Two bugs the tests caught.** The block table is a `Vec` that moves as blocks
+are added, and it was republished only when the *nursery* moved: `wordfreq`
+read a freed copy and crashed. It is now republished at the single point
+control returns to native code, `meadow_exec`, with a regression test that
+promotes trees and closures and reads them natively. And a wrong encoding for
+`addv` was an illegal instruction — caught by assembling every new encoding
+with the system assembler and comparing bytes, which is how they are all
+checked now.
+
+### The second round: the compiler
+
+**Registers were never reused.** A name got a register when it was bound and
+kept it for the rest of the block, so a straight-line block climbed through the
+register file even where most of what it held was dead — and every transfer out
+of it ended in a permutation putting things back. `move` was the most-retired
+instruction in the machine: 27% of `fib`, 35% of `binarytrees`, 18% of
+`mandelbrot`. The sequent IR already says where a value dies, so this was a
+matter of reading it (`meadow_seq::still_used`) rather than computing liveness.
+The case that matters is that **capturing a name is a use of it** — once a
+closure holds a copy, what its methods do later is the methods' business — so a
+continuation built out of the environment now lands on top of what it closed
+over. `fib`'s recursive call went from five instructions to three:
+
+```text
+before                          after
+closure r2 <- m7 [r0..+2]       closure r1 <- m7 [r0..+2]
+subik   r3 <- r0 - 1            subik   r0 <- r0 - 1
+move    r0 <- r3                jump    @169
+move    r1 <- r2
+jump    @169
+```
+
+**There was no simplifier.** `meadow_core::simplify` now does case of known
+constructor (a `Maybe` built and matched in one expression is neither
+allocated nor tested), case of case (the outer alternatives named once in a join
+point and jumped to, rather than copied into each branch), and the algebraic
+identities. On this suite the first two are **neutral**: these are numeric loops
+and channels, not constructor-heavy code. They are kept because they are correct
+and because the code they remove is the code inlining produces.
+
+**The machine had no shift instruction**, and that made strength reduction a
+pessimization. Turning `i * 256` into `i << 8` looks free — a multiply is three
+to five cycles and a shift is one — but `Shl` was not in the typed instruction
+table, so it lowered to a generic primitive, and a generic primitive is not
+compiled natively: it traps back into the interpreter. `matmul` got **45%
+slower** (1.84s to 2.66s). `ShlI`, `ShrI`, `AndI` and their folded-constant forms
+now exist in the bytecode, the VM and both native back ends, and with them
+strength reduction is neutral on `matmul` and worth 11% on `wordfreq`, which
+hashes. The general lesson is the one worth keeping: an instruction is only
+cheaper if the back end can see it.
+
+### The first round: the runtime
 
 **The nursery was 256 KB** (`rts/src/heap.rs`), so `binarytrees` collected about
 eight thousand times. It is now 2 MB. That is a real trade and not a free win:
@@ -294,9 +436,13 @@ redundant.
 1. **One machine, one run of the suite.** These numbers are from a 10-core
    Apple silicon laptop that was not otherwise idle. Ratios within a row are
    more trustworthy than absolute times, and nothing here is a claim about
-   other hardware. `pipeline` in Haskell is the one measurement that moves a
-   lot between runs — 44ms to 872ms — so read that cell as an order of
-   magnitude, not a number.
+   other hardware. The whole table moves about 20% between runs, so a cell
+   compared against the same cell in an older version of this file says
+   nothing: every claim in [What was fixed](#what-was-fixed) comes from
+   alternating two compilers back to back instead. `contention` and `pipeline`
+   vary by ±20% on their own — `contention` gave 403ms, 469ms and 475ms from
+   one binary — and `pipeline` in Haskell moves between 44ms and 1.16s, so read
+   that cell as an order of magnitude, not a number.
 2. **MLton is written but has never been run.** There is no MLton toolchain on
    this machine, so `mlton` has never seen `tasks/*/*.sml`. The programs were
    written to the same specification as the rest and may well have typos.

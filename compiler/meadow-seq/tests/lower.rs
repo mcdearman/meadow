@@ -13,6 +13,23 @@ use meadow_hir::VarId;
 use meadow_seq::{Block, Statement, lower_program};
 use std::sync::Arc;
 
+/// A choice between `a` and `b` that `core::simplify` cannot make.
+///
+/// These tests are about the shape lowering emits, and several of them used a
+/// literal `true` or a constructor built one line above the `match` on it to
+/// say what was being lowered. The simplifier now settles both at compile time
+/// -- correctly, and leaving nothing for the test to look at. So the condition
+/// is a comparison instead: nothing here folds one, and the shape under test is
+/// the shape a real program has.
+fn opaque(a: Term, b: Term) -> Term {
+    let cond = Term::Prim(
+        Prim::Lt,
+        vec![Term::Lit(Lit::Int(0)), Term::Lit(Lit::Int(1))],
+        meadow_core::unknown(),
+    );
+    Term::If(Arc::new(cond), Arc::new(a), Arc::new(b))
+}
+
 fn main_def(term: Term) -> Program {
     let var = VarId(100);
     Program {
@@ -197,11 +214,7 @@ fn a_join_point_becomes_a_label_and_jumps_to_it() {
     let x = VarId(61);
 
     let call = |n: i64| Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Lit(Lit::Int(n))));
-    let body = Term::If(
-        Arc::new(Term::Lit(Lit::Bool(true))),
-        Arc::new(call(1)),
-        Arc::new(call(2)),
-    );
+    let body = opaque(call(1), call(2));
     let term = Term::Let(
         f,
         meadow_core::Poly::mono(meadow_core::unknown()),
@@ -250,7 +263,10 @@ fn a_match_becomes_a_switch_with_a_default() {
     let y = VarId(2);
     let term = Term::let_(
         x,
-        Term::ctor("Just", vec![Term::Lit(Lit::Int(9))]),
+        opaque(
+            Term::ctor("Just", vec![Term::Lit(Lit::Int(9))]),
+            Term::ctor("Nothing", vec![]),
+        ),
         Term::case(
             Term::Var(x),
             vec![
@@ -296,7 +312,9 @@ fn a_letrec_becomes_labels_sharing_one_parameter_list() {
     let b = VarId(5);
     let term = Term::let_(
         n,
-        Term::Lit(Lit::Int(1)),
+        // Not a literal: one of those is copied to where it is read, and then
+        // the group has no capture to share.
+        opaque(Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(2))),
         Term::letrec(
             vec![
                 (
@@ -450,7 +468,14 @@ fn case_trees_replace_the_chain_at_o2() {
             (Pat::Wild, Term::Lit(Lit::Int(0))),
         ],
     );
-    let term = Term::let_(x, Term::ctor("Just", vec![Term::Lit(Lit::Int(9))]), case);
+    let term = Term::let_(
+        x,
+        opaque(
+            Term::ctor("Just", vec![Term::Lit(Lit::Int(9))]),
+            Term::ctor("Nothing", vec![]),
+        ),
+        case,
+    );
 
     let arms_at = |opt| {
         let lowered = lower_program(&main_def(term.clone()), opt);

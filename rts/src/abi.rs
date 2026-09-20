@@ -107,7 +107,12 @@ unsafe fn exec(vm: *mut c_void, pc: u32) -> u32 {
     vm.at = pc as usize;
     vm.pc = next;
     vm.steps += 1;
-    match vm.exec(i) {
+    traps::note(pc, i.op);
+    let status = vm.exec(i);
+    // Whatever the instruction did to the heap, native code reads it through
+    // the block tables next: see `Heap::publish_tables`.
+    vm.heap.publish_tables();
+    match status {
         Err(e) => {
             vm.failure = Some(e);
             FAILED
@@ -124,6 +129,7 @@ unsafe fn exec(vm: *mut c_void, pc: u32) -> u32 {
 
 /// Enter the native block `f` at the machine's pc, and run it until it leaves.
 pub(crate) fn enter(vm: &mut Vm, f: NativeFn) -> Result<Option<Value>, Error> {
+    vm.heap.publish_tables();
     // Safety: `f` was compiled from this machine's program, and gets the
     // machine exclusively for the call.
     let status = unsafe { f(vm as *mut Vm as *mut c_void) };
@@ -167,4 +173,46 @@ pub fn block_entries(program: &meadow_bytecode::Program) -> Vec<Pc> {
     entries.sort_unstable();
     entries.dedup();
     entries
+}
+
+/// Which instructions native code hands to the interpreter, and how often:
+/// what to compile next, measured rather than guessed. On with `MEADOW_TRAPS`
+/// in the environment, and printed when an ahead-of-time program finishes.
+pub mod traps {
+    use meadow_bytecode::{Op, Pc};
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static ON: OnceLock<bool> = OnceLock::new();
+    static COUNTS: Mutex<Option<HashMap<(Pc, u8), u64>>> = Mutex::new(None);
+
+    pub fn on() -> bool {
+        *ON.get_or_init(|| std::env::var_os("MEADOW_TRAPS").is_some())
+    }
+
+    #[inline]
+    pub fn note(pc: u32, op: Op) {
+        if !on() {
+            return;
+        }
+        let mut g = COUNTS.lock().unwrap_or_else(|p| p.into_inner());
+        *g.get_or_insert_with(HashMap::new)
+            .entry((pc as Pc, op as u8))
+            .or_insert(0) += 1;
+    }
+
+    /// The counts so far, largest first.
+    pub fn report() -> Vec<((Pc, Option<Op>), u64)> {
+        let g = COUNTS.lock().unwrap_or_else(|p| p.into_inner());
+        let mut v: Vec<_> = g
+            .as_ref()
+            .map(|m| {
+                m.iter()
+                    .map(|((pc, op), c)| ((*pc, Op::from_byte(*op)), *c))
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+        v
+    }
 }

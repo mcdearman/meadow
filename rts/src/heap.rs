@@ -428,6 +428,21 @@ pub struct Heap {
     /// by collecting, so a program that compacts in a loop and allocates little
     /// else needs this to ask for a collection now and then.
     pub(crate) region_growth: usize,
+    /// Where native code reads a heap word: `table[a >> 30][(a >> 13) &
+    /// 0x1FFFF][a & 8191]`, in slots.
+    ///
+    /// Two entries, one per generation, because the two are laid out
+    /// differently and an expansion has no branch to tell them apart with. The
+    /// nursery is one flat array, so its table is `base`, `base + BLOCK`, …;
+    /// the old generation is separate blocks, so its table is theirs. A heap
+    /// word therefore costs three dependent loads in native code against one
+    /// through `Heap::slot` and about fifty through the interpreter.
+    ///
+    /// Kept by [`Heap::sync`], which every path that can move the nursery or
+    /// change the old generation's blocks already calls.
+    pub(crate) tables: [*const *mut Word; 2],
+    /// The nursery's half of `tables`, which this owns.
+    nursery_blocks: Vec<*mut Word>,
     config: GcConfig,
     /// The nursery, and its other half for collecting into.
     space: Vec<Word>,
@@ -587,6 +602,8 @@ impl Heap {
             #[cfg(feature = "profile-alloc")]
             sites: crate::profile::Sites::default(),
             region_growth: 0,
+            tables: [std::ptr::null(); 2],
+            nursery_blocks: Vec::new(),
         };
         heap.sync();
         heap
@@ -598,6 +615,42 @@ impl Heap {
     fn sync(&mut self) {
         self.base = self.space.as_mut_ptr();
         self.cap = self.space.len();
+        // The nursery a block at a time, so that native code can read it with
+        // the same three loads it reads the old generation with. Rebuilt whole
+        // rather than patched: it is one entry per 64 KiB, so a 2 MiB nursery
+        // is thirty-two of them.
+        let blocks = self.cap.div_ceil(old::BLOCK);
+        self.nursery_blocks.clear();
+        self.nursery_blocks.reserve(blocks + 1);
+        for i in 0..blocks {
+            // Safety: `i * BLOCK <= cap`, so this is inside `space` or one
+            // past its end, which is what a table entry for the last partial
+            // block has to be.
+            self.nursery_blocks
+                .push(unsafe { self.base.add(i * old::BLOCK) });
+        }
+        // An empty nursery still needs an entry: address 0 is in block 0.
+        if self.nursery_blocks.is_empty() {
+            self.nursery_blocks.push(self.base);
+        }
+        self.publish_tables();
+    }
+
+    /// Make [`Heap::tables`] current.
+    ///
+    /// The old generation's half is a `Vec` that reallocates as blocks are
+    /// added, and blocks are added by promotion, by a large allocation and by
+    /// evacuation -- none of which move the nursery, so none of which reach
+    /// [`Heap::sync`]. Native code reads the table's address from here at every
+    /// access, so what has to hold is only that this is called before control
+    /// returns to native code. There is exactly one way back in --
+    /// `crate::abi::exec`, which every instruction the interpreter runs for
+    /// native code goes through -- and one way in to begin with, so both call
+    /// this, and no path that changes the blocks has to remember to. The bug
+    /// this closes was a `wordfreq` reading a freed table entry and crashing on
+    /// the address it found there.
+    pub(crate) fn publish_tables(&mut self) {
+        self.tables = [self.nursery_blocks.as_ptr(), self.old.bases_ptr()];
     }
 
     /// Has enough gone into regions since the last collection that dead ones
@@ -828,6 +881,24 @@ impl Heap {
     /// of words the machine holds it as.
     pub fn word_at(&self, a: Addr) -> Word {
         self.slot(a)
+    }
+
+    /// Write the heap word at slot `a`, and **nothing else**: no descriptor,
+    /// no pointer bit, no remembered set, no snapshot barrier.
+    ///
+    /// This is what a [`crate::codegen::thin::Step::Store`] means, and it is
+    /// only safe because an expansion that uses one has guarded that none of
+    /// those is needed -- the object is a uniform array whose elements are not
+    /// references, so its descriptor cannot change, nothing in it is ever
+    /// followed by the collector, and no field of it can hold a young address.
+    /// Anything else goes through [`Heap::set_field_of`].
+    pub(crate) fn put_word_at(&mut self, a: Addr, w: Word) {
+        if a < OLD_BASE {
+            self.space[a as usize] = w;
+        } else {
+            debug_assert!(a < REGION_BASE, "a region is immutable");
+            self.old.put(a, w);
+        }
     }
 
     fn slot(&self, a: Addr) -> Word {

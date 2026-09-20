@@ -10,8 +10,8 @@
 //! and a fat instruction is opaque: [`crate::codegen`] either has a method that
 //! emits the whole of one, hand-written per architecture, or it hands the
 //! instruction back to the interpreter and native code stops being native.
-//! That is why a matrix multiply spends most of its time outside the machine
-//! code compiled for it.
+//! That is why a matrix multiply used to spend 62% of its time outside the
+//! machine code compiled for it, and now spends under 1%.
 //!
 //! The two wants are not reconcilable in one instruction set, so this is a
 //! second, thinner one underneath. A fat instruction [`expand`]s into a run of
@@ -98,49 +98,41 @@ pub enum Step {
 /// asked for it, exactly as before. Every instruction starts that way and stops
 /// being that way one at a time, each with a test.
 pub fn expand(program: &Program, i: Instr) -> Option<Vec<Step>> {
-    let _ = (program, i);
-    // Nothing yet, and the reason is worth writing down because the machinery
-    // below works and is tested.
-    //
-    // `element` reads an object in the **nursery**: [`Step::Load`] takes a slot
-    // of the one flat array the machine publishes to native code, and an object
-    // that has been promoted does not live there. So the run's first guard
-    // fails for a promoted object and the instruction goes to the interpreter
-    // after all -- having paid four instructions to find out.
-    //
-    // Which way that comes out is measured, on `benchmarks/matmul`, whose three
-    // arrays are half a megabyte each:
-    //
-    // ```text
-    //   arrays promoted (the default)   1659ms -> 1788ms   the guard, wasted
-    //   arrays kept young (64 MiB)      1659ms -> 1036ms   1.6x
-    // ```
-    //
-    // So this is worth having and is not worth turning on as it stands: the
-    // benchmarks it was built for are exactly the ones whose arrays are too big
-    // to stay young. Returning `Some(element(...))` here is the whole of
-    // enabling it once a step can reach the old generation.
-    //
-    // What that needs: `Old` keeps `Vec<Arc<Block>>`, each block owning a
-    // `Box<[UnsafeCell<Word>]>`, so there is no flat array to index. Native
-    // code would need a table of block bases, published into a `layout` slot
-    // the way [`crate::heap::Heap::sync`] publishes the nursery's, and kept in
-    // step with every block the collector makes or frees. Then `Load` compiles
-    // to a compare and two dependent loads instead of one, which is still a
-    // great deal less than the interpreter. A run allocates nothing and so
-    // cannot collect, which is what makes such a table safe to read across one.
-    None
+    use meadow_core::Prim;
+    match i.op {
+        // Reading an element of an array, mutable or not. Both are two
+        // arguments and a result, so both are an `Op::Prim2`, and the kind
+        // guard is what tells them apart at run time.
+        meadow_bytecode::Op::Prim2 => match program.prims.get(i.imm as usize)? {
+            Prim::StGetArray => Some(element(i.a, i.b, i.c, Kind::MutArray)),
+            Prim::ArrayGet => Some(element(i.a, i.b, i.c, Kind::Array)),
+            _ => None,
+        },
+        // Writing one. Three arguments, so a windowed `Op::Prim` whose
+        // registers are `b`, `b + 1`, `b + 2`.
+        meadow_bytecode::Op::Prim if i.c == 3 => match program.prims.get(i.imm as usize)? {
+            Prim::StSetArray => Some(element_set(i.a, i.b, i.b + 1, i.b + 2)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// `r[dst] = ` element `r[idx]` of the `kind` in `r[obj]`.
 ///
 /// The guards, in the order they are cheapest to fail: the object is in the
-/// nursery, it is the kind expected, it keeps one descriptor for every element,
-/// and the index is inside it. A `Kind::Bytes` array keeps eight elements to a
+/// heap rather than a compact region, it is the kind expected, it keeps one
+/// descriptor for every element, and the index is inside it. A `Kind::Bytes` array keeps eight elements to a
 /// word and is not this shape, which the uniform-descriptor guard does not
 /// catch -- so the kind guard is exact rather than a range.
 pub fn element(dst: Reg, obj: Reg, idx: Reg, kind: Kind) -> Vec<Step> {
     use Src::{Imm, Reg as R, Tmp};
+    // A region is the one thing ruled out by address: its blocks are looked up
+    // by a search rather than indexed, and it is immutable anyway. The
+    // generations are both reached through the block table an architecture
+    // reads a slot with, so neither needs a guard of its own -- which is what
+    // made this worth turning on. See `crate::heap::Heap::tables`.
+    //
     // Five temporaries, and they are reused: an architecture has only a handful
     // of scratch registers, and a run that wants more of them than there are
     // would have to spill -- which would cost more than the interpreter it is
@@ -148,7 +140,7 @@ pub fn element(dst: Reg, obj: Reg, idx: Reg, kind: Kind) -> Vec<Step> {
     // and 2 is whatever is needed at the time.
     vec![
         Step::Set(0, R(obj)),
-        Step::Guard(Cond::Lt, Tmp(0), Imm(crate::old::OLD_BASE as u64)),
+        Step::Guard(Cond::Lt, Tmp(0), Imm(crate::region::REGION_BASE as u64)),
         Step::Load(1, Tmp(0)),
         Step::And(2, Tmp(1), KIND_BITS),
         Step::Guard(Cond::Eq, Tmp(2), Imm(kind as u64)),
@@ -162,6 +154,55 @@ pub fn element(dst: Reg, obj: Reg, idx: Reg, kind: Kind) -> Vec<Step> {
         Step::Add(2, Tmp(2), Tmp(4)),
         Step::Load(2, Tmp(2)),
         Step::Put(dst, Tmp(2)),
+    ]
+}
+
+/// Where the element descriptor of a uniform object lives in its first header
+/// word. See [`crate::object`].
+pub const DESC_SHIFT: u32 = 8;
+pub const DESC_BITS: u64 = 0xF;
+
+/// Element `r[idx]` of the mutable array in `r[obj]` `= r[val]`, and `r[dst]`
+/// the unit the primitive answers with.
+///
+/// One guard more than [`element`]: the elements must not be **references**.
+/// That is what makes a bare store safe, and each of the three things it skips
+/// needs it:
+///
+/// * the marker holds the heap's mutation lock while it reads a mutable
+///   object's fields, because a mutable object's *descriptors* change as its
+///   fields do -- but a uniform array has one descriptor for all of them and
+///   [`Heap::set_field_of`] will not let it change, so there is nothing to
+///   race over;
+/// * the snapshot barrier records the old value of an overwritten reference,
+///   and a non-reference is not one;
+/// * the remembered set records an old slot that came to hold a young address,
+///   and a non-reference is never an address.
+///
+/// So an array of numbers is written with a store, and an array of anything
+/// else goes to the interpreter, which does all three.
+pub fn element_set(dst: Reg, obj: Reg, idx: Reg, val: Reg) -> Vec<Step> {
+    use Src::{Imm, Reg as R, Tmp};
+    vec![
+        Step::Set(0, R(obj)),
+        Step::Guard(Cond::Lt, Tmp(0), Imm(crate::region::REGION_BASE as u64)),
+        Step::Load(1, Tmp(0)),
+        Step::And(2, Tmp(1), KIND_BITS),
+        Step::Guard(Cond::Eq, Tmp(2), Imm(Kind::MutArray as u64)),
+        Step::Shr(2, Tmp(1), UNIFORM_BIT),
+        Step::And(2, Tmp(2), 1),
+        Step::Guard(Cond::Eq, Tmp(2), Imm(1)),
+        Step::Shr(2, Tmp(1), DESC_SHIFT),
+        Step::And(2, Tmp(2), DESC_BITS),
+        Step::Guard(Cond::Ne, Tmp(2), Imm(meadow_core::desc::REF as u64)),
+        Step::Shr(3, Tmp(1), LEN_SHIFT),
+        Step::Set(4, R(idx)),
+        Step::Guard(Cond::Lt, Tmp(4), Tmp(3)),
+        Step::Add(2, Tmp(0), Imm(UNIFORM_HEADER)),
+        Step::Add(2, Tmp(2), Tmp(4)),
+        Step::Store(Tmp(2), R(val)),
+        // `stSetArray` answers unit, whose word is zero.
+        Step::Put(dst, Imm(0)),
     ]
 }
 
@@ -192,13 +233,13 @@ pub fn temporaries(steps: &[Step]) -> usize {
 /// This is what the tests compare an expansion against, so that a run of steps
 /// is checked against the instruction it expands, with no assembler in the way.
 pub struct Machine<'h> {
-    pub heap: &'h Heap,
+    pub heap: &'h mut Heap,
     pub regs: &'h mut [Word],
     tmps: [Word; 16],
 }
 
 impl<'h> Machine<'h> {
-    pub fn new(heap: &'h Heap, regs: &'h mut [Word]) -> Self {
+    pub fn new(heap: &'h mut Heap, regs: &'h mut [Word]) -> Self {
         Machine {
             heap,
             regs,
@@ -228,7 +269,10 @@ impl<'h> Machine<'h> {
                 Step::Load(t, at) => {
                     self.tmps[t as usize] = self.heap.word_at(self.read(at) as Addr)
                 }
-                Step::Store(..) => return false,
+                Step::Store(at, v) => {
+                    let (at, v) = (self.read(at) as Addr, self.read(v));
+                    self.heap.put_word_at(at, v);
+                }
                 Step::Guard(c, a, b) => {
                     let (x, y) = (self.read(a), self.read(b));
                     let holds = match c {
@@ -257,7 +301,7 @@ mod tests {
 
     /// Run `steps` against a heap, answering the word they put in `r[dst]`, or
     /// `None` if a guard sent the run to the interpreter.
-    fn run(heap: &Heap, regs: &mut [Word], steps: &[Step], dst: Reg) -> Option<Word> {
+    fn run(heap: &mut Heap, regs: &mut [Word], steps: &[Step], dst: Reg) -> Option<Word> {
         let taken = Machine::new(heap, regs).run(steps);
         taken.then(|| regs[dst as usize])
     }
@@ -282,10 +326,105 @@ mod tests {
         let steps = element(2, 0, 1, Kind::MutArray);
         for i in 0..n {
             let mut regs = [a as Word, i as Word, 0];
-            let got = run(&heap, &mut regs, &steps, 2).expect("inside the array");
+            let got = run(&mut heap, &mut regs, &steps, 2).expect("inside the array");
             let want = heap.field(a, i).bits();
             assert_eq!(got, want, "element {i}");
         }
+    }
+
+    /// A heap whose nursery is too small for the arrays below, so that an
+    /// array allocated in it goes straight to the old generation -- which is
+    /// what happens to a real one of any size.
+    fn old_heap() -> Heap {
+        Heap::with_config(
+            64,
+            crate::heap::GcConfig {
+                nursery: 64,
+                ..crate::heap::GcConfig::from_env()
+            },
+        )
+    }
+
+    fn in_old(heap: &mut Heap, n: usize) -> Addr {
+        let a = ints(heap, n);
+        assert!(a >= crate::old::OLD_BASE, "not in the old generation");
+        a
+    }
+
+    /// The case this was switched off for. An old object is not in the flat
+    /// array the nursery is, so reading one used to be the one thing a run of
+    /// steps could not do -- and the arrays a matrix multiply is made of are
+    /// exactly the ones too big to stay young.
+    #[test]
+    fn an_element_of_a_promoted_array_is_what_the_heap_says_it_is() {
+        let mut heap = old_heap();
+        let a = in_old(&mut heap, 64);
+        let steps = element(0, 1, 2, Kind::MutArray);
+        for i in 0..64u64 {
+            let mut regs = [0, a as Word, i];
+            assert_eq!(
+                run(&mut heap, &mut regs, &steps, 0),
+                Some(heap.field(a, i as usize).bits()),
+                "element {i}"
+            );
+        }
+    }
+
+    /// An array larger than a block takes several, and they are separate
+    /// allocations with nothing contiguous about them -- so the block is
+    /// looked up per slot rather than once per object, and an element in the
+    /// third block of an array has to come out right.
+    #[test]
+    fn an_array_of_several_blocks_is_read_a_block_at_a_time() {
+        let n = 3 * crate::old::BLOCK;
+        let mut heap = old_heap();
+        let a = in_old(&mut heap, n);
+        let steps = element(0, 1, 2, Kind::MutArray);
+        // The first element of each block, and the last of the array.
+        for i in [0, crate::old::BLOCK, 2 * crate::old::BLOCK, n - 1] {
+            let mut regs = [0, a as Word, i as Word];
+            assert_eq!(
+                run(&mut heap, &mut regs, &steps, 0),
+                Some(heap.field(a, i).bits()),
+                "element {i}"
+            );
+        }
+    }
+
+    /// A store writes what the heap would have written, and nothing else in
+    /// the object moves.
+    #[test]
+    fn a_written_element_is_what_the_heap_would_have_written() {
+        for mut heap in [Heap::new(), old_heap()] {
+            let a = ints(&mut heap, 64);
+            let steps = element_set(0, 1, 2, 3);
+            for i in 0..64u64 {
+                let mut regs = [9, a as Word, i, (i as Word) * 1000 + 1];
+                assert_eq!(
+                    run(&mut heap, &mut regs, &steps, 0),
+                    Some(0),
+                    "answers unit"
+                );
+            }
+            for i in 0..64 {
+                assert_eq!(heap.field(a, i), Value::Int(i as i64 * 1000 + 1));
+            }
+        }
+    }
+
+    /// An array of references is the case a bare store may not take: the
+    /// collector follows those fields, so overwriting one needs the barriers
+    /// the interpreter runs and a step does not.
+    #[test]
+    fn an_array_of_references_is_left_to_the_interpreter() {
+        let mut heap = Heap::new();
+        let inner = ints(&mut heap, 2);
+        let fields = vec![Value::Obj(inner); 4];
+        heap.reserve(Heap::size_of(Kind::MutArray, 4));
+        let a = heap.alloc(Kind::MutArray, 0, &fields);
+        let steps = element_set(0, 1, 2, 3);
+        let mut regs = [9, a as Word, 1, inner as Word];
+        assert_eq!(run(&mut heap, &mut regs, &steps, 0), None, "gives up");
     }
 
     /// An index outside the array abandons the run rather than reading
@@ -299,7 +438,7 @@ mod tests {
         let steps = element(2, 0, 1, Kind::MutArray);
         for i in [n as i64, n as i64 + 1, 1_000_000, -1, -1000, i64::MIN] {
             let mut regs = [a as Word, i as Word, 0xDEAD];
-            assert_eq!(run(&heap, &mut regs, &steps, 2), None, "index {i}");
+            assert_eq!(run(&mut heap, &mut regs, &steps, 2), None, "index {i}");
             assert_eq!(regs[2], 0xDEAD, "nothing written for index {i}");
         }
     }
@@ -317,15 +456,15 @@ mod tests {
         let want_mut = element(2, 0, 1, Kind::MutArray);
         let want_arr = element(2, 0, 1, Kind::Array);
         let mut regs = [frozen as Word, 0, 0];
-        assert_eq!(run(&heap, &mut regs, &want_mut, 2), None);
+        assert_eq!(run(&mut heap, &mut regs, &want_mut, 2), None);
         let mut regs = [mutable as Word, 0, 0];
-        assert_eq!(run(&heap, &mut regs, &want_arr, 2), None);
+        assert_eq!(run(&mut heap, &mut regs, &want_arr, 2), None);
 
         // And each reads its own.
         let mut regs = [frozen as Word, 0, 0];
-        assert!(run(&heap, &mut regs, &want_arr, 2).is_some());
+        assert!(run(&mut heap, &mut regs, &want_arr, 2).is_some());
         let mut regs = [mutable as Word, 0, 0];
-        assert!(run(&heap, &mut regs, &want_mut, 2).is_some());
+        assert!(run(&mut heap, &mut regs, &want_mut, 2).is_some());
     }
 
     /// A string keeps eight elements to a word, so it is not the shape a step
@@ -337,7 +476,7 @@ mod tests {
         let s = heap.alloc_bytes(b"abcdefghij");
         let steps = element(2, 0, 1, Kind::Array);
         let mut regs = [s as Word, 0, 0xDEAD];
-        assert_eq!(run(&heap, &mut regs, &steps, 2), None);
+        assert_eq!(run(&mut heap, &mut regs, &steps, 2), None);
         assert_eq!(regs[2], 0xDEAD);
     }
 
@@ -367,7 +506,7 @@ mod tests {
 
         let steps = element(2, 0, 1, Kind::MutArray);
         let mut regs = [refs as Word, 1, 0];
-        let got = run(&heap, &mut regs, &steps, 2).expect("inside");
+        let got = run(&mut heap, &mut regs, &steps, 2).expect("inside");
         assert_eq!(got, inner as Word, "the address, as bits");
     }
 }

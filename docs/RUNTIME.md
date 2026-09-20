@@ -202,17 +202,24 @@ anywhere.
 | inline, in machine code | handed to the interpreter via `meadow_exec(vm, pc)` |
 |---|---|
 | `Move`, and `Const` for immediates | `Const` for strings and `BigInt`s |
-| typed `Int`/`Float` arithmetic and comparisons | generic `Prim`, `PrimK`, `JumpUnlessPrim(K)` |
+| typed `Int`/`Float` arithmetic, shifts and comparisons; `popCount`, `>>>` and `toFloat` on an `Int` | generic `Prim`, `PrimK`, `JumpUnlessPrim(K)` |
 | `Jump`, `JumpUnless`, `BrI`/`BrIK`/`BrF` | `Ref` operations, `compact`, STM and thread primitives |
-| `JumpUnlessTag`, `Field` and `Invoke` on a **nursery** object | the same on an old-generation or region object |
-| `MakeData`/`MakeArray`/`Closure` with a **static header**, if the nursery has room | the same with descriptors from registers, or a full nursery |
+| `JumpUnlessTag`, `Field` and `Invoke` on a nursery **or old-generation** object | the same on a region object; `Invoke` of a closure with more than 8 captures |
+| `stGetArray`, `arrayGet` and `stSetArray` (non-reference elements), through the thin steps of `codegen::thin` | `stSetArray` on an array of references, which needs the write barriers |
+| `MakeData`/`MakeArray`/`Closure` with a **static header**, if the nursery has room | the same with descriptors from registers, more than 8 non-uniform fields, or a full nursery |
 | | `MakeRecord`, `Select`, `Extend`, `Native`, `Halt`, `Error` |
 
 The heap instructions use a **fast path with a slow half**. For `field`, for
-example, the aarch64 code checks that the address is below `OLD_BASE`, loads
-the header, checks the kind and the bounds, and loads the word. Any check that
-fails branches to a slow label placed after the function body. There it undoes
-the step count, calls `meadow_exec` for that one instruction, and jumps back.
+example, the aarch64 code reaches the object -- a nursery address is one load
+off the nursery base; an old one is two more, through the per-generation
+**block table** the heap publishes at `layout::TABLES` (`Heap::tables`), chosen
+by the address's generation bit -- loads the header, checks the kind and the
+bounds, and loads the word. Any check that fails branches to a slow label placed
+after the function body. There it undoes the step count, calls `meadow_exec`
+for that one instruction, and jumps back. The block table is a `Vec` that moves
+as blocks are added, so `meadow_exec` republishes it before it returns: there
+is no other way back into native code, and that is what makes the table safe to
+read without a check.
 Allocation works the same way: bump `TOP` by the object's size, and if that
 passes `CAP` (or the heap has put enough into regions that it wants a
 collection first), take the slow path, where the interpreter collects.
@@ -908,6 +915,21 @@ row;escape 323904
 band;row 25001
 row 4812
 ```
+
+### Counting what native code hands back
+
+```sh
+MEADOW_TRAPS=1 ./target/release/native/MyProgram
+```
+
+An ahead-of-time program run with `MEADOW_TRAPS` set counts every instruction
+native code handed to the interpreter, by pc, and prints the top of the list
+when it finishes -- with the opcode, so a line reads against `meadow dis`. This
+is the number to look at before the sampler: a program that is "all native"
+by its static instruction count can still spend most of its time in
+`meadow_exec`, because the instructions that trap sit in the innermost loop.
+`matmul` was 7.5% trapping instructions and 62% trapping time. The counter
+costs a lock per trap and is off unless asked for.
 
 ### Where a stack comes from, when the machine has none
 

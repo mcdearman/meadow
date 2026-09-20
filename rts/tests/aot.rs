@@ -239,6 +239,47 @@ fn everything_else_goes_through_the_interpreter() {
     assert_eq!(agrees("mixed", src), "(500500, 63, \"hi\", True)");
 }
 
+/// Objects that have been promoted are read, matched on and invoked by native
+/// code, not handed back to the interpreter -- and read *correctly*: the old
+/// generation is separate blocks, reached through a table that moves as blocks
+/// are added. A tree kept alive across many collections is made of old
+/// objects, and so are the closures a long fold carries. The bug this pins was
+/// a `wordfreq` crashing on an address read out of a freed copy of that table.
+#[test]
+fn promoted_objects_are_reached_by_native_code() {
+    let src = "data T = Tip Int | Fork T T
+               use T.*
+               fun build (v : Int) (d : Int) : T =
+                 if d <= 0 then Tip v else Fork (build v (d - 1)) (build (v + 1) (d - 1))
+               fun check (t : T) : Int = match t with | Tip v -> v | Fork l r -> check l + check r
+               fun churn (n : Int) (acc : Int) : Int =
+                 if n == 0 then acc else churn (n - 1) (acc + check (build n 6))
+               data Fs = Done | Then (Int -> Int) Fs
+               use Fs.*
+               fun apply (fs : Fs) (x : Int) : Int =
+                 match fs with | Done -> x | Then f rest -> apply rest (f x)
+               def main =
+                 let lasting = build 1 14 in
+                 let adders = Then (\\x -> x + 1) (Then (\\x -> x * 2) (Then (\\x -> x - 3) Done)) in
+                 let c = churn 3000 0 in
+                 (check lasting, c, apply adders 10)";
+    assert_eq!(agrees("promoted", src), "(131072, 288672000, 19)");
+}
+
+/// `popCount`, `>>>` and `toFloat` on an `Int` are one instruction each, and
+/// have to answer what the interpreter answers at the edges: a negative shifted
+/// logically, a count of 64, a shift of 64 and of 100 (modulo 64, on every
+/// machine), a large `Int` rounded to the nearest `Float`.
+#[test]
+fn unary_typed_instructions_agree_with_the_interpreter() {
+    let src = "fun f (x : Int) (n : Int) = (popCount x, x >>> n, toFloat x)
+               def main = (f 255 4, f (0 - 1) 60, f (0 - 1) 64, f 9007199254740993 100, f 0 0)";
+    assert_eq!(
+        agrees("unary", src),
+        "((8, 15, 255.0), (64, 15, -1.0), (64, -1, -1.0), (2, 131072, 9007199254740992.0), (0, 0, 0.0))"
+    );
+}
+
 #[test]
 fn a_failure_is_the_same_failure() {
     let src = "fun f (a : Int) (b : Int) = a / b\ndef main = f 1 0";

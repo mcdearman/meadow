@@ -22,7 +22,10 @@
 //!   [`Statement::Invoke`], the two places control actually leaves — and often
 //!   not even there. An instruction that wants a window of consecutive registers
 //!   reads the environment where it already sits whenever the environment
-//!   already has that shape, which it usually does: see [`Gen::gather`].
+//!   already has that shape, which it usually does: see [`Gen::gather`]. Reusing
+//!   registers makes that a little less often true — an environment whose
+//!   registers were reused is no longer in ascending order — and a window that
+//!   has to be filled is the price of the moves that reuse removes.
 //! * **A jump needs a permutation.** The target block wants its parameters in
 //!   `r0..rn`, so [`Gen::parallel_move`] emits the moves — breaking cycles with
 //!   one scratch register, which is the only place this pass has to think.
@@ -55,17 +58,33 @@
 //! collect, and operand descriptors at each that has to read a value --
 //! see [`Gen::safepoint`] and [`Gen::operands_for`].
 //!
-//! # What is not done yet
+//! # Registers are reused
 //!
-//! **Register reuse.** A name is given a register when it is bound and keeps it
-//! for the rest of the block, so a long straight-line block climbs through the
-//! register file even when most of what it holds is dead. The IR knows exactly
-//! when a value dies — that is what the environment shrinking at each
-//! `substitute` means — so this is a matter of reading it, not of computing it.
-//! Until then a block needing more registers than there are is a hard error
-//! rather than a spill, which is the honest failure mode: it says the allocator is
-//! missing rather than quietly generating slow code. (The whole standard library
-//! peaks well under that, so there is room to be unhurried about it.)
+//! A name's register comes free at its last use, and the IR says where that is:
+//! [`meadow_seq::still_used`] reads it off a statement rather than computing
+//! liveness. At every binder the environment handed to what follows has the
+//! names nothing below reads taken out of it, so the next `let`, `new` or
+//! `extern` writes its result into one of them. The important case is that
+//! **capturing a name is a use of it** — once a closure holds a copy, the
+//! methods' reads are the methods' business — so a continuation built out of
+//! the environment lands on top of what it closed over instead of one register
+//! higher, and the transfer after it needs no permutation to put things back.
+//! `fib`'s recursive call went from five instructions to three this way.
+//!
+//! There are two places it stops. A `jump` into a labelled block and an
+//! `invoke` of a method hand the environment on whole, position for position,
+//! to a block compiled separately against it — so nothing may be dropped on a
+//! path that reaches one, which is what `still_used` answering `None` means. A
+//! `substitute` then rebuilds a full environment out of its selection, and
+//! from there the shapes `meadow_seq` believes in are true again. See
+//! [`Gen::narrow`] and [`Gen::enter`].
+//!
+//! A block needing more registers than there are is still a hard error rather
+//! than a spill, which is the honest failure mode: it says the allocator is
+//! missing rather than quietly generating slow code. (The whole standard
+//! library peaks well under that, so there is room to be unhurried about it.)
+//!
+//! # What is not done yet
 //!
 //! **A continuation per non-tail call.** `meadow_seq` no longer builds one for
 //! every subexpression — anything that cannot transfer control is lowered where
@@ -195,6 +214,11 @@ struct Gen<'a> {
     label_region: HashMap<Label, usize>,
 
     max_reg: usize,
+    /// Every name some other name's representation points at. A descriptor is
+    /// a value like any other, but it is read through [`Gen::held`] rather
+    /// than named in a statement, so [`Gen::narrow`] cannot see the use and
+    /// must be told not to drop one.
+    descriptors: std::collections::HashSet<u32>,
     debug: Option<Recorder>,
     /// Register maps for the instructions that may collect, each stored once.
     gc_maps: Vec<GcMap>,
@@ -225,6 +249,15 @@ impl<'a> Gen<'a> {
             method_tables: Vec::new(),
             label_region: HashMap::new(),
             max_reg: 1,
+            descriptors: seq
+                .reps
+                .values()
+                .chain(seq.threads.values())
+                .filter_map(|r| match r {
+                    Rep::Var(d) if *d != seq::NO_DESC => Some(*d),
+                    _ => None,
+                })
+                .collect(),
             debug: None,
             gc_maps: Vec::new(),
             gc_index: HashMap::new(),
@@ -645,14 +678,57 @@ impl<'a> Gen<'a> {
 
     /// The lowest register the environment is not using.
     fn free(&mut self, env: &Env) -> Result<Reg, Error> {
+        self.free_but(env, &[])
+    }
+
+    /// The lowest register neither the environment nor `keep` is using.
+    ///
+    /// `keep` is for the one instruction that cannot write over what it reads:
+    /// [`Extern::PrimK`] parks its folded constant in the destination before
+    /// the primitive runs. Every other instruction reads all of its operands
+    /// before it writes, which is what makes it safe for a narrowed
+    /// environment to hand back a register the instruction is about to read.
+    fn free_but(&mut self, env: &Env, keep: &[Reg]) -> Result<Reg, Error> {
         let used: Vec<Reg> = regs_of(env);
         for r in 0..REGISTERS {
-            if !used.contains(&(r as Reg)) {
-                self.track(r + 1);
-                return Ok(r as Reg);
+            let r = r as Reg;
+            if !used.contains(&r) && !keep.contains(&r) {
+                self.track(r as usize + 1);
+                return Ok(r);
             }
         }
         err("a block needs more than 256 registers; the allocator does not spill yet")
+    }
+
+    /// The environment with the names `rest` will not read taken out of it.
+    ///
+    /// This is the whole of register reuse. A name's register becomes free at
+    /// its *last* use, and capturing a name is a last use -- once a closure
+    /// holds a copy, what its methods do with it later is the methods'
+    /// business. Without this a straight-line block climbs through the file
+    /// and every transfer out of it ends in a permutation; `move` was the
+    /// single most-retired instruction in the machine because of it.
+    ///
+    /// [`seq::still_used`] answers `None` for a statement that hands its
+    /// environment on whole -- a `jump` into a labelled block, an `invoke` of
+    /// a method. Those blocks were compiled against the environment `lower`
+    /// gave them, position for position, so nothing may be dropped on a path
+    /// that reaches one, and `None` propagates up to every binder above.
+    ///
+    /// Everywhere else the only blocks between here and the next `substitute`
+    /// are inline ones this pass lays out itself, and [`Gen::enter`] enters
+    /// them by name rather than by position. The `substitute` then rebuilds a
+    /// full environment out of its selection -- which is exactly the set of
+    /// names still used -- so what `lower` and `meadow_seq::describe` believe
+    /// about block shapes stays true from there on, and neither has to know
+    /// this happened.
+    fn narrow(&self, env: Env, rest: &Statement) -> Env {
+        let Some(used) = seq::still_used(rest) else {
+            return env;
+        };
+        env.into_iter()
+            .filter(|(n, _)| used.contains(n) || self.descriptors.contains(&n.0))
+            .collect()
     }
 
     /// A run of `n` registers above everything the environment holds.
@@ -734,6 +810,33 @@ impl<'a> Gen<'a> {
 
     // --- statements -------------------------------------------------------
 
+    /// Enter a block laid out inline: the values it binds, and then the
+    /// environment it continues -- that part by name, because the environment
+    /// reaching here may be narrower than the one `lower` gave the block. A
+    /// parameter with no register left is one [`Gen::narrow`] dropped, and
+    /// nothing below reads it, so it enters holding nothing.
+    fn enter(&mut self, block: &'a Block, bound: &[Reg], env: &Env) -> Result<(), Error> {
+        if block.params.len() < bound.len() {
+            return err(format!(
+                "a block taking {} parameters binds {} values",
+                block.params.len(),
+                bound.len()
+            ));
+        }
+        let mut child: Env = block
+            .params
+            .iter()
+            .copied()
+            .zip(bound.iter().copied())
+            .collect();
+        for p in &block.params[bound.len()..] {
+            if let Some((_, r)) = env.iter().find(|(n, _)| n == p) {
+                child.push((*p, *r));
+            }
+        }
+        self.emit_stmt(&block.body, child)
+    }
+
     fn emit_block(&mut self, block: &'a Block, vals: &[Reg]) -> Result<(), Error> {
         if block.params.len() != vals.len() {
             return err(format!(
@@ -810,13 +913,20 @@ impl<'a> Gen<'a> {
                 let n = u8::try_from(srcs.len()).map_err(|_| Error {
                     msg: "a constructor with more than 256 fields".into(),
                 })?;
-                let dst = self.free(&env)?;
+                // The destination comes out of the narrowed environment, so
+                // it may be a register this very instruction reads: `MakeData`
+                // reads its whole window, and the descriptors beside it,
+                // before it writes. The safepoint and the operand descriptors
+                // are still taken from the environment as it stands, because
+                // both describe the instruction's own read.
+                let live = self.narrow(env.clone(), rest);
+                let dst = self.free(&live)?;
                 let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::MakeData, dst, base, n, *tag));
                 self.operands_in(&env, &srcs);
                 let window = self.gathered(&env, &srcs, base);
                 self.safepoint(&env, &window);
-                let mut env = env;
+                let mut env = live;
                 env.insert(0, (*name, dst));
                 self.emit_stmt(rest, env)
             }
@@ -835,24 +945,32 @@ impl<'a> Gen<'a> {
                     self.emit(Instr::wide(Op::JumpUnlessTag, scr, tag16, 0));
 
                     // The arm binds the constructor's fields, then the
-                    // environment as it stands — the scrutinee included.
-                    let nfields = arm.params.len() - env.len();
+                    // environment as it stands — the scrutinee included. How
+                    // many fields that is comes from the default, whose
+                    // parameters are the environment and nothing else: the
+                    // environment here may have been narrowed, so its own
+                    // length no longer answers the question.
+                    let nfields = arm
+                        .params
+                        .len()
+                        .checked_sub(default.params.len())
+                        .ok_or_else(|| Error {
+                            msg: "a switch arm binding fewer values than the default".into(),
+                        })?;
                     let base = self.window(&env, nfields)?;
-                    let mut vals = Vec::with_capacity(arm.params.len());
+                    let mut fields = Vec::with_capacity(nfields);
                     for i in 0..nfields {
                         let d = base + i as Reg;
                         self.emit(Instr::new(Op::Field, d, scr, 0, i as u32));
-                        vals.push(d);
+                        fields.push(d);
                     }
-                    vals.extend(regs_of(&env));
-                    self.emit_block(arm, &vals)?;
+                    self.enter(arm, &fields, &env)?;
 
                     // Every block body ends in a transfer, so the next
                     // instruction is where a failed test should land.
                     self.code[test].imm = self.code.len() as u32;
                 }
-                let vals = regs_of(&env);
-                self.emit_block(default, &vals)
+                self.enter(default, &[], &env)
             }
 
             Statement::New {
@@ -872,13 +990,19 @@ impl<'a> Gen<'a> {
                 let table_id = self.method_tables.len() as u32;
                 self.method_tables.push(table);
 
-                let dst = self.free(&env)?;
+                // Capturing a name is the last use of it, so the new object
+                // very often lands in a register one of its own captures was
+                // holding. That is the point: the alternative is a closure
+                // climbing one register higher than everything it closes over,
+                // and a permutation at the next transfer to put it back.
+                let live = self.narrow(env.clone(), rest);
+                let dst = self.free(&live)?;
                 let base = self.gather(&env, &srcs)?;
                 self.emit(Instr::new(Op::Closure, dst, base, ncap, table_id));
                 self.operands_in(&env, &srcs);
                 let window = self.gathered(&env, &srcs, base);
                 self.safepoint(&env, &window);
-                let mut env = env;
+                let mut env = live;
                 env.insert(0, (*name, dst));
                 self.emit_stmt(rest, env)
             }
@@ -923,6 +1047,18 @@ impl<'a> Gen<'a> {
         env: &Env,
     ) -> Result<bool, Error> {
         match (op, args, srcs) {
+            // `popCount` and `toFloat` on an `Int`, which are one instruction
+            // each on every machine this targets. A matrix of pixels computes
+            // its coordinates with `toFloat` twice per pixel, and a hash trie
+            // finds a child with `popCount` at every level, so these two were
+            // the most-run primitives left in the interpreter after arrays.
+            (Extern::Prim(p), [x], [rx]) => {
+                let Some(op) = typed1(*p, self.rep_of(*x)) else {
+                    return Ok(false);
+                };
+                self.emit(Instr::new(op, dst, *rx, 0, 0));
+                Ok(true)
+            }
             (Extern::Prim(p), [x, y], [rx, ry]) => {
                 let Some(t) = typed(*p, self.rep_of(*x), self.rep_of(*y)) else {
                     return Ok(false);
@@ -1101,10 +1237,9 @@ impl<'a> Gen<'a> {
                 Some(test) => test,
                 None => self.emit_test(op, &srcs, &env)?,
             };
-            let vals = regs_of(&env);
-            self.emit_block(on_true, &vals)?;
+            self.enter(on_true, &[], &env)?;
             self.code[test].imm = self.code.len() as u32;
-            return self.emit_block(on_false, &vals);
+            return self.enter(on_false, &[], &env);
         }
 
         let [block] = blocks else {
@@ -1117,12 +1252,16 @@ impl<'a> Gen<'a> {
             .iter()
             .map(|n| reg_of(&env, *n))
             .collect::<Result<Vec<_>, _>>()?;
-        let dst = self.free(&env)?;
+        // What the continuation still reads. The operands are not in it if
+        // this is their last use, and every extern but one reads all of them
+        // before it writes, so the result may land on one of them -- which is
+        // what makes `n - 1` in a loop write over `n`. The exception is the
+        // untyped folded primitive below, which takes its own destination.
+        let live = self.narrow(env.clone(), &block.body);
+        let mut dst = self.free(&live)?;
 
         if self.typed_value(op, args, &srcs, dst, &env)? {
-            let mut vals = vec![dst];
-            vals.extend(regs_of(&env));
-            return self.emit_block(block, &vals);
+            return self.enter(block, &[dst], &live);
         }
 
         match op {
@@ -1193,15 +1332,12 @@ impl<'a> Gen<'a> {
                     return err(format!("{p:?} with a folded constant takes 1 argument"));
                 };
                 // The runtime parks the constant in the destination before
-                // running the primitive, which works only because the
-                // destination is never the operand. It cannot be — `free`
-                // returns a register the environment is not using and `x` is in
-                // the environment — but the runtime's correctness rests on it,
-                // so it is stated here rather than left implied.
+                // running the primitive, so this is the one instruction whose
+                // destination may not be its operand. It can be: a narrowed
+                // environment hands back the registers of names this extern
+                // was the last use of, and `x` is often one. So take another.
                 if dst == x {
-                    return err(format!(
-                        "{p:?} would fold a constant into r{dst}, which is also its operand"
-                    ));
+                    dst = self.free_but(&live, &srcs)?;
                 }
                 let id = self.prim(*p);
                 let k = self.konst(constant(l));
@@ -1261,9 +1397,7 @@ impl<'a> Gen<'a> {
             }
         }
 
-        let mut vals = vec![dst];
-        vals.extend(regs_of(&env));
-        self.emit_block(block, &vals)
+        self.enter(block, &[dst], &live)
     }
 }
 
@@ -1353,6 +1487,19 @@ enum Typed {
     FloatCmp(Cond),
 }
 
+/// A one-operand primitive as a typed instruction, if the operand's
+/// representation allows one.
+fn typed1(p: Prim, x: Rep) -> Option<Op> {
+    if x != Rep::Int {
+        return None;
+    }
+    Some(match p.untyped() {
+        Prim::PopCount => Op::PopI,
+        Prim::ToFloat => Op::ItoF,
+        _ => return None,
+    })
+}
+
 /// Can two values of representation `rep` be told equal by their words? Every
 /// immediate but a float: an interned symbol is its key, a sized integer its
 /// masked bits.
@@ -1385,6 +1532,14 @@ fn typed(p: Prim, x: Rep, y: Rep) -> Option<Typed> {
         Mul if ints => Typed::Int(Op::MulI, Some(Op::MulIK)),
         Div if ints => Typed::Int(Op::DivI, None),
         Mod if ints => Typed::Int(Op::ModI, None),
+        // The shift count and the mask are `Int`s like the value, so `ints`
+        // covers both operands. A mask too wide for the immediate field falls
+        // back to the register form, which is what `small` being `None` in
+        // [`Gen::typed_value`] already means.
+        Shl if ints => Typed::Int(Op::ShlI, Some(Op::ShlIK)),
+        Shr if ints => Typed::Int(Op::ShrI, Some(Op::ShrIK)),
+        BitAnd if ints => Typed::Int(Op::AndI, Some(Op::AndIK)),
+        Ushr if ints => Typed::Int(Op::UshrI, Some(Op::UshrIK)),
         AddF if floats => Typed::Float(Op::AddF),
         SubF if floats => Typed::Float(Op::SubF),
         MulF if floats => Typed::Float(Op::MulF),

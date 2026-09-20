@@ -101,6 +101,22 @@ pub mod layout {
     pub const TOP: u32 = 88;
     pub const ALLOCATED: u32 = 96;
     pub const REGION_GROWTH: u32 = 104;
+    /// `[*const *mut Word; 2]`: the block table of each generation, indexed by
+    /// `addr >> 30`. See [`crate::heap::Heap::tables`] and [`super::thin`].
+    pub const TABLES: u32 = 112;
+}
+
+/// Where a heap address keeps each part, for the two-level lookup native code
+/// reads a heap word with. See [`crate::heap::Heap::tables`].
+pub mod addr {
+    /// Which generation: 0 for the nursery, 1 for the old generation. A
+    /// compact region is above both and is guarded out before this is read.
+    pub const GEN_SHIFT: u32 = 30;
+    /// Which block within it.
+    pub const BLOCK_SHIFT: u32 = 13;
+    pub const BLOCK_MASK: u64 = (1 << 17) - 1;
+    /// Which slot within that.
+    pub const SLOT_MASK: u64 = (1 << 13) - 1;
 }
 
 /// A target instruction set.
@@ -152,6 +168,21 @@ pub enum IntOp {
     Mul,
     Div,
     Rem,
+    Shl,
+    /// Arithmetic: the sign is carried in, as `i64::wrapping_shr` does.
+    Shr,
+    /// Logical: zeros come in.
+    Ushr,
+    And,
+}
+
+/// A one-operand typed instruction. See [`Emit::unary`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// The number of set bits, as an `Int`.
+    PopCount,
+    /// An `Int` as the nearest `Float`.
+    ToFloat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +246,8 @@ pub trait Emit {
     /// to `zero` instead.
     fn int(&mut self, op: IntOp, a: Reg, b: Reg, c: Operand, zero: Label);
     fn float(&mut self, op: FloatOp, a: Reg, b: Reg, c: Reg);
+    /// `r[a] = op r[b]`.
+    fn unary(&mut self, op: UnaryOp, a: Reg, b: Reg);
     /// `r[a] = cond(r[b], c)`, as words.
     fn cmp_int(&mut self, cond: Cond, a: Reg, b: Reg, c: Operand);
     fn cmp_float(&mut self, cond: Cond, a: Reg, b: Reg, c: Reg);
@@ -433,7 +466,16 @@ fn pins(code: &[Instr], program: &Program, f: &Function, max: usize) -> Vec<Reg>
         let used: Vec<u32> = match i.op {
             Op::Nop => vec![],
             Op::Const if immediate(program, i.imm).is_some() => vec![i.a as u32],
-            Op::AddI | Op::SubI | Op::MulI | Op::DivI | Op::ModI | Op::CmpI => {
+            Op::AddI
+            | Op::SubI
+            | Op::MulI
+            | Op::DivI
+            | Op::ModI
+            | Op::CmpI
+            | Op::ShlI
+            | Op::ShrI
+            | Op::UshrI
+            | Op::AndI => {
                 vec![i.a as u32, i.b as u32, i.c as u32]
             }
             Op::AddF | Op::SubF | Op::MulF | Op::DivF | Op::CmpF => {
@@ -444,6 +486,12 @@ fn pins(code: &[Instr], program: &Program, f: &Function, max: usize) -> Vec<Reg>
             | Op::AddIK
             | Op::SubIK
             | Op::MulIK
+            | Op::ShlIK
+            | Op::ShrIK
+            | Op::UshrIK
+            | Op::AndIK
+            | Op::PopI
+            | Op::ItoF
             | Op::CmpIK
             | Op::BrI
             | Op::BrF => vec![i.a as u32, i.b as u32],
@@ -790,24 +838,50 @@ fn block<E: Emit>(
                 let to = f.target(asm, k, i.imm as usize);
                 asm.branch_zero(i.a, to);
             }
-            Op::AddI | Op::SubI | Op::MulI | Op::DivI | Op::ModI => {
+            Op::AddI
+            | Op::SubI
+            | Op::MulI
+            | Op::DivI
+            | Op::ModI
+            | Op::ShlI
+            | Op::ShrI
+            | Op::UshrI
+            | Op::AndI => {
                 let op = match i.op {
                     Op::AddI => IntOp::Add,
                     Op::SubI => IntOp::Sub,
                     Op::MulI => IntOp::Mul,
                     Op::DivI => IntOp::Div,
+                    Op::ShlI => IntOp::Shl,
+                    Op::ShrI => IntOp::Shr,
+                    Op::UshrI => IntOp::Ushr,
+                    Op::AndI => IntOp::And,
                     _ => IntOp::Rem,
                 };
                 typed_int(asm, &mut book, op, i, Operand::Reg(i.c), pc32);
             }
-            Op::AddIK | Op::SubIK | Op::MulIK => {
+            Op::AddIK | Op::SubIK | Op::MulIK | Op::ShlIK | Op::ShrIK | Op::UshrIK | Op::AndIK => {
                 let op = match i.op {
                     Op::AddIK => IntOp::Add,
                     Op::SubIK => IntOp::Sub,
+                    Op::ShlIK => IntOp::Shl,
+                    Op::ShrIK => IntOp::Shr,
+                    Op::UshrIK => IntOp::Ushr,
+                    Op::AndIK => IntOp::And,
                     _ => IntOp::Mul,
                 };
                 let c = Operand::Imm(i.imm as i32 as i64);
                 typed_int(asm, &mut book, op, i, c, pc32);
+            }
+            Op::PopI | Op::ItoF => {
+                let op = if i.op == Op::PopI {
+                    UnaryOp::PopCount
+                } else {
+                    UnaryOp::ToFloat
+                };
+                book.step(asm);
+                asm.unary(op, i.a, i.b);
+                book.wrote(i.a);
             }
             Op::AddF | Op::SubF | Op::MulF | Op::DivF => {
                 let op = match i.op {
@@ -1071,5 +1145,24 @@ mod tests {
         assert_eq!(heap + offset_of!(Heap, top) as u32, TOP);
         assert_eq!(heap + offset_of!(Heap, allocated) as u32, ALLOCATED);
         assert_eq!(heap + offset_of!(Heap, region_growth) as u32, REGION_GROWTH);
+        assert_eq!(heap + offset_of!(Heap, tables) as u32, TABLES);
+    }
+
+    /// The shifts native code takes a heap address apart with have to be the
+    /// ones the old generation is actually laid out by.
+    #[test]
+    fn an_address_comes_apart_where_the_heap_says_it_does() {
+        use super::addr::*;
+        assert_eq!(1 << GEN_SHIFT, crate::old::OLD_BASE, "the generation bit");
+        assert_eq!(1 << (GEN_SHIFT + 1), crate::region::REGION_BASE);
+        assert_eq!(1 << BLOCK_SHIFT, crate::old::BLOCK as u64, "block size");
+        assert_eq!(SLOT_MASK, crate::old::BLOCK as u64 - 1);
+        // Every old address has to fit the block field, or two blocks would
+        // share a table entry.
+        let top = (crate::region::REGION_BASE - crate::old::OLD_BASE) >> BLOCK_SHIFT;
+        assert!(
+            u64::from(top) <= BLOCK_MASK + 1,
+            "{top} blocks do not fit the mask"
+        );
     }
 }

@@ -23,11 +23,11 @@ interpreter one instruction at a time. So the heap, the collector, effects and
 the scheduler work the same way whichever backend is running. The only
 difference is how much of the work happens in machine code.
 
-| backend | what runs | default for |
-|---|---|---|
-| `vm` | the bytecode interpreter | |
-| `jit` | the interpreter, compiling each block to machine code once it has been entered 16 times | `--debug` |
-| `aot` | an executable: machine code for every block, the bytecode image, and the runtime, linked together | `--release` |
+| backend | what runs                                                                                         | default for |
+| ------- | ------------------------------------------------------------------------------------------------- | ----------- |
+| `vm`    | the bytecode interpreter                                                                          |             |
+| `jit`   | the interpreter, compiling each block to machine code once it has been entered 16 times           | `--debug`   |
+| `aot`   | an executable: machine code for every block, the bytecode image, and the runtime, linked together | `--release` |
 
 `--backend`, `--jit` and `--aot` choose a backend for one command, and
 `backend = "..."` under `[profile.<name>]` in `Meadow.toml` chooses one for a
@@ -58,15 +58,15 @@ Three decisions made before the runtime sees anything shape everything after.
 ### The call stack is a frame stack
 
 The backend IR is **AxCut** (`compiler/meadow-seq/src/lib.rs`), from Schuster,
-Müller, Ostermann and Brachthäuser, *Compiling Classical Sequent Calculus to
-Stock Hardware* (OOPSLA 2025).
+Müller, Ostermann and Brachthäuser, _Compiling Classical Sequent Calculus to
+Stock Hardware_ (OOPSLA 2025).
 
 AxCut is a classical sequent calculus in a normal form, and it does **not**
 eliminate cuts — it restricts them. A cut is a redex, so cut elimination is the
 reduction relation itself and a program with no cuts has already run. What the
 normal form does is push every cut until a variable — an axiom — stands on one
 side, which is what the name says. There is no `Cut` node in the grammar because
-each of the seven statements *is* a cut with the rule it meets folded in: `let`
+each of the seven statements _is_ a cut with the rule it meets folded in: `let`
 and `new` are cuts against an activation rule, `switch` and `invoke` cuts against
 an axiom.
 
@@ -74,7 +74,7 @@ In the paper that pairing is also the memory discipline — activation acquires,
 deactivation releases, and `substitute` adjusts reference counts — so an AxCut
 program frees its own memory. Meadow does not take that half: it has a
 generational collector (section 4), so `switch` and `invoke` release nothing and
-the linear environment is not enforced. What Meadow takes is the *shape*.
+the linear environment is not enforced. What Meadow takes is the _shape_.
 
 Before the lowering, `meadow_core::joins` names the continuations that several
 places share. A `let f = \x -> … in …` where every mention of `f` is a
@@ -82,7 +82,7 @@ saturated call in tail position is not a function -- nothing can hold it,
 nothing can pass it anywhere, and nothing runs after it answers. It becomes a
 `Term::Join`, and lowering gives it a labelled block that captures nothing:
 what it needs from around it is still in the environment where it is entered,
-so it is passed at the jump. Both branches of an `if` then *jump* to one block
+so it is passed at the jump. Both branches of an `if` then _jump_ to one block
 instead of each building an object and invoking it.
 
 The saving today is that object. The reason to have the form is case-of-case,
@@ -90,8 +90,8 @@ which has to put the context it pushes inwards somewhere: copied into every
 branch a program can square in size, and built as a closure it allocates.
 Naming it is the third answer, and it is why GHC has join points.
 
-In AxCut a function receives the continuation to answer, and *returning is
-invoking that continuation*. A closure, a continuation and an effect handler are
+In AxCut a function receives the continuation to answer, and _returning is
+invoking that continuation_. A closure, a continuation and an effect handler are
 all the same kind of heap object: codata with a method table and captured
 values.
 
@@ -116,9 +116,22 @@ ordinary old address that every part of the runtime already knows how to
 reach. A frame in the current chunk is one load from the chunk's published
 base (`layout::FBASE`); returning through one is a jump to the pc the frame
 carries as its `meta`, with no method table to look up. Frames are collector
-roots, walked by the heap that owns them at every nursery collection and at
-the start of every marking cycle, so the marker never reads one while the
-program pushes and pops.
+roots, walked by the heap that owns them at every nursery collection, at the
+start of every marking cycle, and at every evacuation -- a frame is pushed
+with a bare store, so no pointer in one is ever recorded as pointing into a
+block chosen to move, and evacuation has to rewrite them as it does the
+registers. The marker never reads one while the program pushes and pops.
+
+A nursery collection does not walk the whole stack. Only the current chunk is
+ever pushed into or popped from, so a chunk below it that a collection has
+found to hold nothing young goes on holding nothing young until it is the
+current chunk again, and is skipped (`Heap::clean_chunks`; GHC keeps a dirty
+bit per stack chunk for the same reason). Without that, a deep recursion that
+allocates rescans every frame at every collection and is quadratic. A
+survivor can stay young for one collection, so a chunk may take two scans to
+come clean; a pop, a `detach` or a `reattach` un-cleans exactly the chunks it
+makes current or frees; and a whole collection, which also marks the regions
+frames point into, scans them all.
 
 Every `handle` enters a chunk of its own, and that is what makes effects work
 on a stack -- see [section 5](#5-effects). The stack alone moved `binarytrees`
@@ -143,17 +156,17 @@ told:
   `halt`.
 - **GC maps** (`GcMap`) at every instruction that can collect say which
   registers are live and what each holds: a reference, a scalar, or "whatever
-  the descriptor in register *n* says".
+  the descriptor in register _n_ says".
 - **Object headers** carry a 4-bit descriptor per field (see
   [the object layout](#objects)).
 
 Code that is generic over a type variable doesn't know at compile time whether
 an `a` is an address or a number. So in a **debug** build a generic definition
-takes one hidden *descriptor* argument per type variable
+takes one hidden _descriptor_ argument per type variable
 (`meadow_core::desc`: `REF`, `INT`, `FLOAT`, `STR`, …), passed at each
 instantiation. A **release** build specializes instead
 (`meadow_core::specialize::release`). It makes one copy of generic code per
-*representation*: one for `Int`, one for `Float`, and one shared by every
+_representation_: one for `Int`, one for `Float`, and one shared by every
 reference type. After that no descriptors are passed, and arithmetic in
 formerly generic code becomes typed instructions. This matters for native code
 further down: typed instructions and objects with headers known at compile time
@@ -201,15 +214,15 @@ u32 block(Vm *vm);   // System V on every x86-64 OS, AAPCS64 on arm64
 ```
 
 The function runs from its pc until control leaves. Then, from O1, it jumps
-straight into the native function for the new pc if there is one (*chaining*,
+straight into the native function for the new pc if there is one (_chaining_,
 below); otherwise, or at O0, it sets `vm->pc` and returns a status:
 
-| status | meaning |
-|---|---|
-| `JUMPED` | control left the block, and `pc` says where |
-| `HALTED` | the program finished, and the value is in the machine |
-| `FAILED` | it failed, and the error is in the machine |
-| `REQUESTED` | a thread operation is waiting for the scheduler |
+| status      | meaning                                               |
+| ----------- | ----------------------------------------------------- |
+| `JUMPED`    | control left the block, and `pc` says where           |
+| `HALTED`    | the program finished, and the value is in the machine |
+| `FAILED`    | it failed, and the error is in the machine            |
+| `REQUESTED` | a thread operation is waiting for the scheduler       |
 
 Native code reaches the machine only through fixed offsets into the `repr(C)`
 `Vm` and `Heap` (`codegen::layout`). It reaches the interpreter through a
@@ -224,16 +237,16 @@ anywhere.
 
 #### What is done inline, and what is handed back
 
-| inline, in machine code | handed to the interpreter via `meadow_exec(vm, pc)` |
-|---|---|
-| `Move`, and `Const` for immediates | `Const` for strings and `BigInt`s |
-| typed `Int`/`Float` arithmetic, shifts and comparisons; `popCount`, `>>>` and `toFloat` on an `Int` | generic `Prim`, `PrimK`, `JumpUnlessPrim(K)` |
-| `Jump`, `JumpUnless`, `BrI`/`BrIK`/`BrF` | `Ref` operations, `compact`, STM and thread primitives |
-| `JumpUnlessTag`, `Field` and `Invoke` on a nursery **or old-generation** object | the same on a region object; `Field` of a data object with more than 8 fields |
-| `stGetArray`, `arrayGet`, `stSetArray` (non-reference elements, or a **young** array), `getRef`, `stArrayLen`, `arrayLen` and `stringByteLength`, through the thin steps of `codegen::thin` | `stSetArray` of a reference into an old array, which needs the write barriers; `setRef` |
-| `MakeData`/`MakeArray`/`Closure` with a **static header**, if the nursery has room -- a header of any length | the same with descriptors from registers, or a full nursery |
-| `Frame` with a static header, if the chunk has room; `Invoke` of a frame in the current chunk | a `Frame` that overflows its chunk, and a return through a frame in a lower chunk, which releases chunks on the way |
-| | `MakeRecord`, `Select`, `Extend`, `Native`, `Halt`, `Error` |
+| inline, in machine code                                                                                                                                                                     | handed to the interpreter via `meadow_exec(vm, pc)`                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `Move`, and `Const` for immediates                                                                                                                                                          | `Const` for strings and `BigInt`s                                                                                   |
+| typed `Int`/`Float` arithmetic, shifts and comparisons; `popCount`, `>>>` and `toFloat` on an `Int`                                                                                         | generic `Prim`, `PrimK`, `JumpUnlessPrim(K)`                                                                        |
+| `Jump`, `JumpUnless`, `BrI`/`BrIK`/`BrF`                                                                                                                                                    | `Ref` operations, `compact`, STM and thread primitives                                                              |
+| `JumpUnlessTag`, `Field` and `Invoke` on a nursery **or old-generation** object                                                                                                             | the same on a region object; `Field` of a data object with more than 8 fields                                       |
+| `stGetArray`, `arrayGet`, `stSetArray` (non-reference elements, or a **young** array), `getRef`, `stArrayLen`, `arrayLen` and `stringByteLength`, through the thin steps of `codegen::thin` | `stSetArray` of a reference into an old array, which needs the write barriers; `setRef`                             |
+| `MakeData`/`MakeArray`/`Closure` with a **static header**, if the nursery has room -- a header of any length                                                                                | the same with descriptors from registers, or a full nursery                                                         |
+| `Frame` with a static header, if the chunk has room; `Invoke` of a frame in the current chunk                                                                                               | a `Frame` that overflows its chunk, and a return through a frame in a lower chunk, which releases chunks on the way |
+|                                                                                                                                                                                             | `MakeRecord`, `Select`, `Extend`, `Native`, `Halt`, `Error`                                                         |
 
 The heap instructions use a **fast path with a slow half**. For `field`, for
 example, the aarch64 code reaches the object -- a nursery address is one load
@@ -302,7 +315,7 @@ and the induction register, reads and writes of arrays that never change
 during the loop, and float arithmetic on what was read, it gets a **plan**:
 the arrays, the induction register and its bound, each instruction of the
 body in vector form, and what has to be true first. The architecture's code
-emits the plan as a *preheader* and a loop that does two iterations a trip on
+emits the plan as a _preheader_ and a loop that does two iterations a trip on
 `q` registers, placed just before the scalar loop's header, which it falls
 into for the rest -- the last iteration of an odd count, or every one if a
 check fails. Control from outside the loop enters through the preheader; the
@@ -338,7 +351,7 @@ same observable behavior:
   encodings for constant operands, and **chains**: where control leaves a
   function for a pc that has native code -- a `Jump`, a branch or fall-through
   out of the function, or `Invoke`'s fast path -- it writes pinned registers
-  back and jumps to that function's *warm entry*, just past the prologue that
+  back and jumps to that function's _warm entry_, just past the prologue that
   builds the frame, instead of returning to `advance`. The frame, `steps` and
   the loop count carry on. The target is a direct jump in an AOT object, and a
   load from `vm->native_table` otherwise (null: return as before). A call and
@@ -369,14 +382,14 @@ into native code bounded, so the scheduler always gets control back
 
 Machine registers inside a block function:
 
-| role | arm64 | x86-64 |
-|---|---|---|
-| the `Vm` | x19 | rbx |
-| its register file | x20 | r12 |
-| steps not yet added to the `Vm` | x21 | r13 |
-| back edges and chained jumps this call | x22 | r14 |
-| scratch for the current instruction | x9–x17, d0, d1 | rax, rcx, rdx, rsi, rdi, xmm0, xmm1 |
-| fixed bytecode registers `r0`–`r12` (`r0`–`r4` on x86-64) | x2–x8, x23–x28; d16–d31 for a function's floats | r8–r11, r15 |
+| role                                                      | arm64                                           | x86-64                              |
+| --------------------------------------------------------- | ----------------------------------------------- | ----------------------------------- |
+| the `Vm`                                                  | x19                                             | rbx                                 |
+| its register file                                         | x20                                             | r12                                 |
+| steps not yet added to the `Vm`                           | x21                                             | r13                                 |
+| back edges and chained jumps this call                    | x22                                             | r14                                 |
+| scratch for the current instruction                       | x9–x17, d0, d1                                  | rax, rcx, rdx, rsi, rdi, xmm0, xmm1 |
+| fixed bytecode registers `r0`–`r12` (`r0`–`r4` on x86-64) | x2–x8, x23–x28; d16–d31 for a function's floats | r8–r11, r15                         |
 
 ### The JIT
 
@@ -570,7 +583,7 @@ what survives, which is usually very little.
 ### The old generation: Immix, marked concurrently
 
 Promoted objects go into **Immix** blocks of 8,192 slots (64 KiB), each cut into
-256 lines of 32 slots (`old.rs`). Space is reclaimed a *line* at a time: after a
+256 lines of 32 slots (`old.rs`). Space is reclaimed a _line_ at a time: after a
 marking cycle, any line with no marked object in it is free. Allocation bumps a
 cursor through runs of free lines. No object is freed individually, and nothing
 is copied to reclaim space.
@@ -662,16 +675,16 @@ goes. `Ref`s, mutable arrays and functions can't be compacted.
 
 ### Tuning
 
-| variable | default | effect |
-|---|---|---|
-| `MEADOW_GC` | `generational` | `copying` for the single-space baseline |
-| `MEADOW_GC_NURSERY` | 32768 | largest nursery, in slots, which bounds nursery pauses |
-| `MEADOW_GC_TRIGGER` | 262144 | old-generation growth, in slots, before the first cycle |
-| `MEADOW_GC_MARK_THREADS` | cores / 4 | marker pool size; 0 means mark in pauses |
-| `MEADOW_GC_EVACUATE` | on | `0` turns evacuation off |
-| `MEADOW_GC_VERIFY` | off | check every map and every marking cycle (slow) |
-| `MEADOW_JIT_THRESHOLD` | 16 | block entries before the JIT compiles a block |
-| `MEADOW_THREADS` | cores | OS threads running green threads |
+| variable                 | default        | effect                                                  |
+| ------------------------ | -------------- | ------------------------------------------------------- |
+| `MEADOW_GC`              | `generational` | `copying` for the single-space baseline                 |
+| `MEADOW_GC_NURSERY`      | 32768          | largest nursery, in slots, which bounds nursery pauses  |
+| `MEADOW_GC_TRIGGER`      | 262144         | old-generation growth, in slots, before the first cycle |
+| `MEADOW_GC_MARK_THREADS` | cores / 4      | marker pool size; 0 means mark in pauses                |
+| `MEADOW_GC_EVACUATE`     | on             | `0` turns evacuation off                                |
+| `MEADOW_GC_VERIFY`       | off            | check every map and every marking cycle (slow)          |
+| `MEADOW_JIT_THRESHOLD`   | 16             | block entries before the JIT compiles a block           |
+| `MEADOW_THREADS`         | cores          | OS threads running green threads                        |
 
 `meadow run --gc-stats` reports collections, pause percentiles, promotion and
 marking.
@@ -721,7 +734,7 @@ Answering continuation `k`, this builds:
   run body with evidence ev, answering H
 ```
 
-The clauses and `H` capture the evidence from *outside* the handler, so an
+The clauses and `H` capture the evidence from _outside_ the handler, so an
 effect performed inside a clause skips past this handler, as it should.
 
 ### `perform E.op x`
@@ -773,7 +786,7 @@ and `R`'s method, called as `k v` with its own continuation `c`, does:
 ```
 
 Writing `c` into `target` is what makes handlers **deep** and makes `k v`
-*return* inside the clause.
+_return_ inside the clause.
 
 With continuations on a stack, capturing `k` means capturing the frames
 between the `perform` and the handler. Three primitives do it, all at chunk
@@ -781,7 +794,7 @@ boundaries and none of them copying a frame: `Enter` at every `handle` starts
 a fresh chunk and writes its tag into the handle's `target` `Ref` (in the
 `Ref`'s otherwise unused `meta`), so the body's frames never share a chunk with
 the handler's own and the boundary is known from where the handler was
-*entered*; `Detach`, where a general clause is entered, unlinks that chunk and
+_entered_; `Detach`, where a general clause is entered, unlinks that chunk and
 every one above it and names the segment with a `Kind::Stack` object the
 resumption captures alongside `k`; `Reattach`, in the resumption, links the
 segment back on top of the stack before continuing into `k`, and refuses to do
@@ -827,14 +840,14 @@ That's one of the three kinds of write that ever run it.
 When the evidence runs out, the site falls into `Op::Native`: `r[a] ←
 ops[imm](r[b])`. The runtime answers it in `rts/src/native.rs` and `vm.rs`.
 
-| effect | answered by the runtime |
-|---|---|
-| `Console` | stdin and stdout, or a debugger's protocol stream |
-| `Fs` | files, directories and metadata |
-| `Process` | running commands, `argv`, the environment, `exit` |
-| `Random` | a splitmix64 generator per OS thread, seeded from the clock |
-| `Time` | wall and monotonic clocks, `sleep` |
-| `Test.fail` | a failure with the shown message |
+| effect      | answered by the runtime                                     |
+| ----------- | ----------------------------------------------------------- |
+| `Console`   | stdin and stdout, or a debugger's protocol stream           |
+| `Fs`        | files, directories and metadata                             |
+| `Process`   | running commands, `argv`, the environment, `exit`           |
+| `Random`    | a splitmix64 generator per OS thread, seeded from the clock |
+| `Time`      | wall and monotonic clocks, `sleep`                          |
+| `Test.fail` | a failure with the shown message                            |
 
 Anything else is the run-time error `unhandled effect E.op`. A native's result
 is often a tree, such as `Ok(Just(#[1, 2, 3]))`, and building one object at a
@@ -919,7 +932,7 @@ returned before its thread is suspended.
   ┌────────┐ next: T7      ┌────────┐               ┌────────┐
   │ T1 ▶   │               │ T4 ▶   │               │ steal  │── takes half of
   ├────────┤               ├────────┤               └────────┘   worker 0's queue
-  │ T2 T3 T5 T6 …          │ T8                         
+  │ T2 T3 T5 T6 …          │ T8
   └──────────────          └────                     global: T9 (every 61 turns)
 ```
 
@@ -1016,15 +1029,15 @@ The rule has three consequences:
 
 ### Parallelism, summarized
 
-| layer | how it uses cores |
-|---|---|
-| green threads | M:N over `MEADOW_THREADS` workers, with work stealing |
-| native code | shared and immutable once published; every worker runs the same functions |
-| JIT compilation | on the thread that makes a block hot, under one lock |
-| allocation and nursery collection | per thread, no locks |
-| old-generation marking | a process-wide marker pool, concurrent with the program |
-| shared data | compact regions and `TVar`s, read in place by every thread |
-| communication | copy-on-send parcels over channels, `await` results |
+| layer                             | how it uses cores                                                         |
+| --------------------------------- | ------------------------------------------------------------------------- |
+| green threads                     | M:N over `MEADOW_THREADS` workers, with work stealing                     |
+| native code                       | shared and immutable once published; every worker runs the same functions |
+| JIT compilation                   | on the thread that makes a block hot, under one lock                      |
+| allocation and nursery collection | per thread, no locks                                                      |
+| old-generation marking            | a process-wide marker pool, concurrent with the program                   |
+| shared data                       | compact regions and `TVar`s, read in place by every thread                |
+| communication                     | copy-on-send parcels over channels, `await` results                       |
 
 ## 7. Profiling
 
@@ -1073,12 +1086,12 @@ costs a lock per trap and is off unless asked for.
 
 There is no call stack ([section 2](#there-is-no-call-stack)). There is a chain
 of continuation objects: the function running holds the one it will answer,
-that one captured the one *its* caller will answer, down to the `halt`. So the
+that one captured the one _its_ caller will answer, down to the `halt`. So the
 stack is on the heap, and walking the chain is walking it.
 
 Three things make the walk possible, and all three were already there for the
 debugger: `DebugInfo::env_of`/`envs` say which name is in which register at a
-pc, `returns` says which name is a function's *own* return continuation (as
+pc, `returns` says which name is a function's _own_ return continuation (as
 against `continuations`, the ones it makes for calls it makes), and a closure
 keeps its captures in fields `0..len` in the order its method takes them -- so
 the register a name sits in at a method's entry is the field it was captured
@@ -1095,8 +1108,8 @@ instructions rather than seconds; time in the collector is not here, and
 without returning to the machine -- that is the point of chaining -- so a JIT or
 ahead-of-time run is sampled far too rarely to say anything. The interpreter
 enters the machine at every instruction, and what is hot in a program is the
-same either way: a profile answers *which of my functions*, not *which of my
-machine instructions*.
+same either way: a profile answers _which of my functions_, not _which of my
+machine instructions_.
 
 A package can ask for this instead of remembering the flags, in its
 `Meadow.toml`:
@@ -1127,25 +1140,25 @@ generational collector exists to have.
 
 ## 8. Where to read next
 
-| topic | file |
-|---|---|
-| AxCut, the IR | `compiler/meadow-seq/src/lib.rs` |
-| lowering, evidence passing, descriptors | `compiler/meadow-seq/src/lower.rs`, `describe.rs` |
-| register allocation, GC maps, typed ops | `compiler/meadow-codegen/src/lib.rs` |
-| the instruction set and image format | `compiler/meadow-bytecode/src/lib.rs`, `image.rs` |
-| specialization | `compiler/meadow-core/src/specialize.rs` |
-| the thin instruction set | `rts/src/codegen/thin.rs` |
-| the interpreter | `rts/src/vm.rs`, `prims.rs` |
-| the native ABI | `rts/src/abi.rs` |
-| the code generator | `rts/src/codegen/mod.rs`, `a64.rs`, `x64.rs` |
-| object files | `rts/src/codegen/object.rs` |
-| the JIT | `rts/src/jit.rs` |
-| AOT entry and linking | `rts/src/aot.rs`, `buildtools/meadow/src/aot.rs`, `rts/build.rs` |
-| heap, nursery, remembered set | `rts/src/heap.rs`, `object.rs` |
-| old generation, marking, evacuation | `rts/src/old.rs`, `mark.rs`, `evacuate.rs` |
-| regions and STM | `rts/src/region.rs`, `stm.rs` |
-| the scheduler | `rts/src/sched.rs` |
-| profiling, and the stack the machine has not got | `rts/src/profile.rs`, `buildtools/meadow/src/samples.rs` |
-| join points | `compiler/meadow-core/src/joins.rs` |
-| unhandled effects | `rts/src/native.rs` |
-| what may cross threads | `compiler/meadow-core/src/thread.rs`, `compact.rs`, `stm.rs` |
+| topic                                            | file                                                             |
+| ------------------------------------------------ | ---------------------------------------------------------------- |
+| AxCut, the IR                                    | `compiler/meadow-seq/src/lib.rs`                                 |
+| lowering, evidence passing, descriptors          | `compiler/meadow-seq/src/lower.rs`, `describe.rs`                |
+| register allocation, GC maps, typed ops          | `compiler/meadow-codegen/src/lib.rs`                             |
+| the instruction set and image format             | `compiler/meadow-bytecode/src/lib.rs`, `image.rs`                |
+| specialization                                   | `compiler/meadow-core/src/specialize.rs`                         |
+| the thin instruction set                         | `rts/src/codegen/thin.rs`                                        |
+| the interpreter                                  | `rts/src/vm.rs`, `prims.rs`                                      |
+| the native ABI                                   | `rts/src/abi.rs`                                                 |
+| the code generator                               | `rts/src/codegen/mod.rs`, `a64.rs`, `x64.rs`                     |
+| object files                                     | `rts/src/codegen/object.rs`                                      |
+| the JIT                                          | `rts/src/jit.rs`                                                 |
+| AOT entry and linking                            | `rts/src/aot.rs`, `buildtools/meadow/src/aot.rs`, `rts/build.rs` |
+| heap, nursery, remembered set                    | `rts/src/heap.rs`, `object.rs`                                   |
+| old generation, marking, evacuation              | `rts/src/old.rs`, `mark.rs`, `evacuate.rs`                       |
+| regions and STM                                  | `rts/src/region.rs`, `stm.rs`                                    |
+| the scheduler                                    | `rts/src/sched.rs`                                               |
+| profiling, and the stack the machine has not got | `rts/src/profile.rs`, `buildtools/meadow/src/samples.rs`         |
+| join points                                      | `compiler/meadow-core/src/joins.rs`                              |
+| unhandled effects                                | `rts/src/native.rs`                                              |
+| what may cross threads                           | `compiler/meadow-core/src/thread.rs`, `compact.rs`, `stm.rs`     |

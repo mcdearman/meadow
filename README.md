@@ -31,10 +31,10 @@ Either way you get `meadow` and `meadowup` in `~/.meadow/bin`, added to your
 
 The two split the way Rust's do:
 
-| | |
-|---|---|
-| `meadow` | the build system — `build`, `run`, `test`, `add`, `update`, `fmt`, `clean` |
-| `meadowup` | the toolchain — which version of Meadow you have, and where |
+|            |                                                                            |
+| ---------- | -------------------------------------------------------------------------- |
+| `meadow`   | the build system — `build`, `run`, `test`, `add`, `update`, `fmt`, `clean` |
+| `meadowup` | the toolchain — which version of Meadow you have, and where                |
 
 ```sh
 meadowup update      # bring the toolchain up to date
@@ -103,17 +103,17 @@ in [docs/MACROS.md](docs/MACROS.md).
 Each is a package: `meadow run examples/<name>` runs it, `meadow test
 examples/<name>` runs its tests.
 
-| | |
-|---|---|
-| [`tour`](examples/Tour) | the language in one program: data types, records, matching, numbers, modules, local mutation |
-| [`effects`](examples/Effects) | one program under different handlers: logging, configuration, failure, state, a seeded random game, a tested interactive greeter |
-| [`streams`](examples/Streams) | generators with `yield`: infinite streams, `take`, `filter`, `map` |
-| [`concurrency`](examples/Concurrency) | green threads and channels: a worker pool, a pipeline, fan-out and fan-in |
-| [`parallel`](examples/Parallel) | splitting work across every core, and sharing a compacted table between threads |
-| [`stm`](examples/Stm) | transactional memory: a bank whose total never wavers, transfers that wait for funds, bounded queues |
-| [`mini-ml`](examples/MiniML) | a small ML with Hindley-Milner inference and an interpreter, over four modules |
-| [`euler`](examples/Euler) | Project Euler problems |
-| [`rock-paper-scissors`](examples/RockPaperScissors) | an interactive game, tested by feeding it input |
+|                                                     |                                                                                                                                  |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| [`tour`](examples/Tour)                             | the language in one program: data types, records, matching, numbers, modules, local mutation                                     |
+| [`effects`](examples/Effects)                       | one program under different handlers: logging, configuration, failure, state, a seeded random game, a tested interactive greeter |
+| [`streams`](examples/Streams)                       | generators with `yield`: infinite streams, `take`, `filter`, `map`                                                               |
+| [`concurrency`](examples/Concurrency)               | green threads and channels: a worker pool, a pipeline, fan-out and fan-in                                                        |
+| [`parallel`](examples/Parallel)                     | splitting work across every core, and sharing a compacted table between threads                                                  |
+| [`stm`](examples/Stm)                               | transactional memory: a bank whose total never wavers, transfers that wait for funds, bounded queues                             |
+| [`mini-ml`](examples/MiniML)                        | a small ML with Hindley-Milner inference and an interpreter, over four modules                                                   |
+| [`euler`](examples/Euler)                           | Project Euler problems                                                                                                           |
+| [`rock-paper-scissors`](examples/RockPaperScissors) | an interactive game, tested by feeding it input                                                                                  |
 
 ## Use
 
@@ -170,7 +170,7 @@ guessing it from the URL.
 
 What was actually used goes in **`meadow.lock`** — the commit, and a hash of its
 source tree. Commit that file: it is what makes a build on another machine the
-build you tested. A branch moves, and a tag *can* be moved, so a build follows
+build you tested. A branch moves, and a tag _can_ be moved, so a build follows
 the lockfile and never the reference; `meadow update` is how the lockfile
 changes. If a tag comes to name a different commit than the one locked, the
 build stops and says so rather than quietly compiling something else.
@@ -211,11 +211,11 @@ moves, constants and the common allocations run as machine instructions, and
 everything else calls back into the runtime. There are three backends, and the
 same code generator serves the two that use it:
 
-| backend | | default for |
-|---|---|---|
-| `jit` | the VM, compiling each block to machine code once it has run 16 times (`MEADOW_JIT_THRESHOLD`) | `--debug` |
-| `aot` | an executable: a Mach-O or ELF object holding the code and the program's image, linked by the system's C compiler against the runtime | `--release` |
-| `vm` | the bytecode interpreter alone | |
+| backend |                                                                                                                                       | default for |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| `jit`   | the VM, compiling each block to machine code once it has run 16 times (`MEADOW_JIT_THRESHOLD`)                                        | `--debug`   |
+| `aot`   | an executable: a Mach-O or ELF object holding the code and the program's image, linked by the system's C compiler against the runtime | `--release` |
+| `vm`    | the bytecode interpreter alone                                                                                                        |             |
 
 `--backend <vm|jit|aot>` (or `--jit`, `--aot`) picks one for a command, and a
 package can pick one per profile in its manifest:
@@ -268,7 +268,7 @@ layout-sensitive, formatting can never change what a program means.
 
 Indentation comes from structure — brackets, `match` arms lining up with their
 `match`, `then`/`else` with their `if`, `in` with its `let`, two units for an arm
-body on its own line. A line that only *continues* the expression above it has no
+body on its own line. A line that only _continues_ the expression above it has no
 structural anchor, and there `fmt` keeps the column you chose, so deliberate
 alignment like this is left alone:
 
@@ -326,22 +326,22 @@ what it actually got.
 A test is named by its module — `Parser.handlesEmpty`, or just `handlesEmpty`
 in the package's root module — because two modules may each declare a test of
 the same name. `meadow test <path> <filter>` runs the tests whose name contains
-`<filter>`; add `--exact` to run only the one whose name *is* it, which is what
+`<filter>`; add `--exact` to run only the one whose name _is_ it, which is what
 the editor's **▶ Test** link above each `@test` does.
 
 ### Effects
 
 `Std` leans on algebraic effects for the things that are usually hardest to
-test. Each has a real implementation *and* a handler that fakes it:
+test. Each has a real implementation _and_ a handler that fakes it:
 
-| module | with no handler | handled |
-|---|---|---|
-| `Std.Random` | real entropy | `withSeed 42` — a pure SplitMix64, same numbers every run |
-| `Std.Time` | the real clock | `withClock t`, `withTickingClock t tick` |
-| `Std.State` | — | `runState`, `evalState`, `execState` |
-| `Std.Exn` | — | `toResult`, `catch`, `withDefault`, `toMaybe` |
-| `Std.Stream` | — | `toList`, `toVec`, `fold`, `take`, `find`, `map`, `filter` |
-| `Std.Fs`, `Std.Process` | real I/O | any `handle` |
+| module                  | with no handler | handled                                                    |
+| ----------------------- | --------------- | ---------------------------------------------------------- |
+| `Std.Random`            | real entropy    | `withSeed 42` — a pure SplitMix64, same numbers every run  |
+| `Std.Time`              | the real clock  | `withClock t`, `withTickingClock t tick`                   |
+| `Std.State`             | —               | `runState`, `evalState`, `execState`                       |
+| `Std.Exn`               | —               | `toResult`, `catch`, `withDefault`, `toMaybe`              |
+| `Std.Stream`            | —               | `toList`, `toVec`, `fold`, `take`, `find`, `map`, `filter` |
+| `Std.Fs`, `Std.Process` | real I/O        | any `handle`                                               |
 
 `Std.Stream` is generators: a producer performs `yield` and a consumer decides
 what that means. `take` simply doesn't resume, which unwinds the producer — the
@@ -360,12 +360,12 @@ There are two sequence types and one rule for telling them apart: **a `;` means
 the linked `List`; brackets without one mean the default RRB `Vector`.** It holds
 for types, literals and patterns alike.
 
-| | `Vector` | `List` |
-|---|---|---|
-| type | `[a]` | `[a;]` |
-| empty | `[]` | `[;]` |
-| one element | `[x]` | `[x;]` |
-| several | `[x, y, z]` | `[x; y; z]` |
+|             | `Vector`    | `List`      |
+| ----------- | ----------- | ----------- |
+| type        | `[a]`       | `[a;]`      |
+| empty       | `[]`        | `[;]`       |
+| one element | `[x]`       | `[x;]`      |
+| several     | `[x, y, z]` | `[x; y; z]` |
 
 `#[x, y]` is the third, lower-level one: the builtin `Array`, which both are
 built on.
@@ -380,7 +380,7 @@ fun total xs = match xs with
 
 `[]` matches an empty `Vector` — the library keeps `Vector.Empty` the only
 representation of one, so it matches a vector emptied at run time too. A
-*non-empty* `Vector` has no structural pattern (it is a balanced tree, not a
+_non-empty_ `Vector` has no structural pattern (it is a balanced tree, not a
 cons list); match on `Vector.len` or convert with `Vector.toList`.
 
 ### Editor support
@@ -463,18 +463,18 @@ and recording the positions changes no instruction.
 `--debug` (the default) and `--release` are names for a bundle of compiler
 options, not options themselves. There are two:
 
-| | `--debug` | `--release` |
-|---|---|---|
-| optimization level | `-O1` | `-O2` |
-| non-exhaustive `match` | allowed | an error |
-| backend | `jit` | `aot` |
+|                        | `--debug` | `--release` |
+| ---------------------- | --------- | ----------- |
+| optimization level     | `-O1`     | `-O2`       |
+| non-exhaustive `match` | allowed   | an error    |
+| backend                | `jit`     | `aot`       |
 
 ```sh
 $ meadow run --release missing.mw
 missing: non-exhaustive patterns: `None` is not matched
 ```
 
-Irrefutability of *binding* positions — function and lambda parameters, `def`
+Irrefutability of _binding_ positions — function and lambda parameters, `def`
 and `let` destructuring — is checked at both, since those have no fallback arm.
 
 `-O2` compiles a `match` to a decision tree rather than trying its arms in turn.
@@ -510,13 +510,13 @@ that names only `opt-level` leaves everything else as debug.
 
 The tree is five independent Cargo workspaces:
 
-| | |
-|---|---|
-| `compiler/` | the front end and back end, one crate per pass — through `meadow-seq` (the AxCut IR and its reference machine) and `meadow-codegen` to `meadow-bytecode` |
-| `eval/` | the CEK machine — the specification of what a program means |
-| `rts/` | the runtime: a register bytecode VM, green threads, and a low-pause generational collector (a copying nursery, and an Immix old generation marked concurrently and evacuated a block at a time). It loads an image and knows nothing about the IR that produced it |
-| `buildtools/` | the tools you point at Meadow source: `meadow` (build system, CLI and REPL — the binary) and `meadow-fmt` (the formatter) |
-| `installer/` | `meadowup`, which installs and updates the toolchain |
+|               |                                                                                                                                                                                                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `compiler/`   | the front end and back end, one crate per pass — through `meadow-seq` (the AxCut IR and its reference machine) and `meadow-codegen` to `meadow-bytecode`                                                                                                           |
+| `eval/`       | the CEK machine — the specification of what a program means                                                                                                                                                                                                        |
+| `rts/`        | the runtime: a register bytecode VM, green threads, and a low-pause generational collector (a copying nursery, and an Immix old generation marked concurrently and evacuated a block at a time). It loads an image and knows nothing about the IR that produced it |
+| `buildtools/` | the tools you point at Meadow source: `meadow` (build system, CLI and REPL — the binary) and `meadow-fmt` (the formatter)                                                                                                                                          |
+| `installer/`  | `meadowup`, which installs and updates the toolchain                                                                                                                                                                                                               |
 
 ```
 core ──▶ AxCut ──▶ bytecode ──▶ VM

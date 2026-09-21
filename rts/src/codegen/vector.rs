@@ -257,11 +257,11 @@ fn plan_or(program: &Program, pcs: &[usize], fixed: usize) -> Result<Plan, u32> 
             None => None,
         }
     };
-    let mut array_of = |arrays: &mut Vec<Array>,
-                        syms: &HashMap<Reg, Sym>,
-                        r: Reg,
-                        kind: u8,
-                        stored: bool|
+    let array_of = |arrays: &mut Vec<Array>,
+                    syms: &HashMap<Reg, Sym>,
+                    r: Reg,
+                    kind: u8,
+                    stored: bool|
      -> Option<usize> {
         // The register itself, if invariant, or the invariant it copies.
         let r = match syms.get(&r) {
@@ -291,7 +291,7 @@ fn plan_or(program: &Program, pcs: &[usize], fixed: usize) -> Result<Plan, u32> 
             }
         }
     };
-    let mut new_lane = |lanes: &mut u8| -> Option<u8> {
+    let new_lane = |lanes: &mut u8| -> Option<u8> {
         if *lanes >= LANES {
             return None;
         }

@@ -475,6 +475,14 @@ pub struct Heap {
     /// back, each with the marking epoch it was cut in. Their frames are roots
     /// until the object naming them dies -- see [`Heap::finish_cycle`].
     detached: Vec<Detached>,
+    /// Chunks of the live stack, below the current one, found at a nursery
+    /// collection to hold nothing young -- which, since only the current chunk
+    /// is ever pushed into or popped from, they go on holding nothing young
+    /// until they are the current chunk again. A nursery collection skips
+    /// them: without this it walks every frame of the stack every time, and a
+    /// deep recursion that allocates is quadratic. (GHC does the same with a
+    /// dirty bit per stack chunk.) See [`Heap::minor`].
+    clean_chunks: std::collections::HashSet<Addr>,
     config: GcConfig,
     /// The nursery, and its other half for collecting into.
     space: Vec<Word>,
@@ -643,6 +651,7 @@ impl Heap {
             nursery_blocks: Vec::new(),
             free_chunks: Vec::new(),
             detached: Vec::new(),
+            clean_chunks: std::collections::HashSet::new(),
         };
         heap.sync();
         heap
@@ -1427,10 +1436,12 @@ impl Heap {
         if !self.config.evacuate || self.marking.is_some() || !self.evac.has_pending() {
             return;
         }
+        let frames = frame_slots(&self.old, self.fcur, self.fsp, &self.detached);
         self.evac.evacuate(
             &mut self.old,
             &mut self.space[..self.top],
             roots,
+            &frames,
             &mut self.remembered,
             budget,
         );
@@ -1648,14 +1659,49 @@ impl Heap {
         }
         // Every frame on the stack, and on every detached segment, is a root:
         // its references into the nursery move with what they point at.
-        for slot in frame_slots(gc.old, self.fcur, self.fsp, &self.detached) {
-            let x = gc.old.get(slot) as Addr;
-            // Into the nursery: moved with what it points at. Into a region:
-            // what keeps the region alive, when this collection is the whole.
-            if x < OLD_BASE || x >= REGION_BASE {
-                let n = gc.forward(x);
-                gc.old.put(slot, n as Word);
+        //
+        // A chunk at a time, skipping the ones known to hold nothing young
+        // (see `clean_chunks`) -- except when this collection is the whole,
+        // which also marks the regions frames point into and has to see them
+        // all. A chunk that is not the current one and comes out of its scan
+        // with nothing young in it is clean from now on: a survivor can stay
+        // young for one collection, so that is not always the first scan.
+        let scan = |gc: &mut Minor, chunk: Addr, end: Addr| -> bool {
+            let mut young = false;
+            let mut slots = Vec::new();
+            chunk_slots(gc.old, chunk, end, &mut slots);
+            for slot in slots {
+                let x = gc.old.get(slot) as Addr;
+                // Into the nursery: moved with what it points at. Into a
+                // region: what keeps the region alive, when this collection
+                // is the whole.
+                if x < OLD_BASE || x >= REGION_BASE {
+                    let n = gc.forward(x);
+                    gc.old.put(slot, n as Word);
+                    young |= n < OLD_BASE;
+                }
             }
+            young
+        };
+        for (chunk, end) in chunk_chain(gc.old, self.fcur, self.fsp) {
+            let current = chunk == self.fcur;
+            if !whole && !current && self.clean_chunks.contains(&chunk) {
+                continue;
+            }
+            let young = scan(&mut gc, chunk, end);
+            if !current && !young {
+                self.clean_chunks.insert(chunk);
+            }
+        }
+        for d in self.detached.iter_mut() {
+            if !whole && d.clean {
+                continue;
+            }
+            let mut young = false;
+            for (chunk, end) in chunk_chain(gc.old, d.top, d.end) {
+                young |= scan(&mut gc, chunk, end);
+            }
+            d.clean = !young;
         }
 
         {
@@ -1796,11 +1842,14 @@ impl Heap {
             if a >= REGION_BASE || !seen.insert(a) {
                 continue;
             }
+            // A frame is in a stack chunk, which holds no objects as the old
+            // generation counts them: it is pushed and popped, not allocated.
+            // What it holds is checked like anything else.
             assert!(
                 if a < OLD_BASE {
                     young.contains(&a)
                 } else {
-                    self.old.is_object(a)
+                    self.old.is_object(a) || self.old.in_stack(a)
                 },
                 "{a} is reachable but is not an object: a pointer was not moved"
             );
@@ -2175,12 +2224,17 @@ impl Heap {
 struct Detached {
     /// Its top chunk, which names the rest through the chunk headers.
     top: Addr,
+    /// Where the top chunk's frames end.
+    end: Addr,
     /// The marking epoch it was cut in.
     epoch: u32,
     /// The [`Kind::Stack`] object naming it, once made -- `0` until then. While
     /// young, whether it survives a nursery collection says whether the
     /// segment is still wanted; once old, the marker says.
     obj: Addr,
+    /// Found at a nursery collection to hold nothing young. Nothing pushes
+    /// into a segment while it is off the stack, so it stays that way.
+    clean: bool,
 }
 
 /// Slots in the header of a frame-stack chunk: the chunk below it in its
@@ -2197,34 +2251,45 @@ const TAG_BLOCK_BITS: u32 = 17;
 /// up to `fsp`, and on each detached segment -- that holds a reference.
 fn frame_slots(old: &Old, fcur: Addr, fsp: Addr, detached: &[Detached]) -> Vec<Addr> {
     let mut out = Vec::new();
-    let mut walk = |mut chunk: Addr, mut end: Addr| {
-        while chunk != 0 {
-            let mut a = chunk + CHUNK_HEADER;
-            while a < end {
-                let h = Head::read(old.get(a), old.get(a + 1));
-                debug_assert_eq!(h.kind, Kind::Frame, "a frame stack holds frames");
-                let header = h.header();
-                for i in 0..h.len as usize {
-                    if h.desc(i, |k| old.get(a + k as Addr)) == desc::REF {
-                        out.push(a + (header + i) as Addr);
-                    }
-                }
-                a += h.size() as Addr;
-            }
-            end = old.get(chunk + 1) as Addr;
-            chunk = old.get(chunk) as Addr;
-        }
-    };
-    if fcur != 0 {
-        walk(fcur, fsp);
+    for (chunk, end) in chunk_chain(old, fcur, fsp) {
+        chunk_slots(old, chunk, end, &mut out);
     }
     for d in detached {
-        // A detached segment records its own end in its top chunk's second
-        // header slot, which is free while it is off the stack.
-        let top_fsp = old.get(d.top + 1) as Addr;
-        walk(d.top, top_fsp);
+        for (chunk, end) in chunk_chain(old, d.top, d.end) {
+            chunk_slots(old, chunk, end, &mut out);
+        }
     }
     out
+}
+
+/// The chunks of a chain from `top` down, each with where its frames end:
+/// `end` for the top one, and for each below it what the chunk above recorded
+/// when it was entered.
+fn chunk_chain(old: &Old, top: Addr, end: Addr) -> Vec<(Addr, Addr)> {
+    let mut out = Vec::new();
+    let (mut chunk, mut end) = (top, end);
+    while chunk != 0 {
+        out.push((chunk, end));
+        end = old.get(chunk + 1) as Addr;
+        chunk = old.get(chunk) as Addr;
+    }
+    out
+}
+
+/// Every slot holding a reference in the frames of `chunk`, up to `end`.
+fn chunk_slots(old: &Old, chunk: Addr, end: Addr, out: &mut Vec<Addr>) {
+    let mut a = chunk + CHUNK_HEADER;
+    while a < end {
+        let h = Head::read(old.get(a), old.get(a + 1));
+        debug_assert_eq!(h.kind, Kind::Frame, "a frame stack holds frames");
+        let header = h.header();
+        for i in 0..h.len as usize {
+            if h.desc(i, |k| old.get(a + k as Addr)) == desc::REF {
+                out.push(a + (header + i) as Addr);
+            }
+        }
+        a += h.size() as Addr;
+    }
 }
 
 /// # The frame stack
@@ -2322,10 +2387,13 @@ impl Heap {
                 below, 0,
                 "returning through a frame that is not on the stack"
             );
+            self.clean_chunks.remove(&self.fcur);
             self.free_chunks.push(self.fcur);
             self.fcur = below;
             self.flim = below + old::BLOCK as Addr;
             self.fsp = below_fsp;
+            // The current chunk is pushed into, so it is never clean.
+            self.clean_chunks.remove(&below);
             self.publish_chunk();
         }
         self.fsp = a;
@@ -2353,6 +2421,7 @@ impl Heap {
         }
         let (top, top_fsp) = (self.fcur, self.fsp);
         let mut lowest = self.fcur;
+        let mut cut = Vec::new();
         loop {
             let below = self.old.get(lowest) as Addr;
             let below_fsp = self.old.get(lowest + 1) as Addr;
@@ -2360,7 +2429,14 @@ impl Heap {
             if !bottom && below == 0 {
                 return None;
             }
+            cut.push(lowest);
             if bottom {
+                // What is cut off is the segment's to account for from here
+                // (`Detached::clean`), and the chunk under it is current.
+                for c in &cut {
+                    self.clean_chunks.remove(c);
+                }
+                self.clean_chunks.remove(&below);
                 self.old.put(lowest, 0);
                 self.fcur = below;
                 self.flim = if below == 0 {
@@ -2374,13 +2450,16 @@ impl Heap {
             }
             lowest = below;
         }
-        // The segment's end, kept in the slot the top chunk no longer needs
-        // for a chain above it.
-        self.old.put(top + 1, top_fsp as Word);
+        // The segment's end is kept beside it, not in a chunk header: the top
+        // chunk's second slot says where the chunk *below* it ends, which a
+        // segment of more than one chunk -- any `handle` inside a `handle` --
+        // still needs, for the collector's walk and for the pop back into it.
         self.detached.push(Detached {
             top,
+            end: top_fsp,
             epoch: self.old.epoch(),
             obj: 0,
+            clean: false,
         });
         Some((top, top_fsp))
     }
@@ -2408,10 +2487,15 @@ impl Heap {
         let Some(i) = self.detached.iter().position(|d| d.top == top) else {
             return false;
         };
-        self.detached.swap_remove(i);
+        let segment = self.detached.swap_remove(i);
         let mut bottom = top;
         while self.old.get(bottom) as Addr != 0 {
             bottom = self.old.get(bottom) as Addr;
+            // Below the top of a segment found clean: clean still, on the
+            // stack as off it. The top becomes the current chunk.
+            if segment.clean {
+                self.clean_chunks.insert(bottom);
+            }
         }
         self.old.put(bottom, self.fcur as Word);
         self.old.put(bottom + 1, self.fsp as Word);
@@ -3260,6 +3344,109 @@ mod tests {
         assert!(holder >= OLD_BASE, "promoted");
         assert!(well_formed(&h, h.field(holder, 0), n));
         assert!(well_formed(&h, roots[0], 40_000));
+    }
+
+    // --- the frame stack and the collector -------------------------------------------
+
+    #[test]
+    fn what_a_frame_holds_moves_with_it_when_its_block_is_evacuated() {
+        // A frame is pushed with a bare store, so nothing records that it
+        // points into a block chosen to move: evacuation has to treat frames
+        // as it treats the registers, or the frame goes on naming where the
+        // object used to be. (`verify` is on, so before this was so the
+        // collection itself said "a pointer was not moved".)
+        let mut h = generational(1024, usize::MAX, 0);
+        let mut roots = sparse(&mut h, 40_000);
+        h.collect_all(&mut roots);
+        let (mut cell, mut n) = (roots[0], 40_000);
+        while !h.old.blocks[old::block_of(cell.addr().unwrap())].is_tracked() {
+            cell = h.field(cell.addr().unwrap(), 1);
+            n -= 1;
+            assert!(n > 0, "no cell in a chosen block");
+        }
+        roots.push(cell);
+        let held = roots.len() - 1;
+        let word = cell.bits();
+        let frame = h.push_frame(0, 1, |_| word, |_| desc::REF);
+        let mut cycles = 0;
+        while roots[held] == cell {
+            h.collect_all(&mut roots);
+            cycles += 1;
+            assert!(cycles < 32, "the cell's block never moved");
+        }
+        assert_eq!(h.field(frame, 0), roots[held], "the frame was left behind");
+        assert!(well_formed(&h, roots[0], 40_000));
+    }
+
+    #[test]
+    fn a_segment_of_two_chunks_is_walked_to_each_chunks_own_end() {
+        // A `handle` inside a `handle`: the segment a clause cuts off is two
+        // chunks. Where the lower one's frames end is in the upper one's
+        // header, which is therefore not a place to keep anything else.
+        let mut h = generational(1024, usize::MAX, 0);
+        h.promoting = true;
+        let mut roots = vec![Value::Unit];
+        roots[0] = alloc_rooted(&mut h, &mut roots, Kind::Data, 0, &[]);
+        let word = roots[0].bits();
+        h.enter_frames();
+        h.push_frame(0, 1, |_| word, |_| desc::REF);
+        let tag = h.enter_frames();
+        let lower = h.push_frame(0, 1, |_| word, |_| desc::REF);
+        h.enter_frames();
+        let mut upper = 0;
+        for _ in 0..5 {
+            upper = h.push_frame(0, 1, |_| word, |_| desc::REF);
+        }
+        let (top, end) = h.detach(tag).expect("the handler's chunk is on the stack");
+        // Collections with the segment off the stack: every frame of both
+        // chunks is a root, and what it holds moves.
+        churn(&mut h, &mut roots, 5_000);
+        assert_eq!(
+            h.field(lower, 0),
+            roots[0],
+            "the lower chunk was not walked"
+        );
+        assert_eq!(
+            h.field(upper, 0),
+            roots[0],
+            "the upper chunk was not walked"
+        );
+        // Put back, it is walked the same way on the stack, and the stack
+        // pops into the lower chunk where that chunk's frames end.
+        assert!(h.reattach(top, end));
+        churn(&mut h, &mut roots, 5_000);
+        assert_eq!(h.field(lower, 0), roots[0]);
+        h.pop_to(lower);
+        assert_eq!(h.fsp, lower);
+    }
+
+    #[test]
+    fn a_chunk_below_the_top_is_scanned_until_it_holds_nothing_young() {
+        let mut h = generational(1024, usize::MAX, 0);
+        h.promoting = true;
+        let mut roots = vec![Value::Unit];
+        roots[0] = alloc_rooted(&mut h, &mut roots, Kind::Data, 0, &[]);
+        let word = roots[0].bits();
+        h.enter_frames();
+        let lower = h.fcur;
+        let frame = h.push_frame(0, 1, |_| word, |_| desc::REF);
+        h.enter_frames();
+        assert!(!h.clean_chunks.contains(&lower));
+        // A survivor stays young for one collection and is promoted at the
+        // next, so the chunk holding it comes clean by the third.
+        for _ in 0..3 {
+            h.collect(&mut roots);
+        }
+        assert_eq!(h.field(frame, 0), roots[0], "the frame was left behind");
+        assert!(roots[0].addr().unwrap() >= OLD_BASE, "promoted by now");
+        assert!(h.clean_chunks.contains(&lower), "still being rescanned");
+        assert!(
+            !h.clean_chunks.contains(&h.fcur),
+            "the current chunk is never clean"
+        );
+        // Popping back into it makes it the current chunk again.
+        h.pop_to(frame);
+        assert!(!h.clean_chunks.contains(&lower));
     }
 
     // --- strings ------------------------------------------------------------------

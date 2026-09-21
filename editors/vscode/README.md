@@ -52,13 +52,13 @@ so instead of going quiet.
 
 ## Settings
 
-| | |
-|---|---|
-| `meadow.server.path` | path to the `meadow` executable (default `meadow`) |
-| `meadow.inlayHints.enabled` | show inferred types inline |
-| `meadow.debug.codeLens` | show a "Debug" link above each top-level definition |
-| `meadow.test.codeLens` | show a "Test" link above each `@test` |
-| `meadow.trace.server` | log the LSP traffic, for debugging |
+|                             |                                                     |
+| --------------------------- | --------------------------------------------------- |
+| `meadow.server.path`        | path to the `meadow` executable (default `meadow`)  |
+| `meadow.inlayHints.enabled` | show inferred types inline                          |
+| `meadow.debug.codeLens`     | show a "Debug" link above each top-level definition |
+| `meadow.test.codeLens`      | show a "Test" link above each `@test`               |
+| `meadow.trace.server`       | log the LSP traffic, for debugging                  |
 
 Format on save is on for Meadow files through VS Code's own setting, so it is
 turned off the same way:

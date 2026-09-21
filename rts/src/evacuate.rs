@@ -161,14 +161,22 @@ impl Evacuation {
 
     /// Move chosen blocks' survivors out, until `budget` -- a time, and work
     /// counted in slots copied and fields rewritten -- is spent, or everything
-    /// is moved if there is none. `nursery` is the nursery's objects, and
-    /// `roots` everything else that can point into the old generation besides
-    /// old objects themselves.
+    /// is moved if there is none. `nursery` is the nursery's objects, `roots`
+    /// the registers, and `frames` every slot of the frame stack that holds a
+    /// reference -- which between them are everything that can point into the
+    /// old generation besides old objects themselves.
+    ///
+    /// The frames are roots here as they are for the other collections, and
+    /// for the same reason: a frame is pushed by native code with a bare
+    /// store, so no pointer in one is ever *recorded* as pointing into a
+    /// chosen block. Left out, a frame goes on naming where an object used to
+    /// be.
     pub fn evacuate(
         &mut self,
         old: &mut Old,
         nursery: &mut [Word],
         roots: &mut [Value],
+        frames: &[Addr],
         remembered: &mut Vec<Addr>,
         budget: Option<(Duration, usize)>,
     ) {
@@ -274,6 +282,14 @@ impl Evacuation {
                     .forward(x)
                     .expect("a root points at an object not marked alive");
                 *r = Value::Obj(to);
+            }
+        }
+        for &slot in frames {
+            let x = old.get(slot) as Addr;
+            if moving.has(x)
+                && let Some(to) = moving.forward(x)
+            {
+                old.put_field(slot, to as Word, true);
             }
         }
         let mut at = 0;

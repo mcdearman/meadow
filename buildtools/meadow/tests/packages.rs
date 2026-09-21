@@ -8,11 +8,11 @@ use meadow::{
 use meadow_eval as eval;
 use std::path::{Path, PathBuf};
 
-const WORKSPACE: &str = "tests/fixtures/workspace";
+mod common;
 
 #[test]
 fn manifest_parses_cargo_style() {
-    let m = Manifest::load(Path::new(&format!("{WORKSPACE}/App")))
+    let m = Manifest::load(&common::fixture("App"))
         .unwrap()
         .expect("app has a manifest");
     assert_eq!(m.name, "App");
@@ -24,10 +24,7 @@ fn manifest_parses_cargo_style() {
 
 #[test]
 fn builds_app_against_a_path_dependency() {
-    let out = pipeline::build(
-        Path::new(&format!("{WORKSPACE}/App")),
-        meadow::Options::debug(),
-    );
+    let out = pipeline::build(&common::fixture("App"), meadow::Options::debug());
     assert!(
         out.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
@@ -41,10 +38,7 @@ fn builds_app_against_a_path_dependency() {
 #[test]
 fn private_names_do_not_cross_package_boundaries() {
     // `util` exports `double` / `scale` (both `@pub`) but not `secret`.
-    let out = pipeline::build(
-        Path::new(&format!("{WORKSPACE}/Util")),
-        meadow::Options::debug(),
-    );
+    let out = pipeline::build(&common::fixture("Util"), meadow::Options::debug());
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     let linked = out.linked.unwrap();
     let mut names: Vec<_> = linked
@@ -73,10 +67,7 @@ fn modules_are_compiled_in_dependency_order() {
     // `layers` has `Alpha.mw` (needs `Zeta`), `Zeta.mw` and `Main.mw`. Modules are
     // discovered in filename order, so `Alpha` comes first and everything it uses
     // comes later — inference and evaluation both have to sort that out.
-    let out = pipeline::build(
-        Path::new(&format!("{WORKSPACE}/layers")),
-        meadow::Options::debug(),
-    );
+    let out = pipeline::build(&common::fixture("Layers"), meadow::Options::debug());
     assert!(
         out.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",

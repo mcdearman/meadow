@@ -1,1 +1,1 @@
-Make sure to run rustfmt and the meadow fmt on their respective source files after you generate them.
+Make sure to run default formatters on all files before committing.

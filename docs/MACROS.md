@@ -105,10 +105,10 @@ macro describe
 
 Two more forms:
 
-| written | means |
-|---|---|
-| `$$` | a literal `$` in the output |
-| `$pkg` | the package the macro was defined in |
+| written | means                                |
+| ------- | ------------------------------------ |
+| `$$`    | a literal `$` in the output          |
+| `$pkg`  | the package the macro was defined in |
 
 `$pkg` is Rust's `$crate`: it writes the name of the package the macro was
 defined in, so a path a template writes reaches what the macro can see rather
@@ -143,14 +143,14 @@ macro unlessEmpty
     }
 ```
 
-| kind | matches |
-|---|---|
-| `tt` | one token tree |
+| kind    | matches        |
+| ------- | -------------- |
+| `tt`    | one token tree |
 | `ident` | one identifier |
-| `lit` | one literal |
-| `expr` | an expression |
-| `pat` | a pattern |
-| `item` | a declaration |
+| `lit`   | one literal    |
+| `expr`  | an expression  |
+| `pat`   | a pattern      |
+| `item`  | a declaration  |
 
 `tt`, `ident` and `lit` need no parser at all. The rest are matched by calling
 the parser on the rest of the tokens, which raises the question of where the
@@ -164,7 +164,7 @@ it: `,` `;` `->` `|` a closing bracket, or one of `then`, `else`, `in`, `with`. 
 matcher that puts anything else after an `expr` is rejected where it is written,
 not where it is called.
 
-That rule is what says where a fragment *ends*, and matching uses it directly:
+That rule is what says where a fragment _ends_, and matching uses it directly:
 the fragment runs to the first such token at the top level of the argument —
 brackets are already grouped, so a `,` inside one is not a candidate — and that
 run is handed to the parser. A run the parser cannot read is not a fragment of
@@ -229,20 +229,20 @@ one. Everything else follows from that:
 
 - a template's `let tmp#3 = …` binds a name the caller cannot write, so the
   caller's `tmp` is a different variable;
-- what came from the *call* is spliced in unmarked, so `$x` is still the
+- what came from the _call_ is spliced in unmarked, so `$x` is still the
   caller's `x`;
 - a marked name that nothing bound — `push#3`, where the template meant the
   ordinary `push` — is simply not found, and the resolver looks again without
   the mark. That single fallback is what makes items unhygienic.
 
-The one thing marking must not touch is a lowercase name that is *not* a
+The one thing marking must not touch is a lowercase name that is _not_ a
 variable: a record label, a module member, a type variable, the name of a
 declaration. Those are matched against something outside the expansion, so a
 mark would break them. A label and a variable are the same token, though, and
 only a tree tells them apart — so marks go on at substitution and come off
 those slots once the expansion has been parsed.
 
-Two consequences worth stating. A macro name is an item, so it is *stripped*
+Two consequences worth stating. A macro name is an item, so it is _stripped_
 before the macro is looked up: that is what lets a template call itself, which
 is how a recursive macro is written. And a name a template only mentions
 resolves where the call is, not where the macro was defined — harmless while a
@@ -324,7 +324,7 @@ loops forever fails the build instead of hanging it.
 `Std.Macro` provides the `TokenTree` type: a `Word`, a `Punct` by the text it is
 written with, a literal, a bracketed `Group` — and `Code`, which holds Meadow as
 text for the compiler to lex where the call was. That last one is what a macro
-that *writes* code uses, and it is why there is no `quote` yet: a macro that
+that _writes_ code uses, and it is why there is no `quote` yet: a macro that
 generates a function writes the function, as anyone would.
 
 ```meadow
@@ -342,7 +342,7 @@ def main = println shout!(hello there)   -- "hello there!"
 **`@macro` is what makes one.** Nothing about a function's type does: a package
 that means a function to be called as a macro says so, which is what lets you
 find a package's macros by looking, and what lets the type be checked where the
-macro is *written* rather than in whoever imports it. That type is
+macro is _written_ rather than in whoever imports it. That type is
 `[TokenTree] -> [TokenTree]`; the argument may be looser, since a macro that
 ignores it never constrains it, but the answer is exactly tokens.
 
@@ -391,7 +391,7 @@ definePass! {
 ```
 
 `definePass!` cannot be written against token trees alone, because it has to
-*know what `L0` is*: which productions exist, so it can check the pass covers
+_know what `L0` is_: which productions exist, so it can check the pass covers
 them, generate the traversal for the cases the author did not write, and reject
 output that is not an `L1`. `defineLanguage!` knows that, and by the time
 `definePass!` runs, it is gone.
@@ -423,7 +423,7 @@ cacheable on what it was computed from, for the same reason a proc macro is.
 lookup : Ident -> Macro (Maybe a)
 ```
 
-`defineLanguage!` expands to the `data` declarations for the language *and* a
+`defineLanguage!` expands to the `data` declarations for the language _and_ a
 `@compileTime def` holding its grammar; `definePass!` looks that up and writes
 the pass. Nothing is smuggled through a side channel: the grammar is a value,
 with a type.
@@ -438,7 +438,7 @@ machinery for this shape of problem ([`meadow-scc`](../compiler/meadow-scc)),
 which is the reason to think it is affordable — but it is a real change, and it
 is where this goes further than Rust, which has no such channel at all.
 
-One more thing an embedded language wants: to match *structured* syntax rather
+One more thing an embedded language wants: to match _structured_ syntax rather
 than counting brackets. So `Std.Macro` should expose the parser's own entry
 points — the ones [section 5](#5-how-expansion-runs) added — as library
 functions, letting a proc macro ask for a token tree as an expression or a

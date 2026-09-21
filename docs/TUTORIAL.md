@@ -88,7 +88,7 @@ Hello, Meadow!
 ```
 
 `main` has type `()` — it produces nothing useful. Printing is something it
-*does* rather than something it returns, and a function's type records that
+_does_ rather than something it returns, and a function's type records that
 too; [chapter 9](#9-effects) is about how.
 
 ### The REPL
@@ -117,19 +117,19 @@ definition goes on using the first, and only new mentions reach the new one.
 
 Useful commands:
 
-| | |
-|---|---|
-| `:t <expr>` | show the type without evaluating |
-| `:module` | list what is defined, and what a later definition shadowed |
-| `:reset` | forget everything defined so far |
-| `:time` | time every entry from now on (`:time` again stops) |
-| `:time <expr>` | time just this entry |
-| `:tour` | a guided tour of the language, a step at a time |
-| `:q` | quit |
+|                |                                                            |
+| -------------- | ---------------------------------------------------------- |
+| `:t <expr>`    | show the type without evaluating                           |
+| `:module`      | list what is defined, and what a later definition shadowed |
+| `:reset`       | forget everything defined so far                           |
+| `:time`        | time every entry from now on (`:time` again stops)         |
+| `:time <expr>` | time just this entry                                       |
+| `:tour`        | a guided tour of the language, a step at a time            |
+| `:q`           | quit                                                       |
 
 **The tour** is this document's shorter cousin, taken at the prompt rather than
 read: `:tour` shows what it covers, `:next` and `:back` move through it, and
-`:try` puts a step's example *on the prompt* so it can be edited before it is
+`:try` puts a step's example _on the prompt_ so it can be edited before it is
 run. It is not a mode — between steps the prompt is the ordinary one, so
 anything can be tried, and whatever you define along the way is still there at
 the end.
@@ -162,18 +162,18 @@ def main = 1  -- so is this
 
 ### The primitive types
 
-| Type | Literals | Notes |
-|---|---|---|
-| `Int` | `42`, `-7`, `0xff`, `0o17`, `0b1011` | 64-bit, wrapping; what an integer literal is by default; also spelled `Int64` |
-| `BigInt` | *(same literals)* | arbitrary precision, never overflows; ask for it with `toBigInt` or an annotation |
-| `Int8` `Int16` `Int32` | *(same literals)* | signed, wrapping at their width |
-| `UInt8` `UInt16` `UInt32` `UInt64` | *(same literals)* | unsigned, wrapping at their width |
-| `Float` | `3.14`, `42.0` | 64-bit; also spelled `Float64` |
-| `Float32` | *(same literals)* | 32-bit |
-| `Bool` | `True`, `False` | constructors, capitalised |
-| `String` | `"hi"`, `"tab\there"`, `"hi ${name}"`, `r"C:\dir"` | a sequence of **bytes**; `${…}` interpolates; escapes and raw strings [below](#strings-and-interpolation) |
-| `Char` | `'a'`, `'é'`, `'\n'` | one Unicode **scalar**, not one byte |
-| unit | `()` | one value, written the same way as its type |
+| Type                               | Literals                                           | Notes                                                                                                     |
+| ---------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `Int`                              | `42`, `-7`, `0xff`, `0o17`, `0b1011`               | 64-bit, wrapping; what an integer literal is by default; also spelled `Int64`                             |
+| `BigInt`                           | _(same literals)_                                  | arbitrary precision, never overflows; ask for it with `toBigInt` or an annotation                         |
+| `Int8` `Int16` `Int32`             | _(same literals)_                                  | signed, wrapping at their width                                                                           |
+| `UInt8` `UInt16` `UInt32` `UInt64` | _(same literals)_                                  | unsigned, wrapping at their width                                                                         |
+| `Float`                            | `3.14`, `42.0`                                     | 64-bit; also spelled `Float64`                                                                            |
+| `Float32`                          | _(same literals)_                                  | 32-bit                                                                                                    |
+| `Bool`                             | `True`, `False`                                    | constructors, capitalised                                                                                 |
+| `String`                           | `"hi"`, `"tab\there"`, `"hi ${name}"`, `r"C:\dir"` | a sequence of **bytes**; `${…}` interpolates; escapes and raw strings [below](#strings-and-interpolation) |
+| `Char`                             | `'a'`, `'é'`, `'\n'`                               | one Unicode **scalar**, not one byte                                                                      |
+| unit                               | `()`                                               | one value, written the same way as its type                                                               |
 
 `Bool` values are written, and print, as the constructors `True` and `False`.
 
@@ -237,7 +237,7 @@ def main = ([1, 2] == [1, 2], Just 1 != None, "a" == "a")
 => (True, True, True)
 ```
 
-Integer division truncates, and `%` follows the sign of the *dividend* — so
+Integer division truncates, and `%` follows the sign of the _dividend_ — so
 `(-7) % 3` is `-1`, not `2`. That trips people up when writing `even`/`odd`-style
 tests by hand.
 
@@ -284,14 +284,14 @@ call away: with `use Std.Time as T`, `"took ${T.formatNanos ns}"`.
 
 The escapes are the usual ones, in strings and character literals alike:
 
-| escape | means |
-|---|---|
-| `\n` `\r` `\t` `\0` | newline, carriage return, tab, NUL |
-| `\\` `\"` `\'` `\$` | the character itself |
+| escape                   | means                                                                             |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `\n` `\r` `\t` `\0`      | newline, carriage return, tab, NUL                                                |
+| `\\` `\"` `\'` `\$`      | the character itself                                                              |
 | `\a` `\b` `\f` `\v` `\e` | bell, backspace, form feed, vertical tab, escape (as terminal colour codes start) |
-| `\x41` | an ASCII character by its two hex digits, up to `\x7F` |
-| `\u{1F600}` | any Unicode character, by one to six hex digits |
-| `\` at the end of a line | joins the next line on, without the line break or its leading spaces |
+| `\x41`                   | an ASCII character by its two hex digits, up to `\x7F`                            |
+| `\u{1F600}`              | any Unicode character, by one to six hex digits                                   |
+| `\` at the end of a line | joins the next line on, without the line break or its leading spaces              |
 
 Anything else after a backslash is an error, not a backslash. For text full of
 backslashes or quotes, a **raw string** takes everything between its quotes as it
@@ -348,7 +348,7 @@ it — the types you saw above were inferred — though you can write one; see
 [Signatures](#signatures).
 
 The two are not interchangeable: **`def` takes no parameters.** It binds a
-*pattern* to the value of an expression, so `def square x = x * x` is a parse
+_pattern_ to the value of an expression, so `def square x = x * x` is a parse
 error. Write `fun square x = x * x`, or `def square = \x -> x * x`.
 
 ```meadow
@@ -375,7 +375,7 @@ many functions read it, and a `def` nothing uses is never evaluated.
 That is only safe if evaluating a `def` does nothing a program could see, so a
 top-level `def` may not perform effects. `def greeting = let _ = println "hi" in
 "hi"` is an error: "a top-level `def` cannot perform effects". A `def` can still
-*be* a function with effects, such as `def shout = \s -> println s`: building
+_be_ a function with effects, such as `def shout = \s -> println s`: building
 the closure does nothing, and the printing happens at each call. Effects belong
 inside functions, which run every time they are called, or in `main`, which the
 runtime runs once as the program.
@@ -479,7 +479,7 @@ def main = area 3 4
 => 12
 ```
 
-Or on a line of its own, as a *signature*: `fun name : T`, or `def name : T` for
+Or on a line of its own, as a _signature_: `fun name : T`, or `def name : T` for
 a value. It goes anywhere in the module that defines the name -- before the
 definition, after it, or with the others at the top of the file.
 
@@ -499,7 +499,7 @@ def main = (swap (1, "one"), small)
 
 A signature is held to in both directions. The definition has to have the type
 it gives -- a body that returns a `String` where the signature says `Int` is a
-type mismatch -- and it has to be *as general*: a lowercase name in a signature
+type mismatch -- and it has to be _as general_: a lowercase name in a signature
 is a type variable, a promise that the function works whatever type it stands
 for.
 
@@ -593,7 +593,7 @@ def main = (classify (0 - 3), classify 0, classify 3)
 ### Shadowing
 
 A `let` may reuse a name that is already in scope, and its right-hand side sees
-the *old* binding:
+the _old_ binding:
 
 ```meadow
 fun normalise x =
@@ -850,7 +850,7 @@ There are two kinds of record, and the difference matters more than you would
 expect.
 
 An **anonymous** record needs no declaration. Field selection on it is
-*row-polymorphic*: `getX` below reads "any record with at least an `x`", so it
+_row-polymorphic_: `getX` below reads "any record with at least an `x`", so it
 accepts records of different shapes.
 
 ```meadow
@@ -882,7 +882,7 @@ def main = (origin, origin.x, origin.y)
 
 > **The catch.** Selecting a field needs the record's type known by the time the
 > `.` is reached. When nothing has said what it is, selection infers the
-> *structural* row type `{ x : Int | a }`, and that does not unify with a nominal
+> _structural_ row type `{ x : Int | a }`, and that does not unify with a nominal
 > type:
 >
 > ```
@@ -939,7 +939,7 @@ The record is evaluated first, then the new values in the order they are
 written. As with selection, a nominal record's type has to be known where it is
 updated, and a `data` type with several constructors has no one record to
 update -- match on it. The field-first form, `{ x = v | r }`, is something else:
-it *extends* an anonymous record with a field.
+it _extends_ an anonymous record with a field.
 
 ### `type` — another name for a type
 
@@ -960,7 +960,7 @@ def main = (add (1, 2) (10, 20), swapPair ("l", "r"))
 => ((11, 22), ("r", "l"))
 ```
 
-An alias *is* what it stands for: a `Point` is an `(Int, Int)` everywhere, with
+An alias _is_ what it stands for: a `Point` is an `(Int, Int)` everywhere, with
 nothing to convert, and types print with it expanded. When you want a type that
 is distinct from what it is made of, declare it with `data` or `record`. An
 alias is given all of its arguments wherever it is used, and cannot refer to
@@ -974,15 +974,15 @@ itself -- a recursive type is a `data`. It is as visible as any other type:
 Meadow has three sequence types, and one rule for telling them apart in source:
 **a `;` means the linked `List`; brackets without one mean the default `Vector`.**
 
-| | `Array` | `Vector` | `List` |
-|---|---|---|---|
-| what it is | flat contiguous buffer | RRB tree | cons list |
-| type | `#[a]` | `[a]` | `[a;]` |
-| empty | `#[]` | `[]` | `[;]` |
-| one element | `#[x]` | `[x]` | `[x;]` |
-| several | `#[x, y]` | `[x, y]` | `[x; y]` |
-| indexing | O(1) | O(log n) | O(n) |
-| use it for | primitives, interop | **most things** | when O(1) access to the head is the point |
+|             | `Array`                | `Vector`        | `List`                                    |
+| ----------- | ---------------------- | --------------- | ----------------------------------------- |
+| what it is  | flat contiguous buffer | RRB tree        | cons list                                 |
+| type        | `#[a]`                 | `[a]`           | `[a;]`                                    |
+| empty       | `#[]`                  | `[]`            | `[;]`                                     |
+| one element | `#[x]`                 | `[x]`           | `[x;]`                                    |
+| several     | `#[x, y]`              | `[x, y]`        | `[x; y]`                                  |
+| indexing    | O(1)                   | O(log n)        | O(n)                                      |
+| use it for  | primitives, interop    | **most things** | when O(1) access to the head is the point |
 
 `Vector` is the default: the bare `map`, `filter`, `foldl`, `len`, `range` … in the
 prelude are `Vector`'s. `List`'s equivalents need an explicit `use` — the prelude
@@ -1076,7 +1076,7 @@ def main = (total [1; 2; 3], 1 :: 2 :: [;], List.reverse [1; 2; 3])
 
 ### Matching an empty vector
 
-`[]` is a pattern too — it matches the empty `Vector`. A *non-empty* vector has no
+`[]` is a pattern too — it matches the empty `Vector`. A _non-empty_ vector has no
 structural pattern (it is a balanced tree, not a cons cell), so match on `[]` and
 fall through, or use `len`:
 
@@ -1273,7 +1273,7 @@ are found by the `hash` primitive, which is structural and agrees with `==` —
 cannot be a key: `hash` refuses both. (`Std.Collections.Map` is the older,
 `Int`-keyed ordered map, for when the keys should come out sorted.)
 
-When the map is a *place* rather than a value -- a count being built up, a
+When the map is a _place_ rather than a value -- a count being built up, a
 cache -- `Std.Collections.HashTable` is the same idea written in place: it
 lives inside a `runSt`, like a `StArray`, and `insert` writes into it and
 answers `()`. One probe and one write per update, against a path copied per
@@ -1499,16 +1499,16 @@ or a bare `use mylib` to bring in all of them.
 Nothing is visible outside the module it is written in until it says so. Three
 attributes say so, each one layer wider:
 
-| written | seen by |
-|---|---|
-| nothing | its own module, and the modules inside it |
-| `@pub(super)` | ...and its parent module's subtree |
-| `@pub(pkg)` | ...and every module of this package |
-| `@pub` | ...and anyone who depends on this package |
+| written       | seen by                                   |
+| ------------- | ----------------------------------------- |
+| nothing       | its own module, and the modules inside it |
+| `@pub(super)` | ...and its parent module's subtree        |
+| `@pub(pkg)`   | ...and every module of this package       |
+| `@pub`        | ...and anyone who depends on this package |
 
 This is Rust's arrangement, spellings included, with the package where the crate
 goes: a plain `@pub` is Rust's `pub`, and `@pub(pkg)` is `pub(crate)`. As in Rust,
-something in the parentheses only ever *narrows* `@pub`. A library's surface is
+something in the parentheses only ever _narrows_ `@pub`. A library's surface is
 its `@pub` declarations; `@pub(pkg)` is for the helper that two of your own
 modules share and nobody else should.
 
@@ -1535,15 +1535,15 @@ whether or not it is marked.
 `use` brings a dependency's module into scope. Three forms, and the thing to
 remember is that **a qualifier comes only from `as`**:
 
-| Form | Effect |
-|---|---|
-| `use M` | every exported name, unqualified — constructors stay under their type |
-| `use M as C` | `C.name` only — nothing unqualified |
-| `use M (a, b)` | just `a` and `b`, unqualified |
-| `use M as C (a, b)` | both: `C.name`, plus `a` and `b` unqualified |
-| `use M.T` | the type `T`, its constructors written `T.C` |
-| `use M.T (C, D)` | constructors `C` and `D` of `T`, unqualified |
-| `use M.T.*` | every constructor of `T`, unqualified |
+| Form                | Effect                                                                |
+| ------------------- | --------------------------------------------------------------------- |
+| `use M`             | every exported name, unqualified — constructors stay under their type |
+| `use M as C`        | `C.name` only — nothing unqualified                                   |
+| `use M (a, b)`      | just `a` and `b`, unqualified                                         |
+| `use M as C (a, b)` | both: `C.name`, plus `a` and `b` unqualified                          |
+| `use M.T`           | the type `T`, its constructors written `T.C`                          |
+| `use M.T (C, D)`    | constructors `C` and `D` of `T`, unqualified                          |
+| `use M.T.*`         | every constructor of `T`, unqualified                                 |
 
 ```meadow
 use Std.Collections.List              -- everything, unqualified
@@ -1606,11 +1606,11 @@ unicodeWidth = { git = "https://github.com/mcdearman/meadow-unicode-width", vers
 
 A package's **releases** are the tags that read as versions: `v1.2.0`, or
 `1.2.0` without the `v`. `meadow add` takes the newest release there is and
-writes it down, and that entry means *that release, or any later one that does
-not break it*:
+writes it down, and that entry means _that release, or any later one that does
+not break it_:
 
-| written | means |
-| --- | --- |
+| written             | means             |
+| ------------------- | ----------------- |
 | `version = "1.2.0"` | `>=1.2.0, <2.0.0` |
 | `version = "0.3.1"` | `>=0.3.1, <0.4.0` |
 
@@ -1646,10 +1646,10 @@ still say exactly what to take, and a dependency pinned with `rev` cannot move.
 
 **Two versions at once.** Two packages in one build may want releases that
 cannot be met together — `0.1` and `0.2` of the same package. Both are built,
-and each gets the one it asked for. They are then *different packages*: their
+and each gets the one it asked for. They are then _different packages_: their
 types are different types, and a value of one does not pass for the other.
 That is what the version in `Shape (from shapes@0.1.0)` is saying. Anything
-that *can* share a release does: two packages wanting `1.0` and `1.2` both get
+that _can_ share a release does: two packages wanting `1.0` and `1.2` both get
 `1.2`, and the build holds one copy.
 
 ### Workspaces
@@ -1876,16 +1876,16 @@ def main =
 
 The conditions a build knows:
 
-| condition | holds when |
-|---|---|
-| `os = "windows"`, `"linux"`, `"macos"` | the program is built for that system |
-| `arch = "x86_64"`, `"aarch64"` | …for that processor (`--target` sets it for an executable) |
-| `family = "unix"`, `"windows"`, or bare `unix` / `windows` | …for that family of systems |
-| `profile = "debug"`, `"release"`, or bare `debug` / `release` | the build profile |
-| `backend = "vm"`, `"jit"`, `"aot"`, `"cek"` | what runs the program |
-| `opt_level = "0"`, `"1"`, `"2"` | the optimization level |
-| bare `test` | `meadow test` is building it |
-| any other name, or `name = "value"` | the build turned that flag on |
+| condition                                                     | holds when                                                 |
+| ------------------------------------------------------------- | ---------------------------------------------------------- |
+| `os = "windows"`, `"linux"`, `"macos"`                        | the program is built for that system                       |
+| `arch = "x86_64"`, `"aarch64"`                                | …for that processor (`--target` sets it for an executable) |
+| `family = "unix"`, `"windows"`, or bare `unix` / `windows`    | …for that family of systems                                |
+| `profile = "debug"`, `"release"`, or bare `debug` / `release` | the build profile                                          |
+| `backend = "vm"`, `"jit"`, `"aot"`, `"cek"`                   | what runs the program                                      |
+| `opt_level = "0"`, `"1"`, `"2"`                               | the optimization level                                     |
+| bare `test`                                                   | `meadow test` is building it                               |
+| any other name, or `name = "value"`                           | the build turned that flag on                              |
 
 `all(…)`, `any(…)` and `not(…)` combine conditions, and several `@cfg`s on one
 declaration must all hold: `@cfg(all(unix, not(test)))`.
@@ -1936,7 +1936,7 @@ type looks like line noise, start here.
 
 The payoff first, because it is the reason to bother: code that talks to the
 world — asks a question, reads a file, looks at the clock, gives up halfway — is
-written *once*, and something outside it decides what "the world" is. The real
+written _once_, and something outside it decides what "the world" is. The real
 filesystem, or a list of strings. The real clock, or the number 500. Nothing is
 written twice and nothing is passed in.
 
@@ -1954,7 +1954,7 @@ parameter through `page` and `banner`, which have no use for it themselves — a
 do it again for every other thing `greeting` might ever need. Or keep it in a
 global, and give up on calling `page` for two different people in one program.
 
-An effect is a third option. `greeting` *asks* for the name, and does not care
+An effect is a third option. `greeting` _asks_ for the name, and does not care
 who answers:
 
 ```meadow
@@ -1988,13 +1988,13 @@ effect Ask { ask : String -> String }
 
 This declares an **effect** called `Ask` with one **operation**, `ask`. The type
 says what the operation takes and what it gives back — here a question in, an
-answer out — but, unlike a function, there is no body. Nothing here says *how*
+answer out — but, unlike a function, there is no body. Nothing here says _how_
 a question is answered.
 
 Calling `ask "name"` is called **performing** the operation. It looks exactly
 like a function call, and to the code calling it, it is one: it takes a
 `String` and evaluates to a `String`. The difference is where the answer comes
-from. The call is a request sent *outwards*, to whichever handler is in charge
+from. The call is a request sent _outwards_, to whichever handler is in charge
 when it runs.
 
 An effect may declare several operations, and may take type parameters the way
@@ -2017,12 +2017,12 @@ handle page () with { ask question k -> k "Ada" }
 the braces list what to do about each operation it performs. One entry is a
 **clause**, and it reads left to right:
 
-| part | meaning |
-|---|---|
-| `ask` | which operation this clause answers |
-| `question` | a pattern for the operation's argument — here `"name"` |
-| `k` | the **continuation**: the rest of the body, waiting for an answer |
-| `k "Ada"` | resume the body, with `"Ada"` as the value `ask "name"` returns |
+| part       | meaning                                                           |
+| ---------- | ----------------------------------------------------------------- |
+| `ask`      | which operation this clause answers                               |
+| `question` | a pattern for the operation's argument — here `"name"`            |
+| `k`        | the **continuation**: the rest of the body, waiting for an answer |
+| `k "Ada"`  | resume the body, with `"Ada"` as the value `ask "name"` returns   |
 
 Everything in that table is ordinary except `k`, which is the subject of the
 next section. In short: when `greeting` performs `ask`, it stops, the clause
@@ -2059,7 +2059,7 @@ def main = log "nobody is listening"
 unhandled effect Log.log
 ```
 
-That is a *run-time* error, and it is the one place the types below do not
+That is a _run-time_ error, and it is the one place the types below do not
 protect you: the type of a top-level `def` does not list what running it
 performs, so nothing checks that `main` handled everything.
 
@@ -2143,8 +2143,8 @@ function in `Std` works with effectful functions for free.
 `k` is the heart of the whole mechanism, so here it is slowly.
 
 Take the body `ask () + 1`. At the moment `ask ()` is performed, the program has
-done some of its work and has some left. What is left is: *take whatever `ask`
-returns, add 1 to it, and finish the `handle`*. Write that leftover work with a
+done some of its work and has some left. What is left is: _take whatever `ask`
+returns, add 1 to it, and finish the `handle`_. Write that leftover work with a
 hole where the answer goes:
 
 ```
@@ -2171,14 +2171,14 @@ looks like this, innermost at the top:
 
 Performing `ask` searches downward for the nearest `handle` that has an `ask`
 clause. The frames above it — everything between the `handle` and the `ask` —
-are lifted off the stack and wrapped up as `k`. Then the clause runs, *in place
-of the whole `handle` expression*. What the clause evaluates to is what the
+are lifted off the stack and wrapped up as `k`. Then the clause runs, _in place
+of the whole `handle` expression_. What the clause evaluates to is what the
 `handle` evaluates to.
 
 Calling `k "Ada"` puts those frames back, with the handler still underneath
 them, and makes `ask "name"` return `"Ada"` inside `greeting`. The body carries
 on from there. When the body finally finishes, its value goes through the
-`return` clause, and *that* is what `k "Ada"` returns to the clause.
+`return` clause, and _that_ is what `k "Ada"` returns to the clause.
 
 That last point decides the order things happen in, so watch it happen:
 
@@ -2213,13 +2213,13 @@ handler: after k
 ```
 
 Read it as a conversation. The body runs until it asks, then pauses. The
-handler runs until it calls `k`, then *it* pauses while the body finishes —
+handler runs until it calls `k`, then _it_ pauses while the body finishes —
 including the `return` clause. Only then does `k 41` return `42` to the handler,
 which prints its last line and makes `42` the value of the whole `handle`.
 
 If you know exceptions, that is the one-sentence summary: **performing an
 operation is throwing an exception that the handler can choose to resume**. The
-jump to the handler is the same. What exceptions cannot do is jump *back*,
+jump to the handler is the same. What exceptions cannot do is jump _back_,
 and `k` is exactly that ability, handed to the handler as a value.
 
 ### What a clause can do with `k`
@@ -2330,7 +2330,7 @@ clause produces `Finished`. That is a generator, a coroutine or an async task,
 depending on who is calling `drive`, and `work` is none of them. It just reports.
 
 **Return a function, and thread a value through it.** If every clause and the
-`return` clause produce a *function*, the `handle` as a whole is a function too,
+`return` clause produce a _function_, the `handle` as a whole is a function too,
 and applying it to a starting value passes that value from one operation to the
 next:
 
@@ -2401,12 +2401,12 @@ def main =
 => 1
 ```
 
-**Handlers are deep.** Resuming `k` puts the body back *with its handler around
-it*, so every later operation in that body goes to the same handler — which is
+**Handlers are deep.** Resuming `k` puts the body back _with its handler around
+it_, so every later operation in that body goes to the same handler — which is
 why `collected` saw both logs, and why `drive` kept getting `Suspended` jobs
 back. Nothing has to reinstall anything.
 
-**A clause runs outside its own handler.** An operation performed *inside* a
+**A clause runs outside its own handler.** An operation performed _inside_ a
 clause goes to the next handler out, not back to the one the clause belongs to,
 so a handler can pass things along:
 
@@ -2521,19 +2521,19 @@ covered under the standard library below.
 with a handler that fakes it — which is the point, since these are exactly the
 things that are otherwise hard to test.
 
-| Module | Operations | Unhandled | Handled with |
-|---|---|---|---|
-| `Std.Ref` (`Mut`) | via `newRef` / `getRef` / `setRef` | real cells | — |
-| `Std.St` (`St s`) | via `stNewRef`, `stNewArray`, … | — | `runSt` |
-| `Std.State` | `get`, `put` | — | `runState`, `evalState`, `execState` |
-| `Std.Console` | `writeOutput`, `readLine` | real stdout and stdin | `withOutput`, `withInput` |
-| `Std.Exn` | `throw` | aborts | `toResult`, `catch`, `withDefault`, `toMaybe` |
-| `Std.Yield` | `yield` | — | everything in `Std.Stream` |
-| `Std.Random` | `nextInt`, `intBetween`, … | real entropy | `withSeed`, `withSeedFrom` |
-| `Std.Time` | `now`, `monotonic`, `sleep` | real clock | `withClock`, `withTickingClock` |
-| `Std.Fs` | `readToString`, `writeString`, … | real filesystem | any `handle` |
-| `Std.Process` | `spawn`, `status`, `argv`, … | real subprocesses | any `handle` |
-| `Std.Test` | `fail` | fails the test | `didFail` |
+| Module            | Operations                         | Unhandled             | Handled with                                  |
+| ----------------- | ---------------------------------- | --------------------- | --------------------------------------------- |
+| `Std.Ref` (`Mut`) | via `newRef` / `getRef` / `setRef` | real cells            | —                                             |
+| `Std.St` (`St s`) | via `stNewRef`, `stNewArray`, …    | —                     | `runSt`                                       |
+| `Std.State`       | `get`, `put`                       | —                     | `runState`, `evalState`, `execState`          |
+| `Std.Console`     | `writeOutput`, `readLine`          | real stdout and stdin | `withOutput`, `withInput`                     |
+| `Std.Exn`         | `throw`                            | aborts                | `toResult`, `catch`, `withDefault`, `toMaybe` |
+| `Std.Yield`       | `yield`                            | —                     | everything in `Std.Stream`                    |
+| `Std.Random`      | `nextInt`, `intBetween`, …         | real entropy          | `withSeed`, `withSeedFrom`                    |
+| `Std.Time`        | `now`, `monotonic`, `sleep`        | real clock            | `withClock`, `withTickingClock`               |
+| `Std.Fs`          | `readToString`, `writeString`, …   | real filesystem       | any `handle`                                  |
+| `Std.Process`     | `spawn`, `status`, `argv`, …       | real subprocesses     | any `handle`                                  |
+| `Std.Test`        | `fail`                             | fails the test        | `didFail`                                     |
 
 Both engines answer an unhandled `Console`, `Fs`, `Process`, `Random` or `Time`
 operation for real, so a test that should not touch the filesystem has to handle
@@ -2563,7 +2563,7 @@ def main = countUp 5
 `countUp : Int -> Int ! { Mut | e }`. There is no handler for `Mut` — it is an
 effect so that it shows up in types, not so that it can be reinterpreted.
 
-That typing also keeps mutation *sound*. Meadow generalizes a binding only when
+That typing also keeps mutation _sound_. Meadow generalizes a binding only when
 its right-hand side is pure — an effect-based value restriction rather than ML's
 syntactic one — so `def r = newRef []` is never given `forall a. Ref [a]`, and the
 classic trick of storing at one type and reading at another does not typecheck.
@@ -2657,7 +2657,7 @@ def main = runState 0 (\() -> let a = tick () in let b = tick () in get ())
 `runState` returns `(value, finalState)`; `evalState` keeps the value, `execState`
 the state. `modify f` is `put (f (get ()))` and `gets f` is `f (get ())`.
 
-Reach for `State` when the state is part of what a computation *means* and you
+Reach for `State` when the state is part of what a computation _means_ and you
 want it out of the signatures; reach for `Mut` when you want a cell with identity,
 or speed.
 
@@ -2703,7 +2703,7 @@ same function covers both the interactive and the exhausted case.
 
 The example in `examples/RockPaperScissors` is the whole point of this in
 practice. It is an interactive terminal game — it prompts, it loops, it keeps a
-tally — and its test plays a *complete game* with no terminal and no entropy
+tally — and its test plays a _complete game_ with no terminal and no entropy
 anywhere near it:
 
 ```meadow
@@ -2947,7 +2947,7 @@ follows `--`, so `meadow run . -- input.txt -v` hands the program
 
 `Std.Test`'s `fail` is an ordinary operation, which is why a failing assertion
 stops the test it is in and nothing else. `didFail` handles it, so you can assert
-that something *should* fail:
+that something _should_ fail:
 
 ```meadow
 use Std.Test (assertEq, didFail)
@@ -3143,7 +3143,7 @@ double 21: expected 43, got 42
 
 The assertions: `assert`, `assertEq`, `assertNeq`, `assertTrue`, `assertFalse`,
 `refuteThat`, `failWith`, plus `didFail` / `assertFails` for checking that
-something *does* fail.
+something _does_ fail.
 
 A test fails by performing `Std.Test`'s effect rather than returning a value, so an
 assertion five calls deep still stops the test and still names itself.
@@ -3164,31 +3164,31 @@ In VS Code, the **▶ Test** link above a `@test` runs exactly that.
 
 ### Commands
 
-| | |
-|---|---|
-| `meadow` | REPL |
-| `meadow run <path>` | build and evaluate `main`, on the VM and its JIT |
-| `meadow run --release <path>` | …optimized, as an executable compiled ahead of time |
-| `meadow run --backend vm\|jit\|aot <path>` | …on the backend named (`--jit` and `--aot` for short) |
-| `meadow run --gc-stats <path>` | …and report what the garbage collector did |
-| `meadow run --gc copying <path>` | …with the copying collector instead of the generational one |
-| `meadow run <path> -- <args>` | …passing `<args>` to the program, which `Process.argv` reads |
-| `meadow exec <image.mbc> [--backend vm\|jit] [-- <args>]` | run a bytecode image, like the one `meadow build` writes |
-| `meadow link <image.mbc> [-o <exe>] [--target <arch>]` | compile a bytecode image into a native executable |
-| `meadow link --emit asm <image.mbc>` | …or into the text of its native code, `<image>.s` |
-| `meadow build <path>` | type-check, link, and write the bytecode image to `target/` |
-| `meadow build --release [--target x86_64] <path>` | …and an executable, under `target/release/native/` |
-| `meadow build --annotations <path>` | …and dump every node's type |
-| `meadow build --emit bytecode,asm <path>` | write text in place of the binaries: `bytecode/<name>.mbc.txt`, `native/<name>.s`; `image` and `exe` are the binaries |
-| `meadow dis [--asm [--target <arch>]] <path>` | print the bytecode the VM runs, or the native code it compiles to |
-| `meadow run --cfg fast --cfg feature=gpu <path>` | …with flags on for `@cfg` ([conditional compilation](#conditional-compilation-cfg)); `run`, `build` and `test` take them |
-| `meadow test [<path>] [<filter>]` | run `@test` functions |
-| `meadow build -p app`, `meadow test --workspace [--exclude app]` | in a [workspace](#workspaces): the members named, or all of them; `run`, `build`, `test` and `dis` take these |
-| `meadow init [--workspace] <path>` | create a package, or a workspace; a package made inside a workspace joins it |
-| `meadow fmt <path>` | re-indent in place |
-| `meadow fmt --check <path>` | report, exit 1 if anything differs |
-| `meadow lsp` | run the language server (editors start this) |
-| `meadow update` | replace the binary with the latest release |
+|                                                                  |                                                                                                                          |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `meadow`                                                         | REPL                                                                                                                     |
+| `meadow run <path>`                                              | build and evaluate `main`, on the VM and its JIT                                                                         |
+| `meadow run --release <path>`                                    | …optimized, as an executable compiled ahead of time                                                                      |
+| `meadow run --backend vm\|jit\|aot <path>`                       | …on the backend named (`--jit` and `--aot` for short)                                                                    |
+| `meadow run --gc-stats <path>`                                   | …and report what the garbage collector did                                                                               |
+| `meadow run --gc copying <path>`                                 | …with the copying collector instead of the generational one                                                              |
+| `meadow run <path> -- <args>`                                    | …passing `<args>` to the program, which `Process.argv` reads                                                             |
+| `meadow exec <image.mbc> [--backend vm\|jit] [-- <args>]`        | run a bytecode image, like the one `meadow build` writes                                                                 |
+| `meadow link <image.mbc> [-o <exe>] [--target <arch>]`           | compile a bytecode image into a native executable                                                                        |
+| `meadow link --emit asm <image.mbc>`                             | …or into the text of its native code, `<image>.s`                                                                        |
+| `meadow build <path>`                                            | type-check, link, and write the bytecode image to `target/`                                                              |
+| `meadow build --release [--target x86_64] <path>`                | …and an executable, under `target/release/native/`                                                                       |
+| `meadow build --annotations <path>`                              | …and dump every node's type                                                                                              |
+| `meadow build --emit bytecode,asm <path>`                        | write text in place of the binaries: `bytecode/<name>.mbc.txt`, `native/<name>.s`; `image` and `exe` are the binaries    |
+| `meadow dis [--asm [--target <arch>]] <path>`                    | print the bytecode the VM runs, or the native code it compiles to                                                        |
+| `meadow run --cfg fast --cfg feature=gpu <path>`                 | …with flags on for `@cfg` ([conditional compilation](#conditional-compilation-cfg)); `run`, `build` and `test` take them |
+| `meadow test [<path>] [<filter>]`                                | run `@test` functions                                                                                                    |
+| `meadow build -p app`, `meadow test --workspace [--exclude app]` | in a [workspace](#workspaces): the members named, or all of them; `run`, `build`, `test` and `dis` take these            |
+| `meadow init [--workspace] <path>`                               | create a package, or a workspace; a package made inside a workspace joins it                                             |
+| `meadow fmt <path>`                                              | re-indent in place                                                                                                       |
+| `meadow fmt --check <path>`                                      | report, exit 1 if anything differs                                                                                       |
+| `meadow lsp`                                                     | run the language server (editors start this)                                                                             |
+| `meadow update`                                                  | replace the binary with the latest release                                                                               |
 
 `--release` and `--debug` select a profile. Release requires every `match` to
 be exhaustive, compiles a `match` to a decision tree, and copies generic code
@@ -3215,7 +3215,7 @@ tokens.
 
 **Completion after `|>`** is the one worth knowing about. Where an
 object-oriented language offers a menu after a full stop, Meadow can offer one
-after a pipe, and for the same reason: by then it knows what the value *is*.
+after a pipe, and for the same reason: by then it knows what the value _is_.
 
 ```meadow
 def main = [1, 2, 3] |>
@@ -3225,8 +3225,8 @@ def main = [1, 2, 3] |>
 The list is what that value can be piped into, so nothing that wants another
 type is in it. Two shapes fit, and both are offered:
 
-* `x |> f` is `f x`, so a function whose **first** parameter takes the value;
-* a library written to chain takes its subject **last** —
+- `x |> f` is `f x`, so a function whose **first** parameter takes the value;
+- a library written to chain takes its subject **last** —
   `table |> setWidth 40` is `setWidth 40 table` — so a function whose last
   parameter takes it, offered with holes for the arguments that come first.
 
@@ -3236,7 +3236,7 @@ before something that does, since a pipeline is usually a chain of plain
 transformations; then what this file already uses; then what the standard
 library's own source uses most, which is counted rather than curated — `map`
 and `foldl` are written constantly there, `splitAt` hardly ever. Whether the
-value goes in first or last is the *last* thing considered: both are ordinary,
+value goes in first or last is the _last_ thing considered: both are ordinary,
 so ranking by it would bury `map`, `filter` and `foldl` under every function
 that happens to take its argument the other way round.
 
@@ -3271,7 +3271,7 @@ nothing: writing it would not compile.
 A dot after a value — `point.` — selects a field. That is a question about the
 value's type rather than about a path, and nothing is offered there yet.
 
-Only names you can write *here* are offered. A function that would need a `use`
+Only names you can write _here_ are offered. A function that would need a `use`
 first is left out rather than inserted as something that does not compile.
 
 A file inside a package is analysed as part of that package, so a `use` of a
@@ -3287,14 +3287,14 @@ falls back to plain syntax highlighting if the executable is not on your `PATH`.
 
 ### The formatter
 
-`meadow fmt` is an *indenter*, not a pretty-printer: it fixes leading and trailing
+`meadow fmt` is an _indenter_, not a pretty-printer: it fixes leading and trailing
 whitespace, tabs and blank-line runs, and never moves a token to another line.
 Comments therefore survive exactly as written, and since the grammar is not
 layout-sensitive, formatting cannot change what a program means.
 
 Indentation follows structure — brackets, `match` arms lining up with their
 `match`, `then`/`else` with their `if`, `in` with its `let`, two units for an arm
-body on its own line. A line that merely *continues* the expression above it keeps
+body on its own line. A line that merely _continues_ the expression above it keeps
 the column you chose, so deliberate alignment survives.
 
 ---
@@ -3303,19 +3303,19 @@ the column you chose, so deliberate alignment survives.
 
 ### Operators, loosest to tightest
 
-| Operators | |
-|---|---|
-| `<\|` | apply, right-associative |
-| `\|>` | pipe |
-| `or` | short-circuit |
-| `and` | short-circuit |
-| `==` `!=` `<` `>` `<=` `>=` (and `<.` `>.` `<=.` `>=.`) | comparison |
-| `::` `++` | cons, string concatenation; right-associative |
-| `+` `-` (and `+.` `-.`), `<<` `>>` `>>>` | |
-| `*` `/` `%` (and `*.` `/.`) | |
-| `^` | power, right-associative |
-| `-` (prefix) | negation |
-| *juxtaposition* | function application, tightest |
+| Operators                                               |                                               |
+| ------------------------------------------------------- | --------------------------------------------- |
+| `<\|`                                                   | apply, right-associative                      |
+| `\|>`                                                   | pipe                                          |
+| `or`                                                    | short-circuit                                 |
+| `and`                                                   | short-circuit                                 |
+| `==` `!=` `<` `>` `<=` `>=` (and `<.` `>.` `<=.` `>=.`) | comparison                                    |
+| `::` `++`                                               | cons, string concatenation; right-associative |
+| `+` `-` (and `+.` `-.`), `<<` `>>` `>>>`                |                                               |
+| `*` `/` `%` (and `*.` `/.`)                             |                                               |
+| `^`                                                     | power, right-associative                      |
+| `-` (prefix)                                            | negation                                      |
+| _juxtaposition_                                         | function application, tightest                |
 
 ### Always in scope
 
@@ -3371,7 +3371,7 @@ built on it and is worth reading as a worked example.
 - Each module of a package is its own namespace; a sibling's names come by `use`.
 - Exhaustiveness is only checked under `--release`.
 - `def` takes no parameters — `def f x = ...` is a parse error; use `fun`.
-- Selecting a field (`p.x`) or updating one (`{ p | x = 1 }`) of a *nominal*
+- Selecting a field (`p.x`) or updating one (`{ p | x = 1 }`) of a _nominal_
   record needs `p`'s type known there: give the function a signature, annotate
   `(p : Point)`, or match.
 - A signature has to be as general as it says: `fun f : a -> a` cannot add one.

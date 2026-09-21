@@ -3,7 +3,7 @@
 Seven tasks, eight languages, one program each. Four of the tasks are
 single-threaded and three use every core the machine has.
 
-This is not `benches/`. That directory times Meadow against *itself* — the
+This is not `benches/`. That directory times Meadow against _itself_ — the
 bytecode VM against the CEK machine — and is the right tool for asking whether
 a change to the compiler helped. This directory asks a different and less
 comfortable question: given a task, how long does Meadow take compared to the
@@ -54,15 +54,15 @@ and Node's 56ms are in every number in their columns.
 
 ## The tasks
 
-| | task | what it is for |
-|---|---|---|
-| | `fib` | recursive calls and nothing else: `fib 32`, 64-bit integers, no allocation |
-| | `binarytrees` | allocation and collection: 67 million short-lived nodes, one long-lived tree |
-| | `matmul` | 256×256 double matrix multiply, `ikj` order: flat arrays and tight loops |
-| | `wordfreq` | a 3MB file, 400k words, a hash map and a sort |
-| ⇉ | `mandelbrot` | data parallelism: a 2000×2000 grid of independent float work |
-| ⇉ | `contention` | eight threads moving money between sixteen accounts, atomically |
-| ⇉ | `pipeline` | message passing: four producers, one channel, 200k messages |
+|     | task          | what it is for                                                               |
+| --- | ------------- | ---------------------------------------------------------------------------- |
+|     | `fib`         | recursive calls and nothing else: `fib 32`, 64-bit integers, no allocation   |
+|     | `binarytrees` | allocation and collection: 67 million short-lived nodes, one long-lived tree |
+|     | `matmul`      | 256×256 double matrix multiply, `ikj` order: flat arrays and tight loops     |
+|     | `wordfreq`    | a 3MB file, 400k words, a hash map and a sort                                |
+| ⇉   | `mandelbrot`  | data parallelism: a 2000×2000 grid of independent float work                 |
+| ⇉   | `contention`  | eight threads moving money between sixteen accounts, atomically              |
+| ⇉   | `pipeline`    | message passing: four producers, one channel, 200k messages                  |
 
 A few of these deserve a note about why they are shaped as they are.
 
@@ -97,19 +97,19 @@ still has to produce the same number.
 
 ## The languages
 
-| language | how it is built |
-|---|---|
-| Meadow | `meadow build --release` — `-O2`, compiled ahead of time to a native executable |
-| Rust | `rustc -C opt-level=3`, what `cargo build --release` uses |
-| C | `cc -O3 -ffp-contract=off` — `-O3` to match Rust's `opt-level=3`; `-ffp-contract=off` so `matmul` measures the loop and not who emits a fused multiply-add |
-| Go | `go build` |
-| Haskell | `ghc -O2 -threaded -with-rtsopts=-N` |
-| Java | `javac`, default JVM settings |
-| OCaml | `ocamlopt -O3`, native code |
-| MLton | `mlton`, whole-program compilation |
-| Koka | `koka -O2`, Perceus reference counting |
-| Python | CPython, no flags |
-| JavaScript | Node, no flags |
+| language   | how it is built                                                                                                                                            |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Meadow     | `meadow build --release` — `-O2`, compiled ahead of time to a native executable                                                                            |
+| Rust       | `rustc -C opt-level=3`, what `cargo build --release` uses                                                                                                  |
+| C          | `cc -O3 -ffp-contract=off` — `-O3` to match Rust's `opt-level=3`; `-ffp-contract=off` so `matmul` measures the loop and not who emits a fused multiply-add |
+| Go         | `go build`                                                                                                                                                 |
+| Haskell    | `ghc -O2 -threaded -with-rtsopts=-N`                                                                                                                       |
+| Java       | `javac`, default JVM settings                                                                                                                              |
+| OCaml      | `ocamlopt -O3`, native code                                                                                                                                |
+| MLton      | `mlton`, whole-program compilation                                                                                                                         |
+| Koka       | `koka -O2`, Perceus reference counting                                                                                                                     |
+| Python     | CPython, no flags                                                                                                                                          |
+| JavaScript | Node, no flags                                                                                                                                             |
 
 OCaml, MLton and Koka are here because they are the company Meadow is trying to
 keep: compiled, garbage-collected or reference-counted functional languages
@@ -135,21 +135,21 @@ measured here, and `benches/` is where those get compared.
 On a 10-core Apple silicon machine, macOS 26.3.1, minimum of five runs. The
 figure in brackets is how many times slower than the fastest in that row.
 
-| task | meadow | rust | c | go | haskell | java | ocaml | koka | python | js |
-|---|---|---|---|---|---|---|---|---|---|---|
-| fib | 26ms (2.9×) | 9ms (1.0×) | **9ms** | 10ms (1.1×) | 25ms (2.9×) | 37ms (4.2×) | 12ms (1.3×) | 11ms (1.3×) | 219ms (25.1×) | 77ms (8.8×) |
-| binarytrees | 1.39s (4.5×) | 1.60s (5.2×) | 1.64s (5.3×) | 819ms (2.6×) | 427ms (1.4×) | **310ms** | 560ms (1.8×) | 346ms (1.1×) | 5.70s (18.4×) | 824ms (2.7×) |
-| matmul | 14ms (2.8×) | 6ms (1.3×) | **5ms** | 13ms (2.7×) | 29ms (6.2×) | 39ms (8.2×) | 25ms (5.2×) | 201ms (42.1×) | 758ms (159.2×) | 78ms (16.4×) |
-| wordfreq | 384ms (32.0×) | 13ms (1.0×) | **12ms** | 16ms (1.4×) | 132ms (11.0×) | 132ms (11.0×) | 52ms (4.4×) | — | 51ms (4.3×) | 114ms (9.5×) |
-| ⇉ mandelbrot | 83ms (2.6×) | **32ms** | 48ms (1.5×) | 32ms (1.0×) | 77ms (2.4×) | 87ms (2.7×) | — | — | 1.20s (37.8×) | 127ms (4.0×) |
-| ⇉ contention | 483ms (96.6×) | 6ms (1.1×) | **5ms** | 17ms (3.4×) | 38ms (7.6×) | 60ms (11.8×) | — | — | 59ms (11.6×) | 133ms (26.1×) |
-| ⇉ pipeline | 53ms (3.1×) | 19ms (1.1×) | 31ms (1.8×) | **17ms** | 822ms (49.4×) | 62ms (3.7×) | — | — | 175ms (10.5×) | 154ms (9.3×) |
-| _startup_ | 4ms | 2ms | 2ms | 4ms | 17ms | 30ms | 4ms | — | 19ms | 55ms |
+| task         | meadow        | rust         | c            | go           | haskell       | java          | ocaml        | koka          | python         | js            |
+| ------------ | ------------- | ------------ | ------------ | ------------ | ------------- | ------------- | ------------ | ------------- | -------------- | ------------- |
+| fib          | 26ms (2.9×)   | 9ms (1.0×)   | **9ms**      | 10ms (1.1×)  | 25ms (2.9×)   | 37ms (4.2×)   | 12ms (1.3×)  | 11ms (1.3×)   | 219ms (25.1×)  | 77ms (8.8×)   |
+| binarytrees  | 1.39s (4.5×)  | 1.60s (5.2×) | 1.64s (5.3×) | 819ms (2.6×) | 427ms (1.4×)  | **310ms**     | 560ms (1.8×) | 346ms (1.1×)  | 5.70s (18.4×)  | 824ms (2.7×)  |
+| matmul       | 14ms (2.8×)   | 6ms (1.3×)   | **5ms**      | 13ms (2.7×)  | 29ms (6.2×)   | 39ms (8.2×)   | 25ms (5.2×)  | 201ms (42.1×) | 758ms (159.2×) | 78ms (16.4×)  |
+| wordfreq     | 384ms (32.0×) | 13ms (1.0×)  | **12ms**     | 16ms (1.4×)  | 132ms (11.0×) | 132ms (11.0×) | 52ms (4.4×)  | —             | 51ms (4.3×)    | 114ms (9.5×)  |
+| ⇉ mandelbrot | 83ms (2.6×)   | **32ms**     | 48ms (1.5×)  | 32ms (1.0×)  | 77ms (2.4×)   | 87ms (2.7×)   | —            | —             | 1.20s (37.8×)  | 127ms (4.0×)  |
+| ⇉ contention | 483ms (96.6×) | 6ms (1.1×)   | **5ms**      | 17ms (3.4×)  | 38ms (7.6×)   | 60ms (11.8×)  | —            | —             | 59ms (11.6×)   | 133ms (26.1×) |
+| ⇉ pipeline   | 53ms (3.1×)   | 19ms (1.1×)  | 31ms (1.8×)  | **17ms**     | 822ms (49.4×) | 62ms (3.7×)   | —            | —             | 175ms (10.5×)  | 154ms (9.3×)  |
+| _startup_    | 4ms           | 2ms          | 2ms          | 4ms          | 17ms          | 30ms          | 4ms          | —             | 19ms           | 55ms          |
 
 **Absolute times move about 20% between runs of the whole suite on this
 machine**, so do not read one run against another: this one has Rust, C and Go
 all slower than the previous one by roughly that much, which says the machine
-was busier and nothing about any compiler. Ratios *within* a row are taken in
+was busier and nothing about any compiler. Ratios _within_ a row are taken in
 the same conditions and are the trustworthy part. Where a change to Meadow is
 claimed below, it was measured by alternating two compilers back to back on an
 otherwise idle machine rather than by comparing two runs of this table.
@@ -158,15 +158,15 @@ Where Meadow was when this suite was written, and where it is now, after
 the rounds of work [What was fixed](#what-was-fixed) describes -- measured the
 same way, on the same tasks:
 
-| task | at the start | now | faster by |
-|---|---|---|---|
-| fib | 50ms | **26ms** | 1.9× |
-| binarytrees | 3.77s | **1.39s** | 2.7× |
-| matmul | 2.79s | **14ms** | 199× |
-| wordfreq | 1.44s | **384ms** | 3.8× |
-| mandelbrot | 433ms | **83ms** | 5.2× |
-| contention | 683ms | **483ms** | 1.4× |
-| pipeline | 56ms | 53ms | — |
+| task        | at the start | now       | faster by |
+| ----------- | ------------ | --------- | --------- |
+| fib         | 50ms         | **26ms**  | 1.9×      |
+| binarytrees | 3.77s        | **1.39s** | 2.7×      |
+| matmul      | 2.79s        | **14ms**  | 199×      |
+| wordfreq    | 1.44s        | **384ms** | 3.8×      |
+| mandelbrot  | 433ms        | **83ms**  | 5.2×      |
+| contention  | 683ms        | **483ms** | 1.4×      |
+| pipeline    | 56ms         | 53ms      | —         |
 
 `contention` and `pipeline` move ±20% between runs of the same binary, so
 nothing under that is claimed for them.
@@ -215,7 +215,7 @@ and `St.set` are primitives, and native code did not implement primitives: it
 handed them back to the interpreter through `meadow_exec`, and sampling put 62%
 of the run inside that call. [The third round](#the-third-round-the-native-back-end)
 compiled them inline, and the same sampling put 0.6% there — and the benchmark
-barely moved, because `St.get a i` was still a *call*: a one-line wrapper around
+barely moved, because `St.get a i` was still a _call_: a one-line wrapper around
 the primitive, and a call from a machine with no call stack is a continuation
 built, a jump and a return through the generic `invoke`. Three of those per
 element. [The fifth round](#the-fifth-round-registers-and-the-inliner) inlines
@@ -237,7 +237,7 @@ GHC's runs the identical algorithm in 38ms. (This row moves ±20% between runs o
 the same binary; 403ms and 556ms are both this compiler.) A profile of it is mostly
 `__psynch_mutexwait`, which looks like lock overhead and is not: two attempts to
 remove it — spinning before waiting, and an `RwLock` per cell so readers need
-not take turns — are both measurably *worse*, and the note in `rts/src/stm.rs`
+not take turns — are both measurably _worse_, and the note in `rts/src/stm.rs`
 records the numbers. The transactions really do conflict. What is left is the
 per-transaction machinery: `World::read`, `World::region_for_write` and
 `World::commit` each allocate, and `Std.Stm` runs the control as effect
@@ -288,7 +288,7 @@ plan is made from the bytecode: the induction register and its bound, which
 registers are the arrays, that every index is the induction register plus
 something invariant (stride one, so the element after is the next word), and
 that nothing is carried from one iteration to the next through a register.
-Before the loop, a *preheader* checks once what the scalar code checked on
+Before the loop, a _preheader_ checks once what the scalar code checked on
 every access -- that each array is the kind expected with `Float` elements,
 that every index the whole loop will use is inside its array (the body's own
 index arithmetic, run at the first and last values of the induction
@@ -318,8 +318,8 @@ closure: a call, a frame and a return per iteration, for a body of a few
 instructions. The inliner now **specialises** such a definition at a call
 that gives a lambda for a parameter it passes through unchanged -- the
 lambda substituted, the parameter dropped from the recursion -- and, where
-every recursive call is a tail call, the copy is a *join point that jumps to
-itself*: lowering makes that a block and a jump, and the loop's body is the
+every recursive call is a tail call, the copy is a _join point that jumps to
+itself_: lowering makes that a block and a jump, and the loop's body is the
 lambda's body. `while` and the folds qualify the same way. The simplifier
 also applies a lambda where it stands (`(\i -> e) x` is `let i = x in e`),
 which is what lets the substituted lambda disappear. `matmul`'s inner loop
@@ -350,10 +350,10 @@ Most were one thing. A closure or a frame with more than eight captures has a
 header longer than two words (the field descriptors no longer fit the second
 one), and native code neither built such objects nor entered them: every
 `insertWith` continuation captured ten to twelve values, so its allocation
-*and* its invocation went to the interpreter. The native allocator, the frame
+_and_ its invocation went to the interpreter. The native allocator, the frame
 push, the general `invoke` path and the method entries now handle a header of
 any length. With that, `getRef`, the array and string lengths as thin steps,
-a bare store for a reference into a *young* array (no barrier is needed for
+a bare store for a reference into a _young_ array (no barrier is needed for
 one), and `String.split` cutting into an array of the right size instead of
 growing a persistent vector a piece at a time, the count is 2.7 million:
 seven primitive calls per word, each one real work in Rust. That is the
@@ -397,7 +397,7 @@ checked at when the value's own type says nothing.
 
 Two changes, one on each side of the bytecode.
 
-Native code now does its arithmetic *in* the machine registers a function pins,
+Native code now does its arithmetic _in_ the machine registers a function pins,
 instead of moving each operand into `x9`, operating there and moving the result
 back: `add x3, x4, x5` where there were four instructions. A bytecode register
 the function only ever does float arithmetic on is pinned to one of
@@ -445,13 +445,13 @@ checks the object's kind and copies its captures into that file one word at a
 time; and a step counter kept per instruction for preemption. None of that is
 touched by where the continuation lives. The stack is the prerequisite for
 fixing it — a return that leaves its value in a machine register needs a frame
-to return *to* — but it is not the fix.
+to return _to_ — but it is not the fix.
 
 ### The third round: the native back end
 
 Everything here came out of one question, answered by measurement instead of
-inference: *which instructions does native code hand back to the interpreter,
-and how often?* Static counts said 3–9%. A sampler on the executable said
+inference: _which instructions does native code hand back to the interpreter,
+and how often?_ Static counts said 3–9%. A sampler on the executable said
 `matmul` spent 62% of its time in `meadow_exec`. A per-pc counter in the
 runtime then said exactly which ones.
 
@@ -483,7 +483,7 @@ instruction each on every machine this targets and now are here too, with
 `Ushr`'s folded-constant form.
 
 **Two bugs the tests caught.** The block table is a `Vec` that moves as blocks
-are added, and it was republished only when the *nursery* moved: `wordfreq`
+are added, and it was republished only when the _nursery_ moved: `wordfreq`
 read a freed copy and crashed. It is now republished at the single point
 control returns to native code, `meadow_exec`, with a regression test that
 promotes trees and closures and reads them natively. And a wrong encoding for
@@ -557,7 +557,7 @@ cheaper if the back end can see it.
 
 **The nursery was 256 KB** (`rts/src/heap.rs`), so `binarytrees` collected about
 eight thousand times. It is now 2 MB. That is a real trade and not a free win:
-a nursery collection costs what *survives* it, so a bigger nursery buys
+a nursery collection costs what _survives_ it, so a bigger nursery buys
 throughput and spends tail latency.
 
 ```text
@@ -576,7 +576,7 @@ recopied at every collection instead of being promoted out of it.
 
 **Every collection zeroed the whole to-space.** A copying collector writes every
 slot below `top` and nothing reads above it, so the memset was pure loss — and it
-made a pause cost what the nursery *is* rather than what survived it. Removing it
+made a pause cost what the nursery _is_ rather than what survived it. Removing it
 cut median pause time by a quarter.
 
 **Hashing allocated twice per call.** `Vm::hash_value` built a `Vec` work stack
@@ -589,8 +589,8 @@ allocations it did not need.
 **A top-level `def` of a literal was a jump.** A mention of a global lowers to a
 jump to its definition, and lowering only fuses a comparison into the branch
 that tests it when the comparison cannot transfer control. So a bound written
-`def limit : Int = 100` and read in a loop condition cost *two heap-allocated
-continuations and an unfused compare per iteration*, where the same loop over a
+`def limit : Int = 100` and read in a loop condition cost _two heap-allocated
+continuations and an unfused compare per iteration_, where the same loop over a
 parameter cost a single `bri`. `globals::inline_literals` puts the literal at
 the mention. This was the largest single change in the suite's history, and it
 moved every benchmark that reads a size or a bound from a top-level `def`.

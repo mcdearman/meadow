@@ -234,3 +234,63 @@ pub fn parse_ast(src: &str) -> String {
         None => format!("parse failed: {errs:?}"),
     }
 }
+
+// --- paths, spelled exactly ------------------------------------------------------
+
+/// Does `path` name what is on disk **exactly**, letter for letter?
+///
+/// macOS and Windows find `layers` where the directory is `Layers`; Linux,
+/// which is what CI runs, does not. A test that opens a fixture through a
+/// path one letter off therefore passes on the machine it was written on and
+/// fails everywhere else -- so the tests ask this first, and fail the same
+/// way on every platform. Each component is looked for in its parent's
+/// listing, where a name is what it is whatever the filesystem would accept.
+pub fn exact_case(path: &std::path::Path) -> Result<(), String> {
+    use std::path::{Component, PathBuf};
+    let mut at = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir().map_err(|e| e.to_string())?
+    };
+    for c in path.components() {
+        match c {
+            Component::Normal(name) => {
+                let listed: Vec<std::ffi::OsString> = std::fs::read_dir(&at)
+                    .map_err(|e| format!("{}: {e}", at.display()))?
+                    .filter_map(|e| e.ok().map(|e| e.file_name()))
+                    .collect();
+                if !listed.iter().any(|n| n == name) {
+                    let near = listed.iter().find(|n| {
+                        n.to_string_lossy().to_lowercase() == name.to_string_lossy().to_lowercase()
+                    });
+                    return Err(match near {
+                        Some(n) => format!(
+                            "`{}` is spelled `{}` on disk, in {}: this passes on a \
+                             case-insensitive filesystem and fails on Linux",
+                            name.to_string_lossy(),
+                            n.to_string_lossy(),
+                            at.display()
+                        ),
+                        None => format!("no `{}` in {}", name.to_string_lossy(), at.display()),
+                    });
+                }
+                at.push(name);
+            }
+            Component::ParentDir => {
+                at.pop();
+            }
+            Component::CurDir => {}
+            other => at.push(other.as_os_str()),
+        }
+    }
+    Ok(())
+}
+
+/// The workspace fixture `name`, which has to be spelled as it is on disk.
+pub fn fixture(name: &str) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(format!("tests/fixtures/workspace/{name}"));
+    if let Err(e) = exact_case(&path) {
+        panic!("{e}");
+    }
+    path
+}

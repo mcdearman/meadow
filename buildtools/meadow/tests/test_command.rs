@@ -8,11 +8,11 @@
 use meadow::{Options, linker::Linker, pipeline, test};
 use std::path::Path;
 
-const WORKSPACE: &str = "tests/fixtures/workspace";
+mod common;
 
 /// Build the `effects` fixture and run its tests. Returns `(name, failure)` pairs.
 fn run_fixture() -> Vec<(String, Option<String>)> {
-    let out = pipeline::build(Path::new(&format!("{WORKSPACE}/effects")), Options::debug());
+    let out = pipeline::build(&common::fixture("Effects"), Options::debug());
     assert!(
         out.diagnostics.is_empty(),
         "fixture should compile cleanly: {:?}",

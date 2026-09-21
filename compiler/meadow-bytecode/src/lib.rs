@@ -27,17 +27,19 @@
 //! the start to find boundaries. And stepping *backwards* is well defined, which
 //! variable-width encodings make awkward — see `meadow_rts::journal`.
 //!
-//! # There is no call stack
+//! # There is no `call`
 //!
 //! The strangest thing about this instruction set, and the one that comes
 //! straight from the IR above it: there is no `call`, no `ret`, and no frame
 //! pointer. A closure, a continuation and a handler are all the same kind of
-//! heap object, and entering one ([`Op::Invoke`]) rebuilds the register file and
+//! object, and entering one ([`Op::Invoke`]) rebuilds the register file and
 //! jumps. Returning from a function *is* invoking the continuation it was given.
 //!
-//! So the machine's whole state is a program counter, one flat register file, a
-//! heap, and a stack of installed handlers. Recursion does not grow anything the
-//! VM owns; it grows the heap, which is collected.
+//! The continuation of a call that is not a tail call is made by [`Op::Frame`]:
+//! laid out as a closure, but written to the thread's frame stack -- linked
+//! chunks the heap owns -- and popped when the function returns through it.
+//! So the machine's whole state is a program counter, one flat register file
+//! and a heap, and recursion grows the frame stack rather than the machine's.
 
 pub mod image;
 

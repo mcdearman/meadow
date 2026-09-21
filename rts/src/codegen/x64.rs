@@ -27,6 +27,7 @@ const PIN_REGS: [u8; 5] = [8, 9, 10, 11, 15];
 
 // Condition codes, as the low nibble of `jcc` and `setcc`.
 const CC_BE: u8 = 0x6;
+const CC_B: u8 = 0x2;
 const CC_AE: u8 = 0x3;
 const CC_E: u8 = 0x4;
 const CC_NE: u8 = 0x5;
@@ -309,6 +310,53 @@ impl Asm {
         self.bytes(&[0x40, 0x0F, 0xB6, 0xCE]); // movzx ecx, sil
     }
 
+    /// `reg = ` a thin step's operand.
+    fn thin_operand(&mut self, reg: u8, src: thin::Src) {
+        match src {
+            thin::Src::Reg(r) => self.get(reg, r as u32),
+            thin::Src::Tmp(t) => self.load(reg, R12, Self::thin_slot(t)),
+            thin::Src::Imm(w) => self.imm(reg, w),
+        }
+    }
+
+    /// Temporary `t = reg`.
+    fn thin_put(&mut self, t: u8, reg: u8) {
+        self.save(reg, R12, Self::thin_slot(t));
+    }
+
+    /// Where temporary `t` of a run of steps lives: see [`Emit::steps`].
+    fn thin_slot(t: u8) -> u32 {
+        (crate::vm::SCRATCH as u32 + t as u32) * 8
+    }
+
+    /// `rax >>= n`, unsigned.
+    fn thin_shr_rax(&mut self, n: u32) {
+        debug_assert!(n < 64);
+        if n != 0 {
+            self.bytes(&[0x48, 0xC1, 0xE8, n as u8]); // shr rax, n
+        }
+    }
+
+    /// `rdx = ` the slot address in `rax`, as a machine address, through the
+    /// block tables: the generation's table, the block's first slot, and the
+    /// slot's offset in it. `rax` is left alone; `rsi` is not.
+    fn thin_where(&mut self) {
+        use super::addr::*;
+        self.bytes(&[0x48, 0x89, 0xC6]); // mov rsi, rax
+        self.bytes(&[0x48, 0xC1, 0xEE, GEN_SHIFT as u8]); // shr rsi, 30
+        self.bytes(&[0x48, 0x8B, 0x94, 0xF3]); // mov rdx, [rbx + rsi*8 + TABLES]
+        self.bytes(&layout::TABLES.to_le_bytes());
+        self.bytes(&[0x48, 0x89, 0xC6]); // mov rsi, rax
+        self.bytes(&[0x48, 0xC1, 0xEE, BLOCK_SHIFT as u8]); // shr rsi, 13
+        self.bytes(&[0x81, 0xE6]); // and esi, BLOCK_MASK
+        self.bytes(&(BLOCK_MASK as u32).to_le_bytes());
+        self.bytes(&[0x48, 0x8B, 0x14, 0xF2]); // mov rdx, [rdx + rsi*8]
+        self.bytes(&[0x89, 0xC6]); // mov esi, eax
+        self.bytes(&[0x81, 0xE6]); // and esi, SLOT_MASK
+        self.bytes(&(SLOT_MASK as u32).to_le_bytes());
+        self.bytes(&[0x48, 0x8D, 0x14, 0xF2]); // lea rdx, [rdx + rsi*8]
+    }
+
     /// `rdi = rsi >> 32`: the object's length.
     fn length(&mut self) {
         self.bytes(&[0x48, 0x89, 0xF7, 0x48, 0xC1, 0xEF, 0x20]);
@@ -466,25 +514,93 @@ impl Emit for Asm {
         }
     }
 
-    /// Not implemented here: every run goes straight to `slow`, which is the
-    /// interpreter, which is where these instructions went before the thin
-    /// layer existed. So x86-64 is exactly as correct and exactly as fast as
-    /// it was, and aarch64 is faster.
-    ///
-    /// Writing it is **one method**, and then every expansion works here too --
-    /// that is the whole point of the layer. What it needs, against the helpers
-    /// already in this file: `add`, `and` and `cmp` between two registers
-    /// (`REX.W 01 /r`, `21 /r`, `39 /r`), `shr` by an immediate
-    /// (`REX.W C1 /5 ib`), and a heap load, which is `load(dst, base, 0)` after
-    /// the slot has been shifted and added into a register -- no SIB needed.
-    /// `jcc` and the condition inversion are already here.
-    ///
-    /// It is left undone because it cannot be *run* on the machine this was
-    /// written on, and an instruction encoded wrong here would corrupt a heap
-    /// quietly rather than fail loudly. `codegen::thin`'s tests check the
-    /// expansions and say nothing about the encoding of them.
-    fn steps(&mut self, _run: &[thin::Step], slow: Label) {
-        self.jump(slow);
+    /// A run of thin steps. This architecture has five registers to spare and
+    /// a run may want five temporaries besides its operands, so a temporary
+    /// lives in the scratch slots past the register file -- where `invoke`
+    /// parks arguments, and which nothing reads between instructions -- and
+    /// each step works in `rax`, `rcx` and `rdx`. A store and the load after
+    /// it are forwarded, and either is a small fraction of the round trip
+    /// through the interpreter this replaces.
+    fn steps(&mut self, run: &[thin::Step], slow: Label) {
+        use thin::Step;
+        const RDX: u8 = 2;
+        debug_assert!(thin::temporaries(run) <= thin::TEMPORARIES);
+        for s in run {
+            match *s {
+                Step::Set(t, src) => {
+                    self.thin_operand(RAX, src);
+                    self.thin_put(t, RAX);
+                }
+                Step::Add(t, a, b) => {
+                    self.thin_operand(RAX, a);
+                    self.thin_operand(RCX, b);
+                    self.bytes(&[0x48, 0x01, 0xC8]); // add rax, rcx
+                    self.thin_put(t, RAX);
+                }
+                Step::And(t, a, mask) => {
+                    self.thin_operand(RAX, a);
+                    self.imm(RCX, mask);
+                    self.bytes(&[0x48, 0x21, 0xC8]); // and rax, rcx
+                    self.thin_put(t, RAX);
+                }
+                Step::Shr(t, a, n) => {
+                    self.thin_operand(RAX, a);
+                    self.thin_shr_rax(n);
+                    self.thin_put(t, RAX);
+                }
+                Step::Load(t, at) => {
+                    self.thin_operand(RAX, at);
+                    self.thin_where();
+                    self.bytes(&[0x48, 0x8B, 0x02]); // mov rax, [rdx]
+                    self.thin_put(t, RAX);
+                }
+                Step::Store(at, v) => {
+                    self.thin_operand(RAX, at);
+                    self.thin_where();
+                    self.thin_operand(RCX, v);
+                    self.bytes(&[0x48, 0x89, 0x0A]); // mov [rdx], rcx
+                }
+                Step::Locate(t, at) => {
+                    self.thin_operand(RAX, at);
+                    self.thin_where();
+                    self.thin_put(t, RDX);
+                }
+                Step::LoadAt(t, base, off) => {
+                    self.thin_operand(RDX, base);
+                    self.thin_operand(RCX, off);
+                    self.bytes(&[0x48, 0x8B, 0x04, 0xCA]); // mov rax, [rdx + rcx*8]
+                    self.thin_put(t, RAX);
+                }
+                Step::StoreAt(base, off, v) => {
+                    self.thin_operand(RDX, base);
+                    self.thin_operand(RCX, off);
+                    self.thin_operand(RAX, v);
+                    self.bytes(&[0x48, 0x89, 0x04, 0xCA]); // mov [rdx + rcx*8], rax
+                }
+                // Branch away on the *negation*: the guard holding is the
+                // ordinary case and falls through. Unsigned throughout, which
+                // is what makes one `u <` reject a negative index as well as
+                // one past the end.
+                Step::Guard(c, a, b) => {
+                    self.thin_operand(RAX, a);
+                    self.thin_operand(RCX, b);
+                    self.bytes(&[0x48, 0x39, 0xC8]); // cmp rax, rcx
+                    let fails = match c {
+                        Cond::Eq => CC_NE,
+                        Cond::Ne => CC_E,
+                        Cond::Lt => CC_AE,
+                        Cond::Le => CC_A,
+                        Cond::Gt => CC_BE,
+                        Cond::Ge => CC_B,
+                    };
+                    self.jcc(fails, slow);
+                }
+                Step::Put(r, src) => {
+                    self.thin_operand(RAX, src);
+                    self.store(r);
+                }
+            }
+        }
     }
 
     fn jump(&mut self, to: Label) {
@@ -566,10 +682,38 @@ impl Emit for Asm {
         self.store(a);
     }
 
-    fn frame(&mut self, _a: Reg, _header: &[u64], _base: Reg, _n: u32, slow: Label) {
-        // Not yet on x86-64: the interpreter pushes it. Writing this needs a
-        // machine to run it on, which is the same reason `steps` is not here.
-        self.jump(slow);
+    fn frame(&mut self, a: Reg, header: &[u64], base: Reg, n: u32, slow: Label) {
+        let hdr = header.len() as u32;
+        let size = hdr + n;
+        // eax = fsp, ecx = fsp + size; over the chunk's end -- or no chunk yet,
+        // when the end is zero -- is the interpreter's to sort out.
+        self.bytes(&[0x8B, 0x83]); // mov eax, [rbx + FSP]
+        self.bytes(&layout::FSP.to_le_bytes());
+        self.bytes(&[0x8D, 0x88]); // lea ecx, [rax + size]
+        self.bytes(&size.to_le_bytes());
+        self.bytes(&[0x3B, 0x8B]); // cmp ecx, [rbx + FLIM]
+        self.bytes(&layout::FLIM.to_le_bytes());
+        self.jcc(CC_A, slow);
+        // The frame's slot in memory: rdx = fbase + (fsp - fcur) * 8.
+        self.bytes(&[0x8B, 0x93]); // mov edx, [rbx + FCUR]
+        self.bytes(&layout::FCUR.to_le_bytes());
+        self.bytes(&[0x48, 0x89, 0xC6]); // mov rsi, rax
+        self.bytes(&[0x48, 0x29, 0xD6]); // sub rsi, rdx
+        self.load(2, RBX, layout::FBASE); // rdx
+        self.bytes(&[0x48, 0x8D, 0x14, 0xF2]); // lea rdx, [rdx + rsi*8]
+        for (k, &w) in header.iter().enumerate() {
+            self.imm(RSI, w);
+            self.bytes(&[0x48, 0x89, 0xB2]); // mov [rdx + k * 8], rsi
+            self.bytes(&(k as u32 * 8).to_le_bytes());
+        }
+        for j in 0..n {
+            self.get(RSI, base as u32 + j);
+            self.bytes(&[0x48, 0x89, 0xB2]); // mov [rdx + (hdr + j) * 8], rsi
+            self.bytes(&((hdr + j) * 8).to_le_bytes());
+        }
+        self.bytes(&[0x89, 0x8B]); // mov [rbx + FSP], ecx
+        self.bytes(&layout::FSP.to_le_bytes());
+        self.store(a);
     }
 
     fn unary(&mut self, op: UnaryOp, a: Reg, b: Reg) {
@@ -702,6 +846,38 @@ impl Emit for Asm {
         }
         // The register file is rebuilt in memory below.
         self.spill();
+        let object = self.label();
+        let rebuild = self.label();
+        // A return: the object is in the current chunk of the frame stack.
+        // Everything in a stack chunk is a frame, so its kind needs no test;
+        // its slot is one load from the chunk's base; its return pc is its
+        // `meta`, and its one method is #0, so there is no table to look up.
+        // A frame in a chunk below has chunks to release on the way down,
+        // which the interpreter does: it is not a nursery address below.
+        self.get(RAX, obj as u32);
+        self.bytes(&[0x8B, 0x8B]); // mov ecx, [rbx + FCUR]
+        self.bytes(&layout::FCUR.to_le_bytes());
+        self.bytes(&[0x48, 0x39, 0xC8]); // cmp rax, rcx
+        self.jcc(CC_B, object);
+        self.bytes(&[0x8B, 0x93]); // mov edx, [rbx + FLIM]
+        self.bytes(&layout::FLIM.to_le_bytes());
+        self.bytes(&[0x48, 0x39, 0xD0]); // cmp rax, rdx
+        self.jcc(CC_AE, object);
+        self.bytes(&[0x48, 0x89, 0xC2]); // mov rdx, rax
+        self.bytes(&[0x48, 0x29, 0xCA]); // sub rdx, rcx
+        self.load(RSI, RBX, layout::FBASE);
+        self.bytes(&[0x48, 0x8D, 0x14, 0xD6]); // lea rdx, [rsi + rdx*8]
+        self.bytes(&[0x48, 0x8B, 0x32]); // mov rsi, [rdx]
+        self.length();
+        self.bytes(&[0x48, 0x83, 0xFF, 0x08]); // cmp rdi, 8
+        self.jcc(CC_A, slow);
+        self.bytes(&[0x8B, 0x72, 0x08]); // mov esi, [rdx + 8]
+        // Returning pops the frame: the stack's top goes back to its slot.
+        self.bytes(&[0x89, 0x83]); // mov [rbx + FSP], eax
+        self.bytes(&layout::FSP.to_le_bytes());
+        self.jump(rebuild);
+        // A call: a closure in the nursery.
+        self.bind(object);
         self.nursery(obj, slow);
         self.bytes(&[0x83, 0xF9, crate::heap::Kind::Closure as u8]); // cmp ecx, Closure
         self.jcc(CC_NE, slow);
@@ -721,6 +897,7 @@ impl Emit for Asm {
         self.bytes(&(method as u32).to_le_bytes());
         self.load(RSI, RBX, layout::METHOD_PCS);
         self.bytes(&[0x8B, 0x34, 0x86]); // mov esi, [rsi + rax*4]
+        self.bind(rebuild);
         // The arguments out of the way, the captures in, the arguments after.
         let scratch = crate::vm::SCRATCH as u32;
         for j in 0..argc {

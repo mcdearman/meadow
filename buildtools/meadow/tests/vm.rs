@@ -190,7 +190,9 @@ fn the_axcut_machine_agrees_too() {
 
         let mut checked = 0;
         for (name, var) in &std.tests {
-            let program = calling(&std.program, *var);
+            // Only what the test reaches, as a build lowers: lowering all of
+            // `Std` once per test of it was most of an eleven-minute test.
+            let program = core::prune::prune(&calling(&std.program, *var));
             let lowered_one = meadow_seq::lower_program(&program, opt);
             let cek = meadow_eval::run(&program);
             let axcut = meadow_seq::machine::Machine::run(&lowered_one.program, 200_000_000);

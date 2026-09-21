@@ -6,7 +6,6 @@
 //! checked *through* the test runner, so both are covered at once.
 
 use meadow::{Options, linker::Linker, pipeline, test};
-use std::path::Path;
 
 mod common;
 

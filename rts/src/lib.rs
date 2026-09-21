@@ -12,11 +12,13 @@
 //! flat instruction array, a flat register file, and a heap.
 //!
 //! One consequence is worth stating because it looks like an omission: **there
-//! is no call stack.** In the IR above, returning from a function is entering
-//! the continuation it was given, and a closure, a continuation and a handler
-//! are all the same kind of heap object. So [`Op::Invoke`] is the entire calling
-//! convention — rebuild the registers, jump — and nothing is pushed or popped.
-//! Recursion grows the heap, which is collected.
+//! is no `call` and no `ret`.** In the IR above, returning from a function is
+//! entering the continuation it was given, and a closure, a continuation and a
+//! handler are all the same kind of object. So [`Op::Invoke`] is the entire
+//! calling convention — rebuild the registers, jump. The continuation of a call
+//! that is not a tail call is a frame on a chunked, per-thread frame stack the
+//! heap owns, popped when the function returns through it; recursion grows
+//! that, not the machine's stack.
 //!
 //! [`Op::Invoke`]: meadow_bytecode::Op::Invoke
 //!

@@ -693,9 +693,11 @@ marking.
 
 `compiler/meadow-seq/src/lower.rs` ("Effects: evidence passing").
 
-**No backend knows effect handlers exist.** The runtime has no handler stack,
-no stack capture, and no special instruction for `handle` or `perform`. The
-compiler lowers both into closures, data constructors, `Ref`s and jumps. So the
+**No backend knows effect handlers exist.** The runtime has no handler stack
+and no special instruction for `handle` or `perform`. The compiler lowers both
+into closures, data constructors, `Ref`s and jumps, plus three primitives that
+cut and rejoin the frame stack at chunk boundaries where a resumption is
+captured ([below](#5-effects): `Enter`, `Detach`, `Reattach`). So the
 interpreter, the JIT and AOT code all run effects with the same instructions
 they use for everything else, and native code accelerates handlers exactly as
 much as it accelerates ordinary closures.
@@ -900,7 +902,9 @@ a global clock and publishes all the writes under one lock.
 ### A green thread is a value
 
 A green thread is a `Vm`: registers, a pc, `live`, a heap, and its globals
-cache. Because the machine has no call stack, that is **all** of it. A thread
+cache. Its call stack is the frame stack
+([section 2](#the-call-stack-is-a-frame-stack)), which is chunks of that heap
+and not the OS thread's stack, so that is **all** of it. A thread
 that isn't running is a boxed struct sitting in a queue, and any OS thread can
 pick it up and continue. Nothing about a thread is tied to the OS thread that
 last ran it: no native stack, no thread-local storage, and no suspended native
@@ -1082,12 +1086,17 @@ by its static instruction count can still spend most of its time in
 `matmul` was 7.5% trapping instructions and 62% trapping time. The counter
 costs a lock per trap and is off unless asked for.
 
-### Where a stack comes from, when the machine has none
+### Where a profile's stack comes from
 
-There is no call stack ([section 2](#there-is-no-call-stack)). There is a chain
-of continuation objects: the function running holds the one it will answer,
-that one captured the one _its_ caller will answer, down to the `halt`. So the
-stack is on the heap, and walking the chain is walking it.
+The machine has no `call` or `ret`, and nothing that is a stack pointer to
+unwind from ([section 2](#the-call-stack-is-a-frame-stack)). What it has is a
+chain of continuations: the function running holds the one it will answer,
+that one captured the one _its_ caller will answer, down to the `halt`. Most
+links are frames on the frame stack; one made in tail position of a `handle`,
+or captured by something that outlives its call, is a heap closure. The two
+are laid out alike, so the walk follows the chain from link to link and does
+not care which it is on -- or where one chunk of the stack ends and the next
+begins.
 
 Three things make the walk possible, and all three were already there for the
 debugger: `DebugInfo::env_of`/`envs` say which name is in which register at a
@@ -1095,8 +1104,9 @@ pc, `returns` says which name is a function's _own_ return continuation (as
 against `continuations`, the ones it makes for calls it makes), and a closure
 keeps its captures in fields `0..len` in the order its method takes them -- so
 the register a name sits in at a method's entry is the field it was captured
-into. Each link's method-0 entry pc is a return address, which is the frame
-below.
+into. Each link's entry pc is a return address, which is the frame below: a
+frame carries it as its `meta`, and a closure's is method 0 of its table
+(`Vm::stack`).
 
 ### What it measures, and what it does not
 

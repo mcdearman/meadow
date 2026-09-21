@@ -3,8 +3,9 @@
 //!
 //! # What a green thread is
 //!
-//! A [`Vm`]: a register file, a program counter, a handler stack and a heap.
-//! The machine has no call stack, so that is all of it -- a thread that is not
+//! A [`Vm`]: a register file, a program counter and a heap.
+//! Its call stack is the frame stack, which is chunks of that heap and not the
+//! OS thread's stack, so that is all of it -- a thread that is not
 //! running is a value that can be put in a queue, and any OS thread can pick
 //! it up and carry on. The OS threads are workers and nothing else; a program
 //! never sees one.
@@ -757,21 +758,14 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                     }
                     Some(fiber)
                 }
-                Request::StmCommit { dst } => {
-                    let Some(txn) = fiber.vm.txn.take() else {
-                        fiber.wake = Wake::Fail(meadow_core::stm::outside("atomically"));
-                        return Some(fiber);
-                    };
-                    let Some(written) = sh.world.commit(txn) else {
-                        fiber.wake = Wake::Set(dst, crate::value::Value::Bool(false));
-                        return Some(fiber);
-                    };
+                Request::StmWake { written, dst } => {
                     let mut woken = Vec::new();
-                    if !written.is_empty() {
+                    {
                         let mut waiters = lock(&sh.stm_waiters);
                         for id in written {
                             for slot in waiters.remove(&id).unwrap_or_default() {
                                 if let Some(w) = lock(&slot).take() {
+                                    sh.world.wait_ends();
                                     woken.push(w);
                                 }
                             }
@@ -789,9 +783,12 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                         fiber.wake = Wake::Fail(meadow_core::stm::outside("retry"));
                         return Some(fiber);
                     };
+                    // Counted before the check -- see `World::wait_begins`.
+                    sh.world.wait_begins();
                     let mut waiters = lock(&sh.stm_waiters);
                     if sh.world.changed(&txn.reads) {
                         drop(waiters);
+                        sh.world.wait_ends();
                         fiber.wake = Wake::Set(dst, crate::value::Value::Unit);
                         return Some(fiber);
                     }

@@ -380,8 +380,8 @@ pub struct Program {
     /// Every name that is a function's own *return continuation* -- the `k` a
     /// definition, a lambda or a handler clause answers with.
     ///
-    /// The machine has no call stack, and this is what lets a debugger draw
-    /// one anyway: code running in a function has its function's return
+    /// The machine has no stack pointer to unwind from, and this is what lets
+    /// a debugger draw a call stack anyway: code running in a function has its function's return
     /// continuation in its environment, and the continuation that holds
     /// captures the caller's. A name is fresh wherever it is bound, so a set of
     /// them is unambiguous.

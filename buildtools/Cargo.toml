@@ -24,3 +24,22 @@ meadow-bytecode = { path = "../compiler/meadow-bytecode" }
 [profile.release]
 lto = true
 codegen-units = 1
+
+# A debug build of `meadow` still *runs programs*, and the tests run the whole
+# standard library through every machine several times over. Unoptimized, the
+# machines are some thirty times slower, and `tests/vm.rs` alone took eleven
+# minutes on a fast machine -- and past CI's 45-minute limit on a Windows
+# runner, which looked like a hang and was not one. So the crates that execute
+# programs are optimized in every profile; debug assertions stay on, and
+# everything else -- the compiler, the tools, the tests -- stays quick to build.
+[profile.dev.package.meadow-rts]
+opt-level = 2
+
+[profile.dev.package.meadow-eval]
+opt-level = 2
+
+[profile.dev.package.meadow-seq]
+opt-level = 2
+
+[profile.dev.package.meadow-core]
+opt-level = 2

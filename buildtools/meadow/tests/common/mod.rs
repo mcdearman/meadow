@@ -168,6 +168,9 @@ pub fn run_main_std(src: &str, engine: meadow::Engine) -> String {
                 .join("\n")
         );
     }
+    // What `main` reaches, as a build runs it: not all of `Std`, lowered and
+    // compiled again for every snippet.
+    let program = meadow_compiler::core::prune::prune(&program);
     match meadow::runtime::run(&program, engine, Options::debug().opt) {
         Ok(v) => v,
         Err(e) => e,

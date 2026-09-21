@@ -57,6 +57,9 @@ fn bits(p: Prim) -> num::Bits {
     }
 }
 
+/// What a transaction says on a machine that has no scheduler behind it.
+const NO_WORLD: &str = "transactions need the scheduler; this machine is running on its own";
+
 impl Vm<'_> {
     /// An array -- or a mutable one -- of `words`, each a value of descriptor
     /// `d`. Room must have been made.
@@ -210,10 +213,14 @@ impl Vm<'_> {
     }
 
     /// The run's `TVar`s.
-    fn world(&self) -> Result<std::sync::Arc<crate::stm::World>, Error> {
+    /// The `TVar`s, borrowed: read straight out of the field wherever the
+    /// transaction is needed mutably beside it. Never cloned -- the count of
+    /// an `Arc` every thread holds is a word every thread would then write at
+    /// every read of every transaction.
+    fn world(&self) -> Result<&crate::stm::World, Error> {
         match &self.world {
-            Some(w) => Ok(w.clone()),
-            None => err("transactions need the scheduler; this machine is running on its own"),
+            Some(w) => Ok(w),
+            None => err(NO_WORLD),
         }
     }
 
@@ -250,8 +257,8 @@ impl Vm<'_> {
     /// The transaction this thread is in, for `op`.
     fn txn(&mut self, op: &str) -> Result<&mut crate::stm::Txn, Error> {
         match &mut self.txn {
-            Some(t) => Ok(t),
-            None => err(meadow_core::stm::outside(op)),
+            Some(t) if t.live => Ok(t),
+            _ => err(meadow_core::stm::outside(op)),
         }
     }
 
@@ -981,16 +988,19 @@ impl Vm<'_> {
 
             // --- software transactional memory --------------------------------
             StmNew => {
-                let world = self.world()?;
+                self.world()?;
                 let shared = self.share(arg(self, 0), None)?;
-                let id = world.new_tvar(shared);
+                let id = self.world()?.new_tvar(shared);
                 self.ensure(Heap::size_of(Kind::TVar, 0));
                 Value::Obj(self.heap.alloc(Kind::TVar, id, &[]))
             }
             StmRead => {
                 let id = self.handle(arg(self, 0), Kind::TVar, "a TVar")?;
-                let world = self.world()?;
-                let read = world.read(self.txn("readTVar")?, id);
+                let read = match (&self.world, &mut self.txn) {
+                    (None, _) => return err(NO_WORLD),
+                    (Some(world), Some(txn)) if txn.live => world.read(txn, id),
+                    _ => return err(meadow_core::stm::outside("readTVar")),
+                };
                 match read {
                     crate::stm::Read::Conflict => {
                         self.ensure(Heap::size_of(Kind::Data, 0));
@@ -1011,14 +1021,26 @@ impl Vm<'_> {
             }
             StmWrite => {
                 let id = self.handle(arg(self, 0), Kind::TVar, "a TVar")?;
-                let world = self.world()?;
-                let into = world.region_for_write(self.txn("writeTVar")?, id);
-                let shared = self.share(arg(self, 1), Some(into))?;
+                // An immediate goes in no region, so there is none to find --
+                // and finding one locks the cell, and makes a region when the
+                // value there now is an immediate too.
+                let into = match (arg(self, 1), &self.world, &self.txn) {
+                    (_, None, _) => return err(NO_WORLD),
+                    (Value::Obj(_), Some(world), Some(txn)) if txn.live => {
+                        Some(world.region_for_write(txn, id))
+                    }
+                    (Value::Obj(_), ..) => {
+                        return err(meadow_core::stm::outside("writeTVar"));
+                    }
+                    _ => None,
+                };
+                let shared = self.share(arg(self, 1), into)?;
                 self.txn("writeTVar")?.write(id, shared);
                 Value::Unit
             }
             StmBegin => {
-                self.txn = Some(self.world()?.begin());
+                let last = self.txn.take();
+                self.txn = Some(self.world()?.begin(last));
                 Value::Unit
             }
             StmNest => {
@@ -1034,9 +1056,20 @@ impl Vm<'_> {
                 Value::Unit
             }
             StmCommit => {
-                self.txn("atomically")?;
-                self.request = Some(crate::vm::Request::StmCommit { dst });
-                Value::Unit
+                let went = match (&self.world, &mut self.txn) {
+                    (None, _) => return err(NO_WORLD),
+                    (Some(world), Some(txn)) if txn.live => world.commit(txn),
+                    _ => return err(meadow_core::stm::outside("atomically")),
+                };
+                match went {
+                    crate::stm::Commit::Conflict => Value::Bool(false),
+                    // Nobody to wake: done, without leaving the machine.
+                    crate::stm::Commit::Done => Value::Bool(true),
+                    crate::stm::Commit::Wake(written) => {
+                        self.request = Some(crate::vm::Request::StmWake { written, dst });
+                        Value::Unit
+                    }
+                }
             }
             StmWait => {
                 self.txn("retry")?;

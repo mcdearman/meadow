@@ -21,9 +21,14 @@ jobs:
   check:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # A clean run takes about ten minutes. The default is six hours, which is
-    # how long a hung step would otherwise hold a runner.
-    timeout-minutes: 45
+    # The default is six hours, which is how long a hung step would otherwise
+    # hold a runner. This is not a guess at how long a run takes, and must not
+    # be close to it: at 45 minutes it cancelled runs that were merely slow --
+    # the same script took 66 minutes in `release.yml` and passed -- and a
+    # cancelled run reads as a hang. If a run gets near this, the fix is in the
+    # tests (see the dev profiles in `buildtools/Cargo.toml` and
+    # `rts/Cargo.toml`), not here.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:

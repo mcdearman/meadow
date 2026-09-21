@@ -249,8 +249,10 @@ collector: each green thread's heap is collected in pauses of tens of
 microseconds, however much it keeps alive, because the old generation is marked
 on another OS thread while the program runs.
 Behind it, the compiler lowers to a sequent-calculus IR (AxCut) and then to
-straight-line instructions over a flat register file — with no call stack, since
-in that IR returning from a function is entering the continuation it was given.
+straight-line instructions over a flat register file — with no `call` or `ret`,
+since in that IR returning from a function is entering the continuation it was
+given. A call's continuation is a frame on a chunked, per-thread frame stack
+kept in the heap, as GHC's is, rather than on the machine's.
 
 The older **CEK abstract machine** is still there, and is still the definition of
 what a Meadow program means. `--cek` on `run` and `test`, or `:cek` in the REPL,
@@ -446,8 +448,9 @@ argument of the wrong type is a compile error before anything runs. In
 }
 ```
 
-The machine has no call stack — returning is invoking a continuation on the
-heap — so the adapter reconstructs one from the continuation chain, using what
+The machine has no `call` or `ret` — returning is invoking a continuation,
+a frame on the frame stack or now and then a heap closure — so the adapter
+reconstructs a call stack from the continuation chain, using what
 the compiler records about which name is a function's return continuation. A
 call in tail position replaces its caller's frame, as it does at run time. The
 program's `print` output goes to the Debug Console; `Console.readLine` sees the

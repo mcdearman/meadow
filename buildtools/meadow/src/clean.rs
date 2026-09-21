@@ -37,7 +37,7 @@ pub fn run(path: &Path, profile: Option<&str>, dry_run: bool) -> Result<Cleaned,
     }
 
     let mut out = Cleaned::default();
-    let mut remove = |dir: PathBuf, out: &mut Cleaned| -> Result<(), String> {
+    let remove = |dir: PathBuf, out: &mut Cleaned| -> Result<(), String> {
         if !dir.is_dir() {
             return Ok(());
         }

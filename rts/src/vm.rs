@@ -1,24 +1,33 @@
 //! The virtual machine.
 //!
 //! A program counter, a flat register file and a collected heap. That is the
-//! whole of it — there is **no call stack**, and no handler stack either: the
-//! compiler passes effect handlers as evidence, so a `handle` and a `perform`
-//! arrive here as ordinary objects and jumps, and only an operation no handler
-//! answers reaches the machine, as [`Op::Native`].
+//! whole of it — there is **no `call` and no `ret`**, and no handler stack
+//! either: the compiler passes effect handlers as evidence, so a `handle` and
+//! a `perform` arrive here as ordinary objects and jumps, and only an
+//! operation no handler answers reaches the machine, as [`Op::Native`].
 //!
-//! # Why there is no call stack
+//! # Why there is no `call`
 //!
 //! Because the compiler already removed the need for one. In the sequent IR the
 //! back end works from, a function is handed the continuation it should answer,
 //! and returning is entering that continuation. A closure, a continuation and a
-//! handler are the same kind of heap object, and [`Op::Invoke`] does the same
+//! handler are the same kind of object, and [`Op::Invoke`] does the same
 //! thing to all three: rebuild the register file as the object's captures
-//! followed by its arguments, and jump.
+//! followed by its arguments, and jump. A tail call is not an optimisation
+//! here; it is what an ordinary call already is.
 //!
-//! So nothing is pushed on a call and nothing is popped on a return. Recursion
-//! grows the heap, which is collected, rather than a stack, which is not. A
-//! tail call is not an optimisation here; it is what an ordinary call already
-//! is.
+//! # The frame stack
+//!
+//! What a call that is *not* in tail position needs is a continuation to come
+//! back to, and [`Op::Frame`] makes one: laid out as a closure, so `Invoke`
+//! enters it as it enters anything else, but written into the thread's frame
+//! stack -- 64 KiB chunks of the heap's old generation, linked, so a deep
+//! recursion grows a chain and copies nothing -- and reclaimed by moving the
+//! stack's top back when the function returns through it. It is not the
+//! machine's stack: it belongs to the heap, the collector walks it as it walks
+//! the registers, and a `handle` starts a chunk of its own so that a
+//! resumption can take the frames above it away and put them back. See
+//! `docs/RUNTIME.md`, "The call stack is a frame stack".
 //!
 //! # Registers and the collector
 //!
@@ -230,8 +239,12 @@ pub(crate) enum Request {
         channel: u32,
         dst: Reg,
     },
-    /// Commit the thread's transaction; `true` or `false` into `dst`.
-    StmCommit {
+    /// The thread committed a transaction that wrote `written` while other
+    /// threads were waiting on a `TVar`: wake the ones waiting on those, and
+    /// `true` into `dst`. The commit itself is the thread's own business --
+    /// see `Prim::StmCommit`.
+    StmWake {
+        written: Vec<u32>,
         dst: Reg,
     },
     /// Wait until something the thread's transaction read is written.
@@ -473,7 +486,8 @@ impl<'p> Vm<'p> {
 
     /// The pcs on the machine's stack, innermost first.
     ///
-    /// There is no stack; there is a chain of continuations, and walking it is
+    /// There is no stack pointer to unwind from; there is a chain of
+    /// continuations -- frames, and now and then a heap closure -- and walking it is
     /// the same walk. See [`crate::profile`] for why each link's method-0 entry
     /// pc is the frame below.
     ///

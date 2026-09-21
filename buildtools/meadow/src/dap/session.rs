@@ -8,9 +8,10 @@
 //!
 //! # A call stack for a machine without one
 //!
-//! The VM has no call stack: returning from a function is invoking the
-//! continuation it was given, and that continuation is a heap object. It is
-//! still a stack in every way that matters to a person reading one -- the
+//! The VM has no `call` or `ret`: returning from a function is invoking the
+//! continuation it was given, and that continuation is a frame on the frame
+//! stack, or now and then a heap closure, laid out alike. Either way it is
+//! a stack in every way that matters to a person reading one -- the
 //! continuation captures what the caller will need when it resumes, including
 //! *its* continuation -- so [`Session::frames`] walks that chain. The compiler
 //! records which names are return continuations

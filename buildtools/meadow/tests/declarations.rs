@@ -18,6 +18,7 @@ fn agreed(src: &str) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    let program = meadow_compiler::core::prune::prune(&program);
     let cek = runtime::run(&program, Engine::Cek, OptLevel::O1)
         .unwrap_or_else(|e| panic!("the CEK machine failed on\n{src}\n{e}"));
     for engine in [Engine::Vm, Engine::Jit] {
@@ -33,6 +34,7 @@ fn agreed(src: &str) -> String {
         "release: {:?}",
         diags.iter().map(|d| &d.msg).collect::<Vec<_>>()
     );
+    let release = meadow_compiler::core::prune::prune(&release);
     let got = runtime::run(&release, Engine::Jit, OptLevel::O2).unwrap();
     assert_eq!(got, cek, "a release build on\n{src}");
     cek

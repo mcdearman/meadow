@@ -90,16 +90,15 @@
 //! every subexpression — anything that cannot transfer control is lowered where
 //! it stands, and a saturated call to a known function is a jump — so a tail
 //! loop now allocates nothing at all. What remains is structural rather than an
-//! oversight: a call in argument position has to record where to come back to,
-//! and a machine with no call stack has nowhere to put that but the heap. It
-//! costs four words a call, against zero for Lua, which spends a contiguous
-//! stack to get it.
-//!
-//! Closing that gap means either giving the VM a call stack — and then paying
-//! to copy it whenever a continuation is captured, which is what one-shot
-//! effect handlers do constantly — or a real escape analysis, so a continuation
-//! that provably neither escapes nor outlives its call can live in registers.
-//! The second keeps the effects story intact and is the one worth doing.
+//! oversight: a call in argument position has to record where to come back
+//! to. That record used to be a heap object, four words allocated per call.
+//! It is now a frame ([`Op::Frame`]) on a chunked frame stack, popped when the
+//! function returns through it -- `meadow_seq::Program::frames` says which
+//! `new`s are these. The worry about a stack was copying it whenever a
+//! continuation is captured, which one-shot effect handlers do constantly;
+//! chunks answer it, because a `handle` starts a chunk of its own and a
+//! capture unlinks whole chunks instead of copying frames. See
+//! `docs/RUNTIME.md`, "The call stack is a frame stack".
 
 use meadow_bytecode::{
     Cond, Const, DESC_REG, DescSrc, GcMap, Held, Instr, NO_MAP, NO_OPERANDS, NameDesc, Op, Pc,

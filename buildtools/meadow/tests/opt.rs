@@ -32,6 +32,7 @@ fn agreed(src: &str) -> String {
             .join("\n")
     );
 
+    let program = meadow_compiler::core::prune::prune(&program);
     let cek = runtime::run(&program, Engine::Cek, OptLevel::O1)
         .unwrap_or_else(|e| panic!("the CEK machine failed on\n{src}\n{e}"));
 
@@ -429,6 +430,7 @@ fn a_non_exhaustive_match_fails_the_same_way_everywhere() {
     let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
     assert!(diags.is_empty(), "{:?}", diags);
 
+    let program = meadow_compiler::core::prune::prune(&program);
     let cek = runtime::run(&program, Engine::Cek, OptLevel::O1).unwrap_err();
     for opt in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {
         let vm = runtime::run(&program, Engine::Vm, opt).unwrap_err();
@@ -477,6 +479,7 @@ fn a_folded_operation_still_fails_where_it_should() {
     ] {
         let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
         assert!(diags.is_empty(), "{:?}", diags);
+        let program = meadow_compiler::core::prune::prune(&program);
         let cek = runtime::run(&program, Engine::Cek, OptLevel::O1).unwrap_err();
         assert!(cek.contains(want), "the CEK machine said {cek:?}");
         for opt in [OptLevel::O0, OptLevel::O1, OptLevel::O2] {

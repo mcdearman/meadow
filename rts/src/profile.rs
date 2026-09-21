@@ -1,16 +1,19 @@
 //! **Where a program spends itself**: sampling, and what the samples are.
 //!
-//! # The machine has no stack, and that is the interesting part
+//! # The machine has no stack pointer, and that is the interesting part
 //!
-//! A profile wants a *stack* at each sample, and [`crate::Vm`] has none -- see
-//! `docs/RUNTIME.md`. What it has instead is a chain of continuation objects:
-//! the function running holds the one it will answer, that one captured the one
-//! *its* caller will answer, and so on down to the `halt` at the bottom.
+//! A profile wants a *stack* at each sample, and [`crate::Vm`] has nothing to
+//! unwind one from -- no `call`, no `ret`, no stack pointer; see
+//! `docs/RUNTIME.md`. What it has instead is a chain of continuations: the
+//! function running holds the one it will answer, that one captured the one
+//! *its* caller will answer, and so on down to the `halt` at the bottom. Most
+//! links are frames on the frame stack and a few are heap closures; they are
+//! laid out alike, and the walk does not care which it is on.
 //!
-//! So the stack is there; it is on the heap rather than below the stack
-//! pointer. Walking the chain is walking the call stack, and each link's
-//! method-0 entry pc is where control goes when the function under it returns
-//! -- a return address, which is exactly the frame a profile wants.
+//! Walking the chain is walking the call stack, and each link's entry pc -- a
+//! frame's `meta`, or method 0 of a closure's table -- is where control goes
+//! when the function under it returns: a return address, which is exactly the
+//! frame a profile wants.
 //!
 //! Three things make that walk possible, and all three already existed for the
 //! debugger:

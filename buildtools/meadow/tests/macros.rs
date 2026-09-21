@@ -23,6 +23,7 @@ fn agreed(src: &str) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    let program = meadow_compiler::core::prune::prune(&program);
     let cek = runtime::run(&program, Engine::Cek, OptLevel::O1)
         .unwrap_or_else(|e| panic!("the CEK machine failed on\n{src}\n{e}"));
     for engine in [Engine::Vm, Engine::Jit] {

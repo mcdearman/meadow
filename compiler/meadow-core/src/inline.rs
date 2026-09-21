@@ -17,8 +17,8 @@
 //!
 //! A mention of a top-level name lowers to a *jump to its definition*, and a
 //! jump is a transfer of control — so a call that is not in tail position has
-//! to record where to come back to, and a machine with no call stack records
-//! that as an object on the heap. That is the right price for a function. It is
+//! to record where to come back to, which this machine does by pushing a frame
+//! and returning through it. That is the right price for a function. It is
 //! a ruinous one for
 //!
 //! ```text

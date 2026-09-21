@@ -1538,12 +1538,6 @@ impl Asm {
         self.put(0x8B00_0000 | X17 << 16 | 3 << 10 | X16 << 5 | d); // add d, x16, x17, lsl #3
     }
 
-    /// `xd = ` the heap word at slot `xn`.
-    fn thin_load(&mut self, d: u32, n: u32) {
-        self.thin_where(WORK_A, n);
-        self.ldr(d, WORK_A, 0);
-    }
-
     /// `xd = xn` bits `lsb ..< lsb + width`, zero-extended: `ubfx`, which is
     /// `ubfm xd, xn, #lsb, #(lsb + width - 1)`.
     fn ubfx(&mut self, d: u32, n: u32, lsb: u32, width: u32) {

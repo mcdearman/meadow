@@ -238,10 +238,17 @@ the same binary; 403ms and 556ms are both this compiler.) A profile of it is mos
 `__psynch_mutexwait`, which looks like lock overhead and is not: two attempts to
 remove it — spinning before waiting, and an `RwLock` per cell so readers need
 not take turns — are both measurably _worse_, and the note in `rts/src/stm.rs`
-records the numbers. The transactions really do conflict. What is left is the
-per-transaction machinery: `World::read`, `World::region_for_write` and
-`World::commit` each allocate, and `Std.Stm` runs the control as effect
-handlers.
+records the numbers. The transactions really do conflict -- but that was never
+most of it: one thread doing all the transfers alone took _longer_ than eight.
+The cost was what every transaction did on the way through, much of it a write
+to a word all the threads share: a read lock over the table of `TVar`s, an
+`Arc` cloned per primitive, a region made and discarded for every `Int`
+written, one lock over all waiters taken at every commit, and a trip through
+the scheduler to commit at all. Those are gone (see the note in
+`rts/src/stm.rs`), which on the x86-64 machine they were found on took this
+row from 225ms to 103ms; the table above is from before, and wants measuring
+again. Running the control as an effect handler, the other suspect, measures
+as nothing.
 
 `wordfreq` at 32× was 68× with a persistent HAMT doing the work a mutable
 hash table does everywhere else; it now uses `Std.Collections.HashTable`,

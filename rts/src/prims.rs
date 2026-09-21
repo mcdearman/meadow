@@ -343,7 +343,12 @@ impl Vm<'_> {
         use Prim::*;
         // What each operand is, once: a primitive may read one many times.
         let descs = [self.operand(0), self.operand(1), self.operand(2)];
-        let arg = |vm: &Vm, i: usize| Value::from_bits(vm.reg(srcs[i]), descs[i]);
+        let arg = |vm: &Vm, i: usize| {
+            if descs[i] == meadow_core::desc::ANY {
+                vm.missing_descriptor(i, srcs[i]);
+            }
+            Value::from_bits(vm.reg(srcs[i]), descs[i])
+        };
 
         // Typed primitives run as their untyped ones for now; the machine's
         // own instructions for them come with the typed bytecode.
@@ -884,6 +889,61 @@ impl Vm<'_> {
             Once => {
                 self.ensure(Heap::size_of(Kind::Resume, 1));
                 Value::Obj(self.heap.alloc(Kind::Resume, 0, &[Value::Bool(false)]))
+            }
+            // --- the frame stack ------------------------------------------
+            //
+            // See `Heap`'s frame stack. `Enter` at a `handle`, `Detach` where a
+            // general clause is entered, `Reattach` where it resumes.
+            Enter => {
+                let target = arg(self, 0)
+                    .addr()
+                    .filter(|a| self.heap.kind(*a) == Kind::Ref)
+                    .ok_or_else(|| Error {
+                        msg: "entering a handler without its target".into(),
+                    })?;
+                let tag = self.heap.enter_frames();
+                self.heap.set_meta(target, tag);
+                Value::Unit
+            }
+            Detach => {
+                let target = arg(self, 0)
+                    .addr()
+                    .filter(|a| self.heap.kind(*a) == Kind::Ref)
+                    .ok_or_else(|| Error {
+                        msg: "detaching from something that is not a handler".into(),
+                    })?;
+                let tag = self.heap.meta(target);
+                let Some((top, fsp)) = self.heap.detach(tag) else {
+                    return err(
+                        "an effect was performed after its handler had finished: the \
+                         function performing it escaped the `handle` that answers it",
+                    );
+                };
+                self.ensure(Heap::size_of(Kind::Stack, 2));
+                let obj = self.heap.alloc(
+                    Kind::Stack,
+                    0,
+                    &[Value::Int(top as i64), Value::Int(fsp as i64)],
+                );
+                self.heap.name_segment(top, obj);
+                Value::Obj(obj)
+            }
+            Reattach => {
+                let seg = arg(self, 0)
+                    .addr()
+                    .filter(|a| self.heap.kind(*a) == Kind::Stack)
+                    .ok_or_else(|| Error {
+                        msg: "resumed something that is not a stack segment".into(),
+                    })?;
+                let (Value::Int(top), Value::Int(fsp)) =
+                    (self.heap.field(seg, 0), self.heap.field(seg, 1))
+                else {
+                    return err("a stack segment without its bounds");
+                };
+                if !self.heap.reattach(top as Addr, fsp as Addr) {
+                    return err("continuation resumed more than once");
+                }
+                Value::Unit
             }
             TakeOnce => match arg(self, 0)
                 .addr()

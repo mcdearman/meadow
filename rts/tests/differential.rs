@@ -604,6 +604,27 @@ fn a_handler_that_resumes_continues_the_body_in_place() {
     );
 }
 
+/// A handler in tail position of a function called from another handler's
+/// body -- `map` inside `toVec` in `Std.Stream` -- whose clause performs to the
+/// outer one and then resumes. The inner handler's own continuation is a heap
+/// closure, not a frame, so the frame stack has to know the inner handler's
+/// boundary from where its `handle` was *entered*, not from where its
+/// continuation lives: the first frame-stack cut took the outer handler's
+/// frames along and the outer perform had nothing to return into.
+#[test]
+fn a_handler_inside_another_handlers_body_performs_outwards() {
+    let src = "effect Yield { yield : Int -> () }
+               data L = Nil | Cons Int L
+               use L.*
+               fun range (lo : Int) (hi : Int) = if lo >= hi then () else let _ = yield lo in range (lo + 1) hi
+               fun map f producer =
+                 handle producer () with { yield x k -> let _ = yield (f x) in k (), return r -> () }
+               fun toList producer =
+                 handle producer () with { yield x k -> Cons x (k ()), return r -> Nil }
+               def main = toList (\\() -> map (\\x -> x * 2) (\\() -> range 0 4))";
+    assert_eq!(agree(src), "Cons(0, Cons(2, Cons(4, Cons(6, Nil))))");
+}
+
 #[test]
 fn handlers_are_deep() {
     // `ask` is performed twice, and the second one must find the same handler —

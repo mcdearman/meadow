@@ -1,18 +1,19 @@
 //! **Inlining a small top-level function at the places that call it.**
 //!
-//! # Not in the pipeline
+//! # In the pipeline
 //!
-//! This pass is written, tested and *not run*. Turned on, it broke two
-//! differential tests against the CEK machine -- a record pattern whose bound
-//! name came out with no representation, and an STM program with a variable
-//! out of scope by code generation -- and the cause was not found. What is here
-//! is correct on everything it is tested against and is left for whoever picks
-//! it up; `meadow_seq::lower_program` does not call it.
-//!
-//! It is worth picking up. Eleven of the thirteen definitions a matrix
-//! multiply reaches are polymorphic wrappers like `St.get`, and each one costs
-//! a closure, an indirect call, a jump and a return to do what a single
-//! instruction does.
+//! `meadow_seq::lower_program` runs this after `bools` and before `joins`, at
+//! [`OptLevel::inlines`] -- a release build. A debug build keeps every call a
+//! call, so that the debugger has frames to show and lines to stop at.
+//! It was written and left out for a while, because turning it on broke two
+//! differential tests against the CEK machine, and neither was this pass's
+//! fault: they were shapes lowering had never been given before. A record
+//! accessor inlined at a record literal is a `match` on the literal, and
+//! lowering typed a literal's fields as nothing, so the field it selected had
+//! no representation; and a jump to a join point whose argument has to be
+//! evaluated first has to keep the join's environment alive meanwhile, which
+//! lowering's free-variable expansion knew for `letrec` bindings and not for
+//! join points. Both are fixed in `lower.rs`, where they belonged.
 //!
 //! A mention of a top-level name lowers to a *jump to its definition*, and a
 //! jump is a transfer of control — so a call that is not in tail position has
@@ -44,7 +45,10 @@
 //!   not an optional refinement: eleven of the thirteen definitions a matrix
 //!   multiply reaches are polymorphic, `Std.St`'s array accessors among them,
 //!   because they are generic in the state type `runSt` invents. Refusing them
-//!   left this pass with nothing to do;
+//!   left this pass with nothing to do. A specialized copy (see
+//!   [`crate::specialize`]) is mentioned with the type arguments of the
+//!   definition it was copied from, and is instantiated at the ones for the
+//!   binders it kept -- see [`Body::instantiation`] and [`candidates`];
 //! * **not recursive**, directly or through any chain of definitions — which is
 //!   computed rather than guessed at, because a wrapper calling a wrapper is the
 //!   ordinary case and refusing those would leave most of the library alone;
@@ -84,23 +88,31 @@ pub const INLINE_BASE: u32 = 0x7D00_0000;
 pub const BUDGET: usize = 16;
 
 /// How many times inlining and simplification alternate. A wrapper around a
-/// wrapper needs two; nothing in the standard library has needed three, and the
-/// bound is what stops mutual recursion between two small definitions from
-/// doubling the program on every pass.
-const ROUNDS: usize = 3;
+/// wrapper needs two, and a loop nested three deep -- see [`loops`] -- needs a
+/// round per level and one more for the lambda each level inlines; the bound
+/// is what stops mutual recursion between two small definitions from doubling
+/// the program on every pass.
+const ROUNDS: usize = 6;
+
+/// The most nodes a recursive definition's body may have and still be
+/// specialised at a call -- see [`loops`]. Larger than [`BUDGET`], since a
+/// loop's body is written out once per call site rather than per call.
+pub const LOOP_BUDGET: usize = 64;
 
 /// Inline what is worth inlining, simplifying after each round so that the
 /// `let`s a call becomes collapse before the next one looks at them.
 pub fn program(p: &Program) -> Program {
     let mut out = p.clone();
-    let mut fresh = Fresh(INLINE_BASE);
+    let mut fresh = Fresh(INLINE_BASE.max(simplify::max_var(p) + 1));
     for _ in 0..ROUNDS {
-        let Some(bodies) = candidates(&out) else {
+        let bodies = candidates(&out).unwrap_or_default();
+        let loops = loops(&out);
+        if bodies.is_empty() && loops.is_empty() {
             break;
-        };
+        }
         let mut changed = false;
         for d in &mut out.defs {
-            let next = term(&d.term, &bodies, &mut fresh);
+            let next = term(&d.term, &bodies, &loops, &mut fresh);
             changed |= next != d.term;
             d.term = next;
         }
@@ -129,17 +141,46 @@ struct Body {
     binders: Vec<TyVar>,
     params: Vec<(Var, Ty)>,
     term: Term,
+    /// For a specialized copy (see [`crate::specialize`]), the binders of the
+    /// definition it was copied from: a call mentions the copy with the
+    /// original's type arguments, all of them, and `binders` is the subset the
+    /// copy did not fix, by id.
+    original: Option<Vec<TyVar>>,
+}
+
+impl Body {
+    /// The types this body's own binders take at a call that supplies `tys`,
+    /// if that is exactly them -- or the original's, for a copy, from which the
+    /// ones the copy still binds are picked out.
+    fn instantiation(&self, tys: Vec<Ty>) -> Option<Vec<Ty>> {
+        if tys.len() == self.binders.len() {
+            return Some(tys);
+        }
+        let original = self.original.as_ref()?;
+        if tys.len() != original.len() {
+            return None;
+        }
+        let kept: Vec<Ty> = original
+            .iter()
+            .zip(tys)
+            .filter(|(b, _)| self.binders.iter().any(|c| c.id == b.id))
+            .map(|(_, t)| t)
+            .collect();
+        (kept.len() == self.binders.len()).then_some(kept)
+    }
 }
 
 /// Every definition worth inlining, or `None` if there are none.
 fn candidates(p: &Program) -> Option<HashMap<Var, Body>> {
     let recursive = recursive(p);
+    let binders_of: HashMap<Var, &Vec<TyVar>> =
+        p.defs.iter().map(|d| (d.var, &d.poly.binders)).collect();
     let mut out = HashMap::new();
     for d in &p.defs {
         if recursive.contains(&d.var) {
             continue;
         }
-        let Some(body) = function(&d.term) else {
+        let Some(mut body) = function(&d.term) else {
             continue;
         };
         // A polymorphic definition's term is a `TyLam` binding exactly the
@@ -152,6 +193,17 @@ fn candidates(p: &Program) -> Option<HashMap<Var, Body>> {
         if body.params.is_empty() || size(&body.term, BUDGET) > BUDGET {
             continue;
         }
+        // A specialized copy is inlined as the copy, not as what it was copied
+        // from: its literals are made at their number types, and what it
+        // calls are copies too, which is all a release build can call. What
+        // a release copy no longer says -- every binder that is not a number
+        // is `#Ref` in it -- lowering recovers from the patterns that match
+        // on it, which were checked at the real types.
+        body.original = p
+            .origins
+            .get(&d.var)
+            .and_then(|o| binders_of.get(o))
+            .map(|bs| (*bs).clone());
         out.insert(d.var, body);
     }
     (!out.is_empty()).then_some(out)
@@ -183,6 +235,7 @@ fn function(t: &Term) -> Option<Body> {
                     binders,
                     params,
                     term: t.clone(),
+                    original: None,
                 });
             }
         }
@@ -243,14 +296,479 @@ fn size(t: &Term, cap: usize) -> usize {
     n.min(cap + 1)
 }
 
+// --- loops -----------------------------------------------------------------
+
+/// A recursive definition worth specialising where it is called with a
+/// lambda: `St.forRange lo hi (\i -> ...)`, `while`, a fold.
+///
+/// Such a definition is a loop whose body is a call to a function it was
+/// given, and the call of it costs what the fifth round measured for `matmul`:
+/// a closure call, a frame and a return per iteration, for a body that is a
+/// few instructions. Specialised, the definition becomes a local `letrec` at
+/// the call site with the lambda substituted for the parameter and dropped
+/// from the recursion, and [`crate::simplify`] then applies the lambda where
+/// it stands -- so the loop's body *is* the lambda's body, and the loop is a
+/// jump.
+///
+/// What qualifies: a function that mentions itself only in saturated calls
+/// to itself -- not through any other definition -- whose body is under
+/// [`LOOP_BUDGET`] nodes; and a call is specialised at the parameters every
+/// recursive call passes through **unchanged** (`invariant`) that the call
+/// gives a lambda for. Anything else stays a call.
+struct Loop {
+    body: Body,
+    invariant: Vec<bool>,
+    /// The definition's polytype: the specialised copy's type is it, minus
+    /// the parameters dropped.
+    poly: Poly,
+}
+
+/// Every definition worth specialising as a loop.
+fn loops(p: &Program) -> HashMap<Var, Loop> {
+    let own: HashSet<Var> = p.defs.iter().map(|d| d.var).collect();
+    let calls: HashMap<Var, HashSet<Var>> = p
+        .defs
+        .iter()
+        .map(|d| {
+            let mut free = HashSet::new();
+            free_vars_into(&d.term, &mut free);
+            (d.var, free.intersection(&own).copied().collect())
+        })
+        .collect();
+    let binders_of: HashMap<Var, &Vec<TyVar>> =
+        p.defs.iter().map(|d| (d.var, &d.poly.binders)).collect();
+    let dbg = std::env::var("MEADOW_INLINE_DEBUG").is_ok();
+    let mut out = HashMap::new();
+    for d in &p.defs {
+        let Some(mine) = calls.get(&d.var) else {
+            continue;
+        };
+        if dbg && d.name.to_string().contains("forRange") {
+            eprintln!(
+                "loops: {} {:?} mentions {:?} origin {:?}",
+                d.name,
+                d.var,
+                mine,
+                p.origins.get(&d.var)
+            );
+        }
+        if !mine.contains(&d.var) {
+            continue;
+        }
+        // Recursive through itself alone: nothing else it calls calls it
+        // back, however indirectly.
+        let others: Vec<Var> = mine.iter().copied().filter(|w| *w != d.var).collect();
+        if others.iter().any(|w| reaches(&calls, *w, d.var)) {
+            continue;
+        }
+        let Some(mut body) = function(&d.term) else {
+            continue;
+        };
+        if body.binders.len() != d.poly.binders.len()
+            || body.params.is_empty()
+            || size(&body.term, LOOP_BUDGET) > LOOP_BUDGET
+        {
+            continue;
+        }
+        let Some(invariant) = passes_through(&body.term, d.var, &body.params) else {
+            if dbg {
+                eprintln!(
+                    "loops: {} mentions itself other than in a saturated call",
+                    d.name
+                );
+            }
+            continue;
+        };
+        if dbg {
+            eprintln!("loops: {} invariant {:?}", d.name, invariant);
+        }
+        if !invariant.iter().any(|i| *i) {
+            continue;
+        }
+        body.original = p
+            .origins
+            .get(&d.var)
+            .and_then(|o| binders_of.get(o))
+            .map(|bs| (*bs).clone());
+        out.insert(
+            d.var,
+            Loop {
+                body,
+                invariant,
+                poly: d.poly.clone(),
+            },
+        );
+    }
+    out
+}
+
+/// Can `from` reach `to` through `calls`, not counting `from` itself?
+fn reaches(calls: &HashMap<Var, HashSet<Var>>, from: Var, to: Var) -> bool {
+    let mut seen = HashSet::new();
+    let mut todo = vec![from];
+    while let Some(v) = todo.pop() {
+        for &w in calls.get(&v).into_iter().flatten() {
+            if w == to {
+                return true;
+            }
+            if seen.insert(w) {
+                todo.push(w);
+            }
+        }
+    }
+    false
+}
+
+/// Which of `params` every call of `d` in `body` passes through as itself --
+/// or `None` if `d` is mentioned anywhere other than as the head of a call
+/// with exactly as many arguments as parameters.
+fn passes_through(body: &Term, d: Var, params: &[(Var, Ty)]) -> Option<Vec<bool>> {
+    let mut invariant = vec![true; params.len()];
+    let mut ok = true;
+    let mut work: Vec<&Term> = vec![body];
+    while let Some(t) = work.pop() {
+        rewrite::visit(t, &mut |t| match t {
+            Term::Var(v) if *v == d => {
+                ok = false;
+                false
+            }
+            Term::App(..) | Term::TyApp(..) if spine_head(t) == Some(d) => {
+                let (_, args) = call_spine_of(t);
+                if args.len() != params.len() {
+                    ok = false;
+                    return false;
+                }
+                for (k, a) in args.iter().enumerate() {
+                    if !matches!(peel(a), Term::Var(v) if *v == params[k].0) {
+                        invariant[k] = false;
+                    }
+                    work.push(a);
+                }
+                false
+            }
+            _ => true,
+        });
+        if !ok {
+            return None;
+        }
+    }
+    Some(invariant)
+}
+
+fn peel(t: &Term) -> &Term {
+    match t {
+        Term::Loc(_, inner) => peel(inner),
+        t => t,
+    }
+}
+
+/// The head of a call spine, and its arguments in order.
+fn call_spine_of(t: &Term) -> (&Term, Vec<&Term>) {
+    let mut args = Vec::new();
+    let mut head = t;
+    loop {
+        match head {
+            Term::Loc(_, inner) => head = inner,
+            Term::App(f, a) => {
+                args.push(&**a);
+                head = f;
+            }
+            Term::TyApp(f, _) => head = f,
+            _ => break,
+        }
+    }
+    args.reverse();
+    (head, args)
+}
+
+/// The definition a call spine calls, if it is one.
+fn spine_head(t: &Term) -> Option<Var> {
+    match call_spine_of(t).0 {
+        Term::Var(v) => Some(*v),
+        _ => None,
+    }
+}
+
+/// `t` as a call to a loop specialised at these arguments: the loop, the
+/// types it is called at, its arguments, and which of them are dropped into
+/// the copy -- the invariant parameters given a lambda. `None` where there is
+/// none of those, or the call is not of the shape [`call`] wants.
+fn loop_call<'l>(
+    t: &Term,
+    loops: &'l HashMap<Var, Loop>,
+) -> Option<(&'l Loop, Vec<Ty>, Vec<Term>, Vec<bool>)> {
+    let (head, args) = call_spine_of(t);
+    let Term::Var(v) = head else { return None };
+    let l = loops.get(v)?;
+    if args.len() != l.body.params.len() {
+        return None;
+    }
+    let tys = match peel(t) {
+        _ => {
+            // The instantiation sits under the applications, as `call` reads it.
+            let mut cur = t;
+            let mut tys = Vec::new();
+            loop {
+                match cur {
+                    Term::Loc(_, inner) => cur = inner,
+                    Term::App(f, _) => cur = f,
+                    Term::TyApp(_, at) => {
+                        tys = at.clone();
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+            tys
+        }
+    };
+    let tys = l.body.instantiation(tys)?;
+    let dropped: Vec<bool> = args
+        .iter()
+        .enumerate()
+        .map(|(k, a)| l.invariant[k] && matches!(peel(a), Term::Lam(..)))
+        .collect();
+    // A copy needs a parameter left to be a function of: one with every
+    // parameter dropped would be a recursive *value*, which is not a loop.
+    if !dropped.iter().any(|d| *d) || dropped.iter().all(|d| *d) {
+        return None;
+    }
+    Some((l, tys, args.into_iter().cloned().collect(), dropped))
+}
+
+/// The loop, specialised: its body at these types, with each dropped
+/// parameter replaced by its lambda (a fresh copy per mention) and left out
+/// of every recursive call, entered with the remaining arguments. Where every
+/// recursive call is a tail call -- `forRange`, `while`, a fold -- that is a
+/// **join point** jumping to itself, which lowering makes a block and a jump:
+/// a loop, with no call in it. Otherwise it is a `letrec` of one binding.
+fn enter_loop(
+    l: &Loop,
+    d: Var,
+    tys: Vec<Ty>,
+    args: Vec<Term>,
+    dropped: &[bool],
+    fresh: &mut Fresh,
+) -> Option<Term> {
+    // The copy's type: the definition's at these types, minus what is dropped.
+    let full = if l.poly.binders.len() == tys.len() {
+        l.poly.instantiate(&tys)
+    } else {
+        // A specialised copy called with its original's arguments: its own
+        // type is already at them.
+        l.poly.ty.clone()
+    };
+    let (ps, ret, eff) = uncurry(&full, args.len())?;
+    let at = retype(&l.body, &tys);
+    let copy = freshen(&at, fresh);
+    let go = fresh.var();
+    let keep = |k: usize| !dropped[k];
+    let looping = tail_only(&copy.term, d);
+    // Recursive calls: to `go`, without the dropped arguments -- a jump, for
+    // a loop.
+    let term = rewrite::term(
+        &copy.term,
+        &mut |t| {
+            if !matches!(t, Term::App(..)) || spine_head(&t) != Some(d) {
+                return t;
+            }
+            let (_, call_args) = call_spine_of(&t);
+            if call_args.len() != dropped.len() {
+                return t;
+            }
+            let kept: Vec<Term> = call_args
+                .into_iter()
+                .enumerate()
+                .filter(|(k, _)| keep(*k))
+                .map(|(_, a)| a.clone())
+                .collect();
+            if looping {
+                return Term::Jump(go, kept, ret.clone());
+            }
+            kept.into_iter()
+                .fold(Term::Var(go), |f, a| Term::App(Arc::new(f), Arc::new(a)))
+        },
+        &mut |p| p,
+    );
+    // The dropped parameters: each mention replaced by a copy of the lambda.
+    let mut term = term;
+    for (k, (v, _)) in copy.params.iter().enumerate() {
+        if keep(k) {
+            continue;
+        }
+        let lam = &args[k];
+        term = rewrite::term(
+            &term,
+            &mut |t| match &t {
+                Term::Var(x) if *x == *v => fresh_copy(lam, fresh),
+                _ => t,
+            },
+            &mut |p| p,
+        );
+    }
+    if looping {
+        let params: Vec<(Var, Ty)> = copy
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| keep(*k))
+            .map(|(_, p)| p.clone())
+            .collect();
+        let start: Vec<Term> = args
+            .into_iter()
+            .enumerate()
+            .filter(|(k, _)| keep(*k))
+            .map(|(_, a)| a)
+            .collect();
+        return Some(Term::Join {
+            var: go,
+            params,
+            ty: ret.clone(),
+            rhs: Arc::new(term),
+            body: Arc::new(Term::Jump(go, start, ret)),
+        });
+    }
+    let lam = copy
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| keep(*k))
+        .rev()
+        .fold(term, |body, (_, (v, ty))| {
+            Term::Lam(*v, ty.clone(), Arc::new(body))
+        });
+    let kept_tys: Vec<Ty> = ps
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| keep(*k))
+        .map(|(_, t)| t.clone())
+        .collect();
+    let poly = Poly::mono(curry(kept_tys, ret, eff));
+    let call = args
+        .into_iter()
+        .enumerate()
+        .filter(|(k, _)| keep(*k))
+        .fold(Term::Var(go), |f, (_, a)| {
+            Term::App(Arc::new(f), Arc::new(a))
+        });
+    Some(Term::LetRec(vec![(go, poly, lam)], Arc::new(call)))
+}
+
+/// Is every call of `d` in `t` a tail call: the last thing done, with
+/// nothing waiting for what it answers? A call under a lambda or inside a
+/// handler is not one, whatever its position there.
+fn tail_only(t: &Term, d: Var) -> bool {
+    fn go(t: &Term, d: Var, tail: bool) -> bool {
+        match t {
+            Term::Loc(_, x) => go(x, d, tail),
+            Term::App(..) | Term::TyApp(..) if spine_head(t) == Some(d) => {
+                let (_, args) = call_spine_of(t);
+                tail && args.iter().all(|a| go(a, d, false))
+            }
+            Term::Var(v) => *v != d,
+            Term::Lit(_) | Term::Error => true,
+            Term::App(f, a) => go(f, d, false) && go(a, d, false),
+            Term::TyApp(f, _) => go(f, d, false),
+            Term::Lam(_, _, b) | Term::TyLam(_, b) => go(b, d, false),
+            Term::Let(_, _, r, b) => go(r, d, false) && go(b, d, tail),
+            Term::LetRec(bs, b) => bs.iter().all(|(_, _, t)| go(t, d, false)) && go(b, d, tail),
+            Term::Join { rhs, body, .. } => go(rhs, d, tail) && go(body, d, tail),
+            Term::Jump(_, xs, _)
+            | Term::Tuple(xs)
+            | Term::Array(xs, _)
+            | Term::Prim(_, xs, _)
+            | Term::Ctor(_, _, xs) => xs.iter().all(|x| go(x, d, false)),
+            Term::If(c, a, b) => go(c, d, false) && go(a, d, tail) && go(b, d, tail),
+            Term::Case(s, arms, _) => {
+                go(s, d, false)
+                    && arms.iter().all(|(_, g, b)| {
+                        g.as_ref().is_none_or(|g| go(g, d, false)) && go(b, d, tail)
+                    })
+            }
+            Term::Proj(x, _) | Term::Sel(x, _, _) | Term::Perform(_, _, x, _) => go(x, d, false),
+            Term::Record(fs) => fs.iter().all(|(_, x)| go(x, d, false)),
+            Term::Extend(a, _, b) => go(a, d, false) && go(b, d, false),
+            Term::Handle {
+                body, clauses, ret, ..
+            } => {
+                go(body, d, false)
+                    && clauses.iter().all(|c| go(&c.body, d, false))
+                    && ret.as_ref().is_none_or(|(_, _, b)| go(b, d, false))
+            }
+        }
+    }
+    go(t, d, true)
+}
+
+/// A function type taking `n` arguments, however its arrows are grouped:
+/// the parameters in order, what it answers, and the effect of the call
+/// that answers it.
+fn uncurry(ty: &Ty, n: usize) -> Option<(Vec<Ty>, Ty, Ty)> {
+    let mut params = Vec::new();
+    let mut cur = ty.clone();
+    loop {
+        if params.len() == n {
+            return Some((params, cur, Ty::RowEmpty));
+        }
+        let Ty::Fun(ps, ret, eff) = cur else {
+            return None;
+        };
+        if params.len() + ps.len() > n {
+            return None;
+        }
+        params.extend(ps);
+        if params.len() == n {
+            return Some((params, *ret, *eff));
+        }
+        cur = *ret;
+    }
+}
+
+/// The function type taking `params` one at a time, with `eff` on the call
+/// that answers `ret`, as core writes a curried definition's type.
+fn curry(params: Vec<Ty>, ret: Ty, eff: Ty) -> Ty {
+    let mut ty = ret;
+    let last = params.len().saturating_sub(1);
+    for (k, p) in params.into_iter().enumerate().rev() {
+        let e = if k == last { eff.clone() } else { Ty::RowEmpty };
+        ty = Ty::Fun(vec![p], Box::new(ty), Box::new(e));
+    }
+    ty
+}
+
+/// A copy of `t` binding names nothing else binds.
+fn fresh_copy(t: &Term, fresh: &mut Fresh) -> Term {
+    freshen(
+        &Body {
+            binders: Vec::new(),
+            params: Vec::new(),
+            term: t.clone(),
+            original: None,
+        },
+        fresh,
+    )
+    .term
+}
+
 // --- the rewrite -----------------------------------------------------------
 
-fn term(t: &Term, bodies: &HashMap<Var, Body>, fresh: &mut Fresh) -> Term {
+fn term(
+    t: &Term,
+    bodies: &HashMap<Var, Body>,
+    loops: &HashMap<Var, Loop>,
+    fresh: &mut Fresh,
+) -> Term {
     rewrite::term(
         t,
         &mut |t| match call(&t, bodies) {
             Some((body, tys, args)) => enter(body, tys, args, fresh),
-            None => t,
+            None => match loop_call(&t, loops) {
+                Some((l, tys, args, dropped)) => {
+                    let d = spine_head(&t).expect("a loop call has a head");
+                    enter_loop(l, d, tys, args, &dropped, fresh).unwrap_or(t)
+                }
+                None => t,
+            },
         },
         &mut |p| p,
     )
@@ -281,9 +799,10 @@ fn call<'b>(t: &Term, bodies: &'b HashMap<Var, Body>) -> Option<(&'b Body, Vec<T
                 // what the body answers, which is not this rewrite's business.
                 // And instantiated exactly, or the body's types cannot be made
                 // the ones this copy is for.
-                if args.len() != body.params.len() || tys.len() != body.binders.len() {
+                if args.len() != body.params.len() {
                     return None;
                 }
+                let tys = body.instantiation(tys)?;
                 args.reverse();
                 return Some((body, tys, args));
             }
@@ -318,6 +837,7 @@ fn retype(body: &Body, tys: &[Ty]) -> Body {
             binders: Vec::new(),
             params: body.params.clone(),
             term: body.term.clone(),
+            original: None,
         };
     }
     let map: HashMap<u32, Ty> = body
@@ -330,6 +850,8 @@ fn retype(body: &Body, tys: &[Ty]) -> Body {
     let term = rewrite::term(
         &body.term,
         &mut |t| match t {
+            // A literal typed by a binder is made at the type the binder takes.
+            Term::Lit(l) => Term::Lit(specialize::lit_at(&l, &map)),
             Term::Lam(v, ty, b) => Term::Lam(v, at(&ty), b),
             Term::Let(v, poly, rhs, b) => Term::Let(v, at_poly(&poly, &map), rhs, b),
             Term::LetRec(binds, b) => Term::LetRec(
@@ -383,6 +905,7 @@ fn retype(body: &Body, tys: &[Ty]) -> Body {
         &mut |p| match p {
             Pat::Var(v, ty) => Pat::Var(v, at(&ty)),
             Pat::As(v, ty, inner) => Pat::As(v, at(&ty), inner),
+            Pat::Lit(l) => Pat::Lit(specialize::lit_at(&l, &map)),
             p => p,
         },
     );
@@ -390,6 +913,7 @@ fn retype(body: &Body, tys: &[Ty]) -> Body {
         binders: Vec::new(),
         params: body.params.iter().map(|(v, ty)| (*v, at(ty))).collect(),
         term,
+        original: None,
     }
 }
 
@@ -481,6 +1005,7 @@ fn freshen(body: &Body, fresh: &mut Fresh) -> Body {
             .map(|(v, ty)| (rename(v), ty.clone()))
             .collect(),
         term,
+        original: None,
     }
 }
 

@@ -191,9 +191,23 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     // reason on one side -- it needs join points to put a pushed-in context in
     // -- and because on the other a jump to a definition is not a term it can
     // look into.
-    let program = &core::globals::program(&core::simplify::program(&core::joins::program(
-        &core::globals::inline_literals(&core::bools::program(&specialized)),
-    )));
+    let literals = core::globals::inline_literals(&core::bools::program(&specialized));
+    let inlined = if opt.inlines() {
+        core::inline::program(&literals)
+    } else {
+        literals.clone()
+    };
+    let program =
+        &core::globals::program(&core::simplify::program(&core::joins::program(&inlined)));
+    if let Ok(want) = std::env::var("MEADOW_DUMP_CORE") {
+        for (stage, p) in [("before", &literals), ("after", program)] {
+            for d in &p.defs {
+                if &*d.name.to_string() == want {
+                    eprintln!("== {stage} {} {:?}\n{:#?}", d.name, d.poly, d.term);
+                }
+            }
+        }
+    }
 
     let mut globals = HashMap::new();
     for (i, d) in program.defs.iter().enumerate() {
@@ -213,6 +227,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         unsupported: HashSet::new(),
         returns: HashSet::new(),
         continuations: HashSet::new(),
+        frames: HashSet::new(),
         ev: VarId(0),
         letrecs: HashSet::new(),
         worker_ev: HashSet::new(),
@@ -442,6 +457,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
                 .copied()
                 .collect(),
             returns: lower.returns,
+            frames: lower.frames,
             ctor_fields: program.ctor_fields.clone(),
             origins: program.origins.clone(),
             reps,
@@ -512,6 +528,8 @@ struct Lower {
     returns: HashSet<Name>,
     /// See [`Program::continuations`].
     continuations: HashSet<Name>,
+    /// See [`Program::frames`].
+    frames: HashSet<Name>,
     /// The name holding the evidence -- the handlers in scope -- where lowering
     /// has got to. See the module docs.
     ev: Name,
@@ -712,7 +730,31 @@ impl Lower {
                 _ => return None,
             },
             Term::Array(_, elem) => Ty::Con(InternedString::from("Array"), vec![elem.clone()]),
-            Term::Record(_) | Term::Extend(..) => Ty::Record(Box::new(Ty::RowEmpty)),
+            // A literal's fields, each at its own type where that is known:
+            // a `match` on one -- which is what a record accessor becomes once
+            // it is inlined at a literal -- takes its fields' representations
+            // from here.
+            Term::Record(fields) => Ty::Record(Box::new(fields.iter().rev().fold(
+                Ty::RowEmpty,
+                |rest, (label, x)| {
+                    Ty::RowExtend(
+                        *label,
+                        Box::new(self.type_of(x).unwrap_or_else(core::unknown)),
+                        Box::new(rest),
+                    )
+                },
+            ))),
+            Term::Extend(x, label, v) => {
+                let rest = match self.type_of(x) {
+                    Some(Ty::Record(row)) => *row,
+                    _ => Ty::RowEmpty,
+                };
+                Ty::Record(Box::new(Ty::RowExtend(
+                    *label,
+                    Box::new(self.type_of(v).unwrap_or_else(core::unknown)),
+                    Box::new(rest),
+                )))
+            }
             Term::Sel(_, _, ty)
             | Term::Ctor(_, ty, _)
             | Term::Case(_, _, ty)
@@ -742,14 +784,22 @@ impl Lower {
         )
     }
 
-    /// Names for the `n` fields of constructor `ctor` in a value of type `of`,
-    /// each holding what the constructor's declaration says it does.
-    fn field_names(&mut self, ctor: InternedString, n: usize, of: Option<&core::Ty>) -> Vec<Name> {
+    /// Names for the fields of constructor `ctor` in a value of type `of`
+    /// matched against `subs`, each holding what the constructor's
+    /// declaration says it does -- or what the pattern says, where the
+    /// declaration cannot be read at `of`.
+    fn field_names(
+        &mut self,
+        ctor: InternedString,
+        subs: &[Pat],
+        of: Option<&core::Ty>,
+    ) -> Vec<Name> {
         let types = self.field_types(ctor, of);
-        (0..n)
-            .map(|i| {
+        subs.iter()
+            .enumerate()
+            .map(|(i, p)| {
                 let ty = types.as_ref().and_then(|ts| ts.get(i).cloned());
-                self.fresh_typed(ty)
+                self.fresh_typed(field_type(ty, p))
             })
             .collect()
     }
@@ -1105,8 +1155,16 @@ impl Lower {
     fn expand(&self, want: HashSet<Var>) -> HashSet<Var> {
         let mut out = HashSet::new();
         for v in want {
-            match self.globals.get(&v) {
-                Some((_, extra)) => out.extend(extra.iter().copied()),
+            // A join point's name stands for its environment the same way a
+            // `letrec` binding's does: a jump to it needs what its block
+            // takes, and mentions none of it itself.
+            let extra = self
+                .globals
+                .get(&v)
+                .map(|(_, e)| e)
+                .or_else(|| self.joins.get(&v).map(|(_, e)| e));
+            match extra {
+                Some(extra) => out.extend(extra.iter().copied()),
                 None => {
                     out.insert(v);
                 }
@@ -1539,6 +1597,9 @@ impl Lower {
             return self.direct(e, env, name, f);
         }
         let kk = self.fresh_ref();
+        // `e` runs, returns through `kk` once, and everything it pushed
+        // meanwhile is dead: a frame. See [`Program::frames`].
+        self.frames.insert(kk);
         let x = match name {
             Some(n) => n,
             None => {
@@ -2240,7 +2301,7 @@ impl Lower {
                 unreachable!("the prefix is constructor patterns");
             };
             let tag = self.tag_of(*ctor);
-            let fields = self.field_names(*ctor, subs.len(), scrutinee_ty.as_ref());
+            let fields = self.field_names(*ctor, subs, scrutinee_ty.as_ref());
             let mut arm_env = fields.clone();
             arm_env.extend_from_slice(&env);
             let pairs: Vec<(&Pat, Name)> = subs.iter().zip(fields.iter().copied()).collect();
@@ -2429,7 +2490,7 @@ impl Lower {
             Pat::Ctor(name, subs) => {
                 let tag = self.tag_of(*name);
                 let of = self.type_of_name(subject);
-                let fields = self.field_names(*name, subs.len(), of.as_ref());
+                let fields = self.field_names(*name, subs, of.as_ref());
                 let mut arm_env = fields.clone();
                 arm_env.extend_from_slice(&env);
                 let pairs: Vec<(&Pat, Name)> = subs.iter().zip(fields.iter().copied()).collect();
@@ -2498,7 +2559,7 @@ impl Lower {
                         None => ok(this, env),
                         Some(((label, p), rest)) => {
                             let of = this.type_of_name(subject);
-                            let ty = Lower::label_type(of.as_ref(), *label);
+                            let ty = field_type(Lower::label_type(of.as_ref(), *label), p);
                             this.produces(
                                 Extern::Select(*label),
                                 vec![subject],
@@ -2548,11 +2609,18 @@ impl Lower {
                     got.into_iter().map(|(j, n)| (&subs[j], n)).collect();
                 return this.match_all(pairs, env, fail, ok);
             }
+            // A field nothing looks at is not read: `_` binds no name, so
+            // there is nothing to hold it -- and nothing to know its type by,
+            // where the value's own type says nothing.
+            if matches!(subs[i], Pat::Wild) {
+                return go(this, subs, i + 1, subject, env, got, fail, ok);
+            }
             let ty = match this.type_of_name(subject) {
                 Some(core::Ty::Tuple(items)) => items.get(i).cloned(),
                 Some(core::Ty::Con(_, args)) => args.first().cloned(),
                 _ => None,
             };
+            let ty = field_type(ty, &subs[i]);
             this.produces(
                 Extern::Field(i),
                 vec![subject],
@@ -2716,14 +2784,17 @@ impl Lower {
         }
         let flag = self.fresh_as(Rep::Bits(core::desc::UNIT));
         let taken = self.fresh_ref();
+        let seg = self.fresh_ref();
         let r = self.fresh_ref();
         let kh = self.fresh_ref();
         let mut env1 = vec![flag];
         env1.extend_from_slice(env);
         let mut env2 = vec![taken];
         env2.extend_from_slice(&env1);
+        let mut env2s = vec![seg];
+        env2s.extend_from_slice(&env2);
         let mut env3 = vec![r];
-        env3.extend_from_slice(&env2);
+        env3.extend_from_slice(&env2s);
         let mut env4 = vec![kh];
         env4.extend_from_slice(&env3);
         let enter = Statement::Substitute(
@@ -2733,7 +2804,7 @@ impl Lower {
                 body: Statement::Invoke(clause, 0),
             }),
         );
-        let resume = self.resumption(k, target, taken, res_ty);
+        let resume = self.resumption(k, target, taken, seg, res_ty);
         Statement::Extern {
             op: Extern::Lit(core::Lit::Unit),
             args: vec![],
@@ -2744,21 +2815,32 @@ impl Lower {
                     args: vec![flag],
                     blocks: vec![Block {
                         params: env2,
-                        body: Statement::New {
-                            name: r,
-                            // The flag first: it is what a thread send or a
-                            // `compact` meets first, and what makes it refuse
-                            // this as a continuation.
-                            captures: vec![taken, k, target],
-                            methods: vec![resume],
-                            rest: Box::new(Statement::Extern {
-                                op: Extern::Prim(core::Prim::GetRef),
-                                args: vec![target],
-                                blocks: vec![Block {
-                                    params: env4,
-                                    body: enter,
-                                }],
-                            }),
+                        // The frames between here and the handler, cut off the
+                        // stack: what the resumption puts back. Cut before the
+                        // handler's continuation is read, because the clause
+                        // runs below the cut.
+                        body: Statement::Extern {
+                            op: Extern::Prim(core::Prim::Detach),
+                            args: vec![target],
+                            blocks: vec![Block {
+                                params: env2s,
+                                body: Statement::New {
+                                    name: r,
+                                    // The flag first: it is what a thread send
+                                    // or a `compact` meets first, and what
+                                    // makes it refuse this as a continuation.
+                                    captures: vec![taken, k, target, seg],
+                                    methods: vec![resume],
+                                    rest: Box::new(Statement::Extern {
+                                        op: Extern::Prim(core::Prim::GetRef),
+                                        args: vec![target],
+                                        blocks: vec![Block {
+                                            params: env4,
+                                            body: enter,
+                                        }],
+                                    }),
+                                },
+                            }],
                         },
                     }],
                 },
@@ -2788,16 +2870,26 @@ impl Lower {
     /// The method of a resumption capturing `[taken, k, target]`, called with a
     /// value, a continuation and evidence it has no use for: run once, send
     /// the handler's value to the caller from now on, and continue at `k`.
-    fn resumption(&mut self, k: Name, target: Name, taken: Name, ty: Option<core::Ty>) -> Block {
+    fn resumption(
+        &mut self,
+        k: Name,
+        target: Name,
+        taken: Name,
+        seg: Name,
+        ty: Option<core::Ty>,
+    ) -> Block {
         let (v, c, ev) = (self.fresh_typed(ty), self.fresh_ref(), self.fresh_ref());
         self.returns.insert(c);
-        let params = vec![taken, k, target, v, c, ev];
+        let params = vec![taken, k, target, seg, v, c, ev];
         let first = self.fresh_as(Rep::Bits(core::desc::BOOL));
         let mut at_first = vec![first];
         at_first.extend_from_slice(&params);
         let u = self.fresh_as(Rep::Bits(core::desc::UNIT));
         let mut at_u = vec![u];
         at_u.extend_from_slice(&at_first);
+        let back = self.fresh_as(Rep::Bits(core::desc::UNIT));
+        let mut at_back = vec![back];
+        at_back.extend_from_slice(&at_u);
         let go = self.ret(k, v);
         Block {
             params,
@@ -2821,7 +2913,16 @@ impl Lower {
                                     args: vec![target, c],
                                     blocks: vec![Block {
                                         params: at_u,
-                                        body: go,
+                                        // The segment back on the stack, and
+                                        // then into `k`, its topmost frame.
+                                        body: Statement::Extern {
+                                            op: Extern::Prim(core::Prim::Reattach),
+                                            args: vec![seg],
+                                            blocks: vec![Block {
+                                                params: at_back,
+                                                body: go,
+                                            }],
+                                        },
                                     }],
                                 },
                             },
@@ -2968,14 +3069,38 @@ impl Lower {
                 p
             };
             stmt = match step {
-                Step::Target(n) => Statement::Extern {
-                    op: Extern::Prim(core::Prim::NewRef),
-                    args: vec![k],
-                    blocks: vec![Block {
-                        params: with(n),
-                        body: stmt,
-                    }],
-                },
+                // The target, and then a chunk of the frame stack for the
+                // body: what lets a general clause cut the body's frames off
+                // at a chunk boundary rather than copy them.
+                Step::Target(n) => {
+                    let u = self.fresh_as(Rep::Bits(core::desc::UNIT));
+                    let mut with_u = vec![u];
+                    with_u.extend(with(n));
+                    // `stmt` was lowered for the environment without the
+                    // unit `Enter` answers, so that is dropped again first.
+                    let dropped = Statement::Substitute(
+                        with(n),
+                        Box::new(Block {
+                            params: with(n),
+                            body: stmt,
+                        }),
+                    );
+                    Statement::Extern {
+                        op: Extern::Prim(core::Prim::NewRef),
+                        args: vec![k],
+                        blocks: vec![Block {
+                            params: with(n),
+                            body: Statement::Extern {
+                                op: Extern::Prim(core::Prim::Enter),
+                                args: vec![n],
+                                blocks: vec![Block {
+                                    params: with_u,
+                                    body: dropped,
+                                }],
+                            },
+                        }],
+                    }
+                }
                 Step::Clause(n, captures, method) | Step::Return(n, captures, method) => {
                     Statement::New {
                         name: n,
@@ -3061,6 +3186,21 @@ fn con(name: &str) -> core::Ty {
 }
 
 /// The type of a literal.
+/// The type of a field a pattern matches: `derived` from the value's type,
+/// unless that says nothing -- because the value's type is not known, or is
+/// a specialized copy's `#Ref`, which is a representation and not a type --
+/// in which case what the pattern itself was checked at, where it names the
+/// field.
+fn field_type(derived: Option<core::Ty>, p: &Pat) -> Option<core::Ty> {
+    match derived {
+        Some(ty) if !matches!(ty, core::Ty::Var(_)) => Some(ty),
+        derived => match p {
+            Pat::Var(_, ty) | Pat::As(_, ty, _) => Some(ty.clone()),
+            _ => derived,
+        },
+    }
+}
+
 fn lit_type(l: &core::Lit) -> core::Ty {
     use core::{Lit, Ty};
     let con = |n: &str| Ty::Con(InternedString::from(n), Vec::new());

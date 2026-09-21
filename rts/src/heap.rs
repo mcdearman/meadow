@@ -370,10 +370,22 @@ pub enum Kind {
     /// elements and they are bytes -- see [`Heap::alloc_array`] -- and
     /// everything that reads an array reads either.
     Bytes,
+    /// A function's continuation, on the thread's frame stack rather than in
+    /// the heap: laid out as a [`Kind::Closure`] -- `meta` the method table,
+    /// the fields the captures -- so that invoking it is invoking a closure,
+    /// plus popping it and everything above it. Only [`Heap::push_frame`]
+    /// makes one, and only in a chunk the old generation holds in state
+    /// `STACK`.
+    Frame,
+    /// A stack segment a general handler clause cut off: `[top, fsp]`, the
+    /// segment's top chunk and where its frames end, both as `Int`s. What a
+    /// resumption holds instead of the continuation itself, and puts back
+    /// exactly once -- see [`Heap::detach`] and [`Heap::reattach`].
+    Stack,
 }
 
 impl Kind {
-    const ALL: [Kind; 14] = [
+    const ALL: [Kind; 16] = [
         Kind::Data,
         Kind::Array,
         Kind::Record,
@@ -388,6 +400,8 @@ impl Kind {
         Kind::TVar,
         Kind::Str,
         Kind::Bytes,
+        Kind::Frame,
+        Kind::Stack,
     ];
 
     /// The kind a header's first byte names.
@@ -441,8 +455,26 @@ pub struct Heap {
     /// Kept by [`Heap::sync`], which every path that can move the nursery or
     /// change the old generation's blocks already calls.
     pub(crate) tables: [*const *mut Word; 2],
+    /// The frame stack's top and the end of its current chunk, in slots: where
+    /// native code pushes a frame. See [`Heap::push_frame`].
+    pub(crate) fsp: Addr,
+    pub(crate) flim: Addr,
+    /// The current chunk of the frame stack, `0` before the first frame, and
+    /// its first slot as a machine address: a frame in it is at
+    /// `fbase + (a - fcur) * 8`, one load rather than the block table's three.
+    pub(crate) fcur: Addr,
+    pub(crate) fbase: *mut Word,
+    /// Chunks entered so far: the serial the next one gets.
+    chunk_serial: u32,
     /// The nursery's half of `tables`, which this owns.
     nursery_blocks: Vec<*mut Word>,
+    /// Chunks that were popped, kept for the next push rather than given
+    /// back: a `handle` in a loop enters and leaves one at every iteration.
+    free_chunks: Vec<Addr>,
+    /// Stack segments cut off by a general handler clause and not yet put
+    /// back, each with the marking epoch it was cut in. Their frames are roots
+    /// until the object naming them dies -- see [`Heap::finish_cycle`].
+    detached: Vec<Detached>,
     config: GcConfig,
     /// The nursery, and its other half for collecting into.
     space: Vec<Word>,
@@ -603,7 +635,14 @@ impl Heap {
             sites: crate::profile::Sites::default(),
             region_growth: 0,
             tables: [std::ptr::null(); 2],
+            fsp: 0,
+            flim: 0,
+            fcur: 0,
+            fbase: std::ptr::null_mut(),
+            chunk_serial: 0,
             nursery_blocks: Vec::new(),
+            free_chunks: Vec::new(),
+            detached: Vec::new(),
         };
         heap.sync();
         heap
@@ -651,6 +690,17 @@ impl Heap {
     /// the address it found there.
     pub(crate) fn publish_tables(&mut self) {
         self.tables = [self.nursery_blocks.as_ptr(), self.old.bases_ptr()];
+        self.publish_chunk();
+    }
+
+    /// Make `fbase` the current chunk's: after anything that changes which
+    /// chunk is current, or where the blocks are.
+    fn publish_chunk(&mut self) {
+        self.fbase = if self.fcur == 0 {
+            std::ptr::null_mut()
+        } else {
+            self.old.base_ptr(self.fcur)
+        };
     }
 
     /// Has enough gone into regions since the last collection that dead ones
@@ -881,6 +931,30 @@ impl Heap {
     /// of words the machine holds it as.
     pub fn word_at(&self, a: Addr) -> Word {
         self.slot(a)
+    }
+
+    /// Where slot `a` is in memory: what native code's `Locate` step finds
+    /// through the block tables, for the thin machine to find the same way.
+    /// Not for a region, whose blocks are found by search.
+    pub(crate) fn machine_addr(&self, a: Addr) -> *mut Word {
+        if a < OLD_BASE {
+            self.space.as_ptr().wrapping_add(a as usize) as *mut Word
+        } else {
+            self.old.base_ptr(a).wrapping_add(old::offset_of(a))
+        }
+    }
+
+    /// Set the `meta` of the object at `a`, keeping the rest of its header.
+    /// For a handler's target `Ref`, whose `meta` is otherwise unused: the tag
+    /// of the chunk its `handle` entered.
+    pub fn set_meta(&mut self, a: Addr, meta: u32) {
+        let w = self.slot(a + 1) & !0xFFFF_FFFF | meta as Word;
+        if a < OLD_BASE {
+            self.space[a as usize + 1] = w;
+        } else {
+            let _held = self.marking.is_some().then(|| lock(&self.mutation));
+            self.old.put(a + 1, w);
+        }
     }
 
     /// Write the heap word at slot `a`, and **nothing else**: no descriptor,
@@ -1433,6 +1507,18 @@ impl Heap {
                 }
             }
         }
+        // The frames, live and detached alike, exactly as the registers: what
+        // they reach is in the snapshot. A segment detached after this is
+        // black, and one put back is live -- neither needs the marker to look.
+        let slots = frame_slots(&self.old, self.fcur, self.fsp, &self.detached);
+        for slot in slots {
+            let x = self.old.get(slot) as Addr;
+            if x >= REGION_BASE {
+                self.mark_region_at(x);
+            } else if x >= OLD_BASE {
+                grey.push(x);
+            }
+        }
         job.push(&grey);
         if self.config.mark_threads > 0 {
             mark::submit(&job, self.config.mark_threads);
@@ -1467,6 +1553,21 @@ impl Heap {
             .collect();
         for id in unreached {
             self.free_region(id);
+        }
+        // A detached segment nothing named any more is dead, chunks and all.
+        // One cut after the cycle began is black: it stays whatever the marker
+        // saw.
+        let named = job.stacks();
+        let mut dead = Vec::new();
+        self.detached.retain(|d| {
+            let keep = d.epoch >= job.epoch || named.contains(&d.top);
+            if !keep {
+                dead.push(d.top);
+            }
+            keep
+        });
+        for top in dead {
+            self.free_segment(top);
         }
         // A remembered field in a line the cycle freed belongs to a dead
         // object, and the line may be allocated into: forget it.
@@ -1545,6 +1646,17 @@ impl Heap {
                 *r = Value::Obj(gc.forward(a));
             }
         }
+        // Every frame on the stack, and on every detached segment, is a root:
+        // its references into the nursery move with what they point at.
+        for slot in frame_slots(gc.old, self.fcur, self.fsp, &self.detached) {
+            let x = gc.old.get(slot) as Addr;
+            // Into the nursery: moved with what it points at. Into a region:
+            // what keeps the region alive, when this collection is the whole.
+            if x < OLD_BASE || x >= REGION_BASE {
+                let n = gc.forward(x);
+                gc.old.put(slot, n as Word);
+            }
+        }
 
         {
             // A remembered field may be in an object the marker is reading.
@@ -1613,6 +1725,27 @@ impl Heap {
         self.sync();
         self.top = top;
         self.aged = top;
+        // A segment whose naming object was young and did not survive is dead
+        // now, not at the end of some later marking cycle: a transaction that
+        // retries cuts one off every attempt, and waiting for the marker to
+        // free them left a chunk to allocate per attempt. One whose object
+        // moved is followed; one whose object was promoted is the marker's.
+        let from = &self.other;
+        let mut dead = Vec::new();
+        for d in &mut self.detached {
+            if d.obj != 0 && d.obj < OLD_BASE {
+                match object::forwarded(from[d.obj as usize]) {
+                    Some(n) => d.obj = n,
+                    None => dead.push(d.top),
+                }
+            }
+        }
+        if !dead.is_empty() {
+            self.detached.retain(|d| !dead.contains(&d.top));
+            for top in dead {
+                self.free_segment(top);
+            }
+        }
         self.copied += copied as u64;
         self.promoted += promoted as u64;
 
@@ -1699,7 +1832,11 @@ impl Heap {
             }
             let h = self.head(a);
             let (kind, len, meta) = (h.kind, h.len, h.meta);
-            if a >= OLD_BASE {
+            // A frame is in a stack chunk, which the marker leaves alone: the
+            // frame stack is a root, and a chunk is freed as one with its
+            // segment (see `finish_cycle`), not line by line. What the frame
+            // holds is checked like anything else.
+            if a >= OLD_BASE && !self.old.in_stack(a) {
                 assert!(
                     self.old.is_marked(a, epoch),
                     "old object {a} ({kind:?}) is reachable but was not marked"
@@ -1778,7 +1915,7 @@ impl Heap {
         match h.kind {
             Kind::Ref => return Err(Unsendable::Ref),
             Kind::MutArray => return Err(Unsendable::MutArray),
-            Kind::Resume => return Err(Unsendable::Continuation),
+            Kind::Resume | Kind::Frame | Kind::Stack => return Err(Unsendable::Continuation),
             Kind::Compact => self.carry(parcel, h.meta),
             _ => {}
         }
@@ -2017,7 +2154,9 @@ impl Heap {
         let meta = match kind {
             Kind::Ref => return Err(Uncompactable::Ref),
             Kind::MutArray => return Err(Uncompactable::MutArray),
-            Kind::Closure | Kind::Resume => return Err(Uncompactable::Function),
+            Kind::Closure | Kind::Resume | Kind::Frame | Kind::Stack => {
+                return Err(Uncompactable::Function);
+            }
             // A handle inside a compacted value now names the region it is in,
             // since that is where its contents are copied.
             Kind::Compact => id,
@@ -2031,6 +2170,264 @@ impl Heap {
 }
 
 /// A nursery collection in progress.
+
+/// A stack segment cut off by a general handler clause: see [`Heap::detach`].
+struct Detached {
+    /// Its top chunk, which names the rest through the chunk headers.
+    top: Addr,
+    /// The marking epoch it was cut in.
+    epoch: u32,
+    /// The [`Kind::Stack`] object naming it, once made -- `0` until then. While
+    /// young, whether it survives a nursery collection says whether the
+    /// segment is still wanted; once old, the marker says.
+    obj: Addr,
+}
+
+/// Slots in the header of a frame-stack chunk: the chunk below it in its
+/// chain (`0` at the bottom), where that chunk's frames end, and the serial
+/// number the chunk was entered with -- what tells a handler's chunk from a
+/// later chunk that reused the same block.
+const CHUNK_HEADER: Addr = 3;
+
+/// How a `handle` names its chunk, in its target `Ref`'s `meta`: the block
+/// number in the low 17 bits, the low 15 bits of the serial above.
+const TAG_BLOCK_BITS: u32 = 17;
+
+/// Every slot of every frame that is a root -- on the live chain from `fcur`
+/// up to `fsp`, and on each detached segment -- that holds a reference.
+fn frame_slots(old: &Old, fcur: Addr, fsp: Addr, detached: &[Detached]) -> Vec<Addr> {
+    let mut out = Vec::new();
+    let mut walk = |mut chunk: Addr, mut end: Addr| {
+        while chunk != 0 {
+            let mut a = chunk + CHUNK_HEADER;
+            while a < end {
+                let h = Head::read(old.get(a), old.get(a + 1));
+                debug_assert_eq!(h.kind, Kind::Frame, "a frame stack holds frames");
+                let header = h.header();
+                for i in 0..h.len as usize {
+                    if h.desc(i, |k| old.get(a + k as Addr)) == desc::REF {
+                        out.push(a + (header + i) as Addr);
+                    }
+                }
+                a += h.size() as Addr;
+            }
+            end = old.get(chunk + 1) as Addr;
+            chunk = old.get(chunk) as Addr;
+        }
+    };
+    if fcur != 0 {
+        walk(fcur, fsp);
+    }
+    for d in detached {
+        // A detached segment records its own end in its top chunk's second
+        // header slot, which is free while it is off the stack.
+        let top_fsp = old.get(d.top + 1) as Addr;
+        walk(d.top, top_fsp);
+    }
+    out
+}
+
+/// # The frame stack
+///
+/// A function's continuation used to be a heap object: four words allocated
+/// per non-tail call, and collected later. It is a frame now: the same object,
+/// [`Kind::Frame`], written into a per-thread stack of 64 KiB **chunks** and
+/// reclaimed by moving the stack pointer back when a function returns through
+/// it. The chunks are old-generation blocks in state `STACK`, so their
+/// addresses are ordinary old addresses -- the interpreter, the collector's
+/// tables and native code's block-table walk all reach a frame the way they
+/// reach any old object -- and the allocator, the evacuator and the marker
+/// leave them alone by their state.
+///
+/// A chunk's first two slots say which chunk is below it in its chain and
+/// where that chunk's frames end. A new chunk is linked in when the current
+/// one overflows, so a deep recursion grows a chain and never copies a frame;
+/// and every `handle` enters a chunk of its own, so that a general clause can
+/// cut off everything the handled body pushed by unlinking at a chunk boundary
+/// -- O(1), no copying -- which is what one-shot resumption is. That is the
+/// design of GHC's stack chunks and of OCaml 5's fibers, and it is why the
+/// stack is chunked rather than contiguous.
+///
+/// Frames are roots: at every nursery collection and at the start of every
+/// marking cycle the heap walks every frame on the live chain and on every
+/// detached segment, so the marker never has to read a frame while the program
+/// pushes and pops them.
+impl Heap {
+    /// A chunk to push frames into, from the popped ones first.
+    fn new_chunk(&mut self) -> Addr {
+        self.free_chunks
+            .pop()
+            .unwrap_or_else(|| self.old.stack_block())
+    }
+
+    /// Start a chunk on top of the current one -- what a push does when its
+    /// chunk is full, and what [`meadow_core::Prim::Enter`] does at every
+    /// `handle`, so that the handler's own chunk is a boundary a general
+    /// clause can cut at. Answers the chunk's tag, for the handle's target.
+    ///
+    /// Every `handle`, even one whose chunk would sit empty: two handlers
+    /// sharing a chunk would share a boundary, and the inner one's clause
+    /// performing to the outer would cut off the outer's frames with its own.
+    pub fn enter_frames(&mut self) -> u32 {
+        let base = self.new_chunk();
+        self.chunk_serial = self.chunk_serial.wrapping_add(1);
+        self.old.put(base, self.fcur as Word);
+        self.old.put(base + 1, self.fsp as Word);
+        self.old.put(base + 2, self.chunk_serial as Word);
+        self.fcur = base;
+        self.fsp = base + CHUNK_HEADER;
+        self.flim = base + old::BLOCK as Addr;
+        self.publish_chunk();
+        (self.chunk_serial & ((1 << (32 - TAG_BLOCK_BITS)) - 1)) << TAG_BLOCK_BITS
+            | old::block_of(base) as u32
+    }
+
+    /// Push a frame with method table `meta` and `n` captures, each `word(j)`
+    /// described by `desc(j)`, and answer its address.
+    pub fn push_frame(
+        &mut self,
+        meta: u32,
+        n: usize,
+        word: impl Fn(usize) -> Word,
+        desc: impl Fn(usize) -> desc::Desc,
+    ) -> Addr {
+        let size = Heap::size_of(Kind::Frame, n) as Addr;
+        if self.fcur == 0 || self.fsp + size > self.flim {
+            self.enter_frames();
+        }
+        let a = self.fsp;
+        let old = &self.old;
+        object::write_header(Kind::Frame, meta, (0..n).map(&desc), |k, w| {
+            old.put(a + k as Addr, w)
+        });
+        let header = meadow_core::compact::header_slots(false, n) as Addr;
+        for j in 0..n {
+            old.put(a + header + j as Addr, word(j));
+        }
+        self.fsp += size;
+        a
+    }
+
+    /// Return through the frame at `a`: it and everything above it are gone.
+    /// Chunks emptied on the way are kept for the next push.
+    pub fn pop_to(&mut self, a: Addr) {
+        debug_assert!(
+            self.old.in_stack(a),
+            "returning through {a}, which is not a frame"
+        );
+        while !(self.fcur..self.flim).contains(&a) {
+            let below = self.old.get(self.fcur) as Addr;
+            let below_fsp = self.old.get(self.fcur + 1) as Addr;
+            assert_ne!(
+                below, 0,
+                "returning through a frame that is not on the stack"
+            );
+            self.free_chunks.push(self.fcur);
+            self.fcur = below;
+            self.flim = below + old::BLOCK as Addr;
+            self.fsp = below_fsp;
+            self.publish_chunk();
+        }
+        self.fsp = a;
+    }
+
+    /// Cut off the handler's chunk -- the one `tag` names, entered at its
+    /// `handle` -- and every chunk above it, and answer the segment as its top
+    /// chunk and where its frames end. The program goes on below the cut, on
+    /// the chunk the handler's own continuation is in.
+    ///
+    /// `None` when that chunk is no longer on the stack: the handler has
+    /// returned, and what is performing to it is a closure that escaped its
+    /// `handle` and kept the evidence. There is nothing to return into. The
+    /// serial in the tag is what tells that from a later chunk in the same
+    /// block.
+    pub fn detach(&mut self, tag: u32) -> Option<(Addr, Addr)> {
+        let block = (tag & ((1 << TAG_BLOCK_BITS) - 1)) as usize;
+        let serial = tag >> TAG_BLOCK_BITS;
+        let base = OLD_BASE + (block * old::BLOCK) as Addr;
+        if self.fcur == 0
+            || !self.old.in_stack(base)
+            || self.old.get(base + 2) as u32 & ((1 << (32 - TAG_BLOCK_BITS)) - 1) != serial
+        {
+            return None;
+        }
+        let (top, top_fsp) = (self.fcur, self.fsp);
+        let mut lowest = self.fcur;
+        loop {
+            let below = self.old.get(lowest) as Addr;
+            let below_fsp = self.old.get(lowest + 1) as Addr;
+            let bottom = lowest == base;
+            if !bottom && below == 0 {
+                return None;
+            }
+            if bottom {
+                self.old.put(lowest, 0);
+                self.fcur = below;
+                self.flim = if below == 0 {
+                    0
+                } else {
+                    below + old::BLOCK as Addr
+                };
+                self.fsp = below_fsp;
+                self.publish_chunk();
+                break;
+            }
+            lowest = below;
+        }
+        // The segment's end, kept in the slot the top chunk no longer needs
+        // for a chain above it.
+        self.old.put(top + 1, top_fsp as Word);
+        self.detached.push(Detached {
+            top,
+            epoch: self.old.epoch(),
+            obj: 0,
+        });
+        Some((top, top_fsp))
+    }
+
+    /// The object made to name the segment `top`: see [`Detached::obj`].
+    pub fn name_segment(&mut self, top: Addr, obj: Addr) {
+        if let Some(d) = self.detached.iter_mut().find(|d| d.top == top) {
+            d.obj = obj;
+        }
+    }
+
+    /// Give a whole segment's chunks back for the next push.
+    fn free_segment(&mut self, top: Addr) {
+        let mut chunk = top;
+        while chunk != 0 {
+            let below = self.old.get(chunk) as Addr;
+            self.free_chunks.push(chunk);
+            chunk = below;
+        }
+    }
+
+    /// Put a detached segment back on top of the stack. `false` if it has been
+    /// put back already: a resumption runs once.
+    pub fn reattach(&mut self, top: Addr, top_fsp: Addr) -> bool {
+        let Some(i) = self.detached.iter().position(|d| d.top == top) else {
+            return false;
+        };
+        self.detached.swap_remove(i);
+        let mut bottom = top;
+        while self.old.get(bottom) as Addr != 0 {
+            bottom = self.old.get(bottom) as Addr;
+        }
+        self.old.put(bottom, self.fcur as Word);
+        self.old.put(bottom + 1, self.fsp as Word);
+        self.fcur = top;
+        self.flim = top + old::BLOCK as Addr;
+        self.fsp = top_fsp;
+        self.publish_chunk();
+        true
+    }
+
+    /// Whether `a` is a frame on this heap's stack.
+    pub fn is_frame(&self, a: Addr) -> bool {
+        self.old.in_stack(a)
+    }
+}
+
 struct Minor<'h> {
     from: &'h mut Vec<Word>,
     to: &'h mut Vec<Word>,

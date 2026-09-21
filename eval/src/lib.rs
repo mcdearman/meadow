@@ -1699,6 +1699,7 @@ fn run_prim(op: core::Prim, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // never runs the caching pass that produces these.
         GlobalReady | GlobalGet | GlobalSet => err("a definition cache reached the CEK machine"),
         Once | TakeOnce => err("a resumption's flag reached the CEK machine"),
+        Enter | Detach | Reattach => err("the frame stack reached the CEK machine"),
         IntAdd | IntSub | IntMul | IntDiv | IntMod | IntEq | IntNe | IntLt | IntLe | IntGt
         | IntGe | FloatAdd | FloatSub | FloatMul | FloatDiv | FloatEq | FloatNe | FloatLt
         | FloatLe | FloatGt | FloatGe => err("a typed primitive reached the CEK machine"),

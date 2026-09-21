@@ -222,7 +222,7 @@ impl Vm<'_> {
                     self.render(out, self.heap.field(a, 0));
                 }
                 Kind::Closure => out.push_str("<closure>"),
-                Kind::Resume => out.push_str("<continuation>"),
+                Kind::Resume | Kind::Frame | Kind::Stack => out.push_str("<continuation>"),
                 Kind::Compact => {
                     out.push_str("compact ");
                     self.render(out, self.heap.field(a, 0));
@@ -350,7 +350,7 @@ impl Vm<'_> {
                     Kind::MutArray => Err(Error {
                         msg: unhashable("a mutable array"),
                     }),
-                    Kind::Closure | Kind::Resume => Err(Error {
+                    Kind::Closure | Kind::Resume | Kind::Frame | Kind::Stack => Err(Error {
                         msg: unhashable("a function"),
                     }),
                     Kind::Channel => Err(Error {
@@ -480,7 +480,7 @@ impl Vm<'_> {
                         msg: unhashable("a mutable array"),
                     });
                 }
-                Kind::Closure | Kind::Resume => {
+                Kind::Closure | Kind::Resume | Kind::Frame | Kind::Stack => {
                     return Err(Error {
                         msg: unhashable("a function"),
                     });

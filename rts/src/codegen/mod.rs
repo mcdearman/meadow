@@ -72,6 +72,7 @@
 pub mod a64;
 pub mod object;
 pub mod thin;
+pub mod vector;
 pub mod x64;
 
 use crate::value::Value;
@@ -95,15 +96,26 @@ pub mod layout {
     pub const METHOD_STARTS: u32 = 56;
     /// `*const *const u8`: the native function for each pc, or null.
     pub const NATIVE_TABLE: u32 = 64;
+    /// `*const *const u8`: the method entry for each pc, or null.
+    pub const NATIVE_METHODS: u32 = 72;
     /// The heap's nursery, as `crate::heap::Heap` begins.
-    pub const BASE: u32 = 72;
-    pub const CAP: u32 = 80;
-    pub const TOP: u32 = 88;
-    pub const ALLOCATED: u32 = 96;
-    pub const REGION_GROWTH: u32 = 104;
+    pub const BASE: u32 = 80;
+    pub const CAP: u32 = 88;
+    pub const TOP: u32 = 96;
+    pub const ALLOCATED: u32 = 104;
+    pub const REGION_GROWTH: u32 = 112;
     /// `[*const *mut Word; 2]`: the block table of each generation, indexed by
     /// `addr >> 30`. See [`crate::heap::Heap::tables`] and [`super::thin`].
-    pub const TABLES: u32 = 112;
+    pub const TABLES: u32 = 120;
+    /// The frame stack's top and the end of its current chunk, in slots. Both
+    /// are 32-bit heap addresses, so they sit four bytes apart. See
+    /// `Heap::push_frame`.
+    pub const FSP: u32 = 136;
+    pub const FLIM: u32 = 140;
+    /// The current chunk's base address (32-bit) and its first slot as a
+    /// machine address: a frame in the current chunk is one load away.
+    pub const FCUR: u32 = 144;
+    pub const FBASE: u32 = 152;
 }
 
 /// Where a heap address keeps each part, for the two-level lookup native code
@@ -147,6 +159,9 @@ pub struct Compiled {
     pub code: Vec<u8>,
     /// `(entry pc, offset into code)`, by pc.
     pub blocks: Vec<(Pc, u32)>,
+    /// `(method pc, offset into code)` of every method entry: see
+    /// [`Emit::stub`].
+    pub stubs: Vec<(Pc, u32)>,
 }
 
 /// A position in the code being emitted, bound once and jumped to any number of
@@ -155,7 +170,7 @@ pub struct Compiled {
 pub struct Label(pub usize);
 
 /// An operand that is a register or a constant.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operand {
     Reg(Reg),
     Imm(i64),
@@ -195,12 +210,14 @@ pub enum FloatOp {
 
 /// What one architecture's code for the translation looks like. Every method
 /// emits code at the end of what is emitted so far; "`r`" is a register of the
-/// bytecode machine, which lives in memory -- or, for the registers a function
-/// pins, in a machine register, which the architecture's code moves to memory
-/// and back where anything else could look.
+/// bytecode machine. The first [`Emit::FIXED`] of them live in machine
+/// registers, the same ones in every function, so control passes from one
+/// native function to another with nothing moved; the architecture's code
+/// writes them to memory where the interpreter could look and loads them back
+/// where it enters from it. The rest live in memory.
 pub trait Emit {
-    /// How many bytecode registers a function can keep in machine registers.
-    const PINS: usize;
+    /// How many bytecode registers live in machine registers.
+    const FIXED: usize;
     /// How far into every function its warm entry is: past the part of the
     /// prologue that makes the frame, which a chained function shares with
     /// the one it came from.
@@ -213,10 +230,10 @@ pub trait Emit {
     fn offset(&self) -> usize;
     fn label(&mut self) -> Label;
     fn bind(&mut self, l: Label);
-    /// How the next function is emitted: at `opt`, keeping `pins` -- at most
-    /// [`Emit::PINS`] of them -- in machine registers. Before
-    /// [`Emit::prologue`].
-    fn configure(&mut self, opt: OptLevel, pins: &[Reg]);
+    /// How the next function is emitted: at `opt`, with `floats` -- fixed
+    /// registers the function only ever does float arithmetic on -- kept in
+    /// floating-point registers for its duration. Before [`Emit::prologue`].
+    fn configure(&mut self, opt: OptLevel, floats: &[Reg]);
     /// A function's entry: save what it uses, and find the register file. The
     /// warm entry is [`Emit::WARM`] in, and `warm`, if given, is bound there.
     fn prologue(&mut self, warm: Option<Label>);
@@ -248,6 +265,11 @@ pub trait Emit {
     fn float(&mut self, op: FloatOp, a: Reg, b: Reg, c: Reg);
     /// `r[a] = op r[b]`.
     fn unary(&mut self, op: UnaryOp, a: Reg, b: Reg);
+    /// `r[a] = ` a frame with header `header` and captures `r[base..base+n]`,
+    /// pushed on the frame stack -- or `slow` if its chunk is full, or there
+    /// is none yet. The frame's address is its slot on the stack, an old
+    /// address, so the captures are written through the block table.
+    fn frame(&mut self, a: Reg, header: &[u64], base: Reg, n: u32, slow: Label);
     /// `r[a] = cond(r[b], c)`, as words.
     fn cmp_int(&mut self, cond: Cond, a: Reg, b: Reg, c: Operand);
     fn cmp_float(&mut self, cond: Cond, a: Reg, b: Reg, c: Reg);
@@ -286,13 +308,33 @@ pub trait Emit {
     /// Enter method `method` of the closure in `r[obj]`, with the `argc`
     /// arguments at `r[base]`, as `Op::Invoke` does -- and go on to it, as
     /// [`Emit::chain`] does from [`OptLevel::O1`], or return, leaving for it.
+    /// Where the method's pc has an entry ([`Emit::stub`]), through that,
+    /// with the arguments moved to `r[0..argc]`; otherwise by rebuilding the
+    /// register file in memory as the interpreter does.
     fn invoke(&mut self, obj: Reg, method: u8, base: Reg, argc: u32, slow: Label);
-    /// `r[a] = ` a new object whose header is `header` and whose fields are the
-    /// `n` registers from `base`, bumped into the nursery if it has room.
-    fn alloc(&mut self, a: Reg, header: [u64; 2], base: Reg, n: u32, slow: Label);
+    /// The function's *method entry*, for a function that begins a method
+    /// whose object holds `captures` values and whose block takes `params`
+    /// registers, captures included. Entered from [`Emit::invoke`] with the
+    /// object's first word's address in the scratch register the fast paths
+    /// keep it in, and the arguments in `r[0..params - captures]`: it moves
+    /// the arguments up past the captures, loads the captures from the
+    /// object, sets `live`, and goes on to `warm`, the function's warm entry.
+    /// Answers whether it emitted one; an architecture without them answers
+    /// `false`, and every call takes the other path.
+    fn stub(&mut self, captures: u32, params: u32, warm: Label) -> bool;
+    /// `r[a] = ` a new object whose header is the words `header` and whose
+    /// fields are the `n` registers from `base`, bumped into the nursery if it
+    /// has room.
+    fn alloc(&mut self, a: Reg, header: &[u64], base: Reg, n: u32, slow: Label);
     /// Have the interpreter carry out the instruction at `pc`, and return what
     /// it says unless that is [`crate::abi::CONTINUE`].
     fn exec(&mut self, pc: Pc);
+    /// A loop's preheader and vector version -- see [`vector`] -- placed
+    /// just before the loop's header, which everything falls into: the rest
+    /// of the iterations, or all of them if a check fails, which is a jump
+    /// to `scalar`. An architecture with no vector unit to speak of emits
+    /// nothing.
+    fn vector_loop(&mut self, plan: &vector::Plan, scalar: Label);
     /// The function is done: emit what its code shares.
     fn end(&mut self);
     /// The machine code, with every branch resolved.
@@ -320,36 +362,208 @@ pub fn compile(program: &Program, arch: Arch, opt: OptLevel) -> Compiled {
 }
 
 /// Compile the one block starting at `entry`, at `opt`: a function on its own,
-/// for placing anywhere.
-pub fn compile_block(program: &Program, arch: Arch, entry: Pc, opt: OptLevel) -> Vec<u8> {
-    fn with<E: Emit>(program: &Program, entry: Pc, opt: OptLevel) -> Vec<u8> {
+/// for placing anywhere -- and where in it its method entry is, if it has
+/// one.
+pub fn compile_block(
+    program: &Program,
+    arch: Arch,
+    entry: Pc,
+    opt: OptLevel,
+    loops: &HashMap<usize, u32>,
+) -> (Vec<u8>, Option<u32>) {
+    fn with<E: Emit>(
+        program: &Program,
+        entry: Pc,
+        opt: OptLevel,
+        loops: &HashMap<usize, u32>,
+    ) -> (Vec<u8>, Option<u32>) {
         let mut asm = E::new();
-        block(&mut asm, program, entry, opt, None);
-        asm.finish()
+        let shape = method_shapes(program).get(&entry).copied();
+        let preds = preds(program);
+        let stub = block(&mut asm, program, entry, opt, None, shape, loops, &preds);
+        (asm.finish(), stub)
     }
     match arch {
-        Arch::Aarch64 => with::<a64::Asm>(program, entry, opt),
-        Arch::X86_64 => with::<x64::Asm>(program, entry, opt),
+        Arch::Aarch64 => with::<a64::Asm>(program, entry, opt, loops),
+        Arch::X86_64 => with::<x64::Asm>(program, entry, opt, loops),
     }
 }
 
 fn compile_with<E: Emit>(program: &Program, arch: Arch, opt: OptLevel) -> Compiled {
     let entries = crate::abi::block_entries(program);
+    let shapes = method_shapes(program);
+    let loops = loop_live(program);
     let mut asm = E::new();
     let mut blocks = Vec::with_capacity(entries.len());
+    let mut stubs = Vec::new();
+    let preds = preds(program);
     let mut links = Links {
         entries: entries.iter().map(|&pc| pc as usize).collect(),
         warm: HashMap::new(),
     };
     for &entry in &entries {
         blocks.push((entry, asm.offset() as u32));
-        block(&mut asm, program, entry, opt, Some(&mut links));
+        let shape = shapes.get(&entry).copied();
+        if let Some(at) = block(
+            &mut asm,
+            program,
+            entry,
+            opt,
+            Some(&mut links),
+            shape,
+            &loops,
+            &preds,
+        ) {
+            stubs.push((entry, at));
+        }
     }
     Compiled {
         arch,
         code: asm.finish(),
         blocks,
+        stubs,
     }
+}
+
+/// For every pc a loop goes back to -- the target of a `Jump` at or after it
+/// -- how many registers the loop writes: one past the highest register any
+/// instruction from the target to the jump writes, over every such loop.
+///
+/// What it is for: `live`, the high-water mark the collector reads, would
+/// otherwise be raised again on every trip round, because the loop's header
+/// is a join and a join forgets what `live` was. Every way into the header
+/// brings `live` up to this instead -- a jump sets it, anything else raises
+/// it -- and the header then knows it, and nothing in the loop raises it.
+/// Raising it above what the compiler said is safe: the collector reads each
+/// pc's map for which registers hold addresses, and `live` only bounds it.
+///
+/// A jump to an earlier pc is also what a call to a known function is, so
+/// there are as many of these as calls, and each asks about a range: the
+/// ranges are answered from a sparse table, built once per program, rather
+/// than walked -- walked, the whole thing was quadratic, and the JIT asked
+/// for it once per block it compiled.
+pub fn loop_live(program: &Program) -> HashMap<usize, u32> {
+    let n = program.code.len();
+    if n == 0 {
+        return HashMap::new();
+    }
+    // `table[k][i]`: the most registers written by any of the 2^k
+    // instructions from `i`.
+    let mut table: Vec<Vec<u32>> = vec![
+        program
+            .code
+            .iter()
+            .map(|i| writes(i).map_or(0, |r| r as u32 + 1))
+            .collect(),
+    ];
+    let mut span = 1;
+    while span * 2 <= n {
+        let prev = table.last().expect("a first row");
+        let row: Vec<u32> = (0..=n - span * 2)
+            .map(|i| prev[i].max(prev[i + span]))
+            .collect();
+        table.push(row);
+        span *= 2;
+    }
+    let most = |lo: usize, hi: usize| -> u32 {
+        // Over `lo..=hi`: two spans of the largest power of two that fits,
+        // overlapping in the middle, which a maximum does not mind.
+        let len = hi - lo + 1;
+        let k = usize::BITS - 1 - len.leading_zeros();
+        let row = &table[k as usize];
+        row[lo].max(row[hi + 1 - (1 << k)])
+    };
+    let mut out: HashMap<usize, u32> = HashMap::new();
+    for (pc, i) in program.code.iter().enumerate() {
+        if i.op != Op::Jump || i.imm as usize > pc {
+            continue;
+        }
+        let top = most(i.imm as usize, pc);
+        let e = out.entry(i.imm as usize).or_insert(0);
+        *e = (*e).max(top);
+    }
+    out
+}
+
+/// Where control can arrive at each pc from elsewhere: by the pc, every
+/// instruction that jumps or branches to it. What a vector loop's body must
+/// have none of from outside itself -- and a pc a method table or a
+/// definition names is arrived at from anywhere, so those are `anchored`.
+pub struct Preds {
+    pub from: HashMap<usize, Vec<usize>>,
+    pub anchored: std::collections::HashSet<usize>,
+}
+
+pub fn preds(program: &Program) -> Preds {
+    let mut from: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (pc, i) in program.code.iter().enumerate() {
+        let target = match i.op {
+            Op::Jump | Op::JumpUnless | Op::JumpUnlessTag | Op::BrI | Op::BrIK | Op::BrF => {
+                Some(i.imm as usize)
+            }
+            _ => None,
+        };
+        if let Some(t) = target {
+            from.entry(t).or_default().push(pc);
+        }
+    }
+    let anchored = program
+        .methods
+        .iter()
+        .flatten()
+        .map(|&pc| pc as usize)
+        .chain(program.entries.iter().map(|&pc| pc as usize))
+        .chain(program.entry.map(|pc| pc as usize))
+        .collect();
+    Preds { from, anchored }
+}
+
+/// The register an instruction writes, if it writes one. Anything not known
+/// to leave every register alone is taken to write `a`, which can only make
+/// [`loop_live`] larger.
+fn writes(i: &Instr) -> Option<Reg> {
+    match i.op {
+        Op::Nop
+        | Op::Invoke
+        | Op::Jump
+        | Op::JumpUnless
+        | Op::JumpUnlessTag
+        | Op::BrI
+        | Op::BrIK
+        | Op::BrF
+        | Op::Halt
+        | Op::Error => None,
+        _ => Some(i.a),
+    }
+}
+
+/// The shape of the method beginning at each pc that begins one: how many
+/// captures its object holds, and how many registers its block takes. A pc
+/// two tables disagree about -- which the compiler does not produce -- has no
+/// shape, and every call to it takes the general path.
+fn method_shapes(program: &Program) -> HashMap<Pc, (u8, u8)> {
+    let mut out: HashMap<Pc, Option<(u8, u8)>> = HashMap::new();
+    for (t, table) in program.methods.iter().enumerate() {
+        let Some(&captures) = program.method_captures.get(t) else {
+            continue;
+        };
+        for (k, &pc) in table.iter().enumerate() {
+            let Some(&params) = program.method_params.get(t).and_then(|p| p.get(k)) else {
+                continue;
+            };
+            let shape = (captures, params);
+            out.entry(pc)
+                .and_modify(|s| {
+                    if *s != Some(shape) {
+                        *s = None;
+                    }
+                })
+                .or_insert(Some(shape));
+        }
+    }
+    out.into_iter()
+        .filter_map(|(pc, s)| s.map(|s| (pc, s)))
+        .collect()
 }
 
 /// Does control never fall through from `i` to the instruction after it?
@@ -431,41 +645,22 @@ fn region(code: &[Instr], entry: usize, opt: OptLevel) -> Vec<usize> {
     order
 }
 
-/// The registers `entry`'s function keeps in machine registers: at most `max`,
-/// at [`OptLevel::O2`], chosen by how much the function does with them against
-/// what keeping them costs.
-///
-/// A pinned register is loaded on entry, and moved to memory and back around
-/// every call into the interpreter and before every return -- so each is
-/// worth it only if the function reads and writes it more often than it calls
-/// and returns. Both are counted where they are, eight times over inside a
-/// loop.
-fn pins(code: &[Instr], program: &Program, f: &Function, max: usize) -> Vec<Reg> {
-    if max == 0 {
-        return Vec::new();
-    }
-    // Which instructions are inside a loop of the function: from a backward
-    // edge's target to its source, in the function's order.
-    let mut looped = vec![false; f.order.len()];
-    for (k, &pc) in f.order.iter().enumerate() {
-        let mut edge = |to: usize| {
-            if let Some(&t) = f.index.get(&to)
-                && t <= k
-            {
-                looped[t..=k].iter_mut().for_each(|l| *l = true);
-            }
-        };
-        successors(code, pc).for_each(&mut edge);
-    }
-
-    let mut uses = [0u64; 256];
-    let mut cost = 1u64;
-    for (k, &pc) in f.order.iter().enumerate() {
-        let w = if looped[k] { 8 } else { 1 };
+/// The fixed registers `entry`'s function only ever does float arithmetic on:
+/// those it keeps in floating-point registers, so that the arithmetic needs no
+/// move first. A register that is an `Int` somewhere in the function as well
+/// -- which happens when the compiler reuses one -- stays in its general
+/// register and moves for its float operations. Untyped uses -- moves,
+/// captures, calls -- read and write either kind.
+fn floats(code: &[Instr], f: &Function, fixed: usize) -> Vec<Reg> {
+    let mut floats = [false; 256];
+    let mut ints = [false; 256];
+    for &pc in &f.order {
         let i = code[pc];
-        let used: Vec<u32> = match i.op {
-            Op::Nop => vec![],
-            Op::Const if immediate(program, i.imm).is_some() => vec![i.a as u32],
+        let (int_operands, float_operands): (&[Reg], &[Reg]) = match i.op {
+            Op::AddF | Op::SubF | Op::MulF | Op::DivF => (&[], &[i.a, i.b, i.c]),
+            Op::CmpF => (&[i.a], &[i.b, i.c]),
+            Op::BrF => (&[], &[i.a, i.b]),
+            Op::ItoF => (&[i.b], &[i.a]),
             Op::AddI
             | Op::SubI
             | Op::MulI
@@ -475,70 +670,35 @@ fn pins(code: &[Instr], program: &Program, f: &Function, max: usize) -> Vec<Reg>
             | Op::ShlI
             | Op::ShrI
             | Op::UshrI
-            | Op::AndI => {
-                vec![i.a as u32, i.b as u32, i.c as u32]
-            }
-            Op::AddF | Op::SubF | Op::MulF | Op::DivF | Op::CmpF => {
-                vec![i.a as u32, i.b as u32, i.c as u32]
-            }
-            Op::Move
-            | Op::Field
-            | Op::AddIK
+            | Op::AndI => (&[i.a, i.b, i.c], &[]),
+            Op::AddIK
             | Op::SubIK
             | Op::MulIK
             | Op::ShlIK
             | Op::ShrIK
             | Op::UshrIK
             | Op::AndIK
-            | Op::PopI
-            | Op::ItoF
             | Op::CmpIK
-            | Op::BrI
-            | Op::BrF => vec![i.a as u32, i.b as u32],
-            Op::BrIK | Op::JumpUnless | Op::JumpUnlessTag => vec![i.a as u32],
-            Op::Jump => {
-                if !f.index.contains_key(&(i.imm as usize)) {
-                    cost += w;
-                }
-                vec![]
-            }
-            // A return, after reading the arguments from memory.
-            Op::Invoke => {
-                cost += w;
-                vec![i.a as u32]
-            }
-            Op::MakeData | Op::MakeArray | Op::Closure
-                if header(program, pc, alloc_kind(i.op), 0, i.c as usize).is_some() =>
-            {
-                std::iter::once(i.a as u32)
-                    .chain((0..i.c as u32).map(|j| i.b as u32 + j))
-                    .collect()
-            }
-            // Handed to the interpreter: moved out and back in.
-            _ => {
-                cost += 2 * w;
-                vec![]
-            }
+            | Op::PopI
+            | Op::BrI => (&[i.a, i.b], &[]),
+            Op::BrIK | Op::JumpUnless | Op::JumpUnlessTag => (&[i.a], &[]),
+            _ => (&[], &[]),
         };
-        for r in used {
-            if let Some(u) = uses.get_mut(r as usize) {
-                *u += w;
-            }
-        }
+        int_operands.iter().for_each(|&r| ints[r as usize] = true);
+        float_operands
+            .iter()
+            .for_each(|&r| floats[r as usize] = true);
     }
-    let mut chosen: Vec<(u64, Reg)> = uses
-        .iter()
-        .enumerate()
-        .filter(|&(_, &u)| u > cost)
-        .map(|(r, &u)| (u, r as Reg))
-        .collect();
-    chosen.sort_unstable_by(|x, y| y.0.cmp(&x.0).then(x.1.cmp(&y.1)));
-    chosen.into_iter().take(max).map(|(_, r)| r).collect()
+    (0..fixed.min(256))
+        .filter(|&r| floats[r] && !ints[r])
+        .map(|r| r as Reg)
+        .collect()
 }
 
 fn alloc_kind(op: Op) -> crate::heap::Kind {
     match op {
         Op::MakeData => crate::heap::Kind::Data,
+        Op::Frame => crate::heap::Kind::Frame,
         Op::MakeArray => crate::heap::Kind::Array,
         _ => crate::heap::Kind::Closure,
     }
@@ -629,10 +789,32 @@ impl Book {
         self.known = n;
     }
 
-    /// Where another path joins: settle, and assume nothing about `live`.
-    fn join<E: Emit>(&mut self, asm: &mut E) {
+    /// Where another path joins: settle, and know only what every path
+    /// brings -- `known`, which is what [`loop_live`] says at a loop's header
+    /// and nothing anywhere else.
+    fn join<E: Emit>(&mut self, asm: &mut E, known: u32) {
         self.sync(asm);
-        self.known = 0;
+        self.known = known;
+    }
+
+    /// Falling straight on into the next instruction, which may head a loop:
+    /// then settle and raise as [`Book::entering`] does; otherwise nothing.
+    fn sync_steps_if_entering<E: Emit>(&mut self, asm: &mut E, at: Option<u32>) {
+        if at.is_some() {
+            self.sync(asm);
+            self.entering(asm, at);
+        }
+    }
+
+    /// About to go to `pc`: if it heads a loop that wants `live` at `at`
+    /// least, and that is more than is known, raise it, and know it.
+    fn entering<E: Emit>(&mut self, asm: &mut E, at: Option<u32>) {
+        if let Some(ll) = at
+            && self.known < ll
+        {
+            asm.raise_live_to(ll);
+            self.known = ll;
+        }
     }
 }
 
@@ -665,6 +847,12 @@ struct Function<'a> {
     /// A branch's way to a pc it cannot jump straight to: `(label, from, pc)`,
     /// `from` being the branch's position.
     detours: Vec<(Label, usize, usize)>,
+    /// See [`loop_live`].
+    loops: HashMap<usize, u32>,
+    /// Loops with a vector version: by the header's position, the label of
+    /// its preheader and the position of its jump back. Control from outside
+    /// the loop enters through the preheader; the jump back does not.
+    pre: HashMap<usize, (Label, usize)>,
     /// Go straight on to the next block's function, from [`OptLevel::O1`].
     chain: bool,
     /// How long the program is: a pc past the end has nowhere to chain to.
@@ -697,12 +885,21 @@ impl Function<'_> {
     /// and otherwise, depart for it.
     fn goto<E: Emit>(&mut self, asm: &mut E, from: usize, pc: usize) {
         match self.index.get(&pc) {
-            Some(&t) if t > from => asm.jump(self.labels[t]),
+            Some(&t) if t > from => asm.jump(self.way_in(t, from)),
             Some(&t) => {
                 let over = self.exit(asm, pc);
-                asm.back_edge(self.labels[t], over);
+                asm.back_edge(self.way_in(t, from), over);
             }
             None => self.depart(asm, pc, None),
+        }
+    }
+
+    /// The label to reach position `t` by from position `from`: its
+    /// preheader, if it heads a vector loop and `from` is outside that loop.
+    fn way_in(&self, t: usize, from: usize) -> Label {
+        match self.pre.get(&t) {
+            Some(&(pre, s)) if !(t..=s).contains(&from) => pre,
+            _ => self.labels[t],
         }
     }
 
@@ -711,7 +908,7 @@ impl Function<'_> {
     /// does.
     fn target<E: Emit>(&mut self, asm: &mut E, from: usize, pc: usize) -> Label {
         match self.index.get(&pc) {
-            Some(&t) if t > from => self.labels[t],
+            Some(&t) if t > from => self.way_in(t, from),
             _ => {
                 let l = asm.label();
                 self.detours.push((l, from, pc));
@@ -738,7 +935,7 @@ impl Function<'_> {
                     mark(i.imm as usize);
                     mark(pc + 1);
                 }
-                Op::Field | Op::MakeData | Op::MakeArray | Op::Closure => mark(pc + 1),
+                Op::Field | Op::MakeData | Op::MakeArray | Op::Closure | Op::Frame => mark(pc + 1),
                 _ => {}
             }
             if !ends(&i) && self.order.get(k + 1) != Some(&(pc + 1)) {
@@ -756,46 +953,111 @@ impl Function<'_> {
 }
 
 /// One function: the instructions [`region`] gives `entry`, at `opt` -- with
-/// `links` when every block is being compiled into the same code.
+/// `links` when every block is being compiled into the same code, and
+/// `shape` if `entry` begins a method, for which the function gets a method
+/// entry ([`Emit::stub`]): where that is, if it got one.
 fn block<E: Emit>(
     asm: &mut E,
     program: &Program,
     entry: Pc,
     opt: OptLevel,
     mut links: Option<&mut Links>,
-) {
+    shape: Option<(u8, u8)>,
+    loops: &HashMap<usize, u32>,
+    preds: &Preds,
+) -> Option<u32> {
     let code = &program.code;
     let order = region(code, entry as usize, opt);
-    let index = order.iter().enumerate().map(|(k, &pc)| (pc, k)).collect();
-    let labels = order.iter().map(|_| asm.label()).collect();
-    let warm = links.as_mut().and_then(|l| l.warm(asm, entry as usize));
+    let index: HashMap<usize, usize> = order.iter().enumerate().map(|(k, &pc)| (pc, k)).collect();
+    let labels: Vec<Label> = order.iter().map(|_| asm.label()).collect();
+    // Loops with a vector version: a jump back to a header, over a body of
+    // consecutive instructions none of which, past the header, is a block
+    // entry -- since control arriving there from elsewhere would have
+    // skipped the preheader.
+    let mut plans: HashMap<usize, (vector::Plan, usize)> = HashMap::new();
+    let mut pre: HashMap<usize, (Label, usize)> = HashMap::new();
+    if opt >= OptLevel::O2 {
+        for (s, &pc) in order.iter().enumerate() {
+            let i = code[pc];
+            if i.op != Op::Jump {
+                continue;
+            }
+            let Some(&t) = index.get(&(i.imm as usize)) else {
+                continue;
+            };
+            if t > s || plans.contains_key(&t) {
+                continue;
+            }
+            let pcs = &order[t..=s];
+            let consecutive = pcs.windows(2).all(|w| w[1] == w[0] + 1);
+            let (lo, hi) = (pcs[0], pcs[pcs.len() - 1]);
+            let sealed = pcs[1..].iter().all(|pc| {
+                !preds.anchored.contains(pc)
+                    && preds
+                        .from
+                        .get(pc)
+                        .is_none_or(|srcs| srcs.iter().all(|s| (lo..=hi).contains(s)))
+            });
+            let tracing = std::env::var_os("MEADOW_VECTOR_DEBUG").is_some();
+            if !consecutive || !sealed {
+                if tracing {
+                    eprintln!("vector: loop {lo}..={hi} consecutive={consecutive} sealed={sealed}");
+                }
+                continue;
+            }
+            let planned = vector::plan(program, pcs, E::FIXED);
+            if tracing {
+                eprintln!("vector: loop {lo}..={hi} plan={}", planned.is_some());
+            }
+            if let Some(p) = planned {
+                plans.insert(t, (p, s));
+                pre.insert(t, (asm.label(), s));
+            }
+        }
+    }
+    let warm = links
+        .as_mut()
+        .and_then(|l| l.warm(asm, entry as usize))
+        .unwrap_or_else(|| asm.label());
     let mut f = Function {
         order,
         index,
         labels,
         exits: Vec::new(),
         detours: Vec::new(),
+        loops: loops.clone(),
+        pre,
         chain: opt >= OptLevel::O1,
         len: code.len(),
         links,
     };
     let joins = f.joins(code);
-    let pinned = if opt >= OptLevel::O2 {
-        pins(code, program, &f, E::PINS)
-    } else {
-        Vec::new()
-    };
+    let floats = floats(code, &f, E::FIXED);
     // Fast paths' slow halves: where one starts, and the instruction's
     // position -- placed after the function's code, out of the way.
     let mut slows: Vec<(Label, usize)> = Vec::new();
 
-    asm.configure(opt, &pinned);
-    asm.prologue(warm);
+    asm.configure(opt, &floats);
+    asm.prologue(Some(warm));
     let mut book = Book::new(opt);
+    // Entered at a loop's header, from the machine or another function: the
+    // loop's `live` is owed here, since nothing before this could raise it.
+    if let Some(&ll) = loops.get(&(entry as usize)) {
+        asm.raise_live_to(ll);
+        book.set(ll);
+    }
     for k in 0..f.order.len() {
         let pc = f.order[k];
+        // The preheader and vector version of a loop headed here: everything
+        // from outside comes through it, and falls into the header after.
+        if let Some((plan, _)) = plans.get(&k) {
+            book.sync(asm);
+            book.entering(asm, loops.get(&pc).copied());
+            asm.bind(f.pre[&k].0);
+            asm.vector_loop(plan, f.labels[k]);
+        }
         if joins[k] {
-            book.join(asm);
+            book.join(asm, loops.get(&pc).copied().unwrap_or(0));
         }
         asm.bind(f.labels[k]);
         let i = code[pc];
@@ -824,17 +1086,20 @@ fn block<E: Emit>(
                 book.step(asm);
                 book.sync_steps(asm);
                 let to = i.imm as usize;
+                // Into a loop, `live` for the whole loop: see `loop_live`.
+                let live = (i.a as u32).max(loops.get(&to).copied().unwrap_or(0));
                 if f.index.contains_key(&to) {
-                    asm.set_live(i.a as u32);
-                    book.set(i.a as u32);
+                    asm.set_live(live);
+                    book.set(live);
                     f.goto(asm, k, to);
                 } else {
-                    f.depart(asm, to, Some(i.a as u32));
+                    f.depart(asm, to, Some(live));
                 }
             }
             Op::JumpUnless => {
                 book.step(asm);
                 book.sync(asm);
+                book.entering(asm, loops.get(&(i.imm as usize)).copied());
                 let to = f.target(asm, k, i.imm as usize);
                 asm.branch_zero(i.a, to);
             }
@@ -913,16 +1178,19 @@ fn block<E: Emit>(
                     Op::CmpF => asm.cmp_float(cond, i.a, i.b, i.c),
                     Op::BrI => {
                         book.sync(asm);
+                        book.entering(asm, loops.get(&(i.imm as usize)).copied());
                         let to = f.target(asm, k, i.imm as usize);
                         asm.branch_int(cond, i.a, Operand::Reg(i.b), to);
                     }
                     Op::BrIK => {
                         book.sync(asm);
+                        book.entering(asm, loops.get(&(i.imm as usize)).copied());
                         let to = f.target(asm, k, i.imm as usize);
                         asm.branch_int(cond, i.a, Operand::Imm(i.b as i8 as i64), to);
                     }
                     _ => {
                         book.sync(asm);
+                        book.entering(asm, loops.get(&(i.imm as usize)).copied());
                         let to = f.target(asm, k, i.imm as usize);
                         asm.branch_float(cond, i.a, i.b, to);
                     }
@@ -935,6 +1203,7 @@ fn block<E: Emit>(
                 let slow = asm.label();
                 book.step(asm);
                 book.sync(asm);
+                book.entering(asm, loops.get(&(i.imm as usize)).copied());
                 let miss = f.target(asm, k, i.imm as usize);
                 asm.tag_test(i.a, i.bc() as u32, miss, slow);
                 slows.push((slow, k));
@@ -954,19 +1223,29 @@ fn block<E: Emit>(
                 asm.invoke(i.a, i.b, i.c, i.imm, slow);
                 slows.push((slow, k));
             }
-            Op::MakeData | Op::MakeArray | Op::Closure => {
+            Op::MakeData | Op::MakeArray | Op::Closure | Op::Frame => {
                 let kind = alloc_kind(i.op);
-                let meta = if kind == crate::heap::Kind::Array {
-                    0
-                } else {
-                    i.imm
+                let meta = match kind {
+                    crate::heap::Kind::Array => 0,
+                    // A frame's `meta` is its return pc -- see `Vm::frame`.
+                    crate::heap::Kind::Frame => program
+                        .methods
+                        .get(i.imm as usize)
+                        .and_then(|t| t.first())
+                        .copied()
+                        .unwrap_or(0),
+                    _ => i.imm,
                 };
                 match header(program, pc, kind, meta, i.c as usize) {
                     Some(h) => {
                         let slow = asm.label();
                         book.step(asm);
                         book.sync(asm);
-                        asm.alloc(i.a, h, i.b, i.c as u32, slow);
+                        if i.op == Op::Frame {
+                            asm.frame(i.a, &h, i.b, i.c as u32, slow);
+                        } else {
+                            asm.alloc(i.a, &h, i.b, i.c as u32, slow);
+                        }
                         book.wrote(i.a);
                         slows.push((slow, k));
                     }
@@ -980,7 +1259,7 @@ fn block<E: Emit>(
             // scheduler. A few of these have an expansion into thin steps and
             // are done here after all; the rest go to the interpreter, as they
             // always have. See [`thin`].
-            _ => match thin::expand(program, i) {
+            _ => match thin::expand(program, pc, i) {
                 Some(run) => {
                     let slow = asm.label();
                     book.step(asm);
@@ -1007,6 +1286,8 @@ fn block<E: Emit>(
             // of these; should it, the machine is where it said.
             asm.ret(crate::abi::JUMPED);
         } else {
+            // Back in from the cold, knowing nothing about `live`.
+            Book::new(opt).entering(asm, loops.get(&(pc + 1)).copied());
             f.goto(asm, k, pc + 1);
         }
     }
@@ -1022,6 +1303,15 @@ fn block<E: Emit>(
         asm.leave(pc, None);
     }
     asm.end();
+    // The method entry, for a method whose captures and arguments all fit the
+    // fixed registers: one whose block takes more lives in memory past them,
+    // and is entered the general way.
+    let (captures, params) = shape?;
+    if params < captures || params as usize > E::FIXED {
+        return None;
+    }
+    let at = asm.offset() as u32;
+    asm.stub(captures as u32, params as u32, warm).then_some(at)
 }
 
 /// After the instruction at position `k`: on to the next one, if it is not the
@@ -1038,21 +1328,26 @@ fn fall_through<E: Emit>(asm: &mut E, book: &mut Book, f: &mut Function, code: &
         }
     } else if f.order.get(k + 1) != Some(&(pc + 1)) {
         book.sync(asm);
+        book.entering(asm, f.loops.get(&(pc + 1)).copied());
         // Off the end of the program, this leaves without anywhere to go.
         f.goto(asm, k, pc + 1);
+    } else {
+        // Straight on into a loop's header.
+        book.sync_steps_if_entering(asm, f.loops.get(&(pc + 1)).copied());
     }
 }
 
-/// The two header words of the object the instruction at `pc` builds, if they
-/// can be known when it is compiled: every field's descriptor is, and they fit the second word
-/// -- or, for an array, are all the same.
+/// The header words of the object the instruction at `pc` builds, if they can
+/// be known when it is compiled: every field's descriptor is -- or, for an
+/// array, they are all the same. Past `compact::INLINE_DESCS` fields the
+/// header is longer than two words, and the words say so.
 fn header(
     program: &Program,
     pc: usize,
     kind: crate::heap::Kind,
     meta: u32,
     n: usize,
-) -> Option<[u64; 2]> {
+) -> Option<Vec<u64>> {
     use meadow_bytecode::DESC_REG;
     let operands = program.operands(pc);
     let descs: Vec<meadow_core::desc::Desc> = (0..n)
@@ -1072,10 +1367,8 @@ fn header(
         if kind == crate::heap::Kind::Array && descs.first() == Some(&crate::heap::Heap::BYTE) {
             return None;
         }
-    } else if n > meadow_core::compact::INLINE_DESCS {
-        return None;
     }
-    let mut words = [0u64; 2];
+    let mut words = vec![0u64; meadow_core::compact::header_slots(kind.is_uniform(), n)];
     crate::object::write_header(kind, meta, descs.into_iter(), |k, w| words[k] = w);
     Some(words)
 }
@@ -1138,6 +1431,7 @@ mod tests {
         assert_eq!(offset_of!(Vm, method_pcs) as u32, METHOD_PCS);
         assert_eq!(offset_of!(Vm, method_starts) as u32, METHOD_STARTS);
         assert_eq!(offset_of!(Vm, native_table) as u32, NATIVE_TABLE);
+        assert_eq!(offset_of!(Vm, native_methods) as u32, NATIVE_METHODS);
         let heap = offset_of!(Vm, heap) as u32;
         type Heap = crate::heap::Heap;
         assert_eq!(heap + offset_of!(Heap, base) as u32, BASE);
@@ -1146,6 +1440,10 @@ mod tests {
         assert_eq!(heap + offset_of!(Heap, allocated) as u32, ALLOCATED);
         assert_eq!(heap + offset_of!(Heap, region_growth) as u32, REGION_GROWTH);
         assert_eq!(heap + offset_of!(Heap, tables) as u32, TABLES);
+        assert_eq!(heap + offset_of!(Heap, fsp) as u32, FSP);
+        assert_eq!(heap + offset_of!(Heap, flim) as u32, FLIM);
+        assert_eq!(heap + offset_of!(Heap, fcur) as u32, FCUR);
+        assert_eq!(heap + offset_of!(Heap, fbase) as u32, FBASE);
     }
 
     /// The shifts native code takes a heap address apart with have to be the

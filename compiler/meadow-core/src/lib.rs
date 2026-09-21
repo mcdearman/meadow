@@ -322,6 +322,20 @@ pub enum Prim {
     Once,
     /// `Once -> Bool` -- `true` the first time, and `false` ever after.
     TakeOnce,
+    // --- the frame stack (no source name; made by lowering handlers) ---
+    //
+    // A function's continuation is a frame on a per-thread stack rather than
+    // a heap object, and an effect handler has to capture the frames between
+    // a `perform` and itself. The stack is chunked, and these three cut and
+    // rejoin it at chunk boundaries -- see `meadow_rts::heap`'s frame stack.
+    /// `Ref -> ()` -- entering a `handle`: start a chunk, so that whatever the
+    /// body pushes can be detached from the handler's own frames in O(1).
+    Enter,
+    /// `Ref -> Stack` -- at a general clause: detach every chunk above the one
+    /// holding the handler's current continuation, as a `Stack` value.
+    Detach,
+    /// `Stack -> ()` -- resuming: put the detached chunks back on top. Once.
+    Reattach,
     // --- typed arithmetic (no source name) ---
     //
     // The operators above at a type core knows: both operands are `Int`, or
@@ -475,6 +489,9 @@ impl Prim {
             Prim::StringSlice => 119,
             Prim::StringIndexOf => 120,
             Prim::StringCompare => 121,
+            Prim::Enter => 122,
+            Prim::Detach => 123,
+            Prim::Reattach => 124,
         }
     }
 
@@ -597,6 +614,9 @@ impl Prim {
             119 => Prim::StringSlice,
             120 => Prim::StringIndexOf,
             121 => Prim::StringCompare,
+            122 => Prim::Enter,
+            123 => Prim::Detach,
+            124 => Prim::Reattach,
             _ => return None,
         })
     }
@@ -830,7 +850,10 @@ impl Prim {
             | Prim::StmMerge
             | Prim::StmRollback
             | Prim::Once
-            | Prim::TakeOnce => 1,
+            | Prim::TakeOnce
+            | Prim::Enter
+            | Prim::Detach
+            | Prim::Reattach => 1,
             Prim::ArraySet
             | Prim::ArraySlice
             | Prim::ArrayGetOr
@@ -1693,6 +1716,14 @@ impl OptLevel {
     /// program grows; generic code runs as fast as the code it was written
     /// for. Gated because a debug build is the one being rebuilt constantly.
     pub const fn specializes(self) -> bool {
+        matches!(self, OptLevel::O2)
+    }
+
+    /// Copy a small definition to the places that call it -- see
+    /// [`crate::inline`]. Gated because a debug build is what the debugger
+    /// steps through, and a call that was inlined is not a call to step into,
+    /// a frame to see, or a line a breakpoint can stop at.
+    pub const fn inlines(self) -> bool {
         matches!(self, OptLevel::O2)
     }
 }

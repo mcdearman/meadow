@@ -62,7 +62,7 @@ const MAX_BLOCKS: usize = ((crate::region::REGION_BASE - OLD_BASE) as usize) / B
 /// One block. Its slots are read by the program and by the marker at once;
 /// see [`crate::mark`] for why that is safe.
 pub struct Block {
-    slots: Box<[UnsafeCell<Word>]>,
+    mem: Mem,
     /// Which slots hold an address, one bit each: what a slot's descriptor
     /// says, kept where code that has only the slot's address -- the
     /// remembered set, evacuation's recorded fields -- can read it. Only the
@@ -102,12 +102,32 @@ pub const TRACKED: u8 = 1;
 pub const ABANDONED: u8 = 2;
 /// Being evacuated, in this pause.
 pub const MOVING: u8 = 3;
+/// A chunk of a thread's frame stack: see `crate::heap`'s frame stack. Never
+/// allocated into, evacuated or released by the collector; its contents are
+/// roots, scanned by the heap that owns it, and the marker skips it.
+pub const STACK: u8 = 4;
 
 /// Pointers into one block recorded before it is abandoned. A block sparse
 /// enough to choose holds at most a few hundred objects, so more than this
 /// means a program rewriting pointers to them over and over, and rewriting
 /// all of those would cost more than the block is worth.
 const REF_CAP: u32 = 1 << 11;
+
+/// A block's memory: its own, or a share of a **run** of blocks in one
+/// allocation, which is what an object bigger than a block is laid out in.
+/// The run makes the object contiguous in memory, so that native code, having
+/// found where it starts, reaches every element of it by an offset -- across
+/// what are, to the heap, several blocks.
+///
+/// A block that was part of a run goes back to the spares like any other when
+/// it is freed, and holds its share of the run alive until it is dropped.
+enum Mem {
+    /// No memory yet: a table entry with nothing behind it.
+    None,
+    Own(Box<[UnsafeCell<Word>]>),
+    /// Block `k` of the run.
+    Part(Arc<[UnsafeCell<Word>]>, usize),
+}
 
 // Slots are written only by the heap's own thread; the marker only reads, and
 // only slots no one writes while it can read them -- see `crate::mark`.
@@ -116,8 +136,21 @@ unsafe impl Send for Block {}
 
 impl Block {
     fn new() -> Block {
+        Block::with(Mem::Own((0..BLOCK).map(|_| UnsafeCell::new(0)).collect()))
+    }
+
+    /// `n` blocks in one allocation, for an object bigger than a block: see
+    /// [`Mem::Part`].
+    fn run(n: usize) -> Vec<Block> {
+        let run: Arc<[UnsafeCell<Word>]> = (0..n * BLOCK).map(|_| UnsafeCell::new(0)).collect();
+        (0..n)
+            .map(|k| Block::with(Mem::Part(run.clone(), k)))
+            .collect()
+    }
+
+    fn with(mem: Mem) -> Block {
         Block {
-            slots: (0..BLOCK).map(|_| UnsafeCell::new(0)).collect(),
+            mem,
             pointers: (0..WORDS).map(|_| AtomicU64::new(0)).collect(),
             lines: (0..LINES).map(|_| AtomicU32::new(0)).collect(),
             marks: (0..WORDS).map(|_| AtomicU64::new(0)).collect(),
@@ -143,10 +176,12 @@ impl Block {
     /// object header, so a run of steps gives up on it and the interpreter --
     /// which checks properly -- says what went wrong.
     pub(crate) fn base(&self) -> *mut Word {
-        if self.slots.is_empty() {
-            return zero_block();
+        match &self.mem {
+            Mem::None => zero_block(),
+            Mem::Own(slots) => slots.as_ptr() as *mut Word,
+            // Safety: `k` is below the run's length in blocks.
+            Mem::Part(run, k) => unsafe { (run.as_ptr() as *mut Word).add(k * BLOCK) },
         }
-        self.slots.as_ptr() as *mut Word
     }
 
     fn empty() -> Arc<Block> {
@@ -156,7 +191,7 @@ impl Block {
 
     fn nothing() -> Block {
         Block {
-            slots: Box::new([]),
+            mem: Mem::None,
             pointers: Box::new([]),
             lines: Box::new([]),
             marks: Box::new([]),
@@ -172,7 +207,7 @@ impl Block {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+        matches!(self.mem, Mem::None)
     }
 
     /// As a new block is, apart from what its slots hold, which nothing reads
@@ -200,14 +235,17 @@ impl Block {
 
     #[inline]
     pub fn get(&self, off: usize) -> Word {
-        // Safety: see the `Sync` impl.
-        unsafe { *self.slots[off].get() }
+        debug_assert!(off < BLOCK);
+        // Safety: see the `Sync` impl; `base` is `BLOCK` words, or the zero
+        // block, which is as long.
+        unsafe { *self.base().add(off) }
     }
 
     #[inline]
     fn put(&self, off: usize, w: Word, pointer: bool) {
+        debug_assert!(off < BLOCK && !self.is_empty());
         // Safety: see the `Sync` impl.
-        unsafe { *self.slots[off].get() = w }
+        unsafe { *self.base().add(off) = w }
         let bit = 1u64 << (off % 64);
         let cell = &self.pointers[off / 64];
         let was = cell.load(Ordering::Relaxed);
@@ -502,8 +540,13 @@ impl Default for Old {
 }
 
 impl Old {
+    /// Nothing promoted here yet. Frame-stack chunks do not count: what is in
+    /// them is roots, not old objects, and a collection with only those to
+    /// look at still sees everything.
     pub fn is_empty(&self) -> bool {
-        self.blocks.is_empty()
+        self.blocks
+            .iter()
+            .all(|b| b.is_empty() || b.state() == STACK)
     }
 
     pub fn capacity(&self) -> usize {
@@ -652,12 +695,38 @@ impl Old {
         at
     }
 
+    /// A fresh block for a frame-stack chunk: its first slot's address. In
+    /// state [`STACK`], so nothing here allocates into it, moves it or frees
+    /// it -- the heap's frame stack owns it from here on.
+    pub fn stack_block(&mut self) -> Addr {
+        let i = self.fresh_blocks(1);
+        self.blocks[i].set_state(STACK);
+        // Stamped as in use, so it never looks empty to anything that looks at
+        // lines rather than state.
+        self.stamp_run(addr(i, 0), BLOCK);
+        addr(i, 0)
+    }
+
+    /// Whether `a` is in a frame-stack chunk.
+    pub fn in_stack(&self, a: Addr) -> bool {
+        (OLD_BASE..crate::region::REGION_BASE).contains(&a)
+            && self
+                .blocks
+                .get(block_of(a))
+                .is_some_and(|b| b.state() == STACK)
+    }
+
     /// Give block `i` back, empty.
     pub fn free_block(&mut self, i: usize) {
         give_back(std::mem::replace(&mut self.blocks[i], Block::empty()));
         self.bases[i] = self.blocks[i].base();
         self.real_blocks -= 1;
         self.empty_entries += 1;
+    }
+
+    /// The first slot of the block holding `a`, as a machine address.
+    pub(crate) fn base_ptr(&self, a: Addr) -> *mut Word {
+        self.bases[block_of(a)]
     }
 
     /// Where native code reads the blocks. See [`Old::bases`].
@@ -761,8 +830,15 @@ impl Old {
                 first
             }
         };
-        for i in first..first + n {
-            self.blocks[i] = Arc::new(take_spare());
+        // One block is a spare; a run of them is one allocation, so that an
+        // object spanning them is contiguous -- see [`Mem::Part`].
+        let fresh: Vec<Block> = if n == 1 {
+            vec![take_spare()]
+        } else {
+            Block::run(n)
+        };
+        for (i, b) in (first..first + n).zip(fresh) {
+            self.blocks[i] = Arc::new(b);
             self.bases[i] = self.blocks[i].base();
             self.real_blocks += 1;
             self.empty_entries -= 1;

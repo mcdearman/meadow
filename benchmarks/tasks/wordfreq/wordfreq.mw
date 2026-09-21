@@ -6,13 +6,15 @@ use Std.Console (println)
 use Std.Fs as Fs
 use Std.String as Str
 use Std.Collections.Vector as V
-use Std.Collections.HashMap as HM
+use Std.Collections.HashTable as HT
 use Std.Sort as Sort
 
-fun countLine (m : HashMap String Int) (line : String) =
+-- A mutable table inside a `runSt`, which is what the other languages use: a
+-- count is one probe and one write in place.
+fun countLine t (line : String) =
   V.foldl
-    (\acc w -> if Str.isEmpty w then acc else HM.insertWith (\a b -> a + b) w 1 acc)
-    m
+    (\acc w -> if Str.isEmpty w then () else HT.insertWith (\a b -> a + b) w 1 t)
+    ()
     (Str.split " " line)
 
 fun rank a b =
@@ -21,6 +23,9 @@ fun rank a b =
 
 def main =
   let text = Fs.readToStringOr "" "work/corpus.txt" in
-  let counts = V.foldl countLine HM.empty (Str.lines text) in
-  let top = V.take (Sort.sortBy rank (HM.toVec counts)) 10 in
+  let counts = runSt (\() ->
+    let t = HT.new () in
+    let _ = V.foldl (\acc line -> countLine t line) () (Str.lines text) in
+    HT.toVec t) in
+  let top = V.take (Sort.sortBy rank counts) 10 in
   println (Str.join " " (V.map (\p -> match p with | (w, c) -> "${w}:${c}") top))

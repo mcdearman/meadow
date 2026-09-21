@@ -148,6 +148,11 @@ pub struct Vm<'p> {
     /// rather than return -- see `codegen`'s "Chaining". Null until there is
     /// native code.
     pub(crate) native_table: *const std::sync::atomic::AtomicPtr<std::ffi::c_void>,
+    /// The native method entry for each pc that begins a method, or null:
+    /// where native code's `invoke` goes with the arguments in registers, the
+    /// entry loading the object's captures itself -- see `codegen`'s "Method
+    /// entries". Null until there is native code.
+    pub(crate) native_methods: *const std::sync::atomic::AtomicPtr<std::ffi::c_void>,
     pub(crate) heap: Heap,
     pub(crate) program: &'p Program,
     /// Values something outside the machine is holding on to — a debugger
@@ -278,6 +283,7 @@ impl<'p> Vm<'p> {
             method_pcs: std::ptr::null(),
             method_starts: std::ptr::null(),
             native_table: std::ptr::null(),
+            native_methods: std::ptr::null(),
             pinned: Vec::new(),
             io: Io::default(),
             request: None,
@@ -303,11 +309,13 @@ impl<'p> Vm<'p> {
                 self.method_pcs = n.method_pcs.as_ptr();
                 self.method_starts = n.method_starts.as_ptr();
                 self.native_table = n.table.as_ptr();
+                self.native_methods = n.methods.as_ptr();
             }
             None => {
                 self.method_pcs = std::ptr::null();
                 self.method_starts = std::ptr::null();
                 self.native_table = std::ptr::null();
+                self.native_methods = std::ptr::null();
             }
         }
     }
@@ -484,17 +492,24 @@ impl<'p> Vm<'p> {
         let mut at = self.reg(reg) as crate::value::Addr;
 
         while out.len() < depth {
-            if !self.heap.holds_object(at) || self.heap.kind(at) != Kind::Closure {
+            if !self.heap.holds_object(at)
+                || !matches!(self.heap.kind(at), Kind::Closure | Kind::Frame)
+            {
                 break;
             }
-            let table = self.heap.meta(at) as usize;
-            let Some(&entry) = self
-                .program
-                .methods
-                .get(table)
-                .and_then(|methods| methods.first())
-            else {
-                break;
+            let entry = if self.heap.kind(at) == Kind::Frame {
+                self.heap.meta(at)
+            } else {
+                let table = self.heap.meta(at) as usize;
+                let Some(&entry) = self
+                    .program
+                    .methods
+                    .get(table)
+                    .and_then(|methods| methods.first())
+                else {
+                    break;
+                };
+                entry
             };
             out.push(entry);
             // The link below: the capture that is *that* function's return
@@ -566,6 +581,7 @@ impl<'p> Vm<'p> {
             }
 
             Op::MakeData => self.make(i, Kind::Data, i.imm),
+            Op::Frame => self.frame(i),
             Op::MakeArray => self.make(i, Kind::Array, 0),
 
             Op::MakeRecord => {
@@ -856,19 +872,24 @@ impl<'p> Vm<'p> {
         let argc = i.imm as usize;
 
         match self.heap.kind(a) {
-            Kind::Closure => {
+            kind @ (Kind::Closure | Kind::Frame) => {
                 let ncap = self.heap.len(a);
                 if ncap + argc > REGISTERS {
                     return err("a call needs more than 256 registers");
                 }
-                let table = self.heap.meta(a) as usize;
-                let Some(&pc) = self
-                    .program
-                    .methods
-                    .get(table)
-                    .and_then(|t| t.get(i.b as usize))
-                else {
-                    return err(format!("no method #{} on this object", i.b));
+                let pc = if kind == Kind::Frame {
+                    self.heap.meta(a)
+                } else {
+                    let table = self.heap.meta(a) as usize;
+                    let Some(&pc) = self
+                        .program
+                        .methods
+                        .get(table)
+                        .and_then(|t| t.get(i.b as usize))
+                    else {
+                        return err(format!("no method #{} on this object", i.b));
+                    };
+                    pc
                 };
                 // Arguments out of the way first: writing the captures into
                 // r0.. would otherwise clobber the window they sit in. Through
@@ -882,6 +903,11 @@ impl<'p> Vm<'p> {
                 self.regs.copy_within(SCRATCH..SCRATCH + argc, ncap);
                 self.live = ncap + argc;
                 self.pc = pc as usize;
+                // A frame is a function's return: it is done with, and so is
+                // everything the function pushed above it.
+                if kind == Kind::Frame {
+                    self.heap.pop_to(a);
+                }
                 Ok(None)
             }
 
@@ -959,7 +985,41 @@ impl<'p> Vm<'p> {
     /// carried out.
     #[inline]
     pub(crate) fn value(&self, r: Reg, k: usize) -> Value {
-        Value::from_bits(self.reg(r), self.operand(k))
+        let d = self.operand(k);
+        if d == desc::ANY {
+            self.missing_descriptor(k, r);
+        }
+        Value::from_bits(self.reg(r), d)
+    }
+
+    /// The compiler did not say what operand `k`, in `r`, of the instruction
+    /// being carried out holds: a bug in it, which is worth naming the
+    /// instruction for.
+    #[cold]
+    pub(crate) fn missing_descriptor(&self, k: usize, r: Reg) -> ! {
+        let at = self.at;
+        let name = self
+            .program
+            .debug
+            .as_ref()
+            .and_then(|d| d.region(at as Pc))
+            .map(|r| r.name.to_string())
+            .unwrap_or_default();
+        let listing = self.program.disassemble();
+        let around: Vec<&str> = listing
+            .lines()
+            .filter(|l| {
+                l.split_whitespace()
+                    .next()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .is_some_and(|pc| pc + 14 >= at && pc <= at + 3)
+            })
+            .collect();
+        panic!(
+            "operand {k} (r{r}) of {:?} at pc {at} {name} has no descriptor\n{}",
+            self.program.code.get(at).map(|i| i.op),
+            around.join("\n")
+        );
     }
 
     /// `MakeData`, `MakeArray` and `Closure`: an object of the window's words,
@@ -986,6 +1046,37 @@ impl<'p> Vm<'p> {
             } else {
                 heap.alloc_described(kind, meta, n, |j| regs[base + j], desc)
             }
+        };
+        self.set(i.a, Value::Obj(a));
+    }
+
+    /// A frame: what `make` would make of a closure, pushed on the frame
+    /// stack instead. Nothing is allocated in the heap, so nothing can move.
+    fn frame(&mut self, i: Instr) {
+        let n = i.c as usize;
+        let base = i.b as usize;
+        let operands = self.program.operands(self.at);
+        // A frame's `meta` is where returning through it goes -- its one
+        // method's pc -- rather than a method table: a return is a jump, with
+        // no table to look the jump up in.
+        let pc = self
+            .program
+            .methods
+            .get(i.imm as usize)
+            .and_then(|t| t.first())
+            .copied()
+            .unwrap_or(0);
+        let a = {
+            let Vm { heap, regs, .. } = self;
+            let desc = |j: usize| {
+                let src = operands[j];
+                if src < DESC_REG {
+                    src as Desc
+                } else {
+                    regs[(src - DESC_REG) as usize] as Desc
+                }
+            };
+            heap.push_frame(pc, n, |j| regs[base + j], desc)
         };
         self.set(i.a, Value::Obj(a));
     }

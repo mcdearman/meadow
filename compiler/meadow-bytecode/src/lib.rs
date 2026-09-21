@@ -232,6 +232,11 @@ pub enum Op {
     PopI,
     /// `r[a] = r[b]` as a `Float`: the `Int` converted, rounding to nearest.
     ItoF,
+    /// `r[a] = ` a frame: the object [`Op::Closure`] would make from
+    /// `r[b..b+c]` and method table `imm`, pushed on the thread's frame stack
+    /// instead of allocated in the heap. Invoking it pops it and everything
+    /// above it: it is a function's continuation, and a function returns once.
+    Frame,
 }
 
 /// The comparison a typed compare or branch makes, as its operand byte or
@@ -347,6 +352,7 @@ impl Op {
         Op::UshrIK,
         Op::PopI,
         Op::ItoF,
+        Op::Frame,
     ];
 
     pub fn from_byte(b: u8) -> Option<Op> {
@@ -444,6 +450,13 @@ pub struct Program {
     pub consts: Vec<Const>,
     /// Method entry points, one list per [`Op::Closure`] shape.
     pub methods: Vec<Vec<Pc>>,
+    /// Per method table, how many captures the objects made with it hold; and
+    /// per method, how many registers its block takes, the captures included
+    /// -- so a native method entry can load its captures and shift its
+    /// arguments past them without being told at the call. A table is
+    /// entered by [`Op::Closure`] and [`Op::Frame`] with the same count.
+    pub method_captures: Vec<u8>,
+    pub method_params: Vec<Vec<u8>>,
     /// Field names for [`Op::MakeRecord`], in argument order.
     pub shapes: Vec<Vec<InternedString>>,
     /// Field names for [`Op::Select`] and [`Op::Extend`].
@@ -739,7 +752,9 @@ impl Program {
                     i.a, i.b, i.imm, i.c
                 ),
             },
-            Op::Closure => format!("{name:<14} r{} <- m{} [r{}..+{}]", i.a, i.imm, i.b, i.c),
+            Op::Closure | Op::Frame => {
+                format!("{name:<14} r{} <- m{} [r{}..+{}]", i.a, i.imm, i.b, i.c)
+            }
             Op::Invoke => format!("{name:<14} r{}#{} (r{}..+{})", i.a, i.b, i.c, i.imm),
             Op::Prim1 => match self.prims.get(i.imm as usize) {
                 Some(p) => format!("{name:<14} r{} <- {p:?}(r{})", i.a, i.b),

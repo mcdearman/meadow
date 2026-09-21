@@ -74,7 +74,7 @@ const ROUNDS: usize = 4;
 /// Simplify every definition in `p`.
 pub fn program(p: &Program) -> Program {
     let mut out = p.clone();
-    let mut fresh = Fresh::new();
+    let mut fresh = Fresh::above(p);
     for d in &mut out.defs {
         d.term = term(&d.term, &mut fresh);
     }
@@ -102,11 +102,66 @@ impl Fresh {
         Fresh(SIMPLIFY_BASE)
     }
 
+    /// Names clear of every one `p` already binds or mentions, as well as of
+    /// the other passes' ranges.
+    ///
+    /// The pass runs more than once on a program: [`crate::inline`] runs it
+    /// after each of its rounds, and the pipeline again after `joins`. Names
+    /// dealt out from [`SIMPLIFY_BASE`] every time would be dealt out twice,
+    /// and a binder bound twice is a name lowering finds out of scope, or
+    /// without a representation, wherever the second binding is not the one
+    /// it was looking at.
+    pub fn above(p: &Program) -> Fresh {
+        Fresh(SIMPLIFY_BASE.max(max_var(p) + 1))
+    }
+
     fn var(&mut self) -> Var {
         let v = hir::VarId(self.0);
         self.0 += 1;
         v
     }
+}
+
+/// The largest variable number `p` binds or mentions anywhere.
+pub fn max_var(p: &Program) -> u32 {
+    let top = std::cell::Cell::new(0u32);
+    let note = |v: &Var| top.set(top.get().max(v.0));
+    for d in &p.defs {
+        note(&d.var);
+        rewrite::term(
+            &d.term,
+            &mut |t| {
+                match &t {
+                    Term::Var(v) | Term::Lam(v, ..) | Term::Let(v, ..) | Term::Jump(v, ..) => {
+                        note(v)
+                    }
+                    Term::LetRec(binds, _) => binds.iter().for_each(|(v, ..)| note(v)),
+                    Term::Join { var, params, .. } => {
+                        note(var);
+                        params.iter().for_each(|(v, _)| note(v));
+                    }
+                    Term::Handle { clauses, ret, .. } => {
+                        for c in clauses {
+                            note(&c.param);
+                            note(&c.resume);
+                        }
+                        if let Some((v, ..)) = ret {
+                            note(v);
+                        }
+                    }
+                    _ => {}
+                }
+                t
+            },
+            &mut |pat| {
+                if let Pat::Var(v, _) | Pat::As(v, ..) = &pat {
+                    note(v);
+                }
+                pat
+            },
+        );
+    }
+    top.get()
 }
 
 impl Default for Fresh {
@@ -141,6 +196,13 @@ fn simplify(t: Term, fresh: &mut Fresh) -> Term {
         } => join(var, params, ty, rhs, body),
         Term::Let(x, poly, rhs, body) => let_(x, poly, rhs, body),
         Term::Prim(p, args, ty) => prim(p, args, ty),
+        // A lambda applied where it stands is a `let`: no closure to build,
+        // and the argument goes wherever `let_` would put it. Lowering would
+        // otherwise allocate the closure and enter it.
+        Term::App(f, a) => match peel(&f) {
+            Term::Lam(v, ty, body) => let_(*v, Poly::mono(ty.clone()), a, body.clone()),
+            _ => Term::App(f, a),
+        },
         t => t,
     }
 }
@@ -499,6 +561,18 @@ fn substitute(t: &Term, x: Var, to: &Term) -> Term {
 /// where it *decides* something, or where there is nowhere else it is entered
 /// from. A join that stays is a label and a jump, which is what it was for.
 fn join(var: Var, params: Vec<(Var, Ty)>, ty: Ty, rhs: Arc<Term>, body: Arc<Term>) -> Term {
+    // A join that jumps to itself is a loop (see `crate::inline`'s loops),
+    // and entering it anywhere would unroll it once and leave the jump inside
+    // pointing at nothing. It stays exactly as it is.
+    if jumps_to(&rhs, var) {
+        return Term::Join {
+            var,
+            params,
+            ty,
+            rhs,
+            body,
+        };
+    }
     let body = enter(&body, var, &params, &rhs);
     if !jumps_to(&body, var) {
         return body;

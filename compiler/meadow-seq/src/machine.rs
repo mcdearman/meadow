@@ -252,6 +252,11 @@ impl<'p> Machine<'p> {
                 _ => err("a definition read before it was evaluated"),
             },
             Prim::Once => Ok(Value::Ref(Rc::new(RefCell::new(Value::Bool(false))))),
+            // This machine keeps every continuation on the heap, so the stack
+            // primitives have nothing to cut or rejoin. `Detach` answers a
+            // reference all the same, because a segment is one.
+            Prim::Enter | Prim::Reattach => Ok(Value::Unit),
+            Prim::Detach => Ok(Value::Ref(Rc::new(RefCell::new(Value::Unit)))),
             Prim::TakeOnce => match &vals[0] {
                 Value::Ref(cell) => Ok(Value::Bool(!matches!(
                     cell.replace(Value::Bool(true)),
@@ -1366,6 +1371,7 @@ fn prim<'p>(
             err("a definition cache reached a primitive with no machine")
         }
         Once | TakeOnce => err("a resumption's flag reached a primitive with no machine"),
+        Enter | Detach | Reattach => err("the frame stack reached a primitive with no machine"),
         IntAdd | IntSub | IntMul | IntDiv | IntMod | IntEq | IntNe | IntLt | IntLe | IntGt
         | IntGe | FloatAdd | FloatSub | FloatMul | FloatDiv | FloatEq | FloatNe | FloatLt
         | FloatLe | FloatGt | FloatGe => unreachable!("made untyped above"),
@@ -1662,6 +1668,7 @@ mod tests {
     fn program(body: Statement) -> Program {
         Program {
             returns: Default::default(),
+            frames: Default::default(),
             continuations: Default::default(),
             ctor_fields: Default::default(),
             reps: Default::default(),

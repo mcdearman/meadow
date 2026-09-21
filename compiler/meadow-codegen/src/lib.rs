@@ -211,6 +211,10 @@ struct Gen<'a> {
     fixups: Vec<(usize, usize)>,
     /// Method tables, as region ids until they are resolved.
     method_tables: Vec<Vec<usize>>,
+    /// Alongside `method_tables`: see `Program::method_captures` and
+    /// `Program::method_params`.
+    method_captures: Vec<u8>,
+    method_params: Vec<Vec<u8>>,
     label_region: HashMap<Label, usize>,
 
     max_reg: usize,
@@ -247,6 +251,8 @@ impl<'a> Gen<'a> {
             pending: Vec::new(),
             fixups: Vec::new(),
             method_tables: Vec::new(),
+            method_captures: Vec::new(),
+            method_params: Vec::new(),
             label_region: HashMap::new(),
             max_reg: 1,
             descriptors: seq
@@ -279,6 +285,8 @@ impl<'a> Gen<'a> {
         self.code.push(Instr::a(Op::Halt, 1));
         self.operands_for(&[DESC_REG]);
         self.method_tables.push(vec![usize::MAX]);
+        self.method_captures.push(1);
+        self.method_params.push(vec![2]);
 
         // Every top-level definition gets a region up front: a `jump` may name a
         // label whose block has not been reached yet.
@@ -430,6 +438,8 @@ impl<'a> Gen<'a> {
             code: self.code,
             consts: self.consts,
             methods,
+            method_captures: self.method_captures.clone(),
+            method_params: self.method_params.clone(),
             shapes: self.shapes,
             labels: self.labels,
             prims: self.prims,
@@ -987,8 +997,17 @@ impl<'a> Gen<'a> {
                     msg: "an object capturing more than 256 values".into(),
                 })?;
                 let table: Vec<usize> = methods.iter().map(|m| self.region(m)).collect();
+                let params = methods
+                    .iter()
+                    .map(|m| u8::try_from(m.params.len()))
+                    .collect::<Result<Vec<u8>, _>>()
+                    .map_err(|_| Error {
+                        msg: "a method taking more than 256 registers".into(),
+                    })?;
                 let table_id = self.method_tables.len() as u32;
                 self.method_tables.push(table);
+                self.method_captures.push(ncap);
+                self.method_params.push(params);
 
                 // Capturing a name is the last use of it, so the new object
                 // very often lands in a register one of its own captures was
@@ -998,7 +1017,14 @@ impl<'a> Gen<'a> {
                 let live = self.narrow(env.clone(), rest);
                 let dst = self.free(&live)?;
                 let base = self.gather(&env, &srcs)?;
-                self.emit(Instr::new(Op::Closure, dst, base, ncap, table_id));
+                // A call's continuation goes on the frame stack; everything
+                // else is an object. See `meadow_seq::Program::frames`.
+                let op = if self.seq.frames.contains(name) {
+                    Op::Frame
+                } else {
+                    Op::Closure
+                };
+                self.emit(Instr::new(op, dst, base, ncap, table_id));
                 self.operands_in(&env, &srcs);
                 let window = self.gathered(&env, &srcs, base);
                 self.safepoint(&env, &window);

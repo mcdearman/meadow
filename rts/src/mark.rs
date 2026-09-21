@@ -85,6 +85,8 @@ pub struct Job {
     /// Its region blocks then, sorted, to tell which region an address is in.
     regions: Vec<Arc<region::Block>>,
     mutation: Arc<Mutex<()>>,
+    /// The top chunk of every detached stack segment a live object names.
+    stacks: Mutex<std::collections::HashSet<Addr>>,
     grey: Mutex<Grey>,
     /// Regions reached, for the heap to keep.
     found: Mutex<Vec<u32>>,
@@ -118,6 +120,7 @@ impl Job {
             blocks,
             regions,
             mutation,
+            stacks: Mutex::new(std::collections::HashSet::new()),
             grey: Mutex::new(Grey {
                 stack: Vec::new(),
                 working: 0,
@@ -172,6 +175,11 @@ impl Job {
     }
 
     /// Mark for up to about `budget`, and at most about `limit` fields.
+    /// The detached stack segments live objects named, by top chunk.
+    pub fn stacks(&self) -> std::collections::HashSet<Addr> {
+        lock(&self.stacks).clone()
+    }
+
     pub fn step(&self, budget: Duration, limit: usize) {
         let started = Instant::now();
         let mut local = {
@@ -257,6 +265,12 @@ impl Job {
             // A block made since the cycle began: all of it is black.
             return 1;
         };
+        // A frame-stack chunk: the heap that owns it scanned its frames as
+        // roots when this cycle began, and the frames may be pushed and popped
+        // under a marker at any time, so nothing here reads one.
+        if b.state() == old::STACK {
+            return 1;
+        }
         let off = old::offset_of(a);
         if from == 0 && !b.mark(off, self.epoch) {
             return 1;
@@ -268,6 +282,12 @@ impl Job {
         // A mutable object's descriptors change as its fields do, under the
         // mutation lock; its kind never does.
         let kind = Kind::from_byte(word(0) as u8);
+        // A detached stack segment reachable from the program: the chunks it
+        // names stay. Their frames were roots at the start of the cycle, so
+        // nothing in them needs reading here -- see `Heap::finish_cycle`.
+        if kind == Kind::Stack {
+            lock(&self.stacks).insert(word(2) as Addr);
+        }
         let _held =
             matches!(kind, Kind::Ref | Kind::MutArray | Kind::Resume).then(|| lock(&self.mutation));
         let h = Head::read(word(0), word(1));

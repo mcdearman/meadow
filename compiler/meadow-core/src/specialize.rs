@@ -216,6 +216,40 @@ fn positions(poly: &Poly, all: bool) -> Vec<(usize, VarKind)> {
 }
 
 /// The number types a literal can be made as.
+/// A literal whose type is a variable, at the type `sigma` gives that
+/// variable: the literal of that number type, or the same literal at whatever
+/// variable `sigma` maps it to, or itself where `sigma` says nothing.
+pub(crate) fn lit_at(l: &Lit, sigma: &HashMap<u32, Ty>) -> Lit {
+    let ty = |id: &u32| sigma.get(id).and_then(number_type);
+    let var = |id: &u32| match sigma.get(id) {
+        Some(InferType::Var(v)) => Some(*v),
+        _ => None,
+    };
+    match l {
+        Lit::AnyInt(n, id) => match ty(id).as_deref() {
+            Some("BigInt") => Lit::BigInt(*n),
+            Some("Int") => Lit::Int(*n),
+            Some(name) => match num::Width::from_type(name) {
+                Some(w) => Lit::Word(w, w.wrap(*n as i128)),
+                None => l.clone(),
+            },
+            None => match var(id) {
+                Some(v) => Lit::AnyInt(*n, v),
+                None => l.clone(),
+            },
+        },
+        Lit::AnyFloat(x, id) => match ty(id).as_deref() {
+            Some("Float32") => Lit::Float32(*x as f32),
+            Some("Float") => Lit::Float(*x),
+            _ => match var(id) {
+                Some(v) => Lit::AnyFloat(*x, v),
+                None => l.clone(),
+            },
+        },
+        other => other.clone(),
+    }
+}
+
 fn number_type(ty: &Ty) -> Option<InternedString> {
     match ty {
         InferType::Con(n, args) if args.is_empty() => matches!(
@@ -376,24 +410,7 @@ impl Specializer {
     }
 
     fn lit(&self, l: &Lit, sigma: &HashMap<u32, Ty>) -> Lit {
-        let ty = |id: &u32| sigma.get(id).and_then(number_type);
-        match l {
-            Lit::AnyInt(n, id) => match ty(id).as_deref() {
-                Some("BigInt") => Lit::BigInt(*n),
-                Some("Int") => Lit::Int(*n),
-                Some(name) => match num::Width::from_type(name) {
-                    Some(w) => Lit::Word(w, w.wrap(*n as i128)),
-                    None => l.clone(),
-                },
-                None => l.clone(),
-            },
-            Lit::AnyFloat(x, id) => match ty(id).as_deref() {
-                Some("Float32") => Lit::Float32(*x as f32),
-                Some("Float") => Lit::Float(*x),
-                _ => l.clone(),
-            },
-            other => other.clone(),
-        }
+        lit_at(l, sigma)
     }
 
     fn ty(&self, t: &Ty, sigma: &HashMap<u32, Ty>) -> Ty {

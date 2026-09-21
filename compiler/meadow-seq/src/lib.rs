@@ -392,6 +392,14 @@ pub struct Program {
     /// `g` and then for `f` -- where one capturing a [`Program::returns`] name
     /// is the caller's.
     pub continuations: std::collections::HashSet<Name>,
+    /// The continuations a function makes for its own non-tail calls, by the
+    /// name each is bound to at its `new`: the ones that are **frames**. A
+    /// frame is entered exactly once, by the call it was made for returning
+    /// through it, and everything pushed after it is dead by then -- so the
+    /// back end puts it on the thread's frame stack instead of the heap. Every
+    /// other `new` -- a closure, a handler clause, a resumption -- is an object
+    /// that may outlive the code that made it.
+    pub frames: std::collections::HashSet<Name>,
     /// Named-field order per constructor, carried from core. A `record` value
     /// is constructor data rather than an anonymous record, and `.field` on one
     /// is resolved against this at run time, as the CEK machine does.

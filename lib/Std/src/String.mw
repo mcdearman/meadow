@@ -17,6 +17,7 @@
 @pub mod Parse
 
 use Std.Collections.Vector as V (vecFromArray)
+use Std.St as St
 use Std.Num.Int (min, max)
 use Std.Maybe.Maybe.*
 use Std.Ordering.Ordering.*
@@ -106,15 +107,31 @@ fun repeatLoop acc s n = if n <= 0 then acc else repeatLoop (V.pushBack acc s) s
   let m = byteLength s in
   if n > m then False else slice s (m - n) m == suffix
 
-fun splitLoop s sep i acc =
+-- How many pieces `s` cuts into at `sep`, from byte `i`, counting `n` so far.
+fun pieces s sep i n =
   let k = stringIndexOf s sep i in
-  if k < 0 then V.pushBack acc (slice s i (byteLength s))
-  else splitLoop s sep (k + byteLength sep) (V.pushBack acc (slice s i k))
+  if k < 0 then n else pieces s sep (k + byteLength sep) (n + 1)
+
+-- The pieces of `s` from byte `i`, into `out` from index `j`.
+fun cutInto s sep i j out =
+  let k = stringIndexOf s sep i in
+  if k < 0 then St.set out j (slice s i (byteLength s))
+  else
+    let _ = St.set out j (slice s i k) in
+    cutInto s sep (k + byteLength sep) (j + 1) out
 
 -- `s` cut at every occurrence of `sep`. An empty `sep` yields `s` whole, since
 -- splitting on nothing has no useful answer.
+--
+-- Two passes: count the pieces, then cut them into an array of exactly that
+-- many and make the vector from it in one go -- rather than growing a vector
+-- a piece at a time, which copied its tail for every piece.
 @pub fun split sep s =
-  if isEmpty sep then [s] else splitLoop s sep 0 V.empty
+  if isEmpty sep then [s]
+  else runSt (\() ->
+    let out = St.newArray (pieces s sep 0 1) "" in
+    let _ = cutInto s sep 0 0 out in
+    V.fromArray (St.freeze out))
 
 -- ---------------------------------------------------------------------------
 -- Ordering

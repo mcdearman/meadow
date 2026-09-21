@@ -10,7 +10,7 @@ use crate::{Const, Instr, Program};
 use meadow_core::{Prim, num::Width};
 use meadow_intern::InternedString;
 
-const MAGIC: &[u8; 8] = b"MDWIMG03";
+const MAGIC: &[u8; 8] = b"MDWIMG04";
 
 /// `program`, as bytes [`decode`] reads back.
 pub fn encode(program: &Program) -> Vec<u8> {
@@ -27,6 +27,13 @@ pub fn encode(program: &Program) -> Vec<u8> {
     w.u32(program.methods.len() as u32);
     for m in &program.methods {
         w.u32s(m);
+    }
+    w.u32(program.method_captures.len() as u32);
+    w.0.extend_from_slice(&program.method_captures);
+    w.u32(program.method_params.len() as u32);
+    for m in &program.method_params {
+        w.u32(m.len() as u32);
+        w.0.extend_from_slice(m);
     }
     w.u32(program.shapes.len() as u32);
     for s in &program.shapes {
@@ -111,6 +118,12 @@ pub fn decode(bytes: &[u8]) -> Result<Program, String> {
     for _ in 0..r.u32()? {
         let m = r.u32s()?;
         p.methods.push(m);
+    }
+    let n = r.u32()? as usize;
+    p.method_captures = r.take(n)?.to_vec();
+    for _ in 0..r.u32()? {
+        let n = r.u32()? as usize;
+        p.method_params.push(r.take(n)?.to_vec());
     }
     for _ in 0..r.u32()? {
         let s = r.strs()?;

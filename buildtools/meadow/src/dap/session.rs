@@ -630,19 +630,39 @@ impl Session {
         None
     }
 
+    /// Where invoking the closure or frame at `a` goes: a frame carries its
+    /// pc, a closure a method table.
+    fn entry_of(&self, heap: &meadow_rts::heap::Heap, a: u32) -> Option<u32> {
+        if heap.kind(a) == Kind::Frame {
+            Some(heap.meta(a))
+        } else {
+            self.image
+                .methods
+                .get(heap.meta(a) as usize)
+                .and_then(|t| t.first())
+                .copied()
+        }
+    }
+
     /// `k`'s method, if it is a continuation this program built.
     fn continuation(&self, k: Value) -> Option<(&'static meadow_bytecode::Region, u32)> {
         let a = k.addr()?;
         let heap = self.vm.heap();
-        if !heap.is_object(a) || heap.kind(a) != Kind::Closure {
+        if !heap.is_object(a) || !matches!(heap.kind(a), Kind::Closure | Kind::Frame) {
             return None;
         }
-        let table = heap.meta(a) as usize;
-        // Table 0 is the machine's own halt continuation: the bottom of the stack.
-        if table == 0 {
-            return None;
-        }
-        let entry = *self.image.methods.get(table)?.first()?;
+        // A frame's `meta` is its return pc; a closure's is its method table.
+        let entry = if heap.kind(a) == Kind::Frame {
+            heap.meta(a)
+        } else {
+            let table = heap.meta(a) as usize;
+            // Table 0 is the machine's own halt continuation: the bottom of the
+            // stack.
+            if table == 0 {
+                return None;
+            }
+            *self.image.methods.get(table)?.first()?
+        };
         Some((self.debug.region_at(entry)?, a))
     }
 
@@ -922,6 +942,7 @@ impl Session {
                     | Kind::MutArray
                     | Kind::Record
                     | Kind::Closure
+                    | Kind::Frame
                     | Kind::Ref
                     | Kind::Compact
             )
@@ -956,14 +977,10 @@ impl Session {
                 .enumerate()
                 .map(|(i, f)| self.row(format!("[{i}]"), f, None))
                 .collect(),
-            Kind::Closure => {
-                let table = heap.meta(a) as usize;
-                let params = self
-                    .image
-                    .methods
-                    .get(table)
-                    .and_then(|t| t.first())
-                    .and_then(|&pc| self.debug.region_at(pc))
+            Kind::Closure | Kind::Frame => {
+                let entry = self.entry_of(heap, a);
+                let params = entry
+                    .and_then(|pc| self.debug.region_at(pc))
                     .map(|r| r.params.clone())
                     .unwrap_or_default();
                 fields
@@ -1028,7 +1045,7 @@ impl Session {
                 out.push_str(&format!("{text:?}"));
             }
             Kind::BigInt => out.push_str(&self.vm.show(v)),
-            Kind::Resume => out.push_str("<resumption>"),
+            Kind::Resume | Kind::Stack => out.push_str("<resumption>"),
             Kind::Channel => out.push_str("<channel>"),
             Kind::Task => out.push_str("<thread>"),
             Kind::TVar => out.push_str("<tvar>"),
@@ -1040,14 +1057,10 @@ impl Session {
                 out.push_str("compact ");
                 self.nested(out, heap.field(a, 0), depth, budget);
             }
-            Kind::Closure => {
-                let table = heap.meta(a) as usize;
-                let name = self
-                    .image
-                    .methods
-                    .get(table)
-                    .and_then(|t| t.first())
-                    .and_then(|&pc| self.debug.region_at(pc))
+            Kind::Closure | Kind::Frame => {
+                let entry = self.entry_of(heap, a);
+                let name = entry
+                    .and_then(|pc| self.debug.region_at(pc))
                     .map(|r| r.name.to_string());
                 match name {
                     Some(name) => out.push_str(&format!("<function in {name}>")),

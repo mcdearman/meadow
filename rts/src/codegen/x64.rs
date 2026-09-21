@@ -343,7 +343,7 @@ impl Asm {
 }
 
 impl Emit for Asm {
-    const PINS: usize = PIN_REGS.len();
+    const FIXED: usize = PIN_REGS.len();
     const WARM: usize = 33;
 
     fn new() -> Asm {
@@ -372,11 +372,15 @@ impl Emit for Asm {
         self.labels[l.0] = Some(self.code.len());
     }
 
-    fn configure(&mut self, opt: OptLevel, pins: &[Reg]) {
+    fn configure(&mut self, opt: OptLevel, _floats: &[Reg]) {
         self.defer_live = opt >= OptLevel::O1;
         self.short = opt >= OptLevel::O1;
         self.chain = opt >= OptLevel::O1;
-        self.pins = pins.iter().copied().zip(PIN_REGS).collect();
+        // The fixed registers, in general registers only: floats are not kept
+        // apart here. They are still written back before every chain and
+        // loaded at every warm entry, which the arm64 code no longer needs
+        // to do.
+        self.pins = (0..PIN_REGS.len() as Reg).zip(PIN_REGS).collect();
     }
 
     fn prologue(&mut self, warm: Option<Label>) {
@@ -562,6 +566,12 @@ impl Emit for Asm {
         self.store(a);
     }
 
+    fn frame(&mut self, _a: Reg, _header: &[u64], _base: Reg, _n: u32, slow: Label) {
+        // Not yet on x86-64: the interpreter pushes it. Writing this needs a
+        // machine to run it on, which is the same reason `steps` is not here.
+        self.jump(slow);
+    }
+
     fn unary(&mut self, op: UnaryOp, a: Reg, b: Reg) {
         self.get(RAX, b as u32);
         match op {
@@ -676,6 +686,15 @@ impl Emit for Asm {
         self.store(a);
     }
 
+    fn vector_loop(&mut self, _plan: &super::vector::Plan, _scalar: Label) {
+        // Everything falls into the scalar loop.
+    }
+
+    fn stub(&mut self, _captures: u32, _params: u32, _warm: Label) -> bool {
+        // No method entries here: every call rebuilds the register file.
+        false
+    }
+
     fn invoke(&mut self, obj: Reg, method: u8, base: Reg, argc: u32, slow: Label) {
         if argc > 247 {
             self.jump(slow);
@@ -741,8 +760,9 @@ impl Emit for Asm {
         self.ret_as_is(crate::abi::JUMPED);
     }
 
-    fn alloc(&mut self, a: Reg, header: [u64; 2], base: Reg, n: u32, slow: Label) {
-        let size = 2 + n;
+    fn alloc(&mut self, a: Reg, header: &[u64], base: Reg, n: u32, slow: Label) {
+        let hdr = header.len() as u32;
+        let size = hdr + n;
         self.load(RAX, RBX, layout::TOP);
         self.bytes(&[0x48, 0x8D, 0x88]); // lea rcx, [rax + size]
         self.bytes(&size.to_le_bytes());
@@ -756,14 +776,15 @@ impl Emit for Asm {
         self.jcc(CC_A, slow);
         self.load(2, RBX, layout::BASE);
         self.bytes(&[0x48, 0x8D, 0x14, 0xC2]); // lea rdx, [rdx + rax*8]
-        self.imm(RSI, header[0]);
-        self.bytes(&[0x48, 0x89, 0x32]); // mov [rdx], rsi
-        self.imm(RSI, header[1]);
-        self.bytes(&[0x48, 0x89, 0x72, 0x08]); // mov [rdx + 8], rsi
+        for (k, &w) in header.iter().enumerate() {
+            self.imm(RSI, w);
+            self.bytes(&[0x48, 0x89, 0xB2]); // mov [rdx + k * 8], rsi
+            self.bytes(&(k as u32 * 8).to_le_bytes());
+        }
         for j in 0..n {
             self.get(RSI, base as u32 + j);
-            self.bytes(&[0x48, 0x89, 0xB2]); // mov [rdx + (2 + j) * 8], rsi
-            self.bytes(&((2 + j) * 8).to_le_bytes());
+            self.bytes(&[0x48, 0x89, 0xB2]); // mov [rdx + (hdr + j) * 8], rsi
+            self.bytes(&((hdr + j) * 8).to_le_bytes());
         }
         self.save(RCX, RBX, layout::TOP);
         self.bytes(&[0x48, 0x81, 0x83]); // add qword [rbx + ALLOCATED], size

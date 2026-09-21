@@ -6,8 +6,10 @@
 //!
 //! ```text
 //!   u64 image length   u64 block count   u64 offset of the block table
+//!   u64 method entry count   u64 offset of the method entry table
 //!   the image (see meadow_bytecode::image)
 //!   the block table: (u32 entry pc, u32 offset into the code), per block
+//!   the method entry table: the same, per method entry
 //! ```
 //!
 //! which [`crate::aot::meadow_aot_main`] reads back. A program links one of
@@ -91,13 +93,16 @@ pub const DATA: &str = "meadow_data";
 /// out.
 pub fn data(compiled: &Compiled, image: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    let table = align(24 + image.len(), 4);
+    let table = align(40 + image.len(), 4);
+    let stubs = table + 8 * compiled.blocks.len();
     out.extend_from_slice(&(image.len() as u64).to_le_bytes());
     out.extend_from_slice(&(compiled.blocks.len() as u64).to_le_bytes());
     out.extend_from_slice(&(table as u64).to_le_bytes());
+    out.extend_from_slice(&(compiled.stubs.len() as u64).to_le_bytes());
+    out.extend_from_slice(&(stubs as u64).to_le_bytes());
     out.extend_from_slice(image);
     out.resize(table, 0);
-    for (pc, offset) in &compiled.blocks {
+    for (pc, offset) in compiled.blocks.iter().chain(&compiled.stubs) {
         out.extend_from_slice(&pc.to_le_bytes());
         out.extend_from_slice(&offset.to_le_bytes());
     }

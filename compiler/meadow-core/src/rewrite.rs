@@ -111,6 +111,68 @@ pub fn term(t: &Term, f: &mut dyn FnMut(Term) -> Term, p: &mut dyn FnMut(Pat) ->
     f(rebuilt)
 }
 
+/// Visit `t` top-down: `f` on the node first, and then, if it answers `true`,
+/// its children. Patterns are not visited.
+pub fn visit<'a>(t: &'a Term, f: &mut dyn FnMut(&'a Term) -> bool) {
+    if !f(t) {
+        return;
+    }
+    match t {
+        Term::Var(_) | Term::Lit(_) | Term::Error => {}
+        Term::Loc(_, x)
+        | Term::Lam(_, _, x)
+        | Term::TyLam(_, x)
+        | Term::TyApp(x, _)
+        | Term::Proj(x, _)
+        | Term::Sel(x, _, _)
+        | Term::Perform(_, _, x, _) => visit(x, f),
+        Term::App(a, b) | Term::Extend(a, _, b) => {
+            visit(a, f);
+            visit(b, f);
+        }
+        Term::Let(_, _, a, b) => {
+            visit(a, f);
+            visit(b, f);
+        }
+        Term::LetRec(binds, b) => {
+            binds.iter().for_each(|(_, _, t)| visit(t, f));
+            visit(b, f);
+        }
+        Term::Join { rhs, body, .. } => {
+            visit(rhs, f);
+            visit(body, f);
+        }
+        Term::If(c, a, b) => {
+            visit(c, f);
+            visit(a, f);
+            visit(b, f);
+        }
+        Term::Jump(_, xs, _) | Term::Tuple(xs) | Term::Array(xs, _) | Term::Prim(_, xs, _) => {
+            xs.iter().for_each(|x| visit(x, f))
+        }
+        Term::Ctor(_, _, xs) => xs.iter().for_each(|x| visit(x, f)),
+        Term::Record(fs) => fs.iter().for_each(|(_, x)| visit(x, f)),
+        Term::Case(s, arms, _) => {
+            visit(s, f);
+            for (_, g, b) in arms {
+                if let Some(g) = g {
+                    visit(g, f);
+                }
+                visit(b, f);
+            }
+        }
+        Term::Handle {
+            body, clauses, ret, ..
+        } => {
+            visit(body, f);
+            clauses.iter().for_each(|c| visit(&c.body, f));
+            if let Some((_, _, b)) = ret {
+                visit(b, f);
+            }
+        }
+    }
+}
+
 /// Rebuild a pattern bottom-up through `p`.
 pub fn pattern(pt: &Pat, p: &mut dyn FnMut(Pat) -> Pat) -> Pat {
     let rebuilt = match pt {

@@ -1273,6 +1273,35 @@ are found by the `hash` primitive, which is structural and agrees with `==` —
 cannot be a key: `hash` refuses both. (`Std.Collections.Map` is the older,
 `Int`-keyed ordered map, for when the keys should come out sorted.)
 
+When the map is a *place* rather than a value -- a count being built up, a
+cache -- `Std.Collections.HashTable` is the same idea written in place: it
+lives inside a `runSt`, like a `StArray`, and `insert` writes into it and
+answers `()`. One probe and one write per update, against a path copied per
+level, which is what makes it the right thing for a loop over a big input:
+
+```meadow
+use Std.St as St
+use Std.Collections.Vector as V
+use Std.Collections.HashTable as HT
+
+fun counts words =
+  runSt (\() ->
+    let t = HT.new () in
+    let _ = V.foldl (\_ w -> HT.insertWith (\a b -> a + b) w 1 t) () words in
+    HT.toVec t)
+
+def main = V.length (counts ["a", "b", "a", "c", "a"])
+```
+
+```
+=> 3
+```
+
+`insertWith f k v` puts `v` at `k`, or `f v old` if `k` already holds `old`,
+in one probe; `lookup`, `member`, `adjust`, `delete` and `foldl` are what they
+are for `HashMap`. What comes out of the `runSt` is what `toVec`, `keys` or
+`values` read out, never the table.
+
 ### The collector
 
 Each green thread has a heap of its own, and the VM collects it in short

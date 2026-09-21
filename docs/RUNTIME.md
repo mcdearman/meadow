@@ -55,7 +55,7 @@ reference semantics, and every backend is tested against it.
 
 Three decisions made before the runtime sees anything shape everything after.
 
-### There is no call stack
+### The call stack is a frame stack
 
 The backend IR is **AxCut** (`compiler/meadow-seq/src/lib.rs`), from Schuster,
 Müller, Ostermann and Brachthäuser, *Compiling Classical Sequent Calculus to
@@ -95,15 +95,40 @@ invoking that continuation*. A closure, a continuation and an effect handler are
 all the same kind of heap object: codata with a method table and captured
 values.
 
-So the bytecode has no `call` or `ret` and no frame pointer. `Op::Invoke` is
-the whole calling convention: rebuild the register file as the object's
-captures followed by its arguments, then jump to the method. Nothing is pushed
-and nothing is popped. Every call is a tail call, and a deep recursion grows the
-heap, which is collected, instead of a stack, which would overflow.
+So the bytecode has no `call` or `ret`. `Op::Invoke` is the whole calling
+convention: rebuild the register file as the object's captures followed by its
+arguments, then jump to the method. Every call is a tail call.
 
-The cost is that a call not in tail position has to allocate its continuation
-on the heap, at about four words per call. That makes the nursery's bump
-allocator the fast path for ordinary function calls.
+What a non-tail call needs is a continuation, and where that continuation
+lives is the one thing here that changed. It used to be a heap object -- four
+words allocated per call, collected later. It is now a **frame** (`Op::Frame`,
+`Kind::Frame`): the same object, laid out as a closure so that `Invoke` enters
+it exactly as it enters a closure, but written into a per-thread **frame
+stack** and reclaimed by moving the stack's top back when the function returns
+through it. Lowering knows which `new`s are these -- `meadow_seq::Program::frames`
+-- because a continuation made for a call is entered once, by that call
+returning, and everything pushed after it is dead by then.
+
+The stack is chunked, as GHC's is: 64 KiB chunks that are old-generation
+blocks in state `STACK`, linked through their first two slots, so a deep
+recursion grows a chain and never copies a frame, and a frame's address is an
+ordinary old address that every part of the runtime already knows how to
+reach. A frame in the current chunk is one load from the chunk's published
+base (`layout::FBASE`); returning through one is a jump to the pc the frame
+carries as its `meta`, with no method table to look up. Frames are collector
+roots, walked by the heap that owns them at every nursery collection and at
+the start of every marking cycle, so the marker never reads one while the
+program pushes and pops.
+
+Every `handle` enters a chunk of its own, and that is what makes effects work
+on a stack -- see [section 5](#5-effects). The stack alone moved `binarytrees`
+11% and the call-bound benchmarks not at all, which said where the remaining
+cost was: the convention around the call, where arguments travelled through
+the register file in memory and every `Invoke` rebuilt that file one word at a
+time. Native code no longer does that -- see [Method entries and the fixed
+registers](#method-entries-and-the-fixed-registers) -- and `fib` is 1.8x
+faster for it. The interpreter still does, and the two agree by construction:
+the method entry lays out exactly the registers `Op::Invoke` would.
 
 ### A register is a word, and types become descriptors
 
@@ -204,9 +229,10 @@ anywhere.
 | `Move`, and `Const` for immediates | `Const` for strings and `BigInt`s |
 | typed `Int`/`Float` arithmetic, shifts and comparisons; `popCount`, `>>>` and `toFloat` on an `Int` | generic `Prim`, `PrimK`, `JumpUnlessPrim(K)` |
 | `Jump`, `JumpUnless`, `BrI`/`BrIK`/`BrF` | `Ref` operations, `compact`, STM and thread primitives |
-| `JumpUnlessTag`, `Field` and `Invoke` on a nursery **or old-generation** object | the same on a region object; `Invoke` of a closure with more than 8 captures |
-| `stGetArray`, `arrayGet` and `stSetArray` (non-reference elements), through the thin steps of `codegen::thin` | `stSetArray` on an array of references, which needs the write barriers |
-| `MakeData`/`MakeArray`/`Closure` with a **static header**, if the nursery has room | the same with descriptors from registers, more than 8 non-uniform fields, or a full nursery |
+| `JumpUnlessTag`, `Field` and `Invoke` on a nursery **or old-generation** object | the same on a region object; `Field` of a data object with more than 8 fields |
+| `stGetArray`, `arrayGet`, `stSetArray` (non-reference elements, or a **young** array), `getRef`, `stArrayLen`, `arrayLen` and `stringByteLength`, through the thin steps of `codegen::thin` | `stSetArray` of a reference into an old array, which needs the write barriers; `setRef` |
+| `MakeData`/`MakeArray`/`Closure` with a **static header**, if the nursery has room -- a header of any length | the same with descriptors from registers, or a full nursery |
+| `Frame` with a static header, if the chunk has room; `Invoke` of a frame in the current chunk | a `Frame` that overflows its chunk, and a return through a frame in a lower chunk, which releases chunks on the way |
 | | `MakeRecord`, `Select`, `Extend`, `Native`, `Halt`, `Error` |
 
 The heap instructions use a **fast path with a slow half**. For `field`, for
@@ -214,7 +240,10 @@ example, the aarch64 code reaches the object -- a nursery address is one load
 off the nursery base; an old one is two more, through the per-generation
 **block table** the heap publishes at `layout::TABLES` (`Heap::tables`), chosen
 by the address's generation bit -- loads the header, checks the kind and the
-bounds, and loads the word. Any check that fails branches to a slow label placed
+bounds, and loads the word. An array element is reached the same way once,
+for the object, and then by an offset: every object is contiguous in memory,
+including one bigger than a block, which the old generation lays out in a
+run of blocks in one allocation (`old::Mem::Part`). Any check that fails branches to a slow label placed
 after the function body. There it undoes the step count, calls `meadow_exec`
 for that one instruction, and jumps back. The block table is a `Vec` that moves
 as blocks are added, so `meadow_exec` republishes it before it returns: there
@@ -227,6 +256,71 @@ collection first), take the slow path, where the interpreter collects.
 `meadow_exec` runs the instruction exactly as the interpreter would and returns
 `CONTINUE` if control falls through. Any other status makes the native function
 return it at once.
+
+#### Method entries and the fixed registers
+
+Bytecode registers `r0` to `r12` live in machine registers in every native
+function alike -- the **fixed registers**: `x2`–`x8` and `x23`–`x28` on arm64,
+`r8`–`r11` and `r15` for `r0`–`r4` on x86-64 -- and the rest live in the
+register file in memory. They are loaded from the file where the machine
+enters native code (the prologue), written back before every call into the
+interpreter and every return, and loaded again after every call; a function
+going on to another (chaining, or a call) moves nothing. On arm64 a register a
+function only ever does float arithmetic on lives in one of `d16`–`d31` for
+that function's duration, moved in at its warm entry and back out before it
+goes on, so `fmul d17, d17, d18` is what a `mulf` on two of them is.
+
+A call passes its arguments in them. `Op::Invoke`'s fast path puts the `argc`
+arguments in `r0..argc` and jumps to the method's **entry** -- a stub after
+the method's block function, found through a second table the `Vm` points at
+(`vm->native_methods`, by pc) -- with the object's first word's address in a
+scratch register. The entry knows its own shape, which the compiler records
+per method table (`Program::method_captures`, `Program::method_params`): it
+moves the arguments up past the captures, loads the captures from the object,
+sets `live` to what the block takes, and falls into the block's warm entry.
+Nothing goes through memory. A **return** is the same thing for a frame: a
+frame in the current chunk is recognised by its address alone -- everything
+in a stack chunk is one -- popped by moving the stack's top back to it, and
+entered through the entry of the block its `meta` names.
+
+A method gets an entry when its captures follow a two-word header (at most
+`compact::INLINE_DESCS`, 8, since past that the descriptors spill into further
+header words) and its block's registers all fit the fixed ones. Any other
+method, an `Invoke` whose pc has no native code yet, a frame in a lower chunk,
+and a chain that has run out of budget take the **general path**, which
+rebuilds the register file in memory as the interpreter does and goes on to
+the block's warm entry -- or the interpreter, exactly as before. The
+interpreter's `Op::Invoke` never changed; native code's fast path lays out the
+same registers it would.
+
+#### Vector loops
+
+A loop the compiler has made a jump -- `St.forRange lo hi (\i -> ...)` and
+its like, after `meadow_core::inline`'s loop specialisation -- is looked at
+by `codegen::vector` at O2. Where its body is index arithmetic on invariants
+and the induction register, reads and writes of arrays that never change
+during the loop, and float arithmetic on what was read, it gets a **plan**:
+the arrays, the induction register and its bound, each instruction of the
+body in vector form, and what has to be true first. The architecture's code
+emits the plan as a *preheader* and a loop that does two iterations a trip on
+`q` registers, placed just before the scalar loop's header, which it falls
+into for the rest -- the last iteration of an odd count, or every one if a
+check fails. Control from outside the loop enters through the preheader; the
+loop's own jump back does not.
+
+The preheader checks, once, what the scalar code checks on every access: each
+array is the kind expected, uniform, with `Float` elements; every index the
+loop will use is within its array, found by running the body's index
+arithmetic at the induction register's first and last values and checking at
+each access (an index is the induction register plus an invariant, so those
+are its extremes, and an unsigned compare rejects a negative one); and an
+array written is not the same object as one read at a different index under
+another register. Then each array's base address is kept in `x12`–`x17`
+(free inside the body: nothing in it walks a table or looks up a method),
+its length in a `d` register, invariant floats are broadcast into vector
+registers, and the body runs with lanes in `v0`–`v7`. The scalar loop is
+never changed. `MEADOW_VECTOR_DEBUG=1` at compile time prints every loop
+considered and, for one refused, the line of `vector.rs` that refused it.
 
 #### Bookkeeping native code keeps up
 
@@ -250,12 +344,22 @@ same observable behavior:
   load from `vm->native_table` otherwise (null: return as before). A call and
   its return therefore cost a few jumps rather than two trips through the
   scheduler loop: `fib 35` runs 1.9x faster for it.
-- **O2** (release) adds two passes. **Regions** pull the loops a block belongs
-  to into its function, so a loop that the bytecode lays out as several blocks
+- **O2** (release) adds **regions**: the loops a block belongs to are pulled
+  into its function, so a loop that the bytecode lays out as several blocks
   goes round in machine code instead of returning to `advance` at every block.
-  **Pins** keep a function's most-used bytecode registers in machine registers
-  (x2–x8 on arm64; r8–r11 and r15 on x86-64). Pinned registers are written back
-  to memory before every call and return, and reloaded after every call.
+
+At every level the fixed registers (above) are where `r0`–`r12` live, and
+arithmetic, comparisons and branches on them are done in place -- `add x3, x4,
+x5`, `fmul d17, d17, d18` -- with only a register that lives in memory going
+through a scratch register.
+
+A loop pays for `live` once, not per trip round. A jump to an earlier pc
+declares `live` for the whole loop -- one past the most registers anything
+from the target to the jump writes (`codegen::loop_live`) -- and every other
+way into the loop's header raises `live` to that, so the header knows it and
+nothing inside raises it again. Declaring more than the compiler said is
+safe: the collector reads each pc's map for which registers hold addresses,
+and `live` only bounds it.
 
 A loop inside one function counts its back edges, and after `BACK_EDGES`
 (4096) iterations the function returns anyway. Chained jumps are counted with
@@ -272,7 +376,7 @@ Machine registers inside a block function:
 | steps not yet added to the `Vm` | x21 | r13 |
 | back edges and chained jumps this call | x22 | r14 |
 | scratch for the current instruction | x9–x17, d0, d1 | rax, rcx, rdx, rsi, rdi, xmm0, xmm1 |
-| pinned bytecode registers (O2) | x2–x8 | r8–r11, r15 |
+| fixed bytecode registers `r0`–`r12` (`r0`–`r4` on x86-64) | x2–x8, x23–x28; d16–d31 for a function's floats | r8–r11, r15 |
 
 ### The JIT
 
@@ -525,10 +629,10 @@ cooperation with the collector beyond what the interpreter already does:
   `TOP` if there's room and otherwise takes the slow path, which calls
   `meadow_exec`, and that call is where a collection can happen. Inline code
   never collects.
-- **Before every call into the interpreter**, native code writes pinned
+- **Before every call into the interpreter**, native code writes the fixed
   registers back to the register file and brings `live` up to date. The GC map
   for that pc then describes the roots exactly.
-- **After the call**, pinned registers are reloaded from the register file,
+- **After the call**, the fixed registers are reloaded from the register file,
   which the collector has updated. Scratch machine registers are never live
   across a call.
 - **No native frame survives a block.** Control leaving a block function either
@@ -669,7 +773,29 @@ and `R`'s method, called as `k v` with its own continuation `c`, does:
 ```
 
 Writing `c` into `target` is what makes handlers **deep** and makes `k v`
-*return* inside the clause. When the resumed body eventually finishes, it
+*return* inside the clause.
+
+With continuations on a stack, capturing `k` means capturing the frames
+between the `perform` and the handler. Three primitives do it, all at chunk
+boundaries and none of them copying a frame: `Enter` at every `handle` starts
+a fresh chunk and writes its tag into the handle's `target` `Ref` (in the
+`Ref`'s otherwise unused `meta`), so the body's frames never share a chunk with
+the handler's own and the boundary is known from where the handler was
+*entered*; `Detach`, where a general clause is entered, unlinks that chunk and
+every one above it and names the segment with a `Kind::Stack` object the
+resumption captures alongside `k`; `Reattach`, in the resumption, links the
+segment back on top of the stack before continuing into `k`, and refuses to do
+it twice. The boundary has to come from `Enter` rather than from where the
+handler's continuation lives, because that continuation need not be a frame at
+all: a `handle` in tail position of a function called from another handler's
+body answers with a heap closure, and cutting by its position would take the
+outer handler's frames along -- which is how `Std.Stream`'s `map` inside
+`toVec` found the bug. A perform to a handler whose chunk is no longer on the
+stack -- a closure that escaped its `handle` and kept the evidence -- is the
+runtime error "an effect was performed after its handler had finished". A segment nobody
+resumes is freed at the next nursery collection if its naming object died
+young, or by the marker if it was promoted. This is OCaml 5's fiber design, and
+one-shot resumption is exactly what makes it O(1). When the resumed body eventually finishes, it
 invokes `H`, and `H` reads `target`. That now holds `c`, the rest of the clause
 after its `k v`, so `1 + k ()` gets its answer and the clause carries on. This
 is safe only because a resumption runs **at most once**. Resuming twice is a
@@ -915,6 +1041,18 @@ row;escape 323904
 band;row 25001
 row 4812
 ```
+
+### Dumping a definition's core
+
+```sh
+MEADOW_DUMP_CORE=main meadow run -O2 --backend vm Main.mw
+```
+
+Prints the named definition's core term twice on stderr, before and after
+the passes lowering runs on it (inlining, join points, simplification), at the
+optimization level in use. This is the first thing to reach for when a
+program is right at one level and wrong at another: the bytecode says what
+was compiled, but this says what the passes did to get there.
 
 ### Counting what native code hands back
 

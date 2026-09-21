@@ -82,6 +82,18 @@ pub enum Step {
     Load(u8, Src),
     /// `heap[at] = v`
     Store(Src, Src),
+    /// `t = ` where slot `at` is in memory: a machine address, found through
+    /// the block tables once, from which the rest of the object is an offset.
+    /// That holds across every object: one in the nursery, which is one
+    /// space; one in a block, which never crosses its end; and one bigger
+    /// than a block, which is laid out in a run of blocks in one allocation
+    /// (see `crate::old`'s `Mem`).
+    Locate(u8, Src),
+    /// `t = mem[base + off]`, `base` a machine address from [`Step::Locate`]
+    /// and `off` in slots.
+    LoadAt(u8, Src, Src),
+    /// `mem[base + off] = v`, likewise.
+    StoreAt(Src, Src, Src),
     /// Unless `a cond b` as **unsigned** words, abandon the run.
     ///
     /// Unsigned is not an accident. An index arrives as a signed `Int`, and a
@@ -97,9 +109,17 @@ pub enum Step {
 /// `None` means the instruction has no expansion and the interpreter should be
 /// asked for it, exactly as before. Every instruction starts that way and stops
 /// being that way one at a time, each with a test.
-pub fn expand(program: &Program, i: Instr) -> Option<Vec<Step>> {
+pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
     use meadow_core::Prim;
     match i.op {
+        // One argument and a result: a length, or what a cell holds.
+        meadow_bytecode::Op::Prim1 => match program.prims.get(i.imm as usize)? {
+            Prim::GetRef => Some(ref_get(i.a, i.b)),
+            Prim::StArrayLen => Some(length(i.a, i.b, Kind::MutArray)),
+            Prim::ArrayLen => Some(length(i.a, i.b, Kind::Array)),
+            Prim::StringByteLength => Some(meta_of(i.a, i.b, Kind::Str)),
+            _ => None,
+        },
         // Reading an element of an array, mutable or not. Both are two
         // arguments and a result, so both are an `Op::Prim2`, and the kind
         // guard is what tells them apart at run time.
@@ -109,13 +129,73 @@ pub fn expand(program: &Program, i: Instr) -> Option<Vec<Step>> {
             _ => None,
         },
         // Writing one. Three arguments, so a windowed `Op::Prim` whose
-        // registers are `b`, `b + 1`, `b + 2`.
+        // registers are `b`, `b + 1`, `b + 2`. A value the compiler knows to
+        // be a reference is stored only into a young array; anything else,
+        // into an array of non-references.
         meadow_bytecode::Op::Prim if i.c == 3 => match program.prims.get(i.imm as usize)? {
-            Prim::StSetArray => Some(element_set(i.a, i.b, i.b + 1, i.b + 2)),
+            Prim::StSetArray => {
+                let value = program.operands(pc).get(2).copied();
+                Some(
+                    if value == Some(meadow_core::desc::REF as meadow_bytecode::DescSrc) {
+                        element_set_young(i.a, i.b, i.b + 1, i.b + 2)
+                    } else {
+                        element_set(i.a, i.b, i.b + 1, i.b + 2)
+                    },
+                )
+            }
             _ => None,
         },
         _ => None,
     }
+}
+
+/// `r[dst] = ` what the cell in `r[obj]` holds. A cell has one field after a
+/// two-word header.
+pub fn ref_get(dst: Reg, obj: Reg) -> Vec<Step> {
+    use Src::{Imm, Reg as R, Tmp};
+    vec![
+        Step::Set(0, R(obj)),
+        Step::Guard(Cond::Lt, Tmp(0), Imm(crate::region::REGION_BASE as u64)),
+        Step::Locate(1, Tmp(0)),
+        Step::LoadAt(2, Tmp(1), Imm(0)),
+        Step::And(2, Tmp(2), KIND_BITS),
+        Step::Guard(Cond::Eq, Tmp(2), Imm(Kind::Ref as u64)),
+        Step::LoadAt(2, Tmp(1), Imm(2)),
+        Step::Put(dst, Tmp(2)),
+    ]
+}
+
+/// `r[dst] = ` how many elements the `kind` in `r[obj]` has: its header's
+/// length. Exact about the kind, as [`element`] is: an array of bytes is
+/// packed and its header counts words.
+pub fn length(dst: Reg, obj: Reg, kind: Kind) -> Vec<Step> {
+    use Src::{Imm, Reg as R, Tmp};
+    vec![
+        Step::Set(0, R(obj)),
+        Step::Guard(Cond::Lt, Tmp(0), Imm(crate::region::REGION_BASE as u64)),
+        Step::Load(1, Tmp(0)),
+        Step::And(2, Tmp(1), KIND_BITS),
+        Step::Guard(Cond::Eq, Tmp(2), Imm(kind as u64)),
+        Step::Shr(2, Tmp(1), LEN_SHIFT),
+        Step::Put(dst, Tmp(2)),
+    ]
+}
+
+/// `r[dst] = ` the `meta` of the `kind` in `r[obj]`: the low half of its
+/// second header word, which for a string is its length in bytes.
+pub fn meta_of(dst: Reg, obj: Reg, kind: Kind) -> Vec<Step> {
+    use Src::{Imm, Reg as R, Tmp};
+    vec![
+        Step::Set(0, R(obj)),
+        Step::Guard(Cond::Lt, Tmp(0), Imm(crate::region::REGION_BASE as u64)),
+        Step::Load(1, Tmp(0)),
+        Step::And(2, Tmp(1), KIND_BITS),
+        Step::Guard(Cond::Eq, Tmp(2), Imm(kind as u64)),
+        Step::Add(2, Tmp(0), Imm(1)),
+        Step::Load(2, Tmp(2)),
+        Step::And(2, Tmp(2), 0xFFFF_FFFF),
+        Step::Put(dst, Tmp(2)),
+    ]
 }
 
 /// `r[dst] = ` element `r[idx]` of the `kind` in `r[obj]`.
@@ -138,21 +218,20 @@ pub fn element(dst: Reg, obj: Reg, idx: Reg, kind: Kind) -> Vec<Step> {
     // would have to spill -- which would cost more than the interpreter it is
     // here to avoid. 0 is the object, 1 its header, 3 the length, 4 the index,
     // and 2 is whatever is needed at the time.
+    // 0 is the object, 1 where it is in memory, 3 the length, 4 the index,
+    // and 2 is whatever is needed at the time.
     vec![
         Step::Set(0, R(obj)),
         Step::Guard(Cond::Lt, Tmp(0), Imm(crate::region::REGION_BASE as u64)),
-        Step::Load(1, Tmp(0)),
-        Step::And(2, Tmp(1), KIND_BITS),
-        Step::Guard(Cond::Eq, Tmp(2), Imm(kind as u64)),
-        Step::Shr(2, Tmp(1), UNIFORM_BIT),
-        Step::And(2, Tmp(2), 1),
-        Step::Guard(Cond::Eq, Tmp(2), Imm(1)),
-        Step::Shr(3, Tmp(1), LEN_SHIFT),
+        Step::Locate(1, Tmp(0)),
+        Step::LoadAt(2, Tmp(1), Imm(0)),
+        Step::Shr(3, Tmp(2), LEN_SHIFT),
+        Step::And(2, Tmp(2), KIND_BITS | 1 << UNIFORM_BIT),
+        Step::Guard(Cond::Eq, Tmp(2), Imm(kind as u64 | 1 << UNIFORM_BIT)),
         Step::Set(4, R(idx)),
         Step::Guard(Cond::Lt, Tmp(4), Tmp(3)),
-        Step::Add(2, Tmp(0), Imm(UNIFORM_HEADER)),
-        Step::Add(2, Tmp(2), Tmp(4)),
-        Step::Load(2, Tmp(2)),
+        Step::Add(4, Tmp(4), Imm(UNIFORM_HEADER)),
+        Step::LoadAt(2, Tmp(1), Tmp(4)),
         Step::Put(dst, Tmp(2)),
     ]
 }
@@ -186,22 +265,55 @@ pub fn element_set(dst: Reg, obj: Reg, idx: Reg, val: Reg) -> Vec<Step> {
     vec![
         Step::Set(0, R(obj)),
         Step::Guard(Cond::Lt, Tmp(0), Imm(crate::region::REGION_BASE as u64)),
-        Step::Load(1, Tmp(0)),
-        Step::And(2, Tmp(1), KIND_BITS),
-        Step::Guard(Cond::Eq, Tmp(2), Imm(Kind::MutArray as u64)),
-        Step::Shr(2, Tmp(1), UNIFORM_BIT),
-        Step::And(2, Tmp(2), 1),
-        Step::Guard(Cond::Eq, Tmp(2), Imm(1)),
-        Step::Shr(2, Tmp(1), DESC_SHIFT),
+        Step::Locate(1, Tmp(0)),
+        Step::LoadAt(2, Tmp(1), Imm(0)),
+        Step::Shr(3, Tmp(2), LEN_SHIFT),
+        Step::And(0, Tmp(2), KIND_BITS | 1 << UNIFORM_BIT),
+        Step::Guard(
+            Cond::Eq,
+            Tmp(0),
+            Imm(Kind::MutArray as u64 | 1 << UNIFORM_BIT),
+        ),
+        Step::Shr(2, Tmp(2), DESC_SHIFT),
         Step::And(2, Tmp(2), DESC_BITS),
         Step::Guard(Cond::Ne, Tmp(2), Imm(meadow_core::desc::REF as u64)),
-        Step::Shr(3, Tmp(1), LEN_SHIFT),
         Step::Set(4, R(idx)),
         Step::Guard(Cond::Lt, Tmp(4), Tmp(3)),
-        Step::Add(2, Tmp(0), Imm(UNIFORM_HEADER)),
-        Step::Add(2, Tmp(2), Tmp(4)),
-        Step::Store(Tmp(2), R(val)),
+        Step::Add(4, Tmp(4), Imm(UNIFORM_HEADER)),
+        Step::StoreAt(Tmp(1), Tmp(4), R(val)),
         // `stSetArray` answers unit, whose word is zero.
+        Step::Put(dst, Imm(0)),
+    ]
+}
+
+/// [`element_set`] for a value that is a reference, which may be stored with
+/// a bare store into a **young** array, and only there. What the three
+/// things a store into an old array has to do are for -- the mutation lock,
+/// the snapshot barrier and the remembered set -- is the marker reading old
+/// objects while the program writes them, and old slots coming to hold young
+/// addresses. A young array is read by no marker (the nursery is a root,
+/// walked when a cycle starts and at every nursery collection, never
+/// concurrently), and a young slot is not an old one. A uniform array's
+/// descriptor does not change with a store either, so there is nothing else
+/// to keep in step.
+pub fn element_set_young(dst: Reg, obj: Reg, idx: Reg, val: Reg) -> Vec<Step> {
+    use Src::{Imm, Reg as R, Tmp};
+    vec![
+        Step::Set(0, R(obj)),
+        Step::Guard(Cond::Lt, Tmp(0), Imm(crate::old::OLD_BASE as u64)),
+        Step::Locate(1, Tmp(0)),
+        Step::LoadAt(2, Tmp(1), Imm(0)),
+        Step::Shr(3, Tmp(2), LEN_SHIFT),
+        Step::And(2, Tmp(2), KIND_BITS | 1 << UNIFORM_BIT),
+        Step::Guard(
+            Cond::Eq,
+            Tmp(2),
+            Imm(Kind::MutArray as u64 | 1 << UNIFORM_BIT),
+        ),
+        Step::Set(4, R(idx)),
+        Step::Guard(Cond::Lt, Tmp(4), Tmp(3)),
+        Step::Add(4, Tmp(4), Imm(UNIFORM_HEADER)),
+        Step::StoreAt(Tmp(1), Tmp(4), R(val)),
         Step::Put(dst, Imm(0)),
     ]
 }
@@ -219,7 +331,9 @@ pub fn temporaries(steps: &[Step]) -> usize {
         | Step::Add(t, _, _)
         | Step::And(t, _, _)
         | Step::Shr(t, _, _)
-        | Step::Load(t, _) = s
+        | Step::Load(t, _)
+        | Step::Locate(t, _)
+        | Step::LoadAt(t, _, _) = s
         {
             most = most.max(*t as usize + 1);
         }
@@ -272,6 +386,21 @@ impl<'h> Machine<'h> {
                 Step::Store(at, v) => {
                     let (at, v) = (self.read(at) as Addr, self.read(v));
                     self.heap.put_word_at(at, v);
+                }
+                Step::Locate(t, at) => {
+                    self.tmps[t as usize] = self.heap.machine_addr(self.read(at) as Addr) as u64
+                }
+                // Safety: a machine address `Locate` answered, and an offset
+                // within the object there -- which is what the guards before
+                // the step establish, and what the tests hand it.
+                Step::LoadAt(t, base, off) => {
+                    let p = (self.read(base) as *const Word).wrapping_add(self.read(off) as usize);
+                    self.tmps[t as usize] = unsafe { *p };
+                }
+                Step::StoreAt(base, off, v) => {
+                    let p = (self.read(base) as *mut Word).wrapping_add(self.read(off) as usize);
+                    let v = self.read(v);
+                    unsafe { *p = v };
                 }
                 Step::Guard(c, a, b) => {
                     let (x, y) = (self.read(a), self.read(b));

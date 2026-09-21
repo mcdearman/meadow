@@ -43,6 +43,9 @@ use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 /// Native code for a program's blocks, by entry pc.
 pub struct Native<'p> {
     pub(crate) table: Box<[AtomicPtr<c_void>]>,
+    /// The method entry of each pc that begins a method, or null: see
+    /// [`crate::Vm::use_native`].
+    pub(crate) methods: Box<[AtomicPtr<c_void>]>,
     tier: Option<Tier<'p>>,
     /// The program's method tables, flattened for native code: see
     /// [`crate::Vm::use_native`].
@@ -70,6 +73,8 @@ struct Tier<'p> {
     opt: OptLevel,
     /// Which pcs start a block.
     entry: Box<[bool]>,
+    /// See `codegen::loop_live`: once per program, not per block.
+    loops: std::collections::HashMap<usize, u32>,
     counts: Box<[AtomicU32]>,
     threshold: u32,
     code: Mutex<Arena>,
@@ -85,6 +90,7 @@ impl<'p> Native<'p> {
     pub fn ahead_of_time(
         program: &Program,
         blocks: impl IntoIterator<Item = (Pc, NativeFn)>,
+        stubs: impl IntoIterator<Item = (Pc, *const u8)>,
     ) -> Native<'p> {
         let len = program.code.len();
         let table: Box<[AtomicPtr<c_void>]> = (0..len)
@@ -95,9 +101,18 @@ impl<'p> Native<'p> {
                 slot.store(f as *mut c_void, Ordering::Release);
             }
         }
+        let entries: Box<[AtomicPtr<c_void>]> = (0..len)
+            .map(|_| AtomicPtr::new(std::ptr::null_mut()))
+            .collect();
+        for (pc, at) in stubs {
+            if let Some(slot) = entries.get(pc as usize) {
+                slot.store(at as *mut c_void, Ordering::Release);
+            }
+        }
         let (method_pcs, method_starts) = methods(program);
         Native {
             table,
+            methods: entries,
             tier: None,
             method_pcs,
             method_starts,
@@ -121,11 +136,15 @@ impl<'p> Native<'p> {
             table: (0..len)
                 .map(|_| AtomicPtr::new(std::ptr::null_mut()))
                 .collect(),
+            methods: (0..len)
+                .map(|_| AtomicPtr::new(std::ptr::null_mut()))
+                .collect(),
             tier: Some(Tier {
                 program,
                 arch,
                 opt,
                 entry,
+                loops: codegen::loop_live(program),
                 counts: (0..len).map(|_| AtomicU32::new(0)).collect(),
                 threshold: threshold.max(1),
                 code: Mutex::new(Arena::default()),
@@ -188,12 +207,18 @@ impl<'p> Native<'p> {
             // Another thread got here first.
             return Some(unsafe { std::mem::transmute::<*mut c_void, NativeFn>(p) });
         }
-        let code = codegen::compile_block(tier.program, tier.arch, pc as Pc, tier.opt);
+        let (code, stub) =
+            codegen::compile_block(tier.program, tier.arch, pc as Pc, tier.opt, &tier.loops);
         let Some(at) = arena.put(&code, tier.arch) else {
             // No memory to put it in: interpret it, and stop asking.
             tier.counts[pc].store(0, Ordering::Relaxed);
             return None;
         };
+        if let Some(offset) = stub {
+            // Safety: an offset into the function just written.
+            let entry = unsafe { at.add(offset as usize) };
+            self.methods[pc].store(entry as *mut c_void, Ordering::Release);
+        }
         slot.store(at as *mut c_void, Ordering::Release);
         tier.compiled.fetch_add(1, Ordering::Relaxed);
         // Safety: the function just written there.

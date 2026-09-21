@@ -1,0 +1,297 @@
+-- Std.Collections.HashTable: a mutable hash table, for code inside a `runSt`.
+--
+--   use Std.St as St
+--   use Std.Collections.HashTable as HT
+--
+--   fun counts words =
+--     runSt (\() ->
+--       let t = HT.new () in
+--       let _ = V.foldl (\_ w -> HT.insertWith (\a b -> a + b) w 1 t) () words in
+--       HT.toVec t)
+--
+-- Where `Std.Collections.HashMap` is a value -- every insert answers a new map
+-- and leaves the old one as it was -- this is a place: `insert` writes into it
+-- and answers `()`. That is the whole difference, and it is the difference
+-- between copying a path of the trie per insert and writing one slot. A
+-- table belongs to the `runSt` it was made in, like a `StArray`, and cannot
+-- leave it; what leaves is what `toVec`, `keys`, `values` or `foldl` read out.
+--
+-- Open addressing with linear probing, in one array of slots, which doubles
+-- when three quarters of it are in use. A deleted entry leaves a tombstone a
+-- probe steps over, and tombstones count towards the three quarters, so a
+-- table that is filled and emptied over and over is rebuilt rather than
+-- probed to its end. Every slot keeps its key's hash, so a probe compares
+-- hashes before keys and growing hashes nothing again.
+--
+-- Keys may be anything `hash` accepts, as for `HashMap`.
+
+use Std.St as St
+use Std.Maybe.Maybe.*
+use Std.Ordering (compare)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+
+-- A slot: never used; used and then deleted, which a probe steps over; or an
+-- entry, with its key's hash.
+use Slot.*
+@pub data Slot k v
+  = Empty
+  | Tomb
+  | Full Int k v
+
+-- The slots, how many hold an entry, and how many hold a tombstone. The slots
+-- are in a cell because growing replaces the array.
+use HashTable.*
+@pub data HashTable s k v = Table (StRef s (StArray s (Slot k v))) (StRef s Int) (StRef s Int)
+
+def initialCapacity = 16
+
+-- A new, empty table.
+@pub fun new () = withCapacity initialCapacity
+
+-- A table with room for `n` entries before it first grows.
+@pub fun withCapacity n =
+  Table (St.newRef (St.newArray (capacityFor n) Empty)) (St.newRef 0) (St.newRef 0)
+
+-- The smallest power of two that holds `n` entries under three quarters full.
+fun capacityFor n = capacityUp initialCapacity (n * 4 / 3 + 1)
+
+fun capacityUp c want = if c >= want then c else capacityUp (c * 2) want
+
+@pub fun size t = match t with | Table slots n tombs -> St.getRef n
+
+@pub fun isEmpty t = size t == 0
+
+-- --- probing ------------------------------------------------------------------
+
+-- The slot holding `k`, whose hash is `h`, from the `i`th probe on; or -1 if
+-- the probe reaches an empty slot first, which means there is none.
+fun find slots mask h k i =
+  let idx = bitAnd (h + i) mask in
+  match St.get slots idx with
+  | Empty -> 0 - 1
+  | Tomb -> find slots mask h k (i + 1)
+  | Full h2 k2 v -> if h2 == h and k2 == k then idx else find slots mask h k (i + 1)
+
+-- Where `k` is, and `True`; or where it would go, and `False`: the first
+-- tombstone the probe passed, or else the empty slot that ended it.
+fun place slots mask h k i free =
+  let idx = bitAnd (h + i) mask in
+  match St.get slots idx with
+  | Empty -> (if free >= 0 then free else idx, False)
+  | Tomb -> place slots mask h k (i + 1) (if free >= 0 then free else idx)
+  | Full h2 k2 v ->
+      if h2 == h and k2 == k then (idx, True) else place slots mask h k (i + 1) free
+
+-- --- reading ------------------------------------------------------------------
+
+@pub fun lookup k t =
+  match t with
+  | Table slotsRef n tombs ->
+      let slots = St.getRef slotsRef in
+      let idx = find slots (St.length slots - 1) (hash k) k 0 in
+      if idx < 0 then None
+      else match St.get slots idx with
+      | Full h2 k2 v -> Just v
+      | _ -> None
+
+@pub fun member k t = match lookup k t with | Just v -> True | None -> False
+
+@pub fun getOr default k t = match lookup k t with | Just v -> v | None -> default
+
+-- --- writing ------------------------------------------------------------------
+
+-- Put `v` at `k`, replacing what was there.
+@pub fun insert k v t = insertWith (\new old -> new) k v t
+
+-- Put `v` at `k` -- or, if `k` already holds `old`, `f v old`. One probe
+-- either way, which is what makes counting cheap: `insertWith (\a b -> a + b)
+-- w 1 t` is a lookup and a write in one.
+@pub fun insertWith f k v t =
+  match t with
+  | Table slotsRef n tombs ->
+      let slots = St.getRef slotsRef in
+      let h = hash k in
+      match place slots (St.length slots - 1) h k 0 (0 - 1) with
+      | (idx, True) ->
+          (match St.get slots idx with
+           | Full h2 k2 old -> St.set slots idx (Full h k (f v old))
+           | _ -> ())
+      | (idx, False) ->
+          let wasTomb = (match St.get slots idx with | Tomb -> True | _ -> False) in
+          let _ = St.set slots idx (Full h k v) in
+          let _ = St.setRef n (St.getRef n + 1) in
+          let _ = if wasTomb then St.setRef tombs (St.getRef tombs - 1) else () in
+          grow t
+
+-- Apply `f` to what `k` holds, if anything.
+@pub fun adjust k f t =
+  match t with
+  | Table slotsRef n tombs ->
+      let slots = St.getRef slotsRef in
+      let idx = find slots (St.length slots - 1) (hash k) k 0 in
+      if idx < 0 then ()
+      else match St.get slots idx with
+      | Full h k2 old -> St.set slots idx (Full h k2 (f old))
+      | _ -> ()
+
+-- Remove `k`, if it is there.
+@pub fun delete k t =
+  match t with
+  | Table slotsRef n tombs ->
+      let slots = St.getRef slotsRef in
+      let idx = find slots (St.length slots - 1) (hash k) k 0 in
+      if idx < 0 then ()
+      else
+        let _ = St.set slots idx Tomb in
+        let _ = St.setRef n (St.getRef n - 1) in
+        St.setRef tombs (St.getRef tombs + 1)
+
+-- Remove everything, keeping the room.
+@pub fun clear t =
+  match t with
+  | Table slotsRef n tombs ->
+      let slots = St.getRef slotsRef in
+      let _ = St.forRange 0 (St.length slots) (\i -> St.set slots i Empty) in
+      let _ = St.setRef n 0 in
+      St.setRef tombs 0
+
+-- Rebuild the table once three quarters of its slots are entries or
+-- tombstones: twice the size if it is the entries that fill it, the same
+-- size -- dropping the tombstones -- if it is not.
+fun grow t =
+  match t with
+  | Table slotsRef n tombs ->
+      let slots = St.getRef slotsRef in
+      let cap = St.length slots in
+      if (St.getRef n + St.getRef tombs) * 4 < cap * 3 then ()
+      else
+        let newCap = if St.getRef n * 2 >= cap then cap * 2 else cap in
+        let fresh = St.newArray newCap Empty in
+        let _ = St.forRange 0 cap (\i ->
+          match St.get slots i with
+          | Full h k v -> reinsert fresh (newCap - 1) h k v 0
+          | _ -> ()) in
+        let _ = St.setRef slotsRef fresh in
+        St.setRef tombs 0
+
+-- Into a table with no tombstones and room to spare, so the probe ends at an
+-- empty slot.
+fun reinsert slots mask h k v i =
+  let idx = bitAnd (h + i) mask in
+  match St.get slots idx with
+  | Empty -> St.set slots idx (Full h k v)
+  | _ -> reinsert slots mask h k v (i + 1)
+
+-- --- whole tables -------------------------------------------------------------
+
+-- Fold over every entry as `f acc key value`, in slot order, which is no
+-- order anyone should rely on.
+@pub fun foldl f acc t =
+  match t with
+  | Table slotsRef n tombs ->
+      let slots = St.getRef slotsRef in
+      foldSlots f acc slots 0 (St.length slots)
+
+fun foldSlots f acc slots i cap =
+  if i >= cap then acc
+  else match St.get slots i with
+  | Full h k v -> foldSlots f (f acc k v) slots (i + 1) cap
+  | _ -> foldSlots f acc slots (i + 1) cap
+
+@pub fun toVec t = foldl (\acc k v -> V.pushBack acc (k, v)) V.empty t
+
+@pub fun keys t = foldl (\acc k v -> V.pushBack acc k) V.empty t
+
+@pub fun values t = foldl (\acc k v -> V.pushBack acc v) V.empty t
+
+-- A table holding every pair of `pairs`; a key given twice holds the later value.
+@pub fun fromVec pairs =
+  let t = withCapacity (V.length pairs) in
+  let _ = V.foldl (\acc p -> match p with | (k, v) -> insert k v t) () pairs in
+  t
+
+-- --- tests --------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue)
+use Std.Sort as Sort
+
+@test fun insertAndLookup () =
+  runSt (\() ->
+    let t = new () in
+    let _ = insert "a" 1 t in
+    let _ = insert "b" 2 t in
+    let a = assertEq (lookup "a" t) (Just 1) "a is there" in
+    let b = assertEq (lookup "c" t) None "c is not" in
+    let c = assertTrue (member "b" t) "b is" in
+    assertEq (size t) 2 "two entries")
+
+@test fun insertReplacesRatherThanDuplicates () =
+  runSt (\() ->
+    let t = new () in
+    let _ = insert 1 "one" t in
+    let _ = insert 1 "uno" t in
+    let a = assertEq (lookup 1 t) (Just "uno") "the later value" in
+    assertEq (size t) 1 "one entry")
+
+@test fun insertWithCombinesAndAdjustChanges () =
+  runSt (\() ->
+    let t = new () in
+    let _ = insertWith (\a b -> a + b) "x" 1 t in
+    let _ = insertWith (\a b -> a + b) "x" 1 t in
+    let _ = insertWith (\a b -> a + b) "y" 5 t in
+    let _ = adjust "y" (\v -> v * 10) t in
+    let _ = adjust "z" (\v -> v * 10) t in
+    let a = assertEq (lookup "x" t) (Just 2) "counted twice" in
+    let b = assertEq (lookup "y" t) (Just 50) "adjusted" in
+    assertEq (size t) 2 "z was never there")
+
+@test fun manyKeysSurviveGrowth () =
+  runSt (\() ->
+    let n = 5000 in
+    let t = new () in
+    let _ = St.forRange 0 n (\i -> insert i (i * i) t) in
+    let a = assertEq (size t) n "all in" in
+    let missing = St.newRef 0 in
+    let _ = St.forRange 0 n (\i ->
+      if lookup i t == Just (i * i) then () else St.setRef missing (St.getRef missing + 1)) in
+    let b = assertEq (St.getRef missing) 0 "every one comes back" in
+    assertEq (lookup n t) None "and nothing else")
+
+@test fun deleteLeavesTheRestAndTombstonesAreReclaimed () =
+  runSt (\() ->
+    let t = new () in
+    let _ = St.forRange 0 100 (\i -> insert i i t) in
+    let _ = St.forRange 0 100 (\i -> if i % 2 == 0 then delete i t else ()) in
+    let a = assertEq (size t) 50 "half gone" in
+    let b = assertEq (lookup 4 t) None "an even one is gone" in
+    let c = assertEq (lookup 5 t) (Just 5) "an odd one is not" in
+    -- Filling and emptying many times over must not leave the table full of
+    -- tombstones: every probe still ends.
+    let _ = St.forRange 100 20100 (\i -> let _ = insert i i t in delete i t) in
+    let d = assertEq (size t) 50 "still half" in
+    assertEq (lookup 7 t) (Just 7) "and still findable")
+
+@test fun wholeTableOperations () =
+  let pairs = runSt (\() ->
+    let t = fromVec [("b", 2), ("a", 1), ("c", 3), ("a", 10)] in
+    let _ = clear t in
+    let _ = insert "k" 9 t in
+    let _ = insert "j" 8 t in
+    toVec t) in
+  let sorted = Sort.sortBy (\p q -> match (p, q) with | ((_, a), (_, b)) -> compare a b) pairs in
+  let a = assertEq sorted [("j", 8), ("k", 9)] "cleared, then two" in
+  let ks = runSt (\() -> Sort.sort (keys (fromVec [(3, "x"), (1, "y"), (2, "z")]))) in
+  let b = assertEq ks [1, 2, 3] "keys" in
+  let total = runSt (\() -> foldl (\acc k v -> acc + v) 0 (fromVec [(1, 10), (2, 20), (3, 30)])) in
+  assertEq total 60 "folded"
+
+@test fun anyStructuredValueIsAKey () =
+  runSt (\() ->
+    let tuples = new () in
+    let vectors = new () in
+    let _ = insert (1, "one") True tuples in
+    let _ = insert [1, 2, 3] False vectors in
+    let a = assertEq (lookup (1, "one") tuples) (Just True) "a tuple" in
+    let b = assertEq (lookup (1, "two") tuples) None "not another" in
+    assertEq (lookup [1, 2, 3] vectors) (Just False) "a vector")

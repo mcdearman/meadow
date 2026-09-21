@@ -31,20 +31,27 @@ pub unsafe extern "C" fn meadow_aot_main(
     _argv: *const *const c_char,
 ) -> i32 {
     // Safety: the layout `object::data` writes, which the caller vouches for.
-    let (image, blocks) = unsafe {
+    let (image, blocks, stubs) = unsafe {
         let word = |at: usize| (data.add(at) as *const u64).read_unaligned() as usize;
         let (len, count, table) = (word(0), word(8), word(16));
-        let image = std::slice::from_raw_parts(data.add(24), len);
-        let blocks: Vec<(u32, u32)> = (0..count)
-            .map(|i| {
-                let at = data.add(table + 8 * i);
-                (
-                    (at as *const u32).read_unaligned(),
-                    (at.add(4) as *const u32).read_unaligned(),
-                )
-            })
-            .collect();
-        (image, blocks)
+        let (stub_count, stub_table) = (word(24), word(32));
+        let image = std::slice::from_raw_parts(data.add(40), len);
+        let entries = |table: usize, count: usize| -> Vec<(u32, u32)> {
+            (0..count)
+                .map(|i| {
+                    let at = data.add(table + 8 * i);
+                    (
+                        (at as *const u32).read_unaligned(),
+                        (at.add(4) as *const u32).read_unaligned(),
+                    )
+                })
+                .collect()
+        };
+        (
+            image,
+            entries(table, count),
+            entries(stub_table, stub_count),
+        )
     };
     let program = match meadow_bytecode::image::decode(image) {
         Ok(p) => p,
@@ -60,6 +67,10 @@ pub unsafe extern "C" fn meadow_aot_main(
             // emitted there, in code the linker made executable.
             let f: NativeFn = unsafe { std::mem::transmute(code.add(offset as usize)) };
             (pc, f)
+        }),
+        stubs.into_iter().map(|(pc, offset)| {
+            // Safety: likewise, for the method entry.
+            (pc, unsafe { code.add(offset as usize) } as *const u8)
         }),
     );
     let Some(entry) = program.entry else {

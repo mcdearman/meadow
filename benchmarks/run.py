@@ -177,8 +177,8 @@ LANGS = [
     ),
     Lang(
         "c", ".c", "cc",
-        simple(["cc", "-O2", "-ffp-contract=off", "-o", "{out}", "{src}", "-lpthread", "-lm"]), run_out,
-        note="`-O2 -ffp-contract=off`",
+        simple(["cc", "-O3", "-ffp-contract=off", "-o", "{out}", "{src}", "-lpthread", "-lm"]), run_out,
+        note="`-O3 -ffp-contract=off`",
     ),
     Lang(
         "go", ".go", "go",

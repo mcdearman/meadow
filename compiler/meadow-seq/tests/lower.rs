@@ -97,15 +97,25 @@ fn every_block_binds_the_whole_environment() {
 
 #[test]
 fn calling_a_lambda_is_a_permutation_and_a_branch() {
-    // `(\x -> x) 1`. The call site should end in exactly the two statements the
+    // `(if 1 == 2 then \x -> x else \x -> x) 1`: a call of a function the
+    // simplifier cannot see through -- a lambda applied where it stands is a
+    // `let` to it. The call site should end in exactly the two statements the
     // IR promises: rearrange the registers, then jump into the method. The
     // registers are the function, its argument, the continuation, and the
     // evidence -- the handlers the callee runs under.
     let x = VarId(1);
-    let term = Term::App(
-        Arc::new(Term::lam(x, Term::Var(x))),
-        Arc::new(Term::Lit(Lit::Int(1))),
+    let y = VarId(2);
+    let cond = Term::Prim(
+        Prim::Eq,
+        vec![Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(2))],
+        meadow_core::Ty::Con(meadow_intern::InternedString::from("Bool"), Vec::new()),
     );
+    let f = Term::If(
+        Arc::new(cond),
+        Arc::new(Term::lam(x, Term::Var(x))),
+        Arc::new(Term::lam(y, Term::Var(y))),
+    );
+    let term = Term::App(Arc::new(f), Arc::new(Term::Lit(Lit::Int(1))));
     let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
     assert!(lowered.unsupported.is_empty());
 

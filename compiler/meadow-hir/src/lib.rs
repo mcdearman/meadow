@@ -303,8 +303,83 @@ pub enum Decl {
     Alias(AliasDecl),
     /// `fun f : T` -- the declared type of the top-level binding `f`, which it
     /// must be at least as general as.
-    Sig(Ident, LTypeExpr),
+    ///
+    /// With the traits its `where` asks of its type variables.
+    Sig(Ident, LTypeExpr, Vec<Bound>),
+    /// `trait Show a { … }`
+    Trait(TraitDecl),
+    /// `impl Show Int { … }`
+    Impl(ImplDecl),
     Error,
+}
+
+/// `Show a` in a `where`: the types have to implement the trait `tr` (its
+/// canonical name, where it was written) -- one type, or one per parameter of
+/// a trait of several.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Bound {
+    pub tr: Label,
+    pub tys: Vec<LTypeExpr>,
+}
+
+/// A trait: what a type has to provide to implement it.
+///
+/// At run time a trait is a *dictionary* -- one constructor, [`TraitDecl::dict`],
+/// holding the dictionaries of the traits it requires and then its methods, in
+/// the order they are declared here. A method is a top-level value that takes
+/// the dictionary and answers the field.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TraitDecl {
+    /// Canonical, as a type's name is: it is also the dictionary's type.
+    pub name: InternedString,
+    pub name_span: Span,
+    /// The type variables the trait is about: one, usually.
+    pub params: Vec<Ident>,
+    /// The traits the implementing types must implement too, canonical, each
+    /// with the parameters of this trait it is asked of, by position.
+    pub supers: Vec<(Label, Vec<usize>)>,
+    /// Associated types, canonical: each a type the implementation chooses.
+    pub assocs: Vec<Label>,
+    pub methods: Vec<TraitMethod>,
+    /// The canonical name of the dictionary's constructor.
+    pub dict: InternedString,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TraitMethod {
+    pub name: InternedString,
+    /// The top-level value a program calls.
+    pub var: Ident,
+    /// Its type, over the trait's parameter and associated types.
+    pub ty: LTypeExpr,
+    /// What an implementation that leaves it out gets: a function of the
+    /// trait's dictionary, bound to [`DefaultMethod::var`].
+    pub default: Option<DefaultMethod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DefaultMethod {
+    pub var: VarId,
+    /// `None` in a dependency's declaration, which has been compiled already.
+    pub body: Option<Bind>,
+}
+
+/// One type's implementation of a trait.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ImplDecl {
+    pub tr: Label,
+    /// The implementing types, one per parameter of the trait: each a
+    /// constructor applied to distinct variables.
+    pub tys: Vec<LTypeExpr>,
+    /// What those variables must implement.
+    pub context: Vec<Bound>,
+    /// `(associated type, what it is here)`.
+    pub assocs: Vec<(Label, LTypeExpr)>,
+    /// `(method name, its definition)`. Empty in a dependency's declaration.
+    pub methods: Vec<(InternedString, Bind)>,
+    /// The top-level value that is this implementation's dictionary -- or the
+    /// function from its context's dictionaries to it.
+    pub dict: Ident,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

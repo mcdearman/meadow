@@ -321,6 +321,22 @@ impl Indenter {
             return 0;
         }
 
+        // An item of a `trait` or an `impl` starts over too, one step inside
+        // the braces that hold it: `fun`, `def` and `type` begin nothing else,
+        // so inside a single top-level `{` they can only be the next item.
+        if matches!(first, "fun" | "def" | "type")
+            && matches!(self.stack.first(), Some(Frame::Open { at: 0, close: '}' }))
+            && self
+                .stack
+                .iter()
+                .filter(|f| matches!(f, Frame::Open { .. }))
+                .count()
+                == 1
+        {
+            self.stack.truncate(1);
+            return UNIT;
+        }
+
         let body = self.body();
         if self.opened || self.stack.is_empty() {
             // The first line of a block, or the top level: structural.
@@ -563,7 +579,8 @@ impl Indenter {
 /// Whether these tokens begin a top-level declaration.
 fn starts_declaration(toks: &[Tok<'_>]) -> bool {
     match toks.first_text() {
-        "mod" | "use" | "def" | "fun" | "data" | "record" | "effect" | "type" => true,
+        "mod" | "use" | "def" | "fun" | "data" | "record" | "effect" | "type" | "trait"
+        | "impl" => true,
         // `@pub`, `@attr(…)` — an attribute, not a user-defined `@` operator.
         "@" => toks
             .get(1)
@@ -691,6 +708,42 @@ mod tests {
     #[test]
     fn a_declaration_body_indents_one_unit() {
         assert_eq!(f("fun f x =\nx + 1\n"), "fun f x =\n  x + 1\n");
+    }
+
+    /// The items of a `trait` or an `impl` each start over inside its braces,
+    /// however deep the one before ended.
+    #[test]
+    fn the_items_of_an_impl_line_up() {
+        let src = "impl Show [a;] where Show a {
+fun show xs =
+match xs with
+| [;] -> \".\"
+| x :: rest ->
+show x
+
+fun other x = 1
+}
+trait T a {
+type E a
+fun m : a -> E a
+}
+";
+        let want = "impl Show [a;] where Show a {
+  fun show xs =
+    match xs with
+    | [;] -> \".\"
+    | x :: rest ->
+        show x
+
+  fun other x = 1
+}
+trait T a {
+  type E a
+  fun m : a -> E a
+}
+";
+        assert_eq!(f(src), want);
+        assert_eq!(f(want), want);
     }
 
     /// A `type` alias and a signature start declarations of their own, rather

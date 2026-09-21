@@ -962,6 +962,8 @@ impl Expander<'_> {
         match &mut *d.value {
             ast::Decl::Bind(b) => self.bind(b),
             ast::Decl::Attributed(_, inner) => self.decl(inner),
+            ast::Decl::Trait(td) => td.defaults.iter_mut().for_each(|b| self.bind(b)),
+            ast::Decl::Impl(id) => id.methods.iter_mut().for_each(|b| self.bind(b)),
             // Nothing else holds an expression or a pattern: a type is not a
             // place a macro may be called (see `docs/MACROS.md`).
             ast::Decl::MacCall(_)
@@ -972,7 +974,7 @@ impl Expander<'_> {
             | ast::Decl::Record(_)
             | ast::Decl::Effect(_)
             | ast::Decl::TypeAlias(_)
-            | ast::Decl::Sig(_, _) => {}
+            | ast::Decl::Sig(..) => {}
         }
     }
 

@@ -66,6 +66,11 @@ fn unmark(id: &mut ast::Ident) {
     }
 }
 
+fn bound(b: &mut ast::Bound) {
+    unmark(&mut b.tr);
+    b.tys.iter_mut().for_each(ty);
+}
+
 fn decl(d: &mut ast::LDecl) {
     match &mut *d.value {
         // A top-level binding is an item: its *name* is not hygienic, though
@@ -77,9 +82,46 @@ fn decl(d: &mut ast::LDecl) {
             }
             bind(b);
         }
-        ast::Decl::Sig(name, t) => {
+        ast::Decl::Sig(name, t, bounds) => {
             unmark(name);
             ty(t);
+            bounds.iter_mut().for_each(bound);
+        }
+        ast::Decl::Trait(td) => {
+            unmark(&mut td.name);
+            td.params.iter_mut().for_each(unmark);
+            td.supers.iter_mut().for_each(bound);
+            for (name, params) in &mut td.assocs {
+                unmark(name);
+                params.iter_mut().for_each(unmark);
+            }
+            for (name, t) in &mut td.sigs {
+                unmark(name);
+                ty(t);
+            }
+            for b in &mut td.defaults {
+                if let ast::Bind::Fun(name, _, _, _) = b {
+                    unmark(name);
+                }
+                bind(b);
+            }
+        }
+        ast::Decl::Impl(id) => {
+            unmark(&mut id.tr);
+            id.tys.iter_mut().for_each(ty);
+            id.context.iter_mut().for_each(bound);
+            for (name, at, is) in &mut id.assocs {
+                unmark(name);
+                at.iter_mut().for_each(ty);
+                ty(is);
+            }
+            for b in &mut id.methods {
+                match b {
+                    ast::Bind::Fun(name, _, _, _) => unmark(name),
+                    ast::Bind::Pat(p, _) => item_pat(p),
+                }
+                bind(b);
+            }
         }
         ast::Decl::Data(dd) => {
             unmark(&mut dd.name);

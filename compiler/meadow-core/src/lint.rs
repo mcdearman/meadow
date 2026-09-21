@@ -95,10 +95,20 @@ fn import(s: &Scheme) -> Poly {
         .enumerate()
         .map(|(i, b)| (i as u32, InferType::Var(b.id)))
         .collect();
-    Poly {
-        ty: subst_bound(&s.ty, &map),
-        binders,
-    }
+    // What its `where` asks for is a parameter each, before the rest -- as
+    // `Lowerer::poly_of` gives a definition of this unit.
+    let ty = s
+        .preds
+        .iter()
+        .rev()
+        .fold(subst_bound(&s.ty, &map), |acc, p| {
+            InferType::Fun(
+                vec![subst_bound(&meadow_infer::pred_type(p), &map)],
+                Box::new(acc),
+                Box::new(InferType::RowEmpty),
+            )
+        });
+    Poly { ty, binders }
 }
 
 struct Lint<'a> {

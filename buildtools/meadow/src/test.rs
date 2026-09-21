@@ -39,6 +39,12 @@ pub struct Options {
     /// Which machine runs them. The bytecode VM by default; `--cek` for the
     /// specification.
     pub engine: Engine,
+    /// How many tests run at once. `None` is [`runtime::test_threads`]: one a
+    /// core, unless `MEADOW_TEST_THREADS` says otherwise.
+    pub threads: Option<usize>,
+    /// Write what tests print as they print it, rather than keeping it to show
+    /// beside the ones that fail.
+    pub no_capture: bool,
 }
 
 /// Returns `true` if everything that ran passed.
@@ -141,25 +147,25 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     // Each test is reported the moment it finishes, with a bar saying how far
     // through the run is and what it is on. A thousand tests otherwise say
     // nothing at all until the last one is done.
-    let mut bar = status::Testing::new(total);
+    //
+    // Tests run side by side, as `cargo test`'s do, so they are reported in the
+    // order they finish and the bar says how many are done rather than which
+    // one is running. What a test prints is kept, and shown with it if it
+    // fails: written as it came, it would land among the other tests' lines.
+    let bar = std::sync::Mutex::new(status::Testing::new(total));
     let names: Vec<String> = cases.iter().map(|(name, _)| name.to_string()).collect();
-    if let Some(first) = names.first() {
-        bar.working_on(first);
-    }
-    let results = runtime::run_tests_watched(
+    let results = runtime::run_tests_parallel(
         &linked.program,
         &vars,
         opts.engine,
         opt,
-        &mut |i, result| {
+        opts.threads.unwrap_or_else(runtime::test_threads),
+        !opts.no_capture,
+        &|i, told| {
             let name = names.get(i).map(String::as_str).unwrap_or("?");
-            // The bar moves on first, so that writing the line puts back a bar
-            // that is already about the test now running rather than the one
-            // just reported.
-            bar.step(result.is_ok());
-            // The one now running, or nothing once the last has finished.
-            bar.working_on(names.get(i + 1).map(String::as_str).unwrap_or(""));
-            status::say(&match result {
+            let mut bar = bar.lock().unwrap_or_else(|p| p.into_inner());
+            bar.step(told.result.is_ok());
+            status::say(&match told.result {
                 Ok(_) => format!("test {name} ... {}", status::paint("ok", "32")),
                 Err(_) => format!("test {name} ... {}", status::paint("FAILED", "31")),
             });
@@ -167,11 +173,12 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     )?;
     drop(bar);
 
+    // In declaration order, whatever order they finished in.
     let mut failures = Vec::new();
-    for ((name, _), result) in cases.iter().zip(&results) {
-        if let Err(msg) = result {
+    for ((name, _), told) in cases.iter().zip(&results) {
+        if let Err(msg) = &told.result {
             // The message alone: a failed assertion is not a "runtime error".
-            failures.push((*name, msg.clone()));
+            failures.push((*name, msg.clone(), told.output.clone()));
         }
     }
 
@@ -179,9 +186,16 @@ pub fn run(opts: &Options) -> Result<bool, String> {
         println!();
         println!("failures:");
         println!();
-        for (name, msg) in &failures {
+        for (name, msg, output) in &failures {
             println!("---- {name} ----");
             println!("{msg}");
+            if !output.is_empty() {
+                println!("---- {name} output ----");
+                print!("{output}");
+                if !output.ends_with('\n') {
+                    println!();
+                }
+            }
             println!();
         }
     }

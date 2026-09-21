@@ -105,7 +105,7 @@ fn the_path_has_to_be_written_out() {
     // It is read before the program runs, so it cannot come from the program.
     let root = package(
         "computed",
-        "def where = \"note.txt\"\n\ndef note = includeStr where\n\ndef main = note\n",
+        "def place = \"note.txt\"\n\ndef note = includeStr place\n\ndef main = note\n",
         "unused\n",
     );
     let said = run(&root).unwrap_err();

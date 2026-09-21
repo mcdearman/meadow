@@ -544,6 +544,91 @@ pub fn run_tests_watched(
         .collect())
 }
 
+/// How a test went, away from the machine that ran it: its value rendered, or
+/// its failure, and what it printed if that was being kept.
+pub struct Told {
+    pub result: Result<String, String>,
+    pub output: String,
+}
+
+/// [`run_tests_watched`] on `threads` OS threads, each test's output kept --
+/// or written as it comes, if `capture` is false.
+///
+/// A value of this machine is reference-counted and cannot leave the thread
+/// that made it, so each thread loads the program for itself and hands back
+/// renderings. `each` is called from whichever thread finished a test.
+pub fn run_tests_parallel(
+    program: &core::Program,
+    tests: &[core::Var],
+    threads: usize,
+    capture: bool,
+    each: &(dyn Fn(usize, &Told) + Sync),
+) -> Result<Vec<Told>, RuntimeError> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<Told>>> =
+        tests.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    let failed: std::sync::Mutex<Option<RuntimeError>> = std::sync::Mutex::new(None);
+    std::thread::scope(|scope| {
+        for _ in 0..threads.clamp(1, tests.len().max(1)) {
+            // As much stack as the process's main thread has, which is what
+            // the machine's recursion was written against.
+            let spawned = std::thread::Builder::new()
+                .stack_size(64 << 20)
+                .spawn_scoped(scope, || {
+                    let env = match load(program) {
+                        Ok(env) => env,
+                        Err(e) => {
+                            *failed.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
+                            return;
+                        }
+                    };
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(&var) = tests.get(i) else { return };
+                        CAPTURED.with(|c| *c.borrow_mut() = capture.then(String::new));
+                        let result = match lookup(&env, var) {
+                            None => Err("test not found".to_string()),
+                            Some(f) => Machine::new(
+                                Control::Ret(f),
+                                vec![K::EvalArg {
+                                    arg: Arc::new(core::Term::Lit(core::Lit::Unit)),
+                                    env: env.clone(),
+                                }],
+                                &program.ctor_fields,
+                            )
+                            .run()
+                            .map(|v| v.to_string())
+                            .map_err(|e| e.msg),
+                        };
+                        let output = CAPTURED.with(|c| c.borrow_mut().take()).unwrap_or_default();
+                        let told = Told { result, output };
+                        each(i, &told);
+                        *slots[i].lock().unwrap_or_else(|p| p.into_inner()) = Some(told);
+                    }
+                });
+            if let Err(e) = spawned {
+                *failed.lock().unwrap_or_else(|p| p.into_inner()) = Some(RuntimeError {
+                    msg: format!("could not start a test thread: {e}"),
+                });
+            }
+        }
+    });
+    if let Some(e) = failed.into_inner().unwrap_or_else(|p| p.into_inner()) {
+        return Err(e);
+    }
+    Ok(slots
+        .into_iter()
+        .map(|s| {
+            s.into_inner()
+                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(|| Told {
+                    result: Err("the test did not run".into()),
+                    output: String::new(),
+                })
+        })
+        .collect())
+}
+
 /// Every top-level definition, in a fresh environment.
 ///
 /// Nothing is evaluated here but functions, whose values are only closures. A
@@ -2665,6 +2750,12 @@ fn native_random(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     }
 }
 
+thread_local! {
+    /// What the program on this thread has printed, while it is being kept
+    /// rather than written -- see [`run_tests_parallel`].
+    static CAPTURED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
 /// The runtime's default handler for the `Std.Console` effect: real standard
 /// output and input.
 ///
@@ -2679,9 +2770,18 @@ fn native_console(op: &str, arg: Value) -> Result<Value, RuntimeError> {
         "writeOutput" => match arg {
             Value::Str(s) => {
                 use std::io::Write;
-                let mut out = std::io::stdout().lock();
-                let _ = out.write_all(s.as_bytes());
-                let _ = out.flush();
+                let captured = CAPTURED.with(|c| match &mut *c.borrow_mut() {
+                    Some(text) => {
+                        text.push_str(&s);
+                        true
+                    }
+                    None => false,
+                });
+                if !captured {
+                    let mut out = std::io::stdout().lock();
+                    let _ = out.write_all(s.as_bytes());
+                    let _ = out.flush();
+                }
                 Ok(Value::Unit)
             }
             other => err(format!(

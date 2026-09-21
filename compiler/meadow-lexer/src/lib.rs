@@ -312,10 +312,12 @@ pub enum Token {
     Handle,
     #[token("type")]
     Type,
-    #[token("class")]
-    Class,
-    #[token("instance")]
-    Instance,
+    #[token("trait")]
+    Trait,
+    #[token("impl")]
+    Impl,
+    #[token("where")]
+    Where,
     #[token("as")]
     As,
     #[token("macro")]
@@ -462,8 +464,9 @@ impl Token {
             Effect => owned("effect"),
             Handle => owned("handle"),
             Type => owned("type"),
-            Class => owned("class"),
-            Instance => owned("instance"),
+            Trait => owned("trait"),
+            Impl => owned("impl"),
+            Where => owned("where"),
             As => owned("as"),
             Macro => owned("macro"),
         }
@@ -548,8 +551,9 @@ impl<'a> Display for Token {
             Effect => write!(f, "Effect"),
             Handle => write!(f, "Handle"),
             Type => write!(f, "Type"),
-            Class => write!(f, "Class"),
-            Instance => write!(f, "Instance"),
+            Trait => write!(f, "Trait"),
+            Impl => write!(f, "Impl"),
+            Where => write!(f, "Where"),
             As => write!(f, "As"),
             Macro => write!(f, "Macro"),
             Error => write!(f, "Error"),

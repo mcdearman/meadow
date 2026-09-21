@@ -53,6 +53,16 @@ pub struct Resolver {
     all_types: HashMap<InternedString, usize>,
     /// Every effect known to the unit: canonical name -> arity.
     all_effects: HashMap<InternedString, usize>,
+    /// Every trait known to the unit, by canonical name. A trait's name is a
+    /// type's name too -- its dictionary's -- so it is scoped, imported and
+    /// made ambiguous exactly as a type is, through `tycons`; this says which
+    /// of those names are traits, and what each declares.
+    all_traits: HashMap<InternedString, TraitInfo>,
+    /// Associated type -> the trait it belongs to, both canonical.
+    all_assocs: HashMap<InternedString, InternedString>,
+    /// The dictionaries of this unit's `impl`s, and the default methods of its
+    /// traits: values no program names, which every dependent still needs.
+    hidden_exports: Vec<VarId>,
     /// Every constructor known here, keyed by its **canonical** name --
     /// `Type.Ctor`, the one thing about it that is unique across a program.
     ///
@@ -379,6 +389,17 @@ const LANGUAGE_NAMES: &[&str] = &[
     "Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut", "Stm", "St",
 ];
 
+/// What the resolver knows of a trait: enough to check an `impl` against.
+#[derive(Debug, Clone, Default)]
+struct TraitInfo {
+    /// How many types it is a trait of.
+    params: usize,
+    /// Associated types, canonical, in declaration order.
+    assocs: Vec<InternedString>,
+    /// Method names, in declaration order, and whether each has a default.
+    methods: Vec<(InternedString, bool)>,
+}
+
 /// What a type's (or an effect's) name, as written, means in a scope.
 #[derive(Debug, Clone, PartialEq)]
 enum Named {
@@ -505,6 +526,9 @@ impl Resolver {
             declared_types: std::collections::HashSet::new(),
             all_types: HashMap::new(),
             all_effects: HashMap::new(),
+            all_traits: HashMap::new(),
+            all_assocs: HashMap::new(),
+            hidden_exports: Vec::new(),
             ctors: HashMap::new(),
             visible_ctors: builtin_ctors(),
             module_ctors: HashMap::new(),
@@ -1184,6 +1208,44 @@ impl Resolver {
                 ast::Decl::TypeAlias(ad) => {
                     self.declare_tycon(*ad.name.value(), ad.params.len(), ad.name.span);
                 }
+                ast::Decl::Trait(td) => {
+                    let name = *td.name.value();
+                    let canonical = self.qualify(name);
+                    // The dictionary's type: the trait's parameters, then each
+                    // associated type.
+                    let n = td.params.len();
+                    self.declare_tycon(name, n + td.assocs.len(), td.name.span);
+                    let mut info = TraitInfo {
+                        params: n,
+                        ..TraitInfo::default()
+                    };
+                    for (assoc, _) in &td.assocs {
+                        self.declare_tycon(*assoc.value(), n, assoc.span);
+                        let assoc = self.qualify(*assoc.value());
+                        self.all_assocs.insert(assoc, canonical);
+                        info.assocs.push(assoc);
+                    }
+                    for (method, _) in &td.sigs {
+                        let m = *method.value();
+                        if self.predeclared.contains_key(&(self.current.clone(), m)) {
+                            self.error(
+                                format!("`{m}` is already defined in this module"),
+                                "a trait's method is a top-level name".to_string(),
+                                method.span,
+                            );
+                        }
+                        self.predeclare(m);
+                        self.decl_spans
+                            .entry((self.current.clone(), m))
+                            .or_insert(method.span);
+                        let default = td
+                            .defaults
+                            .iter()
+                            .any(|b| matches!(method_name(b), Some(n) if *n.value() == m));
+                        info.methods.push((m, default));
+                    }
+                    self.all_traits.insert(canonical, info);
+                }
                 _ => {}
             }
         }
@@ -1244,6 +1306,28 @@ impl Resolver {
                 hir::Decl::Alias(ad) => {
                     offer(&mut self.tycons, ad.name, ad.params.len());
                     self.all_types.insert(ad.name, ad.params.len());
+                }
+                hir::Decl::Trait(td) => {
+                    let n = td.params.len();
+                    offer(&mut self.tycons, td.name, n + td.assocs.len());
+                    self.all_types.insert(td.name, n + td.assocs.len());
+                    for a in &td.assocs {
+                        offer(&mut self.tycons, *a.value(), n);
+                        self.all_types.insert(*a.value(), n);
+                        self.all_assocs.insert(*a.value(), td.name);
+                    }
+                    self.all_traits.insert(
+                        td.name,
+                        TraitInfo {
+                            params: n,
+                            assocs: td.assocs.iter().map(|a| *a.value()).collect(),
+                            methods: td
+                                .methods
+                                .iter()
+                                .map(|m| (m.name, m.default.is_some()))
+                                .collect(),
+                        },
+                    );
                 }
                 _ => {}
             }
@@ -1826,7 +1910,7 @@ impl Resolver {
             }
         }
 
-        if let ast::Decl::Sig(name, _) = base.value()
+        if let ast::Decl::Sig(name, ..) = base.value()
             && (vis != Vis::Private || has_test(attrs) || has_macro(attrs))
         {
             // What a binding is -- exported, a test -- is said once, where it
@@ -1915,8 +1999,24 @@ impl Resolver {
             hir::Decl::Alias(ad) => {
                 self.pub_types.insert(ad.name);
             }
+            hir::Decl::Trait(td) => {
+                self.pub_types.insert(td.name);
+                for a in &td.assocs {
+                    self.pub_types.insert(*a.value());
+                }
+                for m in &td.methods {
+                    self.pub_vars.insert(*m.var.value());
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Values a dependent needs whatever is marked: an `impl`'s dictionary,
+    /// which is found by type and never by name, and a trait's default
+    /// methods, which an `impl` elsewhere is built from.
+    pub fn hidden_exports(&self) -> &[VarId] {
+        &self.hidden_exports
     }
 
     /// `true` if the unit said anything about visibility at all — it then
@@ -2082,7 +2182,9 @@ impl Resolver {
                     decl.span,
                 )
             }
-            ast::Decl::Sig(name, ty) => {
+            ast::Decl::Trait(td) => self.resolve_trait(td, decl.span),
+            ast::Decl::Impl(id) => self.resolve_impl(id, decl.span),
+            ast::Decl::Sig(name, ty, bounds) => {
                 let n = *name.value();
                 let id = self.predeclared.get(&(self.current.clone(), n)).copied();
                 // Its variables are its own: `a` here is not an `a` of the
@@ -2090,6 +2192,7 @@ impl Resolver {
                 self.tyvars.clear();
                 let was = std::mem::replace(&mut self.open_tyvars, true);
                 let rty = self.resolve_ty(ty);
+                let rbounds = self.resolve_bounds(bounds);
                 self.open_tyvars = was;
                 self.tyvars.clear();
                 let Some(id) = id else {
@@ -2109,9 +2212,375 @@ impl Resolver {
                     return self.node(hir::Decl::Error, decl.span);
                 }
                 let ident = self.node(id, name.span);
-                self.node(hir::Decl::Sig(ident, rty), decl.span)
+                self.node(hir::Decl::Sig(ident, rty, rbounds), decl.span)
             }
         }
+    }
+
+    // --- traits -------------------------------------------------------------
+
+    /// The trait a name written in a bound or an `impl` means, canonical.
+    fn resolve_trait_name(&mut self, name: &ast::Ident) -> Option<InternedString> {
+        let n = *name.value();
+        match self.tycons.get(&n).cloned() {
+            Some(Named::One(c, _)) if self.all_traits.contains_key(&c) => {
+                self.note_ref(name.span, NameRef::Type(c));
+                Some(c)
+            }
+            Some(Named::Ambiguous(cs)) => {
+                self.ambiguous_type(n, &cs, name.span);
+                None
+            }
+            Some(Named::One(..)) => {
+                self.error(
+                    format!("`{n}` is a type, not a trait"),
+                    "only a trait can be implemented or asked for".to_string(),
+                    name.span,
+                );
+                None
+            }
+            None => {
+                self.error(
+                    format!("unknown trait `{n}`"),
+                    "not defined".to_string(),
+                    name.span,
+                );
+                None
+            }
+        }
+    }
+
+    /// A trait is asked of, and implemented for, as many types as it has
+    /// parameters.
+    fn check_trait_arity(&mut self, tr: InternedString, given: usize, span: Span) -> Option<()> {
+        let want = self.all_traits.get(&tr).map_or(1, |t| t.params);
+        if want == given {
+            return Some(());
+        }
+        self.error(
+            format!(
+                "`{}` is a trait of {want} type{}, given {given}",
+                hir::spelling(&tr),
+                if want == 1 { "" } else { "s" }
+            ),
+            "the wrong number of types".to_string(),
+            span,
+        );
+        None
+    }
+
+    fn resolve_bounds(&mut self, bounds: &[ast::Bound]) -> Vec<hir::Bound> {
+        bounds
+            .iter()
+            .filter_map(|b| {
+                let tys = b.tys.iter().map(|t| self.resolve_ty(t)).collect_vec();
+                let tr = self.resolve_trait_name(&b.tr)?;
+                self.check_trait_arity(tr, tys.len(), b.tr.span)?;
+                Some(hir::Bound {
+                    tr: self.node(tr, b.tr.span),
+                    tys,
+                })
+            })
+            .collect()
+    }
+
+    /// A method or default written inside a `trait` or an `impl`: a function
+    /// under a name of its own, which the program never sees. Its own name is
+    /// **not** in scope in its body -- `show` inside `impl Show [a;]` is the
+    /// trait's `show`, at whatever type it is applied to, not this one again.
+    fn resolve_method(
+        &mut self,
+        bind: &ast::Bind,
+        hidden: &str,
+    ) -> Option<(ast::Ident, hir::Bind)> {
+        let name = method_name(bind)?.clone();
+        let id = self.vars.fresh();
+        self.names.insert(
+            id,
+            InternedString::from(format!("{hidden}.{}", name.value())),
+        );
+        let name_node = self.node(id, name.span);
+        let mark = self.mark();
+        let bound = match bind {
+            ast::Bind::Fun(_, params, ret, body) => {
+                let rparams = params.iter().map(|p| self.resolve_pat(p)).collect_vec();
+                let rret = ret.as_ref().map(|t| {
+                    let was = std::mem::replace(&mut self.open_tyvars, true);
+                    let r = self.resolve_ty(t);
+                    self.open_tyvars = was;
+                    r
+                });
+                let rbody = self.resolve_expr(body);
+                hir::Bind::Fun(name_node, rparams, rret, rbody)
+            }
+            ast::Bind::Pat(_, body) => {
+                let rbody = self.resolve_expr(body);
+                let span = name.span;
+                let pat = self.node(hir::Pat::Var(name_node), span);
+                hir::Bind::Pat(pat, rbody)
+            }
+        };
+        self.reset(mark);
+        Some((name, bound))
+    }
+
+    fn resolve_trait(&mut self, td: &ast::TraitDecl, span: Span) -> hir::LDecl {
+        let name = *td.name.value();
+        let canonical = self.qualify(name);
+        self.tyvars.clear();
+        let params = self.bind_tyvars(&td.params);
+        let listed = td.params.iter().map(|p| p.value().to_string()).join(" ");
+        let mut supers = Vec::new();
+        for b in &td.supers {
+            // Which of this trait's parameters, by position.
+            let of: Option<Vec<usize>> = b
+                .tys
+                .iter()
+                .map(|t| match t.value() {
+                    ast::TypeExpr::Var(v) => td.params.iter().position(|p| p.value() == v.value()),
+                    _ => None,
+                })
+                .collect();
+            let Some(of) = of else {
+                self.error(
+                    format!("a trait can only require traits of its own parameters, `{listed}`"),
+                    "not the trait's parameters".to_string(),
+                    b.tr.span,
+                );
+                continue;
+            };
+            if let Some(tr) = self.resolve_trait_name(&b.tr)
+                && self.check_trait_arity(tr, of.len(), b.tr.span).is_some()
+            {
+                supers.push((self.node(tr, b.tr.span), of));
+            }
+        }
+        let mut assocs = Vec::new();
+        for (assoc, of) in &td.assocs {
+            let same = of.len() == td.params.len()
+                && of
+                    .iter()
+                    .zip(&td.params)
+                    .all(|(a, b)| a.value() == b.value());
+            if !same {
+                self.error(
+                    format!(
+                        "`type {} …`: an associated type is of the trait's parameters, `{listed}`",
+                        assoc.value(),
+                    ),
+                    "not the trait's parameters".to_string(),
+                    assoc.span,
+                );
+            }
+            let c = self.qualify(*assoc.value());
+            assocs.push(self.node(c, assoc.span));
+        }
+        let mut methods = Vec::new();
+        for (method, ty) in &td.sigs {
+            let m = *method.value();
+            let id = self
+                .predeclared
+                .get(&(self.current.clone(), m))
+                .copied()
+                .unwrap_or_else(|| self.bind(m));
+            // Effect variables are a method's own, so they are bound as they
+            // are met; inference refuses any other variable but the trait's.
+            let was = std::mem::replace(&mut self.open_tyvars, true);
+            let rty = self.resolve_ty(ty);
+            self.open_tyvars = was;
+            methods.push(hir::TraitMethod {
+                name: m,
+                var: self.node(id, method.span),
+                ty: rty,
+                default: None,
+            });
+        }
+        for b in &td.defaults {
+            let Some(n) = method_name(b) else {
+                self.error(
+                    "a default is a method: `fun name … = …`".to_string(),
+                    "not a name".to_string(),
+                    span,
+                );
+                continue;
+            };
+            let n = n.clone();
+            let Some(at) = methods.iter().position(|m| m.name == *n.value()) else {
+                self.error(
+                    format!(
+                        "`{}` is not a method of `{name}`: declare it with `fun {} : …`",
+                        n.value(),
+                        n.value()
+                    ),
+                    "no such method".to_string(),
+                    n.span,
+                );
+                continue;
+            };
+            if methods[at].default.is_some() {
+                self.error(
+                    format!("`{}` already has a default", n.value()),
+                    "a second default".to_string(),
+                    n.span,
+                );
+                continue;
+            }
+            if let Some((_, body)) = self.resolve_method(b, &format!("#default.{name}")) {
+                let var = body.bound_vars()[0];
+                self.hidden_exports.push(var);
+                methods[at].default = Some(hir::DefaultMethod {
+                    var,
+                    body: Some(body),
+                });
+            }
+        }
+        self.tyvars.clear();
+        self.node(
+            hir::Decl::Trait(hir::TraitDecl {
+                name: canonical,
+                name_span: td.name.span,
+                params,
+                supers,
+                assocs,
+                methods,
+                dict: canonical_ctor(canonical, InternedString::from("#dict")),
+            }),
+            span,
+        )
+    }
+
+    fn resolve_impl(&mut self, id: &ast::ImplDecl, span: Span) -> hir::LDecl {
+        // The type's variables are the whole declaration's: `a` in a method's
+        // annotation is the `a` of `impl Show [a;]`.
+        self.tyvars.clear();
+        let was = std::mem::replace(&mut self.open_tyvars, true);
+        let tys = id.tys.iter().map(|t| self.resolve_ty(t)).collect_vec();
+        let context = self.resolve_bounds(&id.context);
+        self.open_tyvars = was;
+        let found = self
+            .resolve_trait_name(&id.tr)
+            .filter(|tr| self.check_trait_arity(*tr, tys.len(), id.tr.span).is_some());
+        let Some(tr) = found else {
+            self.tyvars.clear();
+            return self.node(hir::Decl::Error, span);
+        };
+        let info = self.all_traits.get(&tr).cloned().unwrap_or_default();
+        let shown = hir::spelling(&tr).to_string();
+
+        let mut assocs = Vec::new();
+        for (name, at, is) in &id.assocs {
+            let found = match self.tycons.get(name.value()) {
+                Some(Named::One(c, _)) if info.assocs.contains(c) => Some(*c),
+                _ => None,
+            };
+            let Some(c) = found else {
+                self.error(
+                    format!("`{}` is not an associated type of `{shown}`", name.value()),
+                    "no such associated type".to_string(),
+                    name.span,
+                );
+                continue;
+            };
+            let same =
+                at.len() == id.tys.len() && at.iter().zip(&id.tys).all(|(a, b)| same_type(a, b));
+            if !same {
+                self.error(
+                    format!(
+                        "`type {} …` in an `impl` is at the implementing types",
+                        name.value()
+                    ),
+                    "write what follows the trait's name after `impl` here".to_string(),
+                    name.span,
+                );
+            }
+            if assocs
+                .iter()
+                .any(|(l, _): &(hir::Label, _)| *l.value() == c)
+            {
+                self.error(
+                    format!("`{}` is given twice", name.value()),
+                    "already given".to_string(),
+                    name.span,
+                );
+                continue;
+            }
+            let is = self.resolve_ty(is);
+            assocs.push((self.node(c, name.span), is));
+        }
+        for want in &info.assocs {
+            if !assocs.iter().any(|(l, _)| l.value() == want) {
+                self.error(
+                    format!(
+                        "this `impl {shown}` does not say what `{}` is",
+                        hir::spelling(want)
+                    ),
+                    format!("add `type {} … = …`", hir::spelling(want)),
+                    id.tr.span,
+                );
+            }
+        }
+
+        let hidden = format!("#impl.{shown}");
+        let mut methods: Vec<(InternedString, hir::Bind)> = Vec::new();
+        for b in &id.methods {
+            let Some((name, body)) = self.resolve_method(b, &hidden) else {
+                self.error(
+                    "an `impl` holds methods: `fun name … = …`".to_string(),
+                    "not a name".to_string(),
+                    span,
+                );
+                continue;
+            };
+            let m = *name.value();
+            if !info.methods.iter().any(|(n, _)| *n == m) {
+                self.error(
+                    format!("`{m}` is not a method of `{shown}`"),
+                    "no such method".to_string(),
+                    name.span,
+                );
+                continue;
+            }
+            if methods.iter().any(|(n, _)| *n == m) {
+                self.error(
+                    format!("`{m}` is defined twice in this `impl`"),
+                    "already defined".to_string(),
+                    name.span,
+                );
+                continue;
+            }
+            methods.push((m, body));
+        }
+        let missing: Vec<String> = info
+            .methods
+            .iter()
+            .filter(|(n, default)| !default && !methods.iter().any(|(m, _)| m == n))
+            .map(|(n, _)| format!("`{n}`"))
+            .collect();
+        if !missing.is_empty() {
+            self.error(
+                format!("this `impl {shown}` is missing {}", missing.join(", ")),
+                "not every method is defined".to_string(),
+                id.tr.span,
+            );
+        }
+        self.tyvars.clear();
+
+        let dict = self.vars.fresh();
+        self.names.insert(dict, InternedString::from(hidden));
+        self.hidden_exports.push(dict);
+        let dict = self.node(dict, id.tr.span);
+        let tr = self.node(tr, id.tr.span);
+        self.node(
+            hir::Decl::Impl(hir::ImplDecl {
+                tr,
+                tys,
+                context,
+                assocs,
+                methods,
+                dict,
+            }),
+            span,
+        )
     }
 
     // --- type expressions ---------------------------------------------------
@@ -3046,6 +3515,38 @@ impl Resolver {
 }
 
 /// Every `VarId` an already-resolved (irrefutable) pattern binds.
+/// Are two types written the same way, wherever they were written?
+fn same_type(a: &ast::LType, b: &ast::LType) -> bool {
+    use ast::TypeExpr::*;
+    let all = |xs: &[ast::LType], ys: &[ast::LType]| {
+        xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| same_type(x, y))
+    };
+    match (a.value(), b.value()) {
+        (Var(x), Var(y)) => x.value() == y.value(),
+        (Con(x, xs), Con(y, ys)) => x.value() == y.value() && all(xs, ys),
+        (Tuple(xs), Tuple(ys)) => all(xs, ys),
+        (Vector(x), Vector(y)) | (List(x), List(y)) => same_type(x, y),
+        // Nothing an `impl` can be of.
+        _ => false,
+    }
+}
+
+/// The name a method written in a `trait` or an `impl` defines: a `fun`'s, or a
+/// parameterless one's, which the parser makes a pattern binding of one name.
+fn method_name(bind: &ast::Bind) -> Option<&ast::Ident> {
+    match bind {
+        ast::Bind::Fun(name, ..) => Some(name),
+        ast::Bind::Pat(pat, _) => match pat.value() {
+            ast::Pat::Var(name) => Some(name),
+            ast::Pat::Ann(inner, _) => match inner.value() {
+                ast::Pat::Var(name) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        },
+    }
+}
+
 fn collect_hir_pat_vars(pat: &hir::LPat, out: &mut Vec<VarId>) {
     match pat.value() {
         hir::Pat::Var(id) => out.push(*id.value()),

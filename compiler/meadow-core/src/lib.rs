@@ -41,6 +41,7 @@ pub mod args;
 pub mod bools;
 pub mod compact;
 pub mod desc;
+pub mod dictionaries;
 pub mod erase;
 pub mod globals;
 pub mod hash;

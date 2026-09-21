@@ -593,9 +593,24 @@ fn compile_unit_inner(
         // injected into every scope (where an ordinary value can shadow them).
         infer.export_effect_ops(&m.hir.value().decls);
     }
+    // `impl`s after every trait is known, a sibling module's included.
+    for dep in deps {
+        infer.register_impls(&dep.data_decls);
+    }
+    for m in &typed {
+        infer.set_filename(module_filename(&filename, m.source));
+        infer.register_impls(&m.hir.value().decls);
+        infer.export_traits(&m.hir.value().decls);
+    }
     for m in &typed {
         infer.set_filename(module_filename(&filename, m.source));
         infer.infer_module(&m.hir);
+    }
+    // The bodies inside traits and `impl`s last: they may mention any binding
+    // of the unit, and no binding needs more of them than their types.
+    for m in &typed {
+        infer.set_filename(module_filename(&filename, m.source));
+        infer.infer_traits(&m.hir);
     }
     let InferResult {
         table,
@@ -603,6 +618,8 @@ fn compile_unit_inner(
         generalized,
         variants,
         resolutions,
+        evidence,
+        traits,
         errors,
     } = infer.finish();
     diags.extend(errors);
@@ -650,6 +667,8 @@ fn compile_unit_inner(
         resolver.var_gen(),
     );
     lowerer.variants = Some(&variants);
+    lowerer.evidence = Some(&evidence);
+    lowerer.traits = Some(&traits);
     let mut defs = Vec::new();
     for m in &typed {
         lowerer.locations = opts.debug_info.then_some(m.source.id);
@@ -713,8 +732,13 @@ fn compile_unit_inner(
     }
     let mut exports: Vec<Export> = Vec::new();
     let mut exported: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+    // An `impl`'s dictionary is found by type and never by name, so it is
+    // exported whatever is marked; so is a default method, which an `impl` in
+    // a dependent is built from.
+    let hidden: std::collections::HashSet<VarId> =
+        resolver.hidden_exports().iter().copied().collect();
     for (var, scheme) in &schemes {
-        if gated && !resolver.is_pub_var(*var) {
+        if gated && !resolver.is_pub_var(*var) && !hidden.contains(var) {
             continue;
         }
         exported.insert(*var);
@@ -756,9 +780,12 @@ fn compile_unit_inner(
             hir::Decl::Record(rd) => !gated || resolver.is_pub_type(rd.name),
             hir::Decl::Effect(ed) => !gated || resolver.is_pub_type(ed.name),
             hir::Decl::Alias(ad) => !gated || resolver.is_pub_type(ad.name),
+            hir::Decl::Trait(td) => !gated || resolver.is_pub_type(td.name),
+            // Coherence is the program's: an `impl` is every dependent's.
+            hir::Decl::Impl(_) => true,
             _ => false,
         })
-        .cloned()
+        .map(without_bodies)
         .collect();
 
     // Constructors a dependent may write bare: only what a `@pub use M.Ty.*`
@@ -802,6 +829,24 @@ fn compile_unit_inner(
 }
 
 /// Reorder `items` so that the element at `order[k]` ends up `k`th.
+/// A declaration as a dependent needs it: a trait's defaults and an `impl`'s
+/// methods are compiled already, and only their names and types travel.
+fn without_bodies(d: &hir::LDecl) -> hir::LDecl {
+    let mut d = d.clone();
+    match &mut *d.value {
+        hir::Decl::Trait(td) => {
+            for m in &mut td.methods {
+                if let Some(default) = &mut m.default {
+                    default.body = None;
+                }
+            }
+        }
+        hir::Decl::Impl(id) => id.methods.clear(),
+        _ => {}
+    }
+    d
+}
+
 fn permute<T>(items: Vec<T>, order: &[usize]) -> Vec<T> {
     debug_assert_eq!(
         items.len(),

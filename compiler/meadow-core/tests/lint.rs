@@ -247,6 +247,7 @@ fn an_imported_binding_is_known_by_its_scheme() {
     // Defined in another unit, so the checker has its scheme and nothing else.
     let outside = VarId(50);
     let scheme = Scheme {
+        preds: Vec::new(),
         quant: vec![VarKind::Type],
         ty: Type::Fun(
             vec![Type::Bound(0)],

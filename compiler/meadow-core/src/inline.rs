@@ -125,10 +125,10 @@ pub fn program(p: &Program) -> Program {
 }
 
 /// A source of names nothing else uses.
-struct Fresh(u32);
+pub(crate) struct Fresh(pub(crate) u32);
 
 impl Fresh {
-    fn var(&mut self) -> Var {
+    pub(crate) fn var(&mut self) -> Var {
         let v = hir::VarId(self.0);
         self.0 += 1;
         v
@@ -137,15 +137,15 @@ impl Fresh {
 
 /// What a candidate definition is: the type binders a call has to supply, its
 /// parameters, and what to do with them.
-struct Body {
-    binders: Vec<TyVar>,
-    params: Vec<(Var, Ty)>,
-    term: Term,
+pub(crate) struct Body {
+    pub(crate) binders: Vec<TyVar>,
+    pub(crate) params: Vec<(Var, Ty)>,
+    pub(crate) term: Term,
     /// For a specialized copy (see [`crate::specialize`]), the binders of the
     /// definition it was copied from: a call mentions the copy with the
     /// original's type arguments, all of them, and `binders` is the subset the
     /// copy did not fix, by id.
-    original: Option<Vec<TyVar>>,
+    pub(crate) original: Option<Vec<TyVar>>,
 }
 
 impl Body {
@@ -831,7 +831,7 @@ fn enter(body: &Body, tys: Vec<Ty>, args: Vec<Term>, fresh: &mut Fresh) -> Term 
 /// type -- so a copy of a generic body placed where `a` is `Float` has to say
 /// `Float`, or code generation will read the words the wrong way. Every node
 /// that carries a type is rewritten here, and so is every annotated pattern.
-fn retype(body: &Body, tys: &[Ty]) -> Body {
+pub(crate) fn retype(body: &Body, tys: &[Ty]) -> Body {
     if body.binders.is_empty() {
         return Body {
             binders: Vec::new(),
@@ -935,7 +935,7 @@ fn at_poly(poly: &Poly, map: &HashMap<u32, Ty>) -> Poly {
 /// Core binds every name once and the whole compiler below here relies on it.
 /// Two copies of one body at two call sites would bind the same names twice, so
 /// each copy is renamed as it is made.
-fn freshen(body: &Body, fresh: &mut Fresh) -> Body {
+pub(crate) fn freshen(body: &Body, fresh: &mut Fresh) -> Body {
     let mut map: HashMap<Var, Var> = HashMap::new();
     for (v, _) in &body.params {
         map.insert(*v, fresh.var());

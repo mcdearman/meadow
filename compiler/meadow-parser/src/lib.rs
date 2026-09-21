@@ -367,7 +367,94 @@ where
         .ignore_then(value_ident())
         .then_ignore(just(Token::Colon))
         .then(ty())
-        .map_with(|(name, ty), e| LDecl::new(Decl::Sig(name, ty), e.span()));
+        .then(bounds())
+        .map_with(|((name, ty), bounds), e| LDecl::new(Decl::Sig(name, ty, bounds), e.span()));
+
+    // `trait Name a where Super a { type Assoc a  fun m : T  fun m x = default }`.
+    // Every item starts with a keyword, so the body needs no separators.
+    enum TraitItem {
+        Assoc(Ident, Vec<Ident>),
+        Sig(Ident, LType),
+        Default(Bind),
+    }
+    let trait_item = choice((
+        just(Token::Type)
+            .ignore_then(upper_ident())
+            .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
+            .map(|(name, params)| TraitItem::Assoc(name, params)),
+        bind_decl.clone().map(TraitItem::Default),
+        just(Token::Fun)
+            .or(just(Token::Def))
+            .ignore_then(value_ident())
+            .then_ignore(just(Token::Colon))
+            .then(ty())
+            .map(|(name, ty)| TraitItem::Sig(name, ty)),
+    ));
+    let trait_decl = just(Token::Trait)
+        .ignore_then(upper_ident())
+        .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
+        .then(bounds())
+        .then(
+            trait_item
+                .repeated()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+        )
+        .map_with(|(((name, params), supers), items), e| {
+            let mut decl = TraitDecl {
+                name,
+                params,
+                supers,
+                assocs: Vec::new(),
+                sigs: Vec::new(),
+                defaults: Vec::new(),
+            };
+            for item in items {
+                match item {
+                    TraitItem::Assoc(n, p) => decl.assocs.push((n, p)),
+                    TraitItem::Sig(n, t) => decl.sigs.push((n, t)),
+                    TraitItem::Default(b) => decl.defaults.push(b),
+                }
+            }
+            LDecl::new(Decl::Trait(decl), e.span())
+        });
+
+    // `impl Name Type where Bound a { type Assoc Type = T  fun m x = … }`
+    let impl_item = choice((
+        just(Token::Type)
+            .ignore_then(upper_ident())
+            .then(ty_atom().repeated().at_least(1).collect::<Vec<_>>())
+            .then_ignore(just(Token::Eq))
+            .then(ty())
+            .map(|((name, at), is)| Either::Left((name, at, is))),
+        bind_decl.clone().map(Either::Right),
+    ));
+    let impl_decl = just(Token::Impl)
+        .ignore_then(upper_ident())
+        .then(head_ty().repeated().at_least(1).collect::<Vec<_>>())
+        .then(bounds())
+        .then(
+            impl_item
+                .repeated()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LBrace), just(Token::RBrace)),
+        )
+        .map_with(|(((tr, tys), context), items), e| {
+            let mut decl = ImplDecl {
+                tr,
+                tys,
+                context,
+                assocs: Vec::new(),
+                methods: Vec::new(),
+            };
+            for item in items {
+                match item {
+                    Either::Left(a) => decl.assocs.push(a),
+                    Either::Right(b) => decl.methods.push(b),
+                }
+            }
+            LDecl::new(Decl::Impl(decl), e.span())
+        });
 
     choice((
         mod_decl,
@@ -376,6 +463,8 @@ where
         record_decl,
         effect_decl,
         type_decl,
+        trait_decl,
+        impl_decl,
         macro_decl().map_with(|m, e| LDecl::new(Decl::Macro(m), e.span())),
         // Before `sig_decl`, which also starts with a name: `derive! { … }`
         // would otherwise be read as the start of `derive : T`.
@@ -383,6 +472,31 @@ where
         bind_decl.map_with(|bind, e| LDecl::new(Decl::Bind(bind), e.span())),
         sig_decl,
     ))
+}
+
+/// A type after a trait's name, in an `impl` or a `where`: an atom, but never
+/// one that starts with `{` -- that brace opens the body that follows, and an
+/// empty body would otherwise read as an empty record type.
+fn head_ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, LType, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    just(Token::LBrace).not().ignore_then(ty_atom())
+}
+
+/// `where Show a, Ord (f b)` -- the traits some types have to implement; empty
+/// when there is no `where`.
+fn bounds<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Vec<Bound>, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    just(Token::Where)
+        .ignore_then(
+            upper_ident()
+                .then(head_ty().repeated().at_least(1).collect::<Vec<_>>())
+                .map(|(tr, tys)| Bound { tr, tys })
+                .separated_by(just(Token::Comma))
+                .at_least(1)
+                .collect::<Vec<_>>(),
+        )
+        .or_not()
+        .map(Option::unwrap_or_default)
 }
 
 /// `{ @pub name : Type, age : Type, }` — shared by `record` decls, named variant

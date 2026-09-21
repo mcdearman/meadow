@@ -180,6 +180,11 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     // Types are *not* erased: a name's representation comes from its type, a
     // call's type from the instantiation core wrote down, and an abstraction
     // over types takes descriptors -- see the module docs.
+    //
+    // Before either, while a call still says exactly which types and which
+    // dictionaries it is at: a function that takes dictionaries is copied for
+    // the ones it is known to be given -- see [`core::dictionaries`].
+    let program = &core::dictionaries::program(program, opt);
     let specialized = if opt.specializes() {
         core::specialize::release(program)
     } else {

@@ -48,6 +48,13 @@ pub struct Lowerer<'a> {
     /// record update rebuilds its value with. Without it, an update of a
     /// record type lowers as an anonymous record's would.
     pub variants: Option<&'a VariantEnv>,
+    /// The dictionaries each mention of a name with a `where` is applied to,
+    /// and the traits there are -- from inference. See `meadow_infer::traits`.
+    pub evidence: Option<&'a HashMap<hir::NodeId, Vec<meadow_infer::Evidence>>>,
+    pub traits: Option<&'a meadow_infer::TraitEnv>,
+    /// The dictionary parameters of the definition being lowered, and their
+    /// types: what [`meadow_infer::Evidence::Given`] counts into.
+    dicts: Vec<(Var, Ty)>,
     /// Named-field order per constructor, accumulated across `lower_module` calls.
     pub ctor_fields: HashMap<InternedString, Vec<InternedString>>,
     /// Desugaring invents variables -- a scrutinee to bind, an eta-expansion's
@@ -79,6 +86,9 @@ impl<'a> Lowerer<'a> {
             generalized,
             schemes,
             variants: None,
+            evidence: None,
+            traits: None,
+            dicts: Vec::new(),
             ctor_fields: HashMap::new(),
             vars,
             locations: None,
@@ -132,10 +142,20 @@ impl<'a> Lowerer<'a> {
                     .enumerate()
                     .map(|(i, b)| (i as u32, InferType::Var(b.id)))
                     .collect();
-                Poly {
-                    ty: subst_bound(&g.scheme.ty, &map),
-                    binders,
-                }
+                // A `where` is a parameter per trait, before anything else.
+                let ty =
+                    g.scheme
+                        .preds
+                        .iter()
+                        .rev()
+                        .fold(subst_bound(&g.scheme.ty, &map), |acc, p| {
+                            InferType::Fun(
+                                vec![subst_bound(&meadow_infer::pred_type(p), &map)],
+                                Box::new(acc),
+                                Box::new(InferType::RowEmpty),
+                            )
+                        });
+                Poly { ty, binders }
             }
             None => Poly::mono(self.ty(fallback)),
         }
@@ -170,7 +190,12 @@ impl<'a> Lowerer<'a> {
             // through the checker, so there is nothing to recover.
             return term;
         }
-        let args = meadow_infer::match_scheme(scheme, &occurrence).unwrap_or_else(|| {
+        let evidence: &[meadow_infer::Evidence] = self
+            .evidence
+            .and_then(|e| e.get(&at))
+            .map_or(&[], |e| e.as_slice());
+        let dict_tys: Vec<Option<Ty>> = evidence.iter().map(|e| self.evidence_type(e)).collect();
+        let args = meadow_infer::match_scheme_with(scheme, &occurrence, &dict_tys).unwrap_or_else(|| {
             // Every occurrence *is* an instance, so a failure here is a bug in
             // the matcher rather than in the program. Say so where a test will
             // see it, and carry on with something the checker will wave past.
@@ -183,7 +208,223 @@ impl<'a> Lowerer<'a> {
             );
             scheme.quant.iter().map(|_| unknown()).collect()
         });
-        Term::TyApp(Arc::new(term), args)
+        let term = Term::TyApp(Arc::new(term), args);
+        if scheme.preds.len() != evidence.len() {
+            // Only in a program with a reported error.
+            return term;
+        }
+        evidence.iter().fold(term, |f, e| {
+            Term::App(Arc::new(f), Arc::new(self.evidence_term(e)))
+        })
+    }
+
+    /// The type of the dictionary `e` is, where it can be said.
+    fn evidence_type(&self, e: &meadow_infer::Evidence) -> Option<Ty> {
+        use meadow_infer::Evidence;
+        match e {
+            Evidence::Given(i) => self.dicts.get(*i).map(|(_, t)| t.clone()),
+            Evidence::Super { ty, .. } | Evidence::Impl { ty, .. } => Some(ty.clone()),
+            Evidence::Missing => None,
+        }
+    }
+
+    /// The dictionary `e` describes, as a term.
+    fn evidence_term(&self, e: &meadow_infer::Evidence) -> Term {
+        use meadow_infer::Evidence;
+        match e {
+            Evidence::Given(i) => match self.dicts.get(*i) {
+                Some((v, _)) => Term::Var(*v),
+                None => Term::Error,
+            },
+            Evidence::Super { of, label, ty } => {
+                Term::Sel(Arc::new(self.evidence_term(of)), *label, ty.clone())
+            }
+            Evidence::Impl { dict, ty, args } => {
+                let dict_tys: Vec<Option<Ty>> =
+                    args.iter().map(|a| self.evidence_type(a)).collect();
+                let head = self.mention_as(*dict, ty, &dict_tys);
+                args.iter().fold(head, |f, a| {
+                    Term::App(Arc::new(f), Arc::new(self.evidence_term(a)))
+                })
+            }
+            Evidence::Missing => Term::Error,
+        }
+    }
+
+    /// A mention of `v` at the type `ty`, not counting what its `where` takes.
+    fn mention_as(&self, v: Var, ty: &Ty, dict_tys: &[Option<Ty>]) -> Term {
+        let term = Term::Var(v);
+        match self.schemes.get(&v) {
+            Some(scheme) if !scheme.quant.is_empty() => {
+                let args = meadow_infer::match_scheme_with(scheme, ty, dict_tys)
+                    .unwrap_or_else(|| scheme.quant.iter().map(|_| unknown()).collect());
+                Term::TyApp(Arc::new(term), args)
+            }
+            _ => term,
+        }
+    }
+
+    /// Give the definition `v` its dictionary parameters, around the body
+    /// `build` makes with them in scope: `\(d1 : Show a) (d2 : Ord a) -> body`.
+    fn with_dicts(&mut self, v: Var, poly: &Poly, build: impl FnOnce(&mut Self) -> Term) -> Term {
+        let count = self.generalized.get(&v).map_or(0, |g| g.scheme.preds.len());
+        let mut tys = Vec::with_capacity(count);
+        let mut rest = &poly.ty;
+        for _ in 0..count {
+            let InferType::Fun(params, ret, _) = rest else {
+                break;
+            };
+            tys.push(params[0].clone());
+            rest = &**ret;
+        }
+        let dicts: Vec<(Var, Ty)> = tys.into_iter().map(|t| (self.vars.fresh(), t)).collect();
+        let saved = std::mem::replace(&mut self.dicts, dicts.clone());
+        let body = build(self);
+        self.dicts = saved;
+        dicts
+            .into_iter()
+            .rev()
+            .fold(body, |acc, (d, t)| Term::Lam(d, t, Arc::new(acc)))
+    }
+
+    /// A trait's methods: each the function from a dictionary to its field.
+    fn lower_trait(&mut self, td: &hir::TraitDecl, out: &mut Vec<Def>) {
+        let Some(shape) = self.traits.and_then(|t| t.get(&td.name)).cloned() else {
+            return;
+        };
+        self.ctor_fields.insert(td.dict, shape.labels.clone());
+        for m in &td.methods {
+            let v = *m.var.value();
+            let poly = self.poly_of(v, m.var.id);
+            let InferType::Fun(params, result, _) = &poly.ty else {
+                continue;
+            };
+            let d = self.vars.fresh();
+            let body = Term::Sel(Arc::new(Term::Var(d)), m.name, (**result).clone());
+            let term = Self::ty_lam(&poly, Term::Lam(d, params[0].clone(), Arc::new(body)));
+            out.push(Def {
+                var: v,
+                name: self.name_of(v),
+                poly,
+                term,
+            });
+            if let Some(hir::DefaultMethod {
+                body: Some(body), ..
+            }) = &m.default
+            {
+                self.lower_bind_toplevel(body, out);
+            }
+        }
+    }
+
+    /// An `impl`: its methods, and the dictionary that holds them -- a value,
+    /// or a function of the dictionaries its own `where` asks for.
+    fn lower_impl(&mut self, id: &hir::ImplDecl, out: &mut Vec<Def>) {
+        for (_, body) in &id.methods {
+            self.lower_bind_toplevel(body, out);
+        }
+        let dict = *id.dict.value();
+        let (Some(shape), Some(variants)) = (
+            self.traits.and_then(|t| t.get(id.tr.value())).cloned(),
+            self.variants,
+        ) else {
+            return;
+        };
+        let poly = self.poly_of(dict, id.dict.id);
+        let count = self
+            .generalized
+            .get(&dict)
+            .map_or(0, |g| g.scheme.preds.len());
+        let mut dict_ty = &poly.ty;
+        for _ in 0..count {
+            if let InferType::Fun(_, ret, _) = dict_ty {
+                dict_ty = &**ret;
+            }
+        }
+        let dict_ty = dict_ty.clone();
+        let InferType::Con(_, targs) = &dict_ty else {
+            return;
+        };
+        let at: HashMap<u32, Ty> = targs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i as u32, t.clone()))
+            .collect();
+        let field_tys: Vec<Ty> = variants
+            .get(id.tr.value())
+            .and_then(|vs| vs.first())
+            .map(|sig| sig.fields.iter().map(|f| subst_bound(f, &at)).collect())
+            .unwrap_or_default();
+        let supers: Vec<meadow_infer::Evidence> = self
+            .evidence
+            .and_then(|e| e.get(&id.dict.id))
+            .cloned()
+            .unwrap_or_default();
+        let methods: HashMap<InternedString, Var> = id
+            .methods
+            .iter()
+            .map(|(n, b)| (*n, b.bound_vars()[0]))
+            .collect();
+
+        let body_poly = poly.clone();
+        let term = self.with_dicts(dict, &body_poly, |this| {
+            let given: Vec<Term> = this.dicts.iter().map(|(d, _)| Term::Var(*d)).collect();
+            let given_tys: Vec<Option<Ty>> =
+                this.dicts.iter().map(|(_, t)| Some(t.clone())).collect();
+            let apply = |f: Term, args: &[Term]| {
+                args.iter()
+                    .fold(f, |f, a| Term::App(Arc::new(f), Arc::new(a.clone())))
+            };
+            let mut fields: Vec<Term> = Vec::new();
+            for k in 0..shape.supers.len() {
+                fields.push(match supers.get(k) {
+                    Some(e) => this.evidence_term(e),
+                    None => Term::Error,
+                });
+            }
+            for (k, (name, _, default)) in shape.methods.iter().enumerate() {
+                let field_ty = field_tys
+                    .get(shape.supers.len() + k)
+                    .cloned()
+                    .unwrap_or_else(unknown);
+                let field = match (methods.get(name), default) {
+                    (Some(m), _) => {
+                        // Its own `where` is the `impl`'s, when it has one: a
+                        // method with no parameters is a value, and has none.
+                        let takes = this.schemes.get(m).map_or(0, |s| s.preds.len());
+                        let head = this.mention_as(*m, &field_ty, &given_tys);
+                        apply(head, &given[..takes.min(given.len())])
+                    }
+                    (None, Some(default)) => {
+                        // `\x -> default self x`: under a function, so that
+                        // the dictionary is not needed to make itself.
+                        let me = apply(this.mention_as(dict, &dict_ty, &given_tys), &given);
+                        let head = this.mention_as(*default, &field_ty, &[Some(dict_ty.clone())]);
+                        let call = Term::App(Arc::new(head), Arc::new(me));
+                        match &field_ty {
+                            InferType::Fun(params, _, _) => {
+                                let x = this.vars.fresh();
+                                Term::Lam(
+                                    x,
+                                    params[0].clone(),
+                                    Arc::new(Term::App(Arc::new(call), Arc::new(Term::Var(x)))),
+                                )
+                            }
+                            _ => call,
+                        }
+                    }
+                    (None, None) => Term::Error,
+                };
+                fields.push(field);
+            }
+            Term::Ctor(shape.dict, dict_ty.clone(), fields)
+        });
+        out.push(Def {
+            var: dict,
+            name: self.name_of(dict),
+            term: Self::ty_lam(&poly, term),
+            poly,
+        });
     }
 
     /// Lower an integer literal as the type inference gave it: `BigInt`, a sized
@@ -234,6 +475,8 @@ impl<'a> Lowerer<'a> {
                     self.ctor_fields
                         .insert(rd.ctor, rd.fields.iter().map(|(n, _)| *n).collect());
                 }
+                hir::Decl::Trait(td) => self.lower_trait(td, &mut defs),
+                hir::Decl::Impl(id) => self.lower_impl(id, &mut defs),
                 _ => {}
             }
         }
@@ -249,7 +492,8 @@ impl<'a> Lowerer<'a> {
             hir::Bind::Fun(name, params, _, body) => {
                 let v = *name.value();
                 let poly = self.poly_of(v, name.id);
-                let term = Self::ty_lam(&poly, self.curry_lam(params, body));
+                let inner = self.with_dicts(v, &poly, |this| this.curry_lam(params, body));
+                let term = Self::ty_lam(&poly, inner);
                 out.push(Def {
                     var: v,
                     name: self.name_of(v),

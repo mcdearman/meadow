@@ -397,6 +397,53 @@ mod tests {
         );
     }
 
+    /// The format is a contract with compilers not written in Rust, so it is
+    /// pinned byte for byte: this is the worked example of `docs/IMAGE.md`,
+    /// and a change that fails here has to change [`MAGIC`] and that document.
+    #[test]
+    fn a_golden_image_is_these_bytes() {
+        let mut p = Program::default();
+        p.code = vec![Instr::a(Op::Halt, 0)];
+        p.regs = 1;
+        p.gc_at = vec![crate::NO_MAP];
+        p.operands_at = vec![crate::NO_OPERANDS];
+        p.entry_result = meadow_core::desc::UNIT;
+        let mut want: Vec<u8> = b"MDWIMG04".to_vec();
+        want.extend([1, 0, 0, 0]); // code
+        want.extend([6, 0, 0, 0, 0, 0, 0, 0]); // halt r0
+        want.extend([0; 4 * 12]); // consts .. entries, all empty
+        want.push(0); // no entry
+        want.extend([1, 0]); // regs
+        want.extend([0; 4]); // gc_maps
+        want.extend([1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]); // gc_at
+        want.extend([1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]); // operands_at
+        want.extend([0; 4]); // operands
+        want.extend([0; 4]); // results
+        want.push(4); // entry_result: UNIT
+        assert_eq!(encode(&p), want);
+
+        // And one of each thing with a tag, in the order the document gives.
+        let mut p = Program::default();
+        p.consts = vec![Const::Int(-2), Const::Text("hé".into())];
+        p.prims = vec![Prim::StringCompare, Prim::ToWord(Width::U8)];
+        p.gc_maps = vec![crate::GcMap {
+            regs: vec![(1, crate::Held::Ref), (2, crate::Held::Var(7))],
+        }];
+        p.entry = Some(3);
+        let bytes = encode(&p);
+        let consts = [
+            &[2u8, 0, 0, 0][..],
+            &[2, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            &[9, 3, 0, 0, 0, b'h', 0xC3, 0xA9],
+        ]
+        .concat();
+        assert_eq!(&bytes[12..12 + consts.len()], &consts[..]);
+        let find = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+        assert!(find(&[2, 0, 0, 0, 121, 0, 31, 0]), "prims as u16 codes");
+        assert!(find(&[1, 3, 0, 0, 0, 0, 0]), "entry, then regs");
+        assert!(find(&[1, 0, 0, 0, 2, 0, 0, 0, 1, 0, 2, 2, 7]), "a map");
+    }
+
     #[test]
     fn a_truncated_image_is_refused() {
         let bytes = encode(&Program::default());

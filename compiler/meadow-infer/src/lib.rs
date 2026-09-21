@@ -192,7 +192,29 @@ pub enum VarKind {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Scheme {
     pub quant: Vec<VarKind>,
+    /// The traits the quantified variables have to implement: `where Show a`.
+    /// A value of such a type takes a dictionary for each, in this order,
+    /// before anything else.
+    #[serde(default)]
+    pub preds: Vec<Pred>,
     pub ty: Type,
+}
+
+/// `tys` implement the trait `tr` -- one type, or one per parameter of a trait
+/// of several -- whose associated types are `assocs` there, in the trait's
+/// order. In a [`Scheme`] the types are over its quantifiers.
+///
+/// An associated type is carried as a type of its own beside the one it is
+/// of, rather than as an application `Elem f` to reduce: a function over
+/// `Container f` is quantified over `Elem f` too, as one more variable, and
+/// choosing an `impl` for `f` is what settles it. So nothing past inference
+/// ever meets an associated type -- only ordinary variables and the types
+/// that replaced them.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Pred {
+    pub tr: InternedString,
+    pub tys: Vec<Type>,
+    pub assocs: Vec<Type>,
 }
 
 /// An operation of an `effect` declaration, with its argument and result types
@@ -212,7 +234,11 @@ struct EffectInfo {
 
 impl Scheme {
     pub fn mono(ty: Type) -> Scheme {
-        Scheme { quant: vec![], ty }
+        Scheme {
+            preds: Vec::new(),
+            quant: vec![],
+            ty,
+        }
     }
 }
 
@@ -957,6 +983,13 @@ pub struct InferResult {
     /// The candidate chosen for each overloaded name -- see [`hir::Overloads`]
     /// and [`hir::apply_resolutions`].
     pub resolutions: HashMap<NodeId, hir::Alt>,
+    /// The dictionaries each mention of a name with a `where` is applied to,
+    /// one per trait its type asks for, in the scheme's order -- and, for an
+    /// `impl`'s dictionary (by the node of its name), the dictionaries of the
+    /// traits its trait requires.
+    pub evidence: HashMap<NodeId, Vec<Evidence>>,
+    /// Every trait known here, as lowering needs it.
+    pub traits: TraitEnv,
     pub errors: Vec<Diagnostic>,
 }
 
@@ -1015,6 +1048,9 @@ pub fn subst_bound(ty: &Type, args: &[Type]) -> Type {
     Arena::subst_bound(ty, args)
 }
 
+mod traits;
+pub use traits::{Evidence, TraitEnv, TraitShape};
+
 pub struct Infer {
     filename: String,
     /// The definitions that are run rather than defined -- `main`, and the
@@ -1050,8 +1086,11 @@ pub struct Infer {
     ann_tyvars: HashMap<VarId, Type>,
     /// Every `type` alias known, this unit's and its dependencies'.
     aliases: Aliases,
-    /// The standalone signature of each top-level binding that has one.
-    sigs: HashMap<VarId, hir::LTypeExpr>,
+    /// The standalone signature of each top-level binding that has one, with
+    /// the traits its `where` asks for.
+    sigs: HashMap<VarId, (hir::LTypeExpr, Vec<hir::Bound>)>,
+    /// Traits, `impl`s, and what is still wanted of them -- see [`traits`].
+    tr: traits::State,
     /// Bindings whose signature did not even unify with them: reported once,
     /// so not checked for generality as well.
     sig_failed: HashSet<VarId>,
@@ -1138,6 +1177,7 @@ impl Infer {
             ann_tyvars: HashMap::new(),
             aliases: HashMap::new(),
             sigs: HashMap::new(),
+            tr: traits::State::default(),
             sig_failed: HashSet::new(),
             overloads: HashMap::new(),
             pending: Vec::new(),
@@ -1286,8 +1326,8 @@ impl Infer {
         // table has no holes.
         for decl in &module.decls {
             self.table.set(decl.id, Type::unit());
-            if let hir::Decl::Sig(name, t) = decl.value() {
-                self.sigs.insert(*name.value(), t.clone());
+            if let hir::Decl::Sig(name, t, bounds) = decl.value() {
+                self.sigs.insert(*name.value(), (t.clone(), bounds.clone()));
             }
         }
         if module.groups.is_empty() {
@@ -1321,6 +1361,7 @@ impl Infer {
             return;
         }
 
+        let started = self.begin_binding();
         self.arena.enter_level();
 
         // Seed every name in the group before inferring any body, so a mention of
@@ -1344,20 +1385,31 @@ impl Infer {
         // Every member of the group has to be pure for any of them to generalize:
         // the value restriction, applied to the group as a whole.
         let mut pure = true;
+        self.tr.group = seeds.iter().flatten().map(|(v, _)| *v).collect();
         for ((bind, _), seed) in binds.iter().zip(&seeds) {
+            self.tr.member = seed.first().map(|(v, _)| *v);
             pure &= self.infer_group_member(bind, seed);
         }
+        self.tr.member = None;
 
         // A top-level group settles its own names: its type is final once it
         // generalizes, and an overload left open would leave it half-inferred.
         self.solve_overloads(true);
+        self.solve_wanted();
         self.arena.exit_level();
+
+        // Only functions take dictionaries: a `def` that did would be made
+        // again at every use, where it is promised to be made once.
+        let functions = binds.iter().all(|(b, _)| matches!(b, hir::Bind::Fun(..)));
+        let members: Vec<(VarId, Type)> = seeds.iter().flatten().cloned().collect();
+        let mut preds = self.close_binding(started, &members, pure && functions);
 
         for ((bind, _), seed) in binds.iter().zip(&seeds) {
             let classes = matches!(bind, hir::Bind::Fun(..));
             for (vid, ty) in seed {
                 let scheme = if pure {
-                    self.generalize_named(Some(*vid), ty, classes)
+                    let mine = preds.remove(vid).unwrap_or_default();
+                    self.generalize_named(Some(*vid), ty, classes, &mine)
                 } else {
                     let s = Scheme::mono(self.arena.zonk(ty));
                     self.record_mono(*vid, &s);
@@ -1433,6 +1485,9 @@ impl Infer {
             .flat_map(|g| g.vars.iter().copied())
             .collect();
         self.arena.default_num_vars(&quantified);
+        // A number nothing pinned down has its type now, and with it its
+        // `impl`. Whatever is wanted of a type still unknown stays unknown.
+        let evidence = self.finish_wanted();
         self.table.zonk_all(&mut self.arena);
         let mut schemes = HashMap::new();
         for id in self.exports.clone() {
@@ -1443,17 +1498,18 @@ impl Infer {
         // Re-zonk: a variable can be solved after the binding that generalized
         // over it was recorded, and core's annotations have to agree with the
         // table's.
-        let generalized = self
+        let recorded: Vec<(VarId, Generalized)> = self
             .generalized
+            .iter()
+            .map(|(v, g)| (*v, g.clone()))
+            .collect();
+        let generalized = recorded
             .iter()
             .map(|(v, g)| {
                 (
                     *v,
                     Generalized {
-                        scheme: Scheme {
-                            quant: g.scheme.quant.clone(),
-                            ty: self.arena.zonk(&g.scheme.ty),
-                        },
+                        scheme: self.normalize_scheme(&g.scheme),
                         vars: g.vars.clone(),
                     },
                 )
@@ -1465,6 +1521,8 @@ impl Infer {
             generalized,
             variants: self.variants,
             resolutions: self.resolutions,
+            evidence,
+            traits: self.tr.env(),
             errors: self.errors,
         }
     }
@@ -1475,6 +1533,15 @@ impl Infer {
     fn normalize_scheme(&mut self, scheme: &Scheme) -> Scheme {
         Scheme {
             quant: scheme.quant.clone(),
+            preds: scheme
+                .preds
+                .iter()
+                .map(|p| Pred {
+                    tr: p.tr,
+                    tys: p.tys.iter().map(|t| self.arena.zonk(t)).collect(),
+                    assocs: p.assocs.iter().map(|a| self.arena.zonk(a)).collect(),
+                })
+                .collect(),
             ty: self.arena.zonk(&scheme.ty),
         }
     }
@@ -1499,6 +1566,11 @@ impl Infer {
         match bind {
             hir::Bind::Fun(name, params, declared, body) => {
                 let vid = *name.value();
+                let started = toplevel.then(|| self.begin_binding());
+                if toplevel {
+                    self.tr.group = [vid].into_iter().collect();
+                    self.tr.member = Some(vid);
+                }
                 self.arena.enter_level();
 
                 // Parameters are patterns (`fun f a (x, y) = …`); inferring each
@@ -1530,9 +1602,27 @@ impl Infer {
                 // top-level one has nothing around it to wait for.
                 self.solve_overloads(toplevel);
                 self.solve_subsumptions(mark);
+                self.solve_wanted();
                 self.arena.exit_level();
 
-                let scheme = self.generalize_named(Some(vid), &fn_ty, true);
+                let preds = match started {
+                    // A top-level function takes a dictionary for each trait
+                    // its type variables turned out to need.
+                    Some(started) => {
+                        self.tr.member = None;
+                        self.close_binding(started, &[(vid, fn_ty.clone())], true)
+                            .remove(&vid)
+                            .unwrap_or_default()
+                    }
+                    // A local one does not: what it needs of a type it cannot
+                    // say is left to the function around it, whose variable
+                    // that then is.
+                    None => {
+                        self.hold_back_wanted();
+                        Vec::new()
+                    }
+                };
+                let scheme = self.generalize_named(Some(vid), &fn_ty, true, &preds);
                 self.check_sig(vid, &scheme);
                 self.table.set(name.id, self.arena.zonk(&fn_ty));
                 self.env.insert(vid, scheme);
@@ -1560,7 +1650,11 @@ impl Infer {
                 // argument's effect still waiting to be tied in could make an
                 // effectful right-hand side look pure.
                 self.solve_subsumptions(mark);
+                self.solve_wanted();
                 self.arena.exit_level();
+                // A value is made once, so it takes no dictionary: a type it
+                // needs a trait of is not its to generalize.
+                self.hold_back_wanted();
 
                 // The value restriction, replaced: generalize a `let`/`def` binding
                 // only when its right-hand side is pure. `def r = ref []` is
@@ -1595,7 +1689,7 @@ impl Infer {
 
                 for (vid, vty) in bound {
                     let scheme = if pure {
-                        self.generalize_named(Some(vid), &vty, false)
+                        self.generalize_named(Some(vid), &vty, false, &[])
                     } else {
                         // Not generalized, so not the `let`'s own either: its
                         // variables belong to the level around it. Left one
@@ -1643,7 +1737,10 @@ impl Infer {
             }
             hir::Expr::Var(ident) => {
                 let ty = match self.env.get(&*ident.value()).cloned() {
-                    Some(scheme) => self.instantiate(&scheme),
+                    Some(scheme) => {
+                        self.mention_in_group(ident.id, *ident.value());
+                        self.instantiate_at(ident.id, ident.span, &scheme)
+                    }
                     None => {
                         // Either an unresolved name (the resolver has already said
                         // so) or a top-level binding in a dependency cycle that
@@ -2174,9 +2271,26 @@ impl Infer {
         }
     }
 
+    /// The `impl`s among `decls`. After [`Infer::register_types`] has seen every
+    /// module of the unit, since an `impl` may be of a sibling's trait.
+    pub fn register_impls(&mut self, decls: &[hir::LDecl]) {
+        for d in decls {
+            if let hir::Decl::Impl(id) = d.value() {
+                self.register_impl(id);
+            }
+        }
+    }
+
     /// Populate `ctors` / `record_fields` from `data` / `record` declarations.
     /// Call before `infer_module`.
     pub fn register_types(&mut self, decls: &[hir::LDecl]) {
+        // Traits before anything that may mention one; their `impl`s wait
+        // for every module's -- see [`Infer::register_impls`].
+        for d in decls {
+            if let hir::Decl::Trait(td) = d.value() {
+                self.register_trait(td);
+            }
+        }
         // Aliases before everything else, which may be written in terms of them.
         let mut added = Vec::new();
         for d in decls {
@@ -2270,6 +2384,7 @@ impl Infer {
                         self.env.insert(
                             *opvar.value(),
                             Scheme {
+                                preds: Vec::new(),
                                 quant,
                                 ty: Type::Fun(
                                     vec![arg.clone()],
@@ -2315,6 +2430,7 @@ impl Infer {
         self.ctors.insert(
             ctor,
             Scheme {
+                preds: Vec::new(),
                 quant: quant.to_vec(),
                 ty: cty,
             },
@@ -2342,6 +2458,7 @@ impl Infer {
                 accessors.insert(
                     *name,
                     Scheme {
+                        preds: Vec::new(),
                         quant: quant.to_vec(),
                         ty: Type::Fun(
                             vec![head.clone()],
@@ -2356,13 +2473,14 @@ impl Infer {
 
     /// A standalone signature as a polytype: each of its variables quantified,
     /// the ones standing for an effect as effects.
-    fn sig_scheme(&self, t: &hir::LTypeExpr) -> Scheme {
-        let mut vars = HashMap::new();
-        collect_tyvars(t, &mut vars);
-        let ty = ty_of(t, &vars, &self.aliases);
-        let mut quant = vec![VarKind::Type; vars.len()];
-        mark_effect_vars(&ty, &mut quant);
-        Scheme { quant, ty }
+    /// The signature `vid` is held to, if it has one: written on a line of its
+    /// own, or the trait's type for a method of an `impl`.
+    fn sig_of(&mut self, vid: VarId) -> Option<(Scheme, Span)> {
+        if let Some(found) = self.tr.method_sigs.get(&vid) {
+            return Some(found.clone());
+        }
+        let (t, bounds) = self.sigs.get(&vid).cloned()?;
+        Some((self.bounded_scheme(&t, &bounds), t.span))
     }
 
     /// Tie a binding about to be inferred to its signature, if it has one, so
@@ -2370,14 +2488,15 @@ impl Infer {
     /// signature's variables still flexible here; [`Infer::check_sig`] holds
     /// the binding to them once it has been generalized.
     fn seed_sig(&mut self, vid: VarId, ty: &Type) {
-        let Some(t) = self.sigs.get(&vid).cloned() else {
+        let Some((scheme, span)) = self.sig_of(vid) else {
             return;
         };
-        let scheme = self.sig_scheme(&t);
-        let inst = self.instantiate(&scheme);
+        // What its `where` says is what the body may assume.
+        let (inst, given) = self.instantiate_with_preds(&scheme);
+        self.tr.givens.extend(given);
         if let Err(err) = self.arena.unify(ty.clone(), inst) {
             self.sig_failed.insert(vid);
-            let mut diag = self.unify_diagnostic(t.span, err);
+            let mut diag = self.unify_diagnostic(span, err);
             diag.msg = format!(
                 "this definition does not have the type its signature gives, `{}`: {}",
                 show_scheme_body(&scheme),
@@ -2395,13 +2514,12 @@ impl Infer {
     /// one. The signature with its variables made rigid is an instance of the
     /// scheme exactly when the scheme is no less general.
     fn check_sig(&mut self, vid: VarId, scheme: &Scheme) {
-        let Some(t) = self.sigs.get(&vid).cloned() else {
+        let Some((sig, span)) = self.sig_of(vid) else {
             return;
         };
         if self.sig_failed.contains(&vid) || scheme.ty.references_error() {
             return;
         }
-        let sig = self.sig_scheme(&t);
         let rigid: Vec<Type> = (0..sig.quant.len())
             .map(|i| Type::Con(InternedString::from(format!("'sig{i}")), vec![]))
             .collect();
@@ -2411,7 +2529,7 @@ impl Infer {
             this.errors.push(Diagnostic {
                 msg: why,
                 filename: this.filename.clone(),
-                label: ("the signature".to_string(), t.span),
+                label: ("the signature".to_string(), span),
                 extra_labels: vec![],
             });
         };
@@ -2535,7 +2653,13 @@ impl Infer {
     /// The arena variables are kept, not just their count: a `TyLam` in core
     /// binds them and the annotations inside the binding's body mention them,
     /// so the two have to agree about which variable is which.
-    fn generalize_named(&mut self, vid: Option<VarId>, ty: &Type, classes: bool) -> Scheme {
+    fn generalize_named(
+        &mut self,
+        vid: Option<VarId>,
+        ty: &Type,
+        classes: bool,
+        preds: &[Pred],
+    ) -> Scheme {
         // A name still waiting on its overload has a type that is not settled,
         // and generalizing over it would let each use pick differently.
         let level = self.arena.level;
@@ -2552,8 +2676,25 @@ impl Infer {
         let mut map = HashMap::new();
         let mut kinds = Vec::new();
         let body = self.arena.quantify(&z, &mut map, &mut kinds, classes);
+        // Over the same variables: a trait is asked of one of the type's own,
+        // and an associated type is one more beside them.
+        let preds: Vec<Pred> = preds
+            .iter()
+            .map(|p| {
+                let mut q = |t: &Type| {
+                    let t = self.arena.zonk(t);
+                    self.arena.quantify(&t, &mut map, &mut kinds, classes)
+                };
+                Pred {
+                    tr: p.tr,
+                    tys: p.tys.iter().map(&mut q).collect(),
+                    assocs: p.assocs.iter().map(&mut q).collect(),
+                }
+            })
+            .collect();
         let scheme = Scheme {
             quant: kinds,
+            preds,
             ty: body,
         };
         if let Some(vid) = vid {
@@ -2903,7 +3044,16 @@ impl Infer {
     fn choose(&mut self, p: &Pending, k: usize) {
         let alt = p.candidates[k].alt;
         let outer = std::mem::replace(&mut self.arena.level, p.level);
-        let ty = match self.candidate_type(alt) {
+        // For real this time, so what the candidate's `where` wants is wanted.
+        let chosen = match alt {
+            hir::Alt::Value(v) => self
+                .env
+                .get(&v)
+                .cloned()
+                .map(|s| self.instantiate_at(p.node, p.span, &s)),
+            hir::Alt::Ctor(_) => self.candidate_type(alt),
+        };
+        let ty = match chosen {
             Some(t) => t,
             None => {
                 // The same placeholder an unordered reference would get (see
@@ -2930,6 +3080,7 @@ impl Infer {
             .arena
             .quantify_from(&z, None, &mut map, &mut kinds, true);
         show_scheme_body(&Scheme {
+            preds: Vec::new(),
             quant: kinds,
             ty: body,
         })
@@ -3026,7 +3177,8 @@ impl Infer {
             };
             fresh[*i as usize] = meta;
         }
-        Arena::subst_bound(&ty, &fresh)
+        let ty = Arena::subst_bound(&ty, &fresh);
+        self.lift_assocs_wanted(ty, t.span)
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
@@ -3533,24 +3685,31 @@ fn open_effects(scheme: Scheme) -> Scheme {
             other => other,
         }
     }
-    let Scheme { mut quant, ty } = scheme;
+    let Scheme {
+        preds,
+        mut quant,
+        ty,
+    } = scheme;
     let ty = go(ty, &mut quant);
-    Scheme { quant, ty }
+    Scheme { preds, quant, ty }
 }
 
 fn prim_scheme(name: &str) -> Option<Scheme> {
     use Type::*;
     // `∀a. <ty>` where `a` is `Bound(0)`.
     let a1 = |ty: Type| Scheme {
+        preds: Vec::new(),
         quant: vec![VarKind::Type],
         ty,
     };
     // The same over any integer type, and over either float type.
     let num = |ty: Type| Scheme {
+        preds: Vec::new(),
         quant: vec![VarKind::Num],
         ty,
     };
     let frac = |ty: Type| Scheme {
+        preds: Vec::new(),
         quant: vec![VarKind::Frac],
         ty,
     };
@@ -3663,6 +3822,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         )),
         "==" | "!=" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Bound(0), Bound(0)], Type::bool()),
         },
@@ -3679,14 +3839,17 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         // the outside world": a caller can reasonably care about one and not the
         // other.
         "newRef" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Bound(0)], Type::reference(Bound(0)), mut_row(1)),
         },
         "getRef" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Type::reference(Bound(0))], Bound(0), mut_row(1)),
         },
         "setRef" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::reference(Bound(0)), Bound(0)],
@@ -3701,6 +3864,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         // applied directly -- `Infer::infer_run_st` -- so this, its scheme as a
         // mere value, is the ordinary application it is at run time.
         "runSt" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::func_eff(vec![Type::unit()], Bound(0), Bound(1))],
@@ -3709,6 +3873,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stNewRef" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Bound(1)],
@@ -3717,6 +3882,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stGetRef" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::st_ref(Bound(0), Bound(1))],
@@ -3725,6 +3891,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stSetRef" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::st_ref(Bound(0), Bound(1)), Bound(1)],
@@ -3733,6 +3900,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stNewArray" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::int(), Bound(1)],
@@ -3741,6 +3909,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stGetArray" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::st_array(Bound(0), Bound(1)), Type::int()],
@@ -3749,6 +3918,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stSetArray" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::st_array(Bound(0), Bound(1)), Type::int(), Bound(1)],
@@ -3758,10 +3928,12 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         },
         // An array's length is fixed when it is made, so asking is pure.
         "stArrayLen" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type],
             ty: Type::func(vec![Type::st_array(Bound(0), Bound(1))], Type::int()),
         },
         "stFreeze" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::st_array(Bound(0), Bound(1))],
@@ -3770,6 +3942,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stThaw" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::array(Bound(1))],
@@ -3780,14 +3953,17 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         // Pure: a compacted value is equal to the original, and nothing about
         // where it lives can be observed but `compactSize`.
         "compact" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Bound(0)], Type::compact(Bound(0))),
         },
         "getCompact" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Type::compact(Bound(0))], Bound(0)),
         },
         "compactAdd" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type],
             ty: Type::func(
                 vec![Type::compact(Bound(0)), Bound(1)],
@@ -3795,10 +3971,12 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "compactSize" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Type::compact(Bound(0))], Type::int()),
         },
         "threadSpawn" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::Fun(
@@ -3811,18 +3989,22 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "threadAwait" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Type::task(Bound(0))], Bound(0), thread_row(1)),
         },
         "threadYield" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Effect],
             ty: Type::func_eff(vec![Type::unit()], Type::unit(), thread_row(0)),
         },
         "channelNew" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Type::unit()], Type::channel(Bound(0)), thread_row(1)),
         },
         "channelSend" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::channel(Bound(0)), Bound(0)],
@@ -3831,18 +4013,22 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "channelReceive" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Type::channel(Bound(0))], Bound(0), thread_row(1)),
         },
         "stmNew" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Bound(0)], Type::tvar(Bound(0)), stm_row(1)),
         },
         "stmNewIO" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Bound(0)], Type::tvar(Bound(0)), thread_row(1)),
         },
         "stmRead" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::tvar(Bound(0))],
@@ -3851,6 +4037,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stmWrite" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
                 vec![Type::tvar(Bound(0)), Bound(0)],
@@ -3859,14 +4046,17 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stmBegin" | "stmWait" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Effect],
             ty: Type::func_eff(vec![Type::unit()], Type::unit(), thread_row(0)),
         },
         "stmCommit" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Effect],
             ty: Type::func_eff(vec![Type::unit()], Type::bool(), thread_row(0)),
         },
         "stmNest" | "stmMerge" | "stmRollback" => Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Effect],
             ty: Type::func_eff(vec![Type::unit()], Type::unit(), stm_row(0)),
         },
@@ -4265,7 +4455,16 @@ impl fmt::Display for Scheme {
             }
             f.write_str(". ")?;
         }
-        write_type(f, &self.ty, &mut namer, Prec::Top, &hidden)
+        write_type(f, &self.ty, &mut namer, Prec::Top, &hidden)?;
+        for (i, p) in self.preds.iter().enumerate() {
+            f.write_str(if i == 0 { " where " } else { ", " })?;
+            write!(f, "{}", hir::spelling(&p.tr))?;
+            for t in &p.tys {
+                f.write_str(" ")?;
+                write_type(f, t, &mut namer, Prec::App, &hidden)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -4318,6 +4517,7 @@ mod tests {
     #[test]
     fn scheme_display_names_quantifiers() {
         let s = Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type],
             ty: Type::func(vec![Type::Bound(0)], Type::Bound(1)),
         };
@@ -4389,8 +4589,17 @@ mod tests {
         infer.arena.exit_level();
         let shallow = infer.arena.fresh();
 
-        assert_eq!(infer.generalize_named(None, &deep, true).quant.len(), 1);
-        assert_eq!(infer.generalize_named(None, &shallow, true).quant.len(), 0);
+        assert_eq!(
+            infer.generalize_named(None, &deep, true, &[]).quant.len(),
+            1
+        );
+        assert_eq!(
+            infer
+                .generalize_named(None, &shallow, true, &[])
+                .quant
+                .len(),
+            0
+        );
     }
 }
 
@@ -4544,6 +4753,45 @@ pub fn match_scheme(scheme: &Scheme, concrete: &Type) -> Option<Vec<Type>> {
             })
             .collect(),
     )
+}
+
+/// [`match_scheme`], also reading what the scheme's `where` says: `dicts[i]` is
+/// the type of the dictionary its `i`th trait was answered with, when that is
+/// known. An associated type appears in a scheme's `where` and sometimes
+/// nowhere else, and its dictionary's type is then the only thing that says
+/// what it was instantiated to.
+pub fn match_scheme_with(
+    scheme: &Scheme,
+    concrete: &Type,
+    dicts: &[Option<Type>],
+) -> Option<Vec<Type>> {
+    let mut out: HashMap<u32, Type> = HashMap::new();
+    if !match_ty(&scheme.ty, concrete, &mut out) {
+        return None;
+    }
+    for (p, d) in scheme.preds.iter().zip(dicts) {
+        if let Some(d) = d {
+            // Best effort: what the type already settled stays settled.
+            let _ = match_ty(&pred_type(p), d, &mut out);
+        }
+    }
+    Some(
+        (0..scheme.quant.len() as u32)
+            .map(|i| match (out.get(&i), scheme.quant[i as usize]) {
+                (Some(t), _) => t.clone(),
+                (None, VarKind::Row) | (None, VarKind::Effect) => Type::RowEmpty,
+                (None, _) => Type::unit(),
+            })
+            .collect(),
+    )
+}
+
+/// The type of the dictionary that answers `p`: the trait's name applied to
+/// the type and its associated types.
+pub fn pred_type(p: &Pred) -> Type {
+    let mut args = p.tys.clone();
+    args.extend(p.assocs.iter().cloned());
+    Type::Con(p.tr, args)
 }
 
 fn match_ty(pat: &Type, conc: &Type, out: &mut HashMap<u32, Type>) -> bool {
@@ -4827,6 +5075,7 @@ mod pipe_tests {
 
     fn mono(ty: Type) -> Scheme {
         Scheme {
+            preds: Vec::new(),
             quant: Vec::new(),
             ty,
         }
@@ -4870,6 +5119,7 @@ mod pipe_tests {
     fn a_function_of_a_type_variable_fits_everything_and_says_so() {
         // `id : forall a. a -> a`
         let id = Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: arrows(&[Type::Bound(0)], Type::Bound(0)),
         };
@@ -4882,6 +5132,7 @@ mod pipe_tests {
     fn a_generic_container_fits_a_function_over_it() {
         // `len : forall a. Vector a -> Int` takes a `Vector String`.
         let len = Scheme {
+            preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: arrows(
                 &[Type::Con("Vector".into(), vec![Type::Bound(0)])],

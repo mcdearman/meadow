@@ -110,7 +110,7 @@ through it. Lowering knows which `new`s are these -- `meadow_seq::Program::frame
 returning, and everything pushed after it is dead by then.
 
 The stack is chunked, as GHC's is: 64 KiB chunks that are old-generation
-blocks in state `STACK`, linked through their first two slots, so a deep
+blocks in state `STACK`, linked through a three-slot header, so a deep
 recursion grows a chain and never copies a frame, and a frame's address is an
 ordinary old address that every part of the runtime already knows how to
 reach. A frame in the current chunk is one load from the chunk's published
@@ -171,6 +171,40 @@ reference type. After that no descriptors are passed, and arithmetic in
 formerly generic code becomes typed instructions. This matters for native code
 further down: typed instructions and objects with headers known at compile time
 are what the code generator can do inline.
+
+### Traits are dictionaries, and then they are not
+
+`compiler/meadow-infer/src/traits.rs`, `compiler/meadow-core/src/dictionaries.rs`.
+
+A `trait` is lowered to a **dictionary**: one constructor, holding the
+dictionaries of the traits it requires and then its methods. An `impl` is a
+top-level value of that type -- or, with a `where` of its own, a function from
+dictionaries to one -- a method is the function from a dictionary to its
+field, and a function with a `where` takes a dictionary per trait before its
+other arguments. Inference works out which dictionary every mention is applied
+to (`InferResult::evidence`); lowering writes the applications. An associated
+type is one more type parameter of the dictionary's type, settled by the
+`impl`, so nothing below inference knows there are associated types. That is
+the whole of what traits are at run time, and it needs nothing new from any
+backend: data, closures and calls.
+
+`meadow_core::dictionaries` then takes most of it away again. It is the first
+pass of `lower_program`, from O1, while calls still say exactly which types
+they are at. Where a function of dictionaries is applied to **known** ones --
+an `impl`'s own value, or the copy of a parameterized `impl` at known ones --
+it is copied for those types and those dictionaries, and the call becomes a
+call of the copy; in the copy a method selected from a known dictionary is the
+`impl`'s method itself, a direct call the inliner can see. Copies ask for
+copies until nothing is left to ask for; the generic original stays for a
+caller that does not know its types, as it does under `specialize`. A debug
+build makes at most 16 copies of one function; a release build is bounded only
+in depth, which only polymorphic recursion reaches. `MEADOW_KEEP_DICTIONARIES=1`
+turns the pass off. On a loop that does nothing but call methods: 1.97s → 0.41s
+on the debug JIT, 5.9s → 2.0s on the interpreter, 676ms → 277ms as a release
+executable.
+
+The CEK machine runs the program as lowering wrote it, dictionaries and all,
+which is what every differential test compares the copies against.
 
 ### Effects are gone before codegen
 
@@ -1150,25 +1184,25 @@ generational collector exists to have.
 
 ## 8. Where to read next
 
-| topic                                            | file                                                             |
-| ------------------------------------------------ | ---------------------------------------------------------------- |
-| AxCut, the IR                                    | `compiler/meadow-seq/src/lib.rs`                                 |
-| lowering, evidence passing, descriptors          | `compiler/meadow-seq/src/lower.rs`, `describe.rs`                |
-| register allocation, GC maps, typed ops          | `compiler/meadow-codegen/src/lib.rs`                             |
-| the instruction set and image format             | `compiler/meadow-bytecode/src/lib.rs`, `image.rs`                |
-| specialization                                   | `compiler/meadow-core/src/specialize.rs`                         |
-| the thin instruction set                         | `rts/src/codegen/thin.rs`                                        |
-| the interpreter                                  | `rts/src/vm.rs`, `prims.rs`                                      |
-| the native ABI                                   | `rts/src/abi.rs`                                                 |
-| the code generator                               | `rts/src/codegen/mod.rs`, `a64.rs`, `x64.rs`                     |
-| object files                                     | `rts/src/codegen/object.rs`                                      |
-| the JIT                                          | `rts/src/jit.rs`                                                 |
-| AOT entry and linking                            | `rts/src/aot.rs`, `buildtools/meadow/src/aot.rs`, `rts/build.rs` |
-| heap, nursery, remembered set                    | `rts/src/heap.rs`, `object.rs`                                   |
-| old generation, marking, evacuation              | `rts/src/old.rs`, `mark.rs`, `evacuate.rs`                       |
-| regions and STM                                  | `rts/src/region.rs`, `stm.rs`                                    |
-| the scheduler                                    | `rts/src/sched.rs`                                               |
-| profiling, and the stack the machine has not got | `rts/src/profile.rs`, `buildtools/meadow/src/samples.rs`         |
-| join points                                      | `compiler/meadow-core/src/joins.rs`                              |
-| unhandled effects                                | `rts/src/native.rs`                                              |
-| what may cross threads                           | `compiler/meadow-core/src/thread.rs`, `compact.rs`, `stm.rs`     |
+| topic                                            | file                                                                                         |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| AxCut, the IR                                    | `compiler/meadow-seq/src/lib.rs`                                                             |
+| lowering, evidence passing, descriptors          | `compiler/meadow-seq/src/lower.rs`, `describe.rs`                                            |
+| register allocation, GC maps, typed ops          | `compiler/meadow-codegen/src/lib.rs`                                                         |
+| the instruction set and image format             | `compiler/meadow-bytecode/src/lib.rs`, `image.rs`; [IMAGE.md](IMAGE.md) is the format's spec |
+| specialization                                   | `compiler/meadow-core/src/specialize.rs`                                                     |
+| the thin instruction set                         | `rts/src/codegen/thin.rs`                                                                    |
+| the interpreter                                  | `rts/src/vm.rs`, `prims.rs`                                                                  |
+| the native ABI                                   | `rts/src/abi.rs`; [NATIVE.md](NATIVE.md) is the contract a code generator is written against |
+| the code generator                               | `rts/src/codegen/mod.rs`, `a64.rs`, `x64.rs`                                                 |
+| object files                                     | `rts/src/codegen/object.rs`                                                                  |
+| the JIT                                          | `rts/src/jit.rs`                                                                             |
+| AOT entry and linking                            | `rts/src/aot.rs`, `buildtools/meadow/src/aot.rs`, `rts/build.rs`                             |
+| heap, nursery, remembered set                    | `rts/src/heap.rs`, `object.rs`                                                               |
+| old generation, marking, evacuation              | `rts/src/old.rs`, `mark.rs`, `evacuate.rs`                                                   |
+| regions and STM                                  | `rts/src/region.rs`, `stm.rs`                                                                |
+| the scheduler                                    | `rts/src/sched.rs`                                                                           |
+| profiling, and the stack the machine has not got | `rts/src/profile.rs`, `buildtools/meadow/src/samples.rs`                                     |
+| join points                                      | `compiler/meadow-core/src/joins.rs`                                                          |
+| unhandled effects                                | `rts/src/native.rs`                                                                          |
+| what may cross threads                           | `compiler/meadow-core/src/thread.rs`, `compact.rs`, `stm.rs`                                 |

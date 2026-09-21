@@ -967,6 +967,194 @@ alias is given all of its arguments wherever it is used, and cannot refer to
 itself -- a recursive type is a `data`. It is as visible as any other type:
 `@pub type`, `@pub(pkg) type`, or private to its module.
 
+### `trait` and `impl` — one name, a meaning per type
+
+A **trait** says what a type has to provide; an **`impl`** provides it for one
+type. A method is then an ordinary function, and which `impl` it means is
+decided by the type it meets:
+
+```meadow
+trait Describe a {
+  fun describe : a -> String
+
+  fun shout : a -> String
+  fun shout x = describe x ++ "!"
+}
+
+impl Describe Int {
+  fun describe n = "the number " ++ show n
+}
+
+impl Describe Bool {
+  fun describe b = if b then "yes" else "no"
+  fun shout b = "BOOL"
+}
+
+impl Describe [a;] where Describe a {
+  fun describe xs =
+    match xs with
+    | [;] -> "nothing"
+    | x :: rest -> describe x ++ ", " ++ describe rest
+}
+
+def main = (describe 7, shout 7, shout True, describe [True; False])
+```
+
+```
+=> ("the number 7", "the number 7!", "BOOL", "yes, no, nothing")
+```
+
+In a trait, `fun name : T` declares a method and `fun name args = …` gives it a
+**default**, which an `impl` that leaves the method out gets. An `impl` is for
+one type constructor -- `Int`, `[a;]`, `Maybe a`, `(a, b)` -- and its `where`
+says what the type's own parameters must implement: a list can be described
+when its elements can. There is one `impl` per trait and type in a whole
+program, wherever it is written; a second is an error.
+
+A function that uses a method on a type it does not know **asks its caller**
+for the `impl`. Nobody has to say so -- it is inferred, and printed as a
+`where` -- but a [signature](#signatures) can, and then the body may use only
+what the signature asked for:
+
+```meadow
+trait Describe a {
+  fun describe : a -> String
+}
+
+impl Describe Int {
+  fun describe n = show n
+}
+
+fun pair x y = describe x ++ " and " ++ describe y
+
+fun bracket : a -> String where Describe a
+fun bracket x = "[" ++ describe x ++ "]"
+
+def main = (pair 1 2, bracket 3)
+```
+
+```
+=> ("1 and 2", "[3]")
+```
+
+`pair`'s type is `a -> b -> String where Describe a, Describe b`. A trait can
+**require** another -- `trait Ord a where Eq a { … }` -- and then an `impl Ord T`
+needs an `impl Eq T`, and a function given `Ord a` may use `Eq`'s methods too.
+
+A trait can also leave a **type** for each `impl` to choose. `type Elem f`
+declares one, an `impl` says what it is, and `Elem f` can be written wherever a
+type can, of any `f` that implements the trait:
+
+```meadow
+trait Container f {
+  type Elem f
+  fun empty : () -> f
+  fun insert : Elem f -> f -> f
+  fun toList : f -> [Elem f;]
+}
+
+record Stack a = { items : [a;] }
+
+impl Container (Stack a) {
+  type Elem (Stack a) = a
+  fun empty u = Stack { items = [;] }
+  fun insert x s = Stack { items = x :: s.items }
+  fun toList s = s.items
+}
+
+fun fromList : [Elem f;] -> f where Container f
+fun fromList xs =
+  match xs with
+  | [;] -> empty ()
+  | x :: rest -> insert x (fromList rest)
+
+fun stack : [a;] -> Stack a
+fun stack xs = fromList xs
+
+def main = toList (insert 0 (stack [1; 2; 3]))
+```
+
+```
+=> [0; 1; 2; 3]
+```
+
+`fromList` works for every container, and `stack` picks one by its result
+type. Something has to: `toList (fromList xs)` names no container at all, and
+is refused -- "cannot tell which `impl Container` is meant".
+
+A trait can be **of several types** at once, and an `impl` is then for one
+combination of them. The `impl` a call means is chosen by all of them together,
+so the result type can do the choosing:
+
+```meadow
+trait Convert a b {
+  fun convert : a -> b
+}
+
+impl Convert Int String {
+  fun convert n = "#" ++ show n
+}
+
+impl Convert Int Bool {
+  fun convert n = n != 0
+}
+
+impl Convert [a;] [b;] where Convert a b {
+  fun convert xs =
+    match xs with
+    | [;] -> [;]
+    | x :: rest -> convert x :: convert rest
+}
+
+fun labels : [Int;] -> [String;]
+fun labels xs = convert xs
+
+fun flags : [Int;] -> [Bool;]
+fun flags xs = convert xs
+
+def main = (labels [1; 2], flags [0; 3])
+```
+
+```
+=> (["#1"; "#2"], [False; True])
+```
+
+A `where` names all of them -- `where Convert a b` -- an associated type is of
+all of them (`type Out v s`), and a trait may require others of any of its
+parameters: `trait RoundTrip a b where Convert a b, Convert b a`. No type
+decides another: when one of a trait's types should follow from the rest, make
+it an associated type instead of a parameter.
+
+A trait and its methods are visible as any declaration is (`@pub trait`, and a
+`use M (Describe, describe)` elsewhere); an `impl` has no name and no
+visibility, and is found wherever its trait and its types are.
+
+**What it costs.** Nothing, where the types are known. A function with a
+`where` is compiled once, taking its `impl`s as hidden arguments, which is what
+lets it live in a package that has never heard of your types. But wherever it
+is called at types that are known -- which is everywhere, in the end, since
+`main` has no type parameters -- the compiler makes a copy of it for exactly
+those `impl`s, and in the copy `describe x` is a direct call to the one
+`describe` it can be, which a release build may inline. A loop over a trait's
+methods runs two to five times faster for it, on every backend; the CEK
+machine alone runs the uncopied program, as the specification of what the
+copies must do.
+
+What is left out, for now:
+
+- A method's type mentions the trait's parameter, its associated types,
+  concrete types and effects -- not type variables of its own. Write
+  `fun foldWith : (b -> Elem f -> b) -> b -> f -> b where Container f` as a
+  function over a method that is not generic, as `fromList` is above.
+- A trait is of types, not type constructors: there is no `Functor f`.
+- An `impl` is for a constructor applied to distinct variables in each
+  position -- `Convert Int [a;]`, not `Convert a a` or `Convert (Maybe Int) b`.
+- A trait cannot require one that has associated types.
+- Only a top-level `fun` asks its caller for an `impl`. A `def`, and a function
+  made with `let`, is used at one type per trait.
+- The operators (`+`, `==`, `<`, `show`) are the built-in ones, as before, not
+  yet methods of `Add`, `Eq`, `Ord` and `Show`.
+
 ---
 
 ## 7. Sequences: arrays, vectors and lists
@@ -3158,6 +3346,15 @@ rather than `parses` — since two modules may each have a test of that name.
 `meadow test . Parser.parses --exact` is one test and never `Parser.parsesInts`.
 In VS Code, the **▶ Test** link above a `@test` runs exactly that.
 
+Tests run **side by side**, one per core, as `cargo test`'s do. Each is a run of
+its own -- its own heaps, threads, `TVar`s and channels -- so tests share nothing
+inside the language, and are reported in the order they finish. What they can
+still collide on is what two processes can: a file of the same name, a port.
+`--test-threads 1` (or `MEADOW_TEST_THREADS=1`) runs them in order for that.
+What a test prints is kept rather than written among the others' lines, and
+shown under `---- name output ----` if the test fails; `--no-capture` writes it
+as it comes.
+
 ---
 
 ## 11. Tooling
@@ -3183,6 +3380,7 @@ In VS Code, the **▶ Test** link above a `@test` runs exactly that.
 | `meadow dis [--asm [--target <arch>]] <path>`                    | print the bytecode the VM runs, or the native code it compiles to                                                        |
 | `meadow run --cfg fast --cfg feature=gpu <path>`                 | …with flags on for `@cfg` ([conditional compilation](#conditional-compilation-cfg)); `run`, `build` and `test` take them |
 | `meadow test [<path>] [<filter>]`                                | run `@test` functions                                                                                                    |
+| `meadow test --test-threads N`, `--no-capture`                   | …`N` at a time instead of one per core; and writing what they print instead of keeping it for the failures               |
 | `meadow build -p app`, `meadow test --workspace [--exclude app]` | in a [workspace](#workspaces): the members named, or all of them; `run`, `build`, `test` and `dis` take these            |
 | `meadow init [--workspace] <path>`                               | create a package, or a workspace; a package made inside a workspace joins it                                             |
 | `meadow fmt <path>`                                              | re-indent in place                                                                                                       |
@@ -3375,6 +3573,9 @@ built on it and is worth reading as a worked example.
   record needs `p`'s type known there: give the function a signature, annotate
   `(p : Point)`, or match.
 - A signature has to be as general as it says: `fun f : a -> a` cannot add one.
+- `where`, `trait` and `impl` are keywords now, and cannot name a value.
+- A local function that uses a trait's method is used at one type: make it a
+  top-level `fun` if it has to work at two.
 - No block comments.
 - A guarded `match` arm counts for nothing in the exhaustiveness check.
 - `Std.Char`'s predicates are ASCII-only; `String` counts bytes, `Char` counts

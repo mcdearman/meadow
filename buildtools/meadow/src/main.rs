@@ -150,6 +150,15 @@ enum Cmd {
         /// Also run the standard library's own tests.
         #[arg(long)]
         std: bool,
+        /// How many tests run at once: one per core unless this, or
+        /// `MEADOW_TEST_THREADS`, says otherwise. `1` runs them in order,
+        /// for tests that share a file or a port.
+        #[arg(long, value_name = "N")]
+        test_threads: Option<usize>,
+        /// Write what tests print as they print it. By default it is kept,
+        /// and shown beside a test that fails.
+        #[arg(long, visible_alias = "nocapture")]
+        no_capture: bool,
         #[command(flatten)]
         packages: PackageArgs,
         #[command(flatten)]
@@ -637,10 +646,14 @@ fn main() {
             filter,
             exact,
             std,
+            test_threads,
+            no_capture,
             packages,
             profile,
             engine,
         }) => match test::run(&test::Options {
+            threads: test_threads.filter(|n| *n > 0),
+            no_capture,
             packages: packages.selection(),
             engine: engine.engine(profile.resolve(&path).backend),
             profile: engine.resolve(profile.resolve(&path)),

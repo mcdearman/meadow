@@ -433,34 +433,7 @@ pub fn run_tests_jit_at_watched(
         .collect()),
 
         Engine::Vm | Engine::Jit => {
-            // One extra definition per test, whose body applies it to `()`. They
-            // are compiled with everything else, so the image is built once and
-            // each test is simply a different place to start.
-            let base = program.defs.len();
-            let mut defs = program.defs.clone();
-            for (i, var) in tests.iter().enumerate() {
-                defs.push(core::Def {
-                    // Invented after compilation, so it belongs to no unit —
-                    // indexed rather than counted, so the same tests over the
-                    // same program always produce the same image.
-                    var: meadow_compiler::hir::VarId::synthetic(i as u32),
-                    name: "<test>".into(),
-                    // Whatever the test returns: what calling it has.
-                    poly: program.result_of_calling(*var),
-                    term: core::Term::App(
-                        std::sync::Arc::new(core::Term::Var(*var)),
-                        std::sync::Arc::new(core::Term::Lit(core::Lit::Unit)),
-                    ),
-                });
-            }
-            let whole = core::Program {
-                defs,
-                entry: program.entry,
-                ctor_fields: program.ctor_fields.clone(),
-                variants: program.variants.clone(),
-                origins: Default::default(),
-            };
-            let image = compile(&whole, opt)?;
+            let (image, base) = test_image(program, tests, opt)?;
             let jit = native_at(&image, engine, threshold, opt)?;
 
             Ok((0..tests.len())
@@ -486,6 +459,174 @@ pub fn run_tests_jit_at_watched(
                 .collect())
         }
     }
+}
+
+/// How a test went: its value rendered, or its failure; and what it printed,
+/// if that was kept rather than written.
+pub struct Told {
+    pub result: Result<String, String>,
+    pub output: String,
+}
+
+/// How many tests to run at once when nobody says: `MEADOW_TEST_THREADS`, or
+/// one per core -- as `cargo test` does, and `RUST_TEST_THREADS` for it.
+pub fn test_threads() -> usize {
+    std::env::var("MEADOW_TEST_THREADS")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
+/// Call each of `tests` with `()`, `threads` of them at a time, sharing one
+/// build -- and one compilation to native code, which every thread adds to.
+///
+/// Each test is a run of its own: its own main thread, its own heaps, its own
+/// `TVar`s and channels. So tests share nothing inside the language, and what
+/// they can still collide on is what any two processes can: a file of the
+/// same name, a port, the working directory. `threads = 1` is the answer to
+/// that, as it is for `cargo test`.
+///
+/// With `capture`, what a test prints is kept and handed back with its result
+/// instead of being written among the others'. `each` hears of a test as it
+/// finishes, from whichever thread ran it.
+pub fn run_tests_parallel(
+    program: &core::Program,
+    tests: &[core::Var],
+    engine: Engine,
+    opt: OptLevel,
+    threads: usize,
+    capture: bool,
+    each: &(dyn Fn(usize, &Told) + Sync),
+) -> Result<Vec<Told>, String> {
+    let threads = threads.clamp(1, tests.len().max(1));
+    if engine == Engine::Cek {
+        return Ok(
+            meadow_eval::run_tests_parallel(program, tests, threads, capture, &|i, t| {
+                each(
+                    i,
+                    &Told {
+                        result: t.result.clone(),
+                        output: t.output.clone(),
+                    },
+                )
+            })
+            .map_err(|e| e.msg)?
+            .into_iter()
+            .map(|t| Told {
+                result: t.result,
+                output: t.output,
+            })
+            .collect(),
+        );
+    }
+    let (image, base) = test_image(program, tests, opt)?;
+    let threshold = meadow_rts::jit::Native::threshold_from_env();
+    let jit = native_at(&image, engine, threshold, opt)?;
+    // A test that spawns threads gets its share of the cores, and never fewer
+    // than two workers: one that expects to run alongside another should.
+    let workers = (meadow_rts::sched::workers() / threads).max(2);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<Told>>> =
+        tests.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= tests.len() {
+                        return;
+                    }
+                    let told = match image.entries.get(base + i) {
+                        None => Told {
+                            result: Err("a test has no entry point".to_string()),
+                            output: String::new(),
+                        },
+                        Some(&entry) => {
+                            let kept = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+                            let outcome = if capture {
+                                let kept = kept.clone();
+                                meadow_rts::sched::run_captured(
+                                    &image,
+                                    jit.as_ref(),
+                                    entry,
+                                    UNBOUNDED,
+                                    workers,
+                                    std::sync::Arc::new(move |s: &str| {
+                                        kept.lock().unwrap_or_else(|p| p.into_inner()).push_str(s)
+                                    }),
+                                )
+                            } else {
+                                meadow_rts::sched::run_native(
+                                    &image,
+                                    jit.as_ref(),
+                                    entry,
+                                    UNBOUNDED,
+                                    workers,
+                                )
+                            };
+                            let output = std::mem::take(
+                                &mut *kept.lock().unwrap_or_else(|p| p.into_inner()),
+                            );
+                            Told {
+                                result: outcome.result.map_err(|e| e.msg),
+                                output,
+                            }
+                        }
+                    };
+                    each(i, &told);
+                    *slots[i].lock().unwrap_or_else(|p| p.into_inner()) = Some(told);
+                }
+            });
+        }
+    });
+    Ok(slots
+        .into_iter()
+        .map(|s| {
+            s.into_inner()
+                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(|| Told {
+                    result: Err("the test did not run".into()),
+                    output: String::new(),
+                })
+        })
+        .collect())
+}
+
+/// `program` with one extra definition per test, whose body applies it to
+/// `()`, compiled; and the entry the first of them has. They are compiled with
+/// everything else, so the image is built once and each test is simply a
+/// different place to start.
+fn test_image(
+    program: &core::Program,
+    tests: &[core::Var],
+    opt: OptLevel,
+) -> Result<(meadow_bytecode::Program, usize), String> {
+    let base = program.defs.len();
+    let mut defs = program.defs.clone();
+    for (i, var) in tests.iter().enumerate() {
+        defs.push(core::Def {
+            // Invented after compilation, so it belongs to no unit —
+            // indexed rather than counted, so the same tests over the
+            // same program always produce the same image.
+            var: meadow_compiler::hir::VarId::synthetic(i as u32),
+            name: "<test>".into(),
+            // Whatever the test returns: what calling it has.
+            poly: program.result_of_calling(*var),
+            term: core::Term::App(
+                std::sync::Arc::new(core::Term::Var(*var)),
+                std::sync::Arc::new(core::Term::Lit(core::Lit::Unit)),
+            ),
+        });
+    }
+    let whole = core::Program {
+        defs,
+        entry: program.entry,
+        ctor_fields: program.ctor_fields.clone(),
+        variants: program.variants.clone(),
+        origins: Default::default(),
+    };
+    Ok((compile(&whole, opt)?, base))
 }
 
 /// `core` → AxCut → bytecode.

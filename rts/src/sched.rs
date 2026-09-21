@@ -193,6 +193,25 @@ pub fn run_native(
     run_sampled(program, native, entry, fuel, workers, None)
 }
 
+/// Where a run's output goes instead of the process's: what `print` writes on
+/// any of its threads, a piece at a time. Shared, because every green thread
+/// of the run writes to the one place.
+pub type Sink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// [`run_native`], with what the program prints handed to `sink` rather than
+/// written out -- which is what lets many runs share a process without
+/// sharing a terminal: a test runner running tests side by side.
+pub fn run_captured(
+    program: &Program,
+    native: Option<&crate::jit::Native>,
+    entry: Pc,
+    fuel: u64,
+    workers: usize,
+    sink: Sink,
+) -> Outcome {
+    run_all(program, native, entry, fuel, workers, None, Some(sink))
+}
+
 /// [`run_native`], sampled.
 pub fn run_sampled(
     program: &Program,
@@ -201,6 +220,26 @@ pub fn run_sampled(
     fuel: u64,
     workers: usize,
     sampling: Option<Sampling>,
+) -> Outcome {
+    run_all(program, native, entry, fuel, workers, sampling, None)
+}
+
+/// A machine's output, sent to `sink`.
+fn capture(vm: &mut Vm, sink: &Option<Sink>) {
+    if let Some(sink) = sink {
+        let sink = sink.clone();
+        vm.io.output = Some(Box::new(move |s| sink(s)));
+    }
+}
+
+fn run_all(
+    program: &Program,
+    native: Option<&crate::jit::Native>,
+    entry: Pc,
+    fuel: u64,
+    workers: usize,
+    sampling: Option<Sampling>,
+    sink: Option<Sink>,
 ) -> Outcome {
     let workers = workers.max(1);
     // One clock for the run. Every machine samples on it, so a thread that is
@@ -219,6 +258,7 @@ pub fn run_sampled(
     main.vm.scheduled = true;
     main.vm.world = Some(world.clone());
     main.vm.use_native(native);
+    capture(&mut main.vm, &sink);
     if let Some(s) = sampling {
         main.vm.profile = Some(Box::new(match (&ticker, s.every) {
             (Some(t), _) => t.profile(s.depth),
@@ -247,6 +287,7 @@ pub fn run_sampled(
         sampling,
         ticker,
         profile: Mutex::new(None),
+        sink,
     };
     lock(&shared.locals[0]).push_back(main);
     // The calling thread is worker 0. The others start with the first `spawn`,
@@ -314,6 +355,8 @@ type Queue<'p> = Mutex<VecDeque<Box<Fiber<'p>>>>;
 type WaitSlot<'p> = Arc<Mutex<Option<(Box<Fiber<'p>>, Reg)>>>;
 
 struct Shared<'p> {
+    /// Where the run's output goes, if not to the process's -- see [`Sink`].
+    sink: Option<Sink>,
     program: &'p Program,
     native: Option<&'p crate::jit::Native<'p>>,
     fuel: u64,
@@ -683,6 +726,7 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                     child.vm.scheduled = true;
                     child.vm.use_native(sh.native);
                     child.vm.world = Some(sh.world.clone());
+                    capture(&mut child.vm, &sh.sink);
                     if let Some(s) = sh.sampling {
                         child.vm.profile = Some(Box::new(match (&sh.ticker, s.every) {
                             (Some(t), _) => t.profile(s.depth),

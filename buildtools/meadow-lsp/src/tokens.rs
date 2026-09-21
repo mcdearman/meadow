@@ -83,7 +83,9 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
             | Token::Effect
             | Token::Handle
             | Token::Type
-            | Token::Class
+            | Token::Trait
+            | Token::Impl
+            | Token::Where
             | Token::End
             | Token::As
             | Token::And

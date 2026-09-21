@@ -152,7 +152,13 @@ pub enum Decl {
     /// `fun name : T` / `def name : T` -- the type of a top-level binding,
     /// declared on a line of its own. Its variables are the binding's to be
     /// general in, as a Haskell signature's are.
-    Sig(Ident, LType),
+    /// With `where Show a, Ord b` after the type: the traits its variables
+    /// have to implement.
+    Sig(Ident, LType, Vec<Bound>),
+    /// `trait Show a { fun show : a -> String }`
+    Trait(TraitDecl),
+    /// `impl Show Int { fun show n = … }`
+    Impl(ImplDecl),
     /// One or more `@attr` lines in front of another declaration.
     Attributed(Vec<Attr>, Box<LDecl>),
     /// `derive! { Show for Colour }` -- a macro call standing where a
@@ -162,6 +168,45 @@ pub enum Decl {
     /// expansion and gone before name resolution: a macro is not a value, and
     /// nothing downstream has anywhere to put one.
     Macro(MacroDef),
+}
+
+/// `Show a` in a `where`: the type has to implement the trait -- or the types,
+/// together, for a trait of several: `Convert a String`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bound {
+    pub tr: Ident,
+    pub tys: Vec<LType>,
+}
+
+/// `trait Container f where Eq f { type Elem f  fun insert : Elem f -> f -> f }`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraitDecl {
+    pub name: Ident,
+    /// The types the trait is about: one, usually.
+    pub params: Vec<Ident>,
+    /// `where Eq a`: what an implementing type must implement too.
+    pub supers: Vec<Bound>,
+    /// `type Elem f`: types each implementation chooses. The name, and the
+    /// parameters it was written with, which have to be the trait's.
+    pub assocs: Vec<(Ident, Vec<Ident>)>,
+    /// `fun name : T`: what an implementation provides.
+    pub sigs: Vec<(Ident, LType)>,
+    /// `fun name args = body`: what one gets if it does not.
+    pub defaults: Vec<Bind>,
+}
+
+/// `impl Container (Set a) where Ord a { type Elem (Set a) = a  fun insert x s = … }`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplDecl {
+    pub tr: Ident,
+    /// The implementing types, one per parameter of the trait.
+    pub tys: Vec<LType>,
+    /// `where Ord a`: what the type's own parameters must implement.
+    pub context: Vec<Bound>,
+    /// `type Elem (Set a) = a`: the name, the types it was written at, and
+    /// what it is.
+    pub assocs: Vec<(Ident, Vec<LType>, LType)>,
+    pub methods: Vec<Bind>,
 }
 
 /// A `macro` declaration: a name and the rules tried in order.

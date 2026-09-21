@@ -1345,13 +1345,59 @@ impl Walk<'_> {
                 self.ty(&ad.ty);
             }
             // The name in a signature is a use of the binding it describes.
-            hir::Decl::Sig(ident, t) => {
+            hir::Decl::Sig(ident, t, bounds) => {
                 self.a.refs.push((ident.span, *ident.value()));
                 self.ty(t);
+                bounds.iter().for_each(|b| self.bound(b));
+            }
+            hir::Decl::Trait(td) => {
+                self.declare(Namespace::Type, td.name, td.name_span);
+                for (s, _) in &td.supers {
+                    self.a.name_refs.push((s.span, *s.value(), Namespace::Type));
+                }
+                for a in &td.assocs {
+                    self.declare(Namespace::Type, *a.value(), a.span);
+                }
+                for m in &td.methods {
+                    // A method is called as a value, so it is defined as one.
+                    self.bind(&m.var, m.var.id, false);
+                    self.ty(&m.ty);
+                    if let Some(hir::DefaultMethod {
+                        body: Some(body), ..
+                    }) = &m.default
+                    {
+                        self.bind_decl(body, false);
+                    }
+                }
+            }
+            hir::Decl::Impl(id) => {
+                self.a
+                    .name_refs
+                    .push((id.tr.span, *id.tr.value(), Namespace::Type));
+                id.tys.iter().for_each(|t| self.ty(t));
+                id.context.iter().for_each(|b| self.bound(b));
+                for (name, t) in &id.assocs {
+                    self.a
+                        .name_refs
+                        .push((name.span, *name.value(), Namespace::Type));
+                    self.ty(t);
+                }
+                for (_, body) in &id.methods {
+                    self.bind_decl(body, false);
+                }
             }
 
             hir::Decl::Mod(_) | hir::Decl::Use(_) | hir::Decl::Error => {}
         }
+    }
+
+    /// `Show a` in a `where`: a reference to the trait, and to what its type
+    /// mentions.
+    fn bound(&mut self, b: &hir::Bound) {
+        self.a
+            .name_refs
+            .push((b.tr.span, *b.tr.value(), Namespace::Type));
+        b.tys.iter().for_each(|t| self.ty(t));
     }
 
     /// A type or data constructor declaration.

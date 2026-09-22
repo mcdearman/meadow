@@ -88,23 +88,23 @@ fn a_function_asks_for_what_its_body_needs() {
     // Nobody wrote a signature: the `where` is inferred, and printed.
     let schemes = common::schemes_std(&format!(
         "{DESCRIBE}fun both x y = describe x ++ \" & \" ++ describe y\n\
-         fun loud : a -> String where Describe a\n\
+         fun loud : Describe a => a -> String\n\
          fun loud x = twice x ++ \"!\"\n"
     ));
     assert!(
-        schemes.contains("both : forall a b. a -> b -> String where Describe a, Describe b"),
+        schemes.contains("both : forall a b. (Describe a, Describe b) => a -> b -> String"),
         "{schemes}"
     );
     assert!(
-        schemes.contains("loud : forall a. a -> String where Describe a"),
+        schemes.contains("loud : forall a. Describe a => a -> String"),
         "{schemes}"
     );
     is(
         &format!(
             "{DESCRIBE}fun both x y = describe x ++ \" & \" ++ describe y\n\
-             fun loud : a -> String where Describe a\n\
+             fun loud : Describe a => a -> String\n\
              fun loud x = twice x ++ \"!\"\n\
-             fun nested : a -> String where Describe a\n\
+             fun nested : Describe a => a -> String\n\
              fun nested x = describe [(x, x); (x, x)]\n\
              def main = (both True [False;], loud [True;], nested 1)\n"
         ),
@@ -129,7 +129,7 @@ fn mutual_recursion_passes_its_dictionaries_along() {
 #[test]
 fn a_trait_can_require_another() {
     let src = "trait Same a { fun same : a -> a -> Bool }\n\
-        trait Ranked a where Same a { fun before : a -> a -> Bool }\n\
+        trait Ranked a <: Same a { fun before : a -> a -> Bool }\n\
         impl Same Int { fun same x y = x == y }\n\
         impl Ranked Int { fun before x y = x < y }\n\
         impl Same [a;] where Same a {\n\
@@ -144,14 +144,14 @@ fn a_trait_can_require_another() {
         \x20   | ([;], _) -> True\n\
         \x20   | (x :: a, y :: b) -> before x y or (same x y and before a b)\n\
         }\n\
-        fun atMost : a -> a -> Bool where Ranked a\n\
+        fun atMost : Ranked a => a -> a -> Bool\n\
         fun atMost x y = before x y or same x y\n\
         def main = (atMost 1 1, atMost 2 1, atMost [1; 2] [1; 3], atMost [2;] [1; 9])\n";
     is(src, "(True, False, True, False)");
     // An `impl` of the one needs an `impl` of the other.
     let out = errors(
         "trait Same a { fun same : a -> a -> Bool }\n\
-         trait Ranked a where Same a { fun before : a -> a -> Bool }\n\
+         trait Ranked a <: Same a { fun before : a -> a -> Bool }\n\
          impl Ranked Int { fun before x y = x < y }\n\
          def main = before 1 2\n",
     );
@@ -180,7 +180,7 @@ fn an_associated_type_is_the_impls_to_choose() {
         \x20 fun insert x b = Bits { word = b.word * 2 + (if x then 1 else 0) }\n\
         \x20 fun toList b = if b.word <= 1 then [;] else (b.word % 2 == 1) :: toList (Bits { word = b.word / 2 })\n\
         }\n\
-        fun fromList : [Elem f;] -> f where Container f\n\
+        fun fromList : Container f => [Elem f;] -> f\n\
         fun fromList xs = match xs with\n\
         \x20 | [;] -> empty ()\n\
         \x20 | x :: rest -> insert x (fromList rest)\n\
@@ -391,19 +391,19 @@ fn a_trait_can_be_of_several_types() {
         }\n\
         trait Same a { fun same : a -> a -> Bool }\n\
         impl Same Int { fun same x y = x == y }\n\
-        trait RoundTrip a b where Convert a b, Convert b a, Same a {\n\
+        trait RoundTrip a b <: Convert a b, Convert b a, Same a {\n\
         \x20 fun stable : a -> b -> Bool\n\
         }\n\
         impl RoundTrip Int Bool { fun stable n witness = same (there (back n witness)) n }\n\
-        fun back : a -> b -> b where Convert a b\n\
+        fun back : Convert a b => a -> b -> b\n\
         fun back x witness = convert x\n\
-        fun there : b -> a where Convert b a\n\
+        fun there : Convert b a => b -> a\n\
         fun there y = convert y\n\
         fun strings : [Int;] -> [String;]\n\
         fun strings xs = convert xs\n\
-        fun both : a -> (b, c) where Convert a b, Convert a c\n\
+        fun both : (Convert a b, Convert a c) => a -> (b, c)\n\
         fun both x = (convert x, convert x)\n\
-        fun viaRound : a -> b -> Bool where RoundTrip a b\n\
+        fun viaRound : RoundTrip a b => a -> b -> Bool\n\
         fun viaRound x w = stable x w and same x x\n\
         fun pairOf : Int -> (String, Bool)\n\
         fun pairOf n = both n\n\
@@ -441,7 +441,7 @@ fn a_trait_can_be_of_several_types() {
 fn known_dictionaries_are_specialized_away() {
     use meadow_compiler::core;
     let src = format!(
-        "{DESCRIBE}fun loud : a -> String where Describe a\n\
+        "{DESCRIBE}fun loud : Describe a => a -> String\n\
          fun loud x = twice x ++ \"!\"\n\
          fun all xs = match xs with | [;] -> \"\" | x :: rest -> loud x ++ all rest\n\
          def main = (all [1; 2], all [[True;]; [False;]], loud (1, [2;]))\n"
@@ -481,4 +481,84 @@ fn known_dictionaries_are_specialized_away() {
             "the generic originals are unreachable"
         );
     }
+}
+
+// --- inherited associated types -------------------------------------------------
+
+const STREAM: &str = r#"trait Stream s {
+  type Token s
+  fun take1 : s -> Int -> Maybe (Token s, Int)
+}
+
+impl Stream String {
+  type Token String = Char
+  fun take1 s i = if i < stringByteLength s then Just (charFromCode (toInt (stringByteAt s i)), i + 1) else None
+}
+
+impl Stream [t] {
+  type Token [t] = t
+  fun take1 v i = match get v i with | Just x -> Just (x, i + 1) | None -> None
+}
+
+trait Visual s <: Stream s {
+  fun showToken : s -> Token s -> String
+  fun showToken _ t = "<" ++ show t ++ ">"
+}
+
+impl Visual String {}
+
+impl Visual [t] where Display t {
+  fun showToken _ t = "[${t}]"
+}
+"#;
+
+#[test]
+fn a_trait_requiring_one_with_associated_types_can_use_them() {
+    // `Visual`'s method mentions `Stream`'s `Token s`, and a function given
+    // `Visual s` reaches `Stream`'s methods with the same `Token s`.
+    let src = format!(
+        "{STREAM}
+fun first : Visual s => s -> String
+fun first s = match take1 s 0 with | Just (t, _) -> showToken s t | None -> \"empty\"
+
+fun inferred s = match take1 s 1 with | Just (t, _) -> showToken s t | None -> \"empty\"
+
+def main = (first \"xyz\", first [5, 6], inferred \"ab\", inferred [7, 8])
+"
+    );
+    assert_eq!(
+        common::eval_main_std(&src),
+        r#"("<'x'>", "[5]", "<'b'>", "[8]")"#
+    );
+    assert_eq!(
+        common::cek_main_std(&src),
+        r#"("<'x'>", "[5]", "<'b'>", "[8]")"#
+    );
+}
+
+#[test]
+fn a_point_free_function_takes_the_dictionaries_its_type_needs() {
+    // `fun f = e` at the top level is a function of its dictionaries, as a
+    // Haskell binding with a context is -- not a value made once.
+    let src = format!(
+        "{STREAM}
+fun second : Stream s => s -> Maybe (Token s, Int)
+fun second = \\s -> take1 s 1
+
+def main = (second \"ab\", second [1, 2])
+"
+    );
+    assert_eq!(
+        common::eval_main_std(&src),
+        "(Just(('b', 2)), Just((2, 2)))"
+    );
+}
+
+#[test]
+fn a_point_free_function_still_may_not_perform_effects() {
+    let errs = common::errors_std_with(
+        "fun loud = let _ = println \"x\" in 1\ndef main = loud\n",
+        meadow::Options::debug(),
+    );
+    assert!(errs.contains("cannot perform effects"), "{errs}");
 }

@@ -40,6 +40,9 @@ pub const PACKAGE_NAME: &str = "Std";
 pub const MODULES: &[(&str, &str)] = &[
     ("Lib", include_str!("../../../lib/Std/src/Lib.mw")),
     // First, and dependency-free, so every module below can hold `@test`s.
+    ("Ops", include_str!("../../../lib/Std/src/Ops.mw")),
+    ("Display", include_str!("../../../lib/Std/src/Display.mw")),
+    ("Debug", include_str!("../../../lib/Std/src/Debug.mw")),
     ("Test", include_str!("../../../lib/Std/src/Test.mw")),
     ("Bool", include_str!("../../../lib/Std/src/Bool.mw")),
     ("Ref", include_str!("../../../lib/Std/src/Ref.mw")),
@@ -49,6 +52,9 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Num", include_str!("../../../lib/Std/src/Num.mw")),
     ("Num.Int", include_str!("../../../lib/Std/src/Num/Int.mw")),
     ("Maybe", include_str!("../../../lib/Std/src/Maybe.mw")),
+    // After the types its methods answer with; everything below compares
+    // with it.
+    ("Cmp", include_str!("../../../lib/Std/src/Cmp.mw")),
     ("Char", include_str!("../../../lib/Std/src/Char.mw")),
     ("Result", include_str!("../../../lib/Std/src/Result.mw")),
     ("Num.Bits", include_str!("../../../lib/Std/src/Num/Bits.mw")),
@@ -102,6 +108,14 @@ pub const MODULES: &[(&str, &str)] = &[
     (
         "String.Parse",
         include_str!("../../../lib/Std/src/String/Parse.mw"),
+    ),
+    (
+        "String.Parse.Char",
+        include_str!("../../../lib/Std/src/String/Parse/Char.mw"),
+    ),
+    (
+        "String.Parse.Lexer",
+        include_str!("../../../lib/Std/src/String/Parse/Lexer.mw"),
     ),
     ("Path", include_str!("../../../lib/Std/src/Path.mw")),
     ("Json", include_str!("../../../lib/Std/src/Json.mw")),
@@ -293,8 +307,21 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
         // A sibling reaches this module only via `use`, never flat.
         cp.prelude_exports = Some(Vec::new());
         // Tag exports with the module path so `use Std.a.b (x)` from outside works.
+        let flat = cp.exports.clone();
         for e in &mut cp.exports {
             e.module = path.clone();
+        }
+        // Except the operators and `display`, which every later module has
+        // unqualified, and so -- being at the root in the bundle -- does every
+        // dependent.
+        if matches!(*dotted, "Ops" | "Display" | "Debug" | "Cmp") {
+            cp.prelude_exports = Some(flat.iter().map(|e| e.name).collect());
+            // At the root, which is what a flat import takes: a trait's
+            // methods are there already, and its functions have to be put.
+            cp.exports.extend(flat.into_iter().map(|mut e| {
+                e.module = Vec::new();
+                e
+            }));
         }
         subs.push((dotted, cp));
     }
@@ -326,8 +353,11 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut embedded: Vec<(String, u64)> = Vec::new();
     // The macros of every module, which in the bundle are the library's.
     let mut macros = Vec::new();
+    // Every sub-unit's, each of which has its predecessors' too.
+    let mut fixities = Vec::new();
 
     for sub in subs {
+        fixities.extend(sub.fixities.iter().copied());
         embedded.extend(sub.embedded.iter().cloned());
         macros.extend(sub.macros.iter().cloned());
         flat_ctors.extend(sub.flat_ctors.iter().copied());
@@ -349,6 +379,8 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
 
     flat_ctors.sort_by_key(|n| n.to_string());
     flat_ctors.dedup();
+    fixities.sort_by_key(|(op, _)| op.to_string());
+    fixities.dedup();
 
     CompiledPackage {
         id: 0,
@@ -360,6 +392,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         ident: name,
         macros,
         embedded,
+        fixities,
         // A library has no entry point, and `Std` least of all.
         entry: None,
         modules,

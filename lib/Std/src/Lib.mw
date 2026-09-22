@@ -3,6 +3,9 @@
 -- Each `mod` below is a child module. Nothing here is in scope for a child
 -- automatically -- a module reaches another only through an explicit `use`.
 
+@pub mod Ops
+@pub mod Display
+@pub mod Debug
 @pub mod Test
 @pub mod Bool
 @pub mod Ref
@@ -11,6 +14,7 @@
 @pub mod Tuple
 @pub mod Num
 @pub mod Maybe
+@pub mod Cmp
 @pub mod Char
 @pub mod Result
 @pub mod Bytes

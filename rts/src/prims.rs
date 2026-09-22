@@ -986,6 +986,27 @@ impl Vm<'_> {
                 Value::Unit
             }
 
+            // --- tail recursion modulo cons ------------------------------------
+            //
+            // The cell was made with a placeholder in field `i` a moment ago, and
+            // nothing but this chain of calls has seen it. It may have been
+            // promoted since, which is what `set_field`'s barriers are for.
+            SetField => {
+                let i = self.index(arg(self, 1))?;
+                match arg(self, 0).addr() {
+                    Some(a) if self.heap.kind(a) == Kind::Data && i < self.heap.len(a) => {
+                        self.heap.set_field(a, i, arg(self, 2));
+                        Value::Unit
+                    }
+                    _ => {
+                        return err(format!(
+                            "setField: expected a constructor with a field {i}, got {}",
+                            self.show(arg(self, 0))
+                        ));
+                    }
+                }
+            }
+
             // --- software transactional memory --------------------------------
             StmNew => {
                 self.world()?;

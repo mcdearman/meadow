@@ -169,6 +169,7 @@ fn decl(d: &mut ast::LDecl) {
         }
         ast::Decl::Attributed(_, inner) => decl(inner),
         ast::Decl::Mod(n) => unmark(n),
+        ast::Decl::Fixity(_, _, ops) => ops.iter_mut().for_each(unmark),
         // Gone by the time this runs.
         ast::Decl::MacCall(_) | ast::Decl::Macro(_) => {}
     }
@@ -349,7 +350,11 @@ fn expr(e: &mut ast::LExpr) {
             expr(l);
             expr(r);
         }
-        ast::Expr::Interp(_, holes) => holes.iter_mut().for_each(expr),
+        ast::Expr::Infix(first, rest) => {
+            expr(first);
+            rest.iter_mut().for_each(|(_, x)| expr(x));
+        }
+        ast::Expr::Interp(_, holes) => holes.iter_mut().for_each(|(x, _)| expr(x)),
         ast::Expr::Tuple(xs)
         | ast::Expr::Array(xs)
         | ast::Expr::List(xs)

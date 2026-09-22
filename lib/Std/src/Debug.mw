@@ -1,0 +1,96 @@
+-- A value as text, for programmers: what `"${x:?}"` renders.
+--
+-- `Debug` writes a value the way it would be written in source -- a `String`
+-- in quotes with its escapes, a `Char` in single quotes, a constructor with its
+-- fields -- so that two values that print alike are alike. Every primitive
+-- type has an `impl` here, and a type of your own gets one with
+-- `@derive(Debug)`, which renders a constructor and its fields -- `Just("x")`
+-- -- each field by its own `Debug`.
+--
+-- `Display` is the other rendering, for people: a `String` as itself.
+
+@pub trait Debug a {
+  fun debug : a -> String
+}
+
+impl Debug Int {
+  fun debug x = show x
+}
+
+impl Debug BigInt {
+  fun debug x = show x
+}
+
+impl Debug Int8 {
+  fun debug x = show x
+}
+
+impl Debug Int16 {
+  fun debug x = show x
+}
+
+impl Debug Int32 {
+  fun debug x = show x
+}
+
+impl Debug UInt8 {
+  fun debug x = show x
+}
+
+impl Debug UInt16 {
+  fun debug x = show x
+}
+
+impl Debug UInt32 {
+  fun debug x = show x
+}
+
+impl Debug UInt64 {
+  fun debug x = show x
+}
+
+impl Debug Float {
+  fun debug x = show x
+}
+
+impl Debug Float32 {
+  fun debug x = show x
+}
+
+impl Debug String {
+  fun debug s = show s
+}
+
+impl Debug Char {
+  fun debug c = show c
+}
+
+impl Debug () {
+  fun debug u = "()"
+}
+
+impl Debug (a, b) where Debug a, Debug b {
+  fun debug p = match p with | (x, y) -> concatStrings #["(", debug x, ", ", debug y, ")"]
+}
+
+impl Debug (a, b, c) where Debug a, Debug b, Debug c {
+  fun debug p =
+    match p with
+    | (x, y, z) -> concatStrings #["(", debug x, ", ", debug y, ", ", debug z, ")"]
+}
+
+impl Debug (a, b, c, d) where Debug a, Debug b, Debug c, Debug d {
+  fun debug p =
+    match p with
+    | (w, x, y, z) -> concatStrings #["(", debug w, ", ", debug x, ", ", debug y, ", ", debug z, ")"]
+}
+
+fun elements xs i acc =
+  if i >= arrayLen xs then acc
+  else
+    let sep = if i == 0 then "" else ", " in
+    elements xs (i + 1) (concatStrings #[acc, sep, debug (arrayGet xs i)])
+
+impl Debug #[a] where Debug a {
+  fun debug xs = concatStrings #["#[", elements xs 0 "", "]"]
+}

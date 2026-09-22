@@ -107,6 +107,9 @@ pub struct CompiledPackage {
     /// Inputs to the build that its own sources do not mention: without them a
     /// cached build would be reused after an embedded file had changed.
     pub embedded: Vec<(String, u64)>,
+    /// How the operators this package or its dependencies declared bind:
+    /// `infixr 5 ++`. Global by spelling, so every dependent takes them all.
+    pub fixities: Vec<(InternedString, hir::Fixity)>,
     /// This package's `main`, if its root module declares one.
     ///
     /// An entry point is not an export: nothing links against `main`, the
@@ -474,6 +477,16 @@ fn compile_unit_inner(
     // belongs to one module at a time.
     resolver.seal_base_scope();
 
+    for dep in deps {
+        for (op, fixity) in &dep.fixities {
+            resolver.import_fixity(*op, *fixity);
+        }
+    }
+    for m in &modules {
+        resolver.set_filename(module_filename(&filename, m.source));
+        resolver.declare_fixities(&m.ast.value().decls);
+    }
+
     // Declare first, all modules, so that a `use` can name a sibling and so
     // that mutual recursion across modules keeps working — the package is one
     // compilation unit, and only the *namespaces* are per module.
@@ -809,6 +822,7 @@ fn compile_unit_inner(
             ident,
             macros,
             embedded: resolver.embedded().to_vec(),
+            fixities: resolver.fixities(),
             entry,
             modules: typed,
             types: table,

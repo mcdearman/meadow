@@ -108,7 +108,10 @@ fn mutation_inside_run_st_leaves_a_pure_type() {
                \x20   let rec go i = if i > n then () else let _ = stSetRef total (stGetRef total + i) in go (i + 1) in\n\
                \x20   let _ = go 1 in\n\
                \x20   stGetRef total)\n";
-    assert_eq!(scheme_of(src, "sumTo"), "forall n. n -> n");
+    assert_eq!(
+        scheme_of(src, "sumTo"),
+        "forall n. (PartialOrd n, Add n) => n -> n"
+    );
     assert_eq!(both(&format!("{src}def main = sumTo 100\n")), "5050");
 }
 

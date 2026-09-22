@@ -21,12 +21,12 @@ fn everywhere(src: &str) -> String {
 }
 
 #[test]
-fn a_hole_renders_any_value_and_a_string_without_quotes() {
+fn a_hole_renders_by_display_and_by_debug_after_a_colon_question_mark() {
     assert_eq!(
         everywhere(
-            r#"def main = "${"text"} ${[1, 2]} ${Just 'x'} ${1.5} ${()} ${{ a = 1 }} ${show "q"}""#
+            r#"def main = "${"text"} ${[1, 2]} ${Just 'x'} ${Just 'x':?} ${1.5} ${()} ${show { a = 1 }} ${show "q"} ${"q":?}""#
         ),
-        r#""text [1, 2] Just('x') 1.5 () { a = 1 } \"q\"""#
+        r#""text [1, 2] Just(x) Just('x') 1.5 () { a = 1 } \"q\" \"q\"""#
     );
 }
 

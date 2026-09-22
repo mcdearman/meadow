@@ -1,5 +1,5 @@
 ---
-source: tests/parser.rs
+source: meadow/tests/parser.rs
 expression: "parse_ast(\"def xs = 1 :: 2 :: Nil\\nfun uncons l = match l with | x :: rest -> x | Nil -> 0\\n\")"
 ---
 Module {
@@ -18,49 +18,46 @@ Module {
                         span: 4..6,
                     },
                     Located {
-                        value: Cons(
+                        value: Infix(
                             Located {
-                                value: InternedString(Cons),
-                                span: 9..22,
+                                value: Lit(
+                                    Int(
+                                        1,
+                                    ),
+                                ),
+                                span: 9..10,
                             },
                             [
-                                Located {
-                                    value: Lit(
-                                        Int(
-                                            1,
+                                (
+                                    Located {
+                                        value: InternedString(::),
+                                        span: 11..13,
+                                    },
+                                    Located {
+                                        value: Lit(
+                                            Int(
+                                                2,
+                                            ),
                                         ),
-                                    ),
-                                    span: 9..10,
-                                },
-                                Located {
-                                    value: Cons(
-                                        Located {
-                                            value: InternedString(Cons),
-                                            span: 14..22,
-                                        },
-                                        [
+                                        span: 14..15,
+                                    },
+                                ),
+                                (
+                                    Located {
+                                        value: InternedString(::),
+                                        span: 16..18,
+                                    },
+                                    Located {
+                                        value: Cons(
                                             Located {
-                                                value: Lit(
-                                                    Int(
-                                                        2,
-                                                    ),
-                                                ),
-                                                span: 14..15,
-                                            },
-                                            Located {
-                                                value: Cons(
-                                                    Located {
-                                                        value: InternedString(Nil),
-                                                        span: 19..22,
-                                                    },
-                                                    [],
-                                                ),
+                                                value: InternedString(Nil),
                                                 span: 19..22,
                                             },
-                                        ],
-                                    ),
-                                    span: 14..22,
-                                },
+                                            [],
+                                        ),
+                                        span: 19..22,
+                                    },
+                                ),
                             ],
                         ),
                         span: 9..22,

@@ -1,151 +1,389 @@
--- Std.String.Parse: parser combinators over a `Vector`, after Haskell's
--- megaparsec.
---
--- A parser reads a `Vector t` of tokens -- characters, lexemes, bytes, whatever
--- you have -- and either produces a value or a `PError` saying where it gave up
--- and what it wanted instead. The input is never re-sliced as it is consumed:
--- it is passed along whole beside an offset, since a `Vector` indexes and slices
--- cheaply and the input itself never changes.
---
--- Nothing here is string-specific: the token type is whatever you put in the
--- `Vector`. It lives under `String` because parsing text is the common case, and
--- `fromString` is the bridge.
+-- Std.String.Parse: parser combinators, after Haskell's megaparsec.
 --
 --   use Std.String.Parse as P
+--   use Std.String.Parse.Char as C
 --
---   def digit = P.satisfy (\c -> c >= 48 and c <= 57)
---   def number = P.takeWhile1P "a digit" (\c -> c >= 48 and c <= 57)
---   def main = P.runParser (P.thenSkip number P.eof) (P.fromString "123")
+--   fun number = P.takeWhile1P "a digit" Std.Char.isDigit
+--   def main = P.runParser (P.thenSkip number P.eof) "123"
 --
--- The idea worth understanding is **consumed input**. Every parser reports
--- whether it advanced the offset, and `alt` only tries its right branch when the
--- left one failed *without* consuming. That is what keeps an error pointed at
--- the real problem rather than at the last alternative tried, and it is why a
--- parser that needs to backtrack over input it already ate has to say so. Given
+-- A parser reads a **stream** -- a `String`, a `Vector` of tokens, or any type
+-- with an `impl Stream` -- and either produces a value or a `ParseError` saying
+-- where it gave up, what it found there, and what it wanted instead.
 --
---   def lz = skipThen (single 108) (single 122)   -- an `l` then a `z`
+-- # Streams
+--
+-- Three traits describe what a parser can do with its input, as in megaparsec:
+--
+-- * `Stream` is enough to parse: take a token, take a run of them. Its
+--   associated type `Token s` is what one token is -- a `Char` of a `String`,
+--   a `t` of a `[t]`.
+-- * `VisualStream` is enough to *say* what went wrong: how tokens read in a
+--   message. `@derive(VisualStream)` writes it for a stream whose tokens are
+--   `Display`: each reads as it displays.
+-- * `TraversableStream` is enough to say *where*: it turns offsets into the
+--   stream into a span of the source. For a `String` those are the same
+--   offsets. For a stream of tokens a lexer made, each token knows the span of
+--   text it came from, and the `impl` says so -- which is how an error in a
+--   token stream points back at the source.
+--
+-- Positions are offsets, always. Lines and columns are for whoever shows the
+-- error to a person to work out, from the source and a span.
+--
+-- A **chunk** of a stream -- a run of its tokens -- is a stream of the same
+-- type: a `String` of a `String`, a `[t]` of a `[t]`. That is what `chunk`
+-- matches, what `takeWhileP` answers, and what an error holds of the input.
+--
+-- A stream is never re-sliced as it is consumed. A parser is handed the whole
+-- input and an **offset** into it, whose meaning is the stream's own: a byte
+-- offset into a `String`, an index into a `Vector`. Offsets only ever go up.
+--
+-- # Consumed input
+--
+-- Every parser reports whether it advanced the offset, and `alt` only tries its
+-- right branch when the left one failed *without* consuming. That is what keeps
+-- an error pointed at the real problem rather than at the last alternative
+-- tried, and it is why a parser that needs to backtrack over input it already
+-- ate has to say so with `try`. Given
+--
+--   fun lz = P.skipThen (C.char 'l') (C.char 'z')
 --
 -- then on the input "let":
 --
---   alt lz (single 108)         fails at offset 1 -- `lz` ate the `l`, so `alt`
---                                                    is committed to it
---   alt (try lz) (single 108)   succeeds          -- `try` un-consumes on failure
+--   P.alt lz (C.char 'l')           fails at offset 1 -- `lz` ate the `l`
+--   P.alt (P.try lz) (C.char 'l')   succeeds          -- `try` un-consumes
 --
--- `chunk` is *atomic*, as in megaparsec and unlike parsec: a partial match
--- consumes nothing, so alternatives with a shared prefix need no `try`.
+-- `chunk` is *atomic*, as in megaparsec: a partial match consumes nothing, so
+-- alternatives with a shared prefix need no `try`.
 --
---   alt (chunk (fromString "letter")) (chunk (fromString "let"))
+-- # Hints
 --
--- succeeds on "lets".
+-- A parser that succeeds without having taken all it could -- `many digit`
+-- stopping at a letter, `optional sign` finding none -- leaves **hints**: what
+-- it would also have taken there. If the next parser fails at that same
+-- offset without consuming, the hints join what it wanted, so that
+-- `P.thenSkip (P.many digit) P.eof` on "12x" says it expected a digit or the
+-- end of input, not only the end.
 --
--- Note on ordering: every definition here precedes its first use, because a
--- forward reference between top-level bindings currently loses all type
--- information (see the compiler's `Expr::Var` inference).
+-- # Submodules
+--
+-- * `Std.String.Parse.Char` -- parsers of `Char` streams: `char`, `string`,
+--   `space`, `digitChar`, `eol`, …
+-- * `Std.String.Parse.Lexer` -- lexemes over them: a space consumer with line
+--   and block comments, `symbol`, `decimal`, `hexadecimal`, `float`, `signed`,
+--   `charLiteral`, and indentation: `indentBlock`, `lineFold`.
+
+@pub mod Char
+@pub mod Lexer
 
 use Std.Collections.Vector as V (vecFromArray, fromArray)
 use Std.Bool (not)
 use Std.String as S
-use Std.Tuple (pair)
+use Std.Tuple (pair, fst, snd)
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
 
 -- ---------------------------------------------------------------------------
--- Types
+-- Streams
 -- ---------------------------------------------------------------------------
 
--- What went wrong, and where.
---
--- `expected` holds labels rather than tokens: a token is of whatever type the
--- caller chose, and there is no way to render one generically. Index the input
--- at `offset` to see what was actually sitting there.
-@pub record PError = {
-  @pub offset : Int,
-  @pub expected : Vector String,
-  @pub atEnd : Bool,
+-- What a parser reads. Every method takes the input and an offset into it.
+@pub trait Stream s {
+  -- What one token is.
+  type Token s
+
+  -- The token at `off`, and the offset after it; `None` at the end.
+  fun take1 : s -> Int -> Maybe (Token s, Int)
+
+  -- The next `n` tokens from `off` as a chunk, and the offset after them;
+  -- `None` if fewer than `n` are left.
+  fun takeN : s -> Int -> Int -> Maybe (s, Int)
+
+  -- The longest run of tokens from `off` that satisfy the test, possibly
+  -- empty, and the offset after it.
+  fun takeWhile : s -> (Token s -> Bool) -> Int -> (s, Int)
+
+  -- A chunk of one token, or of several.
+  fun tokenToChunk : Token s -> s
+  fun tokensToChunk : [Token s] -> s
+
+  -- A chunk's tokens, and how many there are.
+  fun chunkToTokens : s -> [Token s]
+  fun chunkLength : s -> Int
+
+  fun chunkEmpty : s -> Bool
+  fun chunkEmpty c = chunkLength c == 0
 }
 
--- The outcome of one parser: a value and the offset reached, or an error. The
--- leading `Bool` is "did this consume input?", which is the whole basis of the
--- backtracking rules.
+-- How a stream's tokens read in an error message.
 --
--- Its constructors are always written `Reply.Ok` / `Reply.Err` here: this file
--- also uses `Result`'s `Ok` and `Err`, and the bare spelling means those.
-@pub data Reply a
-  = Ok Bool a Int
-  | Err Bool PError
+-- `@derive(VisualStream)` writes it for a stream whose tokens are `Display`:
+-- `showToken` is `display`.
+@pub trait VisualStream s <: Stream s {
+  -- One token, as a message names it: `'x'`, `newline`, `an identifier`.
+  fun showToken : s -> Token s -> String
 
--- A parser is a function from the input and a position to a `Reply`.
-use Parser.*
-@pub data Parser t a = Parser (Vector t -> Int -> Reply a)
+  -- Several, as a message names them: by default, each as `showToken` says,
+  -- with spaces between.
+  fun showTokens : s -> [Token s] -> String
+  fun showTokens input ts = S.join " " (V.map (showToken input) ts)
+}
 
--- Apply a parser -- the one place the wrapper is opened.
-@pub fun runP (Parser f) input off = f input off
+-- A span of the source: from an offset up to, not including, another.
+@pub type Span = (Int, Int)
 
--- The bytes of `s`, as parser input. `stringToBytes` hands back an `Array`,
--- while a parser reads a `Vector`.
-@pub fun fromString s = V.fromArray (stringToBytes s)
+-- Where a stream's tokens came from, as a span of the source they were read
+-- out of: what an error needs to point at its cause.
+@pub trait TraversableStream s <: Stream s {
+  -- The source span of the stream's tokens from offset `from` up to `to`.
+  -- For an empty run -- the end of the input, or nothing at all -- a span
+  -- with `from` and `to` the same place.
+  fun sourceSpan : s -> Int -> Int -> Span
+}
+
+-- --- a String is a stream of Chars ----------------------------------------
+
+fun byteAt s i = toInt (stringByteAt s i)
+
+fun contAt s i = bitAnd (byteAt s i) 63
+
+-- The character whose UTF-8 encoding starts at byte `i`, and the byte after
+-- it. A byte that does not start a whole character reads as U+FFFD.
+fun decodeAt s i =
+  let n = stringByteLength s in
+  let b = byteAt s i in
+  if b < 128 then (charFromCode b, i + 1)
+  else if b >= 192 and b < 224 and i + 1 < n then
+    (charFromCode ((bitAnd b 31 << 6) + contAt s (i + 1)), i + 2)
+  else if b >= 224 and b < 240 and i + 2 < n then
+    (charFromCode ((bitAnd b 15 << 12) + (contAt s (i + 1) << 6) + contAt s (i + 2)), i + 3)
+  else if b >= 240 and i + 3 < n then
+    let high = (bitAnd b 7 << 18) + (contAt s (i + 1) << 12) in
+    (charFromCode (high + (contAt s (i + 2) << 6) + contAt s (i + 3)), i + 4)
+  else (charFromCode 65533, i + 1)
+
+fun stringWhile s f i =
+  if i >= stringByteLength s then i
+  else
+    match decodeAt s i with
+    | (c, j) -> if f c then stringWhile s f j else i
+
+fun stringSkip s n i =
+  if n <= 0 then Just i
+  else if i >= stringByteLength s then None
+  else
+    match decodeAt s i with
+    | (_, j) -> stringSkip s (n - 1) j
+
+impl Stream String {
+  type Token String = Char
+
+  fun take1 s off =
+    if off >= stringByteLength s then None else Just (decodeAt s off)
+
+  fun takeN s n off =
+    match stringSkip s n off with
+    | None -> None
+    | Just stop -> Just (stringSlice s off stop, stop)
+
+  fun takeWhile s f off =
+    let stop = stringWhile s f off in
+    (stringSlice s off stop, stop)
+
+  fun tokenToChunk c = charsToString #[c]
+
+  fun tokensToChunk cs = charsToString (V.toArray cs)
+
+  fun chunkToTokens s = V.fromArray (stringToChars s)
+
+  fun chunkLength s = S.charLength s
+
+  fun chunkEmpty s = stringByteLength s == 0
+}
+
+-- As megaparsec shows a `Char` stream: a character that is hard to see by
+-- name, one character in single quotes, several in double quotes.
+impl VisualStream String {
+  fun showToken _ c =
+    let n = charCode c in
+    if n == 10 then "newline"
+    else if n == 13 then "carriage return"
+    else if n == 9 then "tab"
+    else if n == 32 then "space"
+    else if n == 0 then "null"
+    else debug c
+
+  fun showTokens input cs =
+    if V.len cs == 1 then showToken input (V.getOr ' ' cs 0)
+    else debug (charsToString (V.toArray cs))
+}
+
+-- A `String`'s offsets are its source's.
+impl TraversableStream String {
+  fun sourceSpan _ from to = (from, to)
+}
+
+-- --- a Vector is a stream of whatever it holds ------------------------------
+
+fun vectorWhile v f i =
+  match V.get v i with
+  | Just x -> if f x then vectorWhile v f (i + 1) else i
+  | None -> i
+
+impl Stream [t] {
+  type Token [t] = t
+
+  fun take1 v off =
+    match V.get v off with
+    | Just x -> Just (x, off + 1)
+    | None -> None
+
+  fun takeN v n off =
+    if off + n > V.len v then None else Just (V.slice v off (off + n), off + n)
+
+  fun takeWhile v f off =
+    let stop = vectorWhile v f off in
+    (V.slice v off stop, stop)
+
+  fun tokenToChunk x = [x]
+
+  fun tokensToChunk xs = xs
+
+  fun chunkToTokens v = v
+
+  fun chunkLength v = V.len v
+}
+
+-- Each token as it displays -- what `@derive(VisualStream)` would write.
+impl VisualStream [t] where Display t {
+  fun showToken _ t = display t
+}
+
+-- A plain vector of tokens knows nothing of where they came from: its spans
+-- are of its own indices. A lexer's tokens that carry their source spans are
+-- a stream type of their own, whose `impl` reads them.
+impl TraversableStream [t] {
+  fun sourceSpan _ from to = (from, to)
+}
 
 -- ---------------------------------------------------------------------------
 -- Errors
 -- ---------------------------------------------------------------------------
 
-@pub fun errOffset (PError { offset = o }) = o
+-- One thing that was, or was wanted, at an offset: a run of the input's
+-- tokens, a description, or the end.
+use ErrorItem.*
+@derive(Debug, Display, PartialEq, Eq)
+@pub data ErrorItem s
+  = Tokens s
+  | Label String
+  | EndOfInput
 
-@pub fun errExpected (PError { expected = e }) = e
+-- What went wrong, and at which offset.
+--
+-- A `Trivial` error is what a token-level parser says: what it found, if it
+-- found anything, and what it would have taken instead. A `Fancy` one is a
+-- message of the program's own -- `fail "no such keyword"`.
+use ParseError.*
+@derive(Debug, Display, PartialEq, Eq)
+@pub data ParseError s
+  = Trivial Int (Maybe (ErrorItem s)) [ErrorItem s]
+  | Fancy Int [String]
 
-@pub fun errAtEnd (PError { atEnd = e }) = e
+@pub fun errorOffset e =
+  match e with
+  | Trivial o _ _ -> o
+  | Fancy o _ -> o
 
-fun errAt off what = PError { offset = off, expected = [what], atEnd = False }
-
-fun errEnd off what = PError { offset = off, expected = [what], atEnd = True }
-
-fun errNone off = PError { offset = off, expected = [], atEnd = False }
+fun orElse a b =
+  match a with
+  | Just _ -> a
+  | None -> b
 
 -- Combine two failures. The one that got further along wins outright -- it is
--- the more informative message; at the same offset the wish-lists are unioned.
+-- the more informative message; at the same offset the two are unioned, and a
+-- message of the program's own wins over a list of wishes.
 @pub fun mergeError a b =
-  if errOffset a > errOffset b then a
-  else if errOffset b > errOffset a then b
+  let oa = errorOffset a in
+  let ob = errorOffset b in
+  if oa > ob then a
+  else if ob > oa then b
   else
-    PError {
-      offset = errOffset a,
-      expected = V.append (errExpected a) (errExpected b),
-      atEnd = errAtEnd a or errAtEnd b,
-    }
+    match (a, b) with
+    | (Trivial o u1 e1, Trivial _ u2 e2) -> Trivial o (orElse u1 u2) (V.append e1 e2)
+    | (Fancy o m1, Fancy _ m2) -> Fancy o (V.append m1 m2)
+    | (Fancy _ _, _) -> a
+    | (_, Fancy _ _) -> b
+
+-- What an error at `off` says it wanted: hints for whatever comes next.
+fun hintsOf off e =
+  match e with
+  | Trivial o _ xs -> if o == off then xs else []
+  | Fancy _ _ -> []
+
+-- An error at `off` that consumed nothing, told what the parser before it
+-- would also have taken there.
+fun withHints off hints e =
+  if V.isEmpty hints then e
+  else
+    match e with
+    | Trivial o u xs -> if o == off then Trivial o u (V.append xs hints) else e
+    | Fancy _ _ -> e
 
 -- ---------------------------------------------------------------------------
--- Building blocks
+-- Parsers
 -- ---------------------------------------------------------------------------
+
+-- The outcome of one parser. The leading `Bool` is "did this consume input?",
+-- which is the whole basis of the backtracking rules. A success carries the
+-- value, the offset reached, and its hints: what it would also have taken at
+-- that offset.
+use Reply.*
+@derive(Debug, Display, PartialEq, Eq)
+@pub data Reply s a
+  = Done Bool a Int [ErrorItem s]
+  | Failed Bool (ParseError s)
+
+-- A parser: from the input and an offset, to a `Reply`.
+use Parser.*
+@pub data Parser s a = Parser (s -> Int -> Reply s a)
+
+-- Apply a parser -- the one place the wrapper is opened.
+@pub fun runP (Parser f) input off = f input off
 
 -- Succeed with `x`, consuming nothing.
-@pub fun pure x = Parser (\input off -> Reply.Ok False x off)
+@pub fun pure x = Parser (\input off -> Done False x off [])
 
--- Fail without consuming, having wanted `what`.
-@pub fun fail what = Parser (\input off -> Reply.Err False (errAt off what))
+-- Fail with a message of your own, consuming nothing.
+@pub fun fail message = Parser (\input off -> Failed False (Fancy off [message]))
 
--- Fail without consuming and without an opinion about what was wanted. The
+-- Fail without consuming, without an opinion about what was wanted: the
 -- identity of `choice`.
-@pub def empty = Parser (\input off -> Reply.Err False (errNone off))
+@pub def empty = Parser (\input off -> Failed False (Trivial off None []))
 
 -- Apply `f` to whatever `p` produces.
 @pub fun map f p =
   Parser (\input off ->
     match runP p input off with
-    | Reply.Ok c a off2 -> Reply.Ok c (f a) off2
-    | Reply.Err c e -> Reply.Err c e)
+    | Done c a off2 hs -> Done c (f a) off2 hs
+    | Failed c e -> Failed c e)
+
+-- What the second half of a `bind` answers, given the first half's.
+fun andThen c off2 hs reply =
+  match reply with
+  | Done c2 b off3 hs2 -> Done (c or c2) b off3 (if c2 then hs2 else V.append hs hs2)
+  | Failed c2 e -> Failed (c or c2) (if c2 then e else withHints off2 hs e)
 
 -- Run `p`, then the parser `f` builds from its result.
 --
 -- Consumption is the union of the two halves, which is what lets `alt` see
--- through a whole `bind` chain rather than just its first step.
+-- through a whole `bind` chain rather than just its first step; and what the
+-- first half hinted joins what the second wanted, if it fails where the first
+-- stopped.
 @pub fun bind p f =
   Parser (\input off ->
     match runP p input off with
-    | Reply.Err c e -> Reply.Err c e
-    | Reply.Ok c a off2 ->
-        (match runP (f a) input off2 with
-         | Reply.Ok c2 b off3 -> Reply.Ok (c or c2) b off3
-         | Reply.Err c2 e -> Reply.Err (c or c2) e))
+    | Failed c e -> Failed c e
+    | Done c a off2 hs -> andThen c off2 hs (runP (f a) input off2))
 
 -- `p` then `q`, keeping `q`'s value.
 @pub fun skipThen p q = bind p (\ignored -> q)
@@ -159,6 +397,23 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 -- Run both, combining their results with `f`.
 @pub fun lift2 f p q = bind p (\a -> map (\b -> f a b) q)
 
+-- Run all three, combining their results with `f`.
+@pub fun lift3 f p q r = bind p (\a -> bind q (\b -> map (\c -> f a b c) r))
+
+-- `p`'s value replaced by `x`.
+@pub fun mapTo x p = map (\ignored -> x) p
+
+-- `p` for its effect alone.
+@pub fun void p = map (\ignored -> ()) p
+
+-- Build the parser only when it is run.
+--
+-- Definitions are evaluated eagerly, so a grammar that refers to itself would
+-- loop while being defined. Break the cycle by wrapping the recursive use:
+--
+--   fun expr () = P.alt (P.lift2 add term (P.skipThen plus (P.defer expr))) term
+@pub fun defer f = Parser (\input off -> runP (f ()) input off)
+
 -- ---------------------------------------------------------------------------
 -- Running
 -- ---------------------------------------------------------------------------
@@ -169,14 +424,22 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 -- when a trailing remainder should be an error.
 @pub fun runParser p input =
   match runP p input 0 with
-  | Reply.Ok c a off -> Ok a
-  | Reply.Err c e -> Err e
+  | Done _ a _ _ -> Ok a
+  | Failed _ e -> Err e
 
--- As `runParser`, but also reports the offset where parsing stopped.
+-- As `runParser`, but also giving the offset where parsing stopped.
 @pub fun runParserPartial p input =
   match runP p input 0 with
-  | Reply.Ok c a off -> Ok (pair a off)
-  | Reply.Err c e -> Err e
+  | Done _ a off _ -> Ok (pair a off)
+  | Failed _ e -> Err e
+
+-- Run `p` over `input`, giving `Ok value`, or the span of the source the error
+-- is about and what went wrong there, as lines of text.
+fun parse : (VisualStream s, TraversableStream s) => Parser s a -> s -> Result ((Int, Int), String) a
+@pub fun parse p input =
+  match runParser p input with
+  | Ok a -> Ok a
+  | Err e -> Err (pair (errorSpan input e) (parseErrorTextPretty e))
 
 -- ---------------------------------------------------------------------------
 -- Choice and backtracking
@@ -189,11 +452,12 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 @pub fun alt p q =
   Parser (\input off ->
     match runP p input off with
-    | Reply.Ok _ _ _ as ok -> ok
-    | Reply.Err True _ as committed -> committed
-    | Reply.Err False e ->
+    | Done _ _ _ _ as ok -> ok
+    | Failed True _ as committed -> committed
+    | Failed False e ->
         (match runP q input off with
-         | Reply.Err False e2 -> Reply.Err False (mergeError e e2)
+         | Failed False e2 -> Failed False (mergeError e e2)
+         | Done False b off2 hs -> Done False b off2 (V.append (hintsOf off e) hs)
          | other -> other))
 
 -- The first of `ps` that succeeds.
@@ -204,124 +468,175 @@ fun errNone off = PError { offset = off, expected = [], atEnd = False }
 @pub fun try p =
   Parser (\input off ->
     match runP p input off with
-    | Reply.Ok _ _ _ as ok -> ok
-    | Reply.Err _ e -> Reply.Err False e)
+    | Done _ _ _ _ as ok -> ok
+    | Failed _ e -> Failed False e)
 
--- Run `p` for its result but rewind the position either way.
+-- Run `p` for its result, but rewind the position either way.
 @pub fun lookAhead p =
   Parser (\input off ->
     match runP p input off with
-    | Reply.Ok _ a _ -> Reply.Ok False a off
+    | Done _ a _ _ -> Done False a off []
     | failed -> failed)
 
+fun found input off =
+  match take1 input off with
+  | Just (t, _) -> Tokens (tokenToChunk t)
+  | None -> EndOfInput
+
 -- Succeed only if `p` does *not* match here. Consumes nothing.
+fun notFollowedBy : Stream s => Parser s a -> Parser s ()
 @pub fun notFollowedBy p =
   Parser (\input off ->
     match runP p input off with
-    | Reply.Ok c a off2 -> Reply.Err False (errAt off "no match here")
-    | Reply.Err c e -> Reply.Ok False () off)
+    | Done _ _ _ _ -> Failed False (Trivial off (Just (found input off)) [])
+    | Failed _ _ -> Done False () off [])
 
 -- Replace what `p` says it wanted, for errors raised before it consumed
--- anything. The way to turn "a different token" into "an identifier".
+-- anything, and what it hints: the way to turn "'x' or 'y' or …" into "an
+-- identifier".
 @pub fun label what p =
   Parser (\input off ->
     match runP p input off with
-    | Reply.Err False e ->
-        Reply.Err False (PError { offset = errOffset e, expected = [what], atEnd = errAtEnd e })
+    | Failed False (Trivial o u _) if o == off -> Failed False (Trivial o u [Label what])
+    | Done False a off2 hs -> Done False a off2 (if V.isEmpty hs then hs else [Label what])
+    | other -> other)
+
+-- `p`, saying nothing about what it wanted when it fails or what it would
+-- have taken when it succeeds: for white space and other things an error
+-- message is better without.
+@pub fun hidden p =
+  Parser (\input off ->
+    match runP p input off with
+    | Failed False (Trivial o u _) if o == off -> Failed False (Trivial o u [])
+    | Done c a off2 _ -> Done c a off2 []
     | other -> other)
 
 -- `Just` what `p` produced, or `None` if it failed without consuming.
 @pub fun optional p = alt (map Just p) (pure None)
 
--- Build the parser only when it is run.
---
--- Definitions are evaluated eagerly, so a grammar that refers to itself would
--- loop while being defined. Break the cycle by wrapping the recursive use:
---
---   fun expr () = alt (lift2 add term (skipThen plus (defer expr))) term
---
-@pub fun defer f = Parser (\input off -> runP (f ()) input off)
+-- What `p` produced, or `x` if it failed without consuming.
+@pub fun option x p = alt p (pure x)
+
+-- `p`'s error as a value rather than a failure, when it fails without
+-- consuming. A failure that consumed input is still one.
+@pub fun observing p =
+  Parser (\input off ->
+    match runP p input off with
+    | Done c a off2 hs -> Done c (Ok a) off2 hs
+    | Failed False e -> Done False (Err e) off []
+    | Failed True e -> Failed True e)
 
 -- ---------------------------------------------------------------------------
 -- Tokens
 -- ---------------------------------------------------------------------------
 
--- Any single token; fails only at the end of input.
-@pub def anySingle =
+-- The next token, if `f` makes something of it. `expected` is what to say was
+-- wanted when it does not.
+fun token : Stream s => (Token s -> Maybe a) -> [ErrorItem s] -> Parser s a
+@pub fun token f expected =
   Parser (\input off ->
-    match V.get input off with
-    | None -> Reply.Err False (errEnd off "any token")
-    | Just x -> Reply.Ok True x (off + 1))
+    match take1 input off with
+    | None -> Failed False (Trivial off (Just EndOfInput) expected)
+    | Just (t, next) ->
+        (match f t with
+         | Just a -> Done True a next []
+         | None -> Failed False (Trivial off (Just (Tokens (tokenToChunk t))) expected)))
+
+-- Any single token; fails only at the end of input.
+fun anySingle : Stream s => Parser s (Token s)
+@pub fun anySingle = token (\t -> Just t) []
 
 -- A token satisfying `f`.
-@pub fun satisfy f =
-  Parser (\input off ->
-    match V.get input off with
-    | None -> Reply.Err False (errEnd off "any token")
-    | Just x ->
-        if f x then Reply.Ok True x (off + 1)
-        else Reply.Err False (errAt off "a different token"))
+fun satisfy : Stream s => (Token s -> Bool) -> Parser s (Token s)
+@pub fun satisfy f = token (\t -> if f t then Just t else None) []
 
 -- Exactly this token.
-@pub fun single x = satisfy (\y -> y == x)
+fun single : (Stream s, PartialEq (Token s)) => Token s -> Parser s (Token s)
+@pub fun single x = token (\t -> if t == x then Just t else None) [Tokens (tokenToChunk x)]
 
 -- Any token except this one.
-@pub fun notSingle x = satisfy (\y -> not (y == x))
+fun anySingleBut : (Stream s, PartialEq (Token s)) => Token s -> Parser s (Token s)
+@pub fun anySingleBut x = satisfy (\t -> not (t == x))
 
 -- Any one of `xs`.
-@pub fun oneOf xs = satisfy (\y -> V.elem y xs)
+fun oneOf : (Stream s, PartialEq (Token s)) => [Token s] -> Parser s (Token s)
+@pub fun oneOf xs = satisfy (\t -> V.elem t xs)
 
 -- Any token not in `xs`.
-@pub fun noneOf xs = satisfy (\y -> V.notElem y xs)
+fun noneOf : (Stream s, PartialEq (Token s)) => [Token s] -> Parser s (Token s)
+@pub fun noneOf xs = satisfy (\t -> V.notElem t xs)
+
+fun rest input off = fst (takeWhile input (\t -> True) off)
 
 -- Exactly this run of tokens, or nothing consumed.
+fun chunk : (Stream s, PartialEq s) => s -> Parser s s
 @pub fun chunk want =
   Parser (\input off ->
-    let n = V.len want in
-    if off + n > V.len input then Reply.Err False (errEnd off "a longer input")
-    else
-      let got = V.slice input off (off + n) in
-      if got == want then Reply.Ok (n > 0) got (off + n)
-      else Reply.Err False (errAt off "a specific sequence"))
+    match takeN input (chunkLength want) off with
+    | Just (got, next) ->
+        if got == want then Done (next > off) got next []
+        else Failed False (Trivial off (Just (Tokens got)) [Tokens want])
+    | None ->
+        let left = rest input off in
+        let unexpected = if chunkEmpty left then EndOfInput else Tokens left in
+        Failed False (Trivial off (Just unexpected) [Tokens want]))
 
 -- The end of the input.
-@pub def eof =
+fun eof : Stream s => Parser s ()
+@pub fun eof =
   Parser (\input off ->
-    if off >= V.len input then Reply.Ok False () off
-    else Reply.Err False (errAt off "end of input"))
-
-fun spanFrom f input off i =
-  match V.get input i with
-  | None -> Reply.Ok (i > off) (V.slice input off i) i
-  | Just x ->
-      if f x then spanFrom f input off (i + 1)
-      else Reply.Ok (i > off) (V.slice input off i) i
+    match take1 input off with
+    | None -> Done False () off []
+    | Just (t, _) -> Failed False (Trivial off (Just (Tokens (tokenToChunk t))) [EndOfInput]))
 
 -- The longest run of tokens satisfying `f`, possibly empty. Never fails.
 --
--- Prefer this to `many (satisfy f)`: it slices the input once rather than
--- accumulating a token at a time.
-@pub fun takeWhileP f = Parser (\input off -> spanFrom f input off off)
+-- Prefer this to `many (satisfy f)`: it takes the run as one chunk rather
+-- than accumulating a token at a time.
+fun takeWhileP : Stream s => (Token s -> Bool) -> Parser s s
+@pub fun takeWhileP f =
+  Parser (\input off ->
+    match takeWhile input f off with
+    | (got, next) -> Done (next > off) got next [])
 
 -- As `takeWhileP`, but demanding at least one token, described by `what`.
+-- What follows the run is hinted to have been `what` as well.
+fun takeWhile1P : Stream s => String -> (Token s -> Bool) -> Parser s s
 @pub fun takeWhile1P what f =
   Parser (\input off ->
-    match runP (takeWhileP f) input off with
-    | Reply.Ok _ v off2 if not (V.isEmpty v) -> Reply.Ok True v off2
-    | Reply.Ok _ _ _ -> Reply.Err False (errAt off what)
-    | failed -> failed)
+    match takeWhile input f off with
+    | (got, next) ->
+        if next > off then Done True got next [Label what]
+        else Failed False (Trivial off (Just (found input off)) [Label what]))
+
+-- Exactly `n` tokens, described by `what`.
+fun takeP : Stream s => String -> Int -> Parser s s
+@pub fun takeP what n =
+  Parser (\input off ->
+    match takeN input n off with
+    | Just (got, next) -> Done (next > off) got next []
+    | None -> Failed False (Trivial off (Just EndOfInput) [Label what]))
 
 -- ---------------------------------------------------------------------------
 -- Position
 -- ---------------------------------------------------------------------------
 
-@pub def getOffset = Parser (\input off -> Reply.Ok False off off)
+-- The offset reached.
+@pub def getOffset = Parser (\input off -> Done False off off [])
 
-@pub def getInput = Parser (\input off -> Reply.Ok False input off)
+-- The whole input: offsets are into this.
+@pub def getInput = Parser (\input off -> Done False input off [])
 
--- `p`'s result, with the offsets either side of it.
-@pub fun withSpan p =
+-- `p`'s result, with the stream offsets either side of it.
+@pub fun withOffsets p =
   bind getOffset (\from -> bind p (\a -> map (\to -> (a, from, to)) getOffset))
+
+-- `p`'s result, with the span of the source it read: what a syntax tree's
+-- nodes want to carry.
+fun withSpan : TraversableStream s => Parser s a -> Parser s (a, (Int, Int))
+@pub fun withSpan p =
+  bind getInput (\input ->
+    map (\t -> match t with | (a, from, to) -> (a, sourceSpan input from to)) (withOffsets p))
 
 -- ---------------------------------------------------------------------------
 -- Repetition
@@ -329,12 +644,13 @@ fun spanFrom f input off i =
 
 fun manyLoop p input acc off consumed =
   match runP p input off with
-  | Reply.Err True e -> Reply.Err True e
-  | Reply.Err False _ -> Reply.Ok consumed acc off
-  | Reply.Ok True a off2 -> manyLoop p input (V.pushBack acc a) off2 True
-  | Reply.Ok False _ _ -> Reply.Err consumed (errAt off "a parser that consumes input")
+  | Failed True e -> Failed True e
+  | Failed False e -> Done consumed acc off (hintsOf off e)
+  | Done True a off2 _ -> manyLoop p input (V.pushBack acc a) off2 True
+  | Done False _ _ _ -> Failed consumed (Fancy off ["a repeated parser that consumes nothing"])
 
--- Zero or more of `p`, stopping at the first failure that consumed nothing.
+-- Zero or more of `p`, stopping at the first failure that consumed nothing --
+-- whose wishes it hints.
 --
 -- A `p` that can succeed without consuming would spin forever, so that is
 -- reported as an error rather than hung on.
@@ -344,10 +660,10 @@ fun manyLoop p input acc off consumed =
 @pub fun some p = lift2 (\x xs -> V.pushFront xs x) p (many p)
 
 -- `many`, discarding the results.
-@pub fun skipMany p = map (\xs -> ()) (many p)
+@pub fun skipMany p = void (many p)
 
 -- `some`, discarding the results.
-@pub fun skipSome p = map (\xs -> ()) (some p)
+@pub fun skipSome p = void (some p)
 
 fun countLoop n p acc =
   if n <= 0 then pure acc else bind p (\x -> countLoop (n - 1) p (V.pushBack acc x))
@@ -375,26 +691,165 @@ fun countLoop n p acc =
 
 fun tillLoop p stop input acc off consumed =
   match runP stop input off with
-  | Reply.Ok c _ off2 -> Reply.Ok (consumed or c) acc off2
-  | Reply.Err True e -> Reply.Err True e
-  | Reply.Err False _ ->
+  | Done c _ off2 hs -> Done (consumed or c) acc off2 hs
+  | Failed True e -> Failed True e
+  | Failed False e1 ->
       (match runP p input off with
-       | Reply.Err c2 e2 -> Reply.Err (consumed or c2) e2
-       | Reply.Ok True a off2 -> tillLoop p stop input (V.pushBack acc a) off2 True
-       | Reply.Ok False _ _ -> Reply.Err consumed (errAt off "a parser that consumes input"))
+       | Failed c2 e2 -> Failed (consumed or c2) (mergeError e1 e2)
+       | Done True a off2 _ -> tillLoop p stop input (V.pushBack acc a) off2 True
+       | Done False _ _ _ ->
+           Failed consumed (Fancy off ["a repeated parser that consumes nothing"]))
 
 -- `p` repeatedly until `stop` matches. The `stop` result is discarded.
 @pub fun manyTill p stop =
   Parser (\input off -> tillLoop p stop input V.empty off False)
 
+fun restL p op acc =
+  alt (bind op (\f -> bind p (\y -> restL p op (f acc y)))) (pure acc)
+
+-- `x`, then as many `op y` as follow, combined from the left:
+-- `chainl1 term (P.mapTo sub (C.char '-'))` reads `1-2-3` as `(1-2)-3`.
+@pub fun chainl1 p op = bind p (\x -> restL p op x)
+
+-- `x`, then as many `op y` as follow, combined from the right.
+@pub fun chainr1 p op =
+  bind p (\x -> alt (bind op (\f -> map (\y -> f x y) (chainr1 p op))) (pure x))
+
 -- ---------------------------------------------------------------------------
 -- Rendering an error
 -- ---------------------------------------------------------------------------
 
--- A one-line description: where it stopped, and what it wanted there.
+-- An item as a message names it. A chunk of tokens stands for its own stream.
+fun showItem : VisualStream s => ErrorItem s -> String
+@pub fun showItem item =
+  match item with
+  | Tokens c -> showTokens c (chunkToTokens c)
+  | Label l -> l
+  | EndOfInput -> "end of input"
+
+fun dedupe xs = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) V.empty xs
+
+-- `a`, `a or b`, `a, b, or c`.
+fun orList xs =
+  let n = V.len xs in
+  if n == 0 then ""
+  else if n == 1 then V.getOr "" xs 0
+  else if n == 2 then S.concatAll [V.getOr "" xs 0, " or ", V.getOr "" xs 1]
+  else S.concatAll [S.join ", " (V.take xs (n - 1)), ", or ", V.getOr "" xs (n - 1)]
+
+-- What went wrong, as lines of text: `unexpected 'x'` and `expecting …`, or
+-- the program's own messages.
+fun parseErrorTextPretty : VisualStream s => ParseError s -> String
+@pub fun parseErrorTextPretty e =
+  match e with
+  | Fancy _ messages -> S.concat (S.join "\n" (dedupe messages)) "\n"
+  | Trivial _ unexpected expected ->
+      let u =
+        match unexpected with
+        | Just item -> S.concatAll ["unexpected ", showItem item, "\n"]
+        | None -> ""
+      in
+      let wants = dedupe (V.map showItem expected) in
+      let x = if V.isEmpty wants then "" else S.concatAll ["expecting ", orList wants, "\n"] in
+      let text = S.concat u x in
+      if S.isEmpty text then "unknown parse error\n" else text
+
+-- A one-line description: the offset, and what went wrong there.
+fun showError : VisualStream s => ParseError s -> String
 @pub fun showError e =
-  let place = S.concat "at offset " (S.fromInt (errOffset e)) in
-  let note = if errAtEnd e then " (end of input)" else "" in
-  let want = errExpected e in
-  if V.isEmpty want then S.concat place note
-  else S.concatAll [place, note, ", expected ", S.join " or " want]
+  S.concatAll [
+    "at offset ",
+    S.fromInt (errorOffset e),
+    ": ",
+    S.join "; " (S.lines (S.trimEnd (parseErrorTextPretty e))),
+  ]
+
+-- The span of the source an error is about: the tokens it found there, or
+-- the place it stopped if it found none.
+fun errorSpan : TraversableStream s => s -> ParseError s -> (Int, Int)
+@pub fun errorSpan input e =
+  let off = errorOffset e in
+  let width =
+    match e with
+    | Trivial _ (Just (Tokens c)) _ -> chunkLength c
+    | _ -> 0
+  in
+  let stop =
+    match takeN input width off with
+    | Just (_, next) -> next
+    | None -> off
+  in
+  sourceSpan input off stop
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Result (isOk)
+use Std.Char (isDigit, isAlpha)
+
+fun errorOf r =
+  match r with
+  | Ok _ -> "no error"
+  | Err e -> S.trimEnd (parseErrorTextPretty e)
+
+@test fun aStringIsAStreamOfChars () =
+  let a = assertEq (take1 "héllo" 1) (Just ('é', 3)) "a two-byte character" in
+  let b = assertEq (takeN "héllo" 2 0) (Just ("hé", 3)) "two characters, three bytes" in
+  let c = assertEq (takeWhile "abc123" isAlpha 0) ("abc", 3) "a run" in
+  assertEq (take1 "" 0) None "the end"
+
+@test fun aVectorIsAStreamOfItsElements () =
+  let a = assertEq (take1 [10, 20] 1) (Just (20, 2)) "an element" in
+  assertEq (takeWhile [1, 2, 9, 3] (\x -> x < 5) 0) ([1, 2], 2) "a run"
+
+@test fun basicsParse () =
+  let a = assertEq (runParser (single 'a') "abc") (Ok 'a') "single" in
+  let b = assertEq (runParser (chunk "ab") "abc") (Ok "ab") "chunk" in
+  let c = assertEq (runParser (takeWhile1P "a digit" isDigit) "123x") (Ok "123") "takeWhile1P" in
+  assertEq (runParser (many (single 'a')) "aab") (Ok ['a', 'a']) "many"
+
+@test fun errorsSayWhatWasFoundAndWanted () =
+  let a = assertEq (errorOf (runParser (single 'a') "b")) "unexpected 'b'\nexpecting 'a'" "a token" in
+  let b = assertEq (errorOf (runParser (chunk "let") "lex")) "unexpected \"lex\"\nexpecting \"let\"" "a chunk" in
+  let c = assertEq (errorOf (runParser (single 'a') "")) "unexpected end of input\nexpecting 'a'" "the end" in
+  let alts = alt (single 'a') (single 'b') in
+  let d = assertEq (errorOf (runParser alts "c")) "unexpected 'c'\nexpecting 'a' or 'b'" "alternatives" in
+  assertEq (errorOf (runParser (single 'a') "\n")) "unexpected newline\nexpecting 'a'" "a newline by name"
+
+@test fun aLabelReplacesTheWishList () =
+  let p = label "a letter" (satisfy isAlpha) in
+  assertEq (errorOf (runParser p "1")) "unexpected '1'\nexpecting a letter" "labelled"
+
+@test fun consumingCommits () =
+  let lz = skipThen (single 'l') (single 'z') in
+  let a = assertFalse (isOk (runParser (alt lz (single 'l')) "let")) "committed" in
+  let b = assertEq (runParser (alt (try lz) (single 'l')) "let") (Ok 'l') "try un-consumes" in
+  assertEq (runParser (alt (chunk "letter") (chunk "let")) "lets") (Ok "let") "chunk is atomic"
+
+@test fun hintsJoinWhatTheNextParserWanted () =
+  let digit = label "a digit" (satisfy isDigit) in
+  let many1 = runParser (thenSkip (many digit) eof) "12x" in
+  let a = assertEq (errorOf many1) "unexpected 'x'\nexpecting end of input or a digit" "after many" in
+  let sign = optional (single '-') in
+  let opt = runParser (skipThen sign digit) "x" in
+  let b = assertEq (errorOf opt) "unexpected 'x'\nexpecting a digit or '-'" "after optional" in
+  let run = runParser (thenSkip (takeWhile1P "a digit" isDigit) eof) "12x" in
+  assertEq (errorOf run) "unexpected 'x'\nexpecting end of input or a digit" "after takeWhile1P"
+
+@test fun anErrorHasASpanOfTheSource () =
+  let p = skipThen (chunk "let x = ") (chunk "1") in
+  match parse p "let x = y" with
+  | Ok _ -> assertTrue False "it should fail"
+  | Err (at, text) ->
+      let a = assertEq at (8, 9) "the span of what was found" in
+      assertEq text "unexpected 'y'\nexpecting '1'\n" "and what went wrong"
+
+@test fun aVectorOfTokensParsesToo () =
+  let a = assertEq (runParser (many (single 1)) [1, 1, 2]) (Ok [1, 1]) "many" in
+  assertEq (errorOf (runParser (single 1) [2])) "unexpected 2\nexpecting 1" "shown by display"
+
+@test fun chainsAssociate () =
+  let digit = map (\c -> charCode c - 48) (satisfy isDigit) in
+  let minus = mapTo (\a b -> a - b) (single '-') in
+  let a = assertEq (runParser (chainl1 digit minus) "9-2-3") (Ok 4) "left" in
+  assertEq (runParser (chainr1 digit minus) "9-2-3") (Ok 10) "right"

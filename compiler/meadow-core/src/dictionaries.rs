@@ -43,8 +43,19 @@
 //!
 //! The generic original stays, as it does under [`crate::specialize`]: it is
 //! what a caller that does not know its types still calls.
+//!
+//! # Primitives, back again
+//!
+//! `Std.Ops` defines the operators as methods -- `impl Add Int { fun (+) a b =
+//! _primAdd a b }` -- so a method selected from a known dictionary is, for an
+//! operator, a function whose whole body is a primitive of its parameters. A
+//! call of one is that primitive of its arguments, rewritten here, so that `x +
+//! y` at `Int` is the same `AddI` it was before `+` was a method. And an `impl`
+//! for every type, `impl Eq a`, is a dictionary with type parameters but no
+//! dictionary parameters: at known types it is copied like a function is, and
+//! the copy is known.
 
-use crate::inline::{Body, Fresh, freshen, retype};
+use crate::inline::{Body, Fresh, freshen_mapped, retype};
 use crate::*;
 use std::collections::HashSet;
 
@@ -82,6 +93,8 @@ pub fn program(p: &Program, opt: OptLevel) -> Program {
         traits,
         functions: HashMap::new(),
         known: HashMap::new(),
+        generic: HashMap::new(),
+        wrappers: HashMap::new(),
         labels: p.ctor_fields.clone(),
         copies: HashMap::new(),
         per_function: HashMap::new(),
@@ -94,10 +107,17 @@ pub fn program(p: &Program, opt: OptLevel) -> Program {
     for d in &p.defs {
         if let Some(f) = s.function(d) {
             s.functions.insert(d.var, f);
-        } else if let Some(found) = s.dictionary(&d.term)
-            && d.poly.binders.is_empty()
+        } else if let Some(found) = s.dictionary(&d.term) {
+            if d.poly.binders.is_empty() {
+                s.known.insert(d.var, found);
+            }
+        } else if let Term::TyLam(_, inner) = d.term.peel()
+            && s.dictionary(inner).is_some()
         {
-            s.known.insert(d.var, found);
+            s.generic.insert(d.var, d.clone());
+        }
+        if let Some(w) = wrapper(d) {
+            s.wrappers.insert(d.var, w);
         }
     }
     if s.functions.is_empty() {
@@ -144,6 +164,11 @@ struct Spec {
     /// The known dictionaries: each one's constructor, and its fields as they
     /// were written.
     known: HashMap<Var, (InternedString, Vec<Term>)>,
+    /// The dictionaries with type parameters and nothing else: `impl Eq a`'s.
+    generic: HashMap<Var, Def>,
+    /// The definitions that are a primitive of their parameters, and nothing
+    /// else: the operators' methods.
+    wrappers: HashMap<Var, Body>,
     /// A dictionary constructor's fields' labels, in order.
     labels: HashMap<InternedString, Vec<InternedString>>,
     /// The copy made of a function at some types and dictionaries.
@@ -168,6 +193,42 @@ fn spine(t: &Term) -> (&Term, Vec<&Arc<Term>>) {
     (cur, args)
 }
 
+/// `d`, if it is an operator's primitive of its parameters, in order, and
+/// nothing else: `fun (+) a b = _primAdd a b`, which is `\a b -> Prim(Add, [a,
+/// b])`. Only an operator's: another primitive -- `spawn`'s, say -- may be one
+/// that later passes expect to find where lowering put it.
+fn wrapper(d: &Def) -> Option<Body> {
+    let mut t = d.term.peel();
+    let mut binders = Vec::new();
+    if let Term::TyLam(bs, inner) = t {
+        binders = bs.clone();
+        t = inner.peel();
+    }
+    let mut params = Vec::new();
+    while let Term::Lam(v, ty, inner) = t {
+        params.push((*v, ty.clone()));
+        t = inner.peel();
+    }
+    let Term::Prim(p, args, _) = t else {
+        return None;
+    };
+    if !p.is_operator() && !matches!(p, Prim::Display | Prim::Show) {
+        return None;
+    }
+    let exact = !params.is_empty()
+        && args.len() == params.len()
+        && args
+            .iter()
+            .zip(&params)
+            .all(|(a, (p, _))| matches!(a.peel(), Term::Var(v) if v == p));
+    exact.then(|| Body {
+        binders,
+        params,
+        term: t.clone(),
+        original: None,
+    })
+}
+
 /// Does a type mention a variable? A copy is made at types that do not: its
 /// caller's own type parameters are not known until *it* is copied.
 ///
@@ -186,6 +247,18 @@ fn open(ty: &Ty) -> bool {
 }
 
 impl Spec {
+    /// A copy of `body` under names of its own, each noted as a copy of the
+    /// variable it was -- or of what that was a copy of -- so that a debugger
+    /// shows a copy's locals by the names they were written with.
+    fn freshen(&mut self, body: &Body) -> Body {
+        let (copy, map) = freshen_mapped(body, &mut self.fresh);
+        for (old, new) in map {
+            let root = self.origins.get(&old).copied().unwrap_or(old);
+            self.origins.insert(new, root);
+        }
+        copy
+    }
+
     fn is_dictionary_type(&self, ty: &Ty) -> bool {
         matches!(ty, InferType::Con(name, _) if self.traits.contains(name))
     }
@@ -239,12 +312,97 @@ impl Spec {
         }
     }
 
-    /// The known dictionary `t` names.
-    fn known_dictionary(&self, t: &Term) -> Option<Var> {
+    /// The known dictionary `t` names: a known one, or the copy of an `impl`
+    /// for every type at the types it is applied to.
+    fn known_dictionary(&mut self, t: &Term) -> Option<Var> {
         match t.peel() {
             Term::Var(v) if self.known.contains_key(v) => Some(*v),
+            Term::TyApp(g, tys) => match g.peel() {
+                Term::Var(v) if self.generic.contains_key(v) && !tys.iter().any(open) => {
+                    self.instance(*v, tys)
+                }
+                _ => None,
+            },
             _ => None,
         }
+    }
+
+    /// The copy of the generic dictionary `k` at `tys`, made if it has not
+    /// been, and known from then on.
+    fn instance(&mut self, k: Var, tys: &[Ty]) -> Option<Var> {
+        let key = (k, format!("{tys:?}"));
+        if let Some(v) = self.copies.get(&key) {
+            return Some(*v);
+        }
+        if self.depth >= DEPTH {
+            return None;
+        }
+        let d = self.generic.get(&k)?.clone();
+        let Term::TyLam(binders, inner) = d.term.peel() else {
+            return None;
+        };
+        if binders.len() != tys.len() {
+            return None;
+        }
+        let at = retype(
+            &Body {
+                binders: binders.clone(),
+                params: Vec::new(),
+                term: (**inner).clone(),
+                original: None,
+            },
+            tys,
+        );
+        let copy = self.freshen(&at);
+        let found = self.dictionary(&copy.term)?;
+        let map: HashMap<u32, Ty> = d
+            .poly
+            .binders
+            .iter()
+            .map(|b| b.id)
+            .zip(tys.iter().cloned())
+            .collect();
+        let ty = subst_rigid(&d.poly.ty, &map);
+        let var = self.fresh.var();
+        self.copies.insert(key, var);
+        self.origins.insert(var, k);
+        self.known.insert(var, found);
+        self.depth += 1;
+        let term = self.term(&copy.term);
+        self.depth -= 1;
+        self.made.push(Def {
+            var,
+            name: d.name,
+            poly: Poly::mono(ty),
+            term,
+        });
+        Some(var)
+    }
+
+    /// A call of a primitive's wrapper with all its arguments, as the
+    /// primitive of them.
+    fn primitive(&self, t: &Term) -> Option<Term> {
+        let (head, args) = spine(t);
+        let (w, tys): (Var, &[Ty]) = match head {
+            Term::Var(v) => (*v, &[]),
+            Term::TyApp(g, tys) => match g.peel() {
+                Term::Var(v) => (*v, tys.as_slice()),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let body = self.wrappers.get(&w)?;
+        if args.len() != body.params.len() || tys.len() != body.binders.len() {
+            return None;
+        }
+        let Term::Prim(p, _, ty) = retype(body, tys).term else {
+            return None;
+        };
+        Some(Term::Prim(
+            p,
+            args.iter().map(|a| (***a).clone()).collect(),
+            ty,
+        ))
     }
 
     /// Field `label` of the known dictionary `k`, ready to stand where the
@@ -256,15 +414,12 @@ impl Spec {
         if self.depth >= DEPTH {
             return None;
         }
-        let copy = freshen(
-            &Body {
-                binders: Vec::new(),
-                params: Vec::new(),
-                term: field,
-                original: None,
-            },
-            &mut self.fresh,
-        );
+        let copy = self.freshen(&Body {
+            binders: Vec::new(),
+            params: Vec::new(),
+            term: field,
+            original: None,
+        });
         self.depth += 1;
         let term = self.term(&copy.term);
         self.depth -= 1;
@@ -287,7 +442,10 @@ impl Spec {
                 }
                 t
             }
-            Term::App(..) => self.call(&t).unwrap_or(t),
+            Term::App(..) => {
+                let t = self.call(&t).unwrap_or(t);
+                self.primitive(&t).unwrap_or(t)
+            }
             _ => t,
         }
     }
@@ -316,10 +474,10 @@ impl Spec {
         if args.len() < count || tys.len() != kinds.len() || unknown {
             return None;
         }
-        let dicts: Vec<Var> = args[..count]
-            .iter()
-            .map(|a| self.known_dictionary(a))
-            .collect::<Option<_>>()?;
+        let mut dicts: Vec<Var> = Vec::with_capacity(count);
+        for a in &args[..count] {
+            dicts.push(self.known_dictionary(a)?);
+        }
         let head = match selects {
             Some((i, label)) => self.field(dicts[i], label)?,
             None => Term::Var(self.copy(f, &tys, &dicts)?),
@@ -364,7 +522,7 @@ impl Spec {
                 other => other,
             };
         }
-        let copy = freshen(&at, &mut self.fresh);
+        let copy = self.freshen(&at);
         // Each dictionary parameter is the known dictionary it was given.
         let given: HashMap<Var, Var> = copy
             .params

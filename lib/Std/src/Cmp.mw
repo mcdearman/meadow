@@ -1,0 +1,415 @@
+-- Equality and ordering, as Rust has them.
+--
+-- * `PartialEq` is `==` and `!=`: equality that may not be reflexive -- a
+--   float's `NaN` is not equal to itself.
+-- * `Eq` says it is: every value equals itself. It has no methods of its own.
+-- * `PartialOrd` is `<`, `>`, `<=`, `>=`, from `partialCmp`, which may find
+--   two values unordered: `partialCmp nan 1.0` is `None`.
+-- * `Ord` says every two values are ordered, and `compare` says how.
+--
+-- Floats are `PartialEq` and `PartialOrd` only. Every other primitive type is
+-- all four, and so are the standard library's types, which derive them. A
+-- type of your own derives them the same way, where its fields allow:
+--
+--   @derive(PartialEq, Eq, PartialOrd, Ord)
+--   data Suit = Clubs | Diamonds | Hearts | Spades
+--
+-- A derived ordering is by constructor, in the order they are declared, and
+-- then by fields, left to right: `Clubs < Spades`, and `Just 1 < Just 2`.
+--
+-- This module comes after `Std.Ordering` and `Std.Maybe`, whose types its
+-- methods answer with; the modules before it compare with the primitives.
+
+use Std.Maybe.Maybe.*
+use Std.Ordering.Ordering.*
+
+@pub trait PartialEq a {
+  fun (==) : a -> a -> Bool
+  fun (!=) : a -> a -> Bool
+  fun (!=) x y = if x == y then False else True
+}
+
+@pub trait Eq a <: PartialEq a {
+}
+
+@pub trait PartialOrd a <: PartialEq a {
+  fun partialCmp : a -> a -> Maybe Ordering
+
+  fun (<) : a -> a -> Bool
+  fun (<) x y = match partialCmp x y with | Just Less -> True | _ -> False
+
+  fun (>) : a -> a -> Bool
+  fun (>) x y = match partialCmp x y with | Just Greater -> True | _ -> False
+
+  fun (<=) : a -> a -> Bool
+  fun (<=) x y = match partialCmp x y with | Just Less -> True | Just Equal -> True | _ -> False
+
+  fun (>=) : a -> a -> Bool
+  fun (>=) x y = match partialCmp x y with | Just Greater -> True | Just Equal -> True | _ -> False
+}
+
+@pub trait Ord a <: Eq a, PartialOrd a {
+  fun compare : a -> a -> Ordering
+}
+
+-- What `@derive(Eq)` checks each field with: that its type is `Eq`.
+fun requireEq : Eq a => a -> ()
+@pub fun requireEq x = ()
+
+-- What derived orderings are made of: whether a comparison found two fields
+-- equal, so that the next field decides.
+@pub fun isEqualPartial c =
+  match c with
+  | Just Equal -> True
+  | _ -> False
+
+@pub fun isEqualOrdering c =
+  match c with
+  | Equal -> True
+  | _ -> False
+
+  -- --- the integer types ---------------------------------------------------------
+  --
+  -- Every comparison is its primitive, so that `x < y` on two `Int`s is the one
+  -- instruction it would be if `<` were built in.
+
+  macro comparable
+  | ($( $t : ident ),*) -> {
+      $(
+        impl PartialEq $t {
+          fun (==) x y = _primEq x y
+          fun (!=) x y = _primNe x y
+        }
+        impl Eq $t {
+        }
+        impl PartialOrd $t {
+          fun partialCmp x y = Just (if _primLt x y then Less else if _primEq x y then Equal else Greater)
+          fun (<) x y = _primLt x y
+          fun (>) x y = _primGt x y
+          fun (<=) x y = _primLe x y
+          fun (>=) x y = _primGe x y
+        }
+        impl Ord $t {
+          fun compare x y = if _primLt x y then Less else if _primEq x y then Equal else Greater
+        }
+      )*
+  }
+
+  comparable! { Int, BigInt, Int8, Int16, Int32, UInt8, UInt16, UInt32, UInt64 }
+
+  -- --- floats: partial -----------------------------------------------------------
+  --
+  -- IEEE 754: `NaN` equals nothing, itself included, and is ordered against
+  -- nothing; `-0.0` equals `0.0`.
+
+  macro floating
+  | ($( $t : ident ),*) -> {
+      $(
+        impl PartialEq $t {
+          fun (==) x y = _primLeF x y and _primGeF x y
+        }
+        impl PartialOrd $t {
+          fun partialCmp x y =
+            if _primLtF x y then Just Less
+            else if _primGtF x y then Just Greater
+            else if _primLeF x y then Just Equal
+            else None
+            fun (<) x y = _primLtF x y
+            fun (>) x y = _primGtF x y
+            fun (<=) x y = _primLeF x y
+            fun (>=) x y = _primGeF x y
+        }
+      )*
+  }
+
+  floating! { Float, Float32 }
+
+-- --- characters and strings ----------------------------------------------------
+
+fun codeOrder x y =
+  let a = charCode x in
+  let b = charCode y in
+  if _primLt a b then Less else if _primEq a b then Equal else Greater
+
+impl PartialEq Char {
+  fun (==) x y = _primEq x y
+}
+
+impl Eq Char {
+}
+
+impl PartialOrd Char {
+  fun partialCmp x y = Just (codeOrder x y)
+  fun (<) x y = _primLt (charCode x) (charCode y)
+}
+
+impl Ord Char {
+  fun compare x y = codeOrder x y
+}
+
+-- Byte by byte, which for UTF-8 is the order of the code points.
+fun stringOrder x y =
+  let c = stringCompare x y in
+  if _primLt c 0 then Less else if _primEq c 0 then Equal else Greater
+
+impl PartialEq String {
+  fun (==) x y = _primEq x y
+}
+
+impl Eq String {
+}
+
+impl PartialOrd String {
+  fun partialCmp x y = Just (stringOrder x y)
+}
+
+impl Ord String {
+  fun compare x y = stringOrder x y
+}
+
+-- --- the types before this module -----------------------------------------------
+
+impl PartialEq () {
+  fun (==) x y = True
+}
+
+impl Eq () {
+}
+
+impl PartialOrd () {
+  fun partialCmp x y = Just Equal
+}
+
+impl Ord () {
+  fun compare x y = Equal
+}
+
+fun boolOrder x y = if _primEq x y then Equal else if x then Greater else Less
+
+impl PartialEq Bool {
+  fun (==) x y = _primEq x y
+}
+
+impl Eq Bool {
+}
+
+impl PartialOrd Bool {
+  fun partialCmp x y = Just (boolOrder x y)
+}
+
+impl Ord Bool {
+  fun compare x y = boolOrder x y
+}
+
+fun rank o =
+  match o with
+  | Less -> 0
+  | Equal -> 1
+  | Greater -> 2
+
+impl PartialEq Ordering {
+  fun (==) x y = _primEq (rank x) (rank y)
+}
+
+impl Eq Ordering {
+}
+
+impl PartialOrd Ordering {
+  fun partialCmp x y = Just (compare (rank x) (rank y))
+}
+
+impl Ord Ordering {
+  fun compare x y = compare (rank x) (rank y)
+}
+
+-- `None` before every `Just`.
+impl PartialEq (Maybe a) where PartialEq a {
+  fun (==) x y =
+    match (x, y) with
+    | (Just a, Just b) -> a == b
+    | (None, None) -> True
+    | _ -> False
+}
+
+impl Eq (Maybe a) where Eq a {
+}
+
+impl PartialOrd (Maybe a) where PartialOrd a {
+  fun partialCmp x y =
+    match (x, y) with
+    | (Just a, Just b) -> partialCmp a b
+    | (None, None) -> Just Equal
+    | (None, _) -> Just Less
+    | _ -> Just Greater
+}
+
+impl Ord (Maybe a) where Ord a {
+  fun compare x y =
+    match (x, y) with
+    | (Just a, Just b) -> compare a b
+    | (None, None) -> Equal
+    | (None, _) -> Less
+    | _ -> Greater
+}
+
+-- A cell is equal only to itself: two cells holding equal values are two
+-- cells.
+impl PartialEq (Ref a) {
+  fun (==) x y = _primEq x y
+}
+
+impl Eq (Ref a) {
+}
+
+-- A compact region is equal to another holding an equal value.
+impl PartialEq (Compact a) where PartialEq a {
+  fun (==) x y = getCompact x == getCompact y
+}
+
+impl Eq (Compact a) where Eq a {
+}
+
+-- --- tuples, field by field ----------------------------------------------------
+
+impl PartialEq (a, b) where PartialEq a, PartialEq b {
+  fun (==) p q = match (p, q) with | ((a1, b1), (a2, b2)) -> a1 == a2 and b1 == b2
+}
+
+impl Eq (a, b) where Eq a, Eq b {
+}
+
+impl PartialOrd (a, b) where PartialOrd a, PartialOrd b {
+  fun partialCmp p q =
+    match (p, q) with
+    | ((a1, b1), (a2, b2)) ->
+        let c = partialCmp a1 a2 in
+        if isEqualPartial c then partialCmp b1 b2 else c
+}
+
+impl Ord (a, b) where Ord a, Ord b {
+  fun compare p q =
+    match (p, q) with
+    | ((a1, b1), (a2, b2)) ->
+        let c = compare a1 a2 in
+        if isEqualOrdering c then compare b1 b2 else c
+}
+
+impl PartialEq (a, b, c) where PartialEq a, PartialEq b, PartialEq c {
+  fun (==) p q =
+    match (p, q) with
+    | ((a1, b1, c1), (a2, b2, c2)) -> a1 == a2 and b1 == b2 and c1 == c2
+}
+
+impl Eq (a, b, c) where Eq a, Eq b, Eq c {
+}
+
+impl PartialOrd (a, b, c) where PartialOrd a, PartialOrd b, PartialOrd c {
+  fun partialCmp p q =
+    match (p, q) with
+    | ((a1, b1, c1), (a2, b2, c2)) ->
+        let x = partialCmp a1 a2 in
+        if isEqualPartial x then
+          let y = partialCmp b1 b2 in
+          if isEqualPartial y then partialCmp c1 c2 else y
+        else x
+}
+
+impl Ord (a, b, c) where Ord a, Ord b, Ord c {
+  fun compare p q =
+    match (p, q) with
+    | ((a1, b1, c1), (a2, b2, c2)) ->
+        let x = compare a1 a2 in
+        if isEqualOrdering x then
+          let y = compare b1 b2 in
+          if isEqualOrdering y then compare c1 c2 else y
+        else x
+}
+
+impl PartialEq (a, b, c, d) where PartialEq a, PartialEq b, PartialEq c, PartialEq d {
+  fun (==) p q =
+    match (p, q) with
+    | ((a1, b1, c1, d1), (a2, b2, c2, d2)) -> a1 == a2 and b1 == b2 and c1 == c2 and d1 == d2
+}
+
+impl Eq (a, b, c, d) where Eq a, Eq b, Eq c, Eq d {
+}
+
+impl PartialOrd (a, b, c, d) where PartialOrd a, PartialOrd b, PartialOrd c, PartialOrd d {
+  fun partialCmp p q =
+    match (p, q) with
+    | ((a1, b1, c1, d1), (a2, b2, c2, d2)) ->
+        let x = partialCmp (a1, b1) (a2, b2) in
+        if isEqualPartial x then partialCmp (c1, d1) (c2, d2) else x
+}
+
+impl Ord (a, b, c, d) where Ord a, Ord b, Ord c, Ord d {
+  fun compare p q =
+    match (p, q) with
+    | ((a1, b1, c1, d1), (a2, b2, c2, d2)) ->
+        let x = compare (a1, b1) (a2, b2) in
+        if isEqualOrdering x then compare (c1, d1) (c2, d2) else x
+}
+
+-- --- arrays, element by element ------------------------------------------------
+--
+-- Lexicographic: the first element that differs decides, and a shorter array
+-- that is a prefix of a longer one comes first.
+
+fun arrayEq xs ys i =
+  if _primGe i (arrayLen xs) then True
+  else if arrayGet xs i == arrayGet ys i then arrayEq xs ys (i + 1)
+  else False
+
+fun arrayPartialCmp xs ys i =
+  let n = arrayLen xs in
+  let m = arrayLen ys in
+  if _primGe i n or _primGe i m then Just (compare (n - i) (m - i))
+  else
+    let c = partialCmp (arrayGet xs i) (arrayGet ys i) in
+    if isEqualPartial c then arrayPartialCmp xs ys (i + 1) else c
+
+fun arrayCompare xs ys i =
+  let n = arrayLen xs in
+  let m = arrayLen ys in
+  if _primGe i n or _primGe i m then compare (n - i) (m - i)
+  else
+    let c = compare (arrayGet xs i) (arrayGet ys i) in
+    if isEqualOrdering c then arrayCompare xs ys (i + 1) else c
+
+impl PartialEq #[a] where PartialEq a {
+  fun (==) xs ys = _primEq (arrayLen xs) (arrayLen ys) and arrayEq xs ys 0
+}
+
+impl Eq #[a] where Eq a {
+}
+
+impl PartialOrd #[a] where PartialOrd a {
+  fun partialCmp xs ys = arrayPartialCmp xs ys 0
+}
+
+impl Ord #[a] where Ord a {
+  fun compare xs ys = arrayCompare xs ys 0
+}
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+
+@test fun compareOrdersThreeWays () =
+  let a = assertEq (compare 1 2) Less "1 vs 2" in
+  let b = assertEq (compare 2 2) Equal "2 vs 2" in
+  let c = assertEq (compare 3 2) Greater "3 vs 2" in
+  assertEq (compare (0 - 5) 0) Less "-5 vs 0"
+
+@test fun everyPrimitiveIsOrdered () =
+  let a = assertTrue ('a' < 'b' and "abc" < "abd" and (1, 2) < (1, 3)) "chars, strings, tuples" in
+  let b = assertEq (compare (Just 1) None) Greater "None before Just" in
+  let c = assertTrue (False < True and Less < Greater) "Bool and Ordering" in
+  assertEq (compare #[1, 2] #[1, 2, 0]) Less "a prefix first"
+
+@test fun floatsArePartial () =
+  let nan = 0.0 /. 0.0 in
+  let a = assertFalse (nan == nan) "NaN is not equal to itself" in
+  let b = assertEq (partialCmp nan 1.0) None "and is ordered against nothing" in
+  let c = assertTrue (0.0 == (0.0 -. 0.0)) "-0.0 equals 0.0" in
+  assertTrue (1.5 < 2.5 and 2.5 >= 2.5) "the rest are ordered"

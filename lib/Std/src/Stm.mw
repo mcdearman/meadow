@@ -55,6 +55,7 @@ use Std.Maybe.Maybe.*
 
 -- How an attempt at a transaction ended.
 use Attempt.*
+@derive(Debug, Display, PartialEq, Eq)
 data Attempt a = Done a | Retried | Conflicted
 
 -- Never returns, at any type: what follows a signal that is not resumed.

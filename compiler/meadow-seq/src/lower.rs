@@ -202,8 +202,10 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     } else {
         literals.clone()
     };
-    let program =
-        &core::globals::program(&core::simplify::program(&core::joins::program(&inlined)));
+    // Tail recursion modulo cons after `simplify`, which would otherwise see a
+    // cell's placeholder as the value of its field -- see [`core::trmc`].
+    let simplified = core::simplify::program(&core::joins::program(&inlined));
+    let program = &core::globals::program(&core::trmc::program(&simplified, opt));
     if let Ok(want) = std::env::var("MEADOW_DUMP_CORE") {
         for (stage, p) in [("before", &literals), ("after", program)] {
             for d in &p.defs {

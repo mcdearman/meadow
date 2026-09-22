@@ -69,7 +69,7 @@ fun wrap x = (x, x)
     assert_eq!(eval_main(src), "((1, 1), (\"s\", \"s\"))");
     assert_eq!(
         schemes("fun wrap x = (x, x)\nfun both = (wrap 1, wrap \"s\")\n"),
-        "wrap : forall a. a -> (a, a)\nboth : ((Int, Int), (String, String))\n"
+        "wrap : forall a. a -> (a, a)\nboth : forall n. ((n, n), (String, String))\n"
     );
 }
 
@@ -96,7 +96,7 @@ fun isOdd n = if n == 0 then False else isEven (n - 1)
 ";
     assert_eq!(
         schemes_std(src),
-        "isEven : forall n. n -> Bool\nisOdd : forall n. n -> Bool\n"
+        "isEven : forall n. (PartialEq n, Sub n) => n -> Bool\nisOdd : forall n. (PartialEq n, Sub n) => n -> Bool\n"
     );
     assert_eq!(
         eval_main_std(&format!("{src}def main = isEven 10\n")),

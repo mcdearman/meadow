@@ -125,17 +125,51 @@ pub struct Region<'p> {
 
 /// A data value's fields.
 ///
-/// A newtype only so [`Drop`] can be iterative. A `Cons` chain is as deep as it
-/// is long, and the derived drop glue recurses once per element — which is what
+/// A newtype so [`Drop`] can be iterative. A `Cons` chain is as deep as it is
+/// long, and the derived drop glue recurses once per element — which is what
 /// aborted the CEK machine at a few thousand elements before it was fixed. The
 /// same shape appears here for the same reason.
-#[derive(Debug, Clone)]
-pub struct Fields<'p>(Vec<Value<'p>>);
+///
+/// And so that [`Prim::SetField`] can fill a field in place: tail recursion
+/// modulo cons builds a cell with a placeholder and writes the field once the
+/// recursion has an answer for it. Nothing reads a cell while that happens --
+/// it is reachable only from the chain of calls filling it -- so no reference
+/// into these fields is ever alive across the write.
+pub struct Fields<'p>(std::cell::UnsafeCell<Vec<Value<'p>>>);
+
+impl<'p> Fields<'p> {
+    pub fn new(fields: Vec<Value<'p>>) -> Fields<'p> {
+        Fields(std::cell::UnsafeCell::new(fields))
+    }
+
+    /// Replace field `i`. See the type's documentation for why this is sound:
+    /// the machine holds values, not references into them, between steps.
+    fn set(&self, i: usize, v: Value<'p>) -> Option<()> {
+        // SAFETY: no `&Vec` from `deref` outlives the step that made it, and
+        // this runs in a step of its own, on a cell only its builder can see.
+        let fields = unsafe { &mut *self.0.get() };
+        *fields.get_mut(i)? = v;
+        Some(())
+    }
+}
+
+impl Clone for Fields<'_> {
+    fn clone(&self) -> Self {
+        Fields::new((**self).clone())
+    }
+}
+
+impl std::fmt::Debug for Fields<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Fields").field(&**self).finish()
+    }
+}
 
 impl<'p> std::ops::Deref for Fields<'p> {
     type Target = Vec<Value<'p>>;
     fn deref(&self) -> &Vec<Value<'p>> {
-        &self.0
+        // SAFETY: see `set`, the only writer.
+        unsafe { &*self.0.get() }
     }
 }
 
@@ -146,12 +180,12 @@ impl Drop for Fields<'_> {
         // rather than letting the drop nest. Arrays and records join in because
         // a `Vector` is a tree of arrays of data, so a deep value need not be
         // deep in constructors alone.
-        let mut stack: Vec<Value> = std::mem::take(&mut self.0);
+        let mut stack: Vec<Value> = std::mem::take(self.0.get_mut());
         while let Some(v) = stack.pop() {
             match v {
                 Value::Data(_, _, rc) => {
                     if let Ok(mut fields) = Rc::try_unwrap(rc) {
-                        stack.append(&mut fields.0);
+                        stack.append(fields.0.get_mut());
                     }
                 }
                 Value::Array(rc) => {
@@ -264,6 +298,13 @@ impl<'p> Machine<'p> {
                 ))),
                 other => err(format!("takeOnce: expected a flag, got {}", kind(other))),
             },
+            Prim::SetField => match (&vals[0], index(&vals[1])?) {
+                (Value::Data(_, _, fields), i) => match fields.set(i, vals[2].clone()) {
+                    Some(()) => Ok(Value::Unit),
+                    None => err(format!("setField: no field {i}")),
+                },
+                (other, _) => err(format!("setField: expected data, got {}", kind(other))),
+            },
             Prim::GlobalSet => {
                 let i = index(&vals[0])?;
                 if self.globals.len() <= i {
@@ -328,7 +369,7 @@ impl<'p> Machine<'p> {
                 rest,
             } => {
                 let vals = self.lookup_all(fields)?;
-                let v = Value::Data(*ctor, *tag, Rc::new(Fields(vals)));
+                let v = Value::Data(*ctor, *tag, Rc::new(Fields::new(vals)));
                 self.push(*name, v)?;
                 self.stmt = rest;
                 Ok(None)
@@ -1062,7 +1103,7 @@ fn prim<'p>(
         // `switch` arms were compiled with, or a `match` on the result would
         // miss. A name the program never mentions gets a tag no arm has.
         let tag = tags.get(&name).copied().unwrap_or(Tag::MAX);
-        Value::Data(name, tag, Rc::new(Fields(fields)))
+        Value::Data(name, tag, Rc::new(Fields::new(fields)))
     };
 
     match op {
@@ -1370,6 +1411,7 @@ fn prim<'p>(
         GlobalReady | GlobalGet | GlobalSet => {
             err("a definition cache reached a primitive with no machine")
         }
+        SetField => err("a destination-passing write reached a primitive with no machine"),
         Once | TakeOnce => err("a resumption's flag reached a primitive with no machine"),
         Enter | Detach | Reattach => err("the frame stack reached a primitive with no machine"),
         IntAdd | IntSub | IntMul | IntDiv | IntMod | IntEq | IntNe | IntLt | IntLe | IntGt
@@ -1823,21 +1865,25 @@ mod tests {
         let d = Value::Data(
             InternedString::from("Rect"),
             0,
-            Rc::new(Fields(vec![Value::Int(3), Value::Int(4)])),
+            Rc::new(Fields::new(vec![Value::Int(3), Value::Int(4)])),
         );
         assert_eq!(d.to_string(), "Rect(3, 4)");
         let t = Value::Data(
             InternedString::from("#tuple"),
             0,
-            Rc::new(Fields(vec![Value::Int(1), Value::Unit])),
+            Rc::new(Fields::new(vec![Value::Int(1), Value::Unit])),
         );
         assert_eq!(t.to_string(), "(1, ())");
         // A `List` prints as its elements, not as the chain it is.
-        let nil = Value::Data(InternedString::from("List.Nil"), 0, Rc::new(Fields(vec![])));
+        let nil = Value::Data(
+            InternedString::from("List.Nil"),
+            0,
+            Rc::new(Fields::new(vec![])),
+        );
         let one = Value::Data(
             InternedString::from("List.Cons"),
             1,
-            Rc::new(Fields(vec![Value::Int(1), nil])),
+            Rc::new(Fields::new(vec![Value::Int(1), nil])),
         );
         assert_eq!(one.to_string(), "[1]");
     }
@@ -1846,12 +1892,16 @@ mod tests {
     fn dropping_a_long_chain_does_not_recurse() {
         // 200_000 deep — the shape that aborted the CEK before its `Drop` was
         // made iterative.
-        let mut xs = Value::Data(InternedString::from("List.Nil"), 0, Rc::new(Fields(vec![])));
+        let mut xs = Value::Data(
+            InternedString::from("List.Nil"),
+            0,
+            Rc::new(Fields::new(vec![])),
+        );
         for i in 0..200_000 {
             xs = Value::Data(
                 InternedString::from("List.Cons"),
                 1,
-                Rc::new(Fields(vec![Value::Int(i), xs])),
+                Rc::new(Fields::new(vec![Value::Int(i), xs])),
             );
         }
         assert!(value_eq(&xs, &xs.clone()));

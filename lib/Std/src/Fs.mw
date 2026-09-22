@@ -11,6 +11,7 @@
 -- rendering strings as data, quotes and all, which looked the same from the
 -- outside.)
 
+@derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub record FileMeta = {
   @pub isFile : Bool,
   @pub isDir : Bool,

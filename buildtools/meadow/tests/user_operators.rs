@@ -1,12 +1,13 @@
 //! `++`: an operator that is an ordinary name.
 //!
-//! Every other operator is a primitive with one fixed meaning. `++` is bound
-//! like a value -- `fun (++) a b = ...` -- and `a ++ b` applies whatever `++`
-//! is in scope, so it is defined, exported, imported and shadowed like any
-//! other name. `Std.String` binds it to `concat` and the prelude re-exports it.
+//! Every operator is. `++` is bound like a value -- `fun (++) a b = ...` --
+//! and `a ++ b` applies whatever `++` is in scope, so it is defined, exported,
+//! imported and shadowed like any other name. `Std.String` binds it to `concat`
+//! and the prelude re-exports it. (`tests/operators.rs` has the rest: fixity
+//! declarations, and the operators that are trait methods.)
 
 mod common;
-use common::{errors, eval_expr_std, eval_main, eval_main_std, parse_ast, schemes, unit_errors};
+use common::{errors, eval_expr_std, eval_main, eval_main_std, schemes, unit_errors};
 
 #[test]
 fn the_prelude_concatenates_strings_with_it() {
@@ -71,11 +72,9 @@ fn without_a_definition_it_is_unbound() {
 }
 
 #[test]
-fn other_operators_cannot_be_bound() {
-    // Only the operators in `USER_OPERATORS` are names; the rest are primitives.
-    let ast = parse_ast("fun (<>) a b = a\n");
-    assert!(
-        ast.starts_with("parse failed") && ast.contains("<>"),
-        "got: {ast}"
-    );
+fn any_operator_can_be_bound() {
+    // `++` is not special: every operator is a name.
+    assert_eq!(eval_main("fun (<>) a b = a\ndef main = 1 <> 2\n"), "1");
+    // Nor are the language's own, which a local definition shadows.
+    assert_eq!(eval_main("fun (-) a b = a + b\ndef main = 1 - 2\n"), "3");
 }

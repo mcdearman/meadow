@@ -936,6 +936,12 @@ fn at_poly(poly: &Poly, map: &HashMap<u32, Ty>) -> Poly {
 /// Two copies of one body at two call sites would bind the same names twice, so
 /// each copy is renamed as it is made.
 pub(crate) fn freshen(body: &Body, fresh: &mut Fresh) -> Body {
+    freshen_mapped(body, fresh).0
+}
+
+/// [`freshen`], and which new name each old one got: what a pass that keeps
+/// `Program::origins` needs to record.
+pub(crate) fn freshen_mapped(body: &Body, fresh: &mut Fresh) -> (Body, HashMap<Var, Var>) {
     let mut map: HashMap<Var, Var> = HashMap::new();
     for (v, _) in &body.params {
         map.insert(*v, fresh.var());
@@ -997,16 +1003,20 @@ pub(crate) fn freshen(body: &Body, fresh: &mut Fresh) -> Body {
             p => p,
         },
     );
-    Body {
-        binders: Vec::new(),
-        params: body
-            .params
-            .iter()
-            .map(|(v, ty)| (rename(v), ty.clone()))
-            .collect(),
-        term,
-        original: None,
-    }
+    let params = body
+        .params
+        .iter()
+        .map(|(v, ty)| (rename(v), ty.clone()))
+        .collect();
+    (
+        Body {
+            binders: Vec::new(),
+            params,
+            term,
+            original: None,
+        },
+        map,
+    )
 }
 
 /// Every name `t` binds anywhere inside it, patterns and handler clauses

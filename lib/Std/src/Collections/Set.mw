@@ -7,6 +7,7 @@ use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 
 use Set.*
+@derive(Debug, Display)
 @pub data Set = Set (Tree Int)
 
 @pub def empty = Set Tree.empty
@@ -47,6 +48,25 @@ fun unwrap s = match s with | Set t -> t
 
 -- Yield every element in ascending order, for `Std.Stream`.
 @pub fun toStream s = Tree.toStream (unwrap s)
+
+-- --- comparing -----------------------------------------------------------------
+
+-- By their elements in order, not by the shape of the tree beneath.
+
+impl PartialEq Set {
+  fun (==) x y = toList x == toList y
+}
+
+impl Eq Set {
+}
+
+impl PartialOrd Set {
+  fun partialCmp x y = partialCmp (toList x) (toList y)
+}
+
+impl Ord Set {
+  fun compare x y = compare (toList x) (toList y)
+}
 
 -- --- tests -------------------------------------------------------------------
 

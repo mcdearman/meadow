@@ -46,6 +46,125 @@ pub fn type_package(name: &str) -> Option<&str> {
     name.rfind("::").map(|at| &name[..at])
 }
 
+/// The operators the language itself knows: how tightly each binds, which way
+/// it groups, and the primitive it means where no definition of it is in scope
+/// -- a program built without `Std`, which is where `Std.Ops` defines them all
+/// as methods of traits, over these same primitives.
+///
+/// `::` is the list constructor's and nothing else's, and `++` has no
+/// primitive: it is `Std.String`'s.
+pub const OPERATORS: &[(&str, Fixity, Option<&str>)] = &[
+    ("^", Fixity::right(8), Some("_primPow")),
+    ("*", Fixity::left(7), Some("_primMul")),
+    ("/", Fixity::left(7), Some("_primDiv")),
+    ("%", Fixity::left(7), Some("_primMod")),
+    ("*.", Fixity::left(7), Some("_primMulF")),
+    ("/.", Fixity::left(7), Some("_primDivF")),
+    ("+", Fixity::left(6), Some("_primAdd")),
+    ("-", Fixity::left(6), Some("_primSub")),
+    ("+.", Fixity::left(6), Some("_primAddF")),
+    ("-.", Fixity::left(6), Some("_primSubF")),
+    ("<<", Fixity::left(6), Some("_primShl")),
+    (">>", Fixity::left(6), Some("_primShr")),
+    (">>>", Fixity::left(6), Some("_primUshr")),
+    ("::", Fixity::right(5), None),
+    ("++", Fixity::right(5), None),
+    ("==", Fixity::none(4), Some("_primEq")),
+    ("!=", Fixity::none(4), Some("_primNe")),
+    ("<", Fixity::none(4), Some("_primLt")),
+    (">", Fixity::none(4), Some("_primGt")),
+    ("<=", Fixity::none(4), Some("_primLe")),
+    (">=", Fixity::none(4), Some("_primGe")),
+    ("<.", Fixity::none(4), Some("_primLtF")),
+    (">.", Fixity::none(4), Some("_primGtF")),
+    ("<=.", Fixity::none(4), Some("_primLeF")),
+    (">=.", Fixity::none(4), Some("_primGeF")),
+];
+
+/// Which way an operator groups: `a - b - c` is `(a - b) - c` (left), `a ^ b ^
+/// c` is `a ^ (b ^ c)` (right), and `a == b == c` is an error (neither).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Assoc {
+    Left,
+    Right,
+    None,
+}
+
+/// How an operator binds: `infixl 6` is `Fixity { assoc: Left, level: 6 }`.
+/// Levels run 0 to 9, tighter as they go up; application is tighter than all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct Fixity {
+    pub assoc: Assoc,
+    pub level: u8,
+}
+
+impl Fixity {
+    pub const fn left(level: u8) -> Fixity {
+        Fixity {
+            assoc: Assoc::Left,
+            level,
+        }
+    }
+    pub const fn right(level: u8) -> Fixity {
+        Fixity {
+            assoc: Assoc::Right,
+            level,
+        }
+    }
+    pub const fn none(level: u8) -> Fixity {
+        Fixity {
+            assoc: Assoc::None,
+            level,
+        }
+    }
+
+    /// What an operator nobody declared binds as: `infixl 9`, as in Haskell.
+    pub const DEFAULT: Fixity = Fixity::left(9);
+
+    /// The keyword a declaration of it is written with.
+    pub fn keyword(self) -> &'static str {
+        match self.assoc {
+            Assoc::Left => "infixl",
+            Assoc::Right => "infixr",
+            Assoc::None => "infix",
+        }
+    }
+}
+
+/// The fixity and fallback primitive of an operator the language knows.
+pub fn builtin_operator(op: &str) -> Option<(Fixity, Option<&'static str>)> {
+    OPERATORS
+        .iter()
+        .find(|(o, _, _)| *o == op)
+        .map(|(_, f, p)| (*f, *p))
+}
+
+/// The traits of `Std` a type nothing settles is taken to be `Int` for, as
+/// Haskell defaults its numeric classes: `x < y` of two things nothing ever
+/// says the type of compares them as `Int`s, as it did when `<` was built in,
+/// and `[;] == [;]` compares two empty lists of them. Only `Std`'s, which are
+/// named without a package.
+pub const NUMERIC_TRAITS: &[&str] = &[
+    "Add",
+    "Sub",
+    "Mul",
+    "Div",
+    "Rem",
+    "Pow",
+    "Shift",
+    "PartialEq",
+    "Eq",
+    "PartialOrd",
+    "Ord",
+    "Debug",
+    "Display",
+];
+
+/// Is `tr` (a canonical trait name) one of [`NUMERIC_TRAITS`]?
+pub fn is_numeric_trait(tr: &str) -> bool {
+    type_package(tr).is_none() && NUMERIC_TRAITS.contains(&tr)
+}
+
 /// Primitive operators, in the order their [`VarId`]s are handed out by
 /// `rename::Resolver::with_prelude`. `infer` builds matching type schemes by
 /// index, and `core`/the linker map names to `Prim`s, so the order is load-bearing.
@@ -56,27 +175,27 @@ pub fn type_package(name: &str) -> Option<&str> {
 pub const PRIMS: &[&str] = &[
     "display",
     "hash",
-    "+",
-    "-",
-    "*",
-    "/",
-    "%",
-    "^",
-    "==",
-    "!=",
-    "<",
-    ">",
-    "<=",
-    ">=",
+    "_primAdd",
+    "_primSub",
+    "_primMul",
+    "_primDiv",
+    "_primMod",
+    "_primPow",
+    "_primEq",
+    "_primNe",
+    "_primLt",
+    "_primGt",
+    "_primLe",
+    "_primGe",
     "neg", //
-    "+.",
-    "-.",
-    "*.",
-    "/.",
-    "<.",
-    ">.",
-    "<=.",
-    ">=.",
+    "_primAddF",
+    "_primSubF",
+    "_primMulF",
+    "_primDivF",
+    "_primLtF",
+    "_primGtF",
+    "_primLeF",
+    "_primGeF",
     "toFloat",
     "toFloat64",
     "toFloat32",
@@ -106,6 +225,12 @@ pub const PRIMS: &[&str] = &[
     "shl",
     "shr",
     "ushr",
+    "_primShl",
+    "_primShr",
+    "_primUshr",
+    // `display` by the name `Std.Display`'s one `impl` for every type calls,
+    // which a program's own `display` -- the trait's method -- cannot shadow.
+    "_primDisplay",
     "bitAnd",
     "bitOr",
     "bitXor",

@@ -15,6 +15,7 @@ use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 
 use Either.*
+@derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub data Either a b = Left a | Right b
 
 @pub fun isLeft e = match e with | Left a -> True | Right b -> False

@@ -1946,3 +1946,109 @@ fn a_release_build_copies_generic_code_once_per_representation() {
         );
     }
 }
+
+// --- tail recursion modulo cons -----------------------------------------------
+//
+// `core::trmc` builds a constructor before the recursive call that fills one of
+// its fields, and writes the field in place. Every case below is checked on
+// every machine at every level; O0 is the one without the rewrite.
+
+/// How many destination-passing twins the pass makes for `src`.
+fn twins(src: &str) -> usize {
+    let prog = program(src);
+    let after = core::trmc::program(&prog, meadow_core::OptLevel::O1);
+    after.defs.len() - prog.defs.len()
+}
+
+const LIST: &str = "use L.*\ndata L = E | C Int L\n";
+
+#[test]
+fn a_map_is_built_front_to_back() {
+    let src = format!(
+        "{LIST}fun map f xs = match xs with | E -> E | C x r -> C (f x) (map f r)
+         fun upto i n = if i > n then E else C i (upto (i + 1) n)
+         fun sum acc xs = match xs with | E -> acc | C x r -> sum (acc + x) r
+         def main = (sum 0 (map (\\x -> x * 2) (upto 1 100000)), map (\\x -> x + 1) (upto 1 3))"
+    );
+    assert_eq!(twins(&src), 2, "`map` and `upto`");
+    assert_eq!(agree(&src), "(10000100000, C(2, C(3, C(4, E))))");
+}
+
+#[test]
+fn a_filter_skips_by_calling_itself_in_tail_position() {
+    // One arm builds a cell, one passes the same destination on, one ends.
+    let src = format!(
+        "{LIST}fun filter p xs = match xs with
+           | E -> E
+           | C x r -> if p x then C x (filter p r) else filter p r
+         def main = filter (\\x -> x % 2 == 0) (C 1 (C 2 (C 3 (C 4 (C 5 (C 6 E))))))"
+    );
+    assert_eq!(twins(&src), 1);
+    assert_eq!(agree(&src), "C(2, C(4, C(6, E)))");
+}
+
+#[test]
+fn an_append_ends_with_a_list_it_did_not_build() {
+    let src = format!(
+        "{LIST}fun append xs ys = match xs with | E -> ys | C x r -> C x (append r ys)
+         def shared = C 9 E
+         def main = (append (C 1 (C 2 E)) shared, append E shared, shared)"
+    );
+    assert_eq!(twins(&src), 1);
+    assert_eq!(agree(&src), "(C(1, C(2, C(9, E))), C(9, E), C(9, E))");
+}
+
+#[test]
+fn a_tree_fills_its_last_field_and_recurses_for_the_others() {
+    let src = "use T.*\ndata T = Leaf | Node T Int T
+               fun mirror t = match t with
+                 | Leaf -> Leaf
+                 | Node l v r -> Node (mirror r) v (mirror l)
+               def main = mirror (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 (Node Leaf 4 Leaf)))";
+    assert_eq!(twins(src), 1);
+    assert_eq!(
+        agree(src),
+        "Node(Node(Node(Leaf, 4, Leaf), 3, Leaf), 2, Node(Leaf, 1, Leaf))"
+    );
+}
+
+#[test]
+fn work_after_the_call_is_not_reordered() {
+    // `f x` after the recursive call is not a value: running it first would
+    // print in the wrong order, so the pass leaves this alone.
+    let src = format!(
+        "{LIST}data P = P L Int
+         fun go f xs = match xs with | E -> P E 0 | C x r -> P (step f r) (f x)
+         fun step f xs = match go f xs with | P l _ -> l
+         def main = go (\\x -> x) (C 1 (C 2 E))"
+    );
+    assert_eq!(twins(&src), 0);
+    agree(&src);
+}
+
+#[test]
+fn a_type_with_no_nullary_constructor_is_left_alone() {
+    let src = "use S.*\ndata S = S Int S | End Int
+               fun bump s = match s with | End n -> End (n + 1) | S n r -> S (n + 1) (bump r)
+               def main = bump (S 1 (S 2 (End 3)))";
+    assert_eq!(
+        twins(src),
+        0,
+        "`End` has a field, so there is no placeholder"
+    );
+    assert_eq!(agree(src), "S(2, S(3, End(4)))");
+}
+
+#[test]
+fn an_effect_performed_mid_list_resumes_into_the_half_built_cell() {
+    let src = format!(
+        "{LIST}effect Ask {{ ask : () -> Int }}
+         fun tag xs = match xs with | E -> E | C x r -> C (x + ask ()) (tag r)
+         def main =
+           handle tag (C 1 (C 2 (C 3 E))) with {{
+             ask u k -> k 10
+           }}"
+    );
+    assert_eq!(twins(&src), 1);
+    assert_eq!(agree(&src), "C(11, C(12, C(13, E)))");
+}

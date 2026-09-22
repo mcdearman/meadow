@@ -517,7 +517,7 @@ fn a_bad_argument_is_reported_as_the_arguments_fault() {
         .err()
         .expect("a type error");
     assert!(err.contains("in `square \"nine\"`"), "{err}");
-    assert!(err.contains("type mismatch"), "{err}");
+    assert!(err.contains("does not implement `Mul`"), "{err}");
 }
 
 #[test]

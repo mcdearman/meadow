@@ -119,8 +119,8 @@ fn printing_performs_console() {
              fun greet name = println name\n\
              fun captured name = withOutput (\\() -> greet name)\n"
         ),
-        "greet : forall a e. a -> () ! { Console | e }\n\
-         captured : forall a e. a -> ((), String) ! { Console | e }\n"
+        "greet : forall a e. Display a => a -> () ! { Console | e }\n\
+         captured : forall a e. Display a => a -> ((), String) ! { Console | e }\n"
     );
 }
 

@@ -181,7 +181,10 @@ pub enum Token {
     Quote,
     #[regex(r"'(\\u\{[^}'\n]*\}|\\x[^'\n]{0,2}|\\.|[^'\\])'", |lex| unescape_char(lex.slice()))]
     Char(char),
+    // A leading `_` is a name too, when something follows it: `_primAdd`, the
+    // primitives the operators are defined with. `_` alone is `Wildcard`.
     #[regex(r"[a-z][a-zA-Z0-9'_]*", |lex| InternedString::from(lex.slice()), priority = 2)]
+    #[regex(r"_[a-zA-Z0-9'_]+", |lex| InternedString::from(lex.slice()), priority = 2)]
     LowerIdent(InternedString),
     #[regex(r"[A-Z][a-zA-Z0-9']*", |lex| InternedString::from(lex.slice()))]
     UpperIdent(InternedString),
@@ -202,6 +205,9 @@ pub enum Token {
     LArrow,
     #[token("->")]
     RArrow,
+    /// `Show a => a -> String`: what a signature's type variables must implement.
+    #[token("=>")]
+    FatArrow,
     #[token("+")]
     Plus,
     #[token("-")]
@@ -322,6 +328,13 @@ pub enum Token {
     As,
     #[token("macro")]
     Macro,
+    /// `infixl 6 +, -` -- how tightly an operator binds, and which way.
+    #[token("infix")]
+    Infix,
+    #[token("infixl")]
+    Infixl,
+    #[token("infixr")]
+    Infixr,
     Error,
 }
 
@@ -411,6 +424,7 @@ impl Token {
             Backslash => owned("\\"),
             LArrow => owned("<-"),
             RArrow => owned("->"),
+            FatArrow => owned("=>"),
             Plus => owned("+"),
             Minus => owned("-"),
             Star => owned("*"),
@@ -467,6 +481,9 @@ impl Token {
             Trait => owned("trait"),
             Impl => owned("impl"),
             Where => owned("where"),
+            Infix => owned("infix"),
+            Infixl => owned("infixl"),
+            Infixr => owned("infixr"),
             As => owned("as"),
             Macro => owned("macro"),
         }
@@ -497,6 +514,7 @@ impl<'a> Display for Token {
             Backslash => write!(f, "Backslash"),
             LArrow => write!(f, "LArrow"),
             RArrow => write!(f, "RArrow"),
+            FatArrow => write!(f, "FatArrow"),
             Plus => write!(f, "Plus"),
             Minus => write!(f, "Minus"),
             Star => write!(f, "Star"),
@@ -554,6 +572,9 @@ impl<'a> Display for Token {
             Trait => write!(f, "Trait"),
             Impl => write!(f, "Impl"),
             Where => write!(f, "Where"),
+            Infix => write!(f, "Infix"),
+            Infixl => write!(f, "Infixl"),
+            Infixr => write!(f, "Infixr"),
             As => write!(f, "As"),
             Macro => write!(f, "Macro"),
             Error => write!(f, "Error"),

@@ -27,6 +27,7 @@
 //! | `stringify!(…)` | its argument, written back as text |
 //! | `concat!(a, b, …)` | its literal arguments, joined into one string |
 
+mod derive;
 mod hygiene;
 pub mod proc;
 mod rules;
@@ -855,12 +856,33 @@ impl Expander<'_> {
         let ast::Decl::Attributed(attrs, inner) = &*d.value else {
             return Vec::new();
         };
-        let Some(argument) = self.source_trees(d.span) else {
-            return Vec::new();
-        };
         let mut out = Vec::new();
         for want in attrs.iter().filter(|a| is_derive(a)).flat_map(|a| &a.args) {
             let Some((pkg, name)) = self.deriving(want) else {
+                // No procedural macro of that name: one of the compiler's own,
+                // or nothing that can derive it.
+                match derive::builtin(want.value(), inner) {
+                    Some(Ok(text)) => out.extend(self.derived_text(want, &text)),
+                    Some(Err(why)) => self.error(
+                        format!("`{}` cannot be derived for this", want.value()),
+                        why,
+                        want.span,
+                        vec![],
+                    ),
+                    None => {
+                        let mut lower = want.value().to_string();
+                        lower.replace_range(..1, &lower[..1].to_lowercase());
+                        self.error(
+                            format!("there is no macro to derive `{}` with", want.value()),
+                            format!("nothing in scope is `{lower}!`"),
+                            want.span,
+                            vec![],
+                        );
+                    }
+                }
+                continue;
+            };
+            let Some(argument) = self.source_trees(d.span) else {
                 continue;
             };
             let Some(runner) = self.procs else {
@@ -908,7 +930,45 @@ impl Expander<'_> {
         out
     }
 
-    /// The macro a `@derive(Name)` names.
+    /// What a built-in derive wrote, parsed where the derive was written.
+    fn derived_text(&mut self, want: &ast::Ident, text: &str) -> Vec<ast::LDecl> {
+        let source = meadow_source::Source::new(
+            meadow_source::SourceKind::Interactive,
+            InternedString::from(text),
+        );
+        let lexed = meadow_lexer::tokenize(source);
+        // Every token is the derive's, at an empty span where it was written:
+        // an error in what it wrote is reported at the `@derive` that asked
+        // for it, and none of it claims the text of the name -- which an
+        // editor still resolves to the trait, not to what the `impl` calls.
+        let at = Span::new(want.span.start, want.span.start);
+        let tokens: Vec<LToken> = lexed
+            .tokens
+            .iter()
+            .map(|t| LToken::new(t.value().clone(), at))
+            .collect();
+        match meadow_parser::parse_decls(&tokens, at) {
+            (Some(mut made), errs) if errs.is_empty() => {
+                self.decls(&mut made);
+                made
+            }
+            _ => {
+                self.error(
+                    format!(
+                        "the derive of `{}` wrote something that does not parse",
+                        want.value()
+                    ),
+                    "the compiler's own derive; a bug in it".to_string(),
+                    want.span,
+                    vec![],
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// The procedural macro a `@derive(Name)` names, if one does. `None` is a
+    /// derive the compiler has built in -- see [`derive`] -- or none at all.
     ///
     /// A macro is a function and functions are lower-case, so `@derive(Lexer)`
     /// finds `lexer`; the name as written is tried first, for a derive that
@@ -922,12 +982,6 @@ impl Expander<'_> {
                 return Some(*found);
             }
         }
-        self.error(
-            format!("there is no macro to derive `{written}` with"),
-            format!("nothing in scope is `{lower}!`"),
-            want.span,
-            vec![],
-        );
         None
     }
 
@@ -974,6 +1028,7 @@ impl Expander<'_> {
             | ast::Decl::Record(_)
             | ast::Decl::Effect(_)
             | ast::Decl::TypeAlias(_)
+            | ast::Decl::Fixity(..)
             | ast::Decl::Sig(..) => {}
         }
     }
@@ -1088,8 +1143,14 @@ impl Expander<'_> {
                 self.expr(l);
                 self.expr(r);
             }
+            ast::Expr::Infix(first, rest) => {
+                self.expr(first);
+                for (_, x) in rest {
+                    self.expr(x);
+                }
+            }
             ast::Expr::Interp(_, holes) => {
-                for h in holes {
+                for (h, _) in holes {
                     self.expr(h);
                 }
             }

@@ -1,14 +1,11 @@
 -- Source text to `Expr`, with `Std.String.Parse`.
 --
--- The input is a `Vector` of *bytes*, which is what `P.fromString` hands over,
--- so a "character" here is a byte and the grammar is ASCII. That is a real
--- limitation and a deliberate one: a toy that handled UTF-8 identifiers would
--- spend more lines on text than on types.
---
--- Every token parser eats its trailing whitespace (`tok` below), so the grammar
--- never mentions spaces again. The one place that needs care is keywords:
--- `chunk` is atomic, but `let` is also a prefix of `letter`, so `keyword` checks
--- that what follows is not another identifier byte.
+-- The input is the source `String` itself, read a `Char` at a time, with
+-- `Std.String.Parse.Lexer`'s space consumer between tokens: every token parser
+-- is a `lexeme`, so the grammar never mentions spaces again, and `--` starts a
+-- comment to the end of the line. The one place that needs care is keywords:
+-- `string` is atomic, but `let` is also a prefix of `letter`, so `keyword`
+-- checks that what follows is not another identifier character.
 
 -- The tree this parser builds, from the package's own `Syntax` module. The
 -- `.*` brings `Expr`'s constructors in unqualified, and this file never mentions
@@ -16,58 +13,53 @@
 use Syntax (Expr)
 use Syntax.Expr.*
 use Std.String.Parse as P
+use Std.String.Parse.Char as C
+use Std.String.Parse.Lexer as L
 use Std.String as S
+use Std.Char as Ch
 use Std.Collections.Vector as V
-use Std.Maybe (unwrapOr)
 use Std.Bool (not)
 
--- --- bytes ---------------------------------------------------------------
+-- --- tokens -----------------------------------------------------------------
 
-fun isDigitB (c : UInt8) = c >= 48 and c <= 57
-fun isLowerB (c : UInt8) = c >= 97 and c <= 122
-fun isUpperB (c : UInt8) = c >= 65 and c <= 90
-fun isAlphaB (c : UInt8) = isLowerB c or isUpperB c
-fun isIdentStart (c : UInt8) = isAlphaB c or c == 95
-fun isIdentByte (c : UInt8) = isIdentStart c or isDigitB c
-fun isSpaceB (c : UInt8) = c == 32 or c == 9 or c == 10 or c == 13
+fun isIdentStart c = Ch.isAlpha c or c == '_'
+fun isIdentChar c = isIdentStart c or Ch.isDigit c
 
-def spaces = P.takeWhileP isSpaceB
+-- White space and `--` comments: what may sit between two tokens.
+fun sc = L.space C.space1 (L.skipLineComment "--") P.empty
 
--- A token: the thing, then any whitespace after it.
-fun tok p = P.thenSkip p spaces
+fun lexeme p = L.lexeme sc p
 
-fun symbol s = tok (P.chunk (P.fromString s))
+fun symbol s = L.symbol sc s
 
--- A keyword is a chunk that is not the start of a longer identifier, so `let`
--- does not match the first three bytes of `letter`.
+-- A keyword is a word that is not the start of a longer identifier, so `let`
+-- does not match the first three characters of `letter`.
 fun keyword s =
-  tok (P.try (P.thenSkip (P.chunk (P.fromString s))
-                         (P.notFollowedBy (P.satisfy isIdentByte))))
+  lexeme (P.try (P.thenSkip (C.string s) (P.notFollowedBy (P.satisfy isIdentChar))))
 
 def reserved = ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"]
 
 -- An identifier, refusing the reserved words so `let` cannot be a variable.
 --
 -- Wrapped in `try` for a reason worth understanding: the reserved check happens
--- *after* the bytes are consumed, so without it `ident` fails on `in` having
--- already eaten it -- and a consumed failure is not something `many` or `alt`
--- will back out of. `try` un-consumes, which turns "this is a keyword" back
--- into "this is not an identifier, look elsewhere".
-def ident =
-  P.try (P.bind (tok (P.lift2 (\c cs -> V.pushFront cs c)
-                       (P.satisfy isIdentStart)
-                       (P.takeWhileP isIdentByte)))
-         (\bytes ->
-           let name = S.fromBytes (V.toArray bytes) in
-            if V.elem name reserved then P.fail "an identifier" else P.pure name))
+-- *after* the characters are consumed, so without it `ident` fails on `in`
+-- having already eaten it -- and a consumed failure is not something `many` or
+-- `alt` will back out of. `try` un-consumes, which turns "this is a keyword"
+-- back into "this is not an identifier, look elsewhere".
+fun ident =
+  P.label "an identifier"
+    (P.try
+      (P.bind (lexeme (P.lift2 (\c cs -> S.concat (Ch.toString c) cs)
+                        (P.satisfy isIdentStart)
+                        (P.takeWhileP isIdentChar)))
+        (\name ->
+          if V.elem name reserved then P.fail "`${name}` is a keyword, not a name"
+          else P.pure name)))
 
-def intLit =
-  P.map (\bytes -> Int (unwrapOr 0 (S.toInt (S.fromBytes (V.toArray bytes)))))
-        (tok (P.takeWhile1P "a number" isDigitB))
+fun intLit = P.map (\n -> Int n) (lexeme L.decimal)
 
-def boolLit =
-  P.alt (P.map (\_ -> Bool True) (keyword "true"))
-        (P.map (\_ -> Bool False) (keyword "false"))
+fun boolLit =
+  P.alt (P.mapTo (Bool True) (keyword "true")) (P.mapTo (Bool False) (keyword "false"))
 
 -- --- the grammar ----------------------------------------------------------
 --
@@ -84,12 +76,8 @@ fun appE () =
 
 -- A chain of left-associative binary operators at one precedence level.
 fun binaryE ops next =
-  P.bind (P.defer next)
-         (\first ->
-           P.bind (P.many (P.lift2 (\o r -> (o, r))
-                                    (P.choice (V.map (\o -> P.map (\_ -> o) (symbol o)) ops))
-                                    (P.defer next)))
-                   (\rest -> P.pure (V.foldl (\l p -> Bin (fst p) l (snd p)) first rest)))
+  P.chainl1 (P.defer next)
+    (P.choice (V.map (\o -> P.mapTo (\l r -> Bin o l r) (symbol o)) ops))
 
 fun mulE () = binaryE ["*", "/"] appE
 fun addE () = binaryE ["+", "-"] mulE
@@ -139,8 +127,9 @@ fun letE () =
 
 fun exprE () = P.choice [P.defer letE, P.defer lamE, P.defer ifE, P.defer cmpE]
 
--- Parse a whole program: an expression, and nothing after it.
+-- Parse a whole program: an expression, and nothing after it. An error says
+-- at which offset, and what went wrong there.
 @pub(pkg) fun parse src =
-  match P.runParser (P.skipThen spaces (P.thenSkip (P.defer exprE) P.eof)) (P.fromString src) with
+  match P.runParser (P.skipThen sc (P.thenSkip (P.defer exprE) P.eof)) src with
   | Ok e -> Ok e
   | Err err -> Err (P.showError err)

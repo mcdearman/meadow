@@ -31,7 +31,7 @@
 -- capture it; these two are in scope everywhere all the same.
 @pub use Std.Console (print, println)
 
-@pub use Std.Ordering (compare, isLess, isEqual, isGreater)
+@pub use Std.Ordering (isLess, isEqual, isGreater)
 
 @pub use Std.Function (id, const, flip, compose, apply, twice)
 

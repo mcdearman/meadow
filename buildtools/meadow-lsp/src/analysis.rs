@@ -1193,6 +1193,10 @@ fn absorb_refs(a: &mut Analysis, m: &meadow_compiler::TypedModule) {
             }
         }
     }
+    // What a derive wrote stands at an empty span: it is nobody's text, and
+    // nothing an editor points at should find it.
+    a.refs.retain(|(s, _)| s.end > s.start);
+    a.name_refs.retain(|(s, _, _)| s.end > s.start);
 }
 
 /// Walk every module of `pkg` for its definitions alone.

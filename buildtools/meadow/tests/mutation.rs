@@ -18,7 +18,7 @@ fn mutating_is_visible_in_the_type_and_purity_still_means_something() {
             "fun bump r = setRef r (getRef r + 1)\n\
              fun untouched x = x + 1\n"
         ),
-        "bump : forall n e. Ref n -> () ! { Mut | e }\nuntouched : forall n. n -> n\n"
+        "bump : forall n e. Add n => Ref n -> () ! { Mut | e }\nuntouched : forall n. Add n => n -> n\n"
     );
 }
 
@@ -28,7 +28,7 @@ fn the_effect_propagates_to_callers() {
     // so its type says so.
     assert_eq!(
         schemes_std("fun inner r = getRef r\nfun outer r = inner r + 1\n"),
-        "inner : forall a e. Ref a -> a ! { Mut | e }\nouter : forall n e. Ref n -> n ! { Mut | e }\n"
+        "inner : forall a e. Ref a -> a ! { Mut | e }\nouter : forall n e. Add n => Ref n -> n ! { Mut | e }\n"
     );
 }
 

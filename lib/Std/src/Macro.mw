@@ -23,8 +23,10 @@ use Std.Maybe.Maybe.*
 use TokenTree.*
 use Delim.*
 
+@derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub data Delim = Paren | Bracket | Brace
 
+@derive(Debug, Display, PartialEq, PartialOrd)
 @pub data TokenTree
   = Word String
   | Punct String

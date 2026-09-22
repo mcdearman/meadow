@@ -308,7 +308,15 @@ fn separate(next: &Token, out: &mut String) {
             | Token::InterpMid(_)
             | Token::InterpEnd(_)
     );
-    let tight_after = matches!(last, '(' | '[' | '{' | '.');
+    // A `.` that ends an operator -- `+.`, `>=.` -- is not the selection dot,
+    // and the operator would swallow whatever symbol came next.
+    let operator_dot = last == '.'
+        && out
+            .chars()
+            .rev()
+            .nth(1)
+            .is_some_and(|c| "!%&*+./<=>?@|^~:-".contains(c));
+    let tight_after = matches!(last, '(' | '[' | '{') || (last == '.' && !operator_dot);
     if !tight_before && !tight_after {
         out.push(' ');
     }

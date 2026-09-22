@@ -52,6 +52,7 @@ use Std.String as S
 use Std.Sort (sort)
 use Std.Test (assertEq, assertTrue)
 
+@derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub record BenchConfig = {
   -- Run for about this many nanoseconds before measuring anything.
   @pub warmupNanos : Int,
@@ -69,6 +70,7 @@ use Std.Test (assertEq, assertTrue)
 @pub def quickConfig =
   { warmupNanos = 5000000, sampleNanos = 2000000, samples = 5 }
 
+@derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub record Report = {
   @pub name : String,
   -- Calls per sample, chosen by calibration.

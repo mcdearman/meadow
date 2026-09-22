@@ -10,7 +10,7 @@
 -- `False` for a non-ASCII character rather than guessing, and `toUpper` /
 -- `toLower` leave it alone.
 
-use Std.Ordering (compare, isLess, isEqual, isGreater)
+use Std.Ordering (isLess, isEqual, isGreater)
 
 -- --- codes --------------------------------------------------------------------
 

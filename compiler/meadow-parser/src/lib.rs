@@ -16,7 +16,6 @@ use chumsky::{
     error::Rich,
     extra,
     input::{Input, ValueInput},
-    pratt::{infix, left, none, prefix, right},
     primitive::*,
     recursive::recursive,
     select,
@@ -203,9 +202,12 @@ where
                 None => Bind::Pat(p, e),
             });
 
-        // `fun f a (x, y) = e`, or point-free `fun f = e` (no parameters) — the
-        // latter is just a value binding, so it takes the `Bind::Pat` path (and
-        // its right-hand side is subject to the value restriction, like `def`).
+        // `fun f a (x, y) = e`, or point-free `fun f = e` (no parameters). At
+        // the top level the latter is still a function -- of nothing but the
+        // trait dictionaries its type may need, as `eof : Stream s => Parser s
+        // ()` is -- so it keeps the `Bind::Fun` shape; checking says its body
+        // may not perform effects, as a `def`'s may not. A local one is a
+        // value binding.
         // `| gcd a b = …`: another equation for the same function. The name is
         // written again, as it is in Haskell, so that a typo in it is caught
         // rather than quietly defining something else.
@@ -224,6 +226,9 @@ where
             .then(expr())
             .then(clause.repeated().collect::<Vec<_>>())
             .validate(|((((name, args), ret), body), rest), e, emitter| {
+                if args.is_empty() && rest.is_empty() {
+                    return Bind::Fun(name, Vec::new(), ret, body);
+                }
                 equations(name, args, ret, body, rest, e.span(), emitter)
             });
 
@@ -361,16 +366,17 @@ where
 
     // `fun f : T` / `def x : T` -- a binding's type with no `=` after it: the
     // definition is elsewhere. Tried after a binding, which is what the same
-    // start with an `=` is.
+    // start with an `=` is. `fun f : (Show a, Ord b) => a -> b -> String` says
+    // what its type variables must implement.
     let sig_decl = just(Token::Fun)
         .or(just(Token::Def))
         .ignore_then(value_ident())
         .then_ignore(just(Token::Colon))
+        .then(context())
         .then(ty())
-        .then(bounds())
-        .map_with(|((name, ty), bounds), e| LDecl::new(Decl::Sig(name, ty, bounds), e.span()));
+        .map_with(|((name, bounds), ty), e| LDecl::new(Decl::Sig(name, ty, bounds), e.span()));
 
-    // `trait Name a where Super a { type Assoc a  fun m : T  fun m x = default }`.
+    // `trait Name a <: Super a { type Assoc a  fun m : T  fun m x = default }`.
     // Every item starts with a keyword, so the body needs no separators.
     enum TraitItem {
         Assoc(Ident, Vec<Ident>),
@@ -393,7 +399,7 @@ where
     let trait_decl = just(Token::Trait)
         .ignore_then(upper_ident())
         .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
-        .then(bounds())
+        .then(supertraits())
         .then(
             trait_item
                 .repeated()
@@ -456,7 +462,30 @@ where
             LDecl::new(Decl::Impl(decl), e.span())
         });
 
+    // `infixl 6 +, -` / `infixr 5 ++` / `infix 4 ==`: an operator bare, or in
+    // the parentheses it is named with elsewhere.
+    let fixity_decl = choice((
+        just(Token::Infixl).to(Assoc::Left),
+        just(Token::Infixr).to(Assoc::Right),
+        just(Token::Infix).to(Assoc::None),
+    ))
+    .then(select! { Token::Int(n) => n })
+    .then(
+        operator()
+            .or(operator().delimited_by(just(Token::LParen), just(Token::RParen)))
+            .separated_by(just(Token::Comma))
+            .at_least(1)
+            .collect::<Vec<_>>(),
+    )
+    .map_with(|((assoc, level), ops), e| {
+        LDecl::new(
+            Decl::Fixity(assoc, level.clamp(0, 255) as u8, ops),
+            e.span(),
+        )
+    });
+
     choice((
+        fixity_decl,
         mod_decl,
         use_decl,
         data_decl,
@@ -482,15 +511,56 @@ fn head_ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
     just(Token::LBrace).not().ignore_then(ty_atom())
 }
 
-/// `where Show a, Ord (f b)` -- the traits some types have to implement; empty
-/// when there is no `where`.
+/// One trait some types have to implement: `Show a`, `Convert a (List b)`.
+fn bound<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Bound, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    upper_ident()
+        .then(head_ty().repeated().at_least(1).collect::<Vec<_>>())
+        .map(|(tr, tys)| Bound { tr, tys })
+}
+
+/// `Show a =>` / `(Show a, Ord b) =>` in front of a signature's type -- the
+/// traits its variables have to implement; empty when there is no `=>`. What
+/// comes before the arrow is only known to be a context once the arrow is
+/// there, so without one this reads nothing and the type is read from the
+/// start.
+fn context<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Vec<Bound>, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    choice((
+        bound().map(|b| vec![b]),
+        bound()
+            .separated_by(just(Token::Comma))
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::LParen), just(Token::RParen)),
+    ))
+    .then_ignore(just(Token::FatArrow))
+    .or_not()
+    .map(Option::unwrap_or_default)
+}
+
+/// `<: Eq a, Show a` after a trait's head -- the traits it requires, its
+/// supertraits; empty when there is no `<:`.
+fn supertraits<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Vec<Bound>, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    select! { Token::OpIdent(s) if &*s == "<:" => () }
+        .ignore_then(
+            bound()
+                .separated_by(just(Token::Comma))
+                .at_least(1)
+                .collect::<Vec<_>>(),
+        )
+        .or_not()
+        .map(Option::unwrap_or_default)
+}
+
+/// `where Show a, Ord (f b)` after an `impl` head -- the traits the type's own
+/// parameters have to implement; empty when there is no `where`.
 fn bounds<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, Vec<Bound>, extra::Err<Rich<'a, Token, Span>>> + Clone {
     just(Token::Where)
         .ignore_then(
-            upper_ident()
-                .then(head_ty().repeated().at_least(1).collect::<Vec<_>>())
-                .map(|(tr, tys)| Bound { tr, tys })
+            bound()
                 .separated_by(just(Token::Comma))
                 .at_least(1)
                 .collect::<Vec<_>>(),
@@ -845,10 +915,8 @@ where
             .map_with(|((lo, _), hi), e| {
                 let span = e.span();
                 let one = Located::new(Expr::Lit(Lit::Int(1)), hi.span);
-                let hi1 = Located::new(
-                    Expr::BinOp(Located::new(BinOp::Add, hi.span), hi, one),
-                    span,
-                );
+                let plus = Ident::new(InternedString::from("+"), hi.span);
+                let hi1 = Located::new(Expr::Infix(hi, vec![(plus, one)]), span);
                 let range = Located::new(
                     Expr::Var(Located::new(InternedString::from("range"), span)),
                     span,
@@ -1077,12 +1145,27 @@ where
             .map_with(|(q, n), e| Located::new(Expr::Qual(q, n), e.span()));
 
         // `"a ${e} b"` -- the lexer has already split the literal into its text
-        // and the tokens of each hole.
+        // and the tokens of each hole. A hole that ends in `:?` is rendered by
+        // `Debug` rather than `Display`, as in Rust.
+        let hole = expr
+            .clone()
+            .then(
+                select! { Token::ConOpIdent(s) if &*s == ":?" => () }
+                    .or_not()
+                    .map(|debug| {
+                        if debug.is_some() {
+                            Fmt::Debug
+                        } else {
+                            Fmt::Display
+                        }
+                    }),
+            )
+            .boxed();
         let interp_expr = select! { Token::InterpStart(s) => s }
-            .then(expr.clone())
+            .then(hole.clone())
             .then(
                 select! { Token::InterpMid(s) => s }
-                    .then(expr.clone())
+                    .then(hole)
                     .repeated()
                     .collect::<Vec<_>>(),
             )
@@ -1216,199 +1299,60 @@ where
             })
             .boxed();
 
-        let ops = choice((mac_app, qual, cons, app)).clone().pratt((
-            prefix(6, just(Token::Minus), |_op: Token, exp: Located<Expr>, e| {
-                let span = e.span();
-                let inner_span = exp.span;
-                // Fold `-<literal>` into a signed literal so `-1.5` works without
-                // a `Float -> Float` `neg`; anything else stays `neg <expr>`.
-                match *exp.value {
-                    Expr::Lit(Lit::Float(bits)) => Located::new(
-                        Expr::Lit(Lit::Float((-f64::from_bits(bits)).to_bits())),
-                        span,
-                    ),
-                    Expr::Lit(Lit::Int(n)) => {
-                        Located::new(Expr::Lit(Lit::Int(-n)), span)
+        // An operand: an application, with any number of `-` in front. A `-`
+        // binds tighter than every infix operator, so `-x ^ 2` is `(-x) ^ 2`.
+        let base = choice((mac_app, qual, cons, app)).boxed();
+        let operand = just(Token::Minus)
+            .map_with(|_, e| e.span())
+            .repeated()
+            .collect::<Vec<Span>>()
+            .then(base)
+            .map(|(minuses, e)| {
+                minuses.into_iter().rev().fold(e, |exp: LExpr, at: Span| {
+                    let span = at.extend(exp.span);
+                    let inner_span = exp.span;
+                    // Fold `-<literal>` into a signed literal so `-1.5` works
+                    // without a `Float -> Float` `neg`; anything else stays
+                    // `neg <expr>`.
+                    match *exp.value {
+                        Expr::Lit(Lit::Float(bits)) => Located::new(
+                            Expr::Lit(Lit::Float((-f64::from_bits(bits)).to_bits())),
+                            span,
+                        ),
+                        Expr::Lit(Lit::Int(n)) => Located::new(Expr::Lit(Lit::Int(-n)), span),
+                        other => Located::new(
+                            Expr::UnOp(
+                                Located::new(UnOp::Neg, span),
+                                Located::new(other, inner_span),
+                            ),
+                            span,
+                        ),
                     }
-                    other => Located::new(
-                        Expr::UnOp(
-                            Located::new(UnOp::Neg, span),
-                            Located::new(other, inner_span),
-                        ),
-                        span,
-                    ),
-                }
-            }),
-            // `head :: tail` — sugar for `Cons head tail` (right-associative).
-            infix(
-                right(2),
-                just(Token::ColonColon),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::Cons(
-                            Located::new(InternedString::from("Cons"), e.span()),
-                            vec![left, right],
-                        ),
-                        e.span(),
-                    )
-                },
-            ),
-            // `a ++ b` -- a user operator, so an application of whatever `++`
-            // names in scope. Right-associative, beside `::`.
-            infix(
-                right(2),
-                user_op(),
-                |l: Located<Expr>, op: Ident, r: Located<Expr>, e| {
-                    let f = Located::new(Expr::Var(op.clone()), op.span);
-                    Located::new(Expr::App(f, vec![l, r]), e.span())
-                },
-            ),
-            // Float operators: `*.` `/.` (tight), `+.` `-.` (loose), `<. >. <=. >=.`.
-            infix(
-                left(4),
-                select! { Token::OpIdent(s) if &*s == "*." || &*s == "/." => s },
-                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| float_binop(&s, l, r, e.span()),
-            ),
-            infix(
-                left(3),
-                select! { Token::OpIdent(s) if &*s == "+." || &*s == "-." => s },
-                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| float_binop(&s, l, r, e.span()),
-            ),
-            infix(
-                none(2),
-                select! { Token::OpIdent(s) if matches!(&*s, "<." | ">." | "<=." | ">=.") => s },
-                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| float_binop(&s, l, r, e.span()),
-            ),
-            // Bit shifts, on any integer type — same precedence as `+`/`-`, left-associative.
-            infix(
-                left(3),
-                select! { Token::OpIdent(s) if matches!(&*s, "<<" | ">>" | ">>>") => s },
-                |l: Located<Expr>, s: InternedString, r: Located<Expr>, e| bit_binop(&s, l, r, e.span()),
-            ),
-            // infix ops
-            infix(
-                left(3),
-                just(Token::Plus),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Add, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                left(3),
-                just(Token::Minus),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Sub, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                left(4),
-                just(Token::Star),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Mul, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                left(4),
-                just(Token::Slash),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Div, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                left(4),
-                just(Token::Percent),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Mod, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                right(5),
-                just(Token::Caret),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Pow, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                left(1),
-                just(Token::EqEq),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Eq, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                none(1),
-                just(Token::Neq),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Neq, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                none(2),
-                just(Token::Lt),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Lt, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                none(2),
-                just(Token::Gt),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Gt, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                none(2),
-                just(Token::Leq),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Leq, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-            infix(
-                none(2),
-                just(Token::Geq),
-                |left: Located<Expr>, _, right: Located<Expr>, e| {
-                    Located::new(
-                        Expr::BinOp(Located::new(BinOp::Geq, e.span()), left, right),
-                        e.span(),
-                    )
-                },
-            ),
-        )).boxed();
+                })
+            })
+            .boxed();
 
-        // `and` / `or` sit below every pratt operator and short-circuit (the
+        // Operands and the operators between them, flat: how they group is the
+        // resolver's to say, once it knows every operator's fixity. `::` is one
+        // of them, the list constructor's.
+        let infix_op = choice((
+            operator(),
+            just(Token::ColonColon)
+                .map_with(|_, e| Ident::new(InternedString::from("::"), e.span())),
+        ));
+        let ops = operand
+            .clone()
+            .then(infix_op.then(operand).repeated().collect::<Vec<_>>())
+            .map_with(|(first, rest), e| {
+                if rest.is_empty() {
+                    first
+                } else {
+                    Located::new(Expr::Infix(first, rest), e.span())
+                }
+            })
+            .boxed();
+
+        // `and` / `or` sit below every infix operator and short-circuit (the
         // resolver turns them into `if`). `and` binds tighter than `or`.
         let bin = |op: BinOp| {
             move |l: Located<Expr>, r: Located<Expr>| {
@@ -1464,38 +1408,6 @@ where
     })
 }
 
-/// Build a float-operator `BinOp` node from its symbol (`"+."`, `"<=."`, …).
-fn float_binop(sym: &str, l: LExpr, r: LExpr, span: Span) -> LExpr {
-    let op = match sym {
-        "+." => BinOp::AddF,
-        "-." => BinOp::SubF,
-        "*." => BinOp::MulF,
-        "/." => BinOp::DivF,
-        "<." => BinOp::LtF,
-        ">." => BinOp::GtF,
-        "<=." => BinOp::LeqF,
-        ">=." => BinOp::GeqF,
-        _ => unreachable!("float_binop: {sym}"),
-    };
-    Located::new(Expr::BinOp(Located::new(op, span), l, r), span)
-}
-
-/// Desugar a bit-shift operator (`<<` / `>>` / `>>>`) to a call of the
-/// corresponding `Int` primitive (`shl` / `shr` / `ushr`).
-fn bit_binop(sym: &str, l: LExpr, r: LExpr, span: Span) -> LExpr {
-    let name = match sym {
-        "<<" => "shl",
-        ">>" => "shr",
-        ">>>" => "ushr",
-        _ => unreachable!("bit_binop: {sym}"),
-    };
-    let f = Located::new(
-        Expr::Var(Located::new(InternedString::from(name), span)),
-        span,
-    );
-    Located::new(Expr::App(f, vec![l, r]), span)
-}
-
 /// Turn a parenthesised expression into a lambda if it contains `_` holes:
 /// `(_ + _)` becomes `\_hole0 _hole1 -> _hole0 + _hole1`, `(f _ 3)` becomes
 /// `\_hole0 -> f _hole0 3`. Holes are numbered left-to-right in source order.
@@ -1538,15 +1450,20 @@ fn fill_holes(e: LExpr, n: &mut usize) -> LExpr {
         // The argument is tokens, not expressions: a `_` in there is the
         // macro's to make sense of once it has expanded.
         Expr::MacCall(m) => Expr::MacCall(m),
-        Expr::Interp(texts, holes) => {
-            Expr::Interp(texts, holes.into_iter().map(|x| go(x, n)).collect())
-        }
+        Expr::Interp(texts, holes) => Expr::Interp(
+            texts,
+            holes.into_iter().map(|(x, f)| (go(x, n), f)).collect(),
+        ),
         Expr::Unit => Expr::Unit,
         // A nested lambda owns any holes in its body.
         Expr::Lam(ps, b) => Expr::Lam(ps, b),
         Expr::App(f, args) => Expr::App(go(f, n), args.into_iter().map(|a| go(a, n)).collect()),
         Expr::UnOp(op, x) => Expr::UnOp(op, go(x, n)),
         Expr::BinOp(op, l, r) => Expr::BinOp(op, go(l, n), go(r, n)),
+        Expr::Infix(first, rest) => Expr::Infix(
+            go(first, n),
+            rest.into_iter().map(|(o, x)| (o, go(x, n))).collect(),
+        ),
         Expr::Tuple(xs) => Expr::Tuple(xs.into_iter().map(|x| go(x, n)).collect()),
         Expr::Array(xs) => Expr::Array(xs.into_iter().map(|x| go(x, n)).collect()),
         Expr::List(xs) => Expr::List(xs.into_iter().map(|x| go(x, n)).collect()),
@@ -1877,25 +1794,41 @@ fn lower_ident<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
     .map_with(|name, e| Ident::new(name, e.span()))
 }
 
-/// The operators a program can bind a value to, with `fun (++) a b = ...` or
-/// `def (++) = ...`, and then use infix. Every other operator is a primitive
-/// with a fixed meaning; these are ordinary names that happen to be written
-/// with symbols, so they are scoped, exported and imported like any other.
-pub const USER_OPERATORS: &[&str] = &["++"];
-
-/// A user-bindable operator token, as the name it binds.
-fn user_op<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+/// An operator, as the name it is: any run of symbols the lexer makes an
+/// operator of, and the ones it gives tokens of their own. Not `::`, which is
+/// the list constructor's, nor `|>` and `<|`, which are application written
+/// backwards and forwards, nor anything that is punctuation: `=`, `->`, `|`,
+/// `\\`, `@`, `.`.
+fn operator<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
     select! {
-        Token::OpIdent(name) if USER_OPERATORS.contains(&&*name) => name
+        Token::OpIdent(name) if &*name != ".*" => name,
+        Token::Plus => InternedString::from("+"),
+        Token::Minus => InternedString::from("-"),
+        Token::Star => InternedString::from("*"),
+        Token::Slash => InternedString::from("/"),
+        Token::Percent => InternedString::from("%"),
+        Token::Caret => InternedString::from("^"),
+        Token::EqEq => InternedString::from("=="),
+        Token::Neq => InternedString::from("!="),
+        Token::Lt => InternedString::from("<"),
+        Token::Gt => InternedString::from(">"),
+        Token::Leq => InternedString::from("<="),
+        Token::Geq => InternedString::from(">="),
     }
     .map_with(|name, e| Ident::new(name, e.span()))
+}
+
+/// An operator in a `use` list: bare, `(concat, ++)`, as `operator` reads it.
+fn user_op<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    operator()
 }
 
 /// A name a value is bound to: `x`, or an operator in parentheses, `(++)`.
 fn value_ident<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
-    lower_ident().or(user_op().delimited_by(just(Token::LParen), just(Token::RParen)))
+    lower_ident().or(operator().delimited_by(just(Token::LParen), just(Token::RParen)))
 }
 
 fn upper_ident<'a, I: ValueInput<'a, Token = Token, Span = Span>>()

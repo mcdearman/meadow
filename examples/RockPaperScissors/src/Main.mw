@@ -12,9 +12,11 @@ use Std.String as S
 use Std.Test (assertEq)
 
 use Choice.*
+@derive(Debug, PartialEq, Eq)
 data Choice = Rock | Paper | Scissors
 
 use Outcome.*
+@derive(Debug, PartialEq, Eq)
 data Outcome = Win | Lose | Draw
 
 fun choiceName c =

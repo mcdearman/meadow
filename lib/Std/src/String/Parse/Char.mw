@@ -1,0 +1,136 @@
+-- Std.String.Parse.Char: parsers of streams of `Char`s, after megaparsec's
+-- `Text.Megaparsec.Char`.
+--
+--   use Std.String.Parse as P
+--   use Std.String.Parse.Char as C
+--
+--   def greeting = P.skipThen (C.string "hello") (P.skipThen C.space1 (P.some C.letterChar))
+--
+-- Everything here works on any stream whose tokens are `Char`s -- a `String`,
+-- or a `[Char]` -- because it asks nothing of the stream but `Stream`, and
+-- compares its tokens with `Char`s.
+
+use Std.String.Parse as P
+use Std.Char as Ch
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+use Std.Bool (not)
+
+-- --- single characters ---------------------------------------------------------
+
+-- Exactly this character.
+@pub fun char c = P.single c
+
+-- This character, in either case.
+@pub fun charCI c =
+  P.label (show c)
+    (P.satisfy (\x -> Ch.toLower x == Ch.toLower c))
+
+-- A newline, `\n`.
+@pub fun newline = P.label "newline" (char '\n')
+
+-- A carriage return and a newline, `\r\n`, as one chunk.
+@pub fun crlf = string "\r\n"
+
+-- The end of a line: `\n` or `\r\n`.
+@pub fun eol = P.label "end of line" (P.alt (P.map P.tokenToChunk newline) crlf)
+
+-- A tab, `\t`.
+@pub fun tab = P.label "tab" (char '\t')
+
+-- Any character.
+@pub fun anyChar = P.anySingle
+
+-- --- runs of characters --------------------------------------------------------
+
+-- Exactly this text, or nothing consumed.
+@pub fun string text = P.chunk (P.tokensToChunk (V.fromArray (stringToChars text)))
+
+-- This text, in any mix of cases. What it answers is the input's own spelling.
+@pub fun stringCI text =
+  let want = V.map Ch.toLower (V.fromArray (stringToChars text)) in
+  P.label (show text)
+    (P.try
+      (P.bind (P.takeP "a word" (V.len want))
+        (\got ->
+          if V.map Ch.toLower (P.chunkToTokens got) == want then P.pure got
+          else P.empty)))
+
+-- --- white space ---------------------------------------------------------------
+
+fun isHorizontal c = c == ' ' or c == '\t'
+
+-- Zero or more white-space characters, newlines among them. Says nothing about
+-- what it wanted, which is always better left out of a message.
+@pub fun space = P.void (P.takeWhileP Ch.isSpace)
+
+-- One or more white-space characters.
+@pub fun space1 = P.void (P.takeWhile1P "white space" Ch.isSpace)
+
+-- Zero or more spaces and tabs: white space that stays on the line.
+@pub fun hspace = P.void (P.takeWhileP isHorizontal)
+
+-- One or more spaces and tabs.
+@pub fun hspace1 = P.void (P.takeWhile1P "white space" isHorizontal)
+
+-- --- classes -------------------------------------------------------------------
+
+-- A white-space character.
+@pub fun spaceChar = P.label "white space" (P.satisfy Ch.isSpace)
+
+-- An upper-case ASCII letter.
+@pub fun upperChar = P.label "an uppercase letter" (P.satisfy Ch.isUpper)
+
+-- A lower-case ASCII letter.
+@pub fun lowerChar = P.label "a lowercase letter" (P.satisfy Ch.isLower)
+
+-- An ASCII letter.
+@pub fun letterChar = P.label "a letter" (P.satisfy Ch.isAlpha)
+
+-- An ASCII letter or digit.
+@pub fun alphaNumChar = P.label "a letter or digit" (P.satisfy Ch.isAlphaNum)
+
+-- A decimal digit.
+@pub fun digitChar = P.label "a digit" (P.satisfy Ch.isDigit)
+
+-- `0` or `1`.
+@pub fun binDigitChar = P.label "a binary digit" (P.satisfy (\c -> c == '0' or c == '1'))
+
+-- `0` to `7`.
+@pub fun octDigitChar = P.label "an octal digit" (P.satisfy (Ch.isBetween '0' '7'))
+
+-- A hexadecimal digit, in either case.
+@pub fun hexDigitChar = P.label "a hexadecimal digit" (P.satisfy Ch.isHexDigit)
+
+-- A character below 128.
+@pub fun asciiChar = P.label "an ASCII character" (P.satisfy Ch.isAscii)
+
+-- A character that is not a control character.
+@pub fun printChar =
+  P.label "a printable character" (P.satisfy (\c -> Ch.code c >= 32 and Ch.code c != 127))
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Result (isOk)
+use Std.Result.Result.*
+
+@test fun charactersAndStrings () =
+  let a = assertEq (P.runParser (char 'x') "xy") (Ok 'x') "char" in
+  let b = assertEq (P.runParser (string "let") "let x") (Ok "let") "string" in
+  let c = assertEq (P.runParser (stringCI "LeT") "lEt") (Ok "lEt") "stringCI keeps the input's spelling" in
+  assertEq (P.runParser (charCI 'q') "Q") (Ok 'Q') "charCI"
+
+@test fun whiteSpaceAndLines () =
+  let a = assertEq (P.runParser (P.skipThen space (char 'x')) " \n\t x") (Ok 'x') "space" in
+  let b = assertEq (P.runParser (P.skipThen hspace eol) "  \r\n") (Ok "\r\n") "hspace, then a CRLF" in
+  assertFalse (isOk (P.runParser space1 "x")) "space1 wants one"
+
+@test fun classesSayWhatTheyWanted () =
+  match P.runParser digitChar "x" with
+  | Ok _ -> assertTrue False "it should fail"
+  | Err e -> assertEq (P.parseErrorTextPretty e) "unexpected 'x'\nexpecting a digit\n" "labelled"
+
+@test fun aVectorOfCharsWorksToo () =
+  let input = V.fromArray (stringToChars "ab1") in
+  assertEq (P.runParser (P.some letterChar) input) (Ok ['a', 'b']) "any stream of Chars"

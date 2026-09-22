@@ -11,6 +11,7 @@ use Std.Maybe (isSome)
 use Std.Maybe.Maybe.*
 
 use Map.*
+@derive(Debug, Display)
 @pub data Map v = Tip | Node (Map v) Int v (Map v)
 
 @pub def empty = Tip
@@ -115,6 +116,25 @@ fun removeRoot l r =
       let _ = toStream l in
       let _ = yield (k, v) in
       toStream r
+
+-- --- comparing -----------------------------------------------------------------
+
+-- By their entries in key order, not by the shape of the tree beneath.
+
+impl PartialEq (Map a) where PartialEq a {
+  fun (==) x y = toList x == toList y
+}
+
+impl Eq (Map a) where Eq a {
+}
+
+impl PartialOrd (Map a) where PartialOrd a {
+  fun partialCmp x y = partialCmp (toList x) (toList y)
+}
+
+impl Ord (Map a) where Ord a {
+  fun compare x y = compare (toList x) (toList y)
+}
 
 -- --- tests -------------------------------------------------------------------
 

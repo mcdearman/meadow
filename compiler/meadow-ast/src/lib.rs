@@ -2,9 +2,9 @@
 //!
 //! Every node is wrapped in [`span::Located`] (value + source [`Span`]). Names are
 //! still plain [`InternedString`]s here; [`meadow_rename`] turns them into
-//! [`meadow_hir::VarId`]s and stamps node ids. Operators live as [`UnOp`] / [`BinOp`]
-//! and are desugared to primitive calls during resolution, so the HIR has no
-//! operator nodes.
+//! [`meadow_hir::VarId`]s and stamps node ids. Operators live as [`UnOp`] and
+//! [`Expr::Infix`] chains, which the resolver groups by fixity and turns into
+//! calls, so the HIR has no operator nodes.
 //!
 //! [`Span`]: meadow_span::Span
 
@@ -152,13 +152,15 @@ pub enum Decl {
     /// `fun name : T` / `def name : T` -- the type of a top-level binding,
     /// declared on a line of its own. Its variables are the binding's to be
     /// general in, as a Haskell signature's are.
-    /// With `where Show a, Ord b` after the type: the traits its variables
+    /// With `(Show a, Ord b) =>` in front of the type: the traits its variables
     /// have to implement.
     Sig(Ident, LType, Vec<Bound>),
     /// `trait Show a { fun show : a -> String }`
     Trait(TraitDecl),
     /// `impl Show Int { fun show n = … }`
     Impl(ImplDecl),
+    /// `infixl 6 +, -` -- how the operators named bind.
+    Fixity(Assoc, u8, Vec<Ident>),
     /// One or more `@attr` lines in front of another declaration.
     Attributed(Vec<Attr>, Box<LDecl>),
     /// `derive! { Show for Colour }` -- a macro call standing where a
@@ -178,7 +180,7 @@ pub struct Bound {
     pub tys: Vec<LType>,
 }
 
-/// `trait Container f where Eq f { type Elem f  fun insert : Elem f -> f -> f }`
+/// `trait Container f <: Eq f { type Elem f  fun insert : Elem f -> f -> f }`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraitDecl {
     pub name: Ident,
@@ -207,6 +209,22 @@ pub struct ImplDecl {
     /// what it is.
     pub assocs: Vec<(Ident, Vec<LType>, LType)>,
     pub methods: Vec<Bind>,
+}
+
+/// How an interpolated hole is rendered: `${x}` by `Display`, `${x:?}` by
+/// `Debug`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fmt {
+    Display,
+    Debug,
+}
+
+/// Which way an operator groups -- see `meadow_hir::Assoc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Assoc {
+    Left,
+    Right,
+    None,
 }
 
 /// A `macro` declaration: a name and the rules tried in order.
@@ -347,10 +365,11 @@ pub type LExpr = Located<Expr>;
 pub enum Expr {
     Var(Ident),
     Lit(Lit),
-    /// `"a ${x} b ${y}"` -- a string literal with expressions in it: its text,
-    /// unescaped, and its holes, alternating. There is one more piece of text
-    /// than there are holes; any piece may be empty.
-    Interp(Vec<InternedString>, Vec<LExpr>),
+    /// `"a ${x} b ${y:?}"` -- a string literal with expressions in it: its
+    /// text, unescaped, and its holes, alternating. There is one more piece of
+    /// text than there are holes; any piece may be empty. A hole is rendered by
+    /// `Display`, or by `Debug` when it ends in `:?`, as in Rust.
+    Interp(Vec<InternedString>, Vec<(LExpr, Fmt)>),
     Lam(Vec<LPat>, LExpr),
     App(LExpr, Vec<LExpr>),
     Let(Vec<Bind>, LExpr),
@@ -359,7 +378,13 @@ pub enum Expr {
     /// condition it is taken on if it has one, and its body.
     Match(LExpr, Vec<(LPat, Option<LExpr>, LExpr)>),
     UnOp(LUnOp, LExpr),
+    /// `and` / `or`, which short-circuit, and so are not operators a program
+    /// can define.
     BinOp(LBinOp, LExpr, LExpr),
+    /// `a + b * c` -- operands and the operators between them, as written.
+    /// How they group is not known until every operator's fixity is: the
+    /// resolver reads the declarations (`infixl 6 +`) and builds the tree.
+    Infix(LExpr, Vec<(Ident, LExpr)>),
     Tuple(Vec<LExpr>),
     /// `#[e, ...]` -- a builtin `Array` literal.
     Array(Vec<LExpr>),
@@ -408,58 +433,18 @@ pub type LBinOp = Located<BinOp>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    Pow,
-    Eq,
-    Neq,
-    Lt,
-    Gt,
-    Leq,
-    Geq,
-    /// `and` / `or` — short-circuiting; the resolver desugars them to `if`, so
-    /// they never reach a primitive.
+    /// `and` / `or` -- short-circuiting; the resolver desugars them to `if`,
+    /// which is why they are not operators a program can define. Every other
+    /// operator is an [`Expr::Infix`].
     And,
     Or,
-    /// Floating-point `+. -. *. /.` and `<. >. <=. >=.`.
-    AddF,
-    SubF,
-    MulF,
-    DivF,
-    LtF,
-    GtF,
-    LeqF,
-    GeqF,
 }
 
 impl ToString for BinOp {
     fn to_string(&self) -> String {
         match self {
-            BinOp::Add => "+",
-            BinOp::Sub => "-",
-            BinOp::Mul => "*",
-            BinOp::Div => "/",
-            BinOp::Mod => "%",
-            BinOp::Pow => "^",
-            BinOp::Eq => "==",
-            BinOp::Neq => "!=",
-            BinOp::Lt => "<",
-            BinOp::Gt => ">",
-            BinOp::Leq => "<=",
-            BinOp::Geq => ">=",
-            BinOp::And => "&&",
-            BinOp::Or => "||",
-            BinOp::AddF => "+.",
-            BinOp::SubF => "-.",
-            BinOp::MulF => "*.",
-            BinOp::DivF => "/.",
-            BinOp::LtF => "<.",
-            BinOp::GtF => ">.",
-            BinOp::LeqF => "<=.",
-            BinOp::GeqF => ">=.",
+            BinOp::And => "and",
+            BinOp::Or => "or",
         }
         .to_string()
     }

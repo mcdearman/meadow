@@ -1,0 +1,123 @@
+-- The operators, as methods of traits.
+--
+-- `a + b` is `(+) a b`, and `(+)` is `Add`'s method, so a type of your own gets
+-- `+` with an `impl Add` -- and a function that adds without knowing what asks
+-- its caller for `Add`, as it would for any trait. Every `impl` here is a
+-- primitive and nothing more; the compiler turns a call of one at a known type
+-- back into that primitive, so `x + y` at `Int` costs what it always did.
+--
+-- This is the first module of `Std`, so every other one has these in scope,
+-- and so does every package that depends on `Std`.
+
+infixr 8 ^
+infixl 7 *, /, %, *., /.
+infixl 6 +, -, +., -., <<, >>, >>>
+infix 4 ==, !=, <, >, <=, >=, <., >., <=., >=.
+
+-- Arithmetic, one trait per operator, so that a type may have `+` without `/`.
+
+@pub trait Add a {
+  fun (+) : a -> a -> a
+}
+
+@pub trait Sub a {
+  fun (-) : a -> a -> a
+}
+
+@pub trait Mul a {
+  fun (*) : a -> a -> a
+}
+
+@pub trait Div a {
+  fun (/) : a -> a -> a
+}
+
+@pub trait Rem a {
+  fun (%) : a -> a -> a
+}
+
+@pub trait Pow a {
+  fun (^) : a -> a -> a
+}
+
+-- `==` and `<` are `Std.Cmp`'s: `PartialEq`, `Eq`, `PartialOrd` and `Ord`,
+-- after the types their methods answer with. Until then, as without `Std`,
+-- they are the primitives.
+
+-- Shifts, by an `Int` whatever the type shifted.
+
+@pub trait Shift a {
+  fun (<<) : a -> Int -> a
+  fun (>>) : a -> Int -> a
+  fun (>>>) : a -> Int -> a
+}
+
+-- The float operators: `1.5 +. x`. Separate from `+` so that a literal says by
+-- its operator which kind of number it is.
+
+@pub trait Floating a {
+  fun (+.) : a -> a -> a
+  fun (-.) : a -> a -> a
+  fun (*.) : a -> a -> a
+  fun (/.) : a -> a -> a
+  fun (<.) : a -> a -> Bool
+  fun (>.) : a -> a -> Bool
+  fun (<=.) : a -> a -> Bool
+  fun (>=.) : a -> a -> Bool
+}
+
+impl Floating Float {
+  fun (+.) x y = _primAddF x y
+  fun (-.) x y = _primSubF x y
+  fun (*.) x y = _primMulF x y
+  fun (/.) x y = _primDivF x y
+  fun (<.) x y = _primLtF x y
+  fun (>.) x y = _primGtF x y
+  fun (<=.) x y = _primLeF x y
+  fun (>=.) x y = _primGeF x y
+}
+
+impl Floating Float32 {
+  fun (+.) x y = _primAddF x y
+  fun (-.) x y = _primSubF x y
+  fun (*.) x y = _primMulF x y
+  fun (/.) x y = _primDivF x y
+  fun (<.) x y = _primLtF x y
+  fun (>.) x y = _primGtF x y
+  fun (<=.) x y = _primLeF x y
+  fun (>=.) x y = _primGeF x y
+}
+
+-- Every integer type has all of the integer operators, from the same
+-- primitives.
+
+macro integer
+  | ($( $t : ident ),*) -> {
+      $(
+        impl Add $t {
+          fun (+) x y = _primAdd x y
+        }
+        impl Sub $t {
+          fun (-) x y = _primSub x y
+        }
+        impl Mul $t {
+          fun (*) x y = _primMul x y
+        }
+        impl Div $t {
+          fun (/) x y = _primDiv x y
+        }
+        impl Rem $t {
+          fun (%) x y = _primMod x y
+        }
+        impl Pow $t {
+          fun (^) x y = _primPow x y
+        }
+        impl Shift $t {
+          fun (<<) x n = _primShl x n
+          fun (>>) x n = _primShr x n
+          fun (>>>) x n = _primUshr x n
+        }
+      )*
+  }
+
+integer! { Int, BigInt, Int8, Int16, Int32, UInt8, UInt16, UInt32, UInt64 }

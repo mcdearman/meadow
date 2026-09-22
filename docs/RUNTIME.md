@@ -143,6 +143,46 @@ registers](#method-entries-and-the-fixed-registers) -- and `fib` is 1.8x
 faster for it. The interpreter still does, and the two agree by construction:
 the method entry lays out exactly the registers `Op::Invoke` would.
 
+### Tail recursion modulo cons
+
+`compiler/meadow-core/src/trmc.rs`.
+
+Every tail call is a jump for free -- there is no `call` to optimise away --
+but `f x :: map f rest` is not a tail call: the cons waits for the recursive
+call, so a `map` over a million elements pushes a million frames. The stack
+never overflows, being chunks on the heap, but those frames are live until the
+end, and each one is a push, a return and a scan at every collection.
+
+From O1, after `simplify`, `meadow_core::trmc` rewrites every top-level function
+whose tail position is a constructor with a saturated call of itself in one
+field (the last such field, with only values after it, so that nothing is
+reordered). It makes a twin in destination-passing style, `map_dps dst i f xs`,
+which writes what `map f xs` would have answered into field `i` of `dst`: at the
+constructor it builds the cell with a placeholder in that field, writes the
+cell into `dst`, and continues with `map_dps cell k …` -- a tail call, so the
+whole list is built front to back in a loop. A tail call of `map` itself
+continues with the same destination; anything else is written into it. `map`
+itself changes only at the constructor, which builds the first cell, hands it
+to the twin, and answers it.
+
+The write is `Prim::SetField`, which on the bytecode machine is the heap's
+barriered field store (`Heap::set_field`): a cell that was promoted while the
+recursion ran is remembered like any old object that comes to point at a young
+one, and the store takes the mutation lock while a marking cycle runs. The
+placeholder is a value of the field's own type, so that the cell has the
+representation its type says at every moment and nothing downstream has to know
+about holes: in the twin it is `dst`, which costs nothing; for the first cell,
+a nullary constructor of the type (`Nil`), and a type with none is not
+rewritten. Nothing can observe the write: until the outermost call answers,
+the chain of cells is reachable only from its frame, and resumptions are
+one-shot. The sequent machine lets a constructor's fields be written for this
+one primitive; the CEK machine never sees it, since it runs core as lowering
+wrote it.
+
+On a `map` of a million-element list: 3.0s → 1.07s on the interpreter, 856ms →
+655ms on the debug JIT, and even in a release executable. `MEADOW_NO_TRMC=1`
+turns the pass off.
+
 ### A register is a word, and types become descriptors
 
 Registers and object fields hold 64-bit words with no tags. An `Int`, a `Float`
@@ -202,6 +242,18 @@ in depth, which only polymorphic recursion reaches. `MEADOW_KEEP_DICTIONARIES=1`
 turns the pass off. On a loop that does nothing but call methods: 1.97s → 0.41s
 on the debug JIT, 5.9s → 2.0s on the interpreter, 676ms → 277ms as a release
 executable.
+
+The operators go through the same machinery. `Std.Ops` defines `+`, `==`, `<<`
+and the rest as methods of traits whose `impl`s are a primitive of their
+parameters and nothing else (`fun (+) x y = _primAdd x y`), so the pass also
+rewrites a saturated call of such a method -- once a known dictionary has
+turned the selection into a direct call -- into the primitive itself, carrying
+the `impl`'s types: `x + y` at `Int` reaches bytecode as the `AddI` it was when
+`+` was built in. `impl Eq a`, the one `impl` for every type, is a dictionary
+with type parameters and no dictionary parameters, copied at known types like a
+function and known from then on. A program that does not depend on `Std` has
+no operator traits at all: the resolver falls back to the `_prim` primitive an
+operator names where no definition of it is in scope.
 
 The CEK machine runs the program as lowering wrote it, dictionaries and all,
 which is what every differential test compares the copies against.

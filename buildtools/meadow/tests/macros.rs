@@ -1291,6 +1291,7 @@ use Std.Macro.TokenTree.*
 
 #[test]
 fn a_derive_that_names_nothing_is_reported() {
+    // A derive is a macro, as in Rust: a trait alone is not enough.
     let app = with_macro(
         "derive-missing",
         SHOUT,
@@ -1302,4 +1303,54 @@ fn a_derive_that_names_nothing_is_reported() {
             .any(|e| e.contains("there is no macro to derive `Nothing` with")),
         "{errs:?}"
     );
+}
+
+#[test]
+fn a_trait_with_defaults_still_needs_a_macro_to_derive() {
+    let src = r#"trait Greet a {
+  fun greet : a -> String
+  fun greet x = "hello"
+}
+
+@derive(Greet)
+data Who = World
+
+def main = 1
+"#;
+    let errs = common::errors_std_with(src, meadow::Options::debug());
+    assert!(
+        errs.contains("there is no macro to derive `Greet` with"),
+        "{errs}"
+    );
+}
+
+#[test]
+fn debug_and_display_are_derived_by_the_compilers_own_macros() {
+    let src = r#"@derive(Debug, Display)
+data Shape = Circle Float | Rect { w : Int, h : Int } | Dot
+
+@derive(Debug)
+record Pt = { name : String, at : (Int, Int) }
+
+@derive(Debug, Display)
+data Pair a = Pair a a
+
+def main =
+  ( "${Shape.Rect { w = 2, h = 3 }} ${Shape.Dot:?} ${Shape.Circle 1.5:?}"
+  , "${Pt { name = "o", at = (1, 2) }:?}"
+  , "${Pair "a" "b"} ${Pair "a" "b":?}"
+  )
+"#;
+    assert_eq!(
+        common::eval_main_std(src),
+        r#"("Rect(2, 3) Dot Circle(1.5)", "Pt(\"o\", (1, 2))", "Pair(a, b) Pair(\"a\", \"b\")")"#
+    );
+}
+
+#[test]
+fn a_derived_impl_asks_for_its_parameters_traits() {
+    // `Pair a` is `Debug` when `a` is: a function is not.
+    let src = "@derive(Debug)\ndata Pair a = Pair a a\n\ndef main = \"${Pair (\\x -> x) (\\x -> x):?}\"\n";
+    let errs = common::errors_std_with(src, meadow::Options::debug());
+    assert!(errs.contains("does not implement `Debug`"), "{errs}");
 }

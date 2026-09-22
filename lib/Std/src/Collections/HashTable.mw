@@ -27,13 +27,13 @@
 
 use Std.St as St
 use Std.Maybe.Maybe.*
-use Std.Ordering (compare)
 use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 
 -- A slot: never used; used and then deleted, which a probe steps over; or an
 -- entry, with its key's hash.
 use Slot.*
+@derive(Debug, Display, PartialEq, Eq)
 @pub data Slot k v
   = Empty
   | Tomb

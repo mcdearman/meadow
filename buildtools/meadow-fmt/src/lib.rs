@@ -580,7 +580,7 @@ impl Indenter {
 fn starts_declaration(toks: &[Tok<'_>]) -> bool {
     match toks.first_text() {
         "mod" | "use" | "def" | "fun" | "data" | "record" | "effect" | "type" | "trait"
-        | "impl" => true,
+        | "impl" | "infix" | "infixl" | "infixr" => true,
         // `@pub`, `@attr(…)` — an attribute, not a user-defined `@` operator.
         "@" => toks
             .get(1)

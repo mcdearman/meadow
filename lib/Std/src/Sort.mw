@@ -31,7 +31,7 @@
 -- nothing but `Ref`, at the cost of an allocation per element and a `Mut` in
 -- every caller's type.)
 
-use Std.Ordering (compare, isLess, isGreater)
+use Std.Ordering (isLess, isGreater)
 use Std.Num.Bits (countLeadingZeros)
 use Std.Tuple (fst, snd)
 use Std.Collections.Vector as V

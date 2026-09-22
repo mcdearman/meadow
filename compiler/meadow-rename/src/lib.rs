@@ -181,6 +181,13 @@ pub struct Resolver {
     /// driver from this module's `mod` children and `use`d modules; consulted when
     /// resolving `Foo.name`.
     qualifiers: HashMap<InternedString, HashMap<InternedString, VarId>>,
+    /// How every operator binds that something declared: this unit's own
+    /// `infixl 6 +` and its dependencies'. One table for the whole unit,
+    /// because an operator's fixity goes by its spelling, not by which
+    /// definition of it is in scope -- the grouping of `a + b * c` has to be
+    /// settled before anything is looked up. The language's own operators are
+    /// in [`hir::OPERATORS`], which a declaration may repeat but not contradict.
+    fixities: HashMap<InternedString, (hir::Fixity, Option<Span>)>,
     errors: Vec<Diagnostic>,
 }
 
@@ -572,8 +579,184 @@ impl Resolver {
             test_vars: Vec::new(),
             macro_vars: Vec::new(),
             qualifiers: HashMap::new(),
+            fixities: HashMap::new(),
             errors: Vec::new(),
         }
+    }
+
+    // --- fixity -----------------------------------------------------------
+
+    /// Take in a module's fixity declarations, before any module is resolved:
+    /// an operator can be used in a module before the one that declares it.
+    pub fn declare_fixities(&mut self, decls: &[ast::LDecl]) {
+        for decl in decls {
+            let (_, base) = peel(decl);
+            let ast::Decl::Fixity(assoc, level, ops) = base.value() else {
+                continue;
+            };
+            let fixity = hir::Fixity {
+                assoc: match assoc {
+                    ast::Assoc::Left => hir::Assoc::Left,
+                    ast::Assoc::Right => hir::Assoc::Right,
+                    ast::Assoc::None => hir::Assoc::None,
+                },
+                level: *level,
+            };
+            if *level > 9 {
+                self.error(
+                    format!("fixity level {level} is out of range"),
+                    "levels run from 0 to 9".to_string(),
+                    base.span,
+                );
+                continue;
+            }
+            for op in ops {
+                let name = *op.value();
+                if let Some((builtin, _)) = hir::builtin_operator(&name) {
+                    if builtin != fixity {
+                        self.error(
+                            format!(
+                                "`{name}` is `{} {}` in the language itself",
+                                builtin.keyword(),
+                                builtin.level
+                            ),
+                            "a declaration may repeat that, but not change it".to_string(),
+                            op.span,
+                        );
+                    }
+                    continue;
+                }
+                match self.fixities.get(&name) {
+                    Some((before, _)) if *before != fixity => {
+                        let before = *before;
+                        self.error(
+                            format!(
+                                "`{name}` was already declared `{} {}`",
+                                before.keyword(),
+                                before.level
+                            ),
+                            "an operator binds one way everywhere".to_string(),
+                            op.span,
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.fixities.insert(name, (fixity, Some(op.span)));
+                    }
+                }
+            }
+        }
+    }
+
+    /// A dependency's fixity declaration. Its package already checked it.
+    pub fn import_fixity(&mut self, name: InternedString, fixity: hir::Fixity) {
+        self.fixities.entry(name).or_insert((fixity, None));
+    }
+
+    /// Every fixity this unit knows beyond the language's, its own and its
+    /// dependencies', for its dependents: a fixity is not scoped, so one a
+    /// package's dependency declared binds in whatever uses that package.
+    pub fn fixities(&self) -> Vec<(InternedString, hir::Fixity)> {
+        let mut own = self
+            .fixities
+            .iter()
+            .map(|(name, (f, _))| (*name, *f))
+            .collect_vec();
+        own.sort_by(|a, b| a.0.cmp(&b.0));
+        own
+    }
+
+    fn fixity(&self, op: InternedString) -> hir::Fixity {
+        let op = ast::hygiene::strip(op);
+        hir::builtin_operator(&op)
+            .map(|(f, _)| f)
+            .or_else(|| self.fixities.get(&op).map(|(f, _)| *f))
+            .unwrap_or(hir::Fixity::DEFAULT)
+    }
+
+    /// The primitive an operator means where nothing else of its name is in
+    /// scope: `_primAdd` for `+`, in a program built without `Std`.
+    fn operator_prim(&self, op: InternedString) -> Option<VarId> {
+        let op = ast::hygiene::strip(op);
+        let (_, prim) = hir::builtin_operator(&op)?;
+        self.prim(prim?)
+    }
+
+    /// Group `a + b * c == d` by the fixities of its operators, into the calls
+    /// it means: `(==) ((+) a ((*) b c)) d`. `x :: xs` is the list constructor.
+    ///
+    /// The usual operator-precedence parse. An operator on the stack is
+    /// applied before the next one is pushed when it binds tighter, or as
+    /// tightly and both group left; two of one level that do not group the same
+    /// way -- or that group neither way, as `a == b == c` -- are an error, as
+    /// they are in Haskell, since no reading of them is the obvious one.
+    fn reassociate(&mut self, first: &ast::LExpr, rest: &[(ast::Ident, ast::LExpr)]) -> ast::LExpr {
+        fn apply(out: &mut Vec<ast::LExpr>, op: ast::Ident) {
+            let r = out.pop().expect("an operand for each operator");
+            let l = out.pop().expect("an operand for each operator");
+            let span = l.span.extend(r.span);
+            let node = if &*ast::hygiene::strip(*op.value()) == "::" {
+                ast::Expr::Cons(
+                    ast::Ident::new(InternedString::from("Cons"), op.span),
+                    vec![l, r],
+                )
+            } else {
+                let f = ast::LExpr::new(ast::Expr::Var(op.clone()), op.span);
+                ast::Expr::App(f, vec![l, r])
+            };
+            out.push(ast::LExpr::new(node, span));
+        }
+
+        let mut out = vec![first.clone()];
+        let mut stack: Vec<(ast::Ident, hir::Fixity)> = Vec::new();
+        for (op, operand) in rest {
+            let here = self.fixity(*op.value());
+            while let Some((top, there)) = stack.last() {
+                let first_goes = match there.level.cmp(&here.level) {
+                    std::cmp::Ordering::Greater => true,
+                    std::cmp::Ordering::Less => false,
+                    std::cmp::Ordering::Equal => match (there.assoc, here.assoc) {
+                        (hir::Assoc::Left, hir::Assoc::Left) => true,
+                        (hir::Assoc::Right, hir::Assoc::Right) => false,
+                        _ => {
+                            let (a, b) = (
+                                ast::hygiene::strip(*top.value()),
+                                ast::hygiene::strip(*op.value()),
+                            );
+                            let (fa, fb) = (*there, here);
+                            let msg = if a == b && fa.assoc == hir::Assoc::None {
+                                format!(
+                                    "`{a}` is `{} {}`, which does not group: `x {a} y {a} z` means nothing",
+                                    fa.keyword(),
+                                    fa.level
+                                )
+                            } else {
+                                format!(
+                                    "`{a}` (`{} {}`) and `{b}` (`{} {}`) cannot be mixed without parentheses",
+                                    fa.keyword(),
+                                    fa.level,
+                                    fb.keyword(),
+                                    fb.level
+                                )
+                            };
+                            self.error(msg, "add parentheses".to_string(), op.span);
+                            true
+                        }
+                    },
+                };
+                if !first_goes {
+                    break;
+                }
+                let (top, _) = stack.pop().expect("just looked");
+                apply(&mut out, top);
+            }
+            stack.push((op.clone(), here));
+            out.push(operand.clone());
+        }
+        while let Some((op, _)) = stack.pop() {
+            apply(&mut out, op);
+        }
+        out.pop().expect("one expression left")
     }
 
     // --- modules ----------------------------------------------------------
@@ -926,6 +1109,16 @@ impl Resolver {
         self.scope
             .get(i)
             .filter(|(n, _)| &**n == name)
+            .map(|(_, id)| *id)
+    }
+
+    /// `name` as the dependencies bring it in, below anything the module
+    /// itself binds: what an interpolated string renders with.
+    fn base_lookup(&self, name: &str) -> Option<VarId> {
+        self.scope[..self.base_scope.min(self.scope.len())]
+            .iter()
+            .rev()
+            .find(|(n, _)| &**n == name)
             .map(|(_, id)| *id)
     }
 
@@ -2066,6 +2259,9 @@ impl Resolver {
                 self.node(hir::Decl::Error, decl.span)
             }
             ast::Decl::Attributed(_, inner) => self.resolve_bare_decl(inner),
+            // Taken in before any module was resolved (`declare_fixities`);
+            // nothing is left of it here.
+            ast::Decl::Fixity(..) => self.node(hir::Decl::Use(Vec::new()), decl.span),
             ast::Decl::Bind(bind) => {
                 self.toplevel = true;
                 // A type variable an annotation introduces belongs to *this*
@@ -2928,12 +3124,15 @@ impl Resolver {
                 self.node(hir::Expr::Lit(l), expr.span)
             }
             ast::Expr::Unit => self.node(hir::Expr::Unit, expr.span),
-            // `"a ${x} b"` is `concatStrings #["a ", display x, " b"]`, naming
-            // the two primitives themselves: a `display` the program defines
-            // is not what a string literal means.
+            // `"a ${x} b ${y:?}"` is `concatStrings #["a ", display x, " b ",
+            // debug y]`: `Display`'s method and `Debug`'s, as the dependencies
+            // bring them in -- not whatever a program calls `display` itself --
+            // or, with no `Std`, the primitives that render anything.
             ast::Expr::Interp(texts, holes) => {
-                let (Some(concat), Some(display)) =
-                    (self.prim("concatStrings"), self.prim("display"))
+                let display = self.base_lookup("display").or_else(|| self.prim("display"));
+                let debug = self.base_lookup("debug").or_else(|| self.prim("show"));
+                let (Some(concat), Some(display), Some(debug)) =
+                    (self.prim("concatStrings"), display, debug)
                 else {
                     self.error(
                         "string interpolation needs the primitives".to_string(),
@@ -2947,9 +3146,13 @@ impl Resolver {
                     if !text.is_empty() {
                         parts.push(self.node(hir::Expr::Lit(hir::Lit::String(*text)), expr.span));
                     }
-                    if let Some(hole) = holes.get(i) {
+                    if let Some((hole, fmt)) = holes.get(i) {
                         let value = self.resolve_expr(hole);
-                        let f = self.node(display, hole.span);
+                        let render = match fmt {
+                            ast::Fmt::Display => display,
+                            ast::Fmt::Debug => debug,
+                        };
+                        let f = self.node(render, hole.span);
                         let callee = self.node(hir::Expr::Var(f), hole.span);
                         parts.push(self.node(hir::Expr::App(callee, vec![value]), hole.span));
                     }
@@ -2978,6 +3181,10 @@ impl Resolver {
                     if ids.len() > 1 {
                         self.overload(v.id, ids.into_iter().map(hir::Alt::Value).collect());
                     }
+                    self.node(hir::Expr::Var(v), expr.span)
+                } else if let Some(prim) = self.operator_prim(*name.value()) {
+                    // `(+)` where no `+` is in scope: the primitive.
+                    let v = self.node(prim, name.span);
                     self.node(hir::Expr::Var(v), expr.span)
                 } else {
                     // Without its hygiene mark: a name a macro wrote is
@@ -3122,16 +3329,10 @@ impl Resolver {
                 };
                 self.node(node, expr.span)
             }
-            ast::Expr::BinOp(op, lhs, rhs) => {
-                let sym = InternedString::from(op.value().to_string());
-                let f = self
-                    .lookup(sym)
-                    .expect("every operator is a prim, and prims are never truncated");
-                let rl = self.resolve_expr(lhs);
-                let rr = self.resolve_expr(rhs);
-                let fv = self.node(f, op.span);
-                let callee = self.node(hir::Expr::Var(fv), op.span);
-                self.node(hir::Expr::App(callee, vec![rl, rr]), expr.span)
+            ast::Expr::BinOp(..) => unreachable!("`and` and `or` are the only BinOps"),
+            ast::Expr::Infix(first, rest) => {
+                let grouped = self.reassociate(first, rest);
+                self.resolve_expr(&grouped)
             }
             ast::Expr::Tuple(exprs) => {
                 let res = exprs.iter().map(|e| self.resolve_expr(e)).collect_vec();

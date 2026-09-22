@@ -35,17 +35,20 @@ use Std.Yield (yield)
 
 -- How many entries, and the root.
 use HashMap.*
+@derive(Debug, Display, PartialEq, Eq)
 @pub data HashMap k v = HashMap Int (HNode k v)
 
 -- A node: the bitmap of occupied slots and those slots, packed in slot order;
 -- or, below the last level, entries whose whole hash is the one given.
 use HNode.*
+@derive(Debug, Display, PartialEq, Eq)
 @pub data HNode k v
   = Bitmap Int (Array (HSlot k v))
   | Collision Int (Array (k, v))
 
 -- An occupied slot: an entry with its key's hash, or the node below.
 use HSlot.*
+@derive(Debug, Display, PartialEq, Eq)
 @pub data HSlot k v
   = Entry Int k v
   | Child (HNode k v)
@@ -347,7 +350,12 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
   let b = assertEq (lookup (V.pushBack [1] 2) (singleton [1, 2] 2)) (Just 2) "a vector, however it was built" in
   let c = assertEq (lookup (Just "x") (singleton (Just "x") 3)) (Just 3) "a constructor" in
   let d = assertEq (lookup (2 :: [;]) (singleton [2;] 5)) (Just 5) "a list" in
-  assertEq (lookup { name = "ada" } (singleton { name = "ada" } 4)) (Just 4) "a record"
+  let who = Person { name = "ada" } in
+  assertEq (lookup who (singleton (Person { name = "ada" }) 4)) (Just 4) "a record"
+
+-- A key is anything `PartialEq`: a record of its own derives it.
+@derive(PartialEq)
+record Person = { name : String }
 
 @test fun collidingHashesShareANode () =
   -- Force every key onto one hash, which no real hash of these keys gives: they

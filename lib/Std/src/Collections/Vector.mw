@@ -53,6 +53,7 @@ fun vaFoldr f z xs =
 -- A middle-tree node. `Branch None` is radix-balanced; `Branch (Just s)` is
 -- relaxed and `s` holds cumulative child sizes.
 use VNode.*
+@derive(Debug, Display)
 @pub data VNode a
   = Leaf (Array a)
   | Branch (Maybe (Array Int)) (Array (VNode a))
@@ -566,6 +567,48 @@ fun vPopChunkFront shift node =
 
 -- Yield every element, in order, for `Std.Stream`.
 @pub fun toStream v = forEach (\x -> yield x) v
+
+-- --- rendering -----------------------------------------------------------------
+
+-- `[1, 2, 3]`, the way a vector is written, each element as `render` says.
+fun renderWith render v =
+  let items =
+    foldl
+      (\acc x -> match acc with | None -> Just (render x) | Just s -> Just (concatStrings #[s, ", ", render x]))
+      None
+      v
+  in
+  match items with
+  | None -> "[]"
+  | Just s -> concatStrings #["[", s, "]"]
+
+impl Debug [a] where Debug a {
+  fun debug v = renderWith debug v
+}
+
+impl Display [a] where Display a {
+  fun display v = renderWith display v
+}
+
+-- --- comparing -----------------------------------------------------------------
+
+-- By their elements, as an array is: two vectors of the same elements are equal
+-- however they were built, and the first element that differs orders them.
+
+impl PartialEq [a] where PartialEq a {
+  fun (==) x y = toArray x == toArray y
+}
+
+impl Eq [a] where Eq a {
+}
+
+impl PartialOrd [a] where PartialOrd a {
+  fun partialCmp x y = partialCmp (toArray x) (toArray y)
+}
+
+impl Ord [a] where Ord a {
+  fun compare x y = compare (toArray x) (toArray y)
+}
 
 -- --- tests -------------------------------------------------------------------
 

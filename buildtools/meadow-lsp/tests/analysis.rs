@@ -39,7 +39,10 @@ thread_local! {
 fn hover_reports_the_type_at_a_position() {
     let (a, off) = at("fun double n = n * 2\ndef main = do@uble 21\n", "@");
     let hover = a.hover_at(off).expect("hover");
-    assert!(hover.contains("double : forall n. n -> n"), "got: {hover}");
+    assert!(
+        hover.contains("double : forall n. Mul n => n -> n"),
+        "got: {hover}"
+    );
 }
 
 #[test]
@@ -209,7 +212,7 @@ fn hinted(src: &str) -> String {
 fn inlay_hints_read_as_a_writable_annotation() {
     assert_eq!(
         hinted("fun add a b = a + b\n"),
-        "fun add (a : n) (b : n) : n = a + b\n"
+        "fun add (a : a) (b : a) : a = a + b\n"
     );
     assert_eq!(
         hinted("fun f u = let k = toInt 1 in k\n"),
@@ -758,7 +761,7 @@ fn a_result_hint_shows_the_effect() {
 fn a_pure_function_is_not_decorated_with_an_empty_effect() {
     assert_eq!(
         hinted("fun add a b = a + b\n"),
-        "fun add (a : n) (b : n) : n = a + b\n"
+        "fun add (a : a) (b : a) : a = a + b\n"
     );
 }
 
@@ -1436,16 +1439,18 @@ fn a_local_function_hovers_as_its_scheme() {
     let src = "fun fib (n : Int) : Int =\n  let rec @loop a b i =\n    if i == 0 then a else loop b (a + b) (i - 1)\n  in loop 0 1 n\n";
     let (a, off) = at(src, "@");
     let hover = a.hover_at(off).expect("hover");
-    assert!(hover.contains("loop : forall"), "{hover}");
+    // A local function takes no dictionaries, so the operators it uses pin
+    // its numbers to what `fib` has: `Int`.
+    assert!(hover.contains("loop : Int -> Int -> Int -> Int"), "{hover}");
     assert!(!hover.contains('!'), "a pure loop has no effect: {hover}");
 
     let top = "fun @loop a b i = if i == 0 then a else loop b (a + b) (i - 1)\n";
     let (t, off) = at(top, "@");
     let top_hover = t.hover_at(off).expect("hover");
-    assert_eq!(
-        hover.replace("fib", ""),
-        top_hover,
-        "the same body should hover the same, local or not"
+    assert!(top_hover.contains("loop : forall"), "{top_hover}");
+    assert!(
+        !top_hover.contains('!'),
+        "a pure loop has no effect: {top_hover}"
     );
 }
 

@@ -1,0 +1,402 @@
+-- Std.String.Parse.Lexer: lexemes over streams of `Char`s, after megaparsec's
+-- `Text.Megaparsec.Char.Lexer`.
+--
+-- The idea is a **space consumer**: one parser that skips whatever may sit
+-- between two tokens -- white space and comments -- and a `lexeme` wrapper
+-- that runs it after each token, so that no other parser has to think about
+-- white space at all.
+--
+--   use Std.String.Parse as P
+--   use Std.String.Parse.Char as C
+--   use Std.String.Parse.Lexer as L
+--
+--   fun sc = L.space C.space1 (L.skipLineComment "--") (L.skipBlockCommentNested "{-" "-}")
+--   fun lexeme p = L.lexeme sc p
+--   fun symbol text = L.symbol sc text
+--
+--   fun integer = lexeme L.decimal
+--   fun parens p = P.between (symbol "(") (symbol ")") p
+--
+-- The space consumer itself should never fail having consumed nothing it
+-- could not skip: build it from a white-space parser that wants at least one
+-- character (`C.space1`), which is what `space` repeats.
+
+use Std.String.Parse as P
+use Std.String.Parse (Parser)
+use Std.String.Parse.Char as C
+use Std.Char as Ch
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+use Std.String as S
+use Std.Maybe.Maybe.*
+use Std.Tuple (pair, fst, snd)
+use Std.Ordering.Ordering.*
+
+-- --- white space and comments --------------------------------------------------
+
+-- Skip any mix of `sp`, `lineComment` and `blockComment`, as many as there are.
+-- Each should consume something when it succeeds -- `C.space1`, not `C.space`.
+-- `P.empty` stands for a kind of comment a language does not have.
+@pub fun space sp lineComment blockComment =
+  P.hidden (P.skipMany (P.choice [sp, lineComment, blockComment]))
+
+-- `p`, then whatever the space consumer `sc` skips after it.
+@pub fun lexeme sc p = P.thenSkip p sc
+
+-- This text as a lexeme: the text, then what `sc` skips.
+@pub fun symbol sc text = lexeme sc (C.string text)
+
+-- This text in any case, as a lexeme.
+@pub fun symbolCI sc text = lexeme sc (C.stringCI text)
+
+-- `prefix` and the rest of its line. The newline is left for the space
+-- consumer.
+@pub fun skipLineComment prefix =
+  P.skipThen (C.string prefix) (P.void (P.takeWhileP (\c -> c != '\n')))
+
+-- `start`, and everything up to and including `stop`. A block comment of this
+-- kind does not nest: the first `stop` closes it.
+@pub fun skipBlockComment start stop =
+  P.skipThen (C.string start) (P.void (P.manyTill P.anySingle (C.string stop)))
+
+-- `start`, and everything up to and including the `stop` that matches it: a
+-- block comment of this kind may hold others.
+@pub fun skipBlockCommentNested start stop =
+  let nested = P.void (P.defer (\() -> skipBlockCommentNested start stop)) in
+  let inside = P.alt nested (P.void P.anySingle) in
+  P.skipThen (C.string start) (P.void (P.manyTill inside (C.string stop)))
+
+-- --- numbers -------------------------------------------------------------------
+
+fun digitOf c =
+  match Ch.hexDigitToInt c with
+  | Just d -> d
+  | None -> 0
+
+fun digitsIn base chunk = V.foldl (\acc c -> acc * base + digitOf c) 0 (P.chunkToTokens chunk)
+
+fun digits = P.takeWhile1P "a digit" Ch.isDigit
+
+-- A decimal integer, without a sign: `42`. See `signed` for one with.
+@pub fun decimal = P.label "an integer" (P.map (digitsIn 10) digits)
+
+-- A binary integer, without its `0b`: `1011`.
+@pub fun binary =
+  let run = P.takeWhile1P "a binary digit" (\c -> c == '0' or c == '1') in
+  P.label "a binary integer" (P.map (digitsIn 2) run)
+
+-- An octal integer, without its `0o`: `755`.
+@pub fun octal =
+  let run = P.takeWhile1P "an octal digit" (Ch.isBetween '0' '7') in
+  P.label "an octal integer" (P.map (digitsIn 8) run)
+
+-- A hexadecimal integer in either case, without its `0x`: `ff`.
+@pub fun hexadecimal =
+  let run = P.takeWhile1P "a hexadecimal digit" Ch.isHexDigit in
+  P.label "a hexadecimal integer" (P.map (digitsIn 16) run)
+
+fun powTen n = if n <= 0 then 1.0 else 10.0 *. powTen (n - 1)
+
+fun scale x e = if e >= 0 then x *. powTen e else x /. powTen (0 - e)
+
+fun fractionOf chunk = toFloat (digitsIn 10 chunk) /. powTen (P.chunkLength chunk)
+
+fun sign = P.option 1 (P.alt (P.mapTo 1 (C.char '+')) (P.mapTo (0 - 1) (C.char '-')))
+
+-- `e7`, `E-3`, `e+2`: the power of ten.
+fun exponent =
+  let mark = P.satisfy (\c -> c == 'e' or c == 'E') in
+  P.skipThen mark (P.lift2 (\s n -> s * n) sign decimal)
+
+fun floatOf whole frac e =
+  let f =
+    match frac with
+    | Just ds -> fractionOf ds
+    | None -> 0.0
+  in
+  scale (toFloat (digitsIn 10 whole) +. f) e
+
+-- An exponent is optional after a fraction, and required without one.
+fun exponentAfter frac =
+  match frac with
+  | Just _ -> P.option 0 exponent
+  | None -> exponent
+
+-- A floating-point number, without a sign: digits and a fraction, an
+-- exponent, or both -- `1.5`, `2e10`, `6.02e23`. A number with neither is not
+-- one: `3` is `decimal`'s.
+@pub fun float =
+  let fraction = P.optional (P.skipThen (C.char '.') digits) in
+  let parts = P.lift2 pair digits fraction in
+  let number = P.bind parts (\wf -> P.map (floatOf (fst wf) (snd wf)) (exponentAfter (snd wf))) in
+  P.label "a floating-point number" (P.try number)
+
+-- A sign before a number, as a function to apply to it: `neg` for a minus.
+fun signBy neg = P.alt (P.mapTo (\x -> x) (C.char '+')) (P.mapTo neg (C.char '-'))
+
+-- An optional sign in front of a number `p` parses, with `sc` allowed between
+-- the two: `signed sc decimal` reads `-12` and `+ 3`. For integers; floats
+-- have `signedFloat`.
+@pub fun signed sc p =
+  let f = P.option (\x -> x) (lexeme sc (signBy (\x -> 0 - x))) in
+  P.bind f (\g -> P.map g p)
+
+-- `signed`, for a floating-point `p`.
+@pub fun signedFloat sc p =
+  let f = P.option (\x -> x) (lexeme sc (signBy (\x -> 0.0 -. x))) in
+  P.bind f (\g -> P.map g p)
+
+-- --- characters ----------------------------------------------------------------
+
+fun byCode n =
+  match Ch.fromCodeSafe n with
+  | Just c -> P.pure c
+  | None -> P.fail "not a Unicode scalar value"
+
+-- `\x41`: two hexadecimal digits.
+fun hexEscape =
+  let two = P.takeP "two hexadecimal digits" 2 in
+  P.skipThen (C.char 'x') (P.map (\ds -> charFromCode (digitsIn 16 ds)) two)
+
+-- `\u{1F600}`: any number of them, in braces.
+fun unicodeEscape =
+  let run = P.takeWhile1P "a hexadecimal digit" Ch.isHexDigit in
+  let code = P.thenSkip run (C.char '}') in
+  P.skipThen (C.string "u{") (P.bind code (\ds -> byCode (digitsIn 16 ds)))
+
+fun escapes = [
+  P.mapTo '\n' (C.char 'n'),
+  P.mapTo '\t' (C.char 't'),
+  P.mapTo '\r' (C.char 'r'),
+  P.mapTo '\0' (C.char '0'),
+  P.mapTo '\\' (C.char '\\'),
+  P.mapTo '\'' (C.char '\''),
+  P.mapTo '"' (C.char '"'),
+  hexEscape,
+  unicodeEscape,
+]
+
+fun escaped = P.label "an escape sequence" (P.choice escapes)
+
+-- One character as a string or character literal writes it: itself, or an
+-- escape -- `\n`, `\t`, `\r`, `\0`, `\\`, `\'`, `\"`, `\x41`, `\u{1F600}`.
+-- The quotes around a literal are the caller's:
+--
+--   P.skipThen (C.char '"') (P.manyTill L.charLiteral (C.char '"'))
+@pub fun charLiteral =
+  P.label "a literal character" (P.alt (P.skipThen (C.char '\\') escaped) P.anySingle)
+
+-- --- indentation ---------------------------------------------------------------
+--
+-- Indentation is a column, which is the one place this library counts one:
+-- how far the reached offset is from the start of its line, a tab moving to
+-- the next multiple of eight. It is worked out from the input, stepping back
+-- from the offset to the line's start, so it asks of a stream that its offsets
+-- go back one at a time -- as a `String`'s bytes and a `Vector`'s indices do.
+
+-- Where the line holding `off` starts.
+fun lineStart input off =
+  if off <= 0 then 0
+  else
+    match P.take1 input (off - 1) with
+    | Just (c, _) -> if c == '\n' then off else lineStart input (off - 1)
+    | None -> off
+
+fun columnFrom input i stop col =
+  if i >= stop then col
+  else
+    match P.take1 input i with
+    | Just (c, next) ->
+        let at = if c == '\t' then col + 8 - (col - 1) % 8 else col + 1 in
+        columnFrom input next stop at
+    | None -> col
+
+-- The column of `off`, starting at 1.
+fun columnAt input off = columnFrom input (lineStart input off) off 1
+
+-- The column the parser has reached.
+@pub fun indentLevel = P.bind P.getInput (\input -> P.map (columnAt input) P.getOffset)
+
+-- Fail, having wanted a column that relates to `ref` as `want` says.
+@pub fun incorrectIndent want ref actual =
+  let how =
+    match want with
+    | Less -> "less than"
+    | Equal -> "equal to"
+    | Greater -> "greater than"
+  in
+  P.fail "incorrect indentation (got ${actual}, should be ${how} ${ref})"
+
+-- Skip what `sc` skips, then check that the column reached compares to `ref`
+-- as `want` says -- `indentGuard sc Greater 1` is "indented at all" -- and
+-- answer the column.
+@pub fun indentGuard sc want ref =
+  let check = \at -> if compare at ref == want then P.pure at else incorrectIndent want ref at in
+  P.skipThen sc (P.bind indentLevel check)
+
+-- `p` at the very start of a line, after what `sc` skips: a top-level
+-- declaration, in a language where indentation means continuation.
+@pub fun nonIndented sc p = P.skipThen (indentGuard sc Equal 1) p
+
+-- What the head of an indented block says comes under it, for `indentBlock`.
+--
+-- * `IndentNone x`: nothing does; the block is `x`.
+-- * `IndentMany at f p`: any number of `p`s, one per line, all at one column
+--   further in than the head -- `at` if it is `Just` one, or wherever the
+--   first is -- and the block is `f` of them.
+-- * `IndentSome at f p`: the same, but at least one.
+use IndentOpt.*
+@pub data IndentOpt s a b
+  = IndentNone a
+  | IndentMany (Maybe Int) ([b] -> Parser s a) (Parser s b)
+  | IndentSome (Maybe Int) ([b] -> Parser s a) (Parser s b)
+
+fun orAt indent lvl =
+  match indent with
+  | Just at -> at
+  | None -> lvl
+
+-- The items of a block at column `lvl`, whose head is at `ref`, until a line
+-- that is not indented past the head.
+fun indentedItems ref lvl sc p =
+  P.skipThen sc
+    (P.bind indentLevel (\pos ->
+      P.bind (P.optional P.eof) (\done ->
+        match done with
+        | Just _ -> P.pure []
+        | None -> itemsAt ref lvl sc p pos)))
+
+fun itemsAt ref lvl sc p pos =
+  if pos <= ref then P.pure []
+  else if pos == lvl then
+    P.lift2 (\x xs -> V.pushFront xs x) p (P.defer (\() -> indentedItems ref lvl sc p))
+  else incorrectIndent Equal lvl pos
+
+-- `IndentMany`: the items, if the next line is indented past the head.
+fun manyBlock sc ref indent f p =
+  let next = P.optional (P.try (P.skipThen C.eol (indentGuard sc Greater ref))) in
+  P.bind next (\lvl ->
+    P.bind (P.optional P.eof) (\done ->
+      match (lvl, done) with
+      | (Just at, None) -> P.bind (indentedItems ref (orAt indent at) sc p) f
+      | _ -> P.skipThen sc (f [])))
+
+-- `IndentSome`: the first item on the next line, which has to be indented
+-- past the head, and the rest at its column.
+fun someBlock sc ref indent f p =
+  P.bind (P.skipThen C.eol (indentGuard sc Greater ref)) (\pos ->
+    let lvl = orAt indent pos in
+    let first =
+      if pos <= ref then incorrectIndent Greater ref pos
+      else if pos == lvl then p
+      else incorrectIndent Equal lvl pos
+    in
+    P.bind first (\x -> P.bind (indentedItems ref lvl sc p) (\xs -> f (V.pushFront xs x))))
+
+-- An indented block, as megaparsec parses one: a head, which says with an
+-- `IndentOpt` what comes under it, and then the lines that do. `sc` is a
+-- space consumer that skips newlines too, since the block's lines are on
+-- lines of their own:
+--
+--   fun item = L.indentBlock scn (P.map (\name -> IndentMany None (P.pure . Node name) leaf) header)
+@pub fun indentBlock sc r =
+  P.skipThen sc
+    (P.bind indentLevel (\ref ->
+      P.bind r (\opt ->
+        match opt with
+        | IndentNone x -> P.mapTo x sc
+        | IndentMany indent f p -> manyBlock sc ref indent f p
+        | IndentSome indent f p -> someBlock sc ref indent f p)))
+
+-- A line fold: a construct that may continue on further lines, as long as
+-- they are indented past where it began. `action` is handed a space consumer
+-- that skips to the next part of the fold -- and fails at a line that is not
+-- a continuation -- to put between the fold's parts:
+--
+--   fun fold = L.lineFold scn (\sc2 -> P.thenSkip (P.sepBy1 word (P.try sc2)) scn)
+--
+-- `sc2` fails at a line that is not a continuation having skipped its
+-- newline, so it goes in a `try`, as in megaparsec.
+@pub fun lineFold sc action =
+  P.skipThen sc (P.bind indentLevel (\lvl -> action (P.void (indentGuard sc Greater lvl))))
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Result (isOk)
+use Std.Result.Result.*
+
+fun sc = space C.space1 (skipLineComment "--") (skipBlockCommentNested "{-" "-}")
+
+fun ok p text = P.runParser (P.thenSkip p P.eof) text
+
+@test fun theSpaceConsumerSkipsCommentsAndSpace () =
+  let p = P.skipThen sc (P.many (lexeme sc decimal)) in
+  let a = assertEq (ok p " 1 -- one\n 2 {- two {- nested -} -} 3") (Ok [1, 2, 3]) "all kinds" in
+  assertEq (ok (symbol sc "let") "let  ") (Ok "let") "symbol"
+
+@test fun numbersInEveryBase () =
+  let a = assertEq (ok decimal "1234") (Ok 1234) "decimal" in
+  let b = assertEq (ok hexadecimal "fF") (Ok 255) "hexadecimal" in
+  let c = assertEq (ok octal "755") (Ok 493) "octal" in
+  let d = assertEq (ok binary "1011") (Ok 11) "binary" in
+  let e = assertEq (ok (signed sc decimal) "- 7") (Ok (0 - 7)) "signed" in
+  assertEq (ok (signed sc decimal) "+7") (Ok 7) "a plus sign"
+
+@test fun floatsNeedAFractionOrAnExponent () =
+  let a = assertEq (ok float "1.5") (Ok 1.5) "a fraction" in
+  let b = assertEq (ok float "2e3") (Ok 2000.0) "an exponent" in
+  let c = assertEq (ok float "2.5e-1") (Ok 0.25) "both" in
+  let d = assertEq (ok (signedFloat sc float) "-0.5") (Ok (0.0 -. 0.5)) "signed" in
+  assertFalse (isOk (ok float "3")) "an integer is not a float"
+
+@test fun charLiteralsDecodeEscapes () =
+  let str = P.skipThen (C.char '"') (P.manyTill charLiteral (C.char '"')) in
+  let a = assertEq (ok str "\"a\\tb\\n\"") (Ok ['a', '\t', 'b', '\n']) "escapes" in
+  assertEq (ok str "\"\\x41\\u{e9}\"") (Ok ['A', 'é']) "by number"
+
+@test fun indentationIsChecked () =
+  let item = indentGuard C.space Greater 1 in
+  let a = assertEq (ok (P.skipThen (C.string "x:\n") item) "x:\n  ") (Ok 3) "indented" in
+  match P.runParser (P.skipThen (C.string "x:\n") item) "x:\ny" with
+  | Ok _ -> assertTrue False "it should fail"
+  | Err e ->
+      assertEq
+        (P.parseErrorTextPretty e)
+        "incorrect indentation (got 1, should be greater than 1)\n"
+        "not indented"
+
+-- An outline of names, one per line, children indented under their parent.
+use Outline.*
+@derive(Debug)
+data Outline = Node String [Outline]
+
+fun hsc = space (P.void (P.takeWhile1P "a space" (\c -> c == ' '))) P.empty P.empty
+
+fun scn = space C.space1 P.empty P.empty
+
+fun name = lexeme hsc (P.takeWhile1P "a name" Ch.isAlpha)
+
+fun tree u =
+  indentBlock scn
+    (P.map (\n -> IndentMany None (\kids -> P.pure (Node n kids)) (P.defer tree)) name)
+
+@test fun indentBlocksNest () =
+  let src = "a\n  b\n    c\n  d\ne" in
+  let p = P.thenSkip (P.many (P.defer tree)) P.eof in
+  let want = [Node "a" [Node "b" [Node "c" []], Node "d" []], Node "e" []] in
+  let a = assertEq (P.runParser p src) (Ok want) "a forest" in
+  match P.runParser p "a\n    b\n  c" with
+  | Ok _ -> assertTrue False "it should fail"
+  | Err e ->
+      assertEq
+        (P.parseErrorTextPretty e)
+        "incorrect indentation (got 3, should be equal to 5)\n"
+        "a line between two levels"
+
+@test fun aLineFoldContinuesOnIndentedLines () =
+  -- As in megaparsec, the fold's space consumer goes in a `try`: it fails
+  -- having skipped a newline, at a line that is not a continuation.
+  let words = lineFold scn (\sc2 -> P.thenSkip (P.sepBy1 name (P.try sc2)) scn) in
+  let p = P.thenSkip (P.many words) P.eof in
+  assertEq (P.runParser p "a b\n  c\nd\n e") (Ok [["a", "b", "c"], ["d", "e"]]) "two folds"

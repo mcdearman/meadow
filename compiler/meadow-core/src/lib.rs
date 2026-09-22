@@ -57,6 +57,7 @@ pub mod specialize;
 pub mod stm;
 pub mod text;
 pub mod thread;
+pub mod trmc;
 pub use lower::Lowerer;
 
 use meadow_hir as hir;
@@ -337,6 +338,12 @@ pub enum Prim {
     Detach,
     /// `Stack -> ()` -- resuming: put the detached chunks back on top. Once.
     Reattach,
+    // --- tail recursion modulo cons (no source name; made by `trmc`) ---
+    /// `d -> Int -> a -> ()` -- fill field `i` of a constructor that was built
+    /// with a placeholder there, in place. Only ever given a cell [`trmc`] made
+    /// a moment before and nothing else has seen, so no program can tell that
+    /// a constructor was written after it was made.
+    SetField,
     // --- typed arithmetic (no source name) ---
     //
     // The operators above at a type core knows: both operands are `Int`, or
@@ -493,6 +500,7 @@ impl Prim {
             Prim::Enter => 122,
             Prim::Detach => 123,
             Prim::Reattach => 124,
+            Prim::SetField => 125,
         }
     }
 
@@ -618,6 +626,7 @@ impl Prim {
             122 => Prim::Enter,
             123 => Prim::Detach,
             124 => Prim::Reattach,
+            125 => Prim::SetField,
             _ => return None,
         })
     }
@@ -690,31 +699,62 @@ impl Prim {
         )
     }
 
+    /// Is this the primitive of one of the language's operators -- what
+    /// `Std.Ops` defines `+`, `==`, `<<` and the rest with?
+    pub fn is_operator(self) -> bool {
+        matches!(
+            self,
+            Prim::Add
+                | Prim::Sub
+                | Prim::Mul
+                | Prim::Div
+                | Prim::Mod
+                | Prim::Pow
+                | Prim::Eq
+                | Prim::Ne
+                | Prim::Lt
+                | Prim::Gt
+                | Prim::Le
+                | Prim::Ge
+                | Prim::AddF
+                | Prim::SubF
+                | Prim::MulF
+                | Prim::DivF
+                | Prim::LtF
+                | Prim::GtF
+                | Prim::LeF
+                | Prim::GeF
+                | Prim::Shl
+                | Prim::Shr
+                | Prim::Ushr
+        )
+    }
+
     pub fn from_name(name: &str) -> Option<Prim> {
         Some(match name {
-            "+" => Prim::Add,
-            "-" => Prim::Sub,
-            "*" => Prim::Mul,
-            "/" => Prim::Div,
-            "%" => Prim::Mod,
-            "^" => Prim::Pow,
-            "==" => Prim::Eq,
-            "!=" => Prim::Ne,
-            "<" => Prim::Lt,
-            ">" => Prim::Gt,
-            "<=" => Prim::Le,
-            ">=" => Prim::Ge,
+            "_primAdd" => Prim::Add,
+            "_primSub" => Prim::Sub,
+            "_primMul" => Prim::Mul,
+            "_primDiv" => Prim::Div,
+            "_primMod" => Prim::Mod,
+            "_primPow" => Prim::Pow,
+            "_primEq" => Prim::Eq,
+            "_primNe" => Prim::Ne,
+            "_primLt" => Prim::Lt,
+            "_primGt" => Prim::Gt,
+            "_primLe" => Prim::Le,
+            "_primGe" => Prim::Ge,
             "neg" => Prim::Neg,
-            "display" => Prim::Display,
+            "display" | "_primDisplay" => Prim::Display,
             "hash" => Prim::Hash,
-            "+." => Prim::AddF,
-            "-." => Prim::SubF,
-            "*." => Prim::MulF,
-            "/." => Prim::DivF,
-            "<." => Prim::LtF,
-            ">." => Prim::GtF,
-            "<=." => Prim::LeF,
-            ">=." => Prim::GeF,
+            "_primAddF" => Prim::AddF,
+            "_primSubF" => Prim::SubF,
+            "_primMulF" => Prim::MulF,
+            "_primDivF" => Prim::DivF,
+            "_primLtF" => Prim::LtF,
+            "_primGtF" => Prim::GtF,
+            "_primLeF" => Prim::LeF,
+            "_primGeF" => Prim::GeF,
             "toFloat" | "toFloat64" => Prim::ToFloat,
             "toFloat32" => Prim::ToFloat32,
             "floor" => Prim::Floor,
@@ -738,9 +778,9 @@ impl Prim {
             "arrayPop" => Prim::ArrayPop,
             "arraySlice" => Prim::ArraySlice,
             "arrayConcat" => Prim::ArrayConcat,
-            "shl" => Prim::Shl,
-            "shr" => Prim::Shr,
-            "ushr" => Prim::Ushr,
+            "shl" | "_primShl" => Prim::Shl,
+            "shr" | "_primShr" => Prim::Shr,
+            "ushr" | "_primUshr" => Prim::Ushr,
             "bitAnd" => Prim::BitAnd,
             "bitOr" => Prim::BitOr,
             "bitXor" => Prim::BitXor,
@@ -860,7 +900,8 @@ impl Prim {
             | Prim::ArrayGetOr
             | Prim::StSetArray
             | Prim::StringSlice
-            | Prim::StringIndexOf => 3,
+            | Prim::StringIndexOf
+            | Prim::SetField => 3,
             _ => 2,
         }
     }
@@ -1566,8 +1607,31 @@ mod tests {
     #[test]
     fn prim_name_roundtrip() {
         for name in [
-            "+", "-", "*", "/", "%", "^", "==", "!=", "<", ">", "<=", ">=", "neg", "display", "+.",
-            "-.", "*.", "/.", "<.", ">.", "<=.", ">=.", "toFloat", "floor",
+            "_primAdd",
+            "_primSub",
+            "_primMul",
+            "_primDiv",
+            "_primMod",
+            "_primPow",
+            "_primEq",
+            "_primNe",
+            "_primLt",
+            "_primGt",
+            "_primLe",
+            "_primGe",
+            "neg",
+            "display",
+            "_primAddF",
+            "_primSubF",
+            "_primMulF",
+            "_primDivF",
+            "_primLtF",
+            "_primGtF",
+            "_primLeF",
+            "_primGeF",
+            "_primShl",
+            "toFloat",
+            "floor",
         ] {
             assert!(Prim::from_name(name).is_some(), "{name} should be a prim");
         }

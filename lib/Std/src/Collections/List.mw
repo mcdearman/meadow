@@ -8,6 +8,7 @@ use Std.Num.Int (min, max)
 -- `toStream` performs `yield`; see the note in `Std.Collections.Vector`.
 use Std.Yield (yield)
 
+@derive(PartialEq, Eq, PartialOrd, Ord)
 @pub data List a = Nil | Cons a (List a)
 
 @pub fun append xs ys =
@@ -187,6 +188,28 @@ fun reverseOnto acc xs =
   match xs with
   | [;] -> ()
   | x :: rest -> let ignored = yield x in toStream rest
+
+-- --- rendering -----------------------------------------------------------------
+
+-- `[1; 2; 3]`, the way a list is written, each element as `render` says.
+fun renderWith render xs =
+  let items =
+    foldl
+      (\acc x -> match acc with | None -> Just (render x) | Just s -> Just (concatStrings #[s, "; ", render x]))
+      None
+      xs
+  in
+  match items with
+  | None -> "[;]"
+  | Just s -> concatStrings #["[", s, "]"]
+
+impl Debug (List a) where Debug a {
+  fun debug xs = renderWith debug xs
+}
+
+impl Display (List a) where Display a {
+  fun display xs = renderWith display xs
+}
 
 -- --- tests -------------------------------------------------------------------
 

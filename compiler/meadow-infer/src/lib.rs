@@ -192,7 +192,7 @@ pub enum VarKind {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Scheme {
     pub quant: Vec<VarKind>,
-    /// The traits the quantified variables have to implement: `where Show a`.
+    /// The traits the quantified variables have to implement: `Show a =>`.
     /// A value of such a type takes a dictionary for each, in this order,
     /// before anything else.
     #[serde(default)]
@@ -1586,6 +1586,7 @@ impl Infer {
                 // so the outer `cur_effect` is untouched.
                 let body_eff = self.arena.fresh_effect();
                 let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
+                let body_eff_of_point_free = body_eff.clone();
 
                 // curried: `fun f a b = e` is `a -> b -> typeof(e) ! <body effect>`
                 let fn_ty = Type::func_eff(param_tys, ret.clone(), body_eff);
@@ -1604,6 +1605,21 @@ impl Infer {
                 self.solve_subsumptions(mark);
                 self.solve_wanted();
                 self.arena.exit_level();
+                // A point-free `fun f = e` runs its body wherever it is used,
+                // which a use cannot be seen to do: like a `def`'s, its body
+                // may not perform effects.
+                if params.is_empty() {
+                    let waiting = self.has_pending_join(mark, &body_eff_of_point_free);
+                    let pure = !waiting
+                        && match self.arena.zonk(&body_eff_of_point_free) {
+                            Type::RowEmpty => true,
+                            Type::Var(id) => self.arena.slot_level(id) > self.arena.level,
+                            _ => false,
+                        };
+                    if !pure {
+                        self.check_pure_def(&[vid], &body_eff_of_point_free, body.span);
+                    }
+                }
 
                 let preds = match started {
                     // A top-level function takes a dictionary for each trait
@@ -2274,23 +2290,25 @@ impl Infer {
     /// The `impl`s among `decls`. After [`Infer::register_types`] has seen every
     /// module of the unit, since an `impl` may be of a sibling's trait.
     pub fn register_impls(&mut self, decls: &[hir::LDecl]) {
-        for d in decls {
-            if let hir::Decl::Impl(id) = d.value() {
-                self.register_impl(id);
-            }
+        // An `impl` of a trait after those of the traits it requires, whatever
+        // the order they were written in: `impl Visual T` reads `Token T` off
+        // `impl Stream T`, which has to be known by then.
+        let mut impls: Vec<&hir::ImplDecl> = decls
+            .iter()
+            .filter_map(|d| match d.value() {
+                hir::Decl::Impl(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        impls.sort_by_key(|id| self.trait_depth(*id.tr.value(), 0));
+        for id in impls {
+            self.register_impl(id);
         }
     }
 
     /// Populate `ctors` / `record_fields` from `data` / `record` declarations.
     /// Call before `infer_module`.
     pub fn register_types(&mut self, decls: &[hir::LDecl]) {
-        // Traits before anything that may mention one; their `impl`s wait
-        // for every module's -- see [`Infer::register_impls`].
-        for d in decls {
-            if let hir::Decl::Trait(td) = d.value() {
-                self.register_trait(td);
-            }
-        }
         // Aliases before everything else, which may be written in terms of them.
         let mut added = Vec::new();
         for d in decls {
@@ -2323,6 +2341,14 @@ impl Infer {
                     let (id, at) = (def.body.id, def.body.span);
                     def.body = hir::Node::new(id, hir::TypeExpr::Error, at);
                 }
+            }
+        }
+        // Traits after aliases, which their methods may be written in, and
+        // before anything that may mention one; their `impl`s wait for every
+        // module's -- see [`Infer::register_impls`].
+        for d in decls {
+            if let hir::Decl::Trait(td) = d.value() {
+                self.register_trait(td);
             }
         }
         for d in decls {
@@ -3718,11 +3744,19 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         //
         // One set of operators per family, over a `Num` (any integer type) or
         // a `Frac` (either float type) -- see `VarKind::Num`.
-        "+" | "-" | "*" | "/" | "%" | "^" => num(Type::func(vec![Bound(0), Bound(0)], Bound(0))),
-        "<" | ">" | "<=" | ">=" => num(Type::func(vec![Bound(0), Bound(0)], Type::bool())),
+        "_primAdd" | "_primSub" | "_primMul" | "_primDiv" | "_primMod" | "_primPow" => {
+            num(Type::func(vec![Bound(0), Bound(0)], Bound(0)))
+        }
+        "_primLt" | "_primGt" | "_primLe" | "_primGe" => {
+            num(Type::func(vec![Bound(0), Bound(0)], Type::bool()))
+        }
         "neg" => num(Type::func(vec![Bound(0)], Bound(0))),
-        "+." | "-." | "*." | "/." => frac(Type::func(vec![Bound(0), Bound(0)], Bound(0))),
-        "<." | ">." | "<=." | ">=." => frac(Type::func(vec![Bound(0), Bound(0)], Type::bool())),
+        "_primAddF" | "_primSubF" | "_primMulF" | "_primDivF" => {
+            frac(Type::func(vec![Bound(0), Bound(0)], Bound(0)))
+        }
+        "_primLtF" | "_primGtF" | "_primLeF" | "_primGeF" => {
+            frac(Type::func(vec![Bound(0), Bound(0)], Type::bool()))
+        }
         "toFloat" => num(Type::func(vec![Bound(0)], Type::float())),
         "toFloat64" => frac(Type::func(vec![Bound(0)], Type::float())),
         "toFloat32" => frac(Type::func(vec![Bound(0)], Type::con("Float32"))),
@@ -3765,7 +3799,9 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         // --- bitwise, on any integer type ---
         // A shift amount is a bit position, which is an `Int` whatever is being
         // shifted -- as in Rust.
-        "shl" | "shr" | "ushr" => num(Type::func(vec![Bound(0), Type::int()], Bound(0))),
+        "shl" | "shr" | "ushr" | "_primShl" | "_primShr" | "_primUshr" => {
+            num(Type::func(vec![Bound(0), Type::int()], Bound(0)))
+        }
         "bitAnd" | "bitOr" | "bitXor" => num(Type::func(vec![Bound(0), Bound(0)], Bound(0))),
         "bitWidth" => num(Type::func(vec![Bound(0)], Type::int())),
         "bitNot" => num(Type::func(vec![Bound(0)], Bound(0))),
@@ -3783,7 +3819,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             vec![Type::array(Type::con("UInt8"))],
             Type::string(),
         )),
-        "show" | "display" => a1(Type::func(vec![Bound(0)], Type::string())),
+        "show" | "display" | "_primDisplay" => a1(Type::func(vec![Bound(0)], Type::string())),
         "hash" => a1(Type::func(vec![Bound(0)], Type::int())),
         "charCode" => Scheme::mono(Type::func(vec![Type::char()], Type::int())),
         "charFromCode" => Scheme::mono(Type::func(vec![Type::int()], Type::char())),
@@ -3821,7 +3857,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
                 vec![Type::array(Type::con("UInt8"))],
             ),
         )),
-        "==" | "!=" => Scheme {
+        "_primEq" | "_primNe" => Scheme {
             preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Bound(0), Bound(0)], Type::bool()),
@@ -4455,16 +4491,28 @@ impl fmt::Display for Scheme {
             }
             f.write_str(". ")?;
         }
-        write_type(f, &self.ty, &mut namer, Prec::Top, &hidden)?;
+        // `Show a => …`, or `(Show a, Ord b) => …`, as a signature says it.
+        let several = self.preds.len() > 1;
+        if several {
+            f.write_str("(")?;
+        }
         for (i, p) in self.preds.iter().enumerate() {
-            f.write_str(if i == 0 { " where " } else { ", " })?;
+            if i > 0 {
+                f.write_str(", ")?;
+            }
             write!(f, "{}", hir::spelling(&p.tr))?;
             for t in &p.tys {
                 f.write_str(" ")?;
                 write_type(f, t, &mut namer, Prec::App, &hidden)?;
             }
         }
-        Ok(())
+        if several {
+            f.write_str(")")?;
+        }
+        if !self.preds.is_empty() {
+            f.write_str(" => ")?;
+        }
+        write_type(f, &self.ty, &mut namer, Prec::Top, &hidden)
     }
 }
 

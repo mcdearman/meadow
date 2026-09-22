@@ -114,7 +114,8 @@ those terms. The comparison a typed compare or branch makes is a `Cond`:
 
 **Primitives.** `prims` holds `Prim::code()` values. The numbering is in
 `compiler/meadow-core/src/lib.rs` and is append-only: `0` `Add` … `121`
-`StringCompare`, `122` `Enter`, `123` `Detach`, `124` `Reattach`. `ToWord(w)` is
+`StringCompare`, `122` `Enter`, `123` `Detach`, `124` `Reattach`, `125`
+`SetField`. `ToWord(w)` is
 `28 +` the width's place in `Width::ALL` (`Int8`, `Int16`, `Int32`, `UInt8`,
 `UInt16`, `UInt32`, `UInt64`). An unknown code is an error at load.
 

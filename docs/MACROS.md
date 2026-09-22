@@ -374,6 +374,15 @@ Nothing in the language reads `@token` or `@regex`; they are there for whatever
 derives over the declaration. A macro is a function and functions are
 lower-case, so `@derive(Lexer)` finds the macro `lexer!`.
 
+**Deriving a trait** is as in Rust: it takes a trait and a macro that writes
+the `impl` of it, and the macro is named for the trait. `@derive(Debug)` needs
+both `Debug` and a derive macro called `Debug` (or `debug`), and a derive with
+no macro of its name is an error however many defaults the trait has. The
+compiler has the derive macros for `Debug`, `Display`, `PartialEq`, `Eq`,
+`PartialOrd`, `Ord` and `Std.String.Parse`'s `VisualStream` built in -- the standard library derives
+them for its own types, which are compiled before any package that could
+define a macro -- and a procedural macro of the same name is found first.
+
 ## 10. Macros that talk to each other
 
 A token tree in and a token tree out is enough for `vec!` and `assertEq!`. It is

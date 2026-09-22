@@ -217,25 +217,43 @@ def main = (square 12, square (toUInt8 20))
 => (144, 144)
 ```
 
-`square : forall n. n -> n`, and `20 * 20` wraps to `144` as a `UInt8`. Only
-`fun` is generic in this way: a `def` or a `let` has one number type, settled
-by how it is used, or `Int` if nothing uses it at a particular one.
+`square : forall n. Mul n => n -> n`, and `20 * 20` wraps to `144` as a
+`UInt8`. `Mul` is the trait `*` is the method of (see
+[operators](#operators-are-methods)): every integer type implements it, and so
+may a type of yours. Only `fun` is generic in this way: a `def` or a `let` has
+one number type, settled by how it is used, or `Int` if nothing uses it at a
+particular one.
 
 A `BigInt` costs more than a machine word — it lives on the heap — which is why
 it is not the default. Where a computation must not wrap, pin it with an
 annotation — `fun fact (n : BigInt) = ...` — and every literal it meets
 follows.
 
-Equality is different again: `==` and `!=` are **structural and work at any
-type** — tuples, lists, constructors, records, anything.
+Equality and ordering are four traits, as in Rust: `PartialEq` (`==`, `!=`),
+`Eq`, `PartialOrd` (`<`, `>`, `<=`, `>=`, `partialCmp`) and `Ord` (`compare`).
+Every primitive type is all four except the floats, which are only
+`PartialEq` and `PartialOrd`: a `NaN` equals nothing, itself included, and is
+ordered against nothing. Tuples, vectors, lists and the rest of the standard
+library's types compare field by field, and a type of your own derives them:
 
 ```meadow
-def main = ([1, 2] == [1, 2], Just 1 != None, "a" == "a")
+use Suit.*
+@derive(Debug, PartialEq, Eq, PartialOrd, Ord)
+data Suit = Clubs | Diamonds | Hearts | Spades
+
+def nan = 0.0 /. 0.0
+
+def main = ([1, 2] == [1, 2], Just 1 != None, "b" > "a", Clubs < Spades, compare Hearts Clubs, nan == nan)
 ```
 
 ```
-=> (True, True, True)
+=> (True, True, True, True, Greater, False)
 ```
+
+A derived ordering goes by constructor, in the order they are declared, then by
+field, left to right. A type that derives none of them has no `==` at all --
+the checker says it does not implement `PartialEq` -- and deriving `Eq` or
+`Ord` over a field that is a float is refused, as in Rust.
 
 Integer division truncates, and `%` follows the sign of the _dividend_ — so
 `(-7) % 3` is `-1`, not `2`. That trips people up when writing `even`/`odd`-style
@@ -259,10 +277,11 @@ def main = (toFloat 3, floor 3.9, toBigInt 5, toInt8 200, toFloat32 (toFloat 3))
 ### Strings and interpolation
 
 A `${…}` inside a string literal is an expression, and the string holds what it
-renders to: any type at all, the way the REPL prints it, except that a string
-goes in without its quotes. A hole can hold anything an expression can,
-including strings with holes of their own. `\$` is a dollar sign that does not
-start a hole, and a `$` not followed by `{` needs no escape.
+renders to, as in Rust's `format!`: `${x}` by its `Display` -- for people, a
+string without its quotes -- and `${x:?}` by its `Debug` -- for programmers,
+the way it would be written in source. A hole can hold anything an expression
+can, including strings with holes of their own. `\$` is a dollar sign that does
+not start a hole, and a `$` not followed by `{` needs no escape.
 
 ```meadow
 fun describe (name : String) (items : [Int]) =
@@ -270,17 +289,41 @@ fun describe (name : String) (items : [Int]) =
 
 def main =
   ( describe "cart" [3, 1, 4],
-    "maybe: ${Just 2}, quoted: ${show "hi"}",
+    "maybe: ${Just 2}, quoted: ${"hi":?}, a char: ${'c'} or ${'c':?}",
     "a price: \$${9}, and \${literal} braces" )
 ```
 
 ```
-=> ("cart has 3 items, the first is 3", "maybe: Just(2), quoted: \"hi\"", "a price: $9, and ${literal} braces")
+=> ("cart has 3 items, the first is 3", "maybe: Just(2), quoted: \"hi\", a char: c or 'c'", "a price: $9, and ${literal} braces")
 ```
 
-A hole renders its value with `display`; `show` keeps the quotes on a string,
-for when you want to see them. Formatting a value some other way is a function
-call away: with `use Std.Time as T`, `"took ${T.formatNanos ns}"`.
+Every primitive type is `Display` and `Debug`, and so are tuples and the
+standard library's types. A type of your own is either with `@derive(Display)`
+and `@derive(Debug)`, which render a constructor and its fields as
+`Just(2)` -- or with an `impl` that says how:
+
+```meadow
+@derive(Debug, Display)
+data Shape = Circle Float | Rect { w : Int, h : Int }
+
+use Suit.*
+data Suit = Hearts | Spades
+
+impl Display Suit {
+  fun display s = match s with | Hearts -> "♥" | Spades -> "♠"
+}
+
+def main = "${Shape.Rect { w = 2, h = 3 }} ${Shape.Circle 1.5:?} ${Suit.Spades}"
+```
+
+```
+=> "Rect(2, 3) Circle(1.5) ♠"
+```
+
+A type that is neither cannot go in a hole or to `println`: the checker says
+it does not implement `Display`. `show` still renders anything, the way the
+REPL does, for when that is all you want. Formatting a value some other way is
+a function call away: with `use Std.Time as T`, `"took ${T.formatNanos ns}"`.
 
 The escapes are the usual ones, in strings and character literals alike:
 
@@ -1012,9 +1055,9 @@ when its elements can. There is one `impl` per trait and type in a whole
 program, wherever it is written; a second is an error.
 
 A function that uses a method on a type it does not know **asks its caller**
-for the `impl`. Nobody has to say so -- it is inferred, and printed as a
-`where` -- but a [signature](#signatures) can, and then the body may use only
-what the signature asked for:
+for the `impl`. Nobody has to say so -- it is inferred, and printed in front of
+the type, `Describe a => …` -- but a [signature](#signatures) can, and then the
+body may use only what the signature asked for:
 
 ```meadow
 trait Describe a {
@@ -1027,7 +1070,7 @@ impl Describe Int {
 
 fun pair x y = describe x ++ " and " ++ describe y
 
-fun bracket : a -> String where Describe a
+fun bracket : Describe a => a -> String
 fun bracket x = "[" ++ describe x ++ "]"
 
 def main = (pair 1 2, bracket 3)
@@ -1037,9 +1080,10 @@ def main = (pair 1 2, bracket 3)
 => ("1 and 2", "[3]")
 ```
 
-`pair`'s type is `a -> b -> String where Describe a, Describe b`. A trait can
-**require** another -- `trait Ord a where Eq a { … }` -- and then an `impl Ord T`
-needs an `impl Eq T`, and a function given `Ord a` may use `Eq`'s methods too.
+`pair`'s type is `(Describe a, Describe b) => a -> b -> String`. A trait can
+**require** another -- `trait Ord a <: Eq a, PartialOrd a { … }` -- and then an
+`impl Ord T` needs an `impl Eq T` and an `impl PartialOrd T`, and a function
+given `Ord a` may use their methods too.
 
 A trait can also leave a **type** for each `impl` to choose. `type Elem f`
 declares one, an `impl` says what it is, and `Elem f` can be written wherever a
@@ -1062,7 +1106,7 @@ impl Container (Stack a) {
   fun toList s = s.items
 }
 
-fun fromList : [Elem f;] -> f where Container f
+fun fromList : Container f => [Elem f;] -> f
 fun fromList xs =
   match xs with
   | [;] -> empty ()
@@ -1119,9 +1163,9 @@ def main = (labels [1; 2], flags [0; 3])
 => (["#1"; "#2"], [False; True])
 ```
 
-A `where` names all of them -- `where Convert a b` -- an associated type is of
+A constraint names all of them -- `Convert a b =>` -- an associated type is of
 all of them (`type Out v s`), and a trait may require others of any of its
-parameters: `trait RoundTrip a b where Convert a b, Convert b a`. No type
+parameters: `trait RoundTrip a b <: Convert a b, Convert b a`. No type
 decides another: when one of a trait's types should follow from the rest, make
 it an associated type instead of a parameter.
 
@@ -1130,7 +1174,7 @@ A trait and its methods are visible as any declaration is (`@pub trait`, and a
 visibility, and is found wherever its trait and its types are.
 
 **What it costs.** Nothing, where the types are known. A function with a
-`where` is compiled once, taking its `impl`s as hidden arguments, which is what
+constraint is compiled once, taking its `impl`s as hidden arguments, which is what
 lets it live in a package that has never heard of your types. But wherever it
 is called at types that are known -- which is everywhere, in the end, since
 `main` has no type parameters -- the compiler makes a copy of it for exactly
@@ -1140,20 +1184,157 @@ methods runs two to five times faster for it, on every backend; the CEK
 machine alone runs the uncopied program, as the specification of what the
 copies must do.
 
+### Operators are methods
+
+Every infix operator is a function with a name made of symbols. `a + b` is
+`(+) a b`, and in parentheses an operator is written anywhere a name can be:
+`(+) 1 2`, `foldl (+) 0 xs`, `fun (<+>) a b = ...`, `use Std.Ops ((+))`.
+
+`Std.Ops` defines the language's operators as the methods of traits:
+
+| Trait      | Methods                         | Implemented for    |
+| ---------- | ------------------------------- | ------------------ |
+| `Add`      | `+`                             | every integer type |
+| `Sub`      | `-`                             | every integer type |
+| `Mul`      | `*`                             | every integer type |
+| `Div`      | `/`                             | every integer type |
+| `Rem`      | `%`                             | every integer type |
+| `Pow`      | `^`                             | every integer type |
+| `Shift`    | `<<` `>>` `>>>`                 | every integer type |
+| `Floating` | `+.` `-.` `*.` `/.` `<.` `>.` … | `Float`, `Float32` |
+
+`==`, `!=`, `<`, `>`, `<=` and `>=` are `Std.Cmp`'s: the methods of
+`PartialEq` and `PartialOrd` (see [equality and ordering](#one-set-of-operators-for-every-integer-type)).
+
+Each `impl` there is a primitive and nothing else -- `fun (+) x y = _primAdd x
+y` -- and the compiler turns a call of one at a known type back into that
+primitive, so `x + y` on two `Int`s is one machine instruction, as it would be
+if `+` were built in. A type of your own gets an operator with an `impl`:
+
+```meadow
+record V2 = { x : Int, y : Int }
+
+impl Add V2 {
+  fun (+) a b = V2 { x = a.x + b.x, y = a.y + b.y }
+}
+
+fun sumAll xs = foldl (+) (V2 { x = 0, y = 0 }) xs
+
+def main = sumAll [V2 { x = 1, y = 2 }, V2 { x = 3, y = 4 }]
+```
+
+```
+=> V2(4, 6)
+```
+
+**A new operator** is any run of the symbols `! % & * + . / < = > ? @ | ^ ~ :
+-` that is not already punctuation. Define it as a function, and say how it
+binds with a **fixity declaration**, as in Haskell:
+
+```meadow
+infixl 6 <+>
+
+fun (<+>) a b = a * 10 + b
+
+def main = (1 <+> 2 <+> 3, 1 <+> 2 * 3)
+```
+
+```
+=> (123, 16)
+```
+
+`infixl` groups to the left (`a - b - c` is `(a - b) - c`), `infixr` to the
+right, and `infix` neither way, so that `a == b == c` is an error asking for
+parentheses. The number is how tightly it binds, from 0 to 9; application binds
+tighter than any of them, and a prefix `-` tighter than any operator. An
+operator nothing declares is `infixl 9`. A fixity belongs to the operator's
+spelling, not to one definition of it: it holds in every module of the package
+that declares it and in every package that depends on that one. A declaration
+may repeat the fixity of one of the language's operators (`Std.Ops` does) but
+not change it, and two declarations of one operator must agree.
+
+Two operators of one level that do not group the same way cannot be mixed
+without parentheses: `a < b == c` is an error, since `<` and `==` are both
+`infix 4`. See the [table](#operators-loosest-to-tightest) for every level.
+
+Without `Std` -- a package that does not depend on it -- the operators still
+work on numbers: where no definition of `+` is in scope, `+` is the primitive
+itself.
+
+### Traits that build on traits
+
+A trait that requires another **inherits its associated types**. Here
+`Visual`'s method mentions `Token s`, which is `Stream`'s, and a function given
+`Visual s` may use `Stream`'s methods as well, at the same `Token s`:
+
+```meadow
+trait Stream s {
+  type Token s
+  fun take1 : s -> Int -> Maybe (Token s, Int)
+}
+
+impl Stream String {
+  type Token String = Char
+  fun take1 s i =
+    if i < stringByteLength s then Just (charFromCode (toInt (stringByteAt s i)), i + 1) else None
+}
+
+trait Visual s <: Stream s {
+  fun showToken : s -> Token s -> String
+  fun showToken _ t = "<" ++ show t ++ ">"
+}
+
+impl Visual String {}
+
+fun first : Visual s => s -> String
+fun first s = match take1 s 0 with | Just (t, _) -> showToken s t | None -> "empty"
+
+def main = first "xyz"
+```
+
+```
+=> "<'x'>"
+```
+
+`impl Visual String {}` says nothing about `Token String`: that is `impl Stream
+String`'s to say, and the `impl` asks for it as if its own `where` had.
+
+**Deriving.** `@derive(Tr)` above a declaration runs the derive macro `Tr`,
+which writes an `impl Tr` for the type beside it -- as in Rust, it takes both a
+trait and a macro. The compiler has the macros for `Debug`, `Display` and
+`PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Std.String.Parse`'s `VisualStream`
+built in; any other is a procedural macro
+a package defines (see [MACROS](MACROS.md#derive)). A derived `impl` of a type
+with parameters asks the same trait of each: `Maybe a` is `Debug` when `a`
+is.
+
+**`Display` and `Debug`.** Both are traits, with an `impl` for every primitive
+type: `display` is what `print`, `println` and `"${x}"` render with, and
+`debug` is what `"${x:?}"` does.
+
+**Point-free functions.** `fun f = e` at the top level is a function of the
+dictionaries its type needs -- `fun eof : Stream s => Parser s ()` is used at
+every stream type -- and is evaluated wherever it is used. Like a `def`, its
+body may not perform effects. A `def` is made once, and so is used at one type
+per trait.
+
 What is left out, for now:
 
 - A method's type mentions the trait's parameter, its associated types,
   concrete types and effects -- not type variables of its own. Write
-  `fun foldWith : (b -> Elem f -> b) -> b -> f -> b where Container f` as a
+  `fun foldWith : Container f => (b -> Elem f -> b) -> b -> f -> b` as a
   function over a method that is not generic, as `fromList` is above.
 - A trait is of types, not type constructors: there is no `Functor f`.
 - An `impl` is for a constructor applied to distinct variables in each
   position -- `Convert Int [a;]`, not `Convert a a` or `Convert (Maybe Int) b`.
-- A trait cannot require one that has associated types.
+- A `data` or `record` declaration cannot mention an associated type:
+  `data Item s = Tok (Token s)` is not `Stream`'s `Token s`. Carry the stream
+  type itself instead, as `Std.String.Parse`'s errors do.
 - Only a top-level `fun` asks its caller for an `impl`. A `def`, and a function
   made with `let`, is used at one type per trait.
-- The operators (`+`, `==`, `<`, `show`) are the built-in ones, as before, not
-  yet methods of `Add`, `Eq`, `Ord` and `Show`.
+- A default method's body may use what the trait's supertraits give it, and
+  not more: a default that needs `Display` of the trait's type has the trait
+  require it (`trait Pretty s <: Display s`).
 
 ---
 
@@ -1179,7 +1360,10 @@ does not activate a `List.` qualifier for you.
 Reach for `List` when constant-time access to the head matters more than
 anything else: building by consing onto the front, sharing a tail between
 versions (an environment of bindings, say), or recursion that takes one element
-off at a time. For everything else a `Vector` does more operations well and
+off at a time. Such recursion is cheap even when it is not a tail call: a
+function that answers `f x :: go rest` -- or any constructor with its own
+recursive call in the last field -- is compiled to build the list front to back
+in a loop, so it uses no stack whatever the list's length. For everything else a `Vector` does more operations well and
 keeps its elements close together in memory. The standard library follows the
 same rule — its functions take and return vectors, and a `List` appears only in
 the explicit `toList` / `fromList` conversions and where an algorithm is a list
@@ -1326,9 +1510,9 @@ def main = "n = " ++ show 42 ++ "!"
 ```
 
 Strings are ordered byte by byte, which for UTF-8 is the order of their code
-points. `<` is for numbers; `S.compare` gives a string's `Ordering`, and
-`S.lessThan`, `S.lessOrEqual`, `S.greaterThan`, `S.greaterOrEqual`, `S.minOf` and
-`S.maxOf` the rest:
+points, and `<`, `compare` and the rest work on them as on anything `Ord`;
+`S.compare`, `S.lessThan`, `S.lessOrEqual`, `S.greaterThan`,
+`S.greaterOrEqual`, `S.minOf` and `S.maxOf` are the same, by name:
 
 ```meadow
 use Std.String as S
@@ -1342,10 +1526,10 @@ def main = (S.compare "apple" "banana", S.lessThan "app" "apple", sortBy S.compa
 ```
 
 `++` binds looser than application and tighter than `==`, and groups to the
-right. Unlike the arithmetic operators it is not a primitive but an ordinary
-name, bound with `fun (++) a b = ...` or `def (++) = ...`. It is imported,
-exported and shadowed like any other name, and written `(++)` wherever a name
-goes: `(++) "a" "b"`, `use Std.String ((++))`.
+right. Like every operator it is an ordinary name, bound with
+`fun (++) a b = ...` or `def (++) = ...`. It is imported, exported and shadowed
+like any other name, and written `(++)` wherever a name goes: `(++) "a" "b"`,
+`use Std.String ((++))`.
 
 Underneath, the bytes of a string are a `#[UInt8]`: `stringToBytes` and
 `bytesToString` convert, and `Std.Bytes` works on the array. An array of
@@ -1434,10 +1618,92 @@ def main = (kind ' ', kind '\n', kind '4', kind 'x')
 => ("space", "newline", "digit", "other")
 ```
 
+### Parsing text
+
+`Std.String.Parse` is a parser combinator library after Haskell's megaparsec,
+with two submodules: `Std.String.Parse.Char` for streams of characters, and
+`Std.String.Parse.Lexer` for the tokens of a programming language -- a space
+consumer that skips white space and comments, numbers, character literals,
+and indentation.
+
+```meadow
+use Std.String.Parse as P
+use Std.String.Parse.Char as C
+use Std.String.Parse.Lexer as L
+
+fun sc = L.space C.space1 (L.skipLineComment "--") P.empty
+
+fun lexeme p = L.lexeme sc p
+
+fun symbol s = L.symbol sc s
+
+fun pairOf = P.between (symbol "(") (symbol ")") (P.sepBy (lexeme L.decimal) (symbol ","))
+
+def main = P.parse (P.skipThen sc (P.thenSkip pairOf P.eof)) "( 1, 2 -- the second\n, 3 )"
+```
+
+```
+=> Ok([1, 2, 3])
+```
+
+A parser reads a **stream**: a `String` (a stream of `Char`s), a `Vector` of
+tokens, or any type with an `impl Stream`. Three traits divide what a parser
+needs of one, as in megaparsec:
+
+- `Stream` is enough to parse: take a token, take a run of them, as `Token s`
+  -- a `Char` of a `String`, a `t` of a `[t]`. A run of tokens -- a **chunk** --
+  is a stream of the same type.
+- `VisualStream` is enough to say what went wrong: how a token reads in a
+  message. `@derive(VisualStream)` writes it for a stream whose tokens are
+  `Display`, each reading as it displays -- so a lexer's token type with a
+  readable `impl Display` makes readable errors. A `Vector` of tokens is one
+  such stream.
+- `TraversableStream` is enough to say where: it turns offsets into the stream
+  into a span of the source. For a `String` those are the same offsets; a
+  stream of tokens a lexer made maps each token to the span of text it came
+  from, which is how an error in a token stream points back at the source.
+
+Positions are offsets, always: an error is a span of the source and a
+message, and turning a span into lines and columns is for whatever shows it to
+a person.
+
+A parser that stops without having taken all it could -- `many digit` at a
+letter, `optional sign` finding none -- leaves **hints**, as in megaparsec:
+what it would also have taken there. If the next parser fails at that spot,
+the hints join what it wanted, so the message says `expecting a digit or end of
+input` rather than only `end of input`.
+
+Every parser reports whether it consumed input, and `alt` only tries its right
+branch when the left one failed **without** consuming, so that an error points
+at the real problem rather than at the last alternative tried; `try` is how a
+parser that must backtrack over what it ate says so. `chunk` (and so
+`C.string`) is atomic: a partial match consumes nothing.
+
+```meadow
+use Std.String.Parse as P
+use Std.String.Parse.Char as C
+
+def main =
+  match P.parse (P.skipThen (C.string "let x = ") (P.some C.digitChar)) "let x = y" with
+  | Ok _ -> ((0, 0), "fine")
+  | Err e -> e
+```
+
+```
+=> ((8, 9), "unexpected 'y'\nexpecting a digit\n")
+```
+
+`Std.String.Parse.Lexer` has megaparsec's indentation too: `indentGuard`,
+`nonIndented`, `indentBlock` for a head and the block of lines under it, and
+`lineFold` for a construct that continues on further indented lines.
+
+`Std.Json` is built on it and is worth reading as a worked example, and so is
+`examples/MiniML`'s `Parser.mw`.
+
 ### Maps keyed by anything
 
-`Std.Collections.HashMap` maps any key `==` can compare to a value: strings,
-tuples, records, vectors, constructors. Like `Vector` it is persistent, so an
+`Std.Collections.HashMap` maps any key that is `PartialEq` to a value:
+strings, tuples, vectors, and any type that derives it. Like `Vector` it is persistent, so an
 update gives a new map and leaves the old one as it was:
 
 ```meadow
@@ -3321,8 +3587,9 @@ test somethingTrue ... ok
 test result: ok. 3 passed; 0 failed
 ```
 
-A failure names both values, because `==` and `show` are structural and work at any
-type:
+A failure names both values. `assertEq` compares with the structural
+primitive and prints with `show`, so it works at any type, whether or not it
+derives `PartialEq` or `Debug`:
 
 ```
 ---- doubling ----
@@ -3501,26 +3768,27 @@ the column you chose, so deliberate alignment survives.
 
 ### Operators, loosest to tightest
 
-| Operators                                               |                                               |
-| ------------------------------------------------------- | --------------------------------------------- |
-| `<\|`                                                   | apply, right-associative                      |
-| `\|>`                                                   | pipe                                          |
-| `or`                                                    | short-circuit                                 |
-| `and`                                                   | short-circuit                                 |
-| `==` `!=` `<` `>` `<=` `>=` (and `<.` `>.` `<=.` `>=.`) | comparison                                    |
-| `::` `++`                                               | cons, string concatenation; right-associative |
-| `+` `-` (and `+.` `-.`), `<<` `>>` `>>>`                |                                               |
-| `*` `/` `%` (and `*.` `/.`)                             |                                               |
-| `^`                                                     | power, right-associative                      |
-| `-` (prefix)                                            | negation                                      |
-| _juxtaposition_                                         | function application, tightest                |
+| Operators                                               | Fixity     |                                  |
+| ------------------------------------------------------- | ---------- | -------------------------------- |
+| `<\|`                                                   |            | apply, right-associative         |
+| `\|>`                                                   |            | pipe                             |
+| `or`                                                    |            | short-circuit                    |
+| `and`                                                   |            | short-circuit                    |
+| `==` `!=` `<` `>` `<=` `>=` (and `<.` `>.` `<=.` `>=.`) | `infix 4`  | comparison; do not group         |
+| `::` `++`                                               | `infixr 5` | cons, string concatenation       |
+| `+` `-` (and `+.` `-.`), `<<` `>>` `>>>`                | `infixl 6` |                                  |
+| `*` `/` `%` (and `*.` `/.`)                             | `infixl 7` |                                  |
+| `^`                                                     | `infixr 8` | power                            |
+| an operator nothing declares                            | `infixl 9` |                                  |
+| `-` (prefix)                                            |            | negation, tighter than any infix |
+| _juxtaposition_                                         |            | function application, tightest   |
 
 ### Always in scope
 
 Without any `use`, from the prelude:
 
 - **Bool** `not`
-- **Ordering** `compare` `isLess` `isEqual` `isGreater`
+- **Ordering** `isLess` `isEqual` `isGreater`
 - **Function** `id` `const` `flip` `compose` `apply` `twice`
 - **Tuple** `fst` `snd` `pair` `swap` `mapFst` `mapSnd`
 - **Num.Int** `min` `max` `abs` `signum` `clamp` `succ` `pred` `even` `odd` `gcd` `lcm`
@@ -3539,19 +3807,24 @@ Without any `use`, from the prelude:
   `partition` `zip` `zipWith` `unzip` `maximum` `minimum` `toArray` `toList`
   `fromArray` `fromList`
 
-Also always available: `++` (`Std.String.concat`); `print` and `println`; `runSt`; the primitives (`show`, `display`, `hash`,
+Also always available: the operators and their traits (`Std.Ops`: `Add`,
+`Sub`, `Mul`, `Div`, `Rem`, `Pow`, `Shift`, `Floating`; `Std.Cmp`:
+`PartialEq`, `Eq`, `PartialOrd`, `Ord`, with `compare` and `partialCmp`;
+`Std.Display` and `Std.Debug`); `++`
+(`Std.String.concat`); `print` and `println`; `runSt`; the primitives (`show`, `display`, `hash`,
 `arrayLen`, `arrayGet`, `stringToBytes`, `stringToChars`, `charCode`, `bitAnd`,
 `toInt`, `toUInt8`, `toFloat`, `toBigInt`, …); and the constructors `Just`, `None`, `Ok`, `Err`,
 `Less`, `Equal`, `Greater`, `True`, `False`, `Nil` and `Cons`.
 
 ### The standard library
 
-`Bool` `Ordering` `Function` `Tuple` `Num` (`Int` `Bits`) `Maybe` `Char` `Result`
+`Ops` `Display` `Debug` `Bool` `Ordering` `Function` `Tuple` `Num` (`Int` `Bits`) `Maybe` `Cmp` `Char` `Result`
 `Either` `Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `St` `Compact` `Thread` `Stm` `Exn`
-`Stream` `Random` `Fs` `Process` `String` (`Parse`) `Path` `Json` `Time` `Test`
+`Stream` `Random` `Fs` `Process` `String` (`Parse` (`Char` `Lexer`)) `Path` `Json` `Time` `Test`
 
-`Std.String.Parse` is a megaparsec-style parser combinator library; `Std.Json` is
-built on it and is worth reading as a worked example.
+`Std.String.Parse` is a megaparsec-style parser combinator library -- see
+[Parsing text](#parsing-text); `Std.Json` is built on it and is worth reading as
+a worked example.
 
 ### Gotchas, collected
 

@@ -12,6 +12,7 @@ use Std.Collections.Vector (vecFromArray)
 use Std.Yield (yield)
 
 use Tree.*
+@derive(Debug, Display)
 @pub data Tree a = Leaf | Node (Tree a) a (Tree a)
 
 @pub def empty = Leaf
@@ -114,6 +115,26 @@ fun pushInOrder acc t =
       let _ = toStream l in
       let _ = yield x in
       toStream r
+
+-- --- comparing -----------------------------------------------------------------
+
+-- By their elements in order, not by the shape of the tree, which depends on
+-- the order they were inserted in.
+
+impl PartialEq (Tree a) where PartialEq a {
+  fun (==) x y = toList x == toList y
+}
+
+impl Eq (Tree a) where Eq a {
+}
+
+impl PartialOrd (Tree a) where PartialOrd a {
+  fun partialCmp x y = partialCmp (toList x) (toList y)
+}
+
+impl Ord (Tree a) where Ord a {
+  fun compare x y = compare (toList x) (toList y)
+}
 
 -- --- tests -------------------------------------------------------------------
 

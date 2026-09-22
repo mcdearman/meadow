@@ -258,7 +258,10 @@ fn hover_shows_the_signature_and_the_doc_comment() {
     c.set(SRC);
     let hover = c.at("textDocument/hover", 3, 12);
     let text = hover["contents"]["value"].as_str().unwrap();
-    assert!(text.contains("double : forall n. n -> n"), "{text}");
+    assert!(
+        text.contains("double : forall n. Mul n => n -> n"),
+        "{text}"
+    );
     assert!(text.contains("Doubles its argument."), "{text}");
 }
 

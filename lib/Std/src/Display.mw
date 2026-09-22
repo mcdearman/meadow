@@ -1,0 +1,105 @@
+-- A value as text, for people: what `print` and `println` write, and what an
+-- interpolated hole, `"${x}"`, renders.
+--
+-- Every primitive type has an `impl` here. A type of your own gets one with
+-- `@derive(Display)`, which renders a constructor and its fields --
+-- `Just(5)` -- each field by its own `Display`; or with an `impl` that says
+-- exactly how:
+--
+--   use Suit.*
+--   data Suit = Hearts | Spades
+--
+--   impl Display Suit {
+--     fun display s = match s with | Hearts -> "♥" | Spades -> "♠"
+--   }
+--
+-- A `String` displays as itself and a `Char` as the character, which is where
+-- `Display` and `Debug` differ: `Debug` is for programmers, and writes both
+-- the way they are written in source, quotes and escapes included.
+
+@pub trait Display a {
+  fun display : a -> String
+}
+
+impl Display Int {
+  fun display x = _primDisplay x
+}
+
+impl Display BigInt {
+  fun display x = _primDisplay x
+}
+
+impl Display Int8 {
+  fun display x = _primDisplay x
+}
+
+impl Display Int16 {
+  fun display x = _primDisplay x
+}
+
+impl Display Int32 {
+  fun display x = _primDisplay x
+}
+
+impl Display UInt8 {
+  fun display x = _primDisplay x
+}
+
+impl Display UInt16 {
+  fun display x = _primDisplay x
+}
+
+impl Display UInt32 {
+  fun display x = _primDisplay x
+}
+
+impl Display UInt64 {
+  fun display x = _primDisplay x
+}
+
+impl Display Float {
+  fun display x = _primDisplay x
+}
+
+impl Display Float32 {
+  fun display x = _primDisplay x
+}
+
+impl Display String {
+  fun display s = s
+}
+
+impl Display Char {
+  fun display c = charsToString #[c]
+}
+
+impl Display () {
+  fun display u = "()"
+}
+
+impl Display (a, b) where Display a, Display b {
+  fun display p = match p with | (x, y) -> concatStrings #["(", display x, ", ", display y, ")"]
+}
+
+impl Display (a, b, c) where Display a, Display b, Display c {
+  fun display p =
+    match p with
+    | (x, y, z) -> concatStrings #["(", display x, ", ", display y, ", ", display z, ")"]
+}
+
+impl Display (a, b, c, d) where Display a, Display b, Display c, Display d {
+  fun display p =
+    match p with
+    | (w, x, y, z) ->
+        concatStrings #["(", display w, ", ", display x, ", ", display y, ", ", display z, ")"]
+}
+
+fun elements xs i acc =
+  if i >= arrayLen xs then acc
+  else
+    let sep = if i == 0 then "" else ", " in
+    elements xs (i + 1) (concatStrings #[acc, sep, display (arrayGet xs i)])
+
+impl Display #[a] where Display a {
+  fun display xs = concatStrings #["#[", elements xs 0 "", "]"]
+}

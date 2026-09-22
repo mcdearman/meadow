@@ -7,13 +7,15 @@
 --     | Ok v -> J.render v
 --     | Err e -> e
 --
--- The parser is built out of `Std.String.Parse`, over the bytes of the input, and
--- follows RFC 8259 with two deliberate gaps noted at `number` and `escape` below.
+-- The parser is built out of `Std.String.Parse`, over the characters of the
+-- input, and follows RFC 8259 with one deliberate gap, noted at `stringLit`.
 -- The renderer is the inverse for everything the parser accepts.
 
 use Std.Bool (not)
 use Std.String as S
 use Std.String.Parse as P
+use Std.String.Parse.Char as C
+use Std.String.Parse.Lexer as L
 use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 use Std.Tuple (fst, snd, pair)
@@ -25,6 +27,7 @@ use Std.Maybe.Maybe.*
 -- type, because meadow's `Int` and `Float` are separate and silently widening
 -- every integer to a float would lose precision no one asked to lose.
 use Json.*
+@derive(Debug, Display, PartialEq, PartialOrd)
 @pub data Json
   = Null
   | Bool Bool
@@ -102,111 +105,88 @@ fun lookupField key fields =
 
 -- --- parsing ------------------------------------------------------------------
 
--- `Ok` of the value, or `Err` of a message naming the byte offset.
+-- `Ok` of the value, or `Err` of a message saying at which byte offset and
+-- what went wrong there. `parseSpanned` gives the span of the text instead.
 @pub fun parse text =
-  match P.runParser document (P.fromString text) with
+  match P.runParser document text with
   | Ok v -> Ok v
   | Err e -> Err (P.showError e)
 
--- These four refer to each other in a cycle, and meadow evaluates top-level
+-- `Ok` of the value, or `Err` of the span of the text the error is about and
+-- what went wrong there, for whoever shows it to point at.
+@pub fun parseSpanned text = P.parse document text
+
+-- What sits between tokens: white space, and nothing else -- JSON has no
+-- comments.
+fun sc = L.space C.space1 P.empty P.empty
+
+fun lexeme p = L.lexeme sc p
+
+fun symbol text = L.symbol sc text
+
+-- These refer to each other in a cycle, and meadow evaluates top-level
 -- definitions eagerly -- so building any of them at load time would read another
 -- that had not been built yet. `defer` delays construction until the parser is
--- actually run, which is what breaks the cycle in a strict language. Every
--- definition in the cycle needs it, not just the one that looks recursive.
-def document = P.defer (\() -> P.thenSkip (P.skipThen spaces value) P.eof)
+-- actually run, which is what breaks the cycle in a strict language.
+fun document = P.defer (\() -> P.thenSkip (P.skipThen sc value) P.eof)
 
-def value =
-  P.defer (\() ->
-    P.choice [
-      P.label "null" (P.map (\c -> Null) (P.chunk (P.fromString "null"))),
-      P.label "true" (P.map (\c -> Bool True) (P.chunk (P.fromString "true"))),
-      P.label "false" (P.map (\c -> Bool False) (P.chunk (P.fromString "false"))),
-      P.label "a string" (P.map String stringLit),
-      P.label "an array" array,
-      P.label "an object" object,
-      P.label "a number" number,
-    ])
+fun values = [
+  P.mapTo Null (C.string "null"),
+  P.mapTo (Bool True) (C.string "true"),
+  P.mapTo (Bool False) (C.string "false"),
+  P.map String stringLit,
+  array,
+  object,
+  number,
+]
 
-def array =
-  P.defer (\() ->
-    P.map Array
-      (P.between (lexeme (P.single 91)) (lexeme (P.single 93))
-        (P.sepBy (lexeme value) (lexeme (P.single 44)))))
+fun value = P.defer (\() -> lexeme (P.choice values))
 
-def object =
-  P.defer (\() ->
-    P.map Object
-      (P.between (lexeme (P.single 123)) (lexeme (P.single 125))
-        (P.sepBy (lexeme member) (lexeme (P.single 44)))))
+fun array =
+  let items = P.between (symbol "[") (C.char ']') (P.sepBy value (symbol ",")) in
+  P.defer (\() -> P.label "an array" (P.map Array items))
 
-def member =
-  P.defer (\() ->
-    P.bind (lexeme stringLit)
-      (\k -> P.map (\v -> pair k v) (P.skipThen (lexeme (P.single 58)) value)))
+fun object =
+  let members = P.between (symbol "{") (C.char '}') (P.sepBy member (symbol ",")) in
+  P.defer (\() -> P.label "an object" (P.map Object members))
+
+fun member =
+  let pairWith = \k -> P.map (\v -> pair k v) (P.skipThen (symbol ":") value) in
+  P.defer (\() -> P.bind (lexeme stringLit) pairWith)
 
 -- --- lexical ------------------------------------------------------------------
 
-def spaces = P.skipMany (P.satisfy isSpace)
+fun float negative = P.map (\x -> Float (if negative then 0.0 -. x else x)) L.float
 
-fun isSpace (b : UInt8) = b == 32 or b == 9 or b == 10 or b == 13
+fun integer negative = P.map (\n -> Int (if negative then 0 - n else n)) L.decimal
 
-fun lexeme p = P.thenSkip p spaces
+-- Numbers: an optional minus, digits, and an optional fraction and exponent.
+-- One with neither is an `Int`; one with either is a `Float`.
+fun number =
+  let minus = P.option False (P.mapTo True (C.char '-')) in
+  P.label "a number" (P.bind minus (\negative -> P.alt (float negative) (integer negative)))
 
--- Numbers: an optional sign, digits, and an optional fraction. JSON also allows
--- an exponent (`1e9`); meadow has no float parser to build one on yet, so an
--- exponent is rejected rather than silently misread.
-def number =
-  P.bind (P.optional (P.single 45))
-    (\sign ->
-      P.bind (P.takeWhile1P "a digit" isDigit)
-        (\whole ->
-          P.bind (P.optional (P.skipThen (P.single 46) (P.takeWhile1P "a digit" isDigit)))
-            (\frac -> P.pure (buildNumber sign whole frac))))
+-- Strings: `\uXXXX` is the one gap. Decoding one means UTF-16 surrogate
+-- pairing, which belongs in `Std.String` rather than here, so for now such an
+-- escape is rejected instead of half-handled.
+fun stringLit =
+  let chars = P.skipThen (C.char '"') (P.manyTill (P.alt escape plainChar) (C.char '"')) in
+  P.label "a string" (P.map (\cs -> charsToString (V.toArray cs)) chars)
 
-fun isDigit (b : UInt8) = b >= 48 and b <= 57
+fun plainChar = P.satisfy (\c -> c != '"' and c != '\\')
 
-fun buildNumber sign whole frac =
-  let neg = match sign with | None -> False | Just s -> True in
-  match frac with
-  | None -> Int (applySign neg (digitsToInt whole))
-  | Just f -> Float (applySignF neg (toFloat (digitsToInt whole) +. fraction f))
+fun escapes = [
+  P.mapTo '"' (C.char '"'),
+  P.mapTo '\\' (C.char '\\'),
+  P.mapTo '/' (C.char '/'),
+  P.mapTo (charFromCode 8) (C.char 'b'),
+  P.mapTo (charFromCode 12) (C.char 'f'),
+  P.mapTo '\n' (C.char 'n'),
+  P.mapTo '\r' (C.char 'r'),
+  P.mapTo '\t' (C.char 't'),
+]
 
-fun applySign neg n = if neg then 0 - n else n
-
-fun applySignF neg x = if neg then 0.0 -. x else x
-
-fun digitsToInt bytes = V.foldl (\acc b -> acc * 10 + toInt (b - 48)) 0 bytes
-
--- `.25` as a `Float`, by dividing the digits by the right power of ten.
-fun fraction bytes =
-  toFloat (digitsToInt bytes) /. powTen (V.len bytes)
-
-fun powTen n = if n <= 0 then 1.0 else 10.0 *. powTen (n - 1)
-
--- Strings: `\uXXXX` is the second gap. Decoding one means UTF-16 surrogate
--- pairing and UTF-8 re-encoding, which belongs in `Std.String` rather than here,
--- so for now such an escape is rejected instead of half-handled.
-def stringLit =
-  P.map bytesToText
-    (P.between (P.single 34) (P.single 34) (P.many (P.alt escape plainByte)))
-
-def plainByte = P.satisfy (\b -> b != 34 and b != 92)
-
-def escape =
-  P.skipThen (P.single 92)
-    (P.label "an escape"
-      (P.choice [
-        P.map (\b -> 34) (P.single 34),
-        P.map (\b -> 92) (P.single 92),
-        P.map (\b -> 47) (P.single 47),
-        P.map (\b -> 8) (P.single 98),
-        P.map (\b -> 12) (P.single 102),
-        P.map (\b -> 10) (P.single 110),
-        P.map (\b -> 13) (P.single 114),
-        P.map (\b -> 9) (P.single 116),
-      ]))
-
-fun bytesToText bytes = S.fromBytes (V.toArray bytes)
+fun escape = P.skipThen (C.char '\\') (P.label "an escape" (P.choice escapes))
 
 -- --- rendering ----------------------------------------------------------------
 
@@ -306,9 +286,25 @@ fun parsed text =
   -- JSON has one number type; meadow has two, and widening every integer to a
   -- float would lose precision no one asked to lose.
   let a = assertEq (parsed "1") (Int 1) "no fraction means Int" in
+  let b = assertEq (parsed "2e3") (Float 2000.0) "an exponent means Float" in
+  let c = assertEq (parsed "-2.5E-1") (Float (0.0 -. 0.25)) "a signed exponent" in
   assertTrue (isFloat (parsed "1.5")) "a fraction means Float"
 
 fun isFloat v = match v with | Float x -> True | _ -> False
+
+@test fun anErrorPointsAtTheSpot () =
+  let text = "{\"a\": [1, 2,\n  ]}" in
+  let wanted = "expecting \"null\", \"true\", \"false\", a string, an array, an object, or a number" in
+  let a =
+    match parse text with
+    | Ok _ -> assertTrue False "it should fail"
+    | Err e -> assertEq e "at offset 15: unexpected \"]}\"; ${wanted}" "the offset, and what went wrong"
+  in
+  match parseSpanned text with
+  | Ok _ -> assertTrue False "it should fail"
+  | Err (at, message) ->
+      let b = assertEq at (15, 17) "the span of what was found" in
+      assertEq message "unexpected \"]}\"\n${wanted}\n" "what went wrong, in lines"
 
 @test fun containersNestAndAreOrdered () =
   let a = assertEq (parsed "[]") (Array []) "an empty array" in

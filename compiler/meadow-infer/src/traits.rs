@@ -40,6 +40,14 @@
 //! types, which is the other way they are settled. So where a program writes
 //! `Elem f`, [`Infer::lift_assocs`] puts the variable, and nothing downstream
 //! ever meets an associated type.
+//!
+//! A trait that requires another **inherits** its associated types. Given
+//! `trait Visual s <: Stream s`, `Token s` is as much `Visual`'s as
+//! `Stream`'s: its dictionary is over one more variable for it, its methods
+//! may mention it, and a `Visual s` given to a function brings `Stream s` with
+//! the same `Token s`. An `impl Visual T` does not say what `Token T` is -- its
+//! `Stream T` does -- so it asks for its `Stream T` as if its `where` had, and
+//! answering that is what settles the inherited types wherever it is used.
 
 use super::*;
 
@@ -74,7 +82,14 @@ pub struct TraitShape {
     pub params: usize,
     /// The traits it requires, each of which of its parameters.
     pub supers: Vec<(InternedString, Vec<usize>)>,
+    /// Its associated types: its own, then those it inherits from the traits
+    /// it requires. A predicate of the trait carries one type for each.
     pub assocs: Vec<InternedString>,
+    /// Which of its parameters each associated type is of: all of them for
+    /// its own, the requiring trait's selection for an inherited one.
+    pub assoc_params: Vec<Vec<usize>>,
+    /// How many of `assocs` are its own.
+    pub own_assocs: usize,
     /// `(name, the value a program calls, its default's definition)`.
     pub methods: Vec<(InternedString, VarId, Option<VarId>)>,
     /// The dictionary's constructor, and its fields' labels: one per required
@@ -103,8 +118,14 @@ enum Sol {
     /// through from there, each with the parameters it is asked of.
     ///
     /// With the types that parameter's trait is of, which a required trait's
-    /// are selected from.
-    Given(usize, Vec<Type>, Vec<(InternedString, Vec<usize>)>),
+    /// are selected from, and its associated types, which a required trait's
+    /// are among.
+    Given(
+        usize,
+        Vec<Type>,
+        Vec<Type>,
+        Vec<(InternedString, Vec<usize>)>,
+    ),
     Impl {
         dict: VarId,
         ty: Type,
@@ -146,6 +167,8 @@ pub(crate) struct State {
     mentions: Vec<(NodeId, VarId, Option<VarId>, Span)>,
     /// The type a method of an `impl`, or a default, is held to.
     pub(crate) method_sigs: HashMap<VarId, (Scheme, Span)>,
+    /// The trait of the given a wanted is answered from, by the wanted.
+    given_of: HashMap<usize, InternedString>,
 }
 
 impl State {
@@ -281,7 +304,13 @@ impl Infer {
                     continue;
                 };
                 progress = true;
-                let Some(found) = self.tr.impls.get(&(tr, key)).cloned() else {
+                let found = self
+                    .tr
+                    .impls
+                    .get(&(tr, key))
+                    .or_else(|| self.tr.impls.get(&(tr, blanket_key(tys.len()))))
+                    .cloned();
+                let Some(found) = found else {
                     self.trait_error(
                         format!(
                             "`{}` does not implement `{}`",
@@ -294,31 +323,91 @@ impl Infer {
                     self.tr.wanted[i].sol = Some(Sol::Failed);
                     continue;
                 };
-                let (dict_ty, context) = self.instantiate_with_preds(&found.scheme);
-                let mut args = tys;
-                args.extend(self.tr.wanted[i].pred.assocs.iter().cloned());
-                self.unify_at(span, dict_ty.clone(), Type::Con(tr, args));
-                let owner = self.tr.wanted[i].owner;
-                let mut subs = Vec::with_capacity(context.len());
-                for pred in context {
-                    subs.push(self.tr.wanted.len());
-                    self.tr.wanted.push(Wanted {
-                        pred,
-                        span,
-                        owner,
-                        sol: None,
-                    });
-                }
-                self.tr.wanted[i].sol = Some(Sol::Impl {
-                    dict: found.dict,
-                    ty: dict_ty,
-                    subs,
-                });
+                self.answer_with(i, tys, &found);
             }
             if !progress {
                 break;
             }
         }
+    }
+
+    /// Answer wanted `i`, at `tys`, with the `impl` `found`: its dictionary,
+    /// applied to what that `impl`'s own `where` wants in turn.
+    fn answer_with(&mut self, i: usize, tys: Vec<Type>, found: &ImplDef) {
+        let (tr, span) = (self.tr.wanted[i].pred.tr, self.tr.wanted[i].span);
+        let (dict_ty, context) = self.instantiate_with_preds(&found.scheme);
+        let mut args = tys;
+        args.extend(self.tr.wanted[i].pred.assocs.iter().cloned());
+        self.unify_at(span, dict_ty.clone(), Type::Con(tr, args));
+        let owner = self.tr.wanted[i].owner;
+        let mut subs = Vec::with_capacity(context.len());
+        for pred in context {
+            subs.push(self.tr.wanted.len());
+            self.tr.wanted.push(Wanted {
+                pred,
+                span,
+                owner,
+                sol: None,
+            });
+        }
+        self.tr.wanted[i].sol = Some(Sol::Impl {
+            dict: found.dict,
+            ty: dict_ty,
+            subs,
+        });
+    }
+
+    /// Wanted `i` is of a type nothing will ever say: `[;] == [;]`, or `1 + 2`
+    /// in a binding that is not a function. Answer it the way it has to mean
+    /// something -- with the trait's `impl` for every type, if it has one, or
+    /// else at `Int`, if it is an integer literal's type or an arithmetic
+    /// trait's, and `Int` implements the trait -- and say whether that worked.
+    fn default_wanted(&mut self, i: usize) -> bool {
+        let tr = self.tr.wanted[i].pred.tr;
+        let tys: Vec<Type> = self.tr.wanted[i]
+            .pred
+            .tys
+            .clone()
+            .iter()
+            .map(|t| self.arena.zonk(t))
+            .collect();
+        // Settled by now, by another one defaulted before it: answered as
+        // any wanted of a known type is.
+        if let Some(key) = heads_key(&tys)
+            && let Some(found) = self.tr.impls.get(&(tr, key)).cloned()
+        {
+            self.answer_with(i, tys, &found);
+            return true;
+        }
+        if let Some(found) = self.tr.impls.get(&(tr, blanket_key(tys.len()))).cloned() {
+            self.answer_with(i, tys, &found);
+            return true;
+        }
+        // A float literal's type, which would be `Float` by the end anyway.
+        if let [Type::Var(v)] = tys.as_slice()
+            && matches!(self.arena.slot_kind(*v), VarKind::Frac)
+        {
+            if let Some(found) = self.tr.impls.get(&(tr, "Float".to_string())).cloned() {
+                let span = self.tr.wanted[i].span;
+                self.unify_at(span, tys[0].clone(), Type::float());
+                self.answer_with(i, vec![Type::float()], &found);
+                return true;
+            }
+            return false;
+        }
+        // An integer literal's type, which would be `Int` by the end anyway,
+        // or what an arithmetic operator was used at (`hir::NUMERIC_TRAITS`).
+        // Not any variable: `make ()` thrown away is not a request for `Int`.
+        if let [Type::Var(v)] = tys.as_slice()
+            && (matches!(self.arena.slot_kind(*v), VarKind::Num) || hir::is_numeric_trait(&tr))
+            && let Some(found) = self.tr.impls.get(&(tr, "Int".to_string())).cloned()
+        {
+            let span = self.tr.wanted[i].span;
+            self.unify_at(span, tys[0].clone(), Type::int());
+            self.answer_with(i, vec![Type::int()], &found);
+            return true;
+        }
+        false
     }
 
     /// One trait at one type has one set of associated types: tie wanted `i`'s,
@@ -375,6 +464,81 @@ impl Infer {
         None
     }
 
+    /// The associated types of `sup`, required by `tr` of the parameters
+    /// `idxs`, out of `tr`'s own: `assocs` is a predicate of `tr`'s.
+    fn super_assocs(
+        &self,
+        tr: InternedString,
+        assocs: &[Type],
+        sup: InternedString,
+        idxs: &[usize],
+    ) -> Vec<Type> {
+        let (Some(me), Some(them)) = (self.tr.shapes.get(&tr), self.tr.shapes.get(&sup)) else {
+            return Vec::new();
+        };
+        them.assocs
+            .iter()
+            .zip(&them.assoc_params)
+            .map(|(a, ps)| {
+                let mapped: Vec<usize> = ps.iter().filter_map(|p| idxs.get(*p).copied()).collect();
+                me.assocs
+                    .iter()
+                    .zip(&me.assoc_params)
+                    .position(|(b, qs)| b == a && *qs == mapped)
+                    .and_then(|k| assocs.get(k).cloned())
+                    .unwrap_or(Type::Error)
+            })
+            .collect()
+    }
+
+    /// Associated type `assoc` of trait `owner` at the types `of` -- written
+    /// over an `impl`'s own quantifiers -- as the `impl` of `owner` for them
+    /// says, if it is known and says it in terms of `of` alone.
+    fn known_assoc(
+        &self,
+        owner: InternedString,
+        assoc: InternedString,
+        of: &[Type],
+    ) -> Option<Type> {
+        let found = self.tr.impls.get(&(owner, heads_key(of)?))?;
+        let shape = self.tr.shapes.get(&owner)?;
+        let Type::Con(_, theirs) = &found.scheme.ty else {
+            return None;
+        };
+        let k = shape.assocs[..shape.own_assocs]
+            .iter()
+            .position(|x| *x == assoc)?;
+        let mut map = HashMap::new();
+        for (pattern, t) in theirs.get(..shape.params)?.iter().zip(of) {
+            match_bound(pattern, t, &mut map)?;
+        }
+        subst_map(theirs.get(shape.params + k)?, &map)
+    }
+
+    /// How many traits deep `tr`'s requirements go: 0 for one that requires
+    /// none. Bounded, against a cycle a program wrote by mistake.
+    pub(crate) fn trait_depth(&self, tr: InternedString, seen: usize) -> usize {
+        if seen > 32 {
+            return seen;
+        }
+        self.tr
+            .shapes
+            .get(&tr)
+            .map(|s| {
+                s.supers
+                    .iter()
+                    .map(|(sup, _)| 1 + self.trait_depth(*sup, seen + 1))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0)
+    }
+
+    /// The trait of the given wanted `i` was answered from.
+    fn given_trait(&self, i: usize) -> Option<InternedString> {
+        self.tr.given_of.get(&i).copied()
+    }
+
     /// Keep every variable something is still wanted of from generalizing here:
     /// a binding that takes no dictionaries cannot be general in it.
     pub(crate) fn hold_back_wanted(&mut self) {
@@ -416,6 +580,13 @@ impl Infer {
             return HashMap::new();
         }
 
+        // The variables of the members' own types: what a signature speaks of.
+        let mut signature_vars = Vec::new();
+        for (_, ty) in members {
+            let z = self.arena.zonk(ty);
+            self.arena.free_vars(&z, &mut signature_vars);
+        }
+
         // The group's `where`: what was given, then what turned out wanted.
         let mut all: Vec<Pred> = givens;
         let mut pending: Vec<(usize, usize, Vec<(InternedString, Vec<usize>)>)> = Vec::new();
@@ -445,24 +616,37 @@ impl Infer {
             let ours = free.iter().any(|v| self.arena.slot_level(*v) > level);
             match found {
                 Some((j, path)) => {
-                    if path.is_empty() {
-                        let theirs = all[j].assocs.clone();
-                        for (a, b) in pred.assocs.iter().zip(&theirs) {
-                            self.unify_at(span, a.clone(), b.clone());
-                        }
+                    // What the given says the associated types are, through
+                    // every trait on the way to this one.
+                    let mut tr = all[j].tr;
+                    let mut theirs = all[j].assocs.clone();
+                    for (s, idxs) in &path {
+                        theirs = self.super_assocs(tr, &theirs, *s, idxs);
+                        tr = *s;
                     }
+                    for (a, b) in pred.assocs.iter().zip(&theirs) {
+                        self.unify_at(span, a.clone(), b.clone());
+                    }
+                    self.tr.given_of.insert(i, all[j].tr);
                     pending.push((i, j, path));
                 }
                 // Variables from further out: not this binding's to ask for.
                 None if !ours => {}
                 None if signed => {
+                    // A variable only the body has -- a literal's, `compare 0
+                    // 0` -- is not the signature's to have asked for: it is
+                    // defaulted, as it would be in a binding with none.
+                    let local = !free.iter().any(|v| signature_vars.contains(v));
+                    if local && self.default_wanted(i) {
+                        continue;
+                    }
                     self.trait_error(
                         format!(
                             "this needs `{} {}`, which the signature does not ask for",
                             hir::spelling(&pred.tr),
                             show_all(&want)
                         ),
-                        &format!("add `where {} …` to the signature", hir::spelling(&pred.tr)),
+                        &format!("add `{} … =>` to the signature", hir::spelling(&pred.tr)),
                         span,
                     );
                     self.tr.wanted[i].sol = Some(Sol::Failed);
@@ -518,8 +702,12 @@ impl Infer {
                 .and_then(|o| lists.get(&o))
                 .and_then(|mine| mine.iter().position(|k| *k == j));
             self.tr.wanted[i].sol = Some(match place {
-                Some(at) => Sol::Given(at, all[j].tys.clone(), path),
+                Some(at) => Sol::Given(at, all[j].tys.clone(), all[j].assocs.clone(), path),
                 None => {
+                    self.tr.wanted[i].sol = None;
+                    if self.default_wanted(i) {
+                        continue;
+                    }
                     let pred = self.tr.wanted[i].pred.clone();
                     let span = self.tr.wanted[i].span;
                     self.ambiguous(&pred, span);
@@ -580,6 +768,15 @@ impl Infer {
     /// ambiguity, and everything else becomes the evidence lowering reads.
     pub(crate) fn finish_wanted(&mut self) -> HashMap<NodeId, Vec<Evidence>> {
         self.solve_wanted();
+        // What nothing said the type of: defaulted, one at a time, since each
+        // one settled may settle others. What is left after that is ambiguous.
+        let mut i = 0;
+        while i < self.tr.wanted.len() {
+            if self.tr.wanted[i].sol.is_none() && self.default_wanted(i) {
+                self.solve_wanted();
+            }
+            i += 1;
+        }
         for i in 0..self.tr.wanted.len() {
             if self.tr.wanted[i].sol.is_none() {
                 let (pred, span) = (self.tr.wanted[i].pred.clone(), self.tr.wanted[i].span);
@@ -604,17 +801,24 @@ impl Infer {
     fn evidence_of(&mut self, i: usize) -> Evidence {
         match self.tr.wanted[i].sol.clone() {
             None | Some(Sol::Failed) => Evidence::Missing,
-            Some(Sol::Given(at, given, path)) => {
-                // A required trait is of a selection of its requirer's types.
+            Some(Sol::Given(at, given, assocs, path)) => {
+                // A required trait is of a selection of its requirer's types,
+                // and its associated types are some of its requirer's.
                 let mut of: Vec<Type> = given.iter().map(|t| self.arena.zonk(t)).collect();
+                let mut asc: Vec<Type> = assocs.iter().map(|t| self.arena.zonk(t)).collect();
+                let mut tr = self.given_trait(i).unwrap_or(self.tr.wanted[i].pred.tr);
                 let mut e = Evidence::Given(at);
                 for (s, idxs) in path {
+                    asc = self.super_assocs(tr, &asc, s, &idxs);
                     of = idxs.iter().filter_map(|k| of.get(*k).cloned()).collect();
+                    let mut args = of.clone();
+                    args.extend(asc.iter().cloned());
                     e = Evidence::Super {
                         of: Box::new(e),
                         label: super_label(s),
-                        ty: Type::Con(s, of.clone()),
+                        ty: Type::Con(s, args),
                     };
+                    tr = s;
                 }
                 e
             }
@@ -666,15 +870,19 @@ impl Infer {
         table: &mut Vec<(InternedString, Vec<Type>, u32)>,
         quant: &mut Vec<VarKind>,
     ) -> Pred {
-        let names = self
+        let (names, params) = self
             .tr
             .shapes
             .get(&tr)
-            .map(|s| s.assocs.clone())
+            .map(|s| (s.assocs.clone(), s.assoc_params.clone()))
             .unwrap_or_default();
         let assocs = names
             .into_iter()
-            .map(|a| Type::Bound(assoc_var(a, &tys, table, quant)))
+            .zip(params)
+            .map(|(a, ps)| {
+                let of: Vec<Type> = ps.iter().filter_map(|p| tys.get(*p).cloned()).collect();
+                Type::Bound(assoc_var(a, &of, table, quant))
+            })
             .collect();
         Pred { tr, tys, assocs }
     }
@@ -772,24 +980,27 @@ impl Infer {
     /// schemes.
     pub(crate) fn register_trait(&mut self, td: &hir::TraitDecl) {
         let np = td.params.len();
-        let n = td.assocs.len();
-        for (s, _) in &td.supers {
-            if self
-                .tr
-                .shapes
-                .get(s.value())
-                .is_some_and(|shape| !shape.assocs.is_empty())
-            {
-                self.trait_error(
-                    format!(
-                        "`{}` has associated types, and a trait cannot require one that does yet",
-                        hir::spelling(s.value())
-                    ),
-                    "ask for it in a `where` on the functions that need both",
-                    s.span,
-                );
+        // Its own associated types, then what it inherits from the traits it
+        // requires, each at the selection of its parameters it is of.
+        let mut assocs: Vec<InternedString> = td.assocs.iter().map(|a| *a.value()).collect();
+        let mut assoc_params: Vec<Vec<usize>> = vec![(0..np).collect(); assocs.len()];
+        for (s, idxs) in &td.supers {
+            let Some(shape) = self.tr.shapes.get(s.value()) else {
+                continue;
+            };
+            for (a, ps) in shape.assocs.iter().zip(&shape.assoc_params) {
+                let mapped: Vec<usize> = ps.iter().filter_map(|p| idxs.get(*p).copied()).collect();
+                let known = assocs
+                    .iter()
+                    .zip(&assoc_params)
+                    .any(|(b, qs)| b == a && *qs == mapped);
+                if !known {
+                    assocs.push(*a);
+                    assoc_params.push(mapped);
+                }
             }
         }
+        let n = assocs.len();
         let mut labels: Vec<InternedString> = td
             .supers
             .iter()
@@ -803,7 +1014,9 @@ impl Infer {
                 .iter()
                 .map(|(s, of)| (*s.value(), of.clone()))
                 .collect(),
-            assocs: td.assocs.iter().map(|a| *a.value()).collect(),
+            assocs: assocs.clone(),
+            assoc_params: assoc_params.clone(),
+            own_assocs: td.assocs.len(),
             methods: td
                 .methods
                 .iter()
@@ -825,13 +1038,9 @@ impl Infer {
             .supers
             .iter()
             .map(|(s, of)| {
-                (
-                    Some(super_label(*s.value())),
-                    Type::Con(
-                        *s.value(),
-                        of.iter().map(|k| Type::Bound(*k as u32)).collect(),
-                    ),
-                )
+                let mut args: Vec<Type> = of.iter().map(|k| Type::Bound(*k as u32)).collect();
+                args.extend(self.super_assocs(td.name, &head_args[np..], *s.value(), of));
+                (Some(super_label(*s.value())), Type::Con(*s.value(), args))
             })
             .collect();
 
@@ -864,13 +1073,16 @@ impl Infer {
                     m.ty.span,
                 );
             }
-            // `Elem a` is the trait's own associated type: its quantifier.
-            let of_params: Vec<Type> = (0..np as u32).map(Type::Bound).collect();
-            let mut table: Vec<(InternedString, Vec<Type>, u32)> = td
-                .assocs
+            // `Elem a` is the trait's own associated type, or one it inherits:
+            // its quantifier.
+            let mut table: Vec<(InternedString, Vec<Type>, u32)> = assocs
                 .iter()
+                .zip(&assoc_params)
                 .enumerate()
-                .map(|(k, a)| (*a.value(), of_params.clone(), (np + k) as u32))
+                .map(|(k, (a, ps))| {
+                    let of = ps.iter().map(|p| Type::Bound(*p as u32)).collect();
+                    (*a, of, (np + k) as u32)
+                })
                 .collect();
             let known = table.len();
             let ty = self.lift_assocs(&raw, &mut table, &mut quant);
@@ -880,7 +1092,7 @@ impl Infer {
                         "`{}` mentions an associated type of something other than the trait's parameters",
                         m.name
                     ),
-                    "only the trait's own associated types, of its own parameters",
+                    "only the associated types of the trait's parameters, its own or those it requires",
                     m.ty.span,
                 );
             }
@@ -945,6 +1157,12 @@ impl Infer {
         }
         // Each a constructor applied to distinct variables, so that finding
         // the `impl` for some types is looking up their constructors.
+        // Or every one a variable of its own: `impl Eq a`, the `impl` for any
+        // type no other `impl` is for.
+        let blanket = heads
+            .iter()
+            .enumerate()
+            .all(|(i, h)| matches!(h, Type::Bound(_)) && !heads[..i].contains(h));
         let plain = heads.iter().all(|head| {
             let params: Vec<&Type> = match head {
                 Type::Con(_, args) | Type::Tuple(args) => args.iter().collect(),
@@ -955,14 +1173,19 @@ impl Infer {
                 .enumerate()
                 .all(|(i, p)| matches!(p, Type::Bound(_)) && !params[..i].contains(p))
         });
-        let Some(key) = heads_key(&heads).filter(|_| plain) else {
+        let key = if blanket {
+            Some(blanket_key(heads.len()))
+        } else {
+            heads_key(&heads).filter(|_| plain)
+        };
+        let Some(key) = key else {
             self.trait_error(
                 format!(
                     "`impl {} {}`: an `impl` is for a type constructor applied to distinct variables",
                     hir::spelling(&tr),
                     show_all(&heads)
                 ),
-                "like `Int`, `Maybe a` or `(a, b)`",
+                "like `Int`, `Maybe a`, `(a, b)`, or `a` for every type",
                 id.tr.span,
             );
             return;
@@ -982,7 +1205,7 @@ impl Infer {
             preds.push(self.pred_over(*b.tr.value(), of, &mut table, &mut quant));
         }
         let mut args = heads.clone();
-        for a in &shape.assocs {
+        for a in &shape.assocs[..shape.own_assocs] {
             let is = id
                 .assocs
                 .iter()
@@ -990,6 +1213,30 @@ impl Infer {
                 .map(|(_, t)| ty_of(t, &vars, &self.aliases))
                 .unwrap_or(Type::Error);
             args.push(self.lift_assocs(&is, &mut table, &mut quant));
+        }
+        // An inherited one is whatever the `impl` of the trait that declares it
+        // says. When that `impl` is known already, it is read off it, so that
+        // `impl Visual String`'s methods see `Token String` as `Char`; when it
+        // is not, this `impl` asks for that one, as if its `where` had, and
+        // answering that settles it wherever it is used.
+        for (a, ps) in shape
+            .assocs
+            .iter()
+            .zip(&shape.assoc_params)
+            .skip(shape.own_assocs)
+        {
+            let of: Vec<Type> = ps.iter().filter_map(|p| heads.get(*p).cloned()).collect();
+            let owner = self.tr.assoc_of.get(a).map(|(o, _)| *o);
+            if let Some(known) = owner.and_then(|o| self.known_assoc(o, *a, &of)) {
+                args.push(known);
+                continue;
+            }
+            args.push(Type::Bound(assoc_var(*a, &of, &mut table, &mut quant)));
+            if let Some(owner) = owner
+                && !preds.iter().any(|p: &Pred| p.tr == owner && p.tys == of)
+            {
+                preds.push(self.pred_over(owner, of, &mut table, &mut quant));
+            }
         }
         let scheme = Scheme {
             quant,
@@ -1175,7 +1422,12 @@ impl Infer {
                                 .iter()
                                 .map(|k| of.get(*k).cloned().unwrap_or(Type::Error))
                                 .collect(),
-                            assocs: Vec::new(),
+                            assocs: self.super_assocs(
+                                tr,
+                                of.get(shape.params..).unwrap_or(&[]),
+                                *s,
+                                idxs,
+                            ),
                         },
                         span: id.tr.span,
                         owner: Some(dict),
@@ -1214,11 +1466,66 @@ fn assoc_var(
     i
 }
 
+/// Match an `impl`'s head, over its quantifiers, against types: what each
+/// quantifier stands for, if the head fits.
+fn match_bound(pattern: &Type, t: &Type, map: &mut HashMap<u32, Type>) -> Option<()> {
+    match (pattern, t) {
+        (Type::Bound(i), _) => match map.get(i) {
+            Some(prev) => (prev == t).then_some(()),
+            None => {
+                map.insert(*i, t.clone());
+                Some(())
+            }
+        },
+        (Type::Con(a, xs), Type::Con(b, ys)) if a == b && xs.len() == ys.len() => xs
+            .iter()
+            .zip(ys)
+            .try_for_each(|(x, y)| match_bound(x, y, map)),
+        (Type::Tuple(xs), Type::Tuple(ys)) if xs.len() == ys.len() => xs
+            .iter()
+            .zip(ys)
+            .try_for_each(|(x, y)| match_bound(x, y, map)),
+        _ => (pattern == t).then_some(()),
+    }
+}
+
+/// `ty` with its quantifiers replaced as `map` says; `None` if one is not
+/// there.
+fn subst_map(ty: &Type, map: &HashMap<u32, Type>) -> Option<Type> {
+    let each = |ts: &[Type]| {
+        ts.iter()
+            .map(|t| subst_map(t, map))
+            .collect::<Option<Vec<_>>>()
+    };
+    Some(match ty {
+        Type::Bound(i) => map.get(i)?.clone(),
+        Type::Con(n, args) => Type::Con(*n, each(args)?),
+        Type::Tuple(items) => Type::Tuple(each(items)?),
+        Type::Fun(ps, ret, eff) => Type::Fun(
+            each(ps)?,
+            Box::new(subst_map(ret, map)?),
+            Box::new(subst_map(eff, map)?),
+        ),
+        Type::Record(row) => Type::Record(Box::new(subst_map(row, map)?)),
+        Type::RowExtend(l, f, rest) => Type::RowExtend(
+            *l,
+            Box::new(subst_map(f, map)?),
+            Box::new(subst_map(rest, map)?),
+        ),
+        Type::Var(_) | Type::RowEmpty | Type::Error => ty.clone(),
+    })
+}
+
 /// What an `impl` of a trait of these types is found by: the outermost
 /// constructor of each, if every one of them is known that far.
 fn heads_key(tys: &[Type]) -> Option<String> {
     let heads: Option<Vec<String>> = tys.iter().map(head_key).collect();
     Some(heads?.join(" "))
+}
+
+/// What the `impl` of a trait of `n` types for every type is found by.
+fn blanket_key(n: usize) -> String {
+    vec!["_"; n].join(" ")
 }
 
 /// Several types as a program writes them after a trait's name.

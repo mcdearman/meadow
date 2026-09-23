@@ -375,3 +375,83 @@ fn a_thread_waits_inside_a_handler() {
         "142"
     );
 }
+
+// --- cycles ------------------------------------------------------------------
+//
+// Counting alone leaves a cycle behind, so the runtime collects them by trial
+// deletion (`aot/src/cycles.rs`). The leak check in `run` is what these are
+// really testing: a program that ties knots and drops them must end with
+// nothing live.
+
+#[test]
+fn a_cycle_through_a_ref_is_collected() {
+    assert_eq!(
+        run_checked(
+            "cycle_ref",
+            "data L = Nil | Node Int (Ref L)
+             use L.*
+             fun knot (n : Int) =
+               let r = newRef Nil in
+               let _ = setRef r (Node n r) in
+               ()
+             fun many (n : Int) : Int = if n == 0 then 0 else let _ = knot n in many (n - 1)
+             def main = many 2000",
+            false
+        ),
+        "0"
+    );
+}
+
+#[test]
+fn a_longer_cycle_is_collected() {
+    // Two cells and two nodes to a knot, so the collector has a subgraph to
+    // walk rather than a self-reference.
+    assert_eq!(
+        run_checked(
+            "cycle_long",
+            "data L = Nil | Node Int (Ref L)
+             use L.*
+             fun knot (n : Int) =
+               let a = newRef Nil in
+               let b = newRef Nil in
+               let _ = setRef a (Node n b) in
+               let _ = setRef b (Node n a) in
+               ()
+             fun many (n : Int) : Int = if n == 0 then 0 else let _ = knot n in many (n - 1)
+             def main = many 2000",
+            false
+        ),
+        "0"
+    );
+}
+
+#[test]
+fn a_cycle_still_in_use_is_kept() {
+    // The knot is held across thousands of allocations, which is long enough
+    // for the collector to have run over it several times. If it collected
+    // what is still reachable, this reads freed memory or answers wrongly.
+    assert_eq!(
+        run_checked(
+            "cycle_live",
+            "data L = Nil | Node Int (Ref L)
+             use L.*
+             fun churn (n : Int) (acc : Int) : Int =
+               if n == 0 then acc
+               else
+                 let r = newRef Nil in
+                 let _ = setRef r (Node n r) in
+                 churn (n - 1) (acc + 1)
+             fun step (r : Ref L) : Int =
+               match getRef r with
+               | Nil -> 0
+               | Node v back -> match getRef back with | Nil -> v | Node w _ -> v + w
+             def main =
+               let keep = newRef Nil in
+               let _ = setRef keep (Node 7 keep) in
+               let n = churn 5000 0 in
+               n + step keep",
+            false
+        ),
+        "5014"
+    );
+}

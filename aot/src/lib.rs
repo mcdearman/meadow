@@ -19,6 +19,7 @@
 //! borrows its arguments, and what one answers is owned by the caller.
 
 pub mod ctx;
+pub mod cycles;
 pub mod heap;
 pub mod native;
 pub mod parcel;
@@ -217,8 +218,12 @@ pub unsafe extern "C" fn meadow_run(
         let (_main_ctx, v) = run_main(entry);
         let text = show::show(v, d);
         prims::report();
+        cycles::report();
         heap::erase(v, d);
         if std::env::var_os("MEADOW_AOT_LEAKS").is_some() {
+            // Every cycle collected and everything pending erased, so that
+            // what is counted as left behind really is left behind.
+            heap::settle();
             let (left, kinds) = heap::leaked(&prims::roots());
             eprintln!("aot: {left} blocks live at exit");
             if left > 0 {

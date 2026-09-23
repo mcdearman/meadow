@@ -51,7 +51,7 @@ interfered with least.
 
 **Wall clock for the whole process**, startup included. That is unfair to the
 runtimes that have one, so the table's last row is the same measurement for a
-program that only prints — the floor each language cannot go below. Java's 67ms
+program that only prints — the floor each language cannot go below. Java's 65ms
 and Node's 37ms are in every number in their columns.
 
 ## The tasks
@@ -99,20 +99,20 @@ still has to produce the same number.
 
 ## The languages
 
-| language   | how it is built                                                                                                                                            |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Meadow     | `meadow build --release` — `-O2`, compiled ahead of time to a native executable                                                                            |
-| Meadow/aot | `meadow build --release --runtime aot` — the same program against the runtime of its own: counted by reference, on the native stack                        |
-| Rust       | `rustc -C opt-level=3`, what `cargo build --release` uses                                                                                                  |
-| C          | `cc -O3 -ffp-contract=off` — `-O3` to match Rust's `opt-level=3`; `-ffp-contract=off` so `matmul` measures the loop and not who emits a fused multiply-add |
-| Go         | `go build`                                                                                                                                                 |
-| Haskell    | `ghc -O2 -threaded -with-rtsopts=-N`                                                                                                                       |
-| Java       | `javac`, default JVM settings                                                                                                                              |
-| OCaml      | `ocamlopt -O3`, native code                                                                                                                                |
-| MLton      | `mlton`, whole-program compilation                                                                                                                         |
-| Koka       | `koka -O2`, Perceus reference counting                                                                                                                     |
-| Python     | CPython, no flags                                                                                                                                          |
-| JavaScript | Node, no flags                                                                                                                                             |
+| language   | how it is built                                                                                                                                                         |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Meadow     | `meadow build --release` — `-O2`, compiled ahead of time to a native executable                                                                                         |
+| Meadow/aot | `meadow build --release --runtime aot` — the same program against the runtime of its own: counted by reference, cycles collected by trial deletion, on the native stack |
+| Rust       | `rustc -C opt-level=3`, what `cargo build --release` uses                                                                                                               |
+| C          | `cc -O3 -ffp-contract=off` — `-O3` to match Rust's `opt-level=3`; `-ffp-contract=off` so `matmul` measures the loop and not who emits a fused multiply-add              |
+| Go         | `go build`                                                                                                                                                              |
+| Haskell    | `ghc -O2 -threaded -with-rtsopts=-N`                                                                                                                                    |
+| Java       | `javac`, default JVM settings                                                                                                                                           |
+| OCaml      | `ocamlopt -O3`, native code                                                                                                                                             |
+| MLton      | `mlton`, whole-program compilation                                                                                                                                      |
+| Koka       | `koka -O2`, Perceus reference counting                                                                                                                                  |
+| Python     | CPython, no flags                                                                                                                                                       |
+| JavaScript | Node, no flags                                                                                                                                                          |
 
 OCaml, MLton and Koka are here because they are the company Meadow is trying to
 keep: compiled, garbage-collected or reference-counted functional languages
@@ -153,14 +153,14 @@ see [Caveats](#caveats-in-order-of-how-much-they-matter).
 
 | task         | meadow        | meadow-aot    | rust         | c            | go           | haskell       | java          | python         | js            |
 | ------------ | ------------- | ------------- | ------------ | ------------ | ------------ | ------------- | ------------- | -------------- | ------------- |
-| fib          | 30ms (4.5×)   | 13ms (2.0×)   | 7ms (1.0×)   | **7ms**      | 12ms (1.9×)  | 16ms (2.4×)   | 72ms (11.1×)  | 218ms (33.3×)  | 51ms (7.8×)   |
-| binarytrees  | 2.36s (8.3×)  | 1.30s (4.6×)  | 1.75s (6.1×) | 1.56s (5.5×) | 1.34s (4.7×) | **285ms**     | 524ms (1.8×)  | 6.34s (22.2×)  | 1.30s (4.6×)  |
-| matmul       | 124ms (21.5×) | 16ms (2.9×)   | **6ms**      | 6ms (1.0×)   | 16ms (2.8×)  | 32ms (5.5×)   | 77ms (13.5×)  | 729ms (126.7×) | 58ms (10.1×)  |
-| wordfreq     | 450ms (32.3×) | 313ms (22.5×) | 16ms (1.1×)  | **14ms**     | 25ms (1.8×)  | 119ms (8.6×)  | 152ms (10.9×) | 70ms (5.0×)    | 109ms (7.8×)  |
-| ⇉ mandelbrot | 86ms (7.3×)   | 33ms (2.8×)   | **12ms**     | ✗            | 17ms (1.4×)  | 31ms (2.7×)   | 139ms (11.8×) | 673ms (57.1×)  | 135ms (11.4×) |
-| ⇉ contention | 86ms (7.7×)   | 72ms (6.5×)   | 14ms (1.2×)  | ✗            | **11ms**     | 28ms (2.5×)   | 88ms (7.9×)   | 75ms (6.7×)    | 125ms (11.2×) |
-| ⇉ pipeline   | 57ms (3.8×)   | 43ms (2.9×)   | **15ms**     | ✗            | 16ms (1.0×)  | 685ms (45.9×) | 103ms (6.9×)  | 218ms (14.6×)  | 144ms (9.6×)  |
-| _startup_    | 6ms           | 4ms           | 3ms          | 3ms          | 6ms          | 10ms          | 66ms          | 28ms           | 37ms          |
+| fib          | 30ms (4.4×)   | 14ms (2.0×)   | **7ms**      | 7ms (1.0×)   | 12ms (1.8×)  | 16ms (2.4×)   | 73ms (10.7×)  | 216ms (31.9×)  | 52ms (7.7×)   |
+| binarytrees  | 2.36s (8.1×)  | 1.28s (4.4×)  | 1.74s (6.0×) | 1.56s (5.4×) | 1.32s (4.6×) | **290ms**     | 524ms (1.8×)  | 6.34s (21.8×)  | 1.31s (4.5×)  |
+| matmul       | 122ms (22.2×) | 16ms (3.0×)   | 6ms (1.1×)   | **6ms**      | 16ms (2.9×)  | 31ms (5.7×)   | 77ms (14.0×)  | 716ms (129.9×) | 57ms (10.4×)  |
+| wordfreq     | 446ms (32.7×) | 323ms (23.7×) | 15ms (1.1×)  | **14ms**     | 25ms (1.8×)  | 119ms (8.7×)  | 154ms (11.3×) | 69ms (5.1×)    | 108ms (7.9×)  |
+| ⇉ mandelbrot | 85ms (6.5×)   | 34ms (2.6×)   | **13ms**     | ✗            | 18ms (1.4×)  | 33ms (2.5×)   | 128ms (9.8×)  | 684ms (52.3×)  | 131ms (10.0×) |
+| ⇉ contention | 89ms (7.9×)   | 59ms (5.2×)   | 13ms (1.1×)  | ✗            | **11ms**     | 27ms (2.4×)   | 89ms (7.9×)   | 75ms (6.7×)    | 126ms (11.2×) |
+| ⇉ pipeline   | 62ms (4.3×)   | 42ms (2.8×)   | **15ms**     | ✗            | 16ms (1.1×)  | 730ms (49.8×) | 98ms (6.7×)   | 218ms (14.9×)  | 143ms (9.8×)  |
+| _startup_    | 5ms           | 4ms           | 3ms          | 3ms          | 6ms          | 10ms          | 65ms          | 27ms           | 37ms          |
 
 **Absolute times move about 20% between runs of the whole suite on this
 machine**, so do not read one run against another, and do not read this table
@@ -193,26 +193,40 @@ nothing under that is claimed for them.
 ## What this says
 
 **The two runtimes are the first thing in the table.** `meadow-aot` is ahead
-of the default on every row: 2.3× on `fib`, 7.8× on `matmul`, 2.6× on
-`mandelbrot`, 1.8× on `binarytrees`, and 1.2–1.4× on `pipeline`, `wordfreq`
+of the default on every row: 2.1× on `fib`, 7.6× on `matmul`, 2.5× on
+`mandelbrot`, 1.8× on `binarytrees`, and 1.4–1.5× on `pipeline`, `wordfreq`
 and `contention`. It is the same compiler as far as AxCut and the same programs;
 what differs is everything below that — LLVM rather than the JIT's own code
 generator, counting by reference rather than a tracing collector, and the
 native stack. The rows where it wins most are the ones where a native compiler
 has most to say: `matmul`'s three nested loops and `fib`'s calls.
 
-The spread inside a Meadow column — 2.0× on `fib` against 22.5× on `wordfreq`
+The spread inside a Meadow column — 2.0× on `fib` against 23.7× on `wordfreq`
 for `meadow-aot` — matters far more than where the column sits on average.
+
+**The `meadow-aot` column now includes a cycle collector**, which counting
+needs and which this runtime cannot get from a tracing backstop: there are no
+stack maps, so the roots cannot be enumerated, and what works without roots is
+trial deletion (`aot/README.md`). None of these programs makes a cycle, so what
+the column shows is purely what it costs a program that does not: the inline
+test before each candidate is one mask and one compare, and a program that
+cannot tie a knot at all has neither. Measured the way this file requires --
+the runtime built with and without it, alternated back to back on an idle
+machine -- `binarytrees` is unchanged at 1.30s against 1.29s and `wordfreq` is
+312ms against 327ms, which is 5%. The arena rows are where it should cost most,
+since they write a mutable array once per node and a mutable array is one of
+the two kinds that get buffered; that was not measured by alternation, so the
+347ms above should not be read against the 317ms of an earlier run.
 
 Of the compiled functional languages with a managed heap, which is what Meadow
 is, only **Haskell** is installed on this machine; OCaml and Koka, the two
 most pointed comparisons, are not. Against GHC, `meadow-aot` is **ahead on
-`fib` (13ms against 16ms) and on `matmul` (16ms against 32ms), level on
-`mandelbrot`**, 4.6× behind on `binarytrees`, and 2.6× behind on `wordfreq`.
+`fib` (14ms against 16ms) and on `matmul` (16ms against 31ms), level on
+`mandelbrot`**, 4.4× behind on `binarytrees`, and 2.7× behind on `wordfreq`.
 
-`pipeline` at 2.9× the fastest is among the strongest results. It is behind Go,
+`pipeline` at 2.8× the fastest is among the strongest results. It is behind Go,
 the language whose reputation rests on this one thing, and behind Rust's
-`mpsc`, but ahead of Java and Node, and sixteen times ahead of GHC's `Chan`.
+`mpsc`, but ahead of Java and Node, and seventeen times ahead of GHC's `Chan`.
 Handing a value between green threads is what the scheduler was built for — a
 thread woken by a message goes to the receiving worker rather than the back of
 a shared queue, so a send and the receive answering it happen on one core back
@@ -221,7 +235,7 @@ and receives were taking the one lock the whole scheduler uses, so four
 producers and a consumer queued up behind each other on it rather than on the
 channel they were actually using.
 
-`fib` at 1.9× says the calling convention and the native backend are sound. It
+`fib` at 2.0× says the calling convention and the native backend are sound. It
 is the one task with no allocation, no arrays and no runtime services, so it is
 the closest thing here to a measurement of the compiler on its own. It was
 5.2× on the default runtime until [the sixth
@@ -229,19 +243,19 @@ round](#the-sixth-round-arguments-in-registers) passed arguments in registers
 and let a method load its own captures, which is what the fourth round had said
 was left: the continuation on a stack moved `fib` not at all, and the
 convention around the call moved it 1.8×. On `meadow-aot`, where the calls are
-LLVM's in a convention with no callee-saved registers, it is 13ms against
+LLVM's in a convention with no callee-saved registers, it is 14ms against
 Rust's and C's 7ms and ahead of GHC.
 
 `mandelbrot` at 2.6× on `meadow-aot` is a good number, and close to GHC. Its
 inner loop is float arithmetic on eight registers and nothing else, and since
 [the fifth round](#the-fifth-round-registers-and-the-inliner) that arithmetic
 happens in registers rather than through a register file in memory. The
-default runtime's 7.3× on this machine against 2.6× on the Apple silicon one
+default runtime's 6.5× on this machine against 2.6× on the Apple silicon one
 is the clearest sign of what the rest of this table says quietly: the JIT's own
 code generator has had far more attention on aarch64 than on x86-64, and
 `meadow-aot`, which hands the loop to LLVM, does not care which it is on.
 
-`matmul` at 2.8× has been 366×, 146×, 56×, 36× and 21×, each with a specific
+`matmul` at 3.0× has been 366×, 146×, 56×, 36× and 21×, each with a specific
 cause. `St.get`
 and `St.set` are primitives, and native code did not implement primitives: it
 handed them back to the interpreter through `meadow_exec`, and sampling put 62%
@@ -263,11 +277,11 @@ on the vector unit, with every check on the arrays made once before it.
 That last round is aarch64's, which is why the default runtime is 122ms here
 and was 14ms on the machine it was written on, while `meadow-aot` — the same
 Meadow, lowered to LLVM IR and vectorized by the same compiler that does it
-for the C — is 16ms, level with Go and 2.8× off C. It is the row where having
+for the C — is 16ms, level with Go and 3.0× off C. It is the row where having
 a second backend pays for itself most plainly.
 
-`contention` at 6.5× is a comparison of software transactional memories: GHC's
-runs the identical algorithm in 28ms, Go's mutex in 11ms. (This row moves ±20%
+`contention` at 5.2× is a comparison of software transactional memories: GHC's
+runs the identical algorithm in 27ms, Go's mutex in 11ms. (This row moves ±20%
 between runs of the same binary.) It was 97× when this suite was written, and
 what fixed it was the same lesson in both runtimes: the cost was not the
 conflicts but what every transaction did on the way through, much of it a
@@ -290,9 +304,9 @@ unfinished segment per turn. Ending the segment where its `handle` ends
 seconds to 53ms, and it is the reason this row is a number rather than a
 scandal.
 
-`wordfreq` at 22.5× is the worst row in either Meadow column, and the one
-place where the second backend barely helps: 313ms against the default
-runtime's 450ms, where every other row is a factor or more. That says the cost
+`wordfreq` at 23.7× is the worst row in either Meadow column, and the one
+place where the second backend barely helps: 323ms against the default
+runtime's 446ms, where every other row is a factor or more. That says the cost
 is not code generation but the work each word makes the runtime do. It was 68×
 with a persistent HAMT doing the work a mutable hash table does everywhere
 else; it now uses `Std.Collections.HashTable`, which is that table, and the
@@ -319,9 +333,9 @@ one number for every thread; the column above is the default, untuned.
 
 `binarytrees` is worth reading for its own sake. It is nothing but
 allocate-walk-discard, and the ordering is not the one the rest of the table
-has: GHC's generational collector wins outright at 285ms, Java's is next, and
+has: GHC's generational collector wins outright at 290ms, Java's is next, and
 then — level with Node and ahead of Go, Rust's `Box` and C's `malloc`/`free` —
-comes `meadow-aot` at 1.30s, counting by reference and reusing the block it has
+comes `meadow-aot` at 1.28s, counting by reference and reusing the block it has
 just freed. Every collector with a bump allocator beats `malloc` here by two to five
 times, and the received wisdom that reference counting cannot compete on
 allocation-heavy functional code is not what this row says either. (Koka, whose
@@ -359,28 +373,28 @@ say so rather than to be left out.
 
 On the same machine, minimum of five runs:
 
-| task                | meadow        | meadow-aot    | rust         | c          | go           | haskell       | java         | python         | js           |
-| ------------------- | ------------- | ------------- | ------------ | ---------- | ------------ | ------------- | ------------ | -------------- | ------------ |
-| fib_arena           | 30ms (4.4×)   | 13ms (1.9×)   | 7ms (1.0×)   | **7ms**    | 12ms (1.8×)  | 16ms (2.4×)   | 72ms (10.7×) | 216ms (32.1×)  | 51ms (7.5×)  |
-| binarytrees_arena   | 2.49s (11.0×) | 317ms (1.4×)  | 243ms (1.1×) | **225ms**  | 244ms (1.1×) | 2.95s (13.1×) | 287ms (1.3×) | 12.19s (54.1×) | 629ms (2.8×) |
-| matmul_arena        | 122ms (22.1×) | 16ms (3.0×)   | **6ms**      | 6ms (1.0×) | 16ms (3.0×)  | 31ms (5.7×)   | 77ms (13.9×) | 723ms (130.9×) | 57ms (10.3×) |
-| wordfreq_arena      | 327ms (26.2×) | 195ms (15.6×) | 13ms (1.1×)  | **12ms**   | 15ms (1.2×)  | 23ms (1.9×)   | 88ms (7.0×)  | 614ms (49.2×)  | 53ms (4.3×)  |
-| binarytrees_compact | 2.43s (1.9×)  | **1.25s**     | —            | —          | —            | —             | —            | —              | —            |
-| _startup_           | 4ms           | 4ms           | 3ms          | 3ms        | 6ms          | 10ms          | 68ms         | 27ms           | 37ms         |
+| task                | meadow        | meadow-aot    | rust         | c         | go           | haskell       | java         | python         | js           |
+| ------------------- | ------------- | ------------- | ------------ | --------- | ------------ | ------------- | ------------ | -------------- | ------------ |
+| fib_arena           | 29ms (4.4×)   | 13ms (2.0×)   | 7ms (1.0×)   | **7ms**   | 12ms (1.8×)  | 16ms (2.4×)   | 73ms (10.9×) | 218ms (32.5×)  | 51ms (7.6×)  |
+| binarytrees_arena   | 2.48s (11.2×) | 347ms (1.6×)  | 239ms (1.1×) | **222ms** | 240ms (1.1×) | 2.95s (13.3×) | 292ms (1.3×) | 11.98s (54.0×) | 628ms (2.8×) |
+| matmul_arena        | 122ms (21.5×) | 16ms (2.9×)   | 6ms (1.0×)   | **6ms**   | 16ms (2.8×)  | 32ms (5.5×)   | 77ms (13.5×) | 721ms (126.5×) | 58ms (10.1×) |
+| wordfreq_arena      | 329ms (25.9×) | 212ms (16.7×) | 13ms (1.0×)  | **13ms**  | 15ms (1.1×)  | 23ms (1.8×)   | 89ms (7.0×)  | 613ms (48.2×)  | 55ms (4.3×)  |
+| binarytrees_compact | 2.42s (1.9×)  | **1.25s**     | —            | —         | —            | —             | —            | —              | —            |
+| _startup_           | 4ms           | 3ms           | 3ms          | 3ms       | 6ms          | 10ms          | 67ms         | 27ms           | 37ms         |
 
 **Against the table above**, on `binarytrees`, which is the row this is for:
 
 | language   | as written | with an arena |              |
 | ---------- | ---------- | ------------- | ------------ |
-| rust       | 1.75s      | **243ms**     | 7.2× faster  |
-| c          | 1.56s      | **225ms**     | 6.9× faster  |
-| go         | 1.34s      | **244ms**     | 5.5× faster  |
-| meadow-aot | 1.30s      | **317ms**     | 4.1× faster  |
-| js         | 1.30s      | **629ms**     | 2.1× faster  |
-| java       | 524ms      | **287ms**     | 1.8× faster  |
-| meadow     | **2.36s**  | 2.49s         | no different |
-| python     | **6.34s**  | 12.19s        | 1.9× slower  |
-| haskell    | **285ms**  | 2.95s         | 10.4× slower |
+| rust       | 1.74s      | **239ms**     | 7.3× faster  |
+| c          | 1.56s      | **222ms**     | 7.0× faster  |
+| go         | 1.32s      | **240ms**     | 5.5× faster  |
+| meadow-aot | 1.28s      | **347ms**     | 3.7× faster  |
+| js         | 1.31s      | **628ms**     | 2.1× faster  |
+| java       | 524ms      | **292ms**     | 1.8× faster  |
+| meadow     | **2.36s**  | 2.48s         | no different |
+| python     | **6.34s**  | 11.98s        | 1.9× slower  |
+| haskell    | **290ms**  | 2.95s         | 10.2× slower |
 
 **The arena is worth most to the languages whose allocator is worst.** C and
 Rust gain seven times over `malloc` and `Box`, Go five, and all three land
@@ -404,25 +418,40 @@ into the runtime for `setRef`, one per node, because the bump counter is a
 `Ref` and reading or writing one was a call while `St.get` and `St.set` had
 long been emitted inline. Emitting those two inline as well -- a `Ref` is a
 block of one field, so its value is a load and a store at a known offset --
-took this row from 1.36s to **317ms**, and the arena went from costing Meadow
-nothing to being worth 4.1× of it. The benchmark did not measure a thing that
-was slow; it found one.
+took this row from 1.36s to 317ms when it was measured, and the arena went
+from costing Meadow nothing to being worth **3.7×** of it. The benchmark did
+not measure a thing that was slow; it found one.
 
 Part of what is left of the gap to C is the bounds check Meadow emits on every
 array read and write, which C does not do; how much of it, this row does not
 say.
 
 `wordfreq_arena` gains for a different reason, and gained before the fix:
-450ms to 327ms on the default runtime and 313ms to 195ms on `aot`, because
+446ms to 329ms on the default runtime and 323ms to 212ms on `aot`, because
 there the arena deletes a hash table and a string per word rather than
 replacing an allocation that was already cheap.
 
 **Compact regions are not an arena** (`binarytrees_compact`, Meadow only).
 `Compact.make` copies a value into memory the collector never looks inside,
 which is what the long-lived tree wants: one mark instead of 22 MiB traced at
-every cycle. Measured, it is worth nothing here either -- 2.43s against 2.37s
+every cycle. Measured, it is worth nothing here either -- 2.42s against 2.36s
 on the default runtime -- because the collector was not spending its time on
-that tree; it was spending it on the churn. And putting the churn in regions is
+that tree; it was spending it on the churn.
+
+**On `meadow-aot` it cannot help at all, by construction**, and the row is
+flat for a different reason: 1.25s against 1.28s. Counting references, there
+is nothing to compact -- so a compact there is a box around a value and not a
+copy of it (`aot/src/prims.rs`, `Compact`), and a box changes neither how the
+67 million nodes were allocated nor how they were counted. What _would_ help
+is the other half of the idea: allocating new values **inside** a region
+rather than copying finished ones into it, so the churn is a pointer bump, no
+node is ever counted, and the whole region goes at once. That is region
+allocation rather than compaction, it needs the escape rule `runSt` already
+has (`lib/Std/src/St.mw`) extended from cells and arrays to everything
+allocated in the scope, and `binarytrees_arena` at 347ms against 1.28s is the
+size of the prize. It is not implemented.
+
+Putting the churn in regions as things stand is
 far worse: compacting every tree as it is built takes **224 seconds**, ninety
 times the plain program, because a region costs a copy of everything put into
 it and these trees die immediately. A region is for data that is large, shared
@@ -787,8 +816,8 @@ redundant.
    POSIX threads, and this machine's clang targets MSVC, which has none — so
    C's `mandelbrot`, `contention` and `pipeline` did not build. The column is
    marked `✗` for those, which is a fact about the toolchain and not about C.
-5. **Startup is inside every number.** Java pays 67ms, Node 37ms and Python
-   28ms before their first instruction. On `fib`, where the fastest is 7ms,
+5. **Startup is inside every number.** Java pays 65ms, Node 37ms and Python
+   27ms before their first instruction. On `fib`, where the fastest is 7ms,
    that is most of what separates the columns. Subtract the last row before
    drawing conclusions about short tasks.
 6. **`matmul` in Python is lists, not numpy.** Anybody multiplying matrices in

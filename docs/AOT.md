@@ -159,9 +159,59 @@ shares a name where it is used again after something consumes it, and erases
 it where it is not used again at all. After the pass the program is linear,
 and each statement consumes as in the table.
 
-**Cycles leak.** Immutable data cannot form one, so only a program that ties a
-knot through a `Ref`, a mutable array or a `TVar` makes garbage it never frees
--- as in Koka. A backup cycle collector can come later.
+## Cycles
+
+Counting misses a cycle, and this runtime cannot have the usual backstop: a
+tracing collector needs the roots, and the roots are in native frames and
+registers with no map saying which slots hold references. What needs no roots
+is **trial deletion** -- Bacon and Rajan, _Concurrent Cycle Collection in
+Reference Counted Systems_, ECOOP 2001 -- and `aot/src/cycles.rs` implements
+it: buffer each block whose count goes down without reaching zero, then mark
+its subgraph gray while subtracting the references that come from inside it,
+scan to restore everything an outside reference still holds, and free what is
+left white.
+
+**Emitted only where it can matter.** A cycle needs a store of a reference
+into a block that already exists, which is `setRef` or a write into a mutable
+array; everything else Meadow builds is built bottom-up and points only
+backwards, and `setField` -- which destination-passing uses to fill a hole --
+writes something newer than what it writes into. `emit::ties_knots` looks for
+those two primitives _and at what they store_, since `Std` builds every string
+it prints in a mutable array of bytes and a byte cannot point at anything. A
+program without one defines `@meadow_cycles` as zero, its counting helpers
+have no candidate test in them, and its runtime never buffers, colours or
+collects anything.
+
+**What a program that does pay, pays.** The test before the call is inline and
+is one mask and one compare against a constant: a block is worth keeping only
+if it is a `Ref` or a mutable array -- marked as such in word 1 when it is
+built -- and only the first time its count goes down, since it stays coloured
+until a run looks at it. Both questions live in the same word, so both are
+asked at once.
+
+**Pauses.** A run takes 64 candidates and walks at most 6,000 blocks; past
+that the mark pass stops and puts back exactly what it took, which is possible
+because it recorded every block it coloured and undoing is that walk
+backwards. Once started the collector keeps going, one bounded run per
+allocation, until the buffer is empty -- the program runs between one run and
+the next. That holds a pause under a millisecond: 0.35 ms while freeing 10.4M
+blocks of small cyclic garbage, 0.18 ms freeing 1.0M.
+
+A cycle _larger_ than the budget is the exception, and it is inherent: what a
+run proves garbage is freed in that run or the proof is lost, so one cycle of
+100,000 blocks is one pause of about 11 ms. Such a candidate is set aside and
+walked with no budget only once the heap has doubled, so the pause is paid for
+by a doubling's worth of allocation and the memory is bounded rather than held
+to exit -- 111 MB on a program that makes 640 MB of giant cyclic garbage.
+Bounding it properly would mean marking incrementally, which means a write
+barrier, which this runtime does not have.
+
+**What is still not caught.** Only a `Ref` and a mutable array are buffered.
+A cycle whose `Ref` is let go of while the cycle is still live, and which
+becomes garbage later when something that is not a `Ref` is let go of, is
+never noticed and leaks as every cycle did before. Buffering every decremented
+block -- the published algorithm -- closes that hole and costs 11% of
+`wordfreq` and 27% of `binarytrees` on programs that make no cycles at all.
 
 ## Calling convention
 

@@ -127,13 +127,60 @@ as they are finished.
 This is what keeps every operation constant work. No erase ever walks a
 structure, and no allocation ever waits for a whole structure to be walked.
 
-### What it cannot do
+### Cycles, without tracing from roots
 
-**Cycles leak.** Immutable data cannot form one, so only a program that ties a
-knot through a `Ref`, a mutable array or a `TVar` makes memory it never gets
-back — the same trade Koka's Perceus makes. `--leaks` reports what was still
-held at exit, and the runtime's own test suite checks that programs without
-mutable state end with nothing live.
+Counting misses a cycle, and the usual answer — a tracing collector as a
+backstop — is not available here: values live in native frames and registers
+with no map saying which slots hold references, so the roots cannot be
+enumerated. What works without roots is **trial deletion**, from Bacon and
+Rajan's _Concurrent Cycle Collection in Reference Counted Systems_ (ECOOP
+2001), and `aot/src/cycles.rs` is it.
+
+Take a block whose count went down without reaching zero — a cycle must
+contain one — and ask a local question: subtract the references that come from
+_inside_ the subgraph it reaches, and see whose count reaches zero. Those are
+reachable only from each other, which is what garbage means. Three passes do
+it: mark gray subtracting the inside edges, scan putting back everything an
+outside reference still holds, and collect what is left white.
+
+**A program that cannot tie a knot has none of it.** A cycle needs a store
+into a block that already exists, which in Meadow is `setRef` or a write into
+a mutable array, and it must store a _reference_: the compiler looks for that,
+and a program without one is emitted with no candidate buffering in its
+counting helpers and no collector in its runtime.
+
+**Pauses are bounded, not amortized away.** A run looks at 64 buffered
+candidates and walks at most 6,000 blocks; past that the mark pass stops and
+puts back exactly what it took, which it can do because it recorded every
+block it coloured. Once the collector starts it keeps going, one bounded run
+per allocation, until the buffer is empty — the program runs in between, since
+allocation is where a run happens. Measured on cyclic garbage:
+
+| what                                  | garbage freed | longest pause |
+| ------------------------------------- | ------------- | ------------- |
+| 200,000 cycles holding 50 nodes each  | 10.4M blocks  | 0.35 ms       |
+| 2,000 cycles holding 500 nodes each   | 1.0M blocks   | 0.18 ms       |
+| 200 cycles holding 100,000 nodes each | 17.9M blocks  | 10.9 ms       |
+
+The last row is the one exception, and it is inherent: a cycle is freed in the
+run that proves it garbage or not at all, so **one cycle bigger than the
+budget is one long pause**. Those candidates are put aside and walked with no
+budget only once the heap has doubled — so the pause is paid for by a
+doubling's worth of allocation, and the memory is bounded rather than held to
+exit. Bounding that too would need the mark pass itself to be incremental,
+which needs a write barrier this runtime does not have.
+
+**What it does not catch.** Only a `Ref` and a mutable array are kept as
+candidates, because every cycle contains one and the program must have been
+holding it to tie the knot. A cycle whose `Ref` is let go of while the cycle
+is still alive, and which becomes garbage later when something that is not a
+`Ref` is let go of, is never noticed. Keeping every block that is decremented
+— the algorithm as published — closes that hole and costs 11% of `wordfreq`
+and 27% of `binarytrees` in buffering alone, on programs that never make a
+cycle at all. `MEADOW_AOT_CYCLES` reports what the collector did, and
+`--leaks` still reports what a run really held at exit.
+
+### What it cannot do
 
 **A continuation that is never resumed leaks what its frames hold.** Discarding
 a suspended stack segment does not unwind it, because the native frames on it
@@ -144,6 +191,7 @@ carry no maps saying which slots hold references.
 | module                | what it is                                                                     |
 | --------------------- | ------------------------------------------------------------------------------ |
 | `heap.rs`             | blocks, `share`/`erase`/`acquire`/`clean`, size classes, the pending list      |
+| `cycles.rs`           | trial deletion, the candidate buffer, and what bounds a pause                  |
 | `ctx.rs`              | one green thread's state: its heap, segments, literals, spill area             |
 | `prims.rs`            | the primitives the emitted code does not do inline                             |
 | `native.rs`           | the effects that reach the world: `Console`, `Fs`, `Process`, `Time`, `Random` |
@@ -214,9 +262,10 @@ other and the program does not link, which is the check working.
 
 ## Environment
 
-| variable           | what it does                                              |
-| ------------------ | --------------------------------------------------------- |
-| `MEADOW_THREADS`   | how many OS threads run green threads (`meadow run -j N`) |
-| `MEADOW_AOT_LEAKS` | report blocks still held at exit (`meadow run --leaks`)   |
-| `MEADOW_AOT_PRIMS` | count the primitives a run called, and report them        |
-| `MEADOW_CLANG`     | the clang to compile and link with                        |
+| variable            | what it does                                              |
+| ------------------- | --------------------------------------------------------- |
+| `MEADOW_THREADS`    | how many OS threads run green threads (`meadow run -j N`) |
+| `MEADOW_AOT_LEAKS`  | report blocks still held at exit (`meadow run --leaks`)   |
+| `MEADOW_AOT_PRIMS`  | count the primitives a run called, and report them        |
+| `MEADOW_AOT_CYCLES` | the cycle collector's runs, what they freed, and pauses   |
+| `MEADOW_CLANG`      | the clang to compile and link with                        |

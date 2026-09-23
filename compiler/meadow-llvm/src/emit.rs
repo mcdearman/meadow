@@ -71,26 +71,82 @@ enum D {
 /// emitted, because a program that cannot spawn is emitted differently: no
 /// safe points, and a spill area of its own. See [`Module::units`].
 fn spawns(program: &Program) -> bool {
-    fn in_statement(s: &meadow_seq::Statement) -> bool {
+    uses(program, &[Prim::ThreadSpawn])
+}
+
+/// Whether the program can tie a knot: whether it stores into a block that
+/// already exists. Everything else Meadow builds is built bottom-up and
+/// points only at what was there before it, so no cycle can come of it --
+/// `setRef` and a write into a mutable array are the two ways to make one,
+/// and a program with neither needs no cycle collector at all (see
+/// `aot/src/cycles.rs`).
+///
+/// `setField`, which destination-passing uses to fill a hole in a structure
+/// being built, is not one of them: what it writes is always newer than what
+/// it writes into, so it cannot point backwards.
+///
+/// What is stored matters as much as where. A store of an `Int`, a `Float` or
+/// a `Word` cannot make a cycle whatever it is stored into, and that is not a
+/// detail: `Std` builds every string it prints in a mutable array of bytes,
+/// so taking the representation into account is what lets an ordinary program
+/// -- one that prints, and ties no knots -- have no collector in it at all.
+fn ties_knots(program: &Program) -> bool {
+    knots(program, &|p, args| {
+        let value = match p {
+            // `setRef r v`, `stSetArray a i v`.
+            Prim::SetRef => args.get(1),
+            Prim::StSetArray => args.get(2),
+            _ => return false,
+        };
+        // No representation known is a reference as far as this is concerned:
+        // the question is only ever asked to leave the collector out, so what
+        // is not known says nothing.
+        value.is_none_or(|n| {
+            !matches!(
+                program.reps.get(n),
+                Some(Rep::Int | Rep::Float | Rep::Bits(_))
+            )
+        })
+    })
+}
+
+/// Does the program use any of these primitives anywhere?
+fn uses(program: &Program, want: &[Prim]) -> bool {
+    knots(program, &|p, _| want.contains(p))
+}
+
+/// Is there anywhere in the program a primitive `want` says yes to, given
+/// what it is applied to?
+fn knots(program: &Program, want: &dyn Fn(&Prim, &[Name]) -> bool) -> bool {
+    fn in_statement(s: &meadow_seq::Statement, want: &dyn Fn(&Prim, &[Name]) -> bool) -> bool {
         use meadow_seq::Statement::*;
         match s {
-            Substitute(_, b) => in_statement(&b.body),
+            Substitute(_, b) => in_statement(&b.body, want),
             Jump(_) | Invoke(..) | Error(_) => false,
-            Let { rest, .. } => in_statement(rest),
+            Let { rest, .. } => in_statement(rest, want),
             Switch { arms, default, .. } => {
-                arms.iter().any(|(_, b)| in_statement(&b.body)) || in_statement(&default.body)
+                arms.iter().any(|(_, b)| in_statement(&b.body, want))
+                    || in_statement(&default.body, want)
             }
             New { methods, rest, .. } => {
-                methods.iter().any(|b| in_statement(&b.body)) || in_statement(rest)
+                methods.iter().any(|b| in_statement(&b.body, want)) || in_statement(rest, want)
             }
-            Extern { op, blocks, .. } => {
-                matches!(op, meadow_seq::Extern::Prim(Prim::ThreadSpawn))
-                    || blocks.iter().any(|b| in_statement(&b.body))
+            Extern { op, args, blocks } => {
+                let here = match op {
+                    meadow_seq::Extern::Prim(p) => want(p, args),
+                    meadow_seq::Extern::PrimK(p, _) => want(p, args),
+                    meadow_seq::Extern::BranchPrim(p) => want(p, args),
+                    _ => false,
+                };
+                here || blocks.iter().any(|b| in_statement(&b.body, want))
             }
-            Mark(_, s) => in_statement(s),
+            Mark(_, s) => in_statement(s, want),
         }
     }
-    program.defs.iter().any(|d| in_statement(&d.block.body))
+    program
+        .defs
+        .iter()
+        .any(|d| in_statement(&d.block.body, want))
 }
 
 /// The module being written.
@@ -123,6 +179,9 @@ pub struct Module<'p> {
     /// spawns one anywhere. If it cannot, it pays for none of what threads
     /// need -- see [`Module::units`].
     threaded: bool,
+    /// Whether it can make a cycle: see [`ties_knots`]. If it cannot, its
+    /// counting helpers keep no candidates and its runtime collects none.
+    cycles: bool,
 }
 
 impl<'p> Module<'p> {
@@ -142,6 +201,7 @@ impl<'p> Module<'p> {
             frame_tables: HashMap::new(),
             pending_frames: Vec::new(),
             threaded: spawns(program),
+            cycles: ties_knots(program),
         }
     }
 
@@ -1666,8 +1726,9 @@ impl<'p> Module<'p> {
         }
         let threads = self.threads_part();
         let first_only = format!(
-            "@meadow_threaded = constant i8 {}\n\n",
-            u8::from(self.threaded)
+            "@meadow_threaded = constant i8 {}\n@meadow_cycles = constant i8 {}\n\n",
+            u8::from(self.threaded),
+            u8::from(self.cycles)
         );
         let methods = self.methods.len();
         let strings: String = self
@@ -1686,7 +1747,7 @@ impl<'p> Module<'p> {
                         "; A Meadow program, compiled by meadow-llvm: part {i}.\n"
                     );
                     out.push_str(RUNTIME);
-                    out.push_str(HELPERS);
+                    out.push_str(&helpers(self.cycles));
                     let _ = writeln!(
                         out,
                         "@meadow_methods = external hidden constant [{methods} x ptr]"
@@ -1731,7 +1792,7 @@ impl<'p> Module<'p> {
         let mut out = String::new();
         let _ = writeln!(out, "; A Meadow program, compiled by meadow-llvm.\n");
         out.push_str(RUNTIME);
-        out.push_str(HELPERS);
+        out.push_str(&helpers(self.cycles));
         out.push_str(INVOKE1);
         let _ = writeln!(out, "@meadow_aot_{fingerprint} = external global i8");
         let _ = writeln!(
@@ -1893,6 +1954,7 @@ declare i64 @meadow_field(i64, i64)
 declare i64 @meadow_text(ptr, i64)
 declare i64 @meadow_bigint(i64)
 declare void @meadow_preempted()
+declare void @meadow_candidate(i64)
 declare i64 @meadow_hash(i64, i64)
 declare i64 @meadow_equal(i64, i64, i64, i64)
 declare i64 @meadow_string_index_of(i64, i64, i64)
@@ -2157,6 +2219,44 @@ enum Entries {
 /// small functions: skip `0` and odd words (no block), and a value whose
 /// descriptor says it is no reference; add to the count, or take from it --
 /// handing the block to the runtime when it was the last.
+/// The helpers as a program gets them. One that can tie a knot hands every
+/// block whose count went down without reaching zero to the collector, which
+/// is where a cycle is noticed (`aot/src/cycles.rs`); one that cannot has no
+/// such call anywhere in it.
+fn helpers(cycles: bool) -> String {
+    // The test before the call is inline, and on a program that makes no
+    // cycles it is the whole cost, so it is one mask and one compare against
+    // a constant. A block is worth keeping only if it is a `Ref` or a mutable
+    // array -- the two kinds a cycle must contain, marked as such when they
+    // are built -- and only the first time its count goes down, since it is
+    // coloured until a collection looks at it. Both questions are in the same
+    // word, so both are asked at once: `MUTABLE` set and the colour black.
+    // `aot/src/cycles.rs` says why those two kinds, `aot/src/heap.rs` has the
+    // bits, and the two must agree.
+    let candidate = if cycles {
+        "  %w1a = getelementptr i64, ptr %p, i64 1
+  %w1 = load i64, ptr %w1a
+  %ask = and i64 %w1, 286720
+  %want = icmp eq i64 %ask, 262144
+  br i1 %want, label %cand, label %done, !prof !0
+cand:
+  call void @meadow_candidate(i64 %v)
+  br label %done
+"
+    } else {
+        "  br label %done\n"
+    };
+    // Counting happens everywhere and a candidate is rare, so say which way
+    // the test goes: the call and its setup are laid out away from the path
+    // every decrement takes.
+    let cold = if cycles {
+        "\n!0 = !{!\"branch_weights\", i32 1, i32 4096}\n"
+    } else {
+        ""
+    };
+    HELPERS.replace("; candidate\n", candidate) + cold
+}
+
 const HELPERS: &str = "\
 define internal void @mw.share(i64 %v, i32 %n) alwaysinline {
 entry:
@@ -2193,7 +2293,7 @@ free:
 dec:
   %rc2 = sub i32 %rc, 1
   store i32 %rc2, ptr %p
-  br label %done
+; candidate
 done:
   ret void
 }

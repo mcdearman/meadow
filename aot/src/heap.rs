@@ -50,6 +50,71 @@ pub const REGION: u64 = 15;
 pub const DESC_SHIFT: u32 = 8;
 pub const UNIFORM: u64 = 1 << 12;
 
+/// What the cycle collector keeps in word 1, where a fresh block has zeroes:
+/// a colour, whether the block is waiting in the candidate buffer, and
+/// whether it died while it was waiting. See [`crate::cycles`].
+pub const COLOUR_SHIFT: u32 = 13;
+pub const BLACK: u64 = 0;
+pub const GRAY: u64 = 1;
+pub const WHITE: u64 = 2;
+pub const PURPLE: u64 = 3;
+const BUFFERED: u64 = 1 << 15;
+/// Its count reached zero while it was a candidate: the memory is held back
+/// until the collector has finished with it.
+const DEAD: u64 = 1 << 16;
+/// Its fields were moved out before it died, so there is nothing in it to
+/// erase -- see [`clean`].
+const MOVED: u64 = 1 << 17;
+/// Its kind is one a cycle can contain: a `Ref` or a mutable array, which is
+/// where a store into a block that already exists can happen. Set where the
+/// block is built and never changed, so that the emitted counting helper can
+/// ask this and the colour in one test -- `meadow_llvm::emit::helpers`, which
+/// has the constant, must agree with these bits.
+pub const MUTABLE: u64 = 1 << 18;
+
+/// Everything in word 1 that is one heap's collector talking to itself: the
+/// colour, whether the block is waiting in that heap's candidate list, and
+/// whether it died while it waited. A block copied into another heap
+/// ([`crate::parcel`]) keeps none of it. [`MUTABLE`] is not here: that is
+/// about the kind, which the copy keeps.
+pub const MARKS: u64 = (3 << COLOUR_SHIFT) | BUFFERED | DEAD | MOVED;
+
+/// The [`MUTABLE`] bit, for a block of this kind.
+const fn mutable(kind: u64) -> u64 {
+    if kind == CELL || kind == MUT_ARRAY {
+        MUTABLE
+    } else {
+        0
+    }
+}
+
+pub fn colour(v: Word) -> u64 {
+    (word(v, 1) >> COLOUR_SHIFT) & 3
+}
+
+pub fn set_colour(v: Word, c: u64) {
+    let w = word(v, 1) & !(3 << COLOUR_SHIFT);
+    set_word(v, 1, w | (c << COLOUR_SHIFT));
+}
+
+pub fn buffered(v: Word) -> bool {
+    word(v, 1) & BUFFERED != 0
+}
+
+pub fn set_buffered(v: Word, yes: bool) {
+    let w = word(v, 1) & !BUFFERED;
+    set_word(v, 1, if yes { w | BUFFERED } else { w });
+}
+
+pub fn dead(v: Word) -> bool {
+    word(v, 1) & DEAD != 0
+}
+
+/// Keep `v` for the cycle collector: see [`Heap::candidate`].
+pub fn keep_candidate(v: Word) {
+    with(|h| h.candidate(v));
+}
+
 /// Word counts with a size class of their own; bigger blocks are allocated
 /// alone and freed at once when clean.
 const CLASSES: usize = 128;
@@ -60,6 +125,9 @@ const CHUNK: usize = 1 << 17;
 const FIRST_CHUNK: usize = 1 << 10;
 /// Fields erased per step of the pending work.
 const STEP: usize = 64;
+/// The smallest heap, in blocks, that a doubling is measured from: below it a
+/// doubling means nothing and the cycle collector would run constantly.
+const FLOOR: usize = 4096;
 
 pub type Word = u64;
 
@@ -75,6 +143,32 @@ pub struct Heap {
     live: isize,
     /// Which, when a leak check asks: see [`tracking`].
     blocks: Option<std::collections::HashSet<usize>>,
+    /// Blocks whose count went down without reaching zero: where the cycle
+    /// collector looks. Empty for a program that cannot make a cycle.
+    candidates: Vec<Word>,
+    /// Candidates whose walk was too long to do inside a pause: kept until
+    /// the heap has grown enough that a long pause beats holding the memory.
+    /// See [`crate::cycles::BUDGET`].
+    oversized: Vec<Word>,
+    /// How many blocks must be live before that is worth doing, or
+    /// `usize::MAX` for "nothing is waiting".
+    oversized_mark: usize,
+    /// Live blocks at which the cycle collector has something to do, which is
+    /// the only thing [`acquire`] asks about: one load and one compare on the
+    /// path every allocation takes. It is `usize::MAX` -- never -- unless
+    /// there is a candidate waiting, `0` once there are [`crate::cycles::
+    /// TRIGGER`] of them, and otherwise a doubling of the heap away, which is
+    /// what makes a program that ties a handful of very large knots collect
+    /// them as it goes rather than waiting for candidates it will never have.
+    run_at: usize,
+    /// Whether the collector is working through the candidates it has: once
+    /// it starts it keeps going, a bounded run per allocation, until the
+    /// buffer is empty. Draining a run at a time is what keeps a pause short
+    /// without letting cyclic garbage pile up -- the program runs between one
+    /// run and the next, since that is where allocation happens.
+    draining: bool,
+    /// Blocks the collector has freed, for its tally.
+    freed: u64,
     /// The memory it has: chunks, and blocks too big for a size class --
     /// what dropping it gives back.
     chunks: Vec<(*mut Word, usize)>,
@@ -90,6 +184,12 @@ impl Heap {
             left: 0,
             live: 0,
             blocks: None,
+            candidates: Vec::new(),
+            oversized: Vec::new(),
+            oversized_mark: usize::MAX,
+            run_at: usize::MAX,
+            draining: false,
+            freed: 0,
             chunks: Vec::new(),
             large: std::collections::HashMap::new(),
         }
@@ -217,11 +317,29 @@ pub fn erase(v: Word, d: i64) {
         // Safety: a live block's count.
         let rc = unsafe { &mut *(v as *mut u32) };
         if *rc == 0 {
-            with(|h| h.pending.push((ptr(v), 0)));
+            died(v);
         } else {
             *rc -= 1;
+            if crate::cycles::possible() {
+                crate::cycles::meadow_candidate(v);
+            }
         }
     }
+}
+
+/// The last reference to `v` is gone: its fields are erased and its memory
+/// comes back. A block waiting in the candidate buffer is only marked, since
+/// the collector still has a pointer to it -- see [`Heap::free_dead`].
+#[inline]
+fn died(v: Word) {
+    if crate::cycles::possible() && buffered(v) {
+        // Black and dead: what the collector must not mistake for a
+        // candidate with a reference left, since the count it reads is the
+        // references besides one.
+        set_word(v, 1, (word(v, 1) | DEAD) & !(3 << COLOUR_SHIFT));
+        return;
+    }
+    with(|h| h.pending.push((ptr(v), 0)));
 }
 
 /// A block of `words` words, count 0, the rest for the caller to write.
@@ -233,6 +351,16 @@ pub fn acquire(words: usize) -> Word {
         let want = words < CLASSES;
         while want && h.clean.get(words).is_none_or(Vec::is_empty) && !h.pending.is_empty() {
             h.step();
+        }
+        // A program that cannot make a cycle never sets this, so what it pays
+        // for the collector is this compare and nothing else.
+        if h.live as usize >= h.run_at {
+            h.draining = true;
+            if h.oversized_due() {
+                crate::cycles::collect_oversized(h);
+            } else {
+                crate::cycles::collect(h);
+            }
         }
         h.live += 1;
         let p = h.take(words);
@@ -294,11 +422,132 @@ impl Heap {
 
 /// The block at `v` is done with: its fields were moved out, or erased.
 pub fn clean(v: Word) {
+    if crate::cycles::possible() && buffered(v) {
+        // Waiting in the candidate buffer: hold the memory back, and
+        // remember that there is nothing left inside to erase.
+        set_word(v, 1, (word(v, 1) | DEAD | MOVED) & !(3 << COLOUR_SHIFT));
+        return;
+    }
     let words = size(v);
     with(|h| h.clean_block(ptr(v), words));
 }
 
 impl Heap {
+    /// Keep `v` for the cycle collector to look at, unless it is kept
+    /// already. See [`crate::cycles`].
+    pub(crate) fn candidate(&mut self, v: Word) {
+        if colour(v) == PURPLE {
+            return;
+        }
+        set_colour(v, PURPLE);
+        if !buffered(v) {
+            set_buffered(v, true);
+            self.candidates.push(v);
+            self.schedule();
+        }
+    }
+
+    /// A candidate has just been buffered: bring the next run no further off
+    /// than it already was. Never further -- a mark that moved with the heap
+    /// would never be reached.
+    fn schedule(&mut self) {
+        if self.candidates.len() >= crate::cycles::TRIGGER {
+            self.run_at = 0;
+        } else if self.run_at == usize::MAX {
+            self.run_at = (2 * self.live.max(0) as usize).max(FLOOR);
+        }
+    }
+
+    /// A run has just finished: when the next one is due, from what it left.
+    /// Once the collector is going it keeps going -- the next allocation
+    /// starts another run -- until there is nothing buffered; then it waits
+    /// for a doubling of the heap, or for [`crate::cycles::TRIGGER`]
+    /// candidates, whichever comes first. See [`Heap::run_at`].
+    pub(crate) fn reschedule(&mut self) {
+        if self.candidates.is_empty() {
+            self.draining = false;
+        }
+        let want = if self.candidates.is_empty() {
+            usize::MAX
+        } else if self.draining || self.candidates.len() >= crate::cycles::TRIGGER {
+            0
+        } else {
+            (2 * self.live.max(0) as usize).max(FLOOR)
+        };
+        self.run_at = want.min(self.oversized_mark);
+    }
+
+    pub(crate) fn has_candidates(&self) -> bool {
+        !self.candidates.is_empty()
+    }
+
+    /// Up to `n` candidates, for a run of the collector: see [`crate::cycles`].
+    /// What is left waits for the next run, still buffered.
+    pub(crate) fn take_candidates(&mut self, n: usize) -> Vec<Word> {
+        if self.candidates.len() <= n {
+            return std::mem::take(&mut self.candidates);
+        }
+        self.candidates.split_off(self.candidates.len() - n)
+    }
+
+    /// Candidates a run did not get to: they are still buffered, so they go
+    /// straight back to wait for the next one.
+    pub(crate) fn return_candidates(&mut self, vs: &[Word]) {
+        self.candidates.extend_from_slice(vs);
+    }
+
+    /// `v` reaches more than a run may walk. Keep it, and remember how big
+    /// the heap may get before walking it anyway -- a doubling, so that the
+    /// one long pause it costs is paid over as much allocation as it saves.
+    pub(crate) fn set_oversized(&mut self, v: Word) {
+        self.oversized.push(v);
+        if self.oversized_mark == usize::MAX {
+            self.oversized_mark = (2 * self.live.max(0) as usize).max(FLOOR);
+        }
+    }
+
+    /// Has the heap grown enough to be worth that pause?
+    pub(crate) fn oversized_due(&self) -> bool {
+        self.live as usize >= self.oversized_mark
+    }
+
+    /// Look at them after all, with no budget: the candidates waiting go back
+    /// on the end of the list, and this says how many.
+    pub(crate) fn retry_oversized(&mut self) -> usize {
+        self.oversized_mark = usize::MAX;
+        let waiting = std::mem::take(&mut self.oversized);
+        self.candidates.extend_from_slice(&waiting);
+        waiting.len()
+    }
+
+    /// A block that died while it was a candidate, now that the collector has
+    /// finished with it: erase what is in it, if anything, and take the
+    /// memory back.
+    pub(crate) fn free_dead(&mut self, v: Word) {
+        let moved = word(v, 1) & MOVED != 0;
+        set_word(v, 1, word(v, 1) & !(DEAD | MOVED));
+        if moved {
+            let words = size(v);
+            self.clean_block(ptr(v), words);
+        } else {
+            self.pending.push((ptr(v), 0));
+        }
+    }
+
+    /// How many blocks the collector has freed from this heap.
+    pub(crate) fn freed(&self) -> u64 {
+        self.freed
+    }
+
+    /// A block the collector found in a garbage cycle. Its edges are
+    /// accounted for already -- the mark pass took them away and the scan
+    /// pass did not put them back -- so only the memory comes back here.
+    pub(crate) fn free_cycle(&mut self, v: Word) {
+        self.freed += 1;
+        let words = size(v);
+        self.clean_block(ptr(v), words);
+    }
+
     fn clean_block(&mut self, p: *mut Word, words: usize) {
         self.live -= 1;
         if let Some(b) = &mut self.blocks {
@@ -327,6 +576,7 @@ impl Heap {
         let to = (from + STEP).min(n);
         let first = first_field(v);
         let refs = kind(v) != STRING && kind(v) != BIGINT;
+        let cycles = crate::cycles::possible();
         if refs {
             for i in from..to {
                 let d = field_desc(v, i);
@@ -335,9 +585,16 @@ impl Heap {
                     // Safety: a live block's count.
                     let rc = unsafe { &mut *(x as *mut u32) };
                     if *rc == 0 {
-                        self.pending.push((ptr(x), 0));
+                        if cycles && buffered(x) {
+                            set_word(x, 1, word(x, 1) | DEAD);
+                        } else {
+                            self.pending.push((ptr(x), 0));
+                        }
                     } else {
                         *rc -= 1;
+                        if cycles && matches!(kind(x), CELL | MUT_ARRAY) {
+                            self.candidate(x);
+                        }
                     }
                 }
             }
@@ -353,6 +610,19 @@ impl Heap {
             self.clean_block(p, words);
         }
     }
+}
+
+/// Look for every cycle there is now, and erase everything pending: what is
+/// live after this is what the program really holds. See [`crate::cycles`].
+pub fn settle() {
+    with(|h| crate::cycles::collect_all(h));
+    with(|h| {
+        while !h.pending.is_empty() {
+            h.step();
+        }
+    });
+    // Erasing what a cycle held can make candidates of its own.
+    with(|h| crate::cycles::collect_all(h));
 }
 
 /// Blocks acquired and not yet clean, on this thread -- after everything
@@ -378,7 +648,7 @@ pub fn build(kind: u64, meta: u32, fields: &[Word], descs: &[i64]) -> Word {
     let dw = n.div_ceil(16);
     let v = acquire(2 + dw + n);
     set_word(v, 0, (n as u64) << 32);
-    set_word(v, 1, kind | (u64::from(meta) << 32));
+    set_word(v, 1, kind | mutable(kind) | (u64::from(meta) << 32));
     for w in 0..dw {
         let mut bits = 0u64;
         for (j, d) in descs.iter().enumerate().skip(16 * w).take(16) {
@@ -400,7 +670,7 @@ pub fn build_uniform(kind: u64, meta: u32, n: usize, d: i64) -> Word {
     set_word(
         v,
         1,
-        kind | ((d as u64 & 15) << DESC_SHIFT) | UNIFORM | (u64::from(meta) << 32),
+        kind | mutable(kind) | ((d as u64 & 15) << DESC_SHIFT) | UNIFORM | (u64::from(meta) << 32),
     );
     v
 }

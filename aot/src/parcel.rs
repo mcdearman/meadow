@@ -99,6 +99,10 @@ impl Parcel {
                 // The count is the references besides one.
                 let len = b.words[0] & 0xFFFF_FFFF_0000_0000;
                 heap::set_word(v, 0, len | u64::from(b.incoming - 1));
+                // What the sending thread's cycle collector thought of the
+                // block it copied is about that heap's candidate list, not
+                // this one's: a fresh block here has never been a candidate.
+                heap::set_word(v, 1, b.words[1] & !heap::MARKS);
                 v
             })
             .collect();

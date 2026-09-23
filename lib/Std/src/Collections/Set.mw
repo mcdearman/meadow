@@ -14,9 +14,9 @@ use Set.*
 
 fun unwrap s = match s with | Set t -> t
 
-@pub fun insert x s = Set (Tree.insert x (unwrap s))
+@pub fun insert x s = s |> unwrap |> Tree.insert x |> Set
 
-@pub fun delete x s = Set (Tree.delete x (unwrap s))
+@pub fun delete x s = s |> unwrap |> Tree.delete x |> Set
 
 @pub fun member x s = Tree.member x (unwrap s)
 
@@ -42,7 +42,7 @@ fun unwrap s = match s with | Set t -> t
 
 @pub fun diff a b = V.foldl (\acc x -> delete x acc) a (toVec b)
 
-@pub fun intersect a b = fromVec (V.filter (\x -> member x b) (toVec a))
+@pub fun intersect a b = a |> toVec |> V.filter (\x -> member x b) |> fromVec
 
 @pub fun subset a b = V.all (\x -> member x b) (toVec a)
 

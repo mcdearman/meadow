@@ -78,7 +78,7 @@ use Std.Collections.Vector (vecFromArray)
 @pub fun awaitAll = V.map (\t -> await t)
 
 -- `map`, with each element on its own thread.
-@pub fun parMap f xs = awaitAll (V.map (\x -> spawn (\() -> f x)) xs)
+@pub fun parMap f xs = xs |> V.map (\x -> spawn (\() -> f x)) |> awaitAll
 
 -- --- tests -------------------------------------------------------------------
 

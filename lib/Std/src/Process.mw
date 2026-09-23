@@ -48,10 +48,10 @@ use Std.Maybe.Maybe.*
   match cmd with | (p, xs, cwd, envs) -> (p, xs, cwd, V.pushBack envs pair)
 
 -- Run `program` with `args` to completion, capturing its output.
-@pub fun run program args = spawn (withArgs args (command program))
+@pub fun run program args = command program |> withArgs args |> spawn
 
 -- Run `program` with `args` to completion, inheriting stdio; just the exit code.
-@pub fun runInherit program args = status (withArgs args (command program))
+@pub fun runInherit program args = command program |> withArgs args |> status
 
 @pub fun outputStatus out = match out with | (s, o, e) -> s
 

@@ -50,7 +50,7 @@ use Std.Collections.Vector (vecFromArray)
 -- Write a value with no trailing newline. A `String` is written as its text;
 -- anything else the way `show` renders it, so `print 42` writes `42` and
 -- `print "hi"` writes `hi`, not `"hi"`.
-@pub fun print value = writeOutput (display value)
+@pub fun print value = value |> display |> writeOutput
 
 -- `print`, then a newline.
 @pub fun println value = writeOutput (S.concat (display value) "\n")

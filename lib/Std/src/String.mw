@@ -58,12 +58,12 @@ fun joinLoop sep acc i xs =
     joinLoop sep next (i + 1) xs
 
 -- Every string in `xs`, with `sep` between them.
-@pub fun join sep xs = concatStrings (V.toArray (joinLoop sep V.empty 0 xs))
+@pub fun join sep xs = joinLoop sep V.empty 0 xs |> V.toArray |> concatStrings
 
 fun repeatLoop acc s n = if n <= 0 then acc else repeatLoop (V.pushBack acc s) s (n - 1)
 
 -- `s` repeated `n` times.
-@pub fun repeat s n = concatStrings (V.toArray (repeatLoop V.empty s n))
+@pub fun repeat s n = repeatLoop V.empty s n |> V.toArray |> concatStrings
 
 -- ---------------------------------------------------------------------------
 -- Taking it apart
@@ -180,10 +180,10 @@ fun endOfText s i =
 
 @pub fun trimEnd s = slice s 0 (endOfText s (byteLength s))
 
-@pub fun trim s = trimEnd (trimStart s)
+@pub fun trim s = s |> trimStart |> trimEnd
 
 -- `s` split on newlines. A trailing newline does not produce a final empty line.
-@pub fun lines s = if isEmpty s then V.empty else split "\n" (trimTrailingNewline s)
+@pub fun lines s = if isEmpty s then V.empty else s |> trimTrailingNewline |> split "\n"
 
 fun trimTrailingNewline s = if endsWith "\n" s then take s (byteLength s - 1) else s
 

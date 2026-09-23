@@ -44,11 +44,11 @@ use Std.Bool (not)
 -- --- runs of characters --------------------------------------------------------
 
 -- Exactly this text, or nothing consumed.
-@pub fun string text = P.chunk (P.tokensToChunk (V.fromArray (stringToChars text)))
+@pub fun string text = text |> stringToChars |> V.fromArray |> P.tokensToChunk |> P.chunk
 
 -- This text, in any mix of cases. What it answers is the input's own spelling.
 @pub fun stringCI text =
-  let want = V.map Ch.toLower (V.fromArray (stringToChars text)) in
+  let want = text |> stringToChars |> V.fromArray |> V.map Ch.toLower in
   P.label (show text)
     (P.try
       (P.bind (P.takeP "a word" (V.len want))

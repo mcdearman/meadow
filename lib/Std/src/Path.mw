@@ -77,7 +77,7 @@ use Std.Maybe.Maybe.*
   | Just d -> join d name
 
 -- Every non-empty component, separators discarded.
-@pub fun components p = V.filter (\c -> not (S.isEmpty c)) (splitAny p)
+@pub fun components p = p |> splitAny |> V.filter (\c -> not (S.isEmpty c))
 
 -- --- classifying --------------------------------------------------------------
 
@@ -99,7 +99,7 @@ fun hasDrive p =
 -- `normalize "a/../b"` is `"b"` even if `a` is a link somewhere else.
 @pub fun normalize p =
   let abs = isAbsolute p in
-  let parts = V.foldl (\acc c -> pushPart abs acc c) [] (components p) in
+  let parts = p |> components |> V.foldl (\acc c -> pushPart abs acc c) [] in
   let body = S.join separator parts in
   if abs
   then S.concat separator body

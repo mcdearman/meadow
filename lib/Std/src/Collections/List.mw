@@ -139,7 +139,7 @@ fun reverseOnto acc xs =
 
 @pub fun partition keep xs = (filter keep xs, filter (\x -> not (keep x)) xs)
 
-@pub fun concatMap f xs = concat (map f xs)
+@pub fun concatMap f xs = xs |> map f |> concat
 
 @pub fun zip xs ys =
   match (xs, ys) with

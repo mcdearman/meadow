@@ -62,7 +62,7 @@ def smallRange = 16
 @pub fun sortOn key v = sortBy (\a b -> compare (key a) (key b)) v
 
 -- The in-place sort itself, on a plain `Array`.
-@pub fun sortArrayBy cmp arr = V.toArray (sortBy cmp (V.fromArray arr))
+@pub fun sortArrayBy cmp arr = arr |> V.fromArray |> sortBy cmp |> V.toArray
 
 @pub fun sortArray arr = sortArrayBy compare arr
 
@@ -74,7 +74,7 @@ def smallRange = 16
 -- keeps an empty effect row.
 
 -- Sort a `Vector` by a comparison, keeping equal elements in their order.
-@pub fun stableSortBy cmp v = V.fromList (mergeSort cmp (V.toList v))
+@pub fun stableSortBy cmp v = v |> V.toList |> mergeSort cmp |> V.fromList
 
 @pub fun stableSort v = stableSortBy compare v
 

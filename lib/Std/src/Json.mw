@@ -144,14 +144,14 @@ fun value = P.defer (\() -> lexeme (P.choice values))
 
 fun array =
   let items = P.between (symbol "[") (C.char ']') (P.sepBy value (symbol ",")) in
-  P.defer (\() -> P.label "an array" (P.map Array items))
+  P.defer (\() -> items |> P.map Array |> P.label "an array")
 
 fun object =
   let members = P.between (symbol "{") (C.char '}') (P.sepBy member (symbol ",")) in
-  P.defer (\() -> P.label "an object" (P.map Object members))
+  P.defer (\() -> members |> P.map Object |> P.label "an object")
 
 fun member =
-  let pairWith = \k -> P.map (\v -> pair k v) (P.skipThen (symbol ":") value) in
+  let pairWith = \k -> value |> P.skipThen (symbol ":") |> P.map (\v -> pair k v) in
   P.defer (\() -> P.bind (lexeme stringLit) pairWith)
 
 -- --- lexical ------------------------------------------------------------------
@@ -171,7 +171,7 @@ fun number =
 -- escape is rejected instead of half-handled.
 fun stringLit =
   let chars = P.skipThen (C.char '"') (P.manyTill (P.alt escape plainChar) (C.char '"')) in
-  P.label "a string" (P.map (\cs -> charsToString (V.toArray cs)) chars)
+  chars |> P.map (\cs -> charsToString (V.toArray cs)) |> P.label "a string"
 
 fun plainChar = P.satisfy (\c -> c != '"' and c != '\\')
 
@@ -186,7 +186,7 @@ fun escapes = [
   P.mapTo '\t' (C.char 't'),
 ]
 
-fun escape = P.skipThen (C.char '\\') (P.label "an escape" (P.choice escapes))
+fun escape = P.choice escapes |> P.label "an escape" |> P.skipThen (C.char '\\')
 
 -- --- rendering ----------------------------------------------------------------
 
@@ -240,7 +240,7 @@ fun pad depth = S.repeat "  " depth
 
 @pub fun quote s = S.concatAll ["\"", escapeAll s, "\""]
 
-fun escapeAll s = S.fromBytes (V.toArray (V.concatMap escapeByte (V.fromArray (S.toBytes s))))
+fun escapeAll s = s |> S.toBytes |> V.fromArray |> V.concatMap escapeByte |> V.toArray |> S.fromBytes
 
 fun escapeByte b =
   if b == 34 then V.fromArray #[92, 34]

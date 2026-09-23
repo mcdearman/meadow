@@ -35,7 +35,7 @@ fun symbol s = L.symbol sc s
 -- A keyword is a word that is not the start of a longer identifier, so `let`
 -- does not match the first three characters of `letter`.
 fun keyword s =
-  lexeme (P.try (P.thenSkip (C.string s) (P.notFollowedBy (P.satisfy isIdentChar))))
+  P.thenSkip (C.string s) (P.notFollowedBy (P.satisfy isIdentChar)) |> P.try |> lexeme
 
 def reserved = ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"]
 
@@ -56,7 +56,7 @@ fun ident =
           if V.elem name reserved then P.fail "`${name}` is a keyword, not a name"
           else P.pure name)))
 
-fun intLit = P.map (\n -> Int n) (lexeme L.decimal)
+fun intLit = L.decimal |> lexeme |> P.map (\n -> Int n)
 
 fun boolLit =
   P.alt (P.mapTo (Bool True) (keyword "true")) (P.mapTo (Bool False) (keyword "false"))
@@ -77,7 +77,7 @@ fun appE () =
 -- A chain of left-associative binary operators at one precedence level.
 fun binaryE ops next =
   P.chainl1 (P.defer next)
-    (P.choice (V.map (\o -> P.mapTo (\l r -> Bin o l r) (symbol o)) ops))
+    (ops |> V.map (\o -> P.mapTo (\l r -> Bin o l r) (symbol o)) |> P.choice)
 
 fun mulE () = binaryE ["*", "/"] appE
 fun addE () = binaryE ["+", "-"] mulE

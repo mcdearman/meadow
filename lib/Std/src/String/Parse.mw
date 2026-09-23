@@ -660,10 +660,10 @@ fun manyLoop p input acc off consumed =
 @pub fun some p = lift2 (\x xs -> V.pushFront xs x) p (many p)
 
 -- `many`, discarding the results.
-@pub fun skipMany p = void (many p)
+@pub fun skipMany p = p |> many |> void
 
 -- `some`, discarding the results.
-@pub fun skipSome p = void (some p)
+@pub fun skipSome p = p |> some |> void
 
 fun countLoop n p acc =
   if n <= 0 then pure acc else bind p (\x -> countLoop (n - 1) p (V.pushBack acc x))
@@ -749,7 +749,7 @@ fun orList xs =
           | Just item -> S.concatAll ["unexpected ", showItem item, "\n"]
           | None -> ""
         in
-        let wants = dedupe (V.map showItem expected) in
+        let wants = expected |> V.map showItem |> dedupe in
         let x = if V.isEmpty wants then "" else S.concatAll ["expecting ", orList wants, "\n"] in
         let text = S.concat u x in
         if S.isEmpty text then "unknown parse error\n" else text
@@ -761,7 +761,7 @@ fun orList xs =
       "at offset ",
       S.fromInt (errorOffset e),
       ": ",
-      S.join "; " (S.lines (S.trimEnd (parseErrorTextPretty e))),
+      e |> parseErrorTextPretty |> S.trimEnd |> S.lines |> S.join "; ",
     ]
 
 -- The span of the source an error is about: the tokens it found there, or

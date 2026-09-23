@@ -38,7 +38,7 @@ use Std.Ordering.Ordering.*
 -- Each should consume something when it succeeds -- `C.space1`, not `C.space`.
 -- `P.empty` stands for a kind of comment a language does not have.
 @pub fun space sp lineComment blockComment =
-  P.hidden (P.skipMany (P.choice [sp, lineComment, blockComment]))
+  P.choice [sp, lineComment, blockComment] |> P.skipMany |> P.hidden
 
 -- `p`, then whatever the space consumer `sc` skips after it.
 @pub fun lexeme sc p = P.thenSkip p sc
@@ -52,19 +52,19 @@ use Std.Ordering.Ordering.*
 -- `prefix` and the rest of its line. The newline is left for the space
 -- consumer.
 @pub fun skipLineComment prefix =
-  P.skipThen (C.string prefix) (P.void (P.takeWhileP (\c -> c != '\n')))
+  P.takeWhileP (\c -> c != '\n') |> P.void |> P.skipThen (C.string prefix)
 
 -- `start`, and everything up to and including `stop`. A block comment of this
 -- kind does not nest: the first `stop` closes it.
 @pub fun skipBlockComment start stop =
-  P.skipThen (C.string start) (P.void (P.manyTill P.anySingle (C.string stop)))
+  P.manyTill P.anySingle (C.string stop) |> P.void |> P.skipThen (C.string start)
 
 -- `start`, and everything up to and including the `stop` that matches it: a
 -- block comment of this kind may hold others.
 @pub fun skipBlockCommentNested start stop =
   let nested = P.void (P.defer (\() -> skipBlockCommentNested start stop)) in
   let inside = P.alt nested (P.void P.anySingle) in
-  P.skipThen (C.string start) (P.void (P.manyTill inside (C.string stop)))
+  P.manyTill inside (C.string stop) |> P.void |> P.skipThen (C.string start)
 
 -- --- numbers -------------------------------------------------------------------
 
@@ -73,27 +73,27 @@ fun digitOf c =
   | Just d -> d
   | None -> 0
 
-fun digitsIn base chunk = V.foldl (\acc c -> acc * base + digitOf c) 0 (P.chunkToTokens chunk)
+fun digitsIn base chunk = chunk |> P.chunkToTokens |> V.foldl (\acc c -> acc * base + digitOf c) 0
 
 fun digits = P.takeWhile1P "a digit" Ch.isDigit
 
 -- A decimal integer, without a sign: `42`. See `signed` for one with.
-@pub fun decimal = P.label "an integer" (P.map (digitsIn 10) digits)
+@pub fun decimal = digits |> P.map (digitsIn 10) |> P.label "an integer"
 
 -- A binary integer, without its `0b`: `1011`.
 @pub fun binary =
   let run = P.takeWhile1P "a binary digit" (\c -> c == '0' or c == '1') in
-  P.label "a binary integer" (P.map (digitsIn 2) run)
+  run |> P.map (digitsIn 2) |> P.label "a binary integer"
 
 -- An octal integer, without its `0o`: `755`.
 @pub fun octal =
   let run = P.takeWhile1P "an octal digit" (Ch.isBetween '0' '7') in
-  P.label "an octal integer" (P.map (digitsIn 8) run)
+  run |> P.map (digitsIn 8) |> P.label "an octal integer"
 
 -- A hexadecimal integer in either case, without its `0x`: `ff`.
 @pub fun hexadecimal =
   let run = P.takeWhile1P "a hexadecimal digit" Ch.isHexDigit in
-  P.label "a hexadecimal integer" (P.map (digitsIn 16) run)
+  run |> P.map (digitsIn 16) |> P.label "a hexadecimal integer"
 
 fun powTen n = if n <= 0 then 1.0 else 10.0 *. powTen (n - 1)
 
@@ -129,7 +129,7 @@ fun exponentAfter frac =
   let fraction = P.optional (P.skipThen (C.char '.') digits) in
   let parts = P.lift2 pair digits fraction in
   let number = P.bind parts (\wf -> P.map (floatOf (fst wf) (snd wf)) (exponentAfter (snd wf))) in
-  P.label "a floating-point number" (P.try number)
+  number |> P.try |> P.label "a floating-point number"
 
 -- A sign before a number, as a function to apply to it: `neg` for a minus.
 fun signBy neg = P.alt (P.mapTo (\x -> x) (C.char '+')) (P.mapTo neg (C.char '-'))
@@ -138,12 +138,12 @@ fun signBy neg = P.alt (P.mapTo (\x -> x) (C.char '+')) (P.mapTo neg (C.char '-'
 -- the two: `signed sc decimal` reads `-12` and `+ 3`. For integers; floats
 -- have `signedFloat`.
 @pub fun signed sc p =
-  let f = P.option (\x -> x) (lexeme sc (signBy (\x -> 0 - x))) in
+  let f = signBy (\x -> 0 - x) |> lexeme sc |> P.option (\x -> x) in
   P.bind f (\g -> P.map g p)
 
 -- `signed`, for a floating-point `p`.
 @pub fun signedFloat sc p =
-  let f = P.option (\x -> x) (lexeme sc (signBy (\x -> 0.0 -. x))) in
+  let f = signBy (\x -> 0.0 -. x) |> lexeme sc |> P.option (\x -> x) in
   P.bind f (\g -> P.map g p)
 
 -- --- characters ----------------------------------------------------------------
@@ -156,7 +156,7 @@ fun byCode n =
 -- `\x41`: two hexadecimal digits.
 fun hexEscape =
   let two = P.takeP "two hexadecimal digits" 2 in
-  P.skipThen (C.char 'x') (P.map (\ds -> charFromCode (digitsIn 16 ds)) two)
+  two |> P.map (\ds -> charFromCode (digitsIn 16 ds)) |> P.skipThen (C.char 'x')
 
 -- `\u{1F600}`: any number of them, in braces.
 fun unicodeEscape =
@@ -274,7 +274,7 @@ fun itemsAt ref lvl sc p pos =
 
 -- `IndentMany`: the items, if the next line is indented past the head.
 fun manyBlock sc ref indent f p =
-  let next = P.optional (P.try (P.skipThen C.eol (indentGuard sc Greater ref))) in
+  let next = P.skipThen C.eol (indentGuard sc Greater ref) |> P.try |> P.optional in
   P.bind next (\lvl ->
     P.bind (P.optional P.eof) (\done ->
       match (lvl, done) with
@@ -298,7 +298,7 @@ fun someBlock sc ref indent f p =
 -- space consumer that skips newlines too, since the block's lines are on
 -- lines of their own:
 --
---   fun item = L.indentBlock scn (P.map (\name -> IndentMany None (P.pure . Node name) leaf) header)
+--   fun item = header |> P.map (\name -> IndentMany None (P.pure . Node name) leaf) |> L.indentBlock scn
 @pub fun indentBlock sc r =
   P.skipThen sc
     (P.bind indentLevel (\ref ->
@@ -334,6 +334,12 @@ fun ok p text = P.runParser (P.thenSkip p P.eof) text
   let p = P.skipThen sc (P.many (lexeme sc decimal)) in
   let a = assertEq (ok p " 1 -- one\n 2 {- two {- nested -} -} 3") (Ok [1, 2, 3]) "all kinds" in
   assertEq (ok (symbol sc "let") "let  ") (Ok "let") "symbol"
+
+@test fun aPlainBlockCommentDoesNotNest () =
+  let p = P.skipThen (skipBlockComment "{-" "-}") (C.string "x") in
+  let a = assertEq (ok p "{- one -}x") (Ok "x") "a comment" in
+  let b = assertEq (ok p "{- a {- b -}x") (Ok "x") "the first close ends it" in
+  assertFalse (isOk (ok p "{- unterminated x")) "never closed"
 
 @test fun numbersInEveryBase () =
   let a = assertEq (ok decimal "1234") (Ok 1234) "decimal" in

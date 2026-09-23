@@ -482,7 +482,7 @@ fun vPopChunkFront shift node =
 @pub fun filter keep v =
   fromArray (vaFoldl (\acc x -> if keep x then arrayPush acc x else acc) #[] (toArray v))
 
-@pub fun reverse v = fromArray (vaFoldr (\x acc -> arrayPush acc x) #[] (toArray v))
+@pub fun reverse v = v |> toArray |> vaFoldr (\x acc -> arrayPush acc x) #[] |> fromArray
 
 @pub fun updateAt v i f =
   match get v i with
@@ -524,7 +524,7 @@ fun vPopChunkFront shift node =
 
 @pub fun concat vs = vaFoldl (\acc v -> append acc v) empty (toArray vs)
 
-@pub fun concatMap f v = concat (map f v)
+@pub fun concatMap f v = v |> map f |> concat
 
 @pub fun replicate n x =
   let rec go k acc = if k <= 0 then acc else go (k - 1) (pushBack acc x)

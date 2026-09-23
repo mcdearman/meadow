@@ -45,6 +45,9 @@ pub struct Options {
     /// Write what tests print as they print it, rather than keeping it to show
     /// beside the ones that fail.
     pub no_capture: bool,
+    /// Compile the tests with the native backend (`--runtime aot`) rather than
+    /// run them on `engine`.
+    pub native: bool,
 }
 
 /// Returns `true` if everything that ran passed.
@@ -154,23 +157,29 @@ pub fn run(opts: &Options) -> Result<bool, String> {
     // fails: written as it came, it would land among the other tests' lines.
     let bar = std::sync::Mutex::new(status::Testing::new(total));
     let names: Vec<String> = cases.iter().map(|(name, _)| name.to_string()).collect();
-    let results = runtime::run_tests_parallel(
-        &linked.program,
-        &vars,
-        opts.engine,
-        opt,
-        opts.threads.unwrap_or_else(runtime::test_threads),
-        !opts.no_capture,
-        &|i, told| {
-            let name = names.get(i).map(String::as_str).unwrap_or("?");
-            let mut bar = bar.lock().unwrap_or_else(|p| p.into_inner());
-            bar.step(told.result.is_ok());
-            status::say(&match told.result {
-                Ok(_) => format!("test {name} ... {}", status::paint("ok", "32")),
-                Err(_) => format!("test {name} ... {}", status::paint("FAILED", "31")),
-            });
-        },
-    )?;
+    let report = |i: usize, told: &runtime::Told| {
+        let name = names.get(i).map(String::as_str).unwrap_or("?");
+        let mut bar = bar.lock().unwrap_or_else(|p| p.into_inner());
+        bar.step(told.result.is_ok());
+        status::say(&match told.result {
+            Ok(_) => format!("test {name} ... {}", status::paint("ok", "32")),
+            Err(_) => format!("test {name} ... {}", status::paint("FAILED", "31")),
+        });
+    };
+    let threads = opts.threads.unwrap_or_else(runtime::test_threads);
+    let results = if opts.native {
+        runtime::run_tests_native(&linked.program, &vars, opt, threads, &report)?
+    } else {
+        runtime::run_tests_parallel(
+            &linked.program,
+            &vars,
+            opts.engine,
+            opt,
+            threads,
+            !opts.no_capture,
+            &report,
+        )?
+    };
     drop(bar);
 
     // In declaration order, whatever order they finished in.

@@ -356,6 +356,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "meadow-llvm"
+version = "0.1.0-alpha"
+dependencies = [
+ "meadow-compiler",
+ "meadow-core",
+ "meadow-hir",
+ "meadow-intern",
+ "meadow-seq",
+]
+
+[[package]]
 name = "meadow-parser"
 version = "0.1.0-alpha"
 dependencies = [

@@ -877,6 +877,11 @@ impl Emit for Asm {
                     let a = self.thin_operand(a, WORK_A);
                     self.thin_shr(dst(t), a, n);
                 }
+                Step::ShrBy(t, a, b) => {
+                    let n = self.thin_operand(a, WORK_A);
+                    let m = self.thin_operand(b, WORK_B);
+                    self.put(0x9AC0_2400 | m << 16 | n << 5 | dst(t)); // lsr xt, xn, xm
+                }
                 Step::Load(t, at) => {
                     let at = self.thin_operand(at, WORK_A);
                     self.thin_where(WORK_B, at);
@@ -1289,8 +1294,9 @@ impl Emit for Asm {
         self.ret_as_is(crate::abi::JUMPED);
     }
 
-    fn alloc(&mut self, a: Reg, header: &[u64], base: Reg, n: u32, slow: Label) {
+    fn alloc(&mut self, a: Reg, header: &[u64], fields: &[Reg], slow: Label) {
         let hdr = header.len() as u32;
+        let n = fields.len() as u32;
         let size = hdr + n;
         self.ldr(X9, X19, layout::TOP);
         self.put(0x9100_0000 | size << 10 | X9 << 5 | X10); // add x10, x9, #size
@@ -1307,8 +1313,8 @@ impl Emit for Asm {
             self.imm(X15, w);
             self.str(X15, X14, k as u32 * 8);
         }
-        for j in 0..n {
-            let s = self.x(base.wrapping_add(j as Reg), X15);
+        for (j, &r) in (0..).zip(fields) {
+            let s = self.x(r, X15);
             self.str(s, X14, (hdr + j) * 8);
         }
         self.str(X10, X19, layout::TOP);
@@ -1318,8 +1324,9 @@ impl Emit for Asm {
         self.store(a);
     }
 
-    fn frame(&mut self, a: Reg, header: &[u64], base: Reg, n: u32, slow: Label) {
+    fn frame(&mut self, a: Reg, header: &[u64], fields: &[Reg], slow: Label) {
         let hdr = header.len() as u32;
+        let n = fields.len() as u32;
         let size = hdr + n;
         // w9 = fsp, w10 = fsp + size; over the chunk's end -- or no chunk yet,
         // when the end is zero -- is the interpreter's to sort out.
@@ -1337,8 +1344,8 @@ impl Emit for Asm {
             self.imm(X15, w);
             self.str(X15, WORK_A, k as u32 * 8);
         }
-        for j in 0..n {
-            let s = self.x(base.wrapping_add(j as Reg), X15);
+        for (j, &r) in (0..).zip(fields) {
+            let s = self.x(r, X15);
             self.str(s, WORK_A, (hdr + j) * 8);
         }
         self.put(0xB900_0000 | (layout::FSP / 4) << 10 | X19 << 5 | X10); // str w10, [x19, #FSP]

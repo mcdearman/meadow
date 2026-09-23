@@ -494,20 +494,75 @@ Code that runs only once, which is most of what a program does at startup, is
 never compiled. A loop is compiled within a few iterations. The `opt` level is
 the build profile's: O1 for debug, O2 if you run `--release --jit`.
 
-Getting executable memory depends on the platform:
+Compiling a block needs a few facts about the whole program -- which blocks
+loop, which instructions are jumped to, what each method takes. Those are
+worked out once, when the JIT starts (`codegen::Whole`), not per block: with
+the standard library linked in a program has tens of thousands of
+instructions, and recomputing them for every hot block made closure-heavy code
+two and a half times slower than it is.
+
+Functions are **packed together** in executable memory, as a linker would lay
+them out. Giving each its own mapping started every one on a page boundary --
+a 64 KiB one on Windows -- so every function's entry had the same low address
+bits and they all competed for the same few ways of the instruction cache and
+the branch predictor; that made the JIT half again slower than the same code
+ahead of time. No address is ever both writable and executable:
 
 - **macOS** uses one `MAP_JIT` mapping, 1 MiB at a time. Only the thread writing
   it sees it as writable, and only while it writes
   (`pthread_jit_write_protect_np`), so other threads keep running the code
   already there. `sys_icache_invalidate` then flushes the processor's
   instruction cache.
-- **Linux** gives each function fresh pages: written, then `mprotect`ed to
-  read+execute, with `__clear_cache` on arm64.
-- **Windows** does the same with `VirtualAlloc` and `VirtualProtect`, then
-  `FlushInstructionCache`.
+- **Linux** maps each 1 MiB chunk twice from a `memfd`: once writable, for the
+  compiler, once read+execute, for the program, with `__clear_cache` on arm64.
+- **Windows** does the same with a section backed by the page file and two
+  `MapViewOfFile`s, then `FlushInstructionCache`.
+
+Where the system will not make the pair of views, each function gets pages of
+its own after all, written and then made executable.
 
 Code is never patched or freed while the program runs, so a thread executing a
 function never races with anything.
+
+#### Guessed calls
+
+The types say what kind of thing an `invoke` enters, never which: a function
+value is whatever was passed in, and a return goes wherever the caller said.
+The generic `invoke` finds everything out at run time -- the object's kind,
+its length, its method table, where the target's code is -- and rebuilds the
+register file in a loop. Most call sites only ever enter one thing, though:
+three quarters of the calls through closures in parsing code.
+
+So while a block is still interpreted, each `invoke` in it notes what it
+entered (`Native::observe`): one word per site, holding the first thing seen,
+and "more than one" for good once a second is. When the block is compiled, a
+site that saw one thing gets a guard on it (`Emit::invoke_known`): the object
+is a closure made with that method table, or a frame returning to that pc. If
+the guard holds, everything the generic path computes is a constant -- how
+many captures, how long the header, where the target is -- and the call is a
+few unrolled moves and a jump. If it fails, the generic `invoke` follows,
+still native. A call through a closure in a tight loop runs about a fifth
+faster for it.
+
+`MEADOW_JIT_GUESS=0` turns guessing off, for telling whether a guess is what
+broke something. x86-64 has guarded calls; on arm64 every call is generic for
+now.
+
+#### Profile-guided `aot` builds
+
+An `aot` build compiles before anything has run, so it has nothing to guess
+from unless a run leaves what it saw behind. `meadow run --train` runs on the
+JIT and writes every call site that entered one thing to
+`target/<profile>/calls.pgo`; an `aot` build of the same image reads it and
+guards those calls as the JIT does, and says so (`Guided by …`). The file names
+a hash of the image it was made from, since its pcs mean nothing in any other:
+after the source changes the profile is ignored, with a note, until the
+program is trained again. See `buildtools/meadow/src/pgo.rs`.
+
+```text
+meadow run --release --train     # run on the JIT, write target/release/calls.pgo
+meadow build --release           # Guided by target/release/calls.pgo
+```
 
 ### AOT executables
 

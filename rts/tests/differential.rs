@@ -114,16 +114,25 @@ fn agree(src: &str) -> String {
 fn jit(image: &meadow_bytecode::Program, workers: usize) -> Result<String, String> {
     let entry = image.entry.ok_or("no entry point")?;
     let mut answer = None;
-    for opt in LEVELS {
-        // Every block that runs, compiled the first time it does: all of the
-        // code the program reaches runs natively.
-        let jit = meadow_rts::jit::Native::jit(image, 1, opt)?;
-        let got = meadow_rts::sched::run_native(image, Some(&jit), entry, FUEL, workers)
-            .result
-            .map_err(|e| e.msg);
-        match &answer {
-            None => answer = Some(got),
-            Some(want) => assert_eq!(want, &got, "JIT at O0 vs {}", opt.name()),
+    // Every block that runs, compiled the first time it does, so all of the
+    // code the program reaches runs natively; and compiled the fourth time,
+    // so that its calls have been seen first and are guarded on what they
+    // entered -- see `meadow_rts::codegen::Known`.
+    for threshold in [1, 4] {
+        for opt in LEVELS {
+            let jit = meadow_rts::jit::Native::jit(image, threshold, opt)?;
+            let got = meadow_rts::sched::run_native(image, Some(&jit), entry, FUEL, workers)
+                .result
+                .map_err(|e| e.msg);
+            match &answer {
+                None => answer = Some(got),
+                Some(want) => assert_eq!(
+                    want,
+                    &got,
+                    "JIT at O0 vs {} after {threshold} entries",
+                    opt.name()
+                ),
+            }
         }
     }
     answer.expect("a level")
@@ -224,6 +233,44 @@ fn a_closure_captures_exactly_what_it_needs() {
                f 0 + g 0"
         ),
         "101"
+    );
+}
+
+/// A call site the JIT has seen enter one thing, and so guards on it, and
+/// then enters something else: the guard has to fail and the call go the
+/// general way. `apply` sees `inc` for its first dozen calls and `dec` after,
+/// and returns into two different continuations; the closures capture more
+/// than eight values, so their headers are the longer kind, and one captures
+/// more than twenty-four.
+#[test]
+fn a_call_that_stops_entering_what_it_was_seen_to_enter() {
+    assert_eq!(
+        agree(
+            "fun apply f (x : Int) = f x
+             fun run (n : Int) (acc : Int) =
+               if n == 0 then acc
+               else
+                 let f = if n > 12 then (\\y -> y + 1) else (\\y -> y - 1) in
+                 run (n - 1) (apply f acc)
+             fun wide (a : Int) (b : Int) (c : Int) (d : Int) (e : Int) =
+               let f = \\y -> y + a + b + c + d + e + a * b + c * d + e * a + b * c in
+               let g = \\y -> y + a + b + c + d + e in
+               apply f 1 + apply g 2
+             fun many (n : Int) =
+               let a = n in let b = n + 1 in let c = n + 2 in let d = n + 3 in
+               let e = n + 4 in let f = n + 5 in let g = n + 6 in let h = n + 7 in
+               let i = n + 8 in let j = n + 9 in let k = n + 10 in let l = n + 11 in
+               let m = n + 12 in let o = n + 13 in let p = n + 14 in let q = n + 15 in
+               let r = n + 16 in let s = n + 17 in let t = n + 18 in let u = n + 19 in
+               let v = n + 20 in let w = n + 21 in let x = n + 22 in let y = n + 23 in
+               let z = n + 24 in
+               apply (\\q0 -> q0 + a + b + c + d + e + f + g + h + i + j + k + l + m + o
+                                  + p + q + r + s + t + u + v + w + x + y + z) 0
+             fun loop (n : Int) (acc : Int) =
+               if n == 0 then acc else loop (n - 1) (acc + wide n 2 3 4 5 + many n)
+             def main = (run 40 0, loop 30 0)"
+        ),
+        "(16, 26280)"
     );
 }
 

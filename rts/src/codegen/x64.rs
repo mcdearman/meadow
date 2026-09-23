@@ -310,6 +310,33 @@ impl Asm {
         self.bytes(&[0x40, 0x0F, 0xB6, 0xCE]); // movzx ecx, sil
     }
 
+    /// [`Asm::nursery`] for an object in either generation: `rdx` its first
+    /// word's address, `rsi` that word, `ecx` its kind -- one in the nursery
+    /// the short way, one in the old generation through the block tables.
+    /// Only a compact region goes to `slow`. A long-lived closure is an old
+    /// one: a parser combinator defined at the top level, say, which every
+    /// call of the parser it builds goes through.
+    fn anywhere(&mut self, x: Reg, slow: Label) {
+        let old = self.label();
+        let found = self.label();
+        self.get(RAX, x as u32);
+        self.bytes(&[0x48, 0x3D]); // cmp rax, OLD_BASE
+        self.bytes(&crate::old::OLD_BASE.to_le_bytes());
+        self.jcc(CC_AE, old);
+        self.load(2, RBX, layout::BASE); // rdx
+        self.bytes(&[0x48, 0x8D, 0x14, 0xC2]); // lea rdx, [rdx + rax*8]
+        self.jump(found);
+        self.bind(old);
+        // Past the generations, a region: bit 31 set.
+        self.bytes(&[0x48, 0x89, 0xC6]); // mov rsi, rax
+        self.bytes(&[0x48, 0xC1, 0xEE, 31]); // shr rsi, 31
+        self.jcc(CC_NE, slow);
+        self.thin_where();
+        self.bind(found);
+        self.bytes(&[0x48, 0x8B, 0x32]); // mov rsi, [rdx]
+        self.bytes(&[0x40, 0x0F, 0xB6, 0xCE]); // movzx ecx, sil
+    }
+
     /// `reg = ` a thin step's operand.
     fn thin_operand(&mut self, reg: u8, src: thin::Src) {
         match src {
@@ -548,6 +575,12 @@ impl Emit for Asm {
                     self.thin_shr_rax(n);
                     self.thin_put(t, RAX);
                 }
+                Step::ShrBy(t, a, b) => {
+                    self.thin_operand(RAX, a);
+                    self.thin_operand(RCX, b);
+                    self.bytes(&[0x48, 0xD3, 0xE8]); // shr rax, cl
+                    self.thin_put(t, RAX);
+                }
                 Step::Load(t, at) => {
                     self.thin_operand(RAX, at);
                     self.thin_where();
@@ -682,8 +715,9 @@ impl Emit for Asm {
         self.store(a);
     }
 
-    fn frame(&mut self, a: Reg, header: &[u64], base: Reg, n: u32, slow: Label) {
+    fn frame(&mut self, a: Reg, header: &[u64], fields: &[Reg], slow: Label) {
         let hdr = header.len() as u32;
+        let n = fields.len() as u32;
         let size = hdr + n;
         // eax = fsp, ecx = fsp + size; over the chunk's end -- or no chunk yet,
         // when the end is zero -- is the interpreter's to sort out.
@@ -706,8 +740,8 @@ impl Emit for Asm {
             self.bytes(&[0x48, 0x89, 0xB2]); // mov [rdx + k * 8], rsi
             self.bytes(&(k as u32 * 8).to_le_bytes());
         }
-        for j in 0..n {
-            self.get(RSI, base as u32 + j);
+        for (j, &r) in (0..).zip(fields) {
+            self.get(RSI, r as u32);
             self.bytes(&[0x48, 0x89, 0xB2]); // mov [rdx + (hdr + j) * 8], rsi
             self.bytes(&((hdr + j) * 8).to_le_bytes());
         }
@@ -839,6 +873,73 @@ impl Emit for Asm {
         false
     }
 
+    fn invoke_known(
+        &mut self,
+        obj: Reg,
+        base: Reg,
+        argc: u32,
+        g: super::Guess,
+        generic: Label,
+    ) -> bool {
+        if argc > 247 || g.captures + argc > 255 {
+            return false;
+        }
+        if g.known.frame {
+            // A return through a frame in the current chunk whose return pc
+            // is the one expected -- which also says how many captures it
+            // holds, since a frame's pc is its method table's one method.
+            self.get(RAX, obj as u32);
+            self.bytes(&[0x8B, 0x8B]); // mov ecx, [rbx + FCUR]
+            self.bytes(&layout::FCUR.to_le_bytes());
+            self.bytes(&[0x48, 0x39, 0xC8]); // cmp rax, rcx
+            self.jcc(CC_B, generic);
+            self.bytes(&[0x8B, 0x93]); // mov edx, [rbx + FLIM]
+            self.bytes(&layout::FLIM.to_le_bytes());
+            self.bytes(&[0x48, 0x39, 0xD0]); // cmp rax, rdx
+            self.jcc(CC_AE, generic);
+            self.bytes(&[0x48, 0x89, 0xC2]); // mov rdx, rax
+            self.bytes(&[0x48, 0x29, 0xCA]); // sub rdx, rcx
+            self.load(RSI, RBX, layout::FBASE);
+            self.bytes(&[0x48, 0x8D, 0x14, 0xD6]); // lea rdx, [rsi + rdx*8]
+            self.bytes(&[0x81, 0x7A, 0x08]); // cmp dword [rdx + 8], target
+            self.bytes(&g.target.to_le_bytes());
+            self.jcc(CC_NE, generic);
+            // Returning pops it: the stack's top goes back to its slot. What
+            // it holds stays where it is until something else is pushed.
+            self.bytes(&[0x89, 0x83]); // mov [rbx + FSP], eax
+            self.bytes(&layout::FSP.to_le_bytes());
+        } else {
+            // A closure made with the method table expected, which says how
+            // many captures it holds.
+            self.anywhere(obj, generic);
+            self.bytes(&[0x83, 0xF9, crate::heap::Kind::Closure as u8]); // cmp ecx, Closure
+            self.jcc(CC_NE, generic);
+            self.bytes(&[0x81, 0x7A, 0x08]); // cmp dword [rdx + 8], table
+            self.bytes(&g.known.meta.to_le_bytes());
+            self.jcc(CC_NE, generic);
+        }
+        // The register file as the target wants it, with every count known:
+        // the arguments out of the way, the captures in, the arguments after.
+        // Through `put`, so a pinned register is written where it lives, and
+        // `chain` writes them all back on the way out.
+        let hdr = meadow_core::compact::header_slots(false, g.captures as usize) as u32;
+        let scratch = crate::vm::SCRATCH as u32;
+        for j in 0..argc {
+            self.get(RAX, base as u32 + j);
+            self.save(RAX, R12, (scratch + j) * 8);
+        }
+        for c in 0..g.captures {
+            self.load(RAX, 2, (hdr + c) * 8); // rax = [rdx + field c]
+            self.put(RAX, c);
+        }
+        for j in 0..argc {
+            self.load(RAX, R12, (scratch + j) * 8);
+            self.put(RAX, g.captures + j);
+        }
+        self.chain(g.target, Some(g.captures + argc), g.to);
+        true
+    }
+
     fn invoke(&mut self, obj: Reg, method: u8, base: Reg, argc: u32, slow: Label) {
         if argc > 247 {
             self.jump(slow);
@@ -869,7 +970,7 @@ impl Emit for Asm {
         self.bytes(&[0x48, 0x8D, 0x14, 0xD6]); // lea rdx, [rsi + rdx*8]
         self.bytes(&[0x48, 0x8B, 0x32]); // mov rsi, [rdx]
         self.length();
-        self.bytes(&[0x48, 0x83, 0xFF, 0x08]); // cmp rdi, 8
+        self.bytes(&[0x48, 0x83, 0xFF, 0x18]); // cmp rdi, 24
         self.jcc(CC_A, slow);
         self.bytes(&[0x8B, 0x72, 0x08]); // mov esi, [rdx + 8]
         // Returning pops the frame: the stack's top goes back to its slot.
@@ -878,11 +979,11 @@ impl Emit for Asm {
         self.jump(rebuild);
         // A call: a closure in the nursery.
         self.bind(object);
-        self.nursery(obj, slow);
+        self.anywhere(obj, slow);
         self.bytes(&[0x83, 0xF9, crate::heap::Kind::Closure as u8]); // cmp ecx, Closure
         self.jcc(CC_NE, slow);
         self.length();
-        self.bytes(&[0x48, 0x83, 0xFF, 0x08]); // cmp rdi, 8
+        self.bytes(&[0x48, 0x83, 0xFF, 0x18]); // cmp rdi, 24
         self.jcc(CC_A, slow);
         // The method's pc: table `meta`, entry `method`, if it has one.
         self.bytes(&[0x8B, 0x4A, 0x08]); // mov ecx, [rdx + 8]
@@ -898,6 +999,15 @@ impl Emit for Asm {
         self.load(RSI, RBX, layout::METHOD_PCS);
         self.bytes(&[0x8B, 0x34, 0x86]); // mov esi, [rsi + rax*4]
         self.bind(rebuild);
+        // The captures follow a header of two words, and one more for every
+        // sixteen fields past the eighth, whose descriptors no longer fit the
+        // second (see `object::write_header`; a closure and a frame are never
+        // uniform). Up to 24, that is one word more past eight.
+        let two = self.label();
+        self.bytes(&[0x48, 0x83, 0xFF, 0x08]); // cmp rdi, 8
+        self.jcc(CC_BE, two);
+        self.bytes(&[0x48, 0x83, 0xC2, 0x08]); // add rdx, 8
+        self.bind(two);
         // The arguments out of the way, the captures in, the arguments after.
         let scratch = crate::vm::SCRATCH as u32;
         for j in 0..argc {
@@ -937,8 +1047,9 @@ impl Emit for Asm {
         self.ret_as_is(crate::abi::JUMPED);
     }
 
-    fn alloc(&mut self, a: Reg, header: &[u64], base: Reg, n: u32, slow: Label) {
+    fn alloc(&mut self, a: Reg, header: &[u64], fields: &[Reg], slow: Label) {
         let hdr = header.len() as u32;
+        let n = fields.len() as u32;
         let size = hdr + n;
         self.load(RAX, RBX, layout::TOP);
         self.bytes(&[0x48, 0x8D, 0x88]); // lea rcx, [rax + size]
@@ -958,8 +1069,8 @@ impl Emit for Asm {
             self.bytes(&[0x48, 0x89, 0xB2]); // mov [rdx + k * 8], rsi
             self.bytes(&(k as u32 * 8).to_le_bytes());
         }
-        for j in 0..n {
-            self.get(RSI, base as u32 + j);
+        for (j, &r) in (0..).zip(fields) {
+            self.get(RSI, r as u32);
             self.bytes(&[0x48, 0x89, 0xB2]); // mov [rdx + (hdr + j) * 8], rsi
             self.bytes(&((hdr + j) * 8).to_le_bytes());
         }

@@ -77,6 +77,9 @@ pub enum Step {
     And(u8, Src, u64),
     /// `t = a >> n`, unsigned.
     Shr(u8, Src, u32),
+    /// `t = a >> (b % 64)`, unsigned: a shift by an amount only known at run
+    /// time, which picking a byte out of a word needs.
+    ShrBy(u8, Src, Src),
     /// The heap word at slot `at`. Slots, not bytes: an [`Addr`] indexes the
     /// heap as an array of words, which is what the machine holds it as.
     Load(u8, Src),
@@ -118,6 +121,33 @@ pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
             Prim::StArrayLen => Some(length(i.a, i.b, Kind::MutArray)),
             Prim::ArrayLen => Some(length(i.a, i.b, Kind::Array)),
             Prim::StringByteLength => Some(meta_of(i.a, i.b, Kind::Str)),
+            // Only where the compiler says what the operand is: a program
+            // lowered without representations leaves the check to the
+            // interpreter.
+            Prim::CharFromCode if operand_is(program, pc, meadow_core::desc::INT) => {
+                Some(char_from_code(i.a, i.b))
+            }
+            // A character's word is its code, which is the `Int`.
+            Prim::CharCode if operand_is(program, pc, meadow_core::desc::CHAR) => {
+                Some(vec![Step::Put(i.a, Src::Reg(i.b))])
+            }
+            // A sized integer's word is its bits wrapped to its width, so an
+            // unsigned one narrower than an `Int` already is the `Int`, and an
+            // `Int` is itself. Anything else converts in the interpreter.
+            Prim::ToInt => {
+                use meadow_core::desc;
+                use meadow_core::num::Width;
+                let from = program.operands(pc).first().copied()?;
+                if from >= meadow_bytecode::DESC_REG {
+                    return None;
+                }
+                let from = from as desc::Desc;
+                let unsigned = [Width::U8, Width::U16, Width::U32]
+                    .iter()
+                    .filter_map(|w| Width::ALL.iter().position(|x| x == w))
+                    .any(|k| from == desc::WORD + k as desc::Desc);
+                (from == desc::INT || unsigned).then(|| vec![Step::Put(i.a, Src::Reg(i.b))])
+            }
             _ => None,
         },
         // Reading an element of an array, mutable or not. Both are two
@@ -126,6 +156,12 @@ pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
         meadow_bytecode::Op::Prim2 => match program.prims.get(i.imm as usize)? {
             Prim::StGetArray => Some(element(i.a, i.b, i.c, Kind::MutArray)),
             Prim::ArrayGet => Some(element(i.a, i.b, i.c, Kind::Array)),
+            Prim::StringByteAt
+                if program.operands(pc).get(1).copied()
+                    == Some(meadow_core::desc::INT as meadow_bytecode::DescSrc) =>
+            {
+                Some(string_byte(i.a, i.b, i.c))
+            }
             _ => None,
         },
         // Writing one. Three arguments, so a windowed `Op::Prim` whose
@@ -147,6 +183,11 @@ pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
         },
         _ => None,
     }
+}
+
+/// Does the compiler say the first operand of the instruction at `pc` is `d`?
+fn operand_is(program: &Program, pc: usize, d: meadow_core::desc::Desc) -> bool {
+    program.operands(pc).first().copied() == Some(d as meadow_bytecode::DescSrc)
 }
 
 /// `r[dst] = ` what the cell in `r[obj]` holds. A cell has one field after a
@@ -233,6 +274,52 @@ pub fn element(dst: Reg, obj: Reg, idx: Reg, kind: Kind) -> Vec<Step> {
         Step::Add(4, Tmp(4), Imm(UNIFORM_HEADER)),
         Step::LoadAt(2, Tmp(1), Tmp(4)),
         Step::Put(dst, Tmp(2)),
+    ]
+}
+
+/// `r[dst] = ` byte `r[idx]` of the string in `r[obj]`, as a `UInt8`.
+///
+/// A string keeps its bytes eight to a word, little-endian, after the header a
+/// uniform object has, and its length in bytes in the low half of its second
+/// header word. What a lexer does to every character it reads -- and on
+/// parsing code it was a third of every instruction native code handed back.
+pub fn string_byte(dst: Reg, obj: Reg, idx: Reg) -> Vec<Step> {
+    use Src::{Imm, Reg as R, Tmp};
+    // 0 the string, 1 where it is, 2 its header and then the word, 3 the
+    // index and then the shift.
+    vec![
+        Step::Set(0, R(obj)),
+        Step::Guard(Cond::Lt, Tmp(0), Imm(crate::region::REGION_BASE as u64)),
+        Step::Locate(1, Tmp(0)),
+        Step::LoadAt(2, Tmp(1), Imm(0)),
+        Step::And(2, Tmp(2), KIND_BITS | 1 << UNIFORM_BIT),
+        Step::Guard(Cond::Eq, Tmp(2), Imm(Kind::Str as u64 | 1 << UNIFORM_BIT)),
+        Step::LoadAt(2, Tmp(1), Imm(1)),
+        Step::And(2, Tmp(2), 0xFFFF_FFFF),
+        Step::Set(3, R(idx)),
+        Step::Guard(Cond::Lt, Tmp(3), Tmp(2)),
+        Step::Shr(2, Tmp(3), 3),
+        Step::Add(2, Tmp(2), Imm(UNIFORM_HEADER)),
+        Step::LoadAt(2, Tmp(1), Tmp(2)),
+        // The byte's place in its word, in bits: (idx % 8) * 8.
+        Step::And(3, Tmp(3), 7),
+        Step::Add(3, Tmp(3), Tmp(3)),
+        Step::Add(3, Tmp(3), Tmp(3)),
+        Step::Add(3, Tmp(3), Tmp(3)),
+        Step::ShrBy(2, Tmp(2), Tmp(3)),
+        Step::And(2, Tmp(2), 0xFF),
+        Step::Put(dst, Tmp(2)),
+    ]
+}
+
+/// `r[dst] = ` the character whose code is the `Int` in `r[code]`, below the
+/// surrogates: a character's word is its code. One unsigned guard rules out a
+/// negative code too; the rest of Unicode goes to the interpreter, which
+/// checks it.
+pub fn char_from_code(dst: Reg, code: Reg) -> Vec<Step> {
+    vec![
+        Step::Guard(Cond::Lt, Src::Reg(code), Src::Imm(0xD800)),
+        Step::Put(dst, Src::Reg(code)),
     ]
 }
 
@@ -331,6 +418,7 @@ pub fn temporaries(steps: &[Step]) -> usize {
         | Step::Add(t, _, _)
         | Step::And(t, _, _)
         | Step::Shr(t, _, _)
+        | Step::ShrBy(t, _, _)
         | Step::Load(t, _)
         | Step::Locate(t, _)
         | Step::LoadAt(t, _, _) = s
@@ -380,6 +468,7 @@ impl<'h> Machine<'h> {
                 }
                 Step::And(t, a, m) => self.tmps[t as usize] = self.read(a) & m,
                 Step::Shr(t, a, n) => self.tmps[t as usize] = self.read(a) >> n,
+                Step::ShrBy(t, a, b) => self.tmps[t as usize] = self.read(a) >> (self.read(b) % 64),
                 Step::Load(t, at) => {
                     self.tmps[t as usize] = self.heap.word_at(self.read(at) as Addr)
                 }
@@ -517,6 +606,55 @@ mod tests {
                 Some(heap.field(a, i).bits()),
                 "element {i}"
             );
+        }
+    }
+
+    /// Every byte of a string comes out as `Heap::packed_byte` says, in a
+    /// string long enough to span several words and not a whole number of
+    /// them; and an index outside it, or a negative one, goes to the
+    /// interpreter.
+    #[test]
+    fn a_string_byte_is_what_the_heap_says_it_is() {
+        for mut heap in [Heap::new(), old_heap()] {
+            let text = "héllo, wörld -- a string of several words";
+            heap.reserve(Heap::packed_slots(text.len()));
+            let s = heap.alloc_str(text.as_bytes());
+            let steps = string_byte(0, 1, 2);
+            for i in 0..text.len() {
+                let mut regs = [0, s as Word, i as Word];
+                assert_eq!(
+                    run(&mut heap, &mut regs, &steps, 0),
+                    Some(heap.packed_byte(s, i) as Word),
+                    "byte {i}"
+                );
+            }
+            for i in [text.len() as Word, -1i64 as Word] {
+                let mut regs = [0, s as Word, i];
+                assert_eq!(run(&mut heap, &mut regs, &steps, 0), None, "index {i}");
+            }
+            // Not a string: an array of ints.
+            let a = ints(&mut heap, 4);
+            let mut regs = [0, a as Word, 0];
+            assert_eq!(run(&mut heap, &mut regs, &steps, 0), None);
+        }
+    }
+
+    /// A code below the surrogates is its character's word; a surrogate, a
+    /// code past them and a negative one are the interpreter's to check.
+    #[test]
+    fn a_character_from_its_code() {
+        let mut heap = Heap::new();
+        let steps = char_from_code(0, 1);
+        for c in ['\0', 'a', 'é', '\u{D7FF}'] {
+            let mut regs = [0, c as Word];
+            assert_eq!(
+                run(&mut heap, &mut regs, &steps, 0),
+                Some(Value::Char(c).bits())
+            );
+        }
+        for code in [0xD800, 0x1F600, -1i64 as Word] {
+            let mut regs = [0, code];
+            assert_eq!(run(&mut heap, &mut regs, &steps, 0), None, "code {code}");
         }
     }
 

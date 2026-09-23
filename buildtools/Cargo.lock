@@ -716,6 +716,7 @@ dependencies = [
  "meadow-compiler",
  "meadow-eval",
  "meadow-fmt",
+ "meadow-llvm",
  "meadow-lsp",
  "meadow-rts",
  "meadow-seq",
@@ -867,6 +868,16 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "serde",
+]
+
+[[package]]
+name = "meadow-llvm"
+version = "0.1.0-alpha"
+dependencies = [
+ "meadow-core",
+ "meadow-hir",
+ "meadow-intern",
+ "meadow-seq",
 ]
 
 [[package]]

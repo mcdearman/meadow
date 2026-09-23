@@ -123,6 +123,119 @@ pub fn allocation(sites: &meadow_rts::profile::Sites, image: &Program) -> String
     out
 }
 
+/// What a JIT could speculate on: how many targets each `invoke` site saw,
+/// weighted by how often it ran, and how lopsided the tag tests were.
+///
+/// Only under `meadow-rts/profile-alloc`. Returns through a frame and calls of
+/// a heap object -- a function value, a heap continuation, a handler -- are
+/// counted apart, because they are guarded on differently: a frame's return
+/// address against a pc, an object's method table against a table.
+#[cfg(feature = "profile-alloc")]
+pub fn feedback(fb: &meadow_rts::profile::Feedback, image: &Program) -> String {
+    let pct = |n: u64, of: u64| {
+        if of == 0 {
+            0.0
+        } else {
+            n as f64 * 100.0 / of as f64
+        }
+    };
+    let mut out = String::new();
+    // [frame, closure]: invokes, sites, invokes by the targets their site saw
+    // (1, 2, 3-4, 5+), and invokes whose site's top target took 90% or more.
+    let mut total = [0u64; 2];
+    let mut sites = [0u64; 2];
+    let mut arity = [[0u64; 4]; 2];
+    let mut biased = [0u64; 2];
+    let mut poly: Vec<(u64, Pc, usize, u64)> = Vec::new();
+    for (site, targets) in &fb.calls {
+        for k in 0..2 {
+            let counts: Vec<u64> = targets
+                .values()
+                .map(|t| if k == 0 { t.0 } else { t.1 })
+                .filter(|n| *n > 0)
+                .collect();
+            let n: u64 = counts.iter().sum();
+            if n == 0 {
+                continue;
+            }
+            total[k] += n;
+            sites[k] += 1;
+            let bucket = match counts.len() {
+                1 => 0,
+                2 => 1,
+                3 | 4 => 2,
+                _ => 3,
+            };
+            arity[k][bucket] += n;
+            let top = counts.iter().copied().max().unwrap_or(0);
+            if top * 10 >= n * 9 {
+                biased[k] += n;
+            }
+            if k == 1 && counts.len() > 1 {
+                poly.push((n, *site, counts.len(), top));
+            }
+        }
+    }
+    let all = total[0] + total[1];
+    out.push_str(&format!(
+        "invokes: {all} at {} sites\n",
+        sites[0] + sites[1]
+    ));
+    for (k, what) in ["returns through a frame", "calls of a heap object"]
+        .iter()
+        .enumerate()
+    {
+        out.push_str(&format!(
+            "  {what}: {} ({:.1}%) at {} sites\n    by targets their site saw: 1 {:.1}%  2 {:.1}%  3-4 {:.1}%  5+ {:.1}%\n    at a site whose top target took >= 90%: {:.1}%\n",
+            total[k],
+            pct(total[k], all),
+            sites[k],
+            pct(arity[k][0], total[k]),
+            pct(arity[k][1], total[k]),
+            pct(arity[k][2], total[k]),
+            pct(arity[k][3], total[k]),
+            pct(biased[k], total[k]),
+        ));
+    }
+    poly.sort_by(|a, b| b.0.cmp(&a.0));
+    if !poly.is_empty() {
+        out.push_str("  busiest heap-object sites with more than one target:\n");
+        for (n, site, targets, top) in poly.iter().take(8) {
+            out.push_str(&format!(
+                "    {:>12}  {} targets, top {:.1}%  {} @{site}\n",
+                n,
+                targets,
+                pct(*top, *n),
+                frame(image, *site),
+            ));
+        }
+    }
+    let moved: u64 = fb.moves.values().sum();
+    if moved > 0 {
+        let mut by: Vec<_> = fb.moves.iter().collect();
+        by.sort_by(|a, b| b.1.cmp(a.1));
+        out.push_str(&format!("moves: {moved}, by what ends their run:"));
+        for (op, n) in by.iter().take(6) {
+            let op = meadow_bytecode::Op::from_byte(**op).unwrap_or(meadow_bytecode::Op::Nop);
+            out.push_str(&format!(" {op:?} {:.1}%", pct(**n, moved)));
+        }
+        out.push('\n');
+    }
+    let tests: u64 = fb.tags.values().map(|[m, n]| m + n).sum();
+    let lopsided: u64 = fb
+        .tags
+        .values()
+        .filter(|[m, n]| (*m).max(*n) * 20 >= (m + n) * 19)
+        .map(|[m, n]| m + n)
+        .sum();
+    out.push_str(&format!(
+        "tag tests: {tests} at {} sites, {:.1}% at a site that goes one way >= 95% of the time\n",
+        fb.tags.len(),
+        pct(lopsided, tests)
+    ));
+    out
+}
+
 /// What a run spent its instructions on, most first.
 ///
 /// Only under `meadow-rts/profile-alloc`, and exact rather than sampled. A

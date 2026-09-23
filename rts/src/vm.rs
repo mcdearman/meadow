@@ -207,6 +207,10 @@ pub struct Vm<'p> {
     /// [`crate::profile::Ops`].
     #[cfg(feature = "profile-alloc")]
     pub ops: crate::profile::Ops,
+    /// Where each `invoke` went, and which way each tag test did. See
+    /// [`crate::profile::Feedback`].
+    #[cfg(feature = "profile-alloc")]
+    pub feedback: crate::profile::Feedback,
 }
 
 // The method table pointers point into the `Native` the machine was given,
@@ -311,6 +315,8 @@ impl<'p> Vm<'p> {
             profile: None,
             #[cfg(feature = "profile-alloc")]
             ops: crate::profile::Ops::default(),
+            #[cfg(feature = "profile-alloc")]
+            feedback: crate::profile::Feedback::default(),
         }
     }
 
@@ -548,6 +554,16 @@ impl<'p> Vm<'p> {
             Op::Nop => {}
 
             Op::Move => {
+                #[cfg(feature = "profile-alloc")]
+                {
+                    let code = &self.program.code;
+                    let mut at = self.pc;
+                    while code.get(at).is_some_and(|i| i.op == Op::Move) {
+                        at += 1;
+                    }
+                    let op = code.get(at).map_or(Op::Nop, |i| i.op);
+                    *self.feedback.moves.entry(op as u8).or_default() += 1;
+                }
                 let w = self.reg(i.b);
                 self.set_word(i.a, w);
             }
@@ -571,7 +587,10 @@ impl<'p> Vm<'p> {
             Op::JumpUnlessTag => {
                 let want = i.bc() as u32;
                 let a = self.reg(i.a) as Addr;
-                if !(self.heap.kind(a) == Kind::Data && self.heap.meta(a) == want) {
+                let matched = self.heap.kind(a) == Kind::Data && self.heap.meta(a) == want;
+                #[cfg(feature = "profile-alloc")]
+                self.feedback.tag(self.at as Pc, matched);
+                if !matched {
                     self.pc = i.imm as usize;
                 }
             }
@@ -905,6 +924,15 @@ impl<'p> Vm<'p> {
                     };
                     pc
                 };
+                #[cfg(feature = "profile-alloc")]
+                self.feedback.call(self.at as Pc, pc, kind == Kind::Frame);
+                // What the JIT will guess this site enters, once its block is
+                // hot: see `jit::Native::observe`.
+                if let Some(n) = self.native {
+                    let frame = kind == Kind::Frame;
+                    let meta = if frame { pc } else { self.heap.meta(a) };
+                    n.observe(self.at, crate::codegen::Known { frame, meta });
+                }
                 // Arguments out of the way first: writing the captures into
                 // r0.. would otherwise clobber the window they sit in. Through
                 // the scratch area rather than a `Vec`, because this is the
@@ -1041,7 +1069,7 @@ impl<'p> Vm<'p> {
     fn make(&mut self, i: Instr, kind: Kind, meta: u32) {
         let n = i.c as usize;
         self.ensure(Heap::size_of(kind, n));
-        let base = i.b as usize;
+        let fields = self.program.fields(self.at, i);
         let operands = self.program.operands(self.at);
         let a = {
             let Vm { heap, regs, .. } = self;
@@ -1055,10 +1083,10 @@ impl<'p> Vm<'p> {
             };
             // An array of bytes is kept a byte to an element.
             if kind == Kind::Array && n > 0 && (0..n).all(|j| desc(j) == Heap::BYTE) {
-                let words: Vec<Word> = (0..n).map(|j| regs[base + j]).collect();
+                let words: Vec<Word> = (0..n).map(|j| regs[fields.reg(j) as usize]).collect();
                 heap.alloc_array(&words, Heap::BYTE)
             } else {
-                heap.alloc_described(kind, meta, n, |j| regs[base + j], desc)
+                heap.alloc_described(kind, meta, n, |j| regs[fields.reg(j) as usize], desc)
             }
         };
         self.set(i.a, Value::Obj(a));
@@ -1068,7 +1096,7 @@ impl<'p> Vm<'p> {
     /// stack instead. Nothing is allocated in the heap, so nothing can move.
     fn frame(&mut self, i: Instr) {
         let n = i.c as usize;
-        let base = i.b as usize;
+        let fields = self.program.fields(self.at, i);
         let operands = self.program.operands(self.at);
         // A frame's `meta` is where returning through it goes -- its one
         // method's pc -- rather than a method table: a return is a jump, with
@@ -1090,7 +1118,7 @@ impl<'p> Vm<'p> {
                     regs[(src - DESC_REG) as usize] as Desc
                 }
             };
-            heap.push_frame(pc, n, |j| regs[base + j], desc)
+            heap.push_frame(pc, n, |j| regs[fields.reg(j) as usize], desc)
         };
         self.set(i.a, Value::Obj(a));
     }

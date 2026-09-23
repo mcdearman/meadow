@@ -33,8 +33,15 @@ TASKS_DIR = HERE / "tasks"
 WORK = HERE / "work"
 REPO = HERE.parent
 
+# What an executable is called here.
+EXE = ".exe" if os.name == "nt" else ""
+# The C compiler, and the Python: `cc` and `python3` are the Unix names, and
+# neither is what a Windows box has. `CC` overrides.
+CC = os.environ.get("CC") or ("clang" if os.name == "nt" else "cc")
+PYTHON = "py" if os.name == "nt" and shutil.which("py") else "python3"
+
 # Built once by `meadow_build`; the debug compiler is slow enough to notice.
-MEADOW = REPO / "buildtools" / "target" / "release" / "meadow"
+MEADOW = REPO / "buildtools" / "target" / "release" / f"meadow{EXE}"
 
 
 # --- the tasks ----------------------------------------------------------------
@@ -52,7 +59,28 @@ TASKS = [
     ("pipeline", True, "message passing: producers, a queue, a consumer"),
 ]
 
-TASK_BY_NAME = {name: (par, why) for name, par, why in TASKS}
+# The same tasks with the allocator taken out: every language builds into one
+# flat block of nodes or slots, indexed rather than pointed at, and throws the
+# block away whole. `fib` allocates nothing and `matmul` is flat arrays
+# already, so those two are the same programs -- which is the answer for them,
+# and `SAME_AS` says so rather than a copy of the file pretending otherwise.
+ARENA = [
+    ("fib_arena", False, "nothing to arena: the same program as `fib`"),
+    ("binarytrees_arena", False, "the trees, built into one flat block of nodes"),
+    ("matmul_arena", False, "nothing to arena: the same program as `matmul`"),
+    ("wordfreq_arena", False, "words as offsets into the corpus, table in flat arrays"),
+    ("binarytrees_compact", False, "Meadow only: the long-lived tree in a compact region"),
+]
+
+SAME_AS = {"fib_arena": "fib", "matmul_arena": "matmul"}
+
+TASK_BY_NAME = {name: (par, why) for name, par, why in TASKS + ARENA}
+
+
+def sources_of(task):
+    """The task whose programs `task` is run from: itself, unless it has none
+    of its own."""
+    return SAME_AS.get(task, task)
 
 
 # --- the languages ------------------------------------------------------------
@@ -75,6 +103,7 @@ class Lang:
         self.note = note
 
     def source(self, task):
+        task = sources_of(task)
         return TASKS_DIR / task / f"{self.stem(task)}{self.ext}"
 
     def out_dir(self, task):
@@ -94,20 +123,32 @@ def cap(s):
     return s[:1].upper() + s[1:]
 
 
+def camel(s):
+    """A Meadow package is named where a module is: `BinarytreesArena`, not
+    `Binarytrees_arena`."""
+    return "".join(cap(part) for part in s.split("_"))
+
+
 def meadow_package(lang, task):
     """A Meadow benchmark is one file; a build that emits an executable needs a
     package. So the file becomes `src/Main.mw` of a package made here."""
     out = lang.out_dir(task)
     (out / "src").mkdir(parents=True, exist_ok=True)
     (out / "Meadow.toml").write_text(
-        f'[package]\nname = "{cap(task)}"\nversion = "0.1.0"\n'
+        f'[package]\nname = "{camel(task)}"\nversion = "0.1.0"\n'
     )
     shutil.copyfile(lang.source(task), out / "src" / "Main.mw")
-    return [str(MEADOW), "build", "--release", "--emit", "exe", str(out)]
+    build = [str(MEADOW), "build", "--release", "--emit", "exe", str(out)]
+    if lang.name.endswith("-aot"):
+        build += ["--runtime", "aot"]
+    return build
 
 
 def native_exe(lang, task):
-    return [str(lang.out_dir(task) / "target" / "release" / "native" / cap(task))]
+    native = lang.out_dir(task) / "target" / "release" / "native"
+    if lang.name.endswith("-aot"):
+        native = native / "aot"
+    return [str(native / f"{camel(task)}{EXE}")]
 
 
 def simple(argv):
@@ -118,7 +159,7 @@ def simple(argv):
         return [
             a.format(
                 src=lang.source(task),
-                out=lang.out_dir(task) / "out",
+                out=lang.out_dir(task) / f"out{EXE}",
                 objs=lang.out_dir(task) / "objs",
             )
             for a in argv
@@ -128,7 +169,7 @@ def simple(argv):
 
 
 def run_out(lang, task):
-    return [str(lang.out_dir(task) / "out")]
+    return [str(lang.out_dir(task) / f"out{EXE}")]
 
 
 def interpreted(argv):
@@ -162,7 +203,7 @@ def java_build(lang, task):
 
 
 def java_run(lang, task):
-    return ["java", "-cp", str(lang.out_dir(task)), cap(task)]
+    return ["java", "-cp", str(lang.out_dir(task)), cap(sources_of(task))]
 
 
 LANGS = [
@@ -171,13 +212,23 @@ LANGS = [
         note="`meadow build --release`: -O2, compiled ahead of time",
     ),
     Lang(
+        "meadow-aot", ".mw", str(MEADOW), meadow_package, native_exe,
+        stem=lambda t: t,
+        note="`meadow build --release --runtime aot`: the runtime of its own, "
+             "counted by reference, on the native stack",
+    ),
+    Lang(
         "rust", ".rs", "rustc",
         simple(["rustc", "-C", "opt-level=3", "-o", "{out}", "{src}"]), run_out,
         note="`-C opt-level=3`, what `cargo build --release` uses",
     ),
     Lang(
-        "c", ".c", "cc",
-        simple(["cc", "-O3", "-ffp-contract=off", "-o", "{out}", "{src}", "-lpthread", "-lm"]), run_out,
+        "c", ".c", CC,
+        simple(
+            [CC, "-O3", "-ffp-contract=off", "-o", "{out}", "{src}"]
+            + ([] if os.name == "nt" else ["-lpthread", "-lm"])
+        ),
+        run_out,
         note="`-O3 -ffp-contract=off`",
     ),
     Lang(
@@ -215,8 +266,8 @@ LANGS = [
         note="`koka -O2`, Perceus reference counting",
     ),
     Lang(
-        "python", ".py", "python3", lambda l, t: None,
-        interpreted(["python3", "{src}"]),
+        "python", ".py", PYTHON, lambda l, t: None,
+        interpreted([PYTHON, "{src}"]),
         note="CPython, no flags",
     ),
     Lang(
@@ -265,6 +316,7 @@ def measure(argv, cwd, reps):
 
 
 STARTUP = {
+    "meadow-aot": 'use Std.Console (println)\n\ndef main = println "0"\n',
     "meadow": 'use Std.Console (println)\n\ndef main = println "0"\n',
     "rust": 'fn main() { println!("0"); }\n',
     "c": '#include <stdio.h>\nint main(void) { printf("0\\n"); return 0; }\n',
@@ -339,6 +391,11 @@ def table(results, langs, tasks, floors):
 
 
 def main():
+    # The table has arrows in it, and a Windows console is not UTF-8
+    # unless it is told.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--task", action="append", default=[])
     ap.add_argument("--lang", action="append", default=[])
@@ -346,17 +403,23 @@ def main():
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--json", type=Path, help="also write the raw numbers here")
     ap.add_argument("--no-startup", action="store_true")
+    ap.add_argument(
+        "--arena",
+        action="store_true",
+        help="the arena tasks instead: the same work with the allocator taken out",
+    )
     args = ap.parse_args()
 
     langs = [LANG_BY_NAME[n] for n in args.lang] if args.lang else LANGS
-    tasks = args.task or [t for t, _, _ in TASKS]
+    every = ARENA if args.arena else TASKS
+    tasks = args.task or [t for t, _, _ in every]
 
     missing = [l for l in langs if not l.available()]
     langs = [l for l in langs if l.available()]
 
     if args.list:
         print("tasks")
-        for name, par, why in TASKS:
+        for name, par, why in TASKS + ARENA:
             mark = "⇉" if par else " "
             print(f"  {mark} {name:<12} {why}")
         print("\nlanguages")
@@ -379,7 +442,8 @@ def main():
     if missing:
         print("skipping (not installed): " + ", ".join(l.name for l in missing) + "\n")
 
-    if "wordfreq" in tasks:
+    if any(t.startswith("wordfreq") for t in tasks):
+        WORK.mkdir(parents=True, exist_ok=True)
         corpus = WORK / "corpus.txt"
         if not corpus.exists():
             print(f"generating {corpus.name} ...")

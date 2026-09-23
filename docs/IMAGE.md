@@ -46,7 +46,7 @@ In this order, and nothing after the last field -- trailing bytes are an error.
 
 | #   | field             | type                         | what it is                                                                                     |
 | --- | ----------------- | ---------------------------- | ---------------------------------------------------------------------------------------------- |
-| 0   | magic             | 8 bytes                      | `MDWIMG04` (ASCII)                                                                             |
+| 0   | magic             | 8 bytes                      | `MDWIMG05` (ASCII)                                                                             |
 | 1   | `code`            | `vec<instr>`                 | the instructions, 8 bytes each -- [below](#instructions)                                       |
 | 2   | `consts`          | `vec<const>`                 | what `Const`, `PrimK`, `JumpUnlessPrimK` load -- [below](#constants)                           |
 | 3   | `methods`         | `vec<vec<pc>>`               | method tables: entry pcs. `Closure` and `Frame` name a table by index; `Invoke` names a method |
@@ -66,8 +66,10 @@ In this order, and nothing after the last field -- trailing bytes are an error.
 | 17  | `gc_at`           | `vec<u32>`                   | per instruction: its map's index, or `0xFFFFFFFF` if it cannot collect                         |
 | 18  | `operands_at`     | `vec<u32>`                   | per instruction: where its operand descriptors start in `operands`, or `0xFFFFFFFF` for none   |
 | 19  | `operands`        | `vec<u16>`                   | operand descriptors -- [below](#descriptors)                                                   |
-| 20  | `results`         | `bytes`                      | per entry of `entries`: the descriptor of what it answers                                      |
-| 21  | `entry_result`    | `u8`                         | the descriptor of what `entry` answers                                                         |
+| 20  | `sources_at`      | `vec<u32>`                   | empty, or per instruction: where its field registers start in `sources`, or `0xFFFFFFFF`       |
+| 21  | `sources`         | `bytes`                      | field registers -- [below](#field-registers)                                                   |
+| 22  | `results`         | `bytes`                      | per entry of `entries`: the descriptor of what it answers                                      |
+| 23  | `entry_result`    | `u8`                         | the descriptor of what `entry` answers                                                         |
 
 Debug information (`meadow_bytecode::DebugInfo`) is **not** in the image. A
 debugger and a profiler build their own image in memory, from source.
@@ -166,6 +168,19 @@ its values are. An instruction's descriptors start at `operands[operands_at[pc]]
 and run for as many operands as that instruction reads, in the order it reads
 them.
 
+## Field registers
+
+`MakeData`, `Closure` and `Frame` build an object from `c` registers. They are
+the window `r[b .. b+c]`, unless `sources_at[pc]` is not `0xFFFFFFFF`: then
+they are the `c` bytes of `sources` from there, one register each, in field
+order, and `b` means nothing. `sources_at` is empty in an image that lists
+none.
+
+A compiler never has to list: it can always copy the registers into a
+window first. The list is there so that it need not -- where register reuse
+has left an object's fields out of order, those copies were most of what a
+closure-heavy program executed.
+
 ## Collector maps
 
 A `gcmap` is `vec<(u8 register, held)>`, sorted by register, where `held` is a
@@ -187,7 +202,9 @@ that the map does not list holds nothing anyone will read again.
 `decode` checks only that the bytes parse. The machine assumes the rest, and a
 compiler has to guarantee it:
 
-- `gc_at` and `operands_at` have exactly one entry per instruction.
+- `gc_at` and `operands_at` have exactly one entry per instruction, and
+  `sources_at` either none or one per instruction. A listed instruction's `c`
+  registers are inside `sources`.
 - Every jump target, method entry, `entries` member and `entry` is a pc inside
   `code`.
 - Every index an instruction carries is inside its table: constants, method
@@ -208,7 +225,7 @@ compiler has to guarantee it:
 ## Versioning
 
 The last two bytes of the magic are the version, in ASCII decimal: this is
-`04`. There is no compatibility between versions: a loader refuses any magic
+`05`. There is no compatibility between versions: a loader refuses any magic
 but its own, and the message says so. The version changes whenever a field is
 added, removed or reordered, an opcode or constant tag is renumbered, or a
 descriptor changes meaning. Appending a primitive or an opcode does not change
@@ -221,7 +238,7 @@ The image of a program whose only instruction is `halt r0`, with nothing in any
 table, no entry point, and one register:
 
 ```text
-4D 44 57 49 4D 47 30 34   magic "MDWIMG04"
+4D 44 57 49 4D 47 30 35   magic "MDWIMG05"
 01 00 00 00               code: 1 instruction
 06 00 00 00 00 00 00 00     Halt a=0
 00 00 00 00               consts: 0
@@ -241,7 +258,8 @@ table, no entry point, and one register:
 00 00 00 00               gc_maps: 0
 01 00 00 00 FF FF FF FF   gc_at: [NO_MAP]
 01 00 00 00 FF FF FF FF   operands_at: [NO_OPERANDS]
-00 00 00 00               operands: 0
+ 00 00 00               sources_at: none
+00 00 00 00               sources: 0
 00 00 00 00               results: 0
 04                        entry_result: UNIT
 ```

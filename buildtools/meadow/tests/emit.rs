@@ -241,6 +241,7 @@ fn link_once(dir: &Path) -> (PathBuf, std::time::SystemTime) {
         "prog",
         &image,
         meadow::aot::Target::host().expect("a host target"),
+        &Default::default(),
     )
     .expect("it links");
     let when = std::fs::metadata(&exe)

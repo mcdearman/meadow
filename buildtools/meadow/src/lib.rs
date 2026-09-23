@@ -24,6 +24,7 @@ pub mod linker;
 pub mod listing;
 pub mod lock;
 pub mod package;
+pub mod pgo;
 pub mod pipeline;
 pub mod proc;
 pub mod profile;

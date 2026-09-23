@@ -31,11 +31,62 @@ use meadow_rts::codegen::{self, Arch, object::Format};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Which backend and runtime a program compiled ahead of time is made with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Runtime {
+    /// `meadow_rts`: the bytecode compiled to machine code block by block,
+    /// with the interpreter for what native code hands back, and the
+    /// collector the JIT and the debugger share.
+    #[default]
+    Rts,
+    /// `meadow_aot`: AxCut compiled by LLVM (`meadow-llvm`), counting
+    /// references, on the native stack. See `docs/AOT.md`.
+    Aot,
+}
+
+impl Runtime {
+    pub fn name(self) -> &'static str {
+        match self {
+            Runtime::Rts => "rts",
+            Runtime::Aot => "aot",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Runtime> {
+        match name {
+            "rts" => Some(Runtime::Rts),
+            "aot" => Some(Runtime::Aot),
+            _ => None,
+        }
+    }
+
+    /// The symbol a library of this runtime built from the sources this
+    /// `meadow` was defines.
+    pub fn symbol(self) -> String {
+        match self {
+            Runtime::Rts => codegen::object::runtime_symbol(),
+            Runtime::Aot => meadow_llvm::runtime_symbol(),
+        }
+    }
+
+    /// The static library's file name, for `format`.
+    pub fn library(self, format: Format) -> &'static str {
+        match (self, format) {
+            (Runtime::Rts, Format::Coff) => "meadow_rts.lib",
+            (Runtime::Rts, Format::MachO | Format::Elf) => "libmeadow_rts.a",
+            (Runtime::Aot, Format::Coff) => "meadow_aot.lib",
+            (Runtime::Aot, Format::MachO | Format::Elf) => "libmeadow_aot.a",
+        }
+    }
+}
+
 /// What to compile for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
     pub arch: Arch,
     pub format: Format,
+    /// Which runtime library the program links: see [`Runtime`].
+    pub runtime: Runtime,
 }
 
 impl Target {
@@ -45,6 +96,7 @@ impl Target {
         Ok(Target {
             arch,
             format: Format::host(),
+            runtime: Runtime::Rts,
         })
     }
 
@@ -63,7 +115,18 @@ impl Target {
         Ok(Target {
             arch,
             format: Format::host(),
+            runtime: Runtime::Rts,
         })
+    }
+
+    /// This, linked against `runtime`.
+    pub fn with_runtime(self, runtime: Runtime) -> Target {
+        Target { runtime, ..self }
+    }
+
+    /// Is this the machine this is running on, whichever runtime it links?
+    pub fn is_host(self) -> bool {
+        Target::host().is_ok_and(|h| (h.arch, h.format) == (self.arch, self.format))
     }
 
     /// The Rust target the runtime library for this is built for.
@@ -88,6 +151,7 @@ pub fn build(
     name: &str,
     image: &meadow_bytecode::Program,
     target: Target,
+    calls: &codegen::Calls,
 ) -> Result<PathBuf, String> {
     let exe =
         native_dir(root, profile, target).join(format!("{name}{}", target.format.exe_suffix()));
@@ -98,15 +162,192 @@ pub fn build(
     // unchanged program therefore cost about a fifth of a second every time it
     // was run, against twenty milliseconds for the same program on the JIT.
     let stamp = exe.with_extension("stamp");
-    let want = made_from(image, opt, target);
+    let want = made_from(image, opt, target, calls);
     if exe.exists() && std::fs::read_to_string(&stamp).is_ok_and(|had| had == want) {
         return Ok(exe);
     }
-    link_image(image, opt, target, &exe)?;
+    link_image(image, opt, target, calls, &exe)?;
     // After linking, so that a link that failed half-way is not taken for a
     // finished one.
     let _ = std::fs::write(&stamp, &want);
     Ok(exe)
+}
+
+/// Compile `program` with the native backend -- AxCut to LLVM IR, compiled and
+/// linked with the `meadow_aot` runtime by clang -- into package `name`'s
+/// executable, answering where it went. See `docs/AOT.md`.
+pub fn build_native(
+    root: &Path,
+    profile: Profile,
+    opt: meadow_compiler::OptLevel,
+    name: &str,
+    program: &meadow_compiler::core::Program,
+    target: Target,
+) -> Result<PathBuf, String> {
+    let lowered = meadow_seq::lower_program(program, opt);
+    if !lowered.unsupported.is_empty() {
+        return Err(format!(
+            "the back end cannot translate {:?} yet",
+            lowered.unsupported
+        ));
+    }
+    let units =
+        meadow_llvm::compile_split(&lowered.program, meadow_llvm::UNIT).map_err(|e| e.msg)?;
+    let dir = native_dir(root, profile, target);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let exe = dir.join(format!("{name}{}", target.format.exe_suffix()));
+    let runtime = runtimes(target)?
+        .into_iter()
+        .next()
+        .ok_or("no aot runtime library")?;
+    // Unchanged module and runtime: the executable there is this one.
+    let stamp = exe.with_extension("stamp");
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let meta = std::fs::metadata(&runtime).ok();
+    for b in units
+        .iter()
+        .flat_map(|u| u.bytes())
+        .chain(opt.name().bytes())
+        .chain(meta.iter().flat_map(|m| m.len().to_le_bytes()))
+        .chain(
+            meta.iter()
+                .filter_map(|m| m.modified().ok())
+                .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .flat_map(|d| d.as_nanos().to_le_bytes()),
+        )
+    {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    let want = format!("{h:016x}");
+    if exe.exists() && std::fs::read_to_string(&stamp).is_ok_and(|had| had == want) {
+        return Ok(exe);
+    }
+    let modules = write_units(&dir, name, &units)?;
+    clang_link(&modules, &runtime, &exe, opt, target)?;
+    let _ = std::fs::write(&stamp, &want);
+    Ok(exe)
+}
+
+/// Write the LLVM modules `units` into `dir`, as `name.ll`, `name.1.ll`, ...,
+/// and answer their paths.
+pub fn write_units(dir: &Path, name: &str, units: &[String]) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::with_capacity(units.len());
+    for (i, u) in units.iter().enumerate() {
+        let path = if i == 0 {
+            dir.join(format!("{name}.ll"))
+        } else {
+            dir.join(format!("{name}.{i}.ll"))
+        };
+        write(&path, u.as_bytes())?;
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+/// Compile the LLVM modules at `modules` -- in parallel, when there are
+/// several -- and link them with the runtime library `runtime` into `exe`,
+/// with clang (or `MEADOW_CLANG`).
+pub fn clang_link(
+    modules: &[PathBuf],
+    runtime: &Path,
+    exe: &Path,
+    opt: meadow_compiler::OptLevel,
+    target: Target,
+) -> Result<(), String> {
+    let level = match opt {
+        meadow_compiler::OptLevel::O0 => "-O0",
+        meadow_compiler::OptLevel::O1 => "-O1",
+        meadow_compiler::OptLevel::O2 => "-O2",
+    };
+    let clang = std::env::var("MEADOW_CLANG").unwrap_or_else(|_| "clang".into());
+    let run = |cmd: &mut Command, what: &Path| -> Result<(), String> {
+        let out = cmd.output().map_err(|e| {
+            format!("could not run {clang}: {e} -- the native backend needs clang, or MEADOW_CLANG")
+        })?;
+        if !out.status.success() {
+            // MSVC's linker says what went wrong on stdout.
+            return Err(format!(
+                "clang could not compile {}:\n{}{}",
+                what.display(),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        Ok(())
+    };
+    let triple = format!("--target={}", target.triple());
+    // One module compiles and links in one step; several are compiled apart
+    // first, as many at once as there are cores.
+    let inputs: Vec<PathBuf> = if modules.len() == 1 {
+        modules.to_vec()
+    } else {
+        let objects: Vec<PathBuf> = modules.iter().map(|m| m.with_extension("o")).collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+        std::thread::scope(|scope| {
+            for _ in 0..cores.min(modules.len()) {
+                scope.spawn(|| {
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if i >= modules.len() {
+                            return;
+                        }
+                        let mut cmd = Command::new(&clang);
+                        cmd.arg(level)
+                            .arg("-c")
+                            .arg("-Wno-override-module")
+                            .arg(&triple)
+                            .arg("-o")
+                            .arg(&objects[i])
+                            .arg(&modules[i]);
+                        if let Err(e) = run(&mut cmd, &modules[i]) {
+                            failed
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .get_or_insert(e);
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(e) = failed.into_inner().unwrap_or_else(|p| p.into_inner()) {
+            return Err(e);
+        }
+        objects
+    };
+    let mut cmd = Command::new(&clang);
+    cmd.arg(level)
+        .arg("-Wno-override-module")
+        .arg(&triple)
+        .arg("-o")
+        .arg(exe)
+        .args(&inputs)
+        .arg(runtime);
+    for lib in native_system_libs(target.format) {
+        cmd.arg(lib);
+    }
+    run(&mut cmd, &modules[0])
+}
+
+/// What clang links a program against besides the runtime library.
+fn native_system_libs(format: Format) -> &'static [&'static str] {
+    match format {
+        Format::Coff => &[
+            "-lkernel32",
+            "-lntdll",
+            "-luserenv",
+            "-lws2_32",
+            "-ldbghelp",
+            "-lbcrypt",
+            "-ladvapi32",
+        ],
+        Format::MachO => &["-liconv"],
+        Format::Elf => &["-lpthread", "-ldl", "-lm"],
+    }
 }
 
 /// What an executable was made from, as one line: the image, how it was
@@ -116,6 +357,7 @@ fn made_from(
     image: &meadow_bytecode::Program,
     opt: meadow_compiler::OptLevel,
     target: Target,
+    calls: &codegen::Calls,
 ) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut feed = |bytes: &[u8]| {
@@ -127,10 +369,19 @@ fn made_from(
     feed(&meadow_bytecode::image::encode(image));
     feed(opt.name().as_bytes());
     feed(target.triple().as_bytes());
+    feed(target.runtime.name().as_bytes());
+    // And what a profile said the calls enter, which the code is guarded on.
+    let mut sites: Vec<_> = calls.iter().collect();
+    sites.sort_by_key(|(pc, _)| **pc);
+    for (pc, k) in sites {
+        feed(&pc.to_le_bytes());
+        feed(&[k.frame as u8]);
+        feed(&k.meta.to_le_bytes());
+    }
     // The runtime is linked in, so a new one makes a new executable. Its name
     // carries this compiler's identity (see `link_image`), and its file says
     // whether it has been rebuilt since.
-    feed(codegen::object::runtime_symbol().as_bytes());
+    feed(target.runtime.symbol().as_bytes());
     for runtime in runtimes(target).unwrap_or_default() {
         if let Ok(meta) = std::fs::metadata(&runtime) {
             feed(&meta.len().to_le_bytes());
@@ -150,8 +401,12 @@ fn made_from(
 pub fn native_dir(root: &Path, profile: Profile, target: Target) -> PathBuf {
     let native = artifacts::native_dir(root, profile);
     let mut dir = PathBuf::from(crate::dap::session::plain_path(&native.to_string_lossy()));
-    if Target::host().ok() != Some(target) {
+    if !target.is_host() {
         dir = dir.join(target.triple());
+    }
+    // Beside the default runtime's, so the two can be run against each other.
+    if target.runtime != Runtime::Rts {
+        dir = dir.join(target.runtime.name());
     }
     dir
 }
@@ -179,6 +434,7 @@ pub fn link_image(
     image: &meadow_bytecode::Program,
     opt: meadow_compiler::OptLevel,
     target: Target,
+    calls: &codegen::Calls,
     exe: &Path,
 ) -> Result<(), String> {
     let runtimes = runtimes(target)?;
@@ -193,7 +449,7 @@ pub fn link_image(
         .and_then(|s| s.to_str())
         .ok_or_else(|| format!("{} is not a file name", exe.display()))?;
 
-    let compiled = codegen::compile(image, target.arch, opt);
+    let compiled = codegen::compile_guided(image, target.arch, opt, calls);
     let bytes = meadow_bytecode::image::encode(image);
     let object = dir.join(format!("{name}.{}", target.format.object_extension()));
     write(
@@ -315,14 +571,6 @@ fn compiler(target: Target) -> Result<(Command, String), String> {
     ))
 }
 
-/// What the runtime library is called, as its format's linker wants it.
-fn library_name(format: Format) -> &'static str {
-    match format {
-        Format::Coff => "meadow_rts.lib",
-        Format::MachO | Format::Elf => "libmeadow_rts.a",
-    }
-}
-
 /// The runtime library built into this `meadow`, for the machine it runs on --
 /// empty if it was built without one (see `build.rs`).
 static EMBEDDED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/runtime"));
@@ -359,7 +607,9 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// Where a runtime library for `target` might be, most wanted first -- see the
 /// module docs.
 pub fn runtimes(target: Target) -> Result<Vec<PathBuf>, String> {
-    let lib = library_name(target.format);
+    let lib = target.runtime.library(target.format);
+    // Where a checkout builds it: the runtime's crate, `rts` or `aot`.
+    let crate_dir = target.runtime.name();
     if let Some(path) = std::env::var_os("MEADOW_RUNTIME") {
         let path = PathBuf::from(path);
         return if path.is_file() {
@@ -371,9 +621,13 @@ pub fn runtimes(target: Target) -> Result<Vec<PathBuf>, String> {
             ))
         };
     }
-    let host = Target::host().ok() == Some(target);
+    let host = target.is_host();
     let mut candidates = Vec::new();
-    if host && let Some(path) = embedded(lib) {
+    // Only `meadow_rts` is built into `meadow`.
+    if host
+        && target.runtime == Runtime::Rts
+        && let Some(path) = embedded(lib)
+    {
         candidates.push(path);
     }
     if let Some(dir) = std::env::current_exe()
@@ -385,12 +639,15 @@ pub fn runtimes(target: Target) -> Result<Vec<PathBuf>, String> {
             candidates.push(dir.join(lib));
         }
     }
-    // A checkout: the `rts` crate's own target directory.
-    let rts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rts/target");
+    // A checkout: the runtime crate's own target directory.
+    let built = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(crate_dir)
+        .join("target");
     for profile in ["release", "debug"] {
-        candidates.push(rts.join(target.triple()).join(profile).join(lib));
+        candidates.push(built.join(target.triple()).join(profile).join(lib));
         if host {
-            candidates.push(rts.join(profile).join(lib));
+            candidates.push(built.join(profile).join(lib));
         }
     }
     let found: Vec<PathBuf> = candidates.into_iter().filter(|p| p.is_file()).collect();
@@ -398,8 +655,8 @@ pub fn runtimes(target: Target) -> Result<Vec<PathBuf>, String> {
         return Ok(found);
     }
     Err(format!(
-        "no runtime library for {} -- build one with `cargo build --release --target {}` in `rts`, \
-             or name it with MEADOW_RUNTIME",
+        "no `{crate_dir}` runtime library for {} -- build one with \
+         `cargo build --release --target {}` in `{crate_dir}`, or name it with MEADOW_RUNTIME",
         target.triple(),
         target.triple()
     ))

@@ -89,6 +89,11 @@ enum Cmd {
         /// `--sample-every`.
         #[arg(long, value_name = "HZ", default_value_t = meadow_rts::profile::HZ)]
         sample_hz: u64,
+        /// Run on the JIT and write what each call site was seen to enter to
+        /// `target/<profile>/calls.pgo`, for an `aot` build of the same
+        /// program to guard its calls on: profile-guided optimization.
+        #[arg(long)]
+        train: bool,
         /// Which collector the VM uses: `generational` (the default: a nursery,
         /// and an old generation marked concurrently, for short pauses) or
         /// `copying` (one space, copied whole). `MEADOW_GC` sets the same.
@@ -165,6 +170,8 @@ enum Cmd {
         profile: ProfileArgs,
         #[command(flatten)]
         engine: EngineArgs,
+        #[command(flatten)]
+        target: TargetArgs,
     },
     /// Disassemble a package: the bytecode the VM would run.
     Dis {
@@ -350,14 +357,51 @@ struct TargetArgs {
     /// The host's by default.
     #[arg(long, value_name = "ARCH")]
     target: Option<String>,
+    /// The runtime library an `aot` build links: `rts` (the default), the
+    /// runtime the JIT and the interpreter share, or `aot`, the separate
+    /// runtime for programs compiled ahead of time. Its executable goes
+    /// beside the default's, under `native/aot/`, so the two can be run
+    /// against each other.
+    #[arg(long, value_name = "RUNTIME", value_parser = ["rts", "aot"])]
+    runtime: Option<String>,
+    /// How many OS threads run the program's green threads. One per core by
+    /// default, and `1` runs them all on one, in turn. `MEADOW_THREADS` says
+    /// the same; both runtimes read it.
+    #[arg(long, short = 'j', value_name = "N")]
+    threads: Option<usize>,
+    /// After running, report the blocks the program left behind: what it
+    /// still held at exit, by kind, and what held them. The `aot` runtime
+    /// counts by reference, so this is where a cycle shows up.
+    #[arg(long)]
+    leaks: bool,
 }
 
 impl TargetArgs {
+    /// Tell the runtime what these ask for. The environment is how both
+    /// runtimes are told, and a program the `aot` runtime runs is a process
+    /// of its own, which inherits it.
+    fn configure(&self) {
+        if let Some(n) = self.threads.filter(|n| *n > 0) {
+            // Safety: before the program, its threads or any child of it.
+            unsafe { std::env::set_var("MEADOW_THREADS", n.to_string()) };
+        }
+        if self.leaks {
+            // Safety: as above.
+            unsafe { std::env::set_var("MEADOW_AOT_LEAKS", "1") };
+        }
+    }
+
     fn target(&self) -> Result<aot::Target, String> {
-        match &self.target {
+        let target = match &self.target {
             Some(name) => aot::Target::named(name),
             None => aot::Target::host(),
-        }
+        }?;
+        let runtime = self
+            .runtime
+            .as_deref()
+            .and_then(aot::Runtime::named)
+            .unwrap_or_default();
+        Ok(target.with_runtime(runtime))
     }
 }
 
@@ -537,6 +581,7 @@ fn main() {
                     &emit,
                     profile,
                     &target,
+                    false,
                 ),
                 many => build_many(
                     many,
@@ -557,11 +602,13 @@ fn main() {
             profile_to,
             sample_every,
             sample_hz,
+            train,
             gc,
             target,
             args,
         }) => {
             meadow_compiler::core::args::set(args);
+            target.configure();
             if let Some(gc) = gc {
                 meadow_rts::heap::configure(meadow_rts::heap::GcConfig {
                     collector: match gc.as_str() {
@@ -580,10 +627,18 @@ fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
-            let profile = engine.resolve(profile.resolve(&path));
+            let mut profile = engine.resolve(profile.resolve(&path));
+            // Training is the JIT watching, whatever the profile would run.
+            if train {
+                profile.backend = Backend::Jit;
+            }
             build(
                 one,
-                Some(engine.engine(profile.backend)),
+                Some(if train {
+                    Engine::Jit
+                } else {
+                    engine.engine(profile.backend)
+                }),
                 Listing {
                     types,
                     annotations: false,
@@ -602,6 +657,7 @@ fn main() {
                 &[],
                 profile,
                 &target,
+                train,
             )
         }
         Some(Cmd::Exec {
@@ -651,24 +707,31 @@ fn main() {
             packages,
             profile,
             engine,
-        }) => match test::run(&test::Options {
-            threads: test_threads.filter(|n| *n > 0),
-            no_capture,
-            packages: packages.selection(),
-            engine: engine.engine(profile.resolve(&path).backend),
-            profile: engine.resolve(profile.resolve(&path)),
-            path,
-            filter,
-            exact,
-            std,
-        }) {
-            Ok(true) => {}
-            Ok(false) => std::process::exit(1),
-            Err(e) => {
-                eprintln!("error: {e}");
-                std::process::exit(1);
+            target,
+        }) => {
+            target.configure();
+            match test::run(&test::Options {
+                native: target
+                    .target()
+                    .is_ok_and(|t| t.runtime == aot::Runtime::Aot),
+                threads: test_threads.filter(|n| *n > 0),
+                no_capture,
+                packages: packages.selection(),
+                engine: engine.engine(profile.resolve(&path).backend),
+                profile: engine.resolve(profile.resolve(&path)),
+                path,
+                filter,
+                exact,
+                std,
+            }) {
+                Ok(true) => {}
+                Ok(false) => std::process::exit(1),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
             }
-        },
+        }
         Some(Cmd::Dap) => {
             if let Err(e) = meadow::dap::run() {
                 eprintln!("error: {e}");
@@ -879,6 +942,7 @@ fn build(
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
+    train: bool,
 ) {
     let profile = for_target(profile, target);
     let started = std::time::Instant::now();
@@ -918,6 +982,7 @@ fn build(
         emit,
         profile,
         target,
+        train,
     );
 }
 
@@ -1016,7 +1081,7 @@ fn link(
         let exe = output.unwrap_or_else(|| {
             path.with_extension(target.format.exe_suffix().trim_start_matches('.'))
         });
-        aot::link_image(&image, opt, target, &exe).map(|()| ("native", exe))
+        aot::link_image(&image, opt, target, &Default::default(), &exe).map(|()| ("native", exe))
     });
     match made {
         Ok((what, file)) => eprintln!("{what}: {}", file.display()),
@@ -1079,6 +1144,7 @@ fn build_many(
             emit,
             profile,
             target,
+            false,
         );
     }
     if !out.diagnostics.is_empty() {
@@ -1113,6 +1179,7 @@ fn finish(
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
+    train: bool,
 ) {
     listing.print(&linked);
     if !emit.is_empty() && package.is_none() {
@@ -1194,7 +1261,46 @@ fn finish(
             let (root, name) = package
                 .as_ref()
                 .ok_or("a native executable needs a package to put it in")?;
-            aot::build(root, profile.profile, profile.opt(), name, image, target)
+            // The native backend compiles AxCut itself, not the image.
+            if target.runtime == aot::Runtime::Aot {
+                return aot::build_native(
+                    root,
+                    profile.profile,
+                    profile.opt(),
+                    name,
+                    &program,
+                    target,
+                );
+            }
+            // What a training run saw the calls enter, if one was made of
+            // this image: see `meadow::pgo`.
+            let at = meadow::pgo::path(root, profile.profile.name());
+            let calls = match meadow::pgo::read(&at, image)? {
+                meadow::pgo::Found::Calls(calls) => {
+                    status::status("Guided", format!("by {}", shown(&at)));
+                    calls
+                }
+                meadow::pgo::Found::Stale => {
+                    status::note(
+                        "Unguided",
+                        format!(
+                            "{} is of an older build; `meadow run --train` makes a new one",
+                            shown(&at)
+                        ),
+                    );
+                    Default::default()
+                }
+                meadow::pgo::Found::None => Default::default(),
+            };
+            aot::build(
+                root,
+                profile.profile,
+                profile.opt(),
+                name,
+                image,
+                target,
+                &calls,
+            )
         });
         match exe {
             Ok(exe) if engine.is_none() => {
@@ -1274,7 +1380,11 @@ fn finish(
                         let (result, profile, stats) =
                             runtime::run_image_sampled(&image, jit.as_ref(), how);
                         #[cfg(feature = "profile-alloc")]
-                        eprint!("{}", meadow::samples::instructions(&stats.ops));
+                        eprint!(
+                            "{}{}",
+                            meadow::samples::instructions(&stats.ops),
+                            meadow::samples::feedback(&stats.feedback, &image)
+                        );
                         #[cfg(feature = "profile-alloc")]
                         if !stats.sites.is_empty() {
                             // Beside the samples: where the garbage came from.
@@ -1312,7 +1422,13 @@ fn finish(
 
         let (result, stats) = match &image {
             Some(image) => match runtime::native(image, engine, profile.opt()) {
-                Ok(jit) => runtime::run_image_with_stats(image, jit.as_ref()),
+                Ok(jit) => {
+                    let ran = runtime::run_image_with_stats(image, jit.as_ref());
+                    if train {
+                        train_from(jit.as_ref(), image, package.as_ref(), &profile);
+                    }
+                    ran
+                }
                 Err(e) => (Err(e), None),
             },
             None => runtime::run_with_stats(&program, engine, profile.opt()),
@@ -1332,6 +1448,29 @@ fn finish(
                 std::process::exit(1);
             }
         }
+    }
+}
+
+/// After `meadow run --train`: write what the JIT saw each call site enter,
+/// for an `aot` build of the same image. See `meadow::pgo`.
+fn train_from(
+    jit: Option<&meadow_rts::jit::Native>,
+    image: &meadow_bytecode::Program,
+    package: Option<&(PathBuf, meadow_compiler::intern::InternedString)>,
+    profile: &Resolved,
+) {
+    let (Some(jit), Some((root, _))) = (jit, package) else {
+        eprintln!("error: training needs a package to write its profile in, and the JIT");
+        std::process::exit(1);
+    };
+    let calls = jit.calls();
+    let to = meadow::pgo::path(root, profile.profile.name());
+    match meadow::pgo::write(&to, image, &calls) {
+        Ok(()) => status::status(
+            "Trained",
+            format!("{} call sites, in {}", calls.len(), shown(&to)),
+        ),
+        Err(e) => eprintln!("error: {e}"),
     }
 }
 

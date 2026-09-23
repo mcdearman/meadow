@@ -85,6 +85,10 @@ pub enum Op {
 
     // --- data ------------------------------------------------------------
     /// `r[a] = data(tag = imm, fields = r[b .. b+c])`
+    ///
+    /// Or, where [`Program::sources_at`] lists them, from the `c` registers
+    /// listed -- see [`Program::sources`]. The same for [`Op::Closure`] and
+    /// [`Op::Frame`].
     MakeData,
     /// `r[a] = array(r[b .. b+c])`
     MakeArray,
@@ -498,10 +502,60 @@ pub struct Program {
     /// Operand descriptors, each where [`DescSrc`] says, in the order the
     /// instruction reads its operands.
     pub operands: Vec<DescSrc>,
+    /// Per instruction that builds an object -- [`Op::MakeData`],
+    /// [`Op::Closure`], [`Op::Frame`] -- from registers that are not one run:
+    /// where its field registers start in [`Program::sources`].
+    /// [`NO_SOURCES`] for every other instruction, and for one whose fields
+    /// are the window `r[b .. b+c]`. Empty in a program with no lists.
+    pub sources_at: Vec<u32>,
+    /// Field registers, `c` of them from where [`Program::sources_at`] says,
+    /// in field order.
+    ///
+    /// Without them the fields of an object had to sit in consecutive
+    /// registers, and wherever reusing registers had left them out of order the
+    /// compiler copied them into a window first: on closure-heavy code more than
+    /// half of every instruction the machine retired was a `move`, most of
+    /// them filling a window for a closure or a frame.
+    pub sources: Vec<Reg>,
     /// The descriptor of what each of [`Program::entries`] answers, in the
     /// same order, and of what [`Program::entry`] does.
     pub results: Vec<meadow_core::desc::Desc>,
     pub entry_result: meadow_core::desc::Desc,
+}
+
+/// Where an object's fields come from: see [`Program::fields`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fields<'a> {
+    /// `r[b .. b+c]`: the base and the count.
+    Window(Reg, u8),
+    /// These registers, in order.
+    Listed(&'a [Reg]),
+}
+
+impl Fields<'_> {
+    pub fn len(self) -> usize {
+        match self {
+            Fields::Window(_, n) => n as usize,
+            Fields::Listed(rs) => rs.len(),
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    /// The register field `j` is read from.
+    #[inline]
+    pub fn reg(self, j: usize) -> Reg {
+        match self {
+            Fields::Window(base, _) => base.wrapping_add(j as Reg),
+            Fields::Listed(rs) => rs[j],
+        }
+    }
+
+    pub fn regs(self) -> Vec<Reg> {
+        (0..self.len()).map(|j| self.reg(j)).collect()
+    }
 }
 
 /// Where an operand's descriptor is: below [`DESC_REG`], the descriptor
@@ -513,6 +567,10 @@ pub const DESC_REG: DescSrc = 16;
 
 /// An instruction with no operand descriptors.
 pub const NO_OPERANDS: u32 = u32::MAX;
+
+/// An instruction whose fields, if it has any, are a window: see
+/// [`Program::sources_at`].
+pub const NO_SOURCES: u32 = u32::MAX;
 
 /// What a name's value is, for a debugger: its descriptor, or the name holding
 /// it.
@@ -530,6 +588,17 @@ impl Program {
         match self.operands_at.get(pc) {
             Some(&at) if at != NO_OPERANDS => &self.operands[at as usize..],
             _ => &[],
+        }
+    }
+
+    /// The registers the object-building instruction `i` at `pc` reads its
+    /// fields from, in field order: the ones listed for it, or its window.
+    #[inline]
+    pub fn fields(&self, pc: usize, i: Instr) -> Fields<'_> {
+        let n = i.c as usize;
+        match self.sources_at.get(pc) {
+            Some(&at) if at != NO_SOURCES => Fields::Listed(&self.sources[at as usize..][..n]),
+            _ => Fields::Window(i.b, i.c),
         }
     }
 
@@ -680,9 +749,26 @@ impl Program {
             }
         );
         for (pc, instr) in self.code.iter().enumerate() {
-            let _ = writeln!(out, "{pc:>6}  {}", self.show(*instr));
+            let _ = writeln!(out, "{pc:>6}  {}", self.show_at(pc, *instr));
         }
         out
+    }
+
+    /// [`Program::show`], with the registers an object's fields are listed
+    /// in, where they are listed rather than a window.
+    pub fn show_at(&self, pc: usize, i: Instr) -> String {
+        let shown = self.show(i);
+        match (i.op, self.fields(pc, i)) {
+            (Op::MakeData | Op::Closure | Op::Frame, Fields::Listed(rs)) => {
+                let list = rs
+                    .iter()
+                    .map(|r| format!("r{r}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                shown.replace(&format!("r{}..+{}", i.b, i.c), &list)
+            }
+            _ => shown,
+        }
     }
 
     fn prim_name(&self, id: u32) -> String {

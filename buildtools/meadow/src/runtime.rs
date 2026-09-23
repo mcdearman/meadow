@@ -597,6 +597,127 @@ pub fn run_tests_parallel(
 /// `()`, compiled; and the entry the first of them has. They are compiled with
 /// everything else, so the image is built once and each test is simply a
 /// different place to start.
+/// Run `tests` compiled by the native backend (`docs/AOT.md`): one executable
+/// holding every test, built once, and run once per test -- a process each,
+/// `threads` at a time -- with the test's number as its argument. A test
+/// passes if its process does; what it printed is its output, and what it
+/// said on stderr the failure.
+pub fn run_tests_native(
+    program: &core::Program,
+    tests: &[core::Var],
+    opt: OptLevel,
+    threads: usize,
+    each: &(dyn Fn(usize, &Told) + Sync),
+) -> Result<Vec<Told>, String> {
+    let (whole, base) = with_tests(program, tests);
+    let lowered = meadow_seq::lower_program(&whole, opt);
+    if !lowered.unsupported.is_empty() {
+        return Err(format!(
+            "the back end cannot translate {:?} yet",
+            lowered.unsupported
+        ));
+    }
+    let labels: Vec<meadow_seq::Label> = (0..tests.len())
+        .map(|i| meadow_seq::Label((base + i) as u32))
+        .collect();
+    let units = meadow_llvm::compile_tests(&lowered.program, &labels, meadow_llvm::UNIT)
+        .map_err(|e| e.msg)?;
+    let target = crate::aot::Target::host()?.with_runtime(crate::aot::Runtime::Aot);
+    let runtime = crate::aot::runtimes(target)?
+        .into_iter()
+        .next()
+        .ok_or("no aot runtime library")?;
+    let dir = std::env::temp_dir()
+        .join("meadow-aot-tests")
+        .join(std::process::id().to_string());
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let modules = crate::aot::write_units(&dir, "tests", &units)?;
+    let exe = dir.join(format!("tests{}", std::env::consts::EXE_SUFFIX));
+    crate::aot::clang_link(&modules, &runtime, &exe, opt, target)?;
+
+    let threads = threads.clamp(1, tests.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<Told>>> =
+        tests.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= tests.len() {
+                        return;
+                    }
+                    let told = match std::process::Command::new(&exe).arg(i.to_string()).output() {
+                        Err(e) => Told {
+                            result: Err(format!("could not run the test executable: {e}")),
+                            output: String::new(),
+                        },
+                        Ok(out) => {
+                            let output = String::from_utf8_lossy(&out.stdout).into_owned();
+                            let said = String::from_utf8_lossy(&out.stderr).trim_end().to_string();
+                            Told {
+                                result: if out.status.success() {
+                                    Ok("()".to_string())
+                                } else if said.is_empty() {
+                                    Err(format!("the test exited with {}", out.status))
+                                } else {
+                                    Err(said)
+                                },
+                                output,
+                            }
+                        }
+                    };
+                    each(i, &told);
+                    *slots[i].lock().unwrap_or_else(|p| p.into_inner()) = Some(told);
+                }
+            });
+        }
+    });
+    // Kept on request, to run a test again by hand: `tests <number>`.
+    if std::env::var_os("MEADOW_AOT_KEEP").is_none() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    Ok(slots
+        .into_iter()
+        .map(|s| {
+            s.into_inner()
+                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or(Told {
+                    result: Err("the test did not run".into()),
+                    output: String::new(),
+                })
+        })
+        .collect())
+}
+
+/// `program` with a definition per test that calls it with `()` -- the
+/// tests' entry points -- after the program's own, whose number is answered.
+fn with_tests(program: &core::Program, tests: &[core::Var]) -> (core::Program, usize) {
+    let base = program.defs.len();
+    let mut defs = program.defs.clone();
+    for (i, var) in tests.iter().enumerate() {
+        defs.push(core::Def {
+            var: meadow_compiler::hir::VarId::synthetic(i as u32),
+            name: "<test>".into(),
+            poly: program.result_of_calling(*var),
+            term: core::Term::App(
+                std::sync::Arc::new(core::Term::Var(*var)),
+                std::sync::Arc::new(core::Term::Lit(core::Lit::Unit)),
+            ),
+        });
+    }
+    (
+        core::Program {
+            defs,
+            entry: program.entry,
+            ctor_fields: program.ctor_fields.clone(),
+            variants: program.variants.clone(),
+            origins: Default::default(),
+        },
+        base,
+    )
+}
+
 fn test_image(
     program: &core::Program,
     tests: &[core::Var],
@@ -689,6 +810,13 @@ pub fn compile(program: &core::Program, opt: OptLevel) -> Result<meadow_bytecode
             "the back end cannot translate {:?} yet; try --cek",
             lowered.unsupported
         ));
+    }
+    // What the back ends are handed, for whoever is writing one:
+    // `MEADOW_DUMP_AXCUT=1` prints every definition's AxCut to stderr.
+    if std::env::var_os("MEADOW_DUMP_AXCUT").is_some() {
+        for d in &lowered.program.defs {
+            eprintln!("-- {} (L{})\n{}", d.name, d.label.0, d.block);
+        }
     }
     meadow_codegen::compile(&lowered.program).map_err(|e| e.msg)
 }

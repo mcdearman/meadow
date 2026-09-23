@@ -25,7 +25,9 @@
 //!   already has that shape, which it usually does: see [`Gen::gather`]. Reusing
 //!   registers makes that a little less often true — an environment whose
 //!   registers were reused is no longer in ascending order — and a window that
-//!   has to be filled is the price of the moves that reuse removes.
+//!   has to be filled is the price of the moves that reuse removes. An
+//!   instruction that builds an object pays nothing either way: where its
+//!   fields are not one run it lists them instead ([`Gen::list`]).
 //! * **A jump needs a permutation.** The target block wants its parameters in
 //!   `r0..rn`, so [`Gen::parallel_move`] emits the moves — breaking cycles with
 //!   one scratch register, which is the only place this pass has to think.
@@ -101,8 +103,8 @@
 //! `docs/RUNTIME.md`, "The call stack is a frame stack".
 
 use meadow_bytecode::{
-    Cond, Const, DESC_REG, DescSrc, GcMap, Held, Instr, NO_MAP, NO_OPERANDS, NameDesc, Op, Pc,
-    Program, Reg,
+    Cond, Const, DESC_REG, DescSrc, GcMap, Held, Instr, NO_MAP, NO_OPERANDS, NO_SOURCES, NameDesc,
+    Op, Pc, Program, Reg,
 };
 use meadow_core::desc::{self, Desc};
 use meadow_core::{Lit, Prim};
@@ -232,6 +234,10 @@ struct Gen<'a> {
     /// has them.
     operands: Vec<DescSrc>,
     operands_at: Vec<(usize, u32)>,
+    /// Field registers listed for an object-building instruction, and where
+    /// each instruction's list starts: see `Program::sources`.
+    sources: Vec<Reg>,
+    sources_at: Vec<(usize, u32)>,
 }
 
 impl<'a> Gen<'a> {
@@ -269,6 +275,8 @@ impl<'a> Gen<'a> {
             gc_at: Vec::new(),
             operands: Vec::new(),
             operands_at: Vec::new(),
+            sources: Vec::new(),
+            sources_at: Vec::new(),
         }
     }
 
@@ -426,8 +434,19 @@ impl<'a> Gen<'a> {
         for (pc, at) in &self.operands_at {
             operands_at[*pc] = *at;
         }
+        let sources_at = if self.sources_at.is_empty() {
+            Vec::new()
+        } else {
+            let mut at = vec![NO_SOURCES; self.code.len()];
+            for (pc, k) in &self.sources_at {
+                at[*pc] = *k;
+            }
+            at
+        };
         Ok(Program {
             debug,
+            sources_at,
+            sources: self.sources,
             gc_maps: self.gc_maps,
             gc_at,
             operands_at,
@@ -785,6 +804,35 @@ impl<'a> Gen<'a> {
         Ok(base)
     }
 
+    /// Where an object-building instruction -- `MakeData`, `Closure`, `Frame`
+    /// -- reads its fields: its window's base when `srcs` already are one run,
+    /// and otherwise nothing that matters, the registers being listed beside
+    /// it by [`Gen::list`] instead.
+    ///
+    /// An object is only read into, so unlike an `invoke` it has no reason to
+    /// want its operands anywhere in particular, and filling a window for one
+    /// was the most common instruction the machine retired on closure-heavy
+    /// code.
+    fn fields(&mut self, srcs: &[Reg]) -> Reg {
+        match run_of(srcs) {
+            Some(base) => {
+                self.track(base as usize + srcs.len());
+                base
+            }
+            None => 0,
+        }
+    }
+
+    /// List `srcs` as the fields of the instruction just emitted, unless
+    /// [`Gen::fields`] found them a window.
+    fn list(&mut self, srcs: &[Reg]) {
+        if run_of(srcs).is_none() {
+            let at = self.sources.len() as u32;
+            self.sources.extend_from_slice(srcs);
+            self.sources_at.push((self.code.len() - 1, at));
+        }
+    }
+
     /// Move `srcs` into a window at `base`, in order.
     fn fill(&mut self, base: Reg, srcs: &[Reg]) {
         for (i, s) in srcs.iter().enumerate() {
@@ -930,11 +978,11 @@ impl<'a> Gen<'a> {
                 // both describe the instruction's own read.
                 let live = self.narrow(env.clone(), rest);
                 let dst = self.free(&live)?;
-                let base = self.gather(&env, &srcs)?;
+                let base = self.fields(&srcs);
                 self.emit(Instr::new(Op::MakeData, dst, base, n, *tag));
+                self.list(&srcs);
                 self.operands_in(&env, &srcs);
-                let window = self.gathered(&env, &srcs, base);
-                self.safepoint(&env, &window);
+                self.safepoint(&env, &[]);
                 let mut env = live;
                 env.insert(0, (*name, dst));
                 self.emit_stmt(rest, env)
@@ -1015,7 +1063,7 @@ impl<'a> Gen<'a> {
                 // and a permutation at the next transfer to put it back.
                 let live = self.narrow(env.clone(), rest);
                 let dst = self.free(&live)?;
-                let base = self.gather(&env, &srcs)?;
+                let base = self.fields(&srcs);
                 // A call's continuation goes on the frame stack; everything
                 // else is an object. See `meadow_seq::Program::frames`.
                 let op = if self.seq.frames.contains(name) {
@@ -1024,9 +1072,9 @@ impl<'a> Gen<'a> {
                     Op::Closure
                 };
                 self.emit(Instr::new(op, dst, base, ncap, table_id));
+                self.list(&srcs);
                 self.operands_in(&env, &srcs);
-                let window = self.gathered(&env, &srcs, base);
-                self.safepoint(&env, &window);
+                self.safepoint(&env, &[]);
                 let mut env = live;
                 env.insert(0, (*name, dst));
                 self.emit_stmt(rest, env)

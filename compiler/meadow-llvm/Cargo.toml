@@ -1,0 +1,18 @@
+[package]
+name = "meadow-llvm"
+description = "AxCut to LLVM IR, with the AxCut paper's reference counting: the backend of `meadow build --runtime aot`."
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_llvm"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-core.workspace = true
+meadow-hir.workspace = true
+meadow-intern.workspace = true
+meadow-seq.workspace = true
+
+[dev-dependencies]
+meadow-compiler = { path = "../meadow-compiler" }

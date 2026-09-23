@@ -111,6 +111,9 @@ pub struct Stats {
     /// How many of each instruction the run retired.
     #[cfg(feature = "profile-alloc")]
     pub ops: crate::profile::Ops,
+    /// Where each `invoke` went and which way each tag test did.
+    #[cfg(feature = "profile-alloc")]
+    pub feedback: crate::profile::Feedback,
     /// Slots promoted to old generations, marking cycles, and time spent
     /// marking on any thread.
     pub promoted: u64,
@@ -649,7 +652,11 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
     /// work on spawned threads comes back empty.
     fn collect(sh: &Shared<'p>, fiber: &mut Fiber<'p>) {
         #[cfg(feature = "profile-alloc")]
-        lock(&sh.stats).ops.merge(&fiber.vm.ops);
+        {
+            let mut stats = lock(&sh.stats);
+            stats.ops.merge(&fiber.vm.ops);
+            stats.feedback.merge(&fiber.vm.feedback);
+        }
         let Some(p) = fiber.vm.profile.take() else {
             return;
         };

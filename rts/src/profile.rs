@@ -219,6 +219,71 @@ impl Profile {
     }
 }
 
+/// Where each `invoke` went and which way each tag test went: what a JIT
+/// could speculate on.
+///
+/// The types say what kind of thing a call enters; they do not say *which*
+/// one. An `invoke` enters whatever object is in its register -- a function
+/// value, a heap continuation, a frame -- and this counts, per site, the
+/// method entries it reached. A site that only ever reached one is one a
+/// compiler could guard on and inline. The same for `JumpUnlessTag`: a test
+/// that nearly always goes one way is one to lay out as the straight path.
+///
+/// Exact, per interpreted instruction, under the same feature as [`Ops`]: run
+/// with `--backend vm` to see every one, since native code does not come back
+/// through the interpreter to be counted.
+#[cfg(feature = "profile-alloc")]
+#[derive(Debug, Clone, Default)]
+pub struct Feedback {
+    /// Per `invoke` site: per target, `(frame invokes, closure invokes)`.
+    pub calls: HashMap<Pc, HashMap<Pc, (u64, u64)>>,
+    /// Per `JumpUnlessTag` site: `[matched, did not]`.
+    pub tags: HashMap<Pc, [u64; 2]>,
+    /// `move`s, by the instruction that ends the run of moves they are in:
+    /// what they gather registers for.
+    pub moves: HashMap<u8, u64>,
+}
+
+#[cfg(feature = "profile-alloc")]
+impl Feedback {
+    pub fn call(&mut self, site: Pc, target: Pc, frame: bool) {
+        let e = self
+            .calls
+            .entry(site)
+            .or_default()
+            .entry(target)
+            .or_default();
+        if frame {
+            e.0 += 1;
+        } else {
+            e.1 += 1;
+        }
+    }
+
+    pub fn tag(&mut self, site: Pc, matched: bool) {
+        self.tags.entry(site).or_default()[usize::from(!matched)] += 1;
+    }
+
+    pub fn merge(&mut self, other: &Feedback) {
+        for (site, targets) in &other.calls {
+            let into = self.calls.entry(*site).or_default();
+            for (target, (f, c)) in targets {
+                let e = into.entry(*target).or_default();
+                e.0 += f;
+                e.1 += c;
+            }
+        }
+        for (op, n) in &other.moves {
+            *self.moves.entry(*op).or_default() += n;
+        }
+        for (site, [m, n]) in &other.tags {
+            let e = self.tags.entry(*site).or_default();
+            e[0] += m;
+            e[1] += n;
+        }
+    }
+}
+
 /// How many of each instruction a run retired.
 ///
 /// Exact rather than sampled -- the interpreter passes through one place -- and

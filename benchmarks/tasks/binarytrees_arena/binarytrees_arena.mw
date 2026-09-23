@@ -1,0 +1,61 @@
+-- `binarytrees`, with an arena: the same trees, built into one flat block of
+-- nodes and thrown away whole.
+--
+-- A node is three slots -- value, left, right -- and a child is the index of
+-- one, not a constructor. Building a tree is a bump of a counter per node;
+-- discarding one is setting the counter back to nought. Nothing is allocated
+-- and nothing is collected while the trees are built, which is the point:
+-- what is left in each language's number is the writing of the nodes and the
+-- walking of them, with its allocator and its collector taken out.
+--
+-- Each tip carries the iteration it was built in, so no two trees are alike
+-- and no compiler can build one and reuse it.
+
+use Std.Console (println)
+use Std.St as St
+
+def top : Int = 18
+
+-- Room for a tree of the deepest kind: 2^(top+1) - 1 nodes, three slots each.
+def room : Int = 3 * (2 ^ (top + 1))
+
+def tip : Int = -1
+
+fun build a bump (v : Int) (d : Int) =
+  let i = St.getRef bump in
+  let _ = St.setRef bump (i + 3) in
+  if d <= 0 then
+    let _ = St.set a i v in
+    let _ = St.set a (i + 1) tip in
+    i
+  else
+    let l = build a bump v (d - 1) in
+    let r = build a bump (v + 1) (d - 1) in
+    let _ = St.set a i 0 in
+    let _ = St.set a (i + 1) l in
+    let _ = St.set a (i + 2) r in
+    i
+
+fun check a (i : Int) =
+  if St.get a (i + 1) == tip then St.get a i
+  else check a (St.get a (i + 1)) + check a (St.get a (i + 2))
+
+fun trees a bump (d : Int) (n : Int) (acc : Int) =
+  if n == 0 then acc
+  else
+    let _ = St.setRef bump 0 in
+    let t = build a bump n d in
+    trees a bump d (n - 1) (acc + check a t)
+
+fun depths a bump (d : Int) (acc : Int) =
+  if d > top then acc
+  else depths a bump (d + 2) (acc + trees a bump d (2 ^ (top - d + 4)) 0)
+
+def main =
+  println (show (runSt (\() ->
+    let lasting = St.newArray room 0 in
+    let ln = St.newRef 0 in
+    let root = build lasting ln 1 top in
+    let arena = St.newArray room 0 in
+    let bump = St.newRef 0 in
+    depths arena bump 4 0 + check lasting root)))

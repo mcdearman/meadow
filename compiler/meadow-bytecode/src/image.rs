@@ -10,7 +10,7 @@ use crate::{Const, Instr, Program};
 use meadow_core::{Prim, num::Width};
 use meadow_intern::InternedString;
 
-const MAGIC: &[u8; 8] = b"MDWIMG04";
+const MAGIC: &[u8; 8] = b"MDWIMG05";
 
 /// `program`, as bytes [`decode`] reads back.
 pub fn encode(program: &Program) -> Vec<u8> {
@@ -92,6 +92,9 @@ pub fn encode(program: &Program) -> Vec<u8> {
     for d in &program.operands {
         w.u16(*d);
     }
+    w.u32s(&program.sources_at);
+    w.u32(program.sources.len() as u32);
+    w.0.extend_from_slice(&program.sources);
     w.u32(program.results.len() as u32);
     w.0.extend(program.results.iter().map(|d| *d as u8));
     w.0.push(program.entry_result as u8);
@@ -177,6 +180,9 @@ pub fn decode(bytes: &[u8]) -> Result<Program, String> {
         let d = r.u16()?;
         p.operands.push(d);
     }
+    p.sources_at = r.u32s()?;
+    let n = r.u32()? as usize;
+    p.sources = r.take(n)?.to_vec();
     let n = r.u32()? as usize;
     p.results = r
         .take(n)?
@@ -408,7 +414,7 @@ mod tests {
         p.gc_at = vec![crate::NO_MAP];
         p.operands_at = vec![crate::NO_OPERANDS];
         p.entry_result = meadow_core::desc::UNIT;
-        let mut want: Vec<u8> = b"MDWIMG04".to_vec();
+        let mut want: Vec<u8> = b"MDWIMG05".to_vec();
         want.extend([1, 0, 0, 0]); // code
         want.extend([6, 0, 0, 0, 0, 0, 0, 0]); // halt r0
         want.extend([0; 4 * 12]); // consts .. entries, all empty
@@ -418,6 +424,8 @@ mod tests {
         want.extend([1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]); // gc_at
         want.extend([1, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]); // operands_at
         want.extend([0; 4]); // operands
+        want.extend([0; 4]); // sources_at: none listed
+        want.extend([0; 4]); // sources
         want.extend([0; 4]); // results
         want.push(4); // entry_result: UNIT
         assert_eq!(encode(&p), want);

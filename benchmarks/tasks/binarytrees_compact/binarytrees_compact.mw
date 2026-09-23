@@ -1,0 +1,43 @@
+-- `binarytrees`, with the long-lived tree in a compact region: Meadow's own
+-- answer to a collector that keeps tracing data which will never change.
+--
+-- `Compact.make` copies a value into memory outside every heap, which the
+-- collector neither copies nor looks inside: however big the region, a
+-- collection pays one mark for it. The tree kept alive throughout is exactly
+-- the shape of thing that is for -- 22 MiB the collector would otherwise
+-- promote and mark again at every cycle.
+--
+-- The trees built and discarded inside the loop are left alone. Compacting
+-- those as well is in the README: a region costs a copy of everything put in
+-- it, so paying it for a tree that dies immediately is nine hundred times
+-- slower than not, which is the useful half of this measurement.
+--
+-- Each tip carries the iteration it was built in, so no two trees are alike
+-- and no compiler can build one and reuse it.
+
+use Std.Console (println)
+use Std.Compact as C
+
+data Tree = Tip Int | Fork Tree Tree
+
+use Tree.*
+
+fun build (v : Int) (d : Int) : Tree =
+  if d <= 0 then Tip v else Fork (build v (d - 1)) (build (v + 1) (d - 1))
+
+fun check (t : Tree) : Int =
+  match t with
+  | Tip v -> v
+  | Fork l r -> check l + check r
+
+fun trees (d : Int) (n : Int) (acc : Int) : Int =
+  if n == 0 then acc else trees d (n - 1) (acc + check (build n d))
+
+fun depths (d : Int) (top : Int) (acc : Int) : Int =
+  if d > top then acc
+  else depths (d + 2) top (acc + trees d (2 ^ (top - d + 4)) 0)
+
+def main =
+  let top : Int = 18 in
+  let lasting = C.make (build 1 top) in
+  println (show (depths 4 top 0 + check (C.get lasting)))

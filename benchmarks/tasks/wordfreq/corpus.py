@@ -23,7 +23,10 @@ def main(out):
         r = (state % VOCAB) * (state // VOCAB % VOCAB) // VOCAB
         parts.append(vocab[r % VOCAB])
         parts.append("\n" if i % 12 == 11 else " ")
-    Path(out).write_text("".join(parts) + "\n")
+    # Bytes, not text: a text-mode write turns every "\n" into "\r\n" on
+    # Windows, and then the corpus -- and every count taken from it -- is not
+    # the same on every machine.
+    Path(out).write_bytes(("".join(parts) + "\n").encode())
 
 
 if __name__ == "__main__":

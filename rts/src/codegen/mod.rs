@@ -265,11 +265,11 @@ pub trait Emit {
     fn float(&mut self, op: FloatOp, a: Reg, b: Reg, c: Reg);
     /// `r[a] = op r[b]`.
     fn unary(&mut self, op: UnaryOp, a: Reg, b: Reg);
-    /// `r[a] = ` a frame with header `header` and captures `r[base..base+n]`,
+    /// `r[a] = ` a frame with header `header` and captures the registers `fields`,
     /// pushed on the frame stack -- or `slow` if its chunk is full, or there
     /// is none yet. The frame's address is its slot on the stack, an old
     /// address, so the captures are written through the block table.
-    fn frame(&mut self, a: Reg, header: &[u64], base: Reg, n: u32, slow: Label);
+    fn frame(&mut self, a: Reg, header: &[u64], fields: &[Reg], slow: Label);
     /// `r[a] = cond(r[b], c)`, as words.
     fn cmp_int(&mut self, cond: Cond, a: Reg, b: Reg, c: Operand);
     fn cmp_float(&mut self, cond: Cond, a: Reg, b: Reg, c: Reg);
@@ -312,6 +312,23 @@ pub trait Emit {
     /// with the arguments moved to `r[0..argc]`; otherwise by rebuilding the
     /// register file in memory as the interpreter does.
     fn invoke(&mut self, obj: Reg, method: u8, base: Reg, argc: u32, slow: Label);
+    /// [`Emit::invoke`] for a call a profile says enters `guess.known`: guard
+    /// that it does, and if so rebuild the register file as that target
+    /// wants it -- captures and arguments whose number is known here -- and
+    /// go on to it as [`Emit::chain`] does. If the guard fails, on to
+    /// `generic`, where the generic invoke is. Answers whether it emitted
+    /// anything; an architecture without it answers `false`, having emitted
+    /// nothing, and every call is generic.
+    fn invoke_known(
+        &mut self,
+        _obj: Reg,
+        _base: Reg,
+        _argc: u32,
+        _guess: Guess,
+        _generic: Label,
+    ) -> bool {
+        false
+    }
     /// The function's *method entry*, for a function that begins a method
     /// whose object holds `captures` values and whose block takes `params`
     /// registers, captures included. Entered from [`Emit::invoke`] with the
@@ -323,9 +340,9 @@ pub trait Emit {
     /// `false`, and every call takes the other path.
     fn stub(&mut self, captures: u32, params: u32, warm: Label) -> bool;
     /// `r[a] = ` a new object whose header is the words `header` and whose
-    /// fields are the `n` registers from `base`, bumped into the nursery if it
+    /// fields are the registers `fields`, bumped into the nursery if it
     /// has room.
-    fn alloc(&mut self, a: Reg, header: &[u64], base: Reg, n: u32, slow: Label);
+    fn alloc(&mut self, a: Reg, header: &[u64], fields: &[Reg], slow: Label);
     /// Have the interpreter carry out the instruction at `pc`, and return what
     /// it says unless that is [`crate::abi::CONTINUE`].
     fn exec(&mut self, pc: Pc);
@@ -353,11 +370,95 @@ pub const BACK_EDGES: u32 = 1 << 12;
 /// chain of these is one call.
 pub const CHAINS: u32 = 1 << 8;
 
+/// The one thing an `invoke` site was seen to enter, by a profile: a frame
+/// returning to pc `meta`, or a closure made with method table `meta`.
+///
+/// The types say what kind of thing a call enters, never which: a function
+/// value is whatever was passed in, a return goes wherever the caller said.
+/// Most sites only ever see one -- three quarters of the calls through
+/// closures in parsing code -- and for those the generic `invoke`, which
+/// finds out everything at run time, can be one guard and code written for
+/// the answer. See [`Emit::invoke_known`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Known {
+    pub frame: bool,
+    pub meta: u32,
+}
+
+/// What a profile saw each `invoke` site enter, for the sites that only ever
+/// entered one thing, by pc.
+pub type Calls = HashMap<Pc, Known>;
+
+/// What [`Emit::invoke_known`] is told: the guard, and everything that
+/// follows from it holding.
+#[derive(Debug, Clone, Copy)]
+pub struct Guess {
+    pub known: Known,
+    /// The method the call goes to.
+    pub target: Pc,
+    /// How many captures the object holds, and so how long its header is.
+    pub captures: u32,
+    /// The target's function, when it is in the same code as this one.
+    pub to: Option<Label>,
+}
+
+/// The [`Guess`] for the `invoke` `i` at `pc`, if the profile has one that
+/// makes sense of the program: a method the object has, taking the arguments
+/// the call passes.
+fn guess(
+    program: &Program,
+    i: Instr,
+    known: Known,
+    shapes: &HashMap<Pc, (u8, u8)>,
+) -> Option<(Pc, u32)> {
+    let target = if known.frame {
+        known.meta
+    } else {
+        *program
+            .methods
+            .get(known.meta as usize)?
+            .get(i.b as usize)?
+    };
+    let (captures, params) = *shapes.get(&target)?;
+    if known.frame && i.b != 0 {
+        return None;
+    }
+    if !known.frame && program.method_captures.get(known.meta as usize) != Some(&captures) {
+        return None;
+    }
+    (captures as u32 + i.imm == params as u32).then_some((target, captures as u32))
+}
+
 /// Compile every block of `program` for `arch`, at `opt`.
 pub fn compile(program: &Program, arch: Arch, opt: OptLevel) -> Compiled {
+    compile_guided(program, arch, opt, &Calls::new())
+}
+
+/// [`compile`], with what a profile saw each call site reach: see [`Known`].
+pub fn compile_guided(program: &Program, arch: Arch, opt: OptLevel, calls: &Calls) -> Compiled {
     match arch {
-        Arch::Aarch64 => compile_with::<a64::Asm>(program, arch, opt),
-        Arch::X86_64 => compile_with::<x64::Asm>(program, arch, opt),
+        Arch::Aarch64 => compile_with::<a64::Asm>(program, arch, opt, calls),
+        Arch::X86_64 => compile_with::<x64::Asm>(program, arch, opt, calls),
+    }
+}
+
+/// What compiling one block at a time needs to know about the whole program:
+/// worked out once, when the JIT starts, and not again for every block it
+/// compiles -- each of these is a pass over every instruction, and a program
+/// with the standard library in it has tens of thousands.
+pub struct Whole {
+    loops: HashMap<usize, u32>,
+    preds: Preds,
+    shapes: HashMap<Pc, (u8, u8)>,
+}
+
+impl Whole {
+    pub fn of(program: &Program) -> Whole {
+        Whole {
+            loops: loop_live(program),
+            preds: preds(program),
+            shapes: method_shapes(program),
+        }
     }
 }
 
@@ -369,27 +470,39 @@ pub fn compile_block(
     arch: Arch,
     entry: Pc,
     opt: OptLevel,
-    loops: &HashMap<usize, u32>,
+    whole: &Whole,
+    calls: &dyn Fn(Pc) -> Option<Known>,
 ) -> (Vec<u8>, Option<u32>) {
     fn with<E: Emit>(
         program: &Program,
         entry: Pc,
         opt: OptLevel,
-        loops: &HashMap<usize, u32>,
+        whole: &Whole,
+        calls: &dyn Fn(Pc) -> Option<Known>,
     ) -> (Vec<u8>, Option<u32>) {
         let mut asm = E::new();
-        let shape = method_shapes(program).get(&entry).copied();
-        let preds = preds(program);
-        let stub = block(&mut asm, program, entry, opt, None, shape, loops, &preds);
+        let shape = whole.shapes.get(&entry).copied();
+        let stub = block(
+            &mut asm,
+            program,
+            entry,
+            opt,
+            None,
+            shape,
+            &whole.loops,
+            &whole.preds,
+            &whole.shapes,
+            calls,
+        );
         (asm.finish(), stub)
     }
     match arch {
-        Arch::Aarch64 => with::<a64::Asm>(program, entry, opt, loops),
-        Arch::X86_64 => with::<x64::Asm>(program, entry, opt, loops),
+        Arch::Aarch64 => with::<a64::Asm>(program, entry, opt, whole, calls),
+        Arch::X86_64 => with::<x64::Asm>(program, entry, opt, whole, calls),
     }
 }
 
-fn compile_with<E: Emit>(program: &Program, arch: Arch, opt: OptLevel) -> Compiled {
+fn compile_with<E: Emit>(program: &Program, arch: Arch, opt: OptLevel, calls: &Calls) -> Compiled {
     let entries = crate::abi::block_entries(program);
     let shapes = method_shapes(program);
     let loops = loop_live(program);
@@ -413,6 +526,8 @@ fn compile_with<E: Emit>(program: &Program, arch: Arch, opt: OptLevel) -> Compil
             shape,
             &loops,
             &preds,
+            &shapes,
+            &|pc| calls.get(&pc).copied(),
         ) {
             stubs.push((entry, at));
         }
@@ -848,7 +963,7 @@ struct Function<'a> {
     /// `from` being the branch's position.
     detours: Vec<(Label, usize, usize)>,
     /// See [`loop_live`].
-    loops: HashMap<usize, u32>,
+    loops: &'a HashMap<usize, u32>,
     /// Loops with a vector version: by the header's position, the label of
     /// its preheader and the position of its jump back. Control from outside
     /// the loop enters through the preheader; the jump back does not.
@@ -965,6 +1080,8 @@ fn block<E: Emit>(
     shape: Option<(u8, u8)>,
     loops: &HashMap<usize, u32>,
     preds: &Preds,
+    shapes: &HashMap<Pc, (u8, u8)>,
+    calls: &dyn Fn(Pc) -> Option<Known>,
 ) -> Option<u32> {
     let code = &program.code;
     let order = region(code, entry as usize, opt);
@@ -1025,7 +1142,7 @@ fn block<E: Emit>(
         labels,
         exits: Vec::new(),
         detours: Vec::new(),
-        loops: loops.clone(),
+        loops,
         pre,
         chain: opt >= OptLevel::O1,
         len: code.len(),
@@ -1220,6 +1337,24 @@ fn block<E: Emit>(
                 let slow = asm.label();
                 book.step(asm);
                 book.sync(asm);
+                // Guarded on what a profile saw here, where it saw one thing,
+                // and chaining only: the guess is worth nothing to a function
+                // that returns to the machine at every block anyway.
+                if f.chain
+                    && let Some(known) = calls(pc32)
+                    && let Some((target, captures)) = guess(program, i, known, shapes)
+                {
+                    let to = f.links.as_mut().and_then(|l| l.warm(asm, target as usize));
+                    let generic = asm.label();
+                    let g = Guess {
+                        known,
+                        target,
+                        captures,
+                        to,
+                    };
+                    asm.invoke_known(i.a, i.c, i.imm, g, generic);
+                    asm.bind(generic);
+                }
                 asm.invoke(i.a, i.b, i.c, i.imm, slow);
                 slows.push((slow, k));
             }
@@ -1241,10 +1376,11 @@ fn block<E: Emit>(
                         let slow = asm.label();
                         book.step(asm);
                         book.sync(asm);
+                        let fields = program.fields(pc, i).regs();
                         if i.op == Op::Frame {
-                            asm.frame(i.a, &h, i.b, i.c as u32, slow);
+                            asm.frame(i.a, &h, &fields, slow);
                         } else {
-                            asm.alloc(i.a, &h, i.b, i.c as u32, slow);
+                            asm.alloc(i.a, &h, &fields, slow);
                         }
                         book.wrote(i.a);
                         slows.push((slow, k));

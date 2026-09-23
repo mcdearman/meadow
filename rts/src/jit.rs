@@ -25,12 +25,14 @@
 //!
 //! # Executable memory
 //!
-//! Platform business. On macOS it is `MAP_JIT` memory, writable only by the
-//! thread writing it, for as long as it writes -- other threads go on running
-//! what is there -- and on Apple silicon the processor's cached copy of the
-//! instructions is told they changed. Elsewhere each compiled function gets
-//! pages of its own: written, then made read-and-execute -- `mmap` and
-//! `mprotect` on Linux, `VirtualAlloc` and `VirtualProtect` on Windows.
+//! Platform business, behind one rule: functions are packed together, as a
+//! linker lays them out, and no address is ever both writable and executable.
+//! On macOS it is `MAP_JIT` memory, writable only by the thread writing it,
+//! for as long as it writes -- other threads go on running what is there --
+//! and on Apple silicon the processor's cached copy of the instructions is
+//! told they changed. Elsewhere each chunk is mapped twice from the same
+//! memory, a view to write and a view to run: a `memfd` on Linux, a section
+//! backed by the page file on Windows. See [`Arena`] for why packing matters.
 
 use crate::abi::NativeFn;
 use crate::codegen::{self, Arch};
@@ -38,7 +40,7 @@ use meadow_bytecode::{Pc, Program};
 use meadow_core::OptLevel;
 use std::ffi::c_void;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// Native code for a program's blocks, by entry pc.
 pub struct Native<'p> {
@@ -73,12 +75,34 @@ struct Tier<'p> {
     opt: OptLevel,
     /// Which pcs start a block.
     entry: Box<[bool]>,
-    /// See `codegen::loop_live`: once per program, not per block.
-    loops: std::collections::HashMap<usize, u32>,
+    /// What every block's compilation needs to know of the whole program:
+    /// once per program, not per block. See `codegen::Whole`.
+    whole: codegen::Whole,
     counts: Box<[AtomicU32]>,
     threshold: u32,
+    /// Per `invoke` site: what it has entered while interpreted -- see
+    /// [`Native::observe`].
+    calls: Box<[AtomicU64]>,
+    /// Whether a block's calls are guarded on what they were seen to enter:
+    /// unless `MEADOW_JIT_GUESS=0`, which is for telling whether a guess is
+    /// what broke something.
+    guess: bool,
     code: Mutex<Arena>,
     compiled: AtomicUsize,
+}
+
+/// A call site's word, once it has entered something: see [`Native::observe`].
+const SEEN: u64 = 1 << 62;
+const FRAME_BIT: u32 = 61;
+/// It has entered more than one thing.
+const POLY: u64 = u64::MAX;
+
+/// What a site's word says it entered, if one thing.
+fn known(w: u64) -> Option<codegen::Known> {
+    (w != POLY && w & SEEN != 0).then(|| codegen::Known {
+        frame: w >> FRAME_BIT & 1 != 0,
+        meta: w as u32,
+    })
 }
 
 /// How many entries make a block hot, unless `MEADOW_JIT_THRESHOLD` says.
@@ -144,8 +168,10 @@ impl<'p> Native<'p> {
                 arch,
                 opt,
                 entry,
-                loops: codegen::loop_live(program),
+                whole: codegen::Whole::of(program),
                 counts: (0..len).map(|_| AtomicU32::new(0)).collect(),
+                calls: (0..len).map(|_| AtomicU64::new(0)).collect(),
+                guess: std::env::var_os("MEADOW_JIT_GUESS").is_none_or(|v| v != "0"),
                 threshold: threshold.max(1),
                 code: Mutex::new(Arena::default()),
                 compiled: AtomicUsize::new(0),
@@ -191,6 +217,48 @@ impl<'p> Native<'p> {
         self.compile(tier, pc)
     }
 
+    /// Note that the `invoke` at `site` entered `known`, while its block was
+    /// interpreted. What a block's compilation guesses its calls enter -- see
+    /// [`codegen::Known`] -- and what [`Native::calls`] hands on to a build
+    /// ahead of time.
+    ///
+    /// One word per site, and nothing to take a lock for: empty, then the one
+    /// thing seen, then [`POLY`] for good once a second one is.
+    #[inline]
+    pub fn observe(&self, site: usize, known: codegen::Known) {
+        let Some(slot) = self.tier.as_ref().and_then(|t| t.calls.get(site)) else {
+            return;
+        };
+        let want = SEEN | (known.frame as u64) << FRAME_BIT | known.meta as u64;
+        let now = slot.load(Ordering::Relaxed);
+        if now == want || now == POLY {
+            return;
+        }
+        if now == 0
+            && slot
+                .compare_exchange(0, want, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            return;
+        }
+        if slot.load(Ordering::Relaxed) != want {
+            slot.store(POLY, Ordering::Relaxed);
+        }
+    }
+
+    /// Every `invoke` site that entered one thing, and only one, while it was
+    /// interpreted.
+    pub fn calls(&self) -> codegen::Calls {
+        let Some(tier) = &self.tier else {
+            return codegen::Calls::new();
+        };
+        tier.calls
+            .iter()
+            .enumerate()
+            .filter_map(|(pc, w)| Some((pc as Pc, known(w.load(Ordering::Relaxed))?)))
+            .collect()
+    }
+
     /// Blocks compiled so far, as the program runs.
     pub fn compiled(&self) -> usize {
         self.tier
@@ -207,8 +275,19 @@ impl<'p> Native<'p> {
             // Another thread got here first.
             return Some(unsafe { std::mem::transmute::<*mut c_void, NativeFn>(p) });
         }
-        let (code, stub) =
-            codegen::compile_block(tier.program, tier.arch, pc as Pc, tier.opt, &tier.loops);
+        let (code, stub) = codegen::compile_block(
+            tier.program,
+            tier.arch,
+            pc as Pc,
+            tier.opt,
+            &tier.whole,
+            &|site| {
+                if !tier.guess {
+                    return None;
+                }
+                known(tier.calls.get(site as usize)?.load(Ordering::Relaxed))
+            },
+        );
         let Some(at) = arena.put(&code, tier.arch) else {
             // No memory to put it in: interpret it, and stop asking.
             tier.counts[pc].store(0, Ordering::Relaxed);
@@ -227,13 +306,41 @@ impl<'p> Native<'p> {
 }
 
 /// Executable memory, handed out a function at a time.
+///
+/// Functions are packed one after another into chunks, as a linker would lay
+/// them out. Giving each its own mapping instead starts every one on a page --
+/// on Windows a 64 KiB boundary -- so every function's entry has the same low
+/// address bits and they all compete for the same few ways of the instruction
+/// cache and the branch predictor, besides taking a page of the instruction TLB
+/// each. On closure-heavy code that made the JIT half again slower than the
+/// same translation ahead of time.
+///
+/// Memory is never writable and executable at one address. On macOS a
+/// `MAP_JIT` mapping is writable only by the thread writing it, for as long as
+/// it writes. Elsewhere each chunk is mapped twice, from the same memory: a
+/// view to write through and a view to run, which never changes. Where the
+/// system will not make the pair, each function gets pages of its own after
+/// all, written and then made executable.
 #[derive(Default)]
 struct Arena {
-    /// Every mapping made: `(start, length)`.
+    /// Every single mapping made: `(start, length)`.
     maps: Vec<(*mut u8, usize)>,
-    /// How far into the last mapping it is filled.
-    #[cfg(target_os = "macos")]
+    /// How far into the last chunk it is filled.
     free: usize,
+    /// Chunks mapped twice, the last one being filled.
+    #[cfg(not(target_os = "macos"))]
+    views: Vec<Views>,
+    /// The system would not map a chunk twice: stop asking.
+    #[cfg(not(target_os = "macos"))]
+    alone: bool,
+}
+
+/// One chunk's two views of the same memory.
+#[cfg(not(target_os = "macos"))]
+struct Views {
+    write: *mut u8,
+    exec: *mut u8,
+    len: usize,
 }
 
 // The mappings are only written under the arena's lock, and only read and run
@@ -247,6 +354,13 @@ impl Drop for Arena {
             // `Native` holding it is gone.
             unsafe {
                 unmap(p, len);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        for v in &self.views {
+            // Safety: as above.
+            unsafe {
+                unmap_views(v);
             }
         }
     }
@@ -270,17 +384,22 @@ unsafe fn unmap(p: *mut u8, _len: usize) {
     }
 }
 
-#[cfg(target_os = "macos")]
+/// How much a chunk holds, unless one function needs more.
 const CHUNK: usize = 1 << 20;
+
+/// Where a function starts: where the architecture's fetch likes it.
+fn align(arch: Arch) -> usize {
+    match arch {
+        Arch::Aarch64 => 4,
+        Arch::X86_64 => 16,
+    }
+}
 
 impl Arena {
     /// `code`, somewhere executable: where it starts.
     #[cfg(target_os = "macos")]
     fn put(&mut self, code: &[u8], arch: Arch) -> Option<*mut u8> {
-        let align = match arch {
-            Arch::Aarch64 => 4,
-            Arch::X86_64 => 16,
-        };
+        let align = align(arch);
         let offset = self.free.div_ceil(align) * align;
         let fits = self
             .maps
@@ -309,9 +428,52 @@ impl Arena {
         Some(at)
     }
 
-    /// `code`, somewhere executable: where it starts.
+    /// `code`, somewhere executable: where it starts. Packed into a chunk
+    /// mapped twice if it can be, on pages of its own if not.
+    #[cfg(not(target_os = "macos"))]
+    fn put(&mut self, code: &[u8], arch: Arch) -> Option<*mut u8> {
+        if !self.alone {
+            match self.packed(code, arch) {
+                Some(at) => return Some(at),
+                None => self.alone = true,
+            }
+        }
+        self.put_alone(code)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn packed(&mut self, code: &[u8], arch: Arch) -> Option<*mut u8> {
+        let align = align(arch);
+        let offset = self.free.div_ceil(align) * align;
+        let fits = self
+            .views
+            .last()
+            .is_some_and(|v| offset + code.len() <= v.len);
+        let offset = if fits {
+            offset
+        } else {
+            // Whole 64 KiB, the granularity Windows maps views at.
+            let len = code.len().max(CHUNK).div_ceil(1 << 16) << 16;
+            // Safety: a fresh pair of views.
+            let v = unsafe { views(len) }?;
+            self.views.push(v);
+            0
+        };
+        let v = self.views.last().expect("a chunk");
+        // Safety: `offset + code.len()` is within the chunk, and nothing runs
+        // that part of it yet: it is published only once this returns.
+        unsafe {
+            std::ptr::copy_nonoverlapping(code.as_ptr(), v.write.add(offset), code.len());
+            let at = v.exec.add(offset);
+            flush(at, code.len());
+            self.free = offset + code.len();
+            Some(at)
+        }
+    }
+
+    /// `code` on pages of its own, written and then made executable.
     #[cfg(windows)]
-    fn put(&mut self, code: &[u8], _arch: Arch) -> Option<*mut u8> {
+    fn put_alone(&mut self, code: &[u8]) -> Option<*mut u8> {
         let page = 4096;
         let len = code.len().max(1).div_ceil(page) * page;
         // Safety: fresh pages, written and then made executable before anyone
@@ -338,9 +500,9 @@ impl Arena {
         }
     }
 
-    /// `code`, somewhere executable: where it starts.
+    /// `code` on pages of its own, written and then made executable.
     #[cfg(all(unix, not(target_os = "macos")))]
-    fn put(&mut self, code: &[u8], _arch: Arch) -> Option<*mut u8> {
+    fn put_alone(&mut self, code: &[u8]) -> Option<*mut u8> {
         let page = 4096;
         let len = code.len().max(1).div_ceil(page) * page;
         // Safety: a fresh anonymous mapping, written and then made executable
@@ -359,6 +521,128 @@ impl Arena {
         }
     }
 }
+
+/// `len` bytes of fresh memory, mapped twice: once writable, once executable.
+#[cfg(windows)]
+unsafe fn views(len: usize) -> Option<Views> {
+    // Safety: a pagefile-backed section of our own, and views of all of it.
+    unsafe {
+        let h = CreateFileMappingW(
+            -1isize as *mut c_void,
+            std::ptr::null_mut(),
+            PAGE_EXECUTE_READWRITE,
+            (len >> 32) as u32,
+            len as u32,
+            std::ptr::null(),
+        );
+        if h.is_null() {
+            return None;
+        }
+        let write = MapViewOfFile(h, FILE_MAP_WRITE, 0, 0, len) as *mut u8;
+        let exec = MapViewOfFile(h, FILE_MAP_READ | FILE_MAP_EXECUTE, 0, 0, len) as *mut u8;
+        // The views keep the section alive.
+        CloseHandle(h);
+        let v = Views { write, exec, len };
+        if write.is_null() || exec.is_null() {
+            unmap_views(&v);
+            return None;
+        }
+        Some(v)
+    }
+}
+
+#[cfg(windows)]
+unsafe fn unmap_views(v: &Views) {
+    // Safety: the caller's.
+    unsafe {
+        for p in [v.write, v.exec] {
+            if !p.is_null() {
+                UnmapViewOfFile(p as *const c_void);
+            }
+        }
+    }
+}
+
+/// Code just written at `at`, through the other view, is what runs there.
+#[cfg(windows)]
+unsafe fn flush(at: *mut u8, len: usize) {
+    // Safety: a range of a view this process mapped.
+    unsafe {
+        FlushInstructionCache(GetCurrentProcess(), at as *const c_void, len);
+    }
+}
+
+#[cfg(windows)]
+const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+#[cfg(windows)]
+const FILE_MAP_WRITE: u32 = 0x0002;
+#[cfg(windows)]
+const FILE_MAP_READ: u32 = 0x0004;
+#[cfg(windows)]
+const FILE_MAP_EXECUTE: u32 = 0x0020;
+
+/// `len` bytes of fresh memory, mapped twice: once writable, once executable.
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe fn views(len: usize) -> Option<Views> {
+    // Safety: an anonymous file of our own, and shared mappings of all of it.
+    unsafe {
+        let fd = memfd_create(c"meadow-jit".as_ptr(), MFD_CLOEXEC);
+        if fd < 0 {
+            return None;
+        }
+        if ftruncate(fd, len as i64) != 0 {
+            close(fd);
+            return None;
+        }
+        let at = |prot| {
+            let p = mmap(std::ptr::null_mut(), len, prot, MAP_SHARED, fd, 0);
+            if p as isize == -1 {
+                std::ptr::null_mut()
+            } else {
+                p as *mut u8
+            }
+        };
+        let write = at(PROT_READ | PROT_WRITE);
+        let exec = at(PROT_READ | PROT_EXEC);
+        // The mappings keep the file alive.
+        close(fd);
+        let v = Views { write, exec, len };
+        if write.is_null() || exec.is_null() {
+            unmap_views(&v);
+            return None;
+        }
+        Some(v)
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe fn unmap_views(v: &Views) {
+    // Safety: the caller's.
+    unsafe {
+        for p in [v.write, v.exec] {
+            if !p.is_null() {
+                munmap(p as *mut c_void, v.len);
+            }
+        }
+    }
+}
+
+/// Code just written at `at`, through the other view, is what runs there.
+#[cfg(all(unix, not(target_os = "macos")))]
+unsafe fn flush(at: *mut u8, len: usize) {
+    // Safety: a range of a mapping this process made.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        __clear_cache(at as *mut c_void, at.add(len) as *mut c_void);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = (at, len);
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+const MAP_SHARED: i32 = 0x0001;
+#[cfg(all(unix, not(target_os = "macos")))]
+const MFD_CLOEXEC: u32 = 0x0001;
 
 #[cfg(windows)]
 const MEM_COMMIT: u32 = 0x1000;
@@ -379,6 +663,23 @@ unsafe extern "system" {
     fn VirtualFree(addr: *mut c_void, size: usize, kind: u32) -> i32;
     fn FlushInstructionCache(process: *mut c_void, base: *const c_void, size: usize) -> i32;
     fn GetCurrentProcess() -> *mut c_void;
+    fn CreateFileMappingW(
+        file: *mut c_void,
+        attributes: *mut c_void,
+        protect: u32,
+        size_high: u32,
+        size_low: u32,
+        name: *const u16,
+    ) -> *mut c_void;
+    fn MapViewOfFile(
+        mapping: *mut c_void,
+        access: u32,
+        offset_high: u32,
+        offset_low: u32,
+        size: usize,
+    ) -> *mut c_void;
+    fn UnmapViewOfFile(base: *const c_void) -> i32;
+    fn CloseHandle(handle: *mut c_void) -> i32;
 }
 
 #[cfg(unix)]
@@ -403,6 +704,12 @@ unsafe extern "C" {
     fn munmap(addr: *mut c_void, len: usize) -> i32;
     #[cfg(all(unix, not(target_os = "macos")))]
     fn mprotect(addr: *mut c_void, len: usize, prot: i32) -> i32;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> i32;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn ftruncate(fd: i32, len: i64) -> i32;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn close(fd: i32) -> i32;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn pthread_jit_write_protect_np(enabled: i32);
     #[cfg(target_os = "macos")]

@@ -51,7 +51,7 @@ fn errors(src: &str) -> String {
 const DESCRIBE: &str = "trait Describe a {\n\
     \x20 fun describe : a -> String\n\
     \x20 fun twice : a -> String\n\
-    \x20 fun twice x = describe x ++ describe x\n\
+    \x20   | twice x = describe x ++ describe x\n\
     }\n\
     impl Describe Int { fun describe n = \"int \" ++ show n }\n\
     impl Describe Bool {\n\
@@ -83,13 +83,104 @@ fn a_method_is_the_impl_of_the_type_it_meets() {
     );
 }
 
+// --- a method and its default are one item ------------------------------------
+
+/// A default belongs to the method it is a default *for*, so it is written in
+/// clauses under the signature -- the same shape a top-level definition takes.
+/// Naming the method a second time to define it is the Haskell habit Meadow
+/// does not have.
+#[test]
+fn a_default_is_written_under_the_signature_it_belongs_to() {
+    is(
+        "trait Greet a {\n\
+        \x20 fun name : a -> String\n\
+        \x20 fun greet : a -> String\n\
+        \x20   | greet x = \"hello, \" ++ name x\n\
+        }\n\
+        impl Greet Int { fun name n = show n }\n\
+        impl Greet Bool {\n\
+        \x20 fun name b = if b then \"yes\" else \"no\"\n\
+        \x20 fun greet b = \"HI \" ++ name b\n\
+        }\n\
+        def main = (greet 1, greet True)\n",
+        r#"("hello, 1", "HI yes")"#,
+    );
+    // Several clauses, as any other definition may have.
+    is(
+        "trait Tag a {\n\
+        \x20 fun show1 : a -> String\n\
+        \x20 fun tag : a -> Bool -> String\n\
+        \x20   | tag x True  = \"!\" ++ show1 x\n\
+        \x20   | tag x False = show1 x\n\
+        }\n\
+        impl Tag Int { fun show1 n = show n }\n\
+        def main = (tag 1 True, tag 2 False)\n",
+        r#"("!1", "2")"#,
+    );
+}
+
+/// The method with no default at all -- most of what a trait holds -- is a
+/// signature on its own, and stays one.
+#[test]
+fn a_method_without_a_default_is_still_a_signature_of_its_own() {
+    is(
+        "trait Size a { fun size : a -> Int }\n\
+         impl Size [b;] where Size b { fun size xs = match xs with | [;] -> 0 | _ :: r -> 1 + size r }\n\
+         impl Size Int { fun size n = n }\n\
+         def main = size [1; 2; 3]\n",
+        "3",
+    );
+}
+
+#[test]
+fn a_method_named_twice_in_a_trait_is_reported() {
+    let out = errors(
+        "trait Greet a {\n\
+        \x20 fun greet : a -> String\n\
+        \x20 fun greet x = \"hi\"\n\
+        }\n\
+        impl Greet Int {}\n\
+        def main = greet 1\n",
+    );
+    assert!(
+        out.contains(
+            "`greet` is named twice in this trait -- a method and its default are one item, so \
+             write the default as `| greet … = …` under the signature rather than declaring the \
+             method again"
+        ),
+        "{out}"
+    );
+    // An operator method is named the way it is declared, in parentheses.
+    let out = errors(
+        "trait Near a {\n\
+        \x20 fun (~=) : a -> a -> Bool\n\
+        \x20 fun (~=) x y = False\n\
+        }\n\
+        def main = 1\n",
+    );
+    assert!(out.contains("`(~=)` is named twice in this trait"), "{out}");
+    // A clause that names another method is caught against the signature.
+    let out = errors(
+        "trait Pair a {\n\
+        \x20 fun left : a -> Int\n\
+        \x20 fun right : a -> Int\n\
+        \x20   | left x = 0\n\
+        }\n\
+        def main = 1\n",
+    );
+    assert!(
+        out.contains("this equation defines `left`, but the signature above it is for `right`"),
+        "{out}"
+    );
+}
+
 #[test]
 fn a_function_asks_for_what_its_body_needs() {
     // Nobody wrote a signature: the `where` is inferred, and printed.
     let schemes = common::schemes_std(&format!(
         "{DESCRIBE}fun both x y = describe x ++ \" & \" ++ describe y\n\
          fun loud : Describe a => a -> String\n\
-         fun loud x = twice x ++ \"!\"\n"
+           | loud x = twice x ++ \"!\"\n"
     ));
     assert!(
         schemes.contains("both : forall a b. (Describe a, Describe b) => a -> b -> String"),
@@ -103,9 +194,9 @@ fn a_function_asks_for_what_its_body_needs() {
         &format!(
             "{DESCRIBE}fun both x y = describe x ++ \" & \" ++ describe y\n\
              fun loud : Describe a => a -> String\n\
-             fun loud x = twice x ++ \"!\"\n\
+               | loud x = twice x ++ \"!\"\n\
              fun nested : Describe a => a -> String\n\
-             fun nested x = describe [(x, x); (x, x)]\n\
+               | nested x = describe [(x, x); (x, x)]\n\
              def main = (both True [False;], loud [True;], nested 1)\n"
         ),
         r#"("yes & no,.", "yes,.yes,.!", "int 1+int 1,int 1+int 1,.")"#,
@@ -145,7 +236,7 @@ fn a_trait_can_require_another() {
         \x20   | (x :: a, y :: b) -> before x y or (same x y and before a b)\n\
         }\n\
         fun atMost : Ranked a => a -> a -> Bool\n\
-        fun atMost x y = before x y or same x y\n\
+          | atMost x y = before x y or same x y\n\
         def main = (atMost 1 1, atMost 2 1, atMost [1; 2] [1; 3], atMost [2;] [1; 9])\n";
     is(src, "(True, False, True, False)");
     // An `impl` of the one needs an `impl` of the other.
@@ -181,13 +272,13 @@ fn an_associated_type_is_the_impls_to_choose() {
         \x20 fun toList b = if b.word <= 1 then [;] else (b.word % 2 == 1) :: toList (Bits { word = b.word / 2 })\n\
         }\n\
         fun fromList : Container f => [Elem f;] -> f\n\
-        fun fromList xs = match xs with\n\
+          | fromList xs = match xs with\n\
         \x20 | [;] -> empty ()\n\
         \x20 | x :: rest -> insert x (fromList rest)\n\
         fun bag : [a;] -> Bag a\n\
-        fun bag xs = fromList xs\n\
+          | bag xs = fromList xs\n\
         fun bits : [Bool;] -> Bits\n\
-        fun bits xs = fromList xs\n\
+          | bits xs = fromList xs\n\
         def main = (toList (bag [\"a\"; \"b\"]), (bits [True; False; True]).word, toList (bits [False; True]))\n";
     is(src, r#"(["a"; "b"], 13, [False; True])"#);
     // What it is comes with the `impl`: a `Bits` holds `Bool`s and nothing else.
@@ -229,7 +320,7 @@ fn what_is_wrong_is_said() {
         out.contains("`String` does not implement `Describe`"),
         "{out}"
     );
-    let out = with("fun f : a -> String\nfun f x = describe x\ndef main = f 1\n");
+    let out = with("fun f : a -> String\n  | f x = describe x\ndef main = f 1\n");
     assert!(
         out.contains("this needs `Describe a`, which the signature does not ask for"),
         "{out}"
@@ -326,7 +417,7 @@ fn a_trait_crosses_the_package() {
         "@pub trait Pretty a {\n\
          \x20 fun pretty : a -> String\n\
          \x20 fun framed : a -> String\n\
-         \x20 fun framed x = \"[\" ++ pretty x ++ \"]\"\n\
+         \x20   | framed x = \"[\" ++ pretty x ++ \"]\"\n\
          }\n\
          impl Pretty Int { fun pretty n = show n }\n\
          impl Pretty [a;] where Pretty a {\n\
@@ -396,19 +487,19 @@ fn a_trait_can_be_of_several_types() {
         }\n\
         impl RoundTrip Int Bool { fun stable n witness = same (there (back n witness)) n }\n\
         fun back : Convert a b => a -> b -> b\n\
-        fun back x witness = convert x\n\
+          | back x witness = convert x\n\
         fun there : Convert b a => b -> a\n\
-        fun there y = convert y\n\
+          | there y = convert y\n\
         fun strings : [Int;] -> [String;]\n\
-        fun strings xs = convert xs\n\
+          | strings xs = convert xs\n\
         fun both : (Convert a b, Convert a c) => a -> (b, c)\n\
-        fun both x = (convert x, convert x)\n\
+          | both x = (convert x, convert x)\n\
         fun viaRound : RoundTrip a b => a -> b -> Bool\n\
-        fun viaRound x w = stable x w and same x x\n\
+          | viaRound x w = stable x w and same x x\n\
         fun pairOf : Int -> (String, Bool)\n\
-        fun pairOf n = both n\n\
+          | pairOf n = both n\n\
         fun flag : Bool -> Int\n\
-        fun flag b = convert b\n\
+          | flag b = convert b\n\
         def main = (strings [1; 2], pairOf 0, flag True, scale 3 (V2 { x = 1, y = 2 }),\n\
         \x20 scale True (V2 { x = 1, y = 2 }), viaRound 1 True, viaRound 5 True)\n";
     is(
@@ -424,7 +515,7 @@ fn a_trait_can_be_of_several_types() {
     let out = errors(
         "trait Convert a b { fun convert : a -> b }\n\
          impl Convert Int String { fun convert n = show n }\n\
-         fun f : Int -> Bool\nfun f n = convert n\ndef main = f 1\n",
+         fun f : Int -> Bool\n  | f n = convert n\ndef main = f 1\n",
     );
     assert!(
         out.contains("`Int Bool` does not implement `Convert`"),
@@ -442,7 +533,7 @@ fn known_dictionaries_are_specialized_away() {
     use meadow_compiler::core;
     let src = format!(
         "{DESCRIBE}fun loud : Describe a => a -> String\n\
-         fun loud x = twice x ++ \"!\"\n\
+           | loud x = twice x ++ \"!\"\n\
          fun all xs = match xs with | [;] -> \"\" | x :: rest -> loud x ++ all rest\n\
          def main = (all [1; 2], all [[True;]; [False;]], loud (1, [2;]))\n"
     );
@@ -502,7 +593,7 @@ impl Stream [t] {
 
 trait Visual s <: Stream s {
   fun showToken : s -> Token s -> String
-  fun showToken _ t = "<" ++ show t ++ ">"
+    | showToken _ t = "<" ++ show t ++ ">"
 }
 
 impl Visual String {}
@@ -519,7 +610,7 @@ fn a_trait_requiring_one_with_associated_types_can_use_them() {
     let src = format!(
         "{STREAM}
 fun first : Visual s => s -> String
-fun first s = match take1 s 0 with | Just (t, _) -> showToken s t | None -> \"empty\"
+  | first s = match take1 s 0 with | Just (t, _) -> showToken s t | None -> \"empty\"
 
 fun inferred s = match take1 s 1 with | Just (t, _) -> showToken s t | None -> \"empty\"
 
@@ -543,7 +634,7 @@ fn a_point_free_function_takes_the_dictionaries_its_type_needs() {
     let src = format!(
         "{STREAM}
 fun second : Stream s => s -> Maybe (Token s, Int)
-fun second = \\s -> take1 s 1
+  | second = \\s -> take1 s 1
 
 def main = (second \"ab\", second [1, 2])
 "

@@ -187,6 +187,7 @@ fn needs_continuation(input: &str) -> bool {
         return true;
     }
 
+    let code = strip_strings_and_comments(input);
     let multiline = input.contains('\n');
     // A blank line submits a multi-line entry. "Blank" has to mean whitespace,
     // not just empty: auto-indent puts spaces on the line before you press Enter.
@@ -198,6 +199,17 @@ fn needs_continuation(input: &str) -> bool {
     {
         return false;
     }
+    // A signature parses on its own, but it is only half a declaration: the
+    // clauses that define the name come under it. Keep reading, or the entry
+    // would be submitted as a signature for something nothing defines.
+    let last_code = code
+        .rsplit('\n')
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
+    if opens_a_signature(last_code) {
+        return true;
+    }
+
     if !multiline {
         return !parses_ok(input);
     }
@@ -210,7 +222,6 @@ fn needs_continuation(input: &str) -> bool {
         return true; // writing match / data arms — end with a blank line
     }
 
-    let code = strip_strings_and_comments(input);
     if bracket_depth(&code) > 0 {
         return true;
     }
@@ -249,6 +260,17 @@ fn needs_continuation(input: &str) -> bool {
     }
 
     !parses_ok(input)
+}
+
+/// Whether `line` is a signature with nothing defined yet: `fun f : T`, or
+/// `def x : T`, with no `=` of its own.
+///
+/// `=>` is not an `=`: `fun f : Show a => a -> String` is still a signature
+/// waiting for its clauses, while `fun f : T = e` is a whole declaration.
+fn opens_a_signature(line: &str) -> bool {
+    matches!(line.split_whitespace().next(), Some("fun") | Some("def"))
+        && line.contains(':')
+        && !line.replace("=>", "").contains('=')
 }
 
 /// Whether `input` lexes and parses (as one decl or one expression) with no errors.
@@ -471,7 +493,7 @@ fn print_banner() {
         "Alt+Enter".cyan(),
         "Ctrl+J".cyan()
     );
-    println!("  dangling operator, trailing `\\`, `| ...` arms) keeps reading.");
+    println!("  dangling operator, trailing `\\`, a signature, `| ...` arms) keeps reading.");
     println!("  End a multi-line entry with a blank line.");
     println!();
 }
@@ -895,19 +917,21 @@ impl Session {
         // still refer to `it`, but `it` is an implementation detail and a poor
         // label. Report it under the name the user actually asked about, or `_`
         // when the expression has no name of its own.
-        let (decl, label) = match item {
-            Either::Left(decl) => (decl, None),
+        // An entry is one declaration, which is one node unless it is a
+        // signature written over the clauses that define it -- then it is the
+        // signature and the binding, and both go into the line's module.
+        let (entered, label) = match item {
+            Either::Left(decls) => (decls, None),
             Either::Right(expr) => {
                 let label = expr_label(&expr);
-                (synth_def("it", expr), Some(label))
+                (vec![synth_def("it", expr)], Some(label))
             }
         };
 
         // Replay every `use` seen so far, so a qualifier stays active for the rest
         // of the session rather than only for the line that introduced it.
-        let is_use = matches!(complete::peel_use(&decl), Some(_));
         let mut decls = self.uses.clone();
-        decls.push(decl.clone());
+        decls.extend(entered.iter().cloned());
 
         let module = Located::new(
             ast::Module {
@@ -994,7 +1018,7 @@ impl Session {
             // Retyping the identical line replaces it; the same module under a new
             // alias is a separate entry, so both qualifiers stay live — which is
             // what the same two lines in a file would do.
-            if is_use {
+            for decl in entered {
                 if let Some(u) = complete::peel_use(&decl) {
                     let key = use_key(u);
                     self.uses

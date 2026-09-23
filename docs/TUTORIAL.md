@@ -523,15 +523,17 @@ def main = area 3 4
 ```
 
 Or on a line of its own, as a _signature_: `fun name : T`, or `def name : T` for
-a value. It goes anywhere in the module that defines the name -- before the
-definition, after it, or with the others at the top of the file.
+a value. A signature and the definition under it are **one declaration**: the
+clauses that define the name follow the signature, each opening with a `|` and
+naming the binding again. Writing `fun name` a second time to define it is an
+error -- Meadow has one shape for a definition, and this is it.
 
 ```meadow
 fun swap : (a, b) -> (b, a)
-fun swap (x, y) = (y, x)
+  | swap (x, y) = (y, x)
 
 def small : Int8
-def small = 5
+  | small = 5
 
 def main = (swap (1, "one"), small)
 ```
@@ -548,9 +550,9 @@ for.
 
 ```
 fun same : a -> a
-fun same x = x + 1
-  -- this definition needs a number where its signature `a -> a` has a type
-  -- variable: it is `n -> n`
+  | same x = x + 1
+    -- this definition needs a number where its signature `a -> a` has a type
+    -- variable: it is `n -> n`
 ```
 
 A function's effects are part of its type, written after `!` the way types print
@@ -559,10 +561,10 @@ so a signature also says what a function is allowed to do:
 
 ```meadow
 fun greet : String -> () ! Console
-fun greet name = println ("hello, " ++ name)
+  | greet name = println ("hello, " ++ name)
 
 fun apply : (a -> b ! e) -> a -> b ! e
-fun apply f x = f x
+  | apply f x = f x
 
 def main = apply greet "Ann"
 ```
@@ -572,9 +574,25 @@ hello, Ann
 => ()
 ```
 
+A definition may be written as several clauses, matched in the order they are
+written -- so a signature stands over as many of them as it needs:
+
+```meadow
+fun gcd : Int -> Int -> Int
+  | gcd a 0 = a
+  | gcd a b = gcd b (a % b)
+
+def main = gcd 48 18
+```
+
+```
+=> 6
+```
+
 A signature tells the checker a parameter's type before it reads the body, which
 is what lets `p.x` select from a nominal record (see [`record`](#record--named-fields)).
-`@pub` and `@test` belong on the definition, not the signature.
+`@pub` and `@test` go in front of the whole declaration, which is the signature
+line when there is one.
 
 ---
 
@@ -941,7 +959,7 @@ def main = (origin, origin.x, origin.y)
 record Point = { x : Int, y : Int }
 
 fun magnitudeSquared : Point -> Int
-fun magnitudeSquared p = p.x * p.x + p.y * p.y
+  | magnitudeSquared p = p.x * p.x + p.y * p.y
 
 fun manhattan p =
   match p with
@@ -967,7 +985,7 @@ type where you reach into it.
 record Person = { name : String, age : Int }
 
 fun birthday : Person -> Person
-fun birthday p = { p | age = p.age + 1 }
+  | birthday p = { p | age = p.age + 1 }
 
 def ann = Person { name = "Ann", age = 41 }
 
@@ -991,10 +1009,10 @@ type Point = (Int, Int)
 type Pair a = (a, a)
 
 fun add : Point -> Point -> Point
-fun add (a, b) (c, d) = (a + c, b + d)
+  | add (a, b) (c, d) = (a + c, b + d)
 
 fun swapPair : Pair a -> Pair a
-fun swapPair (x, y) = (y, x)
+  | swapPair (x, y) = (y, x)
 
 def main = (add (1, 2) (10, 20), swapPair ("l", "r"))
 ```
@@ -1021,7 +1039,7 @@ trait Describe a {
   fun describe : a -> String
 
   fun shout : a -> String
-  fun shout x = describe x ++ "!"
+    | shout x = describe x ++ "!"
 }
 
 impl Describe Int {
@@ -1047,8 +1065,13 @@ def main = (describe 7, shout 7, shout True, describe [True; False])
 => ("the number 7", "the number 7!", "BOOL", "yes, no, nothing")
 ```
 
-In a trait, `fun name : T` declares a method and `fun name args = …` gives it a
-**default**, which an `impl` that leaves the method out gets. An `impl` is for
+In a trait, `fun name : T` declares a method. Clauses under it, opening with a
+`|` exactly as a [signature](#signatures) takes them anywhere else, give the
+method a **default**, which an `impl` that leaves the method out gets. Most
+methods have no default and so are a signature and nothing else; where there is
+one it belongs to the signature, so naming the method a second time to define
+it is an error. An `impl` says only what its methods do, and never repeats a
+signature -- the trait has already declared those. An `impl` is for
 one type constructor -- `Int`, `[a;]`, `Maybe a`, `(a, b)` -- and its `where`
 says what the type's own parameters must implement: a list can be described
 when its elements can. There is one `impl` per trait and type in a whole
@@ -1071,7 +1094,7 @@ impl Describe Int {
 fun pair x y = describe x ++ " and " ++ describe y
 
 fun bracket : Describe a => a -> String
-fun bracket x = "[" ++ describe x ++ "]"
+  | bracket x = "[" ++ describe x ++ "]"
 
 def main = (pair 1 2, bracket 3)
 ```
@@ -1107,13 +1130,13 @@ impl Container (Stack a) {
 }
 
 fun fromList : Container f => [Elem f;] -> f
-fun fromList xs =
-  match xs with
-  | [;] -> empty ()
-  | x :: rest -> insert x (fromList rest)
+  | fromList xs =
+    match xs with
+    | [;] -> empty ()
+    | x :: rest -> insert x (fromList rest)
 
 fun stack : [a;] -> Stack a
-fun stack xs = fromList xs
+  | stack xs = fromList xs
 
 def main = toList (insert 0 (stack [1; 2; 3]))
 ```
@@ -1151,10 +1174,10 @@ impl Convert [a;] [b;] where Convert a b {
 }
 
 fun labels : [Int;] -> [String;]
-fun labels xs = convert xs
+  | labels xs = convert xs
 
 fun flags : [Int;] -> [Bool;]
-fun flags xs = convert xs
+  | flags xs = convert xs
 
 def main = (labels [1; 2], flags [0; 3])
 ```
@@ -1281,13 +1304,13 @@ impl Stream String {
 
 trait Visual s <: Stream s {
   fun showToken : s -> Token s -> String
-  fun showToken _ t = "<" ++ show t ++ ">"
+    | showToken _ t = "<" ++ show t ++ ">"
 }
 
 impl Visual String {}
 
 fun first : Visual s => s -> String
-fun first s = match take1 s 0 with | Just (t, _) -> showToken s t | None -> "empty"
+  | first s = match take1 s 0 with | Just (t, _) -> showToken s t | None -> "empty"
 
 def main = first "xyz"
 ```
@@ -3846,6 +3869,10 @@ a worked example.
   record needs `p`'s type known there: give the function a signature, annotate
   `(p : Point)`, or match.
 - A signature has to be as general as it says: `fun f : a -> a` cannot add one.
+- A signature and the clauses under it are one declaration: writing `fun f : T`
+  and then `fun f x = ...` declares `f` twice, and is an error. Put the clauses
+  under the signature, each opening with `| f`. The same goes for a trait
+  method and its default.
 - `where`, `trait` and `impl` are keywords now, and cannot name a value.
 - A local function that uses a trait's method is used at one type: make it a
   top-level `fun` if it has to work at two.

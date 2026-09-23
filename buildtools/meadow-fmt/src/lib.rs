@@ -747,12 +747,13 @@ trait T a {
     }
 
     /// A `type` alias and a signature start declarations of their own, rather
-    /// than continuing the body before them.
+    /// than continuing the body before them — and the clauses under a signature
+    /// hang off it, one unit in, with their bodies one unit further.
     #[test]
     fn an_alias_and_a_signature_are_declarations() {
         assert_eq!(
-            f("fun f x =\nx + 1\ntype P = (Int, Int)\nfun g : P -> Int\nfun g p =\nf 1\n"),
-            "fun f x =\n  x + 1\ntype P = (Int, Int)\nfun g : P -> Int\nfun g p =\n  f 1\n"
+            f("fun f x =\nx + 1\ntype P = (Int, Int)\nfun g : P -> Int\n| g p =\nf 1\n"),
+            "fun f x =\n  x + 1\ntype P = (Int, Int)\nfun g : P -> Int\n  | g p =\n    f 1\n"
         );
     }
 

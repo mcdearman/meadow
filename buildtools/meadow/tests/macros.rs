@@ -1309,7 +1309,7 @@ fn a_derive_that_names_nothing_is_reported() {
 fn a_trait_with_defaults_still_needs_a_macro_to_derive() {
     let src = r#"trait Greet a {
   fun greet : a -> String
-  fun greet x = "hello"
+    | greet x = "hello"
 }
 
 @derive(Greet)

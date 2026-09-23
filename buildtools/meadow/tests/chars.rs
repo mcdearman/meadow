@@ -17,7 +17,7 @@ fn char_can_be_named_as_a_type() {
         eval_main_std(
             "data Key = Press Char | Release Char\n\
              fun code : Key -> Int\n\
-             fun code k = match k with | Key.Press c -> charCode c | Key.Release c -> 0 - charCode c\n\
+               | code k = match k with | Key.Press c -> charCode c | Key.Release c -> 0 - charCode c\n\
              def main = let (b : Char) = 'b' in (code (Key.Press 'a'), code (Key.Release b))\n"
         ),
         "(97, -98)"

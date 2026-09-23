@@ -26,7 +26,7 @@ use Std.Ordering.Ordering.*
 @pub trait PartialEq a {
   fun (==) : a -> a -> Bool
   fun (!=) : a -> a -> Bool
-  fun (!=) x y = if x == y then False else True
+    | (!=) x y = if x == y then False else True
 }
 
 @pub trait Eq a <: PartialEq a {
@@ -36,16 +36,16 @@ use Std.Ordering.Ordering.*
   fun partialCmp : a -> a -> Maybe Ordering
 
   fun (<) : a -> a -> Bool
-  fun (<) x y = match partialCmp x y with | Just Less -> True | _ -> False
+    | (<) x y = match partialCmp x y with | Just Less -> True | _ -> False
 
   fun (>) : a -> a -> Bool
-  fun (>) x y = match partialCmp x y with | Just Greater -> True | _ -> False
+    | (>) x y = match partialCmp x y with | Just Greater -> True | _ -> False
 
   fun (<=) : a -> a -> Bool
-  fun (<=) x y = match partialCmp x y with | Just Less -> True | Just Equal -> True | _ -> False
+    | (<=) x y = match partialCmp x y with | Just Less -> True | Just Equal -> True | _ -> False
 
   fun (>=) : a -> a -> Bool
-  fun (>=) x y = match partialCmp x y with | Just Greater -> True | Just Equal -> True | _ -> False
+    | (>=) x y = match partialCmp x y with | Just Greater -> True | Just Equal -> True | _ -> False
 }
 
 @pub trait Ord a <: Eq a, PartialOrd a {
@@ -53,8 +53,8 @@ use Std.Ordering.Ordering.*
 }
 
 -- What `@derive(Eq)` checks each field with: that its type is `Eq`.
-fun requireEq : Eq a => a -> ()
-@pub fun requireEq x = ()
+@pub fun requireEq : Eq a => a -> ()
+  | requireEq x = ()
 
 -- What derived orderings are made of: whether a comparison found two fields
 -- equal, so that the next field decides.

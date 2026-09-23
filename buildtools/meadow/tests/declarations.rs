@@ -97,7 +97,7 @@ fn an_alias_is_as_visible_as_it_says() {
     let ok = common::eval_unit(&[
         (
             "Geo",
-            "@pub(pkg) type Point = (Int, Int)\nfun origin : Point\n@pub(pkg) fun origin = (0, 0)\n",
+            "@pub(pkg) type Point = (Int, Int)\n@pub(pkg) fun origin : Point\n  | origin = (0, 0)\n",
         ),
         (
             "",
@@ -138,7 +138,7 @@ fn a_pub_alias_crosses_the_package() {
     write(
         &root.join("geo/src/Lib.mw"),
         "@pub type Point = (Int, Int)\ntype Secret = Int\n\
-         fun norm : Point -> Int\n@pub fun norm (x, y) = x * x + y * y\n",
+         @pub fun norm : Point -> Int\n  | norm (x, y) = x * x + y * y\n",
     );
     let app = |main: &str| {
         write(
@@ -172,42 +172,43 @@ fn a_pub_alias_crosses_the_package() {
 fn a_signature_gives_a_binding_its_type() {
     is(
         "fun swap : (a, b) -> (b, a)\n\
-         fun swap (x, y) = (y, x)\n\
+           | swap (x, y) = (y, x)\n\
          fun apply : (a -> b ! e) -> a -> b ! e\n\
-         fun apply f x = f x\n\
+           | apply f x = f x\n\
          def small : Int8\n\
-         def small = 5\n\
+           | small = 5\n\
          fun names : () -> [String;]\n\
-         fun names () = [\"a\"; \"b\"]\n\
+           | names () = [\"a\"; \"b\"]\n\
          def main = let _ = apply println \"hi\" in (swap (1, \"x\"), swap (True, 2), small, names ())\n",
         r#"(("x", 1), (2, True), 5, ["a"; "b"])"#,
     );
-    // After its definition too, and for mutually recursive ones.
+    // For mutually recursive ones: each signature stands over its own clauses,
+    // and the two still see each other.
     is(
-        "fun isEven n = if n == 0 then True else isOdd (n - 1)\n\
-         fun isOdd n = if n == 0 then False else isEven (n - 1)\n\
-         fun isEven : Int -> Bool\n\
+        "fun isEven : Int -> Bool\n\
+           | isEven n = if n == 0 then True else isOdd (n - 1)\n\
          fun isOdd : Int -> Bool\n\
+           | isOdd n = if n == 0 then False else isEven (n - 1)\n\
          def main = (isEven 10, isOdd 7)\n",
         "(True, True)",
     );
-    let schemes = common::schemes_std("fun f : Int32 -> Int32\nfun f x = x + 1\n");
+    let schemes = common::schemes_std("fun f : Int32 -> Int32\n  | f x = x + 1\n");
     assert!(schemes.contains("f : Int32 -> Int32"), "{schemes}");
 }
 
 #[test]
 fn a_definition_must_be_as_general_as_its_signature() {
-    let out = errors("fun f : a -> a\nfun f x = x ++ \"s\"\ndef main = f \"1\"\n");
+    let out = errors("fun f : a -> a\n  | f x = x ++ \"s\"\ndef main = f \"1\"\n");
     assert!(
         out.contains("less general than its signature: the signature says `a -> a`, and the definition is `String -> String`"),
         "{out}"
     );
-    let out = errors("fun f : a -> a\nfun f x = x + 1\ndef main = f 1\n");
+    let out = errors("fun f : a -> a\n  | f x = x + 1\ndef main = f 1\n");
     assert!(out.contains("needs a number where its signature"), "{out}");
-    let out = errors("fun f : a -> b -> a\nfun f x y = if True then x else y\ndef main = f 1 2\n");
+    let out = errors("fun f : a -> b -> a\n  | f x y = if True then x else y\ndef main = f 1 2\n");
     assert!(out.contains("less general than its signature"), "{out}");
     // An effect the signature does not allow.
-    let out = errors("fun f : Int -> Int\nfun f x = let _ = println x in x\ndef main = f 1\n");
+    let out = errors("fun f : Int -> Int\n  | f x = let _ = println x in x\ndef main = f 1\n");
     assert!(
         out.contains("the effect `Console` is not allowed here"),
         "{out}"
@@ -221,11 +222,76 @@ fn a_signature_belongs_to_one_definition() {
         out.contains("a signature for `g`, which is not defined in this module"),
         "{out}"
     );
-    let out = errors("fun f : Int -> Int\nfun f : Int -> Int\nfun f x = x\ndef main = f 1\n");
+    let out = errors("fun f : Int -> Int\nfun f : Int -> Int\n  | f x = x\ndef main = f 1\n");
     assert!(out.contains("`f` already has a signature"), "{out}");
-    let out = errors("@pub fun f : Int -> Int\nfun f x = x\ndef main = f 1\n");
+}
+
+/// A signature and the clauses under it are one declaration, so the definition
+/// is not written out a second time with `fun`. That is Haskell's shape, and
+/// the one thing Meadow borrowed from it that did not fit: everything else
+/// here says a thing once.
+#[test]
+fn a_signature_and_its_definition_are_one_declaration() {
+    let out = errors("fun f : Int -> Int\nfun f x = x + 1\ndef main = f 1\n");
     assert!(
-        out.contains("a signature cannot carry `@pub`, `@test` or `@macro`"),
+        out.contains(
+            "`f` is declared twice -- a signature and the clauses that define it are one \
+             declaration, so write `| f … = …` under the signature rather than naming `f` again"
+        ),
+        "{out}"
+    );
+    // The same for a `def`, whose definition is a value rather than clauses.
+    let out = errors("def x : Int\ndef x = 1\ndef main = x\n");
+    assert!(out.contains("`x` is declared twice"), "{out}");
+    // And with the signature *after* the definition, which used to be allowed
+    // too. The error points at whichever of the two came second.
+    let out = errors("fun f x = x + 1\nfun f : Int -> Int\ndef main = f 1\n");
+    assert!(out.contains("`f` is declared twice"), "{out}");
+    // Attributes go in front of the whole declaration, which is the signature.
+    is(
+        "@pub fun f : Int -> Int\n  | f x = x + 1\ndef main = f 1\n",
+        "2",
+    );
+}
+
+/// The joined form means what the two declarations meant, down to the scheme
+/// inferred and the value computed.
+#[test]
+fn joined_clauses_mean_what_two_declarations_meant() {
+    is(
+        "fun gcd : Int -> Int -> Int\n\
+           | gcd a 0 = a\n\
+           | gcd a b = gcd b (a % b)\n\
+         def small : Int8\n\
+           | small = 5\n\
+         def main = (gcd 48 18, small)\n",
+        "(6, 5)",
+    );
+    // A signature with a context, over a function of no parameters: still a
+    // function, of the dictionaries its type asks for.
+    let schemes = common::schemes_std(
+        "fun twice : Int32 -> Int32\n  | twice x = x + x\n\
+         fun label : Display a => a -> String\n  | label = \\x -> display x\n",
+    );
+    assert!(schemes.contains("twice : Int32 -> Int32"), "{schemes}");
+    assert!(
+        schemes.contains("label : forall a. Display a => a -> String"),
+        "{schemes}"
+    );
+    // `@cfg` is the one attribute that reaches the signature as well as the
+    // clauses: a definition compiled out must not leave its signature behind.
+    is(
+        "@cfg(nosuchflag) fun gone : Int -> Int\n\
+           | gone x = x\n\
+         @cfg(not(nosuchflag)) fun here : Int -> Int\n\
+           | here x = x + 1\n\
+         def main = here 1\n",
+        "2",
+    );
+    // A clause that names something else is caught against the signature.
+    let out = errors("fun f : Int -> Int\n  | g x = x\ndef main = 1\n");
+    assert!(
+        out.contains("this equation defines `g`, but the signature above it is for `f`"),
         "{out}"
     );
 }
@@ -250,9 +316,9 @@ fn a_record_type_can_be_written_wherever_a_type_can() {
     // The same as a standalone signature, and inside another type.
     is(
         "fun getName : { name : String | r } -> String\n\
-         fun getName p = p.name\n\
+           | getName p = p.name\n\
          fun first : Maybe { name : String | r } -> String\n\
-         fun first m = match m with | Just p -> p.name | None -> \"\"\n\
+           | first m = match m with | Just p -> p.name | None -> \"\"\n\
          def main = (getName { name = \"x\", y = 1 }, first (Just { name = \"q\", z = 2 }))\n",
         r#"("x", "q")"#,
     );
@@ -264,13 +330,13 @@ fn a_record_type_can_be_written_wherever_a_type_can() {
 fn a_row_variable_carries_the_fields_it_stands_for() {
     is(
         "fun keep : { name : String | r } -> { name : String | r }\n\
-         fun keep p = p\n\
+           | keep p = p\n\
          def main = (keep { name = \"d\", age = 4 }).age\n",
         "4",
     );
     let out = errors(
         "fun keep : { name : String | r } -> { name : String | r }\n\
-         fun keep p = { name = p.name }\n\
+           | keep p = { name = p.name }\n\
          def main = 0\n",
     );
     assert!(out.contains("less general than its signature"), "{out}");

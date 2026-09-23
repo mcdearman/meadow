@@ -26,6 +26,20 @@ use meadow_intern::InternedString;
 use meadow_lexer::{LToken, Token, tt};
 use meadow_source::Source;
 use meadow_span::{Located, Span};
+use std::borrow::Cow;
+
+/// A name as a person writes it outside an expression: an operator in the
+/// parentheses it is declared, imported and exported with, `(>=)` and not `>=`.
+///
+/// The same rule as `meadow_hir::spell_name`, which is downstream of here and
+/// so cannot be borrowed from -- and this is the layer that knows how a name is
+/// spelled in source anyway.
+fn spelled(name: &str) -> Cow<'_, str> {
+    match name.chars().next() {
+        Some(c) if !(c.is_alphanumeric() || c == '_') => format!("({name})").into(),
+        _ => name.into(),
+    }
+}
 
 /// Parse a whole module.
 pub fn parse<'src>(
@@ -38,10 +52,16 @@ pub fn parse<'src>(
 }
 
 /// Parse a single REPL entry: either one declaration or one expression.
+///
+/// A declaration may be more than one node: `fun f : T` with its clauses under
+/// it is one thing to write and two to compile (see [`bare_decl`]).
 pub fn parse_repl<'src>(
     src: Source,
     tokens: &'src [LToken],
-) -> (Option<Either<LDecl, LExpr>>, Vec<Rich<'src, Token, Span>>) {
+) -> (
+    Option<Either<Vec<LDecl>, LExpr>>,
+    Vec<Rich<'src, Token, Span>>,
+) {
     let stream = tokens.split_spanned(Span::from(0..src.len()));
     let p = choice((decl().map(Either::Left), expr().map(Either::Right)));
     p.parse(stream).into_output_errors()
@@ -79,6 +99,7 @@ pub fn parse_decls<'src>(
     decl()
         .repeated()
         .collect::<Vec<_>>()
+        .validate(|groups, _, emitter| joined(groups, emitter))
         .parse(tokens.split_spanned(eoi))
         .into_output_errors()
 }
@@ -92,7 +113,8 @@ where
     decl()
         .repeated()
         .at_least(1)
-        .collect()
+        .collect::<Vec<_>>()
+        .validate(|groups, _, emitter| joined(groups, emitter))
         .map_with(move |decls, e| Located::new(Module { name, decls }, e.span()))
 }
 
@@ -163,8 +185,14 @@ where
     })
 }
 
+/// One written declaration, as the nodes it compiles to.
+///
+/// Nearly always exactly one; a signature joined to the clauses that define it
+/// is the exception (see [`bare_decl`]), and gives a `Sig` and a `Bind`.
+/// [`joined`] then checks, over a whole run of declarations, that nobody wrote
+/// those two apart.
 fn decl<'tokens, I>()
--> impl Parser<'tokens, I, LDecl, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+-> impl Parser<'tokens, I, Vec<LDecl>, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
@@ -172,17 +200,38 @@ where
         .repeated()
         .collect::<Vec<_>>()
         .then(bare_decl())
-        .map_with(|(attrs, d), e| {
+        .map_with(|(attrs, ds), e| {
             if attrs.is_empty() {
-                d
-            } else {
-                LDecl::new(Decl::Attributed(attrs, Box::new(d)), e.span())
+                return ds;
             }
+            ds.into_iter()
+                .map(|d| {
+                    // What a binding *is* -- exported, a test, a macro -- is
+                    // said on its definition, so the attributes go there and
+                    // the signature is left bare. `@cfg` is the exception: it
+                    // decides whether the declaration exists at all, and a
+                    // signature left behind by a definition that was compiled
+                    // out is a dangling signature, so it is copied across.
+                    let attrs = match d.value() {
+                        Decl::Sig(..) => attrs
+                            .iter()
+                            .filter(|a| &**a.name.value() == "cfg")
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                        _ => attrs.clone(),
+                    };
+                    if attrs.is_empty() {
+                        d
+                    } else {
+                        LDecl::new(Decl::Attributed(attrs, Box::new(d)), e.span())
+                    }
+                })
+                .collect()
         })
 }
 
 fn bare_decl<'tokens, I>()
--> impl Parser<'tokens, I, LDecl, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+-> impl Parser<'tokens, I, Vec<LDecl>, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
@@ -208,23 +257,13 @@ where
         // ()` is -- so it keeps the `Bind::Fun` shape; checking says its body
         // may not perform effects, as a `def`'s may not. A local one is a
         // value binding.
-        // `| gcd a b = …`: another equation for the same function. The name is
-        // written again, as it is in Haskell, so that a typo in it is caught
-        // rather than quietly defining something else.
-        let clause = just(Token::Bar)
-            .ignore_then(value_ident())
-            .then(param_pat().repeated().collect::<Vec<_>>())
-            .then_ignore(just(Token::Eq))
-            .then(expr())
-            .map(|((name, args), body)| Clause { name, args, body });
-
         let fun_bind = just(Token::Fun)
             .ignore_then(value_ident())
             .then(param_pat().repeated().collect::<Vec<_>>())
             .then(result_ty())
             .then_ignore(just(Token::Eq))
             .then(expr())
-            .then(clause.repeated().collect::<Vec<_>>())
+            .then(clause().repeated().collect::<Vec<_>>())
             .validate(|((((name, args), ret), body), rest), e, emitter| {
                 if args.is_empty() && rest.is_empty() {
                     return Bind::Fun(name, Vec::new(), ret, body);
@@ -364,37 +403,80 @@ where
             )
         });
 
-    // `fun f : T` / `def x : T` -- a binding's type with no `=` after it: the
-    // definition is elsewhere. Tried after a binding, which is what the same
-    // start with an `=` is. `fun f : (Show a, Ord b) => a -> b -> String` says
-    // what its type variables must implement.
+    // `fun f : T` / `def x : T` -- a binding's type with no `=` after it. Tried
+    // after a binding, which is what the same start with an `=` is. `fun f :
+    // (Show a, Ord b) => a -> b -> String` says what its type variables must
+    // implement.
+    //
+    // The clauses that define the binding come under the signature, each one
+    // opening with a `|`:
+    //
+    // ```text
+    // fun gcd : Int -> Int -> Int
+    //   | gcd a 0 = a
+    //   | gcd a b = gcd b (a % b)
+    // ```
+    //
+    // Signature and clauses are *one* declaration -- what ML writes as one
+    // `let`, rather than Haskell's type line followed by a second definition of
+    // the same name. It compiles to two nodes, a `Sig` and a `Bind`, because
+    // that is what a signature means downstream; [`joined`] is what makes sure
+    // nobody wrote those two nodes by hand.
     let sig_decl = just(Token::Fun)
-        .or(just(Token::Def))
-        .ignore_then(value_ident())
+        .to(true)
+        .or(just(Token::Def).to(false))
+        .then(value_ident())
         .then_ignore(just(Token::Colon))
         .then(context())
         .then(ty())
-        .map_with(|((name, bounds), ty), e| LDecl::new(Decl::Sig(name, ty, bounds), e.span()));
+        // The signature's own span, so that it ends where the type does rather
+        // than running to the bottom of the definition.
+        .map_with(|(((is_fun, name), bounds), ty), e| {
+            (
+                is_fun,
+                name.clone(),
+                LDecl::new(Decl::Sig(name, ty, bounds), e.span()),
+            )
+        })
+        .then(clause().repeated().collect::<Vec<_>>())
+        .validate(|((is_fun, name, sig), clauses), e, emitter| {
+            // No clauses: a signature and nothing under it. Resolution reports
+            // it, where it knows whether the name is defined at all.
+            match defined_by(is_fun, name, clauses, e.span(), emitter) {
+                None => vec![sig],
+                Some(bind) => vec![sig, LDecl::new(Decl::Bind(bind), e.span())],
+            }
+        });
 
-    // `trait Name a <: Super a { type Assoc a  fun m : T  fun m x = default }`.
+    // `trait Name a <: Super a { type Assoc a  fun m : T  fun m : T | m x = … }`.
     // Every item starts with a keyword, so the body needs no separators.
-    enum TraitItem {
-        Assoc(Ident, Vec<Ident>),
-        Sig(Ident, LType),
-        Default(Bind),
-    }
+    //
+    // A method with no default is a signature on its own -- which is most of
+    // what a trait holds, and is unchanged. A default is not a second item
+    // that happens to share the method's name: it belongs to the signature,
+    // and is written under it in the clauses any definition is written in.
     let trait_item = choice((
         just(Token::Type)
             .ignore_then(upper_ident())
             .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
-            .map(|(name, params)| TraitItem::Assoc(name, params)),
-        bind_decl.clone().map(TraitItem::Default),
+            .map(|(name, params)| vec![TraitItem::Assoc(name, params)]),
+        bind_decl.clone().map(|b| vec![TraitItem::Default(b)]),
+        // No `context()` here: a method's own bounds are the trait's, so a
+        // `=>` in front of its type has nothing to say.
         just(Token::Fun)
-            .or(just(Token::Def))
-            .ignore_then(value_ident())
+            .to(true)
+            .or(just(Token::Def).to(false))
+            .then(value_ident())
             .then_ignore(just(Token::Colon))
             .then(ty())
-            .map(|(name, ty)| TraitItem::Sig(name, ty)),
+            .then(clause().repeated().collect::<Vec<_>>())
+            .validate(|(((is_fun, name), ty), clauses), e, emitter| {
+                let sig = TraitItem::Sig(name.clone(), ty);
+                match defined_by(is_fun, name, clauses, e.span(), emitter) {
+                    None => vec![sig],
+                    Some(bind) => vec![sig, TraitItem::Default(bind)],
+                }
+            }),
     ));
     let trait_decl = just(Token::Trait)
         .ignore_then(upper_ident())
@@ -406,7 +488,8 @@ where
                 .collect::<Vec<_>>()
                 .delimited_by(just(Token::LBrace), just(Token::RBrace)),
         )
-        .map_with(|(((name, params), supers), items), e| {
+        .validate(|(((name, params), supers), groups), e, emitter| {
+            methods(&groups, emitter);
             let mut decl = TraitDecl {
                 name,
                 params,
@@ -415,7 +498,7 @@ where
                 sigs: Vec::new(),
                 defaults: Vec::new(),
             };
-            for item in items {
+            for item in groups.into_iter().flatten() {
                 match item {
                     TraitItem::Assoc(n, p) => decl.assocs.push((n, p)),
                     TraitItem::Sig(n, t) => decl.sigs.push((n, t)),
@@ -426,6 +509,11 @@ where
         });
 
     // `impl Name Type where Bound a { type Assoc Type = T  fun m x = … }`
+    //
+    // No signature among the items, and so nothing here to join: an `impl`
+    // says what its methods *do*, and what they are is the trait's to declare.
+    // `fun m : T` inside one reads as a method whose result type is `T`, still
+    // waiting for its `=`.
     let impl_item = choice((
         just(Token::Type)
             .ignore_then(upper_ident())
@@ -484,7 +572,7 @@ where
         )
     });
 
-    choice((
+    let one = choice((
         fixity_decl,
         mod_decl,
         use_decl,
@@ -499,8 +587,217 @@ where
         // would otherwise be read as the start of `derive : T`.
         mac_call().map_with(|m, e| LDecl::new(Decl::MacCall(m), e.span())),
         bind_decl.map_with(|bind, e| LDecl::new(Decl::Bind(bind), e.span())),
-        sig_decl,
-    ))
+    ));
+
+    // `sig_decl` last, and alone in giving more than one node back.
+    one.map(|d| vec![d]).or(sig_decl)
+}
+
+/// One equation of a function written in several: `| gcd a b = …`.
+///
+/// The name is written again, as it is in Haskell, so that a typo in it is
+/// caught rather than quietly defining something else.
+fn clause<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Clause, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    just(Token::Bar)
+        .ignore_then(value_ident())
+        .then(param_pat().repeated().collect::<Vec<_>>())
+        .then_ignore(just(Token::Eq))
+        .then(expr())
+        .map(|((name, args), body)| Clause { name, args, body })
+}
+
+/// The binding the clauses under a signature define, or `None` where there are
+/// none and the signature stands alone.
+///
+/// Shared by a top-level declaration and a trait's method, which are written
+/// alike: the signature, then its clauses. `name` is the signature's, and is
+/// the one the binding takes -- so a clause that names something else is
+/// reported and then measured against the signature anyway, rather than
+/// quietly defining whatever it said.
+fn defined_by<'a>(
+    is_fun: bool,
+    name: Ident,
+    clauses: Vec<Clause>,
+    span: Span,
+    emitter: &mut chumsky::input::Emitter<Rich<'a, Token, Span>>,
+) -> Option<Bind> {
+    let mut clauses = clauses.into_iter();
+    let head = clauses.next()?;
+    if head.name.value() != name.value() {
+        emitter.emit(Rich::custom(
+            head.name.span,
+            format!(
+                "this equation defines `{}`, but the signature above it is for `{}`",
+                spelled(head.name.value()),
+                spelled(name.value())
+            ),
+        ));
+    }
+    let rest = clauses.collect::<Vec<_>>();
+    Some(if is_fun && head.args.is_empty() && rest.is_empty() {
+        // The one case `equations` would get wrong: a `fun` with no parameters
+        // is still a function, of nothing but the trait dictionaries its type
+        // may need, so it keeps the `Bind::Fun` shape that a `def` of the same
+        // shape does not (see `fun_bind`).
+        Bind::Fun(name, Vec::new(), None, head.body)
+    } else {
+        equations(name, head.args, None, head.body, rest, span, emitter)
+    })
+}
+
+/// An item of a `trait` body: an associated type, a method's signature, or the
+/// default a method carries. One written item is one or two of these -- two
+/// only when a signature has clauses under it -- which is what lets [`methods`]
+/// see how the trait was written.
+enum TraitItem {
+    Assoc(Ident, Vec<Ident>),
+    Sig(Ident, LType),
+    Default(Bind),
+}
+
+/// Reject a method and its default written as two items of a trait.
+///
+/// ```text
+/// fun showTokens : s -> [Token s] -> String
+/// fun showTokens input ts = S.join " " (V.map (showToken input) ts)
+/// ```
+///
+/// A trait mostly holds methods with no default at all, and those stay
+/// signatures on their own -- that is the declaration, and nothing is missing
+/// from it. A *default* is part of the method rather than a second item of the
+/// same name, so it goes under the signature in clauses:
+///
+/// ```text
+/// fun showTokens : s -> [Token s] -> String
+///   | showTokens input ts = S.join " " (V.map (showToken input) ts)
+/// ```
+///
+/// Told apart the way [`joined`] tells the top-level pair apart: one written
+/// item is one group, so a signature and a default that arrived in separate
+/// groups were written as two items.
+fn methods<'a>(
+    groups: &[Vec<TraitItem>],
+    emitter: &mut chumsky::input::Emitter<Rich<'a, Token, Span>>,
+) {
+    let mut sigs: Vec<(InternedString, Span, usize)> = Vec::new();
+    let mut defaults: Vec<(InternedString, Span, usize)> = Vec::new();
+    for (i, group) in groups.iter().enumerate() {
+        let [only] = &group[..] else { continue };
+        match only {
+            TraitItem::Sig(name, _) => sigs.push((*name.value(), name.span, i)),
+            TraitItem::Default(bind) => {
+                if let Some(name) = bound_name(bind) {
+                    defaults.push((*name.value(), name.span, i));
+                }
+            }
+            TraitItem::Assoc(..) => {}
+        }
+    }
+    for (name, sig_span, sig_at) in &sigs {
+        for (_, default_span, default_at) in defaults.iter().filter(|(n, ..)| n == name) {
+            let span = if default_at > sig_at {
+                *default_span
+            } else {
+                *sig_span
+            };
+            let name = spelled(name);
+            emitter.emit(Rich::custom(
+                span,
+                format!(
+                    "`{name}` is named twice in this trait -- a method and its default are one \
+                     item, so write the default as `| {name} … = …` under the signature rather \
+                     than declaring the method again"
+                ),
+            ));
+        }
+    }
+}
+
+/// Flatten a run of written declarations, rejecting a signature and a
+/// definition of the same name written as two declarations.
+///
+/// ```text
+/// fun showItem : VisualStream s => ErrorItem s -> String
+/// fun showItem item = …
+/// ```
+///
+/// is Haskell's shape, and Meadow does not have it: a signature and the clauses
+/// it stands over are one declaration, written
+///
+/// ```text
+/// fun showItem : VisualStream s => ErrorItem s -> String
+///   | showItem item = …
+/// ```
+///
+/// Told apart here, and only here, because this is the last place that still
+/// knows what was written: [`decl`] hands back the nodes of *one* declaration,
+/// so a pair that arrived in two groups was two declarations, while the joined
+/// form arrives as one group of two. Flattening loses that, which is why the
+/// check happens on the way through.
+fn joined<'a>(
+    groups: Vec<Vec<LDecl>>,
+    emitter: &mut chumsky::input::Emitter<Rich<'a, Token, Span>>,
+) -> Vec<LDecl> {
+    // Where each name was given a signature of its own, and where it was
+    // defined of its own -- both by position in the run, so the error can point
+    // at whichever of the two came second.
+    let mut sigs: Vec<(InternedString, Span, usize)> = Vec::new();
+    let mut defs: Vec<(InternedString, Span, usize)> = Vec::new();
+    for (i, group) in groups.iter().enumerate() {
+        let [only] = &group[..] else { continue };
+        match bare(only) {
+            Decl::Sig(name, ..) => sigs.push((*name.value(), name.span, i)),
+            Decl::Bind(bind) => {
+                if let Some(name) = bound_name(bind) {
+                    defs.push((*name.value(), name.span, i));
+                }
+            }
+            _ => {}
+        }
+    }
+    for (name, sig_span, sig_at) in &sigs {
+        for (_, def_span, def_at) in defs.iter().filter(|(n, ..)| n == name) {
+            let span = if def_at > sig_at {
+                *def_span
+            } else {
+                *sig_span
+            };
+            let name = spelled(name);
+            emitter.emit(Rich::custom(
+                span,
+                format!(
+                    "`{name}` is declared twice -- a signature and the clauses that define it are \
+                     one declaration, so write `| {name} … = …` under the signature rather than \
+                     naming `{name}` again"
+                ),
+            ));
+        }
+    }
+    groups.into_iter().flatten().collect()
+}
+
+/// A declaration with its attributes taken off.
+fn bare(decl: &LDecl) -> &Decl {
+    match decl.value() {
+        Decl::Attributed(_, inner) => bare(inner),
+        d => d,
+    }
+}
+
+/// The name a binding defines, when it defines exactly one.
+fn bound_name(bind: &Bind) -> Option<&Ident> {
+    match bind {
+        Bind::Fun(name, ..) => Some(name),
+        Bind::Pat(p, _) => match p.value() {
+            Pat::Var(name) => Some(name),
+            Pat::Ann(inner, _) => match inner.value() {
+                Pat::Var(name) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        },
+    }
 }
 
 /// A type after a trait's name, in an `impl` or a `where`: an atom, but never

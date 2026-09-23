@@ -2103,17 +2103,12 @@ impl Resolver {
             }
         }
 
-        if let ast::Decl::Sig(name, ..) = base.value()
-            && (vis != Vis::Private || has_test(attrs) || has_macro(attrs))
-        {
-            // What a binding is -- exported, a test -- is said once, where it
-            // is defined; a signature only says its type.
-            self.error(
-                "a signature cannot carry `@pub`, `@test` or `@macro`".to_string(),
-                format!("put it on the definition of `{}`", name.value()),
-                decl.span,
-            );
-        }
+        // A signature never carries `@pub`, `@test` or `@macro` -- not because
+        // it is rejected here, but because the parser puts an attribute on the
+        // definition of the declaration it belongs to, and a signature is only
+        // ever the other half of one (see `meadow_parser`). So `@pub` written
+        // in front of `fun f : T` reaches the clauses under it, which is where
+        // it means something.
         let hir = self.resolve_bare_decl(base);
         if vis == Vis::Exported {
             self.mark_pub(&hir);

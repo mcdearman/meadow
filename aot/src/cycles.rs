@@ -140,13 +140,25 @@ fn worth_keeping(v: Word) -> bool {
     matches!(heap::kind(v), heap::CELL | heap::MUT_ARRAY)
 }
 
-/// Can a block of this kind hold a reference at all? A string or a big
-/// integer holds bytes, and a channel, a thread or a `TVar` holds a number
-/// the scheduler looks up: the collector walks into none of them.
+/// Can a block of this kind hold a reference the collector should follow? A
+/// string or a big integer holds bytes, and a channel, a thread or a `TVar`
+/// holds a number the scheduler looks up.
+///
+/// A compact is the interesting one: it is one object, and what it holds is a
+/// region -- closed, so nothing in it points out, and never counted, so there
+/// is nothing in there for this to subtract. Walking in would be a pause the
+/// size of the region for no possible result, which is exactly what
+/// `Std.Compact` promises does not happen.
 pub(crate) fn may_cycle(v: Word) -> bool {
     !matches!(
         heap::kind(v),
-        heap::STRING | heap::BIGINT | heap::CHANNEL | heap::TASK | heap::TVAR | heap::ONCE
+        heap::STRING
+            | heap::BIGINT
+            | heap::CHANNEL
+            | heap::TASK
+            | heap::TVAR
+            | heap::ONCE
+            | heap::COMPACT
     )
 }
 

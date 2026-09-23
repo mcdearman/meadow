@@ -15,12 +15,45 @@ use meadow_core::desc;
 use std::collections::HashMap;
 
 /// A value lifted out of a heap.
-#[derive(Clone)]
 pub struct Parcel {
     /// The value's word -- or, for a block, its index in `blocks` -- and its
     /// descriptor.
     root: (Word, i64),
     blocks: Vec<Lifted>,
+    /// The regions this parcel carries a reference into, one per `Compact` it
+    /// holds. A region belongs to no thread, so a compact crosses as the
+    /// pointer it is and nothing inside it is copied -- which is what
+    /// `Std.Compact` promises. See [`crate::region`].
+    regions: Vec<*const crate::region::Region>,
+}
+
+// Safety: what a parcel holds is a copy belonging to no heap, and a region it
+// names is shared between threads by design -- closed, immutable, and counted
+// atomically. See [`crate::region`].
+unsafe impl Send for Parcel {}
+unsafe impl Sync for Parcel {}
+
+impl Clone for Parcel {
+    fn clone(&self) -> Parcel {
+        for r in &self.regions {
+            // Safety: this parcel holds a reference to each.
+            unsafe { crate::region::retain(*r) };
+        }
+        Parcel {
+            root: self.root,
+            blocks: self.blocks.clone(),
+            regions: self.regions.clone(),
+        }
+    }
+}
+
+impl Drop for Parcel {
+    fn drop(&mut self) {
+        for r in &self.regions {
+            // Safety: as above, and given up here.
+            unsafe { crate::region::release(*r) };
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -40,10 +73,12 @@ impl Parcel {
     pub fn of(v: Word, d: i64) -> Result<Parcel, String> {
         let mut blocks: Vec<Lifted> = Vec::new();
         let mut index: HashMap<Word, usize> = HashMap::new();
+        let mut regions = Vec::new();
         if d != desc::REF || !heap::is_block(v) {
             return Ok(Parcel {
                 root: (v, d),
                 blocks,
+                regions,
             });
         }
         let mut todo = vec![v];
@@ -54,6 +89,18 @@ impl Parcel {
             let first = heap::first_field(b);
             let raw = heap::kind(b) == heap::STRING || heap::kind(b) == heap::BIGINT;
             if raw {
+                continue;
+            }
+            // A compact crosses as itself: its region belongs to no thread,
+            // so the block is carried whole -- the pointer into the region
+            // and the region beside it -- and nothing in it is copied. The
+            // parcel keeps a reference to the region while it is in flight.
+            if heap::kind(b) == heap::COMPACT {
+                let r = heap::field(b, 1) as *const crate::region::Region;
+                // Safety: the block being lifted holds a reference to it, and
+                // the heap it is in keeps that block while this runs.
+                unsafe { crate::region::retain(r) };
+                regions.push(r);
                 continue;
             }
             for i in 0..heap::len(b) {
@@ -80,6 +127,7 @@ impl Parcel {
         Ok(Parcel {
             root: (0, d),
             blocks,
+            regions,
         })
     }
 
@@ -103,6 +151,22 @@ impl Parcel {
                 // block it copied is about that heap's candidate list, not
                 // this one's: a fresh block here has never been a candidate.
                 heap::set_word(v, 1, b.words[1] & !heap::MARKS);
+                // A compact arrives naming the region it always named, and
+                // that block holds two references into it: its own, given up
+                // when the block dies, and the one its field holds, given up
+                // where that field is erased.
+                if heap::kind(v) == heap::COMPACT {
+                    let r = heap::field(v, 1) as *const crate::region::Region;
+                    // Safety: the parcel holds a reference to it, so it is
+                    // alive while these are taken.
+                    unsafe {
+                        crate::region::retain(r);
+                        if heap::field_desc(v, 0) == desc::REF && heap::in_region(heap::field(v, 0))
+                        {
+                            crate::region::retain(r);
+                        }
+                    }
+                }
                 v
             })
             .collect();

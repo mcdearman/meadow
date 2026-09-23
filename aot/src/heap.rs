@@ -65,6 +65,28 @@ const DEAD: u64 = 1 << 16;
 /// Its fields were moved out before it died, so there is nothing in it to
 /// erase -- see [`clean`].
 const MOVED: u64 = 1 << 17;
+/// The count a block inside a compact region is given on top of the
+/// references it has. It does two things at once, and [`crate::region`] has
+/// both: it puts the count out of reach of zero, so such a block is never
+/// freed on its own and never looks unique to the code that loads its fields;
+/// and it puts the count somewhere no ordinary block's ever is, so a share or
+/// an erase can tell it is touching a region from the count it has loaded
+/// anyway.
+pub const STICKY: u32 = 1 << 30;
+
+/// A count this big is a block inside a compact region and nothing else: half
+/// the bias, so no amount of drift in either direction is mistaken either
+/// way. `meadow_llvm::emit`'s helpers test the same number inline.
+pub const REGION_FLOOR: u32 = STICKY / 2;
+
+/// Is `v` a block inside a compact region? Ask only of a word a descriptor
+/// says is a reference: an `Int` that happens to be even is not an address.
+#[inline]
+pub fn in_region(v: Word) -> bool {
+    // Safety: a live block's count.
+    is_block(v) && unsafe { *(v as *const u32) } >= REGION_FLOOR
+}
+
 /// Its kind is one a cycle can contain: a `Ref` or a mutable array, which is
 /// where a store into a block that already exists can happen. Set where the
 /// block is built and never changed, so that the emitted counting helper can
@@ -306,7 +328,14 @@ pub fn set_field(v: Word, i: usize, x: Word, d: i64) {
 pub fn share(v: Word, d: i64) {
     if d == meadow_core::desc::REF && is_block(v) {
         // Safety: a live block's count.
-        unsafe { *(v as *mut u32) += 1 }
+        let rc = unsafe { &mut *(v as *mut u32) };
+        *rc += 1;
+        if *rc > REGION_FLOOR {
+            // One more reference into the region this block is in, which is
+            // what keeps the region alive: see [`crate::region`].
+            // Safety: the count says it is in one.
+            unsafe { crate::region::shared(v) };
+        }
     }
 }
 
@@ -319,8 +348,13 @@ pub fn erase(v: Word, d: i64) {
         if *rc == 0 {
             died(v);
         } else {
+            let region = *rc > REGION_FLOOR;
             *rc -= 1;
-            if crate::cycles::possible() {
+            if region {
+                // Safety: the count says it is in a region. The region cannot
+                // go under us: this is one of its own references.
+                unsafe { crate::region::erased(v) };
+            } else if crate::cycles::possible() {
                 crate::cycles::meadow_candidate(v);
             }
         }
@@ -591,8 +625,12 @@ impl Heap {
                             self.pending.push((ptr(x), 0));
                         }
                     } else {
+                        let region = *rc > REGION_FLOOR;
                         *rc -= 1;
-                        if cycles && matches!(kind(x), CELL | MUT_ARRAY) {
+                        if region {
+                            // Safety: the count says it is inside a region.
+                            unsafe { crate::region::erased(x) };
+                        } else if cycles && matches!(kind(x), CELL | MUT_ARRAY) {
                             self.candidate(x);
                         }
                     }
@@ -605,6 +643,13 @@ impl Heap {
             // A continuation nobody can resume now: its segments go.
             if kind(v) == STACK {
                 crate::segments::discard(meta(v));
+            }
+            // The last reference to a compact: its region loses the one this
+            // block held, and goes with it if that was the last. Everything
+            // inside it is freed there, all at once, and never here.
+            if kind(v) == COMPACT {
+                // Safety: a `Compact` block whose fields are still in it.
+                unsafe { crate::region::forget(v) };
             }
             let words = first + n;
             self.clean_block(p, words);

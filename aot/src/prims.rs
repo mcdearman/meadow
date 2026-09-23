@@ -572,18 +572,20 @@ fn prim(p: Prim, a: &[Val], d: &[i64]) -> Word {
 
         // --- compact regions ------------------------------------------------
         //
-        // Counting references, there is nothing to compact: a region is a
-        // box around what it holds, whose size is what that holds.
-        // A compact is its value and its region, which every compact made
-        // from it by `compactAdd` shares: a cell holding a chain of what was
-        // put in it. Its size is what the chain reaches, each block once.
+        // A region is memory outside every heap, holding a copy of what was
+        // put in it, and the rest of the runtime treats a compact as one
+        // object: one count, freed all at once, never looked inside. See
+        // `crate::region`, which holds all of it.
+        //
+        // The value is borrowed here, as a primitive's arguments are, and the
+        // region holds a copy -- so nothing is shared and what was compacted
+        // is free to go.
         Compact => {
             let (v, vd) = arg(0).bits();
-            heap::share(v, vd);
-            heap::share(v, vd);
-            let root = heap::build(heap::ARRAY, 0, &[v, 0], &[vd, desc::INT]);
-            let region = heap::build(heap::REGION, 0, &[root], &[desc::REF]);
-            heap::build(heap::COMPACT, 0, &[v, region], &[vd, desc::REF])
+            match crate::region::compact(v, vd) {
+                Ok(c) => c,
+                Err(why) => fail(why),
+            }
         }
         GetCompact => match arg(0).block(heap::COMPACT) {
             Some(c) => {
@@ -594,30 +596,19 @@ fn prim(p: Prim, a: &[Val], d: &[i64]) -> Word {
             None => fail(format!("expected a Compact, got {}", shown(arg(0)))),
         },
         CompactAdd => match arg(0).block(heap::COMPACT) {
+            // Safety: a `Compact` block, which `block` checked.
             Some(c) => {
                 let (v, vd) = arg(1).bits();
-                let region = heap::field(c, 1);
-                // The new root takes over the region's reference to the chain.
-                let head = heap::field(region, 0);
-                heap::share(v, vd);
-                heap::share(v, vd);
-                let root = heap::build(heap::ARRAY, 0, &[v, head], &[vd, desc::REF]);
-                heap::set_field(region, 0, root, desc::REF);
-                heap::share(region, desc::REF);
-                heap::build(heap::COMPACT, 0, &[v, region], &[vd, desc::REF])
+                match unsafe { crate::region::add(c, v, vd) } {
+                    Ok(c) => c,
+                    Err(why) => fail(why),
+                }
             }
             None => fail(format!("expected a Compact, got {}", shown(arg(0)))),
         },
         CompactSize => match arg(0).block(heap::COMPACT) {
-            Some(c) => {
-                let mut roots = Vec::new();
-                let mut at = heap::field(heap::field(c, 1), 0);
-                while heap::is_block(at) {
-                    roots.push((heap::field(at, 0), heap::field_desc(at, 0)));
-                    at = heap::field(at, 1);
-                }
-                (deep_words(&roots) * 8) as Word
-            }
+            // Safety: as above.
+            Some(c) => (unsafe { crate::region::bytes(c) }) as Word,
             None => fail(format!("expected a Compact, got {}", shown(arg(0)))),
         },
 
@@ -706,25 +697,6 @@ pub fn byte_array(v: Val, what: &str) -> Vec<u8> {
 fn globals<T>(f: impl FnOnce(&mut Vec<Option<(Word, i64)>>) -> T) -> T {
     // Safety: the running thread's context.
     f(unsafe { &mut (*crate::ctx::get()).globals })
-}
-
-/// Words reachable from `v`, counting each block once.
-fn deep_words(roots: &[(Word, i64)]) -> usize {
-    let mut seen = std::collections::HashSet::new();
-    let mut stack = roots.to_vec();
-    let mut total = 0;
-    while let Some((w, d)) = stack.pop() {
-        if d != desc::REF || !heap::is_block(w) || !seen.insert(w) {
-            continue;
-        }
-        total += heap::first_field(w) + heap::len(w);
-        if heap::kind(w) != heap::STRING && heap::kind(w) != heap::BIGINT {
-            for i in 0..heap::len(w) {
-                stack.push((heap::field(w, i), heap::field_desc(w, i)));
-            }
-        }
-    }
-    total
 }
 
 // --- equality and hashing -------------------------------------------------

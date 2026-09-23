@@ -24,6 +24,7 @@ pub mod heap;
 pub mod native;
 pub mod parcel;
 pub mod prims;
+pub mod region;
 pub mod sched;
 pub mod segments;
 pub mod show;

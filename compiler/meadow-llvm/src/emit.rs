@@ -110,6 +110,17 @@ fn ties_knots(program: &Program) -> bool {
     })
 }
 
+/// Whether the program can ever hold a value inside a compact region, which
+/// is whether it makes one: a region comes from `compact` and nowhere else,
+/// and nothing can be read out of one, sent between threads or added to that
+/// did not start there. A program with no `compact` in it therefore never
+/// meets a block whose count says it is in a region, and its counting helpers
+/// do not ask -- see `aot/src/region.rs`, which is where the asking is paid
+/// for.
+fn makes_regions(program: &Program) -> bool {
+    uses(program, &[Prim::Compact, Prim::CompactAdd])
+}
+
 /// Does the program use any of these primitives anywhere?
 fn uses(program: &Program, want: &[Prim]) -> bool {
     knots(program, &|p, _| want.contains(p))
@@ -182,6 +193,10 @@ pub struct Module<'p> {
     /// Whether it can make a cycle: see [`ties_knots`]. If it cannot, its
     /// counting helpers keep no candidates and its runtime collects none.
     cycles: bool,
+    /// Whether it can make a compact region: see [`makes_regions`]. If it
+    /// cannot, no value it ever holds is inside one, so its counting helpers
+    /// do not ask.
+    regions: bool,
 }
 
 impl<'p> Module<'p> {
@@ -202,6 +217,7 @@ impl<'p> Module<'p> {
             pending_frames: Vec::new(),
             threaded: spawns(program),
             cycles: ties_knots(program),
+            regions: makes_regions(program),
         }
     }
 
@@ -521,6 +537,19 @@ impl<'p> Module<'p> {
         let rc2 = f.t();
         f.i(format!("{rc2} = sub i32 {rc}, 1"));
         f.i(format!("store i32 {rc2}, ptr {p}"));
+        // Loading the fields of a block inside a compact region is a
+        // reference into that region given up, like any other: see
+        // `aot/src/region.rs`.
+        if self.regions {
+            let inreg = f.t();
+            let (gone, on) = (f.b(), f.b());
+            f.i(format!("{inreg} = icmp ugt i32 {rc}, 536870912"));
+            f.i(format!("br i1 {inreg}, label %{gone}, label %{on}"));
+            f.label(&gone);
+            f.i(format!("call void @meadow_region_erased(i64 {v})"));
+            f.i(format!("br label %{on}"));
+            f.label(&on);
+        }
         for (n, x) in names.iter().zip(loaded) {
             let d = self.desc(*n, env);
             self.share(f, x, &d, 1);
@@ -1747,7 +1776,7 @@ impl<'p> Module<'p> {
                         "; A Meadow program, compiled by meadow-llvm: part {i}.\n"
                     );
                     out.push_str(RUNTIME);
-                    out.push_str(&helpers(self.cycles));
+                    out.push_str(&helpers(self.cycles, self.regions));
                     let _ = writeln!(
                         out,
                         "@meadow_methods = external hidden constant [{methods} x ptr]"
@@ -1792,7 +1821,7 @@ impl<'p> Module<'p> {
         let mut out = String::new();
         let _ = writeln!(out, "; A Meadow program, compiled by meadow-llvm.\n");
         out.push_str(RUNTIME);
-        out.push_str(&helpers(self.cycles));
+        out.push_str(&helpers(self.cycles, self.regions));
         out.push_str(INVOKE1);
         let _ = writeln!(out, "@meadow_aot_{fingerprint} = external global i8");
         let _ = writeln!(
@@ -1955,6 +1984,8 @@ declare i64 @meadow_text(ptr, i64)
 declare i64 @meadow_bigint(i64)
 declare void @meadow_preempted()
 declare void @meadow_candidate(i64)
+declare void @meadow_region_shared(i64)
+declare void @meadow_region_erased(i64)
 declare i64 @meadow_hash(i64, i64)
 declare i64 @meadow_equal(i64, i64, i64, i64)
 declare i64 @meadow_string_index_of(i64, i64, i64)
@@ -2223,7 +2254,7 @@ enum Entries {
 /// block whose count went down without reaching zero to the collector, which
 /// is where a cycle is noticed (`aot/src/cycles.rs`); one that cannot has no
 /// such call anywhere in it.
-fn helpers(cycles: bool) -> String {
+fn helpers(cycles: bool, regions: bool) -> String {
     // The test before the call is inline, and on a program that makes no
     // cycles it is the whole cost, so it is one mask and one compare against
     // a constant. A block is worth keeping only if it is a `Ref` or a mutable
@@ -2246,15 +2277,50 @@ cand:
     } else {
         "  br label %done\n"
     };
-    // Counting happens everywhere and a candidate is rare, so say which way
-    // the test goes: the call and its setup are laid out away from the path
-    // every decrement takes.
-    let cold = if cycles {
+    // A block inside a compact region carries far more references than it
+    // has, so the count a share or an erase has already loaded says whether
+    // it is touching one -- and the region has to be told, since that is what
+    // keeps it alive while anything points into it. `aot/src/region.rs` says
+    // why, and `aot/src/heap.rs` has the number, which must be this one.
+    let share_tail = if regions {
+        "  %inreg = icmp ugt i32 %rc2, 536870912
+  br i1 %inreg, label %rshare, label %done, !prof !0
+rshare:
+  call void @meadow_region_shared(i64 %v)
+  br label %done
+"
+        .to_string()
+    } else {
+        "  br label %done\n".to_string()
+    };
+    // The erase side asks before it takes one away, and a block in a region
+    // is never a candidate for the cycle collector: a region is closed, and
+    // nothing in it can change.
+    let erase_tail = if regions {
+        format!(
+            "  %inreg = icmp ugt i32 %rc, 536870912
+  br i1 %inreg, label %rerase, label %noreg, !prof !0
+rerase:
+  call void @meadow_region_erased(i64 %v)
+  br label %done
+noreg:
+{candidate}"
+        )
+    } else {
+        candidate.to_string()
+    };
+    // Counting happens everywhere and both of these are rare, so say which
+    // way the tests go: the calls and their setup are laid out away from the
+    // path every share and every decrement takes.
+    let cold = if cycles || regions {
         "\n!0 = !{!\"branch_weights\", i32 1, i32 4096}\n"
     } else {
         ""
     };
-    HELPERS.replace("; candidate\n", candidate) + cold
+    HELPERS
+        .replace("; region-share\n", &share_tail)
+        .replace("; candidate\n", &erase_tail)
+        + cold
 }
 
 const HELPERS: &str = "\
@@ -2270,7 +2336,7 @@ go:
   %rc = load i32, ptr %p
   %rc2 = add i32 %rc, %n
   store i32 %rc2, ptr %p
-  br label %done
+; region-share
 done:
   ret void
 }

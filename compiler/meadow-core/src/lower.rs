@@ -184,9 +184,10 @@ impl<'a> Lowerer<'a> {
             return term;
         }
         let occurrence = self.ty(at);
-        if occurrence.references_error() {
+        if occurrence.references_error() || crate::mentions_unknown(&occurrence) {
             // Only a program with a reported error gets here -- the mention is
-            // of something inference could not type -- and it will not be run
+            // of something inference could not type, or of something whose own
+            // type arguments were already given up on -- and it will not be run
             // through the checker, so there is nothing to recover.
             return term;
         }

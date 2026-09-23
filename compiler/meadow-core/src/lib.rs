@@ -979,6 +979,30 @@ pub fn is_unknown(ty: &Ty) -> bool {
     matches!(ty, InferType::Con(n, args) if args.is_empty() && &**n == "?")
 }
 
+/// Does the placeholder [`unknown`] type appear anywhere in this type?
+///
+/// Like [`meadow_infer::Type::references_error`], and asked in the same
+/// places, because the two mean the same thing: the unit has an error in it
+/// already. They are separate because they come from different places -- the
+/// checker writes `Error` where it found the fault, and lowering writes `?`
+/// where it gave up carrying a type it could not recover. Either can reach a
+/// mention whose type arguments then cannot be worked out, and neither is
+/// worth a second complaint.
+pub fn mentions_unknown(ty: &Ty) -> bool {
+    if is_unknown(ty) {
+        return true;
+    }
+    match ty {
+        InferType::Var(_) | InferType::Bound(_) | InferType::RowEmpty | InferType::Error => false,
+        InferType::Con(_, args) | InferType::Tuple(args) => args.iter().any(mentions_unknown),
+        InferType::Fun(ps, r, e) => {
+            ps.iter().any(mentions_unknown) || mentions_unknown(r) || mentions_unknown(e)
+        }
+        InferType::Record(r) => mentions_unknown(r),
+        InferType::RowExtend(_, f, rest) => mentions_unknown(f) || mentions_unknown(rest),
+    }
+}
+
 /// Replace a scheme's numbered quantifiers by types — the bridge from an
 /// inference `Scheme` to a core [`Poly`], whose binders are named.
 pub fn subst_bound(ty: &Ty, map: &HashMap<u32, Ty>) -> Ty {

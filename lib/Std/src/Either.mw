@@ -18,91 +18,91 @@ use Either.*
 @derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub data Either a b = Left a | Right b
 
-@pub fun isLeft e = match e with | Left a -> True | Right b -> False
+@pub fun isLeft (e : Either a b) : Bool = match e with | Left a -> True | Right b -> False
 
-@pub fun isRight e = match e with | Left a -> False | Right b -> True
+@pub fun isRight (e : Either a b) : Bool = match e with | Left a -> False | Right b -> True
 
 -- Collapse both sides to one type: `either f g` is the `Either` eliminator, the
 -- way `match` would do it but as a value.
-@pub fun either onLeft onRight e =
+@pub fun either (onLeft : a -> b ! e) (onRight : c -> b ! e) (e : Either a c) : b =
   match e with
   | Left a -> onLeft a
   | Right b -> onRight b
 
-@pub fun fromLeft fallback e =
+@pub fun fromLeft (fallback : a) (e : Either a b) : a =
   match e with
   | Left a -> a
   | Right b -> fallback
 
-@pub fun fromRight fallback e =
+@pub fun fromRight (fallback : a) (e : Either b a) : a =
   match e with
   | Left a -> fallback
   | Right b -> b
 
 -- Right-biased, like `Result.map`: a `Left` passes through untouched.
-@pub fun map f e =
+@pub fun map (f : a -> b ! e) (e : Either c a) : Either c b =
   match e with
   | Left a -> Left a
   | Right b -> Right (f b)
 
-@pub fun mapLeft f e =
+@pub fun mapLeft (f : a -> b ! e) (e : Either a c) : Either b c =
   match e with
   | Left a -> Left (f a)
   | Right b -> Right b
 
 -- Map both sides at once, each with its own function.
-@pub fun bimap f g e =
+@pub fun bimap (f : a -> b ! e) (g : c -> d ! e) (e : Either a c) : Either b d =
   match e with
   | Left a -> Left (f a)
   | Right b -> Right (g b)
 
-@pub fun andThen f e =
+@pub fun andThen (f : a -> Either b c ! e) (e : Either b a) : Either b c =
   match e with
   | Left a -> Left a
   | Right b -> f b
 
-@pub fun swap e =
+@pub fun swap (e : Either a b) : Either b a =
   match e with
   | Left a -> Right a
   | Right b -> Left b
 
 -- --- conversions ------------------------------------------------------------
 
-@pub fun toMaybe e =
+@pub fun toMaybe (e : Either a b) : Maybe b =
   match e with
   | Left a -> None
   | Right b -> Just b
 
-@pub fun leftToMaybe e =
+@pub fun leftToMaybe (e : Either a b) : Maybe a =
   match e with
   | Left a -> Just a
   | Right b -> None
 
-@pub fun toResult e =
+@pub fun toResult (e : Either a b) : Result a b =
   match e with
   | Left a -> Err a
   | Right b -> Ok b
 
-@pub fun fromResult r =
+@pub fun fromResult (r : Result a b) : Either a b =
   match r with
   | Err e -> Left e
   | Ok x -> Right x
 
-@pub fun fromMaybe fallback o =
+@pub fun fromMaybe (fallback : a) (o : Maybe b) : Either a b =
   match o with
   | None -> Left fallback
   | Just x -> Right x
 
 -- --- collections ------------------------------------------------------------
 
-@pub fun lefts es =
+@pub fun lefts (es : [Either a b]) : [a] =
   V.foldl (\acc e -> match e with | Left a -> V.pushBack acc a | Right b -> acc) V.empty es
 
-@pub fun rights es =
+@pub fun rights (es : [Either a b]) : [b] =
   V.foldl (\acc e -> match e with | Left a -> acc | Right b -> V.pushBack acc b) V.empty es
 
 -- Both at once, in one pass, each side keeping its original order.
-@pub fun partitionEithers es =
+@pub fun partitionEithers (es : [Either a b]) : ([a], [b]) =
   V.foldl
     (\acc e ->
       let (ls, rs) = acc in

@@ -27,28 +27,28 @@ use Std.Ordering.Ordering.*
 -- ---------------------------------------------------------------------------
 
 -- The UTF-8 bytes of `s`.
-@pub fun toBytes s = stringToBytes s
+@pub fun toBytes (s : String) : #[UInt8] = stringToBytes s
 
 -- A string from UTF-8 `bytes`.
-@pub fun fromBytes bytes = bytesToString bytes
+@pub fun fromBytes (bytes : #[UInt8]) : String = bytesToString bytes
 
 -- How many *bytes* `s` occupies.
-@pub fun byteLength s = stringByteLength s
+@pub fun byteLength (s : String) : Int = stringByteLength s
 
-@pub fun isEmpty s = byteLength s == 0
+@pub fun isEmpty (s : String) : Bool = byteLength s == 0
 
 -- ---------------------------------------------------------------------------
 -- Building
 -- ---------------------------------------------------------------------------
 
 -- `a` followed by `b`.
-@pub fun concat a b = concatStrings #[a, b]
+@pub fun concat (a : String) (b : String) : String = concatStrings #[a, b]
 
 -- `a ++ b` is `concat a b`. In the prelude, so it is in scope everywhere.
-@pub def (++) = concat
+@pub def (++) : String -> String -> String = concat
 
 -- Every string in `xs`, run together, in one allocation.
-@pub fun concatAll xs = concatStrings (V.toArray xs)
+@pub fun concatAll (xs : [String]) : String = concatStrings (V.toArray xs)
 
 fun joinLoop sep acc i xs =
   if i >= V.len xs then acc
@@ -58,28 +58,28 @@ fun joinLoop sep acc i xs =
     joinLoop sep next (i + 1) xs
 
 -- Every string in `xs`, with `sep` between them.
-@pub fun join sep xs = joinLoop sep V.empty 0 xs |> V.toArray |> concatStrings
+@pub fun join (sep : String) (xs : [String]) : String = joinLoop sep V.empty 0 xs |> V.toArray |> concatStrings
 
 fun repeatLoop acc s n = if n <= 0 then acc else repeatLoop (V.pushBack acc s) s (n - 1)
 
 -- `s` repeated `n` times.
-@pub fun repeat s n = repeatLoop V.empty s n |> V.toArray |> concatStrings
+@pub fun repeat (s : String) (n : n) : String = repeatLoop V.empty s n |> V.toArray |> concatStrings
 
 -- ---------------------------------------------------------------------------
 -- Taking it apart
 -- ---------------------------------------------------------------------------
 
 -- The bytes of `s` from `from` up to (not including) `to`, clamped to the ends.
-@pub fun slice s from to = stringSlice s from to
+@pub fun slice (s : String) (from : Int) (to : Int) : String = stringSlice s from to
 
 -- The first `n` bytes.
-@pub fun take s n = slice s 0 n
+@pub fun take (s : String) (n : Int) : String = slice s 0 n
 
 -- Everything after the first `n` bytes.
-@pub fun drop s n = slice s n (byteLength s)
+@pub fun drop (s : String) (n : Int) : String = slice s n (byteLength s)
 
 -- The byte at `i`, if there is one.
-@pub fun byteAt s i =
+@pub fun byteAt (s : String) (i : Int) : Maybe UInt8 =
   if i < 0 or i >= byteLength s then None else Just (stringByteAt s i)
 
 -- ---------------------------------------------------------------------------
@@ -88,21 +88,21 @@ fun repeatLoop acc s n = if n <= 0 then acc else repeatLoop (V.pushBack acc s) s
 
 -- The byte offset of the first `needle` in `s` at or after byte `from`, if it
 -- is there.
-@pub fun indexOfFrom needle s from =
+@pub fun indexOfFrom (needle : String) (s : String) (from : Int) : Maybe Int =
   let i = stringIndexOf s needle from in
   if i < 0 then None else Just i
 
 -- The byte offset of the first `needle` in `s`, if it is there. An empty needle
 -- is found at 0.
-@pub fun indexOf needle s = indexOfFrom needle s 0
+@pub fun indexOf (needle : String) (s : String) : Maybe Int = indexOfFrom needle s 0
 
-@pub fun contains needle s = stringIndexOf s needle 0 >= 0
+@pub fun contains (needle : String) (s : String) : Bool = stringIndexOf s needle 0 >= 0
 
-@pub fun startsWith prefix s =
+@pub fun startsWith (prefix : String) (s : String) : Bool =
   let n = byteLength prefix in
   if n > byteLength s then False else slice s 0 n == prefix
 
-@pub fun endsWith suffix s =
+@pub fun endsWith (suffix : String) (s : String) : Bool =
   let n = byteLength suffix in
   let m = byteLength s in
   if n > m then False else slice s (m - n) m == suffix
@@ -126,7 +126,7 @@ fun cutInto s sep i j out =
 -- Two passes: count the pieces, then cut them into an array of exactly that
 -- many and make the vector from it in one go -- rather than growing a vector
 -- a piece at a time, which copied its tail for every piece.
-@pub fun split sep s =
+@pub fun split (sep : String) (s : String) : [String] =
   if isEmpty sep then [s]
   else runSt (\() ->
     let out = St.newArray (pieces s sep 0 1) "" in
@@ -140,24 +140,24 @@ fun cutInto s sep i j out =
 -- How `a` sorts against `b`: byte by byte, which for UTF-8 is the order of the
 -- characters' code points, and a prefix before what it prefixes. What
 -- `Std.Sort.sortBy S.compare` and an ordered map keyed by names want.
-@pub fun compare a b =
+@pub fun compare (a : String) (b : String) : Ordering =
   match stringCompare a b with
   | n if n < 0 -> Less
   | 0 -> Equal
   | _ -> Greater
 
-@pub fun lessThan a b = stringCompare a b < 0
+@pub fun lessThan (a : String) (b : String) : Bool = stringCompare a b < 0
 
-@pub fun lessOrEqual a b = stringCompare a b <= 0
+@pub fun lessOrEqual (a : String) (b : String) : Bool = stringCompare a b <= 0
 
-@pub fun greaterThan a b = stringCompare a b > 0
+@pub fun greaterThan (a : String) (b : String) : Bool = stringCompare a b > 0
 
-@pub fun greaterOrEqual a b = stringCompare a b >= 0
+@pub fun greaterOrEqual (a : String) (b : String) : Bool = stringCompare a b >= 0
 
 -- The one that sorts first, and the one that sorts last.
-@pub fun minOf a b = if stringCompare b a < 0 then b else a
+@pub fun minOf (a : String) (b : String) : String = if stringCompare b a < 0 then b else a
 
-@pub fun maxOf a b = if stringCompare b a > 0 then b else a
+@pub fun maxOf (a : String) (b : String) : String = if stringCompare b a > 0 then b else a
 
 -- ---------------------------------------------------------------------------
 -- Whitespace
@@ -176,14 +176,14 @@ fun endOfText s i =
   else if isSpaceByte (stringByteAt s (i - 1)) then endOfText s (i - 1)
   else i
 
-@pub fun trimStart s = slice s (startOfText s 0) (byteLength s)
+@pub fun trimStart (s : String) : String = slice s (startOfText s 0) (byteLength s)
 
-@pub fun trimEnd s = slice s 0 (endOfText s (byteLength s))
+@pub fun trimEnd (s : String) : String = slice s 0 (endOfText s (byteLength s))
 
-@pub fun trim s = s |> trimStart |> trimEnd
+@pub fun trim (s : String) : String = s |> trimStart |> trimEnd
 
 -- `s` split on newlines. A trailing newline does not produce a final empty line.
-@pub fun lines s = if isEmpty s then V.empty else s |> trimTrailingNewline |> split "\n"
+@pub fun lines (s : String) : [String] = if isEmpty s then V.empty else s |> trimTrailingNewline |> split "\n"
 
 fun trimTrailingNewline s = if endsWith "\n" s then take s (byteLength s - 1) else s
 
@@ -200,9 +200,9 @@ fun upperByte (c : UInt8) = if c >= 97 and c <= 122 then c - 32 else c
 fun lowerByte (c : UInt8) = if c >= 65 and c <= 90 then c + 32 else c
 
 -- ASCII letters only; anything else is left alone.
-@pub fun toUpper s = bytesToString (mapBytes upperByte (stringToBytes s) 0 #[])
+@pub fun toUpper (s : String) : String = bytesToString (mapBytes upperByte (stringToBytes s) 0 #[])
 
-@pub fun toLower s = bytesToString (mapBytes lowerByte (stringToBytes s) 0 #[])
+@pub fun toLower (s : String) : String = bytesToString (mapBytes lowerByte (stringToBytes s) 0 #[])
 
 -- ---------------------------------------------------------------------------
 -- Numbers
@@ -219,7 +219,7 @@ fun digitsToString n =
   bytesToString (reverseFrom ds (arrayLen ds - 1) #[])
 
 -- `n` in base ten.
-@pub fun fromInt n =
+@pub fun fromInt (n : n) : String =
   if n == 0 then "0"
   else if n < 0 then concat "-" (digitsToString (0 - n))
   else digitsToString n
@@ -234,7 +234,7 @@ fun digitsFrom s i acc =
 
 -- `s` read as a base-ten integer, with an optional leading `-`. `None` unless
 -- the whole string is digits.
-@pub fun toInt s =
+@pub fun toInt (s : String) : Maybe Int =
   if byteLength s == 0 then None
   else if stringByteAt s 0 == 45 then negateParsed (digitsAfterSign s)
   else digitsFrom s 0 0
@@ -251,14 +251,14 @@ fun negateParsed m =
 -- Everything above counts bytes. These two are the bridge to `Std.Char`, which
 -- counts Unicode scalars: `chars` decodes the UTF-8, `fromChars` encodes it.
 
-@pub fun chars s = V.fromArray (stringToChars s)
+@pub fun chars (s : String) : [Char] = V.fromArray (stringToChars s)
 
-@pub fun fromChars cs = charsToString (V.toArray cs)
+@pub fun fromChars (cs : [Char]) : String = charsToString (V.toArray cs)
 
 -- The number of *characters*, which is `byteLength` only for ASCII.
-@pub fun charLength s = arrayLen (stringToChars s)
+@pub fun charLength (s : String) : Int = arrayLen (stringToChars s)
 
-@pub fun charAt s i =
+@pub fun charAt (s : String) (i : Int) : Maybe Char =
   let cs = stringToChars s in
   if i < 0 or i >= arrayLen cs then None else Just (arrayGet cs i)
 

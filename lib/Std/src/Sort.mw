@@ -45,7 +45,7 @@ def smallRange = 16
 -- --- the public surface -------------------------------------------------------
 
 -- Sort a `Vector` by a comparison. Unstable: equal elements may be reordered.
-@pub fun sortBy cmp v =
+@pub fun sortBy (cmp : a -> a -> Ordering ! e) (v : [a]) : [a] =
   runSt (\() ->
     let cells = stThaw (V.toArray v) in
     let n = stArrayLen cells in
@@ -53,18 +53,18 @@ def smallRange = 16
     V.fromArray (stFreeze cells))
 
 -- Ascending, for the types `compare` handles.
-@pub fun sort v = sortBy compare v
+@pub fun sort (v : [a]) : [a] = sortBy compare v
 
-@pub fun sortDesc v = sortBy (\a b -> compare b a) v
+@pub fun sortDesc (v : [a]) : [a] = sortBy (\a b -> compare b a) v
 
 -- Sort by a projection: `sortOn length names`. The key is computed on every
 -- comparison rather than cached, so keep it cheap -- or use `sortBy`.
-@pub fun sortOn key v = sortBy (\a b -> compare (key a) (key b)) v
+@pub fun sortOn (key : a -> b ! e) (v : [a]) : [a] = sortBy (\a b -> compare (key a) (key b)) v
 
 -- The in-place sort itself, on a plain `Array`.
-@pub fun sortArrayBy cmp arr = arr |> V.fromArray |> sortBy cmp |> V.toArray
+@pub fun sortArrayBy (cmp : a -> a -> Ordering ! e) (arr : #[a]) : #[a] = arr |> V.fromArray |> sortBy cmp |> V.toArray
 
-@pub fun sortArray arr = sortArrayBy compare arr
+@pub fun sortArray (arr : #[a]) : #[a] = sortArrayBy compare arr
 
 -- --- the stable sort ----------------------------------------------------------
 --
@@ -74,14 +74,14 @@ def smallRange = 16
 -- keeps an empty effect row.
 
 -- Sort a `Vector` by a comparison, keeping equal elements in their order.
-@pub fun stableSortBy cmp v = v |> V.toList |> mergeSort cmp |> V.fromList
+@pub fun stableSortBy (cmp : a -> a -> Ordering) (v : [a]) : [a] = v |> V.toList |> mergeSort cmp |> V.fromList
 
-@pub fun stableSort v = stableSortBy compare v
+@pub fun stableSort (v : [a]) : [a] = stableSortBy compare v
 
 -- The same, for a `List`, with no conversion.
-@pub fun stableSortListBy cmp xs = mergeSort cmp xs
+@pub fun stableSortListBy (cmp : a -> a -> Ordering) (xs : List a) : List a = mergeSort cmp xs
 
-@pub fun stableSortList xs = mergeSort compare xs
+@pub fun stableSortList (xs : List a) : List a = mergeSort compare xs
 
 fun mergeSort cmp xs =
   match xs with
@@ -126,9 +126,9 @@ fun reverseOnto acc xs =
 
 -- --- checking -----------------------------------------------------------------
 
-@pub fun isSortedBy cmp v = sortedFrom cmp (V.toArray v) 1
+@pub fun isSortedBy (cmp : a -> a -> Ordering ! e) (v : [a]) : Bool = sortedFrom cmp (V.toArray v) 1
 
-@pub fun isSorted v = isSortedBy compare v
+@pub fun isSorted (v : [a]) : Bool = isSortedBy compare v
 
 fun sortedFrom cmp arr i =
   if i >= arrayLen arr

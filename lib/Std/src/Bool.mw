@@ -3,7 +3,7 @@
 @derive(Debug, Display)
 @pub data Bool = False | True
 
-@pub fun not b = if b then False else True
+@pub fun not (b : Bool) : Bool = if b then False else True
 
 -- --- tests -------------------------------------------------------------------
 

@@ -289,7 +289,7 @@ use ParseError.*
   = Trivial Int (Maybe (ErrorItem s)) [ErrorItem s]
   | Fancy Int [String]
 
-@pub fun errorOffset e =
+@pub fun errorOffset (e : ParseError s) : Int =
   match e with
   | Trivial o _ _ -> o
   | Fancy o _ -> o
@@ -302,7 +302,7 @@ fun orElse a b =
 -- Combine two failures. The one that got further along wins outright -- it is
 -- the more informative message; at the same offset the two are unioned, and a
 -- message of the program's own wins over a list of wishes.
-@pub fun mergeError a b =
+@pub fun mergeError (a : ParseError s) (b : ParseError s) : ParseError s =
   let oa = errorOffset a in
   let ob = errorOffset b in
   if oa > ob then a
@@ -348,20 +348,21 @@ use Parser.*
 @pub data Parser s a = Parser (s -> Int -> Reply s a)
 
 -- Apply a parser -- the one place the wrapper is opened.
-@pub fun runP (Parser f) input off = f input off
+@pub fun runP : Parser s a -> s -> Int -> Reply s a
+  | runP (Parser f) input off = f input off
 
 -- Succeed with `x`, consuming nothing.
-@pub fun pure x = Parser (\input off -> Done False x off [])
+@pub fun pure (x : a) : Parser s a = Parser (\input off -> Done False x off [])
 
 -- Fail with a message of your own, consuming nothing.
-@pub fun fail message = Parser (\input off -> Failed False (Fancy off [message]))
+@pub fun fail (message : String) : Parser s a = Parser (\input off -> Failed False (Fancy off [message]))
 
 -- Fail without consuming, without an opinion about what was wanted: the
 -- identity of `choice`.
-@pub def empty = Parser (\input off -> Failed False (Trivial off None []))
+@pub def empty : Parser s a = Parser (\input off -> Failed False (Trivial off None []))
 
 -- Apply `f` to whatever `p` produces.
-@pub fun map f p =
+@pub fun map (f : a -> b) (p : Parser s a) : Parser s b =
   Parser (\input off ->
     match runP p input off with
     | Done c a off2 hs -> Done c (f a) off2 hs
@@ -379,32 +380,32 @@ fun andThen c off2 hs reply =
 -- through a whole `bind` chain rather than just its first step; and what the
 -- first half hinted joins what the second wanted, if it fails where the first
 -- stopped.
-@pub fun bind p f =
+@pub fun bind (p : Parser s a) (f : a -> Parser s b) : Parser s b =
   Parser (\input off ->
     match runP p input off with
     | Failed c e -> Failed c e
     | Done c a off2 hs -> andThen c off2 hs (runP (f a) input off2))
 
 -- `p` then `q`, keeping `q`'s value.
-@pub fun skipThen p q = bind p (\ignored -> q)
+@pub fun skipThen (p : Parser s a) (q : Parser s b) : Parser s b = bind p (\ignored -> q)
 
 -- `p` then `q`, keeping `p`'s value.
-@pub fun thenSkip p q = bind p (\a -> map (\ignored -> a) q)
+@pub fun thenSkip (p : Parser s a) (q : Parser s b) : Parser s a = bind p (\a -> map (\ignored -> a) q)
 
 -- Apply the function `pf` yields to the value `pa` yields.
-@pub fun apply pf pa = bind pf (\f -> map f pa)
+@pub fun apply (pf : Parser s (a -> b)) (pa : Parser s a) : Parser s b = bind pf (\f -> map f pa)
 
 -- Run both, combining their results with `f`.
-@pub fun lift2 f p q = bind p (\a -> map (\b -> f a b) q)
+@pub fun lift2 (f : a -> b -> c) (p : Parser s a) (q : Parser s b) : Parser s c = bind p (\a -> map (\b -> f a b) q)
 
 -- Run all three, combining their results with `f`.
-@pub fun lift3 f p q r = bind p (\a -> bind q (\b -> map (\c -> f a b c) r))
+@pub fun lift3 (f : a -> b -> c -> d) (p : Parser s a) (q : Parser s b) (r : Parser s c) : Parser s d = bind p (\a -> bind q (\b -> map (\c -> f a b c) r))
 
 -- `p`'s value replaced by `x`.
-@pub fun mapTo x p = map (\ignored -> x) p
+@pub fun mapTo (x : a) (p : Parser s b) : Parser s a = map (\ignored -> x) p
 
 -- `p` for its effect alone.
-@pub fun void p = map (\ignored -> ()) p
+@pub fun void (p : Parser s a) : Parser s () = map (\ignored -> ()) p
 
 -- Build the parser only when it is run.
 --
@@ -412,7 +413,7 @@ fun andThen c off2 hs reply =
 -- loop while being defined. Break the cycle by wrapping the recursive use:
 --
 --   fun expr () = P.alt (P.lift2 add term (P.skipThen plus (P.defer expr))) term
-@pub fun defer f = Parser (\input off -> runP (f ()) input off)
+@pub fun defer (f : () -> Parser s a) : Parser s a = Parser (\input off -> runP (f ()) input off)
 
 -- ---------------------------------------------------------------------------
 -- Running
@@ -422,13 +423,13 @@ fun andThen c off2 hs reply =
 --
 -- This does not require that everything was consumed; follow `p` with `eof`
 -- when a trailing remainder should be an error.
-@pub fun runParser p input =
+@pub fun runParser (p : Parser s a) (input : s) : Result (ParseError s) a =
   match runP p input 0 with
   | Done _ a _ _ -> Ok a
   | Failed _ e -> Err e
 
 -- As `runParser`, but also giving the offset where parsing stopped.
-@pub fun runParserPartial p input =
+@pub fun runParserPartial (p : Parser s a) (input : s) : Result (ParseError s) (a, Int) =
   match runP p input 0 with
   | Done _ a off _ -> Ok (pair a off)
   | Failed _ e -> Err e
@@ -449,7 +450,7 @@ fun andThen c off2 hs reply =
 --
 -- A branch that consumed input commits: its failure is returned untouched.
 -- Reach for `try` when two alternatives share a prefix.
-@pub fun alt p q =
+@pub fun alt (p : Parser s a) (q : Parser s a) : Parser s a =
   Parser (\input off ->
     match runP p input off with
     | Done _ _ _ _ as ok -> ok
@@ -461,18 +462,18 @@ fun andThen c off2 hs reply =
          | other -> other))
 
 -- The first of `ps` that succeeds.
-@pub fun choice ps = V.foldl (\acc p -> alt acc p) empty ps
+@pub fun choice (ps : [Parser s a]) : Parser s a = V.foldl (\acc p -> alt acc p) empty ps
 
 -- Run `p`, but report no consumption if it fails, so `alt` will still consider
 -- the next branch. This is how you get arbitrary lookahead.
-@pub fun try p =
+@pub fun try (p : Parser s a) : Parser s a =
   Parser (\input off ->
     match runP p input off with
     | Done _ _ _ _ as ok -> ok
     | Failed _ e -> Failed False e)
 
 -- Run `p` for its result, but rewind the position either way.
-@pub fun lookAhead p =
+@pub fun lookAhead (p : Parser s a) : Parser s a =
   Parser (\input off ->
     match runP p input off with
     | Done _ a _ _ -> Done False a off []
@@ -494,7 +495,7 @@ fun found input off =
 -- Replace what `p` says it wanted, for errors raised before it consumed
 -- anything, and what it hints: the way to turn "'x' or 'y' or …" into "an
 -- identifier".
-@pub fun label what p =
+@pub fun label (what : String) (p : Parser s a) : Parser s a =
   Parser (\input off ->
     match runP p input off with
     | Failed False (Trivial o u _) if o == off -> Failed False (Trivial o u [Label what])
@@ -504,7 +505,7 @@ fun found input off =
 -- `p`, saying nothing about what it wanted when it fails or what it would
 -- have taken when it succeeds: for white space and other things an error
 -- message is better without.
-@pub fun hidden p =
+@pub fun hidden (p : Parser s a) : Parser s a =
   Parser (\input off ->
     match runP p input off with
     | Failed False (Trivial o u _) if o == off -> Failed False (Trivial o u [])
@@ -512,14 +513,14 @@ fun found input off =
     | other -> other)
 
 -- `Just` what `p` produced, or `None` if it failed without consuming.
-@pub fun optional p = alt (map Just p) (pure None)
+@pub fun optional (p : Parser s a) : Parser s (Maybe a) = alt (map Just p) (pure None)
 
 -- What `p` produced, or `x` if it failed without consuming.
-@pub fun option x p = alt p (pure x)
+@pub fun option (x : a) (p : Parser s a) : Parser s a = alt p (pure x)
 
 -- `p`'s error as a value rather than a failure, when it fails without
 -- consuming. A failure that consumed input is still one.
-@pub fun observing p =
+@pub fun observing (p : Parser s a) : Parser s (Result (ParseError s) a) =
   Parser (\input off ->
     match runP p input off with
     | Done c a off2 hs -> Done c (Ok a) off2 hs
@@ -622,13 +623,13 @@ fun rest input off = fst (takeWhile input (\t -> True) off)
 -- ---------------------------------------------------------------------------
 
 -- The offset reached.
-@pub def getOffset = Parser (\input off -> Done False off off [])
+@pub def getOffset : Parser s Int = Parser (\input off -> Done False off off [])
 
 -- The whole input: offsets are into this.
-@pub def getInput = Parser (\input off -> Done False input off [])
+@pub def getInput : Parser s s = Parser (\input off -> Done False input off [])
 
 -- `p`'s result, with the stream offsets either side of it.
-@pub fun withOffsets p =
+@pub fun withOffsets (p : Parser s a) : Parser s (a, Int, Int) =
   bind getOffset (\from -> bind p (\a -> map (\to -> (a, from, to)) getOffset))
 
 -- `p`'s result, with the span of the source it read: what a syntax tree's
@@ -654,40 +655,40 @@ fun manyLoop p input acc off consumed =
 --
 -- A `p` that can succeed without consuming would spin forever, so that is
 -- reported as an error rather than hung on.
-@pub fun many p = Parser (\input off -> manyLoop p input V.empty off False)
+@pub fun many (p : Parser s a) : Parser s [a] = Parser (\input off -> manyLoop p input V.empty off False)
 
 -- One or more of `p`.
-@pub fun some p = lift2 (\x xs -> V.pushFront xs x) p (many p)
+@pub fun some (p : Parser s a) : Parser s [a] = lift2 (\x xs -> V.pushFront xs x) p (many p)
 
 -- `many`, discarding the results.
-@pub fun skipMany p = p |> many |> void
+@pub fun skipMany (p : Parser s a) : Parser s () = p |> many |> void
 
 -- `some`, discarding the results.
-@pub fun skipSome p = p |> some |> void
+@pub fun skipSome (p : Parser s a) : Parser s () = p |> some |> void
 
 fun countLoop n p acc =
   if n <= 0 then pure acc else bind p (\x -> countLoop (n - 1) p (V.pushBack acc x))
 
 -- Exactly `n` of `p`.
-@pub fun count n p = countLoop n p V.empty
+@pub fun count (n : n) (p : Parser s a) : Parser s [a] = countLoop n p V.empty
 
 -- One or more `p`, separated by `sep`.
-@pub fun sepBy1 p sep = lift2 (\x xs -> V.pushFront xs x) p (many (skipThen sep p))
+@pub fun sepBy1 (p : Parser s a) (sep : Parser s b) : Parser s [a] = lift2 (\x xs -> V.pushFront xs x) p (many (skipThen sep p))
 
 -- Zero or more `p`, separated by `sep`.
-@pub fun sepBy p sep = alt (sepBy1 p sep) (pure V.empty)
+@pub fun sepBy (p : Parser s a) (sep : Parser s b) : Parser s [a] = alt (sepBy1 p sep) (pure V.empty)
 
 -- Zero or more `p`, each followed by `sep`.
-@pub fun endBy p sep = many (thenSkip p sep)
+@pub fun endBy (p : Parser s a) (sep : Parser s b) : Parser s [a] = many (thenSkip p sep)
 
 -- One or more `p`, each followed by `sep`.
-@pub fun endBy1 p sep = some (thenSkip p sep)
+@pub fun endBy1 (p : Parser s a) (sep : Parser s b) : Parser s [a] = some (thenSkip p sep)
 
 -- Zero or more `p` separated by `sep`, allowing a trailing `sep`.
-@pub fun sepEndBy p sep = thenSkip (sepBy p sep) (optional sep)
+@pub fun sepEndBy (p : Parser s a) (sep : Parser s b) : Parser s [a] = thenSkip (sepBy p sep) (optional sep)
 
 -- `p` between `open` and `close`, keeping only the middle result.
-@pub fun between open close p = skipThen open (thenSkip p close)
+@pub fun between (open : Parser s a) (close : Parser s b) (p : Parser s c) : Parser s c = skipThen open (thenSkip p close)
 
 fun tillLoop p stop input acc off consumed =
   match runP stop input off with
@@ -701,7 +702,7 @@ fun tillLoop p stop input acc off consumed =
            Failed consumed (Fancy off ["a repeated parser that consumes nothing"]))
 
 -- `p` repeatedly until `stop` matches. The `stop` result is discarded.
-@pub fun manyTill p stop =
+@pub fun manyTill (p : Parser s a) (stop : Parser s b) : Parser s [a] =
   Parser (\input off -> tillLoop p stop input V.empty off False)
 
 fun restL p op acc =
@@ -709,10 +710,10 @@ fun restL p op acc =
 
 -- `x`, then as many `op y` as follow, combined from the left:
 -- `chainl1 term (P.mapTo sub (C.char '-'))` reads `1-2-3` as `(1-2)-3`.
-@pub fun chainl1 p op = bind p (\x -> restL p op x)
+@pub fun chainl1 (p : Parser s a) (op : Parser s (a -> a -> a)) : Parser s a = bind p (\x -> restL p op x)
 
 -- `x`, then as many `op y` as follow, combined from the right.
-@pub fun chainr1 p op =
+@pub fun chainr1 (p : Parser s a) (op : Parser s (a -> a -> a)) : Parser s a =
   bind p (\x -> alt (bind op (\f -> map (\y -> f x y) (chainr1 p op))) (pure x))
 
 -- ---------------------------------------------------------------------------

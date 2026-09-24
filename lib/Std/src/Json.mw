@@ -39,52 +39,52 @@ use Json.*
 
 -- --- constructing --------------------------------------------------------------
 
-@pub fun jNull () = Null
+@pub fun jNull () : Json = Null
 
-@pub fun jBool b = Bool b
+@pub fun jBool (b : Bool) : Json = Bool b
 
-@pub fun jInt n = Int n
+@pub fun jInt (n : Int) : Json = Int n
 
-@pub fun jString s = String s
+@pub fun jString (s : String) : Json = String s
 
-@pub fun jArray xs = Array xs
+@pub fun jArray (xs : [Json]) : Json = Array xs
 
-@pub fun jObject fields = Object fields
+@pub fun jObject (fields : [(String, Json)]) : Json = Object fields
 
 -- --- inspecting ---------------------------------------------------------------
 
-@pub fun isNull v = match v with | Null -> True | _ -> False
+@pub fun isNull (v : Json) : Bool = match v with | Null -> True | _ -> False
 
-@pub fun asBool v = match v with | Bool b -> Just b | _ -> None
+@pub fun asBool (v : Json) : Maybe Bool = match v with | Bool b -> Just b | _ -> None
 
-@pub fun asInt v = match v with | Int n -> Just n | _ -> None
+@pub fun asInt (v : Json) : Maybe Int = match v with | Int n -> Just n | _ -> None
 
-@pub fun asFloat v =
+@pub fun asFloat (v : Json) : Maybe Float =
   match v with
   | Float x -> Just x
   | Int n -> Just (toFloat n)
   | _ -> None
 
-@pub fun asString v = match v with | String s -> Just s | _ -> None
+@pub fun asString (v : Json) : Maybe String = match v with | String s -> Just s | _ -> None
 
-@pub fun asArray v = match v with | Array xs -> Just xs | _ -> None
+@pub fun asArray (v : Json) : Maybe [Json] = match v with | Array xs -> Just xs | _ -> None
 
-@pub fun asObject v = match v with | Object fs -> Just fs | _ -> None
+@pub fun asObject (v : Json) : Maybe [(String, Json)] = match v with | Object fs -> Just fs | _ -> None
 
 -- The value at `key`, or `None` if this is not an object or has no such key.
-@pub fun get key v =
+@pub fun get (key : String) (v : Json) : Maybe Json =
   match v with
   | Object fields -> lookupField key fields
   | _ -> None
 
 -- The element at `i`, or `None`.
-@pub fun index i v =
+@pub fun index (i : Int) (v : Json) : Maybe Json =
   match v with
   | Array xs -> V.get xs i
   | _ -> None
 
 -- Follow a chain of object keys: `path ["a", "b"] v` is `v.a.b`.
-@pub fun path keys v =
+@pub fun path (keys : [String]) (v : Json) : Maybe Json =
   V.foldl (\acc k -> maybeThen (\x -> get k x) acc) (Just v) keys
 
 fun maybeThen f o =
@@ -107,14 +107,14 @@ fun lookupField key fields =
 
 -- `Ok` of the value, or `Err` of a message saying at which byte offset and
 -- what went wrong there. `parseSpanned` gives the span of the text instead.
-@pub fun parse text =
+@pub fun parse (text : a) : Result String Json =
   match P.runParser document text with
   | Ok v -> Ok v
   | Err e -> Err (P.showError e)
 
 -- `Ok` of the value, or `Err` of the span of the text the error is about and
 -- what went wrong there, for whoever shows it to point at.
-@pub fun parseSpanned text = P.parse document text
+@pub fun parseSpanned (text : a) : Result ((Int, Int), String) Json = P.parse document text
 
 -- What sits between tokens: white space, and nothing else -- JSON has no
 -- comments.
@@ -191,7 +191,7 @@ fun escape = P.choice escapes |> P.label "an escape" |> P.skipThen (C.char '\\')
 -- --- rendering ----------------------------------------------------------------
 
 -- Compact: no spaces, no newlines. `renderIndented` is below.
-@pub fun render v =
+@pub fun render (v : Json) : String =
   match v with
   | Null -> "null"
   | Bool True -> "true"
@@ -207,7 +207,7 @@ fun renderMember entry =
 
 -- Two spaces per level, one element per line -- the shape `meadow fmt` uses for
 -- meadow itself.
-@pub fun renderIndented v = renderAt 0 v
+@pub fun renderIndented (v : Json) : String = renderAt 0 v
 
 fun renderAt depth v =
   match v with
@@ -238,7 +238,7 @@ fun pad depth = S.repeat "  " depth
 
 -- --- escaping -----------------------------------------------------------------
 
-@pub fun quote s = S.concatAll ["\"", escapeAll s, "\""]
+@pub fun quote (s : String) : String = S.concatAll ["\"", escapeAll s, "\""]
 
 fun escapeAll s = s |> S.toBytes |> V.fromArray |> V.concatMap escapeByte |> V.toArray |> S.fromBytes
 

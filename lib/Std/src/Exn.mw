@@ -26,37 +26,37 @@ use Std.Bool (not)
 -- `throw` where a *value* is expected. An effect operation must declare a result
 -- type and `throw` declares `()`, so `if p then 1 else throw e` does not
 -- typecheck; `raise` is the same throw with a type that fits anywhere.
-@pub fun raise e = absurd (throw e)
+@pub fun raise (e : a) : b = absurd (throw e)
 
 -- --- handling -----------------------------------------------------------------
 
 -- `Ok` of the result, or `Err` of whatever was thrown.
-@pub fun toResult act =
+@pub fun toResult (act : () -> a ! { Exn b | e }) : Result b a =
   handle act () with {
     throw e k -> Err e,
     return x -> Ok x
   }
 
 -- Run `act`; if it throws, hand the error to `recover` and use that instead.
-@pub fun catch recover act =
+@pub fun catch (recover : a -> b ! e) (act : () -> b ! { Exn a | e }) : b =
   handle act () with {
     throw e k -> recover e,
     return x -> x
   }
 
 -- Run `act`, falling back to a fixed value.
-@pub fun withDefault fallback act =
+@pub fun withDefault (fallback : a) (act : () -> a ! { Exn b | e }) : a =
   catch (\e -> fallback) act
 
 -- `Just` the result, or `None` if it threw.
-@pub fun toMaybe act =
+@pub fun toMaybe (act : () -> a ! { Exn b | e }) : Maybe a =
   handle act () with {
     throw e k -> None,
     return x -> Just x
   }
 
 -- Whether `act` threw. Mostly useful in tests.
-@pub fun threw act =
+@pub fun threw (act : () -> a ! { Exn b | e }) : Bool =
   handle act () with {
     throw e k -> True,
     return x -> False
@@ -66,20 +66,20 @@ use Std.Bool (not)
 
 -- Turn a `Result` back into a throw, so `Result`-returning code can be used
 -- inside an `Exn` computation without a `match` at every call.
-@pub fun ofResult r =
+@pub fun ofResult (r : Result a b) : b =
   match r with
   | Err e -> absurd (throw e)
   | Ok x -> x
 
-@pub fun ofMaybe e o =
+@pub fun ofMaybe (e : a) (o : Maybe b) : b =
   match o with
   | None -> absurd (throw e)
   | Just x -> x
 
 -- Throw unless the condition holds.
-@pub fun ensure cond e = if cond then () else throw e
+@pub fun ensure (cond : Bool) (e : a) : () = if cond then () else throw e
 
-@pub fun refute cond e = ensure (not cond) e
+@pub fun refute (cond : Bool) (e : a) : () = ensure (not cond) e
 
 -- An effect operation has to declare a result type, so `throw` claims `()` --
 -- but no handler in this module resumes it, so the value is never produced.

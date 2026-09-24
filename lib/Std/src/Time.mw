@@ -40,53 +40,53 @@ use Std.Collections.Vector (vecFromArray)
 
 -- --- units --------------------------------------------------------------------
 
-@pub def millisPerSecond = 1000
+@pub def millisPerSecond : Int = 1000
 
-@pub def millisPerMinute = 60000
+@pub def millisPerMinute : Int = 60000
 
-@pub def millisPerHour = 3600000
+@pub def millisPerHour : Int = 3600000
 
-@pub def millisPerDay = 86400000
+@pub def millisPerDay : Int = 86400000
 
-@pub def nanosPerMicro = 1000
+@pub def nanosPerMicro : Int = 1000
 
-@pub def nanosPerMilli = 1000000
+@pub def nanosPerMilli : Int = 1000000
 
-@pub def nanosPerSecond = 1000000000
+@pub def nanosPerSecond : Int = 1000000000
 
-@pub fun seconds n = n * millisPerSecond
+@pub fun seconds (n : Int) : Int = n * millisPerSecond
 
-@pub fun minutes n = n * millisPerMinute
+@pub fun minutes (n : Int) : Int = n * millisPerMinute
 
-@pub fun hours n = n * millisPerHour
+@pub fun hours (n : Int) : Int = n * millisPerHour
 
-@pub fun days n = n * millisPerDay
+@pub fun days (n : Int) : Int = n * millisPerDay
 
-@pub fun toSeconds ms = ms / millisPerSecond
+@pub fun toSeconds (ms : Int) : Int = ms / millisPerSecond
 
-@pub fun nanosToMicros ns = ns / nanosPerMicro
+@pub fun nanosToMicros (ns : Int) : Int = ns / nanosPerMicro
 
-@pub fun nanosToMillis ns = ns / nanosPerMilli
+@pub fun nanosToMillis (ns : Int) : Int = ns / nanosPerMilli
 
-@pub fun millisToNanos ms = ms * nanosPerMilli
+@pub fun millisToNanos (ms : Int) : Int = ms * nanosPerMilli
 
 -- --- measuring ----------------------------------------------------------------
 
 -- `(result, elapsed nanoseconds)`. Uses the monotonic clock, so a system clock
 -- adjustment part-way through cannot produce a negative duration.
-@pub fun timed act =
+@pub fun timed (act : () -> a ! { Time | e }) : (a, Int) =
   let start = monotonic () in
   let result = act () in
   let stop = monotonic () in
   (result, stop - start)
 
 -- Just the duration.
-@pub fun elapsed act =
+@pub fun elapsed (act : () -> a ! { Time | e }) : Int =
   match timed act with
   | (result, ns) -> ns
 
 -- Run `act`, print how long it took as `label: 1.23ms`, and answer its result.
-@pub fun time label act =
+@pub fun time (label : String) (act : () -> a ! { Time, Console | r }) : a =
   let (result, ns) = timed act in
   let _ = println (S.concatAll [label, ": ", formatNanos ns]) in
   result
@@ -112,7 +112,7 @@ fun repeatRuns (n : Int) act = if n <= 1 then act () else let _ = act () in repe
 
 -- Run `act` with the clock frozen at `t`: every `now` answers `t`, `monotonic`
 -- counts from zero, and `sleep` returns instantly.
-@pub fun withClock t act =
+@pub fun withClock (t : Int) (act : () -> a ! { Time | e }) : a =
   handle act () with {
     now () k -> k t,
     monotonic () k -> k 0,
@@ -123,7 +123,7 @@ fun repeatRuns (n : Int) act = if n <= 1 then act () else let _ = act () in repe
 -- Run `act` with a clock that starts at `t` and advances by `tick` on every
 -- reading -- enough to test code that compares two `now`s, and to make `sleep`
 -- move the clock without waiting.
-@pub fun withTickingClock t tick act =
+@pub fun withTickingClock (t : Int) (tick : Int) (act : () -> a ! { Time | e }) : a =
   handle act () with {
     now () k -> \s -> (k s) (s + tick),
     monotonic () k -> \s -> (k (s * 1000000)) (s + tick),
@@ -177,7 +177,7 @@ fun threeFigures (ns : Int) (unit : Int) =
 
 -- `hh:mm:ss.mmm` of a duration in milliseconds, the way a stopwatch shows it.
 -- Hours keep counting past a day.
-@pub fun formatDuration ms =
+@pub fun formatDuration (ms : Int) : String =
   let neg = ms < 0 in
   let n = abs ms in
   let body =

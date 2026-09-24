@@ -35,17 +35,17 @@
 -- reference-counts, compacting checks the value and copies nothing.
 
 -- Copy `x` into a new compact region.
-@pub fun make x = compact x
+@pub fun make (x : a) : Compact a = compact x
 
 -- The value in the region. O(1): nothing is copied back.
-@pub fun get c = getCompact c
+@pub fun get (c : Compact a) : a = getCompact c
 
 -- Copy `x` into `c`'s region, sharing what of it is there already.
-@pub fun add c x = compactAdd c x
+@pub fun add (c : Compact a) (x : b) : Compact b = compactAdd c x
 
 -- Bytes the region holds -- all of it, so every `Compact` sharing a region
 -- reports the same. The VM's figure; other engines estimate it.
-@pub fun size c = compactSize c
+@pub fun size (c : Compact a) : Int = compactSize c
 
 -- --- tests -------------------------------------------------------------------
 

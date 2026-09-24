@@ -15,21 +15,21 @@ use Tree.*
 @derive(Debug, Display)
 @pub data Tree a = Leaf | Node (Tree a) a (Tree a)
 
-@pub def empty = Leaf
+@pub def empty : Tree a = Leaf
 
-@pub fun null t = match t with | Leaf -> True | Node l x r -> False
+@pub fun null (t : Tree a) : Bool = match t with | Leaf -> True | Node l x r -> False
 
-@pub fun size t =
+@pub fun size (t : Tree a) : n =
   match t with
   | Leaf -> 0
   | Node l x r -> 1 + size l + size r
 
-@pub fun depth t =
+@pub fun depth (t : Tree a) : n =
   match t with
   | Leaf -> 0
   | Node l x r -> 1 + max (depth l) (depth r)
 
-@pub fun insert x t =
+@pub fun insert (x : a) (t : Tree a) : Tree a =
   match t with
   | Leaf -> Node Leaf x Leaf
   | Node l y r ->
@@ -37,7 +37,7 @@ use Tree.*
       else if y < x then Node l y (insert x r)
       else t
 
-@pub fun member x t =
+@pub fun member (x : a) (t : Tree a) : Bool =
   match t with
   | Leaf -> False
   | Node l y r ->
@@ -45,13 +45,13 @@ use Tree.*
       else if y < x then member x r
       else True
 
-@pub fun minElem t =
+@pub fun minElem (t : Tree a) : Maybe a =
   match t with
   | Leaf -> None
   | Node Leaf x _ -> Just x
   | Node l _ _ -> minElem l
 
-@pub fun maxElem t =
+@pub fun maxElem (t : Tree a) : Maybe a =
   match t with
   | Leaf -> None
   | Node _ x Leaf -> Just x
@@ -74,7 +74,7 @@ fun removeRoot l r =
   | (ll, Leaf) -> ll
   | (ll, rr) -> spliceMin ll rr
 
-@pub fun delete x t =
+@pub fun delete (x : a) (t : Tree a) : Tree a =
   match t with
   | Leaf -> Leaf
   | Node l y r ->
@@ -83,32 +83,32 @@ fun removeRoot l r =
       else removeRoot l r
 
 -- Every element, in order.
-@pub fun toVec t = pushInOrder V.empty t
+@pub fun toVec (t : Tree a) : [a] = pushInOrder V.empty t
 
 fun pushInOrder acc t =
   match t with
   | Leaf -> acc
   | Node l x r -> pushInOrder (V.pushBack (pushInOrder acc l) x) r
 
-@pub fun fromVec v = V.foldl (\acc x -> insert x acc) empty v
+@pub fun fromVec (v : [a]) : Tree a = V.foldl (\acc x -> insert x acc) empty v
 
 -- The same, as a `List`.
-@pub fun toList t = foldr (\x acc -> x :: acc) [;] t
+@pub fun toList (t : Tree a) : List a = foldr (\x acc -> x :: acc) [;] t
 
-@pub fun fromList xs = List.foldl (\acc x -> insert x acc) empty xs
+@pub fun fromList (xs : List a) : Tree a = List.foldl (\acc x -> insert x acc) empty xs
 
-@pub fun foldr f acc t =
+@pub fun foldr (f : a -> b -> b ! e) (acc : b) (t : Tree a) : b =
   match t with
   | Leaf -> acc
   | Node l x r -> foldr f (f x (foldr f acc r)) l
 
-@pub fun map f t =
+@pub fun map (f : a -> b ! e) (t : Tree a) : Tree b =
   match t with
   | Leaf -> Leaf
   | Node l x r -> Node (map f l) (f x) (map f r)
 
 -- Yield every element in order, for `Std.Stream`.
-@pub fun toStream t =
+@pub fun toStream (t : Tree a) : () =
   match t with
   | Leaf -> ()
   | Node l x r ->

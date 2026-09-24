@@ -38,51 +38,51 @@ use Std.Collections.Vector (vecFromArray)
 -- --- cells --------------------------------------------------------------------
 
 -- A new cell holding `x`.
-@pub fun newRef x = stNewRef x
+@pub fun newRef (x : a) : StRef b a = stNewRef x
 
-@pub fun getRef r = stGetRef r
+@pub fun getRef (r : StRef a b) : b = stGetRef r
 
-@pub fun setRef r x = stSetRef r x
+@pub fun setRef (r : StRef a b) (x : b) : () = stSetRef r x
 
 -- Apply `f` to what the cell holds.
-@pub fun modifyRef r f = stSetRef r (f (stGetRef r))
+@pub fun modifyRef (r : StRef a b) (f : b -> b ! { St a | e }) : () = stSetRef r (f (stGetRef r))
 
 -- --- arrays -------------------------------------------------------------------
 
 -- `n` copies of `x`.
-@pub fun newArray n x = stNewArray n x
+@pub fun newArray (n : Int) (x : a) : StArray b a = stNewArray n x
 
-@pub fun get a i = stGetArray a i
+@pub fun get (a : StArray a b) (i : Int) : b = stGetArray a i
 
-@pub fun set a i x = stSetArray a i x
+@pub fun set (a : StArray a b) (i : Int) (x : b) : () = stSetArray a i x
 
-@pub fun length a = stArrayLen a
+@pub fun length (a : StArray a b) : Int = stArrayLen a
 
-@pub fun modify a i f = stSetArray a i (f (stGetArray a i))
+@pub fun modify (a : StArray a b) (i : Int) (f : b -> b ! { St a | e }) : () = stSetArray a i (f (stGetArray a i))
 
-@pub fun swap a i j =
+@pub fun swap (a : StArray a b) (i : Int) (j : Int) : () =
   let x = stGetArray a i in
   let _ = stSetArray a i (stGetArray a j) in
   stSetArray a j x
 
 -- An immutable copy, as it is now.
-@pub fun freeze a = stFreeze a
+@pub fun freeze (a : StArray a b) : #[b] = stFreeze a
 
 -- A mutable copy of an `Array`.
-@pub fun thaw xs = stThaw xs
+@pub fun thaw (xs : #[a]) : StArray b a = stThaw xs
 
-@pub fun fromVec v = stThaw (V.toArray v)
+@pub fun fromVec (v : [a]) : StArray b a = stThaw (V.toArray v)
 
-@pub fun toVec a = V.fromArray (stFreeze a)
+@pub fun toVec (a : StArray a b) : [b] = V.fromArray (stFreeze a)
 
 -- --- loops --------------------------------------------------------------------
 
 -- `f lo`, `f (lo + 1)`, … up to but not including `hi`.
-@pub fun forRange lo hi f =
+@pub fun forRange (lo : n) (hi : n) (f : n -> a ! e) : () =
   if lo >= hi then () else let _ = f lo in forRange (lo + 1) hi f
 
 -- Run `step` while `cond` holds.
-@pub fun while cond step = if cond () then let _ = step () in while cond step else ()
+@pub fun while (cond : () -> Bool ! e) (step : () -> a ! e) : () = if cond () then let _ = step () in while cond step else ()
 
 -- --- tests --------------------------------------------------------------------
 

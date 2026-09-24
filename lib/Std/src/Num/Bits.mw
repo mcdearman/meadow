@@ -12,28 +12,28 @@
 
 -- The mask with the low `n` bits set, at whatever type is wanted (`lowMask 8`
 -- is 255).
-@pub fun lowMask n = (1 << n) - 1
+@pub fun lowMask (n : Int) : n = (1 << n) - 1
 
 -- Keep only the low `n` bits of `x`.
-@pub fun lowBits n x = bitAnd x (lowMask n)
+@pub fun lowBits (n : Int) (x : n) : n = bitAnd x (lowMask n)
 
 -- A single-bit mask: `bit n == 1 << n`.
-@pub fun bit n = 1 << n
+@pub fun bit (n : Int) : n = 1 << n
 
 -- Is bit `n` of `x` set?
-@pub fun testBit x n = bitAnd (x >> n) 1 == 1
+@pub fun testBit (x : n) (n : Int) : Bool = bitAnd (x >> n) 1 == 1
 
-@pub fun setBit x n = bitOr x (bit n)
+@pub fun setBit (x : n) (n : Int) : n = bitOr x (bit n)
 
-@pub fun clearBit x n = bitAnd x (bitNot (bit n))
+@pub fun clearBit (x : n) (n : Int) : n = bitAnd x (bitNot (bit n))
 
-@pub fun flipBit x n = bitXor x (bit n)
+@pub fun flipBit (x : n) (n : Int) : n = bitXor x (bit n)
 
 -- Byte `k` of `x` (0 is the least significant), as a `UInt8`.
-@pub fun byteOf k x = toUInt8 (x >> (8 * k))
+@pub fun byteOf (k : Int) (x : n) : UInt8 = toUInt8 (x >> (8 * k))
 
 -- Four bytes as one `UInt32`, `b0` least significant.
-@pub fun fromBytes4 b0 b1 b2 b3 =
+@pub fun fromBytes4 (b0 : n) (b1 : n1) (b2 : n2) (b3 : n3) : UInt32 =
   bitOr
     (bitOr (toUInt32 b0) (toUInt32 b1 << 8))
     (bitOr (toUInt32 b2 << 16) (toUInt32 b3 << 24))
@@ -45,7 +45,7 @@ fun bitsClzGo x w n =
 
 -- Leading zero bits, at `x`'s width. `countLeadingZeros (toUInt8 1) == 7`; of 0
 -- it is the whole width.
-@pub fun countLeadingZeros x = bitsClzGo x (bitWidth x) 0
+@pub fun countLeadingZeros (x : n) : Int = bitsClzGo x (bitWidth x) 0
 
 fun bitsCtzGo x w n =
   if n >= w then w
@@ -53,13 +53,13 @@ fun bitsCtzGo x w n =
   else bitsCtzGo x w (n + 1)
 
 -- Trailing zero bits. `countTrailingZeros 8 == 3`; of 0 it is the whole width.
-@pub fun countTrailingZeros x = bitsCtzGo x (bitWidth x) 0
+@pub fun countTrailingZeros (x : n) : Int = bitsCtzGo x (bitWidth x) 0
 
 -- Rotate left by `n` (0 up to the width), at `x`'s width.
-@pub fun rotateLeft x n = bitOr (x << n) (ushr x (bitWidth x - n))
+@pub fun rotateLeft (x : n) (n : Int) : n = bitOr (x << n) (ushr x (bitWidth x - n))
 
 -- Rotate right by `n` (0 up to the width).
-@pub fun rotateRight x n = bitOr (ushr x n) (x << (bitWidth x - n))
+@pub fun rotateRight (x : n) (n : Int) : n = bitOr (ushr x n) (x << (bitWidth x - n))
 
 -- --- tests -------------------------------------------------------------------
 

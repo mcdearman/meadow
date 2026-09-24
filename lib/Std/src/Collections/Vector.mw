@@ -21,7 +21,7 @@ use Std.Yield (yield)
 
 -- --- tuning ----------------------------------------------------------------
 
-@pub def vWidth = 32
+@pub def vWidth : Int = 32
 def vBits = 5
 def vMask = 31
 
@@ -251,11 +251,11 @@ fun vPushChunkFront shift node chunk =
 
 -- --- constructors -----------------------------------------------------
 
-@pub def empty = Empty
+@pub def empty : [a] = Empty
 
-@pub fun singleton x = Single #[x]
+@pub fun singleton (x : a) : [a] = Single #[x]
 
-@pub fun fromArray xs =
+@pub fun fromArray (xs : #[a]) : [a] =
   let n = arrayLen xs in
   if n == 0 then Empty
   else if n <= vWidth then Single xs
@@ -269,13 +269,13 @@ fun vPushChunkFront shift node chunk =
 
 -- --- observation ----------------------------------------------------
 
-@pub fun len v =
+@pub fun len (v : [a]) : Int =
   match v with
   | Empty -> 0
   | Single xs -> arrayLen xs
   | Full len sh oF iF mid iB oB -> len
 
-@pub fun isEmpty v = len v == 0
+@pub fun isEmpty (v : [a]) : Bool = len v == 0
 
 fun getU v i =
   match v with
@@ -298,21 +298,21 @@ fun getU v i =
             if i3 < c then arrayGet iB i3
             else arrayGet oB (i3 - c)
 
-@pub fun get v i =
+@pub fun get (v : [a]) (i : Int) : Maybe a =
   if i < 0 then None
   else if i >= len v then None
   else Just (getU v i)
 
-@pub fun getOr d v i =
+@pub fun getOr (d : a) (v : [a]) (i : Int) : a =
   if i < 0 then d
   else if i >= len v then d
   else getU v i
 
-@pub fun head v = get v 0
+@pub fun head (v : [a]) : Maybe a = get v 0
 
-@pub fun last v = get v (len v - 1)
+@pub fun last (v : [a]) : Maybe a = get v (len v - 1)
 
-@pub fun set v i x =
+@pub fun set (v : [a]) (i : Int) (x : a) : [a] =
   if i < 0 then v
   else if i >= len v then v
   else match v with
@@ -337,7 +337,7 @@ fun getU v i =
 
 -- --- push / pop back ------------------------------------------------
 
-@pub fun pushBack v x =
+@pub fun pushBack (v : [a]) (x : a) : [a] =
   match v with
   | Empty -> Single #[x]
   | Single xs ->
@@ -359,7 +359,7 @@ fun vNormalize v =
   | Empty -> Empty
   | _ -> v
 
-@pub fun popBack v =
+@pub fun popBack (v : [a]) : [a] =
   match v with
   | Empty -> Empty
   | Single xs -> vNormalize (Single (vaInit xs))
@@ -377,7 +377,7 @@ fun vNormalize v =
 
 -- --- push / pop front -----------------------------------------------
 
-@pub fun pushFront v x =
+@pub fun pushFront (v : [a]) (x : a) : [a] =
   match v with
   | Empty -> Single #[x]
   | Single xs ->
@@ -408,7 +408,7 @@ fun vPopChunkFront shift node =
           let kids2 = arraySet kids 0 first2 in
           (chunk, Branch (Just (vSizesOf shift kids2)) kids2)
 
-@pub fun popFront v =
+@pub fun popFront (v : [a]) : [a] =
   match v with
   | Empty -> Empty
   | Single xs -> vNormalize (Single (arraySlice xs 1 (arrayLen xs)))
@@ -424,47 +424,47 @@ fun vPopChunkFront shift node =
 
 -- --- conversion ---------------------------------------------------
 
-@pub fun toArray v =
+@pub fun toArray (v : [a]) : #[a] =
   match v with
   | Empty -> #[]
   | Single xs -> xs
   | Full len sh oF iF mid iB oB ->
       arrayConcat (arrayConcat (arrayConcat (arrayConcat oF iF) (vNodeToArray mid)) iB) oB
 
-@pub fun fromList xs =
+@pub fun fromList (xs : List a) : [a] =
   let rec go ys acc =
     match ys with
     | Nil -> acc
     | Cons h t -> go t (arrayPush acc h)
   in fromArray (go xs #[])
 
-@pub fun toList v =
+@pub fun toList (v : [a]) : List a =
   let xs = toArray v in
   let rec go i acc = if i < 0 then acc else go (i - 1) (Cons (arrayGet xs i) acc) in
   go (arrayLen xs - 1) Nil
 
 -- --- bulk ops (chunk-wise / rebuild) ----------------------------------
 
-@pub fun append l r =
+@pub fun append (l : [a]) (r : [a]) : [a] =
   match l with
   | Empty -> r
   | Single _ -> vaFoldl (\v x -> pushBack v x) l (toArray r)
   | Full _ _ _ _ _ _ _ -> vaFoldl (\v x -> pushBack v x) l (toArray r)
 
-@pub fun splitAt v n =
+@pub fun splitAt (v : [a]) (n : Int) : ([a], [a]) =
   let xs = toArray v in
   let k = if n < 0 then 0 else if n > arrayLen xs then arrayLen xs else n in
   (fromArray (arraySlice xs 0 k), fromArray (arraySlice xs k (arrayLen xs)))
 
-@pub fun slice v from to =
+@pub fun slice (v : [a]) (from : Int) (to : Int) : [a] =
   let xs = toArray v in
   fromArray (arraySlice xs from to)
 
-@pub fun take v n = fst (splitAt v n)
+@pub fun take (v : [a]) (n : Int) : [a] = fst (splitAt v n)
 
-@pub fun drop v n = snd (splitAt v n)
+@pub fun drop (v : [a]) (n : Int) : [a] = snd (splitAt v n)
 
-@pub fun map f v =
+@pub fun map (f : a -> b ! e) (v : [a]) : [b] =
   match v with
   | Empty -> Empty
   | Single xs -> Single (vaMap f xs)
@@ -475,78 +475,78 @@ fun vPopChunkFront shift node =
         | Branch szs kids -> Branch szs (vaMap mapNode kids)
       in Full len sh (vaMap f oF) (vaMap f iF) (mapNode mid) (vaMap f iB) (vaMap f oB)
 
-@pub fun foldl f z v = vaFoldl f z (toArray v)
+@pub fun foldl (f : a -> b -> a ! e) (z : a) (v : [b]) : a = vaFoldl f z (toArray v)
 
-@pub fun foldr f z v = vaFoldr f z (toArray v)
+@pub fun foldr (f : a -> b -> b ! e) (z : b) (v : [a]) : b = vaFoldr f z (toArray v)
 
-@pub fun filter keep v =
+@pub fun filter (keep : a -> Bool ! e) (v : [a]) : [a] =
   fromArray (vaFoldl (\acc x -> if keep x then arrayPush acc x else acc) #[] (toArray v))
 
-@pub fun reverse v = v |> toArray |> vaFoldr (\x acc -> arrayPush acc x) #[] |> fromArray
+@pub fun reverse (v : [a]) : [a] = v |> toArray |> vaFoldr (\x acc -> arrayPush acc x) #[] |> fromArray
 
-@pub fun updateAt v i f =
+@pub fun updateAt (v : [a]) (i : Int) (f : a -> a ! e) : [a] =
   match get v i with
   | None -> v
   | Just x -> set v i (f x)
 
-@pub fun forEach f v = vaFoldl (\u x -> f x) () (toArray v)
+@pub fun forEach (f : a -> () ! e) (v : [a]) : () = vaFoldl (\u x -> f x) () (toArray v)
 
 -- The `[…]`-literal target: `[1, 2, 3]` desugars to `vecFromArray #[1, 2, 3]`.
-@pub fun vecFromArray xs = fromArray xs
+@pub fun vecFromArray (xs : #[a]) : [a] = fromArray xs
 
 -- --- derived helpers (the sequence API the prelude re-exports unqualified) ---
 
-@pub fun length v = len v
+@pub fun length (v : [a]) : Int = len v
 
-@pub fun nth n v = get v n
+@pub fun nth (n : Int) (v : [a]) : Maybe a = get v n
 
-@pub fun range lo hi =
+@pub fun range (lo : n) (hi : n) : [n] =
   let rec go i acc = if i >= hi then acc else go (i + 1) (pushBack acc i)
   in go lo empty
 
-@pub fun elem x v = vaFoldl (\found y -> if found then True else x == y) False (toArray v)
+@pub fun elem (x : a) (v : [a]) : Bool = vaFoldl (\found y -> if found then True else x == y) False (toArray v)
 
-@pub fun notElem x v = if elem x v then False else True
+@pub fun notElem (x : a) (v : [a]) : Bool = if elem x v then False else True
 
-@pub fun sum v = vaFoldl (\a x -> a + x) 0 (toArray v)
+@pub fun sum (v : [n]) : n = vaFoldl (\a x -> a + x) 0 (toArray v)
 
-@pub fun product v = vaFoldl (\a x -> a * x) 1 (toArray v)
+@pub fun product (v : [n]) : n = vaFoldl (\a x -> a * x) 1 (toArray v)
 
-@pub fun sumBy f v = vaFoldl (\a x -> a + f x) 0 (toArray v)
+@pub fun sumBy (f : a -> n ! e) (v : [a]) : n = vaFoldl (\a x -> a + f x) 0 (toArray v)
 
-@pub fun all keep v = vaFoldl (\ok x -> if ok then keep x else False) True (toArray v)
+@pub fun all (keep : a -> Bool ! e) (v : [a]) : Bool = vaFoldl (\ok x -> if ok then keep x else False) True (toArray v)
 
-@pub fun any keep v = vaFoldl (\hit x -> if hit then True else keep x) False (toArray v)
+@pub fun any (keep : a -> Bool ! e) (v : [a]) : Bool = vaFoldl (\hit x -> if hit then True else keep x) False (toArray v)
 
-@pub fun find keep v =
+@pub fun find (keep : a -> Bool ! e) (v : [a]) : Maybe a =
   vaFoldl (\acc x -> match acc with | Just _ -> acc | None -> if keep x then Just x else None)
           None (toArray v)
 
-@pub fun concat vs = vaFoldl (\acc v -> append acc v) empty (toArray vs)
+@pub fun concat (vs : [[a]]) : [a] = vaFoldl (\acc v -> append acc v) empty (toArray vs)
 
-@pub fun concatMap f v = v |> map f |> concat
+@pub fun concatMap (f : a -> [b] ! e) (v : [a]) : [b] = v |> map f |> concat
 
-@pub fun replicate n x =
+@pub fun replicate (n : n) (x : a) : [a] =
   let rec go k acc = if k <= 0 then acc else go (k - 1) (pushBack acc x)
   in go n empty
 
-@pub fun takeWhile keep v =
+@pub fun takeWhile (keep : a -> Bool ! e) (v : [a]) : [a] =
   fromArray (fst (vaFoldl
     (\p x -> match p with | (acc, live) ->
         if live then (if keep x then (arrayPush acc x, True) else (acc, False)) else (acc, False))
     (#[], True) (toArray v)))
 
-@pub fun dropWhile keep v =
+@pub fun dropWhile (keep : a -> Bool ! e) (v : [a]) : [a] =
   fromArray (fst (vaFoldl
     (\p x -> match p with | (acc, dropping) ->
         if dropping then (if keep x then (acc, True) else (arrayPush acc x, False))
         else (arrayPush acc x, False))
     (#[], True) (toArray v)))
 
-@pub fun partition keep v =
+@pub fun partition (keep : a -> Bool ! e) (v : [a]) : ([a], [a]) =
   (filter keep v, filter (\x -> if keep x then False else True) v)
 
-@pub fun zipWith f a b =
+@pub fun zipWith (f : a -> b -> c ! e) (a : [a]) (b : [b]) : [c] =
   let xs = toArray a in
   let ys = toArray b in
   let n = if arrayLen xs < arrayLen ys then arrayLen xs else arrayLen ys in
@@ -554,19 +554,19 @@ fun vPopChunkFront shift node =
     if i >= n then acc else go (i + 1) (pushBack acc (f (arrayGet xs i) (arrayGet ys i)))
   in go 0 empty
 
-@pub fun zip a b = zipWith (\x y -> (x, y)) a b
+@pub fun zip (a : [a]) (b : [b]) : [(a, b)] = zipWith (\x y -> (x, y)) a b
 
-@pub fun unzip v =
+@pub fun unzip (v : [(a, b)]) : ([a], [b]) =
   (map (\p -> fst p) v, map (\p -> snd p) v)
 
-@pub fun maximum v =
+@pub fun maximum (v : [a]) : Maybe a =
   foldl (\acc x -> match acc with | None -> Just x | Just m -> if m < x then Just x else acc) None v
 
-@pub fun minimum v =
+@pub fun minimum (v : [a]) : Maybe a =
   foldl (\acc x -> match acc with | None -> Just x | Just m -> if x < m then Just x else acc) None v
 
 -- Yield every element, in order, for `Std.Stream`.
-@pub fun toStream v = forEach (\x -> yield x) v
+@pub fun toStream (v : [a]) : () = forEach (\x -> yield x) v
 
 -- --- rendering -----------------------------------------------------------------
 

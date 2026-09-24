@@ -42,6 +42,26 @@ fn pub_pkg_reaches_the_rest_of_the_package() {
     );
 }
 
+/// `@pub def x : T = v` is a binding of the annotated pattern `(x : T)`, and
+/// the name under the annotation is what is made public. It was not, once:
+/// annotating a `def` quietly took it out of its module's exports.
+#[test]
+fn an_annotated_def_is_exported_like_any_other() {
+    assert_eq!(
+        eval_unit(&[
+            (
+                "Limits",
+                "@pub def limit : Int = 40\n@pub def pair : (Int, Int) = (1, 1)\n"
+            ),
+            (
+                "",
+                "use Limits (limit, pair)\ndef main = match pair with | (a, b) -> limit + a + b\n"
+            ),
+        ]),
+        "42"
+    );
+}
+
 #[test]
 fn a_module_can_always_see_itself() {
     // Nothing here is marked, and nothing needs to be: the declarations and

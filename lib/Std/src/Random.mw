@@ -47,15 +47,15 @@ fun mix z0 =
   bitXor z2 (z2 >>> 31)
 
 -- One step: the next value and the state to continue from.
-@pub fun step s =
+@pub fun step (s : Int) : (Int, Int) =
   let s2 = s + gamma in
   (mix s2, s2)
 
 -- A state to start from. Any `Int` will do; odd ones are traditional.
-@pub fun seed n = bitOr n 1
+@pub fun seed (n : n) : n = bitOr n 1
 
 -- `lo` inclusive, `hi` exclusive, from a pure state.
-@pub fun stepBetween lo hi s =
+@pub fun stepBetween (lo : Int) (hi : Int) (s : Int) : (Int, Int) =
   match step s with
   | (v, s2) ->
       if hi <= lo
@@ -63,7 +63,7 @@ fun mix z0 =
       else (lo + posMod v (hi - lo), s2)
 
 -- In [0, 1), from the top 53 bits -- the ones a `Float` can hold exactly.
-@pub fun stepFloat s =
+@pub fun stepFloat (s : Int) : (Float, Int) =
   match step s with
   | (v, s2) -> (toFloat (v >>> 11) /. 9007199254740992.0, s2)
 
@@ -77,7 +77,7 @@ fun posMod v m =
 
 -- Run `act` with the pure generator, starting from `n`. The same `n` gives the
 -- same numbers, on every machine and every run.
-@pub fun withSeed n act =
+@pub fun withSeed (n : Int) (act : () -> a ! { Random | e }) : a =
   handle act () with {
     nextInt () k -> \s -> match step s with | (v, s2) -> (k v) s2,
     nextSeed () k -> \s -> match step s with | (v, s2) -> (k v) s2,
@@ -90,7 +90,7 @@ fun posMod v m =
   } (seed n)
 
 -- Like `withSeed`, but also hands back the final state so a run can be continued.
-@pub fun withSeedFrom n act =
+@pub fun withSeedFrom (n : Int) (act : () -> a ! { Random | e }) : (a, Int) =
   handle act () with {
     nextInt () k -> \s -> match step s with | (v, s2) -> (k v) s2,
     nextSeed () k -> \s -> match step s with | (v, s2) -> (k v) s2,
@@ -106,16 +106,16 @@ fun posMod v m =
 
 -- An effect operation takes exactly one argument, so `intBetween` takes a pair.
 -- This is the curried form to actually call.
-@pub fun between lo hi = intBetween (lo, hi)
+@pub fun between (lo : Int) (hi : Int) : Int = intBetween (lo, hi)
 
-@pub fun bool () = between 0 2 == 1
+@pub fun bool () : Bool = between 0 2 == 1
 
 -- A uniformly chosen element, or `None` if the vector is empty.
-@pub fun choose v =
+@pub fun choose (v : [a]) : Maybe a =
   if V.isEmpty v then None else V.get v (between 0 (V.len v))
 
 -- Fisher-Yates, from the back.
-@pub fun shuffle v =
+@pub fun shuffle (v : [a]) : [a] =
   let n = V.len v in
   if n <= 1 then v else shuffleFrom (n - 1) v
 

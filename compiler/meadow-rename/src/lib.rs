@@ -2043,6 +2043,7 @@ impl Resolver {
                 self.predeclare_unique(n);
                 self.predeclare_pat(p);
             }
+            ast::Pat::Ann(p, _) => self.predeclare_pat(p),
             ast::Pat::Tuple(ps)
             | ast::Pat::List(ps)
             | ast::Pat::Vector(ps)
@@ -3750,7 +3751,10 @@ fn collect_hir_pat_vars(pat: &hir::LPat, out: &mut Vec<VarId>) {
             out.push(*id.value());
             collect_hir_pat_vars(sub, out);
         }
-        hir::Pat::Tuple(ps) | hir::Pat::List(ps) | hir::Pat::Cons(_, ps) => {
+        // `@pub def x : Int = 1` is a binding of `(x : Int)`: the name is under
+        // the annotation, and has to be exported all the same.
+        hir::Pat::Ann(inner, _) => collect_hir_pat_vars(inner, out),
+        hir::Pat::Tuple(ps) | hir::Pat::List(ps) | hir::Pat::Cons(_, ps) | hir::Pat::Array(ps) => {
             ps.iter().for_each(|p| collect_hir_pat_vars(p, out))
         }
         hir::Pat::Record(fs, _) => fs.iter().for_each(|(_, p)| collect_hir_pat_vars(p, out)),

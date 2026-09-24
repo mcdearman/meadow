@@ -57,13 +57,13 @@ use HSlot.*
 def bitsPerLevel = 5
 def lastShift = 60
 
-@pub def empty = HashMap 0 (Bitmap 0 #[])
+@pub def empty : HashMap a b = HashMap 0 (Bitmap 0 #[])
 
-@pub fun singleton k v = insert k v empty
+@pub fun singleton (k : a) (v : b) : HashMap a b = insert k v empty
 
-@pub fun size m = match m with | HashMap n root -> n
+@pub fun size (m : HashMap a b) : Int = match m with | HashMap n root -> n
 
-@pub fun isEmpty m = size m == 0
+@pub fun isEmpty (m : HashMap a b) : Bool = size m == 0
 
 -- --- arrays -------------------------------------------------------------------
 
@@ -95,7 +95,7 @@ fun slotIndex bitmap bit = popCount (bitAnd bitmap (bit - 1))
 -- --- reading ------------------------------------------------------------------
 
 -- The value for `k`, if there is one.
-@pub fun lookup k m = lookupHashed (hash k) k m
+@pub fun lookup (k : a) (m : HashMap a b) : Maybe b = lookupHashed (hash k) k m
 
 fun lookupHashed h k m = match m with | HashMap n root -> lookupIn h 0 k root
 
@@ -115,12 +115,12 @@ fun lookupIn h shift k node =
        | None -> None)
   | Collision _ _ -> None
 
-@pub fun member k m =
+@pub fun member (k : a) (m : HashMap a b) : Bool =
   match lookup k m with
   | Just v -> True
   | None -> False
 
-@pub fun getOr default k m =
+@pub fun getOr (default : a) (k : b) (m : HashMap b a) : a =
   match lookup k m with
   | Just v -> v
   | None -> default
@@ -128,7 +128,7 @@ fun lookupIn h shift k node =
 -- --- writing ------------------------------------------------------------------
 
 -- Add `k`, or replace what it held.
-@pub fun insert k v m = insertHashed (hash k) k v m
+@pub fun insert (k : a) (v : b) (m : HashMap a b) : HashMap a b = insertHashed (hash k) k v m
 
 fun insertHashed h k v m =
   match m with
@@ -173,7 +173,7 @@ fun split shift h1 k1 v1 h2 k2 v2 =
     else Bitmap (bitOr (1 << i1) (1 << i2)) #[Entry h2 k2 v2, Entry h1 k1 v1]
 
 -- Remove `k`, if it is there.
-@pub fun delete k m = deleteHashed (hash k) k m
+@pub fun delete (k : a) (m : HashMap a b) : HashMap a b = deleteHashed (hash k) k m
 
 fun deleteHashed h k m =
   match m with
@@ -217,20 +217,20 @@ fun collapse node =
   | _ -> Child node
 
 -- Apply `f` to what `k` holds, if it holds anything.
-@pub fun adjust k f m =
+@pub fun adjust (k : a) (f : b -> b ! e) (m : HashMap a b) : HashMap a b =
   match lookup k m with
   | Just v -> insert k (f v) m
   | None -> m
 
 -- `insert`, combining with an existing value as `f new old`.
-@pub fun insertWith f k v m =
+@pub fun insertWith (f : a -> a -> a ! e) (k : b) (v : a) (m : HashMap b a) : HashMap b a =
   match lookup k m with
   | Just old -> insert k (f v old) m
   | None -> insert k v m
 
 -- Decide what `k` holds from what it held: `f` gets `Just` the value or `None`,
 -- and answers `Just` a value to store or `None` to remove the key.
-@pub fun alter f k m =
+@pub fun alter (f : Maybe a -> Maybe a ! e) (k : b) (m : HashMap b a) : HashMap b a =
   match f (lookup k m) with
   | Just v -> insert k v m
   | None -> delete k m
@@ -239,7 +239,7 @@ fun collapse node =
 
 -- Fold over every entry as `f acc key value`. The order is the hashes' order,
 -- which is arbitrary but the same for the same contents.
-@pub fun foldl f acc m = match m with | HashMap n root -> foldNode f acc root
+@pub fun foldl (f : a -> b -> c -> a ! e) (acc : a) (m : HashMap b c) : a = match m with | HashMap n root -> foldNode f acc root
 
 fun foldNode f acc node =
   match node with
@@ -251,22 +251,22 @@ fun foldNode f acc node =
         slots
 
 -- Every `(key, value)` pair, in the fold's order.
-@pub fun toVec m = foldl (\acc k v -> V.pushBack acc (k, v)) V.empty m
+@pub fun toVec (m : HashMap a b) : [(a, b)] = foldl (\acc k v -> V.pushBack acc (k, v)) V.empty m
 
-@pub fun keys m = foldl (\acc k v -> V.pushBack acc k) V.empty m
+@pub fun keys (m : HashMap a b) : [a] = foldl (\acc k v -> V.pushBack acc k) V.empty m
 
-@pub fun values m = foldl (\acc k v -> V.pushBack acc v) V.empty m
+@pub fun values (m : HashMap a b) : [b] = foldl (\acc k v -> V.pushBack acc v) V.empty m
 
 -- Later pairs win when a key repeats.
-@pub fun fromVec pairs = V.foldl (\m p -> match p with | (k, v) -> insert k v m) empty pairs
+@pub fun fromVec (pairs : [(a, b)]) : HashMap a b = V.foldl (\m p -> match p with | (k, v) -> insert k v m) empty pairs
 
 -- The same, as a `List`.
-@pub fun toList m = List.reverse (foldl (\acc k v -> (k, v) :: acc) [;] m)
+@pub fun toList (m : HashMap a b) : List (a, b) = List.reverse (foldl (\acc k v -> (k, v) :: acc) [;] m)
 
-@pub fun fromList pairs = List.foldl (\m p -> match p with | (k, v) -> insert k v m) empty pairs
+@pub fun fromList (pairs : List (a, b)) : HashMap a b = List.foldl (\m p -> match p with | (k, v) -> insert k v m) empty pairs
 
 -- Transform every value, keeping the keys and the shape.
-@pub fun map f m =
+@pub fun map (f : a -> b ! e) (m : HashMap c a) : HashMap c b =
   match m with
   | HashMap n root -> HashMap n (mapNode f root)
 
@@ -284,16 +284,16 @@ fun mapNode f node =
           slots)
 
 -- The entries `keep key value` accepts.
-@pub fun filter keep m = foldl (\acc k v -> if keep k v then acc else delete k acc) m m
+@pub fun filter (keep : a -> b -> Bool ! e) (m : HashMap a b) : HashMap a b = foldl (\acc k v -> if keep k v then acc else delete k acc) m m
 
 -- Every entry of both; where a key is in both, `b`'s value wins.
-@pub fun union a b = foldl (\acc k v -> insert k v acc) a b
+@pub fun union (a : HashMap a b) (b : HashMap a b) : HashMap a b = foldl (\acc k v -> insert k v acc) a b
 
 -- Run `f key value` on every entry, for its effect.
-@pub fun forEach f m = foldl (\u k v -> f k v) () m
+@pub fun forEach (f : a -> b -> () ! e) (m : HashMap a b) : () = foldl (\u k v -> f k v) () m
 
 -- Yield every `(key, value)` pair, for `Std.Stream`.
-@pub fun toStream m = forEach (\k v -> yield (k, v)) m
+@pub fun toStream (m : HashMap a b) : () = forEach (\k v -> yield (k, v)) m
 
 -- --- tests --------------------------------------------------------------------
 

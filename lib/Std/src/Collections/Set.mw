@@ -10,44 +10,44 @@ use Set.*
 @derive(Debug, Display)
 @pub data Set = Set (Tree Int)
 
-@pub def empty = Set Tree.empty
+@pub def empty : Set = Set Tree.empty
 
 fun unwrap s = match s with | Set t -> t
 
-@pub fun insert x s = s |> unwrap |> Tree.insert x |> Set
+@pub fun insert (x : Int) (s : Set) : Set = s |> unwrap |> Tree.insert x |> Set
 
-@pub fun delete x s = s |> unwrap |> Tree.delete x |> Set
+@pub fun delete (x : Int) (s : Set) : Set = s |> unwrap |> Tree.delete x |> Set
 
-@pub fun member x s = Tree.member x (unwrap s)
+@pub fun member (x : Int) (s : Set) : Bool = Tree.member x (unwrap s)
 
-@pub fun size s = Tree.size (unwrap s)
+@pub fun size (s : Set) : n = Tree.size (unwrap s)
 
-@pub fun null s = Tree.null (unwrap s)
+@pub fun null (s : Set) : Bool = Tree.null (unwrap s)
 
 -- Every element, ascending.
-@pub fun toVec s = Tree.toVec (unwrap s)
+@pub fun toVec (s : Set) : [Int] = Tree.toVec (unwrap s)
 
-@pub fun fromVec v = Set (Tree.fromVec v)
+@pub fun fromVec (v : [Int]) : Set = Set (Tree.fromVec v)
 
 -- The same, as a `List`.
-@pub fun toList s = Tree.toList (unwrap s)
+@pub fun toList (s : Set) : List Int = Tree.toList (unwrap s)
 
-@pub fun fromList xs = Set (Tree.fromList xs)
+@pub fun fromList (xs : List Int) : Set = Set (Tree.fromList xs)
 
-@pub fun minElem s = Tree.minElem (unwrap s)
+@pub fun minElem (s : Set) : Maybe Int = Tree.minElem (unwrap s)
 
-@pub fun maxElem s = Tree.maxElem (unwrap s)
+@pub fun maxElem (s : Set) : Maybe Int = Tree.maxElem (unwrap s)
 
-@pub fun union a b = V.foldl (\acc x -> insert x acc) a (toVec b)
+@pub fun union (a : Set) (b : Set) : Set = V.foldl (\acc x -> insert x acc) a (toVec b)
 
-@pub fun diff a b = V.foldl (\acc x -> delete x acc) a (toVec b)
+@pub fun diff (a : Set) (b : Set) : Set = V.foldl (\acc x -> delete x acc) a (toVec b)
 
-@pub fun intersect a b = a |> toVec |> V.filter (\x -> member x b) |> fromVec
+@pub fun intersect (a : Set) (b : Set) : Set = a |> toVec |> V.filter (\x -> member x b) |> fromVec
 
-@pub fun subset a b = V.all (\x -> member x b) (toVec a)
+@pub fun subset (a : Set) (b : Set) : Bool = V.all (\x -> member x b) (toVec a)
 
 -- Yield every element in ascending order, for `Std.Stream`.
-@pub fun toStream s = Tree.toStream (unwrap s)
+@pub fun toStream (s : Set) : () = Tree.toStream (unwrap s)
 
 -- --- comparing -----------------------------------------------------------------
 

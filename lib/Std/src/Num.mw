@@ -32,20 +32,20 @@
 @pub mod Int
 @pub mod Bits
 
-@pub def minInt8 = toInt8 (0 - 128)
-@pub def maxInt8 = toInt8 127
-@pub def minInt16 = toInt16 (0 - 32768)
-@pub def maxInt16 = toInt16 32767
-@pub def minInt32 = toInt32 (0 - 2147483648)
-@pub def maxInt32 = toInt32 2147483647
-@pub def minInt = toInt (0 - 9223372036854775807 - 1)
-@pub def maxInt = toInt 9223372036854775807
+@pub def minInt8 : Int8 = toInt8 (0 - 128)
+@pub def maxInt8 : Int8 = toInt8 127
+@pub def minInt16 : Int16 = toInt16 (0 - 32768)
+@pub def maxInt16 : Int16 = toInt16 32767
+@pub def minInt32 : Int32 = toInt32 (0 - 2147483648)
+@pub def maxInt32 : Int32 = toInt32 2147483647
+@pub def minInt : Int = toInt (0 - 9223372036854775807 - 1)
+@pub def maxInt : Int = toInt 9223372036854775807
 
-@pub def maxUInt8 = toUInt8 255
-@pub def maxUInt16 = toUInt16 65535
-@pub def maxUInt32 = toUInt32 4294967295
+@pub def maxUInt8 : UInt8 = toUInt8 255
+@pub def maxUInt16 : UInt16 = toUInt16 65535
+@pub def maxUInt32 : UInt32 = toUInt32 4294967295
 -- All 64 bits set: `Int`'s -1, kept as bits.
-@pub def maxUInt64 = toUInt64 (toInt (0 - 1))
+@pub def maxUInt64 : UInt64 = toUInt64 (toInt (0 - 1))
 
 -- --- tests -------------------------------------------------------------------
 

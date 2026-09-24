@@ -14,16 +14,16 @@ use Map.*
 @derive(Debug, Display)
 @pub data Map v = Tip | Node (Map v) Int v (Map v)
 
-@pub def empty = Tip
+@pub def empty : Map a = Tip
 
-@pub fun null m = match m with | Tip -> True | Node l k v r -> False
+@pub fun null (m : Map a) : Bool = match m with | Tip -> True | Node l k v r -> False
 
-@pub fun size m =
+@pub fun size (m : Map a) : n =
   match m with
   | Tip -> 0
   | Node l k v r -> 1 + size l + size r
 
-@pub fun insert k v m =
+@pub fun insert (k : Int) (v : a) (m : Map a) : Map a =
   match m with
   | Tip -> Node Tip k v Tip
   | Node l key val r ->
@@ -31,7 +31,7 @@ use Map.*
       else if key < k then Node l key val (insert k v r)
       else Node l k v r
 
-@pub fun lookup k m =
+@pub fun lookup (k : Int) (m : Map a) : Maybe a =
   match m with
   | Tip -> None
   | Node l key val r ->
@@ -39,45 +39,45 @@ use Map.*
       else if key < k then lookup k r
       else Just val
 
-@pub fun member k m = isSome (lookup k m)
+@pub fun member (k : Int) (m : Map a) : Bool = isSome (lookup k m)
 
-@pub fun getOr default k m =
+@pub fun getOr (default : a) (k : Int) (m : Map a) : a =
   match lookup k m with
   | None -> default
   | Just v -> v
 
 -- Every `(key, value)` pair, in key order.
-@pub fun toVec m = pushInOrder V.empty m
+@pub fun toVec (m : Map a) : [(Int, a)] = pushInOrder V.empty m
 
 fun pushInOrder acc m =
   match m with
   | Tip -> acc
   | Node l k v r -> pushInOrder (V.pushBack (pushInOrder acc l) (k, v)) r
 
-@pub fun keys m = V.map fst (toVec m)
+@pub fun keys (m : Map a) : [Int] = V.map fst (toVec m)
 
-@pub fun values m = V.map snd (toVec m)
+@pub fun values (m : Map a) : [a] = V.map snd (toVec m)
 
 fun insertPair p m = match p with | (k, v) -> insert k v m
 
-@pub fun fromVec ps = V.foldl (\acc p -> insertPair p acc) empty ps
+@pub fun fromVec (ps : [(Int, a)]) : Map a = V.foldl (\acc p -> insertPair p acc) empty ps
 
 -- The same, as a `List`.
-@pub fun toList m = consInOrder [;] m
+@pub fun toList (m : Map a) : List (Int, a) = consInOrder [;] m
 
 fun consInOrder acc m =
   match m with
   | Tip -> acc
   | Node l k v r -> consInOrder ((k, v) :: consInOrder acc r) l
 
-@pub fun fromList ps = List.foldl (\acc p -> insertPair p acc) empty ps
+@pub fun fromList (ps : List (Int, a)) : Map a = List.foldl (\acc p -> insertPair p acc) empty ps
 
-@pub fun map f m =
+@pub fun map (f : a -> b ! e) (m : Map a) : Map b =
   match m with
   | Tip -> Tip
   | Node l k v r -> Node (map f l) k (f v) (map f r)
 
-@pub fun minEntry m =
+@pub fun minEntry (m : Map a) : Maybe (Int, a) =
   match m with
   | Tip -> None
   | Node Tip k v _ -> Just (k, v)
@@ -100,7 +100,7 @@ fun removeRoot l r =
   | (ll, Tip) -> ll
   | (ll, rr) -> spliceMin ll rr
 
-@pub fun delete k m =
+@pub fun delete (k : Int) (m : Map a) : Map a =
   match m with
   | Tip -> Tip
   | Node l key val r ->
@@ -109,7 +109,7 @@ fun removeRoot l r =
       else removeRoot l r
 
 -- Yield every `(key, value)` pair in key order, for `Std.Stream`.
-@pub fun toStream m =
+@pub fun toStream (m : Map a) : () =
   match m with
   | Tip -> ()
   | Node l k v r ->

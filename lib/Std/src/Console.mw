@@ -50,25 +50,25 @@ use Std.Collections.Vector (vecFromArray)
 -- Write a value with no trailing newline. A `String` is written as its text;
 -- anything else the way `show` renders it, so `print 42` writes `42` and
 -- `print "hi"` writes `hi`, not `"hi"`.
-@pub fun print value = value |> display |> writeOutput
+@pub fun print (value : a) : () = value |> display |> writeOutput
 
 -- `print`, then a newline.
-@pub fun println value = writeOutput (S.concat (display value) "\n")
+@pub fun println (value : a) : () = writeOutput (S.concat (display value) "\n")
 
 -- --- reading ------------------------------------------------------------------
 
 -- Write `message` with no trailing newline, then read a line.
-@pub fun prompt message =
+@pub fun prompt (message : a) : Maybe String =
   let _ = print message in
   readLine ()
 
 -- The next line, or `fallback` at end of input.
-@pub fun readLineOr fallback = unwrapOr fallback (readLine ())
+@pub fun readLineOr (fallback : String) : String = unwrapOr fallback (readLine ())
 
 -- The next line with surrounding whitespace removed, which is almost always what
 -- you want from a person typing: a stray space before `rock` should not be a
 -- different answer.
-@pub fun readWord () =
+@pub fun readWord () : Maybe String =
   match readLine () with
   | None -> None
   | Just line -> Just (S.trim line)
@@ -76,7 +76,7 @@ use Std.Collections.Vector (vecFromArray)
 -- Keep asking until the answer parses. `parse` returns `Maybe b`; a `None` is
 -- reported with `retry` and the question is put again. Ends as `None` only if
 -- input runs out, so a piped-in file cannot spin forever.
-@pub fun promptUntil message retry parse =
+@pub fun promptUntil (message : a) (retry : b) (parse : String -> Maybe c ! { Console | e }) : Maybe c =
   match prompt message with
   | None -> None
   | Just line ->
@@ -87,7 +87,7 @@ use Std.Collections.Vector (vecFromArray)
           promptUntil message retry parse
 
 -- Every remaining line, in order.
-@pub fun readAll () = readAllLoop V.empty
+@pub fun readAll () : [String] = readAllLoop V.empty
 
 fun readAllLoop acc =
   match readLine () with
@@ -98,7 +98,7 @@ fun readAllLoop acc =
 
 -- Run `body` with the `Vector` `lines` as the input, so nothing touches the
 -- terminal. Once they are exhausted every `readLine` answers `None`.
-@pub fun withInput lines body =
+@pub fun withInput (lines : [String]) (body : () -> a ! { Console | e }) : a =
   let feed =
     handle body () with {
       -- `get` is `None` past the end, which is exactly the answer wanted.
@@ -110,7 +110,7 @@ fun readAllLoop acc =
 -- Run `body` and collect everything it writes instead of printing it: the
 -- result, paired with the text. Reading is left alone, so this nests with
 -- `withInput` in either order.
-@pub fun withOutput body =
+@pub fun withOutput (body : () -> a ! { Console | e }) : (a, String) =
   let collect =
     handle body () with {
       writeOutput text k -> \written -> (k ()) (S.concat written text),

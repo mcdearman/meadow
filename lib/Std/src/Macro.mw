@@ -42,14 +42,14 @@ use Delim.*
   | Fail String
 
 -- Meadow written out as text, for the compiler to lex where the call was.
-@pub fun code text = Code text
+@pub fun code (text : String) : TokenTree = Code text
 
 -- What a macro answers when it cannot do what it was asked: the whole answer,
 -- since there is nothing else worth writing.
-@pub fun fail why = [Fail why]
+@pub fun fail (why : String) : [TokenTree] = [Fail why]
 
 -- The text of a token, as it would be written.
-@pub fun text t =
+@pub fun text (t : TokenTree) : String =
   match t with
   | Word w -> w
   | Punct p -> p
@@ -63,33 +63,33 @@ use Delim.*
 
 -- Every token written out, separated by spaces: what a macro that reads its
 -- argument as text starts from.
-@pub fun spaced ts = S.join " " (V.map text ts)
+@pub fun spaced (ts : [TokenTree]) : String = S.join " " (V.map text ts)
 
-@pub fun opening d = match d with | Paren -> "(" | Bracket -> "[" | Brace -> "{"
+@pub fun opening (d : Delim) : String = match d with | Paren -> "(" | Bracket -> "[" | Brace -> "{"
 
-@pub fun closing d = match d with | Paren -> ")" | Bracket -> "]" | Brace -> "}"
+@pub fun closing (d : Delim) : String = match d with | Paren -> ")" | Bracket -> "]" | Brace -> "}"
 
 -- Whether this is the word `w`.
-@pub fun isWord w t = match t with | Word x -> x == w | _ -> False
+@pub fun isWord (w : String) (t : TokenTree) : Bool = match t with | Word x -> x == w | _ -> False
 
 -- Whether this is the punctuation `p`.
-@pub fun isPunct p t = match t with | Punct x -> x == p | _ -> False
+@pub fun isPunct (p : String) (t : TokenTree) : Bool = match t with | Punct x -> x == p | _ -> False
 
 -- The trees inside a group, or none if it is not one.
-@pub fun inside t = match t with | Group _ ts -> Just ts | _ -> None
+@pub fun inside (t : TokenTree) : Maybe [TokenTree] = match t with | Group _ ts -> Just ts | _ -> None
 
 -- The word a token is, or none.
-@pub fun word t = match t with | Word w -> Just w | _ -> None
+@pub fun word (t : TokenTree) : Maybe String = match t with | Word w -> Just w | _ -> None
 
 -- The string a token is, or none.
-@pub fun string t = match t with | Str s -> Just s | _ -> None
+@pub fun string (t : TokenTree) : Maybe String = match t with | Str s -> Just s | _ -> None
 
 -- `ts` split on the punctuation `p`, which is dropped.
 --
 -- What a macro's argument usually needs first: `a, b, c` as three runs of
 -- tokens. Only the top level is split, so what is inside brackets is left as
 -- it was written.
-@pub fun splitOn p ts = splitting p (V.toList ts) V.empty V.empty
+@pub fun splitOn (p : String) (ts : [TokenTree]) : [[TokenTree]] = splitting p (V.toList ts) V.empty V.empty
 
 fun splitting p ts run acc =
   match ts with

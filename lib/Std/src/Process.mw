@@ -33,30 +33,30 @@ use Std.Maybe.Maybe.*
   removeEnv : String -> (),
 }
 
-@pub fun command program = (program, V.empty, None, V.empty)
+@pub fun command (program : a) : (a, [b], Maybe c, [d]) = (program, V.empty, None, V.empty)
 
-@pub fun withArg a cmd =
+@pub fun withArg (a : a) (cmd : (b, [a], c, d)) : (b, [a], c, d) =
   match cmd with | (p, xs, cwd, envs) -> (p, V.pushBack xs a, cwd, envs)
 
-@pub fun withArgs extra cmd =
+@pub fun withArgs (extra : [a]) (cmd : (b, [a], c, d)) : (b, [a], c, d) =
   match cmd with | (p, xs, cwd, envs) -> (p, V.append xs extra, cwd, envs)
 
-@pub fun withCwd dir cmd =
+@pub fun withCwd (dir : a) (cmd : (b, c, d, e)) : (b, c, Maybe a, e) =
   match cmd with | (p, xs, cwd, envs) -> (p, xs, Just dir, envs)
 
-@pub fun withEnv pair cmd =
+@pub fun withEnv (pair : a) (cmd : (b, c, d, [a])) : (b, c, d, [a]) =
   match cmd with | (p, xs, cwd, envs) -> (p, xs, cwd, V.pushBack envs pair)
 
 -- Run `program` with `args` to completion, capturing its output.
-@pub fun run program args = command program |> withArgs args |> spawn
+@pub fun run (program : String) (args : [String]) : Result String (Int, String, String) = command program |> withArgs args |> spawn
 
 -- Run `program` with `args` to completion, inheriting stdio; just the exit code.
-@pub fun runInherit program args = command program |> withArgs args |> status
+@pub fun runInherit (program : String) (args : [String]) : Result String Int = command program |> withArgs args |> status
 
-@pub fun outputStatus out = match out with | (s, o, e) -> s
+@pub fun outputStatus (out : (a, b, c)) : a = match out with | (s, o, e) -> s
 
-@pub fun outputStdout out = match out with | (s, o, e) -> o
+@pub fun outputStdout (out : (a, b, c)) : b = match out with | (s, o, e) -> o
 
-@pub fun outputStderr out = match out with | (s, o, e) -> e
+@pub fun outputStderr (out : (a, b, c)) : c = match out with | (s, o, e) -> e
 
-@pub fun succeeded out = outputStatus out == 0
+@pub fun succeeded (out : (n, a, b)) : Bool = outputStatus out == 0

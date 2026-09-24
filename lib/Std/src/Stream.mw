@@ -24,14 +24,14 @@ use Std.Collections.Vector as V
 
 -- Every yielded value, in order, as a `Vector` -- the default sequence. Built
 -- with `pushBack`, so it costs one amortised push per value.
-@pub fun toVec producer =
+@pub fun toVec (producer : () -> a ! { Yield b | e }) : [b] =
   handle producer () with {
     yield x k -> \acc -> (k ()) (V.pushBack acc x),
     return r -> \acc -> acc
   } V.empty
 
 -- Every yielded value, in order, as a `List`.
-@pub fun toList producer =
+@pub fun toList (producer : () -> a ! { Yield b | e }) : List b =
   handle producer () with {
     yield x k -> x :: k (),
     return r -> [;]
@@ -40,22 +40,22 @@ use Std.Collections.Vector as V
 -- Run `producer`, calling `f` on each value and discarding the results. The
 -- point of a stream: nothing is collected, so this is constant space in the
 -- number of values (the recursion still nests).
-@pub fun forEach f producer =
+@pub fun forEach (f : a -> b ! e) (producer : () -> c ! { Yield a | e }) : () =
   handle producer () with {
     yield x k -> let ignored = f x in k (),
     return r -> ()
   }
 
 -- Left fold over the yielded values.
-@pub fun fold f acc producer =
+@pub fun fold (f : a -> b -> a ! e) (acc : a) (producer : () -> c ! { Yield b | e }) : a =
   handle producer () with {
     yield x k -> \a -> (k ()) (f a x),
     return r -> \a -> a
   } acc
 
-@pub fun count producer = fold (\n x -> n + 1) 0 producer
+@pub fun count (producer : () -> a ! { Yield b | e }) : n = fold (\n x -> n + 1) 0 producer
 
-@pub fun sum producer = fold (\n x -> n + x) 0 producer
+@pub fun sum (producer : () -> a ! { Yield n | e }) : n = fold (\n x -> n + x) 0 producer
 
 -- --- limiting -----------------------------------------------------------------
 --
@@ -64,40 +64,40 @@ use Std.Collections.Vector as V
 -- language cannot do without either laziness or an effect.
 
 -- The first `n` values, as a `Vector`.
-@pub fun take n producer =
+@pub fun take (n : n) (producer : () -> a ! { Yield b | e }) : [b] =
   handle producer () with {
     yield x k -> \i -> \acc -> if i <= 0 then acc else (k ()) (i - 1) (V.pushBack acc x),
     return r -> \i -> \acc -> acc
   } n V.empty
 
 -- Values up to the first one `keep` rejects, as a `Vector`.
-@pub fun takeWhile keep producer =
+@pub fun takeWhile (keep : a -> Bool ! e) (producer : () -> b ! { Yield a | e }) : [a] =
   handle producer () with {
     yield x k -> \acc -> if keep x then (k ()) (V.pushBack acc x) else acc,
     return r -> \acc -> acc
   } V.empty
 
 -- The first yielded value, if there is one.
-@pub fun first producer =
+@pub fun first (producer : () -> a ! { Yield b | e }) : Maybe b =
   handle producer () with {
     yield x k -> Just x,
     return r -> None
   }
 
 -- Whether any yielded value satisfies `pred`. Stops at the first one that does.
-@pub fun any pred producer =
+@pub fun any (pred : a -> Bool ! e) (producer : () -> b ! { Yield a | e }) : Bool =
   handle producer () with {
     yield x k -> if pred x then True else k (),
     return r -> False
   }
 
-@pub fun all pred producer =
+@pub fun all (pred : a -> Bool ! e) (producer : () -> b ! { Yield a | e }) : Bool =
   handle producer () with {
     yield x k -> if pred x then k () else False,
     return r -> True
   }
 
-@pub fun find pred producer =
+@pub fun find (pred : a -> Bool ! e) (producer : () -> b ! { Yield a | e }) : Maybe a =
   handle producer () with {
     yield x k -> if pred x then Just x else k (),
     return r -> None
@@ -108,13 +108,13 @@ use Std.Collections.Vector as V
 -- These re-yield, so they are producers themselves and compose: the result of
 -- `map f p` is something `toVec`, `take` or another `map` can consume.
 
-@pub fun map f producer =
+@pub fun map (f : a -> b ! { Yield b | e }) (producer : () -> c ! { Yield a, Yield b | e }) : () =
   handle producer () with {
     yield x k -> let ignored = yield (f x) in k (),
     return r -> ()
   }
 
-@pub fun filter keep producer =
+@pub fun filter (keep : a -> Bool ! { Yield a | e }) (producer : () -> b ! { Yield a, Yield a | e }) : () =
   handle producer () with {
     yield x k -> let ignored = if keep x then yield x else () in k (),
     return r -> ()
@@ -126,22 +126,22 @@ use Std.Collections.Vector as V
 -- the other way round; these are here so a producer can be built without naming
 -- the collection's module.
 
-@pub fun ofList xs =
+@pub fun ofList (xs : List a) : () =
   match xs with
   | [;] -> ()
   | x :: rest -> let ignored = yield x in ofList rest
 
-@pub fun ofVec v = V.forEach (\x -> yield x) v
+@pub fun ofVec (v : [a]) : () = V.forEach (\x -> yield x) v
 
 -- `lo` up to but not including `hi`.
-@pub fun range lo hi =
+@pub fun range (lo : n) (hi : n) : () =
   if lo >= hi then () else let ignored = yield lo in range (lo + 1) hi
 
-@pub fun repeat n x =
+@pub fun repeat (n : n) (x : a) : () =
   if n <= 0 then () else let ignored = yield x in repeat (n - 1) x
 
 -- Yield `seed`, `f seed`, `f (f seed)`, … `n` times.
-@pub fun iterate n f seed =
+@pub fun iterate (n : n) (f : a -> a ! { Yield a | e }) (seed : a) : () =
   if n <= 0
   then ()
   else

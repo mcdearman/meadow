@@ -58,12 +58,12 @@ use Std.Ordering.Ordering.*
 
 -- What derived orderings are made of: whether a comparison found two fields
 -- equal, so that the next field decides.
-@pub fun isEqualPartial c =
+@pub fun isEqualPartial (c : Maybe Ordering) : Bool =
   match c with
   | Just Equal -> True
   | _ -> False
 
-@pub fun isEqualOrdering c =
+@pub fun isEqualOrdering (c : Ordering) : Bool =
   match c with
   | Equal -> True
   | _ -> False

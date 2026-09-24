@@ -47,10 +47,10 @@ use HashTable.*
 def initialCapacity = 16
 
 -- A new, empty table.
-@pub fun new () = withCapacity initialCapacity
+@pub fun new () : HashTable a b c = withCapacity initialCapacity
 
 -- A table with room for `n` entries before it first grows.
-@pub fun withCapacity n =
+@pub fun withCapacity (n : Int) : HashTable a b c =
   Table (St.newRef (St.newArray (capacityFor n) Empty)) (St.newRef 0) (St.newRef 0)
 
 -- The smallest power of two that holds `n` entries under three quarters full.
@@ -58,9 +58,9 @@ fun capacityFor n = capacityUp initialCapacity (n * 4 / 3 + 1)
 
 fun capacityUp c want = if c >= want then c else capacityUp (c * 2) want
 
-@pub fun size t = match t with | Table slots n tombs -> St.getRef n
+@pub fun size (t : HashTable a b c) : Int = match t with | Table slots n tombs -> St.getRef n
 
-@pub fun isEmpty t = size t == 0
+@pub fun isEmpty (t : HashTable a b c) : Bool = size t == 0
 
 -- --- probing ------------------------------------------------------------------
 
@@ -85,7 +85,7 @@ fun place slots mask h k i free =
 
 -- --- reading ------------------------------------------------------------------
 
-@pub fun lookup k t =
+@pub fun lookup (k : a) (t : HashTable b a c) : Maybe c =
   match t with
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
@@ -95,19 +95,19 @@ fun place slots mask h k i free =
       | Full h2 k2 v -> Just v
       | _ -> None
 
-@pub fun member k t = match lookup k t with | Just v -> True | None -> False
+@pub fun member (k : a) (t : HashTable b a c) : Bool = match lookup k t with | Just v -> True | None -> False
 
-@pub fun getOr default k t = match lookup k t with | Just v -> v | None -> default
+@pub fun getOr (default : a) (k : b) (t : HashTable c b a) : a = match lookup k t with | Just v -> v | None -> default
 
 -- --- writing ------------------------------------------------------------------
 
 -- Put `v` at `k`, replacing what was there.
-@pub fun insert k v t = insertWith (\new old -> new) k v t
+@pub fun insert (k : a) (v : b) (t : HashTable c a b) : () = insertWith (\new old -> new) k v t
 
 -- Put `v` at `k` -- or, if `k` already holds `old`, `f v old`. One probe
 -- either way, which is what makes counting cheap: `insertWith (\a b -> a + b)
 -- w 1 t` is a lookup and a write in one.
-@pub fun insertWith f k v t =
+@pub fun insertWith (f : a -> a -> a ! { St b | e }) (k : c) (v : a) (t : HashTable b c a) : () =
   match t with
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
@@ -125,7 +125,7 @@ fun place slots mask h k i free =
           grow t
 
 -- Apply `f` to what `k` holds, if anything.
-@pub fun adjust k f t =
+@pub fun adjust (k : a) (f : b -> b ! { St c | e }) (t : HashTable c a b) : () =
   match t with
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
@@ -136,7 +136,7 @@ fun place slots mask h k i free =
       | _ -> ()
 
 -- Remove `k`, if it is there.
-@pub fun delete k t =
+@pub fun delete (k : a) (t : HashTable b a c) : () =
   match t with
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
@@ -148,7 +148,7 @@ fun place slots mask h k i free =
         St.setRef tombs (St.getRef tombs + 1)
 
 -- Remove everything, keeping the room.
-@pub fun clear t =
+@pub fun clear (t : HashTable a b c) : () =
   match t with
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
@@ -187,7 +187,7 @@ fun reinsert slots mask h k v i =
 
 -- Fold over every entry as `f acc key value`, in slot order, which is no
 -- order anyone should rely on.
-@pub fun foldl f acc t =
+@pub fun foldl (f : a -> b -> c -> a ! { St d | e }) (acc : a) (t : HashTable d b c) : a =
   match t with
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
@@ -199,14 +199,14 @@ fun foldSlots f acc slots i cap =
   | Full h k v -> foldSlots f (f acc k v) slots (i + 1) cap
   | _ -> foldSlots f acc slots (i + 1) cap
 
-@pub fun toVec t = foldl (\acc k v -> V.pushBack acc (k, v)) V.empty t
+@pub fun toVec (t : HashTable a b c) : [(b, c)] = foldl (\acc k v -> V.pushBack acc (k, v)) V.empty t
 
-@pub fun keys t = foldl (\acc k v -> V.pushBack acc k) V.empty t
+@pub fun keys (t : HashTable a b c) : [b] = foldl (\acc k v -> V.pushBack acc k) V.empty t
 
-@pub fun values t = foldl (\acc k v -> V.pushBack acc v) V.empty t
+@pub fun values (t : HashTable a b c) : [c] = foldl (\acc k v -> V.pushBack acc v) V.empty t
 
 -- A table holding every pair of `pairs`; a key given twice holds the later value.
-@pub fun fromVec pairs =
+@pub fun fromVec (pairs : [(a, b)]) : HashTable c a b =
   let t = withCapacity (V.length pairs) in
   let _ = V.foldl (\acc p -> match p with | (k, v) -> insert k v t) () pairs in
   t

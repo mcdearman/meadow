@@ -5,33 +5,33 @@ use Result.*
 @derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub data Result e a = Err e | Ok a
 
-@pub fun isOk r = match r with | Err e -> False | Ok x -> True
+@pub fun isOk (r : Result a b) : Bool = match r with | Err e -> False | Ok x -> True
 
-@pub fun isErr r = match r with | Err e -> True | Ok x -> False
+@pub fun isErr (r : Result a b) : Bool = match r with | Err e -> True | Ok x -> False
 
-@pub fun unwrapOr fallback r = match r with | Err e -> fallback | Ok x -> x
+@pub fun unwrapOr (fallback : a) (r : Result b a) : a = match r with | Err e -> fallback | Ok x -> x
 
-@pub fun map f r =
+@pub fun map (f : a -> b ! e) (r : Result c a) : Result c b =
   match r with
   | Err e -> Err e
   | Ok x -> Ok (f x)
 
-@pub fun mapErr f r =
+@pub fun mapErr (f : a -> b ! e) (r : Result a c) : Result b c =
   match r with
   | Err e -> Err (f e)
   | Ok x -> Ok x
 
-@pub fun andThen f r =
+@pub fun andThen (f : a -> Result b c ! e) (r : Result b a) : Result b c =
   match r with
   | Err e -> Err e
   | Ok x -> f x
 
-@pub fun toMaybe r =
+@pub fun toMaybe (r : Result a b) : Maybe b =
   match r with
   | Err e -> None
   | Ok x -> Just x
 
-@pub fun fromMaybe err o =
+@pub fun fromMaybe (err : a) (o : Maybe b) : Result a b =
   match o with
   | None -> Err err
   | Just x -> Ok x

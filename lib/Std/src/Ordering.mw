@@ -6,11 +6,11 @@ use Ordering.*
 
 -- `compare` is `Std.Cmp`'s, the method of `Ord`.
 
-@pub fun isLess o = match o with | Less -> True | Equal -> False | Greater -> False
+@pub fun isLess (o : Ordering) : Bool = match o with | Less -> True | Equal -> False | Greater -> False
 
-@pub fun isEqual o = match o with | Less -> False | Equal -> True | Greater -> False
+@pub fun isEqual (o : Ordering) : Bool = match o with | Less -> False | Equal -> True | Greater -> False
 
-@pub fun isGreater o = match o with | Less -> False | Equal -> False | Greater -> True
+@pub fun isGreater (o : Ordering) : Bool = match o with | Less -> False | Equal -> False | Greater -> True
 
 -- --- tests -------------------------------------------------------------------
 

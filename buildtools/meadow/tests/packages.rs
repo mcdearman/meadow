@@ -126,10 +126,7 @@ fn a_manifest_configures_the_build_profiles() {
         ProfileConfig {
             opt: Some(OptLevel::O0),
             strictness: Some(Strictness::Strict),
-            backend: None,
-            prune: None,
-            cfg: None,
-            profile: None,
+            ..ProfileConfig::default()
         },
     );
     assert_eq!(flagged.opt(), OptLevel::O0);
@@ -199,6 +196,69 @@ fn a_manifest_chooses_the_backend() {
         },
     );
     assert_eq!(flagged.backend, Backend::Jit);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A profile chooses the runtime -- Glade or Silo -- and the runtime's flags;
+/// Silo is compiled ahead of time by what it is, whatever a backend says, and
+/// does not give way to Glade's JIT.
+#[test]
+fn a_manifest_chooses_the_runtime_and_its_flags() {
+    use meadow::aot::Runtime;
+    use meadow::package::ProfileConfig;
+    use meadow::{Profile, Resolved};
+
+    let dir = std::env::temp_dir().join("meadow-runtime-manifest");
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(
+        dir.join("Meadow.toml"),
+        "[package]\n\
+         name = \"Stored\"\n\
+         \n\
+         [profile.debug]\n\
+         aot = true\n\
+         threads = 2\n\
+         \n\
+         [profile.release]\n\
+         runtime = \"silo\"\n\
+         leaks = true\n\
+         target = \"aarch64\"\n",
+    )
+    .unwrap();
+
+    let debug = Resolved::resolve(Profile::Debug, &dir, ProfileConfig::default());
+    assert_eq!(debug.runtime, Runtime::Glade);
+    assert!(
+        debug.native(),
+        "`aot = true` is Glade compiled ahead of time"
+    );
+    assert_eq!(debug.threads, Some(2));
+    assert_eq!(debug.options.cfg.backend, "aot");
+
+    let release = Resolved::resolve(Profile::Release, &dir, ProfileConfig::default());
+    assert_eq!(release.runtime, Runtime::Silo);
+    assert!(release.native());
+    assert!(release.leaks);
+    assert_eq!(
+        release.target.map(|t| t.to_string()),
+        Some("aarch64".into())
+    );
+    assert_eq!(release.options.cfg.backend, "silo", "what `@cfg` sees");
+    assert_eq!(release.fallback(), None, "Silo is not Glade's JIT");
+
+    // The command line beats the manifest.
+    let flagged = Resolved::resolve(
+        Profile::Release,
+        &dir,
+        ProfileConfig {
+            runtime: Some(Runtime::Glade),
+            ..ProfileConfig::default()
+        },
+    );
+    assert_eq!(flagged.runtime, Runtime::Glade);
+    assert_eq!(flagged.options.cfg.backend, "aot");
 
     std::fs::remove_dir_all(&dir).ok();
 }

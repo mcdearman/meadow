@@ -1,6 +1,6 @@
 [package]
 name = "meadow-llvm"
-description = "AxCut to LLVM IR, with the AxCut paper's reference counting: the backend of `meadow build --runtime aot`."
+description = "AxCut to LLVM IR, with the AxCut paper's reference counting: the backend of `meadow build --runtime silo`."
 version.workspace = true
 edition.workspace = true
 

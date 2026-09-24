@@ -1,6 +1,6 @@
 //! The standard library, through the whole back end.
 //!
-//! `meadow_rts`'s own differential tests are hand-written programs, one
+//! `meadow_glade`'s own differential tests are hand-written programs, one
 //! construct at a time. This is the other end: the largest body of Meadow that
 //! exists, compiled the way `meadow test --std` compiles it, and put through
 //! `core` → AxCut → bytecode → the VM.
@@ -201,7 +201,7 @@ fn the_axcut_machine_agrees_too() {
                 (Ok(a), Ok(b)) if a.to_string() == b.to_string() => checked += 1,
                 // This machine has no scheduler. Threads and transactions are
                 // checked between the CEK and the VM instead, in
-                // `rts/tests/differential.rs`.
+                // `glade/tests/differential.rs`.
                 (Ok(_), Err(e))
                     if e.msg.contains("green threads are not supported")
                         || e.msg.contains("transactions are not supported") =>

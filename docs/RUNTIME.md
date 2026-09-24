@@ -1,6 +1,11 @@
-# How Meadow runs a program
+# How Meadow runs a program: Glade
 
-This is a tour of everything below the type checker: the three backends, the
+Meadow has two runtime systems. This is **Glade**, the default, in `glade/`:
+the one the interpreter, the JIT and the debugger share. The other, **Silo**,
+is compiled all the way down by LLVM and counts references instead of
+collecting; [SILO.md](SILO.md) is its design.
+
+This is a tour of everything below the type checker: Glade's three backends, the
 memory model they share, how effects are compiled and run, and how threads run
 in parallel. It describes the code as it is, and names the files to read for
 the rest. The module docs in those files are the detailed reference; this is
@@ -46,8 +51,8 @@ reference semantics, and every backend is tested against it.
                ┌─────────────────────┼──────────────────────┐
                ▼                     ▼                      ▼
           interpreter        JIT: hot blocks →        AOT: all blocks →
-          (rts/src/vm.rs)    machine code in memory   object file + runtime.a
-                             (rts/src/jit.rs)         (rts/src/codegen/object.rs)
+          (glade/src/vm.rs)    machine code in memory   object file + runtime.a
+                             (glade/src/jit.rs)         (glade/src/codegen/object.rs)
                └──────── same heap, same scheduler, same natives ────────┘
 ```
 
@@ -268,7 +273,7 @@ operation that no handler answers. [Section 5](#5-effects) covers the details.
 
 ### The interpreter
 
-`rts/src/vm.rs`. The machine is a program counter, a boxed array of 256
+`glade/src/vm.rs`. The machine is a program counter, a boxed array of 256
 registers plus a scratch area, `live` (how many registers are roots), a heap,
 and a pointer to the program. It has no stacks of any kind. Instructions are a
 fixed 8 bytes: opcode, three register operands, and a 32-bit immediate.
@@ -289,7 +294,7 @@ That one `match` is the whole integration between interpreted and native code.
 
 ### Native code: blocks and block functions
 
-`rts/src/abi.rs`, `rts/src/codegen/mod.rs`.
+`glade/src/abi.rs`, `glade/src/codegen/mod.rs`.
 
 A **block** starts at any pc that control can enter from elsewhere: a
 definition, a method entry, or the target of a jump or branch
@@ -479,7 +484,7 @@ Machine registers inside a block function:
 
 ### The JIT
 
-`rts/src/jit.rs`. `Native::jit(program, threshold, opt)` starts with an empty
+`glade/src/jit.rs`. `Native::jit(program, threshold, opt)` starts with an empty
 table: one `AtomicPtr` per pc. Each time `advance` reaches a block entry with
 no function yet, it bumps that pc's counter. On the `threshold`th entry
 (`MEADOW_JIT_THRESHOLD`, default 16) it compiles the block:
@@ -566,7 +571,7 @@ meadow build --release           # Guided by target/release/calls.pgo
 
 ### AOT executables
 
-`buildtools/meadow/src/aot.rs`, `rts/src/codegen/object.rs`, `rts/src/aot.rs`.
+`buildtools/meadow/src/aot.rs`, `glade/src/codegen/object.rs`, `glade/src/aot.rs`.
 
 `meadow build --release` (or `--aot`) compiles every block with
 `codegen::compile` and writes an object file (Mach-O, ELF or COFF) with two
@@ -579,9 +584,9 @@ symbols:
                  (u32 entry pc, u32 code offset) per block
 ```
 
-A generated `main.c` calls `meadow_aot_main(meadow_code, meadow_data, argc,
-argv)`, and the system C compiler links it with `libmeadow_rts.a`.
-`meadow_aot_main` decodes the image, fills a `Native` table from the block list
+A generated `main.c` calls `meadow_silo_main(meadow_code, meadow_data, argc,
+argv)`, and the system C compiler links it with `libmeadow_glade.a`.
+`meadow_silo_main` decodes the image, fills a `Native` table from the block list
 (`Native::ahead_of_time`), and runs the same scheduler as `meadow run`.
 
 The image holds **only what `main` reaches** (`meadow_core::prune`): every
@@ -605,17 +610,17 @@ at run time and interpreting the common instructions.
 
 **The runtime library has to match the code generator.** The generated code
 hard-codes the `Vm` layout, so a runtime built from different sources would
-corrupt memory. `rts/build.rs` hashes the runtime's sources (plus
+corrupt memory. `glade/build.rs` hashes the runtime's sources (plus
 `meadow-bytecode` and `meadow-core`), and the library exports a symbol named
-`meadow_rts_<hash>`. The generated `main.c` refers to that symbol, so a
+`meadow_glade_<hash>`. The generated `main.c` refers to that symbol, so a
 mismatched library fails at link time, and `meadow` then tries the next place a
 runtime library could be. A release `meadow` embeds its own runtime library and
-writes it to `~/.meadow/lib/meadow_rts_<hash>/` the first time it links, so
+writes it to `~/.meadow/lib/meadow_glade_<hash>/` the first time it links, so
 nothing else needs to be installed.
 
 ## 4. The memory model
 
-`rts/src/heap.rs`, `object.rs`, `old.rs`, `mark.rs`, `evacuate.rs`,
+`glade/src/heap.rs`, `object.rs`, `old.rs`, `mark.rs`, `evacuate.rs`,
 `region.rs`.
 
 ### One heap per green thread
@@ -628,7 +633,7 @@ heap (`THREAD_INITIAL`, 1,024 slots) that grows as needed.
 
 A `String` is an ordinary object on the heap, collected like any other: its
 UTF-8 bytes packed eight to a word, with its length in the header
-(`rts/src/text.rs`). An array of `UInt8` is kept the same way, a byte to an
+(`glade/src/text.rs`). An array of `UInt8` is kept the same way, a byte to an
 element (`Kind::Bytes`), whenever it has elements: every array primitive reads
 either kind, and the one that builds an array packs it if its elements are
 bytes. A string literal is made the first time a thread loads it,
@@ -981,7 +986,7 @@ That's one of the three kinds of write that ever run it.
 ### Operations nobody handles
 
 When the evidence runs out, the site falls into `Op::Native`: `r[a] ←
-ops[imm](r[b])`. The runtime answers it in `rts/src/native.rs` and `vm.rs`.
+ops[imm](r[b])`. The runtime answers it in `glade/src/native.rs` and `vm.rs`.
 
 | effect      | answered by the runtime                                     |
 | ----------- | ----------------------------------------------------------- |
@@ -1030,7 +1035,7 @@ effects the runtime answers (`Console`, `Fs`, `Process`, `Random`, `Time`,
 can't cross threads: it captures its `Resume` flag first, and sending or
 compacting a value refuses a `Resume` object as a continuation.
 
-**STM** (`lib/Std/src/Stm.mw`, `rts/src/stm.rs`) is the same idea split in two.
+**STM** (`lib/Std/src/Stm.mw`, `glade/src/stm.rs`) is the same idea split in two.
 `atomically`, `retry` and `orElse` are handlers written in Meadow. The runtime
 supplies what a handler can't: `TVar`s every thread can see (their values live
 in shared regions), a per-transaction read/write log, and a commit that checks
@@ -1038,7 +1043,7 @@ a global clock and publishes all the writes under one lock.
 
 ## 6. Concurrency and parallelism
 
-`rts/src/sched.rs`, `lib/Std/src/Thread.mw`.
+`glade/src/sched.rs`, `lib/Std/src/Thread.mw`.
 
 ### A green thread is a value
 
@@ -1281,7 +1286,7 @@ that would have run.
 ### Where the garbage comes from
 
 ```sh
-cargo build --features profile-alloc      # in rts/
+cargo build --features profile-alloc      # in glade/
 ```
 
 charges every allocation to the instruction that asked for it
@@ -1291,25 +1296,25 @@ generational collector exists to have.
 
 ## 8. Where to read next
 
-| topic                                            | file                                                                                         |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| AxCut, the IR                                    | `compiler/meadow-seq/src/lib.rs`                                                             |
-| lowering, evidence passing, descriptors          | `compiler/meadow-seq/src/lower.rs`, `describe.rs`                                            |
-| register allocation, GC maps, typed ops          | `compiler/meadow-codegen/src/lib.rs`                                                         |
-| the instruction set and image format             | `compiler/meadow-bytecode/src/lib.rs`, `image.rs`; [IMAGE.md](IMAGE.md) is the format's spec |
-| specialization                                   | `compiler/meadow-core/src/specialize.rs`                                                     |
-| the thin instruction set                         | `rts/src/codegen/thin.rs`                                                                    |
-| the interpreter                                  | `rts/src/vm.rs`, `prims.rs`                                                                  |
-| the native ABI                                   | `rts/src/abi.rs`; [NATIVE.md](NATIVE.md) is the contract a code generator is written against |
-| the code generator                               | `rts/src/codegen/mod.rs`, `a64.rs`, `x64.rs`                                                 |
-| object files                                     | `rts/src/codegen/object.rs`                                                                  |
-| the JIT                                          | `rts/src/jit.rs`                                                                             |
-| AOT entry and linking                            | `rts/src/aot.rs`, `buildtools/meadow/src/aot.rs`, `rts/build.rs`                             |
-| heap, nursery, remembered set                    | `rts/src/heap.rs`, `object.rs`                                                               |
-| old generation, marking, evacuation              | `rts/src/old.rs`, `mark.rs`, `evacuate.rs`                                                   |
-| regions and STM                                  | `rts/src/region.rs`, `stm.rs`                                                                |
-| the scheduler                                    | `rts/src/sched.rs`                                                                           |
-| profiling, and the stack the machine has not got | `rts/src/profile.rs`, `buildtools/meadow/src/samples.rs`                                     |
-| join points                                      | `compiler/meadow-core/src/joins.rs`                                                          |
-| unhandled effects                                | `rts/src/native.rs`                                                                          |
-| what may cross threads                           | `compiler/meadow-core/src/thread.rs`, `compact.rs`, `stm.rs`                                 |
+| topic                                            | file                                                                                           |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| AxCut, the IR                                    | `compiler/meadow-seq/src/lib.rs`                                                               |
+| lowering, evidence passing, descriptors          | `compiler/meadow-seq/src/lower.rs`, `describe.rs`                                              |
+| register allocation, GC maps, typed ops          | `compiler/meadow-codegen/src/lib.rs`                                                           |
+| the instruction set and image format             | `compiler/meadow-bytecode/src/lib.rs`, `image.rs`; [IMAGE.md](IMAGE.md) is the format's spec   |
+| specialization                                   | `compiler/meadow-core/src/specialize.rs`                                                       |
+| the thin instruction set                         | `glade/src/codegen/thin.rs`                                                                    |
+| the interpreter                                  | `glade/src/vm.rs`, `prims.rs`                                                                  |
+| the native ABI                                   | `glade/src/abi.rs`; [NATIVE.md](NATIVE.md) is the contract a code generator is written against |
+| the code generator                               | `glade/src/codegen/mod.rs`, `a64.rs`, `x64.rs`                                                 |
+| object files                                     | `glade/src/codegen/object.rs`                                                                  |
+| the JIT                                          | `glade/src/jit.rs`                                                                             |
+| AOT entry and linking                            | `glade/src/aot.rs`, `buildtools/meadow/src/aot.rs`, `glade/build.rs`                           |
+| heap, nursery, remembered set                    | `glade/src/heap.rs`, `object.rs`                                                               |
+| old generation, marking, evacuation              | `glade/src/old.rs`, `mark.rs`, `evacuate.rs`                                                   |
+| regions and STM                                  | `glade/src/region.rs`, `stm.rs`                                                                |
+| the scheduler                                    | `glade/src/sched.rs`                                                                           |
+| profiling, and the stack the machine has not got | `glade/src/profile.rs`, `buildtools/meadow/src/samples.rs`                                     |
+| join points                                      | `compiler/meadow-core/src/joins.rs`                                                            |
+| unhandled effects                                | `glade/src/native.rs`                                                                          |
+| what may cross threads                           | `compiler/meadow-core/src/thread.rs`, `compact.rs`, `stm.rs`                                   |

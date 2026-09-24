@@ -3,7 +3,7 @@
 //! The back end. Everything the sequent IR says about control — continuations,
 //! handlers, the duality between calling and returning — is compiled away here,
 //! and what comes out is a flat instruction array over a flat register file.
-//! `meadow_rts` never learns any of it.
+//! `meadow_glade` never learns any of it.
 //!
 //! # Why this pass is short
 //!
@@ -125,7 +125,7 @@ fn err<T>(msg: impl Into<String>) -> Result<T, Error> {
 /// How many registers this pass will use.
 ///
 /// One short of the 256 a `u8` operand can name. The top one is the runtime's
-/// (`meadow_rts::vm::TEMP`): a fused compare-and-branch has to put its boolean
+/// (`meadow_glade::vm::TEMP`): a fused compare-and-branch has to put its boolean
 /// somewhere, and the instruction has no field left to say where.
 const REGISTERS: usize = 255;
 

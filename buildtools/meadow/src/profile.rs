@@ -31,7 +31,7 @@ pub enum Backend {
     /// The bytecode interpreter.
     Vm,
     /// The interpreter, compiling the blocks that run often to machine code as
-    /// it goes -- see `meadow_rts::jit`.
+    /// it goes -- see `meadow_glade::jit`.
     #[default]
     Jit,
     /// Machine code compiled ahead of time, linked into an executable -- see
@@ -119,6 +119,16 @@ pub struct Resolved {
     /// and write folded stacks beside the build. `--profile-to` says where
     /// instead, and asking for one on the command line does not need this.
     pub sample: bool,
+    /// The runtime system -- Glade, unless the command line or the manifest
+    /// said Silo. `backend` is Glade's, and means nothing with Silo, which is
+    /// always compiled ahead of time: see [`Resolved::native`].
+    pub runtime: crate::aot::Runtime,
+    /// `threads` from the manifest: `-j`'s default.
+    pub threads: Option<usize>,
+    /// `leaks = true` from the manifest: `--leaks`'s default.
+    pub leaks: bool,
+    /// `target` from the manifest: `--target`'s default.
+    pub target: Option<meadow_compiler::intern::InternedString>,
 }
 
 impl Resolved {
@@ -134,6 +144,10 @@ impl Resolved {
             backend_named: false,
             prune: true,
             sample: false,
+            runtime: crate::aot::Runtime::Glade,
+            threads: None,
+            leaks: false,
+            target: None,
         }
     }
 
@@ -154,12 +168,25 @@ impl Resolved {
             .or_else(|| Manifest::find(path))
             .map(|m| m.profile(profile.name()))
             .unwrap_or_default();
+        let runtime = flags.runtime.or(from_manifest.runtime).unwrap_or_default();
+        // A backend is Glade's to choose. Silo has none: it is compiled ahead
+        // of time by what it is.
+        if runtime == crate::aot::Runtime::Silo && from_manifest.backend.is_some() {
+            crate::status::warning(format!(
+                "`[profile.{}]` picks Silo, which is always compiled ahead of time; \
+                 its `backend` is Glade's, and is ignored",
+                profile.name()
+            ));
+        }
         let named = flags.backend.or(from_manifest.backend);
         let backend = named.unwrap_or(profile.backend());
         let mut options = flags.apply(from_manifest.apply(profile.options()));
         // What `@cfg(profile = …)` and `@cfg(backend = …)` see: this build's.
         options.cfg.profile = profile.name();
-        options.cfg.backend = backend.name();
+        options.cfg.backend = match runtime {
+            crate::aot::Runtime::Silo => "silo",
+            crate::aot::Runtime::Glade => backend.name(),
+        };
         Resolved {
             profile,
             options,
@@ -167,6 +194,10 @@ impl Resolved {
             backend_named: named.is_some(),
             prune: flags.prune.or(from_manifest.prune).unwrap_or(true),
             sample: from_manifest.profile.unwrap_or(false),
+            runtime,
+            threads: flags.threads.or(from_manifest.threads),
+            leaks: flags.leaks.or(from_manifest.leaks).unwrap_or(false),
+            target: flags.target.or(from_manifest.target),
         }
     }
 
@@ -175,10 +206,26 @@ impl Resolved {
     /// one: the JIT, if the backend was only the profile's default, and
     /// nothing, if someone asked for it.
     pub fn fallback(self) -> Option<Resolved> {
-        (self.backend == Backend::Aot && !self.backend_named).then_some(Resolved {
+        let glade_aot = self.runtime == crate::aot::Runtime::Glade && self.backend == Backend::Aot;
+        (glade_aot && !self.backend_named).then_some(Resolved {
             backend: Backend::Jit,
             ..self
         })
+    }
+
+    /// Whether the program is compiled ahead of time into an executable: on
+    /// Silo always, and on Glade when its backend is `aot`.
+    pub fn native(self) -> bool {
+        self.runtime == crate::aot::Runtime::Silo || self.backend == Backend::Aot
+    }
+
+    /// What runs the program, as a build reports it: `silo`, or Glade's
+    /// backend -- `vm`, `jit` or `aot`.
+    pub const fn how(self) -> &'static str {
+        match self.runtime {
+            crate::aot::Runtime::Silo => "silo",
+            crate::aot::Runtime::Glade => self.backend.name(),
+        }
     }
 
     pub const fn opt(self) -> OptLevel {
@@ -214,11 +261,7 @@ mod tests {
 
         let manifest = ProfileConfig {
             opt: Some(OptLevel::O2),
-            strictness: None,
-            backend: None,
-            prune: None,
-            cfg: None,
-            profile: None,
+            ..ProfileConfig::default()
         };
         assert_eq!(manifest.apply(base).opt, OptLevel::O2);
         // Untouched by a section that says nothing about it.
@@ -226,11 +269,7 @@ mod tests {
 
         let flag = ProfileConfig {
             opt: Some(OptLevel::O0),
-            strictness: None,
-            backend: None,
-            prune: None,
-            cfg: None,
-            profile: None,
+            ..ProfileConfig::default()
         };
         assert_eq!(flag.apply(manifest.apply(base)).opt, OptLevel::O0);
     }

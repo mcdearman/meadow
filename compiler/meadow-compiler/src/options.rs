@@ -74,7 +74,8 @@ pub struct Cfg {
     pub arch: &'static str,
     /// `profile = "…"`, and the bare `debug` or `release`.
     pub profile: &'static str,
-    /// `backend = "…"`: `"vm"`, `"jit"`, `"aot"`, or `"cek"`.
+    /// `backend = "…"`: Glade's `"vm"`, `"jit"` or `"aot"`, `"silo"`, or
+    /// `"cek"`.
     pub backend: &'static str,
     /// The bare `test`: on while `meadow test` builds.
     pub test: bool,

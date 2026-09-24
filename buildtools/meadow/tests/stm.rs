@@ -2,7 +2,7 @@
 //!
 //! A transaction may perform only `Stm`, which is what makes running it again
 //! on a conflict safe. What transactions do at run time is in
-//! `rts/tests/differential.rs`, on both the VM and the CEK machine.
+//! `glade/tests/differential.rs`, on both the VM and the CEK machine.
 
 mod common;
 use common::{errors_std_with, schemes_std};

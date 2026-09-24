@@ -3,14 +3,14 @@
 //! with nothing installed beside the binary.
 //!
 //! Only for a release build of `meadow`, or when `MEADOW_EMBED_RUNTIME=1`
-//! asks: the library is a release build of `rts` with its link-time
-//! optimization, which is minutes, not seconds, and a debug `meadow` in a
-//! checkout finds the one `cargo build --release` in `rts` leaves instead.
+//! asks: the library is a release build of Glade (`glade/`) with its
+//! link-time optimization, which is minutes, not seconds, and a debug `meadow`
+//! in a checkout finds the one `cargo build --release` in `glade` leaves instead.
 //! `MEADOW_EMBED_RUNTIME=0` leaves it out of a release build too.
 //!
 //! It is built by a `cargo` of its own, in a target directory of its own, from
-//! the same sources as the `meadow_rts` this binary links -- so its fingerprint
-//! (see `rts/build.rs`) is the one the code generator writes. A failure to
+//! the same sources as the `meadow_glade` this binary links -- so its fingerprint
+//! (see `glade/build.rs`) is the one the code generator writes. A failure to
 //! build it is a warning, not an error: `meadow` still works, and says where
 //! else a runtime library can come from when it wants one.
 
@@ -138,12 +138,12 @@ fn wanted() -> bool {
 /// Build the library and answer its bytes.
 fn build(out: &Path) -> Result<Vec<u8>, String> {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let rts = here.join("../../rts");
+    let glade = here.join("../../glade");
     let compiler = here.join("../../compiler");
     for input in [
-        rts.join("src"),
-        rts.join("build.rs"),
-        rts.join("Cargo.toml"),
+        glade.join("src"),
+        glade.join("build.rs"),
+        glade.join("Cargo.toml"),
         compiler.join("meadow-bytecode"),
         compiler.join("meadow-core"),
         compiler.join("meadow-intern"),
@@ -157,7 +157,7 @@ fn build(out: &Path) -> Result<Vec<u8>, String> {
     let mut cmd = Command::new(cargo);
     cmd.args(["build", "--release", "--lib", "--target", &target])
         .arg("--manifest-path")
-        .arg(rts.join("Cargo.toml"))
+        .arg(glade.join("Cargo.toml"))
         .arg("--target-dir")
         .arg(&dir);
     // What the outer build was told about itself is not for this one.
@@ -176,12 +176,12 @@ fn build(out: &Path) -> Result<Vec<u8>, String> {
         .status()
         .map_err(|e| format!("could not run cargo: {e}"))?;
     if !status.success() {
-        return Err(format!("`cargo build` in rts failed ({status})"));
+        return Err(format!("`cargo build` in glade failed ({status})"));
     }
     let lib = if target.contains("windows-msvc") {
-        "meadow_rts.lib"
+        "meadow_glade.lib"
     } else {
-        "libmeadow_rts.a"
+        "libmeadow_glade.a"
     };
     let path = dir.join(&target).join("release").join(lib);
     std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))
@@ -196,6 +196,6 @@ fn target_dir(out: &Path) -> PathBuf {
         (Some(b), Some(target)) if b.file_name().is_some_and(|n| n == "build") => {
             target.join("meadow-runtime")
         }
-        _ => out.join("rts"),
+        _ => out.join("glade"),
     }
 }

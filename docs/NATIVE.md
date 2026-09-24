@@ -7,7 +7,7 @@ frame stack are laid out in memory.
 
 [RUNTIME.md](RUNTIME.md) explains how the runtime _works_ and why. This is the
 other document: the **contract** a code generator is written against -- the
-one in `rts/src/codegen` today, and one written in Meadow later. Every number
+one in `glade/src/codegen` today, and one written in Meadow later. Every number
 here is a constant in the source named beside it, and the source is normative.
 The layout is **not stable across runtime builds**; [§9](#9-versioning) says
 how that is enforced.
@@ -30,7 +30,7 @@ Three things, linked by the system C compiler:
 ```text
   <name>.o / .obj     machine code + the bytecode image        (§2)
   <name>-main.c       eleven lines: hands the two symbols to the runtime
-  libmeadow_rts.a     the runtime: interpreter, collector, scheduler, primitives
+  libmeadow_glade.a     the runtime: interpreter, collector, scheduler, primitives
 ```
 
 `main` is:
@@ -38,16 +38,16 @@ Three things, linked by the system C compiler:
 ```c
 extern const unsigned char meadow_code[];
 extern const unsigned char meadow_data[];
-extern const unsigned char meadow_rts_<hash>;            /* §9 */
-const unsigned char *const meadow_runtime = &meadow_rts_<hash>;
-extern int meadow_aot_main(const unsigned char *code, const unsigned char *data,
+extern const unsigned char meadow_glade_<hash>;            /* §9 */
+const unsigned char *const meadow_runtime = &meadow_glade_<hash>;
+extern int meadow_silo_main(const unsigned char *code, const unsigned char *data,
                            int argc, char **argv);
 int main(int argc, char **argv) {
-    return meadow_aot_main(meadow_code, meadow_data, argc, argv);
+    return meadow_silo_main(meadow_code, meadow_data, argc, argv);
 }
 ```
 
-`meadow_aot_main` (`rts/src/aot.rs`) decodes the image, builds the table of
+`meadow_silo_main` (`glade/src/aot.rs`) decodes the image, builds the table of
 native functions from the block table, runs the program's entry point on the
 scheduler with every worker thread, prints the answer unless it is `()`, and
 returns `0` -- or prints the failure and returns `1`. `argv` after the program
@@ -60,7 +60,7 @@ without native code is interpreted. A code generator is therefore correct if
 it compiles _nothing_, and gets faster as it compiles more (§10).
 
 The system libraries to link are `Format::system_libs` in
-`rts/src/codegen/object.rs`; on Windows `main` is compiled `/MD`.
+`glade/src/codegen/object.rs`; on Windows `main` is compiled `/MD`.
 
 ## 2. The object file
 
@@ -240,7 +240,7 @@ The two-level lookup (`codegen::addr`; 64 KiB blocks of 8192 slots):
 An object is contiguous in memory, so one lookup finds its first word and the
 rest is offsets from it -- including an object bigger than a block.
 
-**An object** (`rts/src/object.rs`), at slot `a`:
+**An object** (`glade/src/object.rs`), at slot `a`:
 
 ```text
   a+0   len (bits 63‥32) | reserved | uniform (bit 12) | uniform desc (bits 11‥8) | kind (bits 7‥0)
@@ -363,9 +363,9 @@ entries; its calls take the general path.
 ## 9. Versioning
 
 Generated code hard-codes every offset in §4 and every layout in §6 and §7, so
-it runs correctly against exactly one build of the runtime. `rts/build.rs`
+it runs correctly against exactly one build of the runtime. `glade/build.rs`
 hashes the runtime's sources, with `meadow-bytecode` and `meadow-core`, and the
-library exports one symbol named for the hash: `meadow_rts_<hash>`
+library exports one symbol named for the hash: `meadow_glade_<hash>`
 (`object::runtime_symbol`). The generated `main` refers to it, so **a runtime
 built from other sources fails to link** instead of corrupting a heap. A code
 generator outside this repository must be built against the same sources, take
@@ -397,6 +397,6 @@ and stay correct at every step:
 5. **Then** registers in machine registers, chaining, method entries and
    loops, each of which changes what it costs and nothing about what it does.
 
-`rts/tests/differential.rs` and `buildtools/meadow/tests/vm.rs` run the
+`glade/tests/differential.rs` and `buildtools/meadow/tests/vm.rs` run the
 standard library's tests on the interpreter and on native code and require the
 same answer from both, word for word. A generator is right when they pass.

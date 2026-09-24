@@ -1,6 +1,6 @@
 //! The Meadow bytecode.
 //!
-//! This is the contract between the compiler and `meadow_rts`, and it is
+//! This is the contract between the compiler and `meadow_glade`, and it is
 //! deliberately dull: **straight-line instructions over a flat register file**.
 //! Everything interesting — the sequent-calculus IR, the environment shapes, the
 //! decision about which value lives in which register — happens in
@@ -25,7 +25,7 @@
 //! Fixed width buys two things. A program counter is an **index**, so a jump
 //! target is an instruction number and a disassembler never has to decode from
 //! the start to find boundaries. And stepping *backwards* is well defined, which
-//! variable-width encodings make awkward — see `meadow_rts::journal`.
+//! variable-width encodings make awkward — see `meadow_glade::journal`.
 //!
 //! # There is no `call`
 //!

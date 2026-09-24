@@ -330,7 +330,7 @@ pub enum Prim {
     // A function's continuation is a frame on a per-thread stack rather than
     // a heap object, and an effect handler has to capture the frames between
     // a `perform` and itself. The stack is chunked, and these three cut and
-    // rejoin it at chunk boundaries -- see `meadow_rts::heap`'s frame stack.
+    // rejoin it at chunk boundaries -- see `meadow_glade::heap`'s frame stack.
     /// `Ref -> ()` -- entering a `handle`: start a chunk, so that whatever the
     /// body pushes can be detached from the handler's own frames in O(1).
     Enter,
@@ -670,7 +670,7 @@ impl Prim {
     /// the runtime cares — it must not **allocate**, because the machine puts a
     /// fused comparison's result in a register the collector does not scan.
     ///
-    /// So this is a claim about `meadow_rts::prims`, not only about types. A
+    /// So this is a claim about `meadow_glade::prims`, not only about types. A
     /// primitive that allocates does not belong here however boolean it looks.
     pub const fn compares(self) -> bool {
         use Prim::*;
@@ -1749,7 +1749,7 @@ mod tests {
 /// | `O1` | native code keeps the machine's books only where they are observed, with short encodings | — |
 /// | `O2` | `match` compiled to a decision tree; generic code specialized; native loops kept inside one function, hot registers in machine registers | code size, compile time |
 ///
-/// The native rows are the code generator's (`meadow_rts::codegen`), which the
+/// The native rows are the code generator's (`meadow_glade::codegen`), which the
 /// JIT and ahead-of-time executables share. `O1` is the default, and it is
 /// where a pass lands that is worth doing on every keystroke. `O0` exists so
 /// that a suspected miscompilation can be bisected against a compiler doing

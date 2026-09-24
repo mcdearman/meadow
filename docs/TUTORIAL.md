@@ -2372,7 +2372,7 @@ The conditions a build knows:
 | `arch = "x86_64"`, `"aarch64"`                                | …for that processor (`--target` sets it for an executable) |
 | `family = "unix"`, `"windows"`, or bare `unix` / `windows`    | …for that family of systems                                |
 | `profile = "debug"`, `"release"`, or bare `debug` / `release` | the build profile                                          |
-| `backend = "vm"`, `"jit"`, `"aot"`, `"cek"`                   | what runs the program                                      |
+| `backend = "vm"`, `"jit"`, `"aot"`, `"silo"`, `"cek"`         | what runs the program: Glade's backends, Silo, or the CEK  |
 | `opt_level = "0"`, `"1"`, `"2"`                               | the optimization level                                     |
 | bare `test`                                                   | `meadow test` is building it                               |
 | any other name, or `name = "value"`                           | the build turned that flag on                              |
@@ -3669,7 +3669,8 @@ as it comes.
 | `meadow`                                                         | REPL                                                                                                                     |
 | `meadow run <path>`                                              | build and evaluate `main`, on the VM and its JIT                                                                         |
 | `meadow run --release <path>`                                    | …optimized, as an executable compiled ahead of time                                                                      |
-| `meadow run --backend vm\|jit\|aot <path>`                       | …on the backend named (`--jit` and `--aot` for short)                                                                    |
+| `meadow run --backend vm\|jit\|aot <path>`                       | …on the Glade backend named (`--jit` and `--aot` for short)                                                              |
+| `meadow run --runtime silo <path>`                               | …on Silo: compiled by LLVM, counting references                                                                          |
 | `meadow run --gc-stats <path>`                                   | …and report what the garbage collector did                                                                               |
 | `meadow run --gc copying <path>`                                 | …with the copying collector instead of the generational one                                                              |
 | `meadow run <path> -- <args>`                                    | …passing `<args>` to the program, which `Process.argv` reads                                                             |
@@ -3697,13 +3698,19 @@ once per representation it is used at (`Int`, `Float`, `String`, a reference,
 …), so it runs as fast as code written at those types. Debug compiles faster:
 generic code is compiled once and told what its values are as it runs.
 
-Each profile also has a backend. Debug runs on the VM, which compiles a block
-to machine code once it has run often; release links an executable. A package
+Each profile also has a runtime, and Glade, the default, a backend. Debug
+runs on Glade's VM, which compiles a block to machine code once it has run
+often; release links an executable compiled ahead of time. The other runtime,
+Silo, is compiled all the way down by LLVM and counts references instead of
+collecting: it is always an executable, and has no backend to choose. A package
 can choose differently in its `Meadow.toml`:
 
 ```toml
+[profile.debug]
+backend = "jit"    # Glade's: "jit" | "aot" | "vm"
+
 [profile.release]
-backend = "jit"   # "vm" | "jit" | "aot"
+runtime = "silo"   # "glade" | "silo"
 ```
 
 ### Editors

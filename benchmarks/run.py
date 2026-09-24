@@ -140,14 +140,14 @@ def meadow_package(lang, task):
     shutil.copyfile(lang.source(task), out / "src" / "Main.mw")
     build = [str(MEADOW), "build", "--release", "--emit", "exe", str(out)]
     if lang.name.endswith("-aot"):
-        build += ["--runtime", "aot"]
+        build += ["--runtime", "silo"]
     return build
 
 
 def native_exe(lang, task):
     native = lang.out_dir(task) / "target" / "release" / "native"
     if lang.name.endswith("-aot"):
-        native = native / "aot"
+        native = native / "silo"
     return [str(native / f"{camel(task)}{EXE}")]
 
 
@@ -212,9 +212,9 @@ LANGS = [
         note="`meadow build --release`: -O2, compiled ahead of time",
     ),
     Lang(
-        "meadow-aot", ".mw", str(MEADOW), meadow_package, native_exe,
+        "meadow-silo", ".mw", str(MEADOW), meadow_package, native_exe,
         stem=lambda t: t,
-        note="`meadow build --release --runtime aot`: the runtime of its own, "
+        note="`meadow build --release --runtime silo`: the runtime of its own, "
              "counted by reference, on the native stack",
     ),
     Lang(
@@ -316,7 +316,7 @@ def measure(argv, cwd, reps):
 
 
 STARTUP = {
-    "meadow-aot": 'use Std.Console (println)\n\ndef main = println "0"\n',
+    "meadow-silo": 'use Std.Console (println)\n\ndef main = println "0"\n',
     "meadow": 'use Std.Console (println)\n\ndef main = println "0"\n',
     "rust": 'fn main() { println!("0"); }\n',
     "c": '#include <stdio.h>\nint main(void) { printf("0\\n"); return 0; }\n',

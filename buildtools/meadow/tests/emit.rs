@@ -3,7 +3,7 @@
 
 use meadow::listing;
 use meadow::{OptLevel, Options, pipeline, runtime};
-use meadow_rts::codegen::{self, Arch};
+use meadow_glade::codegen::{self, Arch};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -215,7 +215,7 @@ fn a_lone_file_has_nowhere_to_emit_to() {
 
 /// A package whose executable can be built twice over.
 fn buildable(what: &str, body: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("meadow-aot-{}-{what}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("meadow-silo-{}-{what}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).expect("a scratch package");
     std::fs::write(

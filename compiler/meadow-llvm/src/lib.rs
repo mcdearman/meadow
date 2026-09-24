@@ -1,10 +1,10 @@
-//! **AxCut to LLVM IR**: the backend of `meadow build --runtime aot`.
+//! **AxCut to LLVM IR**: the backend of `meadow build --runtime silo`.
 //!
 //! A program is compiled all the way to machine code by LLVM and manages its
 //! memory by reference counting, the discipline of the AxCut paper -- Schuster,
 //! Müller, Ostermann and Brachthäuser, _Compiling Classical Sequent Calculus to
 //! Stock Hardware: The Duality of Compilation_, OOPSLA 2025,
-//! <https://doi.org/10.1145/3720507>. `docs/AOT.md` is the design; this crate
+//! <https://doi.org/10.1145/3720507>. `docs/SILO.md` is the design; this crate
 //! is its compiler half, and `aot/` in a checkout is the runtime it links
 //! against.
 //!
@@ -39,13 +39,13 @@ impl From<emit::Error> for Error {
 /// defines, and that the emitted module refers to: so that a program links
 /// with that runtime and no other. See `build.rs`.
 pub fn runtime_symbol() -> String {
-    format!("meadow_aot_{}", fingerprint())
+    format!("meadow_silo_{}", fingerprint())
 }
 
 /// The fingerprint of the sources that decide the ABI between the emitted
 /// code and the runtime: this crate's and the runtime's. See `build.rs`.
 pub fn fingerprint() -> &'static str {
-    env!("MEADOW_AOT_FINGERPRINT")
+    env!("MEADOW_SILO_FINGERPRINT")
 }
 
 /// `program` as an LLVM module, as text.

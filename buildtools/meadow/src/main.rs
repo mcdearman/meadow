@@ -87,7 +87,7 @@ enum Cmd {
         sample_every: Option<u64>,
         /// Samples a second, for the profile of time. Ignored with
         /// `--sample-every`.
-        #[arg(long, value_name = "HZ", default_value_t = meadow_rts::profile::HZ)]
+        #[arg(long, value_name = "HZ", default_value_t = meadow_glade::profile::HZ)]
         sample_hz: u64,
         /// Run on the JIT and write what each call site was seen to enter to
         /// `target/<profile>/calls.pgo`, for an `aot` build of the same
@@ -361,35 +361,47 @@ fn select(selection: &Selection, path: &std::path::Path) -> Selected {
     selected
 }
 
-/// `--target` -- what an `aot` build compiles for.
-#[derive(clap::Args)]
+/// `--target` -- what a native build compiles for -- and how the runtime runs.
+#[derive(clap::Args, Clone)]
 struct TargetArgs {
-    /// The architecture an `aot` build compiles for: `aarch64` or `x86_64`.
-    /// The host's by default.
+    /// The architecture a native build compiles for: `aarch64` or `x86_64`.
+    /// The host's by default; `target = "…"` in a `[profile.<name>]` of
+    /// `Meadow.toml` sets it for a package.
     #[arg(long, value_name = "ARCH")]
     target: Option<String>,
-    /// The runtime library an `aot` build links: `rts` (the default), the
-    /// runtime the JIT and the interpreter share, or `aot`, the separate
-    /// runtime for programs compiled ahead of time. Its executable goes
-    /// beside the default's, under `native/aot/`, so the two can be run
-    /// against each other.
-    #[arg(long, value_name = "RUNTIME", value_parser = ["rts", "aot"])]
-    runtime: Option<String>,
+    /// The runtime system, from the profile: see `--runtime`.
+    #[arg(skip)]
+    runtime: aot::Runtime,
     /// How many OS threads run the program's green threads. One per core by
     /// default, and `1` runs them all on one, in turn. `MEADOW_THREADS` says
-    /// the same; both runtimes read it.
+    /// the same, and `threads = N` in a profile; both runtimes read it.
     #[arg(long, short = 'j', value_name = "N")]
     threads: Option<usize>,
     /// After running, report the blocks the program left behind: what it
-    /// still held at exit, by kind, and what held them. The `aot` runtime
-    /// counts by reference, so this is where a cycle shows up.
+    /// still held at exit, by kind, and what held them. Silo counts by
+    /// reference, so this is where a cycle shows up. `leaks = true` in a
+    /// profile turns it on for a package.
     #[arg(long)]
     leaks: bool,
 }
 
 impl TargetArgs {
+    /// These, with what the resolved profile says for whatever the command
+    /// line left out -- the runtime above all, which only the profile knows.
+    fn with(&self, profile: &Resolved) -> TargetArgs {
+        TargetArgs {
+            target: self
+                .target
+                .clone()
+                .or_else(|| profile.target.map(|t| t.to_string())),
+            runtime: profile.runtime,
+            threads: self.threads.or(profile.threads),
+            leaks: self.leaks || profile.leaks,
+        }
+    }
+
     /// Tell the runtime what these ask for. The environment is how both
-    /// runtimes are told, and a program the `aot` runtime runs is a process
+    /// runtimes are told, and a program Silo runs is a process
     /// of its own, which inherits it.
     fn configure(&self) {
         if let Some(n) = self.threads.filter(|n| *n > 0) {
@@ -398,7 +410,7 @@ impl TargetArgs {
         }
         if self.leaks {
             // Safety: as above.
-            unsafe { std::env::set_var("MEADOW_AOT_LEAKS", "1") };
+            unsafe { std::env::set_var("MEADOW_SILO_LEAKS", "1") };
         }
     }
 
@@ -407,12 +419,7 @@ impl TargetArgs {
             Some(name) => aot::Target::named(name),
             None => aot::Target::host(),
         }?;
-        let runtime = self
-            .runtime
-            .as_deref()
-            .and_then(aot::Runtime::named)
-            .unwrap_or_default();
-        Ok(target.with_runtime(runtime))
+        Ok(target.with_runtime(self.runtime))
     }
 }
 
@@ -439,18 +446,26 @@ struct ProfileArgs {
     /// Allow a non-exhaustive `match`, whatever the profile says.
     #[arg(long)]
     lenient: bool,
-    /// How the program runs: `vm` (the bytecode interpreter), `jit` (which
-    /// compiles what runs often to machine code as it goes) or `aot` (machine
-    /// code compiled ahead of time, into an executable). Debug builds default
-    /// to `jit` and release builds to `aot`; `backend = "..."` in a
+    /// The runtime system: `glade` (the default) -- bytecode, run by the
+    /// interpreter and the JIT or compiled ahead of time with `--aot`, and a
+    /// garbage collector -- or `silo`, compiled all the way down by LLVM,
+    /// counting references, and always an executable. `runtime = "…"` in a
+    /// `[profile.<name>]` of `Meadow.toml` sets it for a package; this
+    /// overrides that.
+    #[arg(long, value_name = "RUNTIME", value_parser = ["glade", "silo"])]
+    runtime: Option<String>,
+    /// How Glade runs the program: `vm` (the bytecode interpreter), `jit`
+    /// (which compiles what runs often to machine code as it goes) or `aot`
+    /// (machine code compiled ahead of time, into an executable). Debug builds
+    /// default to `jit` and release builds to `aot`; `backend = "..."` in a
     /// `[profile.<name>]` of `Meadow.toml` overrides that, and this overrides
-    /// both.
+    /// both. Silo is always compiled ahead of time.
     #[arg(long, value_name = "BACKEND", value_parser = backend, conflicts_with_all = ["jit", "aot"])]
     backend: Option<Backend>,
     /// `--backend jit`.
     #[arg(long, conflicts_with = "aot")]
     jit: bool,
-    /// `--backend aot`.
+    /// `--backend aot`: Glade, compiled ahead of time into an executable.
     #[arg(long, visible_alias = "native")]
     aot: bool,
     /// Turn on a flag for `@cfg(…)` to test: `--cfg fast`, `--cfg feature=gpu`.
@@ -503,12 +518,26 @@ impl ProfileArgs {
                 .then(|| meadow_compiler::intern::InternedString::from(self.cfg.join(","))),
             // Asked for on the command line with `--profile-to`, not here.
             profile: None,
+            runtime: self.runtime.as_deref().and_then(aot::Runtime::named),
+            // `-j`, `--leaks` and `--target` belong to the command, and win
+            // over these when they are given: see `TargetArgs::with`.
+            threads: None,
+            leaks: None,
+            target: None,
         }
     }
 
     /// The profile, the package's `Meadow.toml`, and these flags, in that order
     /// of increasing authority.
     fn resolve(&self, path: &std::path::Path) -> Resolved {
+        let silo = self.runtime.as_deref() == Some("silo");
+        if silo && (self.backend.is_some() || self.jit || self.aot) {
+            eprintln!(
+                "error: Silo is compiled ahead of time by what it is, and has no backend to \
+                 choose; `--backend`, `--jit` and `--aot` are Glade's"
+            );
+            std::process::exit(2);
+        }
         Resolved::resolve(self.profile(), path, self.overrides())
     }
 }
@@ -582,6 +611,7 @@ fn main() {
         }) => {
             let selected = select(&packages.selection(), &path);
             let profile = profile.resolve(&path);
+            let target = target.with(&profile);
             match &selected.paths[..] {
                 [one] => build(
                     one,
@@ -619,14 +649,16 @@ fn main() {
             args,
         }) => {
             meadow_compiler::core::args::set(args);
+            let resolved = profile.resolve(&path);
+            let target = target.with(&resolved);
             target.configure();
             if let Some(gc) = gc {
-                meadow_rts::heap::configure(meadow_rts::heap::GcConfig {
+                meadow_glade::heap::configure(meadow_glade::heap::GcConfig {
                     collector: match gc.as_str() {
-                        "copying" => meadow_rts::heap::Collector::Copying,
-                        _ => meadow_rts::heap::Collector::Generational,
+                        "copying" => meadow_glade::heap::Collector::Copying,
+                        _ => meadow_glade::heap::Collector::Generational,
                     },
-                    ..meadow_rts::heap::GcConfig::from_env()
+                    ..meadow_glade::heap::GcConfig::from_env()
                 });
             }
             let selection = Selection {
@@ -638,7 +670,7 @@ fn main() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
-            let mut profile = engine.resolve(profile.resolve(&path));
+            let mut profile = engine.resolve(resolved);
             // Training is the JIT watching, whatever the profile would run.
             if train {
                 profile.backend = Backend::Jit;
@@ -658,10 +690,10 @@ fn main() {
                 profile_to.map(|to| {
                     (
                         to,
-                        meadow_rts::sched::Sampling {
+                        meadow_glade::sched::Sampling {
                             every: sample_every,
                             hz: sample_hz,
-                            depth: meadow_rts::profile::DEPTH,
+                            depth: meadow_glade::profile::DEPTH,
                         },
                     )
                 }),
@@ -705,8 +737,9 @@ fn main() {
             target,
         }) => {
             let selected = select(&packages.selection(), &path);
-            let arch = asm.then(|| exit_on_error(target.target()).arch);
-            disassemble(&selected.paths, profile.resolve(&path), arch)
+            let resolved = profile.resolve(&path);
+            let arch = asm.then(|| exit_on_error(target.with(&resolved).target()).arch);
+            disassemble(&selected.paths, resolved, arch)
         }
         Some(Cmd::Test {
             path,
@@ -720,16 +753,18 @@ fn main() {
             engine,
             target,
         }) => {
+            let resolved = profile.resolve(&path);
+            let target = target.with(&resolved);
             target.configure();
             match test::run(&test::Options {
                 native: target
                     .target()
-                    .is_ok_and(|t| t.runtime == aot::Runtime::Aot),
+                    .is_ok_and(|t| t.runtime == aot::Runtime::Silo),
                 threads: test_threads.filter(|n| *n > 0),
                 no_capture,
                 packages: packages.selection(),
-                engine: engine.engine(profile.resolve(&path).backend),
-                profile: engine.resolve(profile.resolve(&path)),
+                engine: engine.engine(resolved.backend),
+                profile: engine.resolve(resolved),
                 path,
                 filter,
                 exact,
@@ -955,7 +990,7 @@ fn build(
     engine: Option<Engine>,
     listing: Listing,
     gc_stats: bool,
-    sampling: Option<(PathBuf, meadow_rts::sched::Sampling)>,
+    sampling: Option<(PathBuf, meadow_glade::sched::Sampling)>,
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
@@ -1039,7 +1074,7 @@ fn finished(profile: &Resolved, started: std::time::Instant) {
             "`{}` profile [{}, {}] in {}",
             profile.profile.name(),
             profile.opt().name(),
-            profile.backend.name(),
+            profile.how(),
             status::elapsed(started.elapsed())
         ),
     );
@@ -1172,12 +1207,12 @@ fn build_many(
 /// `profile`, told the architecture an executable for another is compiled
 /// for: that is the `arch` its `@cfg(…)` sees.
 fn for_target(mut profile: Resolved, target: &TargetArgs) -> Resolved {
-    if profile.backend == Backend::Aot
+    if profile.native()
         && let Ok(t) = target.target()
     {
         profile.options.cfg.arch = match t.arch {
-            meadow_rts::codegen::Arch::Aarch64 => "aarch64",
-            meadow_rts::codegen::Arch::X86_64 => "x86_64",
+            meadow_glade::codegen::Arch::Aarch64 => "aarch64",
+            meadow_glade::codegen::Arch::X86_64 => "x86_64",
         };
     }
     profile
@@ -1192,7 +1227,7 @@ fn finish(
     engine: Option<Engine>,
     listing: Listing,
     gc_stats: bool,
-    sampling: Option<(PathBuf, meadow_rts::sched::Sampling)>,
+    sampling: Option<(PathBuf, meadow_glade::sched::Sampling)>,
     emit: &[Emit],
     profile: Resolved,
     target: &TargetArgs,
@@ -1206,7 +1241,7 @@ fn finish(
         );
         std::process::exit(1);
     }
-    let aot = profile.backend == Backend::Aot && engine != Some(Engine::Cek);
+    let aot = profile.native() && engine != Some(Engine::Cek);
     // What is written: what was asked for, or else the image -- and for an
     // `aot` build, its executable.
     let wants = |kind: Emit| match kind {
@@ -1279,7 +1314,7 @@ fn finish(
                 .as_ref()
                 .ok_or("a native executable needs a package to put it in")?;
             // The native backend compiles AxCut itself, not the image.
-            if target.runtime == aot::Runtime::Aot {
+            if target.runtime == aot::Runtime::Silo {
                 return aot::build_native(
                     root,
                     profile.profile,
@@ -1380,10 +1415,10 @@ fn finish(
                 };
                 (
                     to,
-                    meadow_rts::sched::Sampling {
+                    meadow_glade::sched::Sampling {
                         every: None,
-                        hz: meadow_rts::profile::HZ,
-                        depth: meadow_rts::profile::DEPTH,
+                        hz: meadow_glade::profile::HZ,
+                        depth: meadow_glade::profile::DEPTH,
                     },
                 )
             })
@@ -1471,7 +1506,7 @@ fn finish(
 /// After `meadow run --train`: write what the JIT saw each call site enter,
 /// for an `aot` build of the same image. See `meadow::pgo`.
 fn train_from(
-    jit: Option<&meadow_rts::jit::Native>,
+    jit: Option<&meadow_glade::jit::Native>,
     image: &meadow_bytecode::Program,
     package: Option<&(PathBuf, meadow_compiler::intern::InternedString)>,
     profile: &Resolved,
@@ -1494,7 +1529,7 @@ fn train_from(
 /// Print the bytecode the VM would run — the back end's output, addresses and
 /// all — for each package in `paths`; or, for `arch`, the native code an
 /// `aot` build compiles it to.
-fn disassemble(paths: &[PathBuf], profile: Resolved, arch: Option<meadow_rts::codegen::Arch>) {
+fn disassemble(paths: &[PathBuf], profile: Resolved, arch: Option<meadow_glade::codegen::Arch>) {
     let refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
     let out = pipeline::build_each(&refs, profile.options);
     for d in &out.diagnostics {

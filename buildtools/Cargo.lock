@@ -959,9 +959,9 @@ dependencies = [
  "meadow-eval",
  "meadow-find",
  "meadow-fmt",
+ "meadow-glade",
  "meadow-llvm",
  "meadow-lsp",
- "meadow-rts",
  "meadow-seq",
  "postcard",
  "ratatui",
@@ -1080,6 +1080,17 @@ name = "meadow-fmt"
 version = "0.1.0-alpha"
 
 [[package]]
+name = "meadow-glade"
+version = "0.1.0-alpha"
+dependencies = [
+ "meadow-bytecode",
+ "meadow-core",
+ "meadow-intern",
+ "num-bigint",
+ "num-traits",
+]
+
+[[package]]
 name = "meadow-hir"
 version = "0.1.0-alpha"
 dependencies = [
@@ -1174,17 +1185,6 @@ dependencies = [
  "meadow-intern",
  "meadow-span",
  "serde",
-]
-
-[[package]]
-name = "meadow-rts"
-version = "0.1.0-alpha"
-dependencies = [
- "meadow-bytecode",
- "meadow-core",
- "meadow-intern",
- "num-bigint",
- "num-traits",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 //! Which machine runs the program.
 //!
 //! Two back ends, one interface. The **bytecode VM** is the default: `core` is
-//! lowered to the AxCut IR, compiled to registers, and run by `meadow_rts`. The
+//! lowered to the AxCut IR, compiled to registers, and run by `meadow_glade`. The
 //! **CEK machine** (`meadow_eval`) is still there behind `--cek`, and is still
 //! the specification — if the two disagree the CEK is right and the VM has a
 //! bug, so the flag is the first thing to reach for when a program does
@@ -31,7 +31,7 @@ pub enum Engine {
     /// program means.
     Cek,
     /// The VM, compiling each block to machine code once it has run often
-    /// enough -- see `meadow_rts::jit`.
+    /// enough -- see `meadow_glade::jit`.
     Jit,
 }
 
@@ -62,12 +62,12 @@ pub fn run(program: &core::Program, engine: Engine, opt: OptLevel) -> Result<Str
             let image = compile(program, opt)?;
             let native = native(&image, engine, opt)?;
             let entry = image.entry.ok_or("program has no entry point")?;
-            meadow_rts::sched::run_native(
+            meadow_glade::sched::run_native(
                 &image,
                 native.as_ref(),
                 entry,
                 UNBOUNDED,
-                meadow_rts::sched::workers(),
+                meadow_glade::sched::workers(),
             )
             .result
             .map_err(|e| e.msg)
@@ -108,12 +108,12 @@ pub fn run_timed(
             let result = image.and_then(|image| {
                 let native = native(&image, engine, opt)?;
                 let entry = image.entry.ok_or("program has no entry point")?;
-                meadow_rts::sched::run_native(
+                meadow_glade::sched::run_native(
                     &image,
                     native.as_ref(),
                     entry,
                     UNBOUNDED,
-                    meadow_rts::sched::workers(),
+                    meadow_glade::sched::workers(),
                 )
                 .result
                 .map_err(|e| e.msg)
@@ -181,11 +181,11 @@ pub fn native(
     image: &meadow_bytecode::Program,
     engine: Engine,
     opt: OptLevel,
-) -> Result<Option<meadow_rts::jit::Native<'_>>, String> {
+) -> Result<Option<meadow_glade::jit::Native<'_>>, String> {
     native_at(
         image,
         engine,
-        meadow_rts::jit::Native::threshold_from_env(),
+        meadow_glade::jit::Native::threshold_from_env(),
         opt,
     )
 }
@@ -196,9 +196,9 @@ fn native_at(
     engine: Engine,
     threshold: u32,
     opt: OptLevel,
-) -> Result<Option<meadow_rts::jit::Native<'_>>, String> {
+) -> Result<Option<meadow_glade::jit::Native<'_>>, String> {
     match engine {
-        Engine::Jit => meadow_rts::jit::Native::jit(image, threshold, opt).map(Some),
+        Engine::Jit => meadow_glade::jit::Native::jit(image, threshold, opt).map(Some),
         _ => Ok(None),
     }
 }
@@ -220,7 +220,7 @@ pub struct GcStats {
     pub heap_slots: usize,
     pub region_slots: usize,
     /// Every pause, across every thread.
-    pub pauses: meadow_rts::pauses::Pauses,
+    pub pauses: meadow_glade::pauses::Pauses,
     /// Slots promoted to old generations, marking cycles, and the time marking
     /// took on any thread -- mostly not the program's.
     pub promoted: u64,
@@ -237,7 +237,7 @@ pub struct GcStats {
 
 impl fmt::Display for GcStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let bytes = |slots: u64| human_bytes(slots * meadow_rts::heap::SLOT_BYTES as u64);
+        let bytes = |slots: u64| human_bytes(slots * meadow_glade::heap::SLOT_BYTES as u64);
         let share = if self.run_nanos == 0 {
             0.0
         } else {
@@ -276,7 +276,7 @@ impl fmt::Display for GcStats {
 
 /// The pause percentiles worth knowing when latency matters: the typical one,
 /// the tail, and the worst.
-fn pauses(p: &meadow_rts::pauses::Pauses) -> String {
+fn pauses(p: &meadow_glade::pauses::Pauses) -> String {
     if p.count == 0 {
         return "none".to_string();
     }
@@ -335,18 +335,18 @@ pub fn run_with_stats(
 /// Run a compiled image on the VM, and say what its collector did.
 pub fn run_image_with_stats(
     image: &meadow_bytecode::Program,
-    native: Option<&meadow_rts::jit::Native>,
+    native: Option<&meadow_glade::jit::Native>,
 ) -> (Result<String, String>, Option<GcStats>) {
     let Some(entry) = image.entry else {
         return (Err("program has no entry point".to_string()), None);
     };
     let started = std::time::Instant::now();
-    let outcome = meadow_rts::sched::run_native(
+    let outcome = meadow_glade::sched::run_native(
         image,
         native,
         entry,
         UNBOUNDED,
-        meadow_rts::sched::workers(),
+        meadow_glade::sched::workers(),
     );
     let s = outcome.stats;
     let stats = GcStats {
@@ -394,7 +394,7 @@ pub fn run_tests_watched(
     opt: OptLevel,
     each: &mut dyn FnMut(usize, &Result<String, String>),
 ) -> Result<Vec<Result<String, String>>, String> {
-    let threshold = meadow_rts::jit::Native::threshold_from_env();
+    let threshold = meadow_glade::jit::Native::threshold_from_env();
     run_tests_jit_at_watched(program, tests, engine, opt, threshold, each)
 }
 
@@ -444,12 +444,12 @@ pub fn run_tests_jit_at_watched(
                     let Some(&entry) = image.entries.get(base + i) else {
                         return Err("a test has no entry point".to_string());
                     };
-                    let out = meadow_rts::sched::run_native(
+                    let out = meadow_glade::sched::run_native(
                         &image,
                         jit.as_ref(),
                         entry,
                         UNBOUNDED,
-                        meadow_rts::sched::workers(),
+                        meadow_glade::sched::workers(),
                     )
                     .result
                     .map_err(|e| e.msg);
@@ -521,11 +521,11 @@ pub fn run_tests_parallel(
         );
     }
     let (image, base) = test_image(program, tests, opt)?;
-    let threshold = meadow_rts::jit::Native::threshold_from_env();
+    let threshold = meadow_glade::jit::Native::threshold_from_env();
     let jit = native_at(&image, engine, threshold, opt)?;
     // A test that spawns threads gets its share of the cores, and never fewer
     // than two workers: one that expects to run alongside another should.
-    let workers = (meadow_rts::sched::workers() / threads).max(2);
+    let workers = (meadow_glade::sched::workers() / threads).max(2);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let slots: Vec<std::sync::Mutex<Option<Told>>> =
         tests.iter().map(|_| std::sync::Mutex::new(None)).collect();
@@ -546,7 +546,7 @@ pub fn run_tests_parallel(
                             let kept = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
                             let outcome = if capture {
                                 let kept = kept.clone();
-                                meadow_rts::sched::run_captured(
+                                meadow_glade::sched::run_captured(
                                     &image,
                                     jit.as_ref(),
                                     entry,
@@ -557,7 +557,7 @@ pub fn run_tests_parallel(
                                     }),
                                 )
                             } else {
-                                meadow_rts::sched::run_native(
+                                meadow_glade::sched::run_native(
                                     &image,
                                     jit.as_ref(),
                                     entry,
@@ -597,7 +597,7 @@ pub fn run_tests_parallel(
 /// `()`, compiled; and the entry the first of them has. They are compiled with
 /// everything else, so the image is built once and each test is simply a
 /// different place to start.
-/// Run `tests` compiled by the native backend (`docs/AOT.md`): one executable
+/// Run `tests` compiled by the native backend (`docs/SILO.md`): one executable
 /// holding every test, built once, and run once per test -- a process each,
 /// `threads` at a time -- with the test's number as its argument. A test
 /// passes if its process does; what it printed is its output, and what it
@@ -622,13 +622,13 @@ pub fn run_tests_native(
         .collect();
     let units = meadow_llvm::compile_tests(&lowered.program, &labels, meadow_llvm::UNIT)
         .map_err(|e| e.msg)?;
-    let target = crate::aot::Target::host()?.with_runtime(crate::aot::Runtime::Aot);
+    let target = crate::aot::Target::host()?.with_runtime(crate::aot::Runtime::Silo);
     let runtime = crate::aot::runtimes(target)?
         .into_iter()
         .next()
-        .ok_or("no aot runtime library")?;
+        .ok_or("no Silo runtime library")?;
     let dir = std::env::temp_dir()
-        .join("meadow-aot-tests")
+        .join("meadow-silo-tests")
         .join(std::process::id().to_string());
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let modules = crate::aot::write_units(&dir, "tests", &units)?;
@@ -674,7 +674,7 @@ pub fn run_tests_native(
         }
     });
     // Kept on request, to run a test again by hand: `tests <number>`.
-    if std::env::var_os("MEADOW_AOT_KEEP").is_none() {
+    if std::env::var_os("MEADOW_SILO_KEEP").is_none() {
         let _ = std::fs::remove_dir_all(&dir);
     }
     Ok(slots
@@ -774,12 +774,12 @@ pub fn compile_for_profile(
 /// the samples came to along with the result.
 pub fn run_image_sampled(
     image: &meadow_bytecode::Program,
-    native: Option<&meadow_rts::jit::Native>,
-    sampling: meadow_rts::sched::Sampling,
+    native: Option<&meadow_glade::jit::Native>,
+    sampling: meadow_glade::sched::Sampling,
 ) -> (
     Result<String, String>,
-    Option<meadow_rts::profile::Profile>,
-    meadow_rts::sched::Stats,
+    Option<meadow_glade::profile::Profile>,
+    meadow_glade::sched::Stats,
 ) {
     let Some(entry) = image.entry else {
         return (
@@ -788,12 +788,12 @@ pub fn run_image_sampled(
             Default::default(),
         );
     };
-    let outcome = meadow_rts::sched::run_sampled(
+    let outcome = meadow_glade::sched::run_sampled(
         image,
         native,
         entry,
         UNBOUNDED,
-        meadow_rts::sched::workers(),
+        meadow_glade::sched::workers(),
         Some(sampling),
     );
     (

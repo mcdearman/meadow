@@ -5,7 +5,7 @@
 //! — plus three more for effects, which AxCut does not have.
 //!
 //! It lives beside the IR rather than in the runtime, because it is not a
-//! runtime. `meadow_rts` executes bytecode and knows nothing about sequents; the
+//! runtime. `meadow_glade` executes bytecode and knows nothing about sequents; the
 //! whole point of `meadow_codegen` is that everything in this file is compiled
 //! away. What this is for:
 //!
@@ -866,8 +866,8 @@ fn list_items<'p>(v: &Value<'p>) -> Option<Vec<Value<'p>>> {
 /// A constructor as a reader wants to see it: `Maybe.Just` prints as `Just`.
 ///
 /// The third of three implementations of this — `meadow_eval`'s `Display` and
-/// `meadow_rts::show` are the others — which is why
-/// `constructors_print_bare_and_agree` in `rts/tests/differential.rs` runs all
+/// `meadow_glade::show` are the others — which is why
+/// `constructors_print_bare_and_agree` in `glade/tests/differential.rs` runs all
 /// three against each other rather than trusting any one of them.
 fn bare_ctor(name: &str) -> &str {
     match name.rsplit_once('.') {

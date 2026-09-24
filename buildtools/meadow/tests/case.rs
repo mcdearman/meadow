@@ -72,7 +72,7 @@ fn every_embedded_file_is_spelled_as_it_is_on_disk() {
     // path in the wrong case builds on a Mac and not on Linux.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut sources = Vec::new();
-    for ws in ["buildtools", "compiler", "rts", "eval"] {
+    for ws in ["buildtools", "compiler", "glade", "eval"] {
         rust_sources(&root.join(ws), &mut sources);
     }
     assert!(sources.len() > 50, "found only {} sources", sources.len());

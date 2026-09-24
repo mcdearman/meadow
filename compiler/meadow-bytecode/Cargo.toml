@@ -1,6 +1,6 @@
 [package]
 name = "meadow-bytecode"
-description = "The Meadow bytecode: a fixed-width register instruction set, and the program image the runtime loads. The contract between the compiler's back end and `meadow-rts`."
+description = "The Meadow bytecode: a fixed-width register instruction set, and the program image the runtime loads. The contract between the compiler's back end and `meadow-glade`."
 version.workspace = true
 edition.workspace = true
 

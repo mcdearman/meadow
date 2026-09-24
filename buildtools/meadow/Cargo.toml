@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 meadow-compiler.workspace = true
 meadow-eval.workspace = true
-meadow-rts.workspace = true
+meadow-glade.workspace = true
 meadow-seq.workspace = true
 meadow-codegen.workspace = true
 meadow-llvm.workspace = true
@@ -44,4 +44,4 @@ insta = "1.47.2"
 [features]
 # Pass through to the runtime: charge allocation to the instruction that asked
 # for it, and render it beside the sampling profile.
-profile-alloc = ["meadow-rts/profile-alloc"]
+profile-alloc = ["meadow-glade/profile-alloc"]

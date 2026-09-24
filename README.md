@@ -208,22 +208,35 @@ declared once under `[workspace.package]` and `[workspace.dependencies]`
 (`util = { workspace = true }` in a member). The
 [tutorial](docs/TUTORIAL.md#workspaces) has the details.
 
-### Native code
+### Two runtimes: Glade and Silo
 
-Meadow compiles its bytecode to machine code itself, for **aarch64** and
+A program runs on one of two runtime systems, and they are two backends of
+their own:
+
+| runtime                 | what it is                                                                                                                                                                             |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Glade** (the default) | bytecode, on an interpreter and a JIT, or compiled ahead of time into an executable; green threads, and a garbage collector tending the heap                                           |
+| **Silo**                | compiled all the way down by LLVM, counting references instead of collecting, on the native stack; always an executable, with no interpreter in it -- see [docs/SILO.md](docs/SILO.md) |
+
+`--runtime <glade|silo>` picks one for a command, and `runtime = "…"` in a
+`[profile.<name>]` of the manifest for a package.
+
+Glade compiles its bytecode to machine code itself, for **aarch64** and
 **x86-64**, with no LLVM or Cranelift: typed arithmetic, comparisons, branches,
 moves, constants and the common allocations run as machine instructions, and
-everything else calls back into the runtime. There are three backends, and the
-same code generator serves the two that use it:
+everything else calls back into the runtime. When it compiles is Glade's to
+choose -- its backend:
 
-| backend |                                                                                                                                       | default for |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| `jit`   | the VM, compiling each block to machine code once it has run 16 times (`MEADOW_JIT_THRESHOLD`)                                        | `--debug`   |
-| `aot`   | an executable: a Mach-O or ELF object holding the code and the program's image, linked by the system's C compiler against the runtime | `--release` |
-| `vm`    | the bytecode interpreter alone                                                                                                        |             |
+| Glade backend |                                                                                                                                       | default for |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| `jit`         | the VM, compiling each block to machine code once it has run 16 times (`MEADOW_JIT_THRESHOLD`)                                        | `--debug`   |
+| `aot`         | an executable: a Mach-O or ELF object holding the code and the program's image, linked by the system's C compiler against the runtime | `--release` |
+| `vm`          | the bytecode interpreter alone                                                                                                        |             |
 
 `--backend <vm|jit|aot>` (or `--jit`, `--aot`) picks one for a command, and a
-package can pick one per profile in its manifest:
+package can pick one per profile in its manifest. Silo has no backend to pick:
+it is compiled ahead of time by what it is, and a backend named beside it is
+an error on the command line and a warning in the manifest.
 
 ```toml
 # Meadow.toml
@@ -231,17 +244,19 @@ package can pick one per profile in its manifest:
 backend = "vm"
 
 [profile.release]
-backend = "jit"
+runtime = "silo"
 ```
 
-`aot` links against the runtime built as a static library: `cargo build
---release` in `rts`, or with `--target x86_64-apple-darwin` for the other Mac
-architecture; `MEADOW_RUNTIME` can name one. It has to be built from the same
-sources as `meadow`, and a program will not link against one that is not. When
-`aot` is only the release default and no executable can be made -- a lone `.mw`
-file, which has no `target/` to put one in, or no runtime library -- the JIT
-runs the program instead, with a warning; an `aot` that was asked for is an
-error. `meadow test` runs in-process, so it uses the JIT for both.
+An executable links against its runtime built as a static library: `cargo
+build --release` in `glade` or `silo`, or with `--target x86_64-apple-darwin`
+for the other Mac architecture; `MEADOW_RUNTIME` can name one. A release
+`meadow` carries Glade's inside it. A runtime has to be built from the same
+sources as `meadow`, and a program will not link against one that is not.
+When Glade's `aot` is only the release default and no executable can be made
+-- a lone `.mw` file, which has no `target/` to put one in, or no runtime
+library -- the JIT runs the program instead, with a warning; an `aot` that was
+asked for is an error, and so is Silo that cannot be had. `meadow test` runs
+in-process, so it uses the JIT for both of Glade's.
 
 A package's name is the first segment of a `use` path, so it has to lex as one
 identifier — `meadow init` says so rather than letting a directory called
@@ -475,6 +490,7 @@ options, not options themselves. There are two:
 | ---------------------- | --------- | ----------- |
 | optimization level     | `-O1`     | `-O2`       |
 | non-exhaustive `match` | allowed   | an error    |
+| runtime                | Glade     | Glade       |
 | backend                | `jit`     | `aot`       |
 
 ```sh
@@ -507,7 +523,11 @@ opt-level = 2               # this package is slow to run, not slow to build
 
 [profile.release]
 strictness = "lenient"      # "lenient" | "strict"
-backend = "jit"             # "vm" | "jit" | "aot"
+runtime = "glade"           # "glade" | "silo"
+backend = "jit"             # Glade's: "jit" | "aot" | "vm" -- or `aot = true`
+threads = 4                 # OS threads for the green ones, as `-j`
+leaks = true                # what the program left behind, as `--leaks`
+target = "aarch64"          # the processor an executable is for, as `--target`
 ```
 
 A flag beats the manifest, and the manifest beats the profile's built-in
@@ -516,15 +536,16 @@ that names only `opt-level` leaves everything else as debug.
 
 ## Building from a checkout
 
-The tree is five independent Cargo workspaces:
+The tree is six independent Cargo workspaces:
 
-|               |                                                                                                                                                                                                                                                                    |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `compiler/`   | the front end and back end, one crate per pass — through `meadow-seq` (the AxCut IR and its reference machine) and `meadow-codegen` to `meadow-bytecode`                                                                                                           |
-| `eval/`       | the CEK machine — the specification of what a program means                                                                                                                                                                                                        |
-| `rts/`        | the runtime: a register bytecode VM, green threads, and a low-pause generational collector (a copying nursery, and an Immix old generation marked concurrently and evacuated a block at a time). It loads an image and knows nothing about the IR that produced it |
-| `buildtools/` | the tools you point at Meadow source: `meadow` (build system, CLI and REPL — the binary) and `meadow-fmt` (the formatter)                                                                                                                                          |
-| `installer/`  | `meadowup`, which installs and updates the toolchain                                                                                                                                                                                                               |
+|               |                                                                                                                                                                                                                                                                                                                      |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `compiler/`   | the front end and back end, one crate per pass — through `meadow-seq` (the AxCut IR and its reference machine) and `meadow-codegen` to `meadow-bytecode`                                                                                                                                                             |
+| `eval/`       | the CEK machine — the specification of what a program means                                                                                                                                                                                                                                                          |
+| `glade/`      | Glade, the default runtime: a register bytecode VM, its JIT and native code generator, green threads, and a low-pause generational collector (a copying nursery, and an Immix old generation marked concurrently and evacuated a block at a time). It loads an image and knows nothing about the IR that produced it |
+| `silo/`       | Silo, the runtime a program compiled by LLVM links against: its heap, counted by reference, its primitives, and its scheduler -- see `docs/SILO.md`                                                                                                                                                                  |
+| `buildtools/` | the tools you point at Meadow source: `meadow` (build system, CLI and REPL — the binary) and `meadow-fmt` (the formatter)                                                                                                                                                                                            |
+| `installer/`  | `meadowup`, which installs and updates the toolchain                                                                                                                                                                                                                                                                 |
 
 ```
 core ──▶ AxCut ──▶ bytecode ──▶ VM

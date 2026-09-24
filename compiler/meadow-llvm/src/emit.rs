@@ -7,13 +7,13 @@
 //! `invoke` are tail calls with every argument in a register: see [`REGS`] for
 //! why that convention, and what becomes of an argument past the tenth.
 //!
-//! A **frame** (`docs/AOT.md`, "Frames are the native stack") is not built
+//! A **frame** (`docs/SILO.md`, "Frames are the native stack") is not built
 //! while it is only waiting to be the continuation of a call: the call is an
 //! LLVM `call` with a null continuation, and the frame's method is emitted
 //! after it. Anything else done with a frame -- sharing it, storing it --
 //! builds it then, as the object it would have been.
 //!
-//! Memory is the paper's (see `docs/AOT.md`): a block's first word counts the
+//! Memory is the paper's (see `docs/SILO.md`): a block's first word counts the
 //! references besides one; sharing adds to it, erasing takes from it or, at
 //! zero, hands the block to the runtime's free list; loading fields out of a
 //! block whose count is zero takes them without touching a count.
@@ -27,7 +27,7 @@ use std::fmt::Write;
 use std::rc::Rc;
 
 /// What a block's second word says it is. Shared with the runtime, which
-/// must agree: see `aot/src/heap.rs`.
+/// must agree: see `silo/src/heap.rs`.
 pub mod kind {
     pub const DATA: u64 = 1;
     pub const CLOSURE: u64 = 2;
@@ -79,7 +79,7 @@ fn spawns(program: &Program) -> bool {
 /// points only at what was there before it, so no cycle can come of it --
 /// `setRef` and a write into a mutable array are the two ways to make one,
 /// and a program with neither needs no cycle collector at all (see
-/// `aot/src/cycles.rs`).
+/// `silo/src/cycles.rs`).
 ///
 /// `setField`, which destination-passing uses to fill a hole in a structure
 /// being built, is not one of them: what it writes is always newer than what
@@ -115,7 +115,7 @@ fn ties_knots(program: &Program) -> bool {
 /// and nothing can be read out of one, sent between threads or added to that
 /// did not start there. A program with no `compact` in it therefore never
 /// meets a block whose count says it is in a region, and its counting helpers
-/// do not ask -- see `aot/src/region.rs`, which is where the asking is paid
+/// do not ask -- see `silo/src/region.rs`, which is where the asking is paid
 /// for.
 fn makes_regions(program: &Program) -> bool {
     uses(program, &[Prim::Compact, Prim::CompactAdd])
@@ -539,7 +539,7 @@ impl<'p> Module<'p> {
         f.i(format!("store i32 {rc2}, ptr {p}"));
         // Loading the fields of a block inside a compact region is a
         // reference into that region given up, like any other: see
-        // `aot/src/region.rs`.
+        // `silo/src/region.rs`.
         if self.regions {
             let inreg = f.t();
             let (gone, on) = (f.b(), f.b());
@@ -1019,7 +1019,7 @@ impl<'p> Module<'p> {
             return err("a primitive that answers needs one continuation");
         };
         // The stack-segment primitives take the code after them: see
-        // `aot/src/segments.rs`. It is packed as a closure of one argument
+        // `silo/src/segments.rs`. It is packed as a closure of one argument
         // -- what it binds -- and the runtime answers what that code finally
         // returns natively, which this returns.
         if let Extern::Prim(p @ (Prim::Enter | Prim::Detach | Prim::Reattach)) = op {
@@ -1823,10 +1823,10 @@ impl<'p> Module<'p> {
         out.push_str(RUNTIME);
         out.push_str(&helpers(self.cycles, self.regions));
         out.push_str(INVOKE1);
-        let _ = writeln!(out, "@meadow_aot_{fingerprint} = external global i8");
+        let _ = writeln!(out, "@meadow_silo_{fingerprint} = external global i8");
         let _ = writeln!(
             out,
-            "@meadow_runtime = constant ptr @meadow_aot_{fingerprint}\n"
+            "@meadow_runtime = constant ptr @meadow_silo_{fingerprint}\n"
         );
         let methods: Vec<String> = self.methods.iter().map(|m| format!("ptr {m}")).collect();
         let _ = writeln!(
@@ -1972,7 +1972,7 @@ fn declarations(body: &str, arity: &HashMap<&str, usize>) -> String {
     out
 }
 
-/// What the emitted code calls in the runtime, `aot/src/lib.rs`.
+/// What the emitted code calls in the runtime, `silo/src/lib.rs`.
 const RUNTIME: &str = "\
 declare i64 @meadow_acquire(i64)
 declare void @meadow_free(i64)
@@ -2254,7 +2254,7 @@ enum Entries {
 /// handing the block to the runtime when it was the last.
 /// The helpers as a program gets them. One that can tie a knot hands every
 /// block whose count went down without reaching zero to the collector, which
-/// is where a cycle is noticed (`aot/src/cycles.rs`); one that cannot has no
+/// is where a cycle is noticed (`silo/src/cycles.rs`); one that cannot has no
 /// such call anywhere in it.
 fn helpers(cycles: bool, regions: bool) -> String {
     // The test before the call is inline, and on a program that makes no
@@ -2264,7 +2264,7 @@ fn helpers(cycles: bool, regions: bool) -> String {
     // are built -- and only the first time its count goes down, since it is
     // coloured until a collection looks at it. Both questions are in the same
     // word, so both are asked at once: `MUTABLE` set and the colour black.
-    // `aot/src/cycles.rs` says why those two kinds, `aot/src/heap.rs` has the
+    // `silo/src/cycles.rs` says why those two kinds, `silo/src/heap.rs` has the
     // bits, and the two must agree.
     let candidate = if cycles {
         "  %w1a = getelementptr i64, ptr %p, i64 1
@@ -2282,8 +2282,8 @@ cand:
     // A block inside a compact region carries far more references than it
     // has, so the count a share or an erase has already loaded says whether
     // it is touching one -- and the region has to be told, since that is what
-    // keeps it alive while anything points into it. `aot/src/region.rs` says
-    // why, and `aot/src/heap.rs` has the number, which must be this one.
+    // keeps it alive while anything points into it. `silo/src/region.rs` says
+    // why, and `silo/src/heap.rs` has the number, which must be this one.
     let share_tail = if regions {
         "  %inreg = icmp ugt i32 %rc2, 536870912
   br i1 %inreg, label %rshare, label %done, !prof !0
@@ -2391,7 +2391,7 @@ done:
 ";
 
 /// How the runtime runs a closure of one argument -- the code after a stack
-/// segment primitive (`aot/src/segments.rs`) -- when the methods are in a
+/// segment primitive (`silo/src/segments.rs`) -- when the methods are in a
 /// calling convention Rust cannot call: method 0 of `obj`, found as an
 /// `invoke` finds it, called from the C convention.
 const INVOKE1: &str = "\

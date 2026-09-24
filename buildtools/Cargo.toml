@@ -13,7 +13,7 @@ meadow-lsp = { path = "meadow-lsp" }
 meadow = { path = "meadow" }
 meadow-compiler = { path = "../compiler/meadow-compiler" }
 meadow-eval = { path = "../eval" }
-meadow-rts = { path = "../rts" }
+meadow-glade = { path = "../glade" }
 meadow-seq = { path = "../compiler/meadow-seq" }
 meadow-codegen = { path = "../compiler/meadow-codegen" }
 meadow-llvm = { path = "../compiler/meadow-llvm" }
@@ -34,7 +34,7 @@ codegen-units = 1
 # runner, which looked like a hang and was not one. So the crates that execute
 # programs are optimized in every profile; debug assertions stay on, and
 # everything else -- the compiler, the tools, the tests -- stays quick to build.
-[profile.dev.package.meadow-rts]
+[profile.dev.package.meadow-glade]
 opt-level = 2
 
 [profile.dev.package.meadow-eval]

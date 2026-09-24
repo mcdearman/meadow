@@ -1,4 +1,4 @@
-//! Programs compiled by `meadow-llvm`, linked with the `aot` runtime, run --
+//! Programs compiled by `meadow-llvm`, linked with Silo, run --
 //! and checked against the AxCut abstract machine, which is the meaning they
 //! must keep, and for leaks: a program with no mutable state must end with
 //! every block it acquired given back.
@@ -33,17 +33,17 @@ fn program(src: &str) -> core::Program {
 fn runtime() -> &'static Path {
     static LIB: OnceLock<PathBuf> = OnceLock::new();
     LIB.get_or_init(|| {
-        let aot = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../aot");
+        let aot = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../silo");
         let status = Command::new(env!("CARGO"))
             .args(["build", "--release", "--quiet", "--manifest-path"])
             .arg(aot.join("Cargo.toml"))
             .status()
             .expect("cargo runs");
-        assert!(status.success(), "building the aot runtime failed");
+        assert!(status.success(), "building Silo failed");
         let lib = if cfg!(windows) {
-            "meadow_aot.lib"
+            "meadow_silo.lib"
         } else {
-            "libmeadow_aot.a"
+            "libmeadow_silo.a"
         };
         aot.join("target").join("release").join(lib)
     })
@@ -80,7 +80,7 @@ fn run_checked(name: &str, src: &str, check: bool) -> String {
 }
 
 /// [`run`], for a program that abandons a continuation: what the abandoned
-/// segment's frames held is not erased (see `aot/src/segments.rs`), so it
+/// segment's frames held is not erased (see `silo/src/segments.rs`), so it
 /// is not checked for leaks.
 #[track_caller]
 fn run_abandoning(name: &str, src: &str) -> String {
@@ -118,7 +118,7 @@ fn run_with(name: &str, src: &str, check: bool, abandons: bool) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     let ran = Command::new(&exe)
-        .env("MEADOW_AOT_LEAKS", "1")
+        .env("MEADOW_SILO_LEAKS", "1")
         .output()
         .expect("the program runs");
     let stdout = String::from_utf8_lossy(&ran.stdout).trim_end().to_string();
@@ -379,7 +379,7 @@ fn a_thread_waits_inside_a_handler() {
 // --- cycles ------------------------------------------------------------------
 //
 // Counting alone leaves a cycle behind, so the runtime collects them by trial
-// deletion (`aot/src/cycles.rs`). The leak check in `run` is what these are
+// deletion (`silo/src/cycles.rs`). The leak check in `run` is what these are
 // really testing: a program that ties knots and drops them must end with
 // nothing live.
 

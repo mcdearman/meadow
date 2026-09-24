@@ -257,7 +257,7 @@ fn running_a_package_writes_its_image_under_target() {
     let bytes = std::fs::read(&image).expect("the image is written");
     let program = meadow_bytecode::image::decode(&bytes).expect("and decodes");
     assert_eq!(
-        meadow_rts::run(&program, u64::MAX).map_err(|e| e.msg),
+        meadow_glade::run(&program, u64::MAX).map_err(|e| e.msg),
         Ok("42".into())
     );
     let _ = std::fs::remove_dir_all(&dir);

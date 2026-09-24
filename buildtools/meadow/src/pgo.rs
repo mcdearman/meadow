@@ -2,7 +2,7 @@
 //!
 //! The JIT watches every `invoke` it interprets while a block is warming up,
 //! and guards the calls that only ever entered one thing on that one thing
-//! when it compiles the block (see `meadow_rts::codegen::Known`). An `aot`
+//! when it compiles the block (see `meadow_glade::codegen::Known`). An `aot`
 //! build compiles before anything has run, so it has nothing to guess from --
 //! unless a run leaves what it saw behind.
 //!
@@ -20,7 +20,7 @@
 //! 374 frame 373
 //! ```
 
-use meadow_rts::codegen::{Calls, Known};
+use meadow_glade::codegen::{Calls, Known};
 use std::path::{Path, PathBuf};
 
 const HEADER: &str = "meadow-calls 1";

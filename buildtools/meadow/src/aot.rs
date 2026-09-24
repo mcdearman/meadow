@@ -1,7 +1,7 @@
 //! **Native executables**, compiled ahead of time.
 //!
 //! The bytecode image a build makes is compiled to machine code
-//! (`meadow_rts::codegen`), written with the image into an object file, and
+//! (`meadow_glade::codegen`), written with the image into an object file, and
 //! linked by the system's C compiler with a small `main` and the runtime as a
 //! static library. What comes out is an ordinary executable, under the
 //! package's `target/<profile>/native/` (see [`crate::artifacts`]) -- or
@@ -9,15 +9,15 @@
 //!
 //! # The runtime to link
 //!
-//! `libmeadow_rts.a` (`meadow_rts.lib` on Windows), built for the target:
+//! `libmeadow_glade.a` (`meadow_glade.lib` on Windows), built for the target:
 //! where `MEADOW_RUNTIME` names it; else, for the host, the one built into this
 //! `meadow` (see `build.rs`); else beside this `meadow` binary, as
-//! `lib/<triple>/libmeadow_rts.a` or plain `libmeadow_rts.a` for the host;
-//! else, in a checkout, where `cargo build` in `rts` leaves it.
+//! `lib/<triple>/libmeadow_glade.a` or plain `libmeadow_glade.a` for the host;
+//! else, in a checkout, where `cargo build` in `glade` leaves it.
 //!
 //! It must be built from the same runtime sources as this `meadow`, whose code
 //! generator assumes that runtime's layout: a library from other sources lacks
-//! the symbol the program's `main` refers to (see `rts/build.rs`), so it does
+//! the symbol the program's `main` refers to (see `glade/build.rs`), so it does
 //! not link, and the next place is tried.
 //!
 //! # The linker
@@ -27,35 +27,38 @@
 
 use crate::artifacts;
 use crate::profile::Profile;
-use meadow_rts::codegen::{self, Arch, object::Format};
+use meadow_glade::codegen::{self, Arch, object::Format};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Which backend and runtime a program compiled ahead of time is made with.
+/// Which of Meadow's two runtime systems a program runs on.
+///
+/// **Glade** (`meadow_glade`) is the one the interpreter, the JIT and the
+/// debugger share: bytecode, compiled to machine code block by block as it
+/// runs or ahead of time into an executable (`--aot`), with a garbage
+/// collector tending the heap. **Silo** (`meadow_silo`) is compiled all the way
+/// down by LLVM (`meadow-llvm`) before it runs, counts references instead of
+/// collecting, and carries no interpreter: always an executable. See
+/// `docs/SILO.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Runtime {
-    /// `meadow_rts`: the bytecode compiled to machine code block by block,
-    /// with the interpreter for what native code hands back, and the
-    /// collector the JIT and the debugger share.
     #[default]
-    Rts,
-    /// `meadow_aot`: AxCut compiled by LLVM (`meadow-llvm`), counting
-    /// references, on the native stack. See `docs/AOT.md`.
-    Aot,
+    Glade,
+    Silo,
 }
 
 impl Runtime {
     pub fn name(self) -> &'static str {
         match self {
-            Runtime::Rts => "rts",
-            Runtime::Aot => "aot",
+            Runtime::Glade => "glade",
+            Runtime::Silo => "silo",
         }
     }
 
     pub fn named(name: &str) -> Option<Runtime> {
         match name {
-            "rts" => Some(Runtime::Rts),
-            "aot" => Some(Runtime::Aot),
+            "glade" => Some(Runtime::Glade),
+            "silo" => Some(Runtime::Silo),
             _ => None,
         }
     }
@@ -64,18 +67,18 @@ impl Runtime {
     /// `meadow` was defines.
     pub fn symbol(self) -> String {
         match self {
-            Runtime::Rts => codegen::object::runtime_symbol(),
-            Runtime::Aot => meadow_llvm::runtime_symbol(),
+            Runtime::Glade => codegen::object::runtime_symbol(),
+            Runtime::Silo => meadow_llvm::runtime_symbol(),
         }
     }
 
     /// The static library's file name, for `format`.
     pub fn library(self, format: Format) -> &'static str {
         match (self, format) {
-            (Runtime::Rts, Format::Coff) => "meadow_rts.lib",
-            (Runtime::Rts, Format::MachO | Format::Elf) => "libmeadow_rts.a",
-            (Runtime::Aot, Format::Coff) => "meadow_aot.lib",
-            (Runtime::Aot, Format::MachO | Format::Elf) => "libmeadow_aot.a",
+            (Runtime::Glade, Format::Coff) => "meadow_glade.lib",
+            (Runtime::Glade, Format::MachO | Format::Elf) => "libmeadow_glade.a",
+            (Runtime::Silo, Format::Coff) => "meadow_silo.lib",
+            (Runtime::Silo, Format::MachO | Format::Elf) => "libmeadow_silo.a",
         }
     }
 }
@@ -96,7 +99,7 @@ impl Target {
         Ok(Target {
             arch,
             format: Format::host(),
-            runtime: Runtime::Rts,
+            runtime: Runtime::Glade,
         })
     }
 
@@ -115,7 +118,7 @@ impl Target {
         Ok(Target {
             arch,
             format: Format::host(),
-            runtime: Runtime::Rts,
+            runtime: Runtime::Glade,
         })
     }
 
@@ -178,8 +181,8 @@ pub fn build(
 }
 
 /// Compile `program` with the native backend -- AxCut to LLVM IR, compiled and
-/// linked with the `meadow_aot` runtime by clang -- into package `name`'s
-/// executable, answering where it went. See `docs/AOT.md`.
+/// linked with the `meadow_silo` runtime by clang -- into package `name`'s
+/// executable, answering where it went. See `docs/SILO.md`.
 pub fn build_native(
     root: &Path,
     profile: Profile,
@@ -204,7 +207,7 @@ pub fn build_native(
     let runtime = runtimes(target)?
         .into_iter()
         .next()
-        .ok_or("no aot runtime library")?;
+        .ok_or("no Silo runtime library")?;
     // Unchanged module and runtime: the executable there is this one.
     let stamp = exe.with_extension("stamp");
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -409,7 +412,7 @@ pub fn native_dir(root: &Path, profile: Profile, target: Target) -> PathBuf {
         dir = dir.join(target.triple());
     }
     // Beside the default runtime's, so the two can be run against each other.
-    if target.runtime != Runtime::Rts {
+    if target.runtime != Runtime::Glade {
         dir = dir.join(target.runtime.name());
     }
     dir
@@ -476,7 +479,7 @@ pub fn link_image(
         msg.push_str(&format!("\n  {} is from another build", runtime.display()));
     }
     msg.push_str(&format!(
-        "\nrebuild it with `cargo build --release --target {}` in `rts`",
+        "\nrebuild it with `cargo build --release --target {}` in `glade`",
         target.triple()
     ));
     Err(msg)
@@ -612,7 +615,7 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// module docs.
 pub fn runtimes(target: Target) -> Result<Vec<PathBuf>, String> {
     let lib = target.runtime.library(target.format);
-    // Where a checkout builds it: the runtime's crate, `rts` or `aot`.
+    // Where a checkout builds it: the runtime's crate, `glade` or `silo`.
     let crate_dir = target.runtime.name();
     if let Some(path) = std::env::var_os("MEADOW_RUNTIME") {
         let path = PathBuf::from(path);
@@ -627,9 +630,9 @@ pub fn runtimes(target: Target) -> Result<Vec<PathBuf>, String> {
     }
     let host = target.is_host();
     let mut candidates = Vec::new();
-    // Only `meadow_rts` is built into `meadow`.
+    // Only `meadow_glade` is built into `meadow`.
     if host
-        && target.runtime == Runtime::Rts
+        && target.runtime == Runtime::Glade
         && let Some(path) = embedded(lib)
     {
         candidates.push(path);

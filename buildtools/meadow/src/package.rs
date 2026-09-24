@@ -32,10 +32,21 @@
 //! [profile.release]
 //! opt-level = 2
 //! strictness = "strict"    # "lenient" | "strict"
-//! backend = "aot"          # "vm" | "jit" | "aot"
+//! runtime = "glade"        # "glade" | "silo"
+//! backend = "aot"          # Glade's: "jit" | "aot" (or "vm"); or `aot = true`
 //! prune = true             # compile only what `main` reaches
 //! cfg = "fast, feature=gpu" # flags `@cfg(…)` can test
+//! threads = 4              # OS threads for the green ones: `-j`
+//! leaks = true             # report what the program left behind: `--leaks`
+//! target = "aarch64"       # the processor a native build is for: `--target`
 //! ```
+//!
+//! `runtime` picks the runtime system, and the two are two backends of their
+//! own. **Glade**, the default, has a choice of its own: `backend = "jit"`,
+//! bytecode compiled as it runs, or `"aot"`, compiled ahead of time into an
+//! executable (`"vm"`, the interpreter alone, is there too). **Silo** has
+//! none: it is compiled all the way down by LLVM, ahead of time by what it is,
+//! and a `backend` beside it is warned about and ignored.
 //!
 //! Only the keys that are present are overridden; the rest keep the profile's
 //! built-in meaning (see [`crate::Profile`]). A command-line flag wins over
@@ -193,6 +204,15 @@ pub struct ProfileConfig {
     /// runs -- see [`crate::profile::Resolved::sample`]. Carries the debug info
     /// a profile's frames are named by, which an ordinary release build drops.
     pub profile: Option<bool>,
+    /// The runtime system: Glade or Silo -- see [`crate::aot::Runtime`].
+    pub runtime: Option<crate::aot::Runtime>,
+    /// `threads = N`: how many OS threads run the green ones, as `-j` says.
+    pub threads: Option<usize>,
+    /// `leaks = true`: report what the program left behind, as `--leaks`.
+    pub leaks: Option<bool>,
+    /// `target = "aarch64"`: the processor a native build is for, as
+    /// `--target` says.
+    pub target: Option<InternedString>,
 }
 
 impl ProfileConfig {
@@ -1021,6 +1041,23 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
                     "opt-level" | "opt_level" => p.opt = OptLevel::parse(unquote(value)),
                     "strictness" => p.strictness = Strictness::parse(unquote(value)),
                     "backend" => p.backend = crate::profile::Backend::parse(unquote(value)),
+                    // The command line's `--aot` and `--jit`, as switches.
+                    "aot" if unquote(value) == "true" => {
+                        p.backend = Some(crate::profile::Backend::Aot)
+                    }
+                    "jit" if unquote(value) == "true" => {
+                        p.backend = Some(crate::profile::Backend::Jit)
+                    }
+                    "runtime" => p.runtime = crate::aot::Runtime::named(unquote(value)),
+                    "threads" => p.threads = unquote(value).parse().ok().filter(|n| *n > 0),
+                    "leaks" => {
+                        p.leaks = match unquote(value) {
+                            "true" => Some(true),
+                            "false" => Some(false),
+                            _ => None,
+                        }
+                    }
+                    "target" => p.target = Some(InternedString::from(unquote(value))),
                     "cfg" => p.cfg = Some(InternedString::from(unquote(value))),
                     "prune" => {
                         p.prune = match unquote(value) {

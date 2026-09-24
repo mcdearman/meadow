@@ -28,7 +28,7 @@ done
 # The tree is five independent Cargo workspaces, so there is no one
 # `cargo test --workspace` that covers it. Missing one is the whole reason this
 # script exists.
-WORKSPACES="compiler eval rts buildtools installer"
+WORKSPACES="compiler eval glade buildtools installer"
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 
@@ -82,7 +82,7 @@ cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test --std 
 for mark_threads in 2 0; do
   step "collector stress (marking threads: $mark_threads)"
   export MEADOW_GC_NURSERY=64 MEADOW_GC_TRIGGER=256 MEADOW_GC_VERIFY=1 MEADOW_GC_MARK_THREADS=$mark_threads
-  (cd rts && cargo test --quiet)
+  (cd glade && cargo test --quiet)
   cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test --std
   cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test examples/Concurrency
   cargo run --quiet --manifest-path buildtools/Cargo.toml -p meadow -- test examples/Stm

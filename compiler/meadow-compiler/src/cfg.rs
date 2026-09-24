@@ -22,7 +22,7 @@
 //! | `arch = "x86_64"` / `"aarch64"` | … that processor |
 //! | `family = "unix"` / `"windows"`, or bare `unix` / `windows` | … that family of systems |
 //! | `profile = "debug"` / `"release"`, or bare `debug` / `release` | the build profile |
-//! | `backend = "vm"` / `"jit"` / `"aot"` / `"cek"` | what will run it |
+//! | `backend = "vm"` / `"jit"` / `"aot"` / `"silo"` / `"cek"` | what will run it: Glade's interpreter, JIT or ahead-of-time code, Silo, or the CEK machine |
 //! | `opt_level = "0"` / `"1"` / `"2"` | the optimisation level |
 //! | bare `test` | `meadow test` is building it |
 //! | any other name, or `name = "value"` | the build turned that flag on -- `--cfg fast`, `--cfg feature=gpu` |
@@ -129,7 +129,10 @@ pub fn holds(condition: &ast::Meta, opts: &Options) -> Result<bool, (String, Spa
                 "arch" => (cfg.arch.to_string(), &["x86_64", "aarch64"]),
                 "family" => (cfg.family().to_string(), &["unix", "windows"]),
                 "profile" => (cfg.profile.to_string(), &["debug", "release"]),
-                "backend" => (cfg.backend.to_string(), &["vm", "jit", "aot", "cek"]),
+                "backend" => (
+                    cfg.backend.to_string(),
+                    &["vm", "jit", "aot", "silo", "cek"],
+                ),
                 "opt_level" => (opts.opt.name()[1..].to_string(), &["0", "1", "2"]),
                 flag => return Ok(cfg.has_flag(&format!("{flag}={}", value.value()))),
             };

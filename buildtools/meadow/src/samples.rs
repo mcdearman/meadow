@@ -1,6 +1,6 @@
 //! Turning samples into something a flamegraph tool will read.
 //!
-//! [`meadow_rts::profile`] collects stacks of program counters. A pc means
+//! [`meadow_glade::profile`] collects stacks of program counters. A pc means
 //! nothing to anyone, so this is where they become names -- which is here and
 //! not in the runtime because the runtime has no source table and no business
 //! growing one.
@@ -18,7 +18,7 @@
 //! is also legible without either: sorted by count it is a profile.
 
 use meadow_bytecode::{Pc, Program};
-use meadow_rts::profile::Profile;
+use meadow_glade::profile::Profile;
 use std::collections::HashMap;
 
 /// What to call the code at `pc`.
@@ -102,11 +102,11 @@ pub fn summary(profile: &Profile) -> String {
 /// Allocation by the instruction that asked for it, folded to one line per
 /// function, most first.
 ///
-/// Only under `meadow-rts/profile-alloc`. The shape is the folded-stack format
+/// Only under `meadow-glade/profile-alloc`. The shape is the folded-stack format
 /// again -- name, space, count -- so the same tools read it, with slots in
 /// place of samples.
 #[cfg(feature = "profile-alloc")]
-pub fn allocation(sites: &meadow_rts::profile::Sites, image: &Program) -> String {
+pub fn allocation(sites: &meadow_glade::profile::Sites, image: &Program) -> String {
     let mut by_name: HashMap<String, (u64, u64)> = HashMap::new();
     for (pc, a) in sites.each() {
         let e = by_name.entry(frame(image, pc)).or_insert((0, 0));
@@ -126,12 +126,12 @@ pub fn allocation(sites: &meadow_rts::profile::Sites, image: &Program) -> String
 /// What a JIT could speculate on: how many targets each `invoke` site saw,
 /// weighted by how often it ran, and how lopsided the tag tests were.
 ///
-/// Only under `meadow-rts/profile-alloc`. Returns through a frame and calls of
+/// Only under `meadow-glade/profile-alloc`. Returns through a frame and calls of
 /// a heap object -- a function value, a heap continuation, a handler -- are
 /// counted apart, because they are guarded on differently: a frame's return
 /// address against a pc, an object's method table against a table.
 #[cfg(feature = "profile-alloc")]
-pub fn feedback(fb: &meadow_rts::profile::Feedback, image: &Program) -> String {
+pub fn feedback(fb: &meadow_glade::profile::Feedback, image: &Program) -> String {
     let pct = |n: u64, of: u64| {
         if of == 0 {
             0.0
@@ -238,12 +238,12 @@ pub fn feedback(fb: &meadow_rts::profile::Feedback, image: &Program) -> String {
 
 /// What a run spent its instructions on, most first.
 ///
-/// Only under `meadow-rts/profile-alloc`, and exact rather than sampled. A
+/// Only under `meadow-glade/profile-alloc`, and exact rather than sampled. A
 /// stack profile says which function; this says what that function was made
 /// of, which is the difference between "the loop is hot" and "the calling
 /// convention is".
 #[cfg(feature = "profile-alloc")]
-pub fn instructions(ops: &meadow_rts::profile::Ops) -> String {
+pub fn instructions(ops: &meadow_glade::profile::Ops) -> String {
     let total = ops.total();
     if total == 0 {
         return String::new();

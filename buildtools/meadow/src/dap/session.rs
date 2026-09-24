@@ -25,7 +25,7 @@
 //! branch, a body -- see `meadow_core::Term::Loc`). Stepping over and out
 //! compare return continuations rather than counting frames: the frame a step
 //! began in is identified by the continuation it will answer, which the VM keeps
-//! current across collections ([`meadow_rts::Vm::pinned`]). Counting frames
+//! current across collections ([`meadow_glade::Vm::pinned`]). Counting frames
 //! would mean walking the whole chain at every boundary, which a deep recursion
 //! makes quadratic.
 
@@ -37,7 +37,7 @@ use meadow_compiler::hir;
 use meadow_compiler::infer::Renderer;
 use meadow_compiler::intern::InternedString;
 use meadow_compiler::source::SourceKind;
-use meadow_rts::{Kind, Value, Vm};
+use meadow_glade::{Kind, Value, Vm};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -633,7 +633,7 @@ impl Session {
 
     /// Where invoking the closure or frame at `a` goes: a frame carries its
     /// pc, a closure a method table.
-    fn entry_of(&self, heap: &meadow_rts::heap::Heap, a: u32) -> Option<u32> {
+    fn entry_of(&self, heap: &meadow_glade::heap::Heap, a: u32) -> Option<u32> {
         if heap.kind(a) == Kind::Frame {
             Some(heap.meta(a))
         } else {

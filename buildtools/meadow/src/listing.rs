@@ -13,7 +13,7 @@
 
 use meadow_bytecode::{Pc, Program};
 use meadow_compiler::OptLevel;
-use meadow_rts::codegen::{self, Arch, Compiled};
+use meadow_glade::codegen::{self, Arch, Compiled};
 use std::fmt::Write;
 
 /// What a build writes for a package.

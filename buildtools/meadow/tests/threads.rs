@@ -1,6 +1,6 @@
 //! Green threads, as the type checker sees them.
 //!
-//! What they do at run time is in `rts/tests/differential.rs`, where both
+//! What they do at run time is in `glade/tests/differential.rs`, where both
 //! schedulers are held to the same answers.
 
 mod common;

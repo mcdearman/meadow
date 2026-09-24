@@ -1,6 +1,6 @@
 //! `hash`: a structural hash that agrees with `==`.
 //!
-//! The engines' agreement on plain values is `rts/tests/differential.rs`; these
+//! The engines' agreement on plain values is `glade/tests/differential.rs`; these
 //! are the cases that need `Std` -- a `Vector` is one of its types -- or that are
 //! about what `hash` refuses.
 

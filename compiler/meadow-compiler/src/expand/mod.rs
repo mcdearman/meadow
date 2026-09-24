@@ -27,10 +27,13 @@
 //! | `stringify!(…)` | its argument, written back as text |
 //! | `concat!(a, b, …)` | its literal arguments, joined into one string |
 
+pub mod datum;
 mod derive;
 mod hygiene;
 pub mod proc;
 mod rules;
+
+pub use datum::{Binding, Datum};
 
 use meadow_ast as ast;
 use meadow_diagnostics::Diagnostic;
@@ -83,14 +86,25 @@ pub enum Vis {
 impl Rules {
     /// Whether a module at `path` in package `pkg` may name this.
     fn visible_to(&self, pkg: InternedString, path: &[InternedString]) -> bool {
-        match self.vis {
-            Vis::Exported => true,
-            Vis::Package => pkg == self.package,
-            Vis::Super => {
-                pkg == self.package && path.starts_with(&self.module[..self.module.len() - 1])
-            }
-            Vis::Private => pkg == self.package && path == self.module,
-        }
+        visible(self.vis, self.package, &self.module, pkg, path)
+    }
+}
+
+/// Whether something `vis` in `module` of `package` may be named by a module
+/// at `path` in package `pkg`: the rule a macro and a compile-time binding
+/// share with every other declaration.
+fn visible(
+    vis: Vis,
+    package: InternedString,
+    module: &[InternedString],
+    pkg: InternedString,
+    path: &[InternedString],
+) -> bool {
+    match vis {
+        Vis::Exported => true,
+        Vis::Package => pkg == package,
+        Vis::Super => pkg == package && path.starts_with(&module[..module.len().saturating_sub(1)]),
+        Vis::Private => pkg == package && path == module,
     }
 }
 
@@ -146,10 +160,19 @@ struct Macro {
 /// other than the one that wrote it: the definitions are read from all of them
 /// first, and only then is anything expanded.
 ///
+/// Expansion runs in rounds, because a procedural macro may `lookup` a
+/// compile-time binding that another call has not defined yet. Such a call is
+/// set aside where it stands and tried again in the next round, after every
+/// call that could run has. Rounds go on while they define something; when one
+/// defines nothing and calls are still waiting, the next is *settled* -- a
+/// lookup of a name nothing defined is answered `None` rather than waited on,
+/// so every call finishes.
+///
 /// `deps` are the packages this one depends on, each with the macros it
 /// exports, under the name this unit calls it by. What comes back is the
-/// unit's own macros, for its [`CompiledPackage`](crate::CompiledPackage) to
-/// carry, and a record of every expansion, for [`blame`].
+/// unit's own macros and compile-time bindings, for its
+/// [`CompiledPackage`](crate::CompiledPackage) to carry, and a record of every
+/// expansion, for [`blame`].
 pub fn expand_unit(
     package: InternedString,
     modules: &mut [crate::AstModule],
@@ -157,7 +180,7 @@ pub fn expand_unit(
     procs: Option<&dyn proc::Runner>,
     filename: &str,
     diags: &mut Vec<Diagnostic>,
-) -> (Vec<Rules>, Vec<Expansion>) {
+) -> (Vec<Rules>, Vec<Binding>, Vec<Expansion>) {
     // Visibility works as it does for everything else: a unit that never says
     // `@pub` exports all of it, and one that says it anywhere means it
     // everywhere.
@@ -171,46 +194,92 @@ pub fn expand_unit(
         .collect();
     let mut mine: Vec<Rules> = Vec::new();
     let mut from: Vec<Expansion> = Vec::new();
+    // The values written out by hand, `@compileTime def`, which are there
+    // before any macro runs.
+    let mut bindings: Vec<Binding> = Vec::new();
     for m in modules.iter_mut() {
         let here = crate::unit::module_filename(filename, m.source);
         let text = m.source.content.to_string();
-        let mut ex = Expander {
-            text: &text,
-            filename: &here,
+        let mut ex = Expander::new(
+            &text,
+            &here,
             diags,
-            depth: 0,
-            macros: HashMap::new(),
-            expansions: 0,
-            from: Vec::new(),
             package,
             procs,
-            proc_macros: HashMap::new(),
-            own_macros: own_macros.clone(),
-        };
+            own_macros.clone(),
+            &m.path,
+            gated,
+            &[],
+        );
         ex.collect(&mut m.ast.value.decls, &m.path, gated, &mut mine);
+        ex.compile_time(&mut m.ast.value.decls, &mut bindings);
     }
-    for m in modules.iter_mut() {
+    // A mark per module that lasts across rounds: two expansions in one module
+    // must never share one, whichever round each happened in.
+    let mut marks = vec![0u32; modules.len()];
+    let mut settled = false;
+    for _ in 0..MAX_ROUNDS {
+        let before = bindings.len();
+        let mut waiting = 0;
+        let mut made = Vec::new();
+        for (i, m) in modules.iter_mut().enumerate() {
+            let here = crate::unit::module_filename(filename, m.source);
+            let text = m.source.content.to_string();
+            let mut ex = Expander::new(
+                &text,
+                &here,
+                diags,
+                package,
+                procs,
+                own_macros.clone(),
+                &m.path,
+                gated,
+                &bindings,
+            );
+            ex.expansions = marks[i];
+            ex.settled = settled;
+            ex.import(&m.ast.value, &m.path, &mine, deps, false);
+            ex.decls(&mut m.ast.value.decls);
+            marks[i] = ex.expansions;
+            waiting += ex.waiting;
+            from.extend(ex.from);
+            made.extend(ex.made);
+        }
+        bindings.extend(made);
+        if waiting == 0 {
+            break;
+        }
+        // Nothing new, and something still waiting: whatever it waits for is
+        // not coming, so the next round answers it `None`.
+        if bindings.len() == before {
+            settled = true;
+        }
+    }
+    // What is wrong with a `use` is said once, now that nothing more will be
+    // defined: a binding it names that is missing now is missing for good.
+    for m in modules.iter() {
         let here = crate::unit::module_filename(filename, m.source);
         let text = m.source.content.to_string();
-        let mut ex = Expander {
-            text: &text,
-            filename: &here,
+        let mut ex = Expander::new(
+            &text,
+            &here,
             diags,
-            depth: 0,
-            macros: HashMap::new(),
-            expansions: 0,
-            from: Vec::new(),
             package,
             procs,
-            proc_macros: HashMap::new(),
-            own_macros: own_macros.clone(),
-        };
-        ex.import(&m.ast.value, &m.path, &mine, deps);
-        ex.decls(&mut m.ast.value.decls);
-        from.extend(ex.from);
+            own_macros.clone(),
+            &m.path,
+            gated,
+            &bindings,
+        );
+        ex.import(&m.ast.value, &m.path, &mine, deps, true);
     }
-    (mine, from)
+    (mine, bindings, from)
 }
+
+/// How many rounds expansion may take. Every round but a settled one defines
+/// something, and a call that defines runs once, so this is never reached by a
+/// unit that can finish; it is a guard, not a limit anyone should meet.
+const MAX_ROUNDS: usize = 1024;
 
 /// Whether anything in `module` carries a `@pub`.
 fn says_pub(module: &ast::Module) -> bool {
@@ -244,9 +313,206 @@ struct Expander<'a> {
     /// What this unit marks `@macro` of its own -- which cannot be run here,
     /// but is worth recognising to say why.
     own_macros: Vec<InternedString>,
+    /// The module being expanded, as a path within its package.
+    path: Vec<InternedString>,
+    /// Whether the unit says `@pub` anywhere, which decides what a binding
+    /// with no `@pub` of its own may be seen by.
+    gated: bool,
+    /// Every compile-time binding this unit had when the round began.
+    known: &'a [Binding],
+    /// The bindings this module's calls defined in this round.
+    made: Vec<Binding>,
+    /// What a macro called here can `lookup`, by the name this module knows
+    /// each by.
+    scope: Vec<(String, Datum)>,
+    /// Whether nothing more can be defined, so a lookup of an unknown name is
+    /// answered rather than waited on.
+    settled: bool,
+    /// How many calls were set aside in this round, waiting for a name.
+    waiting: usize,
+    /// Whether the call just run was set aside -- and so is to be left where
+    /// it is, not replaced by anything.
+    waited: bool,
+    /// How far what the call being expanded defines may be seen: what the
+    /// `@pub` written on it says.
+    call_vis: Option<Vis>,
 }
 
-impl Expander<'_> {
+impl<'a> Expander<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        text: &'a str,
+        filename: &'a str,
+        diags: &'a mut Vec<Diagnostic>,
+        package: InternedString,
+        procs: Option<&'a dyn proc::Runner>,
+        own_macros: Vec<InternedString>,
+        path: &[InternedString],
+        gated: bool,
+        known: &'a [Binding],
+    ) -> Expander<'a> {
+        Expander {
+            text,
+            filename,
+            diags,
+            depth: 0,
+            macros: HashMap::new(),
+            expansions: 0,
+            from: Vec::new(),
+            package,
+            procs,
+            proc_macros: HashMap::new(),
+            own_macros,
+            path: path.to_vec(),
+            gated,
+            known,
+            made: Vec::new(),
+            scope: Vec::new(),
+            settled: false,
+            waiting: 0,
+            waited: false,
+            call_vis: None,
+        }
+    }
+
+    /// Whether the call just run was set aside, clearing the flag.
+    fn take_waited(&mut self) -> bool {
+        std::mem::take(&mut self.waited)
+    }
+
+    // --- compile-time bindings ------------------------------------------------
+
+    /// Take every `@compileTime def` out of `decls` and add what it stands for
+    /// to `into`.
+    ///
+    /// Its right-hand side is data, read and never evaluated (see
+    /// [`datum::of_expr`]): the compiler runs nothing of the package it is
+    /// compiling, which is why a macro has to live in a dependency.
+    fn compile_time(&mut self, decls: &mut Vec<ast::LDecl>, into: &mut Vec<Binding>) {
+        let mut kept = Vec::with_capacity(decls.len());
+        for d in std::mem::take(decls) {
+            let ast::Decl::Attributed(attrs, inner) = &*d.value else {
+                kept.push(d);
+                continue;
+            };
+            if !attrs.iter().any(|a| &**a.name.value() == "compileTime") {
+                kept.push(d);
+                continue;
+            }
+            let named = match &*inner.value {
+                ast::Decl::Bind(ast::Bind::Pat(p, e)) => {
+                    let mut p = p;
+                    while let ast::Pat::Ann(under, _) = &*p.value {
+                        p = under;
+                    }
+                    match &*p.value {
+                        ast::Pat::Var(n) => Some((n.clone(), e)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            let Some((name, value)) = named else {
+                self.error(
+                    "`@compileTime` is for a `def` of one name".to_string(),
+                    "this is not one".to_string(),
+                    inner.span,
+                    vec![],
+                );
+                continue;
+            };
+            match datum::of_expr(value) {
+                Ok(v) => {
+                    let taken = into
+                        .iter()
+                        .any(|b| b.name == *name.value() && b.module == self.path);
+                    if taken {
+                        self.error(
+                            format!("`{}` is defined twice at compile time", name.value()),
+                            "this module already has one with this name".to_string(),
+                            name.span,
+                            vec![],
+                        );
+                        continue;
+                    }
+                    into.push(Binding {
+                        name: *name.value(),
+                        module: self.path.clone(),
+                        package: self.package,
+                        vis: vis_of(attrs, self.gated),
+                        value: v,
+                    });
+                }
+                Err((msg, span)) => self.error(
+                    msg,
+                    "a compile-time value is read, not run".to_string(),
+                    span,
+                    vec![],
+                ),
+            }
+        }
+        *decls = kept;
+    }
+
+    /// Record what a call defined, where it was called.
+    fn defined(&mut self, defs: Vec<(String, Datum)>, at: Span) {
+        let vis = self.call_vis.unwrap_or_else(|| vis_of(&[], self.gated));
+        for (name, value) in defs {
+            let name = InternedString::from(name.as_str());
+            let taken = self
+                .known
+                .iter()
+                .chain(self.made.iter())
+                .any(|b| b.name == name && b.package == self.package && b.module == self.path);
+            if taken {
+                self.error(
+                    format!("`{name}` is defined twice at compile time"),
+                    "this call defines it again in the same module".to_string(),
+                    at,
+                    vec![],
+                );
+                continue;
+            }
+            // Seen by what is expanded after it in this module at once, and by
+            // every other module from the next round.
+            self.scope.push((name.to_string(), value.clone()));
+            self.made.push(Binding {
+                name,
+                module: self.path.clone(),
+                package: self.package,
+                vis,
+                value,
+            });
+        }
+    }
+
+    /// The compile-time bindings of the module a `use` path names, wherever
+    /// it lives -- the same places [`Self::module_at`] looks for macros.
+    fn bindings_at(&self, segs: &[InternedString], deps: &[crate::Dep<'_>]) -> Vec<Binding> {
+        if segs.is_empty() {
+            return Vec::new();
+        }
+        let local = if segs[0] == self.package {
+            &segs[1..]
+        } else {
+            segs
+        };
+        let mut out: Vec<Binding> = self
+            .known
+            .iter()
+            .filter(|b| b.module == local)
+            .cloned()
+            .collect();
+        for d in deps {
+            let name = d.spelled.to_string();
+            if dotted(local) == name || dotted(segs) == name {
+                out.extend(d.bindings.iter().cloned());
+            } else if segs[0] == d.spelled {
+                out.extend(d.bindings.iter().filter(|b| b.module == segs[1..]).cloned());
+            }
+        }
+        out
+    }
     // --- reading the definitions --------------------------------------------
 
     /// Take every `macro` declaration out of `decls`, check its rules, and add
@@ -339,7 +605,26 @@ impl Expander<'_> {
     /// a `use`, exactly as a value does -- a bare `use M` brings what `M` can
     /// show it, `use M (vec!)` brings that one, and `use M as V` puts them
     /// behind `V.`.
+    ///
+    /// Run every round, since a round may define bindings a `use` names; so
+    /// what is wrong with a `use` is only said when `report` is, which is once,
+    /// after the last round -- when a name still missing is missing for good.
     fn import(
+        &mut self,
+        module: &ast::Module,
+        path: &[InternedString],
+        mine: &[Rules],
+        deps: &[crate::Dep<'_>],
+        report: bool,
+    ) {
+        let said = self.diags.len();
+        self.import_all(module, path, mine, deps);
+        if !report {
+            self.diags.truncate(said);
+        }
+    }
+
+    fn import_all(
         &mut self,
         module: &ast::Module,
         path: &[InternedString],
@@ -351,9 +636,33 @@ impl Expander<'_> {
                 self.take(r, r.name.to_string());
             }
         }
+        // A module's own compile-time bindings are there without asking, as
+        // its macros are.
+        for b in self.known {
+            if b.package == self.package && b.module == path {
+                self.scope.push((b.name.to_string(), b.value.clone()));
+            }
+        }
         for d in &module.decls {
             let Some(u) = peel_use(d) else { continue };
             let segs: Vec<InternedString> = u.path.iter().map(|s| *s.value()).collect();
+            // Compile-time bindings share the macro namespace, and arrive the
+            // way a macro does: all of them with a bare `use M`, one with
+            // `use M (name!)`, behind `A.` with `use M as A`.
+            let bound: Vec<Binding> = self
+                .bindings_at(&segs, deps)
+                .into_iter()
+                .filter(|b| b.visible_to(self.package, path))
+                .collect();
+            let called = |name: &str| match &u.alias {
+                Some(a) => format!("{}.{name}", a.value()),
+                None => name.to_string(),
+            };
+            if u.macros.is_empty() && u.names.is_empty() && !u.glob {
+                for b in &bound {
+                    self.scope.push((called(&b.name), b.value.clone()));
+                }
+            }
             let there = self.module_at(&segs, mine, deps);
             let reachable: Vec<&Rules> = there
                 .into_iter()
@@ -390,6 +699,10 @@ impl Expander<'_> {
                 let name = *want.value();
                 if let Some(r) = reachable.iter().find(|r| r.name == name) {
                     self.take(r, under(r));
+                    continue;
+                }
+                if let Some(b) = bound.iter().find(|b| b.name == name) {
+                    self.scope.push((called(&b.name), b.value.clone()));
                     continue;
                 }
                 if let Some((pkg, _, scheme)) = written.iter().find(|(_, n, _)| *n == name) {
@@ -619,13 +932,29 @@ impl Expander<'_> {
             );
             return None;
         };
+        let scope = proc::Scope {
+            visible: &self.scope,
+            settled: self.settled,
+        };
+        let outcome = runner.run(pkg, name, &call.arg.trees, at, &scope);
+        if let Ok(proc::Outcome::Waiting(_)) = outcome {
+            // Set aside, to be run again once something is defined: nothing
+            // happened, so there is nothing to record.
+            self.waiting += 1;
+            self.waited = true;
+            return None;
+        }
         self.from.push(Expansion {
             at,
             filename: self.filename.to_string(),
             name: call.name(),
         });
-        match runner.run(pkg, name, &call.arg.trees, at) {
-            Ok(trees) => Some(tt::flatten(&trees)),
+        match outcome {
+            Ok(proc::Outcome::Answered { trees, defined, .. }) => {
+                self.defined(defined, at);
+                Some(tt::flatten(&trees))
+            }
+            Ok(proc::Outcome::Waiting(_)) => unreachable!("handled above"),
             Err(why) => {
                 self.error(
                     format!("`{}!` did not answer: {why}", call.name()),
@@ -820,21 +1149,32 @@ impl Expander<'_> {
         // declarations, or to none.
         let mut out = Vec::with_capacity(decls.len());
         for mut d in std::mem::take(decls) {
-            match &*d.value {
-                ast::Decl::MacCall(call) => {
-                    let Some(made) = self.deeper(|ex| ex.as_decls(call, d.span)) else {
-                        continue;
-                    };
-                    let mut made = made;
-                    self.decls(&mut made);
-                    out.extend(made);
+            // A call, perhaps with attributes: its `@pub` says how far what it
+            // defines at compile time may be seen.
+            if let Some((attrs, call)) = attributed_call(&d) {
+                let vis = vis_of(attrs, self.gated);
+                let outer = self.call_vis.replace(vis);
+                let made = self.deeper(|ex| ex.as_decls(call, d.span));
+                self.call_vis = outer;
+                match made {
+                    Some(mut made) => {
+                        self.decls(&mut made);
+                        out.extend(made);
+                    }
+                    // Waiting for a name: left as it is, for a later round.
+                    None if self.take_waited() => out.push(d),
+                    None => {}
                 }
+                continue;
+            }
+            match &*d.value {
                 // `@derive(Show)`: the declaration stays as it is, and what
-                // the macro wrote about it follows.
+                // the macro wrote about it follows. A derive that is waiting
+                // for a name stays on it, to be run in a later round.
                 ast::Decl::Attributed(attrs, _) if attrs.iter().any(is_derive) => {
-                    let made = self.derived(&d);
+                    let (made, pending) = self.derived(&d);
                     self.decl(&mut d);
-                    out.push(strip_derives(d));
+                    out.push(keep_derives(d, &pending));
                     out.extend(made);
                 }
                 _ => {
@@ -852,11 +1192,15 @@ impl Expander<'_> {
     /// the tree, so a macro sees exactly what was written -- attributes and
     /// all, on the declaration and on its variants, which is where a derive of
     /// any substance keeps what it needs.
-    fn derived(&mut self, d: &ast::LDecl) -> Vec<ast::LDecl> {
+    ///
+    /// Answers what they wrote, and the derives that are waiting for a
+    /// compile-time binding and are to be run again in a later round.
+    fn derived(&mut self, d: &ast::LDecl) -> (Vec<ast::LDecl>, Vec<ast::Ident>) {
         let ast::Decl::Attributed(attrs, inner) = &*d.value else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let mut out = Vec::new();
+        let mut pending = Vec::new();
         for want in attrs.iter().filter(|a| is_derive(a)).flat_map(|a| &a.args) {
             let Some((pkg, name)) = self.deriving(want) else {
                 // No procedural macro of that name: one of the compiler's own,
@@ -897,13 +1241,25 @@ impl Expander<'_> {
                 );
                 continue;
             };
+            let scope = proc::Scope {
+                visible: &self.scope,
+                settled: self.settled,
+            };
+            let outcome = runner.run(pkg, name, &argument, inner.span, &scope);
+            if let Ok(proc::Outcome::Waiting(_)) = outcome {
+                self.waiting += 1;
+                pending.push(want.clone());
+                continue;
+            }
             self.from.push(Expansion {
                 at: inner.span,
                 filename: self.filename.to_string(),
                 name: want.value().to_string(),
             });
-            match runner.run(pkg, name, &argument, inner.span) {
-                Ok(trees) => {
+            match outcome {
+                Ok(proc::Outcome::Waiting(_)) => unreachable!("handled above"),
+                Ok(proc::Outcome::Answered { trees, defined, .. }) => {
+                    self.defined(defined, inner.span);
                     let tokens = tt::flatten(&trees);
                     let (parsed, errs) = meadow_parser::parse_decls(&tokens, inner.span);
                     match parsed {
@@ -927,7 +1283,7 @@ impl Expander<'_> {
                 ),
             }
         }
-        out
+        (out, pending)
     }
 
     /// What a built-in derive wrote, parsed where the derive was written.
@@ -1057,6 +1413,8 @@ impl Expander<'_> {
                     self.pat(&mut made);
                     *p = made;
                 }
+                // Waiting for a name: left as it is, for a later round.
+                None if self.take_waited() => {}
                 // Left as a wildcard: it matches, binds nothing, and lets the
                 // rest of the arm be checked instead of collapsing after one
                 // error.
@@ -1098,6 +1456,8 @@ impl Expander<'_> {
                     self.expr(&mut made);
                     *e = made;
                 }
+                // Waiting for a name: left as it is, for a later round.
+                None if self.take_waited() => {}
                 // `()` in its place: the module keeps its shape, so everything
                 // around the failed call is still checked.
                 None => *e = Located::new(ast::Expr::Unit, span),
@@ -1267,13 +1627,21 @@ fn is_derive(a: &ast::Attr) -> bool {
     &**a.name.value() == "derive"
 }
 
-/// `d` without its `@derive`s: they have had their say, and nothing after this
-/// knows what one is.
-fn strip_derives(d: ast::LDecl) -> ast::LDecl {
+/// `d` with only the derives in `pending` left on it: the rest have had their
+/// say, and nothing after this knows what one is. A pending one is waiting for
+/// a compile-time binding, and stays to be run again in a later round.
+fn keep_derives(d: ast::LDecl, pending: &[ast::Ident]) -> ast::LDecl {
     let span = d.span;
     match *d.value {
         ast::Decl::Attributed(attrs, inner) => {
-            let kept: Vec<ast::Attr> = attrs.into_iter().filter(|a| !is_derive(a)).collect();
+            let mut kept: Vec<ast::Attr> = attrs.into_iter().filter(|a| !is_derive(a)).collect();
+            if !pending.is_empty() {
+                kept.push(ast::Attr {
+                    name: ast::Ident::new(InternedString::from("derive"), span),
+                    args: pending.to_vec(),
+                    meta: Vec::new(),
+                });
+            }
             if kept.is_empty() {
                 *inner
             } else {
@@ -1281,6 +1649,18 @@ fn strip_derives(d: ast::LDecl) -> ast::LDecl {
             }
         }
         other => ast::LDecl::new(other, span),
+    }
+}
+
+/// The macro call `d` is, and the attributes written on it, if it is one.
+fn attributed_call(d: &ast::LDecl) -> Option<(&[ast::Attr], &ast::MacCall)> {
+    match &*d.value {
+        ast::Decl::MacCall(call) => Some((&[], call)),
+        ast::Decl::Attributed(attrs, inner) => match &*inner.value {
+            ast::Decl::MacCall(call) => Some((&attrs[..], call)),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

@@ -25,7 +25,7 @@ use Std.Tuple (fst, snd)
 -- --- running ------------------------------------------------------------------
 
 -- The result and the final state.
-@pub fun runState (s0 : a) (act : () -> b ! { State a | e }) : (b, a) =
+@pub fun runState (s0 : a) (act : () -> b ! { State a | e }) : (b, a) ! e =
   handle act () with {
     get () k -> \s -> (k s) s,
     put s2 k -> \s -> (k ()) s2,
@@ -33,23 +33,23 @@ use Std.Tuple (fst, snd)
   } s0
 
 -- Just the result.
-@pub fun evalState (s0 : a) (act : () -> b ! { State a | e }) : b = fst (runState s0 act)
+@pub fun evalState (s0 : a) (act : () -> b ! { State a | e }) : b ! e = fst (runState s0 act)
 
 -- Just the final state.
-@pub fun execState (s0 : a) (act : () -> b ! { State a | e }) : a = snd (runState s0 act)
+@pub fun execState (s0 : a) (act : () -> b ! { State a | e }) : a ! e = snd (runState s0 act)
 
 -- --- derived operations -------------------------------------------------------
 
 -- Apply `f` to the state.
-@pub fun modify (f : a -> a ! { State a | e }) : () =
+@pub fun modify (f : a -> a ! { State a | e }) : () ! { State a | e } =
   let s = get () in
   put (f s)
 
 -- Read the state through `f` without changing it.
-@pub fun gets (f : a -> b ! { State a | e }) : b = f (get ())
+@pub fun gets (f : a -> b ! { State a | e }) : b ! { State a | e } = f (get ())
 
 -- Replace the state, returning the old one.
-@pub fun swap (s2 : a) : a =
+@pub fun swap (s2 : a) : a ! { State a | e } =
   let old = get () in
   let ignored = put s2 in
   old

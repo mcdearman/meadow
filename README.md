@@ -100,8 +100,9 @@ archive with no network access at all.
 
 A full walkthrough of the language lives in [docs/TUTORIAL.md](docs/TUTORIAL.md).
 How programs run -- the backends, the memory model, effects and threads -- is
-in [docs/RUNTIME.md](docs/RUNTIME.md). The macro system being built is designed
-in [docs/MACROS.md](docs/MACROS.md).
+in [docs/RUNTIME.md](docs/RUNTIME.md). Macros -- declarative, procedural, and
+the compile-time bindings they leave for one another -- are in
+[docs/MACROS.md](docs/MACROS.md).
 
 ## Examples
 

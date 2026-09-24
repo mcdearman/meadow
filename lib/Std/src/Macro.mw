@@ -20,8 +20,12 @@ use Std.String as S
 use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+use Std.Tuple (fst, snd)
 use TokenTree.*
 use Delim.*
+use Outcome.*
+use Wire.*
 
 @derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub data Delim = Paren | Bracket | Brace
@@ -99,6 +103,221 @@ fun splitting p ts run acc =
         splitting p rest V.empty (V.pushBack acc run)
       else
         splitting p rest (V.pushBack run t) acc
+
+-- --- compile-time bindings ---------------------------------------------------
+--
+-- Tokens in and tokens out is enough for `vec!`. It is not enough for an
+-- embedded language, where one macro defines a grammar and another, later,
+-- writes a pass over it: the second has to *know* what the first defined. So a
+-- macro can leave a value behind under a name, and a later one can ask for it.
+--
+-- What is left behind is a `Datum`: data, with a shape anyone can read, and no
+-- functions in it. It is stored in the package that defined it and read by
+-- packages that depend on that one, so it has to mean the same thing to a
+-- macro compiled long after -- which a value of some type of the defining
+-- package's could not promise, and a `Datum` does. `Reflect` is how a macro
+-- works with its own types on top of that.
+
+@derive(Debug, Display, PartialEq)
+@pub data Datum
+  = Sym String
+  | Str String
+  | Int Int
+  | Float Float
+  | Bool Bool
+  | List [Datum]
+  -- Named fields, in the order they were written.
+  | Rec [(String, Datum)]
+  -- A constructor and what it was applied to: `Lam [Sym "x", …]`.
+  | Tag String [Datum]
+  -- Source, carried as tokens: what a macro that writes code later splices.
+  | Code [TokenTree]
+
+-- What a macro may ask of the compiler while it runs.
+--
+-- `lookup` answers the value a name stands for where the macro was *called*,
+-- by the same rules as any other name there: the calling module's own, and
+-- what it `use`s. A name that nothing has defined *yet* is not an answer of
+-- `None`: the macro is set aside, the rest of the package is expanded, and it
+-- is run again once something has. Only when nothing more can be defined is
+-- `None` the answer -- so `None` means there is no such thing, not that it has
+-- not been written yet.
+--
+-- `define` leaves a value for a later macro, under a name in the calling
+-- module, visible as far as the call's own `@pub` says.
+@pub effect Expand {
+  lookup : String -> Maybe Datum,
+  define : (String, Datum) -> (),
+}
+
+-- A type a macro can store and read back: to a `Datum`, and from one, saying
+-- what was wrong when it is not one.
+--
+-- `@derive(Reflect)` writes it for a `data` or `record`: a constructor is a
+-- `Tag` of its name and its fields, a record a `Rec` of its fields by name. The
+-- code it writes names `Reflect` and `Datum`, so both have to be in scope where
+-- it is derived: `use Std.Macro (Reflect, Datum)`.
+@pub trait Reflect a {
+  fun toDatum : a -> Datum
+  fun fromDatum : Datum -> Result String a
+}
+
+impl Reflect Datum {
+  fun toDatum d = d
+  fun fromDatum d = Ok d
+}
+
+impl Reflect Int {
+  fun toDatum n = Datum.Int n
+  fun fromDatum d = match d with | Datum.Int n -> Ok n | other -> Err (expected "an Int" other)
+}
+
+impl Reflect Float {
+  fun toDatum x = Datum.Float x
+  fun fromDatum d = match d with | Datum.Float x -> Ok x | other -> Err (expected "a Float" other)
+}
+
+impl Reflect Bool {
+  fun toDatum b = Datum.Bool b
+  fun fromDatum d = match d with | Datum.Bool b -> Ok b | other -> Err (expected "a Bool" other)
+}
+
+impl Reflect String {
+  fun toDatum s = Datum.Str s
+  fun fromDatum d =
+    match d with
+    | Datum.Str s -> Ok s
+    | Datum.Sym s -> Ok s
+    | other -> Err (expected "a String" other)
+}
+
+impl Reflect [a] where Reflect a {
+  fun toDatum xs = Datum.List (V.map toDatum xs)
+  fun fromDatum d =
+    match d with
+    | Datum.List ds ->
+        V.foldl
+          (\acc x ->
+            match acc with
+            | Err e -> Err e
+            | Ok got -> match fromDatum x with | Err e -> Err e | Ok y -> Ok (V.pushBack got y))
+          (Ok V.empty)
+          ds
+    | other -> Err (expected "a list" other)
+}
+
+impl Reflect (Maybe a) where Reflect a {
+  fun toDatum m = match m with | Just x -> Datum.Tag "Just" [toDatum x] | None -> Datum.Tag "None" []
+  fun fromDatum d =
+    match d with
+    | Datum.Tag "None" _ -> Ok None
+    | Datum.Tag "Just" xs ->
+        (match V.get xs 0 with
+         | Just x -> (match fromDatum x with | Ok y -> Ok (Just y) | Err e -> Err e)
+         | None -> Err "`Just` without what it holds")
+    | other -> Err (expected "a Maybe" other)
+}
+
+-- What a `fromDatum` says when it was given the wrong thing.
+@pub fun expected (what : String) (got : Datum) : String = "expected ${what}, not ${show got}"
+
+-- The value `name` stands for, read as an `a`.
+@pub fun lookupAs (name : String) : Result String a ! { Expand | e } =
+  match lookup name with
+  | Just d -> fromDatum d
+  | None -> Err "nothing is defined as `${name}`"
+
+-- Leave `x` for a later macro, under `name`.
+@pub fun defineAs (name : String) (x : a) : () ! { Expand | e } = define (name, toDatum x)
+
+-- The field `name` of a `Rec`'s fields: what a derived `fromDatum` reads a
+-- record with.
+@pub fun field (name : String) (fields : [(String, Datum)]) : Result String Datum =
+  match V.find (\p -> fst p == name) fields with
+  | Just p -> Ok (snd p)
+  | None -> Err "no field `${name}`"
+
+-- --- running a macro -----------------------------------------------------------
+--
+-- Everything below is the compiler's side of the bargain, and nothing a macro
+-- calls: it is how a macro is run, and how what it did gets back.
+
+-- How a run ended. `Answered` with the tokens, what it defined, and every name
+-- it read -- which is what its answer depends on, beside its argument, and so
+-- what it is cached on. `Waiting` when it asked for a name nothing has defined
+-- yet: it is abandoned, and run again later.
+@pub data Outcome
+  = Answered [TokenTree] [(String, Datum)] [String]
+  | Waiting String
+
+-- Run the macro `run` on `input`, answering its `lookup`s from `scope`.
+--
+-- `settled` is whether anything more can still be defined. Until it is, a
+-- lookup of an unknown name abandons the run; after, it is answered `None`.
+@pub fun expanding (settled : Bool) (scope : [(String, Datum)]) (run : [TokenTree] -> [TokenTree] ! { Expand | e }) (input : [TokenTree]) : Wire ! e =
+  wireOutcome
+    (handle run input with {
+       lookup name k ->
+         match V.find (\p -> fst p == name) scope with
+         | Just p -> reading name (k (Just (snd p)))
+         | None -> if settled then reading name (k None) else Waiting name,
+       define made k -> defining made (k ()),
+       return ts -> Answered ts V.empty V.empty
+    })
+
+fun reading name o =
+  match o with
+  | Answered ts ds rs -> Answered ts ds (V.pushFront rs name)
+  | Waiting n -> Waiting n
+
+fun defining made o =
+  match o with
+  | Answered ts ds rs -> Answered ts (V.pushFront ds made) rs
+  | Waiting n -> Waiting n
+
+-- What the compiler reads back: one tree of one type, built of arrays.
+--
+-- The compiler reads the answer as values, and an array is the one collection
+-- it can read without knowing how a `Vector` is laid out. So the answer is
+-- written into this before it crosses: a named node and its children, text,
+-- and numbers.
+@pub data Wire = Node String #[Wire] | Text String | Whole Int | Frac Float
+
+fun wireOutcome (o : Outcome) : Wire =
+  match o with
+  | Answered ts ds rs ->
+      Node
+        "Answered"
+        #[wireTrees ts,
+          Node "" (V.toArray (V.map (\p -> Node (fst p) #[wireDatum (snd p)]) ds)),
+          Node "" (V.toArray (V.map (\r -> Text r) rs))]
+  | Waiting name -> Node "Waiting" #[Text name]
+
+fun wireTrees (ts : [TokenTree]) : Wire = Node "" (V.toArray (V.map wireTree ts))
+
+fun wireTree (t : TokenTree) : Wire =
+  match t with
+  | Word w -> Node "Word" #[Text w]
+  | Punct p -> Node "Punct" #[Text p]
+  | Str s -> Node "Str" #[Text s]
+  | Chr c -> Node "Chr" #[Text c]
+  | Num n -> Node "Num" #[Whole n]
+  | Real r -> Node "Real" #[Frac r]
+  | Group d ts -> Node "Group" #[Text (opening d), wireTrees ts]
+  | Code c -> Node "Code" #[Text c]
+  | Fail why -> Node "Fail" #[Text why]
+
+fun wireDatum (d : Datum) : Wire =
+  match d with
+  | Datum.Sym s -> Node "Sym" #[Text s]
+  | Datum.Str s -> Node "Str" #[Text s]
+  | Datum.Int n -> Node "Int" #[Whole n]
+  | Datum.Float x -> Node "Float" #[Frac x]
+  | Datum.Bool b -> Node "Bool" #[Whole (if b then 1 else 0)]
+  | Datum.List ds -> Node "List" (V.toArray (V.map wireDatum ds))
+  | Datum.Rec fs -> Node "Rec" (V.toArray (V.map (\p -> Node (fst p) #[wireDatum (snd p)]) fs))
+  | Datum.Tag name ds -> Node "Tag" #[Text name, Node "" (V.toArray (V.map wireDatum ds))]
+  | Datum.Code ts -> Node "Code" #[wireTrees ts]
 
 -- --- tests -------------------------------------------------------------------
 

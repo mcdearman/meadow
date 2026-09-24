@@ -130,7 +130,7 @@ fun collect k n act acc =
   else collect (k - 1) n act (pushBack acc (timeLoop n act))
 
 -- Measure `act` under `config`, counting `units` of work per call.
-@pub fun benchUnitsWith (config : BenchConfig) (name : String) (units : Int) (act : () -> b ! { Time | e }) : Report =
+@pub fun benchUnitsWith (config : BenchConfig) (name : String) (units : Int) (act : () -> b ! { Time | e }) : Report ! { Time | e } =
   let _ = warmUp (monotonic () + config.warmupNanos) act in
   let n = calibrate 1 act config.sampleNanos in
   let overhead = loopOverhead n in
@@ -150,14 +150,14 @@ fun collect k n act acc =
   }
 
 -- Measure `act` under `config`.
-@pub fun benchWith (config : BenchConfig) (name : String) (act : () -> b ! { Time | e }) : Report = benchUnitsWith config name 1 act
+@pub fun benchWith (config : BenchConfig) (name : String) (act : () -> b ! { Time | e }) : Report ! { Time | e } = benchUnitsWith config name 1 act
 
 -- Measure `act` under `defaultConfig`.
-@pub fun bench (name : String) (act : () -> b ! { Time | e }) : Report = benchUnitsWith defaultConfig name 1 act
+@pub fun bench (name : String) (act : () -> b ! { Time | e }) : Report ! { Time | e } = benchUnitsWith defaultConfig name 1 act
 
 -- Measure `act` under `defaultConfig`, counting `units` of work per call. The
 -- throughput column then reports units rather than calls.
-@pub fun benchUnits (name : String) (units : Int) (act : () -> b ! { Time | e }) : Report = benchUnitsWith defaultConfig name units act
+@pub fun benchUnits (name : String) (units : Int) (act : () -> b ! { Time | e }) : Report ! { Time | e } = benchUnitsWith defaultConfig name units act
 
 -- --- statistics ---------------------------------------------------------------
 
@@ -212,7 +212,7 @@ fun padTo width s =
     ]
 
 -- Print a table of already-measured reports.
-@pub fun report (reports : [Report]) : () =
+@pub fun report (reports : [Report]) : () ! { Console | e } =
   let _ = println header in
   let _ = println (S.repeat "-" 78) in
   forEach (\r -> println (formatReport r)) reports
@@ -221,7 +221,7 @@ fun padTo width s =
 -- reads as one expression:
 --
 --   def main = runAll [bench "a" f, bench "b" g]
-@pub fun runAll (reports : [Report]) : () = report reports
+@pub fun runAll (reports : [Report]) : () ! { Console | e } = report reports
 
 -- --- tests --------------------------------------------------------------------
 --

@@ -102,6 +102,10 @@ pub struct CompiledPackage {
     /// source, which is the whole reason they are stored rather than the
     /// matchers they read as.
     pub macros: Vec<crate::expand::Rules>,
+    /// The compile-time bindings this package's macros defined and its
+    /// `@compileTime def`s wrote: what a macro of a dependent can `lookup`,
+    /// as far as each one's visibility says.
+    pub bindings: Vec<crate::expand::Binding>,
     /// Files this package embedded with `includeStr`, and what each hashed to.
     ///
     /// Inputs to the build that its own sources do not mention: without them a
@@ -415,7 +419,7 @@ fn compile_unit_inner(
     }
     modules.retain(|m| !dropped.iter().any(|d| m.path.starts_with(d)));
     // Macros: read from every module of the unit, then expanded in each.
-    let (macros, expansions) =
+    let (macros, bindings, expansions) =
         crate::expand::expand_unit(pkg, &mut modules, deps, procs, &filename, &mut diags);
 
     // --- name resolution (whole unit at once, so modules may be mutually recursive)
@@ -828,6 +832,7 @@ fn compile_unit_inner(
             name: unit_name,
             ident,
             macros,
+            bindings,
             embedded: resolver.embedded().to_vec(),
             fixities: resolver.fixities(),
             entry,
@@ -1143,6 +1148,16 @@ fn apply_use(
         if let Some(&id) = map.get(&name) {
             resolver.import_from(name, id, InternedString::from(dotted(&segs)));
             resolver.note_ref(n.span, NameRef::Value(id));
+        } else if let Some(methods) = trait_methods(&segs, name, deps) {
+            // A trait brings its methods: naming `Show` is asking to call
+            // `show`.
+            let from = InternedString::from(dotted(&segs));
+            for m in methods {
+                if let Some(&id) = map.get(&m) {
+                    resolver.import_from(m, id, from);
+                }
+            }
+            resolver.note_ref(n.span, NameRef::Type(name));
         } else if let Some(&canonical) = types.iter().find(|t| hir::spelling(t) == &*name) {
             // Naming a type in a `use` is what settles which one a spelling
             // shared by several packages means.
@@ -1167,6 +1182,24 @@ fn apply_use(
         }
     }
     Vec::new()
+}
+
+/// The methods of the trait `name`, if a dependency the `use` path `segs`
+/// reaches declares one by that name.
+fn trait_methods(
+    segs: &[InternedString],
+    name: InternedString,
+    deps: &[Dep<'_>],
+) -> Option<Vec<InternedString>> {
+    deps.iter()
+        .filter(|d| segs.first() == Some(&d.spelled) || dotted(segs) == *d.spelled.to_string())
+        .flat_map(|d| d.data_decls.iter())
+        .find_map(|decl| match decl.value() {
+            hir::Decl::Trait(td) if hir::spelling(&td.name) == &*name => {
+                Some(td.methods.iter().map(|m| m.name).collect())
+            }
+            _ => None,
+        })
 }
 
 /// The exported `data` and `record` types a dependency module declares.

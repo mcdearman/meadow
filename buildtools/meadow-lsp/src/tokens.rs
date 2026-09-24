@@ -153,6 +153,7 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
             | Token::Leq
             | Token::Geq
             | Token::Bang
+            | Token::DeclBang
             | Token::RArrow
             | Token::LArrow
             | Token::ColonColon

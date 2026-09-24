@@ -587,6 +587,32 @@ hello, Ann
 => ()
 ```
 
+Inline, the effect goes after the result, since that is where the last arrow
+would be:
+
+```meadow
+fun greet (name : String) : () ! Console = println ("hello, " ++ name)
+
+fun apply (f : a -> b ! e) (x : a) : b ! e = f x
+
+def main = apply greet "Ann"
+```
+
+```
+hello, Ann
+=> ()
+```
+
+A result is read the way an arrow is: written without a `!`, it says the body
+performs nothing, so `fun inc (x : Int) : Int = …` is pure and a `println` in
+it is an error. Only a result left unwritten -- `fun inc (x : Int) = …` -- has
+its effects inferred, as its constraints always are. What a function performs
+is a bound, not everything a place using it allows: a pure `inc` can still be
+handed to `V.map` inside a function that prints. A result that is
+itself a function takes its own arrow's `!` first, so the body's effect then
+goes outside the parentheses: `: (a -> b ! e) ! Console`. A `def` has no body
+that runs when it is used, so it takes no `!` at all.
+
 A definition may be written as several clauses, matched in the order they are
 written -- so a signature stands over as many of them as it needs:
 
@@ -2050,6 +2076,9 @@ def main = (length [1; 2; 3], V.len [1, 2], concat "a" "b")
 A bare `use` shadows anything of the same name already in scope, including the
 prelude — which is exactly how you switch a file from `Vector` to `List`:
 `length` above is `List`'s, not the prelude's.
+
+Naming a trait in the list brings its methods too: `use Std.Macro (Reflect)`
+puts `toDatum` and `fromDatum` in scope, since a trait is named to be used.
 
 ### Depending on another package
 

@@ -62,28 +62,28 @@ data Attempt a = Done a | Retried | Conflicted
 fun unreachable u = unreachable u
 
 -- A new `TVar`, inside a transaction.
-@pub fun newTVar (x : a) : TVar a = stmNew x
+@pub fun newTVar (x : a) : TVar a ! { Stm | e } = stmNew x
 
 -- A new `TVar`, outside one.
-@pub fun newTVarIO (x : a) : TVar a = stmNewIO x
+@pub fun newTVarIO (x : a) : TVar a ! { Thread | e } = stmNewIO x
 
 -- What `tv` holds, as this transaction sees it.
-@pub fun readTVar (tv : TVar a) : a =
+@pub fun readTVar (tv : TVar a) : a ! { Stm | e } =
   match stmRead tv with
   | Just x -> x
   | None -> let _ = conflictSignal () in unreachable ()
 
 -- Make `tv` hold `x` when this transaction commits.
-@pub fun writeTVar (tv : TVar a) (x : a) : () = stmWrite tv x
+@pub fun writeTVar (tv : TVar a) (x : a) : () ! { Stm | e } = stmWrite tv x
 
-@pub fun modifyTVar (tv : TVar a) (f : a -> a ! { Stm | e }) : () = writeTVar tv (f (readTVar tv))
+@pub fun modifyTVar (tv : TVar a) (f : a -> a ! { Stm | e }) : () ! { Stm | e } = writeTVar tv (f (readTVar tv))
 
 -- Give up for now: wait until something this transaction read changes, then
 -- run it again.
-@pub fun retry () : a = let _ = retrySignal () in unreachable ()
+@pub fun retry () : a ! { Stm | e } = let _ = retrySignal () in unreachable ()
 
 -- Carry on only if `ok`; otherwise `retry`.
-@pub fun check (ok : Bool) : () = if ok then () else retry ()
+@pub fun check (ok : Bool) : () ! { Stm | e } = if ok then () else retry ()
 
 -- `first`, or `second` if `first` retries. What `first` wrote is dropped if it
 -- retries; what it read still counts, so if both retry the whole transaction
@@ -110,7 +110,7 @@ fun unreachable u = unreachable u
   | Conflicted -> atomically f
 
 -- What `tv` holds now, as a transaction of its own.
-@pub fun readTVarIO (tv : TVar a) : a = atomically (\() -> readTVar tv)
+@pub fun readTVarIO (tv : TVar a) : a ! { Thread | e } = atomically (\() -> readTVar tv)
 
 -- --- tests -------------------------------------------------------------------
 

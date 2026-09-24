@@ -77,7 +77,7 @@ fun posMod v m =
 
 -- Run `act` with the pure generator, starting from `n`. The same `n` gives the
 -- same numbers, on every machine and every run.
-@pub fun withSeed (n : Int) (act : () -> a ! { Random | e }) : a =
+@pub fun withSeed (n : Int) (act : () -> a ! { Random | e }) : a ! e =
   handle act () with {
     nextInt () k -> \s -> match step s with | (v, s2) -> (k v) s2,
     nextSeed () k -> \s -> match step s with | (v, s2) -> (k v) s2,
@@ -90,7 +90,7 @@ fun posMod v m =
   } (seed n)
 
 -- Like `withSeed`, but also hands back the final state so a run can be continued.
-@pub fun withSeedFrom (n : Int) (act : () -> a ! { Random | e }) : (a, Int) =
+@pub fun withSeedFrom (n : Int) (act : () -> a ! { Random | e }) : (a, Int) ! e =
   handle act () with {
     nextInt () k -> \s -> match step s with | (v, s2) -> (k v) s2,
     nextSeed () k -> \s -> match step s with | (v, s2) -> (k v) s2,
@@ -106,16 +106,16 @@ fun posMod v m =
 
 -- An effect operation takes exactly one argument, so `intBetween` takes a pair.
 -- This is the curried form to actually call.
-@pub fun between (lo : Int) (hi : Int) : Int = intBetween (lo, hi)
+@pub fun between (lo : Int) (hi : Int) : Int ! { Random | e } = intBetween (lo, hi)
 
-@pub fun bool () : Bool = between 0 2 == 1
+@pub fun bool () : Bool ! { Random | e } = between 0 2 == 1
 
 -- A uniformly chosen element, or `None` if the vector is empty.
-@pub fun choose (v : [a]) : Maybe a =
+@pub fun choose (v : [a]) : Maybe a ! { Random | e } =
   if V.isEmpty v then None else V.get v (between 0 (V.len v))
 
 -- Fisher-Yates, from the back.
-@pub fun shuffle (v : [a]) : [a] =
+@pub fun shuffle (v : [a]) : [a] ! { Random | e } =
   let n = V.len v in
   if n <= 1 then v else shuffleFrom (n - 1) v
 

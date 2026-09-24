@@ -74,19 +74,19 @@ use Std.Collections.Vector (vecFromArray)
 
 -- `(result, elapsed nanoseconds)`. Uses the monotonic clock, so a system clock
 -- adjustment part-way through cannot produce a negative duration.
-@pub fun timed (act : () -> a ! { Time | e }) : (a, Int) =
+@pub fun timed (act : () -> a ! { Time | e }) : (a, Int) ! { Time | e } =
   let start = monotonic () in
   let result = act () in
   let stop = monotonic () in
   (result, stop - start)
 
 -- Just the duration.
-@pub fun elapsed (act : () -> a ! { Time | e }) : Int =
+@pub fun elapsed (act : () -> a ! { Time | e }) : Int ! { Time | e } =
   match timed act with
   | (result, ns) -> ns
 
 -- Run `act`, print how long it took as `label: 1.23ms`, and answer its result.
-@pub fun time (label : String) (act : () -> a ! { Time, Console | r }) : a =
+@pub fun time (label : String) (act : () -> a ! { Time, Console | r }) : a ! { Time, Console | r } =
   let (result, ns) = timed act in
   let _ = println (S.concatAll [label, ": ", formatNanos ns]) in
   result
@@ -112,7 +112,7 @@ fun repeatRuns (n : Int) act = if n <= 1 then act () else let _ = act () in repe
 
 -- Run `act` with the clock frozen at `t`: every `now` answers `t`, `monotonic`
 -- counts from zero, and `sleep` returns instantly.
-@pub fun withClock (t : Int) (act : () -> a ! { Time | e }) : a =
+@pub fun withClock (t : Int) (act : () -> a ! { Time | e }) : a ! e =
   handle act () with {
     now () k -> k t,
     monotonic () k -> k 0,
@@ -123,7 +123,7 @@ fun repeatRuns (n : Int) act = if n <= 1 then act () else let _ = act () in repe
 -- Run `act` with a clock that starts at `t` and advances by `tick` on every
 -- reading -- enough to test code that compares two `now`s, and to make `sleep`
 -- move the clock without waiting.
-@pub fun withTickingClock (t : Int) (tick : Int) (act : () -> a ! { Time | e }) : a =
+@pub fun withTickingClock (t : Int) (tick : Int) (act : () -> a ! { Time | e }) : a ! e =
   handle act () with {
     now () k -> \s -> (k s) (s + tick),
     monotonic () k -> \s -> (k (s * 1000000)) (s + tick),

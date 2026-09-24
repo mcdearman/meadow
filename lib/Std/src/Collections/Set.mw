@@ -47,7 +47,7 @@ fun unwrap s = match s with | Set t -> t
 @pub fun subset (a : Set) (b : Set) : Bool = V.all (\x -> member x b) (toVec a)
 
 -- Yield every element in ascending order, for `Std.Stream`.
-@pub fun toStream (s : Set) : () = Tree.toStream (unwrap s)
+@pub fun toStream (s : Set) : () ! { Yield Int | e } = Tree.toStream (unwrap s)
 
 -- --- comparing -----------------------------------------------------------------
 

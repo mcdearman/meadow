@@ -24,7 +24,7 @@ use Either.*
 
 -- Collapse both sides to one type: `either f g` is the `Either` eliminator, the
 -- way `match` would do it but as a value.
-@pub fun either (onLeft : a -> b ! e) (onRight : c -> b ! e) (e : Either a c) : b =
+@pub fun either (onLeft : a -> b ! e) (onRight : c -> b ! e) (e : Either a c) : b ! e =
   match e with
   | Left a -> onLeft a
   | Right b -> onRight b
@@ -40,23 +40,23 @@ use Either.*
   | Right b -> b
 
 -- Right-biased, like `Result.map`: a `Left` passes through untouched.
-@pub fun map (f : a -> b ! e) (e : Either c a) : Either c b =
+@pub fun map (f : a -> b ! e) (e : Either c a) : Either c b ! e =
   match e with
   | Left a -> Left a
   | Right b -> Right (f b)
 
-@pub fun mapLeft (f : a -> b ! e) (e : Either a c) : Either b c =
+@pub fun mapLeft (f : a -> b ! e) (e : Either a c) : Either b c ! e =
   match e with
   | Left a -> Left (f a)
   | Right b -> Right b
 
 -- Map both sides at once, each with its own function.
-@pub fun bimap (f : a -> b ! e) (g : c -> d ! e) (e : Either a c) : Either b d =
+@pub fun bimap (f : a -> b ! e) (g : c -> d ! e) (e : Either a c) : Either b d ! e =
   match e with
   | Left a -> Left (f a)
   | Right b -> Right (g b)
 
-@pub fun andThen (f : a -> Either b c ! e) (e : Either b a) : Either b c =
+@pub fun andThen (f : a -> Either b c ! e) (e : Either b a) : Either b c ! e =
   match e with
   | Left a -> Left a
   | Right b -> f b

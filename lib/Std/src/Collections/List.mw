@@ -16,23 +16,23 @@ use Std.Yield (yield)
   | Nil -> ys
   | Cons x rest -> x :: append rest ys
 
-@pub fun map (f : a -> b ! e) (xs : List a) : List b =
+@pub fun map (f : a -> b ! e) (xs : List a) : List b ! e =
   match xs with
   | Nil -> Nil
   | Cons x rest -> f x :: map f rest
 
-@pub fun filter (keep : a -> Bool ! e) (xs : List a) : List a =
+@pub fun filter (keep : a -> Bool ! e) (xs : List a) : List a ! e =
   match xs with
   | Nil -> Nil
   | Cons x rest if keep x -> x :: filter keep rest
   | Cons _ rest -> filter keep rest
 
-@pub fun foldl (f : a -> b -> a ! e) (acc : a) (xs : List b) : a =
+@pub fun foldl (f : a -> b -> a ! e) (acc : a) (xs : List b) : a ! e =
   match xs with
   | Nil -> acc
   | Cons x rest -> foldl f (f acc x) rest
 
-@pub fun foldr (f : a -> b -> b ! e) (acc : b) (xs : List a) : b =
+@pub fun foldr (f : a -> b -> b ! e) (acc : b) (xs : List a) : b ! e =
   match xs with
   | Nil -> acc
   | Cons x rest -> f x (foldr f acc rest)
@@ -109,37 +109,37 @@ fun reverseOnto acc xs =
   | Nil -> None
   | Cons x rest -> Just (foldl min x rest)
 
-@pub fun all (keep : a -> Bool ! e) (xs : List a) : Bool =
+@pub fun all (keep : a -> Bool ! e) (xs : List a) : Bool ! e =
   match xs with
   | Nil -> True
   | Cons x rest if keep x -> all keep rest
   | Cons _ _ -> False
 
-@pub fun any (keep : a -> Bool ! e) (xs : List a) : Bool =
+@pub fun any (keep : a -> Bool ! e) (xs : List a) : Bool ! e =
   match xs with
   | Nil -> False
   | Cons x _ if keep x -> True
   | Cons _ rest -> any keep rest
 
-@pub fun find (keep : a -> Bool ! e) (xs : List a) : Maybe a =
+@pub fun find (keep : a -> Bool ! e) (xs : List a) : Maybe a ! e =
   match xs with
   | Nil -> None
   | Cons x _ if keep x -> Just x
   | Cons _ rest -> find keep rest
 
-@pub fun takeWhile (keep : a -> Bool ! e) (xs : List a) : List a =
+@pub fun takeWhile (keep : a -> Bool ! e) (xs : List a) : List a ! e =
   match xs with
   | Cons x rest if keep x -> x :: takeWhile keep rest
   | _ -> Nil
 
-@pub fun dropWhile (keep : a -> Bool ! e) (xs : List a) : List a =
+@pub fun dropWhile (keep : a -> Bool ! e) (xs : List a) : List a ! e =
   match xs with
   | Cons x rest if keep x -> dropWhile keep rest
   | _ -> xs
 
-@pub fun partition (keep : a -> Bool ! e) (xs : List a) : (List a, List a) = (filter keep xs, filter (\x -> not (keep x)) xs)
+@pub fun partition (keep : a -> Bool ! e) (xs : List a) : (List a, List a) ! e = (filter keep xs, filter (\x -> not (keep x)) xs)
 
-@pub fun concatMap (f : a -> List b ! e) (xs : List a) : List b = xs |> map f |> concat
+@pub fun concatMap (f : a -> List b ! e) (xs : List a) : List b ! e = xs |> map f |> concat
 
 @pub fun zip (xs : List a) (ys : List b) : List (a, b) =
   match (xs, ys) with
@@ -147,7 +147,7 @@ fun reverseOnto acc xs =
   | (Cons a arest, Nil) -> Nil
   | (Cons a arest, Cons b brest) -> (a, b) :: zip arest brest
 
-@pub fun zipWith (f : a -> b -> c ! e) (xs : List a) (ys : List b) : List c =
+@pub fun zipWith (f : a -> b -> c ! e) (xs : List a) (ys : List b) : List c ! e =
   match (xs, ys) with
   | (Nil, bs) -> Nil
   | (Cons a arest, Nil) -> Nil
@@ -155,7 +155,7 @@ fun reverseOnto acc xs =
 
 @pub fun unzip (ps : List (a, b)) : (List a, List b) = (map fst ps, map snd ps)
 
-@pub fun sumBy (f : a -> n ! e) (xs : List a) : n = foldl (\acc x -> acc + f x) 0 xs
+@pub fun sumBy (f : a -> n ! e) (xs : List a) : n ! e = foldl (\acc x -> acc + f x) 0 xs
 
 @pub fun intercalate (sep : List a) (xs : List (List a)) : List a =
   match xs with
@@ -184,7 +184,7 @@ fun reverseOnto acc xs =
   | Cons pair rest -> Cons pair (removeAssoc key rest)
 
 -- Yield every element, in order, for `Std.Stream`.
-@pub fun toStream (xs : List a) : () =
+@pub fun toStream (xs : List a) : () ! { Yield a | e } =
   match xs with
   | [;] -> ()
   | x :: rest -> let ignored = yield x in toStream rest

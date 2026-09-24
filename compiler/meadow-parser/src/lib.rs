@@ -303,7 +303,7 @@ where
             path_seg()
                 .or(user_op())
                 .or(value_ident())
-                .then(just(Token::Bang).or_not())
+                .then(just(Token::Bang).or(just(Token::DeclBang)).or_not())
                 .separated_by(just(Token::Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>()
@@ -585,7 +585,7 @@ where
         macro_decl().map_with(|m, e| LDecl::new(Decl::Macro(m), e.span())),
         // Before `sig_decl`, which also starts with a name: `derive! { … }`
         // would otherwise be read as the start of `derive : T`.
-        mac_call().map_with(|m, e| LDecl::new(Decl::MacCall(m), e.span())),
+        mac_call(true).map_with(|m, e| LDecl::new(Decl::MacCall(m), e.span())),
         bind_decl.map_with(|bind, e| LDecl::new(Decl::Bind(bind), e.span())),
     ));
 
@@ -1162,16 +1162,28 @@ where
 ///
 /// The three brackets mean the same thing; which one to use is a question of
 /// how the call reads. Nothing here looks inside them.
-fn mac_call<'a, I>() -> impl Parser<'a, I, MacCall, extra::Err<Rich<'a, Token, Span>>> + Clone
+///
+/// `starts` is whether the call may be one written at the start of a line
+/// ([`Token::DeclBang`]): as a declaration or the head of an expression it
+/// may, and as an argument it may not -- so a call on a line of its own
+/// begins a new declaration instead of being applied to by the line above.
+fn mac_call<'a, I>(
+    starts: bool,
+) -> impl Parser<'a, I, MacCall, extra::Err<Rich<'a, Token, Span>>> + Clone
 where
     I: ValueInput<'a, Token = Token, Span = Span>,
 {
+    let bang = if starts {
+        just(Token::Bang).or(just(Token::DeclBang)).boxed()
+    } else {
+        just(Token::Bang).boxed()
+    };
     path_seg()
         .separated_by(just(Token::Period))
         .at_least(1)
         .collect::<Vec<_>>()
         // `!=` is one token, so `foo != x` can never be mistaken for a call.
-        .then_ignore(just(Token::Bang))
+        .then_ignore(bang)
         .then(any_group())
         .map(|(path, arg)| MacCall { path, arg })
 }
@@ -1490,11 +1502,19 @@ where
             .map(desugar_section)
             .boxed();
 
-        let atom = choice((
+        // A call written at the start of a line begins a declaration (see
+        // [`Token::DeclBang`]), so nothing reads its name as an argument: the
+        // expression above it ends where it starts.
+        let line_call = path_seg()
+            .separated_by(just(Token::Period))
+            .at_least(1)
+            .then(just(Token::DeclBang))
+            .ignored();
+        let atom = line_call.not().ignore_then(choice((
             // Before every name: a call is a name, so the alternatives that
             // read one would take the name and leave the `!`. The probe costs
             // a token or two and never descends into a nested expression.
-            located(mac_call().map(Expr::MacCall)),
+            located(mac_call(false).map(Expr::MacCall)),
             qual_atom,
             unit_expr,
             lit_expr,
@@ -1515,7 +1535,7 @@ where
             array_expr,
             list_expr,
             vec_expr,
-        ));
+        )));
 
         // postfix `.field` selection
         let atom = atom
@@ -1585,7 +1605,7 @@ where
         // A macro call with whatever it is applied to, before `qual`: a
         // qualified call reads as a qualified name until the `!`, and `qual`
         // would take the name and leave the `!` behind.
-        let mac_app = located(mac_call().map(Expr::MacCall))
+        let mac_app = located(mac_call(true).map(Expr::MacCall))
             .then(atom.clone().repeated().collect::<Vec<_>>())
             .map_with(|(base, args), e| {
                 if args.is_empty() {
@@ -1907,7 +1927,7 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         // constructor written there takes no arguments of its own, so
         // `Node Leaf x r` is `Node` applied to three patterns, as in Haskell.
         // A constructor that does take some is parenthesized, `Just (Cons x r)`.
-        let argument = mac_call()
+        let argument = mac_call(true)
             .map(Pat::MacCall)
             .or(upper_ident()
                 .then_ignore(just(Token::Period))
@@ -2157,9 +2177,51 @@ where
 }
 
 /// `: T` before the `=` of a binding — the declared result type.
+///
+/// `: R ! e` says what running the body performs as well: the effect of the
+/// function's last arrow, which the parameters written inline leave nowhere
+/// else to put. It is kept as a function type of no parameters -- which no
+/// type written anywhere else can be -- and read apart again by inference.
+/// A result that is itself a function takes its own arrow's effect first, so
+/// `: a -> b ! e` is a function performing `e` when called, and the body's
+/// effect is written after it: `: (a -> b ! e) ! f`.
 fn result_ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, Option<LType>, extra::Err<Rich<'a, Token, Span>>> + Clone {
-    just(Token::Colon).ignore_then(ty()).or_not()
+    just(Token::Colon)
+        .ignore_then(ty())
+        .then(just(Token::Bang).ignore_then(effect_row()).or_not())
+        .map_with(|(t, eff), e| match eff {
+            None => t,
+            Some(eff) => Located::new(TypeExpr::Fun(Vec::new(), t, Some(eff)), e.span()),
+        })
+        .or_not()
+}
+
+/// An effect row as it is written after `!`: `{ Console, State Int | e }`, a
+/// bare variable `e`, or one bare effect `Console`.
+///
+/// The same grammar the arrow of a function type takes (see [`ty`], which has
+/// to keep its own copy for its label arguments to be its own atoms).
+fn effect_row<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, EffectRow, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    let label = upper_ident().then(ty_atom().repeated().collect::<Vec<_>>());
+    let braced = label
+        .clone()
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .then(just(Token::Bar).ignore_then(lower_ident()).or_not())
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .map(|(labels, tail)| EffectRow { labels, tail });
+    let bare_var = lower_ident().map(|n| EffectRow {
+        labels: vec![],
+        tail: Some(n),
+    });
+    let bare_label = label.map(|l| EffectRow {
+        labels: vec![l],
+        tail: None,
+    });
+    choice((braced, bare_var, bare_label))
 }
 
 /// One equation of a function written in several: `| gcd a b = …`.

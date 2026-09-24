@@ -333,6 +333,32 @@ def main = four
 }
 
 #[test]
+fn a_call_on_a_line_of_its_own_begins_a_declaration() {
+    // Not one more argument to the expression above it: nothing but a
+    // keyword or an `@` ends that expression otherwise, and a call written in
+    // column 0 is a declaration.
+    is(
+        r#"
+macro constant
+  | ($name, $value) -> { fun $name = $value }
+
+fun twice x = x + x
+def main = twice four
+constant!(four, 4)
+"#,
+        "8",
+    );
+}
+
+#[test]
+fn a_call_that_is_indented_is_still_an_argument() {
+    is(
+        "fun twice x = x ++ x\ndef main =\n  twice\n  stringify!(ab)\n",
+        r#""abab""#,
+    );
+}
+
+#[test]
 fn a_double_dollar_writes_one_dollar_token() {
     // `$$` is an escape between *tokens*, so it has nothing to do with a `$`
     // inside a string literal, which is already just text.
@@ -1126,6 +1152,24 @@ fn a_procedural_macro_is_a_function_run_while_its_caller_is_compiled() {
         "use Maker (shout!)\n\ndef main = shout!(hello there)\n",
     );
     assert_eq!(build(&app).expect("it builds"), r#""hello there!""#);
+}
+
+#[test]
+fn a_procedural_macro_can_answer_with_a_bracketed_group() {
+    // A group's trees are a `[TokenTree]`, which the compiler once could not
+    // read back: the answer now crosses as arrays all the way down.
+    let app = with_macro(
+        "group",
+        r#"
+use Std.Macro.TokenTree.*
+use Std.Macro.Delim.*
+
+@macro
+@pub fun sum ts = [Group Paren [Num 40, Punct "+", Num 2], Punct "*", Num 1]
+"#,
+        "use Maker (sum!)\n\ndef main = sum!()\n",
+    );
+    assert_eq!(build(&app).expect("it builds"), "42");
 }
 
 #[test]

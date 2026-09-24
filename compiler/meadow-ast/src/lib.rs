@@ -282,6 +282,9 @@ pub enum TypeExpr {
     /// type-constructor application: `Int`, `Vector a`, `Maybe (Vector Int)`
     Con(Ident, Vec<LType>),
     /// `a -> b ! e` (curried when lowered; the effect is on the last arrow).
+    ///
+    /// With no parameters it is a declared result and its effect, `: R ! e`
+    /// after a function's inline parameters -- only ever there.
     Fun(Vec<LType>, LType, Option<EffectRow>),
     /// `(a, b)`
     Tuple(Vec<LType>),

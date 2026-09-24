@@ -5,19 +5,24 @@
 //! job. So the compiler asks, through
 //! [`Runner`](meadow_compiler::expand::proc::Runner), and this answers.
 //!
-//! What crosses is `Std.Macro`'s `TokenTree`. Going in, the call's argument is
-//! built as a term -- an `Array` of constructors, handed to `Vector.fromArray`,
-//! which is how a `[a]` is made without knowing how one is laid out. Coming
-//! back, `Vector.toArray` turns the answer into an array the evaluator hands
-//! over as a plain `Vec`, so nothing here has to know either.
+//! What crosses is `Std.Macro`'s `TokenTree`, and the `Datum`s of the
+//! compile-time bindings the call can see. Going in, both are built as terms
+//! -- `Array`s of constructors, handed to `Vector.fromArray`, which is how a
+//! `[a]` is made without knowing how one is laid out. The macro is run under
+//! `Std.Macro.expanding`, the handler of its `Expand` effect, which answers
+//! its `lookup`s from those bindings and writes what happened into a `Wire`:
+//! arrays all the way down, which the evaluator hands over as plain `Vec`s,
+//! so nothing here has to know how a `[a]` is laid out either.
 //!
 //! Two things make this safe to do during a build. A macro's signature forbids
 //! the effects that would let it learn anything about the world, so what it
-//! answers depends only on what it was given -- which is why the answers are
-//! cached here on exactly that. And it runs with a step budget, so a macro
-//! that does not stop fails the build instead of hanging it.
+//! answers depends only on what it was given and what it read -- which is why
+//! the answers are cached here on exactly that. And it runs with a step
+//! budget, so a macro that does not stop fails the build instead of hanging
+//! it.
 
-use meadow_compiler::expand::proc::Runner;
+use meadow_compiler::expand::Datum;
+use meadow_compiler::expand::proc::{Outcome, Runner, Scope};
 use meadow_compiler::span::Span;
 use meadow_compiler::{CompiledPackage, core, intern::InternedString, lexer::tt};
 use std::cell::RefCell;
@@ -40,6 +45,14 @@ fn fuel() -> u64 {
         .and_then(|v| v.parse().ok())
         .unwrap_or(FUEL)
 }
+
+/// A call, by the macro, its argument as written, and whether the round it
+/// ran in was settled.
+type AnswerKey = (InternedString, InternedString, String, bool);
+
+/// The bindings a run read, and what each said -- `None` for one that was not
+/// there.
+type Reads = Vec<(String, Option<Datum>)>;
 
 /// Where the packages came from.
 ///
@@ -74,9 +87,10 @@ pub struct Macros<'a> {
     /// The linked program, built the first time a macro is actually called --
     /// most builds call none, and linking is not free.
     program: RefCell<Option<Arc<core::Program>>>,
-    /// What each call answered, by what it was asked. A macro cannot tell one
-    /// build from another, so the same tokens always give the same tokens.
-    answers: RefCell<HashMap<(InternedString, InternedString, String), Vec<tt::TokenTree>>>,
+    /// What each call answered, by what it was asked and what it read. A
+    /// macro cannot tell one build from another, so the same tokens and the
+    /// same bindings always give the same answer.
+    answers: RefCell<HashMap<AnswerKey, Vec<(Reads, Outcome)>>>,
 }
 
 impl<'a> Macros<'a> {
@@ -146,9 +160,13 @@ impl<'a> Macros<'a> {
 
     /// The canonical name of a constructor spelled `Type.Ctor`, which carries
     /// the package that declared it and so cannot be written out here.
+    ///
+    /// The standard library's are looked in first: every one this asks for is
+    /// its, and a package with a `Datum` of its own must not be taken for it.
     fn ctor(&self, spelled: &str) -> Option<InternedString> {
-        self.packages
-            .packages()
+        let mut packages = self.packages.packages();
+        packages.sort_by_key(|p| p.name.to_string() != "Std");
+        packages
             .into_iter()
             .flat_map(|p| p.variants.values())
             .flat_map(|vs| vs.iter())
@@ -164,10 +182,26 @@ impl Runner for Macros<'_> {
         name: InternedString,
         input: &[tt::TokenTree],
         at: Span,
-    ) -> Result<Vec<tt::TokenTree>, String> {
-        let key = (package, name, tt::render(input));
+        scope: &Scope<'_>,
+    ) -> Result<Outcome, String> {
+        let key = (package, name, tt::render(input), scope.settled);
+        // An answer is good for as long as everything it read still says what
+        // it said: the argument is the key, and the reads are checked here.
         if let Some(had) = self.answers.borrow().get(&key) {
-            return Ok(had.clone());
+            let current = |n: &str| {
+                scope
+                    .visible
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| k == n)
+                    .map(|(_, d)| d)
+            };
+            if let Some((_, out)) = had
+                .iter()
+                .find(|(reads, _)| reads.iter().all(|(n, was)| current(n) == was.as_ref()))
+            {
+                return Ok(out.clone());
+            }
         }
         let f = self
             .exported(package, name)
@@ -175,28 +209,59 @@ impl Runner for Macros<'_> {
         let from_array = self
             .std_fn(&["Collections", "Vector"], "fromArray")
             .ok_or("the standard library has no `Vector.fromArray`")?;
-        let to_array = self
-            .std_fn(&["Collections", "Vector"], "toArray")
-            .ok_or("the standard library has no `Vector.toArray`")?;
+        let expanding = self
+            .std_fn(&["Macro"], "expanding")
+            .ok_or("the standard library has no `Macro.expanding`")?;
         let mut enc = Encode {
             from_array,
             ctor: &|bare| self.ctor(bare),
         };
         let argument = enc.trees(input)?;
-        // `toArray (macro (fromArray #[…]))`: the answer comes back as an
-        // array, which is a `Vec` here, so nothing has to know how a `[a]` is
-        // laid out.
-        let call = core::Term::App(
-            Arc::new(core::Term::Var(to_array)),
-            Arc::new(core::Term::App(
-                Arc::new(core::Term::Var(f)),
-                Arc::new(argument),
-            )),
+        // Later bindings shadow earlier ones, and the handler takes the first
+        // it finds: so the list goes in latest first.
+        let bound: Vec<core::Term> = scope
+            .visible
+            .iter()
+            .rev()
+            .map(|(n, d)| Ok(core::Term::Tuple(vec![text(n), enc.datum(d)?])))
+            .collect::<Result<_, String>>()?;
+        let bound = core::Term::App(
+            Arc::new(core::Term::Var(from_array)),
+            Arc::new(core::Term::Array(bound, unknown())),
         );
+        // `expanding settled scope macro argument`: the macro run under the
+        // handler of its `Expand` effect, answering in a `Wire` -- arrays all
+        // the way down, which is what can be read here without knowing how a
+        // `[a]` is laid out.
+        let call = [
+            core::Term::Lit(core::Lit::Bool(scope.settled)),
+            bound,
+            core::Term::Var(f),
+            argument,
+        ]
+        .into_iter()
+        .fold(core::Term::Var(expanding), |g, x| {
+            core::Term::App(Arc::new(g), Arc::new(x))
+        });
         let value = meadow_eval::eval_with_fuel(&self.program(), Arc::new(call), self.fuel)
             .map_err(|e| e.msg)?;
-        let out = decode_trees(&value, at)?;
-        self.answers.borrow_mut().insert(key, out.clone());
+        let out = outcome(&wire(&value)?, at)?;
+        if let Outcome::Answered { read, .. } = &out {
+            let current = |n: &str| {
+                scope
+                    .visible
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| k == n)
+                    .map(|(_, d)| d.clone())
+            };
+            let reads = read.iter().map(|n| (n.clone(), current(n))).collect();
+            self.answers
+                .borrow_mut()
+                .entry(key)
+                .or_default()
+                .push((reads, out.clone()));
+        }
         Ok(out)
     }
 }
@@ -258,6 +323,45 @@ impl Encode<'_> {
         self.build(&format!("Delim.{name}"), Vec::new())
     }
 
+    /// A compile-time binding's value, as the `Std.Macro.Datum` it is.
+    fn datum(&mut self, d: &Datum) -> Result<core::Term, String> {
+        let (ctor, fields) = match d {
+            Datum::Sym(s) => ("Sym", vec![text(s)]),
+            Datum::Str(s) => ("Str", vec![text(s)]),
+            Datum::Int(n) => ("Int", vec![core::Term::Lit(core::Lit::Int(*n))]),
+            Datum::Float(f) => ("Float", vec![core::Term::Lit(core::Lit::Float(*f))]),
+            Datum::Bool(b) => ("Bool", vec![core::Term::Lit(core::Lit::Bool(*b))]),
+            Datum::List(ds) => ("List", vec![self.vector(ds)?]),
+            Datum::Rec(fs) => {
+                let fields: Vec<core::Term> = fs
+                    .iter()
+                    .map(|(k, v)| Ok(core::Term::Tuple(vec![text(k), self.datum(v)?])))
+                    .collect::<Result<_, String>>()?;
+                ("Rec", vec![self.array(fields)])
+            }
+            Datum::Tag(t, ds) => ("Tag", vec![text(t), self.vector(ds)?]),
+            Datum::Code(ts) => ("Code", vec![self.trees(ts)?]),
+        };
+        self.build(&format!("Datum.{ctor}"), fields)
+    }
+
+    /// `[…]` of datums.
+    fn vector(&mut self, ds: &[Datum]) -> Result<core::Term, String> {
+        let items = ds
+            .iter()
+            .map(|d| self.datum(d))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.array(items))
+    }
+
+    /// `fromArray #[…]`.
+    fn array(&self, items: Vec<core::Term>) -> core::Term {
+        core::Term::App(
+            Arc::new(core::Term::Var(self.from_array)),
+            Arc::new(core::Term::Array(items, unknown())),
+        )
+    }
+
     fn build(&mut self, spelled: &str, fields: Vec<core::Term>) -> Result<core::Term, String> {
         let name = (self.ctor)(spelled)
             .ok_or_else(|| format!("the standard library has no `{spelled}`"))?;
@@ -275,86 +379,191 @@ fn unknown() -> core::Ty {
     meadow_compiler::infer::Type::Error
 }
 
-/// Reading the answer back.
-fn decode_trees(value: &meadow_eval::Value, at: Span) -> Result<Vec<tt::TokenTree>, String> {
-    let meadow_eval::Value::Array(items) = value else {
-        return Err("it did not answer with tokens".to_string());
-    };
-    items
-        .iter()
-        .map(|v| decode(v, at))
-        .collect::<Result<Vec<_>, _>>()
-        .map(|trees: Vec<Vec<tt::TokenTree>>| trees.into_iter().flatten().collect())
+/// `Std.Macro.Wire`: what a run answers with, read out of the evaluator's
+/// values. Arrays all the way down, so nothing here has to know how a `[a]`
+/// is laid out.
+enum Wire {
+    Node(String, Vec<Wire>),
+    Text(String),
+    Whole(i64),
+    Frac(f64),
 }
 
-/// One `TokenTree` value as trees. `Code` is text, which is lexed here -- that
-/// is the point of it -- so one value can be several trees.
-fn decode(value: &meadow_eval::Value, at: Span) -> Result<Vec<tt::TokenTree>, String> {
-    use meadow_compiler::lexer::{LToken, Token};
+fn wire(value: &meadow_eval::Value) -> Result<Wire, String> {
+    let bad = || "it did not answer with tokens".to_string();
     let meadow_eval::Value::Ctor(name, fields) = value else {
+        return Err(bad());
+    };
+    let spelled = meadow_compiler::hir::spelling(&name.to_string()).to_string();
+    let field = |i: usize| fields.get(i).ok_or_else(bad);
+    match spelled.rsplit('.').next().unwrap_or_default() {
+        "Node" => {
+            let meadow_eval::Value::Str(tag) = field(0)? else {
+                return Err(bad());
+            };
+            let meadow_eval::Value::Array(items) = field(1)? else {
+                return Err(bad());
+            };
+            Ok(Wire::Node(
+                tag.to_string(),
+                items.iter().map(wire).collect::<Result<_, _>>()?,
+            ))
+        }
+        "Text" => match field(0)? {
+            meadow_eval::Value::Str(s) => Ok(Wire::Text(s.to_string())),
+            _ => Err(bad()),
+        },
+        "Whole" => match field(0)? {
+            meadow_eval::Value::Int(n) => Ok(Wire::Whole(*n)),
+            _ => Err(bad()),
+        },
+        "Frac" => match field(0)? {
+            meadow_eval::Value::Float(f) => Ok(Wire::Frac(*f)),
+            _ => Err(bad()),
+        },
+        _ => Err(bad()),
+    }
+}
+
+/// The children of a node, whatever it is called.
+fn children(w: &Wire) -> Result<&[Wire], String> {
+    match w {
+        Wire::Node(_, xs) => Ok(xs),
+        _ => Err("a list was expected".to_string()),
+    }
+}
+
+fn wire_text(w: &Wire) -> Result<String, String> {
+    match w {
+        Wire::Text(s) => Ok(s.clone()),
+        _ => Err("text was expected".to_string()),
+    }
+}
+
+/// How the run ended.
+fn outcome(w: &Wire, at: Span) -> Result<Outcome, String> {
+    match w {
+        Wire::Node(tag, xs) if tag == "Answered" && xs.len() == 3 => {
+            let trees = decode_trees(&xs[0], at)?;
+            let defined = children(&xs[1])?
+                .iter()
+                .map(|d| match d {
+                    Wire::Node(name, v) if v.len() == 1 => Ok((name.clone(), datum(&v[0], at)?)),
+                    _ => Err("a definition without a value".to_string()),
+                })
+                .collect::<Result<_, String>>()?;
+            let read = children(&xs[2])?
+                .iter()
+                .map(wire_text)
+                .collect::<Result<_, _>>()?;
+            Ok(Outcome::Answered {
+                trees,
+                defined,
+                read,
+            })
+        }
+        Wire::Node(tag, xs) if tag == "Waiting" && xs.len() == 1 => {
+            Ok(Outcome::Waiting(wire_text(&xs[0])?))
+        }
+        _ => Err("it did not answer with tokens".to_string()),
+    }
+}
+
+/// A `Datum`, read back.
+fn datum(w: &Wire, at: Span) -> Result<Datum, String> {
+    let Wire::Node(tag, xs) = w else {
+        return Err("a value that is not a `Datum`".to_string());
+    };
+    let one = || {
+        xs.first()
+            .ok_or_else(|| format!("`{tag}` with nothing in it"))
+    };
+    Ok(match tag.as_str() {
+        "Sym" => Datum::Sym(wire_text(one()?)?),
+        "Str" => Datum::Str(wire_text(one()?)?),
+        "Int" => match one()? {
+            Wire::Whole(n) => Datum::Int(*n),
+            _ => return Err("`Int` of something that is not a number".to_string()),
+        },
+        "Float" => match one()? {
+            Wire::Frac(f) => Datum::Float(*f),
+            _ => return Err("`Float` of something that is not a number".to_string()),
+        },
+        "Bool" => Datum::Bool(matches!(one()?, Wire::Whole(n) if *n != 0)),
+        "List" => Datum::List(xs.iter().map(|x| datum(x, at)).collect::<Result<_, _>>()?),
+        "Rec" => Datum::Rec(
+            xs.iter()
+                .map(|f| match f {
+                    Wire::Node(k, v) if v.len() == 1 => Ok((k.clone(), datum(&v[0], at)?)),
+                    _ => Err("a field without a value".to_string()),
+                })
+                .collect::<Result<_, String>>()?,
+        ),
+        "Tag" if xs.len() == 2 => Datum::Tag(
+            wire_text(&xs[0])?,
+            children(&xs[1])?
+                .iter()
+                .map(|x| datum(x, at))
+                .collect::<Result<_, _>>()?,
+        ),
+        "Code" => Datum::Code(decode_trees(one()?, at)?),
+        other => return Err(format!("`{other}` is not a `Datum`")),
+    })
+}
+
+/// Token trees, read back. `Code` is text, which is lexed here -- that is the
+/// point of it -- so one tree can be several.
+fn decode_trees(w: &Wire, at: Span) -> Result<Vec<tt::TokenTree>, String> {
+    let mut out = Vec::new();
+    for t in children(w)? {
+        out.extend(decode(t, at)?);
+    }
+    Ok(out)
+}
+
+fn decode(w: &Wire, at: Span) -> Result<Vec<tt::TokenTree>, String> {
+    use meadow_compiler::lexer::{LToken, Token};
+    let Wire::Node(tag, xs) = w else {
         return Err("it did not answer with tokens".to_string());
     };
-    let bare = meadow_compiler::hir::spelling(&name.to_string())
-        .rsplit('.')
-        .next()
-        .unwrap_or_default()
-        .to_string();
     let one = |t: Token| Ok(vec![tt::TokenTree::Token(LToken::new(t, at))]);
-    let string = |i: usize| -> Result<InternedString, String> {
-        match fields.get(i) {
-            Some(meadow_eval::Value::Str(s)) => Ok(*s),
-            _ => Err(format!("`{bare}` was given something that is not text")),
-        }
+    let first = || {
+        xs.first()
+            .ok_or_else(|| format!("`{tag}` with nothing in it"))
     };
-    match bare.as_str() {
-        "Word" => {
-            let s = string(0)?;
-            // A word is whatever the lexer makes of it: a keyword is a keyword,
-            // and an identifier's case says which kind it is.
-            lex(&s.to_string(), at)
-        }
-        "Punct" => lex(&string(0)?.to_string(), at),
-        "Str" => one(Token::String(string(0)?)),
+    match tag.as_str() {
+        // A word is whatever the lexer makes of it: a keyword is a keyword,
+        // and an identifier's case says which kind it is.
+        "Word" | "Punct" | "Code" => lex(&wire_text(first()?)?, at),
+        "Str" => one(Token::String(InternedString::from(wire_text(first()?)?))),
         "Chr" => {
-            let s = string(0)?.to_string();
+            let s = wire_text(first()?)?;
             let mut cs = s.chars();
             match (cs.next(), cs.next()) {
                 (Some(c), None) => one(Token::Char(c)),
                 _ => Err("a character has to be one character".to_string()),
             }
         }
-        "Num" => match fields.first() {
-            Some(meadow_eval::Value::Int(n)) => one(Token::Int(*n)),
+        "Num" => match first()? {
+            Wire::Whole(n) => one(Token::Int(*n)),
             _ => Err("`Num` was given something that is not a number".to_string()),
         },
-        "Real" => match fields.first() {
-            Some(meadow_eval::Value::Float(f)) => one(Token::Real(f.to_bits())),
+        "Real" => match first()? {
+            Wire::Frac(f) => one(Token::Real(f.to_bits())),
             _ => Err("`Real` was given something that is not a number".to_string()),
         },
-        "Code" => lex(&string(0)?.to_string(), at),
         // Not tokens: what the macro has to say about what it was given.
-        "Fail" => Err(string(0)?.to_string()),
-        "Group" => {
-            let delim = match fields.first() {
-                Some(meadow_eval::Value::Ctor(d, _)) => {
-                    match meadow_compiler::hir::spelling(&d.to_string())
-                        .rsplit('.')
-                        .next()
-                    {
-                        Some("Paren") => tt::Delim::Paren,
-                        Some("Bracket") => tt::Delim::Brack,
-                        Some("Brace") => tt::Delim::Brace,
-                        _ => return Err("a group with no bracket".to_string()),
-                    }
-                }
+        "Fail" => Err(wire_text(first()?)?),
+        "Group" if xs.len() == 2 => {
+            let delim = match wire_text(&xs[0])?.as_str() {
+                "(" => tt::Delim::Paren,
+                "[" => tt::Delim::Brack,
+                "{" => tt::Delim::Brace,
                 _ => return Err("a group with no bracket".to_string()),
             };
-            let inside = fields
-                .get(1)
-                .ok_or_else(|| "a group with nothing in it".to_string())?;
             Ok(vec![tt::TokenTree::Group(tt::Group {
                 delim,
-                trees: decode_trees(inside, at)?,
+                trees: decode_trees(&xs[1], at)?,
                 open: Span::new(at.start, at.start),
                 close: Span::new(at.end, at.end),
             })])

@@ -6,7 +6,7 @@
 //! the parser makes the same module of them either way. That is what lets macro
 //! expansion hand its result back to the ordinary parser.
 
-use meadow_lexer::{LToken, tokenize, tt};
+use meadow_lexer::{LToken, Token, tokenize, tt};
 use meadow_parser::{parse, parse_decls, parse_expr, parse_pat};
 use meadow_source::{Source, SourceKind};
 use meadow_span::Span;
@@ -110,9 +110,15 @@ fn every_module_renders_back_to_the_tokens_it_came_from() {
         ));
         assert!(again.errors.is_empty(), "{name}: {:?}", again.errors);
 
-        // Spans differ -- the text is respaced -- so compare the tokens.
-        let before: Vec<_> = lexed.tokens.iter().map(|t| t.value().clone()).collect();
-        let after: Vec<_> = again.tokens.iter().map(|t| t.value().clone()).collect();
+        // Spans differ -- the text is respaced -- so compare the tokens. So is
+        // the layout, and with it which calls began a line: a `DeclBang` is a
+        // `!` that did, which the rendering cannot say.
+        let bare = |t: &LToken| match t.value() {
+            Token::DeclBang => Token::Bang,
+            other => other.clone(),
+        };
+        let before: Vec<_> = lexed.tokens.iter().map(bare).collect();
+        let after: Vec<_> = again.tokens.iter().map(bare).collect();
         assert_eq!(before, after, "{name}: rendering changed the tokens");
     }
 }

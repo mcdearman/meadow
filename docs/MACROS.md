@@ -344,7 +344,9 @@ that means a function to be called as a macro says so, which is what lets you
 find a package's macros by looking, and what lets the type be checked where the
 macro is _written_ rather than in whoever imports it. That type is
 `[TokenTree] -> [TokenTree]`; the argument may be looser, since a macro that
-ignores it never constrains it, but the answer is exactly tokens.
+ignores it never constrains it, but the answer is exactly tokens. It may
+perform `Expand`, which is how it reads and leaves compile-time bindings
+([section 10](#10-macros-that-talk-to-each-other)).
 
 A macro has to be compiled before it can run, so it belongs to a package the
 one using it depends on — as in Rust, and for the same reason. A `use` of one
@@ -379,7 +381,8 @@ the `impl` of it, and the macro is named for the trait. `@derive(Debug)` needs
 both `Debug` and a derive macro called `Debug` (or `debug`), and a derive with
 no macro of its name is an error however many defaults the trait has. The
 compiler has the derive macros for `Debug`, `Display`, `PartialEq`, `Eq`,
-`PartialOrd`, `Ord` and `Std.String.Parse`'s `VisualStream` built in -- the standard library derives
+`PartialOrd`, `Ord`, `Std.String.Parse`'s `VisualStream` and `Std.Macro`'s
+`Reflect` built in -- the standard library derives
 them for its own types, which are compiled before any package that could
 define a macro -- and a procedural macro of the same name is found first.
 
@@ -408,50 +411,153 @@ output that is not an `L1`. `defineLanguage!` knows that, and by the time
 This is the thing Lisp has that a token-tree macro system does not, and it is
 not really quotation — Meadow's `$` already quotes. It is that a macro can leave
 something behind for a later macro to find. Racket calls it a compile-time
-binding; nanopass is built on exactly this.
+binding; nanopass is built on exactly this. Meadow has it.
 
-Three pieces make it work, and only the third is hard.
+### What is left behind: a `Datum`
 
-**A compile-time binding.** The namespace macros live in holds values, not just
-macros — a `macro` is simply the case where the value is a function from tokens
-to tokens.
-
-```meadow
-@compileTime
-def l0 = Language.of [ ... ]
-```
-
-The right-hand side is ordinary Meadow, evaluated during compilation on the VM
-that is already there for proc macros, under the same effect bound: no `Fs`, no
-`Process`, no `Random`, no `Time`. So a compile-time value is deterministic, and
-cacheable on what it was computed from, for the same reason a proc macro is.
-
-**A way to read one.** A proc macro asks for a binding by name:
+A compile-time binding is a name that stands for a **`Datum`**, `Std.Macro`'s
+one shared format:
 
 ```meadow
-lookup : Ident -> Macro (Maybe a)
+data Datum
+  = Sym String | Str String | Int Int | Float Float | Bool Bool
+  | List [Datum]
+  | Rec [(String, Datum)]        -- named fields, in order
+  | Tag String [Datum]           -- a constructor and what it is applied to
+  | Code [TokenTree]             -- source, carried as tokens
 ```
 
-`defineLanguage!` expands to the `data` declarations for the language _and_ a
-`@compileTime def` holding its grammar; `definePass!` looks that up and writes
-the pass. Nothing is smuggled through a side channel: the grammar is a value,
-with a type.
+It is data with a fixed shape rather than a value of whatever type the defining
+macro had in mind, and that is the point. A binding is stored in the
+`CompiledPackage` of the package that defined it and read by macros of other
+packages, compiled against other versions of anything the definer declared;
+it is cached on; and it holds no functions, which could be neither stored nor
+compared. A `Datum` means the same thing to all of them.
 
-**Expansion has to become demand-driven, and that is the cost.** Today it is a
-walk: read the `macro` declarations, then expand calls in order. Once one macro
-can read what another produced, expanding a call may first require expanding
-whatever defines what it asks for, so expansion becomes a fixpoint over a
-dependency graph, with a cycle reported as a cycle rather than as a missing
-name. Meadow's top level is already order-independent and already has the
-machinery for this shape of problem ([`meadow-scc`](../compiler/meadow-scc)),
-which is the reason to think it is affordable — but it is a real change, and it
-is where this goes further than Rust, which has no such channel at all.
+A macro works with its own types on top of that through **`Reflect`**:
+
+```meadow
+trait Reflect a {
+  fun toDatum : a -> Datum
+  fun fromDatum : Datum -> Result String a
+}
+```
+
+`Std.Macro` has it for `Int`, `Float`, `Bool`, `String`, `Datum`, `[a]` and
+`Maybe a`, and **`@derive(Reflect)`** writes it for a `data` or `record`: a
+constructor is a `Tag` of its name and its fields — named fields as one `Rec` —
+and a record is a `Rec`. Reading one back says what was wrong (`no field `y``)
+rather than only that something was. What the derive writes names `Datum` and
+the trait's methods, so `use Std.Macro (Datum, Reflect)` has to be in scope
+where it is used — naming a trait in a `use` brings its methods with it.
+
+### How a macro reads and writes one: the `Expand` effect
+
+```meadow
+effect Expand {
+  lookup : String -> Maybe Datum,
+  define : (String, Datum) -> (),
+}
+```
+
+A procedural macro performs it like any other effect; its type becomes
+`[TokenTree] -> [TokenTree] ! { Expand | e }`, which the sandbox allows.
+`lookupAs : Reflect a => String -> Result String a` and
+`defineAs : Reflect a => String -> a -> ()` are the typed versions.
+
+```meadow
+@macro
+@pub fun remember ts =
+  match (V.get ts 0, V.get ts 1) with
+  | (Just (Word n), Just (Num v)) -> let u = define (n, Datum.Int v) in []
+  | _ -> [Fail "remember!(name number)"]
+
+@macro
+@pub fun recall ts =
+  match V.get ts 0 with
+  | Just (Word n) ->
+      (match lookup n with
+       | Just (Datum.Int v) -> [Num v]
+       | _ -> [Fail "nothing is called `${n}`"])
+  | _ -> [Fail "recall!(name)"]
+```
+
+```meadow
+use Maker (remember!, recall!)
+
+remember!(answer 42)
+def main = recall!(answer)     -- 42
+```
+
+The compiler runs every procedural macro under the handler of `Expand`
+(`Std.Macro.expanding`). Nothing about it is a side channel: what a macro can
+read is a value, with a type, handed to it by a handler.
+
+### Where a name can be seen
+
+A binding is a declaration like any other, in the **macro namespace**:
+
+- `lookup` resolves a name the way the **call's** module would: its own
+  bindings, and what it `use`s — `use M` brings all of `M`'s it may see,
+  `use M (name!)` one of them, `use M as A` puts them behind `A.`.
+- A binding a call defines belongs to the module of the call, and is seen as far
+  as the `@pub` written **on the call** says: `@pub defineLanguage! { … }`
+  exports what it defines, `@pub(pkg)` keeps it in the package, and nothing
+  keeps it in the module — with the same fallback the rest of the surface has,
+  that a unit which never says `@pub` exports all of it.
+- One module may not define a name twice.
+
+So a language can be defined in one package, and the passes over it written in
+the packages that depend on that one.
+
+A binding can also be written by hand, as **`@compileTime def`**:
+
+```meadow
+@compileTime def origin = Point { x = 40, y = 2 }
+```
+
+Its right-hand side is **read as data, never evaluated**: a name is a `Sym`, a
+literal itself, `True`/`False` a `Bool`, a constructor applied to things a
+`Tag`, a list, vector or tuple a `List`, a record a `Rec`. A call, an operator
+or a lambda would need running, and is refused. The compiler runs no code of the
+package it is compiling — that is why a macro lives in a dependency — and
+`@compileTime` does not change that.
+
+### Expansion is demand-driven
+
+Once a macro can read what another produced, the order calls are written in
+cannot be the order they run in. `recall!(answer)` above could just as well be
+written first.
+
+So expansion runs in **rounds**. A call that `lookup`s a name nothing has
+defined **yet** is set aside — its run abandoned, and the call left where it is
+— and every other call runs. The next round tries it again. Macros are pure, so
+running one twice is safe, and the answers are cached, so it is cheap: a set-aside
+call costs one run per round it waits.
+
+Rounds go on while they define something. When one defines nothing and calls
+are still waiting, what they wait for is not coming, and the next round is
+**settled**: there, a lookup of an unknown name is answered `None`, so every
+call finishes. `None` therefore always means _there is no such thing_, never
+_not written yet_. Two macros waiting on each other both see `None` and report,
+in their own words, what they were missing.
+
+What a `use` gets wrong is said once, after the last round: `use M (name!)`
+naming a binding a later round defines is not an error.
+
+### Caching
+
+A macro's answer depends on its argument **and on the bindings it read**. The
+handler records every name a run looks up, so an answer is cached on the tokens
+it was given and reused only while each of those names still stands for what it
+did. A package's fingerprint already covers its dependencies', so a binding
+changing upstream rebuilds whoever read it.
 
 One more thing an embedded language wants: to match _structured_ syntax rather
 than counting brackets. So `Std.Macro` should expose the parser's own entry
 points — the ones [section 5](#5-how-expansion-runs) added — as library
 functions, letting a proc macro ask for a token tree as an expression or a
-pattern and work on the tree.
+pattern and work on the tree. That is not built yet.
 
 ## 11. What is left out
 
@@ -499,7 +605,11 @@ Each step is useful on its own and none commits to the next.
    it, which is what `Code` is for.
    ([`expand/proc.rs`](../compiler/meadow-compiler/src/expand/proc.rs),
    [`proc.rs`](../buildtools/meadow/src/proc.rs))
-8. **Compile-time bindings** ([section 10](#10-macros-that-talk-to-each-other)):
-   `@compileTime def`, `lookup`, and demand-driven expansion. This is what an
-   embedded language needs, and it is last because it rests on every step
-   before it.
+8. **Done.** **Compile-time bindings**
+   ([section 10](#10-macros-that-talk-to-each-other)): `Datum`, `Reflect` and
+   `@derive(Reflect)`, the `Expand` effect with `lookup` and `define`,
+   `@compileTime def`, bindings exported with their package, and expansion in
+   rounds. This is what an embedded language needs, and it came last because it
+   rests on every step before it.
+   ([`datum.rs`](../compiler/meadow-compiler/src/expand/datum.rs),
+   [`Macro.mw`](../lib/Std/src/Macro.mw))

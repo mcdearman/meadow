@@ -1028,6 +1028,17 @@ impl Resolver {
                     let canonical = self.qualify(*n);
                     self.tycons.insert(*n, Named::One(canonical, *a));
                     self.bring_struct_ctor(canonical);
+                    // A trait brings its methods: naming `Show` is asking to
+                    // call `show`.
+                    if let Some(info) = self.all_traits.get(&canonical) {
+                        let methods: Vec<InternedString> =
+                            info.methods.iter().map(|(m, _)| *m).collect();
+                        for (m, id, _) in &frame.values {
+                            if methods.contains(m) {
+                                self.scope.push((*m, *id));
+                            }
+                        }
+                    }
                     sites.push(RefSite {
                         span: want.span,
                         what: NameRef::Type(canonical),
@@ -3515,6 +3526,17 @@ impl Resolver {
                 // so a type variable in it is the same one a sibling annotation
                 // means -- and may introduce one that nothing declared.
                 let rp = self.resolve_pat(inner);
+                // `: R ! e` is a function's result and what its body performs;
+                // a value has no body that runs when it is used.
+                if let ast::TypeExpr::Fun(ps, _, Some(_)) = t.value()
+                    && ps.is_empty()
+                {
+                    self.error(
+                        "only a function's result can say what its body performs".to_string(),
+                        "a value performs nothing when it is used: drop the `! …`".to_string(),
+                        t.span,
+                    );
+                }
                 let was = std::mem::replace(&mut self.open_tyvars, true);
                 let rt = self.resolve_ty(t);
                 self.open_tyvars = was;

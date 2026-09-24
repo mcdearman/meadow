@@ -464,7 +464,7 @@ fun vPopChunkFront shift node =
 
 @pub fun drop (v : [a]) (n : Int) : [a] = snd (splitAt v n)
 
-@pub fun map (f : a -> b ! e) (v : [a]) : [b] =
+@pub fun map (f : a -> b ! e) (v : [a]) : [b] ! e =
   match v with
   | Empty -> Empty
   | Single xs -> Single (vaMap f xs)
@@ -475,21 +475,21 @@ fun vPopChunkFront shift node =
         | Branch szs kids -> Branch szs (vaMap mapNode kids)
       in Full len sh (vaMap f oF) (vaMap f iF) (mapNode mid) (vaMap f iB) (vaMap f oB)
 
-@pub fun foldl (f : a -> b -> a ! e) (z : a) (v : [b]) : a = vaFoldl f z (toArray v)
+@pub fun foldl (f : a -> b -> a ! e) (z : a) (v : [b]) : a ! e = vaFoldl f z (toArray v)
 
-@pub fun foldr (f : a -> b -> b ! e) (z : b) (v : [a]) : b = vaFoldr f z (toArray v)
+@pub fun foldr (f : a -> b -> b ! e) (z : b) (v : [a]) : b ! e = vaFoldr f z (toArray v)
 
-@pub fun filter (keep : a -> Bool ! e) (v : [a]) : [a] =
+@pub fun filter (keep : a -> Bool ! e) (v : [a]) : [a] ! e =
   fromArray (vaFoldl (\acc x -> if keep x then arrayPush acc x else acc) #[] (toArray v))
 
 @pub fun reverse (v : [a]) : [a] = v |> toArray |> vaFoldr (\x acc -> arrayPush acc x) #[] |> fromArray
 
-@pub fun updateAt (v : [a]) (i : Int) (f : a -> a ! e) : [a] =
+@pub fun updateAt (v : [a]) (i : Int) (f : a -> a ! e) : [a] ! e =
   match get v i with
   | None -> v
   | Just x -> set v i (f x)
 
-@pub fun forEach (f : a -> () ! e) (v : [a]) : () = vaFoldl (\u x -> f x) () (toArray v)
+@pub fun forEach (f : a -> () ! e) (v : [a]) : () ! e = vaFoldl (\u x -> f x) () (toArray v)
 
 -- The `[…]`-literal target: `[1, 2, 3]` desugars to `vecFromArray #[1, 2, 3]`.
 @pub fun vecFromArray (xs : #[a]) : [a] = fromArray xs
@@ -512,41 +512,41 @@ fun vPopChunkFront shift node =
 
 @pub fun product (v : [n]) : n = vaFoldl (\a x -> a * x) 1 (toArray v)
 
-@pub fun sumBy (f : a -> n ! e) (v : [a]) : n = vaFoldl (\a x -> a + f x) 0 (toArray v)
+@pub fun sumBy (f : a -> n ! e) (v : [a]) : n ! e = vaFoldl (\a x -> a + f x) 0 (toArray v)
 
-@pub fun all (keep : a -> Bool ! e) (v : [a]) : Bool = vaFoldl (\ok x -> if ok then keep x else False) True (toArray v)
+@pub fun all (keep : a -> Bool ! e) (v : [a]) : Bool ! e = vaFoldl (\ok x -> if ok then keep x else False) True (toArray v)
 
-@pub fun any (keep : a -> Bool ! e) (v : [a]) : Bool = vaFoldl (\hit x -> if hit then True else keep x) False (toArray v)
+@pub fun any (keep : a -> Bool ! e) (v : [a]) : Bool ! e = vaFoldl (\hit x -> if hit then True else keep x) False (toArray v)
 
-@pub fun find (keep : a -> Bool ! e) (v : [a]) : Maybe a =
+@pub fun find (keep : a -> Bool ! e) (v : [a]) : Maybe a ! e =
   vaFoldl (\acc x -> match acc with | Just _ -> acc | None -> if keep x then Just x else None)
           None (toArray v)
 
 @pub fun concat (vs : [[a]]) : [a] = vaFoldl (\acc v -> append acc v) empty (toArray vs)
 
-@pub fun concatMap (f : a -> [b] ! e) (v : [a]) : [b] = v |> map f |> concat
+@pub fun concatMap (f : a -> [b] ! e) (v : [a]) : [b] ! e = v |> map f |> concat
 
 @pub fun replicate (n : n) (x : a) : [a] =
   let rec go k acc = if k <= 0 then acc else go (k - 1) (pushBack acc x)
   in go n empty
 
-@pub fun takeWhile (keep : a -> Bool ! e) (v : [a]) : [a] =
+@pub fun takeWhile (keep : a -> Bool ! e) (v : [a]) : [a] ! e =
   fromArray (fst (vaFoldl
     (\p x -> match p with | (acc, live) ->
         if live then (if keep x then (arrayPush acc x, True) else (acc, False)) else (acc, False))
     (#[], True) (toArray v)))
 
-@pub fun dropWhile (keep : a -> Bool ! e) (v : [a]) : [a] =
+@pub fun dropWhile (keep : a -> Bool ! e) (v : [a]) : [a] ! e =
   fromArray (fst (vaFoldl
     (\p x -> match p with | (acc, dropping) ->
         if dropping then (if keep x then (acc, True) else (arrayPush acc x, False))
         else (arrayPush acc x, False))
     (#[], True) (toArray v)))
 
-@pub fun partition (keep : a -> Bool ! e) (v : [a]) : ([a], [a]) =
+@pub fun partition (keep : a -> Bool ! e) (v : [a]) : ([a], [a]) ! e =
   (filter keep v, filter (\x -> if keep x then False else True) v)
 
-@pub fun zipWith (f : a -> b -> c ! e) (a : [a]) (b : [b]) : [c] =
+@pub fun zipWith (f : a -> b -> c ! e) (a : [a]) (b : [b]) : [c] ! e =
   let xs = toArray a in
   let ys = toArray b in
   let n = if arrayLen xs < arrayLen ys then arrayLen xs else arrayLen ys in
@@ -566,7 +566,7 @@ fun vPopChunkFront shift node =
   foldl (\acc x -> match acc with | None -> Just x | Just m -> if x < m then Just x else acc) None v
 
 -- Yield every element, in order, for `Std.Stream`.
-@pub fun toStream (v : [a]) : () = forEach (\x -> yield x) v
+@pub fun toStream (v : [a]) : () ! { Yield a | e } = forEach (\x -> yield x) v
 
 -- --- rendering -----------------------------------------------------------------
 

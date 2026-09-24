@@ -364,3 +364,21 @@ fn main_needs_no_marker_even_in_an_annotated_package() {
         "42"
     );
 }
+
+// --- a trait brings its methods ------------------------------------------------
+
+/// Naming a trait in a `use` is asking to call its methods: `use M (Area)`
+/// brings `area` as well, in a package's own modules as from a dependency.
+#[test]
+fn using_a_trait_brings_its_methods() {
+    assert_eq!(
+        eval_unit(&[
+            (
+                "Shapes",
+                "@pub trait Area a {\n  fun area : a -> Int\n}\n\nimpl Area Int {\n  fun area n = n * n\n}\n"
+            ),
+            ("", "use Shapes (Area)\ndef main = area 6\n"),
+        ]),
+        "36"
+    );
+}

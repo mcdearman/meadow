@@ -45,40 +45,40 @@ use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 
 -- Start running `f ()` on a thread of its own.
-@pub fun spawn (f : () -> a ! e) : Task a = threadSpawn f
+@pub fun spawn (f : () -> a ! e) : Task a ! { Thread | r } = threadSpawn f
 
 -- Wait for a thread to finish, and take a copy of its result. If the thread
 -- failed, so does this, with the same message. A thread may be awaited any
 -- number of times, by any number of threads.
-@pub fun await (t : Task a) : a = threadAwait t
+@pub fun await (t : Task a) : a ! { Thread | e } = threadAwait t
 
 -- Let other threads run before this one carries on.
-@pub fun yieldNow () : () = threadYield ()
+@pub fun yieldNow () : () ! { Thread | e } = threadYield ()
 
 -- A new channel. Any thread holding it may send and receive; values come out in
 -- the order they went in.
-@pub fun newChannel () : Channel a = channelNew ()
+@pub fun newChannel () : Channel a ! { Thread | e } = channelNew ()
 
 -- Send a copy of `x`. Never waits: a channel holds as many values as are sent.
-@pub fun send (ch : Channel a) (x : a) : () = channelSend ch x
+@pub fun send (ch : Channel a) (x : a) : () ! { Thread | e } = channelSend ch x
 
 -- The oldest value sent and not yet received, waiting for one if there is none.
 -- Each value goes to exactly one receiver.
-@pub fun receive (ch : Channel a) : a = channelReceive ch
+@pub fun receive (ch : Channel a) : a ! { Thread | e } = channelReceive ch
 
 -- --- built on those ------------------------------------------------------------
 
 -- Run both at once, and both answers.
-@pub fun both (f : () -> a ! e) (g : () -> b ! e) : (a, b) =
+@pub fun both (f : () -> a ! e) (g : () -> b ! e) : (a, b) ! { Thread | r } =
   let a = spawn f in
   let b = spawn g in
   (await a, await b)
 
 -- Wait for every thread, in order.
-@pub fun awaitAll (ts : [Task a]) : [a] = V.map (\t -> await t) ts
+@pub fun awaitAll (ts : [Task a]) : [a] ! { Thread | e } = V.map (\t -> await t) ts
 
 -- `map`, with each element on its own thread.
-@pub fun parMap (f : a -> b ! e) (xs : [a]) : [b] = xs |> V.map (\x -> spawn (\() -> f x)) |> awaitAll
+@pub fun parMap (f : a -> b ! e) (xs : [a]) : [b] ! { Thread | r } = xs |> V.map (\x -> spawn (\() -> f x)) |> awaitAll
 
 -- --- tests -------------------------------------------------------------------
 

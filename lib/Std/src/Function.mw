@@ -4,13 +4,13 @@
 
 @pub fun const (x : a) (y : b) : a = x
 
-@pub fun flip (f : a -> b -> c ! e) (x : b) (y : a) : c = f y x
+@pub fun flip (f : a -> b -> c ! e) (x : b) (y : a) : c ! e = f y x
 
-@pub fun compose (f : a -> b ! e) (g : c -> a ! e) (x : c) : b = f (g x)
+@pub fun compose (f : a -> b ! e) (g : c -> a ! e) (x : c) : b ! e = f (g x)
 
-@pub fun apply (f : a -> b ! e) (x : a) : b = f x
+@pub fun apply (f : a -> b ! e) (x : a) : b ! e = f x
 
-@pub fun twice (f : a -> a ! e) (x : a) : a = f (f x)
+@pub fun twice (f : a -> a ! e) (x : a) : a ! e = f (f x)
 
 -- --- tests -------------------------------------------------------------------
 

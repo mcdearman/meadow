@@ -8,9 +8,9 @@
 
 @pub fun swap (p : (a, b)) : (b, a) = match p with | (a, b) -> (b, a)
 
-@pub fun mapFst (f : a -> b ! e) (p : (a, c)) : (b, c) = match p with | (a, b) -> (f a, b)
+@pub fun mapFst (f : a -> b ! e) (p : (a, c)) : (b, c) ! e = match p with | (a, b) -> (f a, b)
 
-@pub fun mapSnd (f : a -> b ! e) (p : (c, a)) : (c, b) = match p with | (a, b) -> (a, f b)
+@pub fun mapSnd (f : a -> b ! e) (p : (c, a)) : (c, b) ! e = match p with | (a, b) -> (a, f b)
 
 -- --- tests -------------------------------------------------------------------
 

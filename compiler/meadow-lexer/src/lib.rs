@@ -240,6 +240,12 @@ pub enum Token {
     Geq,
     #[token("!")]
     Bang,
+    /// The `!` of a macro call written at the start of a line, `name!(…)` in
+    /// column 0 -- never lexed as such, but made from a [`Token::Bang`] by
+    /// [`tokenize`]. A call there begins a declaration, and the parser takes
+    /// no argument that is one: `def main = f x` followed by `derive! { … }` on
+    /// the next line is two declarations, not `f x derive! { … }`.
+    DeclBang,
     #[token(",")]
     Comma,
     #[token(".")]
@@ -440,7 +446,7 @@ impl Token {
             Gt => owned(">"),
             Leq => owned("<="),
             Geq => owned(">="),
-            Bang => owned("!"),
+            Bang | DeclBang => owned("!"),
             Comma => owned(","),
             Period => owned("."),
             DoublePeriod => owned(".."),
@@ -530,7 +536,7 @@ impl<'a> Display for Token {
             Gt => write!(f, "Gt"),
             Leq => write!(f, "Leq"),
             Geq => write!(f, "Geq"),
-            Bang => write!(f, "Bang"),
+            Bang | DeclBang => write!(f, "Bang"),
             Comma => write!(f, "Comma"),
             Period => write!(f, "Period"),
             DoublePeriod => write!(f, "DoublePeriod"),
@@ -593,7 +599,46 @@ pub fn tokenize(src: Source) -> LexResult {
         errors: Vec::new(),
     };
     lex_into(&src.content, 0, &src.name().to_string(), &mut out);
+    mark_line_calls(&src.content, &mut out.tokens);
     out
+}
+
+/// Turn the `!` of every macro call written at the start of a line into a
+/// [`Token::DeclBang`]: a name path in column 0 with the `!` right after it.
+///
+/// The one place layout decides anything, and only because a declaration can
+/// begin with a name here -- nothing else at the top level does, since every
+/// other declaration opens with a keyword or an `@`.
+fn mark_line_calls(text: &str, tokens: &mut [LToken]) {
+    let at_line_start = |at: usize| at == 0 || text.as_bytes().get(at - 1) == Some(&b'\n');
+    for i in 1..tokens.len() {
+        if *tokens[i].value() != Token::Bang {
+            continue;
+        }
+        // Back over `A.B.name`, each piece touching the next.
+        let mut first = i;
+        let mut want_name = true;
+        while first > 0 {
+            let prev = &tokens[first - 1];
+            let touching = prev.span.end == tokens[first].span.start;
+            let fits = if want_name {
+                matches!(prev.value(), Token::LowerIdent(_) | Token::UpperIdent(_))
+            } else {
+                *prev.value() == Token::Period
+            };
+            if !touching || !fits {
+                break;
+            }
+            first -= 1;
+            want_name = !want_name;
+        }
+        // A path ends on a name, and the `!` has to follow one.
+        let names_something = first < i && !want_name;
+        if names_something && at_line_start(tokens[first].span.start as usize) {
+            let span = tokens[i].span;
+            tokens[i] = LToken::new(Token::DeclBang, span);
+        }
+    }
 }
 
 /// Lex `text`, whose first byte is at `base` in the source named `name`.

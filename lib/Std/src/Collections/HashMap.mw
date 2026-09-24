@@ -217,20 +217,20 @@ fun collapse node =
   | _ -> Child node
 
 -- Apply `f` to what `k` holds, if it holds anything.
-@pub fun adjust (k : a) (f : b -> b ! e) (m : HashMap a b) : HashMap a b =
+@pub fun adjust (k : a) (f : b -> b ! e) (m : HashMap a b) : HashMap a b ! e =
   match lookup k m with
   | Just v -> insert k (f v) m
   | None -> m
 
 -- `insert`, combining with an existing value as `f new old`.
-@pub fun insertWith (f : a -> a -> a ! e) (k : b) (v : a) (m : HashMap b a) : HashMap b a =
+@pub fun insertWith (f : a -> a -> a ! e) (k : b) (v : a) (m : HashMap b a) : HashMap b a ! e =
   match lookup k m with
   | Just old -> insert k (f v old) m
   | None -> insert k v m
 
 -- Decide what `k` holds from what it held: `f` gets `Just` the value or `None`,
 -- and answers `Just` a value to store or `None` to remove the key.
-@pub fun alter (f : Maybe a -> Maybe a ! e) (k : b) (m : HashMap b a) : HashMap b a =
+@pub fun alter (f : Maybe a -> Maybe a ! e) (k : b) (m : HashMap b a) : HashMap b a ! e =
   match f (lookup k m) with
   | Just v -> insert k v m
   | None -> delete k m
@@ -239,7 +239,7 @@ fun collapse node =
 
 -- Fold over every entry as `f acc key value`. The order is the hashes' order,
 -- which is arbitrary but the same for the same contents.
-@pub fun foldl (f : a -> b -> c -> a ! e) (acc : a) (m : HashMap b c) : a = match m with | HashMap n root -> foldNode f acc root
+@pub fun foldl (f : a -> b -> c -> a ! e) (acc : a) (m : HashMap b c) : a ! e = match m with | HashMap n root -> foldNode f acc root
 
 fun foldNode f acc node =
   match node with
@@ -266,7 +266,7 @@ fun foldNode f acc node =
 @pub fun fromList (pairs : List (a, b)) : HashMap a b = List.foldl (\m p -> match p with | (k, v) -> insert k v m) empty pairs
 
 -- Transform every value, keeping the keys and the shape.
-@pub fun map (f : a -> b ! e) (m : HashMap c a) : HashMap c b =
+@pub fun map (f : a -> b ! e) (m : HashMap c a) : HashMap c b ! e =
   match m with
   | HashMap n root -> HashMap n (mapNode f root)
 
@@ -284,16 +284,16 @@ fun mapNode f node =
           slots)
 
 -- The entries `keep key value` accepts.
-@pub fun filter (keep : a -> b -> Bool ! e) (m : HashMap a b) : HashMap a b = foldl (\acc k v -> if keep k v then acc else delete k acc) m m
+@pub fun filter (keep : a -> b -> Bool ! e) (m : HashMap a b) : HashMap a b ! e = foldl (\acc k v -> if keep k v then acc else delete k acc) m m
 
 -- Every entry of both; where a key is in both, `b`'s value wins.
 @pub fun union (a : HashMap a b) (b : HashMap a b) : HashMap a b = foldl (\acc k v -> insert k v acc) a b
 
 -- Run `f key value` on every entry, for its effect.
-@pub fun forEach (f : a -> b -> () ! e) (m : HashMap a b) : () = foldl (\u k v -> f k v) () m
+@pub fun forEach (f : a -> b -> () ! e) (m : HashMap a b) : () ! e = foldl (\u k v -> f k v) () m
 
 -- Yield every `(key, value)` pair, for `Std.Stream`.
-@pub fun toStream (m : HashMap a b) : () = forEach (\k v -> yield (k, v)) m
+@pub fun toStream (m : HashMap a b) : () ! { Yield (a, b) | e } = forEach (\k v -> yield (k, v)) m
 
 -- --- tests --------------------------------------------------------------------
 

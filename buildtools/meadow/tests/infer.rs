@@ -200,3 +200,73 @@ fn a_let_bound_call_is_instantiated_at_what_is_bound() {
         });
     }
 }
+
+// --- `: R ! e`: what a function's body performs, said inline -----------------
+
+/// Inline parameters leave the last arrow's effect nowhere to go but after the
+/// result, and that is where it is written.
+#[test]
+fn a_declared_result_can_say_what_the_body_performs() {
+    let out = schemes_std("fun say (s : String) : () ! { Console | e } = println s\n");
+    assert_eq!(
+        out, "say : forall e. String -> () ! { Console | e }\n",
+        "{out}"
+    );
+}
+
+/// The row is the declaration's like every other annotation's variable: the
+/// `e` a parameter's arrow names is the `e` the body performs.
+#[test]
+fn a_declared_effect_shares_its_variable_with_the_parameters() {
+    let out = schemes_std("fun run (f : () -> a ! e) : a ! e = f ()\n");
+    assert_eq!(out, "run : forall a e. (() -> a ! e) -> a ! e\n", "{out}");
+}
+
+/// A closed row is a promise: a body that performs more is refused.
+#[test]
+fn a_declared_pure_body_may_not_perform() {
+    let out = schemes_std("fun noisy (x : Int) : Int ! {} = let u = println \"hi\" in x\n");
+    assert!(
+        out.contains("!!"),
+        "a pure declaration accepted a print: {out}"
+    );
+}
+
+/// A value has no body that runs when it is used.
+#[test]
+fn a_def_cannot_declare_an_effect() {
+    let out = schemes_std("def x : Int ! e = 1\n");
+    assert!(
+        out.contains("only a function's result can say what its body performs"),
+        "{out}"
+    );
+}
+
+/// A result written without a `!` is a promise of purity, as an arrow without
+/// one is; only a result left unwritten has its effect inferred.
+#[test]
+fn a_declared_result_without_an_effect_is_pure() {
+    let out = schemes_std("fun noisy (x : Int) : Int = let u = println \"hi\" in x\n");
+    assert!(
+        out.contains("the effect `Console` is not allowed here"),
+        "{out}"
+    );
+    let out = schemes_std("fun noisy (x : Int) = let u = println \"hi\" in x\n");
+    assert_eq!(
+        out, "noisy : forall e. Int -> Int ! { Console | e }\n",
+        "{out}"
+    );
+}
+
+/// Pure is what a function does, not all a place that uses it allows: one can
+/// be handed to a caller whose callback may print without closing that call.
+#[test]
+fn a_pure_function_can_stand_where_a_callback_may_do_more() {
+    let out = schemes_std(
+        "use Std.Collections.Vector as V\n\
+         fun inc (x : Int) : Int = x + 1\n\
+         fun noisy (xs : [Int]) : [Int] ! { Console | e } =\n\
+         \x20 let u = println \"mapping\" in V.map inc xs\n",
+    );
+    assert!(!out.contains("!!"), "{out}");
+}

@@ -1,6 +1,6 @@
 //! The derive macros the compiler has built in, for the standard library's own
-//! traits: `Debug`, `Display`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, and
-//! `Std.String.Parse`'s `VisualStream`.
+//! traits: `Debug`, `Display`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
+//! `Std.String.Parse`'s `VisualStream`, and `Std.Macro`'s `Reflect`.
 //!
 //! A derive is always a macro, as in Rust: `@derive(Show)` needs a trait
 //! `Show` and a macro that writes the `impl` of it. Most are procedural macros
@@ -26,6 +26,7 @@ pub fn builtin(name: &str, decl: &ast::LDecl) -> Option<Result<String, String>> 
         "PartialOrd" => shape.map(|s| ordering(&s, "PartialOrd", "partialCmp", "isEqualPartial")),
         "Ord" => shape.map(|s| ordering(&s, "Ord", "compare", "isEqualOrdering")),
         "VisualStream" => shape.map(|s| visual(&s)),
+        "Reflect" => shape.map(|s| reflect(&s)),
         _ => return None,
     })
 }
@@ -303,6 +304,134 @@ fn visual(shape: &Shape) -> String {
         shape.head(),
         shape.context("Display")
     )
+}
+
+/// `impl Reflect T`: `Std.Macro`'s trait of what a macro can store at compile
+/// time and read back.
+///
+/// A constructor is a `Tag` of its name and its fields -- named fields as one
+/// `Rec` -- and a `record` is a `Rec`, which is also what a `@compileTime def`
+/// writes for a record's constructor applied to its fields. Reading one back
+/// says which field was wrong rather than only that something was.
+///
+/// What it writes names `Datum` and `Reflect`, and the prelude's `get`,
+/// `find`, `fst` and `snd`: a derive is expanded where it is written.
+fn reflect(shape: &Shape) -> String {
+    let construct = |c: &Ctor| {
+        if shape.record {
+            c.name.clone()
+        } else {
+            format!("{}.{}", shape.name, c.name)
+        }
+    };
+    let mut to = String::new();
+    let mut from = String::new();
+    for c in &shape.ctors {
+        let (pattern, _) = shape.pattern(c, "f");
+        let value = match &c.fields {
+            Fields::Positional(n) => {
+                let parts: Vec<String> = (0..*n).map(|i| format!("toDatum f{i}")).collect();
+                format!("Datum.Tag {:?} [{}]", c.name, parts.join(", "))
+            }
+            Fields::Named(names) => {
+                let rec = named_datum(names);
+                if shape.record {
+                    rec
+                } else {
+                    format!("Datum.Tag {:?} [{rec}]", c.name)
+                }
+            }
+        };
+        to.push_str(&format!("    | {pattern} -> {value}\n"));
+        match &c.fields {
+            Fields::Positional(n) => {
+                let built = if *n == 0 {
+                    construct(c)
+                } else {
+                    let gs: Vec<String> = (0..*n).map(|i| format!("g{i}")).collect();
+                    format!("{} {}", construct(c), gs.join(" "))
+                };
+                from.push_str(&format!(
+                    "    | Datum.Tag {:?} fs -> {}\n",
+                    c.name,
+                    positional_from(&c.name, *n, &built)
+                ));
+            }
+            Fields::Named(names) => {
+                let binds: Vec<String> = names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| format!("{n} = g{i}"))
+                    .collect();
+                let built = format!("{} {{ {} }}", construct(c), binds.join(", "));
+                let body = named_from(names, &built);
+                if shape.record {
+                    from.push_str(&format!("    | Datum.Rec rs -> {body}\n"));
+                }
+                from.push_str(&format!(
+                    "    | Datum.Tag {:?} fs -> (match get fs 0 with | Just (Datum.Rec rs) -> {body} | _ -> Err \"`{}` takes its fields by name\")\n",
+                    c.name, c.name
+                ));
+            }
+        }
+    }
+    if shape.ctors.is_empty() {
+        to.push_str("    | _ -> Datum.List []\n");
+    }
+    from.push_str(&format!("    | _ -> Err \"expected a `{}`\"\n", shape.name));
+    format!(
+        "impl Reflect {head}{ctx} {{\n  fun toDatum v =\n    match v with\n{to}  fun fromDatum d =\n    match d with\n{from}}}\n",
+        head = shape.head(),
+        ctx = shape.context("Reflect"),
+    )
+}
+
+/// `Datum.Rec [("x", toDatum f0), …]`.
+fn named_datum(names: &[String]) -> String {
+    let fields: Vec<String> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| format!("({n:?}, toDatum f{i})"))
+        .collect();
+    format!("Datum.Rec [{}]", fields.join(", "))
+}
+
+/// Read the `n` datums of `fs` into `g0` … and answer `built`, or the first
+/// thing that was wrong.
+fn positional_from(ctor: &str, n: usize, built: &str) -> String {
+    if n == 0 {
+        return format!("Ok {built}");
+    }
+    let mut body = format!("Ok ({built})");
+    for i in (0..n).rev() {
+        body = format!("(match fromDatum d{i} with | Err e -> Err e | Ok g{i} -> {body})");
+    }
+    let gets: Vec<String> = (0..n).map(|i| format!("get fs {i}")).collect();
+    let justs: Vec<String> = (0..n).map(|i| format!("Just d{i}")).collect();
+    let (scrutinee, pattern) = if n == 1 {
+        (gets[0].clone(), justs[0].clone())
+    } else {
+        (
+            format!("({})", gets.join(", ")),
+            format!("({})", justs.join(", ")),
+        )
+    };
+    format!(
+        "(match {scrutinee} with | {pattern} -> {body} | _ -> Err \"`{ctor}` takes {n} field{}\")",
+        if n == 1 { "" } else { "s" }
+    )
+}
+
+/// Read the fields `names` of the record fields `rs` into `g0` … and answer
+/// `built`, or say which one was missing or wrong.
+fn named_from(names: &[String], built: &str) -> String {
+    let mut body = format!("Ok ({built})");
+    for (i, n) in names.iter().enumerate().rev() {
+        body = format!(
+            "(match find (\\p -> fst p == {n:?}) rs with | None -> Err \"no field `{n}`\" | Just p{i} -> (match fromDatum (snd p{i}) with | Err e -> Err e | Ok g{i} -> {body}))"
+        );
+    }
+    body
 }
 
 #[cfg(test)]

@@ -97,18 +97,18 @@ fun pushInOrder acc t =
 
 @pub fun fromList (xs : List a) : Tree a = List.foldl (\acc x -> insert x acc) empty xs
 
-@pub fun foldr (f : a -> b -> b ! e) (acc : b) (t : Tree a) : b =
+@pub fun foldr (f : a -> b -> b ! e) (acc : b) (t : Tree a) : b ! e =
   match t with
   | Leaf -> acc
   | Node l x r -> foldr f (f x (foldr f acc r)) l
 
-@pub fun map (f : a -> b ! e) (t : Tree a) : Tree b =
+@pub fun map (f : a -> b ! e) (t : Tree a) : Tree b ! e =
   match t with
   | Leaf -> Leaf
   | Node l x r -> Node (map f l) (f x) (map f r)
 
 -- Yield every element in order, for `Std.Stream`.
-@pub fun toStream (t : Tree a) : () =
+@pub fun toStream (t : Tree a) : () ! { Yield a | e } =
   match t with
   | Leaf -> ()
   | Node l x r ->

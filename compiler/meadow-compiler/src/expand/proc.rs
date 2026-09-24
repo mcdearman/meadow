@@ -12,13 +12,15 @@
 //! compile with none of them simply has no procedural macros: the REPL and the
 //! editor say so rather than pretending.
 
+use super::datum::Datum;
 use meadow_intern::InternedString;
 use meadow_lexer::tt;
 
 /// Something that can run a procedural macro.
 pub trait Runner {
-    /// Run the function `name` exported by `package` on `input`, or say what
-    /// went wrong in a sentence that can be reported at the call.
+    /// Run the function `name` exported by `package` on `input`, answering its
+    /// `lookup`s from `scope`, or say what went wrong in a sentence that can be
+    /// reported at the call.
     ///
     /// The trees that come back carry `at`, the call's span: they were not
     /// written anywhere, so the call is the only place to point at.
@@ -28,7 +30,32 @@ pub trait Runner {
         name: InternedString,
         input: &[tt::TokenTree],
         at: meadow_span::Span,
-    ) -> Result<Vec<tt::TokenTree>, String>;
+        scope: &Scope<'_>,
+    ) -> Result<Outcome, String>;
+}
+
+/// What a macro can read while it runs: the compile-time bindings visible
+/// where it was called, by the names the call's module knows them by.
+pub struct Scope<'a> {
+    pub visible: &'a [(String, Datum)],
+    /// Whether anything more can still be defined. Until it can not, a lookup
+    /// of a name nothing has defined sets the run aside instead of answering.
+    pub settled: bool,
+}
+
+/// How a run of a procedural macro ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    /// It answered: with these tokens, having defined these names, and having
+    /// read these -- which its answer depends on as much as on its argument.
+    Answered {
+        trees: Vec<tt::TokenTree>,
+        defined: Vec<(String, Datum)>,
+        read: Vec<String>,
+    },
+    /// It asked for a name nothing has defined yet, and was abandoned. It is
+    /// run again once something has.
+    Waiting(String),
 }
 
 /// What a procedural macro's type has to be, and what it may not perform.

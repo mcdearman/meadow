@@ -394,7 +394,7 @@ fn a_cycle_through_a_ref_is_collected() {
                let r = newRef Nil in
                let _ = setRef r (Node n r) in
                ()
-             fun many (n : Int) : Int = if n == 0 then 0 else let _ = knot n in many (n - 1)
+             fun many (n : Int) : Int ! Mut = if n == 0 then 0 else let _ = knot n in many (n - 1)
              def main = many 2000",
             false
         ),
@@ -417,7 +417,7 @@ fn a_longer_cycle_is_collected() {
                let _ = setRef a (Node n b) in
                let _ = setRef b (Node n a) in
                ()
-             fun many (n : Int) : Int = if n == 0 then 0 else let _ = knot n in many (n - 1)
+             fun many (n : Int) : Int ! Mut = if n == 0 then 0 else let _ = knot n in many (n - 1)
              def main = many 2000",
             false
         ),
@@ -435,13 +435,13 @@ fn a_cycle_still_in_use_is_kept() {
             "cycle_live",
             "data L = Nil | Node Int (Ref L)
              use L.*
-             fun churn (n : Int) (acc : Int) : Int =
+             fun churn (n : Int) (acc : Int) : Int ! Mut =
                if n == 0 then acc
                else
                  let r = newRef Nil in
                  let _ = setRef r (Node n r) in
                  churn (n - 1) (acc + 1)
-             fun step (r : Ref L) : Int =
+             fun step (r : Ref L) : Int ! Mut =
                match getRef r with
                | Nil -> 0
                | Node v back -> match getRef back with | Nil -> v | Node w _ -> v + w

@@ -45,7 +45,7 @@ def smallRange = 16
 -- --- the public surface -------------------------------------------------------
 
 -- Sort a `Vector` by a comparison. Unstable: equal elements may be reordered.
-@pub fun sortBy (cmp : a -> a -> Ordering ! e) (v : [a]) : [a] =
+@pub fun sortBy (cmp : a -> a -> Ordering ! e) (v : [a]) : [a] ! e =
   runSt (\() ->
     let cells = stThaw (V.toArray v) in
     let n = stArrayLen cells in
@@ -59,10 +59,10 @@ def smallRange = 16
 
 -- Sort by a projection: `sortOn length names`. The key is computed on every
 -- comparison rather than cached, so keep it cheap -- or use `sortBy`.
-@pub fun sortOn (key : a -> b ! e) (v : [a]) : [a] = sortBy (\a b -> compare (key a) (key b)) v
+@pub fun sortOn (key : a -> b ! e) (v : [a]) : [a] ! e = sortBy (\a b -> compare (key a) (key b)) v
 
 -- The in-place sort itself, on a plain `Array`.
-@pub fun sortArrayBy (cmp : a -> a -> Ordering ! e) (arr : #[a]) : #[a] = arr |> V.fromArray |> sortBy cmp |> V.toArray
+@pub fun sortArrayBy (cmp : a -> a -> Ordering ! e) (arr : #[a]) : #[a] ! e = arr |> V.fromArray |> sortBy cmp |> V.toArray
 
 @pub fun sortArray (arr : #[a]) : #[a] = sortArrayBy compare arr
 
@@ -126,7 +126,7 @@ fun reverseOnto acc xs =
 
 -- --- checking -----------------------------------------------------------------
 
-@pub fun isSortedBy (cmp : a -> a -> Ordering ! e) (v : [a]) : Bool = sortedFrom cmp (V.toArray v) 1
+@pub fun isSortedBy (cmp : a -> a -> Ordering ! e) (v : [a]) : Bool ! e = sortedFrom cmp (V.toArray v) 1
 
 @pub fun isSorted (v : [a]) : Bool = isSortedBy compare v
 

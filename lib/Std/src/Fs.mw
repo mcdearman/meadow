@@ -46,8 +46,8 @@ use Std.Result (unwrapOr)
 use Std.Result.Result.*
 use Std.Collections.Vector as V
 
-@pub fun readToStringOr (default : String) (path : String) : String = path |> readToString |> unwrapOr default
+@pub fun readToStringOr (default : String) (path : String) : String ! { Fs | e } = path |> readToString |> unwrapOr default
 
-@pub fun tryReadDir (path : String) : [String] = path |> readDir |> unwrapOr V.empty
+@pub fun tryReadDir (path : String) : [String] ! { Fs | e } = path |> readDir |> unwrapOr V.empty
 
-@pub fun existsAll (paths : [String]) : Bool = V.all exists paths
+@pub fun existsAll (paths : [String]) : Bool ! { Fs | e } = V.all exists paths

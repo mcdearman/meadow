@@ -250,9 +250,25 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
                 hir::Decl::Data(dd) => {
                     n.types.push(hir::spelling(&dd.name).to_string());
                     // A variant's name is canonical (`Maybe.Just`); a person
-                    // completing one types the bare spelling.
-                    n.ctors
-                        .extend(dd.variants.iter().map(|v| bare_ctor(&v.name.to_string())));
+                    // completing one types the bare spelling. Only those that
+                    // can be written bare, though: a library's constructors
+                    // live under their type unless it flattens them (the
+                    // prelude's `Just`) or the syntax needs them (`Nil`,
+                    // `Cons`), and a REPL line's are all in reach.
+                    let bare = |v: &&hir::Variant| {
+                        pkg.prelude_exports.is_none()
+                            || pkg.flat_ctors.contains(&v.name)
+                            || matches!(
+                                bare_ctor(&v.name.to_string()).as_str(),
+                                "Nil" | "Cons" | "True" | "False"
+                            )
+                    };
+                    n.ctors.extend(
+                        dd.variants
+                            .iter()
+                            .filter(bare)
+                            .map(|v| bare_ctor(&v.name.to_string())),
+                    );
                 }
                 hir::Decl::Record(rd) => {
                     n.types.push(hir::spelling(&rd.name).to_string());

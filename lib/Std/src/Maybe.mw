@@ -12,17 +12,17 @@ use Maybe.*
 
 @pub fun orElse (fallback : Maybe a) (o : Maybe a) : Maybe a = match o with | None -> fallback | Just x -> o
 
-@pub fun map (f : a -> b ! e) (o : Maybe a) : Maybe b =
+@pub fun map (f : a -> b ! e) (o : Maybe a) : Maybe b ! e =
   match o with
   | None -> None
   | Just x -> Just (f x)
 
-@pub fun andThen (f : a -> Maybe b ! e) (o : Maybe a) : Maybe b =
+@pub fun andThen (f : a -> Maybe b ! e) (o : Maybe a) : Maybe b ! e =
   match o with
   | None -> None
   | Just x -> f x
 
-@pub fun keepIf (pred : a -> Bool ! e) (o : Maybe a) : Maybe a =
+@pub fun keepIf (pred : a -> Bool ! e) (o : Maybe a) : Maybe a ! e =
   match o with
   | Just x if pred x -> o
   | _ -> None

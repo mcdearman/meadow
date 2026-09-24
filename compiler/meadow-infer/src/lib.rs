@@ -1213,6 +1213,30 @@ impl Infer {
         self.join_effect_into(span, region, phi);
     }
 
+    /// A named function's type as a use of it sees it: the effect of each
+    /// arrow it answers with left open at its end.
+    ///
+    /// `: Int` declares a body that performs nothing, and `! { Console }` one
+    /// that performs only that -- what the function *does*. Where it is used,
+    /// that is a bound, not everything the place allows: a pure function can
+    /// be passed where a callback may print, and must not close the effect of
+    /// the call it is passed to. So a closed row is opened here, as Koka does
+    /// on instantiation. Only the arrows it returns: its parameters' effects
+    /// say what it allows of its callers, and those stay as written.
+    fn open_arrows(&mut self, ty: Type) -> Type {
+        match self.arena.zonk(&ty) {
+            Type::Fun(ps, ret, eff) => {
+                let eff = match self.arena.zonk(&eff) {
+                    Type::RowEmpty => self.arena.fresh_effect(),
+                    closed => self.open_row_end(closed),
+                };
+                let ret = self.open_arrows(*ret);
+                Type::Fun(ps, Box::new(ret), Box::new(eff))
+            }
+            _ => ty,
+        }
+    }
+
     /// `row` with a fresh variable for its end, if it is a closed row of at
     /// least one effect; otherwise `row`.
     fn open_row_end(&mut self, row: Type) -> Type {
@@ -1433,8 +1457,11 @@ impl Infer {
                     .iter()
                     .map(|p| self.infer_pat(p, &mut bound))
                     .collect();
-                let ret = self.declared_result(declared);
+                let (ret, declared_eff) = self.declared_result(declared);
                 let body_eff = self.arena.fresh_effect();
+                if let Some(eff) = declared_eff {
+                    self.unify_at(body.span, body_eff.clone(), eff);
+                }
                 let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
 
                 let fn_ty = Type::func_eff(param_tys, ret.clone(), body_eff);
@@ -1580,11 +1607,15 @@ impl Infer {
                     .iter()
                     .map(|p| self.infer_pat(p, &mut bound))
                     .collect();
-                let ret = self.declared_result(declared);
+                let (ret, declared_eff) = self.declared_result(declared);
                 // The body runs in its own effect region; that region ends up on the
                 // function's (innermost) arrow. Defining the function is itself pure,
-                // so the outer `cur_effect` is untouched.
+                // so the outer `cur_effect` is untouched. `: R ! e` says what the
+                // region is.
                 let body_eff = self.arena.fresh_effect();
+                if let Some(eff) = declared_eff {
+                    self.unify_at(body.span, body_eff.clone(), eff);
+                }
                 let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
                 let body_eff_of_point_free = body_eff.clone();
 
@@ -1770,7 +1801,8 @@ impl Infer {
                 let ty = match self.env.get(&*ident.value()).cloned() {
                     Some(scheme) => {
                         self.mention_in_group(ident.id, *ident.value());
-                        self.instantiate_at(ident.id, ident.span, &scheme)
+                        let ty = self.instantiate_at(ident.id, ident.span, &scheme);
+                        self.open_arrows(ty)
                     }
                     None => {
                         // Either an unresolved name (the resolver has already said
@@ -3178,11 +3210,62 @@ impl Infer {
     /// against, so it constrains rather than merely records: writing
     /// `fun f x : Int = x` makes `f` an `Int -> Int` and an incompatible body
     /// an error, instead of generalising over whatever the body happened to be.
-    fn declared_result(&mut self, declared: &Option<hir::LTypeExpr>) -> Type {
+    /// A function's declared result, and the effect of its body when the
+    /// declaration says one: `: R ! e`, which the parser keeps as a function
+    /// type of no parameters. Its variables are the declaration's, as every
+    /// annotation's are, so the `e` of `(f : a -> b ! e) : b ! e` is one row.
+    ///
+    /// A result written without a `!` says the body performs nothing -- as an
+    /// arrow without one does -- and only a result not written at all leaves
+    /// the effect to be inferred.
+    fn declared_result(&mut self, declared: &Option<hir::LTypeExpr>) -> (Type, Option<Type>) {
         match declared {
-            Some(t) => self.annotation(t),
-            None => self.arena.fresh(),
+            Some(t) => match t.value() {
+                hir::TypeExpr::Fun(ps, r, Some(row)) if ps.is_empty() => {
+                    let ret = self.annotation(r);
+                    let eff = self.effect_annotation(t, row);
+                    (ret, Some(eff))
+                }
+                _ => (self.annotation(t), Some(Type::RowEmpty)),
+            },
+            None => (self.arena.fresh(), None),
         }
+    }
+
+    /// The effect row `row`, written in the annotation `whole`, as an inference
+    /// type -- its variables the declaration's, like [`Self::annotation`]'s.
+    fn effect_annotation(&mut self, whole: &hir::LTypeExpr, row: &hir::EffectRow) -> Type {
+        let mut vars = HashMap::new();
+        collect_tyvars(whole, &mut vars);
+        let eff = eff_of(row, &vars, &self.aliases);
+        // Where it stands says what it is: on an arrow, a row.
+        let mut kinds = vec![VarKind::Type; vars.len()];
+        let probe = Type::Fun(
+            vec![Type::unit()],
+            Box::new(Type::unit()),
+            Box::new(eff.clone()),
+        );
+        mark_effect_vars(&probe, &mut kinds);
+        let fresh = self.metas_for(&vars, &kinds);
+        Arena::subst_bound(&eff, &fresh)
+    }
+
+    /// The meta each of an annotation's variables stands for, made the first
+    /// time the declaration mentions it and the same one every time after.
+    fn metas_for(&mut self, vars: &HashMap<VarId, u32>, kinds: &[VarKind]) -> Vec<Type> {
+        let mut fresh = vec![Type::unit(); vars.len()];
+        for (var, i) in vars {
+            let meta = match self.ann_tyvars.get(var) {
+                Some(t) => t.clone(),
+                None => {
+                    let t = self.arena.fresh_of(kinds[*i as usize]);
+                    self.ann_tyvars.insert(*var, t.clone());
+                    t
+                }
+            };
+            fresh[*i as usize] = meta;
+        }
+        fresh
     }
 
     /// A pattern annotation as an inference type.
@@ -3206,18 +3289,7 @@ impl Infer {
         // row variable, or it could not absorb the rest of a record's fields.
         let mut kinds = vec![VarKind::Type; vars.len()];
         mark_effect_vars(&ty, &mut kinds);
-        let mut fresh = vec![Type::unit(); vars.len()];
-        for (var, i) in &vars {
-            let meta = match self.ann_tyvars.get(var) {
-                Some(t) => t.clone(),
-                None => {
-                    let t = self.arena.fresh_of(kinds[*i as usize]);
-                    self.ann_tyvars.insert(*var, t.clone());
-                    t
-                }
-            };
-            fresh[*i as usize] = meta;
-        }
+        let fresh = self.metas_for(&vars, &kinds);
         let ty = Arena::subst_bound(&ty, &fresh);
         self.lift_assocs_wanted(ty, t.span)
     }
@@ -4879,7 +4951,7 @@ fn match_ty(pat: &Type, conc: &Type, out: &mut HashMap<u32, Type>) -> bool {
             p1.len() == p2.len()
                 && p1.iter().zip(p2).all(|(x, y)| match_ty(x, y, out))
                 && match_ty(r1, r2, out)
-                && match_ty(e1, e2, out)
+                && match_effect(e1, e2, out)
         }
         (Type::Tuple(a), Type::Tuple(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(x, y)| match_ty(x, y, out))
@@ -4891,6 +4963,24 @@ fn match_ty(pat: &Type, conc: &Type, out: &mut HashMap<u32, Type>) -> bool {
         (Type::RowExtend(..), _) => match_row(pat, conc, out),
         _ => false,
     }
+}
+
+/// Match a function's effect: as any row, or -- when the scheme's row is
+/// closed -- as that row opened at a use (see `Infer::open_arrows`): every label
+/// it lists is there, and its end is whatever the use left it.
+fn match_effect(pat: &Type, conc: &Type, out: &mut HashMap<u32, Type>) -> bool {
+    let saved = out.clone();
+    if match_ty(pat, conc, out) {
+        return true;
+    }
+    *out = saved;
+    let (want, ptail) = row_parts(pat);
+    if ptail.is_some() {
+        return false;
+    }
+    let (have, _) = row_parts(conc);
+    want.iter()
+        .all(|(l, pf)| have.iter().any(|(h, hf)| h == l && match_ty(pf, hf, out)))
 }
 
 /// Match a row pattern against a concrete row, label by label.

@@ -503,6 +503,8 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut embedded: Vec<(String, u64)> = Vec::new();
     // The macros of every module, which in the bundle are the library's.
     let mut macros = Vec::new();
+    // And their compile-time bindings, which are the library's too.
+    let mut bindings = Vec::new();
     // Every sub-unit's, each of which has its predecessors' too.
     let mut fixities = Vec::new();
 
@@ -510,6 +512,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         fixities.extend(sub.fixities.iter().copied());
         embedded.extend(sub.embedded.iter().cloned());
         macros.extend(sub.macros.iter().cloned());
+        bindings.extend(sub.bindings.iter().cloned());
         flat_ctors.extend(sub.flat_ctors.iter().copied());
         defs.extend(sub.defs);
         modules.extend(sub.modules);
@@ -541,6 +544,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         // nothing has to tell two copies of it apart.
         ident: name,
         macros,
+        bindings,
         embedded,
         fixities,
         // A library has no entry point, and `Std` least of all.

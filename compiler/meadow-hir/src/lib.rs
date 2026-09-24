@@ -526,6 +526,9 @@ pub enum TypeExpr {
     Var(Ident),
     Con(Label, Vec<LTypeExpr>),
     /// `arg -> ret ! effect` (curried; effect on the last arrow).
+    ///
+    /// With no parameters it is a declared result and its effect, `: R ! e`
+    /// after a function's inline parameters -- only ever there.
     Fun(Vec<LTypeExpr>, LTypeExpr, Option<EffectRow>),
     Tuple(Vec<LTypeExpr>),
     /// `[a]` — the default sequence, an RRB `Vector`.

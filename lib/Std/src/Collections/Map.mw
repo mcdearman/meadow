@@ -72,7 +72,7 @@ fun consInOrder acc m =
 
 @pub fun fromList (ps : List (Int, a)) : Map a = List.foldl (\acc p -> insertPair p acc) empty ps
 
-@pub fun map (f : a -> b ! e) (m : Map a) : Map b =
+@pub fun map (f : a -> b ! e) (m : Map a) : Map b ! e =
   match m with
   | Tip -> Tip
   | Node l k v r -> Node (map f l) k (f v) (map f r)
@@ -109,7 +109,7 @@ fun removeRoot l r =
       else removeRoot l r
 
 -- Yield every `(key, value)` pair in key order, for `Std.Stream`.
-@pub fun toStream (m : Map a) : () =
+@pub fun toStream (m : Map a) : () ! { Yield (Int, a) | e } =
   match m with
   | Tip -> ()
   | Node l k v r ->

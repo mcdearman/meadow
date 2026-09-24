@@ -40,6 +40,7 @@
 pub mod args;
 pub mod bools;
 pub mod compact;
+pub mod defaults;
 pub mod desc;
 pub mod dictionaries;
 pub mod erase;

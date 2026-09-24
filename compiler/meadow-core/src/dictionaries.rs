@@ -506,6 +506,19 @@ impl Spec {
 
         let function = &self.functions[&f];
         let name = function.name;
+        // An effect argument may be the caller's own row variable, which the
+        // copy -- a definition of its own -- does not bind. Effects are erased
+        // below core and not checked in it, so the copy takes such a row as
+        // empty, and is closed.
+        let tys: Vec<Ty> = tys
+            .iter()
+            .zip(&function.body.binders)
+            .map(|(t, b)| match b.kind {
+                VarKind::Effect | VarKind::Row if open(t) => InferType::RowEmpty,
+                _ => t.clone(),
+            })
+            .collect();
+        let tys = &tys[..];
         let at = retype(&function.body, tys);
         // The type it has left: its own, at these types, past the dictionaries.
         let map: HashMap<u32, Ty> = function

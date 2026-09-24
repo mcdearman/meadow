@@ -18,8 +18,12 @@
 //! argument is what the function wanted, that both branches of an `if` and
 //! every arm of a `case` agree, that a constructor is applied to fields of the
 //! types its declaration gives, that a `TyApp` supplies one argument per
-//! binder of the thing it instantiates, and that no name is used before it is
-//! bound.
+//! binder of the thing it instantiates, that no name is used before it is
+//! bound -- and that no *type variable* is either: every one a type written
+//! into core mentions (an instantiation's arguments, a binder's annotation)
+//! is bound by the definition or by a `TyLam` around it. One that is not is a
+//! type nobody solved or a binder a pass forgot, which the checks above cannot
+//! see, since an unbound variable is only ever equal to itself.
 //!
 //! # What it does not check
 //!
@@ -60,13 +64,17 @@ pub fn check(
 
     let mut lint = Lint {
         globals,
+        origins: &program.origins,
         ctors,
         locals: Vec::new(),
+        tyvars: Vec::new(),
         errors: Vec::new(),
         where_: InternedString::from(""),
     };
     for d in &program.defs {
         lint.where_ = d.name;
+        lint.tyvars = d.poly.binders.iter().map(|b| b.id).collect();
+        lint.scoped(&d.poly.ty, "the definition's type");
         let got = lint.synth(&d.term);
         if !poly_same(&got, &d.poly) {
             lint.say(format!(
@@ -113,9 +121,15 @@ fn import(s: &Scheme) -> Poly {
 
 struct Lint<'a> {
     globals: HashMap<Var, Poly>,
+    /// Copies and what they are copies of: a copy `specialize` makes at a
+    /// representation is instantiated at its original's type arguments.
+    origins: &'a HashMap<Var, Var>,
     ctors: &'a VariantEnv,
     /// Value bindings in scope, innermost last.
     locals: Vec<(Var, Poly)>,
+    /// Type variables in scope: the definition's binders, and every `TyLam`'s
+    /// around the term being checked.
+    tyvars: Vec<u32>,
     errors: Vec<String>,
     /// The definition being checked, for the message.
     where_: InternedString,
@@ -125,6 +139,64 @@ impl Lint<'_> {
     fn say(&mut self, msg: String) {
         let name = self.where_;
         self.errors.push(format!("in `{name}`: {msg}"));
+    }
+
+    /// Say so if `ty` mentions a type variable nothing in scope binds.
+    fn scoped(&mut self, ty: &Ty, what: &str) {
+        fn free(t: &Ty, out: &mut Vec<u32>) {
+            match t {
+                InferType::Var(v) => out.push(*v),
+                InferType::Con(_, xs) | InferType::Tuple(xs) => {
+                    xs.iter().for_each(|x| free(x, out))
+                }
+                InferType::Fun(ps, r, e) => {
+                    ps.iter().for_each(|x| free(x, out));
+                    free(r, out);
+                    free(e, out);
+                }
+                InferType::Record(r) => free(r, out),
+                InferType::RowExtend(_, f, r) => {
+                    free(f, out);
+                    free(r, out);
+                }
+                InferType::Bound(_) | InferType::RowEmpty | InferType::Error => {}
+            }
+        }
+        if mentions_unknown(ty) {
+            return;
+        }
+        let mut vars = Vec::new();
+        free(ty, &mut vars);
+        if let Some(v) = vars.into_iter().find(|v| !self.tyvars.contains(v)) {
+            self.say(format!(
+                "{what} mentions type variable {v}, which nothing here binds: {ty:?}"
+            ));
+        }
+    }
+
+    /// `binders` in scope for `f`.
+    fn binding<T>(&mut self, binders: &[TyVar], f: impl FnOnce(&mut Self) -> T) -> T {
+        let depth = self.tyvars.len();
+        self.tyvars.extend(binders.iter().map(|b| b.id));
+        let out = f(self);
+        self.tyvars.truncate(depth);
+        out
+    }
+
+    /// What `copy` is a copy of, taking `arity` type arguments: the original
+    /// binding, or -- where the original was itself renamed, inside a copied
+    /// definition -- the binding in scope that is a copy of the same one.
+    fn original_of(&self, copy: Var, arity: usize) -> Option<Poly> {
+        let origin = *self.origins.get(&copy)?;
+        let fits = |p: &Poly| p.binders.len() == arity;
+        if let Some(p) = self.lookup(origin).filter(fits) {
+            return Some(p);
+        }
+        self.locals
+            .iter()
+            .rev()
+            .find(|(v, p)| *v != copy && self.origins.get(v) == Some(&origin) && fits(p))
+            .map(|(_, p)| p.clone())
     }
 
     fn lookup(&self, v: Var) -> Option<Poly> {
@@ -165,7 +237,12 @@ impl Lint<'_> {
                 body,
             } => {
                 let outer = self.locals.len();
+                // A join is in scope in its own right-hand side too: one that
+                // jumps to itself is a loop, which is what `inline` makes of a
+                // function calling itself in tail position.
+                self.locals.push((*var, Poly::mono(ty.clone())));
                 for (v, t) in params {
+                    self.scoped(t, "a join point's parameter");
                     self.locals.push((*v, Poly::mono(t.clone())));
                 }
                 let _ = self.synth_mono(rhs);
@@ -186,14 +263,27 @@ impl Lint<'_> {
             }
 
             Term::TyLam(binders, body) => {
-                let inner = self.synth_mono(body);
+                let inner = self.binding(binders, |l| l.synth_mono(body));
                 Poly {
                     binders: binders.clone(),
                     ty: inner,
                 }
             }
             Term::TyApp(f, args) => {
-                let p = self.synth(f);
+                for a in args {
+                    self.scoped(a, "an instantiation");
+                }
+                let mut p = self.synth(f);
+                // A copy made at a representation has lost the exact types --
+                // it says `#Ref` where the caller has a tuple -- so a mention
+                // of it keeps its original's type arguments, and is typed as
+                // an instantiation of the original. See `specialize`.
+                if p.binders.len() != args.len()
+                    && let Term::Var(copy) = f.peel()
+                    && let Some(original) = self.original_of(*copy, args.len())
+                {
+                    p = original;
+                }
                 if p.binders.len() != args.len() {
                     // A monomorphic thing given type arguments, or the wrong
                     // number of them: the usual shape of a botched inline.
@@ -208,6 +298,7 @@ impl Lint<'_> {
             }
 
             Term::Lam(v, ty, body) => {
+                self.scoped(ty, "a parameter's annotation");
                 self.locals.push((*v, Poly::mono(ty.clone())));
                 let ret = self.synth_mono(body);
                 self.locals.pop();
@@ -238,6 +329,7 @@ impl Lint<'_> {
             }
 
             Term::Let(v, poly, rhs, body) => {
+                self.binding(&poly.binders, |l| l.scoped(&poly.ty, "a `let`'s type"));
                 self.check_binding(poly, rhs);
                 self.locals.push((*v, poly.clone()));
                 let ty = self.synth_mono(body);
@@ -251,6 +343,7 @@ impl Lint<'_> {
                     self.locals.push((*v, poly.clone()));
                 }
                 for (_, poly, rhs) in binds {
+                    self.binding(&poly.binders, |l| l.scoped(&poly.ty, "a `letrec`'s type"));
                     self.check_binding(poly, rhs);
                 }
                 let ty = self.synth_mono(body);
@@ -461,9 +554,10 @@ impl Lint<'_> {
                         self.check_pat(p, t);
                     }
                 }
-                other if is_unknown(other) => self.unknown_pats(ps),
+                // A representation copy's `#Ref` stands for the tuple: see `same`.
+                other if is_unknown(other) || is_reference(other) => self.unknown_pats(ps),
                 _ => {
-                    self.say("tuple pattern on a non-tuple".to_string());
+                    self.say(format!("tuple pattern on a non-tuple: {scrut:?}"));
                     self.unknown_pats(ps);
                 }
             },
@@ -607,11 +701,28 @@ fn poly_same(a: &Poly, b: &Poly) -> bool {
     same(&subst_rigid(&a.ty, &map), &b.ty)
 }
 
+/// `#Ref`: the type a copy `specialize` made at a representation gives every
+/// type a reference represents.
+fn is_reference(t: &Ty) -> bool {
+    matches!(t, InferType::Con(n, args) if &**n == crate::specialize::REF && args.is_empty())
+}
+
 /// Type equality, as core means it: up to the order of a row's labels, with
 /// effects ignored and [`unknown`] matching anything. See the module docs.
 fn same(a: &Ty, b: &Ty) -> bool {
     if is_unknown(a) || is_unknown(b) {
         return true;
+    }
+    // `#Ref` is what a copy `specialize` makes at a representation says for
+    // every type represented by a reference -- a string, a tuple, data. It
+    // stands for any of them, and inlining such a copy puts it beside the
+    // type it stood for.
+    let reference = is_reference;
+    if reference(a) || reference(b) {
+        let other = if reference(a) { b } else { a };
+        return reference(other)
+            || matches!(other, InferType::Var(_))
+            || crate::desc::of(other).is_none_or(|d| d == crate::desc::REF);
     }
     match (a, b) {
         (InferType::Var(x), InferType::Var(y)) => x == y,

@@ -36,6 +36,7 @@
 
 use crate::inline::Fresh;
 use crate::*;
+use meadow_infer::VarKind;
 use std::collections::{HashMap, HashSet};
 
 pub fn program(p: &Program, opt: OptLevel) -> Program {
@@ -54,6 +55,7 @@ pub fn program(p: &Program, opt: OptLevel) -> Program {
         renames: Vec::new(),
         outer: InternedString::from(""),
         count: 0,
+        representations: opt.specializes(),
     };
     let mut defs = Vec::with_capacity(p.defs.len());
     for d in &p.defs {
@@ -104,6 +106,9 @@ struct Lifter {
     /// The definition being rewritten, to name what is lifted out of it.
     outer: InternedString,
     count: usize,
+    /// Whether `specialize` copied generic bindings per representation, whose
+    /// mentions carry their original's type arguments -- see [`Lifter::lift`].
+    representations: bool,
 }
 
 impl Lifter {
@@ -200,10 +205,49 @@ impl Lifter {
     }
 
     /// Lift a group of functions, if it can be: `None` leaves it be.
-    fn lift(&mut self, binds: &[(Var, &Poly, &Term)]) -> Option<()> {
+    ///
+    /// `body` is where the group is in scope besides its own right-hand sides.
+    /// A copy `specialize` made at a representation is mentioned with its
+    /// original's type arguments rather than its own -- see `specialize` --
+    /// which a lifted definition could not say, so a group mentioned that way
+    /// stays where it is.
+    fn lift(&mut self, binds: &[(Var, &Poly, &Term)], body: &Term) -> Option<()> {
         let mut shapes = Vec::new();
         for (_, poly, rhs) in binds {
             shapes.push(Self::function(poly, rhs)?);
+        }
+        // Copies made per representation sit beside the generic binding they
+        // were made from, and are typed through it: it stays, and so do they.
+        let generic = |own: &Vec<TyVar>| {
+            own.iter()
+                .any(|b| !matches!(b.kind, VarKind::Effect | VarKind::Row))
+        };
+        if self.representations && shapes.iter().any(|(own, _)| generic(own)) {
+            return None;
+        }
+        let arity: HashMap<Var, usize> = binds
+            .iter()
+            .zip(&shapes)
+            .map(|((v, _, _), (own, _))| (*v, own.len()))
+            .collect();
+        let mut mismatched = false;
+        for t in binds
+            .iter()
+            .map(|(_, _, t)| *t)
+            .chain(std::iter::once(body))
+        {
+            rewrite::visit(t, &mut |x| {
+                if let Term::TyApp(f, tys) = x
+                    && let Term::Var(v) = f.peel()
+                    && arity.get(v).is_some_and(|n| *n != tys.len())
+                {
+                    mismatched = true;
+                }
+                !mismatched
+            });
+        }
+        if mismatched {
+            return None;
         }
         let group: Vec<Var> = binds.iter().map(|(v, _, _)| *v).collect();
         let lambdas: Vec<&Term> = shapes.iter().map(|(_, l)| *l).collect();
@@ -294,7 +338,7 @@ impl Lifter {
             }
             Term::Let(v, poly, rhs, body) => {
                 self.types.insert(*v, poly.clone());
-                if self.lift(&[(*v, poly, rhs)]).is_some() {
+                if self.lift(&[(*v, poly, rhs)], body).is_some() {
                     return self.term(body);
                 }
                 let rhs = self.generic(poly, rhs);
@@ -306,7 +350,7 @@ impl Lifter {
                 }
                 let group: Vec<(Var, &Poly, &Term)> =
                     binds.iter().map(|(v, p, t)| (*v, p, t)).collect();
-                if self.lift(&group).is_some() {
+                if self.lift(&group, body).is_some() {
                     return self.term(body);
                 }
                 let binds = binds

@@ -575,9 +575,11 @@ fn tails(t: &Term, ty: &Ty, f: &mut dyn FnMut(Term) -> Term) -> Term {
         },
         // A jump hands its answer to a join, and a join inside `t` has had its
         // right-hand side rebuilt above: wrapping the jump as well would apply
-        // `f` twice. (A jump to a join outside `t` cannot be one of its tails:
-        // `t` is a scrutinee or an argument, which is not a tail position.)
-        Term::Jump(..) => t.clone(),
+        // `f` twice. It answers what the join now does, though, so it is
+        // retyped like every other tail. (A jump to a join outside `t` cannot
+        // be one of its tails: `t` is a scrutinee or an argument, which is not
+        // a tail position.)
+        Term::Jump(j, args, _) => Term::Jump(*j, args.clone(), ty.clone()),
         t => f(t.clone()),
     }
 }

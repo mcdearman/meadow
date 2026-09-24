@@ -350,3 +350,73 @@ fn the_unknown_type_is_accepted_anywhere() {
     );
     ok(&def(VarId(1), Poly::mono(int()), term));
 }
+
+// --- type variables in scope ---------------------------------------------------
+
+#[test]
+fn an_instantiation_at_an_unbound_type_variable_is_caught() {
+    // What inference left behind for the effect of a `let`-bound call: an
+    // instantiation at a variable nothing binds.
+    fails(
+        &with_id(|f| {
+            Term::App(
+                Arc::new(Term::TyApp(Arc::new(Term::Var(f)), vec![Type::Var(77)])),
+                Arc::new(Term::Lit(Lit::Int(1))),
+            )
+        }),
+        "which nothing here binds",
+    );
+}
+
+#[test]
+fn an_annotation_mentioning_an_unbound_type_variable_is_caught() {
+    let x = VarId(2);
+    let term = Term::App(
+        Arc::new(Term::Lam(
+            x,
+            Type::Var(42),
+            Arc::new(Term::Lit(Lit::Int(0))),
+        )),
+        Arc::new(Term::Lit(Lit::Int(1))),
+    );
+    fails(
+        &def(VarId(1), Poly::mono(int()), term),
+        "which nothing here binds",
+    );
+}
+
+#[test]
+fn a_type_variable_its_abstraction_binds_is_in_scope() {
+    // `id` itself: `a` is bound by the definition's `TyLam`.
+    ok(&with_id(|f| {
+        Term::App(
+            Arc::new(Term::TyApp(Arc::new(Term::Var(f)), vec![int()])),
+            Arc::new(Term::Lit(Lit::Int(1))),
+        )
+    }));
+}
+
+#[test]
+fn a_join_point_that_jumps_to_itself_is_a_loop() {
+    // `join j (i : Int) = if i >= 3 then i else jump j (i + 1) in jump j 0`
+    let j = VarId(2);
+    let i = VarId(3);
+    let ge = Term::Prim(
+        Prim::Ge,
+        vec![Term::Var(i), Term::Lit(Lit::Int(3))],
+        Type::bool(),
+    );
+    let next = Term::Prim(Prim::Add, vec![Term::Var(i), Term::Lit(Lit::Int(1))], int());
+    let term = Term::Join {
+        var: j,
+        params: vec![(i, int())],
+        ty: int(),
+        rhs: Arc::new(Term::If(
+            Arc::new(ge),
+            Arc::new(Term::Var(i)),
+            Arc::new(Term::Jump(j, vec![next], int())),
+        )),
+        body: Arc::new(Term::Jump(j, vec![Term::Lit(Lit::Int(0))], int())),
+    };
+    ok(&def(VarId(1), Poly::mono(int()), term));
+}

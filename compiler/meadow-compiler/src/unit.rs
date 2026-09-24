@@ -689,6 +689,13 @@ fn compile_unit_inner(
     }
     let var_end = lowerer.var_end();
 
+    // --- what inference left unsolved, defaulted: see `core::defaults`.
+    let binder_kinds: HashMap<VarId, Vec<meadow_infer::VarKind>> = all_schemes
+        .iter()
+        .map(|(v, s)| (*v, s.quant.clone()))
+        .collect();
+    core::defaults::defs(&mut defs, &binder_kinds);
+
     // --- lint (debug builds and tests only)
     //
     // Core is typed so that a pass over it can be checked; this is where the

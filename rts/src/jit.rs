@@ -704,8 +704,10 @@ unsafe extern "C" {
     fn munmap(addr: *mut c_void, len: usize) -> i32;
     #[cfg(all(unix, not(target_os = "macos")))]
     fn mprotect(addr: *mut c_void, len: usize, prot: i32) -> i32;
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
     fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> i32;
+    #[cfg(target_os = "android")]
+    fn syscall(number: std::ffi::c_long, ...) -> std::ffi::c_long;
     #[cfg(all(unix, not(target_os = "macos")))]
     fn ftruncate(fd: i32, len: i64) -> i32;
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -714,8 +716,72 @@ unsafe extern "C" {
     fn pthread_jit_write_protect_np(enabled: i32);
     #[cfg(target_os = "macos")]
     fn sys_icache_invalidate(start: *mut c_void, len: usize);
-    #[cfg(all(unix, not(target_os = "macos"), target_arch = "aarch64"))]
+    #[cfg(all(
+        unix,
+        not(target_os = "macos"),
+        not(target_os = "android"),
+        target_arch = "aarch64"
+    ))]
     fn __clear_cache(start: *mut c_void, end: *mut c_void);
+}
+
+/// `memfd_create`, which Android's C library has only from Android 11 (API
+/// 30). An Android build links against an older one -- Termux runs on Android
+/// 7 -- so this asks the kernel directly, which has had the call since Linux
+/// 3.17. A kernel older still answers -1, and so does anything that refuses
+/// it; either way `views` fails, and the JIT puts code on pages of its own.
+#[cfg(target_os = "android")]
+unsafe fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> i32 {
+    let number: std::ffi::c_long = if cfg!(target_arch = "aarch64") {
+        279
+    } else if cfg!(target_arch = "x86_64") {
+        319
+    } else {
+        return -1;
+    };
+    // Safety: the call's own arguments, as the kernel takes them.
+    unsafe { syscall(number, name, flags) as i32 }
+}
+
+/// What `__clear_cache` does on ARM64, written out. On Linux it is libgcc's,
+/// and Android links no library that has it -- it is a few instructions.
+///
+/// Code written through one view and run through another is only seen as
+/// written once the data cache has been cleaned to where the instruction side
+/// reads from, and the instruction cache invalidated over it: each a line at a
+/// time, by the line sizes `CTR_EL0` gives. A core that says it keeps the two
+/// coherent itself -- `IDC`, `DIC` -- skips the step it does not need.
+#[cfg(all(target_os = "android", target_arch = "aarch64"))]
+unsafe fn __clear_cache(start: *mut c_void, end: *mut c_void) {
+    use std::arch::asm;
+    let (start, end) = (start as usize, end as usize);
+    let ctr: u64;
+    // Safety: a register the kernel lets user code read, on every ARM64 Linux.
+    unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack, preserves_flags)) };
+    if (ctr >> 28) & 1 == 0 {
+        let line = 4usize << ((ctr >> 16) & 15);
+        let mut at = start & !(line - 1);
+        while at < end {
+            // Safety: a line of a mapping this process made.
+            unsafe { asm!("dc cvau, {}", in(reg) at, options(nostack, preserves_flags)) };
+            at += line;
+        }
+    }
+    // Safety: barriers, no operands.
+    unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
+    if (ctr >> 29) & 1 == 0 {
+        let line = 4usize << (ctr & 15);
+        let mut at = start & !(line - 1);
+        while at < end {
+            // Safety: as above.
+            unsafe { asm!("ic ivau, {}", in(reg) at, options(nostack, preserves_flags)) };
+            at += line;
+        }
+        // Safety: as above.
+        unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
+    }
+    // Safety: as above.
+    unsafe { asm!("isb sy", options(nostack, preserves_flags)) };
 }
 
 /// An anonymous private mapping of `len` bytes.

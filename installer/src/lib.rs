@@ -106,6 +106,10 @@ pub fn target_triple() -> Result<&'static str, String> {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        // Termux on a phone. A meadowup built for Android knows it is on
+        // Android, and takes the build linked against Android's own C library
+        // -- the Linux one expects glibc and does not run there.
+        ("android", "aarch64") => "aarch64-linux-android",
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("windows", "x86_64") => "x86_64-pc-windows-msvc",
         ("windows", "aarch64") => "aarch64-pc-windows-msvc",

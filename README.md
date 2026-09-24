@@ -20,11 +20,16 @@ def main = classify 42
 [latest release](https://github.com/mcdearman/meadow/releases/latest) and run
 it. (Take `meadowup-aarch64.exe` on an ARM machine.)
 
-**macOS / Linux**
+**macOS / Linux / Android**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
 ```
+
+On Android, run that in [Termux](https://termux.dev): it notices it is on
+Android and takes the build linked against Android's own C library. The REPL and
+`meadow run` need nothing else; a `--release` build links a native executable,
+which wants a C compiler — `pkg install clang`.
 
 Either way you get `meadow` and `meadowup` in `~/.meadow/bin`, added to your
 `PATH` — open a new terminal and run `meadow`.

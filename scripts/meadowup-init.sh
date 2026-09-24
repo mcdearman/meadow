@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs Meadow on macOS and Linux, from a release.
+# Installs Meadow on macOS, Linux and Android (in Termux), from a release.
 #
 #   curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
 #
@@ -93,6 +93,16 @@ EOF
 detect_target() {
     os="$(uname -s)"
     arch="$(uname -m)"
+
+    # Android says it is Linux, and its kernel is; its C library is not
+    # glibc, and the Linux build will not run on it. Termux's `uname -o` is
+    # the one that says so.
+    if [ "$os" = "Linux" ] && [ "$(uname -o 2>/dev/null)" = "Android" ]; then
+        case "$arch" in
+            aarch64|arm64) echo "aarch64-linux-android"; return ;;
+            *) err "no release build for Android on $arch; build from source with scripts/install.sh" ;;
+        esac
+    fi
 
     case "$os" in
         Darwin) os_part="apple-darwin" ;;

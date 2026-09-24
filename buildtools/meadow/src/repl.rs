@@ -999,6 +999,34 @@ impl Session {
         out
     }
 
+    /// The scheme of the binding an entry names, when the entry is nothing but
+    /// a name -- `def it = fib`, with the `fib` resolved by the compiler, so a
+    /// name defined twice, or brought in by a `use`, or written `S.length`, is
+    /// the binding it really is. `None` for any other entry.
+    fn named_scheme(&self, compiled: &CompiledPackage) -> Option<String> {
+        let module = compiled.modules.first()?;
+        let var = module
+            .hir
+            .value
+            .decls
+            .iter()
+            .rev()
+            .find_map(|d| match &*d.value {
+                hir::Decl::Bind(hir::Bind::Pat(_, body)) => match &*body.value {
+                    hir::Expr::Var(id) => Some(*id.value),
+                    _ => None,
+                },
+                _ => None,
+            })?;
+        self.prefix.iter().rev().find_map(|p| {
+            p.exports
+                .iter()
+                .find(|e| e.var == var)
+                .map(|e| e.scheme.to_string())
+                .or_else(|| p.generalized.get(&var).map(|s| s.to_string()))
+        })
+    }
+
     /// Check, compile and -- in [`Mode::Run`] -- run one entry, and with `timed`
     /// say how long each of those took.
     fn handle(&mut self, input: &str, mode: Mode, timed: bool) {
@@ -1081,11 +1109,19 @@ impl Session {
         let had_error = !diags.is_empty();
         diagnostics::emit(&diags, "repl", input);
 
+        // An entry that is only a name is asking what that name is. It runs
+        // as `def it = fib`, and running a value settles its constraints --
+        // `Add n` becomes `Add Int` -- so `it`'s own type says less than
+        // `fib`'s. Show the binding the name means instead.
+        let named = label.as_ref().and_then(|_| self.named_scheme(&compiled));
         for e in &compiled.exports {
             // `label` is set only for a synthesized expression, so a real
             // `def it = …` still prints as `it`.
             match &label {
-                Some(l) => println!("{} : {}", l, e.scheme),
+                Some(l) => match &named {
+                    Some(scheme) => println!("{l} : {scheme}"),
+                    None => println!("{} : {}", l, e.scheme),
+                },
                 None => println!("{} : {}", hir::spell_name(&e.name), e.scheme),
             }
         }
@@ -1222,6 +1258,42 @@ mod tests {
         assert_eq!(answers.len(), 2, "both definitions are there: {listed:?}");
         assert!(answers[0].2, "the first is shadowed");
         assert!(!answers[1].2, "the second is what a new mention reaches");
+    }
+
+    /// A name on its own is a question about that name. Running it settles its
+    /// constraints, so `it` is `Int -> Int`; what `fib` is, is still general.
+    #[test]
+    fn a_name_on_its_own_shows_its_binding_not_what_running_it_settled() {
+        let mut session = Session::new();
+        session.handle(
+            "fun fib (n : Int) =\n    let rec loop a b i =\n      if i == 0 then a else loop b (a + b) (i - 1)\n     in loop 0 1 n",
+            Mode::Run,
+            false,
+        );
+        session.handle("fib", Mode::Run, false);
+        let entry = session.prefix.last().expect("the entry");
+        assert_eq!(
+            entry.exports[0].scheme.to_string(),
+            "Int -> Int",
+            "what running it settled"
+        );
+        assert_eq!(
+            session.named_scheme(entry).as_deref(),
+            Some("forall n. Add n => Int -> n"),
+        );
+
+        // A name from the library is the library's binding.
+        session.handle("length", Mode::Run, false);
+        let entry = session.prefix.last().expect("the entry");
+        assert_eq!(
+            session.named_scheme(entry).as_deref(),
+            Some("forall a. [a] -> Int")
+        );
+
+        // Anything more than a name has no binding to show: its value is it.
+        session.handle("fib 10", Mode::Run, false);
+        let entry = session.prefix.last().expect("the entry");
+        assert_eq!(session.named_scheme(entry), None);
     }
 
     /// Both colour states in one test: `yansi::whenever` is process-global, so

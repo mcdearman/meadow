@@ -141,3 +141,62 @@ fn effectful_binding_is_not_generalized() {
         "def a = \\x -> x\nfun g u = let b = newRef (\\y -> y) in (b, b)\n"
     ));
 }
+
+/// Every type an instantiation is at mentions only variables something binds.
+///
+/// A pure `let` right-hand side's effect row is a variable nothing outside can
+/// constrain, and it used to stay unsolved: `let r = f x` recorded `f` at an
+/// effect no binder anywhere bound, which is an instantiation of nothing in
+/// particular. It is empty, and core says so.
+#[test]
+fn a_let_bound_call_is_instantiated_at_what_is_bound() {
+    use meadow_compiler::core::{Term, Ty, rewrite};
+    let src = "fun step (c : String) (i : Int) : Int = if i >= 10 then i else step c (i + 1)\n\
+               fun fold f (c : String) (i : Int) acc =\n\
+               \x20 if i >= 3 then acc else let r = step c i in fold f c (i + 1) (f acc r)\n\
+               def main = fold (\\a x -> a + x) \"x\" 0 0\n";
+    let (program, diags) =
+        meadow::pipeline::compile_str_with_std("test", src, meadow::Options::debug());
+    assert!(
+        diags.is_empty(),
+        "{:?}",
+        diags.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
+    for d in program.defs.iter().filter(|d| &*d.name == "fold") {
+        let bound: Vec<u32> = d.poly.binders.iter().map(|b| b.id).collect();
+        rewrite::visit(&d.term, &mut |t| {
+            if let Term::TyApp(_, tys) = t {
+                for ty in tys {
+                    let mut vars = Vec::new();
+                    fn collect(t: &Ty, out: &mut Vec<u32>) {
+                        match t {
+                            Ty::Var(v) => out.push(*v),
+                            Ty::Con(_, xs) | Ty::Tuple(xs) => {
+                                xs.iter().for_each(|x| collect(x, out))
+                            }
+                            Ty::Fun(ps, r, e) => {
+                                ps.iter().for_each(|x| collect(x, out));
+                                collect(r, out);
+                                collect(e, out);
+                            }
+                            Ty::Record(r) => collect(r, out),
+                            Ty::RowExtend(_, f, r) => {
+                                collect(f, out);
+                                collect(r, out);
+                            }
+                            _ => {}
+                        }
+                    }
+                    collect(ty, &mut vars);
+                    for v in vars {
+                        assert!(
+                            bound.contains(&v),
+                            "`fold` instantiates at unbound {v}: {tys:?}"
+                        );
+                    }
+                }
+            }
+            true
+        });
+    }
+}

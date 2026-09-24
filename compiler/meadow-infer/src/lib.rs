@@ -1694,6 +1694,21 @@ impl Infer {
                         Type::Var(id) => self.arena.slot_level(id) > self.arena.level,
                         _ => false,
                     };
+                // A pure right-hand side's row is a variable nothing outside can
+                // constrain, and nothing inside will again: it is empty, and is
+                // said to be. Left open, it stays unsolved in whatever was
+                // instantiated inside -- `let r = f x` recorded `f` at an effect
+                // no binder anywhere binds. Unless the bound type mentions it,
+                // where it is the binding's own to generalize.
+                if pure && let Type::Var(id) = self.arena.zonk(&rhs_eff) {
+                    let mut free = Vec::new();
+                    for (_, vty) in &bound {
+                        self.arena.free_vars(vty, &mut free);
+                    }
+                    if !free.contains(&id) {
+                        self.unify_at(pat.span, rhs_eff.clone(), Type::RowEmpty);
+                    }
+                }
                 if !pure && !toplevel {
                     // let the enclosing region see the rhs's effects
                     let region = self.cur_effect.clone();

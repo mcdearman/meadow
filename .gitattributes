@@ -1,0 +1,8 @@
+# GitHub has no highlighter for Meadow yet: Linguist adds a language only once
+# it is in wide use across GitHub. Until then `.mw` files borrow Haskell's,
+# the nearest there is -- the same `--` comments, `data`, `->` and `=>`, and
+# `[a]` types -- though `fun` and `match ... with` are not keywords to it.
+#
+# `linguist-detectable=false` keeps them out of the language bar, which would
+# otherwise call this a Haskell repository.
+*.mw linguist-language=Haskell linguist-detectable=false

@@ -217,7 +217,7 @@ fn blocks(inside: &Inside) -> Vec<Word> {
         while at < words {
             // Safety: inside the chunk, at the word before a block.
             let v = unsafe { p.add(at + 1) } as Word;
-            let size = heap::first_field(v) + heap::len(v);
+            let size = heap::size(v);
             out.push(v);
             at += size + 1;
         }
@@ -307,7 +307,7 @@ fn plan(inside: &Inside, v: Word, d: i64) -> Result<(Vec<Word>, usize), String> 
             continue;
         }
         order.push(b);
-        words += heap::first_field(b) + heap::len(b);
+        words += heap::size(b);
         if !walks(b) {
             continue;
         }
@@ -334,7 +334,7 @@ fn copy(inside: &mut Inside, r: *const Region, v: Word, d: i64) -> Result<Word, 
     let mut made: HashMap<Word, Word> = HashMap::new();
     let mut at = 0;
     for &b in &order {
-        let size = heap::first_field(b) + heap::len(b);
+        let size = heap::size(b);
         // Safety: `room` gave room for every block and its word, and the
         // sizes here are what it was asked for.
         unsafe { *base.add(at) = r as Word };

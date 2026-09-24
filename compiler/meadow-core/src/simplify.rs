@@ -177,6 +177,9 @@ fn simplify(t: Term, fresh: &mut Fresh) -> Term {
             if let Some(t) = known_ctor(&scrut, &arms) {
                 return t;
             }
+            if let Some(t) = known_tuple(&scrut, &arms, fresh) {
+                return t;
+            }
             if let Some(t) = of_case(&scrut, &arms, &ty, fresh) {
                 return t;
             }
@@ -194,8 +197,18 @@ fn simplify(t: Term, fresh: &mut Fresh) -> Term {
             rhs,
             body,
         } => join(var, params, ty, rhs, body),
-        Term::Let(x, poly, rhs, body) => let_(x, poly, rhs, body),
-        Term::Prim(p, args, ty) => prim(p, args, ty),
+        Term::Let(x, poly, rhs, body) => {
+            if let Some(t) = let_of_branch(x, &poly, &rhs, &body, fresh) {
+                return t;
+            }
+            let_(x, poly, rhs, body)
+        }
+        Term::Prim(p, args, ty) => {
+            if let Some(t) = prim_of_branch(p, &args, &ty, fresh) {
+                return t;
+            }
+            prim(p, args, ty)
+        }
         // A lambda applied where it stands is a `let`: no closure to build,
         // and the argument goes wherever `let_` would put it. Lowering would
         // otherwise allocate the closure and enter it.
@@ -253,6 +266,54 @@ fn known_ctor(scrut: &Term, arms: &[(Pat, Option<Term>, Term)]) -> Option<Term> 
         }
     }
     None
+}
+
+/// `case (e1, e2) of (x, y) -> body` is `let x = e1 in let y = e2 in body`,
+/// whatever `e1` and `e2` are: the tuple is built only to be taken apart.
+///
+/// [`known_ctor`] does this only for a tuple of values, since in general it
+/// may be deciding between arms and cannot drop work. A first arm of variables
+/// and wildcards decides nothing -- it always matches -- so each field is
+/// bound, in the order the tuple would have evaluated them, and a function
+/// returning a pair that has been inlined costs no allocation at all.
+fn known_tuple(
+    scrut: &Term,
+    arms: &[(Pat, Option<Term>, Term)],
+    fresh: &mut Fresh,
+) -> Option<Term> {
+    let Term::Tuple(fields) = peel(scrut) else {
+        return None;
+    };
+    let (Pat::Tuple(pats), None, body) = arms.first()? else {
+        return None;
+    };
+    if pats.len() != fields.len() {
+        return None;
+    }
+    let mut binds = Vec::with_capacity(fields.len());
+    for (p, e) in pats.iter().zip(fields) {
+        match p {
+            Pat::Var(v, ty) => binds.push((*v, ty.clone(), e.clone())),
+            // Still evaluated, for whatever it does; unless it is only a name
+            // or a literal, which does nothing.
+            Pat::Wild => match peel(e) {
+                Term::Var(_) | Term::Lit(_) => {}
+                other => {
+                    let ty = produces(other)?;
+                    binds.push((fresh.var(), ty, e.clone()));
+                }
+            },
+            _ => return None,
+        }
+    }
+    Some(
+        binds
+            .into_iter()
+            .rev()
+            .fold(body.clone(), |acc, (v, ty, t)| {
+                Term::Let(v, Poly::mono(ty), Arc::new(t), Arc::new(acc))
+            }),
+    )
 }
 
 /// Whether `pat` matches the value `t`, and with what bindings.
@@ -370,6 +431,71 @@ fn of_case(
     })
 }
 
+/// `let x = (if c then a else b) in body` -- the body named once as a join
+/// point with `x` its parameter, and jumped to from each branch.
+///
+/// The same move as [`of_case`], for the other context a branch is found in
+/// constantly: an inlined function whose body is an `if`, bound by a `let`.
+/// Lowering a `let` whose right-hand side answers from two places has to give
+/// the body somewhere to be answered to, and without a join that somewhere is
+/// a continuation object, built on every run of the `let`.
+fn let_of_branch(x: Var, poly: &Poly, rhs: &Term, body: &Term, fresh: &mut Fresh) -> Option<Term> {
+    if !poly.is_mono() || is_unknown(&poly.ty) || !branches(peel(rhs)) {
+        return None;
+    }
+    let ty = produces(body)?;
+    if is_unknown(&ty) {
+        return None;
+    }
+    let j = fresh.var();
+    let jumps = tails(peel(rhs), &ty, &mut |tail| {
+        Term::Jump(j, vec![tail], ty.clone())
+    });
+    Some(Term::Join {
+        var: j,
+        params: vec![(x, poly.ty.clone())],
+        ty,
+        rhs: Arc::new(body.clone()),
+        body: Arc::new(jumps),
+    })
+}
+
+/// `p(a, (if c then x else y), …)` -- the primitive named once as a join point
+/// taking the branch's answer, and jumped to from each branch: what
+/// `acc + classify b` is once `classify` is inlined.
+///
+/// Only where every argument before the branch is a variable or a literal, so
+/// that nothing that was evaluated before the branch is evaluated after it.
+fn prim_of_branch(p: Prim, args: &[Term], ty: &Ty, fresh: &mut Fresh) -> Option<Term> {
+    if is_unknown(ty) {
+        return None;
+    }
+    let i = args.iter().position(|a| branches(peel(a)))?;
+    if !args[..i]
+        .iter()
+        .all(|a| matches!(peel(a), Term::Var(_) | Term::Lit(_)))
+    {
+        return None;
+    }
+    let arg_ty = produces(peel(&args[i]))?;
+    if is_unknown(&arg_ty) {
+        return None;
+    }
+    let (j, x) = (fresh.var(), fresh.var());
+    let mut rest = args.to_vec();
+    let branch = std::mem::replace(&mut rest[i], Term::Var(x));
+    let jumps = tails(peel(&branch), ty, &mut |tail| {
+        Term::Jump(j, vec![tail], ty.clone())
+    });
+    Some(Term::Join {
+        var: j,
+        params: vec![(x, arg_ty)],
+        ty: ty.clone(),
+        rhs: Arc::new(Term::Prim(p, rest, ty.clone())),
+        body: Arc::new(jumps),
+    })
+}
+
 /// Whether pushing a context into this term's tails is worth doing: it answers
 /// from more than one place, so the context would otherwise be copied into each
 /// or closed over.
@@ -397,7 +523,12 @@ fn produces(t: &Term) -> Option<Ty> {
         // A `let`'s answer is its body's, and an `if`'s is either branch's --
         // whichever of the two says so.
         Term::Let(_, _, _, body) => produces(body),
-        Term::If(_, a, b) => produces(a).or_else(|| produces(b)),
+        Term::If(_, a, b) => produces(a)
+            .filter(|t| !is_unknown(t))
+            .or_else(|| produces(b)),
+        // A literal says its type, except a number literal in a function
+        // generic over its number type, which answers unknown and declines.
+        Term::Lit(l) => Some(crate::lint::lit_ty(l)),
         _ => None,
     }
 }
@@ -442,6 +573,11 @@ fn tails(t: &Term, ty: &Ty, f: &mut dyn FnMut(Term) -> Term) -> Term {
             rhs: Arc::new(tails(rhs, ty, f)),
             body: Arc::new(tails(body, ty, f)),
         },
+        // A jump hands its answer to a join, and a join inside `t` has had its
+        // right-hand side rebuilt above: wrapping the jump as well would apply
+        // `f` twice. (A jump to a join outside `t` cannot be one of its tails:
+        // `t` is a scrutinee or an argument, which is not a tail position.)
+        Term::Jump(..) => t.clone(),
         t => f(t.clone()),
     }
 }

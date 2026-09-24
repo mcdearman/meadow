@@ -857,7 +857,10 @@ fn the_collector_runs_and_the_answer_survives_it() {
         collections > 0,
         "the heap never filled — is the test too small?"
     );
-    assert!(allocated > 1_000_000, "only {allocated} slots allocated");
+    // The list alone is 200_000 cells of four slots; the recursion's
+    // continuations no longer add to it, since a branch's context is a join
+    // point rather than an object.
+    assert!(allocated >= 800_000, "only {allocated} slots allocated");
 
     // And the specification agrees, which is the point.
     assert_eq!(agree(src), "20000100000");

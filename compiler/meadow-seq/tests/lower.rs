@@ -339,7 +339,9 @@ fn a_letrec_becomes_labels_sharing_one_parameter_list() {
             Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Lit(Lit::Int(0)))),
         ),
     );
-    let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
+    // At `-O0`: above it, the group is lifted to definitions of its own before
+    // lowering sees it -- see the next test.
+    let lowered = lower_program(&main_def(term), meadow_core::OptLevel::O0);
     assert!(lowered.unsupported.is_empty());
 
     // One definition for `main`, one per `letrec` binding.
@@ -356,6 +358,43 @@ fn a_letrec_becomes_labels_sharing_one_parameter_list() {
             "a lifted binding takes the group's captures, then the continuation and the evidence"
         );
     }
+}
+
+#[test]
+fn a_local_function_is_lifted_to_a_definition_with_a_direct_entry() {
+    // `let n = … in letrec go = \x -> go n in go 0`, above `-O0`: `go` is a
+    // definition of its own taking `n` first, so the call in `main` is a jump
+    // to its direct entry, with no closure built for it.
+    let n = VarId(1);
+    let go = VarId(2);
+    let a = VarId(3);
+    let term = Term::let_(
+        n,
+        opaque(Term::Lit(Lit::Int(1)), Term::Lit(Lit::Int(2))),
+        Term::letrec(
+            vec![(
+                go,
+                Term::lam(
+                    a,
+                    Term::App(Arc::new(Term::Var(go)), Arc::new(Term::Var(n))),
+                ),
+            )],
+            Term::App(Arc::new(Term::Var(go)), Arc::new(Term::Lit(Lit::Int(0)))),
+        ),
+    );
+    let lowered = lower_program(&main_def(term), meadow_core::OptLevel::default());
+    assert!(lowered.unsupported.is_empty());
+    let text = lowered.program.pretty();
+    // `main`, and `go` lifted: its entry as a value and its direct entry, which
+    // takes the captured `n`, the argument and the continuation.
+    let lifted: Vec<_> = lowered
+        .program
+        .defs
+        .iter()
+        .filter(|d| d.name.ends_with(".local1"))
+        .collect();
+    assert_eq!(lifted.len(), 2, "{text}");
+    assert!(lifted.iter().any(|d| d.block.params.len() == 3), "{text}");
 }
 
 /// Every statement in a tree, including the bodies of nested blocks.

@@ -358,13 +358,16 @@ fn prim(p: Prim, a: &[Val], d: &[i64]) -> Word {
             new_array(heap::ARRAY, &words, ed)
         }
         ArraySlice => {
-            let (words, ed) = elems(array(arg(0)));
-            let n = words.len() as i64;
+            // Only the slice is read: taking the whole array out first made
+            // cutting a big one into pieces quadratic.
+            let a = array(arg(0));
+            let n = heap::len(a) as i64;
+            let ed = heap::field_desc(a, 0);
             let from = int(arg(1)).clamp(0, n) as usize;
             let to = int(arg(2)).clamp(from as i64, n) as usize;
-            let part = &words[from..to];
-            share_all(part, ed);
-            new_array(heap::ARRAY, part, ed)
+            let part: Vec<Word> = (from..to).map(|i| heap::field(a, i)).collect();
+            share_all(&part, ed);
+            new_array(heap::ARRAY, &part, ed)
         }
         ArrayConcat => {
             let (x, dx) = elems(array(arg(0)));
@@ -967,6 +970,78 @@ pub extern "C" fn meadow_st_set(a: Word, i: Word, x: Word, d: i64) -> Word {
     heap::erase(heap::field(arr, i), heap::field_desc(arr, i));
     heap::set_word(arr, 2 + i, x);
     0
+}
+
+/// Whether the array at `a` can be written in place: nobody else holds it, and
+/// it is not in a region, whose blocks are never counted.
+fn unshared(a: Word) -> bool {
+    heap::word(a, 0) & 0xFFFF_FFFF == 0
+}
+
+/// Set the length of the array at `a` to `n`, keeping its count, and its
+/// elements' descriptor to `d`.
+fn set_array_shape(a: Word, n: usize, d: i64) {
+    heap::set_word(a, 0, ((n as Word) << 32) | (heap::word(a, 0) & 0xFFFF_FFFF));
+    let w1 = heap::word(a, 1);
+    let bits = (w1 & !(15 << heap::DESC_SHIFT)) | (((d as u64) & 15) << heap::DESC_SHIFT);
+    heap::set_word(a, 1, bits);
+}
+
+/// `arrayPush a x`, **consuming** `a`: the linearization gives this entry its
+/// own reference to the array, sharing it first where the caller still wants
+/// the old one. So when the count says there is no other reference, nobody can
+/// see the array change, and `x` goes into the room [`heap::array_room`] left
+/// at its end. Only a push that crosses into the next size copies, which makes
+/// building an array a push at a time linear rather than quadratic.
+#[unsafe(no_mangle)]
+pub extern "C" fn meadow_array_push(a: Word, x: Word, d: i64) -> Word {
+    let arr = array(Val::Ref(a));
+    let n = heap::len(arr);
+    heap::share(x, d);
+    if unshared(arr) && heap::array_room(n + 1) == heap::array_room(n) {
+        heap::set_word(arr, 2 + n, x);
+        set_array_shape(arr, n + 1, d);
+        return arr;
+    }
+    let (mut words, ed) = elems(arr);
+    share_all(&words, ed);
+    words.push(x);
+    let v = new_array(heap::ARRAY, &words, d);
+    heap::erase(arr, desc::REF);
+    v
+}
+
+/// `arrayConcat a b`, consuming `a` as [`meadow_array_push`] does and lending
+/// `b`: `b`'s elements go into `a`'s room when it has enough.
+#[unsafe(no_mangle)]
+pub extern "C" fn meadow_array_concat(a: Word, b: Word) -> Word {
+    let x = array(Val::Ref(a));
+    let y = array(Val::Ref(b));
+    let (n, m) = (heap::len(x), heap::len(y));
+    if m == 0 {
+        return x;
+    }
+    let dy = heap::field_desc(y, 0);
+    for i in 0..m {
+        heap::share(heap::field(y, i), dy);
+    }
+    if n == 0 {
+        heap::erase(x, desc::REF);
+        return new_array(heap::ARRAY, &elems(y).0, dy);
+    }
+    if unshared(x) && heap::array_room(n + m) == heap::array_room(n) {
+        for i in 0..m {
+            heap::set_word(x, 2 + n + i, heap::field(y, i));
+        }
+        set_array_shape(x, n + m, heap::field_desc(x, 0));
+        return x;
+    }
+    let (mut words, dx) = elems(x);
+    share_all(&words, dx);
+    words.extend(elems(y).0);
+    let v = new_array(heap::ARRAY, &words, dx);
+    heap::erase(x, desc::REF);
+    v
 }
 // --- records, arrays and fields the emitted code builds ------------------------
 

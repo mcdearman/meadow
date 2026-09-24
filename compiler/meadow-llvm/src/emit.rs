@@ -1992,6 +1992,8 @@ declare i64 @meadow_string_index_of(i64, i64, i64)
 declare i64 @meadow_string_slice(i64, i64, i64)
 declare i64 @meadow_get_ref(i64)
 declare i64 @meadow_st_set(i64, i64, i64, i64)
+declare i64 @meadow_array_push(i64, i64, i64)
+declare i64 @meadow_array_concat(i64, i64)
 declare i32 @meadow_run(ptr, i32, ptr)
 declare i32 @meadow_run_test(ptr, i64, i32, ptr)
 declare i64 @meadow_enter(i64, i64)
@@ -2453,8 +2455,26 @@ fn direct(p: Prim) -> Option<(&'static str, Descs)> {
         // The element's descriptor, and no other's: the array and the index
         // are what they are.
         Prim::StSetArray => ("meadow_st_set", Descs::Last),
+        // These two consume the array they grow, which is what lets them grow
+        // it in place: see [`consumes`].
+        Prim::ArrayPush => ("meadow_array_push", Descs::Last),
+        Prim::ArrayConcat => ("meadow_array_concat", Descs::None),
         _ => return None,
     })
+}
+
+/// The argument a primitive **consumes** rather than borrows, if it does.
+///
+/// Every other primitive borrows its arguments. One that consumes is handed a
+/// reference of its own: the linearization shares the argument first where it
+/// is used again, and otherwise gives up the caller's. So a count of zero inside
+/// the primitive means nobody else can see the value, and it may be changed in
+/// place -- which is how `arrayPush` grows an array without copying it.
+pub fn consumes(op: &meadow_seq::Extern) -> Option<usize> {
+    match op {
+        meadow_seq::Extern::Prim(Prim::ArrayPush | Prim::ArrayConcat) => Some(0),
+        _ => None,
+    }
 }
 
 /// Which arguments of a [`direct`] primitive carry a descriptor.

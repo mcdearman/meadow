@@ -537,7 +537,7 @@ impl Lint<'_> {
     }
 }
 
-fn lit_ty(l: &Lit) -> Ty {
+pub(crate) fn lit_ty(l: &Lit) -> Ty {
     match l {
         Lit::Int(_) => InferType::int(),
         Lit::Float(_) => InferType::float(),

@@ -363,7 +363,8 @@ fn every_opt_level_agrees_with_the_cek() {
     }
 }
 
-/// `-O2` compiles a `match` to one `switch` rather than one per arm.
+/// `-O2` compiles a `match` to one `switch` rather than one per arm, where it
+/// is not one already.
 ///
 /// A switch testing several constructors is the observable difference, and it
 /// is what would notice the gate being wired to nothing — which is the way an
@@ -388,11 +389,15 @@ fn case_trees_are_what_o2_turns_on() {
         .collect();
 
     // A chain tests one constructor a switch; a tree tests them all in one.
-    // (Every `perform`'s search block tests two, at every level.)
-    assert_eq!(counts[0], 0, "O1 builds decision trees");
+    // (Every `perform`'s search block tests two, at every level.) A `match`
+    // with an unguarded arm for every constructor is one `switch` at every
+    // level -- it is smaller as well as faster -- so `-O1` has some; what `-O2`
+    // adds is the tree for the rest, whose arms can fall through.
     assert!(
-        counts[1] > 0,
-        "O2 builds no decision trees — the gate is doing nothing"
+        counts[1] > counts[0],
+        "O2 builds no more decision trees than O1 ({} against {}) — the gate is doing nothing",
+        counts[1],
+        counts[0]
     );
 }
 

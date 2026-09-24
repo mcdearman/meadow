@@ -108,6 +108,17 @@ which want indexing in constant time, so blocks come in **size classes**
 instead, one object to a block. Literals -- strings, big integers -- are made
 once at start-up and held by a global that is never erased.
 
+An array's block has **room to grow**: an array of `n` elements is given
+`heap::array_room(n)` slots -- `n` itself up to 8, then the next of 12, 16, 24,
+32, 48, ... -- so at most a third is spare. The room is a function of the
+length alone, so no block records it and the free path works it out as it
+does a block's size. `arrayPush` and `arrayConcat` **consume** the array they
+grow (see `emit::consumes`): the linearization gives them a reference of their
+own, sharing it first where the old array is still wanted, so a count of zero
+inside them means nobody else can see the array, and the new elements go into
+its room in place. Building an array a push at a time is linear, where copying
+at every push made it quadratic.
+
 ### Acquiring and releasing, lazily
 
 Freeing is the paper's, and it is what makes every operation constant work: no

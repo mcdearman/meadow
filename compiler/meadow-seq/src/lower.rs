@@ -204,8 +204,12 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     };
     // Tail recursion modulo cons after `simplify`, which would otherwise see a
     // cell's placeholder as the value of its field -- see [`core::trmc`].
+    // Local functions are lifted to the top level before it, so that a local
+    // loop is a definition with a direct entry rather than a closure, and is a
+    // candidate for TRMC like any other -- see [`core::lift`].
     let simplified = core::simplify::program(&core::joins::program(&inlined));
-    let program = &core::globals::program(&core::trmc::program(&simplified, opt));
+    let lifted = core::lift::program(&simplified, opt);
+    let program = &core::globals::program(&core::trmc::program(&lifted, opt));
     if let Ok(want) = std::env::var("MEADOW_DUMP_CORE") {
         for (stage, p) in [("before", &literals), ("after", program)] {
             for d in &p.defs {
@@ -2240,6 +2244,27 @@ impl Lower {
     /// invoking one object — including the scrutinee, which a `switch` in the
     /// middle of the arm will have consumed.
     fn case(&mut self, s: Name, arms: &[Arm], live: Vec<Name>, k: Name) -> Statement {
+        // An arm that cannot fail needs nothing to fail to: no chain, no
+        // objects, just its bindings and its body. `let (a, b) = p in …` is a
+        // `match` of exactly this shape, and it used to build two objects.
+        if let Some((pat, None, term)) = arms.first()
+            && irrefutable(pat)
+        {
+            let unused = self.fresh_ref();
+            return self.match_pat(
+                pat,
+                s,
+                live,
+                unused,
+                Box::new(move |this, env| this.expr(term, &env, k)),
+            );
+        }
+        if let Some(chain) = self.case_literals(s, arms, &live, k) {
+            return chain;
+        }
+        if let Some(switch) = self.case_total(s, arms, &live, k) {
+            return switch;
+        }
         if let Some(tree) = self
             .opt
             .case_trees()
@@ -2249,6 +2274,127 @@ impl Lower {
             return tree;
         }
         self.case_chain(s, arms, live, k)
+    }
+
+    /// A `match` with an arm for every constructor of its type, none guarded
+    /// and none looking inside a field in a way that can fail: one `switch`,
+    /// and nothing to fall back to, so no failure object is built. Most
+    /// `match`es are this, and it is smaller code than the chain as well as
+    /// faster, so it is not gated.
+    fn case_total(&mut self, s: Name, arms: &[Arm], live: &[Name], k: Name) -> Option<Statement> {
+        // Every constructor of the type, each arm unguarded and matching all of
+        // its fields: nothing can fail, so there is no fallback to build. This
+        // is most `match`es there are, and it saves an object on each.
+        let scrutinee_ty = self.type_of_name(s);
+        let covered = match &scrutinee_ty {
+            Some(core::Ty::Con(name, _)) => self.variants.get(name).map(|vs| vs.len()),
+            _ => None,
+        };
+        let n = arms.len();
+        let distinct: HashSet<InternedString> = arms
+            .iter()
+            .filter_map(|(p, _, _)| match p {
+                Pat::Ctor(name, _) => Some(*name),
+                _ => None,
+            })
+            .collect();
+        if n >= 1
+            && covered == Some(n)
+            && distinct.len() == n
+            && arms.iter().all(|(p, g, _)| {
+                g.is_none() && matches!(p, Pat::Ctor(_, subs) if subs.iter().all(irrefutable))
+            })
+        {
+            let unused = self.fresh_ref();
+            let mut switch_arms = Vec::with_capacity(n);
+            for (pat, _, term) in arms {
+                let Pat::Ctor(ctor, subs) = pat else {
+                    unreachable!("every arm is a constructor pattern");
+                };
+                let tag = self.tag_of(*ctor);
+                let fields = self.field_names(*ctor, subs, scrutinee_ty.as_ref());
+                let mut arm_env = fields.clone();
+                arm_env.extend_from_slice(live);
+                let pairs: Vec<(&Pat, Name)> = subs.iter().zip(fields.iter().copied()).collect();
+                let body = self.match_all(
+                    pairs,
+                    arm_env.clone(),
+                    unused,
+                    Box::new(move |this, env1| this.expr(term, &env1, k)),
+                );
+                switch_arms.push((
+                    tag,
+                    Block {
+                        params: arm_env,
+                        body,
+                    },
+                ));
+            }
+            Some(Statement::Switch {
+                scrutinee: s,
+                arms: switch_arms,
+                default: Box::new(Block {
+                    params: live.to_vec(),
+                    body: Statement::Error("non-exhaustive pattern match"),
+                }),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// The leading arms that test a literal, as a chain of compare-and-branch.
+    ///
+    /// A literal pattern has nothing inside it to fail half-way through, so an
+    /// arm's failure is its own comparison coming out false, and the next test
+    /// can simply be the false branch. The chain builds no failure objects --
+    /// it used to build one per arm before testing anything, which made a
+    /// `match` on a byte cost twenty allocations -- and LLVM turns a run of
+    /// equality tests on one value into a `switch`. Whatever follows the
+    /// literals is the false branch of the last test, compiled as any `match`.
+    ///
+    /// An arm with a guard ends the run: failing a guard means going on to the
+    /// next arm, which is what the chain's objects are for.
+    fn case_literals(
+        &mut self,
+        s: Name,
+        arms: &[Arm],
+        live: &[Name],
+        k: Name,
+    ) -> Option<Statement> {
+        let n = arms
+            .iter()
+            .take_while(|(p, g, _)| matches!(p, Pat::Lit(_)) && g.is_none())
+            .count();
+        if n == 0 {
+            return None;
+        }
+        let mut stmt = if n == arms.len() {
+            Statement::Error("non-exhaustive pattern match")
+        } else {
+            self.case(s, &arms[n..], live.to_vec(), k)
+        };
+        for (pat, _, term) in arms[..n].iter().rev() {
+            let Pat::Lit(lit) = pat else {
+                unreachable!("the prefix is literal patterns");
+            };
+            let yes = self.expr(term, live, k);
+            stmt = Statement::Extern {
+                op: Extern::BranchPrimK(core::Prim::Eq, lit.clone()),
+                args: vec![s],
+                blocks: vec![
+                    Block {
+                        params: live.to_vec(),
+                        body: stmt,
+                    },
+                    Block {
+                        params: live.to_vec(),
+                        body: yes,
+                    },
+                ],
+            };
+        }
+        Some(stmt)
     }
 
     /// One `switch` over the arms that dispatch on a constructor, instead of one
@@ -3342,6 +3488,18 @@ fn mentions(t: &Term, out: &mut HashSet<Var>) {
 ///
 /// `fun f a b = e` is `Lam(a, Lam(b, e))`, so this is how a definition's arity is
 /// recovered — which is what lets a saturated call to it become a jump.
+/// Whether `p` matches every value of its type: binding it can bind names and
+/// take a tuple or a record apart, but never fail.
+fn irrefutable(p: &Pat) -> bool {
+    match p {
+        Pat::Wild | Pat::Var(..) => true,
+        Pat::As(_, _, sub) => irrefutable(sub),
+        Pat::Tuple(subs) => subs.iter().all(irrefutable),
+        Pat::Record(fields) => fields.iter().all(|(_, p)| irrefutable(p)),
+        Pat::Lit(_) | Pat::Array(_) | Pat::Ctor(..) => false,
+    }
+}
+
 fn lam_spine(t: &Term) -> (Vec<Var>, &Term) {
     let mut params = Vec::new();
     let mut cur = t;

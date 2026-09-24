@@ -455,6 +455,31 @@ impl<'p> Pass<'p> {
                         return err(format!("a primitive reads {a:?}, which is not owned"));
                     }
                 }
+                // A primitive that consumes an argument is handed a reference
+                // of its own: a share of it where anything after still wants
+                // it, and otherwise the caller's, which is then no longer the
+                // caller's to erase. See `emit::consumes`.
+                let mut owned = owned;
+                let mut share_first = None;
+                if let Some(i) = crate::emit::consumes(op)
+                    && let Some(&a) = args.get(i)
+                    && self.counted(a)
+                {
+                    let again = args.iter().filter(|x| **x == a).count() > 1
+                        || blocks.iter().any(|b| {
+                            let n = b.params.len().saturating_sub(env.len());
+                            let used = self.uses(&b.body, &b.params);
+                            b.params[n..]
+                                .iter()
+                                .zip(env)
+                                .any(|(p, v)| *v == a && used.contains(p))
+                        });
+                    if again {
+                        share_first = Some(a);
+                    } else {
+                        owned.remove(&a);
+                    }
+                }
                 let mut lblocks = Vec::with_capacity(blocks.len());
                 for b in blocks {
                     let n = b.params.len().saturating_sub(env.len());
@@ -462,10 +487,14 @@ impl<'p> Pass<'p> {
                     let body = self.enter(b, n, env, &owned)?;
                     lblocks.push((results, body));
                 }
-                Ok(L::Extern {
+                let ext = L::Extern {
                     op: op.clone(),
                     args: args.clone(),
                     blocks: lblocks,
+                };
+                Ok(match share_first {
+                    Some(a) => self.sharing(a, 1, ext),
+                    None => ext,
                 })
             }
         }

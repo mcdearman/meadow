@@ -295,8 +295,31 @@ pub fn first_field(v: Word) -> usize {
 }
 
 /// Words the block takes.
-fn size(v: Word) -> usize {
-    first_field(v) + len(v)
+pub fn size(v: Word) -> usize {
+    first_field(v)
+        + if kind(v) == ARRAY {
+            array_room(len(v))
+        } else {
+            len(v)
+        }
+}
+
+/// The element slots an array of `n` elements is given: `n` for a small one,
+/// and for a bigger one the next of 12, 16, 24, 32, 48, ... -- each a power of
+/// two or three quarters of one -- so that at most a third is spare.
+///
+/// The room is a function of the length and nothing else, so no block records
+/// it: [`size`] works it out, as the allocator's free path needs. It is what
+/// makes `arrayPush` constant time on an array nobody else holds -- the element
+/// goes into the room while there is some (`meadow_array_push`), and only
+/// crossing to the next size copies.
+pub fn array_room(n: usize) -> usize {
+    if n <= 8 {
+        return n;
+    }
+    let p = n.next_power_of_two();
+    let q = p / 4 * 3;
+    if q >= n { q } else { p }
 }
 
 /// Field `i`'s descriptor.
@@ -710,7 +733,7 @@ pub fn build(kind: u64, meta: u32, fields: &[Word], descs: &[i64]) -> Word {
 /// A uniform block of `kind` and `meta` of `n` words, every one described by
 /// `d`, the words for the caller to write.
 pub fn build_uniform(kind: u64, meta: u32, n: usize, d: i64) -> Word {
-    let v = acquire(2 + n);
+    let v = acquire(2 + if kind == ARRAY { array_room(n) } else { n });
     set_word(v, 0, (n as u64) << 32);
     set_word(
         v,

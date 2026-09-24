@@ -47,6 +47,7 @@ pub mod globals;
 pub mod hash;
 pub mod inline;
 pub mod joins;
+pub mod lift;
 pub mod lint;
 pub mod lower;
 pub mod num;

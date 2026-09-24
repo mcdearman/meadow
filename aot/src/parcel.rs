@@ -194,7 +194,7 @@ fn lift(v: Word) -> Result<Lifted, String> {
     if let Some(what) = why {
         return Err(meadow_core::thread::unsendable(what));
     }
-    let n = heap::first_field(v) + heap::len(v);
+    let n = heap::size(v);
     let mut words: Vec<Word> = (0..n).map(|i| heap::word(v, i)).collect();
     words[0] &= 0xFFFF_FFFF_0000_0000;
     Ok(Lifted {

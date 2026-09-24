@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 meadow-compiler.workspace = true
 meadow-fmt.workspace = true
+meadow-find.workspace = true
 lsp-server = "0.10"
 lsp-types = "0.97"
 serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,12 @@
+[package]
+name = "meadow-find"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+meadow-compiler.workspace = true
+nucleo-matcher = "0.3"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+meadow.workspace = true

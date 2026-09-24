@@ -16,6 +16,7 @@ pub mod clean;
 pub mod complete;
 pub mod dap;
 pub mod editor;
+pub mod finder;
 pub mod format;
 pub mod git;
 pub mod incremental;

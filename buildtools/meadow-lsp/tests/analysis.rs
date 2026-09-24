@@ -1794,3 +1794,20 @@ fn an_offer_says_what_kind_of_name_it_is() {
     let offers = path_offers("def main = Maybe.");
     assert_eq!(offers[0].kind, PathKind::Ctor);
 }
+
+#[test]
+fn a_signature_carries_the_doc_for_the_clauses_under_it() {
+    // A signature and its clauses are one declaration, and the doc is above
+    // the first line of it. Looking above the clause would find the signature
+    // and nothing else.
+    let src = "\
+-- Doubles its argument.
+fun double : Int -> Int
+  | double n = n * 2
+
+def main = do@uble 21
+";
+    let (a, off) = at(src, "@");
+    let hover = a.hover_at(off).expect("hover");
+    assert!(hover.contains("Doubles its argument."), "got: {hover}");
+}

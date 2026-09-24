@@ -389,6 +389,11 @@ pub struct Analysis {
     pub ctor_paths: std::collections::HashMap<InternedString, String>,
     /// What every dotted path reaches, for completing one.
     pub paths: PathIndex,
+    /// Everything this document's package declares -- privately too, since
+    /// they are the package's author's to find -- and what the package
+    /// depends on declares publicly. What a workspace symbol search looks
+    /// through, besides the library: see `meadow_find`.
+    pub declarations: Vec<meadow_find::Decl>,
 }
 
 /// A top-level definition, as something to start a program at.
@@ -725,12 +730,19 @@ impl Std {
             functions: Vec::new(),
             ctor_paths: Default::default(),
             paths: Default::default(),
+            declarations: Vec::new(),
         };
         collect_names(
             &pkg.data_decls,
             &mut a.types_in_scope,
             &mut a.ctors_in_scope,
         );
+        a.declarations =
+            meadow_find::collect::package(&pkg, meadow_find::collect::Options { private: true });
+        for (_, dep) in &sources.deps {
+            a.declarations
+                .extend(meadow_find::collect::package(dep, Default::default()));
+        }
         for e in &pkg.exports {
             a.binding_names.insert(e.var, e.name.to_string());
             a.schemes.insert(e.var, e.scheme.to_string());
@@ -853,12 +865,15 @@ impl Std {
             functions: Vec::new(),
             ctor_paths: Default::default(),
             paths: Default::default(),
+            declarations: Vec::new(),
         };
         collect_names(
             &pkg.data_decls,
             &mut a.types_in_scope,
             &mut a.ctors_in_scope,
         );
+        a.declarations =
+            meadow_find::collect::package(&pkg, meadow_find::collect::Options { private: true });
         for e in &pkg.exports {
             a.binding_names.insert(e.var, e.name.to_string());
             a.schemes.insert(e.var, e.scheme.to_string());
@@ -1957,6 +1972,7 @@ impl Analysis {
             functions: Vec::new(),
             ctor_paths: Default::default(),
             paths: Default::default(),
+            declarations: Vec::new(),
             source_id: 0,
         }
     }

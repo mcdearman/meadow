@@ -829,3 +829,75 @@ fn completion_in_a_use_offers_the_modules_under_the_path() {
     assert!(labels.contains(&"Collections".to_string()), "{labels:?}");
     assert!(labels.contains(&"Maybe".to_string()), "{labels:?}");
 }
+
+/// `workspace/symbol`: the editor's own picker over every declaration there
+/// is -- what the REPL's `Ctrl-F` searches, found the same way.
+#[test]
+fn workspace_symbols_are_advertised() {
+    let c = Client::start();
+    let caps = c.capabilities.as_ref().unwrap();
+    assert_eq!(caps["capabilities"]["workspaceSymbolProvider"], json!(true));
+}
+
+fn symbols(c: &mut Client, query: &str) -> Vec<Value> {
+    c.request("workspace/symbol", json!({ "query": query }))
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_workspace_symbol_in_the_open_document_points_into_it() {
+    let mut c = Client::start();
+    c.set("-- Twice as much.\nfun doubleIt : Int -> Int\n  | doubleIt n = n * 2\n\nfun helper x = x\n");
+    let found = symbols(&mut c, "doubleIt");
+    let first = found.first().expect("doubleIt is found");
+    assert_eq!(first["name"], json!("doubleIt : Int -> Int"), "{first}");
+    assert_eq!(first["location"]["uri"], json!(URI));
+    assert_eq!(first["kind"], json!(12), "a function"); // SymbolKind::FUNCTION
+    // A private one is the author's to find too.
+    let helper = symbols(&mut c, "helper");
+    assert!(
+        helper
+            .iter()
+            .any(|s| s["name"].as_str().unwrap().starts_with("helper :")),
+        "{helper:?}"
+    );
+}
+
+#[test]
+fn a_workspace_symbol_from_the_library_points_at_its_file() {
+    let root = std_sources("symbols");
+    let mut c = Client::start_with(Some(root.clone()));
+    c.set("def main = 1\n");
+    let found = symbols(&mut c, "Path.components");
+    let s = found.first().expect("Std.Path.components");
+    assert_eq!(s["name"], json!("components : String -> [String]"), "{s}");
+    assert_eq!(s["containerName"], json!("Std.Path"));
+    let uri = s["location"]["uri"].as_str().unwrap();
+    assert!(uri.ends_with("/Std/Path.mw"), "{uri}");
+    assert!(s["location"]["range"]["start"]["line"].as_u64().unwrap() > 0);
+    drop(c);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_workspace_symbol_query_that_is_a_type_searches_by_type() {
+    let root = std_sources("typed-symbols");
+    let mut c = Client::start_with(Some(root.clone()));
+    c.set("def main = 1\n");
+    let found = symbols(&mut c, "String -> [String]");
+    let names: Vec<&str> = found
+        .iter()
+        .take(5)
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names
+            .iter()
+            .any(|n| n.starts_with("lines :") || n.starts_with("components :")),
+        "{names:?}"
+    );
+    drop(c);
+    let _ = std::fs::remove_dir_all(&root);
+}

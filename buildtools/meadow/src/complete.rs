@@ -14,6 +14,7 @@
 //!
 //! The entry up to the cursor is lexed, and [`context`] walks those tokens.
 
+use meadow_compiler::hir::VarId;
 use meadow_compiler::intern::InternedString;
 use meadow_compiler::lexer::{Token, tokenize};
 use meadow_compiler::source::{Source, SourceKind};
@@ -43,6 +44,13 @@ pub struct Names {
     /// Qualifiers currently *in scope*, mapped to what they reach. Keyed by the
     /// alias when there is one, so `use … as L` completes `L.`.
     pub qualified: HashMap<String, Vec<String>>,
+    /// Which binding each unqualified value name means -- later wins, as a
+    /// later definition shadows an earlier. Completion only needs to know a
+    /// name exists; the finder needs to know whether it is the declaration
+    /// somebody chose or another one spelled the same.
+    pub value_vars: HashMap<String, VarId>,
+    /// The same for each qualifier's names.
+    pub qualified_vars: HashMap<String, HashMap<String, VarId>>,
 }
 
 /// What kind of name the cursor sits on.
@@ -219,16 +227,17 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
     // `prelude_exports` contributes everything (REPL lines), one with a list
     // contributes just that list.
     for pkg in prefix {
-        match &pkg.prelude_exports {
-            None => n
-                .values
-                .extend(pkg.exports.iter().map(|e| e.name.to_string())),
-            Some(flat) => n.values.extend(
-                pkg.exports
-                    .iter()
-                    .filter(|e| e.module.is_empty() && flat.contains(&e.name))
-                    .map(|e| e.name.to_string()),
-            ),
+        let visible: Vec<&meadow_compiler::Export> = match &pkg.prelude_exports {
+            None => pkg.exports.iter().collect(),
+            Some(flat) => pkg
+                .exports
+                .iter()
+                .filter(|e| e.module.is_empty() && flat.contains(&e.name))
+                .collect(),
+        };
+        for e in visible {
+            n.values.push(e.name.to_string());
+            n.value_vars.insert(e.name.to_string(), e.var);
         }
     }
     n.values.extend(hir::PRIMS.iter().map(|p| p.to_string()));
@@ -294,20 +303,31 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
                 let mut vals: Vec<String> = resolved.map.keys().map(|k| k.to_string()).collect();
                 vals.sort();
                 n.qualified.insert(a.value().to_string(), vals);
+                n.qualified_vars.insert(
+                    a.value().to_string(),
+                    resolved
+                        .map
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), *v))
+                        .collect(),
+                );
             }
             // `use M` — every exported name, unqualified. No qualifier.
             None if u.names.is_empty() => {
-                n.values.extend(resolved.map.keys().map(|k| k.to_string()));
+                for (k, v) in &resolved.map {
+                    n.values.push(k.to_string());
+                    n.value_vars.insert(k.to_string(), *v);
+                }
             }
             None => {}
         }
         // `use M (a, b)` — just those, whether or not there is also an alias.
-        n.values.extend(
-            u.names
-                .iter()
-                .filter(|nm| resolved.map.contains_key(&*nm.value()))
-                .map(|nm| nm.value().to_string()),
-        );
+        for nm in &u.names {
+            if let Some(v) = resolved.map.get(&*nm.value()) {
+                n.values.push(nm.value().to_string());
+                n.value_vars.insert(nm.value().to_string(), *v);
+            }
+        }
     }
 
     // Operators are punctuation; completing them would only be noise. Applied
@@ -459,6 +479,7 @@ mod tests {
             ctors: vec!["Just".into(), "None".into()],
             modules: HashMap::from([("Std.Collections.List".to_string(), vec!["map".to_string()])]),
             qualified: HashMap::from([("List".to_string(), vec!["map".to_string()])]),
+            ..Default::default()
         };
         assert_eq!(names.candidates(&Ctx::Term, "ma"), vec!["map", "max"]);
         assert_eq!(names.candidates(&Ctx::Type, "L"), vec!["List"]);

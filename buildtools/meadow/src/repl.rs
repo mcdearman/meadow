@@ -17,7 +17,7 @@
 use itertools::Either;
 use meadow::runtime;
 use meadow::tour;
-use meadow::{complete, stdlib};
+use meadow::{complete, finder, stdlib};
 use meadow_compiler::{
     AstModule, CompiledPackage, Options, ast, compile_unit, core, diagnostics, hir,
     intern::InternedString,
@@ -36,6 +36,7 @@ use rustyline::{
     validate::{ValidationResult, Validator},
 };
 use std::borrow::Cow;
+use std::sync::{Arc, Mutex, RwLock};
 
 /// The rustyline helper: multi-line validation plus namespace-aware completion.
 ///
@@ -140,6 +141,37 @@ impl ConditionalEventHandler for AutoIndent {
         // middle of an entry breaks the line at that point.
         let before = &ctx.line()[..ctx.pos()];
         Some(Cmd::Insert(1, format!("\n{}", auto_indent(before))))
+    }
+}
+
+/// `Ctrl-F`: the declaration finder, over the prompt. What is chosen goes on
+/// the prompt at the cursor; a `use` it needs is kept for when the line is
+/// submitted, since nothing can be run from inside the line editor.
+struct FindKey {
+    catalog: Arc<RwLock<finder::Catalog>>,
+    needs: Arc<Mutex<Vec<String>>>,
+}
+
+impl ConditionalEventHandler for FindKey {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        _ctx: &EventContext<'_>,
+    ) -> Option<Cmd> {
+        let catalog = self.catalog.read().ok()?;
+        match finder::pick(&catalog) {
+            Ok(Some(choice)) => {
+                if let (Some(line), Ok(mut needs)) = (choice.needs, self.needs.lock()) {
+                    needs.push(line);
+                }
+                Some(Cmd::Insert(1, choice.text))
+            }
+            // Closed without choosing, or the terminal would not have it:
+            // the line goes back as it was.
+            _ => Some(Cmd::Repaint),
+        }
     }
 }
 
@@ -488,6 +520,11 @@ fn print_banner() {
     );
     println!("  each in the namespace the cursor is actually in.");
     println!(
+        "  {} finds a declaration — by name, or by a type like {}.",
+        "Ctrl+F".cyan().bold(),
+        "[a] -> Int".cyan()
+    );
+    println!(
         "  {}: {} / {} insert a newline; an unfinished line (open bracket,",
         "Multi-line".bold(),
         "Alt+Enter".cyan(),
@@ -530,6 +567,15 @@ pub struct Session {
     cache: Prefix,
     /// The same for `Std` alone, which `:reset` goes back to.
     std_cache: Prefix,
+    /// What `Ctrl-F` searches, shared with the key binding that shows it and
+    /// brought up to date after every entry. See [`meadow::finder`].
+    finder: Arc<RwLock<finder::Catalog>>,
+    /// The library's declarations, collected once: `Std` does not change
+    /// under a session.
+    std_decls: Vec<meadow_find::Decl>,
+    /// The `use`s that names chosen with `Ctrl-F` need, to run ahead of the
+    /// line they were chosen for.
+    needs: Arc<Mutex<Vec<String>>>,
 }
 
 /// What every entry's program is built from, kept between entries: the
@@ -570,6 +616,10 @@ impl Session {
         let std_len = std_pkgs.len();
         let mut std_cache = Prefix::default();
         std_cache.catch_up(&std_pkgs);
+        let std_decls = std_pkgs
+            .iter()
+            .flat_map(|p| meadow_find::collect::package(p, Default::default()))
+            .collect();
         Session {
             line: std_len as u32,
             opts,
@@ -584,6 +634,39 @@ impl Session {
             tried: 0,
             cache: std_cache.clone(),
             std_cache,
+            finder: Arc::default(),
+            std_decls,
+            needs: Arc::default(),
+        }
+    }
+
+    /// Bring what `Ctrl-F` searches up to what the session has now: the
+    /// library, everything defined so far that a line can still name, and
+    /// what each name in scope means.
+    fn refresh_finder(&self, names: &complete::Names) {
+        let mut decls = self.std_decls.clone();
+        for pkg in &self.prefix[self.std_len.min(self.prefix.len())..] {
+            for mut d in meadow_find::collect::package(pkg, Default::default()) {
+                // An expression entered is compiled as `def it = ...`, which
+                // is how it is kept, not something anybody wrote.
+                if d.name == "it" {
+                    continue;
+                }
+                // Defined again since: the older one has no name left to be
+                // reached by, so offering it would only insert the newer.
+                if d.var.is_some() && names.value_vars.get(&d.name) != d.var.as_ref() {
+                    continue;
+                }
+                // `repl:12` to the compiler; to a person, what they typed here.
+                d.module = "repl".into();
+                d.package = "repl".into();
+                decls.push(d);
+            }
+        }
+        if let Ok(mut catalog) = self.finder.write() {
+            catalog.index = meadow_find::Index::new(decls);
+            catalog.scope = names.value_vars.clone();
+            catalog.aliases = names.qualified_vars.clone();
         }
     }
 
@@ -678,9 +761,19 @@ impl Session {
             .build();
         let mut rl: Editor<TermValidator, rustyline::history::FileHistory> =
             Editor::with_config(config).expect("failed to create editor");
-        rl.set_helper(Some(TermValidator {
-            names: complete::snapshot(&self.prefix, &self.uses),
-        }));
+        let names = complete::snapshot(&self.prefix, &self.uses);
+        self.refresh_finder(&names);
+        rl.set_helper(Some(TermValidator { names }));
+
+        // `Ctrl-F`: find a declaration, by name or by type, and put it on the
+        // prompt. See `meadow::finder`.
+        rl.bind_sequence(
+            KeyEvent::ctrl('F'),
+            EventHandler::Conditional(Box::new(FindKey {
+                catalog: Arc::clone(&self.finder),
+                needs: Arc::clone(&self.needs),
+            })),
+        );
 
         // Insert a literal newline instead of submitting. `Alt+Enter` and `Ctrl+J`
         // are portable and distinguishable; `Shift+Enter` only reaches us on
@@ -720,6 +813,19 @@ impl Session {
                         continue;
                     }
                     let _ = rl.add_history_entry(line.as_str());
+                    // A name chosen with `Ctrl-F` that was not in scope asked
+                    // for a `use`, and it goes first -- said out loud, so that
+                    // nothing comes into scope without it being on the screen.
+                    let needs = self
+                        .needs
+                        .lock()
+                        .map(|mut n| std::mem::take(&mut *n))
+                        .unwrap_or_default();
+                    for u in needs {
+                        use yansi::Paint as _;
+                        println!("{}", u.as_str().dim());
+                        self.handle(&u, Mode::Run, false);
+                    }
                     // Fold `\`-continued lines back together, then work with the
                     // whole (possibly multi-line) entry.
                     let entry = join_continuations(&line);
@@ -823,9 +929,12 @@ impl Session {
                         }
                         _ => self.handle(trimmed, Mode::Run, self.timing),
                     }
-                    // A new `def`, `data` or `use` should be completable now.
+                    // A new `def`, `data` or `use` should be completable -- and
+                    // findable -- now.
+                    let names = complete::snapshot(&self.prefix, &self.uses);
+                    self.refresh_finder(&names);
                     if let Some(h) = rl.helper_mut() {
-                        h.names = complete::snapshot(&self.prefix, &self.uses);
+                        h.names = names;
                     }
                 }
                 Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,

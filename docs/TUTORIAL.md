@@ -147,6 +147,19 @@ path. For multi-line entries, an unfinished line (open bracket, dangling operato
 `| ...` arms) keeps reading; `Alt+Enter` or `Ctrl+J` forces a newline. **End a
 multi-line entry with a blank line.**
 
+`Ctrl+F` finds a declaration. Type part of a name -- `len` finds `length`, and
+`Vector.len` only the one in `Std.Collections.Vector` -- or a type, and it
+searches by type instead, the way Hoogle does: `[a] -> Int` finds `length`,
+`Maybe a -> a -> a` finds `unwrapOr` though it takes its arguments the other way
+round, and a leading `:` asks outright, so `: String` finds what makes one. The
+preview shows the signature, the module, the file and the doc comment. `Enter`
+puts the name on the prompt; if it is not in scope, the `use` that brings it in
+is run first, and printed so that you can see it was.
+
+An editor with the language server has the same search as its own picker for
+workspace symbols -- `Ctrl+T` in VS Code, `Space S` in Helix -- over the
+library and everything in the packages you have open.
+
 ### Comments
 
 Only line comments, introduced by `--`. There is no block comment syntax.

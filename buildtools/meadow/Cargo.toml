@@ -18,6 +18,9 @@ meadow-llvm.workspace = true
 meadow-bytecode.workspace = true
 meadow-fmt.workspace = true
 meadow-lsp.workspace = true
+meadow-find.workspace = true
+# The `Ctrl-F` declaration finder's pop-up: see `finder.rs`.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 chumsky = { version = "0.13.0", features = ["pratt"] }
 clap = { version = "4.6.1", features = ["cargo", "derive"] }
 env_logger = "0.11.10"

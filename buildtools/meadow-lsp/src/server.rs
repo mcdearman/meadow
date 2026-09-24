@@ -16,6 +16,7 @@ use lsp_types::notification::{
 use lsp_types::request::{
     CodeLensRequest, Completion, Formatting, GotoDefinition, HoverRequest, InlayHintRequest,
     PrepareRenameRequest, Rename, Request as LspRequest, SemanticTokensFullRequest,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::*;
 use meadow_compiler::{CompiledPackage, source::Source, span::Span};
@@ -65,7 +66,12 @@ pub fn serve(
     load_package: Option<PackageLoader>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     handshake(connection)?;
+    let std_decls = std_packages
+        .iter()
+        .flat_map(|p| meadow_find::collect::package(p, Default::default()))
+        .collect();
     let mut server = Server {
+        std_decls,
         std: Std::new(std_packages, std_modules, std_src_root, std_sources),
         docs: HashMap::new(),
         indexes: HashMap::new(),
@@ -133,6 +139,7 @@ fn server_capabilities() -> ServerCapabilities {
             ..Default::default()
         }),
         definition_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
         // What an editor's format-on-save asks for.
         document_formatting_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
@@ -171,6 +178,9 @@ struct Doc {
 
 struct Server {
     std: Std,
+    /// Everything the library declares, for a workspace symbol search.
+    /// Collected once, as the library is compiled once.
+    std_decls: Vec<meadow_find::Decl>,
     docs: HashMap<Uri, Doc>,
     /// Line indexes for sources that are not open documents -- the modules a
     /// definition can land in. Keyed by source id, and never invalidated: see
@@ -393,6 +403,16 @@ impl Server {
                 let doc = s.docs.get(&p.text_document.uri)?;
                 Some(crate::format::edits(&doc.text))
             }),
+            // The editor's own fuzzy picker over every declaration there is --
+            // VS Code's Ctrl+T, Helix's Space S -- by name, or by type when
+            // the query is one: see `meadow_find`.
+            WorkspaceSymbolRequest::METHOD => {
+                self.answer::<WorkspaceSymbolRequest, _>(req, |s, p| {
+                    Some(WorkspaceSymbolResponse::Nested(
+                        s.workspace_symbols(&p.query),
+                    ))
+                })
+            }
             HoverRequest::METHOD => self.answer::<HoverRequest, _>(req, |s, p| {
                 let (doc, offset) = s.at(&p.text_document_position_params)?;
                 Some(Hover {
@@ -648,6 +668,84 @@ impl Server {
         }
     }
 
+    /// The declarations `query` finds: the library's, and everything the
+    /// package of each open document declares and depends on.
+    ///
+    /// A value is listed as its signature -- `length : [a] -> Int` -- rather
+    /// than its bare name. Most editors show a workspace symbol's name and
+    /// little else, and a list of `map`s is no use without their types; and an
+    /// editor that filters the answers again by what was typed then keeps the
+    /// ones a search by type found, because what was typed is in the label.
+    fn workspace_symbols(&mut self, query: &str) -> Vec<WorkspaceSymbol> {
+        // A package open in two documents declares the same things twice, and
+        // an open `Std` module the same things the library does.
+        let mut seen = std::collections::HashSet::new();
+        let mut decls: Vec<meadow_find::Decl> = Vec::new();
+        let mut homes: Vec<Option<Uri>> = Vec::new();
+        let std_decls = self.std_decls.iter().map(|d| (d, None));
+        let doc_decls = self.docs.iter().flat_map(|(uri, doc)| {
+            doc.analysis
+                .declarations
+                .iter()
+                .map(move |d| (d, Some(uri)))
+        });
+        for (d, home) in doc_decls.chain(std_decls) {
+            if seen.insert((d.qualified(), d.kind, d.detail.clone())) {
+                decls.push(d.clone());
+                homes.push(home.cloned());
+            }
+        }
+        let index = meadow_find::Index::new(decls);
+        let hits = index.search(query, 256);
+        hits.into_iter()
+            .filter_map(|h| {
+                let d = &index.decls[h.decl];
+                let location = self.place(d, homes[h.decl].as_ref())?;
+                Some(WorkspaceSymbol {
+                    name: if d.kind.is_value() {
+                        d.headline()
+                    } else {
+                        d.name.clone()
+                    },
+                    kind: symbol_kind(d.kind),
+                    tags: None,
+                    container_name: Some(d.module.clone()),
+                    location: OneOf::Left(location),
+                    data: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Where a declaration is, for the editor to go to: in the document's own
+    /// text when it is in an open document -- which may be newer than the file
+    /// -- and in the file otherwise.
+    fn place(&mut self, d: &meadow_find::Decl, home: Option<&Uri>) -> Option<Location> {
+        let site = d.site?;
+        if let Some(uri) = home {
+            let doc = self.docs.get(uri)?;
+            if site.source.id == doc.analysis.source_id {
+                let (start, end) = doc.index.range(site.span);
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: Range {
+                        start: Position::new(start.0, start.1),
+                        end: Position::new(end.0, end.1),
+                    },
+                });
+            }
+        }
+        let path = self.std.path_of(site.source)?;
+        let (start, end) = self.range_in(site.source, site.span);
+        Some(Location {
+            uri: path_to_uri(&path)?,
+            range: Range {
+                start: Position::new(start.0, start.1),
+                end: Position::new(end.0, end.1),
+            },
+        })
+    }
+
     fn at(&self, p: &TextDocumentPositionParams) -> Option<(&Doc, usize)> {
         let doc = self.docs.get(&p.text_document.uri)?;
         Some((doc, doc.index.offset(p.position.line, p.position.character)))
@@ -786,6 +884,23 @@ impl Server {
             .entry(source.id)
             .or_insert_with(|| LineIndex::new(&source.content))
             .range(span)
+    }
+}
+
+/// What an editor draws beside a declaration it lists.
+fn symbol_kind(kind: meadow_find::Kind) -> SymbolKind {
+    use meadow_find::Kind;
+    match kind {
+        Kind::Function | Kind::Macro | Kind::Operation => SymbolKind::FUNCTION,
+        Kind::Method => SymbolKind::METHOD,
+        Kind::Value => SymbolKind::CONSTANT,
+        Kind::Constructor => SymbolKind::ENUM_MEMBER,
+        Kind::Type => SymbolKind::ENUM,
+        Kind::Record => SymbolKind::STRUCT,
+        Kind::Alias => SymbolKind::TYPE_PARAMETER,
+        Kind::Trait => SymbolKind::INTERFACE,
+        // What happens, as an event does, and what a handler answers.
+        Kind::Effect => SymbolKind::EVENT,
     }
 }
 

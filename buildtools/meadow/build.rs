@@ -34,6 +34,93 @@ fn main() {
     if std::fs::read(&embedded).ok().as_deref() != Some(&bytes[..]) {
         std::fs::write(&embedded, &bytes).expect("OUT_DIR is writable");
     }
+
+    precompiled_std(&out);
+}
+
+/// The standard library, compiled ahead of time -- see `src/stdlib.rs`.
+///
+/// Two things. **A fingerprint** of everything that decides what compiling
+/// `Std` produces: the compiler's crates, `Std`'s sources, and the code here
+/// that drives the compile. It is of the *sources*, not of this binary, so a
+/// `Std` compiled by one build of `meadow` is recognised by another built from
+/// the same sources -- which is what lets a release compile `Std` once and
+/// build it into the `meadow` it ships.
+///
+/// And **the precompiled library itself**, when `MEADOW_PRECOMPILED_STD` names
+/// one (`meadow __precompile-std` writes it): embedded, so that a `meadow`
+/// built this way never compiles `Std` at all. Without it the embedded bytes
+/// are empty, and `Std` is compiled once per toolchain on first use.
+fn precompiled_std(out: &Path) {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = here.join("../..");
+    let mut inputs: Vec<PathBuf> = vec![root.join("lib/Std"), here.join("src/stdlib.rs")];
+    if let Ok(crates) = std::fs::read_dir(root.join("compiler")) {
+        for c in crates.flatten() {
+            let p = c.path();
+            if p.join("Cargo.toml").is_file() {
+                inputs.push(p.join("src"));
+                inputs.push(p.join("Cargo.toml"));
+            }
+        }
+    }
+    inputs.sort();
+    let mut files = Vec::new();
+    for i in &inputs {
+        println!("cargo:rerun-if-changed={}", i.display());
+        collect(i, &mut files);
+    }
+    files.sort();
+    // FNV-1a, over each file's path relative to the root and its text with
+    // line endings made one kind, so that a checkout with CRLFs and one
+    // without agree.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    feed(env!("CARGO_PKG_VERSION").as_bytes());
+    for f in &files {
+        let rel = f.strip_prefix(&root).unwrap_or(f);
+        feed(rel.to_string_lossy().replace('\\', "/").as_bytes());
+        if let Ok(text) = std::fs::read(f) {
+            let text: Vec<u8> = text.into_iter().filter(|b| *b != b'\r').collect();
+            feed(&text);
+        }
+    }
+    println!("cargo:rustc-env=MEADOW_STD_FINGERPRINT={h:016x}");
+
+    println!("cargo:rerun-if-env-changed=MEADOW_PRECOMPILED_STD");
+    let bytes = match std::env::var_os("MEADOW_PRECOMPILED_STD") {
+        Some(path) => {
+            println!("cargo:rerun-if-changed={}", Path::new(&path).display());
+            std::fs::read(&path).unwrap_or_else(|e| {
+                println!(
+                    "cargo:warning=MEADOW_PRECOMPILED_STD names {}, which could not be read: {e}",
+                    Path::new(&path).display()
+                );
+                Vec::new()
+            })
+        }
+        None => Vec::new(),
+    };
+    let file = out.join("std");
+    if std::fs::read(&file).ok().as_deref() != Some(&bytes[..]) {
+        std::fs::write(&file, &bytes).expect("OUT_DIR is writable");
+    }
+}
+
+/// Every file under `path`, or `path` itself if it is one.
+fn collect(path: &Path, out: &mut Vec<PathBuf>) {
+    if path.is_file() {
+        out.push(path.to_path_buf());
+    } else if let Ok(entries) = std::fs::read_dir(path) {
+        for e in entries.flatten() {
+            collect(&e.path(), out);
+        }
+    }
 }
 
 fn wanted() -> bool {

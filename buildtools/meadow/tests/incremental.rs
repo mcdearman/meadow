@@ -303,7 +303,7 @@ fn the_cache_can_be_turned_off() {
     assert!(run("0").contains(r#"=> (42, "b x2")"#));
     assert!(!dir.exists(), "nothing is written");
     assert!(run("1").contains(r#"=> (42, "b x2")"#));
-    // `Std`, `Util`, `Text` and `App`.
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 4);
+    // `Util`, `Text` and `App`: `Std` is the toolchain's, not the project's.
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
     assert!(run("1").contains(r#"=> (42, "b x2")"#), "and read back");
 }

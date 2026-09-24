@@ -303,6 +303,17 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
     },
+    /// Compile the standard library ahead of time into OUT, for a build of
+    /// `meadow` to embed with `MEADOW_PRECOMPILED_STD=OUT`. Hidden: it is the
+    /// release's business, not a user's.
+    #[command(name = "__precompile-std", hide = true)]
+    PrecompileStd {
+        out: PathBuf,
+        /// The Rust target triple the `meadow` embedding it is built for;
+        /// this machine's by default.
+        #[arg(long)]
+        target: Option<String>,
+    },
 }
 
 /// `-p`, `--workspace` and `--exclude` -- which members of a workspace a
@@ -879,6 +890,12 @@ fn main() {
                 dry_run,
             }) {
                 status::error(e);
+                std::process::exit(1);
+            }
+        }
+        Some(Cmd::PrecompileStd { out, target }) => {
+            if let Err(e) = meadow::stdlib::precompile(&out, target.as_deref()) {
+                eprintln!("error: {e}");
                 std::process::exit(1);
             }
         }

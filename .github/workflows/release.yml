@@ -113,6 +113,23 @@ jobs:
             echo "AR_aarch64_linux_android=$bin/llvm-ar"
           } >> "$GITHUB_ENV"
 
+      # The standard library, compiled ahead of time for the target and built
+      # into the `meadow` below, so that it never compiles `Std` itself: see
+      # `buildtools/meadow/src/stdlib.rs`. Most targets are cross-compiled and
+      # their `meadow` cannot run here, so a `meadow` for this runner does it --
+      # the compile depends only on the target's system and processor, and on
+      # the sources, which the two builds share. Without the runtime library
+      # built in, which this one does not need.
+      - name: Precompile Std
+        working-directory: buildtools
+        shell: bash
+        run: |
+          MEADOW_EMBED_RUNTIME=0 cargo build --release -p meadow
+          host="target/release/meadow"
+          [ -f "$host.exe" ] && host="$host.exe"
+          "$host" __precompile-std "$RUNNER_TEMP/std.bin" --target ${{ matrix.target }}
+          echo "MEADOW_PRECOMPILED_STD=$RUNNER_TEMP/std.bin" >> "$GITHUB_ENV"
+
       # The CLI lives in the `buildtools/` workspace.
       - name: Build
         working-directory: buildtools
@@ -130,7 +147,13 @@ jobs:
           [ -f "$bin.exe" ] && bin="$bin.exe"
           "$bin" --version
           echo 'def main = 6 * 7' > /tmp/smoke.mw
-          "$bin" run /tmp/smoke.mw | tail -1 | grep -q '=> 42'
+          # With `Std` built in, a first run in an empty home compiles nothing
+          # of it and keeps nothing.
+          MEADOW_HOME="$RUNNER_TEMP/fresh-home" "$bin" run /tmp/smoke.mw | tail -1 | grep -q '=> 42'
+          if [ -d "$RUNNER_TEMP/fresh-home/lib/std" ]; then
+            echo "Std was compiled: the precompiled one is not built in" >&2
+            exit 1
+          fi
           # A release build is a native executable, linked against the runtime
           # built into the binary; `--aot` makes falling back an error.
           bin="$PWD/$bin"

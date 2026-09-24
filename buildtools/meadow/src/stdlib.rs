@@ -149,9 +149,185 @@ pub fn std_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
     let cell = &CACHE[cache_key(opts)];
     let (modules, diags) = cell.get_or_init(|| {
         counter(opts).fetch_add(1, Ordering::Relaxed);
-        compile_modules(opts)
+        if let Some(modules) = precompiled(opts).or_else(|| cached(opts)) {
+            return (modules, Vec::new());
+        }
+        let (modules, diags) = compile_modules(opts);
+        if diags.is_empty() {
+            save(opts, &modules);
+        }
+        (modules, diags)
     });
     (modules.clone(), diags.clone())
+}
+
+// --- the standard library, compiled ahead of time --------------------------
+//
+// `Std` is the same for every program, so like rustup's prebuilt `std` it is
+// compiled once, not once per project: a released `meadow` carries it
+// compiled, built into the binary (`build.rs`, `__precompile-std`), and a
+// `meadow` built without it compiles it on first use and keeps the result
+// under `~/.meadow/lib/std/`, for every project after. Either way nobody sees
+// it compiled -- it is the toolchain's, not the build's.
+//
+// What is kept is the modules, in the form [`std_modules`] answers: the bundle
+// a dependent sees is made from them in a moment, and the language server
+// needs them apart. It is the front end's output, from which both back ends --
+// bytecode and native -- start. A compile of `Std` depends on the platform,
+// on whether `match` must be exhaustive and on debug information (see
+// [`cache_key`]), so there is one per combination, and `MEADOW_STD_FINGERPRINT`
+// -- a hash of the sources that produce it -- says which compiler made it.
+
+/// The compiled modules built into this binary for `opts`, if there are any.
+fn precompiled(opts: Options) -> Option<Vec<(&'static str, CompiledPackage)>> {
+    static BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/std"));
+    if BLOB.is_empty() {
+        return None;
+    }
+    let (fingerprint, entries): Prebuilt = postcard::from_bytes(BLOB).ok()?;
+    if fingerprint != FINGERPRINT {
+        return None;
+    }
+    let key = variant(opts);
+    let (_, modules) = entries.iter().find(|(v, _)| *v == key)?;
+    decode(modules)
+}
+
+/// The modules an earlier run of this toolchain compiled for `opts`.
+fn cached(opts: Options) -> Option<Vec<(&'static str, CompiledPackage)>> {
+    decode(&std::fs::read(cache_file(opts)?).ok()?)
+}
+
+/// Keep `modules` for every later run of this toolchain. Whole or not at all,
+/// since another `meadow` may be reading it.
+fn save(opts: Options, modules: &[(&'static str, CompiledPackage)]) {
+    let Some(path) = cache_file(opts) else { return };
+    let Some(bytes) = encode(modules) else { return };
+    let Some(dir) = path.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let partial = path.with_extension(format!("{}", std::process::id()));
+    if std::fs::write(&partial, &bytes).is_ok() && std::fs::rename(&partial, &path).is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+}
+
+fn cache_file(opts: Options) -> Option<PathBuf> {
+    Some(
+        home()?
+            .join("lib")
+            .join("std")
+            .join(FINGERPRINT)
+            .join(format!("Std-{}.mstd", variant(opts))),
+    )
+}
+
+/// The hash of the sources that produce a compiled `Std` -- see `build.rs`.
+const FINGERPRINT: &str = env!("MEADOW_STD_FINGERPRINT");
+
+/// Which compile of `Std` `opts` wants: the platform, and [`cache_key`].
+fn variant(opts: Options) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in format!("{:?}", opts.cfg.platform()).bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}-{}", cache_key(opts))
+}
+
+/// What `__precompile-std` writes and `build.rs` embeds: the fingerprint, and
+/// each variant's modules as [`encode`] writes them -- decoded only for the one
+/// a build wants.
+type Prebuilt = (String, Vec<(String, Vec<u8>)>);
+
+const MAGIC: &[u8; 8] = b"MWSTD\x00\x00\x01";
+
+fn encode(modules: &[(&'static str, CompiledPackage)]) -> Option<Vec<u8>> {
+    let named: Vec<(&str, &CompiledPackage)> = modules.iter().map(|(n, p)| (*n, p)).collect();
+    let payload = postcard::to_stdvec(&named).ok()?;
+    let mut bytes = MAGIC.to_vec();
+    bytes.extend_from_slice(FINGERPRINT.as_bytes());
+    bytes.extend_from_slice(&payload);
+    Some(bytes)
+}
+
+/// The modules in `bytes`, if [`encode`] wrote them with this fingerprint --
+/// and if they are the modules `MODULES` names, in its order.
+fn decode(bytes: &[u8]) -> Option<Vec<(&'static str, CompiledPackage)>> {
+    let rest = bytes.strip_prefix(MAGIC)?;
+    let rest = rest.strip_prefix(FINGERPRINT.as_bytes())?;
+    let named: Vec<(String, CompiledPackage)> = postcard::from_bytes(rest).ok()?;
+    if named.len() != MODULES.len() {
+        return None;
+    }
+    named
+        .into_iter()
+        .zip(MODULES)
+        .map(|((n, p), (dotted, _))| (n == *dotted).then_some((*dotted, p)))
+        .collect()
+}
+
+/// Compile `Std` for `target` -- a Rust target triple, or the machine this
+/// runs on -- every variant a build can ask for, into one file for `build.rs`
+/// to embed: what `meadow __precompile-std` does. A release cross-compiles
+/// most of its `meadow`s, which cannot run where they are built, so the one
+/// that can compiles `Std` for each of them.
+pub fn precompile(to: &std::path::Path, target: Option<&str>) -> Result<(), String> {
+    let platform = match target {
+        Some(triple) => Some(platform_of(triple)?),
+        None => None,
+    };
+    let mut entries = Vec::new();
+    for strict in [false, true] {
+        for debug_info in [false, true] {
+            let mut opts = if strict {
+                Options::release()
+            } else {
+                Options::debug()
+            };
+            opts.debug_info = debug_info;
+            if let Some((os, arch)) = platform {
+                opts.cfg = opts.cfg.on(os, arch);
+            }
+            let (modules, diags) = compile_modules(opts);
+            if !diags.is_empty() {
+                return Err(format!(
+                    "the standard library does not compile: {}",
+                    diags[0].msg
+                ));
+            }
+            entries.push((
+                variant(opts),
+                encode(&modules).ok_or("could not encode the standard library")?,
+            ));
+        }
+    }
+    let prebuilt: Prebuilt = (FINGERPRINT.to_string(), entries);
+    let blob = postcard::to_stdvec(&prebuilt).map_err(|e| e.to_string())?;
+    std::fs::write(to, blob).map_err(|e| format!("could not write {}: {e}", to.display()))
+}
+
+/// What `std::env::consts` says on the machine a Rust target triple is for:
+/// what a `meadow` built for it will look its `Std` up by.
+fn platform_of(triple: &str) -> Result<(&'static str, &'static str), String> {
+    let arch = match triple.split('-').next() {
+        Some("x86_64") => "x86_64",
+        Some("aarch64") => "aarch64",
+        _ => return Err(format!("no `Std` for `{triple}`: x86_64 and aarch64 only")),
+    };
+    let os = if triple.contains("windows") {
+        "windows"
+    } else if triple.contains("android") {
+        "android"
+    } else if triple.contains("apple-darwin") {
+        "macos"
+    } else if triple.contains("linux") {
+        "linux"
+    } else {
+        return Err(format!("no `Std` for `{triple}`: an unknown system"));
+    };
+    Ok((os, arch))
 }
 
 /// The embedded `Std` package, compiled once per process.
@@ -166,40 +342,19 @@ pub fn std_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
 /// because linking consumes its packages — and cloning the compiled tree is
 /// about two orders of magnitude cheaper than rebuilding it.
 pub fn std_packages(opts: Options) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
-    std_packages_in(opts, None)
-}
-
-/// [`std_packages`], reading `Std` back from `saved` when the process has not
-/// compiled it yet and a build with this compiler has -- and saving it there
-/// when it compiles it instead. See [`crate::incremental`].
-pub fn std_packages_in(
-    opts: Options,
-    saved: Option<&crate::incremental::Cache>,
-) -> (Vec<CompiledPackage>, Vec<Diagnostic>) {
     static CACHE: [OnceLock<(Vec<CompiledPackage>, Vec<Diagnostic>)>; 4] =
         [const { OnceLock::new() }; 4];
     // The same key as `std_modules`, for the reason given there.
     let cell = &CACHE[cache_key(opts)];
     let (packages, diags) = cell.get_or_init(|| {
-        if let Some(package) = saved.and_then(|c| c.load_std()) {
-            counter(opts).fetch_add(1, Ordering::Relaxed);
-            return (vec![package], Vec::new());
-        }
         // Shares the one compile with `std_modules`, so asking for both costs
         // memory but not time.
-        crate::status::status(
-            "Compiling",
-            format!("{PACKAGE_NAME} v{} (embedded)", env!("CARGO_PKG_VERSION")),
-        );
         let (modules, diags) = std_modules(opts);
         let subs = modules.into_iter().map(|(_, p)| p).collect();
-        let package = bundle(InternedString::from(PACKAGE_NAME), subs);
-        if let Some(cache) = saved
-            && diags.is_empty()
-        {
-            cache.store_std(&package);
-        }
-        (vec![package], diags)
+        (
+            vec![bundle(InternedString::from(PACKAGE_NAME), subs)],
+            diags,
+        )
     });
     (packages.clone(), diags.clone())
 }
@@ -255,12 +410,7 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
     // dependencies. Each sub-unit gets `prelude_exports = Some([])` so a later
     // sibling only reaches it through `use`.
     let mut subs: Vec<(&'static str, CompiledPackage)> = Vec::new();
-    // Compiling the standard library is the slowest thing a first build does,
-    // so it gets a bar of its own, a module at a time.
-    let mut bar = crate::status::Building::new(MODULES.len());
     for (dotted, src) in MODULES {
-        bar.working_on(&format!("{PACKAGE_NAME}.{dotted}"));
-        bar.step();
         let filename = format!("Std/{}.mw", dotted.replace('.', "/"));
         let source = Source::new(
             SourceKind::File(InternedString::from(filename.as_str())),

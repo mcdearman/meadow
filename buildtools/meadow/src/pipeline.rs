@@ -378,7 +378,7 @@ pub(crate) fn compile_graph(
     opts: Options,
     cache: Option<&Cache>,
 ) -> Compiled {
-    let (std, mut diagnostics) = stdlib::std_packages_in(opts, cache);
+    let (std, mut diagnostics) = stdlib::std_packages(opts);
     let n = graph.packages.len();
     let mut packages: Vec<Option<CompiledPackage>> = (0..n).map(|_| None).collect();
     let mut fingerprints = vec![0u64; n];

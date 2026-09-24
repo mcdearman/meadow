@@ -27,9 +27,8 @@
 //! package starts on a boundary of [`ID_CHUNK`]: a package growing within its
 //! chunk moves nobody else.
 //!
-//! The embedded `Std` is kept the same way, in the same directory: it is most
-//! of the compiling a small program's build does, and without it every build
-//! would compile it again, however little else changed.
+//! `Std` is not kept here: it is the toolchain's, compiled ahead of time and
+//! shared by every project -- see [`crate::stdlib`].
 //!
 //! What is written is only ever a package that compiled without a diagnostic,
 //! against dependencies that did too, so that a build with errors reports them
@@ -64,7 +63,6 @@ pub struct Cache {
     /// it changes, so the directory holds one file per package per set of
     /// options, however many builds there have been.
     tag: u64,
-    opts: Options,
 }
 
 impl Cache {
@@ -79,7 +77,6 @@ impl Cache {
         Some(Cache {
             dir: crate::artifacts::incremental_dir(root, opts.cfg.profile),
             tag: h.finish(),
-            opts,
         })
     }
 
@@ -98,30 +95,6 @@ impl Cache {
             .dir
             .join(format!("{}-{:016x}.mpk", package.name, self.tag));
         write(&path, package, fingerprint);
-    }
-
-    /// The embedded `Std`, as an earlier build with this cache compiled it.
-    pub fn load_std(&self) -> Option<CompiledPackage> {
-        let (path, fingerprint) = self.std();
-        read(&path, fingerprint)
-    }
-
-    pub fn store_std(&self, package: &CompiledPackage) {
-        let (path, fingerprint) = self.std();
-        write(&path, package, fingerprint);
-    }
-
-    /// Where `Std` is kept, and its fingerprint. `Std` sees only the platform
-    /// and whether `match` must be exhaustive (see `stdlib::std_modules`), so
-    /// one file serves every other option; its sources are part of the
-    /// compiler.
-    fn std(&self) -> (PathBuf, u64) {
-        let mut h = hasher();
-        text(&mut h, &format!("{:?}", self.opts.cfg.platform()));
-        h.write_u8(u8::from(self.opts.check_exhaustive()));
-        let tag = h.finish();
-        h.write_u64(compiler());
-        (self.dir.join(format!("Std-{tag:016x}.mpk")), h.finish())
     }
 }
 

@@ -401,6 +401,14 @@ pub(crate) fn compile_graph(
     let mut bar = status::Building::new(graph.order().len());
     for &pid in graph.order() {
         let pkg = &graph.packages[pid];
+        // `@cfg(test)` holds in the packages being tested, not in what they
+        // depend on -- as cargo compiles a dependency without `cfg(test)`. A
+        // dependency's tests are its own business, and need not even compile
+        // under the compiler testing the package that uses it.
+        let mut opts = opts;
+        if !graph.roots().contains(&pid) {
+            opts.cfg.test = false;
+        }
         let dep_prints: Vec<u64> = pkg.deps.iter().map(|&d| fingerprints[d]).collect();
         let fingerprint = incremental::fingerprint(pkg, &dep_prints, opts, floor);
         let reused = cache.and_then(|c| c.load(&pkg.name, fingerprint));

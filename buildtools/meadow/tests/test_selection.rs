@@ -166,3 +166,41 @@ fn a_root_test_has_no_qualifier_and_a_nested_one_has_every_segment() {
         "Deep.Er.nested"
     );
 }
+
+/// `@cfg(test)` is the tested package's, not its dependencies': a dependency
+/// whose own tests no longer compile does not stop the package using it from
+/// being tested, as cargo builds a dependency without `cfg(test)`.
+#[test]
+fn a_dependency_is_built_without_its_tests() {
+    let root = std::env::temp_dir().join(format!("meadow-test-deps-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dep = root.join("dep");
+    let app = root.join("app");
+    std::fs::create_dir_all(dep.join("src")).unwrap();
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        dep.join("Meadow.toml"),
+        "[package]\nname = \"Dep\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dep.join("src").join("Lib.mw"),
+        "@pub fun one u = 1\n\n@cfg(test)\nfun broken u = 1 + \"not a number\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("Meadow.toml"),
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n\
+         [dependencies]\nDep = { path = \"../dep\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src").join("Main.mw"),
+        "use Std.Test (assertEq)\nuse Dep (one)\n\ndef main = 0\n\n\
+         @test fun usesDep u = assertEq (one ()) 1 \"one\"\n",
+    )
+    .unwrap();
+    assert_eq!(ran(&app, &[]), vec![("usesDep".to_string(), true)]);
+    // Tested on its own, the dependency's tests are compiled -- and fail to.
+    assert!(ran(&dep, &[]).is_empty());
+}

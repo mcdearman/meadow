@@ -61,8 +61,21 @@ impl Format {
     /// linker takes them: what `rustc --print native-static-libs` says, less
     /// what the C compiler links anyway. The Windows ones assume a `main`
     /// compiled against the DLL C runtime (`cl /MD`), as Rust's own `std` is.
+    ///
+    /// A native executable is for the machine this is running on, so which
+    /// ELF system it is -- Linux or Android -- is which one this was built for.
     pub fn system_libs(self) -> &'static [&'static str] {
+        self.system_libs_on(cfg!(target_os = "android"))
+    }
+
+    /// The same, saying whether an ELF target is Android: its C library is
+    /// Bionic, which has in it what glibc splits into `pthread`, `rt` and
+    /// `util`, and it has no `gcc_s` at all -- asking for one fails the link.
+    /// What it has instead is `log` and `unwind`. Again what `rustc --print
+    /// native-static-libs` says, for `aarch64-linux-android`.
+    pub fn system_libs_on(self, android: bool) -> &'static [&'static str] {
         match self {
+            Format::Elf if android => &["-ldl", "-llog", "-lunwind", "-ldl", "-lm", "-lc"],
             Format::MachO => &["-liconv", "-lSystem", "-lc", "-lm"],
             Format::Elf => &[
                 "-lgcc_s",
@@ -447,4 +460,27 @@ pub fn main_c() -> String {
          \x20   return meadow_aot_main({CODE}, {DATA}, argc, argv);\n\
          }}\n"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Format;
+
+    /// Android is ELF, but not glibc: asking its linker for `gcc_s` fails the
+    /// link, which is how the first native build on a phone went.
+    #[test]
+    fn android_links_its_own_system_libraries() {
+        let android = Format::Elf.system_libs_on(true);
+        for glibc_only in ["-lgcc_s", "-lutil", "-lrt", "-lpthread"] {
+            assert!(
+                !android.contains(&glibc_only),
+                "{glibc_only} in {android:?}"
+            );
+        }
+        assert!(android.contains(&"-llog") && android.contains(&"-lunwind"));
+        assert!(
+            Format::Elf.system_libs_on(false).contains(&"-lgcc_s"),
+            "Linux keeps its own"
+        );
+    }
 }

@@ -132,6 +132,10 @@ impl Target {
     /// The Rust target the runtime library for this is built for.
     pub fn triple(self) -> &'static str {
         match (self.arch, self.format) {
+            // An ELF target on Android is Android: a native executable is for
+            // the machine this runs on, and on a phone that is not glibc Linux.
+            (Arch::Aarch64, Format::Elf) if cfg!(target_os = "android") => "aarch64-linux-android",
+            (Arch::X86_64, Format::Elf) if cfg!(target_os = "android") => "x86_64-linux-android",
             (Arch::Aarch64, Format::MachO) => "aarch64-apple-darwin",
             (Arch::X86_64, Format::MachO) => "x86_64-apple-darwin",
             (Arch::Aarch64, Format::Elf) => "aarch64-unknown-linux-gnu",

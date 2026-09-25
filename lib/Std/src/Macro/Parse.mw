@@ -1,0 +1,190 @@
+-- Reading a macro's argument with `Std.String.Parse`.
+--
+-- A macro that defines a language has a grammar to read, and hand-matching
+-- token trees gets old fast. `Tokens` makes a macro's argument a stream the
+-- parser combinators read like any other, and `parseTokens` runs one: when it
+-- fails, the answer is a `Fail` at the token that was wrong, so the caller sees
+-- the error on their own line rather than on the whole call.
+--
+-- The stream is the argument laid flat: every bracket is a `Punct` of its own,
+-- spanned where it was written. So a parse that fails deep inside a group
+-- points at the token inside, not at the group. `group` reads one back, and
+-- `treesUntil` takes a run of tokens as the trees they were -- what a macro
+-- passes through untouched, so that errors in it land where it was written.
+--
+--   use Std.Macro.Parse (parseTokens, ident, punct, treesUntil)
+--   use Std.String.Parse as P
+--
+--   -- `rule! name = body`
+--   def rule = P.bind ident (\n -> P.skipThen (punct "=") (P.map (\b -> (n, b)) (treesUntil (\t -> False))))
+
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+use Std.Bool (not)
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+use Std.Tuple (fst, snd)
+use Std.Macro (TokenTree, Delim, Loc, spanOf, text, opening, closing, isWord, isPunct, word, string)
+use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
+use Std.Macro.Delim.*
+use Std.String.Parse (Parser, Stream, VisualStream, TraversableStream)
+use Std.String.Parse as P
+
+-- A macro's argument laid flat, as a parser reads it.
+@pub data Tokens = Tokens [TokenTree]
+
+-- `ts` as a stream: every group opened into its brackets and what is inside.
+@pub fun tokens (ts : [TokenTree]) : Tokens = Tokens (flatten ts)
+
+fun flatten (ts : [TokenTree]) : [TokenTree] = V.concatMap flat ts
+
+fun flat (t : TokenTree) : [TokenTree] =
+  match t with
+  | Group d inner at ->
+      V.pushBack (V.pushFront (flatten inner) (Punct (opening d) (openAt at))) (Punct (closing d) (closeAt at))
+  | other -> [other]
+
+fun openAt (s : Loc) : Loc = match s with | At a b -> At a (a + 1) | Nowhere -> Nowhere
+
+fun closeAt (s : Loc) : Loc = match s with | At a b -> At (b - 1) b | Nowhere -> Nowhere
+
+impl Stream Tokens {
+  type Token Tokens = TokenTree
+
+  fun take1 ts off = match ts with | Tokens v -> take1 v off
+
+  fun takeN ts n off =
+    match ts with
+    | Tokens v -> (match takeN v n off with | Just got -> Just (Tokens (fst got), snd got) | None -> None)
+
+  fun takeWhile ts f off =
+    match ts with
+    | Tokens v -> (let got = takeWhile v f off in (Tokens (fst got), snd got))
+
+  fun tokenToChunk t = Tokens [t]
+
+  fun tokensToChunk ts = Tokens ts
+
+  fun chunkToTokens ts = match ts with | Tokens v -> v
+
+  fun chunkLength ts = match ts with | Tokens v -> V.len v
+}
+
+impl VisualStream Tokens {
+  fun showToken _ t = "`${text t}`"
+}
+
+-- A run of the stream is where its first token starts up to where its last
+-- ends; an empty one is where the next token starts, or the end of the last.
+-- A token nothing wrote has no place, and nor does a run with one at its end:
+-- `(-1, -1)`, which `parseTokens` reports at the call.
+impl TraversableStream Tokens {
+  fun sourceSpan ts from to =
+    match ts with
+    | Tokens v ->
+        if from < to then
+          spanned (V.get v from) (V.get v (to - 1))
+        else
+          (match V.get v from with
+           | Just t -> startOf t
+           | None -> (match V.get v (V.len v - 1) with | Just t -> endOf t | None -> nowhere))
+}
+
+def nowhere : (Int, Int) = (0 - 1, 0 - 1)
+
+fun spanned (a : Maybe TokenTree) (b : Maybe TokenTree) : (Int, Int) =
+  match (a, b) with
+  | (Just x, Just y) -> (match (spanOf x, spanOf y) with | (At s _, At _ e) -> (s, e) | _ -> nowhere)
+  | _ -> nowhere
+
+fun startOf (t : TokenTree) : (Int, Int) = match spanOf t with | At s _ -> (s, s) | Nowhere -> nowhere
+
+fun endOf (t : TokenTree) : (Int, Int) = match spanOf t with | At _ e -> (e, e) | Nowhere -> nowhere
+
+-- --- running ---------------------------------------------------------------
+
+-- Run `p` over the tokens `ts`, all of them. A failure is the `Fail` a macro
+-- answers with: the parser's message, at the token it stopped on.
+@pub fun parseTokens (p : Parser Tokens a) (ts : [TokenTree]) : Result [TokenTree] a =
+  match P.parse (P.thenSkip p P.eof) (tokens ts) with
+  | Ok a -> Ok a
+  | Err e -> Err [Fail (snd e) (located (fst e))]
+
+-- A macro's whole answer from a parser of it: what the parser made of the
+-- argument, or where it went wrong.
+@pub fun expandWith (p : Parser Tokens [TokenTree]) (ts : [TokenTree]) : [TokenTree] =
+  match parseTokens p ts with
+  | Ok out -> out
+  | Err failed -> failed
+
+fun located (r : (Int, Int)) : Loc = if fst r < 0 then Nowhere else At (fst r) (snd r)
+
+-- --- tokens ------------------------------------------------------------------
+
+-- Any name, as it is spelled.
+@pub def ident : Parser Tokens String = P.label "a name" (P.token word [])
+
+-- The word `w`: a keyword of the language being read.
+@pub fun keyword (w : String) : Parser Tokens () = P.label "`${w}`" (P.void (P.satisfy (isWord w)))
+
+-- The punctuation `p`.
+@pub fun punct (p : String) : Parser Tokens () = P.label "`${p}`" (P.void (P.satisfy (isPunct p)))
+
+-- A string literal's contents.
+@pub def stringLit : Parser Tokens String = P.label "a string" (P.token string [])
+
+-- An integer literal.
+@pub def number : Parser Tokens Int =
+  P.label "a number" (P.token (\t -> match t with | Num n _ -> Just n | _ -> None) [])
+
+-- `p` inside brackets `d`.
+@pub fun group (d : Delim) (p : Parser Tokens a) : Parser Tokens a =
+  P.between (punct (opening d)) (punct (closing d)) p
+
+-- The tokens up to one that `stop` accepts outside any bracket -- or up to a
+-- closing bracket, or the end -- as the trees they were, groups rebuilt and
+-- every token still where it was written.
+@pub fun treesUntil (stop : TokenTree -> Bool) : Parser Tokens [TokenTree] =
+  P.many (P.alt (P.choice [groupTree Paren, groupTree Bracket, groupTree Brace]) (P.satisfy (\t -> not (stop t) and not (bracket t))))
+
+fun groupTree (d : Delim) : Parser Tokens TokenTree =
+  P.bind
+    (P.satisfy (isPunct (opening d)))
+    (\o ->
+      P.bind
+        (P.defer (\u -> treesUntil (\t -> False)))
+        (\inner -> P.map (\c -> Group d inner (across (spanOf o) (spanOf c))) (P.satisfy (isPunct (closing d)))))
+
+fun bracket (t : TokenTree) : Bool = V.any (\b -> isPunct b t) ["(", ")", "[", "]", "{", "}"]
+
+fun across (a : Loc) (b : Loc) : Loc = match (a, b) with | (At s _, At _ e) -> At s e | _ -> Nowhere
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+-- `name = a (b c)`, each token a byte after the last.
+def sample : [TokenTree] =
+  [ Word "name" (At 0 4),
+    Punct "=" (At 5 6),
+    Word "a" (At 7 8),
+    Group Paren [Word "b" (At 10 11), Word "c" (At 12 13)] (At 9 14) ]
+
+@test fun aRunIsReadBackAsTheTreesItWas () =
+  let rule = P.bind ident (\n -> P.skipThen (punct "=") (P.map (\b -> (n, b)) (treesUntil (\t -> False)))) in
+  match parseTokens rule sample with
+  | Ok got -> assertEq (V.len (snd got)) 2 "a word and a group, as written"
+  | Err e -> assertEq (V.len e) 0 "it parses"
+
+@test fun aFailureIsAtTheTokenThatWasWrong () =
+  let wanted = P.skipThen ident (punct ":") in
+  match parseTokens wanted sample with
+  | Ok got -> assertEq 0 1 "it should not parse"
+  | Err e -> assertEq (V.map spanOf e) [At 5 6] "at the `=`, not the whole call"
+
+@test fun aFailureInsideAGroupIsInsideIt () =
+  let wanted = P.skipThen ident (P.skipThen (punct "=") (P.skipThen ident (group Paren (P.skipThen ident number)))) in
+  match parseTokens wanted sample with
+  | Ok got -> assertEq 0 1 "it should not parse"
+  | Err e -> assertEq (V.map spanOf e) [At 12 13] "at the `c`"

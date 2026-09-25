@@ -942,7 +942,23 @@ fn ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         let tcon0 = upper_ident().map_with(|n, e| Located::new(TypeExpr::Con(n, vec![]), e.span()));
         let record = record_ty(ty.clone());
 
-        let atom = choice((unit, array, seq, paren_or_tuple, record, tvar, tcon0));
+        // A macro call written at the start of a line begins a declaration
+        // (see [`Token::DeclBang`]): its name is not one more field of the
+        // `data` above it.
+        let line_call = path_seg()
+            .separated_by(just(Token::Period))
+            .at_least(1)
+            .then(just(Token::DeclBang))
+            .ignored();
+        let atom = line_call.not().ignore_then(choice((
+            unit,
+            array,
+            seq,
+            paren_or_tuple,
+            record,
+            tvar,
+            tcon0,
+        )));
 
         let app = upper_ident()
             .then(atom.clone().repeated().at_least(1).collect::<Vec<_>>())
@@ -1038,7 +1054,21 @@ fn ty_atom<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
     // A variant's own `{ ... }` is its named fields, and `variant` tries that
     // first; a positional field of record type is written in parentheses.
     let record = record_ty(inner.clone());
-    choice((unit, array, seq, paren_or_tuple, record, tvar, tcon0))
+    // A macro call on the next line is a declaration, not one more field.
+    let line_call = path_seg()
+        .separated_by(just(Token::Period))
+        .at_least(1)
+        .then(just(Token::DeclBang))
+        .ignored();
+    line_call.not().ignore_then(choice((
+        unit,
+        array,
+        seq,
+        paren_or_tuple,
+        record,
+        tvar,
+        tcon0,
+    )))
 }
 
 /// `{ name : String, age : Int }` or `{ name : String | r }` -- a structural

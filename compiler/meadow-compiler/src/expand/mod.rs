@@ -26,11 +26,25 @@
 //! | `file!()` | the name of the file it is written in |
 //! | `stringify!(…)` | its argument, written back as text |
 //! | `concat!(a, b, …)` | its literal arguments, joined into one string |
+//! | `quote! { … $x … }` | an expression building those tokens, `$x` spliced (see [`quote`]) |
+
+/// The first thing a parser said about a macro's output, and where. A macro
+/// rather than a function: the parser's error type is not one this crate can
+/// name.
+macro_rules! first_error {
+    ($errs:expr) => {
+        $errs.first().map(|e| {
+            let d = meadow_diagnostics::from_parse_error("", e);
+            (d.msg, d.label.1)
+        })
+    };
+}
 
 pub mod datum;
 mod derive;
 mod hygiene;
 pub mod proc;
+mod quote;
 mod rules;
 
 pub use datum::{Binding, Datum};
@@ -49,7 +63,7 @@ use std::collections::HashMap;
 const MAX_DEPTH: usize = 128;
 
 /// The macros a built-in name takes, which a `macro` may not.
-const BUILT_IN: &[&str] = &["line", "file", "stringify", "concat"];
+const BUILT_IN: &[&str] = &["line", "file", "stringify", "concat", "quote"];
 
 /// A macro as it is stored and shared: its rules as token trees, unread.
 ///
@@ -904,6 +918,26 @@ impl<'a> Expander<'a> {
                 let text = self.concat(call)?;
                 one(Token::String(InternedString::from(text)))
             }
+            "quote" => match quote::expression(&call.arg.trees) {
+                Ok(text) => {
+                    let lexed = meadow_lexer::tokenize(meadow_source::Source::new(
+                        meadow_source::SourceKind::Interactive,
+                        InternedString::from(text),
+                    ));
+                    // What the quote wrote stands where the quote is.
+                    Some(
+                        lexed
+                            .tokens
+                            .iter()
+                            .map(|t| LToken::new(t.value().clone(), span))
+                            .collect(),
+                    )
+                }
+                Err((msg, at)) => {
+                    self.error(msg, "in this quote".to_string(), at, vec![]);
+                    None
+                }
+            },
             _ => match self.proc_macros.get(&call.name()).copied() {
                 Some((pkg, name)) => self.run_proc(call, pkg, name),
                 None => self.run_rules(call),
@@ -956,11 +990,11 @@ impl<'a> Expander<'a> {
             }
             Ok(proc::Outcome::Waiting(_)) => unreachable!("handled above"),
             Err(why) => {
-                self.error(
-                    format!("`{}!` did not answer: {why}", call.name()),
-                    "this call is what it was given".to_string(),
+                self.failed(
+                    &format!("`{}!`", call.name()),
+                    why,
                     at,
-                    vec![],
+                    "this call is what it was given",
                 );
                 None
             }
@@ -1094,7 +1128,7 @@ impl<'a> Expander<'a> {
     fn as_expr(&mut self, call: &ast::MacCall, span: Span) -> Option<ast::LExpr> {
         let out = self.run(call)?;
         let (parsed, errs) = meadow_parser::parse_expr(&out, span);
-        let mut e = self.parsed(call, span, "an expression", parsed, !errs.is_empty())?;
+        let mut e = self.parsed(call, span, "an expression", parsed, first_error!(errs))?;
         hygiene::strip_in_expr(&mut e);
         Some(e)
     }
@@ -1102,7 +1136,7 @@ impl<'a> Expander<'a> {
     fn as_pat(&mut self, call: &ast::MacCall, span: Span) -> Option<ast::LPat> {
         let out = self.run(call)?;
         let (parsed, errs) = meadow_parser::parse_pat(&out, span);
-        let mut p = self.parsed(call, span, "a pattern", parsed, !errs.is_empty())?;
+        let mut p = self.parsed(call, span, "a pattern", parsed, first_error!(errs))?;
         hygiene::strip_in_pat(&mut p);
         Some(p)
     }
@@ -1110,7 +1144,7 @@ impl<'a> Expander<'a> {
     fn as_decls(&mut self, call: &ast::MacCall, span: Span) -> Option<Vec<ast::LDecl>> {
         let out = self.run(call)?;
         let (parsed, errs) = meadow_parser::parse_decls(&out, span);
-        let mut ds = self.parsed(call, span, "declarations", parsed, !errs.is_empty())?;
+        let mut ds = self.parsed(call, span, "declarations", parsed, first_error!(errs))?;
         hygiene::strip_items(&mut ds);
         Some(ds)
     }
@@ -1126,13 +1160,25 @@ impl<'a> Expander<'a> {
         span: Span,
         wanted: &str,
         parsed: Option<T>,
-        failed: bool,
+        failed: Option<(String, Span)>,
     ) -> Option<T> {
-        match parsed {
-            Some(t) if !failed => Some(t),
-            _ => {
+        match (parsed, failed) {
+            (Some(t), None) => Some(t),
+            // Where the parser stopped, when that is a token the caller wrote
+            // and the macro passed through: the mistake is there.
+            (_, Some((why, at))) if at != span && span.start <= at.start && at.end <= span.end => {
                 self.error(
-                    format!("`{}!` did not expand to {wanted}", call.name()),
+                    format!("`{}!` did not expand to {wanted}: {why}", call.name()),
+                    "here".to_string(),
+                    at,
+                    vec![],
+                );
+                None
+            }
+            (_, why) => {
+                let why = why.map(|(w, _)| format!(": {w}")).unwrap_or_default();
+                self.error(
+                    format!("`{}!` did not expand to {wanted}{why}", call.name()),
                     format!("this call is where {wanted} belongs"),
                     span,
                     vec![],
@@ -1275,11 +1321,11 @@ impl<'a> Expander<'a> {
                         ),
                     }
                 }
-                Err(why) => self.error(
-                    format!("`{}` did not answer: {why}", want.value()),
-                    "this declaration is what it was given".to_string(),
+                Err(why) => self.failed(
+                    &format!("`{}`", want.value()),
+                    why,
                     want.span,
-                    vec![],
+                    "this declaration is what it was given",
                 ),
             }
         }
@@ -1568,6 +1614,20 @@ impl<'a> Expander<'a> {
         let out = f(self);
         self.depth -= 1;
         out
+    }
+
+    /// Report a macro that gave no answer: at the token it said was wrong
+    /// when it said one, and at `fallback` -- the call -- when it did not.
+    fn failed(&mut self, who: &str, why: proc::Failure, fallback: Span, label: &str) {
+        match why.at {
+            Some(at) => self.error(why.msg, format!("{who} stopped here"), at, vec![]),
+            None => self.error(
+                format!("{who} did not answer: {}", why.msg),
+                label.to_string(),
+                fallback,
+                vec![],
+            ),
+        }
     }
 
     fn error(&mut self, msg: String, label: String, span: Span, extra: Vec<(String, Span)>) {

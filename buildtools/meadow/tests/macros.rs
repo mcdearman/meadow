@@ -1163,9 +1163,10 @@ fn a_procedural_macro_can_answer_with_a_bracketed_group() {
         r#"
 use Std.Macro.TokenTree.*
 use Std.Macro.Delim.*
+use Std.Macro.Loc.*
 
 @macro
-@pub fun sum ts = [Group Paren [Num 40, Punct "+", Num 2], Punct "*", Num 1]
+@pub fun sum ts = [Group Paren [Num 40 Nowhere, Punct "+" Nowhere, Num 2 Nowhere] Nowhere, Punct "*" Nowhere, Num 1 Nowhere]
 "#,
         "use Maker (sum!)\n\ndef main = sum!()\n",
     );
@@ -1303,7 +1304,7 @@ use Std.Maybe.Maybe.*
 
 fun isUpperWord t =
   match t with
-  | Word w -> (match S.byteAt w 0 with | Just b -> b >= 65 and b <= 90 | None -> False)
+  | Word w _ -> (match S.byteAt w 0 with | Just b -> b >= 65 and b <= 90 | None -> False)
   | _ -> False
 
 fun arm c = "| ${text c} -> \"${text c}\" "
@@ -1322,9 +1323,10 @@ fn a_derive_is_given_the_declaration_as_it_was_written() {
         r#"
 use Std.Macro (spaced)
 use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
 
 @macro
-@pub fun echo ts = [Code "def given =", Str (spaced ts)]
+@pub fun echo ts = [Code "def given =", Str (spaced ts) Nowhere]
 "#,
         "use Maker (echo!)\n\n@derive(Echo)\ndata Token = @token(\"+\") Plus | @regex(\"[0-9]+\") Number\n\ndef main = given\n",
     );
@@ -1397,4 +1399,177 @@ fn a_derived_impl_asks_for_its_parameters_traits() {
     let src = "@derive(Debug)\ndata Pair a = Pair a a\n\ndef main = \"${Pair (\\x -> x) (\\x -> x):?}\"\n";
     let errs = common::errors_std_with(src, meadow::Options::debug());
     assert!(errs.contains("does not implement `Debug`"), "{errs}");
+}
+
+// --- where what a macro wrote is ----------------------------------------------
+
+/// Every diagnostic of the app at `dir`, with the text its label is on.
+fn located(dir: &Path, caller: &str) -> Vec<(String, String)> {
+    pipeline::build(dir, Options::debug())
+        .diagnostics
+        .iter()
+        .map(|d| {
+            let (a, b) = (d.label.1.start as usize, d.label.1.end as usize);
+            (d.msg.clone(), caller.get(a..b).unwrap_or("?").to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn a_macro_can_say_which_token_was_wrong() {
+    let caller = "use Maker (strict!)\n\ndef main = strict!(a b c)\n";
+    let app = with_macro(
+        "fail-at",
+        r#"
+use Std.Macro (failAt, fail)
+use Std.Collections.Vector as V
+
+@macro
+@pub fun strict ts = match V.get ts 1 with | Just t -> failAt "not this one" t | None -> fail "empty"
+"#,
+        caller,
+    );
+    let got = located(&app, caller);
+    assert_eq!(
+        got,
+        vec![("not this one".to_string(), "b".to_string())],
+        "{got:?}"
+    );
+}
+
+#[test]
+fn tokens_passed_through_keep_where_they_were_written() {
+    // The macro hands back what it was given; the type error in it is the
+    // caller's, on the caller's own tokens, and not on the whole call.
+    let caller = "use Maker (same!)\n\ndef main = same!(1 + \"x\")\n";
+    let app = with_macro("pass-through", "@macro\n@pub fun same ts = ts\n", caller);
+    let got = located(&app, caller);
+    assert!(!got.is_empty(), "it should not build");
+    assert!(
+        got.iter().all(|(_, at)| at != "(1 + \"x\")" && at != "?"),
+        "reported at the whole call rather than inside it: {got:?}"
+    );
+}
+
+#[test]
+fn a_parse_of_the_argument_fails_at_the_token_it_stopped_on() {
+    let caller = "use Maker (pair!)\n\ndef main = pair!(first (second third))\n";
+    let app = with_macro(
+        "parse-tokens",
+        r#"
+use Std.Macro (TokenTree, Delim, Loc, ToTokens, quoted)
+use Std.Macro.Parse (expandWith, ident, punct, group)
+use Std.String.Parse as P
+use Std.Macro.Delim.*
+
+@macro
+@pub fun pair ts =
+  expandWith
+    (P.bind ident (\a -> P.map (\b -> quote! { ($(TokenTree.Word a Loc.Nowhere), $(TokenTree.Word b Loc.Nowhere)) }) (group Paren (P.thenSkip ident (punct ",")))))
+    ts
+"#,
+        caller,
+    );
+    let got = located(&app, caller);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(
+        got[0].1, "third",
+        "at the token inside the brackets: {got:?}"
+    );
+}
+
+#[test]
+fn a_quote_writes_code_with_what_it_splices() {
+    let app = with_macro(
+        "quote",
+        r#"
+use Std.Macro (TokenTree, Delim, Loc, ToTokens, quoted)
+
+@macro
+@pub fun twice (ts : [TokenTree]) : [TokenTree] = quote! { ($ts, $ts) }
+
+@macro
+@pub fun dollars (ts : [TokenTree]) : [TokenTree] = quote! { $$ }
+"#,
+        "use Maker (twice!)\n\ndef main = twice!(20 + 1)\n",
+    );
+    assert_eq!(build(&app).expect("it builds"), "(21, 21)");
+}
+
+#[test]
+fn a_quoted_splice_keeps_where_the_caller_wrote_it() {
+    let caller = "use Maker (twice!)\n\ndef main = twice!(1 + \"x\")\n";
+    let app = with_macro(
+        "quote-spans",
+        r#"
+use Std.Macro (TokenTree, Delim, Loc, ToTokens, quoted)
+
+@macro
+@pub fun twice (ts : [TokenTree]) : [TokenTree] = quote! { ($ts, $ts) }
+"#,
+        caller,
+    );
+    let got = located(&app, caller);
+    assert!(!got.is_empty(), "it should not build");
+    assert!(
+        got.iter().all(|(_, at)| at != "(1 + \"x\")" && at != "?"),
+        "reported at the whole call rather than inside it: {got:?}"
+    );
+}
+
+#[test]
+fn a_macro_whose_argument_needs_a_trait_is_told_to_say_what_it_takes() {
+    // Left to inference, `toTokens ts` makes `ts` anything with `ToTokens`,
+    // and a macro is handed tokens with no trait to go with them.
+    let app = with_macro(
+        "needs-trait",
+        r#"
+use Std.Macro (TokenTree, Delim, Loc, ToTokens, quoted)
+
+@macro
+@pub fun twice ts = quote! { ($ts, $ts) }
+"#,
+        "use Maker (twice!)\n\ndef main = twice!(1)\n",
+    );
+    let errs = build(&app).expect_err("it does not build");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("say what it is: `(ts : [TokenTree])`")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn a_call_after_a_data_declaration_is_not_one_of_its_fields() {
+    // A variant's fields are type atoms, and a name is one: the call on the
+    // next line starts a declaration of its own.
+    is(
+        r#"
+macro constant
+  | ($name, $value) -> { fun $name = $value }
+
+data Shape = Square Int | Circle Int
+constant!(four, 4)
+
+def main = four
+"#,
+        "4",
+    );
+}
+
+#[test]
+fn what_a_macro_wrote_that_does_not_parse_says_why() {
+    let e = errors(
+        r#"
+macro broken
+  | () -> { fun = 1 }
+
+broken!()
+def main = 1
+"#,
+    );
+    assert!(
+        e.contains("`broken!` did not expand to declarations: found"),
+        "{e}"
+    );
 }

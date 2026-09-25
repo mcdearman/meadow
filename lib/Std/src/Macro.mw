@@ -10,11 +10,15 @@
 -- identifier or keyword, `Punct` is everything else by the text it is written
 -- with, and a bracketed run is a `Group` with what was inside it. That is the
 -- whole language a macro sees: brackets balance, and nothing else is promised.
+-- Each carries the `Loc` it was written at, and keeps it through what a macro
+-- hands back: an error in the caller's code a macro passed through is reported
+-- where the caller wrote it.
 --
--- `Code` is the way out of spelling everything: it holds Meadow as text, and
--- the compiler lexes it where the call was. A macro that generates code writes
--- it the way anyone writes code, and one that inspects its argument still gets
--- the tokens.
+-- A macro writes code with `quote! { … $x … }`, or as text with `Code`, which
+-- the compiler lexes where the call was. `Std.Macro.Parse` reads an argument
+-- with `Std.String.Parse`'s combinators.
+
+@pub mod Parse
 
 use Std.String as S
 use Std.Collections.Vector as V
@@ -24,46 +28,70 @@ use Std.Result.Result.*
 use Std.Tuple (fst, snd)
 use TokenTree.*
 use Delim.*
+use Loc.*
 use Outcome.*
 use Wire.*
 
 @derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub data Delim = Paren | Bracket | Brace
 
+-- Where a token was written: from one byte of the calling file up to another.
+-- A token a macro makes up was written nowhere, and stands where the call is.
+@derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
+@pub data Loc = At Int Int | Nowhere
+
 @derive(Debug, Display, PartialEq, PartialOrd)
 @pub data TokenTree
-  = Word String
-  | Punct String
-  | Str String
-  | Chr String
-  | Num Int
-  | Real Float
-  | Group Delim [TokenTree]
+  = Word String Loc
+  | Punct String Loc
+  | Str String Loc
+  | Chr String Loc
+  | Num Int Loc
+  | Real Float Loc
+  | Group Delim [TokenTree] Loc
   | Code String
-  -- Not tokens at all: what is wrong. A macro that is given something it
-  -- cannot work with answers with this, and the compiler reports it at the
-  -- call rather than writing code that fails for a reason nobody can read.
-  | Fail String
+  -- Not tokens at all: what is wrong, and where. A macro that is given
+  -- something it cannot work with answers with this, and the compiler reports
+  -- it at that place -- the token that was wrong, or the call if it is
+  -- `Nowhere` -- rather than writing code that fails for a reason nobody can
+  -- read.
+  | Fail String Loc
 
 -- Meadow written out as text, for the compiler to lex where the call was.
 @pub fun code (text : String) : TokenTree = Code text
 
 -- What a macro answers when it cannot do what it was asked: the whole answer,
--- since there is nothing else worth writing.
-@pub fun fail (why : String) : [TokenTree] = [Fail why]
+-- since there is nothing else worth writing. Reported at the call.
+@pub fun fail (why : String) : [TokenTree] = [Fail why Nowhere]
+
+-- The same, reported at the token `t` -- the one that was wrong.
+@pub fun failAt (why : String) (t : TokenTree) : [TokenTree] = [Fail why (spanOf t)]
+
+-- Where a token was written.
+@pub fun spanOf (t : TokenTree) : Loc =
+  match t with
+  | Word _ s -> s
+  | Punct _ s -> s
+  | Str _ s -> s
+  | Chr _ s -> s
+  | Num _ s -> s
+  | Real _ s -> s
+  | Group _ _ s -> s
+  | Fail _ s -> s
+  | Code _ -> Nowhere
 
 -- The text of a token, as it would be written.
 @pub fun text (t : TokenTree) : String =
   match t with
-  | Word w -> w
-  | Punct p -> p
-  | Str s -> "\"${s}\""
-  | Chr c -> "'${c}'"
-  | Num n -> show n
-  | Real r -> show r
+  | Word w _ -> w
+  | Punct p _ -> p
+  | Str s _ -> "\"${s}\""
+  | Chr c _ -> "'${c}'"
+  | Num n _ -> show n
+  | Real r _ -> show r
   | Code c -> c
-  | Fail why -> why
-  | Group d ts -> "${opening d}${spaced ts}${closing d}"
+  | Fail why _ -> why
+  | Group d ts _ -> "${opening d}${spaced ts}${closing d}"
 
 -- Every token written out, separated by spaces: what a macro that reads its
 -- argument as text starts from.
@@ -74,19 +102,19 @@ use Wire.*
 @pub fun closing (d : Delim) : String = match d with | Paren -> ")" | Bracket -> "]" | Brace -> "}"
 
 -- Whether this is the word `w`.
-@pub fun isWord (w : String) (t : TokenTree) : Bool = match t with | Word x -> x == w | _ -> False
+@pub fun isWord (w : String) (t : TokenTree) : Bool = match t with | Word x _ -> x == w | _ -> False
 
 -- Whether this is the punctuation `p`.
-@pub fun isPunct (p : String) (t : TokenTree) : Bool = match t with | Punct x -> x == p | _ -> False
+@pub fun isPunct (p : String) (t : TokenTree) : Bool = match t with | Punct x _ -> x == p | _ -> False
 
 -- The trees inside a group, or none if it is not one.
-@pub fun inside (t : TokenTree) : Maybe [TokenTree] = match t with | Group _ ts -> Just ts | _ -> None
+@pub fun inside (t : TokenTree) : Maybe [TokenTree] = match t with | Group _ ts _ -> Just ts | _ -> None
 
 -- The word a token is, or none.
-@pub fun word (t : TokenTree) : Maybe String = match t with | Word w -> Just w | _ -> None
+@pub fun word (t : TokenTree) : Maybe String = match t with | Word w _ -> Just w | _ -> None
 
 -- The string a token is, or none.
-@pub fun string (t : TokenTree) : Maybe String = match t with | Str s -> Just s | _ -> None
+@pub fun string (t : TokenTree) : Maybe String = match t with | Str s _ -> Just s | _ -> None
 
 -- `ts` split on the punctuation `p`, which is dropped.
 --
@@ -103,6 +131,52 @@ fun splitting p ts run acc =
         splitting p rest V.empty (V.pushBack acc run)
       else
         splitting p rest (V.pushBack run t) acc
+
+-- --- quoting ---------------------------------------------------------------
+--
+-- `quote! { fun $name x = $body }` is the tokens written there, with each
+-- `$name` -- or `$(an expression)` -- replaced by what it stands for, as
+-- tokens. What is spliced keeps where it was written, so a macro that passes
+-- the caller's code through leaves an error in it pointing at the caller's
+-- line; what the quote wrote stands where the call is.
+--
+-- The quote is expanded where it is written, into a call of `quoted` with
+-- `TokenTree`, `Delim` and `Loc` spelled out and each splice passed to
+-- `toTokens`: `use Std.Macro (TokenTree, Delim, Loc, ToTokens, quoted)`.
+
+-- What can be spliced into a quote, as the tokens that write it.
+@pub trait ToTokens a {
+  fun toTokens : a -> [TokenTree]
+}
+
+impl ToTokens TokenTree {
+  fun toTokens t = [t]
+}
+
+impl ToTokens [a] where ToTokens a {
+  fun toTokens xs = V.concatMap toTokens xs
+}
+
+impl ToTokens Int {
+  fun toTokens n = [Num n Nowhere]
+}
+
+impl ToTokens Float {
+  fun toTokens x = [Real x Nowhere]
+}
+
+impl ToTokens Bool {
+  fun toTokens b = [Word (if b then "True" else "False") Nowhere]
+}
+
+-- A string is spliced as a string literal. A name is a `Word`: splice
+-- `Word name Nowhere`.
+impl ToTokens String {
+  fun toTokens s = [Str s Nowhere]
+}
+
+-- The runs of tokens a quote was cut into, joined.
+@pub fun quoted (parts : #[[TokenTree]]) : [TokenTree] = V.concat (vecFromArray parts)
 
 -- --- compile-time bindings ---------------------------------------------------
 --
@@ -218,6 +292,27 @@ impl Reflect (Maybe a) where Reflect a {
     | other -> Err (expected "a Maybe" other)
 }
 
+-- A `Datum` as the source a `@compileTime def` reads it back from: what a
+-- macro splices to write out a value it was left.
+impl ToTokens Datum {
+  fun toTokens d =
+    match d with
+    | Datum.Sym s -> [Word s Nowhere]
+    | Datum.Str s -> [Str s Nowhere]
+    | Datum.Int n -> [Num n Nowhere]
+    | Datum.Float x -> [Real x Nowhere]
+    | Datum.Bool b -> toTokens b
+    | Datum.List ds -> [Group Bracket (commas (V.map toTokens ds)) Nowhere]
+    | Datum.Rec fs ->
+        [Group Brace (commas (V.map (\p -> V.append [Word (fst p) Nowhere, Punct "=" Nowhere] (toTokens (snd p))) fs)) Nowhere]
+    | Datum.Tag name ds -> V.pushFront (V.concatMap (\x -> [Group Paren (toTokens x) Nowhere]) ds) (Word name Nowhere)
+    | Datum.Code ts -> ts
+}
+
+-- Runs of tokens with a comma between each.
+fun commas (parts : [[TokenTree]]) : [TokenTree] =
+  V.foldl (\acc part -> if V.isEmpty acc then part else V.append (V.pushBack acc (Punct "," Nowhere)) part) V.empty parts
+
 -- What a `fromDatum` says when it was given the wrong thing.
 @pub fun expected (what : String) (got : Datum) : String = "expected ${what}, not ${show got}"
 
@@ -297,15 +392,20 @@ fun wireTrees (ts : [TokenTree]) : Wire = Node "" (V.toArray (V.map wireTree ts)
 
 fun wireTree (t : TokenTree) : Wire =
   match t with
-  | Word w -> Node "Word" #[Text w]
-  | Punct p -> Node "Punct" #[Text p]
-  | Str s -> Node "Str" #[Text s]
-  | Chr c -> Node "Chr" #[Text c]
-  | Num n -> Node "Num" #[Whole n]
-  | Real r -> Node "Real" #[Frac r]
-  | Group d ts -> Node "Group" #[Text (opening d), wireTrees ts]
+  | Word w at -> Node "Word" #[Text w, wireSpan at]
+  | Punct p at -> Node "Punct" #[Text p, wireSpan at]
+  | Str s at -> Node "Str" #[Text s, wireSpan at]
+  | Chr c at -> Node "Chr" #[Text c, wireSpan at]
+  | Num n at -> Node "Num" #[Whole n, wireSpan at]
+  | Real r at -> Node "Real" #[Frac r, wireSpan at]
+  | Group d ts at -> Node "Group" #[Text (opening d), wireTrees ts, wireSpan at]
   | Code c -> Node "Code" #[Text c]
-  | Fail why -> Node "Fail" #[Text why]
+  | Fail why at -> Node "Fail" #[Text why, wireSpan at]
+
+fun wireSpan (s : Loc) : Wire =
+  match s with
+  | At from to -> Node "At" #[Whole from, Whole to]
+  | Nowhere -> Node "Nowhere" #[]
 
 fun wireDatum (d : Datum) : Wire =
   match d with
@@ -324,18 +424,18 @@ fun wireDatum (d : Datum) : Wire =
 use Std.Test (assertEq, assertTrue, assertFalse)
 
 @test fun textWritesATokenBack () =
-  let a = assertEq (text (Word "fun")) "fun" "a word" in
-  let b = assertEq (text (Str "hi")) "\"hi\"" "a string keeps its quotes" in
-  let c = assertEq (text (Group Paren [Num 1, Punct "+", Num 2])) "(1 + 2)" "a group" in
+  let a = assertEq (text (Word "fun" Nowhere)) "fun" "a word" in
+  let b = assertEq (text (Str "hi" Nowhere)) "\"hi\"" "a string keeps its quotes" in
+  let c = assertEq (text (Group Paren [Num 1 Nowhere, Punct "+" Nowhere, Num 2 Nowhere] Nowhere)) "(1 + 2)" "a group" in
   assertEq (text (Code "def x = 1")) "def x = 1" "code is itself"
 
 @test fun splitOnCutsAtTheTopLevelOnly () =
-  let ts = [Word "a", Punct ",", Group Paren [Word "b", Punct ",", Word "c"]] in
+  let ts = [Word "a" Nowhere, Punct "," Nowhere, Group Paren [Word "b" Nowhere, Punct "," Nowhere, Word "c" Nowhere] Nowhere] in
   let parts = splitOn "," ts in
   let a = assertEq (V.len parts) 2 "two parts" in
   assertEq (V.map spaced parts) ["a", "(b , c)"] "the bracketed comma is left alone"
 
 @test fun isWordAndIsPunctSayWhatATokenIs () =
-  let a = assertTrue (isWord "data" (Word "data")) "a word" in
-  let b = assertFalse (isWord "data" (Punct "data")) "not a word" in
-  assertTrue (isPunct "->" (Punct "->")) "punctuation"
+  let a = assertTrue (isWord "data" (Word "data" Nowhere)) "a word" in
+  let b = assertFalse (isWord "data" (Punct "data" Nowhere)) "not a word" in
+  assertTrue (isPunct "->" (Punct "->" Nowhere)) "punctuation"

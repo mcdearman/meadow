@@ -322,10 +322,9 @@ workspaces is just another member. It is given a fuel budget, so a macro that
 loops forever fails the build instead of hanging it.
 
 `Std.Macro` provides the `TokenTree` type: a `Word`, a `Punct` by the text it is
-written with, a literal, a bracketed `Group` — and `Code`, which holds Meadow as
-text for the compiler to lex where the call was. That last one is what a macro
-that _writes_ code uses, and it is why there is no `quote` yet: a macro that
-generates a function writes the function, as anyone would.
+written with, a literal, a bracketed `Group` — each with the `Loc` it was written
+at — and `Code`, which holds Meadow as text for the compiler to lex where the
+call was. A macro writes code with `quote!` (below), or as text with `Code`.
 
 ```meadow
 -- in its own package: an ordinary exported function that says what it is
@@ -358,6 +357,69 @@ macro is imported, so nothing it answers can depend on when it ran. That is what
 makes the answers cacheable, and they are cached, on exactly the tokens it was
 given. It runs with a step budget (`MEADOW_MACRO_FUEL` to change it), so a macro
 that does not stop fails the build rather than hanging it.
+
+### Where a token was written
+
+Every token a macro is given carries a **`Loc`**: `At start end`, the bytes of
+the calling file it was written at, or `Nowhere` for one a macro made up. What
+comes back is placed by it. A token the macro passes through — the caller's
+expression, a clause of a pass — stays where the caller wrote it, so an error in
+it is reported on the caller's own line; a token written `Nowhere`, and all of
+`Code`, stands where the call is.
+
+A macro that cannot use what it was given says where: `failAt "expected a name"
+t` answers `[Fail … (spanOf t)]`, and the compiler reports the message at `t`.
+`fail` reports at the call.
+
+A binding's `Code` loses its places when it is stored: it was written in some
+other file, and is spliced wherever a later macro puts it.
+
+### `quote!`
+
+Writing tokens out constructor by constructor buries what they say. A quote is
+the tokens themselves, with `$name` — or `$(an expression)` — where something
+goes in, and `$$` for a `$`:
+
+```meadow
+use Std.Macro (TokenTree, Delim, Loc, ToTokens, quoted)
+
+@macro
+@pub fun twice (ts : [TokenTree]) : [TokenTree] = quote! { ($ts, $ts) }
+```
+
+It is expanded where it is written, in the macro's package, into an expression
+building the tokens: what it writes stands `Nowhere`, and a splice is whatever
+`toTokens` makes of it — tokens as they are, still where the caller wrote them;
+an `Int` or `String` as a literal; a `Datum` as the source that would read it
+back. It names `quoted`, `toTokens`, `TokenTree`, `Delim` and `Loc`, which is
+the `use` above.
+
+A macro's argument is handed over as tokens and nothing else, so its type has
+to say so when inference would leave it open: `toTokens ts` alone makes `ts`
+anything with `ToTokens`, and a macro whose argument needs a trait is refused
+with a message saying to write `(ts : [TokenTree])`.
+
+### Reading an argument: `Std.Macro.Parse`
+
+A macro with a grammar to read uses `Std.String.Parse`'s combinators on it.
+`Std.Macro.Parse` makes the argument a stream of its own, `Tokens` — laid flat,
+every bracket a `Punct` in its own place — and `parseTokens` runs a parser over
+all of it, answering a failure as a `Fail` at the token the parser stopped on,
+however deep in brackets:
+
+```meadow
+use Std.Macro.Parse (expandWith, ident, punct, group)
+use Std.String.Parse as P
+
+-- `pair!(a (b, c))`: fails at `c` if the comma is missing
+@macro
+@pub fun pair (ts : [TokenTree]) : [TokenTree] =
+  expandWith (P.bind ident (\a -> P.map (\b -> …) (group Paren (P.thenSkip ident (punct ","))))) ts
+```
+
+`ident`, `keyword`, `punct`, `stringLit`, `number` and `group` read tokens;
+`treesUntil` takes a run as the trees it was, groups rebuilt and every token in
+its place — what a macro hands back untouched.
 
 ### `@derive`
 
@@ -553,11 +615,12 @@ it was given and reused only while each of those names still stands for what it
 did. A package's fingerprint already covers its dependencies', so a binding
 changing upstream rebuilds whoever read it.
 
-One more thing an embedded language wants: to match _structured_ syntax rather
-than counting brackets. So `Std.Macro` should expose the parser's own entry
+An embedded language also wants to read _structured_ syntax rather than count
+brackets. `Std.Macro.Parse` (see [section 9](#reading-an-argument-stdmacroparse))
+reads a macro's own grammar; what is not built yet is the parser's own entry
 points — the ones [section 5](#5-how-expansion-runs) added — as library
-functions, letting a proc macro ask for a token tree as an expression or a
-pattern and work on the tree. That is not built yet.
+functions, so that a proc macro could ask for a run of tokens as a Meadow
+expression or pattern and work on the tree.
 
 ## 11. What is left out
 
@@ -600,9 +663,7 @@ Each step is useful on its own and none commits to the next.
    call, labelled with the macro that wrote it.
    ([`expand/mod.rs`](../compiler/meadow-compiler/src/expand/mod.rs))
 7. **Done.** **Procedural macros**: `@macro`, `Std.Macro`, running on the VM
-   under an effect bound and a fuel budget, cached on input, and `@derive`. `quote` is
-   the one piece left out — a macro writes code as text and the compiler lexes
-   it, which is what `Code` is for.
+   under an effect bound and a fuel budget, cached on input, and `@derive`.
    ([`expand/proc.rs`](../compiler/meadow-compiler/src/expand/proc.rs),
    [`proc.rs`](../buildtools/meadow/src/proc.rs))
 8. **Done.** **Compile-time bindings**
@@ -613,3 +674,9 @@ Each step is useful on its own and none commits to the next.
    rests on every step before it.
    ([`datum.rs`](../compiler/meadow-compiler/src/expand/datum.rs),
    [`Macro.mw`](../lib/Std/src/Macro.mw))
+9. **Done.** **Tokens with places**: a `Loc` on every token, kept through what a
+   macro passes back and reported at by `failAt`; `quote!`, with `$` splices
+   through `ToTokens`; and `Std.Macro.Parse`, a token stream for
+   `Std.String.Parse` whose failures land on the token they stopped at.
+   ([`quote.rs`](../compiler/meadow-compiler/src/expand/quote.rs),
+   [`Macro/Parse.mw`](../lib/Std/src/Macro/Parse.mw))

@@ -22,7 +22,7 @@
 //! it.
 
 use meadow_compiler::expand::Datum;
-use meadow_compiler::expand::proc::{Outcome, Runner, Scope};
+use meadow_compiler::expand::proc::{Failure, Outcome, Runner, Scope};
 use meadow_compiler::span::Span;
 use meadow_compiler::{CompiledPackage, core, intern::InternedString, lexer::tt};
 use std::cell::RefCell;
@@ -183,7 +183,7 @@ impl Runner for Macros<'_> {
         input: &[tt::TokenTree],
         at: Span,
         scope: &Scope<'_>,
-    ) -> Result<Outcome, String> {
+    ) -> Result<Outcome, Failure> {
         let key = (package, name, tt::render(input), scope.settled);
         // An answer is good for as long as everything it read still says what
         // it said: the argument is the key, and the reads are checked here.
@@ -215,6 +215,7 @@ impl Runner for Macros<'_> {
         let mut enc = Encode {
             from_array,
             ctor: &|bare| self.ctor(bare),
+            spans: true,
         };
         let argument = enc.trees(input)?;
         // Later bindings shadow earlier ones, and the handler takes the first
@@ -224,7 +225,7 @@ impl Runner for Macros<'_> {
             .iter()
             .rev()
             .map(|(n, d)| Ok(core::Term::Tuple(vec![text(n), enc.datum(d)?])))
-            .collect::<Result<_, String>>()?;
+            .collect::<Result<_, Failure>>()?;
         let bound = core::Term::App(
             Arc::new(core::Term::Var(from_array)),
             Arc::new(core::Term::Array(bound, unknown())),
@@ -244,7 +245,7 @@ impl Runner for Macros<'_> {
             core::Term::App(Arc::new(g), Arc::new(x))
         });
         let value = meadow_eval::eval_with_fuel(&self.program(), Arc::new(call), self.fuel)
-            .map_err(|e| e.msg)?;
+            .map_err(|e| Failure::from(e.msg))?;
         let out = outcome(&wire(&value)?, at)?;
         if let Outcome::Answered { read, .. } = &out {
             let current = |n: &str| {
@@ -270,6 +271,10 @@ impl Runner for Macros<'_> {
 struct Encode<'a> {
     from_array: core::Var,
     ctor: &'a dyn Fn(&str) -> Option<InternedString>,
+    /// Whether tokens go in where they were written. A binding's code does
+    /// not: it was written in whatever file defined it, and where it is spliced
+    /// is somewhere else, so it stands `Nowhere` -- at the call that uses it.
+    spans: bool,
 }
 
 impl Encode<'_> {
@@ -285,7 +290,7 @@ impl Encode<'_> {
 
     fn tree(&mut self, tree: &tt::TokenTree) -> Result<core::Term, String> {
         use meadow_compiler::lexer::Token;
-        let (ctor, fields) = match tree {
+        let (ctor, mut fields) = match tree {
             tt::TokenTree::Group(g) => {
                 let delim = self.delim(g.delim)?;
                 let inner = self.trees(&g.trees)?;
@@ -311,7 +316,21 @@ impl Encode<'_> {
                 }
             },
         };
+        let span = match tree {
+            tt::TokenTree::Group(g) => Span::new(g.open.start, g.close.end),
+            tt::TokenTree::Token(t) => t.span,
+        };
+        fields.push(self.loc(span)?);
         self.build(&format!("TokenTree.{ctor}"), fields)
+    }
+
+    /// Where a token was written, as a `Std.Macro.Loc`.
+    fn loc(&mut self, span: Span) -> Result<core::Term, String> {
+        if !self.spans {
+            return self.build("Loc.Nowhere", Vec::new());
+        }
+        let at = |n: u32| core::Term::Lit(core::Lit::Int(n as i64));
+        self.build("Loc.At", vec![at(span.start), at(span.end)])
     }
 
     fn delim(&mut self, d: tt::Delim) -> Result<core::Term, String> {
@@ -340,7 +359,12 @@ impl Encode<'_> {
                 ("Rec", vec![self.array(fields)])
             }
             Datum::Tag(t, ds) => ("Tag", vec![text(t), self.vector(ds)?]),
-            Datum::Code(ts) => ("Code", vec![self.trees(ts)?]),
+            Datum::Code(ts) => {
+                let was = std::mem::replace(&mut self.spans, false);
+                let trees = self.trees(ts);
+                self.spans = was;
+                ("Code", vec![trees?])
+            }
         };
         self.build(&format!("Datum.{ctor}"), fields)
     }
@@ -441,7 +465,7 @@ fn wire_text(w: &Wire) -> Result<String, String> {
 }
 
 /// How the run ended.
-fn outcome(w: &Wire, at: Span) -> Result<Outcome, String> {
+fn outcome(w: &Wire, at: Span) -> Result<Outcome, Failure> {
     match w {
         Wire::Node(tag, xs) if tag == "Answered" && xs.len() == 3 => {
             let trees = decode_trees(&xs[0], at)?;
@@ -449,13 +473,13 @@ fn outcome(w: &Wire, at: Span) -> Result<Outcome, String> {
                 .iter()
                 .map(|d| match d {
                     Wire::Node(name, v) if v.len() == 1 => Ok((name.clone(), datum(&v[0], at)?)),
-                    _ => Err("a definition without a value".to_string()),
+                    _ => Err(Failure::from("a definition without a value")),
                 })
-                .collect::<Result<_, String>>()?;
+                .collect::<Result<_, Failure>>()?;
             let read = children(&xs[2])?
                 .iter()
                 .map(wire_text)
-                .collect::<Result<_, _>>()?;
+                .collect::<Result<_, String>>()?;
             Ok(Outcome::Answered {
                 trees,
                 defined,
@@ -465,14 +489,14 @@ fn outcome(w: &Wire, at: Span) -> Result<Outcome, String> {
         Wire::Node(tag, xs) if tag == "Waiting" && xs.len() == 1 => {
             Ok(Outcome::Waiting(wire_text(&xs[0])?))
         }
-        _ => Err("it did not answer with tokens".to_string()),
+        _ => Err(Failure::from("it did not answer with tokens")),
     }
 }
 
 /// A `Datum`, read back.
-fn datum(w: &Wire, at: Span) -> Result<Datum, String> {
+fn datum(w: &Wire, at: Span) -> Result<Datum, Failure> {
     let Wire::Node(tag, xs) = w else {
-        return Err("a value that is not a `Datum`".to_string());
+        return Err(Failure::from("a value that is not a `Datum`"));
     };
     let one = || {
         xs.first()
@@ -483,11 +507,11 @@ fn datum(w: &Wire, at: Span) -> Result<Datum, String> {
         "Str" => Datum::Str(wire_text(one()?)?),
         "Int" => match one()? {
             Wire::Whole(n) => Datum::Int(*n),
-            _ => return Err("`Int` of something that is not a number".to_string()),
+            _ => return Err(Failure::from("`Int` of something that is not a number")),
         },
         "Float" => match one()? {
             Wire::Frac(f) => Datum::Float(*f),
-            _ => return Err("`Float` of something that is not a number".to_string()),
+            _ => return Err(Failure::from("`Float` of something that is not a number")),
         },
         "Bool" => Datum::Bool(matches!(one()?, Wire::Whole(n) if *n != 0)),
         "List" => Datum::List(xs.iter().map(|x| datum(x, at)).collect::<Result<_, _>>()?),
@@ -495,9 +519,9 @@ fn datum(w: &Wire, at: Span) -> Result<Datum, String> {
             xs.iter()
                 .map(|f| match f {
                     Wire::Node(k, v) if v.len() == 1 => Ok((k.clone(), datum(&v[0], at)?)),
-                    _ => Err("a field without a value".to_string()),
+                    _ => Err(Failure::from("a field without a value")),
                 })
-                .collect::<Result<_, String>>()?,
+                .collect::<Result<_, Failure>>()?,
         ),
         "Tag" if xs.len() == 2 => Datum::Tag(
             wire_text(&xs[0])?,
@@ -507,13 +531,13 @@ fn datum(w: &Wire, at: Span) -> Result<Datum, String> {
                 .collect::<Result<_, _>>()?,
         ),
         "Code" => Datum::Code(decode_trees(one()?, at)?),
-        other => return Err(format!("`{other}` is not a `Datum`")),
+        other => return Err(Failure::from(format!("`{other}` is not a `Datum`"))),
     })
 }
 
 /// Token trees, read back. `Code` is text, which is lexed here -- that is the
 /// point of it -- so one tree can be several.
-fn decode_trees(w: &Wire, at: Span) -> Result<Vec<tt::TokenTree>, String> {
+fn decode_trees(w: &Wire, at: Span) -> Result<Vec<tt::TokenTree>, Failure> {
     let mut out = Vec::new();
     for t in children(w)? {
         out.extend(decode(t, at)?);
@@ -521,54 +545,81 @@ fn decode_trees(w: &Wire, at: Span) -> Result<Vec<tt::TokenTree>, String> {
     Ok(out)
 }
 
-fn decode(w: &Wire, at: Span) -> Result<Vec<tt::TokenTree>, String> {
+fn decode(w: &Wire, at: Span) -> Result<Vec<tt::TokenTree>, Failure> {
     use meadow_compiler::lexer::{LToken, Token};
     let Wire::Node(tag, xs) = w else {
-        return Err("it did not answer with tokens".to_string());
+        return Err(Failure::from("it did not answer with tokens"));
     };
-    let one = |t: Token| Ok(vec![tt::TokenTree::Token(LToken::new(t, at))]);
     let first = || {
         xs.first()
             .ok_or_else(|| format!("`{tag}` with nothing in it"))
     };
+    // Where the token stands: where it was written, or -- for one the macro
+    // made up -- where the call is.
+    let placed = |i: usize| xs.get(i).and_then(written).unwrap_or(at);
+    let one = |t: Token, i: usize| Ok(vec![tt::TokenTree::Token(LToken::new(t, placed(i)))]);
     match tag.as_str() {
         // A word is whatever the lexer makes of it: a keyword is a keyword,
         // and an identifier's case says which kind it is.
-        "Word" | "Punct" | "Code" => lex(&wire_text(first()?)?, at),
-        "Str" => one(Token::String(InternedString::from(wire_text(first()?)?))),
+        "Word" | "Punct" => Ok(lex(&wire_text(first()?)?, placed(1))?),
+        "Code" => Ok(lex(&wire_text(first()?)?, at)?),
+        "Str" => one(Token::String(InternedString::from(wire_text(first()?)?)), 1),
         "Chr" => {
             let s = wire_text(first()?)?;
             let mut cs = s.chars();
             match (cs.next(), cs.next()) {
-                (Some(c), None) => one(Token::Char(c)),
-                _ => Err("a character has to be one character".to_string()),
+                (Some(c), None) => one(Token::Char(c), 1),
+                _ => Err(Failure::from("a character has to be one character")),
             }
         }
         "Num" => match first()? {
-            Wire::Whole(n) => one(Token::Int(*n)),
-            _ => Err("`Num` was given something that is not a number".to_string()),
+            Wire::Whole(n) => one(Token::Int(*n), 1),
+            _ => Err(Failure::from(
+                "`Num` was given something that is not a number",
+            )),
         },
         "Real" => match first()? {
-            Wire::Frac(f) => one(Token::Real(f.to_bits())),
-            _ => Err("`Real` was given something that is not a number".to_string()),
+            Wire::Frac(f) => one(Token::Real(f.to_bits()), 1),
+            _ => Err(Failure::from(
+                "`Real` was given something that is not a number",
+            )),
         },
-        // Not tokens: what the macro has to say about what it was given.
-        "Fail" => Err(wire_text(first()?)?),
-        "Group" if xs.len() == 2 => {
+        // Not tokens: what the macro has to say about what it was given, and
+        // where -- the token that was wrong, when it said one.
+        "Fail" => Err(Failure {
+            msg: wire_text(first()?)?,
+            at: xs.get(1).and_then(written),
+        }),
+        "Group" if xs.len() >= 2 => {
             let delim = match wire_text(&xs[0])?.as_str() {
                 "(" => tt::Delim::Paren,
                 "[" => tt::Delim::Brack,
                 "{" => tt::Delim::Brace,
-                _ => return Err("a group with no bracket".to_string()),
+                _ => return Err(Failure::from("a group with no bracket")),
             };
+            let span = placed(2);
             Ok(vec![tt::TokenTree::Group(tt::Group {
                 delim,
                 trees: decode_trees(&xs[1], at)?,
-                open: Span::new(at.start, at.start),
-                close: Span::new(at.end, at.end),
+                open: Span::new(span.start, (span.start + 1).min(span.end)),
+                close: Span::new(span.end.saturating_sub(1).max(span.start), span.end),
             })])
         }
-        other => Err(format!("`{other}` is not a token")),
+        other => Err(Failure::from(format!("`{other}` is not a token"))),
+    }
+}
+
+/// A `Loc`, read back: `Some` of where a token was written, `None` for one
+/// written `Nowhere`.
+fn written(w: &Wire) -> Option<Span> {
+    match w {
+        Wire::Node(tag, xs) if tag == "At" => match (xs.first(), xs.get(1)) {
+            (Some(Wire::Whole(a)), Some(Wire::Whole(b))) if *a >= 0 && *b >= *a => {
+                Some(Span::new(*a as u32, *b as u32))
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 

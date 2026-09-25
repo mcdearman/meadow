@@ -38,23 +38,24 @@ fn build(dir: &Path) -> Result<String, Vec<String>> {
 const MAKER: &str = r#"
 use Std.Macro (Datum, Reflect, lookup, define, lookupAs)
 use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
 use Std.Collections.Vector as V
 
 @macro
 @pub fun remember ts =
   match (V.get ts 0, V.get ts 1) with
-  | (Just (Word n), Just (Num v)) -> let u = define (n, Datum.Int v) in []
-  | _ -> [Fail "remember!(name number)"]
+  | (Just (Word n _), Just (Num v _)) -> let u = define (n, Datum.Int v) in []
+  | _ -> [Fail "remember!(name number)" Nowhere]
 
 @macro
 @pub fun recall ts =
   match V.get ts 0 with
-  | Just (Word n) ->
+  | Just (Word n _) ->
       (match lookup n with
-       | Just (Datum.Int v) -> [Num v]
-       | Just other -> [Fail "`${n}` is not a number"]
-       | None -> [Fail "nothing is called `${n}`"])
-  | _ -> [Fail "recall!(name)"]
+       | Just (Datum.Int v) -> [Num v Nowhere]
+       | Just other -> [Fail "`${n}` is not a number" Nowhere]
+       | None -> [Fail "nothing is called `${n}`" Nowhere])
+  | _ -> [Fail "recall!(name)" Nowhere]
 
 @derive(Reflect)
 @pub record Point = { x : Int, y : Int }
@@ -64,8 +65,8 @@ fun point (r : Result String Point) : Result String Point = r
 @macro
 @pub fun sumOf ts =
   match V.get ts 0 with
-  | Just (Word n) -> (match point (lookupAs n) with | Ok p -> [Num (p.x + p.y)] | Err e -> [Fail e])
-  | _ -> [Fail "sumOf!(name)"]
+  | Just (Word n _) -> (match point (lookupAs n) with | Ok p -> [Num (p.x + p.y) Nowhere] | Err e -> [Fail e Nowhere])
+  | _ -> [Fail "sumOf!(name)" Nowhere]
 "#;
 
 fn maker(what: &str) -> PathBuf {

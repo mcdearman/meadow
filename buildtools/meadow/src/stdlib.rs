@@ -121,6 +121,11 @@ pub const MODULES: &[(&str, &str)] = &[
     ("Json", include_str!("../../../lib/Std/src/Json.mw")),
     // After `String`, whose `join` it writes tokens with.
     ("Macro", include_str!("../../../lib/Std/src/Macro.mw")),
+    // After `Macro`, whose tokens it reads, and `String.Parse`, which reads them.
+    (
+        "Macro.Parse",
+        include_str!("../../../lib/Std/src/Macro/Parse.mw"),
+    ),
     ("Console", include_str!("../../../lib/Std/src/Console.mw")),
     // After `Console`, so `time` can print what it measured.
     ("Time", include_str!("../../../lib/Std/src/Time.mw")),

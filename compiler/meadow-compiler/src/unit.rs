@@ -1148,7 +1148,7 @@ fn apply_use(
         if let Some(&id) = map.get(&name) {
             resolver.import_from(name, id, InternedString::from(dotted(&segs)));
             resolver.note_ref(n.span, NameRef::Value(id));
-        } else if let Some(methods) = trait_methods(&segs, name, deps) {
+        } else if let Some(methods) = trait_methods(pkg, &segs, name, deps) {
             // A trait brings its methods: naming `Show` is asking to call
             // `show`.
             let from = InternedString::from(dotted(&segs));
@@ -1187,12 +1187,24 @@ fn apply_use(
 /// The methods of the trait `name`, if a dependency the `use` path `segs`
 /// reaches declares one by that name.
 fn trait_methods(
+    pkg: InternedString,
     segs: &[InternedString],
     name: InternedString,
     deps: &[Dep<'_>],
 ) -> Option<Vec<InternedString>> {
+    // A module of this package compiled as a unit of its own is named by its
+    // path without the package, as `module_types` reads it.
+    let local: &[InternedString] = if segs.first() == Some(&pkg) {
+        &segs[1..]
+    } else {
+        segs
+    };
     deps.iter()
-        .filter(|d| segs.first() == Some(&d.spelled) || dotted(segs) == *d.spelled.to_string())
+        .filter(|d| {
+            segs.first() == Some(&d.spelled)
+                || dotted(segs) == *d.spelled.to_string()
+                || dotted(local) == *d.spelled.to_string()
+        })
         .flat_map(|d| d.data_decls.iter())
         .find_map(|decl| match decl.value() {
             hir::Decl::Trait(td) if hir::spelling(&td.name) == &*name => {

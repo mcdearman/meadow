@@ -31,7 +31,30 @@ pub trait Runner {
         input: &[tt::TokenTree],
         at: meadow_span::Span,
         scope: &Scope<'_>,
-    ) -> Result<Outcome, String>;
+    ) -> Result<Outcome, Failure>;
+}
+
+/// Why a run gave no answer: a sentence, and where it is about when the macro
+/// said -- a `Fail` at the token that was wrong. `None` is the call itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Failure {
+    pub msg: String,
+    pub at: Option<meadow_span::Span>,
+}
+
+impl From<String> for Failure {
+    fn from(msg: String) -> Failure {
+        Failure { msg, at: None }
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(msg: &str) -> Failure {
+        Failure {
+            msg: msg.to_string(),
+            at: None,
+        }
+    }
 }
 
 /// What a macro can read while it runs: the compile-time bindings visible
@@ -102,6 +125,15 @@ pub fn signature(scheme: &meadow_infer::Scheme) -> Result<(), String> {
     };
     if args.len() != 1 || !takes || !tokens(ret) {
         return Err("it is not `[TokenTree] -> [TokenTree]`".to_string());
+    }
+    // A macro is handed tokens and nothing else: a type that asks for a trait
+    // of its argument -- `toTokens ts`, with `ts` left to be anything -- would
+    // need that trait passed in too, and nothing passes it.
+    if let Some(p) = scheme.preds.first() {
+        return Err(format!(
+            "its argument is left needing `{}`; say what it is: `(ts : [TokenTree])`",
+            meadow_hir::spelling(&p.tr.to_string())
+        ));
     }
     for name in performed(eff) {
         if FORBIDDEN.contains(&name.as_str()) {

@@ -538,11 +538,142 @@ fn datum(w: &Wire, at: Span) -> Result<Datum, Failure> {
 /// Token trees, read back. `Code` is text, which is lexed here -- that is the
 /// point of it -- so one tree can be several.
 fn decode_trees(w: &Wire, at: Span) -> Result<Vec<tt::TokenTree>, Failure> {
+    let items = children(w)?;
     let mut out = Vec::new();
-    for t in children(w)? {
-        out.extend(decode(t, at)?);
+    let mut i = 0;
+    while i < items.len() {
+        // An interpolated string is several tokens -- its text up to each hole,
+        // the hole's own tokens, and on to its end -- none of which is Meadow
+        // alone. Lexed one at a time, `"a ${` said its `${` was never closed:
+        // so the whole literal, holes and all, is written out and lexed once.
+        if piece(&items[i]) == Some(Piece::Start) {
+            let (text, end) = interpolated(items, i)?;
+            let first = loc_of(&items[i]).unwrap_or(at);
+            let last = loc_of(&items[end]).unwrap_or(first);
+            out.extend(lex(
+                &text,
+                Span::new(first.start, last.end.max(first.start)),
+            )?);
+            i = end + 1;
+        } else {
+            out.extend(decode(&items[i], at)?);
+            i += 1;
+        }
     }
     Ok(out)
+}
+
+/// The pieces of an interpolated string, as a macro is given them: each a
+/// `Punct` of the text the lexer writes it back with.
+#[derive(PartialEq)]
+enum Piece {
+    /// `"…${`
+    Start,
+    /// `}…${`
+    Mid,
+    /// `}…"`
+    End,
+}
+
+fn piece(w: &Wire) -> Option<Piece> {
+    let Wire::Node(tag, xs) = w else { return None };
+    if tag != "Punct" {
+        return None;
+    }
+    let text = wire_text(xs.first()?).ok()?;
+    if text.len() < 2 {
+        return None;
+    }
+    match (
+        text.starts_with('"'),
+        text.starts_with('}'),
+        text.ends_with("${"),
+    ) {
+        (true, _, true) => Some(Piece::Start),
+        (_, true, true) => Some(Piece::Mid),
+        (_, true, false) if text.ends_with('"') => Some(Piece::End),
+        _ => None,
+    }
+}
+
+/// The interpolated string starting at `items[start]`, written out whole, and
+/// the index of its last piece -- the `End` that closes it, past any string
+/// nested in one of its holes.
+fn interpolated(items: &[Wire], start: usize) -> Result<(String, usize), Failure> {
+    let mut depth = 0usize;
+    let mut text = String::new();
+    for (j, item) in items.iter().enumerate().skip(start) {
+        match piece(item) {
+            Some(Piece::Start) => depth += 1,
+            Some(Piece::End) => depth -= 1,
+            _ => {}
+        }
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(&source_text(item)?);
+        if depth == 0 {
+            return Ok((text, j));
+        }
+    }
+    Err(Failure::from("an interpolated string that does not end"))
+}
+
+/// A token tree of an answer, written back as Meadow: what `lex` reads.
+fn source_text(w: &Wire) -> Result<String, Failure> {
+    use meadow_compiler::lexer::Token;
+    let Wire::Node(tag, xs) = w else {
+        return Err(Failure::from("it did not answer with tokens"));
+    };
+    let first = || {
+        xs.first()
+            .ok_or_else(|| Failure::from(format!("`{tag}` with nothing in it")))
+    };
+    Ok(match tag.as_str() {
+        "Word" | "Punct" | "Code" => wire_text(first()?)?,
+        "Str" => Token::String(InternedString::from(wire_text(first()?)?)).text(),
+        "Chr" => match wire_text(first()?)?.chars().next() {
+            Some(c) => Token::Char(c).text(),
+            None => return Err(Failure::from("a character has to be one character")),
+        },
+        "Num" => match first()? {
+            Wire::Whole(n) => n.to_string(),
+            _ => {
+                return Err(Failure::from(
+                    "`Num` was given something that is not a number",
+                ));
+            }
+        },
+        "Real" => match first()? {
+            Wire::Frac(f) => Token::Real(f.to_bits()).text(),
+            _ => {
+                return Err(Failure::from(
+                    "`Real` was given something that is not a number",
+                ));
+            }
+        },
+        "Group" if xs.len() >= 2 => {
+            let open = wire_text(&xs[0])?;
+            let close = match open.as_str() {
+                "(" => ")",
+                "[" => "]",
+                "{" => "}",
+                _ => return Err(Failure::from("a group with no bracket")),
+            };
+            let inner: Result<Vec<String>, Failure> =
+                children(&xs[1])?.iter().map(source_text).collect();
+            format!("{open}{}{close}", inner?.join(" "))
+        }
+        other => return Err(Failure::from(format!("`{other}` is not a token"))),
+    })
+}
+
+/// Where a token of an answer was written, if it says.
+fn loc_of(w: &Wire) -> Option<Span> {
+    match w {
+        Wire::Node(_, xs) => xs.last().and_then(written),
+        _ => None,
+    }
 }
 
 fn decode(w: &Wire, at: Span) -> Result<Vec<tt::TokenTree>, Failure> {

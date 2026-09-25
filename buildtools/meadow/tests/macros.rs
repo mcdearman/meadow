@@ -1174,6 +1174,20 @@ use Std.Macro.Loc.*
 }
 
 #[test]
+fn an_interpolated_string_comes_back_through_a_macro_whole() {
+    // A macro is given an interpolated string as pieces -- `"outer ${`, the
+    // hole's tokens, `} end"` -- none of which is Meadow on its own. Handed
+    // back, they used to be read one at a time, and `"outer ${` never closed.
+    // Quotes inside a hole, and a string nested in one, come back too.
+    let app = with_macro(
+        "interp",
+        "use Std.Macro (TokenTree)\n\n@macro\n@pub fun same (ts : [TokenTree]) : [TokenTree] = ts\n",
+        "use Maker (same!)\nuse Std.String as S\n\ndef main = same!(let x = \"a\" in \"outer ${S.join \", \" [x, \"b ${x}\"]} end\")\n",
+    );
+    assert_eq!(build(&app).expect("it builds"), r#""outer a, b a end""#);
+}
+
+#[test]
 fn a_procedural_macro_may_not_perform_an_effect() {
     // A macro runs during a build, so anything it could learn about the world
     // would make the build depend on when it ran.
@@ -1442,7 +1456,11 @@ fn tokens_passed_through_keep_where_they_were_written() {
     // The macro hands back what it was given; the type error in it is the
     // caller's, on the caller's own tokens, and not on the whole call.
     let caller = "use Maker (same!)\n\ndef main = same!(1 + \"x\")\n";
-    let app = with_macro("pass-through", "@macro\n@pub fun same ts = ts\n", caller);
+    let app = with_macro(
+        "pass-through",
+        "use Std.Macro (TokenTree)\n\n@macro\n@pub fun same (ts : [TokenTree]) : [TokenTree] = ts\n",
+        caller,
+    );
     let got = located(&app, caller);
     assert!(!got.is_empty(), "it should not build");
     assert!(

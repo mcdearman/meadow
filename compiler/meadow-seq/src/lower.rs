@@ -61,10 +61,17 @@
 //! already tested, so a wide `match` on one scrutinee does more work than it
 //! needs to. It is correct and it is small.
 //!
-//! At [`OptLevel::O2`] the arms that dispatch on a constructor become a single
-//! `switch` instead — [`Lower::case_tree`]. It is gated because a decision tree
-//! is a code-size trade in general, and because the chain is what the arms fall
-//! back to when the tree does not cover them, so both have to keep working.
+//! At [`OptLevel::O2`] a `match` whose patterns are constructors, literals,
+//! tuples and variables -- nearly all of them -- is a decision tree instead,
+//! [`Lower::case_matrix`]: every value is tested once, nothing is built to
+//! backtrack with, and each `switch` can consume what it takes apart, which is
+//! what lets the reference-counted backend build in the blocks a match took
+//! apart. An arm reached from more than one leaf is copied to each while it is
+//! small and becomes a label they jump to when it is not. What the tree does not
+//! take -- arrays, records, a tree too big -- falls to [`Lower::case_tree`], one
+//! `switch` over a prefix of distinct constructors, and then to the chain. It is
+//! gated because a decision tree is a code-size trade in general, and because
+//! the chain is what the arms fall back to, so all of them have to keep working.
 //!
 //! # Where this departs from the paper
 //!
@@ -2171,6 +2178,12 @@ impl Lower {
                     }
                 }
                 want.insert(k);
+                if self.opt.case_trees()
+                    && let Term::Tuple(items) = scrutinee.peel()
+                    && let Some(tree) = self.case_of_tuple(items, arms, env, &want, k)
+                {
+                    return tree;
+                }
                 let keep = restrict(env, &want);
                 self.bind(
                     scrutinee,
@@ -2264,6 +2277,11 @@ impl Lower {
         }
         if let Some(switch) = self.case_total(s, arms, &live, k) {
             return switch;
+        }
+        if self.opt.case_trees()
+            && let Some(tree) = self.case_matrix(s, arms, &live, k)
+        {
+            return tree;
         }
         if let Some(tree) = self
             .opt
@@ -3531,4 +3549,635 @@ fn call_spine(t: &Term) -> (&Term, Vec<&Term>) {
     }
     args.reverse();
     (cur, args)
+}
+
+// --- decision trees --------------------------------------------------------
+
+/// A row of a `match`'s pattern matrix: what is still to be tested of one arm
+/// -- each test a value and a pattern it must match -- and what its variables
+/// have been bound to so far.
+#[derive(Clone)]
+struct Row<'t> {
+    tests: Vec<(Name, &'t Pat)>,
+    binds: Vec<(Var, Name)>,
+    arm: usize,
+}
+
+/// A decision tree over a `match`'s arms, built whole before anything is
+/// emitted so that an arm reached from more than one leaf is known to be.
+enum Dt<'t> {
+    Fail,
+    /// Arm `arm` matched, its variables bound by `binds`. `otherwise` is what
+    /// is left to try when its guard is false.
+    Leaf {
+        arm: usize,
+        binds: Vec<(Var, Name)>,
+        otherwise: Option<Box<Dt<'t>>>,
+    },
+    /// Switch on `occ`, a case per constructor some row names there, each
+    /// binding its fields; `default` for the others, unless there are none.
+    Switch {
+        occ: Name,
+        cases: Vec<(InternedString, Vec<Name>, Dt<'t>)>,
+        default: Option<Box<Dt<'t>>>,
+    },
+    Lits {
+        occ: Name,
+        cases: Vec<(&'t core::Lit, Dt<'t>)>,
+        default: Box<Dt<'t>>,
+    },
+    /// Take the fields of tuple `occ` that some row looks at.
+    Tuple {
+        occ: Name,
+        fields: Vec<(usize, Name)>,
+        next: Box<Dt<'t>>,
+    },
+}
+
+/// An arm reached from more than one leaf and too big to copy to each: a
+/// label its leaves jump to, as a join point is.
+struct SharedArm {
+    label: Label,
+    fvs: Vec<Name>,
+    vars: Vec<Var>,
+    ev: bool,
+}
+
+/// The most nodes an arm's body may have and still be copied to every leaf
+/// that reaches it. Copying is what keeps the arm in the same function as the
+/// switches above it -- and so able to build in the blocks they took apart.
+const ARM_COPY_BUDGET: usize = 48;
+
+/// Whether the decision tree can take `p` apart.
+fn tree_pat(p: &Pat) -> bool {
+    match p {
+        Pat::Wild | Pat::Var(..) | Pat::Lit(_) => true,
+        Pat::As(_, _, sub) => tree_pat(sub),
+        Pat::Ctor(_, subs) | Pat::Tuple(subs) => subs.iter().all(tree_pat),
+        Pat::Array(_) | Pat::Record(_) => false,
+    }
+}
+
+/// `row` with its variables bound and its wildcards gone: what is left are
+/// tests that can fail, or take a tuple apart.
+fn settle(mut row: Row<'_>) -> Row<'_> {
+    let mut out = Vec::with_capacity(row.tests.len());
+    let mut stack: Vec<(Name, &Pat)> = row.tests.drain(..).rev().collect();
+    while let Some((x, p)) = stack.pop() {
+        match p {
+            Pat::Wild => {}
+            Pat::Var(v, _) => row.binds.push((*v, x)),
+            Pat::As(v, _, sub) => {
+                row.binds.push((*v, x));
+                stack.push((x, sub));
+            }
+            _ => out.push((x, p)),
+        }
+    }
+    row.tests = out;
+    row
+}
+
+/// `row` where `occ` is known to be built by `ctor`, whose fields are
+/// `fields`: its test of `occ` becomes tests of the fields, in its place, and
+/// a row that wanted another constructor there is gone.
+fn specialize<'t>(
+    row: &Row<'t>,
+    occ: Name,
+    ctor: InternedString,
+    fields: &[Name],
+) -> Option<Row<'t>> {
+    let Some(j) = row.tests.iter().position(|(x, _)| *x == occ) else {
+        return Some(row.clone());
+    };
+    match row.tests[j].1 {
+        Pat::Ctor(c, subs) if *c == ctor => {
+            let mut row = row.clone();
+            row.tests.remove(j);
+            for (i, sub) in subs.iter().enumerate().rev() {
+                if !matches!(sub, Pat::Wild) {
+                    row.tests.insert(j, (fields[i], sub));
+                }
+            }
+            Some(row)
+        }
+        _ => None,
+    }
+}
+
+fn count_leaves(dt: &Dt<'_>, out: &mut HashMap<usize, usize>) {
+    match dt {
+        Dt::Fail => {}
+        Dt::Leaf { arm, otherwise, .. } => {
+            *out.entry(*arm).or_default() += 1;
+            if let Some(o) = otherwise {
+                count_leaves(o, out);
+            }
+        }
+        Dt::Switch { cases, default, .. } => {
+            for (_, _, c) in cases {
+                count_leaves(c, out);
+            }
+            if let Some(d) = default {
+                count_leaves(d, out);
+            }
+        }
+        Dt::Lits { cases, default, .. } => {
+            for (_, c) in cases {
+                count_leaves(c, out);
+            }
+            count_leaves(default, out);
+        }
+        Dt::Tuple { next, .. } => count_leaves(next, out),
+    }
+}
+
+impl Lower {
+    /// A `match` as a decision tree: every value tested once, and no failure
+    /// objects -- a tree never backtracks, so nothing has to be kept to
+    /// backtrack with. That is also what lets a `switch` consume what it
+    /// takes apart, and so hand its block to what the arm builds (see
+    /// `meadow_llvm::linear`): the chain's failure objects captured the
+    /// scrutinee, which was then never the last reference.
+    ///
+    /// Arms are tried in order, left to right within a pattern: a row whose
+    /// pattern is fully matched is the answer, and its guard failing goes on
+    /// to the rows after it. An arm reached from several leaves is copied to
+    /// each while it is small, and is a label they jump to when it is not.
+    ///
+    /// `None` when some pattern is not one the tree takes apart -- an array,
+    /// a record -- or the tree would be too big; the chain handles those.
+    fn case_matrix(&mut self, s: Name, arms: &[Arm], live: &[Name], k: Name) -> Option<Statement> {
+        if !arms.iter().all(|(p, _, _)| tree_pat(p)) {
+            return None;
+        }
+        let rows: Vec<Row<'_>> = arms
+            .iter()
+            .enumerate()
+            .map(|(i, (p, _, _))| Row {
+                tests: vec![(s, p)],
+                binds: Vec::new(),
+                arm: i,
+            })
+            .collect();
+        let dt = self.plan(rows, arms)?;
+        Some(self.emit_planned(dt, arms, live, k))
+    }
+
+    /// `match (e1, …, en) with …` where every arm takes the tuple apart: each
+    /// `ei` is bound to a name of its own and the tree tests those, so the
+    /// tuple -- built only to be taken apart -- is never built. Building it
+    /// was more than an allocation: a field taken out of a tuple still alive
+    /// is shared with it, and so is never the last reference -- Okasaki's
+    /// `balance`, which matches on `(colour, left, right)`, could reuse
+    /// nothing it took apart.
+    fn case_of_tuple(
+        &mut self,
+        items: &[Term],
+        arms: &[Arm],
+        env: &[Name],
+        want: &HashSet<Var>,
+        k: Name,
+    ) -> Option<Statement> {
+        let n = items.len();
+        let takes_apart = |p: &Pat| match p {
+            Pat::Wild => true,
+            Pat::Tuple(ps) => ps.len() == n && tree_pat(p),
+            _ => false,
+        };
+        if !arms.iter().all(|(p, _, _)| takes_apart(p)) {
+            return None;
+        }
+        // Named before they are bound, so that the tree can be planned --
+        // and given up on -- before anything is lowered.
+        let names: Vec<Name> = items
+            .iter()
+            .map(|e| {
+                let ty = self.type_of(e);
+                self.fresh_typed(ty)
+            })
+            .collect();
+        let rows: Vec<Row<'_>> = arms
+            .iter()
+            .enumerate()
+            .map(|(i, (p, _, _))| Row {
+                tests: match p {
+                    Pat::Tuple(ps) => names
+                        .iter()
+                        .copied()
+                        .zip(ps)
+                        .filter(|(_, p)| !matches!(p, Pat::Wild))
+                        .collect(),
+                    _ => Vec::new(),
+                },
+                binds: Vec::new(),
+                arm: i,
+            })
+            .collect();
+        let dt = self.plan(rows, arms)?;
+        Some(self.bind_all(
+            items,
+            env,
+            want,
+            Box::new(move |this, got, env1| {
+                let binds: Vec<(Var, Name)> = names.iter().copied().zip(got).collect();
+                this.bind_vars(
+                    &binds,
+                    env1,
+                    Box::new(move |this, env2| this.emit_planned(dt, arms, &env2, k)),
+                )
+            }),
+        ))
+    }
+
+    /// The tree for `rows`, unless it would be too big to be worth it.
+    fn plan<'t>(&mut self, rows: Vec<Row<'t>>, arms: &'t [Arm]) -> Option<Dt<'t>> {
+        let mut budget = 256 + 32 * arms.len();
+        self.build_tree(rows, arms, &mut budget)
+    }
+
+    /// Emit a planned tree in `live`: the arms it reaches from more than one
+    /// leaf, and cannot copy to each, made labels first.
+    fn emit_planned<'t>(
+        &mut self,
+        dt: Dt<'t>,
+        arms: &'t [Arm],
+        live: &[Name],
+        k: Name,
+    ) -> Statement {
+        let mut counts = HashMap::new();
+        count_leaves(&dt, &mut counts);
+        let mut shared = HashMap::new();
+        for (i, arm) in arms.iter().enumerate() {
+            if counts.get(&i).copied().unwrap_or(0) > 1
+                && core::inline::size(&arm.2, ARM_COPY_BUDGET) > ARM_COPY_BUDGET
+            {
+                let sa = self.shared_arm(arm, live);
+                shared.insert(i, sa);
+            }
+        }
+        self.emit_tree(dt, arms, live.to_vec(), k, &shared)
+    }
+
+    fn build_tree<'t>(
+        &mut self,
+        rows: Vec<Row<'t>>,
+        arms: &'t [Arm],
+        budget: &mut usize,
+    ) -> Option<Dt<'t>> {
+        if *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        let mut rows: Vec<Row<'t>> = rows.into_iter().map(settle).collect();
+        let Some(first) = rows.first() else {
+            return Some(Dt::Fail);
+        };
+        let Some(&(occ, pat)) = first.tests.first() else {
+            let row = rows.remove(0);
+            let otherwise = match arms[row.arm].1 {
+                Some(_) => Some(Box::new(self.build_tree(rows, arms, budget)?)),
+                None => None,
+            };
+            return Some(Dt::Leaf {
+                arm: row.arm,
+                binds: row.binds,
+                otherwise,
+            });
+        };
+        let at = |r: &Row<'t>| r.tests.iter().find(|(x, _)| *x == occ).map(|(_, p)| *p);
+        let untested = |rows: &[Row<'t>]| -> Vec<Row<'t>> {
+            rows.iter().filter(|r| at(r).is_none()).cloned().collect()
+        };
+        match pat {
+            Pat::Ctor(..) => {
+                let mut ctors: Vec<(InternedString, &'t [Pat])> = Vec::new();
+                for r in &rows {
+                    if let Some(Pat::Ctor(c, subs)) = at(r)
+                        && !ctors.iter().any(|(d, _)| d == c)
+                    {
+                        ctors.push((*c, subs));
+                    }
+                }
+                let of = self.type_of_name(occ);
+                let mut cases = Vec::with_capacity(ctors.len());
+                for (c, subs) in &ctors {
+                    let fields = self.field_names(*c, subs, of.as_ref());
+                    let spec: Vec<Row<'t>> = rows
+                        .iter()
+                        .filter_map(|r| specialize(r, occ, *c, &fields))
+                        .collect();
+                    let sub = self.build_tree(spec, arms, budget)?;
+                    cases.push((*c, fields, sub));
+                }
+                let covered = match &of {
+                    Some(core::Ty::Con(name, _)) => self.variants.get(name).map(|vs| vs.len()),
+                    _ => None,
+                };
+                let default = if covered == Some(ctors.len()) {
+                    None
+                } else {
+                    Some(Box::new(self.build_tree(untested(&rows), arms, budget)?))
+                };
+                Some(Dt::Switch {
+                    occ,
+                    cases,
+                    default,
+                })
+            }
+            Pat::Lit(_) => {
+                let mut lits: Vec<&'t core::Lit> = Vec::new();
+                for r in &rows {
+                    if let Some(Pat::Lit(l)) = at(r)
+                        && !lits.contains(&l)
+                    {
+                        lits.push(l);
+                    }
+                }
+                let mut cases = Vec::with_capacity(lits.len());
+                for l in lits {
+                    let spec: Vec<Row<'t>> = rows
+                        .iter()
+                        .filter_map(|r| match r.tests.iter().position(|(x, _)| *x == occ) {
+                            None => Some(r.clone()),
+                            Some(j) => match r.tests[j].1 {
+                                Pat::Lit(m) if m == l => {
+                                    let mut r = r.clone();
+                                    r.tests.remove(j);
+                                    Some(r)
+                                }
+                                _ => None,
+                            },
+                        })
+                        .collect();
+                    cases.push((l, self.build_tree(spec, arms, budget)?));
+                }
+                let default = Box::new(self.build_tree(untested(&rows), arms, budget)?);
+                Some(Dt::Lits {
+                    occ,
+                    cases,
+                    default,
+                })
+            }
+            Pat::Tuple(subs) => {
+                let of = self.type_of_name(occ);
+                let mut names: Vec<Option<Name>> = vec![None; subs.len()];
+                for r in &rows {
+                    if let Some(Pat::Tuple(subs)) = at(r) {
+                        for (i, sub) in subs.iter().enumerate() {
+                            if names[i].is_none() && !matches!(sub, Pat::Wild) {
+                                let ty = match &of {
+                                    Some(core::Ty::Tuple(items)) => items.get(i).cloned(),
+                                    _ => None,
+                                };
+                                names[i] = Some(self.fresh_typed(field_type(ty, sub)));
+                            }
+                        }
+                    }
+                }
+                let spec: Vec<Row<'t>> = rows
+                    .into_iter()
+                    .map(|mut r| {
+                        if let Some(j) = r.tests.iter().position(|(x, _)| *x == occ)
+                            && let (_, Pat::Tuple(subs)) = r.tests.remove(j)
+                        {
+                            for (i, sub) in subs.iter().enumerate().rev() {
+                                if let Some(n) = names[i]
+                                    && !matches!(sub, Pat::Wild)
+                                {
+                                    r.tests.insert(j, (n, sub));
+                                }
+                            }
+                        }
+                        r
+                    })
+                    .collect();
+                let fields = names
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, n)| n.map(|n| (i, n)))
+                    .collect();
+                Some(Dt::Tuple {
+                    occ,
+                    fields,
+                    next: Box::new(self.build_tree(spec, arms, budget)?),
+                })
+            }
+            _ => unreachable!("a settled row tests only constructors, literals and tuples"),
+        }
+    }
+
+    /// Arm `arm`'s body as a label of its own, taking what it needs of `live`
+    /// and its pattern's variables.
+    fn shared_arm(&mut self, arm: &Arm, live: &[Name]) -> SharedArm {
+        let (pat, _, body) = arm;
+        let mut vars = Vec::new();
+        core::pat_vars(pat, &mut vars);
+        let mut want = self.wants(&[body], &vars);
+        let ev = want.remove(&self.ev);
+        let fvs = restrict(live, &want);
+        let label = self.fresh_label();
+        let kk = self.function_return();
+        let mut block = fvs.clone();
+        block.extend(vars.iter().copied());
+        block.push(kk);
+        let outer = self.ev;
+        if ev {
+            let iev = self.fresh_ref();
+            block.push(iev);
+            self.ev = iev;
+        }
+        let made = self.expr(body, &block, kk);
+        self.ev = outer;
+        self.defs.push(Def {
+            label,
+            name: InternedString::from("<arm>"),
+            block: Block {
+                params: block,
+                body: made,
+            },
+        });
+        SharedArm {
+            label,
+            fvs,
+            vars,
+            ev,
+        }
+    }
+
+    fn emit_tree<'t>(
+        &mut self,
+        dt: Dt<'t>,
+        arms: &'t [Arm],
+        env: Vec<Name>,
+        k: Name,
+        shared: &'t HashMap<usize, SharedArm>,
+    ) -> Statement {
+        match dt {
+            Dt::Fail => Statement::Error("non-exhaustive pattern match"),
+            Dt::Leaf {
+                arm,
+                binds,
+                otherwise,
+            } => self.bind_vars(
+                &binds,
+                env,
+                Box::new(move |this, env1| {
+                    let run: Success<'t> = Box::new(move |this, env2| match shared.get(&arm) {
+                        None => this.expr(&arms[arm].2, &env2, k),
+                        Some(sa) => {
+                            let mut sel = sa.fvs.clone();
+                            sel.extend(sa.vars.iter().copied());
+                            sel.push(k);
+                            if sa.ev {
+                                sel.push(this.ev);
+                            }
+                            Statement::Substitute(
+                                sel.clone(),
+                                Box::new(Block {
+                                    params: sel,
+                                    body: Statement::Jump(sa.label),
+                                }),
+                            )
+                        }
+                    });
+                    match (&arms[arm].1, otherwise) {
+                        (Some(guard), Some(otherwise)) => this.bind(
+                            guard,
+                            &env1,
+                            &env1,
+                            None,
+                            Box::new(move |this, cv, env2| {
+                                let no = this.emit_tree(*otherwise, arms, env2.clone(), k, shared);
+                                let yes = run(this, env2.clone());
+                                Statement::Extern {
+                                    op: Extern::Branch,
+                                    args: vec![cv],
+                                    blocks: vec![
+                                        Block {
+                                            params: env2.clone(),
+                                            body: no,
+                                        },
+                                        Block {
+                                            params: env2,
+                                            body: yes,
+                                        },
+                                    ],
+                                }
+                            }),
+                        ),
+                        _ => run(this, env1),
+                    }
+                }),
+            ),
+            Dt::Switch {
+                occ,
+                cases,
+                default,
+            } => {
+                let mut switch_arms = Vec::with_capacity(cases.len());
+                for (ctor, fields, sub) in cases {
+                    let tag = self.tag_of(ctor);
+                    let mut arm_env = fields;
+                    arm_env.extend_from_slice(&env);
+                    let body = self.emit_tree(sub, arms, arm_env.clone(), k, shared);
+                    switch_arms.push((
+                        tag,
+                        Block {
+                            params: arm_env,
+                            body,
+                        },
+                    ));
+                }
+                let otherwise = match default {
+                    Some(d) => self.emit_tree(*d, arms, env.clone(), k, shared),
+                    None => Statement::Error("non-exhaustive pattern match"),
+                };
+                Statement::Switch {
+                    scrutinee: occ,
+                    arms: switch_arms,
+                    default: Box::new(Block {
+                        params: env,
+                        body: otherwise,
+                    }),
+                }
+            }
+            Dt::Lits {
+                occ,
+                cases,
+                default,
+            } => {
+                let mut stmt = self.emit_tree(*default, arms, env.clone(), k, shared);
+                for (lit, sub) in cases.into_iter().rev() {
+                    let yes = self.emit_tree(sub, arms, env.clone(), k, shared);
+                    stmt = Statement::Extern {
+                        op: Extern::BranchPrimK(core::Prim::Eq, lit.clone()),
+                        args: vec![occ],
+                        blocks: vec![
+                            Block {
+                                params: env.clone(),
+                                body: stmt,
+                            },
+                            Block {
+                                params: env.clone(),
+                                body: yes,
+                            },
+                        ],
+                    };
+                }
+                stmt
+            }
+            Dt::Tuple { occ, fields, next } => {
+                self.take_fields(occ, &fields, env, *next, arms, k, shared)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn take_fields<'t>(
+        &mut self,
+        occ: Name,
+        fields: &[(usize, Name)],
+        env: Vec<Name>,
+        next: Dt<'t>,
+        arms: &'t [Arm],
+        k: Name,
+        shared: &'t HashMap<usize, SharedArm>,
+    ) -> Statement {
+        match fields.split_first() {
+            None => self.emit_tree(next, arms, env, k, shared),
+            Some(((i, name), rest)) => {
+                let rest = rest.to_vec();
+                self.produces_as(
+                    Extern::Field(*i),
+                    vec![occ],
+                    &env,
+                    None,
+                    Some(*name),
+                    move |this, _x, env1| this.take_fields(occ, &rest, env1, next, arms, k, shared),
+                )
+            }
+        }
+    }
+
+    /// Give each variable of `binds` the value it names, then `then`.
+    fn bind_vars<'a>(
+        &mut self,
+        binds: &[(Var, Name)],
+        env: Vec<Name>,
+        then: Success<'a>,
+    ) -> Statement {
+        match binds.split_first() {
+            None => then(self, env),
+            Some(((v, x), rest)) => {
+                let rest = rest.to_vec();
+                self.rebind(
+                    *x,
+                    *v,
+                    env,
+                    Box::new(move |this, env1| this.bind_vars(&rest, env1, then)),
+                )
+            }
+        }
+    }
 }

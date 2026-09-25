@@ -22,6 +22,33 @@
 //! the fields), `invoke` the object and the arguments, `jump` the whole
 //! environment. A primitive borrows its arguments.
 //!
+//! A `switch` decides per arm. An arm that still wants the scrutinee --
+//! `match o with | Just x -> o`, or an arm of a decision tree that tests a
+//! value and then uses it whole -- *keeps* it: it borrows the fields it uses,
+//! sharing each, and the scrutinee stays its own. Every other arm consumes
+//! the scrutinee, and so is the one that can build in its block. Deciding for
+//! the whole `switch` at once, as this pass used to, shared the scrutinee
+//! before it whenever any arm wanted it, and no arm could reuse it.
+//!
+//! A kept scrutinee can still be reused on a path that no longer wants it:
+//! where it is erased there, and something after builds a block its size,
+//! the erase is a `DropReuse` (Perceus's *drop-reuse*) -- when it was the
+//! last reference, its references to its fields are given up and its block
+//! is the token; when it was not, it is erased as usual and the token holds
+//! nothing. `if k < x then … (ins l k) … else t` keeps `t` for the one path
+//! that returns it, and rebuilds in it on the others.
+//!
+//! **Reuse** (FBIP, after Perceus). An arm that takes a block apart and then,
+//! before anything else could want the memory, builds a block of the same size
+//! is given the old one to build in: `switch` binds a *reuse token* in the arm
+//! -- the scrutinee's block when it was the last reference, whose fields the
+//! arm has just been handed, or nothing when it was shared -- and the first
+//! `let` of as many fields on each path out of the arm builds in it. A path
+//! that builds nothing that size gives the token back (`Clean`) where it
+//! parts from the paths that do, so the memory is never held longer than it
+//! could be used. `map` over a list it holds the only reference to rebuilds
+//! the list in place.
+//!
 //! A name whose representation is not a reference is tracked the same way --
 //! the environment is one list -- but sharing and erasing it does nothing, so
 //! no statement is written for it. A name of a type variable's type is shared
@@ -47,13 +74,32 @@ pub enum L {
         name: Name,
         tag: Tag,
         fields: Vec<Name>,
+        /// A reuse token to build in, when it holds a block: see the module
+        /// docs.
+        reuse: Option<Name>,
         rest: Box<L>,
     },
-    /// Consumes the scrutinee: each arm binds its fields, which it loads.
+    /// Each arm binds its fields, which it loads, and either consumes the
+    /// scrutinee -- binding, when something in it can build in the
+    /// scrutinee's block, a reuse token -- or keeps it (see the module docs).
+    /// The default consumes it too, unless `keep_default`.
     Switch {
         scrutinee: Name,
-        arms: Vec<(Tag, Vec<Name>, L)>,
+        arms: Vec<SwitchArm>,
         default: Box<L>,
+        keep_default: bool,
+    },
+    /// Give the reuse token `name` back unused: its block, if it holds one,
+    /// goes back to the runtime, its fields already taken.
+    Clean(Name, Box<L>),
+    /// Erase `name`, a block whose fields a kept arm loaded as `fields`, and
+    /// bind `token`: `name`'s block, its references to `fields` given up,
+    /// when this was the last reference to it, and nothing when it was not.
+    DropReuse {
+        name: Name,
+        fields: Vec<Name>,
+        token: Name,
+        rest: Box<L>,
     },
     New {
         name: Name,
@@ -83,6 +129,19 @@ pub enum L {
     Error(&'static str),
 }
 
+/// An arm of a [`L::Switch`].
+#[derive(Debug, Clone)]
+pub struct SwitchArm {
+    pub tag: Tag,
+    pub fields: Vec<Name>,
+    /// The token for the scrutinee's block, in an arm that consumes it.
+    pub reuse: Option<Name>,
+    /// Whether the arm keeps the scrutinee rather than consuming it: its
+    /// body shares what it uses of the fields, which are borrowed.
+    pub keep: bool,
+    pub body: L,
+}
+
 /// A method: what it binds, and its body, which owns all of it.
 #[derive(Debug, Clone)]
 pub struct LBlock {
@@ -101,16 +160,32 @@ fn err<T>(msg: impl Into<String>) -> Result<T, Error> {
 
 /// A definition's block, linear.
 pub fn block(program: &Program, b: &Block) -> Result<LBlock, Error> {
+    let mut tokens = 0;
+    block_in(program, b, &mut tokens)
+}
+
+/// [`block`], numbering reuse tokens on from `tokens`: a method's are counted
+/// with its definition's, since a token can be carried into a frame's method
+/// and must not meet one of the method's own there.
+fn block_in(program: &Program, b: &Block, tokens: &mut u32) -> Result<LBlock, Error> {
     let mut pass = Pass {
         program,
         uses: HashMap::new(),
+        tokens: *tokens,
     };
     let owned: HashSet<Name> = b.params.iter().copied().collect();
     let body = pass.stmt(&b.body, &b.params, owned)?;
+    *tokens = pass.tokens;
     Ok(LBlock {
         params: b.params.clone(),
         body,
     })
+}
+
+/// Whether `n` is a reuse token: they are numbered down from the top of the
+/// id space, where no program's names are.
+pub fn is_token(n: Name) -> bool {
+    n.0 > u32::MAX - (1 << 24)
 }
 
 struct Pass<'p> {
@@ -118,6 +193,9 @@ struct Pass<'p> {
     /// What each statement uses, by its address: the environment a statement
     /// runs in is fixed by where it is, so this is a function of the node.
     uses: HashMap<*const Statement, Rc<HashSet<Name>>>,
+    /// How many reuse tokens this definition has made: each is a name of its
+    /// own, from the top of the id space down, where no program's are.
+    tokens: u32,
 }
 
 impl<'p> Pass<'p> {
@@ -378,6 +456,7 @@ impl<'p> Pass<'p> {
                         name: *name,
                         tag: *tag,
                         fields: fields.clone(),
+                        reuse: None,
                         rest: Box::new(body),
                     },
                 ))
@@ -394,7 +473,7 @@ impl<'p> Pass<'p> {
                 let shares = self.consume(captures, &after, &mut owned)?;
                 let mut ms = Vec::with_capacity(methods.len());
                 for m in methods {
-                    ms.push(block(self.program, m)?);
+                    ms.push(block_in(self.program, m, &mut self.tokens)?);
                 }
                 owned.insert(*name);
                 let body = self.stmt(rest, &env2, owned)?;
@@ -415,37 +494,73 @@ impl<'p> Pass<'p> {
                 arms,
                 default,
             } => {
-                // The switch consumes the scrutinee; an arm that still wants it
-                // -- `match o with | Just x -> o` -- gets a share.
-                let wanted = arms
-                    .iter()
-                    .map(|(_, b)| b)
-                    .chain(std::iter::once(&**default))
-                    .any(|b| self.uses(&b.body, &b.params).contains(scrutinee));
                 if !owned.contains(scrutinee) {
                     return err(format!("{scrutinee:?} is switched on but not owned"));
                 }
-                if !wanted {
-                    owned.remove(scrutinee);
-                }
+                let mut consumed = owned.clone();
+                consumed.remove(scrutinee);
                 let nfields = |b: &Block| b.params.len().saturating_sub(default.params.len());
                 let mut larms = Vec::with_capacity(arms.len());
                 for (tag, arm) in arms {
                     let n = nfields(arm);
                     let fields = arm.params[..n].to_vec();
-                    let body = self.enter(arm, n, env, &owned)?;
-                    larms.push((*tag, fields, body));
+                    let keep = self.entered(arm, &vec![None; n], env).contains(scrutinee);
+                    let (reuse, body) = if keep {
+                        // Borrowed fields: what the arm uses of them is
+                        // shared, and the rest are never its own.
+                        let used = self.uses(&arm.body, &arm.params);
+                        let taken: Vec<Name> = fields
+                            .iter()
+                            .copied()
+                            .filter(|x| used.contains(x))
+                            .collect();
+                        let body = self.enter_taking(arm, n, &taken, env, &owned)?;
+                        // Where the scrutinee dies on a path that builds a
+                        // block its size, it is dropped into a token.
+                        let body = if n > 0 && reusing() {
+                            let mut names = vec![*scrutinee];
+                            names.extend(
+                                arm.params[n..]
+                                    .iter()
+                                    .zip(env)
+                                    .filter(|(_, v)| *v == scrutinee)
+                                    .map(|(p, _)| *p),
+                            );
+                            self.drop_reuse(body, &names, &fields)
+                        } else {
+                            body
+                        };
+                        let body = taken.iter().rev().fold(body, |b, x| self.sharing(*x, 1, b));
+                        (None, body)
+                    } else {
+                        let body = self.enter(arm, n, env, &consumed)?;
+                        if n > 0 && reusing() && has_site(&body, n) {
+                            let t = self.token();
+                            (Some(t), self.place(body, t, n))
+                        } else {
+                            (None, body)
+                        }
+                    };
+                    larms.push(SwitchArm {
+                        tag: *tag,
+                        fields,
+                        reuse,
+                        keep,
+                        body,
+                    });
                 }
-                let ldefault = self.enter(default, 0, env, &owned)?;
-                let sw = L::Switch {
+                let keep_default = self.entered(default, &[], env).contains(scrutinee);
+                let ldefault = self.enter(
+                    default,
+                    0,
+                    env,
+                    if keep_default { &owned } else { &consumed },
+                )?;
+                Ok(L::Switch {
                     scrutinee: *scrutinee,
                     arms: larms,
                     default: Box::new(ldefault),
-                };
-                Ok(if wanted {
-                    self.sharing(*scrutinee, 1, sw)
-                } else {
-                    sw
+                    keep_default,
                 })
             }
 
@@ -510,7 +625,19 @@ impl<'p> Pass<'p> {
         env: &[Name],
         owned: &HashSet<Name>,
     ) -> Result<L, Error> {
-        let mut owned_in: HashSet<Name> = b.params[..fresh].iter().copied().collect();
+        self.enter_taking(b, fresh, &b.params[..fresh], env, owned)
+    }
+
+    /// [`Self::enter`], owning only `taken` of the new values.
+    fn enter_taking(
+        &mut self,
+        b: &'p Block,
+        fresh: usize,
+        taken: &[Name],
+        env: &[Name],
+        owned: &HashSet<Name>,
+    ) -> Result<L, Error> {
+        let mut owned_in: HashSet<Name> = taken.iter().copied().collect();
         let mut renames = Vec::new();
         for (p, v) in b.params[fresh..].iter().zip(env) {
             if owned.contains(v) {
@@ -561,12 +688,37 @@ pub fn free(l: &L) -> Vec<Name> {
                 bound.truncate(mark);
             }
             L::Let {
-                name, fields, rest, ..
+                name,
+                fields,
+                reuse,
+                rest,
+                ..
             } => {
                 for f in fields {
                     use_(*f, bound, out);
                 }
+                if let Some(t) = reuse {
+                    use_(*t, bound, out);
+                }
                 bound.push(*name);
+                go(rest, bound, out);
+                bound.pop();
+            }
+            L::Clean(t, rest) => {
+                use_(*t, bound, out);
+                go(rest, bound, out);
+            }
+            L::DropReuse {
+                name,
+                fields,
+                token,
+                rest,
+            } => {
+                use_(*name, bound, out);
+                for f in fields {
+                    use_(*f, bound, out);
+                }
+                bound.push(*token);
                 go(rest, bound, out);
                 bound.pop();
             }
@@ -587,12 +739,14 @@ pub fn free(l: &L) -> Vec<Name> {
                 scrutinee,
                 arms,
                 default,
+                ..
             } => {
                 use_(*scrutinee, bound, out);
-                for (_, fields, body) in arms {
+                for a in arms {
                     let mark = bound.len();
-                    bound.extend(fields.iter().copied());
-                    go(body, bound, out);
+                    bound.extend(a.fields.iter().copied());
+                    bound.extend(a.reuse.iter().copied());
+                    go(&a.body, bound, out);
                     bound.truncate(mark);
                 }
                 go(default, bound, out);
@@ -625,4 +779,301 @@ pub fn free(l: &L) -> Vec<Name> {
     let mut out = Vec::new();
     go(l, &mut Vec::new(), &mut out);
     out
+}
+
+// --- reuse ---------------------------------------------------------------------------
+
+/// Whether to reuse at all: always, unless `MEADOW_NO_REUSE` is set -- which is
+/// for measuring what reuse is worth, the same compiler with it and without.
+fn reusing() -> bool {
+    std::env::var_os("MEADOW_NO_REUSE").is_none()
+}
+
+/// Whether a primitive runs the code after it later, as a closure: nothing may
+/// be carried into that code but what a closure captures, and a reuse token is
+/// not a value.
+fn packs(op: &Extern) -> bool {
+    matches!(
+        op,
+        Extern::Prim(
+            meadow_core::Prim::Enter | meadow_core::Prim::Detach | meadow_core::Prim::Reattach
+        )
+    )
+}
+
+/// The method of `l` when it is a frame a token can be carried into: the
+/// continuation of a non-tail call, entered once with the call's one answer.
+/// Its code runs after the call, in the same activation as far as the token
+/// is concerned -- which is what lets `Node c (ins l k v) kx vx r` build in
+/// the node it took apart before the call.
+fn frame_method(l: &L) -> Option<&LBlock> {
+    match l {
+        L::New {
+            captures,
+            methods,
+            frame: true,
+            ..
+        } if methods.len() == 1 && methods[0].params.len() == captures.len() + 1 => {
+            Some(&methods[0])
+        }
+        _ => None,
+    }
+}
+
+/// Whether some path through `l` builds a block of `n` fields that has no
+/// block to build in yet -- in `l` itself or in the frames it makes, which run
+/// once; not in the code of a closure or a packed continuation, which may run
+/// any number of times, or none.
+fn has_site(l: &L, n: usize) -> bool {
+    match l {
+        L::Let {
+            fields,
+            reuse,
+            rest,
+            ..
+        } => (fields.len() == n && reuse.is_none()) || has_site(rest, n),
+        L::Share(_, rest) | L::Erase(_, rest) | L::Rename(_, rest) | L::Clean(_, rest) => {
+            has_site(rest, n)
+        }
+        L::DropReuse { rest, .. } => has_site(rest, n),
+        L::New { rest, .. } => {
+            has_site(rest, n) || frame_method(l).is_some_and(|m| has_site(&m.body, n))
+        }
+        L::Switch { arms, default, .. } => {
+            arms.iter().any(|a| has_site(&a.body, n)) || has_site(default, n)
+        }
+        L::Extern { op, blocks, .. } => !packs(op) && blocks.iter().any(|(_, b)| has_site(b, n)),
+        L::Invoke { .. } | L::Jump { .. } | L::Error(_) => false,
+    }
+}
+
+impl Pass<'_> {
+    /// `l`, the body of an arm that keeps a scrutinee known inside it as
+    /// `names`, whose fields it loaded as `fields`: each erase of the
+    /// scrutinee followed by a `let` of as many fields made a `DropReuse`,
+    /// whose token that `let` builds in. See the module docs.
+    fn drop_reuse(&mut self, l: L, names: &[Name], fields: &[Name]) -> L {
+        let n = fields.len();
+        let on = |this: &mut Self, rest: Box<L>| Box::new(this.drop_reuse(*rest, names, fields));
+        match l {
+            L::Erase(x, rest) if names.contains(&x) && has_site(&rest, n) => {
+                let token = self.token();
+                let rest = self.place(*rest, token, n);
+                L::DropReuse {
+                    name: x,
+                    fields: fields.to_vec(),
+                    token,
+                    rest: Box::new(rest),
+                }
+            }
+            L::Share(x, rest) => L::Share(x, on(self, rest)),
+            L::Erase(x, rest) => L::Erase(x, on(self, rest)),
+            L::Clean(x, rest) => L::Clean(x, on(self, rest)),
+            L::Rename(binds, rest) => {
+                // The scrutinee under another name, past a renaming.
+                let mut more = names.to_vec();
+                more.extend(
+                    binds
+                        .iter()
+                        .filter(|(_, from)| names.contains(from))
+                        .map(|(to, _)| *to),
+                );
+                L::Rename(binds, Box::new(self.drop_reuse(*rest, &more, fields)))
+            }
+            L::Let {
+                name,
+                tag,
+                fields: fs,
+                reuse,
+                rest,
+            } => L::Let {
+                name,
+                tag,
+                fields: fs,
+                reuse,
+                rest: on(self, rest),
+            },
+            L::DropReuse {
+                name,
+                fields: fs,
+                token,
+                rest,
+            } => L::DropReuse {
+                name,
+                fields: fs,
+                token,
+                rest: on(self, rest),
+            },
+            L::New {
+                name,
+                captures,
+                methods,
+                frame,
+                rest,
+            } => L::New {
+                name,
+                captures,
+                methods,
+                frame,
+                rest: on(self, rest),
+            },
+            L::Switch {
+                scrutinee,
+                arms,
+                default,
+                keep_default,
+            } => L::Switch {
+                scrutinee,
+                arms: arms
+                    .into_iter()
+                    .map(|a| SwitchArm {
+                        body: *on(self, Box::new(a.body)),
+                        ..a
+                    })
+                    .collect(),
+                default: on(self, default),
+                keep_default,
+            },
+            L::Extern { op, args, blocks } if !packs(&op) => L::Extern {
+                op,
+                args,
+                blocks: blocks
+                    .into_iter()
+                    .map(|(rs, body)| (rs, *on(self, Box::new(body))))
+                    .collect(),
+            },
+            other => other,
+        }
+    }
+
+    /// A new reuse token's name.
+    fn token(&mut self) -> Name {
+        self.tokens += 1;
+        meadow_hir::VarId(u32::MAX - self.tokens)
+    }
+
+    /// `l`, with the first `let` of `n` fields on each path building in token
+    /// `t`, and every path that builds none giving `t` back where it parts from
+    /// those that do. `l` has a site: see [`has_site`].
+    fn place(&mut self, l: L, t: Name, n: usize) -> L {
+        // `rest` keeps the token going if it can use it, and gives it back
+        // first if it cannot.
+        let onward = |this: &mut Self, rest: Box<L>| -> Box<L> {
+            if has_site(&rest, n) {
+                Box::new(this.place(*rest, t, n))
+            } else {
+                Box::new(L::Clean(t, rest))
+            }
+        };
+        let frame_site = frame_method(&l).is_some_and(|m| has_site(&m.body, n));
+        match l {
+            L::Let {
+                name,
+                tag,
+                fields,
+                reuse: None,
+                rest,
+            } if fields.len() == n => L::Let {
+                name,
+                tag,
+                fields,
+                reuse: Some(t),
+                rest,
+            },
+            L::Let {
+                name,
+                tag,
+                fields,
+                reuse,
+                rest,
+            } => L::Let {
+                name,
+                tag,
+                fields,
+                reuse,
+                rest: onward(self, rest),
+            },
+            L::Share(x, rest) => L::Share(x, onward(self, rest)),
+            L::Erase(x, rest) => L::Erase(x, onward(self, rest)),
+            L::Rename(b, rest) => L::Rename(b, onward(self, rest)),
+            L::Clean(x, rest) => L::Clean(x, onward(self, rest)),
+            L::DropReuse {
+                name,
+                fields,
+                token,
+                rest,
+            } => L::DropReuse {
+                name,
+                fields,
+                token,
+                rest: onward(self, rest),
+            },
+            // What runs before the call builds in it if it can; otherwise the
+            // frame carries it, as one more capture, to the code after. A
+            // path in `rest` that never enters the frame erases it, and the
+            // token with it: see `emit`.
+            L::New {
+                name,
+                mut captures,
+                mut methods,
+                frame,
+                rest,
+            } if frame_site && !has_site(&rest, n) => {
+                let m = methods.pop().expect("a frame has one method");
+                let inner = self.token();
+                let ncap = captures.len();
+                captures.push(t);
+                let mut params = m.params;
+                params.insert(ncap, inner);
+                let body = self.place(m.body, inner, n);
+                methods.push(LBlock { params, body });
+                L::New {
+                    name,
+                    captures,
+                    methods,
+                    frame,
+                    rest,
+                }
+            }
+            L::New {
+                name,
+                captures,
+                methods,
+                frame,
+                rest,
+            } => L::New {
+                name,
+                captures,
+                methods,
+                frame,
+                rest: onward(self, rest),
+            },
+            L::Switch {
+                scrutinee,
+                arms,
+                default,
+                keep_default,
+            } => L::Switch {
+                scrutinee,
+                arms: arms
+                    .into_iter()
+                    .map(|a| SwitchArm {
+                        body: *onward(self, Box::new(a.body)),
+                        ..a
+                    })
+                    .collect(),
+                default: onward(self, default),
+                keep_default,
+            },
+            L::Extern { op, args, blocks } if !packs(&op) => L::Extern {
+                op,
+                args,
+                blocks: blocks
+                    .into_iter()
+                    .map(|(rs, body)| (rs, *onward(self, Box::new(body))))
+                    .collect(),
+            },
+            other => L::Clean(t, Box::new(other)),
+        }
+    }
 }

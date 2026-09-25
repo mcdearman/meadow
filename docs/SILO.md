@@ -171,6 +171,75 @@ shares a name where it is used again after something consumes it, and erases
 it where it is not used again at all. After the pass the program is linear,
 and each statement consumes as in the table.
 
+### Reuse: functional but in place
+
+Counting at the last use says, the moment a `switch` takes a block apart,
+whether it was the last reference -- `release` already asks, to hand the
+fields over without a count moving. With that known, a block about to go back
+to the runtime can instead be built in, as Koka's Perceus does ("FBIP":
+functional, but in place):
+
+```meadow
+fun inc (xs : L) : L = match xs with
+  | Nil -> Nil
+  | Cons x rest -> Cons (x + 1) (inc rest)   -- built in the cell just taken apart
+```
+
+The linearization pass pairs them. An arm that takes apart a block of _n_
+fields, from a `switch` that consumes its scrutinee, binds a **reuse token**;
+the first `let` of _n_ fields on each path out of the arm -- the same size of
+block -- builds in it. `release` makes the token the scrutinee's block when it
+was the last reference, its fields now the arm's, and nothing when it was
+shared (the count goes down and the fields are shared, as always). A `let`
+given a token writes every word of the block it holds, and acquires one only
+when it holds none. A path out of the arm that builds nothing that size gives
+the token back (`clean`) where it parts from the paths that do, so the memory
+is held no longer than it could be used.
+
+So `inc` over a list it holds the only reference to rebuilds it in place: two
+passes over a thousand cells acquire the thousand and nothing more, where they
+acquired three thousand before. A list still held elsewhere is copied, as it
+must be.
+
+The rest of what Perceus does is here too, and each piece was measured on a
+red-black tree taking 4.2 million insertions (`benchmarks/`, `rbtree`):
+
+- **Across a call.** A block built after a non-tail call returns -- `Node c
+(ins l k) x r` -- is built in the frame's code. The token rides in the frame
+  as one more capture, an `i64` nobody counts; a frame erased without being
+  entered gives it back. Frames are entered once, so this is safe where a
+  closure's code, which may run any number of times, is not.
+- **Per arm.** An arm that still wants the scrutinee -- it returns it, or a
+  decision tree tested it and an arm uses it whole -- _keeps_ it, borrowing
+  the fields it uses, while every other arm consumes it and can build in its
+  block. Deciding for the whole `switch` at once shared the scrutinee first if
+  any arm wanted it, and then no arm could reuse it.
+- **Drop-reuse.** Where a kept scrutinee dies on a path that builds a block its
+  size, it becomes a token there: its references to its fields are given up
+  and its block is built in, if it was the last reference.
+- **Reuse specialization.** A `let` building in a token it knows the origin of
+  writes only what changed: not the first word, not the constructor or the
+  descriptors when they are the same, and not a field whose new value is what
+  was loaded out of that slot.
+- **Matches that can consume.** `meadow_seq` compiles a `match` to a decision
+  tree (`Lower::case_matrix`), which never backtracks, so nothing keeps the
+  scrutinee alive to backtrack with; the chain of failure objects it replaced
+  captured every scrutinee and made reuse impossible under a nested pattern. A
+  `match` on a tuple written out -- `match (c, l, r) with` -- binds the
+  elements and never builds the tuple, whose fields would otherwise be shared
+  with it.
+
+Two things outside this pass matter as much. The inliner copies a definition
+mentioned exactly once to its call, however big (up to `ONCE_BUDGET`), so
+`balanceLeft (ins l k) x r` builds in the node `ins` took apart rather than
+giving it back for `balanceLeft` to ask for another. And tail modulo cons's
+hole is filled inline (`SetField`) rather than by a runtime call.
+
+Taken together, the idiomatic insertion -- nested patterns, a `balance` per
+side -- went from 1.27 billion blocks acquired and 22 seconds to 8.4 million
+and 1.6 -- two blocks per insertion, where the leaf is one. `MEADOW_NO_REUSE` builds the
+same compiler without reuse, to measure what it is worth.
+
 ## Cycles
 
 Counting misses a cycle, and this runtime cannot have the usual backstop: a
@@ -429,7 +498,8 @@ bookkeeping -- what `await` has to hand back, what a channel holds, what a
   well, and must answer alike -- the same harness `meadow-glade` has, on the
   standard library's tests and the examples.
 - **Leaks:** a debug runtime counts live objects, and a program without
-  `Ref`s, mutable arrays or `TVar`s must end with none.
+  `Ref`s, mutable arrays or `TVar`s must end with none. It also says how many
+  blocks were acquired at all, which is how the tests see reuse.
 - **A/B:** `meadow build --release --runtime glade` against `--runtime silo`, on
   the benchmarks.
 

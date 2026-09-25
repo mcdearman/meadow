@@ -38,6 +38,7 @@ EXE = ".exe" if os.name == "nt" else ""
 # The C compiler, and the Python: `cc` and `python3` are the Unix names, and
 # neither is what a Windows box has. `CC` overrides.
 CC = os.environ.get("CC") or ("clang" if os.name == "nt" else "cc")
+CXX = os.environ.get("CXX") or ("clang++" if os.name == "nt" else "c++")
 PYTHON = "py" if os.name == "nt" and shutil.which("py") else "python3"
 
 # Built once by `meadow_build`; the debug compiler is slow enough to notice.
@@ -54,6 +55,7 @@ TASKS = [
     ("binarytrees", False, "allocation and collection: build, walk, discard"),
     ("matmul", False, "float arrays and three nested loops"),
     ("wordfreq", False, "strings, a hash map, and a sort"),
+    ("rbtree", False, "a functional red-black tree nobody else holds: reuse"),
     ("mandelbrot", True, "data parallelism over a grid of float work"),
     ("contention", True, "many threads incrementing shared state"),
     ("pipeline", True, "message passing: producers, a queue, a consumer"),
@@ -139,14 +141,14 @@ def meadow_package(lang, task):
     )
     shutil.copyfile(lang.source(task), out / "src" / "Main.mw")
     build = [str(MEADOW), "build", "--release", "--emit", "exe", str(out)]
-    if lang.name.endswith("-aot"):
+    if lang.name.endswith("-silo"):
         build += ["--runtime", "silo"]
     return build
 
 
 def native_exe(lang, task):
     native = lang.out_dir(task) / "target" / "release" / "native"
-    if lang.name.endswith("-aot"):
+    if lang.name.endswith("-silo"):
         native = native / "silo"
     return [str(native / f"{camel(task)}{EXE}")]
 
@@ -230,6 +232,17 @@ LANGS = [
         ),
         run_out,
         note="`-O3 -ffp-contract=off`",
+    ),
+    Lang(
+        "cpp", ".cpp", CXX,
+        simple(
+            [CXX, "-O3", "-std=c++17", "-o", "{out}", "{src}"]
+            # clang 15 against a newer MSVC STL, which asks for clang 16
+            # but compiles this fine.
+            + (["-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"] if os.name == "nt" else [])
+        ),
+        run_out,
+        note="`-O3 -std=c++17`",
     ),
     Lang(
         "go", ".go", "go",
@@ -320,6 +333,7 @@ STARTUP = {
     "meadow": 'use Std.Console (println)\n\ndef main = println "0"\n',
     "rust": 'fn main() { println!("0"); }\n',
     "c": '#include <stdio.h>\nint main(void) { printf("0\\n"); return 0; }\n',
+    "cpp": '#include <cstdio>\nint main() { std::printf("0\\n"); }\n',
     "go": 'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println(0) }\n',
     "haskell": "main :: IO ()\nmain = putStrLn \"0\"\n",
     "ocaml": 'let () = print_endline "0"\n',

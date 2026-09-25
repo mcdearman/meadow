@@ -1,7 +1,7 @@
 # Meadow against other languages
 
-Seven tasks, eleven languages, one program each — and Meadow in both of its
-runtimes. Four of the tasks are single-threaded and three use every core the
+Eight tasks, twelve languages, one program each — and Meadow in both of its
+runtimes. Five of the tasks are single-threaded and three use every core the
 machine has.
 
 This is not `benches/`. That directory times Meadow against _itself_ — the
@@ -62,6 +62,7 @@ and Node's 37ms are in every number in their columns.
 |     | `binarytrees` | allocation and collection: 67 million short-lived nodes, one long-lived tree |
 |     | `matmul`      | 256×256 double matrix multiply, `ikj` order: flat arrays and tight loops     |
 |     | `wordfreq`    | a 3MB file, 400k words, a hash map and a sort                                |
+|     | `rbtree`      | 4.2 million keys into a functional red-black tree: reuse, nested patterns    |
 | ⇉   | `mandelbrot`  | data parallelism: a 2000×2000 grid of independent float work                 |
 | ⇉   | `contention`  | eight threads moving money between sixteen accounts, atomically              |
 | ⇉   | `pipeline`    | message passing: four producers, one channel, 200k messages                  |
@@ -97,6 +98,19 @@ thread gets all the cheap ones, and the total does not depend on how many
 threads there were. Every language may therefore use as many as it likes and
 still has to produce the same number.
 
+**`rbtree` is Koka's benchmark, not ours.** Four point two million keys, in
+descending order, each inserted into a persistent red-black tree that nothing
+else holds, then a fold counting the tenth that are flagged. It is the
+benchmark the Perceus paper made its case with: a tree only ever held once can
+be rebuilt in the nodes it is taken apart from, and a runtime that counts
+references can see that and a tracing collector cannot. The Koka, Haskell,
+OCaml and Java programs are Koka's own (`test/bench/`, at `facb793`), unchanged
+but for Java's class name. The C++ is Koka's too, and is not the same
+algorithm: it is `std::map`, a red-black tree mutated in place, which is what
+Koka's papers measure against -- the thing a functional tree is trying to get
+close to. The Meadow program is Koka's written as Meadow would write it, with
+nested patterns; Rust, Go, Python and JavaScript are ports of the same.
+
 ## The languages
 
 | language   | how it is built                                                                                                                                                          |
@@ -105,6 +119,7 @@ still has to produce the same number.
 | Meadow/aot | `meadow build --release --runtime silo` — the same program against the runtime of its own: counted by reference, cycles collected by trial deletion, on the native stack |
 | Rust       | `rustc -C opt-level=3`, what `cargo build --release` uses                                                                                                                |
 | C          | `cc -O3 -ffp-contract=off` — `-O3` to match Rust's `opt-level=3`; `-ffp-contract=off` so `matmul` measures the loop and not who emits a fused multiply-add               |
+| C++        | `clang++ -O3 -std=c++17` — only `rbtree` has a C++ program, Koka's                                                                                                       |
 | Go         | `go build`                                                                                                                                                               |
 | Haskell    | `ghc -O2 -threaded -with-rtsopts=-N`                                                                                                                                     |
 | Java       | `javac`, default JVM settings                                                                                                                                            |
@@ -120,7 +135,7 @@ rather than C and Rust. Koka is the most pointed comparison of the three --
 its Perceus reference counting is the nearest thing in production to the memory
 discipline AxCut describes, and `binarytrees` is where that shows.
 
-Three of the seven tasks are missing for all three, and for a reason worth
+Three of the eight tasks are missing for all three, and for a reason worth
 recording rather than hiding. **OCaml 4.14 has no multicore** (OCaml 5 does);
 **MLton has no parallel runtime** (MPL is the fork that does); **Koka's
 concurrency is `async`, not threads**. None of them can express the parallel
@@ -189,6 +204,25 @@ columns against each other and not against the table above:
 
 `contention` and `pipeline` move ±20% between runs of the same binary, so
 nothing under that is claimed for them.
+
+### `rbtree`
+
+Added after the table above, and measured on its own, on the same machine:
+
+| task   | meadow        | meadow-silo  | c++       | java         | haskell      | js           | rust         | go           | python         |
+| ------ | ------------- | ------------ | --------- | ------------ | ------------ | ------------ | ------------ | ------------ | -------------- |
+| rbtree | 8.97s (13.9×) | 1.54s (2.4×) | **646ms** | 836ms (1.3×) | 1.13s (1.7×) | 1.64s (2.5×) | 3.15s (4.9×) | 4.26s (6.6×) | 18.98s (29.4×) |
+
+The first time it ran, `meadow-silo` took 22 seconds and acquired 1.27
+billion blocks, and `meadow` took 15. Reuse was there, and was reaching almost
+nothing: a nested pattern compiled to a chain of failure objects, each holding
+the scrutinee, so no `switch` ever saw a last reference; a node built after a
+call returned could not be built in the one taken apart before it; and every
+cell tail modulo cons built filled its hole with a runtime call. With those
+fixed (`docs/SILO.md`, "Reuse") the same program acquires 8.4 million blocks
+-- two per insertion -- and runs in 1.54s, ahead of Node and GHC and behind
+only the JVM and the tree C++ mutates in place. The decision trees are
+`meadow`'s too, which took it from 15.2s to 9.0s.
 
 ## What this says
 

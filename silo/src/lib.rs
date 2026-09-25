@@ -227,6 +227,7 @@ pub unsafe extern "C" fn meadow_run(
             heap::settle();
             let (left, kinds) = heap::leaked(&prims::roots());
             eprintln!("aot: {left} blocks live at exit");
+            eprintln!("aot: {} blocks acquired", heap::acquired());
             if left > 0 {
                 for (n, k, m) in kinds.iter().take(12) {
                     let what = match *k {

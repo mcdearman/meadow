@@ -1,0 +1,77 @@
+-- Reuse: insert 4.2 million keys into a persistent red-black tree, one at a
+-- time, and count the values that are set. The tree is only ever held once, so
+-- a runtime that can see that -- Koka's Perceus, Silo's reuse -- rebuilds each
+-- path down the tree in the nodes it takes apart instead of allocating new ones.
+--
+-- Koka's `test/bench/koka/rbtree.kk`, itself after Lean's `rbmap`, which is
+-- where the C++, Haskell, OCaml and Java versions here come from too.
+
+use Std.Console (println)
+
+data Color = Red | Black
+
+data Tree = Leaf | Node Color Tree Int Bool Tree
+
+use Color.*
+use Tree.*
+
+fun isRed (t : Tree) : Bool =
+  match t with
+  | Node Red _ _ _ _ -> True
+  | _ -> False
+
+fun balanceLeft (l : Tree) (k : Int) (v : Bool) (r : Tree) : Tree =
+  match l with
+  | Node _ (Node Red lx kx vx rx) ky vy ry ->
+      Node Red (Node Black lx kx vx rx) ky vy (Node Black ry k v r)
+  | Node _ ly ky vy (Node Red lx kx vx rx) ->
+      Node Red (Node Black ly ky vy lx) kx vx (Node Black rx k v r)
+  | Node _ lx kx vx rx -> Node Black (Node Red lx kx vx rx) k v r
+  | Leaf -> Leaf
+
+fun balanceRight (l : Tree) (k : Int) (v : Bool) (r : Tree) : Tree =
+  match r with
+  | Node _ (Node Red lx kx vx rx) ky vy ry ->
+      Node Red (Node Black l k v lx) kx vx (Node Black rx ky vy ry)
+  | Node _ lx kx vx (Node Red ly ky vy ry) ->
+      Node Red (Node Black l k v lx) kx vx (Node Black ly ky vy ry)
+  | Node _ lx kx vx rx -> Node Black l k v (Node Red lx kx vx rx)
+  | Leaf -> Leaf
+
+fun ins (t : Tree) (k : Int) (v : Bool) : Tree =
+  match t with
+  | Node Red l kx vx r ->
+      if k < kx then Node Red (ins l k v) kx vx r
+      else if k > kx then Node Red l kx vx (ins r k v)
+      else Node Red l k v r
+  | Node Black l kx vx r ->
+      if k < kx then
+        (if isRed l then balanceLeft (ins l k v) kx vx r
+          else Node Black (ins l k v) kx vx r)
+      else if k > kx then
+        (if isRed r then balanceRight l kx vx (ins r k v)
+          else Node Black l kx vx (ins r k v))
+      else Node Black l k v r
+  | Leaf -> Node Red Leaf k v Leaf
+
+fun setBlack (t : Tree) : Tree =
+  match t with
+  | Node _ l k v r -> Node Black l k v r
+  | _ -> t
+
+fun insert (t : Tree) (k : Int) (v : Bool) : Tree = setBlack (ins t k v)
+
+fun fold (t : Tree) (b : a) (f : Int -> Bool -> a -> a) : a =
+  match t with
+  | Node _ l k v r -> fold r (f k v (fold l b f)) f
+  | Leaf -> b
+
+fun makeTree (n : Int) (t : Tree) : Tree =
+  if n <= 0 then t
+  else
+    let n1 = n - 1 in
+    makeTree n1 (insert t n1 (n1 % 10 == 0))
+
+def main =
+  let t = makeTree 4200000 Leaf in
+  println (fold t 0 (\k v r -> if v then r + 1 else r))

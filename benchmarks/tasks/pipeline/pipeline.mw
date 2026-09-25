@@ -16,7 +16,7 @@ def each : Int = 50000
 fun send ch (base : Int) (i : Int) =
   if i >= each then () else let _ = Thread.send ch (base + i) in send ch base (i + 1)
 
-fun drain ch (n : Int) (acc : Int) : Int =
+fun drain ch (n : Int) (acc : Int) : Int ! Thread =
   if n == 0 then acc else drain ch (n - 1) (acc + Thread.receive ch)
 
 def main =

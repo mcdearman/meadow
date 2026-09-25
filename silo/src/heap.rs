@@ -163,6 +163,9 @@ pub struct Heap {
     left: usize,
     /// Blocks acquired and not yet clean: what a leak check counts.
     live: isize,
+    /// Blocks acquired at all: what a block built in one the program already
+    /// had -- reuse, see `meadow-llvm`'s `linear` -- saves.
+    acquired: u64,
     /// Which, when a leak check asks: see [`tracking`].
     blocks: Option<std::collections::HashSet<usize>>,
     /// Blocks whose count went down without reaching zero: where the cycle
@@ -205,6 +208,7 @@ impl Heap {
             chunk: std::ptr::null_mut(),
             left: 0,
             live: 0,
+            acquired: 0,
             blocks: None,
             candidates: Vec::new(),
             oversized: Vec::new(),
@@ -420,6 +424,7 @@ pub fn acquire(words: usize) -> Word {
             }
         }
         h.live += 1;
+        h.acquired += 1;
         let p = h.take(words);
         if let Some(b) = &mut h.blocks {
             b.insert(p as usize);
@@ -674,7 +679,7 @@ impl Heap {
                 // Safety: a `Compact` block whose fields are still in it.
                 unsafe { crate::region::forget(v) };
             }
-            let words = first + n;
+            let words = size(v);
             self.clean_block(p, words);
         }
     }
@@ -691,6 +696,11 @@ pub fn settle() {
     });
     // Erasing what a cycle held can make candidates of its own.
     with(|h| crate::cycles::collect_all(h));
+}
+
+/// Blocks acquired on this thread so far.
+pub fn acquired() -> u64 {
+    with(|h| h.acquired)
 }
 
 /// Blocks acquired and not yet clean, on this thread -- after everything

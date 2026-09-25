@@ -89,6 +89,27 @@ fn run_abandoning(name: &str, src: &str) -> String {
 
 #[track_caller]
 fn run_with(name: &str, src: &str, check: bool, abandons: bool) -> String {
+    run_full(name, src, check, abandons).0
+}
+
+/// [`run`], and how many blocks the program acquired: what reuse saves.
+#[track_caller]
+fn run_counting(name: &str, src: &str) -> (String, u64) {
+    let (got, stderr) = run_full(name, src, true, false);
+    let acquired = stderr
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("aot: ")?
+                .strip_suffix(" blocks acquired")?
+                .parse()
+                .ok()
+        })
+        .expect("the run says how many blocks it acquired");
+    (got, acquired)
+}
+
+#[track_caller]
+fn run_full(name: &str, src: &str, check: bool, abandons: bool) -> (String, String) {
     let prog = program(src);
     let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::O2);
     assert!(lowered.unsupported.is_empty(), "{:?}", lowered.unsupported);
@@ -140,7 +161,7 @@ fn run_with(name: &str, src: &str, check: bool, abandons: bool) -> String {
         abandons || stderr.contains("aot: 0 blocks live at exit"),
         "{name} leaked: {stderr}"
     );
-    got
+    (got, stderr)
 }
 
 #[test]
@@ -454,4 +475,131 @@ fn a_cycle_still_in_use_is_kept() {
         ),
         "5014"
     );
+}
+
+// --- reuse ---------------------------------------------------------------------
+
+const LIST: &str = "use L.*
+     data L = Nil | Cons Int L
+     fun build (n : Int) (acc : L) : L = if n == 0 then acc else build (n - 1) (Cons n acc)
+     fun inc (xs : L) : L = match xs with | Nil -> Nil | Cons x rest -> Cons (x + 1) (inc rest)
+     fun total (xs : L) : Int = match xs with | Nil -> 0 | Cons x rest -> x + total rest
+";
+
+#[test]
+fn a_list_nobody_else_holds_is_rebuilt_in_place() {
+    // Each `inc` takes a cell apart and builds one of the same size: with the
+    // list its only reference, it builds in the cell it took apart. Two
+    // passes over a thousand cells acquire none beyond the thousand built.
+    let (got, acquired) = run_counting(
+        "reuse-map",
+        &format!("{LIST} def main = total (inc (inc (build 1000 Nil)))"),
+    );
+    assert_eq!(got, "502500");
+    assert!(
+        acquired < 1100,
+        "{acquired} blocks acquired: the passes did not reuse"
+    );
+}
+
+#[test]
+fn a_list_still_held_elsewhere_is_copied() {
+    // Shared, the cells are not `inc`'s to reuse: it copies, and the list it
+    // was given is still whole for the second `total`.
+    let (got, acquired) = run_counting(
+        "reuse-shared",
+        &format!("{LIST} def main = let xs = build 1000 Nil in total (inc xs) + total xs"),
+    );
+    assert_eq!(got, "1002000");
+    assert!(
+        acquired >= 2000,
+        "{acquired}: a shared list cannot have been reused"
+    );
+}
+
+#[test]
+fn a_path_that_builds_nothing_gives_the_block_back() {
+    // `keep` builds a cell on one path and none on the other: the cells it
+    // drops go back to the runtime, and nothing leaks.
+    let (got, _) = run_counting(
+        "reuse-filter",
+        &format!(
+            "{LIST} fun keep (xs : L) : L = match xs with | Nil -> Nil | Cons x rest -> if x % 2 == 0 then Cons x (keep rest) else keep rest
+             def main = total (keep (build 1000 Nil))"
+        ),
+    );
+    assert_eq!(got, "250500");
+}
+
+#[test]
+fn a_block_is_rebuilt_after_the_calls_it_waits_on() {
+    // `bump` takes a node apart, recurses into both sides -- two calls that
+    // are not tail calls -- and only then builds the node again. The block
+    // it took apart waits in the frames of those calls, and the node is built
+    // in it when they return.
+    let (got, acquired) = run_counting(
+        "reuse-across-calls",
+        "use T.*
+         data T = Tip | Node T Int T
+         fun build (d : Int) : T = if d == 0 then Tip else Node (build (d - 1)) d (build (d - 1))
+         fun bump (t : T) : T = match t with | Tip -> Tip | Node l x r -> let l2 = bump l in let r2 = bump r in Node l2 (x + 1) r2
+         fun sum (t : T) : Int = match t with | Tip -> 0 | Node l x r -> sum l + x + sum r
+         def main = sum (bump (bump (build 10)))",
+    );
+    assert_eq!(got, "4082");
+    assert!(
+        acquired < 1100,
+        "{acquired} blocks acquired for a tree of 1023: the rebuilds did not reuse"
+    );
+}
+
+#[test]
+fn nested_patterns_rebuild_in_what_they_took_apart() {
+    // Koka's red-black insertion (its `rbtree` benchmark), with the nested
+    // patterns it is written with. The matches are decision trees, so each
+    // `switch` consumes what it takes apart and the nodes a rotation builds
+    // are the nodes it matched; a chain of failure objects would have held
+    // every scrutinee while the arm ran, and nothing could have been reused.
+    // `balanceLeft` is inlined into `ins`, its one caller, so a rotation
+    // builds in the node `ins` took apart as well as the two it matched; and
+    // where `ins` keeps `t` for the path that returns it, the other paths drop
+    // it into a token. Two thousand insertions copy a path of a dozen nodes
+    // each without reuse -- over forty thousand blocks -- and with it build
+    // nothing but the two thousand leaves.
+    let (got, acquired) = run_counting(
+        "reuse-rbtree",
+        "use Color.*
+         use Tree.*
+         data Color = Red | Black
+         data Tree = Leaf | Node Color Tree Int Tree
+         fun isRed (t : Tree) : Bool = match t with | Node Red _ _ _ -> True | _ -> False
+         fun balanceLeft (l : Tree) (k : Int) (r : Tree) : Tree = match l with | Node _ (Node Red a x b) y c -> Node Red (Node Black a x b) y (Node Black c k r) | Node _ a x (Node Red b y c) -> Node Red (Node Black a x b) y (Node Black c k r) | Node _ a x b -> Node Black (Node Red a x b) k r | Leaf -> Leaf
+         fun balanceRight (l : Tree) (k : Int) (r : Tree) : Tree = match r with | Node _ (Node Red a x b) y c -> Node Red (Node Black l k a) x (Node Black b y c) | Node _ a x (Node Red b y c) -> Node Red (Node Black l k a) x (Node Black b y c) | Node _ a x b -> Node Black l k (Node Red a x b) | Leaf -> Leaf
+         fun ins (t : Tree) (k : Int) : Tree = match t with | Node Red l x r -> (if k < x then Node Red (ins l k) x r else if k > x then Node Red l x (ins r k) else t) | Node Black l x r -> (if k < x then (if isRed l then balanceLeft (ins l k) x r else Node Black (ins l k) x r) else if k > x then (if isRed r then balanceRight l x (ins r k) else Node Black l x (ins r k)) else t) | Leaf -> Node Red Leaf k Leaf
+         fun insert (t : Tree) (k : Int) : Tree = match ins t k with | Node _ l x r -> Node Black l x r | Leaf -> Leaf
+         fun make (n : Int) (t : Tree) : Tree = if n == 0 then t else make (n - 1) (insert t n)
+         fun size (t : Tree) : Int = match t with | Leaf -> 0 | Node _ l _ r -> size l + 1 + size r
+         def main = size (make 2000 Leaf)",
+    );
+    assert_eq!(got, "2000");
+    assert!(
+        acquired < 2_100,
+        "{acquired} blocks acquired for 2000 insertions: the paths were copied"
+    );
+}
+
+#[test]
+fn an_arm_can_test_a_value_and_keep_it_whole() {
+    // The second arm takes `xs` apart two cells deep and then uses all of
+    // it; the first tests a literal in the same place. As a decision tree
+    // the switch on `xs` keeps it in the arm that wants it and gives it up
+    // in the others.
+    let (got, _) = run_counting(
+        "keep-arm",
+        &format!(
+            "{LIST} fun pick (xs : L) : Int = match xs with | Cons 0 rest -> total rest | Cons x (Cons y _) -> x * 100 + y + total xs | ys -> total ys
+             def main = pick (Cons 0 (build 3 Nil)) + pick (build 4 Nil) + pick (Cons 7 Nil) + pick Nil"
+        ),
+    );
+    assert_eq!(got, "125");
 }

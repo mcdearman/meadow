@@ -52,7 +52,14 @@
 //! * **not recursive**, directly or through any chain of definitions — which is
 //!   computed rather than guessed at, because a wrapper calling a wrapper is the
 //!   ordinary case and refusing those would leave most of the library alone;
-//! * **small**, under [`BUDGET`] nodes.
+//! * **small**, under [`BUDGET`] nodes -- or, when it is monomorphic and the
+//!   whole program mentions it exactly once, under [`ONCE_BUDGET`]: the one
+//!   copy is its only one anywhere, so nothing is duplicated, and the call is
+//!   gone. What that buys beyond the call is the callee's code in its
+//!   caller's function, where it can see what the caller took apart:
+//!   `balanceLeft (ins l k) x r` in a red-black insertion builds its nodes in
+//!   the one `ins` matched, instead of the caller giving that node back and
+//!   the callee asking for another.
 //!
 //! and the call is **saturated**: exactly as many arguments as parameters.
 //! Anything else is left as it is.
@@ -86,6 +93,12 @@ pub const INLINE_BASE: u32 = 0x7D00_0000;
 /// Raising it trades code size for calls saved, and nothing measured so far
 /// asks for that.
 pub const BUDGET: usize = 16;
+
+/// The most nodes a definition the program mentions exactly once may have and
+/// still be inlined at that one place. Larger than [`BUDGET`] because copying
+/// it duplicates nothing -- but bounded, since the caller is compiled as one
+/// function and grows by all of it.
+pub const ONCE_BUDGET: usize = 256;
 
 /// How many times inlining and simplification alternate. A wrapper around a
 /// wrapper needs two, and a loop nested three deep -- see [`loops`] -- needs a
@@ -173,6 +186,7 @@ impl Body {
 /// Every definition worth inlining, or `None` if there are none.
 fn candidates(p: &Program) -> Option<HashMap<Var, Body>> {
     let recursive = recursive(p);
+    let mentions = mentions(p);
     let binders_of: HashMap<Var, &Vec<TyVar>> =
         p.defs.iter().map(|d| (d.var, &d.poly.binders)).collect();
     let mut out = HashMap::new();
@@ -190,7 +204,15 @@ fn candidates(p: &Program) -> Option<HashMap<Var, Body>> {
         if body.binders.len() != d.poly.binders.len() {
             continue;
         }
-        if body.params.is_empty() || size(&body.term, BUDGET) > BUDGET {
+        // Only a monomorphic definition, and not a specialized copy: a big
+        // polymorphic body is instantiated at its one call through every
+        // local binding and lifted function inside it, which this pass has
+        // only ever been trusted to do for the small ones.
+        let once = mentions.get(&d.var) == Some(&1)
+            && body.binders.is_empty()
+            && !p.origins.contains_key(&d.var);
+        let budget = if once { ONCE_BUDGET } else { BUDGET };
+        if body.params.is_empty() || size(&body.term, budget) > budget {
             continue;
         }
         // A specialized copy is inlined as the copy, not as what it was copied
@@ -207,6 +229,21 @@ fn candidates(p: &Program) -> Option<HashMap<Var, Body>> {
         out.insert(d.var, body);
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// How many times each variable is mentioned, anywhere in the program.
+fn mentions(p: &Program) -> HashMap<Var, usize> {
+    let mut out: HashMap<Var, usize> = HashMap::new();
+    for d in &p.defs {
+        let mut note = |t: Term| {
+            if let Term::Var(v) = &t {
+                *out.entry(*v).or_default() += 1;
+            }
+            t
+        };
+        rewrite::term(&d.term, &mut note, &mut |p| p);
+    }
+    out
 }
 
 /// A definition's type binders, parameters and body, if it is a function.
@@ -282,7 +319,7 @@ fn recursive(p: &Program) -> HashSet<Var> {
 }
 
 /// How many nodes `t` has, giving up once past `cap`.
-fn size(t: &Term, cap: usize) -> usize {
+pub fn size(t: &Term, cap: usize) -> usize {
     let mut n = 0;
     let mut count = |t: Term| {
         n += 1;

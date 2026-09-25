@@ -316,7 +316,10 @@ impl Indenter {
 
         // A top-level declaration starts over at the left margin. Guarded on
         // there being no open bracket, so a record field never resets anything.
-        if starts_declaration(toks) && !self.stack.iter().any(|f| matches!(f, Frame::Open { .. })) {
+        // A macro call written at the left margin is a declaration too, as the
+        // parser reads it; indented, it is part of what is above it.
+        let declares = starts_declaration(toks) || (author == 0 && starts_macro_call(toks));
+        if declares && !self.stack.iter().any(|f| matches!(f, Frame::Open { .. })) {
             self.stack.clear();
             return 0;
         }
@@ -589,6 +592,22 @@ fn starts_declaration(toks: &[Tok<'_>]) -> bool {
     }
 }
 
+/// Whether these tokens begin with a macro call: `name!` or `A.b.name!`.
+fn starts_macro_call(toks: &[Tok<'_>]) -> bool {
+    let mut i = 0;
+    loop {
+        match toks.get(i) {
+            Some(t) if t.text.starts_with(|c: char| c.is_alphabetic() || c == '_') => {}
+            _ => return false,
+        }
+        match toks.get(i + 1).map(|t| t.text) {
+            Some("!") => return true,
+            Some(".") => i += 2,
+            _ => return false,
+        }
+    }
+}
+
 /// How many `#`s the raw string starting at `i` opens with, if one does: an `r`
 /// that is not the end of a longer name, `#`s, and a quote.
 fn opens_raw(line: &[char], i: usize) -> Option<usize> {
@@ -812,6 +831,14 @@ trait T a {
     fn brackets_indent_their_contents_and_the_closer_goes_back_out() {
         let src = "record R = {\na : Int,\nb : Int,\n}\n";
         assert_eq!(f(src), "record R = {\n  a : Int,\n  b : Int,\n}\n");
+    }
+
+    #[test]
+    fn a_macro_call_at_the_margin_is_a_declaration() {
+        // At the left margin it begins a declaration, as the parser reads it;
+        // indented, it is part of what is above.
+        let src = "def x =\n  f 1\nderive! { a }\n\ndef y =\n  g\n  stringify!(b)\n";
+        assert_eq!(f(src), src);
     }
 
     #[test]

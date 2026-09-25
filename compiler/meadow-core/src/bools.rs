@@ -11,10 +11,16 @@
 
 use crate::*;
 
+/// Which boolean `name` is, if it is one of `Bool`'s constructors -- by the
+/// names the checker knows them by, and no other. Another type may have a
+/// `True` of its own (a lexer's token for the keyword, say), and it is a
+/// constructor like any other: taking every name that ends in `True` made that
+/// one a boolean where it was built and where it was matched, so a `match` on
+/// it fell through at run time.
 fn which(name: &str) -> Option<bool> {
-    match name.rsplit('.').next() {
-        Some("True") => Some(true),
-        Some("False") => Some(false),
+    match name {
+        "True" | "Bool.True" => Some(true),
+        "False" | "Bool.False" => Some(false),
         _ => None,
     }
 }
@@ -85,5 +91,19 @@ mod tests {
             term(&Term::ctor("True", vec![Term::Lit(Lit::Int(1))])),
             Term::ctor("True", vec![Term::Lit(Lit::Int(1))])
         );
+    }
+
+    #[test]
+    fn another_types_true_is_its_own() {
+        // A lexer's `Token.True`, in a package: a constructor of `Token`, built
+        // and matched as one.
+        let t = Term::case(
+            Term::ctor("Mini@0.1.0::Token.True", vec![]),
+            vec![(
+                Pat::Ctor("Mini@0.1.0::Token.False".into(), vec![]),
+                Term::ctor("Mini@0.1.0::Token.True", vec![]),
+            )],
+        );
+        assert_eq!(term(&t), t);
     }
 }

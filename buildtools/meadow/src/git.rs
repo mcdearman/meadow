@@ -46,7 +46,8 @@ use std::process::Command;
 /// `--upload-pack=<cmd>` runs `<cmd>` -- so a manifest could otherwise run a
 /// command at build time. A `helper::address` URL (`ext::sh -c …`) runs a
 /// command through git's remote-helper machinery. Both are refused here; only
-/// the ordinary transports and the scp-like `user@host:path` form are allowed.
+/// the ordinary transports, the scp-like `user@host:path` form, and a path to
+/// a repository on this machine are allowed.
 pub fn safe_url(url: &str) -> Result<(), String> {
     if url.is_empty() {
         return Err("a git dependency has an empty url".to_string());
@@ -75,6 +76,15 @@ pub fn safe_url(url: &str) -> Result<(), String> {
     if SCHEMES.iter().any(|s| url.starts_with(s)) {
         return Ok(());
     }
+    // A repository on this machine, by its path: `/srv/repo`, `./repo`,
+    // `../repo`, `C:\repo`. Git reads it as a path, and neither of the two
+    // dangers above can be one.
+    let b = url.as_bytes();
+    let drive =
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\');
+    if url.starts_with('/') || url.starts_with("./") || url.starts_with("../") || drive {
+        return Ok(());
+    }
     // scp-like: `[user@]host:path`, the host part holding no slash.
     if let Some(colon) = url.find(':')
         && !url[..colon].contains('/')
@@ -84,7 +94,8 @@ pub fn safe_url(url: &str) -> Result<(), String> {
     }
     Err(format!(
         "`{url}` is not a git url meadow understands; expected one beginning \
-         with https://, ssh://, git:// or file://, or a `host:path` address"
+         with https://, ssh://, git:// or file://, a `host:path` address, or a \
+         path to a repository"
     ))
 }
 

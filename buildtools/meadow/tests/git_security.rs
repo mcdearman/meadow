@@ -55,6 +55,13 @@ fn an_ordinary_url_is_allowed() {
         "file:///home/me/pkg",
         "git@github.com:someone/pkg",
         "user@host.example:some/path",
+        // A repository on this machine: what CI's tests fetch from, and what
+        // the first version of this check refused on Unix.
+        "/tmp/meadow-git-src/repo",
+        "./vendor/repo",
+        "../repo",
+        "C:\\Users\\me\\repo",
+        "C:/Users/me/repo",
     ] {
         assert!(git::safe_url(url).is_ok(), "`{url}` should be allowed");
     }

@@ -26,6 +26,9 @@ use Std.Maybe.Maybe.*
   -- Terminate the current process immediately with the given exit code.
   exit : Int -> (),
   currentPid : () -> Int,
+  -- Whether standard input (0), output (1) or error (2) is a terminal rather
+  -- than a file or a pipe: whether what is written there should be coloured.
+  isTerminal : Int -> Bool,
   -- The process's command-line arguments (not including the program name).
   argv : () -> Vector String,
   getEnv : String -> Maybe String,

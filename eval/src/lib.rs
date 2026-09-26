@@ -2246,6 +2246,7 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             std::process::exit(code as i32);
         }
         "currentPid" => Value::Int(std::process::id() as i64),
+        "isTerminal" => Value::Bool(is_terminal(as_int(&arg)?)),
         "argv" => vector_value(meadow_core::args::get().into_iter().map(sv).collect()),
         "getEnv" => match std::env::var(&*as_str(&arg)?) {
             Ok(v) => just(sv(v)),
@@ -3440,4 +3441,17 @@ fn as_tvar(v: &Value) -> Result<Rc<TVarCell>, RuntimeError> {
 /// that on the VM its value can live in a shared region.
 fn storable(v: &Value) -> Result<(), RuntimeError> {
     compact_into(&RefCell::new(Region::default()), v, core::stm::unstorable)
+}
+
+/// Whether standard input (0), output (1) or error (2) is a terminal:
+/// `Process.isTerminal`, for a program choosing whether to colour what it
+/// writes.
+fn is_terminal(fd: i64) -> bool {
+    use std::io::IsTerminal;
+    match fd {
+        0 => std::io::stdin().is_terminal(),
+        1 => std::io::stdout().is_terminal(),
+        2 => std::io::stderr().is_terminal(),
+        _ => false,
+    }
 }

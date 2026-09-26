@@ -455,6 +455,15 @@ impl Vm<'_> {
                 }
             },
             "currentPid" => Build::int(std::process::id() as i64),
+            "isTerminal" => match arg {
+                Value::Int(fd) => Build::At(Value::Bool(is_terminal(fd))),
+                other => {
+                    return err(format!(
+                        "Process.isTerminal: expected an Int, got {}",
+                        self.show(other)
+                    ));
+                }
+            },
             "argv" => Build::Vector(
                 meadow_core::args::get()
                     .into_iter()
@@ -643,5 +652,18 @@ impl Vm<'_> {
             },
             _ => return Ok(None),
         }))
+    }
+}
+
+/// Whether standard input (0), output (1) or error (2) is a terminal:
+/// `Process.isTerminal`, for a program choosing whether to colour what it
+/// writes.
+fn is_terminal(fd: i64) -> bool {
+    use std::io::IsTerminal;
+    match fd {
+        0 => std::io::stdin().is_terminal(),
+        1 => std::io::stdout().is_terminal(),
+        2 => std::io::stderr().is_terminal(),
+        _ => false,
     }
 }

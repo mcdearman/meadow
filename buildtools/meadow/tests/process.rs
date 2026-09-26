@@ -41,6 +41,16 @@ fn command_builder() {
 }
 
 #[test]
+fn is_terminal_answers_for_the_three_streams_and_no_other() {
+    // Whether stdout is a terminal depends on how the tests are run, so only
+    // that it answers is asserted; a descriptor past stderr is never one.
+    insta::assert_snapshot!(eval_main_std(
+        "use Std.Process (isTerminal)\n\
+         def main = (isTerminal 1 or True, isTerminal 9)\n"
+    ), @"(True, False)");
+}
+
+#[test]
 fn current_pid_is_positive() {
     insta::assert_snapshot!(eval_main_std("def main = currentPid () > 0\n"), @"True");
 }

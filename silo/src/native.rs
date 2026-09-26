@@ -428,6 +428,13 @@ fn process(op: &str, arg: Val) -> Option<Build> {
             )),
         },
         "currentPid" => Build::int(std::process::id() as i64),
+        "isTerminal" => match arg {
+            Val::Int(fd) => Build::bool(is_terminal(fd)),
+            other => fail(format!(
+                "Process.isTerminal: expected an Int, got {}",
+                shown(other)
+            )),
+        },
         "argv" => Build::Vector(std::env::args().skip(1).map(Build::Str).collect()),
         "getEnv" => match std::env::var(text(arg, &what)) {
             Ok(v) => Build::Data("Maybe.Just", vec![Build::Str(v)]),
@@ -519,4 +526,17 @@ fn time(op: &str, arg: Val) -> Option<Build> {
         },
         _ => return None,
     })
+}
+
+/// Whether standard input (0), output (1) or error (2) is a terminal:
+/// `Process.isTerminal`, for a program choosing whether to colour what it
+/// writes.
+fn is_terminal(fd: i64) -> bool {
+    use std::io::IsTerminal;
+    match fd {
+        0 => std::io::stdin().is_terminal(),
+        1 => std::io::stdout().is_terminal(),
+        2 => std::io::stderr().is_terminal(),
+        _ => false,
+    }
 }

@@ -19,6 +19,8 @@
 //! run by the language server and by tests, and neither wants a narration.
 //! Bars are drawn only on a terminal, and colour follows the same rule --
 //! `NO_COLOR` turns it off, as `CARGO_TERM_COLOR` would for cargo.
+//! On Windows it also needs a console that draws ANSI escapes, which it is
+//! asked to do first (`meadow_core::console::ansi`).
 
 use std::io::{IsTerminal, Write};
 use std::sync::Mutex;
@@ -45,9 +47,7 @@ fn terminal() -> bool {
 }
 
 fn colour() -> bool {
-    terminal()
-        && std::env::var_os("NO_COLOR").is_none()
-        && (!cfg!(windows) || std::env::var_os("WT_SESSION").is_some())
+    terminal() && std::env::var_os("NO_COLOR").is_none() && meadow_compiler::core::console::ansi()
 }
 
 /// `word` padded to twelve columns, then coloured -- in that order, since an
@@ -147,7 +147,7 @@ pub fn diagnostic(d: &meadow_compiler::diagnostics::Diagnostic) {
 pub fn paint(text: &str, code: &str) -> String {
     let wanted = std::io::stdout().is_terminal()
         && std::env::var_os("NO_COLOR").is_none()
-        && (!cfg!(windows) || std::env::var_os("WT_SESSION").is_some());
+        && meadow_compiler::core::console::ansi();
     if wanted {
         format!("\x1b[{code}m{text}\x1b[0m")
     } else {

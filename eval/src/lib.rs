@@ -3445,13 +3445,14 @@ fn storable(v: &Value) -> Result<(), RuntimeError> {
 
 /// Whether standard input (0), output (1) or error (2) is a terminal:
 /// `Process.isTerminal`, for a program choosing whether to colour what it
-/// writes.
+/// writes: for output, a terminal that draws colour -- which a Windows console
+/// does once asked to (`meadow_core::console::ansi`).
 fn is_terminal(fd: i64) -> bool {
     use std::io::IsTerminal;
     match fd {
         0 => std::io::stdin().is_terminal(),
-        1 => std::io::stdout().is_terminal(),
-        2 => std::io::stderr().is_terminal(),
+        1 => std::io::stdout().is_terminal() && meadow_core::console::ansi(),
+        2 => std::io::stderr().is_terminal() && meadow_core::console::ansi(),
         _ => false,
     }
 }

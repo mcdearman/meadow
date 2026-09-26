@@ -1283,6 +1283,9 @@ impl Infer {
         // lists what a call performs, not all the region may: the region
         // holds it and possibly more, so it is joined with its end left open.
         let phi = self.open_row_end(phi);
+        if self.joins_within(&region, &phi, span) {
+            return;
+        }
         let target = match self.arena.zonk(&phi) {
             Type::Var(id) => {
                 let level = self.arena.slot_level(id);
@@ -1300,6 +1303,43 @@ impl Infer {
             _ => region,
         };
         self.unify_at(span, target, phi);
+    }
+
+    /// Whether `phi` is already part of `region` because the two end in the
+    /// same row variable -- `e` into `{ Thread, Mut | e }`, what is left of a
+    /// handled `{ Ask | e }` in a function that performs `{ Thread, Mut | e }`
+    /// -- with each effect it names in `region` too, whose arguments are then
+    /// unified. Unifying the rows instead would ask for `e = { Thread, Mut |
+    /// e }`, which no type is: the occurs check fails, and says so as
+    /// `infinite type: a occurs in a`.
+    fn joins_within(&mut self, region: &Type, phi: &Type, span: Span) -> bool {
+        fn split(row: Type) -> (Vec<(InternedString, Type)>, Type) {
+            let mut labels = Vec::new();
+            let mut end = row;
+            while let Type::RowExtend(l, f, rest) = end {
+                labels.push((l, *f));
+                end = *rest;
+            }
+            (labels, end)
+        }
+        let (want, end) = split(self.arena.zonk(phi));
+        let (mut have, region_end) = split(self.arena.zonk(region));
+        if !matches!(end, Type::Var(_)) || end != region_end {
+            return false;
+        }
+        let mut pairs = Vec::new();
+        for (label, field) in want {
+            // Labels are matched first come first served, as unification
+            // matches them.
+            match have.iter().position(|(l, _)| *l == label) {
+                Some(i) => pairs.push((field, have.remove(i).1)),
+                None => return false,
+            }
+        }
+        for (a, b) in pairs {
+            self.unify_at(span, a, b);
+        }
+        true
     }
 
     /// Whether a join into `region` is still waiting, from `mark` on.
@@ -1387,6 +1427,7 @@ impl Infer {
 
         let started = self.begin_binding();
         self.arena.enter_level();
+        let mark = self.subsumptions.len();
 
         // Seed every name in the group before inferring any body, so a mention of
         // a sibling resolves to a variable the sibling's own inference constrains
@@ -1419,6 +1460,10 @@ impl Infer {
         // A top-level group settles its own names: its type is final once it
         // generalizes, and an overload left open would leave it half-inferred.
         self.solve_overloads(true);
+        // And what its arguments perform, as a lone binding's is: left pending,
+        // a closure given to `atomically` inside a recursive function was never
+        // held to the `{ Stm }` it is allowed.
+        self.solve_subsumptions(mark);
         self.solve_wanted();
         self.arena.exit_level();
 
@@ -1480,6 +1525,7 @@ impl Infer {
             hir::Bind::Pat(pat, expr) => {
                 let rhs_eff = self.arena.fresh_effect();
                 let saved = std::mem::replace(&mut self.cur_effect, rhs_eff.clone());
+                let mark = self.subsumptions.len();
                 let rhs = self.infer_expr(expr);
                 let mut bound = Vec::new();
                 let pty = self.infer_pat(pat, &mut bound);
@@ -1494,6 +1540,8 @@ impl Infer {
                         self.unify_at(pat.span, seed_ty.clone(), vty);
                     }
                 }
+                // Before the purity test, as for a lone `def`.
+                self.solve_subsumptions(mark);
                 self.check_pure_def(&vars, &rhs_eff, expr.span);
                 matches!(self.arena.zonk(&rhs_eff), Type::RowEmpty | Type::Var(_))
             }
@@ -2300,19 +2348,26 @@ impl Infer {
     /// - `Nil  : List a`
     /// - `Cons : a -> List a -> List a`
     /// - `True`, `False : Bool`
+    ///
+    /// Its arrows are opened as a named function's are ([`Self::open_arrows`]):
+    /// building a value performs nothing, so a constructor passed to `V.map`
+    /// in a function that performs `Fetch` is an `Int -> K ! { Fetch | e }`,
+    /// as a lambda written there would be.
     fn ctor_type(&mut self, name: InternedString) -> Option<Type> {
-        if let Some(scheme) = self.ctors.get(&name).cloned() {
-            return Some(self.instantiate(&scheme));
-        }
-        Some(match &*name {
-            "List.Nil" => Type::list(self.arena.fresh()),
-            "List.Cons" => {
-                let a = self.arena.fresh();
-                Type::func(vec![a.clone(), Type::list(a.clone())], Type::list(a))
+        let ty = if let Some(scheme) = self.ctors.get(&name).cloned() {
+            self.instantiate(&scheme)
+        } else {
+            match &*name {
+                "List.Nil" => Type::list(self.arena.fresh()),
+                "List.Cons" => {
+                    let a = self.arena.fresh();
+                    Type::func(vec![a.clone(), Type::list(a.clone())], Type::list(a))
+                }
+                "Bool.True" | "Bool.False" => Type::bool(),
+                _ => return None,
             }
-            "Bool.True" | "Bool.False" => Type::bool(),
-            _ => return None,
-        })
+        };
+        Some(self.open_arrows(ty))
     }
 
     /// Export the operations of every `effect` in `decls`, so a dependent can

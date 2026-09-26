@@ -64,3 +64,24 @@ fn a_transaction_may_use_local_state() {
                fun f tv = S.atomically (\\() -> runSt (\\() -> let r = stNewRef (toInt 1) in stGetRef r) + S.readTVar tv)\n";
     assert_eq!(errors(src), "");
 }
+
+/// What an argument may perform is held to its parameter in a recursive
+/// function as in any other: a transaction there cannot touch a `Ref` or print.
+#[test]
+fn a_transaction_in_a_recursive_function_is_still_only_a_transaction() {
+    let src = "use Std.Stm as S\n\
+               fun f r tv n = if n == 0 then 0 else S.atomically (\\() -> getRef r + S.readTVar tv) + f r tv (n - 1)\n";
+    assert!(
+        errors(src).contains("the effect `Mut` is not allowed here"),
+        "{}",
+        errors(src)
+    );
+    let src = "use Std.Stm as S\n\
+               fun ping tv n = if n == 0 then 0 else pong tv (n - 1)\n\
+               fun pong tv n = S.atomically (\\() -> let _ = println \"hi\" in S.readTVar tv) + ping tv n\n";
+    assert!(
+        errors(src).contains("the effect `Console` is not allowed here"),
+        "{}",
+        errors(src)
+    );
+}

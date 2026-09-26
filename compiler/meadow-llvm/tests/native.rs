@@ -603,3 +603,32 @@ fn an_arm_can_test_a_value_and_keep_it_whole() {
     );
     assert_eq!(got, "125");
 }
+
+#[test]
+fn a_nested_pattern_on_an_inlined_copy_counts_what_it_takes_apart() {
+    // `first` is generic, so a release build copies it at `#Ref` and inlines
+    // the copy: the `match` sees a `Opt #Ref`, which says nothing of what the
+    // `Some` holds. The `Computed` there is still `xs`'s too, so the arm shares
+    // the `Memo` inside it -- which it could only do knowing the `Memo` is a
+    // reference, from `Computed`'s declaration. It was left unknown, the
+    // share counted nothing, and the `Memo` was taken apart as the only
+    // reference to it: its `deps` went with it while `xs` still held them,
+    // and the second `match` read freed memory.
+    let got = run(
+        "nested-inlined-copy",
+        &format!(
+            "{LIST} use Opt.*
+             use E.*
+             use M.*
+             use Ps.*
+             data Opt a = None | Some a
+             data M = Memo Int L
+             data E = Computed M | Running Int
+             data Ps a = PNil | PCons a (Ps a)
+             fun first (xs : Ps a) : Opt a = match xs with | PCons x _ -> Some x | PNil -> None
+             fun read (xs : Ps E) : Int = match first xs with | Some (Computed (Memo n deps)) -> n + total deps | _ -> 0
+             def main = let xs = PCons (Computed (Memo 1 (build 3 Nil))) PNil in read xs * 100 + read xs"
+        ),
+    );
+    assert_eq!(got, "707");
+}

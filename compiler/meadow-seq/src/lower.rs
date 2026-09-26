@@ -784,20 +784,41 @@ impl Lower {
     }
 
     /// The types of constructor `ctor`'s fields, in a value of type `of`.
+    ///
+    /// Where `of` is not the type `ctor` belongs to -- a release copy's
+    /// `#Ref`, or nothing known -- the declaration still says what it can:
+    /// its fields at unknown type arguments, so `Computed (Memo k v)` has a
+    /// `Memo`, a reference, whatever `k` and `v` are. A field whose type is
+    /// one of those arguments is left [`core::unknown`] for the pattern to
+    /// say. Matching `Just (Computed m)` on an inlined copy's `Maybe #Ref`
+    /// used to leave `m` unknown, which counts nothing: sharing it did
+    /// nothing, and the `Memo` it was taken apart as if it were the only
+    /// reference to it.
     fn field_types(&self, ctor: InternedString, of: Option<&core::Ty>) -> Option<Vec<core::Ty>> {
-        let core::Ty::Con(name, args) = of? else {
-            return None;
-        };
         let bare = ctor.rsplit('.').next().unwrap_or(&ctor);
-        let sig = self
-            .variants
-            .get(name)?
-            .iter()
-            .find(|v| *v.name == *ctor || *v.name == *bare)?;
+        let find = |name: &InternedString| {
+            self.variants
+                .get(name)?
+                .iter()
+                .find(|v| *v.name == *ctor || *v.name == *bare)
+        };
+        if let Some(core::Ty::Con(name, args)) = of
+            && let Some(sig) = find(name)
+        {
+            return Some(
+                sig.fields
+                    .iter()
+                    .map(|f| meadow_infer::subst_bound(f, args))
+                    .collect(),
+            );
+        }
+        let (owner, _) = ctor.rsplit_once('.')?;
+        let sig = find(&InternedString::from(owner))?;
+        let unknowns = vec![core::unknown(); sig.fields.iter().map(bound_arity).max().unwrap_or(0)];
         Some(
             sig.fields
                 .iter()
-                .map(|f| meadow_infer::subst_bound(f, args))
+                .map(|f| meadow_infer::subst_bound(f, &unknowns))
                 .collect(),
         )
     }
@@ -817,9 +838,40 @@ impl Lower {
             .enumerate()
             .map(|(i, p)| {
                 let ty = types.as_ref().and_then(|ts| ts.get(i).cloned());
-                self.fresh_typed(field_type(ty, p))
+                let ty = field_type(ty, p).or_else(|| self.pattern_type(p));
+                self.fresh_typed(ty)
             })
             .collect()
+    }
+
+    /// What a pattern that takes a value apart says of it, when nothing else
+    /// does: a constructor's is its type's, a tuple's a tuple, a literal's its
+    /// own. Its type arguments are unknown, and need not be known: the
+    /// representation is what this is for, and a data value is a reference
+    /// whatever it holds.
+    fn pattern_type(&self, p: &Pat) -> Option<core::Ty> {
+        match p {
+            Pat::Ctor(ctor, _) => {
+                let (owner, _) = ctor.rsplit_once('.')?;
+                let owner = InternedString::from(owner);
+                let sig = self.variants.get(&owner)?;
+                let arity = sig
+                    .iter()
+                    .flat_map(|v| v.fields.iter())
+                    .map(bound_arity)
+                    .max()
+                    .unwrap_or(0);
+                Some(core::Ty::Con(owner, vec![core::unknown(); arity]))
+            }
+            Pat::Tuple(items) => Some(core::Ty::Tuple(vec![core::unknown(); items.len()])),
+            Pat::Array(_) => Some(core::Ty::Con(
+                InternedString::from("Array"),
+                vec![core::unknown()],
+            )),
+            Pat::Record(_) => Some(core::Ty::Record(Box::new(core::Ty::RowEmpty))),
+            Pat::Lit(l) => Some(lit_type(l)),
+            Pat::Var(..) | Pat::As(..) | Pat::Wild => None,
+        }
     }
 
     /// The type of field `label` of a record of type `of`.
@@ -3364,11 +3416,30 @@ fn con(name: &str) -> core::Ty {
 /// field.
 fn field_type(derived: Option<core::Ty>, p: &Pat) -> Option<core::Ty> {
     match derived {
-        Some(ty) if !matches!(ty, core::Ty::Var(_)) => Some(ty),
+        Some(ty) if !matches!(ty, core::Ty::Var(_)) && !core::is_unknown(&ty) => Some(ty),
         derived => match p {
             Pat::Var(_, ty) | Pat::As(_, ty, _) => Some(ty.clone()),
-            _ => derived,
+            _ => derived.filter(|ty| !core::is_unknown(ty)),
         },
+    }
+}
+
+/// How many type arguments a field type written over `Bound` indices needs:
+/// one more than the largest index it mentions.
+fn bound_arity(ty: &meadow_infer::Type) -> usize {
+    use meadow_infer::Type;
+    match ty {
+        Type::Bound(i) => *i as usize + 1,
+        Type::Con(_, args) | Type::Tuple(args) => args.iter().map(bound_arity).max().unwrap_or(0),
+        Type::Fun(args, ret, eff) => args
+            .iter()
+            .chain([&**ret, &**eff])
+            .map(bound_arity)
+            .max()
+            .unwrap_or(0),
+        Type::Record(row) => bound_arity(row),
+        Type::RowExtend(_, field, rest) => bound_arity(field).max(bound_arity(rest)),
+        _ => 0,
     }
 }
 

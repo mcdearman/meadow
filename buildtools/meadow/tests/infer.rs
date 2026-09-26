@@ -270,3 +270,38 @@ fn a_pure_function_can_stand_where_a_callback_may_do_more() {
     );
     assert!(!out.contains("!!"), "{out}");
 }
+
+/// A constructor used as a function is one that performs nothing, and can be
+/// handed to a caller whose callback may do more -- as a lambda wrapping it can.
+#[test]
+fn a_constructor_can_stand_where_a_callback_may_do_more() {
+    let out = schemes_std(
+        "use Std.Collections.Vector as V\n\
+         data K = Len Int | Total\n\
+         fun lens (xs : [Int]) : [K] ! { Console | e } =\n\
+         \x20 let u = println \"mapping\" in V.map K.Len xs\n\
+         fun app (f : a -> b ! e) (x : a) : b ! e = f x\n\
+         fun one (x : Int) : K ! { Console | e } = app K.Len x\n",
+    );
+    assert!(!out.contains("!!"), "{out}");
+}
+
+/// What a handler leaves of a body that performs the function's own effects
+/// is already part of what the function performs: `e` into `{ Console | e }`
+/// is a join, not an equation, which as one would have no solution.
+#[test]
+fn a_handler_can_leave_the_effects_of_the_function_around_it() {
+    let out = schemes_std(
+        "effect Ask {\n\
+         \x20 ask : Int -> Int\n\
+         }\n\
+         fun asking (body : Int -> Int ! { Ask | e }) : Int ! { Console | e } =\n\
+         \x20 let got = handle body 1 with { ask n resume -> resume n, return x -> x } in\n\
+         \x20 let u = println \"asked\" in got\n",
+    );
+    assert!(!out.contains("!!"), "{out}");
+    assert!(
+        out.contains("asking : forall e. (Int -> Int ! { Ask | e }) -> Int ! { Console | e }"),
+        "{out}"
+    );
+}

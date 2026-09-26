@@ -578,7 +578,28 @@ impl EngineArgs {
     }
 }
 
+/// The stack the whole command runs on.
+///
+/// The compiler walks a program's structure recursively -- resolving,
+/// inferring, expanding macros, lowering -- and a main thread's stack is 1 MB
+/// on Windows: a few hundred nested `let`s, three hundred chained `+`s, or a
+/// macro a hundred calls deep ran out of it and killed the process. This is
+/// address space reserved, and committed only as deep as a program needs.
+const STACK: usize = 256 << 20;
+
 fn main() {
+    let run = std::thread::Builder::new()
+        .name("meadow".into())
+        .stack_size(STACK)
+        .spawn(command)
+        .expect("the main thread starts");
+    // A panic has said what it was already; the exit status is Rust's own.
+    if run.join().is_err() {
+        std::process::exit(101);
+    }
+}
+
+fn command() {
     let cli = Cli::parse();
     // Said once, before anything resolves a dependency.
     meadow::package::set_policy(meadow::package::Policy {

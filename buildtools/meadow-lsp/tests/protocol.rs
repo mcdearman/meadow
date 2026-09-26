@@ -165,6 +165,42 @@ fn the_handshake_advertises_what_we_implement() {
     assert_eq!(s["textDocumentSync"], json!(1), "full sync");
 }
 
+/// Format-on-save of a document with text that is not ASCII -- a name, a
+/// string, a comment, a byte-order mark -- once panicked in the formatter
+/// and took the server with it. It formats, and the server goes on.
+#[test]
+fn formatting_text_that_is_not_ascii_answers() {
+    let mut c = Client::start();
+    for doc in [
+        "def caf\u{e9} = 1   \n",
+        "def s = \"\u{1f600}\"\n",
+        "def x = 1 -- \u{2192} fine\n",
+        "\u{feff}def x = 1   \n",
+    ] {
+        c.set(doc);
+        let edits = c.request(
+            "textDocument/formatting",
+            json!({
+                "textDocument": {"uri": URI},
+                "options": {"tabSize": 2, "insertSpaces": true}
+            }),
+        );
+        assert!(edits.is_array() || edits.is_null(), "{doc:?}: {edits}");
+    }
+    c.set("def main = 1\n");
+    let edits = c.request(
+        "textDocument/formatting",
+        json!({
+            "textDocument": {"uri": URI},
+            "options": {"tabSize": 2, "insertSpaces": true}
+        }),
+    );
+    assert!(
+        edits.is_array() || edits.is_null(),
+        "the server still answers: {edits}"
+    );
+}
+
 /// `textDocument/formatting` -- what format-on-save sends -- answers with the
 /// edits `meadow fmt` would make, computed from the document as the editor
 /// holds it rather than as it is on disk.
@@ -741,6 +777,48 @@ fn completion_after_a_pipe_narrows_as_the_name_is_typed() {
             "after typing {typed:?}: {names:?}"
         );
     }
+}
+
+/// Completing just after a character wider than one byte -- an arrow in a
+/// comment, a no-break space, an emoji -- once panicked, and took the server
+/// with it. It answers, and goes on answering.
+#[test]
+fn completion_after_a_wide_character_answers() {
+    let mut c = Client::start();
+    for line in [
+        "def main = 1 -- \u{2192}",
+        "def main =\u{a0}",
+        "def main = 1 -- \u{1f600} ",
+        "def caf\u{e9} = 1\ndef main = caf\u{e9}",
+    ] {
+        c.set(line);
+        let last = line.lines().count() - 1;
+        let tail = line.lines().next_back().unwrap();
+        // The editor counts UTF-16 units.
+        let character = tail.encode_utf16().count();
+        let got = c.request(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": URI},
+                "position": {"line": last, "character": character},
+            }),
+        );
+        assert!(
+            got.is_object() || got.is_null() || got.is_array(),
+            "{line:?}: {got}"
+        );
+    }
+    // Still there: an ordinary question gets an ordinary answer.
+    c.set("def xs = [11..20]\n\ndef main = xs |> fol");
+    let got = c.request(
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": URI},
+            "position": {"line": 2, "character": 20},
+        }),
+    );
+    let items = got["items"].as_array().expect("the server still answers");
+    assert!(items.iter().any(|i| i["label"] == json!("foldl")), "{got}");
 }
 
 /// The edit an offer carries replaces the word being typed, and nothing else.

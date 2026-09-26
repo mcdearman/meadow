@@ -125,3 +125,80 @@ fn refutable_def_binding_is_an_error() {
         "refutable pattern in binding: `B` is not matched"
     );
 }
+
+// --- methods --------------------------------------------------------------------
+//
+// An `impl`'s methods and a trait's defaults are functions like any other; the
+// checker once walked only top-level bindings, so a `match` in a method went
+// unchecked, and a missing case in release was a crash at run time.
+
+const SIZE: &str = "trait Size a { fun size : a -> Int }\n";
+
+#[test]
+fn a_non_exhaustive_match_in_an_impl_method_is_reported() {
+    let src = format!(
+        "{SIZE}impl Size (Maybe a) {{ fun size m = match m with | Just n -> 1 }}\n\
+         def main = size (Just 3)\n"
+    );
+    assert_eq!(errors_std_with(&src, Options::debug()), "");
+    assert_eq!(
+        errors_std_with(&src, Options::release()),
+        "non-exhaustive patterns: `None` is not matched"
+    );
+}
+
+#[test]
+fn an_exhaustive_impl_method_is_accepted() {
+    let src = format!(
+        "{SIZE}impl Size (Maybe a) {{ fun size m = match m with | Just n -> 1 | None -> 0 }}\n\
+         def main = size (Just 3)\n"
+    );
+    assert_eq!(errors_std_with(&src, Options::release()), "");
+}
+
+#[test]
+fn a_refutable_parameter_of_an_impl_method_is_an_error() {
+    let src = format!(
+        "{SIZE}impl Size (Maybe a) {{ fun size (Just n) = 1 }}\n\
+         def main = size (Just 3)\n"
+    );
+    let expected = "refutable pattern in function parameter: `None` is not matched";
+    assert_eq!(errors_std_with(&src, Options::debug()), expected);
+    assert_eq!(errors_std_with(&src, Options::release()), expected);
+}
+
+#[test]
+fn a_non_exhaustive_match_in_a_default_method_is_reported() {
+    let src = "trait Pick a {\n\
+               \x20 fun pick : a -> Maybe Int\n\
+               \x20 fun picked : a -> Int\n\
+               \x20   | picked x = match pick x with | Just n -> n\n\
+               }\n\
+               impl Pick Int { fun pick n = Just n }\n\
+               def main = picked 4\n";
+    assert_eq!(errors_std_with(src, Options::debug()), "");
+    assert_eq!(
+        errors_std_with(src, Options::release()),
+        "non-exhaustive patterns: `None` is not matched"
+    );
+}
+
+#[test]
+fn clause_methods_are_checked_as_a_whole() {
+    // Clauses covering both `Bool`s are complete; dropping one is not.
+    let both = "trait Tag a {\n\
+                \x20 fun tag : a -> Bool -> Int\n\
+                \x20   | tag x True  = 1\n\
+                \x20   | tag x False = 0\n\
+                }\n\
+                impl Tag Int {}\n\
+                def main = tag 3 True\n";
+    assert_eq!(errors_std_with(both, Options::release()), "");
+    let one = "trait Tag a { fun tag : a -> Bool -> Int }\n\
+               impl Tag Int { fun tag x b = match b with | True -> x }\n\
+               def main = tag 3 True\n";
+    assert_eq!(
+        errors_std_with(one, Options::release()),
+        "non-exhaustive patterns: `False` is not matched"
+    );
+}

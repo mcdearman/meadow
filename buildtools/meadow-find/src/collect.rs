@@ -316,6 +316,7 @@ fn constructors(
             let scheme = Scheme {
                 quant: vec![VarKind::Type; params],
                 preds: Vec::new(),
+                lacks: Vec::new(),
                 ty,
             };
             let span = span_of(&v.name);

@@ -217,3 +217,63 @@ def main = loop 0
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- deep programs ------------------------------------------------------------------
+//
+// The compiler walks a program recursively, and ran on a main thread whose
+// stack is 1 MB on Windows: a few hundred nested `let`s, three hundred chained
+// `+`s or a literal of a few hundred elements killed the process with a stack
+// overflow. `meadow` now runs on a thread with room.
+
+/// Build and run `main` with the binary, and answer what it printed last.
+#[track_caller]
+fn runs(who: &str, main: &str) -> String {
+    let dir = scratch(who);
+    let root = package(&dir, who, main);
+    let (ok, stdout, stderr) = meadow(&root, &["run"]);
+    assert!(ok, "{who} failed:\n{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+    answer(&stdout).to_string()
+}
+
+#[test]
+fn many_nested_lets_compile() {
+    let n = 600;
+    let mut src = String::from("def main =\n");
+    for i in 0..n {
+        src.push_str(&format!("  let x{i} = {i} in\n"));
+    }
+    src.push_str(&format!("  x{}\n", n - 1));
+    assert_eq!(runs("nested_lets", &src), format!("=> {}", n - 1));
+}
+
+#[test]
+fn a_long_chain_of_additions_compiles() {
+    let n = 600;
+    let terms: Vec<String> = (1..=n).map(|i| i.to_string()).collect();
+    let src = format!("def main = {}\n", terms.join(" + "));
+    assert_eq!(runs("long_sum", &src), format!("=> {}", n * (n + 1) / 2));
+}
+
+#[test]
+fn a_long_literal_compiles() {
+    // Past the register file: see `meadow_codegen`, "Spilling".
+    let n = 800;
+    let items: Vec<String> = (1..=n).map(|i| i.to_string()).collect();
+    let src = format!(
+        "use Std.Collections.Vector as V\n\ndef main = V.len [{}]\n",
+        items.join(", ")
+    );
+    assert_eq!(runs("long_literal", &src), format!("=> {n}"));
+}
+
+#[test]
+fn a_macro_a_hundred_calls_deep_compiles() {
+    let args: Vec<String> = (1..=120).map(|i| i.to_string()).collect();
+    let src = format!(
+        "macro sum\n  | ($x) -> {{ $x }}\n  | ($x, $( $r ),+) -> {{ $x + sum!($( $r ),+) }}\n\n\
+         def main = sum!({})\n",
+        args.join(", ")
+    );
+    assert_eq!(runs("deep_macro", &src), "=> 7260");
+}

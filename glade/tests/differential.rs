@@ -1200,8 +1200,14 @@ fn what_cannot_be_compacted_fails_the_same_way_everywhere() {
         ("Just (\\x -> x)", "a function"),
         ("#[stNewArray 2 0]", "a mutable array"),
     ] {
+        // Where the type at `compact` is known, this is refused before it runs
+        // (`meadow_exhaust`). Through a function that only knows it as a
+        // variable, and does more with it than hand it on, it reaches each
+        // runtime -- whose own check is what this is about.
         let prog = program(&format!(
-            "use Opt.*\ndata Opt a = None | Just a\ndef main = compact ({value})"
+            "use Opt.*\ndata Opt a = None | Just a\n\
+             fun later x = let y = x in compact y\n\
+             def main = later ({value})"
         ));
         let cek = meadow_eval::run(&prog).expect_err("CEK should fail");
         let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
@@ -2101,4 +2107,245 @@ fn an_effect_performed_mid_list_resumes_into_the_half_built_cell() {
     );
     assert_eq!(twins(&src), 1);
     assert_eq!(agree(&src), "C(11, C(12, C(13, E)))");
+}
+
+// --- more values live than there are registers ------------------------------------
+//
+// An operand names one of 255 registers. What does not fit is spilled into a
+// heap block and reloaded where it is read (see `meadow_codegen`, "Spilling"),
+// and an array longer than one instruction builds is built in pieces. Each of
+// these failed to compile before, with "the allocator does not spill yet".
+
+/// `let x0 = f 0 in ... let x{n-1} = f (n-1) in`, each a call.
+fn many_lets(n: usize) -> String {
+    (0..n).map(|i| format!("  let x{i} = f {i} in\n")).collect()
+}
+
+#[test]
+fn an_array_literal_longer_than_the_register_file() {
+    let items: Vec<String> = (1..=800).map(|i| i.to_string()).collect();
+    let src = format!(
+        "def main = let a = #[{}] in (arrayLen a, arrayGet a 0, arrayGet a 399, arrayGet a 799)",
+        items.join(", ")
+    );
+    assert_eq!(agree(&src), "(800, 1, 400, 800)");
+}
+
+#[test]
+fn an_array_literal_of_computed_elements_keeps_their_order() {
+    // Elements that are calls, each live until its piece is built.
+    let items: Vec<String> = (0..300).map(|i| format!("f {i}")).collect();
+    let src = format!(
+        "fun f (i : Int) : Int = i * 3\n\
+         fun sum a (i : Int) (acc : Int) : Int = if i == arrayLen a then acc else sum a (i + 1) (acc + arrayGet a i * (i + 1))\n\
+         def main = sum #[{}] 0 0",
+        items.join(", ")
+    );
+    let want: i64 = (0..300i64).map(|i| i * 3 * (i + 1)).sum();
+    assert_eq!(agree(&src), want.to_string());
+}
+
+#[test]
+fn a_list_literal_longer_than_the_register_file() {
+    let items: Vec<String> = (1..=600).map(|i| i.to_string()).collect();
+    let src = format!(
+        "fun sum xs = match xs with | [;] -> 0 | x :: rest -> x + sum rest\n\
+         def main = sum [{}]",
+        items.join("; ")
+    );
+    assert_eq!(agree(&src), (600 * 601 / 2).to_string());
+}
+
+#[test]
+fn three_hundred_values_live_across_calls() {
+    // Every `f i` is a non-tail call, whose continuation captures everything
+    // still live: spill blocks, rather than three hundred values.
+    let sum: Vec<String> = (0..300).map(|i| format!("x{i}")).collect();
+    let src = format!(
+        "fun f (i : Int) : Int = i * 2 + 1\n\
+         def main =\n{}  {}",
+        many_lets(300),
+        sum.join(" + ")
+    );
+    assert_eq!(agree(&src), "90000");
+}
+
+#[test]
+fn spilled_values_of_a_type_variable_keep_their_descriptors() {
+    // A value of type `a` is read through its descriptor, which is never
+    // spilled; the values themselves are.
+    let items: Vec<String> = (0..280).map(|i| format!("x{i}")).collect();
+    let lets: String = (0..280)
+        .map(|i| format!("  let x{i} = id2 a in\n"))
+        .collect();
+    let src = format!(
+        "fun id2 x = x\n\
+         fun many a =\n{lets}  #[{}]\n\
+         def main = (arrayLen (many \"s\"), arrayGet (many (1, 2)) 279)",
+        items.join(", ")
+    );
+    assert_eq!(agree(&src), "(280, (1, 2))");
+}
+
+#[test]
+fn spilled_values_reach_branches_matches_closures_and_handlers() {
+    let evens: Vec<String> = (0..300).step_by(2).map(|i| format!("x{i}")).collect();
+    let odds: Vec<String> = (1..300).step_by(2).map(|i| format!("x{i}")).collect();
+    let src = format!(
+        "use Opt.*\ndata Opt a = None | Some a\n\
+         effect Ask {{ ask : Int -> Int }}\n\
+         fun f (i : Int) : Int = i * 2 + 1\n\
+         fun pick (n : Int) = if n > 100 then Some n else None\n\
+         fun body u =\n{}\
+         \x20 let a = if x7 > x3 then {} else 0 in\n\
+         \x20 let b = match pick x250 with | Some v -> v + x1 | None -> x2 in\n\
+         \x20 let g = \\y -> x0 + x299 + y in\n\
+         \x20 let c = g x150 + ask x10 in\n\
+         \x20 a + b + c + {}\n\
+         def main = handle body 0 with {{ ask n k -> k (n * 1000) }}",
+        many_lets(300),
+        evens.join(" + "),
+        odds.join(" + ")
+    );
+    assert_eq!(agree(&src), "112405");
+}
+
+#[test]
+fn spilled_references_survive_collections() {
+    // Lists held only in spill blocks while a loop allocates enough to collect
+    // every few slots, the heap verified at each collection.
+    use meadow_glade::heap::{Collector, GcConfig, Heap};
+    let lengths: Vec<String> = (0..300).map(|i| format!("len x{i}")).collect();
+    let lets: String = (0..300)
+        .map(|i| format!("  let x{i} = build {} in\n", i % 7 + 1))
+        .collect();
+    let src = format!(
+        "fun build (n : Int) = if n == 0 then [;] else n :: build (n - 1)\n\
+         fun len xs = match xs with | [;] -> 0 | x :: rest -> 1 + len rest\n\
+         fun churn (n : Int) (acc : Int) : Int = if n == 0 then acc else churn (n - 1) (acc + len (build 20))\n\
+         def main =\n{lets}  let c = churn 2000 0 in\n  (c, {})",
+        lengths.join(" + ")
+    );
+    assert_eq!(agree(&src), "(40000, 1197)");
+    let prog = program(&src);
+    let img = image(&prog);
+    for collector in [Collector::Generational, Collector::Copying] {
+        let config = GcConfig {
+            collector,
+            nursery: 64,
+            min_trigger: 64,
+            verify: true,
+            ..GcConfig::from_env()
+        };
+        let mut vm = meadow_glade::Vm::with_heap(&img, Heap::with_config(1 << 12, config));
+        let v = vm
+            .run(img.entry.unwrap(), u64::MAX)
+            .unwrap_or_else(|e| panic!("{collector:?}: {}", e.msg));
+        assert_eq!(vm.show(v), "(40000, 1197)", "{collector:?}");
+        assert!(vm.heap().collections > 10, "{collector:?} should collect");
+    }
+}
+
+// --- wider than one instruction --------------------------------------------------
+//
+// A constructor, a record, or a call's arguments more than one instruction can
+// name at once: built blank and filled, extended a field at a time, or handed
+// over with the rest packed (see `meadow_codegen`, "Spilling").
+
+fn ints(n: usize, sep: &str) -> String {
+    (0..n).map(|i| i.to_string()).collect::<Vec<_>>().join(sep)
+}
+
+fn names(n: usize, sep: &str) -> String {
+    (0..n)
+        .map(|i| format!("x{i}"))
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+#[test]
+fn a_function_of_three_hundred_parameters() {
+    let params: String = (0..300).map(|i| format!("(x{i} : Int) ")).collect();
+    let src = format!(
+        "fun f {params}: Int = {}\n\
+         def main = f {}",
+        names(300, " + "),
+        ints(300, " ")
+    );
+    assert_eq!(agree(&src), "44850");
+}
+
+#[test]
+fn a_function_of_three_hundred_parameters_that_loops() {
+    // Each turn jumps back into itself with three hundred values.
+    let params: String = (0..300).map(|i| format!("(x{i} : Int) ")).collect();
+    let next: String = (0..300).map(|i| format!("(x{i} + 1) ")).collect();
+    let src = format!(
+        "fun f (n : Int) {params}: Int = if n == 0 then x0 + x150 + x299 else f (n - 1) {next}\n\
+         def main = f 10 {}",
+        ints(300, " ")
+    );
+    assert_eq!(agree(&src), (10 + 160 + 309).to_string());
+}
+
+#[test]
+fn a_lambda_of_three_hundred_parameters_invoked() {
+    // Called through a value, so an `invoke` rather than a `jump`: the method
+    // unpacks by the same rule the call packs by.
+    let lam = format!("\\{} -> x0 + x299 * 2", names(300, " "));
+    let src = format!(
+        "fun call g = g {}\n\
+         def main = call ({lam})",
+        ints(300, " ")
+    );
+    assert_eq!(agree(&src), "598");
+}
+
+#[test]
+fn a_constructor_of_three_hundred_fields() {
+    let fields: String = (0..300).map(|_| "Int ").collect();
+    let src = format!(
+        "use Big.*\ndata Big = Big {fields}\n\
+         fun total b = match b with | Big {} -> {}\n\
+         def main = total (Big {})",
+        names(300, " "),
+        names(300, " + "),
+        ints(300, " ")
+    );
+    assert_eq!(agree(&src), "44850");
+}
+
+#[test]
+fn a_wide_constructor_holding_references_survives_collections() {
+    // Fields that are lists, filled one at a time into a block that may have
+    // been promoted by then.
+    let fields: String = (0..260).map(|_| "L ").collect();
+    let builds: String = (0..260)
+        .map(|i| format!("(build {}) ", i % 5 + 1))
+        .collect();
+    let src = format!(
+        "use L.*\ndata L = N | C Int L\n\
+         use Big.*\ndata Big = Big {fields}\n\
+         fun build (n : Int) = if n == 0 then N else C n (build (n - 1))\n\
+         fun len xs = match xs with | N -> 0 | C _ r -> 1 + len r\n\
+         fun total b = match b with | Big {} -> {}\n\
+         def main = total (Big {builds})",
+        names(260, " "),
+        (0..260)
+            .map(|i| format!("len x{i}"))
+            .collect::<Vec<_>>()
+            .join(" + "),
+    );
+    let want: usize = (0..260).map(|i| i % 5 + 1).sum();
+    assert_eq!(agree(&src), want.to_string());
+}
+
+#[test]
+fn a_record_of_three_hundred_fields() {
+    let fields: String = (0..300)
+        .map(|i| format!("f{i} = {i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let src = format!("def main = let r = {{ {fields} }} in r.f0 + r.f150 + r.f299");
+    assert_eq!(agree(&src), "449");
 }

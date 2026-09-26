@@ -47,6 +47,10 @@ pub struct Resolver {
     /// The package whose types this unit declares, which qualifies their
     /// canonical names: `None` for the standard library. See [`Resolver::qualify`].
     package: Option<InternedString>,
+    /// Built with no dependencies, so without the standard library: the unit
+    /// declares for itself the language names the standard library would --
+    /// `Maybe` for a primitive's type, `Stm` for the handlers of its effect.
+    standalone: bool,
     /// Canonical names of the types this unit declares, for the duplicate check.
     declared_types: std::collections::HashSet<InternedString>,
     /// Every type known to the unit, in scope or not: canonical name -> arity.
@@ -530,6 +534,7 @@ impl Resolver {
             predeclared: HashMap::new(),
             tycons,
             package: None,
+            standalone: false,
             declared_types: std::collections::HashSet::new(),
             all_types: HashMap::new(),
             all_effects: HashMap::new(),
@@ -835,6 +840,11 @@ impl Resolver {
     /// the compiler knows several of them by name.
     pub fn set_package(&mut self, package: InternedString) {
         self.package = (&*package != "Std").then_some(package);
+    }
+
+    /// Mark this unit as built without dependencies: see [`Self::standalone`].
+    pub fn set_standalone(&mut self, standalone: bool) {
+        self.standalone = standalone;
     }
 
     /// The canonical name of a type or effect this unit declares as `name`.
@@ -1392,8 +1402,14 @@ impl Resolver {
                     self.frame().effects.push((name, ed.params.len(), vis));
                     for op_field in &ed.ops {
                         let op = *op_field.name.value();
+                        // A duplicate is one this module already declares. An
+                        // operation of the same name from elsewhere -- the
+                        // standard library's `State` has a `get` -- is only
+                        // shadowed here, as any imported name is by one of the
+                        // module's own.
                         let already = self.predeclared.contains_key(&(self.current.clone(), op));
-                        if self.effect_ops.insert(op, canonical).is_some() || already {
+                        self.effect_ops.insert(op, canonical);
+                        if already {
                             self.error(
                                 format!("operation `{op}` is already defined"),
                                 "duplicate operation".to_string(),
@@ -1566,7 +1582,25 @@ impl Resolver {
         let again = !self.declared_types.insert(canonical);
         self.all_types.insert(canonical, arity);
         self.tycons.insert(name, Named::One(canonical, arity));
-        if (again || clash) && !BUILTIN_TYCONS.contains(&&*name) {
+        // The built-in and language names -- `Bool`, `List`, `Int`, the effect
+        // labels like `Mut` -- are never package-qualified (see `qualify`) and
+        // the back ends give a value of one the built-in's representation. So a
+        // user declaration under one of these names does not make a new type;
+        // it aliases the built-in, and its values are then read as the wrong
+        // thing (a segfault on the native runtimes). Only the standard library
+        // -- the one unit `set_package` leaves without a package -- may declare
+        // them; anyone else is refused here. A unit built with no dependencies
+        // at all has no standard library to alias and stands in for it, so it
+        // may declare the language names; never the built-in representations.
+        let reserved = BUILTIN_TYCONS.contains(&&*name)
+            || (LANGUAGE_NAMES.contains(&&*name) && !self.standalone);
+        if reserved && self.package.is_some() {
+            self.error(
+                format!("`{name}` is a built-in name and cannot be declared"),
+                "built in".to_string(),
+                span,
+            );
+        } else if (again || clash) && !BUILTIN_TYCONS.contains(&&*name) {
             self.error(
                 format!("type `{name}` is already defined"),
                 "duplicate type".to_string(),

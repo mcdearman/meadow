@@ -203,11 +203,7 @@ impl Infer {
     /// [`Infer::instantiate`], with the scheme's `where` over the same fresh
     /// variables.
     pub(crate) fn instantiate_with_preds(&mut self, scheme: &Scheme) -> (Type, Vec<Pred>) {
-        let fresh: Vec<Type> = scheme
-            .quant
-            .iter()
-            .map(|k| self.arena.fresh_of(*k))
-            .collect();
+        let fresh = self.arena.fresh_quantifiers(scheme);
         let preds = scheme
             .preds
             .iter()
@@ -925,7 +921,12 @@ impl Infer {
                 preds.push(self.pred_over(tr, of, &mut table, &mut quant));
             }
         }
-        Scheme { quant, preds, ty }
+        Scheme {
+            lacks: Vec::new(),
+            quant,
+            preds,
+            ty,
+        }
     }
 
     /// An annotation's type, after its variables have been made fresh: every
@@ -1112,6 +1113,7 @@ impl Infer {
             );
             fields.push((Some(m.name), field));
             let scheme = Scheme {
+                lacks: Vec::new(),
                 quant,
                 preds: vec![Pred {
                     tr: td.name,
@@ -1239,6 +1241,7 @@ impl Infer {
             }
         }
         let scheme = Scheme {
+            lacks: Vec::new(),
             quant,
             preds,
             ty: Type::Con(tr, args),
@@ -1366,6 +1369,7 @@ impl Infer {
                 })
                 .collect();
             let scheme = Scheme {
+                lacks: Vec::new(),
                 quant,
                 preds: found.preds.clone(),
                 ty: Arena::subst_bound(&method.ty, &subst),

@@ -81,10 +81,41 @@
 //! from there the shapes `meadow_seq` believes in are true again. See
 //! [`Gen::narrow`] and [`Gen::enter`].
 //!
-//! A block needing more registers than there are is still a hard error rather
-//! than a spill, which is the honest failure mode: it says the allocator is
-//! missing rather than quietly generating slow code. (The whole standard
-//! library peaks well under that, so there is room to be unhurried about it.)
+//! # Spilling
+//!
+//! An operand names one of 255 registers, and a block can have more values
+//! live than that: an 800-element literal binds all its elements before it
+//! builds anything, and generated code can hold hundreds of names across a
+//! run of calls. The file has no memory behind it -- it is 256 words, and a
+//! jump hands it over whole -- so what does not fit goes to the heap, with
+//! instructions the machine already has:
+//!
+//! * **Spilling** packs a group of live values into a block (`MakeData`,
+//!   described field by field like any other) held in one register, and
+//!   frees theirs. It happens where a statement begins with more than
+//!   [`SPILL_ABOVE`] registers in use, down to [`SPILL_TO`], and takes the
+//!   values in the highest registers -- which also lowers the top of the
+//!   file, where windows are laid. Never a descriptor: other values are read
+//!   through those. See [`Gen::make_room`].
+//! * **Reloading** is a `Field` from the block, where a statement reads the
+//!   value. A spilled value keeps its place in the environment, which is an
+//!   ordered list -- a `jump` and an `invoke` hand it over by position -- and
+//!   only where it is changes. Those two reload everything first.
+//! * **A closure or frame** captures the spill blocks rather than what they
+//!   hold, and its methods are entered knowing which captures are fields of
+//!   which block: see [`Plan`]. So a non-tail call with three hundred values
+//!   live builds a continuation of a few dozen.
+//! * **An array literal** longer than [`ARRAY_CHUNK`] is built in pieces
+//!   joined by `arrayConcat`, each piece's elements given up once it is built.
+//! * **A constructor** of more than [`WIDE`] fields is made blank (`Blank`)
+//!   and filled a field at a time by `setField`; **a record** that wide is
+//!   made of its first fields and extended by the rest. Matching on such a
+//!   constructor binds its fields where they are -- fields of the scrutinee,
+//!   loaded when read -- rather than all at once.
+//! * **A jump or an invoke** handing over more than [`ARGS_ABOVE`] values
+//!   passes the first [`ARGS_KEPT`] in registers and the rest packed in
+//!   blocks, and the block or method entered knows to look there: the same
+//!   rule at both ends, [`arg_slots`], so that neither has to see the other.
 //!
 //! # What is not done yet
 //!
@@ -169,28 +200,164 @@ struct Recorder {
     carry: Vec<(u32, Reg)>,
 }
 
-/// One value in the environment: what the IR calls it, and where it is.
-type Env = Vec<(Name, Reg)>;
+/// Where a value is: a register, or a field of a spill block -- the block
+/// being a value of the environment itself, under a name only this pass uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Loc {
+    Reg(Reg),
+    Field(Name, u32),
+}
+
+/// The environment: what the IR calls each value, and where it is, in the
+/// order the IR has them -- which a `jump` and an `invoke` hand over by
+/// position. Spilling and reloading change where a value is, never its place.
+#[derive(Debug, Clone, Default)]
+struct Env {
+    entries: Vec<(Name, Loc)>,
+}
+
+impl FromIterator<(Name, Reg)> for Env {
+    fn from_iter<I: IntoIterator<Item = (Name, Reg)>>(it: I) -> Env {
+        Env {
+            entries: it.into_iter().map(|(n, r)| (n, Loc::Reg(r))).collect(),
+        }
+    }
+}
+
+impl Env {
+    /// The values in registers, in order.
+    fn regs(&self) -> impl Iterator<Item = (Name, Reg)> + '_ {
+        self.entries.iter().filter_map(|(n, l)| match l {
+            Loc::Reg(r) => Some((*n, *r)),
+            Loc::Field(..) => None,
+        })
+    }
+
+    fn loc(&self, n: Name) -> Option<Loc> {
+        self.entries.iter().find(|(m, _)| *m == n).map(|(_, l)| *l)
+    }
+
+    fn reg(&self, n: Name) -> Option<Reg> {
+        match self.loc(n) {
+            Some(Loc::Reg(r)) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// The name register `r` holds, if any.
+    fn in_reg(&self, r: Reg) -> Option<Name> {
+        self.regs().find(|(_, x)| *x == r).map(|(n, _)| n)
+    }
+
+    fn insert(&mut self, at: usize, n: Name, r: Reg) {
+        self.entries.insert(at, (n, Loc::Reg(r)));
+    }
+
+    fn push(&mut self, n: Name, r: Reg) {
+        self.entries.push((n, Loc::Reg(r)));
+    }
+
+    /// Whether anything is spilled.
+    fn spills(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|(_, l)| matches!(l, Loc::Field(..)))
+    }
+
+    /// The spill blocks the entries in `locs` need, from `self` -- and the
+    /// blocks those need, a block being a value that may be spilled in turn --
+    /// leaving out any `locs` has already.
+    fn blocks_for(&self, locs: &[(Name, Loc)]) -> Vec<(Name, Loc)> {
+        let mut out: Vec<(Name, Loc)> = Vec::new();
+        let mut todo: Vec<Loc> = locs.iter().map(|(_, l)| *l).collect();
+        while let Some(l) = todo.pop() {
+            if let Loc::Field(b, _) = l
+                && !locs.iter().any(|(n, _)| *n == b)
+                && !out.iter().any(|(n, _)| *n == b)
+                && let Some(at) = self.loc(b)
+            {
+                out.push((b, at));
+                todo.push(at);
+            }
+        }
+        out
+    }
+}
 
 fn reg_of(env: &Env, n: Name) -> Result<Reg, Error> {
-    match env.iter().find(|(m, _)| *m == n) {
-        Some((_, r)) => Ok(*r),
+    match env.loc(n) {
+        Some(Loc::Reg(r)) => Ok(r),
+        // A read that was not reloaded first: this pass's mistake, and one
+        // that must not become a read of whatever the register holds.
+        Some(Loc::Field(..)) => err(format!("{n:?} is spilled where it is read")),
         None => err(format!("{n:?} is not in scope during code generation")),
     }
 }
 
 fn regs_of(env: &Env) -> Vec<Reg> {
-    env.iter().map(|(_, r)| *r).collect()
+    env.regs().map(|(_, r)| r).collect()
 }
 
-/// The environment with the first slot named `n` dropped — what `invoke` leaves
-/// for the method's arguments.
-fn without(env: &Env, n: Name) -> Env {
-    let mut out = env.clone();
-    if let Some(i) = out.iter().position(|(m, _)| *m == n) {
-        out.remove(i);
+/// A statement begins spilling when more registers than this are in use...
+const SPILL_ABOVE: usize = 200;
+/// ...and spills down to this many.
+const SPILL_TO: usize = 150;
+/// The longest array built by one instruction; longer literals are joined.
+const ARRAY_CHUNK: usize = 64;
+/// A constructor or record with more fields than this is built a piece at a
+/// time, and a match on a constructor that wide loads its fields when read.
+const WIDE: usize = 128;
+/// A jump or invoke handing over more values than this packs the rest...
+const ARGS_ABOVE: usize = 200;
+/// ...keeping this many in registers...
+const ARGS_KEPT: usize = 128;
+/// ...and packing this many to a block.
+const PACK: usize = 128;
+
+/// Where each of `n` values handed over by a jump or an invoke arrives,
+/// registers counted from `at`, when there are too many for registers: the
+/// first [`ARGS_KEPT`] in registers, the rest as fields of blocks after them.
+/// With how many registers that takes. `None` when they all fit.
+///
+/// Both ends go by this alone -- the jump or invoke packs by it, and the block
+/// or method it enters unpacks by it -- which is what lets a method be entered
+/// from anywhere and a labelled block be compiled once.
+fn arg_slots(n: usize, at: usize) -> Option<(Vec<Slot>, usize)> {
+    if n <= ARGS_ABOVE {
+        return None;
     }
-    out
+    let slots = (0..n)
+        .map(|i| {
+            if i < ARGS_KEPT {
+                Slot::At((at + i) as Reg)
+            } else {
+                let p = (i - ARGS_KEPT) / PACK;
+                Slot::In((at + ARGS_KEPT + p) as Reg, ((i - ARGS_KEPT) % PACK) as u32)
+            }
+        })
+        .collect();
+    Some((slots, ARGS_KEPT + (n - ARGS_KEPT).div_ceil(PACK)))
+}
+/// Where this pass's own names start: above every name lowering makes, the
+/// synthetic ones included (`meadow_hir::SYNTHETIC_BASE`).
+const OWN_NAMES: u32 = 0xF000_0000;
+
+/// How a method's captures arrive when the `new` that built its object
+/// captured spill blocks in place of what they hold.
+#[derive(Debug, Clone)]
+struct Plan {
+    /// For each capture the method's block names, in order.
+    slots: Vec<Slot>,
+    /// How many values the object physically holds.
+    physical: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Slot {
+    /// The capture itself, at this position.
+    At(Reg),
+    /// A field of the spill block captured at this position.
+    In(Reg, u32),
 }
 
 struct Gen<'a> {
@@ -238,6 +405,11 @@ struct Gen<'a> {
     /// each instruction's list starts: see `Program::sources`.
     sources: Vec<Reg>,
     sources_at: Vec<(usize, u32)>,
+    /// Names this pass made up -- spill blocks, pieces of an array -- which
+    /// hold references.
+    own: std::collections::HashSet<Name>,
+    /// Per region: how its captures arrive, when that is not in order.
+    plans: Vec<Option<Plan>>,
 }
 
 impl<'a> Gen<'a> {
@@ -277,6 +449,8 @@ impl<'a> Gen<'a> {
             operands_at: Vec::new(),
             sources: Vec::new(),
             sources_at: Vec::new(),
+            own: std::collections::HashSet::new(),
+            plans: Vec::new(),
         }
     }
 
@@ -299,6 +473,11 @@ impl<'a> Gen<'a> {
         // label whose block has not been reached yet.
         for def in &self.seq.defs {
             let id = self.region(&def.block);
+            // Too many parameters for registers: entered the way a jump
+            // hands them over (see `arg_slots`).
+            if let Some((slots, physical)) = arg_slots(def.block.params.len(), 0) {
+                self.plans[id] = Some(Plan { slots, physical });
+            }
             if let Some(d) = &mut self.debug {
                 d.region_name[id] = def.name;
             }
@@ -313,10 +492,19 @@ impl<'a> Gen<'a> {
                 d.loc = d.region_loc[id];
             }
             // A region is entered with its parameters in r0..rn — that is what
-            // `jump` and `invoke` arrange.
-            let vals: Vec<Reg> = (0..block.params.len() as u16).map(|i| i as Reg).collect();
-            self.track(block.params.len());
-            self.emit_block(block, &vals)?;
+            // `jump` and `invoke` arrange -- unless its object captured spill
+            // blocks, when the plan says where each capture is.
+            match self.plans[id].clone() {
+                None => {
+                    let vals: Vec<Reg> = (0..block.params.len() as u16).map(|i| i as Reg).collect();
+                    self.track(block.params.len());
+                    self.emit_block(block, &vals)?;
+                }
+                Some(plan) => {
+                    let env = self.planned(block, &plan)?;
+                    self.emit_stmt(&block.body, env)?;
+                }
+            }
         }
 
         for (at, region) in &self.fixups {
@@ -479,11 +667,14 @@ impl<'a> Gen<'a> {
     /// lowering keeps in every environment such a value is in (see
     /// `meadow_seq::describe`), so the map can say which register has it.
     fn held(&self, env: &Env, n: Name) -> Held {
+        if self.own.contains(&n) {
+            return Held::Ref;
+        }
         match self.seq.reps.get(&n) {
             Some(Rep::Ref) => Held::Ref,
             Some(Rep::Int | Rep::Float | Rep::Bits(_) | Rep::Str) => Held::Scalar,
-            Some(Rep::Var(d)) if *d != seq::NO_DESC => match env.iter().find(|(m, _)| m.0 == *d) {
-                Some((_, r)) => Held::Var(*r),
+            Some(Rep::Var(d)) if *d != seq::NO_DESC => match env.reg(seq::VarId(*d)) {
+                Some(r) => Held::Var(r),
                 None => {
                     debug_assert!(false, "{n:?} is here without its descriptor");
                     Held::Any
@@ -498,9 +689,7 @@ impl<'a> Gen<'a> {
 
     /// What register `r` holds, going by the name the environment gives it.
     fn held_in(&self, env: &Env, r: Reg) -> Held {
-        env.iter()
-            .find(|(_, x)| *x == r)
-            .map_or(Held::Any, |(n, _)| self.held(env, *n))
+        env.in_reg(r).map_or(Held::Any, |n| self.held(env, n))
     }
 
     /// The window `gather` filled for `srcs` at `base`, if it had to: copies of
@@ -520,8 +709,8 @@ impl<'a> Gen<'a> {
     /// it, or a register it writes before it reads.
     fn safepoint(&mut self, env: &Env, extra: &[(Reg, Held)]) {
         let mut regs: std::collections::BTreeMap<Reg, Held> = std::collections::BTreeMap::new();
-        for (n, r) in env {
-            regs.insert(*r, self.held(env, *n));
+        for (n, r) in env.regs() {
+            regs.insert(r, self.held(env, n));
         }
         for (r, h) in extra {
             regs.insert(*r, *h);
@@ -545,9 +734,12 @@ impl<'a> Gen<'a> {
 
     /// Where the descriptor of the value named `n` is, in `env`.
     fn desc_src(&self, env: &Env, n: Name) -> DescSrc {
+        if self.own.contains(&n) {
+            return desc::REF as DescSrc;
+        }
         match self.seq.reps.get(&n) {
-            Some(Rep::Var(d)) if *d != seq::NO_DESC => match env.iter().find(|(m, _)| m.0 == *d) {
-                Some((_, r)) => DESC_REG + *r as DescSrc,
+            Some(Rep::Var(d)) if *d != seq::NO_DESC => match env.reg(seq::VarId(*d)) {
+                Some(r) => DESC_REG + r as DescSrc,
                 None => desc::ANY as DescSrc,
             },
             Some(rep) => rep.desc().unwrap_or(desc::ANY) as DescSrc,
@@ -557,9 +749,8 @@ impl<'a> Gen<'a> {
 
     /// The same for what register `r` holds.
     fn desc_in(&self, env: &Env, r: Reg) -> DescSrc {
-        env.iter()
-            .find(|(_, x)| *x == r)
-            .map_or(desc::ANY as DescSrc, |(n, _)| self.desc_src(env, *n))
+        env.in_reg(r)
+            .map_or(desc::ANY as DescSrc, |n| self.desc_src(env, n))
     }
 
     /// The operand descriptors of the instruction just emitted.
@@ -589,6 +780,7 @@ impl<'a> Gen<'a> {
     fn region(&mut self, block: &'a Block) -> usize {
         let id = self.regions.len();
         self.regions.push(block);
+        self.plans.push(None);
         self.region_pc.push(None);
         self.pending.push(id);
         if let Some(d) = &mut self.debug {
@@ -681,7 +873,7 @@ impl<'a> Gen<'a> {
     /// The environment the instructions emitted next run in.
     fn note_env(&mut self, env: &Env) {
         if let Some(d) = &mut self.debug {
-            let key: Vec<(u32, Reg)> = env.iter().map(|(n, r)| (n.0, *r)).collect();
+            let key: Vec<(u32, Reg)> = env.regs().map(|(n, r)| (n.0, r)).collect();
             Self::note(d, key);
         }
     }
@@ -725,7 +917,7 @@ impl<'a> Gen<'a> {
                 return Ok(r);
             }
         }
-        err("a block needs more than 256 registers; the allocator does not spill yet")
+        err("no register is free, with the environment spilled")
     }
 
     /// The environment with the names `rest` will not read taken out of it.
@@ -754,9 +946,36 @@ impl<'a> Gen<'a> {
         let Some(used) = seq::still_used(rest) else {
             return env;
         };
-        env.into_iter()
-            .filter(|(n, _)| used.contains(n) || self.descriptors.contains(&n.0))
-            .collect()
+        let mut keep: std::collections::HashSet<Name> = env
+            .entries
+            .iter()
+            .map(|(n, _)| *n)
+            .filter(|n| used.contains(n) || self.descriptors.contains(&n.0))
+            .collect();
+        // A spill block stays for as long as something it holds is wanted,
+        // and so does the block it is in, if it is in one.
+        loop {
+            let more: Vec<Name> = env
+                .entries
+                .iter()
+                .filter(|(n, _)| keep.contains(n))
+                .filter_map(|(_, l)| match l {
+                    Loc::Field(b, _) if !keep.contains(b) => Some(*b),
+                    _ => None,
+                })
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            keep.extend(more);
+        }
+        Env {
+            entries: env
+                .entries
+                .into_iter()
+                .filter(|(n, _)| keep.contains(n))
+                .collect(),
+        }
     }
 
     /// A run of `n` registers above everything the environment holds.
@@ -771,11 +990,22 @@ impl<'a> Gen<'a> {
             .map(|r| *r as usize + 1)
             .max()
             .unwrap_or(0);
-        if base + n > REGISTERS {
-            return err("a block needs more than 256 registers; the allocator does not spill yet");
+        if base + n <= REGISTERS {
+            self.track(base + n);
+            return Ok(base as Reg);
         }
-        self.track(base + n);
-        Ok(base as Reg)
+        // Nothing above the environment: any run it does not use, which is
+        // as safe -- filling it overwrites nothing the environment holds.
+        let used = regs_of(env);
+        (0..=REGISTERS.saturating_sub(n))
+            .find(|&b| (b..b + n).all(|r| !used.contains(&(r as Reg))))
+            .map(|b| {
+                self.track(b + n);
+                b as Reg
+            })
+            .ok_or_else(|| Error {
+                msg: format!("no run of {n} free registers, with the environment spilled"),
+            })
     }
 
     /// Where a windowed instruction should read its arguments from.
@@ -887,10 +1117,12 @@ impl<'a> Gen<'a> {
             .zip(bound.iter().copied())
             .collect();
         for p in &block.params[bound.len()..] {
-            if let Some((_, r)) = env.iter().find(|(n, _)| n == p) {
-                child.push((*p, *r));
+            if let Some(l) = env.loc(*p) {
+                child.entries.push((*p, l));
             }
         }
+        let blocks = env.blocks_for(&child.entries);
+        child.entries.extend(blocks);
         self.emit_stmt(&block.body, child)
     }
 
@@ -912,6 +1144,29 @@ impl<'a> Gen<'a> {
     }
 
     fn emit_stmt(&mut self, s: &'a Statement, env: Env) -> Result<(), Error> {
+        // Room for what this statement reads, in registers.
+        let env = match s {
+            Statement::Let { fields, .. } if fields.len() > WIDE => self.make_room(env, &[])?,
+            Statement::Let { fields, .. } => self.make_room(env, fields)?,
+            Statement::Switch { scrutinee, .. } => {
+                self.make_room(env, std::slice::from_ref(scrutinee))?
+            }
+            // Its captures may stay where they are: see `Plan`.
+            Statement::New { .. } => self.make_room(env, &[])?,
+            Statement::Extern { op, args, .. } => {
+                if (matches!(op, Extern::Array) && args.len() > ARRAY_CHUNK)
+                    || (matches!(op, Extern::Record(_)) && args.len() > WIDE)
+                {
+                    self.make_room(env, &[])?
+                } else {
+                    self.make_room(env, args)?
+                }
+            }
+            // Handing control over: everything comes back, in its place --
+            // or, for more than a jump can hold, packed (see `Gen::hand_over`).
+            Statement::Jump(_) | Statement::Invoke(..) => env,
+            Statement::Mark(..) | Statement::Substitute(..) | Statement::Error(_) => env,
+        };
         self.note_env(&env);
         match s {
             Statement::Mark(loc, inner) => {
@@ -925,18 +1180,31 @@ impl<'a> Gen<'a> {
             // Pure renaming. The values are already where they are; the block
             // simply calls them something else.
             Statement::Substitute(sel, block) => {
-                let vals = sel
-                    .iter()
-                    .map(|n| reg_of(&env, *n))
-                    .collect::<Result<Vec<_>, _>>()?;
+                if block.params.len() != sel.len() {
+                    return err(format!(
+                        "block takes {} parameters but {} values reach it",
+                        block.params.len(),
+                        sel.len()
+                    ));
+                }
                 let transfer = matches!(
                     peel_marks(&block.body),
                     Statement::Jump(_) | Statement::Invoke(..)
                 );
                 if transfer && let Some(d) = &mut self.debug {
-                    d.carry = env.iter().map(|(n, r)| (n.0, *r)).collect();
+                    d.carry = env.regs().map(|(n, r)| (n.0, r)).collect();
                 }
-                let done = self.emit_block(block, &vals);
+                // A spilled value is renamed where it is.
+                let mut child = Env::default();
+                for (p, n) in block.params.iter().zip(sel) {
+                    let Some(l) = env.loc(*n) else {
+                        return err(format!("{n:?} is not in scope during code generation"));
+                    };
+                    child.entries.push((*p, l));
+                }
+                let blocks = env.blocks_for(&child.entries);
+                child.entries.extend(blocks);
+                let done = self.emit_stmt(&block.body, child);
                 if let Some(d) = &mut self.debug {
                     d.carry.clear();
                 }
@@ -947,7 +1215,7 @@ impl<'a> Gen<'a> {
                 let Some(&region) = self.label_region.get(label) else {
                     return err(format!("jump to undefined label {label:?}"));
                 };
-                let srcs = regs_of(&env);
+                let (_, srcs) = self.hand_over(env, None)?;
                 self.parallel_move(&srcs)?;
                 let live = u8::try_from(srcs.len()).map_err(|_| Error {
                     msg: "a block takes more than 256 parameters".into(),
@@ -955,6 +1223,14 @@ impl<'a> Gen<'a> {
                 self.emit_to(Instr::new(Op::Jump, live, 0, 0, 0), region);
                 Ok(())
             }
+
+            Statement::Let {
+                name,
+                tag,
+                fields,
+                rest,
+                ..
+            } if fields.len() > WIDE => self.wide_data(*name, *tag, fields, rest, env),
 
             Statement::Let {
                 name,
@@ -984,7 +1260,7 @@ impl<'a> Gen<'a> {
                 self.operands_in(&env, &srcs);
                 self.safepoint(&env, &[]);
                 let mut env = live;
-                env.insert(0, (*name, dst));
+                env.insert(0, *name, dst);
                 self.emit_stmt(rest, env)
             }
 
@@ -1014,14 +1290,36 @@ impl<'a> Gen<'a> {
                         .ok_or_else(|| Error {
                             msg: "a switch arm binding fewer values than the default".into(),
                         })?;
-                    let base = self.window(&env, nfields)?;
-                    let mut fields = Vec::with_capacity(nfields);
-                    for i in 0..nfields {
-                        let d = base + i as Reg;
-                        self.emit(Instr::new(Op::Field, d, scr, 0, i as u32));
-                        fields.push(d);
+                    if nfields > WIDE {
+                        // Too many to load at once: each stays a field of the
+                        // scrutinee until something reads it. The scrutinee is
+                        // held under a name of this pass's own, since the arm
+                        // may not keep it -- and a name the arm does not have
+                        // must not reach a jump out of it.
+                        let holder = self.own_name();
+                        let mut child = Env::default();
+                        for (i, p) in arm.params[..nfields].iter().enumerate() {
+                            child.entries.push((*p, Loc::Field(holder, i as u32)));
+                        }
+                        for p in &arm.params[nfields..] {
+                            if let Some(l) = env.loc(*p) {
+                                child.entries.push((*p, l));
+                            }
+                        }
+                        child.push(holder, scr);
+                        let blocks = env.blocks_for(&child.entries);
+                        child.entries.extend(blocks);
+                        self.emit_stmt(&arm.body, child)?;
+                    } else {
+                        let base = self.window(&env, nfields)?;
+                        let mut fields = Vec::with_capacity(nfields);
+                        for i in 0..nfields {
+                            let d = base + i as Reg;
+                            self.emit(Instr::new(Op::Field, d, scr, 0, i as u32));
+                            fields.push(d);
+                        }
+                        self.enter(arm, &fields, &env)?;
                     }
-                    self.enter(arm, &fields, &env)?;
 
                     // Every block body ends in a transfer, so the next
                     // instruction is where a failed test should land.
@@ -1036,21 +1334,57 @@ impl<'a> Gen<'a> {
                 methods,
                 rest,
             } => {
-                let srcs = captures
+                // What the object physically holds: each capture in a register,
+                // and for those spilled, the block they are in -- once.
+                let mut physical: Vec<Name> = Vec::new();
+                let mut slots: Vec<Slot> = Vec::with_capacity(captures.len());
+                for n in captures {
+                    let at = |physical: &mut Vec<Name>, x: Name| {
+                        physical.iter().position(|p| *p == x).unwrap_or_else(|| {
+                            physical.push(x);
+                            physical.len() - 1
+                        }) as Reg
+                    };
+                    match env.loc(*n) {
+                        Some(Loc::Reg(_)) => slots.push(Slot::At(at(&mut physical, *n))),
+                        Some(Loc::Field(b, f)) => slots.push(Slot::In(at(&mut physical, b), f)),
+                        None => {
+                            return err(format!("{n:?} is not in scope during code generation"));
+                        }
+                    }
+                }
+                let srcs = physical
                     .iter()
                     .map(|n| reg_of(&env, *n))
                     .collect::<Result<Vec<_>, _>>()?;
                 let ncap = u8::try_from(srcs.len()).map_err(|_| Error {
                     msg: "an object capturing more than 256 values".into(),
                 })?;
+                let planned = slots.iter().any(|s| matches!(s, Slot::In(..)));
                 let table: Vec<usize> = methods.iter().map(|m| self.region(m)).collect();
-                let params = methods
-                    .iter()
-                    .map(|m| u8::try_from(m.params.len()))
-                    .collect::<Result<Vec<u8>, _>>()
-                    .map_err(|_| Error {
+                // Each method's registers: what the object holds, then its
+                // arguments -- packed, past `ARGS_ABOVE` of them.
+                let physcap = srcs.len();
+                let mut params = Vec::with_capacity(methods.len());
+                for (m, id) in methods.iter().zip(&table) {
+                    let nargs = m.params.len() - captures.len();
+                    let packed = arg_slots(nargs, physcap);
+                    let width = physcap + packed.as_ref().map_or(nargs, |(_, w)| *w);
+                    if planned || packed.is_some() {
+                        let mut all = slots.clone();
+                        match packed {
+                            Some((s, _)) => all.extend(s),
+                            None => all.extend((0..nargs).map(|j| Slot::At((physcap + j) as Reg))),
+                        }
+                        self.plans[*id] = Some(Plan {
+                            slots: all,
+                            physical: width,
+                        });
+                    }
+                    params.push(u8::try_from(width).map_err(|_| Error {
                         msg: "a method taking more than 256 registers".into(),
-                    })?;
+                    })?);
+                }
                 let table_id = self.method_tables.len() as u32;
                 self.method_tables.push(table);
                 self.method_captures.push(ncap);
@@ -1076,14 +1410,13 @@ impl<'a> Gen<'a> {
                 self.operands_in(&env, &srcs);
                 self.safepoint(&env, &[]);
                 let mut env = live;
-                env.insert(0, (*name, dst));
+                env.insert(0, *name, dst);
                 self.emit_stmt(rest, env)
             }
 
             Statement::Invoke(target, tag) => {
+                let (env, srcs) = self.hand_over(env, Some(*target))?;
                 let obj = reg_of(&env, *target)?;
-                let args = without(&env, *target);
-                let srcs = regs_of(&args);
                 let base = self.gather(&env, &srcs)?;
                 let method = u8::try_from(*tag).map_err(|_| Error {
                     msg: format!("method {tag} does not fit an invoke operand"),
@@ -1285,6 +1618,419 @@ impl<'a> Gen<'a> {
         }
     }
 
+    // --- spilling ----------------------------------------------------------
+
+    /// A name of this pass's own, holding a reference.
+    fn own_name(&mut self) -> Name {
+        let n = seq::VarId(OWN_NAMES + self.own.len() as u32);
+        self.own.insert(n);
+        n
+    }
+
+    /// `env` with `reads` in registers, spilling first if the file is too
+    /// full for what the statement will want -- see the module docs,
+    /// "Spilling".
+    fn make_room(&mut self, env: Env, reads: &[Name]) -> Result<Env, Error> {
+        let spilled_reads = reads
+            .iter()
+            .filter(|n| matches!(env.loc(**n), Some(Loc::Field(..))))
+            .count();
+        let mut env = env;
+        if env.regs().count() + spilled_reads > SPILL_ABOVE {
+            // Down far enough that what is to be reloaded fits as well.
+            let to = SPILL_TO.min(SPILL_ABOVE.saturating_sub(spilled_reads));
+            env = self.spill(env, reads, to)?;
+        }
+        for n in reads {
+            self.reload(&mut env, *n)?;
+        }
+        Ok(env)
+    }
+
+    /// Spill the values in the highest registers until `to` are in use,
+    /// keeping `keep`, the descriptors, and the blocks themselves.
+    fn spill(&mut self, mut env: Env, keep: &[Name], to: usize) -> Result<Env, Error> {
+        let mut victims: Vec<(Name, Reg)> = env
+            .regs()
+            .filter(|(n, _)| {
+                !keep.contains(n) && !self.descriptors.contains(&n.0) && !self.own.contains(n)
+            })
+            .collect();
+        victims.sort_by_key(|(_, r)| std::cmp::Reverse(*r));
+        let over = env.regs().count().saturating_sub(to);
+        victims.truncate(over.max(1).min(255));
+        if victims.is_empty() {
+            return Ok(env);
+        }
+        let srcs: Vec<Reg> = victims.iter().map(|(_, r)| *r).collect();
+        let dst = self.free(&env)?;
+        let base = self.fields(&srcs);
+        self.emit(Instr::new(Op::MakeData, dst, base, srcs.len() as u8, 0));
+        self.list(&srcs);
+        self.operands_in(&env, &srcs);
+        self.safepoint(&env, &[]);
+        let block = self.own_name();
+        for (i, (n, _)) in victims.iter().enumerate() {
+            if let Some(e) = env.entries.iter_mut().find(|(m, _)| m == n) {
+                e.1 = Loc::Field(block, i as u32);
+            }
+        }
+        env.push(block, dst);
+        Ok(env)
+    }
+
+    /// Bring `n` back into a register, if it was spilled.
+    fn reload(&mut self, env: &mut Env, n: Name) -> Result<(), Error> {
+        let Some(Loc::Field(block, field)) = env.loc(n) else {
+            return Ok(());
+        };
+        // The block may itself have been spilled, or be a field of something.
+        self.reload(env, block)?;
+        let from = reg_of(env, block)?;
+        let dst = self.free(env)?;
+        self.emit(Instr::new(Op::Field, dst, from, 0, field));
+        for e in env.entries.iter_mut().filter(|(m, _)| *m == n) {
+            e.1 = Loc::Reg(dst);
+        }
+        Ok(())
+    }
+
+    /// Everything back in registers and the blocks gone: what a `jump` or an
+    /// `invoke` hands over, position for position.
+    fn reload_all(&mut self, mut env: Env) -> Result<Env, Error> {
+        if !env.spills() {
+            return Ok(env);
+        }
+        let spilled: Vec<Name> = env
+            .entries
+            .iter()
+            .filter(|(_, l)| matches!(l, Loc::Field(..)))
+            .map(|(n, _)| *n)
+            .collect();
+        for n in spilled {
+            self.reload(&mut env, n)?;
+        }
+        env.entries.retain(|(n, _)| !self.own.contains(n));
+        Ok(env)
+    }
+
+    /// The environment a method starts in when its object captured spill
+    /// blocks: each capture where [`Plan`] says, then its arguments.
+    fn planned(&mut self, block: &'a Block, plan: &Plan) -> Result<Env, Error> {
+        let ncap = plan.slots.len();
+        if block.params.len() < ncap {
+            return err("a method taking fewer parameters than its object captured");
+        }
+        let mut env = Env::default();
+        let mut blocks: Vec<(Reg, Name)> = Vec::new();
+        for (p, slot) in block.params.iter().zip(&plan.slots) {
+            match *slot {
+                Slot::At(r) => env.push(*p, r),
+                Slot::In(r, f) => {
+                    let b = match blocks.iter().find(|(x, _)| *x == r) {
+                        Some((_, b)) => *b,
+                        None => {
+                            let b = self.own_name();
+                            blocks.push((r, b));
+                            b
+                        }
+                    };
+                    env.entries.push((*p, Loc::Field(b, f)));
+                }
+            }
+        }
+        for (r, b) in blocks {
+            env.push(b, r);
+        }
+        for (i, p) in block.params[ncap..].iter().enumerate() {
+            env.push(*p, (plan.physical + i) as Reg);
+        }
+        self.track(plan.physical + block.params.len() - ncap);
+        Ok(env)
+    }
+
+    /// What a `jump` or an `invoke` hands over: every value of the environment
+    /// the IR has, in order, but `except` -- the object invoked. Answers the
+    /// environment, with `except` in a register, and where each value to hand
+    /// over is: in registers, or past [`ARGS_ABOVE`] of them the first
+    /// [`ARGS_KEPT`] in registers and the rest packed by [`arg_slots`]' rule.
+    fn hand_over(&mut self, env: Env, except: Option<Name>) -> Result<(Env, Vec<Reg>), Error> {
+        let names: Vec<Name> = env
+            .entries
+            .iter()
+            .map(|(n, _)| *n)
+            .filter(|n| !self.own.contains(n) && Some(*n) != except)
+            .collect();
+        if names.len() <= ARGS_ABOVE {
+            let env = self.reload_all(env)?;
+            let srcs = names
+                .iter()
+                .map(|n| reg_of(&env, *n))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok((env, srcs));
+        }
+        let mut env = env;
+        let mut packs: Vec<Name> = Vec::new();
+        for chunk in names[ARGS_KEPT..].chunks(PACK) {
+            env = self.make_room(env, chunk)?;
+            let srcs = chunk
+                .iter()
+                .map(|n| reg_of(&env, *n))
+                .collect::<Result<Vec<_>, _>>()?;
+            let dst = self.free(&env)?;
+            let base = self.fields(&srcs);
+            self.emit(Instr::new(Op::MakeData, dst, base, srcs.len() as u8, 0));
+            self.list(&srcs);
+            self.operands_in(&env, &srcs);
+            self.safepoint(&env, &[]);
+            // Packed: what is handed over is the pack.
+            env.entries.retain(|(n, _)| !chunk.contains(n));
+            let pack = self.own_name();
+            env.push(pack, dst);
+            packs.push(pack);
+        }
+        let kept: Vec<Name> = names[..ARGS_KEPT]
+            .iter()
+            .copied()
+            .chain(packs.iter().copied())
+            .collect();
+        let reads: Vec<Name> = kept.iter().copied().chain(except).collect();
+        env = self.make_room(env, &reads)?;
+        let srcs = kept
+            .iter()
+            .map(|n| reg_of(&env, *n))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((env, srcs))
+    }
+
+    /// Take `gone` out of `env`, and with them the blocks of this pass's own
+    /// that nothing left -- nor `keep` -- is in.
+    fn give_up(&self, env: &mut Env, gone: &[Name], keep: &[Name]) {
+        env.entries.retain(|(n, _)| !gone.contains(n));
+        let mut need: std::collections::HashSet<Name> = keep.iter().copied().collect();
+        loop {
+            let more: Vec<Name> = env
+                .entries
+                .iter()
+                .filter(|(n, _)| !self.own.contains(n) || need.contains(n))
+                .filter_map(|(_, l)| match l {
+                    Loc::Field(b, _) if !need.contains(b) => Some(*b),
+                    _ => None,
+                })
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            need.extend(more);
+        }
+        env.entries
+            .retain(|(n, _)| !self.own.contains(n) || need.contains(n));
+    }
+
+    /// Which of `done` nothing reads any more: not `later` values still to be
+    /// used here, nor what follows (`after`), nor a descriptor.
+    fn finished(
+        &self,
+        done: &[Name],
+        later: &[Name],
+        after: &Option<std::collections::HashSet<Name>>,
+    ) -> Vec<Name> {
+        done.iter()
+            .copied()
+            .filter(|n| {
+                !later.contains(n)
+                    && after.as_ref().is_some_and(|w| !w.contains(n))
+                    && !self.descriptors.contains(&n.0)
+            })
+            .collect()
+    }
+
+    /// `let name = tag(fields) in rest`, for more fields than one instruction
+    /// takes: made blank, and filled by `setField` one field at a time, so
+    /// that only the field being written need be in a register.
+    fn wide_data(
+        &mut self,
+        name: Name,
+        tag: u32,
+        fields: &'a [Name],
+        rest: &'a Statement,
+        env: Env,
+    ) -> Result<(), Error> {
+        let n = fields.len();
+        let wide = u16::try_from(n).map_err(|_| Error {
+            msg: format!("a constructor of {n} fields"),
+        })?;
+        let mut env = env;
+        let dst = self.free(&env)?;
+        self.emit(Instr::new(
+            Op::Blank,
+            dst,
+            (wide >> 8) as u8,
+            wide as u8,
+            tag,
+        ));
+        self.safepoint(&env, &[]);
+        let obj = self.own_name();
+        env.insert(0, obj, dst);
+        let set = self.prim(Prim::SetField);
+        let after = seq::still_used(rest);
+        for (k, chunk) in fields.chunks(ARRAY_CHUNK).enumerate() {
+            for (j, f) in chunk.iter().enumerate() {
+                env = self.make_room(env, &[*f, obj])?;
+                let (o, v) = (reg_of(&env, obj)?, reg_of(&env, *f)?);
+                // `setField obj i v`, its operands in a window above everything
+                // live, the index loaded straight into it.
+                let base = self.window(&env, 3)?;
+                self.emit(Instr::new(Op::Move, base, o, 0, 0));
+                let at = self.konst(Const::Int((k * ARRAY_CHUNK + j) as i64));
+                self.emit(Instr::ai(Op::Const, base + 1, at));
+                self.emit(Instr::new(Op::Move, base + 2, v, 0, 0));
+                let out = self.free(&env)?;
+                self.emit(Instr::new(Op::Prim, out, base, 3, set));
+                self.operands_for(&[
+                    desc::REF as DescSrc,
+                    desc::INT as DescSrc,
+                    self.desc_src(&env, *f),
+                ]);
+                let window = [
+                    (base, Held::Ref),
+                    (base + 1, Held::Scalar),
+                    (base + 2, self.held(&env, *f)),
+                ];
+                self.safepoint(&env, &window);
+            }
+            let later = fields.get((k + 1) * ARRAY_CHUNK..).unwrap_or(&[]);
+            let gone = self.finished(chunk, later, &after);
+            self.give_up(&mut env, &gone, &[obj]);
+        }
+        let dst = reg_of(&env, obj)?;
+        env.entries.retain(|(m, _)| *m != obj);
+        let mut env = self.narrow(env, rest);
+        env.insert(0, name, dst);
+        self.emit_stmt(rest, env)
+    }
+
+    /// A record literal of more fields than one instruction takes: made of
+    /// its first [`ARRAY_CHUNK`], and extended by the rest one at a time.
+    fn wide_record(
+        &mut self,
+        labels: &[InternedString],
+        args: &'a [Name],
+        block: &'a Block,
+        env: Env,
+    ) -> Result<(), Error> {
+        let after = seq::still_used(&block.body);
+        let (first, rest) = args.split_at(ARRAY_CHUNK);
+        let mut env = self.make_room(env, first)?;
+        let srcs = first
+            .iter()
+            .map(|n| reg_of(&env, *n))
+            .collect::<Result<Vec<_>, _>>()?;
+        let shape = self.shapes.len() as u32;
+        self.shapes.push(labels[..ARRAY_CHUNK].to_vec());
+        let base = self.gather(&env, &srcs)?;
+        let dst = self.free(&env)?;
+        self.emit(Instr::new(
+            Op::MakeRecord,
+            dst,
+            base,
+            srcs.len() as u8,
+            shape,
+        ));
+        self.operands_in(&env, &srcs);
+        let window = self.gathered(&env, &srcs, base);
+        self.safepoint(&env, &window);
+        let mut acc = self.own_name();
+        env.insert(0, acc, dst);
+        let gone = self.finished(first, rest, &after);
+        self.give_up(&mut env, &gone, &[acc]);
+        for (i, (label, x)) in labels[ARRAY_CHUNK..].iter().zip(rest).enumerate() {
+            env = self.make_room(env, &[*x, acc])?;
+            let (r, v) = (reg_of(&env, acc)?, reg_of(&env, *x)?);
+            let out = self.free(&env)?;
+            let id = self.label(*label);
+            self.emit(Instr::new(Op::Extend, out, r, v, id));
+            self.operands_in(&env, &[r, v]);
+            self.safepoint(&env, &[]);
+            env.entries.retain(|(m, _)| *m != acc);
+            acc = self.own_name();
+            env.insert(0, acc, out);
+            let gone = self.finished(&[*x], &rest[i + 1..], &after);
+            self.give_up(&mut env, &gone, &[acc]);
+        }
+        let dst = reg_of(&env, acc)?;
+        let mut live = self.narrow(env, &block.body);
+        live.entries.retain(|(n, _)| *n != acc);
+        self.enter(block, &[dst], &live)
+    }
+
+    /// An array literal longer than one instruction builds: in pieces of
+    /// [`ARRAY_CHUNK`], each joined onto what came before by `arrayConcat`,
+    /// and each piece's elements given up once it is built, so that however
+    /// long the literal, only a piece of it is in registers at a time.
+    fn big_array(&mut self, args: &'a [Name], block: &'a Block, env: Env) -> Result<(), Error> {
+        let mut env = env;
+        let wanted_after = seq::still_used(&block.body);
+        let concat = self.prim(Prim::ArrayConcat);
+        let mut acc: Option<Name> = None;
+        for (k, chunk) in args.chunks(ARRAY_CHUNK).enumerate() {
+            env = self.make_room(env, chunk)?;
+            let srcs = chunk
+                .iter()
+                .map(|n| reg_of(&env, *n))
+                .collect::<Result<Vec<_>, _>>()?;
+            let base = self.gather(&env, &srcs)?;
+            let part = self.free(&env)?;
+            self.emit(Instr::new(Op::MakeArray, part, base, srcs.len() as u8, 0));
+            self.operands_in(&env, &srcs);
+            let window = self.gathered(&env, &srcs, base);
+            self.safepoint(&env, &window);
+            let piece = self.own_name();
+            env.insert(0, piece, part);
+            acc = Some(match acc {
+                None => piece,
+                Some(before) => {
+                    let (x, y) = (reg_of(&env, before)?, part);
+                    let out = self.free(&env)?;
+                    self.emit(Instr::new(Op::Prim2, out, x, y, concat));
+                    self.operands_for(&[desc::REF as DescSrc, desc::REF as DescSrc]);
+                    self.safepoint(&env, &[]);
+                    env.entries.retain(|(n, _)| *n != before && *n != piece);
+                    let joined = self.own_name();
+                    env.insert(0, joined, out);
+                    joined
+                }
+            });
+            // The elements built in are given up, unless something still
+            // reads them -- a later piece, or what follows.
+            let rest = args.get((k + 1) * ARRAY_CHUNK..).unwrap_or(&[]);
+            let wanted = |n: &Name| {
+                rest.contains(n)
+                    || wanted_after.as_ref().is_none_or(|w| w.contains(n))
+                    || self.descriptors.contains(&n.0)
+            };
+            let gone: Vec<Name> = chunk.iter().copied().filter(|n| !wanted(n)).collect();
+            env.entries.retain(|(n, _)| !gone.contains(n));
+            // A spill block nothing refers to any more goes too.
+            let held: Vec<Name> = env
+                .entries
+                .iter()
+                .filter_map(|(_, l)| match l {
+                    Loc::Field(b, _) => Some(*b),
+                    Loc::Reg(_) => None,
+                })
+                .collect();
+            let acc_now = acc;
+            env.entries
+                .retain(|(n, _)| !self.own.contains(n) || held.contains(n) || Some(*n) == acc_now);
+        }
+        let acc = acc.expect("a literal longer than a piece has pieces");
+        let dst = reg_of(&env, acc)?;
+        let mut live = self.narrow(env, &block.body);
+        live.entries.retain(|(n, _)| *n != acc);
+        self.enter(block, &[dst], &live)
+    }
+
     fn emit_extern(
         &mut self,
         op: &'a Extern,
@@ -1321,6 +2067,14 @@ impl<'a> Gen<'a> {
                 blocks.len()
             ));
         };
+        if matches!(op, Extern::Array) && args.len() > ARRAY_CHUNK {
+            return self.big_array(args, block, env);
+        }
+        if let Extern::Record(labels) = op
+            && args.len() > WIDE
+        {
+            return self.wide_record(labels, args, block, env);
+        }
         let srcs = args
             .iter()
             .map(|n| reg_of(&env, *n))
@@ -1365,9 +2119,8 @@ impl<'a> Gen<'a> {
                     let out = block.params[0];
                     let answer = match self.seq.threads.get(&out) {
                         Some(Rep::Var(d)) if *d != seq::NO_DESC => env
-                            .iter()
-                            .find(|(m, _)| m.0 == *d)
-                            .map_or(desc::ANY as DescSrc, |(_, r)| DESC_REG + *r as DescSrc),
+                            .reg(seq::VarId(*d))
+                            .map_or(desc::ANY as DescSrc, |r| DESC_REG + r as DescSrc),
                         Some(rep) => rep.desc().unwrap_or(desc::ANY) as DescSrc,
                         None => desc::ANY as DescSrc,
                     };

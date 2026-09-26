@@ -44,9 +44,14 @@ impl LineIndex {
         start + rest.len()
     }
 
-    /// Byte offset -> `(line, utf16 character)`.
+    /// Byte offset -> `(line, utf16 character)`. An offset inside a character
+    /// is taken as that character's start: a span from something that counted
+    /// differently is a place in the text still, not a reason to stop.
     pub fn position(&self, offset: usize) -> (u32, u32) {
-        let offset = offset.min(self.text.len());
+        let mut offset = offset.min(self.text.len());
+        while !self.text.is_char_boundary(offset) {
+            offset -= 1;
+        }
         let line = match self.starts.binary_search(&offset) {
             Ok(i) => i,
             Err(i) => i - 1,
@@ -70,6 +75,17 @@ impl LineIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_byte_offset_inside_a_character_is_that_characters_position() {
+        // `\u{e9}` is bytes 0..2; byte 1 is inside it.
+        let idx = LineIndex::new("\u{e9}x\n\u{1f600}y");
+        assert_eq!(idx.position(1), (0, 0));
+        assert_eq!(idx.position(2), (0, 1));
+        // The emoji is bytes 4..8 of the text, the second line's 0..4.
+        assert_eq!(idx.position(6), (1, 0));
+        assert_eq!(idx.position(8), (1, 2));
+    }
 
     #[test]
     fn offsets_and_positions_round_trip() {

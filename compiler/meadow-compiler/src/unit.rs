@@ -152,6 +152,11 @@ pub struct CompiledPackage {
     /// re-exports). `None` = flat-import everything (REPL prefixes, ad-hoc `deps`);
     /// `Some(list)` = only these are flat, the rest need `use`.
     pub prelude_exports: Option<Vec<InternedString>>,
+    /// This package's functions that copy one of their parameters into a
+    /// compact region, with which: checked at a dependent's calls as
+    /// `compact` is. See `meadow_exhaust::compacting_wrappers`.
+    #[serde(default)]
+    pub compacting: Vec<(VarId, usize)>,
 }
 
 /// A `@test` function, and the module it is declared in.
@@ -433,6 +438,7 @@ fn compile_unit_inner(
         .max(floor);
     let mut resolver = Resolver::with_prelude(filename.clone(), var_base);
     resolver.set_package(ident);
+    resolver.set_standalone(deps.is_empty());
     // Every dependency's *types* are known here, so they can be named in an
     // annotation and their constructors written `Type.Ctor`. Which of those
     // constructors may be written *bare* is a separate question, and the
@@ -647,6 +653,21 @@ fn compile_unit_inner(
     }
 
     // --- pattern coverage (needs the types; runs before lowering discards them)
+    // -- and what may go in a compact, which needs them too.
+    let mut compacting: HashMap<VarId, usize> = resolver
+        .prelude_bindings()
+        .into_iter()
+        .filter_map(|(name, id)| match &*name {
+            "compact" => Some((id, 0)),
+            "compactAdd" => Some((id, 1)),
+            _ => None,
+        })
+        .collect();
+    for dep in deps {
+        compacting.extend(dep.compacting.iter().copied());
+    }
+    let hirs: Vec<&hir::LModule> = typed.iter().map(|m| &m.hir).collect();
+    let own_compacting = exhaust::compacting_wrappers(&hirs, &mut compacting);
     for m in &typed {
         diags.extend(exhaust::check_module(
             &module_filename(&filename, m.source),
@@ -654,6 +675,7 @@ fn compile_unit_inner(
             &table,
             &variants,
             opts.check_exhaustive(),
+            &compacting,
         ));
     }
 
@@ -849,6 +871,7 @@ fn compile_unit_inner(
             data_decls,
             tests: resolver.test_vars().to_vec(),
             prelude_exports: None,
+            compacting: own_compacting,
         },
         diags,
     )

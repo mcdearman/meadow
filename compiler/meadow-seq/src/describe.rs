@@ -26,7 +26,7 @@
 //! entry, so blocks are settled to a fixpoint first: a lifted block's needs
 //! reach whoever jumps to it, which may be itself.
 
-use crate::{Block, Def, Label, NO_DESC, Name, Rep, Statement, VarId};
+use crate::{Block, Def, Extern, Label, NO_DESC, Name, Rep, Statement, VarId};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -36,10 +36,12 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 pub(crate) fn close(
     defs: &mut [Def],
     reps: &HashMap<Name, Rep>,
+    threads: &HashMap<Name, Rep>,
     descs: &HashSet<Name>,
 ) -> HashMap<Label, Vec<Name>> {
     let mut closer = Closer {
         reps,
+        threads,
         descs,
         extra: HashMap::new(),
         memo: RefCell::new(HashMap::new()),
@@ -81,6 +83,8 @@ pub(crate) fn close(
 
 struct Closer<'a> {
     reps: &'a HashMap<Name, Rep>,
+    /// How the answer of each `Task` is represented: see `Program::threads`.
+    threads: &'a HashMap<Name, Rep>,
     descs: &'a HashSet<Name>,
     /// What each labelled block has gained.
     extra: HashMap<Label, Vec<Name>>,
@@ -153,9 +157,24 @@ impl Closer<'_> {
                 }
                 self.binding(*name, rest, out);
             }
-            Statement::Extern { blocks, .. } => {
+            Statement::Extern { op, blocks, .. } => {
                 for b in blocks {
                     out.extend(self.missing(b));
+                }
+                // A spawn tells the runtime what its thread will answer, so
+                // the answer's descriptor is needed where the spawn is -- in
+                // a closure too, which `Thread.spawn` taken as a value is.
+                // Nothing else names it: the `Task` itself is a pointer.
+                if matches!(op, Extern::Prim(meadow_core::Prim::ThreadSpawn)) {
+                    for b in blocks {
+                        for p in &b.params {
+                            if let Some(Rep::Var(d)) = self.threads.get(p)
+                                && *d != NO_DESC
+                            {
+                                out.insert(VarId(*d));
+                            }
+                        }
+                    }
                 }
             }
             Statement::Switch { arms, default, .. } => {

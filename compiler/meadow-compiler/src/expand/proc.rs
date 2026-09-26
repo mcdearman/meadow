@@ -87,7 +87,13 @@ pub enum Outcome {
 /// could learn from the world outside would make the build depend on when it
 /// ran -- and a build that is not deterministic cannot be cached on what went
 /// into it. The effects named here are the ones that would do that.
-pub const FORBIDDEN: &[&str] = &["Fs", "Process", "Random", "Time", "Thread", "Stm"];
+///
+/// `Console` too, both ways: input is the world outside, and output goes
+/// where the compiler's does -- which, under an editor, is the channel the
+/// language server answers on, so one line printed breaks the protocol.
+pub const FORBIDDEN: &[&str] = &[
+    "Fs", "Process", "Random", "Time", "Thread", "Stm", "Console",
+];
 
 /// Whether `scheme` is `[TokenTree] -> [TokenTree]`, and what is wrong when it
 /// is not.

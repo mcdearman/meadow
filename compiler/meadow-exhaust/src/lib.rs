@@ -26,23 +26,29 @@ use meadow_hir as hir;
 use meadow_infer::{Type, TypeTable, VariantEnv, subst_bound};
 use meadow_intern::InternedString;
 use meadow_span::Span;
+use std::collections::HashMap;
 
 /// Run both checks over one module.
 ///
 /// `check_matches` enables the `match`-exhaustiveness check; irrefutability of
 /// binding positions is checked regardless.
+///
+/// `compacting` names the primitives that copy a value into a compact region,
+/// each with which of its parameters is that value: see [`Checker::compacted`].
 pub fn check_module(
     filename: &str,
     module: &hir::LModule,
     types: &TypeTable,
     variants: &VariantEnv,
     check_matches: bool,
+    compacting: &HashMap<hir::VarId, usize>,
 ) -> Vec<Diagnostic> {
     let mut c = Checker {
         filename: filename.to_string(),
         types,
         variants,
         check_matches,
+        compacting,
         errors: Vec::new(),
     };
     for decl in &module.value().decls {
@@ -82,6 +88,133 @@ enum Con {
     Array(usize),
 }
 
+/// The functions of `modules` that hand one of their parameters straight to a
+/// function in `known` -- one that copies it into a compact region -- added
+/// to `known` with which parameter, and answered: `Std.Compact.make x =
+/// compact x` is checked at each call to `make`, where the type of `x` is
+/// known, as `compact` is. To a fixpoint, so a wrapper of a wrapper is one.
+pub fn compacting_wrappers(
+    modules: &[&hir::LModule],
+    known: &mut HashMap<hir::VarId, usize>,
+) -> Vec<(hir::VarId, usize)> {
+    let mut found = Vec::new();
+    loop {
+        let before = found.len();
+        for m in modules {
+            for d in &m.value().decls {
+                let hir::Decl::Bind(b) = d.value() else {
+                    continue;
+                };
+                let (name, params, body) = match b {
+                    hir::Bind::Fun(name, params, _, body) => (name, params.as_slice(), body),
+                    hir::Bind::Pat(pat, e) => match (strip(pat).value(), e.value()) {
+                        (hir::Pat::Var(name), hir::Expr::Lam(params, body)) => {
+                            (name, params.as_slice(), body)
+                        }
+                        _ => continue,
+                    },
+                    hir::Bind::Error => continue,
+                };
+                if known.contains_key(name.value()) {
+                    continue;
+                }
+                if let Some(at) = forwards(params, body, known) {
+                    known.insert(*name.value(), at);
+                    found.push((*name.value(), at));
+                }
+            }
+        }
+        if found.len() == before {
+            return found;
+        }
+    }
+}
+
+/// `p` without the type written on it.
+fn strip(p: &hir::LPat) -> &hir::LPat {
+    match p.value() {
+        hir::Pat::Ann(inner, _) => strip(inner),
+        _ => p,
+    }
+}
+
+/// Which of `params` `body` hands to a compacting function as the value it
+/// copies, if it is such a call and one of them is.
+fn forwards(
+    params: &[hir::LPat],
+    body: &hir::LExpr,
+    known: &HashMap<hir::VarId, usize>,
+) -> Option<usize> {
+    let hir::Expr::App(f, args) = body.value() else {
+        return None;
+    };
+    let hir::Expr::Var(g) = f.value() else {
+        return None;
+    };
+    let at = *known.get(g.value())?;
+    let hir::Expr::Var(x) = args.get(at)?.value() else {
+        return None;
+    };
+    params
+        .iter()
+        .position(|p| matches!(strip(p).value(), hir::Pat::Var(v) if v.value() == x.value()))
+}
+
+/// What a value of type `ty` could hold that a compact region may not, if
+/// anything: looking through tuples, records and the fields of data types,
+/// with `ty`'s arguments in place. `seen` is the data types being looked
+/// through, so a recursive one is looked at once.
+///
+/// A variable could be anything, and is taken to be fine: the check is
+/// wherever it is known. A `Compact` inside one is kept whole, having been
+/// checked when it was made.
+fn uncompactable(ty: &Type, variants: &VariantEnv, seen: &mut Vec<Type>) -> Option<&'static str> {
+    match ty {
+        Type::Fun(..) => Some("a function"),
+        Type::Tuple(ts) => ts.iter().find_map(|t| uncompactable(t, variants, seen)),
+        Type::Record(row) => {
+            let mut row = &**row;
+            while let Type::RowExtend(_, field, rest) = row {
+                if let Some(what) = uncompactable(field, variants, seen) {
+                    return Some(what);
+                }
+                row = rest;
+            }
+            None
+        }
+        Type::Con(name, args) => {
+            match &**name {
+                "Ref" | "StRef" => return Some("a Ref"),
+                "StArray" => return Some("a mutable array"),
+                "Task" => return Some("a thread"),
+                "Channel" => return Some("a channel"),
+                "TVar" => return Some("a TVar"),
+                "Compact" => return None,
+                _ => {}
+            }
+            if seen.contains(ty) {
+                return None;
+            }
+            match variants.get(name) {
+                // What its constructors hold, with this type's arguments.
+                Some(vs) => {
+                    seen.push(ty.clone());
+                    let found = vs
+                        .iter()
+                        .flat_map(|v| &v.fields)
+                        .find_map(|f| uncompactable(&subst_bound(f, args), variants, seen));
+                    seen.pop();
+                    found
+                }
+                // A built-in container -- an `Array`, a `List` -- holds its
+                // arguments.
+                None => args.iter().find_map(|a| uncompactable(a, variants, seen)),
+            }
+        }
+        Type::Var(_) | Type::Bound(_) | Type::RowEmpty | Type::RowExtend(..) | Type::Error => None,
+    }
+}
+
 // ===========================================================================
 // The checker
 // ===========================================================================
@@ -91,6 +224,7 @@ struct Checker<'a> {
     types: &'a TypeTable,
     variants: &'a VariantEnv,
     check_matches: bool,
+    compacting: &'a HashMap<hir::VarId, usize>,
     errors: Vec<Diagnostic>,
 }
 
@@ -100,6 +234,15 @@ impl Checker<'_> {
     fn decl(&mut self, decl: &hir::LDecl) {
         match decl.value() {
             hir::Decl::Bind(b) => self.bind(b),
+            // A method is a function like any other, and so is a default.
+            hir::Decl::Impl(imp) => imp.methods.iter().for_each(|(_, b)| self.bind(b)),
+            hir::Decl::Trait(tr) => {
+                for m in &tr.methods {
+                    if let Some(body) = m.default.as_ref().and_then(|d| d.body.as_ref()) {
+                        self.bind(body);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -181,7 +324,46 @@ impl Checker<'_> {
                 self.expr(base);
                 fields.iter().for_each(|(_, e)| self.expr(e));
             }
-            hir::Expr::Var(_) | hir::Expr::Lit(_) | hir::Expr::Unit | hir::Expr::Error => {}
+            hir::Expr::Var(v) => {
+                if let Some(&at) = self.compacting.get(v.value()) {
+                    self.compacted(expr, at);
+                }
+            }
+            hir::Expr::Lit(_) | hir::Expr::Unit | hir::Expr::Error => {}
+        }
+    }
+
+    /// A mention of `compact` or `compactAdd`, whose parameter `at` is the value
+    /// copied into a region: refused here when its type says it can hold what
+    /// a region may not -- a function, or anything that changes.
+    ///
+    /// Every runtime refuses these as it copies, but not all of them can see
+    /// all of it: on Silo a function that captures nothing is a word, as a
+    /// constructor with no fields is, and nothing tells the two apart. The
+    /// type does, wherever it is known -- a call, a pipe, or the primitive
+    /// passed as a value. Where it is a variable (`Std.Compact.make` itself)
+    /// nothing is known, and the check is at each use of that instead.
+    fn compacted(&mut self, var: &hir::LExpr, at: usize) {
+        let Some(Type::Fun(params, ret, _)) = self.types.get(var.id) else {
+            return;
+        };
+        // Curried: the parameter `at` is `at` arrows in.
+        let (mut params, mut ret) = (params, ret);
+        let mut at = at;
+        while at >= params.len() {
+            at -= params.len();
+            match &**ret {
+                Type::Fun(p, r, _) => (params, ret) = (p, r),
+                _ => return,
+            }
+        }
+        let ty = params[at].clone();
+        if let Some(what) = uncompactable(&ty, self.variants, &mut Vec::new()) {
+            self.error(
+                format!("a compact cannot hold {what}: a compact region holds only immutable data"),
+                format!("this would hold {what}"),
+                var.span,
+            );
         }
     }
 

@@ -27,6 +27,7 @@ pub mod prims;
 pub mod region;
 pub mod sched;
 pub mod segments;
+pub mod shadow;
 pub mod show;
 pub mod value;
 
@@ -228,6 +229,7 @@ pub unsafe extern "C" fn meadow_run(
             let (left, kinds) = heap::leaked(&prims::roots());
             eprintln!("aot: {left} blocks live at exit");
             eprintln!("aot: {} blocks acquired", heap::acquired());
+            eprintln!("aot: {} segments live at exit", segments::live());
             if left > 0 {
                 for (n, k, m) in kinds.iter().take(12) {
                     let what = match *k {

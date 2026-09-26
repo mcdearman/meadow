@@ -614,6 +614,15 @@ impl<'p> Vm<'p> {
             }
 
             Op::MakeData => self.make(i, Kind::Data, i.imm),
+            Op::Blank => {
+                let n = (usize::from(i.b) << 8) | usize::from(i.c);
+                self.ensure(Heap::size_of(Kind::Data, n));
+                let unit = Value::Unit.bits();
+                let a = self
+                    .heap
+                    .alloc_described(Kind::Data, i.imm, n, |_| unit, |_| desc::UNIT);
+                self.set(i.a, Value::Obj(a));
+            }
             Op::Frame => self.frame(i),
             Op::MakeArray => self.make(i, Kind::Array, 0),
 

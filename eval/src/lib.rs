@@ -2830,13 +2830,33 @@ fn native_console(op: &str, arg: Value) -> Result<Value, RuntimeError> {
 /// in no newline for `readLine` to stop at. It reads through the same buffer
 /// `readLine` does, so the two can take turns.
 pub fn read_bytes(n: i64) -> std::io::Result<Option<String>> {
-    use std::io::Read;
-    let mut buf = vec![0u8; n.max(0) as usize];
-    match std::io::stdin().lock().read_exact(&mut buf) {
-        Ok(()) => Ok(Some(String::from_utf8_lossy(&buf).into_owned())),
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-        Err(e) => Err(e),
+    read_exact_bounded(&mut std::io::stdin().lock(), n)
+}
+
+/// Read exactly `n` bytes of `input`, growing the buffer as bytes arrive, or
+/// `None` if it ends first. The length is not trusted: reading in chunks means
+/// a message that claims to be enormous costs nothing until the bytes actually
+/// come, rather than a preallocation of `n` that aborts the process.
+pub fn read_exact_bounded<R: std::io::Read>(
+    input: &mut R,
+    n: i64,
+) -> std::io::Result<Option<String>> {
+    let mut remaining = n.max(0) as usize;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 65536];
+    while remaining > 0 {
+        let want = remaining.min(chunk.len());
+        match input.read(&mut chunk[..want]) {
+            Ok(0) => return Ok(None),
+            Ok(got) => {
+                buf.extend_from_slice(&chunk[..got]);
+                remaining -= got;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
     }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
 /// The runtime's default handler for the `Std.Time` effect: the real clock.
@@ -2874,6 +2894,48 @@ fn native_time(op: &str, arg: Value) -> Result<Value, RuntimeError> {
 mod tests {
     use super::*;
     use meadow_core::{HClause, Lit, Prim, Program, Term};
+
+    // --- Console.readExact reads in bounded chunks -------------------------
+
+    #[test]
+    fn read_exact_returns_the_requested_bytes() {
+        let mut cur = std::io::Cursor::new(b"hello world".to_vec());
+        assert_eq!(
+            read_exact_bounded(&mut cur, 5).unwrap().as_deref(),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn read_exact_is_none_when_input_ends_first() {
+        let mut cur = std::io::Cursor::new(b"hi".to_vec());
+        // Asks for more than there is: `None`, not a partial read.
+        assert_eq!(read_exact_bounded(&mut cur, 100).unwrap(), None);
+    }
+
+    #[test]
+    fn a_huge_claimed_length_allocates_nothing_up_front() {
+        // The whole point: a peer that claims an enormous length but sends a
+        // few bytes must not make the runtime preallocate that length and
+        // abort. With a bounded reader it just reaches end of input and
+        // answers `None`, in an instant.
+        let mut cur = std::io::Cursor::new(b"tiny".to_vec());
+        let started = std::time::Instant::now();
+        assert_eq!(read_exact_bounded(&mut cur, i64::MAX).unwrap(), None);
+        assert!(
+            started.elapsed().as_secs() < 5,
+            "should not have tried to allocate i64::MAX bytes"
+        );
+    }
+
+    #[test]
+    fn a_negative_length_reads_nothing() {
+        let mut cur = std::io::Cursor::new(b"data".to_vec());
+        assert_eq!(
+            read_exact_bounded(&mut cur, -1).unwrap().as_deref(),
+            Some("")
+        );
+    }
 
     /// A fresh variable for a hand-built test term.
     ///

@@ -64,11 +64,25 @@ impl Ask {
 /// list against as more is typed. Left to the client's own guess, a list whose
 /// entries do not start where it thinks the word does simply empties as
 /// someone types.
+///
+/// Just after the character that ends the word, however many bytes that is:
+/// the `→` or the no-break space before a name is three bytes or two, and a
+/// start one byte past it would be inside it.
 pub fn word_start(text: &str, offset: usize) -> usize {
-    let head = &text[..offset.min(text.len())];
-    head.rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .map(|i| i + 1)
-        .unwrap_or(0)
+    let head = &text[..boundary(text, offset)];
+    head.char_indices()
+        .rev()
+        .find(|&(_, c)| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |(i, c)| i + c.len_utf8())
+}
+
+/// `offset` in `text`, moved back to the start of the character it is in.
+fn boundary(text: &str, offset: usize) -> usize {
+    let mut at = offset.min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
 }
 
 /// One thing to offer.
@@ -96,7 +110,7 @@ pub struct Offer {
 /// A pipe counts only when nothing but a name is between it and the cursor --
 /// `x |> ma` is still choosing a function, `x |> map f` is no longer.
 pub fn ask(text: &str, offset: usize) -> Ask {
-    let head = &text[..offset.min(text.len())];
+    let head = &text[..boundary(text, offset)];
     let word_start = word_start(text, offset);
     let word = head[word_start..].to_string();
     let before = &head[..word_start];
@@ -204,8 +218,8 @@ pub const HOLE: &str = "meadowCompletionHole";
 /// same question as `xs |> `, and a half-written name is one more thing that
 /// does not resolve.
 pub fn repaired(text: &str, start: usize, end: usize) -> String {
-    let start = start.min(text.len());
-    let end = end.min(text.len()).max(start);
+    let start = boundary(text, start);
+    let end = boundary(text, end).max(start);
     let mut out = String::with_capacity(text.len() + HOLE.len() + 1);
     out.push_str(&text[..start]);
     out.push_str(HOLE);
@@ -221,7 +235,7 @@ pub fn repaired(text: &str, start: usize, end: usize) -> String {
 /// Emptying the line leaves the rest of the document to say what is there; the
 /// line itself stays, so nothing below it moves to another line.
 pub fn without_line(text: &str, at: usize) -> String {
-    let at = at.min(text.len());
+    let at = boundary(text, at);
     let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
     format!("{}{}", &text[..start], &text[end..])
@@ -557,6 +571,42 @@ fn offer(c: &Candidate, fit: &PipeFit) -> Offer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- a character of more than one byte before the word -----------------
+    //
+    // The word once started one byte after the character that ends it, which
+    // is inside that character when it is wider: a panic, while typing, since
+    // a space is a trigger character.
+
+    #[test]
+    fn a_word_after_a_wide_character_starts_after_all_of_it() {
+        for (text, word) in [
+            ("x \u{2192}ma", "ma"),
+            ("def main =\u{a0}ma", "ma"),
+            ("x \u{1f600}fo", "fo"),
+            ("x \u{2192}", ""),
+        ] {
+            let start = word_start(text, text.len());
+            assert_eq!(&text[start..], word, "{text:?}");
+            assert_eq!(ask(text, text.len()).word(), word, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_word_that_is_not_ascii_is_one_word() {
+        let text = "def caf\u{e9}s = 1\ndef main = caf\u{e9}";
+        assert_eq!(ask(text, text.len()).word(), "caf\u{e9}");
+    }
+
+    #[test]
+    fn an_offset_inside_a_character_is_taken_as_its_start() {
+        // Byte 3 is inside the arrow, which starts at byte 2.
+        let text = "x \u{2192}y";
+        assert_eq!(word_start(text, 3), 2);
+        let _ = ask(text, 3);
+        let _ = repaired(text, 3, 4);
+        let _ = without_line(text, 3);
+    }
 
     #[test]
     fn a_pipe_is_what_the_cursor_is_after() {

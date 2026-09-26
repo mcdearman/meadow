@@ -19,9 +19,11 @@
 -- so these are pure functions.
 --
 -- What cannot go in. A region is never looked inside, so nothing in it may
--- change or point back out: `make` fails at run time on a value that reaches a
--- `Ref`, a mutable array (`StArray`) or a function. Data, arrays, records,
--- strings, numbers and other `Compact`s are all fine.
+-- change or point back out: a value that can reach a `Ref`, a mutable array
+-- (`StArray`) or a function is refused -- at compile time, wherever its type
+-- is known at the call to `make` (or to a function that passes its argument
+-- straight to `make`), and otherwise at run time, as it is copied. Data,
+-- arrays, records, strings, numbers and other `Compact`s are all fine.
 --
 -- When it pays. Compacting costs one copy of the value, so it is for data
 -- built once and then read for a long time -- a parsed input, a lookup table, a

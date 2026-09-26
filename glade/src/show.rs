@@ -165,11 +165,22 @@ impl Vm<'_> {
     /// Render a value the way the REPL prints it.
     pub fn show(&self, v: Value) -> String {
         let mut out = String::new();
-        self.render(&mut out, v);
+        self.render(&mut out, v, 0);
         out
     }
 
-    fn render(&self, out: &mut String, v: Value) {
+    fn render(&self, out: &mut String, v: Value, depth: usize) {
+        // `render` recurses once per level of nesting, so a value deep enough
+        // -- a long chain of a user data type, or a cycle through a `Ref` --
+        // would overflow the native stack and abort the process. Past a bound
+        // it prints an ellipsis instead. Lists and vectors are flattened
+        // below and do not count against it, so an ordinary long list still
+        // prints in full.
+        const MAX_DEPTH: usize = 1000;
+        if depth > MAX_DEPTH {
+            out.push('…');
+            return;
+        }
         match v {
             Value::Int(n) => {
                 let _ = write!(out, "{n}");
@@ -194,12 +205,12 @@ impl Vm<'_> {
                 }
                 Kind::Array | Kind::Bytes => {
                     out.push_str("#[");
-                    self.join(out, &self.heap.array_values(a), ", ");
+                    self.join(out, &self.heap.array_values(a), ", ", depth);
                     out.push(']');
                 }
                 Kind::MutArray => {
                     out.push_str("mut #[");
-                    self.join(out, &self.heap.fields(a), ", ");
+                    self.join(out, &self.heap.fields(a), ", ", depth);
                     out.push(']');
                 }
                 Kind::Record => {
@@ -211,7 +222,7 @@ impl Vm<'_> {
                         if let Value::Str(l) = self.heap.field(a, 2 * j) {
                             let _ = write!(out, "{l} = ");
                         }
-                        self.render(out, self.heap.field(a, 2 * j + 1));
+                        self.render(out, self.heap.field(a, 2 * j + 1), depth + 1);
                     }
                     out.push_str(" }");
                 }
@@ -219,13 +230,13 @@ impl Vm<'_> {
                 // wants to see.
                 Kind::Ref => {
                     out.push_str("ref ");
-                    self.render(out, self.heap.field(a, 0));
+                    self.render(out, self.heap.field(a, 0), depth + 1);
                 }
                 Kind::Closure => out.push_str("<closure>"),
                 Kind::Resume | Kind::Frame | Kind::Stack => out.push_str("<continuation>"),
                 Kind::Compact => {
                     out.push_str("compact ");
-                    self.render(out, self.heap.field(a, 0));
+                    self.render(out, self.heap.field(a, 0), depth + 1);
                 }
                 Kind::Channel => out.push_str("<channel>"),
                 Kind::Task => out.push_str("<thread>"),
@@ -234,12 +245,12 @@ impl Vm<'_> {
                     let text = String::from_utf8_lossy(&self.heap.packed_bytes(a)).into_owned();
                     let _ = write!(out, "{text:?}");
                 }
-                Kind::Data => self.render_data(out, v, a),
+                Kind::Data => self.render_data(out, v, a, depth),
             },
         }
     }
 
-    fn render_data(&self, out: &mut String, v: Value, a: crate::value::Addr) {
+    fn render_data(&self, out: &mut String, v: Value, a: crate::value::Addr, depth: usize) {
         let name = match self.program.ctor(self.heap.meta(a)) {
             Some(n) => n,
             None => {
@@ -250,13 +261,13 @@ impl Vm<'_> {
         match &*name {
             "#tuple" => {
                 out.push('(');
-                self.join(out, &self.heap.fields(a), ", ");
+                self.join(out, &self.heap.fields(a), ", ", depth);
                 out.push(')');
             }
             "List.Nil" | "List.Cons" => match self.list_items(v) {
                 Some(xs) => {
                     out.push('[');
-                    self.join(out, &xs, "; ");
+                    self.join(out, &xs, "; ", depth);
                     out.push(']');
                 }
                 None => {
@@ -266,7 +277,7 @@ impl Vm<'_> {
             n if is_vector_ctor(n) => match self.vector_elems(v) {
                 Some(xs) => {
                     out.push('[');
-                    self.join(out, &xs, ", ");
+                    self.join(out, &xs, ", ", depth);
                     out.push(']');
                 }
                 None => {
@@ -278,18 +289,18 @@ impl Vm<'_> {
             }
             _ => {
                 let _ = write!(out, "{}(", bare_ctor(&name));
-                self.join(out, &self.heap.fields(a), ", ");
+                self.join(out, &self.heap.fields(a), ", ", depth);
                 out.push(')');
             }
         }
     }
 
-    fn join(&self, out: &mut String, vs: &[Value], sep: &str) {
+    fn join(&self, out: &mut String, vs: &[Value], sep: &str, depth: usize) {
         for (i, v) in vs.iter().enumerate() {
             if i > 0 {
                 out.push_str(sep);
             }
-            self.render(out, *v);
+            self.render(out, *v, depth + 1);
         }
     }
 

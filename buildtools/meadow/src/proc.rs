@@ -46,9 +46,16 @@ fn fuel() -> u64 {
         .unwrap_or(FUEL)
 }
 
-/// A call, by the macro, its argument as written, and whether the round it
-/// ran in was settled.
-type AnswerKey = (InternedString, InternedString, String, bool);
+/// A call, by the macro, its argument as written, whether the round it ran
+/// in was settled, and where it is.
+///
+/// Where, because an answer is tokens, and a token says where it is: the
+/// argument's, handed back, and those the macro made, placed at the call.
+/// Without it a second call written the same way took the first's answer,
+/// positions and all -- its errors reported at the other call, or at offsets
+/// that are not in the file at all. The same call expanded again in a later
+/// round is still found, which is what the cache is for.
+type AnswerKey = (InternedString, InternedString, String, bool, Span);
 
 /// The bindings a run read, and what each said -- `None` for one that was not
 /// there.
@@ -184,7 +191,7 @@ impl Runner for Macros<'_> {
         at: Span,
         scope: &Scope<'_>,
     ) -> Result<Outcome, Failure> {
-        let key = (package, name, tt::render(input), scope.settled);
+        let key = (package, name, tt::render(input), scope.settled, at);
         // An answer is good for as long as everything it read still says what
         // it said: the argument is the key, and the reads are checked here.
         if let Some(had) = self.answers.borrow().get(&key) {

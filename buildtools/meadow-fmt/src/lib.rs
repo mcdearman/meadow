@@ -50,6 +50,10 @@ pub const UNIT: usize = 2;
 /// lines to one, drops leading and trailing blank lines, and ends with exactly
 /// one newline. The result uses `\r\n` if that is what `src` mostly used.
 pub fn format(src: &str) -> String {
+    // A byte-order mark is kept as it was, and never read as code.
+    if let Some(rest) = src.strip_prefix('\u{feff}') {
+        return format!("\u{feff}{}", format(rest));
+    }
     let crlf = src.matches("\r\n").count() * 2 > src.matches('\n').count();
     let mut out: Vec<String> = Vec::new();
     let mut blanks = 0usize;
@@ -639,40 +643,38 @@ struct Tok<'a> {
 /// Split a line of code into words, single brackets, and maximal operator runs —
 /// enough to see the first token, the last token, and every bracket. Mirrors the
 /// lexer's operator character class so `->` and `|>` stay whole.
+///
+/// By character, not byte: `é` is one letter of a name, not two bytes that
+/// each look like something else. A token's column counts characters, which
+/// is what an indent lines up with.
 fn tokens(code: &str) -> Vec<Tok<'_>> {
     const OP: &str = "!$%&*+./<=>?@|^~:-";
     let mut out = Vec::new();
-    let bytes = code.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i] as char;
+    let chars: Vec<(usize, char)> = code.char_indices().collect();
+    // The byte offset of the `k`th character, or the end.
+    let at = |k: usize| chars.get(k).map_or(code.len(), |&(b, _)| b);
+    let mut k = 0;
+    while k < chars.len() {
+        let c = chars[k].1;
+        let start = k;
         if c.is_whitespace() {
-            i += 1;
+            k += 1;
+            continue;
         } else if is_word(c) {
-            let start = i;
-            while i < bytes.len() && is_word(bytes[i] as char) {
-                i += 1;
+            while k < chars.len() && is_word(chars[k].1) {
+                k += 1;
             }
-            out.push(Tok {
-                col: start,
-                text: &code[start..i],
-            });
         } else if OP.contains(c) {
-            let start = i;
-            while i < bytes.len() && OP.contains(bytes[i] as char) {
-                i += 1;
+            while k < chars.len() && OP.contains(chars[k].1) {
+                k += 1;
             }
-            out.push(Tok {
-                col: start,
-                text: &code[start..i],
-            });
         } else {
-            out.push(Tok {
-                col: i,
-                text: &code[i..i + 1],
-            });
-            i += 1;
+            k += 1;
         }
+        out.push(Tok {
+            col: start,
+            text: &code[at(start)..at(k)],
+        });
     }
     out
 }
@@ -702,6 +704,52 @@ mod tests {
 
     fn f(src: &str) -> String {
         format(src)
+    }
+
+    // --- text that is not ASCII ----------------------------------------------
+    //
+    // The tokenizer once walked bytes, and read the first byte of `é` as a
+    // letter of its own: slicing the line there panicked, and an editor that
+    // formats on save took the language server down with it.
+
+    #[test]
+    fn a_name_that_is_not_ascii_is_one_word() {
+        assert_eq!(f("def café = 1\n"), "def café = 1\n");
+        assert_eq!(f("fun naïve x =\n    x + 1\n"), "fun naïve x =\n  x + 1\n");
+    }
+
+    #[test]
+    fn symbols_and_wide_characters_in_code_are_kept() {
+        for src in [
+            "def π = 3\n",
+            "def x = '→'\n",
+            "def 名前 = 1\n",
+            "def e = \"😀 emoji\"\n",
+            "def f x = x -- a comment with ümlauts\n",
+        ] {
+            assert_eq!(f(src), src, "{src}");
+        }
+    }
+
+    #[test]
+    fn indentation_after_a_wide_character_is_still_decided() {
+        // A `match` after a non-ASCII name: its arms still line up under it.
+        let src = "def größe x = match x with\n| 0 -> 1\n| _ -> 2\n";
+        let once = f(src);
+        assert_eq!(f(&once), once, "formatting is idempotent");
+        assert!(
+            once.contains("| 0 -> 1") && once.contains("| _ -> 2"),
+            "{once}"
+        );
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_kept_and_not_read_as_code() {
+        assert_eq!(f("\u{feff}def x = 1   \n"), "\u{feff}def x = 1\n");
+        assert_eq!(
+            f("\u{feff}def f y =\n\tf y\n"),
+            "\u{feff}def f y =\n  f y\n"
+        );
     }
 
     #[test]

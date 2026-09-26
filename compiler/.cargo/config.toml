@@ -1,0 +1,8 @@
+# The tests compile programs on the test harness's own threads, which have
+# 2 MB stacks by default. The compiler walks a program recursively, so a deep
+# or a wide one -- three hundred parameters, a few hundred nested `let`s --
+# needs more, as it gets from the `meadow` binary (see `STACK` in
+# `buildtools/meadow/src/main.rs`). Address space, committed only as deep as a
+# test goes.
+[env]
+RUST_MIN_STACK = "268435456"

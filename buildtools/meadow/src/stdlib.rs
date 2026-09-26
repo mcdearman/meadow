@@ -512,8 +512,10 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     let mut bindings = Vec::new();
     // Every sub-unit's, each of which has its predecessors' too.
     let mut fixities = Vec::new();
+    let mut compacting = Vec::new();
 
     for sub in subs {
+        compacting.extend(sub.compacting.iter().copied());
         fixities.extend(sub.fixities.iter().copied());
         embedded.extend(sub.embedded.iter().cloned());
         macros.extend(sub.macros.iter().cloned());
@@ -564,6 +566,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         data_decls,
         tests,
         prelude_exports: Some(prelude_names),
+        compacting,
     }
 }
 

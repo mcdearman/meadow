@@ -458,6 +458,14 @@ impl Resolver {
         }
     }
 
+    /// This resolver, never fetching whatever this run's policy says -- for
+    /// the editor, which reads a package because a file in it was opened, not
+    /// because anyone asked for a build. What is already cached is used.
+    pub fn offline(mut self) -> Resolver {
+        self.net = crate::git::Net::Offline;
+        self
+    }
+
     /// Where `dep`, written in the manifest in `from`, can be read.
     /// Which release of `url` meets `req`, given what the rest of the build
     /// already settled on.

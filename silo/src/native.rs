@@ -13,6 +13,29 @@ fn fail<T>(msg: impl AsRef<str>) -> T {
     crate::fail(msg.as_ref())
 }
 
+/// Read exactly `n` bytes of `input`, growing the buffer as they arrive, or
+/// `None` if it ends first. Reading in chunks means a length that lies about
+/// how much follows costs nothing until the bytes come, rather than a
+/// preallocation of `n` that aborts the process. See `Console.readExact`.
+fn read_exact_bounded<R: std::io::Read>(input: &mut R, n: i64) -> std::io::Result<Option<String>> {
+    let mut remaining = n.max(0) as usize;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 65536];
+    while remaining > 0 {
+        let want = remaining.min(chunk.len());
+        match input.read(&mut chunk[..want]) {
+            Ok(0) => return Ok(None),
+            Ok(got) => {
+                buf.extend_from_slice(&chunk[..got]);
+                remaining -= got;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
 /// A result, built bottom-up. Nothing moves, so it is built as it is made.
 enum Build {
     At(Val),
@@ -256,18 +279,13 @@ fn console(op: &str, arg: Val) -> Option<Build> {
             }
         }
         "readExact" => {
-            use std::io::Read;
             let _ = std::io::stdout().flush();
             let n = arg.word() as i64;
-            let mut buf = vec![0u8; n.max(0) as usize];
-            match std::io::stdin().lock().read_exact(&mut buf) {
-                Ok(()) => Build::Data(
-                    "Maybe.Just",
-                    vec![Build::Str(String::from_utf8_lossy(&buf).into_owned())],
-                ),
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    Build::Data("Maybe.None", vec![])
-                }
+            // Reads in chunks, so a hostile length costs nothing until the
+            // bytes actually arrive, rather than a preallocation of `n`.
+            match read_exact_bounded(&mut std::io::stdin().lock(), n) {
+                Ok(Some(text)) => Build::Data("Maybe.Just", vec![Build::Str(text)]),
+                Ok(None) => Build::Data("Maybe.None", vec![]),
                 Err(e) => fail(format!("Console.readExact: {e}")),
             }
         }

@@ -76,26 +76,13 @@ fn run(name: &str, src: &str) -> String {
 
 #[track_caller]
 fn run_checked(name: &str, src: &str, check: bool) -> String {
-    run_with(name, src, check, false)
-}
-
-/// [`run`], for a program that abandons a continuation: what the abandoned
-/// segment's frames held is not erased (see `silo/src/segments.rs`), so it
-/// is not checked for leaks.
-#[track_caller]
-fn run_abandoning(name: &str, src: &str) -> String {
-    run_with(name, src, true, true)
-}
-
-#[track_caller]
-fn run_with(name: &str, src: &str, check: bool, abandons: bool) -> String {
-    run_full(name, src, check, abandons).0
+    run_full(name, src, check, meadow_core::OptLevel::O2).0
 }
 
 /// [`run`], and how many blocks the program acquired: what reuse saves.
 #[track_caller]
 fn run_counting(name: &str, src: &str) -> (String, u64) {
-    let (got, stderr) = run_full(name, src, true, false);
+    let (got, stderr) = run_full(name, src, true, meadow_core::OptLevel::O2);
     let acquired = stderr
         .lines()
         .find_map(|l| {
@@ -108,26 +95,63 @@ fn run_counting(name: &str, src: &str) -> (String, u64) {
     (got, acquired)
 }
 
+/// [`run`], lowered at `O1` as a debug build is: nothing specialized, so a
+/// polymorphic definition runs on the descriptors it is passed. Not checked
+/// against the AxCut machine, which has no threads.
 #[track_caller]
-fn run_full(name: &str, src: &str, check: bool, abandons: bool) -> (String, String) {
+fn run_o1(name: &str, src: &str) -> String {
+    run_full(name, src, false, meadow_core::OptLevel::O1).0
+}
+
+/// [`run`], compiled as many modules -- a function or so each -- and linked,
+/// as a build of a large program is: a call and the function it enters are
+/// then in different modules.
+#[track_caller]
+fn run_split(name: &str, src: &str, check: bool) -> String {
+    run_units(name, src, check, meadow_core::OptLevel::O2, 1).0
+}
+
+#[track_caller]
+fn run_full(name: &str, src: &str, check: bool, opt: meadow_core::OptLevel) -> (String, String) {
+    run_units(name, src, check, opt, usize::MAX)
+}
+
+#[track_caller]
+fn run_units(
+    name: &str,
+    src: &str,
+    check: bool,
+    opt: meadow_core::OptLevel,
+    unit: usize,
+) -> (String, String) {
     let prog = program(src);
-    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::O2);
+    let lowered = meadow_seq::lower_program(&prog, opt);
     assert!(lowered.unsupported.is_empty(), "{:?}", lowered.unsupported);
     let want = check.then(|| {
         meadow_seq::machine::Machine::run(&lowered.program, 50_000_000)
             .unwrap_or_else(|e| panic!("the AxCut machine failed: {}", e.msg))
             .to_string()
     });
-    let ll = meadow_llvm::compile(&lowered.program).unwrap_or_else(|e| panic!("{}", e.msg));
+    let units =
+        meadow_llvm::compile_split(&lowered.program, unit).unwrap_or_else(|e| panic!("{}", e.msg));
     let dir = std::env::temp_dir().join("meadow-llvm-tests").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let ll_path = dir.join("prog.ll");
-    std::fs::write(&ll_path, &ll).unwrap();
+    let paths: Vec<std::path::PathBuf> = units
+        .iter()
+        .enumerate()
+        .map(|(i, ll)| {
+            let path = dir.join(format!("prog{i}.ll"));
+            std::fs::write(&path, ll).unwrap();
+            path
+        })
+        .collect();
+    let ll_path = paths[0].clone();
     let exe = dir.join(if cfg!(windows) { "prog.exe" } else { "prog" });
     let out = Command::new("clang")
         .args(["-O2", "-Wno-override-module", "-o"])
         .arg(&exe)
-        .arg(&ll_path)
+        .args(&paths)
         .arg(runtime())
         .args(system_libs())
         .output()
@@ -157,8 +181,10 @@ fn run_full(name: &str, src: &str, check: bool, abandons: bool) -> (String, Stri
     if let Some(want) = want {
         assert_eq!(got, want, "native vs the AxCut machine, {name}");
     }
+    // Every program, a continuation abandoned or not: what its frames held
+    // is given up with it (`silo/src/shadow.rs`).
     assert!(
-        abandons || stderr.contains("aot: 0 blocks live at exit"),
+        stderr.contains("aot: 0 blocks live at exit"),
         "{name} leaked: {stderr}"
     );
     (got, stderr)
@@ -254,7 +280,7 @@ fn time_fib() {
 #[test]
 fn a_handler_that_never_resumes_aborts_the_body() {
     assert_eq!(
-        run_abandoning(
+        run(
             "abort",
             "effect Abort { bail : () -> Int }
              def main = handle 1 + bail () with { bail u k -> 99 }"
@@ -631,4 +657,450 @@ fn a_nested_pattern_on_an_inlined_copy_counts_what_it_takes_apart() {
         ),
     );
     assert_eq!(got, "707");
+}
+
+// --- literal operands ---------------------------------------------------------
+//
+// A literal operand rides inside its `extern` (`PrimK`, `BranchPrimK`) rather
+// than as a name, so the ownership pass never schedules its erase. A literal
+// that is a heap block -- a string, a big integer -- is made fresh for the one
+// primitive, which only borrows it, and must be given back after.
+
+#[test]
+fn a_string_literal_pattern_gives_its_block_back() {
+    assert_eq!(
+        run(
+            "string_literal_pattern",
+            "fun code s = match s with | \"red\" -> 1 | \"green\" -> 2 | \"blue\" -> 3 | _ -> 0\n\
+             def main = code \"green\" + code \"blue\" * 10 + code \"mauve\" * 100\n"
+        ),
+        "32"
+    );
+}
+
+#[test]
+fn a_big_integer_literal_operand_gives_its_block_back() {
+    assert_eq!(
+        run(
+            "bigint_literal_operand",
+            "fun next (x : BigInt) : BigInt = x + 2\n\
+             def main = next (next 40)\n"
+        ),
+        "44"
+    );
+}
+
+#[test]
+fn a_big_integer_literal_in_a_comparison_gives_its_block_back() {
+    assert_eq!(
+        run(
+            "bigint_literal_branch",
+            "fun small (x : BigInt) : Int = if x < 100 then 1 else 0\n\
+             def main = small 5 + small 500 * 10\n"
+        ),
+        "1"
+    );
+}
+
+#[test]
+fn literal_operands_in_a_loop_do_not_accumulate() {
+    // Many iterations, each comparing against a string literal and adding a
+    // big literal: a per-iteration leak would leave thousands of blocks.
+    assert_eq!(
+        run(
+            "literal_operands_loop",
+            "fun count (n : Int) (acc : BigInt) : BigInt =\n\
+             \x20 if n == 0 then acc\n\
+             \x20 else count (n - 1) (match \"tick\" with | \"tick\" -> acc + 1 | _ -> acc)\n\
+             def main = count 2000 0\n"
+        ),
+        "2000"
+    );
+}
+
+// --- a spawn taken as a value -------------------------------------------------
+//
+// A thread's answer crosses to the thread that awaits it by its descriptor:
+// a block is copied out of the thread's heap, which goes when the thread does.
+// The descriptor of `a` in a `Task a` names no value, so a closure around a
+// spawn -- `spawn` passed to another function -- once captured nothing for it,
+// and the answer crossed as a bare word into a heap already freed.
+
+const SPAWNING: &str = "data L = N | C Int L
+     use L.*
+     fun mk (n : Int) : L = if n == 0 then N else C n (mk (n - 1))
+     fun len (l : L) : Int = match l with | N -> 0 | C _ r -> 1 + len r
+     fun busy (n : Int) : Int = if n == 0 then 0 else busy (n - 1)
+     fun spawn f = threadSpawn f
+     fun app f x = f x
+";
+
+#[test]
+fn a_spawn_passed_as_a_value_hands_its_answer_across() {
+    for opt in ["o1", "o2"] {
+        let src = format!(
+            "{SPAWNING}\
+             def main =
+               let t = app spawn (\\() -> mk 2000) in
+               let b1 = threadSpawn (\\() -> busy 300000) in
+               let b2 = threadSpawn (\\() -> busy 300000) in
+               let r = threadAwait t in
+               (len r, threadAwait b1 + threadAwait b2)"
+        );
+        let name = format!("spawn_as_value_{opt}");
+        let got = if opt == "o1" {
+            run_o1(&name, &src)
+        } else {
+            run_checked(&name, &src, false)
+        };
+        assert_eq!(got, "(2000, 0)", "{opt}");
+    }
+}
+
+#[test]
+fn spawns_mapped_over_a_list_hand_their_answers_across() {
+    // The shape of `V.map Thread.spawn fs`: the spawn is a closure's body.
+    let src = format!(
+        "{SPAWNING}\
+         data Fs = FNil | FCons (() -> L) Fs
+         data Ts = TNil | TCons (Task L) Ts
+         use Fs.*
+         use Ts.*
+         fun mapSpawn g fs = match fs with | FNil -> TNil | FCons f rest -> TCons (g f) (mapSpawn g rest)
+         fun total ts = match ts with | TNil -> 0 | TCons t rest -> len (threadAwait t) + total rest
+         def main = total (mapSpawn spawn (FCons (\\() -> mk 300) (FCons (\\() -> mk 400) (FCons (\\() -> mk 500) FNil))))"
+    );
+    assert_eq!(run_o1("spawns_mapped", &src), "1200");
+}
+
+#[test]
+fn a_generic_spawner_passes_its_descriptor_on() {
+    // `later` never learns what `a` is; its caller's descriptor has to reach
+    // the spawn inside the lambda it builds.
+    let src = format!(
+        "{SPAWNING}\
+         fun later f = \\() -> spawn f
+         def main = let go = later (\\() -> mk 1500) in len (threadAwait (go ()))"
+    );
+    assert_eq!(run_o1("generic_spawner", &src), "1500");
+}
+
+// --- segments inside a discarded continuation ----------------------------------
+//
+// An operation that passes an inner handler on its way to an outer one
+// suspends the inner handler's segment too. If the outer clause never resumes,
+// the continuation is discarded without unwinding, and the inner segment --
+// once held only by a frame on the outer one's stack -- was never given back:
+// a stack of its own, per turn, for good.
+
+/// [`run`], and how many handler segments were still live at exit.
+#[track_caller]
+fn run_segments(name: &str, src: &str) -> (String, usize) {
+    let (got, stderr) = run_full(name, src, true, meadow_core::OptLevel::O2);
+    let live = stderr
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("aot: ")?
+                .strip_suffix(" segments live at exit")?
+                .parse()
+                .ok()
+        })
+        .expect("the run says how many segments are live");
+    (got, live)
+}
+
+const RAISING: &str = "effect Raise { raise : Int -> Int }
+     effect Ask { ask : Int -> Int }
+     fun asking body = handle body () with { ask n k -> let r = k n in r + 1, return x -> x }
+     fun catching body = handle body () with { raise e k -> 0 - e, return x -> x }
+     fun loop (i : Int) (acc : Int) = if i == 0 then acc else loop (i - 1) (acc + once i)
+";
+
+#[test]
+fn an_abandoned_continuation_gives_back_the_segments_inside_it() {
+    // `raise` passes `asking` on its way to `catching`, which drops `k`.
+    let src = format!(
+        "{RAISING}\
+         fun once (i : Int) = catching (\\() -> asking (\\() -> let a = ask i in if a >= 0 then raise 1 else a))
+         def main = loop 2000 0"
+    );
+    let (got, live) = run_segments("abandoned_nested", &src);
+    assert_eq!(got, "-2000");
+    assert_eq!(live, 0, "segments left behind");
+}
+
+#[test]
+fn several_handlers_deep_are_all_given_back() {
+    // Three handlers between the operation and the one that drops it.
+    let src = format!(
+        "{RAISING}\
+         fun once (i : Int) = catching (\\() -> asking (\\() -> asking (\\() -> asking (\\() ->
+           let a = ask i in if a >= 0 then raise 2 else a))))
+         def main = loop 500 0"
+    );
+    let (got, live) = run_segments("abandoned_deep", &src);
+    assert_eq!(got, "-1000");
+    assert_eq!(live, 0, "segments left behind");
+}
+
+#[test]
+fn a_resumed_continuation_takes_its_nested_segments_back() {
+    // The outer clause resumes: the segments parked inside the continuation go
+    // back to the frames that drive them, and the inner handler still answers.
+    let src = format!(
+        "{RAISING}\
+         fun resuming body = handle body () with {{ raise e k -> k (e * 10), return x -> x }}
+         fun once (i : Int) = resuming (\\() -> asking (\\() -> let a = ask i in raise a + 1))
+         def main = loop 300 0"
+    );
+    // ask i -> i; raise i -> 10 i; + 1; asking's clause adds 1: 10 i + 2.
+    let (got, live) = run_segments("resumed_nested", &src);
+    assert_eq!(got, (1..=300).map(|i| 10 * i + 2).sum::<i64>().to_string());
+    assert_eq!(live, 0, "segments left behind");
+}
+
+#[test]
+fn a_continuation_resumed_later_still_finds_its_segments() {
+    // The outer clause keeps its continuation while another operation passes
+    // a handler and is dropped -- parking, and discarding, segments of its own
+    // -- and only then resumes the first.
+    let src = format!(
+        "{RAISING}\
+         fun later body = handle body () with {{
+           raise e k ->
+             let other = catching (\\() -> asking (\\() -> let a = ask e in if a >= 0 then raise 5 else a)) in
+             k (other + e),
+           return x -> x }}
+         fun once (i : Int) = later (\\() -> asking (\\() -> raise (ask i)))
+         def main = loop 200 0"
+    );
+    // ask i -> i; raise i: other = -5, so k (i - 5); the outer asking's clause
+    // adds 1: i - 4.
+    let (got, live) = run_segments("resumed_after_other", &src);
+    assert_eq!(got, (1..=200).map(|i| i - 4).sum::<i64>().to_string());
+    assert_eq!(live, 0, "segments left behind");
+}
+
+// --- values read out of a compact that is gone ------------------------------------
+//
+// A block inside a compact region holds a reference to the region, and taking
+// one apart gives that reference up. When the compact itself has gone, the
+// block's may be the region's last -- and giving it up before sharing the
+// fields just loaded freed the region under the shares: heap corruption.
+
+/// Run `src` lowered at both levels, since what one inlines away the other
+/// keeps: a debug build is where a value read out of a compact is released
+/// through the generic path.
+#[track_caller]
+fn both(name: &str, src: &str, want: &str) {
+    assert_eq!(run(name, src), want, "O2");
+    assert_eq!(run_o1(&format!("{name}_o1"), src), want, "O1");
+}
+
+const COMPACTED: &str = "data L = N | C Int L
+     use L.*
+     fun sum (l : L) : Int = match l with | N -> 0 | C x r -> x + sum r
+     fun inc (l : L) : L = match l with | N -> N | C x r -> C (x + 1) (inc r)
+     fun build (n : Int) : L = if n == 0 then N else C n (build (n - 1))
+";
+
+#[test]
+fn data_read_out_of_a_dropped_compact_can_be_taken_apart() {
+    let src = format!("{COMPACTED}def main = sum (getCompact (compact (build 100)))");
+    both("compact_taken_apart", &src, "5050");
+}
+
+#[test]
+fn data_read_out_of_a_dropped_compact_can_be_rebuilt() {
+    // `inc` would build each cell in place of the one it takes apart, were
+    // that one its own; a region's never is, so each is released and copied.
+    let src = format!("{COMPACTED}def main = sum (inc (getCompact (compact (build 100))))");
+    both("compact_rebuilt", &src, "5150");
+}
+
+#[test]
+fn data_read_out_of_a_dropped_compact_compares_equal() {
+    let src = format!(
+        "{COMPACTED}def main =
+           let a = getCompact (compact (build 50)) == build 50 in
+           let b = build 50 == getCompact (compact (build 50)) in
+           let c = getCompact (compact (build 50)) == build 49 in
+           (a, b, c)"
+    );
+    both("compact_equal", &src, "(True, True, False)");
+}
+
+#[test]
+fn a_tuple_read_out_of_a_dropped_compact_can_be_taken_apart() {
+    let src = format!(
+        "{COMPACTED}def main =
+           let (a, b) = getCompact (compact (build 3, build 4)) in
+           sum a * 100 + sum b"
+    );
+    both("compact_tuple", &src, "610");
+}
+
+#[test]
+fn a_wrapper_read_out_of_a_dropped_compact_can_be_unwrapped() {
+    // The shape `Std.Collections.Vector`'s `==` has, which crashed: the one
+    // field of a block whose reference is the region's last.
+    let src = format!(
+        "{COMPACTED}data W = W L
+         use W.*
+         fun unwrap (w : W) : L = match w with | W l -> l
+         def main = sum (unwrap (getCompact (compact (W (build 10)))))"
+    );
+    both("compact_unwrapped", &src, "55");
+}
+
+#[test]
+fn reading_a_compact_in_a_loop_leaves_nothing_behind() {
+    // Each turn makes a region, reads it, drops the compact, and takes the value
+    // apart: the region must go every time, and only once.
+    let src = format!(
+        "{COMPACTED}fun loop (i : Int) (acc : Int) : Int =
+           if i == 0 then acc else loop (i - 1) (acc + sum (getCompact (compact (build 20))))
+         def main = loop 500 0"
+    );
+    both("compact_loop", &src, "105000");
+}
+
+// --- what an abandoned continuation's frames held -----------------------------
+//
+// A frame waiting on a call holds what it will need when the call returns. If
+// the call never returns -- an operation inside it was answered by a clause
+// that dropped the continuation -- those values were never given up. They are
+// now recorded around the call and given up when the continuation is
+// discarded (`silo/src/shadow.rs`), so these programs end with nothing live.
+
+const HOLDING: &str = "effect Raise { raise : Int -> Int }
+     data L = N | C Int L
+     use L.*
+     fun build (n : Int) : L = if n == 0 then N else C n (build (n - 1))
+     fun len (l : L) : Int = match l with | N -> 0 | C _ r -> 1 + len r
+     fun catching body = handle body () with { raise e k -> 0 - e }
+     fun loop (i : Int) (acc : Int) = if i == 0 then acc else loop (i - 1) (acc + once i)
+";
+
+/// Run at both levels, checked for leaks: O1 keeps every call a call.
+#[track_caller]
+fn no_leak(name: &str, src: &str, want: &str) {
+    assert_eq!(run_checked(name, src, true), want, "O2");
+    assert_eq!(run_o1(&format!("{name}_o1"), src), want, "O1");
+}
+
+#[test]
+fn frames_that_held_lists_give_them_up_when_abandoned() {
+    // Ten frames deep, each holding a list across the call below it, when
+    // `raise` is answered by a clause that drops the continuation.
+    let src = format!(
+        "{HOLDING}\
+         fun deep (n : Int) (held : L) =\n\
+         \x20 if n == 0 then raise 1 else let r = deep (n - 1) (C n held) in r + len held\n\
+         fun once (i : Int) = catching (\\() -> deep 10 (build 5))\n\
+         def main = loop 300 0"
+    );
+    no_leak("abandoned_frames", &src, "-300");
+}
+
+#[test]
+fn frames_holding_values_of_a_type_variable_give_them_up() {
+    // What each frame holds is described at run time: a descriptor in a
+    // register, recorded as it is.
+    let src = format!(
+        "{HOLDING}\
+         fun keep (n : Int) (x : a) f =\n\
+         \x20 if n == 0 then raise 2 else let r = keep (n - 1) x f in r + f x\n\
+         fun once (i : Int) = catching (\\() -> keep 6 (build 4) len + keep 6 (C i N, build 3) (\\p -> 1))\n\
+         def main = loop 200 0"
+    );
+    no_leak("abandoned_poly_frames", &src, "-400");
+}
+
+#[test]
+fn frames_under_a_nested_handler_give_theirs_up_too() {
+    // The operation passes an inner handler on its way out: the frames on the
+    // inner segment and the outer are both discarded, and the continuation
+    // `handle` was to answer, held by the runtime, goes with them.
+    let src = format!(
+        "{HOLDING}\
+         effect Ask {{ ask : Int -> Int }}\n\
+         fun asking body = handle body () with {{ ask n k -> let r = k n in r + 1 }}\n\
+         fun deep (n : Int) (held : L) =\n\
+         \x20 if n == 0 then raise (ask 3) else let r = deep (n - 1) (C n held) in r + len held\n\
+         fun once (i : Int) =\n\
+         \x20 catching (\\() -> let before = build 3 in len before + asking (\\() -> deep 5 (build 2)))\n\
+         def main = loop 200 0"
+    );
+    no_leak("abandoned_nested_frames", &src, "-600");
+}
+
+#[test]
+fn a_program_with_threads_gives_abandoned_frames_up() {
+    // With threads the chain's head is each thread's own, reached through the
+    // runtime rather than a global.
+    let src = format!(
+        "{HOLDING}\
+         fun deep (n : Int) (held : L) =\n\
+         \x20 if n == 0 then raise 1 else let r = deep (n - 1) (C n held) in r + len held\n\
+         fun once (i : Int) = catching (\\() -> deep 8 (build 4))\n\
+         def main =\n\
+         \x20 let t = threadSpawn (\\() -> loop 100 0) in\n\
+         \x20 let here = loop 100 0 in\n\
+         \x20 here + threadAwait t"
+    );
+    assert_eq!(run_checked("abandoned_threaded", &src, false), "-200");
+    assert_eq!(run_o1("abandoned_threaded_o1", &src), "-200");
+}
+
+// --- calls wider than the registers --------------------------------------------
+//
+// Arguments past the tenth go through a spill area: once a fixed 256 words,
+// written past its end by a wider call, and in a program without threads one
+// area per module, so a call into another module read the wrong one.
+
+fn wide_call(n: usize) -> String {
+    let params: String = (0..n).map(|i| format!("(x{i} : Int) ")).collect();
+    let sum: Vec<String> = (0..n).map(|i| format!("x{i} * {}", i % 3 + 1)).collect();
+    let args: Vec<String> = (0..n).map(|i| i.to_string()).collect();
+    format!(
+        "fun f {params}: Int = {}
+def main = f {}",
+        sum.join(" + "),
+        args.join(" ")
+    )
+}
+
+fn wide_want(n: usize) -> String {
+    (0..n).map(|i| i * (i % 3 + 1)).sum::<usize>().to_string()
+}
+
+#[test]
+fn a_call_of_three_hundred_arguments() {
+    assert_eq!(run("wide_call_300", &wide_call(300)), wide_want(300));
+    assert_eq!(run_o1("wide_call_300_o1", &wide_call(300)), wide_want(300));
+}
+
+#[test]
+fn a_wide_call_into_another_module() {
+    // Twelve arguments, two past the registers, and three hundred: each
+    // function its own module.
+    assert_eq!(
+        run_split("split_call_12", &wide_call(12), true),
+        wide_want(12)
+    );
+    assert_eq!(
+        run_split("split_call_300", &wide_call(300), true),
+        wide_want(300)
+    );
+}
+
+#[test]
+fn a_wide_call_in_a_program_with_threads() {
+    // With threads each has a spill area of its own, which the runtime makes
+    // as big as the module says it needs.
+    let src = wide_call(300).replace("def main = f", "def once = f")
+        + "\ndef main = let t = threadSpawn (\\() -> once) in once + threadAwait t";
+    let want = (2 * wide_want(300).parse::<usize>().unwrap()).to_string();
+    assert_eq!(run_checked("wide_call_threads", &src, false), want);
 }

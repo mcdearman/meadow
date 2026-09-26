@@ -23,8 +23,13 @@
 //! thread's own stack.
 //!
 //! A continuation never resumed is discarded when its stack object is
-//! erased, without unwinding: whatever its frames held is not erased -- as a
-//! cycle is not.
+//! erased, without unwinding. What its frames were holding across calls is
+//! given up all the same, from the shadow chains its segments stopped with
+//! (`crate::shadow`); and its segments' stacks are given back, the ones nested
+//! inside it too: an operation that passes an inner handler on its way out
+//! suspends the inner segment from a `drive` frame on the outer one's stack,
+//! and that frame is never unwound, so the inner segment is kept in the
+//! context ([`Suspended::nested`]) rather than in the frame.
 
 use crate::heap::{self, Word};
 use crate::value::Val;
@@ -32,6 +37,7 @@ use corosensei::stack::DefaultStack;
 use corosensei::{Coroutine, CoroutineResult, Yielder};
 use meadow_core::Prim;
 use meadow_core::desc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A segment's stack: reserved, and committed as it is touched.
 const SEGMENT: usize = 256 << 20;
@@ -62,6 +68,31 @@ pub(crate) type Segment = Coroutine<Down, Up, Word, DefaultStack>;
 
 /// A segment, to be handed between OS threads with the thread it belongs to.
 pub(crate) struct SendSegment(pub Segment);
+
+/// A segment that is not running, and the head of its shadow chain where it
+/// stopped -- what its frames hold (see `crate::shadow`).
+pub(crate) struct Parked {
+    pub segment: SendSegment,
+    pub shadow: Word,
+}
+
+/// A continuation's segments: the one suspended for `handler`, and those
+/// suspended inside it for the same operation, innermost first -- what the
+/// `drive` frames on its stack will take back, in turn, when it resumes.
+pub(crate) struct Suspended {
+    pub top: Parked,
+    pub handler: u32,
+    pub nested: Vec<Parked>,
+}
+
+/// Segments `handle` has made that have neither finished nor been discarded:
+/// what the leak check reports.
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// How many segments are live: see [`LIVE`].
+pub fn live() -> usize {
+    LIVE.load(Ordering::Relaxed)
+}
 
 // Safety: everything on a segment's stack is the emitted code's frames and
 // this runtime's, which keep nothing tied to an OS thread across a switch --
@@ -149,6 +180,12 @@ pub extern "C" fn meadow_enter(target: Word, body: Word) -> Word {
     // code after a `handle` is the continuation the code inside it is given,
     // and handlers in a loop would nest one stack deep for each turn.
     let after = outer(target);
+    // This frame holds `after` while the body runs, and a discarded
+    // continuation this frame is part of would never give it up: so it is on
+    // the chain of the segment this runs on, like a frame's captures.
+    let record: [i64; 4] = [crate::shadow::head() as i64, 1, after as i64, desc::REF];
+    crate::shadow::set(record.as_ptr() as Word);
+    LIVE.fetch_add(1, Ordering::Relaxed);
     let segment = Coroutine::with_stack(
         take_stack(SEGMENT),
         move |y: &Yielder<Down, Up>, _: Down| {
@@ -158,7 +195,8 @@ pub extern "C" fn meadow_enter(target: Word, body: Word) -> Word {
             v
         },
     );
-    let v = drive(segment, Down::Start, handler);
+    let v = drive(segment, Down::Start, handler, Vec::new(), 0);
+    crate::shadow::set(record[0] as Word);
     // The handle is done: carry on where its value was to go, on this stack.
     match after {
         0 => v,
@@ -182,18 +220,52 @@ fn outer(target: Word) -> Word {
 /// returns -- or suspends for this handler, when `then` runs here with the
 /// continuation. Suspending for a handler further out, or to wait, suspends
 /// the segment this runs on too, and resumes this one when that is resumed.
-fn drive(mut segment: Segment, mut down: Down, handler: u32) -> Word {
+///
+/// While that lasts, `segment` is parked in the context rather than kept in
+/// this frame: if the continuation is discarded, this frame is never unwound,
+/// and what it held would never be given back. Every segment parked during
+/// one resume, and still parked when it suspends for this handler, is inside
+/// the continuation, so it goes with it (`nested`), and back to the parked
+/// ones when the continuation resumes. Resuming goes from the outside in, and
+/// each frame takes the last parked, so they come back in the order they went.
+///
+/// Each segment has a shadow chain of its own (`crate::shadow`): `shadow` is
+/// `segment`'s, put in place while it runs and taken back whenever it stops,
+/// and this frame's own segment's in place the rest of the time.
+fn drive(
+    mut segment: Segment,
+    mut down: Down,
+    handler: u32,
+    mut nested: Vec<Parked>,
+    mut shadow: Word,
+) -> Word {
+    let here = crate::shadow::head();
     loop {
-        match segment.resume(down) {
+        let mark = cx().parked.len();
+        cx().parked.append(&mut nested);
+        crate::shadow::set(shadow);
+        let result = segment.resume(down);
+        shadow = crate::shadow::head();
+        crate::shadow::set(here);
+        match result {
             CoroutineResult::Return(v) => {
+                LIVE.fetch_sub(1, Ordering::Relaxed);
                 give_stack(segment.into_stack());
                 return v;
             }
             CoroutineResult::Yield(Up::Detach { target, then }) => {
                 if meta_of(target) == handler {
+                    let nested = cx().parked.split_off(mark);
                     let id = {
                         let s = &mut cx().suspended;
-                        s.push(Some((SendSegment(segment), handler)));
+                        s.push(Some(Suspended {
+                            top: Parked {
+                                segment: SendSegment(segment),
+                                shadow,
+                            },
+                            handler,
+                            nested,
+                        }));
                         s.len() - 1
                     };
                     let k =
@@ -201,15 +273,38 @@ fn drive(mut segment: Segment, mut down: Down, handler: u32) -> Word {
                     return run(then, k);
                 }
                 let Some(y) = innermost() else { escaped() };
+                cx().parked.push(Parked {
+                    segment: SendSegment(segment),
+                    shadow,
+                });
                 down = suspend(y, Up::Detach { target, then });
+                (segment, shadow) = unpark();
             }
             CoroutineResult::Yield(Up::Park) => {
                 let Some(y) = innermost() else {
                     crate::fail("a thread waited outside every thread")
                 };
+                cx().parked.push(Parked {
+                    segment: SendSegment(segment),
+                    shadow,
+                });
                 down = suspend(y, Up::Park);
+                (segment, shadow) = unpark();
             }
         }
+    }
+}
+
+/// The segment this `drive` frame parked, now that the one it runs on has
+/// been resumed: the last parked. Resuming goes from the outside in, so the
+/// segments around this one have been taken back and those inside it not yet.
+fn unpark() -> (Segment, Word) {
+    match cx().parked.pop() {
+        Some(Parked {
+            segment: SendSegment(s),
+            shadow,
+        }) => (s, shadow),
+        None => crate::fail("a segment resumed without the segment it was driving"),
     }
 }
 
@@ -235,21 +330,41 @@ pub extern "C" fn meadow_reattach(k: Word, code: Word) -> Word {
             cx().suspended.get_mut(id).and_then(Option::take)
         })
         .flatten();
-    let Some((SendSegment(segment), handler)) = taken else {
+    let Some(Suspended {
+        top: Parked {
+            segment: SendSegment(segment),
+            shadow,
+        },
+        handler,
+        nested,
+    }) = taken
+    else {
         crate::fail("continuation resumed more than once")
     };
-    drive(segment, Down::Resume(code), handler)
+    drive(segment, Down::Resume(code), handler, nested, shadow)
 }
 
 /// The stack object numbered `id` was erased: its segments will never be
 /// resumed. Discarded without unwinding.
 pub fn discard(id: u32) {
     let seg = cx().suspended.get_mut(id as usize).and_then(Option::take);
-    if let Some((SendSegment(mut segment), _)) = seg {
-        // Safety: nothing will resume it, and what its frames held is left
-        // alone rather than unwound -- see the module docs.
-        unsafe { segment.force_reset() };
-        give_stack(segment.into_stack());
+    if let Some(Suspended { top, nested, .. }) = seg {
+        for Parked {
+            segment: SendSegment(mut segment),
+            shadow,
+        } in std::iter::once(top).chain(nested)
+        {
+            // What its frames were holding across calls goes first, while
+            // the records saying so are still on its stack: see
+            // `crate::shadow`.
+            // Safety: the chain this segment stopped with, its stack intact.
+            unsafe { crate::shadow::give_up(shadow) };
+            // Safety: nothing will resume it, and its frames are not unwound
+            // -- the shadow chain was what they held.
+            unsafe { segment.force_reset() };
+            LIVE.fetch_sub(1, Ordering::Relaxed);
+            give_stack(segment.into_stack());
+        }
     }
 }
 

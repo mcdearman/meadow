@@ -308,6 +308,10 @@ struct Expander<'a> {
     filename: &'a str,
     diags: &'a mut Vec<Diagnostic>,
     depth: usize,
+    /// The depth limit was reached: every call still to expand fails at once,
+    /// so a macro that expands to two calls of itself stops after one report
+    /// rather than after trying every branch to the limit.
+    overflowed: bool,
     /// The package being compiled, for `$pkg` in a macro of its own.
     package: InternedString,
     /// What a call may name here, by the name it is called by: `vec` for one
@@ -370,6 +374,7 @@ impl<'a> Expander<'a> {
             filename,
             diags,
             depth: 0,
+            overflowed: false,
             macros: HashMap::new(),
             expansions: 0,
             from: Vec::new(),
@@ -1200,13 +1205,19 @@ impl<'a> Expander<'a> {
             if let Some((attrs, call)) = attributed_call(&d) {
                 let vis = vis_of(attrs, self.gated);
                 let outer = self.call_vis.replace(vis);
-                let made = self.deeper(|ex| ex.as_decls(call, d.span));
+                // What it made is expanded again one level deeper, so a macro
+                // that expands to a call of itself counts every step.
+                let made = self.deeper(d.span, |ex| {
+                    let made = ex.as_decls(call, d.span);
+                    ex.call_vis = outer;
+                    made.map(|mut made| {
+                        ex.decls(&mut made);
+                        made
+                    })
+                });
                 self.call_vis = outer;
                 match made {
-                    Some(mut made) => {
-                        self.decls(&mut made);
-                        out.extend(made);
-                    }
+                    Some(made) => out.extend(made),
                     // Waiting for a name: left as it is, for a later round.
                     None if self.take_waited() => out.push(d),
                     None => {}
@@ -1453,12 +1464,16 @@ impl<'a> Expander<'a> {
     fn pat(&mut self, p: &mut ast::LPat) {
         if let ast::Pat::MacCall(call) = &*p.value {
             let span = p.span;
-            match self.deeper(|ex| ex.as_pat(call, span)) {
-                // Re-expanded, in case what came out holds a call of its own.
-                Some(mut made) => {
-                    self.pat(&mut made);
-                    *p = made;
-                }
+            // Re-expanded, in case what came out holds a call of its own --
+            // one level deeper, so a recursive macro counts every step.
+            let made = self.deeper(span, |ex| {
+                ex.as_pat(call, span).map(|mut made| {
+                    ex.pat(&mut made);
+                    made
+                })
+            });
+            match made {
+                Some(made) => *p = made,
                 // Waiting for a name: left as it is, for a later round.
                 None if self.take_waited() => {}
                 // Left as a wildcard: it matches, binds nothing, and lets the
@@ -1497,11 +1512,14 @@ impl<'a> Expander<'a> {
     fn expr(&mut self, e: &mut ast::LExpr) {
         if let ast::Expr::MacCall(call) = &*e.value {
             let span = e.span;
-            match self.deeper(|ex| ex.as_expr(call, span)) {
-                Some(mut made) => {
-                    self.expr(&mut made);
-                    *e = made;
-                }
+            let made = self.deeper(span, |ex| {
+                ex.as_expr(call, span).map(|mut made| {
+                    ex.expr(&mut made);
+                    made
+                })
+            });
+            match made {
+                Some(made) => *e = made,
                 // Waiting for a name: left as it is, for a later round.
                 None if self.take_waited() => {}
                 // `()` in its place: the module keeps its shape, so everything
@@ -1606,8 +1624,27 @@ impl<'a> Expander<'a> {
     // --- the depth limit --------------------------------------------------
 
     /// Run `f` one expansion deeper, or report a macro that never stops.
-    fn deeper<T>(&mut self, f: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
+    ///
+    /// `f` expands the call at `span` and then what that made, so the depth is
+    /// how many expansions are under way at once: a macro that expands into a
+    /// call of itself goes one deeper each time, and is stopped here rather
+    /// than by the compiler's stack. Reported once, where it gave up; the
+    /// expansions around it see a failed call and go on.
+    fn deeper<T>(&mut self, span: Span, f: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
+        if self.overflowed {
+            return None;
+        }
         if self.depth >= MAX_DEPTH {
+            self.overflowed = true;
+            self.error(
+                format!(
+                    "macro expansion went {MAX_DEPTH} deep: a macro that expands to a call of \
+                     itself needs a case that does not"
+                ),
+                "expanded too deeply".to_string(),
+                span,
+                vec![],
+            );
             return None;
         }
         self.depth += 1;

@@ -198,6 +198,11 @@ pub struct Scheme {
     #[serde(default)]
     pub preds: Vec<Pred>,
     pub ty: Type,
+    /// For each quantified row variable that must lack some labels -- by its
+    /// index in `quant` -- which: `fun ext r = { x = 1 | r }` is generic in
+    /// `r` only over rows without an `x`, and an instance keeps to that.
+    #[serde(default)]
+    pub lacks: Vec<(u32, Vec<InternedString>)>,
 }
 
 /// `tys` implement the trait `tr` -- one type, or one per parameter of a trait
@@ -235,6 +240,7 @@ struct EffectInfo {
 impl Scheme {
     pub fn mono(ty: Type) -> Scheme {
         Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![],
             ty,
@@ -248,7 +254,16 @@ impl Scheme {
 
 #[derive(Debug, Clone)]
 enum Slot {
-    Unbound { level: u32, kind: VarKind },
+    /// `lacks` is for a record row variable: labels the row it comes to stand
+    /// for may not have. A record extended with `x` over a row `r` is only a
+    /// record with one `x` if `r` has none, so extension puts `x` here, and
+    /// binding the variable to a row with an `x` is an error. Kept in the slot
+    /// so a snapshot's rollback takes it back with everything else.
+    Unbound {
+        level: u32,
+        kind: VarKind,
+        lacks: Vec<InternedString>,
+    },
     Bound(Type),
 }
 
@@ -265,6 +280,8 @@ enum UnifyError {
     Arity(usize, usize),
     /// A required label is absent from a closed row.
     MissingLabel(InternedString),
+    /// A record would have a label twice: extended with a field it already has.
+    Duplicate(InternedString),
 }
 
 #[derive(Debug, Clone)]
@@ -385,10 +402,14 @@ impl Arena {
         let ty = self.prune(ty.clone());
         match ty {
             Type::Var(id) => {
-                if let Slot::Unbound { level: l, kind } = self.slots[id as usize].clone()
+                if let Slot::Unbound {
+                    level: l,
+                    kind,
+                    lacks,
+                } = self.slots[id as usize].clone()
                     && l > level
                 {
-                    self.set_slot(id, Slot::Unbound { level, kind });
+                    self.set_slot(id, Slot::Unbound { level, kind, lacks });
                 }
             }
             Type::Bound(_) | Type::RowEmpty | Type::Error => {}
@@ -437,6 +458,7 @@ impl Arena {
         let id = self.slots.len() as u32;
         self.slots.push(Slot::Unbound {
             level: self.level,
+            lacks: Vec::new(),
             kind,
         });
         Type::Var(id)
@@ -464,6 +486,7 @@ impl Arena {
         self.slots.push(Slot::Unbound {
             level: 0,
             kind: VarKind::Type,
+            lacks: Vec::new(),
         });
         Type::Var(id)
     }
@@ -486,6 +509,66 @@ impl Arena {
             Slot::Unbound { kind, .. } => *kind,
             Slot::Bound(_) => VarKind::Type,
         }
+    }
+
+    /// The labels an unbound row variable may not come to have.
+    fn lacks_of(&self, id: u32) -> Vec<InternedString> {
+        match &self.slots[id as usize] {
+            Slot::Unbound { lacks, .. } => lacks.clone(),
+            Slot::Bound(_) => Vec::new(),
+        }
+    }
+
+    /// Require that `row` has none of `labels`: an error for each it already
+    /// has, and for its unknown rest, a promise it never will -- carried by
+    /// the row variable it ends in, and checked when that is bound.
+    fn require_lacks(&mut self, row: Type, labels: &[InternedString]) -> Result<(), UnifyError> {
+        if labels.is_empty() {
+            return Ok(());
+        }
+        match self.prune(row) {
+            Type::RowExtend(l, _, rest) => {
+                if labels.contains(&l) {
+                    return Err(UnifyError::Duplicate(l));
+                }
+                self.require_lacks(*rest, labels)
+            }
+            Type::Var(id) => {
+                if let Slot::Unbound { level, kind, lacks } = self.slots[id as usize].clone() {
+                    let mut more = lacks.clone();
+                    for l in labels {
+                        if !more.contains(l) {
+                            more.push(*l);
+                        }
+                    }
+                    if more.len() != lacks.len() {
+                        self.set_slot(
+                            id,
+                            Slot::Unbound {
+                                level,
+                                kind,
+                                lacks: more,
+                            },
+                        );
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// A fresh variable for each of `scheme`'s quantifiers, each row variable
+    /// promising again the labels it lacked when the scheme was made.
+    fn fresh_quantifiers(&mut self, scheme: &Scheme) -> Vec<Type> {
+        let fresh: Vec<Type> = scheme.quant.iter().map(|k| self.fresh_of(*k)).collect();
+        for (i, labels) in &scheme.lacks {
+            if let Some(v) = fresh.get(*i as usize) {
+                // Fresh, so nothing can be in the way: this only records.
+                let _ = self.require_lacks(v.clone(), labels);
+            }
+        }
+        fresh
     }
 
     /// Union-find `find` with path compression.
@@ -598,6 +681,10 @@ impl Arena {
 
     fn bind_var(&mut self, id: u32, ty: Type) -> Result<(), UnifyError> {
         self.occurs_adjust(id, &ty)?;
+        // A row variable promised to lack some labels keeps that promise in
+        // whatever it becomes -- or, if that is another variable, hands it on.
+        let lacks = self.lacks_of(id);
+        self.require_lacks(ty.clone(), &lacks)?;
         match self.slot_kind(id) {
             VarKind::Num if !Self::is_integer_type(&ty) => {
                 return Err(UnifyError::NotANumber(true, ty));
@@ -677,10 +764,17 @@ impl Arena {
                     return Err(UnifyError::Occurs(Type::Var(id), Type::Var(j)));
                 }
                 let min = self.slot_level(id).min(self.slot_level(j));
-                if let Slot::Unbound { level, kind } = self.slots[j as usize].clone()
+                if let Slot::Unbound { level, kind, lacks } = self.slots[j as usize].clone()
                     && level != min
                 {
-                    self.set_slot(j, Slot::Unbound { level: min, kind });
+                    self.set_slot(
+                        j,
+                        Slot::Unbound {
+                            level: min,
+                            kind,
+                            lacks,
+                        },
+                    );
                 }
                 Ok(())
             }
@@ -749,11 +843,18 @@ impl Arena {
                 // label is being added to a row that may belong further out,
                 // and what it carries must not be generalized -- or escape --
                 // more freely than the row itself.
+                // A row that was promised not to have `label` cannot grow it.
+                let lacks = self.lacks_of(id);
+                if lacks.contains(&label) {
+                    return Err(UnifyError::Duplicate(label));
+                }
                 let at = self.slot_level(id);
                 let saved = std::mem::replace(&mut self.level, at);
                 let field = self.fresh();
                 let new_rest = self.fresh_row();
                 self.level = saved;
+                // What is left of the row keeps the promise.
+                self.require_lacks(new_rest.clone(), &lacks)?;
                 let ext =
                     Type::RowExtend(label, Box::new(field.clone()), Box::new(new_rest.clone()));
                 self.set_slot(id, Slot::Bound(ext));
@@ -1618,6 +1719,7 @@ impl Infer {
                 })
                 .collect(),
             ty: self.arena.zonk(&scheme.ty),
+            lacks: scheme.lacks.clone(),
         }
     }
 
@@ -2045,11 +2147,18 @@ impl Infer {
             }
 
             hir::Expr::Record(fields, base) => {
+                let labels = self.distinct_labels(fields);
                 let mut row = match base {
                     Some(b) => {
                         let bt = self.infer_expr(b);
                         let r = self.arena.fresh_row();
                         self.unify_at(b.span, bt, Type::Record(Box::new(r.clone())));
+                        // `{ x = 1 | r }` adds `x`, so `r` may not have one:
+                        // a record never holds a label twice.
+                        if let Err(err) = self.arena.require_lacks(r.clone(), &labels) {
+                            let diag = self.unify_diagnostic(expr.span, err);
+                            self.errors.push(diag);
+                        }
                         r
                     }
                     None => Type::RowEmpty,
@@ -2121,8 +2230,11 @@ impl Infer {
                 // with fresh type arguments. One handler may answer operations of
                 // several effects.
                 let mut handled: Vec<(InternedString, EffectInfo, Vec<Type>)> = Vec::new();
-                for arm in arms {
-                    let Some(name) = self.op_effect(arm.op) else {
+                // Which effect each clause answers, decided once.
+                let arm_effects: Vec<Option<InternedString>> =
+                    arms.iter().map(|arm| self.arm_effect(arm)).collect();
+                for name in arm_effects.iter().copied() {
+                    let Some(name) = name else {
                         continue;
                     };
                     if handled.iter().any(|(n, ..)| *n == name) {
@@ -2160,21 +2272,27 @@ impl Infer {
                         })
                 };
                 let inside = row(&mut handled.iter());
-                let outside = row(&mut handled.iter().filter(|(_, info, _)| {
-                    info.ops
-                        .iter()
-                        .any(|o| !arms.iter().any(|a| a.op == o.name))
-                }));
+                let answered = |effect: InternedString, op: InternedString| {
+                    arms.iter()
+                        .zip(&arm_effects)
+                        .any(|(a, e)| a.op == op && *e == Some(effect))
+                };
+                let outside = row(&mut handled
+                    .iter()
+                    .filter(|(name, info, _)| info.ops.iter().any(|o| !answered(*name, o.name))));
                 self.unify_at(expr.span, body_eff, inside);
                 self.join_effect(expr.span, outside.clone());
 
-                for arm in arms {
-                    let op = handled.iter().find_map(|(_, info, params)| {
-                        info.ops
-                            .iter()
-                            .find(|o| o.name == arm.op)
-                            .map(|o| (o, params))
-                    });
+                for (arm, effect) in arms.iter().zip(&arm_effects) {
+                    let op = handled
+                        .iter()
+                        .filter(|(name, ..)| Some(*name) == *effect)
+                        .find_map(|(_, info, params)| {
+                            info.ops
+                                .iter()
+                                .find(|o| o.name == arm.op)
+                                .map(|o| (o, params))
+                        });
                     let (arg_ty, ret_ty) = match op {
                         Some((o, params)) => (
                             Arena::subst_bound(&o.arg, params),
@@ -2323,8 +2441,12 @@ impl Infer {
             }
 
             hir::Pat::Record(fields, open) => {
+                let labels = self.distinct_labels(fields);
                 let mut row = if *open {
-                    self.arena.fresh_row()
+                    let rest = self.arena.fresh_row();
+                    // The rest of `{ x | .. }` is what is not `x`.
+                    let _ = self.arena.require_lacks(rest.clone(), &labels);
+                    rest
                 } else {
                     Type::RowEmpty
                 };
@@ -2512,6 +2634,7 @@ impl Infer {
                         self.env.insert(
                             *opvar.value(),
                             Scheme {
+                                lacks: Vec::new(),
                                 preds: Vec::new(),
                                 quant,
                                 ty: Type::Fun(
@@ -2534,11 +2657,31 @@ impl Infer {
         }
     }
 
+    /// The effect a handler clause answers: the one the resolver found for
+    /// it, which knows what is in scope where the `handle` is written.
+    ///
+    /// Once, it was the first effect with an operation of that name, looked
+    /// for in a hash map: with two -- the standard library's `State` has a
+    /// `get`, and so may a program's own -- which was handled changed from one
+    /// run to the next, and the wrong one brought errors that made no sense.
+    fn arm_effect(&self, arm: &hir::HandlerArm) -> Option<InternedString> {
+        if self
+            .effects
+            .get(&arm.effect)
+            .is_some_and(|info| info.ops.iter().any(|o| o.name == arm.op))
+        {
+            return Some(arm.effect);
+        }
+        self.op_effect(arm.op)
+    }
+
+    /// Some effect with an operation called `op` -- the same one every time.
     fn op_effect(&self, op: InternedString) -> Option<InternedString> {
         self.effects
             .iter()
-            .find(|(_, info)| info.ops.iter().any(|o| o.name == op))
+            .filter(|(_, info)| info.ops.iter().any(|o| o.name == op))
             .map(|(name, _)| *name)
+            .min_by(|a, b| a.to_string().cmp(&b.to_string()))
     }
 
     fn record_ctor(
@@ -2558,6 +2701,7 @@ impl Infer {
         self.ctors.insert(
             ctor,
             Scheme {
+                lacks: Vec::new(),
                 preds: Vec::new(),
                 quant: quant.to_vec(),
                 ty: cty,
@@ -2586,6 +2730,7 @@ impl Infer {
                 accessors.insert(
                     *name,
                     Scheme {
+                        lacks: Vec::new(),
                         preds: Vec::new(),
                         quant: quant.to_vec(),
                         ty: Type::Fun(
@@ -2820,10 +2965,21 @@ impl Infer {
                 }
             })
             .collect();
+        // A quantified row variable that must lack some labels says which, so
+        // every instance promises it again.
+        let mut lacks: Vec<(u32, Vec<InternedString>)> = map
+            .iter()
+            .filter_map(|(&var, &idx)| {
+                let labels = self.arena.lacks_of(var);
+                (!labels.is_empty()).then_some((idx, labels))
+            })
+            .collect();
+        lacks.sort_by_key(|(i, _)| *i);
         let scheme = Scheme {
             quant: kinds,
             preds,
             ty: body,
+            lacks,
         };
         if let Some(vid) = vid {
             // `map` is arena var -> quantifier index; invert it.
@@ -3208,6 +3364,7 @@ impl Infer {
             .arena
             .quantify_from(&z, None, &mut map, &mut kinds, true);
         show_scheme_body(&Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: kinds,
             ty: body,
@@ -3350,11 +3507,7 @@ impl Infer {
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
-        let fresh: Vec<Type> = scheme
-            .quant
-            .iter()
-            .map(|k| self.arena.fresh_of(*k))
-            .collect();
+        let fresh = self.arena.fresh_quantifiers(scheme);
         Arena::subst_bound(&scheme.ty, &fresh)
     }
 
@@ -3482,6 +3635,22 @@ impl Infer {
         }
     }
 
+    /// The labels of a record literal or pattern, each reported if it is
+    /// given more than once.
+    fn distinct_labels<T>(&mut self, fields: &[(hir::Label, T)]) -> Vec<InternedString> {
+        let mut seen: Vec<InternedString> = Vec::with_capacity(fields.len());
+        for (label, _) in fields {
+            let l = *label.value();
+            if seen.contains(&l) {
+                let diag = self.unify_diagnostic(label.span, UnifyError::Duplicate(l));
+                self.errors.push(diag);
+            } else {
+                seen.push(l);
+            }
+        }
+        seen
+    }
+
     fn unify_diagnostic(&mut self, span: Span, err: UnifyError) -> Diagnostic {
         let (msg, label) = match err {
             UnifyError::Mismatch(a, b) => {
@@ -3553,6 +3722,10 @@ impl Infer {
             UnifyError::MissingLabel(l) => (
                 format!("record has no field `{l}`"),
                 format!("missing field `{l}`"),
+            ),
+            UnifyError::Duplicate(l) => (
+                format!("the record already has a field `{l}`"),
+                format!("a second `{l}`"),
             ),
         };
         Diagnostic {
@@ -3857,26 +4030,35 @@ fn open_effects(scheme: Scheme) -> Scheme {
         preds,
         mut quant,
         ty,
+        lacks,
     } = scheme;
     let ty = go(ty, &mut quant);
-    Scheme { preds, quant, ty }
+    Scheme {
+        preds,
+        quant,
+        ty,
+        lacks,
+    }
 }
 
 fn prim_scheme(name: &str) -> Option<Scheme> {
     use Type::*;
     // `∀a. <ty>` where `a` is `Bound(0)`.
     let a1 = |ty: Type| Scheme {
+        lacks: Vec::new(),
         preds: Vec::new(),
         quant: vec![VarKind::Type],
         ty,
     };
     // The same over any integer type, and over either float type.
     let num = |ty: Type| Scheme {
+        lacks: Vec::new(),
         preds: Vec::new(),
         quant: vec![VarKind::Num],
         ty,
     };
     let frac = |ty: Type| Scheme {
+        lacks: Vec::new(),
         preds: Vec::new(),
         quant: vec![VarKind::Frac],
         ty,
@@ -4000,6 +4182,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         )),
         "_primEq" | "_primNe" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Bound(0), Bound(0)], Type::bool()),
@@ -4017,16 +4200,19 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         // the outside world": a caller can reasonably care about one and not the
         // other.
         "newRef" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Bound(0)], Type::reference(Bound(0)), mut_row(1)),
         },
         "getRef" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Type::reference(Bound(0))], Bound(0), mut_row(1)),
         },
         "setRef" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4042,6 +4228,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         // applied directly -- `Infer::infer_run_st` -- so this, its scheme as a
         // mere value, is the ordinary application it is at run time.
         "runSt" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4051,6 +4238,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stNewRef" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4060,6 +4248,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stGetRef" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4069,6 +4258,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stSetRef" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4078,6 +4268,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stNewArray" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4087,6 +4278,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stGetArray" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4096,6 +4288,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stSetArray" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4106,11 +4299,13 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         },
         // An array's length is fixed when it is made, so asking is pure.
         "stArrayLen" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type],
             ty: Type::func(vec![Type::st_array(Bound(0), Bound(1))], Type::int()),
         },
         "stFreeze" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4120,6 +4315,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stThaw" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4131,16 +4327,19 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
         // Pure: a compacted value is equal to the original, and nothing about
         // where it lives can be observed but `compactSize`.
         "compact" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Bound(0)], Type::compact(Bound(0))),
         },
         "getCompact" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Type::compact(Bound(0))], Bound(0)),
         },
         "compactAdd" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type],
             ty: Type::func(
@@ -4149,11 +4348,13 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "compactSize" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type],
             ty: Type::func(vec![Type::compact(Bound(0))], Type::int()),
         },
         "threadSpawn" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4167,21 +4368,25 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "threadAwait" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Type::task(Bound(0))], Bound(0), thread_row(1)),
         },
         "threadYield" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Effect],
             ty: Type::func_eff(vec![Type::unit()], Type::unit(), thread_row(0)),
         },
         "channelNew" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Type::unit()], Type::channel(Bound(0)), thread_row(1)),
         },
         "channelSend" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4191,21 +4396,25 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "channelReceive" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Type::channel(Bound(0))], Bound(0), thread_row(1)),
         },
         "stmNew" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Bound(0)], Type::tvar(Bound(0)), stm_row(1)),
         },
         "stmNewIO" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(vec![Bound(0)], Type::tvar(Bound(0)), thread_row(1)),
         },
         "stmRead" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4215,6 +4424,7 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stmWrite" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Effect],
             ty: Type::func_eff(
@@ -4224,16 +4434,19 @@ fn prim_scheme(name: &str) -> Option<Scheme> {
             ),
         },
         "stmBegin" | "stmWait" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Effect],
             ty: Type::func_eff(vec![Type::unit()], Type::unit(), thread_row(0)),
         },
         "stmCommit" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Effect],
             ty: Type::func_eff(vec![Type::unit()], Type::bool(), thread_row(0)),
         },
         "stmNest" | "stmMerge" | "stmRollback" => Scheme {
+            lacks: Vec::new(),
             preds: Vec::new(),
             quant: vec![VarKind::Effect],
             ty: Type::func_eff(vec![Type::unit()], Type::unit(), stm_row(0)),
@@ -4708,6 +4921,7 @@ mod tests {
     fn scheme_display_names_quantifiers() {
         let s = Scheme {
             preds: Vec::new(),
+            lacks: Vec::new(),
             quant: vec![VarKind::Type, VarKind::Type],
             ty: Type::func(vec![Type::Bound(0)], Type::Bound(1)),
         };
@@ -5147,7 +5361,7 @@ pub struct PipeFit {
 pub fn pipes_into(scheme: &Scheme, subject: &Type) -> Option<PipeFit> {
     let mut arena = Arena::new();
     let subject = freshen(&mut arena, subject);
-    let fresh: Vec<Type> = scheme.quant.iter().map(|k| arena.fresh_of(*k)).collect();
+    let fresh = arena.fresh_quantifiers(scheme);
     let ty = Arena::subst_bound(&scheme.ty, &fresh);
     let (params, _) = parameters(&ty);
     if params.is_empty() {
@@ -5284,6 +5498,7 @@ mod pipe_tests {
     fn mono(ty: Type) -> Scheme {
         Scheme {
             preds: Vec::new(),
+            lacks: Vec::new(),
             quant: Vec::new(),
             ty,
         }
@@ -5328,6 +5543,7 @@ mod pipe_tests {
         // `id : forall a. a -> a`
         let id = Scheme {
             preds: Vec::new(),
+            lacks: Vec::new(),
             quant: vec![VarKind::Type],
             ty: arrows(&[Type::Bound(0)], Type::Bound(0)),
         };
@@ -5341,6 +5557,7 @@ mod pipe_tests {
         // `len : forall a. Vector a -> Int` takes a `Vector String`.
         let len = Scheme {
             preds: Vec::new(),
+            lacks: Vec::new(),
             quant: vec![VarKind::Type],
             ty: arrows(
                 &[Type::Con("Vector".into(), vec![Type::Bound(0)])],

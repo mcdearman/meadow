@@ -1213,6 +1213,30 @@ use Std.Fs (readToString)
 }
 
 #[test]
+fn a_procedural_macro_may_not_use_the_console() {
+    // Under an editor, what the compiler prints goes down the channel the
+    // language server answers on: one line from a macro breaks the protocol.
+    // And what it reads is the world outside, which a build may not depend on.
+    for body in [
+        "let u = println \"hello\" in [Code \"1\"]",
+        "match readLine () with | Just s -> [Code \"1\"] | None -> [Code \"2\"]",
+    ] {
+        let app = with_macro(
+            "console",
+            &format!(
+                "use Std.Macro.TokenTree.*\nuse Std.Maybe.Maybe.*\n\n@macro\n@pub fun noisy ts =\n  {body}\n"
+            ),
+            "use Maker (noisy!)\n\ndef main = noisy!()\n",
+        );
+        let errs = build(&app).expect_err("it does not build");
+        assert!(
+            errs.iter().any(|e| e.contains("it performs `Console`")),
+            "{body}: {errs:?}"
+        );
+    }
+}
+
+#[test]
 fn a_function_is_a_macro_only_if_it_says_so() {
     // Nothing about a function's type makes it a macro: `@macro` does, and a
     // package that means one to be used that way has to say it.
@@ -1590,4 +1614,190 @@ def main = 1
         e.contains("`broken!` did not expand to declarations: found"),
         "{e}"
     );
+}
+
+// --- the depth limit ---------------------------------------------------------------
+//
+// Expanding what a call made used to happen outside the depth count, so the
+// count never went past one: a macro that expands to a call of itself went on
+// until the compiler's own stack ran out, and took the compiler with it.
+
+const TOO_DEEP: &str = "macro expansion went 128 deep";
+
+#[test]
+fn an_expression_macro_that_never_stops_is_an_error() {
+    let e = errors(
+        r#"
+macro forever
+  | ($x) -> { forever!($x) + 1 }
+
+def main = forever!(1)
+"#,
+    );
+    assert!(e.contains(TOO_DEEP), "{e}");
+    assert_eq!(e.matches(TOO_DEEP).count(), 1, "reported once: {e}");
+}
+
+#[test]
+fn a_declaration_macro_that_never_stops_is_an_error() {
+    let e = errors(
+        r#"
+macro again
+  | ($name) -> { again!($name) }
+
+again!(x)
+
+def main = 0
+"#,
+    );
+    assert!(e.contains(TOO_DEEP), "{e}");
+}
+
+#[test]
+fn a_pattern_macro_that_never_stops_is_an_error() {
+    let e = errors(
+        r#"
+macro pat
+  | ($x) -> { pat!($x) }
+
+def main = match 1 with | pat!(y) -> y | _ -> 0
+"#,
+    );
+    assert!(e.contains(TOO_DEEP), "{e}");
+}
+
+#[test]
+fn a_macro_that_branches_forever_stops_after_one_report() {
+    // Two calls of itself at every step: trying every branch to the limit
+    // would be 2^128 expansions. The first to reach it ends them all.
+    let started = std::time::Instant::now();
+    let e = errors(
+        r#"
+macro tree
+  | ($x) -> { (tree!($x), tree!($x)) }
+
+def main = tree!(1)
+"#,
+    );
+    assert!(e.contains(TOO_DEEP), "{e}");
+    assert_eq!(e.matches(TOO_DEEP).count(), 1, "reported once: {e}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_recursive_macro_within_the_limit_still_expands() {
+    // One step per argument: 100 arguments is 100 deep, under the limit.
+    let args: Vec<String> = (1..=100).map(|i| i.to_string()).collect();
+    is(
+        &format!(
+            r#"
+macro sum
+  | ()              -> {{ 0 }}
+  | ($x)            -> {{ $x }}
+  | ($x, $( $r ),+) -> {{ $x + sum!($( $r ),+) }}
+
+def main = sum!({})
+"#,
+            args.join(", ")
+        ),
+        "5050",
+    );
+}
+
+#[test]
+fn a_recursive_macro_past_the_limit_is_an_error_not_a_crash() {
+    let args: Vec<String> = (1..=200).map(|i| i.to_string()).collect();
+    let e = errors(&format!(
+        r#"
+macro sum
+  | ()              -> {{ 0 }}
+  | ($x)            -> {{ $x }}
+  | ($x, $( $r ),+) -> {{ $x + sum!($( $r ),+) }}
+
+def main = sum!({})
+"#,
+        args.join(", ")
+    ));
+    assert!(e.contains(TOO_DEEP), "{e}");
+}
+
+// --- a macro's answer says where it is --------------------------------------------
+//
+// An answer was cached on the macro and its argument's text alone, and it is
+// tokens that say where they are: a second call written the same way took the
+// first one's, and its errors were reported at the first call.
+
+const SAME: &str =
+    "use Std.Macro (TokenTree)\n\n@macro\n@pub fun same (ts : [TokenTree]) : [TokenTree] = ts\n";
+
+/// What each diagnostic's label points at in the caller's `Lib.mw`.
+fn pointed_at(app: &Path) -> Vec<(String, String)> {
+    let src = std::fs::read_to_string(app.join("src").join("Lib.mw")).unwrap();
+    let out = pipeline::build(app, Options::debug());
+    out.diagnostics
+        .iter()
+        .map(|d| {
+            let span = d.label.1;
+            let text = src
+                .get(span.start as usize..span.end as usize)
+                .unwrap_or("<not in the file>")
+                .to_string();
+            (d.msg.clone(), text)
+        })
+        .collect()
+}
+
+#[test]
+fn two_calls_written_alike_are_reported_where_each_is() {
+    let caller = "use Maker (same!)\n\n\
+                  def a = same!(nope1)\n\
+                  def b = same!(nope1)\n\
+                  def main = 0\n";
+    let app = with_macro("same-twice", SAME, caller);
+    let got = pointed_at(&app);
+    assert_eq!(got.len(), 2, "one error per call: {got:?}");
+    let src = std::fs::read_to_string(app.join("src").join("Lib.mw")).unwrap();
+    let out = pipeline::build(&app, Options::debug());
+    let mut starts: Vec<u32> = out.diagnostics.iter().map(|d| d.label.1.start).collect();
+    starts.sort();
+    let first = src.find("same!(nope1)").unwrap() as u32;
+    let second = src.rfind("same!(nope1)").unwrap() as u32;
+    assert!(
+        starts[0] >= first && starts[0] < second && starts[1] >= second,
+        "the errors are at {starts:?}, the calls at {first} and {second}: {got:?}"
+    );
+}
+
+#[test]
+fn a_call_after_a_longer_one_is_not_given_its_positions() {
+    // The first call is further into the file, and the second's answer, if
+    // it were the first's, would point past where the second call ends.
+    let caller = "use Maker (same!)\n\n\
+                  def a = let padding = 1 in same!(nope2)\n\
+                  def b = same!(nope2)\n\
+                  def main = 0\n";
+    let app = with_macro("same-shifted", SAME, caller);
+    let got = pointed_at(&app);
+    for (msg, text) in &got {
+        assert_eq!(text, "nope2", "{msg} points at {text:?}");
+    }
+    let out = pipeline::build(&app, Options::debug());
+    let spans: Vec<_> = out.diagnostics.iter().map(|d| d.label.1).collect();
+    assert_eq!(spans.len(), 2, "{got:?}");
+    assert_ne!(spans[0], spans[1], "each at its own call: {spans:?}");
+}
+
+#[test]
+fn a_call_that_answers_the_same_is_still_expanded_right_each_time() {
+    // No errors: the cache still serves, and both calls work.
+    let caller = "use Maker (same!)\n\n\
+                  def a = same!(1 + 1)\n\
+                  def b = same!(1 + 1)\n\
+                  def main = a + b\n";
+    let app = with_macro("same-fine", SAME, caller);
+    assert_eq!(build(&app).expect("it builds"), "4");
 }

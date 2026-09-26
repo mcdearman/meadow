@@ -13,8 +13,9 @@
 //!   the pass, not about any run, and the one that would catch a `core`
 //!   construct nobody thought to test.
 //! * **Does it compile?** [`the_whole_standard_library_reaches_bytecode`] runs
-//!   the register allocator over every block. It has no spilling, so a block
-//!   wanting more than 256 registers is a hard error — this is what would notice.
+//!   the register allocator over every block. What does not fit in the file is
+//!   spilled, so what is left to fail is a block it still cannot express --
+//!   a labelled block of more than 255 parameters -- and this would notice.
 //! * **Does it mean the same thing?** [`the_vm_agrees_with_the_cek`] runs each
 //!   `@test` on both machines and requires the same answer.
 //!

@@ -71,7 +71,7 @@ use crate::heap::{self, Word};
 use meadow_core::desc;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Words a region takes from the system at a time, when what is being put in
 /// it is smaller than that.
@@ -85,6 +85,10 @@ pub struct Region {
     /// `getCompact` gave it one or it loaded a field. The region goes when
     /// this reaches zero.
     refs: AtomicUsize,
+    /// Freed, under the leak check: the memory is gone but this is kept, so
+    /// that a reference given up or taken after the last one is caught
+    /// rather than writing into memory something else now owns.
+    dead: AtomicBool,
 }
 
 struct Inside {
@@ -114,6 +118,7 @@ fn new() -> *const Region {
             words: 0,
         }),
         refs: AtomicUsize::new(1),
+        dead: AtomicBool::new(false),
     }))
 }
 
@@ -172,7 +177,17 @@ pub extern "C" fn meadow_region_erased(v: Word) {
 /// `r` must be a region with a reference the caller holds.
 pub unsafe fn retain(r: *const Region) {
     // Safety: the caller's.
-    unsafe { &*r }.refs.fetch_add(1, Ordering::Relaxed);
+    let region = unsafe { &*r };
+    used_after_free(region);
+    region.refs.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Under the leak check, a region already freed is never touched again: see
+/// [`Region::dead`].
+fn used_after_free(region: &Region) {
+    if heap::tracking() && region.dead.load(Ordering::Relaxed) {
+        crate::fail("a compact region was used after it was freed");
+    }
 }
 
 /// One fewer. The last one takes the memory with it.
@@ -182,7 +197,9 @@ pub unsafe fn retain(r: *const Region) {
 /// `r` must be a region with a reference the caller is giving up.
 pub unsafe fn release(r: *const Region) {
     // Safety: the caller's.
-    if unsafe { &*r }.refs.fetch_sub(1, Ordering::Release) != 1 {
+    let shared = unsafe { &*r };
+    used_after_free(shared);
+    if shared.refs.fetch_sub(1, Ordering::Release) != 1 {
         return;
     }
     // Safety: the last reference is gone, so nobody can be reading it, and
@@ -196,6 +213,14 @@ pub unsafe fn release(r: *const Region) {
             // Safety: written by `copy`, which retained it.
             unsafe { release(handle(v)) };
         }
+    }
+    if heap::tracking() {
+        // Kept, and marked, for [`used_after_free`] -- its memory too, which a
+        // late share writes a count into before it reaches the region.
+        region.dead.store(true, Ordering::Relaxed);
+        drop(inside);
+        std::mem::forget(region);
+        return;
     }
     for (p, n) in inside.chunks.drain(..) {
         let layout = std::alloc::Layout::array::<Word>(n).expect("a chunk fits memory");

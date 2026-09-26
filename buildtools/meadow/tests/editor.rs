@@ -133,3 +133,60 @@ fn a_procedural_macro_runs_for_the_editor() {
         .expect("the file is there");
     assert!(diagnostics(&file).is_empty(), "{:?}", diagnostics(&file));
 }
+
+// --- opening a file fetches nothing -------------------------------------------------
+//
+// A manifest is text anyone may have written, and opening a file in an editor
+// is not asking for a build. The server used to resolve dependencies the way a
+// build does: a git dependency was cloned, compiled, and its macros run, on
+// opening any file of the package.
+
+#[test]
+fn a_git_dependency_is_not_fetched_for_the_editor() {
+    // `.invalid` never resolves: were it fetched, git would be run and fail
+    // with its own message, after trying the network.
+    let dir = package(
+        "git-dep",
+        "[package]\nname = \"Victim\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+         Far = { git = \"https://example.invalid/far.git\" }\n",
+        &[("Main.mw", "def main = 1\n")],
+    );
+    let file = dir.join("src").join("Main.mw");
+    let started = std::time::Instant::now();
+    let got = meadow::editor::find_package(&file).expect("the file is in a package");
+    let why = match got {
+        Ok(_) => panic!("a dependency that is not fetched cannot be loaded"),
+        Err(why) => why,
+    };
+    assert!(why.contains("is not in the cache"), "{why}");
+    assert!(why.contains("The editor never fetches"), "{why}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "nothing was waited on: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_path_dependency_is_still_loaded_for_the_editor() {
+    // What is on disk already is not fetched: it is read, as before.
+    let lib = package(
+        "offline-lib",
+        "[package]\nname = \"Near\"\nversion = \"0.1.0\"\n",
+        &[("Lib.mw", "@pub def near = 41\n")],
+    );
+    let app = package(
+        "offline-app",
+        &format!(
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nNear = {{ path = \"{}\" }}\n",
+            lib.display().to_string().replace('\\', "/")
+        ),
+        &[("Lib.mw", "use Near (near)\n\ndef main = near + 1\n")],
+    );
+    let file = app
+        .join("src/Lib.mw")
+        .canonicalize()
+        .expect("the file is there");
+    let diags = diagnostics(&file);
+    assert!(diags.is_empty(), "{diags:?}");
+}

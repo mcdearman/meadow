@@ -126,8 +126,20 @@ pub fn find_package(
 ) -> Option<Result<meadow_lsp::analysis::PackageSources, String>> {
     use meadow_compiler::source::SourceKind;
     let root = crate::package::enclosing_root(file)?;
-    let graph = match crate::package::PackageGraph::build(&root) {
+    // Never fetched from here. Opening a file is not asking for a build, and
+    // a manifest is only text someone else may have written: what it names
+    // would be cloned, compiled, and its macros run, all on opening it. What
+    // a build has already fetched is used.
+    let mut resolver = crate::package::Resolver::for_entry(&root).offline();
+    let graph = match crate::package::PackageGraph::build_all_with(&[&root], &mut resolver) {
         Ok(g) => g,
+        Err(d) if d.msg.contains("is not in the cache") => {
+            return Some(Err(format!(
+                "{}\nThe editor never fetches a dependency: `meadow build` in the package \
+                 fetches it once, and the editor uses what it fetched.",
+                d.msg.lines().next().unwrap_or(&d.msg)
+            )));
+        }
         Err(d) => return Some(Err(d.msg)),
     };
     let pkg = &graph.packages[graph.root()];

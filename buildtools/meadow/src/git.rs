@@ -39,6 +39,63 @@ use crate::package::GitRef;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Whether `url` is one a dependency may name, refusing what git would take
+/// as an option or a remote-helper command rather than a location to fetch.
+///
+/// A URL beginning with `-` is an option to `git clone`/`git fetch` -- and
+/// `--upload-pack=<cmd>` runs `<cmd>` -- so a manifest could otherwise run a
+/// command at build time. A `helper::address` URL (`ext::sh -c …`) runs a
+/// command through git's remote-helper machinery. Both are refused here; only
+/// the ordinary transports and the scp-like `user@host:path` form are allowed.
+pub fn safe_url(url: &str) -> Result<(), String> {
+    if url.is_empty() {
+        return Err("a git dependency has an empty url".to_string());
+    }
+    if url.starts_with('-') {
+        return Err(format!(
+            "the git url `{url}` begins with `-`, so git would read it as an \
+             option rather than a location; refusing it"
+        ));
+    }
+    // `helper::address` -- a remote-helper transport, which can run a command.
+    if let Some(i) = url.find("::") {
+        let scheme = &url[..i];
+        if !scheme.is_empty()
+            && scheme
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'.' || b == b'-')
+        {
+            return Err(format!(
+                "the git url `{url}` uses the `{scheme}::` transport, which can \
+                 run a command; refusing it"
+            ));
+        }
+    }
+    const SCHEMES: [&str; 5] = ["https://", "http://", "ssh://", "git://", "file://"];
+    if SCHEMES.iter().any(|s| url.starts_with(s)) {
+        return Ok(());
+    }
+    // scp-like: `[user@]host:path`, the host part holding no slash.
+    if let Some(colon) = url.find(':')
+        && !url[..colon].contains('/')
+        && !url[..colon].is_empty()
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "`{url}` is not a git url meadow understands; expected one beginning \
+         with https://, ssh://, git:// or file://, or a `host:path` address"
+    ))
+}
+
+/// Whether `s` is a full commit id -- 40 hex characters, or 64 for sha256.
+/// A lockfile's `rev` becomes a directory name and a revision handed to git,
+/// so one that is a path (absolute, or holding `..` or a separator) must not
+/// be trusted.
+fn is_commit_id(s: &str) -> bool {
+    (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Whether a build may reach the network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Net {
@@ -98,6 +155,20 @@ pub fn ensure(
         }
         other => other,
     };
+    // A lockfile records `rev` as a full commit id, and it becomes both a
+    // directory name and a revision handed to git. One that is a path -- an
+    // absolute one, or holding `..` -- would otherwise select any directory
+    // on disk, so a tampered lockfile could point a build at code that is not
+    // the commit it names.
+    if let Some(rev) = pinned
+        && !is_commit_id(rev)
+    {
+        return Err(format!(
+            "meadow.lock gives `{rev}` as the commit of `{url}`, which is not a \
+             commit id; refusing it"
+        ));
+    }
+
     let root = cache;
     let slug = slug(url);
     let db = root.join("db").join(&slug);
@@ -221,6 +292,9 @@ pub fn releases(
 
 /// Clone `url` into `db` if it is not there, then fetch into it.
 fn fetch(db: &Path, url: &str, reference: &GitRef) -> Result<(), String> {
+    // Before git is told to fetch it: a url that is really an option, or a
+    // remote-helper command, would otherwise run at build time.
+    safe_url(url)?;
     crate::status::status("Updating", format!("git repository `{url}`"));
     if !db.join("HEAD").is_file() {
         if let Some(parent) = db.parent() {
@@ -229,7 +303,11 @@ fn fetch(db: &Path, url: &str, reference: &GitRef) -> Result<(), String> {
         }
         // A partial clone left by an interrupted run would never complete.
         let _ = std::fs::remove_dir_all(db);
-        git_fetching(None, &["clone", "--bare", url, &db.display().to_string()])?;
+        // `--` so git reads `url` as a location, never as an option.
+        git_fetching(
+            None,
+            &["clone", "--bare", "--", url, &db.display().to_string()],
+        )?;
         return Ok(());
     }
     // `+` on both sides: a force-moved tag is brought over so that it can be
@@ -238,7 +316,7 @@ fn fetch(db: &Path, url: &str, reference: &GitRef) -> Result<(), String> {
         "+refs/heads/*:refs/heads/*".to_string(),
         "+refs/tags/*:refs/tags/*".to_string(),
     ];
-    let mut args = vec!["fetch", "--force", "--prune", url];
+    let mut args = vec!["fetch", "--force", "--prune", "--", url];
     args.extend(refs.iter().map(String::as_str));
     let _ = reference;
     git_fetching(Some(db), &args)
@@ -322,14 +400,22 @@ fn rev_parse(db: &Path, what: &str) -> Result<String, String> {
     // than the tag object, which is what a checkout needs.
     let out = git(
         Some(db),
-        &["rev-parse", "--verify", &format!("{what}^{{commit}}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{what}^{{commit}}"),
+        ],
     )?;
     Ok(out.trim().to_string())
 }
 
 /// The hash of the source tree at `rev`.
 fn tree_of(db: &Path, rev: &str) -> Result<String, String> {
-    let out = git(Some(db), &["rev-parse", &format!("{rev}^{{tree}}")])?;
+    let out = git(
+        Some(db),
+        &["rev-parse", "--end-of-options", &format!("{rev}^{{tree}}")],
+    )?;
     Ok(out.trim().to_string())
 }
 
@@ -383,6 +469,9 @@ fn unpack(db: &Path, rev: &str, path: &Path) -> Result<(), String> {
 /// configuration: it is this build's business, not theirs.
 fn git_command(dir: Option<&Path>) -> Command {
     let mut cmd = Command::new("git");
+    // The `ext::` transport runs an arbitrary command; a dependency url is not
+    // trusted to ask for that, whatever the user's git configuration allows.
+    cmd.args(["-c", "protocol.ext.allow=never"]);
     if cfg!(windows) {
         cmd.args(["-c", "core.longpaths=true"]);
     }

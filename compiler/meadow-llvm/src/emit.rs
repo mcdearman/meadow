@@ -67,6 +67,9 @@ enum D {
     Dyn(String),
 }
 
+/// A shadow record's descriptor for a reuse token: `silo::shadow::TOKEN`.
+const SHADOW_TOKEN: i64 = -1;
+
 /// Whether the program spawns a thread anywhere. Known before anything is
 /// emitted, because a program that cannot spawn is emitted differently: no
 /// safe points, and a spill area of its own. See [`Module::units`].
@@ -197,6 +200,15 @@ pub struct Module<'p> {
     /// cannot, no value it ever holds is inside one, so its counting helpers
     /// do not ask.
     regions: bool,
+    /// Whether it can capture a continuation, and so abandon one: whether it
+    /// performs an operation of a general handler anywhere. If it can, every
+    /// frame not built that waits on a call is recorded where a discarded
+    /// continuation's segments can find what it holds -- see
+    /// `silo/src/shadow.rs`. If it cannot, no record is ever made.
+    shadow: bool,
+    /// The most words any call passes through the spill area, or any function
+    /// reads from it: how big the area has to be. See [`spill`].
+    spill_words: usize,
 }
 
 impl<'p> Module<'p> {
@@ -218,6 +230,8 @@ impl<'p> Module<'p> {
             threaded: spawns(program),
             cycles: ties_knots(program),
             regions: makes_regions(program),
+            shadow: uses(program, &[Prim::Detach]),
+            spill_words: 0,
         }
     }
 
@@ -411,6 +425,10 @@ impl<'p> Module<'p> {
     /// the counting helpers -- is `alwaysinline` instead.
     fn finish_as(&mut self, f: Fun, linkage: &str) {
         let regs = f.params.len().min(REGS);
+        self.spill_words = self
+            .spill_words
+            .max(f.spill)
+            .max(f.params.len().saturating_sub(REGS));
         let text = format!(
             "define {linkage} ghccc i64 {}({}) noinline {{\nentry:\n{}{}{}}}\n\n",
             f.name,
@@ -521,6 +539,14 @@ impl<'p> Module<'p> {
         }
     }
 
+    /// Give back a literal operand `k` of a `PrimK` or `BranchPrimK` once its
+    /// primitive is done with it. It never had a name, so the ownership pass
+    /// scheduled no erase; a string or big integer is a block made fresh for
+    /// the one primitive, which only borrowed it. The others are words.
+    fn erase_literal(&self, f: &mut Fun, k: &str, lit: &Lit) {
+        self.erase(f, k, &D::Known(lit_desc(lit)));
+    }
+
     /// Load `n` fields out of the non-uniform block `v`.
     fn load_fields(&self, f: &mut Fun, v: &str, n: usize) -> Vec<String> {
         if n == 0 {
@@ -574,26 +600,36 @@ impl<'p> Module<'p> {
         let rc2 = f.t();
         f.i(format!("{rc2} = sub i32 {rc}, 1"));
         f.i(format!("store i32 {rc2}, ptr {p}"));
-        // Loading the fields of a block inside a compact region is a
-        // reference into that region given up, like any other: see
-        // `silo/src/region.rs`.
-        if self.regions {
-            let inreg = f.t();
-            let (gone, on) = (f.b(), f.b());
-            f.i(format!("{inreg} = icmp ugt i32 {rc}, 536870912"));
-            f.i(format!("br i1 {inreg}, label %{gone}, label %{on}"));
-            f.label(&gone);
-            f.i(format!("call void @meadow_region_erased(i64 {v})"));
-            f.i(format!("br label %{on}"));
-            f.label(&on);
-        }
         for (n, x) in names.iter().zip(loaded) {
             let d = self.desc(*n, env);
             self.share(f, x, &d, 1);
         }
+        self.region_released(f, v, &rc);
         f.i(format!("br label %{done}"));
         f.label(&done);
         Ok(())
+    }
+
+    /// The reference into a compact region that `v`, a block whose count was
+    /// `rc`, held -- given up when `v` is released without being the last
+    /// reference, if `v` is inside one: see `silo/src/region.rs`.
+    ///
+    /// Only after its fields are shared. Those are in the region too, and the
+    /// reference `v` gives up may be the region's last: a value read out of a
+    /// compact that is itself gone. Given up first, it would take the region
+    /// with it, and the shares would write into memory already freed.
+    fn region_released(&self, f: &mut Fun, v: &str, rc: &str) {
+        if !self.regions {
+            return;
+        }
+        let inreg = f.t();
+        let (gone, on) = (f.b(), f.b());
+        f.i(format!("{inreg} = icmp ugt i32 {rc}, 536870912"));
+        f.i(format!("br i1 {inreg}, label %{gone}, label %{on}"));
+        f.label(&gone);
+        f.i(format!("call void @meadow_region_erased(i64 {v})"));
+        f.i(format!("br label %{on}"));
+        f.label(&on);
     }
 
     /// [`Self::release`], keeping the block: the answer is a reuse token -- `v`
@@ -622,20 +658,11 @@ impl<'p> Module<'p> {
         let rc2 = f.t();
         f.i(format!("{rc2} = sub i32 {rc}, 1"));
         f.i(format!("store i32 {rc2}, ptr {p}"));
-        if self.regions {
-            let inreg = f.t();
-            let (gone, on) = (f.b(), f.b());
-            f.i(format!("{inreg} = icmp ugt i32 {rc}, 536870912"));
-            f.i(format!("br i1 {inreg}, label %{gone}, label %{on}"));
-            f.label(&gone);
-            f.i(format!("call void @meadow_region_erased(i64 {v})"));
-            f.i(format!("br label %{on}"));
-            f.label(&on);
-        }
         for (n, x) in names.iter().zip(loaded) {
             let d = self.desc(*n, env);
             self.share(f, x, &d, 1);
         }
+        self.region_released(f, v, &rc);
         f.i(format!("br label %{shared_end}"));
         f.label(&shared_end);
         f.i(format!("br label %{done}"));
@@ -1063,6 +1090,73 @@ impl<'p> Module<'p> {
         }
     }
 
+    /// Link a record of what `fr` holds into the running segment's shadow
+    /// chain, for the call it is about to wait on -- see
+    /// `silo/src/shadow.rs`. Answers where the chain's head is and what it
+    /// was, for putting back once the call returns; nothing when the program
+    /// cannot abandon a continuation, or `fr` holds nothing to give up.
+    fn shadow_push(
+        &mut self,
+        fr: &Frame,
+        env: &HashMap<Name, V>,
+        f: &mut Fun,
+    ) -> Option<(String, String)> {
+        if !self.shadow {
+            return None;
+        }
+        let mut held = Vec::new();
+        self.shadow_entries(fr, env, &mut held);
+        if held.is_empty() {
+            return None;
+        }
+        let words = 2 + 2 * held.len();
+        let rec = f.t();
+        f.alloca(format!("{rec} = alloca [{words} x i64]"));
+        let slot = if self.threaded {
+            let s = f.t();
+            f.i(format!("{s} = call ptr @meadow_shadow_head()"));
+            s
+        } else {
+            "@meadow_shadow_single".to_string()
+        };
+        let prev = f.t();
+        f.i(format!("{prev} = load i64, ptr {slot}"));
+        let store = |f: &mut Fun, i: usize, v: &str| {
+            let q = f.t();
+            f.i(format!("{q} = getelementptr i64, ptr {rec}, i64 {i}"));
+            f.i(format!("store i64 {v}, ptr {q}"));
+        };
+        store(f, 0, &prev);
+        store(f, 1, &held.len().to_string());
+        for (i, (v, d)) in held.iter().enumerate() {
+            store(f, 2 + 2 * i, v);
+            store(f, 3 + 2 * i, d);
+        }
+        let at = f.t();
+        f.i(format!("{at} = ptrtoint ptr {rec} to i64"));
+        f.i(format!("store i64 {at}, ptr {slot}"));
+        Some((slot, prev))
+    }
+
+    /// What giving `fr` up would give up, as [`Module::erase_frame`] would:
+    /// each value with its descriptor, or `TOKEN` for a reuse token. A value
+    /// whose descriptor is known not to be a reference has nothing to give up.
+    fn shadow_entries(&self, fr: &Frame, env: &HashMap<Name, V>, out: &mut Vec<(String, String)>) {
+        for (i, c) in fr.captured.iter().enumerate() {
+            match c {
+                V::Frame(inner) => self.shadow_entries(inner, env, out),
+                V::Val(v) if crate::linear::is_token(fr.method.params[i]) => {
+                    out.push((v.clone(), SHADOW_TOKEN.to_string()));
+                }
+                V::Val(v) => match self.desc(fr.method.params[i], env) {
+                    D::Known(k) if k == desc::REF => out.push((v.clone(), k.to_string())),
+                    D::Known(_) => {}
+                    D::Dyn(d) => out.push((v.clone(), d)),
+                },
+            }
+        }
+    }
+
     fn erase_frame(
         &mut self,
         fr: &Frame,
@@ -1178,8 +1272,12 @@ impl<'p> Module<'p> {
                 Ok(())
             }
             Some(fr) => {
+                let pushed = self.shadow_push(&fr, env, f);
                 let r = f.t();
                 f.i(format!("{r} = call ghccc i64 {callee}({list})"));
+                if let Some((slot, prev)) = pushed {
+                    f.i(format!("store i64 {prev}, ptr {slot}"));
+                }
                 self.call_frame(&fr, vec![r], f)
             }
         }
@@ -1287,6 +1385,7 @@ impl<'p> Module<'p> {
                     let a = self.val(args[0], env, f)?;
                     let k = self.literal(lit, f)?;
                     let r = self.prim2(*p, &a, &k, args[0], env, f)?;
+                    self.erase_literal(f, &k, lit);
                     let c = f.t();
                     f.i(format!("{c} = icmp ne i64 {r}, 0"));
                     c
@@ -1397,7 +1496,13 @@ impl<'p> Module<'p> {
                             Some(Rep::Var(d)) if *d != meadow_seq::NO_DESC => {
                                 match env.get(&VarId(*d)) {
                                     Some(V::Val(v)) => D::Dyn(v.clone()),
-                                    _ => D::Known(desc::ANY),
+                                    // Not `ANY`: Silo would hand the answer
+                                    // across as a word, and a block of the
+                                    // thread's heap would outlive the heap.
+                                    _ => {
+                                        return err("the descriptor of what a spawned thread \
+                                             answers is not in scope");
+                                    }
                                 }
                             }
                             Some(rep) => D::Known(rep.desc().unwrap_or(desc::ANY)),
@@ -1414,14 +1519,15 @@ impl<'p> Module<'p> {
             }
             Extern::PrimK(p, lit) => {
                 let a = self.val(args[0], env, f)?;
-                if inline2(*p, self.rep(args[0])) {
-                    let k = self.literal(lit, f)?;
+                let k = self.literal(lit, f)?;
+                let r = if inline2(*p, self.rep(args[0])) {
                     self.prim2(*p, &a, &k, args[0], env, f)?
                 } else {
-                    let k = self.literal(lit, f)?;
                     let kd = D::Known(lit_desc(lit));
-                    self.generic(*p, args, &[a], &[(k, kd)], env, f)
-                }
+                    self.generic(*p, args, &[a], &[(k.clone(), kd)], env, f)
+                };
+                self.erase_literal(f, &k, lit);
+                r
             }
             Extern::Field(i) => {
                 let a = self.val(args[0], env, f)?;
@@ -2072,11 +2178,12 @@ impl<'p> Module<'p> {
             size += text.len();
             chunks.last_mut().expect("one").push_str(text);
         }
-        let threads = self.threads_part();
         let first_only = format!(
-            "@meadow_threaded = constant i8 {}\n@meadow_cycles = constant i8 {}\n\n",
+            "@meadow_threaded = constant i8 {}\n@meadow_cycles = constant i8 {}\n\
+             @meadow_spill_words = constant i64 {}\n\n",
             u8::from(self.threaded),
-            u8::from(self.cycles)
+            u8::from(self.cycles),
+            self.spill_area()
         );
         let methods = self.methods.len();
         let strings: String = self
@@ -2103,7 +2210,7 @@ impl<'p> Module<'p> {
                     out.push_str(&strings);
                     out.push('\n');
                 }
-                out.push_str(&threads);
+                out.push_str(&self.threads_part(i == 0));
                 if i == 0 {
                     out.push_str(&first_only);
                 }
@@ -2114,17 +2221,40 @@ impl<'p> Module<'p> {
             .collect()
     }
 
-    /// What each unit says about threads: see [`Module::units`].
-    fn threads_part(&self) -> String {
+    /// How many words the spill area has: enough for the widest call, and
+    /// never fewer than it always had.
+    fn spill_area(&self) -> usize {
+        self.spill_words.max(256)
+    }
+
+    /// What each unit says about threads: see [`Module::units`]. `first` is
+    /// the unit that defines what the others share.
+    fn threads_part(&self, first: bool) -> String {
         let mut out = String::new();
         if self.threaded {
             out.push_str("@meadow_preempt = external hidden global i8\n");
             out.push_str("declare ptr @meadow_spill_area()\n");
+            if self.shadow {
+                out.push_str("declare ptr @meadow_shadow_head()\n");
+            }
         } else {
+            if self.shadow {
+                out.push_str("@meadow_shadow_single = external global i64\n");
+            }
             // No `spawn` anywhere: nothing ever sets the flag, and the one
-            // thread's spill area can be an ordinary global.
+            // thread's spill area can be an ordinary global -- one, defined in
+            // the first unit, since a call and the function it enters may be
+            // in different units.
             out.push_str("@meadow_preempt = internal constant i8 0\n");
-            out.push_str("@mw.spill = internal global [256 x i64] zeroinitializer\n");
+            let words = self.spill_area();
+            if first {
+                let _ = writeln!(
+                    out,
+                    "@mw.spill = hidden global [{words} x i64] zeroinitializer"
+                );
+            } else {
+                let _ = writeln!(out, "@mw.spill = external hidden global [{words} x i64]");
+            }
             out.push_str(
                 "define internal ptr @meadow_spill_area() alwaysinline {\n  \
                  ret ptr @mw.spill\n}\n",
@@ -2454,6 +2584,7 @@ fn spill(f: &mut Fun, ops: &[String]) {
     if ops.len() <= REGS {
         return;
     }
+    f.spill = f.spill.max(ops.len() - REGS);
     let area = f.t();
     f.i(format!("{area} = call ptr @meadow_spill_area()"));
     for (i, o) in ops.iter().enumerate().skip(REGS) {
@@ -2513,6 +2644,8 @@ struct Fun {
     /// Where each reuse token made in this function came from, by its
     /// operand: see [`Module::build_in`].
     origins: HashMap<String, Origin>,
+    /// The most words a call here passes through the spill area.
+    spill: usize,
 }
 
 /// The block a reuse token holds, as the `switch` that took it apart left
@@ -2537,6 +2670,7 @@ impl Fun {
             blk: 0,
             cur: "entry".into(),
             origins: HashMap::new(),
+            spill: 0,
         }
     }
 

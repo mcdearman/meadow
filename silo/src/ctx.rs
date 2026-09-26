@@ -11,7 +11,7 @@
 //! stops it.
 
 use crate::heap::{Heap, Word};
-use crate::segments::SendSegment;
+use crate::segments::{Parked, Suspended};
 use std::cell::Cell;
 use std::collections::HashMap;
 
@@ -47,8 +47,14 @@ pub struct Ctx {
     /// The segments running, innermost last: see `crate::segments`.
     pub running: Vec<*const ()>,
     /// Suspended segments, by the number their stack objects hold, with the
-    /// handler each was suspended for.
-    pub(crate) suspended: Vec<Option<(SendSegment, u32)>>,
+    /// handler each was suspended for and the segments suspended inside it.
+    pub(crate) suspended: Vec<Option<Suspended>>,
+    /// Segments suspended for a handler further out than their own, while
+    /// that suspension lasts, innermost first: see `crate::segments::drive`.
+    pub(crate) parked: Vec<Parked>,
+    /// The running segment's shadow chain: see `crate::shadow`. Here for a
+    /// program with threads; one without keeps it in a global.
+    pub shadow: Word,
     pub next_handler: u32,
     /// String literals, made once per thread, by their bytes' address.
     pub literals: HashMap<usize, Word>,
@@ -64,7 +70,9 @@ pub struct Ctx {
     /// handlers would otherwise do at every `handle`.
     pub(crate) stacks: Vec<corosensei::stack::DefaultStack>,
     /// Where a call puts the arguments that do not fit in registers.
-    pub spill: [Word; 256],
+    /// As many words as the emitted module's widest call needs:
+    /// `meadow_spill_words`.
+    pub spill: Vec<Word>,
     /// The thread's number: 0 is `main`.
     pub tid: usize,
 }
@@ -79,6 +87,8 @@ impl Ctx {
             heap: Heap::new(),
             running: Vec::new(),
             suspended: Vec::new(),
+            parked: Vec::new(),
+            shadow: 0,
             next_handler: 1,
             literals: HashMap::new(),
             globals: Vec::new(),
@@ -87,7 +97,8 @@ impl Ctx {
             request: None,
             wake: Wake::Nothing,
             stacks: Vec::new(),
-            spill: [0; 256],
+            // Safety: a constant the emitted module defines.
+            spill: vec![0; unsafe { meadow_spill_words }.max(0) as usize],
             tid,
         })
     }
@@ -97,7 +108,10 @@ impl Drop for Ctx {
     fn drop(&mut self) {
         // Dropping a suspended segment unwinds it, which a runtime that aborts
         // on a panic cannot do: they are let go, and their memory with them.
-        for (s, _) in self.suspended.drain(..).flatten() {
+        for s in self.suspended.drain(..).flatten() {
+            std::mem::forget(s);
+        }
+        for s in self.parked.drain(..) {
             std::mem::forget(s);
         }
     }
@@ -114,6 +128,9 @@ unsafe extern "C" {
     /// Whether the program spawns a thread anywhere: the emitted module says
     /// so, since it knows what the program does. See `meadow_llvm::emit`.
     static meadow_threaded: u8;
+    /// How many words a call passes in the spill area, at most: the
+    /// emitted module says, having seen every call.
+    static meadow_spill_words: i64;
 }
 
 /// Whether the program can ever have a second thread. When it cannot there is

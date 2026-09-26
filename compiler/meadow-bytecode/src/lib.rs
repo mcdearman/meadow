@@ -243,6 +243,12 @@ pub enum Op {
     /// instead of allocated in the heap. Invoking it pops it and everything
     /// above it: it is a function's continuation, and a function returns once.
     Frame,
+    /// `r[a] = data(tag = imm, fields = b * 256 + c of them, each ())`: a
+    /// constructor too wide for [`Op::MakeData`], whose field count is a byte
+    /// and whose fields would all have to be in registers at once. It is made
+    /// with a placeholder in every field, and `setField` fills them a piece at
+    /// a time -- see `meadow_codegen`, "Spilling".
+    Blank,
 }
 
 /// The comparison a typed compare or branch makes, as its operand byte or
@@ -359,6 +365,7 @@ impl Op {
         Op::PopI,
         Op::ItoF,
         Op::Frame,
+        Op::Blank,
     ];
 
     pub fn from_byte(b: u8) -> Option<Op> {
@@ -842,6 +849,14 @@ impl Program {
             },
             Op::Closure | Op::Frame => {
                 format!("{name:<14} r{} <- m{} [r{}..+{}]", i.a, i.imm, i.b, i.c)
+            }
+            Op::Blank => {
+                let n = (usize::from(i.b) << 8) | usize::from(i.c);
+                let ctor = self
+                    .ctor(i.imm)
+                    .map(spelled)
+                    .unwrap_or_else(|| format!("#{}", i.imm));
+                format!("{name:<14} r{} <- {ctor}(() x {n})", i.a)
             }
             Op::Invoke => format!("{name:<14} r{}#{} (r{}..+{})", i.a, i.b, i.c, i.imm),
             Op::Prim1 => match self.prims.get(i.imm as usize) {

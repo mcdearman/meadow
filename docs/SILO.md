@@ -382,10 +382,30 @@ the segment is over, and the runtime carries on with the continuation it took,
 on the stack the `handle` began on. Before this, a program that handled in a
 loop slowed down as it went, with an unfinished segment for every turn.
 
-**An abandoned continuation leaks what its frames hold.** A continuation never
-resumed is discarded when its stack object is erased, without unwinding: the
-native frames on its segment have no maps saying which slots hold references.
-This is bounded by what the aborted computation was holding, as a cycle is.
+**An abandoned continuation gives up what its frames hold.** A continuation
+never resumed is discarded when its stack object is erased, without unwinding:
+the native frames on its segment have no maps saying which slots hold
+references, and nothing on them runs again. What they hold across a call is
+what they need when it returns -- a frame not built, waiting on the call -- so
+around such a call the emitted code links a record of those values, each with
+its descriptor, into a chain kept for the segment it runs on, and unlinks it
+when the call returns (`silo/src/shadow.rs`). A segment that suspends keeps its
+chain's head; a discard walks it and gives up every value on it before the
+stack goes back. The runtime links records of its own where one of its frames
+holds something across Meadow code: `meadow_enter` holds the continuation a
+`handle`'s value goes to. Only a program that performs an operation of a
+general handler -- the only way to capture a continuation -- makes records at
+all, so one that does not pays nothing; one that does pays a few stores and a
+load around each non-tail call.
+
+The segments themselves are given back, including those nested inside the
+continuation. An operation that passes an inner handler on its way out
+suspends the inner segment from a `drive` frame on the outer segment's stack,
+and a frame that is never unwound would never free what it held, so while the
+suspension lasts the inner segment is parked in the thread's context instead.
+The continuation carries the segments parked during its suspension; a discard
+frees them with it, and a resumption hands them back to their frames, from the
+outside in. `MEADOW_SILO_LEAKS` reports how many segments are still live at exit.
 
 ## Threads
 

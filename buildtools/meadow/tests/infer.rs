@@ -102,7 +102,7 @@ fn nominal_record_and_field() {
 #[test]
 fn maybe_type() {
     insta::assert_snapshot!(schemes(
-        "use Maybe.*\ndata Maybe a = None | Some a\n\
+        "use Option.*\ndata Option a = None | Some a\n\
          fun orElse m d = match m with | None -> d | Some x -> x\n"
     ));
 }

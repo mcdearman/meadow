@@ -453,7 +453,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
                 },
             });
     }
-    let unmet = crate::describe::close(&mut defs, &reps, &lower.descs);
+    let unmet = crate::describe::close(&mut defs, &reps, &lower.threads, &lower.descs);
     // A definition is entered knowing only its own descriptors.
     let entered: HashSet<Label> = (0..program.defs.len() as u32)
         .map(Label)

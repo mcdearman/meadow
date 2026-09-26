@@ -354,6 +354,13 @@ pub trait Emit {
     fn vector_loop(&mut self, plan: &vector::Plan, scalar: Label);
     /// The function is done: emit what its code shares.
     fn end(&mut self);
+    /// Whether every branch emitted so far reaches its target -- which, on an
+    /// architecture whose direct branches reach less than the whole of a
+    /// large program's code, a jump from one block's function to another's
+    /// may not.
+    fn reaches(&self) -> bool {
+        true
+    }
     /// The machine code, with every branch resolved.
     fn finish(self) -> Vec<u8>;
 }
@@ -506,31 +513,42 @@ fn compile_with<E: Emit>(program: &Program, arch: Arch, opt: OptLevel, calls: &C
     let entries = crate::abi::block_entries(program);
     let shapes = method_shapes(program);
     let loops = loop_live(program);
-    let mut asm = E::new();
-    let mut blocks = Vec::with_capacity(entries.len());
-    let mut stubs = Vec::new();
     let preds = preds(program);
-    let mut links = Links {
-        entries: entries.iter().map(|&pc| pc as usize).collect(),
-        warm: HashMap::new(),
-    };
-    for &entry in &entries {
-        blocks.push((entry, asm.offset() as u32));
-        let shape = shapes.get(&entry).copied();
-        if let Some(at) = block(
-            &mut asm,
-            program,
-            entry,
-            opt,
-            Some(&mut links),
-            shape,
-            &loops,
-            &preds,
-            &shapes,
-            &|pc| calls.get(&pc).copied(),
-        ) {
-            stubs.push((entry, at));
+    // Every function jumps straight to the next one's code where it can. A
+    // program big enough that such a jump cannot reach -- aarch64's `b` goes
+    // 128 MiB either way -- is compiled again with none, each going through
+    // the machine's table as a JIT-compiled function does.
+    let whole = |linked: bool| {
+        let mut asm = E::new();
+        let mut blocks = Vec::with_capacity(entries.len());
+        let mut stubs = Vec::new();
+        let mut links = Links {
+            entries: entries.iter().map(|&pc| pc as usize).collect(),
+            warm: HashMap::new(),
+        };
+        for &entry in &entries {
+            blocks.push((entry, asm.offset() as u32));
+            let shape = shapes.get(&entry).copied();
+            if let Some(at) = block(
+                &mut asm,
+                program,
+                entry,
+                opt,
+                linked.then_some(&mut links),
+                shape,
+                &loops,
+                &preds,
+                &shapes,
+                &|pc| calls.get(&pc).copied(),
+            ) {
+                stubs.push((entry, at));
+            }
         }
+        (asm, blocks, stubs)
+    };
+    let (mut asm, mut blocks, mut stubs) = whole(true);
+    if !asm.reaches() {
+        (asm, blocks, stubs) = whole(false);
     }
     Compiled {
         arch,

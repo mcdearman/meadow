@@ -87,6 +87,16 @@ enum Fixup {
     Imm19,
 }
 
+impl Fixup {
+    /// Whether a branch this far, in instructions, fits.
+    fn reaches(self, delta: i64) -> bool {
+        match self {
+            Fixup::B => (-(1 << 25)..(1 << 25)).contains(&delta),
+            Fixup::Imm19 => (-(1 << 18)..(1 << 18)).contains(&delta),
+        }
+    }
+}
+
 pub struct Asm {
     code: Vec<u8>,
     labels: Vec<Option<usize>>,
@@ -1374,6 +1384,15 @@ impl Emit for Asm {
         self.reload();
     }
 
+    fn reaches(&self) -> bool {
+        self.fixups
+            .iter()
+            .all(|&(at, l, f)| match self.labels[l.0] {
+                Some(to) => f.reaches((to as i64 - at as i64) / 4),
+                None => true,
+            })
+    }
+
     fn finish(mut self) -> Vec<u8> {
         for (at, l, f) in std::mem::take(&mut self.fixups) {
             let to = self.labels[l.0].expect("every label is bound");
@@ -1381,11 +1400,11 @@ impl Emit for Asm {
             let word = u32::from_le_bytes(self.code[at..at + 4].try_into().expect("four bytes"));
             let word = match f {
                 Fixup::B => {
-                    assert!((-(1 << 25)..(1 << 25)).contains(&delta), "a branch too far");
+                    assert!(f.reaches(delta), "a branch too far");
                     word | (delta as u32 & 0x03FF_FFFF)
                 }
                 Fixup::Imm19 => {
-                    assert!((-(1 << 18)..(1 << 18)).contains(&delta), "a branch too far");
+                    assert!(f.reaches(delta), "a branch too far");
                     word | (delta as u32 & 0x7FFFF) << 5
                 }
             };
@@ -1555,5 +1574,25 @@ impl Asm {
     /// `ldr xt, [xn, xm, lsl #3]` -- word `xm` of the array at `xn`.
     fn ldr_idx(&mut self, t: u32, n: u32, m: u32) {
         self.put(0xF860_7800 | m << 16 | n << 5 | t);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_jump_past_what_b_reaches_is_said_not_to() {
+        // `b` reaches 2^25 instructions either way, and its target here is
+        // one past the gap. The code between is zeros, which
+        // `Vec` gets from the allocator without touching.
+        for (gap, reaches) in [((1 << 27) - 8, true), ((1 << 27) - 4, false)] {
+            let mut asm = Asm::new();
+            let far = asm.label();
+            asm.jump(far);
+            asm.code.resize(asm.code.len() + gap, 0);
+            asm.bind(far);
+            assert_eq!(asm.reaches(), reaches, "{gap} bytes on");
+        }
     }
 }

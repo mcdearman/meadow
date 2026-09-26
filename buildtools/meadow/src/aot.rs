@@ -9,11 +9,12 @@
 //!
 //! # The runtime to link
 //!
-//! `libmeadow_glade.a` (`meadow_glade.lib` on Windows), built for the target:
-//! where `MEADOW_RUNTIME` names it; else, for the host, the one built into this
-//! `meadow` (see `build.rs`); else beside this `meadow` binary, as
-//! `lib/<triple>/libmeadow_glade.a` or plain `libmeadow_glade.a` for the host;
-//! else, in a checkout, where `cargo build` in `glade` leaves it.
+//! `libmeadow_glade.a` (`meadow_glade.lib` on Windows) -- or Silo's,
+//! `libmeadow_silo.a` -- built for the target: where `MEADOW_RUNTIME` names
+//! it; else, for the host, the one built into this `meadow` (see `build.rs`);
+//! else beside this `meadow` binary, as `lib/<triple>/<library>` or plain
+//! `<library>` for the host; else, in a checkout, where `cargo build` in
+//! `glade` or `silo` leaves it.
 //!
 //! It must be built from the same runtime sources as this `meadow`, whose code
 //! generator assumes that runtime's layout: a library from other sources lacks
@@ -578,29 +579,32 @@ fn compiler(target: Target) -> Result<(Command, String), String> {
     ))
 }
 
-/// The runtime library built into this `meadow`, for the machine it runs on --
-/// empty if it was built without one (see `build.rs`).
-static EMBEDDED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/runtime"));
+/// The runtime libraries built into this `meadow`, for the machine it runs on
+/// -- each empty if it was built without it (see `build.rs`).
+static EMBEDDED_GLADE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/runtime"));
+static EMBEDDED_SILO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/runtime-silo"));
 
-/// The embedded runtime library, as a file a linker can be handed: under
+/// `runtime`'s embedded library, as a file a linker can be handed: under
 /// `~/.meadow/lib/<its fingerprint>/`, written the first time it is wanted.
 /// Its fingerprint names the directory, so a `meadow` from other sources
 /// writes its own beside it rather than over it.
-fn embedded(lib: &str) -> Option<PathBuf> {
-    if EMBEDDED.is_empty() {
+fn embedded(runtime: Runtime, lib: &str) -> Option<PathBuf> {
+    let bytes = match runtime {
+        Runtime::Glade => EMBEDDED_GLADE,
+        Runtime::Silo => EMBEDDED_SILO,
+    };
+    if bytes.is_empty() {
         return None;
     }
-    let dir = crate::stdlib::home()?
-        .join("lib")
-        .join(codegen::object::runtime_symbol());
+    let dir = crate::stdlib::home()?.join("lib").join(runtime.symbol());
     let path = dir.join(lib);
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() == EMBEDDED.len() as u64) {
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64) {
         return Some(path);
     }
     std::fs::create_dir_all(&dir).ok()?;
     // Whole or not at all: another `meadow` may be linking against it.
     let partial = dir.join(format!("{lib}.{}", std::process::id()));
-    std::fs::write(&partial, EMBEDDED).ok()?;
+    std::fs::write(&partial, bytes).ok()?;
     if std::fs::rename(&partial, &path).is_err() {
         let _ = std::fs::remove_file(&partial);
     }
@@ -630,11 +634,7 @@ pub fn runtimes(target: Target) -> Result<Vec<PathBuf>, String> {
     }
     let host = target.is_host();
     let mut candidates = Vec::new();
-    // Only `meadow_glade` is built into `meadow`.
-    if host
-        && target.runtime == Runtime::Glade
-        && let Some(path) = embedded(lib)
-    {
+    if host && let Some(path) = embedded(target.runtime, lib) {
         candidates.push(path);
     }
     if let Some(dir) = std::env::current_exe()

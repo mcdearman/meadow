@@ -1,38 +1,77 @@
-//! The runtime library, built for the target this `meadow` is, and put where
-//! `src/aot.rs` embeds it -- so that a release build makes native executables
-//! with nothing installed beside the binary.
+//! The runtime libraries -- Glade's and Silo's -- built for the target this
+//! `meadow` is, and put where `src/aot.rs` embeds them, so that a release
+//! build makes native executables on either runtime with nothing installed
+//! beside the binary.
 //!
 //! Only for a release build of `meadow`, or when `MEADOW_EMBED_RUNTIME=1`
-//! asks: the library is a release build of Glade (`glade/`) with its
-//! link-time optimization, which is minutes, not seconds, and a debug `meadow`
-//! in a checkout finds the one `cargo build --release` in `glade` leaves instead.
-//! `MEADOW_EMBED_RUNTIME=0` leaves it out of a release build too.
+//! asks: each library is a release build of its runtime (`glade/`, `silo/`)
+//! with link-time optimization, which is minutes, not seconds, and a debug
+//! `meadow` in a checkout finds the ones `cargo build --release` leaves in
+//! those directories instead. `MEADOW_EMBED_RUNTIME=0` leaves them out of a
+//! release build too.
 //!
-//! It is built by a `cargo` of its own, in a target directory of its own, from
-//! the same sources as the `meadow_glade` this binary links -- so its fingerprint
-//! (see `glade/build.rs`) is the one the code generator writes. A failure to
-//! build it is a warning, not an error: `meadow` still works, and says where
-//! else a runtime library can come from when it wants one.
+//! Each is built by a `cargo` of its own, in a target directory of its own,
+//! from the same sources as this binary's code generators -- so its
+//! fingerprint (see `glade/build.rs`, `silo/build.rs`) is the one the program
+//! it links refers to. A failure to build one is a warning, not an error:
+//! `meadow` still works, and says where else a runtime library can come from
+//! when it wants one.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
-    let embedded = out.join("runtime");
     println!("cargo:rerun-if-env-changed=MEADOW_EMBED_RUNTIME");
     println!("cargo:rerun-if-changed=build.rs");
 
-    let bytes = match wanted() {
-        true => build(&out).unwrap_or_else(|e| {
-            println!("cargo:warning=no runtime library built into meadow: {e}");
-            Vec::new()
-        }),
-        false => Vec::new(),
-    };
-    // Unchanged contents leave the file alone, so nothing recompiles for it.
-    if std::fs::read(&embedded).ok().as_deref() != Some(&bytes[..]) {
-        std::fs::write(&embedded, &bytes).expect("OUT_DIR is writable");
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = here.join("../..");
+    let compiler = root.join("compiler");
+    // Each runtime: its crate, what is embedded as, and every input its
+    // library -- and so its fingerprint -- depends on.
+    let runtimes = [
+        (
+            "glade",
+            "runtime",
+            vec![
+                root.join("glade/src"),
+                root.join("glade/build.rs"),
+                root.join("glade/Cargo.toml"),
+                compiler.join("meadow-bytecode"),
+                compiler.join("meadow-core"),
+                compiler.join("meadow-intern"),
+            ],
+        ),
+        (
+            "silo",
+            "runtime-silo",
+            vec![
+                root.join("silo/src"),
+                root.join("silo/build.rs"),
+                root.join("silo/Cargo.toml"),
+                root.join("glade/fingerprint.rs"),
+                compiler.join("meadow-llvm/src"),
+                compiler.join("meadow-core"),
+            ],
+        ),
+    ];
+    for (name, file, inputs) in runtimes {
+        for input in &inputs {
+            println!("cargo:rerun-if-changed={}", input.display());
+        }
+        let bytes = match wanted() {
+            true => build(&out, name).unwrap_or_else(|e| {
+                println!("cargo:warning=no {name} runtime library built into meadow: {e}");
+                Vec::new()
+            }),
+            false => Vec::new(),
+        };
+        // Unchanged contents leave the file alone, so nothing recompiles for it.
+        let embedded = out.join(file);
+        if std::fs::read(&embedded).ok().as_deref() != Some(&bytes[..]) {
+            std::fs::write(&embedded, &bytes).expect("OUT_DIR is writable");
+        }
     }
 
     precompiled_std(&out);
@@ -135,29 +174,18 @@ fn wanted() -> bool {
     }
 }
 
-/// Build the library and answer its bytes.
-fn build(out: &Path) -> Result<Vec<u8>, String> {
+/// Build runtime `name`'s library -- `glade` or `silo` -- and answer its
+/// bytes.
+fn build(out: &Path, name: &str) -> Result<Vec<u8>, String> {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let glade = here.join("../../glade");
-    let compiler = here.join("../../compiler");
-    for input in [
-        glade.join("src"),
-        glade.join("build.rs"),
-        glade.join("Cargo.toml"),
-        compiler.join("meadow-bytecode"),
-        compiler.join("meadow-core"),
-        compiler.join("meadow-intern"),
-    ] {
-        println!("cargo:rerun-if-changed={}", input.display());
-    }
-
+    let krate = here.join("../..").join(name);
     let target = std::env::var("TARGET").map_err(|e| e.to_string())?;
     let dir = target_dir(out);
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut cmd = Command::new(cargo);
     cmd.args(["build", "--release", "--lib", "--target", &target])
         .arg("--manifest-path")
-        .arg(glade.join("Cargo.toml"))
+        .arg(krate.join("Cargo.toml"))
         .arg("--target-dir")
         .arg(&dir);
     // What the outer build was told about itself is not for this one.
@@ -176,12 +204,12 @@ fn build(out: &Path) -> Result<Vec<u8>, String> {
         .status()
         .map_err(|e| format!("could not run cargo: {e}"))?;
     if !status.success() {
-        return Err(format!("`cargo build` in glade failed ({status})"));
+        return Err(format!("`cargo build` in {name} failed ({status})"));
     }
     let lib = if target.contains("windows-msvc") {
-        "meadow_glade.lib"
+        format!("meadow_{name}.lib")
     } else {
-        "libmeadow_glade.a"
+        format!("libmeadow_{name}.a")
     };
     let path = dir.join(&target).join("release").join(lib);
     std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))

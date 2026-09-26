@@ -221,6 +221,52 @@ fn a_cycle_between_modules_is_still_checked() {
     );
 }
 
+/// Both orders, since which of two modules in a cycle goes first is what the
+/// bug below depended on.
+#[track_caller]
+fn both_orders(a: (&str, &str), b: (&str, &str), root: &str) -> [String; 2] {
+    [
+        eval_unit(&[a, b, ("", root)]),
+        eval_unit(&[b, a, ("", root)]),
+    ]
+}
+
+#[test]
+fn a_function_used_across_a_cycle_keeps_its_own_effects() {
+    // `Query` uses `parse` inside an operation's argument, and in a function
+    // declared pure; `Parse` uses `Query` back. Inferred module by module, one
+    // of them met the other's names untyped, and used each at one type,
+    // effect row and all -- so `parse`, called where `Fetch` is performed,
+    // "performed `Fetch`" in the pure function too.
+    let parse = (
+        "Parse",
+        "use Query (pure)\nfun parse (s : String) : Int = stringByteLength s\nfun check u = pure \"abc\"\n",
+    );
+    let query = (
+        "Query",
+        "use Parse (parse)\neffect Fetch { fetch : Int -> Int }\nfun inQuery s = fetch (parse s)\nfun pure (s : String) : Int = parse s + 1\n",
+    );
+    for got in both_orders(parse, query, "use Parse (check)\ndef main = check 0\n") {
+        assert_eq!(got, "4");
+    }
+}
+
+#[test]
+fn a_function_used_across_a_cycle_stays_polymorphic() {
+    // Met untyped, `ident` was one type for both uses: `Bool` and `Int` at once.
+    let a = (
+        "Alpha",
+        "use Beta (pick)\nfun ident x = x\nfun run u = pick 0\n",
+    );
+    let b = (
+        "Beta",
+        "use Alpha (ident)\nfun pick u = if ident (1 < 2) then ident 40 + 2 else 0\n",
+    );
+    for got in both_orders(a, b, "use Alpha (run)\ndef main = run 0\n") {
+        assert_eq!(got, "42");
+    }
+}
+
 #[test]
 fn two_modules_may_define_the_same_name() {
     // Separate namespaces, so `map` in one is not `map` in the other — and a

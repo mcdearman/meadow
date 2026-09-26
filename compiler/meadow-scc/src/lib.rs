@@ -1,13 +1,16 @@
 //! **Dependency analysis of a compilation unit.**
 //!
 //! Type inference wants bindings in dependency order, and wants mutually
-//! recursive ones handed to it together. This pass works that out at two scales,
+//! recursive ones handed to it together. This pass works that out at three scales,
 //! both with Tarjan's algorithm over a "mentions" graph:
 //!
 //! * [`module_order`] sorts the *modules* of a unit, since they are discovered
 //!   in alphabetical order, which has nothing to do with what depends on what.
 //! * [`group_module`] sorts the *bindings* inside one module and records a
 //!   [`hir::BindGroup`] per strongly connected component.
+//! * [`unit_groups`] groups the bindings of the whole unit at once, which is
+//!   the order inference goes in: modules that use one another both ways
+//!   have no order of their own, and their bindings still do.
 //!
 //! Two things fall out of it.
 //!
@@ -138,6 +141,59 @@ pub fn group_module(module: &mut hir::Module, overloads: &hir::Overloads) {
 
     module.decls = decls;
     module.groups = groups;
+}
+
+/// One strongly connected component of a whole unit's top-level bindings:
+/// each member as `(module, declaration)`, indices into the modules as given
+/// and into their declarations as [`group_module`] left them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitGroup {
+    pub members: Vec<(usize, usize)>,
+    pub recursive: bool,
+}
+
+/// The binding groups of a whole unit, in dependency order across its modules.
+///
+/// [`group_module`]'s groups are right within a module, and [`module_order`]
+/// puts one module after another; together they are right as long as modules
+/// do not depend on one another both ways. When they do -- a module's tests
+/// calling a helper in a sibling that uses the module -- one of them has to go
+/// first, and a name it takes from the other has no type yet. Inference then
+/// used it at one monomorphic type, latent effect and all, across every use:
+/// a use inside a query made a pure parser "perform `Fetch`" everywhere else.
+/// Grouping the unit's bindings as one graph never asks that: a binding comes
+/// after everything it mentions, wherever that is, and a group spans modules
+/// only where the bindings really are mutually recursive.
+pub fn unit_groups(modules: &[&hir::Module], overloads: &hir::Overloads) -> Vec<UnitGroup> {
+    let mut at: Vec<(usize, usize)> = Vec::new();
+    let mut owner: HashMap<VarId, usize> = HashMap::new();
+    for (m, module) in modules.iter().enumerate() {
+        for (i, decl) in module.decls.iter().enumerate() {
+            if let hir::Decl::Bind(b) = decl.value() {
+                for v in b.bound_vars() {
+                    owner.insert(v, at.len());
+                }
+                at.push((m, i));
+            }
+        }
+    }
+    let mut edges: Vec<Vec<usize>> = vec![Vec::new(); at.len()];
+    for (slot, &(m, i)) in at.iter().enumerate() {
+        if let hir::Decl::Bind(b) = modules[m].decls[i].value() {
+            let mut seen = Vec::new();
+            mentions(b, &owner, overloads, &mut seen);
+            seen.sort_unstable();
+            seen.dedup();
+            edges[slot] = seen;
+        }
+    }
+    scc(&edges)
+        .into_iter()
+        .map(|comp| UnitGroup {
+            recursive: comp.len() > 1 || comp.first().is_some_and(|&s| edges[s].contains(&s)),
+            members: comp.iter().map(|&s| at[s]).collect(),
+        })
+        .collect()
 }
 
 /// The slots of the top-level bindings a binding's body mentions.

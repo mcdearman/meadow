@@ -1487,14 +1487,7 @@ impl Infer {
     /// solved — the usual binding-group discipline.
     pub fn infer_module(&mut self, module: &hir::LModule) {
         let module = module.value();
-        // A declaration is not itself a value; the node type is only there so the
-        // table has no holes.
-        for decl in &module.decls {
-            self.table.set(decl.id, Type::unit());
-            if let hir::Decl::Sig(name, t, bounds) = decl.value() {
-                self.sigs.insert(*name.value(), (t.clone(), bounds.clone()));
-            }
-        }
+        self.declarations(module);
         if module.groups.is_empty() {
             // Ungrouped HIR (the SCC pass didn't run): source order is all we have.
             for decl in &module.decls {
@@ -1509,19 +1502,69 @@ impl Infer {
         }
     }
 
+    /// A module's declarations that are not bindings: a declaration is not
+    /// itself a value -- the node type is only there so the table has no holes
+    /// -- and a signature is kept for the binding it is of.
+    fn declarations(&mut self, module: &hir::Module) {
+        for decl in &module.decls {
+            self.table.set(decl.id, Type::unit());
+            if let hir::Decl::Sig(name, t, bounds) = decl.value() {
+                self.sigs.insert(*name.value(), (t.clone(), bounds.clone()));
+            }
+        }
+    }
+
+    /// Infer a whole unit: each module's declarations, then its bindings group
+    /// by group in `groups`' order -- each group a strongly connected
+    /// component of the unit's bindings, members as `(module, declaration)`,
+    /// in dependency order across modules (`meadow_scc::unit_groups`). Each
+    /// binding is inferred with its own module's `filenames` entry, so a
+    /// message says where, whichever module its group started in.
+    pub fn infer_unit(
+        &mut self,
+        modules: &[&hir::LModule],
+        filenames: &[String],
+        groups: &[(Vec<(usize, usize)>, bool)],
+    ) {
+        for (m, file) in modules.iter().zip(filenames) {
+            self.set_filename(file.clone());
+            self.declarations(m.value());
+        }
+        for (members, recursive) in groups {
+            let binds: Vec<(&hir::Bind, Span, String)> = members
+                .iter()
+                .filter_map(|&(m, i)| {
+                    let decl = &modules[m].value().decls[i];
+                    match decl.value() {
+                        hir::Decl::Bind(bind) => Some((bind, decl.span, filenames[m].clone())),
+                        _ => None,
+                    }
+                })
+                .collect();
+            self.infer_binds(&binds, *recursive);
+        }
+    }
+
     /// Infer one strongly connected component of the top-level bindings.
     fn infer_group(&mut self, decls: &[hir::LDecl], group: &hir::BindGroup) {
-        let binds: Vec<(&hir::Bind, Span)> = group
+        let file = self.filename.clone();
+        let binds: Vec<(&hir::Bind, Span, String)> = group
             .members
             .iter()
             .filter_map(|&i| match decls[i].value() {
-                hir::Decl::Bind(bind) => Some((bind, decls[i].span)),
+                hir::Decl::Bind(bind) => Some((bind, decls[i].span, file.clone())),
                 _ => None,
             })
             .collect();
+        self.infer_binds(&binds, group.recursive);
+    }
 
+    /// Infer a group of bindings -- each with the file it was written in --
+    /// that mention one another if `recursive`.
+    fn infer_binds(&mut self, binds: &[(&hir::Bind, Span, String)], recursive: bool) {
         // A lone non-recursive binding is just a binding.
-        if !group.recursive && binds.len() == 1 {
+        if !recursive && binds.len() == 1 {
+            self.set_filename(binds[0].2.clone());
             self.infer_bind(binds[0].0, true);
             return;
         }
@@ -1534,7 +1577,7 @@ impl Infer {
         // a sibling resolves to a variable the sibling's own inference constrains
         // rather than to an unrelated fresh one.
         let mut seeds: Vec<Vec<(VarId, Type)>> = Vec::with_capacity(binds.len());
-        for (bind, span) in &binds {
+        for (bind, span, _) in binds {
             let seeded: Vec<(VarId, Type)> = bind
                 .bound_vars()
                 .into_iter()
@@ -1552,7 +1595,8 @@ impl Infer {
         // the value restriction, applied to the group as a whole.
         let mut pure = true;
         self.tr.group = seeds.iter().flatten().map(|(v, _)| *v).collect();
-        for ((bind, _), seed) in binds.iter().zip(&seeds) {
+        for ((bind, _, file), seed) in binds.iter().zip(&seeds) {
+            self.set_filename(file.clone());
             self.tr.member = seed.first().map(|(v, _)| *v);
             pure &= self.infer_group_member(bind, seed);
         }
@@ -1570,11 +1614,14 @@ impl Infer {
 
         // Only functions take dictionaries: a `def` that did would be made
         // again at every use, where it is promised to be made once.
-        let functions = binds.iter().all(|(b, _)| matches!(b, hir::Bind::Fun(..)));
+        let functions = binds
+            .iter()
+            .all(|(b, _, _)| matches!(b, hir::Bind::Fun(..)));
         let members: Vec<(VarId, Type)> = seeds.iter().flatten().cloned().collect();
         let mut preds = self.close_binding(started, &members, pure && functions);
 
-        for ((bind, _), seed) in binds.iter().zip(&seeds) {
+        for ((bind, _, file), seed) in binds.iter().zip(&seeds) {
+            self.set_filename(file.clone());
             let classes = matches!(bind, hir::Bind::Fun(..));
             for (vid, ty) in seed {
                 let scheme = if pure {

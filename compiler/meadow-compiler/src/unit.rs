@@ -598,7 +598,7 @@ fn compile_unit_inner(
     // --- type inference (one arena for the whole unit + dependency schemes)
     let mut infer = Infer::new(filename.clone(), resolver.id_count());
     infer.set_entries(runs);
-    infer.set_overloads(overloads);
+    infer.set_overloads(overloads.clone());
     infer.load_prelude(&resolver.prelude_bindings());
     let dep_schemes: Vec<(VarId, Scheme)> = deps
         .iter()
@@ -625,9 +625,23 @@ fn compile_unit_inner(
         infer.register_impls(&m.hir.value().decls);
         infer.export_traits(&m.hir.value().decls);
     }
-    for m in &typed {
-        infer.set_filename(module_filename(&filename, m.source));
-        infer.infer_module(&m.hir);
+    // The bindings of every module, as one graph: a module whose tests call a
+    // sibling that uses it must not see the sibling's names before they have
+    // types. See `meadow_scc::unit_groups`.
+    {
+        let hirs: Vec<&hir::LModule> = typed.iter().map(|m| &m.hir).collect();
+        let files: Vec<String> = typed
+            .iter()
+            .map(|m| module_filename(&filename, m.source))
+            .collect();
+        let groups: Vec<(Vec<(usize, usize)>, bool)> = scc::unit_groups(
+            &hirs.iter().map(|m| m.value()).collect::<Vec<_>>(),
+            &overloads,
+        )
+        .into_iter()
+        .map(|g| (g.members, g.recursive))
+        .collect();
+        infer.infer_unit(&hirs, &files, &groups);
     }
     // The bodies inside traits and `impl`s last: they may mention any binding
     // of the unit, and no binding needs more of them than their types.

@@ -16,6 +16,12 @@
 		"vscode": "^1.75.0"
 	},
 	"main": "./src/extension.js",
+	"capabilities": {
+		"untrustedWorkspaces": {
+			"supported": "limited",
+			"description": "In Restricted Mode the language server does not fetch a package's dependencies, which would clone the repositories its manifest names and run their macros. It uses only what `meadow build` already fetched."
+		}
+	},
 	"contributes": {
 		"configurationDefaults": {
 			"[meadow]": {

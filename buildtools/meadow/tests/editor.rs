@@ -158,8 +158,13 @@ fn a_git_dependency_is_not_fetched_for_the_editor() {
         Ok(_) => panic!("a dependency that is not fetched cannot be loaded"),
         Err(why) => why,
     };
-    assert!(why.contains("is not in the cache"), "{why}");
-    assert!(why.contains("The editor never fetches"), "{why}");
+    // What is missing, what fetches it, and why the editor did not -- and not
+    // the resolver's words about `--offline`, which nobody here passed.
+    assert!(why.contains("`Far`"), "{why}");
+    assert!(why.contains("has not been fetched yet"), "{why}");
+    assert!(why.contains("trust this one"), "{why}");
+    assert!(why.contains("`meadow build`"), "{why}");
+    assert!(!why.contains("offline"), "{why}");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(10),
         "nothing was waited on: {:?}",

@@ -119,6 +119,50 @@ fn sources_digest(graph: &crate::package::PackageGraph) -> u64 {
     h
 }
 
+/// Whether the language server may fetch what a package depends on, as a
+/// build would: `meadow lsp --fetch`, which the VS Code extension passes in a
+/// workspace the user trusts. A manifest is text anyone may have written, and
+/// what it names is cloned, compiled, and has its macros run -- so in a
+/// workspace nobody vouched for, opening a file fetches nothing, and only
+/// what a build already fetched is used.
+static FETCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The packages the server has already fetched for, or tried to: once each,
+/// so that one that cannot be fetched is not tried again on every edit.
+static FETCHED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Let the server fetch dependencies (see [`FETCH`]).
+pub fn allow_fetching() {
+    FETCH.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn fetching() -> bool {
+    FETCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn first_fetch(root: &std::path::Path) -> bool {
+    let mut fetched = FETCHED.lock().unwrap_or_else(|e| e.into_inner());
+    if fetched.iter().any(|r| r == root) {
+        return false;
+    }
+    fetched.push(root.to_path_buf());
+    true
+}
+
+/// Resolve `root`'s dependencies as a build does -- fetching what is not
+/// cached -- and write the lockfile, as a build does, so that the next build
+/// uses what the editor pinned.
+fn fetch(root: &std::path::Path) -> Result<crate::package::PackageGraph, String> {
+    let mut resolver = crate::package::Resolver::for_entry(root);
+    let graph =
+        crate::package::PackageGraph::build_all_with(&[root], &mut resolver).map_err(|d| d.msg)?;
+    if !resolver.seen.is_empty() {
+        resolver.lock.retain(&resolver.seen);
+        let _ = resolver.lock.save(&crate::lock::dir_for(root));
+    }
+    Ok(graph)
+}
+
 /// [`load_package`], saying why when the file is in a package that cannot be
 /// loaded. This is the one the server is given, so the reason reaches the editor.
 pub fn find_package(
@@ -126,19 +170,38 @@ pub fn find_package(
 ) -> Option<Result<meadow_lsp::analysis::PackageSources, String>> {
     use meadow_compiler::source::SourceKind;
     let root = crate::package::enclosing_root(file)?;
-    // Never fetched from here. Opening a file is not asking for a build, and
-    // a manifest is only text someone else may have written: what it names
-    // would be cloned, compiled, and its macros run, all on opening it. What
-    // a build has already fetched is used.
+    // What is already in the cache, first: this runs on every edit, and only
+    // the first load of a package should ever wait on the network.
     let mut resolver = crate::package::Resolver::for_entry(&root).offline();
     let graph = match crate::package::PackageGraph::build_all_with(&[&root], &mut resolver) {
         Ok(g) => g,
         Err(d) if d.msg.contains("is not in the cache") => {
-            return Some(Err(format!(
-                "{}\nThe editor never fetches a dependency: `meadow build` in the package \
-                 fetches it once, and the editor uses what it fetched.",
-                d.msg.lines().next().unwrap_or(&d.msg)
-            )));
+            if fetching() && first_fetch(&root) {
+                match fetch(&root) {
+                    Ok(g) => g,
+                    Err(why) => {
+                        return Some(Err(format!(
+                            "could not fetch the dependencies of `{}`: {why}",
+                            root.display()
+                        )));
+                    }
+                }
+            } else {
+                // The resolver's own words are about `--offline`, which nobody
+                // here passed: say what is missing, and what fetches it.
+                let what = d
+                    .msg
+                    .split('`')
+                    .nth(1)
+                    .unwrap_or("a dependency")
+                    .to_string();
+                return Some(Err(format!(
+                    "`{what}` has not been fetched yet. The editor fetches a package's \
+                     dependencies only in a workspace you trust -- trust this one, or run \
+                     `meadow build` in `{}`, and it picks them up as soon as they are there.",
+                    root.display()
+                )));
+            }
         }
         Err(d) => return Some(Err(d.msg)),
     };

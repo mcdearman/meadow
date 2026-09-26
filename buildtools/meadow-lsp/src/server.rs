@@ -10,8 +10,8 @@ use crate::pos::LineIndex;
 use crate::tokens;
 use lsp_server::{Connection, ExtractError, Message, Request, RequestId, Response};
 use lsp_types::notification::{
-    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
-    Notification, PublishDiagnostics,
+    DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument, Exit,
+    Initialized, Notification, PublishDiagnostics,
 };
 use lsp_types::request::{
     CodeLensRequest, Completion, Formatting, GotoDefinition, HoverRequest, InlayHintRequest,
@@ -202,7 +202,7 @@ impl Server {
                     c.sender.send(Message::Response(response))?;
                 }
                 Message::Notification(note) => {
-                    if let Some((uri, text)) = self.notification(note) {
+                    for uri in self.notification(note) {
                         let diagnostics = self.publish(&uri);
                         c.sender
                             .send(Message::Notification(lsp_server::Notification {
@@ -213,7 +213,6 @@ impl Server {
                                     version: None,
                                 })?,
                             }))?;
-                        let _ = text;
                     }
                 }
                 Message::Response(_) => {}
@@ -222,27 +221,52 @@ impl Server {
         Ok(())
     }
 
-    /// Returns the document to re-publish diagnostics for, if any.
-    fn notification(&mut self, note: lsp_server::Notification) -> Option<(Uri, ())> {
+    /// Returns the documents to re-publish diagnostics for.
+    fn notification(&mut self, note: lsp_server::Notification) -> Vec<Uri> {
         match note.method.as_str() {
             DidOpenTextDocument::METHOD => {
-                let p: DidOpenTextDocumentParams = serde_json::from_value(note.params).ok()?;
+                let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(note.params) else {
+                    return Vec::new();
+                };
                 self.set(p.text_document.uri.clone(), p.text_document.text);
-                Some((p.text_document.uri, ()))
+                vec![p.text_document.uri]
             }
             DidChangeTextDocument::METHOD => {
-                let p: DidChangeTextDocumentParams = serde_json::from_value(note.params).ok()?;
+                let Ok(p) = serde_json::from_value::<DidChangeTextDocumentParams>(note.params)
+                else {
+                    return Vec::new();
+                };
                 // Full sync, so the last change carries the whole document.
-                let text = p.content_changes.into_iter().last()?.text;
-                self.set(p.text_document.uri.clone(), text);
-                Some((p.text_document.uri, ()))
+                let Some(change) = p.content_changes.into_iter().last() else {
+                    return Vec::new();
+                };
+                self.set(p.text_document.uri.clone(), change.text);
+                vec![p.text_document.uri]
             }
             DidCloseTextDocument::METHOD => {
-                let p: DidCloseTextDocumentParams = serde_json::from_value(note.params).ok()?;
-                self.docs.remove(&p.text_document.uri);
-                None
+                if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(note.params) {
+                    self.docs.remove(&p.text_document.uri);
+                }
+                Vec::new()
             }
-            _ => None,
+            // A file changed on disk: a sibling module, a manifest, or the
+            // lockfile a build wrote having fetched what the editor could
+            // not. Any of them can change what an open document means, so
+            // every one is analysed again, as it stands in the editor.
+            DidChangeWatchedFiles::METHOD => {
+                let open: Vec<(Uri, String)> = self
+                    .docs
+                    .iter()
+                    .map(|(uri, doc)| (uri.clone(), doc.text.clone()))
+                    .collect();
+                open.into_iter()
+                    .map(|(uri, text)| {
+                        self.set(uri.clone(), text);
+                        uri
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
         }
     }
 

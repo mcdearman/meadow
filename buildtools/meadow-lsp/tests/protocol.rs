@@ -280,6 +280,33 @@ fn diagnostics_arrive_on_open_and_update_on_every_edit() {
 }
 
 #[test]
+fn a_file_changing_on_disk_analyses_the_open_documents_again() {
+    // What a build writes -- a lockfile, having fetched what the editor never
+    // fetches -- can change what an open document means, and nothing is typed
+    // in the editor to say so.
+    let mut c = Client::start();
+    let broken = c.set(
+        "def main = 1 + \"oops\"
+",
+    );
+    assert_eq!(broken.len(), 1);
+    c.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": "file:///meadow.lock", "type": 2}]}),
+    );
+    loop {
+        if let Message::Notification(n) = c.conn.receiver.recv().unwrap()
+            && n.method == "textDocument/publishDiagnostics"
+        {
+            let p: PublishDiagnosticsParams = serde_json::from_value(n.params).unwrap();
+            assert_eq!(p.uri.as_str(), URI);
+            assert_eq!(p.diagnostics.len(), 1, "analysed again, as it stands");
+            break;
+        }
+    }
+}
+
+#[test]
 fn a_parse_error_is_reported_rather_than_crashing_the_server() {
     let mut c = Client::start();
     let diags = c.set("def main = let in\n");

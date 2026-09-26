@@ -42,14 +42,24 @@ function start() {
       });
   }
 
+  // In a workspace the user trusts, the server fetches what a package depends
+  // on the first time it opens one, as `meadow build` would -- which clones
+  // repositories a manifest names and runs their macros. In one they have not
+  // vouched for, it uses only what a build already fetched.
+  const args = workspace.isTrusted ? ["lsp", "--fetch"] : ["lsp"];
   const serverOptions = {
-    run: { command, args: ["lsp"], transport: TransportKind.stdio },
-    debug: { command, args: ["lsp"], transport: TransportKind.stdio },
+    run: { command, args, transport: TransportKind.stdio },
+    debug: { command, args, transport: TransportKind.stdio },
   };
 
   const clientOptions = {
     documentSelector: [{ scheme: "file", language: "meadow" }],
-    synchronize: { fileEvents: workspace.createFileSystemWatcher("**/*.mw") },
+    // A sibling module, a manifest, or the lockfile a build writes once it has
+    // fetched the dependencies: the server analyses the open documents again
+    // when any of them changes on disk.
+    synchronize: {
+      fileEvents: workspace.createFileSystemWatcher("**/{*.mw,Meadow.toml,meadow.lock}"),
+    },
     outputChannelName: "Meadow Language Server",
     middleware: {
       // "Debug" above each definition and "Test" above each `@test`, each
@@ -106,6 +116,14 @@ function activate(context) {
   start();
   registerDebugger(context);
   registerTesting(context);
+  // Trusting the workspace is what lets the server fetch: start it again,
+  // this time allowed to.
+  context.subscriptions.push(
+    workspace.onDidGrantWorkspaceTrust(async () => {
+      await stop();
+      await start();
+    })
+  );
   context.subscriptions.push(
     commands.registerCommand("meadow.restartServer", async () => {
       await stop();

@@ -1271,6 +1271,14 @@ fn finish(
         );
         std::process::exit(1);
     }
+    // A library has nothing to run. Its image would be the whole standard
+    // library and everything else it could call, unpruned -- no entry point
+    // to prune from -- and nothing reads it: what depends on the library links
+    // against its compiled package, not its image. So building one is
+    // compiling and checking it, unless `--emit` asks for more.
+    if engine.is_none() && emit.is_empty() && linked.program.entry.is_none() {
+        return;
+    }
     let aot = profile.native() && engine != Some(Engine::Cek);
     // What is written: what was asked for, or else the image -- and for an
     // `aot` build, its executable.

@@ -219,12 +219,15 @@ impl Resolved {
         self.runtime == crate::aot::Runtime::Silo || self.backend == Backend::Aot
     }
 
-    /// What runs the program, as a build reports it: `silo`, or Glade's
-    /// backend -- `vm`, `jit` or `aot`.
+    /// What runs the program, as a build reports it: the runtime, and on
+    /// Glade the backend -- `glade vm`, `glade jit`, `glade aot` -- or `silo`,
+    /// which has one way to run a program.
     pub const fn how(self) -> &'static str {
-        match self.runtime {
-            crate::aot::Runtime::Silo => "silo",
-            crate::aot::Runtime::Glade => self.backend.name(),
+        match (self.runtime, self.backend) {
+            (crate::aot::Runtime::Silo, _) => "silo",
+            (crate::aot::Runtime::Glade, Backend::Vm) => "glade vm",
+            (crate::aot::Runtime::Glade, Backend::Jit) => "glade jit",
+            (crate::aot::Runtime::Glade, Backend::Aot) => "glade aot",
         }
     }
 

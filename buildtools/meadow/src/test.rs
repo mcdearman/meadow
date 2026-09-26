@@ -125,8 +125,8 @@ pub fn run(opts: &Options) -> Result<bool, String> {
             opts.profile.opt().name(),
             match opts.engine {
                 Engine::Cek => "cek",
-                Engine::Vm => "vm",
-                Engine::Jit => "jit",
+                Engine::Vm => "glade vm",
+                Engine::Jit => "glade jit",
             },
             status::elapsed(started.elapsed())
         ),

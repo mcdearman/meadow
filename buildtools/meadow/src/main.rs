@@ -206,6 +206,12 @@ enum Cmd {
         /// when the editor goes away. This one exits when its input closes.
         #[arg(long = "clientProcessId", value_name = "PID")]
         client_process_id: Option<String>,
+        /// Fetch what a package depends on when a file of it is opened, as a
+        /// build would -- cloning, compiling, and running its macros. Editors
+        /// pass it only for a workspace the user trusts; without it, only
+        /// what a build already fetched is used.
+        #[arg(long)]
+        fetch: bool,
     },
     /// Run the debug adapter, speaking the Debug Adapter Protocol over stdin
     /// and stdout.
@@ -805,7 +811,10 @@ fn command() {
                 std::process::exit(1);
             }
         }
-        Some(Cmd::Lsp { .. }) => {
+        Some(Cmd::Lsp { fetch, .. }) => {
+            if fetch {
+                meadow::editor::allow_fetching();
+            }
             // Both shapes of the standard library: the bundle a package depends
             // on, and the modules it was bundled from — which is what lets a
             // `Std` source file be analysed as itself. One compile serves both.
@@ -1087,7 +1096,7 @@ impl Listing {
     }
 }
 
-/// `    Finished `debug` profile [O1, jit] in 0.42s`
+/// `    Finished `debug` profile [O1, glade jit] in 0.42s`
 fn finished(profile: &Resolved, started: std::time::Instant) {
     status::status(
         "Finished",

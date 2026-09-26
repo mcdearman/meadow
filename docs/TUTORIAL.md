@@ -65,7 +65,7 @@ evaluated to:
 ```
    Compiling Std v0.1.0-alpha (embedded)
    Compiling hello (/home/you/hello.mw)
-    Finished `debug` profile [O1, jit] in 0.41s
+    Finished `debug` profile [O1, glade jit] in 0.41s
      Running `main` on the JIT
 Hello, Meadow!
 => ()

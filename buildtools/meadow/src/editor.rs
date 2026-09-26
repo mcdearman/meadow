@@ -74,9 +74,24 @@ fn dependencies(root: &std::path::Path, graph: &crate::package::PackageGraph) ->
     // compiled against.
     let mut held: Vec<meadow_compiler::CompiledPackage> = compiled.std.clone();
     held.extend(compiled.packages.iter().flatten().cloned());
+    // What the package's macro calls answered, where a build of it keeps them
+    // and under the fingerprint it keeps them under: an editor opening a
+    // package that was built answers them without running anything.
+    let mut procs = crate::proc::Macros::owning(held);
+    if let Some(cache) = &cache {
+        let deps: Vec<u64> = graph.packages[me]
+            .deps
+            .iter()
+            .map(|&d| compiled.fingerprints[d])
+            .collect();
+        procs = procs.remembering(
+            cache.macros(&graph.packages[me].name),
+            crate::incremental::macros_print(&deps),
+        );
+    }
     let built = Rc::new(Built {
         deps,
-        procs: Rc::new(crate::proc::Macros::owning(held)),
+        procs: Rc::new(procs),
     });
     BUILT.with(|b| {
         b.borrow_mut()

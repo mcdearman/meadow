@@ -19,6 +19,7 @@
 -- with `Std.String.Parse`'s combinators.
 
 @pub mod Parse
+@pub mod Serve
 
 use Std.String as S
 use Std.Collections.Vector as V
@@ -343,7 +344,7 @@ fun commas (parts : [[TokenTree]]) : [TokenTree] =
 -- yet: it is abandoned, and run again later.
 @pub data Outcome
   = Answered [TokenTree] [(String, Datum)] [String]
-  | Waiting String
+  | Waiting String [String]
 
 -- Run the macro `run` on `input`, answering its `lookup`s from `scope`.
 --
@@ -355,7 +356,7 @@ fun commas (parts : [[TokenTree]]) : [TokenTree] =
        lookup name k ->
          match V.find (\p -> fst p == name) scope with
          | Just p -> reading name (k (Just (snd p)))
-         | None -> if settled then reading name (k None) else Waiting name,
+         | None -> if settled then reading name (k None) else Waiting name V.empty,
        define made k -> defining made (k ()),
        return ts -> Answered ts V.empty V.empty
     })
@@ -363,12 +364,12 @@ fun commas (parts : [[TokenTree]]) : [TokenTree] =
 fun reading name o =
   match o with
   | Answered ts ds rs -> Answered ts ds (V.pushFront rs name)
-  | Waiting n -> Waiting n
+  | Waiting n rs -> Waiting n (V.pushFront rs name)
 
 fun defining made o =
   match o with
   | Answered ts ds rs -> Answered ts (V.pushFront ds made) rs
-  | Waiting n -> Waiting n
+  | Waiting n rs -> Waiting n rs
 
 -- What the compiler reads back: one tree of one type, built of arrays.
 --
@@ -376,6 +377,7 @@ fun defining made o =
 -- it can read without knowing how a `Vector` is laid out. So the answer is
 -- written into this before it crosses: a named node and its children, text,
 -- and numbers.
+@derive(Debug, PartialEq)
 @pub data Wire = Node String #[Wire] | Text String | Whole Int | Frac Float
 
 fun wireOutcome (o : Outcome) : Wire =
@@ -386,7 +388,7 @@ fun wireOutcome (o : Outcome) : Wire =
         #[wireTrees ts,
           Node "" (V.toArray (V.map (\p -> Node (fst p) #[wireDatum (snd p)]) ds)),
           Node "" (V.toArray (V.map (\r -> Text r) rs))]
-  | Waiting name -> Node "Waiting" #[Text name]
+  | Waiting name rs -> Node "Waiting" #[Text name, Node "" (V.toArray (V.map (\r -> Text r) rs))]
 
 fun wireTrees (ts : [TokenTree]) : Wire = Node "" (V.toArray (V.map wireTree ts))
 

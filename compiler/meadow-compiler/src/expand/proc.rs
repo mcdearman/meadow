@@ -67,7 +67,7 @@ pub struct Scope<'a> {
 }
 
 /// How a run of a procedural macro ended.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Outcome {
     /// It answered: with these tokens, having defined these names, and having
     /// read these -- which its answer depends on as much as on its argument.

@@ -337,6 +337,8 @@ pub(crate) struct Compiled {
     pub(crate) diagnostics: Vec<Diagnostic>,
     /// Which were compiled rather than read back from the cache.
     pub(crate) compiled: Vec<InternedString>,
+    /// Each package's fingerprint, by id: see [`incremental::fingerprint`].
+    pub(crate) fingerprints: Vec<u64>,
 }
 
 /// Who each package of `graph` is, for naming the types and effects it
@@ -442,7 +444,13 @@ pub(crate) fn compile_graph(
                 }));
                 // What a procedural macro would be run with: everything
                 // compiled so far. Nothing is linked unless one is called.
-                let runner = crate::proc::Macros::new(deps.iter().map(|d| d.pkg).collect());
+                let mut runner = crate::proc::Macros::new(deps.iter().map(|d| d.pkg).collect());
+                if let Some(cache) = cache {
+                    runner = runner.remembering(
+                        cache.macros(&pkg.name),
+                        incremental::macros_print(&dep_prints),
+                    );
+                }
                 let (cp, mut d) = compile_package(pkg, idents[pid], &deps, opts, floor, &runner);
                 clean[pid] = d.is_empty() && pkg.deps.iter().all(|&d| clean[d]);
                 diagnostics.append(&mut d);
@@ -466,6 +474,7 @@ pub(crate) fn compile_graph(
         packages,
         diagnostics,
         compiled,
+        fingerprints,
     }
 }
 

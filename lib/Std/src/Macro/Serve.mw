@@ -1,0 +1,157 @@
+-- Running a macro as a program of its own: what a build does with every
+-- macro it can call, on the bytecode machine. Nothing a macro calls.
+--
+-- A run is handed what the call gives the macro -- whether the round is
+-- settled, the bindings it can see, its argument -- as a `Wire` written out
+-- on its input, runs it under `expanding`, and writes the `Wire` that
+-- answers on its output.
+
+use Std.String as S
+use Std.Collections.Vector as V
+use Std.Maybe.Maybe.*
+use Std.Tuple (fst, snd)
+use Std.Console (Console, readLine, writeOutput)
+use Std.Macro (TokenTree, Delim, Loc, Datum, Wire, Expand, expanding)
+use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
+use Std.Macro.Delim.*
+use Std.Macro.Wire.*
+
+-- A build runs its macros on the bytecode machine: one image holding every
+-- macro the build can call, each behind `serve`, compiled once. A run is
+-- handed what the call gives the macro -- whether the round is settled, the
+-- bindings it can see, its argument -- as a `Wire` on its input, and writes
+-- what `expanding` answered as a `Wire` on its output.
+--
+-- A `Wire` as text: `N` and the tag's length, `:`, the tag, and how many
+-- children, `;`, then the children; `T` and a length, `:`, and that many bytes
+-- of text; `W` an integer and `;`; `F` a float and `;`. Lengths are in bytes,
+-- so nothing in a string is escaped. A float coming in is an integer and a
+-- power of two -- `F-3e-1;` is -1.5 -- which is exact, and one going out is as
+-- `show` writes it.
+
+-- Run the macro `run` on what the input gives it, and write its answer out.
+@pub fun serve (run : [TokenTree] -> [TokenTree] ! { Expand | e }) : () ! { Console | e } =
+  match readLine () with
+  | None -> ()
+  | Just given ->
+      match fst (readWire given 0) with
+      | Node _ parts ->
+          let settled = wholeOf (arrayGet parts 0) == 1 in
+          let scope = V.map binding (V.fromArray (childrenOf (arrayGet parts 1))) in
+          writeOutput (writeWire (expanding settled scope run (treesOf (arrayGet parts 2))))
+      | _ -> ()
+
+-- `w` as text.
+@pub fun writeWire (w : Wire) : String = S.join "" (pieces w V.empty)
+
+fun pieces (w : Wire) (acc : [String]) : [String] =
+  match w with
+  | Text s -> V.pushBack (V.pushBack acc "T${show (stringByteLength s)}:") s
+  | Whole n -> V.pushBack acc "W${show n};"
+  | Frac x -> V.pushBack acc "F${show x};"
+  | Node tag xs ->
+      V.foldl
+        (\a x -> pieces x a)
+        (V.pushBack acc "N${show (stringByteLength tag)}:${tag}${show (arrayLen xs)};")
+        (V.fromArray xs)
+
+-- The `Wire` written at byte `i` of `s`, and the byte after it.
+@pub fun readWire (s : String) (i : Int) : (Wire, Int) =
+  let b = byteOf s i in
+  if b == 84 then
+    let colon = upTo s (i + 1) 58 in
+    let n = numberIn s (i + 1) colon in
+    (Text (stringSlice s (colon + 1) (colon + 1 + n)), colon + 1 + n)
+  else if b == 87 then
+    let semi = upTo s (i + 1) 59 in
+    (Whole (numberIn s (i + 1) semi), semi + 1)
+  else if b == 70 then
+    let semi = upTo s (i + 1) 59 in
+    let e = upTo s (i + 1) 101 in
+    (Frac (scaled (toFloat (numberIn s (i + 1) e)) (numberIn s (e + 1) semi)), semi + 1)
+  else if b == 78 then
+    let colon = upTo s (i + 1) 58 in
+    let n = numberIn s (i + 1) colon in
+    let semi = upTo s (colon + 1 + n) 59 in
+    let kids = readMany s (semi + 1) (numberIn s (colon + 1 + n) semi) V.empty in
+    (Node (stringSlice s (colon + 1) (colon + 1 + n)) (V.toArray (fst kids)), snd kids)
+  else (Text "", stringByteLength s)
+
+fun readMany (s : String) (i : Int) (n : Int) (acc : [Wire]) : ([Wire], Int) =
+  if n <= 0 then (acc, i)
+  else match readWire s i with | (w, j) -> readMany s j (n - 1) (V.pushBack acc w)
+
+fun byteOf (s : String) (i : Int) : Int = if i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
+
+-- The first byte from `i` on that is `b`, or the end.
+fun upTo (s : String) (i : Int) (b : Int) : Int = if i >= stringByteLength s or byteOf s i == b then i else upTo s (i + 1) b
+
+fun numberIn (s : String) (from : Int) (to : Int) : Int = match S.toInt (stringSlice s from to) with | Just n -> n | None -> 0
+
+-- `x` times two to the `e`: exact, one doubling or halving at a time.
+fun scaled (x : Float) (e : Int) : Float =
+  if e > 0 then scaled (x *. 2.0) (e - 1) else if e < 0 then scaled (x *. 0.5) (e + 1) else x
+
+fun childrenOf (w : Wire) : #[Wire] = match w with | Node _ xs -> xs | _ -> V.toArray V.empty
+
+fun wholeOf (w : Wire) : Int = match w with | Whole n -> n | _ -> 0
+
+fun textOf (w : Wire) : String = match w with | Text s -> s | _ -> ""
+
+fun fracOf (w : Wire) : Float = match w with | Frac x -> x | Whole n -> toFloat n | _ -> 0.0
+
+fun binding (w : Wire) : (String, Datum) =
+  match w with
+  | Node name xs -> (name, datumOf (arrayGet xs 0))
+  | _ -> ("", Datum.Bool False)
+
+fun treesOf (w : Wire) : [TokenTree] = V.map treeOf (V.fromArray (childrenOf w))
+
+-- A token tree, as `wireTree` writes one.
+fun treeOf (w : Wire) : TokenTree =
+  match w with
+  | Node "Word" xs -> Word (textOf (arrayGet xs 0)) (locOf (arrayGet xs 1))
+  | Node "Punct" xs -> Punct (textOf (arrayGet xs 0)) (locOf (arrayGet xs 1))
+  | Node "Str" xs -> Str (textOf (arrayGet xs 0)) (locOf (arrayGet xs 1))
+  | Node "Chr" xs -> Chr (textOf (arrayGet xs 0)) (locOf (arrayGet xs 1))
+  | Node "Num" xs -> Num (wholeOf (arrayGet xs 0)) (locOf (arrayGet xs 1))
+  | Node "Real" xs -> Real (fracOf (arrayGet xs 0)) (locOf (arrayGet xs 1))
+  | Node "Group" xs -> Group (delimOf (textOf (arrayGet xs 0))) (treesOf (arrayGet xs 1)) (locOf (arrayGet xs 2))
+  | Node "Code" xs -> Code (textOf (arrayGet xs 0))
+  | _ -> Fail "the compiler sent a token this cannot read" Nowhere
+
+fun delimOf (opened : String) : Delim = if opened == "(" then Paren else if opened == "[" then Bracket else Brace
+
+fun locOf (w : Wire) : Loc =
+  match w with
+  | Node "At" xs -> At (wholeOf (arrayGet xs 0)) (wholeOf (arrayGet xs 1))
+  | _ -> Nowhere
+
+-- A binding's value, as `wireDatum` writes one.
+fun datumOf (w : Wire) : Datum =
+  match w with
+  | Node "Sym" xs -> Datum.Sym (textOf (arrayGet xs 0))
+  | Node "Str" xs -> Datum.Str (textOf (arrayGet xs 0))
+  | Node "Int" xs -> Datum.Int (wholeOf (arrayGet xs 0))
+  | Node "Float" xs -> Datum.Float (fracOf (arrayGet xs 0))
+  | Node "Bool" xs -> Datum.Bool (wholeOf (arrayGet xs 0) == 1)
+  | Node "List" xs -> Datum.List (V.map datumOf (V.fromArray xs))
+  | Node "Rec" xs -> Datum.Rec (V.map binding (V.fromArray xs))
+  | Node "Tag" xs -> Datum.Tag (textOf (arrayGet xs 0)) (V.map datumOf (V.fromArray (childrenOf (arrayGet xs 1))))
+  | Node "Code" xs -> Datum.Code (treesOf (arrayGet xs 0))
+  | _ -> Datum.Bool False
+
+-- --- tests -------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun aWireWrittenOutReadsBackAsItWas () =
+  let w = Node "Answered" #[Node "" #[Node "Word" #[Text "a:b;", Node "At" #[Whole 3, Whole (0 - 9)]]], Text "", Node "" #[]] in
+  assertEq (fst (readWire (writeWire w) 0)) w "the same wire"
+
+-- A float comes in exactly, as an integer and a power of two, and goes out as
+-- `show` writes it -- which the compiler reads back exactly.
+@test fun aFloatCrossesExactlyEitherWay () =
+  let a = assertEq (fst (readWire "F-3e-1;" 0)) (Frac (0.0 -. 1.5)) "in" in
+  assertEq (writeWire (Frac 1.5)) "F1.5;" "out"

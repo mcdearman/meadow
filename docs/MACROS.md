@@ -358,6 +358,14 @@ makes the answers cacheable, and they are cached, on exactly the tokens it was
 given. It runs with a step budget (`MEADOW_MACRO_FUEL` to change it), so a macro
 that does not stop fails the build rather than hanging it.
 
+It runs on Glade's bytecode machine. Every macro a build can call is compiled
+into one image the first time one is called -- each behind
+`Std.Macro.Serve.serve`, which reads the call on its input and writes the answer
+on its output, as text -- and each call runs its macro's entry in it. A package
+the bytecode back end cannot translate has its macros run by the CEK machine, as
+they all once were: the same answers, a good deal more slowly.
+`MEADOW_MACRO_TIMES=1` says, for every call, which ran it and how long it took.
+
 ### Where a token was written
 
 Every token a macro is given carries a **`Loc`**: `At start end`, the bytes of
@@ -614,6 +622,15 @@ handler records every name a run looks up, so an answer is cached on the tokens
 it was given and reused only while each of those names still stands for what it
 did. A package's fingerprint already covers its dependencies', so a binding
 changing upstream rebuilds whoever read it.
+
+The answers outlive the build. Each package keeps what its calls answered in
+`target/<profile>/incremental/<name>-<options>.macros`, under a fingerprint of
+the standard library and of every package it depends on -- which is to say, of
+every macro it could have called. A later build after an edit that touched no
+macro reads them back, and a call it asks again is answered without anything
+running; so is a call set aside to wait, which is kept as a wait for the name it
+wanted. An edit to a macro, or to anything under it, is a different fingerprint,
+and every call runs again.
 
 An embedded language also wants to read _structured_ syntax rather than count
 brackets. `Std.Macro.Parse` (see [section 9](#reading-an-argument-stdmacroparse))

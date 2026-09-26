@@ -88,6 +88,12 @@ impl Cache {
         )
     }
 
+    /// Where the package called `name` keeps what its macro calls answered:
+    /// see [`crate::proc::Macros::remembering`].
+    pub fn macros(&self, name: &str) -> PathBuf {
+        self.dir.join(format!("{name}-{:016x}.macros", self.tag))
+    }
+
     /// Save `package` under `fingerprint`. Best effort: a build that cannot
     /// write its cache has still built.
     pub fn store(&self, package: &CompiledPackage, fingerprint: u64) {
@@ -183,6 +189,20 @@ pub fn fingerprint(package: &Package, deps: &[u64], opts: Options, floor: u32) -
 /// looks wrong.
 pub fn enabled() -> bool {
     std::env::var("MEADOW_INCREMENTAL").map_or(true, |v| v != "0")
+}
+
+/// What a package's macro calls are answered by, as one number: the standard
+/// library, and the fingerprints of the packages it depends on -- each of
+/// which is of its sources and its own dependencies', so an edit to a macro
+/// anywhere under it changes this. What its calls answered is kept under it
+/// (see [`crate::proc::Macros::remembering`]).
+pub fn macros_print(deps: &[u64]) -> u64 {
+    let mut h = hasher();
+    text(&mut h, crate::stdlib::fingerprint());
+    for d in deps {
+        h.write_u64(*d);
+    }
+    h.finish()
 }
 
 /// A hasher that answers the same in every process of one binary. Nothing

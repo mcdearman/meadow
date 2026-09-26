@@ -127,6 +127,12 @@ pub const MODULES: &[(&str, &str)] = &[
         include_str!("../../../lib/Std/src/Macro/Parse.mw"),
     ),
     ("Console", include_str!("../../../lib/Std/src/Console.mw")),
+    // After `Console`, which a macro run reads its call from and writes its
+    // answer to, and `Macro`, whose tokens it carries.
+    (
+        "Macro.Serve",
+        include_str!("../../../lib/Std/src/Macro/Serve.mw"),
+    ),
     // After `Console`, so `time` can print what it measured.
     ("Time", include_str!("../../../lib/Std/src/Time.mw")),
     ("Bench", include_str!("../../../lib/Std/src/Bench.mw")),
@@ -230,6 +236,12 @@ fn cache_file(opts: Options) -> Option<PathBuf> {
 
 /// The hash of the sources that produce a compiled `Std` -- see `build.rs`.
 const FINGERPRINT: &str = env!("MEADOW_STD_FINGERPRINT");
+
+/// The fingerprint of the sources the standard library is built from: what
+/// tells one `Std` from another, whoever compiled it.
+pub fn fingerprint() -> &'static str {
+    FINGERPRINT
+}
 
 /// Which compile of `Std` `opts` wants: the platform, and [`cache_key`].
 fn variant(opts: Options) -> String {

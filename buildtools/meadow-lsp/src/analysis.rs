@@ -635,6 +635,7 @@ impl Std {
         let mut here: Option<Source> = None;
         let mut modules: Vec<AstModule> = Vec::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut calls: Vec<Span> = Vec::new();
 
         for m in &sources.modules {
             let mine = m.file == open;
@@ -658,6 +659,9 @@ impl Std {
                 }
             }
             if let Some(ast) = ast {
+                if mine {
+                    calls = macro_calls(&ast);
+                }
                 modules.push(AstModule {
                     path: m.path.clone(),
                     name: m.name,
@@ -791,6 +795,7 @@ impl Std {
         mark_tests(&mut a, &pkg);
         a.ctor_paths = ctor_paths(&pkg, Some(sources.name), &deps, None);
         a.paths = path_index(&pkg, Some(sources.name), &deps, None);
+        a.leave_out_expansions(&calls);
         Some(a)
     }
 
@@ -812,6 +817,7 @@ impl Std {
         for e in &perrs {
             diagnostics.push(meadow_compiler::diagnostics::from_parse_error("main", e));
         }
+        let calls = ast.as_ref().map(macro_calls).unwrap_or_default();
 
         let modules = ast
             .map(|ast| {
@@ -907,7 +913,47 @@ impl Std {
         // its own constructors are shown from the module down.
         a.ctor_paths = ctor_paths(&pkg, package, deps, package);
         a.paths = path_index(&pkg, package, deps, package);
+        a.leave_out_expansions(&calls);
         a
+    }
+}
+
+/// Where each macro call standing for declarations is: `syntax! { … }`,
+/// `lang! { … }`, `derive! …`, attributed or not.
+fn macro_calls(ast: &meadow_compiler::span::Located<meadow_compiler::ast::Module>) -> Vec<Span> {
+    use meadow_compiler::ast::Decl;
+    fn call(d: &Decl) -> bool {
+        match d {
+            Decl::MacCall(_) => true,
+            Decl::Attributed(_, inner) => call(inner.value()),
+            _ => false,
+        }
+    }
+    ast.value()
+        .decls
+        .iter()
+        .filter(|d| call(d.value()))
+        .map(|d| d.span)
+        .collect()
+}
+
+impl Analysis {
+    /// Leave out what a macro call's expansion would otherwise put on it.
+    ///
+    /// What a macro generates is declarations like any other, and its spans
+    /// are the call's: every function it makes got a Debug lens on the call,
+    /// and every parameter a `(x : T)` hint inside it -- dozens, for a
+    /// `syntax!`. A macro call is not the code it stands for. It keeps hover
+    /// and go-to-definition, which are asked about a place, and its
+    /// diagnostics; it loses the lenses and hints, which are put on places
+    /// unasked.
+    fn leave_out_expansions(&mut self, calls: &[Span]) {
+        if calls.is_empty() {
+            return;
+        }
+        let inside = |at: u32| calls.iter().any(|c| c.start <= at && at < c.end);
+        self.functions.retain(|f| !inside(f.span.start));
+        self.binders.retain(|h| !inside(h.offset));
     }
 }
 

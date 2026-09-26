@@ -1811,3 +1811,48 @@ def main = do@uble 21
     let hover = a.hover_at(off).expect("hover");
     assert!(hover.contains("Doubles its argument."), "got: {hover}");
 }
+
+// --- a macro call is not the code it stands for -------------------------------------
+
+/// `adder!(inc)` makes `fun inc x = x + 1`, whose spans are the call's.
+const ADDER: &str = "\
+macro adder
+  | ($name) -> { fun $name x = x + 1 }
+
+adder!(inc)
+
+def main = in@c 1
+";
+
+#[test]
+fn what_a_macro_generates_gets_no_lenses_or_hints() {
+    let (a, _) = at(ADDER, "@");
+    let clean = ADDER.replacen("@", "", 1);
+    let call = clean.find("adder!(inc)").unwrap() as u32;
+    let end = call + "adder!(inc)".len() as u32;
+    let names: Vec<&str> = a.functions.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["main"], "no Debug lens on the call");
+    assert!(
+        a.binders
+            .iter()
+            .all(|h| !(call <= h.offset && h.offset < end)),
+        "no `(x : Int)` inside the call"
+    );
+}
+
+#[test]
+fn a_name_a_macro_made_still_hovers_and_goes_to_its_definition() {
+    let (a, off) = at(ADDER, "@");
+    let hover = a.hover_at(off).expect("hover");
+    assert!(hover.contains("inc"), "got: {hover}");
+    let def = a
+        .definition_at(off, &Default::default(), &Default::default())
+        .expect("definition");
+    let clean = ADDER.replacen("@", "", 1);
+    let call = clean.find("adder!(inc)").unwrap() as u32;
+    assert!(
+        def.span.start >= call && def.span.start < call + "adder!(inc)".len() as u32,
+        "into the call that made it: {:?}",
+        def.span
+    );
+}

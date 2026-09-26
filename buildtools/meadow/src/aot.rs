@@ -133,6 +133,15 @@ impl Target {
         Target::host().is_ok_and(|h| (h.arch, h.format) == (self.arch, self.format))
     }
 
+    /// The calling convention Silo's functions are in on this target: see
+    /// [`meadow_llvm::CallConv`].
+    pub fn call_conv(self) -> meadow_llvm::CallConv {
+        meadow_llvm::CallConv::for_arch(match self.arch {
+            Arch::Aarch64 => "aarch64",
+            Arch::X86_64 => "x86_64",
+        })
+    }
+
     /// The Rust target the runtime library for this is built for.
     pub fn triple(self) -> &'static str {
         match (self.arch, self.format) {
@@ -192,6 +201,10 @@ pub fn build_native(
     program: &meadow_compiler::core::Program,
     target: Target,
 ) -> Result<PathBuf, String> {
+    // Everything from here is the native half of the build, and on a large
+    // program the longest part of it: said, so that it is not taken for a
+    // hang.
+    crate::status::status("Lowering", format!("`{name}` for Silo"));
     let lowered = meadow_seq::lower_program(program, opt);
     if !lowered.unsupported.is_empty() {
         return Err(format!(
@@ -199,8 +212,8 @@ pub fn build_native(
             lowered.unsupported
         ));
     }
-    let units =
-        meadow_llvm::compile_split(&lowered.program, meadow_llvm::UNIT).map_err(|e| e.msg)?;
+    let units = meadow_llvm::compile_split(&lowered.program, meadow_llvm::UNIT, target.call_conv())
+        .map_err(|e| e.msg)?;
     let dir = native_dir(root, profile, target);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
@@ -294,6 +307,12 @@ pub fn clang_link(
         let objects: Vec<PathBuf> = modules.iter().map(|m| m.with_extension("o")).collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
         let failed: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        let bar = std::sync::Mutex::new(crate::status::Building::new(modules.len()));
+        let unit = |i: usize| {
+            modules[i]
+                .file_name()
+                .map_or(String::new(), |n| n.to_string_lossy().into_owned())
+        };
         let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
         std::thread::scope(|scope| {
             for _ in 0..cores.min(modules.len()) {
@@ -303,6 +322,9 @@ pub fn clang_link(
                         if i >= modules.len() {
                             return;
                         }
+                        bar.lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .working_on(&unit(i));
                         let mut cmd = Command::new(&clang);
                         cmd.arg(level)
                             .arg("-c")
@@ -318,15 +340,24 @@ pub fn clang_link(
                                 .get_or_insert(e);
                             return;
                         }
+                        let mut bar = bar.lock().unwrap_or_else(|p| p.into_inner());
+                        bar.step();
+                        bar.working_on(&unit(i));
                     }
                 });
             }
         });
+        drop(bar);
         if let Some(e) = failed.into_inner().unwrap_or_else(|p| p.into_inner()) {
             return Err(e);
         }
         objects
     };
+    crate::status::status(
+        "Linking",
+        exe.file_name()
+            .map_or(String::new(), |n| n.to_string_lossy().into_owned()),
+    );
     let mut cmd = Command::new(&clang);
     cmd.arg(level)
         .arg("-Wno-override-module")

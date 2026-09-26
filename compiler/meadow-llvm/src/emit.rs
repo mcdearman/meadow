@@ -166,6 +166,9 @@ fn knots(program: &Program, want: &dyn Fn(&Prim, &[Name]) -> bool) -> bool {
 /// The module being written.
 pub struct Module<'p> {
     program: &'p Program,
+    /// The calling convention of every function the module defines: see
+    /// [`CallConv`].
+    cc: &'static str,
     /// Every function written, as text, with how many parameters it takes
     /// in registers -- for declaring it in the other units: see
     /// [`Module::units`].
@@ -212,9 +215,10 @@ pub struct Module<'p> {
 }
 
 impl<'p> Module<'p> {
-    pub fn new(program: &'p Program) -> Module<'p> {
+    pub fn new(program: &'p Program, conv: CallConv) -> Module<'p> {
         Module {
             program,
+            cc: conv.keyword(),
             funs: Vec::new(),
             methods: Vec::new(),
             pending: Vec::new(),
@@ -409,7 +413,7 @@ impl<'p> Module<'p> {
             .collect::<Vec<_>>()
             .join(", ");
         let r = f.t();
-        f.i(format!("{r} = tail call ghccc i64 {callee}({list})"));
+        f.i(format!("{r} = tail call {} i64 {callee}({list})", self.cc));
         f.i(format!("ret i64 {r}"));
         Ok(())
     }
@@ -430,7 +434,8 @@ impl<'p> Module<'p> {
             .max(f.spill)
             .max(f.params.len().saturating_sub(REGS));
         let text = format!(
-            "define {linkage} ghccc i64 {}({}) noinline {{\nentry:\n{}{}{}}}\n\n",
+            "define {linkage} {} i64 {}({}) noinline {{\nentry:\n{}{}{}}}\n\n",
+            self.cc,
             f.name,
             f.params
                 .iter()
@@ -1267,14 +1272,14 @@ impl<'p> Module<'p> {
         match frame {
             None => {
                 let r = f.t();
-                f.i(format!("{r} = tail call ghccc i64 {callee}({list})"));
+                f.i(format!("{r} = tail call {} i64 {callee}({list})", self.cc));
                 f.i(format!("ret i64 {r}"));
                 Ok(())
             }
             Some(fr) => {
                 let pushed = self.shadow_push(&fr, env, f);
                 let r = f.t();
-                f.i(format!("{r} = call ghccc i64 {callee}({list})"));
+                f.i(format!("{r} = call {} i64 {callee}({list})", self.cc));
                 if let Some((slot, prev)) = pushed {
                     f.i(format!("store i64 {prev}, ptr {slot}"));
                 }
@@ -2214,7 +2219,7 @@ impl<'p> Module<'p> {
                 if i == 0 {
                     out.push_str(&first_only);
                 }
-                out.push_str(&declarations(&body, &arity));
+                out.push_str(&declarations(&body, &arity, self.cc));
                 out.push_str(&body);
                 out
             })
@@ -2271,7 +2276,7 @@ impl<'p> Module<'p> {
         let _ = writeln!(out, "; A Meadow program, compiled by meadow-llvm.\n");
         out.push_str(RUNTIME);
         out.push_str(&helpers(self.cycles, self.regions));
-        out.push_str(INVOKE1);
+        out.push_str(&INVOKE1.replace("ghccc", self.cc));
         let _ = writeln!(out, "@meadow_silo_{fingerprint} = external global i8");
         let _ = writeln!(
             out,
@@ -2349,8 +2354,8 @@ impl<'p> Module<'p> {
             Entries::Main(entry) => {
                 let _ = writeln!(
                     out,
-                    "define i64 @meadow_entry() {{\n  %r = call ghccc i64 @mw.L{}(i64 0)\n  ret i64 %r\n}}\n",
-                    entry.0
+                    "define i64 @meadow_entry() {{\n  %r = call {} i64 @mw.L{}(i64 0)\n  ret i64 %r\n}}\n",
+                    self.cc, entry.0
                 );
                 out.push_str(
                     "define i32 @main(i32 %argc, ptr %argv) {\n  \
@@ -2363,8 +2368,8 @@ impl<'p> Module<'p> {
                 for (i, l) in labels.iter().enumerate() {
                     let _ = writeln!(
                         out,
-                        "define i64 @meadow_test{i}() {{\n  %r = call ghccc i64 @mw.L{}(i64 0)\n  ret i64 %r\n}}\n",
-                        l.0
+                        "define i64 @meadow_test{i}() {{\n  %r = call {} i64 @mw.L{}(i64 0)\n  ret i64 %r\n}}\n",
+                        self.cc, l.0
                     );
                     table.push(format!("ptr @meadow_test{i}"));
                 }
@@ -2384,7 +2389,7 @@ impl<'p> Module<'p> {
 
 /// Declarations of the functions `body` calls and does not define, which
 /// another unit does.
-fn declarations(body: &str, arity: &HashMap<&str, usize>) -> String {
+fn declarations(body: &str, arity: &HashMap<&str, usize>, cc: &str) -> String {
     let mut defined = std::collections::HashSet::new();
     let mut used = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -2414,7 +2419,7 @@ fn declarations(body: &str, arity: &HashMap<&str, usize>) -> String {
     for name in used {
         if !defined.contains(name) {
             let params = vec!["i64"; arity[name]].join(", ");
-            let _ = writeln!(out, "declare hidden ghccc i64 {name}({params})");
+            let _ = writeln!(out, "declare hidden {cc} i64 {name}({params})");
         }
     }
     out.push('\n');
@@ -2566,11 +2571,54 @@ fn lit_desc(l: &Lit) -> i64 {
 }
 
 /// How many of a function's parameters travel in registers. The functions are
-/// in LLVM's GHC convention, which passes ten words in registers on x86-64 and
-/// more on aarch64, and whose tail calls LLVM makes as long as nothing goes on
-/// the stack: `tailcc` guarantees them too, but on Windows only for arguments
-/// that fit its four registers, and an AxCut environment is often bigger.
+/// in LLVM's GHC convention on x86-64, which passes ten words in registers,
+/// and whose tail calls LLVM makes as long as nothing goes on the stack:
+/// `tailcc` guarantees them too, but on Windows only for arguments that fit
+/// its four registers, and an AxCut environment is often bigger. On aarch64
+/// they are in `tailcc` (see [`CallConv`]), which passes eight in registers
+/// and the rest on the stack, and guarantees the tail calls either way.
 const REGS: usize = 10;
+
+/// The calling convention a module's functions are in.
+///
+/// **`ghccc`** on x86-64: no callee-saved registers, everything in registers,
+/// and every `tail call` a jump -- on Windows too, where `tailcc` is not up to
+/// an AxCut environment's size.
+///
+/// **`tailcc`** on aarch64, where `ghccc` cannot be used at all: LLVM gives a
+/// GHC-convention function no prologue there -- GHC keeps its own stack -- so
+/// the link register is never saved, and it does not make GHC-convention
+/// tail calls. A `tail call` became `bl` then `ret`, and the `ret` returned to
+/// itself for ever. `tailcc` has ordinary prologues, and LLVM guarantees its
+/// marked tail calls on aarch64 whatever is passed on the stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallConv {
+    Ghc,
+    Tail,
+}
+
+impl CallConv {
+    /// The convention for code that runs on `arch`, as Rust names it:
+    /// `x86_64`, `aarch64`.
+    pub fn for_arch(arch: &str) -> CallConv {
+        match arch {
+            "aarch64" => CallConv::Tail,
+            _ => CallConv::Ghc,
+        }
+    }
+
+    /// The convention for code that runs on this machine.
+    pub fn host() -> CallConv {
+        CallConv::for_arch(std::env::consts::ARCH)
+    }
+
+    fn keyword(self) -> &'static str {
+        match self {
+            CallConv::Ghc => "ghccc",
+            CallConv::Tail => "tailcc",
+        }
+    }
+}
 
 /// What does not fit [`REGS`] goes through the running thread's spill area
 /// (`meadow_spill_area`): stored just before the call, and loaded by the
@@ -2861,7 +2909,8 @@ done:
 /// How the runtime runs a closure of one argument -- the code after a stack
 /// segment primitive (`silo/src/segments.rs`) -- when the methods are in a
 /// calling convention Rust cannot call: method 0 of `obj`, found as an
-/// `invoke` finds it, called from the C convention.
+/// `invoke` finds it, called from the C convention. Written for `ghccc`, and
+/// given the module's own convention where it is used.
 const INVOKE1: &str = "\
 define i64 @meadow_invoke1(i64 %obj, i64 %arg) {
 entry:

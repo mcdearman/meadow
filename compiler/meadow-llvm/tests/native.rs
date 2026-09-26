@@ -132,8 +132,8 @@ fn run_units(
             .unwrap_or_else(|e| panic!("the AxCut machine failed: {}", e.msg))
             .to_string()
     });
-    let units =
-        meadow_llvm::compile_split(&lowered.program, unit).unwrap_or_else(|e| panic!("{}", e.msg));
+    let units = meadow_llvm::compile_split(&lowered.program, unit, meadow_llvm::CallConv::host())
+        .unwrap_or_else(|e| panic!("{}", e.msg));
     let dir = std::env::temp_dir().join("meadow-llvm-tests").join(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -188,6 +188,38 @@ fn run_units(
         "{name} leaked: {stderr}"
     );
     (got, stderr)
+}
+
+#[test]
+fn aarch64_code_is_never_in_the_ghc_convention() {
+    // LLVM gives a GHC-convention function no prologue on aarch64 and does
+    // not make its tail calls, so a call there returned to itself for ever.
+    // Every function, call and declaration is `tailcc` instead -- and
+    // x86-64 keeps `ghccc`.
+    let prog = program(
+        "fun count (lo : n) (hi : n) : Int =\n\
+         \x20 let rec go i k = if i >= hi then k else go (i + 1) (k + 1)\n\
+         \x20 in go lo 0\n\
+         def main = count 0 10\n",
+    );
+    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::O2);
+    let text = |arch| {
+        meadow_llvm::compile_split(&lowered.program, 1, meadow_llvm::CallConv::for_arch(arch))
+            .unwrap_or_else(|e| panic!("{}", e.msg))
+            .concat()
+    };
+    let a64 = text("aarch64");
+    assert!(!a64.contains("ghccc"), "ghccc in aarch64 code");
+    assert!(
+        a64.contains("tail call tailcc"),
+        "its tail calls are tailcc"
+    );
+    assert!(
+        a64.contains("declare hidden tailcc"),
+        "and so are its declarations"
+    );
+    let x64 = text("x86_64");
+    assert!(!x64.contains("tailcc") && x64.contains("tail call ghccc"));
 }
 
 #[test]

@@ -48,9 +48,11 @@ pub fn fingerprint() -> &'static str {
     env!("MEADOW_SILO_FINGERPRINT")
 }
 
-/// `program` as an LLVM module, as text.
-pub fn compile(program: &Program) -> Result<String, Error> {
-    Ok(compile_split(program, usize::MAX)?.remove(0))
+pub use emit::CallConv;
+
+/// `program` as an LLVM module, as text, its functions in `conv`.
+pub fn compile(program: &Program, conv: CallConv) -> Result<String, Error> {
+    Ok(compile_split(program, usize::MAX, conv)?.remove(0))
 }
 
 /// About how much of a program each of the modules [`compile_split`] makes
@@ -58,12 +60,13 @@ pub fn compile(program: &Program) -> Result<String, Error> {
 pub const UNIT: usize = 2 << 20;
 
 /// `program` as LLVM modules of about `unit` bytes each, to compile apart and
-/// link: see `emit::Module::units`.
-pub fn compile_split(program: &Program, unit: usize) -> Result<Vec<String>, Error> {
+/// link: see `emit::Module::units`. Their functions are in `conv`, which is
+/// the target's: see [`CallConv`].
+pub fn compile_split(program: &Program, unit: usize, conv: CallConv) -> Result<Vec<String>, Error> {
     let entry = program.entry.ok_or_else(|| Error {
         msg: "the program has no entry point".into(),
     })?;
-    let mut module = emit::Module::new(program);
+    let mut module = emit::Module::new(program, conv);
     for d in &program.defs {
         let lb = linear::block(program, &d.block).map_err(|e| Error {
             msg: format!("in {}: {}", d.name, e.msg),
@@ -88,8 +91,9 @@ pub fn compile_tests(
     program: &Program,
     tests: &[meadow_seq::Label],
     unit: usize,
+    conv: CallConv,
 ) -> Result<Vec<String>, Error> {
-    let mut module = emit::Module::new(program);
+    let mut module = emit::Module::new(program, conv);
     for d in &program.defs {
         let lb = linear::block(program, &d.block).map_err(|e| Error {
             msg: format!("in {}: {}", d.name, e.msg),

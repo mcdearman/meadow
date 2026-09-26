@@ -308,6 +308,14 @@ jump -- on Windows too, where `tailcc` with `musttail` is not supported. It
 passes ten arguments in registers; a block with more takes the rest from
 `meadow_spill`, a thread-local area the caller fills just before the jump.
 
+On aarch64 the convention is `tailcc` instead. There LLVM gives a `ghccc`
+function no prologue -- GHC keeps its own stack -- so the link register is
+never saved, and it makes no `ghccc` tail calls: a `tail call` became `bl`
+then `ret`, and the `ret` returned to itself for ever. `tailcc` functions
+have ordinary prologues, and LLVM guarantees their marked tail calls on
+aarch64 whatever goes on the stack. The emitter is told which
+(`meadow_llvm::CallConv`); the IR is otherwise the same.
+
 Reference counting is calls to small helpers the module defines (`mw.share`,
 `mw.erase`, and forms that look at a descriptor first), which LLVM inlines where
 it pays: emitting the checks at every site made the standard library's module

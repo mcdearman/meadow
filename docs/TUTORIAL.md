@@ -41,7 +41,7 @@ On Windows, download `meadowup-x86_64.exe` from the
 
 Either way, `meadowup` installs itself and `meadow` into `~/.meadow/bin`, and
 `meadowup update` keeps them current. To build from a checkout instead, run
-`scripts/install.sh --local .`.
+`scripts/install.sh` in it.
 
 ### Your first program
 
@@ -1912,7 +1912,7 @@ value and copies nothing.
 A package is a directory with a `Meadow.toml` and a `src/`:
 
 ```
-myapp/
+MyApp/
   Meadow.toml
   src/
     Main.mw
@@ -1921,11 +1921,11 @@ myapp/
 
 ```toml
 [package]
-name = "myapp"
+name = "MyApp"
 version = "0.1.0"
 ```
 
-`meadow run myapp` builds it and evaluates `main`. A single `.mw` file also counts
+`meadow run MyApp` builds it and evaluates `main`. A single `.mw` file also counts
 as a package, which is why `meadow run hello.mw` works.
 
 Module files, and any directories under `src/`, are PascalCase: each is a name
@@ -1947,14 +1947,14 @@ sibling's names arrive through a `use`, and never for free.
 
 ```meadow
 -- src/Main.mw  (a second file in the same package)
-use myapp.Math (double)       -- the package name, then the module
+use MyApp.Math (double)       -- the package name, then the module
 
 def main = double 21
 ```
 
 The path starts with the package's own name, which is what `Meadow.toml` says —
-`use myapp.Math`. The name on its own is the root module (`Main.mw` or `Lib.mw`),
-as `crate` is in Rust: a child module writes `use myapp (helper)` to reach
+`use MyApp.Math`. The name on its own is the root module (`Main.mw` or `Lib.mw`),
+as `crate` is in Rust: a child module writes `use MyApp (helper)` to reach
 something the root declares. The plain `use Math (double)` works too and means the same
 thing; the longer form is the one to write when it is not obvious that `Math` is
 next door rather than a dependency.
@@ -1962,9 +1962,9 @@ next door rather than a dependency.
 Every `use` form works on a sibling:
 
 ```meadow
-use myapp.Math               -- everything it exports, unqualified
-use myapp.Math as M          -- M.double, and nothing unqualified
-use myapp.Math (double)      -- just `double`
+use MyApp.Math               -- everything it exports, unqualified
+use MyApp.Math as M          -- M.double, and nothing unqualified
+use MyApp.Math (double)      -- just `double`
 ```
 
 Because the namespaces are separate, two modules of one package may both define
@@ -1981,7 +1981,7 @@ that declares it a constructor is written `Expr.Int`:
 
 ```meadow
 -- src/Eval.mw
-use myapp.Syntax (Expr)      -- the type; its constructors stay `Expr.Int`
+use MyApp.Syntax (Expr)      -- the type; its constructors stay `Expr.Int`
 
 @pub(pkg) fun eval e = match e with
   | Expr.Int n -> n
@@ -1992,23 +1992,23 @@ To write them bare, put the type on the end of the path — Rust's
 `use Expr::{Int, Add}`:
 
 ```meadow
-use myapp.Syntax.Expr            -- just the type, same as `use myapp.Syntax (Expr)`
-use myapp.Syntax.Expr (Int, Add) -- those two constructors, unqualified
-use myapp.Syntax.Expr.*          -- every constructor of `Expr`, unqualified
+use MyApp.Syntax.Expr            -- just the type, same as `use MyApp.Syntax (Expr)`
+use MyApp.Syntax.Expr (Int, Add) -- those two constructors, unqualified
+use MyApp.Syntax.Expr.*          -- every constructor of `Expr`, unqualified
 ```
 
-Nothing else flattens them: not naming the type, and not a bare `use myapp.Syntax`,
+Nothing else flattens them: not naming the type, and not a bare `use MyApp.Syntax`,
 which brings the module's values, types and effects but leaves constructors under
-their types. `use myapp.Syntax (Int)` is an error that says where `Int` lives.
+their types. `use MyApp.Syntax (Int)` is an error that says where `Int` lives.
 That holds inside `Syntax.mw` too: it writes `Expr.Int`, or says `use Expr.*`
 once -- Rust's `use self::Expr::*` -- and then `Int`. The prelude re-exports
 `Just`, `None`, `Ok`, `Err` and `Ordering`'s three with `@pub use ... .*`, which is
 the only reason those need no `use` anywhere.
 
 A package's root module can do the same for its users, as a Rust crate root does
-with `pub use Ty::*`. After `@pub use mylib.Shapes.Shape.*` in `mylib`'s
-`Lib.mw`, a dependent writes `use mylib (Square)` to bring in one constructor,
-or a bare `use mylib` to bring in all of them.
+with `pub use Ty::*`. After `@pub use MyLib.Shapes.Shape.*` in `MyLib`'s
+`Lib.mw`, a dependent writes `use MyLib (Square)` to bring in one constructor,
+or a bare `use MyLib` to bring in all of them.
 
 ### Visibility: `@pub`, `@pub(pkg)`, `@pub(super)`
 
@@ -2084,28 +2084,28 @@ puts `toDatum` and `fromDatum` in scope, since a trait is named to be used.
 
 ```toml
 [package]
-name = "app"
+name = "App"
 version = "0.1.0"
 
 [dependencies]
-util = { path = "../util" }
+Util = { path = "../Util" }
 ```
 
-Then `use util` for all of it, `use util (double)` for one name, or
-`use util as U` to keep it behind a qualifier. Only `@pub` names cross the
+Then `use Util` for all of it, `use Util (double)` for one name, or
+`use Util as U` to keep it behind a qualifier. Only `@pub` names cross the
 boundary.
 
 A dependency's types can be named without a `use`, and each package's types
-are its own. If `shapes` and `figures` both declare a `Shape`, they are two
+are its own. If `Shapes` and `Figures` both declare a `Shape`, they are two
 types: a value of one is not a value of the other, and a program may use both.
 A type mismatch between them says which package each one comes from:
 
 ```
-type mismatch: `Shape` (from `shapes@0.1.0`) vs `Shape` (from `figures@0.1.0`)
+type mismatch: `Shape` (from `Shapes@0.1.0`) vs `Shape` (from `Figures@0.1.0`)
 ```
 
 Written bare, such a name could be either one, so it is an error until a `use`
-picks one: `use shapes (Shape)`. A type your own package declares needs no
+picks one: `use Shapes (Shape)`. A type your own package declares needs no
 `use`: it shadows any other type of the same name, including one from the
 prelude, so a program may declare its own `Parser`.
 
@@ -2120,7 +2120,7 @@ meadow add mcdearman/meadow-unicode-width
 
 ```toml
 [dependencies]
-unicodeWidth = { git = "https://github.com/mcdearman/meadow-unicode-width", version = "0.1.0" }
+UnicodeWidth = { git = "https://github.com/mcdearman/meadow-unicode-width", version = "0.1.0" }
 ```
 
 A package's **releases** are the tags that read as versions: `v1.2.0`, or
@@ -2141,7 +2141,7 @@ Which release a build actually used is in `meadow.lock`, with the commit:
 
 ```toml
 [[package]]
-name = "unicodeWidth"
+name = "UnicodeWidth"
 source = "git+https://github.com/mcdearman/meadow-unicode-width?version=0.1.0"
 version = "0.1.4"
 rev = "fa95092300d547891f5e1ecbd100b7e2438e1058"
@@ -2152,7 +2152,7 @@ again takes the same thing, however many releases have happened since —
 `meadow update` is what looks for a newer one, and it says so in versions:
 
 ```
-Updating widget 0.1.3 -> 0.1.4
+Updating Widget 0.1.3 -> 0.1.4
 ```
 
 It never crosses a break: a `version = "0.1.0"` dependency does not move to
@@ -2167,7 +2167,7 @@ still say exactly what to take, and a dependency pinned with `rev` cannot move.
 cannot be met together — `0.1` and `0.2` of the same package. Both are built,
 and each gets the one it asked for. They are then _different packages_: their
 types are different types, and a value of one does not pass for the other.
-That is what the version in `Shape (from shapes@0.1.0)` is saying. Anything
+That is what the version in `Shape (from Shapes@0.1.0)` is saying. Anything
 that _can_ share a release does: two packages wanting `1.0` and `1.2` both get
 `1.2`, and the build holds one copy.
 
@@ -2180,25 +2180,25 @@ build profiles, and whatever they declare there once.
 ```
 shop/
   Meadow.toml          the workspace
-  app/
+  App/
     Meadow.toml
     src/Main.mw
   libs/
-    text/  Meadow.toml  src/Lib.mw
-    util/  Meadow.toml  src/Lib.mw
+    Text/  Meadow.toml  src/Lib.mw
+    Util/  Meadow.toml  src/Lib.mw
 ```
 
 ```toml
 # shop/Meadow.toml
 [workspace]
-members = ["app", "libs/*"]
+members = ["App", "libs/*"]
 
 [workspace.package]
 version = "0.3.0"
 
 [workspace.dependencies]
-util = { path = "libs/util" }
-text = { path = "libs/text" }
+Util = { path = "libs/Util" }
+Text = { path = "libs/Text" }
 
 [profile.release]
 opt-level = 2
@@ -2209,18 +2209,18 @@ path, so `libs/*` is every package under `libs`. A member takes what the
 workspace declares by saying `workspace = true`:
 
 ```toml
-# shop/app/Meadow.toml
+# shop/App/Meadow.toml
 [package]
-name = "app"
+name = "App"
 version.workspace = true
 
 [dependencies]
-util = { workspace = true }
-text.workspace = true         # the same thing, spelled the other way
+Util = { workspace = true }
+Text.workspace = true         # the same thing, spelled the other way
 ```
 
 ```meadow
--- libs/util/src/Lib.mw
+-- libs/Util/src/Lib.mw
 use Std.Test
 
 @pub fun double x = x * 2
@@ -2230,16 +2230,16 @@ fun doubles () = assertEq (double 4) 8 "double 4"
 ```
 
 ```meadow
--- libs/text/src/Lib.mw
-use util (double)
+-- libs/Text/src/Lib.mw
+use Util (double)
 
 @pub fun label s = "${s} x${double 1}"
 ```
 
 ```meadow
--- app/src/Main.mw
-use util (double)
-use text (label)
+-- App/src/Main.mw
+use Util (double)
+use Text (label)
 
 def main = (double 21, label "b")
 ```
@@ -2248,28 +2248,28 @@ Commands work from anywhere inside the workspace, and three flags pick the
 packages:
 
 ```sh
-$ meadow run -p app              # a member, by name
+$ meadow run -p App              # a member, by name
 => (42, "b x2")
-$ cd app && meadow run           # or the member you are in
+$ cd App && meadow run           # or the member you are in
 => (42, "b x2")
 $ meadow test --workspace        # every member
 running 1 test
-test util.doubles ... ok
+test Util.doubles ... ok
 
 test result: ok. 1 passed; 0 failed
-$ meadow build --workspace --exclude app
+$ meadow build --workspace --exclude App
 ```
 
 - `-p NAME` (or `--package`) names a member, and can be repeated.
 - `--workspace` (or `--all`) is every member; `--exclude NAME` leaves one out.
 - With neither, a command at the root means the members listed in
-  `default-members = ["app"]` if there is one, and otherwise every member.
+  `default-members = ["App"]` if there is one, and otherwise every member.
   `meadow run` needs exactly one, and says which to choose from if it is given
   more.
 
-Testing several packages names each test after its package, `util.doubles`,
+Testing several packages names each test after its package, `Util.doubles`,
 which is its `use` path. Only the chosen packages' tests run, never those of
-what they depend on: `meadow test` in `app` runs `app`'s.
+what they depend on: `meadow test` in `App` runs `App`'s.
 
 What being a member changes:
 
@@ -2296,12 +2296,12 @@ already covers it:
 
 ```sh
 $ meadow init --workspace shop && cd shop
-$ meadow init app
-created package `app` at app
-  app/Meadow.toml
-  app/src/Main.mw
+$ meadow init App
+created package `App` at App
+  App/Meadow.toml
+  App/src/Main.mw
   Meadow.toml
-added `app` to the members of .
+added `App` to the members of .
 ```
 
 ### Incremental builds
@@ -2317,9 +2317,9 @@ it again, as long as nothing it was compiled from has changed:
 - the packages it depends on.
 
 That last point is what makes it work across a workspace. A change reaches
-exactly the packages downstream of it. Edit `app` and only `app` is compiled.
-Edit `util` and `util`, `text` and `app` are compiled, but not a member that
-does not use `util`. The embedded standard library is saved there too, which
+exactly the packages downstream of it. Edit `App` and only `App` is compiled.
+Edit `Util` and `Util`, `Text` and `App` are compiled, but not a member that
+does not use `Util`. The embedded standard library is saved there too, which
 is most of what a small program's build used to spend its time on.
 
 What is read back is what compiling would have made: the types, the code and the

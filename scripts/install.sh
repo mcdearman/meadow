@@ -1,17 +1,22 @@
 #!/bin/sh
 # Builds Meadow from source and installs it, on macOS and Linux.
 #
-#   scripts/install.sh --local .
+#   scripts/install.sh
 #
 # This is for working on Meadow, or for a machine with no release build. To
 # install a release, use scripts/meadowup-init.sh instead:
 #
 #   curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
 #
-# Builds the whole toolchain from source -- `meadow`, the build system, and
-# `meadowup`, which looks after which version of Meadow you have -- and installs
-# both. Nothing is downloaded but the source. It needs a Rust toolchain and takes
-# a few minutes.
+# Builds the whole toolchain from source -- `meadow` (the compiler, the build
+# system and the language server) and `meadowup`, which looks after which
+# version of Meadow you have -- and installs both. It needs a Rust toolchain and
+# takes a few minutes.
+#
+# The source is the checkout this script is in, when it is in one. Otherwise --
+# piped from curl, or asked for a `--version` -- it is cloned into
+# ~/.meadow/src, and that is all that is downloaded. `--local <path>` builds a
+# checkout somewhere else.
 #
 # What ends up on disk is exactly what `meadowup install` would have put there:
 # the binaries in ~/.meadow/bin, and your PATH edited to find them. That is
@@ -21,8 +26,8 @@
 # installed too, `meadowup update` moves a source build on to the next release
 # like any other install.
 #
-# Working on Meadow itself? `--local .` builds this checkout, and
-# `--with-extension` builds and installs the VS Code extension alongside it.
+# Working on Meadow itself? `--with-extension` builds and installs the VS Code
+# extension alongside it.
 #
 # Run with --help for the options.
 
@@ -93,8 +98,8 @@ Builds the Meadow toolchain from source and installs it.
 
     scripts/install.sh [options]
 
-    --version <TAG>    build that tag, rather than the newest source
-    --local <PATH>     build a checkout already on disk
+    --version <TAG>    fetch and build that tag, rather than this checkout
+    --local <PATH>     build the checkout at PATH, rather than this one
     --with-extension   also build and install the VS Code extension
     --no-modify-path   do not touch your shell profiles
     --uninstall        remove Meadow and undo the PATH entry

@@ -2807,7 +2807,35 @@ fn native_console(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                 Err(e) => err(format!("Console.readLine: {e}")),
             }
         }
+        "readExact" => {
+            let Value::Int(n) = arg else {
+                return err(format!("Console.readExact: expected an Int, got {arg}"));
+            };
+            match read_bytes(n) {
+                Ok(Some(text)) => Ok(Value::ctor(
+                    InternedString::from("Maybe.Just"),
+                    vec![Value::Str(InternedString::from(text.as_str()))],
+                )),
+                Ok(None) => Ok(Value::ctor(InternedString::from("Maybe.None"), vec![])),
+                Err(e) => err(format!("Console.readExact: {e}")),
+            }
+        }
         other => err(format!("unhandled effect Console.{other}")),
+    }
+}
+
+/// Exactly `n` bytes of standard input, as text -- `None` if it ends first.
+/// What a protocol that frames its messages by length reads a message with,
+/// the Language Server Protocol's `Content-Length` among them: its body ends
+/// in no newline for `readLine` to stop at. It reads through the same buffer
+/// `readLine` does, so the two can take turns.
+pub fn read_bytes(n: i64) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+    let mut buf = vec![0u8; n.max(0) as usize];
+    match std::io::stdin().lock().read_exact(&mut buf) {
+        Ok(()) => Ok(Some(String::from_utf8_lossy(&buf).into_owned())),
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+        Err(e) => Err(e),
     }
 }
 

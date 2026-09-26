@@ -255,6 +255,22 @@ fn console(op: &str, arg: Val) -> Option<Build> {
                 Err(e) => fail(format!("Console.readLine: {e}")),
             }
         }
+        "readExact" => {
+            use std::io::Read;
+            let _ = std::io::stdout().flush();
+            let n = arg.word() as i64;
+            let mut buf = vec![0u8; n.max(0) as usize];
+            match std::io::stdin().lock().read_exact(&mut buf) {
+                Ok(()) => Build::Data(
+                    "Maybe.Just",
+                    vec![Build::Str(String::from_utf8_lossy(&buf).into_owned())],
+                ),
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    Build::Data("Maybe.None", vec![])
+                }
+                Err(e) => fail(format!("Console.readExact: {e}")),
+            }
+        }
         _ => return None,
     })
 }

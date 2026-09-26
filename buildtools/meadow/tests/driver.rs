@@ -156,3 +156,64 @@ fn a_program_that_does_not_compile_is_not_run() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `meadow` in `dir`, with `input` on its standard input.
+fn meadow_fed(dir: &Path, args: &[&str], input: &str) -> (bool, String) {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_meadow"))
+        .current_dir(dir)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("the meadow binary runs");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn a_message_framed_by_its_length_is_read_whole() {
+    // The Language Server Protocol's framing: a header, a blank line, and a
+    // body that no newline ends -- `readLine` for the first two, `readExact`
+    // for the last. The two read through one buffer, so they take turns.
+    let dir = scratch("framed");
+    let root = package(
+        &dir,
+        "framed",
+        "use Std.Console (readLine, readExact)
+use Std.String as S
+
+fun loop (n : Int) =
+  match readLine () with
+  | None -> println \"${show n} read\"
+  | Just header ->
+      let blank = readLine () in
+      match S.toInt (S.trim (S.drop header 15)) with
+      | None -> println \"bad header\"
+      | Just k -> (match readExact k with
+          | Just body -> (let u = println \"[${body}]\" in loop (n + 1))
+          | None -> println \"cut short\")
+
+def main = loop 0
+",
+    );
+    let input = "Content-Length: 7\r\n\r\n{\"a\":1}Content-Length: 14\r\n\r\n{\"method\":\"x\"}Content-Length: 50\r\n\r\nshort";
+    for backend in ["jit", "vm"] {
+        let (ok, out) = meadow_fed(&root, &["run", "--backend", backend], input);
+        assert!(ok, "{backend}: {out}");
+        assert!(
+            out.contains("[{\"a\":1}]\n[{\"method\":\"x\"}]\ncut short\n"),
+            "{backend}: {out}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

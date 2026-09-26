@@ -542,6 +542,13 @@ impl Vm<'_> {
                         None => Build::Data("Maybe.None", vec![]),
                     }));
                 }
+                // What was written before the program waits on its input is
+                // what whoever gives the input may be waiting for -- a prompt,
+                // or a reply the next request depends on.
+                {
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                }
                 let mut line = String::new();
                 match std::io::stdin().lock().read_line(&mut line) {
                     // Zero bytes is end of input, not an empty line: an empty
@@ -553,6 +560,29 @@ impl Vm<'_> {
                         Build::Data("Maybe.Just", vec![Build::Str(line.to_string())])
                     }
                     Err(e) => return err(format!("Console.readLine: {e}")),
+                }
+            }
+            "readExact" => {
+                let n = match arg {
+                    Value::Int(n) => n,
+                    other => {
+                        return err(format!("Console.readExact: expected an Int, got {other:?}"));
+                    }
+                };
+                let read = {
+                    use std::io::{Read, Write};
+                    let _ = std::io::stdout().flush();
+                    let mut buf = vec![0u8; n.max(0) as usize];
+                    match std::io::stdin().lock().read_exact(&mut buf) {
+                        Ok(()) => Ok(Some(String::from_utf8_lossy(&buf).into_owned())),
+                        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+                        Err(e) => Err(e),
+                    }
+                };
+                match read {
+                    Ok(Some(text)) => Build::Data("Maybe.Just", vec![Build::Str(text)]),
+                    Ok(None) => Build::Data("Maybe.None", vec![]),
+                    Err(e) => return err(format!("Console.readExact: {e}")),
                 }
             }
             _ => return Ok(None),

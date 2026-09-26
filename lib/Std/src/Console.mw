@@ -43,6 +43,10 @@ use Std.Collections.Vector (vecFromArray)
   writeOutput : String -> (),
   -- The next line, without its line terminator. `None` at end of input.
   readLine : () -> Maybe String,
+  -- Exactly this many bytes of input, as text. `None` if it ends first. What a
+  -- protocol that frames messages by length -- the Language Server Protocol's
+  -- `Content-Length` -- reads a message's body with, since nothing ends it.
+  readExact : Int -> Maybe String,
 }
 
 -- --- writing ------------------------------------------------------------------

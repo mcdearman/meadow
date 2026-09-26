@@ -414,7 +414,12 @@ fn rev_parse(db: &Path, what: &str) -> Result<String, String> {
 fn tree_of(db: &Path, rev: &str) -> Result<String, String> {
     let out = git(
         Some(db),
-        &["rev-parse", "--end-of-options", &format!("{rev}^{{tree}}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{rev}^{{tree}}"),
+        ],
     )?;
     Ok(out.trim().to_string())
 }
@@ -686,7 +691,22 @@ mod live {
             "no manifest in the checkout"
         );
         assert_eq!(got.rev.len(), 40, "a full commit name");
-        assert!(!got.tree.is_empty(), "a tree hash");
+        // The tree hash itself, and nothing else: `rev-parse` echoes an option
+        // it does not take, and once wrote `--end-of-options` into lockfiles.
+        let want = Command::new("git")
+            .args(["-C", &url, "rev-parse", &format!("{}^{{tree}}", got.rev)])
+            .output()
+            .expect("git runs");
+        assert_eq!(
+            got.tree,
+            String::from_utf8_lossy(&want.stdout).trim(),
+            "the tree"
+        );
+        assert!(
+            got.tree.len() == 40 && got.tree.chars().all(|c| c.is_ascii_hexdigit()),
+            "a tree hash and only that: {:?}",
+            got.tree
+        );
 
         // Asking again with the commit pinned must not need the network.
         let again =

@@ -919,13 +919,19 @@ impl Std {
 }
 
 /// Where each macro call standing for declarations is: `syntax! { … }`,
-/// `lang! { … }`, `derive! …`, attributed or not.
+/// `lang! { … }`, `derive! …`, attributed or not -- and each declaration
+/// with a `@derive(…)` on it.
 fn macro_calls(ast: &meadow_compiler::span::Located<meadow_compiler::ast::Module>) -> Vec<Span> {
     use meadow_compiler::ast::Decl;
+    // A `@derive(…)` is a macro call too -- `@derive(Lexer)` writes a whole
+    // lexer -- and what it writes has the declaration's spans. The `data` it
+    // is on has no functions or parameters of its own to lose.
     fn call(d: &Decl) -> bool {
         match d {
             Decl::MacCall(_) => true,
-            Decl::Attributed(_, inner) => call(inner.value()),
+            Decl::Attributed(attrs, inner) => {
+                attrs.iter().any(|a| &**a.name.value() == "derive") || call(inner.value())
+            }
             _ => false,
         }
     }
@@ -951,7 +957,9 @@ impl Analysis {
         if calls.is_empty() {
             return;
         }
-        let inside = |at: u32| calls.iter().any(|c| c.start <= at && at < c.end);
+        // Up to the end, inclusive: a generated binder spans the whole call,
+        // so the closing half of its hint -- ` : T)` -- is at the call's end.
+        let inside = |at: u32| calls.iter().any(|c| c.start <= at && at <= c.end);
         self.functions.retain(|f| !inside(f.span.start));
         self.binders.retain(|h| !inside(h.offset));
     }

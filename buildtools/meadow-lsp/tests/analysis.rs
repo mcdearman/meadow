@@ -1835,8 +1835,8 @@ fn what_a_macro_generates_gets_no_lenses_or_hints() {
     assert!(
         a.binders
             .iter()
-            .all(|h| !(call <= h.offset && h.offset < end)),
-        "no `(x : Int)` inside the call"
+            .all(|h| !(call <= h.offset && h.offset <= end)),
+        "no `(x : Int)` inside the call, nor its `)` at the end"
     );
 }
 

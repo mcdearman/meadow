@@ -1432,6 +1432,25 @@ def main =
 }
 
 #[test]
+fn an_enumeration_compares_by_where_each_constructor_is() {
+    // No constructor has fields, so equality and order are by position in
+    // the declaration -- the same answers the constructor-by-constructor
+    // comparison gave, without building a pair to match on.
+    let src = r#"@derive(PartialEq, PartialOrd)
+data Kind = Let | In | Fun | Arrow
+
+def main =
+  ( Kind.Let == Kind.Let, Kind.Let == Kind.Fun, Kind.Arrow != Kind.In
+  , Kind.Let < Kind.Arrow, Kind.Fun > Kind.In, Kind.In <= Kind.In
+  )
+"#;
+    assert_eq!(
+        common::eval_main_std(src),
+        "(True, False, True, True, True, True)"
+    );
+}
+
+#[test]
 fn a_derived_impl_asks_for_its_parameters_traits() {
     // `Pair a` is `Debug` when `a` is: a function is not.
     let src = "@derive(Debug)\ndata Pair a = Pair a a\n\ndef main = \"${Pair (\\x -> x) (\\x -> x):?}\"\n";

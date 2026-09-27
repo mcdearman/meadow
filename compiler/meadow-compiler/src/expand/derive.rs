@@ -200,7 +200,20 @@ impl Shape {
 }
 
 /// `impl PartialEq T`: the same constructor, and each field equal.
+///
+/// A type whose constructors have no fields -- an enumeration, a parser's
+/// kinds -- is compared by where each constructor is in the declaration: a
+/// `match` on each side and an integer compare, where matching the pair
+/// built a tuple and tried every constructor against every other.
 fn partial_eq(shape: &Shape) -> String {
+    if let Some(rank) = enumeration_rank(shape, "_eqRankOf") {
+        return format!(
+            "impl PartialEq {}{} {{\n  fun (==) x y = _eqRankOf{name} x == _eqRankOf{name} y\n}}\n\n{rank}",
+            shape.head(),
+            shape.context("PartialEq"),
+            name = shape.name,
+        );
+    }
     let mut arms = String::new();
     for c in &shape.ctors {
         let (left, n) = shape.pattern(c, "f");
@@ -254,11 +267,39 @@ fn eq(shape: &Shape) -> String {
     )
 }
 
+/// Where each constructor of an enumeration -- more than one constructor,
+/// none with fields -- is in its declaration, as a function called
+/// `{prefix}{name}`; `None` for any other type.
+fn enumeration_rank(shape: &Shape, prefix: &str) -> Option<String> {
+    if shape.ctors.len() < 2 || shape.ctors.iter().any(|c| shape.pattern(c, "").1 != 0) {
+        return None;
+    }
+    let arms: String = shape
+        .ctors
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("  | {} -> {i}\n", shape.pattern(c, "").0))
+        .collect();
+    Some(format!(
+        "fun {prefix}{name} v =\n  match v with\n{arms}",
+        name = shape.name
+    ))
+}
+
 /// `impl PartialOrd T` or `impl Ord T`: by constructor, in the order they are
 /// declared, then by field, left to right -- each field compared only if the
 /// ones before it were equal. `method` is the comparison, `equal` the test of
-/// its answer.
+/// its answer. An enumeration is compared by position alone.
 fn ordering(shape: &Shape, tr: &str, method: &str, equal: &str) -> String {
+    let prefix = format!("_{}RankOf", tr.to_lowercase());
+    if let Some(rank) = enumeration_rank(shape, &prefix) {
+        return format!(
+            "impl {tr} {}{} {{\n  fun {method} x y = {method} ({prefix}{name} x) ({prefix}{name} y)\n}}\n\n{rank}",
+            shape.head(),
+            shape.context(tr),
+            name = shape.name,
+        );
+    }
     let mut arms = String::new();
     for c in &shape.ctors {
         let (left, n) = shape.pattern(c, "f");

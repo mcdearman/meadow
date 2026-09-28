@@ -1,0 +1,3 @@
+def x = 1
+def s = "this string ${x} never ends
+def y = 2

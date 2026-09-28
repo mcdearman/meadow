@@ -257,7 +257,7 @@ pub unsafe extern "C" fn meadow_run(
         .spawn(run)
         .expect("the main thread starts")
         .join();
-    match answer {
+    let status = match answer {
         Ok(text) => {
             if text != "()" {
                 println!("{text}");
@@ -265,5 +265,11 @@ pub unsafe extern "C" fn meadow_run(
             0
         }
         Err(_) => 1,
-    }
+    };
+    // What the program wrote after its last newline is still in stdout's
+    // buffer, and nothing else empties it: the process is the emitted
+    // module's `main`, not Rust's, so Rust's cleanup at exit never runs.
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    status
 }

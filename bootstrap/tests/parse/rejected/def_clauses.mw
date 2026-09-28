@@ -1,0 +1,3 @@
+-- A `def` with a body has no clauses.
+def x : Int = 1
+  | x = 2

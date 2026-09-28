@@ -1,0 +1,38 @@
+-- Pattern synonyms: each matcher, and each builder read back from its
+-- pattern -- through parentheses, `::`, annotations, records and lists.
+
+pattern Pair x y = (x, y)
+
+pattern Head x xs = (x :: xs)
+
+pattern Typed n = (n : Int)
+
+pattern Nested a b = Just ((a, b) :: [])
+
+pattern Point x y = { x = x, y }
+
+pattern Listed a b = [a; b]
+
+pattern Arrayed a = #[a, 1]
+
+pattern Quoted s = ("text", s)
+
+pattern Unit = ()
+
+pattern Op f = ((+), f)
+
+pattern Nothing <- (_, _)
+
+pattern Viewed n <- (length -> n)
+
+pattern Aliased x <- (x as whole)
+
+pattern Qualified <- Maybe.None
+
+pattern Open x <- { x | _ }
+
+pattern Vec a <- [a, 2]
+
+pattern Built x <- Just x where Built x = Just (x + 1)
+
+pattern Zero | One | Many

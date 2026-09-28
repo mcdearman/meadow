@@ -1,0 +1,4 @@
+-- An impl says what its associated type is.
+impl T Int {
+  type Item Int
+}

@@ -1,0 +1,29 @@
+# Written by meadow. Commit this file: it is what makes a build on
+# another machine the build you tested. Change it with `meadow update`.
+
+version = 1
+
+[[package]]
+name = "Lingua"
+source = "git+https://github.com/mcdearman/Lingua.git?branch=master"
+rev = "860a338fcc648758a162810f6f51405b34c5a7f7"
+tree = "18f5b35521dcbe5e0e2689344a41209c5d450fdb"
+
+[[package]]
+name = "Nettle"
+source = "git+https://github.com/mcdearman/Nettle.git?branch=master"
+rev = "b59e370aea76f2fb5b2072c28f02564f047284fe"
+tree = "efe45c638977f2ed42635f3a743269a0a31f55b2"
+
+[[package]]
+name = "Scythe"
+source = "git+https://github.com/mcdearman/Scythe.git?branch=master"
+rev = "36e77e30fdccb145a988c292f90fd56dbf6a6bfa"
+tree = "543f9dae3b0683667cdfccf427416f8b8becdcc9"
+
+[[package]]
+name = "UnicodeWidth"
+source = "git+https://github.com/mcdearman/UnicodeWidth?version=0.2.0"
+version = "0.2.0"
+rev = "a4580b8010ecfba736c0f7d105a308db6972e60e"
+tree = "018d5c43b7b4c92e41fdcb4b91907ae7654bd335"

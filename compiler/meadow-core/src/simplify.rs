@@ -69,6 +69,7 @@
 //! cascade is the whole point.
 
 use crate::*;
+use std::collections::HashMap;
 
 /// Where this pass's own names start: clear of units, synthetic definitions,
 /// specialized copies and [`crate::globals`].
@@ -579,15 +580,112 @@ fn of_case(
         return None;
     }
     let (j, x) = (fresh.var(), fresh.var());
-    let rhs = Term::Case(Arc::new(Term::Var(x)), arms.to_vec(), ty.clone());
+    let (bodies, arms) = arms_as_joins(arms, ty, fresh);
+    let rhs = Term::Case(Arc::new(Term::Var(x)), arms, ty.clone());
     let body = tails(inner, ty, &mut |tail| Term::Jump(j, vec![tail], ty.clone()));
-    Some(Term::Join {
+    let outer = Term::Join {
         var: j,
         params: vec![(x, scrut_ty)],
         ty: ty.clone(),
         rhs: Arc::new(rhs),
         body: Arc::new(body),
-    })
+    };
+    Some(
+        bodies
+            .into_iter()
+            .rev()
+            .fold(outer, |acc, (a, params, rhs)| Term::Join {
+                var: a,
+                params,
+                ty: ty.clone(),
+                rhs: Arc::new(rhs),
+                body: Arc::new(acc),
+            }),
+    )
+}
+
+/// The outer alternatives of a case-of-case, each body that is more than a
+/// jump or a name its own join point, taking what its pattern binds: the
+/// bodies, and the arms jumping to them.
+///
+/// The join the outer `case` becomes is entered in every inner branch that
+/// answers a constructor, to be decided there -- and without this, entering
+/// it copies every arm's body into every branch, where the one arm chosen is
+/// usually the same `_ -> rest`. A match over synonyms nests that `rest`
+/// once per arm, and so copied it a factorial number of times: six synonyms
+/// took twelve seconds and two and a half million lines. With each body a
+/// join, what is copied is a `case` of jumps. A body jumped to from one place
+/// is entered there again by [`join`], so nothing else changes.
+fn arms_as_joins(
+    arms: &[(Pat, Option<Term>, Term)],
+    ty: &Ty,
+    fresh: &mut Fresh,
+) -> (
+    Vec<(Var, Vec<(Var, Ty)>, Term)>,
+    Vec<(Pat, Option<Term>, Term)>,
+) {
+    let mut bodies = Vec::new();
+    let arms = arms
+        .iter()
+        .map(|(p, guard, body)| {
+            // A guard reads what the pattern binds, as the body does, and
+            // would have to be renamed with it; such an arm stays as it is.
+            if guard.is_some() || matches!(peel(body), Term::Jump(..) | Term::Var(_) | Term::Lit(_))
+            {
+                return (p.clone(), guard.clone(), body.clone());
+            }
+            let mut params = Vec::new();
+            binders_of(p, &mut params);
+            // The pattern binds fresh names and hands them over; the join's
+            // parameters are the old ones, so the body is left as it was and
+            // every name is still bound once.
+            let renamed: HashMap<Var, Var> =
+                params.iter().map(|(v, _)| (*v, fresh.var())).collect();
+            let a = fresh.var();
+            let args = params.iter().map(|(v, _)| Term::Var(renamed[v])).collect();
+            bodies.push((a, params, body.clone()));
+            (
+                rename_binders(p, &renamed),
+                None,
+                Term::Jump(a, args, ty.clone()),
+            )
+        })
+        .collect();
+    (bodies, arms)
+}
+
+/// What `p` binds, with the types it binds them at, left to right.
+fn binders_of(p: &Pat, out: &mut Vec<(Var, Ty)>) {
+    match p {
+        Pat::Wild | Pat::Lit(_) => {}
+        Pat::Var(v, t) => out.push((*v, t.clone())),
+        Pat::As(v, t, inner) => {
+            out.push((*v, t.clone()));
+            binders_of(inner, out);
+        }
+        Pat::Tuple(ps) | Pat::Array(ps) | Pat::Ctor(_, ps) => {
+            ps.iter().for_each(|q| binders_of(q, out))
+        }
+        Pat::Record(fs) => fs.iter().for_each(|(_, q)| binders_of(q, out)),
+    }
+}
+
+/// `p` binding the names `to` gives instead of its own.
+fn rename_binders(p: &Pat, to: &HashMap<Var, Var>) -> Pat {
+    let name = |v: &Var| to.get(v).copied().unwrap_or(*v);
+    match p {
+        Pat::Wild | Pat::Lit(_) => p.clone(),
+        Pat::Var(v, t) => Pat::Var(name(v), t.clone()),
+        Pat::As(v, t, inner) => Pat::As(name(v), t.clone(), Box::new(rename_binders(inner, to))),
+        Pat::Tuple(ps) => Pat::Tuple(ps.iter().map(|q| rename_binders(q, to)).collect()),
+        Pat::Array(ps) => Pat::Array(ps.iter().map(|q| rename_binders(q, to)).collect()),
+        Pat::Ctor(c, ps) => Pat::Ctor(*c, ps.iter().map(|q| rename_binders(q, to)).collect()),
+        Pat::Record(fs) => Pat::Record(
+            fs.iter()
+                .map(|(l, q)| (*l, rename_binders(q, to)))
+                .collect(),
+        ),
+    }
 }
 
 /// `let x = (if c then a else b) in body` -- the body named once as a join

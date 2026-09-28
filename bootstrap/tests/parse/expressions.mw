@@ -1,0 +1,46 @@
+-- Expressions whose abstract syntax is not what was written: sections,
+-- negation, ranges, vectors, pipes, and the spans each is given.
+
+def sections = ((_ + 1), (f _ _), (g (_ * 2) _), (\x -> _), (h _ |> k _))
+
+def nested = ((_ :: (_ + _)), (match _ with | 0 -> _ | n -> n), (let y = _ in y))
+
+def handled = (handle _ with { ask () k -> k _, return x -> _ })
+
+def negatives = (-1, -1.5, - -2, -x, -(f y), -x.field, 3 - -4)
+
+def ranges = ([1 .. 10], [a ..= b], [f x .. g y + 1])
+
+def vectors = ([], [1], [1, 2, 3], [;], [1; 2], [x, ])
+
+def pipes = x |> f |> g <| h <| y
+
+def logic = a and b or c and not d or e
+
+def infixes = 1 + 2 * 3 :: xs == ys
+
+def fields = (r.a.b, M.x, f r.a, (g x).b)
+
+def records = ({ a = 1, b }, { r | a = 2 }, { a = 1 | base }, {})
+
+def texts = "a ${x} b ${y:?} c ${ "${z}" }"
+
+def lambdas = \(x : Int) (a, b) { c } -> x
+
+def lets =
+  let fun f x = x in
+  let g (a : Int) : Int = a in
+  let rec h n = h n in
+  let (p, q) = pair in
+  let r : Int = 1 in
+  f p
+
+def arrays = #[1, 2, 3]
+
+def units = (())
+
+def ops = ((+), (<:), (==))
+
+def ifs = if a then b else if c then d else e
+
+def matches = match x with | Just (y as z) if y > 0 -> z | Cons a (b :: c) -> a | _ -> 0

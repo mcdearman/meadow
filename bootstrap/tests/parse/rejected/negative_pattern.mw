@@ -1,0 +1,2 @@
+-- A negative literal is not a pattern.
+fun f (-1) = 0

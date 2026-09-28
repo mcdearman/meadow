@@ -1,0 +1,2 @@
+-- A context is bounds.
+fun f : (a -> b) => a

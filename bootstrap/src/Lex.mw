@@ -1,0 +1,633 @@
+-- Meadow's tokens, read exactly as `meadow-lexer` reads them.
+--
+-- The Rust lexer is logos, with the string literals read by hand: what is
+-- inside a `${…}` is code again -- strings, braces and all -- which no one
+-- pattern can match. Here it is two Scythe lexers taking turns, as logos's
+-- `morph` has them: `Code` for the program, `Piece` for the text of a string
+-- literal, each asked for one token at a time (`nextCode`, `nextPiece`) from
+-- wherever the other stopped.
+--
+-- What logos decides by priority -- a keyword over a name, an `Int` over a
+-- `Real`, a token of its own over an operator -- Scythe decides by the order
+-- the variants are written in, so they are written in that order. Where logos
+-- matches a character (`.`, `[^'\\]`) the patterns match one of UTF-8's,
+-- lead byte and all, so that a token ends where logos's does.
+--
+-- What logos's callbacks do -- read an integer, unescape a character -- and
+-- what `meadow-lexer` does around it -- raw strings, the `!` of a macro call
+-- in column 0 -- is done here after a token is matched, as it is there.
+
+use Scythe (lexer!, token, start, stop, errorAt)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Char as C
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+-- --- the program's tokens ------------------------------------------------------
+
+@derive(Lexer)
+@pub data Code
+  = @regex("[ \t\n\r]+") @skip Whitespace
+  | @regex("--[^\n]*") @skip Comment
+  | @token("mod") Mod
+  | @token("end") End
+  | @token("use") Use
+  | @token("def") Def
+  | @token("fun") Fun
+  | @token("let") Let
+  | @token("in") In
+  | @token("match") Match
+  | @token("with") With
+  | @token("if") If
+  | @token("then") Then
+  | @token("else") Else
+  | @token("data") Data
+  | @token("record") Record
+  | @token("effect") Effect
+  | @token("handle") Handle
+  | @token("type") Type
+  | @token("trait") Trait
+  | @token("impl") Impl
+  | @token("where") Where
+  | @token("as") As
+  | @token("macro") Macro
+  | @token("infix") Infix
+  | @token("infixl") Infixl
+  | @token("infixr") Infixr
+  | @token("and") And
+  | @token("or") Or
+  | @regex("0b[0-1]+|0o[0-7]+|0x[0-9a-fA-F]+|[1-9][0-9]*|0") Int String
+  | @regex("([0-9]*[.])?[0-9]+") Real String
+  | @token("\"") Quote
+  | @regex("'(\\\\u\\{[^}'\n]*\\}|\\\\x(([\\x00-\\x09\\x0B-\\x26\\x28-\\x7F]|[\\xC2-\\xDF][\\x80-\\xBF]|[\\xE0-\\xEF][\\x80-\\xBF][\\x80-\\xBF]|[\\xF0-\\xF4][\\x80-\\xBF][\\x80-\\xBF][\\x80-\\xBF])([\\x00-\\x09\\x0B-\\x26\\x28-\\x7F]|[\\xC2-\\xDF][\\x80-\\xBF]|[\\xE0-\\xEF][\\x80-\\xBF][\\x80-\\xBF]|[\\xF0-\\xF4][\\x80-\\xBF][\\x80-\\xBF][\\x80-\\xBF])?)?|\\\\([\\x00-\\x09\\x0B-\\x7F]|[\\xC2-\\xDF][\\x80-\\xBF]|[\\xE0-\\xEF][\\x80-\\xBF][\\x80-\\xBF]|[\\xF0-\\xF4][\\x80-\\xBF][\\x80-\\xBF][\\x80-\\xBF])|([\\x00-\\x26\\x28-\\x5B\\x5D-\\x7F]|[\\xC2-\\xDF][\\x80-\\xBF]|[\\xE0-\\xEF][\\x80-\\xBF][\\x80-\\xBF]|[\\xF0-\\xF4][\\x80-\\xBF][\\x80-\\xBF][\\x80-\\xBF]))'") Char String
+  | @regex("[a-z][a-zA-Z0-9'_]*|_[a-zA-Z0-9'_]+") LowerIdent String
+  | @regex("[A-Z][a-zA-Z0-9']*") UpperIdent String
+  | @token("_") Wildcard
+  | @token("\\") Backslash
+  | @token("<-") LArrow
+  | @token("->") RArrow
+  | @token("=>") FatArrow
+  | @token("+") Plus
+  | @token("-") Minus
+  | @token("*") Star
+  | @token("/") Slash
+  | @token("%") Percent
+  | @token("^") Caret
+  | @token("=") Eq
+  | @token("==") EqEq
+  | @token("!=") Neq
+  | @token("<") Lt
+  | @token(">") Gt
+  | @token("<=") Leq
+  | @token(">=") Geq
+  | @token("!") Bang
+  | @token(",") Comma
+  | @token(".") Period
+  | @token("..") DoublePeriod
+  | @token("..=") DoublePeriodEq
+  | @token("::") ColonColon
+  | @token(":") Colon
+  | @token(";") SemiColon
+  | @token("(") LParen
+  | @token(")") RParen
+  | @token("{") LBrace
+  | @token("}") RBrace
+  | @token("[") LBrack
+  | @token("]") RBrack
+  | @token("#") Hash
+  | @token("|") Bar
+  | @token("<|") LPipe
+  | @token("|>") RPipe
+  | @token("@") At
+  | @token("`") Backtick
+  | @token("$") Dollar
+  | @regex(":[!%&*+./<=>?@|^~:-]+") ConOpIdent String
+  | @regex("[!%&*+./<=>?@|^~:-]+") OpIdent String
+
+-- --- the text of a string literal ----------------------------------------------
+
+-- Each escape a string has, the ones that are wrong included: every byte is
+-- the start of one of these, so reading a string never stops.
+@derive(Lexer)
+@pub data Piece
+  = @regex("[^\"\\\\$]+") Text String
+  | @token("\${") Open
+  | @token("$") Dollar
+  | @token("\"") Close
+  | @regex("\\\\[nrt0abfve\\\\\"'$]") Simple String
+  | @regex("\\\\x[0-9a-fA-F][0-9a-fA-F]") Hex String
+  | @token("\\x") BadHex
+  | @regex("\\\\u\\{[^}\"\n]*\\}") Uni String
+  | @token("\\u{") UniOpen
+  | @token("\\u") BadUni
+  | @regex("\\\\[\r\n][ \t\r\n]*") Join
+  | @regex("\\\\([\\x00-\\x7F]|[\\xC2-\\xDF][\\x80-\\xBF]|[\\xE0-\\xEF][\\x80-\\xBF][\\x80-\\xBF]|[\\xF0-\\xF4][\\x80-\\xBF][\\x80-\\xBF][\\x80-\\xBF])") BadEscape String
+  | @token("\\") Lone
+
+-- --- what is read --------------------------------------------------------------
+
+-- `meadow-lexer`'s `Token`, less the ones that never reach a token stream.
+@pub data Token
+  = Int Int
+  | Real String
+  | Str String
+  | InterpStart String
+  | InterpMid String
+  | InterpEnd String
+  | Char Int
+  | LowerIdent String
+  | UpperIdent String
+  | OpIdent String
+  | ConOpIdent String
+  | Wildcard
+  | Backslash
+  | LArrow
+  | RArrow
+  | FatArrow
+  | Plus
+  | Minus
+  | Star
+  | Slash
+  | Percent
+  | Caret
+  | And
+  | Or
+  | Eq
+  | EqEq
+  | Neq
+  | Lt
+  | Gt
+  | Leq
+  | Geq
+  | Bang
+  | DeclBang
+  | Comma
+  | Period
+  | DoublePeriod
+  | DoublePeriodEq
+  | ColonColon
+  | Colon
+  | SemiColon
+  | LParen
+  | RParen
+  | LBrace
+  | RBrace
+  | LBrack
+  | RBrack
+  | Hash
+  | Bar
+  | LPipe
+  | RPipe
+  | At
+  | Backtick
+  | Dollar
+  | Mod
+  | End
+  | Use
+  | Def
+  | Fun
+  | Let
+  | In
+  | Match
+  | With
+  | If
+  | Then
+  | Else
+  | Data
+  | Record
+  | Effect
+  | Handle
+  | Type
+  | Trait
+  | Impl
+  | Where
+  | As
+  | Macro
+  | Infix
+  | Infixl
+  | Infixr
+  | Error
+
+-- A token, and the bytes of the source it covers.
+@pub record Lexed = { token : Token, from : Int, to : Int }
+
+-- What is wrong, and where: `meadow-lexer`'s diagnostic, as far as a
+-- comparison with it needs.
+@pub record Problem = { from : Int, to : Int, message : String }
+
+-- What lexing a source comes to: every token, and every problem, in the order
+-- `meadow-lexer` finds them.
+@pub record Lexing = { tokens : [Lexed], problems : [Problem] }
+
+def nothing = Lexing { tokens = [], problems = [] }
+
+fun push (l : Lexing) (t : Token) (from : Int) (to : Int) : Lexing =
+  { l | tokens = V.pushBack l.tokens (Lexed { token = t, from = from, to = to }) }
+
+fun problem (l : Lexing) (from : Int) (to : Int) (message : String) : Lexing =
+  { l | problems = V.pushBack l.problems (Problem { from = from, to = to, message = message }) }
+
+fun joined (a : Lexing) (b : Lexing) : Lexing =
+  Lexing { tokens = V.append a.tokens b.tokens, problems = V.append a.problems b.problems }
+
+-- --- lexing -------------------------------------------------------------------
+
+-- `input`'s tokens: `meadow-lexer`'s `tokenize`.
+@pub fun lex (input : String) : Lexing =
+  match code input 0 False 0 nothing with
+  | (l, _, _) -> { l | tokens = lineCalls input l.tokens }
+
+-- The program from `at`: to the end of `input`, or -- `hole` -- to the `}`
+-- closing a string's `${`. Answers what was read, where it stopped, and
+-- whether a hole was closed there.
+fun code (input : String) (at : Int) (hole : Bool) (depth : Int) (l : Lexing) : (Lexing, Int, Bool) =
+  match nextCode input at with
+  | Ok None -> (l, stringByteLength input, False)
+  | Err e -> stuck input (errorAt e) hole depth l
+  | Ok (Just x) -> read input (token x) (start x) (stop x) hole depth l
+
+-- Nothing matches at `at`: what the machine read before it gave up is an
+-- invalid token, as logos makes it -- or one character, where it read nothing
+-- -- ending where a character does, and reading goes on after it.
+fun stuck (input : String) (at : Int) (hole : Bool) (depth : Int) (l : Lexing) : (Lexing, Int, Bool) =
+  let reached = reachCode input at in
+  let to = if reached > at then boundary input reached else at + charLength input at in
+  let l2 = problem (push l Token.Error at to) at to "Invalid token: ${stringSlice input at to}" in
+  code input to hole depth l2
+
+fun read (input : String) (t : Code) (from : Int) (to : Int) (hole : Bool) (depth : Int) (l : Lexing) : (Lexing, Int, Bool) =
+  match t with
+  | Code.Quote ->
+      (match string input from l with
+       | (l2, after) -> code input after hole depth l2)
+  | Code.LowerIdent "r" if rawHashes input to >= 0 ->
+      (match raw input from l with
+       | (l2, after) -> code input after hole depth l2)
+  | Code.LBrace -> code input to hole (depth + 1) (push l Token.LBrace from to)
+  | Code.RBrace ->
+      if hole and depth == 0 then (l, from, True)
+      else code input to hole (depth - 1) (push l Token.RBrace from to)
+  | other ->
+      (match converted input other from to with
+       | Ok tok -> code input to hole depth (push l tok from to)
+       | Err message -> code input to hole depth (problem (push l Token.Error from to) from to message))
+
+-- A matched token as `meadow-lexer` has it once its callback has run: a
+-- number read, a character unescaped -- or, where the callback refuses, why.
+fun converted (input : String) (t : Code) (from : Int) (to : Int) : Result String Token =
+  let invalid = Err "Invalid token: ${stringSlice input from to}" in
+  match t with
+  | Code.Int text -> (match parseInt text with | Just n -> Ok (Token.Int n) | None -> invalid)
+  | Code.Real text -> Ok (Token.Real text)
+  | Code.Char text -> (match unescapeChar text with | Just c -> Ok (Token.Char c) | None -> invalid)
+  | Code.LowerIdent s -> Ok (Token.LowerIdent s)
+  | Code.UpperIdent s -> Ok (Token.UpperIdent s)
+  | Code.OpIdent s -> Ok (Token.OpIdent s)
+  | Code.ConOpIdent s -> Ok (Token.ConOpIdent s)
+  | other -> Ok (fixed other)
+
+fun fixed (t : Code) : Token =
+  match t with
+  | Code.Mod -> Token.Mod
+  | Code.End -> Token.End
+  | Code.Use -> Token.Use
+  | Code.Def -> Token.Def
+  | Code.Fun -> Token.Fun
+  | Code.Let -> Token.Let
+  | Code.In -> Token.In
+  | Code.Match -> Token.Match
+  | Code.With -> Token.With
+  | Code.If -> Token.If
+  | Code.Then -> Token.Then
+  | Code.Else -> Token.Else
+  | Code.Data -> Token.Data
+  | Code.Record -> Token.Record
+  | Code.Effect -> Token.Effect
+  | Code.Handle -> Token.Handle
+  | Code.Type -> Token.Type
+  | Code.Trait -> Token.Trait
+  | Code.Impl -> Token.Impl
+  | Code.Where -> Token.Where
+  | Code.As -> Token.As
+  | Code.Macro -> Token.Macro
+  | Code.Infix -> Token.Infix
+  | Code.Infixl -> Token.Infixl
+  | Code.Infixr -> Token.Infixr
+  | Code.And -> Token.And
+  | Code.Or -> Token.Or
+  | Code.Wildcard -> Token.Wildcard
+  | Code.Backslash -> Token.Backslash
+  | Code.LArrow -> Token.LArrow
+  | Code.RArrow -> Token.RArrow
+  | Code.FatArrow -> Token.FatArrow
+  | Code.Plus -> Token.Plus
+  | Code.Minus -> Token.Minus
+  | Code.Star -> Token.Star
+  | Code.Slash -> Token.Slash
+  | Code.Percent -> Token.Percent
+  | Code.Caret -> Token.Caret
+  | Code.Eq -> Token.Eq
+  | Code.EqEq -> Token.EqEq
+  | Code.Neq -> Token.Neq
+  | Code.Lt -> Token.Lt
+  | Code.Gt -> Token.Gt
+  | Code.Leq -> Token.Leq
+  | Code.Geq -> Token.Geq
+  | Code.Bang -> Token.Bang
+  | Code.Comma -> Token.Comma
+  | Code.Period -> Token.Period
+  | Code.DoublePeriod -> Token.DoublePeriod
+  | Code.DoublePeriodEq -> Token.DoublePeriodEq
+  | Code.ColonColon -> Token.ColonColon
+  | Code.Colon -> Token.Colon
+  | Code.SemiColon -> Token.SemiColon
+  | Code.LParen -> Token.LParen
+  | Code.RParen -> Token.RParen
+  | Code.LBrace -> Token.LBrace
+  | Code.RBrace -> Token.RBrace
+  | Code.LBrack -> Token.LBrack
+  | Code.RBrack -> Token.RBrack
+  | Code.Hash -> Token.Hash
+  | Code.Bar -> Token.Bar
+  | Code.LPipe -> Token.LPipe
+  | Code.RPipe -> Token.RPipe
+  | Code.At -> Token.At
+  | Code.Backtick -> Token.Backtick
+  | Code.Dollar -> Token.Dollar
+  | _ -> Token.Error
+
+-- --- string literals ------------------------------------------------------------
+
+-- The string literal whose quote is at `from`: its tokens, and where it ends --
+-- `meadow-lexer`'s `lex_string`. Without a `${` it is one `Str`; with some it
+-- is the text before the first (`InterpStart`), each hole's own tokens, the
+-- text between holes (`InterpMid`) and after the last (`InterpEnd`), each piece
+-- of text spanning the `${`, `}` and quotes around it.
+fun string (input : String) (from : Int) (l : Lexing) : (Lexing, Int) =
+  text input from (from + 1) from "" 0 l
+
+-- Reading text at `at`, whose piece began at `piece` with `sofar` in it, after
+-- `holes` holes.
+fun text (input : String) (from : Int) (at : Int) (piece : Int) (sofar : String) (holes : Int) (l : Lexing) : (Lexing, Int) =
+  match nextPiece input at with
+  | Ok (Just p) -> piece_ input from (token p) (start p) (stop p) piece sofar holes l
+  | _ ->
+      let n = stringByteLength input in
+      (problem (push l Token.Error from n) from n "this string is never closed", n)
+
+fun piece_ (input : String) (from : Int) (p : Piece) (at : Int) (to : Int) (piece : Int) (sofar : String) (holes : Int) (l : Lexing) : (Lexing, Int) =
+  let more = \s -> text input from to piece (sofar ++ s) holes l in
+  let bad = \message -> text input from to piece sofar holes (problem l at to message) in
+  match p with
+  | Piece.Text s -> more s
+  | Piece.Dollar -> more "$"
+  | Piece.Simple s -> more (simple (byteAt s 1))
+  | Piece.Hex s ->
+      let code = hexValue (stringSlice s 2 4) in
+      if code > 127 then bad "`\\x${stringSlice s 2 4}` is past ASCII; write `\\u{${stringSlice s 2 4}}` for that character"
+      else more (C.toString (C.fromCode code))
+  | Piece.BadHex -> bad "`\\x` takes two hex digits, as `\\x41`"
+  | Piece.Uni s ->
+      (match unicode (stringSlice s 3 (stringByteLength s - 1)) with
+       | Ok c -> more (C.toString (C.fromCode c))
+       | Err message -> bad message)
+  | Piece.UniOpen -> bad "this `\\u{` is never closed"
+  | Piece.BadUni -> bad "`\\u` takes hex digits in braces, as `\\u{1F600}`"
+  | Piece.Join -> more ""
+  | Piece.BadEscape s -> bad "`\\${stringSlice s 1 (stringByteLength s)}` is not an escape; a backslash itself is `\\\\`"
+  | Piece.Lone -> bad "a `\\` with nothing after it"
+  | Piece.Close ->
+      let t = if holes == 0 then Token.Str sofar else Token.InterpEnd sofar in
+      (push l t piece to, to)
+  | Piece.Open ->
+      let t = if holes == 0 then Token.InterpStart sofar else Token.InterpMid sofar in
+      hole input from at (push l t piece to) holes
+
+-- A `${`, at `at`: the code in it, to its `}`, read as a lexing of its own and
+-- kept only when the hole is closed -- `meadow-lexer` finds the `}` before it
+-- reads anything in between.
+fun hole (input : String) (from : Int) (at : Int) (l : Lexing) (holes : Int) : (Lexing, Int) =
+  let open = at + 2 in
+  match code input open True 0 nothing with
+  | (inside, close, True) ->
+      if blank input open close then
+        let l2 = problem (push l Token.Error at (close + 1)) at (close + 1) "`\${}` needs an expression inside" in
+        text input from (close + 1) close "" (holes + 1) l2
+      else text input from (close + 1) close "" (holes + 1) (joined l inside)
+  | (_, n, False) -> (problem (push l Token.Error at n) at n "this `\${` is never closed", n)
+
+-- Whether `input` holds only whitespace between `from` and `to`.
+fun blank (input : String) (from : Int) (to : Int) : Bool =
+  if from >= to then True
+  else
+    let b = byteAt input from in
+    if b == 32 or b == 9 or b == 10 or b == 13 then blank input (from + 1) to else False
+
+-- `\n` and the rest: the character a simple escape stands for.
+fun simple (c : Int) : String =
+  if c == 110 then "\n"
+  else if c == 114 then "\r"
+  else if c == 116 then "\t"
+  else if c == 48 then C.toString (C.fromCode 0)
+  else if c == 97 then C.toString (C.fromCode 7)
+  else if c == 98 then C.toString (C.fromCode 8)
+  else if c == 102 then C.toString (C.fromCode 12)
+  else if c == 118 then C.toString (C.fromCode 11)
+  else if c == 101 then C.toString (C.fromCode 27)
+  else C.toString (C.fromCode c)
+
+-- The code point of `\u{hex}`, or what is wrong with it.
+fun unicode (hex : String) : Result String Int =
+  let n = stringByteLength hex in
+  if n == 0 or n > 6 or not (allHex hex 0) then Err "`\\u{${hex}}` needs one to six hex digits"
+  else
+    let c = hexValue hex in
+    if C.isScalar c then Ok c else Err "`\\u{${hex}}` is not a Unicode character"
+
+-- --- raw strings -----------------------------------------------------------------
+
+-- How many `#`s the raw string opening at `at` -- just past its `r` -- has, or
+-- -1 when what follows is not `#`s and a quote.
+fun rawHashes (input : String) (at : Int) : Int =
+  let n = hashesFrom input at 0 in
+  if byteAt input (at + n) == 34 then n else 0 - 1
+
+fun hashesFrom (input : String) (at : Int) (n : Int) : Int = if byteAt input at == 35 then hashesFrom input (at + 1) (n + 1) else n
+
+-- The raw string whose `r` is at `from`: `meadow-lexer`'s `lex_raw`.
+fun raw (input : String) (from : Int) (l : Lexing) : (Lexing, Int) =
+  let hashes = rawHashes input (from + 1) in
+  let open = from + 1 + hashes + 1 in
+  let close = "\"" ++ S.repeat "#" hashes in
+  match S.indexOfFrom close input open with
+  | Just k -> (push l (Token.Str (stringSlice input open k)) from (k + stringByteLength close), k + stringByteLength close)
+  | None ->
+      let n = stringByteLength input in
+      (problem (push l Token.Error from n) from n "this raw string is never closed", n)
+
+-- --- what logos's callbacks do --------------------------------------------------
+
+-- An integer literal's value, when it fits: `meadow-lexer`'s `parse_int`.
+fun parseInt (text : String) : Maybe Int =
+  if S.startsWith "0x" text then digitsIn (stringSlice text 2 (stringByteLength text)) 16
+  else if S.startsWith "0b" text then digitsIn (stringSlice text 2 (stringByteLength text)) 2
+  else if S.startsWith "0o" text then digitsIn (stringSlice text 2 (stringByteLength text)) 8
+  else digitsIn text 10
+
+-- `digits` in `radix`, or `None` past what an `Int` holds.
+fun digitsIn (digits : String) (radix : Int) : Maybe Int = digitsFrom digits radix 0 0
+
+fun digitsFrom (digits : String) (radix : Int) (i : Int) (acc : Int) : Maybe Int =
+  if i >= stringByteLength digits then Just acc
+  else
+    let d = hexDigit (byteAt digits i) in
+    let limit = (9223372036854775807 - d) / radix in
+    if acc > limit then None else digitsFrom digits radix (i + 1) (acc * radix + d)
+
+-- The character a `'…'` literal holds, resolving an escape, or `None` for a
+-- bad one: `meadow-lexer`'s `unescape_char`.
+fun unescapeChar (text : String) : Maybe Int =
+  let inner = stringSlice text 1 (stringByteLength text - 1) in
+  if byteAt inner 0 != 92 then Just (firstChar inner)
+  else
+    let rest = stringSlice inner 1 (stringByteLength inner) in
+    match escaped rest with
+    | Just (c, n) -> if n == stringByteLength rest then Just c else None
+    | None -> None
+
+-- The escape `rest` -- what follows a backslash -- starts with, as a code point
+-- and how many bytes it takes; `None` for one that is wrong, or that stands for
+-- no character (a backslash ending a line).
+fun escaped (rest : String) : Maybe (Int, Int) =
+  let c = byteAt rest 0 in
+  if c < 0 then None
+  else if c == 120 then
+    (if stringByteLength rest >= 3 and allHex (stringSlice rest 1 3) 0 and hexValue (stringSlice rest 1 3) <= 127 then Just (hexValue (stringSlice rest 1 3), 3) else None)
+  else if c == 117 then unicodeEscape rest
+  else if c == 110 or c == 114 or c == 116 or c == 48 or c == 97 or c == 98 or c == 102 or c == 118 or c == 101 then Just (firstChar (simple c), 1)
+  else if c == 92 or c == 34 or c == 39 or c == 36 then Just (c, 1)
+  else None
+
+fun unicodeEscape (rest : String) : Maybe (Int, Int) =
+  if byteAt rest 1 != 123 then None
+  else
+    match S.indexOfFrom "}" rest 2 with
+    | None -> None
+    | Just close ->
+        (match unicode (stringSlice rest 2 close) with
+         | Ok c -> Just (c, close + 1)
+         | Err _ -> None)
+
+-- --- macro calls at the start of a line ------------------------------------------
+
+-- Every `!` of a macro call written at the start of a line made a `DeclBang`:
+-- `meadow-lexer`'s `mark_line_calls`.
+fun lineCalls (input : String) (tokens : [Lexed]) : [Lexed] =
+  V.map (\i -> atLineStart input tokens i) (V.range 0 (V.len tokens))
+
+fun atLineStart (input : String) (tokens : [Lexed]) (i : Int) : Lexed =
+  match V.get tokens i with
+  | Just t ->
+      (match t.token with
+       | Token.Bang ->
+           (match pathStart tokens i i True with
+            | (first, wantName) ->
+                if first < i and not wantName and lineStart input (at tokens first).from then { t | token = Token.DeclBang } else t)
+       | _ -> t)
+  | None -> Lexed { token = Token.Error, from = 0, to = 0 }
+
+-- Back from the `!` at `i` over `A.B.name`, each piece touching the next.
+fun pathStart (tokens : [Lexed]) (i : Int) (first : Int) (wantName : Bool) : (Int, Bool) =
+  if first <= 0 then (first, wantName)
+  else
+    let prev = at tokens (first - 1) in
+    let touching = prev.to == (at tokens first).from in
+    let fits = if wantName then isName prev.token else isPeriod prev.token in
+    if touching and fits then pathStart tokens i (first - 1) (not wantName) else (first, wantName)
+
+fun isName (t : Token) : Bool = match t with | Token.LowerIdent _ -> True | Token.UpperIdent _ -> True | _ -> False
+
+fun isPeriod (t : Token) : Bool = match t with | Token.Period -> True | _ -> False
+
+fun lineStart (input : String) (from : Int) : Bool = from == 0 or byteAt input (from - 1) == 10
+
+fun at (tokens : [Lexed]) (i : Int) : Lexed = V.getOr (Lexed { token = Token.Error, from = 0, to = 0 }) tokens i
+
+-- --- bytes ------------------------------------------------------------------------
+
+-- The byte at `i`, or -1 past the end.
+fun byteAt (s : String) (i : Int) : Int = if i < 0 or i >= stringByteLength s then 0 - 1 else toInt (stringByteAt s i)
+
+-- `at`, or the start of the next character when `at` is inside one.
+fun boundary (s : String) (at : Int) : Int =
+  let b = byteAt s at in
+  if b >= 128 and b < 192 then boundary s (at + 1) else at
+
+-- How many bytes the UTF-8 character at `at` takes.
+fun charLength (s : String) (at : Int) : Int =
+  let b = byteAt s at in
+  if b < 128 then 1 else if b < 224 then 2 else if b < 240 then 3 else 4
+
+-- The code point of the first character of `s`.
+fun firstChar (s : String) : Int =
+  let b = byteAt s 0 in
+  let cont = \i -> byteAt s i % 64 in
+  if b < 128 then b
+  else if b < 224 then (b % 32) * 64 + cont 1
+  else if b < 240 then (b % 16) * 4096 + cont 1 * 64 + cont 2
+  else (b % 8) * 262144 + cont 1 * 4096 + cont 2 * 64 + cont 3
+
+fun hexDigit (b : Int) : Int =
+  if b >= 48 and b <= 57 then b - 48
+  else if b >= 97 and b <= 102 then b - 87
+  else if b >= 65 and b <= 70 then b - 55
+  else 99
+
+fun allHex (s : String) (i : Int) : Bool =
+  if i >= stringByteLength s then True else if hexDigit (byteAt s i) < 16 then allHex s (i + 1) else False
+
+fun hexValue (s : String) : Int = V.foldl (\acc b -> acc * 16 + hexDigit (toInt b)) 0 (bytesOf s)
+
+fun bytesOf (s : String) = V.fromArray (S.toBytes s)
+
+-- --- the dump ------------------------------------------------------------------------
+
+-- A lexing written out one token a line -- `from to Kind payload` -- and then
+-- one problem a line, `! from to message`: what the differential test compares
+-- with what `meadow-lexer` gives, written the same way on that side.
+@pub fun dump (l : Lexing) : String =
+  let ts = V.foldl (\acc (t : Lexed) -> acc ++ "${show t.from} ${show t.to} ${described t.token}\n") "" l.tokens in
+  V.foldl (\acc (p : Problem) -> acc ++ "! ${show p.from} ${show p.to} ${escape p.message}\n") ts l.problems
+
+@pub fun described (t : Token) : String =
+  match t with
+  | Token.Int n -> "Int ${show n}"
+  | Token.Real s -> "Real ${s}"
+  | Token.Str s -> "String ${escape s}"
+  | Token.InterpStart s -> "InterpStart ${escape s}"
+  | Token.InterpMid s -> "InterpMid ${escape s}"
+  | Token.InterpEnd s -> "InterpEnd ${escape s}"
+  | Token.Char c -> "Char ${show c}"
+  | Token.LowerIdent s -> "LowerIdent ${s}"
+  | Token.UpperIdent s -> "UpperIdent ${s}"
+  | Token.OpIdent s -> "OpIdent ${s}"
+  | Token.ConOpIdent s -> "ConOpIdent ${s}"
+  | other -> show other
+
+-- `s` with every control byte and backslash written `\xNN`, so that a line
+-- holds it: the other bytes, UTF-8 included, as they are.
+@pub fun escape (s : String) : String = escapeFrom s 0 0 ""
+
+-- `s` from `run`, where the text not yet copied starts, with `i` the byte
+-- being looked at: runs are copied whole, so a character is never cut.
+fun escapeFrom (s : String) (run : Int) (i : Int) (acc : String) : String =
+  if i >= stringByteLength s then acc ++ stringSlice s run i
+  else
+    let n = byteAt s i in
+    if n < 32 or n == 127 or n == 92 then escapeFrom s (i + 1) (i + 1) (acc ++ stringSlice s run i ++ "\\x" ++ twoHex n)
+    else escapeFrom s run (i + 1) acc
+
+fun twoHex (n : Int) : String =
+  let digit = \d -> stringSlice "0123456789ABCDEF" d (d + 1) in
+  digit (n / 16) ++ digit (n % 16)

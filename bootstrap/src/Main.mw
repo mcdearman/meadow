@@ -1,0 +1,65 @@
+-- MeadowBoot: Meadow's compiler, written in Meadow with Lingua.
+--
+-- Each pass is checked against the Rust compiler's, input by input: see
+-- `README.md` and `buildtools/meadow/tests/bootstrap.rs`. What each command
+-- prints is what that test compares.
+
+mod Lex
+mod Core
+mod Cek
+mod Syntax
+mod Parse
+
+use Lingua (cli!)
+use MeadowBoot.Lex (lex, dump)
+use MeadowBoot.Core (program)
+use MeadowBoot.Cek as Cek
+use MeadowBoot.Parse (parsed)
+use Std.Collections.Vector as V
+use Std.Fs (Fs, readToString)
+use Std.Console (writeOutput)
+use Std.Process (exit)
+
+cli! {
+  pub Cli "meadowboot" "Meadow's compiler, written in Meadow"
+    | lex "Each file's tokens, one a line, and then what is wrong in them" { files : [String] "the files to read" }
+    | eval "Run each program of core with the CEK machine, and say its value" { files : [String] "core, as the Rust compiler writes it" }
+    | parse "Parse each file, and write the abstract syntax it is" { files : [String] "the files to read" }
+}
+
+def main =
+  match argsCli () with
+  | Cli.Lex r -> finish (V.foldl (\ok p -> lexFile p and ok) True r.files)
+  | Cli.Eval r -> finish (V.foldl (\ok p -> evalFile p and ok) True r.files)
+  | Cli.Parse r -> finish (V.foldl (\ok p -> parseFile p and ok) True r.files)
+
+-- `path`'s abstract syntax, a node a line, under a line naming it -- or
+-- `parse failed`.
+fun parseFile (path : String) : Bool ! { Fs, Console | e } =
+  match readToString path with
+  | Err why -> (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
+  | Ok text ->
+      (match parsed text with
+       | Ok tree -> (let u = writeOutput ("== ${path}\n" ++ tree) in True)
+       | Err _ -> (let u = writeOutput "== ${path}\nparse failed\n" in True))
+
+-- `path`'s value, or `error: why`, under a line naming it.
+fun evalFile (path : String) : Bool ! { Fs, Console | e } =
+  match readToString path with
+  | Err why -> (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
+  | Ok text ->
+      (match program text with
+       | Err why -> (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
+       | Ok p ->
+           (match Cek.run p with
+            | Ok v -> (let u = writeOutput "== ${path}\n${Cek.display v}\n" in True)
+            | Err why -> (let u = writeOutput "== ${path}\nerror: ${why}\n" in True)))
+
+-- End with status 1 when something went wrong.
+fun finish (ok : Bool) = if ok then () else exit 1
+
+-- `path`'s tokens under a line naming it: `== path`.
+fun lexFile (path : String) : Bool ! { Fs, Console | e } =
+  match readToString path with
+  | Err why -> (let u = writeOutput "== ${path}\n! cannot read it: ${why}\n" in False)
+  | Ok text -> (let u = writeOutput "== ${path}\n${dump (lex text)}" in True)

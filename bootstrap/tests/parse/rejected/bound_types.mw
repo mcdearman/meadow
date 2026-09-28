@@ -1,0 +1,2 @@
+-- A bound applies a trait to types.
+fun f : (Show, Eq a) => a

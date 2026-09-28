@@ -57,7 +57,7 @@
 
 use crate::inline::{Body, Fresh, freshen_mapped, retype};
 use crate::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Where the names of copies, and of what they bind, start: clear of every
 /// unit and of the test runner's definitions, and below [`crate::specialize`]'s.
@@ -469,13 +469,25 @@ impl Spec {
         };
         // The caller's own type variables among the types: a release build
         // copies at them too -- see [`Spec::copy`] -- and a debug build waits
-        // for the caller to be copied.
+        // for the caller to be copied. Each keeps the kind it stands in for: a
+        // record's row, or a number's, is not any type.
         let mut vars = Vec::new();
+        let mut var_kinds: HashMap<u32, VarKind> = HashMap::new();
         for (t, k) in tys.iter().zip(&kinds) {
-            if !matches!(k, VarKind::Effect) && open(t) && !type_vars(t, &mut vars) {
+            if matches!(k, VarKind::Effect) {
+                continue;
+            }
+            if let InferType::Var(v) = t {
+                var_kinds.entry(*v).or_insert(*k);
+            }
+            if open(t) && !type_vars(t, &mut vars) {
                 return None;
             }
         }
+        let vars: Vec<(u32, VarKind)> = vars
+            .into_iter()
+            .map(|v| (v, var_kinds.get(&v).copied().unwrap_or(VarKind::Type)))
+            .collect();
         if args.len() < count
             || tys.len() != kinds.len()
             || (self.limit.is_some() && !vars.is_empty())
@@ -495,7 +507,7 @@ impl Spec {
                 } else {
                     Term::TyApp(
                         Arc::new(copy),
-                        vars.iter().map(|v| InferType::Var(*v)).collect(),
+                        vars.iter().map(|(v, _)| InferType::Var(*v)).collect(),
                     )
                 }
             }
@@ -509,15 +521,15 @@ impl Spec {
 
     /// The copy of `f` at `tys` and `dicts`, made if it has not been.
     ///
-    /// `vars` are the caller's own type variables among `tys`, and the copy
-    /// is generic in them: its dictionaries are what is known, and the types
-    /// it is at are whatever the caller's turn out to be. A function called
+    /// `vars` are the caller's own type variables among `tys`, each with its
+    /// kind, and the copy is generic in them: its dictionaries are what is
+    /// known, and the types it is at are whatever the caller's turn out to be. A function called
     /// inside a `runSt` -- whose state type no caller ever knows, because
     /// `runSt` asks for a body that works at every one -- is where it
     /// matters: `==` at a known type, through a helper generic in the state,
     /// was a dictionary looked up at run time at every call, never copied at
     /// all. The representation passes after this copy the copy in their turn.
-    fn copy(&mut self, f: Var, tys: &[Ty], dicts: &[Var], vars: &[u32]) -> Option<Var> {
+    fn copy(&mut self, f: Var, tys: &[Ty], dicts: &[Var], vars: &[(u32, VarKind)]) -> Option<Var> {
         let key = (f, format!("{tys:?}{dicts:?}"));
         if let Some(v) = self.copies.get(&key) {
             return Some(*v);
@@ -537,11 +549,18 @@ impl Spec {
         // copy -- a definition of its own -- does not bind. Effects are erased
         // below core and not checked in it, so the copy takes such a row as
         // empty, and is closed.
+        //
+        // A record's row is not: what else a record holds decides how it is
+        // laid out, so a copy that took `{ items | r }` as `{ items }` read
+        // the record it was given as one of a single field -- a vector where
+        // there was a record, and a match on what it held that fitted no arm.
+        // The copy is generic in the caller's row instead, as in any other of
+        // its type variables.
         let tys: Vec<Ty> = tys
             .iter()
             .zip(&function.body.binders)
             .map(|(t, b)| match b.kind {
-                VarKind::Effect | VarKind::Row if open(t) => InferType::RowEmpty,
+                VarKind::Effect if open(t) => InferType::RowEmpty,
                 _ => t.clone(),
             })
             .collect();
@@ -590,9 +609,9 @@ impl Spec {
         self.depth -= 1;
         let binders: Vec<TyVar> = vars
             .iter()
-            .map(|v| TyVar {
+            .map(|(v, kind)| TyVar {
                 id: *v,
-                kind: VarKind::Type,
+                kind: *kind,
             })
             .collect();
         let (poly, term) = if binders.is_empty() {

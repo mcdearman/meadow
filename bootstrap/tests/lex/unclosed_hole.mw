@@ -1,0 +1,2 @@
+def s = "a hole ${ f "inner" x that is never closed
+def y = 2

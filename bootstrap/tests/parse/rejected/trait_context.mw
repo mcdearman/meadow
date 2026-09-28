@@ -1,0 +1,4 @@
+-- A trait method takes no context.
+trait T a {
+  fun m : Show a => a
+}

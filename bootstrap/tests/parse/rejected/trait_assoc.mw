@@ -1,0 +1,4 @@
+-- A trait's associated type has parameters and no value.
+trait T a {
+  type Item = a
+}

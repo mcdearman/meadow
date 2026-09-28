@@ -1,0 +1,514 @@
+-- Meadow's syntax: the grammar Lingua makes a parser of (`syntax!`), a lossless
+-- tree for any input, and a pattern for each of its rules that reads the tree
+-- as abstract syntax.
+--
+-- The parser is an automaton `syntax!` works out when this file is compiled:
+-- every choice it makes is a test of the next few tokens, and it never tries a
+-- way and comes back. The Rust parser does come back -- it is a PEG -- and the
+-- places it does are written differently here, so that looking ahead decides
+-- them:
+--
+-- * A pattern in parentheses may be a view, `(f x -> p)`, whose function is
+--   any expression: the parentheses hold expressions, which may also say
+--   `as`, `: T` and `-> p`, and what is not a view is read as a pattern
+--   afterwards -- as GHC reads patterns.
+-- * `fun f : T` and `fun f x : T = e` begin alike, as do a signature's
+--   context and a type (`C a => …`): one form each, told apart afterwards by
+--   what came after.
+-- * `{ r | x = e }` and `{ x | r }`: one form, the part after `|` a field
+--   list or an expression by its second token.
+-- * `[a .. b]`, `[a; b]`, `[a, b]`: one form, by what follows the first.
+-- * A handler's arms: `op p k -> e`, and `return p -> e` is the one with no
+--   resumption and that name.
+--
+-- The lexer's tokens are MeadowBoot's own (`Lex`), each given a kind here.
+-- Some words mean something only where they are: `pattern` before a capital
+-- starts a synonym, `rec` after `let` before a name makes the binding
+-- recursive, `.*` ends a `use`, `<:` begins a trait's supertraits, `:?` asks
+-- for a hole's `Debug`. And a name in a path a `!` follows is a macro's: the
+-- Rust parser takes `a.b!` as a call wherever it could be one, which it sees
+-- by looking along the path to the `!`, and the lexer marks it here instead --
+-- one kind for a path whose `!` starts a line's declaration, which no
+-- expression before it may take as an argument, and one for any other. (A
+-- type's `! e` marks the name before it the same way: type atoms take either.)
+-- Each is a kind of its own.
+
+use Lingua (syntax!)
+use MeadowBoot.Lex (lex, Lexed, Token)
+use MeadowBoot.Lex.Token.*
+use Std.Collections.Vector as V
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+-- --- tokens -----------------------------------------------------------------------
+
+-- A token as the grammar sees it: its kind, nothing more -- its text is the
+-- source's.
+@pub data Tk
+  = TInt
+  | TReal
+  | TStr
+  | TInterpStart
+  | TInterpMid
+  | TInterpEnd
+  | TChar
+  | TLower
+  | TUpper
+  | TLineLower
+  | TLineUpper
+  | TMacLower
+  | TMacUpper
+  | TOp
+  | TSubtrait
+  | TDotStar
+  | TConOp
+  | TDebugFmt
+  | TPattern
+  | TRec
+  | TWildcard
+  | TBackslash
+  | TLArrow
+  | TRArrow
+  | TFatArrow
+  | TPlus
+  | TMinus
+  | TStar
+  | TSlash
+  | TPercent
+  | TCaret
+  | TAnd
+  | TOr
+  | TEq
+  | TEqEq
+  | TNeq
+  | TLt
+  | TGt
+  | TLeq
+  | TGeq
+  | TBang
+  | TDeclBang
+  | TComma
+  | TPeriod
+  | TDoublePeriod
+  | TDoublePeriodEq
+  | TColonColon
+  | TColon
+  | TSemiColon
+  | TLParen
+  | TRParen
+  | TLBrace
+  | TRBrace
+  | TLBrack
+  | TRBrack
+  | THash
+  | TBar
+  | TLPipe
+  | TRPipe
+  | TAt
+  | TBacktick
+  | TDollar
+  | TMod
+  | TEnd
+  | TUse
+  | TDef
+  | TFun
+  | TLet
+  | TIn
+  | TMatch
+  | TWith
+  | TIf
+  | TThen
+  | TElse
+  | TData
+  | TRecord
+  | TEffect
+  | THandle
+  | TType
+  | TTrait
+  | TImpl
+  | TWhere
+  | TAs
+  | TMacro
+  | TInfix
+  | TInfixl
+  | TInfixr
+  | TError
+
+-- Every token of `input` with its kind, from `start` on, to `f` in turn, as
+-- a Scythe lexer's fold hands them: what `syntax!` reads a source with.
+@pub fun foldTk f acc (input : String) =
+  let ts = (lex input).tokens in
+  let line = paths ts True in
+  let mac = paths ts False in
+  Ok (V.foldl (\a i -> match V.get ts i with | Just (l : Lexed) -> f a (kindAt ts line mac i) l.from l.to | None -> a) acc (V.range 0 (V.len ts)))
+
+-- For each token, whether it is a name in the path of a macro call: one that
+-- starts a line -- the names before a `DeclBang` -- or, `line` false, any
+-- other, the names before a `!`.
+fun paths (ts : [Lexed]) (line : Bool) : [Bool] =
+  V.foldl
+    (\marks i ->
+      match V.get ts i with
+      | Just (l : Lexed) ->
+          (match l.token with
+           | DeclBang -> if line then markPath ts marks (i - 1) else marks
+           | Bang -> if line then marks else markPath ts marks (i - 1)
+           | _ -> marks)
+      | None -> marks)
+    (V.map (\_ -> False) ts)
+    (V.range 0 (V.len ts))
+
+fun markPath (ts : [Lexed]) (marks : [Bool]) (j : Int) : [Bool] =
+  if j < 0 or not (isSeg ts j) then marks
+  else
+    let marked = V.set marks j True in
+    if j >= 2 and isPeriod ts (j - 1) then markPath ts marked (j - 2) else marked
+
+fun isSeg (ts : [Lexed]) (j : Int) : Bool =
+  match V.get ts j with
+  | Just (l : Lexed) -> (match l.token with | LowerIdent _ -> True | UpperIdent _ -> True | _ -> False)
+  | None -> False
+
+fun isPeriod (ts : [Lexed]) (j : Int) : Bool =
+  match V.get ts j with
+  | Just (l : Lexed) -> (match l.token with | Period -> True | _ -> False)
+  | None -> False
+
+fun tokenAt (ts : [Lexed]) (j : Int) : Maybe Token = match V.get ts j with | Just (l : Lexed) -> Just l.token | None -> None
+
+fun kindAt (ts : [Lexed]) (line : [Bool]) (mac : [Bool]) (i : Int) : Tk =
+  match tokenAt ts i with
+  | Just t -> kindOf ts line mac i t
+  | None -> Tk.TError
+
+fun kindOf (ts : [Lexed]) (line : [Bool]) (mac : [Bool]) (i : Int) (t : Token) : Tk =
+  match t with
+  | Int _ -> Tk.TInt
+  | Real _ -> Tk.TReal
+  | Str _ -> Tk.TStr
+  | InterpStart _ -> Tk.TInterpStart
+  | InterpMid _ -> Tk.TInterpMid
+  | InterpEnd _ -> Tk.TInterpEnd
+  | Char _ -> Tk.TChar
+  | LowerIdent s ->
+      if V.getOr False line i then Tk.TLineLower
+      else if V.getOr False mac i then Tk.TMacLower
+      else if s == "pattern" and upperAt ts (i + 1) then Tk.TPattern
+      else if s == "rec" and letAt ts (i - 1) and lowerAt ts (i + 1) then Tk.TRec
+      else Tk.TLower
+  | UpperIdent _ -> if V.getOr False line i then Tk.TLineUpper else if V.getOr False mac i then Tk.TMacUpper else Tk.TUpper
+  | OpIdent s -> if s == ".*" then Tk.TDotStar else if s == "<:" then Tk.TSubtrait else Tk.TOp
+  | ConOpIdent s -> if s == ":?" then Tk.TDebugFmt else Tk.TConOp
+  | Wildcard -> Tk.TWildcard
+  | Backslash -> Tk.TBackslash
+  | LArrow -> Tk.TLArrow
+  | RArrow -> Tk.TRArrow
+  | FatArrow -> Tk.TFatArrow
+  | Plus -> Tk.TPlus
+  | Minus -> Tk.TMinus
+  | Star -> Tk.TStar
+  | Slash -> Tk.TSlash
+  | Percent -> Tk.TPercent
+  | Caret -> Tk.TCaret
+  | And -> Tk.TAnd
+  | Or -> Tk.TOr
+  | Eq -> Tk.TEq
+  | EqEq -> Tk.TEqEq
+  | Neq -> Tk.TNeq
+  | Lt -> Tk.TLt
+  | Gt -> Tk.TGt
+  | Leq -> Tk.TLeq
+  | Geq -> Tk.TGeq
+  | Bang -> Tk.TBang
+  | DeclBang -> Tk.TDeclBang
+  | Comma -> Tk.TComma
+  | Period -> Tk.TPeriod
+  | DoublePeriod -> Tk.TDoublePeriod
+  | DoublePeriodEq -> Tk.TDoublePeriodEq
+  | ColonColon -> Tk.TColonColon
+  | Colon -> Tk.TColon
+  | SemiColon -> Tk.TSemiColon
+  | LParen -> Tk.TLParen
+  | RParen -> Tk.TRParen
+  | LBrace -> Tk.TLBrace
+  | RBrace -> Tk.TRBrace
+  | LBrack -> Tk.TLBrack
+  | RBrack -> Tk.TRBrack
+  | Hash -> Tk.THash
+  | Bar -> Tk.TBar
+  | LPipe -> Tk.TLPipe
+  | RPipe -> Tk.TRPipe
+  | At -> Tk.TAt
+  | Backtick -> Tk.TBacktick
+  | Dollar -> Tk.TDollar
+  | Mod -> Tk.TMod
+  | End -> Tk.TEnd
+  | Use -> Tk.TUse
+  | Def -> Tk.TDef
+  | Fun -> Tk.TFun
+  | Let -> Tk.TLet
+  | In -> Tk.TIn
+  | Match -> Tk.TMatch
+  | With -> Tk.TWith
+  | If -> Tk.TIf
+  | Then -> Tk.TThen
+  | Else -> Tk.TElse
+  | Data -> Tk.TData
+  | Record -> Tk.TRecord
+  | Effect -> Tk.TEffect
+  | Handle -> Tk.THandle
+  | Type -> Tk.TType
+  | Trait -> Tk.TTrait
+  | Impl -> Tk.TImpl
+  | Where -> Tk.TWhere
+  | As -> Tk.TAs
+  | Macro -> Tk.TMacro
+  | Infix -> Tk.TInfix
+  | Infixl -> Tk.TInfixl
+  | Infixr -> Tk.TInfixr
+  | Error -> Tk.TError
+
+fun upperAt (ts : [Lexed]) (j : Int) : Bool = match tokenAt ts j with | Just (UpperIdent _) -> True | _ -> False
+
+fun lowerAt (ts : [Lexed]) (j : Int) : Bool = match tokenAt ts j with | Just (LowerIdent _) -> True | _ -> False
+
+fun letAt (ts : [Lexed]) (j : Int) : Bool = match tokenAt ts j with | Just Let -> True | _ -> False
+
+-- --- the grammar ------------------------------------------------------------------
+
+@pub syntax! {
+  pub Meadow
+  lexer Tk
+  lookahead 5
+  tokens {
+    "int" = TInt, "real" = TReal, "string" = TStr, "interp_start" = TInterpStart,
+    "interp_mid" = TInterpMid, "interp_end" = TInterpEnd, "char" = TChar, "lower" = TLower,
+    "upper" = TUpper, "line_lower" = TLineLower, "line_upper" = TLineUpper, "mac_lower" = TMacLower,
+    "mac_upper" = TMacUpper, "op" = TOp,
+    "<:" = TSubtrait, ".*" = TDotStar, "conop" = TConOp, ":?" = TDebugFmt, "pattern" = TPattern,
+    "rec" = TRec, "_" = TWildcard, "\\" = TBackslash, "<-" = TLArrow, "->" = TRArrow,
+    "=>" = TFatArrow, "+" = TPlus, "-" = TMinus, "*" = TStar, "/" = TSlash, "%" = TPercent,
+    "^" = TCaret, "and" = TAnd, "or" = TOr, "=" = TEq, "==" = TEqEq, "!=" = TNeq, "<" = TLt,
+    ">" = TGt, "<=" = TLeq, ">=" = TGeq, "!" = TBang, "declbang" = TDeclBang, "," = TComma,
+    "." = TPeriod, ".." = TDoublePeriod, "..=" = TDoublePeriodEq, "::" = TColonColon,
+    ":" = TColon, ";" = TSemiColon, "(" = TLParen, ")" = TRParen, "{" = TLBrace, "}" = TRBrace,
+    "[" = TLBrack, "]" = TRBrack, "#" = THash, "|" = TBar, "<|" = TLPipe, "|>" = TRPipe,
+    "@" = TAt, "`" = TBacktick, "$" = TDollar, "mod" = TMod, "end" = TEnd, "use" = TUse,
+    "def" = TDef, "fun" = TFun, "let" = TLet, "in" = TIn, "match" = TMatch, "with" = TWith,
+    "if" = TIf, "then" = TThen, "else" = TElse, "data" = TData, "record" = TRecord,
+    "effect" = TEffect, "handle" = THandle, "type" = TType, "trait" = TTrait, "impl" = TImpl,
+    "where" = TWhere, "as" = TAs, "macro" = TMacro, "infix" = TInfix, "infixl" = TInfixl,
+    "infixr" = TInfixr, "error" = TError
+  }
+  grammar {
+    File = decls:Decl*
+
+    -- --- declarations ---
+
+    Decl = attrs:Attr* item:Item
+    Item = fixity:Fixity | modDecl:ModDecl | useDecl:UseDecl | dataDecl:DataDecl
+      | recordDecl:RecordDecl | effectDecl:EffectDecl | typeDecl:TypeDecl
+      | traitDecl:TraitDecl | implDecl:ImplDecl | macroDecl:MacroDecl | macCall:MacCall
+      | funItem:FunItem | defItem:DefItem | patternDecl:PatternDecl
+
+    Attr = "@" name:AttrName args:AttrArgs?
+    AttrName = "lower" | "upper" | "macro"
+    AttrArgs = "(" metas:(Meta ("," Meta)* ","?)? ")"
+    Meta = text:"string" | name:Seg rest:MetaRest?
+    MetaRest = value:MetaValue | args:AttrArgs
+    MetaValue = "=" text:"string"
+    Seg = "lower" | "upper"
+
+    Fixity = assoc:("infixl" | "infixr" | "infix") prec:"int" ops:(FixOp ("," FixOp)*)
+    FixOp = "("? op:OpName ")"?
+    OpName = "op" | "<:" | "+" | "-" | "*" | "/" | "%" | "^" | "==" | "!=" | "<" | ">" | "<=" | ">="
+
+    ModDecl = "mod" name:Seg
+
+    UseDecl = "use" path:UsePath glob:UseGlob? alias:UseAlias? names:UseNames?
+    UsePath = segs:(Seg ("." Seg)*)
+    UseGlob = ".*" | "." "*"
+    UseAlias = "as" name:"upper"
+    UseNames = "(" items:(UseItem ("," UseItem)* ","?)? ")"
+    UseItem = name:UseName bang:("!" | "declbang")?
+    UseName = seg:Seg | mac:("mac_lower" | "mac_upper") | op:OpName | paren:ParenOp
+    ParenOp = "(" op:OpName ")"
+
+    DataDecl = "data" name:"upper" params:"lower"* "=" "|"? variants:(Variant ("|" Variant)*)
+    Variant = attrs:Attr* name:"upper" args:TAtom*
+    RecordDecl = "record" name:"upper" params:"lower"* "=" fields:RecTy
+    EffectDecl = "effect" name:"upper" params:"lower"* ops:RecTy
+    TypeDecl = "type" name:"upper" params:"lower"* "=" ty:Type
+
+    TraitDecl = "trait" name:"upper" params:"lower"* supers:Supers? "{" items:Member* "}"
+    Supers = "<:" bounds:(Bound ("," Bound)*)
+    Bound = tr:"upper" tys:HeadTy*
+    ImplDecl = "impl" tr:"upper" tys:HeadTy* context:WhereBounds? "{" items:Member* "}"
+    WhereBounds = "where" bounds:(Bound ("," Bound)*)
+    Member = assoc:AssocDecl | funItem:FunItem | defItem:DefItem
+    AssocDecl = "type" name:"upper" args:TAtom* value:AssocValue?
+    AssocValue = "=" ty:Type
+
+    MacroDecl = "macro" name:"lower" rules:MacroRule*
+    MacroRule = "|" matcher:Group "->" template:Group
+    Group = ParenGroup | BrackGroup | BraceGroup
+    ParenGroup = "(" trees:Tt* ")"
+    BrackGroup = "[" trees:Tt* "]"
+    BraceGroup = "{" trees:Tt* "}"
+    Tt = Group | TtToken
+    TtToken = token:("int" | "real" | "string" | "interp_start" | "interp_mid" | "interp_end"
+        | "char" | "lower" | "upper" | "line_lower" | "line_upper" | "mac_lower" | "mac_upper" | "op"
+        | "<:" | ".*" | "conop"
+        | ":?" | "pattern" | "rec" | "_" | "\\" | "<-" | "->" | "=>" | "+" | "-" | "*" | "/" | "%"
+        | "^" | "and" | "or" | "=" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "!" | "declbang" | ","
+        | "." | ".." | "..=" | "::" | ":" | ";" | "#" | "|" | "<|" | "|>" | "@" | "`" | "$" | "mod"
+        | "end" | "use" | "def" | "fun" | "let" | "in" | "match" | "with" | "if" | "then" | "else"
+        | "data" | "record" | "effect" | "handle" | "type" | "trait" | "impl" | "where" | "as"
+        | "macro" | "infix" | "infixl" | "infixr" | "error")
+
+    MacCall = path:MacPath bang:("!" | "declbang") arg:Group
+    MacPath = segs:(AnySeg ("." AnySeg)*)
+    AnySeg = "mac_lower" | "mac_upper" | "line_lower" | "line_upper"
+
+    FunItem = "fun" name:Vid params:Param* annot:Annot? body:Body? clauses:Clause*
+    DefItem = "def" pat:Pat annot:Annot? body:Body? clauses:Clause*
+    Annot = ":" ty:Type implies:Implies? eff:EffAnnot?
+    Implies = "=>" ty:Type
+    EffAnnot = "!" row:EffRow
+    Body = "=" expr:Expr
+    Clause = "|" name:Vid params:Param* "=" body:Expr
+
+    PatternDecl = "pattern" name:"upper" form:PatternForm?
+    PatternForm = Synonym | Complete
+    Synonym = params:Vid* dir:("=" | "<-") pat:Pat builder:SynBuilder?
+    SynBuilder = "where" name:"upper" params:Param* "=" body:Expr
+    Complete = names:(CompleteName CompleteName*)
+    CompleteName = "|" name:"upper"
+
+    Vid = name:"lower" | "(" op:OpName ")"
+
+    -- --- types ---
+
+    Type = head:THead arrow:Arrow?
+    Arrow = "->" result:Type eff:EffAnnot?
+    THead = con:TCon | paren:TParen | array:TArray | brack:TBrack | recTy:RecTy | var:("lower" | "mac_lower")
+    TCon = name:("upper" | "mac_upper") args:TAtom*
+    TAtom = paren:TParen | array:TArray | brack:TBrack | recTy:RecTy | var:("lower" | "mac_lower")
+      | name:("upper" | "mac_upper")
+    HeadTy = paren:TParen | array:TArray | brack:TBrack | var:("lower" | "mac_lower") | name:("upper" | "mac_upper")
+    TParen = "(" tys:(Type ("," Type)*)? ")"
+    TArray = "#" "[" ty:Type "]"
+    TBrack = "[" ty:Type ";"? "]"
+    RecTy = "{" fields:(FieldTy ("," FieldTy)* ","?)? tail:RowTail? "}"
+    FieldTy = attrs:Attr* name:"lower" ":" ty:Type
+    RowTail = "|" var:"lower"
+    EffRow = braces:RowBraces | var:("lower" | "mac_lower") | label:RowLabel
+    RowBraces = "{" labels:(RowLabel ("," RowLabel)* ","?)? tail:RowTail? "}"
+    RowLabel = name:("upper" | "mac_upper") args:TAtom*
+
+    -- --- patterns ---
+
+    Pat = first:PAtom conses:ConsTail* ases:AsTail*
+    ConsTail = "::" atom:PAtom
+    AsTail = "as" name:Vid
+    PAtom = con:ConPat | arg:Arg
+    ConPat = name:"upper" qual:QualTail? args:Parg*
+    QualTail = "." name:"upper"
+    Parg = con:NullCon | arg:Arg
+    NullCon = name:"upper" qual:QualTail?
+    Arg = paren:PatParen | recPat:RecPat | var:Vid | wild:"_" | lit:("int" | "real" | "string" | "char")
+      | array:ArrPat | brack:BrackPat | mac:MacCall
+    Param = con:NullCon | paren:PatParen | recPat:RecPat | var:Vid | wild:"_"
+      | lit:("int" | "real" | "string" | "char") | brack:BrackParam | array:ArrParam
+    BrackParam = first:BrackPat conses:ConsTail* ases:AsTail*
+    ArrParam = first:ArrPat conses:ConsTail* ases:AsTail*
+    RecPat = "{" fields:(PField ("," PField)* ","?)? open:OpenTail? "}"
+    PField = name:"lower" value:PFieldValue?
+    PFieldValue = "=" pat:Pat
+    OpenTail = "|" "_"
+    ArrPat = "#" "[" items:(Pat ("," Pat)* ","?)? "]"
+    BrackPat = "[" body:BrackPatBody? "]"
+    BrackPatBody = semi:";" | first:Pat tail:BrackPatTail?
+    BrackPatTail = ListPatTail | VecPatTail
+    ListPatTail = items:(SemiPat SemiPat*)
+    SemiPat = ";" pat:Pat?
+    VecPatTail = items:(CommaPat CommaPat*)
+    CommaPat = "," pat:Pat?
+    PatParen = "(" elems:(Elem ("," Elem)* ","?)? annot:ParenAnnot? ")"
+
+    -- --- expressions ---
+
+    Expr = first:PipeL backs:BackPipe*
+    BackPipe = "<|" operand:PipeL
+    PipeL = first:OrE pipes:Pipe*
+    Pipe = "|>" operand:OrE
+    OrE = first:AndE ors:OrTail*
+    OrTail = "or" operand:AndE
+    AndE = first:Ops ands:AndTail*
+    AndTail = "and" operand:Ops
+    Ops = first:Operand rest:InfixTail*
+    InfixTail = op:InfixOp operand:Operand
+    InfixOp = "op" | "<:" | "+" | "-" | "*" | "/" | "%" | "^" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "::"
+    Operand = negs:"-"* base:Base
+
+    -- An operand: what is applied, and what it is applied to. A macro call
+    -- (`mac_app`), a qualified name, a constructor or an atom, as the Rust
+    -- parser tries them -- told apart here by their first two tokens.
+    Base = head:Head args:Atom*
+    Head = mac:MacCall | qual:QualHead | con:"upper" | low:LowAtom
+    QualHead = qual:"upper" "." name:("lower" | "upper")
+
+    -- An argument. A bare constructor takes no fields: `A.x` is a qualified
+    -- name, never `A`'s field `x`.
+    Atom = mac:MacAtom | qual:QualAtom | con:"upper" | low:LowAtom
+    MacAtom = path:MacPath "!" arg:Group fields:FieldTail*
+    QualAtom = qual:"upper" "." name:("lower" | "upper") fields:FieldTail*
+    -- A form that ends in an expression -- `let`, `if`, a lambda, `match`,
+    -- `handle` -- takes no fields: that expression takes them first.
+    LowAtom = closed:ClosedAtom | open:OpenPrim
+    ClosedAtom = prim:ClosedPrim fields:FieldTail*
+    FieldTail = "." name:"lower"
+    ClosedPrim = Paren | OpRef | LitE | InterpE | VarE | HoleE | BraceE | BrackE | ArrE
+    OpenPrim = HandleE | LetE | IfE | LamE | MatchE
+    Paren = "(" elems:(Elem ("," Elem)* ","?)? annot:ParenAnnot? ")"
+    Elem = expr:Expr ases:AsTail* view:ViewTail?
+    ViewTail = "->" pat:Pat
+    ParenAnnot = ":" ty:Type
+    OpRef = "(" op:OpName ")"
+    LitE = "int" | "real" | "string" | "char"
+    InterpE = "interp_start" first:Hole mids:InterpMid* "interp_end"
+    InterpMid = "interp_mid" hole:Hole
+    Hole = expr:Expr debug:":?"?
+    VarE = "lower"
+    HoleE = "_"
+    BraceE = "{" items:(BraceItem ("," BraceItem)* ","?)? tail:BraceTail? "}"
+    BraceItem = expr:AsExpr value:FieldValue?
+    FieldValue = "=" expr:AsExpr
+    BraceTail = "|" body:BraceTailBody
+    BraceTailBody = UpdFields | TailExpr
+    UpdFields = fields:(UpdField ("," UpdField)* ","?)
+    UpdField = name:"lower" "=" value:Expr
+    TailExpr = expr:Expr
+    HandleE = "handle" expr:Expr "with" "{" arms:(HArm ("," HArm)* ","?)? "}"
+    HArm = op:"lower" param:Pat resume:"lower"? "->" body:Expr
+    LetE = "let" binds:(LetBind LetBind*) "in" body:Expr
+    LetBind = FunBind | PatBind
+    FunBind = "fun" name:"lower" params:Param* annot:Annot? "=" value:Expr
+    PatBind = rec:"rec"? pat:Pat params:Param* annot:Annot? "=" value:Expr
+    IfE = "if" cond:Expr "then" yes:Expr "else" no:Expr
+    LamE = "\\" params:(Pat Pat*) "->" body:Expr
+    MatchE = "match" scrutinee:Expr "with" arms:(Arm Arm*)
+    Arm = "|" pat:Pat guard:Guard? "->" body:Expr
+    Guard = "if" cond:Expr
+    BrackE = "[" body:BrackBody? "]"
+    BrackBody = semi:";" | first:AsExpr tail:BrackTail?
+    BrackTail = RangeTail | ListTail | VecTail
+    RangeTail = kind:(".." | "..=") hi:Expr
+    ListTail = items:(SemiItem SemiItem*)
+    SemiItem = ";" expr:AsExpr?
+    VecTail = items:(CommaItem CommaItem*)
+    CommaItem = "," expr:AsExpr?
+    ArrE = "#" "[" items:(AsExpr ("," AsExpr)* ","?)? "]"
+    AsExpr = expr:Expr ases:AsTail*
+  }
+}

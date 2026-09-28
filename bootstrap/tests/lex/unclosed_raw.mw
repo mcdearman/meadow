@@ -1,0 +1,2 @@
+def ok = r#"closed"#
+def s = r##"this raw string is closed by "# only, which is not enough

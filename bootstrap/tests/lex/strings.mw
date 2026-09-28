@@ -1,0 +1,17 @@
+-- Strings, and every escape a string has, good and bad.
+def plain = "plain text, with 'quotes' and a \"quote\""
+def escapes = "\n \r \t \0 \\ \" \' \$ \a \b \f \v \e"
+def hex = "\x41 \x7F \x80 \xZZ \x4"
+def unicode = "\u{1F600} \u{41} \u{} \u{1234567} \u{D800} \u{GG} \u{41 \u 41"
+def joined = "one \
+              two \
+   three"
+def bad = "\q \é done"
+def dollars = "$ $$ $x ${1 + 2} $${x} \${y} ${ "nested ${ "deep" } one" }"
+def holes = "a ${b} c ${d ++ "e"} f ${ { g = 1 }.g } h"
+def empty = "${} and ${   } and ${ -- a comment
+}"
+def braces = "${f "}" '}'} ${x'} ${"a}" ++ "{"}"
+def unicodeText = "héllo wörld — ✓ 🎉"
+def raws = r"no \escapes ${here}" ++ r#"a "quote" inside"# ++ r##"one "# inside"##
+def notRaw = r ++ r1 ++ rr"x"

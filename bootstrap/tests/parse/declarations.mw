@@ -1,0 +1,70 @@
+-- Declarations, with the bindings several equations and a signature's
+-- clauses make, and the attributes each is written under.
+
+infixl 6 +., (-.)
+
+infixr 5 <>
+
+use A.B.C
+use A.B.*
+use A.B as C
+use A.B (x, Y, (+), m!, (<>))
+
+@cfg(test) @doc("sig and bind")
+fun gcd : Int -> Int -> Int
+  | gcd a 0 = a
+  | gcd a b = gcd b (a % b)
+
+@pub fun area (Shape.Circle r) = r * r
+  | area (Shape.Square s) = s * s
+
+fun apply f x : Int ! { Io, State Int | e } = f x
+
+fun first [x; _] = x
+  | first _ = 0
+
+fun each #[a, b] :: rest as all = all
+
+def (a, b) : (Int, Int) = (1, 2)
+
+def value : Int
+  | value = 3
+
+fun (<>) a b = a ++ b
+
+@derive(Debug, PartialEq) @meta(key = "v", list(a, "b"))
+data Shape a = | Circle Float | Square { side : Float } | Tagged a (List a) | Rec { x : a, y : [a] }
+
+record Point a = { x : a, @skip y : a, }
+
+effect State s { get : () -> s, put : s -> () }
+
+type Fn a b = a -> #[a] -> [b] -> [b;] -> (a, b) -> () -> { x : a | r } -> b ! { Io, State Int | e }
+
+trait Container f <: Functor f, Show (Maybe Int) {
+  type Item a
+  fun size : Box a -> Int
+  fun empty : Box a = none
+  fun isEmpty : Box a -> Bool
+    | isEmpty c = size c == 0
+  def zero : Int
+}
+
+impl Container [a] (Maybe b) where Show a, Eq b {
+  type Item a = a
+  fun size xs = len xs
+  def zero = 0
+}
+
+macro twice
+  | ($x:expr) -> ($x + $x)
+  | [$($y:tt),*] -> { $($y)* }
+
+rules! { a b (c [d]) }
+
+a.b.c! (x y)
+
+fun ctx : (Show a, Eq a) => a -> String
+  | ctx x = show x
+
+fun one : Show a => a -> String

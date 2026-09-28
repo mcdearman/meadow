@@ -1,0 +1,2 @@
+-- A signature says only the effects its type does.
+fun f : Int ! Io

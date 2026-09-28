@@ -2540,9 +2540,14 @@ impl fmt::Display for Value {
                 }
                 f.write_str("]")
             }
+            // By label, as every machine prints one: the map's own order is
+            // the order the labels happened to be interned in, which is the
+            // process's and not the program's.
             Value::Record(map) => {
                 f.write_str("{ ")?;
-                for (i, (k, v)) in map.iter().enumerate() {
+                let mut fields: Vec<_> = map.iter().collect();
+                fields.sort_by(|a, b| (**a.0).cmp(&**b.0));
+                for (i, (k, v)) in fields.into_iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ")?;
                     }

@@ -1,0 +1,2 @@
+-- A record update is not a pattern.
+fun f ({ r | a = 1 }) = r

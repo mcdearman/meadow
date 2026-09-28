@@ -1,0 +1,2 @@
+-- A function applied is not a pattern.
+fun f (g x) = x

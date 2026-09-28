@@ -283,3 +283,79 @@ fn an_executable_that_is_gone_is_linked_again() {
     let (again, _) = link_once(&dir);
     assert!(again.exists(), "it came back");
 }
+
+// --- what Silo runs ------------------------------------------------------------
+
+/// What a Silo program writes after its last newline: kept. The process is
+/// the emitted module's `main`, not Rust's, so nothing flushed stdout's
+/// buffer at exit and the end of the output was lost.
+#[test]
+fn silo_keeps_what_follows_the_last_newline() {
+    let dir = std::env::temp_dir().join(format!("meadow-silo-{}-flush", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).expect("a scratch package");
+    std::fs::write(
+        dir.join("Meadow.toml"),
+        "[package]
+name = \"Flush\"
+version = \"0.1.0\"
+
+[profile.release]
+runtime = \"silo\"
+",
+    )
+    .expect("a manifest");
+    std::fs::write(
+        dir.join("src/Main.mw"),
+        "use Std.Console (writeOutput)
+
+def main = writeOutput \"line\nno newline\"
+",
+    )
+    .expect("a module");
+    let out = Command::new(env!("CARGO_BIN_EXE_meadow"))
+        .args(["run", "--release"])
+        .arg(&dir)
+        .output()
+        .expect("the meadow binary runs");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "line
+no newline"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A record's row through a copy of a function of dictionaries, run natively:
+/// a release build copied `settle` at the caller's row taken as empty, and
+/// Silo, which lays a record out by what it holds, read `{ items, name }` as
+/// `{ items }` -- a vector where the record was, and a match that fitted
+/// nothing in it. The machines that do not lay records out agreed all along.
+#[test]
+fn silo_reads_a_record_through_a_copy_at_the_callers_row() {
+    let dir = std::env::temp_dir().join(format!("meadow-silo-{}-row", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).expect("a scratch package");
+    std::fs::write(
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"Row\"\nversion = \"0.1.0\"\n\n[profile.release]\nruntime = \"silo\"\n",
+    )
+    .expect("a manifest");
+    std::fs::write(
+        dir.join("src/Main.mw"),
+        "use Std.Collections.Vector as V\nuse Std.Console (writeOutput)\nuse T.*\ndata T = A Int | B String\n\nfun firsts spec = settle spec 0 0\n\nfun settle spec acc n =\n  let next = V.foldl (\\a t -> match t with | A i -> a + i | B s -> a + 1) acc spec.items in\n  if n > 5 then next else settle spec next (n + 1)\n\ndef main =\n  let spec = { name = \"G\", items = V.map (\\i -> if i % 2 == 0 then A i else B \"s\") (V.range 0 100) } in\n  writeOutput (show (firsts spec))\n",
+    )
+    .expect("a module");
+    let out = Command::new(env!("CARGO_BIN_EXE_meadow"))
+        .args(["run", "--release"])
+        .arg(&dir)
+        .output()
+        .expect("the meadow binary runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("17500"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

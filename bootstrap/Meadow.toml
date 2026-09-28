@@ -1,0 +1,15 @@
+[package]
+name = "MeadowBoot"
+version = "0.1.0"
+
+[dependencies]
+Lingua = { git = "https://github.com/mcdearman/Lingua.git", branch = "master" }
+Scythe = { git = "https://github.com/mcdearman/Scythe.git", branch = "master" }
+
+# Native, through LLVM: the fastest MeadowBoot there is, and one that links
+# with what LLVM links with.
+[profile.debug]
+runtime = "silo"
+
+[profile.release]
+runtime = "silo"

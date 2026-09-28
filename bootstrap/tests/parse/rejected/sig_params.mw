@@ -1,0 +1,2 @@
+-- A signature takes no parameters.
+fun f x : Int

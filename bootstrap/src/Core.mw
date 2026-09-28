@@ -1,0 +1,288 @@
+-- Core: what a program compiles to before any back end sees it, and what the
+-- CEK machine runs -- `meadow_core`'s `Term`, with the types erased and the
+-- positions gone. It is a Lingua language (`lang!`), a program of it tables
+-- and a node a row of them.
+--
+-- For now it is read from the core the Rust compiler writes of its own, in
+-- `CoreText`: a grammar Lingua makes the parser of (`syntax!`), the language
+-- that grammar implies, `Printed` (`lang!`), and a pass from it to `Core`,
+-- `read` (`pass!`), which makes numbers of the numerals and text of the
+-- quoted strings. The passes that make it of a program come later.
+
+use Scythe (lexer!)
+use Lingua (syntax!, lang!, pass!)
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Char as C
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+-- --- what the Rust compiler writes ---------------------------------------------------
+--
+-- A word says what each thing is, and it comes first: `lam 3 var 3` is a
+-- function of binder 3 answering it. A list is in brackets. Numbers are
+-- numbers -- a float is its bits -- and names and text are quoted, with
+-- `\xNN` for a control byte, a backslash or a quote, so that neither holds
+-- one.
+
+@derive(Lexer)
+data Word
+  = @regex("[ \t\r\n]+") Space
+  | @token("[") Open
+  | @token("]") Close
+  | @token("program") KProgram
+  | @token("defs") KDefs
+  | @token("fields") KFields
+  | @token("var") KVar
+  | @token("lam") KLam
+  | @token("app") KApp
+  | @token("let") KLet
+  | @token("letrec") KLetRec
+  | @token("if") KIf
+  | @token("tuple") KTuple
+  | @token("array") KArray
+  | @token("proj") KProj
+  | @token("record") KRecord
+  | @token("sel") KSel
+  | @token("extend") KExtend
+  | @token("ctor") KCtor
+  | @token("prim") KPrim
+  | @token("case") KCase
+  | @token("when") KWhen
+  | @token("perform") KPerform
+  | @token("handle") KHandle
+  | @token("return") KReturn
+  | @token("join") KJoin
+  | @token("jump") KJump
+  | @token("error") KError
+  | @token("const") KConst
+  | @token("int") KInt
+  | @token("bigint") KBigInt
+  | @token("f64") KF64
+  | @token("f32") KF32
+  | @token("word") KWord
+  | @token("str") KStr
+  | @token("char") KChar
+  | @token("true") KTrue
+  | @token("false") KFalse
+  | @token("unit") KUnit
+  | @token("wild") KWild
+  | @token("pvar") KPVar
+  | @token("pas") KPAs
+  | @token("plit") KPLit
+  | @token("ptuple") KPTuple
+  | @token("parray") KPArray
+  | @token("pctor") KPCtor
+  | @token("precord") KPRecord
+  | @regex("-?[0-9]+") Number
+  | @regex("\"[^\"]*\"") Quoted
+
+syntax! {
+  pub CoreText
+  lexer Word
+  trivia { Space }
+  tokens {
+    "[" = Open, "]" = Close, "program" = KProgram, "defs" = KDefs, "fields" = KFields,
+    "var" = KVar, "lam" = KLam, "app" = KApp, "let" = KLet, "letrec" = KLetRec, "if" = KIf,
+    "tuple" = KTuple, "array" = KArray, "proj" = KProj, "record" = KRecord, "sel" = KSel,
+    "extend" = KExtend, "ctor" = KCtor, "prim" = KPrim, "case" = KCase, "when" = KWhen,
+    "perform" = KPerform, "handle" = KHandle, "return" = KReturn, "join" = KJoin, "jump" = KJump,
+    "error" = KError, "const" = KConst, "int" = KInt, "bigint" = KBigInt, "f64" = KF64,
+    "f32" = KF32, "word" = KWord, "str" = KStr, "char" = KChar, "true" = KTrue, "false" = KFalse,
+    "unit" = KUnit, "wild" = KWild, "pvar" = KPVar, "pas" = KPAs, "plit" = KPLit,
+    "ptuple" = KPTuple, "parray" = KPArray, "pctor" = KPCtor, "precord" = KPRecord,
+    "number" = Number, "string" = Quoted
+  }
+  grammar {
+    File = "program" entry:"number" "defs" defs:Def* "fields" named:Named*
+    Def = id:"number" body:Term
+    Named = name:"string" "[" labels:"string"* "]"
+
+    Term = Var | Lam | App | Let | LetRec | If | Tuple | Array | Proj | Record | Sel | Extend
+      | Ctor | Prim | Case | Perform | Handle | Join | Jump | Ill | Const
+    Var = "var" id:"number"
+    Lam = "lam" param:"number" body:Term
+    App = "app" func:Term arg:Term
+    Let = "let" id:"number" value:Term body:Term
+    LetRec = "letrec" "[" binds:Bind* "]" body:Term
+    Bind = id:"number" value:Term
+    If = "if" cond:Term yes:Term no:Term
+    Tuple = "tuple" "[" items:Term* "]"
+    Array = "array" "[" items:Term* "]"
+    Proj = "proj" tuple:Term index:"number"
+    Record = "record" "[" fields:Field* "]"
+    Field = label:"string" value:Term
+    Sel = "sel" target:Term label:"string"
+    Extend = "extend" target:Term label:"string" value:Term
+    Ctor = "ctor" name:"string" "[" args:Term* "]"
+    Prim = "prim" op:"string" "[" args:Term* "]"
+    Case = "case" scrutinee:Term "[" arms:Arm* "]"
+    Arm = pat:Pat guard:Guard? body:Term
+    Guard = "when" cond:Term
+    Perform = "perform" eff:"string" op:"string" arg:Term
+    Handle = "handle" body:Term "[" clauses:Clause* "]" ("return" retId:"number" ret:Term)?
+    Clause = eff:"string" op:"string" param:"number" resume:"number" body:Term
+    Join = "join" id:"number" "[" params:"number"* "]" rhs:Term body:Term
+    Jump = "jump" id:"number" "[" args:Term* "]"
+    Ill = "error"
+    Const = "const" lit:Lit
+
+    Lit = LInt | LBig | LF64 | LF32 | LWord | LStr | LChar | LBool | LUnit
+    LInt = "int" value:"number"
+    LBig = "bigint" value:"number"
+    LF64 = "f64" bits:"number"
+    LF32 = "f32" bits:"number"
+    LWord = "word" ty:"string" bits:"number"
+    LStr = "str" text:"string"
+    LChar = "char" code:"number"
+    LBool = value:("true" | "false")
+    LUnit = "unit"
+
+    Pat = PWild | PVar | PAs | PLit | PTuple | PArray | PCtor | PRecord
+    PWild = "wild"
+    PVar = "pvar" id:"number"
+    PAs = "pas" id:"number" pat:Pat
+    PLit = "plit" lit:Lit
+    PTuple = "ptuple" "[" items:Pat* "]"
+    PArray = "parray" "[" items:Pat* "]"
+    PCtor = "pctor" name:"string" "[" args:Pat* "]"
+    PRecord = "precord" "[" fields:PField* "]"
+    PField = label:"string" pat:Pat
+  }
+}
+
+-- The language the grammar implies: every number and name still its text.
+lang! { Printed from CoreText }
+
+-- --- the language ------------------------------------------------------------------
+
+-- Core: a binder is a number, a name or a text is itself, and a literal is
+-- its value.
+lang! {
+  pub Core extends Printed
+  File + File { entry : Int, defs : [Def], named : [Named] }
+  Def + Def { id : Int, body : Term }
+  Named + Named { name : String, labels : [String] }
+  Term + Var { id : Int }
+  Term + Lam { param : Int, body : Term }
+  Term + Let { id : Int, value : Term, body : Term }
+  Bind + Bind { id : Int, value : Term }
+  Term + Proj { tuple : Term, index : Int }
+  Field + Field { label : String, value : Term }
+  Term + Sel { target : Term, label : String }
+  Term + Extend { target : Term, label : String, value : Term }
+  Term + Ctor { name : String, args : [Term] }
+  Term + Prim { op : String, args : [Term] }
+  Term + Perform { eff : String, op : String, arg : Term }
+  Term + Handle { body : Term, clauses : [Clause], retId : Maybe Int, ret : Maybe Term }
+  Clause + Clause { eff : String, op : String, param : Int, resume : Int, body : Term }
+  Term + Join { id : Int, params : [Int], rhs : Term, body : Term }
+  Term + Jump { id : Int, args : [Term] }
+  Lit + LInt { value : Int }
+  Lit + LBig { value : Int }
+  Lit + LF64 { value : Float }
+  Lit + LF32 { value : Float }
+  Lit + LWord { ty : String, bits : Int }
+  Lit + LStr { text : String }
+  Lit + LChar { code : Int }
+  Lit + LBool { value : Bool }
+  Pat + PVar { id : Int }
+  Pat + PAs { id : Int, pat : Pat }
+  Pat + PCtor { name : String, args : [Pat] }
+  PField + PField { label : String, pat : Pat }
+  Arm + Arm { pat : Pat, guard : Maybe Term, body : Term }
+}
+
+-- Each numeral a number, each quoted string its text, each float's bits the
+-- float; everything else is as it was.
+pass! {
+  read : Printed -> Core
+    | File { entry, defs, named } -> File { entry = number entry, defs = defs, named = named }
+    | Def { id, body } -> Def { id = number id, body = body }
+    | Named { name, labels } -> Named { name = unquoted name, labels = V.map unquoted labels }
+    | Var { id } -> Var { id = number id }
+    | Lam { param, body } -> Lam { param = number param, body = body }
+    | Let { id, value, body } -> Let { id = number id, value = value, body = body }
+    | Bind { id, value } -> Bind { id = number id, value = value }
+    | Proj { tuple, index } -> Proj { tuple = tuple, index = number index }
+    | Field { label, value } -> Field { label = unquoted label, value = value }
+    | Sel { target, label } -> Sel { target = target, label = unquoted label }
+    | Extend { target, label, value } -> Extend { target = target, label = unquoted label, value = value }
+    | Ctor { name, args } -> Ctor { name = unquoted name, args = args }
+    | Prim { op, args } -> Prim { op = unquoted op, args = args }
+    | Perform { eff, op, arg } -> Perform { eff = unquoted eff, op = unquoted op, arg = arg }
+    | Handle { body, clauses, retId, ret } -> Handle { body = body, clauses = clauses, retId = M.map number retId, ret = ret }
+    | Clause { eff, op, param, resume, body } ->
+        Clause { eff = unquoted eff, op = unquoted op, param = number param, resume = number resume, body = body }
+    | Join { id, params, rhs, body } -> Join { id = number id, params = V.map number params, rhs = rhs, body = body }
+    | Jump { id, args } -> Jump { id = number id, args = args }
+    | LInt { value } -> LInt { value = number value }
+    | LBig { value } -> LBig { value = number value }
+    | LF64 { bits } -> LF64 { value = f64Of (number bits) }
+    | LF32 { bits } -> LF32 { value = f32Of (number bits) }
+    | LWord { ty, bits } -> LWord { ty = unquoted ty, bits = number bits }
+    | LStr { text } -> LStr { text = unquoted text }
+    | LChar { code } -> LChar { code = number code }
+    | LBool { value } -> LBool { value = value == "true" }
+    | PVar { id } -> PVar { id = number id }
+    | PAs { id, pat } -> PAs { id = number id, pat = pat }
+    | PCtor { name, args } -> PCtor { name = unquoted name, args = args }
+    | PField { label, pat } -> PField { label = unquoted label, pat = pat }
+    | Arm { pat, guard, body } -> Arm { pat = pat, guard = M.map (\g -> coreGuardCondIn out g) guard, body = body }
+}
+
+-- The program `input` writes, or what is wrong with it.
+@pub fun program (input : String) : Result String CoreProgram =
+  match parseCoreText input with
+  | (g, []) ->
+      (match printedFromCoreText g with
+       | Just p -> Ok (read p)
+       | None -> Err "the program is not all there")
+  | (_, errs) ->
+      (match V.get errs 0 with
+       | Just (at, why) -> Err "${why}, at byte ${show at}"
+       | None -> Err "it does not parse")
+
+-- --- reading the text ----------------------------------------------------------------
+
+fun number (s : String) : Int = M.unwrapOr 0 (S.toInt s)
+
+-- A quoted string's text: its quotes off, and each `\xNN` the byte it names.
+fun unquoted (s : String) : String = unescaped (stringSlice s 1 (stringByteLength s - 1)) 0 0 ""
+
+fun unescaped (s : String) (run : Int) (i : Int) (acc : String) : String =
+  if i >= stringByteLength s then acc ++ stringSlice s run i
+  else if toInt (stringByteAt s i) == 92 then
+    let code = hex (toInt (stringByteAt s (i + 2))) * 16 + hex (toInt (stringByteAt s (i + 3))) in
+    unescaped s (i + 4) (i + 4) (acc ++ stringSlice s run i ++ C.toString (C.fromCode code))
+  else unescaped s run (i + 1) acc
+
+fun hex (b : Int) : Int = if b >= 65 then b - 55 else b - 48
+
+-- The `Float` whose bits are `bits`. Nothing gives a float of its bits, so it
+-- is worked out: the mantissa, a whole number, scaled by twos -- which is
+-- exact, as long as what it comes to is a float, and it is one.
+fun f64Of (bits : Int) : Float =
+  let exponent = bitAnd (bits >>> 52) 2047 in
+  let fraction = bitAnd bits 4503599627370495 in
+  let magnitude =
+    if exponent == 2047 then (if fraction == 0 then 1.0 /. 0.0 else 0.0 /. 0.0)
+    else if exponent == 0 then scaled (toFloat fraction) (0 - 1074)
+    else scaled (toFloat (fraction + 4503599627370496)) (exponent - 1075) in
+    if bits < 0 then magnitude *. (0.0 -. 1.0) else magnitude
+
+-- The `Float32` whose bits are `bits`, as a `Float`, which holds it exactly.
+fun f32Of (bits : Int) : Float =
+  let exponent = bitAnd (bits >>> 23) 255 in
+  let fraction = bitAnd bits 8388607 in
+  let magnitude =
+    if exponent == 255 then (if fraction == 0 then 1.0 /. 0.0 else 0.0 /. 0.0)
+    else if exponent == 0 then scaled (toFloat fraction) (0 - 149)
+    else scaled (toFloat (fraction + 8388608)) (exponent - 150) in
+    if bitAnd bits 2147483648 != 0 then magnitude *. (0.0 -. 1.0) else magnitude
+
+fun scaled (x : Float) (e : Int) : Float =
+  if e > 0 then scaled (x *. 2.0) (e - 1)
+  else if e < 0 then scaled (x *. 0.5) (e + 1)
+  else x

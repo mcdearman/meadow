@@ -1,0 +1,4 @@
+-- An impl has no signatures.
+impl T Int {
+  fun m : Int
+}

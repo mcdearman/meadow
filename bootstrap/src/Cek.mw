@@ -1,0 +1,949 @@
+-- The CEK machine: `meadow_eval`'s, in Meadow, step for step.
+--
+-- `(Control, Environment, Kontinuation)`: a term and the names it sees, or a
+-- value; and a stack of frames, each saying what to do with the value of the
+-- sub-expression under way. The frames are the Rust machine's `K`, one for one,
+-- and so is what each step does with them -- the order a thing is evaluated
+-- in, what a guard that fails goes on to, where a `perform` unwinds to -- since
+-- what this machine is for is to answer as that one does. Effects are deep,
+-- one-shot handlers: a `perform` splits the stack at the nearest handler for
+-- its operation, and resuming puts the frames it took back.
+--
+-- The environment is a map from each name to a cell. A `letrec` makes its
+-- names' cells first and fills them in as their values come, so that what is
+-- made in the meantime sees them -- the Rust machine's `define` into a scope
+-- that was already captured.
+--
+-- A term is a row of the program's tables (`Core`), read with the patterns
+-- `lang!` made: `CoreApp f x` matches the row's production and reads its
+-- fields, and builds nothing. So the machine makes no terms either. Where the
+-- Rust machine rewrites a join point as a `letrec` of nested lambdas, and a
+-- jump as the applications of it, this one has a closure take its parameters
+-- one at a time, and a jump push the arguments' frames those applications
+-- would have pushed.
+
+use MeadowBoot.Core
+use Std.Collections.Map as Map
+use Std.Collections.Map (Map)
+use Std.Collections.Vector as V
+use Std.Collections.List as L
+use Std.String as S
+use Std.Char as C
+use Std.Sort (sortOn)
+use Std.Maybe as Mb
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+use Value.*
+use Frame.*
+use Shape.*
+use Control.*
+
+-- --- values ------------------------------------------------------------------------
+
+@pub data Value
+  = VInt Int
+  -- The sized integers, each Meadow's own: what they do is what the machine
+  -- this runs on does with them, which is what `meadow_core::num` says.
+  | VI8 Int8
+  | VI16 Int16
+  | VI32 Int32
+  | VU8 UInt8
+  | VU16 UInt16
+  | VU32 UInt32
+  | VU64 UInt64
+  | VBig BigInt
+  | VFloat Float
+  | VF32 Float32
+  | VBool Bool
+  | VStr String
+  | VChar Char
+  | VUnit
+  | VTuple [Value]
+  | VArray [Value]
+  -- A record's fields, each label once, in the order they were made.
+  | VRecord [(String, Value)]
+  | VCtor String [Value]
+  -- A function: the parameters it has still to take -- a lambda's one, or a
+  -- join point's several -- its body, and its scope.
+  | VClosure [Int] CoreTerm (Map (Ref Value))
+  -- A captured continuation: the frames a `perform` took, until it is resumed.
+  | VCont (Ref (Maybe (List Frame)))
+  | VRef (Ref Value)
+  -- A mutable array, from `stNewArray`: one cell, holding what it holds now.
+  | VMut (Ref [Value])
+  -- A value in a compact region.
+  | VCompact Value
+  -- A top-level value not evaluated yet: its definition.
+  | VLazy CoreTerm
+
+-- --- the machine -------------------------------------------------------------------
+
+-- One frame of the continuation: `meadow_eval`'s `K`.
+@pub data Frame
+  = EvalArg CoreTerm (Map (Ref Value))
+  | ApplyTo Value
+  | IfK CoreTerm CoreTerm (Map (Ref Value))
+  | Bind Int CoreTerm (Map (Ref Value))
+  -- The scope, the bindings still to evaluate -- the first is under way -- and
+  -- the body.
+  | LetRecK (Map (Ref Value)) [(Int, CoreTerm)] CoreTerm
+  -- What is being built, what is done, what is still to evaluate after the
+  -- one under way.
+  | Build Shape [Value] [CoreTerm] (Map (Ref Value))
+  | BuildRecord [(String, Value)] [CoreField] (Map (Ref Value))
+  | ProjK Int
+  | SelK String
+  | ExtendVal String CoreTerm (Map (Ref Value))
+  | ExtendWith String Value
+  | MatchK [CoreArm] (Map (Ref Value))
+  -- An arm matched and its guard is under way: the arms, where they were
+  -- written, the arm after it, the scrutinee, and the scope the arm bound.
+  | GuardK [CoreArm] (Map (Ref Value)) Int Value (Map (Ref Value))
+  | PerformWith String String
+  | HandleMark [CoreClause] (Maybe (Int, CoreTerm)) (Map (Ref Value))
+  | Cache Int
+
+@pub data Shape = STuple | SArray | SCtor String | SPrim String
+
+data Control = Eval CoreTerm (Map (Ref Value)) | Ret Value
+
+-- What does not change as the machine runs: the program's tables, the
+-- definitions, each a cell, and each constructor's named fields.
+record Machine = { arena : CoreArena, root : Map (Ref Value), fields : [(String, [String])] }
+
+-- `p`'s entry point evaluated, or what went wrong: `meadow_eval::run`.
+@pub fun run (p : CoreProgram) =
+  let a = coreArena p in
+  let file = coreRoot p in
+  let root = V.foldl (\env d -> Map.insert (coreDefId a d) (newRef (loaded a (coreDefBody a d))) env) Map.empty (coreFileDefs a file) in
+  let m = Machine { arena = a, root = root, fields = V.map (\n -> (coreNamedName a n, coreNamedLabels a n)) (coreFileNamed a file) } in
+  let entry = coreFileEntry a file in
+  if entry < 0 then Ok VUnit else variable m entry Map.empty [;]
+
+-- A definition as the machine keeps it: a function made, anything else left
+-- to be evaluated where it is first used.
+fun loaded (a : CoreArena) (t : CoreTerm) : Value =
+  match (a, t) with
+  | CoreLam p body -> VClosure [p] body Map.empty
+  | _ -> VLazy t
+
+fun go (m : Machine) (c : Control) (k : List Frame) =
+  match c with
+  | Eval t env -> eval m t env k
+  | Ret v ->
+      (match k with
+       | [;] -> Ok v
+       | f :: rest -> ret m v f rest)
+
+-- The cell `v` is in: the scope's, or a definition's.
+fun lookup (m : Machine) (env : Map (Ref Value)) (v : Int) : Maybe (Ref Value) =
+  match Map.lookup v env with
+  | Just r -> Just r
+  | None -> Map.lookup v m.root
+
+fun define (env : Map (Ref Value)) (v : Int) (x : Value) = Map.insert v (newRef x) env
+
+-- Variable `v`'s value: a definition's evaluated the first time it is asked
+-- for, and kept.
+fun variable (m : Machine) (v : Int) (env : Map (Ref Value)) (k : List Frame) =
+  match lookup m env v with
+  | Just r ->
+      (match getRef r with
+       | VLazy body -> go m (Eval body Map.empty) (Cache v :: k)
+       | val -> go m (Ret val) k)
+  | None -> Err "unbound variable VarId(${show v})"
+
+fun eval (m : Machine) (t : CoreTerm) (env : Map (Ref Value)) (k : List Frame) =
+  let a = m.arena in
+  match (a, t) with
+  | CoreVar v -> variable m v env k
+  | CoreConst l -> go m (Ret (literal a l)) k
+  | CoreLam p body -> go m (Ret (VClosure [p] body env)) k
+  | CoreApp f x -> go m (Eval f env) (EvalArg x env :: k)
+  | CoreLet v rhs body -> go m (Eval rhs env) (Bind v body env :: k)
+  -- A `letrec` of the join point's lambdas: with parameters, the lambda is a
+  -- closure at once; with none, it is the body, evaluated now.
+  | CoreJoin j params rhs body ->
+      let scope = define env j VUnit in
+      if V.isEmpty params then go m (Eval rhs scope) (LetRecK scope [(j, rhs)] body :: k)
+      else (let u = fill scope j (VClosure params rhs scope) in go m (Eval body scope) k)
+  -- The join point applied to each argument in turn: the frames of
+  -- `((j a) b)`, under `j`.
+  | CoreJump j args -> variable m j env (V.foldr (\x acc -> EvalArg x env :: acc) k args)
+  | CoreLetRec binds body ->
+      let pairs = V.map (\b -> (coreBindId a b, coreBindValue a b)) binds in
+      let scope = V.foldl (\e b -> define e (fst b) VUnit) env pairs in
+      (match V.get pairs 0 with
+       | Just (_, rhs) -> go m (Eval rhs scope) (LetRecK scope pairs body :: k)
+       | None -> go m (Eval body scope) k)
+  | CoreIf c y n -> go m (Eval c env) (IfK y n env :: k)
+  | CoreTuple xs -> start m STuple xs env k
+  | CoreArray xs -> start m SArray xs env k
+  | CoreCtor n xs -> start m (SCtor n) xs env k
+  | CorePrim op xs -> start m (SPrim op) xs env k
+  | CoreRecord fs ->
+      (match V.get fs 0 with
+       | Just first -> go m (Eval (coreFieldValue a first) env) (BuildRecord [] fs env :: k)
+       | None -> go m (Ret (VRecord [])) k)
+  | CoreProj x i -> go m (Eval x env) (ProjK i :: k)
+  | CoreSel x l -> go m (Eval x env) (SelK l :: k)
+  | CoreExtend r l val -> go m (Eval r env) (ExtendVal l val env :: k)
+  | CoreCase s arms -> go m (Eval s env) (MatchK arms env :: k)
+  | CorePerform e o x -> go m (Eval x env) (PerformWith e o :: k)
+  | CoreHandle body clauses retId r ->
+      let returned = (match (retId, r) with | (Just v, Just b) -> Just (v, b) | _ -> None) in
+      go m (Eval body env) (HandleMark clauses returned env :: k)
+  | CoreIll -> Err "evaluating an ill-formed expression"
+
+-- A sequence of sub-expressions, left to right, then what they make.
+fun start (m : Machine) (s : Shape) (xs : [CoreTerm]) (env : Map (Ref Value)) (k : List Frame) =
+  match V.get xs 0 with
+  | Just first -> go m (Eval first env) (Build s [] (V.drop xs 1) env :: k)
+  | None ->
+      go m (Ret (match s with | STuple -> VTuple [] | SArray -> VArray [] | SCtor n -> VCtor n [] | SPrim _ -> VUnit)) k
+
+fun ret (m : Machine) (v : Value) (f : Frame) (k : List Frame) =
+  match f with
+  | EvalArg x env -> go m (Eval x env) (ApplyTo v :: k)
+  | ApplyTo func -> apply m func v k
+  | IfK y n env ->
+      (match v with
+       | VBool True -> go m (Eval y env) k
+       | VBool False -> go m (Eval n env) k
+       | other -> Err "`if` condition is not a Bool: ${display other}")
+  | Bind var body env -> go m (Eval body (define env var v)) k
+  | LetRecK scope binds body ->
+      let u = (match V.get binds 0 with | Just (var, _) -> fill scope var v | None -> ()) in
+      let later = V.drop binds 1 in
+      (match V.get later 0 with
+       | Just (_, rhs) -> go m (Eval rhs scope) (LetRecK scope later body :: k)
+       | None -> go m (Eval body scope) k)
+  | Build s done pending env ->
+      let all = V.pushBack done v in
+      (match V.get pending 0 with
+       | Just next -> go m (Eval next env) (Build s all (V.drop pending 1) env :: k)
+       | None ->
+           (match s with
+            | STuple -> go m (Ret (VTuple all)) k
+            | SArray -> go m (Ret (VArray all)) k
+            | SCtor n -> go m (Ret (VCtor n all)) k
+            | SPrim op ->
+                (match prim op all with
+                 | Ok r -> go m (Ret r) k
+                 | Err e -> Err e)))
+  | BuildRecord done pending env ->
+      let label = (match V.get pending 0 with | Just f -> coreFieldLabel m.arena f | None -> "") in
+      let all = withField label v done in
+      let later = V.drop pending 1 in
+      (match V.get later 0 with
+       | Just next -> go m (Eval (coreFieldValue m.arena next) env) (BuildRecord all later env :: k)
+       | None -> go m (Ret (VRecord all)) k)
+  | ProjK i ->
+      (match v with
+       | VTuple xs ->
+           (match V.get xs i with
+            | Just x -> go m (Ret x) k
+            | None -> Err "tuple projection ${show i} out of range")
+       | other -> Err "cannot project field ${show i} out of ${display other}")
+  | SelK label -> select m label v k
+  | ExtendVal label val env -> go m (Eval val env) (ExtendWith label v :: k)
+  | ExtendWith label rec ->
+      (match rec with
+       | VRecord fs -> go m (Ret (VRecord (withField label v fs))) k
+       | other -> Err "cannot extend non-record ${display other}")
+  | MatchK arms env -> arms_ m arms env 0 v k
+  | GuardK arms env next scrutinee scope ->
+      (match v with
+       | VBool True ->
+           (match V.get arms (next - 1) with
+            | Just arm -> go m (Eval (coreArmBody m.arena arm) scope) k
+            | None -> Err "non-exhaustive pattern match")
+       | VBool False -> arms_ m arms env next scrutinee k
+       | other -> Err "a `match` guard is not a Bool: ${display other}")
+  | PerformWith e o -> perform m e o v k
+  | Cache var ->
+      let u = (match Map.lookup var m.root with | Just r -> setRef r v | None -> ()) in
+      go m (Ret v) k
+  | HandleMark _ r henv ->
+      (match r with
+       | Just (param, body) -> go m (Eval body (define henv param v)) k
+       | None -> go m (Ret v) k)
+
+fun fill (scope : Map (Ref Value)) (var : Int) (v : Value) =
+  match Map.lookup var scope with
+  | Just r -> setRef r v
+  | None -> ()
+
+-- `fs` with `label` set to `v`: replaced where it is, or added at the end.
+fun withField (label : String) (v : Value) (fs : [(String, Value)]) : [(String, Value)] =
+  if V.any (\f -> fst f == label) fs then V.map (\f -> if fst f == label then (label, v) else f) fs
+  else V.pushBack fs (label, v)
+
+fun select (m : Machine) (label : String) (v : Value) (k : List Frame) =
+  match v with
+  | VRecord fs ->
+      (match V.find (\f -> fst f == label) fs with
+       | Just (_, x) -> go m (Ret x) k
+       | None -> Err "record has no field `${label}`")
+  | VCtor name vals ->
+      let named = V.find (\f -> fst f == name) m.fields in
+      let at = (match named with | Just (_, fs) -> indexOf label fs 0 | None -> 0 - 1) in
+      (match V.get vals at with
+       | Just x -> go m (Ret x) k
+       | None -> Err "`${afterLast "::" name}` has no field `${label}`")
+  | other -> Err "cannot select `.${label}` from ${display other}"
+
+-- Where `x` is in `xs`, from `i` on, or -1.
+fun indexOf (x : String) (xs : [String]) (i : Int) : Int =
+  match V.get xs i with
+  | Just y -> if y == x then i else indexOf x xs (i + 1)
+  | None -> 0 - 1
+
+-- The arms from `from` on, against `v`: the first whose pattern matches, and
+-- whose guard -- evaluated next, if it has one -- holds.
+fun arms_ (m : Machine) (arms : [CoreArm]) (env : Map (Ref Value)) (from : Int) (v : Value) (k : List Frame) =
+  let a = m.arena in
+  match V.get arms from with
+  | None -> Err "non-exhaustive pattern match"
+  | Just arm ->
+      (match matched a (coreArmPat a arm) v env with
+       | None -> arms_ m arms env (from + 1) v k
+       | Just scope ->
+           (match coreArmGuard a arm with
+            | None -> go m (Eval (coreArmBody a arm) scope) k
+            | Just g -> go m (Eval g scope) (GuardK arms env (from + 1) v scope :: k)))
+
+-- The scope `p` matching `v` makes of `env`, or `None`.
+fun matched (a : CoreArena) (p : CorePat) (v : Value) (env : Map (Ref Value)) : Maybe (Map (Ref Value)) ! { Mut | e } =
+  match (a, p) with
+  | CorePWild -> Just env
+  | CorePVar x -> Just (define env x v)
+  | CorePAs x sub -> matched a sub v (define env x v)
+  | CorePLit l -> if litMatches a l v then Just env else None
+  | CorePTuple ps -> (match v with | VTuple vs -> (if V.len ps == V.len vs then all a ps vs env else None) | _ -> None)
+  | CorePArray ps -> (match v with | VArray vs -> (if V.len ps == V.len vs then all a ps vs env else None) | _ -> None)
+  | CorePCtor name ps ->
+      (match v with
+       | VCtor vname vs -> if name == vname and V.len ps == V.len vs then all a ps vs env else None
+       | _ -> None)
+  | CorePRecord fs ->
+      (match v with
+       | VRecord vfs ->
+           V.foldl
+             (\acc f ->
+               match (acc, V.find (\g -> fst g == corePFieldLabel a f) vfs) with
+               | (Just e, Just (_, x)) -> matched a (corePFieldPat a f) x e
+               | _ -> None)
+             (Just env)
+             fs
+       | _ -> None)
+
+fun all (a : CoreArena) (ps : [CorePat]) (vs : [Value]) (env : Map (Ref Value)) : Maybe (Map (Ref Value)) ! { Mut | e } =
+  V.foldl
+    (\acc i ->
+      match (acc, V.get ps i, V.get vs i) with
+      | (Just e, Just p, Just x) -> matched a p x e
+      | _ -> None)
+    (Just env)
+    (V.range 0 (V.len ps))
+
+fun litMatches (a : CoreArena) (l : CoreLit) (v : Value) : Bool =
+  match (a, l) with
+  | CoreLInt n -> (match v with | VInt b -> n == b | _ -> equal (literal a l) v)
+  | CoreLBig _ -> equal (literal a l) v
+  | CoreLWord _ _ -> equal (literal a l) v
+  | CoreLF64 x -> (match v with | VFloat y -> x == y | _ -> False)
+  | CoreLF32 _ -> equal (literal a l) v
+  | CoreLStr s -> (match v with | VStr t -> s == t | _ -> False)
+  | CoreLChar c -> (match v with | VChar ch -> c == C.code ch | _ -> False)
+  | CoreLBool b -> (match v with | VBool w -> b == w | _ -> False)
+  | CoreLUnit -> (match v with | VUnit -> True | _ -> False)
+
+fun literal (a : CoreArena) (l : CoreLit) : Value =
+  match (a, l) with
+  | CoreLInt n -> VInt n
+  | CoreLBig n -> VBig (toBigInt n)
+  | CoreLWord w n -> sized w (VInt n)
+  | CoreLF64 x -> VFloat x
+  | CoreLF32 x -> VF32 (toFloat32 x)
+  | CoreLStr s -> VStr s
+  | CoreLChar c -> VChar (C.fromCode c)
+  | CoreLBool b -> VBool b
+  | CoreLUnit -> VUnit
+
+-- `f` applied to `arg`. A closure with parameters still to take after this
+-- one is a closure again, as the lambda inside a lambda would have made.
+fun apply (m : Machine) (f : Value) (arg : Value) (k : List Frame) =
+  match f with
+  | VClosure ps body env ->
+      (match V.get ps 0 with
+       | Just p ->
+           let scope = define env p arg in
+           if V.len ps == 1 then go m (Eval body scope) k
+           else go m (Ret (VClosure (V.drop ps 1) body scope)) k
+       | None -> go m (Eval body env) k)
+  | VCont cell ->
+      (match getRef cell with
+       | Just saved ->
+           let u = setRef cell None in
+           go m (Ret arg) (L.append saved k)
+       | None -> Err "continuation resumed more than once")
+  | other -> Err "${display other} is not a function"
+
+-- A `perform`: the continuation split at the nearest handler with a clause for
+-- the operation -- the handler's frame and everything above it taken, to be
+-- the resumption -- and the clause run.
+fun perform (m : Machine) (e : String) (o : String) (arg : Value) (k : List Frame) =
+  let a = m.arena in
+  match handlerIn a e o k [;] with
+  | None -> Err "unhandled effect ${afterLast "::" e}.${o}"
+  | Just (taken, outer, clause, henv) ->
+      let cont = VCont (newRef (Just taken)) in
+      let scope = define (define henv (coreClauseParam a clause) arg) (coreClauseResume a clause) cont in
+      go m (Eval (coreClauseBody a clause) scope) outer
+
+-- The frames down to the first handler for `e.o`, that handler's frame last;
+-- what is under it; its clause; and its scope.
+fun handlerIn (a : CoreArena) (e : String) (o : String) (k : List Frame) (above : List Frame) =
+  match k with
+  | [;] -> None
+  | f :: rest ->
+      (match f with
+       | HandleMark clauses _ henv ->
+           (match V.find (\c -> coreClauseEff a c == e and coreClauseOp a c == o) clauses with
+            | Just c -> Just (L.reverse (f :: above), rest, c, henv)
+            | None -> handlerIn a e o rest (f :: above))
+       | _ -> handlerIn a e o rest (f :: above))
+
+-- --- primitives -----------------------------------------------------------------------
+
+fun prim (op : String) (args : [Value]) : Result String Value ! { Mut | e } =
+  let a = V.getOr VUnit args 0 in
+  let b = V.getOr VUnit args 1 in
+  let c = V.getOr VUnit args 2 in
+  match op with
+  | "Add" -> integral "+" op a b
+  | "Sub" -> integral "-" op a b
+  | "Mul" -> integral "*" op a b
+  | "Div" -> integral "/" op a b
+  | "Mod" -> integral "%" op a b
+  | "Pow" -> integral "^" op a b
+  | "BitAnd" -> integral "bitAnd" op a b
+  | "BitOr" -> integral "bitOr" op a b
+  | "BitXor" -> integral "bitXor" op a b
+  | "Shl" -> integral "shl" op a b
+  | "Shr" -> integral "shr" op a b
+  | "Ushr" -> integral "ushr" op a b
+  | "Lt" -> ordered "<" op a b
+  | "Gt" -> ordered ">" op a b
+  | "Le" -> ordered "<=" op a b
+  | "Ge" -> ordered ">=" op a b
+  | "Neg" -> negated a
+  | "BitNot" -> inverted a
+  | "AddF" -> fractional "+." op a b
+  | "SubF" -> fractional "-." op a b
+  | "MulF" -> fractional "*." op a b
+  | "DivF" -> fractional "/." op a b
+  | "LtF" -> fractionalOrder "<." op a b
+  | "GtF" -> fractionalOrder ">." op a b
+  | "LeF" -> fractionalOrder "<=." op a b
+  | "GeF" -> fractionalOrder ">=." op a b
+  | "Eq" -> Ok (VBool (equal a b))
+  | "Ne" -> Ok (VBool (not (equal a b)))
+  | "ToFloat" -> asFloat a
+  | "ToFloat32" ->
+      (match a with
+       | VFloat x -> Ok (VF32 (toFloat32 x))
+       | VF32 x -> Ok (VF32 x)
+       | other -> Err "`toFloat32` expects a float, got ${display other}")
+  | "Floor" ->
+      (match a with
+       | VFloat x -> Ok (VInt (floor x))
+       | VF32 x -> Ok (VInt (floor x))
+       | other -> Err "expected a number, got ${display other}")
+  | "ToInt" -> toWidth "Int" a
+  | "ToBig" -> toWidth "BigInt" a
+  | "Display" -> Ok (VStr (displayed a))
+  | "Show" -> Ok (VStr (display a))
+  | "ConcatStrings" ->
+      (match a with
+       | VArray xs -> Ok (VStr (V.foldl (\acc x -> match x with | VStr s -> acc ++ s | _ -> acc) "" xs))
+       | other -> Err "concatStrings: expected an Array, got ${display other}")
+  | "StringByteLength" -> (match a with | VStr s -> Ok (VInt (stringByteLength s)) | other -> Err "stringByteLength: expected a String, got ${display other}")
+  | "StringSlice" -> (match (a, b, c) with | (VStr s, VInt x, VInt y) -> Ok (VStr (stringSlice s x y)) | _ -> Err "stringSlice: expected a String")
+  | "StringCompare" -> (match (a, b) with | (VStr x, VStr y) -> Ok (VInt (stringCompare x y)) | _ -> Err "stringCompare: expected a String")
+  | "StringIndexOf" -> (match (a, b, c) with | (VStr h, VStr n, VInt from) -> Ok (VInt (stringIndexOf h n from)) | _ -> Err "stringIndexOf: expected a String")
+  | "CharCode" -> (match a with | VChar ch -> Ok (VInt (C.code ch)) | other -> Err "charCode: expected a Char, got ${display other}")
+  | "CharFromCode" ->
+      (match a with
+       | VInt n -> if C.isScalar n then Ok (VChar (C.fromCode n)) else Err "charFromCode: ${show n} is not a Unicode scalar value"
+       | other -> Err "charFromCode: expected an Int, got ${display other}")
+  | "StringToChars" -> (match a with | VStr s -> Ok (VArray (V.map VChar (V.fromArray (stringToChars s)))) | other -> Err "stringToChars: expected a String, got ${display other}")
+  | "CharsToString" ->
+      (match a with
+       | VArray xs -> Ok (VStr (V.foldl (\acc x -> match x with | VChar ch -> acc ++ C.toString ch | _ -> acc) "" xs))
+       | other -> Err "charsToString: expected an Array, got ${display other}")
+  | other if S.startsWith "ToWord(" other -> toWidth (stringSlice other 7 (stringByteLength other - 1)) a
+  | "ArrayLen" -> (match a with | VArray xs -> Ok (VInt (V.len xs)) | other -> Err "expected an Array, got ${display other}")
+  | "ArrayGet" ->
+      (match (a, b) with
+       | (VArray xs, VInt i) -> (match V.get xs i with | Just x -> Ok x | None -> Err "arrayGet: index ${show i} out of bounds (len ${show (V.len xs)})")
+       | _ -> Err "arrayGet: expected an Array")
+  | "ArrayGetOr" -> (match (b, c) with | (VArray xs, VInt i) -> Ok (V.getOr a xs i) | _ -> Err "arrayGetOr: expected an Array")
+  | "ArraySet" ->
+      (match (a, b) with
+       | (VArray xs, VInt i) -> if i >= 0 and i < V.len xs then Ok (VArray (V.set xs i c)) else Err "arraySet: index ${show i} out of bounds (len ${show (V.len xs)})"
+       | _ -> Err "arraySet: expected an Array")
+  | "ArrayPush" -> (match a with | VArray xs -> Ok (VArray (V.pushBack xs b)) | _ -> Err "arrayPush: expected an Array")
+  | "ArrayPop" -> (match a with | VArray xs -> if V.isEmpty xs then Err "arrayPop: empty array" else Ok (VArray (V.take xs (V.len xs - 1))) | _ -> Err "arrayPop: expected an Array")
+  | "ArrayConcat" -> (match (a, b) with | (VArray x, VArray y) -> Ok (VArray (V.append x y)) | _ -> Err "arrayConcat: expected an Array")
+  | "ArraySlice" ->
+      (match (a, b, c) with
+       | (VArray xs, VInt x, VInt y) ->
+           let n = V.len xs in
+           let from = clamp x 0 n in
+           Ok (VArray (V.slice xs from (clamp y from n)))
+       | _ -> Err "arraySlice: expected an Array")
+  | "Hash" -> made VInt (hashed a)
+  | "PopCount" ->
+      (match a with
+       | VInt x -> Ok (VInt (popCount x))
+       | VI8 x -> Ok (VInt (popCount x))
+       | VI16 x -> Ok (VInt (popCount x))
+       | VI32 x -> Ok (VInt (popCount x))
+       | VU8 x -> Ok (VInt (popCount x))
+       | VU16 x -> Ok (VInt (popCount x))
+       | VU32 x -> Ok (VInt (popCount x))
+       | VU64 x -> Ok (VInt (popCount x))
+       | other -> Err "`popCount` expects an integer, got ${display other}")
+  | "BitWidth" ->
+      (match a with
+       | VInt _ -> Ok (VInt 64)
+       | VI8 _ -> Ok (VInt 8)
+       | VI16 _ -> Ok (VInt 16)
+       | VI32 _ -> Ok (VInt 32)
+       | VU8 _ -> Ok (VInt 8)
+       | VU16 _ -> Ok (VInt 16)
+       | VU32 _ -> Ok (VInt 32)
+       | VU64 _ -> Ok (VInt 64)
+       | VBig _ -> Err "`bitWidth` of a BigInt, which has no fixed width"
+       | other -> Err "`bitWidth` expects an integer, got ${display other}")
+  | "StNewArray" ->
+      (match a with
+       | VInt n -> if n >= 0 then Ok (VMut (newRef (V.map (\_ -> b) (V.range 0 n)))) else Err "stNewArray: expected a length of zero or more, got ${display a}"
+       | other -> Err "stNewArray: expected a length of zero or more, got ${display other}")
+  | "StGetArray" ->
+      (match (a, b) with
+       | (VMut r, VInt i) ->
+           let cells = getRef r in
+           (match V.get cells i with
+            | Just x -> Ok x
+            | None -> Err "stGetArray: index ${show i} out of bounds (len ${show (V.len cells)})")
+       | _ -> Err "stGetArray: expected a mutable array")
+  | "StSetArray" ->
+      (match (a, b) with
+       | (VMut r, VInt i) ->
+           let cells = getRef r in
+           if i >= 0 and i < V.len cells then (let u = setRef r (V.set cells i c) in Ok VUnit)
+           else Err "stSetArray: index ${show i} out of bounds (len ${show (V.len cells)})"
+       | _ -> Err "stSetArray: expected a mutable array")
+  | "StArrayLen" -> (match a with | VMut r -> Ok (VInt (V.len (getRef r))) | _ -> Err "stArrayLen: expected a mutable array")
+  | "StFreeze" -> (match a with | VMut r -> Ok (VArray (getRef r)) | _ -> Err "stFreeze: expected a mutable array")
+  | "StThaw" -> (match a with | VArray xs -> Ok (VMut (newRef xs)) | other -> Err "stThaw: expected an Array, got ${display other}")
+  | "Compact" -> Ok (VCompact a)
+  | "GetCompact" -> (match a with | VCompact x -> Ok x | other -> Err "expected a compact, got ${display other}")
+  | "CompactAdd" -> (match a with | VCompact _ -> Ok (VCompact b) | other -> Err "expected a compact, got ${display other}")
+  | "NewRef" -> Ok (VRef (newRef a))
+  | "GetRef" -> (match a with | VRef r -> Ok (getRef r) | other -> Err "getRef: expected a Ref, got ${display other}")
+  | "SetRef" -> (match a with | VRef r -> (let u = setRef r b in Ok VUnit) | other -> Err "setRef: expected a Ref, got ${display other}")
+  | other -> Err "MeadowBoot's CEK machine does not have the primitive `${other}` yet"
+
+-- Toward zero, as Rust's `as i64` has it.
+fun truncated (x : Float) : Int = if x >=. 0.0 then floor x else 0 - floor (0.0 -. x)
+
+fun clamp (x : Int) (lo : Int) (hi : Int) : Int = if x < lo then lo else if x > hi then hi else x
+
+-- --- numbers ----------------------------------------------------------------------------
+
+-- `x op y` on two integers of one type: what `meadow_core::num::int_arith` and
+-- `int_bits` do, done by Meadow's own integers of that type.
+fun arith (op : String) (x : n) (y : n) =
+  match op with
+  | "Add" -> Ok (x + y)
+  | "Sub" -> Ok (x - y)
+  | "Mul" -> Ok (x * y)
+  | "Div" -> if y == 0 then Err "division by zero" else Ok (x / y)
+  | "Mod" -> if y == 0 then Err "modulo by zero" else Ok (x % y)
+  | "Pow" -> Ok (x ^ y)
+  | "BitAnd" -> Ok (bitAnd x y)
+  | "BitOr" -> Ok (bitOr x y)
+  | "BitXor" -> Ok (bitXor x y)
+  | "Shl" -> Ok (x << toInt y)
+  | "Shr" -> Ok (x >> toInt y)
+  | "Ushr" -> Ok (x >>> toInt y)
+  | other -> Err "`${other}` is not an operation on integers"
+
+fun compared (op : String) (x : n) (y : n) : Bool =
+  match op with
+  | "Lt" -> x < y
+  | "Gt" -> x > y
+  | "Le" -> x <= y
+  | _ -> x >= y
+
+fun made (f : n -> Value) (r : Result String n) =
+  match r with
+  | Ok x -> Ok (f x)
+  | Err e -> Err e
+
+-- Two integers of one type -- an `Int` beside a sized one taking its type, as
+-- `meadow_core::num`'s `int_pair` has it -- and `op` on them.
+fun integral (what : String) (op : String) (a : Value) (b : Value) =
+  match (a, b) with
+  | (VInt x, VInt y) -> made VInt (arith op x y)
+  | (VI8 x, VI8 y) -> made VI8 (arith op x y)
+  | (VI8 x, VInt y) -> made VI8 (arith op x (toInt8 y))
+  | (VInt x, VI8 y) -> made VI8 (arith op (toInt8 x) y)
+  | (VI16 x, VI16 y) -> made VI16 (arith op x y)
+  | (VI16 x, VInt y) -> made VI16 (arith op x (toInt16 y))
+  | (VInt x, VI16 y) -> made VI16 (arith op (toInt16 x) y)
+  | (VI32 x, VI32 y) -> made VI32 (arith op x y)
+  | (VI32 x, VInt y) -> made VI32 (arith op x (toInt32 y))
+  | (VInt x, VI32 y) -> made VI32 (arith op (toInt32 x) y)
+  | (VU8 x, VU8 y) -> made VU8 (arith op x y)
+  | (VU8 x, VInt y) -> made VU8 (arith op x (toUInt8 y))
+  | (VInt x, VU8 y) -> made VU8 (arith op (toUInt8 x) y)
+  | (VU16 x, VU16 y) -> made VU16 (arith op x y)
+  | (VU16 x, VInt y) -> made VU16 (arith op x (toUInt16 y))
+  | (VInt x, VU16 y) -> made VU16 (arith op (toUInt16 x) y)
+  | (VU32 x, VU32 y) -> made VU32 (arith op x y)
+  | (VU32 x, VInt y) -> made VU32 (arith op x (toUInt32 y))
+  | (VInt x, VU32 y) -> made VU32 (arith op (toUInt32 x) y)
+  | (VU64 x, VU64 y) -> made VU64 (arith op x y)
+  | (VU64 x, VInt y) -> made VU64 (arith op x (toUInt64 y))
+  | (VInt x, VU64 y) -> made VU64 (arith op (toUInt64 x) y)
+  | (VBig x, VBig y) -> made VBig (arith op x y)
+  | (VBig x, VInt y) -> made VBig (arith op x (toBigInt y))
+  | (VInt x, VBig y) -> made VBig (arith op (toBigInt x) y)
+  | _ -> Err "`${what}` expects two integers of one type, got ${display a} and ${display b}"
+
+fun ordered (what : String) (op : String) (a : Value) (b : Value) =
+  let ok = \x -> Ok (VBool x) in
+  match (a, b) with
+  | (VInt x, VInt y) -> ok (compared op x y)
+  | (VI8 x, VI8 y) -> ok (compared op x y)
+  | (VI8 x, VInt y) -> ok (compared op x (toInt8 y))
+  | (VInt x, VI8 y) -> ok (compared op (toInt8 x) y)
+  | (VI16 x, VI16 y) -> ok (compared op x y)
+  | (VI16 x, VInt y) -> ok (compared op x (toInt16 y))
+  | (VInt x, VI16 y) -> ok (compared op (toInt16 x) y)
+  | (VI32 x, VI32 y) -> ok (compared op x y)
+  | (VI32 x, VInt y) -> ok (compared op x (toInt32 y))
+  | (VInt x, VI32 y) -> ok (compared op (toInt32 x) y)
+  | (VU8 x, VU8 y) -> ok (compared op x y)
+  | (VU8 x, VInt y) -> ok (compared op x (toUInt8 y))
+  | (VInt x, VU8 y) -> ok (compared op (toUInt8 x) y)
+  | (VU16 x, VU16 y) -> ok (compared op x y)
+  | (VU16 x, VInt y) -> ok (compared op x (toUInt16 y))
+  | (VInt x, VU16 y) -> ok (compared op (toUInt16 x) y)
+  | (VU32 x, VU32 y) -> ok (compared op x y)
+  | (VU32 x, VInt y) -> ok (compared op x (toUInt32 y))
+  | (VInt x, VU32 y) -> ok (compared op (toUInt32 x) y)
+  | (VU64 x, VU64 y) -> ok (compared op x y)
+  | (VU64 x, VInt y) -> ok (compared op x (toUInt64 y))
+  | (VInt x, VU64 y) -> ok (compared op (toUInt64 x) y)
+  | (VBig x, VBig y) -> ok (compared op x y)
+  | (VBig x, VInt y) -> ok (compared op x (toBigInt y))
+  | (VInt x, VBig y) -> ok (compared op (toBigInt x) y)
+  | _ -> Err "`${what}` expects two integers of one type, got ${display a} and ${display b}"
+
+fun negated (a : Value) =
+  match a with
+  | VInt x -> Ok (VInt (0 - x))
+  | VI8 x -> Ok (VI8 (0 - x))
+  | VI16 x -> Ok (VI16 (0 - x))
+  | VI32 x -> Ok (VI32 (0 - x))
+  | VU8 x -> Ok (VU8 (0 - x))
+  | VU16 x -> Ok (VU16 (0 - x))
+  | VU32 x -> Ok (VU32 (0 - x))
+  | VU64 x -> Ok (VU64 (0 - x))
+  | VBig x -> Ok (VBig (0 - x))
+  | other -> Err "`neg` expects an integer, got ${display other}"
+
+fun inverted (a : Value) =
+  match a with
+  | VInt x -> Ok (VInt (bitNot x))
+  | VI8 x -> Ok (VI8 (bitNot x))
+  | VI16 x -> Ok (VI16 (bitNot x))
+  | VI32 x -> Ok (VI32 (bitNot x))
+  | VU8 x -> Ok (VU8 (bitNot x))
+  | VU16 x -> Ok (VU16 (bitNot x))
+  | VU32 x -> Ok (VU32 (bitNot x))
+  | VU64 x -> Ok (VU64 (bitNot x))
+  | VBig x -> Ok (VBig (bitNot x))
+  | other -> Err "`bitNot` expects an integer, got ${display other}"
+
+-- An integer as a `BigInt`, exactly: what two integers of any types are
+-- compared by. `None` for anything that is not one.
+fun exactly (a : Value) : Maybe BigInt =
+  match a with
+  | VInt x -> Just (toBigInt x)
+  | VI8 x -> Just (toBigInt x)
+  | VI16 x -> Just (toBigInt x)
+  | VI32 x -> Just (toBigInt x)
+  | VU8 x -> Just (toBigInt x)
+  | VU16 x -> Just (toBigInt x)
+  | VU32 x -> Just (toBigInt x)
+  | VU64 x -> Just (toBigInt x)
+  | VBig x -> Just x
+  | _ -> None
+
+-- `a` as the integer type `w` names, wrapped to it: `toUInt8` and the rest.
+fun toWidth (w : String) (a : Value) =
+  match exactly a with
+  | Just x -> Ok (sized w (VBig x))
+  | None -> Err "`to${w}` expects an integer, got ${display a}"
+
+-- The integer `a` -- a `VInt` or a `VBig` -- as the type `w` names.
+fun sized (w : String) (a : Value) : Value =
+  let big = (match a with | VBig x -> x | VInt x -> toBigInt x | _ -> toBigInt 0) in
+  match w with
+  | "I8" -> VI8 (toInt8 big)
+  | "I16" -> VI16 (toInt16 big)
+  | "I32" -> VI32 (toInt32 big)
+  | "U8" -> VU8 (toUInt8 big)
+  | "U16" -> VU16 (toUInt16 big)
+  | "U32" -> VU32 (toUInt32 big)
+  | "U64" -> VU64 (toUInt64 big)
+  | "BigInt" -> VBig big
+  | _ -> VInt (toInt big)
+
+fun asFloat (a : Value) =
+  match a with
+  | VFloat x -> Ok (VFloat x)
+  | VF32 x -> Ok (VFloat (toFloat64 x))
+  | VInt x -> Ok (VFloat (toFloat x))
+  | VBig x -> Ok (VFloat (toFloat x))
+  | other ->
+      (match exactly other with
+       | Just x -> Ok (VFloat (toFloat x))
+       | None -> Err "`toFloat` expects a number, got ${display other}")
+
+-- `x op y` on two floats of one type.
+fun floatArith (op : String) (x : f) (y : f) : f =
+  if op == "AddF" then x +. y else if op == "SubF" then x -. y else if op == "MulF" then x *. y else x /. y
+
+fun floatCompare (op : String) (x : f) (y : f) : Bool =
+  if op == "LtF" then x <. y else if op == "GtF" then x >. y else if op == "LeF" then x <=. y else x >=. y
+
+fun fractional (what : String) (op : String) (a : Value) (b : Value) =
+  let f = \x y -> floatArith op x y in
+  let g = \x y -> floatArith op x y in
+  match (a, b) with
+  | (VFloat x, VFloat y) -> Ok (VFloat (f x y))
+  | (VF32 x, VF32 y) -> Ok (VF32 (g x y))
+  | (VF32 x, VFloat y) -> Ok (VF32 (g x (toFloat32 y)))
+  | (VFloat x, VF32 y) -> Ok (VF32 (g (toFloat32 x) y))
+  | _ -> Err "`${what}` expects two floats of one type, got ${display a} and ${display b}"
+
+fun fractionalOrder (what : String) (op : String) (a : Value) (b : Value) =
+  let f = \x y -> floatCompare op x y in
+  let g = \x y -> floatCompare op x y in
+  match (a, b) with
+  | (VFloat x, VFloat y) -> Ok (VBool (f x y))
+  | (VF32 x, VF32 y) -> Ok (VBool (g x y))
+  | (VF32 x, VFloat y) -> Ok (VBool (g x (toFloat32 y)))
+  | (VFloat x, VF32 y) -> Ok (VBool (g (toFloat32 x) y))
+  | _ -> Err "`${what}` expects two floats of one type, got ${display a} and ${display b}"
+
+-- Structural, as `meadow_eval`'s `value_eq`: a cell by which one it is.
+fun equal (a : Value) (b : Value) : Bool =
+  match (exactly a, exactly b) with
+  | (Just x, Just y) -> x == y
+  | _ -> sameShape a b
+
+fun sameShape (a : Value) (b : Value) : Bool =
+  match (a, b) with
+  | (VFloat x, VFloat y) -> x == y
+  | (VF32 x, VF32 y) -> x == y
+  | (VF32 x, VFloat y) -> x == toFloat32 y
+  | (VFloat x, VF32 y) -> toFloat32 x == y
+  | (VBool x, VBool y) -> x == y
+  | (VStr x, VStr y) -> x == y
+  | (VChar x, VChar y) -> x == y
+  | (VUnit, VUnit) -> True
+  | (VTuple xs, VTuple ys) -> allEqual xs ys
+  | (VArray xs, VArray ys) -> allEqual xs ys
+  | (VCtor n xs, VCtor m ys) -> n == m and allEqual xs ys
+  | (VRecord xs, VRecord ys) ->
+      V.len xs == V.len ys
+        and V.all (\f -> match V.find (\g -> fst g == fst f) ys with | Just g -> equal (snd f) (snd g) | None -> False) xs
+  | (VRef x, VRef y) -> x == y
+  | (VMut x, VMut y) -> x == y
+  | (VCompact x, VCompact y) -> equal x y
+  | _ -> False
+
+fun allEqual (xs : [Value]) (ys : [Value]) : Bool =
+  V.len xs == V.len ys and V.all (\i -> equal (V.getOr VUnit xs i) (V.getOr VUnit ys i)) (V.range 0 (V.len xs))
+
+-- --- hashing ------------------------------------------------------------------------
+--
+-- `meadow_core::hash`, word for word: a value's head, then its parts left to
+-- right, each mixed into one 64-bit state -- held in an `Int`, whose
+-- arithmetic wraps as the Rust `u64`'s does, with `>>>` the unsigned shift.
+
+-- `v`'s hash, or why it has none.
+fun hashed (v : Value) = match hashInto v 7640891576956012808 with | Ok h -> Ok (finished h) | Err e -> Err e
+
+fun mix (h : Int) (w : Int) : Int = bitXor (bitOr (h << 5) (h >>> 59)) w * 5871781006564002453
+
+fun finished (h : Int) : Int =
+  let a = bitXor h (h >>> 30) * (0 - 4658895280553007687) in
+  let b = bitXor a (a >>> 27) * (0 - 7723592293110705685) in
+  bitXor b (b >>> 31)
+
+fun tagged (h : Int) (t : Int) : Int = mix h t
+
+fun intInto (h : Int) (n : Int) : Int = mix (tagged h 1) n
+
+-- The bytes of `s`, their count first, eight to a word, little-endian.
+fun bytesInto (h : Int) (s : String) : Int =
+  let n = stringByteLength s in
+  V.foldl (\acc i -> mix acc (wordAt s (i * 8))) (mix h n) (V.range 0 ((n + 7) / 8))
+
+fun wordAt (s : String) (at : Int) : Int =
+  V.foldl
+    (\acc k -> if at + k < stringByteLength s then bitOr acc (toInt (stringByteAt s (at + k)) << (8 * k)) else acc)
+    0
+    (V.range 0 8)
+
+fun strInto (h : Int) (s : String) : Int = bytesInto (tagged h 6) s
+
+fun dataInto (h : Int) (name : String) (arity : Int) : Int =
+  if arity == 0 and (name == "True" or name == "Bool.True") then mix (tagged h 4) 1
+  else if arity == 0 and (name == "False" or name == "Bool.False") then mix (tagged h 4) 0
+  else mix (bytesInto (tagged h 8) name) arity
+
+-- An integer of any type the same, as long as it fits in an `Int`.
+fun integerInto (h : Int) (x : BigInt) =
+  if x >= toBigInt (0 - 9223372036854775807 - 1) and x <= toBigInt 9223372036854775807 then Ok (intInto h (toInt x))
+  else Err "MeadowBoot's CEK machine cannot hash an integer past an Int yet"
+
+fun hashInto (v : Value) (h : Int) =
+  match v with
+  | VFloat x -> Ok (mix (tagged h 3) (floatBits x))
+  | VF32 x -> Ok (mix (tagged h 3) (floatBits (toFloat64 x)))
+  | VBool b -> Ok (mix (tagged h 4) (if b then 1 else 0))
+  | VChar c -> Ok (mix (tagged h 5) (C.code c))
+  | VStr s -> Ok (strInto h s)
+  | VUnit -> Ok (tagged h 7)
+  | VTuple xs -> hashAll xs (dataInto h "#tuple" (V.len xs))
+  | VCtor name xs -> hashAll xs (dataInto h name (V.len xs))
+  | VArray xs -> hashAll xs (mix (tagged h 10) (V.len xs))
+  | VRecord fs ->
+      V.foldl
+        (\acc f -> match acc with | Ok g -> hashInto (snd f) (strInto g (fst f)) | Err e -> Err e)
+        (Ok (mix (tagged h 11) (V.len fs)))
+        (sortOn fst fs)
+  | VCompact x -> hashInto x (tagged h 12)
+  | VRef _ -> Err "cannot hash a Ref: it has no structure to compare by"
+  | VMut _ -> Err "cannot hash a mutable array: it has no structure to compare by"
+  | VClosure _ _ _ -> Err "cannot hash a function: it has no structure to compare by"
+  | VCont _ -> Err "cannot hash a function: it has no structure to compare by"
+  | VLazy _ -> Err "hash: a top-level value that was never evaluated"
+  | other ->
+      (match exactly other with
+       | Just x -> integerInto h x
+       | None -> Err "cannot hash ${display other}")
+
+fun hashAll (xs : [Value]) (h : Int) =
+  V.foldl (\acc x -> match acc with | Ok g -> hashInto x g | Err e -> Err e) (Ok h) xs
+
+-- The bits of `x` as a hash takes them: both zeros alike, and every NaN the
+-- one `f64::NAN` is. Worked out, since nothing gives a float's bits: `x` is
+-- scaled by twos, which is exact, until its mantissa is a whole number.
+fun floatBits (x : Float) : Int =
+  if x == 0.0 then 0
+  else if x != x then 9221120237041090560
+  else
+    let negative = x <. 0.0 in
+    let a = if negative then 0.0 -. x else x in
+    let magnitude = if a == 1.0 /. 0.0 then 9218868437227405312 else finiteBits a in
+    if negative then bitOr magnitude (0 - 9223372036854775807 - 1) else magnitude
+
+fun finiteBits (a : Float) : Int =
+  match normalised a 0 with
+  | (m, e) ->
+      if m >=. 4503599627370496.0 then bitOr ((e + 1075) << 52) (floor m - 4503599627370496)
+      else floor m
+
+-- `a` as `m × 2^e` with `m` in [2^52, 2^53) -- or, below the smallest normal
+-- float, `e` at -1074 and `m` smaller.
+fun normalised (a : Float) (e : Int) : (Float, Int) =
+  if a >=. 9007199254740992.0 then normalised (a *. 0.5) (e + 1)
+  else if a <. 4503599627370496.0 and e > 0 - 1074 then normalised (a *. 2.0) (e - 1)
+  else (a, e)
+
+-- --- display ------------------------------------------------------------------------
+
+-- How `print` shows a value: a string as its text, anything else as `display`.
+fun displayed (v : Value) = match v with | VStr s -> s | other -> display other
+
+-- A value as `meadow_eval`'s `Display` writes it.
+@pub fun display (v : Value) : String ! { Mut | e } =
+  match v with
+  | VInt n -> show n
+  | VI8 n -> show n
+  | VI16 n -> show n
+  | VI32 n -> show n
+  | VU8 n -> show n
+  | VU16 n -> show n
+  | VU32 n -> show n
+  | VU64 n -> show n
+  | VBig n -> show n
+  | VFloat x -> show x
+  | VF32 x -> show x
+  | VBool b -> if b then "True" else "False"
+  | VStr s -> show s
+  | VChar c -> show c
+  | VUnit -> "()"
+  | VTuple xs -> "(" ++ joined ", " xs ++ ")"
+  | VArray xs -> "#[" ++ joined ", " xs ++ "]"
+  | VRecord fs -> "{ " ++ S.join ", " (V.map (\f -> "${fst f} = ${display (snd f)}") (sortOn fst fs)) ++ " }"
+  | VCtor name xs ->
+      if name == "List.Nil" or name == "List.Cons" then
+        (match listItems v [] with
+         | Just items -> "[" ++ joined "; " items ++ "]"
+         | None -> "${bare name}(..)")
+      else if V.isEmpty xs then bare name
+      else "${bare name}(" ++ joined ", " xs ++ ")"
+  | VClosure _ _ _ -> "<closure>"
+  | VCont _ -> "<continuation>"
+  | VRef r -> "ref ${display (getRef r)}"
+  | VMut r -> "mut #[" ++ joined ", " (getRef r) ++ "]"
+  | VCompact x -> "compact ${display x}"
+  | VLazy _ -> "<unevaluated>"
+
+fun joined (sep : String) (xs : [Value]) = S.join sep (V.map display xs)
+
+-- A list's elements, when it is one.
+fun listItems (v : Value) (sofar : [Value]) : Maybe [Value] =
+  match v with
+  | VCtor "List.Nil" xs -> if V.isEmpty xs then Just sofar else None
+  | VCtor "List.Cons" xs ->
+      (match (V.get xs 0, V.get xs 1) with
+       | (Just h, Just t) -> listItems t (V.pushBack sofar h)
+       | _ -> None)
+  | _ -> None
+
+-- A constructor as a reader wants it: `Maybe.Just` is `Just`.
+fun bare (name : String) : String = afterLast "." name
+
+-- What follows the last `sep` in `s`, or all of `s`.
+fun afterLast (sep : String) (s : String) : String =
+  match lastIndex sep s 0 (0 - 1) with
+  | i -> if i < 0 then s else stringSlice s (i + stringByteLength sep) (stringByteLength s)
+
+fun lastIndex (sep : String) (s : String) (from : Int) (found : Int) : Int =
+  match S.indexOfFrom sep s from with
+  | Just i -> lastIndex sep s (i + 1) i
+  | None -> found

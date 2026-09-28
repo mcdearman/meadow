@@ -1,0 +1,4 @@
+-- A trait has parameters.
+trait T {
+  fun m : Int
+}

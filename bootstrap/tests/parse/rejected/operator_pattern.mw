@@ -1,0 +1,2 @@
+-- An operator other than `::` is not a pattern.
+fun f (x + 1) = x

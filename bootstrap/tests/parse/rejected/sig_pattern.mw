@@ -1,0 +1,2 @@
+-- A signature names a value.
+def (a, b) : (Int, Int)

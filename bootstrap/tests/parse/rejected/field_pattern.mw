@@ -1,0 +1,2 @@
+-- A field is not a pattern.
+fun f (r.a) = 0

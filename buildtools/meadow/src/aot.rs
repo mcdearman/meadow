@@ -243,12 +243,45 @@ pub fn build_native(
     }
     let want = format!("{h:016x}");
     if exe.exists() && std::fs::read_to_string(&stamp).is_ok_and(|had| had == want) {
+        prune_units(&dir, name, units.len());
         return Ok(exe);
     }
     let modules = write_units(&dir, name, &units)?;
     clang_link(&modules, &runtime, &exe, opt, target)?;
     let _ = std::fs::write(&stamp, &want);
+    // The IR was only ever clang's input -- several times the size of the
+    // objects it made -- and nothing reads it again: the next build writes it
+    // afresh. Kept when the link fails, which is when someone wants to read it.
+    for m in &modules {
+        let _ = std::fs::remove_file(m);
+    }
+    prune_units(&dir, name, units.len());
     Ok(exe)
+}
+
+/// Remove what an earlier build of `name` left in `dir` that the executable
+/// there was not linked from: its LLVM IR, and the objects of the modules
+/// past the `count` this one has -- `name.o` too, when one module was compiled
+/// and linked in a single step.
+fn prune_units(dir: &Path, name: &str, count: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        let Some(rest) = file.to_str().and_then(|f| f.strip_prefix(name)) else {
+            continue;
+        };
+        let stale = match rest.strip_prefix('.').and_then(|r| r.rsplit_once('.')) {
+            Some((_, "ll")) => true,
+            Some((i, "o")) => i.parse::<usize>().is_ok_and(|i| i >= count),
+            _ => false,
+        } || rest == ".ll"
+            || (rest == ".o" && count == 1);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Write the LLVM modules `units` into `dir`, as `name.ll`, `name.1.ll`, ...,
@@ -363,13 +396,34 @@ pub fn clang_link(
         .arg("-Wno-override-module")
         .arg(&triple)
         .arg("-o")
-        .arg(exe)
-        .args(&inputs)
-        .arg(runtime);
+        .arg(exe);
+    // Several objects are named in a response file rather than on the command
+    // line: a large program is hundreds of them, and a Windows command line
+    // holds 32K characters.
+    let listed = (inputs.len() > 1).then(|| exe.with_extension("rsp"));
+    match &listed {
+        Some(rsp) => {
+            let text: String = inputs
+                .iter()
+                .map(|p| format!("\"{}\"\n", p.to_string_lossy().replace('\\', "/")))
+                .collect();
+            std::fs::write(rsp, text)
+                .map_err(|e| format!("could not write {}: {e}", rsp.display()))?;
+            cmd.arg(format!("@{}", rsp.display()));
+        }
+        None => {
+            cmd.args(&inputs);
+        }
+    }
+    cmd.arg(runtime);
     for lib in native_system_libs(target.format) {
         cmd.arg(lib);
     }
-    run(&mut cmd, &modules[0])
+    let linked = run(&mut cmd, &modules[0]);
+    if let Some(rsp) = listed {
+        let _ = std::fs::remove_file(rsp);
+    }
+    linked
 }
 
 /// What clang links a program against besides the runtime library.

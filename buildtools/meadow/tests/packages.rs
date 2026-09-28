@@ -477,12 +477,13 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
         ),
         "{got}"
     );
-    // Named bare, `Shape` could be either, until a `use` says which.
-    let ambiguous = two_shapes("ambiguous", "fun f (s : Shape) = s\ndef main = 1\n");
+    // Named bare, `Shape` is neither's: a dependency's type is in scope only
+    // where a `use` brings it.
+    let unnamed = two_shapes("unnamed", "fun f (s : Shape) = s\ndef main = 1\n");
     assert!(
-        run_app(&ambiguous).contains("`Shape` could be the type of any of"),
+        run_app(&unnamed).contains("unknown type `Shape`"),
         "{}",
-        run_app(&ambiguous)
+        run_app(&unnamed)
     );
     let chosen = two_shapes(
         "chosen",

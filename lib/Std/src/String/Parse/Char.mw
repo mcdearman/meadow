@@ -134,6 +134,8 @@ fun isHorizontal c = c == ' ' or c == '\t'
 use Std.Test (assertEq, assertTrue, assertFalse)
 use Std.Result (isOk)
 use Std.Result.Result.*
+use Std.String.Parse (Parser)
+use Std.String.Parse (Stream)
 
 @test fun charactersAndStrings () =
   let a = assertEq (P.runParser (char 'x') "xy") (Ok 'x') "char" in

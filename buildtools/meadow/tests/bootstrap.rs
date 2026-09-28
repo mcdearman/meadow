@@ -45,6 +45,9 @@ fn meadowboot(args: &[String]) -> String {
             c.arg("--offline");
         }
         c.arg(&dir).arg("--").args(args);
+        // Where the standard library's sources are, for the passes that build
+        // a file's unit and the units it depends on.
+        c.env("MEADOWBOOT_STD", repo().join("lib").join("Std"));
         c.output().expect("meadow runs")
     };
     let mut out = run(true);
@@ -95,9 +98,14 @@ fn sources(dirs: &[&str]) -> Vec<PathBuf> {
 /// MeadowBoot's output for one command over `files`, split by the `== path`
 /// line it writes before each: in batches, so a command line stays short.
 fn per_file(command: &str, files: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    per_file_with(&[command.to_string()], files)
+}
+
+/// The same, with `args` -- a command and its options -- before the files.
+fn per_file_with(args: &[String], files: &[PathBuf]) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
     for batch in files.chunks(40) {
-        let mut args = vec![command.to_string()];
+        let mut args = args.to_vec();
         args.extend(batch.iter().map(|p| p.display().to_string()));
         let text = meadowboot(&args);
         // A line of a dump never starts with `== `: its lines start with a
@@ -119,7 +127,10 @@ fn per_file(command: &str, files: &[PathBuf]) -> Vec<(PathBuf, String)> {
 }
 
 /// The files whose two texts differ, each at its first differing line.
-fn differences(files: &[(PathBuf, String)], reference: impl Fn(&Path) -> String) -> Vec<String> {
+fn differences(
+    files: &[(PathBuf, String)],
+    mut reference: impl FnMut(&Path) -> String,
+) -> Vec<String> {
     let mut bad = Vec::new();
     for (path, theirs) in files {
         let ours = reference(path);
@@ -251,6 +262,9 @@ fn parsed(text: &str) -> String {
                 out: String::new(),
                 depth: 0,
                 text,
+                fixities: None,
+                chains: Vec::new(),
+                grouping: Vec::new(),
             };
             w.node("Module", m.span, |w| {
                 for d in &m.value.decls {
@@ -268,6 +282,43 @@ struct Tree<'t> {
     depth: usize,
     /// The source, for what a float literal says.
     text: &'t str,
+    /// The unit's fixities, when each chain of operators is also grouped by
+    /// them, as `meadow-rename` groups it.
+    fixities: Option<&'t HashMap<InternedString, hir::Fixity>>,
+    /// Each chain so grouped: where its first operator is, and it bracketed.
+    chains: Vec<(u32, String)>,
+    /// What grouping them found wrong, and where.
+    grouping: Vec<(String, Span)>,
+}
+
+/// A chain of operators, grouped: an operand, or an operator applied to two.
+enum Grouped<'a> {
+    Leaf(&'a LExpr),
+    Bin(Ident, Span, Box<Grouped<'a>>, Box<Grouped<'a>>),
+}
+
+impl Grouped<'_> {
+    fn span(&self) -> Span {
+        match self {
+            Grouped::Leaf(e) => e.span,
+            Grouped::Bin(_, s, _, _) => *s,
+        }
+    }
+
+    /// Bracketed as MeadowBoot's `Fixity.chainsOf` writes it: each operator
+    /// with where it is, each operand `_`.
+    fn bracketed(&self) -> String {
+        match self {
+            Grouped::Leaf(_) => "_".to_string(),
+            Grouped::Bin(op, _, l, r) => format!(
+                "({} {}@{} {})",
+                l.bracketed(),
+                op.value(),
+                at(op.span),
+                r.bracketed()
+            ),
+        }
+    }
 }
 
 fn at(s: Span) -> String {
@@ -631,15 +682,43 @@ impl Tree<'_> {
                 w.expr(a);
                 w.expr(b);
             }),
-            Expr::Infix(first, rest) => self.node("Infix", s, |w| {
-                w.expr(first);
-                w.list("rest", rest, |w, (op, x)| {
-                    w.under("Op", |w| {
-                        w.ident(op);
-                        w.expr(x);
-                    })
+            Expr::Infix(first, rest) => {
+                // Grouped too, when the fixities are given -- and written as
+                // parsed all the same, for the chains inside its operands.
+                if let Some(table) = self.fixities {
+                    let mut errors = Vec::new();
+                    let grouped = meadow_compiler::rename::reassociate(
+                        Grouped::Leaf(first),
+                        rest.iter().map(|(op, e)| (op.clone(), Grouped::Leaf(e))),
+                        |op| fixity_of(table, op),
+                        |op, l, r| {
+                            let span = l.span().extend(r.span());
+                            Grouped::Bin(op, span, Box::new(l), Box::new(r))
+                        },
+                        |msg, span| errors.push((msg, span)),
+                    );
+                    self.grouping.extend(errors);
+                    // A chain the parser made up -- `[a .. b]` is `range a (b +
+                    // 1)` -- was not written, and has no grouping to compare.
+                    let written = rest.iter().all(|(op, _)| {
+                        self.text.get(op.span.start as usize..op.span.end as usize)
+                            == Some(&**op.value())
+                    });
+                    if written {
+                        let first_op = rest.first().map_or(0, |(op, _)| op.span.start);
+                        self.chains.push((first_op, grouped.bracketed()));
+                    }
+                }
+                self.node("Infix", s, |w| {
+                    w.expr(first);
+                    w.list("rest", rest, |w, (op, x)| {
+                        w.under("Op", |w| {
+                            w.ident(op);
+                            w.expr(x);
+                        })
+                    });
                 });
-            }),
+            }
             Expr::Tuple(xs) => self.node("Tuple", s, |w| w.list("items", xs, |w, x| w.expr(x))),
             Expr::Array(xs) => self.node("Array", s, |w| w.list("items", xs, |w, x| w.expr(x))),
             Expr::List(xs) => self.node("List", s, |w| w.list("items", xs, |w, x| w.expr(x))),
@@ -740,6 +819,340 @@ fn every_source_parses_as_meadow_parser_parses_it() {
     assert!(
         bad.is_empty(),
         "{} of {} files parse differently:\n\n{}",
+        bad.len(),
+        files.len(),
+        bad.iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+}
+
+// --- grouping operators by fixity ----------------------------------------------
+
+use meadow_compiler::hir;
+use meadow_compiler::intern::InternedString;
+use std::collections::HashMap;
+
+/// How `op` binds, as the resolver says: the language's own operators as they
+/// always do, one the unit declared as declared, and anything else `infixl 9`.
+fn fixity_of(table: &HashMap<InternedString, hir::Fixity>, op: InternedString) -> hir::Fixity {
+    let op = meadow_compiler::ast::hygiene::strip(op);
+    hir::builtin_operator(&op)
+        .map(|(f, _)| f)
+        .or_else(|| table.get(&op).copied())
+        .unwrap_or(hir::Fixity::DEFAULT)
+}
+
+/// The package a file is in: the nearest directory above it with a
+/// `Meadow.toml`.
+fn package_of(file: &Path) -> Option<PathBuf> {
+    file.ancestors()
+        .skip(1)
+        .find(|d| d.join("Meadow.toml").is_file())
+        .map(Path::to_path_buf)
+}
+
+/// The fixities the package at `root` declares, over `known`, as
+/// `Resolver::declare_fixities` takes them in: a level past 9 and a language
+/// operator are passed over, and the first declaration of an operator stands.
+fn declared_in(
+    known: &HashMap<InternedString, hir::Fixity>,
+    root: &Path,
+) -> HashMap<InternedString, hir::Fixity> {
+    let mut table = known.clone();
+    let mut files = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n != "target") {
+                    walk(&p, out);
+                }
+            } else if p.extension().is_some_and(|e| e == "mw") {
+                out.push(p);
+            }
+        }
+    }
+    walk(&root.join("src"), &mut files);
+    for f in files {
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let source = Source::new(SourceKind::Interactive, text.as_str().into());
+        let lexed = tokenize(source);
+        let (ast, _) = meadow_compiler::parser::parse("boot".into(), source, &lexed.tokens);
+        let Some(m) = ast else {
+            continue;
+        };
+        for d in &m.value.decls {
+            let mut d = d.value();
+            while let Decl::Attributed(_, inner) = d {
+                d = inner.value();
+            }
+            let Decl::Fixity(assoc, level, ops) = d else {
+                continue;
+            };
+            if *level > 9 {
+                continue;
+            }
+            let fixity = hir::Fixity {
+                assoc: match assoc {
+                    meadow_compiler::ast::Assoc::Left => hir::Assoc::Left,
+                    meadow_compiler::ast::Assoc::Right => hir::Assoc::Right,
+                    meadow_compiler::ast::Assoc::None => hir::Assoc::None,
+                },
+                level: *level,
+            };
+            for op in ops {
+                if hir::builtin_operator(op.value()).is_none() {
+                    table.entry(*op.value()).or_insert(fixity);
+                }
+            }
+        }
+    }
+    table
+}
+
+/// `text`'s chains of operators grouped by `table`, as MeadowBoot's `fixity`
+/// writes them: each bracketed, first operator first, then each that could
+/// not be grouped.
+fn grouped(text: &str, table: &HashMap<InternedString, hir::Fixity>) -> String {
+    let source = Source::new(SourceKind::Interactive, text.into());
+    let lexed = tokenize(source);
+    let (ast, _) = meadow_compiler::parser::parse("boot".into(), source, &lexed.tokens);
+    match ast {
+        None => "parse failed\n".to_string(),
+        Some(m) => {
+            let mut w = Tree {
+                out: String::new(),
+                depth: 0,
+                text,
+                fixities: Some(table),
+                chains: Vec::new(),
+                grouping: Vec::new(),
+            };
+            w.node("Module", m.span, |w| {
+                for d in &m.value.decls {
+                    w.decl(d);
+                }
+            });
+            let mut out = String::new();
+            w.chains.sort_by_key(|c| c.0);
+            for (_, chain) in &w.chains {
+                out.push_str(&format!(
+                    "chain {chain}
+"
+                ));
+            }
+            for (msg, span) in w.grouping {
+                out.push_str(&format!("fixity error {} {msg}\n", at(span)));
+            }
+            out
+        }
+    }
+}
+
+#[test]
+fn every_source_groups_its_operators_as_meadow_rename_groups_them() {
+    let files = sources(&["lib", "examples", "benches", "bootstrap", "glade", "silo"]);
+    let std = repo().join("lib").join("Std");
+    let theirs = per_file("fixity", &files);
+    let lib = declared_in(&HashMap::new(), &std);
+    let mut tables: HashMap<PathBuf, HashMap<InternedString, hir::Fixity>> = HashMap::new();
+    let bad = differences(&theirs, |p| {
+        let root = package_of(p).unwrap_or_default();
+        let table = tables
+            .entry(root.clone())
+            .or_insert_with(|| {
+                if root == std {
+                    declared_in(&HashMap::new(), &root)
+                } else {
+                    declared_in(&lib, &root)
+                }
+            })
+            .clone();
+        grouped(&std::fs::read_to_string(p).expect("a source"), &table)
+    });
+    assert!(
+        bad.is_empty(),
+        "{} of {} files group differently:\n\n{}",
+        bad.len(),
+        files.len(),
+        bad.iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+}
+
+// --- renaming -------------------------------------------------------------------
+
+use meadow_lsp::analysis::{Mentioned, mentions};
+
+/// A file as a rename dump names it: its package's name and its path in the
+/// package, `Std/src/Char.mw` -- the same wherever the package was checked out.
+fn file_name(source: &Source, roots: &[(PathBuf, String)]) -> Option<String> {
+    let SourceKind::File(name) = source.kind else {
+        return None;
+    };
+    // The standard library's modules are compiled from text built into the
+    // compiler, and named for their path under its `src`.
+    if let Some(rest) = name.strip_prefix("Std/") {
+        return Some(format!("Std/src/{rest}"));
+    }
+    let path = Path::new(&*name);
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    roots.iter().find_map(|(root, pkg)| {
+        let rel = path.strip_prefix(root).ok()?;
+        Some(format!(
+            "{pkg}/{}",
+            rel.to_string_lossy().replace('\\', "/")
+        ))
+    })
+}
+
+/// Every module of the package at `root` renamed, as MeadowBoot's `rename`
+/// writes it: a name written a line, sorted -- `from to kind declared`, where
+/// the kind is `v` for a value, `t` for a type and `c` for a constructor, and
+/// `declared` is where what it names is declared, `file@offset`, or `-` for a
+/// primitive -- keyed by file. The standard library's, when `root` is it.
+fn renamed_package(root: &Path) -> HashMap<PathBuf, String> {
+    let std_root = repo().join("lib").join("Std");
+    // The standard library is compiled for any build: the smallest will do.
+    let entry = if root == std_root {
+        let probe = std::env::temp_dir().join("meadowboot-std-probe.mw");
+        std::fs::write(&probe, "def main = 1\n").expect("a probe");
+        probe
+    } else {
+        root.to_path_buf()
+    };
+    let graph = match meadow::pipeline::compile_packages(&entry, meadow::Options::debug()) {
+        Ok(g) => g,
+        Err(_) => return HashMap::new(),
+    };
+    let mut roots: Vec<(PathBuf, String)> = graph
+        .packages
+        .iter()
+        .filter_map(|(r, p)| {
+            let r = r.canonicalize().ok()?;
+            Some((r, p.as_ref()?.name.to_string()))
+        })
+        .collect();
+    // The deepest first: a package inside another's directory is its own.
+    roots.sort_by_key(|(r, _)| std::cmp::Reverse(r.components().count()));
+    let everything: Vec<&meadow_compiler::CompiledPackage> = graph
+        .std
+        .iter()
+        .chain(graph.packages.iter().filter_map(|(_, p)| p.as_ref()))
+        .collect();
+    let wanted: Vec<&meadow_compiler::CompiledPackage> = if root == std_root {
+        graph.std.iter().collect()
+    } else {
+        let me = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        graph
+            .packages
+            .iter()
+            .filter(|(r, _)| r.canonicalize().is_ok_and(|r| r == me))
+            .filter_map(|(_, p)| p.as_ref())
+            .collect()
+    };
+    let mut out = HashMap::new();
+    for pkg in wanted {
+        for (source, found) in mentions(pkg, &everything) {
+            let Some(file) = file_name(&source, &roots) else {
+                continue;
+            };
+            let mut lines: Vec<String> = found
+                .iter()
+                .map(|m| {
+                    let kind = match m.what {
+                        Mentioned::Value(_) => 'v',
+                        Mentioned::Type(_) => 't',
+                        Mentioned::Ctor(_) => 'c',
+                    };
+                    let declared = m
+                        .declared
+                        .and_then(|d| {
+                            Some(format!(
+                                "{}@{}",
+                                file_name(&d.source, &roots)?,
+                                d.span.start
+                            ))
+                        })
+                        .unwrap_or_else(|| "-".to_string());
+                    format!("{} {} {kind} {declared}\n", m.span.start, m.span.end)
+                })
+                .collect();
+            lines.sort_by_key(|l| {
+                let mut n = l.split(' ').map(|x| x.parse::<usize>().unwrap_or(0));
+                (n.next(), n.next(), l.clone())
+            });
+            lines.dedup();
+            let path = match file.strip_prefix("Std/src/") {
+                Some(rest) => std_root.join("src").join(rest),
+                None => {
+                    let (pkg, rel) = file.split_once('/').unwrap_or_default();
+                    match roots.iter().find(|(_, p)| p == pkg) {
+                        Some((r, _)) => r.join(rel),
+                        None => continue,
+                    }
+                }
+            };
+            out.insert(path, lines.concat());
+        }
+    }
+    out
+}
+
+/// What this compiler's `rename` dump of the file `MEADOWBOOT_RENAME` is:
+/// run by hand, `cargo test --test bootstrap rename_dump -- --ignored
+/// --nocapture`, to see what MeadowBoot is to write.
+#[test]
+#[ignore]
+fn rename_dump() {
+    let Some(file) = std::env::var_os("MEADOWBOOT_RENAME").map(PathBuf::from) else {
+        return;
+    };
+    let file = file.canonicalize().expect("the file");
+    let root = package_of(&file).expect("its package");
+    let dumps = renamed_package(&root);
+    let found = dumps
+        .iter()
+        .find(|(f, _)| f.canonicalize().is_ok_and(|f| f == file));
+    match found {
+        Some((_, d)) => print!("{d}"),
+        None => println!("not compiled"),
+    }
+}
+
+#[test]
+#[ignore = "MeadowBoot expands no macros yet: the 14 files that call one differ"]
+fn every_source_renames_as_meadow_rename_renames_it() {
+    let files = sources(&["lib", "examples", "benches", "bootstrap", "glade", "silo"]);
+    let theirs = per_file("rename", &files);
+    let mut packages: HashMap<PathBuf, HashMap<PathBuf, String>> = HashMap::new();
+    let bad = differences(&theirs, |p| {
+        let root = package_of(p).unwrap_or_default();
+        let dumps = packages
+            .entry(root.clone())
+            .or_insert_with(|| renamed_package(&root));
+        let me = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        dumps
+            .iter()
+            .find(|(f, _)| f.canonicalize().is_ok_and(|f| f == me))
+            .map(|(_, d)| d.clone())
+            .unwrap_or_else(|| "not compiled\n".to_string())
+    });
+    assert!(
+        bad.is_empty(),
+        "{} of {} files rename differently:\n\n{}",
         bad.len(),
         files.len(),
         bad.iter()

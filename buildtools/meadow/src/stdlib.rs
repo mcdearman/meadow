@@ -483,6 +483,16 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
         // dependent.
         if matches!(*dotted, "Ops" | "Display" | "Debug" | "Cmp") {
             cp.prelude_exports = Some(flat.iter().map(|e| e.name).collect());
+            // And their traits, which a program asks for and implements
+            // without a `use`: `where Eq a`, `impl Display T`.
+            cp.flat_types = cp
+                .data_decls
+                .iter()
+                .filter_map(|d| match d.value() {
+                    meadow_compiler::hir::Decl::Trait(td) => Some(td.name),
+                    _ => None,
+                })
+                .collect();
             // At the root, which is what a flat import takes: a trait's
             // methods are there already, and its functions have to be put.
             cp.exports.extend(flat.into_iter().map(|mut e| {
@@ -515,6 +525,8 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
     // Unioned across the sub-units, which in practice means `Prelude.mw`'s:
     // it is the only one that `@pub use`s a type's constructors.
     let mut flat_ctors: Vec<InternedString> = Vec::new();
+    // And the types it names: `@pub use Std.Maybe (Maybe)`.
+    let mut flat_types: Vec<InternedString> = Vec::new();
     let mut tests = Vec::new();
     // What the library itself embedded, so a build notices those files too.
     let mut embedded: Vec<(String, u64)> = Vec::new();
@@ -533,6 +545,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         macros.extend(sub.macros.iter().cloned());
         bindings.extend(sub.bindings.iter().cloned());
         flat_ctors.extend(sub.flat_ctors.iter().copied());
+        flat_types.extend(sub.flat_types.iter().copied());
         defs.extend(sub.defs);
         modules.extend(sub.modules);
         ctor_fields.extend(sub.ctor_fields);
@@ -551,12 +564,15 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
 
     flat_ctors.sort_by_key(|n| n.to_string());
     flat_ctors.dedup();
+    flat_types.sort_by_key(|n| n.to_string());
+    flat_types.dedup();
     fixities.sort_by_key(|(op, _)| op.to_string());
     fixities.dedup();
 
     CompiledPackage {
         id: 0,
         flat_ctors,
+        flat_types,
         vars: lo..hi,
         name,
         // The standard library is one package, at one version, in every build:
@@ -578,6 +594,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         data_decls,
         tests,
         prelude_exports: Some(prelude_names),
+        package: false,
         compacting,
     }
 }

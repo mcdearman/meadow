@@ -21,284 +21,60 @@
 -- * A handler's arms: `op p k -> e`, and `return p -> e` is the one with no
 --   resumption and that name.
 --
--- The lexer's tokens are MeadowBoot's own (`Lex`), each given a kind here.
--- Some words mean something only where they are: `pattern` before a capital
--- starts a synonym, `rec` after `let` before a name makes the binding
--- recursive, `.*` ends a `use`, `<:` begins a trait's supertraits, `:?` asks
--- for a hole's `Debug`. And a name in a path a `!` follows is a macro's: the
--- Rust parser takes `a.b!` as a call wherever it could be one, which it sees
--- by looking along the path to the `!`, and the lexer marks it here instead --
--- one kind for a path whose `!` starts a line's declaration, which no
--- expression before it may take as an argument, and one for any other. (A
--- type's `! e` marks the name before it the same way: type atoms take either.)
--- Each is a kind of its own.
+-- The tokens are the lexer's (`Lex`), each of its kind -- but for some that
+-- mean something only where they are, which `syntax!`'s `context` gives kinds
+-- of their own: `pattern` before a capital starts a synonym, and `rec` after
+-- `let` before a name makes the binding recursive. `.*` ends a `use`, `<:`
+-- begins a trait's supertraits and `:?` asks for a hole's `Debug`, wherever
+-- they are. And a name on a path a `!` ends is a macro's: the Rust parser
+-- takes `a.b!` as a call wherever it could be one, which it sees by looking
+-- along the path to the `!` -- further than any number of tokens ahead -- so
+-- the path's names are kinds of their own, one for a path whose `!` starts a
+-- line's declaration, which no expression before it may take as an argument,
+-- and one for any other. (A type's `! e` makes the name before it one too:
+-- type atoms take either.)
+--
+-- Operators are read as chains, `a + b * c` flat: how they group is known
+-- only once every fixity declaration of the unit is read, which the fixity
+-- pass (`Fixity`) does after parsing, into a language of its own.
 
 use Lingua (syntax!)
-use MeadowBoot.Lex (lex, Lexed, Token)
-use MeadowBoot.Lex.Token.*
-use Std.Collections.Vector as V
+use MeadowBoot.Lex (Token, foldToken)
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
-
--- --- tokens -----------------------------------------------------------------------
-
--- A token as the grammar sees it: its kind, nothing more -- its text is the
--- source's.
-@pub data Tk
-  = TInt
-  | TReal
-  | TStr
-  | TInterpStart
-  | TInterpMid
-  | TInterpEnd
-  | TChar
-  | TLower
-  | TUpper
-  | TLineLower
-  | TLineUpper
-  | TMacLower
-  | TMacUpper
-  | TOp
-  | TSubtrait
-  | TDotStar
-  | TConOp
-  | TDebugFmt
-  | TPattern
-  | TRec
-  | TWildcard
-  | TBackslash
-  | TLArrow
-  | TRArrow
-  | TFatArrow
-  | TPlus
-  | TMinus
-  | TStar
-  | TSlash
-  | TPercent
-  | TCaret
-  | TAnd
-  | TOr
-  | TEq
-  | TEqEq
-  | TNeq
-  | TLt
-  | TGt
-  | TLeq
-  | TGeq
-  | TBang
-  | TDeclBang
-  | TComma
-  | TPeriod
-  | TDoublePeriod
-  | TDoublePeriodEq
-  | TColonColon
-  | TColon
-  | TSemiColon
-  | TLParen
-  | TRParen
-  | TLBrace
-  | TRBrace
-  | TLBrack
-  | TRBrack
-  | THash
-  | TBar
-  | TLPipe
-  | TRPipe
-  | TAt
-  | TBacktick
-  | TDollar
-  | TMod
-  | TEnd
-  | TUse
-  | TDef
-  | TFun
-  | TLet
-  | TIn
-  | TMatch
-  | TWith
-  | TIf
-  | TThen
-  | TElse
-  | TData
-  | TRecord
-  | TEffect
-  | THandle
-  | TType
-  | TTrait
-  | TImpl
-  | TWhere
-  | TAs
-  | TMacro
-  | TInfix
-  | TInfixl
-  | TInfixr
-  | TError
-
--- Every token of `input` with its kind, from `start` on, to `f` in turn, as
--- a Scythe lexer's fold hands them: what `syntax!` reads a source with.
-@pub fun foldTk f acc (input : String) =
-  let ts = (lex input).tokens in
-  let line = paths ts True in
-  let mac = paths ts False in
-  Ok (V.foldl (\a i -> match V.get ts i with | Just (l : Lexed) -> f a (kindAt ts line mac i) l.from l.to | None -> a) acc (V.range 0 (V.len ts)))
-
--- For each token, whether it is a name in the path of a macro call: one that
--- starts a line -- the names before a `DeclBang` -- or, `line` false, any
--- other, the names before a `!`.
-fun paths (ts : [Lexed]) (line : Bool) : [Bool] =
-  V.foldl
-    (\marks i ->
-      match V.get ts i with
-      | Just (l : Lexed) ->
-          (match l.token with
-           | DeclBang -> if line then markPath ts marks (i - 1) else marks
-           | Bang -> if line then marks else markPath ts marks (i - 1)
-           | _ -> marks)
-      | None -> marks)
-    (V.map (\_ -> False) ts)
-    (V.range 0 (V.len ts))
-
-fun markPath (ts : [Lexed]) (marks : [Bool]) (j : Int) : [Bool] =
-  if j < 0 or not (isSeg ts j) then marks
-  else
-    let marked = V.set marks j True in
-    if j >= 2 and isPeriod ts (j - 1) then markPath ts marked (j - 2) else marked
-
-fun isSeg (ts : [Lexed]) (j : Int) : Bool =
-  match V.get ts j with
-  | Just (l : Lexed) -> (match l.token with | LowerIdent _ -> True | UpperIdent _ -> True | _ -> False)
-  | None -> False
-
-fun isPeriod (ts : [Lexed]) (j : Int) : Bool =
-  match V.get ts j with
-  | Just (l : Lexed) -> (match l.token with | Period -> True | _ -> False)
-  | None -> False
-
-fun tokenAt (ts : [Lexed]) (j : Int) : Maybe Token = match V.get ts j with | Just (l : Lexed) -> Just l.token | None -> None
-
-fun kindAt (ts : [Lexed]) (line : [Bool]) (mac : [Bool]) (i : Int) : Tk =
-  match tokenAt ts i with
-  | Just t -> kindOf ts line mac i t
-  | None -> Tk.TError
-
-fun kindOf (ts : [Lexed]) (line : [Bool]) (mac : [Bool]) (i : Int) (t : Token) : Tk =
-  match t with
-  | Int _ -> Tk.TInt
-  | Real _ -> Tk.TReal
-  | Str _ -> Tk.TStr
-  | InterpStart _ -> Tk.TInterpStart
-  | InterpMid _ -> Tk.TInterpMid
-  | InterpEnd _ -> Tk.TInterpEnd
-  | Char _ -> Tk.TChar
-  | LowerIdent s ->
-      if V.getOr False line i then Tk.TLineLower
-      else if V.getOr False mac i then Tk.TMacLower
-      else if s == "pattern" and upperAt ts (i + 1) then Tk.TPattern
-      else if s == "rec" and letAt ts (i - 1) and lowerAt ts (i + 1) then Tk.TRec
-      else Tk.TLower
-  | UpperIdent _ -> if V.getOr False line i then Tk.TLineUpper else if V.getOr False mac i then Tk.TMacUpper else Tk.TUpper
-  | OpIdent s -> if s == ".*" then Tk.TDotStar else if s == "<:" then Tk.TSubtrait else Tk.TOp
-  | ConOpIdent s -> if s == ":?" then Tk.TDebugFmt else Tk.TConOp
-  | Wildcard -> Tk.TWildcard
-  | Backslash -> Tk.TBackslash
-  | LArrow -> Tk.TLArrow
-  | RArrow -> Tk.TRArrow
-  | FatArrow -> Tk.TFatArrow
-  | Plus -> Tk.TPlus
-  | Minus -> Tk.TMinus
-  | Star -> Tk.TStar
-  | Slash -> Tk.TSlash
-  | Percent -> Tk.TPercent
-  | Caret -> Tk.TCaret
-  | And -> Tk.TAnd
-  | Or -> Tk.TOr
-  | Eq -> Tk.TEq
-  | EqEq -> Tk.TEqEq
-  | Neq -> Tk.TNeq
-  | Lt -> Tk.TLt
-  | Gt -> Tk.TGt
-  | Leq -> Tk.TLeq
-  | Geq -> Tk.TGeq
-  | Bang -> Tk.TBang
-  | DeclBang -> Tk.TDeclBang
-  | Comma -> Tk.TComma
-  | Period -> Tk.TPeriod
-  | DoublePeriod -> Tk.TDoublePeriod
-  | DoublePeriodEq -> Tk.TDoublePeriodEq
-  | ColonColon -> Tk.TColonColon
-  | Colon -> Tk.TColon
-  | SemiColon -> Tk.TSemiColon
-  | LParen -> Tk.TLParen
-  | RParen -> Tk.TRParen
-  | LBrace -> Tk.TLBrace
-  | RBrace -> Tk.TRBrace
-  | LBrack -> Tk.TLBrack
-  | RBrack -> Tk.TRBrack
-  | Hash -> Tk.THash
-  | Bar -> Tk.TBar
-  | LPipe -> Tk.TLPipe
-  | RPipe -> Tk.TRPipe
-  | At -> Tk.TAt
-  | Backtick -> Tk.TBacktick
-  | Dollar -> Tk.TDollar
-  | Mod -> Tk.TMod
-  | End -> Tk.TEnd
-  | Use -> Tk.TUse
-  | Def -> Tk.TDef
-  | Fun -> Tk.TFun
-  | Let -> Tk.TLet
-  | In -> Tk.TIn
-  | Match -> Tk.TMatch
-  | With -> Tk.TWith
-  | If -> Tk.TIf
-  | Then -> Tk.TThen
-  | Else -> Tk.TElse
-  | Data -> Tk.TData
-  | Record -> Tk.TRecord
-  | Effect -> Tk.TEffect
-  | Handle -> Tk.THandle
-  | Type -> Tk.TType
-  | Trait -> Tk.TTrait
-  | Impl -> Tk.TImpl
-  | Where -> Tk.TWhere
-  | As -> Tk.TAs
-  | Macro -> Tk.TMacro
-  | Infix -> Tk.TInfix
-  | Infixl -> Tk.TInfixl
-  | Infixr -> Tk.TInfixr
-  | Error -> Tk.TError
-
-fun upperAt (ts : [Lexed]) (j : Int) : Bool = match tokenAt ts j with | Just (UpperIdent _) -> True | _ -> False
-
-fun lowerAt (ts : [Lexed]) (j : Int) : Bool = match tokenAt ts j with | Just (LowerIdent _) -> True | _ -> False
-
-fun letAt (ts : [Lexed]) (j : Int) : Bool = match tokenAt ts j with | Just Let -> True | _ -> False
 
 -- --- the grammar ------------------------------------------------------------------
 
 @pub syntax! {
-  pub Meadow
-  lexer Tk
+  pub Surface
+  lexer Token
   lookahead 5
   tokens {
-    "int" = TInt, "real" = TReal, "string" = TStr, "interp_start" = TInterpStart,
-    "interp_mid" = TInterpMid, "interp_end" = TInterpEnd, "char" = TChar, "lower" = TLower,
-    "upper" = TUpper, "line_lower" = TLineLower, "line_upper" = TLineUpper, "mac_lower" = TMacLower,
-    "mac_upper" = TMacUpper, "op" = TOp,
-    "<:" = TSubtrait, ".*" = TDotStar, "conop" = TConOp, ":?" = TDebugFmt, "pattern" = TPattern,
-    "rec" = TRec, "_" = TWildcard, "\\" = TBackslash, "<-" = TLArrow, "->" = TRArrow,
-    "=>" = TFatArrow, "+" = TPlus, "-" = TMinus, "*" = TStar, "/" = TSlash, "%" = TPercent,
-    "^" = TCaret, "and" = TAnd, "or" = TOr, "=" = TEq, "==" = TEqEq, "!=" = TNeq, "<" = TLt,
-    ">" = TGt, "<=" = TLeq, ">=" = TGeq, "!" = TBang, "declbang" = TDeclBang, "," = TComma,
-    "." = TPeriod, ".." = TDoublePeriod, "..=" = TDoublePeriodEq, "::" = TColonColon,
-    ":" = TColon, ";" = TSemiColon, "(" = TLParen, ")" = TRParen, "{" = TLBrace, "}" = TRBrace,
-    "[" = TLBrack, "]" = TRBrack, "#" = THash, "|" = TBar, "<|" = TLPipe, "|>" = TRPipe,
-    "@" = TAt, "`" = TBacktick, "$" = TDollar, "mod" = TMod, "end" = TEnd, "use" = TUse,
-    "def" = TDef, "fun" = TFun, "let" = TLet, "in" = TIn, "match" = TMatch, "with" = TWith,
-    "if" = TIf, "then" = TThen, "else" = TElse, "data" = TData, "record" = TRecord,
-    "effect" = TEffect, "handle" = THandle, "type" = TType, "trait" = TTrait, "impl" = TImpl,
-    "where" = TWhere, "as" = TAs, "macro" = TMacro, "infix" = TInfix, "infixl" = TInfixl,
-    "infixr" = TInfixr, "error" = TError
+    "int" = Int _, "real" = Real _, "string" = Str _, "interp_start" = InterpStart _,
+    "interp_mid" = InterpMid _, "interp_end" = InterpEnd _, "char" = Char _,
+    "lower" = LowerIdent _, "upper" = UpperIdent _, "op" = OpIdent _, "conop" = ConOpIdent _,
+    ".*" as DotStar = OpIdent ".*", "<:" as Subtrait = OpIdent "<:", ":?" as DebugFmt = ConOpIdent ":?",
+    "_" = Wildcard, "\\" = Backslash, "<-" = LArrow, "->" = RArrow,
+    "=>" = FatArrow, "+" = Plus, "-" = Minus, "*" = Star, "/" = Slash, "%" = Percent,
+    "^" = Caret, "and" = And, "or" = Or, "=" = Eq, "==" = EqEq, "!=" = Neq, "<" = Lt,
+    ">" = Gt, "<=" = Leq, ">=" = Geq, "!" = Bang, "declbang" = DeclBang, "," = Comma,
+    "." = Period, ".." = DoublePeriod, "..=" = DoublePeriodEq, "::" = ColonColon,
+    ":" = Colon, ";" = SemiColon, "(" = LParen, ")" = RParen, "{" = LBrace, "}" = RBrace,
+    "[" = LBrack, "]" = RBrack, "#" = Hash, "|" = Bar, "<|" = LPipe, "|>" = RPipe,
+    "@" = At, "`" = Backtick, "$" = Dollar, "mod" = Mod, "end" = End, "use" = Use,
+    "def" = Def, "fun" = Fun, "let" = Let, "in" = In, "match" = Match, "with" = With,
+    "if" = If, "then" = Then, "else" = Else, "data" = Data, "record" = Record,
+    "effect" = Effect, "handle" = Handle, "type" = Type, "trait" = Trait, "impl" = Impl,
+    "where" = Where, "as" = As, "macro" = Macro, "infix" = Infix, "infixl" = Infixl,
+    "infixr" = Infixr, "error" = Error
+  }
+  context {
+    "line_lower" = LowerIdent _ ending DeclBang via Period,
+    "line_upper" = UpperIdent _ ending DeclBang via Period,
+    "mac_lower" = LowerIdent _ ending Bang via Period,
+    "mac_upper" = UpperIdent _ ending Bang via Period,
+    "pattern" = LowerIdent "pattern" before UpperIdent _,
+    "rec" = LowerIdent "rec" after Let before LowerIdent _
   }
   grammar {
     File = decls:Decl*
@@ -446,6 +222,9 @@ fun letAt (ts : [Lexed]) (j : Int) : Bool = match tokenAt ts j with | Just Let -
     OrTail = "or" operand:AndE
     AndE = first:Ops ands:AndTail*
     AndTail = "and" operand:Ops
+    -- Operators, as parsed: a chain, `a + b * c`, whose grouping waits for the
+    -- fixities of its operators. The fixity pass's language, `Grouped`, has
+    -- them grouped in its place (`Fixity`).
     Ops = first:Operand rest:InfixTail*
     InfixTail = op:InfixOp operand:Operand
     InfixOp = "op" | "<:" | "+" | "-" | "*" | "/" | "%" | "^" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "::"
@@ -461,7 +240,12 @@ fun letAt (ts : [Lexed]) (j : Int) : Bool = match tokenAt ts j with | Just Let -
     -- An argument. A bare constructor takes no fields: `A.x` is a qualified
     -- name, never `A`'s field `x`.
     Atom = mac:MacAtom | qual:QualAtom | con:"upper" | low:LowAtom
-    MacAtom = path:MacPath "!" arg:Group fields:FieldTail*
+    -- A macro call as an argument: its names are before a `!`, never a
+    -- line's `declbang`, so they are never a line's -- which lets an
+    -- expression's arguments stop where a line's macro call begins.
+    MacAtom = path:ArgPath "!" arg:Group fields:FieldTail*
+    ArgPath = segs:(ArgSeg ("." ArgSeg)*)
+    ArgSeg = "mac_lower" | "mac_upper"
     QualAtom = qual:"upper" "." name:("lower" | "upper") fields:FieldTail*
     -- A form that ends in an expression -- `let`, `if`, a lambda, `match`,
     -- `handle` -- takes no fields: that expression takes them first.

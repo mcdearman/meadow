@@ -1578,11 +1578,29 @@ impl Infer {
         // rather than to an unrelated fresh one.
         let mut seeds: Vec<Vec<(VarId, Type)>> = Vec::with_capacity(binds.len());
         for (bind, span, _) in binds {
+            // A function is seeded as the function it is -- a pure arrow for
+            // each parameter but the last, whose effect is its body's -- not as
+            // a bare variable. Otherwise a sibling applying it to fewer
+            // arguments than it takes, `map (f k) xs`, would guess that
+            // application might perform something and join that guess to its
+            // own effect -- and when `f` turned out to be pure until its last
+            // argument, the guess would close the caller's effect along with it.
+            let arity = match bind {
+                hir::Bind::Fun(_, params, _, _) => params.len(),
+                _ => 0,
+            };
             let seeded: Vec<(VarId, Type)> = bind
                 .bound_vars()
                 .into_iter()
                 .map(|vid| {
-                    let ty = self.arena.fresh();
+                    let ty = if arity > 0 {
+                        let params = (0..arity).map(|_| self.arena.fresh()).collect();
+                        let ret = self.arena.fresh();
+                        let eff = self.arena.fresh_effect();
+                        Type::func_eff(params, ret, eff)
+                    } else {
+                        self.arena.fresh()
+                    };
                     self.bind_mono(vid, &ty, *span);
                     self.seed_sig(vid, &ty);
                     (vid, ty)

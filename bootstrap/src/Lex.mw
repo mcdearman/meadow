@@ -233,6 +233,10 @@ fun joined (a : Lexing) (b : Lexing) : Lexing =
 
 -- --- lexing -------------------------------------------------------------------
 
+-- Every token of `input`, to `f` in turn with where it starts and ends, as a
+-- Scythe lexer's fold hands them: what `syntax!` reads a source with.
+@pub fun foldToken f acc (input : String) = Ok (V.foldl (\a (l : Lexed) -> f a l.token l.from l.to) acc (lex input).tokens)
+
 -- `input`'s tokens: `meadow-lexer`'s `tokenize`.
 @pub fun lex (input : String) : Lexing =
   match code input 0 False 0 nothing with

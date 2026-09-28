@@ -96,18 +96,22 @@ fun hasDrive p =
 
 -- Resolve `.` and `..` textually and collapse repeated separators. Purely
 -- lexical: it never looks at the disk, so it cannot follow symlinks, and
--- `normalize "a/../b"` is `"b"` even if `a` is a link somewhere else.
+-- `normalize "a/../b"` is `"b"` even if `a` is a link somewhere else. A path
+-- with a drive keeps it first, as it was: `C:\a\..\b` is `C:/b`, not
+-- `/C:/b`, which is nowhere.
 @pub fun normalize (p : String) : String =
   let abs = isAbsolute p in
   let parts = p |> components |> V.foldl (\acc c -> pushPart abs acc c) [] in
   let body = S.join separator parts in
-  if abs
-  then S.concat separator body
+  if hasDrive p then body
+  else if abs then S.concat separator body
   else if S.isEmpty body then "." else body
 
 fun pushPart abs acc c =
   if c == "." then acc
   else if c != ".." then V.pushBack acc c
+  -- Nothing is above a drive.
+  else if V.len acc == 1 and (match V.last acc with | Just d -> hasDrive d | None -> False) then acc
   else
     match V.last acc with
     | None if abs -> acc
@@ -214,3 +218,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 @test fun windowsSeparatorsAreAcceptedOnInput () =
   let a = assertEq (fileName r"a\b\c.txt") "c.txt" "backslash" in
   assertEq (normalize r"a\b") "a/b" "output is always forward slashes"
+
+@test fun aDriveStaysWhereItIs () =
+  let a = assertEq (normalize "C:\\Users\\me\\..\\you") "C:/Users/you" "the drive first, no separator before it" in
+  assertEq (normalize "C:/..") "C:" "nothing above a drive"

@@ -74,8 +74,10 @@ impl Cache {
         }
         let mut h = hasher();
         text(&mut h, &format!("{opts:?}"));
+        let dir = crate::artifacts::incremental_dir(root, opts.cfg.profile);
+        prune(&dir);
         Some(Cache {
-            dir: crate::artifacts::incremental_dir(root, opts.cfg.profile),
+            dir,
             tag: h.finish(),
         })
     }
@@ -101,6 +103,47 @@ impl Cache {
             .dir
             .join(format!("{}-{:016x}.mpk", package.name, self.tag));
         write(&path, package, fingerprint);
+    }
+}
+
+/// Remove from `dir` what an earlier build of the compiler wrote: a package or
+/// a macro's answers from before this binary existed was written by another
+/// one, and is never read again -- its fingerprint names that compiler (see
+/// [`compiler`]). A file is overwritten only by a build with the same options,
+/// so without this, the files of options no build asks for again -- a flag
+/// tried once, or options a newer compiler spells another way -- would stay
+/// for good. Once per directory per process.
+fn prune(dir: &Path) {
+    static DONE: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    {
+        let mut done = DONE.lock().unwrap_or_else(|p| p.into_inner());
+        if done.iter().any(|d| d == dir) {
+            return;
+        }
+        done.push(dir.to_path_buf());
+    }
+    let Some(built) = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .and_then(|m| m.modified())
+        .ok()
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ours = path
+            .extension()
+            .is_some_and(|e| e == "mpk" || e == "macros");
+        let older = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t < built);
+        if ours && older {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 

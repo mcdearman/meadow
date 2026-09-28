@@ -2163,7 +2163,8 @@ the only reason those need no `use` anywhere.
 A package's root module can do the same for its users, as a Rust crate root does
 with `pub use Ty::*`. After `@pub use MyLib.Shapes.Shape.*` in `MyLib`'s
 `Lib.mw`, a dependent writes `use MyLib (Square)` to bring in one constructor,
-or a bare `use MyLib` to bring in all of them.
+or a bare `use MyLib` to bring in all of them. A type re-exports the same way:
+after `@pub use MyLib.Shapes (Shape)`, a dependent writes `use MyLib (Shape)`.
 
 ### Visibility: `@pub`, `@pub(pkg)`, `@pub(super)`
 
@@ -2233,7 +2234,20 @@ prelude — which is exactly how you switch a file from `Vector` to `List`:
 `length` above is `List`'s, not the prelude's.
 
 Naming a trait in the list brings its methods too: `use Std.Macro (Reflect)`
-puts `toDatum` and `fromDatum` in scope, since a trait is named to be used.
+puts `toDatum` and `fromDatum` in scope, since a trait is named to be used. An
+effect brings its operations the same way: `use Std.Process (Process)` puts
+`spawn` in scope.
+
+A `use` is for the module it is written in. What one module brings, the
+next module of the package does not see: each says what it wants for itself.
+That goes for types as much as for values. Outside the module that declares
+it, a type is in scope only where a `use` names it (`use M (T)`, `use M.T`, or a
+bare `use M`), or the prelude re-exports it.
+
+A plain `use` stays private: it brings names into this module and gives
+nothing to anyone else. Only `@pub use` re-exports. A module's interface, and
+so a package's, is exactly what it exports with `@pub`, its declarations plus
+its `@pub use`s, and nothing it merely uses.
 
 ### Depending on another package
 
@@ -2248,21 +2262,24 @@ Util = { path = "../Util" }
 
 Then `use Util` for all of it, `use Util (double)` for one name, or
 `use Util as U` to keep it behind a qualifier. Only `@pub` names cross the
-boundary.
+boundary, and nothing crosses without a `use`: a dependency puts no name in
+scope by being listed in `Meadow.toml`, and every module that wants one of its
+names says so with its own `use`. Nothing is inherited either: a name that
+`Util` itself `use`s from another package is not `Util`'s to give, unless
+`Util` re-exports it with `@pub use`.
 
-A dependency's types can be named without a `use`, and each package's types
-are its own. If `Shapes` and `Figures` both declare a `Shape`, they are two
-types: a value of one is not a value of the other, and a program may use both.
-A type mismatch between them says which package each one comes from:
+Each package's types are its own. If `Shapes` and `Figures` both declare a
+`Shape`, they are two types: a value of one is not a value of the other, and a
+program may use both. A type mismatch between them says which package each one
+comes from:
 
 ```
 type mismatch: `Shape` (from `Shapes@0.1.0`) vs `Shape` (from `Figures@0.1.0`)
 ```
 
-Written bare, such a name could be either one, so it is an error until a `use`
-picks one: `use Shapes (Shape)`. A type your own package declares needs no
-`use`: it shadows any other type of the same name, including one from the
-prelude, so a program may declare its own `Parser`.
+Which `Shape` a module means is the one it `use`s: `use Shapes (Shape)`. A type
+your own module declares needs no `use`: it shadows any other type of the same
+name, including one from the prelude, so a program may declare its own `Parser`.
 
 ### Depending on a released package
 
@@ -2483,6 +2500,11 @@ reported on every build. `meadow run` and `meadow test` keep separate copies,
 since `@cfg(test)` makes them different builds. Deleting `target` starts again
 from nothing, and `MEADOW_INCREMENTAL=0` turns reuse off for a command without
 deleting anything.
+
+`target` holds only what the current compiler can use. What an older build of
+the compiler saved is never read again, so a build removes it. A native build
+removes the LLVM IR it compiled once the executable is linked, and the objects
+of an earlier build that this one no longer has.
 
 ### Embedding a file: `includeStr`
 

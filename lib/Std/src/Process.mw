@@ -15,6 +15,8 @@
 
 use Std.Collections.Vector as V
 use Std.Maybe.Maybe.*
+use Std.Result (Result)
+use Std.Collections.Vector (Vector)
 
 @pub effect Process {
   -- Run to completion, capturing stdout/stderr.

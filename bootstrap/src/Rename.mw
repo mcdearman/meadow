@@ -1,0 +1,341 @@
+-- Rename: every name a unit writes, made the binder it means -- as
+-- `meadow-rename` resolves it.
+--
+-- `Hir` is `Ast` with its names resolved. Where a name is used, or a type or a
+-- constructor named, there is a `Ref`: where it was written, and the id of
+-- what it means -- an entry of the binders' side table (`Lingua.Table`), what
+-- it is called, what it is, where it was declared, and every place it is
+-- used. The table is the unit's: a binder a module declares is one entry
+-- however many modules use it, and so is one a dependency exports.
+--
+-- Which binder a bare name means depends on where it is, in three layers, as
+-- in the Rust resolver: a local binding shadows everything; below that, the
+-- module's own top-level names and what its `use`s brought, the first of them
+-- that has the name; below that, the base every module shares -- the
+-- primitives, then the prelude, the last of them that has it.
+
+use Lingua (lang!, pass!)
+use Lingua.Lang (Meta, spanMeta, metaStart, metaEnd)
+use Lingua.Table (Table, enter, entry, amend, tabled)
+use MeadowBoot.Ast
+use MeadowBoot.Ast (Ast!)
+use Std.Collections.Vector as V
+use Std.Collections.List as L
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Sort (sortOn)
+
+@pub(pkg) lang! {
+  pub Hir extends Ast
+  Ref + Ref { id : Int }
+
+  Expr - Var
+  Expr + Var { ref : Ref }
+  Expr - Qual
+  Expr - Neg
+  Expr - AndE
+  Expr - OrE
+  Expr - Interp
+  Expr - Cons
+  Expr + Cons { ref : Ref, args : [Expr] }
+
+  Pat - PVar
+  Pat + PVar { id : Int }
+  Pat - PAs
+  Pat + PAs { id : Int, pat : Pat }
+  Pat - PCons
+  Pat + PCons { ref : Ref, args : [Pat] }
+  Pat - PQualCons
+
+  Type - TCon
+  Type + TCon { ref : Ref, args : [Type] }
+
+  Bind - FunBind
+  Bind + FunBind { id : Int, params : [Pat], ret : Maybe Type, body : Expr }
+}
+
+-- --- binders -------------------------------------------------------------------------
+
+-- A binder: what it is called, what it is -- a value `v`, a type `t` or a
+-- constructor `c` -- where it was declared, `file@offset` (`-` for what no
+-- module declares: a primitive, a built-in type), and each use: its file and
+-- the bytes it spans.
+@derive(Debug, PartialEq)
+@pub record Binder = { name : String, kind : String, site : String, uses : [(String, Int, Int)] }
+
+@pub fun declareBinder (name : String) (kind : String) (site : String) : Int ! { Table Binder | e } =
+  enter (Binder { name = name, kind = kind, site = site, uses = [] })
+
+-- A use of binder `id` in `file`, spanning `m`.
+@pub fun useOf (file : String) (id : Int) (m : Meta) : () ! { Table Binder | e } =
+  amend id (\(b : Binder) -> { b | uses = V.pushBack b.uses (file, metaStart m, metaEnd m) })
+
+-- --- scopes --------------------------------------------------------------------------
+
+-- What a module sees, below its locals: its file as a dump names it; its own
+-- top-level values, which a top-level binding of that name is; the module
+-- layer and the base; the modules it named with `as`; and the types and
+-- constructors it may write bare, and every constructor of every type it
+-- knows, which `T.C` reaches.
+@pub record Scope = {
+  file : String,
+  top : HashMap String Int,
+  values : HashMap String [Int],
+  base : HashMap String Int,
+  quals : HashMap String (HashMap String Int),
+  types : HashMap String Int,
+  ctors : HashMap String Int,
+  typeCtors : HashMap Int (HashMap String Int),
+  unknown : Int,
+  builtinType : Int,
+  builtinCtor : Int,
+  bools : HashMap String Int,
+  traitAssocs : HashMap Int (HashMap String Int)
+}
+
+-- The context `rename` carries down: the module's scope, what is bound
+-- locally -- nearest first -- whether a binding here is at the top level,
+-- and, in an `impl`, its trait's associated types.
+-- And whether a binding here is a method -- an `impl`'s, or a trait's
+-- default -- whose name its own body does not see: there, the name is the
+-- trait's method.
+@pub record Env = { scope : Scope, locals : [(String, Int);], top : Bool, assocs : HashMap String Int, method : Bool }
+
+@pub fun envOf (s : Scope) : Env = Env { scope = s, locals = [;], top = True, assocs = H.empty, method = False }
+
+fun nested (env : Env) : Env = { env | top = False, method = False }
+
+fun asMethods (env : Env) : Env = { env | top = False, method = True }
+
+fun bindLocal (env : Env) (name : String) (id : Int) : Env = { env | locals = (name, id) :: env.locals }
+
+fun bindAll (env : Env) (bs : [(String, Int)]) : Env = V.foldl (\e x -> bindLocal e (fst x) (snd x)) env bs
+
+-- The value `name` means here: or, for an operator nothing here defines --
+-- in a module of the standard library before the one that does -- the
+-- primitive it falls back on.
+fun valueOf (env : Env) (name : String) : Int =
+  match L.lookupAssoc name env.locals with
+  | Just id -> id
+  | None ->
+      (match H.lookup name env.scope.values with
+       | Just ids -> V.getOr env.scope.unknown ids 0
+       | None ->
+           (match H.lookup name env.scope.base with
+            | Just id -> id
+            | None ->
+                (match V.find (\o -> fst o == name) operatorPrims with
+                 | Just (_, prim) -> M.unwrapOr env.scope.unknown (H.lookup prim env.scope.base)
+                 | None -> env.scope.unknown)))
+
+-- The operators the language knows, each with the primitive it means where
+-- nothing else of its name is in scope (`meadow_hir::OPERATORS`).
+def operatorPrims : [(String, String)] =
+  [ ("^", "_primPow"), ("*", "_primMul"), ("/", "_primDiv"), ("%", "_primMod"), ("*.", "_primMulF"), ("/.", "_primDivF"),
+    ("+", "_primAdd"), ("-", "_primSub"), ("+.", "_primAddF"), ("-.", "_primSubF"), ("<<", "_primShl"), (">>", "_primShr"),
+    (">>>", "_primUshr"), ("==", "_primEq"), ("!=", "_primNe"), ("<", "_primLt"), (">", "_primGt"), ("<=", "_primLe"),
+    (">=", "_primGe"), ("<.", "_primLtF"), (">.", "_primGtF"), ("<=.", "_primLeF"), (">=.", "_primGeF") ]
+
+-- The value `name` means in the base alone: what an interpolated string
+-- renders with, whatever the module calls `display` itself.
+fun baseValue (env : Env) (name : String) : Int = M.unwrapOr env.scope.unknown (H.lookup name env.scope.base)
+
+-- A type no module declares is one of the language's own: `Int`, `Array`.
+fun typeOf (env : Env) (name : String) : Int = M.unwrapOr env.scope.builtinType (H.lookup name env.scope.types)
+
+fun ctorOf (env : Env) (name : String) : Int = M.unwrapOr env.scope.builtinCtor (H.lookup name env.scope.ctors)
+
+-- `ty`'s constructor `name`, if `ty` is a type this module can name.
+fun typeCtor (env : Env) (ty : String) (name : String) : Maybe (Int, Int) =
+  match H.lookup ty env.scope.types with
+  | Just t -> M.map (\c -> (t, c)) (M.andThen (H.lookup name) (H.lookup t env.scope.typeCtors))
+  | None -> None
+
+-- --- the pass ------------------------------------------------------------------------
+
+pass! {
+  pub rename : Ast -> Hir with env
+    | Var { name } -> Var { ref = refTo out env (valueOf env (textOf out name)) (nameMeta out name) }
+    | Qual { qual, name } -> qualified out env here qual name []
+    | App { func, args } -> applied out here func args
+    | Cons { name, args } -> Cons { ref = refTo out env (ctorOf env (textOf out name)) (nameMeta out name), args = args }
+    | Neg { op, operand } -> App { func = newHirVar out (nameMeta out op) (refTo out env (valueOf env "neg") (nameMeta out op)), args = [operand] }
+    | AndE { op, lhs, rhs } -> If { cond = lhs, yes = rhs, no = boolCon out env "False" (nameMeta out op) }
+    | OrE { op, lhs, rhs } -> If { cond = lhs, yes = boolCon out env "True" (nameMeta out op), no = rhs }
+    | Interp { texts, holes } -> interpolated out env here texts holes
+    | Lam { later params, later body } ->
+        (let ps = V.map (\p -> p (nested env)) params in
+          Lam { params = ps, body = body (bindAll (nested env) (V.concatMap (patBinders out) ps)) })
+    | Let { later binds, later body } ->
+        (let done = V.foldl (\acc b -> (let bound = b (fst acc) in (bindAll (fst acc) (bindBinders out bound), V.pushBack (snd acc) bound))) (nested env, []) binds in
+          Let { binds = snd done, body = body (fst done) })
+    | Arm { later pat, later guard, later body } ->
+        (let p = pat (nested env) in
+          let inner = bindAll (nested env) (patBinders out p) in
+          Arm { pat = p, guard = M.map (\g -> g inner) guard, body = body inner })
+    | HArm { op, later param, resume, later body } ->
+        (let p = param (nested env) in
+          let k = declareBinder (textOf out resume) "v" (siteOf env (nameMeta out resume)) in
+          let inner = bindLocal (bindAll (nested env) (patBinders out p)) (textOf out resume) k in
+          HArm { op = op, param = p, resume = resume, body = body inner })
+    | Ret { later pat, later body } ->
+        (let p = pat (nested env) in
+          Ret { pat = p, body = body (bindAll (nested env) (patBinders out p)) })
+    | PatBind { later pat, later value } ->
+        (let v = value (nested env) in
+          PatBind { pat = pat env, value = v })
+    | FunBind { name, later params, later ret, later body } ->
+        (let n = textOf out name in
+          let id = funId env n (nameMeta out name) in
+          let inner = if env.method then nested env else bindLocal (nested env) n id in
+          let ps = V.map (\p -> p inner) params in
+          let within = bindAll inner (V.concatMap (patBinders out) ps) in
+          FunBind { id = id, params = ps, ret = M.map (\r -> r within) ret, body = body within })
+    | PVar { name } -> PVar { id = patVar out env name }
+    | PAs { name, pat } -> PAs { id = patVar out env name, pat = pat }
+    | PCons { name, args } -> PCons { ref = refTo out env (ctorOf env (textOf out name)) (nameMeta out name), args = args }
+    | PQualCons { qual, name, args } -> PCons { ref = qualifiedCtor out env qual name, args = args }
+    | TCon { name, args } -> TCon { ref = refTo out env (typeOf env (textOf out name)) (nameMeta out name), args = args }
+    | SigDecl { name, ty, bounds } -> (let u = mention env (valueOf env (textOf out name)) (nameMeta out name) in SigDecl { name = name, ty = ty, bounds = bounds })
+    | DataDecl { name, params, variants } ->
+        (let t = typeOf env (textOf out name) in
+          let u = mention env t (nameMeta out name) in
+          let own = M.unwrapOr H.empty (H.lookup t env.scope.typeCtors) in
+          let w = V.foldl (\acc v -> (let n = hirVariantNameIn out v in mention env (M.unwrapOr env.scope.builtinCtor (H.lookup (textOf out n) own)) (nameMeta out n))) () variants in
+          DataDecl { name = name, params = params, variants = variants })
+    | RecordDecl { name, params, fields } -> (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in RecordDecl { name = name, params = params, fields = fields })
+    | EffectDecl { name, params, ops } -> (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in EffectDecl { name = name, params = params, ops = ops })
+    | AliasDecl { name, params, ty } -> (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in AliasDecl { name = name, params = params, ty = ty })
+    | Bound { tr, tys } -> (let u = mention env (typeOf env (textOf out tr)) (nameMeta out tr) in Bound { tr = tr, tys = tys })
+    | TraitDecl { name, params, supers, assocs, sigs, later defaults } ->
+        (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in
+          let w = V.foldl (\acc a -> (let n = hirAssocNameIn out a in mention env (typeOf env (textOf out n)) (nameMeta out n))) () assocs in
+          TraitDecl { name = name, params = params, supers = supers, assocs = assocs, sigs = sigs, defaults = V.map (\d -> d (asMethods env)) defaults })
+    | ImplDecl { tr, tys, context, later assocs, later methods } ->
+        (let t = typeOf env (textOf out tr) in
+          let u = mention env t (nameMeta out tr) in
+          let inImpl = { env | assocs = M.unwrapOr H.empty (H.lookup t env.scope.traitAssocs) } in
+          ImplDecl { tr = tr, tys = tys, context = context, assocs = V.map (\a -> a inImpl) assocs, methods = V.map (\m -> m (asMethods env)) methods })
+    | AssocDef { name, later args, ty } ->
+        (let n = textOf out name in
+          let u = mention env (M.unwrapOr (typeOf env n) (H.lookup n env.assocs)) (nameMeta out name) in
+          AssocDef { name = name, args = [], ty = ty })
+}
+
+fun textOf out (n : HirName) = hirNameTextIn out n
+
+fun nameMeta out (n : HirName) = metaHirNameIn out n
+
+fun siteOf (env : Env) (m : Meta) : String = "${env.scope.file}@${show (metaStart m)}"
+
+-- A use of binder `id` at `m`, recorded.
+fun mention (env : Env) (id : Int) (m : Meta) : () ! { Table Binder | e } = useOf env.scope.file id m
+
+-- A use of binder `id` at `m`: recorded, and written.
+fun refTo out (env : Env) (id : Int) (m : Meta) =
+  let u = mention env id m in
+  newHirRef out m id
+
+-- The binder a binding of `n` at the top level is -- the one its module
+-- declared -- or, anywhere else, a new one.
+fun funId (env : Env) (n : String) (m : Meta) : Int ! { Table Binder | e } =
+  match (if env.top then H.lookup n env.scope.top else None) with
+  | Just id -> id
+  | None -> declareBinder n "v" (siteOf env m)
+
+-- A name a pattern binds: the top level's own, or a new binder.
+fun patVar out (env : Env) (name : HirName) : Int ! { Table Binder | e } = funId env (textOf out name) (nameMeta out name)
+
+-- `Bool`'s constructor `c`, spanning `m`: what `and` and `or` are made of.
+fun boolCon out (env : Env) (c : String) (m : Meta) =
+  let id = M.unwrapOr env.scope.builtinCtor (H.lookup c env.scope.bools) in
+  newHirCons out m (refTo out env id m) []
+
+-- `M.x`, `T.C`: a constructor of the type `T` if there is one -- the
+-- qualifier then a use of the type -- and otherwise what the module `use`d
+-- as `M` exports.
+fun qualified out (env : Env) (m : Meta) (qual : HirName) (name : HirName) (args : [Int]) =
+  let n = textOf out name in
+  if isUpper n then newHirCons out m (qualifiedCtor out env qual name) args
+  else
+    let id = M.unwrapOr env.scope.unknown (M.andThen (H.lookup n) (H.lookup (textOf out qual) env.scope.quals)) in
+    let v = newHirVar out m (refTo out env id (nameMeta out name)) in
+    if V.isEmpty args then v else newHirApp out m v args
+
+fun qualifiedCtor out (env : Env) (qual : HirName) (name : HirName) =
+  match typeCtor env (textOf out qual) (textOf out name) with
+  | Just (t, c) -> (let u = mention env t (nameMeta out qual) in refTo out env c (nameMeta out name))
+  | None -> refTo out env (ctorOf env (textOf out name)) (nameMeta out name)
+
+-- `T.C a b`: the constructor applied, rather than a call of it.
+fun applied out (m : Meta) (func : Int) (args : [Int]) =
+  if kindHirExprIn out func == HirExprKind.Cons and V.isEmpty (hirConsArgsIn out func) then newHirCons out m (hirConsRefIn out func) args
+  else newHirApp out m func args
+
+-- `"a ${x} b"`: `concatStrings #["a ", display x, " b"]` -- `display` and
+-- `debug` as the base has them, each call spanning its hole.
+fun interpolated out (env : Env) (m : Meta) (texts : [String]) (holes : [Int]) =
+  let render = \h ->
+    (let e = hirHoleExprIn out h in
+      let hm = metaHirExprIn out e in
+      let f = (if hirHoleDebugIn out h then baseOr env "debug" "show" else baseOr env "display" "display") in
+      newHirApp out hm (newHirVar out hm (refTo out env f hm)) [e]) in
+    let parts =
+      V.concatMap
+      (\i ->
+        let t = V.getOr "" texts i in
+        V.append
+          (if S.isEmpty t then [] else [newHirLitE out m (newHirLitString out m t)])
+          (match V.get holes i with | Just h -> [render h] | None -> []))
+      (V.range 0 (V.len texts)) in
+      newHirApp out m (newHirVar out m (refTo out env (baseValue env "concatStrings") m)) [newHirArrayE out m parts]
+
+fun baseOr (env : Env) (name : String) (prim : String) : Int =
+  match H.lookup name env.scope.base with
+  | Just id -> id
+  | None -> baseValue env prim
+
+fun isUpper (s : String) : Bool = not (S.isEmpty s) and S.toUpper (stringSlice s 0 1) == stringSlice s 0 1 and S.toLower (stringSlice s 0 1) != stringSlice s 0 1
+
+-- What a pattern binds, read back from what was written: each name with its
+-- binder.
+fun patBinders out (p : Int) : [(String, Int)] ! { Table Binder | e } =
+  let k = kindHirPatIn out p in
+  if k == HirPatKind.PVar then named (hirPVarIdIn out p)
+  else if k == HirPatKind.PAs then V.append (named (hirPAsIdIn out p)) (patBinders out (hirPAsPatIn out p))
+  else if k == HirPatKind.PAnn then patBinders out (hirPAnnPatIn out p)
+  else if k == HirPatKind.PCons then V.concatMap (patBinders out) (hirPConsArgsIn out p)
+  else if k == HirPatKind.PTuple then V.concatMap (patBinders out) (hirPTupleItemsIn out p)
+  else if k == HirPatKind.PArray then V.concatMap (patBinders out) (hirPArrayItemsIn out p)
+  else if k == HirPatKind.PVector then V.concatMap (patBinders out) (hirPVectorItemsIn out p)
+  else if k == HirPatKind.PList then V.concatMap (patBinders out) (hirPListItemsIn out p)
+  else if k == HirPatKind.PRecord then V.concatMap (\f -> patBinders out (hirPFieldPatIn out f)) (hirPRecordFieldsIn out p)
+  else if k == HirPatKind.PView then patBinders out (hirPViewPatIn out p)
+  else []
+
+fun named (id : Int) : [(String, Int)] ! { Table Binder | e } =
+  match entry id with
+  | Just (b : Binder) -> [(b.name, id)]
+  | None -> []
+
+-- What a `let`'s binding binds: a function its name, a pattern what it does.
+fun bindBinders out (b : Int) : [(String, Int)] ! { Table Binder | e } =
+  if kindHirBindIn out b == HirBindKind.FunBind then named (hirFunBindIdIn out b)
+  else patBinders out (hirPatBindPatIn out b)
+
+-- --- what was named where -------------------------------------------------------------
+
+-- Every use of every binder, a line each under the file it is in -- `from to
+-- kind declared` -- sorted, as the rename test compares them.
+@pub fun mentionsOf (binders : [Binder]) : HashMap String [String] =
+  let lines =
+    V.concatMap
+      (\(b : Binder) -> V.map (\u -> match u with | (file, from, to) -> (file, (from, to, "${show from} ${show to} ${b.kind} ${b.site}"))) b.uses)
+      binders in
+    let grouped = V.foldl (\h x -> H.insert (fst x) (V.pushBack (M.unwrapOr [] (H.lookup (fst x) h)) (snd x)) h) H.empty lines in
+    H.fromVec (V.map (\kv -> (fst kv, dedup (V.map (\x -> match x with | (_, _, l) -> l) (sortOn (\x -> x) (snd kv))))) (H.toVec grouped))
+
+fun dedup (xs : [String]) : [String] = V.foldl (\acc x -> if V.getOr "" acc (V.len acc - 1) == x and not (V.isEmpty acc) then acc else V.pushBack acc x) [] xs

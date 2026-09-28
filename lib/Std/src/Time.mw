@@ -322,6 +322,7 @@ fun groupDigits (n : Int) =
 
 use Std.Test (assertEq, assertTrue)
 use Std.Maybe.Maybe.*
+use Std.Console (Console)
 
 @test fun theUnitsConvert () =
   let a = assertEq (seconds 1) 1000 "seconds" in

@@ -381,6 +381,7 @@ fun ok p text = P.runParser (P.thenSkip p P.eof) text
 
 -- An outline of names, one per line, children indented under their parent.
 use Outline.*
+use Std.String.Parse (Stream)
 @derive(Debug)
 data Outline = Node String [Outline]
 

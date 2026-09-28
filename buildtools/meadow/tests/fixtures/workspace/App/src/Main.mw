@@ -1,4 +1,7 @@
--- `app` depends on `util` and (implicitly) on `Std`.
+-- `app` depends on `util` and (implicitly) on `Std`. A dependency's names are
+-- in scope only where a `use` brings them.
+
+use Util (double, scale)
 
 def nums = range 1 6
 

@@ -1,0 +1,166 @@
+-- Compiler: MeadowBoot's passes as queries (`database!`), inside units built
+-- by Lingua's build (`make!`).
+--
+-- A unit -- a package (`Unit`) -- is compiled against the interfaces of the
+-- units it depends on: what each tells the units after it. Inside one, each
+-- step is a query, worked out when asked and remembered, and asked again only
+-- when something it read has changed: a file's text is an input, its tree
+-- (`parsed`) a query of it, the unit's fixities (`fixities`) a query of every
+-- tree and the imported interfaces, a file grouped by them (`grouped`) a
+-- query of both, and the unit's names resolved (`renamed`) a query of every
+-- grouped file and what the units before it export.
+
+use Lingua (database!, make!)
+use Lingua.Make (Given, unitSources, unitImports, unitOut, unitDir)
+use Lingua.Green (Green)
+use Lingua.Red as R
+use Lingua.Diagnostic (Diagnostic, collect, renderAll)
+use MeadowBoot.Syntax
+use MeadowBoot.Parse (checkedTree)
+use MeadowBoot.Fixity (Fixity, Grouped, declare, grouped)
+use MeadowBoot.Unit (dependenciesOf, unitFilesOf, manifestOf, packageName)
+use MeadowBoot.Lower (lowered)
+use MeadowBoot.Rename (mentionsOf)
+use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
+use Std.Macro (Reflect)
+use Std.Exn (toResult)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Path as Path
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+-- What a unit tells the units that depend on it: every fixity it knows --
+-- its own, and its dependencies', since a fixity is not scoped -- its
+-- package's name, what it exports, and whether it says what it exports: a
+-- unit whose declarations never mention visibility exports everything.
+@derive(Reflect, Debug, PartialEq)
+@pub record Interface = { fixities : [Declared], package : String, exports : [Export], anyVis : Bool }
+
+-- An operator, and how it binds.
+@derive(Reflect, Debug, PartialEq)
+@pub data Declared = Declared String Fixity
+
+database! {
+  pub Compiler
+    | input source (file : String) : String
+    | input files (unit : Int) : [String]
+    | input imported (unit : Int) : [Interface]
+    | input home (unit : Int) : String
+    | query parsed (file : String) : Result [(Int, String)] (Green Surface) = checkedTree (querySource file)
+    | query fixities (unit : Int) : [Declared] = declaredOf (queryImported unit) (V.concatMap (\f -> match queryParsed f with | Ok g -> [g] | Err _ -> []) (modulesOf (queryFiles unit)))
+    | query grouped (file : String) : Maybe (Green Grouped, [Diagnostic]) = groupedOf (queryFixities 0) (queryParsed file)
+    | query renamed (unit : Int) : ([(String, [String])], [Export], Bool) = renamedOf (queryHome unit) (queryImported unit) (V.map (\f -> (f, querySource f, queryGrouped f)) (queryFiles unit))
+}
+
+-- The files of a unit that are its modules: all but its manifest.
+fun modulesOf (files : [String]) : [String] = V.filter (\f -> S.endsWith ".mw" f) files
+
+-- The fixities the unit's trees declare, over those it imported.
+fun declaredOf (imported : [Interface]) (trees : [Green Surface]) : [Declared] =
+  let known = V.foldl (\m (i : Interface) -> V.foldl (\n d -> match d with | Declared.Declared op f -> (if M.isSome (H.lookup op n) then n else H.insert op f n)) m i.fixities) H.empty imported in
+  let table = fst (collect (\() -> declare known (V.map R.root trees))) in
+  V.map (\kv -> Declared.Declared (fst kv) (snd kv)) (H.toVec table)
+
+fun tableOf (ds : [Declared]) : HashMap String Fixity = V.foldl (\m d -> match d with | Declared.Declared op f -> H.insert op f m) H.empty ds
+
+fun groupedOf (ds : [Declared]) (parsed : Result [(Int, String)] (Green Surface)) : Maybe (Green Grouped, [Diagnostic]) =
+  match parsed with
+  | Ok g -> Just (grouped (tableOf ds) (R.root g))
+  | Err _ -> None
+
+-- The unit at `dir` renamed: each module's names, as the rename test
+-- compares them, by its path; what the unit exports; and whether it says.
+fun renamedOf (dir : String) (imported : [Interface]) (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) : ([(String, [String])], [Export], Bool) =
+  let manifest = V.find (\x -> match x with | (p, _, _) -> not (S.endsWith ".mw" p)) files in
+  let pkg = (match manifest with | Just (_, text, _) -> packageName text | None -> "") in
+  let isStd = pkg == "Std" in
+  let src = Path.join dir "src" in
+  let sources =
+    V.concatMap
+      (\x ->
+        match x with
+        | (path, text, Just (g, _)) -> [(path, Source { path = modulePath isStd src path, file = "${pkg}/${relativeTo dir path}", ast = lowered text g })]
+        | _ -> [])
+      files in
+    let deps = V.map (\(i : Interface) -> DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis }) imported in
+    let r = renameUnit pkg isStd (V.map snd sources) deps in
+    let mentions = mentionsOf r.binders in
+    (V.map (\x -> (fst x, M.unwrapOr [] (H.lookup (fileOf (snd x)) mentions))) sources, r.exports, r.anyVis)
+
+fun fileOf (s : Source) : String = s.file
+
+-- `path` from `dir`, `/`-separated.
+fun relativeTo (dir : String) (path : String) : String =
+  let d = Path.normalize dir in
+  let p = Path.normalize path in
+  if S.startsWith (d ++ "/") p then S.drop p (stringByteLength d + 1) else p
+
+-- Where the module at `path` is in its unit: its path from `src`, each
+-- directory and the file's name. `Main.mw` and `Lib.mw` are the root; in the
+-- standard library `Prelude.mw` is too.
+fun modulePath (isStd : Bool) (src : String) (path : String) : [String] =
+  let rel = relativeTo src path in
+  let segs = S.split "/" (if S.endsWith ".mw" rel then stringSlice rel 0 (stringByteLength rel - 3) else rel) in
+  if segs == ["Main"] or segs == ["Lib"] or (isStd and segs == ["Prelude"]) then [] else segs
+
+-- A database for unit `u`: its files' texts, where it is, and what it
+-- imports, set.
+@pub fun unitDatabase (u : Given Interface) =
+  let db = newCompiler () in
+  let sources = unitSources u in
+  let a = setCompilerFiles db 0 (V.map fst sources) in
+  let b = setCompilerImported db 0 (V.map snd (unitImports u)) in
+  let h = setCompilerHome db 0 (unitDir u) in
+  let c = V.foldl (\acc s -> setCompilerSource db (fst s) (snd s)) () sources in
+  db
+
+-- --- the build --------------------------------------------------------------------------
+
+make! {
+  pub Units "meadow"
+    | sources = ".mw"
+    | manifest = "Meadow.toml"
+    | dependencies = dependenciesOf
+    | files = unitFilesOf
+    | compile = compileUnit
+}
+
+-- Compile unit `u`: every file parsed and grouped by the unit's fixities, and
+-- its interface -- or what is wrong, drawn.
+fun compileUnit (u : Given Interface) =
+  match toResult (\() -> compiling u) with
+  | Ok r -> r
+  | Err why -> Err "${show why}\n"
+
+fun compiling (u : Given Interface) =
+  let db = unitDatabase u in
+  let sources = V.filter (\s -> S.endsWith ".mw" (fst s)) (unitSources u) in
+  let files = V.map fst sources in
+  let parsed = compilerParsedEach db files in
+  let failed =
+    V.concatMap
+      (\i ->
+        match (V.get sources i, V.get parsed i) with
+        | (Just (path, _), Just (Err errs)) -> ["${path}: ${S.join "; " (V.map (\e -> "${snd e} at byte ${show (fst e)}") errs)}\n"]
+        | _ -> [])
+      (V.range 0 (V.len sources)) in
+    if not (V.isEmpty failed) then Err (S.join "" failed)
+    else
+      let groups = compilerGroupedEach db files in
+      let wrong =
+        V.concatMap
+        (\i ->
+          match (V.get sources i, V.get groups i) with
+          | (Just (path, text), Just (Just (_, ds))) -> (if V.isEmpty ds then [] else [renderAll path text ds])
+          | _ -> [])
+        (V.range 0 (V.len sources)) in
+        if not (V.isEmpty wrong) then Err (S.join "" wrong)
+        else
+          match compilerRenamed db 0 with
+          | (_, exports, anyVis) ->
+              let manifest = M.unwrapOr "" (M.map snd (V.find (\s -> not (S.endsWith ".mw" (fst s))) (unitSources u))) in
+              Ok (Interface { fixities = compilerFixities db 0, package = packageName manifest, exports = exports, anyVis = anyVis })

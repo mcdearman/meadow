@@ -138,6 +138,35 @@ fn build_inner(
     }
 }
 
+/// Every package a build of `entry` compiles, left unlinked: what a tool that
+/// reads what the compiler made of each one wants -- MeadowBoot's differential
+/// tests, say. Compiled afresh, with no cache read or written.
+pub struct CompiledGraph {
+    /// The standard library's modules, each a package of its own.
+    pub std: Vec<CompiledPackage>,
+    /// The graph's packages, each with its root directory; `None` where one
+    /// could not be compiled because something it depends on was not.
+    pub packages: Vec<(std::path::PathBuf, Option<CompiledPackage>)>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Compile the package at `entry` and everything it depends on -- see
+/// [`CompiledGraph`] -- or say why its graph could not be found.
+pub fn compile_packages(entry: &Path, opts: Options) -> Result<CompiledGraph, Diagnostic> {
+    let graph = discover(&[entry])?;
+    let compiled = compile_graph(&graph, opts, None);
+    Ok(CompiledGraph {
+        std: compiled.std,
+        packages: graph
+            .packages
+            .iter()
+            .map(|p| p.root.clone())
+            .zip(compiled.packages)
+            .collect(),
+        diagnostics: compiled.diagnostics,
+    })
+}
+
 /// Where a build whose `target` is `package`'s keeps compiled packages for
 /// the next one: none for a lone file, which has no `target`.
 fn cache_for(
@@ -506,9 +535,11 @@ fn compile_package(
         }
     }
 
-    let (cp, unit_diags) = meadow_compiler::compile_unit_with_procs(
+    let (mut cp, unit_diags) = meadow_compiler::compile_unit_with_procs(
         pkg.name, ident, pkg.name, pkg.id, modules, deps, opts, floor, procs,
     );
+    // A package: a dependent names its values with `use`.
+    cp.package = true;
     diags.extend(unit_diags);
     (cp, diags)
 }

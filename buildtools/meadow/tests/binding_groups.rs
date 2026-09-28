@@ -105,6 +105,23 @@ fun isOdd n = if n == 0 then False else isEven (n - 1)
 }
 
 #[test]
+fn a_sibling_applied_to_fewer_arguments_than_it_takes_keeps_its_effects() {
+    // `b k` is `b` partly applied: pure until its last argument. Guessing it
+    // might perform something, and joining the guess to `a`'s effect, closed
+    // `a`'s effect -- `Tick` and all -- once `b` was seen to be pure there.
+    let src = "\
+effect Tick { tick : () -> () }
+fun a (k : Int) (x : Int) = if x > 0 then V.concatMap (b k) [x - 1] else (let u = tick () in [x])
+fun b (k : Int) (x : Int) = a k x
+def main = handle a 1 3 with { tick u r -> r (), return v -> V.len v }
+";
+    assert_eq!(
+        eval_main_std(&format!("use Std.Collections.Vector as V\n{src}")),
+        "1"
+    );
+}
+
+#[test]
 fn mutual_recursion_is_checked_across_the_group() {
     // `ping` says its argument is an `Int`; `pong` passes it a `String`. Both are
     // monomorphic while the group is solved, so the two meet.

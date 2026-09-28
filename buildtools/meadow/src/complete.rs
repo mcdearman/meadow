@@ -223,11 +223,12 @@ pub fn peel_use(decl: &ast::LDecl) -> Option<&ast::UseDecl> {
 pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
     let mut n = Names::default();
 
-    // Values: mirrors `compile_unit`'s flat-import rule — a package with no
-    // `prelude_exports` contributes everything (REPL lines), one with a list
-    // contributes just that list.
+    // Values: mirrors `compile_unit`'s flat-import rule — a package's values
+    // are named with `use`, a REPL line (no `prelude_exports`) contributes
+    // everything, and one with a list contributes just that list.
     for pkg in prefix {
         let visible: Vec<&meadow_compiler::Export> = match &pkg.prelude_exports {
+            None if pkg.package => Vec::new(),
             None => pkg.exports.iter().collect(),
             Some(flat) => pkg
                 .exports

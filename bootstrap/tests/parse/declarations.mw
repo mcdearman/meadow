@@ -68,3 +68,8 @@ fun ctx : (Show a, Eq a) => a -> String
   | ctx x = show x
 
 fun one : Show a => a -> String
+
+-- A line's macro call right after an expression: not one of its arguments.
+def beforeAMacro = f 1
+
+after! { a }

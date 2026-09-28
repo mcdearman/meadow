@@ -74,7 +74,11 @@ fn app_using(what: &str, repo: &Path) -> PathBuf {
         ),
     )
     .unwrap();
-    std::fs::write(dir.join("src/Main.mw"), "def main = greeting\n").unwrap();
+    std::fs::write(
+        dir.join("src/Main.mw"),
+        "use Greet (greeting)\ndef main = greeting\n",
+    )
+    .unwrap();
     dir
 }
 
@@ -234,7 +238,11 @@ fn a_path_dependency_is_not_pinned() {
          [dependencies]\nUtil = { path = \"../util\" }\n",
     )
     .unwrap();
-    std::fs::write(app.join("src/Main.mw"), "def main = answer\n").unwrap();
+    std::fs::write(
+        app.join("src/Main.mw"),
+        "use Util (answer)\ndef main = answer\n",
+    )
+    .unwrap();
 
     let out = build_in(&app, "paths", |_| {});
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
@@ -308,7 +316,11 @@ fn update_moves_a_branch_forward_and_a_build_does_not() {
         ),
     )
     .unwrap();
-    std::fs::write(app.join("src/Main.mw"), "def main = greeting\n").unwrap();
+    std::fs::write(
+        app.join("src/Main.mw"),
+        "use Greet (greeting)\ndef main = greeting\n",
+    )
+    .unwrap();
 
     let cache = scratch("cache-five");
     let build = |set: fn(&mut Resolver)| {
@@ -492,7 +504,11 @@ fn a_repository_with_no_releases_says_so_rather_than_guessing() {
         ),
     )
     .unwrap();
-    std::fs::write(dir.join("src/Main.mw"), "def main = greeting\n").unwrap();
+    std::fs::write(
+        dir.join("src/Main.mw"),
+        "use Greet (greeting)\ndef main = greeting\n",
+    )
+    .unwrap();
     let out = build_in(&dir, "rel-untagged", |_| {});
     let said = format!("{:?}", out.diagnostics);
     assert!(said.contains("no release of `Greet`"), "{said}");

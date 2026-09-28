@@ -1,0 +1,245 @@
+-- Unit: Meadow's packages, as Lingua's units (`Lingua.Make`).
+--
+-- A unit is a directory with a `Meadow.toml`, and its sources the `.mw` files
+-- under its `src/`. What it depends on is what its manifest's
+-- `[dependencies]` name -- a `path`, from the unit, or a `git` repository,
+-- which `meadow` has fetched into its cache at the commit the root unit's
+-- `meadow.lock` pins -- and the standard library, which every unit but the
+-- standard library itself depends on, and whose sources are where
+-- `MEADOWBOOT_STD` says.
+--
+-- The manifests are read as far as `meadow` writes them: sections, `key =
+-- "text"`, and inline tables of those, `Name = { path = "../x" }`.
+
+use Std.Fs (Fs, readToString, readDir, isDir, exists)
+use Std.Process (Process, getEnv)
+use Std.Path as Path
+use Std.Collections.Vector as V
+use Std.String as S
+use Std.Sort (sort)
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+
+-- `path` without Windows' `\\?\`, which asks for a path to be taken exactly as
+-- written and which nothing here needs.
+@pub fun plain (path : String) : String = if S.startsWith "\\\\?\\" path then S.drop path 4 else path
+
+-- `path` from the root of the file system, and normalised: the one way a
+-- unit is written, whoever names it. A relative path is from where the shell
+-- says it is, when it says.
+@pub fun absolute (path : String) : String ! { Process | e } =
+  let p = plain path in
+  if Path.isAbsolute p then Path.normalize p
+  else
+    match getEnv "PWD" with
+    | Just here -> Path.normalize (Path.join (plain (fromShell here)) p)
+    | None -> Path.normalize p
+
+-- A path as a POSIX shell on Windows writes it, `/c/Users`, as Windows does:
+-- `C:/Users`.
+fun fromShell (p : String) : String =
+  if stringByteLength p >= 3 and S.startsWith "/" p and stringSlice p 2 3 == "/" then S.join "" [S.toUpper (stringSlice p 1 2), ":", stringSlice p 2 (stringByteLength p)]
+  else p
+
+-- The unit `file` is in: the nearest directory above it with a `Meadow.toml`.
+@pub fun packageOf (file : String) : Maybe String ! { Fs, Process | e } =
+  let rec up dir =
+    match dir with
+    | None -> None
+    | Just d -> if exists (Path.join d "Meadow.toml") then Just (Path.normalize d) else up (Path.parent d)
+  in
+  up (Path.parent (absolute file))
+
+-- A unit's sources: every `.mw` file under its `src/`.
+@pub fun sourcesOf (dir : String) : [String] ! { Fs | e } = under (Path.join dir "src")
+
+-- What a unit is compiled from: its manifest, which names its package, and
+-- its sources.
+@pub fun unitFilesOf (dir : String) : [String] ! { Fs | e } = V.pushFront (sourcesOf dir) (manifestOf dir)
+
+@pub fun manifestOf (dir : String) : String = Path.normalize (Path.join dir "Meadow.toml")
+
+-- The name a manifest gives its package.
+@pub fun packageName (text : String) : String =
+  match V.find (\(e : Entry) -> e.section == "package" and e.key == "name") (readToml text) with
+  | Just e -> (match e.value with | Text t -> t | Other t -> t | Table _ -> "")
+  | None -> ""
+
+fun under (dir : String) : [String] ! { Fs | e } =
+  match readDir dir with
+  | Err _ -> []
+  | Ok names ->
+      V.concatMap
+        (\n ->
+          let p = Path.join dir n in
+          if isDir p then (if n == "target" then [] else under p)
+          else if S.endsWith ".mw" n then [Path.normalize p]
+          else [])
+        (sort names)
+
+-- The units `dir` depends on, read off its manifest `text`, in a build of the
+-- unit at `root`: its dependencies, then the standard library.
+@pub fun dependenciesOf (root : String) (dir : String) (text : String) : Result String [String] ! { Fs, Process | e } =
+  let manifest = readToml text in
+  let std = M.map absolute (getEnv "MEADOWBOOT_STD") in
+  let named = V.filter (\(e : Entry) -> e.section == "dependencies") manifest in
+  let found =
+    V.foldl
+      (\acc e ->
+        match acc with
+        | Err why -> Err why
+        | Ok ds -> (match locate root dir e with | Ok d -> Ok (V.pushBack ds d) | Err why -> Err why))
+      (Ok [])
+      named in
+    match (found, std) with
+    | (Err why, _) -> Err why
+    | (Ok ds, Just s) -> Ok (if absolute dir == s then ds else V.pushBack ds s)
+    | (Ok ds, None) -> Ok ds
+
+-- Where dependency `e` of the unit at `dir` is.
+fun locate (root : String) (dir : String) (e : Entry) : Result String String ! { Fs, Process | f } =
+  match (field "path" e.value, field "git" e.value) with
+  | (Just p, _) -> Ok (Path.normalize (Path.join dir p))
+  | (_, Just url) ->
+      (match pinned root dir e.key with
+       | Just rev -> checkout url rev
+       | None -> Err "`${e.key}` is not in `meadow.lock`: run `meadow build` once to fetch it")
+  | _ -> Err "`${e.key}` is neither a `path` nor a `git` dependency"
+
+-- The commit `meadow.lock` pins package `name` at: the root's, or the unit's.
+fun pinned (root : String) (dir : String) (name : String) : Maybe String ! { Fs | e } =
+  let inLock = \d ->
+    match readToString (Path.join d "meadow.lock") with
+    | Ok text -> M.andThen (\(p : Entry) -> field "rev" p.value) (V.find (\(p : Entry) -> p.section == "package" and field "name" p.value == Just name) (tables (readToml text)))
+    | Err _ -> None
+  in
+  match inLock root with
+  | Just rev -> Just rev
+  | None -> inLock dir
+
+-- Where `meadow` checked out commit `rev` of `url`: `git/checkouts/<name>-<hash
+-- of the url>/<rev>` under its home. The directory holding `rev` whose name
+-- starts with the repository's is it: a commit's name is unique.
+fun checkout (url : String) (rev : String) : Result String String ! { Fs, Process | e } =
+  match home () with
+  | None -> Err "no home directory to find `meadow`'s git checkouts in"
+  | Just h ->
+      let root = Path.joinAll [h, "git", "checkouts"] in
+      let name = repoName url in
+      let dirs = (match readDir root with | Ok ns -> ns | Err _ -> []) in
+      match V.find (\d -> S.startsWith (name ++ "-") d and isDir (Path.joinAll [root, d, rev])) (sort dirs) with
+      | Just d -> Ok (Path.normalize (Path.joinAll [root, d, rev]))
+      | None -> Err "${url} at ${rev} has not been fetched: run `meadow build` once"
+
+-- `meadow`'s home: `MEADOW_HOME`, or `.meadow` in the user's.
+fun home () : Maybe String ! { Process | e } =
+  match getEnv "MEADOW_HOME" with
+  | Just h -> Just h
+  | None ->
+      (match getEnv "USERPROFILE" with
+       | Just u -> Just (Path.join u ".meadow")
+       | None -> M.map (\u -> Path.join u ".meadow") (getEnv "HOME"))
+
+-- The repository's name, as `meadow` names its checkouts: the URL's last
+-- segment, without `.git`, each character not a letter, digit, `-` or `_` a
+-- `-`.
+@pub fun repoName (url : String) : String =
+  let trimmed = strip "/" (strip ".git" (strip "/" url)) in
+  let segs = V.filter (\x -> not (S.isEmpty x)) (V.concatMap (\x -> S.split ":" x) (S.split "/" trimmed)) in
+  let last = M.unwrapOr "repo" (V.get segs (V.len segs - 1)) in
+  S.join "" (V.map (\i -> let c = stringSlice last i (i + 1) in if safe c then c else "-") (V.range 0 (stringByteLength last)))
+
+fun strip (suffix : String) (s : String) : String = if S.endsWith suffix s then stringSlice s 0 (stringByteLength s - stringByteLength suffix) else s
+
+fun safe (c : String) : Bool =
+  let b = toInt (stringByteAt c 0) in
+  (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 45 or b == 95
+
+-- --- the manifests --------------------------------------------------------------------
+
+-- A value: text, a table of texts, or anything else, as written.
+@pub data TomlValue = Text String | Table [(String, String)] | Other String
+
+use TomlValue.*
+
+-- A key's value, in the section it is in: `[dependencies]`, or the `n`th
+-- `[[package]]` (-1 in a section that is not one of several).
+@pub record Entry = { section : String, index : Int, key : String, value : TomlValue }
+
+-- What `key` says in an inline table, or a section of them.
+fun field (key : String) (v : TomlValue) : Maybe String =
+  match v with
+  | Table kvs -> M.map snd (V.find (\kv -> fst kv == key) kvs)
+  | _ -> None
+
+-- Each `[[section]]`, its keys as one table.
+fun tables (es : [Entry]) : [Entry] =
+  let indices = V.foldl (\acc (e : Entry) -> if e.index >= 0 and not (V.any (\x -> fst x == e.section and snd x == e.index) acc) then V.pushBack acc (e.section, e.index) else acc) [] es in
+  V.map
+    (\si ->
+      let kvs = V.concatMap (\(e : Entry) -> if e.section == fst si and e.index == snd si then (match e.value with | Text t -> [(e.key, t)] | Other t -> [(e.key, t)] | Table _ -> []) else []) es in
+      Entry { section = fst si, index = snd si, key = "", value = Table kvs })
+    indices
+
+-- The entries of a manifest, as far as `meadow` writes them.
+@pub fun readToml (text : String) : [Entry] =
+  match
+    V.foldl
+      (\acc raw ->
+        match acc with
+        | (section, index, es) ->
+            let l = S.trim (uncommented raw) in
+            if S.isEmpty l then acc
+            else if S.startsWith "[[" l then (let n = S.trim (stringSlice l 2 (stringByteLength l - 2)) in (n, countOf n es, es))
+            else if S.startsWith "[" l then (S.trim (stringSlice l 1 (stringByteLength l - 1)), 0 - 1, es)
+            else
+              (match S.indexOf "=" l with
+               | Just at -> (section, index, V.pushBack es (Entry { section = section, index = index, key = unquoted (S.trim (stringSlice l 0 at)), value = valueOf (S.trim (stringSlice l (at + 1) (stringByteLength l))) }))
+               | None -> acc))
+      ("", 0 - 1, [])
+      (S.lines text) with
+      | (_, _, es) -> es
+
+-- How many `[[n]]` tables were before: the next one's index. One with no
+-- keys yet counts, which `readToml` places by the index it gives it.
+fun countOf (n : String) (es : [Entry]) : Int = V.len (V.foldl (\acc (e : Entry) -> if e.section == n and not (V.elem e.index acc) then V.pushBack acc e.index else acc) [] es)
+
+-- A line without its comment -- a `#` outside quotes.
+fun uncommented (l : String) : String =
+  let n = stringByteLength l in
+  let rec go i quoted = if i >= n then l else (let b = toInt (stringByteAt l i) in if b == 34 then go (i + 1) (not quoted) else if b == 35 and not quoted then stringSlice l 0 i else go (i + 1) quoted) in
+  go 0 False
+
+fun valueOf (v : String) : TomlValue =
+  if S.startsWith "{" v and S.endsWith "}" v then
+    Table
+      (V.concatMap
+        (\part ->
+          match S.indexOf "=" part with
+          | Just at -> [(unquoted (S.trim (stringSlice part 0 at)), unquoted (S.trim (stringSlice part (at + 1) (stringByteLength part))))]
+          | None -> [])
+        (S.split "," (stringSlice v 1 (stringByteLength v - 1))))
+  else if S.startsWith "\"" v then Text (unquoted v)
+  else Other v
+
+fun unquoted (s : String) : String = if stringByteLength s >= 2 and S.startsWith "\"" s and S.endsWith "\"" s then stringSlice s 1 (stringByteLength s - 1) else s
+
+-- --- tests -----------------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun aManifestsDependenciesAreItsInlineTables () =
+  let es = readToml "[package]\nname = \"MeadowBoot\"\n\n[dependencies]\nLingua = { path = \"../../Lingua\" }\nScythe = { git = \"https://github.com/mcdearman/Scythe.git\", branch = \"master\" } # fetched\n" in
+  assertEq
+    (V.map (\(e : Entry) -> (e.key, field "path" e.value, field "git" e.value)) (V.filter (\(e : Entry) -> e.section == "dependencies") es))
+    [("Lingua", Just "../../Lingua", None), ("Scythe", None, Just "https://github.com/mcdearman/Scythe.git")]
+    "a path and a git repository"
+
+@test fun aLockPinsEachPackage () =
+  let es = readToml "version = 1\n\n[[package]]\nname = \"Nettle\"\nrev = \"b59e\"\n\n[[package]]\nname = \"Scythe\"\nrev = \"36e7\"\n" in
+  assertEq (V.map (\(t : Entry) -> (field "name" t.value, field "rev" t.value)) (tables es)) [(Just "Nettle", Just "b59e"), (Just "Scythe", Just "36e7")] "one table each"
+
+@test fun aCheckoutIsNamedForItsRepository () =
+  let a = assertEq (repoName "https://github.com/mcdearman/Scythe.git") "Scythe" "without `.git`" in
+  assertEq (repoName "https://github.com/someone/meadow-json/") "meadow-json" "without the slash"

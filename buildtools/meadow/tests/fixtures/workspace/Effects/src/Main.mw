@@ -6,6 +6,7 @@ use Std.Random as R
 use Std.Time as T
 use Std.Path as Pa
 use Std.Json as J
+use Std.Json (Json)
 
 -- State ---------------------------------------------------------------------
 fun tick u = let n = St.get () in let ignored = St.put (n + 1) in n

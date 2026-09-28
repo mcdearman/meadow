@@ -18,6 +18,17 @@
 -- themselves is worth more than the consistency. `True` / `False` / `Nil` /
 -- `::` need no help: the language's own syntax depends on them, so they are
 -- always in scope.
+-- The types a program names without a `use`: the prelude's constructors'
+-- types, the effects its functions perform, and what they answer. Nothing else
+-- of the standard library's -- or of any package's -- is in scope until a
+-- module asks for it.
+@pub use Std.Maybe (Maybe)
+@pub use Std.Result (Result)
+@pub use Std.Ordering (Ordering)
+@pub use Std.Collections.Vector (Vector)
+@pub use Std.Console (Console)
+@pub use Std.Fs (Fs, FileMeta)
+@pub use Std.Process (Process)
 @pub use Std.Maybe.Maybe.*
 @pub use Std.Result.Result.*
 @pub use Std.Ordering.Ordering.*

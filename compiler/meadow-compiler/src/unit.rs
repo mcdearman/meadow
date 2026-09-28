@@ -80,6 +80,12 @@ pub struct CompiledPackage {
     /// `@pub use Std.Maybe.Maybe.*` lists `Maybe.Just` and `Maybe.None` here,
     /// which is why `Just` needs no qualifier anywhere.
     pub flat_ctors: Vec<InternedString>,
+    /// Types, effects and traits a dependent may name **unqualified**, by
+    /// canonical name: what a `@pub use` names. A dependency's are in scope
+    /// only where a module asks for them, and the prelude's -- the standard
+    /// library's `@pub use Std.Maybe (Maybe)` -- are asked for everywhere.
+    #[serde(default)]
+    pub flat_types: Vec<InternedString>,
     /// The `VarId` range this unit minted: `start..end`.
     ///
     /// A unit starts above everything its dependencies used, so the ranges of
@@ -152,6 +158,12 @@ pub struct CompiledPackage {
     /// re-exports). `None` = flat-import everything (REPL prefixes, ad-hoc `deps`);
     /// `Some(list)` = only these are flat, the rest need `use`.
     pub prelude_exports: Option<Vec<InternedString>>,
+    /// Whether this is a package a manifest depends on: its values are named
+    /// with `use` -- `use Util`, `use Util (double)` -- and none is in a
+    /// dependent's scope otherwise, whatever `prelude_exports` says of its
+    /// constructors. A REPL line and an ad-hoc dependency are not packages.
+    #[serde(default)]
+    pub package: bool,
     /// This package's functions that copy one of their parameters into a
     /// compact region, with which: checked at a dependent's calls as
     /// `compact` is. See `meadow_exhaust::compacting_wrappers`.
@@ -463,16 +475,20 @@ fn compile_unit_inner(
     let mut resolver = Resolver::with_prelude(filename.clone(), var_base);
     resolver.set_package(ident);
     resolver.set_standalone(deps.is_empty());
-    // Every dependency's *types* are known here, so they can be named in an
-    // annotation and their constructors written `Type.Ctor`. Which of those
-    // constructors may be written *bare* is a separate question, and the
-    // answer is `flat_ctors` -- the prelude's list, plus anything a
-    // `use M.Ty (C)` brings in later.
+    // Every dependency's types are *known* here: what a `use` can bring, and
+    // what a canonical name means. A module names one only once it has asked
+    // for it -- `use M (Ty)`, `use M` -- or the prelude re-exports it; a REPL
+    // prefix or an ad-hoc dependency alone puts all of its in scope.
     for dep in deps {
-        resolver.import_types(&dep.data_decls);
+        resolver.import_types(
+            &dep.data_decls,
+            dep.prelude_exports.is_none() && !dep.package,
+        );
     }
     for dep in deps {
         match &dep.prelude_exports {
+            // A package: a module asks for what it names.
+            None if dep.package => {}
             // A REPL prefix or an ad-hoc dep: its values are flat, but its
             // constructors are still under their types -- `Colour.Red`, or bare
             // after `use Colour.*` -- except one named like its type.
@@ -481,7 +497,11 @@ fn compile_unit_inner(
                     resolver.use_struct_ctor(ty);
                 }
             }
+            // The prelude: the types and constructors it re-exports.
             Some(_) => {
+                for t in &dep.flat_types {
+                    resolver.use_named_type(*t);
+                }
                 for c in &dep.flat_ctors {
                     resolver.use_flat_ctor(*c);
                 }
@@ -493,15 +513,29 @@ fn compile_unit_inner(
     // contributes only `list` unqualified, the rest reachable via `use`.
     for dep in deps {
         match &dep.prelude_exports {
+            // A package: what a module wants of it, it names with `use`.
+            None if dep.package => {}
             None => {
                 for e in &dep.exports {
                     resolver.import(e.name, e.var);
                 }
             }
+            // The standard library's prelude.
             Some(flat) => {
                 for e in &dep.exports {
                     if e.module.is_empty() && flat.contains(&e.name) {
-                        resolver.import(e.name, e.var);
+                        resolver.import_prelude(e.name, e.var);
+                    }
+                }
+                // An effect it re-exports brings its operations, as naming
+                // one in a `use` does.
+                for d in &dep.data_decls {
+                    if let hir::Decl::Effect(ed) = d.value()
+                        && dep.flat_types.contains(&ed.name)
+                    {
+                        for (op, id, _) in &ed.ops {
+                            resolver.import_prelude(*op, *id.value());
+                        }
                     }
                 }
             }
@@ -539,6 +573,8 @@ fn compile_unit_inner(
     // (node ids are unit-wide). Inference chooses; see `hir::Overloads`.
     // What `@pub use M.Ty.*` re-exports unqualified; see `flat_ctors` below.
     let mut flat_ctors: Vec<InternedString> = Vec::new();
+    // And what `@pub use M (Ty)` re-exports; see `flat_types`.
+    let mut flat_types: Vec<InternedString> = Vec::new();
     let mut overloads: hir::Overloads = HashMap::new();
     let mut typed: Vec<TypedModule> = modules
         .iter()
@@ -554,7 +590,8 @@ fn compile_unit_inner(
                     other => other,
                 };
                 if let ast::Decl::Use(u) = base {
-                    let brought = apply_use(&mut resolver, pkg, u, deps, &here, &mut diags);
+                    let (brought, types) =
+                        apply_use(&mut resolver, pkg, u, deps, &here, &mut diags);
                     // `@pub use M.Ty.*`: the package's *unqualified* surface,
                     // which is a claim about what a dependent may write bare.
                     // Plain `@pub` only -- an argument only ever narrows it.
@@ -564,6 +601,7 @@ fn compile_unit_inner(
                             .any(|a| &**a.name.value() == "pub" && a.args.is_empty())
                         {
                             flat_ctors.extend(brought);
+                            flat_types.extend(types);
                         }
                     }
                 }
@@ -885,6 +923,8 @@ fn compile_unit_inner(
     // constructors stay under their types like anyone's.
     flat_ctors.sort_by_key(|n| n.to_string());
     flat_ctors.dedup();
+    flat_types.sort_by_key(|n| n.to_string());
+    flat_types.dedup();
 
     // What a macro wrote is reported at the call, which is the only place in
     // the file there is to point at. This is what says which macro.
@@ -894,6 +934,7 @@ fn compile_unit_inner(
         CompiledPackage {
             id,
             flat_ctors,
+            flat_types,
             vars: var_base..var_end,
             name: unit_name,
             ident,
@@ -915,6 +956,7 @@ fn compile_unit_inner(
             data_decls,
             tests: resolver.test_vars().to_vec(),
             prelude_exports: None,
+            package: false,
             compacting: own_compacting,
         },
         diags,
@@ -992,7 +1034,8 @@ fn collect_toplevel_vars(
 /// The path ends in a module -- `use M`, `use M as C`, `use M (a, b)` -- or in a
 /// type declared by one: `use M.Ty` for the type, `use M.Ty (A, B)` or
 /// `use M.Ty.*` for its constructors unqualified. Returns the canonical
-/// constructors that last form brought, which a `@pub use` re-exports flat.
+/// constructors that last form brought, which a `@pub use` re-exports flat,
+/// and the types, effects and traits it named -- which it re-exports too.
 fn apply_use(
     resolver: &mut Resolver,
     pkg: InternedString,
@@ -1000,6 +1043,20 @@ fn apply_use(
     deps: &[Dep<'_>],
     filename: &str,
     diags: &mut Vec<Diagnostic>,
+) -> (Vec<InternedString>, Vec<InternedString>) {
+    let mut types_brought: Vec<InternedString> = Vec::new();
+    let ctors = use_in(resolver, pkg, u, deps, filename, diags, &mut types_brought);
+    (ctors, types_brought)
+}
+
+fn use_in(
+    resolver: &mut Resolver,
+    pkg: InternedString,
+    u: &ast::UseDecl,
+    deps: &[Dep<'_>],
+    filename: &str,
+    diags: &mut Vec<Diagnostic>,
+    types_brought: &mut Vec<InternedString>,
 ) -> Vec<InternedString> {
     let segs: Vec<InternedString> = u.path.iter().map(|s| *s.value()).collect();
     if segs.is_empty() {
@@ -1072,7 +1129,7 @@ fn apply_use(
                 let values = resolver.module_values(&local);
                 resolver.activate_module(*a.value(), values);
             }
-            None => resolver.use_module(&local, &u.names),
+            None => types_brought.extend(resolver.use_module(&local, &u.names)),
         }
         return Vec::new();
     }
@@ -1105,7 +1162,12 @@ fn apply_use(
                 .filter(|c| known.contains(c))
                 .collect();
             match spelled.as_slice() {
-                [canonical] => return resolver.use_dep_type(ty, *canonical, &u.names, u.glob),
+                [canonical] => {
+                    if !u.glob && u.names.is_empty() {
+                        types_brought.push(*canonical);
+                    }
+                    return resolver.use_dep_type(ty, *canonical, &u.names, u.glob);
+                }
                 [] => {}
                 many => {
                     let owners: Vec<String> = many
@@ -1144,6 +1206,9 @@ fn apply_use(
                     );
                     return Vec::new();
                 }
+                if !u.glob && u.names.is_empty() {
+                    types_brought.push(canonical);
+                }
                 return resolver.use_dep_type(ty, canonical, &u.names, u.glob);
             }
         }
@@ -1167,11 +1232,20 @@ fn apply_use(
 
     // A package's root re-exports constructors flat with `@pub use M.Ty.*`,
     // as a Rust crate root does with `pub use Ty::*`: `use pkg` brings them
-    // all, and `use pkg (C)` the ones it names.
+    // all, and `use pkg (C)` the ones it names. And the types it names in a
+    // `@pub use`, likewise.
     let flat: Vec<InternedString> = if segs.len() == 1 {
         deps.iter()
             .filter(|d| d.spelled == segs[0] && d.prelude_exports.is_none())
             .flat_map(|d| d.flat_ctors.iter().copied())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let flat_types: Vec<InternedString> = if segs.len() == 1 {
+        deps.iter()
+            .filter(|d| d.spelled == segs[0] && d.prelude_exports.is_none())
+            .flat_map(|d| d.flat_types.iter().copied())
             .collect()
     } else {
         Vec::new()
@@ -1184,6 +1258,15 @@ fn apply_use(
     if u.alias.is_none() && u.names.is_empty() {
         for c in &flat {
             resolver.use_flat_ctor(*c);
+        }
+        for t in &flat_types {
+            resolver.use_named_type(*t);
+            types_brought.push(*t);
+        }
+        // `use M`: its types, effects and traits too, as its values.
+        for t in module_types(pkg, &segs, deps) {
+            resolver.use_named_type(t);
+            types_brought.push(t);
         }
     }
 
@@ -1202,8 +1285,25 @@ fn apply_use(
             for (name, id) in all {
                 resolver.import_from(name, id, from);
             }
+            // And its effects' operations, which are values too.
+            for (_, op, id) in module_effect_ops(pkg, &segs, deps) {
+                resolver.import_from(op, id, from);
+            }
         }
         None => {}
+    }
+    // An effect named brings its operations, as a trait named brings its
+    // methods; an operation named brings itself.
+    if u.alias.is_none() && !u.names.is_empty() {
+        let from = InternedString::from(dotted(&segs));
+        for (effect, op, id) in module_effect_ops(pkg, &segs, deps) {
+            if u.names
+                .iter()
+                .any(|n| *n.value() == op || &**n.value() == hir::spelling(&effect))
+            {
+                resolver.import_from(op, id, from);
+            }
+        }
     }
     // Only *values* live in `map`. A selected name can also be a type or an
     // effect operation, and those are imported wholesale elsewhere
@@ -1230,21 +1330,29 @@ fn apply_use(
         } else if synonym {
         } else if let Some(methods) = trait_methods(pkg, &segs, name, deps) {
             // A trait brings its methods: naming `Show` is asking to call
-            // `show`.
+            // `show`. And itself, to be asked for and implemented.
             let from = InternedString::from(dotted(&segs));
             for m in methods {
                 if let Some(&id) = map.get(&m) {
                     resolver.import_from(m, id, from);
                 }
             }
+            if let Some(&canonical) = types.iter().find(|t| hir::spelling(t) == &*name) {
+                resolver.use_named_type(canonical);
+                types_brought.push(canonical);
+            }
             resolver.note_ref(n.span, NameRef::Type(name));
         } else if let Some(&canonical) = types.iter().find(|t| hir::spelling(t) == &*name) {
             // Naming a type in a `use` is what settles which one a spelling
             // shared by several packages means.
             resolver.use_named_type(canonical);
+            types_brought.push(canonical);
             resolver.note_ref(n.span, NameRef::Type(canonical));
         } else if let Some(c) = flat_named(name) {
             resolver.use_flat_ctor(c);
+        } else if let Some(&t) = flat_types.iter().find(|t| hir::spelling(t) == &*name) {
+            resolver.use_named_type(t);
+            types_brought.push(t);
         } else if let Some(owner) = types
             .iter()
             .find(|t| resolver.type_ctor_names(**t).contains(&name))
@@ -1294,7 +1402,8 @@ fn trait_methods(
         })
 }
 
-/// The exported `data` and `record` types a dependency module declares.
+/// The exported types a dependency module declares: its `data`, `record` and
+/// `type` declarations, its effects and its traits.
 fn module_types(
     pkg: InternedString,
     segs: &[InternedString],
@@ -1306,6 +1415,8 @@ fn module_types(
                 hir::Decl::Data(dd) => Some(dd.name),
                 hir::Decl::Record(rd) => Some(rd.name),
                 hir::Decl::Alias(ad) => Some(ad.name),
+                hir::Decl::Effect(ed) => Some(ed.name),
+                hir::Decl::Trait(td) => Some(td.name),
                 _ => None,
             })
             .collect()
@@ -1338,6 +1449,47 @@ fn module_types(
                     .into_iter()
                     .filter(|t| exported.contains(t)),
             );
+        }
+    }
+    out
+}
+
+/// The operations of the exported effects a dependency module declares: the
+/// effect, the operation, and the operation's value.
+fn module_effect_ops(
+    pkg: InternedString,
+    segs: &[InternedString],
+    deps: &[Dep<'_>],
+) -> Vec<(InternedString, InternedString, VarId)> {
+    let effects = module_types(pkg, segs, deps);
+    let local: &[InternedString] = if segs.first() == Some(&pkg) {
+        &segs[1..]
+    } else {
+        segs
+    };
+    let mut out = Vec::new();
+    for dep in deps {
+        let wants: Vec<&[InternedString]> = [
+            (dotted(local) == *dep.spelled.to_string()).then_some(local),
+            (segs.first() == Some(&dep.spelled)).then(|| &segs[1..]),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        for m in dep
+            .modules
+            .iter()
+            .filter(|m| wants.contains(&m.path.as_slice()))
+        {
+            for d in &m.hir.value().decls {
+                if let hir::Decl::Effect(ed) = d.value()
+                    && effects.contains(&ed.name)
+                {
+                    for (op, id, _) in &ed.ops {
+                        out.push((ed.name, *op, *id.value()));
+                    }
+                }
+            }
         }
     }
     out

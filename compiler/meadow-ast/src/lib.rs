@@ -37,6 +37,17 @@ pub mod hygiene {
         name.contains(MARK)
     }
 
+    /// The mark of a name a built-in derive wrote: `get#0` is the prelude's
+    /// `get`, whatever else the scope the derive is expanded in calls `get` --
+    /// a dependency's, a module's own. Expansions count from 1, so no
+    /// template's mark is this one.
+    pub const PRELUDE: u32 = 0;
+
+    /// Whether `name`'s last mark is the prelude's.
+    pub fn is_prelude(name: InternedString) -> bool {
+        name.ends_with(&format!("{MARK}{PRELUDE}"))
+    }
+
     /// `name` without its mark, or `name` when it has none. A name marked by
     /// nested expansions loses one mark at a time, outermost first.
     pub fn strip(name: InternedString) -> InternedString {

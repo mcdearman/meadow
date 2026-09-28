@@ -1268,6 +1268,63 @@ fn absorb_refs(a: &mut Analysis, m: &meadow_compiler::TypedModule) {
     a.name_refs.retain(|(s, _, _)| s.end > s.start);
 }
 
+/// What a name written in a module names.
+#[derive(Debug, Clone, Copy)]
+pub enum Mentioned {
+    Value(VarId),
+    Type(InternedString),
+    Ctor(InternedString),
+}
+
+/// A name written in a module: where, what it names, and where that is
+/// declared -- `None` for what no module declares, a primitive.
+#[derive(Debug, Clone, Copy)]
+pub struct Mention {
+    pub span: Span,
+    pub what: Mentioned,
+    pub declared: Option<Loc>,
+}
+
+/// Every name each module of `pkg` writes, in the order the walk meets them,
+/// with where what it names is declared: in `pkg`, or in one of `others`, the
+/// packages it was compiled against. The resolver's answers as an editor reads
+/// them, and what another resolver -- MeadowBoot's -- is checked against.
+pub fn mentions(pkg: &CompiledPackage, others: &[&CompiledPackage]) -> Vec<(Source, Vec<Mention>)> {
+    let mut defs = DefIndex::default();
+    let mut names = NameIndex::default();
+    for p in others.iter().copied().chain([pkg]) {
+        index_package(p, &mut defs, &mut names);
+    }
+    pkg.modules
+        .iter()
+        .map(|m| {
+            let mut a = Analysis::empty();
+            let mut w = Walk {
+                types: None,
+                source: m.source,
+                namer: meadow_compiler::infer::Renderer::new(),
+                a: &mut a,
+            };
+            w.module(&m.hir);
+            absorb_refs(&mut a, m);
+            let values = a.refs.iter().map(|&(span, v)| Mention {
+                span,
+                what: Mentioned::Value(v),
+                declared: defs.get(&v).copied(),
+            });
+            let named = a.name_refs.iter().map(|&(span, n, ns)| Mention {
+                span,
+                what: match ns {
+                    Namespace::Type => Mentioned::Type(n),
+                    Namespace::Ctor => Mentioned::Ctor(n),
+                },
+                declared: names.get(n, ns),
+            });
+            (m.source, values.chain(named).collect())
+        })
+        .collect()
+}
+
 /// Walk every module of `pkg` for its definitions alone.
 ///
 /// Cheaper than it looks next to the full walk: rendering a type to a string is

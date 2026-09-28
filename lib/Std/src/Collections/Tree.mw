@@ -140,6 +140,7 @@ impl Ord (Tree a) where Ord a {
 
 use Std.Test (assertEq, assertTrue, assertFalse)
 use Std.Maybe.Maybe.*
+use Std.Yield (Yield)
 
 def sample = fromVec [5, 3, 8, 1]
 

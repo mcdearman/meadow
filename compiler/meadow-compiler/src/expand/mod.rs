@@ -1354,14 +1354,32 @@ impl<'a> Expander<'a> {
         // an error in what it wrote is reported at the `@derive` that asked
         // for it, and none of it claims the text of the name -- which an
         // editor still resolves to the trait, not to what the `impl` calls.
+        //
+        // And every name it writes carries the prelude's mark: what the derive
+        // binds, it binds under the mark, and what it only mentions -- `get`,
+        // `fst`, `debug` -- is the prelude's, not whatever the scope it is
+        // expanded in calls that (see `meadow_rename`). The marks come off the
+        // names that are not variables once it is parsed, as a template's do.
         let at = Span::new(want.span.start, want.span.start);
         let tokens: Vec<LToken> = lexed
             .tokens
             .iter()
-            .map(|t| LToken::new(t.value().clone(), at))
+            .map(|t| {
+                let marked = match t.value() {
+                    // The one type a derive names that a module need not
+                    // have: the standard library's `Datum`, which `Reflect`'s
+                    // is written in.
+                    Token::UpperIdent(n) if &**n == "Datum" => {
+                        Token::UpperIdent(ast::hygiene::mark(*n, ast::hygiene::PRELUDE))
+                    }
+                    other => hygiene::mark(other, ast::hygiene::PRELUDE),
+                };
+                LToken::new(marked, at)
+            })
             .collect();
         match meadow_parser::parse_decls(&tokens, at) {
             (Some(mut made), errs) if errs.is_empty() => {
+                hygiene::strip_items(&mut made);
                 self.decls(&mut made);
                 made
             }

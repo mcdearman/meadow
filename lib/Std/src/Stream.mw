@@ -156,6 +156,7 @@ use Std.State (execState, modify)
 use Std.Collections.Vector (vecFromArray)
 use Std.Either.Either.*
 use Std.Maybe.Maybe.*
+use Std.Yield (Yield)
 
 fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n - 1)
 

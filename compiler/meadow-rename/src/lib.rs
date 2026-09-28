@@ -192,6 +192,10 @@ pub struct Resolver {
     /// settled before anything is looked up. The language's own operators are
     /// in [`hir::OPERATORS`], which a declaration may repeat but not contradict.
     fixities: HashMap<InternedString, (hir::Fixity, Option<Span>)>,
+    /// The prelude: what the standard library brings every module unqualified,
+    /// by name. What a name a built-in derive wrote means (see
+    /// [`ast::hygiene::PRELUDE`]).
+    prelude: HashMap<InternedString, VarId>,
     errors: Vec<Diagnostic>,
 }
 
@@ -585,6 +589,7 @@ impl Resolver {
             macro_vars: Vec::new(),
             qualifiers: HashMap::new(),
             fixities: HashMap::new(),
+            prelude: HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -696,72 +701,30 @@ impl Resolver {
     /// way -- or that group neither way, as `a == b == c` -- are an error, as
     /// they are in Haskell, since no reading of them is the obvious one.
     fn reassociate(&mut self, first: &ast::LExpr, rest: &[(ast::Ident, ast::LExpr)]) -> ast::LExpr {
-        fn apply(out: &mut Vec<ast::LExpr>, op: ast::Ident) {
-            let r = out.pop().expect("an operand for each operator");
-            let l = out.pop().expect("an operand for each operator");
-            let span = l.span.extend(r.span);
-            let node = if &*ast::hygiene::strip(*op.value()) == "::" {
-                ast::Expr::Cons(
-                    ast::Ident::new(InternedString::from("Cons"), op.span),
-                    vec![l, r],
-                )
-            } else {
-                let f = ast::LExpr::new(ast::Expr::Var(op.clone()), op.span);
-                ast::Expr::App(f, vec![l, r])
-            };
-            out.push(ast::LExpr::new(node, span));
-        }
-
-        let mut out = vec![first.clone()];
-        let mut stack: Vec<(ast::Ident, hir::Fixity)> = Vec::new();
-        for (op, operand) in rest {
-            let here = self.fixity(*op.value());
-            while let Some((top, there)) = stack.last() {
-                let first_goes = match there.level.cmp(&here.level) {
-                    std::cmp::Ordering::Greater => true,
-                    std::cmp::Ordering::Less => false,
-                    std::cmp::Ordering::Equal => match (there.assoc, here.assoc) {
-                        (hir::Assoc::Left, hir::Assoc::Left) => true,
-                        (hir::Assoc::Right, hir::Assoc::Right) => false,
-                        _ => {
-                            let (a, b) = (
-                                ast::hygiene::strip(*top.value()),
-                                ast::hygiene::strip(*op.value()),
-                            );
-                            let (fa, fb) = (*there, here);
-                            let msg = if a == b && fa.assoc == hir::Assoc::None {
-                                format!(
-                                    "`{a}` is `{} {}`, which does not group: `x {a} y {a} z` means nothing",
-                                    fa.keyword(),
-                                    fa.level
-                                )
-                            } else {
-                                format!(
-                                    "`{a}` (`{} {}`) and `{b}` (`{} {}`) cannot be mixed without parentheses",
-                                    fa.keyword(),
-                                    fa.level,
-                                    fb.keyword(),
-                                    fb.level
-                                )
-                            };
-                            self.error(msg, "add parentheses".to_string(), op.span);
-                            true
-                        }
-                    },
+        let mut errors = Vec::new();
+        let grouped = reassociate(
+            first.clone(),
+            rest.iter().map(|(op, e)| (op.clone(), e.clone())),
+            |op| self.fixity(op),
+            |op, l: ast::LExpr, r: ast::LExpr| {
+                let span = l.span.extend(r.span);
+                let node = if &*ast::hygiene::strip(*op.value()) == "::" {
+                    ast::Expr::Cons(
+                        ast::Ident::new(InternedString::from("Cons"), op.span),
+                        vec![l, r],
+                    )
+                } else {
+                    let f = ast::LExpr::new(ast::Expr::Var(op.clone()), op.span);
+                    ast::Expr::App(f, vec![l, r])
                 };
-                if !first_goes {
-                    break;
-                }
-                let (top, _) = stack.pop().expect("just looked");
-                apply(&mut out, top);
-            }
-            stack.push((op.clone(), here));
-            out.push(operand.clone());
+                ast::LExpr::new(node, span)
+            },
+            |msg, span| errors.push((msg, span)),
+        );
+        for (msg, span) in errors {
+            self.error(msg, "add parentheses".to_string(), span);
         }
-        while let Some((op, _)) = stack.pop() {
-            apply(&mut out, op);
-        }
-        out.pop().expect("one expression left")
+        grouped
     }
 
     // --- modules ----------------------------------------------------------
@@ -899,7 +862,7 @@ impl Resolver {
         self.effects = self.base_effects.clone();
         self.effect_ops = self.base_effect_ops.clone();
         let frame = self.frames.get(path).cloned().unwrap_or_default();
-        self.admit(&frame, None);
+        let _ = self.admit(&frame, None);
     }
 
     /// Make a frame's declarations visible in the current module.
@@ -907,7 +870,11 @@ impl Resolver {
     /// `owner` is the module the frame belongs to: `None` for the current
     /// module's own frame, where visibility does not apply — a declaration is
     /// always visible where it was written.
-    fn admit(&mut self, frame: &ModuleFrame, owner: Option<&[InternedString]>) {
+    fn admit(
+        &mut self,
+        frame: &ModuleFrame,
+        owner: Option<&[InternedString]>,
+    ) -> Vec<InternedString> {
         // Copied out first: what follows mutates `self`, and the test only
         // needs where we are and whether the unit talks about visibility.
         let here = self.current.clone();
@@ -916,11 +883,13 @@ impl Resolver {
             None => true,
             Some(o) => all || vis.reaches(o, &here),
         };
+        let mut brought = Vec::new();
         for (n, a, v) in &frame.tycons {
             if ok(*v) {
                 let canonical = self.qualify(*n);
                 self.tycons.insert(*n, Named::One(canonical, *a));
                 self.bring_struct_ctor(canonical);
+                brought.push(canonical);
             }
         }
         // Constructors live under their type, as a Rust enum's variants do --
@@ -930,7 +899,9 @@ impl Resolver {
         // declaring the type, naming it in a `use`, nor a module glob does.
         for (n, a, v) in &frame.effects {
             if ok(*v) {
-                self.effects.insert(*n, Named::One(self.qualify(*n), *a));
+                let canonical = self.qualify(*n);
+                self.effects.insert(*n, Named::One(canonical, *a));
+                brought.push(canonical);
             }
         }
         for (op, eff, v) in &frame.effect_ops {
@@ -943,6 +914,7 @@ impl Resolver {
                 self.scope.push((*n, *id));
             }
         }
+        brought
     }
 
     /// Can this module name a declaration of `owner`'s with visibility `vis`?
@@ -998,14 +970,21 @@ impl Resolver {
     /// the whole module was asked for, and an error when it was named: saying
     /// `use M (secret)` and silently getting nothing would be reported later
     /// as `undefined variable`, which is true and unhelpful.
-    pub fn use_module(&mut self, path: &[InternedString], names: &[ast::Ident]) {
+    /// Bring a sibling module's names into scope: every one it lets this
+    /// module see, or those `names` asks for. Returns the types and effects
+    /// brought, by canonical name, which a `@pub use` re-exports.
+    pub fn use_module(
+        &mut self,
+        path: &[InternedString],
+        names: &[ast::Ident],
+    ) -> Vec<InternedString> {
         let Some(frame) = self.frames.get(path).cloned() else {
-            return;
+            return Vec::new();
         };
         if names.is_empty() {
-            self.admit(&frame, Some(path));
-            return;
+            return self.admit(&frame, Some(path));
         }
+        let mut brought = Vec::new();
         let here = self.current.clone();
         let all = !self.any_vis;
         for want in names {
@@ -1042,6 +1021,7 @@ impl Resolver {
                     let canonical = self.qualify(*n);
                     self.tycons.insert(*n, Named::One(canonical, *a));
                     self.bring_struct_ctor(canonical);
+                    brought.push(canonical);
                     // A trait brings its methods: naming `Show` is asking to
                     // call `show`.
                     if let Some(info) = self.all_traits.get(&canonical) {
@@ -1061,7 +1041,9 @@ impl Resolver {
             }
             for (n, a, v) in &frame.effects {
                 if *n == name && note(*v, &mut found, &mut hidden) {
-                    self.effects.insert(*n, Named::One(self.qualify(*n), *a));
+                    let canonical = self.qualify(*n);
+                    self.effects.insert(*n, Named::One(canonical, *a));
+                    brought.push(canonical);
                 }
             }
             for (op, eff, v) in &frame.effect_ops {
@@ -1097,6 +1079,7 @@ impl Resolver {
                 }
             }
         }
+        brought
     }
 
     pub fn with_prelude(filename: impl Into<String>, var_base: u32) -> Self {
@@ -1173,10 +1156,21 @@ impl Resolver {
     /// is what makes local bindings hygienic and items not: a local the
     /// template introduced *is* bound under its mark and is found on the first
     /// look, while a name it only mentions falls through to the second.
+    ///
+    /// A name a built-in derive wrote carries the prelude's mark: nothing it
+    /// did not bind itself is found under it, and it means the prelude's --
+    /// `get` is `Std`'s, however a dependency's `get` came into scope -- or,
+    /// where the prelude has none, whatever the name means here.
     fn lookup_all(&self, name: InternedString) -> Vec<VarId> {
         let found = self.lookup_marked(name);
         if found.is_empty() && ast::hygiene::is_marked(name) {
-            return self.lookup_all(ast::hygiene::strip(name));
+            let bare = ast::hygiene::strip(name);
+            if ast::hygiene::is_prelude(name)
+                && let Some(&id) = self.prelude.get(&bare)
+            {
+                return vec![id];
+            }
+            return self.lookup_all(bare);
         }
         found
     }
@@ -1223,6 +1217,12 @@ impl Resolver {
     pub fn import(&mut self, name: InternedString, id: VarId) {
         self.names.insert(id, name);
         self.scope.push((name, id));
+    }
+
+    /// The same, for one of the prelude's: what a derive's names mean.
+    pub fn import_prelude(&mut self, name: InternedString, id: VarId) {
+        self.import(name, id);
+        self.prelude.insert(name, id);
     }
 
     /// [`Resolver::import`], remembering the module it came from so an
@@ -1477,11 +1477,19 @@ impl Resolver {
 
     /// Re-register the type + data constructors of an already-resolved dependency
     /// (or an earlier REPL line). Trusted, so no duplicate diagnostics.
-    pub fn import_types(&mut self, decls: &[hir::LDecl]) {
+    ///
+    /// Known is not in scope. A dependency's types, effects and operations are
+    /// known here -- what `use` can bring, what a canonical name means -- but a
+    /// module names one only once it has asked for it: `use M (Ty)`, `use M`,
+    /// or the prelude's re-export (`flat_types`). Only `in_scope` -- an earlier
+    /// REPL line, an ad-hoc dependency -- puts them all in every module's scope.
+    pub fn import_types(&mut self, decls: &[hir::LDecl], in_scope: bool) {
         for d in decls {
             match d.value() {
                 hir::Decl::Data(dd) => {
-                    offer(&mut self.tycons, dd.name, dd.params.len());
+                    if in_scope {
+                        offer(&mut self.tycons, dd.name, dd.params.len());
+                    }
                     self.all_types.insert(dd.name, dd.params.len());
                     for v in &dd.variants {
                         let (arity, field_names) = match &v.fields {
@@ -1501,7 +1509,9 @@ impl Resolver {
                     }
                 }
                 hir::Decl::Record(rd) => {
-                    offer(&mut self.tycons, rd.name, rd.params.len());
+                    if in_scope {
+                        offer(&mut self.tycons, rd.name, rd.params.len());
+                    }
                     self.all_types.insert(rd.name, rd.params.len());
                     self.ctors.insert(
                         rd.ctor,
@@ -1516,27 +1526,39 @@ impl Resolver {
                         .push(InternedString::from(hir::spelling(&rd.name)));
                 }
                 hir::Decl::Effect(ed) => {
-                    offer(&mut self.tycons, ed.name, ed.params.len());
-                    offer(&mut self.effects, ed.name, ed.params.len());
+                    if in_scope {
+                        offer(&mut self.tycons, ed.name, ed.params.len());
+                        offer(&mut self.effects, ed.name, ed.params.len());
+                    }
                     self.all_types.insert(ed.name, ed.params.len());
                     self.all_effects.insert(ed.name, ed.params.len());
                     for (opname, op, _) in &ed.ops {
+                        // An operation a handler names: which effect it is of.
                         self.effect_ops.insert(*opname, ed.name);
                         self.effect_op_ids.insert(*op.value(), (ed.name, *opname));
-                        // bring the operation value into scope under its own id
-                        self.import(*opname, *op.value());
+                        // The operation as a value, which a module otherwise
+                        // brings with `use` as it does any other.
+                        if in_scope {
+                            self.import(*opname, *op.value());
+                        }
                     }
                 }
                 hir::Decl::Alias(ad) => {
-                    offer(&mut self.tycons, ad.name, ad.params.len());
+                    if in_scope {
+                        offer(&mut self.tycons, ad.name, ad.params.len());
+                    }
                     self.all_types.insert(ad.name, ad.params.len());
                 }
                 hir::Decl::Trait(td) => {
                     let n = td.params.len();
-                    offer(&mut self.tycons, td.name, n + td.assocs.len());
+                    if in_scope {
+                        offer(&mut self.tycons, td.name, n + td.assocs.len());
+                    }
                     self.all_types.insert(td.name, n + td.assocs.len());
                     for a in &td.assocs {
-                        offer(&mut self.tycons, *a.value(), n);
+                        if in_scope {
+                            offer(&mut self.tycons, *a.value(), n);
+                        }
                         self.all_types.insert(*a.value(), n);
                         self.all_assocs.insert(*a.value(), td.name);
                     }
@@ -1731,6 +1753,17 @@ impl Resolver {
         ty: InternedString,
         name: InternedString,
     ) -> Option<InternedString> {
+        // `Datum.Tag`, as a built-in derive writes it: the standard library's
+        // `Datum`, whether or not this module named it (see
+        // [`ast::hygiene::PRELUDE`]).
+        if ast::hygiene::is_prelude(ty) {
+            let bare = ast::hygiene::strip(ty);
+            if self.all_types.contains_key(&bare) {
+                let canonical = canonical_ctor(bare, name);
+                return self.ctors.contains_key(&canonical).then_some(canonical);
+            }
+            return self.resolve_qualified_ctor(bare, name);
+        }
         let owner = match self.tycons.get(&ty) {
             Some(Named::One(c, _)) => *c,
             _ => return None,
@@ -1993,10 +2026,22 @@ impl Resolver {
             self.tycons.insert(spelled, Named::One(canonical, arity));
             self.bring_struct_ctor(canonical);
         }
-        if let Some(Named::Ambiguous(cs)) = self.effects.get(&spelled).cloned() {
-            if cs.contains(&canonical) {
-                let arity = self.imported_effect_arity(canonical).unwrap_or(0);
-                self.effects.insert(spelled, Named::One(canonical, arity));
+        // An effect, named: what a row may now say. A trait's associated
+        // types come with the trait.
+        if let Some(arity) = self.imported_effect_arity(canonical) {
+            self.effects.insert(spelled, Named::One(canonical, arity));
+        }
+        let assocs: Vec<InternedString> = self
+            .all_traits
+            .get(&canonical)
+            .map(|t| t.assocs.clone())
+            .unwrap_or_default();
+        for a in assocs {
+            if let Some(arity) = self.imported_arity(a) {
+                self.tycons.insert(
+                    InternedString::from(hir::spelling(&a)),
+                    Named::One(a, arity),
+                );
             }
         }
     }
@@ -3921,6 +3966,84 @@ impl Resolver {
 
 /// Every `VarId` an already-resolved (irrefutable) pattern binds.
 /// Are two types written the same way, wherever they were written?
+// --- grouping operators --------------------------------------------------------
+
+/// Group the chain `first`, then each operator and operand of `rest`, by the
+/// fixities `fixity` says, into what `apply` makes of an operator and its two
+/// sides: `a + b * c == d` as `(a + (b * c)) == d`.
+///
+/// The usual operator-precedence parse. An operator on the stack is applied
+/// before the next one is pushed when it binds tighter, or as tightly and both
+/// group left; two of one level that do not group the same way -- or that
+/// group neither way, as `a == b == c` -- are an error, as they are in
+/// Haskell, since no reading of them is the obvious one, and read as if the
+/// first went first. What the resolver groups with, and what MeadowBoot's
+/// fixity pass is checked against.
+pub fn reassociate<T>(
+    first: T,
+    rest: impl IntoIterator<Item = (ast::Ident, T)>,
+    fixity: impl Fn(InternedString) -> hir::Fixity,
+    mut apply: impl FnMut(ast::Ident, T, T) -> T,
+    mut error: impl FnMut(String, Span),
+) -> T {
+    fn reduce<T>(out: &mut Vec<T>, op: ast::Ident, apply: &mut impl FnMut(ast::Ident, T, T) -> T) {
+        let r = out.pop().expect("an operand for each operator");
+        let l = out.pop().expect("an operand for each operator");
+        out.push(apply(op, l, r));
+    }
+
+    let mut out = vec![first];
+    let mut stack: Vec<(ast::Ident, hir::Fixity)> = Vec::new();
+    for (op, operand) in rest {
+        let here = fixity(*op.value());
+        while let Some((top, there)) = stack.last() {
+            let first_goes = match there.level.cmp(&here.level) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Less => false,
+                std::cmp::Ordering::Equal => match (there.assoc, here.assoc) {
+                    (hir::Assoc::Left, hir::Assoc::Left) => true,
+                    (hir::Assoc::Right, hir::Assoc::Right) => false,
+                    _ => {
+                        let (a, b) = (
+                            ast::hygiene::strip(*top.value()),
+                            ast::hygiene::strip(*op.value()),
+                        );
+                        let (fa, fb) = (*there, here);
+                        let msg = if a == b && fa.assoc == hir::Assoc::None {
+                            format!(
+                                "`{a}` is `{} {}`, which does not group: `x {a} y {a} z` means nothing",
+                                fa.keyword(),
+                                fa.level
+                            )
+                        } else {
+                            format!(
+                                "`{a}` (`{} {}`) and `{b}` (`{} {}`) cannot be mixed without parentheses",
+                                fa.keyword(),
+                                fa.level,
+                                fb.keyword(),
+                                fb.level
+                            )
+                        };
+                        error(msg, op.span);
+                        true
+                    }
+                },
+            };
+            if !first_goes {
+                break;
+            }
+            let (top, _) = stack.pop().expect("just looked");
+            reduce(&mut out, top, &mut apply);
+        }
+        stack.push((op, here));
+        out.push(operand);
+    }
+    while let Some((op, _)) = stack.pop() {
+        reduce(&mut out, op, &mut apply);
+    }
+    out.pop().expect("one expression left")
+}
+
 fn same_type(a: &ast::LType, b: &ast::LType) -> bool {
     use ast::TypeExpr::*;
     let all = |xs: &[ast::LType], ys: &[ast::LType]| {

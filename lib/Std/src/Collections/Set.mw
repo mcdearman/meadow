@@ -72,6 +72,8 @@ impl Ord Set {
 
 use Std.Test (assertEq, assertTrue, assertFalse)
 use Std.Maybe.Maybe.*
+use Std.Collections.Tree (Tree)
+use Std.Yield (Yield)
 
 def a = fromVec [1, 2, 3]
 

@@ -139,6 +139,7 @@ impl Ord (Map a) where Ord a {
 -- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Yield (Yield)
 
 def sample = fromVec [(1, "a"), (2, "b")]
 

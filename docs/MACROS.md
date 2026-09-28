@@ -517,9 +517,12 @@ trait Reflect a {
 `Maybe a`, and **`@derive(Reflect)`** writes it for a `data` or `record`: a
 constructor is a `Tag` of its name and its fields — named fields as one `Rec` —
 and a record is a `Rec`. Reading one back says what was wrong (`no field `y``)
-rather than only that something was. What the derive writes names `Datum` and
-the trait's methods, so `use Std.Macro (Datum, Reflect)` has to be in scope
-where it is used — naming a trait in a `use` brings its methods with it.
+rather than only that something was. `use Std.Macro (Reflect)` has to be in
+scope where it is derived, as any trait does, and naming the trait brings its
+methods with it. `Datum` need not be: what a built-in derive writes means the
+standard library's `Datum`, and its lower-case helpers (`get`, `map` and the
+like) mean the prelude's, whatever the module has in scope under those names. A
+package that declares or `use`s its own `get` still derives.
 
 ### How a macro reads and writes one: the `Expand` effect
 

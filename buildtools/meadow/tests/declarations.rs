@@ -148,7 +148,7 @@ fn a_pub_alias_crosses_the_package() {
         write(&root.join("app/src/Main.mw"), main);
         pipeline::build(&root.join("app"), Options::debug())
     };
-    let out = app("use Geo (norm)\ndef p : Point = (3, 4)\ndef main = norm p\n");
+    let out = app("use Geo (norm, Point)\ndef p : Point = (3, 4)\ndef main = norm p\n");
     assert!(
         out.diagnostics.is_empty(),
         "{:?}",
@@ -157,7 +157,7 @@ fn a_pub_alias_crosses_the_package() {
     let program = out.linked.unwrap().program;
     assert_eq!(meadow_eval::run(&program).unwrap().to_string(), "25");
 
-    let out = app("def s : Secret = 1\ndef main = s\n");
+    let out = app("use Geo (Secret)\ndef s : Secret = 1\ndef main = s\n");
     let msgs: Vec<_> = out.diagnostics.iter().map(|d| d.msg.clone()).collect();
     assert!(
         msgs.iter().any(|m| m.contains("unknown type `Secret`")),

@@ -1,0 +1,113 @@
+-- Ast: a unit's modules as `meadow-parser` reads them -- its abstract syntax,
+-- as tables (`lang!`) -- written from the fixity pass's trees (`lower`).
+--
+-- It is what the Rust parser makes of a file, with the operators grouped: a
+-- chain of them is the calls its fixities make of it, `(+) a ((*) b c)`, as
+-- `meadow-rename` groups one before it resolves anything. Everything else is
+-- read as `Parse` reads it for the parse test -- several equations one
+-- `match`, a section a lambda, `[a, b]` a call of `vecFromArray` -- each node
+-- spanning what the Rust parser's does, since the passes after this say where
+-- things are by those spans.
+
+use Lingua (lang!)
+
+@pub(pkg) lang! {
+  pub Ast
+  Module + Module { decls : [Decl] }
+  Name + Name { text : String }
+
+  Decl + Bind { bind : Bind }
+  Decl + ModDecl { name : Name }
+  Decl + UseDecl { path : [Name], names : [Name], macros : [Name], glob : Bool, alias : Maybe Name }
+  Decl + DataDecl { name : Name, params : [Name], variants : [Variant] }
+  Decl + RecordDecl { name : Name, params : [Name], fields : [Field] }
+  Decl + EffectDecl { name : Name, params : [Name], ops : [Field] }
+  Decl + AliasDecl { name : Name, params : [Name], ty : Type }
+  Decl + SigDecl { name : Name, ty : Type, bounds : [Bound] }
+  Decl + TraitDecl { name : Name, params : [Name], supers : [Bound], assocs : [Assoc], sigs : [MethodSig], defaults : [Bind] }
+  Decl + ImplDecl { tr : Name, tys : [Type], context : [Bound], assocs : [AssocDef], methods : [Bind] }
+  Decl + FixityDecl { ops : [Name] }
+  Decl + Attributed { attrs : [Attr], decl : Decl }
+  Decl + MacCallDecl { call : MacCall }
+  Decl + MacroDecl { name : Name }
+
+  Attr + Attr { name : Name, args : [Name], metas : [AttrMeta] }
+  AttrMeta + MetaWord { name : Name }
+  AttrMeta + MetaText { text : Name }
+  AttrMeta + MetaValue { name : Name, value : Name }
+  AttrMeta + MetaList { name : Name, metas : [AttrMeta] }
+
+  MacCall + MacCall { path : [Name] }
+
+  Variant + Variant { attrs : [Attr], name : Name, named : Bool, positional : [Type], fields : [Field] }
+  Field + Field { attrs : [Attr], name : Name, ty : Type }
+  Bound + Bound { tr : Name, tys : [Type] }
+  Assoc + Assoc { name : Name, params : [Name] }
+  AssocDef + AssocDef { name : Name, args : [Type], ty : Type }
+  MethodSig + MethodSig { name : Name, ty : Type }
+
+  Type + TVar { name : Name }
+  Type + TCon { name : Name, args : [Type] }
+  Type + TFun { params : [Type], result : Type, row : Maybe Row }
+  Type + TTuple { items : [Type] }
+  Type + TVector { item : Type }
+  Type + TList { item : Type }
+  Type + TRecord { fields : [TField], tail : Maybe Name }
+  TField + TField { name : Name, ty : Type }
+  Row + Row { labels : [Label], tail : Maybe Name }
+  Label + Label { name : Name, args : [Type] }
+
+  Bind + PatBind { pat : Pat, value : Expr }
+  Bind + FunBind { name : Name, params : [Pat], ret : Maybe Type, body : Expr }
+
+  Lit + LitInt { text : String }
+  Lit + LitFloat { text : String }
+  Lit + LitString { text : String }
+  Lit + LitChar { text : String }
+
+  Pat + PWild { }
+  Pat + PVar { name : Name }
+  Pat + PAnn { pat : Pat, ty : Type }
+  Pat + PLit { lit : Lit }
+  Pat + PAs { name : Name, pat : Pat }
+  Pat + PCons { name : Name, args : [Pat] }
+  Pat + PQualCons { qual : Name, name : Name, args : [Pat] }
+  Pat + PTuple { items : [Pat] }
+  Pat + PArray { items : [Pat] }
+  Pat + PVector { items : [Pat] }
+  Pat + PList { items : [Pat] }
+  Pat + PRecord { fields : [PField], open : Bool }
+  Pat + PUnit { }
+  Pat + PView { fn : Expr, pat : Pat }
+  Pat + PMacCall { call : MacCall }
+  PField + PField { name : Name, pat : Pat }
+
+  Expr + Var { name : Name }
+  Expr + LitE { lit : Lit }
+  Expr + Interp { texts : [String], holes : [Hole] }
+  Expr + Lam { params : [Pat], body : Expr }
+  Expr + App { func : Expr, args : [Expr] }
+  Expr + Let { binds : [Bind], body : Expr }
+  Expr + If { cond : Expr, yes : Expr, no : Expr }
+  Expr + Match { scrutinee : Expr, arms : [Arm] }
+  Expr + Neg { op : Name, operand : Expr }
+  Expr + AndE { op : Name, lhs : Expr, rhs : Expr }
+  Expr + OrE { op : Name, lhs : Expr, rhs : Expr }
+  Expr + Tuple { items : [Expr] }
+  Expr + ArrayE { items : [Expr] }
+  Expr + ListE { items : [Expr] }
+  Expr + Cons { name : Name, args : [Expr] }
+  Expr + Qual { qual : Name, name : Name }
+  Expr + RecordE { fields : [FieldE], base : Maybe Expr }
+  Expr + Update { base : Expr, fields : [FieldE] }
+  Expr + Proj { target : Expr, label : Name }
+  Expr + Handle { body : Expr, arms : [HArm], ret : Maybe Ret }
+  Expr + UnitE { }
+  Expr + HoleE { }
+  Expr + MacCallE { call : MacCall }
+  Hole + Hole { expr : Expr, debug : Bool }
+  Arm + Arm { pat : Pat, guard : Maybe Expr, body : Expr }
+  HArm + HArm { op : Name, param : Pat, resume : Name, body : Expr }
+  Ret + Ret { pat : Pat, body : Expr }
+  FieldE + FieldE { name : Name, value : Expr }
+}

@@ -37,6 +37,7 @@ use Std.Tuple (fst, snd)
 use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 use Std.Test (assertEq, assertTrue, assertFalse)
+use Std.Ordering (Ordering)
 
 -- Ranges shorter than this go to insertion sort, which beats quicksort's
 -- overhead when there is little to divide.

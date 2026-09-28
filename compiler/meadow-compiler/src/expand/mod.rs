@@ -1486,6 +1486,10 @@ impl<'a> Expander<'a> {
         match &mut *p.value {
             ast::Pat::Ann(inner, _) => self.pat(inner),
             ast::Pat::As(_, inner) => self.pat(inner),
+            ast::Pat::View(f, inner) => {
+                self.expr(f);
+                self.pat(inner);
+            }
             ast::Pat::Cons(_, ps)
             | ast::Pat::QualCons(_, _, ps)
             | ast::Pat::Tuple(ps)

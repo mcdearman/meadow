@@ -467,11 +467,19 @@ impl Spec {
             let kinds: Vec<VarKind> = function.body.binders.iter().map(|b| b.kind).collect();
             (function.body.params.len(), kinds, function.selects)
         };
-        let unknown = tys
-            .iter()
-            .zip(&kinds)
-            .any(|(t, k)| !matches!(k, VarKind::Effect) && open(t));
-        if args.len() < count || tys.len() != kinds.len() || unknown {
+        // The caller's own type variables among the types: a release build
+        // copies at them too -- see [`Spec::copy`] -- and a debug build waits
+        // for the caller to be copied.
+        let mut vars = Vec::new();
+        for (t, k) in tys.iter().zip(&kinds) {
+            if !matches!(k, VarKind::Effect) && open(t) && !type_vars(t, &mut vars) {
+                return None;
+            }
+        }
+        if args.len() < count
+            || tys.len() != kinds.len()
+            || (self.limit.is_some() && !vars.is_empty())
+        {
             return None;
         }
         let mut dicts: Vec<Var> = Vec::with_capacity(count);
@@ -480,7 +488,17 @@ impl Spec {
         }
         let head = match selects {
             Some((i, label)) => self.field(dicts[i], label)?,
-            None => Term::Var(self.copy(f, &tys, &dicts)?),
+            None => {
+                let copy = Term::Var(self.copy(f, &tys, &dicts, &vars)?);
+                if vars.is_empty() {
+                    copy
+                } else {
+                    Term::TyApp(
+                        Arc::new(copy),
+                        vars.iter().map(|v| InferType::Var(*v)).collect(),
+                    )
+                }
+            }
         };
         Some(
             args[count..]
@@ -490,7 +508,16 @@ impl Spec {
     }
 
     /// The copy of `f` at `tys` and `dicts`, made if it has not been.
-    fn copy(&mut self, f: Var, tys: &[Ty], dicts: &[Var]) -> Option<Var> {
+    ///
+    /// `vars` are the caller's own type variables among `tys`, and the copy
+    /// is generic in them: its dictionaries are what is known, and the types
+    /// it is at are whatever the caller's turn out to be. A function called
+    /// inside a `runSt` -- whose state type no caller ever knows, because
+    /// `runSt` asks for a body that works at every one -- is where it
+    /// matters: `==` at a known type, through a helper generic in the state,
+    /// was a dictionary looked up at run time at every call, never copied at
+    /// all. The representation passes after this copy the copy in their turn.
+    fn copy(&mut self, f: Var, tys: &[Ty], dicts: &[Var], vars: &[u32]) -> Option<Var> {
         let key = (f, format!("{tys:?}{dicts:?}"));
         if let Some(v) = self.copies.get(&key) {
             return Some(*v);
@@ -561,12 +588,51 @@ impl Spec {
         self.depth += 1;
         let term = self.term(&body);
         self.depth -= 1;
+        let binders: Vec<TyVar> = vars
+            .iter()
+            .map(|v| TyVar {
+                id: *v,
+                kind: VarKind::Type,
+            })
+            .collect();
+        let (poly, term) = if binders.is_empty() {
+            (Poly::mono(ty), term)
+        } else {
+            (
+                Poly {
+                    binders: binders.clone(),
+                    ty,
+                },
+                Term::TyLam(binders, Arc::new(term)),
+            )
+        };
         self.made.push(Def {
             var,
             name,
-            poly: Poly::mono(ty),
+            poly,
             term,
         });
         Some(var)
+    }
+}
+
+/// The type variables `t` mentions, into `out` once each -- or `false`, if it
+/// mentions one a copy could not simply be generic in: a row's, or a bound
+/// one.
+fn type_vars(t: &Ty, out: &mut Vec<u32>) -> bool {
+    match t {
+        InferType::Var(v) => {
+            if !out.contains(v) {
+                out.push(*v);
+            }
+            true
+        }
+        InferType::Bound(_) => false,
+        InferType::RowEmpty | InferType::Error => true,
+        InferType::Con(_, args) | InferType::Tuple(args) => args.iter().all(|a| type_vars(a, out)),
+        InferType::Fun(params, ret, _) => {
+            params.iter().all(|p| type_vars(p, out)) && type_vars(ret, out)
+        }
+        InferType::Record(_) | InferType::RowExtend(..) => !open(t),
     }
 }

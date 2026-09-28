@@ -940,6 +940,24 @@ fn constructors_print_bare_and_agree() {
     );
 }
 
+/// A definition that is a constructor applied to nothing is written in where
+/// it is mentioned, as a literal is -- including a generic one's copy at each
+/// type it is used at -- rather than kept and asked for.
+#[test]
+fn a_constant_constructor_is_the_same_wherever_it_is_mentioned() {
+    assert_eq!(
+        agree(
+            "use M.*\ndata M = A | B Int\n\
+             def none : M = A\n\
+             def nothing : [a;] = [;]\n\
+             fun count (n : Int) (acc : Int) : Int =\n\
+             \x20 if n == 0 then acc else count (n - 1) (match none with | A -> acc + 1 | B _ -> acc)\n\
+             def main = (count 10 0, 1 :: nothing, \"x\" :: nothing)"
+        ),
+        "(10, [1], [\"x\"])"
+    );
+}
+
 /// `.field` on a `record` declaration's value, which is constructor data with
 /// named fields rather than an anonymous record. The CEK machine looked the
 /// name up in the constructor's field list; the VM and the sequent machine only
@@ -961,6 +979,19 @@ fn a_records_fields_select_by_name_everywhere() {
              def main = let p = Pair { first = 1, second = 2 } in (p.first, p.second)"
         ),
         "(1, 2)"
+    );
+    // Selected where only the type says which record it is -- a field read,
+    // not a search by name -- of a record with parameters and an unboxed field
+    // beside boxed ones.
+    assert_eq!(
+        agree(
+            "record Box a = { item : a, count : Int, weight : Float }\n\
+             fun weigh (b : Box a) : Float = b.weight *. 2.0\n\
+             fun first (b : Box [Int;]) : [Int;] = b.item\n\
+             def main = let b = Box { weight = 1.5, item = [4; 5], count = 3 } in\n\
+             \x20 (weigh b, first b, b.count)"
+        ),
+        "(3.0, [4; 5], 3)"
     );
 }
 

@@ -307,6 +307,16 @@ pub enum Statement {
 /// The paper's is a bare string interpreted by the backend (`"add"`, `"ifz"`,
 /// `"lit_5"`). Naming the three kinds keeps the lowering from building strings
 /// only to parse them again.
+/// Where a label is in a record whose type is a closed row: its place among
+/// the labels in the order a record keeps them -- the interned names' -- and
+/// how many labels there are. A back end that lays a record out in that order
+/// reads the field there, rather than searching the labels at run time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Place {
+    pub at: u32,
+    pub of: u32,
+}
+
 #[derive(Debug, Clone)]
 pub enum Extern {
     /// Produce a constant. One continuation, which binds it.
@@ -341,10 +351,11 @@ pub enum Extern {
 
     /// Build a record. The labels name the arguments, in the same order.
     Record(Vec<InternedString>),
-    /// `r.label`.
-    Select(InternedString),
-    /// `{ r | label = v }` — one argument the record, one the value.
-    Extend(InternedString),
+    /// `r.label`, and where it is, if the record's type says.
+    Select(InternedString, Option<Place>),
+    /// `{ r | label = v }` — one argument the record, one the value — and
+    /// where the label is, if the record's type says it has it already.
+    Extend(InternedString, Option<Place>),
     /// Build the builtin `Array` from its arguments.
     Array,
 
@@ -416,6 +427,13 @@ pub struct Program {
     /// For a name holding a thread, a `Task a`: how `a` is represented, which
     /// is what the thread answers with.
     pub threads: std::collections::HashMap<Name, Rep>,
+    /// The blocks whose code can never have its activation captured: a
+    /// definition's, or a direct entry point's, that performs nothing,
+    /// handles nothing and calls nothing that might -- which is what taking
+    /// no evidence says. A continuation made in one runs once, before the
+    /// block's caller goes on, and so may borrow what the block borrowed: see
+    /// `meadow_llvm::linear`.
+    pub pure: std::collections::HashSet<Label>,
 }
 
 impl Program {

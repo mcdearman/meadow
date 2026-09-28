@@ -1032,6 +1032,10 @@ impl Resolver {
                         what: NameRef::Value(*id),
                     });
                 }
+                // `P`, a pattern synonym: its matcher and its builder.
+                if part_of_synonym(n, &name) && note(*v, &mut found, &mut hidden) {
+                    self.scope.push((*n, *id));
+                }
             }
             for (n, a, v) in &frame.tycons {
                 if *n == name && note(*v, &mut found, &mut hidden) {
@@ -2070,6 +2074,7 @@ impl Resolver {
         match pat.value() {
             ast::Pat::Var(n) => self.duplicates.contains(&n.span),
             ast::Pat::As(n, p) => self.duplicates.contains(&n.span) || self.binds_duplicate(p),
+            ast::Pat::View(_, p) => self.binds_duplicate(p),
             ast::Pat::Tuple(ps)
             | ast::Pat::List(ps)
             | ast::Pat::Vector(ps)
@@ -2089,6 +2094,7 @@ impl Resolver {
                 self.predeclare_pat(p);
             }
             ast::Pat::Ann(p, _) => self.predeclare_pat(p),
+            ast::Pat::View(_, p) => self.predeclare_pat(p),
             ast::Pat::Tuple(ps)
             | ast::Pat::List(ps)
             | ast::Pat::Vector(ps)
@@ -3133,6 +3139,11 @@ impl Resolver {
         // is `Type.Ctor`, and the bare spelling is only how this module is
         // allowed to write it.
         let bare = *name.value();
+        if !self.is_known_ctor(bare)
+            && let Some(built) = self.synonym_expr(span, name, args)
+        {
+            return built;
+        }
         let cands = self.ctor_candidates(bare);
         let cname = cands.first().copied().unwrap_or(bare);
         if let [only] = args {
@@ -3214,6 +3225,25 @@ impl Resolver {
                     expr.span,
                 );
                 self.node(hir::Expr::Error, expr.span)
+            }
+            // `$m?A`, the matcher of the pattern synonym `A`, however many
+            // parameters it has: what `pattern A | B` names.
+            ast::Expr::Var(name) if name.value().starts_with("$m?") => {
+                let bare = InternedString::from(&name.value()[3..]);
+                let found = self.synonym_arity(bare).and_then(|n| {
+                    self.value_use(
+                        InternedString::from(format!("$m{n}{bare}").as_str()),
+                        name.span,
+                    )
+                });
+                found.unwrap_or_else(|| {
+                    self.error(
+                        format!("`{bare}` is not a pattern synonym"),
+                        "`pattern A | B` names pattern synonyms".to_string(),
+                        name.span,
+                    );
+                    self.node(hir::Expr::Error, expr.span)
+                })
             }
             ast::Expr::Var(name) => {
                 let ids = self.lookup_all(*name.value());
@@ -3474,6 +3504,11 @@ impl Resolver {
         // is `Type.Ctor`, and the bare spelling is only how this module is
         // allowed to write it.
         let bare = *name.value();
+        if !self.is_known_ctor(bare)
+            && let Some(matched) = self.synonym_pat(span, name, args)
+        {
+            return matched;
+        }
         let cands = self.ctor_candidates(bare);
         let cname = cands.first().copied().unwrap_or(bare);
         if let [only] = args {
@@ -3493,6 +3528,116 @@ impl Resolver {
         }
         let ra = args.iter().map(|p| self.resolve_pat(p)).collect_vec();
         self.node(hir::Pat::Cons(label, ra), span)
+    }
+
+    /// The functions in scope named `name`, as a use of it: the first, and an
+    /// overload of them all when there are more.
+    fn value_use(&mut self, name: InternedString, span: Span) -> Option<hir::LExpr> {
+        let ids = self.lookup_all(name);
+        let &first = ids.first()?;
+        let v = self.node(first, span);
+        if ids.len() > 1 {
+            self.overload(v.id, ids.into_iter().map(hir::Alt::Value).collect());
+        }
+        Some(self.node(hir::Expr::Var(v), span))
+    }
+
+    /// `P p1 p2`, where `P` is a pattern synonym: the view of its matcher,
+    /// `($m2P -> [(p1, p2);])` -- see the parser's `synonym`. `None` when no
+    /// synonym `P` is in scope.
+    fn synonym_pat(
+        &mut self,
+        span: Span,
+        name: &ast::Ident,
+        args: &[ast::LPat],
+    ) -> Option<hir::LPat> {
+        let bare = *name.value();
+        let matcher = InternedString::from(format!("$m{}{bare}", args.len()).as_str());
+        let Some(f) = self.value_use(matcher, name.span) else {
+            let arity = self.synonym_arity(bare)?;
+            self.error(
+                format!(
+                    "the pattern `{bare}` takes {arity} argument{}, not {}",
+                    plural(arity),
+                    args.len()
+                ),
+                format!("`{bare}` is a pattern synonym of {arity}"),
+                span,
+            );
+            args.iter().for_each(|p| {
+                self.resolve_pat(p);
+            });
+            return Some(self.node(hir::Pat::Error, span));
+        };
+        self.extra_refs.push(RefSite {
+            span: name.span,
+            what: NameRef::Value(match f.value() {
+                hir::Expr::Var(v) => *v.value(),
+                _ => unreachable!("a use of a value"),
+            }),
+        });
+        let mut ps = args.iter().map(|p| self.resolve_pat(p)).collect_vec();
+        let answer = match ps.len() {
+            0 => {
+                let yes = self.node(InternedString::from("Bool.True"), name.span);
+                hir::Pat::Cons(yes, Vec::new())
+            }
+            1 => hir::Pat::List(ps),
+            _ => {
+                let tuple = self.node(hir::Pat::Tuple(std::mem::take(&mut ps)), span);
+                hir::Pat::List(vec![tuple])
+            }
+        };
+        let answer = self.node(answer, span);
+        Some(self.node(hir::Pat::View(f, answer), span))
+    }
+
+    /// `P e1 e2` in an expression, where `P` is a pattern synonym: its
+    /// builder, `$bP e1 e2`. `None` when no synonym `P` is in scope; an error
+    /// when one is, and only matches.
+    fn synonym_expr(
+        &mut self,
+        span: Span,
+        name: &ast::Ident,
+        args: &[ast::LExpr],
+    ) -> Option<hir::LExpr> {
+        let bare = *name.value();
+        let builder = InternedString::from(format!("$b{bare}").as_str());
+        let Some(f) = self.value_use(builder, name.span) else {
+            self.synonym_arity(bare)?;
+            self.error(
+                format!("`{bare}` is a pattern synonym that only matches"),
+                format!(
+                    "`pattern {bare} … = …` builds as it matches; `pattern {bare} … <- … where {bare} … = …` says how"
+                ),
+                name.span,
+            );
+            args.iter().for_each(|a| {
+                self.resolve_expr(a);
+            });
+            return Some(self.node(hir::Expr::Error, span));
+        };
+        if let hir::Expr::Var(v) = f.value() {
+            self.extra_refs.push(RefSite {
+                span: name.span,
+                what: NameRef::Value(*v.value()),
+            });
+        }
+        if args.is_empty() {
+            return Some(f);
+        }
+        let ra = args.iter().map(|a| self.resolve_expr(a)).collect_vec();
+        Some(self.node(hir::Expr::App(f, ra), span))
+    }
+
+    /// How many arguments the pattern synonym `name` in scope takes, if there
+    /// is one.
+    fn synonym_arity(&self, name: InternedString) -> Option<usize> {
+        (0..=MAX_SYNONYM_ARITY).find(|n| {
+            !self
+                .lookup_all(InternedString::from(format!("$m{n}{name}").as_str()))
+                .is_empty()
+        })
     }
 
     /// Which candidate a named-field constructor `C { a = .., b = .. }` is, and
@@ -3647,6 +3792,13 @@ impl Resolver {
                     .collect_vec();
                 self.node(hir::Pat::Record(rfields, *open), pat.span)
             }
+            // The view is an expression in the scope the pattern is in, with
+            // what the pattern has bound to its left.
+            ast::Pat::View(f, p) => {
+                let rf = self.resolve_expr(f);
+                let rp = self.resolve_pat(p);
+                self.node(hir::Pat::View(rf, rp), pat.span)
+            }
         }
     }
 
@@ -3800,6 +3952,27 @@ fn method_name(bind: &ast::Bind) -> Option<&ast::Ident> {
     }
 }
 
+/// The most parameters a pattern synonym is looked for with, when one is
+/// used with a number it does not take.
+const MAX_SYNONYM_ARITY: usize = 16;
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// Whether `value`, a module's function, is part of the pattern synonym
+/// `name` -- its matcher `$m<arity><name>` or its builder `$b<name>` -- which
+/// naming `name` in a `use` brings along.
+pub fn part_of_synonym(value: &str, name: &str) -> bool {
+    if let Some(rest) = value.strip_prefix("$b") {
+        return rest == name;
+    }
+    value
+        .strip_prefix("$m")
+        .map(|rest| rest.trim_start_matches(|c: char| c.is_ascii_digit()))
+        .is_some_and(|rest| rest == name && value.len() > 2 + name.len())
+}
+
 fn collect_hir_pat_vars(pat: &hir::LPat, out: &mut Vec<VarId>) {
     match pat.value() {
         hir::Pat::Var(id) => out.push(*id.value()),
@@ -3810,6 +3983,7 @@ fn collect_hir_pat_vars(pat: &hir::LPat, out: &mut Vec<VarId>) {
         // `@pub def x : Int = 1` is a binding of `(x : Int)`: the name is under
         // the annotation, and has to be exported all the same.
         hir::Pat::Ann(inner, _) => collect_hir_pat_vars(inner, out),
+        hir::Pat::View(_, inner) => collect_hir_pat_vars(inner, out),
         hir::Pat::Tuple(ps) | hir::Pat::List(ps) | hir::Pat::Cons(_, ps) | hir::Pat::Array(ps) => {
             ps.iter().for_each(|p| collect_hir_pat_vars(p, out))
         }

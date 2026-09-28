@@ -297,6 +297,12 @@ impl Indenter {
             return self.body() + UNIT;
         }
 
+        // A `where` that heads its line -- a pattern synonym's builder, or an
+        // `impl`'s bounds -- hangs one unit under what it belongs to.
+        if first == "where" {
+            return self.body() + UNIT;
+        }
+
         // `then` / `else` line up with their `if`.
         if first == "then" || first == "else" {
             while let Some(&frame) = self.stack.last() {
@@ -588,6 +594,10 @@ fn starts_declaration(toks: &[Tok<'_>]) -> bool {
     match toks.first_text() {
         "mod" | "use" | "def" | "fun" | "data" | "record" | "effect" | "type" | "trait"
         | "impl" | "infix" | "infixl" | "infixr" => true,
+        // `pattern P …` — a pattern synonym; `pattern` is a name anywhere else.
+        "pattern" => toks
+            .get(1)
+            .is_some_and(|t| t.text.starts_with(|c: char| c.is_uppercase())),
         // `@pub`, `@attr(…)` — an attribute, not a user-defined `@` operator.
         "@" => toks
             .get(1)

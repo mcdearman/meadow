@@ -170,6 +170,29 @@ pub struct Lowered {
     pub unsupported: HashSet<Unsupported>,
 }
 
+/// `MEADOW_TIME_PASSES=1`: how long each pass over the program took, on
+/// stderr, for finding the one that does not scale.
+struct Timing(bool);
+
+impl Timing {
+    fn from_env() -> Timing {
+        Timing(std::env::var_os("MEADOW_TIME_PASSES").is_some())
+    }
+
+    fn pass<T>(&self, name: &str, f: impl FnOnce() -> T) -> T {
+        let at = std::time::Instant::now();
+        let out = f();
+        self.since(name, at);
+        out
+    }
+
+    fn since(&self, name: &str, at: std::time::Instant) {
+        if self.0 {
+            eprintln!("  {name:<14} {:>10.1?}", at.elapsed());
+        }
+    }
+}
+
 /// Lower a whole program.
 ///
 /// Fresh names continue above the highest [`VarId`] the front end used, so an
@@ -191,32 +214,42 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     // Before either, while a call still says exactly which types and which
     // dictionaries it is at: a function that takes dictionaries is copied for
     // the ones it is known to be given -- see [`core::dictionaries`].
-    let program = &core::dictionaries::program(program, opt);
-    let specialized = if opt.specializes() {
-        core::specialize::release(program)
-    } else {
-        core::specialize::program(program)
-    };
+    let timing = Timing::from_env();
+    let program = &timing.pass("dictionaries", || core::dictionaries::program(program, opt));
+    let specialized = timing.pass("specialize", || {
+        if opt.specializes() {
+            core::specialize::release(program)
+        } else {
+            core::specialize::program(program)
+        }
+    });
     // `joins` before `globals`: a mention of a global becomes a jump to its
     // definition there, and a join point wants to be found while the calls to
     // it still look like calls. `simplify` between the two, for the same
     // reason on one side -- it needs join points to put a pushed-in context in
     // -- and because on the other a jump to a definition is not a term it can
     // look into.
-    let literals = core::globals::inline_literals(&core::bools::program(&specialized));
-    let inlined = if opt.inlines() {
-        core::inline::program(&literals)
-    } else {
-        literals.clone()
-    };
+    let literals = timing.pass("literals", || {
+        core::globals::inline_literals(&core::bools::program(&specialized))
+    });
+    let inlined = timing.pass("inline", || {
+        if opt.inlines() {
+            core::inline::program(&literals)
+        } else {
+            literals.clone()
+        }
+    });
     // Tail recursion modulo cons after `simplify`, which would otherwise see a
     // cell's placeholder as the value of its field -- see [`core::trmc`].
     // Local functions are lifted to the top level before it, so that a local
     // loop is a definition with a direct entry rather than a closure, and is a
     // candidate for TRMC like any other -- see [`core::lift`].
-    let simplified = core::simplify::program(&core::joins::program(&inlined));
-    let lifted = core::lift::program(&simplified, opt);
-    let program = &core::globals::program(&core::trmc::program(&lifted, opt));
+    let joined = timing.pass("joins", || core::joins::program(&inlined));
+    let simplified = timing.pass("simplify", || core::simplify::program(&joined));
+    let lifted = timing.pass("lift", || core::lift::program(&simplified, opt));
+    let trmc = timing.pass("trmc", || core::trmc::program(&lifted, opt));
+    let program = &timing.pass("globals", || core::globals::program(&trmc));
+    let lowering = std::time::Instant::now();
     if let Ok(want) = std::env::var("MEADOW_DUMP_CORE") {
         for (stage, p) in [("before", &literals), ("after", program)] {
             for d in &p.defs {
@@ -261,6 +294,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         origins: program.origins.clone(),
         results: HashMap::new(),
         threads: HashMap::new(),
+        pure: HashSet::new(),
     };
     for d in &program.defs {
         lower.polys.insert(d.var, d.poly.clone());
@@ -324,6 +358,9 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         let k = lower.function_return();
         let mut params = desc_names.clone();
         params.push(k);
+        if !lower.needs_ev(term) {
+            lower.pure.insert(label);
+        }
         let body = if lower.needs_ev(term) {
             let ev = lower.fresh_ref();
             lower.ev = ev;
@@ -368,6 +405,8 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
             block_params.push(k);
             if lower.worker_ev.contains(&d.var) {
                 block_params.push(ev);
+            } else {
+                lower.pure.insert(worker);
             }
             let body = lower.expr(body, &block_params, k);
             lower.defs.push(Def {
@@ -464,6 +503,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         "definitions needing descriptors they are not passed: {unmet:?}"
     );
 
+    timing.since("lower", lowering);
     Lowered {
         program: Program {
             defs,
@@ -481,6 +521,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
             reps,
             results: lower.results,
             threads: lower.threads,
+            pure: lower.pure,
         },
         unsupported: lower.unsupported,
     }
@@ -589,6 +630,8 @@ struct Lower {
     results: HashMap<Label, Rep>,
     /// See [`Program::threads`].
     threads: HashMap<Name, Rep>,
+    /// See [`Program::pure`].
+    pure: HashSet<Label>,
 }
 
 /// The constructor of an evidence entry: `#ev(key, clause, target, rest)`.
@@ -887,6 +930,42 @@ impl Lower {
             cur = rest;
         }
         None
+    }
+
+    /// Where a value of the named type `of` keeps its field `label`, if every
+    /// constructor of the type has that field in the same place: a `record`
+    /// type's, or a `data` type's whose constructors name their fields. Its
+    /// selection is then a field read, not a search of the labels at run time.
+    fn field_index(&self, of: Option<&core::Ty>, label: InternedString) -> Option<usize> {
+        let Some(core::Ty::Con(name, _)) = of else {
+            return None;
+        };
+        let mut at = None;
+        for v in self.variants.get(name)? {
+            let i = v.labels.as_ref()?.iter().position(|l| *l == label)?;
+            if at.is_some_and(|a| a != i) {
+                return None;
+            }
+            at = Some(i);
+        }
+        at
+    }
+
+    /// `.label` of the value `r` holds, which a term of type `of` computed: a
+    /// field read where the type says where the field is.
+    fn select(&self, of: Option<core::Ty>, r: Name, label: InternedString) -> Extern {
+        let of = of.or_else(|| self.type_of_name(r));
+        match self.field_index(of.as_ref(), label) {
+            Some(i) => Extern::Field(i),
+            None => Extern::Select(label, place(of.as_ref(), label)),
+        }
+    }
+
+    /// `{ r | label = v }` of the value `r` holds, which a term of type `of`
+    /// computed.
+    fn extend(&self, of: Option<core::Ty>, r: Name, label: InternedString) -> Extern {
+        let of = of.or_else(|| self.type_of_name(r));
+        Extern::Extend(label, place(of.as_ref(), label))
     }
 
     /// A fresh name for a function's own return continuation -- see
@@ -1540,12 +1619,14 @@ impl Lower {
 
             Term::Sel(rec, label, _) => {
                 let label = *label;
+                let of = self.type_of(rec);
                 self.direct(
                     rec,
                     env,
                     None,
                     Box::new(move |this, r, env1| {
-                        this.produces_as(Extern::Select(label), vec![r], &env1, ty, name, f)
+                        let op = this.select(of, r, label);
+                        this.produces_as(op, vec![r], &env1, ty, name, f)
                     }),
                 )
             }
@@ -1565,8 +1646,10 @@ impl Lower {
             Term::Extend(rec, label, val) => {
                 let label = *label;
                 let terms = vec![(**rec).clone(), (**val).clone()];
+                let of = self.type_of(rec);
                 self.direct_all(&terms, env.to_vec(), move |this, xs, env1| {
-                    this.produces_as(Extern::Extend(label), xs, &env1, ty, name, f)
+                    let op = this.extend(of, xs[0], label);
+                    this.produces_as(op, xs, &env1, ty, name, f)
                 })
             }
 
@@ -2176,15 +2259,15 @@ impl Lower {
                 let label = *label;
                 let ty = Some(ty.clone());
                 let keep = restrict(env, &[k].into_iter().collect());
+                let of = self.type_of(rec);
                 self.bind(
                     rec,
                     env,
                     &keep,
                     None,
                     Box::new(move |this, r, env1| {
-                        this.produces(Extern::Select(label), vec![r], &env1, ty, |this, out, _| {
-                            this.ret(k, out)
-                        })
+                        let op = this.select(of, r, label);
+                        this.produces(op, vec![r], &env1, ty, |this, out, _| this.ret(k, out))
                     }),
                 )
             }
@@ -2193,10 +2276,10 @@ impl Lower {
                 let label = *label;
                 let terms = vec![(**rec).clone(), (**val).clone()];
                 let ty = self.type_of(e);
+                let of = self.type_of(rec);
                 self.sequence(&terms, env, k, move |this, xs, env1| {
-                    this.produces(Extern::Extend(label), xs, &env1, ty, |this, out, _| {
-                        this.ret(k, out)
-                    })
+                    let op = this.extend(of, xs[0], label);
+                    this.produces(op, xs, &env1, ty, |this, out, _| this.ret(k, out))
                 })
             }
 
@@ -2783,23 +2866,18 @@ impl Lower {
                         Some(((label, p), rest)) => {
                             let of = this.type_of_name(subject);
                             let ty = field_type(Lower::label_type(of.as_ref(), *label), p);
-                            this.produces(
-                                Extern::Select(*label),
-                                vec![subject],
-                                &env,
-                                ty,
-                                |this, x, env1| {
-                                    this.match_pat(
-                                        p,
-                                        x,
-                                        env1,
-                                        fail,
-                                        Box::new(move |this, env2| {
-                                            go(this, rest, subject, env2, fail, ok)
-                                        }),
-                                    )
-                                },
-                            )
+                            let op = this.select(of, subject, *label);
+                            this.produces(op, vec![subject], &env, ty, |this, x, env1| {
+                                this.match_pat(
+                                    p,
+                                    x,
+                                    env1,
+                                    fail,
+                                    Box::new(move |this, env2| {
+                                        go(this, rest, subject, env2, fail, ok)
+                                    }),
+                                )
+                            })
                         }
                     }
                 }
@@ -3408,7 +3486,32 @@ fn con(name: &str) -> core::Ty {
     core::Ty::Con(InternedString::from(name), Vec::new())
 }
 
-/// The type of a literal.
+/// Where `label` is in a record of type `of`, if that is a closed row that has
+/// it -- and so exactly the labels it lists, whatever built the record.
+fn place(of: Option<&core::Ty>, label: InternedString) -> Option<crate::Place> {
+    let core::Ty::Record(row) = of? else {
+        return None;
+    };
+    let mut labels = Vec::new();
+    let mut cur = &**row;
+    while let core::Ty::RowExtend(l, _, rest) = cur {
+        labels.push(*l);
+        cur = rest;
+    }
+    if !matches!(cur, core::Ty::RowEmpty) || !labels.contains(&label) {
+        return None;
+    }
+    // A record holds each label once: a row that lists one twice -- which is
+    // what `type_of` makes of `{ r | x = 1 }` where `r` has an `x` -- means
+    // the one field.
+    labels.sort();
+    labels.dedup();
+    Some(crate::Place {
+        at: labels.iter().position(|l| *l == label)? as u32,
+        of: labels.len() as u32,
+    })
+}
+
 /// The type of a field a pattern matches: `derived` from the value's type,
 /// unless that says nothing -- because the value's type is not known, or is
 /// a specialized copy's `#Ref`, which is a representation and not a type --

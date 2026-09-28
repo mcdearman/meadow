@@ -49,6 +49,36 @@
 //! could be used. `map` over a list it holds the only reference to rebuilds
 //! the list in place.
 //!
+//! **Borrowing** (after Lean 4's borrow inference, Ullrich and de Moura,
+//! _Counting Immutable Beans_, IFL 2019). A definition's parameter is
+//! *borrowed* when its block only reads it: switches on it, hands it to
+//! primitives, or passes it on to another borrowed parameter. The caller keeps
+//! its reference; the block neither erases it nor, reading its fields, counts
+//! them -- a switch on a borrowed name keeps it, and its fields are borrowed
+//! too. Where a borrowed name is consumed after all -- built into a block,
+//! captured, invoked with, passed to an owned parameter -- it is shared first.
+//!
+//! Which parameters are borrowed is worked out over the whole program
+//! ([`program`]): each starts borrowed, and one becomes owned when its block
+//! consumes it, or when a switch on it could rebuild in its block. Only ever
+//! from borrowed to owned, so it ends.
+//!
+//! A caller that hands a borrowed parameter an owned value it has no further
+//! use for -- `check (build n)` -- would have to keep it past the call to give
+//! it up: Lean's `dec` after a call, which walks a tree a second time to free
+//! what the callee could have freed as it went. It calls a copy of the block
+//! instead, in which those parameters are owned: made for each set of them
+//! some caller needs, and linearized like any other block. A copy that
+//! recurses on what it owns calls itself.
+//!
+//! A non-tail call is a frame and a jump. In a block whose activation can
+//! never be captured ([`Program::pure`]), a frame handed straight on as the
+//! jump's continuation runs before the block's caller goes on, so it may
+//! borrow what the block borrowed: its method takes those parameters
+//! borrowed. In any other block a frame owns what it holds, since a handler
+//! may keep a captured continuation longer than the block's caller keeps
+//! anything.
+//!
 //! A name whose representation is not a reference is tracked the same way --
 //! the environment is one list -- but sharing and erasing it does nothing, so
 //! no statement is written for it. A name of a type variable's type is shared
@@ -56,6 +86,7 @@
 //! asks the descriptor.
 
 use meadow_seq::{Block, Extern, Label, Name, Program, Rep, Statement, Tag};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -142,11 +173,54 @@ pub struct SwitchArm {
     pub body: L,
 }
 
-/// A method: what it binds, and its body, which owns all of it.
+/// A method: what it binds, and its body, which owns all of it but the
+/// parameters `borrowed` says it borrows.
 #[derive(Debug, Clone)]
 pub struct LBlock {
     pub params: Vec<Name>,
+    pub borrowed: Vec<bool>,
     pub body: L,
+}
+
+impl LBlock {
+    /// Whether parameter `i` is borrowed: never given up by this block.
+    pub fn borrows(&self, i: usize) -> bool {
+        self.borrowed.get(i).copied().unwrap_or(false)
+    }
+}
+
+/// Which parameters of each definition's block are borrowed: see the module
+/// docs.
+pub type Borrows = HashMap<Label, Vec<bool>>;
+
+/// How a block is entered with each parameter: owned, or borrowed -- and
+/// then, when it is one of the definition's own parameters under another
+/// name, which.
+#[derive(Debug, Clone, Copy)]
+enum Param {
+    Owned,
+    Borrowed(Option<usize>),
+}
+
+/// What a block is linearized knowing: which parameters are borrowed where,
+/// the definition it belongs to, and whether its activation can be captured.
+struct Cx<'p> {
+    borrows: &'p Borrows,
+    label: Option<Label>,
+    pure: bool,
+    copies: Option<&'p RefCell<Copies>>,
+}
+
+/// The copies of blocks made so far, in which some of the parameters the
+/// block borrows are owned: see the module docs.
+#[derive(Default)]
+struct Copies {
+    /// Each copy's label, by the block and which of its parameters it owns.
+    of: HashMap<(Label, Vec<bool>), Label>,
+    /// Each copy: its label, its block's, and which parameters it owns.
+    made: Vec<(Label, Label, Vec<bool>)>,
+    /// The next label free.
+    next: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,28 +232,329 @@ fn err<T>(msg: impl Into<String>) -> Result<T, Error> {
     Err(Error { msg: msg.into() })
 }
 
-/// A definition's block, linear.
+/// A definition's block, linear, owning everything it is given.
 pub fn block(program: &Program, b: &Block) -> Result<LBlock, Error> {
+    let none = Borrows::new();
+    let cx = Cx {
+        borrows: &none,
+        label: None,
+        pure: false,
+        copies: None,
+    };
     let mut tokens = 0;
-    block_in(program, b, &mut tokens)
+    Ok(block_in(program, b, &mut tokens, &cx, &[])?.0)
+}
+
+/// Every definition's block, linear, borrowing what they can, and the copies
+/// of blocks that own some of what those borrow: see the module docs. Each
+/// with the definition it is of, by its place in the program, and its label.
+/// `pinned` are the blocks something outside the program enters -- the entry
+/// point, the tests -- which own everything they are given.
+pub fn program(program: &Program, pinned: &[Label]) -> Result<Vec<(usize, Label, LBlock)>, Error> {
+    let defs = &program.defs;
+    let index: HashMap<Label, usize> = defs.iter().enumerate().map(|(i, d)| (d.label, i)).collect();
+    let mut borrows: Borrows = defs
+        .iter()
+        .map(|d| {
+            let on = borrowing() && !pinned.contains(&d.label);
+            (d.label, vec![on; d.block.params.len()])
+        })
+        .collect();
+    // Who jumps to each block: what has to be done again when its parameters
+    // change.
+    let mut callers: HashMap<Label, Vec<usize>> = HashMap::new();
+    for (i, d) in defs.iter().enumerate() {
+        let mut to = Vec::new();
+        jumps(&d.block.body, &mut to);
+        to.sort_by_key(|l| l.0);
+        to.dedup();
+        for l in to {
+            callers.entry(l).or_default().push(i);
+        }
+    }
+    // What can run at all: the pinned blocks and what they jump to, and so
+    // on. A block nothing reaches -- the closure a function would be, where
+    // the function is never used as a value -- decides nothing about the
+    // blocks it would call.
+    let mut reachable = vec![false; defs.len()];
+    let mut todo: Vec<usize> = pinned
+        .iter()
+        .filter_map(|l| index.get(l).copied())
+        .collect();
+    while let Some(i) = todo.pop() {
+        if std::mem::replace(&mut reachable[i], true) {
+            continue;
+        }
+        let mut to = Vec::new();
+        jumps(&defs[i].block.body, &mut to);
+        todo.extend(to.iter().filter_map(|l| index.get(l).copied()));
+    }
+    // The copies are numbered after the definitions, in the queue as in the
+    // labels: copy `c` is `defs.len() + c`, labelled past every definition.
+    let copies = RefCell::new(Copies {
+        next: defs.iter().map(|d| d.label.0 + 1).max().unwrap_or(0),
+        ..Copies::default()
+    });
+    let mut out: Vec<Option<LBlock>> = vec![None; defs.len()];
+    let mut queue: std::collections::VecDeque<usize> = (0..defs.len()).collect();
+    let mut queued = vec![true; defs.len()];
+    while let Some(i) = queue.pop_front() {
+        queued[i] = false;
+        // A definition, or a copy of one owning `owns`.
+        let (d, owns) = match i.checked_sub(defs.len()) {
+            None => (&defs[i], None),
+            Some(c) => {
+                let (_, of, owns) = copies.borrow().made[c].clone();
+                (&defs[index[&of]], Some(owns))
+            }
+        };
+        let params: Vec<Param> = borrows[&d.label]
+            .iter()
+            .enumerate()
+            .map(|(j, b)| {
+                let owned = owns.as_ref().is_some_and(|o| o[j]);
+                if *b && !owned {
+                    Param::Borrowed(Some(j))
+                } else {
+                    Param::Owned
+                }
+            })
+            .collect();
+        let (lb, forced) = {
+            let cx = Cx {
+                borrows: &borrows,
+                label: Some(d.label),
+                pure: program.pure.contains(&d.label),
+                copies: Some(&copies),
+            };
+            let mut tokens = 0;
+            block_in(program, &d.block, &mut tokens, &cx, &params).map_err(|e| Error {
+                msg: format!("in {}: {}", d.name, e.msg),
+            })?
+        };
+        // Copies this one asked for that are new: linearized in their turn.
+        let made = copies.borrow().made.len();
+        while out.len() < defs.len() + made {
+            out.push(None);
+            reachable.push(true);
+            queued.push(true);
+            queue.push_back(out.len() - 1);
+        }
+        out[i] = Some(lb);
+        if !reachable[i] {
+            continue;
+        }
+        for (l, j) in forced {
+            let Some(flags) = borrows.get_mut(&l) else {
+                continue;
+            };
+            if flags.get(j) != Some(&true) {
+                continue;
+            }
+            flags[j] = false;
+            // The block again, what calls it, and every copy of those.
+            let again: HashSet<usize> = index
+                .get(&l)
+                .copied()
+                .into_iter()
+                .chain(callers.get(&l).into_iter().flatten().copied())
+                .collect();
+            let copied = copies
+                .borrow()
+                .made
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, of, _))| again.contains(&index[of]))
+                .map(|(c, _)| defs.len() + c)
+                .collect::<Vec<_>>();
+            for k in again.into_iter().chain(copied) {
+                if !queued[k] {
+                    queued[k] = true;
+                    queue.push_back(k);
+                }
+            }
+        }
+    }
+    let made = copies.into_inner().made;
+    let mut all: Vec<(usize, Label, LBlock)> = Vec::with_capacity(out.len());
+    for (i, lb) in out.into_iter().enumerate() {
+        let lb = lb.expect("every block linearized");
+        match i.checked_sub(defs.len()) {
+            None => all.push((i, defs[i].label, lb)),
+            Some(c) => all.push((index[&made[c].1], made[c].0, lb)),
+        }
+    }
+    // Only the copies something still calls: one asked for early may have
+    // been left behind when what it owns came to be owned by the block itself.
+    let mut called: HashSet<Label> = HashSet::new();
+    let mut todo: Vec<usize> = (0..defs.len()).collect();
+    let at: HashMap<Label, usize> = all
+        .iter()
+        .enumerate()
+        .map(|(k, (_, l, _))| (*l, k))
+        .collect();
+    let mut seen = vec![false; all.len()];
+    while let Some(k) = todo.pop() {
+        if std::mem::replace(&mut seen[k], true) {
+            continue;
+        }
+        let mut to = HashSet::new();
+        l_jumps(&all[k].2.body, &mut to);
+        for l in to {
+            if called.insert(l)
+                && let Some(&k2) = at.get(&l)
+            {
+                todo.push(k2);
+            }
+        }
+    }
+    all.retain(|(i, l, _)| defs[*i].label == *l || called.contains(l));
+    Ok(all)
+}
+
+/// Every block the linear statement `l` jumps to, its methods' included.
+fn l_jumps(l: &L, out: &mut HashSet<Label>) {
+    match l {
+        L::Share(_, r) | L::Erase(_, r) | L::Rename(_, r) | L::Clean(_, r) => l_jumps(r, out),
+        L::Let { rest, .. } | L::DropReuse { rest, .. } => l_jumps(rest, out),
+        L::Switch { arms, default, .. } => {
+            for a in arms {
+                l_jumps(&a.body, out);
+            }
+            l_jumps(default, out);
+        }
+        L::New { methods, rest, .. } => {
+            for m in methods {
+                l_jumps(&m.body, out);
+            }
+            l_jumps(rest, out);
+        }
+        L::Jump { label, .. } => {
+            out.insert(*label);
+        }
+        L::Extern { blocks, .. } => {
+            for (_, b) in blocks {
+                l_jumps(b, out);
+            }
+        }
+        L::Invoke { .. } | L::Error(_) => {}
+    }
+}
+
+/// Whether to borrow at all: always, unless `MEADOW_NO_BORROW` is set -- which
+/// is for measuring what borrowing is worth, as `MEADOW_NO_REUSE` is reuse.
+fn borrowing() -> bool {
+    std::env::var_os("MEADOW_NO_BORROW").is_none()
+}
+
+/// Every block `s` jumps to, its methods' included.
+fn jumps(s: &Statement, out: &mut Vec<Label>) {
+    match s {
+        Statement::Jump(l) => out.push(*l),
+        Statement::Invoke(..) | Statement::Error(_) => {}
+        Statement::Substitute(_, b) => jumps(&b.body, out),
+        Statement::Mark(_, inner) => jumps(inner, out),
+        Statement::Let { rest, .. } => jumps(rest, out),
+        Statement::New { methods, rest, .. } => {
+            for m in methods {
+                jumps(&m.body, out);
+            }
+            jumps(rest, out);
+        }
+        Statement::Switch { arms, default, .. } => {
+            for (_, a) in arms {
+                jumps(&a.body, out);
+            }
+            jumps(&default.body, out);
+        }
+        Statement::Extern { blocks, .. } => {
+            for b in blocks {
+                jumps(&b.body, out);
+            }
+        }
+    }
+}
+
+/// Whether some path through `s` builds a block of `n` fields -- in `s`, or in
+/// the frames it makes, which run once: what a switch on a name could build
+/// in, were the name its own.
+fn builds(s: &Statement, n: usize, program: &Program) -> bool {
+    match s {
+        Statement::Let { fields, rest, .. } => fields.len() == n || builds(rest, n, program),
+        Statement::Substitute(_, b) => builds(&b.body, n, program),
+        Statement::Mark(_, inner) => builds(inner, n, program),
+        Statement::New {
+            name,
+            methods,
+            rest,
+            ..
+        } => {
+            builds(rest, n, program)
+                || (program.frames.contains(name)
+                    && methods.iter().any(|m| builds(&m.body, n, program)))
+        }
+        Statement::Switch { arms, default, .. } => {
+            arms.iter().any(|(_, a)| builds(&a.body, n, program))
+                || builds(&default.body, n, program)
+        }
+        Statement::Extern { op, blocks, .. } => {
+            !packs(op) && blocks.iter().any(|b| builds(&b.body, n, program))
+        }
+        Statement::Jump(_) | Statement::Invoke(..) | Statement::Error(_) => false,
+    }
 }
 
 /// [`block`], numbering reuse tokens on from `tokens`: a method's are counted
 /// with its definition's, since a token can be carried into a frame's method
-/// and must not meet one of the method's own there.
-fn block_in(program: &Program, b: &Block, tokens: &mut u32) -> Result<LBlock, Error> {
+/// and must not meet one of the method's own there. `params` says how each
+/// parameter is entered, the rest owned. Answers the block, and the
+/// parameters -- of any definition -- that turned out to have to be owned.
+fn block_in(
+    program: &Program,
+    b: &Block,
+    tokens: &mut u32,
+    cx: &Cx<'_>,
+    params: &[Param],
+) -> Result<(LBlock, Vec<(Label, usize)>), Error> {
     let mut pass = Pass {
         program,
         uses: HashMap::new(),
         tokens: *tokens,
+        borrows: cx.borrows,
+        label: cx.label,
+        pure: cx.pure,
+        borrowed: HashSet::new(),
+        origin: HashMap::new(),
+        forced: Vec::new(),
+        copies: cx.copies,
     };
-    let owned: HashSet<Name> = b.params.iter().copied().collect();
+    let mut owned = HashSet::new();
+    let mut borrowed = Vec::with_capacity(b.params.len());
+    for (i, p) in b.params.iter().enumerate() {
+        match params.get(i).copied().unwrap_or(Param::Owned) {
+            Param::Owned => {
+                owned.insert(*p);
+                borrowed.push(false);
+            }
+            Param::Borrowed(origin) => {
+                pass.borrowed.insert(*p);
+                if let Some(j) = origin {
+                    pass.origin.insert(*p, j);
+                }
+                borrowed.push(true);
+            }
+        }
+    }
     let body = pass.stmt(&b.body, &b.params, owned)?;
     *tokens = pass.tokens;
-    Ok(LBlock {
-        params: b.params.clone(),
-        body,
-    })
+    Ok((
+        LBlock {
+            params: b.params.clone(),
+            borrowed,
+            body,
+        },
+        pass.forced,
+    ))
 }
 
 /// Whether `n` is a reuse token: they are numbered down from the top of the
@@ -196,6 +571,23 @@ struct Pass<'p> {
     /// How many reuse tokens this definition has made: each is a name of its
     /// own, from the top of the id space down, where no program's are.
     tokens: u32,
+    /// Which parameters of each definition are borrowed, as far as is known.
+    borrows: &'p Borrows,
+    /// The definition this block is part of.
+    label: Option<Label>,
+    /// Whether this block's activation can never be captured: see
+    /// [`Program::pure`].
+    pure: bool,
+    /// The names that may be used without being owned: borrowed. Names are
+    /// bound once, so one set does for the whole block.
+    borrowed: HashSet<Name>,
+    /// The borrowed names that are the definition's own parameters, under
+    /// whatever name: which.
+    origin: HashMap<Name, usize>,
+    /// Parameters found to have to be owned after all.
+    forced: Vec<(Label, usize)>,
+    /// The copies of blocks that own what they borrow, when there may be.
+    copies: Option<&'p RefCell<Copies>>,
 }
 
 impl<'p> Pass<'p> {
@@ -342,7 +734,7 @@ impl<'p> Pass<'p> {
     /// used once they have been: share what is consumed more than once or
     /// used again, and give up the rest. Answers how many shares of each.
     fn consume(
-        &self,
+        &mut self,
         names: &[Name],
         after: &HashSet<Name>,
         owned: &mut HashSet<Name>,
@@ -357,6 +749,12 @@ impl<'p> Pass<'p> {
         let mut shares = Vec::new();
         for (n, c) in counts {
             if !owned.contains(&n) {
+                // Borrowed: every one of these is a reference of its own.
+                if self.borrowed.contains(&n) {
+                    self.consumed_borrowed(n);
+                    shares.push((n, c));
+                    continue;
+                }
                 return err(format!("{n:?} is consumed but not owned"));
             }
             let again = after.contains(&n);
@@ -366,6 +764,118 @@ impl<'p> Pass<'p> {
             shares.push((n, c - 1 + usize::from(again)));
         }
         Ok(shares)
+    }
+
+    /// Borrowed `n` is consumed: shared. When it is a parameter of the
+    /// definition, the parameter is better owned -- the caller's reference
+    /// handed over, rather than one more made here.
+    fn consumed_borrowed(&mut self, n: Name) {
+        if !self.counted(n) {
+            return;
+        }
+        if let (Some(l), Some(&i)) = (self.label, self.origin.get(&n)) {
+            self.forced.push((l, i));
+        }
+    }
+
+    /// `p` is `v` again, and `v` is borrowed: so is `p`.
+    fn borrow_as(&mut self, p: Name, v: Name) {
+        self.borrowed.insert(p);
+        if let Some(&i) = self.origin.get(&v) {
+            self.origin.insert(p, i);
+        }
+    }
+
+    /// Whether `n` may be read here: owned, or borrowed.
+    fn readable(&self, n: Name, owned: &HashSet<Name>) -> bool {
+        owned.contains(&n) || self.borrowed.contains(&n)
+    }
+
+    /// When `s`, run in `env`, is a jump -- past renamings -- that hands frame
+    /// `k` on as its one frame: what it takes ownership of, its arguments in
+    /// the places the target owns. `None` for anything else.
+    fn chain(&mut self, s: &'p Statement, env: &[Name], k: Name) -> Option<HashSet<Name>> {
+        match s {
+            Statement::Mark(_, inner) => self.chain(inner, env, k),
+            Statement::Substitute(sel, block) => {
+                if sel.iter().filter(|v| **v == k).count() != 1 {
+                    return None;
+                }
+                let kp = block.params[sel.iter().position(|v| *v == k)?];
+                let owns = self.chain(&block.body, &block.params, kp)?;
+                Some(
+                    block
+                        .params
+                        .iter()
+                        .zip(sel)
+                        .filter(|(p, _)| owns.contains(p))
+                        .map(|(_, v)| *v)
+                        .collect(),
+                )
+            }
+            Statement::Jump(label) => {
+                // `k` handed on, and no other frame: so it is the one entered
+                // natively, never built -- see `emit`'s `transfer`.
+                if !env.contains(&k)
+                    || env
+                        .iter()
+                        .any(|n| *n != k && self.program.frames.contains(n))
+                {
+                    return None;
+                }
+                let flags = self.borrows.get(label);
+                let borrows = |i: usize| flags.and_then(|f| f.get(i)).copied().unwrap_or(false);
+                Some(
+                    env.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !borrows(*i))
+                        .map(|(_, n)| *n)
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+
+    /// The jump to `label` with `env`, where `hold` are the owned values it
+    /// hands to parameters that borrow them -- which nothing would give up
+    /// after. A continuation is entered, which consumes it: the parameter it
+    /// is handed to has to be owned. For the rest the jump is to a copy of
+    /// the block that owns them: see the module docs.
+    fn holding(&mut self, label: Label, env: &[Name], hold: &[(usize, Name)]) -> L {
+        let (conts, hold): (Vec<_>, Vec<_>) = hold
+            .iter()
+            .copied()
+            .partition(|(_, n)| self.program.frames.contains(n));
+        for (i, _) in &conts {
+            self.forced.push((label, *i));
+        }
+        let args = env.to_vec();
+        if hold.is_empty() {
+            return L::Jump { label, args };
+        }
+        let Some(copies) = self.copies else {
+            for (i, _) in &hold {
+                self.forced.push((label, *i));
+            }
+            return L::Jump { label, args };
+        };
+        let mut owns = vec![false; env.len()];
+        for (i, _) in &hold {
+            owns[*i] = true;
+        }
+        let mut copies = copies.borrow_mut();
+        let copy = match copies.of.get(&(label, owns.clone())) {
+            Some(l) => *l,
+            None => {
+                let l = Label(copies.next);
+                copies.next += 1;
+                copies.of.insert((label, owns.clone()), l);
+                copies.made.push((l, label, owns));
+                l
+            }
+        };
+        L::Jump { label: copy, args }
     }
 
     fn wrap_shares(&self, shares: &[(Name, usize)], mut body: L) -> L {
@@ -388,14 +898,6 @@ impl<'p> Pass<'p> {
                 // as left out; `stmt` has erased those already, since `uses`
                 // said so, unless the same value is selected again for a
                 // parameter that is used.
-                let taken: Vec<Name> = block
-                    .params
-                    .iter()
-                    .zip(sel)
-                    .filter(|(p, _)| inner.contains(p))
-                    .map(|(_, v)| *v)
-                    .collect();
-                let shares = self.consume(&taken, &HashSet::new(), &mut owned)?;
                 let binds: Vec<(Name, Name)> = block
                     .params
                     .iter()
@@ -403,27 +905,77 @@ impl<'p> Pass<'p> {
                     .filter(|(p, _)| inner.contains(p))
                     .map(|(p, v)| (*p, *v))
                     .collect();
-                let owned_in: HashSet<Name> = binds.iter().map(|(p, _)| *p).collect();
+                // A borrowed value is renamed and stays borrowed, however many
+                // times it is selected; an owned one is shared for each more.
+                for (_, v) in &binds {
+                    if !self.readable(*v, &owned) {
+                        return err(format!("{v:?} is selected but neither owned nor borrowed"));
+                    }
+                }
+                let was_owned: HashSet<Name> = binds
+                    .iter()
+                    .map(|(_, v)| *v)
+                    .filter(|v| owned.contains(v))
+                    .collect();
+                let taken: Vec<Name> = binds
+                    .iter()
+                    .map(|(_, v)| *v)
+                    .filter(|v| was_owned.contains(v))
+                    .collect();
+                let shares = self.consume(&taken, &HashSet::new(), &mut owned)?;
+                let mut owned_in: HashSet<Name> = HashSet::new();
+                for (p, v) in &binds {
+                    if was_owned.contains(v) {
+                        owned_in.insert(*p);
+                    } else {
+                        self.borrow_as(*p, *v);
+                    }
+                }
                 let body = self.stmt(&block.body, &block.params, owned_in)?;
                 let body = L::Rename(binds, Box::new(body));
                 Ok(self.wrap_shares(&shares, body))
             }
 
             Statement::Jump(label) => {
-                for n in env {
-                    if !owned.contains(n) {
+                // Each value goes to a parameter the target owns or borrows.
+                // An owned one it borrows would be erased by nobody: the
+                // parameter has to be owned. A borrowed one it owns is shared.
+                let flags = self.borrows.get(label).cloned();
+                let mut lent = Vec::new();
+                let mut hold = Vec::new();
+                for (i, n) in env.iter().enumerate() {
+                    let borrows = flags
+                        .as_ref()
+                        .and_then(|f| f.get(i))
+                        .copied()
+                        .unwrap_or(false);
+                    if owned.contains(n) {
+                        // A value nothing counts has no one to give it up.
+                        if borrows && self.counted(*n) {
+                            hold.push((i, *n));
+                        }
+                    } else if self.borrowed.contains(n) {
+                        if !borrows {
+                            self.consumed_borrowed(*n);
+                            lent.push(*n);
+                        }
+                    } else {
                         return err(format!("a jump hands on {n:?}, which is not owned"));
                     }
                 }
-                Ok(L::Jump {
-                    label: *label,
-                    args: env.to_vec(),
-                })
+                let body = self.holding(*label, env, &hold);
+                Ok(lent.iter().rev().fold(body, |b, n| self.sharing(*n, 1, b)))
             }
 
             Statement::Invoke(target, tag) => {
+                let mut lent = Vec::new();
                 for n in env {
                     if !owned.contains(n) {
+                        if self.borrowed.contains(n) {
+                            self.consumed_borrowed(*n);
+                            lent.push(*n);
+                            continue;
+                        }
                         return err(format!("an invoke hands on {n:?}, which is not owned"));
                     }
                 }
@@ -431,11 +983,12 @@ impl<'p> Pass<'p> {
                 if let Some(i) = args.iter().position(|n| n == target) {
                     args.remove(i);
                 }
-                Ok(L::Invoke {
+                let body = L::Invoke {
                     target: *target,
                     tag: *tag,
                     args,
-                })
+                };
+                Ok(lent.iter().rev().fold(body, |b, n| self.sharing(*n, 1, b)))
             }
 
             Statement::Let {
@@ -469,11 +1022,68 @@ impl<'p> Pass<'p> {
                 rest,
             } => {
                 let env2 = cons(*name, env);
-                let after = self.uses(rest, &env2);
-                let shares = self.consume(captures, &after, &mut owned)?;
+                let frame = self.program.frames.contains(name);
+                // A frame entered straight away as a jump's one continuation,
+                // in a block whose activation cannot be captured: it runs
+                // before the block's caller goes on. See the module docs.
+                let chain = if frame && self.pure {
+                    self.chain(rest, &env2, *name)
+                } else {
+                    None
+                };
+                let lend: Vec<bool> = captures
+                    .iter()
+                    .map(|c| chain.is_some() && !owned.contains(c) && self.borrowed.contains(c))
+                    .collect();
+                let kept: Vec<Name> = captures
+                    .iter()
+                    .zip(&lend)
+                    .filter(|(_, l)| !**l)
+                    .map(|(c, _)| *c)
+                    .collect();
+                let after = match &chain {
+                    Some(owns) => owns.clone(),
+                    None => (*self.uses(rest, &env2)).clone(),
+                };
+                let shares = self.consume(&kept, &after, &mut owned)?;
+                if chain.is_some() {
+                    // Moved into the frame, and still read by the jump: which
+                    // reads it borrowed, the frame keeping it alive.
+                    let live = self.uses(rest, &env2);
+                    for c in &kept {
+                        if !owned.contains(c) && live.contains(c) {
+                            self.borrowed.insert(*c);
+                        }
+                    }
+                }
+                let how: Vec<Param> = captures
+                    .iter()
+                    .zip(&lend)
+                    .map(|(c, l)| {
+                        if *l {
+                            Param::Borrowed(self.origin.get(c).copied())
+                        } else {
+                            Param::Owned
+                        }
+                    })
+                    .collect();
                 let mut ms = Vec::with_capacity(methods.len());
                 for m in methods {
-                    ms.push(block_in(self.program, m, &mut self.tokens)?);
+                    let cx = Cx {
+                        borrows: self.borrows,
+                        label: self.label,
+                        pure: frame && self.pure,
+                        copies: self.copies,
+                    };
+                    let (lb, forced) = block_in(
+                        self.program,
+                        m,
+                        &mut self.tokens,
+                        &cx,
+                        if frame { &how } else { &[] },
+                    )?;
+                    self.forced.extend(forced);
+                    ms.push(lb);
                 }
                 owned.insert(*name);
                 let body = self.stmt(rest, &env2, owned)?;
@@ -483,7 +1093,7 @@ impl<'p> Pass<'p> {
                         name: *name,
                         captures: captures.clone(),
                         methods: ms,
-                        frame: self.program.frames.contains(name),
+                        frame,
                         rest: Box::new(body),
                     },
                 ))
@@ -495,6 +1105,9 @@ impl<'p> Pass<'p> {
                 default,
             } => {
                 if !owned.contains(scrutinee) {
+                    if self.borrowed.contains(scrutinee) {
+                        return self.borrowed_switch(*scrutinee, arms, default, env, &owned);
+                    }
                     return err(format!("{scrutinee:?} is switched on but not owned"));
                 }
                 let mut consumed = owned.clone();
@@ -566,7 +1179,7 @@ impl<'p> Pass<'p> {
 
             Statement::Extern { op, args, blocks } => {
                 for a in args {
-                    if !owned.contains(a) {
+                    if !self.readable(*a, &owned) {
                         return err(format!("a primitive reads {a:?}, which is not owned"));
                     }
                 }
@@ -577,6 +1190,14 @@ impl<'p> Pass<'p> {
                 let mut owned = owned;
                 let mut share_first = None;
                 if let Some(i) = crate::emit::consumes(op)
+                    && let Some(&a) = args.get(i)
+                    && self.counted(a)
+                    && !owned.contains(&a)
+                {
+                    // Borrowed: the primitive is handed a reference of its own.
+                    self.consumed_borrowed(a);
+                    share_first = Some(a);
+                } else if let Some(i) = crate::emit::consumes(op)
                     && let Some(&a) = args.get(i)
                     && self.counted(a)
                 {
@@ -595,6 +1216,25 @@ impl<'p> Pass<'p> {
                         owned.remove(&a);
                     }
                 }
+                // Code a primitive packs as a closure runs later, from another
+                // stack segment, and may outlive this block's caller: what it
+                // reads that is borrowed here is shared into it, and owned.
+                let mut packed = Vec::new();
+                if packs(op) {
+                    for b in blocks {
+                        let n = b.params.len().saturating_sub(env.len());
+                        for v in self.entered(b, &vec![None; n], env) {
+                            if !owned.contains(&v)
+                                && self.borrowed.contains(&v)
+                                && !packed.contains(&v)
+                            {
+                                self.consumed_borrowed(v);
+                                packed.push(v);
+                                owned.insert(v);
+                            }
+                        }
+                    }
+                }
                 let mut lblocks = Vec::with_capacity(blocks.len());
                 for b in blocks {
                     let n = b.params.len().saturating_sub(env.len());
@@ -607,10 +1247,11 @@ impl<'p> Pass<'p> {
                     args: args.clone(),
                     blocks: lblocks,
                 };
-                Ok(match share_first {
+                let ext = match share_first {
                     Some(a) => self.sharing(a, 1, ext),
                     None => ext,
-                })
+                };
+                Ok(packed.iter().rev().fold(ext, |b, v| self.sharing(*v, 1, b)))
             }
         }
     }
@@ -645,6 +1286,11 @@ impl<'p> Pass<'p> {
                 if p != v {
                     renames.push((*p, *v));
                 }
+            } else if self.borrowed.contains(v) {
+                self.borrow_as(*p, *v);
+                if p != v {
+                    renames.push((*p, *v));
+                }
             }
         }
         let body = self.stmt(&b.body, &b.params, owned_in)?;
@@ -652,6 +1298,56 @@ impl<'p> Pass<'p> {
             body
         } else {
             L::Rename(renames, Box::new(body))
+        })
+    }
+}
+
+impl<'p> Pass<'p> {
+    /// A switch on a borrowed name: every arm keeps it, and its fields are
+    /// borrowed too -- the block's caller holds the value, and so everything
+    /// in it, for as long as the block runs. When a switch on one of the
+    /// definition's parameters could rebuild in its block, the parameter is
+    /// better owned.
+    fn borrowed_switch(
+        &mut self,
+        scrutinee: Name,
+        arms: &'p [(Tag, Block)],
+        default: &'p Block,
+        env: &[Name],
+        owned: &HashSet<Name>,
+    ) -> Result<L, Error> {
+        let nfields = |b: &Block| b.params.len().saturating_sub(default.params.len());
+        if reusing()
+            && let (Some(l), Some(&i)) = (self.label, self.origin.get(&scrutinee))
+            && arms.iter().any(|(_, a)| {
+                let n = nfields(a);
+                n > 0 && builds(&a.body, n, self.program)
+            })
+        {
+            self.forced.push((l, i));
+        }
+        let mut larms = Vec::with_capacity(arms.len());
+        for (tag, arm) in arms {
+            let n = nfields(arm);
+            let fields = arm.params[..n].to_vec();
+            for f in &fields {
+                self.borrowed.insert(*f);
+            }
+            let body = self.enter_taking(arm, n, &[], env, owned)?;
+            larms.push(SwitchArm {
+                tag: *tag,
+                fields,
+                reuse: None,
+                keep: true,
+                body,
+            });
+        }
+        let ldefault = self.enter(default, 0, env, owned)?;
+        Ok(L::Switch {
+            scrutinee,
+            arms: larms,
+            default: Box::new(ldefault),
+            keep_default: true,
         })
     }
 }
@@ -1025,8 +1721,14 @@ impl Pass<'_> {
                 captures.push(t);
                 let mut params = m.params;
                 params.insert(ncap, inner);
+                let mut borrowed = m.borrowed;
+                borrowed.insert(ncap.min(borrowed.len()), false);
                 let body = self.place(m.body, inner, n);
-                methods.push(LBlock { params, body });
+                methods.push(LBlock {
+                    params,
+                    borrowed,
+                    body,
+                });
                 L::New {
                     name,
                     captures,

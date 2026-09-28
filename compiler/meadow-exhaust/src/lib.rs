@@ -26,6 +26,7 @@ use meadow_hir as hir;
 use meadow_infer::{Type, TypeTable, VariantEnv, subst_bound};
 use meadow_intern::InternedString;
 use meadow_span::Span;
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// Run both checks over one module.
@@ -42,6 +43,7 @@ pub fn check_module(
     variants: &VariantEnv,
     check_matches: bool,
     compacting: &HashMap<hir::VarId, usize>,
+    synonyms: &Synonyms,
 ) -> Vec<Diagnostic> {
     let mut c = Checker {
         filename: filename.to_string(),
@@ -49,6 +51,8 @@ pub fn check_module(
         variants,
         check_matches,
         compacting,
+        synonyms,
+        seeing: RefCell::new(Vec::new()),
         errors: Vec::new(),
     };
     for decl in &module.value().decls {
@@ -84,6 +88,9 @@ enum Con {
     Char(char),
     /// A float literal, by bit pattern (so it stays comparable).
     Float(u64),
+    /// A pattern synonym of a set that covers its type together (`pattern
+    /// A | B`), by its matcher, with its name for a witness.
+    Syn(hir::VarId, InternedString),
     /// `#[p, …]` — an array of exactly this length.
     Array(usize),
 }
@@ -127,6 +134,159 @@ pub fn compacting_wrappers(
         if found.len() == before {
             return found;
         }
+    }
+}
+
+/// A pattern synonym whose use can be seen through: its pattern, and its
+/// parameters in the order a use gives them.
+pub struct Synonym {
+    pat: hir::LPat,
+    params: Vec<hir::VarId>,
+}
+
+/// What the check knows of a package's pattern synonyms.
+#[derive(Default)]
+pub struct Synonyms {
+    /// The ones that can be seen through, by their matchers.
+    seen: HashMap<hir::VarId, Synonym>,
+    /// The sets that cover their type together, `pattern A | B`: each
+    /// synonym's matcher, name and number of parameters.
+    sets: Vec<Vec<(hir::VarId, InternedString, usize)>>,
+}
+
+impl Synonyms {
+    fn get(&self, matcher: &hir::VarId) -> Option<&Synonym> {
+        self.seen.get(matcher)
+    }
+
+    /// The set `matcher` is in, if one says so.
+    fn set_of(&self, matcher: hir::VarId) -> Option<&[(hir::VarId, InternedString, usize)]> {
+        self.sets
+            .iter()
+            .find(|s| s.iter().any(|(m, ..)| *m == matcher))
+            .map(|s| s.as_slice())
+    }
+}
+
+/// The pattern synonyms of `modules` whose patterns say everything about what
+/// they match -- no view, and no `as` -- by their matchers: see the parser's
+/// `synonym` for what one is. A use of one covers what its pattern does; a
+/// use of any other covers nothing, as a view does.
+pub fn synonyms(
+    modules: &[&hir::LModule],
+    names: &HashMap<hir::VarId, InternedString>,
+) -> Synonyms {
+    let mut found = Synonyms::default();
+    // `$m2P`: `P`, of 2.
+    let matcher = |v: &hir::VarId| -> Option<(InternedString, usize)> {
+        let rest = names.get(v)?.strip_prefix("$m")?;
+        let name = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+        let arity = rest[..rest.len() - name.len()].parse().ok()?;
+        Some((InternedString::from(name), arity))
+    };
+    for m in modules {
+        for d in &m.value().decls {
+            // `pattern A | B`, which is `$complete@… = ($m1A, $m0B)`.
+            if let hir::Decl::Bind(hir::Bind::Pat(p, e)) = d.value()
+                && let hir::Pat::Var(v) = p.value()
+                && names
+                    .get(v.value())
+                    .is_some_and(|n| n.starts_with("$complete"))
+            {
+                let members = match e.value() {
+                    hir::Expr::Tuple(xs) => xs.iter().collect(),
+                    _ => vec![e],
+                };
+                let set: Vec<_> = members
+                    .into_iter()
+                    .filter_map(|x| match x.value() {
+                        hir::Expr::Var(f) => matcher(f.value()).map(|(n, a)| (*f.value(), n, a)),
+                        _ => None,
+                    })
+                    .collect();
+                found.sets.push(set);
+                continue;
+            }
+            let hir::Decl::Bind(hir::Bind::Fun(name, params, _, body)) = d.value() else {
+                continue;
+            };
+            let is_matcher = names.get(name.value()).is_some_and(|n| {
+                n.strip_prefix("$m")
+                    .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+            });
+            if !is_matcher || params.len() != 1 {
+                continue;
+            }
+            let hir::Expr::Match(_, arms) = body.value() else {
+                continue;
+            };
+            let Some((pat, None, yes)) = arms.first() else {
+                continue;
+            };
+            let var = |e: &hir::LExpr| match e.value() {
+                hir::Expr::Var(v) => Some(*v.value()),
+                _ => None,
+            };
+            let params = match yes.value() {
+                hir::Expr::Cons(_, args) if args.is_empty() => Some(Vec::new()),
+                hir::Expr::List(xs) => match xs.as_slice() {
+                    [only] => match only.value() {
+                        hir::Expr::Tuple(vs) => vs.iter().map(var).collect(),
+                        _ => var(only).map(|v| vec![v]),
+                    },
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(params) = params
+                && transparent(pat)
+            {
+                found.seen.insert(
+                    *name.value(),
+                    Synonym {
+                        pat: pat.clone(),
+                        params,
+                    },
+                );
+            }
+        }
+    }
+    found
+}
+
+/// What a use of a pattern synonym of `arity` parameters was given: the
+/// pattern its matcher's answer is matched against, `True`, `[a;]` or `[(a,
+/// b);]` -- see the parser's `synonym`.
+fn answered(p: &hir::LPat, arity: usize) -> Option<Vec<&hir::LPat>> {
+    match (p.value(), arity) {
+        (hir::Pat::Cons(_, none), 0) if none.is_empty() => Some(Vec::new()),
+        (hir::Pat::List(one), 1) if one.len() == 1 => Some(vec![&one[0]]),
+        (hir::Pat::List(one), n) if one.len() == 1 => match one[0].value() {
+            hir::Pat::Tuple(ps) if ps.len() == n => Some(ps.iter().collect()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `p` says everything about what it matches: whether it has no
+/// view but a pattern synonym's use, and names nothing twice with `as`.
+fn transparent(p: &hir::LPat) -> bool {
+    match p.value() {
+        hir::Pat::As(..) => false,
+        // A synonym's use: whether that one can be seen through is asked
+        // where it is used.
+        hir::Pat::View(f, inner) => matches!(f.value(), hir::Expr::Var(_)) && transparent(inner),
+        hir::Pat::Ann(inner, _) => transparent(inner),
+        hir::Pat::Tuple(ps) | hir::Pat::Array(ps) | hir::Pat::List(ps) | hir::Pat::Cons(_, ps) => {
+            ps.iter().all(transparent)
+        }
+        hir::Pat::Record(fields, _) => fields.iter().all(|(_, q)| transparent(q)),
+        hir::Pat::Wildcard
+        | hir::Pat::Var(_)
+        | hir::Pat::Lit(_)
+        | hir::Pat::Unit
+        | hir::Pat::Error => true,
     }
 }
 
@@ -225,6 +385,10 @@ struct Checker<'a> {
     variants: &'a VariantEnv,
     check_matches: bool,
     compacting: &'a HashMap<hir::VarId, usize>,
+    synonyms: &'a Synonyms,
+    /// The synonyms being seen through, innermost last: one that is used in
+    /// its own pattern is not seen through again.
+    seeing: RefCell<Vec<hir::VarId>>,
     errors: Vec<Diagnostic>,
 }
 
@@ -252,6 +416,7 @@ impl Checker<'_> {
             hir::Bind::Fun(_, params, _, body) => {
                 for p in params {
                     self.require_irrefutable(p, "function parameter");
+                    self.pat(p);
                 }
                 self.expr(body);
             }
@@ -259,6 +424,7 @@ impl Checker<'_> {
             // so they must be irrefutable too.
             hir::Bind::Pat(pat, expr) => {
                 self.require_irrefutable(pat, "binding");
+                self.pat(pat);
                 self.expr(expr);
             }
             hir::Bind::Error => {}
@@ -270,12 +436,14 @@ impl Checker<'_> {
             hir::Expr::Lam(params, body) => {
                 for p in params {
                     self.require_irrefutable(p, "lambda parameter");
+                    self.pat(p);
                 }
                 self.expr(body);
             }
             hir::Expr::Match(scrut, arms) => {
                 self.expr(scrut);
-                for (_, guard, body) in arms {
+                for (p, guard, body) in arms {
+                    self.pat(p);
                     if let Some(g) = guard {
                         self.expr(g);
                     }
@@ -289,10 +457,12 @@ impl Checker<'_> {
                 self.expr(body);
                 for arm in arms {
                     self.require_irrefutable(&arm.param, "handler parameter");
+                    self.pat(&arm.param);
                     self.expr(&arm.body);
                 }
                 if let Some((p, b)) = ret {
                     self.require_irrefutable(p, "handler `return` parameter");
+                    self.pat(p);
                     self.expr(b);
                 }
             }
@@ -331,6 +501,111 @@ impl Checker<'_> {
             }
             hir::Expr::Lit(_) | hir::Expr::Unit | hir::Expr::Error => {}
         }
+    }
+
+    /// The expressions of the views in `pat`, which may hold matches of their
+    /// own.
+    fn pat(&mut self, pat: &hir::LPat) {
+        match pat.value() {
+            hir::Pat::View(f, p) => {
+                self.expr(f);
+                self.pat(p);
+            }
+            hir::Pat::Ann(p, _) => self.pat(p),
+            hir::Pat::As(_, p) => self.pat(p),
+            hir::Pat::Tuple(ps)
+            | hir::Pat::Array(ps)
+            | hir::Pat::List(ps)
+            | hir::Pat::Cons(_, ps) => ps.iter().for_each(|p| self.pat(p)),
+            hir::Pat::Record(fields, _) => fields.iter().for_each(|(_, p)| self.pat(p)),
+            hir::Pat::Wildcard
+            | hir::Pat::Var(_)
+            | hir::Pat::Lit(_)
+            | hir::Pat::Unit
+            | hir::Pat::Error => {}
+        }
+    }
+
+    /// Whether `pat` says anything definite about what it covers: whether it
+    /// holds no view that may fail to match. A view's answer is not a question
+    /// about the value's shape, so -- like a guarded arm -- a pattern with one
+    /// covers nothing; one whose own pattern matches everything is `_`.
+    fn definite(&self, pat: &hir::LPat) -> bool {
+        match pat.value() {
+            hir::Pat::View(f, p) if self.seen_through(f, p).is_some() => {
+                let (_, _, args) = self.seen_through(f, p).expect("just seen");
+                args.iter().all(|a| self.definite(a))
+            }
+            // One of a set that covers its type: as definite as a
+            // constructor.
+            hir::Pat::View(f, p) if self.of_set(f, p).is_some() => {
+                let (_, _, args) = self.of_set(f, p).expect("just seen");
+                args.iter().all(|a| self.definite(a))
+            }
+            hir::Pat::View(_, p) => {
+                self.definite(p)
+                    && match self.types.get(p.id) {
+                        Some(t) => self.missing(&[vec![self.lower(p)]], &[t.clone()]).is_none(),
+                        None => true,
+                    }
+            }
+            hir::Pat::Ann(p, _) => self.definite(p),
+            hir::Pat::As(_, p) => self.definite(p),
+            hir::Pat::Tuple(ps)
+            | hir::Pat::Array(ps)
+            | hir::Pat::List(ps)
+            | hir::Pat::Cons(_, ps) => ps.iter().all(|p| self.definite(p)),
+            hir::Pat::Record(fields, _) => fields.iter().all(|(_, p)| self.definite(p)),
+            hir::Pat::Wildcard
+            | hir::Pat::Var(_)
+            | hir::Pat::Lit(_)
+            | hir::Pat::Unit
+            | hir::Pat::Error => true,
+        }
+    }
+
+    /// The view `f -> p` as the use of a pattern synonym that can be seen
+    /// through, `P a b`: its matcher, the synonym, and what it was given.
+    fn seen_through<'p>(
+        &self,
+        f: &hir::LExpr,
+        p: &'p hir::LPat,
+    ) -> Option<(hir::VarId, &Synonym, Vec<&'p hir::LPat>)> {
+        let hir::Expr::Var(v) = f.value() else {
+            return None;
+        };
+        let v = *v.value();
+        let syn = self.synonyms.get(&v)?;
+        if self.seeing.borrow().contains(&v) {
+            return None;
+        }
+        // Its pattern may hold views only of synonyms that can be seen
+        // through in turn.
+        self.seeing.borrow_mut().push(v);
+        let definite = self.definite(&syn.pat);
+        self.seeing.borrow_mut().pop();
+        if !definite {
+            return None;
+        }
+        let args = answered(p, syn.params.len())?;
+        Some((v, syn, args))
+    }
+
+    /// The view `f -> p` as the use of a pattern synonym in a set that covers
+    /// its type, `pattern A | B`: its matcher, its name, and what it was
+    /// given.
+    fn of_set<'p>(
+        &self,
+        f: &hir::LExpr,
+        p: &'p hir::LPat,
+    ) -> Option<(hir::VarId, InternedString, Vec<&'p hir::LPat>)> {
+        let hir::Expr::Var(v) = f.value() else {
+            return None;
+        };
+        let v = *v.value();
+        let set = self.synonyms.set_of(v)?;
+        let (_, name, arity) = set.iter().find(|(m, ..)| *m == v)?;
+        Some((v, *name, answered(p, *arity)?))
     }
 
     /// A mention of `compact` or `compactAdd`, whose parameter `at` is the value
@@ -380,9 +655,10 @@ impl Checker<'_> {
         };
         // A guarded arm covers nothing: whether it is taken is not a question
         // about the pattern, so the arms after it have to cover its cases too.
+        // Nor does one with a view that may not match (see `definite`).
         let rows: Vec<Vec<P>> = arms
             .iter()
-            .filter(|(_, guard, _)| guard.is_none())
+            .filter(|(p, guard, _)| guard.is_none() && self.definite(p))
             .map(|(p, _, _)| vec![self.lower(p)])
             .collect();
         if let Some(w) = self.missing(&rows, &[ty]) {
@@ -406,6 +682,14 @@ impl Checker<'_> {
         let Some(ty) = self.types.get(pat.id).cloned() else {
             return;
         };
+        if !self.definite(pat) {
+            self.error(
+                format!("refutable pattern in {what}: a view in it may not match"),
+                format!("a {what} must match every value"),
+                pat.span,
+            );
+            return;
+        }
         let rows = vec![vec![self.lower(pat)]];
         if let Some(w) = self.missing(&rows, &[ty]) {
             let witness = render(&w[0]);
@@ -429,6 +713,12 @@ impl Checker<'_> {
     // --- hir::Pat -> P ------------------------------------------------------
 
     fn lower(&self, pat: &hir::LPat) -> P {
+        self.lower_in(pat, &HashMap::new())
+    }
+
+    /// [`Checker::lower`], with what each of `subst`'s names -- a pattern
+    /// synonym's parameters -- stands for.
+    fn lower_in(&self, pat: &hir::LPat, subst: &HashMap<hir::VarId, P>) -> P {
         // A pattern inference gave the error type (an unknown constructor) is
         // taken to match anything: whatever it was meant to cover, saying the
         // `match` misses it would only repeat the error.
@@ -436,10 +726,35 @@ impl Checker<'_> {
             return P::Wild;
         }
         match pat.value() {
-            hir::Pat::Wildcard | hir::Pat::Var(_) | hir::Pat::Error => P::Wild,
+            hir::Pat::Var(v) => subst.get(v.value()).cloned().unwrap_or(P::Wild),
+            hir::Pat::Wildcard | hir::Pat::Error => P::Wild,
+            // A pattern synonym's use is its pattern, with what it was given
+            // for its parameters. Any other view is only ever one that
+            // matches everything: see `definite`.
+            hir::Pat::View(f, p) => match self.seen_through(f, p) {
+                Some((v, syn, args)) => {
+                    let given: HashMap<hir::VarId, P> = syn
+                        .params
+                        .iter()
+                        .zip(args)
+                        .map(|(x, a)| (*x, self.lower_in(a, subst)))
+                        .collect();
+                    self.seeing.borrow_mut().push(v);
+                    let lowered = self.lower_in(&syn.pat, &given);
+                    self.seeing.borrow_mut().pop();
+                    lowered
+                }
+                None => match self.of_set(f, p) {
+                    Some((v, name, args)) => P::Con(
+                        Con::Syn(v, name),
+                        args.iter().map(|a| self.lower_in(a, subst)).collect(),
+                    ),
+                    None => P::Wild,
+                },
+            },
             // An annotation constrains the type, never the shape.
-            hir::Pat::Ann(inner, _) => self.lower(inner),
-            hir::Pat::As(_, sub) => self.lower(sub),
+            hir::Pat::Ann(inner, _) => self.lower_in(inner, subst),
+            hir::Pat::As(_, sub) => self.lower_in(sub, subst),
             hir::Pat::Unit => P::Con(Con::Unit, vec![]),
             hir::Pat::Lit(hir::Lit::Int(i)) => P::Con(Con::Int(*i), vec![]),
             hir::Pat::Lit(hir::Lit::String(s)) => P::Con(Con::Str(*s), vec![]),
@@ -447,11 +762,11 @@ impl Checker<'_> {
             hir::Pat::Lit(hir::Lit::Float(b)) => P::Con(Con::Float(*b), vec![]),
             hir::Pat::Tuple(ps) => P::Con(
                 Con::Tuple(ps.len()),
-                ps.iter().map(|p| self.lower(p)).collect(),
+                ps.iter().map(|p| self.lower_in(p, subst)).collect(),
             ),
             hir::Pat::Array(ps) => P::Con(
                 Con::Array(ps.len()),
-                ps.iter().map(|p| self.lower(p)).collect(),
+                ps.iter().map(|p| self.lower_in(p, subst)).collect(),
             ),
             // `[a; b]` is sugar for `Cons a (Cons b Nil)`.
             hir::Pat::List(ps) => ps.iter().rev().fold(
@@ -459,7 +774,7 @@ impl Checker<'_> {
                 |tail, p| {
                     P::Con(
                         Con::Variant(InternedString::from("List.Cons")),
-                        vec![self.lower(p), tail],
+                        vec![self.lower_in(p, subst), tail],
                     )
                 },
             ),
@@ -467,7 +782,7 @@ impl Checker<'_> {
                 let name = *label.value();
                 P::Con(
                     Con::Variant(name),
-                    args.iter().map(|p| self.lower(p)).collect(),
+                    args.iter().map(|p| self.lower_in(p, subst)).collect(),
                 )
             }
             // Canonicalize against the record's own type, so every arm of a match
@@ -486,7 +801,7 @@ impl Checker<'_> {
                 let args = labels
                     .iter()
                     .map(|l| match fields.iter().find(|(fl, _)| fl.value() == l) {
-                        Some((_, p)) => self.lower(p),
+                        Some((_, p)) => self.lower_in(p, subst),
                         None => P::Wild,
                     })
                     .collect();
@@ -586,6 +901,48 @@ impl Checker<'_> {
             out.extend(w);
             return Some(out);
         }
+        let used: Vec<Con> = heads(rows);
+        // A column headed by pattern synonyms of a set that covers the type:
+        // the set is its constructors, each of whose arguments is covered only
+        // by what matches anything. What it leaves uncovered is the witness --
+        // unless the type's own constructors, to which the synonyms' rows
+        // cover nothing, cover it after all.
+        if let Some(set) = used.iter().find_map(|c| match c {
+            Con::Syn(v, _) => self.synonyms.set_of(*v),
+            _ => None,
+        }) {
+            let opaque = Type::Con(InternedString::from("$synonym"), Vec::new());
+            let mut witness = None;
+            for (v, n, arity) in set {
+                let con = Con::Syn(*v, *n);
+                if !used.contains(&con) {
+                    let rest = self.missing(&default_matrix(rows), &col_types[1..]);
+                    if let Some(rest) = rest {
+                        let mut out = vec![P::Con(con, vec![P::Wild; *arity])];
+                        out.extend(rest);
+                        witness = Some(out);
+                        break;
+                    }
+                    continue;
+                }
+                let spec = specialize(rows, &con, *arity);
+                let mut tys = vec![opaque.clone(); *arity];
+                tys.extend_from_slice(&col_types[1..]);
+                if let Some(w) = self.missing(&spec, &tys) {
+                    witness = Some(rebuild(con, *arity, w));
+                    break;
+                }
+            }
+            let witness = witness?;
+            return self.missing_by_type(rows, col_types).map(|_| witness);
+        }
+        self.missing_by_type(rows, col_types)
+    }
+
+    /// [`Checker::missing`], splitting the first column by its type's own
+    /// constructors.
+    fn missing_by_type(&self, rows: &[Vec<P>], col_types: &[Type]) -> Option<Vec<P>> {
+        let ty = &col_types[0];
         let used: Vec<Con> = heads(rows);
         let all = self.ctors_of(ty);
         let complete = all
@@ -743,6 +1100,12 @@ fn render_at(p: &P, nested: bool) -> String {
             // person: the canonical `Maybe.None` exists so the compiler can
             // tell two types' constructors apart, and a reader looking at a
             // missing case already knows which type they are matching on.
+            Con::Syn(_, name) if args.is_empty() => name.to_string(),
+            Con::Syn(_, name) => {
+                let parts: Vec<String> = args.iter().map(|a| render_at(a, true)).collect();
+                let s = format!("{name} {}", parts.join(" "));
+                if nested { format!("({s})") } else { s }
+            }
             Con::Variant(name) if args.is_empty() => bare_ctor(name),
             Con::Variant(name) => {
                 let parts: Vec<String> = args.iter().map(|a| render_at(a, true)).collect();

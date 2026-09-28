@@ -589,8 +589,271 @@ where
         bind_decl.map_with(|bind, e| LDecl::new(Decl::Bind(bind), e.span())),
     ));
 
+    // `pattern P x y = p` / `pattern P x y <- p [where P a b = e]` -- a
+    // pattern synonym, as the functions it compiles to: see `synonym`.
+    // `pattern` is a keyword only here, before a capitalized name: elsewhere
+    // it is an ordinary name.
+    let synonym_decl = upper_ident()
+        .then(value_ident().repeated().collect::<Vec<_>>())
+        .then(just(Token::Eq).to(true).or(just(Token::LArrow).to(false)))
+        .then(pat())
+        .then(
+            just(Token::Where)
+                .ignore_then(upper_ident())
+                .then(param_pat().repeated().collect::<Vec<_>>())
+                .then_ignore(just(Token::Eq))
+                .then(expr())
+                .or_not(),
+        )
+        .validate(|((((name, params), both), rhs), builder), e, emitter| {
+            synonym(name, params, both, rhs, builder, e.span(), emitter)
+        });
+    // `pattern A | B | C` -- synonyms that together match every value of
+    // their type, as GHC's `COMPLETE` says: see `complete`.
+    let complete_decl = upper_ident()
+        .separated_by(just(Token::Bar))
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .map_with(|names, e| vec![complete(names, e.span())]);
+    let pattern_decl = just(Token::LowerIdent(InternedString::from("pattern")))
+        .ignore_then(synonym_decl.or(complete_decl));
+
     // `sig_decl` last, and alone in giving more than one node back.
-    one.map(|d| vec![d]).or(sig_decl)
+    one.map(|d| vec![d]).or(pattern_decl).or(sig_decl)
+}
+
+/// The functions a pattern synonym `pattern P x y <- p` is.
+///
+/// Its **matcher**, `$m2P` -- the number is how many parameters it has --
+/// matches its argument against `p` and answers what `p` bound, as a list of
+/// one tuple, `[(x, y);]`, or `[;]` when it does not match: of one value
+/// `[x;]`, and of none `True` or `False`. A use of it, `P a b`, is the view
+/// `($m2P -> [(a, b);])`; with the matcher inlined the list and the tuple are
+/// taken apart where they are made, and nothing is built. A list, rather than
+/// `Maybe`, because it is the compiler's own and there without a library.
+///
+/// Its **builder**, `$bP`, is what `P e1 e2` calls in an expression: `p`
+/// read as an expression, when it is written `pattern P x y = p`, or the
+/// equation after `where`. `pattern P x y <- p` alone has none, and only
+/// matches.
+///
+/// Both are ordinary functions, found, imported and exported as any are.
+fn synonym<'a>(
+    name: Ident,
+    params: Vec<Ident>,
+    both: bool,
+    rhs: LPat,
+    builder: Option<((Ident, Vec<LPat>), LExpr)>,
+    span: Span,
+    emitter: &mut chumsky::input::Emitter<Rich<'a, Token, Span>>,
+) -> Vec<LDecl> {
+    // What `p` binds is what the synonym's parameters are, each once.
+    let mut bound = Vec::new();
+    pat_binds(&rhs, &mut bound);
+    for p in &params {
+        match bound.iter().filter(|b| b.value() == p.value()).count() {
+            1 => {}
+            0 => emitter.emit(Rich::custom(
+                p.span,
+                format!(
+                    "`{}` is a parameter of `{}` that its pattern does not bind",
+                    p.value(),
+                    name.value()
+                ),
+            )),
+            _ => emitter.emit(Rich::custom(
+                p.span,
+                format!(
+                    "`{}` is bound more than once in the pattern of `{}`",
+                    p.value(),
+                    name.value()
+                ),
+            )),
+        }
+    }
+    for b in &bound {
+        if !params.iter().any(|p| p.value() == b.value()) {
+            emitter.emit(Rich::custom(
+                b.span,
+                format!(
+                    "`{}` is bound by the pattern of `{}` but is not one of its parameters",
+                    b.value(),
+                    name.value()
+                ),
+            ));
+        }
+    }
+    let at = |e: Expr| Located::new(e, span);
+    let ident = |s: String| Ident::new(InternedString::from(s.as_str()), name.span);
+    let vars: Vec<LExpr> = params
+        .iter()
+        .map(|p| Located::new(Expr::Var(p.clone()), p.span))
+        .collect();
+    let (yes, no) = match vars.len() {
+        0 => (
+            at(Expr::Cons(ident("True".into()), vec![])),
+            at(Expr::Cons(ident("False".into()), vec![])),
+        ),
+        1 => (at(Expr::List(vars)), at(Expr::List(vec![]))),
+        _ => (
+            at(Expr::List(vec![at(Expr::Tuple(vars))])),
+            at(Expr::List(vec![])),
+        ),
+    };
+    let scrutinee = ident("$scrutinee".into());
+    let matcher = Bind::Fun(
+        ident(format!("$m{}{}", params.len(), name.value())),
+        vec![Located::new(Pat::Var(scrutinee.clone()), name.span)],
+        None,
+        at(Expr::Match(
+            at(Expr::Var(scrutinee)),
+            vec![
+                (rhs.clone(), None, yes),
+                (Located::new(Pat::Wildcard, span), None, no),
+            ],
+        )),
+    );
+    let mut out = vec![LDecl::new(Decl::Bind(matcher), span)];
+    let builder_name = ident(format!("$b{}", name.value()));
+    let built = match builder {
+        Some(((again, args), body)) => {
+            if both {
+                emitter.emit(Rich::custom(
+                    again.span,
+                    format!(
+                        "`{}` builds as its pattern reads: write `pattern {} … <- …` to give it a `where` of its own",
+                        name.value(),
+                        name.value()
+                    ),
+                ));
+            }
+            if again.value() != name.value() {
+                emitter.emit(Rich::custom(
+                    again.span,
+                    format!(
+                        "the equation under `pattern {}` defines `{}`",
+                        name.value(),
+                        again.value()
+                    ),
+                ));
+            }
+            Some((args, body))
+        }
+        None if both => match pat_expr(&rhs) {
+            Ok(body) => Some((
+                params
+                    .iter()
+                    .map(|p| Located::new(Pat::Var(p.clone()), p.span))
+                    .collect(),
+                body,
+            )),
+            Err(at) => {
+                emitter.emit(Rich::custom(
+                    at,
+                    format!(
+                        "`{}` cannot be built from its pattern, which this part of cannot be read as a value: write `pattern {} … <- …`, with a `where` to say how it is built",
+                        name.value(),
+                        name.value()
+                    ),
+                ));
+                None
+            }
+        },
+        None => None,
+    };
+    if let Some((args, body)) = built {
+        out.push(LDecl::new(
+            Decl::Bind(Bind::Fun(builder_name, args, None, body)),
+            span,
+        ));
+    }
+    out
+}
+
+/// `pattern A | B | C`: which synonyms cover their type together. What the
+/// exhaustiveness check reads -- a `match` with an arm for each of them, each
+/// matching whatever it binds, is exhaustive -- as a definition nothing uses,
+/// `$complete:A|B|C`, of their matchers: `$m?A` is the matcher of `A`,
+/// however many parameters it has.
+fn complete(names: Vec<Ident>, span: Span) -> LDecl {
+    let matchers: Vec<LExpr> = names
+        .iter()
+        .map(|n| {
+            let m = Ident::new(
+                InternedString::from(format!("$m?{}", n.value()).as_str()),
+                n.span,
+            );
+            Located::new(Expr::Var(m), n.span)
+        })
+        .collect();
+    let value = match matchers.len() {
+        1 => matchers.into_iter().next().expect("one"),
+        _ => Located::new(Expr::Tuple(matchers), span),
+    };
+    let name = Ident::new(
+        InternedString::from(
+            format!(
+                "$complete:{}",
+                names
+                    .iter()
+                    .map(|n| n.value().to_string())
+                    .collect::<Vec<_>>()
+                    .join("|")
+            )
+            .as_str(),
+        ),
+        span,
+    );
+    LDecl::new(
+        Decl::Bind(Bind::Pat(Located::new(Pat::Var(name), span), value)),
+        span,
+    )
+}
+
+/// Every name a pattern binds, in order.
+fn pat_binds(p: &LPat, out: &mut Vec<Ident>) {
+    match p.value() {
+        Pat::Var(n) => out.push(n.clone()),
+        Pat::As(n, inner) => {
+            out.push(n.clone());
+            pat_binds(inner, out);
+        }
+        Pat::Ann(inner, _) => pat_binds(inner, out),
+        Pat::View(_, inner) => pat_binds(inner, out),
+        Pat::Cons(_, ps)
+        | Pat::QualCons(_, _, ps)
+        | Pat::Tuple(ps)
+        | Pat::Array(ps)
+        | Pat::Vector(ps)
+        | Pat::List(ps) => ps.iter().for_each(|q| pat_binds(q, out)),
+        Pat::Record(fields, _) => fields.iter().for_each(|(_, q)| pat_binds(q, out)),
+        Pat::Wildcard | Pat::Lit(_) | Pat::Unit | Pat::MacCall(_) => {}
+    }
+}
+
+/// A pattern read as the expression that builds what it matches, or where it
+/// cannot be.
+fn pat_expr(p: &LPat) -> Result<LExpr, Span> {
+    let all = |ps: &[LPat]| ps.iter().map(pat_expr).collect::<Result<Vec<_>, _>>();
+    let e = match p.value() {
+        Pat::Var(n) => Expr::Var(n.clone()),
+        Pat::Lit(l) => Expr::Lit(l.clone()),
+        Pat::Unit => Expr::Unit,
+        Pat::Ann(inner, _) => return pat_expr(inner),
+        Pat::Cons(n, ps) => Expr::Cons(n.clone(), all(ps)?),
+        Pat::Tuple(ps) => Expr::Tuple(all(ps)?),
+        Pat::Array(ps) => Expr::Array(all(ps)?),
+        Pat::List(ps) => Expr::List(all(ps)?),
+        Pat::Record(fields, false) => Expr::Record(
+            fields
+                .iter()
+                .map(|(l, q)| Ok((l.clone(), pat_expr(q)?)))
+                .collect::<Result<Vec<_>, Span>>()?,
+            None,
+        ),
+        _ => return Err(p.span),
+    };
+    Ok(Located::new(e, p.span))
 }
 
 /// One equation of a function written in several: `| gcd a b = …`.
@@ -1326,7 +1589,12 @@ where
 
             let fun_bind = just(Token::Fun)
                 .ignore_then(lower_ident())
-                .then(param_pat().repeated().at_least(1).collect::<Vec<_>>())
+                .then(
+                    param_pat_in(expr.clone())
+                        .repeated()
+                        .at_least(1)
+                        .collect::<Vec<_>>(),
+                )
                 .then(result_ty())
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone())
@@ -1335,13 +1603,13 @@ where
             // `[rec] name args = body`  /  `[rec] name = body`
             let name_bind = rec_prefix
                 .ignore_then(lower_ident())
-                .then(param_pat().repeated().collect::<Vec<_>>())
+                .then(param_pat_in(expr.clone()).repeated().collect::<Vec<_>>())
                 .then(result_ty())
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone())
                 .map(|(((name, args), ret), body)| bind_of(name, args, ret, body));
 
-            let pat_bind = pat()
+            let pat_bind = pat_in(expr.clone())
                 .then_ignore(just(Token::Eq))
                 .then(expr.clone())
                 .map(|(p, e)| Bind::Pat(p, e));
@@ -1368,7 +1636,12 @@ where
             .boxed();
 
         let lam_expr = just(Token::Backslash)
-            .ignore_then(pat().repeated().at_least(1).collect::<Vec<_>>())
+            .ignore_then(
+                pat_in(expr.clone())
+                    .repeated()
+                    .at_least(1)
+                    .collect::<Vec<_>>(),
+            )
             .then_ignore(just(Token::RArrow))
             .then(expr.clone())
             .map(|(params, body)| Expr::Lam(params, body))
@@ -1377,7 +1650,7 @@ where
 
         // `| p -> e`, or `| p if guard -> e`, taken only where the guard holds.
         let match_arm = just(Token::Bar)
-            .ignore_then(pat())
+            .ignore_then(pat_in(expr.clone()))
             .then(just(Token::If).ignore_then(expr.clone()).or_not())
             .then_ignore(just(Token::RArrow))
             .then(expr.clone())
@@ -1431,12 +1704,12 @@ where
         // `handle e with { op p k -> body, return x -> body }`  (arms comma-separated)
         let handle_expr = {
             let ret_arm = just(Token::LowerIdent(InternedString::from("return")))
-                .ignore_then(pat())
+                .ignore_then(pat_in(expr.clone()))
                 .then_ignore(just(Token::RArrow))
                 .then(expr.clone())
                 .map(Either::Right);
             let op_arm = lower_ident()
-                .then(pat())
+                .then(pat_in(expr.clone()))
                 .then(lower_ident())
                 .then_ignore(just(Token::RArrow))
                 .then(expr.clone())
@@ -1859,6 +2132,16 @@ fn fill_holes(e: LExpr, n: &mut usize) -> LExpr {
 
 fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, LPat, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    pat_in(expr())
+}
+
+/// [`pat`], with `expr` for the expressions of views: inside [`expr`] its own
+/// recursive parser, since building a fresh one there would never end.
+fn pat_in<'a, I, E>(expr: E) -> impl Parser<'a, I, LPat, extra::Err<Rich<'a, Token, Span>>> + Clone
+where
+    I: ValueInput<'a, Token = Token, Span = Span>,
+    E: Parser<'a, I, LExpr, extra::Err<Rich<'a, Token, Span>>> + Clone + 'a,
+{
     recursive(|pat| {
         // `[a, b]` / `[a; b]` — a `List` pattern (either separator). There is no
         // A `;` anywhere makes a bracket pattern a `List`, exactly as it does for
@@ -1915,10 +2198,20 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
             .then_ignore(just(Token::RParen))
             .map(|(p, t)| Pat::Ann(Box::new(p), t));
 
+        // `f -> p`, a view, as what parentheses hold: `(f -> p)` on its own,
+        // or a part of a tuple, `(k, lookup k -> Just v)`. Tried before a
+        // plain pattern, which would take the `f` and stop at the arrow.
+        let viewed = expr
+            .clone()
+            .then_ignore(just(Token::RArrow))
+            .then(pat.clone())
+            .map_with(|(f, p), e| LPat::new(Pat::View(f, p), e.span()))
+            .or(pat.clone());
+
         // `(p)` is grouping, `(p, q)` a tuple — mirroring the type grammar.
         let tuple = just(Token::LParen)
             .ignore_then(
-                pat.clone()
+                viewed
                     .separated_by(just(Token::Comma))
                     .allow_trailing()
                     .collect::<Vec<_>>(),
@@ -2052,7 +2345,18 @@ fn pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 /// exhaustiveness check reports.
 fn param_pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, LPat, extra::Err<Rich<'a, Token, Span>>> + Clone {
-    let inner = pat();
+    param_pat_in(expr())
+}
+
+/// [`param_pat`], with `expr` for the expressions of views: see [`pat_in`].
+fn param_pat_in<'a, I, E>(
+    expr: E,
+) -> impl Parser<'a, I, LPat, extra::Err<Rich<'a, Token, Span>>> + Clone
+where
+    I: ValueInput<'a, Token = Token, Span = Span>,
+    E: Parser<'a, I, LExpr, extra::Err<Rich<'a, Token, Span>>> + Clone + 'a,
+{
+    let inner = pat_in(expr.clone());
 
     // `(p : T)` — a parameter with a declared type. This parser deliberately
     // does not reuse `pat`'s outermost rules (a bare `Just x` here would read as
@@ -2065,9 +2369,13 @@ fn param_pat<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         .then_ignore(just(Token::RParen))
         .map_with(|(p, t), e| LPat::new(Pat::Ann(Box::new(p), t), e.span()));
 
-    // `()` unit, `(p)` grouping, `(p, q)` tuple.
-    let paren = inner
-        .clone()
+    // `()` unit, `(p)` grouping, `(p, q)` tuple -- and a view, `(f -> p)`,
+    // on its own or as a part of one: see `pat_in`.
+    let paren = expr
+        .then_ignore(just(Token::RArrow))
+        .then(inner.clone())
+        .map_with(|(f, p), e| LPat::new(Pat::View(f, p), e.span()))
+        .or(inner.clone())
         .separated_by(just(Token::Comma))
         .allow_trailing()
         .collect::<Vec<_>>()
@@ -2133,11 +2441,20 @@ fn unit<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         .map_with(|_, _| ())
 }
 
+/// A lower-case name. Not `pattern` before a capitalized one: that begins
+/// the next declaration, a pattern synonym, and is not the last argument, or
+/// type variable, of this one -- declarations are not laid out, and `pattern`
+/// is a keyword nowhere else.
 fn lower_ident<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
     select! {
         Token::LowerIdent(name) => name
     }
+    .and_is(
+        just(Token::LowerIdent(InternedString::from("pattern")))
+            .then(select! { Token::UpperIdent(_) => () })
+            .not(),
+    )
     .map_with(|name, e| Ident::new(name, e.span()))
 }
 

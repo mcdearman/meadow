@@ -137,7 +137,7 @@ pub extern "C" fn meadow_candidate(v: Word) {
 /// What this gives up is stated where it is paid for: see "What it does not
 /// catch" in the module docs.
 fn worth_keeping(v: Word) -> bool {
-    matches!(heap::kind(v), heap::CELL | heap::MUT_ARRAY)
+    matches!(heap::kind(v), heap::CELL | heap::MUT_ARRAY) && heap::holds_refs(v)
 }
 
 /// Can a block of this kind hold a reference the collector should follow? A
@@ -162,10 +162,17 @@ pub(crate) fn may_cycle(v: Word) -> bool {
     )
 }
 
-/// What `v` points at: its fields that are references to blocks.
+/// What `v` points at that could be part of a cycle with it: its fields that
+/// are references to blocks, less the leaves -- a string, a big integer, a
+/// compact -- which point at nothing a cycle could run through. The passes
+/// never colour a leaf or touch its count, so a column of ten thousand names
+/// costs a walk a look at each and no more; and [`collect_white`] lets go of
+/// the leaves a garbage cycle held, which it would otherwise not see.
 fn children(v: Word, out: &mut Vec<Word>) {
     out.clear();
-    if !may_cycle(v) {
+    // An array of numbers -- a table of a program's -- points at nothing,
+    // however long it is: not looked through a word at a time.
+    if !walked_into(v) {
         return;
     }
     for i in 0..heap::len(v) {
@@ -173,10 +180,42 @@ fn children(v: Word, out: &mut Vec<Word>) {
             continue;
         }
         let x = heap::field(v, i);
-        if heap::is_block(x) {
+        if heap::is_block(x) && may_cycle(x) {
             out.push(x);
         }
     }
+}
+
+/// Let go of the leaves the white block `v` holds: the references
+/// [`children`] leaves out, which no pass took away.
+fn release_leaves(v: Word, heap: &mut heap::Heap) {
+    if !may_cycle(v) || !heap::holds_refs(v) {
+        return;
+    }
+    for i in 0..heap::len(v) {
+        if heap::field_desc(v, i) != meadow_core::desc::REF {
+            continue;
+        }
+        let x = heap::field(v, i);
+        if heap::is_block(x) && !may_cycle(x) {
+            heap.let_go(x);
+        }
+    }
+}
+
+/// Whether a walk goes into `v`: not a leaf, not a block that holds nothing
+/// a cycle runs through, and not one waiting for a walk of its own
+/// ([`heap::DEFERRED`]).
+fn walked_into(v: Word) -> bool {
+    may_cycle(v) && heap::may_hold_cycles(v) && !heap::deferred(v)
+}
+
+/// What a walk pays for coming to `v`: one for the block, and one for each
+/// field it looks through -- so that a table of ten thousand
+/// slots costs what it takes to look at, and a walk that comes to one runs
+/// out of budget rather than looking through it at every run.
+fn cost(v: Word) -> usize {
+    1 + if walked_into(v) { heap::len(v) } else { 0 }
 }
 
 /// The count, as the algorithm wants it: how many references there are, where
@@ -328,6 +367,7 @@ fn run(heap: &mut heap::Heap, batch: usize, budget: usize) {
         }
         if heap::colour(s) == heap::PURPLE && refs(s) > 0 {
             grayed.clear();
+            let had = left;
             if mark_gray(s, &mut left, &mut work, &mut kids, &mut grayed) {
                 marked.push(s);
                 continue;
@@ -337,7 +377,7 @@ fn run(heap: &mut heap::Heap, batch: usize, budget: usize) {
             // the run here. What was marked before stands: those walks
             // finished, and this one touched nothing they had coloured.
             unmark(&grayed, &mut kids);
-            if grayed.len() >= budget {
+            if had >= budget {
                 // This one candidate ate a whole budget, so no run of this
                 // size will ever get through it: it waits for one with none.
                 heap.set_oversized(s);
@@ -405,10 +445,11 @@ fn mark_gray(
         if heap::colour(v) == heap::GRAY {
             continue;
         }
-        if *left == 0 {
+        let c = cost(v);
+        if *left < c {
             return false;
         }
-        *left -= 1;
+        *left -= c;
         grayed.push((v, heap::colour(v)));
         heap::set_colour(v, heap::GRAY);
         children(v, kids);
@@ -443,7 +484,8 @@ fn scan(s: Word, work: &mut Vec<Word>, kids: &mut Vec<Word>) {
         if heap::colour(v) != heap::GRAY {
             continue;
         }
-        if refs(v) > 0 {
+        // Alive, or taken for alive: see `heap::DEFERRED`.
+        if refs(v) > 0 || heap::deferred(v) {
             scan_black(v, kids);
             continue;
         }
@@ -491,6 +533,9 @@ fn collect_white(s: Word, heap: &mut heap::Heap, work: &mut Vec<Word>, kids: &mu
             work.push(t);
         }
         doomed.push(v);
+    }
+    for &v in &doomed {
+        release_leaves(v, heap);
     }
     for v in doomed {
         heap.free_cycle(v);

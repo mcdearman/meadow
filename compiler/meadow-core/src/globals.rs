@@ -55,8 +55,12 @@ pub const GLOBALS_BASE: u32 = 0x7C00_0000;
 /// iteration*, where the same loop over a parameter compiled to a single
 /// `bri`. Inlining the literal makes the two identical.
 ///
-/// Only literals: they cost nothing to evaluate, cannot fail, and cannot
-/// observe anything, so a mention is worth exactly as much as the definition.
+/// Only literals, and constructors applied to nothing -- `Empty`, `None` at a
+/// type, which specializing a generic `def empty : [a] = Empty` makes one of
+/// for every type it is used at: they cost nothing to evaluate, cannot fail,
+/// and cannot observe anything, so a mention is worth exactly as much as the
+/// definition. Cached instead, every `[]` a parser wrote in a loop was a
+/// question to the runtime and a jump back.
 /// A generic definition is left alone -- its value is made from the descriptors
 /// of the types it is used at.
 ///
@@ -78,8 +82,10 @@ pub fn inline_literals(p: &Program) -> Program {
     let put = &mut |t: Term| match &t {
         Term::Var(v) => lits.get(v).cloned().unwrap_or(t),
         // A mention of a binding is written `e [T, …]`, and a literal has
-        // nothing to instantiate.
-        Term::TyApp(inner, _) if matches!(&**inner, Term::Lit(_)) => (**inner).clone(),
+        // nothing to instantiate -- nor has a constructor already at its type.
+        Term::TyApp(inner, _) if matches!(&**inner, Term::Lit(_)) || is_constant(inner) => {
+            (**inner).clone()
+        }
         _ => t,
     };
     let mut out = p.clone();
@@ -89,13 +95,20 @@ pub fn inline_literals(p: &Program) -> Program {
     out
 }
 
-/// The literal a definition's body is, under any number of source positions.
+/// The literal a definition's body is, or the constructor applied to nothing,
+/// under any number of source positions.
 fn literal(t: &Term) -> Option<Term> {
     match t {
         Term::Loc(_, inner) => literal(inner),
         Term::Lit(_) => Some(t.clone()),
+        _ if is_constant(t) => Some(t.clone()),
         _ => None,
     }
+}
+
+/// A constructor applied to nothing: a word, like a literal.
+fn is_constant(t: &Term) -> bool {
+    matches!(t, Term::Ctor(_, _, args) if args.is_empty())
 }
 
 pub fn program(p: &Program) -> Program {
@@ -179,7 +192,7 @@ fn is_literal(t: &Term) -> bool {
     match t {
         Term::Loc(_, inner) => is_literal(inner),
         Term::Lit(_) => true,
-        _ => false,
+        _ => is_constant(t),
     }
 }
 

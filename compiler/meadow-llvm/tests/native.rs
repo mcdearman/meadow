@@ -164,6 +164,9 @@ fn run_units(
     );
     let ran = Command::new(&exe)
         .env("MEADOW_SILO_LEAKS", "1")
+        // What went through the runtime's generic entry, on stderr: see
+        // `a_method_under_run_st_is_found_before_the_program_runs`.
+        .env("MEADOW_SILO_PRIMS", "1")
         .output()
         .expect("the program runs");
     let stdout = String::from_utf8_lossy(&ran.stdout).trim_end().to_string();
@@ -188,6 +191,30 @@ fn run_units(
         "{name} leaked: {stderr}"
     );
     (got, stderr)
+}
+
+#[test]
+fn a_method_under_run_st_is_found_before_the_program_runs() {
+    // `check` is generic in its tag, and the loop calls it with the `runSt`'s
+    // state -- a type no caller knows -- at a dictionary everyone knows. The
+    // method is found where the program is compiled: nothing reads the
+    // dictionary at run time, which is what a top-level value's cache would
+    // be asked for -- and the runtime counts what it is asked
+    // (`MEADOW_SILO_PRIMS`).
+    let src = "trait Same a { fun same : a -> a -> Bool }\n\
+         impl Same Int { fun same x y = x == y }\n\
+         fun check tag x y = same x y\n\
+         fun count (r : StRef s Int) (i : Int) : Int ! { St s | e } =\n\
+         \x20 if i == 0 then stGetRef r\n\
+         \x20 else (let _ = (if check r i 3 then stSetRef r (stGetRef r + 1) else ()) in count r (i - 1))\n\
+         def main = runSt (\\() -> count (stNewRef 0) 1000)\n";
+    let (got, stderr) = run_full("same-under-st", src, true, meadow_core::OptLevel::O2);
+    assert_eq!(got, "1");
+    assert!(
+        !stderr.contains("GlobalGet"),
+        "the dictionary is read at run time:
+{stderr}"
+    );
 }
 
 #[test]
@@ -258,6 +285,30 @@ fn data_and_matching() {
              def main = let xs = build 1000 in (total xs, len xs)"
         ),
         "(500500, 1000)"
+    );
+}
+
+#[test]
+fn view_patterns() {
+    // A view that fails goes on to the arms after it; one in a parameter is
+    // applied as the function is called.
+    assert_eq!(
+        run(
+            "views",
+            "use L.*
+             data L = Nil | Cons Int L
+             data M = No | Yes Int
+             use M.*
+             fun half (n : Int) : M = if n % 2 == 0 then Yes (n / 2) else No
+             fun steps (n : Int) (acc : Int) : Int = match n with
+               | 1 -> acc
+               | (half -> Yes h) -> steps h (acc + 1)
+               | _ -> steps (3 * n + 1) (acc + 1)
+             fun sum (xs : L) : Int = match xs with | Nil -> 0 | Cons x r -> x + sum r
+             fun total ((\\n -> Cons n (Cons (n + 1) Nil)) -> xs) = sum xs
+             def main = (steps 27 0, total 20)"
+        ),
+        "(111, 41)"
     );
 }
 
@@ -482,6 +533,53 @@ fn a_cycle_through_a_ref_is_collected() {
 }
 
 #[test]
+fn what_a_garbage_cycle_holds_that_cannot_cycle_goes_with_it() {
+    // Each knot holds a string, and an array of numbers beside it: neither is
+    // walked by the collector -- a string points at nothing, and an array of
+    // numbers can hold no reference -- so the string is let go of when the
+    // cycle is freed, and the leak check at exit finds nothing left.
+    assert_eq!(
+        run_checked(
+            "cycle_leaves",
+            "data L = Nil | Node String (Array Int) (Ref L)
+             use L.*
+             fun knot (n : Int) =
+               let r = newRef Nil in
+               let _ = setRef r (Node (show n) #[n, n + 1] r) in
+               ()
+             fun many (n : Int) : Int ! Mut = if n == 0 then 0 else let _ = knot n in many (n - 1)
+             def main = many 2000",
+            false
+        ),
+        "0"
+    );
+}
+
+#[test]
+fn a_cycle_through_a_mutable_array_is_collected() {
+    // The array starts out holding nothing a cycle could run through, and is
+    // then given a node that holds the array: from then on the collector
+    // walks it, and the knot is found.
+    assert_eq!(
+        run_checked(
+            "cycle_array",
+            "data Opt a = No | Some a
+             use Opt.*
+             data N s = N (StArray s (Opt (N s))) Int
+             fun knot (n : Int) : Int =
+               runSt (\\() ->
+                 let a = stNewArray 2 No in
+                 let _ = stSetArray a 0 (Some (N a n)) in
+                 n)
+             fun many (n : Int) (acc : Int) : Int = if n == 0 then acc else many (n - 1) (acc + knot n)
+             def main = many 2000 0",
+            false
+        ),
+        "2001000"
+    );
+}
+
+#[test]
 fn a_longer_cycle_is_collected() {
     // Two cells and two nodes to a knot, so the collector has a subgraph to
     // walk rather than a self-reference.
@@ -544,6 +642,71 @@ const LIST: &str = "use L.*
      fun total (xs : L) : Int = match xs with | Nil -> 0 | Cons x rest -> x + total rest
 ";
 
+/// The parameters of `name`'s direct entry point, as borrowed or owned: in
+/// the block itself, and then in each copy of it.
+fn borrowed_params_all(src: &str, name: &str) -> Vec<Vec<bool>> {
+    let pruned = core::prune::prune(&program(src));
+    let lowered = meadow_seq::lower_program(&pruned, meadow_core::OptLevel::O2);
+    let entry = lowered.program.entry.expect("an entry point");
+    let blocks = meadow_llvm::linear::program(&lowered.program, &[entry]).unwrap();
+    let defs = &lowered.program.defs;
+    let Some(i) = (0..defs.len())
+        .filter(|i| &*defs[*i].name.to_string() == name)
+        .max_by_key(|i| defs[*i].block.params.len())
+    else {
+        return Vec::new();
+    };
+    let mut found: Vec<(bool, Vec<bool>)> = blocks
+        .iter()
+        .filter(|(d, _, _)| *d == i)
+        .map(|(_, l, b)| (*l != defs[i].label, b.borrowed.clone()))
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, b)| b).collect()
+}
+
+/// The parameters of `name`'s direct entry point, as borrowed or owned.
+fn borrowed_params(src: &str, name: &str) -> Vec<bool> {
+    borrowed_params_all(src, name)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_list_only_read_is_borrowed_and_one_rebuilt_is_owned() {
+    // `total` reads its list and hands its tail on: the caller's reference
+    // is all it needs, and walking the list counts nothing. `inc` rebuilds
+    // the list in the cells it takes apart, which it can only do owning them.
+    let src = format!("{LIST} def main = let xs = build 100 Nil in total xs + total (inc xs)");
+    assert_eq!(
+        borrowed_params(&src, "total").first(),
+        Some(&true),
+        "total borrows its list"
+    );
+    assert_eq!(
+        borrowed_params(&src, "inc").first(),
+        Some(&false),
+        "inc owns its list"
+    );
+    // And what it computes is what it did, with nothing left over.
+    assert_eq!(run("borrow-total", &src), "10200");
+}
+
+#[test]
+fn a_list_handed_over_for_good_goes_to_a_copy_that_owns_it() {
+    // `total (inc xs)` gives `total` a list nobody will use again. Held by
+    // the caller, it would be walked twice -- summed, then freed; a copy of
+    // `total` that owns its list frees each cell as it sums it, and calls
+    // itself on the tail it now owns.
+    let src = format!("{LIST} def main = let xs = build 100 Nil in total xs + total (inc xs)");
+    let all = borrowed_params_all(&src, "total");
+    assert_eq!(all.len(), 2, "total and one copy: {all:?}");
+    assert_eq!(all[0].first(), Some(&true), "total borrows its list");
+    assert_eq!(all[1].first(), Some(&false), "the copy owns it");
+    assert_eq!(run("borrow-copy", &src), "10200");
+}
+
 #[test]
 fn a_list_nobody_else_holds_is_rebuilt_in_place() {
     // Each `inc` takes a cell apart and builds one of the same size: with the
@@ -573,6 +736,35 @@ fn a_list_still_held_elsewhere_is_copied() {
         acquired >= 2000,
         "{acquired}: a shared list cannot have been reused"
     );
+}
+
+#[test]
+fn a_record_nobody_else_holds_is_updated_in_place() {
+    // The type says where `n` and `total` are, and the record is the loop's
+    // alone: each update writes the field where it is, acquiring nothing.
+    let (got, acquired) = run_counting(
+        "record-update",
+        "fun go (st : { n : Int, total : Int, name : String }) : { n : Int, total : Int, name : String } =\n\
+         \x20 if st.n == 0 then st else go { st | n = st.n - 1, total = st.total + st.n }\n\
+         def main = let r = go { name = \"sum\", n = 1000, total = 0 } in (r.name, r.total)",
+    );
+    assert_eq!(got, "(\"sum\", 500500)");
+    assert!(
+        acquired < 100,
+        "{acquired} blocks acquired: the updates copied"
+    );
+}
+
+#[test]
+fn a_record_still_held_elsewhere_is_copied_by_an_update() {
+    let got = run(
+        "record-update-shared",
+        "def main = let a = { x = 1, ys = [1; 2], z = \"z\" } in\n\
+         \x20 let b = { a | ys = [3;] } in\n\
+         \x20 let c = { b | x = 5, z = \"c\" } in\n\
+         \x20 (a.x, a.ys, a.z, b.x, b.ys, b.z, c.x, c.ys, c.z)",
+    );
+    assert_eq!(got, "(1, [1; 2], \"z\", 1, [3], \"z\", 5, [3], \"c\")");
 }
 
 #[test]

@@ -284,6 +284,36 @@ impl<'p> Module<'p> {
     /// load and a branch not taken. A program that cannot spawn has it as a
     /// constant zero of its own instead, and LLVM folds all of this away: see
     /// [`Module::units`].
+    /// The running thread's context, as the code in hand names it: every
+    /// function of a program that can spawn takes it first, in a register of
+    /// its own, and hands it on in every call -- see [`CTX`]. A program that
+    /// cannot keeps it in a static, and the runtime finds it there; `0` says
+    /// so.
+    fn cx(&self) -> &'static str {
+        if self.threaded { CTX } else { "0" }
+    }
+
+    /// How many of a call's arguments travel in registers: all of [`REGS`],
+    /// less the one the context takes.
+    fn regs(&self) -> usize {
+        if self.threaded { REGS - 1 } else { REGS }
+    }
+
+    /// The arguments of a call, the context first where there is one.
+    fn arg_list(&self, ops: &[String]) -> String {
+        let ctx = self.threaded.then(|| format!("i64 {CTX}"));
+        ctx.into_iter()
+            .chain(ops.iter().take(self.regs()).map(|o| format!("i64 {o}")))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// What does not fit in registers, stored in the spill area: see
+    /// [`spill`].
+    fn spill(&self, f: &mut Fun, ops: &[String]) {
+        spill(f, ops, self.regs(), self.threaded);
+    }
+
     fn safe_point(&self, f: &mut Fun) {
         // A program that cannot spawn has nothing to give way to.
         if !self.threaded {
@@ -405,13 +435,8 @@ impl<'p> Module<'p> {
         Self::flat_captures(&fr.captured, &mut ops);
         ops.extend(args);
         let callee = self.frame_fn(fr);
-        spill(f, &ops);
-        let list = ops
-            .iter()
-            .take(REGS)
-            .map(|o| format!("i64 {o}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        self.spill(f, &ops);
+        let list = self.arg_list(&ops);
         let r = f.t();
         f.i(format!("{r} = tail call {} i64 {callee}({list})", self.cc));
         f.i(format!("ret i64 {r}"));
@@ -428,26 +453,22 @@ impl<'p> Module<'p> {
     /// gigabytes on the standard library's tests. What is worth inlining --
     /// the counting helpers -- is `alwaysinline` instead.
     fn finish_as(&mut self, f: Fun, linkage: &str) {
-        let regs = f.params.len().min(REGS);
+        let regs = self.regs();
         self.spill_words = self
             .spill_words
             .max(f.spill)
-            .max(f.params.len().saturating_sub(REGS));
+            .max(f.params.len().saturating_sub(regs));
         let text = format!(
             "define {linkage} {} i64 {}({}) noinline {{\nentry:\n{}{}{}}}\n\n",
             self.cc,
             f.name,
-            f.params
-                .iter()
-                .take(REGS)
-                .map(|p| format!("i64 {p}"))
-                .collect::<Vec<_>>()
-                .join(", "),
-            spilled_params(&f.params),
+            self.arg_list(&f.params),
+            spilled_params(&f.params, regs, self.threaded),
             f.allocas,
             f.body
         );
-        self.funs.push((f.name, text, regs));
+        let words = f.params.len().min(regs) + usize::from(self.threaded);
+        self.funs.push((f.name, text, words));
     }
 
     /// A method's function: the object first, then the arguments. It loads
@@ -538,9 +559,14 @@ impl<'p> Module<'p> {
     /// Erase `v`, described by `d`: see [`Module::share`].
     fn erase(&self, f: &mut Fun, v: &str, d: &D) {
         match d {
-            D::Known(k) if *k == desc::REF => f.i(format!("call void @mw.erase(i64 {v})")),
+            D::Known(k) if *k == desc::REF => {
+                f.i(format!("call void @mw.erase(i64 {}, i64 {v})", self.cx()))
+            }
             D::Known(_) => {}
-            D::Dyn(r) => f.i(format!("call void @mw.erase_d(i64 {v}, i64 {r})")),
+            D::Dyn(r) => f.i(format!(
+                "call void @mw.erase_d(i64 {}, i64 {v}, i64 {r})",
+                self.cx()
+            )),
         }
     }
 
@@ -599,7 +625,10 @@ impl<'p> Module<'p> {
         f.i(format!("{last} = icmp eq i32 {rc}, 0"));
         f.i(format!("br i1 {last}, label %{clean}, label %{shared}"));
         f.label(&clean);
-        f.i(format!("call void @meadow_clean(i64 {v})"));
+        f.i(format!(
+            "call void @meadow_clean(i64 {}, i64 {v})",
+            self.cx()
+        ));
         f.i(format!("br label %{done}"));
         f.label(&shared);
         let rc2 = f.t();
@@ -736,7 +765,10 @@ impl<'p> Module<'p> {
         f.i(format!("{has} = icmp ne i64 {token}, 0"));
         f.i(format!("br i1 {has}, label %{give}, label %{on}"));
         f.label(&give);
-        f.i(format!("call void @meadow_clean(i64 {token})"));
+        f.i(format!(
+            "call void @meadow_clean(i64 {}, i64 {token})",
+            self.cx()
+        ));
         f.i(format!("br label %{on}"));
         f.label(&on);
     }
@@ -777,7 +809,8 @@ impl<'p> Module<'p> {
             None => {
                 let b = f.t();
                 f.i(format!(
-                    "{b} = call i64 @meadow_acquire(i64 {})",
+                    "{b} = call i64 @meadow_acquire(i64 {}, i64 {})",
+                    self.cx(),
                     2 + dw + n
                 ));
                 self.write_block(f, &b, kind, meta, vals, descs, None);
@@ -798,7 +831,8 @@ impl<'p> Module<'p> {
                 f.label(&fresh);
                 let a = f.t();
                 f.i(format!(
-                    "{a} = call i64 @meadow_acquire(i64 {})",
+                    "{a} = call i64 @meadow_acquire(i64 {}, i64 {})",
+                    self.cx(),
                     2 + dw + n
                 ));
                 self.write_block(f, &a, kind, meta, vals, descs, None);
@@ -911,6 +945,12 @@ impl<'p> Module<'p> {
         f: &mut Fun,
     ) -> Result<String, Error> {
         let ncap = fr.captured.len();
+        // A frame that lends -- borrows what its block borrowed -- is only
+        // ever entered natively (see `linear`): built as an object, it would
+        // hold references it never took.
+        if (0..ncap).any(|i| fr.method.borrows(i)) {
+            return err("a frame that borrows what it holds was built as an object");
+        }
         let base = match self.frame_tables.get(&fr.id) {
             Some(b) => *b,
             None => {
@@ -1118,8 +1158,10 @@ impl<'p> Module<'p> {
         let rec = f.t();
         f.alloca(format!("{rec} = alloca [{words} x i64]"));
         let slot = if self.threaded {
+            // Word 1 of the context: see `silo/src/ctx.rs`.
+            let c = f.ptr(CTX);
             let s = f.t();
-            f.i(format!("{s} = call ptr @meadow_shadow_head()"));
+            f.i(format!("{s} = getelementptr i64, ptr {c}, i64 1"));
             s
         } else {
             "@meadow_shadow_single".to_string()
@@ -1148,6 +1190,10 @@ impl<'p> Module<'p> {
     /// whose descriptor is known not to be a reference has nothing to give up.
     fn shadow_entries(&self, fr: &Frame, env: &HashMap<Name, V>, out: &mut Vec<(String, String)>) {
         for (i, c) in fr.captured.iter().enumerate() {
+            // Borrowed: never the frame's to give up.
+            if fr.method.borrows(i) {
+                continue;
+            }
             match c {
                 V::Frame(inner) => self.shadow_entries(inner, env, out),
                 V::Val(v) if crate::linear::is_token(fr.method.params[i]) => {
@@ -1169,6 +1215,9 @@ impl<'p> Module<'p> {
         f: &mut Fun,
     ) -> Result<(), Error> {
         for (i, c) in fr.captured.iter().enumerate() {
+            if fr.method.borrows(i) {
+                continue;
+            }
             match c {
                 V::Frame(inner) => self.erase_frame(inner, env, f)?,
                 V::Val(v) if crate::linear::is_token(fr.method.params[i]) => {
@@ -1262,13 +1311,8 @@ impl<'p> Module<'p> {
                 ops.push(self.val(*a, env, f)?);
             }
         }
-        spill(f, &ops);
-        let list = ops
-            .iter()
-            .take(REGS)
-            .map(|o| format!("i64 {o}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        self.spill(f, &ops);
+        let list = self.arg_list(&ops);
         match frame {
             None => {
                 let r = f.t();
@@ -1421,8 +1465,11 @@ impl<'p> Module<'p> {
                 .collect();
             let mut params = caps.clone();
             params.extend(results.iter().copied());
+            // It owns all it captures: see `linear`, which shared what the
+            // code borrowed before packing it.
             let method = LBlock {
                 params,
+                borrowed: Vec::new(),
                 body: body.clone(),
             };
             let base = self.methods_for(std::slice::from_ref(&method), caps.len());
@@ -1527,6 +1574,11 @@ impl<'p> Module<'p> {
                 let k = self.literal(lit, f)?;
                 let r = if inline2(*p, self.rep(args[0])) {
                     self.prim2(*p, &a, &k, args[0], env, f)?
+                } else if matches!(p, Prim::SetRef) {
+                    // `setRef r 0`, `setRef done True`: a counter reset, a
+                    // flag set -- as inline as with any other value.
+                    self.set_ref(f, &a, &k, &D::Known(lit_desc(lit)));
+                    "0".to_string()
                 } else {
                     let kd = D::Known(lit_desc(lit));
                     self.generic(*p, args, &[a], &[(k.clone(), kd)], env, f)
@@ -1537,7 +1589,7 @@ impl<'p> Module<'p> {
             Extern::Field(i) => {
                 let a = self.val(args[0], env, f)?;
                 let r = f.t();
-                f.i(format!("{r} = call i64 @meadow_field(i64 {a}, i64 {i})"));
+                f.i(format!("{r} = call i64 @mw.field(i64 {a}, i64 {i})"));
                 r
             }
             Extern::Array | Extern::Record(_) => {
@@ -1590,25 +1642,42 @@ impl<'p> Module<'p> {
                 }
                 r
             }
-            Extern::Select(label) => {
+            // A record keeps label and value in turn, in the labels' order: a
+            // label whose place the type says has its value at `2 at + 1`.
+            Extern::Select(_, Some(place)) => {
+                let a = self.val(args[0], env, f)?;
+                let r = f.t();
+                let i = 2 * place.at + 1;
+                f.i(format!("{r} = call i64 @mw.field(i64 {a}, i64 {i})"));
+                r
+            }
+            Extern::Select(label, None) => {
                 let a = self.val(args[0], env, f)?;
                 let l = self.sym(*label);
                 let r = f.t();
                 f.i(format!("{r} = call i64 @meadow_select(i64 {a}, i64 {l})"));
                 r
             }
-            Extern::Extend(label) => {
+            Extern::Extend(label, place) => {
                 let rec = self.val(args[0], env, f)?;
                 let v = self.val(args[1], env, f)?;
                 let d = match self.desc(args[1], env) {
                     D::Known(x) => x.to_string(),
                     D::Dyn(x) => x,
                 };
-                let l = self.sym(*label);
                 let r = f.t();
-                f.i(format!(
-                    "{r} = call i64 @meadow_extend(i64 {rec}, i64 {l}, i64 {v}, i64 {d})"
-                ));
+                match place {
+                    Some(p) => f.i(format!(
+                        "{r} = call i64 @meadow_update(i64 {rec}, i64 {}, i64 {}, i64 {v}, i64 {d})",
+                        p.at, p.of
+                    )),
+                    None => {
+                        let l = self.sym(*label);
+                        f.i(format!(
+                            "{r} = call i64 @meadow_extend(i64 {rec}, i64 {l}, i64 {v}, i64 {d})"
+                        ))
+                    }
+                }
                 r
             }
             Extern::Native(effect, op) => {
@@ -1777,6 +1846,35 @@ impl<'p> Module<'p> {
     /// bytes, characters' codes, elements. A case the inline code does not
     /// cover -- an index out of bounds, a code past the surrogates -- calls
     /// the runtime, which says what is wrong as it always has.
+    /// `setRef r v`, where `d` describes `v`: a `Ref` is a block of one field,
+    /// its value word 3 and the four bits saying how to read it in word 2.
+    fn set_ref(&self, f: &mut Fun, r: &str, v: &str, d: &D) {
+        let p = f.ptr(r);
+        let q = f.t();
+        f.i(format!("{q} = getelementptr i64, ptr {p}, i64 3"));
+        let old = f.t();
+        f.i(format!("{old} = load i64, ptr {q}"));
+        // What it held is gone; what it holds now is one more reference. The
+        // old one is erased by the same descriptor, since a `Ref` holds one
+        // type.
+        self.share(f, v, d, 1);
+        f.i(format!("store i64 {v}, ptr {q}"));
+        self.erase(f, &old, d);
+        if let D::Dyn(dv) = d {
+            // A value of a type variable's type: the block says how to read
+            // it, so say it.
+            let w = f.t();
+            f.i(format!("{w} = getelementptr i64, ptr {p}, i64 2"));
+            let had = f.t();
+            f.i(format!("{had} = load i64, ptr {w}"));
+            let (cleared, bits, now) = (f.t(), f.t(), f.t());
+            f.i(format!("{cleared} = and i64 {had}, -16"));
+            f.i(format!("{bits} = and i64 {dv}, 15"));
+            f.i(format!("{now} = or i64 {cleared}, {bits}"));
+            f.i(format!("store i64 {now}, ptr {w}"));
+        }
+    }
+
     fn inline_prim(
         &mut self,
         p: Prim,
@@ -1885,30 +1983,7 @@ impl<'p> Module<'p> {
             }
             (SetRef, [r, v]) => {
                 let d = self.desc(args[1], env);
-                let p = f.ptr(r);
-                let q = f.t();
-                f.i(format!("{q} = getelementptr i64, ptr {p}, i64 3"));
-                let old = f.t();
-                f.i(format!("{old} = load i64, ptr {q}"));
-                // What it held is gone; what it holds now is one more
-                // reference. The old one is erased by the same descriptor,
-                // since a `Ref` holds one type.
-                self.share(f, v, &d, 1);
-                f.i(format!("store i64 {v}, ptr {q}"));
-                self.erase(f, &old, &d);
-                if let D::Dyn(dv) = &d {
-                    // A value of a type variable's type: the block says how to
-                    // read it, so say it.
-                    let w = f.t();
-                    f.i(format!("{w} = getelementptr i64, ptr {p}, i64 2"));
-                    let had = f.t();
-                    f.i(format!("{had} = load i64, ptr {w}"));
-                    let (cleared, bits, now) = (f.t(), f.t(), f.t());
-                    f.i(format!("{cleared} = and i64 {had}, -16"));
-                    f.i(format!("{bits} = and i64 {dv}, 15"));
-                    f.i(format!("{now} = or i64 {cleared}, {bits}"));
-                    f.i(format!("store i64 {now}, ptr {w}"));
-                }
+                self.set_ref(f, r, v, &d);
                 Some("0".to_string())
             }
             // A hole filled in place, as tail recursion modulo cons does at
@@ -2237,11 +2312,11 @@ impl<'p> Module<'p> {
     fn threads_part(&self, first: bool) -> String {
         let mut out = String::new();
         if self.threaded {
+            // The context comes in as every function's first argument, and
+            // the spill area and the shadow chain's head are in it; only the
+            // ways in from the runtime ask for it (`meadow_ctx`).
             out.push_str("@meadow_preempt = external hidden global i8\n");
-            out.push_str("declare ptr @meadow_spill_area()\n");
-            if self.shadow {
-                out.push_str("declare ptr @meadow_shadow_head()\n");
-            }
+            out.push_str("declare i64 @meadow_ctx()\n");
         } else {
             if self.shadow {
                 out.push_str("@meadow_shadow_single = external global i64\n");
@@ -2269,6 +2344,19 @@ impl<'p> Module<'p> {
         out
     }
 
+    /// How a way in from the runtime finds the context to hand the code it
+    /// calls, and the argument that hands it on: nothing, where there is none.
+    fn entry_ctx(&self) -> (String, String) {
+        if self.threaded {
+            (
+                format!("  {CTX} = call i64 @meadow_ctx()\n"),
+                format!("i64 {CTX}, "),
+            )
+        } else {
+            (String::new(), String::new())
+        }
+    }
+
     /// The first module's own part: the runtime's declarations, the tables,
     /// and the entry points.
     fn header(&mut self, entries: Entries, result: i64, fingerprint: &str) -> String {
@@ -2276,7 +2364,7 @@ impl<'p> Module<'p> {
         let _ = writeln!(out, "; A Meadow program, compiled by meadow-llvm.\n");
         out.push_str(RUNTIME);
         out.push_str(&helpers(self.cycles, self.regions));
-        out.push_str(&INVOKE1.replace("ghccc", self.cc));
+        out.push_str(&invokers(self.cc, self.threaded));
         let _ = writeln!(out, "@meadow_silo_{fingerprint} = external global i8");
         let _ = writeln!(
             out,
@@ -2352,9 +2440,10 @@ impl<'p> Module<'p> {
         out.push('\n');
         match entries {
             Entries::Main(entry) => {
+                let (get, arg) = self.entry_ctx();
                 let _ = writeln!(
                     out,
-                    "define i64 @meadow_entry() {{\n  %r = call {} i64 @mw.L{}(i64 0)\n  ret i64 %r\n}}\n",
+                    "define i64 @meadow_entry() {{\n{get}  %r = call {} i64 @mw.L{}({arg}i64 0)\n  ret i64 %r\n}}\n",
                     self.cc, entry.0
                 );
                 out.push_str(
@@ -2365,10 +2454,11 @@ impl<'p> Module<'p> {
             }
             Entries::Tests(labels) => {
                 let mut table = Vec::new();
+                let (get, arg) = self.entry_ctx();
                 for (i, l) in labels.iter().enumerate() {
                     let _ = writeln!(
                         out,
-                        "define i64 @meadow_test{i}() {{\n  %r = call {} i64 @mw.L{}(i64 0)\n  ret i64 %r\n}}\n",
+                        "define i64 @meadow_test{i}() {{\n{get}  %r = call {} i64 @mw.L{}({arg}i64 0)\n  ret i64 %r\n}}\n",
                         self.cc, l.0
                     );
                     table.push(format!("ptr @meadow_test{i}"));
@@ -2428,9 +2518,9 @@ fn declarations(body: &str, arity: &HashMap<&str, usize>, cc: &str) -> String {
 
 /// What the emitted code calls in the runtime, `silo/src/lib.rs`.
 const RUNTIME: &str = "\
-declare i64 @meadow_acquire(i64)
-declare void @meadow_free(i64)
-declare void @meadow_clean(i64)
+declare i64 @meadow_acquire(i64, i64)
+declare void @meadow_free(i64, i64)
+declare void @meadow_clean(i64, i64)
 declare void @meadow_fail(ptr, i64) noreturn
 declare i64 @meadow_prim(i64, i64, ptr, ptr)
 declare i64 @meadow_field(i64, i64)
@@ -2457,6 +2547,7 @@ declare i64 @meadow_native(ptr, ptr, i64, i64)
 declare i64 @meadow_record(i64, ptr, ptr, ptr)
 declare i64 @meadow_select(i64, i64)
 declare i64 @meadow_extend(i64, i64, i64, i64)
+declare i64 @meadow_update(i64, i64, i64, i64, i64)
 declare i64 @meadow_array(i64, ptr, ptr)
 
 ";
@@ -2579,6 +2670,15 @@ fn lit_desc(l: &Lit) -> i64 {
 /// and the rest on the stack, and guarantees the tail calls either way.
 const REGS: usize = 10;
 
+/// What every function of a program that can spawn calls the running
+/// thread's context, its first parameter: the `Ctx` of `silo/src/ctx.rs`,
+/// whose first words are the spill area's address and the shadow chain's
+/// head. A thread's context moves between OS threads with it but never
+/// within memory, so this holds across any wait -- where a thread-local
+/// would be the OS thread's -- and finding it costs nothing: it is already in
+/// a register.
+const CTX: &str = "%ctx";
+
 /// The calling convention a module's functions are in.
 ///
 /// **`ghccc`** on x86-64: no callee-saved registers, everything in registers,
@@ -2624,39 +2724,48 @@ impl CallConv {
 /// (`meadow_spill_area`): stored just before the call, and loaded by the
 /// callee first thing, before anything else could use it.
 ///
-/// The area is asked for at each site rather than read from a thread-local
-/// the compiler could keep across a call: a thread that waits can carry on
-/// on another OS thread, and an address from before the wait would be that
-/// OS thread's.
-fn spill(f: &mut Fun, ops: &[String]) {
-    if ops.len() <= REGS {
+/// The area is the running thread's, and in a program that can spawn its
+/// address is word 0 of the context the function was handed -- never an OS
+/// thread's, which a thread that waits and carries on elsewhere would leave
+/// behind. One that cannot has a single area, a static.
+fn spill(f: &mut Fun, ops: &[String], regs: usize, threaded: bool) {
+    if ops.len() <= regs {
         return;
     }
-    f.spill = f.spill.max(ops.len() - REGS);
+    f.spill = f.spill.max(ops.len() - regs);
     let area = f.t();
-    f.i(format!("{area} = call ptr @meadow_spill_area()"));
-    for (i, o) in ops.iter().enumerate().skip(REGS) {
+    f.i(spill_area(&area, threaded));
+    for (i, o) in ops.iter().enumerate().skip(regs) {
         let q = f.t();
         f.i(format!(
             "{q} = getelementptr i64, ptr {area}, i64 {}",
-            i - REGS
+            i - regs
         ));
         f.i(format!("store i64 {o}, ptr {q}"));
     }
 }
 
-/// The loads of a function's parameters past [`REGS`], at its entry.
-fn spilled_params(params: &[String]) -> String {
+/// `area` set to the spill area's address.
+fn spill_area(area: &str, threaded: bool) -> String {
+    if threaded {
+        format!("{area}.ctx = inttoptr i64 {CTX} to ptr\n  {area} = load ptr, ptr {area}.ctx")
+    } else {
+        format!("{area} = call ptr @meadow_spill_area()")
+    }
+}
+
+/// The loads of a function's parameters past the first `regs`, at its entry.
+fn spilled_params(params: &[String], regs: usize, threaded: bool) -> String {
     let mut out = String::new();
-    if params.len() <= REGS {
+    if params.len() <= regs {
         return out;
     }
-    let _ = writeln!(out, "  %spill.at = call ptr @meadow_spill_area()");
-    for (i, p) in params.iter().enumerate().skip(REGS) {
+    let _ = writeln!(out, "  {}", spill_area("%spill.at", threaded));
+    for (i, p) in params.iter().enumerate().skip(regs) {
         let _ = writeln!(
             out,
             "  {p}.at = getelementptr i64, ptr %spill.at, i64 {}\n  {p} = load i64, ptr {p}.at",
-            i - REGS
+            i - regs
         );
     }
     out
@@ -2859,7 +2968,7 @@ done:
   ret void
 }
 
-define internal void @mw.erase(i64 %v) alwaysinline {
+define internal void @mw.erase(i64 %ctx, i64 %v) alwaysinline {
 entry:
   %low = and i64 %v, 1
   %even = icmp eq i64 %low, 0
@@ -2872,7 +2981,7 @@ go:
   %last = icmp eq i32 %rc, 0
   br i1 %last, label %free, label %dec
 free:
-  call void @meadow_free(i64 %v)
+  call void @meadow_free(i64 %ctx, i64 %v)
   br label %done
 dec:
   %rc2 = sub i32 %rc, 1
@@ -2893,18 +3002,71 @@ done:
   ret void
 }
 
-define internal void @mw.erase_d(i64 %v, i64 %d) alwaysinline {
+define internal void @mw.erase_d(i64 %ctx, i64 %v, i64 %d) alwaysinline {
 entry:
   %isref = icmp eq i64 %d, 0
   br i1 %isref, label %go, label %done
 go:
-  call void @mw.erase(i64 %v)
+  call void @mw.erase(i64 %ctx, i64 %v)
   br label %done
 done:
   ret void
 }
 
+; Field %i of the block at %v, shared: `meadow_field` without the call. A
+; uniform block's fields start at word 2 and share word 1's descriptor; any
+; other's start past its descriptor words, sixteen four-bit descriptors to a
+; word. Called with a constant %i, all but the loads folds away.
+define internal i64 @mw.field(i64 %v, i64 %i) alwaysinline {
+entry:
+  %p = inttoptr i64 %v to ptr
+  %w1p = getelementptr i64, ptr %p, i64 1
+  %w1 = load i64, ptr %w1p
+  %uni = and i64 %w1, 4096
+  %isuni = icmp ne i64 %uni, 0
+  br i1 %isuni, label %uniform, label %mixed
+uniform:
+  %ud0 = lshr i64 %w1, 8
+  %ud = and i64 %ud0, 15
+  br label %load
+mixed:
+  %w0 = load i64, ptr %p
+  %len = lshr i64 %w0, 32
+  %len15 = add i64 %len, 15
+  %dws = lshr i64 %len15, 4
+  %mfirst = add i64 %dws, 2
+  %slot0 = lshr i64 %i, 4
+  %slot = add i64 %slot0, 2
+  %dwp = getelementptr i64, ptr %p, i64 %slot
+  %dw = load i64, ptr %dwp
+  %nib = and i64 %i, 15
+  %shift = shl i64 %nib, 2
+  %md0 = lshr i64 %dw, %shift
+  %md = and i64 %md0, 15
+  br label %load
+load:
+  %first = phi i64 [ 2, %uniform ], [ %mfirst, %mixed ]
+  %d = phi i64 [ %ud, %uniform ], [ %md, %mixed ]
+  %at = add i64 %first, %i
+  %xp = getelementptr i64, ptr %p, i64 %at
+  %x = load i64, ptr %xp
+  call void @mw.share_d(i64 %x, i64 %d, i32 1)
+  ret i64 %x
+}
+
 ";
+
+/// [`INVOKE1`] in the module's convention, handing the method it calls the
+/// running thread's context where the program has one to hand.
+fn invokers(cc: &str, threaded: bool) -> String {
+    let text = INVOKE1.replace("ghccc", cc);
+    if threaded {
+        text.replace("  %slot = ", "  %ctx = call i64 @meadow_ctx()\n  %slot = ")
+            .replace(" i64 %fp(i64 %obj", " i64 %fp(i64 %ctx, i64 %obj")
+    } else {
+        text
+    }
+}
 
 /// How the runtime runs a closure of one argument -- the code after a stack
 /// segment primitive (`silo/src/segments.rs`) -- when the methods are in a
@@ -2986,10 +3148,12 @@ fn direct(p: Prim) -> Option<(&'static str, Descs)> {
 /// reference of its own: the linearization shares the argument first where it
 /// is used again, and otherwise gives up the caller's. So a count of zero inside
 /// the primitive means nobody else can see the value, and it may be changed in
-/// place -- which is how `arrayPush` grows an array without copying it.
+/// place -- which is how `arrayPush` grows an array without copying it, and
+/// how a record whose type says where the label is gets its field replaced.
 pub fn consumes(op: &meadow_seq::Extern) -> Option<usize> {
     match op {
-        meadow_seq::Extern::Prim(Prim::ArrayPush | Prim::ArrayConcat) => Some(0),
+        meadow_seq::Extern::Prim(Prim::ArrayPush | Prim::ArrayConcat)
+        | meadow_seq::Extern::Extend(_, Some(_)) => Some(0),
         _ => None,
     }
 }

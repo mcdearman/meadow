@@ -240,6 +240,31 @@ side -- went from 1.27 billion blocks acquired and 22 seconds to 8.4 million
 and 1.6 -- two blocks per insertion, where the leaf is one. `MEADOW_NO_REUSE` builds the
 same compiler without reuse, to measure what it is worth.
 
+### Borrowing
+
+A parameter a function only reads -- switches on, hands to primitives, passes
+on to another reader -- is _borrowed_, after Lean 4 (Ullrich and de Moura,
+_Counting Immutable Beans_, IFL 2019): the caller keeps its reference, and
+the callee counts nothing, not even the fields it walks into. Which
+parameters are borrowed is worked out over the whole program
+(`linear::program`): every one starts borrowed, and becomes owned when its
+function consumes it -- builds it into a block, captures it, passes it to an
+owner -- or could build in its block. Only from borrowed to owned, so it ends.
+
+Lean has a caller that hands a borrowed parameter a value it will not use
+again give it up after the call. For `check (build n)` that walks the tree
+twice -- once to read, once to free -- where a callee that owned it would
+have freed each node as it read it: binarytrees ran 15% slower. Such a call
+goes instead to a **copy** of the function that owns those parameters, made
+once for each set of them some caller needs and linearized like any other;
+its recursive calls on what it owns go to itself. A copy no one calls in the
+end is not emitted.
+
+A non-tail call's frame, in a function whose activation no handler can
+capture (`Program::pure`), runs before the function's caller goes on, so it
+lends what the function borrowed rather than counting it in.
+`MEADOW_NO_BORROW` builds everything owned, to measure what this is worth.
+
 ## Cycles
 
 Counting misses a cycle, and this runtime cannot have the usual backstop: a

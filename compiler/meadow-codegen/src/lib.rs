@@ -2208,11 +2208,11 @@ impl<'a> Gen<'a> {
                 let window = self.gathered(&env, &srcs, base);
                 self.safepoint(&env, &window);
             }
-            Extern::Select(l) => {
+            Extern::Select(l, _) => {
                 let id = self.label(*l);
                 self.emit(Instr::new(Op::Select, dst, srcs[0], 0, id));
             }
-            Extern::Extend(l) => {
+            Extern::Extend(l, _) => {
                 let id = self.label(*l);
                 self.emit(Instr::new(Op::Extend, dst, srcs[0], srcs[1], id));
                 self.operands_in(&env, &[srcs[0], srcs[1]]);

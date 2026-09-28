@@ -99,7 +99,19 @@ pub const MUTABLE: u64 = 1 << 18;
 /// whether it died while it waited. A block copied into another heap
 /// ([`crate::parcel`]) keeps none of it. [`MUTABLE`] is not here: that is
 /// about the kind, which the copy keeps.
-pub const MARKS: u64 = (3 << COLOUR_SHIFT) | BUFFERED | DEAD | MOVED;
+pub const MARKS: u64 = (3 << COLOUR_SHIFT) | BUFFERED | DEAD | MOVED | DEFERRED;
+
+/// Waiting in the oversized list for a walk with no budget (see
+/// [`Heap::set_oversized`]): until then, a walk from another candidate that
+/// reaches it goes no further in and takes it for alive -- which can only put
+/// off freeing a cycle through it, never free what is not garbage. Without
+/// this, one big table a program reads over and over is walked in part at
+/// every run, from whatever candidate reaches it.
+pub const DEFERRED: u64 = 1 << 20;
+
+pub fn deferred(v: Word) -> bool {
+    word(v, 1) & DEFERRED != 0
+}
 
 /// The [`MUTABLE`] bit, for a block of this kind.
 const fn mutable(kind: u64) -> u64 {
@@ -107,6 +119,57 @@ const fn mutable(kind: u64) -> u64 {
         MUTABLE
     } else {
         0
+    }
+}
+
+/// The [`MUTABLE`] bit, for a uniform block of this kind whose words are all
+/// described by `d`. A mutable array of numbers is mutable, but can hold no
+/// reference, and so can be part of no cycle: it is never a candidate, and a
+/// program that keeps its tables in such arrays -- a parser's, a compiler's --
+/// does not have the collector walk them every time one is let go of.
+fn mutable_holding(kind: u64, d: i64) -> u64 {
+    if d == meadow_core::desc::REF || d == meadow_core::desc::ANY {
+        mutable(kind)
+    } else {
+        0
+    }
+}
+
+/// A mutable array has had a block stored in it that a cycle could run
+/// through -- not a string, a big integer, a number: set where an element is
+/// written, and never cleared. One that has only ever held leaves has nothing
+/// for the cycle collector to walk, however long it is; which is what a
+/// program's column of ten thousand names is, taken and let go of at every
+/// read of it and so a candidate again after every run.
+pub const CYCLABLE: u64 = 1 << 19;
+
+/// `x`, described by `d`, is being stored in the mutable array at `arr`.
+#[inline]
+pub fn note_stored(arr: Word, x: Word, d: i64) {
+    if (d == meadow_core::desc::REF || d == meadow_core::desc::ANY)
+        && is_block(x)
+        && crate::cycles::may_cycle(x)
+    {
+        set_word(arr, 1, word(arr, 1) | CYCLABLE);
+    }
+}
+
+/// Whether the block at `v` can point at anything a cycle could run through:
+/// a mutable array only if something that could ever was stored in it.
+pub fn may_hold_cycles(v: Word) -> bool {
+    if kind(v) == MUT_ARRAY && uniform(v) {
+        word(v, 1) & CYCLABLE != 0
+    } else {
+        holds_refs(v)
+    }
+}
+
+/// Whether the block at `v` can hold a reference at all: not a uniform one
+/// whose words are all described as something else.
+pub fn holds_refs(v: Word) -> bool {
+    !uniform(v) || {
+        let d = ((word(v, 1) >> DESC_SHIFT) & 15) as i64;
+        d == meadow_core::desc::REF || d == meadow_core::desc::ANY
     }
 }
 
@@ -155,7 +218,10 @@ pub type Word = u64;
 
 /// A heap: one per green thread (`crate::ctx`), freed with it.
 pub struct Heap {
-    clean: Vec<Vec<*mut Word>>,
+    /// The clean blocks of each size class: the first, whose word 0 is the
+    /// next, and so on to a null. A list through the blocks themselves is a
+    /// load and a store to take one or give one back, and never grows.
+    clean: [*mut Word; CLASSES],
     /// Blocks whose last reference was erased, and how far into their fields
     /// erasing has got.
     pending: Vec<(*mut Word, usize)>,
@@ -203,13 +269,13 @@ pub struct Heap {
 impl Heap {
     pub fn new() -> Heap {
         Heap {
-            clean: Vec::new(),
+            clean: [std::ptr::null_mut(); CLASSES],
             pending: Vec::new(),
             chunk: std::ptr::null_mut(),
             left: 0,
             live: 0,
             acquired: 0,
-            blocks: None,
+            blocks: tracking().then(std::collections::HashSet::new),
             candidates: Vec::new(),
             oversized: Vec::new(),
             oversized_mark: usize::MAX,
@@ -243,10 +309,17 @@ impl Drop for Heap {
 }
 
 fn with<T>(f: impl FnOnce(&mut Heap) -> T) -> T {
+    with_in(crate::ctx::get(), f)
+}
+
+/// `f` of the heap of context `c`: the running thread's, which emitted code
+/// hands the runtime's hottest entries rather than have them look it up.
+#[inline(always)]
+fn with_in<T>(c: *mut crate::ctx::Ctx, f: impl FnOnce(&mut Heap) -> T) -> T {
     // Safety: the running green thread's heap, and nothing here re-enters
     // it while it is borrowed -- erasing pushes onto `pending` rather than
     // recursing.
-    f(unsafe { &mut (*crate::ctx::get()).heap })
+    f(unsafe { &mut (*c).heap })
 }
 
 /// Is `v` the address of a block?
@@ -350,6 +423,23 @@ pub fn set_field(v: Word, i: usize, x: Word, d: i64) {
     }
 }
 
+/// `n` references more to `v`, described by `d`: one count written, unless
+/// the block is in a region, which counts each.
+pub fn share_n(v: Word, d: i64, n: usize) {
+    if n == 0 || d != meadow_core::desc::REF || !is_block(v) {
+        return;
+    }
+    if in_region(v) {
+        for _ in 0..n {
+            share(v, d);
+        }
+    } else {
+        // Safety: a live block's count.
+        let rc = unsafe { &mut *(v as *mut u32) };
+        *rc += n as u32;
+    }
+}
+
 /// One reference more to `v`, described by `d`.
 #[inline]
 pub fn share(v: Word, d: i64) {
@@ -393,6 +483,12 @@ pub fn erase(v: Word, d: i64) {
 /// the collector still has a pointer to it -- see [`Heap::free_dead`].
 #[inline]
 fn died(v: Word) {
+    died_in(crate::ctx::get(), v);
+}
+
+/// [`died`], in context `c`'s heap.
+#[inline]
+pub fn died_in(c: *mut crate::ctx::Ctx, v: Word) {
     if crate::cycles::possible() && buffered(v) {
         // Black and dead: what the collector must not mistake for a
         // candidate with a reference left, since the count it reads is the
@@ -400,17 +496,22 @@ fn died(v: Word) {
         set_word(v, 1, (word(v, 1) | DEAD) & !(3 << COLOUR_SHIFT));
         return;
     }
-    with(|h| h.pending.push((ptr(v), 0)));
+    with_in(c, |h| h.pending.push((ptr(v), 0)));
 }
 
 /// A block of `words` words, count 0, the rest for the caller to write.
 pub fn acquire(words: usize) -> Word {
-    with(|h| {
+    acquire_in(crate::ctx::get(), words)
+}
+
+/// [`acquire`], from context `c`'s heap.
+pub fn acquire_in(c: *mut crate::ctx::Ctx, words: usize) -> Word {
+    with_in(c, |h| {
         // Work off what is pending: one step always, more while nothing clean
         // of this size is to be had.
         h.step();
         let want = words < CLASSES;
-        while want && h.clean.get(words).is_none_or(Vec::is_empty) && !h.pending.is_empty() {
+        while want && h.clean[words].is_null() && !h.pending.is_empty() {
             h.step();
         }
         // A program that cannot make a cycle never sets this, so what it pays
@@ -442,9 +543,6 @@ pub fn tracking() -> bool {
 impl Heap {
     fn take(&mut self, words: usize) -> Word {
         let h = self;
-        if h.blocks.is_none() && tracking() {
-            h.blocks = Some(std::collections::HashSet::new());
-        }
         let want = words < CLASSES;
         if !want {
             let layout = std::alloc::Layout::array::<Word>(words).expect("a block fits memory");
@@ -456,7 +554,10 @@ impl Heap {
             h.large.insert(p as usize, words);
             return p as Word;
         }
-        if let Some(p) = h.clean.get_mut(words).and_then(Vec::pop) {
+        let p = h.clean[words];
+        if !p.is_null() {
+            // Safety: a clean block, whose word 0 is the next.
+            h.clean[words] = unsafe { *p } as *mut Word;
             return p as Word;
         }
         if h.left < words {
@@ -484,6 +585,11 @@ impl Heap {
 
 /// The block at `v` is done with: its fields were moved out, or erased.
 pub fn clean(v: Word) {
+    clean_in(crate::ctx::get(), v);
+}
+
+/// [`clean`], into context `c`'s heap.
+pub fn clean_in(c: *mut crate::ctx::Ctx, v: Word) {
     if crate::cycles::possible() && buffered(v) {
         // Waiting in the candidate buffer: hold the memory back, and
         // remember that there is nothing left inside to erase.
@@ -491,7 +597,7 @@ pub fn clean(v: Word) {
         return;
     }
     let words = size(v);
-    with(|h| h.clean_block(ptr(v), words));
+    with_in(c, |h| h.clean_block(ptr(v), words));
 }
 
 impl Heap {
@@ -562,6 +668,7 @@ impl Heap {
     /// the heap may get before walking it anyway -- a doubling, so that the
     /// one long pause it costs is paid over as much allocation as it saves.
     pub(crate) fn set_oversized(&mut self, v: Word) {
+        set_word(v, 1, word(v, 1) | DEFERRED);
         self.oversized.push(v);
         if self.oversized_mark == usize::MAX {
             self.oversized_mark = (2 * self.live.max(0) as usize).max(FLOOR);
@@ -578,6 +685,9 @@ impl Heap {
     pub(crate) fn retry_oversized(&mut self) -> usize {
         self.oversized_mark = usize::MAX;
         let waiting = std::mem::take(&mut self.oversized);
+        for &v in &waiting {
+            set_word(v, 1, word(v, 1) & !DEFERRED);
+        }
         self.candidates.extend_from_slice(&waiting);
         waiting.len()
     }
@@ -593,6 +703,25 @@ impl Heap {
             self.clean_block(ptr(v), words);
         } else {
             self.pending.push((ptr(v), 0));
+        }
+    }
+
+    /// One reference fewer to the block at `x`, from inside the collector,
+    /// which has this heap in hand already: `erase`, without looking the heap
+    /// up again. For a leaf -- a string, a big integer, a compact -- which is
+    /// never a candidate.
+    pub(crate) fn let_go(&mut self, x: Word) {
+        // Safety: a live block's count.
+        let rc = unsafe { &mut *(x as *mut u32) };
+        if *rc == 0 {
+            self.pending.push((ptr(x), 0));
+        } else {
+            let region = *rc > REGION_FLOOR;
+            *rc -= 1;
+            if region {
+                // Safety: the count says it is in a region.
+                unsafe { crate::region::erased(x) };
+            }
         }
     }
 
@@ -622,10 +751,9 @@ impl Heap {
             unsafe { std::alloc::dealloc(p as *mut u8, layout) };
             return;
         }
-        if self.clean.len() <= words {
-            self.clean.resize_with(words + 1, Vec::new);
-        }
-        self.clean[words].push(p);
+        // Safety: a block of `words` words, which nothing reads any more.
+        unsafe { *p = self.clean[words] as Word };
+        self.clean[words] = p;
     }
 
     /// Erase up to [`STEP`] fields of the block pending longest.
@@ -748,7 +876,10 @@ pub fn build_uniform(kind: u64, meta: u32, n: usize, d: i64) -> Word {
     set_word(
         v,
         1,
-        kind | mutable(kind) | ((d as u64 & 15) << DESC_SHIFT) | UNIFORM | (u64::from(meta) << 32),
+        kind | mutable_holding(kind, d)
+            | ((d as u64 & 15) << DESC_SHIFT)
+            | UNIFORM
+            | (u64::from(meta) << 32),
     );
     v
 }

@@ -190,6 +190,10 @@ fn item_pat(p: &mut ast::LPat) {
             unmark(n);
             item_pat(inner);
         }
+        ast::Pat::View(f, inner) => {
+            expr(f);
+            item_pat(inner);
+        }
         _ => pat(p),
     }
 }
@@ -266,6 +270,10 @@ fn pat(p: &mut ast::LPat) {
             ty(t);
         }
         ast::Pat::As(_, inner) => pat(inner),
+        ast::Pat::View(f, inner) => {
+            expr(f);
+            pat(inner);
+        }
         ast::Pat::Cons(_, ps)
         | ast::Pat::QualCons(_, _, ps)
         | ast::Pat::Tuple(ps)

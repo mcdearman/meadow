@@ -42,7 +42,17 @@ pub enum Wake {
     Fail(String),
 }
 
+/// Laid out as C would, for the first two words' sake: emitted code reads
+/// them off the context it is handed (`meadow_llvm::emit`'s `CTX`), so they
+/// must be where it looks.
+#[repr(C)]
 pub struct Ctx {
+    /// Word 0: where the spill area starts -- `spill`'s buffer, which never
+    /// moves.
+    pub spill_at: *mut Word,
+    /// Word 1: the running segment's shadow chain: see `crate::shadow`.
+    /// Here for a program with threads; one without keeps it in a global.
+    pub shadow: Word,
     pub heap: Heap,
     /// The segments running, innermost last: see `crate::segments`.
     pub running: Vec<*const ()>,
@@ -52,9 +62,6 @@ pub struct Ctx {
     /// Segments suspended for a handler further out than their own, while
     /// that suspension lasts, innermost first: see `crate::segments::drive`.
     pub(crate) parked: Vec<Parked>,
-    /// The running segment's shadow chain: see `crate::shadow`. Here for a
-    /// program with threads; one without keeps it in a global.
-    pub shadow: Word,
     pub next_handler: u32,
     /// String literals, made once per thread, by their bytes' address.
     pub literals: HashMap<usize, Word>,
@@ -71,7 +78,7 @@ pub struct Ctx {
     pub(crate) stacks: Vec<corosensei::stack::DefaultStack>,
     /// Where a call puts the arguments that do not fit in registers.
     /// As many words as the emitted module's widest call needs:
-    /// `meadow_spill_words`.
+    /// `meadow_spill_words`. Never resized: `spill_at` is its address.
     pub spill: Vec<Word>,
     /// The thread's number: 0 is `main`.
     pub tid: usize,
@@ -83,12 +90,13 @@ unsafe impl Send for Ctx {}
 
 impl Ctx {
     pub fn new(tid: usize) -> Box<Ctx> {
-        Box::new(Ctx {
+        let mut c = Box::new(Ctx {
+            spill_at: std::ptr::null_mut(),
+            shadow: 0,
             heap: Heap::new(),
             running: Vec::new(),
             suspended: Vec::new(),
             parked: Vec::new(),
-            shadow: 0,
             next_handler: 1,
             literals: HashMap::new(),
             globals: Vec::new(),
@@ -100,7 +108,9 @@ impl Ctx {
             // Safety: a constant the emitted module defines.
             spill: vec![0; unsafe { meadow_spill_words }.max(0) as usize],
             tid,
-        })
+        });
+        c.spill_at = c.spill.as_mut_ptr();
+        c
     }
 }
 
@@ -161,6 +171,20 @@ fn current() -> *mut Ctx {
         crate::fail("the native runtime ran outside every thread")
     }
     c
+}
+
+/// The running thread's context, for the ways into emitted code from the
+/// runtime, which hand it on as every function's first argument.
+#[unsafe(no_mangle)]
+pub extern "C" fn meadow_ctx() -> *mut Ctx {
+    get()
+}
+
+/// The context emitted code handed a runtime entry: its own, or -- `null`,
+/// from a program that cannot spawn and so passes none -- the one there is.
+#[inline(always)]
+pub fn given(c: *mut Ctx) -> *mut Ctx {
+    if c.is_null() { get() } else { c }
 }
 
 /// Whether there is a running thread's context on this OS thread.

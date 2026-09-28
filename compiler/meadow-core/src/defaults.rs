@@ -40,7 +40,10 @@ pub fn defs(defs: &mut [Def], imported: &HashMap<Var, Vec<VarKind>>) {
     }
     for d in defs.iter_mut() {
         let mut bound: HashSet<u32> = d.poly.binders.iter().map(|b| b.id).collect();
-        let mut local = kinds.clone();
+        // This definition's own local bindings, over everyone's: a copy of
+        // the whole table per definition made the pass quadratic in how many
+        // a unit has.
+        let mut local: HashMap<Var, Vec<VarKind>> = HashMap::new();
         rewrite::visit(&d.term, &mut |t| {
             match t {
                 Term::TyLam(bs, _) => bound.extend(bs.iter().map(|b| b.id)),
@@ -60,7 +63,8 @@ pub fn defs(defs: &mut [Def], imported: &HashMap<Var, Vec<VarKind>>) {
         });
         let fix = Fix {
             bound: &bound,
-            kinds: &local,
+            kinds: &kinds,
+            local: &local,
         };
         // The definition's own type can hold one too -- `def main = compact
         // #[stNewArray 2 0]` has a state thread nothing names -- and has to be
@@ -78,9 +82,17 @@ pub fn defs(defs: &mut [Def], imported: &HashMap<Var, Vec<VarKind>>) {
 struct Fix<'a> {
     bound: &'a HashSet<u32>,
     kinds: &'a HashMap<Var, Vec<VarKind>>,
+    /// The definition's own local bindings, looked at before `kinds`.
+    local: &'a HashMap<Var, Vec<VarKind>>,
 }
 
 impl Fix<'_> {
+    /// What the binders of `v` stand for: a local binding's, or else one of
+    /// the unit's or an import's.
+    fn kinds_of(&self, v: &Var) -> Option<&Vec<VarKind>> {
+        self.local.get(v).or_else(|| self.kinds.get(v))
+    }
+
     /// Whether anything in `t` needs a default -- most definitions have none,
     /// and are not rebuilt.
     fn needed(&self, t: &Term) -> bool {
@@ -161,7 +173,7 @@ impl Fix<'_> {
         match t {
             Term::TyApp(f, args) => {
                 let binders = match f.peel() {
-                    Term::Var(v) => self.kinds.get(v).cloned(),
+                    Term::Var(v) => self.kinds_of(v).cloned(),
                     _ => None,
                 };
                 let args = args

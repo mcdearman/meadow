@@ -673,16 +673,15 @@ impl<'a> Lowerer<'a> {
                 let arms = arms
                     .iter()
                     .map(|(p, g, e)| {
-                        let pat = self.lower_pat(p);
                         let guard = g.as_ref().map(|g| {
                             let lowered = self.lower_expr(g);
                             self.at(g.span, lowered)
                         });
                         let body = self.lower_expr(e);
-                        (pat, guard, self.at(e.span, body))
+                        (Some(p), guard, self.at(e.span, body))
                     })
                     .collect();
-                Term::Case(Arc::new(s), arms, self.ty(expr.id))
+                self.lower_case(s, self.ty(scrut.id), arms, self.ty(expr.id))
             }
 
             hir::Expr::Tuple(items) => {
@@ -828,9 +827,10 @@ impl<'a> Lowerer<'a> {
                     ),
                     // A structural binder: one arm, and the `case` produces
                     // whatever the body does.
-                    _ => Term::Case(
-                        Arc::new(rhs),
-                        vec![(self.lower_pat(pat), None, body)],
+                    _ => self.lower_case(
+                        rhs,
+                        self.ty(pat.id),
+                        vec![(Some(pat), None, body)],
                         result.clone(),
                     ),
                 }
@@ -864,10 +864,31 @@ impl<'a> Lowerer<'a> {
                 }
             }
             hir::Pat::Error => {}
+            // `(f -> p)`: `f` applied once, and its answer taken apart.
+            hir::Pat::View(f, p) => {
+                let answer = self.vars.fresh();
+                let lf = self.lower_expr(f);
+                let applied = self.at(f.span, Term::App(Arc::new(lf), Arc::new(scrut)));
+                out.push((answer, self.ty(p.id), applied));
+                self.bind_pat(Term::Var(answer), p, out);
+            }
             // Refutable in an irrefutable position: fall back to a single-arm Case.
             hir::Pat::Cons(..) | hir::Pat::List(..) | hir::Pat::Array(..) => {
                 let mut inner = Vec::new();
                 collect_pat_vars(pat, &mut inner);
+                if has_view(pat) {
+                    for (v, vty) in inner {
+                        let ty = self.ty(vty);
+                        let case = self.lower_case(
+                            scrut.clone(),
+                            self.ty(pat.id),
+                            vec![(Some(pat), None, Term::Var(v))],
+                            ty.clone(),
+                        );
+                        out.push((v, ty, case));
+                    }
+                    return;
+                }
                 let core_pat = self.lower_pat(pat);
                 for (v, vty) in inner {
                     let ty = self.ty(vty);
@@ -885,33 +906,57 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A pattern with no view in it.
     fn lower_pat(&mut self, pat: &hir::LPat) -> Pat {
+        let mut views = Vec::new();
+        let lowered = self.lower_pat_views(pat, &mut views);
+        debug_assert!(views.is_empty(), "a view is matched by `lower_case`");
+        lowered
+    }
+
+    /// `pat`, with each view in it -- not those inside a view's own pattern
+    /// -- a fresh variable, in `views` with its type, what it applies and
+    /// the pattern its answer has to match, in the order they are written.
+    fn lower_pat_views<'h>(&mut self, pat: &'h hir::LPat, views: &mut Vec<View<'h>>) -> Pat {
+        let mut lower_pat = |this: &mut Self, p: &'h hir::LPat| this.lower_pat_views(p, views);
         match pat.value() {
+            hir::Pat::View(f, p) => {
+                let v = self.vars.fresh();
+                let ty = self.ty(pat.id);
+                views.push((v, f, p));
+                Pat::Var(v, ty)
+            }
             hir::Pat::Wildcard => Pat::Wild,
             hir::Pat::Unit => Pat::Lit(Lit::Unit),
             hir::Pat::Var(id) => Pat::Var(*id.value(), self.ty(pat.id)),
             // Types are gone by here; the annotation did its work in inference.
-            hir::Pat::Ann(inner, _) => self.lower_pat(inner),
+            hir::Pat::Ann(inner, _) => lower_pat(self, inner),
             hir::Pat::As(id, sub) => {
-                Pat::As(*id.value(), self.ty(pat.id), Box::new(self.lower_pat(sub)))
+                let ty = self.ty(pat.id);
+                Pat::As(*id.value(), ty, Box::new(lower_pat(self, sub)))
             }
             hir::Pat::Lit(hir::Lit::Int(i)) => Pat::Lit(self.int_lit(pat.id, *i)),
             hir::Pat::Lit(hir::Lit::Float(b)) => Pat::Lit(self.float_lit(pat.id, *b)),
             hir::Pat::Lit(hir::Lit::String(s)) => Pat::Lit(Lit::Str(*s)),
             hir::Pat::Lit(hir::Lit::Char(c)) => Pat::Lit(Lit::Char(*c)),
-            hir::Pat::Tuple(items) => Pat::Tuple(items.iter().map(|p| self.lower_pat(p)).collect()),
-            hir::Pat::Array(items) => Pat::Array(items.iter().map(|p| self.lower_pat(p)).collect()),
+            hir::Pat::Tuple(items) => {
+                Pat::Tuple(items.iter().map(|p| lower_pat(self, p)).collect())
+            }
+            hir::Pat::Array(items) => {
+                Pat::Array(items.iter().map(|p| lower_pat(self, p)).collect())
+            }
             // `[a; b; c]` — the same `Cons`/`Nil` chain as the expression form.
+            // Its elements in order, so that their views are.
             hir::Pat::List(items) => {
+                let heads: Vec<Pat> = items.iter().map(|p| lower_pat(self, p)).collect();
                 let nil = Pat::Ctor(InternedString::from("List.Nil"), vec![]);
-                items.iter().rev().fold(nil, |acc, p| {
-                    let head = self.lower_pat(p);
+                heads.into_iter().rev().fold(nil, |acc, head| {
                     Pat::Ctor(InternedString::from("List.Cons"), vec![head, acc])
                 })
             }
             hir::Pat::Cons(label, args) => {
                 let name = *label.value();
-                let lowered: Vec<Pat> = args.iter().map(|p| self.lower_pat(p)).collect();
+                let lowered: Vec<Pat> = args.iter().map(|p| lower_pat(self, p)).collect();
                 match (&*name, lowered.len()) {
                     ("Bool.True", 0) => Pat::Lit(Lit::Bool(true)),
                     ("Bool.False", 0) => Pat::Lit(Lit::Bool(false)),
@@ -921,11 +966,120 @@ impl<'a> Lowerer<'a> {
             hir::Pat::Record(fields, _) => Pat::Record(
                 fields
                     .iter()
-                    .map(|(l, p)| (*l.value(), self.lower_pat(p)))
+                    .map(|(l, p)| (*l.value(), lower_pat(self, p)))
                     .collect(),
             ),
             hir::Pat::Error => Pat::Wild,
         }
+    }
+
+    /// `match scrut with arms`, where an arm's pattern is `None` for `_` and
+    /// its guard and body are lowered already.
+    ///
+    /// Views are what a core `case` cannot say: a pattern matches without
+    /// running anything. So an arm with views matches the rest of its pattern
+    /// with a variable where each view is, and then, in its body, applies
+    /// each view in turn and matches its answer. A view that does not match
+    /// -- or the guard, after them all -- goes on to the arms after this one:
+    /// a join, `k ()`, whose body matches the scrutinee against those, and
+    /// which the `case` enters too when this arm's pattern does not match.
+    fn lower_case(
+        &mut self,
+        scrut: Term,
+        scrut_ty: Ty,
+        arms: Vec<(Option<&hir::LPat>, Option<Term>, Term)>,
+        result: Ty,
+    ) -> Term {
+        let Some(at) = arms.iter().position(|(p, ..)| p.is_some_and(has_view)) else {
+            let arms = arms
+                .into_iter()
+                .map(|(p, g, b)| (p.map_or(Pat::Wild, |p| self.lower_pat(p)), g, b))
+                .collect();
+            return Term::Case(Arc::new(scrut), arms, result);
+        };
+        // The scrutinee is matched again by the arms after: evaluated once.
+        // A tuple of names or literals, `match (a, e) with`, is written out
+        // again instead, where it costs nothing: taken apart where it is
+        // made, it is never built.
+        let atom = |t: &Term| matches!(t, Term::Var(_) | Term::Lit(_));
+        let (s, bound) = match scrut {
+            Term::Tuple(ref xs) if xs.iter().all(atom) => (scrut.clone(), None),
+            Term::Var(v) => (Term::Var(v), None),
+            other => {
+                let v = self.vars.fresh();
+                (Term::Var(v), Some((v, other)))
+            }
+        };
+        let mut arms = arms;
+        let rest: Vec<_> = arms.split_off(at + 1);
+        let (pat, guard, body) = arms.pop().expect("the arm with the view");
+        // What failing does: the arms after, or -- when that is one `_` whose
+        // body is only a jump -- that jump, with no join of its own.
+        let (fail, join) = match rest.as_slice() {
+            [(None, None, jump @ Term::App(f, a))]
+                if matches!(**f, Term::Var(_)) && matches!(**a, Term::Lit(Lit::Unit)) =>
+            {
+                (jump.clone(), None)
+            }
+            _ => {
+                let k = self.vars.fresh();
+                let jump = Term::App(Arc::new(Term::Var(k)), Arc::new(Term::Lit(Lit::Unit)));
+                let others = self.lower_case(s.clone(), scrut_ty.clone(), rest, result.clone());
+                (jump, Some((k, others)))
+            }
+        };
+        let mut views = Vec::new();
+        let head = self.lower_pat_views(pat.expect("an arm with a view has a pattern"), &mut views);
+        let body = self.after_views(&views, guard, body, &fail, &result);
+        let mut out: Vec<(Pat, Option<Term>, Term)> = arms
+            .into_iter()
+            .map(|(p, g, b)| (p.map_or(Pat::Wild, |p| self.lower_pat(p)), g, b))
+            .collect();
+        out.push((head, None, body));
+        out.push((Pat::Wild, None, fail));
+        let mut term = Term::Case(Arc::new(s), out, result.clone());
+        if let Some((k, others)) = join {
+            let u = self.vars.fresh();
+            let kty = InferType::Fun(
+                vec![InferType::unit()],
+                Box::new(result.clone()),
+                Box::new(InferType::RowEmpty),
+            );
+            let lam = Term::Lam(u, InferType::unit(), Arc::new(others));
+            term = Term::Let(k, Poly::mono(kty), Arc::new(lam), Arc::new(term));
+        }
+        if let Some((v, rhs)) = bound {
+            term = Term::Let(v, Poly::mono(scrut_ty), Arc::new(rhs), Arc::new(term));
+        }
+        term
+    }
+
+    /// An arm's body once its pattern has matched: each of `views` applied and
+    /// its answer matched in turn, then the guard, and `fail` wherever one of
+    /// them says no.
+    fn after_views(
+        &mut self,
+        views: &[View<'_>],
+        guard: Option<Term>,
+        body: Term,
+        fail: &Term,
+        result: &Ty,
+    ) -> Term {
+        let Some(((v, f, p), later)) = views.split_first() else {
+            return match guard {
+                Some(g) => Term::If(Arc::new(g), Arc::new(body), Arc::new(fail.clone())),
+                None => body,
+            };
+        };
+        let inner = self.after_views(later, guard, body, fail, result);
+        let lf = self.lower_expr(f);
+        let applied = self.at(f.span, Term::App(Arc::new(lf), Arc::new(Term::Var(*v))));
+        self.lower_case(
+            applied,
+            self.ty(p.id),
+            vec![(Some(*p), None, inner), (None, None, fail.clone())],
+            result.clone(),
+        )
     }
 
     /// Build a constructor application, eta-expanding an under-applied one so a
@@ -967,9 +1121,30 @@ impl<'a> Lowerer<'a> {
             _ => None,
         };
         let Some(sig) = sig else {
-            return fields.iter().fold(lbase, |term, (l, e)| {
-                Term::Extend(Arc::new(term), *l.value(), Arc::new(self.lower_expr(e)))
+            // Every value first, and then the fields replaced: the record is
+            // used for the last time by the first replacement, rather than
+            // held while the values after it are computed -- which, since
+            // they read from it, they usually are -- so a back end can
+            // replace the field in place when nothing else holds the record.
+            let b = self.vars.fresh();
+            let values: Vec<(InternedString, Var, Ty, Term)> = fields
+                .iter()
+                .map(|(l, e)| {
+                    (
+                        *l.value(),
+                        self.vars.fresh(),
+                        self.ty(l.id),
+                        self.lower_expr(e),
+                    )
+                })
+                .collect();
+            let updated = values.iter().fold(Term::Var(b), |term, (l, v, ..)| {
+                Term::Extend(Arc::new(term), *l, Arc::new(Term::Var(*v)))
             });
+            let body = values.into_iter().rev().fold(updated, |acc, (_, v, t, e)| {
+                Term::Let(v, Poly::mono(t), Arc::new(e), Arc::new(acc))
+            });
+            return Term::Let(b, Poly::mono(bty), Arc::new(lbase), Arc::new(body));
         };
         let InferType::Con(_, targs) = &bty else {
             unreachable!("only a named type has constructors")
@@ -1029,6 +1204,28 @@ impl<'a> Lowerer<'a> {
     }
 }
 
+/// A view taken out of a pattern by `lower_pat_views`: the variable standing
+/// where it was, what it applies, and the pattern its answer has to match.
+type View<'h> = (Var, &'h hir::LExpr, &'h hir::LPat);
+
+/// Whether `pat` has a view anywhere in it.
+fn has_view(pat: &hir::LPat) -> bool {
+    match pat.value() {
+        hir::Pat::View(..) => true,
+        hir::Pat::Ann(p, _) => has_view(p),
+        hir::Pat::As(_, p) => has_view(p),
+        hir::Pat::Tuple(ps) | hir::Pat::Array(ps) | hir::Pat::List(ps) | hir::Pat::Cons(_, ps) => {
+            ps.iter().any(has_view)
+        }
+        hir::Pat::Record(fields, _) => fields.iter().any(|(_, p)| has_view(p)),
+        hir::Pat::Wildcard
+        | hir::Pat::Var(_)
+        | hir::Pat::Lit(_)
+        | hir::Pat::Unit
+        | hir::Pat::Error => false,
+    }
+}
+
 /// Every variable an irrefutable pattern binds, with the node whose inferred
 /// type is that variable's.
 fn collect_pat_vars(pat: &hir::LPat, out: &mut Vec<(Var, hir::NodeId)>) {
@@ -1043,6 +1240,8 @@ fn collect_pat_vars(pat: &hir::LPat, out: &mut Vec<(Var, hir::NodeId)>) {
         | hir::Pat::Array(items)
         | hir::Pat::Cons(_, items) => items.iter().for_each(|p| collect_pat_vars(p, out)),
         hir::Pat::Record(fields, _) => fields.iter().for_each(|(_, p)| collect_pat_vars(p, out)),
+        hir::Pat::Ann(p, _) => collect_pat_vars(p, out),
+        hir::Pat::View(_, p) => collect_pat_vars(p, out),
         _ => {}
     }
 }

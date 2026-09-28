@@ -389,6 +389,28 @@ pub fn compile_unit_with_procs(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// `MEADOW_TIME_PASSES=1`: how long each phase of compiling a unit took, on
+/// stderr -- the front end's half of what `meadow_seq::lower_program` says of
+/// the back end's.
+struct Phase(Option<std::time::Instant>);
+
+impl Phase {
+    fn start() -> Phase {
+        Phase(
+            std::env::var_os("MEADOW_TIME_PASSES")
+                .is_some()
+                .then(std::time::Instant::now),
+        )
+    }
+
+    fn done(&mut self, name: &str) {
+        if let Some(at) = &mut self.0 {
+            eprintln!("  {name:<14} {:>10.1?}", at.elapsed());
+            *at = std::time::Instant::now();
+        }
+    }
+}
+
 fn compile_unit_inner(
     pkg: InternedString,
     ident: InternedString,
@@ -402,6 +424,7 @@ fn compile_unit_inner(
 ) -> (CompiledPackage, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     let filename = unit_name.to_string();
+    let mut phase = Phase::start();
 
     // `@cfg(…)`: what does not apply to this build is gone before anything
     // else looks. Then macros, on what is left -- a call under a `@cfg` that
@@ -427,6 +450,7 @@ fn compile_unit_inner(
     let (macros, bindings, expansions) =
         crate::expand::expand_unit(pkg, &mut modules, deps, procs, &filename, &mut diags);
 
+    phase.done("expand");
     // --- name resolution (whole unit at once, so modules may be mutually recursive)
     // Start above every dependency, so no two units can mint the same id and
     // an id can be traced back to the unit that owns it.
@@ -595,6 +619,7 @@ fn compile_unit_inner(
         );
     }
 
+    phase.done("resolve");
     // --- type inference (one arena for the whole unit + dependency schemes)
     let mut infer = Infer::new(filename.clone(), resolver.id_count());
     infer.set_entries(runs);
@@ -666,6 +691,7 @@ fn compile_unit_inner(
         hir::apply_resolutions(&mut m.hir, &resolutions);
     }
 
+    phase.done("infer");
     // --- pattern coverage (needs the types; runs before lowering discards them)
     // -- and what may go in a compact, which needs them too.
     let mut compacting: HashMap<VarId, usize> = resolver
@@ -682,6 +708,7 @@ fn compile_unit_inner(
     }
     let hirs: Vec<&hir::LModule> = typed.iter().map(|m| &m.hir).collect();
     let own_compacting = exhaust::compacting_wrappers(&hirs, &mut compacting);
+    let synonyms = exhaust::synonyms(&hirs, resolver.names());
     for m in &typed {
         diags.extend(exhaust::check_module(
             &module_filename(&filename, m.source),
@@ -690,9 +717,11 @@ fn compile_unit_inner(
             &variants,
             opts.check_exhaustive(),
             &compacting,
+            &synonyms,
         ));
     }
 
+    phase.done("coverage");
     // --- lower to core
     let prims = prim_map(&resolver);
     let names = resolver.names().clone();
@@ -729,6 +758,7 @@ fn compile_unit_inner(
     }
     let var_end = lowerer.var_end();
 
+    phase.done("to core");
     // --- what inference left unsolved, defaulted: see `core::defaults`.
     let binder_kinds: HashMap<VarId, Vec<meadow_infer::VarKind>> = all_schemes
         .iter()
@@ -1182,9 +1212,22 @@ fn apply_use(
     let types = module_types(pkg, &segs, deps);
     for n in &u.names {
         let name = *n.value();
+        // `P`, a pattern synonym: its matcher and its builder, which are what
+        // it is. Sorted, so the scope is built the same way on every run.
+        let mut parts: Vec<(InternedString, VarId)> = map
+            .iter()
+            .filter(|(f, _)| meadow_rename::part_of_synonym(f, &name))
+            .map(|(f, id)| (*f, *id))
+            .collect();
+        parts.sort_by_key(|(f, _)| f.to_string());
+        let synonym = !parts.is_empty();
+        for (f, id) in parts {
+            resolver.import_from(f, id, InternedString::from(dotted(&segs)));
+        }
         if let Some(&id) = map.get(&name) {
             resolver.import_from(name, id, InternedString::from(dotted(&segs)));
             resolver.note_ref(n.span, NameRef::Value(id));
+        } else if synonym {
         } else if let Some(methods) = trait_methods(pkg, &segs, name, deps) {
             // A trait brings its methods: naming `Show` is asking to call
             // `show`.

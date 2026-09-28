@@ -1617,6 +1617,10 @@ impl Walk<'_> {
                 ps.iter().for_each(|q| self.pat(q, hint));
             }
             hir::Pat::Record(fs, _) => fs.iter().for_each(|(_, q)| self.pat(q, hint)),
+            hir::Pat::View(f, q) => {
+                self.expr(f);
+                self.pat(q, hint);
+            }
             hir::Pat::Wildcard | hir::Pat::Lit(_) | hir::Pat::Unit | hir::Pat::Error => {}
         }
     }

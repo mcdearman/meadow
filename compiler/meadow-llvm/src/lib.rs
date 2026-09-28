@@ -67,12 +67,10 @@ pub fn compile_split(program: &Program, unit: usize, conv: CallConv) -> Result<V
         msg: "the program has no entry point".into(),
     })?;
     let mut module = emit::Module::new(program, conv);
-    for d in &program.defs {
-        let lb = linear::block(program, &d.block).map_err(|e| Error {
-            msg: format!("in {}: {}", d.name, e.msg),
-        })?;
-        module.def(d.label, &lb).map_err(|e| Error {
-            msg: format!("in {}: {}", d.name, e.msg),
+    let blocks = linear::program(program, &[entry])?;
+    for (i, label, lb) in &blocks {
+        module.def(*label, lb).map_err(|e| Error {
+            msg: format!("in {}: {}", program.defs[*i].name, e.msg),
         })?;
     }
     let result = program
@@ -94,12 +92,10 @@ pub fn compile_tests(
     conv: CallConv,
 ) -> Result<Vec<String>, Error> {
     let mut module = emit::Module::new(program, conv);
-    for d in &program.defs {
-        let lb = linear::block(program, &d.block).map_err(|e| Error {
-            msg: format!("in {}: {}", d.name, e.msg),
-        })?;
-        module.def(d.label, &lb).map_err(|e| Error {
-            msg: format!("in {}: {}", d.name, e.msg),
+    let blocks = linear::program(program, tests)?;
+    for (i, label, lb) in &blocks {
+        module.def(*label, lb).map_err(|e| Error {
+            msg: format!("in {}: {}", program.defs[*i].name, e.msg),
         })?;
     }
     Ok(module.text_tests(tests, fingerprint(), unit))

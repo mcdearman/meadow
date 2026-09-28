@@ -274,7 +274,7 @@ pub fn piped(a: &Analysis, subject: &Type, word: &str) -> Vec<Offer> {
     let used = usage(&a.source);
     let mut out: Vec<(Rank, Offer)> = Vec::new();
     for c in &a.candidates {
-        if !c.name.starts_with(word) {
+        if !c.name.starts_with(word) || c.name.starts_with('$') {
             continue;
         }
         let Some(fit) = pipes_into(&c.scheme, subject) else {
@@ -299,7 +299,9 @@ pub fn names(a: &Analysis, word: &str) -> Vec<Offer> {
     let mut out: Vec<(Rank, Offer)> = a
         .candidates
         .iter()
-        .filter(|c| c.name.starts_with(word))
+        // A name the compiler made -- a pattern synonym's matcher, say -- is
+        // nobody's to type.
+        .filter(|c| c.name.starts_with(word) && !c.name.starts_with('$'))
         .map(|c| {
             (
                 Rank {

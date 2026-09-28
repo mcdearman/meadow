@@ -45,24 +45,30 @@ unsafe extern "C" {
     static meadow_result_desc: i64;
 }
 
+// The emitted code's hottest entries, each handed the running thread's
+// context -- which a program that can spawn keeps in a register, so that
+// nothing is looked up per block -- or `null` from one that cannot, whose one
+// context is a static. See `meadow_llvm::emit`'s `CTX`.
+
 /// A block of `words` words for a `let` or a `new`, count zero.
 #[unsafe(no_mangle)]
-pub extern "C" fn meadow_acquire(words: i64) -> Word {
-    heap::acquire(words as usize)
+pub extern "C" fn meadow_acquire(c: *mut ctx::Ctx, words: i64) -> Word {
+    heap::acquire_in(ctx::given(c), words as usize)
 }
 
-/// The last reference to the block at `v` was erased. Its fields are erased
+/// The last reference to the block at `v` was erased: it is block `v` and its
+/// count is zero, which the emitted code has checked. Its fields are erased
 /// later, a few at a time: see [`heap`].
 #[unsafe(no_mangle)]
-pub extern "C" fn meadow_free(v: Word) {
-    heap::erase(v, meadow_core::desc::REF);
+pub extern "C" fn meadow_free(c: *mut ctx::Ctx, v: Word) {
+    heap::died_in(ctx::given(c), v);
 }
 
 /// The block at `v` had its fields moved out by its last reference: it is
 /// reusable.
 #[unsafe(no_mangle)]
-pub extern "C" fn meadow_clean(v: Word) {
-    heap::clean(v);
+pub extern "C" fn meadow_clean(c: *mut ctx::Ctx, v: Word) {
+    heap::clean_in(ctx::given(c), v);
 }
 
 /// Fail with the message at `msg`: an `error`, a failed assertion, a division

@@ -183,6 +183,14 @@ impl Body {
     }
 }
 
+/// Whether `name` is a pattern synonym's matcher, `$m2P`: see the parser's
+/// `synonym`.
+fn is_matcher(name: &str) -> bool {
+    let name = name.rsplit_once('.').map_or(name, |(_, last)| last);
+    name.strip_prefix("$m")
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+}
+
 /// Every definition worth inlining, or `None` if there are none.
 fn candidates(p: &Program) -> Option<HashMap<Var, Body>> {
     let recursive = recursive(p);
@@ -211,7 +219,14 @@ fn candidates(p: &Program) -> Option<HashMap<Var, Body>> {
         let once = mentions.get(&d.var) == Some(&1)
             && body.binders.is_empty()
             && !p.origins.contains_key(&d.var);
-        let budget = if once { ONCE_BUDGET } else { BUDGET };
+        // A pattern synonym's matcher is inlined wherever it is used, however
+        // polymorphic: what it answers is only there to be taken apart where
+        // it is matched, which it can only be once it is there.
+        let budget = if once || is_matcher(&d.name) {
+            ONCE_BUDGET
+        } else {
+            BUDGET
+        };
         if body.params.is_empty() || size(&body.term, budget) > budget {
             continue;
         }

@@ -30,6 +30,15 @@
 //! rewrite fires. A chain of `&&` over comparisons collapses to a chain of
 //! branches this way, which is the case that made it worth writing.
 //!
+//! **Case of a constructor still being built.** `case C e1 e2 of alts`, whose
+//! fields are not values yet, names them first -- `let x1 = e1 in let x2 = e2
+//! in case C x1 x2 of alts` -- and the first rewrite takes it from there.
+//!
+//! **The same case again.** `case s of alts; _ -> case s of more` is one
+//! `case`, when asking `s` again answers the same and does nothing: a name, or
+//! a pure function's call on names. With the last two, an arm per production
+//! written with pattern synonyms comes to one switch on the production.
+//!
 //! **Strength reduction.** Replacing an operation by a cheaper one that
 //! computes the same thing: `x * 8` is `x << 3`; on an unsigned type `x / 8` is
 //! `x >> 3` and `x % 8` is `x & 7`. A 64-bit multiply is three to five cycles
@@ -94,12 +103,13 @@ pub fn term(t: &Term, fresh: &mut Fresh) -> Term {
     out
 }
 
-/// A source of names nothing else uses.
-pub struct Fresh(u32);
+/// A source of names nothing else uses -- and what the pass knows of the
+/// program the terms are from: which of its definitions are pure functions.
+pub struct Fresh(u32, std::sync::Arc<std::collections::HashSet<Var>>);
 
 impl Fresh {
     pub fn new() -> Fresh {
-        Fresh(SIMPLIFY_BASE)
+        Fresh(SIMPLIFY_BASE, Default::default())
     }
 
     /// Names clear of every one `p` already binds or mentions, as well as of
@@ -112,7 +122,10 @@ impl Fresh {
     /// without a representation, wherever the second binding is not the one
     /// it was looking at.
     pub fn above(p: &Program) -> Fresh {
-        Fresh(SIMPLIFY_BASE.max(max_var(p) + 1))
+        Fresh(
+            SIMPLIFY_BASE.max(max_var(p) + 1),
+            std::sync::Arc::new(pure_functions(p)),
+        )
     }
 
     fn var(&mut self) -> Var {
@@ -120,6 +133,23 @@ impl Fresh {
         self.0 += 1;
         v
     }
+}
+
+/// The definitions of `p` that are functions doing nothing but answer: every
+/// arrow of their type performs nothing. A call of one on names and literals
+/// answers the same however often it is made, and makes nothing happen.
+fn pure_functions(p: &Program) -> std::collections::HashSet<Var> {
+    fn pure(t: &Ty) -> bool {
+        match t {
+            Ty::Fun(_, ret, eff) => matches!(**eff, Ty::RowEmpty) && (!ret.is_fun() || pure(ret)),
+            _ => false,
+        }
+    }
+    p.defs
+        .iter()
+        .filter(|d| d.poly.binders.is_empty() && pure(&d.poly.ty))
+        .map(|d| d.var)
+        .collect()
 }
 
 /// The largest variable number `p` binds or mentions anywhere.
@@ -178,6 +208,12 @@ fn simplify(t: Term, fresh: &mut Fresh) -> Term {
                 return t;
             }
             if let Some(t) = known_tuple(&scrut, &arms, fresh) {
+                return t;
+            }
+            if let Some(t) = named_fields(&scrut, &arms, &ty, fresh) {
+                return t;
+            }
+            if let Some(t) = same_again(&scrut, &arms, &ty, fresh) {
                 return t;
             }
             if let Some(t) = of_case(&scrut, &arms, &ty, fresh) {
@@ -398,6 +434,129 @@ fn same_lit(a: &Lit, b: &Lit) -> Option<bool> {
     }
 }
 
+/// `case C e1 e2 of alts`, where the fields are not values: `let x1 = e1 in
+/// let x2 = e2 in case C x1 x2 of alts`, which [`known_ctor`] then takes
+/// apart. The fields are evaluated in the order the constructor would have
+/// evaluated them, and the constructor is never built. Only where the arm it
+/// comes to is decided by the constructor and its value fields: a pattern
+/// that looks inside a field that is not a value could not be decided anyway.
+///
+/// What a pattern synonym's matcher answers once it is inlined is exactly
+/// this: `[(fieldA a e, fieldB a e);]`, made to be taken apart at once.
+fn named_fields(
+    scrut: &Term,
+    arms: &[(Pat, Option<Term>, Term)],
+    ty: &Ty,
+    fresh: &mut Fresh,
+) -> Option<Term> {
+    let value = peel(scrut);
+    if is_value(value) || known_ctor(&placeheld(value)?, arms).is_none() {
+        return None;
+    }
+    let mut binds: Vec<(Var, Ty, Term)> = Vec::new();
+    let atom = name_fields(value, fresh, &mut binds)?;
+    let case = Term::Case(Arc::new(atom), arms.to_vec(), ty.clone());
+    Some(binds.into_iter().rev().fold(case, |acc, (v, t, e)| {
+        Term::Let(v, Poly::mono(t), Arc::new(e), Arc::new(acc))
+    }))
+}
+
+/// `case s of alts; _ -> case s of more` is `case s of alts; more`, where `s`
+/// answers the same when it is asked again and does nothing else: a name, or a
+/// pure function's call on names. Arms are tried in order, so the arms of the
+/// inner `case` are tried after the outer's have failed, exactly as falling to
+/// its `_` tried them -- and the scrutinee is looked at once, in one switch.
+///
+/// What an arm per production over pattern synonyms comes to once each has
+/// been inlined: `case kind a e of Lam -> …; _ -> case kind a e of App -> …`.
+fn same_again(
+    scrut: &Term,
+    arms: &[(Pat, Option<Term>, Term)],
+    ty: &Ty,
+    fresh: &Fresh,
+) -> Option<Term> {
+    let (Pat::Wild, None, last) = arms.last()? else {
+        return None;
+    };
+    let Term::Case(again, more, _) = peel(last) else {
+        return None;
+    };
+    if peel(again) != peel(scrut) || !answers_alike(peel(scrut), &fresh.1) {
+        return None;
+    }
+    let mut merged = arms[..arms.len() - 1].to_vec();
+    merged.extend(more.iter().cloned());
+    Some(Term::Case(Arc::new(scrut.clone()), merged, ty.clone()))
+}
+
+/// Whether `t` answers the same each time it is evaluated, doing nothing
+/// else: a name, a literal, or a call of one of `pure` on those.
+fn answers_alike(t: &Term, pure: &std::collections::HashSet<Var>) -> bool {
+    match t {
+        Term::Var(_) | Term::Lit(_) => true,
+        Term::App(..) => {
+            let mut f = t;
+            while let Term::App(g, a) = f {
+                if !matches!(peel(a), Term::Var(_) | Term::Lit(_)) {
+                    return false;
+                }
+                f = peel(g);
+            }
+            matches!(f, Term::Var(v) if pure.contains(v))
+        }
+        _ => false,
+    }
+}
+
+/// `t`, a constructor or tuple built of anything, with every field that is not
+/// a value named by a fresh `let` in `binds`, in evaluation order: `None` when
+/// the type of one cannot be read off.
+fn name_fields(t: &Term, fresh: &mut Fresh, binds: &mut Vec<(Var, Ty, Term)>) -> Option<Term> {
+    let mut named = |args: &[Term], binds: &mut Vec<(Var, Ty, Term)>| -> Option<Vec<Term>> {
+        args.iter()
+            .map(|a| {
+                if is_value(a) {
+                    return Some(a.clone());
+                }
+                if let Term::Ctor(..) | Term::Tuple(..) = peel(a) {
+                    return name_fields(peel(a), fresh, binds);
+                }
+                let ty = produces(a).filter(|t| !is_unknown(t))?;
+                let v = fresh.var();
+                binds.push((v, ty, a.clone()));
+                Some(Term::Var(v))
+            })
+            .collect()
+    };
+    match t {
+        Term::Ctor(name, ty, args) => Some(Term::Ctor(*name, ty.clone(), named(args, binds)?)),
+        Term::Tuple(args) => Some(Term::Tuple(named(args, binds)?)),
+        _ => None,
+    }
+}
+
+/// A constructor or tuple built of anything, with each field that is not a
+/// value replaced by a name that stands for it: what [`known_ctor`] can decide
+/// on without the fields being computed. `None` for anything else.
+fn placeheld(t: &Term) -> Option<Term> {
+    let held = |args: &[Term]| -> Vec<Term> {
+        args.iter()
+            .map(|a| {
+                if is_value(a) {
+                    a.clone()
+                } else {
+                    placeheld(peel(a)).unwrap_or(Term::Var(hir::VarId(u32::MAX)))
+                }
+            })
+            .collect()
+    };
+    match t {
+        Term::Ctor(name, ty, args) => Some(Term::Ctor(*name, ty.clone(), held(args))),
+        Term::Tuple(args) => Some(Term::Tuple(held(args))),
+        _ => None,
+    }
+}
+
 // --- case of case ----------------------------------------------------------
 
 /// `case (case s of p -> e) of alts` -- the outer alternatives named once and
@@ -503,7 +662,11 @@ fn branches(t: &Term) -> bool {
     match t {
         Term::Loc(_, inner) => branches(inner),
         Term::If(..) => true,
-        Term::Case(_, arms, _) => arms.len() > 1,
+        // One arm that cannot fail, whose body branches, as taking apart a
+        // tuple before deciding on what was in it does.
+        Term::Case(_, arms, _) => {
+            arms.len() > 1 || matches!(arms.as_slice(), [(_, None, body)] if branches(body))
+        }
         // A `let` in front of a branch is still a branch, and so is a join
         // whose body branches. Both come out of desugaring constantly.
         Term::Let(_, _, _, body) | Term::Join { body, .. } => branches(body),
@@ -735,6 +898,17 @@ fn enter(body: &Term, j: Var, params: &[(Var, Ty)], rhs: &Term) -> Term {
         if !once && !decides(rhs, params, &args) {
             return None;
         }
+        // A right-hand side that is a `case` on a parameter used nowhere else
+        // takes the argument where the parameter was, so that the `case` sees
+        // what it is: bound by a `let` first, it would see only a name.
+        if let [(x, _)] = params
+            && let Term::Case(scrut, arms, ty) = peel(rhs)
+            && matches!(peel(scrut), Term::Var(v) if v == x)
+            && count_var(rhs, *x) == 1
+        {
+            let arg = args.into_iter().next().expect("one argument");
+            return Some(Term::Case(Arc::new(arg), arms.clone(), ty.clone()));
+        }
         Some(
             params
                 .iter()
@@ -761,7 +935,10 @@ fn decides(rhs: &Term, params: &[(Var, Ty)], args: &[Term]) -> bool {
         .iter()
         .zip(args)
         .find(|((v, _), _)| v == x)
-        .is_some_and(|(_, arg)| known_ctor(arg, arms).is_some())
+        .is_some_and(|(_, arg)| {
+            known_ctor(arg, arms).is_some()
+                || placeheld(peel(arg)).is_some_and(|held| known_ctor(&held, arms).is_some())
+        })
 }
 
 fn count_jumps(t: &Term, j: Var) -> usize {
@@ -877,6 +1054,99 @@ mod tests {
 
     fn simplified(t: &Term) -> Term {
         term(t, &mut Fresh::new())
+    }
+
+    fn ctor(name: &str, ty: &str, args: Vec<Term>) -> Term {
+        Term::Ctor(InternedString::from(name), con(ty), args)
+    }
+
+    fn pctor(name: &str, args: Vec<Pat>) -> Pat {
+        Pat::Ctor(InternedString::from(name), args)
+    }
+
+    /// A constructor whose fields are still to be computed, matched where it
+    /// is built: the fields are computed, in order, and the constructor is
+    /// not -- what a pattern synonym's matcher answers once it is inlined.
+    #[test]
+    fn a_constructor_of_computed_fields_is_not_built_to_be_matched() {
+        // case Just (a + 1) of { Just x -> x; _ -> 0 }
+        let (a, x) = (v(1), v(2));
+        let sum = Term::Prim(Prim::Add, vec![Term::Var(a), int(1)], con("Int"));
+        let t = Term::Case(
+            Arc::new(ctor("Just", "Maybe", vec![sum.clone()])),
+            vec![
+                (
+                    pctor("Just", vec![Pat::Var(x, con("Int"))]),
+                    None,
+                    Term::Var(x),
+                ),
+                (Pat::Wild, None, int(0)),
+            ],
+            con("Int"),
+        );
+        let got = simplified(&t);
+        assert!(
+            !format!("{got:?}").contains("Ctor"),
+            "the constructor is still built: {got:?}"
+        );
+        assert!(
+            format!("{got:?}").contains("Add"),
+            "the field is still computed"
+        );
+    }
+
+    /// `case s of A -> 1; _ -> case s of B -> 2; _ -> 3`, with `s` a name: one
+    /// `case`, looking at `s` once.
+    #[test]
+    fn a_case_on_the_same_name_again_is_one_case() {
+        let s = v(1);
+        let inner = Term::Case(
+            Arc::new(Term::Var(s)),
+            vec![
+                (pctor("B", vec![]), None, int(2)),
+                (Pat::Wild, None, int(3)),
+            ],
+            con("Int"),
+        );
+        let t = Term::Case(
+            Arc::new(Term::Var(s)),
+            vec![(pctor("A", vec![]), None, int(1)), (Pat::Wild, None, inner)],
+            con("Int"),
+        );
+        assert_eq!(
+            simplified(&t),
+            Term::Case(
+                Arc::new(Term::Var(s)),
+                vec![
+                    (pctor("A", vec![]), None, int(1)),
+                    (pctor("B", vec![]), None, int(2)),
+                    (Pat::Wild, None, int(3)),
+                ],
+                con("Int"),
+            )
+        );
+    }
+
+    /// Not a call that could do something: asked twice, it does it twice, and
+    /// the two `case`s stay two. Nothing here says `f` is pure.
+    #[test]
+    fn a_case_on_a_call_again_is_left_alone() {
+        let (f, x) = (v(1), v(2));
+        let call = Term::App(Arc::new(Term::Var(f)), Arc::new(Term::Var(x)));
+        let inner = Term::Case(
+            Arc::new(call.clone()),
+            vec![
+                (pctor("B", vec![]), None, int(2)),
+                (Pat::Wild, None, int(3)),
+            ],
+            con("Int"),
+        );
+        let t = Term::Case(
+            Arc::new(call),
+            vec![(pctor("A", vec![]), None, int(1)), (Pat::Wild, None, inner)],
+            con("Int"),
+        );
+        assert_eq!(simplified(&t), t);
     }
 
     /// The rewrite the whole pass exists for: a constructor built and taken

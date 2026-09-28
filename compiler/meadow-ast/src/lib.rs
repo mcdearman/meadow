@@ -496,6 +496,9 @@ pub enum Pat {
     /// `{ x, y = p | _ }` — `open` (the trailing `| _`) is the bool.
     Record(Vec<(Ident, LPat)>, bool),
     Unit,
+    /// `(f -> p)` — a *view*: `f` applied to what is matched here, and its
+    /// answer matched against `p`. `f` sees the names bound to its left.
+    View(LExpr, LPat),
     /// A macro call standing where a pattern goes, until it is expanded into
     /// one.
     MacCall(MacCall),

@@ -204,9 +204,43 @@ fn mentions(
     out: &mut Vec<usize>,
 ) {
     match bind {
-        hir::Bind::Fun(_, _, _, body) => expr_mentions(body, owner, ov, out),
-        hir::Bind::Pat(_, body) => expr_mentions(body, owner, ov, out),
+        hir::Bind::Fun(_, params, _, body) => {
+            params.iter().for_each(|p| pat_mentions(p, owner, ov, out));
+            expr_mentions(body, owner, ov, out)
+        }
+        hir::Bind::Pat(p, body) => {
+            pat_mentions(p, owner, ov, out);
+            expr_mentions(body, owner, ov, out)
+        }
         hir::Bind::Error => {}
+    }
+}
+
+/// What the views in a pattern mention.
+fn pat_mentions(
+    pat: &hir::LPat,
+    owner: &HashMap<VarId, usize>,
+    ov: &hir::Overloads,
+    out: &mut Vec<usize>,
+) {
+    match pat.value() {
+        hir::Pat::View(f, p) => {
+            expr_mentions(f, owner, ov, out);
+            pat_mentions(p, owner, ov, out);
+        }
+        hir::Pat::Ann(p, _) => pat_mentions(p, owner, ov, out),
+        hir::Pat::As(_, p) => pat_mentions(p, owner, ov, out),
+        hir::Pat::Tuple(ps) | hir::Pat::Array(ps) | hir::Pat::List(ps) | hir::Pat::Cons(_, ps) => {
+            ps.iter().for_each(|p| pat_mentions(p, owner, ov, out))
+        }
+        hir::Pat::Record(fields, _) => fields
+            .iter()
+            .for_each(|(_, p)| pat_mentions(p, owner, ov, out)),
+        hir::Pat::Wildcard
+        | hir::Pat::Var(_)
+        | hir::Pat::Lit(_)
+        | hir::Pat::Unit
+        | hir::Pat::Error => {}
     }
 }
 
@@ -231,7 +265,10 @@ fn expr_mentions(
                 }
             }
         }
-        hir::Expr::Lam(_, body) => expr_mentions(body, owner, ov, out),
+        hir::Expr::Lam(params, body) => {
+            params.iter().for_each(|p| pat_mentions(p, owner, ov, out));
+            expr_mentions(body, owner, ov, out)
+        }
         hir::Expr::App(f, args) => {
             expr_mentions(f, owner, ov, out);
             args.iter().for_each(|a| expr_mentions(a, owner, ov, out));
@@ -247,7 +284,8 @@ fn expr_mentions(
         }
         hir::Expr::Match(scrut, arms) => {
             expr_mentions(scrut, owner, ov, out);
-            for (_, g, b) in arms {
+            for (p, g, b) in arms {
+                pat_mentions(p, owner, ov, out);
                 if let Some(g) = g {
                     expr_mentions(g, owner, ov, out);
                 }
@@ -275,9 +313,12 @@ fn expr_mentions(
         }
         hir::Expr::Handle(body, arms, ret) => {
             expr_mentions(body, owner, ov, out);
-            arms.iter()
-                .for_each(|a| expr_mentions(&a.body, owner, ov, out));
-            if let Some((_, b)) = ret {
+            for a in arms {
+                pat_mentions(&a.param, owner, ov, out);
+                expr_mentions(&a.body, owner, ov, out);
+            }
+            if let Some((p, b)) = ret {
+                pat_mentions(p, owner, ov, out);
                 expr_mentions(b, owner, ov, out);
             }
         }

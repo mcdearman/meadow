@@ -174,8 +174,29 @@ pub fn package(pkg: &CompiledPackage, options: Options) -> Vec<Decl> {
         None => pkg.exports.iter().map(|e| e.var).collect(),
     };
     let mut seen: HashSet<VarId> = HashSet::new();
+    // A pattern synonym is its builder `$bP` and its matcher `$m2P`: listed
+    // once, as `P`, with the builder's type when it has one -- which is the
+    // synonym's, `a -> b -> T` -- and otherwise the matcher's.
+    let builders: HashSet<String> = pkg
+        .exports
+        .iter()
+        .filter_map(|e| e.name.strip_prefix("$b").map(str::to_string))
+        .collect();
     let mut value =
         |var: VarId, name: String, scheme: &Scheme, is_macro: bool, out: &mut Vec<Decl>| {
+            let synonym = match (name.strip_prefix("$b"), name.strip_prefix("$m")) {
+                (Some(p), _) => Some(p.to_string()),
+                (_, Some(rest)) => {
+                    let p = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                    if builders.contains(p) {
+                        return;
+                    }
+                    Some(p.to_string())
+                }
+                _ if name.starts_with('$') => return,
+                _ => None,
+            };
+            let name = synonym.clone().unwrap_or(name);
             if !seen.insert(var) {
                 return;
             }
@@ -188,6 +209,7 @@ pub fn package(pkg: &CompiledPackage, options: Options) -> Vec<Decl> {
             let sig = crate::shape::Sig::of_scheme(scheme);
             let kind = match kinds.get(&var) {
                 Some(k) => *k,
+                None if synonym.is_some() => Kind::Pattern,
                 None if is_macro => Kind::Macro,
                 None if sig.args.is_empty() => Kind::Value,
                 None => Kind::Function,
@@ -437,6 +459,7 @@ fn pat_idents(pat: &hir::LPat, out: &mut Vec<(VarId, Span)>) {
             pat_idents(inner, out);
         }
         hir::Pat::Ann(inner, _) => pat_idents(inner, out),
+        hir::Pat::View(_, inner) => pat_idents(inner, out),
         hir::Pat::Cons(_, items)
         | hir::Pat::Tuple(items)
         | hir::Pat::Array(items)

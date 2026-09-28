@@ -585,7 +585,7 @@ impl<'p> Machine<'p> {
                     labels.iter().copied().zip(vals).collect::<BTreeMap<_, _>>(),
                 ))
             }
-            Extern::Select(label) => match &vals[0] {
+            Extern::Select(label, _) => match &vals[0] {
                 Value::Record(map) => match map.get(label) {
                     Some(v) => v.clone(),
                     None => return err(format!("no field `{label}` on this record")),
@@ -608,7 +608,7 @@ impl<'p> Machine<'p> {
                 }
                 other => return err(format!("selected `.{label}` from {}", kind(other))),
             },
-            Extern::Extend(label) => match &vals[0] {
+            Extern::Extend(label, _) => match &vals[0] {
                 Value::Record(map) => {
                     let mut map = (**map).clone();
                     map.insert(*label, vals[1].clone());
@@ -1717,6 +1717,7 @@ mod tests {
             origins: Default::default(),
             results: Default::default(),
             threads: Default::default(),
+            pure: Default::default(),
             defs: vec![Def {
                 label: Label(0),
                 name: InternedString::from("main"),

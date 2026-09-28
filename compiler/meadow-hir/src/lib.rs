@@ -685,6 +685,8 @@ pub fn pat_vars(pat: &LPat, out: &mut Vec<VarId>) {
             ps.iter().for_each(|p| pat_vars(p, out))
         }
         Pat::Record(fields, _) => fields.iter().for_each(|(_, p)| pat_vars(p, out)),
+        // The view's expression binds nothing outside itself.
+        Pat::View(_, p) => pat_vars(p, out),
         Pat::Wildcard | Pat::Lit(_) | Pat::Unit | Pat::Error => {}
     }
 }
@@ -709,6 +711,9 @@ pub enum Pat {
     /// `{ x, y = p | _ }` — `open` is true when the pattern ends in `| _`.
     Record(Vec<(Label, LPat)>, bool),
     Unit,
+    /// `(f -> p)` -- `f` applied to what is matched here, and its answer
+    /// matched against `p`.
+    View(LExpr, LPat),
     Error,
 }
 
@@ -933,6 +938,10 @@ fn rewrite_pat(p: &mut LPat, chosen: &std::collections::HashMap<NodeId, Alt>) {
             ps.iter_mut().for_each(|x| rewrite_pat(x, chosen))
         }
         Pat::Record(fields, _) => fields.iter_mut().for_each(|(_, x)| rewrite_pat(x, chosen)),
+        Pat::View(f, p) => {
+            rewrite_expr(f, chosen);
+            rewrite_pat(p, chosen);
+        }
         Pat::Wildcard | Pat::Unit | Pat::Var(_) | Pat::Lit(_) | Pat::Error => {}
     }
 }

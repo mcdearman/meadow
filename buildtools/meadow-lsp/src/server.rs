@@ -918,7 +918,7 @@ fn symbol_kind(kind: meadow_find::Kind) -> SymbolKind {
         Kind::Function | Kind::Macro | Kind::Operation => SymbolKind::FUNCTION,
         Kind::Method => SymbolKind::METHOD,
         Kind::Value => SymbolKind::CONSTANT,
-        Kind::Constructor => SymbolKind::ENUM_MEMBER,
+        Kind::Constructor | Kind::Pattern => SymbolKind::ENUM_MEMBER,
         Kind::Type => SymbolKind::ENUM,
         Kind::Record => SymbolKind::STRUCT,
         Kind::Alias => SymbolKind::TYPE_PARAMETER,

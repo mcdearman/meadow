@@ -873,6 +873,161 @@ A constructor's arguments are written after it, and each is an atom: a variable,
 arguments of its own**. So `Node Leaf x r` is `Node` applied to three patterns,
 and a constructor that takes arguments needs parentheses: `Just (Cons x rest)`.
 
+### View patterns
+
+`(f -> p)` applies `f` to what is being matched there and matches its answer
+against `p`. The function is any expression, and it sees the names the pattern
+bound to its left. In a tuple, a component can be a view without parentheses of
+its own: `(k, lookup k -> Just v)`.
+
+```meadow
+fun half n = if n % 2 == 0 then Just (n / 2) else None
+
+fun lookup k xs =
+  match xs with
+  | [;] -> None
+  | (j, v) :: rest -> if j == k then Just v else lookup k rest
+
+fun describe n =
+  match n with
+  | 0 -> "zero"
+  | (half -> Just h) if h > 10 -> "big and even"
+  | (half -> Just _) -> "even"
+  | _ -> "odd"
+
+fun named p =
+  match p with
+  | (k, lookup k -> Just name) -> name
+  | _ -> "?"
+
+def main = (describe 30, describe 4, describe 5, named (2, [(1, "one"); (2, "two")]))
+```
+
+```
+=> ("big and even", "even", "odd", "two")
+```
+
+A view that does not match goes on to the next arm, as a failed guard does,
+and for the same reason **covers nothing** for the exhaustiveness check -- unless
+its own pattern matches everything, `(length -> n)`, when it is as good as `_`.
+It is applied once, however much of its answer the pattern takes apart, and it
+can be a parameter, when its pattern cannot fail:
+
+```meadow
+fun swap (a, b) = (b, a)
+
+fun second (swap -> (b, _)) = b
+
+def main = second (1, 2)
+```
+
+```
+=> 2
+```
+
+What a view in a parameter does -- an effect it performs -- is done when the
+function is called, so it is on the function's type.
+
+### Pattern synonyms
+
+`pattern` names a pattern, to match with -- and, where it can, to build with --
+as if it were a constructor:
+
+```meadow
+pattern Pair a b = (a, b)
+
+pattern Head x <- x :: _
+
+fun swap p =
+  match p with
+  | Pair a b -> Pair b a
+
+fun first xs =
+  match xs with
+  | Head x -> x
+  | _ -> 0
+
+def main = (swap (Pair 1 2), first [3; 4], first [;])
+```
+
+```
+=> ((2, 1), 3, 0)
+```
+
+`pattern P x y = p` both matches and builds: `p` is read as the expression that
+makes what it matches. `pattern P x y <- p` only matches, and a `where` after it
+says how `P` builds, which is how a synonym presents a type as another it is not
+-- a view in its pattern does the seeing:
+
+```meadow
+data Nat = Nat Int
+
+use Nat.*
+
+fun pred (Nat n) = if n > 0 then Just (Nat (n - 1)) else None
+
+pattern Zero <- (pred -> None)
+  where Zero = Nat 0
+
+pattern Succ m <- (pred -> Just m)
+  where Succ (Nat n) = Nat (n + 1)
+
+fun toInt n =
+  match n with
+  | Succ m -> 1 + toInt m
+  | _ -> 0
+
+def main = toInt (Succ (Succ (Succ Zero)))
+```
+
+```
+=> 3
+```
+
+The pattern binds each of the synonym's parameters exactly once, and nothing
+else. A synonym is exported with `@pub`, and `use M (P)` brings it in.
+
+A synonym whose pattern is made of constructors, tuples and the like counts for
+exhaustiveness as that pattern does: the `match` in `swap` above needs nothing
+more. One whose pattern has a view covers nothing, as the view would -- unless
+a declaration says which synonyms cover their type together, as GHC's
+`COMPLETE` does. Then a `match` with an arm for each of them needs nothing more:
+
+```meadow
+data Nat = Nat Int
+
+use Nat.*
+
+fun pred (Nat n) = if n > 0 then Just (Nat (n - 1)) else None
+
+pattern Zero <- (pred -> None)
+  where Zero = Nat 0
+
+pattern Succ m <- (pred -> Just m)
+  where Succ (Nat n) = Nat (n + 1)
+
+pattern Zero | Succ
+
+fun toInt n =
+  match n with
+  | Zero -> 0
+  | Succ m -> 1 + toInt m
+
+def main = toInt (Succ (Succ Zero))
+```
+
+```
+=> 2
+```
+
+The compiler takes the declaration's word for it: that every `Nat` is a `Zero`
+or a `Succ` is what `pred` has to make true.
+
+Nothing is left of a synonym once it is compiled with optimization: a `match`
+on `Pair a b` is a `match` on `(a, b)`. It is a function the compiler writes
+-- one that answers what the pattern bound, or that it did not match -- and
+inlines where it is used, where what it answered is taken apart as it is made.
+
 ---
 
 ## 6. Your own types

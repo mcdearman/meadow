@@ -1645,17 +1645,19 @@ impl Infer {
     fn infer_group_member(&mut self, bind: &hir::Bind, seed: &[(VarId, Type)]) -> bool {
         match bind {
             hir::Bind::Fun(name, params, declared, body) => {
+                // The parameters are matched when the function is called: a
+                // view in one does what the body does.
+                let body_eff = self.arena.fresh_effect();
+                let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
                 let mut bound = Vec::new();
                 let param_tys: Vec<Type> = params
                     .iter()
                     .map(|p| self.infer_pat(p, &mut bound))
                     .collect();
                 let (ret, declared_eff) = self.declared_result(declared);
-                let body_eff = self.arena.fresh_effect();
                 if let Some(eff) = declared_eff {
                     self.unify_at(body.span, body_eff.clone(), eff);
                 }
-                let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
 
                 let fn_ty = Type::func_eff(param_tys, ret.clone(), body_eff);
                 if let Some((_, seed_ty)) = seed.first() {
@@ -1797,6 +1799,13 @@ impl Infer {
                 }
                 self.arena.enter_level();
 
+                // The body runs in its own effect region; that region ends up on the
+                // function's (innermost) arrow. Defining the function is itself pure,
+                // so the outer `cur_effect` is untouched. `: R ! e` says what the
+                // region is. The parameters are matched in it too, when the
+                // function is called: a view in one does what the body does.
+                let body_eff = self.arena.fresh_effect();
+                let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
                 // Parameters are patterns (`fun f a (x, y) = …`); inferring each
                 // binds the variables it introduces.
                 let mut bound = Vec::new();
@@ -1805,15 +1814,9 @@ impl Infer {
                     .map(|p| self.infer_pat(p, &mut bound))
                     .collect();
                 let (ret, declared_eff) = self.declared_result(declared);
-                // The body runs in its own effect region; that region ends up on the
-                // function's (innermost) arrow. Defining the function is itself pure,
-                // so the outer `cur_effect` is untouched. `: R ! e` says what the
-                // region is.
-                let body_eff = self.arena.fresh_effect();
                 if let Some(eff) = declared_eff {
                     self.unify_at(body.span, body_eff.clone(), eff);
                 }
-                let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
                 let body_eff_of_point_free = body_eff.clone();
 
                 // curried: `fun f a b = e` is `a -> b -> typeof(e) ! <body effect>`
@@ -2025,13 +2028,13 @@ impl Infer {
                 // Multi-parameter lambdas curry: `\a b -> e` is `\a -> \b -> e`.
                 // The body has its own effect region, which lands on the arrow;
                 // building a closure is pure, so the ambient effect is untouched.
+                let body_eff = self.arena.fresh_effect();
+                let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
                 let mut bound = Vec::new();
                 let ptys: Vec<Type> = params
                     .iter()
                     .map(|p| self.infer_pat(p, &mut bound))
                     .collect();
-                let body_eff = self.arena.fresh_effect();
-                let saved = std::mem::replace(&mut self.cur_effect, body_eff.clone());
                 let bty = self.infer_expr(body);
                 self.cur_effect = saved;
                 Type::func_eff(ptys, bty, body_eff)
@@ -2392,6 +2395,22 @@ impl Infer {
 
     fn infer_pat_inner(&mut self, pat: &hir::LPat, bound: &mut Vec<(VarId, Type)>) -> Type {
         match pat.value() {
+            // `(f -> p)`: what is matched here is `f`'s argument, and `p`
+            // matches its answer. Applying it is done where the match is, as
+            // any call there would be.
+            hir::Pat::View(f, p) => {
+                let fty = self.infer_expr(f);
+                let pt = self.infer_pat(p, bound);
+                let arg = self.arena.fresh();
+                let phi = self.arena.fresh_effect();
+                self.unify_at(
+                    f.span,
+                    fty,
+                    Type::Fun(vec![arg.clone()], Box::new(pt), Box::new(phi.clone())),
+                );
+                self.join_effect(f.span, phi);
+                arg
+            }
             hir::Pat::Wildcard => self.arena.fresh(),
             hir::Pat::Unit => Type::unit(),
             hir::Pat::Lit(hir::Lit::Int(_)) => self.arena.fresh_num(),

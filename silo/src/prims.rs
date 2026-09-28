@@ -188,6 +188,32 @@ pub fn new_array(kind: u64, words: &[Word], d: i64) -> Word {
     v
 }
 
+/// A new uniform array of `kind` holding elements `from..to` of the array at
+/// `a`, described by `d` -- lent, so each is shared, where they are counted.
+/// One copy, where collecting them first made two.
+fn copied(kind: u64, a: Word, from: usize, to: usize, d: i64) -> Word {
+    let n = to - from;
+    let v = heap::build_uniform(kind, 0, n, d);
+    // Safety: `a` has elements `from..to` from its first field, and `v` room
+    // for `n` from word 2.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            (a as *const Word).add(heap::first_field(a) + from),
+            (v as *mut Word).add(2),
+            n,
+        );
+    }
+    if d == desc::REF {
+        for i in 0..n {
+            heap::share(heap::word(v, 2 + i), d);
+            if kind == heap::MUT_ARRAY {
+                heap::note_stored(v, heap::word(v, 2 + i), d);
+            }
+        }
+    }
+    v
+}
+
 /// `words`, lent, shared once each.
 fn share_all(words: &[Word], d: i64) {
     for w in words {
@@ -365,9 +391,7 @@ fn prim(p: Prim, a: &[Val], d: &[i64]) -> Word {
             let ed = heap::field_desc(a, 0);
             let from = int(arg(1)).clamp(0, n) as usize;
             let to = int(arg(2)).clamp(from as i64, n) as usize;
-            let part: Vec<Word> = (from..to).map(|i| heap::field(a, i)).collect();
-            share_all(&part, ed);
-            new_array(heap::ARRAY, &part, ed)
+            copied(heap::ARRAY, a, from, to, ed)
         }
         ArrayConcat => {
             let (x, dx) = elems(array(arg(0)));
@@ -531,10 +555,15 @@ fn prim(p: Prim, a: &[Val], d: &[i64]) -> Word {
                 )),
             };
             let (v, vd) = arg(1).bits();
-            for _ in 0..n {
-                heap::share(v, vd);
+            heap::share_n(v, vd, n);
+            let arr = heap::build_uniform(heap::MUT_ARRAY, 0, n, vd);
+            if n > 0 {
+                heap::note_stored(arr, v, vd);
             }
-            new_array(heap::MUT_ARRAY, &vec![v; n], vd)
+            for i in 0..n {
+                heap::set_word(arr, 2 + i, v);
+            }
+            arr
         }
         StGetArray => {
             let arr = mut_array(arg(0));
@@ -557,20 +586,30 @@ fn prim(p: Prim, a: &[Val], d: &[i64]) -> Word {
             let (v, vd) = arg(2).bits();
             heap::share(v, vd);
             heap::erase(heap::field(arr, i), heap::field_desc(arr, i));
+            heap::note_stored(arr, v, vd);
             heap::set_word(arr, 2 + i, v);
             0
         }
         StArrayLen => heap::len(mut_array(arg(0))) as Word,
         StFreeze => {
             let arr = mut_array(arg(0));
-            let (words, ed) = elems(arr);
-            share_all(&words, ed);
-            new_array(heap::ARRAY, &words, ed)
+            copied(
+                heap::ARRAY,
+                arr,
+                0,
+                heap::len(arr),
+                heap::field_desc(arr, 0),
+            )
         }
         StThaw => {
-            let (words, ed) = elems(array(arg(0)));
-            share_all(&words, ed);
-            new_array(heap::MUT_ARRAY, &words, ed)
+            let arr = array(arg(0));
+            copied(
+                heap::MUT_ARRAY,
+                arr,
+                0,
+                heap::len(arr),
+                heap::field_desc(arr, 0),
+            )
         }
 
         // --- compact regions ------------------------------------------------
@@ -968,6 +1007,7 @@ pub extern "C" fn meadow_st_set(a: Word, i: Word, x: Word, d: i64) -> Word {
     }
     heap::share(x, d);
     heap::erase(heap::field(arr, i), heap::field_desc(arr, i));
+    heap::note_stored(arr, x, d);
     heap::set_word(arr, 2 + i, x);
     0
 }
@@ -987,6 +1027,35 @@ fn set_array_shape(a: Word, n: usize, d: i64) {
     heap::set_word(a, 1, bits);
 }
 
+/// A new array of `total` elements, described by `d`, whose first are the
+/// array at `a`'s, and whose rest are for the caller to write -- consuming `a`.
+/// Where nobody else holds `a` its elements move, and its block goes back
+/// with nothing to erase; otherwise each is shared. Either way nothing is
+/// copied twice, as collecting them first would.
+fn grown(a: Word, total: usize, d: i64) -> Word {
+    let n = heap::len(a);
+    let v = heap::build_uniform(heap::ARRAY, 0, total, d);
+    // Safety: `a` has `n` elements from its first field, and `v` room for
+    // `total >= n` from word 2.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            (a as *const Word).add(heap::first_field(a)),
+            (v as *mut Word).add(2),
+            n,
+        );
+    }
+    if unshared(a) {
+        heap::clean(a);
+    } else {
+        let ed = heap::field_desc(a, 0);
+        for i in 0..n {
+            heap::share(heap::field(a, i), ed);
+        }
+        heap::erase(a, desc::REF);
+    }
+    v
+}
+
 /// `arrayPush a x`, **consuming** `a`: the linearization gives this entry its
 /// own reference to the array, sharing it first where the caller still wants
 /// the old one. So when the count says there is no other reference, nobody can
@@ -1003,11 +1072,8 @@ pub extern "C" fn meadow_array_push(a: Word, x: Word, d: i64) -> Word {
         set_array_shape(arr, n + 1, d);
         return arr;
     }
-    let (mut words, ed) = elems(arr);
-    share_all(&words, ed);
-    words.push(x);
-    let v = new_array(heap::ARRAY, &words, d);
-    heap::erase(arr, desc::REF);
+    let v = grown(arr, n + 1, d);
+    heap::set_word(v, 2 + n, x);
     v
 }
 
@@ -1027,7 +1093,11 @@ pub extern "C" fn meadow_array_concat(a: Word, b: Word) -> Word {
     }
     if n == 0 {
         heap::erase(x, desc::REF);
-        return new_array(heap::ARRAY, &elems(y).0, dy);
+        let v = heap::build_uniform(heap::ARRAY, 0, m, dy);
+        for i in 0..m {
+            heap::set_word(v, 2 + i, heap::field(y, i));
+        }
+        return v;
     }
     if unshared(x) && heap::array_room(n + m) == heap::array_room(n) {
         for i in 0..m {
@@ -1036,11 +1106,11 @@ pub extern "C" fn meadow_array_concat(a: Word, b: Word) -> Word {
         set_array_shape(x, n + m, heap::field_desc(x, 0));
         return x;
     }
-    let (mut words, dx) = elems(x);
-    share_all(&words, dx);
-    words.extend(elems(y).0);
-    let v = new_array(heap::ARRAY, &words, dx);
-    heap::erase(x, desc::REF);
+    let dx = heap::field_desc(x, 0);
+    let v = grown(x, n + m, dx);
+    for i in 0..m {
+        heap::set_word(v, 2 + n + i, heap::field(y, i));
+    }
     v
 }
 // --- records, arrays and fields the emitted code builds ------------------------
@@ -1092,9 +1162,7 @@ pub extern "C" fn meadow_select(r: Word, label: i64) -> Word {
         }
     }
     if heap::is_block(r) && heap::kind(r) == heap::DATA {
-        let name = show::names().syms.get(label).cloned().unwrap_or_default();
-        if let Some(fields) = show::ctor_fields(heap::meta(r) as usize)
-            && let Some(i) = fields.iter().position(|f| *f == name)
+        if let Some(i) = show::ctor_field_index(heap::meta(r) as usize, label)
             && i < heap::len(r)
         {
             let w = heap::field(r, i);
@@ -1141,6 +1209,45 @@ pub extern "C" fn meadow_extend(r: Word, label: i64, v: Word, vd: i64) -> Word {
         ds.push(d);
     }
     heap::build(heap::RECORD, 0, &words, &ds)
+}
+
+/// `{ r | label = v }` where the record's type says it has `label`, as its
+/// `at`th of `of`: its value is field `2 at + 1`, and replacing it keeps every
+/// label where it was. **Consumes** `r` (see `meadow_llvm::emit::consumes`) and
+/// lends `v`, described by `vd`. Where nobody else holds the record, the field
+/// is written in place; otherwise the copy is one block, its fields shared.
+#[unsafe(no_mangle)]
+pub extern "C" fn meadow_update(r: Word, at: i64, of: i64, v: Word, vd: i64) -> Word {
+    debug_assert!(
+        heap::is_block(r) && heap::kind(r) == heap::RECORD && heap::len(r) == 2 * of as usize,
+        "a record of {of} labels, as its type said"
+    );
+    let _ = of;
+    let i = 2 * at as usize + 1;
+    heap::share(v, vd);
+    if unshared(r) {
+        heap::erase(heap::field(r, i), heap::field_desc(r, i));
+        heap::set_field(r, i, v, vd);
+        return r;
+    }
+    let words = heap::size(r);
+    let c = heap::acquire(words);
+    // Safety: both blocks have `words` words.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            (r as *const Word).add(1),
+            (c as *mut Word).add(1),
+            words - 1,
+        )
+    };
+    heap::set_word(c, 0, heap::word(r, 0) & !0xFFFF_FFFF);
+    heap::set_word(c, 1, heap::word(r, 1) & !heap::MARKS);
+    for j in (1..heap::len(r)).step_by(2).filter(|j| *j != i) {
+        heap::share(heap::field(r, j), heap::field_desc(r, j));
+    }
+    heap::set_field(c, i, v, vd);
+    heap::erase(r, desc::REF);
+    c
 }
 
 /// An array of the `n` values at `args`, all described alike by the first of

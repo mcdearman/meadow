@@ -116,6 +116,14 @@ pub fn ctor_fields(tag: usize) -> Option<Vec<String>> {
     names().fields.get(tag).cloned().flatten()
 }
 
+/// Where the `record` constructor `tag` keeps the field named by symbol
+/// `label`, if it has one.
+pub fn ctor_field_index(tag: usize, label: usize) -> Option<usize> {
+    let n = names();
+    let name = n.syms.get(label)?;
+    n.fields.get(tag)?.as_ref()?.iter().position(|f| f == name)
+}
+
 fn bare_ctor(name: &str) -> &str {
     match name.rsplit_once('.') {
         Some((_, c)) => c,

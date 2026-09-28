@@ -1824,9 +1824,56 @@ impl OptLevel {
 // Free variables
 // ===========================================================================
 
+/// The names bound around a point of a term, innermost last: a stack, to
+/// unwind, and how many times each name is on it, to ask of in constant time.
+/// A term nested thousands deep -- a program of a few thousand `let`s -- has
+/// thousands of names bound around its innermost parts, and asking a list of
+/// them at every variable made finding a term's free variables quadratic in
+/// its depth.
+#[derive(Default)]
+struct Bound {
+    stack: Vec<Var>,
+    counts: std::collections::HashMap<Var, u32>,
+}
+
+impl Bound {
+    fn contains(&self, v: &Var) -> bool {
+        self.counts.get(v).is_some_and(|n| *n > 0)
+    }
+
+    fn len(&self) -> usize {
+        self.stack.len()
+    }
+
+    fn push(&mut self, v: Var) {
+        self.stack.push(v);
+        *self.counts.entry(v).or_insert(0) += 1;
+    }
+
+    fn pop(&mut self) {
+        if let Some(v) = self.stack.pop()
+            && let Some(n) = self.counts.get_mut(&v)
+        {
+            *n -= 1;
+        }
+    }
+
+    fn truncate(&mut self, len: usize) {
+        while self.stack.len() > len {
+            self.pop();
+        }
+    }
+
+    fn extend(&mut self, vs: impl IntoIterator<Item = Var>) {
+        for v in vs {
+            self.push(v);
+        }
+    }
+}
+
 /// Adds the free variables of `t` to `out`.
 pub fn free_vars_into(t: &Term, out: &mut std::collections::HashSet<Var>) {
-    fn go(t: &Term, bound: &mut Vec<Var>, out: &mut std::collections::HashSet<Var>) {
+    fn go(t: &Term, bound: &mut Bound, out: &mut std::collections::HashSet<Var>) {
         match t {
             Term::TyLam(_, b) | Term::TyApp(b, _) | Term::Loc(_, b) => go(b, bound, out),
             Term::Var(v) => {
@@ -1915,7 +1962,9 @@ pub fn free_vars_into(t: &Term, out: &mut std::collections::HashSet<Var>) {
                 go(s, bound, out);
                 for (p, g, t) in arms {
                     let before = bound.len();
-                    pat_vars(p, bound);
+                    let mut vs = Vec::new();
+                    pat_vars(p, &mut vs);
+                    bound.extend(vs);
                     if let Some(g) = g {
                         go(g, bound, out);
                     }
@@ -1942,7 +1991,7 @@ pub fn free_vars_into(t: &Term, out: &mut std::collections::HashSet<Var>) {
             }
         }
     }
-    go(t, &mut Vec::new(), out);
+    go(t, &mut Bound::default(), out);
 }
 
 /// The variables a pattern binds.

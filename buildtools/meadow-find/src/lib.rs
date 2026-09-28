@@ -116,6 +116,8 @@ pub enum Kind {
     Alias,
     Trait,
     Effect,
+    /// A pattern synonym: `pattern P x y = p`.
+    Pattern,
 }
 
 impl Kind {
@@ -129,6 +131,7 @@ impl Kind {
                 | Kind::Method
                 | Kind::Operation
                 | Kind::Constructor
+                | Kind::Pattern
         )
     }
 
@@ -146,6 +149,7 @@ impl Kind {
             Kind::Alias => "type",
             Kind::Trait => "trait",
             Kind::Effect => "effect",
+            Kind::Pattern => "pattern",
         }
     }
 }

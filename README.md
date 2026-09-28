@@ -408,6 +408,24 @@ representation of one, so it matches a vector emptied at run time too. A
 _non-empty_ `Vector` has no structural pattern (it is a balanced tree, not a
 cons list); match on `Vector.len` or convert with `Vector.toList`.
 
+### Views and pattern synonyms
+
+A pattern can look at a value through a function, `(f -> p)`, and a pattern
+can have a name, as GHC's `ViewPatterns` and `PatternSynonyms` allow:
+
+```
+pattern Succ m <- (pred -> Just m) where Succ (Nat n) = Nat (n + 1)
+pattern Pair a b = (a, b)
+
+fun toInt n = match n with
+  | Succ m -> 1 + toInt m
+  | _ -> 0
+```
+
+A synonym matches and builds as if it were a constructor, and costs nothing
+once optimized: its matcher is inlined, and what it answers is taken apart
+where it is made. See the tutorial's §5.
+
 ### Editor support
 
 `meadow lsp` is a language server — diagnostics as you type, hover with the

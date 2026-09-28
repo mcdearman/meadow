@@ -52,6 +52,13 @@ fn params(ns: &[Name]) -> String {
     format!("({})", names(ns))
 }
 
+fn place(p: &Option<crate::Place>) -> String {
+    match p {
+        Some(p) => format!(" @{}/{}", p.at, p.of),
+        None => String::new(),
+    }
+}
+
 fn pad(out: &mut String, depth: usize) {
     for _ in 0..depth {
         out.push_str("  ");
@@ -135,8 +142,8 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
-                Extern::Select(l) => format!("select .{l}"),
-                Extern::Extend(l) => format!("extend .{l}"),
+                Extern::Select(l, p) => format!("select .{l}{}", place(p)),
+                Extern::Extend(l, p) => format!("extend .{l}{}", place(p)),
                 Extern::Array => "array".to_string(),
                 Extern::Field(i) => format!("field {i}"),
                 Extern::Native(e, o) => format!("native {e}.{o}"),

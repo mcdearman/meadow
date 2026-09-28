@@ -1293,6 +1293,10 @@ impl Names<'_> {
             | hir::Pat::Array(ps)
             | hir::Pat::List(ps) => ps.iter().for_each(|x| self.pat(x)),
             hir::Pat::Record(fs, _) => fs.iter().for_each(|(_, x)| self.pat(x)),
+            hir::Pat::View(f, x) => {
+                self.expr(f);
+                self.pat(x);
+            }
             hir::Pat::Wildcard | hir::Pat::Unit | hir::Pat::Lit(_) | hir::Pat::Error => {}
         }
     }

@@ -289,7 +289,7 @@ impl<'a> Picker<'a> {
         match kind {
             Kind::Function | Kind::Value | Kind::Method | Kind::Operation => Color::Blue,
             Kind::Macro => Color::Magenta,
-            Kind::Constructor => Color::Green,
+            Kind::Constructor | Kind::Pattern => Color::Green,
             Kind::Type | Kind::Record | Kind::Alias => Color::Yellow,
             Kind::Trait => Color::Cyan,
             Kind::Effect => Color::Red,

@@ -71,6 +71,14 @@
           }
         },
         {
+          "comment": "a pattern synonym being declared; `pattern` is a name anywhere else",
+          "match": "\\b(pattern)\\s+([A-Z][a-zA-Z0-9']*)",
+          "captures": {
+            "1": { "name": "keyword.other.meadow" },
+            "2": { "name": "entity.name.function.meadow" }
+          }
+        },
+        {
           "comment": "a module path in `use`",
           "match": "\\b(use)\\s+([A-Za-z][A-Za-z0-9'.]*)",
           "captures": {

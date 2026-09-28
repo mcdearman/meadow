@@ -83,6 +83,26 @@ fn a_method_is_the_impl_of_the_type_it_meets() {
     );
 }
 
+/// A dictionary known at a call from a function generic in some other type --
+/// one it only passes along, or a `runSt`'s state, which no caller ever
+/// knows -- is still the one the method is found in: a release build copies
+/// the callee for it, generic in what is not known.
+#[test]
+fn a_known_dictionary_is_used_under_a_type_nobody_knows() {
+    is(
+        &format!(
+            "{DESCRIBE}\
+             use Std.St as St\n\
+             fun tagged tag x = describe x\n\
+             fun passing (tag : b) (n : Int) : String = tagged tag n\n\
+             fun counted (r : StRef s Int) (n : Int) : String ! {{ St s | e }} =\n\
+             \x20 let _ = St.modifyRef r (\\c -> c + 1) in tagged r (n, [True;])\n\
+             def main = (passing \"s\" 3, passing False 4, runSt (\\() -> let r = St.newRef 0 in (counted r 5, St.getRef r)))\n"
+        ),
+        r#"("int 3", "int 4", ("int 5+yes,.", 1))"#,
+    );
+}
+
 // --- a method and its default are one item ------------------------------------
 
 /// A default belongs to the method it is a default *for*, so it is written in

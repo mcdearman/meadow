@@ -127,6 +127,51 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
+/// A type is known by its fully qualified path: two modules of one package may
+/// each keep a type of one name, and each means its own.
+#[test]
+fn two_modules_may_each_declare_a_type_of_one_name() {
+    let root = scratch("fqp");
+    write(
+        &root.join("Meadow.toml"),
+        "[package]\nname = \"Two\"\nversion = \"0.1.0\"\n",
+    );
+    write(
+        &root.join("src/Left.mw"),
+        "type Syn = Int\ndata Shape = Dot\n@pub fun left (x : Syn) : Syn = x + 1\n\
+         @pub fun leftShape (s : Shape) = match s with | Shape.Dot -> 1\n@pub def dot = Shape.Dot\n",
+    );
+    write(
+        &root.join("src/Right.mw"),
+        "type Syn = String\ndata Shape = Dot | Line\n@pub fun right (x : Syn) : Syn = x ++ \"!\"\n\
+         @pub fun rightShape (s : Shape) = match s with | Shape.Dot -> 10 | Shape.Line -> 20\n\
+         @pub def line = Shape.Line\n",
+    );
+    write(
+        &root.join("src/Main.mw"),
+        "use Two.Left (left, leftShape, dot)\nuse Two.Right (right, rightShape, line)\n\
+         def main = (left 1, right \"a\", leftShape dot, rightShape line)\n",
+    );
+    let out = pipeline::build(&root, Options::debug());
+    assert!(
+        out.diagnostics.is_empty(),
+        "{:?}",
+        out.diagnostics.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
+    // Two `Shape.Dot`s at run time too, each its own type's: on every engine.
+    let program = meadow_compiler::core::prune::prune(&out.linked.unwrap().program);
+    let cek = runtime::run(&program, Engine::Cek, OptLevel::O1).unwrap();
+    assert_eq!(cek, "(2, \"a!\", 1, 20)");
+    for engine in [Engine::Vm, Engine::Jit] {
+        assert_eq!(
+            runtime::run(&program, engine, OptLevel::O1).unwrap(),
+            cek,
+            "{engine:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// A dependent sees a package's `@pub` alias, and not one it kept.
 #[test]
 fn a_pub_alias_crosses_the_package() {

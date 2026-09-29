@@ -28,11 +28,11 @@ pub fn spell_name(name: &str) -> std::borrow::Cow<'_, str> {
 /// A type's or effect's name as a person writes it.
 ///
 /// A type declared outside the standard library is known past the resolver by
-/// its package as well -- `anstyle::Color` -- so that two packages may each
-/// declare a `Color`, and a program may use both. Messages, hovers and printed
-/// types show the name without the package, as the source spells it; a
-/// constructor's `Type.Ctor` keeps its type part: `anstyle::Color.Red` is
-/// `Color.Red`.
+/// its fully qualified path -- `anstyle::Color`, `app::Syntax.Tree::Expr` -- so
+/// that two packages, or two modules of one, may each declare a `Color`, and a
+/// program may use both. Messages, hovers and printed types show the name
+/// without its path, as the source spells it; a constructor's `Type.Ctor` keeps
+/// its type part: `anstyle::Color.Red` is `Color.Red`.
 pub fn spelling(name: &str) -> &str {
     match name.rfind("::") {
         Some(at) => &name[at + 2..],
@@ -41,9 +41,9 @@ pub fn spelling(name: &str) -> &str {
 }
 
 /// The package a type's canonical name says it belongs to, if any: `None` for
-/// the standard library's and the builtins', which have none.
+/// the names the compiler knows, which have none.
 pub fn type_package(name: &str) -> Option<&str> {
-    name.rfind("::").map(|at| &name[..at])
+    name.find("::").map(|at| &name[..at])
 }
 
 /// The operators the language itself knows: how tightly each binds, which way
@@ -160,9 +160,10 @@ pub const NUMERIC_TRAITS: &[&str] = &[
     "Display",
 ];
 
-/// Is `tr` (a canonical trait name) one of [`NUMERIC_TRAITS`]?
+/// Is `tr` (a canonical trait name) one of [`NUMERIC_TRAITS`] -- the standard
+/// library's, and no other package's of the same name?
 pub fn is_numeric_trait(tr: &str) -> bool {
-    type_package(tr).is_none() && NUMERIC_TRAITS.contains(&tr)
+    type_package(tr) == Some("Std") && NUMERIC_TRAITS.contains(&spelling(tr))
 }
 
 /// Primitive operators, in the order their [`VarId`]s are handed out by

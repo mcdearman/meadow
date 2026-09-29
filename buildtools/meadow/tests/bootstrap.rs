@@ -48,6 +48,9 @@ fn meadowboot(args: &[String]) -> String {
         // Where the standard library's sources are, for the passes that build
         // a file's unit and the units it depends on.
         c.env("MEADOWBOOT_STD", repo().join("lib").join("Std"));
+        // And what the Rust compiler's macros expanded to, where the rename
+        // test wrote it.
+        c.env("MEADOWBOOT_EXPANSIONS", expansions_dir());
         c.output().expect("meadow runs")
     };
     let mut out = run(true);
@@ -1002,12 +1005,17 @@ fn file_name(source: &Source, roots: &[(PathBuf, String)]) -> Option<String> {
     let SourceKind::File(name) = source.kind else {
         return None;
     };
+    named_file(&name, roots)
+}
+
+/// The same, for a module's file as the compiler names it.
+fn named_file(name: &str, roots: &[(PathBuf, String)]) -> Option<String> {
     // The standard library's modules are compiled from text built into the
     // compiler, and named for their path under its `src`.
     if let Some(rest) = name.strip_prefix("Std/") {
         return Some(format!("Std/src/{rest}"));
     }
-    let path = Path::new(&*name);
+    let path = Path::new(name);
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     roots.iter().find_map(|(root, pkg)| {
         let rel = path.strip_prefix(root).ok()?;
@@ -1024,6 +1032,16 @@ fn file_name(source: &Source, roots: &[(PathBuf, String)]) -> Option<String> {
 /// `declared` is where what it names is declared, `file@offset`, or `-` for a
 /// primitive -- keyed by file. The standard library's, when `root` is it.
 fn renamed_package(root: &Path) -> HashMap<PathBuf, String> {
+    renamed_recording(root, &mut Vec::new())
+}
+
+/// The same, with what the macros of every package the build compiled
+/// expanded to (`meadow_compiler::expand::record`) added to `expanded`, each
+/// with its file as a dump names it.
+fn renamed_recording(
+    root: &Path,
+    expanded: &mut Vec<(String, meadow_compiler::expand::record::Recorded)>,
+) -> HashMap<PathBuf, String> {
     let std_root = repo().join("lib").join("Std");
     // The standard library is compiled for any build: the smallest will do.
     let entry = if root == std_root {
@@ -1033,7 +1051,10 @@ fn renamed_package(root: &Path) -> HashMap<PathBuf, String> {
     } else {
         root.to_path_buf()
     };
-    let graph = match meadow::pipeline::compile_packages(&entry, meadow::Options::debug()) {
+    meadow_compiler::expand::record::start();
+    let compiled = meadow::pipeline::compile_packages(&entry, meadow::Options::debug());
+    let recorded = meadow_compiler::expand::record::take();
+    let graph = match compiled {
         Ok(g) => g,
         Err(_) => return HashMap::new(),
     };
@@ -1047,6 +1068,11 @@ fn renamed_package(root: &Path) -> HashMap<PathBuf, String> {
         .collect();
     // The deepest first: a package inside another's directory is its own.
     roots.sort_by_key(|(r, _)| std::cmp::Reverse(r.components().count()));
+    for r in recorded {
+        if let Some(file) = named_file(&r.filename, &roots) {
+            expanded.push((file, r));
+        }
+    }
     let everything: Vec<&meadow_compiler::CompiledPackage> = graph
         .std
         .iter()
@@ -1111,6 +1137,40 @@ fn renamed_package(root: &Path) -> HashMap<PathBuf, String> {
     out
 }
 
+/// Where the rename test leaves what this compiler's macros expanded to, for
+/// MeadowBoot: a file a package, `Pkg.json`.
+fn expansions_dir() -> PathBuf {
+    std::env::temp_dir().join("meadowboot-expansions")
+}
+
+/// Write `expanded` there, each package's in its file: a JSON array, an
+/// expansion an element, `[file, from, to, kind, what]` -- `what` the
+/// expansion as `meadow_compiler::expand::record` writes it.
+fn write_expansions(expanded: &[(String, meadow_compiler::expand::record::Recorded)]) {
+    let dir = expansions_dir();
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory for the expansions");
+    let mut by_package: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for (file, r) in expanded {
+        if !seen.insert((file.clone(), r.at.start, r.at.end, r.kind)) {
+            continue;
+        }
+        let pkg = file.split('/').next().unwrap_or_default();
+        by_package.entry(pkg).or_default().push(format!(
+            "[{:?},{},{},{:?},{}]",
+            file, r.at.start, r.at.end, r.kind, r.json
+        ));
+    }
+    for (pkg, entries) in by_package {
+        std::fs::write(
+            dir.join(format!("{pkg}.json")),
+            format!("[{}]", entries.join(",\n")),
+        )
+        .expect("the expansions");
+    }
+}
+
 /// What this compiler's `rename` dump of the file `MEADOWBOOT_RENAME` is:
 /// run by hand, `cargo test --test bootstrap rename_dump -- --ignored
 /// --nocapture`, to see what MeadowBoot is to write.
@@ -1133,16 +1193,33 @@ fn rename_dump() {
 }
 
 #[test]
-#[ignore = "MeadowBoot expands no macros yet: the 14 files that call one differ"]
 fn every_source_renames_as_meadow_rename_renames_it() {
     let files = sources(&["lib", "examples", "benches", "bootstrap", "glade", "silo"]);
-    let theirs = per_file("rename", &files);
+    // This compiler first, keeping what its macros expanded to, which
+    // MeadowBoot is then given.
     let mut packages: HashMap<PathBuf, HashMap<PathBuf, String>> = HashMap::new();
+    let mut expanded = Vec::new();
+    // The standard library's too, which a build otherwise reads back from a
+    // cache without expanding anything.
+    meadow_compiler::expand::record::start();
+    let _ = meadow::stdlib::compile_fresh(meadow::Options::debug());
+    for r in meadow_compiler::expand::record::take() {
+        if let Some(file) = named_file(&r.filename, &[]) {
+            expanded.push((file, r));
+        }
+    }
+    for p in &files {
+        let root = package_of(p).unwrap_or_default();
+        if !packages.contains_key(&root) {
+            let dumps = renamed_recording(&root, &mut expanded);
+            packages.insert(root, dumps);
+        }
+    }
+    write_expansions(&expanded);
+    let theirs = per_file("rename", &files);
     let bad = differences(&theirs, |p| {
         let root = package_of(p).unwrap_or_default();
-        let dumps = packages
-            .entry(root.clone())
-            .or_insert_with(|| renamed_package(&root));
+        let dumps = &packages[&root];
         let me = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         dumps
             .iter()

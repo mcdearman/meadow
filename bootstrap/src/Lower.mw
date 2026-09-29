@@ -10,6 +10,7 @@
 use MeadowBoot.Ast
 use MeadowBoot.Fixity
 use MeadowBoot.Fixity.Grouped.*
+use MeadowBoot.Fixity.Assoc.*
 use MeadowBoot.Lex (lex, Lexed, Token)
 use MeadowBoot.Lex.Token.*
 use Lingua.Red as R
@@ -25,20 +26,28 @@ use Std.String as S
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
 use Std.St (St, runSt)
+use Std.Json as J
+use Std.Json (Json)
 
--- `input`'s grouped tree as a module of abstract syntax.
-@pub fun lowered (input : String) (tree : Green Grouped) : AstProgram =
+-- `input`'s grouped tree as a module of abstract syntax: each macro call
+-- the expansion `exps` has for it, by position and where it starts
+-- (`expr@120`), and each `@derive` what it wrote -- an operator chain in one
+-- grouped by the unit's fixities `fx`.
+@pub fun lowered (input : String) (tree : Green Grouped) (exps : HashMap String Json) (fx : HashMap String Fixity) : AstProgram =
   runSt (\() ->
     let b = newAstBuilder () in
-    let c = Lc { tokens = H.fromVec (V.map (\(l : Lexed) -> (l.from, l.token)) (lex input).tokens) } in
+    let c = Lc { tokens = H.fromVec (V.map (\(l : Lexed) -> (l.from, l.token)) (lex input).tokens), exps = exps, fx = fx } in
     let top = R.root tree in
     let decls = V.concatMap (decl c b) (childrenOf NodeDecl top) in
     let root = newAstModule b (spanOf top) decls in
     AstProgram (freezeAst b) root)
 
 -- Each token as the lexer read it, by where it starts: what a literal is
--- worth.
-record Lc = { tokens : HashMap Int Token }
+-- worth; what the module's macro calls expanded to; and the unit's fixities.
+record Lc = { tokens : HashMap Int Token, exps : HashMap String Json, fx : HashMap String Fixity }
+
+-- What the call in position `kind` starting at `m` expanded to, if it did.
+fun expansion (c : Lc) (kind : String) (m : Meta) : Maybe Json = H.lookup "${kind}@${show (metaStart m)}" c.exps
 
 -- --- the tree ------------------------------------------------------------------------
 
@@ -102,6 +111,14 @@ fun nm b (n : Nm) = newAstName b n.at n.text
 -- synonym -- each under the attributes written on it, a signature keeping
 -- only `@cfg`.
 fun decl (c : Lc) b (s : GTree) =
+  let isCall = M.map R.kindOf (M.andThen firstNode (childOf NodeItem s)) == Just NodeMacCall in
+  -- A macro call: what it expanded to, in its place.
+  match (if isCall then expansion c "decls" (spanOf s) else None) with
+  | Just made -> V.map (jDecl c b) (jarr made)
+  | None -> V.append (written c b s) (V.map (jDecl c b) (M.unwrapOr [] (M.map jarr (expansion c "derived" (spanOf s)))))
+
+-- A declaration as it was written, each of its nodes under its attributes.
+fun written (c : Lc) b (s : GTree) =
   let attrs = childrenOf NodeAttr s in
   let bare = (match firstNode (must NodeItem s) with | Just item -> item_ c b item | None -> []) in
   if V.isEmpty attrs then V.map snd bare
@@ -516,7 +533,7 @@ fun arg (c : Lc) b (s : GTree) (over : Maybe Meta) =
       else if k == NodeVid then newAstPVar b m (nm b (vid n))
       else if k == NodeArrPat then newAstPArray b m (V.map (pat c b) (childrenOf NodePat n))
       else if k == NodeBrackPat then brackPat c b n m
-      else if k == NodeMacCall then newAstPMacCall b m (macCall b n)
+      else if k == NodeMacCall then patCall c b m n
       else newAstPWild b m
   | None -> litOrWild c b s m
 
@@ -608,7 +625,7 @@ fun basePat (c : Lc) b (s : GTree) (over : Maybe Meta) =
   match firstNode head with
   | Just h ->
       let k = R.kindOf h in
-      if k == NodeMacCall then newAstPMacCall b m (macCall b h)
+      if k == NodeMacCall then patCall c b m h
       else if k == NodeQualHead then newAstPQualCons b m (nm b (firstName h)) (nm b (lastName h)) (V.map (atomPat c b) args)
       else lowPat c b h over
   | None -> newAstPCons b m (nm b (firstName head)) (V.map (atomPat c b) args)
@@ -618,7 +635,7 @@ fun atomPat (c : Lc) b (s : GTree) =
   match firstNode s with
   | Just n ->
       let k = R.kindOf n in
-      if k == NodeMacAtom then newAstPMacCall b m (macCall b n)
+      if k == NodeMacAtom then patCall c b m n
       else if k == NodeQualAtom then newAstPQualCons b m (nm b (firstName n)) (nm b (lastName n)) []
       else lowPat c b n None
   | None -> newAstPCons b m (nm b (firstName s)) []
@@ -982,7 +999,7 @@ fun baseE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
   match firstNode head with
   | Just h ->
       let k = R.kindOf h in
-      if k == NodeMacCall then applied (\o -> newAstMacCallE b (M.unwrapOr (macSpan h) o) (macCall b h))
+      if k == NodeMacCall then applied (\o -> exprCall c b (M.unwrapOr (macSpan h) o) h)
       else if k == NodeQualHead then applied (\o -> newAstQual b (spanOf s) (nm b (firstName h)) (nm b (lastName h)))
       else if V.isEmpty args then lowAtom c b hs h over
       else newAstApp b m (lowAtom c b hs h None) (written ())
@@ -993,7 +1010,7 @@ fun atomE (c : Lc) b (hs : [Int]) (s : GTree) =
   match firstNode s with
   | Just n ->
       let k = R.kindOf n in
-      if k == NodeMacAtom then fields b n (newAstMacCallE b (macSpan n) (macCall b n))
+      if k == NodeMacAtom then fields b n (exprCall c b (macSpan n) n)
       else if k == NodeQualAtom then
         let toks = V.filter (\t -> R.kindOf t != TokenPeriod) (tokenKids n) in
         let q = (match V.get toks 0 with | Just t -> nameOf t | None -> named "" m) in
@@ -1230,3 +1247,219 @@ fun holesIn (s : GTree) : [Int] =
         V.concatMap (\a -> holesIn (must NodeExpr a)) (V.filter (\a -> not (isReturn a)) arms),
         (match V.get rets (V.len rets - 1) with | Just r -> holesIn (must NodeExpr r) | None -> []) ]
   else V.concatMap holesIn (V.filter (\x -> R.kindOf x != NodePat and R.kindOf x != NodeAnnot and R.kindOf x != NodeParam) (nodeKids s))
+
+-- --- expansions ----------------------------------------------------------------------
+--
+-- What the Rust compiler's macros expanded to (`meadow_compiler::expand::record`):
+-- JSON, a node an array -- its production, where it came from, its fields, named
+-- and ordered as `Ast` has them -- read here into `Ast`'s tables. A chain of
+-- operators comes as it was parsed, and is grouped here by the unit's
+-- fixities, as the fixity pass groups one in a tree.
+
+fun exprCall (c : Lc) b (m : Meta) (call : GTree) =
+  match expansion c "expr" m with
+  | Just made -> jExpr c b made
+  | None -> newAstMacCallE b m (macCall b call)
+
+fun patCall (c : Lc) b (m : Meta) (call : GTree) =
+  match expansion c "pat" m with
+  | Just made -> jPat c b made
+  | None -> newAstPMacCall b m (macCall b call)
+
+fun jarr (j : Json) : [Json] = M.unwrapOr [] (J.asArray j)
+
+fun jat (j : Json) (i : Int) : Json = V.getOr (J.jNull ()) (jarr j) i
+
+fun jint (j : Json) (i : Int) : Int = M.unwrapOr 0 (J.asInt (jat j i))
+
+fun jstr (j : Json) (i : Int) : String = M.unwrapOr "" (J.asString (jat j i))
+
+fun jbool (j : Json) (i : Int) : Bool = M.unwrapOr False (J.asBool (jat j i))
+
+fun jtag (j : Json) : String = jstr j 0
+
+fun jmeta (j : Json) : Meta = spanMeta (jint j 1) (jint j 2)
+
+-- Field `i` of node `j`, by its place among the fields.
+fun jf (j : Json) (i : Int) : Json = jat j (i + 3)
+
+fun jn b (j : Json) = newAstName b (jmeta j) (jstr j 3)
+
+fun jns b (j : Json) = V.map (jn b) (jarr j)
+
+fun jopt (f : Json -> a ! e) (j : Json) : Maybe a ! e = if J.isNull j then None else Just (f j)
+
+fun jDecl (c : Lc) b (j : Json) =
+  let m = jmeta j in
+  let t = jtag j in
+  let f = jf j in
+  if t == "Bind" then newAstBind b m (jBind c b (f 0))
+  else if t == "ModDecl" then newAstModDecl b m (jn b (f 0))
+  else if t == "UseDecl" then newAstUseDecl b m (jns b (f 0)) (jns b (f 1)) (jns b (f 2)) (M.unwrapOr False (J.asBool (f 3))) (jopt (jn b) (f 4))
+  else if t == "DataDecl" then newAstDataDecl b m (jn b (f 0)) (jns b (f 1)) (V.map (jVariant c b) (jarr (f 2)))
+  else if t == "RecordDecl" then newAstRecordDecl b m (jn b (f 0)) (jns b (f 1)) (V.map (jField c b) (jarr (f 2)))
+  else if t == "EffectDecl" then newAstEffectDecl b m (jn b (f 0)) (jns b (f 1)) (V.map (jField c b) (jarr (f 2)))
+  else if t == "AliasDecl" then newAstAliasDecl b m (jn b (f 0)) (jns b (f 1)) (jType c b (f 2))
+  else if t == "SigDecl" then newAstSigDecl b m (jn b (f 0)) (jType c b (f 1)) (V.map (jBound c b) (jarr (f 2)))
+  else if t == "TraitDecl" then
+    newAstTraitDecl b m (jn b (f 0)) (jns b (f 1)) (V.map (jBound c b) (jarr (f 2)))
+      (V.map (\x -> newAstAssoc b (jmeta x) (jn b (jf x 0)) (jns b (jf x 1))) (jarr (f 3)))
+      (V.map (\x -> newAstMethodSig b (jmeta x) (jn b (jf x 0)) (jType c b (jf x 1))) (jarr (f 4)))
+      (V.map (jBind c b) (jarr (f 5)))
+  else if t == "ImplDecl" then
+    newAstImplDecl b m (jn b (f 0)) (V.map (jType c b) (jarr (f 1))) (V.map (jBound c b) (jarr (f 2)))
+      (V.map (\x -> newAstAssocDef b (jmeta x) (jn b (jf x 0)) (V.map (jType c b) (jarr (jf x 1))) (jType c b (jf x 2))) (jarr (f 3)))
+      (V.map (jBind c b) (jarr (f 4)))
+  else if t == "FixityDecl" then newAstFixityDecl b m (jns b (f 0))
+  else if t == "Attributed" then newAstAttributed b m (V.map (jAttr b) (jarr (f 0))) (jDecl c b (f 1))
+  else if t == "MacCallDecl" then newAstMacCallDecl b m (jMac b (f 0))
+  else newAstMacroDecl b m (jn b (f 0))
+
+fun jAttr b (j : Json) = newAstAttr b (jmeta j) (jn b (jf j 0)) (jns b (jf j 1)) (V.map (jMeta b) (jarr (jf j 2)))
+
+fun jMeta b (j : Json) =
+  let m = jmeta j in
+  let t = jtag j in
+  if t == "MetaWord" then newAstMetaWord b m (jn b (jf j 0))
+  else if t == "MetaText" then newAstMetaText b m (jn b (jf j 0))
+  else if t == "MetaValue" then newAstMetaValue b m (jn b (jf j 0)) (jn b (jf j 1))
+  else newAstMetaList b m (jn b (jf j 0)) (V.map (jMeta b) (jarr (jf j 1)))
+
+fun jMac b (j : Json) = newAstMacCall b (jmeta j) (jns b (jf j 0))
+
+fun jVariant (c : Lc) b (j : Json) =
+  newAstVariant b (jmeta j) (V.map (jAttr b) (jarr (jf j 0))) (jn b (jf j 1)) (M.unwrapOr False (J.asBool (jf j 2))) (V.map (jType c b) (jarr (jf j 3))) (V.map (jField c b) (jarr (jf j 4)))
+
+fun jField (c : Lc) b (j : Json) = newAstField b (jmeta j) (V.map (jAttr b) (jarr (jf j 0))) (jn b (jf j 1)) (jType c b (jf j 2))
+
+fun jBound (c : Lc) b (j : Json) = newAstBound b (jmeta j) (jn b (jf j 0)) (V.map (jType c b) (jarr (jf j 1)))
+
+fun jType (c : Lc) b (j : Json) =
+  let m = jmeta j in
+  let t = jtag j in
+  let f = jf j in
+  let ts = \x -> V.map (jType c b) (jarr x) in
+  if t == "TVar" then newAstTVar b m (jn b (f 0))
+  else if t == "TCon" then newAstTCon b m (jn b (f 0)) (ts (f 1))
+  else if t == "TFun" then newAstTFun b m (ts (f 0)) (jType c b (f 1)) (jopt (jRow c b) (f 2))
+  else if t == "TTuple" then newAstTTuple b m (ts (f 0))
+  else if t == "TVector" then newAstTVector b m (jType c b (f 0))
+  else if t == "TList" then newAstTList b m (jType c b (f 0))
+  else newAstTRecord b m (V.map (\x -> newAstTField b (jmeta x) (jn b (jf x 0)) (jType c b (jf x 1))) (jarr (f 0))) (jopt (jn b) (f 1))
+
+fun jRow (c : Lc) b (j : Json) =
+  newAstRow b (jmeta j) (V.map (\x -> newAstLabel b (jmeta x) (jn b (jf x 0)) (V.map (jType c b) (jarr (jf x 1)))) (jarr (jf j 0))) (jopt (jn b) (jf j 1))
+
+fun jBind (c : Lc) b (j : Json) =
+  let m = jmeta j in
+  if jtag j == "PatBind" then newAstPatBind b m (jPat c b (jf j 0)) (jExpr c b (jf j 1))
+  else newAstFunBind b m (jn b (jf j 0)) (V.map (jPat c b) (jarr (jf j 1))) (jopt (jType c b) (jf j 2)) (jExpr c b (jf j 3))
+
+fun jLit b (j : Json) =
+  let m = jmeta j in
+  let t = jtag j in
+  let text = jstr j 3 in
+  if t == "LitInt" then newAstLitInt b m text
+  else if t == "LitFloat" then newAstLitFloat b m text
+  else if t == "LitChar" then newAstLitChar b m text
+  else newAstLitString b m text
+
+fun jPat (c : Lc) b (j : Json) =
+  let m = jmeta j in
+  let t = jtag j in
+  let f = jf j in
+  let ps = \x -> V.map (jPat c b) (jarr x) in
+  if t == "PWild" then newAstPWild b m
+  else if t == "PVar" then newAstPVar b m (jn b (f 0))
+  else if t == "PAnn" then newAstPAnn b m (jPat c b (f 0)) (jType c b (f 1))
+  else if t == "PLit" then newAstPLit b m (jLit b (f 0))
+  else if t == "PAs" then newAstPAs b m (jn b (f 0)) (jPat c b (f 1))
+  else if t == "PCons" then newAstPCons b m (jn b (f 0)) (ps (f 1))
+  else if t == "PQualCons" then newAstPQualCons b m (jn b (f 0)) (jn b (f 1)) (ps (f 2))
+  else if t == "PTuple" then newAstPTuple b m (ps (f 0))
+  else if t == "PArray" then newAstPArray b m (ps (f 0))
+  else if t == "PVector" then newAstPVector b m (ps (f 0))
+  else if t == "PList" then newAstPList b m (ps (f 0))
+  else if t == "PRecord" then newAstPRecord b m (V.map (\x -> newAstPField b (jmeta x) (jn b (jf x 0)) (jPat c b (jf x 1))) (jarr (f 0))) (M.unwrapOr False (J.asBool (f 1)))
+  else if t == "PUnit" then newAstPUnit b m
+  else if t == "PView" then newAstPView b m (jExpr c b (f 0)) (jPat c b (f 1))
+  else newAstPMacCall b m (jMac b (f 0))
+
+fun jExpr (c : Lc) b (j : Json) =
+  let m = jmeta j in
+  let t = jtag j in
+  let f = jf j in
+  let es = \x -> V.map (jExpr c b) (jarr x) in
+  let fieldsOf = \x -> V.map (\y -> newAstFieldE b (jmeta y) (jn b (jf y 0)) (jExpr c b (jf y 1))) (jarr x) in
+  if t == "Var" then newAstVar b m (jn b (f 0))
+  else if t == "LitE" then newAstLitE b m (jLit b (f 0))
+  else if t == "Interp" then newAstInterp b m (V.map (\x -> M.unwrapOr "" (J.asString x)) (jarr (f 0))) (V.map (\h -> newAstHole b (jmeta h) (jExpr c b (jf h 0)) (M.unwrapOr False (J.asBool (jf h 1)))) (jarr (f 1)))
+  else if t == "Lam" then newAstLam b m (V.map (jPat c b) (jarr (f 0))) (jExpr c b (f 1))
+  else if t == "App" then newAstApp b m (jExpr c b (f 0)) (es (f 1))
+  else if t == "Let" then newAstLet b m (V.map (jBind c b) (jarr (f 0))) (jExpr c b (f 1))
+  else if t == "If" then newAstIf b m (jExpr c b (f 0)) (jExpr c b (f 1)) (jExpr c b (f 2))
+  else if t == "Match" then newAstMatch b m (jExpr c b (f 0)) (V.map (\a -> newAstArm b (jmeta a) (jPat c b (jf a 0)) (jopt (jExpr c b) (jf a 1)) (jExpr c b (jf a 2))) (jarr (f 1)))
+  else if t == "Neg" then newAstNeg b m (jn b (f 0)) (jExpr c b (f 1))
+  else if t == "AndE" then newAstAndE b m (jn b (f 0)) (jExpr c b (f 1)) (jExpr c b (f 2))
+  else if t == "OrE" then newAstOrE b m (jn b (f 0)) (jExpr c b (f 1)) (jExpr c b (f 2))
+  else if t == "Chain" then chainOf c b (jExpr c b (f 0)) (V.zip (jarr (f 1)) (es (f 2)))
+  else if t == "Tuple" then newAstTuple b m (es (f 0))
+  else if t == "ArrayE" then newAstArrayE b m (es (f 0))
+  else if t == "ListE" then newAstListE b m (es (f 0))
+  else if t == "Cons" then newAstCons b m (jn b (f 0)) (es (f 1))
+  else if t == "Qual" then newAstQual b m (jn b (f 0)) (jn b (f 1))
+  else if t == "RecordE" then newAstRecordE b m (fieldsOf (f 0)) (jopt (jExpr c b) (f 1))
+  else if t == "Update" then newAstUpdate b m (jExpr c b (f 0)) (fieldsOf (f 1))
+  else if t == "Proj" then newAstProj b m (jExpr c b (f 0)) (jn b (f 1))
+  else if t == "Handle" then
+    newAstHandle b m (jExpr c b (f 0))
+      (V.map (\a -> newAstHArm b (jmeta a) (jn b (jf a 0)) (jPat c b (jf a 1)) (jn b (jf a 2)) (jExpr c b (jf a 3))) (jarr (f 1)))
+      (jopt (\r -> newAstRet b (jmeta r) (jPat c b (jf r 0)) (jExpr c b (jf r 1))) (f 2))
+  else if t == "UnitE" then newAstUnitE b m
+  else if t == "HoleE" then newAstHoleE b m
+  else newAstMacCallE b m (jMac b (f 0))
+
+-- A chain of operators grouped by the unit's fixities, as `meadow-rename`
+-- groups one: each operator applied to its two operands, spanning them.
+fun chainOf (c : Lc) b (first : Int) (steps : [(Json, Int)]) =
+  let done =
+    V.foldl
+      (\st step ->
+        match (st, step) with
+        | ((outs, ops), (op, x)) ->
+            let name = jstr op 3 in
+            let here = fixityOf c.fx name in
+            let reduced = reduceOps c b outs ops here in
+            (V.pushBack (fst reduced) x, V.pushBack (snd reduced) (op, here)))
+      ([first], [])
+      steps in
+    let outs = V.foldr (\o acc -> applyOp b acc o) (fst done) (snd done) in
+    V.getOr first outs (V.len outs - 1)
+
+-- Apply every operator on the stack that goes before one that binds as `here`.
+fun reduceOps (c : Lc) b (outs : [Int]) ops (here : Fixity) =
+  match V.get ops (V.len ops - 1) with
+  | None -> (outs, ops)
+  | Just (top, there) ->
+      if goesBefore there here then reduceOps c b (applyOp b outs (top, there)) (V.take ops (V.len ops - 1)) here else (outs, ops)
+
+-- Whether an operator binding as `there`, on the stack, is applied before one
+-- binding as `here` is pushed: it binds tighter, or as tightly and they do
+-- not both group right. Two that group neither way are an error the fixity
+-- pass reports; they are read as if the first went first.
+fun goesBefore (there : Fixity) (here : Fixity) : Bool =
+  if there.level > here.level then True
+  else if there.level < here.level then False
+  else not (there.assoc == GroupsRight and here.assoc == GroupsRight)
+
+-- The top two operands, operator `o` applied to them: `(+) l r`, or `Cons l r`.
+fun applyOp b (outs : [Int]) o =
+  match (o, V.get outs (V.len outs - 2), V.get outs (V.len outs - 1)) with
+  | ((op, _), Just l, Just r) ->
+      let lm = metaAstExprIn b l in
+      let rm = metaAstExprIn b r in
+      let m = spanMeta (min (metaStart lm) (metaStart rm)) (max (metaEnd lm) (metaEnd rm)) in
+      let rest = V.take outs (V.len outs - 2) in
+      if jstr op 3 == "::" then V.pushBack rest (newAstCons b m (newAstName b (jmeta op) "Cons") [l, r])
+      else V.pushBack rest (newAstApp b m (newAstVar b (jmeta op) (jn b op)) [l, r])
+  | _ -> outs

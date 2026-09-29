@@ -798,11 +798,11 @@ impl Resolver {
         self.filename = filename.into();
     }
 
-    /// The package this unit belongs to: its types are known by it as well as
-    /// by their names, as `package::Name`. The standard library's are not --
-    /// the compiler knows several of them by name.
+    /// The package this unit belongs to: its types are known by it and their
+    /// module as well as by their names, `package::Mod::Name` -- the standard
+    /// library's too, but for the ones the compiler knows by name.
     pub fn set_package(&mut self, package: InternedString) {
-        self.package = (&*package != "Std").then_some(package);
+        self.package = Some(package);
     }
 
     /// Mark this unit as built without dependencies: see [`Self::standalone`].
@@ -810,16 +810,29 @@ impl Resolver {
         self.standalone = standalone;
     }
 
-    /// The canonical name of a type or effect this unit declares as `name`.
+    /// The canonical name of a type or effect the module being declared
+    /// declares as `name` -- see [`Resolver::qualify_in`].
+    fn qualify(&self, name: InternedString) -> InternedString {
+        self.qualify_in(&self.current.clone(), name)
+    }
+
+    /// The canonical name of a type or effect module `module` of this unit
+    /// declares as `name`: its fully qualified path, `pkg::Mod.Sub::Name` --
+    /// `pkg::Name` at the package's root -- so that two modules may each
+    /// declare a type of one name, as they may a value.
     ///
     /// A name the compiler itself knows -- one a primitive's type mentions, or
     /// one the runtime answers -- stays as it is, wherever it is declared: the
     /// standard library declares those, and a program built without it
     /// declares its own.
-    fn qualify(&self, name: InternedString) -> InternedString {
+    fn qualify_in(&self, module: &[InternedString], name: InternedString) -> InternedString {
         match self.package {
             Some(p) if !LANGUAGE_NAMES.contains(&&*name) => {
-                InternedString::from(format!("{p}::{name}"))
+                if module.is_empty() {
+                    InternedString::from(format!("{p}::{name}"))
+                } else {
+                    InternedString::from(format!("{p}::{}::{name}", dotted_path(module)))
+                }
             }
             _ => name,
         }
@@ -883,10 +896,12 @@ impl Resolver {
             None => true,
             Some(o) => all || vis.reaches(o, &here),
         };
+        // Whose names these are: `owner`'s, or this module's own.
+        let module: Vec<InternedString> = owner.map_or_else(|| here.clone(), <[_]>::to_vec);
         let mut brought = Vec::new();
         for (n, a, v) in &frame.tycons {
             if ok(*v) {
-                let canonical = self.qualify(*n);
+                let canonical = self.qualify_in(&module, *n);
                 self.tycons.insert(*n, Named::One(canonical, *a));
                 self.bring_struct_ctor(canonical);
                 brought.push(canonical);
@@ -899,14 +914,14 @@ impl Resolver {
         // declaring the type, naming it in a `use`, nor a module glob does.
         for (n, a, v) in &frame.effects {
             if ok(*v) {
-                let canonical = self.qualify(*n);
+                let canonical = self.qualify_in(&module, *n);
                 self.effects.insert(*n, Named::One(canonical, *a));
                 brought.push(canonical);
             }
         }
         for (op, eff, v) in &frame.effect_ops {
             if ok(*v) {
-                self.effect_ops.insert(*op, self.qualify(*eff));
+                self.effect_ops.insert(*op, self.qualify_in(&module, *eff));
             }
         }
         for (n, id, v) in &frame.values {
@@ -1018,7 +1033,7 @@ impl Resolver {
             }
             for (n, a, v) in &frame.tycons {
                 if *n == name && note(*v, &mut found, &mut hidden) {
-                    let canonical = self.qualify(*n);
+                    let canonical = self.qualify_in(path, *n);
                     self.tycons.insert(*n, Named::One(canonical, *a));
                     self.bring_struct_ctor(canonical);
                     brought.push(canonical);
@@ -1041,14 +1056,14 @@ impl Resolver {
             }
             for (n, a, v) in &frame.effects {
                 if *n == name && note(*v, &mut found, &mut hidden) {
-                    let canonical = self.qualify(*n);
+                    let canonical = self.qualify_in(path, *n);
                     self.effects.insert(*n, Named::One(canonical, *a));
                     brought.push(canonical);
                 }
             }
             for (op, eff, v) in &frame.effect_ops {
                 if *op == name && note(*v, &mut found, &mut hidden) {
-                    self.effect_ops.insert(*op, self.qualify(*eff));
+                    self.effect_ops.insert(*op, self.qualify_in(path, *eff));
                 }
             }
             self.extra_refs.extend(sites);
@@ -1601,9 +1616,10 @@ impl Resolver {
         let vis = self.vis;
         self.frame().tycons.push((name, arity, vis));
         let canonical = self.qualify(name);
-        // A package's types are its own, so only its other declarations can
-        // clash with one -- except in the standard library, whose names are
-        // not qualified, and so must also stay clear of its other units'.
+        // A type is known by its fully qualified path, so only another
+        // declaration at that path can clash with it -- except a name the
+        // compiler knows, which is not qualified, and so must also stay clear
+        // of the standard library's other units'.
         let clash = canonical == name && self.type_in_scope(canonical);
         let again = !self.declared_types.insert(canonical);
         self.all_types.insert(canonical, arity);
@@ -1614,13 +1630,12 @@ impl Resolver {
         // user declaration under one of these names does not make a new type;
         // it aliases the built-in, and its values are then read as the wrong
         // thing (a segfault on the native runtimes). Only the standard library
-        // -- the one unit `set_package` leaves without a package -- may declare
-        // them; anyone else is refused here. A unit built with no dependencies
+        // may declare them; anyone else is refused here. A unit built with no dependencies
         // at all has no standard library to alias and stands in for it, so it
         // may declare the language names; never the built-in representations.
         let reserved = BUILTIN_TYCONS.contains(&&*name)
             || (LANGUAGE_NAMES.contains(&&*name) && !self.standalone);
-        if reserved && self.package.is_some() {
+        if reserved && self.package.is_some_and(|p| &*p != "Std") {
             self.error(
                 format!("`{name}` is a built-in name and cannot be declared"),
                 "built in".to_string(),
@@ -1758,8 +1773,13 @@ impl Resolver {
         // [`ast::hygiene::PRELUDE`]).
         if ast::hygiene::is_prelude(ty) {
             let bare = ast::hygiene::strip(ty);
-            if self.all_types.contains_key(&bare) {
-                let canonical = canonical_ctor(bare, name);
+            let std = self
+                .all_types
+                .keys()
+                .copied()
+                .find(|c| hir::type_package(c) == Some("Std") && hir::spelling(c) == &*bare);
+            if let Some(ty) = std {
+                let canonical = canonical_ctor(ty, name);
                 return self.ctors.contains_key(&canonical).then_some(canonical);
             }
             return self.resolve_qualified_ctor(bare, name);
@@ -1839,7 +1859,7 @@ impl Resolver {
                 // `use Ty.*` works for this module's own types and for a
                 // dependency's, which are in scope by name; a sibling module's
                 // needs its path.
-                let own = self.qualify(spell(ty)) == *ty;
+                let own = hir::type_package(ty) == self.package.as_deref();
                 let ty = &spell(ty);
                 let sibling = own
                     && !self.module_has_type(&here, *ty)
@@ -1920,7 +1940,7 @@ impl Resolver {
             );
             return Vec::new();
         }
-        let canonical_ty = self.qualify(tyname);
+        let canonical_ty = self.qualify_in(path, tyname);
         self.note_ref(ty.span, NameRef::Type(canonical_ty));
         let ctors: Vec<(InternedString, InternedString)> = frame
             .ctors

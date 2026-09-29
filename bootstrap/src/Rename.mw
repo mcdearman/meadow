@@ -93,7 +93,8 @@ use Std.Sort (sortOn)
   builtinType : Int,
   builtinCtor : Int,
   bools : HashMap String Int,
-  traitAssocs : HashMap Int (HashMap String Int)
+  traitAssocs : HashMap Int (HashMap String Int),
+  vectorEmpty : Int
 }
 
 -- The context `rename` carries down: the module's scope, what is bound
@@ -117,19 +118,36 @@ fun bindAll (env : Env) (bs : [(String, Int)]) : Env = V.foldl (\e x -> bindLoca
 -- The value `name` means here: or, for an operator nothing here defines --
 -- in a module of the standard library before the one that does -- the
 -- primitive it falls back on.
+--
+-- A name a macro's template wrote carries a mark, `tmp#3`. One the template
+-- bound itself is found as it is; one it only mentions is found without its
+-- mark -- or, marked `#0` by a built-in derive, as the prelude has it.
 fun valueOf (env : Env) (name : String) : Int =
-  match L.lookupAssoc name env.locals with
+  match lookupValue env name with
   | Just id -> id
   | None ->
+      if isMarked name then
+        (if S.endsWith "#0" name then M.unwrapOr (valueOf env (unmarked name)) (H.lookup (unmarked name) env.scope.base)
+          else valueOf env (unmarked name))
+      else
+        (match V.find (\o -> fst o == name) operatorPrims with
+         | Just (_, prim) -> M.unwrapOr env.scope.unknown (H.lookup prim env.scope.base)
+         | None -> env.scope.unknown)
+
+fun lookupValue (env : Env) (name : String) : Maybe Int =
+  match L.lookupAssoc name env.locals with
+  | Just id -> Just id
+  | None ->
       (match H.lookup name env.scope.values with
-       | Just ids -> V.getOr env.scope.unknown ids 0
-       | None ->
-           (match H.lookup name env.scope.base with
-            | Just id -> id
-            | None ->
-                (match V.find (\o -> fst o == name) operatorPrims with
-                 | Just (_, prim) -> M.unwrapOr env.scope.unknown (H.lookup prim env.scope.base)
-                 | None -> env.scope.unknown)))
+       | Just ids -> V.get ids 0
+       | None -> H.lookup name env.scope.base)
+
+fun isMarked (name : String) : Bool = M.isSome (S.indexOf "#" name)
+
+fun unmarked (name : String) : String =
+  match S.indexOf "#" name with
+  | Just at -> stringSlice name 0 at
+  | None -> name
 
 -- The operators the language knows, each with the primitive it means where
 -- nothing else of its name is in scope (`meadow_hir::OPERATORS`).
@@ -144,9 +162,9 @@ def operatorPrims : [(String, String)] =
 fun baseValue (env : Env) (name : String) : Int = M.unwrapOr env.scope.unknown (H.lookup name env.scope.base)
 
 -- A type no module declares is one of the language's own: `Int`, `Array`.
-fun typeOf (env : Env) (name : String) : Int = M.unwrapOr env.scope.builtinType (H.lookup name env.scope.types)
+fun typeOf (env : Env) (name : String) : Int = M.unwrapOr env.scope.builtinType (H.lookup (unmarked name) env.scope.types)
 
-fun ctorOf (env : Env) (name : String) : Int = M.unwrapOr env.scope.builtinCtor (H.lookup name env.scope.ctors)
+fun ctorOf (env : Env) (name : String) : Int = M.unwrapOr env.scope.builtinCtor (H.lookup (unmarked name) env.scope.ctors)
 
 -- `ty`'s constructor `name`, if `ty` is a type this module can name.
 fun typeCtor (env : Env) (ty : String) (name : String) : Maybe (Int, Int) =
@@ -158,10 +176,17 @@ fun typeCtor (env : Env) (ty : String) (name : String) : Maybe (Int, Int) =
 
 pass! {
   pub rename : Ast -> Hir with env
-    | Var { name } -> Var { ref = refTo out env (valueOf env (textOf out name)) (nameMeta out name) }
+    | Var { name } -> Var { ref = refTo out env (known env (textOf out name) (varOf env (textOf out name))) (nameMeta out name) }
     | Qual { qual, name } -> qualified out env here qual name []
     | App { func, args } -> applied out here func args
-    | Cons { name, args } -> Cons { ref = refTo out env (ctorOf env (textOf out name)) (nameMeta out name), args = args }
+    | Cons { name, args } ->
+        (let n = textOf out name in
+          match (H.lookup (unmarked n) env.scope.ctors, lookupValue env "$b${n}") with
+          | (None, Just builder) ->
+              -- A pattern synonym, built: its builder applied.
+              (let f = newHirVar out (nameMeta out name) (refTo out env builder (nameMeta out name)) in
+                if V.isEmpty args then f else newHirApp out here f args)
+          | _ -> Cons { ref = refTo out env (ctorOf env n) (nameMeta out name), args = args })
     | Neg { op, operand } -> App { func = newHirVar out (nameMeta out op) (refTo out env (valueOf env "neg") (nameMeta out op)), args = [operand] }
     | AndE { op, lhs, rhs } -> If { cond = lhs, yes = rhs, no = boolCon out env "False" (nameMeta out op) }
     | OrE { op, lhs, rhs } -> If { cond = lhs, yes = boolCon out env "True" (nameMeta out op), no = rhs }
@@ -196,7 +221,14 @@ pass! {
           FunBind { id = id, params = ps, ret = M.map (\r -> r within) ret, body = body within })
     | PVar { name } -> PVar { id = patVar out env name }
     | PAs { name, pat } -> PAs { id = patVar out env name, pat = pat }
-    | PCons { name, args } -> PCons { ref = refTo out env (ctorOf env (textOf out name)) (nameMeta out name), args = args }
+    | PCons { name, args } ->
+        (let n = textOf out name in
+          match (H.lookup (unmarked n) env.scope.ctors, lookupValue env "$m${show (V.len args)}${n}") with
+          | (None, Just matcher) -> synonymPat out env here (nameMeta out name) matcher args
+          | _ -> PCons { ref = refTo out env (ctorOf env n) (nameMeta out name), args = args })
+    | PVector { items } ->
+        -- `[]` is the empty `Vector`: its constructor `Vector.Empty`.
+        (if V.isEmpty items then newHirPCons out here (refTo out env env.scope.vectorEmpty here) [] else PVector { items = items })
     | PQualCons { qual, name, args } -> PCons { ref = qualifiedCtor out env qual name, args = args }
     | TCon { name, args } -> TCon { ref = refTo out env (typeOf env (textOf out name)) (nameMeta out name), args = args }
     | SigDecl { name, ty, bounds } -> (let u = mention env (valueOf env (textOf out name)) (nameMeta out name) in SigDecl { name = name, ty = ty, bounds = bounds })
@@ -245,6 +277,30 @@ fun funId (env : Env) (n : String) (m : Meta) : Int ! { Table Binder | e } =
   match (if env.top then H.lookup n env.scope.top else None) with
   | Just id -> id
   | None -> declareBinder n "v" (siteOf env m)
+
+-- `P a b`, where `P` is a pattern synonym: its matcher applied to what is
+-- matched here, and what it answers matched by what `P` binds -- `True` for
+-- a synonym of nothing, a one-item list of one thing, of a tuple of several.
+fun synonymPat out (env : Env) (m : Meta) (at : Meta) (matcher : Int) (args : [Int]) =
+  let f = newHirVar out at (refTo out env matcher at) in
+  let answer =
+    (match V.len args with
+     | 0 -> newHirPCons out at (refTo out env (M.unwrapOr env.scope.builtinCtor (H.lookup "True" env.scope.bools)) at) []
+     | 1 -> newHirPList out m args
+     | _ -> newHirPList out m [newHirPTuple out m args]) in
+    newHirPView out m f answer
+
+-- The value `name` means, where `$m?P` is any of pattern synonym `P`'s
+-- matchers: what `pattern A | B` names.
+fun varOf (env : Env) (name : String) : Int =
+  if S.startsWith "$m?" name then
+    let bare = stringSlice name 3 (stringByteLength name) in
+    M.unwrapOr env.scope.unknown (V.foldl (\found n -> match found with | Just x -> Just x | None -> lookupValue env "$m${show n}${bare}") None (V.range 0 17))
+  else valueOf env name
+
+-- A binder for a name nothing here binds, saying which: `?name`.
+fun known (env : Env) (name : String) (id : Int) : Int ! { Table Binder | e } =
+  if id == env.scope.unknown then declareBinder name "v" "?${name}" else id
 
 -- A name a pattern binds: the top level's own, or a new binder.
 fun patVar out (env : Env) (name : HirName) : Int ! { Table Binder | e } = funId env (textOf out name) (nameMeta out name)
@@ -333,7 +389,8 @@ fun bindBinders out (b : Int) : [(String, Int)] ! { Table Binder | e } =
 @pub fun mentionsOf (binders : [Binder]) : HashMap String [String] =
   let lines =
     V.concatMap
-      (\(b : Binder) -> V.map (\u -> match u with | (file, from, to) -> (file, (from, to, "${show from} ${show to} ${b.kind} ${b.site}"))) b.uses)
+      -- A use spanning nothing is one a derive wrote: nobody's text.
+      (\(b : Binder) -> V.concatMap (\u -> match u with | (file, from, to) -> (if to > from then [(file, (from, to, "${show from} ${show to} ${b.kind} ${b.site}"))] else [])) b.uses)
       binders in
     let grouped = V.foldl (\h x -> H.insert (fst x) (V.pushBack (M.unwrapOr [] (H.lookup (fst x) h)) (snd x)) h) H.empty lines in
     H.fromVec (V.map (\kv -> (fst kv, dedup (V.map (\x -> match x with | (_, _, l) -> l) (sortOn (\x -> x) (snd kv))))) (H.toVec grouped))

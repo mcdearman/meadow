@@ -45,6 +45,7 @@ mod derive;
 mod hygiene;
 pub mod proc;
 mod quote;
+pub mod record;
 mod rules;
 
 pub use datum::{Binding, Datum};
@@ -1217,7 +1218,10 @@ impl<'a> Expander<'a> {
                 });
                 self.call_vis = outer;
                 match made {
-                    Some(made) => out.extend(made),
+                    Some(made) => {
+                        record::decls(self.filename, d.span, "decls", &made);
+                        out.extend(made)
+                    }
                     // Waiting for a name: left as it is, for a later round.
                     None if self.take_waited() => out.push(d),
                     None => {}
@@ -1230,6 +1234,7 @@ impl<'a> Expander<'a> {
                 // for a name stays on it, to be run in a later round.
                 ast::Decl::Attributed(attrs, _) if attrs.iter().any(is_derive) => {
                     let (made, pending) = self.derived(&d);
+                    record::decls(self.filename, d.span, "derived", &made);
                     self.decl(&mut d);
                     out.push(keep_derives(d, &pending));
                     out.extend(made);
@@ -1491,7 +1496,10 @@ impl<'a> Expander<'a> {
                 })
             });
             match made {
-                Some(made) => *p = made,
+                Some(made) => {
+                    record::pat(self.filename, span, &made);
+                    *p = made
+                }
                 // Waiting for a name: left as it is, for a later round.
                 None if self.take_waited() => {}
                 // Left as a wildcard: it matches, binds nothing, and lets the
@@ -1541,7 +1549,10 @@ impl<'a> Expander<'a> {
                 })
             });
             match made {
-                Some(made) => *e = made,
+                Some(made) => {
+                    record::expr(self.filename, span, &made);
+                    *e = made
+                }
                 // Waiting for a name: left as it is, for a later round.
                 None if self.take_waited() => {}
                 // `()` in its place: the module keeps its shape, so everything

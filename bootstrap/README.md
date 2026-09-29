@@ -96,9 +96,15 @@ HIR the way the language server does (`meadow_lsp::analysis::mentions`). A unit
 is renamed with what the units before it export, so each unit's interface
 carries its exports, and Lingua's build (`make!`) compiles them in order.
 
-Macros are not expanded yet, so a module that calls one differs where the
-expansion would be: the standard library's `comparable!`, `integer!` and
-`floating!`, and MeadowBoot's own modules, which are mostly Lingua's macros.
+A macro call is what the Rust compiler expanded it to, for now, as the CEK
+machine's core is what it lowered: the expander records every expansion, and
+each `@derive`'s, as JSON of its syntax with its spans
+(`meadow_compiler::expand::record`); the rename test writes a package's to
+`Pkg.json` where `MEADOWBOOT_EXPANSIONS` says, which a unit reads as one of its
+files, and `Lower` takes an expansion where its call is. A chain of operators
+in one is grouped there by the unit's fixities. A name a template wrote keeps
+its hygiene mark, `tmp#3`, and is resolved as the Rust resolver resolves it.
+`macro` rules are to be expanded here next, checked against these.
 
 ## Running
 
@@ -136,6 +142,6 @@ checks:
 - A native build of a large program named each of its hundreds of objects on
   clang's command line, past the 32K characters Windows allows. They are in a
   response file now.
-- Type names are unique across a package, not a module: two modules' private
-  `type Syn` clash, and one module can resolve the other's. MeadowBoot names its
-  helper types apart; the resolver still does this.
+- Type names were unique across a package, not by their path: two modules'
+  private `type Syn` clashed, and one module could resolve the other's. A type
+  is known by its fully qualified path now, the standard library's too.

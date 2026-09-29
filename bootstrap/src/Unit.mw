@@ -56,7 +56,18 @@ fun fromShell (p : String) : String =
 
 -- What a unit is compiled from: its manifest, which names its package, and
 -- its sources.
-@pub fun unitFilesOf (dir : String) : [String] ! { Fs | e } = V.pushFront (sourcesOf dir) (manifestOf dir)
+@pub fun unitFilesOf (dir : String) : [String] ! { Fs, Process | e } =
+  V.concat [[manifestOf dir], sourcesOf dir, expansionsOf dir]
+
+-- What the Rust compiler's macros expanded to in the unit at `dir`, if that
+-- was written down: `Pkg.json` where `MEADOWBOOT_EXPANSIONS` says. MeadowBoot
+-- takes a procedural macro's expansion from there, as it takes core.
+fun expansionsOf (dir : String) : [String] ! { Fs, Process | e } =
+  match (getEnv "MEADOWBOOT_EXPANSIONS", readToString (manifestOf dir)) with
+  | (Just exps, Ok text) ->
+      let p = Path.normalize (Path.join (absolute exps) "${packageName text}.json") in
+      if exists p then [p] else []
+  | _ -> []
 
 @pub fun manifestOf (dir : String) : String = Path.normalize (Path.join dir "Meadow.toml")
 

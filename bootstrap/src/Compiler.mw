@@ -23,6 +23,8 @@ use MeadowBoot.Lower (lowered)
 use MeadowBoot.Rename (mentionsOf)
 use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
 use Std.Macro (Reflect)
+use Std.Json as J
+use Std.Json (Json)
 use Std.Exn (toResult)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as H
@@ -53,7 +55,7 @@ database! {
     | query parsed (file : String) : Result [(Int, String)] (Green Surface) = checkedTree (querySource file)
     | query fixities (unit : Int) : [Declared] = declaredOf (queryImported unit) (V.concatMap (\f -> match queryParsed f with | Ok g -> [g] | Err _ -> []) (modulesOf (queryFiles unit)))
     | query grouped (file : String) : Maybe (Green Grouped, [Diagnostic]) = groupedOf (queryFixities 0) (queryParsed file)
-    | query renamed (unit : Int) : ([(String, [String])], [Export], Bool) = renamedOf (queryHome unit) (queryImported unit) (V.map (\f -> (f, querySource f, queryGrouped f)) (queryFiles unit))
+    | query renamed (unit : Int) : ([(String, [String])], [Export], Bool) = renamedOf (queryHome unit) (queryImported unit) (tableOf (queryFixities 0)) (V.map (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None)) (queryFiles unit))
 }
 
 -- The files of a unit that are its modules: all but its manifest.
@@ -74,8 +76,9 @@ fun groupedOf (ds : [Declared]) (parsed : Result [(Int, String)] (Green Surface)
 
 -- The unit at `dir` renamed: each module's names, as the rename test
 -- compares them, by its path; what the unit exports; and whether it says.
-fun renamedOf (dir : String) (imported : [Interface]) (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) : ([(String, [String])], [Export], Bool) =
-  let manifest = V.find (\x -> match x with | (p, _, _) -> not (S.endsWith ".mw" p)) files in
+fun renamedOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity) (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) : ([(String, [String])], [Export], Bool) =
+  let manifest = V.find (\x -> match x with | (p, _, _) -> S.endsWith "Meadow.toml" p) files in
+  let expanded = expansionsIn (V.concatMap (\x -> match x with | (p, text, _) -> (if S.endsWith ".json" p then [text] else [])) files) in
   let pkg = (match manifest with | Just (_, text, _) -> packageName text | None -> "") in
   let isStd = pkg == "Std" in
   let src = Path.join dir "src" in
@@ -83,7 +86,9 @@ fun renamedOf (dir : String) (imported : [Interface]) (files : [(String, String,
     V.concatMap
       (\x ->
         match x with
-        | (path, text, Just (g, _)) -> [(path, Source { path = modulePath isStd src path, file = "${pkg}/${relativeTo dir path}", ast = lowered text g })]
+        | (path, text, Just (g, _)) ->
+            let file = "${pkg}/${relativeTo dir path}" in
+            [(path, Source { path = modulePath isStd src path, file = file, ast = lowered text g (M.unwrapOr H.empty (H.lookup file expanded)) fx })]
         | _ -> [])
       files in
     let deps = V.map (\(i : Interface) -> DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis }) imported in
@@ -92,6 +97,25 @@ fun renamedOf (dir : String) (imported : [Interface]) (files : [(String, String,
     (V.map (\x -> (fst x, M.unwrapOr [] (H.lookup (fileOf (snd x)) mentions))) sources, r.exports, r.anyVis)
 
 fun fileOf (s : Source) : String = s.file
+
+-- What the Rust compiler's macros expanded to, from the files `meadow` wrote
+-- it in (`Unit.expansionsOf`): by module, each expansion by its position and
+-- where it starts, `expr@120`.
+fun expansionsIn (texts : [String]) : HashMap String (HashMap String Json) =
+  V.foldl
+    (\h text ->
+      match J.parse text with
+      | Ok j ->
+          V.foldl
+            (\g e ->
+              match (M.andThen J.asString (J.index 0 e), M.andThen J.asInt (J.index 1 e), M.andThen J.asString (J.index 3 e), J.index 4 e) with
+              | (Just file, Just at, Just kind, Just made) -> H.insert file (H.insert "${kind}@${show at}" made (M.unwrapOr H.empty (H.lookup file g))) g
+              | _ -> g)
+            h
+            (M.unwrapOr [] (J.asArray j))
+      | _ -> h)
+    H.empty
+    texts
 
 -- `path` from `dir`, `/`-separated.
 fun relativeTo (dir : String) (path : String) : String =
@@ -162,5 +186,5 @@ fun compiling (u : Given Interface) =
         else
           match compilerRenamed db 0 with
           | (_, exports, anyVis) ->
-              let manifest = M.unwrapOr "" (M.map snd (V.find (\s -> not (S.endsWith ".mw" (fst s))) (unitSources u))) in
+              let manifest = M.unwrapOr "" (M.map snd (V.find (\s -> S.endsWith "Meadow.toml" (fst s)) (unitSources u))) in
               Ok (Interface { fixities = compilerFixities db 0, package = packageName manifest, exports = exports, anyVis = anyVis })

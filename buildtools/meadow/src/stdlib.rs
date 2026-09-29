@@ -419,6 +419,13 @@ pub fn compiles(opts: Options) -> usize {
 /// a healthy tree is empty. Callers surface the diagnostics
 /// ([`crate::pipeline::build`] and the REPL print them; `tests/stdlib.rs` asserts
 /// they stay empty).
+/// `Std` compiled afresh, past every cache: for a tool that wants to watch
+/// it being compiled -- what its macros expand to, say
+/// (`meadow_compiler::expand::record`).
+pub fn compile_fresh(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<Diagnostic>) {
+    compile_modules(opts)
+}
+
 fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<Diagnostic>) {
     let mut diags = Vec::new();
     let pkg = InternedString::from(PACKAGE_NAME);

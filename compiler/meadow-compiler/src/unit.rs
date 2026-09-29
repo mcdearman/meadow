@@ -1020,10 +1020,25 @@ fn collect_toplevel_vars(
     out: &mut HashMap<VarId, Vec<InternedString>>,
 ) {
     for decl in &module.value().decls {
-        if let hir::Decl::Bind(bind) = decl.value() {
-            for id in bind.bound_vars() {
-                out.entry(id).or_insert_with(|| path.to_vec());
+        match decl.value() {
+            hir::Decl::Bind(bind) => {
+                for id in bind.bound_vars() {
+                    out.entry(id).or_insert_with(|| path.to_vec());
+                }
             }
+            // An effect's operations and a trait's methods are the module's
+            // values too, known by its path as the rest are.
+            hir::Decl::Effect(ed) => {
+                for (_, id, _) in &ed.ops {
+                    out.entry(*id.value()).or_insert_with(|| path.to_vec());
+                }
+            }
+            hir::Decl::Trait(td) => {
+                for m in &td.methods {
+                    out.entry(*m.var.value()).or_insert_with(|| path.to_vec());
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1337,11 +1352,14 @@ fn use_in(
                     resolver.import_from(m, id, from);
                 }
             }
-            if let Some(&canonical) = types.iter().find(|t| hir::spelling(t) == &*name) {
+            // The trait by its fully qualified name: a type is known by nothing
+            // less.
+            let canonical = types.iter().copied().find(|t| hir::spelling(t) == &*name);
+            if let Some(canonical) = canonical {
                 resolver.use_named_type(canonical);
                 types_brought.push(canonical);
             }
-            resolver.note_ref(n.span, NameRef::Type(name));
+            resolver.note_ref(n.span, NameRef::Type(canonical.unwrap_or(name)));
         } else if let Some(&canonical) = types.iter().find(|t| hir::spelling(t) == &*name) {
             // Naming a type in a `use` is what settles which one a spelling
             // shared by several packages means.

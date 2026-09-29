@@ -2123,7 +2123,10 @@ use MyApp.Math (double)      -- just `double`
 ```
 
 Because the namespaces are separate, two modules of one package may both define
-`map`, and a module that wants both can take one of them under an alias.
+`map`, and a module that wants both can take one of them under an alias. Types
+are the same: a name is known by its fully qualified path, `MyApp.Math.map`,
+`MyApp.Syntax.Expr`, and a constructor by its type's, `MyApp.Syntax.Expr.Int`.
+Two modules may each declare an `Expr`, and each means its own.
 
 A constructor lives under its type, as a variant does in Rust. Naming a
 **type** in a `use` brings the type and nothing else, so outside the module

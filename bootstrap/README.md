@@ -12,15 +12,16 @@ pass until the one before agrees everywhere it is asked.
 
 ## Passes
 
-| pass     | module                                   | checked against                        | inputs                                                                   |
-| -------- | ---------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------ |
-| lex      | `src/Lex.mw`                             | `meadow-lexer`'s `tokenize`            | every `.mw` in the repository, `tests/lex/`                              |
-| evaluate | `src/Cek.mw`, `Core.mw`                  | `meadow-eval`, the Rust CEK machine    | the programs `glade/tests/differential.rs` checks every back end with    |
-| parse    | `src/Syntax.mw`                          | `meadow-parser`                        | every `.mw` in the repository: each parses (the trees are compared next) |
-| group    | `src/Fixity.mw`                          | `meadow-rename`'s `reassociate`        | every `.mw` in the repository, each with its unit's fixities             |
-| rename   | `src/Lower.mw`, `Rename.mw`, `Scopes.mw` | `meadow-rename`, as an editor reads it | every `.mw` in the repository, each with its unit and what it depends on |
-| infer    | —                                        | `meadow-infer`                         |                                                                          |
-| lower    | —                                        | `meadow-core`'s lowering               |                                                                          |
+| pass     | module                                   | checked against                                      | inputs                                                                   |
+| -------- | ---------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------ |
+| lex      | `src/Lex.mw`                             | `meadow-lexer`'s `tokenize`                          | every `.mw` in the repository, `tests/lex/`                              |
+| evaluate | `src/Cek.mw`, `Core.mw`                  | `meadow-eval`, the Rust CEK machine                  | the programs `glade/tests/differential.rs` checks every back end with    |
+| parse    | `src/Syntax.mw`                          | `meadow-parser`                                      | every `.mw` in the repository: each parses (the trees are compared next) |
+| group    | `src/Fixity.mw`                          | `meadow-rename`'s `reassociate`                      | every `.mw` in the repository, each with its unit's fixities             |
+| expand   | `src/Rules.mw`, `Hygiene.mw`             | `meadow-compiler`'s `macro` rules, by what they name | every call of a `macro` in the repository, `tests/rename/Macros`         |
+| rename   | `src/Lower.mw`, `Rename.mw`, `Scopes.mw` | `meadow-rename`, as an editor reads it               | every `.mw` in the repository, each with its unit and what it depends on |
+| infer    | —                                        | `meadow-infer`                                       |                                                                          |
+| lower    | —                                        | `meadow-core`'s lowering                             |                                                                          |
 
 ### Lexing
 
@@ -96,15 +97,30 @@ HIR the way the language server does (`meadow_lsp::analysis::mentions`). A unit
 is renamed with what the units before it export, so each unit's interface
 carries its exports, and Lingua's build (`make!`) compiles them in order.
 
-A macro call is what the Rust compiler expanded it to, for now, as the CEK
-machine's core is what it lowered: the expander records every expansion, and
-each `@derive`'s, as JSON of its syntax with its spans
-(`meadow_compiler::expand::record`); the rename test writes a package's to
-`Pkg.json` where `MEADOWBOOT_EXPANSIONS` says, which a unit reads as one of its
+A call of one of the module's own `macro`s is expanded here. `src/Rules.mw`
+matches it against the rules and writes the template out as tokens, as
+`meadow_compiler::expand::rules` does: each token the template wrote stands
+where the call's argument is, and each the call passed in stands where it was
+written. Every lowercase name the template wrote is marked with the
+expansion's number, `tmp#3`, counted as the Rust expander counts, a call and
+then what it wrote. The parser reads the tokens where they stand
+(`parseSurfaceTokens`, which Lingua writes beside `parseSurface`): a tree whose
+text is the tokens' and whose every node spans what its tokens stand for, so
+each node of what a macro wrote spans what the Rust parser's does. It is
+grouped by the unit's fixities and lowered like any other. Then
+`src/Hygiene.mw` takes the marks off every name that is not a local, slot for
+slot as `meadow_compiler::expand::hygiene` does. The rename test's
+`tests/rename/Macros` package calls a macro of each kind: recursive, hygienic,
+in a pattern, writing declarations, labels, local functions, token trees.
+
+Any other macro call is what the Rust compiler expanded it to, for now, as
+the CEK machine's core is what it lowered. The expander records every
+expansion, and each `@derive`'s, as JSON of its syntax with its spans
+(`meadow_compiler::expand::record`). The rename test writes a package's to
+`Pkg.json` where `MEADOWBOOT_EXPANSIONS` says, a unit reads that as one of its
 files, and `Lower` takes an expansion where its call is. A chain of operators
-in one is grouped there by the unit's fixities. A name a template wrote keeps
-its hygiene mark, `tmp#3`, and is resolved as the Rust resolver resolves it.
-`macro` rules are to be expanded here next, checked against these.
+in one is grouped there by the unit's fixities. A call of the module's own
+`macro` never falls back to this, so the test sees what `Rules` makes of it.
 
 ## Running
 

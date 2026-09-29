@@ -88,7 +88,7 @@ fun renamedOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixit
         match x with
         | (path, text, Just (g, _)) ->
             let file = "${pkg}/${relativeTo dir path}" in
-            [(path, Source { path = modulePath isStd src path, file = file, ast = lowered text g (M.unwrapOr H.empty (H.lookup file expanded)) fx })]
+            [(path, Source { path = modulePath isStd src path, file = file, ast = lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx })]
         | _ -> [])
       files in
     let deps = V.map (\(i : Interface) -> DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis }) imported in

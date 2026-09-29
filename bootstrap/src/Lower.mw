@@ -28,23 +28,45 @@ use Std.Maybe.Maybe.*
 use Std.St (St, runSt)
 use Std.Json as J
 use Std.Json (Json)
+use MeadowBoot.Syntax (parseSurfaceTokens)
+use MeadowBoot.Rules as Ru
+use MeadowBoot.Rules (Macro, Tok)
+use MeadowBoot.Hygiene as Hy
 
--- `input`'s grouped tree as a module of abstract syntax: each macro call
+-- `input`'s grouped tree, a module of package `pkg`, as abstract syntax:
+-- each call of one of its `macro`s expanded here, and each other macro call
 -- the expansion `exps` has for it, by position and where it starts
 -- (`expr@120`), and each `@derive` what it wrote -- an operator chain in one
 -- grouped by the unit's fixities `fx`.
-@pub fun lowered (input : String) (tree : Green Grouped) (exps : HashMap String Json) (fx : HashMap String Fixity) : AstProgram =
+@pub fun lowered (pkg : String) (input : String) (tree : Green Grouped) (exps : HashMap String Json) (fx : HashMap String Fixity) : AstProgram =
   runSt (\() ->
-    let b = newAstBuilder () in
-    let c = Lc { tokens = H.fromVec (V.map (\(l : Lexed) -> (l.from, l.token)) (lex input).tokens), exps = exps, fx = fx } in
-    let top = R.root tree in
-    let decls = V.concatMap (decl c b) (childrenOf NodeDecl top) in
-    let root = newAstModule b (spanOf top) decls in
-    AstProgram (freezeAst b) root)
+    let count = stNewRef 0 in
+    counting count (\() ->
+      let b = newAstBuilder () in
+      let bare = Lc { tokens = H.fromVec (V.map (\(l : Lexed) -> (l.from, l.token)) (lex input).tokens), exps = exps, fx = fx, macros = H.empty } in
+      let top = R.root tree in
+      let c = { bare | macros = macrosOf bare pkg top } in
+      let decls = V.concatMap (decl c b) (childrenOf NodeDecl top) in
+      let root = newAstModule b (spanOf top) decls in
+      AstProgram (freezeAst b) root))
 
--- Each token as the lexer read it, by where it starts: what a literal is
--- worth; what the module's macro calls expanded to; and the unit's fixities.
-record Lc = { tokens : HashMap Int Token, exps : HashMap String Json, fx : HashMap String Fixity }
+-- Each token as the lexer read it, by where it is in the tree's text: what a
+-- literal is worth; what the module's other macro calls expanded to; the
+-- unit's fixities; and the module's `macro`s, by name.
+record Lc = { tokens : HashMap Int Token, exps : HashMap String Json, fx : HashMap String Fixity, macros : HashMap String Macro }
+
+-- Each call of a `macro` expanded is numbered, in the order the Rust expander
+-- meets them -- a call, then what it wrote, then the next -- which is what
+-- the names its template writes are marked with.
+effect Expanding {
+  nextExpansion : () -> Int,
+}
+
+fun counting (count : StRef s Int) (act : () -> a ! { Expanding, St s | e }) : a ! { St s | e } =
+  handle act () with {
+    nextExpansion u k -> (let n = stGetRef count + 1 in let v = stSetRef count n in k n),
+    return x -> x
+  }
 
 -- What the call in position `kind` starting at `m` expanded to, if it did.
 fun expansion (c : Lc) (kind : String) (m : Meta) : Maybe Json = H.lookup "${kind}@${show (metaStart m)}" c.exps
@@ -71,20 +93,21 @@ fun must (k : Grouped) (s : GTree) : GTree = M.unwrapOr s (childOf k s)
 
 fun tokenIs (k : Grouped) (s : GTree) : Bool = V.any (\t -> R.kindOf t == k) (tokenKids s)
 
--- The bytes `s` spans: its first token's start to its last's end.
+-- The bytes `s` spans: its first token's start to its last's end -- where
+-- they stand, for a tree a macro wrote (`Lingua.Green`).
 fun spanOf (s : GTree) : Meta =
   match s with
   | Syntax g i ->
       let toks = V.filter (\j -> G.isTokenAt g j and G.kindAt g j != Unknown) (V.range i (G.after g i)) in
       (match (V.get toks 0, V.get toks (V.len toks - 1)) with
-       | (Just f, Just l) -> spanMeta (G.startAt g f) (G.endAt g l)
-       | _ -> spanMeta (G.startAt g i) (G.startAt g i))
+       | (Just f, Just l) -> spanMeta (G.fromAt g f) (G.toAt g l)
+       | _ -> spanMeta (G.fromAt g i) (G.fromAt g i))
 
 fun join (a : Meta) (z : Meta) : Meta = spanMeta (min (metaStart a) (metaStart z)) (max (metaEnd a) (metaEnd z))
 
 fun from (a : Meta) (z : Meta) : Meta = spanMeta (metaStart a) (metaEnd z)
 
-fun tokenOf (c : Lc) (t : GTree) : Maybe Token = H.lookup (R.offset t) c.tokens
+fun tokenOf (c : Lc) (t : GTree) : Maybe Token = H.lookup (fst (R.textRange t)) c.tokens
 
 -- A name as it is written: its text and its bytes.
 record Nm = { text : String, at : Meta }
@@ -97,7 +120,7 @@ fun firstName (s : GTree) : Nm =
   match s with
   | Syntax g i ->
       (match V.find (\j -> G.isTokenAt g j and G.kindAt g j != Unknown) (V.range i (G.after g i)) with
-       | Just j -> named (G.textAt g j) (spanMeta (G.startAt g j) (G.endAt g j))
+       | Just j -> named (G.textAt g j) (spanMeta (G.fromAt g j) (G.toAt g j))
        | None -> named "" (spanOf s))
 
 fun lastName (s : GTree) : Nm = match V.get (tokenKids s) (V.len (tokenKids s) - 1) with | Just t -> nameOf t | None -> firstName s
@@ -111,11 +134,16 @@ fun nm b (n : Nm) = newAstName b n.at n.text
 -- synonym -- each under the attributes written on it, a signature keeping
 -- only `@cfg`.
 fun decl (c : Lc) b (s : GTree) =
-  let isCall = M.map R.kindOf (M.andThen firstNode (childOf NodeItem s)) == Just NodeMacCall in
-  -- A macro call: what it expanded to, in its place.
-  match (if isCall then expansion c "decls" (spanOf s) else None) with
-  | Just made -> V.map (jDecl c b) (jarr made)
-  | None -> V.append (written c b s) (V.map (jDecl c b) (M.unwrapOr [] (M.map jarr (expansion c "derived" (spanOf s)))))
+  let item = M.andThen firstNode (childOf NodeItem s) in
+  let isCall = M.map R.kindOf item == Just NodeMacCall in
+  -- A macro call: what it expanded to, in its place -- a call of one of the
+  -- module's `macro`s expanded here, and left a call if it cannot be.
+  match (if isCall then M.andThen (\i -> M.map (\m -> (i, m)) (rulesOf c i)) item else None) with
+  | Just (i, m) -> M.unwrapOr (written c b s) (expandedDecls c b m i)
+  | None ->
+      (match (if isCall then expansion c "decls" (spanOf s) else None) with
+       | Just made -> V.map (jDecl c b) (jarr made)
+       | None -> V.append (written c b s) (V.map (jDecl c b) (M.unwrapOr [] (M.map jarr (expansion c "derived" (spanOf s))))))
 
 -- A declaration as it was written, each of its nodes under its attributes.
 fun written (c : Lc) b (s : GTree) =
@@ -1257,14 +1285,115 @@ fun holesIn (s : GTree) : [Int] =
 -- fixities, as the fixity pass groups one in a tree.
 
 fun exprCall (c : Lc) b (m : Meta) (call : GTree) =
-  match expansion c "expr" m with
-  | Just made -> jExpr c b made
-  | None -> newAstMacCallE b m (macCall b call)
+  match rulesOf c call with
+  | Just r -> M.unwrapOr (newAstMacCallE b m (macCall b call)) (expandedExpr c b r call)
+  | None ->
+      (match expansion c "expr" m with
+       | Just made -> jExpr c b made
+       | None -> newAstMacCallE b m (macCall b call))
 
 fun patCall (c : Lc) b (m : Meta) (call : GTree) =
-  match expansion c "pat" m with
-  | Just made -> jPat c b made
-  | None -> newAstPMacCall b m (macCall b call)
+  match rulesOf c call with
+  | Just r -> M.unwrapOr (newAstPMacCall b m (macCall b call)) (expandedPat c b r call)
+  | None ->
+      (match expansion c "pat" m with
+       | Just made -> jPat c b made
+       | None -> newAstPMacCall b m (macCall b call))
+
+-- --- `macro`s ------------------------------------------------------------------------
+--
+-- A call of one of the module's own `macro`s is expanded here (`Rules`): its
+-- template written out as tokens, each standing where it came from, parsed
+-- from them where the call is -- inside `def x = …` for an expression, a
+-- match's arm for a pattern -- grouped by the unit's fixities, lowered, and
+-- the marks taken off every name but the locals (`Hygiene`).
+
+-- The module's `macro`s, by name, each rule's matcher read.
+fun macrosOf (c : Lc) (pkg : String) (top : GTree) : HashMap String Macro =
+  V.foldl
+    (\h d ->
+      match M.andThen firstNode (childOf NodeItem d) with
+      | Just (GroupedMacroDecl name rules) -> (match macroOf c pkg rules with | Just m -> H.insert (nameOf name).text m h | None -> h)
+      | _ -> h)
+    H.empty
+    (childrenOf NodeDecl top)
+
+fun macroOf (c : Lc) (pkg : String) (rules : [GTree]) : Maybe Macro =
+  let read = V.map (ruleOf c) rules in
+  if V.all M.isSome read then Just (Macro { rules = V.concatMap (\x -> match x with | Just y -> [y] | None -> []) read, pkg = pkg }) else None
+
+-- A rule: its matcher, read, and its template.
+fun ruleOf (c : Lc) (r : GTree) =
+  match r with
+  | GroupedMacroRule mt tp -> (match Ru.readMatcher (Ru.treeOf (tokenOf c) mt) with | Ok m -> Just (m, Ru.treeOf (tokenOf c) tp) | Err _ -> None)
+  | _ -> None
+
+-- The module's `macro` a call is of, if it is of one. A call a template
+-- wrote is named without the mark it was written with.
+fun rulesOf (c : Lc) (call : GTree) : Maybe Macro =
+  let pathNode = M.unwrapOr call (V.find (\x -> R.kindOf x == NodeMacPath or R.kindOf x == NodeArgPath) (nodeKids call)) in
+  let segs = V.filter (\x -> R.kindOf x == NodeAnySeg or R.kindOf x == NodeArgSeg) (nodeKids pathNode) in
+  if V.len segs == 1 then M.andThen (\x -> H.lookup (Hy.stripOnce (firstName x).text) c.macros) (V.get segs 0) else None
+
+-- What a call of `macro` `m` wrote, if a rule matches it.
+fun expandCall (c : Lc) (m : Macro) (call : GTree) =
+  let n = nextExpansion () in
+  match V.find isGroup (nodeKids call) with
+  | Just g -> (match Ru.expand m (Ru.treeOf (tokenOf c) g) n with | Ok toks -> Just toks | Err _ -> None)
+  | None -> None
+
+-- `toks`, after `before` and before `after` -- tokens that stand nowhere --
+-- parsed and grouped by the unit's fixities: the tree, and the context to
+-- lower it in, its tokens by where each is in the tree's text.
+fun reparsed (c : Lc) (before : [(Token, String)]) (toks : [Tok]) (after : [(Token, String)]) : (Lc, GTree) =
+  let made = \p -> (fst p, 0 - 1, 0 - 1, snd p) in
+  let given = V.concat [V.map made before, V.map (\(t : Tok) -> (t.token, t.from, t.to, t.text)) toks, V.map made after] in
+  let starts = V.foldl (\acc x -> match x with | (_, _, _, text) -> V.pushBack acc (M.unwrapOr 0 (M.map (\l -> l + 1) (V.last acc)) + stringByteLength text)) [] given in
+  let at = \i -> if i == 0 then 0 else V.getOr 0 starts (i - 1) + 1 in
+  let tokens = H.fromVec (V.map (\i -> (at i, match V.getOr (Token.Wildcard, 0, 0, "") given i with | (t, _, _, _) -> t)) (V.range 0 (V.len given))) in
+  match parseSurfaceTokens given with
+  | (g, _) -> (match grouped c.fx (R.root g) with | (gg, _) -> ({ c | tokens = tokens }, R.root gg))
+
+fun expandedDecls (c : Lc) b (m : Macro) (call : GTree) =
+  M.map
+    (\toks ->
+      match reparsed c [] toks [] with
+      | (inner, root) ->
+          let ds = V.concatMap (decl inner b) (childrenOf NodeDecl root) in
+          let u = Hy.stripItems b ds in
+          ds)
+    (expandCall c m call)
+
+fun expandedExpr (c : Lc) b (m : Macro) (call : GTree) =
+  M.andThen
+    (\toks ->
+      match reparsed c [(Token.Def, "def"), (Token.LowerIdent "x", "x"), (Token.Eq, "=")] toks [] with
+      | (inner, root) ->
+          M.map
+            (\body ->
+              let e = expr inner b (must NodeExpr body) in
+              let u = Hy.stripInExpr b e in
+              e)
+            (M.andThen (childOf NodeBody) (M.andThen firstNode (M.andThen (childOf NodeItem) (childOf NodeDecl root)))))
+    (expandCall c m call)
+
+fun expandedPat (c : Lc) b (m : Macro) (call : GTree) =
+  M.andThen
+    (\toks ->
+      match reparsed c [(Token.Def, "def"), (Token.LowerIdent "x", "x"), (Token.Eq, "="), (Token.Match, "match"), (Token.LParen, "("), (Token.RParen, ")"), (Token.With, "with"), (Token.Bar, "|")] toks [(Token.RArrow, "->"), (Token.LParen, "("), (Token.RParen, ")")] with
+      | (inner, root) ->
+          M.map
+            (\arm ->
+              let p = pat inner b (must NodePat arm) in
+              let u = Hy.stripInPat b p in
+              p)
+            (firstOfKind NodeArm root))
+    (expandCall c m call)
+
+-- The first node of kind `k` in `s`, reading down and left to right.
+fun firstOfKind (k : Grouped) (s : GTree) : Maybe GTree =
+  if R.kindOf s == k then Just s
+  else V.foldl (\found x -> match found with | Just f -> Just f | None -> firstOfKind k x) None (nodeKids s)
 
 fun jarr (j : Json) : [Json] = M.unwrapOr [] (J.asArray j)
 

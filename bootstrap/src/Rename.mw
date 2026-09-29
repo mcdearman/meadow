@@ -87,7 +87,8 @@ use Std.Sort (sortOn)
   base : HashMap String Int,
   quals : HashMap String (HashMap String Int),
   types : HashMap String Int,
-  ctors : HashMap String Int,
+  ctors : HashMap String [Int],
+  ctorFields : HashMap Int [String],
   typeCtors : HashMap Int (HashMap String Int),
   unknown : Int,
   builtinType : Int,
@@ -164,7 +165,27 @@ fun baseValue (env : Env) (name : String) : Int = M.unwrapOr env.scope.unknown (
 -- A type no module declares is one of the language's own: `Int`, `Array`.
 fun typeOf (env : Env) (name : String) : Int = M.unwrapOr env.scope.builtinType (H.lookup (unmarked name) env.scope.types)
 
-fun ctorOf (env : Env) (name : String) : Int = M.unwrapOr env.scope.builtinCtor (H.lookup (unmarked name) env.scope.ctors)
+fun ctorOf (env : Env) (name : String) : Int = M.unwrapOr env.scope.builtinCtor (M.andThen (\cs -> V.get cs 0) (H.lookup (unmarked name) env.scope.ctors))
+
+-- The constructor `name` applied to `args` is: of several, the one whose
+-- named fields the record it is given names -- `C { x = 1 }` -- as
+-- `meadow-rename`'s `named_ctor` picks; else the first.
+fun ctorApplied out (env : Env) (name : String) (args : [HirExpr]) =
+  let cands = M.unwrapOr [] (H.lookup (unmarked name) env.scope.ctors) in
+  let named = V.filter (\c -> M.isSome (H.lookup c env.scope.ctorFields)) cands in
+  match (if V.len args == 1 then M.andThen (recordLabels out) (V.get args 0) else None) with
+  | Just labels ->
+      if V.len named == 1 then V.getOr (ctorOf env name) named 0
+      else
+        (let fits = V.filter (\c -> V.all (\l -> V.elem l (M.unwrapOr [] (H.lookup c env.scope.ctorFields))) labels) named in
+          if V.len fits == 1 then V.getOr (ctorOf env name) fits 0 else ctorOf env name)
+  | _ -> ctorOf env name
+
+-- The labels of a record with no base, `{ x = 1, y = 2 }`.
+fun recordLabels out (e : HirExpr) =
+  match viewHirExprIn out e with
+  | HirExprView.RecordE r -> (match r.base with | None -> Just (V.map (\f -> textOf out (hirFieldENameIn out f)) r.fields) | Just _ -> None)
+  | _ -> None
 
 -- `ty`'s constructor `name`, if `ty` is a type this module can name.
 fun typeCtor (env : Env) (ty : String) (name : String) : Maybe (Int, Int) =
@@ -186,7 +207,7 @@ pass! {
               -- A pattern synonym, built: its builder applied.
               (let f = newHirVar out (nameMeta out name) (refTo out env builder (nameMeta out name)) in
                 if V.isEmpty args then f else newHirApp out here f args)
-          | _ -> Cons { ref = refTo out env (ctorOf env n) (nameMeta out name), args = args })
+          | _ -> Cons { ref = refTo out env (ctorApplied out env n args) (nameMeta out name), args = args })
     | Neg { op, operand } -> App { func = newHirVar out (nameMeta out op) (refTo out env (valueOf env "neg") (nameMeta out op)), args = [operand] }
     | AndE { op, lhs, rhs } -> If { cond = lhs, yes = rhs, no = boolCon out env "False" (nameMeta out op) }
     | OrE { op, lhs, rhs } -> If { cond = lhs, yes = boolCon out env "True" (nameMeta out op), no = rhs }

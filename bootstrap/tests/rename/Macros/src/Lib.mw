@@ -1,0 +1,62 @@
+-- `macro` rules for the rename test: MeadowBoot expands each of these calls
+-- itself (`Rules`), and what the expansions name must be what the Rust
+-- expander's do.
+
+-- A run of expressions, and a call of itself in what it writes.
+macro sum
+  | () -> { 0 }
+  | ($x : expr) -> { $x }
+  | ($x : expr, $( $rest : expr ),+) -> { $x + sum!($( $rest ),+) }
+
+-- A local the template binds is never the caller's.
+macro swap
+  | ($a : expr, $b : expr) -> { let tmp = $a in ($b, tmp) }
+
+-- A pattern.
+macro pair
+  | ($a : pat, $b : pat) -> { ($a, $b) }
+
+-- Declarations, a run of them.
+macro constants
+  | ($( $n : ident = $v : lit ),*) -> { $( fun $n () = $v )* }
+
+-- A record's labels, which are not hygienic.
+macro point
+  | ($x : expr, $y : expr) -> { { x = $x, y = $y } }
+
+-- A local function.
+macro twice
+  | ($f : expr, $x : expr) -> { let go n = $f ($f n) in go $x }
+
+-- Token trees: the first of any run.
+macro first
+  | ($a $( $rest )*) -> { $a }
+
+-- Brackets inside the matcher, and a separator that is not a comma.
+macro table
+  | ([ $( $k : ident => $v : expr );* ]) -> { [ $( ($k, $v) ),* ] }
+
+constants! { one = 1, two = 2 }
+
+fun total () = sum!(one (), two (), 3)
+
+fun swapped () =
+  let tmp = 10 in
+  swap!(tmp, 20)
+
+fun added p =
+  match p with
+  | pair!(a, b) -> a + b
+
+fun xOf () = (point!(1, 2)).x
+
+fun inc n = n + 1
+
+fun four () = twice!(inc, 2)
+
+fun firstOf () = first!(5 6 7)
+
+fun pairs () =
+  let a = 1 in
+  let b = 2 in
+  table!([ a => 10; b => 20 ])

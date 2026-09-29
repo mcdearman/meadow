@@ -1,0 +1,541 @@
+-- Rules: a `macro`'s rules, matched against a call and written out --
+-- `meadow_compiler::expand::rules`, piece for piece.
+--
+-- A matcher is token trees with metavariables in them: `$name`, or
+-- `$name : kind` to say what may stand there, and `$( … )sep*` for a run.
+-- Matching binds each metavariable to the trees it stood for; writing puts
+-- them back into the template. Nothing is parsed but a fragment the parser
+-- reads: what comes out is tokens, each standing where it came from -- a
+-- token the template wrote where the call's argument is, one the call passed
+-- in where it was written -- and the parser reads them there
+-- (`parseSurfaceTokens`), so every node of what a macro wrote spans what the
+-- Rust parser's does.
+--
+-- ```text
+-- macro vec
+--   | ()                 -> { empty }
+--   | ($x)               -> { push empty $x }
+--   | ($x, $( $rest ),+) -> { push (vec!($( $rest ),+)) $x }
+-- ```
+
+use MeadowBoot.Lex (Token)
+use MeadowBoot.Syntax (Surface, parseSurfaceTokens)
+use MeadowBoot.Fixity (Grouped)
+use Lingua.Red as R
+use Lingua.Red (Syntax)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+use Std.Result as Res
+
+-- --- token trees -------------------------------------------------------------------
+
+-- A token as a macro reads it: what the lexer made of it, its text, and the
+-- bytes it stands for.
+@pub record Tok = { token : Token, text : String, from : Int, to : Int }
+
+@pub data Delim = Paren | Brack | Brace
+
+use Delim.*
+
+-- A token, or a bracketed run of trees with its brackets.
+@pub data Tree = Leaf Tok | Delimited Delim Tok Tok [Tree]
+
+use Tree.*
+
+-- A group of a grouped tree -- `( … )`, `[ … ]` or `{ … }` -- as a token tree:
+-- `tokenOf` says what the lexer made of each token.
+@pub fun treeOf (tokenOf : Syntax Grouped -> Maybe Token) (s : Syntax Grouped) : Tree =
+  let toks = V.filter R.isTokenOf (kids s) in
+  let edge = \i -> tok tokenOf (V.getOr s toks i) in
+  Delimited (delimOf s) (edge 0) (edge (V.len toks - 1)) (V.map (inner tokenOf) (V.filter (\x -> not (R.isTokenOf x)) (kids s)))
+
+fun inner (tokenOf : Syntax Grouped -> Maybe Token) (s : Syntax Grouped) : Tree =
+  if isGroup s then treeOf tokenOf s
+  else Leaf (tok tokenOf (V.getOr s (V.filter R.isTokenOf (kids s)) 0))
+
+fun tok (tokenOf : Syntax Grouped -> Maybe Token) (t : Syntax Grouped) : Tok =
+  Tok { token = M.unwrapOr (Token.OpIdent (R.text t)) (tokenOf t), text = R.text t, from = R.offset t, to = R.endOffset t }
+
+fun kids (s : Syntax Grouped) : [Syntax Grouped] = V.filter (\x -> R.kindOf x != Grouped.Unknown) (R.children s)
+
+@pub fun isGroup (s : Syntax Grouped) : Bool =
+  let k = R.kindOf s in
+  k == Grouped.NodeParenGroup or k == Grouped.NodeBrackGroup or k == Grouped.NodeBraceGroup
+
+fun delimOf (s : Syntax Grouped) : Delim =
+  let k = R.kindOf s in
+  if k == Grouped.NodeParenGroup then Paren else if k == Grouped.NodeBrackGroup then Brack else Brace
+
+-- A group's trees: what is between its brackets.
+@pub fun treesIn (t : Tree) : [Tree] = match t with | Delimited _ _ _ ts -> ts | Leaf _ -> []
+
+-- The bytes a group stands for, its brackets included.
+@pub fun spanOfTree (t : Tree) : (Int, Int) =
+  match t with
+  | Delimited _ o c _ -> (o.from, c.to)
+  | Leaf k -> (k.from, k.to)
+
+-- Every token of `trees`, brackets and all, in order.
+@pub fun flatten (trees : [Tree]) : [Tok] =
+  V.concatMap (\t -> match t with | Leaf k -> [k] | Delimited _ o c ts -> V.concat [[o], flatten ts, [c]]) trees
+
+fun isDollar (t : Tok) : Bool = match t.token with | Token.Dollar -> True | _ -> False
+
+fun identOf (t : Tok) : Maybe String =
+  match t.token with
+  | Token.LowerIdent n -> Just n
+  | Token.UpperIdent n -> Just n
+  | _ -> None
+
+fun isDeclBang (t : Tok) : Bool = match t.token with | Token.DeclBang -> True | _ -> False
+
+-- Whether two tokens are the same token: the lexer's reading of one text is
+-- its reading of the other, but for a `!` that starts a line's declaration.
+fun same (a : Tok) (b : Tok) : Bool = a.text == b.text and isDeclBang a == isDeclBang b
+
+-- `t`, standing for `from` to `to`.
+fun at (from : Int) (to : Int) (t : Tok) : Tok = { t | from = from, to = to }
+
+-- --- fragments ---------------------------------------------------------------------
+
+-- What may stand where a metavariable is written. `tt`, `ident` and `lit`
+-- need no parser; `expr`, `pat` and `item` are read by it, which the follow
+-- rules make safe: they say where the fragment stops.
+@pub data Fragment = Tt | Ident | Lit | Expr | Pat | Item
+
+use Fragment.*
+
+fun fragmentOf (name : String) : Maybe Fragment =
+  if name == "tt" then Just Tt
+  else if name == "ident" then Just Ident
+  else if name == "lit" then Just Lit
+  else if name == "expr" then Just Expr
+  else if name == "pat" then Just Pat
+  else if name == "item" then Just Item
+  else None
+
+fun isParsed (k : Fragment) : Bool = match k with | Expr -> True | Pat -> True | Item -> True | _ -> False
+
+fun isTt (k : Fragment) : Bool = match k with | Tt -> True | _ -> False
+
+fun fragmentName (k : Fragment) : String =
+  match k with
+  | Tt -> "tt"
+  | Ident -> "ident"
+  | Lit -> "lit"
+  | Expr -> "expr"
+  | Pat -> "pat"
+  | Item -> "item"
+
+-- Whether `t` is the sort of token `k` stands for.
+fun accepts (k : Fragment) (t : Tok) : Bool =
+  match k with
+  | Ident -> M.isSome (identOf t)
+  | Lit -> (match t.token with | Token.Int _ -> True | Token.Real _ -> True | Token.Str _ -> True | Token.Char _ -> True | _ -> False)
+  | _ -> True
+
+-- What may follow a fragment the parser reads: application is juxtaposition,
+-- so an expression ends only at a token that cannot be part of it.
+def follow : [String] = [",", ";", "->", "|", "then", "else", "in", "with"]
+
+fun follows (t : Tok) : Bool = V.elem t.text follow
+
+-- How many times a repetition may occur: `*`, `+` or `?`.
+@pub data Repeat = Any | AtLeastOne | AtMostOne
+
+use Repeat.*
+
+fun countOf (t : Tok) : Maybe Repeat =
+  if t.text == "*" then Just Any else if t.text == "+" then Just AtLeastOne else if t.text == "?" then Just AtMostOne else None
+
+-- --- reading a matcher -------------------------------------------------------------
+
+-- One piece of a matcher, as it is read: a token that must be there; a
+-- bracketed run of pieces; `$name : kind`; `$( … )sep rep`; `$$`.
+@pub data Piece = Exact Tok | Nested Delim [Piece] | Var String Fragment | Repeated [Piece] (Maybe Tok) Repeat | Escaped
+
+use Piece.*
+
+-- Something wrong with how a macro is written: what, what to say at it, and
+-- where.
+@pub record Invalid = { msg : String, label : String, from : Int, to : Int }
+
+fun invalid (msg : String) (label : String) (t : Tok) : Invalid = Invalid { msg = msg, label = label, from = t.from, to = t.to }
+
+fun pieces (trees : [Tree]) : Result Invalid [Piece] = piecesFrom trees 0 []
+
+fun piecesFrom (trees : [Tree]) (i : Int) (acc : [Piece]) : Result Invalid [Piece] =
+  match V.get trees i with
+  | None -> Ok acc
+  | Just (Delimited d _ _ inside) ->
+      (match pieces inside with
+       | Ok ps -> piecesFrom trees (i + 1) (V.pushBack acc (Nested d ps))
+       | Err e -> Err e)
+  | Just (Leaf t) ->
+      if isDollar t then
+        (match dollar trees i t with
+         | Ok (p, used) -> piecesFrom trees (i + used) (V.pushBack acc p)
+         | Err e -> Err e)
+      else piecesFrom trees (i + 1) (V.pushBack acc (Exact t))
+
+-- What follows the `$` at `i`, and how many trees it took.
+fun dollar (trees : [Tree]) (i : Int) (d : Tok) : Result Invalid (Piece, Int) =
+  let lone = Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d) in
+  match V.get trees (i + 1) with
+  | Just (Leaf t) ->
+      if isDollar t then Ok (Escaped, 2)
+      else
+        (match identOf t with
+         | Just name ->
+             let colon = (match V.get trees (i + 2) with | Just (Leaf c) -> c.text == ":" | _ -> False) in
+             if not colon then Ok (Var name Tt, 2)
+             else
+               (match V.get trees (i + 3) with
+                | Just (Leaf k) ->
+                    (match M.andThen fragmentOf (identOf k) with
+                     | Just kind -> Ok (Var name kind, 4)
+                     | None -> Err (invalid "`${k.text}` is not a fragment kind" "the kinds are `tt`, `ident`, `lit`, `expr`, `pat` and `item`" k))
+                | _ -> Err (invalid "`\$${name} :` does not say what may stand there" "a fragment kind belongs here" t))
+         | None -> lone)
+  | Just (Delimited Paren o _ inside) ->
+      (match pieces inside with
+       | Err e -> Err e
+       | Ok ps ->
+           (match repeatOf trees (i + 2) o with
+            | Ok (sep, rep) -> Ok (Repeated ps sep rep, if M.isSome sep then 4 else 3)
+            | Err e -> Err e))
+  | _ -> lone
+
+-- The separator and count after a `$( … )`.
+fun repeatOf (trees : [Tree]) (i : Int) (o : Tok) : Result Invalid (Maybe Tok, Repeat) =
+  let tokenAt = \k -> match V.get trees k with | Just (Leaf t) -> Just t | _ -> None in
+  match tokenAt i with
+  | None -> Err (invalid "a repetition that does not say how many" "expected `*`, `+` or `?` after this" o)
+  | Just t ->
+      (match countOf t with
+       | Just rep -> Ok (None, rep)
+       | None ->
+           (match M.andThen countOf (tokenAt (i + 1)) with
+            | Just rep -> Ok (Just t, rep)
+            | None -> Err (invalid "a repetition that does not say how many" "expected `*`, `+` or `?` after this `${t.text}`" t)))
+
+-- Every metavariable `ps` bind.
+fun boundBy (ps : [Piece]) : [String] =
+  V.concatMap
+    (\p ->
+      match p with
+      | Var name _ -> [name]
+      | Nested _ inside -> boundBy inside
+      | Repeated inside _ _ -> boundBy inside
+      | _ -> [])
+    ps
+
+-- A matcher, read and checked once, where the macro is written.
+@pub data Matcher = Matcher [Piece]
+
+@pub fun readMatcher (group : Tree) : Result Invalid Matcher =
+  let whole = (match group with | Delimited _ o _ _ -> o | Leaf t -> t) in
+  match pieces (treesIn group) with
+  | Err e -> Err e
+  | Ok ps ->
+      (match checkFollow ps Bracket with
+       | Just e -> Err e
+       | None ->
+           let names = boundBy ps in
+           if V.elem "pkg" names then Err (invalid "`\$pkg` is the package a macro was written in" "this name is taken" whole)
+           else
+             (match V.find (\i -> V.elem (V.getOr "" names i) (V.take names i)) (V.range 0 (V.len names)) with
+              | Just i -> Err (invalid "`\$${V.getOr "" names i}` is bound twice in one rule" "each name may stand for one thing" whole)
+              | None -> Ok (Matcher ps)))
+
+-- What comes after a run of pieces, for a fragment at the end of it: a
+-- closing bracket, a repetition's separator, or nothing that could end it.
+data Ends = Bracket | Separator Tok | Unended
+
+use Ends.*
+
+-- The first fragment the parser reads that nothing says the end of.
+fun checkFollow (ps : [Piece]) (after : Ends) : Maybe Invalid =
+  V.foldl (\found i -> match found with | Just e -> Just e | None -> checkOne ps i after) None (V.range 0 (V.len ps))
+
+fun checkOne (ps : [Piece]) (i : Int) (after : Ends) : Maybe Invalid =
+  match V.get ps i with
+  | Just (Nested _ inside) -> checkFollow inside Bracket
+  | Just (Repeated inside sep _) ->
+      -- Every pass but the last ends at the separator, and the last at what
+      -- follows the repetition: a fragment at the end of one needs both.
+      checkFollow inside (match sep with | Just t -> (if follows t and endedAfter ps i after then Separator t else Unended) | None -> Unended)
+  | Just (Var name kind) ->
+      if isParsed kind and not (endedAfter ps i after) then
+        Just (Invalid { msg = "nothing says where `\$${name} : ${fragmentName kind}` ends", label = "follow it with `,`, `;`, `->`, `|`, `then`, `else`, `in`, `with`, or a closing bracket", from = 0, to = 0 })
+      else None
+  | _ -> None
+
+-- Whether what comes after the piece at `i` can end a fragment.
+fun endedAfter (ps : [Piece]) (i : Int) (after : Ends) : Bool =
+  match V.get ps (i + 1) with
+  | None -> (match after with | Bracket -> True | Separator t -> follows t | Unended -> False)
+  | Just (Exact t) -> follows t
+  | Just _ -> False
+
+-- --- matching ----------------------------------------------------------------------
+
+-- What a metavariable stood for: outside any repetition, the trees it
+-- matched; inside one, what it matched on each pass.
+@pub data Binding = One [Tree] | Many [Binding]
+
+use Binding.*
+
+-- Match `trees`, a call's argument, against the matcher, binding what each
+-- metavariable stood for; `None` when it does not match, and the next rule is
+-- tried.
+@pub fun matchTrees (m : Matcher) (trees : [Tree]) : Maybe (HashMap String Binding) =
+  match m with
+  | Matcher ps -> matchFrom ps trees 0 0 H.empty
+
+-- Match pieces `i` on against exactly `trees` from `at` on.
+fun matchFrom (ps : [Piece]) (trees : [Tree]) (i : Int) (at : Int) (out : HashMap String Binding) : Maybe (HashMap String Binding) =
+  match V.get ps i with
+  | None -> if at == V.len trees then Just out else None
+  | Just (Exact want) ->
+      (match V.get trees at with
+       | Just (Leaf t) -> if same t want then matchFrom ps trees (i + 1) (at + 1) out else None
+       | _ -> None)
+  | Just Escaped ->
+      (match V.get trees at with
+       | Just (Leaf t) -> if isDollar t then matchFrom ps trees (i + 1) (at + 1) out else None
+       | _ -> None)
+  | Just (Nested d inside) ->
+      (match V.get trees at with
+       | Just (Delimited e _ _ ts) ->
+           if sameDelim d e then M.andThen (\o -> matchFrom ps trees (i + 1) (at + 1) o) (matchFrom inside ts 0 0 out) else None
+       | _ -> None)
+  | Just (Var name kind) ->
+      if isParsed kind then
+        M.andThen (\e -> M.andThen (\bound -> matchFrom ps trees (i + 1) e (H.insert name (One bound) out)) (fragment kind (V.slice trees at e))) (fragmentEnd ps trees i at)
+      else
+        (match V.get trees at with
+         | None -> None
+         | Just tree ->
+             let fits = isTt kind or (match tree with | Leaf t -> accepts kind t | _ -> False) in
+             if fits then matchFrom ps trees (i + 1) (at + 1) (H.insert name (One [tree]) out) else None)
+  | Just (Repeated inside sep rep) ->
+      -- Greedy, but never into what the rest of the matcher needs.
+      let tail = V.drop ps (i + 1) in
+      let rest = V.drop trees at in
+      (match matchRepeat inside sep rest tail with
+       | (passes, used) ->
+           let enough = (match rep with | Any -> True | AtLeastOne -> not (V.isEmpty passes) | AtMostOne -> V.len passes <= 1) in
+           if not enough then None
+           else
+             let bound = V.foldl (\o n -> H.insert n (Many (V.map (\p -> M.unwrapOr (One []) (H.lookup n p)) passes)) o) out (boundBy inside) in
+             matchFrom tail (V.drop rest used) 0 0 bound)
+
+-- Where the fragment at piece `i`, from `at`, ends: at the token the matcher
+-- says follows it, or at the end.
+fun fragmentEnd (ps : [Piece]) (trees : [Tree]) (i : Int) (at : Int) : Maybe Int =
+  match V.get ps (i + 1) with
+  | Just (Exact t) -> M.map (\n -> at + n) (nextOf t (V.drop trees at))
+  | _ -> Just (V.len trees)
+
+-- Where the first of `trees` that is the token `t` is.
+fun nextOf (t : Tok) (trees : [Tree]) : Maybe Int = V.find (\n -> match V.get trees n with | Just (Leaf x) -> same x t | _ -> False) (V.range 0 (V.len trees))
+
+fun sameDelim (a : Delim) (b : Delim) : Bool =
+  match (a, b) with
+  | (Paren, Paren) -> True
+  | (Brack, Brack) -> True
+  | (Brace, Brace) -> True
+  | _ -> False
+
+-- Match `inside` as often as it fits, separated by `sep`, leaving enough for
+-- `tail`: what each pass bound, and how many trees were used.
+fun matchRepeat (inside : [Piece]) (sep : Maybe Tok) (trees : [Tree]) (tail : [Piece]) : ([HashMap String Binding], Int) =
+  let limit = max 0 (V.len trees - M.unwrapOr 0 (fixedLen tail)) in
+  repeatFrom inside sep trees limit 0 []
+
+fun repeatFrom (inside : [Piece]) (sep : Maybe Tok) (trees : [Tree]) (limit : Int) (at : Int) (passes : [HashMap String Binding]) : ([HashMap String Binding], Int) =
+  match (if at >= limit then None else passStart sep trees at (V.isEmpty passes)) with
+  | None -> (passes, at)
+  | Just s ->
+      let stop = passEnd inside sep trees limit s in
+      if s > limit or s > stop then (passes, at)
+      else
+        (match matchFrom inside (V.slice trees s stop) 0 0 H.empty with
+         | Just bound -> repeatFrom inside sep trees limit stop (V.pushBack passes bound)
+         | None -> (passes, at))
+
+-- Where the pass from `at` starts: past the separator, between passes.
+fun passStart (sep : Maybe Tok) (trees : [Tree]) (at : Int) (first : Bool) : Maybe Int =
+  match (if first then None else sep) with
+  | Just want -> (match V.get trees at with | Just (Leaf t) -> (if same t want then Just (at + 1) else None) | _ -> None)
+  | None -> Just at
+
+-- How far the pass from `s` reaches: to the next separator, or as many trees
+-- as the pieces take.
+fun passEnd (inside : [Piece]) (sep : Maybe Tok) (trees : [Tree]) (limit : Int) (s : Int) : Int =
+  match sep with
+  | Just want -> M.unwrapOr limit (M.map (\k -> s + k) (nextOf want (V.slice trees s limit)))
+  | None -> min limit (s + M.unwrapOr 1 (fixedLen inside))
+
+-- How many trees pieces take, when that does not depend on the input.
+fun fixedLen (ps : [Piece]) : Maybe Int = if V.any (\p -> match p with | Repeated _ _ _ -> True | _ -> False) ps then None else Just (V.len ps)
+
+-- `trees` as a fragment of kind `k`, as it will be written back: an
+-- expression or a pattern in brackets that stand where it does, so that it
+-- stays one thing wherever the template puts it. The parser decides: a run
+-- that is not that kind of fragment does not match.
+fun fragment (k : Fragment) (trees : [Tree]) : Maybe [Tree] =
+  match (V.get trees 0, V.get trees (V.len trees - 1)) with
+  | (Just first, Just last) ->
+      if not (parses k trees) then None
+      else
+        (match k with
+         | Item -> Just trees
+         | _ ->
+             let a = fst (spanOfTree first) in
+             let z = snd (spanOfTree last) in
+             Just [Delimited Paren (Tok { token = Token.LParen, text = "(", from = a, to = a }) (Tok { token = Token.RParen, text = ")", from = z, to = z }) trees])
+  | _ -> None
+
+-- Whether `trees` read as a fragment of kind `k`, and nothing more: an
+-- expression as the value of a definition, a pattern as a match's arm, an
+-- item as a file of one declaration.
+fun parses (k : Fragment) (trees : [Tree]) : Bool =
+  let given = V.map (\(t : Tok) -> (t.token, t.from, t.to, t.text)) (flatten trees) in
+  let made = \t text -> (t, 0 - 1, 0 - 1, text) in
+  let toks =
+    (match k with
+     | Expr -> V.concat [[made Token.Def "def", made (Token.LowerIdent "x") "x", made Token.Eq "="], given]
+     | Pat -> V.concat [[made Token.Def "def", made (Token.LowerIdent "x") "x", made Token.Eq "=", made Token.Match "match", made Token.LParen "(", made Token.RParen ")", made Token.With "with", made Token.Bar "|"], given, [made Token.RArrow "->", made Token.LParen "(", made Token.RParen ")"]]
+     | _ -> given) in
+    match parseSurfaceTokens toks with
+    | (g, errs) -> V.isEmpty errs and V.len (V.filter (\x -> R.kindOf x == Surface.NodeDecl) (R.children (R.root g))) == 1
+
+-- --- writing a template ------------------------------------------------------------
+
+-- `template` with `bound` put into it, as tokens: each the template wrote
+-- standing where the call's argument does, `at`, its name marked with
+-- expansion `mark` if it is one that can be a local (`name#3`); each the call
+-- passed in standing where it was written.
+@pub fun substitute (template : [Tree]) (bound : HashMap String Binding) (whole : (Int, Int)) (pkg : String) (mark : Int) : Result Invalid [Tok] =
+  writeFrom template bound whole pkg mark 0 []
+
+fun writeFrom (template : [Tree]) (bound : HashMap String Binding) (whole : (Int, Int)) (pkg : String) (mark : Int) (i : Int) (out : [Tok]) : Result Invalid [Tok] =
+  let a = fst whole in
+  let z = snd whole in
+  match V.get template i with
+  | None -> Ok out
+  | Just (Delimited _ o c ts) ->
+      (match writeFrom ts bound whole pkg mark 0 (V.pushBack out (at a z o)) with
+       | Ok made -> writeFrom template bound whole pkg mark (i + 1) (V.pushBack made (at a z c))
+       | Err e -> Err e)
+  | Just (Leaf t) ->
+      if isDollar t then
+        (match splice template i bound whole pkg mark t with
+         | Ok (made, used) -> writeFrom template bound whole pkg mark (i + used) (V.append out made)
+         | Err e -> Err e)
+      else writeFrom template bound whole pkg mark (i + 1) (V.pushBack out (at a z (marked mark t)))
+
+-- A token the template wrote, marked if it is a lowercase name: uppercase
+-- ones are types and constructors, never hygienic.
+fun marked (mark : Int) (t : Tok) : Tok =
+  match t.token with
+  | Token.LowerIdent n -> { t | token = Token.LowerIdent "${n}#${show mark}", text = "${n}#${show mark}" }
+  | _ -> t
+
+-- What the `$` at `i` stands for, and how many trees it took.
+fun splice (template : [Tree]) (i : Int) (bound : HashMap String Binding) (whole : (Int, Int)) (pkg : String) (mark : Int) (d : Tok) : Result Invalid ([Tok], Int) =
+  let a = fst whole in
+  let z = snd whole in
+  match V.get template (i + 1) with
+  | Just (Leaf t) ->
+      if isDollar t then Ok ([at a z d], 2)
+      else
+        (match identOf t with
+         -- `$pkg`: the package the macro was written in, so that what a
+         -- template names resolves where the macro is.
+         | Just name ->
+             if name == "pkg" then Ok ([Tok { token = packageToken pkg, text = pkg, from = a, to = z }], 2)
+             else
+               (match H.lookup name bound with
+                | Just (One trees) -> Ok (flatten trees, 2)
+                | Just (Many _) -> Err (invalid "`\$${name}` stands for a run of things" "it needs a `\$( … )` around it to say how they are written" t)
+                | None -> Err (invalid "`\$${name}` is not bound by this rule's matcher" "no such name is matched" t))
+         | None -> Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d))
+  | Just (Delimited Paren o _ ts) ->
+      (match repeatOf template (i + 2) o with
+       | Err e -> Err e
+       | Ok (sep, _) ->
+           let used = if M.isSome sep then 4 else 3 in
+           -- Which names inside vary, and how many passes they agree on.
+           let names = dollarNames ts in
+           let counts = V.concatMap (\n -> match H.lookup n bound with | Just (Many v) -> [V.len v] | _ -> []) names in
+           (match V.get counts 0 with
+            | None -> Err (invalid "a repetition with nothing to repeat" "no name in here stands for a run of things" o)
+            | Just passes ->
+                if V.any (\c -> c != passes) counts then Err (invalid "the names in this repetition stand for different numbers of things" "they have to be written the same number of times" o)
+                else
+                  V.foldl
+                    (\acc k ->
+                      match acc with
+                      | Err e -> Err e
+                      | Ok made ->
+                          -- Each pass sees the k-th of every run.
+                          let pass = V.foldl (\b n -> match H.lookup n bound with | Just (Many v) -> H.insert n (V.getOr (One []) v k) b | _ -> b) bound names in
+                          let between = (match sep with | Just s -> (if k > 0 then [at a z s] else []) | None -> []) in
+                          (match writeFrom ts pass whole pkg mark 0 [] with
+                           | Ok more -> Ok (V.concat [made, between, more])
+                           | Err e -> Err e))
+                    (Ok [])
+                    (V.range 0 passes)
+                  |> Res.map (\made -> (made, used))))
+  | _ -> Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d)
+
+-- A package's name as a token: which identifier it is follows its case.
+fun packageToken (pkg : String) : Token =
+  if stringByteLength pkg > 0 and isUpperStart pkg then Token.UpperIdent pkg else Token.LowerIdent pkg
+
+fun isUpperStart (s : String) : Bool = let c = stringSlice s 0 1 in c >= "A" and c <= "Z"
+
+-- Every `$name` written in `trees`, at any depth, once each.
+fun dollarNames (trees : [Tree]) : [String] = dollarNamesFrom trees 0 []
+
+fun dollarNamesFrom (trees : [Tree]) (i : Int) (acc : [String]) : [String] =
+  match V.get trees i with
+  | None -> acc
+  | Just (Delimited _ _ _ ts) -> dollarNamesFrom trees (i + 1) (V.foldl (\a n -> if V.elem n a then a else V.pushBack a n) acc (dollarNames ts))
+  | Just (Leaf t) ->
+      if isDollar t then
+        (match V.get trees (i + 1) with
+         | Just (Leaf n) ->
+             (match identOf n with
+              | Just name -> dollarNamesFrom trees (i + 2) (if V.elem name acc then acc else V.pushBack acc name)
+              | None -> dollarNamesFrom trees (i + 2) acc)
+         | _ -> dollarNamesFrom trees (i + 2) acc)
+      else dollarNamesFrom trees (i + 1) acc
+
+-- --- a macro -----------------------------------------------------------------------
+
+-- A `macro`: each rule's matcher, read, and template; and the package it was
+-- written in.
+@pub record Macro = { rules : [(Matcher, Tree)], pkg : String }
+
+-- Expand a call with argument `arg` -- its brackets and what is between them
+-- -- by the first rule that matches it, as expansion `mark`: the tokens, or
+-- why not.
+@pub fun expand (m : Macro) (arg : Tree) (mark : Int) : Result String [Tok] =
+  let trees = treesIn arg in
+  match V.find (\r -> M.isSome (matchTrees (fst r) trees)) m.rules with
+  | None -> Err "no rule matches this call"
+  | Just (matcher, template) ->
+      (match matchTrees matcher trees with
+       | Just bound ->
+           (match substitute (treesIn template) bound (spanOfTree arg) m.pkg mark with
+            | Ok toks -> Ok toks
+            | Err e -> Err e.msg)
+       | None -> Err "no rule matches this call")

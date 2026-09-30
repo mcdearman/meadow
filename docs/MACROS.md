@@ -260,7 +260,7 @@ the file there is to point at — with a label naming the macro:
 ```
 error: type mismatch: `String` vs `Int`
   ╭─[ main.mw:4:12 ]
-4 │ def main = addOne!(1)
+4 │ def four = addOne!(1)
   │            ─────┬────
   │                 ╰──── `addOne!` wrote this
 ```
@@ -335,7 +335,7 @@ call was. A macro writes code with `quote!` (below), or as text with `Code`.
 ```meadow
 use shouty (shout!)
 
-def main = println shout!(hello there)   -- "hello there!"
+fun main () = println shout!(hello there)   -- "hello there!"
 ```
 
 **`@macro` is what makes one.** Nothing about a function's type does: a package
@@ -559,7 +559,7 @@ A procedural macro performs it like any other effect; its type becomes
 use Maker (remember!, recall!)
 
 remember!(answer 42)
-def main = recall!(answer)     -- 42
+fun main () = println recall!(answer)     -- 42
 ```
 
 The compiler runs every procedural macro under the handler of `Expand`

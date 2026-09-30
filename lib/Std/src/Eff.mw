@@ -1,0 +1,25 @@
+-- Std.Eff: every effect the runtime answers itself, under one name.
+--
+-- `main` is `() -> () ! Eff`: it may perform any of these, and nothing else,
+-- because once it runs there is nothing above it to answer anything else. A
+-- function `Thread.spawn` starts is held to the same, for the same reason. An
+-- effect of a program's own is handled inside `main`, where a handler can see
+-- it:
+--
+--   effect Log { log : String -> () }
+--
+--   fun main () : () ! Eff =
+--     handle greet () with { log line k -> let u = println line in k () }
+--
+-- `Console`, `Fs`, `Process`, `Random` and `Time` are the outside world;
+-- `Test` is a failed assertion; `Mut` is a `Ref`'s, and `Thread` a green
+-- thread's.
+
+use Std.Console (Console)
+use Std.Fs (Fs)
+use Std.Process (Process)
+use Std.Random (Random)
+use Std.Time (Time)
+use Std.Test (Test)
+
+@pub effect Eff = { Console, Fs, Process, Random, Time, Test, Mut, Thread }

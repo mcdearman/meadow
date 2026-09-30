@@ -44,7 +44,7 @@ fn workspace(who: &str) -> PathBuf {
         (
             "App",
             "Util = { workspace = true }\nText = { workspace = true }\n",
-            "use Util (double)\nuse Text (label)\n\ndef main = (double 21, label \"b\")\n",
+            "use Util (double)\nuse Text (label)\n\ndef result = (double 21, label \"b\")\n\nfun main () = println \"${result:?}\"\n",
         ),
     ] {
         let short = name.rsplit('/').next().unwrap();
@@ -66,7 +66,9 @@ fn members(root: &Path) -> Vec<PathBuf> {
 }
 
 fn options(root: &Path) -> meadow::Options {
-    Resolved::resolve(Profile::Debug, root, ProfileConfig::default()).options
+    Resolved::resolve(Profile::Debug, root, ProfileConfig::default())
+        .options
+        .entry("result")
 }
 
 /// Build `App` and `Other` together, answering what was compiled.
@@ -130,7 +132,7 @@ fn compiling_the_same_package_twice_gives_the_same_package() {
         // An addition keeps the cache out of it: both are compiled.
         let out = pipeline::build_with(
             &example,
-            meadow::Options::debug(),
+            meadow::Options::debug().entry("result"),
             Some(pipeline::Addition {
                 file: &main,
                 text: "",
@@ -300,10 +302,10 @@ fn the_cache_can_be_turned_off() {
         String::from_utf8_lossy(&out.stdout).to_string()
     };
     let dir = root.join("target/debug/incremental");
-    assert!(run("0").contains(r#"=> (42, "b x2")"#));
+    assert!(run("0").contains(r#"(42, "b x2")"#));
     assert!(!dir.exists(), "nothing is written");
-    assert!(run("1").contains(r#"=> (42, "b x2")"#));
+    assert!(run("1").contains(r#"(42, "b x2")"#));
     // `Util`, `Text` and `App`: `Std` is the toolchain's, not the project's.
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3);
-    assert!(run("1").contains(r#"=> (42, "b x2")"#), "and read back");
+    assert!(run("1").contains(r#"(42, "b x2")"#), "and read back");
 }

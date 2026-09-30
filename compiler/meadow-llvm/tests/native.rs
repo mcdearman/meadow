@@ -5,20 +5,16 @@
 //!
 //! Needs clang, and builds the runtime library (`aot/`) the first time.
 
-use meadow_compiler::{compile_str, core};
+use meadow_compiler::{Options, compile_str_with, core};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
 fn program(src: &str) -> core::Program {
-    let (pkg, diags) = compile_str("native", src);
+    let (pkg, diags) = compile_str_with("native", src, Options::default().entry("result"));
     let hard: Vec<_> = diags.iter().map(|d| d.msg.clone()).collect();
     assert!(hard.is_empty(), "compile errors:\n{}", hard.join("\n"));
-    let entry = pkg
-        .exports
-        .iter()
-        .find(|e| &*e.name == "main")
-        .map(|e| e.var);
+    let entry = pkg.value_entry;
     assert!(entry.is_some(), "the case has no `main`");
     core::Program {
         defs: pkg.defs.clone(),
@@ -207,7 +203,7 @@ fn a_method_under_run_st_is_found_before_the_program_runs() {
          fun count (r : StRef s Int) (i : Int) : Int ! { St s | e } =\n\
          \x20 if i == 0 then stGetRef r\n\
          \x20 else (let _ = (if check r i 3 then stSetRef r (stGetRef r + 1) else ()) in count r (i - 1))\n\
-         def main = runSt (\\() -> count (stNewRef 0) 1000)\n";
+         def result = runSt (\\() -> count (stNewRef 0) 1000)\n";
     let (got, stderr) = run_full("same-under-st", src, true, meadow_core::OptLevel::O2);
     assert_eq!(got, "1");
     assert!(
@@ -227,7 +223,7 @@ fn aarch64_code_is_never_in_the_ghc_convention() {
         "fun count (lo : n) (hi : n) : Int =\n\
          \x20 let rec go i k = if i >= hi then k else go (i + 1) (k + 1)\n\
          \x20 in go lo 0\n\
-         def main = count 0 10\n",
+         def result = count 0 10\n",
     );
     let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::O2);
     let text = |arch| {
@@ -254,7 +250,7 @@ fn arithmetic_and_comparison() {
     assert_eq!(
         run(
             "arith",
-            "def main = (1 + 2 * 3, 10 - 4, 7 / 2, 7 % 3, 2.5 +. 1.0, 3 < 4, 'a' == 'b')"
+            "def result = (1 + 2 * 3, 10 - 4, 7 / 2, 7 % 3, 2.5 +. 1.0, 3 < 4, 'a' == 'b')"
         ),
         "(7, 6, 3, 1, 3.5, True, False)"
     );
@@ -266,7 +262,7 @@ fn recursion_on_the_native_stack() {
         run(
             "fib",
             "fun fib (n : Int) : Int = if n < 2 then n else fib (n - 1) + fib (n - 2)
-             def main = fib 25"
+             def result = fib 25"
         ),
         "75025"
     );
@@ -282,7 +278,7 @@ fn data_and_matching() {
              fun build (n : Int) : L = if n == 0 then Nil else Cons n (build (n - 1))
              fun total (xs : L) : Int = match xs with | Nil -> 0 | Cons x r -> x + total r
              fun len (xs : L) : Int = match xs with | Nil -> 0 | Cons _ r -> 1 + len r
-             def main = let xs = build 1000 in (total xs, len xs)"
+             def result = let xs = build 1000 in (total xs, len xs)"
         ),
         "(500500, 1000)"
     );
@@ -306,7 +302,7 @@ fn view_patterns() {
                | _ -> steps (3 * n + 1) (acc + 1)
              fun sum (xs : L) : Int = match xs with | Nil -> 0 | Cons x r -> x + sum r
              fun total ((\\n -> Cons n (Cons (n + 1) Nil)) -> xs) = sum xs
-             def main = (steps 27 0, total 20)"
+             def result = (steps 27 0, total 20)"
         ),
         "(111, 41)"
     );
@@ -319,7 +315,7 @@ fn closures_and_higher_order() {
             "closures",
             "fun twice f x = f (f x)
              fun compose f g x = f (g x)
-             def main =
+             def result =
                let k = 10 in
                let add = \\x -> x + k in
                (twice add 1, compose (\\x -> x * 2) add 5, twice (twice (\\x -> x + 1)) 0)"
@@ -337,7 +333,7 @@ fn deep_non_tail_recursion() {
              data L = Nil | Cons Int L
              fun build (n : Int) (acc : L) : L = if n == 0 then acc else build (n - 1) (Cons n acc)
              fun total (xs : L) : Int = match xs with | Nil -> 0 | Cons x r -> x + total r
-             def main = total (build 1000000 Nil)"
+             def result = total (build 1000000 Nil)"
         ),
         "500000500000"
     );
@@ -352,7 +348,7 @@ fn time_fib() {
     run_checked(
         "timefib",
         "fun fib (n : Int) : Int = if n < 2 then n else fib (n - 1) + fib (n - 2)
-         def main = fib 32",
+         def result = fib 32",
         false,
     );
     eprintln!("fib 32, compiled and run: {:?}", started.elapsed());
@@ -366,7 +362,7 @@ fn a_handler_that_never_resumes_aborts_the_body() {
         run(
             "abort",
             "effect Abort { bail : () -> Int }
-             def main = handle 1 + bail () with { bail u k -> 99 }"
+             def result = handle 1 + bail () with { bail u k -> 99 }"
         ),
         "99"
     );
@@ -378,7 +374,7 @@ fn a_handler_that_resumes_continues_the_body_in_place() {
         run(
             "resume",
             "effect Ask { ask : () -> Int }
-             def main = handle ask () + 1 with { ask u k -> k 5 + 100 }"
+             def result = handle ask () + 1 with { ask u k -> k 5 + 100 }"
         ),
         "106"
     );
@@ -391,7 +387,7 @@ fn handlers_are_deep() {
             "deep_handler",
             "effect Ask { ask : () -> Int }
              fun twice u = ask () + ask ()
-             def main = (handle ask () + ask () with { ask u k -> k 5 },
+             def result = (handle ask () + ask () with { ask u k -> k 5 },
                          handle twice () with { ask u k -> k 3 })"
         ),
         "(10, 6)"
@@ -404,7 +400,7 @@ fn state_by_hand_is_a_handler_returning_a_function() {
         run(
             "state",
             "effect St { get : () -> Int, put : Int -> () }
-             def main =
+             def result =
                let f =
                  handle
                    let a = get () in
@@ -428,7 +424,7 @@ fn nested_handlers_and_performing_outwards() {
         run(
             "nested",
             "effect Ask { ask : () -> Int }
-             def main = handle (handle ask () with { ask u k -> k 1 }) + ask () with { ask u k -> k 100 }"
+             def result = handle (handle ask () with { ask u k -> k 1 }) + ask () with { ask u k -> k 100 }"
         ),
         "101"
     );
@@ -443,7 +439,7 @@ fn nested_handlers_and_performing_outwards() {
                handle producer () with { yield x k -> let _ = yield (f x) in k (), return r -> () }
              fun toList producer =
                handle producer () with { yield x k -> Cons x (k ()), return r -> Nil }
-             def main = toList (\\() -> map (\\x -> x * 2) (\\() -> range 0 4))"
+             def result = toList (\\() -> map (\\x -> x * 2) (\\() -> range 0 4))"
         ),
         "Cons(0, Cons(2, Cons(4, Cons(6, Nil))))"
     );
@@ -459,7 +455,7 @@ fn threads_answer_through_await() {
         run_checked(
             "spawn",
             "fun fib (n : Int) : Int = if n < 2 then n else fib (n - 1) + fib (n - 2)
-             def main =
+             def result =
                let a = threadSpawn (\\() -> fib 15) in
                let b = threadSpawn (\\() -> (fib 16, 1)) in
                (threadAwait a, threadAwait b, threadAwait a)",
@@ -474,7 +470,7 @@ fn a_receiver_waits_for_a_sender() {
     assert_eq!(
         run_checked(
             "channel",
-            "def main =
+            "def result =
                let ch = channelNew () in
                let reader = threadSpawn (\\() -> channelReceive ch + channelReceive ch) in
                let _ = threadYield () in
@@ -493,7 +489,7 @@ fn a_thread_waits_inside_a_handler() {
         run_checked(
             "wait_in_handler",
             "effect Ask { ask : () -> Int }
-             def main =
+             def result =
                let ch = channelNew () in
                let t = threadSpawn (\\() ->
                  handle (let x = channelReceive ch in x + ask ()) with { ask u k -> k 1 + 100 }) in
@@ -525,7 +521,7 @@ fn a_cycle_through_a_ref_is_collected() {
                let _ = setRef r (Node n r) in
                ()
              fun many (n : Int) : Int ! Mut = if n == 0 then 0 else let _ = knot n in many (n - 1)
-             def main = many 2000",
+             def result = many 2000",
             false
         ),
         "0"
@@ -548,7 +544,7 @@ fn what_a_garbage_cycle_holds_that_cannot_cycle_goes_with_it() {
                let _ = setRef r (Node (show n) #[n, n + 1] r) in
                ()
              fun many (n : Int) : Int ! Mut = if n == 0 then 0 else let _ = knot n in many (n - 1)
-             def main = many 2000",
+             def result = many 2000",
             false
         ),
         "0"
@@ -572,7 +568,7 @@ fn a_cycle_through_a_mutable_array_is_collected() {
                  let _ = stSetArray a 0 (Some (N a n)) in
                  n)
              fun many (n : Int) (acc : Int) : Int = if n == 0 then acc else many (n - 1) (acc + knot n)
-             def main = many 2000 0",
+             def result = many 2000 0",
             false
         ),
         "2001000"
@@ -595,7 +591,7 @@ fn a_longer_cycle_is_collected() {
                let _ = setRef b (Node n a) in
                ()
              fun many (n : Int) : Int ! Mut = if n == 0 then 0 else let _ = knot n in many (n - 1)
-             def main = many 2000",
+             def result = many 2000",
             false
         ),
         "0"
@@ -622,7 +618,7 @@ fn a_cycle_still_in_use_is_kept() {
                match getRef r with
                | Nil -> 0
                | Node v back -> match getRef back with | Nil -> v | Node w _ -> v + w
-             def main =
+             def result =
                let keep = newRef Nil in
                let _ = setRef keep (Node 7 keep) in
                let n = churn 5000 0 in
@@ -678,7 +674,7 @@ fn a_list_only_read_is_borrowed_and_one_rebuilt_is_owned() {
     // `total` reads its list and hands its tail on: the caller's reference
     // is all it needs, and walking the list counts nothing. `inc` rebuilds
     // the list in the cells it takes apart, which it can only do owning them.
-    let src = format!("{LIST} def main = let xs = build 100 Nil in total xs + total (inc xs)");
+    let src = format!("{LIST} def result = let xs = build 100 Nil in total xs + total (inc xs)");
     assert_eq!(
         borrowed_params(&src, "total").first(),
         Some(&true),
@@ -699,7 +695,7 @@ fn a_list_handed_over_for_good_goes_to_a_copy_that_owns_it() {
     // the caller, it would be walked twice -- summed, then freed; a copy of
     // `total` that owns its list frees each cell as it sums it, and calls
     // itself on the tail it now owns.
-    let src = format!("{LIST} def main = let xs = build 100 Nil in total xs + total (inc xs)");
+    let src = format!("{LIST} def result = let xs = build 100 Nil in total xs + total (inc xs)");
     let all = borrowed_params_all(&src, "total");
     assert_eq!(all.len(), 2, "total and one copy: {all:?}");
     assert_eq!(all[0].first(), Some(&true), "total borrows its list");
@@ -714,7 +710,7 @@ fn a_list_nobody_else_holds_is_rebuilt_in_place() {
     // passes over a thousand cells acquire none beyond the thousand built.
     let (got, acquired) = run_counting(
         "reuse-map",
-        &format!("{LIST} def main = total (inc (inc (build 1000 Nil)))"),
+        &format!("{LIST} def result = total (inc (inc (build 1000 Nil)))"),
     );
     assert_eq!(got, "502500");
     assert!(
@@ -729,7 +725,7 @@ fn a_list_still_held_elsewhere_is_copied() {
     // was given is still whole for the second `total`.
     let (got, acquired) = run_counting(
         "reuse-shared",
-        &format!("{LIST} def main = let xs = build 1000 Nil in total (inc xs) + total xs"),
+        &format!("{LIST} def result = let xs = build 1000 Nil in total (inc xs) + total xs"),
     );
     assert_eq!(got, "1002000");
     assert!(
@@ -746,7 +742,7 @@ fn a_record_nobody_else_holds_is_updated_in_place() {
         "record-update",
         "fun go (st : { n : Int, total : Int, name : String }) : { n : Int, total : Int, name : String } =\n\
          \x20 if st.n == 0 then st else go { st | n = st.n - 1, total = st.total + st.n }\n\
-         def main = let r = go { name = \"sum\", n = 1000, total = 0 } in (r.name, r.total)",
+         def result = let r = go { name = \"sum\", n = 1000, total = 0 } in (r.name, r.total)",
     );
     assert_eq!(got, "(\"sum\", 500500)");
     assert!(
@@ -759,7 +755,7 @@ fn a_record_nobody_else_holds_is_updated_in_place() {
 fn a_record_still_held_elsewhere_is_copied_by_an_update() {
     let got = run(
         "record-update-shared",
-        "def main = let a = { x = 1, ys = [1; 2], z = \"z\" } in\n\
+        "def result = let a = { x = 1, ys = [1; 2], z = \"z\" } in\n\
          \x20 let b = { a | ys = [3;] } in\n\
          \x20 let c = { b | x = 5, z = \"c\" } in\n\
          \x20 (a.x, a.ys, a.z, b.x, b.ys, b.z, c.x, c.ys, c.z)",
@@ -775,7 +771,7 @@ fn a_path_that_builds_nothing_gives_the_block_back() {
         "reuse-filter",
         &format!(
             "{LIST} fun keep (xs : L) : L = match xs with | Nil -> Nil | Cons x rest -> if x % 2 == 0 then Cons x (keep rest) else keep rest
-             def main = total (keep (build 1000 Nil))"
+             def result = total (keep (build 1000 Nil))"
         ),
     );
     assert_eq!(got, "250500");
@@ -794,7 +790,7 @@ fn a_block_is_rebuilt_after_the_calls_it_waits_on() {
          fun build (d : Int) : T = if d == 0 then Tip else Node (build (d - 1)) d (build (d - 1))
          fun bump (t : T) : T = match t with | Tip -> Tip | Node l x r -> let l2 = bump l in let r2 = bump r in Node l2 (x + 1) r2
          fun sum (t : T) : Int = match t with | Tip -> 0 | Node l x r -> sum l + x + sum r
-         def main = sum (bump (bump (build 10)))",
+         def result = sum (bump (bump (build 10)))",
     );
     assert_eq!(got, "4082");
     assert!(
@@ -829,7 +825,7 @@ fn nested_patterns_rebuild_in_what_they_took_apart() {
          fun insert (t : Tree) (k : Int) : Tree = match ins t k with | Node _ l x r -> Node Black l x r | Leaf -> Leaf
          fun make (n : Int) (t : Tree) : Tree = if n == 0 then t else make (n - 1) (insert t n)
          fun size (t : Tree) : Int = match t with | Leaf -> 0 | Node _ l _ r -> size l + 1 + size r
-         def main = size (make 2000 Leaf)",
+         def result = size (make 2000 Leaf)",
     );
     assert_eq!(got, "2000");
     assert!(
@@ -848,7 +844,7 @@ fn an_arm_can_test_a_value_and_keep_it_whole() {
         "keep-arm",
         &format!(
             "{LIST} fun pick (xs : L) : Int = match xs with | Cons 0 rest -> total rest | Cons x (Cons y _) -> x * 100 + y + total xs | ys -> total ys
-             def main = pick (Cons 0 (build 3 Nil)) + pick (build 4 Nil) + pick (Cons 7 Nil) + pick Nil"
+             def result = pick (Cons 0 (build 3 Nil)) + pick (build 4 Nil) + pick (Cons 7 Nil) + pick Nil"
         ),
     );
     assert_eq!(got, "125");
@@ -877,7 +873,7 @@ fn a_nested_pattern_on_an_inlined_copy_counts_what_it_takes_apart() {
              data Ps a = PNil | PCons a (Ps a)
              fun first (xs : Ps a) : Opt a = match xs with | PCons x _ -> Some x | PNil -> None
              fun read (xs : Ps E) : Int = match first xs with | Some (Computed (Memo n deps)) -> n + total deps | _ -> 0
-             def main = let xs = PCons (Computed (Memo 1 (build 3 Nil))) PNil in read xs * 100 + read xs"
+             def result = let xs = PCons (Computed (Memo 1 (build 3 Nil))) PNil in read xs * 100 + read xs"
         ),
     );
     assert_eq!(got, "707");
@@ -896,7 +892,7 @@ fn a_string_literal_pattern_gives_its_block_back() {
         run(
             "string_literal_pattern",
             "fun code s = match s with | \"red\" -> 1 | \"green\" -> 2 | \"blue\" -> 3 | _ -> 0\n\
-             def main = code \"green\" + code \"blue\" * 10 + code \"mauve\" * 100\n"
+             def result = code \"green\" + code \"blue\" * 10 + code \"mauve\" * 100\n"
         ),
         "32"
     );
@@ -908,7 +904,7 @@ fn a_big_integer_literal_operand_gives_its_block_back() {
         run(
             "bigint_literal_operand",
             "fun next (x : BigInt) : BigInt = x + 2\n\
-             def main = next (next 40)\n"
+             def result = next (next 40)\n"
         ),
         "44"
     );
@@ -920,7 +916,7 @@ fn a_big_integer_literal_in_a_comparison_gives_its_block_back() {
         run(
             "bigint_literal_branch",
             "fun small (x : BigInt) : Int = if x < 100 then 1 else 0\n\
-             def main = small 5 + small 500 * 10\n"
+             def result = small 5 + small 500 * 10\n"
         ),
         "1"
     );
@@ -936,7 +932,7 @@ fn literal_operands_in_a_loop_do_not_accumulate() {
             "fun count (n : Int) (acc : BigInt) : BigInt =\n\
              \x20 if n == 0 then acc\n\
              \x20 else count (n - 1) (match \"tick\" with | \"tick\" -> acc + 1 | _ -> acc)\n\
-             def main = count 2000 0\n"
+             def result = count 2000 0\n"
         ),
         "2000"
     );
@@ -964,7 +960,7 @@ fn a_spawn_passed_as_a_value_hands_its_answer_across() {
     for opt in ["o1", "o2"] {
         let src = format!(
             "{SPAWNING}\
-             def main =
+             def result =
                let t = app spawn (\\() -> mk 2000) in
                let b1 = threadSpawn (\\() -> busy 300000) in
                let b2 = threadSpawn (\\() -> busy 300000) in
@@ -992,7 +988,7 @@ fn spawns_mapped_over_a_list_hand_their_answers_across() {
          use Ts.*
          fun mapSpawn g fs = match fs with | FNil -> TNil | FCons f rest -> TCons (g f) (mapSpawn g rest)
          fun total ts = match ts with | TNil -> 0 | TCons t rest -> len (threadAwait t) + total rest
-         def main = total (mapSpawn spawn (FCons (\\() -> mk 300) (FCons (\\() -> mk 400) (FCons (\\() -> mk 500) FNil))))"
+         def result = total (mapSpawn spawn (FCons (\\() -> mk 300) (FCons (\\() -> mk 400) (FCons (\\() -> mk 500) FNil))))"
     );
     assert_eq!(run_o1("spawns_mapped", &src), "1200");
 }
@@ -1004,7 +1000,7 @@ fn a_generic_spawner_passes_its_descriptor_on() {
     let src = format!(
         "{SPAWNING}\
          fun later f = \\() -> spawn f
-         def main = let go = later (\\() -> mk 1500) in len (threadAwait (go ()))"
+         def result = let go = later (\\() -> mk 1500) in len (threadAwait (go ()))"
     );
     assert_eq!(run_o1("generic_spawner", &src), "1500");
 }
@@ -1046,7 +1042,7 @@ fn an_abandoned_continuation_gives_back_the_segments_inside_it() {
     let src = format!(
         "{RAISING}\
          fun once (i : Int) = catching (\\() -> asking (\\() -> let a = ask i in if a >= 0 then raise 1 else a))
-         def main = loop 2000 0"
+         def result = loop 2000 0"
     );
     let (got, live) = run_segments("abandoned_nested", &src);
     assert_eq!(got, "-2000");
@@ -1060,7 +1056,7 @@ fn several_handlers_deep_are_all_given_back() {
         "{RAISING}\
          fun once (i : Int) = catching (\\() -> asking (\\() -> asking (\\() -> asking (\\() ->
            let a = ask i in if a >= 0 then raise 2 else a))))
-         def main = loop 500 0"
+         def result = loop 500 0"
     );
     let (got, live) = run_segments("abandoned_deep", &src);
     assert_eq!(got, "-1000");
@@ -1075,7 +1071,7 @@ fn a_resumed_continuation_takes_its_nested_segments_back() {
         "{RAISING}\
          fun resuming body = handle body () with {{ raise e k -> k (e * 10), return x -> x }}
          fun once (i : Int) = resuming (\\() -> asking (\\() -> let a = ask i in raise a + 1))
-         def main = loop 300 0"
+         def result = loop 300 0"
     );
     // ask i -> i; raise i -> 10 i; + 1; asking's clause adds 1: 10 i + 2.
     let (got, live) = run_segments("resumed_nested", &src);
@@ -1096,7 +1092,7 @@ fn a_continuation_resumed_later_still_finds_its_segments() {
              k (other + e),
            return x -> x }}
          fun once (i : Int) = later (\\() -> asking (\\() -> raise (ask i)))
-         def main = loop 200 0"
+         def result = loop 200 0"
     );
     // ask i -> i; raise i: other = -5, so k (i - 5); the outer asking's clause
     // adds 1: i - 4.
@@ -1130,7 +1126,7 @@ const COMPACTED: &str = "data L = N | C Int L
 
 #[test]
 fn data_read_out_of_a_dropped_compact_can_be_taken_apart() {
-    let src = format!("{COMPACTED}def main = sum (getCompact (compact (build 100)))");
+    let src = format!("{COMPACTED}def result = sum (getCompact (compact (build 100)))");
     both("compact_taken_apart", &src, "5050");
 }
 
@@ -1138,14 +1134,14 @@ fn data_read_out_of_a_dropped_compact_can_be_taken_apart() {
 fn data_read_out_of_a_dropped_compact_can_be_rebuilt() {
     // `inc` would build each cell in place of the one it takes apart, were
     // that one its own; a region's never is, so each is released and copied.
-    let src = format!("{COMPACTED}def main = sum (inc (getCompact (compact (build 100))))");
+    let src = format!("{COMPACTED}def result = sum (inc (getCompact (compact (build 100))))");
     both("compact_rebuilt", &src, "5150");
 }
 
 #[test]
 fn data_read_out_of_a_dropped_compact_compares_equal() {
     let src = format!(
-        "{COMPACTED}def main =
+        "{COMPACTED}def result =
            let a = getCompact (compact (build 50)) == build 50 in
            let b = build 50 == getCompact (compact (build 50)) in
            let c = getCompact (compact (build 50)) == build 49 in
@@ -1157,7 +1153,7 @@ fn data_read_out_of_a_dropped_compact_compares_equal() {
 #[test]
 fn a_tuple_read_out_of_a_dropped_compact_can_be_taken_apart() {
     let src = format!(
-        "{COMPACTED}def main =
+        "{COMPACTED}def result =
            let (a, b) = getCompact (compact (build 3, build 4)) in
            sum a * 100 + sum b"
     );
@@ -1172,7 +1168,7 @@ fn a_wrapper_read_out_of_a_dropped_compact_can_be_unwrapped() {
         "{COMPACTED}data W = W L
          use W.*
          fun unwrap (w : W) : L = match w with | W l -> l
-         def main = sum (unwrap (getCompact (compact (W (build 10)))))"
+         def result = sum (unwrap (getCompact (compact (W (build 10)))))"
     );
     both("compact_unwrapped", &src, "55");
 }
@@ -1184,7 +1180,7 @@ fn reading_a_compact_in_a_loop_leaves_nothing_behind() {
     let src = format!(
         "{COMPACTED}fun loop (i : Int) (acc : Int) : Int =
            if i == 0 then acc else loop (i - 1) (acc + sum (getCompact (compact (build 20))))
-         def main = loop 500 0"
+         def result = loop 500 0"
     );
     both("compact_loop", &src, "105000");
 }
@@ -1222,7 +1218,7 @@ fn frames_that_held_lists_give_them_up_when_abandoned() {
          fun deep (n : Int) (held : L) =\n\
          \x20 if n == 0 then raise 1 else let r = deep (n - 1) (C n held) in r + len held\n\
          fun once (i : Int) = catching (\\() -> deep 10 (build 5))\n\
-         def main = loop 300 0"
+         def result = loop 300 0"
     );
     no_leak("abandoned_frames", &src, "-300");
 }
@@ -1236,7 +1232,7 @@ fn frames_holding_values_of_a_type_variable_give_them_up() {
          fun keep (n : Int) (x : a) f =\n\
          \x20 if n == 0 then raise 2 else let r = keep (n - 1) x f in r + f x\n\
          fun once (i : Int) = catching (\\() -> keep 6 (build 4) len + keep 6 (C i N, build 3) (\\p -> 1))\n\
-         def main = loop 200 0"
+         def result = loop 200 0"
     );
     no_leak("abandoned_poly_frames", &src, "-400");
 }
@@ -1254,7 +1250,7 @@ fn frames_under_a_nested_handler_give_theirs_up_too() {
          \x20 if n == 0 then raise (ask 3) else let r = deep (n - 1) (C n held) in r + len held\n\
          fun once (i : Int) =\n\
          \x20 catching (\\() -> let before = build 3 in len before + asking (\\() -> deep 5 (build 2)))\n\
-         def main = loop 200 0"
+         def result = loop 200 0"
     );
     no_leak("abandoned_nested_frames", &src, "-600");
 }
@@ -1268,7 +1264,7 @@ fn a_program_with_threads_gives_abandoned_frames_up() {
          fun deep (n : Int) (held : L) =\n\
          \x20 if n == 0 then raise 1 else let r = deep (n - 1) (C n held) in r + len held\n\
          fun once (i : Int) = catching (\\() -> deep 8 (build 4))\n\
-         def main =\n\
+         def result =\n\
          \x20 let t = threadSpawn (\\() -> loop 100 0) in\n\
          \x20 let here = loop 100 0 in\n\
          \x20 here + threadAwait t"
@@ -1289,7 +1285,7 @@ fn wide_call(n: usize) -> String {
     let args: Vec<String> = (0..n).map(|i| i.to_string()).collect();
     format!(
         "fun f {params}: Int = {}
-def main = f {}",
+def result = f {}",
         sum.join(" + "),
         args.join(" ")
     )
@@ -1323,8 +1319,8 @@ fn a_wide_call_into_another_module() {
 fn a_wide_call_in_a_program_with_threads() {
     // With threads each has a spill area of its own, which the runtime makes
     // as big as the module says it needs.
-    let src = wide_call(300).replace("def main = f", "def once = f")
-        + "\ndef main = let t = threadSpawn (\\() -> once) in once + threadAwait t";
+    let src = wide_call(300).replace("def result = f", "def once = f")
+        + "\ndef result = let t = threadSpawn (\\() -> once) in once + threadAwait t";
     let want = (2 * wide_want(300).parse::<usize>().unwrap()).to_string();
     assert_eq!(run_checked("wide_call_threads", &src, false), want);
 }

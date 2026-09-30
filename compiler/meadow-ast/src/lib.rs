@@ -160,6 +160,9 @@ pub enum Decl {
     /// `type Span = (Int, Int)` -- another name for a type, which means exactly
     /// what it stands for.
     TypeAlias(TypeAliasDecl),
+    /// `effect Eff = { Console, Fs }` -- another name for effects: a row that
+    /// names it names every one of them.
+    EffectAlias(EffectAliasDecl),
     /// `fun name : T` / `def name : T` -- the type of a top-level binding,
     /// declared on a line of its own. Its variables are the binding's to be
     /// general in, as a Haskell signature's are.
@@ -364,6 +367,13 @@ pub struct TypeAliasDecl {
     pub name: Ident,
     pub params: Vec<Ident>,
     pub ty: LType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectAliasDecl {
+    pub name: Ident,
+    pub params: Vec<Ident>,
+    pub row: EffectRow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

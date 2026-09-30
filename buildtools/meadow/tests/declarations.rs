@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 /// The CEK machine's answer, required of the VM and its JIT at every level
 /// and of a release build.
 fn agreed(src: &str) -> String {
-    let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "compile errors in\n{src}\n{}",
@@ -28,7 +29,8 @@ fn agreed(src: &str) -> String {
             assert_eq!(got, cek, "{engine:?} at {} on\n{src}", opt.name());
         }
     }
-    let (release, diags) = pipeline::compile_str_with_std("test", src, Options::release());
+    let (release, diags) =
+        pipeline::compile_str_with_std("test", src, Options::release().entry("result"));
     assert!(
         diags.is_empty(),
         "release: {:?}",
@@ -45,7 +47,7 @@ fn is(src: &str, expected: &str) {
 }
 
 fn errors(src: &str) -> String {
-    common::errors_std_with(src, Options::debug())
+    common::errors_std_with(src, Options::debug().entry("result"))
 }
 
 // --- type aliases -------------------------------------------------------------
@@ -58,7 +60,7 @@ fn an_alias_means_what_it_stands_for() {
          type Grid = [Pair Point;]\n\
          fun add ((a, b) : Point) ((c, d) : Point) : Point = (a + c, b + d)\n\
          def grid : Grid = [((0, 0), (1, 1)); ((2, 3), (4, 5))]\n\
-         def main = (add (1, 2) (10, 20), grid)\n",
+         def result = (add (1, 2) (10, 20), grid)\n",
         "((11, 22), [((0, 0), (1, 1)); ((2, 3), (4, 5))])",
     );
     // In a declaration, and with an effect in it.
@@ -67,7 +69,7 @@ fn an_alias_means_what_it_stands_for() {
          type Action a = a -> () ! Console\n\
          data Named = Named Name Int\n\
          record Greeter = { who : Name, act : Action Name }\n\
-         def main = let g = Greeter { who = \"Ann\", act = \\n -> println n } in\n\
+         def result = let g = Greeter { who = \"Ann\", act = \\n -> println n } in\n\
            let _ = g.act g.who in\n\
            match Named.Named g.who 3 with | Named.Named n k -> (n, k)\n",
         r#"("Ann", 3)"#,
@@ -86,9 +88,9 @@ fn an_alias_is_not_a_new_type() {
 
 #[test]
 fn an_alias_cannot_refer_to_itself() {
-    let out = errors("type A = [B]\ntype B = (A, Int)\ndef main = 1\n");
+    let out = errors("type A = [B]\ntype B = (A, Int)\ndef result = 1\n");
     assert!(out.contains("type alias `A` refers to itself"), "{out}");
-    let out = errors("type T a = [a]\ndef x : T = []\ndef main = 1\n");
+    let out = errors("type T a = [a]\ndef x : T = []\ndef result = 1\n");
     assert!(out.contains("type `T` takes 1 argument(s), got 0"), "{out}");
 }
 
@@ -101,7 +103,7 @@ fn an_alias_is_as_visible_as_it_says() {
         ),
         (
             "",
-            "use Geo (Point, origin)\nfun shift ((x, y) : Point) : Point = (x + 1, y)\ndef main = shift origin\n",
+            "use Geo (Point, origin)\nfun shift ((x, y) : Point) : Point = (x + 1, y)\ndef result = shift origin\n",
         ),
     ]);
     assert_eq!(ok, "(1, 0)");
@@ -110,7 +112,7 @@ fn an_alias_is_as_visible_as_it_says() {
             "Geo",
             "type Point = (Int, Int)\n@pub(pkg) def origin = (0, 0)\n",
         ),
-        ("", "use Geo (Point)\ndef main = 1\n"),
+        ("", "use Geo (Point)\ndef result = 1\n"),
     ]);
     assert!(out.contains("`Point` is private to module `Geo`"), "{out}");
 }
@@ -150,9 +152,9 @@ fn two_modules_may_each_declare_a_type_of_one_name() {
     write(
         &root.join("src/Main.mw"),
         "use Two.Left (left, leftShape, dot)\nuse Two.Right (right, rightShape, line)\n\
-         def main = (left 1, right \"a\", leftShape dot, rightShape line)\n",
+         def result = (left 1, right \"a\", leftShape dot, rightShape line)\n",
     );
-    let out = pipeline::build(&root, Options::debug());
+    let out = pipeline::build(&root, Options::debug().entry("result"));
     assert!(
         out.diagnostics.is_empty(),
         "{:?}",
@@ -191,9 +193,9 @@ fn a_pub_alias_crosses_the_package() {
             "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nGeo = { path = \"../geo\" }\n",
         );
         write(&root.join("app/src/Main.mw"), main);
-        pipeline::build(&root.join("app"), Options::debug())
+        pipeline::build(&root.join("app"), Options::debug().entry("result"))
     };
-    let out = app("use Geo (norm, Point)\ndef p : Point = (3, 4)\ndef main = norm p\n");
+    let out = app("use Geo (norm, Point)\ndef p : Point = (3, 4)\ndef result = norm p\n");
     assert!(
         out.diagnostics.is_empty(),
         "{:?}",
@@ -202,7 +204,7 @@ fn a_pub_alias_crosses_the_package() {
     let program = out.linked.unwrap().program;
     assert_eq!(meadow_eval::run(&program).unwrap().to_string(), "25");
 
-    let out = app("use Geo (Secret)\ndef s : Secret = 1\ndef main = s\n");
+    let out = app("use Geo (Secret)\ndef s : Secret = 1\ndef result = s\n");
     let msgs: Vec<_> = out.diagnostics.iter().map(|d| d.msg.clone()).collect();
     assert!(
         msgs.iter().any(|m| m.contains("unknown type `Secret`")),
@@ -224,7 +226,7 @@ fn a_signature_gives_a_binding_its_type() {
            | small = 5\n\
          fun names : () -> [String;]\n\
            | names () = [\"a\"; \"b\"]\n\
-         def main = let _ = apply println \"hi\" in (swap (1, \"x\"), swap (True, 2), small, names ())\n",
+         def result = let _ = apply println \"hi\" in (swap (1, \"x\"), swap (True, 2), small, names ())\n",
         r#"(("x", 1), (2, True), 5, ["a"; "b"])"#,
     );
     // For mutually recursive ones: each signature stands over its own clauses,
@@ -234,7 +236,7 @@ fn a_signature_gives_a_binding_its_type() {
            | isEven n = if n == 0 then True else isOdd (n - 1)\n\
          fun isOdd : Int -> Bool\n\
            | isOdd n = if n == 0 then False else isEven (n - 1)\n\
-         def main = (isEven 10, isOdd 7)\n",
+         def result = (isEven 10, isOdd 7)\n",
         "(True, True)",
     );
     let schemes = common::schemes_std("fun f : Int32 -> Int32\n  | f x = x + 1\n");
@@ -243,17 +245,18 @@ fn a_signature_gives_a_binding_its_type() {
 
 #[test]
 fn a_definition_must_be_as_general_as_its_signature() {
-    let out = errors("fun f : a -> a\n  | f x = x ++ \"s\"\ndef main = f \"1\"\n");
+    let out = errors("fun f : a -> a\n  | f x = x ++ \"s\"\ndef result = f \"1\"\n");
     assert!(
         out.contains("less general than its signature: the signature says `a -> a`, and the definition is `String -> String`"),
         "{out}"
     );
-    let out = errors("fun f : a -> a\n  | f x = x + 1\ndef main = f 1\n");
+    let out = errors("fun f : a -> a\n  | f x = x + 1\ndef result = f 1\n");
     assert!(out.contains("needs a number where its signature"), "{out}");
-    let out = errors("fun f : a -> b -> a\n  | f x y = if True then x else y\ndef main = f 1 2\n");
+    let out =
+        errors("fun f : a -> b -> a\n  | f x y = if True then x else y\ndef result = f 1 2\n");
     assert!(out.contains("less general than its signature"), "{out}");
     // An effect the signature does not allow.
-    let out = errors("fun f : Int -> Int\n  | f x = let _ = println x in x\ndef main = f 1\n");
+    let out = errors("fun f : Int -> Int\n  | f x = let _ = println x in x\ndef result = f 1\n");
     assert!(
         out.contains("the effect `Console` is not allowed here"),
         "{out}"
@@ -262,12 +265,12 @@ fn a_definition_must_be_as_general_as_its_signature() {
 
 #[test]
 fn a_signature_belongs_to_one_definition() {
-    let out = errors("fun g : Int -> Int\ndef main = 1\n");
+    let out = errors("fun g : Int -> Int\ndef result = 1\n");
     assert!(
         out.contains("a signature for `g`, which is not defined in this module"),
         "{out}"
     );
-    let out = errors("fun f : Int -> Int\nfun f : Int -> Int\n  | f x = x\ndef main = f 1\n");
+    let out = errors("fun f : Int -> Int\nfun f : Int -> Int\n  | f x = x\ndef result = f 1\n");
     assert!(out.contains("`f` already has a signature"), "{out}");
 }
 
@@ -277,7 +280,7 @@ fn a_signature_belongs_to_one_definition() {
 /// here says a thing once.
 #[test]
 fn a_signature_and_its_definition_are_one_declaration() {
-    let out = errors("fun f : Int -> Int\nfun f x = x + 1\ndef main = f 1\n");
+    let out = errors("fun f : Int -> Int\nfun f x = x + 1\ndef result = f 1\n");
     assert!(
         out.contains(
             "`f` is declared twice -- a signature and the clauses that define it are one \
@@ -286,15 +289,15 @@ fn a_signature_and_its_definition_are_one_declaration() {
         "{out}"
     );
     // The same for a `def`, whose definition is a value rather than clauses.
-    let out = errors("def x : Int\ndef x = 1\ndef main = x\n");
+    let out = errors("def x : Int\ndef x = 1\ndef result = x\n");
     assert!(out.contains("`x` is declared twice"), "{out}");
     // And with the signature *after* the definition, which used to be allowed
     // too. The error points at whichever of the two came second.
-    let out = errors("fun f x = x + 1\nfun f : Int -> Int\ndef main = f 1\n");
+    let out = errors("fun f x = x + 1\nfun f : Int -> Int\ndef result = f 1\n");
     assert!(out.contains("`f` is declared twice"), "{out}");
     // Attributes go in front of the whole declaration, which is the signature.
     is(
-        "@pub fun f : Int -> Int\n  | f x = x + 1\ndef main = f 1\n",
+        "@pub fun f : Int -> Int\n  | f x = x + 1\ndef result = f 1\n",
         "2",
     );
 }
@@ -309,7 +312,7 @@ fn joined_clauses_mean_what_two_declarations_meant() {
            | gcd a b = gcd b (a % b)\n\
          def small : Int8\n\
            | small = 5\n\
-         def main = (gcd 48 18, small)\n",
+         def result = (gcd 48 18, small)\n",
         "(6, 5)",
     );
     // A signature with a context, over a function of no parameters: still a
@@ -330,11 +333,11 @@ fn joined_clauses_mean_what_two_declarations_meant() {
            | gone x = x\n\
          @cfg(not(nosuchflag)) fun here : Int -> Int\n\
            | here x = x + 1\n\
-         def main = here 1\n",
+         def result = here 1\n",
         "2",
     );
     // A clause that names something else is caught against the signature.
-    let out = errors("fun f : Int -> Int\n  | g x = x\ndef main = 1\n");
+    let out = errors("fun f : Int -> Int\n  | g x = x\ndef result = 1\n");
     assert!(
         out.contains("this equation defines `g`, but the signature above it is for `f`"),
         "{out}"
@@ -354,7 +357,7 @@ fn a_record_type_can_be_written_wherever_a_type_can() {
          fun mk (s : String) : { name : String } = { name = s }\n\
          type Person = { name : String, home : { city : String } }\n\
          fun city (p : Person) : String = p.home.city\n\
-         def main = (getName { name = \"ada\", age = 36 }, byParam { name = \"bo\" }, \
+         def result = (getName { name = \"ada\", age = 36 }, byParam { name = \"bo\" }, \
                      (mk \"cy\").name, city { name = \"di\", home = { city = \"Rome\" } })\n",
         r#"("ada", "bo", "cy", "Rome")"#,
     );
@@ -364,7 +367,7 @@ fn a_record_type_can_be_written_wherever_a_type_can() {
            | getName p = p.name\n\
          fun first : Maybe { name : String | r } -> String\n\
            | first m = match m with | Just p -> p.name | None -> \"\"\n\
-         def main = (getName { name = \"x\", y = 1 }, first (Just { name = \"q\", z = 2 }))\n",
+         def result = (getName { name = \"x\", y = 1 }, first (Just { name = \"q\", z = 2 }))\n",
         r#"("x", "q")"#,
     );
 }
@@ -376,13 +379,13 @@ fn a_row_variable_carries_the_fields_it_stands_for() {
     is(
         "fun keep : { name : String | r } -> { name : String | r }\n\
            | keep p = p\n\
-         def main = (keep { name = \"d\", age = 4 }).age\n",
+         def result = (keep { name = \"d\", age = 4 }).age\n",
         "4",
     );
     let out = errors(
         "fun keep : { name : String | r } -> { name : String | r }\n\
            | keep p = { name = p.name }\n\
-         def main = 0\n",
+         def result = 0\n",
     );
     assert!(out.contains("less general than its signature"), "{out}");
 }
@@ -392,16 +395,16 @@ fn a_row_variable_carries_the_fields_it_stands_for() {
 #[test]
 fn a_record_type_is_checked_like_one() {
     let out = errors(
-        "fun f : { name : String } -> String = \\p -> p.name\ndef main = f { name = \"a\", age = 1 }\n",
+        "fun f : { name : String } -> String = \\p -> p.name\ndef result = f { name = \"a\", age = 1 }\n",
     );
     assert!(out.contains("no field `age`"), "{out}");
     let out = errors(
-        "fun f : { name : String | r } -> String = \\p -> p.name\ndef main = f { age = 1 }\n",
+        "fun f : { name : String | r } -> String = \\p -> p.name\ndef result = f { age = 1 }\n",
     );
     assert!(out.contains("no field `name`"), "{out}");
-    let out = errors("fun f (p : { x : Int, x : Bool }) : Int = 1\ndef main = 0\n");
+    let out = errors("fun f (p : { x : Int, x : Bool }) : Int = 1\ndef result = 0\n");
     assert!(out.contains("field `x` appears twice"), "{out}");
-    is("fun unit (u : {}) : Int = 1\ndef main = unit {}\n", "1");
+    is("fun unit (u : {}) : Int = 1\ndef result = unit {}\n", "1");
 }
 
 /// A variant's own braces are its named fields; a positional field of record
@@ -413,7 +416,7 @@ fn a_variants_braces_are_still_its_fields() {
          data Box = Box ({ w : Int })\n\
          fun area (s : Shape) : Int = match s with | Shape.Rect { w, h } -> w * h\n\
          fun width (b : Box) : Int = match b with | Box.Box r -> r.w\n\
-         def main = (area (Shape.Rect { w = 2, h = 3 }), width (Box.Box { w = 7 }))\n",
+         def result = (area (Shape.Rect { w = 2, h = 3 }), width (Box.Box { w = 7 }))\n",
         "(6, 7)",
     );
 }
@@ -427,11 +430,11 @@ fn a_qualified_constructor_takes_named_fields() {
     is(
         "data Shape = Rect { w : Int, h : Int }\n\
          fun area (s : Shape) : Int = match s with | Shape.Rect { h, w } -> w - h\n\
-         def main = (area (Shape.Rect { h = 3, w = 10 }), area (Shape.Rect { w = 5, h = 1 }))\n",
+         def result = (area (Shape.Rect { h = 3, w = 10 }), area (Shape.Rect { w = 5, h = 1 }))\n",
         "(7, 4)",
     );
     let out = errors(
-        "data Shape = Rect { w : Int, h : Int }\ndef main = Shape.Rect { w = 2, depth = 3 }\n",
+        "data Shape = Rect { w : Int, h : Int }\ndef result = Shape.Rect { w = 2, depth = 3 }\n",
     );
     assert!(out.contains("no field `depth`"), "{out}");
 }
@@ -444,7 +447,7 @@ fn an_update_replaces_the_fields_it_names() {
         "record Person = { name : String, age : Int, tags : [String;] }\n\
          fun birthday (p : Person) = { p | age = p.age + 1 }\n\
          def ann = Person { name = \"Ann\", age = 41, tags = [\"a\";] }\n\
-         def main = let older = birthday ann in\n\
+         def result = let older = birthday ann in\n\
            let renamed = { older | tags = [;], name = \"Bo\" } in\n\
            (ann.age, older.age, older.name, renamed.name, renamed.age, renamed.tags, older.tags)\n",
         r#"(41, 42, "Ann", "Bo", 42, [], ["a"])"#,
@@ -453,7 +456,7 @@ fn an_update_replaces_the_fields_it_names() {
     is(
         "record Box a = { item : a, count : Int, weight : Float }\n\
          fun refill (b : Box a) (x : a) : Box a = { b | item = x, count = b.count + 1 }\n\
-         def main = let b = refill (Box { item = [1; 2], count = 1, weight = 2.5 }) [3;] in\n\
+         def result = let b = refill (Box { item = [1; 2], count = 1, weight = 2.5 }) [3;] in\n\
            (b.item, b.count, b.weight)\n",
         "([3], 2, 2.5)",
     );
@@ -461,7 +464,7 @@ fn an_update_replaces_the_fields_it_names() {
     // its fields.
     is(
         "fun reset r = { r | count = 0 }\n\
-         def main = let r = { count = 5, name = \"x\" } in\n\
+         def result = let r = { count = 5, name = \"x\" } in\n\
            let s = reset r in\n\
            let t = { s | name = \"y\", count = s.count + 2 } in\n\
            (r.count, s.count, s.name, t.count, t.name)\n",
@@ -471,7 +474,7 @@ fn an_update_replaces_the_fields_it_names() {
     is(
         "use Std.St as St\n\
          record P = { a : Int, b : Int }\n\
-         def main = runSt (\\() ->\n\
+         def result = runSt (\\() ->\n\
            let log = St.newRef 0 in\n\
            let note tag = St.modifyRef log (\\n -> n * 10 + tag) in\n\
            let p = { (let _ = note 1 in P { a = 0, b = 0 }) | b = (let _ = note 2 in 2), a = (let _ = note 3 in 1) } in\n\
@@ -483,23 +486,23 @@ fn an_update_replaces_the_fields_it_names() {
 #[test]
 fn an_update_keeps_every_field_and_its_type() {
     let out = errors(
-        "record P = { x : Int }\nfun f (p : P) = { p | y = 1 }\ndef main = f (P { x = 1 })\n",
+        "record P = { x : Int }\nfun f (p : P) = { p | y = 1 }\ndef result = f (P { x = 1 })\n",
     );
     assert!(out.contains("`P` has no field `y`"), "{out}");
     let out = errors(
-        "record P = { x : Int }\nfun f (p : P) = { p | x = \"s\" }\ndef main = f (P { x = 1 })\n",
+        "record P = { x : Int }\nfun f (p : P) = { p | x = \"s\" }\ndef result = f (P { x = 1 })\n",
     );
     assert!(out.contains("type mismatch: `Int` vs `String`"), "{out}");
     let out = errors(
-        "data S = A { x : Int } | B { x : Int }\nfun f (s : S) = { s | x = 1 }\ndef main = 1\n",
+        "data S = A { x : Int } | B { x : Int }\nfun f (s : S) = { s | x = 1 }\ndef result = 1\n",
     );
     assert_eq!(
         out,
         "`S` has more than one constructor, so there is no one record to update"
     );
-    let out = errors("def r = { x = 1 }\ndef main = { r | x = 2, x = 3 }\n");
+    let out = errors("def r = { x = 1 }\ndef result = { r | x = 2, x = 3 }\n");
     assert_eq!(out, "field `x` is updated twice");
-    let out = errors("def main = { { x = 1 } | y = 2 }\n");
+    let out = errors("def result = { { x = 1 } | y = 2 }\n");
     assert!(out.contains("record has no field `y`"), "{out}");
 }
 
@@ -512,7 +515,7 @@ fn a_function_may_be_written_as_several_equations() {
 fun gcd a 0 = a
   | gcd a b = gcd b (a % b)
 
-def main = gcd 48 18
+def result = gcd 48 18
 "#,
         "6",
     );
@@ -526,7 +529,7 @@ fun describe 0 = "zero"
   | describe 1 = "one"
   | describe n = "many"
 
-def main = (describe 0, describe 1, describe 7)
+def result = (describe 0, describe 1, describe 7)
 "#,
         r#"("zero", "one", "many")"#,
     );
@@ -541,7 +544,7 @@ use Std.Maybe.Maybe.*
 fun orElse d None     = d
   | orElse _ (Just x) = x
 
-def main = (orElse 9 None, orElse 9 (Just 1))
+def result = (orElse 9 None, orElse 9 (Just 1))
 "#,
         "(9, 1)",
     );
@@ -554,7 +557,7 @@ fn equations_may_match_lists() {
 fun len [;]       = 0
   | len (_ :: xs) = 1 + len xs
 
-def main = len [1; 2; 3]
+def result = len [1; 2; 3]
 "#,
         "3",
     );
@@ -571,7 +574,7 @@ fun classify n = match compare n 0 with
   | Equal   -> "zero"
   | Greater -> "pos"
 
-def main = (classify (-5), classify 0, classify 5)
+def result = (classify (-5), classify 0, classify 5)
 "#,
         r#"("neg", "zero", "pos")"#,
     );
@@ -584,7 +587,7 @@ fn several_equations_can_be_recursive_and_polymorphic() {
 fun count [;]       = 0
   | count (_ :: xs) = 1 + count xs
 
-def main = (count [1; 2], count ["a"; "b"; "c"])
+def result = (count [1; 2], count ["a"; "b"; "c"])
 "#,
         "(2, 3)",
     );
@@ -598,7 +601,7 @@ fun gcd a b : Int = gcd' a b
 fun gcd' a 0 = a
   | gcd' a b = gcd' b (a % b)
 
-def main = gcd 48 18
+def result = gcd 48 18
 "#,
         "6",
     );
@@ -611,7 +614,7 @@ fn one_equation_that_names_something_else_is_reported() {
 fun f a 0 = a
   | g a b = b
 
-def main = f 1 0
+def result = f 1 0
 "#,
     );
     assert!(
@@ -627,7 +630,7 @@ fn equations_that_take_different_numbers_of_arguments_are_reported() {
 fun f a 0 = a
   | f a = a
 
-def main = f 1 0
+def result = f 1 0
 "#,
     );
     assert!(e.contains("takes 1 argument, but the first takes 2"), "{e}");
@@ -640,7 +643,7 @@ fn equations_with_nothing_to_match_on_are_reported() {
 fun f = 1
   | f = 2
 
-def main = f
+def result = f
 "#,
     );
     assert!(e.contains("takes no arguments"), "{e}");
@@ -654,9 +657,9 @@ fn equations_that_do_not_cover_everything_are_reported() {
 fun describe 0 = "zero"
   | describe 1 = "one"
 
-def main = describe 0
+def result = describe 0
 "#,
-        Options::release(),
+        Options::release().entry("result"),
     );
     assert!(e.contains("non-exhaustive"), "{e}");
 }
@@ -668,9 +671,9 @@ fn a_single_equation_may_still_match_a_literal() {
     let e = common::errors_std_with(
         r#"
 fun f 0 = "zero"
-def main = f 0
+def result = f 0
 "#,
-        Options::release(),
+        Options::release().entry("result"),
     );
     assert!(e.contains("refutable pattern in function parameter"), "{e}");
 }

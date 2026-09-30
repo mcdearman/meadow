@@ -20,7 +20,7 @@ fn a_plain_declaration_does_not_leave_its_module() {
             "Hidden",
             "fun secret n = n * 2\n@pub(pkg) fun shown n = n + 1\n",
         ),
-        ("", "use Hidden (secret)\ndef main = secret 21\n"),
+        ("", "use Hidden (secret)\ndef result = secret 21\n"),
     ]);
     assert!(
         out.contains("`secret` is private to module `Hidden`"),
@@ -36,7 +36,7 @@ fn pub_pkg_reaches_the_rest_of_the_package() {
                 "Hidden",
                 "fun secret n = n * 2\n@pub(pkg) fun shown n = secret n + 1\n"
             ),
-            ("", "use Hidden (shown)\ndef main = shown 20\n"),
+            ("", "use Hidden (shown)\ndef result = shown 20\n"),
         ]),
         "41"
     );
@@ -55,7 +55,7 @@ fn an_annotated_def_is_exported_like_any_other() {
             ),
             (
                 "",
-                "use Limits (limit, pair)\ndef main = match pair with | (a, b) -> limit + a + b\n"
+                "use Limits (limit, pair)\ndef result = match pair with | (a, b) -> limit + a + b\n"
             ),
         ]),
         "42"
@@ -72,7 +72,7 @@ fn a_module_can_always_see_itself() {
                 "Solo",
                 "fun secret n = n * 2\n@pub(pkg) fun shown n = secret n\n"
             ),
-            ("", "use Solo (shown)\ndef main = shown 21\n"),
+            ("", "use Solo (shown)\ndef result = shown 21\n"),
         ]),
         "42"
     );
@@ -85,7 +85,7 @@ fn an_unannotated_unit_has_no_visibility_at_all() {
     assert_eq!(
         eval_unit(&[
             ("Math", "fun double n = n * 2\n"),
-            ("", "use Math (double)\ndef main = double 21\n"),
+            ("", "use Math (double)\ndef result = double 21\n"),
         ]),
         "42"
     );
@@ -101,14 +101,14 @@ fn pub_super_reaches_the_parent_and_no_further() {
             "Outer",
             "use Outer.Inner (helper)\n@pub(pkg) fun useHelper n = helper n\n",
         ),
-        ("", "use Outer (useHelper)\ndef main = useHelper 7\n"),
+        ("", "use Outer (useHelper)\ndef result = useHelper 7\n"),
     ]);
     assert_eq!(ok, "21");
 
     let out = unit_errors(&[
         ("Outer.Inner", "@pub(super) fun helper n = n * 3\n"),
         ("Outer", "@pub(pkg) fun useHelper n = n\n"),
-        ("", "use Outer.Inner (helper)\ndef main = helper 7\n"),
+        ("", "use Outer.Inner (helper)\ndef result = helper 7\n"),
     ]);
     assert!(
         out.contains("visible only to the parent of module `Outer.Inner`"),
@@ -125,7 +125,7 @@ fn a_type_is_as_visible_as_it_says() {
             "Syntax",
             "data Expr = Lit Int\n@pub(pkg) fun lit n = Expr.Lit n\n",
         ),
-        ("", "use Syntax (Expr)\ndef main = 1\n"),
+        ("", "use Syntax (Expr)\ndef result = 1\n"),
     ]);
     assert!(
         out.contains("`Expr` is private to module `Syntax`"),
@@ -148,7 +148,7 @@ fn naming_a_type_leaves_its_constructors_under_it() {
         EXPR,
         (
             "",
-            "use Syntax (Expr)\nfun eval e = match e with\n  | Lit n -> n\n  | Neg i -> 0 - eval i\ndef main = 1\n",
+            "use Syntax (Expr)\nfun eval e = match e with\n  | Lit n -> n\n  | Neg i -> 0 - eval i\ndef result = 1\n",
         ),
     ]);
     assert!(
@@ -168,7 +168,7 @@ fn a_named_type_qualifies_its_constructors() {
             EXPR,
             (
                 "",
-                "use Syntax (Expr)\nfun eval e = match e with\n  | Expr.Lit n -> n\n  | Expr.Neg i -> 0 - eval i\ndef main = eval (Expr.Neg (Expr.Lit 5))\n"
+                "use Syntax (Expr)\nfun eval e = match e with\n  | Expr.Lit n -> n\n  | Expr.Neg i -> 0 - eval i\ndef result = eval (Expr.Neg (Expr.Lit 5))\n"
             ),
         ]),
         "-5"
@@ -182,12 +182,12 @@ fn a_type_path_imports_just_the_type() {
             EXPR,
             (
                 "",
-                "use Syntax.Expr\ndef main = match Expr.Lit 5 with | Expr.Lit n -> n | Expr.Neg e -> 0\n"
+                "use Syntax.Expr\ndef result = match Expr.Lit 5 with | Expr.Lit n -> n | Expr.Neg e -> 0\n"
             )
         ]),
         "5"
     );
-    let out = unit_errors(&[EXPR, ("", "use Syntax.Expr\ndef main = Lit 5\n")]);
+    let out = unit_errors(&[EXPR, ("", "use Syntax.Expr\ndef result = Lit 5\n")]);
     assert!(out.contains("unknown constructor `Lit`"), "{out}");
 }
 
@@ -198,7 +198,7 @@ fn a_type_path_with_a_list_imports_those_constructors() {
             EXPR,
             (
                 "",
-                "use Syntax.Expr (Lit, Neg)\nfun eval e = match e with\n  | Lit n -> n\n  | Neg i -> 0 - eval i\ndef main = eval (Neg (Lit 5))\n"
+                "use Syntax.Expr (Lit, Neg)\nfun eval e = match e with\n  | Lit n -> n\n  | Neg i -> 0 - eval i\ndef result = eval (Neg (Lit 5))\n"
             ),
         ]),
         "-5"
@@ -206,7 +206,7 @@ fn a_type_path_with_a_list_imports_those_constructors() {
     // Only the ones listed.
     let out = unit_errors(&[
         EXPR,
-        ("", "use Syntax.Expr (Lit)\ndef main = Neg (Lit 5)\n"),
+        ("", "use Syntax.Expr (Lit)\ndef result = Neg (Lit 5)\n"),
     ]);
     assert!(out.contains("unknown constructor `Neg`"), "{out}");
     assert!(!out.contains("`Lit`"), "{out}");
@@ -219,7 +219,7 @@ fn a_type_path_glob_imports_every_constructor() {
             EXPR,
             (
                 "",
-                "use Syntax.Expr.*\nfun eval e = match e with\n  | Lit n -> n\n  | Neg i -> 0 - eval i\ndef main = eval (Neg (Lit 5))\n"
+                "use Syntax.Expr.*\nfun eval e = match e with\n  | Lit n -> n\n  | Neg i -> 0 - eval i\ndef result = eval (Neg (Lit 5))\n"
             ),
         ]),
         "-5"
@@ -228,14 +228,14 @@ fn a_type_path_glob_imports_every_constructor() {
 
 #[test]
 fn a_module_glob_does_not_flatten_constructors() {
-    let out = unit_errors(&[EXPR, ("", "use Syntax\ndef main = Lit 5\n")]);
+    let out = unit_errors(&[EXPR, ("", "use Syntax\ndef result = Lit 5\n")]);
     assert!(out.contains("unknown constructor `Lit`"), "{out}");
     assert_eq!(
         eval_unit(&[
             EXPR,
             (
                 "",
-                "use Syntax\ndef main = match Expr.Lit 5 with | Expr.Lit n -> n | Expr.Neg e -> 0\n"
+                "use Syntax\ndef result = match Expr.Lit 5 with | Expr.Lit n -> n | Expr.Neg e -> 0\n"
             )
         ]),
         "5"
@@ -244,7 +244,7 @@ fn a_module_glob_does_not_flatten_constructors() {
 
 #[test]
 fn a_constructor_named_as_a_module_item_says_where_it_lives() {
-    let out = unit_errors(&[EXPR, ("", "use Syntax (Lit)\ndef main = 1\n")]);
+    let out = unit_errors(&[EXPR, ("", "use Syntax (Lit)\ndef result = 1\n")]);
     assert_eq!(
         out,
         "`Lit` is a constructor of `Expr`, not an item of `Syntax`"
@@ -254,8 +254,8 @@ fn a_constructor_named_as_a_module_item_says_where_it_lives() {
 #[test]
 fn a_dependency_constructor_named_as_a_module_item_says_where_it_lives() {
     let out = common::errors_std_with(
-        "use Std.Maybe (Maybe, Just)\ndef main = 1\n",
-        meadow::Options::debug(),
+        "use Std.Maybe (Maybe, Just)\ndef result = 1\n",
+        meadow::Options::debug().entry("result"),
     );
     assert_eq!(
         out,
@@ -266,19 +266,19 @@ fn a_dependency_constructor_named_as_a_module_item_says_where_it_lives() {
 #[test]
 fn a_dependency_type_path_imports_its_constructors() {
     let src = "use Std.Either.Either (Left)\n\
-               def main = match Left 1 with | Left n -> n | Either.Right s -> 0\n";
+               def result = match Left 1 with | Left n -> n | Either.Right s -> 0\n";
     assert_eq!(common::eval_main_std(src), "1");
 }
 
 #[test]
 fn a_constructor_the_type_does_not_have_is_reported() {
-    let out = unit_errors(&[EXPR, ("", "use Syntax.Expr (Lit, Add)\ndef main = 1\n")]);
+    let out = unit_errors(&[EXPR, ("", "use Syntax.Expr (Lit, Add)\ndef result = 1\n")]);
     assert_eq!(out, "`Expr` has no constructor `Add`");
 }
 
 #[test]
 fn a_glob_on_a_module_is_reported() {
-    let out = unit_errors(&[EXPR, ("", "use Syntax.*\ndef main = 1\n")]);
+    let out = unit_errors(&[EXPR, ("", "use Syntax.*\ndef result = 1\n")]);
     assert_eq!(
         out,
         "`use Syntax.*` names a module; `.*` is for a type's constructors"
@@ -292,7 +292,7 @@ fn a_private_types_constructors_cannot_be_imported() {
             "Syntax",
             "data Expr = Lit Int\n@pub(pkg) fun lit n = Expr.Lit n\n",
         ),
-        ("", "use Syntax.Expr.*\ndef main = 1\n"),
+        ("", "use Syntax.Expr.*\ndef result = 1\n"),
     ]);
     assert!(
         out.contains("`Expr` is private to module `Syntax`"),
@@ -313,7 +313,7 @@ fn only_a_plain_pub_is_exported() {
 
 #[test]
 fn an_unknown_visibility_is_reported() {
-    let out = unit_errors(&[("", "@pub(nowhere) fun f x = x\ndef main = f 1\n")]);
+    let out = unit_errors(&[("", "@pub(nowhere) fun f x = x\ndef result = f 1\n")]);
     assert!(
         out.contains("unknown visibility `@pub(nowhere)`"),
         "a nonsense visibility was accepted: {out}"
@@ -327,7 +327,7 @@ fn an_unknown_visibility_is_reported() {
 /// only thing that breaks.
 #[test]
 fn the_old_pub_pack_says_what_it_is_now_called() {
-    let out = unit_errors(&[("", "@pub(pack) fun f x = x\ndef main = f 1\n")]);
+    let out = unit_errors(&[("", "@pub(pack) fun f x = x\ndef result = f 1\n")]);
     assert_eq!(
         out.matches("`@pub(pack)` is now written `@pub`").count(),
         1,
@@ -346,7 +346,7 @@ fn the_old_pub_pack_says_what_it_is_now_called() {
 
 #[test]
 fn an_unknown_visibility_is_reported_once() {
-    let out = unit_errors(&[("", "@pub(nowhere) fun f x = x\ndef main = f 1\n")]);
+    let out = unit_errors(&[("", "@pub(nowhere) fun f x = x\ndef result = f 1\n")]);
     assert_eq!(out.matches("unknown visibility").count(), 1, "{out}");
 }
 
@@ -359,7 +359,7 @@ fn main_needs_no_marker_even_in_an_annotated_package() {
     assert_eq!(
         eval_unit(&[
             ("Math", "@pub(pkg) fun double n = n * 2\n"),
-            ("", "use Math (double)\ndef main = double 21\n"),
+            ("", "use Math (double)\ndef result = double 21\n"),
         ]),
         "42"
     );
@@ -377,7 +377,7 @@ fn using_a_trait_brings_its_methods() {
                 "Shapes",
                 "@pub trait Area a {\n  fun area : a -> Int\n}\n\nimpl Area Int {\n  fun area n = n * n\n}\n"
             ),
-            ("", "use Shapes (Area)\ndef main = area 6\n"),
+            ("", "use Shapes (Area)\ndef result = area 6\n"),
         ]),
         "36"
     );

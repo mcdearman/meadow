@@ -22,7 +22,7 @@ fn package(what: &str, manifest: &str, files: &[(&str, &str)]) -> PathBuf {
 
 /// What the package at `dir` evaluates to, or the diagnostics that stopped it.
 fn build(dir: &Path) -> Result<String, Vec<String>> {
-    let out = pipeline::build(dir, Options::debug());
+    let out = pipeline::build(dir, Options::debug().entry("result"));
     if !out.diagnostics.is_empty() {
         return Err(out.diagnostics.iter().map(|d| d.msg.clone()).collect());
     }
@@ -104,7 +104,7 @@ fn a_macro_reads_what_another_defined() {
         "reads",
         &[(
             "Lib.mw",
-            &format!("{USES}remember!(answer 42)\n\ndef main = recall!(answer)\n"),
+            &format!("{USES}remember!(answer 42)\n\ndef result = recall!(answer)\n"),
         )],
         &[],
     );
@@ -119,7 +119,7 @@ fn a_lookup_of_what_is_defined_below_it_waits_for_it() {
         "waits",
         &[(
             "Lib.mw",
-            &format!("{USES}def main = recall!(answer)\n\nremember!(answer 42)\n"),
+            &format!("{USES}def result = recall!(answer)\n\nremember!(answer 42)\n"),
         )],
         &[],
     );
@@ -130,7 +130,7 @@ fn a_lookup_of_what_is_defined_below_it_waits_for_it() {
 fn a_name_nothing_defines_is_answered_none_in_the_end() {
     let dir = app(
         "missing",
-        &[("Lib.mw", &format!("{USES}def main = recall!(nowhere)\n"))],
+        &[("Lib.mw", &format!("{USES}def result = recall!(nowhere)\n"))],
         &[],
     );
     let errs = build(&dir).expect_err("it does not build");
@@ -150,7 +150,7 @@ fn a_binding_is_reached_from_another_module_through_a_use() {
             (
                 "Lib.mw",
                 &format!(
-                    "mod Facts\n\n{USES}use App.Facts (answer!)\n\ndef main = recall!(answer)\n"
+                    "mod Facts\n\n{USES}use App.Facts (answer!)\n\ndef result = recall!(answer)\n"
                 ),
             ),
         ],
@@ -170,7 +170,7 @@ fn a_binding_is_private_to_its_module_without_a_pub() {
             ),
             (
                 "Lib.mw",
-                &format!("mod Facts\n\n{USES}use App.Facts\n\ndef main = recall!(answer)\n"),
+                &format!("mod Facts\n\n{USES}use App.Facts\n\ndef result = recall!(answer)\n"),
             ),
         ],
         &[],
@@ -199,7 +199,7 @@ fn a_binding_crosses_packages_with_the_package_it_is_in() {
         "cross",
         &[(
             "Lib.mw",
-            &format!("{USES}use Facts (answer!)\n\ndef main = recall!(answer)\n"),
+            &format!("{USES}use Facts (answer!)\n\ndef result = recall!(answer)\n"),
         )],
         &[("Facts", &facts)],
     );
@@ -212,7 +212,7 @@ fn a_compile_time_def_is_a_binding_written_by_hand() {
         "handwritten",
         &[(
             "Lib.mw",
-            &format!("{USES}@compileTime def answer = 42\n\ndef main = recall!(answer)\n"),
+            &format!("{USES}@compileTime def answer = 42\n\ndef result = recall!(answer)\n"),
         )],
         &[],
     );
@@ -225,7 +225,7 @@ fn a_compile_time_def_is_data_and_is_not_run() {
         "notdata",
         &[(
             "Lib.mw",
-            "fun f x = x\n\n@compileTime def answer = f 42\n\ndef main = 0\n",
+            "fun f x = x\n\n@compileTime def answer = f 42\n\ndef result = 0\n",
         )],
         &[],
     );
@@ -243,7 +243,7 @@ fn a_name_defined_twice_in_a_module_is_reported() {
         "twice",
         &[(
             "Lib.mw",
-            &format!("{USES}remember!(answer 1)\n\nremember!(answer 2)\n\ndef main = 0\n"),
+            &format!("{USES}remember!(answer 1)\n\nremember!(answer 2)\n\ndef result = 0\n"),
         )],
         &[],
     );
@@ -264,7 +264,7 @@ fn reflect_reads_a_binding_back_as_the_type_it_was() {
         &[(
             "Lib.mw",
             &format!(
-                "{USES}@compileTime def origin = Point {{ x = 40, y = 2 }}\n\ndef main = sumOf!(origin)\n"
+                "{USES}@compileTime def origin = Point {{ x = 40, y = 2 }}\n\ndef result = sumOf!(origin)\n"
             ),
         )],
         &[],
@@ -278,7 +278,9 @@ fn reflect_says_which_field_was_wrong() {
         "reflectbad",
         &[(
             "Lib.mw",
-            &format!("{USES}@compileTime def origin = {{ x = 40 }}\n\ndef main = sumOf!(origin)\n"),
+            &format!(
+                "{USES}@compileTime def origin = {{ x = 40 }}\n\ndef result = sumOf!(origin)\n"
+            ),
         )],
         &[],
     );

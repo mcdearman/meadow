@@ -12,7 +12,7 @@
 --
 --   use Std.Console (readLine, prompt)
 --
---   def main =
+--   fun main () =
 --     match prompt "your name: " with
 --     | Just name -> println (S.concat "hello, " name)
 --     | None -> println "nothing to read"

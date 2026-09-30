@@ -188,7 +188,21 @@ fun isOk (r : Result UnifyError ()) : Bool = match r with | Ok _ -> True | Err _
 fun candidateType (i : Inf s) (alt : Meaning) : Maybe Type ! { St s | e } =
   match alt with
   | Ctor c -> ctorType i c
-  | Value v -> M.map (\sc -> instantiate i sc) (schemeOf i v)
+  | Value v -> M.map (\sc -> openLatent i (instantiate i sc)) (schemeOf i v)
+
+-- `t` with the effect of every arrow it returns through left open, as
+-- `meadow_infer`'s `open_latent`: a function that does less than a use of it
+-- allows fits that use. Not a parameter's.
+fun openLatent (i : Inf s) (t : Type) : Type ! { St s | e } =
+  match zonk i.ar t with
+  | Fun params ret eff -> Fun params (openLatent i ret) (openTail i eff)
+  | other -> other
+
+fun openTail (i : Inf s) (row : Type) : Type ! { St s | e } =
+  match row with
+  | RowExtend l f rest -> RowExtend l f (openTail i rest)
+  | RowEmpty -> freshEffect i.ar
+  | other -> other
 
 -- Commit to candidate `k`.
 fun choose (i : Inf s) (p : Pending) (k : Int) : () ! { St s | e } =
@@ -201,7 +215,7 @@ fun choose (i : Inf s) (p : Pending) (k : Int) : () ! { St s | e } =
      | Ctor _ -> candidateType i alt) in
     let t =
       (match chosen with
-       | Just x -> x
+       | Just x -> openLatent i x
        | None ->
            (match alt with
             | Value v -> (let g = freshGlobal i.ar in let w = setScheme i v (mono g) in g)
@@ -972,8 +986,20 @@ fun registerTypes (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
   let a = here.a in
   let aliases = V.concatMap (\d -> match viewHirDecl a d with | HirDeclView.AliasDecl r -> [AliasSrc { name = typeCanon items (hirNameText a r.name), params = V.map (\n -> hirNameText a n) r.params, ty = r.ty }] | _ -> []) decls in
   let u = V.foldl (\w (x : AliasSrc) -> expandAlias i a aliases [] x.name) () aliases in
-  let v = V.foldl (\w d -> match viewHirDecl a d with | HirDeclView.TraitDecl r -> registerTraitDecl i a items r.name r.params r.supers r.assocs r.sigs r.defaults | _ -> ()) () decls in
-  V.foldl
+  -- An alias of effects: the closed row it stands for, its parameters bound.
+  let w0 =
+    V.foldl
+      (\w d ->
+        match viewHirDecl a d with
+        | HirDeclView.EffectAliasDecl r ->
+            let params = V.map (\n -> hirNameText a n) r.params in
+            let body = effOf i a r.row (indexed params) in
+            stSetRef i.aliases (H.insert (typeCanon items (hirNameText a r.name)) (AliasDef { params = V.len params, body = body }) (stGetRef i.aliases))
+        | _ -> ())
+      ()
+      decls in
+    let v = V.foldl (\w d -> match viewHirDecl a d with | HirDeclView.TraitDecl r -> registerTraitDecl i a items r.name r.params r.supers r.assocs r.sigs r.defaults | _ -> ()) () decls in
+    V.foldl
     (\w d ->
       match viewHirDecl a d with
       | HirDeclView.DataDecl r ->
@@ -1188,6 +1214,7 @@ fun inferImpl (i : Inf s) (here : Here) (tr : String) (methods : [HirBind]) (dic
         ()
         groups in
       let u9 = V.foldl (\w k -> inferTraits i (hereOf i k) (rootDecls r k) dicts) () order in
+      let u9b = checkMain i r in
       -- The unit is done.
       let u10 = solveOverloads i True in
       let quantified = V.foldl (\h (g : Generalized) -> V.foldl (\h2 v -> H.insert v True h2) h g.vars) H.empty (H.values (stGetRef i.generalized)) in
@@ -1199,6 +1226,40 @@ fun inferImpl (i : Inf s) (here : Here) (tr : String) (methods : [HirBind]) (dic
       let exported = V.foldl (\h id -> match schemeOf i id with | Just sc -> H.insert id (normalizeScheme i sc) h | None -> h) H.empty (stGetRef i.exports) in
       let dumps = V.map (\k -> dumpModule i r k general texts) (V.range 0 (V.len r.modules)) in
       Inferred { dumps = dumps, schemes = exported, types = ownTypes i })
+
+-- The effects the runtime answers itself: `Std.Eff`, `meadow_infer`'s
+-- `THREAD_EFFECTS`.
+def runtimeEffects : [String] = ["Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut"]
+
+-- The root module's `main` is `() -> () ! Eff`: given nothing, giving nothing
+-- back, and performing at most what the runtime answers -- as
+-- `meadow_infer`'s `check_main` holds it, after it is generalized.
+fun checkMain (i : Inf s) (r : Renamed) : () ! { St s | e } =
+  let mains = V.concatMap (\(d : Declared) -> if V.isEmpty d.path then V.filter (\(it : Item) -> it.kind == "v" and it.name == "main") d.items else []) r.modules in
+  match V.get mains 0 with
+  | None -> ()
+  | Just (it : Item) ->
+      (match H.lookup it.id (stGetRef i.generalized) with
+       | Just (g : Generalized) -> mainFits i g.scheme
+       | None -> ())
+
+fun mainFits (i : Inf s) (sc : Scheme) : () ! { St s | e } =
+  match zonk i.ar (instantiate i sc) with
+  | Fun params ret eff ->
+      if V.len params == 1 and fits i (V.getOr (unitT ()) params 0) (unitT ()) and fits i ret (unitT ()) then unanswered i (zonk i.ar eff)
+      else report i "`main` is `${showScheme sc}`, and has to be `() -> () ! Eff`"
+  | _ -> report i "`main` is `${showScheme sc}`, and has to be `() -> () ! Eff`"
+
+fun fits (i : Inf s) (a : Type) (b : Type) : Bool ! { St s | e } =
+  match unify i.ar a b with
+  | Ok _ -> True
+  | Err _ -> False
+
+-- What `main` performs that nobody would answer, said.
+fun unanswered (i : Inf s) (eff : Type) : () ! { St s | e } =
+  let names = V.filter (\l -> not (V.elem l runtimeEffects)) (V.map fst (labelsOf eff)) in
+  if V.isEmpty names then ()
+  else report i "`main` performs ${S.join ", " (V.map (\l -> "`${spelling l}`") names)}, which nothing would handle"
 
 fun emptyMod () : Mod = Mod { a = emptyArena (), file = "" }
 

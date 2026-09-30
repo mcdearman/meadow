@@ -154,9 +154,12 @@ fn a_let_bound_call_is_instantiated_at_what_is_bound() {
     let src = "fun step (c : String) (i : Int) : Int = if i >= 10 then i else step c (i + 1)\n\
                fun fold f (c : String) (i : Int) acc =\n\
                \x20 if i >= 3 then acc else let r = step c i in fold f c (i + 1) (f acc r)\n\
-               def main = fold (\\a x -> a + x) \"x\" 0 0\n";
-    let (program, diags) =
-        meadow::pipeline::compile_str_with_std("test", src, meadow::Options::debug());
+               def result = fold (\\a x -> a + x) \"x\" 0 0\n";
+    let (program, diags) = meadow::pipeline::compile_str_with_std(
+        "test",
+        src,
+        meadow::Options::debug().entry("result"),
+    );
     assert!(
         diags.is_empty(),
         "{:?}",

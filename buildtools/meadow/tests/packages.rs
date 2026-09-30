@@ -24,7 +24,10 @@ fn manifest_parses_cargo_style() {
 
 #[test]
 fn builds_app_against_a_path_dependency() {
-    let out = pipeline::build(&common::fixture("App"), meadow::Options::debug());
+    let out = pipeline::build(
+        &common::fixture("App"),
+        meadow::Options::debug().entry("result"),
+    );
     assert!(
         out.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
@@ -38,7 +41,10 @@ fn builds_app_against_a_path_dependency() {
 #[test]
 fn private_names_do_not_cross_package_boundaries() {
     // `util` exports `double` / `scale` (both `@pub`) but not `secret`.
-    let out = pipeline::build(&common::fixture("Util"), meadow::Options::debug());
+    let out = pipeline::build(
+        &common::fixture("Util"),
+        meadow::Options::debug().entry("result"),
+    );
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     let linked = out.linked.unwrap();
     let mut names: Vec<_> = linked
@@ -67,7 +73,10 @@ fn modules_are_compiled_in_dependency_order() {
     // `layers` has `Alpha.mw` (needs `Zeta`), `Zeta.mw` and `Main.mw`. Modules are
     // discovered in filename order, so `Alpha` comes first and everything it uses
     // comes later — inference and evaluation both have to sort that out.
-    let out = pipeline::build(&common::fixture("Layers"), meadow::Options::debug());
+    let out = pipeline::build(
+        &common::fixture("Layers"),
+        meadow::Options::debug().entry("result"),
+    );
     assert!(
         out.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
@@ -87,7 +96,7 @@ fn a_manifest_configures_the_build_profiles() {
 
     let dir = std::env::temp_dir().join("meadow-profile-manifest");
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def result = 1\n").unwrap();
     std::fs::write(
         dir.join("Meadow.toml"),
         "[package]\n\
@@ -161,7 +170,7 @@ fn a_manifest_chooses_the_backend() {
 
     let dir = std::env::temp_dir().join("meadow-backend-manifest");
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def result = 1\n").unwrap();
     std::fs::write(
         dir.join("Meadow.toml"),
         "[package]\n\
@@ -211,7 +220,7 @@ fn a_manifest_chooses_the_runtime_and_its_flags() {
 
     let dir = std::env::temp_dir().join("meadow-runtime-manifest");
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def result = 1\n").unwrap();
     std::fs::write(
         dir.join("Meadow.toml"),
         "[package]\n\
@@ -275,7 +284,7 @@ fn a_profile_section_can_ask_to_be_profiled() {
 
     let dir = std::env::temp_dir().join("meadow-profiled-manifest");
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def result = 1\n").unwrap();
     std::fs::write(
         dir.join("Meadow.toml"),
         "[package]\n\
@@ -305,7 +314,7 @@ fn prune_is_on_unless_a_manifest_or_a_flag_says_otherwise() {
 
     let dir = std::env::temp_dir().join("meadow-prune-manifest");
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("src/Main.mw"), "def main = 1\n").unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def result = 1\n").unwrap();
     std::fs::write(
         dir.join("Meadow.toml"),
         "[package]\n\
@@ -370,7 +379,7 @@ fn reexporting_pair(what: &str, main: &str) -> PathBuf {
 }
 
 fn run_app(app: &Path) -> String {
-    let out = pipeline::build(app, meadow::Options::debug());
+    let out = pipeline::build(app, meadow::Options::debug().entry("result"));
     if !out.diagnostics.is_empty() {
         return out
             .diagnostics
@@ -389,19 +398,22 @@ fn a_package_root_can_re_export_constructors_flat() {
     // Named in the `use`, as `use Shapes::Square` would be in Rust.
     let named = reexporting_pair(
         "named",
-        "use Shapes (area, Square)\ndef main = area (Square 4)\n",
+        "use Shapes (area, Square)\ndef result = area (Square 4)\n",
     );
     assert_eq!(run_app(&named), "16");
     // A bare `use` brings every one.
-    let all = reexporting_pair("all", "use Shapes\ndef main = area (Rect 2 3)\n");
+    let all = reexporting_pair("all", "use Shapes\ndef result = area (Rect 2 3)\n");
     assert_eq!(run_app(&all), "6");
     // Without either, they stay under their type.
     let qualified = reexporting_pair(
         "qualified",
-        "use Shapes (area, Shape)\ndef main = area (Shape.Square 3)\n",
+        "use Shapes (area, Shape)\ndef result = area (Shape.Square 3)\n",
     );
     assert_eq!(run_app(&qualified), "9");
-    let unnamed = reexporting_pair("unnamed", "use Shapes (area)\ndef main = area (Square 4)\n");
+    let unnamed = reexporting_pair(
+        "unnamed",
+        "use Shapes (area)\ndef result = area (Square 4)\n",
+    );
     assert!(
         run_app(&unnamed).contains("unknown constructor `Square`"),
         "{}",
@@ -456,7 +468,7 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
     let both = two_shapes(
         "both",
         "use Shapes (shapesArea, shapesUnit)\nuse Figures (figuresArea, figuresUnit)\n\
-         def main = (shapesArea shapesUnit, figuresArea figuresUnit)\n",
+         def result = (shapesArea shapesUnit, figuresArea figuresUnit)\n",
     );
     assert_eq!(run_app(&both), "(1, 3)");
     // One package's value is no value of the other's type: this used to
@@ -464,7 +476,7 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
     let crossed = two_shapes(
         "crossed",
         "use Shapes (shapesArea)\nuse Figures (figuresUnit)\n\
-         def main = shapesArea figuresUnit\n",
+         def result = shapesArea figuresUnit\n",
     );
     let got = run_app(&crossed);
     // A package is named with its version, since two copies of one package at
@@ -479,7 +491,7 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
     );
     // Named bare, `Shape` is neither's: a dependency's type is in scope only
     // where a `use` brings it.
-    let unnamed = two_shapes("unnamed", "fun f (s : Shape) = s\ndef main = 1\n");
+    let unnamed = two_shapes("unnamed", "fun f (s : Shape) = s\ndef result = 1\n");
     assert!(
         run_app(&unnamed).contains("unknown type `Shape`"),
         "{}",
@@ -488,7 +500,7 @@ fn two_packages_may_each_declare_a_type_of_one_name() {
     let chosen = two_shapes(
         "chosen",
         "use Shapes (Shape, shapesArea)\nfun f (s : Shape) = shapesArea s\n\
-         def main = f (Shape.Square 5)\n",
+         def result = f (Shape.Square 5)\n",
     );
     assert_eq!(run_app(&chosen), "25");
 }
@@ -501,7 +513,7 @@ fn a_type_of_the_package_itself_shadows_one_of_the_same_name_elsewhere() {
         "local",
         "data Shape = Dot\ndata Parser = Parser Int\n\
          fun f (s : Shape) = match s with | Shape.Dot -> 7\n\
-         def main = (f Shape.Dot, match Parser 2 with | Parser n -> n)\n",
+         def result = (f Shape.Dot, match Parser 2 with | Parser n -> n)\n",
     );
     assert_eq!(run_app(&local), "(7, 2)");
 }

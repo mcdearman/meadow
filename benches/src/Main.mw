@@ -143,7 +143,7 @@ fun buildVector n = foldl (\v i -> pushBack v i) empty (range 0 n)
 -- allocator more than it measures strings.
 fun joinNumbers n = S.concatAll (map S.fromInt (range 0 n))
 
-def main =
+fun main () =
   runAll
     -- Throughput in calls per second, so the three are directly comparable.
     [ benchUnits "ack 2 6" (ackCalls 2 6) (\u -> ack 2 6)

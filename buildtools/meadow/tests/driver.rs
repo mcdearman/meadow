@@ -42,17 +42,12 @@ fn meadow(dir: &Path, args: &[&str]) -> (bool, String, String) {
     )
 }
 
-/// The line a run ends with.
+/// The last line a run printed.
 fn answer(stdout: &str) -> &str {
-    stdout
-        .lines()
-        .rev()
-        .find(|l| l.starts_with("=> "))
-        .unwrap_or("")
+    stdout.lines().last().unwrap_or("")
 }
 
-const ARGS: &str =
-    "use Std.Process\nuse Std.Collections.Vector as V\n\ndef main = V.toList (argv ())\n";
+const ARGS: &str = "use Std.Process\nuse Std.Collections.Vector as V\n\nfun main () = println \"${V.toList (argv ()):?}\"\n";
 
 #[test]
 fn a_program_gets_what_follows_the_double_dash() {
@@ -66,13 +61,13 @@ fn a_program_gets_what_follows_the_double_dash() {
         assert!(ok, "{err}");
         assert_eq!(
             answer(&out),
-            r#"=> ["one"; "two words"; "--three"]"#,
+            r#"["one"; "two words"; "--three"]"#,
             "{engine:?}"
         );
     }
     let (ok, out, err) = meadow(&root, &["run", "."]);
     assert!(ok, "{err}");
-    assert_eq!(answer(&out), "=> []", "and nothing, given nothing");
+    assert_eq!(answer(&out), "[;]", "and nothing, given nothing");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -82,7 +77,7 @@ fn bytes_are_written_as_they_are() {
     let root = package(
         &dir,
         "bytes",
-        "use Std.Fs\n\ndef main =\n  let w = writeBytes (\"out.bin\", #[0xff, 0x00, 0x41, 0x80]) in\n  (w, readBytes \"out.bin\")\n",
+        "use Std.Fs\n\nfun main () =\n  let w = writeBytes (\"out.bin\", #[0xff, 0x00, 0x41, 0x80]) in\n  println \"${(w, readBytes \"out.bin\"):?}\"\n",
     );
     for engine in [&[][..], &["--backend", "vm"], &["--cek"]] {
         let mut args = vec!["run"];
@@ -90,7 +85,7 @@ fn bytes_are_written_as_they_are() {
         args.push(".");
         let (ok, out, err) = meadow(&root, &args);
         assert!(ok, "{err}");
-        assert_eq!(answer(&out), "=> (Ok(()), Ok(#[255, 0, 65, 128]))");
+        assert_eq!(answer(&out), "(Ok(()), Ok(#[255, 0, 65, 128]))");
         assert_eq!(
             std::fs::read(root.join("out.bin")).unwrap(),
             [0xff, 0, 0x41, 0x80]
@@ -112,7 +107,7 @@ fn an_image_runs_on_its_own() {
     for backend in ["jit", "vm"] {
         let (ok, out, err) = meadow(&dir, &["exec", &image, "--backend", backend, "--", "x"]);
         assert!(ok, "{err}");
-        assert_eq!(answer(&out), r#"=> ["x"]"#);
+        assert_eq!(answer(&out), r#"["x"]"#);
     }
     let (ok, _, err) = meadow(&dir, &["exec", &root.join("Meadow.toml").to_string_lossy()]);
     assert!(!ok);
@@ -140,7 +135,7 @@ fn an_image_runs_on_its_own() {
 #[test]
 fn a_program_that_does_not_compile_is_not_run() {
     let dir = scratch("errors");
-    let root = package(&dir, "broken", "def main = 1 + \"one\"\n");
+    let root = package(&dir, "broken", "fun main () = println (1 + \"one\")\n");
     let (ok, out, err) = meadow(&root, &["run", "."]);
     assert!(!ok);
     assert!(err.contains("mismatch") || err.contains("integer"), "{err}");
@@ -203,7 +198,7 @@ fun loop (n : Int) =
           | Just body -> (let u = println \"[${body}]\" in loop (n + 1))
           | None -> println \"cut short\")
 
-def main = loop 0
+fun main () = loop 0
 ",
     );
     let input = "Content-Length: 7\r\n\r\n{\"a\":1}Content-Length: 14\r\n\r\n{\"method\":\"x\"}Content-Length: 50\r\n\r\nshort";
@@ -239,20 +234,20 @@ fn runs(who: &str, main: &str) -> String {
 #[test]
 fn many_nested_lets_compile() {
     let n = 600;
-    let mut src = String::from("def main =\n");
+    let mut src = String::from("fun main () =\n");
     for i in 0..n {
         src.push_str(&format!("  let x{i} = {i} in\n"));
     }
-    src.push_str(&format!("  x{}\n", n - 1));
-    assert_eq!(runs("nested_lets", &src), format!("=> {}", n - 1));
+    src.push_str(&format!("  println x{}\n", n - 1));
+    assert_eq!(runs("nested_lets", &src), format!("{}", n - 1));
 }
 
 #[test]
 fn a_long_chain_of_additions_compiles() {
     let n = 600;
     let terms: Vec<String> = (1..=n).map(|i| i.to_string()).collect();
-    let src = format!("def main = {}\n", terms.join(" + "));
-    assert_eq!(runs("long_sum", &src), format!("=> {}", n * (n + 1) / 2));
+    let src = format!("fun main () = println ({})\n", terms.join(" + "));
+    assert_eq!(runs("long_sum", &src), format!("{}", n * (n + 1) / 2));
 }
 
 #[test]
@@ -261,10 +256,10 @@ fn a_long_literal_compiles() {
     let n = 800;
     let items: Vec<String> = (1..=n).map(|i| i.to_string()).collect();
     let src = format!(
-        "use Std.Collections.Vector as V\n\ndef main = V.len [{}]\n",
+        "use Std.Collections.Vector as V\n\nfun main () = println (V.len [{}])\n",
         items.join(", ")
     );
-    assert_eq!(runs("long_literal", &src), format!("=> {n}"));
+    assert_eq!(runs("long_literal", &src), format!("{n}"));
 }
 
 #[test]
@@ -272,8 +267,8 @@ fn a_macro_a_hundred_calls_deep_compiles() {
     let args: Vec<String> = (1..=120).map(|i| i.to_string()).collect();
     let src = format!(
         "macro sum\n  | ($x) -> {{ $x }}\n  | ($x, $( $r ),+) -> {{ $x + sum!($( $r ),+) }}\n\n\
-         def main = sum!({})\n",
+         fun main () = println (sum!({}))\n",
         args.join(", ")
     );
-    assert_eq!(runs("deep_macro", &src), "=> 7260");
+    assert_eq!(runs("deep_macro", &src), "7260");
 }

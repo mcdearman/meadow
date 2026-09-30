@@ -467,11 +467,15 @@ mod tests {
                     // A `:` command is the REPL's, and there is nothing here
                     // that could compile it.
                     Line::Command => continue,
-                    Line::Decl => format!("{decls}{line}\n\ndef main = 1\n"),
-                    Line::Expr => format!("{decls}def main = {line}\n"),
+                    Line::Decl => format!("{decls}{line}\n\ndef it = 1\n"),
+                    Line::Expr => format!("{decls}def it = {line}\n"),
                 };
-                let (_, diags) =
-                    crate::pipeline::compile_str_with_std("tour", &source, crate::Options::debug());
+                // As the REPL runs a line: as `it`, a value to show.
+                let (_, diags) = crate::pipeline::compile_str_with_std(
+                    "tour",
+                    &source,
+                    crate::Options::debug().entry("it"),
+                );
                 assert!(
                     diags.is_empty(),
                     "step {} ({}): `{line}` does not compile: {:?}",

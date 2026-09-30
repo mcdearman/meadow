@@ -65,7 +65,7 @@ fun before text starts lens counts (a : Int) (b : Int) =
         if x != y then x < y else go (i + 1)
     in go 0
 
-def main =
+fun main () =
   let text = Fs.readToStringOr "" "work/corpus.txt" in
   let size = Str.byteLength text in
   let top = runSt (\() ->

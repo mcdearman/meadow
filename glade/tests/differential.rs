@@ -21,24 +21,21 @@
 //! purpose. Anything the lowering cannot translate is asserted *loudly*: a case
 //! that silently reported `Unsupported` and passed would be worse than no case.
 
-use meadow_compiler::{compile_str, core};
+use meadow_compiler::{Options, compile_str_with, core};
 use meadow_seq::machine;
 
 /// How many steps a case may take. Generous — a bug that loops should fail a
 /// test, not hang one.
 const FUEL: u64 = 20_000_000;
 
-/// Compile a source string to a `core::Program` whose entry point is `main`.
+/// Compile a source string to a `core::Program` whose entry point is the
+/// value `result`.
 fn program(src: &str) -> core::Program {
-    let (pkg, diags) = compile_str("diff", src);
+    let (pkg, diags) = compile_str_with("diff", src, Options::default().entry("result"));
     let hard: Vec<_> = diags.iter().map(|d| d.msg.clone()).collect();
     assert!(hard.is_empty(), "compile errors:\n{}", hard.join("\n"));
-    let entry = pkg
-        .exports
-        .iter()
-        .find(|e| &*e.name == "main")
-        .map(|e| e.var);
-    assert!(entry.is_some(), "the case has no `main`");
+    let entry = pkg.value_entry;
+    assert!(entry.is_some(), "the case has no `result`");
     core::Program {
         defs: pkg.defs.clone(),
         entry,
@@ -156,14 +153,14 @@ fn image(prog: &core::Program) -> meadow_bytecode::Program {
 #[test]
 fn interpolated_strings() {
     assert_eq!(
-        agree(r#"def main = "a ${1 + 2} b ${"c"} ${'d'} ${(1, 2.5)} \${e}""#),
+        agree(r#"def result = "a ${1 + 2} b ${"c"} ${'d'} ${(1, 2.5)} \${e}""#),
         r#""a 3 b c 'd' (1, 2.5) ${e}""#
     );
     // Holes in holes, and a hole with nothing around it.
     assert_eq!(
         agree(
             r#"fun f (n : Int) = "<${n}>"
-                 def main = "${f 1}${"${f 2}${f 3}"}""#
+                 def result = "${f 1}${"${f 2}${f 3}"}""#
         ),
         r#""<1><2><3>""#
     );
@@ -171,61 +168,61 @@ fn interpolated_strings() {
 
 #[test]
 fn literals() {
-    assert_eq!(agree("def main = 42"), "42");
-    assert_eq!(agree("def main = ()"), "()");
-    assert_eq!(agree("def main = 'q'"), "'q'");
-    assert_eq!(agree(r#"def main = "hi""#), "\"hi\"");
-    assert_eq!(agree("def main = 1.5 +. 1.0"), "2.5");
+    assert_eq!(agree("def result = 42"), "42");
+    assert_eq!(agree("def result = ()"), "()");
+    assert_eq!(agree("def result = 'q'"), "'q'");
+    assert_eq!(agree(r#"def result = "hi""#), "\"hi\"");
+    assert_eq!(agree("def result = 1.5 +. 1.0"), "2.5");
 }
 
 #[test]
 fn arithmetic_nests_and_keeps_its_order() {
-    assert_eq!(agree("def main = 2 + 2"), "4");
-    assert_eq!(agree("def main = 1 + 2 * 3 - 4"), "3");
+    assert_eq!(agree("def result = 2 + 2"), "4");
+    assert_eq!(agree("def result = 1 + 2 * 3 - 4"), "3");
     // Left to right, and each operand's continuation has to keep the operands
     // already computed alive — the case that catches a wrong `keep` set.
-    assert_eq!(agree("def main = (1 + 2) * (3 + 4) - (5 + 6)"), "10");
+    assert_eq!(agree("def result = (1 + 2) * (3 + 4) - (5 + 6)"), "10");
 }
 
 #[test]
 fn comparisons_and_conditionals() {
-    assert_eq!(agree("def main = if 1 < 2 then 10 else 20"), "10");
-    assert_eq!(agree("def main = if 1 > 2 then 10 else 20"), "20");
+    assert_eq!(agree("def result = if 1 < 2 then 10 else 20"), "10");
+    assert_eq!(agree("def result = if 1 > 2 then 10 else 20"), "20");
     // Both branches have to see the same environment, and it is not the one the
     // scrutinee was computed in.
     assert_eq!(
-        agree("def main = let x = 5 in if x < 3 then x * 2 else x * 3"),
+        agree("def result = let x = 5 in if x < 3 then x * 2 else x * 3"),
         "15"
     );
 }
 
 #[test]
 fn let_bindings_nest_and_shadow() {
-    assert_eq!(agree("def main = let x = 1 in x + 1"), "2");
-    assert_eq!(agree("def main = let x = 1 in let y = 2 in x + y"), "3");
+    assert_eq!(agree("def result = let x = 1 in x + 1"), "2");
+    assert_eq!(agree("def result = let x = 1 in let y = 2 in x + y"), "3");
     // The inner `x` must not be captured as the outer one.
-    assert_eq!(agree("def main = let x = 1 in let x = x + 10 in x"), "11");
+    assert_eq!(agree("def result = let x = 1 in let x = x + 10 in x"), "11");
 }
 
 // --- codata ---------------------------------------------------------------
 
 #[test]
 fn a_lambda_is_codata_with_one_method() {
-    assert_eq!(agree("def main = (\\x -> x + 1) 41"), "42");
-    assert_eq!(agree("def main = (\\x -> \\y -> x - y) 10 3"), "7");
+    assert_eq!(agree("def result = (\\x -> x + 1) 41"), "42");
+    assert_eq!(agree("def result = (\\x -> \\y -> x - y) 10 3"), "7");
 }
 
 #[test]
 fn a_closure_captures_exactly_what_it_needs() {
     assert_eq!(
-        agree("def main = let n = 10 in let f = \\x -> x + n in f 32"),
+        agree("def result = let n = 10 in let f = \\x -> x + n in f 32"),
         "42"
     );
     // Two closures over different bindings, alive at the same time: the
     // capture lists have to be independent.
     assert_eq!(
         agree(
-            "def main =
+            "def result =
                let a = 1 in
                let f = \\x -> x + a in
                let b = 100 in
@@ -268,7 +265,7 @@ fn a_call_that_stops_entering_what_it_was_seen_to_enter() {
                                   + p + q + r + s + t + u + v + w + x + y + z) 0
              fun loop (n : Int) (acc : Int) =
                if n == 0 then acc else loop (n - 1) (acc + wide n 2 3 4 5 + many n)
-             def main = (run 40 0, loop 30 0)"
+             def result = (run 40 0, loop 30 0)"
         ),
         "(16, 26280)"
     );
@@ -279,7 +276,7 @@ fn functions_are_values() {
     assert_eq!(
         agree(
             "fun twice f x = f (f x)
-             def main = twice (\\n -> n * 3) 2"
+             def result = twice (\\n -> n * 3) 2"
         ),
         "18"
     );
@@ -288,7 +285,7 @@ fn functions_are_values() {
     assert_eq!(
         agree(
             "fun adder n = \\m -> n + m
-             def main = (adder 40) 2"
+             def result = (adder 40) 2"
         ),
         "42"
     );
@@ -301,14 +298,14 @@ fn a_global_reference_is_a_jump() {
     assert_eq!(
         agree(
             "def x = 21
-             def main = x + x"
+             def result = x + x"
         ),
         "42"
     );
     // Definition order in the source is not call order.
     assert_eq!(
         agree(
-            "def main = a + b
+            "def result = a + b
              def a = 1
              def b = 2"
         ),
@@ -321,14 +318,14 @@ fn recursion_needs_no_back_patching() {
     assert_eq!(
         agree(
             "fun fact n = if n <= 1 then 1 else n * fact (n - 1)
-             def main = fact 10"
+             def result = fact 10"
         ),
         "3628800"
     );
     assert_eq!(
         agree(
             "fun fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
-             def main = fib 20"
+             def result = fib 20"
         ),
         "6765"
     );
@@ -338,7 +335,7 @@ fn recursion_needs_no_back_patching() {
         agree(
             "fun isEven n = if n == 0 then 0 == 0 else isOdd (n - 1)
              fun isOdd n = if n == 0 then 0 == 1 else isEven (n - 1)
-             def main = isEven 100"
+             def result = isEven 100"
         ),
         "True"
     );
@@ -352,7 +349,7 @@ fn a_deep_tail_call_does_not_grow_anything() {
     assert_eq!(
         agree(
             "fun count n acc = if n == 0 then acc else count (n - 1) (acc + n)
-             def main = count 100000 0"
+             def result = count 100000 0"
         ),
         "5000050000"
     );
@@ -365,14 +362,14 @@ fn constructors_build_data() {
     assert_eq!(
         agree(
             "use Shape.*\ndata Shape = Circle Int | Rect Int Int
-             def main = Rect 3 4"
+             def result = Rect 3 4"
         ),
         "Rect(3, 4)"
     );
     assert_eq!(
         agree(
             "use Shape.*\ndata Shape = Circle Int | Rect Int Int
-             def main = Circle (1 + 2)"
+             def result = Circle (1 + 2)"
         ),
         "Circle(3)"
     );
@@ -380,8 +377,8 @@ fn constructors_build_data() {
 
 #[test]
 fn tuples_are_data_too() {
-    assert_eq!(agree("def main = (1, 2)"), "(1, 2)");
-    assert_eq!(agree("def main = (1 + 1, (2, 3))"), "(2, (2, 3))");
+    assert_eq!(agree("def result = (1, 2)"), "(1, 2)");
+    assert_eq!(agree("def result = (1 + 1, (2, 3))"), "(2, (2, 3))");
 }
 
 // --- the shape of the failure --------------------------------------------
@@ -396,7 +393,7 @@ fn matching_on_a_constructor() {
              fun area s = match s with
                | Circle r -> 3 * r * r
                | Rect w h -> w * h
-             def main = area (Rect 3 4) + area (Circle 2)"
+             def result = area (Rect 3 4) + area (Circle 2)"
         ),
         "24"
     );
@@ -410,7 +407,7 @@ fn arms_are_tried_in_order_and_a_wildcard_catches() {
                | 0 -> \"zero\"
                | 1 -> \"one\"
                | _ -> \"many\"
-             def main = (classify 0, classify 1, classify 7)"
+             def result = (classify 0, classify 1, classify 7)"
         ),
         "(\"zero\", \"one\", \"many\")"
     );
@@ -429,7 +426,7 @@ fn nested_patterns_backtrack_into_the_next_arm() {
                | Some 0 -> \"zero\"
                | Some n -> \"some\"
                | None   -> \"none\"
-             def main = (f (Some 0), f (Some 5), f None)"
+             def result = (f (Some 0), f (Some 5), f None)"
         ),
         "(\"zero\", \"some\", \"none\")"
     );
@@ -443,7 +440,7 @@ fn deeply_nested_constructor_patterns() {
              fun sum t = match t with
                | Leaf -> 0
                | Node l v r -> sum l + v + sum r
-             def main = sum (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))"
+             def result = sum (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))"
         ),
         "6"
     );
@@ -455,7 +452,7 @@ fn tuple_and_as_patterns() {
         agree(
             "fun swap p = match p with
                | (a, b) -> (b, a)
-             def main = swap (1, 2)"
+             def result = swap (1, 2)"
         ),
         "(2, 1)"
     );
@@ -466,7 +463,7 @@ fn tuple_and_as_patterns() {
              fun f x = match x with
                | Some n -> n
                | None -> 0
-             def main = f (Some 7)"
+             def result = f (Some 7)"
         ),
         "7"
     );
@@ -479,7 +476,7 @@ fn a_non_exhaustive_match_fails_the_same_way_everywhere() {
     let prog = program(
         "use Opt.*\ndata Opt = None | Some Int
          fun f x = match x with | Some n -> n
-         def main = f None",
+         def result = f None",
     );
     let cek = meadow_eval::run(&prog).expect_err("CEK should fail");
     let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
@@ -501,7 +498,7 @@ fn a_recursive_data_type_end_to_end() {
              fun total xs = match xs with
                | Nil -> 0
                | Cons x rest -> x + total rest
-             def main = total (range 100)"
+             def result = total (range 100)"
         ),
         "5050"
     );
@@ -520,7 +517,7 @@ fn a_lookalike_type_is_not_mistaken_for_the_builtin_list() {
     assert_eq!(
         agree(
             "use Chain.*\ndata Chain = Nil | Cons Int Chain
-             def main = Cons 1 (Cons 2 (Cons 3 Nil))"
+             def result = Cons 1 (Cons 2 (Cons 3 Nil))"
         ),
         "Cons(1, Cons(2, Cons(3, Nil)))"
     );
@@ -530,13 +527,13 @@ fn a_lookalike_type_is_not_mistaken_for_the_builtin_list() {
 
 #[test]
 fn records_build_and_select() {
-    assert_eq!(agree("def main = { x = 1, y = 2 }"), "{ x = 1, y = 2 }");
-    assert_eq!(agree("def main = { x = 1, y = 2 }.y"), "2");
+    assert_eq!(agree("def result = { x = 1, y = 2 }"), "{ x = 1, y = 2 }");
+    assert_eq!(agree("def result = { x = 1, y = 2 }.y"), "2");
     // Row polymorphism: one accessor, records of different shapes.
     assert_eq!(
         agree(
             "fun getX r = r.x
-             def main = (getX { x = 1 }, getX { x = 5, other = 9 })"
+             def result = (getX { x = 1 }, getX { x = 5, other = 9 })"
         ),
         "(1, 5)"
     );
@@ -583,7 +580,7 @@ fn a_record_pattern_matches_the_fields_it_names() {
     assert_eq!(
         agree(
             "fun getX r = match r with | { x = v } -> v
-             def main = getX { x = 42 }"
+             def result = getX { x = 42 }"
         ),
         "42"
     );
@@ -591,14 +588,14 @@ fn a_record_pattern_matches_the_fields_it_names() {
 
 #[test]
 fn arrays_build_and_match_by_length() {
-    assert_eq!(agree("def main = #[1, 2, 3]"), "#[1, 2, 3]");
-    assert_eq!(agree("def main = arrayLen #[1, 2, 3]"), "3");
+    assert_eq!(agree("def result = #[1, 2, 3]"), "#[1, 2, 3]");
+    assert_eq!(agree("def result = arrayLen #[1, 2, 3]"), "3");
     assert_eq!(
         agree(
             "fun f a = match a with
                | #[x, y] -> x + y
                | _ -> 0
-             def main = (f #[3, 4], f #[1, 2, 3])"
+             def result = (f #[3, 4], f #[1, 2, 3])"
         ),
         "(7, 0)"
     );
@@ -611,10 +608,13 @@ fn tuple_projection_does_not_need_the_arity() {
     // to name every field, and the arity is not in the term. It becomes a field
     // extern instead.
     assert_eq!(
-        agree("fun addPair (a, b) = a + b\ndef main = addPair (1, 2)"),
+        agree("fun addPair (a, b) = a + b\ndef result = addPair (1, 2)"),
         "3"
     );
-    assert_eq!(agree("def main = let (a, b, c) = (10, 20, 30) in b"), "20");
+    assert_eq!(
+        agree("def result = let (a, b, c) = (10, 20, 30) in b"),
+        "20"
+    );
 }
 
 // --- effects --------------------------------------------------------------
@@ -624,7 +624,7 @@ fn a_handler_that_never_resumes_aborts_the_body() {
     assert_eq!(
         agree(
             "effect Abort { bail : () -> Int }
-             def main =
+             def result =
                handle 1 + bail () with {
                  bail u k -> 99
                }"
@@ -642,7 +642,7 @@ fn a_handler_that_resumes_continues_the_body_in_place() {
     assert_eq!(
         agree(
             "effect Ask { ask : () -> Int }
-             def main =
+             def result =
                handle ask () + 1 with {
                  ask u k -> k 5 + 100
                }"
@@ -668,7 +668,7 @@ fn a_handler_inside_another_handlers_body_performs_outwards() {
                  handle producer () with { yield x k -> let _ = yield (f x) in k (), return r -> () }
                fun toList producer =
                  handle producer () with { yield x k -> Cons x (k ()), return r -> Nil }
-               def main = toList (\\() -> map (\\x -> x * 2) (\\() -> range 0 4))";
+               def result = toList (\\() -> map (\\x -> x * 2) (\\() -> range 0 4))";
     assert_eq!(agree(src), "Cons(0, Cons(2, Cons(4, Cons(6, Nil))))");
 }
 
@@ -679,7 +679,7 @@ fn handlers_are_deep() {
     assert_eq!(
         agree(
             "effect Ask { ask : () -> Int }
-             def main =
+             def result =
                handle ask () + ask () with {
                  ask u k -> k 5
                }"
@@ -691,7 +691,7 @@ fn handlers_are_deep() {
         agree(
             "effect Ask { ask : () -> Int }
              fun twice u = ask () + ask ()
-             def main = handle twice () with { ask u k -> k 3 }"
+             def result = handle twice () with { ask u k -> k 3 }"
         ),
         "6"
     );
@@ -702,7 +702,7 @@ fn a_return_clause_transforms_the_final_value() {
     assert_eq!(
         agree(
             "effect Ask { ask : () -> Int }
-             def main =
+             def result =
                handle ask () with {
                  ask u k -> k 2,
                  return x -> x * 10
@@ -720,7 +720,7 @@ fn state_by_hand_is_a_handler_returning_a_function() {
     assert_eq!(
         agree(
             "effect St { get : () -> Int, put : Int -> () }
-             def main =
+             def result =
                let f =
                  handle
                    let a = get () in
@@ -743,7 +743,7 @@ fn a_nested_handler_takes_precedence_over_an_outer_one() {
     assert_eq!(
         agree(
             "effect Ask { ask : () -> Int }
-             def main =
+             def result =
                handle
                  (handle ask () with { ask u k -> k 1 }) + ask ()
                with {
@@ -758,7 +758,7 @@ fn a_nested_handler_takes_precedence_over_an_outer_one() {
 fn resuming_twice_is_refused_everywhere() {
     let prog = program(
         "effect Ask { ask : () -> Int }
-         def main =
+         def result =
            handle ask () with {
              ask u k -> k 1 + k 2
            }",
@@ -793,7 +793,7 @@ fn nothing_in_core_is_left_untranslated() {
 
          fun addPair (a, b) = a + b
 
-         def main =
+         def result =
            let opt = Some 3 in
            let arr = #[1, 2, 3] in
            let r = sum (chain 4) in
@@ -850,7 +850,7 @@ fn the_collector_runs_and_the_answer_survives_it() {
                fun total xs = match xs with
                  | Nil -> 0
                  | Cons x rest -> x + total rest
-               def main = total (build 200000)";
+               def result = total (build 200000)";
     let (out, collections, allocated) = run_on_vm(src);
     assert_eq!(out, "20000100000");
     assert!(
@@ -876,7 +876,7 @@ fn garbage_is_actually_reclaimed() {
                fun step n = let pair = (n, n) in loop 10 0
                fun outer n acc =
                  if n == 0 then acc else outer (n - 1) (acc + step n)
-               def main = outer 20000 0";
+               def result = outer 20000 0";
     let (out, collections, _) = run_on_vm(src);
     assert_eq!(out, "200000");
     assert!(collections > 0);
@@ -893,7 +893,7 @@ fn a_cycle_through_a_mutable_cell_does_not_leak_the_program() {
                    let cell = newRef 0 in
                    let ignored = setRef cell (getRef cell + n) in
                    getRef cell + spin (n - 1)
-               def main = spin 20000";
+               def result = spin 20000";
     assert_eq!(agree(src), "200010000");
 }
 
@@ -904,7 +904,7 @@ fn a_deep_tail_loop_costs_the_vm_no_stack() {
     // one accumulator alive and everything else has to go.
     let (out, _, _) = run_on_vm(
         "fun count n acc = if n == 0 then acc else count (n - 1) (acc + n)
-         def main = count 100000 0",
+         def result = count 100000 0",
     );
     assert_eq!(out, "5000050000");
 }
@@ -921,11 +921,11 @@ fn a_deep_tail_loop_costs_the_vm_no_stack() {
 fn constructors_print_bare_and_agree() {
     // No `Std` here, so every constructor is one these cases declare.
     assert_eq!(
-        agree("use Box.*\ndata Box = Wrap Int\ndef main = Wrap 3"),
+        agree("use Box.*\ndata Box = Wrap Int\ndef result = Wrap 3"),
         "Wrap(3)"
     );
     assert_eq!(
-        agree("use Colour.*\ndata Colour = Red | Green\ndef main = (Red, Green)"),
+        agree("use Colour.*\ndata Colour = Red | Green\ndef result = (Red, Green)"),
         "(Red, Green)"
     );
     // Two types owning one constructor name — the reason the qualified form
@@ -934,7 +934,7 @@ fn constructors_print_bare_and_agree() {
         agree(
             "use Tree.*\ndata Tree = Leaf | Node Tree Tree\n\
              use Rope.*\ndata Rope = Leaf String | Node Rope Rope\n\
-             def main = (Tree.Leaf, Rope.Leaf \"s\")"
+             def result = (Tree.Leaf, Rope.Leaf \"s\")"
         ),
         "(Leaf, Leaf(\"s\"))"
     );
@@ -952,7 +952,7 @@ fn a_constant_constructor_is_the_same_wherever_it_is_mentioned() {
              def nothing : [a;] = [;]\n\
              fun count (n : Int) (acc : Int) : Int =\n\
              \x20 if n == 0 then acc else count (n - 1) (match none with | A -> acc + 1 | B _ -> acc)\n\
-             def main = (count 10 0, 1 :: nothing, \"x\" :: nothing)"
+             def result = (count 10 0, 1 :: nothing, \"x\" :: nothing)"
         ),
         "(10, [1], [\"x\"])"
     );
@@ -968,7 +968,7 @@ fn a_records_fields_select_by_name_everywhere() {
         agree(
             "record Point = { x : Int, y : Int }\n\
              def origin = Point { x = 3, y = 4 }\n\
-             def main = (origin.y, origin.x, (Point { x = 1, y = 2 }).y)"
+             def result = (origin.y, origin.x, (Point { x = 1, y = 2 }).y)"
         ),
         "(4, 3, 2)"
     );
@@ -976,7 +976,7 @@ fn a_records_fields_select_by_name_everywhere() {
     assert_eq!(
         agree(
             "record Pair = { second : Int, first : Int }\n\
-             def main = let p = Pair { first = 1, second = 2 } in (p.first, p.second)"
+             def result = let p = Pair { first = 1, second = 2 } in (p.first, p.second)"
         ),
         "(1, 2)"
     );
@@ -988,7 +988,7 @@ fn a_records_fields_select_by_name_everywhere() {
             "record Box a = { item : a, count : Int, weight : Float }\n\
              fun weigh (b : Box a) : Float = b.weight *. 2.0\n\
              fun first (b : Box [Int;]) : [Int;] = b.item\n\
-             def main = let b = Box { weight = 1.5, item = [4; 5], count = 3 } in\n\
+             def result = let b = Box { weight = 1.5, item = [4; 5], count = 3 } in\n\
              \x20 (weigh b, first b, b.count)"
         ),
         "(3.0, [4; 5], 3)"
@@ -1003,7 +1003,7 @@ fn hashes_agree_everywhere() {
     agree(
         "use Shape.*\ndata Shape = Circle Int | Rect Int Int\n\
          record Point = { x : Int, y : Int }\n\
-         def main =\n\
+         def result =\n\
          \x20 ( hash 0, hash (-7), hash 1.5, hash (-0.0), hash True, hash 'q'\n\
          \x20 , hash \"a string past eight bytes\", hash ()\n\
          \x20 , hash (1, \"two\", 3.0), hash [1; 2; 3], hash #[4, 5]\n\
@@ -1017,7 +1017,7 @@ fn hashes_agree_everywhere() {
 fn equal_values_hash_alike() {
     assert_eq!(
         agree(
-            "def main =\n\
+            "def result =\n\
              \x20 ( hash 0.0 == hash (-0.0)\n\
              \x20 , hash { a = 1, b = 2 } == hash { b = 2, a = 1 }\n\
              \x20 , hash (1 :: 2 :: [;]) == hash [1; 2]\n\
@@ -1034,7 +1034,7 @@ fn mutable_arrays_agree_everywhere() {
     assert_eq!(
         agree(
             "fun fill a i n = if i >= n then () else let _ = stSetArray a i (i * i) in fill a (i + 1) n\n\
-             def main = runSt (\\() ->\n\
+             def result = runSt (\\() ->\n\
              \x20 let a = stNewArray 5 0 in\n\
              \x20 let _ = fill a 0 5 in\n\
              \x20 let frozen = stFreeze a in\n\
@@ -1056,17 +1056,17 @@ fn mutable_arrays_agree_everywhere() {
 
 #[test]
 fn a_fixed_width_integer_wraps_at_its_width() {
-    assert_eq!(agree("def main = toUInt8 250 + toUInt8 10"), "4");
-    assert_eq!(agree("def main = toInt8 127 + toInt8 1"), "-128");
-    assert_eq!(agree("def main = toUInt16 0 - toUInt16 1"), "65535");
-    assert_eq!(agree("def main = toInt32 65536 * toInt32 65536"), "0");
+    assert_eq!(agree("def result = toUInt8 250 + toUInt8 10"), "4");
+    assert_eq!(agree("def result = toInt8 127 + toInt8 1"), "-128");
+    assert_eq!(agree("def result = toUInt16 0 - toUInt16 1"), "65535");
+    assert_eq!(agree("def result = toInt32 65536 * toInt32 65536"), "0");
     assert_eq!(
-        agree("def main = toUInt64 (toInt (0 - 1))"),
+        agree("def result = toUInt64 (toInt (0 - 1))"),
         "18446744073709551615"
     );
     // A conversion keeps the low bits, from a `BigInt` as from anything else.
-    assert_eq!(agree("def main = toUInt8 (2 ^ 100 + 5)"), "5");
-    assert_eq!(agree("def main = toInt16 40000"), "-25536");
+    assert_eq!(agree("def result = toUInt8 (2 ^ 100 + 5)"), "5");
+    assert_eq!(agree("def result = toInt16 40000"), "-25536");
 }
 
 /// A number nothing pins down is an `Int`, and an `Int` wraps: `2 ^ 64` is
@@ -1075,30 +1075,39 @@ fn a_fixed_width_integer_wraps_at_its_width() {
 /// every program that never said what its numbers were paid for the heap.)
 #[test]
 fn an_unconstrained_literal_is_an_int_and_wraps() {
-    assert_eq!(agree("def main = 2 ^ 64"), "0");
-    assert_eq!(agree("def main = toBigInt 2 ^ 64"), "18446744073709551616");
+    assert_eq!(agree("def result = 2 ^ 64"), "0");
     assert_eq!(
-        agree("def big : BigInt = 2 ^ 64\ndef main = big"),
+        agree("def result = toBigInt 2 ^ 64"),
+        "18446744073709551616"
+    );
+    assert_eq!(
+        agree("def big : BigInt = 2 ^ 64\ndef result = big"),
         "18446744073709551616"
     );
 }
 
 #[test]
 fn shifts_and_bits_know_the_width_and_the_sign() {
-    assert_eq!(agree("def main = toUInt32 (0 - 1) >> 28"), "15");
-    assert_eq!(agree("def main = toInt32 (0 - 16) >> 2"), "-4");
-    assert_eq!(agree("def main = bitNot (toUInt8 0)"), "255");
-    assert_eq!(agree("def main = popCount (toInt16 (0 - 1))"), "16");
-    assert_eq!(agree("def main = bitWidth (toUInt64 0)"), "64");
+    assert_eq!(agree("def result = toUInt32 (0 - 1) >> 28"), "15");
+    assert_eq!(agree("def result = toInt32 (0 - 16) >> 2"), "-4");
+    assert_eq!(agree("def result = bitNot (toUInt8 0)"), "255");
+    assert_eq!(agree("def result = popCount (toInt16 (0 - 1))"), "16");
+    assert_eq!(agree("def result = bitWidth (toUInt64 0)"), "64");
 }
 
 #[test]
 fn sized_integers_compare_and_match_by_value() {
-    assert_eq!(agree("def main = if toUInt8 200 > 100 then 1 else 0"), "1");
-    assert_eq!(agree("def main = if toInt8 (0 - 1) < 0 then 1 else 0"), "1");
-    assert_eq!(agree("def main = if toUInt16 5 == 5 then 1 else 0"), "1");
     assert_eq!(
-        agree("def main = match toUInt8 3 with | 2 -> 20 | 3 -> 30 | _ -> 0"),
+        agree("def result = if toUInt8 200 > 100 then 1 else 0"),
+        "1"
+    );
+    assert_eq!(
+        agree("def result = if toInt8 (0 - 1) < 0 then 1 else 0"),
+        "1"
+    );
+    assert_eq!(agree("def result = if toUInt16 5 == 5 then 1 else 0"), "1");
+    assert_eq!(
+        agree("def result = match toUInt8 3 with | 2 -> 20 | 3 -> 30 | _ -> 0"),
         "30"
     );
 }
@@ -1109,36 +1118,39 @@ fn sized_numbers_are_stored_in_fields_and_arrays() {
         agree(
             "use P.*\ndata P = P UInt8 Int16 Float32
              fun total p = match p with | P a b c -> (toInt a + toInt b, c)
-             def main = total (P (toUInt8 255) (toInt16 (0 - 5)) (toFloat32 0.5))"
+             def result = total (P (toUInt8 255) (toInt16 (0 - 5)) (toFloat32 0.5))"
         ),
         "(250, 0.5)"
     );
     assert_eq!(
-        agree("def main = let (b : #[UInt8]) = #[1, 255, 3] in (b, arrayGet b 1 + toUInt8 1)"),
+        agree("def result = let (b : #[UInt8]) = #[1, 255, 3] in (b, arrayGet b 1 + toUInt8 1)"),
         "(#[1, 255, 3], 0)"
     );
 }
 
 #[test]
 fn float32_keeps_single_precision() {
-    assert_eq!(agree("def main = toFloat32 1.5 +. toFloat32 0.25"), "1.75");
-    // Printed as the shortest text that reads back as the same `Float32`.
-    assert_eq!(agree("def main = toFloat32 0.1"), "0.1");
     assert_eq!(
-        agree("def main = toFloat64 (toFloat32 0.1)"),
+        agree("def result = toFloat32 1.5 +. toFloat32 0.25"),
+        "1.75"
+    );
+    // Printed as the shortest text that reads back as the same `Float32`.
+    assert_eq!(agree("def result = toFloat32 0.1"), "0.1");
+    assert_eq!(
+        agree("def result = toFloat64 (toFloat32 0.1)"),
         "0.10000000149011612"
     );
-    assert_eq!(agree("def main = toFloat32 16777217.0"), "16777216.0");
+    assert_eq!(agree("def result = toFloat32 16777217.0"), "16777216.0");
 }
 
 #[test]
 fn equal_integers_hash_alike_whatever_their_type() {
     assert_eq!(
-        agree("def main = if hash (toUInt8 7) == hash (toInt 7) then 1 else 0"),
+        agree("def result = if hash (toUInt8 7) == hash (toInt 7) then 1 else 0"),
         "1"
     );
     assert_eq!(
-        agree("def main = if hash (toInt32 7) == hash (toBigInt 7) then 1 else 0"),
+        agree("def result = if hash (toInt32 7) == hash (toBigInt 7) then 1 else 0"),
         "1"
     );
 }
@@ -1162,14 +1174,14 @@ const CHAIN: &str = "use Chain.*\ndata Chain = End | Link Int Chain
 #[test]
 fn a_compacted_value_is_the_value() {
     let src = format!(
-        "{CHAIN}def main =
+        "{CHAIN}def result =
            let xs = build 100 in
            let c = compact xs in
            (total (getCompact c), if getCompact c == xs then 1 else 0)"
     );
     assert_eq!(agree(&src), "(5050, 1)");
     assert_eq!(
-        agree("def main = compact (1, \"two\", #[3.0])"),
+        agree("def result = compact (1, \"two\", #[3.0])"),
         "compact (1, \"two\", #[3.0])"
     );
 }
@@ -1179,7 +1191,7 @@ fn compacts_compare_and_hash_by_what_they_hold() {
     let src = format!(
         "{CHAIN}def a = compact (build 10)
          def b = compact (build 10)
-         def main = (if a == b then 1 else 0, if hash a == hash b then 1 else 0,
+         def result = (if a == b then 1 else 0, if hash a == hash b then 1 else 0,
                      if compact (build 3) == a then 1 else 0)"
     );
     assert_eq!(agree(&src), "(1, 1, 0)");
@@ -1188,7 +1200,7 @@ fn compacts_compare_and_hash_by_what_they_hold() {
 #[test]
 fn adding_to_a_region_keeps_both_values_and_shares_the_old_one() {
     let src = format!(
-        "{CHAIN}def main =
+        "{CHAIN}def result =
            let c = compact (build 100) in
            let before = compactSize c in
            let c2 = compactAdd c (Link 0 (getCompact c)) in
@@ -1204,7 +1216,7 @@ fn adding_to_a_region_keeps_both_values_and_shares_the_old_one() {
 #[test]
 fn compact_size_is_the_same_on_every_engine() {
     let src = format!(
-        "{CHAIN}def main =
+        "{CHAIN}def result =
            let xs = build 1000 in
            (compactSize (compact xs), compactSize (compact (xs, xs)),
             compactSize (compact (toInt 7)), compactSize (compact #[xs, xs, xs]))"
@@ -1215,7 +1227,7 @@ fn compact_size_is_the_same_on_every_engine() {
 #[test]
 fn a_compact_can_hold_a_compact() {
     let src = format!(
-        "{CHAIN}def main =
+        "{CHAIN}def result =
            let inner = compact (build 4) in
            let outer = compact (inner, inner) in
            match getCompact outer with
@@ -1238,7 +1250,7 @@ fn what_cannot_be_compacted_fails_the_same_way_everywhere() {
         let prog = program(&format!(
             "use Opt.*\ndata Opt a = None | Just a\n\
              fun later x = let y = x in compact y\n\
-             def main = later ({value})"
+             def result = later ({value})"
         ));
         let cek = meadow_eval::run(&prog).expect_err("CEK should fail");
         let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
@@ -1261,7 +1273,7 @@ fn a_compacted_value_survives_collections_without_being_copied() {
     let run = |keep: &str, collector: Collector| {
         let src = format!(
             "{CHAIN}{churn}
-             def main = let xs = {keep} in (churn 20000 0, total xs)"
+             def result = let xs = {keep} in (churn 20000 0, total xs)"
         );
         let prog = program(&src);
         let img = image(&prog);
@@ -1327,7 +1339,7 @@ fn regions_nothing_refers_to_are_freed() {
     let src = format!(
         "{CHAIN}fun again n acc = if n == 0 then acc
                  else again (n - 1) (acc + total (getCompact (compact (build 1000))))
-         def main = again 1000 0"
+         def result = again 1000 0"
     );
     let prog = program(&src);
     let img = image(&prog);
@@ -1365,12 +1377,12 @@ fn a_generic_function_computes_at_the_type_it_is_called_at() {
     // `fib 100` defaults to `Int`: wrapped. Where its answer meets a
     // `BigInt`, it is computed as one: exact.
     assert_eq!(
-        agree(&format!("{FIB}def main = toBigInt 0 + fib 100")),
+        agree(&format!("{FIB}def result = toBigInt 0 + fib 100")),
         "354224848179261915075"
     );
     assert_eq!(
         agree(&format!(
-            "{FIB}def main = (fib 100, fib (toUInt8 13) + toUInt8 0)"
+            "{FIB}def result = (fib 100, fib (toUInt8 13) + toUInt8 0)"
         )),
         "(3736710778780434371, 233)"
     );
@@ -1390,7 +1402,7 @@ fn big_integers_agree_across_every_sign_and_limb_boundary() {
         "{FIB}def big = fib 400
          def neg = toBigInt 0 - big
          def two64 = toBigInt 9223372036854775807 * toBigInt 2 + toBigInt 2
-         def main =
+         def result =
            ( ( big - big, neg + big, big - (big + toBigInt 1), neg - neg
              , two64 - toBigInt 1, two64 * two64 - toBigInt 1, neg - big )
            , ( 7 + big - big, big + 9223372036854775807 - big, (big * big) / big == big
@@ -1415,7 +1427,7 @@ fn big_integers_agree_across_every_sign_and_limb_boundary() {
 #[test]
 fn a_literal_in_generic_code_wraps_at_the_width_it_is_used_at() {
     let src = "fun bump x = x + 200
-               def main = (bump (toUInt8 100), bump (toInt16 32600), bump 1)";
+               def result = (bump (toUInt8 100), bump (toInt16 32600), bump 1)";
     assert_eq!(agree(src), "(44, -32736, 201)");
 }
 
@@ -1424,7 +1436,7 @@ fn a_generic_local_is_copied_for_each_type_in_its_scope() {
     let src = "fun f u =
                  let g x = x + 1 in
                  (g (toUInt8 255), g (toInt8 127), g (toBigInt 9223372036854775807), g 9223372036854775807)
-               def main = f ()";
+               def result = f ()";
     assert_eq!(
         agree(src),
         "(0, -128, 9223372036854775808, -9223372036854775808)"
@@ -1435,7 +1447,7 @@ fn a_generic_local_is_copied_for_each_type_in_its_scope() {
 fn a_generic_function_passed_as_a_value_is_copied_too() {
     let src = "fun addOne x = x + 1
                fun apply f x = f x
-               def main = (apply addOne (toUInt8 255), apply addOne (toBigInt 9223372036854775807), apply addOne 9223372036854775807)";
+               def result = (apply addOne (toUInt8 255), apply addOne (toBigInt 9223372036854775807), apply addOne 9223372036854775807)";
     assert_eq!(agree(src), "(0, 9223372036854775808, -9223372036854775808)");
 }
 
@@ -1443,14 +1455,14 @@ fn a_generic_function_passed_as_a_value_is_copied_too() {
 fn mutually_recursive_generic_functions_are_copied_together() {
     let src = "fun countDown n acc = if n == 0 then acc else countUp (n - 1) (acc + 1)
                fun countUp n acc = if n == 0 then acc else countDown (n - 1) (acc + 1)
-               def main = (countDown (toInt 5) (toUInt8 254), countUp 3 0)";
+               def result = (countDown (toInt 5) (toUInt8 254), countUp 3 0)";
     assert_eq!(agree(src), "(3, 3)");
 }
 
 #[test]
 fn a_float_literal_in_generic_code_takes_the_float_type() {
     let src = "fun third x = x /. 3.0
-               def main = (third (toFloat32 1.0), third 1.0)";
+               def result = (third (toFloat32 1.0), third 1.0)";
     assert_eq!(agree(src), "(0.33333334, 0.3333333333333333)");
 }
 
@@ -1498,7 +1510,8 @@ const FIB_INT: &str = "fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fi
 
 #[test]
 fn a_spawned_thread_answers_through_await() {
-    let src = format!("{FIB_INT}def main = let t = threadSpawn (\\() -> fib 20) in threadAwait t");
+    let src =
+        format!("{FIB_INT}def result = let t = threadSpawn (\\() -> fib 20) in threadAwait t");
     assert_eq!(threads_agree(&src), Ok("6765".into()));
 }
 
@@ -1508,7 +1521,7 @@ fn threads_run_side_by_side_and_are_awaited_in_any_order() {
         "{FIB_INT}use Ts.*\ndata Ts = Done | More (Task Int) Ts
          fun spawnAll (n : Int) acc = if n == 0 then acc else spawnAll (n - 1) (More (threadSpawn (\\() -> fib n)) acc)
          fun sumAll ts acc = match ts with | Done -> acc | More t rest -> sumAll rest (acc + threadAwait t)
-         def main = sumAll (spawnAll 20 Done) 0"
+         def result = sumAll (spawnAll 20 Done) 0"
     );
     assert_eq!(threads_agree(&src), Ok("17710".into()));
 }
@@ -1516,7 +1529,7 @@ fn threads_run_side_by_side_and_are_awaited_in_any_order() {
 #[test]
 fn a_channel_carries_values_between_threads_in_order() {
     let src = "use L.*\ndata L = Nil | Cons Int L
-               def main =
+               def result =
                  let ch = channelNew () in
                  let producer = threadSpawn (\\() ->
                    let rec go (i : Int) = if i > 5 then () else let _ = channelSend ch i in go (i + 1)
@@ -1534,7 +1547,7 @@ fn a_channel_carries_values_between_threads_in_order() {
 #[test]
 fn channels_and_threads_can_themselves_be_sent() {
     // A worker is handed the channel to answer on, over another channel.
-    let src = "def main =
+    let src = "def result =
                  let jobs = channelNew () in
                  let worker = threadSpawn (\\() ->
                    let job = channelReceive jobs in
@@ -1555,7 +1568,7 @@ fn every_thread_has_its_own_mutable_state() {
     let src = "fun count (n : Int) = let r = newRef (toInt 0) in
                  let rec go (i : Int) = if i == 0 then getRef r else let _ = setRef r (getRef r + 1) in go (i - 1)
                  in go n
-               def main =
+               def result =
                  let a = threadSpawn (\\() -> count 3000) in
                  let b = threadSpawn (\\() -> count 5000) in
                  let c = threadSpawn (\\() -> count 7000) in
@@ -1571,7 +1584,7 @@ fn many_producers_one_consumer() {
                fun spawnProducers ch (k : Int) = if k == 0 then () else
                    let _ = threadSpawn (\\() -> produce ch (k * 1000)) in spawnProducers ch (k - 1)
                fun consume ch (n : Int) acc = if n == 0 then acc else consume ch (n - 1) (acc + channelReceive ch)
-               def main = let ch = channelNew () in let _ = spawnProducers ch 16 in consume ch 1600 0";
+               def result = let ch = channelNew () in let _ = spawnProducers ch 16 in consume ch 1600 0";
     assert_eq!(threads_agree(src), Ok("13680800".into()));
 }
 
@@ -1580,7 +1593,7 @@ fn mutable_state_and_continuations_cannot_cross() {
     for (value, what) in [("newRef 1", "a Ref"), ("stNewArray 2 0", "a mutable array")] {
         let src = format!(
             "use L.*\ndata L = Nil | Cons Int L
-             def main = let x = {value} in threadAwait (threadSpawn (\\() -> let y = x in 0))"
+             def result = let x = {value} in threadAwait (threadSpawn (\\() -> let y = x in 0))"
         );
         let src = src.replace("[;]", "Nil");
         assert_eq!(
@@ -1590,7 +1603,7 @@ fn mutable_state_and_continuations_cannot_cross() {
         );
     }
     let src = "effect E { e : () -> Int }
-               def main = handle (let n = e () in n) with {
+               def result = handle (let n = e () in n) with {
                  e u k -> let _ = threadAwait (threadSpawn (\\() -> let j = k in 0)) in 0 }";
     assert_eq!(
         threads_agree(src),
@@ -1602,13 +1615,13 @@ fn mutable_state_and_continuations_cannot_cross() {
 fn a_ref_in_scope_but_unused_does_not_stop_a_spawn() {
     // What crosses is what the function uses -- which the CEK machine, whose
     // closures hold their whole environment, has to work out to agree.
-    let src = "def main = let r = newRef (toInt 1) in let x = toInt 41 in threadAwait (threadSpawn (\\() -> x + 1))";
+    let src = "def result = let r = newRef (toInt 1) in let x = toInt 41 in threadAwait (threadSpawn (\\() -> x + 1))";
     assert_eq!(threads_agree(src), Ok("42".into()));
 }
 
 #[test]
 fn a_message_cannot_carry_a_ref_either() {
-    let src = "def main = let ch = channelNew () in channelSend ch (newRef (toInt 0))";
+    let src = "def result = let ch = channelNew () in channelSend ch (newRef (toInt 0))";
     assert_eq!(
         threads_agree(src),
         Err(meadow_core::thread::unsendable("a Ref"))
@@ -1617,16 +1630,16 @@ fn a_message_cannot_carry_a_ref_either() {
 
 #[test]
 fn a_failed_thread_fails_its_await_with_the_same_message() {
-    let src = "def main = let t = threadSpawn (\\() -> toInt 1 / toInt 0) in threadAwait t + 1";
+    let src = "def result = let t = threadSpawn (\\() -> toInt 1 / toInt 0) in threadAwait t + 1";
     assert_eq!(threads_agree(src), Err("division by zero".into()));
     // Nobody waiting: the failure stays in the thread.
-    let src = "def main = let t = threadSpawn (\\() -> toInt 1 / toInt 0) in 7";
+    let src = "def result = let t = threadSpawn (\\() -> toInt 1 / toInt 0) in 7";
     assert_eq!(threads_agree(src), Ok("7".into()));
 }
 
 #[test]
 fn waiting_on_what_can_never_answer_is_a_deadlock() {
-    let src = "def main = let ch = channelNew () in threadAwait (threadSpawn (\\() -> channelReceive ch + toInt 1))";
+    let src = "def result = let ch = channelNew () in threadAwait (threadSpawn (\\() -> channelReceive ch + toInt 1))";
     assert_eq!(
         threads_agree(src),
         Err(meadow_core::thread::DEADLOCK.into())
@@ -1638,7 +1651,7 @@ fn a_thread_that_never_waits_does_not_starve_the_others() {
     // `spin` would run forever; the answer comes from the other thread, and
     // `main` ending ends the program.
     let src = "fun spin (n : Int) = spin (n + 1)
-               def main = let _ = threadSpawn (\\() -> spin 0) in
+               def result = let _ = threadSpawn (\\() -> spin 0) in
                  threadAwait (threadSpawn (\\() -> toInt 99))";
     let prog = program(src);
     let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
@@ -1663,7 +1676,7 @@ fn threads_collect_their_own_heaps() {
                fun build (n : Int) = if n == 0 then Nil else Cons n (build (n - 1))
                fun len xs = match xs with | Nil -> toInt 0 | Cons _ r -> 1 + len r
                fun churn (k : Int) acc = if k == 0 then acc else churn (k - 1) (acc + len (build 2000))
-               def main =
+               def result =
                  let a = threadSpawn (\\() -> churn 50 0) in
                  let b = threadSpawn (\\() -> churn 50 0) in
                  threadAwait a + threadAwait b";
@@ -1691,7 +1704,7 @@ fn threads_collect_their_own_heaps() {
 fn a_top_level_value_is_evaluated_once() {
     let src = format!(
         "{CHAIN}def c = compact (build 100)
-         def main = let c2 = compactAdd c (Link 0 End) in (compactSize c, compactSize c2)"
+         def result = let c2 = compactAdd c (Link 0 End) in (compactSize c, compactSize c2)"
     );
     // One region, grown by the add: both mentions of `c` are the same value.
     let slots = meadow_core::compact::object_slots;
@@ -1704,7 +1717,7 @@ fn a_top_level_value_is_evaluated_once() {
 #[test]
 fn a_top_level_value_nobody_uses_is_never_evaluated() {
     let src = "def boom = toInt 1 / toInt 0
-               def main = 7";
+               def result = 7";
     assert_eq!(agree(src), "7");
 }
 
@@ -1712,7 +1725,7 @@ fn a_top_level_value_nobody_uses_is_never_evaluated() {
 fn a_top_level_value_used_by_many_threads_is_the_same_value_in_each() {
     let src = format!(
         "{CHAIN}def big = build 1000
-         def main =
+         def result =
            let a = threadSpawn (\\() -> total big) in
            let b = threadSpawn (\\() -> total big) in
            threadAwait a + threadAwait b + total big"
@@ -1740,7 +1753,7 @@ fn spawned_work_spreads_to_idle_workers() {
         "{FIB_INT}use Ts.*\ndata Ts = Done | More (Task Int) Ts
          fun spawnAll (n : Int) acc = if n == 0 then acc else spawnAll (n - 1) (More (threadSpawn (\\() -> fib 22)) acc)
          fun sumAll ts acc = match ts with | Done -> acc | More t rest -> sumAll rest (acc + threadAwait t)
-         def main = sumAll (spawnAll 16 Done) 0"
+         def result = sumAll (spawnAll 16 Done) 0"
     );
     let prog = program(&src);
     let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::default());
@@ -1755,7 +1768,7 @@ fn a_compact_crosses_threads_without_being_copied() {
     // On the VM the region is shared: the spawned threads read the chain where
     // `main` compacted it. Every engine gives the same answer.
     let src = format!(
-        "{CHAIN}def main =
+        "{CHAIN}def result =
            let c = compact (build 5000) in
            let a = threadSpawn (\\() -> total (getCompact c)) in
            let b = threadSpawn (\\() -> compactSize c) in
@@ -1774,7 +1787,7 @@ fn a_compacted_value_sent_to_a_thread_is_not_copied_into_its_heap() {
     // difference in what was allocated is the copy.
     let run = |value: &str| {
         let src = format!(
-            "{CHAIN}def main =
+            "{CHAIN}def result =
                let c = {value} in
                threadAwait (threadSpawn (\\() -> total (getCompact c)))"
         );
@@ -1831,7 +1844,7 @@ fn increments_from_many_threads_are_none_of_them_lost() {
            let _ = atomically (\\() -> stmWrite tv (readTVar tv + 1)) in bump tv (k - 1)
          fun spawnAll tv (n : Int) acc = if n == 0 then acc else spawnAll tv (n - 1) (More (threadSpawn (\\() -> bump tv 1000)) acc)
          fun awaitAll ts = match ts with | End -> () | More t rest -> let _ = threadAwait t in awaitAll rest
-         def main =
+         def result =
            let tv = stmNewIO (toInt 0) in
            let _ = awaitAll (spawnAll tv 16 End) in
            atomically (\\() -> readTVar tv)"
@@ -1853,7 +1866,7 @@ fn a_transaction_never_sees_half_of_another() {
          fun watch a b (k : Int) (bad : Int) = if k == 0 then bad else
            let s = atomically (\\() -> readTVar a + readTVar b) in
            watch a b (k - 1) (if s == 100 then bad else bad + 1)
-         def main =
+         def result =
            let a = stmNewIO (toInt 100) in
            let b = stmNewIO (toInt 0) in
            let mover = threadSpawn (\\() -> shuffle a b 2000) in
@@ -1873,7 +1886,7 @@ fn retry_blocks_until_there_is_something_to_take() {
          fun put box x = atomically (\\() -> match readTVar box with | None -> stmWrite box (Just x) | Just _ -> retry ())
          fun consume box (k : Int) acc = if k == 0 then acc else consume box (k - 1) (acc + take box)
          fun produce box (k : Int) = if k == 0 then () else let _ = put box k in produce box (k - 1)
-         def main =
+         def result =
            let box = stmNewIO None in
            let consumer = threadSpawn (\\() -> consume box 500 (toInt 0)) in
            let producer = threadSpawn (\\() -> produce box 500) in
@@ -1886,7 +1899,7 @@ fn retry_blocks_until_there_is_something_to_take() {
 #[test]
 fn or_else_falls_back_and_keeps_only_what_succeeded() {
     let src = format!(
-        "{STM}def main =
+        "{STM}def result =
            let tv = stmNewIO (toInt 1) in
            let got = atomically (\\() ->
              orElse (\\() -> let _ = stmWrite tv 50 in retry ()) (\\() -> let _ = stmWrite tv (readTVar tv + 1) in readTVar tv)) in
@@ -1898,7 +1911,7 @@ fn or_else_falls_back_and_keeps_only_what_succeeded() {
 #[test]
 fn a_tvar_holds_only_what_a_compact_can() {
     for (value, what) in [("newRef 1", "a Ref"), ("\\x -> x", "a function")] {
-        let src = format!("{STM}def main = let tv = stmNewIO ({value}) in 0");
+        let src = format!("{STM}def result = let tv = stmNewIO ({value}) in 0");
         assert_eq!(
             threads_agree(&src),
             Err(meadow_core::stm::unstorable(what)),
@@ -1909,7 +1922,7 @@ fn a_tvar_holds_only_what_a_compact_can() {
 
 #[test]
 fn a_transaction_operation_outside_atomically_says_so() {
-    let src = format!("{STM}def main = let tv = stmNewIO (toInt 1) in stmRead tv");
+    let src = format!("{STM}def result = let tv = stmNewIO (toInt 1) in stmRead tv");
     assert_eq!(
         threads_agree(&src),
         Err(meadow_core::stm::outside("readTVar"))
@@ -1919,7 +1932,7 @@ fn a_transaction_operation_outside_atomically_says_so() {
 #[test]
 fn waiting_on_a_tvar_nobody_writes_is_a_deadlock() {
     let src = format!(
-        "{STM}def main = let tv = stmNewIO (toInt 0) in
+        "{STM}def result = let tv = stmNewIO (toInt 0) in
            atomically (\\() -> if readTVar tv == 0 then retry () else readTVar tv)"
     );
     assert_eq!(
@@ -1939,7 +1952,7 @@ fn typed_int_arithmetic_wraps_and_compares_as_the_primitives_do() {
     let src = "fun f (a : Int) (b : Int) =
                  (a + b, a - b, a * b, a / b, a % b, a < b, a >= b, a == b, a != b)
                fun g (a : Int) = (a + 5000000000, a * 3, a - 1, a < 2, a == 7, a > 3000000000)
-               def main = (f 9223372036854775807 3, f (0 - 7) 2, g 7, g 9223372036854775807)";
+               def result = (f 9223372036854775807 3, f (0 - 7) 2, g 7, g 9223372036854775807)";
     assert_eq!(
         agree(src),
         "((-9223372036854775806, 9223372036854775804, 9223372036854775805, 3074457345618258602, 1, False, True, False, True), \
@@ -1953,7 +1966,7 @@ fn typed_int_arithmetic_wraps_and_compares_as_the_primitives_do() {
 fn typed_division_by_zero_fails_the_same_way_everywhere() {
     for (op, what) in [("/", "division by zero"), ("%", "modulo by zero")] {
         let prog = program(&format!(
-            "fun f (a : Int) (b : Int) = a {op} b\ndef main = f 1 0"
+            "fun f (a : Int) (b : Int) = a {op} b\ndef result = f 1 0"
         ));
         let cek = meadow_eval::run(&prog).expect_err("CEK should fail");
         let vm = meadow_glade::run(&image(&prog), FUEL).expect_err("the VM should fail");
@@ -1966,7 +1979,7 @@ fn typed_division_by_zero_fails_the_same_way_everywhere() {
 fn typed_float_arithmetic_is_ieee() {
     let src = "fun f (a : Float) (b : Float) =
                  (a +. b, a -. b, a *. b, a /. b, a <. b, a >=. b, a == b, a != b)
-               def main = let nan = 0.0 /. 0.0 in (f 1.5 0.25, f nan nan, f 0.0 (0.0 -. 0.0))";
+               def result = let nan = 0.0 /. 0.0 in (f 1.5 0.25, f nan nan, f 0.0 (0.0 -. 0.0))";
     let out = agree(src);
     assert!(
         out.starts_with("((1.75, 1.25, 0.375, 6.0, False, True, False, True)"),
@@ -1979,7 +1992,7 @@ fn typed_literal_patterns_and_equality_on_immediates() {
     let src = "fun c x = let _ = x == 'q' in match x with | 'a' -> 1 | 'λ' -> 2 | _ -> 0
                fun s x = let _ = x == \"q\" in match x with | \"hi\" -> 1 | _ -> 0
                fun b x = if x == (1 < 2) then 1 else 0
-               def main = (c 'a', c 'λ', c 'z', s \"hi\", s \"ho\", b (1 < 2), b (2 < 1), \"x\" == \"x\")";
+               def result = (c 'a', c 'λ', c 'z', s \"hi\", s \"ho\", b (1 < 2), b (2 < 1), \"x\" == \"x\")";
     assert_eq!(agree(src), "(1, 2, 0, 1, 0, 1, 0, True)");
 }
 
@@ -1992,7 +2005,7 @@ fn a_release_build_copies_generic_code_once_per_representation() {
     // string is an object on the heap.
     let src = "use L.*\ndata L = Nil | Cons Int L
                fun id x = x
-               def main = (id (toInt 1), id \"s\", id (Cons 1 Nil), id (id 2, Nil))";
+               def result = (id (toInt 1), id \"s\", id (Cons 1 Nil), id (id 2, Nil))";
     let prog = program(src);
     let id = prog
         .defs
@@ -2055,7 +2068,7 @@ fn a_map_is_built_front_to_back() {
         "{LIST}fun map f xs = match xs with | E -> E | C x r -> C (f x) (map f r)
          fun upto i n = if i > n then E else C i (upto (i + 1) n)
          fun sum acc xs = match xs with | E -> acc | C x r -> sum (acc + x) r
-         def main = (sum 0 (map (\\x -> x * 2) (upto 1 100000)), map (\\x -> x + 1) (upto 1 3))"
+         def result = (sum 0 (map (\\x -> x * 2) (upto 1 100000)), map (\\x -> x + 1) (upto 1 3))"
     );
     assert_eq!(twins(&src), 2, "`map` and `upto`");
     assert_eq!(agree(&src), "(10000100000, C(2, C(3, C(4, E))))");
@@ -2068,7 +2081,7 @@ fn a_filter_skips_by_calling_itself_in_tail_position() {
         "{LIST}fun filter p xs = match xs with
            | E -> E
            | C x r -> if p x then C x (filter p r) else filter p r
-         def main = filter (\\x -> x % 2 == 0) (C 1 (C 2 (C 3 (C 4 (C 5 (C 6 E))))))"
+         def result = filter (\\x -> x % 2 == 0) (C 1 (C 2 (C 3 (C 4 (C 5 (C 6 E))))))"
     );
     assert_eq!(twins(&src), 1);
     assert_eq!(agree(&src), "C(2, C(4, C(6, E)))");
@@ -2079,7 +2092,7 @@ fn an_append_ends_with_a_list_it_did_not_build() {
     let src = format!(
         "{LIST}fun append xs ys = match xs with | E -> ys | C x r -> C x (append r ys)
          def shared = C 9 E
-         def main = (append (C 1 (C 2 E)) shared, append E shared, shared)"
+         def result = (append (C 1 (C 2 E)) shared, append E shared, shared)"
     );
     assert_eq!(twins(&src), 1);
     assert_eq!(agree(&src), "(C(1, C(2, C(9, E))), C(9, E), C(9, E))");
@@ -2091,7 +2104,7 @@ fn a_tree_fills_its_last_field_and_recurses_for_the_others() {
                fun mirror t = match t with
                  | Leaf -> Leaf
                  | Node l v r -> Node (mirror r) v (mirror l)
-               def main = mirror (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 (Node Leaf 4 Leaf)))";
+               def result = mirror (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 (Node Leaf 4 Leaf)))";
     assert_eq!(twins(src), 1);
     assert_eq!(
         agree(src),
@@ -2107,7 +2120,7 @@ fn work_after_the_call_is_not_reordered() {
         "{LIST}data P = P L Int
          fun go f xs = match xs with | E -> P E 0 | C x r -> P (step f r) (f x)
          fun step f xs = match go f xs with | P l _ -> l
-         def main = go (\\x -> x) (C 1 (C 2 E))"
+         def result = go (\\x -> x) (C 1 (C 2 E))"
     );
     assert_eq!(twins(&src), 0);
     agree(&src);
@@ -2117,7 +2130,7 @@ fn work_after_the_call_is_not_reordered() {
 fn a_type_with_no_nullary_constructor_is_left_alone() {
     let src = "use S.*\ndata S = S Int S | End Int
                fun bump s = match s with | End n -> End (n + 1) | S n r -> S (n + 1) (bump r)
-               def main = bump (S 1 (S 2 (End 3)))";
+               def result = bump (S 1 (S 2 (End 3)))";
     assert_eq!(
         twins(src),
         0,
@@ -2131,7 +2144,7 @@ fn an_effect_performed_mid_list_resumes_into_the_half_built_cell() {
     let src = format!(
         "{LIST}effect Ask {{ ask : () -> Int }}
          fun tag xs = match xs with | E -> E | C x r -> C (x + ask ()) (tag r)
-         def main =
+         def result =
            handle tag (C 1 (C 2 (C 3 E))) with {{
              ask u k -> k 10
            }}"
@@ -2156,7 +2169,7 @@ fn many_lets(n: usize) -> String {
 fn an_array_literal_longer_than_the_register_file() {
     let items: Vec<String> = (1..=800).map(|i| i.to_string()).collect();
     let src = format!(
-        "def main = let a = #[{}] in (arrayLen a, arrayGet a 0, arrayGet a 399, arrayGet a 799)",
+        "def result = let a = #[{}] in (arrayLen a, arrayGet a 0, arrayGet a 399, arrayGet a 799)",
         items.join(", ")
     );
     assert_eq!(agree(&src), "(800, 1, 400, 800)");
@@ -2169,7 +2182,7 @@ fn an_array_literal_of_computed_elements_keeps_their_order() {
     let src = format!(
         "fun f (i : Int) : Int = i * 3\n\
          fun sum a (i : Int) (acc : Int) : Int = if i == arrayLen a then acc else sum a (i + 1) (acc + arrayGet a i * (i + 1))\n\
-         def main = sum #[{}] 0 0",
+         def result = sum #[{}] 0 0",
         items.join(", ")
     );
     let want: i64 = (0..300i64).map(|i| i * 3 * (i + 1)).sum();
@@ -2181,7 +2194,7 @@ fn a_list_literal_longer_than_the_register_file() {
     let items: Vec<String> = (1..=600).map(|i| i.to_string()).collect();
     let src = format!(
         "fun sum xs = match xs with | [;] -> 0 | x :: rest -> x + sum rest\n\
-         def main = sum [{}]",
+         def result = sum [{}]",
         items.join("; ")
     );
     assert_eq!(agree(&src), (600 * 601 / 2).to_string());
@@ -2194,7 +2207,7 @@ fn three_hundred_values_live_across_calls() {
     let sum: Vec<String> = (0..300).map(|i| format!("x{i}")).collect();
     let src = format!(
         "fun f (i : Int) : Int = i * 2 + 1\n\
-         def main =\n{}  {}",
+         def result =\n{}  {}",
         many_lets(300),
         sum.join(" + ")
     );
@@ -2212,7 +2225,7 @@ fn spilled_values_of_a_type_variable_keep_their_descriptors() {
     let src = format!(
         "fun id2 x = x\n\
          fun many a =\n{lets}  #[{}]\n\
-         def main = (arrayLen (many \"s\"), arrayGet (many (1, 2)) 279)",
+         def result = (arrayLen (many \"s\"), arrayGet (many (1, 2)) 279)",
         items.join(", ")
     );
     assert_eq!(agree(&src), "(280, (1, 2))");
@@ -2233,7 +2246,7 @@ fn spilled_values_reach_branches_matches_closures_and_handlers() {
          \x20 let g = \\y -> x0 + x299 + y in\n\
          \x20 let c = g x150 + ask x10 in\n\
          \x20 a + b + c + {}\n\
-         def main = handle body 0 with {{ ask n k -> k (n * 1000) }}",
+         def result = handle body 0 with {{ ask n k -> k (n * 1000) }}",
         many_lets(300),
         evens.join(" + "),
         odds.join(" + ")
@@ -2254,7 +2267,7 @@ fn spilled_references_survive_collections() {
         "fun build (n : Int) = if n == 0 then [;] else n :: build (n - 1)\n\
          fun len xs = match xs with | [;] -> 0 | x :: rest -> 1 + len rest\n\
          fun churn (n : Int) (acc : Int) : Int = if n == 0 then acc else churn (n - 1) (acc + len (build 20))\n\
-         def main =\n{lets}  let c = churn 2000 0 in\n  (c, {})",
+         def result =\n{lets}  let c = churn 2000 0 in\n  (c, {})",
         lengths.join(" + ")
     );
     assert_eq!(agree(&src), "(40000, 1197)");
@@ -2299,7 +2312,7 @@ fn a_function_of_three_hundred_parameters() {
     let params: String = (0..300).map(|i| format!("(x{i} : Int) ")).collect();
     let src = format!(
         "fun f {params}: Int = {}\n\
-         def main = f {}",
+         def result = f {}",
         names(300, " + "),
         ints(300, " ")
     );
@@ -2313,7 +2326,7 @@ fn a_function_of_three_hundred_parameters_that_loops() {
     let next: String = (0..300).map(|i| format!("(x{i} + 1) ")).collect();
     let src = format!(
         "fun f (n : Int) {params}: Int = if n == 0 then x0 + x150 + x299 else f (n - 1) {next}\n\
-         def main = f 10 {}",
+         def result = f 10 {}",
         ints(300, " ")
     );
     assert_eq!(agree(&src), (10 + 160 + 309).to_string());
@@ -2326,7 +2339,7 @@ fn a_lambda_of_three_hundred_parameters_invoked() {
     let lam = format!("\\{} -> x0 + x299 * 2", names(300, " "));
     let src = format!(
         "fun call g = g {}\n\
-         def main = call ({lam})",
+         def result = call ({lam})",
         ints(300, " ")
     );
     assert_eq!(agree(&src), "598");
@@ -2338,7 +2351,7 @@ fn a_constructor_of_three_hundred_fields() {
     let src = format!(
         "use Big.*\ndata Big = Big {fields}\n\
          fun total b = match b with | Big {} -> {}\n\
-         def main = total (Big {})",
+         def result = total (Big {})",
         names(300, " "),
         names(300, " + "),
         ints(300, " ")
@@ -2360,7 +2373,7 @@ fn a_wide_constructor_holding_references_survives_collections() {
          fun build (n : Int) = if n == 0 then N else C n (build (n - 1))\n\
          fun len xs = match xs with | N -> 0 | C _ r -> 1 + len r\n\
          fun total b = match b with | Big {} -> {}\n\
-         def main = total (Big {builds})",
+         def result = total (Big {builds})",
         names(260, " "),
         (0..260)
             .map(|i| format!("len x{i}"))
@@ -2377,6 +2390,6 @@ fn a_record_of_three_hundred_fields() {
         .map(|i| format!("f{i} = {i}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let src = format!("def main = let r = {{ {fields} }} in r.f0 + r.f150 + r.f299");
+    let src = format!("def result = let r = {{ {fields} }} in r.f0 + r.f150 + r.f299");
     assert_eq!(agree(&src), "449");
 }

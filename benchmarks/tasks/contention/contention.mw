@@ -34,7 +34,7 @@ fun step at (s : Int) (n : Int) =
           Stm.modifyTVar (at b) (\x -> x + amt))
     in step at s2 (n - 1)
 
-def main =
+fun main () =
   let tvs = V.map (\i -> Stm.newTVarIO 1000) [0..accounts - 1] in
   let spare = Stm.newTVarIO 0 in
   let at = \i -> V.getOr spare tvs i in

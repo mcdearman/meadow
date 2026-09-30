@@ -13,7 +13,7 @@ use common::{errors_std_with, eval_main_std};
 use meadow::Options;
 
 fn errors(src: &str) -> String {
-    errors_std_with(src, Options::debug())
+    errors_std_with(src, Options::debug().entry("result"))
 }
 
 #[track_caller]
@@ -45,7 +45,7 @@ fn a_function_is_refused_wherever_it_is_nested() {
         "[Just (\\x -> x + 1)]",
     ] {
         refused(
-            &format!("{HEAD}def main = C.size (C.make {value})\n"),
+            &format!("{HEAD}def result = C.size (C.make {value})\n"),
             "a function",
         );
     }
@@ -57,7 +57,7 @@ fn a_function_in_a_user_types_field_is_refused() {
         &format!(
             "{HEAD}data Handler = Handler String (Int -> Int)\n\
              use Handler.*\n\
-             def main = C.size (C.make (Handler \"inc\" (\\x -> x + 1)))\n"
+             def result = C.size (C.make (Handler \"inc\" (\\x -> x + 1)))\n"
         ),
         "a function",
     );
@@ -71,21 +71,21 @@ fn a_recursive_type_is_looked_through_once() {
         &format!(
             "{HEAD}data Hs = Done | More (Int -> Int) Hs\n\
              use Hs.*\n\
-             def main = C.size (C.make (More (\\x -> x) Done))\n"
+             def result = C.size (C.make (More (\\x -> x) Done))\n"
         ),
         "a function",
     );
     accepted(&format!(
         "{HEAD}data Tree = Leaf | Node Tree Int Tree\n\
          use Tree.*\n\
-         def main = C.size (C.make (Node Leaf 1 Leaf))\n"
+         def result = C.size (C.make (Node Leaf 1 Leaf))\n"
     ));
 }
 
 #[test]
 fn mutable_things_are_refused() {
     refused(
-        &format!("{HEAD}def main = let r = newRef 1 in C.size (C.make (Just r))\n"),
+        &format!("{HEAD}def result = let r = newRef 1 in C.size (C.make (Just r))\n"),
         "a Ref",
     );
 }
@@ -93,11 +93,11 @@ fn mutable_things_are_refused() {
 #[test]
 fn compact_add_checks_what_it_adds() {
     refused(
-        &format!("{HEAD}def main = C.size (C.add (C.make 1) [\\x -> x])\n"),
+        &format!("{HEAD}def result = C.size (C.add (C.make 1) [\\x -> x])\n"),
         "a function",
     );
     accepted(&format!(
-        "{HEAD}def main = C.size (C.add (C.make 1) [1, 2, 3])\n"
+        "{HEAD}def result = C.size (C.add (C.make 1) [1, 2, 3])\n"
     ));
 }
 
@@ -106,7 +106,7 @@ fn the_primitive_passed_as_a_value_is_checked_too() {
     refused(
         &format!(
             "{HEAD}use Std.Collections.Vector as V\n\
-             def main = V.len (V.map compact [\\x -> x + 1])\n"
+             def result = V.len (V.map compact [\\x -> x + 1])\n"
         ),
         "a function",
     );
@@ -118,7 +118,7 @@ fn immutable_data_is_accepted() {
         "{HEAD}use Std.Collections.HashMap as H\n\
          data Shape = Circle Int | Square Int\n\
          use Shape.*\n\
-         def main =\n\
+         def result =\n\
          \x20 let a = C.make (H.insert 1 \"one\" H.empty) in\n\
          \x20 let b = C.make [Circle 1, Square 2] in\n\
          \x20 let c = C.make ({{ name = \"x\", sizes = #[1, 2] }}, Just 'c') in\n\
@@ -134,7 +134,7 @@ fn a_type_argument_no_field_holds_is_not_held() {
         "{HEAD}data Tag a = Tag Int\n\
          use Tag.*\n\
          fun size (t : Tag (Int -> Int)) = C.size (C.make t)\n\
-         def main = size (Tag 1)\n"
+         def result = size (Tag 1)\n"
     ));
 }
 
@@ -142,7 +142,7 @@ fn a_type_argument_no_field_holds_is_not_held() {
 fn accepted_values_still_round_trip() {
     assert_eq!(
         eval_main_std(&format!(
-            "{HEAD}def main = C.get (C.make [Just 1, None, Just 3]) == [Just 1, None, Just 3]\n"
+            "{HEAD}def result = C.get (C.make [Just 1, None, Just 3]) == [Just 1, None, Just 3]\n"
         )),
         "True"
     );
@@ -156,12 +156,12 @@ fn a_wrapper_of_a_wrapper_is_checked_at_its_calls() {
         &format!(
             "{HEAD}fun keep x = C.make x\n\
              def keepAll = \\x -> keep x\n\
-             def main = C.size (keepAll (Just (\\x -> x)))\n"
+             def result = C.size (keepAll (Just (\\x -> x)))\n"
         ),
         "a function",
     );
     accepted(&format!(
         "{HEAD}fun keep x = C.make x\n\
-         def main = C.size (keep [1, 2])\n"
+         def result = C.size (keep [1, 2])\n"
     ));
 }

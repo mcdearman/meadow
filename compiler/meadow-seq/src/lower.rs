@@ -425,7 +425,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         }
     }
 
-    // A generic entry point -- `def main = compact (Just (\x -> x))` -- is
+    // A generic entry point -- `def it = compact (Just (\x -> x))` in the REPL -- is
     // started like any other, with only a continuation, so it gets a block that
     // instantiates it at no type in particular.
     if let Some(i) = program

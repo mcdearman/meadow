@@ -41,18 +41,29 @@ pub struct Source {
 
 static SOURCE_COUNT: AtomicU32 = AtomicU32::new(0);
 
-/// A source is saved as where it came from and what it says. Its id is only
-/// unique within the process that made it, so one read back gets a new id.
+/// Ids from here up are fixed: a standard library module's is its place in the
+/// library, the same in every process. A compiled `Std` is kept and read back
+/// by other processes, and what it compiled to -- a debugger's locations --
+/// names its sources by id, so those ids have to mean the same thing there.
+pub const FIXED_IDS: SourceId = u32::MAX - (1 << 16);
+
+/// A source is saved as where it came from and what it says. An id made by
+/// [`Source::new`] is only unique within the process that made it, so one
+/// read back gets a new one; a fixed id ([`Source::fixed`]) is kept.
 impl serde::Serialize for Source {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        (self.kind, self.content).serialize(s)
+        (self.id, self.kind, self.content).serialize(s)
     }
 }
 
 impl<'de> serde::Deserialize<'de> for Source {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let (kind, content) = <(SourceKind, InternedString)>::deserialize(d)?;
-        Ok(Source::new(kind, content))
+        let (id, kind, content) = <(SourceId, SourceKind, InternedString)>::deserialize(d)?;
+        Ok(if id >= FIXED_IDS {
+            Source { id, kind, content }
+        } else {
+            Source::new(kind, content)
+        })
     }
 }
 
@@ -60,6 +71,15 @@ impl Source {
     pub fn new(kind: SourceKind, content: InternedString) -> Self {
         let id = SOURCE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self { id, kind, content }
+    }
+
+    /// The source whose id is the `index`th fixed one -- see [`FIXED_IDS`].
+    pub fn fixed(index: u32, kind: SourceKind, content: InternedString) -> Self {
+        Self {
+            id: FIXED_IDS + index,
+            kind,
+            content,
+        }
     }
 
     pub fn name(&self) -> InternedString {

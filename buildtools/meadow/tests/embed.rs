@@ -31,7 +31,9 @@ fn package(who: &str, main: &str, note: &str) -> PathBuf {
 }
 
 fn options(root: &Path) -> meadow::Options {
-    Resolved::resolve(Profile::Debug, root, ProfileConfig::default()).options
+    Resolved::resolve(Profile::Debug, root, ProfileConfig::default())
+        .options
+        .entry("result")
 }
 
 /// Build it and run it, or give back what went wrong.
@@ -53,7 +55,7 @@ fn run(root: &Path) -> Result<String, String> {
 fn a_file_beside_the_source_is_read_at_compile_time() {
     let root = package(
         "reads",
-        "def note = includeStr \"note.txt\"\n\ndef main = note\n",
+        "def note = includeStr \"note.txt\"\n\ndef result = note\n",
         "hello from a file\n",
     );
     assert_eq!(run(&root).unwrap(), "\"hello from a file\\n\"");
@@ -65,7 +67,7 @@ fn the_path_is_taken_beside_the_file_that_wrote_it() {
     // `note.txt`, and that is `src/note.txt`.
     let root = package(
         "beside",
-        "def note = includeStr \"note.txt\"\n\ndef main = note\n",
+        "def note = includeStr \"note.txt\"\n\ndef result = note\n",
         "beside\n",
     );
     let elsewhere = root.join("note.txt");
@@ -80,7 +82,7 @@ fn editing_the_embedded_file_is_a_rebuild() {
     // the old program.
     let root = package(
         "rebuild",
-        "def note = includeStr \"note.txt\"\n\ndef main = note\n",
+        "def note = includeStr \"note.txt\"\n\ndef result = note\n",
         "first\n",
     );
     assert_eq!(run(&root).unwrap(), "\"first\\n\"");
@@ -92,7 +94,7 @@ fn editing_the_embedded_file_is_a_rebuild() {
 fn a_file_that_is_not_there_says_so_with_the_path_it_looked_for() {
     let root = package(
         "missing",
-        "def note = includeStr \"nope.txt\"\n\ndef main = note\n",
+        "def note = includeStr \"nope.txt\"\n\ndef result = note\n",
         "unused\n",
     );
     let said = run(&root).unwrap_err();
@@ -105,7 +107,7 @@ fn the_path_has_to_be_written_out() {
     // It is read before the program runs, so it cannot come from the program.
     let root = package(
         "computed",
-        "def place = \"note.txt\"\n\ndef note = includeStr place\n\ndef main = note\n",
+        "def place = \"note.txt\"\n\ndef note = includeStr place\n\ndef result = note\n",
         "unused\n",
     );
     let said = run(&root).unwrap_err();
@@ -116,7 +118,7 @@ fn the_path_has_to_be_written_out() {
 fn one_argument_is_what_it_takes() {
     let root = package(
         "arity",
-        "def note = includeStr \"note.txt\" \"more.txt\"\n\ndef main = note\n",
+        "def note = includeStr \"note.txt\" \"more.txt\"\n\ndef result = note\n",
         "unused\n",
     );
     let said = run(&root).unwrap_err();
@@ -127,7 +129,7 @@ fn one_argument_is_what_it_takes() {
 fn a_binding_of_your_own_wins() {
     let root = package(
         "shadow",
-        "fun includeStr s = \"mine: ${s}\"\n\ndef main = includeStr \"note.txt\"\n",
+        "fun includeStr s = \"mine: ${s}\"\n\ndef result = includeStr \"note.txt\"\n",
         "unused\n",
     );
     assert_eq!(run(&root).unwrap(), "\"mine: note.txt\"");

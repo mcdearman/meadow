@@ -147,14 +147,14 @@ fn cased(tag: &str, main: &str) -> Vec<String> {
     .unwrap();
     std::fs::write(dir.join("src/Alpha.mw"), "def x = 41\n").unwrap();
     std::fs::write(dir.join("src/Main.mw"), main).unwrap();
-    let out = pipeline::build(&dir, Options::debug());
+    let out = pipeline::build(&dir, Options::debug().entry("result"));
     let _ = std::fs::remove_dir_all(&dir);
     out.diagnostics.iter().map(|d| d.msg.clone()).collect()
 }
 
 #[test]
 fn a_module_is_named_as_its_file_is() {
-    let ok = cased("right", "use Cased.Alpha (x)\n\ndef main = x + 1\n");
+    let ok = cased("right", "use Cased.Alpha (x)\n\ndef result = x + 1\n");
     assert!(ok.is_empty(), "{ok:?}");
 }
 
@@ -163,13 +163,13 @@ fn a_module_in_the_wrong_case_is_not_found_on_any_platform() {
     // The file is `Alpha.mw`. A disk that would open it as `alpha.mw` must not
     // make `use Cased.alpha` mean it: the same program has to be the same
     // program on Linux.
-    let wrong = cased("module", "use Cased.alpha (x)\n\ndef main = x + 1\n");
+    let wrong = cased("module", "use Cased.alpha (x)\n\ndef result = x + 1\n");
     assert!(!wrong.is_empty(), "`use Cased.alpha` found `Alpha.mw`");
 }
 
 #[test]
 fn a_package_in_the_wrong_case_is_not_found_on_any_platform() {
-    let wrong = cased("package", "use cased.Alpha (x)\n\ndef main = x + 1\n");
+    let wrong = cased("package", "use cased.Alpha (x)\n\ndef result = x + 1\n");
     assert!(
         !wrong.is_empty(),
         "`use cased.Alpha` found the package `Cased`"
@@ -182,21 +182,21 @@ fn the_standard_library_is_named_exactly() {
     // stay that way, and `std` or `collections` has to stay wrong.
     let right = cased(
         "std-right",
-        "use Std.Collections.Vector as V\n\ndef main = V.len [1, 2]\n",
+        "use Std.Collections.Vector as V\n\ndef result = V.len [1, 2]\n",
     );
     assert!(right.is_empty(), "{right:?}");
     for (tag, src) in [
         (
             "std-a",
-            "use Std.collections.Vector as V\n\ndef main = V.len [1, 2]\n",
+            "use Std.collections.Vector as V\n\ndef result = V.len [1, 2]\n",
         ),
         (
             "std-b",
-            "use Std.Collections.vector as V\n\ndef main = V.len [1, 2]\n",
+            "use Std.Collections.vector as V\n\ndef result = V.len [1, 2]\n",
         ),
         (
             "std-c",
-            "use std.Collections.Vector as V\n\ndef main = V.len [1, 2]\n",
+            "use std.Collections.Vector as V\n\ndef result = V.len [1, 2]\n",
         ),
     ] {
         let wrong = cased(tag, src);

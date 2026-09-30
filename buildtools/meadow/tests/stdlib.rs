@@ -6,7 +6,7 @@ use meadow_eval as eval;
 
 #[test]
 fn stdlib_compiles_without_diagnostics() {
-    let (_pkgs, diags) = stdlib::std_packages(meadow::Options::debug());
+    let (_pkgs, diags) = stdlib::std_packages(meadow::Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "Std did not compile clean:\n{}",
@@ -19,7 +19,8 @@ fn stdlib_compiles_without_diagnostics() {
 }
 
 fn run(src: &str) -> String {
-    let (program, diags) = pipeline::compile_str_with_std("test", src, meadow::Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", src, meadow::Options::debug().entry("result"));
     if !diags.is_empty() {
         return format!(
             "compile errors:\n{}",
@@ -39,21 +40,21 @@ fn run(src: &str) -> String {
 #[test]
 fn prelude_list_functions_are_in_scope() {
     assert_eq!(
-        run("def main = sum (map (\\x -> x * x) (range 1 5))\n"),
+        run("def result = sum (map (\\x -> x * x) (range 1 5))\n"),
         "30" // 1 + 4 + 9 + 16
     );
 }
 
 #[test]
 fn cons_sugar_builds_a_list() {
-    assert_eq!(run("def main = 1 :: 2 :: 3 :: Nil\n"), "[1; 2; 3]");
+    assert_eq!(run("def result = 1 :: 2 :: 3 :: Nil\n"), "[1; 2; 3]");
 }
 
 #[test]
 fn cons_sugar_in_patterns() {
     assert_eq!(
         run(
-            "fun swapFirstTwo xs =\n  match xs with\n  | a :: b :: rest -> b :: a :: rest\n  | other -> other\ndef main = swapFirstTwo [1; 2; 3; 4]\n"
+            "fun swapFirstTwo xs =\n  match xs with\n  | a :: b :: rest -> b :: a :: rest\n  | other -> other\ndef result = swapFirstTwo [1; 2; 3; 4]\n"
         ),
         "[2; 1; 3; 4]"
     );
@@ -63,7 +64,7 @@ fn cons_sugar_in_patterns() {
 fn point_free_sum_with_operator_section() {
     // the motivating example
     assert_eq!(
-        run("fun total = foldl (_ + _) 0\ndef main = total (range 1 11)\n"),
+        run("fun total = foldl (_ + _) 0\ndef result = total (range 1 11)\n"),
         "55"
     );
 }
@@ -71,7 +72,7 @@ fn point_free_sum_with_operator_section() {
 #[test]
 fn foldl_and_filter() {
     assert_eq!(
-        run("def main = foldl (\\a x -> a + x) 0 (filter (\\n -> n % 2 == 0) (range 0 10))\n"),
+        run("def result = foldl (\\a x -> a + x) 0 (filter (\\n -> n % 2 == 0) (range 0 10))\n"),
         "20" // 0 + 2 + 4 + 6 + 8
     );
 }
@@ -80,7 +81,7 @@ fn foldl_and_filter() {
 fn option_helpers() {
     assert_eq!(
         run(
-            "use Std.Maybe as Maybe\ndef main = Maybe.unwrapOr 0 (Maybe.map (\\x -> x + 1) (Just 41))\n"
+            "use Std.Maybe as Maybe\ndef result = Maybe.unwrapOr 0 (Maybe.map (\\x -> x + 1) (Just 41))\n"
         ),
         "42"
     );
@@ -90,7 +91,7 @@ fn option_helpers() {
 fn std_map_roundtrip() {
     assert_eq!(
         run(
-            "use Std.Collections.Map as Map\ndef main =\n  let m = Map.insert 2 \"b\" (Map.insert 1 \"a\" Map.empty) in\n  Map.lookup 2 m\n"
+            "use Std.Collections.Map as Map\ndef result =\n  let m = Map.insert 2 \"b\" (Map.insert 1 \"a\" Map.empty) in\n  Map.lookup 2 m\n"
         ),
         "Just(\"b\")"
     );
@@ -100,7 +101,7 @@ fn std_map_roundtrip() {
 fn std_set_dedups() {
     assert_eq!(
         run(
-            "use Std.Collections.Set as Set\ndef main = Set.size (Set.fromList [1; 2; 2; 3; 3; 3])\n"
+            "use Std.Collections.Set as Set\ndef result = Set.size (Set.fromList [1; 2; 2; 3; 3; 3])\n"
         ),
         "3"
     );
@@ -116,7 +117,7 @@ fn fs_write_read_list_remove() {
     let d = dir.to_string_lossy().replace('\\', "/");
 
     let src = format!(
-        "def main =\n\
+        "def result =\n\
         \x20 let w = writeString (\"{p}\", \"greetings\") in\n\
         \x20 let back = readToString \"{p}\" in\n\
         \x20 let there = exists \"{p}\" in\n\
@@ -132,7 +133,7 @@ fn fs_write_read_list_remove() {
 #[test]
 fn fs_effect_can_be_handled() {
     // a handler intercepts `Fs` so the runtime never touches the disk
-    let src = "def main =\n\
+    let src = "def result =\n\
       \x20 handle readToString \"/nope\" with {\n\
       \x20   readToString path k -> k (Ok \"mocked\"),\n\
       \x20   return x -> x\n\
@@ -144,7 +145,7 @@ fn fs_effect_can_be_handled() {
 fn std_tree_sorts() {
     assert_eq!(
         run(
-            "use Std.Collections.Tree as Tree\ndef main = Tree.toList (Tree.fromList [5; 3; 8; 1; 4; 7; 9; 2; 6])\n"
+            "use Std.Collections.Tree as Tree\ndef result = Tree.toList (Tree.fromList [5; 3; 8; 1; 4; 7; 9; 2; 6])\n"
         ),
         "[1; 2; 3; 4; 5; 6; 7; 8; 9]"
     );
@@ -163,8 +164,8 @@ fn std_packages_is_cached() {
     // is really a second clone; comparing two clones against each other says
     // nothing about the cache, and on a loaded machine it fails outright. The
     // count *is* the property: at most one compile per profile per process.
-    let (first, _) = stdlib::std_packages(meadow::Options::debug());
-    let (second, _) = stdlib::std_packages(meadow::Options::debug());
+    let (first, _) = stdlib::std_packages(meadow::Options::debug().entry("result"));
+    let (second, _) = stdlib::std_packages(meadow::Options::debug().entry("result"));
 
     assert_eq!(first.len(), second.len(), "the same packages come back");
     assert_eq!(
@@ -173,7 +174,7 @@ fn std_packages_is_cached() {
         "and with the same exports"
     );
     assert_eq!(
-        stdlib::compiles(meadow::Options::debug()),
+        stdlib::compiles(meadow::Options::debug().entry("result")),
         1,
         "the embedded Std should be compiled exactly once per process"
     );
@@ -183,26 +184,35 @@ fn std_packages_is_cached() {
 /// but not `Std`, which sees only the platform: one compile serves them all.
 #[test]
 fn cfg_flags_do_not_recompile_std() {
-    let mut flagged = meadow::Options::debug();
+    let mut flagged = meadow::Options::debug().entry("result");
     flagged.cfg = flagged.cfg.with_flags("fast, feature=gpu");
     flagged.cfg.backend = "cek";
     flagged.cfg.test = true;
-    let (plain, _) = stdlib::std_packages(meadow::Options::debug());
+    let (plain, _) = stdlib::std_packages(meadow::Options::debug().entry("result"));
     let (other, _) = stdlib::std_packages(flagged);
     assert_eq!(plain.len(), other.len());
-    assert_eq!(stdlib::compiles(meadow::Options::debug()), 1);
+    assert_eq!(
+        stdlib::compiles(meadow::Options::debug().entry("result")),
+        1
+    );
 }
 
 #[test]
 fn the_two_profiles_are_cached_separately() {
     // `--release` turns on the exhaustiveness check, so the two can disagree
     // about diagnostics and must not share a cache entry.
-    let (debug, _) = stdlib::std_packages(meadow::Options::debug());
-    let (release, _) = stdlib::std_packages(meadow::Options::release());
+    let (debug, _) = stdlib::std_packages(meadow::Options::debug().entry("result"));
+    let (release, _) = stdlib::std_packages(meadow::Options::release().entry("result"));
     assert_eq!(debug.len(), release.len());
     // Two entries, each filled once: sharing one would leave the other at zero.
-    assert_eq!(stdlib::compiles(meadow::Options::debug()), 1);
-    assert_eq!(stdlib::compiles(meadow::Options::release()), 1);
+    assert_eq!(
+        stdlib::compiles(meadow::Options::debug().entry("result")),
+        1
+    );
+    assert_eq!(
+        stdlib::compiles(meadow::Options::release().entry("result")),
+        1
+    );
 }
 
 /// `Lib.mw` declares every top-level `Std` module, by the name it is compiled

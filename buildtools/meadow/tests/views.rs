@@ -8,7 +8,8 @@ use meadow::{Engine, OptLevel, Options, pipeline, runtime};
 /// The CEK machine's answer, required of the VM and its JIT at every level
 /// and of a release build.
 fn agreed(src: &str) -> String {
-    let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "compile errors in\n{src}\n{}",
@@ -28,7 +29,8 @@ fn agreed(src: &str) -> String {
             assert_eq!(got, cek, "{engine:?} at {} on\n{src}", opt.name());
         }
     }
-    let (release, diags) = pipeline::compile_str_with_std("test", src, Options::release());
+    let (release, diags) =
+        pipeline::compile_str_with_std("test", src, Options::release().entry("result"));
     assert!(
         diags.is_empty(),
         "release: {:?}",
@@ -60,7 +62,7 @@ fn a_view_matches_what_its_function_answers() {
              | Rect w h -> w + h\n\
              | Circle r -> r\n\
              | Dot -> 0\n\
-             def main = (describe (Rect 3 3), describe (Rect 2 5), describe (Circle 7), describe Dot)\n"
+             def result = (describe (Rect 3 3), describe (Rect 2 5), describe (Circle 7), describe Dot)\n"
         ),
         "(300, 7, 7, 0)",
     );
@@ -78,7 +80,7 @@ fn a_view_that_does_not_match_tries_the_arms_after_it() {
          | (half -> Just h) if h > 10 -> \"big and even\"\n\
          | (half -> Just _) -> \"even\"\n\
          | _ -> \"odd\"\n\
-         def main = (f 0, f 2, f 30, f 4, f 5)\n",
+         def result = (f 0, f 2, f 30, f 4, f 5)\n",
         r#"("zero", "two", "big and even", "even", "odd")"#,
     );
 }
@@ -98,7 +100,7 @@ fn views_nest_and_see_what_is_bound_to_their_left() {
          fun both p = match p with\n\
          | Just ((\\i -> i * 2) -> k, (lookup k -> Just n)) -> n\n\
          | _ -> \"none\"\n\
-         def main = (name (1, table), name (3, table), both (Just (1, table)), both None)\n",
+         def result = (name (1, table), name (3, table), both (Just (1, table)), both None)\n",
         r#"("one", "?", "two", "none")"#,
     );
 }
@@ -108,7 +110,7 @@ fn a_view_is_a_parameter_and_a_binding() {
     is(
         "fun swap (a, b) = (b, a)\n\
          fun first (swap -> (_, a)) = a\n\
-         def main =\n\
+         def result =\n\
            let (swap -> (x, y)) = (1, 2) in\n\
            let g = \\(swap -> (p, _)) -> p in\n\
            (first (3, 4), x, y, g (5, 6))\n",
@@ -123,7 +125,7 @@ fn a_function_of_equations_can_match_through_a_view() {
          fun steps 1 acc = acc\n\
            | steps (half -> Just h) acc = steps h (acc + 1)\n\
            | steps n acc = steps (3 * n + 1) (acc + 1)\n\
-         def main = steps 6 0\n",
+         def result = steps 6 0\n",
         "8",
     );
 }
@@ -133,7 +135,7 @@ fn a_function_of_equations_can_match_through_a_view() {
 #[test]
 fn a_view_is_applied_once() {
     is(
-        "def main =\n\
+        "def result =\n\
            let n = newRef 0 in\n\
            let count = \\p -> let _ = setRef n (getRef n + 1) in p in\n\
            let (count -> (a, b, c)) = (1, 2, 3) in\n\
@@ -147,8 +149,11 @@ fn a_view_whose_pattern_matches_everything_covers_everything() {
     let src = "fun double n = n * 2\n\
                fun f n = match n with\n\
                | (double -> m) -> m\n\
-               def main = f 4\n";
-    assert_eq!(common::errors_std_with(src, Options::release()), "");
+               def result = f 4\n";
+    assert_eq!(
+        common::errors_std_with(src, Options::release().entry("result")),
+        ""
+    );
     assert_eq!(agreed(src), "8");
 }
 
@@ -158,14 +163,14 @@ fn a_view_that_may_not_match_covers_nothing() {
                fun f n = match n with\n\
                | (half -> Just h) -> h\n\
                | (half -> None) -> 0\n\
-               def main = f 4\n";
-    let errors = common::errors_std_with(src, Options::release());
+               def result = f 4\n";
+    let errors = common::errors_std_with(src, Options::release().entry("result"));
     assert!(errors.contains("non-exhaustive"), "{errors}");
     // Nor can a parameter be one.
     let src = "fun half n = if n % 2 == 0 then Just (n / 2) else None\n\
                fun f (half -> Just h) = h\n\
-               def main = f 4\n";
-    let errors = common::errors_std_with(src, Options::debug());
+               def result = f 4\n";
+    let errors = common::errors_std_with(src, Options::debug().entry("result"));
     assert!(errors.contains("refutable pattern"), "{errors}");
 }
 
@@ -176,16 +181,16 @@ fn a_view_is_typed_as_a_function_of_what_it_matches() {
          fun f n = match n with\n\
          | (len -> 0) -> n + 1\n\
          | _ -> 0\n\
-         def main = f 1\n",
-        Options::debug(),
+         def result = f 1\n",
+        Options::debug().entry("result"),
     );
     assert!(errors.contains("String"), "{errors}");
     let errors = common::errors_std_with(
         "fun f n = match n with\n\
          | (\\x -> x + 1) -> 0\n\
          | _ -> 0\n\
-         def main = f 1\n",
-        Options::debug(),
+         def result = f 1\n",
+        Options::debug().entry("result"),
     );
     assert!(
         !errors.is_empty(),

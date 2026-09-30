@@ -59,7 +59,7 @@ fun runningSum producer =
 
 -- --- main --------------------------------------------------------------------
 
-def main =
+fun main () =
   let _ = println "== the first 12 Fibonacci numbers" in
   let _ = println (Stream.take 12 fibs) in
   let _ = println "== the first 10 primes, from an infinite stream" in

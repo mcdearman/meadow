@@ -135,6 +135,7 @@ pub const MODULES: &[(&str, &str)] = &[
     ),
     // After `Console`, so `time` can print what it measured.
     ("Time", include_str!("../../../lib/Std/src/Time.mw")),
+    ("Eff", include_str!("../../../lib/Std/src/Eff.mw")),
     ("Bench", include_str!("../../../lib/Std/src/Bench.mw")),
     ("Prelude", include_str!("../../../lib/Std/src/Prelude.mw")),
 ];
@@ -434,9 +435,12 @@ fn compile_modules(opts: Options) -> (Vec<(&'static str, CompiledPackage)>, Vec<
     // dependencies. Each sub-unit gets `prelude_exports = Some([])` so a later
     // sibling only reaches it through `use`.
     let mut subs: Vec<(&'static str, CompiledPackage)> = Vec::new();
-    for (dotted, src) in MODULES {
+    for (index, (dotted, src)) in MODULES.iter().enumerate() {
         let filename = format!("Std/{}.mw", dotted.replace('.', "/"));
-        let source = Source::new(
+        // Known by its place in the library, in every process: this compile is
+        // kept, and read back by others -- see `meadow_source::FIXED_IDS`.
+        let source = Source::fixed(
+            index as u32,
             SourceKind::File(InternedString::from(filename.as_str())),
             InternedString::from(*src),
         );
@@ -591,6 +595,7 @@ fn bundle(name: InternedString, subs: Vec<CompiledPackage>) -> CompiledPackage {
         fixities,
         // A library has no entry point, and `Std` least of all.
         entry: None,
+        value_entry: None,
         modules,
         types,
         exports,

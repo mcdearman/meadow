@@ -7,7 +7,7 @@
 --
 --   fun naiveFib n = if n < 2 then n else naiveFib (n - 1) + naiveFib (n - 2)
 --
---   def main = runAll
+--   fun main () = runAll
 --     [ bench "fib 20" (\() -> naiveFib 20)
 --     , bench "fib 25" (\() -> naiveFib 25)
 --     ]
@@ -222,7 +222,7 @@ fun padTo width s =
 -- Measure nothing -- the reports are already made. Present so the common shape
 -- reads as one expression:
 --
---   def main = runAll [bench "a" f, bench "b" g]
+--   fun main () = runAll [bench "a" f, bench "b" g]
 @pub fun runAll (reports : [Report]) : () ! { Console | e } = report reports
 
 -- --- tests --------------------------------------------------------------------

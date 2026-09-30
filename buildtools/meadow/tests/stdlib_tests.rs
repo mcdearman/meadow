@@ -8,7 +8,7 @@
 use meadow::{Engine, Options, linker::Linker, stdlib, test};
 
 fn run() -> Vec<(String, Option<String>)> {
-    let (packages, diags) = stdlib::std_packages(Options::debug());
+    let (packages, diags) = stdlib::std_packages(Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "the standard library should compile cleanly: {:?}",
@@ -18,7 +18,7 @@ fn run() -> Vec<(String, Option<String>)> {
         Linker::link(packages),
         "Std",
         Engine::default(),
-        Options::debug().opt,
+        Options::debug().entry("result").opt,
     )
     .expect("the runner should not itself fail")
 }
@@ -55,7 +55,7 @@ fn the_library_actually_carries_tests() {
 fn every_module_with_a_public_surface_is_tested() {
     // Not a coverage measure — just a check that no module was left out entirely
     // when tests were added, and that a new one does not quietly arrive untested.
-    let (packages, _) = stdlib::std_packages(Options::debug());
+    let (packages, _) = stdlib::std_packages(Options::debug().entry("result"));
     let tested: Vec<String> = packages[0]
         .tests
         .iter()
@@ -71,7 +71,10 @@ fn the_standard_library_cannot_be_built_as_a_package() {
     // Pointing the build system at `lib/Std` used to produce a hundred
     // `already defined` errors — the embedded copy is injected alongside the
     // one on disk. The cause is worth naming; the symptoms are not.
-    let out = meadow::pipeline::build(std::path::Path::new("../../lib/Std"), Options::debug());
+    let out = meadow::pipeline::build(
+        std::path::Path::new("../../lib/Std"),
+        Options::debug().entry("result"),
+    );
     assert!(out.linked.is_none(), "it should not link");
     let msgs: Vec<_> = out.diagnostics.iter().map(|d| d.msg.clone()).collect();
     assert_eq!(msgs.len(), 1, "one diagnostic, not a hundred: {msgs:?}");

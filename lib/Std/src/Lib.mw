@@ -38,5 +38,6 @@
 @pub mod Macro
 @pub mod Console
 @pub mod Time
+@pub mod Eff
 @pub mod Bench
 @pub mod Prelude

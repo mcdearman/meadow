@@ -11,17 +11,13 @@
 //! does. If a change *improves* one, tighten it — the number in the assertion is
 //! a claim about the compiler, and it should stay true.
 
-use meadow_compiler::{compile_str, core};
+use meadow_compiler::{Options, compile_str_with, core};
 
 fn program(src: &str) -> core::Program {
-    let (pkg, diags) = compile_str("cost", src);
+    let (pkg, diags) = compile_str_with("cost", src, Options::default().entry("result"));
     let msgs: Vec<_> = diags.iter().map(|d| d.msg.clone()).collect();
     assert!(msgs.is_empty(), "{}", msgs.join("\n"));
-    let entry = pkg
-        .exports
-        .iter()
-        .find(|e| &*e.name == "main")
-        .map(|e| e.var);
+    let entry = pkg.value_entry;
     core::Program {
         defs: pkg.defs.clone(),
         entry,
@@ -57,7 +53,7 @@ fn a_tail_recursive_loop_allocates_nothing() {
     // argument. Nothing here should allocate at all.
     let (out, steps, allocated) = cost(
         "fun count (n : Int) acc = if n == 0 then acc else count (n - 1) (acc + n)
-         def main = count 100000 0",
+         def result = count 100000 0",
     );
     assert_eq!(out, "5000050000");
     assert_eq!(
@@ -78,7 +74,7 @@ fn a_known_call_does_not_build_a_closure() {
     let (_, _, direct) = cost(
         "fun add a b = a + b
          fun go (n : Int) acc = if n == 0 then acc else go (n - 1) (add acc n)
-         def main = go 1000 0",
+         def result = go 1000 0",
     );
     // A real partial application — `(add acc)` is one argument short, so it has
     // to become a closure. Parentheses alone would not do it: `(add acc) n` is
@@ -87,7 +83,7 @@ fn a_known_call_does_not_build_a_closure() {
         "fun add a b = a + b
          fun apply f x = f x
          fun go (n : Int) acc = if n == 0 then acc else go (n - 1) (apply (add acc) n)
-         def main = go 1000 0",
+         def result = go 1000 0",
     );
     // Four words an iteration: one continuation object for the non-tail call
     // -- a two-word header and two captures -- which a machine with no call
@@ -107,7 +103,7 @@ fn a_known_call_does_not_build_a_closure() {
 fn arithmetic_is_three_address() {
     // `a + b` is one instruction, not a move, a move and an add. Six operations
     // plus the loop's own overhead, over one iteration.
-    let (out, steps, _) = cost("def main = 1 + 2 * 3 - 4 + 5 * 6 - 7");
+    let (out, steps, _) = cost("def result = 1 + 2 * 3 - 4 + 5 * 6 - 7");
     assert_eq!(out, "26");
     assert!(steps < 20, "{steps} instructions for six operations");
 }
@@ -120,7 +116,7 @@ fn building_a_list_costs_the_list_and_little_else() {
         "use Chain.*\ndata Chain = Nil | Cons Int Chain
          fun build n = if n == 0 then Nil else Cons n (build (n - 1))
          fun total xs = match xs with | Nil -> 0 | Cons x r -> x + total r
-         def main = total (build 10000)",
+         def result = total (build 10000)",
     );
     assert_eq!(out, "50005000");
     // 10_000 conses at 4 words, one `Nil`, and the continuations `build` and
@@ -137,7 +133,7 @@ fn a_closure_still_captures_what_it_should() {
     let (out, _, _) = cost(
         "fun twice f x = f (f x)
          fun adder n = \\m -> n + m
-         def main = twice (adder 10) 1",
+         def result = twice (adder 10) 1",
     );
     assert_eq!(out, "21");
 }
@@ -192,7 +188,7 @@ fn a_comparison_allocates_nothing() {
                 "{prelude}fun go (i : Int) (acc : Int) a b =\n\
                  \x20 if i == 0 then acc\n\
                  \x20 else if {cond} then go (i - 1) (acc + 1) a b else go (i - 1) acc a b\n\
-                 def main = go {n} 0 {args}\n"
+                 def result = go {n} 0 {args}\n"
             )
         };
         let (_, _, few) = cost(&src(3));

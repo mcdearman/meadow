@@ -169,8 +169,10 @@ fun item_ (c : Lc) b (s : GTree) =
       [(False, newAstDataDecl b m (nm b (nameOf name)) (V.map (\p -> nm b (nameOf p)) params) (V.map (variant c b) variants))]
   | GroupedRecordDecl name params fields ->
       [(False, newAstRecordDecl b m (nm b (nameOf name)) (V.map (\p -> nm b (nameOf p)) params) (V.map (field c b) (childrenOf NodeFieldTy fields)))]
-  | GroupedEffectDecl name params ops ->
-      [(False, newAstEffectDecl b m (nm b (nameOf name)) (V.map (\p -> nm b (nameOf p)) params) (V.map (field c b) (childrenOf NodeFieldTy ops)))]
+  | GroupedEffectDecl name params body ->
+      (match childOf NodeEffectAlias body with
+       | Just alias -> [(False, newAstEffectAliasDecl b m (nm b (nameOf name)) (V.map (\p -> nm b (nameOf p)) params) (row c b (must NodeEffRow alias)))]
+       | None -> [(False, newAstEffectDecl b m (nm b (nameOf name)) (V.map (\p -> nm b (nameOf p)) params) (V.map (field c b) (childrenOf NodeFieldTy (must NodeRecTy body))))])
   | GroupedTypeDecl name params t -> [(False, newAstAliasDecl b m (nm b (nameOf name)) (V.map (\p -> nm b (nameOf p)) params) (ty c b t))]
   | GroupedTraitDecl name params supers items -> [(False, traitDecl c b m name params supers items)]
   | GroupedImplDecl tr tys context items -> [(False, implDecl c b m tr tys context items)]
@@ -1429,6 +1431,7 @@ fun jDecl (c : Lc) b (j : Json) =
   else if t == "RecordDecl" then newAstRecordDecl b m (jn b (f 0)) (jns b (f 1)) (V.map (jField c b) (jarr (f 2)))
   else if t == "EffectDecl" then newAstEffectDecl b m (jn b (f 0)) (jns b (f 1)) (V.map (jField c b) (jarr (f 2)))
   else if t == "AliasDecl" then newAstAliasDecl b m (jn b (f 0)) (jns b (f 1)) (jType c b (f 2))
+  else if t == "EffectAliasDecl" then newAstEffectAliasDecl b m (jn b (f 0)) (jns b (f 1)) (jRow c b (f 2))
   else if t == "SigDecl" then newAstSigDecl b m (jn b (f 0)) (jType c b (f 1)) (V.map (jBound c b) (jarr (f 2)))
   else if t == "TraitDecl" then
     newAstTraitDecl b m (jn b (f 0)) (jns b (f 1)) (V.map (jBound c b) (jarr (f 2)))

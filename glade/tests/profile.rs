@@ -6,7 +6,7 @@
 //! is a plausible-looking lie, so these check the depth against programs whose
 //! nesting is known by construction.
 
-use meadow_compiler::{compile_str, core};
+use meadow_compiler::{Options, compile_str_with, core};
 use meadow_glade::profile::Profile;
 use meadow_glade::vm::Vm;
 
@@ -15,14 +15,10 @@ const FUEL: u64 = 50_000_000;
 /// Compile `src` to an image that carries debug info, which is what a profile
 /// is walked by.
 fn image(src: &str) -> meadow_bytecode::Program {
-    let (pkg, diags) = compile_str("prof", src);
+    let (pkg, diags) = compile_str_with("prof", src, Options::default().entry("result"));
     let hard: Vec<_> = diags.iter().map(|d| d.msg.clone()).collect();
     assert!(hard.is_empty(), "compile errors:\n{}", hard.join("\n"));
-    let entry = pkg
-        .exports
-        .iter()
-        .find(|e| &*e.name == "main")
-        .map(|e| e.var);
+    let entry = pkg.value_entry;
     let program = core::Program {
         defs: pkg.defs.clone(),
         entry,
@@ -55,7 +51,7 @@ fn deepest(p: &Profile) -> usize {
 #[test]
 fn a_profile_does_not_change_the_answer() {
     let src = "fun fib (n : Int) : Int = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\
-               def main = fib 18\n";
+               def result = fib 18\n";
     let (p, shown) = profile_of(src, 50, 64);
     assert_eq!(shown, "2584");
     assert!(p.taken() > 0, "no samples taken");
@@ -68,7 +64,7 @@ fn a_profile_does_not_change_the_answer() {
 #[test]
 fn a_sample_sees_the_callers_below_it() {
     let src = "fun fib (n : Int) : Int = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\
-               def main = fib 18\n";
+               def result = fib 18\n";
     let (p, _) = profile_of(src, 20, 64);
     assert!(
         deepest(&p) > 1,
@@ -87,9 +83,9 @@ fn a_sample_sees_the_callers_below_it() {
 #[test]
 fn deeper_recursion_is_deeper_in_the_profile() {
     let shallow = "fun down (n : Int) : Int = if n <= 0 then 0 else 1 + down (n - 1)\n\
-                   def main = down 4\n";
+                   def result = down 4\n";
     let deep = "fun down (n : Int) : Int = if n <= 0 then 0 else 1 + down (n - 1)\n\
-                def main = down 40\n";
+                def result = down 40\n";
     let (a, _) = profile_of(shallow, 1, 200);
     let (b, _) = profile_of(deep, 1, 200);
     assert!(
@@ -105,7 +101,7 @@ fn deeper_recursion_is_deeper_in_the_profile() {
 #[test]
 fn the_depth_asked_for_is_a_bound() {
     let src = "fun down (n : Int) : Int = if n <= 0 then 0 else 1 + down (n - 1)\n\
-               def main = down 200\n";
+               def result = down 200\n";
     for depth in [2, 5, 17] {
         let (p, _) = profile_of(src, 1, depth);
         assert!(
@@ -124,7 +120,7 @@ fn the_depth_asked_for_is_a_bound() {
 #[test]
 fn every_frame_is_an_instruction_of_the_program() {
     let src = "fun fib (n : Int) : Int = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\
-               def main = fib 14\n";
+               def result = fib 14\n";
     let image = image(src);
     let entry = image.entry.expect("an entry point");
     let mut vm = Vm::new(&image);

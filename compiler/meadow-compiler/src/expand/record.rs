@@ -175,6 +175,11 @@ fn decl(d: &ast::LDecl) -> String {
             s,
             &[name(&ad.name), names(&ad.params), ty(&ad.ty)],
         ),
+        ast::Decl::EffectAlias(ad) => node(
+            "EffectAliasDecl",
+            s,
+            &[name(&ad.name), names(&ad.params), row(&ad.row, s)],
+        ),
         ast::Decl::Sig(n, t, bs) => {
             node("SigDecl", s, &[name(n), ty(t), list(bs.iter().map(bound))])
         }

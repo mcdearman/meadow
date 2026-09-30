@@ -8,7 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// The finder as a fresh session has it: the library, and nothing `use`d.
 fn catalog() -> Catalog {
-    let (packages, _) = stdlib::std_packages(meadow::Options::debug());
+    let (packages, _) = stdlib::std_packages(meadow::Options::debug().entry("result"));
     let names = complete::snapshot(&packages, &[]);
     Catalog {
         index: meadow_find::Index::new(

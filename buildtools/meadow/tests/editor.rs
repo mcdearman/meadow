@@ -23,7 +23,7 @@ fn package(what: &str, manifest: &str, files: &[(&str, &str)]) -> PathBuf {
 
 /// The standard library, as the server holds it.
 fn std_lib() -> meadow_lsp::analysis::Std {
-    let opts = Options::debug();
+    let opts = Options::debug().entry("result");
     let modules = meadow::stdlib::std_modules(opts)
         .0
         .into_iter()
@@ -60,7 +60,7 @@ fn a_packages_dependencies_are_loaded_with_it() {
             "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nutil = {{ path = \"{}\" }}\n",
             lib.display()
         ),
-        &[("Lib.mw", "use util (double)\n\ndef main = double 21\n")],
+        &[("Lib.mw", "use util (double)\n\ndef result = double 21\n")],
     );
     let file = app
         .join("src/Lib.mw")
@@ -93,7 +93,7 @@ fn a_name_a_dependency_does_not_have_is_still_undefined() {
             "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nutil = {{ path = \"{}\" }}\n",
             lib.display()
         ),
-        &[("Lib.mw", "use util (double)\n\ndef main = treble 21\n")],
+        &[("Lib.mw", "use util (double)\n\ndef result = treble 21\n")],
     );
     let file = app
         .join("src/Lib.mw")
@@ -124,7 +124,7 @@ fn a_procedural_macro_runs_for_the_editor() {
         ),
         &[(
             "Lib.mw",
-            "use maker (defineOne!)\n\ndefineOne!()\n\ndef main = one\n",
+            "use maker (defineOne!)\n\ndefineOne!()\n\ndef result = one\n",
         )],
     );
     let file = app
@@ -149,7 +149,7 @@ fn a_git_dependency_is_not_fetched_for_the_editor() {
         "git-dep",
         "[package]\nname = \"Victim\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
          Far = { git = \"https://example.invalid/far.git\" }\n",
-        &[("Main.mw", "def main = 1\n")],
+        &[("Main.mw", "def result = 1\n")],
     );
     let file = dir.join("src").join("Main.mw");
     let started = std::time::Instant::now();
@@ -186,7 +186,7 @@ fn a_path_dependency_is_still_loaded_for_the_editor() {
             "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nNear = {{ path = \"{}\" }}\n",
             lib.display().to_string().replace('\\', "/")
         ),
-        &[("Lib.mw", "use Near (near)\n\ndef main = near + 1\n")],
+        &[("Lib.mw", "use Near (near)\n\ndef result = near + 1\n")],
     );
     let file = app
         .join("src/Lib.mw")

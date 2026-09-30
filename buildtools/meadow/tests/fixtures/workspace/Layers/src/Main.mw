@@ -2,4 +2,4 @@
 -- written here with the package name in front, as `use Layers.Alpha`.
 use Layers.Alpha (describe, twentyOne)
 
-def main = describe 20 + twentyOne
+def result = describe 20 + twentyOne

@@ -40,18 +40,18 @@ fn refused(src: &str, name: &str) -> String {
 
 #[test]
 fn a_bare_constructor_in_an_expression_is_refused() {
-    refused(&format!("{COLOUR}def main = Red\n"), "Red");
+    refused(&format!("{COLOUR}def result = Red\n"), "Red");
 }
 
 #[test]
 fn a_bare_constructor_applied_to_arguments_is_refused() {
-    refused(&format!("{OPT}def main = Some 1\n"), "Some");
+    refused(&format!("{OPT}def result = Some 1\n"), "Some");
 }
 
 #[test]
 fn a_bare_constructor_in_a_match_arm_is_refused() {
     let src = format!(
-        "{COLOUR}fun name c = match c with | Red -> 1 | Colour.Green -> 2 | Colour.Blue -> 3\ndef main = name Colour.Red\n"
+        "{COLOUR}fun name c = match c with | Red -> 1 | Colour.Green -> 2 | Colour.Blue -> 3\ndef result = name Colour.Red\n"
     );
     refused(&src, "Red");
 }
@@ -59,32 +59,32 @@ fn a_bare_constructor_in_a_match_arm_is_refused() {
 #[test]
 fn a_bare_constructor_nested_in_a_pattern_is_refused() {
     let src = format!(
-        "{OPT}fun f p = match p with | (Some x, _) -> x | _ -> 0\ndef main = f (Opt.Some 1, 2)\n"
+        "{OPT}fun f p = match p with | (Some x, _) -> x | _ -> 0\ndef result = f (Opt.Some 1, 2)\n"
     );
     refused(&src, "Some");
 }
 
 #[test]
 fn a_bare_constructor_in_a_parameter_pattern_is_refused() {
-    let src = "data Box = Box Int | Empty\nfun f (Empty) = 0\ndef main = 1\n";
+    let src = "data Box = Box Int | Empty\nfun f (Empty) = 0\ndef result = 1\n";
     refused(src, "Empty");
 }
 
 #[test]
 fn a_bare_constructor_in_a_let_pattern_is_refused() {
-    let src = format!("{OPT}fun f u = let (Some x) = Opt.Some 1 in x\ndef main = f ()\n");
+    let src = format!("{OPT}fun f u = let (Some x) = Opt.Some 1 in x\ndef result = f ()\n");
     refused(&src, "Some");
 }
 
 #[test]
 fn a_bare_constructor_used_as_a_function_is_refused() {
-    let src = format!("{OPT}fun apply f x = f x\ndef main = apply Some 1\n");
+    let src = format!("{OPT}fun apply f x = f x\ndef result = apply Some 1\n");
     refused(&src, "Some");
 }
 
 #[test]
 fn a_bare_constructor_inside_a_lambda_is_refused() {
-    let src = format!("{COLOUR}def main = (\\u -> Red) ()\n");
+    let src = format!("{COLOUR}def result = (\\u -> Red) ()\n");
     refused(&src, "Red");
 }
 
@@ -92,20 +92,20 @@ fn a_bare_constructor_inside_a_lambda_is_refused() {
 fn a_bare_constructor_inside_a_handler_clause_is_refused() {
     let src = format!(
         "{COLOUR}effect Pick {{ pick : () -> Colour }}\n\
-         def main = handle pick () with {{ pick u k -> k Blue }}\n"
+         def result = handle pick () with {{ pick u k -> k Blue }}\n"
     );
     refused(&src, "Blue");
 }
 
 #[test]
 fn a_bare_constructor_in_a_local_function_is_refused() {
-    let src = format!("{COLOUR}fun f u = let g v = Green in g ()\ndef main = f ()\n");
+    let src = format!("{COLOUR}fun f u = let g v = Green in g ()\ndef result = f ()\n");
     refused(&src, "Green");
 }
 
 #[test]
 fn the_error_says_where_the_constructor_lives() {
-    let out = refused(&format!("{COLOUR}def main = Red\n"), "Red");
+    let out = refused(&format!("{COLOUR}def result = Red\n"), "Red");
     assert_eq!(
         out,
         "unknown constructor `Red`: it belongs to `Colour`, so write `Colour.Red`, or bring it in with `use Colour.*`"
@@ -114,7 +114,7 @@ fn the_error_says_where_the_constructor_lives() {
 
 #[test]
 fn the_error_lists_every_type_it_could_belong_to() {
-    let src = "data Tree = Leaf | Node Tree Tree\ndata Rope = Leaf String | Node Rope Rope\ndef main = Leaf\n";
+    let src = "data Tree = Leaf | Node Tree Tree\ndata Rope = Leaf String | Node Rope Rope\ndef result = Leaf\n";
     assert_eq!(
         errors(src),
         "unknown constructor `Leaf`: it could be `Rope.Leaf`, `Tree.Leaf`; say which, or `use` one"
@@ -124,7 +124,7 @@ fn the_error_lists_every_type_it_could_belong_to() {
 #[test]
 fn a_constructor_no_type_has_is_just_unknown() {
     assert_eq!(
-        errors(&format!("{COLOUR}def main = Purple\n")),
+        errors(&format!("{COLOUR}def result = Purple\n")),
         "unknown constructor `Purple`"
     );
 }
@@ -135,7 +135,7 @@ fn a_constructor_no_type_has_is_just_unknown() {
 fn a_qualified_constructor_needs_no_use() {
     let src = format!(
         "{COLOUR}fun rank c = match c with | Colour.Red -> 1 | Colour.Green -> 2 | Colour.Blue -> 3\n\
-         def main = (rank Colour.Blue, Colour.Red == Colour.Red)\n"
+         def result = (rank Colour.Blue, Colour.Red == Colour.Red)\n"
     );
     assert_eq!(errors(&src), "");
     assert_eq!(eval_main(&src), "(3, True)");
@@ -146,7 +146,7 @@ fn use_type_glob_brings_every_constructor_of_a_local_type() {
     let src = format!(
         "{COLOUR}use Colour.*\n\
          fun rank c = match c with | Red -> 1 | Green -> 2 | Blue -> 3\n\
-         def main = rank Blue\n"
+         def result = rank Blue\n"
     );
     assert_eq!(errors(&src), "");
     assert_eq!(eval_main(&src), "3");
@@ -154,22 +154,22 @@ fn use_type_glob_brings_every_constructor_of_a_local_type() {
 
 #[test]
 fn use_type_with_a_list_brings_only_those() {
-    let src = format!("{COLOUR}use Colour (Red)\ndef main = (Red, Green)\n");
+    let src = format!("{COLOUR}use Colour (Red)\ndef result = (Red, Green)\n");
     let out = refused(&src, "Green");
     assert!(!out.contains("`Red`"), "{out}");
-    let src = format!("{COLOUR}use Colour (Red, Blue)\ndef main = (Red, Blue, Colour.Green)\n");
+    let src = format!("{COLOUR}use Colour (Red, Blue)\ndef result = (Red, Blue, Colour.Green)\n");
     assert_eq!(errors(&src), "");
 }
 
 #[test]
 fn a_use_may_come_before_the_type_it_names() {
-    let src = format!("use Colour.*\n{COLOUR}def main = Red\n");
+    let src = format!("use Colour.*\n{COLOUR}def result = Red\n");
     assert_eq!(errors(&src), "");
 }
 
 #[test]
 fn a_use_of_a_constructor_the_type_lacks_is_reported() {
-    let src = format!("{COLOUR}use Colour (Red, Purple)\ndef main = Red\n");
+    let src = format!("{COLOUR}use Colour (Red, Purple)\ndef result = Red\n");
     assert_eq!(errors(&src), "`Colour` has no constructor `Purple`");
 }
 
@@ -177,14 +177,14 @@ fn a_use_of_a_constructor_the_type_lacks_is_reported() {
 fn two_local_types_with_the_same_constructors_stay_apart() {
     let src = "data Tree = Leaf | Node Tree Tree\n\
                data Rope = Leaf String | Node Rope Rope\n\
-               def main = (Tree.Node Tree.Leaf Tree.Leaf, Rope.Leaf \"x\")\n";
+               def result = (Tree.Node Tree.Leaf Tree.Leaf, Rope.Leaf \"x\")\n";
     assert_eq!(errors(src), "");
     // Both brought in: each use is chosen by its type.
     let src = "data Tree = Leaf | Node Tree Tree\n\
                data Rope = Leaf String | Node Rope Rope\n\
                use Tree.*\nuse Rope.*\n\
                fun depth (t : Tree) = match t with | Leaf -> 0 | Node a b -> 1 + depth a\n\
-               def main = (depth (Node Leaf Leaf), Leaf \"x\")\n";
+               def result = (depth (Node Leaf Leaf), Leaf \"x\")\n";
     assert_eq!(errors(src), "");
 }
 
@@ -194,14 +194,14 @@ fn a_constructor_named_like_its_type_comes_with_the_type() {
     let src = "data Wrap = Wrap Int\n\
                record Point = { x : Int, y : Int }\n\
                fun unwrap (Wrap n) = n\n\
-               def main = (unwrap (Wrap 3), match Point { x = 1, y = 2 } with | Point { x = a, y = b } -> a + b)\n";
+               def result = (unwrap (Wrap 3), match Point { x = 1, y = 2 } with | Point { x = a, y = b } -> a + b)\n";
     assert_eq!(errors(src), "");
     assert_eq!(eval_main(src), "(3, 3)");
 }
 
 #[test]
 fn a_types_other_constructors_do_not_come_with_one_named_like_it() {
-    let src = "data Wrap = Wrap Int | Unwrapped\ndef main = (Wrap 1, Unwrapped)\n";
+    let src = "data Wrap = Wrap Int | Unwrapped\ndef result = (Wrap 1, Unwrapped)\n";
     refused(src, "Unwrapped");
 }
 
@@ -217,7 +217,7 @@ fn the_rule_holds_in_a_package_module_as_in_a_single_file() {
     assert!(out.contains("unknown constructor `Red`"), "{out}");
     assert_eq!(
         unit_errors(&[
-            ("", "mod Paint\ndef main = 1\n"),
+            ("", "mod Paint\ndef result = 1\n"),
             (
                 "Paint",
                 "use Colour.*\ndata Colour = Red | Green\n@pub(pkg) def red = Red\n"
@@ -232,7 +232,7 @@ fn a_local_use_is_this_modules_alone() {
     // `Paint` says `use Colour.*` for itself; the root still has to say so for
     // itself, through the path.
     let modules = [
-        ("", "mod Paint\nuse Paint.Colour\ndef main = Red\n"),
+        ("", "mod Paint\nuse Paint.Colour\ndef result = Red\n"),
         (
             "Paint",
             "use Colour.*\n@pub(pkg) data Colour = Red | Green\n",
@@ -246,7 +246,7 @@ fn a_local_use_is_this_modules_alone() {
     let modules = [
         (
             "",
-            "mod Paint\nuse Paint.Colour.*\ndef main = match Red with | Red -> 1 | Green -> 2\n",
+            "mod Paint\nuse Paint.Colour.*\ndef result = match Red with | Red -> 1 | Green -> 2\n",
         ),
         (
             "Paint",
@@ -267,7 +267,7 @@ fn a_nested_module_does_not_see_its_parents_constructors_bare() {
             "mod Inner
 use Colour.*
 @pub(pkg) data Colour = Red | Green
-def main = Red
+def result = Red
 ",
         ),
         (
@@ -288,7 +288,7 @@ def main = Red
             "mod Inner
 use Colour.*
 @pub(pkg) data Colour = Red | Green
-def main = Red
+def result = Red
 ",
         ),
         (
@@ -308,8 +308,10 @@ fn a_standard_library_modules_private_constructors_do_not_leak() {
     // `Std.Stm` declares `data Attempt a = Done a | Retried | Conflicted` for
     // itself. None of those are anyone else's to write.
     for name in ["Done", "Retried", "Conflicted"] {
-        let out =
-            common::errors_std_with(&format!("def main = {name}\n"), meadow::Options::debug());
+        let out = common::errors_std_with(
+            &format!("def result = {name}\n"),
+            meadow::Options::debug().entry("result"),
+        );
         assert!(
             out.contains(&format!("unknown constructor `{name}`")),
             "{name}: {out}"
@@ -320,12 +322,12 @@ fn a_standard_library_modules_private_constructors_do_not_leak() {
 #[test]
 fn a_dependencys_constructors_need_a_use_even_when_the_type_is_in_scope() {
     let out = common::errors_std_with(
-        "use Std.Either (Either)\ndef main = Left 1\n",
-        meadow::Options::debug(),
+        "use Std.Either (Either)\ndef result = Left 1\n",
+        meadow::Options::debug().entry("result"),
     );
     assert!(out.contains("unknown constructor `Left`"), "{out}");
     assert_eq!(
-        common::eval_main_std("use Std.Either (Either)\ndef main = Either.Left 1\n"),
+        common::eval_main_std("use Std.Either (Either)\ndef result = Either.Left 1\n"),
         "Left(1)"
     );
 }
@@ -333,14 +335,14 @@ fn a_dependencys_constructors_need_a_use_even_when_the_type_is_in_scope() {
 #[test]
 fn the_preludes_constructors_are_bare_everywhere() {
     let src = "fun f m = match m with | Just x -> Ok x | None -> Err \"none\"\n\
-               def main = (f (Just 1), compare 1 2 == Less, True, [1; 2])\n";
+               def result = (f (Just 1), compare 1 2 == Less, True, [1; 2])\n";
     assert_eq!(eval_main_std(src), "(Ok(1), True, True, [1; 2])");
 }
 
 #[test]
 fn the_languages_own_constructors_are_bare_everywhere() {
     let src = "fun len xs = match xs with | Nil -> 0 | Cons x rest -> 1 + len rest\n\
-               def main = (len (Cons 1 (Cons 2 Nil)), if True then 1 else 0)\n";
+               def result = (len (Cons 1 (Cons 2 Nil)), if True then 1 else 0)\n";
     assert_eq!(eval_main(src), "(2, 1)");
 }
 
@@ -377,7 +379,7 @@ fn against(lib: &str, src: &str) -> String {
         1,
         vec![module],
         &[meadow_compiler::Dep::new(&dep)],
-        meadow::Options::debug(),
+        meadow::Options::debug().entry("result"),
     );
     diags
         .iter()
@@ -390,11 +392,14 @@ fn against(lib: &str, src: &str) -> String {
 fn an_earlier_units_constructors_are_under_their_types_too() {
     // What a REPL line sees of the lines before it.
     let lib = "data Colour = Red | Green\nrecord Point = { x : Int }\n";
-    assert!(against(lib, "def main = Red\n").contains("unknown constructor `Red`"));
-    assert_eq!(against(lib, "def main = Colour.Red\n"), "");
-    assert_eq!(against(lib, "use Colour.*\ndef main = (Red, Green)\n"), "");
+    assert!(against(lib, "def result = Red\n").contains("unknown constructor `Red`"));
+    assert_eq!(against(lib, "def result = Colour.Red\n"), "");
+    assert_eq!(
+        against(lib, "use Colour.*\ndef result = (Red, Green)\n"),
+        ""
+    );
     // A record's constructor is its type's, and comes with it.
-    assert_eq!(against(lib, "def main = Point { x = 1 }\n"), "");
+    assert_eq!(against(lib, "def result = Point { x = 1 }\n"), "");
 }
 
 #[test]
@@ -402,6 +407,8 @@ fn a_package_that_marks_nothing_still_keeps_its_constructors_under_their_types()
     // No `@pub` anywhere, so every name is exported -- but a constructor is not
     // a name of the package, it is its type's.
     let lib = "data Shape = Circle Int | Square Int\nfun area s = match s with | Shape.Circle r -> r | Shape.Square w -> w\n";
-    assert!(against(lib, "def main = area (Circle 1)\n").contains("unknown constructor `Circle`"));
-    assert_eq!(against(lib, "def main = area (Shape.Circle 1)\n"), "");
+    assert!(
+        against(lib, "def result = area (Circle 1)\n").contains("unknown constructor `Circle`")
+    );
+    assert_eq!(against(lib, "def result = area (Shape.Circle 1)\n"), "");
 }

@@ -7,7 +7,7 @@
 --   use Std.State (get, put, runState)
 --
 --   fun tick () = let n = get () in let ignored = put (n + 1) in n
---   def main = runState 0 (\() -> let a = tick () in let b = tick () in get ())
+--   fun main () = println "${runState 0 (\() -> let a = tick () in let b = tick () in get ()):?}"
 --   -- (2, 2)
 --
 -- The handlers below are the classic state-passing ones: each clause returns a

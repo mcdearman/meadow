@@ -63,7 +63,7 @@ fn a_def_may_use_local_state_that_cannot_be_seen() {
 
 #[test]
 fn main_is_run_and_may_do_anything() {
-    let src = "def main = let _ = println \"hello\" in newRef (toInt 1) |> getRef\n";
+    let src = "def result = let _ = println \"hello\" in newRef (toInt 1) |> getRef\n";
     assert_eq!(eval_main_std(src), "1");
 }
 

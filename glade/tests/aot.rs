@@ -5,20 +5,16 @@
 //! `MEADOW_CC` names the C compiler, `MEADOW_RUNTIME` the runtime library, and
 //! `MEADOW_SILO_RUNNER` what runs the result, for testing under an emulator.
 
-use meadow_compiler::{compile_str, core};
+use meadow_compiler::{Options, compile_str_with, core};
 use meadow_glade::codegen::{self, Arch, object};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn program(src: &str) -> core::Program {
-    let (pkg, diags) = compile_str("aot", src);
+    let (pkg, diags) = compile_str_with("aot", src, Options::default().entry("result"));
     let hard: Vec<_> = diags.iter().map(|d| d.msg.clone()).collect();
     assert!(hard.is_empty(), "compile errors:\n{}", hard.join("\n"));
-    let entry = pkg
-        .exports
-        .iter()
-        .find(|e| &*e.name == "main")
-        .map(|e| e.var);
+    let entry = pkg.value_entry;
     core::Program {
         defs: pkg.defs.clone(),
         entry,
@@ -222,7 +218,7 @@ fn typed_arithmetic_and_branches_run_natively() {
     let src = "fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
                fun loop (n : Int) (acc : Float) = if n == 0 then acc else loop (n - 1) (acc +. 1.5)
                fun g (a : Int) (b : Int) = (a / b, a % b, a * b - 7, a >= b, a != b)
-               def main = (fib 20, loop 1000 0.0, g 17 5, g (0 - 9223372036854775807 - 1) (0 - 1))";
+               def result = (fib 20, loop 1000 0.0, g 17 5, g (0 - 9223372036854775807 - 1) (0 - 1))";
     assert_eq!(
         agrees("typed", src),
         "(6765, 1500.0, (3, 2, 78, True, True), (-9223372036854775808, 0, 9223372036854775801, False, True))"
@@ -235,7 +231,7 @@ fn everything_else_goes_through_the_interpreter() {
                fun build (n : Int) = if n == 0 then Nil else Cons n (build (n - 1))
                fun total xs = match xs with | Nil -> 0 | Cons x r -> x + total r
                fun twice f x = f (f x)
-               def main = (total (build 1000), twice (\\x -> x * 3) 7, \"hi\", 1.5 <. 2.5)";
+               def result = (total (build 1000), twice (\\x -> x * 3) 7, \"hi\", 1.5 <. 2.5)";
     assert_eq!(agrees("mixed", src), "(500500, 63, \"hi\", True)");
 }
 
@@ -258,7 +254,7 @@ fn promoted_objects_are_reached_by_native_code() {
                use Fs.*
                fun apply (fs : Fs) (x : Int) : Int =
                  match fs with | Done -> x | Then f rest -> apply rest (f x)
-               def main =
+               def result =
                  let lasting = build 1 14 in
                  let adders = Then (\\x -> x + 1) (Then (\\x -> x * 2) (Then (\\x -> x - 3) Done)) in
                  let c = churn 3000 0 in
@@ -273,7 +269,7 @@ fn promoted_objects_are_reached_by_native_code() {
 #[test]
 fn unary_typed_instructions_agree_with_the_interpreter() {
     let src = "fun f (x : Int) (n : Int) = (popCount x, x >>> n, toFloat x)
-               def main = (f 255 4, f (0 - 1) 60, f (0 - 1) 64, f 9007199254740993 100, f 0 0)";
+               def result = (f 255 4, f (0 - 1) 60, f (0 - 1) 64, f 9007199254740993 100, f 0 0)";
     assert_eq!(
         agrees("unary", src),
         "((8, 15, 255.0), (64, 15, -1.0), (64, -1, -1.0), (2, 131072, 9007199254740992.0), (0, 0, 0.0))"
@@ -282,13 +278,13 @@ fn unary_typed_instructions_agree_with_the_interpreter() {
 
 #[test]
 fn a_failure_is_the_same_failure() {
-    let src = "fun f (a : Int) (b : Int) = a / b\ndef main = f 1 0";
+    let src = "fun f (a : Int) (b : Int) = a / b\ndef result = f 1 0";
     assert_eq!(agrees("fails", src), "division by zero");
 }
 
 #[test]
 fn threads_run_natively_too() {
     let src = "fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
-               def main = let t = threadSpawn (\\() -> fib 18) in (fib 17, threadAwait t)";
+               def result = let t = threadSpawn (\\() -> fib 18) in (fib 17, threadAwait t)";
     assert_eq!(agrees("threads", src), "(1597, 2584)");
 }

@@ -43,7 +43,7 @@ fn what_init_writes_is_a_package_that_builds() {
     assert!(m.deps.is_empty());
 
     // And the source compiles clean against the real pipeline.
-    let out = pipeline::build(&made.root, Options::debug());
+    let out = pipeline::build(&made.root, Options::debug().entry("result"));
     assert!(
         out.diagnostics.is_empty(),
         "the generated package should build clean: {:?}",
@@ -106,12 +106,12 @@ fn existing_sources_are_not_replaced() {
     let target = dir.join("has-code");
     std::fs::create_dir_all(target.join("src")).unwrap();
     let main = target.join("src").join("Main.mw");
-    std::fs::write(&main, "def main = 7\n").unwrap();
+    std::fs::write(&main, "fun main () = println 7\n").unwrap();
 
     init_at(&target, Some("HasCode")).expect("init");
     assert_eq!(
         std::fs::read_to_string(&main).unwrap(),
-        "def main = 7\n",
+        "fun main () = println 7\n",
         "the existing `main` should survive"
     );
     assert!(
@@ -184,11 +184,11 @@ fn a_generated_package_can_be_used_as_a_dependency() {
     .unwrap();
     std::fs::write(
         app.join("src").join("Main.mw"),
-        "use util (double)\n\ndef main = double 21\n",
+        "use util (double)\n\ndef result = double 21\n",
     )
     .unwrap();
 
-    let out = pipeline::build(&app, Options::debug());
+    let out = pipeline::build(&app, Options::debug().entry("result"));
     assert!(
         out.diagnostics.is_empty(),
         "{:?}",
@@ -242,7 +242,11 @@ fn an_existing_gitignore_gains_the_line_and_keeps_the_rest() {
 fn running_a_package_writes_its_image_under_target() {
     let dir = scratch("target");
     let made = init_at(&dir.join("demo"), None).expect("init");
-    std::fs::write(made.root.join("src").join("Main.mw"), "def main = 6 * 7\n").unwrap();
+    std::fs::write(
+        made.root.join("src").join("Main.mw"),
+        "fun main () = println (6 * 7)\n",
+    )
+    .unwrap();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_meadow"))
         .arg("run")
         .arg(&made.root)
@@ -258,7 +262,7 @@ fn running_a_package_writes_its_image_under_target() {
     let program = meadow_bytecode::image::decode(&bytes).expect("and decodes");
     assert_eq!(
         meadow_glade::run(&program, u64::MAX).map_err(|e| e.msg),
-        Ok("42".into())
+        Ok("()".into())
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

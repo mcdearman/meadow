@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn image(src: &str) -> meadow_bytecode::Program {
-    let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "{:?}",
@@ -20,7 +21,7 @@ fn image(src: &str) -> meadow_bytecode::Program {
 }
 
 const PROGRAM: &str = "fun fact n = if n == 0 then 1 else n * fact (n - 1)\n\
-                       def main = fact 10\n";
+                       fun main () = println (fact 10)\n";
 
 /// Every function gets its label, where its code starts; every byte of the
 /// code is on some line; and what comes out reads as each architecture's
@@ -256,7 +257,7 @@ fn an_executable_is_not_relinked_when_nothing_has_changed() {
     // Linking is the slow part of a native build, and on some systems running a
     // newly written binary costs more still -- so a `run` that changed nothing
     // used to be an order of magnitude slower than the same program on the JIT.
-    let dir = buildable("fresh", "def main = 1 + 1\n");
+    let dir = buildable("fresh", "def result = 1 + 1\n");
     let (first, when) = link_once(&dir);
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let (again, and_then) = link_once(&dir);
@@ -266,10 +267,10 @@ fn an_executable_is_not_relinked_when_nothing_has_changed() {
 
 #[test]
 fn an_executable_is_relinked_when_the_program_changes() {
-    let dir = buildable("stale", "def main = 1 + 1\n");
+    let dir = buildable("stale", "def result = 1 + 1\n");
     let (exe, when) = link_once(&dir);
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    std::fs::write(dir.join("src/Lib.mw"), "def main = 2 + 2\n").expect("a module");
+    std::fs::write(dir.join("src/Lib.mw"), "def result = 2 + 2\n").expect("a module");
     let (again, and_then) = link_once(&dir);
     assert_eq!(exe, again);
     assert_ne!(when, and_then, "a different program, the same executable");
@@ -277,7 +278,7 @@ fn an_executable_is_relinked_when_the_program_changes() {
 
 #[test]
 fn an_executable_that_is_gone_is_linked_again() {
-    let dir = buildable("deleted", "def main = 1 + 1\n");
+    let dir = buildable("deleted", "def result = 1 + 1\n");
     let (exe, _) = link_once(&dir);
     std::fs::remove_file(&exe).expect("it was there");
     let (again, _) = link_once(&dir);
@@ -309,7 +310,7 @@ runtime = \"silo\"
         dir.join("src/Main.mw"),
         "use Std.Console (writeOutput)
 
-def main = writeOutput \"line\nno newline\"
+fun main () = writeOutput \"line\nno newline\"
 ",
     )
     .expect("a module");
@@ -343,7 +344,7 @@ fn silo_reads_a_record_through_a_copy_at_the_callers_row() {
     .expect("a manifest");
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use Std.Collections.Vector as V\nuse Std.Console (writeOutput)\nuse T.*\ndata T = A Int | B String\n\nfun firsts spec = settle spec 0 0\n\nfun settle spec acc n =\n  let next = V.foldl (\\a t -> match t with | A i -> a + i | B s -> a + 1) acc spec.items in\n  if n > 5 then next else settle spec next (n + 1)\n\ndef main =\n  let spec = { name = \"G\", items = V.map (\\i -> if i % 2 == 0 then A i else B \"s\") (V.range 0 100) } in\n  writeOutput (show (firsts spec))\n",
+        "use Std.Collections.Vector as V\nuse Std.Console (writeOutput)\nuse T.*\ndata T = A Int | B String\n\nfun firsts spec = settle spec 0 0\n\nfun settle spec acc n =\n  let next = V.foldl (\\a t -> match t with | A i -> a + i | B s -> a + 1) acc spec.items in\n  if n > 5 then next else settle spec next (n + 1)\n\nfun main () =\n  let spec = { name = \"G\", items = V.map (\\i -> if i % 2 == 0 then A i else B \"s\") (V.range 0 100) } in\n  writeOutput (show (firsts spec))\n",
     )
     .expect("a module");
     let out = Command::new(env!("CARGO_BIN_EXE_meadow"))

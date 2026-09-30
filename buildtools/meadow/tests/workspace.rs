@@ -72,7 +72,7 @@ cfg = "shop"
     write(
         &root.join("app/src/Main.mw"),
         "use Std.Test\nuse Util (double, place)\nuse Text (label)\n\n\
-         def main = (double 21, label \"b\", place)\n\n@test\nfun works u = assertEq (double 1) 2 \"works\"\n",
+         def result = (double 21, label \"b\", place)\n\nfun main () = println \"${result:?}\"\n\n@test\nfun works u = assertEq (double 1) 2 \"works\"\n",
     );
     root
 }
@@ -151,11 +151,11 @@ fn a_package_inside_a_workspace_must_be_a_member() {
         &root.join("stray/Meadow.toml"),
         "[package]\nname = \"Stray\"\n",
     );
-    write(&root.join("stray/src/Main.mw"), "def main = 1\n");
+    write(&root.join("stray/src/Main.mw"), "def result = 1\n");
 
     let err = Workspace::find(&root.join("stray")).unwrap_err();
     assert!(err.contains("not a member"), "{err}");
-    let out = pipeline::build(&root.join("stray"), Options::debug());
+    let out = pipeline::build(&root.join("stray"), Options::debug().entry("result"));
     assert!(out.linked.is_none());
     assert!(out.diagnostics[0].msg.contains("not a member"));
 
@@ -169,7 +169,7 @@ fn a_package_inside_a_workspace_must_be_a_member() {
         ),
     );
     assert!(Workspace::find(&root.join("stray")).unwrap().is_none());
-    let out = pipeline::build(&root.join("stray"), Options::debug());
+    let out = pipeline::build(&root.join("stray"), Options::debug().entry("result"));
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     assert_eq!(out.package.unwrap().0, root.join("stray"));
 }
@@ -253,7 +253,9 @@ fn members_build_together_into_one_target() {
     let root = shop("build");
     let paths = [root.join("app"), root.join("libs/text")];
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-    let opts = Resolved::resolve(Profile::Debug, &root, ProfileConfig::default()).options;
+    let opts = Resolved::resolve(Profile::Debug, &root, ProfileConfig::default())
+        .options
+        .entry("result");
     let out = pipeline::build_each(&refs, opts);
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     assert_eq!(out.each.len(), 2);
@@ -287,7 +289,7 @@ fn every_member_builds_with_the_root_profiles() {
 
     let (ok, output) = meadow(&root, &["run", "-p", "App"]);
     assert!(ok, "{output}");
-    assert!(output.contains(r#"=> (42, "b x2", "shop")"#), "{output}");
+    assert!(output.contains(r#"(42, "b x2", "shop")"#), "{output}");
     assert!(output.contains("warning: the `[profile]` sections of `App` are ignored"));
     assert!(root.join("target/debug/bytecode/App.mbc").is_file());
     assert!(!root.join("app/target").exists());
@@ -330,7 +332,7 @@ fn testing_runs_the_selected_packages_tests() {
 #[test]
 fn a_virtual_root_is_not_a_package() {
     let root = shop("virtual");
-    let out = pipeline::build(&root, Options::debug());
+    let out = pipeline::build(&root, Options::debug().entry("result"));
     assert!(out.linked.is_none());
     assert!(
         out.diagnostics[0].msg.contains("no package of its own"),
@@ -346,7 +348,7 @@ fn inheriting_what_the_workspace_lacks_is_an_error() {
         &root.join("app/Meadow.toml"),
         "[package]\nname = \"App\"\n\n[dependencies]\nhttp = { workspace = true }\n",
     );
-    let out = pipeline::build(&root.join("app"), Options::debug());
+    let out = pipeline::build(&root.join("app"), Options::debug().entry("result"));
     assert!(out.linked.is_none());
     let msg = &out.diagnostics[0].msg;
     assert!(
@@ -452,9 +454,9 @@ fn packages_beside_each_other_keep_their_own_definitions() {
     );
     write(
         &dir.join("app/src/Main.mw"),
-        "use a (fa, va)\nuse b (fb, vb)\n\ndef main = (fa 1, va, fb 2, vb)\n",
+        "use a (fa, va)\nuse b (fb, vb)\n\ndef result = (fa 1, va, fb 2, vb)\n",
     );
-    let out = pipeline::build(&dir.join("app"), Options::debug());
+    let out = pipeline::build(&dir.join("app"), Options::debug().entry("result"));
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     assert_eq!(run(&out), "(2, 11, 200, 300)");
     let _ = std::fs::remove_dir_all(&dir);

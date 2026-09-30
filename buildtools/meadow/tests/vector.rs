@@ -16,7 +16,7 @@ fun mkFront n =\n\
 fun sumV v = foldl (\\a x -> a + x) 0 v\n";
 
 fn run(body: &str) -> String {
-    eval_main_std(&format!("{P}def main = {body}\n"))
+    eval_main_std(&format!("{P}def result = {body}\n"))
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn set_is_persistent() {
     insta::assert_snapshot!(eval_main_std(
         "def a = fromArray #[1, 2, 3, 4]\n\
          def b = set a 1 99\n\
-         def main = (toList a, toList b)\n"
+         def result = (toList a, toList b)\n"
     ), @"([1; 2; 3; 4], [1; 99; 3; 4])");
     insta::assert_snapshot!(run("getOr 0 (set (mk 1000) 777 (0 - 1)) 777"), @"-1");
     insta::assert_snapshot!(run("getOr 0 (set (mk 1000) 777 (0 - 1)) 776"), @"776");
@@ -120,6 +120,6 @@ fun run v xs i seed bad =\n\
 \x20   let k = if arrayLen xs > 160 then 2 + s2 % 2 else if arrayLen xs < 40 then s2 % 2 else s2 % 16 in\n\
 \x20   match step v xs (if k > 7 then k % 2 else k) (s2 / 16) with\n\
 \x20   | (v2, xs2) -> run v2 xs2 (i + 1) s2 (if agrees v2 xs2 then bad else bad + 1)\n\
-def main = run empty #[] 0 7 0\n";
+def result = run empty #[] 0 7 0\n";
     assert_eq!(eval_main_std(src), "0");
 }

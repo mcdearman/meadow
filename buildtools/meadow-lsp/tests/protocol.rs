@@ -149,7 +149,7 @@ const SRC: &str = "\
 -- Doubles its argument.
 fun double n = n * 2
 
-def main = double 21
+def demo = double 21
 ";
 
 #[test]
@@ -187,7 +187,7 @@ fn formatting_text_that_is_not_ascii_answers() {
         );
         assert!(edits.is_array() || edits.is_null(), "{doc:?}: {edits}");
     }
-    c.set("def main = 1\n");
+    c.set("def demo = 1\n");
     let edits = c.request(
         "textDocument/formatting",
         json!({
@@ -207,7 +207,7 @@ fn formatting_text_that_is_not_ascii_answers() {
 #[test]
 fn formatting_answers_with_what_meadow_fmt_would_do() {
     let mut c = Client::start();
-    let messy = "fun f x =\n        x + 1\n\n\n\ndef main =   \n   f 1\n";
+    let messy = "fun f x =\n        x + 1\n\n\n\ndef demo =   \n   f 1\n";
     c.set(messy);
     let edits = c.request(
         "textDocument/formatting",
@@ -265,7 +265,7 @@ fn diagnostics_arrive_on_open_and_update_on_every_edit() {
     assert!(c.set(SRC).is_empty(), "a good file reports nothing");
 
     // Break it: diagnostics must appear without any request being made.
-    let broken = c.set("def main = 1 + \"oops\"\n");
+    let broken = c.set("def demo = 1 + \"oops\"\n");
     assert_eq!(broken.len(), 1);
     assert!(
         broken[0].message.contains("type mismatch"),
@@ -286,7 +286,7 @@ fn a_file_changing_on_disk_analyses_the_open_documents_again() {
     // in the editor to say so.
     let mut c = Client::start();
     let broken = c.set(
-        "def main = 1 + \"oops\"
+        "def demo = 1 + \"oops\"
 ",
     );
     assert_eq!(broken.len(), 1);
@@ -309,7 +309,7 @@ fn a_file_changing_on_disk_analyses_the_open_documents_again() {
 #[test]
 fn a_parse_error_is_reported_rather_than_crashing_the_server() {
     let mut c = Client::start();
-    let diags = c.set("def main = let in\n");
+    let diags = c.set("def demo = let in\n");
     assert!(!diags.is_empty());
     // The server is still answering afterwards.
     assert!(c.set(SRC).is_empty());
@@ -527,7 +527,7 @@ fn survives_chatter_before_initialized(chatter: &[(&str, Value)]) -> bool {
             method: "textDocument/didOpen".into(),
             params: json!({"textDocument": {
                 "uri": "file:///x.mw", "languageId": "meadow", "version": 1,
-                "text": "def main = 1\n"
+                "text": "def demo = 1\n"
             }}),
         }))
         .unwrap();
@@ -635,8 +635,8 @@ fn a_request_before_initialized_is_answered_rather_than_dropped() {
 fn definition_crosses_into_the_standard_library() {
     let root = std_sources("definition");
     let mut c = Client::start_with(Some(root.clone()));
-    c.set("use Std.String (concatAll)\ndef main = concatAll\n");
-    // Line 1, character 12 is inside `concatAll` in `def main = concatAll`.
+    c.set("use Std.String (concatAll)\ndef demo = concatAll\n");
+    // Line 1, character 12 is inside `concatAll` in `def demo = concatAll`.
     let def = c.at("textDocument/definition", 1, 12);
 
     let uri = def["uri"].as_str().expect("a uri");
@@ -711,7 +711,7 @@ fn rename_is_offered_and_answers_with_an_edit_per_occurrence() {
 #[test]
 fn rename_refuses_a_name_from_the_standard_library() {
     let mut c = Client::start();
-    c.set("def main = println \"hi\"\n");
+    c.set("def demo = println \"hi\"\n");
     // `println` is `Std`'s, and this server is not editing `Std`.
     let prepared = c.at("textDocument/prepareRename", 0, 12);
     assert_eq!(prepared, Value::Null, "offered a rename it cannot do");
@@ -786,7 +786,7 @@ fn completion_after_a_pipe_narrows_as_the_name_is_typed() {
             .collect()
     };
 
-    let empty = ask(&mut c, "def xs = [11..20]\n\ndef main = xs |> ");
+    let empty = ask(&mut c, "def xs = [11..20]\n\ndef demo = xs |> ");
     let all = names(&empty);
     assert!(!all.is_empty(), "a pipe offers something");
     assert!(all.contains(&"foldl".to_string()), "{all:?}");
@@ -796,7 +796,7 @@ fn completion_after_a_pipe_narrows_as_the_name_is_typed() {
     for typed in ["f", "fo", "fol", "fold", "foldl"] {
         let got = ask(
             &mut c,
-            &format!("def xs = [11..20]\n\ndef main = xs |> {typed}"),
+            &format!("def xs = [11..20]\n\ndef demo = xs |> {typed}"),
         );
         let names = names(&got);
         assert!(
@@ -813,10 +813,10 @@ fn completion_after_a_pipe_narrows_as_the_name_is_typed() {
 fn completion_after_a_wide_character_answers() {
     let mut c = Client::start();
     for line in [
-        "def main = 1 -- \u{2192}",
-        "def main =\u{a0}",
-        "def main = 1 -- \u{1f600} ",
-        "def caf\u{e9} = 1\ndef main = caf\u{e9}",
+        "def demo = 1 -- \u{2192}",
+        "def demo =\u{a0}",
+        "def demo = 1 -- \u{1f600} ",
+        "def caf\u{e9} = 1\ndef demo = caf\u{e9}",
     ] {
         c.set(line);
         let last = line.lines().count() - 1;
@@ -836,7 +836,7 @@ fn completion_after_a_wide_character_answers() {
         );
     }
     // Still there: an ordinary question gets an ordinary answer.
-    c.set("def xs = [11..20]\n\ndef main = xs |> fol");
+    c.set("def xs = [11..20]\n\ndef demo = xs |> fol");
     let got = c.request(
         "textDocument/completion",
         json!({
@@ -852,7 +852,7 @@ fn completion_after_a_wide_character_answers() {
 #[test]
 fn an_offer_replaces_the_half_written_name() {
     let mut c = Client::start();
-    let text = "def xs = [11..20]\n\ndef main = xs |> fol";
+    let text = "def xs = [11..20]\n\ndef demo = xs |> fol";
     c.set(text);
     let got = c.request(
         "textDocument/completion",
@@ -886,7 +886,7 @@ fn an_offer_replaces_the_half_written_name() {
 #[test]
 fn completion_after_a_dot_offers_what_is_under_the_path() {
     let mut c = Client::start();
-    c.set("data Shape = Circle Int | Square Int\n\ndef main = Shape.Ci");
+    c.set("data Shape = Circle Int | Square Int\n\ndef demo = Shape.Ci");
     let got = c.request(
         "textDocument/completion",
         json!({
@@ -917,7 +917,7 @@ fn completion_after_a_dot_offers_what_is_under_the_path() {
 #[test]
 fn completion_in_a_use_offers_the_modules_under_the_path() {
     let mut c = Client::start();
-    c.set("use Std.\n\ndef main = 1");
+    c.set("use Std.\n\ndef demo = 1");
     let got = c.request(
         "textDocument/completion",
         json!({
@@ -974,7 +974,7 @@ fn a_workspace_symbol_in_the_open_document_points_into_it() {
 fn a_workspace_symbol_from_the_library_points_at_its_file() {
     let root = std_sources("symbols");
     let mut c = Client::start_with(Some(root.clone()));
-    c.set("def main = 1\n");
+    c.set("def demo = 1\n");
     let found = symbols(&mut c, "Path.components");
     let s = found.first().expect("Std.Path.components");
     assert_eq!(s["name"], json!("components : String -> [String]"), "{s}");
@@ -990,7 +990,7 @@ fn a_workspace_symbol_from_the_library_points_at_its_file() {
 fn a_workspace_symbol_query_that_is_a_type_searches_by_type() {
     let root = std_sources("typed-symbols");
     let mut c = Client::start_with(Some(root.clone()));
-    c.set("def main = 1\n");
+    c.set("def demo = 1\n");
     let found = symbols(&mut c, "String -> [String]");
     let names: Vec<&str> = found
         .iter()

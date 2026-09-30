@@ -94,7 +94,7 @@ fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
 
 -- --- main --------------------------------------------------------------------
 
-def main =
+fun main () =
   let _ = println "== a worker pool of 4, over 1..10000" in
   let answers = pool 4 (V.range 1 10001) in
   let _ = println (S.concatAll ["answered ", S.fromInt (V.len answers), " jobs"]) in

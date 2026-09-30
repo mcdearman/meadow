@@ -18,7 +18,7 @@
 --
 --   use Std.Time (time)
 --
---   def main = time "sorting" (\() -> sort xs)      -- prints `sorting: 12.3ms`
+--   fun main () = let sorted = time "sorting" (\() -> sort xs) in ()  -- prints `sorting: 12.3ms`
 --
 -- and durations and dates print the way a person reads them -- see `formatNanos`
 -- and `formatTimestamp`. For measurements worth quoting, with warm-up and many

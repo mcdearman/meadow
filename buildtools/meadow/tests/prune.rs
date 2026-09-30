@@ -10,7 +10,8 @@ use meadow::pipeline;
 use meadow_compiler::core::prune::prune;
 
 fn same_pruned(src: &str) {
-    let (program, diags) = pipeline::compile_str_with_std("prune", src, Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("prune", src, Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "compile errors:\n{}\n{src}",
@@ -28,7 +29,7 @@ fn same_pruned(src: &str) {
         program.defs.len()
     );
     for engine in [meadow::Engine::Cek, meadow::Engine::Vm, meadow::Engine::Jit] {
-        let opt = Options::debug().opt;
+        let opt = Options::debug().entry("result").opt;
         let whole = meadow::runtime::run(&program, engine, opt);
         let small = meadow::runtime::run(&pruned, engine, opt);
         assert_eq!(whole, small, "whole vs pruned on {engine}\n{src}");
@@ -37,14 +38,14 @@ fn same_pruned(src: &str) {
 
 #[test]
 fn a_constant() {
-    same_pruned("def main = \"hello\"");
+    same_pruned("def result = \"hello\"");
 }
 
 #[test]
 fn prelude_collections_and_strings() {
     same_pruned(
         "use Std.String as S
-         def main = (map (\\x -> x * 2) [1, 2, 3], S.split \",\" \"a,b,c\", Just 3, foldl (\\a b -> a + b) 0 (range 0 100))",
+         def result = (map (\\x -> x * 2) [1, 2, 3], S.split \",\" \"a,b,c\", Just 3, foldl (\\a b -> a + b) 0 (range 0 100))",
     );
 }
 
@@ -52,7 +53,7 @@ fn prelude_collections_and_strings() {
 fn json_round_trip() {
     same_pruned(
         "use Std.Json as J
-         def main = match J.parse \"{\\\"a\\\": [1, 2.5, true, null]}\" with
+         def result = match J.parse \"{\\\"a\\\": [1, 2.5, true, null]}\" with
            | Ok j -> J.render j
            | Err e -> e",
     );
@@ -63,7 +64,7 @@ fn a_user_type_and_a_record() {
     same_pruned(
         "data Shape = Circle Float | Square Float
          fun area s = match s with | Shape.Circle r -> 3.0 *. r *. r | Shape.Square a -> a *. a
-         def main = (area (Shape.Circle 2.0), { name = \"sq\", area = area (Shape.Square 3.0) })",
+         def result = (area (Shape.Circle 2.0), { name = \"sq\", area = area (Shape.Square 3.0) })",
     );
 }
 
@@ -72,7 +73,7 @@ fn effects_and_handlers() {
     same_pruned(
         "use Std.Time as T
          use Std.Random as R
-         def main = (T.withClock 500 (\\() -> T.formatTimestamp (T.now ())), R.withSeed 42 (\\() -> R.between 1 100))",
+         def result = (T.withClock 500 (\\() -> T.formatTimestamp (T.now ())), R.withSeed 42 (\\() -> R.between 1 100))",
     );
 }
 
@@ -82,7 +83,7 @@ fn threads_channels_and_stm() {
         "use Std.Thread as Thread
          use Std.Stm as Stm
          fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
-         def main =
+         def result =
            let t = Thread.spawn (\\() -> fib 15) in
            let tv = Stm.newTVarIO (toInt 1) in
            let _ = Stm.atomically (\\() -> Stm.modifyTVar tv (\\x -> x + 41)) in
@@ -96,6 +97,6 @@ fn a_native_answer_the_program_never_takes_apart() {
     // nothing in the pruned program's own code gives `Result.Err` a tag.
     same_pruned(
         "use Std.Fs as Fs
-         def main = Fs.readToString \"this-file-is-not-there.txt\"",
+         def result = Fs.readToString \"this-file-is-not-there.txt\"",
     );
 }

@@ -18,7 +18,7 @@ const LIST: &str = "use L.*\n\
 
 #[test]
 fn a_shallow_user_value_prints_in_full() {
-    let out = vm(&format!("{LIST}def main = show (build 3 N)"));
+    let out = vm(&format!("{LIST}def result = show (build 3 N)"));
     // The harness renders the resulting `String` value with quotes.
     assert_eq!(out, "\"C(1, C(2, C(3, N)))\"", "{out}");
     assert!(
@@ -31,7 +31,7 @@ fn a_shallow_user_value_prints_in_full() {
 fn a_deep_user_value_is_bounded_not_a_crash() {
     // 5000 deep: this is what aborted the process before. It must return, and
     // the ellipsis shows the depth guard fired rather than the stack blowing.
-    let out = vm(&format!("{LIST}def main = show (build 5000 N)"));
+    let out = vm(&format!("{LIST}def result = show (build 5000 N)"));
     assert!(
         out.contains('…'),
         "expected a bounded render, got {} chars",
@@ -49,7 +49,7 @@ fn an_ordinary_long_list_still_prints_in_full() {
     // The builtin `List` is flattened, so its length does not count against the
     // depth guard: a 20000-element list prints every element.
     let out = vm("use Std.Collections.List as List\n\
-         def main = let xs = List.range 0 20000 in stringByteLength (show xs)");
+         def result = let xs = List.range 0 20000 in stringByteLength (show xs)");
     assert!(
         !out.contains('…'),
         "a flat list should not be truncated: {out}"
@@ -67,7 +67,7 @@ fn a_cycle_through_a_ref_terminates() {
     let out = vm("use Std.Ref\n\
          use Std.Maybe.Maybe.*\n\
          data Node = Node (Ref (Maybe Node))\n\
-         def main =\n\
+         def result =\n\
          \x20 let r = newRef None in\n\
          \x20 let n = Node r in\n\
          \x20 let u = setRef r (Just n) in\n\

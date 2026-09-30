@@ -4,7 +4,7 @@
 --   use Std.Collections.HashMap as HashMap
 --
 --   def ages = HashMap.fromVec [("ada", 36), ("grace", 45)]
---   def main = HashMap.lookup "ada" ages          -- Just(36)
+--   fun main () = println "${HashMap.lookup "ada" ages:?}"   -- Just(36)
 --
 -- The structure is a hash array mapped trie, as in Rust's `im::HashMap` or
 -- Clojure's maps: each level takes five bits of the key's hash, and a node keeps

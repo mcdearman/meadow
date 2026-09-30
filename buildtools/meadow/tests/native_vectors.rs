@@ -31,7 +31,7 @@ fn program(dir: &std::path::Path) -> String {
     format!(
         "use Std.Collections.Vector as V\n\
          use Std.String as S\n\
-         def main =\n\
+         def result =\n\
          \x20 match readDir \"{}\" with\n\
          \x20 | Err e -> (0 - 1, 0, False, 0)\n\
          \x20 | Ok names ->\n\
@@ -85,7 +85,7 @@ fn read_bytes_is_an_array() {
     let file = dir.join("bytes");
     std::fs::write(&file, [104u8, 105, 255]).unwrap();
     let src = format!(
-        "def main = match readBytes \"{}\" with | Ok b -> (arrayLen b, arrayGet b 2) | Err e -> (0, 0)\n",
+        "def result = match readBytes \"{}\" with | Ok b -> (arrayLen b, arrayGet b 2) | Err e -> (0, 0)\n",
         literal(&file)
     );
     assert_eq!(eval_main_std(&src), "(3, 255)");
@@ -95,7 +95,7 @@ fn read_bytes_is_an_array() {
 
 #[test]
 fn argv_is_a_vector() {
-    let src = "use Std.Collections.Vector as V\ndef main = V.len (argv ()) >= 0\n";
+    let src = "use Std.Collections.Vector as V\ndef result = V.len (argv ()) >= 0\n";
     assert_eq!(eval_main_std(src), "True");
     assert_eq!(cek_main_std(src), "True");
 }

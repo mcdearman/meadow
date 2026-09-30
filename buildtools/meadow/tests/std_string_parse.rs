@@ -20,7 +20,7 @@ use Std.Char (isDigit)
 fun number = P.map (\ds -> foldl (\a d -> a * 10 + (charCode d - 48)) 0 (P.chunkToTokens ds)) (P.takeWhile1P "a digit" isDigit)
 fun comma = C.char ','
 fun describe r = match r with | Ok v -> "ok" | Err e -> P.showError e
-def main = {body}
+def result = {body}
 "#
     ))
 }
@@ -231,7 +231,7 @@ use Std.String.Parse.Char as C
 fun plus = P.mapTo (\a b -> a + b) (C.char '+')
 fun sum u = P.chainl1 (P.defer atom) plus
 fun atom u = P.alt L.decimal (P.between (C.char '(') (C.char ')') (P.defer sum))
-def main = P.runParser (P.thenSkip (P.defer sum) P.eof) "1+(2+3)+4"
+def result = P.runParser (P.thenSkip (P.defer sum) P.eof) "1+(2+3)+4"
 "#;
     assert_eq!(eval_main_std(src), "Ok(10)");
 }
@@ -273,7 +273,7 @@ data Tok = Num Int | Plus
 impl Display Tok {
   fun display t = match t with | Num n -> "number ${n}" | Plus -> "'+'"
 }
-def main =
+def result =
   match P.runParser (P.thenSkip (P.single Plus) P.eof) [Plus, Num 1] with
   | Ok _ -> "no error"
   | Err e -> P.parseErrorTextPretty e
@@ -321,7 +321,7 @@ impl TraversableStream Digits {
     | ((start, _), (_, stop)) -> if to > from then (start, stop) else (start, start)
 }
 
-def main =
+def result =
   match P.parse (P.skipThen (P.single 1) (P.single 7)) (Digits [(1, (0, 3)), (3, (10, 14))]) with
   | Ok _ -> ((0, 0), "no error")
   | Err e -> e

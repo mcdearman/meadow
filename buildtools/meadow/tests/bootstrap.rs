@@ -418,6 +418,11 @@ impl Tree<'_> {
                 w.idents("params", &t.params);
                 w.ty(&t.ty);
             }),
+            Decl::EffectAlias(e) => self.node("EffectAlias", s, |w| {
+                w.ident(&e.name);
+                w.idents("params", &e.params);
+                w.row(&e.row);
+            }),
             Decl::Sig(n, t, bounds) => self.node("Sig", s, |w| {
                 w.ident(n);
                 w.ty(t);
@@ -1045,12 +1050,14 @@ fn built(root: &Path) -> Option<(meadow::pipeline::CompiledGraph, Vec<(PathBuf, 
     // The standard library is compiled for any build: the smallest will do.
     let entry = if is_std(root) {
         let probe = std::env::temp_dir().join("meadowboot-std-probe.mw");
-        std::fs::write(&probe, "def main = 1\n").expect("a probe");
+        std::fs::write(&probe, "def result = 1\n").expect("a probe");
         probe
     } else {
         root.to_path_buf()
     };
-    let graph = meadow::pipeline::compile_packages(&entry, meadow::Options::debug()).ok()?;
+    let graph =
+        meadow::pipeline::compile_packages(&entry, meadow::Options::debug().entry("result"))
+            .ok()?;
     let mut roots: Vec<(PathBuf, String)> = graph
         .packages
         .iter()
@@ -1237,7 +1244,7 @@ fn every_source_infers_as_meadow_infer_infers_it() {
     let mut packages: HashMap<PathBuf, HashMap<PathBuf, String>> = HashMap::new();
     let mut expanded = Vec::new();
     meadow_compiler::expand::record::start();
-    let _ = meadow::stdlib::compile_fresh(meadow::Options::debug());
+    let _ = meadow::stdlib::compile_fresh(meadow::Options::debug().entry("result"));
     for r in meadow_compiler::expand::record::take() {
         if let Some(file) = named_file(&r.filename, &[]) {
             expanded.push((file, r));
@@ -1503,7 +1510,7 @@ fn every_source_renames_as_meadow_rename_renames_it() {
     // The standard library's too, which a build otherwise reads back from a
     // cache without expanding anything.
     meadow_compiler::expand::record::start();
-    let _ = meadow::stdlib::compile_fresh(meadow::Options::debug());
+    let _ = meadow::stdlib::compile_fresh(meadow::Options::debug().entry("result"));
     for r in meadow_compiler::expand::record::take() {
         if let Some(file) = named_file(&r.filename, &[]) {
             expanded.push((file, r));
@@ -1623,7 +1630,8 @@ fn rust_string(s: &str) -> Option<(String, &str)> {
 /// `src` compiled with no library, as the glade cases are: its definitions,
 /// entered at `main`.
 fn compiled(src: &str) -> Result<core::Program, String> {
-    let (pkg, diags) = meadow_compiler::compile_str("boot", src);
+    let opts = meadow_compiler::Options::default().entry("result");
+    let (pkg, diags) = meadow_compiler::compile_str_with("boot", src, opts);
     if !diags.is_empty() {
         return Err(diags
             .iter()
@@ -1631,11 +1639,7 @@ fn compiled(src: &str) -> Result<core::Program, String> {
             .collect::<Vec<_>>()
             .join("; "));
     }
-    let entry = pkg
-        .exports
-        .iter()
-        .find(|e| &*e.name == "main")
-        .map(|e| e.var);
+    let entry = pkg.value_entry;
     Ok(core::Program {
         defs: pkg.defs.clone(),
         entry,

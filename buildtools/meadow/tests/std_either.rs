@@ -8,7 +8,7 @@ fn e(body: &str) -> String {
     // and `Right` into scope unqualified. `Either` is not one of the handful
     // of types the prelude flattens, so a user writes this too.
     eval_main_std(&format!(
-        "use Std.Either as E\nuse Std.Either.Either.*\ndef main = {body}\n"
+        "use Std.Either as E\nuse Std.Either.Either.*\ndef result = {body}\n"
     ))
 }
 

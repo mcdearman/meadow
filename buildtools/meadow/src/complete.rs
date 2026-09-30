@@ -277,6 +277,7 @@ pub fn snapshot(prefix: &[CompiledPackage], uses: &[ast::LDecl]) -> Names {
                 }
                 hir::Decl::Effect(ed) => n.types.push(hir::spelling(&ed.name).to_string()),
                 hir::Decl::Alias(ad) => n.types.push(hir::spelling(&ad.name).to_string()),
+                hir::Decl::EffectAlias(ad) => n.types.push(hir::spelling(&ad.name).to_string()),
                 _ => {}
             }
         }

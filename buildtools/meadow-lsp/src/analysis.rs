@@ -1190,7 +1190,7 @@ fn ctor_paths(
                     let mut full = prefix.clone();
                     // The name carries the package past the resolver; the path
                     // already names it, and a hover spells it as the source does.
-                    full.push(hir::spelling(&c.to_string()).to_string());
+                    full.push(hir::ctor_spelling(&c.to_string()).to_string());
                     out.insert(c, full.join("."));
                 }
             }
@@ -1473,6 +1473,12 @@ impl Walk<'_> {
             hir::Decl::Alias(ad) => {
                 self.declare(Namespace::Type, ad.name, ad.name_span);
                 self.ty(&ad.ty);
+            }
+            hir::Decl::EffectAlias(ad) => {
+                self.declare(Namespace::Type, ad.name, ad.name_span);
+                for (_, args) in &ad.row.labels {
+                    args.iter().for_each(|a| self.ty(a));
+                }
             }
             // The name in a signature is a use of the binding it describes.
             hir::Decl::Sig(ident, t, bounds) => {
@@ -1954,7 +1960,7 @@ impl Analysis {
                 .ctor_paths
                 .get(name)
                 .cloned()
-                .unwrap_or_else(|| hir::spelling(&name.to_string()).to_string());
+                .unwrap_or_else(|| hir::ctor_spelling(&name.to_string()).to_string());
             return Some(format!("```meadow\n{path}\n```"));
         }
         let var = self.var_at(offset);

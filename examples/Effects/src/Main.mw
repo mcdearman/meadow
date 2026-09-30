@@ -101,7 +101,7 @@ fun greeter () =
 
 def settings = [("taxPercent", toInt 20), ("limit", 100)]
 
-def main =
+fun main () =
   let _ = println "== checkout, printing its log" in
   let result = printingLogs (\() -> withSettings settings (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout [10, 20, 30])))) in
   let _ = println (S.concat "result and items counted: " (show result)) in

@@ -72,6 +72,11 @@ fun decl b (d : Int) =
   | AstDeclView.RecordDecl r -> (let u = unmark b r.name in let v = each (unmark b) r.params in each (field b) r.fields)
   | AstDeclView.EffectDecl r -> (let u = unmark b r.name in let v = each (unmark b) r.params in each (field b) r.ops)
   | AstDeclView.AliasDecl r -> (let u = unmark b r.name in let v = each (unmark b) r.params in ty b r.ty)
+  | AstDeclView.EffectAliasDecl r ->
+      let u = unmark b r.name in
+      let v = each (unmark b) r.params in
+      let x = each (\l -> (let y = unmark b (astLabelNameIn b l) in each (ty b) (astLabelArgsIn b l))) (astRowLabelsIn b r.row) in
+      maybe (unmark b) (astRowTailIn b r.row)
   | AstDeclView.UseDecl r ->
       let u = each (unmark b) r.path in
       let v = each (unmark b) r.names in

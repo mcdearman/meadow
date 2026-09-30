@@ -105,7 +105,7 @@ mod tests {
         let root = dir.join("Pkg");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("Meadow.toml"), "[package]\nname = \"Pkg\"\n").unwrap();
-        std::fs::write(root.join("src/Main.mw"), "def main = 1\n").unwrap();
+        std::fs::write(root.join("src/Main.mw"), "fun main () = ()\n").unwrap();
         for p in ["debug", "release"] {
             std::fs::create_dir_all(root.join("target").join(p)).unwrap();
             std::fs::write(root.join("target").join(p).join("image.mbc"), [0u8; 512]).unwrap();

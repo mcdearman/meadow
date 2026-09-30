@@ -452,6 +452,9 @@ pub enum Decl {
     /// `type Span = (Int, Int)` -- a name for a type. Inference expands it
     /// wherever it is written; nothing after that knows it was there.
     Alias(AliasDecl),
+    /// `effect Eff = { Console, Fs }` -- a name for effects. Inference expands
+    /// it wherever a row names it, as it does a type alias.
+    EffectAlias(EffectAliasDecl),
     /// `fun f : T` -- the declared type of the top-level binding `f`, which it
     /// must be at least as general as.
     ///
@@ -540,6 +543,17 @@ pub struct AliasDecl {
     pub name_span: Span,
     pub params: Vec<Ident>,
     pub ty: LTypeExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EffectAliasDecl {
+    pub name: InternedString,
+    /// Where the name was written — see [`DataDecl::name_span`].
+    pub name_span: Span,
+    pub params: Vec<Ident>,
+    /// What it stands for: labels only, as no row it is spliced into could
+    /// say what a tail of its own should join.
+    pub row: EffectRow,
 }
 
 pub type LTypeExpr = Node<TypeExpr>;

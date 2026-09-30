@@ -86,7 +86,7 @@ fun total xs = match xs with
   | [;] -> 0
   | x :: rest -> x + total rest
 
-def main = total [1; 2; 3] + total [7;] + total [;]
+def result = total [1; 2; 3] + total [7;] + total [;]
 ";
     assert_eq!(eval_main_std(src), "13");
 }
@@ -103,7 +103,7 @@ fun isEmpty v = match v with
   | [] -> 1
   | _ -> 0
 
-def main =
+def result =
   isEmpty []
   + isEmpty (V.drop [1, 2, 3] 3)
   + isEmpty (V.popBack [1])
@@ -116,7 +116,10 @@ def main =
 
 #[test]
 fn a_non_empty_vector_pattern_is_rejected_with_a_way_out() {
-    let out = errors_std_with("fun f v = match v with | [a, b] -> a\n", Options::debug());
+    let out = errors_std_with(
+        "fun f v = match v with | [a, b] -> a\n",
+        Options::debug().entry("result"),
+    );
     assert!(
         out.contains("`Vector` pattern can only be the empty `[]`"),
         "expected a vector-pattern diagnostic, got: {out}"
@@ -127,12 +130,18 @@ fn a_non_empty_vector_pattern_is_rejected_with_a_way_out() {
 
 #[test]
 fn the_empty_patterns_are_not_exhaustive_on_their_own() {
-    let vector = errors_std_with("fun f v = match v with | [] -> 0\n", Options::release());
+    let vector = errors_std_with(
+        "fun f v = match v with | [] -> 0\n",
+        Options::release().entry("result"),
+    );
     assert!(
         vector.contains("non-exhaustive") && vector.contains("Single"),
         "expected the vector's other constructors, got: {vector}"
     );
-    let list = errors_std_with("fun f xs = match xs with | [;] -> 0\n", Options::release());
+    let list = errors_std_with(
+        "fun f xs = match xs with | [;] -> 0\n",
+        Options::release().entry("result"),
+    );
     assert!(
         list.contains("non-exhaustive") && list.contains("Cons"),
         "expected `Cons` to be reported missing, got: {list}"

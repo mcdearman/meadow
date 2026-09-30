@@ -46,10 +46,10 @@ fn std_bytes_multibyte() {
     // write then read back
     insta::assert_snapshot!(eval_main_std(
         "def b = bytesSetU32LE #[0, 0, 0, 0] 0 305419896\n\
-         def main = (b, bytesGetU32LE b 0)\n"
+         def result = (b, bytesGetU32LE b 0)\n"
     ), @"(#[120, 86, 52, 18], 305419896)");
     insta::assert_snapshot!(eval_main_std(
         "def b = bytesSetU16BE #[0, 0] 0 258\n\
-         def main = (b, bytesGetU16BE b 0)\n"
+         def result = (b, bytesGetU16BE b 0)\n"
     ), @"(#[1, 2], 258)");
 }

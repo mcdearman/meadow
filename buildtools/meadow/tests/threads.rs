@@ -31,7 +31,7 @@ fn a_thread_may_not_perform_an_effect_only_its_spawner_handles() {
     // A spawned thread starts with no handlers; `Log` would have nobody to
     // answer it.
     let src = "effect Log { log : String -> () }\n\
-               def main = threadAwait (threadSpawn (\\() -> log \"hello\"))\n";
+               def result = threadAwait (threadSpawn (\\() -> log \"hello\"))\n";
     assert_eq!(
         errors(src),
         "type mismatch: the effect `Log` is not allowed here"
@@ -41,22 +41,25 @@ fn a_thread_may_not_perform_an_effect_only_its_spawner_handles() {
 #[test]
 fn a_thread_may_perform_what_the_runtime_answers() {
     let src = "use Std.Thread as T\n\
-               def main = T.await (T.spawn (\\() -> let _ = println \"hi\" in toInt 1))\n";
-    assert_eq!(errors_std_with(src, meadow::Options::debug()), "");
+               def result = T.await (T.spawn (\\() -> let _ = println \"hi\" in toInt 1))\n";
+    assert_eq!(
+        errors_std_with(src, meadow::Options::debug().entry("result")),
+        ""
+    );
 }
 
 #[test]
 fn a_thread_may_handle_its_own_effects() {
     let src = "effect Log { log : String -> () }\n\
-               def main = threadAwait (threadSpawn (\\() -> handle (let _ = log \"x\" in toInt 1) with { log m k -> toInt 3 }))\n";
+               def result = threadAwait (threadSpawn (\\() -> handle (let _ = log \"x\" in toInt 1) with { log m k -> toInt 3 }))\n";
     assert_eq!(errors(src), "");
 }
 
 #[test]
 fn the_thread_effect_can_be_written_in_an_annotation() {
-    let src = "fun spawnIt (f : () -> Int ! { Thread }) = f ()\ndef main = 0\n";
+    let src = "fun spawnIt (f : () -> Int ! { Thread }) = f ()\ndef result = 0\n";
     assert_eq!(errors(src), "");
-    let src = "fun cell (f : () -> Int ! { Mut }) = f ()\ndef main = 0\n";
+    let src = "fun cell (f : () -> Int ! { Mut }) = f ()\ndef result = 0\n";
     assert_eq!(errors(src), "");
 }
 
@@ -64,6 +67,6 @@ fn the_thread_effect_can_be_written_in_an_annotation() {
 fn a_program_with_threads_runs_through_the_front_door() {
     let src = "use Std.Thread as T\n\
                fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\
-               def main = T.parMap (\\n -> fib n) [10, 15, 20]\n";
+               def result = T.parMap (\\n -> fib n) [10, 15, 20]\n";
     assert_eq!(eval_main_std(src), "[55, 610, 6765]");
 }

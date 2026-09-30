@@ -1136,7 +1136,8 @@ fn exec(path: &std::path::Path, backend: Backend, opt: OptLevel) {
         Err(e) => Err(e),
     };
     match result {
-        Ok(value) => println!("=> {value}"),
+        // `main` gives nothing back: what it had to say, it printed.
+        Ok(_) => {}
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
@@ -1501,7 +1502,8 @@ fn finish(
                 },
             };
             match result {
-                Ok(value) => println!("=> {value}"),
+                // `main` gives nothing back: what it had to say, it printed.
+                Ok(_) => {}
                 Err(e) => {
                     eprintln!("{e}");
                     std::process::exit(1);
@@ -1532,7 +1534,8 @@ fn finish(
             }
         }
         match result {
-            Ok(value) => println!("=> {value}"),
+            // `main` gives nothing back: what it had to say, it printed.
+            Ok(_) => {}
             Err(e) => {
                 eprintln!("{e}");
                 std::process::exit(1);

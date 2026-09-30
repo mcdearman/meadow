@@ -402,6 +402,8 @@ const LANGUAGE_NAMES: &[&str] = &[
     "StArray", "Compact", "Task", "Channel", "TVar", "Vector", "VNode", "Maybe", "Result",
     // Effects the runtimes answer, or a primitive performs.
     "Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut", "Stm", "St",
+    // Every one the runtime answers, by one name: what `main` may perform.
+    "Eff",
 ];
 
 /// What the resolver knows of a trait: enough to check an `impl` against.
@@ -1447,6 +1449,18 @@ impl Resolver {
                 ast::Decl::TypeAlias(ad) => {
                     self.declare_tycon(*ad.name.value(), ad.params.len(), ad.name.span);
                 }
+                // Named as an effect is, so a row can name it where it could
+                // name one.
+                ast::Decl::EffectAlias(ad) => {
+                    let name = *ad.name.value();
+                    let canonical = self.qualify(name);
+                    self.declare_tycon(name, ad.params.len(), ad.name.span);
+                    self.effects
+                        .insert(name, Named::One(canonical, ad.params.len()));
+                    self.all_effects.insert(canonical, ad.params.len());
+                    let vis = self.vis;
+                    self.frame().effects.push((name, ad.params.len(), vis));
+                }
                 ast::Decl::Trait(td) => {
                     let name = *td.name.value();
                     let canonical = self.qualify(name);
@@ -1563,6 +1577,14 @@ impl Resolver {
                         offer(&mut self.tycons, ad.name, ad.params.len());
                     }
                     self.all_types.insert(ad.name, ad.params.len());
+                }
+                hir::Decl::EffectAlias(ad) => {
+                    if in_scope {
+                        offer(&mut self.tycons, ad.name, ad.params.len());
+                        offer(&mut self.effects, ad.name, ad.params.len());
+                    }
+                    self.all_types.insert(ad.name, ad.params.len());
+                    self.all_effects.insert(ad.name, ad.params.len());
                 }
                 hir::Decl::Trait(td) => {
                     let n = td.params.len();
@@ -2304,6 +2326,9 @@ impl Resolver {
             hir::Decl::Alias(ad) => {
                 self.pub_types.insert(ad.name);
             }
+            hir::Decl::EffectAlias(ad) => {
+                self.pub_types.insert(ad.name);
+            }
             hir::Decl::Trait(td) => {
                 self.pub_types.insert(td.name);
                 for a in &td.assocs {
@@ -2486,6 +2511,37 @@ impl Resolver {
                         name_span: ad.name.span,
                         params,
                         ty,
+                    }),
+                    decl.span,
+                )
+            }
+            ast::Decl::EffectAlias(ad) => {
+                self.tyvars.clear();
+                let params = self.bind_tyvars(&ad.params);
+                if let Some(tail) = &ad.row.tail {
+                    self.error(
+                        format!(
+                            "effect alias `{}` has a tail `{}`",
+                            ad.name.value(),
+                            tail.value()
+                        ),
+                        "an alias names effects; the row that names it says what else".to_string(),
+                        tail.span,
+                    );
+                }
+                // Resolved without it, which would only be reported again as
+                // a variable nothing binds.
+                let row = self.resolve_effect_row(&ast::EffectRow {
+                    labels: ad.row.labels.clone(),
+                    tail: None,
+                });
+                self.tyvars.clear();
+                self.node(
+                    hir::Decl::EffectAlias(hir::EffectAliasDecl {
+                        name: self.qualify(*ad.name.value()),
+                        name_span: ad.name.span,
+                        params,
+                        row,
                     }),
                     decl.span,
                 )

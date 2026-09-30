@@ -8,7 +8,7 @@
 --   use Std.Stream (yield, toVec, take)
 --
 --   fun counter n = if n <= 0 then () else let ignored = yield n in counter (n - 1)
---   def main = toVec (\() -> counter 3)   -- [3, 2, 1]
+--   fun main () = println "${toVec (\() -> counter 3):?}"   -- [3, 2, 1]
 --
 -- The consumers here are *deep* handlers, so a `yield` from inside a nested call
 -- reaches them too. They are also one-shot: each resumes `k` at most once, which

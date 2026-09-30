@@ -320,10 +320,38 @@ fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out e
 -- A written effect row as a type.
 @pub fun effOf (i : Inf s) (a : HirArena) (row : HirRow) (params : HashMap String Int) : Type ! { St s | e } =
   let tail = (match hirRowTail a row with | Just tl -> M.unwrapOr RowEmpty (M.map (\k -> Bound k) (H.lookup (hirNameText a tl) params)) | None -> RowEmpty) in
-  V.foldl
-    (\rest l -> RowExtend (canonOf i (hirRefId a (hirLabelRef a l)) (hirNameText a (hirLabelName a l))) (Tuple (V.map (\x -> tyOf i a x params) (hirLabelArgs a l))) rest)
-    tail
-    (V.reverse (hirRowLabels a row))
+  let labels =
+    V.foldl
+      (\acc l -> spliceLabel i acc (canonOf i (hirRefId a (hirLabelRef a l)) (hirNameText a (hirLabelName a l))) (V.map (\x -> tyOf i a x params) (hirLabelArgs a l)))
+      []
+      (hirRowLabels a row) in
+    V.foldl (\rest (lab : (String, Type)) -> RowExtend (fst lab) (snd lab) rest) tail (V.reverse labels)
+
+-- A label onto `acc`, as `meadow_infer`'s `row_labels` puts it: an effect
+-- alias's labels in its place, with its arguments for its parameters, and one
+-- said twice -- `{ Eff, Console }` -- once. An alias of effects is kept as the
+-- closed row it stands for, which no alias of a type can be.
+fun spliceLabel (i : Inf s) (acc : [(String, Type)]) (name : String) (args : [Type]) : [(String, Type)] ! { St s | e } =
+  match H.lookup name (stGetRef i.aliases) with
+  | Just (d : AliasDef) ->
+      if d.params == V.len args and isRow d.body then V.foldl (\x (lab : (String, Type)) -> addLabel x (fst lab) (substBound (snd lab) args)) acc (labelsOf d.body)
+      else addLabel acc name (Tuple args)
+  | None -> addLabel acc name (Tuple args)
+
+fun addLabel (acc : [(String, Type)]) (name : String) (args : Type) : [(String, Type)] =
+  if V.any (\(x : (String, Type)) -> fst x == name and snd x == args) acc then acc else V.pushBack acc (name, args)
+
+fun isRow (t : Type) : Bool =
+  match t with
+  | RowExtend _ _ _ -> True
+  | RowEmpty -> True
+  | _ -> False
+
+-- A row's labels, each with its arguments.
+@pub fun labelsOf (t : Type) : [(String, Type)] =
+  match t with
+  | RowExtend l f rest -> V.pushFront (labelsOf rest) (l, f)
+  | _ -> []
 
 -- Which of a type's quantifiers stand for a row: an arrow's latent effect, or
 -- the tail of its row, an effect; the tail of a record's row, a record row.

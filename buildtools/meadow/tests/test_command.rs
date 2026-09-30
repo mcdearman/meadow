@@ -11,7 +11,10 @@ mod common;
 
 /// Build the `effects` fixture and run its tests. Returns `(name, failure)` pairs.
 fn run_fixture() -> Vec<(String, Option<String>)> {
-    let out = pipeline::build(&common::fixture("Effects"), Options::debug());
+    let out = pipeline::build(
+        &common::fixture("Effects"),
+        Options::debug().entry("result"),
+    );
     assert!(
         out.diagnostics.is_empty(),
         "fixture should compile cleanly: {:?}",
@@ -20,7 +23,7 @@ fn run_fixture() -> Vec<(String, Option<String>)> {
     test::run_linked(
         out.linked.expect("linked"),
         meadow::Engine::default(),
-        meadow::Options::debug().opt,
+        meadow::Options::debug().entry("result").opt,
     )
     .expect("the runner itself should not fail")
 }
@@ -96,7 +99,7 @@ fn a_test_must_be_callable() {
 fn run_src(src: &str) -> Vec<(String, Option<String>)> {
     // `compile_str_with_std` returns only a linked program, and the test list
     // lives on the package — so compile the unit directly against `Std`.
-    let (std_pkgs, _) = meadow::stdlib::std_packages(Options::debug());
+    let (std_pkgs, _) = meadow::stdlib::std_packages(Options::debug().entry("result"));
     let std_deps: Vec<meadow_compiler::Dep<'_>> =
         std_pkgs.iter().map(meadow_compiler::Dep::new).collect();
     let source = meadow_compiler::source::Source::new(
@@ -115,8 +118,13 @@ fn run_src(src: &str) -> Vec<(String, Option<String>)> {
             }]
         })
         .unwrap_or_default();
-    let (cp, diags) =
-        meadow_compiler::compile_unit("t".into(), 1, modules, &std_deps, Options::debug());
+    let (cp, diags) = meadow_compiler::compile_unit(
+        "t".into(),
+        1,
+        modules,
+        &std_deps,
+        Options::debug().entry("result"),
+    );
     assert!(
         diags.is_empty(),
         "{:?}",
@@ -127,7 +135,7 @@ fn run_src(src: &str) -> Vec<(String, Option<String>)> {
     test::run_linked(
         Linker::link(pkgs),
         meadow::Engine::default(),
-        meadow::Options::debug().opt,
+        meadow::Options::debug().entry("result").opt,
     )
     .expect("runner")
 }

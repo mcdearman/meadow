@@ -64,7 +64,7 @@ fn app(what: &str, url: &str) -> PathBuf {
         ),
     )
     .unwrap();
-    std::fs::write(dir.join("src/Main.mw"), "def main = greeting\n").unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def result = greeting\n").unwrap();
     dir
 }
 

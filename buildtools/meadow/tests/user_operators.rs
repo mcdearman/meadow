@@ -29,7 +29,7 @@ fn it_binds_looser_than_application_and_tighter_than_comparison() {
 
 #[test]
 fn it_is_right_associative() {
-    let src = "fun (++) a b = (a, b)\ndef main = 1 ++ 2 ++ 3\n";
+    let src = "fun (++) a b = (a, b)\ndef result = 1 ++ 2 ++ 3\n";
     assert_eq!(eval_main(src), "(1, (2, 3))");
 }
 
@@ -42,7 +42,7 @@ fn a_program_can_define_its_own() {
 
 #[test]
 fn a_local_definition_shadows_the_preludes() {
-    let src = "fun (++) a b = b\ndef main = \"left\" ++ \"right\"\n";
+    let src = "fun (++) a b = b\ndef result = \"left\" ++ \"right\"\n";
     assert_eq!(eval_main_std(src), r#""right""#);
 }
 
@@ -51,14 +51,14 @@ fn it_is_imported_like_any_other_name() {
     let def = "@pub fun (++) a b = (b, a)\n";
     // Bare in the list, or in its own parentheses.
     for list in ["(++)", "((++))"] {
-        let user = format!("use Ops {list}\ndef main = 1 ++ 2\n");
+        let user = format!("use Ops {list}\ndef result = 1 ++ 2\n");
         assert_eq!(
             unit_errors(&[("", "mod Ops\n"), ("Ops", def), ("Main", &user)]),
             ""
         );
     }
     // Not imported, not in scope.
-    let user = "def main = 1 ++ 2\n";
+    let user = "def result = 1 ++ 2\n";
     assert_eq!(
         unit_errors(&[("", "mod Ops\n"), ("Ops", def), ("Main", user)]),
         "undefined variable: ++"
@@ -67,14 +67,14 @@ fn it_is_imported_like_any_other_name() {
 
 #[test]
 fn without_a_definition_it_is_unbound() {
-    let errs = errors("def main = \"a\" ++ \"b\"\n");
+    let errs = errors("def result = \"a\" ++ \"b\"\n");
     assert_eq!(errs, "undefined variable: ++");
 }
 
 #[test]
 fn any_operator_can_be_bound() {
     // `++` is not special: every operator is a name.
-    assert_eq!(eval_main("fun (<>) a b = a\ndef main = 1 <> 2\n"), "1");
+    assert_eq!(eval_main("fun (<>) a b = a\ndef result = 1 <> 2\n"), "1");
     // Nor are the language's own, which a local definition shadows.
-    assert_eq!(eval_main("fun (-) a b = a + b\ndef main = 1 - 2\n"), "3");
+    assert_eq!(eval_main("fun (-) a b = a + b\ndef result = 1 - 2\n"), "3");
 }

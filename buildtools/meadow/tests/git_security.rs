@@ -132,7 +132,7 @@ fn app_with_dep_url(what: &str, url: &str) -> PathBuf {
         ),
     )
     .unwrap();
-    std::fs::write(dir.join("src/Main.mw"), "def main = 0\n").unwrap();
+    std::fs::write(dir.join("src/Main.mw"), "def result = 0\n").unwrap();
     dir
 }
 
@@ -146,7 +146,11 @@ fn building_a_hostile_git_url_runs_no_command() {
 
     let mut resolver = Resolver::for_entry(&app);
     resolver.cache = scratch("inj-cache");
-    let out = pipeline::build_resolved(&app, meadow::Options::debug(), &mut resolver);
+    let out = pipeline::build_resolved(
+        &app,
+        meadow::Options::debug().entry("result"),
+        &mut resolver,
+    );
 
     assert!(
         !out.diagnostics.is_empty(),

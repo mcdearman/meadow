@@ -51,7 +51,7 @@ fun depths a bump (d : Int) (acc : Int) =
   if d > top then acc
   else depths a bump (d + 2) (acc + trees a bump d (2 ^ (top - d + 4)) 0)
 
-def main =
+fun main () =
   println (show (runSt (\() ->
     let lasting = St.newArray room 0 in
     let ln = St.newRef 0 in

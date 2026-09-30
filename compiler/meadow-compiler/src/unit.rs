@@ -127,7 +127,13 @@ pub struct CompiledPackage {
     /// lets a program keep its declarations to itself — before this, adding
     /// a visibility attribute anywhere in a package meant `main` needed one too or the linker
     /// would report no entry point at all.
+    ///
+    /// It is `() -> () ! Eff`, and a program runs by calling it.
     pub entry: Option<VarId>,
+    /// What runs instead of `main` when the build asked for another entry by
+    /// name ([`crate::Options::entry_name`]): a value, evaluated and shown --
+    /// the REPL's `it`, a debugger's expression, a test's `result`.
+    pub value_entry: Option<VarId>,
     pub modules: Vec<TypedModule>,
     /// Whole-package node -> type table (node ids are dense across the package).
     pub types: TypeTable,
@@ -631,23 +637,34 @@ fn compile_unit_inner(
     // The entry point, from the root module alone: a `main` in a submodule is
     // an ordinary function that happens to be called `main`. Found before
     // inference, which holds `main` to a different rule than every other `def`.
-    let main = InternedString::from("main");
-    let entry = typed
-        .iter()
-        .filter(|m| m.path.is_empty())
-        .flat_map(|m| m.hir.value().decls.iter())
-        .filter_map(|d| match d.value() {
-            hir::Decl::Bind(bind) => bind
-                .bound_vars()
-                .into_iter()
-                .find(|id| resolver.names().get(id) == Some(&main)),
-            _ => None,
-        })
-        .next();
-    // And whatever the caller runs in its place, in any module.
+    let root_named = |name: InternedString| {
+        typed
+            .iter()
+            .filter(|m| m.path.is_empty())
+            .flat_map(|m| m.hir.value().decls.iter().map(move |d| (m.source, d)))
+            .filter_map(|(source, d)| match d.value() {
+                hir::Decl::Bind(bind) => bind
+                    .bound_vars()
+                    .into_iter()
+                    .find(|id| resolver.names().get(id) == Some(&name))
+                    // Where its name is written, for what is said of it.
+                    .map(|id| match bind {
+                        hir::Bind::Fun(n, ..) => (id, n.span, source),
+                        _ => (id, d.span, source),
+                    }),
+                _ => None,
+            })
+            .next()
+    };
+    let main_at = root_named(InternedString::from("main"));
+    let entry = main_at.map(|(id, _, _)| id);
+    // And whatever the caller runs in its place, in any module: a value, which
+    // is evaluated and shown rather than called.
     let mut runs: Vec<VarId> = entry.into_iter().collect();
+    let mut value_entry = None;
     if let Some(name) = opts.entry_name {
         let name = InternedString::from(name);
+        value_entry = root_named(name).map(|(id, _, _)| id);
         runs.extend(
             resolver
                 .names()
@@ -711,6 +728,10 @@ fn compile_unit_inner(
     for m in &typed {
         infer.set_filename(module_filename(&filename, m.source));
         infer.infer_traits(&m.hir);
+    }
+    if let Some((main, at, source)) = main_at {
+        infer.set_filename(module_filename(&filename, source));
+        infer.check_main(main, at);
     }
     let InferResult {
         table,
@@ -908,6 +929,7 @@ fn compile_unit_inner(
             hir::Decl::Record(rd) => !gated || resolver.is_pub_type(rd.name),
             hir::Decl::Effect(ed) => !gated || resolver.is_pub_type(ed.name),
             hir::Decl::Alias(ad) => !gated || resolver.is_pub_type(ad.name),
+            hir::Decl::EffectAlias(ad) => !gated || resolver.is_pub_type(ad.name),
             hir::Decl::Trait(td) => !gated || resolver.is_pub_type(td.name),
             // Coherence is the program's: an `impl` is every dependent's.
             hir::Decl::Impl(_) => true,
@@ -943,6 +965,7 @@ fn compile_unit_inner(
             embedded: resolver.embedded().to_vec(),
             fixities: resolver.fixities(),
             entry,
+            value_entry,
             modules: typed,
             types: table,
             exports,
@@ -1433,6 +1456,7 @@ fn module_types(
                 hir::Decl::Data(dd) => Some(dd.name),
                 hir::Decl::Record(rd) => Some(rd.name),
                 hir::Decl::Alias(ad) => Some(ad.name),
+                hir::Decl::EffectAlias(ad) => Some(ad.name),
                 hir::Decl::Effect(ed) => Some(ed.name),
                 hir::Decl::Trait(td) => Some(td.name),
                 _ => None,

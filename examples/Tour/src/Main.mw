@@ -50,7 +50,7 @@ fun wordCounts text =
 
 -- --- main --------------------------------------------------------------------
 
-def main =
+fun main () =
   let _ = println "== shapes: data types, records, matching" in
   let shapes = [Circle 1.0, Rect 2.0 3.0, Rect 2.0 2.0, Triangle 3.0 4.0 5.0, Rect 0.0 4.0] in
   let _ = V.forEach (\s -> println (describe s ++ " with area " ++ show (area s))) shapes in

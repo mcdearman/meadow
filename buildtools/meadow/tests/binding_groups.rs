@@ -20,7 +20,7 @@ fn a_forward_reference_is_checked_not_guessed() {
     let src = "\
 fun addOne n = helper n
 fun helper n = n + 1
-def main = addOne \"not a number\"
+def result = addOne \"not a number\"
 ";
     assert!(
         errors(src).contains("type mismatch"),
@@ -44,7 +44,7 @@ fn a_def_may_use_a_function_declared_below_it() {
     // Evaluation is eager and follows lowering order, so this only works because
     // the pass moves `double` ahead of `main`.
     assert_eq!(
-        eval_main("def main = double 21\nfun double n = n * 2\n"),
+        eval_main("def result = double 21\nfun double n = n * 2\n"),
         "42"
     );
 }
@@ -62,7 +62,7 @@ fn a_dependency_is_generalized_before_its_user() {
     // `pair` is only usable at two different types if it generalizes before
     // `main` is inferred — which is exactly what ordering the groups buys.
     let src = "\
-def main = both
+def result = both
 fun both = (wrap 1, wrap \"s\")
 fun wrap x = (x, x)
 ";
@@ -82,7 +82,7 @@ fn self_recursion_still_works() {
         "len : forall a n. #[a] -> n\n"
     );
     assert_eq!(
-        eval_main("fun fact n = if n <= 1 then 1 else n * fact (n - 1)\ndef main = fact 5\n"),
+        eval_main("fun fact n = if n <= 1 then 1 else n * fact (n - 1)\ndef result = fact 5\n"),
         "120"
     );
 }
@@ -99,7 +99,7 @@ fun isOdd n = if n == 0 then False else isEven (n - 1)
         "isEven : forall n. (PartialEq n, Sub n) => n -> Bool\nisOdd : forall n. (PartialEq n, Sub n) => n -> Bool\n"
     );
     assert_eq!(
-        eval_main_std(&format!("{src}def main = isEven 10\n")),
+        eval_main_std(&format!("{src}def result = isEven 10\n")),
         "True"
     );
 }
@@ -113,7 +113,7 @@ fn a_sibling_applied_to_fewer_arguments_than_it_takes_keeps_its_effects() {
 effect Tick { tick : () -> () }
 fun a (k : Int) (x : Int) = if x > 0 then V.concatMap (b k) [x - 1] else (let u = tick () in [x])
 fun b (k : Int) (x : Int) = a k x
-def main = handle a 1 3 with { tick u r -> r (), return v -> V.len v }
+def result = handle a 1 3 with { tick u r -> r (), return v -> V.len v }
 ";
     assert_eq!(
         eval_main_std(&format!("use Std.Collections.Vector as V\n{src}")),
@@ -160,7 +160,7 @@ fn a_group_may_use_an_earlier_group_polymorphically() {
 fun id2 x = x
 fun f n = if n == 0 then id2 0 else g (n - 1)
 fun g n = f (id2 n)
-def main = (f 3, id2 \"s\")
+def result = (f 3, id2 \"s\")
 ";
     assert_eq!(eval_main(src), "(0, \"s\")");
 }
@@ -180,7 +180,7 @@ fn a_module_may_use_a_module_handed_over_after_it() {
             ("Zeta", "fun double n = n * 2\n"),
             (
                 "",
-                "use Alpha (twenty, describe)\ndef main = twenty + describe 6\n"
+                "use Alpha (twenty, describe)\ndef result = twenty + describe 6\n"
             ),
         ]),
         "32"
@@ -213,7 +213,7 @@ fn mutually_recursive_modules_still_compile() {
                 "use Pong (pong)\nfun ping n = if n == 0 then 0 else pong (n - 1)\n"
             ),
             ("Pong", "use Ping (ping)\nfun pong n = ping n\n"),
-            ("", "use Ping (ping)\ndef main = ping 4\n"),
+            ("", "use Ping (ping)\ndef result = ping 4\n"),
         ]),
         "0"
     );
@@ -263,7 +263,7 @@ fn a_function_used_across_a_cycle_keeps_its_own_effects() {
         "Query",
         "use Parse (parse)\neffect Fetch { fetch : Int -> Int }\nfun inQuery s = fetch (parse s)\nfun pure (s : String) : Int = parse s + 1\n",
     );
-    for got in both_orders(parse, query, "use Parse (check)\ndef main = check 0\n") {
+    for got in both_orders(parse, query, "use Parse (check)\ndef result = check 0\n") {
         assert_eq!(got, "4");
     }
 }
@@ -279,7 +279,7 @@ fn a_function_used_across_a_cycle_stays_polymorphic() {
         "Beta",
         "use Alpha (ident)\nfun pick u = if ident (1 < 2) then ident 40 + 2 else 0\n",
     );
-    for got in both_orders(a, b, "use Alpha (run)\ndef main = run 0\n") {
+    for got in both_orders(a, b, "use Alpha (run)\ndef result = run 0\n") {
         assert_eq!(got, "42");
     }
 }
@@ -294,7 +294,7 @@ fn two_modules_may_define_the_same_name() {
             ("Lst", "fun map f = f 2\n"),
             (
                 "",
-                "use Vec (map)\nuse Lst as L\nfun ident x = x\ndef main = map ident + L.map ident\n"
+                "use Vec (map)\nuse Lst as L\nfun ident x = x\ndef result = map ident + L.map ident\n"
             ),
         ]),
         "3"
@@ -306,7 +306,7 @@ fn a_sibling_can_be_taken_under_an_alias() {
     assert_eq!(
         eval_unit(&[
             ("Math", "fun double n = n * 2\n"),
-            ("", "use Math as M\ndef main = M.double 21\n"),
+            ("", "use Math as M\ndef result = M.double 21\n"),
         ]),
         "42"
     );
@@ -319,7 +319,7 @@ fn a_child_can_use_the_package_root() {
         eval_unit(&[
             (
                 "",
-                "@pub mod Child\nuse test.Child (quad)\n@pub fun double n = n * 2\ndef main = quad 5\n"
+                "@pub mod Child\nuse test.Child (quad)\n@pub fun double n = n * 2\ndef result = quad 5\n"
             ),
             (
                 "Child",
@@ -332,7 +332,7 @@ fn a_child_can_use_the_package_root() {
         eval_unit(&[
             (
                 "",
-                "@pub mod Child\nuse test.Child (quad)\n@pub fun double n = n * 2\ndef main = quad 5\n"
+                "@pub mod Child\nuse test.Child (quad)\n@pub fun double n = n * 2\ndef result = quad 5\n"
             ),
             (
                 "Child",
@@ -351,7 +351,7 @@ fn a_module_declared_under_a_false_cfg_is_left_out() {
         eval_unit(&[
             (
                 "",
-                "@cfg(test)\nmod Tests\nmod Kept\nuse test.Kept (one)\ndef main = one\n"
+                "@cfg(test)\nmod Tests\nmod Kept\nuse test.Kept (one)\ndef result = one\n"
             ),
             ("Tests", "def broken = nowhere\n"),
             ("Tests.Deep", "def broken = alsoNowhere\n"),
@@ -364,7 +364,7 @@ fn a_module_declared_under_a_false_cfg_is_left_out() {
         eval_unit(&[
             (
                 "",
-                "@cfg(test)\nmod Impl\n@cfg(not(test))\nmod Impl\nuse test.Impl (two)\ndef main = two\n"
+                "@cfg(test)\nmod Impl\n@cfg(not(test))\nmod Impl\nuse test.Impl (two)\ndef result = two\n"
             ),
             ("Impl", "@pub def two = 2\n"),
         ]),

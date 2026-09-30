@@ -243,7 +243,7 @@ pub enum Token {
     /// The `!` of a macro call written at the start of a line, `name!(…)` in
     /// column 0 -- never lexed as such, but made from a [`Token::Bang`] by
     /// [`tokenize`]. A call there begins a declaration, and the parser takes
-    /// no argument that is one: `def main = f x` followed by `derive! { … }` on
+    /// no argument that is one: `def result = f x` followed by `derive! { … }` on
     /// the next line is two declarations, not `f x derive! { … }`.
     DeclBang,
     #[token(",")]

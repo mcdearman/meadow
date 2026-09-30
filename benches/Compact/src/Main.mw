@@ -86,7 +86,7 @@ fun cost () =
   let m = bigMap entries in
   [benchUnits "compact the map" entries (\u -> compact m)]
 
-def main =
+fun main () =
   match getEnv "MEADOW_BENCH_COMPACT" with
   | Just "plain" -> runAll (plain ())
   | Just "compact" -> runAll (compacted ())

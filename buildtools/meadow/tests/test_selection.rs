@@ -27,7 +27,7 @@ fn package(who: &str) -> PathBuf {
     .unwrap();
     std::fs::write(
         dir.join("src").join("Main.mw"),
-        "use Std.Test (assertEq)\n\ndef main = 0\n\n@test fun root u = assertEq 1 1 \"root\"\n",
+        "use Std.Test (assertEq)\n\ndef result = 0\n\n@test fun root u = assertEq 1 1 \"root\"\n",
     )
     .unwrap();
     std::fs::write(
@@ -196,7 +196,7 @@ fn a_dependency_is_built_without_its_tests() {
     .unwrap();
     std::fs::write(
         app.join("src").join("Main.mw"),
-        "use Std.Test (assertEq)\nuse Dep (one)\n\ndef main = 0\n\n\
+        "use Std.Test (assertEq)\nuse Dep (one)\n\ndef result = 0\n\n\
          @test fun usesDep u = assertEq (one ()) 1 \"one\"\n",
     )
     .unwrap();

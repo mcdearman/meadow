@@ -113,7 +113,9 @@ use Std.Result.Result.*
     DataDecl = "data" name:"upper" params:"lower"* "=" "|"? variants:(Variant ("|" Variant)*)
     Variant = attrs:Attr* name:"upper" args:TAtom*
     RecordDecl = "record" name:"upper" params:"lower"* "=" fields:RecTy
-    EffectDecl = "effect" name:"upper" params:"lower"* ops:RecTy
+    EffectDecl = "effect" name:"upper" params:"lower"* body:EffectBody
+    EffectBody = ops:RecTy | alias:EffectAlias
+    EffectAlias = "=" row:EffRow
     TypeDecl = "type" name:"upper" params:"lower"* "=" ty:Type
 
     TraitDecl = "trait" name:"upper" params:"lower"* supers:Supers? "{" items:Member* "}"

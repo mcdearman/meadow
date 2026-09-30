@@ -60,10 +60,11 @@ fun sum xs =
   | [;] -> 0
   | x :: rest -> x + sum rest
 
-def main =
+fun main () =
   let a = double 21 in
   let b = sum [1; 2; 3] in
-  a + b
+  let u = println (a + b) in
+  ()
 ";
 
 #[test]
@@ -71,8 +72,9 @@ fn it_runs_to_the_end_with_nothing_set() {
     let (mut s, _) = launch("end", PROGRAM);
     assert_eq!(
         go(&mut s, Mode::Continue),
-        Stop::Exited(Ok("48".to_string()))
+        Stop::Exited(Ok("()".to_string()))
     );
+    assert_eq!(s.take_output(), "48\n");
 }
 
 #[test]
@@ -141,7 +143,7 @@ fn stepping_over_a_call_stays_in_the_function() {
         match go(&mut s, Mode::StepOver) {
             Stop::Step => assert_eq!(stack(&s)[0].0, "main", "{:?}", stack(&s)),
             Stop::Exited(r) => {
-                assert_eq!(r, Ok("48".to_string()));
+                assert_eq!(r, Ok("()".to_string()));
                 return;
             }
             other => panic!("{other:?}"),
@@ -151,17 +153,20 @@ fn stepping_over_a_call_stays_in_the_function() {
 
 #[test]
 fn output_is_captured_rather_than_printed() {
-    let (mut s, _) = launch("out", "def main =\n  let u = println \"hello\" in\n  1\n");
+    let (mut s, _) = launch("out", "fun main () =\n  println \"hello\"\n");
     assert_eq!(
         go(&mut s, Mode::Continue),
-        Stop::Exited(Ok("1".to_string()))
+        Stop::Exited(Ok("()".to_string()))
     );
     assert_eq!(s.take_output(), "hello\n");
 }
 
 #[test]
 fn a_failure_stops_where_it_happened() {
-    let (mut s, _) = launch("fail", "fun f n =\n  n / 0\n\ndef main = f 7\n");
+    let (mut s, _) = launch(
+        "fail",
+        "fun f n =\n  n / 0\n\nfun main () = println (f 7)\n",
+    );
     match go(&mut s, Mode::Continue) {
         Stop::Exception(msg) => assert!(msg.contains("zero"), "{msg}"),
         other => panic!("{other:?}"),
@@ -174,7 +179,7 @@ fn a_failure_stops_where_it_happened() {
 
 #[test]
 fn values_can_be_opened_up() {
-    let src = "fun f pair =\n  pair\n\ndef main = f (Just [1; 2], { x = 1, y = \"s\" })\n";
+    let src = "fun f pair =\n  pair\n\nfun main () = match f (Just [1; 2], { x = 1, y = \"s\" }) with | (_, r) -> println r.y\n";
     let (mut s, file) = launch("open", src);
     s.set_breakpoints(&file, &[2]);
     assert_eq!(go(&mut s, Mode::Continue), Stop::Breakpoint);
@@ -324,7 +329,7 @@ mod protocol {
             .filter(|m| m["event"] == "output")
             .map(|m| m["body"]["output"].as_str().unwrap_or("").to_string())
             .collect();
-        assert!(output.contains("=> 48"), "{output}");
+        assert!(output.contains("48"), "{output}");
         assert!(event(&msgs, "terminated").is_some());
     }
 
@@ -334,7 +339,7 @@ mod protocol {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("main.mw");
-        std::fs::write(&file, "def main = nope\n").unwrap();
+        std::fs::write(&file, "fun main () = nope\n").unwrap();
 
         let sink = Sink::default();
         let mut a = Adapter::new(Box::new(sink.clone()));
@@ -362,7 +367,8 @@ mod protocol {
 #[test]
 fn a_call_inside_a_call_is_still_one_frame() {
     // `main` waits for `inc` and then for `double`: two continuations, one call.
-    let src = "fun inc n =\n  n + 1\n\nfun double n = n * 2\n\ndef main = double (inc 20)\n";
+    let src =
+        "fun inc n =\n  n + 1\n\nfun double n = n * 2\n\nfun main () = println (double (inc 20))\n";
     let (mut s, file) = launch("nested", src);
     s.set_breakpoints(&file, &[2]);
     assert_eq!(go(&mut s, Mode::Continue), Stop::Breakpoint);
@@ -372,7 +378,7 @@ fn a_call_inside_a_call_is_still_one_frame() {
 
 #[test]
 fn stepping_in_can_reach_the_standard_library() {
-    let src = "use Std.Collections.List as L\n\ndef main =\n  L.length [1; 2; 3]\n";
+    let src = "use Std.Collections.List as L\n\nfun main () =\n  println (L.length [1; 2; 3])\n";
     let (mut s, file) = launch("std", src);
     s.set_breakpoints(&file, &[4]);
     assert_eq!(go(&mut s, Mode::Continue), Stop::Breakpoint);
@@ -395,11 +401,11 @@ fn a_package_of_several_modules_debugs_across_them() {
     for f in ["Syntax.mw", "Parser.mw", "Infer.mw", "Eval.mw", "Main.mw"] {
         let mut text = std::fs::read_to_string(root.join("src").join(f)).unwrap();
         if f == "Main.mw" {
-            let at = text.find("@pub(pkg) def main =").expect("main");
+            let at = text.find("fun main () ").expect("main");
             let end = text[at..].find("\n\n").map_or(text.len(), |e| at + e);
             text.replace_range(
                 at..end,
-                "@pub(pkg) def main = runSource \"(fun x -> x + 1) 41\"",
+                "fun main () = println \"${runSource \"(fun x -> x + 1) 41\":?}\"",
             );
         }
         std::fs::write(dir.join("src").join(f), text).unwrap();
@@ -428,8 +434,9 @@ fn a_package_of_several_modules_debugs_across_them() {
 
     assert_eq!(
         go(&mut s, Mode::Continue),
-        Stop::Exited(Ok("Ok(\"42\")".to_string()))
+        Stop::Exited(Ok("()".to_string()))
     );
+    assert_eq!(s.take_output(), "Ok(\"42\")\n");
 }
 
 // --- starting at a function --------------------------------------------------------
@@ -466,7 +473,7 @@ fn a_private_function_in_a_module_can_be_the_entry() {
         &[
             (
                 "src/Main.mw",
-                "use Maths (twice)\n\n@pub(pkg) def main = twice 1\n",
+                "use Maths (twice)\n\nfun main () = println (twice 1)\n",
             ),
             (
                 "src/Maths.mw",

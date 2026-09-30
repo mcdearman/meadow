@@ -4,7 +4,7 @@
 --   use Std.Exn (raise, toResult)
 --
 --   fun half n = if even n then n / 2 else raise "odd"
---   def main = toResult (\() -> half 7)   -- Err("odd")
+--   fun main () = println "${toResult (\() -> half 7):?}"   -- Err("odd")
 --
 -- This is `Result`'s sibling, not its replacement. `Result` is the right answer
 -- when a caller is expected to look at the failure; `Exn` is the right answer

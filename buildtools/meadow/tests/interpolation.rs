@@ -24,7 +24,7 @@ fn everywhere(src: &str) -> String {
 fn a_hole_renders_by_display_and_by_debug_after_a_colon_question_mark() {
     assert_eq!(
         everywhere(
-            r#"def main = "${"text"} ${[1, 2]} ${Just 'x'} ${Just 'x':?} ${1.5} ${()} ${show { a = 1 }} ${show "q"} ${"q":?}""#
+            r#"def result = "${"text"} ${[1, 2]} ${Just 'x'} ${Just 'x':?} ${1.5} ${()} ${show { a = 1 }} ${show "q"} ${"q":?}""#
         ),
         r#""text [1, 2] Just(x) Just('x') 1.5 () { a = 1 } \"q\" \"q\"""#
     );
@@ -36,7 +36,7 @@ fn a_hole_holds_any_expression() {
         everywhere(
             r#"use Std.String as S
                fun greet (name : String) (age : Int) = "Hello ${S.toUpper name}, next year you are ${age + 1}."
-               def main = (greet "ann" 41, "${ {a = 1}.a } ${if True then "y" else "n"} ${match Just 3 with | Just n -> n | None -> 0}")"#
+               def result = (greet "ann" 41, "${ {a = 1}.a } ${if True then "y" else "n"} ${match Just 3 with | Just n -> n | None -> 0}")"#
         ),
         r#"("Hello ANN, next year you are 42.", "1 y 3")"#
     );
@@ -45,7 +45,7 @@ fn a_hole_holds_any_expression() {
 #[test]
 fn strings_in_holes_have_holes_of_their_own() {
     assert_eq!(
-        everywhere(r#"def main = "a ${"b ${"c ${1}"}"} d""#),
+        everywhere(r#"def result = "a ${"b ${"c ${1}"}"} d""#),
         r#""a b c 1 d""#
     );
 }
@@ -53,7 +53,7 @@ fn strings_in_holes_have_holes_of_their_own() {
 #[test]
 fn a_dollar_is_text_unless_it_opens_a_hole() {
     assert_eq!(
-        everywhere(r#"def main = ("costs $5", "\${not a hole}", "\$${5}", "$")"#),
+        everywhere(r#"def result = ("costs $5", "\${not a hole}", "\$${5}", "$")"#),
         r#"("costs $5", "${not a hole}", "$5", "$")"#
     );
 }
@@ -63,7 +63,7 @@ fn a_program_that_defines_display_does_not_change_what_a_hole_means() {
     assert_eq!(
         everywhere(
             r#"fun display x = "not this"
-                      def main = "${42}""#
+                      def result = "${42}""#
         ),
         r#""42""#
     );
@@ -72,7 +72,7 @@ fn a_program_that_defines_display_does_not_change_what_a_hole_means() {
 #[test]
 fn a_hole_spans_lines() {
     assert_eq!(
-        everywhere("def main = \"sum: ${\n  1 +\n  2\n}\""),
+        everywhere("def result = \"sum: ${\n  1 +\n  2\n}\""),
         r#""sum: 3""#
     );
 }
@@ -80,9 +80,9 @@ fn a_hole_spans_lines() {
 #[test]
 fn broken_interpolations_are_reported() {
     for (src, want) in [
-        (r#"def main = "${}""#, "needs an expression"),
-        (r#"def main = "${1 + 2""#, "never closed"),
-        (r#"def main = "${undefinedName}""#, "undefinedName"),
+        (r#"def result = "${}""#, "needs an expression"),
+        (r#"def result = "${1 + 2""#, "never closed"),
+        (r#"def result = "${undefinedName}""#, "undefinedName"),
     ] {
         let got = errors(src);
         assert!(got.contains(want), "{src}: {got}");

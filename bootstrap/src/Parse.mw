@@ -274,8 +274,10 @@ fun item_ (c : Cx) (s : Syn) : [(Bool, Out)] =
       one "Data" (\e -> V.concat [ident e (nameOf name), idents e "params" (V.map nameOf params), many e "variants" (each (variant c) variants)])
   | SurfaceRecordDecl name params fields ->
       one "Record" (\e -> V.concat [ident e (nameOf name), idents e "params" (V.map nameOf params), many e "fields" (each (field c) (childrenOf NodeFieldTy fields))])
-  | SurfaceEffectDecl name params ops ->
-      one "Effect" (\e -> V.concat [ident e (nameOf name), idents e "params" (V.map nameOf params), many e "ops" (each (field c) (childrenOf NodeFieldTy ops))])
+  | SurfaceEffectDecl name params body ->
+      (match childOf NodeEffectAlias body with
+       | Just alias -> one "EffectAlias" (\e -> V.concat [ident e (nameOf name), idents e "params" (V.map nameOf params), row c e (must NodeEffRow alias)])
+       | None -> one "Effect" (\e -> V.concat [ident e (nameOf name), idents e "params" (V.map nameOf params), many e "ops" (each (field c) (childrenOf NodeFieldTy (must NodeRecTy body)))]))
   | SurfaceTypeDecl name params t -> one "TypeAlias" (\e -> V.concat [ident e (nameOf name), idents e "params" (V.map nameOf params), ty c e t])
   | SurfaceTraitDecl name params supers items -> one "Trait" (\e -> traitDecl c e name params supers items)
   | SurfaceImplDecl tr tys context items -> one "Impl" (\e -> implDecl c e tr tys context items)

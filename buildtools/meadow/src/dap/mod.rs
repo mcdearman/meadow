@@ -169,12 +169,17 @@ impl Adapter {
             Stop::Pause => ("pause", None),
             Stop::Exception(msg) => ("exception", Some(msg)),
             Stop::Exited(result) => {
+                // `main` gives back `()`, which says nothing; an entry
+                // expression's value is what it was run for.
                 let (line, code) = match result {
+                    Ok(v) if v == "()" => (String::new(), 0),
                     Ok(v) => (format!("=> {v}\n"), 0),
                     Err(e) => (format!("{e}\n"), 1),
                 };
                 let category = if code == 0 { "console" } else { "stderr" };
-                self.event("output", json!({ "category": category, "output": line }));
+                if !line.is_empty() {
+                    self.event("output", json!({ "category": category, "output": line }));
+                }
                 self.event("exited", json!({ "exitCode": code }));
                 self.event("terminated", json!({}));
                 return;

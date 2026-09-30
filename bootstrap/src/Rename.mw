@@ -284,6 +284,7 @@ pass! {
     | RecordDecl { name, params, fields } -> (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in RecordDecl { name = name, params = params, fields = fields })
     | EffectDecl { name, params, ops } -> (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in EffectDecl { name = name, params = params, ops = ops })
     | AliasDecl { name, params, ty } -> (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in AliasDecl { name = name, params = params, ty = ty })
+    | EffectAliasDecl { name, params, row } -> (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in EffectAliasDecl { name = name, params = params, row = row })
     | Bound { tr, tys } -> (let u = mention env (typeOf env (textOf out tr)) (nameMeta out tr) in Bound { tr = tr, ref = hidden out (nameMeta out tr) (typeOf env (textOf out tr)), tys = tys })
     | TraitDecl { name, params, supers, assocs, sigs, later defaults } ->
         (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in

@@ -84,7 +84,7 @@ fun popEither a b = Stm.orElse (\() -> pop a) (\() -> pop b)
 
 -- --- main --------------------------------------------------------------------
 
-def main =
+fun main () =
   let _ = println "== a bank: 4 accounts, 4 threads shuffling money round, 1 auditor" in
   let accounts = V.map (\i -> Stm.newTVarIO (toInt 100)) (V.range 0 4) in
   let movers = V.map (\i -> Thread.spawn (\() -> shuffle accounts i 2000)) (V.range 0 4) in

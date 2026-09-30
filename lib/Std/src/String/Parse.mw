@@ -4,7 +4,7 @@
 --   use Std.String.Parse.Char as C
 --
 --   fun number = P.takeWhile1P "a digit" Std.Char.isDigit
---   def main = P.runParser (P.thenSkip number P.eof) "123"
+--   fun main () = println "${P.runParser (P.thenSkip number P.eof) "123":?}"
 --
 -- A parser reads a **stream** -- a `String`, a `Vector` of tokens, or any type
 -- with an `impl Stream` -- and either produces a value or a `ParseError` saying

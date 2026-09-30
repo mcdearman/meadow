@@ -156,6 +156,19 @@ fn decl(d: &mut ast::LDecl) {
             }
             ty(&mut ad.ty);
         }
+        ast::Decl::EffectAlias(ad) => {
+            unmark(&mut ad.name);
+            for p in &mut ad.params {
+                unmark(p);
+            }
+            for (label, args) in &mut ad.row.labels {
+                unmark(label);
+                args.iter_mut().for_each(ty);
+            }
+            if let Some(tail) = &mut ad.row.tail {
+                unmark(tail);
+            }
+        }
         ast::Decl::Use(u) => {
             for n in &mut u.path {
                 unmark(n);

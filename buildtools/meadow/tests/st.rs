@@ -11,7 +11,7 @@ use common::{cek_main_std, errors_std_with, eval_main_std, schemes_std};
 const ESCAPES: &str = "state from inside a `runSt` escapes it";
 
 fn errors(src: &str) -> String {
-    errors_std_with(src, meadow::Options::debug())
+    errors_std_with(src, meadow::Options::debug().entry("result"))
 }
 
 fn scheme_of(src: &str, name: &str) -> String {
@@ -112,7 +112,7 @@ fn mutation_inside_run_st_leaves_a_pure_type() {
         scheme_of(src, "sumTo"),
         "forall n. (PartialOrd n, Add n) => n -> n"
     );
-    assert_eq!(both(&format!("{src}def main = sumTo 100\n")), "5050");
+    assert_eq!(both(&format!("{src}def result = sumTo 100\n")), "5050");
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn a_callers_callback_keeps_its_own_effect() {
 
 #[test]
 fn run_st_nests_and_an_inner_one_may_use_outer_cells() {
-    let src = "def main = runSt (\\() ->\n\
+    let src = "def result = runSt (\\() ->\n\
                \x20 let outer = stNewRef 1 in\n\
                \x20 let inner = runSt (\\() -> let r = stNewRef 10 in let _ = stSetRef outer (stGetRef outer + 1) in stGetRef r) in\n\
                \x20 stGetRef outer + inner)\n";
@@ -146,14 +146,14 @@ fn run_st_nests_and_an_inner_one_may_use_outer_cells() {
 
 #[test]
 fn a_pure_result_still_generalizes() {
-    let src = "def ident = runSt (\\() -> \\x -> x)\ndef main = (ident 1, ident \"s\")\n";
+    let src = "def ident = runSt (\\() -> \\x -> x)\ndef result = (ident 1, ident \"s\")\n";
     assert_eq!(errors(src), "");
     assert_eq!(both(src), "(1, \"s\")");
 }
 
 #[test]
 fn run_st_as_a_value_is_just_application() {
-    let src = "def main = map runSt [\\() -> 1, \\() -> 2]\n";
+    let src = "def result = map runSt [\\() -> 1, \\() -> 2]\n";
     assert_eq!(errors(src), "");
     assert_eq!(both(src), "[1, 2]");
 }
@@ -171,7 +171,7 @@ fn std_sort_is_pure_now() {
 
 #[test]
 fn arrays_are_written_in_place_and_copied_at_the_edges() {
-    let src = "def main = runSt (\\() ->\n\
+    let src = "def result = runSt (\\() ->\n\
                \x20 let a = stThaw #[1, 2, 3] in\n\
                \x20 let before = stFreeze a in\n\
                \x20 let _ = stSetArray a 0 (stGetArray a 2 * 10) in\n\
@@ -181,7 +181,7 @@ fn arrays_are_written_in_place_and_copied_at_the_edges() {
 
 #[test]
 fn an_index_out_of_bounds_is_an_error_not_a_crash() {
-    let out = both("def main = runSt (\\() -> let a = stNewArray 2 0 in stGetArray a 5)\n");
+    let out = both("def result = runSt (\\() -> let a = stNewArray 2 0 in stGetArray a 5)\n");
     assert!(out.contains("out of bounds"), "{out}");
 }
 
@@ -199,7 +199,7 @@ fn a_parameter_called_under_a_let_keeps_its_own_effect() {
                  in\n\
                  let _ = go 0 in\n\
                  stGetRef r)\n\
-             def main = probe (\\i -> i + 1) 4\n"
+             def result = probe (\\i -> i + 1) 4\n"
         ),
         "5"
     );

@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 /// What `src` evaluates to, required to be the same on every engine -- a macro
 /// is gone by the time anything runs, so all of them must agree.
 fn agreed(src: &str) -> String {
-    let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "compile errors in\n{src}\n{}",
@@ -39,60 +40,60 @@ fn is(src: &str, expected: &str) {
 }
 
 fn errors(src: &str) -> String {
-    common::errors_std_with(src, Options::debug())
+    common::errors_std_with(src, Options::debug().entry("result"))
 }
 
 // --- what the built-ins answer ------------------------------------------------
 
 #[test]
 fn stringify_gives_back_the_tokens_it_was_given() {
-    is(r#"def main = stringify!(1 + f x)"#, r#""1 + f x""#);
+    is(r#"def result = stringify!(1 + f x)"#, r#""1 + f x""#);
 }
 
 #[test]
 fn stringify_normalises_the_spacing_rather_than_remembering_it() {
     // A token tree does not know what whitespace it was written with, so the
     // text is the tokens written back, not the source.
-    is(r#"def main = stringify!( 1   +    2 )"#, r#""1 + 2""#);
+    is(r#"def result = stringify!( 1   +    2 )"#, r#""1 + 2""#);
 }
 
 #[test]
 fn stringify_takes_anything_that_balances_its_brackets() {
     // Not an expression, and never parsed as one.
-    is(r#"def main = stringify!(fun let ->)"#, r#""fun let ->""#);
+    is(r#"def result = stringify!(fun let ->)"#, r#""fun let ->""#);
 }
 
 #[test]
 fn concat_joins_its_literals() {
-    is(r#"def main = concat!("a", "b", "c")"#, r#""abc""#);
-    is(r#"def main = concat!("n = ", 42)"#, r#""n = 42""#);
-    is(r#"def main = concat!('x', 'y')"#, r#""xy""#);
+    is(r#"def result = concat!("a", "b", "c")"#, r#""abc""#);
+    is(r#"def result = concat!("n = ", 42)"#, r#""n = 42""#);
+    is(r#"def result = concat!('x', 'y')"#, r#""xy""#);
 }
 
 #[test]
 fn concat_of_nothing_is_the_empty_string() {
-    is(r#"def main = concat!()"#, r#""""#);
+    is(r#"def result = concat!()"#, r#""""#);
 }
 
 #[test]
 fn line_is_the_line_the_call_is_written_on() {
     // Line 1 is empty -- the literal starts with a newline -- so `main` is on
     // line 2 and the call on line 3.
-    is("\ndef main =\n  line!()\n", "3");
+    is("\ndef result =\n  line!()\n", "3");
 }
 
 #[test]
 fn file_is_the_module_the_call_is_written_in() {
-    is(r#"def main = file!()"#, r#""test""#);
+    is(r#"def result = file!()"#, r#""test""#);
 }
 
 // --- where a call may stand ---------------------------------------------------
 
 #[test]
 fn the_three_brackets_mean_the_same_thing() {
-    let round = agreed(r#"def main = stringify!(a b)"#);
-    let square = agreed(r#"def main = stringify![a b]"#);
-    let curly = agreed(r#"def main = stringify!{a b}"#);
+    let round = agreed(r#"def result = stringify!(a b)"#);
+    let square = agreed(r#"def result = stringify![a b]"#);
+    let curly = agreed(r#"def result = stringify!{a b}"#);
     assert_eq!(round, square);
     assert_eq!(round, curly);
 }
@@ -103,7 +104,7 @@ fn a_call_is_an_expression_like_any_other() {
     // is `twice` applied to the expansion, not to `twice stringify` and a `!`.
     is(
         r#"
-def main =
+def result =
   let twice s = s ++ s in
   twice stringify!(a b)
 "#,
@@ -116,7 +117,7 @@ fn a_call_can_stand_where_a_pattern_does() {
     // `concat!` expands to a string literal, and a string literal is a pattern.
     is(
         r#"
-def main =
+def result =
   match "ab" with
   | concat!("a", "b") -> "matched"
   | _ -> "no"
@@ -127,14 +128,14 @@ def main =
 
 #[test]
 fn a_call_inside_an_interpolation_hole_is_expanded() {
-    is(r#"def main = "n = ${stringify!(a b)}""#, r#""n = a b""#);
+    is(r#"def result = "n = ${stringify!(a b)}""#, r#""n = a b""#);
 }
 
 #[test]
 fn a_call_is_expanded_wherever_an_expression_is_nested() {
     is(
         r#"
-def main =
+def result =
   let go x = if x then stringify!(yes) else stringify!(no) in
   go True
 "#,
@@ -146,26 +147,26 @@ def main =
 
 #[test]
 fn an_unknown_macro_is_reported_by_name() {
-    let e = errors(r#"def main = nope!(1)"#);
+    let e = errors(r#"def result = nope!(1)"#);
     assert!(e.contains("there is no macro `nope!`"), "{e}");
 }
 
 #[test]
 fn a_macro_that_takes_nothing_says_so_when_given_something() {
-    let e = errors(r#"def main = line!(1)"#);
+    let e = errors(r#"def result = line!(1)"#);
     assert!(e.contains("`line!` takes no arguments"), "{e}");
 }
 
 #[test]
 fn concat_of_something_that_is_not_a_literal_is_reported() {
-    let e = errors(r#"def main = concat!("a", f x)"#);
+    let e = errors(r#"def result = concat!("a", f x)"#);
     assert!(e.contains("`concat!` takes literals"), "{e}");
 }
 
 #[test]
 fn a_macro_that_does_not_expand_to_a_declaration_is_reported_there() {
     // `line!()` is an integer, which is an expression and not a declaration.
-    let e = errors("line!()\ndef main = 1");
+    let e = errors("line!()\ndef result = 1");
     assert!(e.contains("`line!` did not expand to declarations"), "{e}");
 }
 
@@ -175,7 +176,7 @@ fn a_failed_call_does_not_hide_the_rest_of_the_module() {
     // it is still reported: one mistake should not swallow the next.
     let e = errors(
         r#"
-def main =
+def result =
   let a = nope!(1) in
   undefinedName
 "#,
@@ -195,7 +196,7 @@ fn a_call_under_a_cfg_that_does_not_hold_is_never_expanded() {
 @cfg(not(debug))
 def unused = nope!(1)
 
-def main = 1
+def result = 1
 "#,
     );
     assert_eq!(e, "", "a stripped declaration was still expanded");
@@ -206,7 +207,7 @@ fn a_macro_call_is_not_confused_with_a_not_equal() {
     // `!=` is one token, so `foo != x` can never be read as a call to `foo!`.
     is(
         r#"
-def main = if 1 != 2 then "differ" else "same"
+def result = if 1 != 2 then "differ" else "same"
 "#,
         r#""differ""#,
     );
@@ -221,7 +222,7 @@ fn a_rule_binds_what_its_matcher_stood_for() {
 macro swap
   | ($a, $b) -> { ($b, $a) }
 
-def main = swap!(1, "two")
+def result = swap!(1, "two")
 "#,
         r#"("two", 1)"#,
     );
@@ -236,7 +237,7 @@ macro pick
   | ($x)     -> { "one" }
   | ($x, $y) -> { "two" }
 
-def main = (pick!(), pick!(1), pick!(1, 2))
+def result = (pick!(), pick!(1), pick!(1, 2))
 "#,
         r#"("none", "one", "two")"#,
     );
@@ -248,7 +249,7 @@ fn a_macro_can_be_called_above_where_it_is_written() {
     // in its whole module -- as every other top-level name is.
     is(
         r#"
-def main = later!(1)
+def result = later!(1)
 
 macro later
   | ($x) -> { $x + 1 }
@@ -264,7 +265,7 @@ fn a_repetition_matches_a_run_and_writes_one_back() {
 macro listOf
   | ($( $x ),*) -> { [ $( $x );* ] }
 
-def main = listOf!(1, 2, 3)
+def result = listOf!(1, 2, 3)
 "#,
         "[1; 2; 3]",
     );
@@ -279,7 +280,7 @@ fn the_template_may_separate_a_run_differently_from_the_matcher() {
 macro sumOf
   | ($( $x ),*) -> { [ $( $x );* ] }
 
-def main = sumOf!(1, 2)
+def result = sumOf!(1, 2)
 "#,
         "[1; 2]",
     );
@@ -296,7 +297,7 @@ fn a_repetition_of_none_is_still_a_match() {
 macro listOf
   | ($( $x ),*) -> { [ $( $x );* ] }
 
-def main = listOf!()
+def result = listOf!()
 "#,
         "[]",
     );
@@ -311,7 +312,7 @@ macro sum
   | ($x)            -> { $x }
   | ($x, $( $r ),+) -> { $x + sum!($( $r ),+) }
 
-def main = sum!(1, 2, 3, 4)
+def result = sum!(1, 2, 3, 4)
 "#,
         "10",
     );
@@ -326,7 +327,7 @@ macro constant
 
 constant!(four, 4)
 
-def main = four
+def result = four
 "#,
         "4",
     );
@@ -343,7 +344,7 @@ macro constant
   | ($name, $value) -> { fun $name = $value }
 
 fun twice x = x + x
-def main = twice four
+def result = twice four
 constant!(four, 4)
 "#,
         "8",
@@ -353,7 +354,7 @@ constant!(four, 4)
 #[test]
 fn a_call_that_is_indented_is_still_an_argument() {
     is(
-        "fun twice x = x ++ x\ndef main =\n  twice\n  stringify!(ab)\n",
+        "fun twice x = x ++ x\ndef result =\n  twice\n  stringify!(ab)\n",
         r#""abab""#,
     );
 }
@@ -372,7 +373,7 @@ fn a_double_dollar_writes_one_dollar_token() {
 macro dollars
   | () -> { $$ }
 
-def main = dollars!()
+def result = dollars!()
 "#,
     );
     assert!(
@@ -388,7 +389,7 @@ fn a_dollar_inside_a_string_a_template_writes_is_text() {
 macro dollars
   | () -> { "$$" }
 
-def main = dollars!()
+def result = dollars!()
 "#,
         r#""$$""#,
     );
@@ -403,7 +404,7 @@ fn an_ident_fragment_takes_only_an_identifier() {
 macro name
   | ($x : ident) -> { stringify!($x) }
 
-def main = name!(hello)
+def result = name!(hello)
 "#,
         r#""hello""#,
     );
@@ -416,7 +417,7 @@ fn a_lit_fragment_takes_only_a_literal() {
 macro twice
   | ($x : lit) -> { ($x, $x) }
 
-def main = twice!(7)
+def result = twice!(7)
 "#,
         "(7, 7)",
     );
@@ -429,7 +430,7 @@ fn a_fragment_that_is_the_wrong_sort_does_not_match() {
 macro name
   | ($x : ident) -> { $x }
 
-def main = name!(1)
+def result = name!(1)
 "#,
     );
     assert!(e.contains("no rule of `name!` matches"), "{e}");
@@ -443,7 +444,7 @@ fn a_bare_metavariable_is_a_token_tree() {
 macro first
   | ($x, $y) -> { $x }
 
-def main = first!((1 + 2), 9)
+def result = first!((1 + 2), 9)
 "#,
         "3",
     );
@@ -460,7 +461,7 @@ fn a_template_cannot_capture_a_name_the_caller_passed_in() {
 macro addTen
   | ($x) -> { let tmp = 10 in tmp + $x }
 
-def main =
+def result =
   let tmp = 100 in
   addTen!(tmp)
 "#,
@@ -475,7 +476,7 @@ fn two_expansions_do_not_share_the_locals_they_introduce() {
 macro twice
   | ($x) -> { let t = $x in t + t }
 
-def main = twice!(1) + twice!(2)
+def result = twice!(1) + twice!(2)
 "#,
         "6",
     );
@@ -492,7 +493,7 @@ fun helper n = n * 3
 macro tripled
   | ($x) -> { helper $x }
 
-def main = tripled!(5)
+def result = tripled!(5)
 "#,
         "15",
     );
@@ -507,7 +508,7 @@ fn a_record_label_a_template_writes_is_still_that_label() {
 macro named
   | ($v) -> { { name = $v } }
 
-def main = (named!("a")).name
+def result = (named!("a")).name
 "#,
         r#""a""#,
     );
@@ -526,7 +527,7 @@ macro getter
 
 getter!()
 
-def main = getName { name = "x", age = 1 }
+def result = getName { name = "x", age = 1 }
 "#,
         r#""x""#,
     );
@@ -541,7 +542,7 @@ fn a_call_that_fits_no_rule_is_reported() {
 macro pair
   | ($a, $b) -> { ($a, $b) }
 
-def main = pair!(1)
+def result = pair!(1)
 "#,
     );
     assert!(e.contains("no rule of `pair!` matches this call"), "{e}");
@@ -554,7 +555,7 @@ fn a_template_naming_something_its_matcher_does_not_bind_is_reported() {
 macro wrong
   | ($a) -> { $b }
 
-def main = wrong!(1)
+def result = wrong!(1)
 "#,
     );
     assert!(
@@ -570,7 +571,7 @@ fn a_fragment_kind_that_does_not_exist_is_reported() {
 macro wrong
   | ($a : ty) -> { $a }
 
-def main = wrong!(1)
+def result = wrong!(1)
 "#,
     );
     assert!(e.contains("is not a fragment kind"), "{e}");
@@ -583,7 +584,7 @@ fn a_repetition_that_does_not_say_how_many_is_reported() {
 macro wrong
   | ($( $a )) -> { 1 }
 
-def main = wrong!(1)
+def result = wrong!(1)
 "#,
     );
     assert!(e.contains("does not say how many"), "{e}");
@@ -596,7 +597,7 @@ fn a_run_written_without_a_repetition_around_it_is_reported() {
 macro wrong
   | ($( $a ),*) -> { $a }
 
-def main = wrong!(1, 2)
+def result = wrong!(1, 2)
 "#,
     );
     assert!(e.contains("stands for a run of things"), "{e}");
@@ -609,7 +610,7 @@ fn one_name_bound_twice_in_a_rule_is_reported() {
 macro wrong
   | ($a, $a) -> { $a }
 
-def main = wrong!(1, 2)
+def result = wrong!(1, 2)
 "#,
     );
     assert!(e.contains("is bound twice"), "{e}");
@@ -625,7 +626,7 @@ macro same
 macro same
   | () -> { 2 }
 
-def main = same!()
+def result = same!()
 "#,
     );
     assert!(e.contains("defined twice"), "{e}");
@@ -638,7 +639,7 @@ fn a_macro_may_not_take_a_built_in_name() {
 macro stringify
   | () -> { 1 }
 
-def main = 1
+def result = 1
 "#,
     );
     assert!(e.contains("is a built-in macro"), "{e}");
@@ -647,7 +648,7 @@ def main = 1
 /// Every diagnostic, labels and all: what a reader sees, rather than only the
 /// headline `errors` gives.
 fn errors_in_full(src: &str) -> String {
-    let (_, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+    let (_, diags) = pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
     diags
         .iter()
         .map(|d| {
@@ -667,7 +668,7 @@ fn an_unknown_macro_says_which_ones_there_are() {
 macro known
   | () -> { 1 }
 
-def main = unknown!()
+def result = unknown!()
 "#,
     );
     assert!(e.contains("there is no macro `unknown!`"), "{e}");
@@ -685,7 +686,7 @@ fn a_repetition_may_be_followed_by_more_of_the_matcher() {
 macro lastOf
   | ($( $a ),* ; $last) -> { ($last, [ $( $a );* ]) }
 
-def main = lastOf!(1, 2, 3 ; 9)
+def result = lastOf!(1, 2, 3 ; 9)
 "#,
         "(9, [1; 2; 3])",
     );
@@ -698,7 +699,7 @@ fn a_repetition_of_none_before_more_of_the_matcher_still_matches() {
 macro lastOf
   | ($( $a ),* ; $last) -> { ($last, [ $( $a );* ]) }
 
-def main = lastOf!( ; 9)
+def result = lastOf!( ; 9)
 "#,
         "(9, [])",
     );
@@ -713,7 +714,7 @@ fn an_expr_fragment_takes_a_whole_expression() {
 macro twice
   | ($e : expr) -> { ($e, $e) }
 
-def main = twice!(1 + 2)
+def result = twice!(1 + 2)
 "#,
         "(3, 3)",
     );
@@ -729,7 +730,7 @@ fn an_expr_fragment_stays_one_thing_where_it_is_written() {
 macro call
   | ($f : expr, $x : expr) -> { $f $x }
 
-def main = call!(show, 1 + 2)
+def result = call!(show, 1 + 2)
 "#,
         r#""3""#,
     );
@@ -742,7 +743,7 @@ fn a_pat_fragment_takes_a_pattern() {
 macro matches
   | ($e : expr, $p : pat) -> { match $e with | $p -> True | _ -> False }
 
-def main = (matches!(Just 1, Just x), matches!(None, Just x))
+def result = (matches!(Just 1, Just x), matches!(None, Just x))
 "#,
         "(True, False)",
     );
@@ -757,7 +758,7 @@ macro alsoDefine
 
 alsoDefine! { def seven = 7 }
 
-def main = seven
+def result = seven
 "#,
         "7",
     );
@@ -770,7 +771,7 @@ fn a_fragment_the_parser_cannot_read_does_not_match() {
 macro twice
   | ($e : expr) -> { ($e, $e) }
 
-def main = twice!(let)
+def result = twice!(let)
 "#,
     );
     assert!(e.contains("no rule of `twice!` matches"), "{e}");
@@ -785,7 +786,7 @@ fn a_fragment_runs_to_the_token_the_matcher_says_follows_it() {
 macro pair
   | ($a : expr, $b : expr) -> { ($a, $b) }
 
-def main = pair!(fst (1, 2), 3)
+def result = pair!(fst (1, 2), 3)
 "#,
         "(1, 3)",
     );
@@ -798,7 +799,7 @@ fn a_run_of_fragments_is_separated_as_the_matcher_says() {
 macro total
   | ($( $e : expr ),*) -> { foldl (\a b -> a + b) 0 [$( $e ),*] }
 
-def main = total!(1 + 1, 2, 3)
+def result = total!(1 + 1, 2, 3)
 "#,
         "7",
     );
@@ -811,7 +812,7 @@ fn a_matcher_that_does_not_say_where_a_fragment_ends_is_reported() {
 macro wrong
   | ($f : expr $x : expr) -> { $f $x }
 
-def main = wrong!(id 1)
+def result = wrong!(id 1)
 "#,
     );
     assert!(e.contains("nothing says where `$f : expr` ends"), "{e}");
@@ -825,7 +826,7 @@ fn a_fragment_followed_by_something_that_could_continue_it_is_reported() {
 macro wrong
   | ($a : expr + $b : expr) -> { $a + $b }
 
-def main = wrong!(1 + 2)
+def result = wrong!(1 + 2)
 "#,
     );
     assert!(e.contains("nothing says where `$a : expr` ends"), "{e}");
@@ -838,7 +839,7 @@ fn a_repeated_fragment_with_nothing_between_is_reported() {
 macro wrong
   | ($( $e : expr )*) -> { [$( $e );*] }
 
-def main = wrong!(1 2)
+def result = wrong!(1 2)
 "#,
     );
     assert!(e.contains("nothing says where `$e : expr` ends"), "{e}");
@@ -851,7 +852,7 @@ fn a_fragment_at_the_end_of_a_matcher_is_ended_by_the_bracket() {
 macro discard
   | ($a : expr, $b : expr) -> { $b }
 
-def main = discard!(1, 2 + 3)
+def result = discard!(1, 2 + 3)
 "#,
         "5",
     );
@@ -874,7 +875,7 @@ fn package(what: &str, manifest: &str, files: &[(&str, &str)]) -> PathBuf {
 
 /// What the package at `dir` evaluates to, or the diagnostics that stopped it.
 fn build(dir: &Path) -> Result<String, Vec<String>> {
-    let out = pipeline::build(dir, Options::debug());
+    let out = pipeline::build(dir, Options::debug().entry("result"));
     if !out.diagnostics.is_empty() {
         return Err(out.diagnostics.iter().map(|d| d.msg.clone()).collect());
     }
@@ -896,7 +897,7 @@ fn a_macro_is_reached_from_another_module_of_its_package() {
             ),
             (
                 "Lib.mw",
-                "mod Helpers\n\nuse Demo.Helpers (twice!)\n\ndef main = twice!(1 + 1)\n",
+                "mod Helpers\n\nuse Demo.Helpers (twice!)\n\ndef result = twice!(1 + 1)\n",
             ),
         ],
     );
@@ -915,7 +916,7 @@ fn a_macro_reached_through_an_alias_is_written_with_it() {
             ),
             (
                 "Lib.mw",
-                "mod Helpers\n\nuse Demo.Helpers as H\n\ndef main = H.twice!(3)\n",
+                "mod Helpers\n\nuse Demo.Helpers as H\n\ndef result = H.twice!(3)\n",
             ),
         ],
     );
@@ -934,7 +935,7 @@ fn a_macro_that_is_not_public_stays_in_its_module() {
             ),
             (
                 "Lib.mw",
-                "mod Helpers\n\nuse Demo.Helpers (hidden!)\n\ndef main = hidden!()\n",
+                "mod Helpers\n\nuse Demo.Helpers (hidden!)\n\ndef result = hidden!()\n",
             ),
         ],
     );
@@ -967,7 +968,7 @@ fn a_macro_crosses_into_a_package_that_depends_on_it() {
         ),
         &[(
             "Lib.mw",
-            "use Demo.Helpers (twice!)\n\ndef main = twice!(2)\n",
+            "use Demo.Helpers (twice!)\n\ndef result = twice!(2)\n",
         )],
     );
     assert_eq!(build(&app).expect("it builds"), "(2, 2)");
@@ -995,7 +996,7 @@ fn pkg_is_the_package_the_macro_was_written_in() {
         ),
         &[(
             "Lib.mw",
-            "use Demo.Helpers (whereFrom!)\n\ndef main = whereFrom!()\n",
+            "use Demo.Helpers (whereFrom!)\n\ndef result = whereFrom!()\n",
         )],
     );
     assert_eq!(build(&app).expect("it builds"), r#""Demo""#);
@@ -1008,7 +1009,7 @@ fn a_metavariable_may_not_be_called_pkg() {
 macro wrong
   | ($pkg : expr) -> { $pkg }
 
-def main = wrong!(1)
+def result = wrong!(1)
 "#,
     );
     assert!(e.contains("is the package a macro was written in"), "{e}");
@@ -1028,7 +1029,7 @@ fn a_use_that_selects_a_macro_selects_nothing_else() {
             ),
             (
                 "Lib.mw",
-                "mod Helpers\n\nuse Demo.Helpers (twice!)\n\ndef main = helper (twice!(1))\n",
+                "mod Helpers\n\nuse Demo.Helpers (twice!)\n\ndef result = helper (twice!(1))\n",
             ),
         ],
     );
@@ -1060,7 +1061,7 @@ fn a_template_reaches_its_own_packages_helpers_through_pkg() {
         ),
         &[(
             "Lib.mw",
-            "use Demo.Helpers (withShout!)\n\nwithShout! {\n  def greeting = shout \"hello\"\n}\n\ndef main = greeting\n",
+            "use Demo.Helpers (withShout!)\n\nwithShout! {\n  def greeting = shout \"hello\"\n}\n\ndef result = greeting\n",
         )],
     );
     assert_eq!(build(&app).expect("it builds"), r#""hello!""#);
@@ -1078,7 +1079,7 @@ fn an_error_in_what_a_macro_wrote_names_the_macro() {
 macro addOne
   | ($e : expr) -> { $e + notANumber }
 
-def main = addOne!(1)
+def result = addOne!(1)
 "#,
     );
     assert!(e.contains("`addOne!` wrote this"), "{e}");
@@ -1093,7 +1094,7 @@ fn an_error_in_an_argument_is_the_callers_own() {
 macro twice
   | ($e : expr) -> { ($e, $e) }
 
-def main = twice!(notANumber)
+def result = twice!(notANumber)
 "#,
     );
     assert!(e.contains("notANumber"), "{e}");
@@ -1110,7 +1111,7 @@ macro inner
 macro outer
   | ($e : expr) -> { inner!($e) }
 
-def main = outer!(1)
+def result = outer!(1)
 "#,
     );
     assert!(e.contains("`inner!` wrote this"), "{e}");
@@ -1149,7 +1150,7 @@ fn a_procedural_macro_is_a_function_run_while_its_caller_is_compiled() {
     let app = with_macro(
         "proc",
         SHOUT,
-        "use Maker (shout!)\n\ndef main = shout!(hello there)\n",
+        "use Maker (shout!)\n\ndef result = shout!(hello there)\n",
     );
     assert_eq!(build(&app).expect("it builds"), r#""hello there!""#);
 }
@@ -1168,7 +1169,7 @@ use Std.Macro.Loc.*
 @macro
 @pub fun sum ts = [Group Paren [Num 40 Nowhere, Punct "+" Nowhere, Num 2 Nowhere] Nowhere, Punct "*" Nowhere, Num 1 Nowhere]
 "#,
-        "use Maker (sum!)\n\ndef main = sum!()\n",
+        "use Maker (sum!)\n\ndef result = sum!()\n",
     );
     assert_eq!(build(&app).expect("it builds"), "42");
 }
@@ -1182,7 +1183,7 @@ fn an_interpolated_string_comes_back_through_a_macro_whole() {
     let app = with_macro(
         "interp",
         "use Std.Macro (TokenTree)\n\n@macro\n@pub fun same (ts : [TokenTree]) : [TokenTree] = ts\n",
-        "use Maker (same!)\nuse Std.String as S\n\ndef main = same!(let x = \"a\" in \"outer ${S.join \", \" [x, \"b ${x}\"]} end\")\n",
+        "use Maker (same!)\nuse Std.String as S\n\ndef result = same!(let x = \"a\" in \"outer ${S.join \", \" [x, \"b ${x}\"]} end\")\n",
     );
     assert_eq!(build(&app).expect("it builds"), r#""outer a, b a end""#);
 }
@@ -1203,7 +1204,7 @@ use Std.Fs (readToString)
   | Ok s -> [Code "1"]
   | Err e -> [Code "2"]
 "#,
-        "use Maker (peek!)\n\ndef main = peek!()\n",
+        "use Maker (peek!)\n\ndef result = peek!()\n",
     );
     let errs = build(&app).expect_err("it does not build");
     assert!(
@@ -1226,7 +1227,7 @@ fn a_procedural_macro_may_not_use_the_console() {
             &format!(
                 "use Std.Macro.TokenTree.*\nuse Std.Maybe.Maybe.*\n\n@macro\n@pub fun noisy ts =\n  {body}\n"
             ),
-            "use Maker (noisy!)\n\ndef main = noisy!()\n",
+            "use Maker (noisy!)\n\ndef result = noisy!()\n",
         );
         let errs = build(&app).expect_err("it does not build");
         assert!(
@@ -1248,7 +1249,7 @@ use Std.Macro.TokenTree.*
 
 @pub fun shout ts = [Code "\"${spaced ts}!\""]
 "#,
-        "use Maker (shout!)\n\ndef main = shout!(hi)\n",
+        "use Maker (shout!)\n\ndef result = shout!(hi)\n",
     );
     let errs = build(&app).expect_err("it does not build");
     assert!(
@@ -1287,7 +1288,7 @@ fn a_macro_of_ones_own_package_cannot_be_run_there() {
             ),
             (
                 "Lib.mw",
-                "mod Mac\n\nuse Maker.Mac (one!)\n\ndef main = one!()\n",
+                "mod Mac\n\nuse Maker.Mac (one!)\n\ndef result = one!()\n",
             ),
         ],
     );
@@ -1306,8 +1307,8 @@ fn a_macro_that_does_not_stop_runs_out_of_the_budget_it_is_given() {
     // this is it, at the size a test can wait for.
     let (program, diags) = pipeline::compile_str_with_std(
         "test",
-        "fun spin n = spin (n + 1)\n\ndef main = spin 0\n",
-        Options::debug(),
+        "fun spin n = spin (n + 1)\n\ndef result = spin 0\n",
+        Options::debug().entry("result"),
     );
     assert!(diags.is_empty(), "{diags:?}");
     let entry = program.entry.expect("an entry point");
@@ -1347,7 +1348,7 @@ fun isUpperWord t =
 
 fun arm c = "| ${text c} -> \"${text c}\" "
 "#,
-        "use Maker (naming!)\n\n@derive(Naming)\ndata Colour = Red | Green | Blue\n\nuse Colour.*\n\ndef main = nameOf Green\n",
+        "use Maker (naming!)\n\n@derive(Naming)\ndata Colour = Red | Green | Blue\n\nuse Colour.*\n\ndef result = nameOf Green\n",
     );
     assert_eq!(build(&app).expect("it builds"), r#""Green""#);
 }
@@ -1366,7 +1367,7 @@ use Std.Macro.Loc.*
 @macro
 @pub fun echo ts = [Code "def given =", Str (spaced ts) Nowhere]
 "#,
-        "use Maker (echo!)\n\n@derive(Echo)\ndata Token = @token(\"+\") Plus | @regex(\"[0-9]+\") Number\n\ndef main = given\n",
+        "use Maker (echo!)\n\n@derive(Echo)\ndata Token = @token(\"+\") Plus | @regex(\"[0-9]+\") Number\n\ndef result = given\n",
     );
     let given = build(&app).expect("it builds");
     assert!(given.contains("@ token (\\\"+\\\") Plus"), "{given}");
@@ -1379,7 +1380,7 @@ fn a_derive_that_names_nothing_is_reported() {
     let app = with_macro(
         "derive-missing",
         SHOUT,
-        "use Maker (shout!)\n\n@derive(Nothing)\ndata Colour = Red\n\ndef main = 1\n",
+        "use Maker (shout!)\n\n@derive(Nothing)\ndata Colour = Red\n\ndef result = 1\n",
     );
     let errs = build(&app).expect_err("it does not build");
     assert!(
@@ -1399,9 +1400,9 @@ fn a_trait_with_defaults_still_needs_a_macro_to_derive() {
 @derive(Greet)
 data Who = World
 
-def main = 1
+def result = 1
 "#;
-    let errs = common::errors_std_with(src, meadow::Options::debug());
+    let errs = common::errors_std_with(src, meadow::Options::debug().entry("result"));
     assert!(
         errs.contains("there is no macro to derive `Greet` with"),
         "{errs}"
@@ -1419,7 +1420,7 @@ record Pt = { name : String, at : (Int, Int) }
 @derive(Debug, Display)
 data Pair a = Pair a a
 
-def main =
+def result =
   ( "${Shape.Rect { w = 2, h = 3 }} ${Shape.Dot:?} ${Shape.Circle 1.5:?}"
   , "${Pt { name = "o", at = (1, 2) }:?}"
   , "${Pair "a" "b"} ${Pair "a" "b":?}"
@@ -1439,7 +1440,7 @@ fn an_enumeration_compares_by_where_each_constructor_is() {
     let src = r#"@derive(PartialEq, PartialOrd)
 data Kind = Let | In | Fun | Arrow
 
-def main =
+def result =
   ( Kind.Let == Kind.Let, Kind.Let == Kind.Fun, Kind.Arrow != Kind.In
   , Kind.Let < Kind.Arrow, Kind.Fun > Kind.In, Kind.In <= Kind.In
   )
@@ -1453,8 +1454,8 @@ def main =
 #[test]
 fn a_derived_impl_asks_for_its_parameters_traits() {
     // `Pair a` is `Debug` when `a` is: a function is not.
-    let src = "@derive(Debug)\ndata Pair a = Pair a a\n\ndef main = \"${Pair (\\x -> x) (\\x -> x):?}\"\n";
-    let errs = common::errors_std_with(src, meadow::Options::debug());
+    let src = "@derive(Debug)\ndata Pair a = Pair a a\n\ndef result = \"${Pair (\\x -> x) (\\x -> x):?}\"\n";
+    let errs = common::errors_std_with(src, meadow::Options::debug().entry("result"));
     assert!(errs.contains("does not implement `Debug`"), "{errs}");
 }
 
@@ -1462,7 +1463,7 @@ fn a_derived_impl_asks_for_its_parameters_traits() {
 
 /// Every diagnostic of the app at `dir`, with the text its label is on.
 fn located(dir: &Path, caller: &str) -> Vec<(String, String)> {
-    pipeline::build(dir, Options::debug())
+    pipeline::build(dir, Options::debug().entry("result"))
         .diagnostics
         .iter()
         .map(|d| {
@@ -1474,7 +1475,7 @@ fn located(dir: &Path, caller: &str) -> Vec<(String, String)> {
 
 #[test]
 fn a_macro_can_say_which_token_was_wrong() {
-    let caller = "use Maker (strict!)\n\ndef main = strict!(a b c)\n";
+    let caller = "use Maker (strict!)\n\ndef result = strict!(a b c)\n";
     let app = with_macro(
         "fail-at",
         r#"
@@ -1498,7 +1499,7 @@ use Std.Collections.Vector as V
 fn tokens_passed_through_keep_where_they_were_written() {
     // The macro hands back what it was given; the type error in it is the
     // caller's, on the caller's own tokens, and not on the whole call.
-    let caller = "use Maker (same!)\n\ndef main = same!(1 + \"x\")\n";
+    let caller = "use Maker (same!)\n\ndef result = same!(1 + \"x\")\n";
     let app = with_macro(
         "pass-through",
         "use Std.Macro (TokenTree)\n\n@macro\n@pub fun same (ts : [TokenTree]) : [TokenTree] = ts\n",
@@ -1514,7 +1515,7 @@ fn tokens_passed_through_keep_where_they_were_written() {
 
 #[test]
 fn a_parse_of_the_argument_fails_at_the_token_it_stopped_on() {
-    let caller = "use Maker (pair!)\n\ndef main = pair!(first (second third))\n";
+    let caller = "use Maker (pair!)\n\ndef result = pair!(first (second third))\n";
     let app = with_macro(
         "parse-tokens",
         r#"
@@ -1552,14 +1553,14 @@ use Std.Macro (TokenTree, Delim, Loc, ToTokens, quoted)
 @macro
 @pub fun dollars (ts : [TokenTree]) : [TokenTree] = quote! { $$ }
 "#,
-        "use Maker (twice!)\n\ndef main = twice!(20 + 1)\n",
+        "use Maker (twice!)\n\ndef result = twice!(20 + 1)\n",
     );
     assert_eq!(build(&app).expect("it builds"), "(21, 21)");
 }
 
 #[test]
 fn a_quoted_splice_keeps_where_the_caller_wrote_it() {
-    let caller = "use Maker (twice!)\n\ndef main = twice!(1 + \"x\")\n";
+    let caller = "use Maker (twice!)\n\ndef result = twice!(1 + \"x\")\n";
     let app = with_macro(
         "quote-spans",
         r#"
@@ -1590,7 +1591,7 @@ use Std.Macro (TokenTree, Delim, Loc, ToTokens, quoted)
 @macro
 @pub fun twice ts = quote! { ($ts, $ts) }
 "#,
-        "use Maker (twice!)\n\ndef main = twice!(1)\n",
+        "use Maker (twice!)\n\ndef result = twice!(1)\n",
     );
     let errs = build(&app).expect_err("it does not build");
     assert!(
@@ -1612,7 +1613,7 @@ macro constant
 data Shape = Square Int | Circle Int
 constant!(four, 4)
 
-def main = four
+def result = four
 "#,
         "4",
     );
@@ -1626,7 +1627,7 @@ macro broken
   | () -> { fun = 1 }
 
 broken!()
-def main = 1
+def result = 1
 "#,
     );
     assert!(
@@ -1650,7 +1651,7 @@ fn an_expression_macro_that_never_stops_is_an_error() {
 macro forever
   | ($x) -> { forever!($x) + 1 }
 
-def main = forever!(1)
+def result = forever!(1)
 "#,
     );
     assert!(e.contains(TOO_DEEP), "{e}");
@@ -1666,7 +1667,7 @@ macro again
 
 again!(x)
 
-def main = 0
+def result = 0
 "#,
     );
     assert!(e.contains(TOO_DEEP), "{e}");
@@ -1679,7 +1680,7 @@ fn a_pattern_macro_that_never_stops_is_an_error() {
 macro pat
   | ($x) -> { pat!($x) }
 
-def main = match 1 with | pat!(y) -> y | _ -> 0
+def result = match 1 with | pat!(y) -> y | _ -> 0
 "#,
     );
     assert!(e.contains(TOO_DEEP), "{e}");
@@ -1695,7 +1696,7 @@ fn a_macro_that_branches_forever_stops_after_one_report() {
 macro tree
   | ($x) -> { (tree!($x), tree!($x)) }
 
-def main = tree!(1)
+def result = tree!(1)
 "#,
     );
     assert!(e.contains(TOO_DEEP), "{e}");
@@ -1719,7 +1720,7 @@ macro sum
   | ($x)            -> {{ $x }}
   | ($x, $( $r ),+) -> {{ $x + sum!($( $r ),+) }}
 
-def main = sum!({})
+def result = sum!({})
 "#,
             args.join(", ")
         ),
@@ -1737,7 +1738,7 @@ macro sum
   | ($x)            -> {{ $x }}
   | ($x, $( $r ),+) -> {{ $x + sum!($( $r ),+) }}
 
-def main = sum!({})
+def result = sum!({})
 "#,
         args.join(", ")
     ));
@@ -1756,7 +1757,7 @@ const SAME: &str =
 /// What each diagnostic's label points at in the caller's `Lib.mw`.
 fn pointed_at(app: &Path) -> Vec<(String, String)> {
     let src = std::fs::read_to_string(app.join("src").join("Lib.mw")).unwrap();
-    let out = pipeline::build(app, Options::debug());
+    let out = pipeline::build(app, Options::debug().entry("result"));
     out.diagnostics
         .iter()
         .map(|d| {
@@ -1775,12 +1776,12 @@ fn two_calls_written_alike_are_reported_where_each_is() {
     let caller = "use Maker (same!)\n\n\
                   def a = same!(nope1)\n\
                   def b = same!(nope1)\n\
-                  def main = 0\n";
+                  def result = 0\n";
     let app = with_macro("same-twice", SAME, caller);
     let got = pointed_at(&app);
     assert_eq!(got.len(), 2, "one error per call: {got:?}");
     let src = std::fs::read_to_string(app.join("src").join("Lib.mw")).unwrap();
-    let out = pipeline::build(&app, Options::debug());
+    let out = pipeline::build(&app, Options::debug().entry("result"));
     let mut starts: Vec<u32> = out.diagnostics.iter().map(|d| d.label.1.start).collect();
     starts.sort();
     let first = src.find("same!(nope1)").unwrap() as u32;
@@ -1798,13 +1799,13 @@ fn a_call_after_a_longer_one_is_not_given_its_positions() {
     let caller = "use Maker (same!)\n\n\
                   def a = let padding = 1 in same!(nope2)\n\
                   def b = same!(nope2)\n\
-                  def main = 0\n";
+                  def result = 0\n";
     let app = with_macro("same-shifted", SAME, caller);
     let got = pointed_at(&app);
     for (msg, text) in &got {
         assert_eq!(text, "nope2", "{msg} points at {text:?}");
     }
-    let out = pipeline::build(&app, Options::debug());
+    let out = pipeline::build(&app, Options::debug().entry("result"));
     let spans: Vec<_> = out.diagnostics.iter().map(|d| d.label.1).collect();
     assert_eq!(spans.len(), 2, "{got:?}");
     assert_ne!(spans[0], spans[1], "each at its own call: {spans:?}");
@@ -1816,7 +1817,7 @@ fn a_call_that_answers_the_same_is_still_expanded_right_each_time() {
     let caller = "use Maker (same!)\n\n\
                   def a = same!(1 + 1)\n\
                   def b = same!(1 + 1)\n\
-                  def main = a + b\n";
+                  def result = a + b\n";
     let app = with_macro("same-fine", SAME, caller);
     assert_eq!(build(&app).expect("it builds"), "4");
 }

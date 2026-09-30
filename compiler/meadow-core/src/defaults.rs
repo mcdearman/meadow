@@ -66,7 +66,7 @@ pub fn defs(defs: &mut [Def], imported: &HashMap<Var, Vec<VarKind>>) {
             kinds: &kinds,
             local: &local,
         };
-        // The definition's own type can hold one too -- `def main = compact
+        // The definition's own type can hold one too -- `def result = compact
         // #[stNewArray 2 0]` has a state thread nothing names -- and has to be
         // defaulted the way its body is, or the two disagree.
         if fix.unsolved(&d.poly.ty) {

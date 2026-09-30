@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 /// The CEK machine's answer, required of the VM and its JIT at every level
 /// and of a release build, where dictionaries meet the specializer.
 fn agreed(src: &str) -> String {
-    let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "compile errors in\n{src}\n{}",
@@ -28,7 +29,8 @@ fn agreed(src: &str) -> String {
             assert_eq!(got, cek, "{engine:?} at {} on\n{src}", opt.name());
         }
     }
-    let (release, diags) = pipeline::compile_str_with_std("test", src, Options::release());
+    let (release, diags) =
+        pipeline::compile_str_with_std("test", src, Options::release().entry("result"));
     assert!(
         diags.is_empty(),
         "release: {:?}",
@@ -45,7 +47,7 @@ fn is(src: &str, expected: &str) {
 }
 
 fn errors(src: &str) -> String {
-    common::errors_std_with(src, Options::debug())
+    common::errors_std_with(src, Options::debug().entry("result"))
 }
 
 const DESCRIBE: &str = "trait Describe a {\n\
@@ -71,14 +73,14 @@ const DESCRIBE: &str = "trait Describe a {\n\
 fn a_method_is_the_impl_of_the_type_it_meets() {
     is(
         &format!(
-            "{DESCRIBE}def main = (describe 3, describe True, describe [1; 2], describe (1, [True;]))\n"
+            "{DESCRIBE}def result = (describe 3, describe True, describe [1; 2], describe (1, [True;]))\n"
         ),
         r#"("int 3", "yes", "int 1,int 2,.", "int 1+yes,.")"#,
     );
     // A default is what an `impl` that leaves the method out gets, and one
     // that defines it does not.
     is(
-        &format!("{DESCRIBE}def main = (twice 4, twice False, twice [7;])\n"),
+        &format!("{DESCRIBE}def result = (twice 4, twice False, twice [7;])\n"),
         r#"("int 4int 4", "bool!", "int 7,.int 7,.")"#,
     );
 }
@@ -97,7 +99,7 @@ fn a_known_dictionary_is_used_under_a_type_nobody_knows() {
              fun passing (tag : b) (n : Int) : String = tagged tag n\n\
              fun counted (r : StRef s Int) (n : Int) : String ! {{ St s | e }} =\n\
              \x20 let _ = St.modifyRef r (\\c -> c + 1) in tagged r (n, [True;])\n\
-             def main = (passing \"s\" 3, passing False 4, runSt (\\() -> let r = St.newRef 0 in (counted r 5, St.getRef r)))\n"
+             def result = (passing \"s\" 3, passing False 4, runSt (\\() -> let r = St.newRef 0 in (counted r 5, St.getRef r)))\n"
         ),
         r#"("int 3", "int 4", ("int 5+yes,.", 1))"#,
     );
@@ -122,7 +124,7 @@ fn a_default_is_written_under_the_signature_it_belongs_to() {
         \x20 fun name b = if b then \"yes\" else \"no\"\n\
         \x20 fun greet b = \"HI \" ++ name b\n\
         }\n\
-        def main = (greet 1, greet True)\n",
+        def result = (greet 1, greet True)\n",
         r#"("hello, 1", "HI yes")"#,
     );
     // Several clauses, as any other definition may have.
@@ -134,7 +136,7 @@ fn a_default_is_written_under_the_signature_it_belongs_to() {
         \x20   | tag x False = show1 x\n\
         }\n\
         impl Tag Int { fun show1 n = show n }\n\
-        def main = (tag 1 True, tag 2 False)\n",
+        def result = (tag 1 True, tag 2 False)\n",
         r#"("!1", "2")"#,
     );
 }
@@ -147,7 +149,7 @@ fn a_method_without_a_default_is_still_a_signature_of_its_own() {
         "trait Size a { fun size : a -> Int }\n\
          impl Size [b;] where Size b { fun size xs = match xs with | [;] -> 0 | _ :: r -> 1 + size r }\n\
          impl Size Int { fun size n = n }\n\
-         def main = size [1; 2; 3]\n",
+         def result = size [1; 2; 3]\n",
         "3",
     );
 }
@@ -160,7 +162,7 @@ fn a_method_named_twice_in_a_trait_is_reported() {
         \x20 fun greet x = \"hi\"\n\
         }\n\
         impl Greet Int {}\n\
-        def main = greet 1\n",
+        def result = greet 1\n",
     );
     assert!(
         out.contains(
@@ -176,7 +178,7 @@ fn a_method_named_twice_in_a_trait_is_reported() {
         \x20 fun (~=) : a -> a -> Bool\n\
         \x20 fun (~=) x y = False\n\
         }\n\
-        def main = 1\n",
+        def result = 1\n",
     );
     assert!(out.contains("`(~=)` is named twice in this trait"), "{out}");
     // A clause that names another method is caught against the signature.
@@ -186,7 +188,7 @@ fn a_method_named_twice_in_a_trait_is_reported() {
         \x20 fun right : a -> Int\n\
         \x20   | left x = 0\n\
         }\n\
-        def main = 1\n",
+        def result = 1\n",
     );
     assert!(
         out.contains("this equation defines `left`, but the signature above it is for `right`"),
@@ -217,7 +219,7 @@ fn a_function_asks_for_what_its_body_needs() {
                | loud x = twice x ++ \"!\"\n\
              fun nested : Describe a => a -> String\n\
                | nested x = describe [(x, x); (x, x)]\n\
-             def main = (both True [False;], loud [True;], nested 1)\n"
+             def result = (both True [False;], loud [True;], nested 1)\n"
         ),
         r#"("yes & no,.", "yes,.yes,.!", "int 1+int 1,int 1+int 1,.")"#,
     );
@@ -231,7 +233,7 @@ fn mutual_recursion_passes_its_dictionaries_along() {
             "{DESCRIBE}fun evens n x = if n == 0 then describe x else odds (n - 1) x\n\
              fun odds n x = if n == 0 then \"odd \" ++ describe x else evens (n - 1) x\n\
              fun count n x = if n == 0 then describe x else count (n - 1) x\n\
-             def main = (evens 4 True, odds 3 [1;], evens 3 2, count 5 (True, 1))\n"
+             def result = (evens 4 True, odds 3 [1;], evens 3 2, count 5 (True, 1))\n"
         ),
         r#"("yes", "int 1,.", "odd int 2", "yes+int 1")"#,
     );
@@ -257,14 +259,14 @@ fn a_trait_can_require_another() {
         }\n\
         fun atMost : Ranked a => a -> a -> Bool\n\
           | atMost x y = before x y or same x y\n\
-        def main = (atMost 1 1, atMost 2 1, atMost [1; 2] [1; 3], atMost [2;] [1; 9])\n";
+        def result = (atMost 1 1, atMost 2 1, atMost [1; 2] [1; 3], atMost [2;] [1; 9])\n";
     is(src, "(True, False, True, False)");
     // An `impl` of the one needs an `impl` of the other.
     let out = errors(
         "trait Same a { fun same : a -> a -> Bool }\n\
          trait Ranked a <: Same a { fun before : a -> a -> Bool }\n\
          impl Ranked Int { fun before x y = x < y }\n\
-         def main = before 1 2\n",
+         def result = before 1 2\n",
     );
     assert!(out.contains("`Int` does not implement `Same`"), "{out}");
 }
@@ -299,12 +301,12 @@ fn an_associated_type_is_the_impls_to_choose() {
           | bag xs = fromList xs\n\
         fun bits : [Bool;] -> Bits\n\
           | bits xs = fromList xs\n\
-        def main = (toList (bag [\"a\"; \"b\"]), (bits [True; False; True]).word, toList (bits [False; True]))\n";
+        def result = (toList (bag [\"a\"; \"b\"]), (bits [True; False; True]).word, toList (bits [False; True]))\n";
     is(src, r#"(["a"; "b"], 13, [False; True])"#);
     // What it is comes with the `impl`: a `Bits` holds `Bool`s and nothing else.
     let out = errors(&format!(
         "{}def wrong = insert 3 (bits [True;])\n",
-        src.replace("def main", "def unused")
+        src.replace("def result", "def unused")
     ));
     assert!(out.contains("type mismatch"), "{out}");
 }
@@ -327,7 +329,7 @@ fn a_method_may_be_general_in_its_effects() {
          \x20 let sum = St.newRef 0 in\n\
          \x20 let _ = each (\\x -> St.modifyRef sum (\\s -> s + x)) xs in\n\
          \x20 St.getRef sum)\n\
-         def main = total [1; 2; 3; 4]\n",
+         def result = total [1; 2; 3; 4]\n",
         "10",
     );
 }
@@ -335,48 +337,49 @@ fn a_method_may_be_general_in_its_effects() {
 #[test]
 fn what_is_wrong_is_said() {
     let with = |rest: &str| errors(&format!("{DESCRIBE}{rest}"));
-    let out = with("def main = describe \"x\"\n");
+    let out = with("def result = describe \"x\"\n");
     assert!(
         out.contains("`String` does not implement `Describe`"),
         "{out}"
     );
-    let out = with("fun f : a -> String\n  | f x = describe x\ndef main = f 1\n");
+    let out = with("fun f : a -> String\n  | f x = describe x\ndef result = f 1\n");
     assert!(
         out.contains("this needs `Describe a`, which the signature does not ask for"),
         "{out}"
     );
-    let out = with("impl Describe Int { fun describe n = \"again\" }\ndef main = 1\n");
+    let out = with("impl Describe Int { fun describe n = \"again\" }\ndef result = 1\n");
     assert!(
         out.contains("`Describe` is already implemented for `Int`"),
         "{out}"
     );
-    let out = with("impl Describe String { }\ndef main = 1\n");
+    let out = with("impl Describe String { }\ndef result = 1\n");
     assert!(
         out.contains("this `impl Describe` is missing `describe`"),
         "{out}"
     );
-    let out = with("impl Describe String { fun describe s = s  fun other s = s }\ndef main = 1\n");
+    let out =
+        with("impl Describe String { fun describe s = s  fun other s = s }\ndef result = 1\n");
     assert!(
         out.contains("`other` is not a method of `Describe`"),
         "{out}"
     );
-    let out = with("impl Describe String { fun describe s = 5 }\ndef main = 1\n");
+    let out = with("impl Describe String { fun describe s = 5 }\ndef result = 1\n");
     assert!(out.contains("type mismatch"), "{out}");
-    let out = with("impl Missing Int { }\ndef main = 1\n");
+    let out = with("impl Missing Int { }\ndef result = 1\n");
     assert!(out.contains("unknown trait `Missing`"), "{out}");
-    let out = with("impl Maybe Int { }\ndef main = 1\n");
+    let out = with("impl Maybe Int { }\ndef result = 1\n");
     assert!(out.contains("`Maybe` is a type, not a trait"), "{out}");
-    let out = with("impl Describe (Maybe Int) { fun describe m = \"m\" }\ndef main = 1\n");
+    let out = with("impl Describe (Maybe Int) { fun describe m = \"m\" }\ndef result = 1\n");
     assert!(
         out.contains("a type constructor applied to distinct variables"),
         "{out}"
     );
-    let out = errors("trait Conv a { fun conv : a -> b -> b }\ndef main = 1\n");
+    let out = errors("trait Conv a { fun conv : a -> b -> b }\ndef result = 1\n");
     assert!(out.contains("has a type variable of its own"), "{out}");
     // Nothing says which `impl`: the value is made and thrown away.
     let out = errors(
         "trait Make a { fun make : () -> a }\nimpl Make Int { fun make u = 1 }\n\
-         def main = let _ = make () in 0\n",
+         def result = let _ = make () in 0\n",
     );
     assert!(
         out.contains("cannot tell which `impl Make` is meant"),
@@ -405,7 +408,7 @@ fn a_trait_is_used_across_modules() {
         (
             "",
             "use Shape (Square, area)\nuse Round (Circle, double)\n\
-             def main = (area (Square { side = 3 }), double (Circle { r = 2 }), double (Square { side = 1 }))\n",
+             def result = (area (Square { side = 3 }), double (Circle { r = 2 }), double (Square { side = 1 }))\n",
         ),
     ]);
     assert_eq!(out, "(9, 24, 2)");
@@ -454,9 +457,12 @@ fn a_trait_crosses_the_package() {
         "use Pretty (Pretty, pretty, framed, shout)\n\
          record Point = { x : Int, y : Int }\n\
          impl Pretty Point { fun pretty p = pretty p.x ++ \"/\" ++ pretty p.y }\n\
-         def main = (pretty [1; 2], framed (Point { x = 1, y = 2 }), shout [Point { x = 3, y = 4 };])\n",
+         def result = (pretty [1; 2], framed (Point { x = 1, y = 2 }), shout [Point { x = 3, y = 4 };])\n",
     );
-    for opts in [Options::debug(), Options::release()] {
+    for opts in [
+        Options::debug().entry("result"),
+        Options::release().entry("result"),
+    ] {
         let out = pipeline::build(&root.join("App"), opts);
         assert!(
             out.diagnostics.is_empty(),
@@ -520,14 +526,15 @@ fn a_trait_can_be_of_several_types() {
           | pairOf n = both n\n\
         fun flag : Bool -> Int\n\
           | flag b = convert b\n\
-        def main = (strings [1; 2], pairOf 0, flag True, scale 3 (V2 { x = 1, y = 2 }),\n\
+        def result = (strings [1; 2], pairOf 0, flag True, scale 3 (V2 { x = 1, y = 2 }),\n\
         \x20 scale True (V2 { x = 1, y = 2 }), viaRound 1 True, viaRound 5 True)\n";
     is(
         src,
         r##"(["#1"; "#2"], ("#0", False), 1, V2(3, 6), 3, True, False)"##,
     );
-    let out =
-        errors("trait Convert a b { fun convert : a -> b }\nimpl Convert Int { }\ndef main = 1\n");
+    let out = errors(
+        "trait Convert a b { fun convert : a -> b }\nimpl Convert Int { }\ndef result = 1\n",
+    );
     assert!(
         out.contains("`Convert` is a trait of 2 types, given 1"),
         "{out}"
@@ -535,7 +542,7 @@ fn a_trait_can_be_of_several_types() {
     let out = errors(
         "trait Convert a b { fun convert : a -> b }\n\
          impl Convert Int String { fun convert n = show n }\n\
-         fun f : Int -> Bool\n  | f n = convert n\ndef main = f 1\n",
+         fun f : Int -> Bool\n  | f n = convert n\ndef result = f 1\n",
     );
     assert!(
         out.contains("`Int Bool` does not implement `Convert`"),
@@ -555,9 +562,10 @@ fn known_dictionaries_are_specialized_away() {
         "{DESCRIBE}fun loud : Describe a => a -> String\n\
            | loud x = twice x ++ \"!\"\n\
          fun all xs = match xs with | [;] -> \"\" | x :: rest -> loud x ++ all rest\n\
-         def main = (all [1; 2], all [[True;]; [False;]], loud (1, [2;]))\n"
+         def result = (all [1; 2], all [[True;]; [False;]], loud (1, [2;]))\n"
     );
-    let (program, diags) = pipeline::compile_str_with_std("test", &src, Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", &src, Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "{:?}",
@@ -634,7 +642,7 @@ fun first : Visual s => s -> String
 
 fun inferred s = match take1 s 1 with | Just (t, _) -> showToken s t | None -> \"empty\"
 
-def main = (first \"xyz\", first [5, 6], inferred \"ab\", inferred [7, 8])
+def result = (first \"xyz\", first [5, 6], inferred \"ab\", inferred [7, 8])
 "
     );
     assert_eq!(
@@ -656,7 +664,7 @@ fn a_point_free_function_takes_the_dictionaries_its_type_needs() {
 fun second : Stream s => s -> Maybe (Token s, Int)
   | second = \\s -> take1 s 1
 
-def main = (second \"ab\", second [1, 2])
+def result = (second \"ab\", second [1, 2])
 "
     );
     assert_eq!(
@@ -668,8 +676,8 @@ def main = (second \"ab\", second [1, 2])
 #[test]
 fn a_point_free_function_still_may_not_perform_effects() {
     let errs = common::errors_std_with(
-        "fun loud = let _ = println \"x\" in 1\ndef main = loud\n",
-        meadow::Options::debug(),
+        "fun loud = let _ = println \"x\" in 1\ndef result = loud\n",
+        meadow::Options::debug().entry("result"),
     );
     assert!(errs.contains("cannot perform effects"), "{errs}");
 }

@@ -21,7 +21,7 @@ fun rank a b =
   match (a, b) with
   | ((wa, ca), (wb, cb)) -> if ca == cb then Str.compare wa wb else compare cb ca
 
-def main =
+fun main () =
   let text = Fs.readToStringOr "" "work/corpus.txt" in
   let counts = runSt (\() ->
     let t = HT.new () in

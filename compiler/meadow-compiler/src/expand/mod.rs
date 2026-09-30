@@ -1464,6 +1464,7 @@ impl<'a> Expander<'a> {
             | ast::Decl::Record(_)
             | ast::Decl::Effect(_)
             | ast::Decl::TypeAlias(_)
+            | ast::Decl::EffectAlias(_)
             | ast::Decl::Fixity(..)
             | ast::Decl::Sig(..) => {}
         }

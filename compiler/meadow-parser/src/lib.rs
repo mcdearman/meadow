@@ -383,12 +383,23 @@ where
             )
         });
 
+    // `effect State s { get : () -> s }` declares an effect and its operations;
+    // `effect Eff = { Console, Fs }` names effects that are declared already.
     let effect_decl = just(Token::Effect)
         .ignore_then(upper_ident())
         .then(lower_ident().repeated().collect::<Vec<_>>())
-        .then(field_list())
-        .map_with(|((name, params), ops), e| {
-            LDecl::new(Decl::Effect(EffectDecl { name, params, ops }), e.span())
+        .then(choice((
+            just(Token::Eq)
+                .ignore_then(effect_row())
+                .map(EffectBody::Alias),
+            field_list().map(EffectBody::Ops),
+        )))
+        .map_with(|((name, params), body), e| {
+            let decl = match body {
+                EffectBody::Ops(ops) => Decl::Effect(EffectDecl { name, params, ops }),
+                EffectBody::Alias(row) => Decl::EffectAlias(EffectAliasDecl { name, params, row }),
+            };
+            LDecl::new(decl, e.span())
         });
 
     let type_decl = just(Token::Type)
@@ -2569,6 +2580,14 @@ fn effect_row<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
         tail: None,
     });
     choice((braced, bare_var, bare_label))
+}
+
+/// What follows an `effect`'s name and parameters: its operations, or the
+/// effects it is another name for.
+#[derive(Clone)]
+enum EffectBody {
+    Ops(Vec<Field>),
+    Alias(EffectRow),
 }
 
 /// One equation of a function written in several: `| gcd a b = …`.

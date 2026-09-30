@@ -7,7 +7,8 @@ use meadow::{Engine, OptLevel, Options, pipeline, runtime};
 /// The CEK machine's answer, required of the VM and its JIT at every level
 /// and of a release build (whose `match` arms become a switch).
 fn agreed(src: &str) -> String {
-    let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "compile errors in\n{src}\n{}",
@@ -27,7 +28,8 @@ fn agreed(src: &str) -> String {
             assert_eq!(got, cek, "{engine:?} at {} on\n{src}", opt.name());
         }
     }
-    let (release, diags) = pipeline::compile_str_with_std("test", src, Options::release());
+    let (release, diags) =
+        pipeline::compile_str_with_std("test", src, Options::release().entry("result"));
     assert!(
         diags.is_empty(),
         "release: {:?}",
@@ -51,7 +53,7 @@ fn a_guard_picks_among_arms_that_match() {
          | 0 -> \"zero\"\n\
          | x if x > 100 -> \"big\"\n\
          | _ -> \"positive\"\n\
-         def main = (classify (0 - 5), classify 0, classify 500, classify 7)\n",
+         def result = (classify (0 - 5), classify 0, classify 500, classify 7)\n",
         r#"("negative", "zero", "big", "positive")"#,
     );
 }
@@ -70,7 +72,7 @@ fn a_failed_guard_tries_the_arms_after_it() {
          | Rect w h if w == h -> w * w\n\
          | Rect w h -> w * h\n\
          | Dot -> 0\n\
-         def main = (area (Circle 20), area (Circle 2), area (Rect 3 3), area (Rect 2 5), area Dot)\n",
+         def result = (area (Circle 20), area (Circle 2), area (Rect 3 3), area (Rect 2 5), area Dot)\n",
         "(999, 12, 9, 10, 0)",
     );
     // Guarded arms for distinct constructors, which a release build puts in one
@@ -84,7 +86,7 @@ fn a_failed_guard_tries_the_arms_after_it() {
          | Dot -> 0\n\
          | Circle r -> 3 * r * r\n\
          | Rect w h -> w * h\n\
-         def main = (area (Circle 20), area (Circle 2), area (Rect 3 3), area (Rect 2 5), area Dot)\n",
+         def result = (area (Circle 20), area (Circle 2), area (Rect 3 3), area (Rect 2 5), area Dot)\n",
         "(999, 12, 9, 10, 0)",
     );
     is(
@@ -92,7 +94,7 @@ fn a_failed_guard_tries_the_arms_after_it() {
          | x :: _ if x % 2 == 0 -> Just x\n\
          | _ :: rest -> firstEven rest\n\
          | [;] -> None\n\
-         def main = (firstEven [1; 3; 8; 10], firstEven [1; 3])\n",
+         def result = (firstEven [1; 3; 8; 10], firstEven [1; 3])\n",
         "(Just(8), None)",
     );
 }
@@ -106,7 +108,7 @@ fn a_guard_can_call_and_perform() {
          fun f n = match n with\n\
          | x if isBig x -> \"big\"\n\
          | _ -> \"small\"\n\
-         def main = (f 20, f 3)\n",
+         def result = (f 20, f 3)\n",
         r#"("big", "small")"#,
     );
     is(
@@ -119,7 +121,7 @@ fn a_guard_can_call_and_perform() {
              | Just x if checks (x + 10) -> 0 - x\n\
              | _ -> 0 in\n\
            (r, St.getRef seen))\n\
-         def main = (count (Just 5), count (Just 1), count None)\n",
+         def result = (count (Just 5), count (Just 1), count None)\n",
         "((5, 1), (-1, 2), (0, 0))",
     );
 }
@@ -130,14 +132,14 @@ fn an_as_pattern_names_the_whole_of_what_it_matched() {
         "fun dup xs = match xs with\n\
          | x :: rest as whole -> (x, whole, rest)\n\
          | [;] as whole -> (0, whole, whole)\n\
-         def main = (dup [1; 2; 3], dup [;])\n",
+         def result = (dup [1; 2; 3], dup [;])\n",
         "((1, [1; 2; 3], [2; 3]), (0, [], []))",
     );
     is(
         "fun f p = match p with\n\
          | ((a, b) as inner, c) if a + b == c -> (inner, True)\n\
          | (inner, _) -> (inner, False)\n\
-         def main = (f ((1, 2), 3), f ((1, 2), 4))\n",
+         def result = (f ((1, 2), 3), f ((1, 2), 4))\n",
         "(((1, 2), True), ((1, 2), False))",
     );
     // Deepest name innermost, and a name for a part and the whole at once.
@@ -145,37 +147,40 @@ fn an_as_pattern_names_the_whole_of_what_it_matched() {
         "fun g xs = match xs with\n\
          | (x as y) :: _ as all -> (x + y, all)\n\
          | _ -> (0, xs)\n\
-         def main = g [4; 5]\n",
+         def result = g [4; 5]\n",
         "(8, [4; 5])",
     );
     // In a `let` too, where a pattern binds.
     is(
-        "def main = let (a, b) as pair = (1, 2) in (a + b, pair)\n",
+        "def result = let (a, b) as pair = (1, 2) in (a + b, pair)\n",
         "(3, (1, 2))",
     );
 }
 
 #[test]
 fn a_guarded_arm_covers_nothing() {
-    let src = "fun f n = match n with\n| x if x > 0 -> 1\n| 0 -> 0\ndef main = f 1\n";
-    let errors = common::errors_std_with(src, Options::release());
+    let src = "fun f n = match n with\n| x if x > 0 -> 1\n| 0 -> 0\ndef result = f 1\n";
+    let errors = common::errors_std_with(src, Options::release().entry("result"));
     assert!(errors.contains("non-exhaustive"), "{errors}");
     // With an arm after it that does cover, it is fine.
-    let src = "fun f n = match n with\n| x if x > 0 -> 1\n| _ -> 0\ndef main = f 1\n";
-    assert_eq!(common::errors_std_with(src, Options::release()), "");
+    let src = "fun f n = match n with\n| x if x > 0 -> 1\n| _ -> 0\ndef result = f 1\n";
+    assert_eq!(
+        common::errors_std_with(src, Options::release().entry("result")),
+        ""
+    );
 }
 
 #[test]
 fn a_guard_is_a_bool_that_sees_the_pattern() {
     let errors = common::errors_std_with(
-        "fun f n = match n with\n| x if x -> 1\n| _ -> 0\ndef main = f 1\n",
-        Options::debug(),
+        "fun f n = match n with\n| x if x -> 1\n| _ -> 0\ndef result = f 1\n",
+        Options::debug().entry("result"),
     );
     assert!(errors.contains("Bool"), "{errors}");
     // The pattern's names are in scope in the guard, and not after the match.
     let errors = common::errors_std_with(
-        "fun f n = match n with\n| x if y > 0 -> 1\n| _ -> 0\ndef main = f 1\n",
-        Options::debug(),
+        "fun f n = match n with\n| x if y > 0 -> 1\n| _ -> 0\ndef result = f 1\n",
+        Options::debug().entry("result"),
     );
     assert!(errors.contains("undefined variable: y"), "{errors}");
 }

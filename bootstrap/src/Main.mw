@@ -38,6 +38,8 @@ use Std.Maybe.Maybe.*
 use Std.Collections.Vector as V
 use Std.Fs (Fs, readToString)
 use Std.Console (writeOutput)
+use Std.Exn (catch)
+use Lingua.Query (QueryError)
 use Std.Process (exit)
 
 cli! {
@@ -53,8 +55,19 @@ cli! {
         { files : [String] "the files to read, each in a package; the standard library's sources are where `MEADOWBOOT_STD` says" }
 }
 
-def main =
-  match argsCli () with
+fun main () = catch failed (\() -> run (argsCli ()))
+
+-- A query read before it was set, or one that needs itself: a mistake of the
+-- compiler's rather than of what it read. It is said, and the run fails.
+fun failed (e : QueryError k) = let u = writeOutput (failure e) in exit 1
+
+fun failure (e : QueryError k) : String =
+  match e with
+  | QueryError.Unset _ -> "meadowboot: a query was read before it was set\n"
+  | QueryError.Cycle ks -> "meadowboot: ${S.fromInt (V.len ks)} queries need each other\n"
+
+fun run (cli : Cli) =
+  match cli with
   | Cli.Lex r -> finish (V.foldl (\ok p -> lexFile p and ok) True r.files)
   | Cli.Eval r -> finish (V.foldl (\ok p -> evalFile p and ok) True r.files)
   | Cli.Parse r -> finish (V.foldl (\ok p -> parseFile p and ok) True r.files)

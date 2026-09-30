@@ -44,7 +44,7 @@ fn a_polymorphic_reference_is_rejected() {
          def r = newRef []\n\
          fun poison u = setRef r [1]\n\
          fun readAsStrings u = S.concatAll (getRef r)\n",
-        Options::debug(),
+        Options::debug().entry("result"),
     );
     assert!(
         out.contains("type mismatch"),
@@ -98,7 +98,7 @@ fn purity_is_not_lost_by_merely_mentioning_a_cell() {
 #[test]
 fn a_cell_is_shared_not_copied() {
     let src = "\
-def main =
+def result =
   let r = newRef 0 in
   let alias = r in
   let a = setRef alias 42 in
@@ -112,7 +112,7 @@ fn mutation_survives_across_calls() {
     let src = "\
 fun tick r = setRef r (getRef r + 1)
 
-def main =
+def result =
   let r = newRef 0 in
   let a = tick r in
   let b = tick r in
@@ -127,12 +127,12 @@ fn cells_are_equal_by_identity_not_contents() {
     // Every other value in the language is equal when it looks alike. A `Ref` is
     // a place, so two cells holding the same thing are still two cells.
     assert_eq!(
-        eval_main_std("def main = let r = newRef 1 in (r == r, newRef 1 == newRef 1)\n"),
+        eval_main_std("def result = let r = newRef 1 in (r == r, newRef 1 == newRef 1)\n"),
         "(True, False)"
     );
 }
 
 #[test]
 fn a_cell_prints_as_its_contents() {
-    assert_eq!(eval_main_std("def main = show (newRef 7)\n"), "\"ref 7\"");
+    assert_eq!(eval_main_std("def result = show (newRef 7)\n"), "\"ref 7\"");
 }

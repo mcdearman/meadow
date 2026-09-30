@@ -9,9 +9,9 @@ use common::{
 
 #[test]
 fn a_fixity_declaration_says_how_an_operator_groups() {
-    let left = "infixl 6 <+>\nfun (<+>) a b = a * 10 + b\ndef main = 1 <+> 2 <+> 3\n";
+    let left = "infixl 6 <+>\nfun (<+>) a b = a * 10 + b\ndef result = 1 <+> 2 <+> 3\n";
     assert_eq!(eval_main(left), "123");
-    let right = "infixr 6 <+>\nfun (<+>) a b = a * 10 + b\ndef main = 1 <+> 2 <+> 3\n";
+    let right = "infixr 6 <+>\nfun (<+>) a b = a * 10 + b\ndef result = 1 <+> 2 <+> 3\n";
     assert_eq!(eval_main(right), "33");
 }
 
@@ -21,7 +21,7 @@ fn a_fixity_declaration_says_how_tightly_it_binds() {
     // declaration at all it is `infixl 9`, tighter than every other.
     let at = |fixity: &str| {
         eval_main(&format!(
-            "{fixity}fun (<+>) a b = a - b\ndef main = 10 * 2 <+> 3\n"
+            "{fixity}fun (<+>) a b = a - b\ndef result = 10 * 2 <+> 3\n"
         ))
     };
     assert_eq!(at("infixl 6 <+>\n"), "17");
@@ -50,36 +50,36 @@ fn an_operator_in_parentheses_is_a_name() {
 #[test]
 fn without_std_an_operator_is_its_primitive() {
     assert_eq!(
-        eval_main("def main = (1 + 2 * 3, (-) 7 2, 3 < 4)\n"),
+        eval_main("def result = (1 + 2 * 3, (-) 7 2, 3 < 4)\n"),
         "(7, 5, True)"
     );
 }
 
 #[test]
 fn comparisons_do_not_group() {
-    let e = errors("def main = 1 == 2 == True\n");
+    let e = errors("def result = 1 == 2 == True\n");
     assert!(e.contains("does not group"), "{e}");
-    let e = errors("def main = 1 < 2 == True\n");
+    let e = errors("def result = 1 < 2 == True\n");
     assert!(e.contains("cannot be mixed without parentheses"), "{e}");
     assert_eq!(eval_expr_std("(1 < 2) == True"), "True");
 }
 
 #[test]
 fn a_declaration_may_not_change_the_languages_fixities() {
-    let e = errors("infixr 3 +\ndef main = 1\n");
+    let e = errors("infixr 3 +\ndef result = 1\n");
     assert!(
         e.contains("`+` is `infixl 6` in the language itself"),
         "{e}"
     );
     // Repeating it is fine: `Std.Ops` does.
-    assert_eq!(eval_main("infixl 6 +\ndef main = 1 + 1\n"), "2");
+    assert_eq!(eval_main("infixl 6 +\ndef result = 1 + 1\n"), "2");
 }
 
 #[test]
 fn two_declarations_of_one_operator_must_agree() {
-    let e = errors("infixl 3 <+>\ninfixr 3 <+>\ndef main = 1\n");
+    let e = errors("infixl 3 <+>\ninfixr 3 <+>\ndef result = 1\n");
     assert!(e.contains("already declared `infixl 3`"), "{e}");
-    let e = errors("infixl 12 <+>\ndef main = 1\n");
+    let e = errors("infixl 12 <+>\ndef result = 1\n");
     assert!(e.contains("out of range"), "{e}");
 }
 
@@ -88,7 +88,7 @@ fn a_fixity_holds_in_every_module_of_the_package() {
     let modules = [
         (
             "",
-            "mod Ops\nmod User\nuse User (answer)\ndef main = answer\n",
+            "mod Ops\nmod User\nuse User (answer)\ndef result = answer\n",
         ),
         ("Ops", "infixr 5 <+>\n@pub fun (<+>) a b = a * 10 + b\n"),
         ("User", "use Ops ((<+>))\n@pub def answer = 1 <+> 2 <+> 3\n"),
@@ -108,7 +108,7 @@ impl Add V2 {
 
 fun sumAll xs = foldl (+) (V2 { x = 0, y = 0 }) xs
 
-def main = (V2 { x = 1, y = 2 } + V2 { x = 3, y = 4 }, sumAll [V2 { x = 1, y = 1 }, V2 { x = 2, y = 2 }])
+def result = (V2 { x = 1, y = 2 } + V2 { x = 3, y = 4 }, sumAll [V2 { x = 1, y = 1 }, V2 { x = 2, y = 2 }])
 ";
     assert_eq!(eval_main_std(src), "(V2(4, 6), V2(3, 3))");
     assert_eq!(cek_main_std(src), "(V2(4, 6), V2(3, 3))");
@@ -123,7 +123,7 @@ impl PartialEq Loose {
   fun (==) a b = True
 }
 
-def main = (Loose 1 == Loose 2, Loose 1 != Loose 2, Just 1 == Just 2)
+def result = (Loose 1 == Loose 2, Loose 1 != Loose 2, Just 1 == Just 2)
 ";
     assert_eq!(eval_main_std(src), "(True, False, False)");
     assert_eq!(cek_main_std(src), "(True, False, False)");
@@ -140,6 +140,6 @@ fn a_generic_function_asks_for_the_operators_it_uses() {
 
 #[test]
 fn a_type_without_the_operator_is_told_so() {
-    let e = common::run_main_std("def main = \"a\" + \"b\"\n", meadow::Engine::Vm);
+    let e = common::run_main_std("def result = \"a\" + \"b\"\n", meadow::Engine::Vm);
     assert!(e.contains("`String` does not implement `Add`"), "{e}");
 }

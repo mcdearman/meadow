@@ -13,7 +13,7 @@ use Std.St as St
 
 def n : Int = 256
 
-def main =
+fun main () =
   let total = runSt (\() ->
     let a = St.newArray (n * n) 0.0 in
     let b = St.newArray (n * n) 0.0 in

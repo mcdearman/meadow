@@ -7,7 +7,7 @@ use meadow::pipeline;
 use meadow::profile::{Profile, Resolved};
 use meadow_compiler::intern::InternedString;
 
-/// A package whose `main` reports what its `@cfg`s kept.
+/// A package whose `result` reports what its `@cfg`s kept.
 fn package(name: &str, manifest_profiles: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("meadow-cfg-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -28,16 +28,16 @@ fn package(name: &str, manifest_profiles: &str) -> std::path::PathBuf {
 @cfg(debug) def profile = "debug"
 @cfg(backend = "aot") def backend = "aot"
 @cfg(not(backend = "aot")) def backend = "not aot"
-def main = (speed, gpu, profile, backend)
+def result = (speed, gpu, profile, backend)
 "#,
     )
     .unwrap();
     dir
 }
 
-/// What `main` answers when `dir` is built as `resolved` says.
+/// What `result` is when `dir` is built as `resolved` says.
 fn answer(dir: &std::path::Path, resolved: Resolved) -> String {
-    let out = pipeline::build(dir, resolved.options);
+    let out = pipeline::build(dir, resolved.options.entry("result"));
     assert!(
         out.diagnostics.is_empty(),
         "{:?}",

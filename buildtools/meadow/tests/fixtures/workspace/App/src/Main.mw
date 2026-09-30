@@ -5,4 +5,4 @@ use Util (double, scale)
 
 def nums = range 1 6
 
-def main = sum (scale 3 (map double nums))
+def result = sum (scale 3 (map double nums))

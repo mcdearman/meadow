@@ -18,19 +18,19 @@ fn equal_vectors_hash_alike_whatever_their_shape() {
     // Past one chunk, a literal and a vector grown by pushes are laid out
     // differently inside and still compare equal -- so they must hash alike.
     let src = "def pushed = foldl (\\v i -> pushBack v i) [] (range 0 100)\n\
-               def main = (pushed == range 0 100, hash pushed == hash (range 0 100), hash [1, 2] == hash [2, 1])\n";
+               def result = (pushed == range 0 100, hash pushed == hash (range 0 100), hash [1, 2] == hash [2, 1])\n";
     assert_eq!(both(src), "(True, True, False)");
 }
 
 #[test]
 fn a_ref_cannot_be_hashed() {
-    let out = both("def main = hash (newRef 1)\n");
+    let out = both("def result = hash (newRef 1)\n");
     assert!(out.contains("cannot hash a Ref"), "{out}");
 }
 
 #[test]
 fn a_function_cannot_be_hashed() {
-    let out = both("def main = hash (\\x -> x)\n");
+    let out = both("def result = hash (\\x -> x)\n");
     assert!(out.contains("cannot hash a function"), "{out}");
 }
 
@@ -38,6 +38,6 @@ fn a_function_cannot_be_hashed() {
 fn a_hash_map_behaves_the_same_on_both_engines() {
     let src = "use Std.Collections.HashMap as H\n\
                def m = foldl (\\acc i -> H.insert (show i) i acc) H.empty (range 0 500)\n\
-               def main = (H.size m, H.lookup \"250\" m, H.lookup \"x\" m, H.size (H.delete \"7\" m))\n";
+               def result = (H.size m, H.lookup \"250\" m, H.lookup \"x\" m, H.size (H.delete \"7\" m))\n";
     assert_eq!(both(src), "(500, Just(250), None, 499)");
 }

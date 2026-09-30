@@ -46,11 +46,11 @@ Either way, `meadowup` installs itself and `meadow` into `~/.meadow/bin`, and
 ### Your first program
 
 Meadow source files end in `.mw`. A file is a list of **declarations** — you cannot
-write a bare expression at the top level. The entry point is a declaration named
+write a bare expression at the top level. The entry point is a function named
 `main`:
 
 ```meadow
-def main = println "Hello, Meadow!"
+fun main () = println "Hello, Meadow!"
 ```
 
 Save that as `hello.mw` and run it:
@@ -59,37 +59,50 @@ Save that as `hello.mw` and run it:
 $ meadow run hello.mw
 ```
 
-`meadow run` says what it compiles, runs `main`, and prints the value it
-evaluated to:
+`meadow run` says what it compiles, then calls `main`:
 
 ```
-   Compiling Std v0.1.0-alpha (embedded)
-   Compiling hello (/home/you/hello.mw)
-    Finished `debug` profile [O1, glade jit] in 0.41s
+   Compiling Hello (/home/you/hello.mw)
+    Finished `debug` profile [O1, glade jit] in 0.10s
      Running `main` on the JIT
 Hello, Meadow!
-=> ()
 ```
 
 The lines about compiling go to stderr, so a program's own output is all there
-is on stdout. To see the type of every top-level binding as well, pass
-`--types`:
+is on stdout: here, the one line `main` printed. To see the type of every
+top-level binding as well, pass `--types`:
 
 ```sh
 $ meadow run --types hello.mw
 ```
 
 ```
-=== package hello ===
-  main : ()
+=== package Hello ===
+  main : forall e. () -> () ! { Console | e }
+  (7 annotated nodes)
 entry: main
 Hello, Meadow!
-=> ()
 ```
 
-`main` has type `()` — it produces nothing useful. Printing is something it
-_does_ rather than something it returns, and a function's type records that
-too; [chapter 9](#9-effects) is about how.
+`main` takes `()` and returns `()`: it produces nothing useful. Printing is
+something it _does_ rather than something it returns, and a function's type
+records that too — the `! { Console | e }` says that calling `main` may write
+to the terminal. [Chapter 9](#9-effects) is about how.
+
+Every program's `main` has to fit one type, `() -> () ! Eff`. It must return
+`()`, and it may perform at most the effects the runtime itself knows how to
+answer — the terminal, the filesystem, the clock and a few more, which the
+standard library names `Eff`. `Console` is one of them, so this `main` fits. A
+program's output is exactly what it prints, and the examples in this tutorial
+print what they want to show. Writing `main` as a value, `def main = ...`, is
+an error that says what it should be.
+
+`println` prints a number, a string, a tuple or a vector as a person would
+read it: a string without its quotes. To see a value the way it is written in
+source, quotes and all, put it in a string as `"${x:?}"`
+([below](#strings-and-interpolation)). To print several lines, one after
+another, write `let _ = println a in println b` (`let` is in
+[chapter 4](#4-bindings-and-scope)).
 
 ### The REPL
 
@@ -166,7 +179,7 @@ Only line comments, introduced by `--`. There is no block comment syntax.
 
 ```meadow
 -- This is a comment.
-def main = 1  -- so is this
+fun main () = ()  -- so is this
 ```
 
 ---
@@ -202,11 +215,11 @@ def big   = toBigInt 2 ^ 100
 def small = 2 ^ 62
 def byte  = toUInt8 250 + 6
 
-def main = (big, small, byte)
+fun main () = println (big, small, byte)
 ```
 
 ```
-=> (1267650600228229401496703205376, 4611686018427387904, 0)
+(1267650600228229401496703205376, 4611686018427387904, 0)
 ```
 
 Every fixed-width type wraps at its width, as `byte` shows and as `2 ^ 64`
@@ -223,11 +236,11 @@ so with a variable named `n`, which stands for "some integer type":
 ```meadow
 fun square x = x * x
 
-def main = (square 12, square (toUInt8 20))
+fun main () = println (square 12, square (toUInt8 20))
 ```
 
 ```
-=> (144, 144)
+(144, 144)
 ```
 
 `square : forall n. Mul n => n -> n`, and `20 * 20` wraps to `144` as a
@@ -256,11 +269,14 @@ data Suit = Clubs | Diamonds | Hearts | Spades
 
 def nan = 0.0 /. 0.0
 
-def main = ([1, 2] == [1, 2], Just 1 != None, "b" > "a", Clubs < Spades, compare Hearts Clubs, nan == nan)
+fun main () =
+  let _ = println ([1, 2] == [1, 2], Just 1 != None, "b" > "a") in
+  println (Clubs < Spades, compare Hearts Clubs, nan == nan)
 ```
 
 ```
-=> (True, True, True, True, Greater, False)
+(True, True, True)
+(True, Greater, False)
 ```
 
 A derived ordering goes by constructor, in the order they are declared, then by
@@ -280,11 +296,14 @@ tests by hand.
 convert between the two float types; `floor` goes from a float to an `Int`.
 
 ```meadow
-def main = (toFloat 3, floor 3.9, toBigInt 5, toInt8 200, toFloat32 (toFloat 3))
+fun main () =
+  let _ = println (toFloat 3, floor 3.9, toBigInt 5) in
+  println (toInt8 200, toFloat32 (toFloat 3))
 ```
 
 ```
-=> (3.0, 3, 5, -56, 3.0)
+(3.0, 3, 5)
+(-56, 3.0)
 ```
 
 ### Strings and interpolation
@@ -300,14 +319,16 @@ not start a hole, and a `$` not followed by `{` needs no escape.
 fun describe (name : String) (items : [Int]) =
   "${name} has ${len items} items, the first is ${getOr 0 items 0}"
 
-def main =
-  ( describe "cart" [3, 1, 4],
-    "maybe: ${Just 2}, quoted: ${"hi":?}, a char: ${'c'} or ${'c':?}",
-    "a price: \$${9}, and \${literal} braces" )
+fun main () =
+  let _ = println (describe "cart" [3, 1, 4]) in
+  let _ = println "maybe: ${Just 2}, quoted: ${"hi":?}, a char: ${'c'} or ${'c':?}" in
+  println "a price: \$${9}, and \${literal} braces"
 ```
 
 ```
-=> ("cart has 3 items, the first is 3", "maybe: Just(2), quoted: \"hi\", a char: c or 'c'", "a price: $9, and ${literal} braces")
+cart has 3 items, the first is 3
+maybe: Just(2), quoted: "hi", a char: c or 'c'
+a price: $9, and ${literal} braces
 ```
 
 Every primitive type is `Display` and `Debug`, and so are tuples and the
@@ -326,11 +347,11 @@ impl Display Suit {
   fun display s = match s with | Hearts -> "♥" | Spades -> "♠"
 }
 
-def main = "${Shape.Rect { w = 2, h = 3 }} ${Shape.Circle 1.5:?} ${Suit.Spades}"
+fun main () = println "${Shape.Rect { w = 2, h = 3 }} ${Shape.Circle 1.5:?} ${Suit.Spades}"
 ```
 
 ```
-=> "Rect(2, 3) Circle(1.5) ♠"
+Rect(2, 3) Circle(1.5) ♠
 ```
 
 A type that is neither cannot go in a hole or to `println`: the checker says
@@ -355,12 +376,20 @@ is: no escapes and no `${…}`. `r"…"` cannot contain a `"`; `r#"…"#` can, a
 at `"#`; add `#`s until the text does not contain the closing sequence.
 
 ```meadow
-def main = (r"C:\Users\${name}", r#"she said "hi""#, "caf\u{e9} \x41\tB")
+fun main () =
+  let _ = println r"C:\Users\${name}" in
+  let _ = println r#"she said "hi""# in
+  println "${"caf\u{e9} \x41\tB":?}"
 ```
 
 ```
-=> ("C:\\Users\\${name}", "she said \"hi\"", "café A\tB")
+C:\Users\${name}
+she said "hi"
+"café A\tB"
 ```
+
+The last line is printed with `:?`, which writes the tab back as `\t` so that
+it can be seen.
 
 ### Booleans and bit twiddling
 
@@ -372,11 +401,11 @@ width: `>>` is arithmetic on a signed type and logical on an unsigned one, and
 helpers on top.
 
 ```meadow
-def main = (1 < 2 and 3 < 4, not True or True, 1 << 4, bitAnd 12 10)
+fun main () = println (1 < 2 and 3 < 4, not True or True, 1 << 4, bitAnd 12 10)
 ```
 
 ```
-=> (True, True, 16, 8)
+(True, True, 16, 8)
 ```
 
 ### Tuples
@@ -384,11 +413,11 @@ def main = (1 < 2 and 3 < 4, not True or True, 1 << 4, bitAnd 12 10)
 ```meadow
 def point = (1, "north", True)
 
-def main = (fst (1, 2), snd (1, 2), point)
+fun main () = println "${(fst (1, 2), snd (1, 2), point):?}"
 ```
 
 ```
-=> (1, 2, (1, "north", True))
+(1, 2, (1, "north", True))
 ```
 
 `fst` and `snd` only work on pairs. For anything wider, use pattern matching.
@@ -414,11 +443,11 @@ fun add a b = a + b
 
 def four = double 2
 
-def main = (double 21, add 1 2, four)
+fun main () = println (double 21, add 1 2, four)
 ```
 
 ```
-=> (42, 3, 4)
+(42, 3, 4)
 ```
 
 Application is by juxtaposition — `add 1 2`, not `add(1, 2)` — so parentheses are
@@ -433,8 +462,8 @@ top-level `def` may not perform effects. `def greeting = let _ = println "hi" in
 "hi"` is an error: "a top-level `def` cannot perform effects". A `def` can still
 _be_ a function with effects, such as `def shout = \s -> println s`: building
 the closure does nothing, and the printing happens at each call. Effects belong
-inside functions, which run every time they are called, or in `main`, which the
-runtime runs once as the program.
+inside functions, which run every time they are called — `main` among them,
+which the runtime calls once as the program.
 
 ### Currying and partial application
 
@@ -446,11 +475,11 @@ fun add a b = a + b
 
 def increment = add 1
 
-def main = (increment 41, map (add 10) [1, 2, 3])
+fun main () = println (increment 41, map (add 10) [1, 2, 3])
 ```
 
 ```
-=> (42, [11, 12, 13])
+(42, [11, 12, 13])
 ```
 
 ### Lambdas
@@ -458,7 +487,7 @@ def main = (increment 41, map (add 10) [1, 2, 3])
 `\x -> body`, with multiple parameters allowed:
 
 ```meadow
-def main = (
+fun main () = println (
   (\x -> x * 2) 21,
   (\x y -> x + y) 1 2,
   filter (\n -> n % 2 == 0) [1, 2, 3, 4]
@@ -466,7 +495,7 @@ def main = (
 ```
 
 ```
-=> (42, 3, [2, 4])
+(42, 3, [2, 4])
 ```
 
 ### Pipelines
@@ -475,15 +504,16 @@ def main = (
 chains read left-to-right instead of inside-out.
 
 ```meadow
-def main =
+fun main () =
   [1, 2, 3, 4, 5]
   |> filter (\n -> n % 2 == 1)
   |> map (\n -> n * n)
   |> sum
+  |> println
 ```
 
 ```
-=> 35
+35
 ```
 
 `|>` binds looser than every arithmetic operator, so `x |> f |> g` is `g (f x)` and
@@ -496,11 +526,11 @@ def main =
 ```meadow
 def addThenDouble = compose (\n -> n * 2) (\n -> n + 1)
 
-def main = (addThenDouble 5, flip (\a b -> a - b) 3 10, id 7, const 1 "ignored")
+fun main () = println (addThenDouble 5, flip (\a b -> a - b) 3 10, id 7, const 1 "ignored")
 ```
 
 ```
-=> (12, 7, 7, 1)
+(12, 7, 7, 1)
 ```
 
 ### Order does not matter
@@ -509,7 +539,7 @@ Top-level declarations may appear in any order. The compiler sorts them by
 dependency before type-checking and evaluating, and handles mutual recursion:
 
 ```meadow
-def main = isEven 10
+fun main () = println (isEven 10)
 
 fun isEven n = if n == 0 then True else isOdd (n - 1)
 
@@ -517,7 +547,7 @@ fun isOdd n = if n == 0 then False else isEven (n - 1)
 ```
 
 ```
-=> True
+True
 ```
 
 ### Signatures
@@ -528,11 +558,11 @@ parameter pattern takes `(p : T)`, and the result type goes before the `=`:
 ```meadow
 fun area (w : Int) (h : Int) : Int = w * h
 
-def main = area 3 4
+fun main () = println (area 3 4)
 ```
 
 ```
-=> 12
+12
 ```
 
 Or on a line of its own, as a _signature_: `fun name : T`, or `def name : T` for
@@ -548,11 +578,11 @@ fun swap : (a, b) -> (b, a)
 def small : Int8
   | small = 5
 
-def main = (swap (1, "one"), small)
+fun main () = println "${(swap (1, "one"), small):?}"
 ```
 
 ```
-=> (("one", 1), 5)
+(("one", 1), 5)
 ```
 
 A signature is held to in both directions. The definition has to have the type
@@ -579,12 +609,11 @@ fun greet : String -> () ! Console
 fun apply : (a -> b ! e) -> a -> b ! e
   | apply f x = f x
 
-def main = apply greet "Ann"
+fun main () = apply greet "Ann"
 ```
 
 ```
 hello, Ann
-=> ()
 ```
 
 Inline, the effect goes after the result, since that is where the last arrow
@@ -595,12 +624,11 @@ fun greet (name : String) : () ! Console = println ("hello, " ++ name)
 
 fun apply (f : a -> b ! e) (x : a) : b ! e = f x
 
-def main = apply greet "Ann"
+fun main () = apply greet "Ann"
 ```
 
 ```
 hello, Ann
-=> ()
 ```
 
 A result is read the way an arrow is: written without a `!`, it says the body
@@ -621,11 +649,11 @@ fun gcd : Int -> Int -> Int
   | gcd a 0 = a
   | gcd a b = gcd b (a % b)
 
-def main = gcd 48 18
+fun main () = println (gcd 48 18)
 ```
 
 ```
-=> 6
+6
 ```
 
 A signature tells the checker a parameter's type before it reads the body, which
@@ -648,11 +676,11 @@ fun hypotenuseSquared a b =
   let bb = b * b in
   aa + bb
 
-def main = hypotenuseSquared 3 4
+fun main () = println (hypotenuseSquared 3 4)
 ```
 
 ```
-=> 25
+25
 ```
 
 ### `let rec`
@@ -665,11 +693,11 @@ fun countdown n =
     if i == 0 then acc else go (i - 1) (acc + i)
   in go n 0
 
-def main = countdown 10
+fun main () = println (countdown 10)
 ```
 
 ```
-=> 55
+55
 ```
 
 ### `if ... then ... else`
@@ -683,11 +711,11 @@ fun classify n =
   else if n == 0 then "zero"
   else "positive"
 
-def main = (classify (0 - 3), classify 0, classify 3)
+fun main () = println "${(classify (0 - 3), classify 0, classify 3):?}"
 ```
 
 ```
-=> ("negative", "zero", "positive")
+("negative", "zero", "positive")
 ```
 
 ### Shadowing
@@ -701,11 +729,11 @@ fun normalise x =
   let x = min x 100 in
   x
 
-def main = (normalise (0 - 250), let a = 1 in let a = a + 1 in a)
+fun main () = println (normalise (0 - 250), let a = 1 in let a = a + 1 in a)
 ```
 
 ```
-=> (100, 2)
+(100, 2)
 ```
 
 A binding **with parameters** is the exception, and deliberately so: it is
@@ -717,11 +745,11 @@ fun sumTo n =
   let go i acc = if i == 0 then acc else go (i - 1) (acc + i) in
   go n 0
 
-def main = sumTo 10
+fun main () = println (sumTo 10)
 ```
 
 ```
-=> 55
+55
 ```
 
 `let rec` is accepted as a spelling of the same thing, for emphasis.
@@ -739,11 +767,11 @@ fun describe n =
   | 1 -> "one"
   | _ -> "many"
 
-def main = (describe 0, describe 1, describe 9)
+fun main () = println "${(describe 0, describe 1, describe 9):?}"
 ```
 
 ```
-=> ("zero", "one", "many")
+("zero", "one", "many")
 ```
 
 ### What you can match on
@@ -767,11 +795,11 @@ fun originDistance p =
   | (_, 0) -> "on the x axis"
   | (_, _) -> "somewhere else"
 
-def main = (area (Rect 3 4), area (Circle 2), originDistance (0, 5))
+fun main () = println "${(area (Rect 3 4), area (Circle 2), originDistance (0, 5)):?}"
 ```
 
 ```
-=> (12, 12, "on the y axis")
+(12, 12, "on the y axis")
 ```
 
 ### Patterns in parameters
@@ -783,11 +811,11 @@ records are fine, but constructors of a multi-case type are not.
 ```meadow
 fun addPair (a, b) = a + b
 
-def main = addPair (1, 2)
+fun main () = println (addPair (1, 2))
 ```
 
 ```
-=> 3
+3
 ```
 
 ### Exhaustiveness
@@ -826,11 +854,14 @@ fun area s =
   | Rect w h if w == h -> w * w
   | Rect w h -> w * h
 
-def main = (classify (0 - 5), classify 500, area (Circle 20), area (Rect 3 3), area (Rect 2 5))
+fun main () =
+  let _ = println "${(classify (0 - 5), classify 500):?}" in
+  println (area (Circle 20), area (Rect 3 3), area (Rect 2 5))
 ```
 
 ```
-=> ("negative", "big", 999, 9, 10)
+("negative", "big")
+(999, 9, 10)
 ```
 
 A guard is an ordinary expression: it can call functions and perform effects,
@@ -856,11 +887,11 @@ fun pairUp p =
   | ((a, b) as inner, c) if a + b == c -> Just inner
   | _ -> None
 
-def main = (dup [1; 2; 3], pairUp ((1, 2), 3))
+fun main () = println (dup [1; 2; 3], pairUp ((1, 2), 3))
 ```
 
 ```
-=> ((1, [1; 2; 3], [2; 3]), Just((1, 2)))
+((1, [1; 2; 3], [2; 3]), Just((1, 2)))
 ```
 
 It saves rebuilding a value only to return it, which also saves the allocation:
@@ -900,11 +931,11 @@ fun named p =
   | (k, lookup k -> Just name) -> name
   | _ -> "?"
 
-def main = (describe 30, describe 4, describe 5, named (2, [(1, "one"); (2, "two")]))
+fun main () = println "${(describe 30, describe 4, describe 5, named (2, [(1, "one"); (2, "two")])):?}"
 ```
 
 ```
-=> ("big and even", "even", "odd", "two")
+("big and even", "even", "odd", "two")
 ```
 
 A view that does not match goes on to the next arm, as a failed guard does,
@@ -918,11 +949,11 @@ fun swap (a, b) = (b, a)
 
 fun second (swap -> (b, _)) = b
 
-def main = second (1, 2)
+fun main () = println (second (1, 2))
 ```
 
 ```
-=> 2
+2
 ```
 
 What a view in a parameter does -- an effect it performs -- is done when the
@@ -947,11 +978,11 @@ fun first xs =
   | Head x -> x
   | _ -> 0
 
-def main = (swap (Pair 1 2), first [3; 4], first [;])
+fun main () = println (swap (Pair 1 2), first [3; 4], first [;])
 ```
 
 ```
-=> ((2, 1), 3, 0)
+((2, 1), 3, 0)
 ```
 
 `pattern P x y = p` both matches and builds: `p` is read as the expression that
@@ -977,11 +1008,11 @@ fun toInt n =
   | Succ m -> 1 + toInt m
   | _ -> 0
 
-def main = toInt (Succ (Succ (Succ Zero)))
+fun main () = println (toInt (Succ (Succ (Succ Zero))))
 ```
 
 ```
-=> 3
+3
 ```
 
 The pattern binds each of the synonym's parameters exactly once, and nothing
@@ -1013,11 +1044,11 @@ fun toInt n =
   | Zero -> 0
   | Succ m -> 1 + toInt m
 
-def main = toInt (Succ (Succ Zero))
+fun main () = println (toInt (Succ (Succ Zero)))
 ```
 
 ```
-=> 2
+2
 ```
 
 The compiler takes the declaration's word for it: that every `Nat` is a `Zero`
@@ -1038,6 +1069,7 @@ A `data` declaration lists alternatives, each with zero or more fields. Type
 parameters are lowercase names after the type's own name.
 
 ```meadow
+@derive(PartialEq)
 data Colour = Red | Green | Blue
 
 data Shrub a = Tip | Fork (Shrub a) a (Shrub a)
@@ -1052,11 +1084,11 @@ fun size t =
 
 def sample = Fork (Fork Tip 1 Tip) 2 Tip
 
-def main = (size sample, Red == Red, Red == Blue)
+fun main () = println (size sample, Red == Red, Red == Blue)
 ```
 
 ```
-=> (2, True, False)
+(2, True, False)
 ```
 
 **A constructor lives under its type**, as a variant does in Rust, even in the
@@ -1084,11 +1116,11 @@ fun parseAge s =
   | None -> Err "not a number"
   | Just n -> if n < 0 then Err "negative" else Ok n
 
-def main = (safeDiv 10 2, safeDiv 10 0, parseAge "30", parseAge "x")
+fun main () = println "${(safeDiv 10 2, safeDiv 10 0, parseAge "30", parseAge "x"):?}"
 ```
 
 ```
-=> (Just(5), None, Ok(30), Err("not a number"))
+(Just(5), None, Ok(30), Err("not a number"))
 ```
 
 There is also `Either a b` in `Std.Either`, for when neither side means
@@ -1113,26 +1145,30 @@ def anon = { x = 1, y = 2, label = "extra" }
 
 fun getX r = r.x
 
-def main = (anon, getX anon, getX { x = 99 }, getX { x = 5, other = True })
+fun main () = println (getX anon, getX { x = 99 }, getX { x = 5, other = True })
 ```
 
 ```
-=> ({ x = 1, y = 2, label = "extra" }, 1, 99, 5)
+(1, 99, 5)
 ```
+
+An anonymous record has no `Display` or `Debug`, so `println anon` does not
+compile: print its fields.
 
 A **nominal** record is declared with `record`, constructed by name, and selected
 from with the same `.`:
 
 ```meadow
+@derive(Debug)
 record Point = { x : Int, y : Int }
 
 def origin = Point { x = 0, y = 0 }
 
-def main = (origin, origin.x, origin.y)
+fun main () = println "${(origin, origin.x, origin.y):?}"
 ```
 
 ```
-=> (Point(0, 0), 0, 0)
+(Point(0, 0), 0, 0)
 ```
 
 > **The catch.** Selecting a field needs the record's type known by the time the
@@ -1159,11 +1195,11 @@ fun manhattan p =
   match p with
   | Point { x = a, y = b } -> abs a + abs b
 
-def main = (magnitudeSquared (Point { x = 3, y = 4 }), manhattan (Point { x = 3, y = -4 }))
+fun main () = println (magnitudeSquared (Point { x = 3, y = 4 }), manhattan (Point { x = 3, y = -4 }))
 ```
 
 ```
-=> (25, 7)
+(25, 7)
 ```
 
 In short: use anonymous records when you want lightweight structural data and
@@ -1176,6 +1212,7 @@ type where you reach into it.
 `r` itself unchanged. Each field named has to be one `r` has, and keeps its type.
 
 ```meadow
+@derive(Debug)
 record Person = { name : String, age : Int }
 
 fun birthday : Person -> Person
@@ -1183,11 +1220,13 @@ fun birthday : Person -> Person
 
 def ann = Person { name = "Ann", age = 41 }
 
-def main = (birthday ann, ann.age, { { x = 1, y = 2 } | y = 5 })
+fun main () =
+  let moved = { { x = 1, y = 2 } | y = 5 } in
+  println "${(birthday ann, ann.age, moved.x, moved.y):?}"
 ```
 
 ```
-=> (Person("Ann", 42), 41, { x = 1, y = 5 })
+(Person("Ann", 42), 41, 1, 5)
 ```
 
 The record is evaluated first, then the new values in the order they are
@@ -1208,11 +1247,11 @@ fun add : Point -> Point -> Point
 fun swapPair : Pair a -> Pair a
   | swapPair (x, y) = (y, x)
 
-def main = (add (1, 2) (10, 20), swapPair ("l", "r"))
+fun main () = println "${(add (1, 2) (10, 20), swapPair ("l", "r")):?}"
 ```
 
 ```
-=> ((11, 22), ("r", "l"))
+((11, 22), ("r", "l"))
 ```
 
 An alias _is_ what it stands for: a `Point` is an `(Int, Int)` everywhere, with
@@ -1252,11 +1291,11 @@ impl Describe [a;] where Describe a {
     | x :: rest -> describe x ++ ", " ++ describe rest
 }
 
-def main = (describe 7, shout 7, shout True, describe [True; False])
+fun main () = println "${(describe 7, shout 7, shout True, describe [True; False]):?}"
 ```
 
 ```
-=> ("the number 7", "the number 7!", "BOOL", "yes, no, nothing")
+("the number 7", "the number 7!", "BOOL", "yes, no, nothing")
 ```
 
 In a trait, `fun name : T` declares a method. Clauses under it, opening with a
@@ -1290,11 +1329,11 @@ fun pair x y = describe x ++ " and " ++ describe y
 fun bracket : Describe a => a -> String
   | bracket x = "[" ++ describe x ++ "]"
 
-def main = (pair 1 2, bracket 3)
+fun main () = println "${(pair 1 2, bracket 3):?}"
 ```
 
 ```
-=> ("1 and 2", "[3]")
+("1 and 2", "[3]")
 ```
 
 `pair`'s type is `(Describe a, Describe b) => a -> b -> String`. A trait can
@@ -1332,11 +1371,11 @@ fun fromList : Container f => [Elem f;] -> f
 fun stack : [a;] -> Stack a
   | stack xs = fromList xs
 
-def main = toList (insert 0 (stack [1; 2; 3]))
+fun main () = println (toList (insert 0 (stack [1; 2; 3])))
 ```
 
 ```
-=> [0; 1; 2; 3]
+[0; 1; 2; 3]
 ```
 
 `fromList` works for every container, and `stack` picks one by its result
@@ -1373,11 +1412,11 @@ fun labels : [Int;] -> [String;]
 fun flags : [Int;] -> [Bool;]
   | flags xs = convert xs
 
-def main = (labels [1; 2], flags [0; 3])
+fun main () = println "${(labels [1; 2], flags [0; 3]):?}"
 ```
 
 ```
-=> (["#1"; "#2"], [False; True])
+(["#1"; "#2"], [False; True])
 ```
 
 A constraint names all of them -- `Convert a b =>` -- an associated type is of
@@ -1429,6 +1468,7 @@ primitive, so `x + y` on two `Int`s is one machine instruction, as it would be
 if `+` were built in. A type of your own gets an operator with an `impl`:
 
 ```meadow
+@derive(Debug)
 record V2 = { x : Int, y : Int }
 
 impl Add V2 {
@@ -1437,11 +1477,11 @@ impl Add V2 {
 
 fun sumAll xs = foldl (+) (V2 { x = 0, y = 0 }) xs
 
-def main = sumAll [V2 { x = 1, y = 2 }, V2 { x = 3, y = 4 }]
+fun main () = println "${sumAll [V2 { x = 1, y = 2 }, V2 { x = 3, y = 4 }]:?}"
 ```
 
 ```
-=> V2(4, 6)
+V2(4, 6)
 ```
 
 **A new operator** is any run of the symbols `! % & * + . / < = > ? @ | ^ ~ :
@@ -1453,11 +1493,11 @@ infixl 6 <+>
 
 fun (<+>) a b = a * 10 + b
 
-def main = (1 <+> 2 <+> 3, 1 <+> 2 * 3)
+fun main () = println (1 <+> 2 <+> 3, 1 <+> 2 * 3)
 ```
 
 ```
-=> (123, 16)
+(123, 16)
 ```
 
 `infixl` groups to the left (`a - b - c` is `(a - b) - c`), `infixr` to the
@@ -1506,11 +1546,11 @@ impl Visual String {}
 fun first : Visual s => s -> String
   | first s = match take1 s 0 with | Just (t, _) -> showToken s t | None -> "empty"
 
-def main = first "xyz"
+fun main () = println (first "xyz")
 ```
 
 ```
-=> "<'x'>"
+<'x'>
 ```
 
 `impl Visual String {}` says nothing about `Token String`: that is `impl Stream
@@ -1593,11 +1633,11 @@ def vec  = [1, 2, 3]
 def list = [1; 2; 3]
 def arr  = #[1, 2, 3]
 
-def main = (len vec, List.length list, arrayLen arr)
+fun main () = println (len vec, List.length list, arrayLen arr)
 ```
 
 ```
-=> (3, 3, 3)
+(3, 3, 3)
 ```
 
 ### Ranges
@@ -1606,25 +1646,26 @@ def main = (len vec, List.length list, arrayLen arr)
 function is **half-open**, which is a genuine trap:
 
 ```meadow
-def main = ([1..5], range 1 5)
+fun main () = println ([1..5], range 1 5)
 ```
 
 ```
-=> ([1, 2, 3, 4, 5], [1, 2, 3, 4])
+([1, 2, 3, 4, 5], [1, 2, 3, 4])
 ```
 
 ### Working with vectors
 
 ```meadow
-def main =
+fun main () =
   [1..10]
   |> filter (\n -> n % 2 == 0)
   |> map (\n -> n * n)
   |> foldl (\acc n -> acc + n) 0
+  |> println
 ```
 
 ```
-=> 220
+220
 ```
 
 Other prelude staples: `head`, `last`, `get`, `getOr`, `take`, `drop`, `slice`,
@@ -1635,11 +1676,11 @@ Other prelude staples: `head`, `last`, `get`, `getOr`, `take`, `drop`, `slice`,
 `get` is bounds-checked and returns a `Maybe`:
 
 ```meadow
-def main = (get [1, 2, 3] 1, get [1, 2, 3] 99, getOr 0 [1, 2, 3] 99)
+fun main () = println (get [1, 2, 3] 1, get [1, 2, 3] 99, getOr 0 [1, 2, 3] 99)
 ```
 
 ```
-=> (Just(2), None, 0)
+(Just(2), None, 0)
 ```
 
 ### Working with lists
@@ -1654,11 +1695,11 @@ fun total xs =
   | [;] -> 0
   | x :: rest -> x + total rest
 
-def main = (total [1; 2; 3], 1 :: 2 :: [;], List.reverse [1; 2; 3])
+fun main () = println (total [1; 2; 3], 1 :: 2 :: [;], List.reverse [1; 2; 3])
 ```
 
 ```
-=> (6, [1; 2], [3; 2; 1])
+(6, [1; 2], [3; 2; 1])
 ```
 
 `Vector.toList` and `Vector.fromList` convert between the two.
@@ -1675,11 +1716,11 @@ fun describe v =
   | [] -> 0
   | _ -> len v
 
-def main = (describe [], describe [1, 2, 3])
+fun main () = println (describe [], describe [1, 2, 3])
 ```
 
 ```
-=> (0, 3)
+(0, 3)
 ```
 
 ### Strings are bytes; characters are scalars
@@ -1690,17 +1731,14 @@ Unicode **scalar**, so they are different things and the bridge is explicit:
 ```meadow
 use Std.String as S
 
-def main =
-  ( S.byteLength "héllo"
-  , S.charLength "héllo"
-  , S.chars "hi"
-  , S.fromChars ['h', 'i']
-  , S.charAt "héllo" 1
-  )
+fun main () =
+  let _ = println (S.byteLength "héllo", S.charLength "héllo") in
+  println "${(S.chars "hi", S.fromChars ['h', 'i'], S.charAt "héllo" 1):?}"
 ```
 
 ```
-=> (6, 5, ['h', 'i'], "hi", Just('é'))
+(6, 5)
+(['h', 'i'], "hi", Just('é'))
 ```
 
 The rest of `Std.String` is byte-oriented and ASCII-minded:
@@ -1708,22 +1746,22 @@ The rest of `Std.String` is byte-oriented and ASCII-minded:
 ```meadow
 use Std.String as S
 
-def main = (S.concat "foo" "bar", S.split "," "a,b,c", S.toUpper "hi", S.toInt "42")
+fun main () = println "${(S.concat "foo" "bar", S.split "," "a,b,c", S.toUpper "hi", S.toInt "42"):?}"
 ```
 
 ```
-=> ("foobar", ["a", "b", "c"], "HI", Just(42))
+("foobar", ["a", "b", "c"], "HI", Just(42))
 ```
 
 `concat` is common enough to have an operator. `a ++ b` is `S.concat a b`, and
 it is in the prelude, so it needs no `use`:
 
 ```meadow
-def main = "n = " ++ show 42 ++ "!"
+fun main () = println ("n = " ++ show 42 ++ "!")
 ```
 
 ```
-=> "n = 42!"
+n = 42!
 ```
 
 Strings are ordered byte by byte, which for UTF-8 is the order of their code
@@ -1735,11 +1773,11 @@ points, and `<`, `compare` and the rest work on them as on anything `Ord`;
 use Std.String as S
 use Std.Sort (sortBy)
 
-def main = (S.compare "apple" "banana", S.lessThan "app" "apple", sortBy S.compare ["pear", "Fig", "apple"])
+fun main () = println "${(S.compare "apple" "banana", S.lessThan "app" "apple", sortBy S.compare ["pear", "Fig", "apple"]):?}"
 ```
 
 ```
-=> (Less, True, ["Fig", "apple", "pear"])
+(Less, True, ["Fig", "apple", "pear"])
 ```
 
 `++` binds looser than application and tighter than `==`, and groups to the
@@ -1760,11 +1798,11 @@ fun digits acc bytes i =
   if i >= arrayLen bytes then acc
   else digits (acc * 10 + toInt (arrayGet bytes i - 48)) bytes (i + 1)
 
-def main = digits 0 (stringToBytes "1234") 0
+fun main () = println (digits 0 (stringToBytes "1234") 0)
 ```
 
 ```
-=> 1234
+1234
 ```
 
 Without the `toInt`, `acc` would be a `UInt8` too, and the answer `210`.
@@ -1782,11 +1820,11 @@ fun countLines s i n =
   if i >= S.byteLength s then n
   else countLines s (i + 1) (if stringByteAt s i == 10 then n + 1 else n)
 
-def main = (S.byteLength text, countLines text 0 0, S.slice text 4 5, S.indexOfFrom "x" text 5)
+fun main () = println "${(S.byteLength text, countLines text 0 0, S.slice text 4 5, S.indexOfFrom "x" text 5):?}"
 ```
 
 ```
-=> (1000000, 100000, "x", Just(14))
+(1000000, 100000, "x", Just(14))
 ```
 
 `stringByteAt s i` is the byte, an error past either end; `S.byteAt` is the same
@@ -1803,18 +1841,14 @@ guessed at:
 ```meadow
 use Std.Char as C
 
-def main =
-  ( C.isDigit '7'
-  , C.toUpper 'a'
-  , C.code 'A'
-  , C.fromCode 97
-  , C.digitToInt '7'
-  , C.isAlpha 'é'
-  )
+fun main () =
+  let _ = println "${(C.isDigit '7', C.toUpper 'a', C.code 'A'):?}" in
+  println "${(C.fromCode 97, C.digitToInt '7', C.isAlpha 'é'):?}"
 ```
 
 ```
-=> (True, 'A', 65, 'a', Just(7), False)
+(True, 'A', 65)
+('a', Just(7), False)
 ```
 
 Characters match like any other literal:
@@ -1828,11 +1862,11 @@ fun kind c =
   | '\n' -> "newline"
   | _ -> if C.isDigit c then "digit" else "other"
 
-def main = (kind ' ', kind '\n', kind '4', kind 'x')
+fun main () = println "${(kind ' ', kind '\n', kind '4', kind 'x'):?}"
 ```
 
 ```
-=> ("space", "newline", "digit", "other")
+("space", "newline", "digit", "other")
 ```
 
 ### Parsing text
@@ -1856,11 +1890,11 @@ fun symbol s = L.symbol sc s
 
 fun pairOf = P.between (symbol "(") (symbol ")") (P.sepBy (lexeme L.decimal) (symbol ","))
 
-def main = P.parse (P.skipThen sc (P.thenSkip pairOf P.eof)) "( 1, 2 -- the second\n, 3 )"
+fun main () = println (P.parse (P.skipThen sc (P.thenSkip pairOf P.eof)) "( 1, 2 -- the second\n, 3 )")
 ```
 
 ```
-=> Ok([1, 2, 3])
+Ok([1, 2, 3])
 ```
 
 A parser reads a **stream**: a `String` (a stream of `Char`s), a `Vector` of
@@ -1900,14 +1934,16 @@ parser that must backtrack over what it ate says so. `chunk` (and so
 use Std.String.Parse as P
 use Std.String.Parse.Char as C
 
-def main =
+fun main () =
   match P.parse (P.skipThen (C.string "let x = ") (P.some C.digitChar)) "let x = y" with
-  | Ok _ -> ((0, 0), "fine")
-  | Err e -> e
+  | Ok _ -> println "fine"
+  | Err (span, message) -> let _ = println span in print message
 ```
 
 ```
-=> ((8, 9), "unexpected 'y'\nexpecting a digit\n")
+(8, 9)
+unexpected 'y'
+expecting a digit
 ```
 
 `Std.String.Parse.Lexer` has megaparsec's indentation too: `indentGuard`,
@@ -1930,11 +1966,11 @@ def ages = HashMap.fromVec [("ada", 36), ("grace", 45)]
 
 def older = HashMap.adjust "ada" (\n -> n + 1) ages
 
-def main = (HashMap.lookup "ada" ages, HashMap.lookup "ada" older, HashMap.size older)
+fun main () = println (HashMap.lookup "ada" ages, HashMap.lookup "ada" older, HashMap.size older)
 ```
 
 ```
-=> (Just(36), Just(37), 2)
+(Just(36), Just(37), 2)
 ```
 
 Underneath it is a hash array mapped trie, as in Rust's `im` or Clojure: a
@@ -1961,11 +1997,11 @@ fun counts words =
     let _ = V.foldl (\_ w -> HT.insertWith (\a b -> a + b) w 1 t) () words in
     HT.toVec t)
 
-def main = V.length (counts ["a", "b", "a", "c", "a"])
+fun main () = println (V.length (counts ["a", "b", "a", "c", "a"]))
 ```
 
 ```
-=> 3
+3
 ```
 
 `insertWith f k v` puts `v` at `k`, or `f v old` if `k` already holds `old`,
@@ -2026,11 +2062,11 @@ fun squares (n : Int) = foldl (\m i -> H.insert i (i * i) m) H.empty (range 0 n)
 
 def table = C.make (squares 1000)
 
-def main = (H.lookup 12 (C.get table), C.get table == squares 1000)
+fun main () = println (H.lookup 12 (C.get table), C.get table == squares 1000)
 ```
 
 ```
-=> (Just(144), True)
+(Just(144), True)
 ```
 
 `C.make` copies the value into a new region, and `C.get` hands it back without
@@ -2080,7 +2116,7 @@ name = "MyApp"
 version = "0.1.0"
 ```
 
-`meadow run MyApp` builds it and evaluates `main`. A single `.mw` file also counts
+`meadow run MyApp` builds it and runs `main`. A single `.mw` file also counts
 as a package, which is why `meadow run hello.mw` works.
 
 Module files, and any directories under `src/`, are PascalCase: each is a name
@@ -2104,7 +2140,7 @@ sibling's names arrive through a `use`, and never for free.
 -- src/Main.mw  (a second file in the same package)
 use MyApp.Math (double)       -- the package name, then the module
 
-def main = double 21
+fun main () = println (double 21)
 ```
 
 The path starts with the package's own name, which is what `Meadow.toml` says —
@@ -2225,11 +2261,13 @@ use Std.Collections.List              -- everything, unqualified
 use Std.Collections.Vector as V       -- V.len, and nothing else
 use Std.String (concat)               -- just `concat`
 
-def main = (length [1; 2; 3], V.len [1, 2], concat "a" "b")
+fun main () =
+  let answers = (length [1; 2; 3], V.len [1, 2], concat "a" "b") in
+  println "${answers:?}"
 ```
 
 ```
-=> (3, 2, "ab")
+(3, 2, "ab")
 ```
 
 A bare `use` shadows anything of the same name already in scope, including the
@@ -2416,7 +2454,7 @@ use Util (double)
 use Util (double)
 use Text (label)
 
-def main = (double 21, label "b")
+fun main () = println "${(double 21, label "b"):?}"
 ```
 
 Commands work from anywhere inside the workspace, and three flags pick the
@@ -2424,9 +2462,9 @@ packages:
 
 ```sh
 $ meadow run -p App              # a member, by name
-=> (42, "b x2")
+(42, "b x2")
 $ cd App && meadow run           # or the member you are in
-=> (42, "b x2")
+(42, "b x2")
 $ meadow test --workspace        # every member
 running 1 test
 test Util.doubles ... ok
@@ -2564,13 +2602,13 @@ fun log msg = println "[debug] ${msg}"
 @cfg(not(debug))
 fun log msg = ()
 
-def main =
+fun main () =
   let _ = log "starting" in
-  greet "Ann"
+  println (greet "Ann")
 ```
 
-`meadow run` prints `[debug] starting` and answers `"Hello, Ann."`;
-`meadow run --cfg feature=fancy` answers `"** Hello, Ann! **"`; and
+`meadow run` prints `[debug] starting` and then `Hello, Ann.`;
+`meadow run --cfg feature=fancy` prints `** Hello, Ann! **` instead; and
 `meadow run --release` skips the log line.
 
 The conditions a build knows:
@@ -2667,13 +2705,14 @@ fun banner () = S.concatAll ["*** ", greeting (), " ***"]
 
 fun page () = S.concat (banner ()) " Welcome back."
 
-def main =
-  ( handle page () with { ask question k -> k "Ada" }
-  , handle page () with { ask question k -> k "Grace" } )
+fun main () =
+  let _ = println (handle page () with { ask question k -> k "Ada" }) in
+  println (handle page () with { ask question k -> k "Grace" })
 ```
 
 ```
-=> ("*** Hello, Ada *** Welcome back.", "*** Hello, Grace *** Welcome back.")
+*** Hello, Ada *** Welcome back.
+*** Hello, Grace *** Welcome back.
 ```
 
 `banner` and `page` never mention a name, and the same `page` served two people.
@@ -2734,33 +2773,38 @@ final value on its way out. Leave it off and it is `return x -> x`:
 ```meadow
 effect Ask { ask : () -> Int }
 
-def main =
-  ( handle ask () + ask () with { ask () k -> k 10 }
-  , handle 1 + 2 with { ask () k -> k 10, return x -> x * 100 } )
+fun main () =
+  println
+    ( handle ask () + ask () with { ask () k -> k 10 }
+    , handle 1 + 2 with { ask () k -> k 10, return x -> x * 100 } )
 ```
 
 ```
-=> (20, 300)
+(20, 300)
 ```
 
 The first body asks twice and gets `10` both times. The second never asks at
 all; the `return` clause still runs, on `3`.
 
-If an operation is performed and nothing handles it, the program stops:
+An operation that nothing handles would have nobody to answer it, so a program
+in which that could happen does not compile:
 
 ```meadow
 effect Log { log : String -> () }
 
-def main = log "nobody is listening"
+fun main () = log "nobody is listening"
 ```
 
 ```
-unhandled effect Log.log
+`main` performs `Log`, which nothing would handle
 ```
 
-That is a _run-time_ error, and it is the one place the types below do not
-protect you: the type of a top-level `def` does not list what running it
-performs, so nothing checks that `main` handled everything.
+The compiler says so before the program ever runs. `main` is
+`() -> () ! Eff`: it may perform only the effects the runtime answers itself —
+the terminal, the filesystem, the clock, randomness and a few more
+([below](#the-standard-librarys-effects)) — because once it is running there is
+nothing above it to answer anything else. An effect of the program's own, like
+`Log`, has to be handled inside `main`, or inside something `main` calls.
 
 ### Reading the types
 
@@ -2799,14 +2843,14 @@ fun silenced () = handle work () with { log m k -> k () }
 
 fun answered () = handle silenced () with { ask q k -> k 21 }
 
-def main = answered ()
+fun main () = println (answered ())
 ```
 
 ```
   work : forall r. () -> Int ! { Log, Ask | r }
   silenced : forall r. () -> Int ! { Ask | r }
   answered : () -> Int
-=> 42
+42
 ```
 
 Each handler takes one label off the row. `silenced` still asks, so its type
@@ -2829,13 +2873,47 @@ fun sumTwice () = twice (\() -> 1 + 1)
 ```
   twice : forall a e. (() -> a ! e) -> a ! e
   logTwice : forall e. () -> () ! { Log | e }
-  sumTwice : forall n. () -> n
+  sumTwice : forall n. Add n => () -> n
 ```
 
 `twice` performs exactly what `f` performs — the row variable `e` appears on both
 sides. So `logTwice` performs `Log` and `sumTwice` performs nothing, and `twice`
 was written once. This is why `map`, `foldl` and every other higher-order
 function in `Std` works with effectful functions for free.
+
+**Naming a group of effects.** A row that lists the same effects again and
+again can name them once. `effect App = { Log, Ask }` declares an **effect
+alias**, and a row that names it means every effect in it: `! { App | e }` is
+`! { Log, Ask | e }`. Naming an effect twice changes nothing, so
+`! { App, Log | e }` is that same row. The types the compiler prints spell an
+alias out in full:
+
+```meadow
+effect Log { log : String -> () }
+effect Ask { ask : String -> Int }
+effect App = { Log, Ask }
+
+fun work : () -> Int ! { App | e }
+  | work () =
+    let _ = log "starting" in
+    ask "how many?" * 2
+
+fun main () : () ! Eff =
+  println (handle work () with { log m k -> k (), ask q k -> k 21 })
+```
+
+```
+  work : forall r. () -> Int ! { Log, Ask | r }
+  main : () -> () ! { Console, Fs, Process, Random, Time, Test, Mut, Thread }
+42
+```
+
+`Eff` is one of these. The standard library declares it as
+`effect Eff = { Console, Fs, Process, Random, Time, Test, Mut, Thread }` —
+every effect the runtime answers — and it is always in scope, so `main` can say
+in its own signature what it is allowed to do, as this one does. Leave the
+signature off and `main`'s effects are inferred like any other function's, and
+then checked against `Eff`.
 
 ### Continuations: what `k` is
 
@@ -2884,22 +2962,25 @@ That last point decides the order things happen in, so watch it happen:
 ```meadow
 effect Ask { ask : () -> Int }
 
-def main =
-  handle (
-    let _ = println "body: before ask" in
-    let x = ask () in
-    let _ = println "body: after ask" in
-    x + 1
-  ) with {
-    ask () k ->
-      let _ = println "handler: before k" in
-      let r = k 41 in
-      let _ = println "handler: after k" in
-      r,
-    return v ->
-      let _ = println "return clause" in
-      v
-  }
+fun main () =
+  let answer =
+    handle (
+      let _ = println "body: before ask" in
+      let x = ask () in
+      let _ = println "body: after ask" in
+      x + 1
+    ) with {
+      ask () k ->
+        let _ = println "handler: before k" in
+        let r = k 41 in
+        let _ = println "handler: after k" in
+        r,
+      return v ->
+        let _ = println "return clause" in
+        v
+    }
+  in
+  println answer
 ```
 
 ```
@@ -2908,13 +2989,14 @@ handler: before k
 body: after ask
 return clause
 handler: after k
-=> 42
+42
 ```
 
 Read it as a conversation. The body runs until it asks, then pauses. The
 handler runs until it calls `k`, then _it_ pauses while the body finishes —
 including the `return` clause. Only then does `k 41` return `42` to the handler,
-which prints its last line and makes `42` the value of the whole `handle`.
+which prints its last line and makes `42` the value of the whole `handle`,
+for `main` to print.
 
 If you know exceptions, that is the one-sentence summary: **performing an
 operation is throwing an exception that the handler can choose to resume**. The
@@ -2952,11 +3034,11 @@ def counted =
     return x -> 0
   }
 
-def main = (collected, counted)
+fun main () = println "${(collected, counted):?}"
 ```
 
 ```
-=> (["step one", "step two"], 2)
+(["step one", "step two"], 2)
 ```
 
 In `collected` the first `log` puts `"step one"` in front of whatever the rest of
@@ -2979,13 +3061,14 @@ fun search xs =
   let _ = forEach (\x -> if x < 0 then abort (show x) else ()) xs in
   "all non-negative"
 
-def main =
-  ( handle search [1, 2, 3] with { abort m k -> S.concat "found " m, return x -> x }
-  , handle search [1, -2, 3] with { abort m k -> S.concat "found " m, return x -> x } )
+fun main () =
+  let _ = println (handle search [1, 2, 3] with { abort m k -> S.concat "found " m, return x -> x }) in
+  println (handle search [1, -2, 3] with { abort m k -> S.concat "found " m, return x -> x })
 ```
 
 ```
-=> ("all non-negative", "found -2")
+all non-negative
+found -2
 ```
 
 There is no `break` in the language and none is needed: `forEach` does not know
@@ -3015,11 +3098,11 @@ fun drive job seen = match job with
   | Job.Finished result -> (result, seen)
   | Job.Suspended pct resume -> drive (resume ()) (pushBack seen pct)
 
-def main = drive (start ()) []
+fun main () = println "${drive (start ()) []:?}"
 ```
 
 ```
-=> ("all done", [25, 50, 75])
+("all done", [25, 50, 75])
 ```
 
 `start` returns as soon as `work` reports 25, with the rest of `work` inside the
@@ -3044,11 +3127,11 @@ fun counting act =
     return x -> \n -> x
   }) 0
 
-def main = counting job
+fun main () = println (counting job)
 ```
 
 ```
-=> [0; 1; 2]
+[0; 1; 2]
 ```
 
 `next () k -> \n -> (k n) (n + 1)` says: given the current count `n`, answer
@@ -3066,10 +3149,10 @@ exactly what happened to the effect:
 ```meadow
 effect Choose { choose : () -> Bool }
 
-def main =
-  handle (if choose () then 1 else 2) with {
+fun main () =
+  println (handle (if choose () then 1 else 2) with {
     choose () k -> k True + k False
-  }
+  })
 ```
 
 ```
@@ -3090,14 +3173,14 @@ first handler with a clause for the operation:
 ```meadow
 effect Ask { ask : () -> Int }
 
-def main =
-  handle (
+fun main () =
+  println (handle (
     handle ask () with { ask () k -> k 1 }
-  ) with { ask () k -> k 100 }
+  ) with { ask () k -> k 100 })
 ```
 
 ```
-=> 1
+1
 ```
 
 **Handlers are deep.** Resuming `k` puts the body back _with its handler around
@@ -3114,21 +3197,24 @@ effect Log { log : String -> () }
 
 use Std.String as S
 
-def main =
-  handle (
-    handle log "inner" with {
-      log m k -> let _ = log (S.concat "relayed: " m) in k (),
-      return x -> "done"
+fun main () =
+  let result =
+    handle (
+      handle log "inner" with {
+        log m k -> let _ = log (S.concat "relayed: " m) in k (),
+        return x -> "done"
+      }
+    ) with {
+      log m k -> let _ = println (S.concat "outer handler saw: " m) in k (),
+      return x -> x
     }
-  ) with {
-    log m k -> let _ = println (S.concat "outer handler saw: " m) in k (),
-    return x -> x
-  }
+  in
+  println result
 ```
 
 ```
 outer handler saw: relayed: inner
-=> "done"
+done
 ```
 
 **One handler can answer several effects**, and a clause's argument can be any
@@ -3143,16 +3229,19 @@ fun save () =
   let _ = write ("a.txt", "hello") in
   write ("b.txt", "world")
 
-def main =
-  handle save () with {
-    log m k -> k (),
-    write (path, text) k -> pushFront (k ()) path,
-    return x -> []
-  }
+fun main () =
+  let written =
+    handle save () with {
+      log m k -> k (),
+      write (path, text) k -> pushFront (k ()) path,
+      return x -> []
+    }
+  in
+  println "${written:?}"
 ```
 
 ```
-=> ["a.txt", "b.txt"]
+["a.txt", "b.txt"]
 ```
 
 **An operation without a clause passes through** to the next handler out, and
@@ -3166,16 +3255,19 @@ fun job () = let a = next () in let _ = reset () in let b = next () in (a, b)
 
 fun partial () = handle job () with { next () k -> k 7 }
 
-def main = handle partial () with { reset () k -> k () }
+fun main () = println (handle partial () with { reset () k -> k (), next () k -> k 0 })
 ```
 
 ```
   partial : forall e. () -> (Int, Int) ! { Counter | e }
-=> (7, 7)
+(7, 7)
 ```
 
 The row names effects, not operations, so the type cannot say "`Counter`, but
-only `reset`". It errs toward saying too much.
+only `reset`". It errs toward saying too much — which is why the handler in
+`main` has a clause for `next` as well, though nothing will ever reach it.
+Without one, `main` would still perform `Counter` as far as its type can
+tell, and would not compile.
 
 ### Which things are effects, and which are not
 
@@ -3186,20 +3278,22 @@ use Std.Console (withOutput)
 
 fun greet name = println name
 
-def main = withOutput (\() -> let _ = greet "Ada" in greet 42)
+fun main () =
+  let captured = withOutput (\() -> let _ = greet "Ada" in greet 42) in
+  println "${captured:?}"
 ```
 
 ```
-  greet : forall a e. a -> () ! { Console | e }
-=> ((), "Ada\n42\n")
+  greet : forall a e. Display a => a -> () ! { Console | e }
+((), "Ada\n42\n")
 ```
 
 `print` and `println` are ordinary functions in `Std.Console`, re-exported by the
 prelude so they need no `use`. Underneath they perform one operation,
 `writeOutput : String -> ()`. Unhandled, that writes to the real terminal; under
 `withOutput`, as here, nothing is printed and the text comes back as a value.
-A value that is not a `String` is written the way `show` renders it, which is
-why `42` came out as `42`. `withOutput` answers only `writeOutput` and not
+A value that is not a `String` is written by its `Display`, which is why `42`
+came out as `42`. `withOutput` answers only `writeOutput` and not
 `readLine`, so by the rule above `Console` stays in the type of anything that
 uses it.
 
@@ -3252,11 +3346,11 @@ fun countUp n =
   let ignored = repeatN n (\() -> modify r (\x -> x + 1)) in
   getRef r
 
-def main = countUp 5
+fun main () = println (countUp 5)
 ```
 
 ```
-=> 5
+5
 ```
 
 `countUp : Int -> Int ! { Mut | e }`. There is no handler for `Mut` — it is an
@@ -3295,13 +3389,13 @@ fun fibs n =
     let _ = St.forRange 2 n (\i -> St.set a i (St.get a (i - 1) + St.get a (i - 2))) in
     St.toVec a)
 
-def main = (sumTo 100, fibs 10)
+fun main () = println (sumTo 100, fibs 10)
 ```
 
 ```
-  sumTo : forall n. n -> n
-  fibs : forall n. Int -> [n]
-=> (5050, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34])
+  sumTo : forall n. (PartialOrd n, Add n) => n -> n
+  fibs : forall n. Add n => Int -> [n]
+(5050, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34])
 ```
 
 No `Mut`, and no `St` either. What makes that safe is a check on the types, not
@@ -3346,11 +3440,11 @@ fun tick () =
   let ignored = put (n + 1) in
   n
 
-def main = runState 0 (\() -> let a = tick () in let b = tick () in get ())
+fun main () = println (runState 0 (\() -> let a = tick () in let b = tick () in get ()))
 ```
 
 ```
-=> (2, 2)
+(2, 2)
 ```
 
 `runState` returns `(value, finalState)`; `evalState` keeps the value, `execState`
@@ -3376,11 +3470,11 @@ fun greet () =
   | Just name -> S.concat "hello, " name
   | None -> "nobody there"
 
-def main = (withInput ["ada"] greet, withInput [] greet)
+fun main () = println "${(withInput ["ada"] greet, withInput [] greet):?}"
 ```
 
 ```
-name: name: => ("hello, ada", "nobody there")
+name: name: ("hello, ada", "nobody there")
 ```
 
 The two `name: ` are real: `withInput` answers only `readLine`, so the `print`
@@ -3390,11 +3484,13 @@ conversation stays inside the program:
 ```meadow
 use Std.Console (prompt, withInput, withOutput)
 
-def main = withOutput (\() -> withInput ["ada"] (\() -> prompt "name: "))
+fun main () =
+  let captured = withOutput (\() -> withInput ["ada"] (\() -> prompt "name: ")) in
+  println "${captured:?}"
 ```
 
 ```
-=> (Just("ada"), "name: ")
+(Just("ada"), "name: ")
 ```
 
 `withInput` feeds a vector of lines and answers `None` once they run out, so the
@@ -3412,7 +3508,7 @@ anywhere near it:
     assertEq played () "a full game plays through to the summary"
 ```
 
-That runs `game` itself, not a copy of it — the same function `def main` calls. The
+That runs `game` itself, not a copy of it — the same function `main` calls. The
 `"nonsense"` line exercises the re-prompt path, and `"quit"` exercises the exit.
 Two handlers nest: `withSeed` fixes what the machine plays, `withInput` fixes what
 you type, and between them the transcript is fully determined.
@@ -3430,11 +3526,11 @@ fun guess () =
   | None -> "no answer"
   | Just typed -> if S.trim typed == show secret then "right" else "wrong"
 
-def main = R.withSeed 1 (\() -> withInput ["3"] guess)
+fun main () = println (R.withSeed 1 (\() -> withInput ["3"] guess))
 ```
 
 ```
-pick 1-10: => "wrong"
+pick 1-10: wrong
 ```
 
 #### Exn — failure that unwinds
@@ -3447,15 +3543,18 @@ use Std.Exn (raise, toResult, withDefault, toMaybe, ensure)
 
 fun half n = if n % 2 == 0 then n / 2 else raise "odd"
 
-def main =
-  ( toResult (\() -> 1 + half 8)
-  , toResult (\() -> 1 + half 7)
-  , withDefault 0 (\() -> half 7)
-  , toMaybe (\() -> half 7) )
+fun main () =
+  let results =
+    ( toResult (\() -> 1 + half 8)
+    , toResult (\() -> 1 + half 7)
+    , withDefault 0 (\() -> half 7)
+    , toMaybe (\() -> half 7) )
+  in
+  println "${results:?}"
 ```
 
 ```
-=> (Ok(5), Err("odd"), 0, None)
+(Ok(5), Err("odd"), 0, None)
 ```
 
 Also: `catch recover act` runs `recover` on the error, `threw act` answers a
@@ -3478,11 +3577,11 @@ fun countdown n =
   if n <= 0 then ()
   else let _ = yield n in countdown (n - 1)
 
-def main = (St.toVec (\() -> countdown 5), St.take 2 (\() -> countdown 100))
+fun main () = println (St.toVec (\() -> countdown 5), St.take 2 (\() -> countdown 100))
 ```
 
 ```
-=> ([5, 4, 3, 2, 1], [100, 99])
+([5, 4, 3, 2, 1], [100, 99])
 ```
 
 `take` is the interesting one: it simply stops resuming, which unwinds the
@@ -3493,14 +3592,15 @@ building a million-element anything:
 ```meadow
 use Std.Stream as St
 
-def main =
-  ( St.take 3 (\() -> St.range 0 1000000)
-  , St.toVec (\() -> St.map (\x -> x * x) (\() -> St.range 1 5))
-  , St.sum (\() -> St.range 1 101) )
+fun main () =
+  println
+    ( St.take 3 (\() -> St.range 0 1000000)
+    , St.toVec (\() -> St.map (\x -> x * x) (\() -> St.range 1 5))
+    , St.sum (\() -> St.range 1 101) )
 ```
 
 ```
-=> ([0, 1, 2], [1, 4, 9, 16], 5050)
+([0, 1, 2], [1, 4, 9, 16], 5050)
 ```
 
 Consumers: `toVec`, `toList`, `forEach`, `fold`, `count`, `sum`, `take`,
@@ -3516,11 +3616,11 @@ use Std.Random as R
 
 def rolls = R.withSeed 42 (\() -> [R.between 1 7; R.between 1 7; R.between 1 7])
 
-def main = (rolls, rolls == R.withSeed 42 (\() -> [R.between 1 7; R.between 1 7; R.between 1 7]))
+fun main () = println (rolls, rolls == R.withSeed 42 (\() -> [R.between 1 7; R.between 1 7; R.between 1 7]))
 ```
 
 ```
-=> ([1; 4; 4], True)
+([1; 4; 4], True)
 ```
 
 Same seed, same sequence — which is what makes a shuffle or a simulation testable.
@@ -3537,11 +3637,11 @@ def frozen = T.withClock 500 (\() -> (T.now (), T.now ()))
 
 def ticking = T.withTickingClock 1000 10 (\() -> (T.now (), T.now (), T.now ()))
 
-def main = (frozen, ticking)
+fun main () = println (frozen, ticking)
 ```
 
 ```
-=> ((500, 500), (1000, 1010, 1020))
+((500, 500), (1000, 1010, 1020))
 ```
 
 `withClock` freezes time; `withTickingClock start step` advances it by `step` on
@@ -3559,16 +3659,20 @@ the way a person reads them:
 ```meadow
 use Std.Time as T
 
-def main =
-  ( T.formatNanos 1234567,
-    T.formatMillis (T.minutes 90),
-    T.formatTimestamp 1789405445123,
-    T.formatReadable 1789405445123,
-    T.formatAgo (T.hours 5) (T.hours 2) )
+fun main () =
+  let _ = println (T.formatNanos 1234567) in
+  let _ = println (T.formatMillis (T.minutes 90)) in
+  let _ = println (T.formatTimestamp 1789405445123) in
+  let _ = println (T.formatReadable 1789405445123) in
+  println (T.formatAgo (T.hours 5) (T.hours 2))
 ```
 
 ```
-=> ("1.23ms", "1h 30m 00s", "2026-09-14T17:04:05.123Z", "Mon 14 Sep 2026 17:04:05 UTC", "3h ago")
+1.23ms
+1h 30m 00s
+2026-09-14T17:04:05.123Z
+Mon 14 Sep 2026 17:04:05 UTC
+3h ago
 ```
 
 `formatNanos` picks the unit and keeps three significant figures; `utc ms` takes a
@@ -3583,11 +3687,11 @@ Every operation answers a `Result`, so failure is a value rather than a throw:
 ```meadow
 use Std.Fs (readToString, writeString, exists, removeFile)
 
-def main =
+fun main () =
   handle
     match readToString "config.txt" with
-    | Ok text -> text
-    | Err e -> e
+    | Ok text -> println text
+    | Err e -> println e
   with {
     readToString path k -> k (Ok "colour = blue"),
     return x -> x
@@ -3595,7 +3699,7 @@ def main =
 ```
 
 ```
-=> "colour = blue"
+colour = blue
 ```
 
 No file was touched. `Fs` has no bundled fake — a handler is a few lines and the
@@ -3621,15 +3725,18 @@ fun versionOf tool =
   | Ok out -> P.outputStdout out
   | Err e -> e
 
-def main =
-  handle versionOf "meadow" with {
-    spawn cmd k -> k (Ok (0, "meadow 0.1.0-alpha", "")),
-    return x -> x
-  }
+fun main () =
+  let version =
+    handle versionOf "meadow" with {
+      spawn cmd k -> k (Ok (0, "meadow 0.1.0-alpha", "")),
+      return x -> x
+    }
+  in
+  println version
 ```
 
 ```
-=> "meadow 0.1.0-alpha"
+meadow 0.1.0-alpha
 ```
 
 `spawn` captures stdout and stderr and gives you `(status, out, err)` — pick them
@@ -3651,11 +3758,11 @@ that something _should_ fail:
 ```meadow
 use Std.Test (assertEq, didFail)
 
-def main = (didFail (\() -> assertEq 1 1 "same"), didFail (\() -> assertEq 1 2 "different"))
+fun main () = println (didFail (\() -> assertEq 1 1 "same"), didFail (\() -> assertEq 1 2 "different"))
 ```
 
 ```
-=> (False, True)
+(False, True)
 ```
 
 #### Thread — green threads and channels
@@ -3669,14 +3776,14 @@ use Std.Thread as Thread
 
 fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
 
-def main =
+fun main () =
   let a = Thread.spawn (\() -> fib 20) in
   let b = Thread.spawn (\() -> fib 21) in
-  (Thread.await a, Thread.await b, Thread.parMap (\n -> n * n) [1, 2, 3])
+  println (Thread.await a, Thread.await b, Thread.parMap (\n -> n * n) [1, 2, 3])
 ```
 
 ```
-=> (6765, 10946, [1, 4, 9])
+(6765, 10946, [1, 4, 9])
 ```
 
 `spawn` starts a thread and answers a `Task`; `await` waits for it and hands
@@ -3686,7 +3793,7 @@ never waits, `receive` takes the oldest value out and waits if there is none.
 ```meadow
 use Std.Thread as Thread
 
-def main =
+fun main () =
   let requests = Thread.newChannel () in
   let replies = Thread.newChannel () in
   let server = Thread.spawn (\() ->
@@ -3700,11 +3807,11 @@ def main =
   let _ = Thread.send requests (toInt 7) in
   let first = Thread.receive replies in
   let _ = Thread.send requests (toInt 8) in
-  (first, Thread.receive replies)
+  println (first, Thread.receive replies)
 ```
 
 ```
-=> (49, 64)
+(49, 64)
 ```
 
 The rules that make this safe:
@@ -3717,9 +3824,9 @@ The rules that make this safe:
   run time. Threads can't share mutable state. A `Compact` crosses without
   being copied, so compacting a large value is how threads share it cheaply.
 - **What a thread may do is in its type.** A thread starts with no handlers,
-  so its function may perform only what the runtime answers: `Console`, `Fs`,
-  `Process`, `Random`, `Time`, `Test`, `Mut` and `Thread`. Any other effect
-  must be handled inside the thread. `spawn (\() -> log "x")` with a `Log`
+  so its function may perform only what the runtime answers: `Eff`, as `main`
+  may — `Console`, `Fs`, `Process`, `Random`, `Time`, `Test`, `Mut` and
+  `Thread`. Any other effect must be handled inside the thread. `spawn (\() -> log "x")` with a `Log`
   handled outside is a type error: "the effect `Log` is not allowed here".
 - **`main` ending ends the program**, as in Go. Threads still running are
   stopped.
@@ -3753,17 +3860,17 @@ fun transfer from to (amount : Int) =
     let _ = Stm.writeTVar from (balance - amount) in
     Stm.modifyTVar to (\b -> b + amount))
 
-def main =
+fun main () =
   let a = Stm.newTVarIO (toInt 0) in
   let b = Stm.newTVarIO (toInt 0) in
   let waiting = Thread.spawn (\() -> transfer a b 30) in
   let _ = Stm.atomically (\() -> Stm.writeTVar a 100) in
   let _ = Thread.await waiting in
-  Stm.atomically (\() -> (Stm.readTVar a, Stm.readTVar b))
+  println (Stm.atomically (\() -> (Stm.readTVar a, Stm.readTVar b)))
 ```
 
 ```
-=> (70, 30)
+(70, 30)
 ```
 
 `check` blocks the transfer until the money is there. It is `retry` underneath:
@@ -3813,7 +3920,7 @@ use Std.Test (assertEq, assertTrue)
 
 fun double n = n * 2
 
-def main = double 21
+fun main () = println (double 21)
 
 @test fun doubling () = assertEq (double 21) 42 "double 21"
 
@@ -3876,7 +3983,7 @@ as it comes.
 |                                                                  |                                                                                                                          |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `meadow`                                                         | REPL                                                                                                                     |
-| `meadow run <path>`                                              | build and evaluate `main`, on the VM and its JIT                                                                         |
+| `meadow run <path>`                                              | build and run `main`, on the VM and its JIT                                                                              |
 | `meadow run --release <path>`                                    | …optimized, as an executable compiled ahead of time                                                                      |
 | `meadow run --backend vm\|jit\|aot <path>`                       | …on the Glade backend named (`--jit` and `--aot` for short)                                                              |
 | `meadow run --runtime silo <path>`                               | …on Silo: compiled by LLVM, counting references                                                                          |
@@ -3935,8 +4042,8 @@ object-oriented language offers a menu after a full stop, Meadow can offer one
 after a pipe, and for the same reason: by then it knows what the value _is_.
 
 ```meadow
-def main = [1, 2, 3] |>
---                      ^ len, head, reverse, drop ⟨…⟩, …
+def total = [1, 2, 3] |>
+--                       ^ len, head, reverse, drop ⟨…⟩, …
 ```
 
 The list is what that value can be piped into, so nothing that wants another
@@ -3971,8 +4078,8 @@ use Std.Maybe as M
 
 data Shape = Circle Int | Square Int
 
-def main = Shape.
---               ^ Circle, Square
+def shape = Shape.
+--                ^ Circle, Square
 
 def first = M.
 --            ^ map, unwrapOr, …, and Just and None
@@ -4063,7 +4170,7 @@ Also always available: the operators and their traits (`Std.Ops`: `Add`,
 `Sub`, `Mul`, `Div`, `Rem`, `Pow`, `Shift`, `Floating`; `Std.Cmp`:
 `PartialEq`, `Eq`, `PartialOrd`, `Ord`, with `compare` and `partialCmp`;
 `Std.Display` and `Std.Debug`); `++`
-(`Std.String.concat`); `print` and `println`; `runSt`; the primitives (`show`, `display`, `hash`,
+(`Std.String.concat`); `print` and `println`; `runSt`; the effect alias `Eff`; the primitives (`show`, `display`, `hash`,
 `arrayLen`, `arrayGet`, `stringToBytes`, `stringToChars`, `charCode`, `bitAnd`,
 `toInt`, `toUInt8`, `toFloat`, `toBigInt`, …); and the constructors `Just`, `None`, `Ok`, `Err`,
 `Less`, `Equal`, `Greater`, `True`, `False`, `Nil` and `Cons`.
@@ -4072,7 +4179,7 @@ Also always available: the operators and their traits (`Std.Ops`: `Add`,
 
 `Ops` `Display` `Debug` `Bool` `Ordering` `Function` `Tuple` `Num` (`Int` `Bits`) `Maybe` `Cmp` `Char` `Result`
 `Either` `Bytes` `Yield` `Collections` (`Vector` `List` `Tree` `Set` `Map` `HashMap`) `State` `St` `Compact` `Thread` `Stm` `Exn`
-`Stream` `Random` `Fs` `Process` `String` (`Parse` (`Char` `Lexer`)) `Path` `Json` `Time` `Test`
+`Stream` `Random` `Fs` `Process` `String` (`Parse` (`Char` `Lexer`)) `Path` `Json` `Time` `Test` `Eff`
 
 `Std.String.Parse` is a megaparsec-style parser combinator library -- see
 [Parsing text](#parsing-text); `Std.Json` is built on it and is worth reading as
@@ -4106,6 +4213,9 @@ a worked example.
 - A local function that uses a trait's method is used at one type: make it a
   top-level `fun` if it has to work at two.
 - No block comments.
+- `main` is a function, `fun main () = ...`: it returns `()`, performs at most
+  `Eff`, and a program shows what it prints and nothing else. `def main = ...`
+  is an error.
 - A guarded `match` arm counts for nothing in the exhaustiveness check.
 - `Std.Char`'s predicates are ASCII-only; `String` counts bytes, `Char` counts
   scalars.

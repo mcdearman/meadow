@@ -70,7 +70,7 @@ fun loop () =
         let ignored = println (replLine trimmed) in
         loop ()
 
-@pub(pkg) def main =
+@pub(pkg) fun main () =
   let ignored = println "mini-ml. An expression per line, `:q` or Ctrl-D to stop." in
   loop ()
 

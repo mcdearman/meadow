@@ -5,10 +5,10 @@
 --
 --   fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
 --
---   def main =
+--   fun main () =
 --     let a = Thread.spawn (\() -> fib 30) in
 --     let b = Thread.spawn (\() -> fib 31) in
---     Thread.await a + Thread.await b
+--     println (Thread.await a + Thread.await b)
 --
 -- A thread is cheap -- a small heap and a register file -- so a program can
 -- have a great many. The runtime runs them on every core, moving each between

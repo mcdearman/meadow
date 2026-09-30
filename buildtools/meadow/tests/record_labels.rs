@@ -12,7 +12,7 @@ use common::{errors_std_with, eval_main_std};
 use meadow::Options;
 
 fn errors(src: &str) -> String {
-    errors_std_with(src, Options::debug())
+    errors_std_with(src, Options::debug().entry("result"))
 }
 
 fn refused(src: &str) {
@@ -25,20 +25,20 @@ fn refused(src: &str) {
 
 #[test]
 fn a_literal_with_a_label_twice_is_refused() {
-    refused("def r = { x = 1, x = 2 }\ndef main = 0\n");
+    refused("def r = { x = 1, x = 2 }\ndef result = 0\n");
 }
 
 #[test]
 fn a_pattern_with_a_label_twice_is_refused() {
     refused(
         "fun f (r : { x : Int }) : Int = match r with | { x = a, x = b } -> a\n\
-         def main = 0\n",
+         def result = 0\n",
     );
 }
 
 #[test]
 fn extending_a_record_that_has_the_field_is_refused() {
-    refused("def r = { x = True }\ndef s = { x = 1 | r }\ndef main = 0\n");
+    refused("def r = { x = True }\ndef s = { x = 1 | r }\ndef result = 0\n");
 }
 
 #[test]
@@ -47,7 +47,7 @@ fn a_polymorphic_extension_applied_to_a_record_with_the_field_is_refused() {
     refused(
         "fun ext r = { x = 1 | r }\n\
          def s = ext { x = True }\n\
-         def main = 0\n",
+         def result = 0\n",
     );
 }
 
@@ -59,7 +59,7 @@ fn the_promise_survives_another_generalization() {
         "fun ext r = { x = 1 | r }\n\
          fun wrap r = ext r\n\
          def s = wrap { x = True }\n\
-         def main = 0\n",
+         def result = 0\n",
     );
 }
 
@@ -68,7 +68,7 @@ fn extending_twice_with_one_label_is_refused() {
     refused(
         "fun ext r = { x = 1 | r }\n\
          fun twice r = ext (ext r)\n\
-         def main = 0\n",
+         def result = 0\n",
     );
 }
 
@@ -78,7 +78,7 @@ fn the_rest_of_an_open_pattern_lacks_its_fields() {
     // there cannot later be given an `x` of its own by extension.
     refused(
         "fun f r = match r with | { x = a | _ } -> { x = a | r }\n\
-         def main = 0\n",
+         def result = 0\n",
     );
 }
 
@@ -87,14 +87,14 @@ fn ordinary_extension_still_works() {
     let out = errors(
         "fun ext r = { x = 1 | r }\n\
          fun wrap r = ext r\n\
-         def main = (wrap { y = 2 }).x + (ext { y = 40 }).y\n",
+         def result = (wrap { y = 2 }).x + (ext { y = 40 }).y\n",
     );
     assert!(!out.contains("already has a field"), "{out}");
     assert_eq!(
         eval_main_std(
             "fun ext r = { x = 1 | r }\n\
              fun wrap r = ext r\n\
-             def main = (wrap { y = 2 }).x + (ext { y = 40 }).y\n"
+             def result = (wrap { y = 2 }).x + (ext { y = 40 }).y\n"
         ),
         "41"
     );
@@ -106,7 +106,7 @@ fn distinct_labels_and_updates_are_unaffected() {
         eval_main_std(
             "def r = { x = 1, y = 2 }\n\
              def s = { z = 3 | r }\n\
-             def main = s.x + s.y + s.z + { r | x = 10 }.x\n"
+             def result = s.x + s.y + s.z + { r | x = 10 }.x\n"
         ),
         "16"
     );
@@ -119,11 +119,11 @@ fn an_annotated_extension_keeps_its_promise() {
     refused(
         "fun ext (r : { | r }) : { x : Int | r } = { x = 1 | r }\n\
          def s = ext { x = True }\n\
-         def main = 0\n",
+         def result = 0\n",
     );
     refused(
         "fun ext : { | r } -> { x : Int | r } = \\p -> { x = 1 | p }\n\
          def s = ext { x = True }\n\
-         def main = 0\n",
+         def result = 0\n",
     );
 }

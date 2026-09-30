@@ -25,7 +25,7 @@ fn division_and_modulo_by_zero_are_errors() {
     fails_with("1 / 0", "division by zero");
     fails_with("1 % 0", "modulo by zero");
     // Through a variable, so it cannot be folded away at compile time.
-    assert!(eval_main_std("fun d a b = a / b\ndef main = d 1 0\n").contains("division by zero"));
+    assert!(eval_main_std("fun d a b = a / b\ndef result = d 1 0\n").contains("division by zero"));
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn malformed_hex_is_rejected() {
 fn a_reference_cannot_be_made_to_contain_itself() {
     // `setRef r r` needs `a = Ref a`, which the occurs check refuses — so the
     // cyclic structure that would hang `show` or `==` cannot be built.
-    let out = eval_main_std("def main = let r = newRef 0 in setRef r r\n");
+    let out = eval_main_std("def result = let r = newRef 0 in setRef r r\n");
     assert!(
         out.contains("compile errors"),
         "a self-referential cell should not typecheck: {out}"
@@ -137,7 +137,7 @@ fn a_reference_cannot_be_made_to_contain_itself() {
 #[test]
 fn reading_a_cell_of_a_cell_is_fine() {
     assert_eq!(
-        eval_main_std("def main = getRef (getRef (newRef (newRef 5)))\n"),
+        eval_main_std("def result = getRef (getRef (newRef (newRef 5)))\n"),
         "5"
     );
 }
@@ -146,14 +146,15 @@ fn reading_a_cell_of_a_cell_is_fine() {
 
 #[test]
 fn a_failed_match_is_an_error_not_a_panic() {
-    let out =
-        eval_main_std("use T.*\ndata T = A | B\nfun f x = match x with | A -> 1\ndef main = f B\n");
+    let out = eval_main_std(
+        "use T.*\ndata T = A | B\nfun f x = match x with | A -> 1\ndef result = f B\n",
+    );
     assert!(out.contains("non-exhaustive"), "got {out}");
 }
 
 #[test]
 fn an_unhandled_effect_names_itself() {
-    let out = eval_main_std("effect E { op : () -> Int }\ndef main = op ()\n");
+    let out = eval_main_std("effect E { op : () -> Int }\ndef result = op ()\n");
     assert!(
         out.contains("unhandled effect") && out.contains("op"),
         "got {out}"
@@ -162,7 +163,7 @@ fn an_unhandled_effect_names_itself() {
 
 #[test]
 fn calling_a_non_function_is_an_error() {
-    let out = eval_main_std("fun apply f = f 1\ndef main = apply 2\n");
+    let out = eval_main_std("fun apply f = f 1\ndef result = apply 2\n");
     assert!(
         out.contains("compile errors") || out.contains("not a function"),
         "got {out}"
@@ -174,14 +175,14 @@ fn calling_a_non_function_is_an_error() {
 #[test]
 fn string_operations_clamp_rather_than_index_blindly() {
     let src = "use Std.String as S\n\
-               def main = (S.slice \"hi\" 99 200, S.drop \"hi\" 99, S.take \"hi\" 0, S.byteAt \"\" 0)\n";
+               def result = (S.slice \"hi\" 99 200, S.drop \"hi\" 99, S.take \"hi\" 0, S.byteAt \"\" 0)\n";
     assert_eq!(eval_main_std(src), "(\"\", \"\", \"\", None)");
 }
 
 #[test]
 fn path_operations_survive_nonsense_input() {
     let src = "use Std.Path as P\n\
-               def main = (P.extension \"\", P.fileName \"\", P.normalize \"\", P.join \"\" \"\")\n";
+               def result = (P.extension \"\", P.fileName \"\", P.normalize \"\", P.join \"\" \"\")\n";
     let out = eval_main_std(src);
     assert!(
         !out.contains("panic") && !out.contains("error"),
@@ -195,7 +196,7 @@ fn json_rejects_deeply_nested_input_without_crashing() {
     let src = "use Std.Json as J\n\
                use Std.String as S\n\
                fun nest n = if n <= 0 then \"1\" else S.concatAll [\"[\", nest (n - 1), \"]\"]\n\
-               def main = match J.parse (nest 200) with | Ok v -> True | Err e -> True\n";
+               def result = match J.parse (nest 200) with | Ok v -> True | Err e -> True\n";
     assert_eq!(eval_main_std(src), "True");
 }
 
@@ -205,7 +206,7 @@ fn sorting_pathological_input_terminates() {
     // quadratic or, with a bad partition, loop forever.
     let src = "use Std.Sort (sort, isSorted)\n\
                use Std.Collections.Vector as V\n\
-               def main =\n\
+               def result =\n\
                \x20 ( isSorted (sort (V.replicate 500 1))\n\
                \x20 , isSorted (sort (V.reverse (V.range 0 500)))\n\
                \x20 )\n";
@@ -226,7 +227,7 @@ fn sorting_pathological_input_terminates() {
 #[test]
 fn a_long_list_can_be_built_and_walked() {
     let src = "use Std.Collections.List as L
-\n               def main = L.length (L.range 0 50000)
+\n               def result = L.length (L.range 0 50000)
 ";
     assert_eq!(eval_main_std(src), "50000");
 }
@@ -235,7 +236,7 @@ fn a_long_list_can_be_built_and_walked() {
 fn a_long_list_can_be_compared() {
     // `==` recursed per element until `value_eq` was made iterative.
     let src = "use Std.Collections.List as L
-\n               def main =
+\n               def result =
 \n                 let a = L.range 0 50000 in
 \n                 (a == a, a == L.range 0 50000, a == L.range 0 49999)
 ";
@@ -246,7 +247,7 @@ fn a_long_list_can_be_compared() {
 fn a_long_list_can_be_shown() {
     let src = "use Std.Collections.List as L
 \n               use Std.String as S
-\n               def main = S.byteLength (show (L.range 0 20000)) > 0
+\n               def result = S.byteLength (show (L.range 0 20000)) > 0
 ";
     assert_eq!(eval_main_std(src), "True");
 }
@@ -256,7 +257,7 @@ fn vectors_were_never_subject_to_it() {
     // A tree, so only ~log32(n) deep — this worked even before the fix, and is
     // here so a regression shows up as a difference between the two.
     let src = "use Std.Collections.Vector as V
-\n               def main = V.len (V.range 0 50000)
+\n               def result = V.len (V.range 0 50000)
 ";
     assert_eq!(eval_main_std(src), "50000");
 }
@@ -266,7 +267,7 @@ fn deep_recursion_itself_was_never_the_problem() {
     // The continuation lives on the heap, so 200_000 non-tail frames are fine.
     // Only the data structure ever was.
     let src = "fun go i = if i <= 0 then 0 else 1 + go (i - 1)
-def main = go 200000
+def result = go 200000
 ";
     assert_eq!(eval_main_std(src), "200000");
 }

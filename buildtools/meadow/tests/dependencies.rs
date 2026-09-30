@@ -76,7 +76,7 @@ fn app_using(what: &str, repo: &Path) -> PathBuf {
     .unwrap();
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use Greet (greeting)\ndef main = greeting\n",
+        "use Greet (greeting)\ndef result = greeting\n",
     )
     .unwrap();
     dir
@@ -91,7 +91,7 @@ fn build_in(app: &Path, cache: &str, set: impl FnOnce(&mut Resolver)) -> pipelin
     let mut resolver = Resolver::for_entry(app);
     resolver.cache = scratch(&format!("cache-{cache}"));
     set(&mut resolver);
-    pipeline::build_resolved(app, meadow::Options::debug(), &mut resolver)
+    pipeline::build_resolved(app, meadow::Options::debug().entry("result"), &mut resolver)
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn a_second_build_needs_no_network() {
     let first = {
         let mut r = Resolver::for_entry(&app);
         r.cache = cache.clone();
-        pipeline::build_resolved(&app, meadow::Options::debug(), &mut r)
+        pipeline::build_resolved(&app, meadow::Options::debug().entry("result"), &mut r)
     };
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
 
@@ -240,7 +240,7 @@ fn a_path_dependency_is_not_pinned() {
     .unwrap();
     std::fs::write(
         app.join("src/Main.mw"),
-        "use Util (answer)\ndef main = answer\n",
+        "use Util (answer)\ndef result = answer\n",
     )
     .unwrap();
 
@@ -318,7 +318,7 @@ fn update_moves_a_branch_forward_and_a_build_does_not() {
     .unwrap();
     std::fs::write(
         app.join("src/Main.mw"),
-        "use Greet (greeting)\ndef main = greeting\n",
+        "use Greet (greeting)\ndef result = greeting\n",
     )
     .unwrap();
 
@@ -327,7 +327,7 @@ fn update_moves_a_branch_forward_and_a_build_does_not() {
         let mut r = Resolver::for_entry(&app);
         r.cache = cache.clone();
         set(&mut r);
-        pipeline::build_resolved(&app, meadow::Options::debug(), &mut r)
+        pipeline::build_resolved(&app, meadow::Options::debug().entry("result"), &mut r)
     };
 
     let out = build(|_| {});
@@ -433,7 +433,7 @@ fn app_wanting(what: &str, repo: &Path, version: &str) -> PathBuf {
     .unwrap();
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use Widget (label)\n\ndef main = label\n",
+        "use Widget (label)\n\ndef result = label\n",
     )
     .unwrap();
     dir
@@ -506,7 +506,7 @@ fn a_repository_with_no_releases_says_so_rather_than_guessing() {
     .unwrap();
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use Greet (greeting)\ndef main = greeting\n",
+        "use Greet (greeting)\ndef result = greeting\n",
     )
     .unwrap();
     let out = build_in(&dir, "rel-untagged", |_| {});
@@ -549,7 +549,7 @@ fn everything_that_can_share_a_release_shares_one() {
     .unwrap();
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use One (oneLabel)\nuse Two (twoLabel)\n\ndef main = (oneLabel, twoLabel)\n",
+        "use One (oneLabel)\nuse Two (twoLabel)\n\ndef result = (oneLabel, twoLabel)\n",
     )
     .unwrap();
     let out = build_in(&dir, "rel-share", |_| {});
@@ -597,7 +597,7 @@ fn requirements_that_cannot_meet_take_a_copy_each() {
     .unwrap();
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use Old (oldLabel)\nuse New (newLabel)\n\ndef main = (oldLabel, newLabel)\n",
+        "use Old (oldLabel)\nuse New (newLabel)\n\ndef result = (oldLabel, newLabel)\n",
     )
     .unwrap();
     let out = build_in(&dir, "rel-two", |_| {});
@@ -652,7 +652,7 @@ fn two_copies_of_a_package_declare_two_types() {
     .unwrap();
     std::fs::write(
         dir.join("src/Main.mw"),
-        "use Maker (aTag)\nuse Taker (takeTag)\n\ndef main = takeTag aTag\n",
+        "use Maker (aTag)\nuse Taker (takeTag)\n\ndef result = takeTag aTag\n",
     )
     .unwrap();
     let out = build_in(&dir, "rel-types", |_| {});

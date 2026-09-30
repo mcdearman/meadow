@@ -4,13 +4,13 @@
 -- With no handler the runtime supplies real entropy:
 --
 --   use Std.Random (between)
---   def main = between 1 7             -- a die roll
+--   fun main () = println (between 1 7)             -- a die roll
 --
 -- With `withSeed` the same program is deterministic, which is what makes random
 -- code testable:
 --
 --   use Std.Random (between, withSeed)
---   def main = withSeed 42 (\() -> between 1 7)      -- the same roll every time
+--   fun main () = println (withSeed 42 (\() -> between 1 7))  -- the same roll every time
 --
 -- The generator is SplitMix64: one multiply-xor-shift chain, no state beyond a
 -- single `Int`. It is fast and good enough for shuffling, sampling and tests. It

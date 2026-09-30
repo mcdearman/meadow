@@ -2,10 +2,10 @@
 --
 --   use Std.Json as J
 --
---   def main =
+--   fun main () =
 --     match J.parse "{\"a\": [1, 2, 3]}" with
---     | Ok v -> J.render v
---     | Err e -> e
+--     | Ok v -> println (J.render v)
+--     | Err e -> println e
 --
 -- The parser is built out of `Std.String.Parse`, over the characters of the
 -- input, and follows RFC 8259 with one deliberate gap, noted at `stringLit`.

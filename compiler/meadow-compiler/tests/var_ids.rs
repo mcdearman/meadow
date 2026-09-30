@@ -7,7 +7,7 @@
 
 use meadow_compiler::{compile_str, hir::VarId};
 
-const SRC: &str = "fun add x y = x + y\nfun twice f v = f (f v)\ndef main = add 1 2\n";
+const SRC: &str = "fun add x y = x + y\nfun twice f v = f (f v)\ndef result = add 1 2\n";
 
 /// The same source compiles to the same ids, however many units came first.
 ///
@@ -23,7 +23,7 @@ fn compiling_a_unit_twice_gives_the_same_ids() {
     );
 
     // Compile something else in between, to use up ids if anything still can.
-    let _ = compile_str("noise", "fun a b = b\nfun c d = d\ndef main = 0\n");
+    let _ = compile_str("noise", "fun a b = b\nfun c d = d\ndef result = 0\n");
 
     let (second, d2) = compile_str("t", SRC);
     assert!(d2.is_empty());
@@ -56,7 +56,7 @@ fn a_units_ids_lie_inside_the_range_it_reports() {
          fun pick c = match c with | Red -> 1 | Green -> 2\n\
          fun curried a = add a\n\
          fun add a b = a + b\n\
-         def main = pick Red\n",
+         def result = pick Red\n",
     );
     assert!(
         diags.is_empty(),
@@ -123,7 +123,7 @@ fn a_dependent_unit_does_not_overlap_its_dependency() {
         "{:?}",
         d1.iter().map(|d| &d.msg).collect::<Vec<_>>()
     );
-    let (top, d2) = unit("top", "def main = helper 41\n", &[&base]);
+    let (top, d2) = unit("top", "def result = helper 41\n", &[&base]);
     assert!(
         d2.is_empty(),
         "{:?}",

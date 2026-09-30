@@ -34,7 +34,7 @@ struct Std {
 }
 
 fn std_program() -> Std {
-    let (packages, diags) = stdlib::std_packages(Options::debug());
+    let (packages, diags) = stdlib::std_packages(Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "the standard library should compile cleanly: {:?}",
@@ -55,7 +55,7 @@ fn std_program() -> Std {
 #[test]
 fn the_whole_standard_library_lowers() {
     let std = std_program();
-    let lowered = meadow_seq::lower_program(&std.program, Options::debug().opt);
+    let lowered = meadow_seq::lower_program(&std.program, Options::debug().entry("result").opt);
     assert!(
         lowered.unsupported.is_empty(),
         "the standard library uses `core` constructs the lowering does not \
@@ -73,7 +73,7 @@ fn the_whole_standard_library_lowers() {
 #[test]
 fn the_whole_standard_library_reaches_bytecode() {
     let std = std_program();
-    let image = runtime::compile(&std.program, Options::debug().opt)
+    let image = runtime::compile(&std.program, Options::debug().entry("result").opt)
         .expect("the standard library should compile");
     assert!(
         image.code.len() > 10_000,
@@ -99,10 +99,20 @@ fn the_vm_agrees_with_the_cek() {
     let std = std_program();
     let vars: Vec<core::Var> = std.tests.iter().map(|(_, v)| *v).collect();
 
-    let cek = runtime::run_tests(&std.program, &vars, Engine::Cek, Options::debug().opt)
-        .expect("the CEK runner");
-    let vm = runtime::run_tests(&std.program, &vars, Engine::Vm, Options::debug().opt)
-        .expect("the VM runner");
+    let cek = runtime::run_tests(
+        &std.program,
+        &vars,
+        Engine::Cek,
+        Options::debug().entry("result").opt,
+    )
+    .expect("the CEK runner");
+    let vm = runtime::run_tests(
+        &std.program,
+        &vars,
+        Engine::Vm,
+        Options::debug().entry("result").opt,
+    )
+    .expect("the VM runner");
 
     let mut agreed = 0;
     let mut native = Vec::new();
@@ -248,7 +258,7 @@ fn every_standard_library_value_is_where_its_representation_says() {
         defs,
         ..std.program.clone()
     };
-    let lowered = meadow_seq::lower_program(&whole, Options::debug().opt);
+    let lowered = meadow_seq::lower_program(&whole, Options::debug().entry("result").opt);
     let mut wrong = Vec::new();
     let mut ran = 0;
     for (i, (name, _)) in std.tests.iter().enumerate() {
@@ -438,7 +448,7 @@ fn switches(s: &meadow_seq::Statement, least: usize) -> usize {
 #[test]
 fn a_debug_build_runs_the_standard_library_the_same() {
     let plain = std_program();
-    let mut options = Options::debug();
+    let mut options = Options::debug().entry("result");
     options.debug_info = true;
     let (packages, diags) = stdlib::std_packages(options);
     assert!(

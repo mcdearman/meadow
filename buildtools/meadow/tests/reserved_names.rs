@@ -14,21 +14,21 @@ use common::{errors_std_with, run_main_std};
 use meadow::Options;
 
 fn errors(src: &str) -> String {
-    errors_std_with(src, Options::debug())
+    errors_std_with(src, Options::debug().entry("result"))
 }
 
 #[test]
 fn a_user_bool_is_refused() {
     // The confirmed miscompile: a third constructor made the word-literal
     // rewrite of `True`/`False` confuse tags, crashing at -O2 and on Silo.
-    let out = errors("data Bool = False | Unknown | True\ndef main = 0\n");
+    let out = errors("data Bool = False | Unknown | True\ndef result = 0\n");
     assert!(out.contains("built-in name"), "{out}");
 }
 
 #[test]
 fn a_user_representation_type_is_refused() {
     for ty in ["Int", "Float", "Char", "UInt8", "List", "String", "Array"] {
-        let out = errors(&format!("data {ty} = MkThing Int\ndef main = 0\n"));
+        let out = errors(&format!("data {ty} = MkThing Int\ndef result = 0\n"));
         assert!(
             out.contains("built-in name"),
             "declaring `{ty}` should be refused, got: {out}"
@@ -45,7 +45,7 @@ fn a_user_effect_named_mut_is_refused() {
         "effect Mut { dummy : () -> () }\n\
          fun hide act = handle act () with { dummy u k -> k () }\n\
          fun mkCell u = hide (\\() -> newRef [])\n\
-         def main = 0\n",
+         def result = 0\n",
     );
     assert!(out.contains("built-in name"), "{out}");
 }
@@ -53,7 +53,7 @@ fn a_user_effect_named_mut_is_refused() {
 #[test]
 fn a_reserved_effect_label_is_refused() {
     for e in ["Mut", "Console", "Stm", "Thread", "Fs"] {
-        let out = errors(&format!("effect {e} {{ op : () -> () }}\ndef main = 0\n"));
+        let out = errors(&format!("effect {e} {{ op : () -> () }}\ndef result = 0\n"));
         assert!(
             out.contains("built-in name"),
             "declaring effect `{e}` should be refused, got: {out}"
@@ -64,7 +64,7 @@ fn a_reserved_effect_label_is_refused() {
 #[test]
 fn an_ordinary_user_type_is_still_fine() {
     // The fix must not reject a type whose name is not built in.
-    let out = errors("data Colour = Red | Green | Blue\ndef main = 0\n");
+    let out = errors("data Colour = Red | Green | Blue\ndef result = 0\n");
     assert!(
         !out.contains("built-in name") && !out.contains("!!"),
         "{out}"
@@ -73,7 +73,7 @@ fn an_ordinary_user_type_is_still_fine() {
         "data Shape = Circle Int | Square Int\n\
          use Shape.*\n\
          fun area (s : Shape) : Int = match s with | Circle r -> r * r * 3 | Square w -> w * w\n\
-         def main = area (Square 4)",
+         def result = area (Square 4)",
         meadow::Engine::Vm,
     );
     assert_eq!(ran, "16", "{ran}");
@@ -84,7 +84,7 @@ fn a_user_effect_with_its_own_name_is_still_fine() {
     let out = errors(
         "effect Logger { note : String -> () }\n\
          fun quiet act = handle act () with { note s k -> k () }\n\
-         def main = 0\n",
+         def result = 0\n",
     );
     assert!(
         !out.contains("built-in name") && !out.contains("!!"),
@@ -104,7 +104,7 @@ fn a_program_built_without_the_standard_library_declares_its_own() {
 \
          effect St { get : () -> Int }
 \
-         def main = 0
+         def result = 0
 ",
     );
     assert!(!out.contains("built-in name"), "{out}");
@@ -117,7 +117,7 @@ fn a_standalone_program_still_may_not_redeclare_a_representation() {
     for ty in ["Bool", "List", "Int", "String"] {
         let out = errors_standalone(&format!(
             "data {ty} = A | B | C
-def main = 0
+def result = 0
 "
         ));
         assert!(
@@ -132,7 +132,7 @@ fn with_the_standard_library_maybe_and_result_are_refused() {
     for ty in ["Maybe", "Result", "Vector"] {
         let out = errors(&format!(
             "data {ty} a = Nope | Yep a
-def main = 0
+def result = 0
 "
         ));
         assert!(

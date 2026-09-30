@@ -2959,7 +2959,8 @@ mod tests {
         Var::synthetic(NEXT.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// Evaluate a single term (as `def main = term`, entry `main`).
+    /// Evaluate a single term (as `def main = term`, the entry: a value, as the
+    /// REPL's `it` is).
     fn eval_term(term: Term) -> Result<Value, RuntimeError> {
         let m = v();
         run(&Program {

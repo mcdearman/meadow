@@ -2,7 +2,7 @@
 --
 --   use Std.Sort (sort, sortBy, sortOn)
 --
---   def main = sort [3, 1, 2]              -- [1, 2, 3]
+--   fun main () = println "${sort [3, 1, 2]:?}"   -- [1, 2, 3]
 --
 -- Two sorts, and the choice between them is the usual one:
 --

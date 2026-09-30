@@ -14,7 +14,7 @@ use common::errors_std_with;
 use meadow::Options;
 
 fn errors(src: &str) -> String {
-    errors_std_with(src, Options::release())
+    errors_std_with(src, Options::release().entry("result"))
 }
 
 // --- the first error only -----------------------------------------------------
@@ -32,7 +32,7 @@ fn unknown_constructor_as_a_parameter() {
 #[test]
 fn unknown_constructor_in_a_match_arm() {
     assert_eq!(
-        errors("def main = match 1 with | Nope -> 0\n"),
+        errors("def result = match 1 with | Nope -> 0\n"),
         "unknown constructor `Nope`"
     );
 }
@@ -40,7 +40,7 @@ fn unknown_constructor_in_a_match_arm() {
 #[test]
 fn undefined_scrutinee() {
     assert_eq!(
-        errors("use T.*\ndata T = A | B\ndef main = match nope with | A -> 0\n"),
+        errors("use T.*\ndata T = A | B\ndef result = match nope with | A -> 0\n"),
         "undefined variable: nope"
     );
 }
@@ -81,7 +81,10 @@ fn a_variable_poisoned_by_its_pattern_stays_quiet() {
 
 #[test]
 fn undefined_variable_in_arithmetic() {
-    assert_eq!(errors("def main = nope + 1\n"), "undefined variable: nope");
+    assert_eq!(
+        errors("def result = nope + 1\n"),
+        "undefined variable: nope"
+    );
 }
 
 // --- independent errors are all still reported --------------------------------
@@ -106,7 +109,7 @@ fn two_unrelated_errors() {
 #[test]
 fn an_error_beside_a_real_mismatch() {
     assert_eq!(
-        errors("def main = (nope, 1 + \"s\")\n"),
+        errors("def result = (nope, 1 + \"s\")\n"),
         "undefined variable: nope\ntype mismatch: `String` is not an integer type"
     );
 }
@@ -114,7 +117,7 @@ fn an_error_beside_a_real_mismatch() {
 #[test]
 fn a_missing_case_is_still_missing() {
     assert_eq!(
-        errors("use T.*\ndata T = A | B\ndef main = match A with | A -> 0\n"),
+        errors("use T.*\ndata T = A | B\ndef result = match A with | A -> 0\n"),
         "non-exhaustive patterns: `B` is not matched"
     );
 }

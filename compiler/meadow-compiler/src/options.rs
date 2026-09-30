@@ -53,10 +53,10 @@ pub struct Options {
     /// Not part of either profile: it is what `meadow dap` asks for, and it
     /// changes nothing a program does -- only what the compiler remembers.
     pub debug_info: bool,
-    /// A top-level definition, besides `main`, that is run rather than defined,
-    /// and so may perform effects: the REPL's `it`, a debugger's entry. A
-    /// `def` of any other name has to be pure -- see the type checker's
-    /// `check_pure_def`.
+    /// A top-level value that runs in place of `main`, and so may perform
+    /// effects: the REPL's `it`, a debugger's entry, a test's `result`. It is
+    /// evaluated and shown, where `main` is called. A `def` of any other name
+    /// has to be pure -- see the type checker's `check_pure_def`.
     pub entry_name: Option<&'static str>,
     /// What `@cfg(…)` is tested against -- see [`crate::cfg`].
     pub cfg: Cfg,
@@ -184,6 +184,15 @@ impl Options {
             debug_info: false,
             entry_name: None,
             cfg: Cfg::host("release", "aot"),
+        }
+    }
+
+    /// The same build, running the value `name` rather than calling `main`:
+    /// see [`Options::entry_name`].
+    pub const fn entry(self, name: &'static str) -> Self {
+        Options {
+            entry_name: Some(name),
+            ..self
         }
     }
 }

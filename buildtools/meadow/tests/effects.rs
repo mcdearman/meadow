@@ -36,7 +36,7 @@ fn state_effect_runs() {
              put s2 k -> \\s -> (k ()) s2,\n\
              return x -> \\s -> (x, s)\n\
            } s0\n\
-         def main = runState 0 (\\u -> let a = tick () in let b = tick () in get ())\n"
+         def result = runState 0 (\\u -> let a = tick () in let b = tick () in get ())\n"
     ));
 }
 
@@ -49,7 +49,7 @@ fn a_primitive_passed_as_a_value_keeps_its_effect_open() {
             "effect Log { log : String -> () }\n\
              fun apply f x = f x\n\
              fun logged u = let a = log \"x\" in apply charCode 'b'\n\
-             def main = handle logged () with { log s k -> k (), return x -> x }\n"
+             def result = handle logged () with { log s k -> k (), return x -> x }\n"
         ),
         "98"
     );
@@ -81,7 +81,7 @@ fn return_clause_is_optional() {
     insta::assert_snapshot!(eval_main(
         "effect E { ask : () -> Int }\n\
          fun run act = handle act () with { ask a k -> k 99 }\n\
-         def main = run (\\u -> ask () + ask ())\n"
+         def result = run (\\u -> ask () + ask ())\n"
     ));
 }
 
@@ -89,7 +89,7 @@ fn return_clause_is_optional() {
 fn unhandled_operation_is_a_runtime_error() {
     insta::assert_snapshot!(eval_main(
         "effect E { boom : () -> Int }\n\
-         def main = boom ()\n"
+         def result = boom ()\n"
     ));
 }
 
@@ -116,7 +116,7 @@ fn a_call_through_a_closed_row_leaves_room_for_other_effects() {
              effect Log { log : String -> () }\n\
              record Job = { run : () -> Int ! Tick }\n\
              fun both (j : Job) = let n = j.run () in let _ = log \"ran\" in n\n\
-             def main = handle (handle both (Job { run = \\u -> tick () }) with { tick u k -> k 5, return x -> x }) \
+             def result = handle (handle both (Job { run = \\u -> tick () }) with { tick u k -> k 5, return x -> x }) \
              with { log s k -> k (), return x -> x }\n"
         ),
         "5"

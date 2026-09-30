@@ -164,7 +164,8 @@ fun canonical (pkg : String) (path : [String]) (i : Item) : Item =
   [ "Int", "BigInt", "Float", "String", "Char", "Bool", "Int64", "Int32", "Int16", "Int8", "UInt64",
     "UInt32", "UInt16", "UInt8", "Float64", "Float32", "Unit", "List", "Array", "Ref", "StRef",
     "StArray", "Compact", "Task", "Channel", "TVar", "Vector", "VNode", "Maybe", "Result",
-    "Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut", "Stm", "St" ]
+    "Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut", "Stm", "St",
+    "Eff" ]
 
 -- The names of fields `fs`.
 fun fieldNames (a : AstArena) (fs : [AstField]) : [String] = V.map (\f -> nameText a (astFieldName a f)) fs
@@ -188,6 +189,7 @@ fun declItems (src : Source) (a : AstArena) (vis : Vis) (d : AstDecl) : [Item] !
     (let e = nameText a (astEffectDeclName a d) in
       V.pushFront (V.map (\f -> one (astFieldName a f) "v" ("op:" ++ e)) (astEffectDeclOps a d)) (one (astEffectDeclName a d) "t" "effect"))
   else if k == AstDeclKind.AliasDecl then [one (astAliasDeclName a d) "t" "alias"]
+  else if k == AstDeclKind.EffectAliasDecl then [one (astEffectAliasDeclName a d) "t" "effectAlias"]
   else if k == AstDeclKind.TraitDecl then
     (let t = nameText a (astTraitDeclName a d) in
       V.concat

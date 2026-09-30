@@ -426,7 +426,7 @@ impl<'a> Macros<'a> {
             .flat_map(|p| p.variants.values())
             .flat_map(|vs| vs.iter())
             .map(|v| v.name)
-            .find(|n| meadow_compiler::hir::spelling(&n.to_string()) == spelled)
+            .find(|n| meadow_compiler::hir::ctor_spelling(&n.to_string()) == spelled)
     }
 }
 

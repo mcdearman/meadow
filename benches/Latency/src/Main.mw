@@ -51,7 +51,7 @@ fun serve m (i : Int) (n : Int) (entries : Int) (worst : Int) (slow : Int) =
     let slow2 = if took > 1000000 then slow + 1 else slow in
     serve m2 (i + 1) n entries (max worst took) slow2
 
-def main =
+fun main () =
   let entries = setting "MEADOW_BENCH_ENTRIES" 500000 in
   let requests = setting "MEADOW_BENCH_REQUESTS" 200000 in
   let built = monotonic () in

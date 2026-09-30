@@ -1220,6 +1220,60 @@ impl Infer {
         self.entries = entries;
     }
 
+    /// The program's entry point, `main`, has to be `() -> () ! Eff`: it is
+    /// given nothing, gives nothing back, and performs at most what the runtime
+    /// answers -- [`THREAD_EFFECTS`], which `Std.Eff` names -- since once it
+    /// runs there is nothing above it to answer anything else.
+    ///
+    /// Held to that after it is generalized, as a use of it would be: its
+    /// scheme is what it was inferred to be, and only has to fit. At most, not
+    /// exactly: a `main` that prints nothing, or nothing at all, is a `main`.
+    pub fn check_main(&mut self, main: VarId, span: Span) {
+        let Some(scheme) = self.generalized.get(&main).map(|g| g.scheme.clone()) else {
+            return;
+        };
+        let got = self.instantiate(&scheme);
+        let effect = match self.arena.zonk(&got) {
+            Type::Fun(params, ret, eff)
+                if params.len() == 1
+                    && self.arena.unify(params[0].clone(), Type::unit()).is_ok()
+                    && self.arena.unify((*ret).clone(), Type::unit()).is_ok() =>
+            {
+                Some(self.arena.zonk(&eff))
+            }
+            _ => None,
+        };
+        let (msg, label) = match effect {
+            None => (
+                format!("`main` is `{scheme}`, and has to be `() -> () ! Eff`"),
+                "the program starts here: `fun main () = ...`".to_string(),
+            ),
+            Some(eff) => {
+                // What it performs that nobody would answer.
+                let unanswered: Vec<String> = row_parts(&eff)
+                    .0
+                    .into_iter()
+                    .filter(|(l, _)| !THREAD_EFFECTS.contains(&&**l))
+                    .map(|(l, _)| format!("`{}`", hir::spelling(&l)))
+                    .collect();
+                if unanswered.is_empty() {
+                    return;
+                }
+                let list = unanswered.join(", ");
+                (
+                    format!("`main` performs {list}, which nothing would handle"),
+                    format!("handle {list} inside `main`; it may perform only `Eff`"),
+                )
+            }
+        };
+        self.errors.push(Diagnostic {
+            msg,
+            filename: self.filename.clone(),
+            label: (label, span),
+            extra_labels: vec![],
+        });
+    }
+
     /// A top-level `def` has to be pure to evaluate.
     ///
     /// Its right-hand side is evaluated once, the first time anything needs it,
@@ -2620,34 +2674,61 @@ impl Infer {
         // Aliases before everything else, which may be written in terms of them.
         let mut added = Vec::new();
         for d in decls {
-            if let hir::Decl::Alias(ad) = d.value() {
-                self.aliases.insert(
-                    ad.name,
-                    AliasDef {
-                        params: param_map(&ad.params),
-                        body: ad.ty.clone(),
-                    },
-                );
-                added.push((ad.name, ad.name_span));
+            match d.value() {
+                hir::Decl::Alias(ad) => {
+                    self.aliases.insert(
+                        ad.name,
+                        AliasDef {
+                            params: param_map(&ad.params),
+                            body: AliasBody::Type(ad.ty.clone()),
+                        },
+                    );
+                    added.push((ad.name, ad.name_span));
+                }
+                hir::Decl::EffectAlias(ad) => {
+                    self.aliases.insert(
+                        ad.name,
+                        AliasDef {
+                            params: param_map(&ad.params),
+                            body: AliasBody::Effect(ad.row.clone()),
+                        },
+                    );
+                    added.push((ad.name, ad.name_span));
+                }
+                _ => {}
             }
         }
         for (name, span) in added {
             if alias_reaches(&self.aliases, name, name, &mut Vec::new()) {
-                self.errors.push(Diagnostic {
-                    msg: format!("type alias `{}` refers to itself", hir::spelling(&name)),
-                    filename: self.filename.clone(),
-                    label: (
-                        "an alias is only another name; use `data` for a recursive type"
-                            .to_string(),
-                        span,
+                let (what, instead) = match self.aliases.get(&name).map(|d| &d.body) {
+                    Some(AliasBody::Effect(_)) => (
+                        "effect alias",
+                        "an alias names other effects, never itself, however indirectly",
                     ),
+                    _ => (
+                        "type alias",
+                        "an alias is only another name; use `data` for a recursive type",
+                    ),
+                };
+                self.errors.push(Diagnostic {
+                    msg: format!("{what} `{}` refers to itself", hir::spelling(&name)),
+                    filename: self.filename.clone(),
+                    label: (instead.to_string(), span),
                     extra_labels: vec![],
                 });
-                // Expanded, it would never end; as the error type it agrees
-                // with everything, so nothing else is reported for it.
+                // Expanded, it would never end; as the error type (or no
+                // effects) it agrees with everything, so nothing else is
+                // reported for it.
                 if let Some(def) = self.aliases.get_mut(&name) {
-                    let (id, at) = (def.body.id, def.body.span);
-                    def.body = hir::Node::new(id, hir::TypeExpr::Error, at);
+                    def.body = match &def.body {
+                        AliasBody::Type(t) => {
+                            AliasBody::Type(hir::Node::new(t.id, hir::TypeExpr::Error, t.span))
+                        }
+                        AliasBody::Effect(_) => AliasBody::Effect(hir::EffectRow {
+                            labels: Vec::new(),
+                            tail: None,
+                        }),
+                    };
                 }
             }
         }
@@ -3403,8 +3484,38 @@ impl Infer {
             hir::Alt::Ctor(c) => self.ctor_type(c),
             hir::Alt::Value(v) => {
                 let scheme = self.env.get(&v).cloned()?;
-                Some(self.instantiate(&scheme))
+                let t = self.instantiate(&scheme);
+                Some(self.open_latent(t))
             }
+        }
+    }
+
+    /// `t` with the effect of every arrow it returns through left open: a
+    /// function that does less than a use of it allows fits that use, as it
+    /// does when it is the only candidate -- its effect is then only joined
+    /// into where it is called. A `String.concat`, pure, is a `concat` a
+    /// `println` argument can call. Not a parameter's: a callback that may do
+    /// more is not one that does less.
+    fn open_latent(&mut self, t: Type) -> Type {
+        match self.arena.zonk(&t) {
+            Type::Fun(params, ret, eff) => {
+                let ret = self.open_latent(*ret);
+                let eff = self.open_tail(*eff);
+                Type::Fun(params, Box::new(ret), Box::new(eff))
+            }
+            other => other,
+        }
+    }
+
+    /// A closed effect row made open, with a fresh variable for the rest.
+    fn open_tail(&mut self, row: Type) -> Type {
+        match row {
+            Type::RowExtend(l, f, rest) => {
+                let rest = self.open_tail(*rest);
+                Type::RowExtend(l, f, Box::new(rest))
+            }
+            Type::RowEmpty => self.arena.fresh_effect(),
+            other => other,
         }
     }
 
@@ -3422,7 +3533,7 @@ impl Infer {
             hir::Alt::Ctor(_) => self.candidate_type(alt),
         };
         let ty = match chosen {
-            Some(t) => t,
+            Some(t) => self.open_latent(t),
             None => {
                 // The same placeholder an unordered reference would get (see
                 // `Expr::Var`), so the definition still meets this use.
@@ -3834,11 +3945,20 @@ fn param_map(params: &[hir::Ident]) -> HashMap<VarId, u32> {
         .collect()
 }
 
-/// A `type` alias: its parameters, numbered, and what it stands for.
+/// A `type` or `effect` alias: its parameters, numbered, and what it stands
+/// for.
 #[derive(Debug, Clone)]
 struct AliasDef {
     params: HashMap<VarId, u32>,
-    body: hir::LTypeExpr,
+    body: AliasBody,
+}
+
+#[derive(Debug, Clone)]
+enum AliasBody {
+    /// `type Span = (Int, Int)`
+    Type(hir::LTypeExpr),
+    /// `effect Eff = { Console, Fs }`: labels, and no tail.
+    Effect(hir::EffectRow),
 }
 
 type Aliases = HashMap<InternedString, AliasDef>;
@@ -3873,7 +3993,15 @@ fn alias_reaches(
         return false;
     };
     let mut mentioned = Vec::new();
-    names(&def.body, &mut mentioned);
+    match &def.body {
+        AliasBody::Type(t) => names(t, &mut mentioned),
+        AliasBody::Effect(row) => {
+            for (label, args) in &row.labels {
+                mentioned.push(*label);
+                args.iter().for_each(|a| names(a, &mut mentioned));
+            }
+        }
+    }
     for n in mentioned {
         if n == target {
             return true;
@@ -3955,8 +4083,11 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>, aliases: &Aliases) ->
                 _ => match aliases.get(name.value()) {
                     // What it stands for, with the arguments in place of its
                     // parameters. The resolver has checked there are as many.
-                    Some(def) if def.params.len() == args.len() => {
-                        Arena::subst_bound(&ty_of(&def.body, &def.params, aliases), &args)
+                    Some(AliasDef {
+                        params: ps,
+                        body: AliasBody::Type(body),
+                    }) if ps.len() == args.len() => {
+                        Arena::subst_bound(&ty_of(body, ps, aliases), &args)
                     }
                     Some(_) => Type::Error,
                     None => Type::Con(*name.value(), args),
@@ -4002,7 +4133,8 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>, aliases: &Aliases) ->
     }
 }
 
-/// Convert a resolved effect row into an effect [`Type`].
+/// Convert a resolved effect row into an effect [`Type`], with every effect
+/// alias it names replaced by the effects it stands for.
 fn eff_of(row: &hir::EffectRow, params: &HashMap<VarId, u32>, aliases: &Aliases) -> Type {
     let tail = match &row.tail {
         Some(v) => params
@@ -4011,10 +4143,46 @@ fn eff_of(row: &hir::EffectRow, params: &HashMap<VarId, u32>, aliases: &Aliases)
             .unwrap_or(Type::RowEmpty),
         None => Type::RowEmpty,
     };
-    row.labels.iter().rev().fold(tail, |rest, (name, args)| {
-        let argtup = Type::Tuple(args.iter().map(|a| ty_of(a, params, aliases)).collect());
-        Type::RowExtend(*name, Box::new(argtup), Box::new(rest))
+    let mut labels = Vec::new();
+    row_labels(row, params, aliases, &mut labels);
+    labels.into_iter().rev().fold(tail, |rest, (name, args)| {
+        Type::RowExtend(name, Box::new(args), Box::new(rest))
     })
+}
+
+/// The labels of `row`, each with its arguments as a tuple, onto `out`: an
+/// alias's own, in its place, and one said twice -- `{ Eff, Console }` --
+/// once.
+fn row_labels(
+    row: &hir::EffectRow,
+    params: &HashMap<VarId, u32>,
+    aliases: &Aliases,
+    out: &mut Vec<(InternedString, Type)>,
+) {
+    for (name, args) in &row.labels {
+        let args: Vec<Type> = args.iter().map(|a| ty_of(a, params, aliases)).collect();
+        match aliases.get(name) {
+            Some(AliasDef {
+                params: ps,
+                body: AliasBody::Effect(body),
+            }) if ps.len() == args.len() => {
+                let mut inner = Vec::new();
+                row_labels(body, ps, aliases, &mut inner);
+                for (label, of) in inner {
+                    let of = Arena::subst_bound(&of, &args);
+                    if !out.iter().any(|(l, o)| *l == label && *o == of) {
+                        out.push((label, of));
+                    }
+                }
+            }
+            _ => {
+                let args = Type::Tuple(args);
+                if !out.iter().any(|(l, o)| l == name && *o == args) {
+                    out.push((*name, args));
+                }
+            }
+        }
+    }
 }
 
 // ===========================================================================

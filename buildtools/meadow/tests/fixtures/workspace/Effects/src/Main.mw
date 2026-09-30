@@ -101,4 +101,4 @@ fun inRange n = n >= 10 and n < 20
 
 use Std.String as S2
 
-def main = 0
+def result = 0

@@ -1,0 +1,5 @@
+-- Project Euler, a problem to a module.
+
+use P5 (e5)
+
+fun main () = println e5

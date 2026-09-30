@@ -37,7 +37,7 @@ thread_local! {
 
 #[test]
 fn hover_reports_the_type_at_a_position() {
-    let (a, off) = at("fun double n = n * 2\ndef main = do@uble 21\n", "@");
+    let (a, off) = at("fun double n = n * 2\ndef demo = do@uble 21\n", "@");
     let hover = a.hover_at(off).expect("hover");
     assert!(
         hover.contains("double : forall n. Mul n => n -> n"),
@@ -47,7 +47,7 @@ fn hover_reports_the_type_at_a_position() {
 
 #[test]
 fn hover_shows_the_generalised_scheme_not_the_use_site() {
-    let (a, off) = at("fun ident x = x\ndef main = ide@nt 1\n", "@");
+    let (a, off) = at("fun ident x = x\ndef demo = ide@nt 1\n", "@");
     let hover = a.hover_at(off).expect("hover");
     assert!(
         hover.contains("forall"),
@@ -62,7 +62,7 @@ fn hover_includes_the_doc_comment_above_the_definition() {
 -- Twice as much, in other words.
 fun double n = n * 2
 
-def main = do@uble 21
+def demo = do@uble 21
 ";
     let (a, off) = at(src, "@");
     let hover = a.hover_at(off).expect("hover");
@@ -78,7 +78,7 @@ fn a_doc_comment_stops_at_a_blank_line() {
 -- The real docs.
 fun double n = n * 2
 
-def main = do@uble 21
+def demo = do@uble 21
 ";
     let (a, off) = at(src, "@");
     let hover = a.hover_at(off).unwrap();
@@ -89,7 +89,7 @@ def main = do@uble 21
 #[test]
 fn hovering_a_constructor_shows_its_path_rather_than_its_type() {
     let (a, off) = at(
-        "data Shape = Circle Int | Square Int\nuse Shape.*\ndef main = Ci@rcle 2\n",
+        "data Shape = Circle Int | Square Int\nuse Shape.*\ndef demo = Ci@rcle 2\n",
         "@",
     );
     let hover = a.hover_at(off).expect("hover");
@@ -98,13 +98,13 @@ fn hovering_a_constructor_shows_its_path_rather_than_its_type() {
 
 #[test]
 fn hovering_a_constructor_from_std_names_its_package_and_module() {
-    let (a, off) = at("def main = J@ust 1\n", "@");
+    let (a, off) = at("def demo = J@ust 1\n", "@");
     assert_eq!(
         a.hover_at(off).expect("hover"),
         "```meadow\nStd.Maybe.Maybe.Just\n```"
     );
     let (a, off) = at(
-        "def main = match Just 1 with | N@one -> 0 | Just n -> n\n",
+        "def demo = match Just 1 with | N@one -> 0 | Just n -> n\n",
         "@",
     );
     assert_eq!(
@@ -115,7 +115,7 @@ fn hovering_a_constructor_from_std_names_its_package_and_module() {
 
 #[test]
 fn hovering_a_qualified_constructor_shows_its_path() {
-    let (a, off) = at("data Ty = Int | Bool\ndef main = Ty.I@nt\n", "@");
+    let (a, off) = at("data Ty = Int | Bool\ndef demo = Ty.I@nt\n", "@");
     assert_eq!(a.hover_at(off).expect("hover"), "```meadow\nTy.Int\n```");
 }
 
@@ -128,7 +128,7 @@ fn hovering_a_siblings_constructor_names_the_package_and_module() {
             ("Syntax.mw", "@pub(pkg) data Tv = Unbound Int | Link Int\n"),
             (
                 "Main.mw",
-                "use Demo.Syntax (Tv)\ndef main = match Tv.Link 1 with | Tv.Link n -> n | Tv.Unbound n -> n\n",
+                "use Demo.Syntax (Tv)\ndef demo = match Tv.Link 1 with | Tv.Link n -> n | Tv.Unbound n -> n\n",
             ),
         ],
     );
@@ -147,7 +147,7 @@ fn hovering_a_siblings_constructor_names_the_package_and_module() {
 
 #[test]
 fn go_to_definition_finds_the_binder() {
-    let src = "fun double n = n * 2\ndef main = do@uble 21\n";
+    let src = "fun double n = n * 2\ndef demo = do@uble 21\n";
     let (a, off) = at(src, "@");
     let def = a
         .definition_at(off, &Default::default(), &Default::default())
@@ -161,7 +161,7 @@ fn go_to_definition_finds_the_binder() {
 
 #[test]
 fn go_to_definition_works_for_a_local_binding() {
-    let src = "fun f u =\n  let answer = 42 in\n  ans@wer + 1\ndef main = f ()\n";
+    let src = "fun f u =\n  let answer = 42 in\n  ans@wer + 1\ndef demo = f ()\n";
     let (a, off) = at(src, "@");
     let def = a
         .definition_at(off, &Default::default(), &Default::default())
@@ -178,7 +178,7 @@ fn go_to_definition_works_for_a_local_binding() {
 #[test]
 fn the_innermost_node_wins() {
     // At `xs` the type is the vector's, not the enclosing `len xs`'s `Int`.
-    let (a, off) = at("fun size xs = len @xs\ndef main = size [1, 2]\n", "@");
+    let (a, off) = at("fun size xs = len @xs\ndef demo = size [1, 2]\n", "@");
     assert_eq!(a.type_at(off), Some("[a]"));
 }
 
@@ -282,7 +282,7 @@ fn a_top_level_name_gets_no_inlay_hint() {
 
 #[test]
 fn diagnostics_come_through() {
-    let a = STD.with(|s| s.analyse("def main = 1 + \"nope\"\n"));
+    let a = STD.with(|s| s.analyse("def demo = 1 + \"nope\"\n"));
     assert!(
         a.diagnostics
             .iter()
@@ -294,23 +294,23 @@ fn diagnostics_come_through() {
 
 #[test]
 fn a_clean_file_has_no_diagnostics() {
-    let a = STD.with(|s| s.analyse("def main = 1 + 2\n"));
+    let a = STD.with(|s| s.analyse("def demo = 1 + 2\n"));
     assert!(a.diagnostics.is_empty(), "got: {:?}", a.diagnostics);
 }
 
 #[test]
 fn a_parse_error_does_not_panic() {
-    let a = STD.with(|s| s.analyse("def main = let in\n"));
+    let a = STD.with(|s| s.analyse("def demo = let in\n"));
     assert!(!a.diagnostics.is_empty());
     assert!(a.hover_at(0).is_none() || a.hover_at(0).is_some());
 }
 
 #[test]
 fn positions_map_through_to_spans() {
-    let src = "fun double n = n * 2\ndef main = double 21\n";
+    let src = "fun double n = n * 2\ndef demo = double 21\n";
     let a = STD.with(|s| s.analyse(src));
     let idx = LineIndex::new(src);
-    // Line 1, character 11 is inside `double` in `def main = double 21`.
+    // Line 1, character 11 is inside `double` in `def demo = double 21`.
     let off = idx.offset(1, 11);
     let def = a
         .definition_at(off, &Default::default(), &Default::default())
@@ -414,7 +414,7 @@ fn a_std_module_analysed_the_ordinary_way_collides_with_itself() {
 /// whatever happens to sit at that offset.
 #[test]
 fn go_to_definition_reaches_into_the_standard_library() {
-    let src = "use Std.String (concatAll)\ndef main = concat@All\n";
+    let src = "use Std.String (concatAll)\ndef demo = concat@All\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -440,7 +440,7 @@ fn go_to_definition_reaches_into_the_standard_library() {
 /// an index that merely found *a* binding called `map` would be wrong here.
 #[test]
 fn a_prelude_name_is_followed_to_the_module_that_defines_it() {
-    let src = "fun incr x = x + 1\ndef main = ma@p incr [1; 2; 3]\n";
+    let src = "fun incr x = x + 1\ndef demo = ma@p incr [1; 2; 3]\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -461,7 +461,7 @@ fn a_prelude_name_is_followed_to_the_module_that_defines_it() {
 /// reports the open document.
 #[test]
 fn a_local_definition_is_preferred_to_an_imported_one() {
-    let src = "fun map f xs = xs\nfun id x = x\ndef main = ma@p id [1; 2]\n";
+    let src = "fun map f xs = xs\nfun id x = x\ndef demo = ma@p id [1; 2]\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -516,7 +516,7 @@ fn one_std_module_can_reach_another() {
 /// Follow a type name, in the same file.
 #[test]
 fn go_to_definition_finds_a_type() {
-    let src = "data Colour = Red | Green\ndata Box = Box Col@our\ndef main = 0\n";
+    let src = "data Colour = Red | Green\ndata Box = Box Col@our\ndef demo = 0\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -533,8 +533,8 @@ fn go_to_definition_finds_a_type() {
 #[test]
 fn go_to_definition_finds_a_constructor() {
     for src in [
-        "data Colour = Red | Green\nuse Colour.*\ndef main = Gre@en\n",
-        "data Colour = Red | Green\nuse Colour.*\nfun f c = match c with | Gre@en -> 1 | Red -> 0\ndef main = f Red\n",
+        "data Colour = Red | Green\nuse Colour.*\ndef demo = Gre@en\n",
+        "data Colour = Red | Green\nuse Colour.*\nfun f c = match c with | Gre@en -> 1 | Red -> 0\ndef demo = f Red\n",
     ] {
         let (a, off) = at(src, "@");
         let loc = STD
@@ -585,7 +585,7 @@ fn go_to_definition_follows_the_overload_that_was_chosen() {
 /// be right half the time.
 #[test]
 fn a_type_and_a_constructor_may_share_a_name() {
-    let src = "data Pair = Pair Int Int\nfun fst p = match p with | Pai@r a b -> a\ndef main = 0\n";
+    let src = "data Pair = Pair Int Int\nfun fst p = match p with | Pai@r a b -> a\ndef demo = 0\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -599,7 +599,7 @@ fn a_type_and_a_constructor_may_share_a_name() {
     );
 
     // And in a type position, the type.
-    let src = "data Pair = Pair Int Int\ndata Box = Box Pai@r\ndef main = 0\n";
+    let src = "data Pair = Pair Int Int\ndata Box = Box Pai@r\ndef demo = 0\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -615,7 +615,7 @@ fn the_innermost_type_wins() {
 data Inner = I
 data Outer a = O a
 data Holder = Holder (Outer Inn@er)
-def main = 0
+def demo = 0
 ";
     let (a, off) = at(src, "@");
     let loc = STD
@@ -636,7 +636,7 @@ def main = 0
 /// answer, which is worse than none.
 #[test]
 fn a_builtin_type_has_nowhere_to_go() {
-    let src = "data Outer a = O a\ndata Holder = Holder (Outer In@t)\ndef main = 0\n";
+    let src = "data Outer a = O a\ndata Holder = Holder (Outer In@t)\ndef demo = 0\n";
     let (a, off) = at(src, "@");
     let loc = STD.with(|s| a.definition_at(off, s.definitions(), s.declared_names()));
     assert!(
@@ -649,7 +649,7 @@ fn a_builtin_type_has_nowhere_to_go() {
 /// A type from another module, across the package boundary.
 #[test]
 fn go_to_definition_reaches_a_type_in_the_standard_library() {
-    let src = "data Holder = Holder (May@be Int)\ndef main = 0\n";
+    let src = "data Holder = Holder (May@be Int)\ndef demo = 0\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -667,7 +667,7 @@ fn go_to_definition_reaches_a_type_in_the_standard_library() {
 /// And a constructor from another module.
 #[test]
 fn go_to_definition_reaches_a_constructor_in_the_standard_library() {
-    let src = "def main = Jus@t 5\n";
+    let src = "def demo = Jus@t 5\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -685,7 +685,7 @@ fn go_to_definition_reaches_a_constructor_in_the_standard_library() {
 /// An effect is a type too, and its operations are values.
 #[test]
 fn go_to_definition_covers_effects_and_their_operations() {
-    let src = "effect Counter { bump : Int -> Int }\ndef main = bum@p 1\n";
+    let src = "effect Counter { bump : Int -> Int }\ndef demo = bum@p 1\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -715,7 +715,7 @@ fn a_written_result_type_is_not_hinted_again() {
 /// A type named in a result annotation can be followed, like any other.
 #[test]
 fn go_to_definition_reaches_a_type_from_a_result_annotation() {
-    let src = "fun f (n : Int) : May@be Int = None\ndef main = 0\n";
+    let src = "fun f (n : Int) : May@be Int = None\ndef demo = 0\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -805,7 +805,7 @@ fn a_module_sees_its_siblings_through_a_use() {
             ),
             (
                 "Main.mw",
-                "use Demo.Eval (eval)\nuse Demo.Syntax (Expr)\ndef main = eval (Expr.Int 1)\n",
+                "use Demo.Eval (eval)\nuse Demo.Syntax (Expr)\ndef demo = eval (Expr.Int 1)\n",
             ),
         ],
     );
@@ -829,7 +829,7 @@ fn only_this_documents_diagnostics_are_reported() {
         Some("[package]\nname = \"Demo\"\n"),
         &[
             ("Broken.mw", "@pub(pkg) fun oops x = nosuchthing x\n"),
-            ("Main.mw", "def main = 1\n"),
+            ("Main.mw", "def demo = 1\n"),
         ],
     );
     let file = root.join("src").join("Main.mw");
@@ -870,7 +870,7 @@ fn go_to_definition_crosses_to_another_module_of_the_package() {
             ),
             (
                 "Main.mw",
-                "use Demo.Syntax (Expr, zero)\ndef main = zero ()\n",
+                "use Demo.Syntax (Expr, zero)\ndef demo = zero ()\n",
             ),
         ],
     );
@@ -895,7 +895,7 @@ fn go_to_definition_crosses_to_another_module_of_the_package() {
 #[test]
 fn a_file_outside_a_package_is_still_analysed_alone() {
     let stray = std::env::temp_dir().join(format!("meadow-stray-{}.mw", std::process::id()));
-    std::fs::write(&stray, "def main = 1\n").expect("write");
+    std::fs::write(&stray, "def demo = 1\n").expect("write");
     assert!(
         meadow::editor::load_package(&stray).is_none(),
         "a file with no package around it should not find one"
@@ -929,7 +929,7 @@ fn a_bad_use_is_reported_in_the_file_that_wrote_it() {
                 "Other.mw",
                 "use Demo.Nowhere (thing)\n@pub(pkg) def n = 1\n",
             ),
-            ("Main.mw", "def main = 1\n"),
+            ("Main.mw", "def demo = 1\n"),
         ],
     );
     for (name, wanted) in [("Main.mw", false), ("Other.mw", true)] {
@@ -1019,7 +1019,7 @@ fn renaming_reaches_every_module_of_the_package() {
                 "Math.mw",
                 "@pub(pkg) fun dou$ble n = n * 2\n@pub(pkg) fun quad n = double (double n)\n",
             ),
-            ("Main.mw", "use Demo.Math (double)\ndef main = double 21\n"),
+            ("Main.mw", "use Demo.Math (double)\ndef demo = double 21\n"),
         ],
         "twice",
     )
@@ -1030,7 +1030,7 @@ fn renaming_reaches_every_module_of_the_package() {
         *math,
         "@pub(pkg) fun twice n = n * 2\n@pub(pkg) fun quad n = twice (twice n)\n"
     );
-    assert_eq!(*main, "use Demo.Math (twice)\ndef main = twice 21\n");
+    assert_eq!(*main, "use Demo.Math (twice)\ndef demo = twice 21\n");
 }
 
 #[test]
@@ -1068,7 +1068,7 @@ fn renaming_a_type_takes_its_mentions_with_it() {
             ("Syntax.mw", "@pub(pkg) data Ex$pr = Lit Int\n@pub(pkg) fun lit n = Expr.Lit n\n"),
             (
                 "Main.mw",
-                "use Demo.Syntax (Expr, lit)\nfun size e = match e with | Lit n -> n\ndef main = size (lit 1)\n",
+                "use Demo.Syntax (Expr, lit)\nfun size e = match e with | Lit n -> n\ndef demo = size (lit 1)\n",
             ),
         ],
         "Term",
@@ -1080,7 +1080,7 @@ fn renaming_a_type_takes_its_mentions_with_it() {
     );
     assert_eq!(
         out.iter().find(|(n, _)| n == "Main.mw").unwrap().1,
-        "use Demo.Syntax (Term, lit)\nfun size e = match e with | Lit n -> n\ndef main = size (lit 1)\n"
+        "use Demo.Syntax (Term, lit)\nfun size e = match e with | Lit n -> n\ndef demo = size (lit 1)\n"
     );
 }
 
@@ -1107,7 +1107,7 @@ fn two_constructors_with_one_name_are_told_apart() {
 fn a_standard_library_name_is_not_renamed() {
     let err = renamed(
         "rename-std",
-        &[("Main.mw", "def main = ma$p (\\x -> x) [1, 2]\n")],
+        &[("Main.mw", "def demo = ma$p (\\x -> x) [1, 2]\n")],
         "mapped",
     )
     .expect_err("should refuse");
@@ -1118,7 +1118,7 @@ fn a_standard_library_name_is_not_renamed() {
 fn a_new_name_has_to_be_one() {
     let err = renamed(
         "rename-bad",
-        &[("Main.mw", "fun dou$ble n = n * 2\ndef main = double 1\n")],
+        &[("Main.mw", "fun dou$ble n = n * 2\ndef demo = double 1\n")],
         "Double",
     )
     .expect_err("should refuse");
@@ -1126,7 +1126,7 @@ fn a_new_name_has_to_be_one() {
 
     let err = renamed(
         "rename-bad2",
-        &[("Main.mw", "fun dou$ble n = n * 2\ndef main = double 1\n")],
+        &[("Main.mw", "fun dou$ble n = n * 2\ndef demo = double 1\n")],
         "two words",
     )
     .expect_err("should refuse");
@@ -1182,7 +1182,7 @@ fn a_test_is_marked_with_the_name_the_runner_knows_it_by() {
                 "B.mw",
                 "use Std.Test (assertEq)\n\n@test fun works u = assertEq 1 1 \"b\"\n",
             ),
-            ("Main.mw", "def main = 0\n"),
+            ("Main.mw", "def demo = 0\n"),
         ],
     );
     let file = root.join("src").join("A.mw");
@@ -1329,7 +1329,7 @@ fn a_constructor_that_shares_a_types_name_is_still_a_constructor() {
 /// or a constructor, and an alias qualifying a call is too.
 #[test]
 fn a_module_path_is_a_namespace_whatever_it_is_called() {
-    let src = "use Std.Bool (not)\nuse Std.String as S\n\ndef main = S.concat \"a\" \"b\"\n";
+    let src = "use Std.Bool (not)\nuse Std.String as S\n\ndef demo = S.concat \"a\" \"b\"\n";
     assert_eq!(
         colours(src),
         [
@@ -1389,11 +1389,11 @@ fn a_module_named_like_a_type_is_a_namespace() {
 /// it is defined.
 #[test]
 fn hovering_a_user_operator_shows_its_binding() {
-    let (a, off) = at("def main = \"a\" @++ \"b\"\n", "@");
+    let (a, off) = at("def demo = \"a\" @++ \"b\"\n", "@");
     let hover = a.hover_at(off).expect("hover");
     assert!(hover.contains("String -> String -> String"), "got: {hover}");
 
-    let (a, off) = at("fun (++) a b = (a, b)\ndef main = 1 @++ 2\n", "@");
+    let (a, off) = at("fun (++) a b = (a, b)\ndef demo = 1 @++ 2\n", "@");
     let hover = a.hover_at(off).expect("hover");
     assert!(
         hover.contains("(++) : forall a b. a -> b -> (a, b)"),
@@ -1403,7 +1403,7 @@ fn hovering_a_user_operator_shows_its_binding() {
 
 #[test]
 fn a_user_operator_goes_to_its_definition() {
-    let src = "fun (++) a b = (a, b)\ndef main = 1 @++ 2\n";
+    let src = "fun (++) a b = (a, b)\ndef demo = 1 @++ 2\n";
     let (a, off) = at(src, "@");
     let loc = STD
         .with(|s| a.definition_at(off, s.definitions(), s.declared_names()))
@@ -1498,7 +1498,7 @@ fn names_of(offers: &[meadow_lsp::complete::Offer]) -> Vec<&str> {
 
 #[test]
 fn a_pipe_offers_what_the_value_can_be_piped_into() {
-    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let offers = piped("def xs = [1, 2, 3]\n\ndef demo = xs |> ");
     let names = names_of(&offers);
     // Functions of a vector, and nothing that wants something else.
     assert!(names.contains(&"len"), "{names:?}");
@@ -1512,7 +1512,7 @@ fn a_pipe_offers_what_the_value_can_be_piped_into() {
 
 #[test]
 fn what_is_typed_after_the_pipe_narrows_it() {
-    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> le");
+    let offers = piped("def xs = [1, 2, 3]\n\ndef demo = xs |> le");
     let names = names_of(&offers);
     assert!(names.contains(&"len"), "{names:?}");
     assert!(names.iter().all(|n| n.starts_with("le")), "{names:?}");
@@ -1522,7 +1522,7 @@ fn what_is_typed_after_the_pipe_narrows_it() {
 fn a_name_that_would_need_a_use_first_is_not_offered() {
     // `toUpper` is `Std.String`'s, which this document has not brought in:
     // offering it would write something that does not compile.
-    let offers = piped("def greeting = \"hello\"\n\ndef main = greeting |> ");
+    let offers = piped("def greeting = \"hello\"\n\ndef demo = greeting |> ");
     let names = names_of(&offers);
     assert!(!names.contains(&"toUpper"), "{names:?}");
     // What the prelude does have for a `String` is still there.
@@ -1531,7 +1531,7 @@ fn a_name_that_would_need_a_use_first_is_not_offered() {
 
 #[test]
 fn a_function_that_takes_the_value_directly_comes_before_one_that_fits_anything() {
-    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let offers = piped("def xs = [1, 2, 3]\n\ndef demo = xs |> ");
     let names = names_of(&offers);
     let at = |want: &str| names.iter().position(|n| *n == want);
     // `id : a -> a` fits every value, so it is not what the menu leads with.
@@ -1542,7 +1542,7 @@ fn a_function_that_takes_the_value_directly_comes_before_one_that_fits_anything(
 
 #[test]
 fn what_performs_no_effect_comes_first() {
-    let offers = piped("def path = \"notes.txt\"\n\ndef main = path |> ");
+    let offers = piped("def path = \"notes.txt\"\n\ndef demo = path |> ");
     let names = names_of(&offers);
     let at = |want: &str| names.iter().position(|n| *n == want);
     // Reading a file in the middle of a pipeline is deliberate; joining two
@@ -1555,7 +1555,7 @@ fn what_performs_no_effect_comes_first() {
 #[test]
 fn what_the_file_already_uses_comes_first() {
     // Two functions fit equally; the one this file already reaches for wins.
-    let src = "def xs = [1, 2, 3]\n\ndef n = len xs\n\ndef main = xs |> ";
+    let src = "def xs = [1, 2, 3]\n\ndef n = len xs\n\ndef demo = xs |> ";
     let offers = piped(src);
     let names = names_of(&offers);
     let at = |want: &str| names.iter().position(|n| *n == want);
@@ -1566,7 +1566,7 @@ fn what_the_file_already_uses_comes_first() {
 
 #[test]
 fn a_function_written_to_chain_is_offered_partly_applied() {
-    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let offers = piped("def xs = [1, 2, 3]\n\ndef demo = xs |> ");
     let snippets: Vec<&str> = offers
         .iter()
         .filter(|o| o.snippet)
@@ -1580,7 +1580,7 @@ fn a_function_written_to_chain_is_offered_partly_applied() {
 
 #[test]
 fn an_offer_says_what_it_is_and_where_it_came_from() {
-    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let offers = piped("def xs = [1, 2, 3]\n\ndef demo = xs |> ");
     let len = offers
         .iter()
         .find(|o| o.name == "len")
@@ -1591,7 +1591,7 @@ fn an_offer_says_what_it_is_and_where_it_came_from() {
 
 #[test]
 fn the_editors_own_ordering_cannot_undo_this_one() {
-    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let offers = piped("def xs = [1, 2, 3]\n\ndef demo = xs |> ");
     let sorts: Vec<&str> = offers.iter().map(|o| o.sort.as_str()).collect();
     let mut sorted = sorts.clone();
     sorted.sort_unstable();
@@ -1603,10 +1603,10 @@ fn typing_the_name_keeps_it_in_the_list() {
     // What the euler example reaches for: fold a range into a number. Typing
     // more of the name narrows the list rather than emptying it.
     for src in [
-        "def xs = [11..20]\n\ndef main = xs |> ",
-        "def xs = [11..20]\n\ndef main = xs |> f",
-        "def xs = [11..20]\n\ndef main = xs |> fol",
-        "def xs = [11..20]\n\ndef main = xs |> foldl",
+        "def xs = [11..20]\n\ndef demo = xs |> ",
+        "def xs = [11..20]\n\ndef demo = xs |> f",
+        "def xs = [11..20]\n\ndef demo = xs |> fol",
+        "def xs = [11..20]\n\ndef demo = xs |> foldl",
     ] {
         let offers = piped(src);
         let names = names_of(&offers);
@@ -1622,7 +1622,7 @@ fn typing_the_name_keeps_it_in_the_list() {
 fn the_ways_of_taking_a_collection_are_all_near_the_top() {
     // `len v` takes it first and `map f v` takes it last; both are ordinary,
     // so neither convention is buried under the other.
-    let offers = piped("def xs = [1, 2, 3]\n\ndef main = xs |> ");
+    let offers = piped("def xs = [1, 2, 3]\n\ndef demo = xs |> ");
     let names = names_of(&offers);
     for want in ["map", "filter", "foldl"] {
         assert!(names.contains(&want), "{want} is missing: {names:?}");
@@ -1634,7 +1634,7 @@ fn what_idiomatic_meadow_reaches_for_comes_first() {
     // With nothing in this file to go on, the order is what the standard
     // library's own source does: `map` and `foldl` constantly, `splitAt`
     // hardly ever.
-    let offers = piped("def xs = [11..20]\n\ndef main = xs |> ");
+    let offers = piped("def xs = [11..20]\n\ndef demo = xs |> ");
     let names = names_of(&offers);
     let at = |want: &str| {
         names
@@ -1701,7 +1701,7 @@ fn path_offers(src: &str) -> Vec<meadow_lsp::complete::Offer> {
 
 #[test]
 fn a_type_offers_its_constructors() {
-    let offers = path_offers("data Shape = Circle Int | Square Int\n\ndef main = Shape.");
+    let offers = path_offers("data Shape = Circle Int | Square Int\n\ndef demo = Shape.");
     assert_eq!(names_of(&offers), vec!["Circle", "Square"]);
 }
 
@@ -1709,24 +1709,24 @@ fn a_type_offers_its_constructors() {
 fn a_type_from_the_library_offers_its_constructors() {
     // `Maybe` is a module *and* the type inside it. Only the type is something
     // a constructor can follow, so that is the one this means.
-    let offers = path_offers("def main = Maybe.");
+    let offers = path_offers("def demo = Maybe.");
     assert_eq!(names_of(&offers), vec!["Just", "None"]);
 }
 
 #[test]
 fn a_half_written_constructor_narrows_the_list() {
-    let offers = path_offers("data Shape = Circle Int | Square Int\n\ndef main = Shape.Ci");
+    let offers = path_offers("data Shape = Circle Int | Square Int\n\ndef demo = Shape.Ci");
     assert_eq!(names_of(&offers), vec!["Circle"]);
 }
 
 #[test]
 fn a_qualifier_that_names_nothing_offers_nothing() {
-    assert!(path_offers("def main = Nowhere.").is_empty());
+    assert!(path_offers("def demo = Nowhere.").is_empty());
 }
 
 #[test]
 fn an_alias_reaches_the_module_it_names() {
-    let offers = path_offers("use Std.Maybe as M\n\ndef main = M.");
+    let offers = path_offers("use Std.Maybe as M\n\ndef demo = M.");
     let names = names_of(&offers);
     // Its values, and the constructors of the type it declares -- both of which
     // `M.` reaches, as the compiler resolves it.
@@ -1791,7 +1791,7 @@ fn an_offer_says_what_kind_of_name_it_is() {
         .find(|o| o.name == "Collections")
         .expect("a module");
     assert_eq!(module.kind, PathKind::Module);
-    let offers = path_offers("def main = Maybe.");
+    let offers = path_offers("def demo = Maybe.");
     assert_eq!(offers[0].kind, PathKind::Ctor);
 }
 
@@ -1805,7 +1805,7 @@ fn a_signature_carries_the_doc_for_the_clauses_under_it() {
 fun double : Int -> Int
   | double n = n * 2
 
-def main = do@uble 21
+def demo = do@uble 21
 ";
     let (a, off) = at(src, "@");
     let hover = a.hover_at(off).expect("hover");
@@ -1821,7 +1821,7 @@ macro adder
 
 adder!(inc)
 
-def main = in@c 1
+def demo = in@c 1
 ";
 
 #[test]
@@ -1831,7 +1831,7 @@ fn what_a_macro_generates_gets_no_lenses_or_hints() {
     let call = clean.find("adder!(inc)").unwrap() as u32;
     let end = call + "adder!(inc)".len() as u32;
     let names: Vec<&str> = a.functions.iter().map(|f| f.name.as_str()).collect();
-    assert_eq!(names, ["main"], "no Debug lens on the call");
+    assert_eq!(names, ["demo"], "no Debug lens on the call");
     assert!(
         a.binders
             .iter()

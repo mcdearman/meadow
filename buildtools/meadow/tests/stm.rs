@@ -8,7 +8,7 @@ mod common;
 use common::{errors_std_with, schemes_std};
 
 fn errors(src: &str) -> String {
-    errors_std_with(src, meadow::Options::debug())
+    errors_std_with(src, meadow::Options::debug().entry("result"))
 }
 
 #[test]

@@ -72,6 +72,6 @@ fun makeTree (n : Int) (t : Tree) : Tree =
     let n1 = n - 1 in
     makeTree n1 (insert t n1 (n1 % 10 == 0))
 
-def main =
+fun main () =
   let t = makeTree 4200000 Leaf in
   println (fold t 0 (\k v r -> if v then r + 1 else r))

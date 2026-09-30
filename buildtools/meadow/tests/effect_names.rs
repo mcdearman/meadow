@@ -12,13 +12,13 @@ use common::{errors_std_with, run_main_std};
 use meadow::{Engine, Options};
 
 fn errors(src: &str) -> String {
-    errors_std_with(src, Options::debug())
+    errors_std_with(src, Options::debug().entry("result"))
 }
 
 /// The tutorial's own `State`, handled the classic way.
 const STATE: &str = "effect State s { get : () -> s, put : s -> () }\n\
                      fun counter () = let n = get () in let u = put (n + 1) in let m = get () in n + m\n\
-                     def main =\n\
+                     def result =\n\
                      \x20 (handle counter () with {\n\
                      \x20   get u k -> \\s -> (k s) s,\n\
                      \x20   put v k -> \\s -> (k ()) v,\n\
@@ -40,7 +40,7 @@ fn which_effect_is_handled_is_the_same_every_time() {
     }
     let ambiguous = "use Std.State (get)\n\
                      effect Mine { get : () -> Int }\n\
-                     def main = handle get () + 1 with { get u k -> k 41 }\n";
+                     def result = handle get () + 1 with { get u k -> k 41 }\n";
     let said = errors(ambiguous);
     assert!(said.contains("ambiguous `get`"), "{said}");
     for _ in 0..8 {
@@ -53,7 +53,7 @@ fn an_operation_may_share_a_prelude_functions_name() {
     for (op, want) in [("length", "31"), ("map", "31"), ("fold", "31")] {
         let src = format!(
             "effect Fx {{ {op} : Int -> Int }}\n\
-             def main = handle {op} 3 + 1 with {{ {op} n k -> k (n * 10) }}\n"
+             def result = handle {op} 3 + 1 with {{ {op} n k -> k (n * 10) }}\n"
         );
         assert_eq!(run_main_std(&src, Engine::Vm), want, "{op}");
     }
@@ -65,7 +65,7 @@ fn the_standard_librarys_state_still_works_beside_a_programs_own() {
     // handler answers the program's, and `runState` the library's.
     let src = "use Std.State (runState)\n\
                effect Mine { get : () -> Int }\n\
-               def main = (handle get () + 1 with { get u k -> k 41 }, runState 0 (\\() -> 5))\n";
+               def result = (handle get () + 1 with { get u k -> k 41 }, runState 0 (\\() -> 5))\n";
     assert_eq!(run_main_std(src, Engine::Vm), "(42, (5, 0))");
 }
 
@@ -74,7 +74,7 @@ fn one_module_declaring_an_operation_twice_is_still_an_error() {
     let e = errors(
         "effect A { ping : () -> Int }\n\
          effect B { ping : () -> Int }\n\
-         def main = 0\n",
+         def result = 0\n",
     );
     assert!(e.contains("operation `ping` is already defined"), "{e}");
 }

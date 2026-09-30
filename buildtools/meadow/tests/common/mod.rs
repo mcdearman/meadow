@@ -1,5 +1,9 @@
 //! Shared helpers for the integration tests.
 //!
+//! A snippet shows a value by defining `result`, which each helper builds as
+//! the value to run (`Options::entry`) -- the REPL's `it` by another name. A
+//! program's `main` is `() -> () ! Eff`, and gives nothing back to compare.
+//!
 //! Everything here returns **deterministic** strings: rendered type schemes,
 //! diagnostic messages, `Value` display, or the var-normalized core dump. Raw HIR
 //! / `VarId`s are deliberately never snapshotted — the id counter is process-wide
@@ -18,7 +22,8 @@ use meadow_compiler::{
 
 /// Compile a source string; return the package and its diagnostic messages.
 pub fn compile(src: &str) -> (CompiledPackage, Vec<String>) {
-    let (cp, diags) = pipeline::compile_str("test", src);
+    let (cp, diags) =
+        meadow_compiler::compile_str_with("test", src, Options::default().entry("result"));
     (cp, diags.iter().map(|d| d.msg.clone()).collect())
 }
 
@@ -75,7 +80,8 @@ pub fn compile_modules(modules: &[(&str, &str)]) -> (CompiledPackage, Vec<String
             });
         }
     }
-    let (cp, unit_diags) = meadow_compiler::compile_unit(name, 0, asts, &[], Options::debug());
+    let (cp, unit_diags) =
+        meadow_compiler::compile_unit(name, 0, asts, &[], Options::debug().entry("result"));
     diags.extend(unit_diags.iter().map(|d| d.msg.clone()));
     (cp, diags)
 }
@@ -85,7 +91,7 @@ pub fn unit_errors(modules: &[(&str, &str)]) -> String {
     compile_modules(modules).1.join("\n")
 }
 
-/// Compile a multi-module unit and run its `main`.
+/// Compile a multi-module unit and evaluate its `result`.
 pub fn eval_unit(modules: &[(&str, &str)]) -> String {
     let (cp, diags) = compile_modules(modules);
     if !diags.is_empty() {
@@ -120,7 +126,7 @@ fn joined(diags: &[meadow_compiler::diagnostics::Diagnostic]) -> String {
         .join("\n")
 }
 
-/// Compile `src` (which must define `main`), link, and evaluate the entry point.
+/// Compile `src` (which must define `result`), link, and evaluate it.
 pub fn eval_main(src: &str) -> String {
     let (cp, diags) = compile(src);
     if !diags.is_empty() {
@@ -133,9 +139,9 @@ pub fn eval_main(src: &str) -> String {
     }
 }
 
-/// Evaluate a single expression by wrapping it in `def main = <expr>`.
+/// Evaluate a single expression by wrapping it in `def result = <expr>`.
 pub fn eval_expr(expr: &str) -> String {
-    eval_main(&format!("def main = {expr}\n"))
+    eval_main(&format!("def result = {expr}\n"))
 }
 
 /// Like [`eval_main`], but links the embedded `Std` package so prelude names
@@ -150,14 +156,15 @@ pub fn cek_main_std(src: &str) -> String {
     run_main_std(src, meadow::Engine::Cek)
 }
 
-/// Compile against `Std` and evaluate `main` on `engine`.
+/// Compile against `Std` and evaluate `result` on `engine`.
 ///
 /// [`eval_main_std`] uses the bytecode VM, which is what `meadow run` uses. The
 /// snapshots in these tests were written against the CEK machine, so every one
 /// of them is also a check that the two agree — on the standard library, on real
 /// subprocesses, and on the filesystem.
 pub fn run_main_std(src: &str, engine: meadow::Engine) -> String {
-    let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
     if !diags.is_empty() {
         return format!(
             "compile errors:\n{}",
@@ -168,10 +175,10 @@ pub fn run_main_std(src: &str, engine: meadow::Engine) -> String {
                 .join("\n")
         );
     }
-    // What `main` reaches, as a build runs it: not all of `Std`, lowered and
+    // What `result` reaches, as a build runs it: not all of `Std`, lowered and
     // compiled again for every snippet.
     let program = meadow_compiler::core::prune::prune(&program);
-    match meadow::runtime::run(&program, engine, Options::debug().opt) {
+    match meadow::runtime::run(&program, engine, Options::debug().entry("result").opt) {
         Ok(v) => v,
         Err(e) => e,
     }
@@ -179,14 +186,14 @@ pub fn run_main_std(src: &str, engine: meadow::Engine) -> String {
 
 /// Evaluate a single expression against `Std` (see [`eval_main_std`]).
 pub fn eval_expr_std(expr: &str) -> String {
-    eval_main_std(&format!("def main = {expr}\n"))
+    eval_main_std(&format!("def result = {expr}\n"))
 }
 
 /// `name : scheme` for every top-level binding, compiled against `Std`.
 pub fn schemes_std(src: &str) -> String {
     // `compile_str_with_std` only returns a linked `Program`, so re-run the
     // unit compile with the std package as a dep to recover export schemes.
-    let (std_pkgs, _) = meadow::stdlib::std_packages(Options::debug());
+    let (std_pkgs, _) = meadow::stdlib::std_packages(Options::debug().entry("result"));
     let std_deps: Vec<meadow_compiler::Dep<'_>> =
         std_pkgs.iter().map(meadow_compiler::Dep::new).collect();
     let source = meadow_compiler::source::Source::new(
@@ -205,8 +212,13 @@ pub fn schemes_std(src: &str) -> String {
             }]
         })
         .unwrap_or_default();
-    let (cp, diags) =
-        meadow_compiler::compile_unit("test".into(), 1, modules, &std_deps, Options::debug());
+    let (cp, diags) = meadow_compiler::compile_unit(
+        "test".into(),
+        1,
+        modules,
+        &std_deps,
+        Options::debug().entry("result"),
+    );
     let mut out = String::new();
     for e in &cp.exports {
         out.push_str(&format!(

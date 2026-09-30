@@ -29,6 +29,7 @@
 @pub use Std.Console (Console)
 @pub use Std.Fs (Fs, FileMeta)
 @pub use Std.Process (Process)
+@pub use Std.Eff (Eff)
 @pub use Std.Maybe.Maybe.*
 @pub use Std.Result.Result.*
 @pub use Std.Ordering.Ordering.*

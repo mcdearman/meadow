@@ -7,7 +7,7 @@ mod common;
 use common::eval_main_std;
 
 fn s(body: &str) -> String {
-    eval_main_std(&format!("use Std.String as S\ndef main = {body}\n"))
+    eval_main_std(&format!("use Std.String as S\ndef result = {body}\n"))
 }
 
 // --- building ----------------------------------------------------------------

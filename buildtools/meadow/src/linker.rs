@@ -4,11 +4,20 @@
 //! [`core::Def`]s in dependency order, build one global symbol table, and locate
 //! the `main` entry point. It also keeps the per-package type tables around so the
 //! driver can print a fully annotated tree.
+//!
+//! A program runs by calling `main`, which is `() -> () ! Eff`. So the entry
+//! the runtimes are given is one more definition, `start = main ()`, and they
+//! evaluate it as they would any other: they never learn which definitions are
+//! functions.
 
 use meadow_compiler::{
-    CompiledPackage, core, hir, hir::VarId, infer::Scheme, intern::InternedString,
+    CompiledPackage, core, hir,
+    hir::VarId,
+    infer::{Scheme, Type, VarKind},
+    intern::InternedString,
 };
 use std::fmt::Write;
+use std::sync::Arc;
 
 pub struct GlobalSymbol {
     pub package: InternedString,
@@ -59,12 +68,12 @@ impl Linker {
             // `CompiledPackage::entry`. The last one wins, and packages arrive
             // in dependency order, so that is the root package's.
             if let Some(var) = pkg.entry {
-                entry = Some(var);
+                entry = Some(Entry::Main(var));
+            }
+            if let Some(var) = pkg.value_entry {
+                entry = Some(Entry::Value(var));
             }
             for e in &pkg.exports {
-                if &*e.name == "main" {
-                    entry = Some(e.var);
-                }
                 symbols.push(GlobalSymbol {
                     package: pkg.name,
                     name: e.name,
@@ -74,19 +83,67 @@ impl Linker {
             }
         }
 
+        let mut program = core::Program {
+            defs,
+            entry: None,
+            ctor_fields,
+            variants,
+            origins: Default::default(),
+        };
+        program.entry = match entry {
+            Some(Entry::Main(main)) => Some(start(&mut program, main)),
+            Some(Entry::Value(value)) => Some(value),
+            None => None,
+        };
         LinkedProgram {
-            program: core::Program {
-                defs,
-                entry,
-                ctor_fields,
-                variants,
-                origins: Default::default(),
-            },
+            program,
             symbols,
             packages,
             tests,
         }
     }
+}
+
+/// What a program runs.
+#[derive(Clone, Copy)]
+enum Entry {
+    /// `main`, which is called.
+    Main(VarId),
+    /// A value the build asked for by name, which is evaluated and shown.
+    Value(VarId),
+}
+
+/// `start = main ()`, added to `program`: what runs it.
+///
+/// `main` is `() -> () ! Eff`, so a type it is general in can only be `()`, and
+/// an effect or a row it is general in can only be empty -- which is what it is
+/// instantiated at here.
+fn start(program: &mut core::Program, main: VarId) -> VarId {
+    let binders = program
+        .defs
+        .iter()
+        .find(|d| d.var == main)
+        .map(|d| d.poly.binders.clone())
+        .unwrap_or_default();
+    let mut callee = core::Term::Var(main);
+    if !binders.is_empty() {
+        let tys = binders
+            .iter()
+            .map(|b| match b.kind {
+                VarKind::Row | VarKind::Effect => Type::RowEmpty,
+                VarKind::Type | VarKind::Num | VarKind::Frac => Type::unit(),
+            })
+            .collect();
+        callee = core::Term::TyApp(Arc::new(callee), tys);
+    }
+    let var = VarId(core::simplify::max_var(program) + 1);
+    program.defs.push(core::Def {
+        var,
+        name: InternedString::from("start"),
+        poly: core::Poly::mono(Type::unit()),
+        term: core::Term::App(Arc::new(callee), Arc::new(core::Term::Lit(core::Lit::Unit))),
+    });
+    var
 }
 
 impl LinkedProgram {

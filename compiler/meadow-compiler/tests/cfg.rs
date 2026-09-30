@@ -90,20 +90,20 @@ fn a_name_defined_once_per_build_is_not_a_duplicate() {
     let src = r#"
         @cfg(windows) def sep = "\\"
         @cfg(not(windows)) def sep = "/"
-        def main = sep
+        def result = sep
     "#;
     let (names, diags) = exports(src, on("linux", "debug", "jit", ""));
     assert!(diags.is_empty(), "{diags:?}");
-    assert_eq!(names, ["main", "sep"]);
+    assert_eq!(names, ["result", "sep"]);
 }
 
 #[test]
 fn what_is_left_out_is_not_checked() {
     // Nonsense that never reaches the type checker on this build.
-    let src = "@cfg(windows)\ndef broken = 1 + \"one\"\ndef main = 2\n";
+    let src = "@cfg(windows)\ndef broken = 1 + \"one\"\ndef result = 2\n";
     let (names, diags) = exports(src, on("linux", "debug", "jit", ""));
     assert!(diags.is_empty(), "{diags:?}");
-    assert_eq!(names, ["main"]);
+    assert_eq!(names, ["result"]);
 }
 
 #[test]

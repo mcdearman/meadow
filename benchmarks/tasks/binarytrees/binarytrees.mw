@@ -27,7 +27,7 @@ fun depths (d : Int) (top : Int) (acc : Int) : Int =
   if d > top then acc
   else depths (d + 2) top (acc + trees d (2 ^ (top - d + 4)) 0)
 
-def main =
+fun main () =
   let top : Int = 18 in
   let lasting = build 1 top in
   println (depths 4 top 0 + check lasting)

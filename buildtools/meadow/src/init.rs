@@ -244,7 +244,8 @@ fn manifest(name: &str) -> String {
 }
 
 const MAIN: &str = "\
-def main = println \"Hello, world!\"
+fun main () : () ! Eff =
+  println \"Hello, world!\"
 ";
 
 /// The name a directory implies: what it is called, as a package name.

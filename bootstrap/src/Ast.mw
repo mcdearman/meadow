@@ -23,6 +23,7 @@ use Lingua (lang!)
   Decl + RecordDecl { name : Name, params : [Name], fields : [Field] }
   Decl + EffectDecl { name : Name, params : [Name], ops : [Field] }
   Decl + AliasDecl { name : Name, params : [Name], ty : Type }
+  Decl + EffectAliasDecl { name : Name, params : [Name], row : Row }
   Decl + SigDecl { name : Name, ty : Type, bounds : [Bound] }
   Decl + TraitDecl { name : Name, params : [Name], supers : [Bound], assocs : [Assoc], sigs : [MethodSig], defaults : [Bind] }
   Decl + ImplDecl { tr : Name, tys : [Type], context : [Bound], assocs : [AssocDef], methods : [Bind] }

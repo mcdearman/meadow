@@ -40,14 +40,14 @@ fn operator_section_two_holes() {
 #[test]
 fn operator_section_one_hole_each_side() {
     insta::assert_snapshot!(eval_main(
-        "def addTen = (_ + 10)\ndef half = (_ / 2)\ndef main = (addTen 5, half 30, (100 - _) 40)\n"
+        "def addTen = (_ + 10)\ndef half = (_ / 2)\ndef result = (addTen 5, half 30, (100 - _) 40)\n"
     ));
 }
 
 #[test]
 fn point_free_fun_with_no_params() {
     insta::assert_snapshot!(eval_main(
-        "fun twice f x = f (f x)\nfun quad = twice (_ * 2)\ndef main = quad 3\n"
+        "fun twice f x = f (f x)\nfun quad = twice (_ * 2)\ndef result = quad 3\n"
     ));
 }
 
@@ -75,7 +75,7 @@ fn let_binding() {
 fn recursion_fib() {
     insta::assert_snapshot!(eval_main(
         "fun fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)\n\
-         def main = fib 15\n"
+         def result = fib 15\n"
     ));
 }
 
@@ -83,7 +83,7 @@ fn recursion_fib() {
 fn list_map_builtin() {
     insta::assert_snapshot!(eval_main(
         "fun map f xs = match xs with | Nil -> Nil | Cons x r -> Cons (f x) (map f r)\n\
-         def main = map (\\x -> x * x) [1, 2, 3, 4]\n"
+         def result = map (\\x -> x * x) [1, 2, 3, 4]\n"
     ));
 }
 
@@ -92,7 +92,7 @@ fn match_on_data() {
     insta::assert_snapshot!(eval_main(
         "use Shape.*\ndata Shape = Circle Int | Rect Int Int\n\
          fun area s = match s with | Circle r -> r * r | Rect w h -> w * h\n\
-         def main = area (Rect 3 4) + area (Circle 5)\n"
+         def result = area (Rect 3 4) + area (Circle 5)\n"
     ));
 }
 
@@ -101,7 +101,7 @@ fn recursive_data() {
     insta::assert_snapshot!(eval_main(
         "use Tree.*\ndata Tree a = Tip | Branch (Tree a) a (Tree a)\n\
          fun sum t = match t with | Tip -> 0 | Branch l x r -> x + sum l + sum r\n\
-         def main = sum (Branch (Branch Tip 3 Tip) 5 (Branch Tip 7 Tip))\n"
+         def result = sum (Branch (Branch Tip 3 Tip) 5 (Branch Tip 7 Tip))\n"
     ));
 }
 
@@ -110,7 +110,7 @@ fn nominal_record_field() {
     insta::assert_snapshot!(eval_main(
         "record Person = { name : String, age : Int }\n\
          def p = Person { name = \"Ann\", age = 30 }\n\
-         def main = p.age\n"
+         def result = p.age\n"
     ));
 }
 
@@ -128,7 +128,7 @@ fn division_by_zero() {
 fn non_exhaustive_match() {
     insta::assert_snapshot!(eval_main(
         "fun head xs = match xs with | Cons x r -> x\n\
-         def main = head Nil\n"
+         def result = head Nil\n"
     ));
 }
 
@@ -146,7 +146,7 @@ fn bigint_factorial() {
     // `main` is made a `BigInt`, so every literal in `fact` becomes one too.
     insta::assert_snapshot!(eval_main(
         "fun fact n = if n == 0 then 1 else n * fact (n - 1)\n\
-         def main = fact (toBigInt 25)\n"
+         def result = fact (toBigInt 25)\n"
     ));
 }
 

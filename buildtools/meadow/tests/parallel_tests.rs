@@ -29,7 +29,7 @@ fn package(who: &str) -> PathBuf {
             "@test fun t{k} () = let _ = say {k} in let _ = say {k} in assertEq (say {k}) {want} \"t{k}\"\n"
         ));
     }
-    src.push_str("def main = ()\n");
+    src.push_str("def result = ()\n");
     std::fs::write(root.join("src/Main.mw"), src).unwrap();
     root
 }
@@ -37,7 +37,7 @@ fn package(who: &str) -> PathBuf {
 #[test]
 fn tests_run_side_by_side_answer_as_they_do_in_order() {
     let root = package("agree");
-    let out = pipeline::build(&root, Options::debug());
+    let out = pipeline::build(&root, Options::debug().entry("result"));
     assert!(
         out.diagnostics.is_empty(),
         "{:?}",
@@ -51,7 +51,7 @@ fn tests_run_side_by_side_answer_as_they_do_in_order() {
         .map(|t| t.var)
         .collect();
     assert_eq!(vars.len(), 12);
-    let opt = Options::debug().opt;
+    let opt = Options::debug().entry("result").opt;
 
     for engine in [Engine::Vm, Engine::Jit, Engine::Cek] {
         let in_order: Vec<Result<String, String>> =

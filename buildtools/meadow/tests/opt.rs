@@ -21,7 +21,8 @@ use meadow::{Engine, OptLevel, Options, pipeline, runtime};
 /// Every level's answer, and the CEK's, when they agree — and a panic naming
 /// the culprit when they do not.
 fn agreed(src: &str) -> String {
-    let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
     assert!(
         diags.is_empty(),
         "compile errors in\n{src}\n{}",
@@ -57,7 +58,7 @@ fn is(src: &str, expected: &str) {
 
 /// An expression, evaluated against `Std`.
 fn expr_is(expr: &str, expected: &str) {
-    is(&format!("def main = {expr}\n"), expected);
+    is(&format!("def result = {expr}\n"), expected);
 }
 
 // --- folding a literal operand ------------------------------------------------
@@ -82,47 +83,47 @@ fn a_folded_constant_keeps_the_side_it_was_written_on() {
 
     // Through a variable, which is the shape that actually folds: one operand
     // in a register and one in the instruction.
-    is("def n = 10\ndef main = n - 3\n", "7");
-    is("def n = 10\ndef main = 3 - n\n", "-7");
-    is("def n = 10\ndef main = n / 3\n", "3");
-    is("def n = 10\ndef main = 3 / n\n", "0");
-    is("def n = 10\ndef main = n % 3\n", "1");
-    is("def n = 10\ndef main = 3 % n\n", "3");
-    is("def n = 3\ndef main = n ^ 2\n", "9");
-    is("def n = 3\ndef main = 2 ^ n\n", "8");
+    is("def n = 10\ndef result = n - 3\n", "7");
+    is("def n = 10\ndef result = 3 - n\n", "-7");
+    is("def n = 10\ndef result = n / 3\n", "3");
+    is("def n = 10\ndef result = 3 / n\n", "0");
+    is("def n = 10\ndef result = n % 3\n", "1");
+    is("def n = 10\ndef result = 3 % n\n", "3");
+    is("def n = 3\ndef result = n ^ 2\n", "9");
+    is("def n = 3\ndef result = 2 ^ n\n", "8");
 
     // Bit shifts are the other asymmetric pair.
-    is("def n = 8\ndef main = shl n 2\n", "32");
-    is("def n = 8\ndef main = shr n 2\n", "2");
-    is("def n = 2\ndef main = shl 8 n\n", "32");
+    is("def n = 8\ndef result = shl n 2\n", "32");
+    is("def n = 8\ndef result = shr n 2\n", "2");
+    is("def n = 2\ndef result = shl 8 n\n", "32");
 }
 
 /// The commutative ones may take their literal from either side, and must come
 /// out the same when they do.
 #[test]
 fn a_commutative_operation_folds_from_either_side() {
-    is("def n = 10\ndef main = n + 3\n", "13");
-    is("def n = 10\ndef main = 3 + n\n", "13");
-    is("def n = 10\ndef main = n * 3\n", "30");
-    is("def n = 10\ndef main = 3 * n\n", "30");
-    is("def n = 10\ndef main = n == 10\n", "True");
-    is("def n = 10\ndef main = 10 == n\n", "True");
-    is("def n = 10\ndef main = n != 10\n", "False");
-    is("def n = 10\ndef main = 10 != n\n", "False");
+    is("def n = 10\ndef result = n + 3\n", "13");
+    is("def n = 10\ndef result = 3 + n\n", "13");
+    is("def n = 10\ndef result = n * 3\n", "30");
+    is("def n = 10\ndef result = 3 * n\n", "30");
+    is("def n = 10\ndef result = n == 10\n", "True");
+    is("def n = 10\ndef result = 10 == n\n", "True");
+    is("def n = 10\ndef result = n != 10\n", "False");
+    is("def n = 10\ndef result = 10 != n\n", "False");
 }
 
 /// Every literal type the constant table holds, on the folded path.
 #[test]
 fn a_folded_constant_can_be_any_literal() {
-    is("def c = 'a'\ndef main = c == 'a'\n", "True");
-    is("def s = \"hi\"\ndef main = s == \"hi\"\n", "True");
-    is("def s = \"hi\"\ndef main = s == \"ho\"\n", "False");
-    is("def x = 1.5\ndef main = x +. 0.25\n", "1.75");
-    is("def x = 1.5\ndef main = x -. 0.25\n", "1.25");
-    is("def x = 0.25\ndef main = 1.5 -. x\n", "1.25");
-    is("def b = True\ndef main = b == True\n", "True");
+    is("def c = 'a'\ndef result = c == 'a'\n", "True");
+    is("def s = \"hi\"\ndef result = s == \"hi\"\n", "True");
+    is("def s = \"hi\"\ndef result = s == \"ho\"\n", "False");
+    is("def x = 1.5\ndef result = x +. 0.25\n", "1.75");
+    is("def x = 1.5\ndef result = x -. 0.25\n", "1.25");
+    is("def x = 0.25\ndef result = 1.5 -. x\n", "1.25");
+    is("def b = True\ndef result = b == True\n", "True");
     // `()` compares equal to itself and nothing else can be written.
-    is("def u = ()\ndef main = u == ()\n", "True");
+    is("def u = ()\ndef result = u == ()\n", "True");
 }
 
 // --- fusing a comparison into its branch --------------------------------------
@@ -135,7 +136,7 @@ fn a_fused_comparison_does_not_invert() {
         is(
             &format!(
                 "def n = {n}\n\
-                 def main = if n < 5 then \"below\" else if n > 5 then \"above\" else \"equal\"\n"
+                 def result = if n < 5 then \"below\" else if n > 5 then \"above\" else \"equal\"\n"
             ),
             expect,
         );
@@ -143,7 +144,7 @@ fn a_fused_comparison_does_not_invert() {
         is(
             &format!(
                 "def n = {n}\n\
-                 def main = if 5 > n then \"below\" else if 5 < n then \"above\" else \"equal\"\n"
+                 def result = if 5 > n then \"below\" else if 5 < n then \"above\" else \"equal\"\n"
             ),
             expect,
         );
@@ -151,14 +152,14 @@ fn a_fused_comparison_does_not_invert() {
         is(
             &format!(
                 "def n = {n}\n\
-                 def main = if n <= 5 then \"le\" else \"gt\"\n"
+                 def result = if n <= 5 then \"le\" else \"gt\"\n"
             ),
             if n <= 5 { "\"le\"" } else { "\"gt\"" },
         );
         is(
             &format!(
                 "def n = {n}\n\
-                 def main = if n >= 5 then \"ge\" else \"lt\"\n"
+                 def result = if n >= 5 then \"ge\" else \"lt\"\n"
             ),
             if n >= 5 { "\"ge\"" } else { "\"lt\"" },
         );
@@ -169,19 +170,19 @@ fn a_fused_comparison_does_not_invert() {
 #[test]
 fn a_fused_comparison_of_two_variables() {
     is(
-        "def a = 3\ndef b = 7\ndef main = if a < b then \"lt\" else \"ge\"\n",
+        "def a = 3\ndef b = 7\ndef result = if a < b then \"lt\" else \"ge\"\n",
         "\"lt\"",
     );
     is(
-        "def a = 7\ndef b = 3\ndef main = if a < b then \"lt\" else \"ge\"\n",
+        "def a = 7\ndef b = 3\ndef result = if a < b then \"lt\" else \"ge\"\n",
         "\"ge\"",
     );
     is(
-        "def a = 3\ndef b = 3\ndef main = if a < b then \"lt\" else \"ge\"\n",
+        "def a = 3\ndef b = 3\ndef result = if a < b then \"lt\" else \"ge\"\n",
         "\"ge\"",
     );
     is(
-        "def a = 3\ndef b = 3\ndef main = if a == b then \"eq\" else \"ne\"\n",
+        "def a = 3\ndef b = 3\ndef result = if a == b then \"eq\" else \"ne\"\n",
         "\"eq\"",
     );
 }
@@ -190,16 +191,19 @@ fn a_fused_comparison_of_two_variables() {
 /// primitive, a call is not fusable, and a plain `Bool` has nothing to fuse.
 #[test]
 fn a_condition_that_cannot_fuse_still_branches() {
-    is("def b = True\ndef main = if b then 1 else 2\n", "1");
+    is("def b = True\ndef result = if b then 1 else 2\n", "1");
     is(
-        "def n = 4\ndef main = if n > 0 and n < 10 then 1 else 2\n",
+        "def n = 4\ndef result = if n > 0 and n < 10 then 1 else 2\n",
         "1",
     );
     is(
-        "def n = 40\ndef main = if n > 0 and n < 10 then 1 else 2\n",
+        "def n = 40\ndef result = if n > 0 and n < 10 then 1 else 2\n",
         "2",
     );
-    is("def n = 4\ndef main = if not (n == 4) then 1 else 2\n", "2");
+    is(
+        "def n = 4\ndef result = if not (n == 4) then 1 else 2\n",
+        "2",
+    );
 }
 
 /// Floats and `BigInt`s compare too, and their comparisons are on the fused
@@ -209,35 +213,35 @@ fn a_condition_that_cannot_fuse_still_branches() {
 #[test]
 fn fusing_covers_the_other_numeric_types() {
     is(
-        "def x = 1.5\ndef main = if x <. 2.0 then \"lt\" else \"ge\"\n",
+        "def x = 1.5\ndef result = if x <. 2.0 then \"lt\" else \"ge\"\n",
         "\"lt\"",
     );
     is(
-        "def x = 2.5\ndef main = if x <. 2.0 then \"lt\" else \"ge\"\n",
+        "def x = 2.5\ndef result = if x <. 2.0 then \"lt\" else \"ge\"\n",
         "\"ge\"",
     );
     is(
-        "def x = 2.0\ndef main = if x <=. 2.0 then \"le\" else \"gt\"\n",
+        "def x = 2.0\ndef result = if x <=. 2.0 then \"le\" else \"gt\"\n",
         "\"le\"",
     );
     is(
-        "def x = toBigInt 5\ndef main = if x < toBigInt 9 then \"lt\" else \"ge\"\n",
+        "def x = toBigInt 5\ndef result = if x < toBigInt 9 then \"lt\" else \"ge\"\n",
         "\"lt\"",
     );
     is(
-        "def x = toBigInt 50\ndef main = if x < toBigInt 9 then \"lt\" else \"ge\"\n",
+        "def x = toBigInt 50\ndef result = if x < toBigInt 9 then \"lt\" else \"ge\"\n",
         "\"ge\"",
     );
     is(
-        "def x = toUInt8 200\ndef main = if x > 100 then \"gt\" else \"le\"\n",
+        "def x = toUInt8 200\ndef result = if x > 100 then \"gt\" else \"le\"\n",
         "\"gt\"",
     );
     is(
-        "def x = toInt8 (0 - 1)\ndef main = if x < 0 then \"lt\" else \"ge\"\n",
+        "def x = toInt8 (0 - 1)\ndef result = if x < 0 then \"lt\" else \"ge\"\n",
         "\"lt\"",
     );
     is(
-        "def x = toUInt64 (toInt (0 - 1))\ndef main = if x > 0 then \"gt\" else \"le\"\n",
+        "def x = toUInt64 (toInt (0 - 1))\ndef result = if x > 0 then \"gt\" else \"le\"\n",
         "\"gt\"",
     );
 }
@@ -251,7 +255,7 @@ fn fusing_covers_the_other_numeric_types() {
 #[test]
 fn a_closure_over_many_values_captures_them_in_order() {
     is(
-        "def main =\n\
+        "def result =\n\
          \x20 let a = 1 in let b = 2 in let c = 3 in let d = 4 in let e = 5 in\n\
          \x20 let f = \\u -> a * 10000 + b * 1000 + c * 100 + d * 10 + e in\n\
          \x20 f ()\n",
@@ -265,7 +269,7 @@ fn a_closure_over_many_values_captures_them_in_order() {
 fn arguments_arrive_in_the_order_they_were_written() {
     is(
         "fun five a b c d e = a * 10000 + b * 1000 + c * 100 + d * 10 + e\n\
-         def main = five 1 2 3 4 5\n",
+         def result = five 1 2 3 4 5\n",
         "12345",
     );
     // Under-applied, so the arguments arrive across several closures rather
@@ -273,7 +277,7 @@ fn arguments_arrive_in_the_order_they_were_written() {
     is(
         "fun five a b c d e = a * 10000 + b * 1000 + c * 100 + d * 10 + e\n\
          fun apply f x = f x\n\
-         def main = apply (five 1 2 3 4) 5\n",
+         def result = apply (five 1 2 3 4) 5\n",
         "12345",
     );
 }
@@ -297,7 +301,7 @@ fn a_case_tree_picks_the_same_arm_the_chain_would() {
              \x20 | Box 0 0 -> \"degenerate box\"\n\
              \x20 | Line n -> \"line\"\n\
              \x20 | Box w h -> \"box\"\n\
-             def main = name ({v})\n"
+             def result = name ({v})\n"
         )
     };
     is(&src("Dot"), "\"dot\"");
@@ -321,7 +325,7 @@ fn a_wildcard_still_shadows_the_arms_after_it() {
              \x20 | Line n -> \"line\"\n\
              \x20 | _ -> \"anything\"\n\
              \x20 | Box w h -> \"box\"\n\
-             def main = name ({v})\n"
+             def result = name ({v})\n"
         )
     };
     is(&src("Dot"), "\"dot\"");
@@ -337,7 +341,7 @@ fn a_binding_arm_sees_the_whole_scrutinee() {
     is(
         "use Shape.*\ndata Shape = Dot | Line Int\n\
          fun size s = match s with | Dot -> 0 | other -> (match other with | Line n -> n | _ -> -1)\n\
-         def main = size (Line 9)\n",
+         def result = size (Line 9)\n",
         "9",
     );
 }
@@ -357,7 +361,7 @@ fn nested_matches_each_get_their_own_tree() {
              \x20 | P (B n) -> 3 + n\n\
              \x20 | Q x -> 100\n\
              \x20 | R -> 200\n\
-             def main = go ({v})\n"
+             def result = go ({v})\n"
         )
     };
     is(&src("P A"), "1");
@@ -374,7 +378,7 @@ fn nested_matches_each_get_their_own_tree() {
 fn matching_a_list_agrees_at_every_level() {
     is(
         "use Std.Collections.List as L
-def main = L.sum [1; 2; 3; 4]
+def result = L.sum [1; 2; 3; 4]
 ",
         "10",
     );
@@ -398,7 +402,7 @@ def main = L.sum [1; 2; 3; 4]
 fn literal_patterns_match_every_literal_type() {
     let int = |v: &str| {
         format!(
-            "fun f n = match n with | 0 -> \"zero\" | 1 -> \"one\" | _ -> \"many\"\ndef main = f {v}\n"
+            "fun f n = match n with | 0 -> \"zero\" | 1 -> \"one\" | _ -> \"many\"\ndef result = f {v}\n"
         )
     };
     is(&int("0"), "\"zero\"");
@@ -406,14 +410,16 @@ fn literal_patterns_match_every_literal_type() {
     is(&int("7"), "\"many\"");
 
     let ch = |v: &str| {
-        format!("fun f c = match c with | 'a' -> 1 | 'b' -> 2 | _ -> 0\ndef main = f {v}\n")
+        format!("fun f c = match c with | 'a' -> 1 | 'b' -> 2 | _ -> 0\ndef result = f {v}\n")
     };
     is(&ch("'a'"), "1");
     is(&ch("'b'"), "2");
     is(&ch("'z'"), "0");
 
     let s = |v: &str| {
-        format!("fun f s = match s with | \"yes\" -> 1 | \"no\" -> 2 | _ -> 0\ndef main = f {v}\n")
+        format!(
+            "fun f s = match s with | \"yes\" -> 1 | \"no\" -> 2 | _ -> 0\ndef result = f {v}\n"
+        )
     };
     is(&s("\"yes\""), "1");
     is(&s("\"no\""), "2");
@@ -426,8 +432,9 @@ fn literal_patterns_match_every_literal_type() {
 fn a_non_exhaustive_match_fails_the_same_way_everywhere() {
     let src = "use Shape.*\ndata Shape = Dot | Line Int\n\
                fun name s = match s with | Dot -> \"dot\"\n\
-               def main = name (Line 1)\n";
-    let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+               def result = name (Line 1)\n";
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
     assert!(diags.is_empty(), "{:?}", diags);
 
     let program = meadow_compiler::core::prune::prune(&program);
@@ -462,7 +469,7 @@ fn a_comparison_works_past_the_two_hundred_and_fifty_sixth_constant() {
     // comparison against a constant that is certainly not near the front of the
     // table.
     src.push_str(
-        "def main =\n\
+        "def result =\n\
          \x20 classify k399 * 1000 + classify k0 * 100 + classify k7 * 10\n\
          \x20 + (if k399 > 100398 then 1 else 0)\n",
     );
@@ -473,11 +480,12 @@ fn a_comparison_works_past_the_two_hundred_and_fifty_sixth_constant() {
 #[test]
 fn a_folded_operation_still_fails_where_it_should() {
     for (src, want) in [
-        ("def n = 1\ndef main = n / 0\n", "division by zero"),
-        ("def n = 1\ndef main = n % 0\n", "modulo by zero"),
-        ("def n = 0\ndef main = 1 / n\n", "division by zero"),
+        ("def n = 1\ndef result = n / 0\n", "division by zero"),
+        ("def n = 1\ndef result = n % 0\n", "modulo by zero"),
+        ("def n = 0\ndef result = 1 / n\n", "division by zero"),
     ] {
-        let (program, diags) = pipeline::compile_str_with_std("test", src, Options::debug());
+        let (program, diags) =
+            pipeline::compile_str_with_std("test", src, Options::debug().entry("result"));
         assert!(diags.is_empty(), "{:?}", diags);
         let program = meadow_compiler::core::prune::prune(&program);
         let cek = runtime::run(&program, Engine::Cek, OptLevel::O1).unwrap_err();
@@ -502,7 +510,7 @@ fn folding_and_fusing_survive_a_resumption() {
          \x20   let b = tick () in\n\
          \x20   a * 100 + b\n\
          \x20 with { tick u r -> r 7 + 1 }\n\
-         def main = counting ()\n",
+         def result = counting ()\n",
         "709",
     );
 }

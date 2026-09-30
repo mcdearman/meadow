@@ -11,7 +11,7 @@ fun classify n =
   | Equal   -> "zero"
   | Greater -> "positive"
 
-def main = classify 42
+fun main () = println (classify 42)
 ```
 
 ## Install

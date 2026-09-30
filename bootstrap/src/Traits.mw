@@ -1,0 +1,557 @@
+-- Traits: what a `where` asks for, and how it is answered -- `meadow_infer`'s
+-- `traits`, as far as it decides types.
+--
+-- Instantiating a scheme with a `where` leaves a **wanted** predicate for
+-- each trait it names, over the fresh variables. One is answered once its
+-- type is known that far: by the one `impl` for that trait and that
+-- constructor, whose own `where` is wanted in turn. One whose type is still a
+-- variable when its function is generalized is the function's to ask its
+-- caller for: it joins the scheme's `where`. What a signature's `where`
+-- gives is what the body may assume. Only a top-level `fun` takes
+-- dictionaries; a `def` and a local function do not generalize a variable
+-- something is still wanted of.
+--
+-- An associated type is never an application to reduce: a predicate carries
+-- its trait's associated types beside the types it is of, as types of their
+-- own, and answering it settles them. Which dictionary answers each wanted
+-- -- the evidence lowering needs -- is left to later: it decides nothing
+-- about a type.
+
+use MeadowBoot.Types
+use MeadowBoot.Types.Type.*
+use MeadowBoot.Types.VarKind.*
+use MeadowBoot.Solve
+use MeadowBoot.Solve.Sol.*
+use MeadowBoot.Rename
+use Lingua.Buf as B
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Sort (sort)
+
+-- --- keys ------------------------------------------------------------------------------
+
+-- What an `impl` is found by: the outermost constructor of a type.
+fun headKey (t : Type) : Maybe String =
+  match t with
+  | Con name _ -> Just name
+  | Tuple items -> Just "#tuple${show (V.len items)}"
+  | Fun _ _ _ -> Just "#fun"
+  | Record _ -> Just "#record"
+  | _ -> None
+
+@pub fun headsKey (tys : [Type]) : Maybe String =
+  let heads = V.map headKey tys in
+  if V.all M.isSome heads then Just (S.join " " (V.map (M.unwrapOr "") heads)) else None
+
+@pub fun blanketKey (n : Int) : String = S.join " " (V.replicate n "_")
+
+fun implKey (tr : String) (key : String) : String = tr ++ "\n" ++ key
+
+@pub fun methodKey (tr : String) (name : String) : String = tr ++ "\n" ++ name
+
+fun findImpl (i : Inf s) (tr : String) (key : String) : Maybe ImplDef ! { St s | e } = H.lookup (implKey tr key) (stGetRef i.impls)
+
+-- --- wanting -----------------------------------------------------------------------------
+
+fun wantedAt (i : Inf s) (k : Int) : Wanted ! { St s | e } = B.at i.wanted k
+
+fun setSol (i : Inf s) (k : Int) (sol : Maybe Sol) : () ! { St s | e } = B.put i.wanted k { (wantedAt i k) | sol = sol }
+
+fun want (i : Inf s) (p : Pred) (owner : Maybe Int) : Int ! { St s | e } = B.push i.wanted (Wanted { pred = p, owner = owner, sol = None })
+
+-- The scheme of a name mentioned, instantiated, wanting what its `where`
+-- asks for.
+@pub fun instantiateAt (i : Inf s) (sc : Scheme) : Type ! { St s | e } =
+  if V.isEmpty sc.preds then instantiate i sc
+  else
+    match instantiateWithPreds i sc with
+    | (t, preds) ->
+        let owner = stGetRef i.member in
+        let u = V.foldl (\w p -> (let k = want i p owner in ())) () preds in
+        t
+
+-- A binding begins: what is wanted from here on is its body's.
+@pub fun beginBinding (i : Inf s) : Int ! { St s | e } =
+  let u = stSetRef i.givens [] in
+  B.len i.wanted
+
+-- Answer every wanted whose types are known by now, and settle associated
+-- types that have to agree.
+@pub fun solveWanted (i : Inf s) : () ! { St s | e } =
+  let progress = V.foldl (\acc k -> solveOne i k or acc) False (V.range 0 (B.len i.wanted)) in
+  if progress then solveWanted i else ()
+
+fun solveOne (i : Inf s) (k : Int) : Bool ! { St s | e } =
+  let w = wantedAt i k in
+  if M.isSome w.sol then False
+  else
+    let tys = V.map (zonk i.ar) w.pred.tys in
+    if V.any referencesError tys then (let u = setSol i k (Just Failed) in False)
+    else
+      match headsKey tys with
+      | None -> (let u = agree i k tys in False)
+      | Just key ->
+          (let scrutinee = (match findImpl i w.pred.tr key with | Just f -> Just f | None -> findImpl i w.pred.tr (blanketKey (V.len tys))) in
+            match scrutinee with
+            | Just found -> (let u = answerWith i k tys found in True)
+            | None -> (let u = report i "`${S.join " " (V.map showType tys)}` does not implement `${spelling w.pred.tr}`" in let v = setSol i k (Just Failed) in True))
+
+-- Answer wanted `k`, at `tys`, with the `impl` `found`: its own `where` is
+-- wanted in turn.
+fun answerWith (i : Inf s) (k : Int) (tys : [Type]) (found : ImplDef) : () ! { St s | e } =
+  let w = wantedAt i k in
+  match instantiateWithPreds i found.scheme with
+  | (dictTy, context) ->
+      let u = unifyAt i dictTy (Con w.pred.tr (V.append tys w.pred.assocs)) in
+      let v = V.foldl (\x p -> (let j = want i p w.owner in ())) () context in
+      setSol i k (Just ByImpl)
+
+-- Wanted `k` is of a type nothing will ever say: answered by the trait's
+-- `impl` for every type, or at `Int` for an integer literal's or an
+-- arithmetic trait's, or at `Float` for a float literal's.
+fun defaultWanted (i : Inf s) (k : Int) : Bool ! { St s | e } =
+  let w = wantedAt i k in
+  let tr = w.pred.tr in
+  let tys = V.map (zonk i.ar) w.pred.tys in
+  match M.andThen (\key -> findImpl i tr key) (headsKey tys) with
+  | Just found -> (let u = answerWith i k tys found in True)
+  | None ->
+      (match findImpl i tr (blanketKey (V.len tys)) with
+       | Just found -> (let u = answerWith i k tys found in True)
+       | None ->
+           (match (V.len tys, V.getOr Error tys 0) with
+            | (1, Var v) ->
+                if slotKind i.ar v == Frac then
+                  (match findImpl i tr "Float" with
+                   | Just found -> (let u = unifyAt i (Var v) (floatT ()) in let x = answerWith i k [floatT ()] found in True)
+                   | None -> False)
+                else if slotKind i.ar v == Num or isNumericTrait tr then
+                  (match findImpl i tr "Int" with
+                   | Just found -> (let u = unifyAt i (Var v) (intT ()) in let x = answerWith i k [intT ()] found in True)
+                   | None -> False)
+                else False
+            | _ -> False))
+
+-- The standard library's traits a type nothing settles is `Int` for.
+fun isNumericTrait (tr : String) : Bool =
+  S.startsWith "Std." tr and V.elem (spelling tr) ["Add", "Sub", "Mul", "Div", "Rem", "Pow", "Shift", "PartialEq", "Eq", "PartialOrd", "Ord", "Debug", "Display"]
+
+-- One trait at one type has one set of associated types: tie wanted `k`'s to
+-- those of whatever else asks the same.
+fun agree (i : Inf s) (k : Int) (tys : [Type]) : () ! { St s | e } =
+  let w = wantedAt i k in
+  if V.isEmpty w.pred.assocs then ()
+  else
+    let earlier = V.concatMap (\j -> (let o = wantedAt i j in if o.pred.tr == w.pred.tr then [(o.pred.tys, o.pred.assocs)] else [])) (V.range 0 k) in
+    let given = V.concatMap (\(g : Pred) -> if g.tr == w.pred.tr then [(g.tys, g.assocs)] else []) (stGetRef i.givens) in
+    V.foldl
+      (\u o ->
+        if V.map (zonk i.ar) (fst o) != tys then ()
+        else V.foldl (\x j -> unifyAt i (V.getOr Error w.pred.assocs j) (V.getOr Error (snd o) j)) () (V.range 0 (min (V.len w.pred.assocs) (V.len (snd o)))))
+      ()
+      (V.append earlier given)
+
+-- The traits to go through from a dictionary of `from` at `have` to one of
+-- `to` at `want`: empty for that one, `None` for no way.
+fun superPath (i : Inf s) (from : String) (have : [Type]) (to : String) (wantTys : [Type]) : Maybe [Super] ! { St s | e } =
+  if from == to and have == wantTys then Just []
+  else
+    match H.lookup from (stGetRef i.shapes) with
+    | None -> None
+    | Just (sh : TraitShape) ->
+        V.foldl
+          (\found (sup : Super) ->
+            match found with
+            | Just p -> Just p
+            | None -> M.map (\rest -> V.pushFront rest sup) (superPath i sup.tr (V.concatMap (\j -> match V.get have j with | Just t -> [t] | None -> []) sup.over) to wantTys))
+          None
+          sh.supers
+
+-- The associated types of `sup`, required by `tr` of `idxs`, out of `tr`'s
+-- own `assocs`.
+@pub fun superAssocs (i : Inf s) (tr : String) (assocs : [Type]) (sup : String) (idxs : [Int]) : [Type] ! { St s | e } =
+  match (H.lookup tr (stGetRef i.shapes), H.lookup sup (stGetRef i.shapes)) with
+  | (Just (me : TraitShape), Just (them : TraitShape)) ->
+      V.map
+        (\k ->
+          let a = V.getOr "" them.assocs k in
+          let mapped = V.concatMap (\p -> match V.get idxs p with | Just x -> [x] | None -> []) (V.getOr [] them.assocParams k) in
+          match V.find (\j -> V.getOr "" me.assocs j == a and V.getOr [] me.assocParams j == mapped) (V.range 0 (V.len me.assocs)) with
+          | Just j -> V.getOr Error assocs j
+          | None -> Error)
+        (V.range 0 (V.len them.assocs))
+  | _ -> []
+
+-- Associated type `assoc` of trait `owner` at `of`, as the `impl` of `owner`
+-- for `of` says, if it says so in terms of `of` alone.
+fun knownAssoc (i : Inf s) (owner : String) (assoc : String) (over : [Type]) : Maybe Type ! { St s | e } =
+  match (M.andThen (\key -> findImpl i owner key) (headsKey over), H.lookup owner (stGetRef i.shapes)) with
+  | (Just found, Just (sh : TraitShape)) ->
+      (match found.scheme.ty with
+       | Con _ theirs ->
+           (match V.find (\j -> V.getOr "" sh.assocs j == assoc) (V.range 0 sh.ownAssocs) with
+            | Just k ->
+                (match V.foldl (\acc j -> M.andThen (\m -> matchBound (V.getOr Error theirs j) (V.getOr Error over j) m) acc) (Just H.empty) (V.range 0 (min sh.params (V.len over))) with
+                 | Just m -> M.andThen (\t -> substMap t m) (V.get theirs (sh.params + k))
+                 | None -> None)
+            | None -> None)
+       | _ -> None)
+  | _ -> None
+
+-- How many traits deep `tr`'s requirements go.
+@pub fun traitDepth (i : Inf s) (tr : String) (seen : Int) : Int ! { St s | e } =
+  if seen > 32 then seen
+  else
+    match H.lookup tr (stGetRef i.shapes) with
+    | Just (sh : TraitShape) -> V.foldl (\m (sup : Super) -> max m (1 + traitDepth i sup.tr (seen + 1))) 0 sh.supers
+    | None -> 0
+
+-- Keep every variable something is still wanted of from generalizing here.
+@pub fun holdBackWanted (i : Inf s) : () ! { St s | e } =
+  let level = levelOf i.ar in
+  V.foldl
+    (\u k ->
+      let w = wantedAt i k in
+      if M.isSome w.sol then ()
+      else (let x = V.foldl (\y t -> holdBack i.ar t level) () w.pred.tys in V.foldl (\y t -> holdBack i.ar t level) () w.pred.assocs))
+    ()
+    (V.range 0 (B.len i.wanted))
+
+-- The top-level bindings `members` have been inferred together: what each
+-- asks of its caller -- its `where` -- and the wanteds their bodies had of
+-- those variables answered. Only functions may ask (`dictionaries`).
+@pub fun closeBinding (i : Inf s) (started : Int) (members : [(Int, Type)]) (dictionaries : Bool) : HashMap Int [Pred] ! { St s | e } =
+  let level = levelOf i.ar in
+  let givens = stGetRef i.givens in
+  let u = stSetRef i.givens [] in
+  let signed = V.any (\m -> M.isSome (H.lookup (fst m) (stGetRef i.sigs)) or M.isSome (H.lookup (fst m) (stGetRef i.methodSigs))) members in
+  let v = stSetRef i.group [] in
+  if not dictionaries then (let x = holdBackWanted i in H.empty)
+  else
+    let signatureVars = V.foldl (\acc m -> freeVars i.ar (zonk i.ar (snd m)) acc) [] members in
+    -- The group's `where`: what was given, then what turned out wanted.
+    match V.foldl (\acc k -> closeOne i level signed signatureVars acc k) (givens, []) (V.range started (B.len i.wanted)) with
+    | (all, pending) ->
+        -- Each member asks for what its own type can settle.
+        let lists = V.foldl (\h m -> H.insert (fst m) (settledBy i all (snd m)) h) H.empty members in
+        let only = if V.len members == 1 then M.map fst (V.get members 0) else None in
+        let w = V.foldl (\x pj -> placeWanted i lists only pj) () pending in
+        H.fromVec (V.map (\kv -> (fst kv, V.map (\j -> V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j) (snd kv))) (H.toVec lists))
+
+-- One wanted of the group's: through a given if one answers it, into the
+-- group's `where` if its variables are the group's, or left.
+fun closeOne (i : Inf s) (level : Int) (signed : Bool) (signatureVars : [Int]) (acc : ([Pred], [(Int, Int)])) (k : Int) : ([Pred], [(Int, Int)]) ! { St s | e } =
+  match acc with
+  | (all, pending) ->
+      let w = wantedAt i k in
+      if M.isSome w.sol then acc
+      else
+        let wantTys = V.map (zonk i.ar) w.pred.tys in
+        if V.any referencesError wantTys then acc
+        else
+          let found = V.foldl (\f j -> match f with | Just x -> Just x | None -> (let have = V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j in M.map (\path -> (j, path)) (superPath i have.tr (V.map (zonk i.ar) have.tys) w.pred.tr wantTys))) None (V.range 0 (V.len all)) in
+          let free = V.foldl (\o t -> freeVars i.ar t o) [] wantTys in
+          let ours = V.any (\x -> slotLevel i.ar x > level) free in
+          match found with
+          | Just (j, path) ->
+              -- What the given says the associated types are, through every
+              -- trait on the way.
+              let have = V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j in
+              let theirs = fst (V.foldl (\st (sup : Super) -> (superAssocs i (snd st) (fst st) sup.tr sup.over, sup.tr)) (have.assocs, have.tr) path) in
+              let u = V.foldl (\x n -> unifyAt i (V.getOr Error w.pred.assocs n) (V.getOr Error theirs n)) () (V.range 0 (min (V.len w.pred.assocs) (V.len theirs))) in
+              (all, V.pushBack pending (k, j))
+          | None ->
+              if not ours then acc
+              else if signed then
+                let local = not (V.any (\x -> V.elem x signatureVars) free) in
+                if local and defaultWanted i k then acc
+                else (let u = report i "this needs `${spelling w.pred.tr} ${S.join " " (V.map showType wantTys)}`, which the signature does not ask for" in let v = setSol i k (Just Failed) in acc)
+              else (V.pushBack all w.pred, V.pushBack pending (k, V.len all))
+
+-- The places in the group's `where` a member of type `t` asks for: every one
+-- whose types its own type settles, and those that settles in turn.
+fun settledBy (i : Inf s) (all : [Pred]) (t : Type) : [Int] ! { St s | e } =
+  let settled = freeVars i.ar (zonk i.ar t) [] in
+  sort (settleLoop i all settled [])
+
+fun settleLoop (i : Inf s) (all : [Pred]) (settled : [Int]) (mine : [Int]) : [Int] ! { St s | e } =
+  let scrutinee = V.foldl (\acc j -> (match acc with | (s1, m1) -> (if V.elem j m1 then acc else (let p = V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j in let over = V.foldl (\o t -> freeVars i.ar (zonk i.ar t) o) [] p.tys in if V.all (\x -> V.elem x s1) over then (V.foldl (\o t -> freeVars i.ar (zonk i.ar t) o) s1 p.assocs, V.pushBack m1 j) else acc)))) (settled, mine) (V.range 0 (V.len all)) in
+  match scrutinee with
+  | (s2, m2) -> if V.len m2 == V.len mine then m2 else settleLoop i all s2 m2
+
+-- A wanted is answered by its own function's parameter -- or, if its function
+-- does not ask for it, defaulted, or ambiguous.
+fun placeWanted (i : Inf s) (lists : HashMap Int [Int]) (only : Maybe Int) (pj : (Int, Int)) : () ! { St s | e } =
+  let k = fst pj in
+  let j = snd pj in
+  let w = wantedAt i k in
+  let owner = (match w.owner with | Just o -> Just o | None -> only) in
+  let placed = (match M.andThen (\o -> H.lookup o lists) owner with | Just mine -> V.elem j mine | None -> False) in
+  if placed then setSol i k (Just ByGiven)
+  else
+    let u = setSol i k None in
+    if defaultWanted i k then ()
+    else (let v = report i "cannot tell which `impl ${spelling w.pred.tr}` is meant" in setSol i k (Just Failed))
+
+-- The unit is done: what is still wanted of a type nothing said is
+-- defaulted, one at a time, and what is left is ambiguous.
+@pub fun finishWanted (i : Inf s) : () ! { St s | e } =
+  let u = solveWanted i in
+  let v = finishFrom i 0 in
+  V.foldl (\x k -> if M.isSome (wantedAt i k).sol then () else (let y = report i "ambiguous `impl ${spelling (wantedAt i k).pred.tr}`" in setSol i k (Just Failed))) () (V.range 0 (B.len i.wanted))
+
+fun finishFrom (i : Inf s) (k : Int) : () ! { St s | e } =
+  if k >= B.len i.wanted then ()
+  else
+    let u = (if M.isNone (wantedAt i k).sol and defaultWanted i k then solveWanted i else ()) in
+    finishFrom i (k + 1)
+
+-- --- associated types in written types --------------------------------------------------
+
+-- A quantifier for associated type `assoc` of `of`, the one `table` has or a
+-- new one.
+@pub record AssocVars = { table : [(String, [Type], Int)], quant : [VarKind] }
+
+fun assocVar (assoc : String) (over : [Type]) (st : AssocVars) : (Int, AssocVars) =
+  let scrutinee = V.find (\x -> match x with | (a, t, _) -> a == assoc and t == over) st.table in
+  match scrutinee with
+  | Just (_, _, k) -> (k, st)
+  | None ->
+      let k = V.len st.quant in
+        (k, AssocVars { table = V.pushBack st.table (assoc, over, k), quant = V.pushBack st.quant Plain })
+
+-- `t` with every `Elem τ` a quantifier.
+@pub fun liftAssocs (i : Inf s) (t : Type) (st : AssocVars) : (Type, AssocVars) ! { St s | e } =
+  match t with
+  | Con name args ->
+      (match liftEach i args st with
+       | (xs, st2) -> (if M.isSome (H.lookup name (stGetRef i.assocOf)) then (match assocVar name xs st2 with | (k, st3) -> (Bound k, st3)) else (Con name xs, st2)))
+  | Tuple items -> (match liftEach i items st with | (xs, st2) -> (Tuple xs, st2))
+  | Fun ps ret eff -> (match liftEach i ps st with | (xs, st2) -> (match liftAssocs i ret st2 with | (r, st3) -> (match liftAssocs i eff st3 with | (e2, st4) -> (Fun xs r e2, st4))))
+  | Record row -> (match liftAssocs i row st with | (r, st2) -> (Record r, st2))
+  | RowExtend l f rest -> (match liftAssocs i f st with | (f2, st2) -> (match liftAssocs i rest st2 with | (r2, st3) -> (RowExtend l f2 r2, st3)))
+  | other -> (other, st)
+
+fun liftEach (i : Inf s) (ts : [Type]) (st : AssocVars) : ([Type], AssocVars) ! { St s | e } =
+  V.foldl (\acc t -> match acc with | (xs, s1) -> (match liftAssocs i t s1 with | (x, s2) -> (V.pushBack xs x, s2))) ([], st) ts
+
+-- Trait `tr` of `tys`, its associated types the quantifiers for them.
+@pub fun predOver (i : Inf s) (tr : String) (tys : [Type]) (st : AssocVars) : (Pred, AssocVars) ! { St s | e } =
+  match H.lookup tr (stGetRef i.shapes) with
+  | Just (sh : TraitShape) ->
+      (let scrutinee = V.foldl (\acc k -> match acc with | (xs, s1) -> (let over = V.concatMap (\p -> match V.get tys p with | Just x -> [x] | None -> []) (V.getOr [] sh.assocParams k) in match assocVar (V.getOr "" sh.assocs k) over s1 with | (q, s2) -> (V.pushBack xs (Bound q), s2))) ([], st) (V.range 0 (V.len sh.assocs)) in
+        match scrutinee with
+        | (assocs, st2) -> (Pred { tr = tr, tys = tys, assocs = assocs }, st2))
+  | None -> (Pred { tr = tr, tys = tys, assocs = [] }, st)
+
+-- Every predicate `table` still needs, after `preds`: the trait of each
+-- associated type at its types, unless one of `preds` is it.
+fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) : ([Pred], AssocVars) ! { St s | e } =
+  match V.get st.table k with
+  | None -> (preds, st)
+  | Just (assoc, over, _) ->
+      (match H.lookup assoc (stGetRef i.assocOf) with
+       | Just (owner : AssocOwner) ->
+           if V.any (\(p : Pred) -> p.tr == owner.tr and p.tys == over) preds then impliedPreds i preds st (k + 1)
+           else (match predOver i owner.tr over st with | (p, st2) -> impliedPreds i (V.pushBack preds p) st2 (k + 1))
+       | None -> impliedPreds i preds st (k + 1))
+
+-- A written type and its `where`, as a scheme: every variable quantified, and
+-- one more for each associated type it mentions.
+@pub fun boundedScheme (i : Inf s) (a : HirArena) (t : HirType) (bounds : [HirBound]) : Scheme ! { St s | e } =
+  let names = V.foldl (\acc b -> V.foldl (\o x -> collectTyvars a x o) acc (hirBoundTys a b)) (collectTyvars a t []) bounds in
+  let vars = indexed names in
+  let raw = tyOf i a t vars in
+  let quant = markEffectVars raw (V.replicate (V.len names) Plain) in
+  match liftAssocs i raw (AssocVars { table = [], quant = quant }) with
+  | (ty, st1) ->
+      let scrutinee = V.foldl (\acc b -> match acc with | (ps, s1) -> (match liftEach i (V.map (\x -> tyOf i a x vars) (hirBoundTys a b)) s1 with | (over, s2) -> (match predOver i (canonOf i (hirRefId a (hirBoundRef a b)) (hirNameText a (hirBoundTr a b))) over s2 with | (p, s3) -> (V.pushBack ps p, s3)))) ([], st1) bounds in
+      match scrutinee with
+      | (preds, st2) ->
+          match impliedPreds i preds st2 0 with
+          | (all, st3) -> Scheme { quant = st3.quant, preds = all, ty = ty, lacks = [] }
+
+-- An annotation's type, its variables made fresh already: every `Elem τ` a
+-- fresh variable, wanted of `τ`'s `impl`.
+@pub fun liftAssocsWanted (i : Inf s) (t : Type) : Type ! { St s | e } =
+  match liftAssocs i t (AssocVars { table = [], quant = [] }) with
+  | (lifted, st) ->
+      if V.isEmpty st.table then t
+      else
+        match impliedPreds i [] st 0 with
+        | (preds, st2) ->
+            let fresh = V.map (\k -> freshIn i.ar k) st2.quant in
+            let owner = stGetRef i.member in
+            let u = V.foldl (\x (p : Pred) -> (let k = want i (Pred { tr = p.tr, tys = V.map (\y -> substBound y fresh) p.tys, assocs = V.map (\y -> substBound y fresh) p.assocs }) owner in ())) () preds in
+            substBound lifted fresh
+
+-- --- matching an impl's head --------------------------------------------------------------
+
+@pub fun matchBound (pattern : Type) (t : Type) (m : HashMap Int Type) : Maybe (HashMap Int Type) =
+  match (pattern, t) with
+  | (Bound k, _) -> (match H.lookup k m with | Just prev -> (if prev == t then Just m else None) | None -> Just (H.insert k t m))
+  | (Con a xs, Con b ys) -> (if a == b and V.len xs == V.len ys then V.foldl (\acc j -> M.andThen (\m2 -> matchBound (V.getOr Error xs j) (V.getOr Error ys j) m2) acc) (Just m) (V.range 0 (V.len xs)) else (if pattern == t then Just m else None))
+  | (Tuple xs, Tuple ys) -> (if V.len xs == V.len ys then V.foldl (\acc j -> M.andThen (\m2 -> matchBound (V.getOr Error xs j) (V.getOr Error ys j) m2) acc) (Just m) (V.range 0 (V.len xs)) else None)
+  | _ -> if pattern == t then Just m else None
+
+@pub fun substMap (t : Type) (m : HashMap Int Type) : Maybe Type =
+  let each = \ts -> V.foldl (\acc x -> M.andThen (\xs -> M.map (\y -> V.pushBack xs y) (substMap x m)) acc) (Just []) ts in
+  match t with
+  | Bound k -> H.lookup k m
+  | Con n args -> M.map (\xs -> Con n xs) (each args)
+  | Tuple items -> M.map (\xs -> Tuple xs) (each items)
+  | Fun ps ret eff -> M.andThen (\xs -> M.andThen (\r -> M.map (\e2 -> Fun xs r e2) (substMap eff m)) (substMap ret m)) (each ps)
+  | Record row -> M.map (\r -> Record r) (substMap row m)
+  | RowExtend l f rest -> M.andThen (\f2 -> M.map (\r -> RowExtend l f2 r) (substMap rest m)) (substMap f m)
+  | other -> Just other
+
+-- --- declarations -------------------------------------------------------------------------
+
+-- The label of the field of a dictionary holding a required trait's.
+@pub fun superLabel (tr : String) : String = "#super.${tr}"
+
+-- A `trait`: its shape, its dictionary's constructor, and its methods'
+-- schemes -- `name` its canonical name, `params` its parameters' names,
+-- `supers` the traits it requires, each with the parameters it is of,
+-- `assocs` its associated types' canonical names, and `methods` each method's
+-- name, binder, written type, and default's binder.
+@pub fun registerTrait (i : Inf s) (a : HirArena) (name : String) (params : [String]) (supers : [Super]) (assocs : [String]) (methods : [(String, Int, HirType, Maybe Int)]) (dict : String) : () ! { St s | e } =
+  let np = V.len params in
+  -- Its own associated types, then those it inherits.
+  let inherited =
+    V.foldl
+      (\acc (sup : Super) ->
+        match H.lookup sup.tr (stGetRef i.shapes) with
+        | Just (sh : TraitShape) ->
+            V.foldl
+              (\acc2 k ->
+                let x = V.getOr "" sh.assocs k in
+                let mapped = V.concatMap (\p -> match V.get sup.over p with | Just v -> [v] | None -> []) (V.getOr [] sh.assocParams k) in
+                if V.any (\j -> V.getOr "" (fst acc2) j == x and V.getOr [] (snd acc2) j == mapped) (V.range 0 (V.len (fst acc2))) then acc2
+                else (V.pushBack (fst acc2) x, V.pushBack (snd acc2) mapped))
+              acc
+              (V.range 0 (V.len sh.assocs))
+        | None -> acc)
+      (assocs, V.replicate (V.len assocs) (V.range 0 np))
+      supers in
+    let allAssocs = fst inherited in
+    let assocParams = snd inherited in
+    let n = V.len allAssocs in
+    let shape = TraitShape { params = np, supers = supers, assocs = allAssocs, assocParams = assocParams, ownAssocs = V.len assocs, methods = V.map (\m -> match m with | (mn, _, _, _) -> mn) methods, dict = dict, labels = V.append (V.map (\(sup : Super) -> superLabel sup.tr) supers) (V.map (\m -> match m with | (mn, _, _, _) -> mn) methods) } in
+    let u = V.foldl (\x k -> stSetRef i.assocOf (H.insert (V.getOr "" assocs k) (AssocOwner { tr = name, at = k }) (stGetRef i.assocOf))) () (V.range 0 (V.len assocs)) in
+    let v = stSetRef i.shapes (H.insert name shape (stGetRef i.shapes)) in
+    let headArgs = V.map (\k -> Bound k) (V.range 0 (np + n)) in
+    let head = Con name headArgs in
+    let superFields = V.map (\(sup : Super) -> (Just (superLabel sup.tr), Con sup.tr (V.append (V.map (\k -> Bound k) sup.over) (superAssocs i name (V.drop headArgs np) sup.tr sup.over)))) supers in
+    let methodFields = V.map (\m -> registerMethod i a name params allAssocs assocParams headArgs m) methods in
+    let quant = V.replicate (np + n) Plain in
+    recordCtorIn i name dict quant head (V.append superFields methodFields)
+
+-- One method: its scheme over the trait's parameters and associated types,
+-- and its field in the dictionary.
+fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String]) (assocs : [String]) (assocParams : [[Int]]) (headArgs : [Type]) (m : (String, Int, HirType, Maybe Int)) : (Maybe String, Type) ! { St s | e } =
+  match m with
+  | (mname, var, mty, dflt) ->
+      let np = V.len params in
+      let n = V.len assocs in
+      let others = V.filter (\x -> not (V.elem x params)) (collectTyvars a mty []) in
+      let vars = V.foldl (\h k -> H.insert (V.getOr "" others k) (np + n + k) h) (indexed params) (V.range 0 (V.len others)) in
+      let raw = tyOf i a mty vars in
+      let quant = markEffectVars raw (V.replicate (np + n + V.len others) Plain) in
+      let table = V.map (\k -> (V.getOr "" assocs k, V.map (\p -> Bound p) (V.getOr [] assocParams k), np + k)) (V.range 0 n) in
+      match liftAssocs i raw (AssocVars { table = table, quant = quant }) with
+      | (ty, st) ->
+          let field = substBound ty (V.map (\k -> if k < np + n then Bound k else RowEmpty) (V.range 0 (V.len st.quant))) in
+          let sc = Scheme { quant = st.quant, preds = [Pred { tr = tr, tys = V.take headArgs np, assocs = V.drop headArgs np }], ty = ty, lacks = [] } in
+          let u = stSetRef i.methods (H.insert (methodKey tr mname) sc (stGetRef i.methods)) in
+          let v = (match dflt with | Just d -> (let x = setScheme i d sc in stSetRef i.methodSigs (H.insert d sc (stGetRef i.methodSigs))) | None -> ()) in
+          let w = setScheme i var sc in
+          (Just mname, field)
+
+-- A constructor `ctor` of type `tyname`, with the scheme `quant => head`
+-- over its fields -- named or not -- and its fields' accessors.
+@pub fun recordCtorIn (i : Inf s) (tyname : String) (ctor : String) (quant : [VarKind]) (head : Type) (fields : [(Maybe String, Type)]) : () ! { St s | e } =
+  let fieldTys = V.map snd fields in
+  let cty = if V.isEmpty fieldTys then head else func fieldTys head in
+  let u = stSetRef i.ctors (H.insert ctor (Scheme { quant = quant, preds = [], ty = cty, lacks = [] }) (stGetRef i.ctors)) in
+  let labels = (if V.all (\f -> M.isSome (fst f)) fields and not (V.isEmpty fields) then Just (V.map (\f -> M.unwrapOr "" (fst f)) fields) else None) in
+  let sig = VariantSig { name = ctor, fields = fieldTys, labels = labels } in
+  let group = M.unwrapOr [] (H.lookup tyname (stGetRef i.variants)) in
+  let replaced = (if V.any (\(v : VariantSig) -> v.name == ctor) group then V.map (\(v : VariantSig) -> if v.name == ctor then sig else v) group else V.pushBack group sig) in
+  let w = stSetRef i.variants (H.insert tyname replaced (stGetRef i.variants)) in
+  let accessors = M.unwrapOr H.empty (H.lookup tyname (stGetRef i.recordFields)) in
+  let more = V.foldl (\h f -> match fst f with | Just nm -> H.insert nm (Scheme { quant = quant, preds = [], ty = Fun [head] (snd f) RowEmpty, lacks = [] }) h | None -> h) accessors fields in
+  stSetRef i.recordFields (H.insert tyname more (stGetRef i.recordFields))
+
+-- An `impl`: the scheme of its dictionary, found from here on by its trait
+-- and its types' constructors. `tr` the trait, `tys` the types it is for,
+-- `context` its `where`, `assocs` its associated types, `dict` its binder.
+@pub fun registerImpl (i : Inf s) (a : HirArena) (tr : String) (tys : [HirType]) (context : [HirBound]) (assocs : [(String, HirType)]) (dict : Int) : () ! { St s | e } =
+  match H.lookup tr (stGetRef i.shapes) with
+  | None -> ()
+  | Just (sh : TraitShape) ->
+      let names = V.foldl (\acc b -> V.foldl (\o x -> collectTyvars a x o) acc (hirBoundTys a b)) (V.foldl (\acc t -> collectTyvars a t acc) [] tys) context in
+      let vars = indexed names in
+      let heads = V.map (\t -> tyOf i a t vars) tys in
+      if V.any referencesError heads then ()
+      else
+        let blanket = V.all (\k -> (match V.getOr Error heads k with | Bound _ -> not (V.elem (V.getOr Error heads k) (V.take heads k)) | _ -> False)) (V.range 0 (V.len heads)) in
+        let plain = V.all distinctParams heads in
+        let key = (if blanket then Just (blanketKey (V.len heads)) else (if plain then headsKey heads else None)) in
+        match key with
+        | None -> report i "`impl ${spelling tr}`: an `impl` is for a type constructor applied to distinct variables"
+        | Just k ->
+            let st0 = AssocVars { table = [], quant = V.replicate (V.len names) Plain } in
+            let scrutinee = V.foldl (\acc b -> match acc with | (ps, s1) -> (match liftEach i (V.map (\x -> tyOf i a x vars) (hirBoundTys a b)) s1 with | (over, s2) -> (match predOver i (canonOf i (hirRefId a (hirBoundRef a b)) (hirNameText a (hirBoundTr a b))) over s2 with | (p, s3) -> (V.pushBack ps p, s3)))) ([], st0) context in
+            match scrutinee with
+            | (preds0, st1) ->
+                -- Its own associated types, as it says them.
+                let scrutinee = V.foldl (\acc j -> match acc with | (xs, s1) -> (let is = (match V.find (\x -> fst x == V.getOr "" sh.assocs j) assocs with | Just (_, t) -> tyOf i a t vars | None -> Error) in match liftAssocs i is s1 with | (x, s2) -> (V.pushBack xs x, s2))) (heads, st1) (V.range 0 sh.ownAssocs) in
+                match scrutinee with
+                | (args1, st2) ->
+                    -- An inherited one is what the `impl` of the trait that
+                    -- declares it says, or asked of it.
+                    match V.foldl (\acc j -> inheritedAssoc i sh heads acc j) (args1, st2, preds0) (V.range sh.ownAssocs (V.len sh.assocs)) with
+                    | (args, st3, preds) ->
+                        let sc = Scheme { quant = st3.quant, preds = preds, ty = Con tr args, lacks = [] } in
+                            match findImpl i tr k with
+                            | Just prev -> (if prev.dict != dict then report i "`${spelling tr}` is already implemented for these types" else addImpl i tr k dict sc)
+                            | None -> addImpl i tr k dict sc
+
+fun addImpl (i : Inf s) (tr : String) (k : String) (dict : Int) (sc : Scheme) : () ! { St s | e } =
+  let u = setScheme i dict sc in
+  stSetRef i.impls (H.insert (implKey tr k) (ImplDef { dict = dict, scheme = sc }) (stGetRef i.impls))
+
+fun inheritedAssoc (i : Inf s) (sh : TraitShape) (heads : [Type]) (acc : ([Type], AssocVars, [Pred])) (j : Int) : ([Type], AssocVars, [Pred]) ! { St s | e } =
+  match acc with
+  | (args, st, preds) ->
+      let x = V.getOr "" sh.assocs j in
+      let over = V.concatMap (\p -> match V.get heads p with | Just t -> [t] | None -> []) (V.getOr [] sh.assocParams j) in
+      let owner = M.map (\(o : AssocOwner) -> o.tr) (H.lookup x (stGetRef i.assocOf)) in
+      match M.andThen (\o -> knownAssoc i o x over) owner with
+      | Just known -> (V.pushBack args known, st, preds)
+      | None ->
+          (match assocVar x over st with
+           | (q, st2) ->
+               (match owner with
+                | Just o ->
+                    if V.any (\(p : Pred) -> p.tr == o and p.tys == over) preds then (V.pushBack args (Bound q), st2, preds)
+                    else (match predOver i o over st2 with | (p, st3) -> (V.pushBack args (Bound q), st3, V.pushBack preds p))
+                | None -> (V.pushBack args (Bound q), st2, preds)))
+
+-- A constructor or tuple applied to distinct variables.
+fun distinctParams (head : Type) : Bool =
+  let params = (match head with | Con _ args -> Just args | Tuple args -> Just args | _ -> None) in
+  match params with
+  | Just ps -> V.all (\k -> (match V.getOr Error ps k with | Bound _ -> not (V.elem (V.getOr Error ps k) (V.take ps k)) | _ -> False)) (V.range 0 (V.len ps))
+  | None -> False
+
+-- A scheme nothing generalized -- a method's, a dictionary's -- recorded with
+-- an arena variable for each quantifier.
+@pub fun recordPoly (i : Inf s) (vid : Int) (sc : Scheme) : () ! { St s | e } =
+  let vars = V.map (\k -> match freshIn i.ar k with | Var id -> id | _ -> 0) sc.quant in
+  stSetRef i.generalized (H.insert vid (Generalized { scheme = sc, vars = vars }) (stGetRef i.generalized))

@@ -25,7 +25,7 @@ use MeadowBoot.Parse (parsed, checked)
 use MeadowBoot.Fixity (chainsOf)
 use MeadowBoot.Unit (packageOf, absolute)
 use Std.Result as Res
-use MeadowBoot.Compiler (unitDatabase, buildUnits, givenUnits, setCompilerSource, compilerGrouped, compilerRenamed)
+use MeadowBoot.Compiler (unitDatabase, buildUnits, givenUnits, setCompilerSource, compilerGrouped, compilerRenamed, compilerInferred)
 use Std.Path as Path
 use Lingua.Red as R
 use Lingua.Lang (metaStart, metaEnd)
@@ -49,6 +49,8 @@ cli! {
         { files : [String] "the files to read, each in a package; the standard library's sources are where `MEADOWBOOT_STD` says" }
     | rename "Resolve each file's names with its unit's, and write each name and where what it names was declared"
         { files : [String] "the files to read, each in a package; the standard library's sources are where `MEADOWBOOT_STD` says" }
+    | infer "Infer each file's types with its unit's, and write each top-level name and its scheme"
+        { files : [String] "the files to read, each in a package; the standard library's sources are where `MEADOWBOOT_STD` says" }
 }
 
 def main =
@@ -58,6 +60,7 @@ def main =
   | Cli.Parse r -> finish (V.foldl (\ok p -> parseFile p and ok) True r.files)
   | Cli.Fixity r -> finish (fixityFiles r.files)
   | Cli.Rename r -> finish (renameFiles r.files)
+  | Cli.Infer r -> finish (inferFiles r.files)
 
 -- Each of `files`, its names resolved with every other of its unit's -- a
 -- package, built with the units it depends on first -- under a line naming
@@ -71,6 +74,17 @@ fun renameFiles (files : [String]) =
   V.foldl (\ok f -> renameFile named f and ok) True files
 
 fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
+
+-- Each of `files`, its unit inferred, under a line naming it: each name a
+-- top-level binding binds a line, `from to name : scheme` (`Infer`), or `not
+-- compiled`.
+fun inferFiles (files : [String]) =
+  let roots = V.foldl (\acc f -> match packageOf f with | Just r -> (if V.elem r acc then acc else V.pushBack acc r) | None -> acc) [] files in
+  let built = V.map (\r -> buildUnits r) roots in
+  let named = V.map (\r -> (r, M.map (\u -> (let db = unitDatabase u in fst4 (compilerInferred db 0))) (Res.toMaybe (givenUnits r r)))) roots in
+  V.foldl (\ok f -> renameFile named f and ok) True files
+
+fun fst4 (t : (a, b, c, d)) : a = match t with | (x, _, _, _) -> x
 
 fun renameFile named (path : String) =
   let file = absolute path in

@@ -17,6 +17,9 @@
   @pub isDir : Bool,
   @pub len : Int,
   @pub readonly : Bool,
+  -- When it was last written, in milliseconds since 1970 began; 0 where the
+  -- platform cannot say.
+  @pub modified : Int,
 }
 
 @pub effect Fs {

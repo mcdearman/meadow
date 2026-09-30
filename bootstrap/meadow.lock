@@ -6,8 +6,8 @@ version = 1
 [[package]]
 name = "Lingua"
 source = "git+https://github.com/mcdearman/Lingua.git?branch=master"
-rev = "a17025e8bffed323f18492ce7eeffcf774d788d0"
-tree = "12409fc979e2956bffdec3d56cf5a327ec466047"
+rev = "8d9c58746ca28c883c15cee075b7b24a0d851bb3"
+tree = "40cce50ef3ae72d10eb995ddd8f1968dc7ad645c"
 
 [[package]]
 name = "Nettle"

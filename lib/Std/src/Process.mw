@@ -28,6 +28,9 @@ use Std.Collections.Vector (Vector)
   -- Terminate the current process immediately with the given exit code.
   exit : Int -> (),
   currentPid : () -> Int,
+  -- The path of the program running: what a build tool tells one compiler
+  -- from another by. Empty when the platform cannot say.
+  currentExe : () -> String,
   -- Whether standard input (0), output (1) or error (2) is a terminal rather
   -- than a file or a pipe: whether what is written there should be coloured.
   isTerminal : Int -> Bool,

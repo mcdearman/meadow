@@ -297,7 +297,7 @@ impl Lifter {
             self.origins.insert(def, *v);
             self.made.push(Def {
                 var: def,
-                name: InternedString::from(format!("{}.local{}", self.outer, self.count)),
+                name: InternedString::from(format!("{}Local{}", self.outer, self.count)),
                 poly: Poly { binders, ty },
                 term,
             });

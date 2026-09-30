@@ -22,6 +22,8 @@ use MeadowBoot.Unit (dependenciesOf, unitFilesOf, manifestOf, packageName)
 use MeadowBoot.Lower (lowered)
 use MeadowBoot.Rename (mentionsOf)
 use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
+use MeadowBoot.Infer (inferUnit, Inferred)
+use MeadowBoot.Solve (TypeEnv, noTypes)
 use Std.Macro (Reflect)
 use Std.Json as J
 use Std.Json (Json)
@@ -37,10 +39,11 @@ use Std.Result.Result.*
 
 -- What a unit tells the units that depend on it: every fixity it knows --
 -- its own, and its dependencies', since a fixity is not scoped -- its
--- package's name, what it exports, and whether it says what it exports: a
--- unit whose declarations never mention visibility exports everything.
+-- package's name, what it exports, each with its scheme, whether it says
+-- what it exports -- a unit whose declarations never mention visibility
+-- exports everything -- and what it knows about types.
 @derive(Reflect, Debug, PartialEq)
-@pub record Interface = { fixities : [Declared], package : String, exports : [Export], anyVis : Bool }
+@pub record Interface = { fixities : [Declared], package : String, exports : [Export], anyVis : Bool, types : TypeEnv }
 
 -- An operator, and how it binds.
 @derive(Reflect, Debug, PartialEq)
@@ -56,6 +59,7 @@ database! {
     | query fixities (unit : Int) : [Declared] = declaredOf (queryImported unit) (V.concatMap (\f -> match queryParsed f with | Ok g -> [g] | Err _ -> []) (modulesOf (queryFiles unit)))
     | query grouped (file : String) : Maybe (Green Grouped, [Diagnostic]) = groupedOf (queryFixities 0) (queryParsed file)
     | query renamed (unit : Int) : ([(String, [String])], [Export], Bool) = renamedOf (queryHome unit) (queryImported unit) (tableOf (queryFixities 0)) (V.map (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None)) (queryFiles unit))
+    | query inferred (unit : Int) : ([(String, [String])], [Export], Bool, TypeEnv) = inferredOf (queryHome unit) (queryImported unit) (tableOf (queryFixities 0)) (V.map (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None)) (queryFiles unit))
 }
 
 -- The files of a unit that are its modules: all but its manifest.
@@ -77,6 +81,27 @@ fun groupedOf (ds : [Declared]) (parsed : Result [(Int, String)] (Green Surface)
 -- The unit at `dir` renamed: each module's names, as the rename test
 -- compares them, by its path; what the unit exports; and whether it says.
 fun renamedOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity) (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) : ([(String, [String])], [Export], Bool) =
+  match unitOf dir imported fx files with
+  | (sources, r) ->
+      let mentions = mentionsOf r.binders in
+      (V.map (\x -> (fst x, M.unwrapOr [] (H.lookup (fileOf (snd x)) mentions))) sources, r.exports, r.anyVis)
+
+-- The unit at `dir` inferred: each module's top-level bindings' schemes, as
+-- the infer test compares them, by its path; what the unit exports, each with
+-- its scheme; whether it says; and what it knows about types.
+fun inferredOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity) (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) : ([(String, [String])], [Export], Bool, TypeEnv) =
+  match unitOf dir imported fx files with
+  | (sources, r) ->
+      let deps = V.map (\(i : Interface) -> DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis }) imported in
+      let texts = H.fromVec (V.concatMap (\x -> match x with | (path, text, _) -> (match V.find (\s -> fst s == path) sources with | Just (_, src) -> [(fileOf src, text)] | None -> [])) files) in
+      let done = inferUnit r deps (V.map (\(i : Interface) -> i.types) imported) texts in
+      let dumps = H.fromVec done.dumps in
+      let exports = V.map (\(e : Export) -> { e | scheme = H.lookup e.binder done.schemes }) r.exports in
+      (V.map (\x -> (fst x, M.unwrapOr [] (H.lookup (fileOf (snd x)) dumps))) sources, exports, r.anyVis, done.types)
+
+-- The unit at `dir` renamed: its modules, each with its path, and what
+-- renaming made of them.
+fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity) (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) : ([(String, Source)], Renamed) =
   let manifest = V.find (\x -> match x with | (p, _, _) -> S.endsWith "Meadow.toml" p) files in
   let expanded = expansionsIn (V.concatMap (\x -> match x with | (p, text, _) -> (if S.endsWith ".json" p then [text] else [])) files) in
   let pkg = (match manifest with | Just (_, text, _) -> packageName text | None -> "") in
@@ -92,9 +117,7 @@ fun renamedOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixit
         | _ -> [])
       files in
     let deps = V.map (\(i : Interface) -> DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis }) imported in
-    let r = renameUnit pkg isStd (V.map snd sources) deps in
-    let mentions = mentionsOf r.binders in
-    (V.map (\x -> (fst x, M.unwrapOr [] (H.lookup (fileOf (snd x)) mentions))) sources, r.exports, r.anyVis)
+    (sources, renameUnit pkg isStd (V.map snd sources) deps)
 
 fun fileOf (s : Source) : String = s.file
 
@@ -184,7 +207,7 @@ fun compiling (u : Given Interface) =
         (V.range 0 (V.len sources)) in
         if not (V.isEmpty wrong) then Err (S.join "" wrong)
         else
-          match compilerRenamed db 0 with
-          | (_, exports, anyVis) ->
+          match compilerInferred db 0 with
+          | (_, exports, anyVis, types) ->
               let manifest = M.unwrapOr "" (M.map snd (V.find (\s -> S.endsWith "Meadow.toml" (fst s)) (unitSources u))) in
-              Ok (Interface { fixities = compilerFixities db 0, package = packageName manifest, exports = exports, anyVis = anyVis })
+              Ok (Interface { fixities = compilerFixities db 0, package = packageName manifest, exports = exports, anyVis = anyVis, types = types })

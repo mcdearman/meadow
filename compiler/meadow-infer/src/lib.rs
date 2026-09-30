@@ -3353,7 +3353,7 @@ impl Infer {
     fn candidate_line(&self, c: &hir::Candidate, mark: &str) -> String {
         let (spelled, scheme) = match c.alt {
             hir::Alt::Ctor(ctor) => (
-                hir::spelling(&ctor.to_string()).to_string(),
+                hir::ctor_spelling(&ctor.to_string()).to_string(),
                 self.ctors.get(&ctor).cloned(),
             ),
             hir::Alt::Value(v) => (
@@ -4123,6 +4123,13 @@ fn open_effects(scheme: Scheme) -> Scheme {
         ty,
         lacks,
     }
+}
+
+/// A primitive's scheme as a program sees it, its effects opened as
+/// [`Infer::load_prelude`] opens them: what a tool that keeps its own table of
+/// them -- MeadowBoot's is written from this -- has to agree with.
+pub fn primitive_scheme(name: &str) -> Option<Scheme> {
+    prim_scheme(name).map(open_effects)
 }
 
 fn prim_scheme(name: &str) -> Option<Scheme> {

@@ -1038,26 +1038,19 @@ fn renamed_package(root: &Path) -> HashMap<PathBuf, String> {
 /// The same, with what the macros of every package the build compiled
 /// expanded to (`meadow_compiler::expand::record`) added to `expanded`, each
 /// with its file as a dump names it.
-fn renamed_recording(
-    root: &Path,
-    expanded: &mut Vec<(String, meadow_compiler::expand::record::Recorded)>,
-) -> HashMap<PathBuf, String> {
-    let std_root = repo().join("lib").join("Std");
+/// The build of the package at `root` -- of the standard library, when `root`
+/// is it -- and the root of every package it compiled with its name, the
+/// deepest first: a package inside another's directory is its own.
+fn built(root: &Path) -> Option<(meadow::pipeline::CompiledGraph, Vec<(PathBuf, String)>)> {
     // The standard library is compiled for any build: the smallest will do.
-    let entry = if root == std_root {
+    let entry = if is_std(root) {
         let probe = std::env::temp_dir().join("meadowboot-std-probe.mw");
         std::fs::write(&probe, "def main = 1\n").expect("a probe");
         probe
     } else {
         root.to_path_buf()
     };
-    meadow_compiler::expand::record::start();
-    let compiled = meadow::pipeline::compile_packages(&entry, meadow::Options::debug());
-    let recorded = meadow_compiler::expand::record::take();
-    let graph = match compiled {
-        Ok(g) => g,
-        Err(_) => return HashMap::new(),
-    };
+    let graph = meadow::pipeline::compile_packages(&entry, meadow::Options::debug()).ok()?;
     let mut roots: Vec<(PathBuf, String)> = graph
         .packages
         .iter()
@@ -1066,8 +1059,58 @@ fn renamed_recording(
             Some((r, p.as_ref()?.name.to_string()))
         })
         .collect();
-    // The deepest first: a package inside another's directory is its own.
     roots.sort_by_key(|(r, _)| std::cmp::Reverse(r.components().count()));
+    Some((graph, roots))
+}
+
+/// Whether `root` is the standard library's directory, however it is written.
+fn is_std(root: &Path) -> bool {
+    let std_root = repo().join("lib").join("Std");
+    root == std_root || root.canonicalize().ok() == std_root.canonicalize().ok()
+}
+
+/// The package at `root` among what `graph` compiled: the standard library,
+/// when `root` is it.
+fn wanted<'g>(
+    graph: &'g meadow::pipeline::CompiledGraph,
+    root: &Path,
+) -> Vec<&'g meadow_compiler::CompiledPackage> {
+    if is_std(root) {
+        return graph.std.iter().collect();
+    }
+    let me = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    graph
+        .packages
+        .iter()
+        .filter(|(r, _)| r.canonicalize().is_ok_and(|r| r == me))
+        .filter_map(|(_, p)| p.as_ref())
+        .collect()
+}
+
+/// The path of the file a dump names `file`.
+fn path_named(file: &str, roots: &[(PathBuf, String)]) -> Option<PathBuf> {
+    match file.strip_prefix("Std/src/") {
+        Some(rest) => Some(repo().join("lib").join("Std").join("src").join(rest)),
+        None => {
+            let (pkg, rel) = file.split_once('/')?;
+            roots
+                .iter()
+                .find(|(_, p)| p == pkg)
+                .map(|(r, _)| r.join(rel))
+        }
+    }
+}
+
+fn renamed_recording(
+    root: &Path,
+    expanded: &mut Vec<(String, meadow_compiler::expand::record::Recorded)>,
+) -> HashMap<PathBuf, String> {
+    meadow_compiler::expand::record::start();
+    let compiled = built(root);
+    let recorded = meadow_compiler::expand::record::take();
+    let Some((graph, roots)) = compiled else {
+        return HashMap::new();
+    };
     for r in recorded {
         if let Some(file) = named_file(&r.filename, &roots) {
             expanded.push((file, r));
@@ -1078,19 +1121,8 @@ fn renamed_recording(
         .iter()
         .chain(graph.packages.iter().filter_map(|(_, p)| p.as_ref()))
         .collect();
-    let wanted: Vec<&meadow_compiler::CompiledPackage> = if root == std_root {
-        graph.std.iter().collect()
-    } else {
-        let me = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        graph
-            .packages
-            .iter()
-            .filter(|(r, _)| r.canonicalize().is_ok_and(|r| r == me))
-            .filter_map(|(_, p)| p.as_ref())
-            .collect()
-    };
     let mut out = HashMap::new();
-    for pkg in wanted {
+    for pkg in wanted(&graph, root) {
         for (source, found) in mentions(pkg, &everything) {
             let Some(file) = file_name(&source, &roots) else {
                 continue;
@@ -1121,20 +1153,289 @@ fn renamed_recording(
                 (n.next(), n.next(), l.clone())
             });
             lines.dedup();
-            let path = match file.strip_prefix("Std/src/") {
-                Some(rest) => std_root.join("src").join(rest),
-                None => {
-                    let (pkg, rel) = file.split_once('/').unwrap_or_default();
-                    match roots.iter().find(|(_, p)| p == pkg) {
-                        Some((r, _)) => r.join(rel),
-                        None => continue,
-                    }
-                }
+            let Some(path) = path_named(&file, &roots) else {
+                continue;
             };
             out.insert(path, lines.concat());
         }
     }
     out
+}
+
+// --- inferring -------------------------------------------------------------------
+
+/// Every module of the package at `root` inferred, as MeadowBoot's `infer`
+/// writes it: each name a top-level binding binds, a line, in the order they
+/// are written -- `from to name : scheme`, the scheme as `meadow build --types`
+/// shows it -- keyed by file. The standard library's, when `root` is it.
+fn inferred_package(root: &Path) -> HashMap<PathBuf, String> {
+    inferred_recording(root, &mut Vec::new())
+}
+
+/// The same, with what the macros of every package the build compiled
+/// expanded to added to `expanded`, as [`renamed_recording`] adds them.
+fn inferred_recording(
+    root: &Path,
+    expanded: &mut Vec<(String, meadow_compiler::expand::record::Recorded)>,
+) -> HashMap<PathBuf, String> {
+    meadow_compiler::expand::record::start();
+    let compiled = built(root);
+    let recorded = meadow_compiler::expand::record::take();
+    let Some((graph, roots)) = compiled else {
+        return HashMap::new();
+    };
+    for r in recorded {
+        if let Some(file) = named_file(&r.filename, &roots) {
+            expanded.push((file, r));
+        }
+    }
+    let mut out = HashMap::new();
+    for pkg in wanted(&graph, root) {
+        for m in &pkg.modules {
+            let Some(file) = file_name(&m.source, &roots) else {
+                continue;
+            };
+            let Some(path) = path_named(&file, &roots) else {
+                continue;
+            };
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut named = Vec::new();
+            for d in &m.hir.value().decls {
+                if let hir::Decl::Bind(b) = d.value() {
+                    binders_of(b, &mut named);
+                }
+            }
+            let mut lines: Vec<((u32, u32), String)> = named
+                .iter()
+                .map(|(var, span)| {
+                    let name = text
+                        .get(span.start as usize..span.end as usize)
+                        .unwrap_or("?");
+                    let scheme = pkg
+                        .generalized
+                        .get(var)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "?".to_string());
+                    let line = format!("{} {} {name} : {scheme}\n", span.start, span.end);
+                    ((span.start, span.end), line)
+                })
+                .collect();
+            // By where each is written; those a macro's call writes alike, by
+            // what they say.
+            lines.sort();
+            out.insert(path, lines.into_iter().map(|(_, l)| l).collect());
+        }
+    }
+    out
+}
+
+#[test]
+fn every_source_infers_as_meadow_infer_infers_it() {
+    let files = sources(&["lib", "examples", "benches", "bootstrap", "glade", "silo"]);
+    // This compiler first, keeping what its macros expanded to, which
+    // MeadowBoot is then given -- the standard library's too.
+    let mut packages: HashMap<PathBuf, HashMap<PathBuf, String>> = HashMap::new();
+    let mut expanded = Vec::new();
+    meadow_compiler::expand::record::start();
+    let _ = meadow::stdlib::compile_fresh(meadow::Options::debug());
+    for r in meadow_compiler::expand::record::take() {
+        if let Some(file) = named_file(&r.filename, &[]) {
+            expanded.push((file, r));
+        }
+    }
+    for p in &files {
+        let root = package_of(p).unwrap_or_default();
+        if !packages.contains_key(&root) {
+            let dumps = inferred_recording(&root, &mut expanded);
+            packages.insert(root, dumps);
+        }
+    }
+    write_expansions(&expanded);
+    let theirs = per_file("infer", &files);
+    let bad = differences(&theirs, |p| {
+        let root = package_of(p).unwrap_or_default();
+        let dumps = &packages[&root];
+        let me = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        dumps
+            .iter()
+            .find(|(f, _)| f.canonicalize().is_ok_and(|f| f == me))
+            .map(|(_, d)| d.clone())
+            .unwrap_or_else(|| "not compiled\n".to_string())
+    });
+    assert!(
+        bad.is_empty(),
+        "{} of {} files infer differently:\n\n{}",
+        bad.len(),
+        files.len(),
+        bad.iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+}
+
+/// Each name binding `b` binds, and where it is written.
+fn binders_of(b: &hir::Bind, out: &mut Vec<(hir::VarId, Span)>) {
+    fn pat(p: &hir::LPat, out: &mut Vec<(hir::VarId, Span)>) {
+        match p.value() {
+            hir::Pat::Var(id) => out.push((*id.value(), id.span)),
+            hir::Pat::As(id, sub) => {
+                out.push((*id.value(), id.span));
+                pat(sub, out);
+            }
+            hir::Pat::Ann(inner, _) => pat(inner, out),
+            hir::Pat::View(_, inner) => pat(inner, out),
+            hir::Pat::Tuple(ps)
+            | hir::Pat::List(ps)
+            | hir::Pat::Array(ps)
+            | hir::Pat::Cons(_, ps) => ps.iter().for_each(|q| pat(q, out)),
+            hir::Pat::Record(fields, _) => fields.iter().for_each(|(_, q)| pat(q, out)),
+            _ => {}
+        }
+    }
+    match b {
+        hir::Bind::Fun(name, ..) => out.push((*name.value(), name.span)),
+        hir::Bind::Pat(p, _) => pat(p, out),
+        hir::Bind::Error => {}
+    }
+}
+
+/// Write MeadowBoot's table of the primitives' types, `src/Prims.mw`, from
+/// this compiler's (`meadow_infer::primitive_scheme`): run by hand, `cargo test
+/// --test bootstrap write_prims -- --ignored`, when a primitive changes. Each
+/// entry carries the scheme as this compiler writes it, which MeadowBoot's
+/// test of the table holds its own writing to.
+#[test]
+#[ignore]
+fn write_prims() {
+    use meadow_compiler::infer::{Scheme, Type, VarKind, primitive_scheme};
+    fn kind(k: &VarKind) -> &'static str {
+        match k {
+            VarKind::Type => "Plain",
+            VarKind::Row => "Row",
+            VarKind::Effect => "Effect",
+            VarKind::Num => "Num",
+            VarKind::Frac => "Frac",
+        }
+    }
+    fn ty(t: &Type) -> String {
+        let each = |ts: &[Type]| ts.iter().map(ty).collect::<Vec<_>>().join(", ");
+        match t {
+            Type::Var(i) => format!("(Var {i})"),
+            Type::Bound(i) => format!("(Bound {i})"),
+            Type::Con(n, args) => format!("(Con {:?} [{}])", n.to_string(), each(args)),
+            Type::Fun(ps, r, e) => format!("(Fun [{}] {} {})", each(ps), ty(r), ty(e)),
+            Type::Tuple(ts) => format!("(Tuple [{}])", each(ts)),
+            Type::Record(r) => format!("(Record {})", ty(r)),
+            Type::RowEmpty => "RowEmpty".to_string(),
+            Type::RowExtend(l, f, r) => {
+                format!("(RowExtend {:?} {} {})", l.to_string(), ty(f), ty(r))
+            }
+            Type::Error => "Error".to_string(),
+        }
+    }
+    fn scheme(s: &Scheme) -> String {
+        let quant = s.quant.iter().map(kind).collect::<Vec<_>>().join(", ");
+        let preds = s
+            .preds
+            .iter()
+            .map(|p| {
+                let tys = p.tys.iter().map(ty).collect::<Vec<_>>().join(", ");
+                let assocs = p.assocs.iter().map(ty).collect::<Vec<_>>().join(", ");
+                format!(
+                    "Pred {{ tr = {:?}, tys = [{tys}], assocs = [{assocs}] }}",
+                    p.tr.to_string()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let lacks = s
+            .lacks
+            .iter()
+            .map(|(i, ls)| {
+                let ls = ls
+                    .iter()
+                    .map(|l| format!("{:?}", l.to_string()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("Lacking {{ at = {i}, labels = [{ls}] }}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "Scheme {{ quant = [{quant}], preds = [{preds}], ty = {}, lacks = [{lacks}] }}",
+            ty(&s.ty)
+        )
+    }
+    let mut out = String::from(
+        "-- Prims: the type of every primitive, as `meadow_infer` has it -- its\n\
+         -- effects opened, as a use of it sees them -- by name, in the order the\n\
+         -- resolver hands out their binders (`meadow_hir::PRIMS`).\n\
+         --\n\
+         -- Written by `write_prims` in `buildtools/meadow/tests/bootstrap.rs`, from\n\
+         -- the Rust compiler's table; not by hand. Each entry keeps the scheme as the\n\
+         -- Rust compiler writes it, which the test below holds `showScheme` to.\n\n\
+         use MeadowBoot.Types\n\
+         use MeadowBoot.Types.Type.*\n\
+         use MeadowBoot.Types.VarKind.*\n\
+         use Std.Collections.Vector as V\n\
+         use Std.Maybe.Maybe.*\n\n\
+         -- Each primitive, its scheme -- if it has one -- and that written out.\n\
+         @pub def prims : [(String, Maybe Scheme, String)] =\n  [ ",
+    );
+    let entries: Vec<String> = meadow_compiler::hir::PRIMS
+        .iter()
+        .map(|name| match primitive_scheme(name) {
+            Some(s) => format!("({name:?}, Just ({}), {:?})", scheme(&s), s.to_string()),
+            None => format!("({name:?}, None, \"\")"),
+        })
+        .collect();
+    out.push_str(&entries.join(",\n    "));
+    out.push_str(
+        " ]\n\n\
+         -- The scheme of the primitive `name`, if it has one.\n\
+         @pub fun primScheme (name : String) : Maybe Scheme =\n  \
+         match V.find (\\x -> match x with | (n, _, _) -> n == name) prims with\n  \
+         | Just (_, s, _) -> s\n  \
+         | None -> None\n\n\
+         -- --- tests ---------------------------------------------------------------------------\n\n\
+         use Std.Test (assertEq)\n\n\
+         @test fun everyPrimitiveIsWrittenAsTheRustCompilerWritesIt () =\n  \
+         let wrong = V.concatMap (\\x -> match x with | (n, Just s, shown) -> (if showScheme s == shown then [] else [\"${n}: ${showScheme s}, not ${shown}\"]) | _ -> []) prims in\n  \
+         assertEq wrong [] \"each as it is written there\"\n",
+    );
+    std::fs::write(repo().join("bootstrap/src/Prims.mw"), out).expect("the table");
+}
+
+/// What this compiler's `infer` dump of the file `MEADOWBOOT_INFER` is -- or,
+/// for a package's directory, of each of its files, under a line naming it:
+/// run by hand, `cargo test --test bootstrap infer_dump -- --ignored
+/// --nocapture`, to see what MeadowBoot is to write.
+#[test]
+#[ignore]
+fn infer_dump() {
+    let Some(file) = std::env::var_os("MEADOWBOOT_INFER").map(PathBuf::from) else {
+        return;
+    };
+    if file.is_dir() {
+        let mut dumps: Vec<(PathBuf, String)> = inferred_package(&file).into_iter().collect();
+        dumps.sort();
+        for (f, d) in dumps {
+            print!("== {}\n{d}", f.display());
+        }
+        return;
+    }
+    let file = file.canonicalize().expect("the file");
+    let root = package_of(&file).expect("its package");
+    let dumps = inferred_package(&root);
+    let found = dumps
+        .iter()
+        .find(|(f, _)| f.canonicalize().is_ok_and(|f| f == file));
+    match found {
+        Some((_, d)) => print!("{d}"),
+        None => println!("not compiled"),
+    }
 }
 
 /// Where the rename test leaves what this compiler's macros expanded to, for

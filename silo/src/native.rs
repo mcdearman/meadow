@@ -239,7 +239,7 @@ pub unsafe extern "C" fn meadow_native(
             std::ffi::CStr::from_ptr(op).to_string_lossy(),
         )
     };
-    let effect = effect.rsplit("::").next().unwrap_or_default().to_string();
+    let effect = meadow_core::spelling(&effect).to_string();
     let arg = val(arg, d);
     let built = match effect.as_str() {
         "Test" if op == "fail" => fail(show::displayed(arg.word(), d)),
@@ -373,6 +373,10 @@ fn fs(op: &str, arg: Val) -> Option<Build> {
                 ("isDir", Build::bool(md.is_dir())),
                 ("len", Build::int(md.len() as i64)),
                 ("readonly", Build::bool(md.permissions().readonly())),
+                (
+                    "modified",
+                    Build::int(meadow_core::args::modified_millis(&md)),
+                ),
             ])),
             Err(e) => ioerr(e),
         },
@@ -428,6 +432,7 @@ fn process(op: &str, arg: Val) -> Option<Build> {
             )),
         },
         "currentPid" => Build::int(std::process::id() as i64),
+        "currentExe" => Build::Str(meadow_core::args::current_exe()),
         "isTerminal" => match arg {
             Val::Int(fd) => Build::bool(is_terminal(fd)),
             other => fail(format!(

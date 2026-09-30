@@ -695,7 +695,7 @@ impl<'p> Vm<'p> {
                             }
                             None => {
                                 let name = ctor.map_or("?".to_string(), |c| {
-                                    c.rsplit("::").next().unwrap_or_default().to_string()
+                                    meadow_core::ctor_spelling(&c).to_string()
                                 });
                                 return err(format!("`{name}` has no field `{label}`"));
                             }
@@ -985,7 +985,7 @@ impl<'p> Vm<'p> {
                 Ok(())
             }
             None => {
-                let effect = effect.rsplit("::").next().unwrap_or_default();
+                let effect = meadow_core::spelling(&effect);
                 err(format!("unhandled effect {effect}.{op}"))
             }
         }

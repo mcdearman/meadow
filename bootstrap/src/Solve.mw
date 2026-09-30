@@ -1,0 +1,345 @@
+-- Solve: the state of inferring a unit's types, and what everything else in
+-- inference is built of -- a written type read as a type, a scheme
+-- instantiated and a type generalized, two types unified where a program
+-- wants them equal -- as `meadow_infer` has them.
+--
+-- A name is known by its binder (`Rename`), which is to inference what a
+-- `VarId` is to the Rust compiler's: unique in the unit. A type, an effect, a
+-- trait and a constructor are known by their canonical names, the fully
+-- qualified paths that make them the ones they are (`Scopes.qualified`),
+-- and are written spelled.
+
+use MeadowBoot.Types
+use MeadowBoot.Types.Type.*
+use MeadowBoot.Types.VarKind.*
+use MeadowBoot.Types.UnifyError.*
+use MeadowBoot.Rename
+use Lingua.Buf as B
+use Lingua.Buf (Buf)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+use Std.Result.Result.*
+use Std.Macro (Reflect)
+
+-- --- what inference knows ------------------------------------------------------------
+
+-- A generalized binding: its scheme, and the arena variable behind each of
+-- its quantifiers.
+@pub record Generalized = { scheme : Scheme, vars : [Int] }
+
+-- One constructor of a type: its canonical name, its fields' types over the
+-- type's parameters, and their labels if they have them.
+@derive(Debug, PartialEq, Reflect)
+@pub record VariantSig = { name : String, fields : [Type], labels : Maybe [String] }
+
+-- An operation of an effect: its argument's and its result's types, over the
+-- effect's parameters.
+@derive(Debug, PartialEq, Reflect)
+@pub record EffOp = { name : String, arg : Type, ret : Type }
+
+@derive(Debug, PartialEq, Reflect)
+@pub record EffectInfo = { params : Int, ops : [EffOp] }
+
+-- A `type` alias: how many parameters it has, and what it stands for over them.
+@derive(Debug, PartialEq, Reflect)
+@pub record AliasDef = { params : Int, body : Type }
+
+-- A trait as a dictionary is laid out: how many types it is of; the traits it
+-- requires, each of which of its parameters; its associated types, its own
+-- and those it inherits, each with the parameters it is of; how many of them
+-- are its own; its methods' names; its dictionary's constructor, and the
+-- labels of its fields.
+@derive(Debug, PartialEq, Reflect)
+@pub record TraitShape = { params : Int, supers : [Super], assocs : [String], assocParams : [[Int]], ownAssocs : Int, methods : [String], dict : String, labels : [String] }
+
+-- A trait a trait requires, and the requiring trait's parameters it is of.
+@derive(Debug, PartialEq, Reflect)
+@pub record Super = { tr : String, over : [Int] }
+
+-- An `impl`: its dictionary's binder, and `forall vars. context => Trait head assocs…`.
+@derive(Debug, PartialEq, Reflect)
+@pub record ImplDef = { dict : Int, scheme : Scheme }
+
+-- What a unit tells the units after it about types: every constructor's
+-- scheme, every type's constructors, every record's fields, every effect,
+-- alias, trait and `impl` -- by canonical name -- and each trait's methods'
+-- schemes and associated types. What the Rust compiler re-registers from a
+-- dependency's declarations.
+@derive(Debug, PartialEq, Reflect)
+@pub record TypeEnv = {
+  ctors : [Entry Scheme],
+  variants : [Entry [VariantSig]],
+  fields : [Entry [Entry Scheme]],
+  effects : [Entry EffectInfo],
+  aliases : [Entry AliasDef],
+  shapes : [Entry TraitShape],
+  methods : [Entry Scheme],
+  assocOf : [Entry AssocOwner],
+  impls : [Entry ImplDef]
+}
+
+-- A name and what it names, as a table of them is kept in an interface.
+@derive(Debug, PartialEq, Reflect)
+@pub record Entry a = { key : String, value : a }
+
+-- An associated type's trait, and its place among the trait's.
+@derive(Debug, PartialEq, Reflect)
+@pub record AssocOwner = { tr : String, at : Int }
+
+@pub def noTypes : TypeEnv = TypeEnv { ctors = [], variants = [], fields = [], effects = [], aliases = [], shapes = [], methods = [], assocOf = [], impls = [] }
+
+-- An overloaded name's meanings: a value's binder, or a constructor's
+-- canonical name.
+@derive(Debug, PartialEq)
+@pub data Meaning = Value Int | Ctor String
+
+use Meaning.*
+
+-- A name inference has not chosen a meaning for yet: where it was written,
+-- its meanings, the type the context wants of it, and the level it was
+-- mentioned at.
+@pub record Pending = { node : String, candidates : [Meaning], ty : Type, level : Int }
+
+-- How a wanted trait was answered: by the binding's own `where`, by an
+-- `impl`, or not at all.
+@pub data Sol = ByGiven | ByImpl | Failed
+
+use Sol.*
+
+-- A trait wanted of some types: the predicate, the top-level binding whose
+-- body wants it, and how it was answered, once it is.
+@pub record Wanted = { pred : Pred, owner : Maybe Int, sol : Maybe Sol }
+
+-- A module being inferred: its tables, and its file.
+@pub record Mod = { a : HirArena, file : String }
+
+-- Where inference is: the module's tables, the module's place, and the
+-- declaration whose annotations share their type variables.
+@pub record Here = { a : HirArena, m : Int, scope : String }
+
+-- Everything inference keeps while it goes, in a `runSt`: the arena; each
+-- binder's scheme; the unit's own top-level binders, in the order found;
+-- every binding generalized; constructors, types, fields, effects, aliases;
+-- the current region's effect; the variables annotations introduced, by
+-- their declaration and name; each top-level binding's signature; the
+-- bindings whose signatures failed; the overloaded names, by module and
+-- node, and those not yet chosen; the argument effects waiting to be tied
+-- in; what went wrong; `runSt`'s binder; the levels of the `runSt`s open;
+-- the definitions that are run rather than defined; every binder's
+-- canonical name; the modules; the traits; and every binder's name.
+@pub record Inf s = {
+  ar : Arena s,
+  env : StRef s (HashMap Int Scheme),
+  exports : StRef s [Int],
+  generalized : StRef s (HashMap Int Generalized),
+  ctors : StRef s (HashMap String Scheme),
+  variants : StRef s (HashMap String [VariantSig]),
+  recordFields : StRef s (HashMap String (HashMap String Scheme)),
+  effects : StRef s (HashMap String EffectInfo),
+  curEffect : StRef s Type,
+  annTyvars : StRef s (HashMap String Type),
+  aliases : StRef s (HashMap String AliasDef),
+  sigs : StRef s (HashMap Int SigOf),
+  sigFailed : StRef s (HashMap Int Bool),
+  overloads : HashMap String [Meaning],
+  pending : StRef s [Pending],
+  subsumptions : StRef s [(Type, Type)],
+  errors : StRef s [String],
+  runSt : Int,
+  stLevels : StRef s [Int],
+  entries : [Int],
+  canon : HashMap Int String,
+  mods : [Mod],
+  shapes : StRef s (HashMap String TraitShape),
+  methods : StRef s (HashMap String Scheme),
+  assocOf : StRef s (HashMap String AssocOwner),
+  impls : StRef s (HashMap String ImplDef),
+  wanted : Buf s Wanted,
+  givens : StRef s [Pred],
+  group : StRef s [Int],
+  member : StRef s (Maybe Int),
+  methodSigs : StRef s (HashMap Int Scheme),
+  names : [String]
+}
+
+-- A signature, where it was written: its module, its type, the bounds its
+-- `where` asks for, and the declaration its variables belong to.
+@pub record SigOf = { here : Here, ty : HirType, bounds : [HirBound] }
+
+@pub fun report (i : Inf s) (msg : String) : () ! { St s | e } = stSetRef i.errors (V.pushBack (stGetRef i.errors) msg)
+
+@pub fun schemeOf (i : Inf s) (v : Int) : Maybe Scheme ! { St s | e } = H.lookup v (stGetRef i.env)
+
+@pub fun setScheme (i : Inf s) (v : Int) (sc : Scheme) : () ! { St s | e } = stSetRef i.env (H.insert v sc (stGetRef i.env))
+
+-- A binder's canonical name, or `fallback` for a name the language knows that
+-- nothing declares.
+@pub fun canonOf (i : Inf s) (id : Int) (fallback : String) : String =
+  match H.lookup id i.canon with
+  | Just c -> (if S.isEmpty c then fallback else c)
+  | None -> fallback
+
+-- --- unifying ---------------------------------------------------------------------------
+
+-- `a` and `b` made one where the program wants them equal; a mismatch is
+-- reported, unless either side already holds an error.
+@pub fun unifyAt (i : Inf s) (a : Type) (b : Type) : () ! { St s | e } =
+  match unify i.ar a b with
+  | Ok _ -> ()
+  | Err err ->
+      if referencesError (zonk i.ar a) or referencesError (zonk i.ar b) then ()
+      else report i (describe i err)
+
+fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
+  match err with
+  | Mismatch a b -> "type mismatch: `${showType (zonk i.ar a)}` vs `${showType (zonk i.ar b)}`"
+  | Occurs a b -> "infinite type: `${showType (zonk i.ar a)}` occurs in `${showType (zonk i.ar b)}`"
+  | NotANumber integer t -> "type mismatch: `${showType (zonk i.ar t)}` is not ${if integer then "an integer type" else "a float type"}"
+  | Escape -> "state from inside a `runSt` escapes it"
+  | Arity x y -> "function applied to the wrong number over arguments: expected ${show x}, found ${show y}"
+  | MissingLabel l -> "missing `${l}`"
+  | Duplicate l -> "the record already has a field `${l}`"
+
+-- --- schemes ----------------------------------------------------------------------------
+
+@pub fun instantiate (i : Inf s) (sc : Scheme) : Type ! { St s | e } = substBound sc.ty (freshQuantifiers i.ar sc)
+
+-- `sc` instantiated, and its `where` over the same fresh variables.
+@pub fun instantiateWithPreds (i : Inf s) (sc : Scheme) : (Type, [Pred]) ! { St s | e } =
+  let fresh = freshQuantifiers i.ar sc in
+  (substBound sc.ty fresh, V.map (\(p : Pred) -> Pred { tr = p.tr, tys = V.map (\t -> substBound t fresh) p.tys, assocs = V.map (\t -> substBound t fresh) p.assocs }) sc.preds)
+
+-- Generalize `t` -- number variables too if `classes` -- over the `where`
+-- `preds`, and record it under `vid`.
+@pub fun generalizeNamed (i : Inf s) (vid : Maybe Int) (t : Type) (classes : Bool) (preds : [Pred]) : Scheme ! { St s | e } =
+  let level = levelOf i.ar in
+  -- A name still waiting on its overload has a type that is not settled.
+  let u = V.foldl (\w (p : Pending) -> holdBack i.ar p.ty level) () (stGetRef i.pending) in
+  let z = zonk i.ar t in
+  let v = if classes then () else holdBackClasses i.ar z level in
+  match quantifyFrom i.ar z (Just level) noneQuantified classes with
+  | (body, q) ->
+      let scrutinee = V.foldl (\acc (p : Pred) -> match acc with | (ps, q1) -> (match quantifyEach i p.tys q1 level classes with | (tys, q2) -> (match quantifyEach i p.assocs q2 level classes with | (assocs, q3) -> (V.pushBack ps (Pred { tr = p.tr, tys = tys, assocs = assocs }), q3)))) ([], q) preds in
+      match scrutinee with
+      | (qpreds, qall) ->
+          let lacks = V.concatMap (\kv -> (let ls = lacksOf i.ar (fst kv) in if V.isEmpty ls then [] else [Lacking { at = snd kv, labels = ls }])) (H.toVec qall.map) in
+            let sc = Scheme { quant = qall.kinds, preds = qpreds, ty = body, lacks = sortLacks lacks } in
+            let w = (match vid with | Just id -> stSetRef i.generalized (H.insert id (Generalized { scheme = sc, vars = varsOf qall }) (stGetRef i.generalized)) | None -> ()) in
+            sc
+
+fun quantifyEach (i : Inf s) (ts : [Type]) (q : Quantified) (level : Int) (classes : Bool) : ([Type], Quantified) ! { St s | e } =
+  V.foldl (\acc t -> match acc with | (xs, q1) -> (match quantifyFrom i.ar (zonk i.ar t) (Just level) q1 classes with | (x, q2) -> (V.pushBack xs x, q2))) ([], q) ts
+
+fun sortLacks (ls : [Lacking]) : [Lacking] = V.foldl (\acc (l : Lacking) -> insertLacking acc l) [] ls
+
+fun insertLacking (acc : [Lacking]) (l : Lacking) : [Lacking] =
+  let before = V.filter (\(x : Lacking) -> x.at < l.at) acc in
+  let after = V.filter (\(x : Lacking) -> x.at >= l.at) acc in
+  V.concat [before, [l], after]
+
+-- The arena variable behind each quantifier, in quantifier order.
+fun varsOf (q : Quantified) : [Int] =
+  V.map (\k -> M.unwrapOr 0 (M.map fst (V.find (\kv -> snd kv == k) (H.toVec q.map)))) (V.range 0 (V.len q.kinds))
+
+-- A binding not generalized, recorded as one.
+@pub fun recordMono (i : Inf s) (vid : Int) (sc : Scheme) : () ! { St s | e } =
+  stSetRef i.generalized (H.insert vid (Generalized { scheme = sc, vars = [] }) (stGetRef i.generalized))
+
+-- `sc` with its body and `where` resolved as far as the arena says now.
+@pub fun normalizeScheme (i : Inf s) (sc : Scheme) : Scheme ! { St s | e } =
+  { sc | preds = V.map (\(p : Pred) -> Pred { tr = p.tr, tys = V.map (zonk i.ar) p.tys, assocs = V.map (zonk i.ar) p.assocs }) sc.preds, ty = zonk i.ar sc.ty }
+
+-- --- written types ------------------------------------------------------------------------
+
+-- The distinct type variables of `t`, in the order they appear, after `out`.
+@pub fun collectTyvars (a : HirArena) (t : HirType) (out : [String]) : [String] =
+  match viewHirType a t with
+  | HirTypeView.TVar r -> addVar out (hirNameText a r.name)
+  | HirTypeView.TCon r -> V.foldl (\acc x -> collectTyvars a x acc) out r.args
+  | HirTypeView.TFun r ->
+      let ps = V.foldl (\acc x -> collectTyvars a x acc) out r.params in
+      let res = collectTyvars a r.result ps in
+      (match r.row with
+       | Just row ->
+           let labels = V.foldl (\acc l -> V.foldl (\o x -> collectTyvars a x o) acc (hirLabelArgs a l)) res (hirRowLabels a row) in
+           (match hirRowTail a row with | Just tl -> addVar labels (hirNameText a tl) | None -> labels)
+       | None -> res)
+  | HirTypeView.TTuple r -> V.foldl (\acc x -> collectTyvars a x acc) out r.items
+  | HirTypeView.TVector r -> collectTyvars a r.item out
+  | HirTypeView.TList r -> collectTyvars a r.item out
+  | HirTypeView.TRecord r ->
+      let fs = V.foldl (\acc f -> collectTyvars a (hirTFieldTy a f) acc) out r.fields in
+      (match r.tail with | Just tl -> addVar fs (hirNameText a tl) | None -> fs)
+
+fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out else V.pushBack out n
+
+-- Each of `names`'s place.
+@pub fun indexed (names : [String]) : HashMap String Int = V.foldl (\h k -> H.insert (V.getOr "" names k) k h) H.empty (V.range 0 (V.len names))
+
+-- A written type as a type: its variables, by `params`, `Bound`, and every
+-- alias expanded.
+@pub fun tyOf (i : Inf s) (a : HirArena) (t : HirType) (params : HashMap String Int) : Type ! { St s | e } =
+  match viewHirType a t with
+  | HirTypeView.TVar r -> (match H.lookup (hirNameText a r.name) params with | Just k -> Bound k | None -> Error)
+  | HirTypeView.TCon r ->
+      let args = V.map (\x -> tyOf i a x params) r.args in
+      let name = canonOf i (hirRefId a r.ref) (hirNameText a r.name) in
+      conNamed i name args
+  | HirTypeView.TFun r ->
+      let eff = (match r.row with | Just row -> effOf i a row params | None -> RowEmpty) in
+      funcEff (V.map (\x -> tyOf i a x params) r.params) (tyOf i a r.result params) eff
+  | HirTypeView.TTuple r -> Tuple (V.map (\x -> tyOf i a x params) r.items)
+  | HirTypeView.TVector r -> vectorT (tyOf i a r.item params)
+  | HirTypeView.TList r -> listT (tyOf i a r.item params)
+  | HirTypeView.TRecord r ->
+      let rest = (match r.tail with | Just tl -> (match H.lookup (hirNameText a tl) params with | Just k -> Bound k | None -> Error) | None -> RowEmpty) in
+      Record (V.foldl (\acc f -> RowExtend (hirNameText a (hirTFieldName a f)) (tyOf i a (hirTFieldTy a f) params) acc) rest (V.reverse r.fields))
+
+-- A type constructor by its canonical name applied to `args`: one the
+-- language spells more than one way, as itself, and an alias as what it
+-- stands for.
+@pub fun conNamed (i : Inf s) (name : String) (args : [Type]) : Type ! { St s | e } =
+  if name == "Int" or name == "Int64" then intT ()
+  else if name == "BigInt" then bigIntT ()
+  else if name == "Float" or name == "Float64" then floatT ()
+  else if name == "String" then stringT ()
+  else if name == "Bool" then boolT ()
+  else if name == "Unit" then unitT ()
+  else if name == "List" then listT (V.getOr (unitT ()) args 0)
+  else if name == "Array" then arrayT (V.getOr (unitT ()) args 0)
+  else if name == "Ref" then Con "Ref" [V.getOr (unitT ()) args 0]
+  else
+    match H.lookup name (stGetRef i.aliases) with
+    | Just (d : AliasDef) -> (if d.params == V.len args then substBound d.body args else Error)
+    | None -> Con name args
+
+-- A written effect row as a type.
+@pub fun effOf (i : Inf s) (a : HirArena) (row : HirRow) (params : HashMap String Int) : Type ! { St s | e } =
+  let tail = (match hirRowTail a row with | Just tl -> M.unwrapOr RowEmpty (M.map (\k -> Bound k) (H.lookup (hirNameText a tl) params)) | None -> RowEmpty) in
+  V.foldl
+    (\rest l -> RowExtend (canonOf i (hirRefId a (hirLabelRef a l)) (hirNameText a (hirLabelName a l))) (Tuple (V.map (\x -> tyOf i a x params) (hirLabelArgs a l))) rest)
+    tail
+    (V.reverse (hirRowLabels a row))
+
+-- Which of a type's quantifiers stand for a row: an arrow's latent effect, or
+-- the tail of its row, an effect; the tail of a record's row, a record row.
+@pub fun markEffectVars (t : Type) (kinds : [VarKind]) : [VarKind] =
+  match t with
+  | Fun args ret eff ->
+      let k1 = markEffectVars ret (V.foldl (\ks x -> markEffectVars x ks) kinds args) in
+      markRowEnd eff k1 Effect
+  | Con _ args -> V.foldl (\ks x -> markEffectVars x ks) kinds args
+  | Tuple args -> V.foldl (\ks x -> markEffectVars x ks) kinds args
+  | Record row -> markRowEnd row kinds Row
+  | RowExtend _ f rest -> markEffectVars rest (markEffectVars f kinds)
+  | _ -> kinds
+
+fun markRowEnd (row : Type) (kinds : [VarKind]) (into : VarKind) : [VarKind] =
+  match row with
+  | RowExtend _ f rest -> markRowEnd rest (markEffectVars f kinds) into
+  | Bound k -> (if k < V.len kinds then V.set kinds k into else kinds)
+  | _ -> kinds

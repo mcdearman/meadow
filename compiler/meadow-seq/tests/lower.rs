@@ -391,7 +391,7 @@ fn a_local_function_is_lifted_to_a_definition_with_a_direct_entry() {
         .program
         .defs
         .iter()
-        .filter(|d| d.name.ends_with(".local1"))
+        .filter(|d| d.name.ends_with("Local1"))
         .collect();
     assert_eq!(lifted.len(), 2, "{text}");
     assert!(lifted.iter().any(|d| d.block.params.len() == 3), "{text}");

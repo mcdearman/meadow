@@ -1246,7 +1246,7 @@ impl<'a> Machine<'a> {
                         .ok_or_else(|| RuntimeError {
                             msg: format!(
                                 "`{}` has no field `{label}`",
-                                cname.rsplit("::").next().unwrap_or_default()
+                                meadow_core::ctor_spelling(&cname)
                             ),
                         })?,
                     other => return err(format!("cannot select `.{label}` from {other}")),
@@ -1377,7 +1377,7 @@ impl<'a> Machine<'a> {
                 self.ctrl = Control::Ret(result);
                 return Ok(());
             }
-            let effect = effect.rsplit("::").next().unwrap_or_default();
+            let effect = meadow_core::spelling(&effect);
             return err(format!("unhandled effect {effect}.{op}"));
         };
 
@@ -2152,6 +2152,10 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                     InternedString::from("readonly"),
                     Value::Bool(md.permissions().readonly()),
                 );
+                rec.insert(
+                    InternedString::from("modified"),
+                    Value::Int(meadow_core::args::modified_millis(&md)),
+                );
                 ok(Value::Record(rec))
             }
             Err(e) => ioerr(e),
@@ -2246,6 +2250,7 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             std::process::exit(code as i32);
         }
         "currentPid" => Value::Int(std::process::id() as i64),
+        "currentExe" => sv(meadow_core::args::current_exe()),
         "isTerminal" => Value::Bool(is_terminal(as_int(&arg)?)),
         "argv" => vector_value(meadow_core::args::get().into_iter().map(sv).collect()),
         "getEnv" => match std::env::var(&*as_str(&arg)?) {

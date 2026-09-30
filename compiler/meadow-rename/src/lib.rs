@@ -817,8 +817,8 @@ impl Resolver {
     }
 
     /// The canonical name of a type or effect module `module` of this unit
-    /// declares as `name`: its fully qualified path, `pkg::Mod.Sub::Name` --
-    /// `pkg::Name` at the package's root -- so that two modules may each
+    /// declares as `name`: its fully qualified path, `pkg.Mod.Sub.Name` --
+    /// `pkg.Name` at the package's root -- so that two modules may each
     /// declare a type of one name, as they may a value.
     ///
     /// A name the compiler itself knows -- one a primitive's type mentions, or
@@ -829,9 +829,9 @@ impl Resolver {
         match self.package {
             Some(p) if !LANGUAGE_NAMES.contains(&&*name) => {
                 if module.is_empty() {
-                    InternedString::from(format!("{p}::{name}"))
+                    InternedString::from(format!("{p}.{name}"))
                 } else {
-                    InternedString::from(format!("{p}::{}::{name}", dotted_path(module)))
+                    InternedString::from(format!("{p}.{}.{name}", dotted_path(module)))
                 }
             }
             _ => name,

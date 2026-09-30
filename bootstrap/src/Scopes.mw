@@ -14,7 +14,8 @@
 
 use MeadowBoot.Ast
 use MeadowBoot.Rename
-use Lingua.Lang (Meta, metaStart, spanMeta)
+use MeadowBoot.Types (Scheme)
+use Lingua.Lang (Meta, metaStart, metaEnd, spanMeta)
 use Lingua.Table (Table, enter, entry, tabled)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as H
@@ -40,14 +41,18 @@ use Vis.*
 -- And whether it is a re-export, `@pub use`: a constructor a package's root
 -- re-exports is what a bare `use` of the package brings bare. And, for a
 -- constructor with named fields -- a record's, or a variant's `{ … }` --
--- their names: what picks one of several constructors of one name.
-@pub record Item = { name : String, kind : String, id : Int, vis : Vis, owner : String, flat : Bool, fields : Maybe [String] }
+-- their names: what picks one of several constructors of one name. And, for
+-- a type or a constructor, its canonical name: the fully qualified path that
+-- makes it the one it is (`qualified`).
+@pub record Item = { name : String, kind : String, id : Int, vis : Vis, owner : String, flat : Bool, fields : Maybe [String], canon : String }
 
 -- What a unit tells the units after it of each name it exports: the module
 -- it is in, its name and kind, where it was declared, how far it is seen
 -- (`@pub`: `Exported`), and what it belongs to.
 @derive(Reflect, Debug, PartialEq)
-@pub record Export = { module : [String], name : String, kind : String, site : String, vis : Vis, owner : String, flat : Bool, fields : Maybe [String] }
+-- And, once inference has said, its scheme -- and, before that, its binder
+-- in the unit that declares it.
+@pub record Export = { module : [String], name : String, kind : String, site : String, vis : Vis, owner : String, flat : Bool, fields : Maybe [String], canon : String, binder : Int, scheme : Maybe Scheme }
 
 -- One module of a unit: where it is in the unit, its file as a dump names
 -- it, and its syntax.
@@ -125,19 +130,41 @@ fun siteIn (src : Source) (m : Meta) : String = "${src.file}@${show (metaStart m
 
 -- A binder for name `n` of the module's.
 fun binderOf (src : Source) (a : AstArena) (n : AstName) (kind : String) : Int ! { Table Binder | e } =
-  declareBinder (nameText a n) kind (siteIn src (metaAstName a n))
+  declareBinderTo (nameText a n) kind (siteIn src (metaAstName a n)) (metaEnd (metaAstName a n))
 
--- What a module declares, and its `use`s.
-fun frameOf (src : Source) : (ModFrame, Bool) ! { Table Binder | e } =
+-- What a module of package `pkg` declares, and its `use`s.
+fun frameOf (pkg : String) (src : Source) : (ModFrame, Bool) ! { Table Binder | e } =
   match src.ast with
   | AstProgram a root ->
       let decls = declsOf src in
       let said = V.any (\x -> M.isSome (visOf a (fst x))) decls in
-      let items = V.concatMap (\x -> declItems src a (M.unwrapOr Private (visOf a (fst x))) (snd x)) decls in
+      let items = V.map (canonical pkg src.path) (V.concatMap (\x -> declItems src a (M.unwrapOr Private (visOf a (fst x))) (snd x)) decls) in
       let uses = V.concatMap (\x -> if kindAstDecl a (snd x) == AstDeclKind.UseDecl then [(snd x, M.unwrapOr Private (visOf a (fst x)))] else []) decls in
       (ModFrame { src = src, items = items, uses = uses }, said)
 
-fun item (name : String) (kind : String) (id : Int) (vis : Vis) (owner : String) : Item = Item { name = name, kind = kind, id = id, vis = vis, owner = owner, flat = False, fields = None }
+fun item (name : String) (kind : String) (id : Int) (vis : Vis) (owner : String) : Item = Item { name = name, kind = kind, id = id, vis = vis, owner = owner, flat = False, fields = None, canon = "" }
+
+-- `i`, declared in module `path` of package `pkg`, with its canonical name:
+-- a type's its qualified path, a constructor's its type's and its own.
+fun canonical (pkg : String) (path : [String]) (i : Item) : Item =
+  if i.kind == "t" then { i | canon = qualified pkg path i.name }
+  else if i.kind == "c" then { i | canon = qualified pkg path i.owner ++ "." ++ i.name }
+  else i
+
+-- A type's canonical name, `meadow-rename`'s `qualify_in`: its path as the
+-- source writes one, `pkg.Mod.Sub.Name`, `pkg.Name` at the root -- but the
+-- names the language itself knows.
+@pub fun qualified (pkg : String) (path : [String]) (name : String) : String =
+  if V.elem name languageNames then name
+  else S.join "." (V.concat [[pkg], path, [name]])
+
+-- The types and effects the language itself knows, which no package's path
+-- qualifies (`meadow-rename`'s `LANGUAGE_NAMES`).
+@pub def languageNames : [String] =
+  [ "Int", "BigInt", "Float", "String", "Char", "Bool", "Int64", "Int32", "Int16", "Int8", "UInt64",
+    "UInt32", "UInt16", "UInt8", "Float64", "Float32", "Unit", "List", "Array", "Ref", "StRef",
+    "StArray", "Compact", "Task", "Channel", "TVar", "Vector", "VNode", "Maybe", "Result",
+    "Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut", "Stm", "St" ]
 
 -- The names of fields `fs`.
 fun fieldNames (a : AstArena) (fs : [AstField]) : [String] = V.map (\f -> nameText a (astFieldName a f)) fs
@@ -481,14 +508,22 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) : (Scope, [Item], [(Meta,
 @pub record DepExports = { name : String, exports : [Export], anyVis : Bool }
 
 -- What renaming a unit made: each module's program, what each binder is --
--- its uses among it -- what the unit exports, and whether it says.
-@pub record Renamed = { programs : [(String, HirProgram)], binders : [Binder], exports : [Export], anyVis : Bool }
+-- its uses among it -- what the unit exports, and whether it says. And what
+-- inference reads beside the programs: each module's file, path and
+-- declarations; the declarations its dependencies export, each with the
+-- binder it has here; and each primitive's binder.
+@pub record Renamed = { programs : [(String, HirProgram)], binders : [Binder], exports : [Export], anyVis : Bool, modules : [Declared], depItems : [Item], prims : [(String, Int)] }
+
+-- A module's file as a dump names it, its path in its unit, and what it
+-- declares.
+@pub record Declared = { file : String, path : [String], items : [Item] }
 
 -- Rename unit `pkg` -- the standard library when `isStd` -- its modules
 -- `sources`, against what its dependencies export.
 @pub fun renameUnit (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExports]) : Renamed =
   match tabled (\() -> renaming pkg isStd sources deps) with
-  | ((programs, exports, anyVis), binders) -> Renamed { programs = programs, binders = binders, exports = V.map (\(e : Export) -> { e | site = siteOfId binders e.site }) exports, anyVis = anyVis }
+  | ((programs, exports, anyVis, modules, depItems, prims), binders) ->
+      Renamed { programs = programs, binders = binders, exports = V.map (\(e : Export) -> { e | site = siteOfId binders e.site }) exports, anyVis = anyVis, modules = modules, depItems = depItems, prims = prims }
 
 -- An export's site, while renaming: its binder's id, which is read back as
 -- where the binder was declared once the table is done.
@@ -502,7 +537,7 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
   let builtinType = declareBinder "" "t" "-" in
   let builtinCtor = declareBinder "" "c" "-" in
   let prims = V.map (\n -> (n, declareBinder n "v" "-")) primNames in
-  let declared = V.map frameOf sources in
+  let declared = V.map (frameOf pkg) sources in
   let frames = V.map fst declared in
   let anyVis = V.any snd declared in
   let depCx =
@@ -510,7 +545,7 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
       (\(d : DepExports) ->
         Dep {
           name = d.name,
-          items = V.map (\(e : Export) -> (e.module, { (item e.name e.kind (declareBinder e.name e.kind e.site) e.vis e.owner) | flat = e.flat, fields = e.fields })) d.exports,
+          items = depItemsOf d.exports,
           anyVis = d.anyVis })
       deps in
     let cx = UnitCx { pkg = pkg, isStd = isStd, anyVis = anyVis, frames = frames, deps = depCx } in
@@ -559,13 +594,29 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
           (\x ->
             match x with
             | (f, _, re) ->
-                V.map (\(i : Item) -> Export { module = framePath f, name = i.name, kind = i.kind, site = show i.id, vis = i.vis, owner = i.owner, flat = i.flat, fields = i.fields }) (V.append f.items re))
+                V.map (\(i : Item) -> Export { module = framePath f, name = i.name, kind = i.kind, site = show i.id, vis = i.vis, owner = i.owner, flat = i.flat, fields = i.fields, canon = i.canon, binder = i.id, scheme = None }) (V.append f.items re))
           done in
           -- The standard library's operators, `display`, `debug` and comparison are
           -- at its root too: every program has them unqualified.
           let flat =
             if isStd then V.concatMap (\(e : Export) -> if V.elem (dotted e.module) flatModules and e.vis == Exported then [{ e | module = [] }] else []) exports
             else [] in
-            (programs, V.append exports flat, anyVis)
+            let modules = V.map (\(f : ModFrame) -> Declared { file = f.src.file, path = framePath f, items = f.items }) frames in
+            (programs, V.append exports flat, anyVis, modules, depCtors, prims)
+
+-- A dependency's exports as items, each with the module it is in: one binder
+-- for each thing exported, however many places export it -- a module and the
+-- package's root both -- as one `VarId` is in the Rust compiler.
+fun depItemsOf (exports : [Export]) : [([String], Item)] ! { Table Binder | e } =
+  fst
+    (V.foldl
+      (\acc (e : Export) ->
+        match acc with
+        | (items, seen) ->
+            let key = "${e.kind}|${e.name}|${e.site}|${e.canon}" in
+            let id = (match H.lookup key seen with | Just x -> x | None -> declareBinder e.name e.kind e.site) in
+            (V.pushBack items (e.module, { (item e.name e.kind id e.vis e.owner) | flat = e.flat, fields = e.fields, canon = e.canon }), H.insert key id seen))
+      ([], H.empty)
+      exports)
 
 fun renameSource (sc : Scope) (f : ModFrame) = (f.src.file, rename (envOf sc) f.src.ast)

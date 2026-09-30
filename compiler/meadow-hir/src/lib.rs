@@ -25,25 +25,50 @@ pub fn spell_name(name: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// A type's or effect's name as a person writes it.
+/// A type's, effect's or trait's name as a person writes it.
 ///
 /// A type declared outside the standard library is known past the resolver by
-/// its fully qualified path -- `anstyle::Color`, `app::Syntax.Tree::Expr` -- so
-/// that two packages, or two modules of one, may each declare a `Color`, and a
-/// program may use both. Messages, hovers and printed types show the name
-/// without its path, as the source spells it; a constructor's `Type.Ctor` keeps
-/// its type part: `anstyle::Color.Red` is `Color.Red`.
+/// its fully qualified path, written as the source writes a path --
+/// `anstyle.Color`, `app.Syntax.Tree.Expr` -- so that two packages, or two
+/// modules of one, may each declare a `Color`, and a program may use both.
+/// Messages, hovers and printed types show the name without its path, as the
+/// source spells it. A constructor keeps its type: see [`ctor_spelling`].
 pub fn spelling(name: &str) -> &str {
-    match name.rfind("::") {
-        Some(at) => &name[at + 2..],
+    match name.rfind('.') {
+        Some(at) => &name[at + 1..],
+        None => name,
+    }
+}
+
+/// A constructor's canonical name, `Type.Ctor` after its type's path, as a
+/// person writes it: `anstyle.Color.Red` is `Color.Red`, and `Maybe.Just`,
+/// whose type the compiler knows, stays as it is.
+pub fn ctor_spelling(name: &str) -> &str {
+    match name.rfind('.').and_then(|at| name[..at].rfind('.')) {
+        Some(at) => &name[at + 1..],
         None => name,
     }
 }
 
 /// The package a type's canonical name says it belongs to, if any: `None` for
 /// the names the compiler knows, which have none.
+///
+/// The package is the path's first segment, and a version's parts with it --
+/// `json@1.2.0.Value` is `json@1.2.0`'s -- which no module or type is mistaken
+/// for, since those begin with a capital.
 pub fn type_package(name: &str) -> Option<&str> {
-    name.find("::").map(|at| &name[..at])
+    let first = name.find('.')?;
+    if !name[..first].contains('@') {
+        return Some(&name[..first]);
+    }
+    let mut end = first;
+    while let Some(next) = name[end + 1..].find('.').map(|at| end + 1 + at) {
+        if name[end + 1..].starts_with(|c: char| c.is_uppercase()) {
+            break;
+        }
+        end = next;
+    }
+    Some(&name[..end])
 }
 
 /// The operators the language itself knows: how tightly each binds, which way
@@ -944,5 +969,31 @@ fn rewrite_pat(p: &mut LPat, chosen: &std::collections::HashMap<NodeId, Alt>) {
             rewrite_pat(p, chosen);
         }
         Pat::Wildcard | Pat::Unit | Pat::Var(_) | Pat::Lit(_) | Pat::Error => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_canonical_name_is_spelled_without_its_path() {
+        assert_eq!(spelling("app.Syntax.Tree.Expr"), "Expr");
+        assert_eq!(spelling("anstyle.Color"), "Color");
+        assert_eq!(spelling("Maybe"), "Maybe");
+        assert_eq!(ctor_spelling("app.Syntax.Tree.Expr.Lit"), "Expr.Lit");
+        assert_eq!(ctor_spelling("Maybe.Just"), "Maybe.Just");
+    }
+
+    #[test]
+    fn a_canonical_name_says_its_package() {
+        assert_eq!(type_package("Std.Ops.Add"), Some("Std"));
+        assert_eq!(type_package("anstyle.Color"), Some("anstyle"));
+        assert_eq!(type_package("json@1.2.0.Value"), Some("json@1.2.0"));
+        assert_eq!(
+            type_package("json@1.2.0-rc.1.Data.Value"),
+            Some("json@1.2.0-rc.1")
+        );
+        assert_eq!(type_package("Int"), None);
     }
 }

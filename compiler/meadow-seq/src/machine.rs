@@ -562,7 +562,7 @@ impl<'p> Machine<'p> {
                     Value::Unit
                 }
                 _ => {
-                    let effect = effect.rsplit("::").next().unwrap_or_default();
+                    let effect = meadow_core::spelling(&effect);
                     return err(format!("unhandled effect {effect}.{op}"));
                 }
             },
@@ -601,7 +601,7 @@ impl<'p> Machine<'p> {
                     match at.and_then(|i| fields.get(i)) {
                         Some(v) => v.clone(),
                         None => {
-                            let name = name.rsplit("::").next().unwrap_or_default();
+                            let name = meadow_core::ctor_spelling(name);
                             return err(format!("`{name}` has no field `{label}`"));
                         }
                     }

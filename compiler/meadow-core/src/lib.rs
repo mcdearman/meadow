@@ -64,6 +64,8 @@ pub mod trmc;
 pub use lower::Lowerer;
 
 use meadow_hir as hir;
+/// How a canonical name is written, for the runtimes' messages.
+pub use meadow_hir::{ctor_spelling, spelling};
 use meadow_infer::{Generalized, Scheme, Type as InferType, TypeTable, VarKind, VariantEnv};
 use meadow_intern::InternedString;
 use std::collections::HashMap;
@@ -1547,7 +1549,7 @@ impl Printer {
             }
             Term::Ctor(n, t, args) => {
                 let t = self.ty(t);
-                format!("({} {} : {t})", hir::spelling(n), self.terms(args))
+                format!("({} {} : {t})", hir::ctor_spelling(n), self.terms(args))
             }
             Term::Case(s, arms, _) => {
                 let parts: Vec<String> = arms
@@ -1611,7 +1613,7 @@ impl Printer {
             Pat::Lit(l) => Self::lit(l),
             Pat::Tuple(ps) => format!("(tup {})", self.pats(ps)),
             Pat::Array(ps) => format!("#[{}]", self.pats(ps)),
-            Pat::Ctor(n, ps) => format!("({} {})", hir::spelling(n), self.pats(ps)),
+            Pat::Ctor(n, ps) => format!("({} {})", hir::ctor_spelling(n), self.pats(ps)),
             Pat::Record(fields) => {
                 let parts: Vec<String> = fields
                     .iter()

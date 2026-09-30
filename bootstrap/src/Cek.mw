@@ -290,7 +290,7 @@ fun select (m : Machine) (label : String) (v : Value) (k : List Frame) =
       let at = (match named with | Just (_, fs) -> indexOf label fs 0 | None -> 0 - 1) in
       (match V.get vals at with
        | Just x -> go m (Ret x) k
-       | None -> Err "`${afterLast "::" name}` has no field `${label}`")
+       | None -> Err "`${ctorSpelling name}` has no field `${label}`")
   | other -> Err "cannot select `.${label}` from ${display other}"
 
 -- Where `x` is in `xs`, from `i` on, or -1.
@@ -396,7 +396,7 @@ fun apply (m : Machine) (f : Value) (arg : Value) (k : List Frame) =
 fun perform (m : Machine) (e : String) (o : String) (arg : Value) (k : List Frame) =
   let a = m.arena in
   match handlerIn a e o k [;] with
-  | None -> Err "unhandled effect ${afterLast "::" e}.${o}"
+  | None -> Err "unhandled effect ${afterLast "." e}.${o}"
   | Just (taken, outer, clause, henv) ->
       let cont = VCont (newRef (Just taken)) in
       let scope = define (define henv (coreClauseParam a clause) arg) (coreClauseResume a clause) cont in
@@ -939,6 +939,12 @@ fun listItems (v : Value) (sofar : [Value]) : Maybe [Value] =
 fun bare (name : String) : String = afterLast "." name
 
 -- What follows the last `sep` in `s`, or all of `s`.
+-- A constructor's name as a person writes it: `Type.Ctor`, without the path
+-- in front of its type.
+fun ctorSpelling (name : String) : String =
+  let at = lastIndex "." name 0 (0 - 1) in
+  if at < 0 then name else stringSlice name (lastIndex "." (stringSlice name 0 at) 0 (0 - 1) + 1) (stringByteLength name)
+
 fun afterLast (sep : String) (s : String) : String =
   match lastIndex sep s 0 (0 - 1) with
   | i -> if i < 0 then s else stringSlice s (i + stringByteLength sep) (stringByteLength s)

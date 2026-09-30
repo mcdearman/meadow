@@ -23,3 +23,21 @@ pub fn get() -> Vec<String> {
         None => std::env::args().skip(1).collect(),
     }
 }
+
+/// When the file `md` describes was last written, in milliseconds since the
+/// Unix epoch, as `Fs.metadata` answers it: 0 where the platform cannot say.
+pub fn modified_millis(md: &std::fs::Metadata) -> i64 {
+    md.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// The path of the program running in this process, as `Process.currentExe`
+/// answers it: what a build tool tells one compiler from another by. Empty
+/// when the platform cannot say.
+pub fn current_exe() -> String {
+    std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default()
+}

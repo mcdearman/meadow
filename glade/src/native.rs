@@ -397,6 +397,10 @@ impl Vm<'_> {
                         "readonly",
                         Build::At(Value::Bool(md.permissions().readonly())),
                     ),
+                    (
+                        "modified",
+                        Build::int(meadow_core::args::modified_millis(&md)),
+                    ),
                 ])),
                 Err(e) => ioerr(e),
             },
@@ -455,6 +459,7 @@ impl Vm<'_> {
                 }
             },
             "currentPid" => Build::int(std::process::id() as i64),
+            "currentExe" => Build::Str(meadow_core::args::current_exe()),
             "isTerminal" => match arg {
                 Value::Int(fd) => Build::At(Value::Bool(is_terminal(fd))),
                 other => {

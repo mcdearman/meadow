@@ -1019,9 +1019,5 @@ mod tests {
 /// standard library is known past the resolver by its package as well, which
 /// a disassembly has no reason to repeat.
 fn spelled(name: InternedString) -> String {
-    let name = name.to_string();
-    match name.rfind("::") {
-        Some(at) => name[at + 2..].to_string(),
-        None => name,
-    }
+    meadow_core::ctor_spelling(&name).to_string()
 }

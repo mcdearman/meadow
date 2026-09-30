@@ -12,16 +12,16 @@ pass until the one before agrees everywhere it is asked.
 
 ## Passes
 
-| pass     | module                                   | checked against                                      | inputs                                                                   |
-| -------- | ---------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------ |
-| lex      | `src/Lex.mw`                             | `meadow-lexer`'s `tokenize`                          | every `.mw` in the repository, `tests/lex/`                              |
-| evaluate | `src/Cek.mw`, `Core.mw`                  | `meadow-eval`, the Rust CEK machine                  | the programs `glade/tests/differential.rs` checks every back end with    |
-| parse    | `src/Syntax.mw`                          | `meadow-parser`                                      | every `.mw` in the repository: each parses (the trees are compared next) |
-| group    | `src/Fixity.mw`                          | `meadow-rename`'s `reassociate`                      | every `.mw` in the repository, each with its unit's fixities             |
-| expand   | `src/Rules.mw`, `Hygiene.mw`             | `meadow-compiler`'s `macro` rules, by what they name | every call of a `macro` in the repository, `tests/rename/Macros`         |
-| rename   | `src/Lower.mw`, `Rename.mw`, `Scopes.mw` | `meadow-rename`, as an editor reads it               | every `.mw` in the repository, each with its unit and what it depends on |
-| infer    | —                                        | `meadow-infer`                                       |                                                                          |
-| lower    | —                                        | `meadow-core`'s lowering                             |                                                                          |
+| pass     | module                                                           | checked against                                      | inputs                                                                   |
+| -------- | ---------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------ |
+| lex      | `src/Lex.mw`                                                     | `meadow-lexer`'s `tokenize`                          | every `.mw` in the repository, `tests/lex/`                              |
+| evaluate | `src/Cek.mw`, `Core.mw`                                          | `meadow-eval`, the Rust CEK machine                  | the programs `glade/tests/differential.rs` checks every back end with    |
+| parse    | `src/Syntax.mw`                                                  | `meadow-parser`                                      | every `.mw` in the repository: each parses (the trees are compared next) |
+| group    | `src/Fixity.mw`                                                  | `meadow-rename`'s `reassociate`                      | every `.mw` in the repository, each with its unit's fixities             |
+| expand   | `src/Rules.mw`, `Hygiene.mw`                                     | `meadow-compiler`'s `macro` rules, by what they name | every call of a `macro` in the repository, `tests/rename/Macros`         |
+| rename   | `src/Lower.mw`, `Rename.mw`, `Scopes.mw`                         | `meadow-rename`, as an editor reads it               | every `.mw` in the repository, each with its unit and what it depends on |
+| infer    | `src/Infer.mw`, `Solve.mw`, `Traits.mw`, `Types.mw`, `Groups.mw` | `meadow-infer`, each top-level binding's scheme      | every `.mw` in the repository, each with its unit and what it depends on |
+| lower    | —                                                                | `meadow-core`'s lowering                             |                                                                          |
 
 ### Lexing
 
@@ -122,6 +122,35 @@ files, and `Lower` takes an expansion where its call is. A chain of operators
 in one is grouped there by the unit's fixities. A call of the module's own
 `macro` never falls back to this, so the test sees what `Rules` makes of it.
 
+### Inferring
+
+Inference is `meadow_infer`'s, step for step: Algorithm J over an arena of
+meta variables linked by union-find (`src/Types.mw`), written inside a
+`runSt`; generalization by levels, as OCaml's; records and effects as rows.
+A unit's top-level bindings are inferred group by group, each group a strongly
+connected component of what mentions what (`src/Groups.mw`, `meadow_scc`),
+found three times as the Rust compiler finds them: the modules in order, each
+module's bindings in order, and the unit's bindings as one graph walked in
+those orders, which is what breaks ties. A trait's `where` is what an
+instantiated scheme wants, answered by an `impl` once its type is known that
+far, or joined to the `where` of the function whose variable it is
+(`src/Traits.mw`). A name with several meanings is chosen by what fits. The
+primitives' types are the Rust compiler's table, written out as Meadow
+(`src/Prims.mw`, by the test `write_prims`), whose test holds every one to
+how the Rust compiler writes it.
+
+A name is known by its binder, as a `VarId` is in the Rust compiler; a type,
+an effect, a trait and a constructor by its canonical name, the fully
+qualified path renaming gives each (`Scopes.qualified`). Renaming leaves
+inference what the rename dump does not show: a name's other meanings, the
+operation a handler clause answers, the effect a written row names. A unit's
+interface carries its exports' schemes and everything it knows about types,
+as a dependency's declarations are to a Rust compiler's unit.
+
+What is compared is each top-level binding's scheme, `from to name : scheme`,
+as `meadow build --types` writes it: quantifiers lettered by kind, `where` in
+front, an effect variable said once left out.
+
 ## Running
 
 ```sh
@@ -130,6 +159,7 @@ meadow run --release bootstrap -- eval FILE…    # a core program's value
 meadow run --release bootstrap -- parse FILE…   # each file's abstract syntax
 meadow run --release bootstrap -- fixity FILE…  # each chain of operators, grouped
 meadow run --release bootstrap -- rename FILE…  # each name, and what it names
+meadow run --release bootstrap -- infer FILE…   # each top-level name's scheme
 ```
 
 and the differential tests, from `buildtools/`:

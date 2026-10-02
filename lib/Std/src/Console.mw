@@ -41,6 +41,9 @@ use Std.Collections.Vector (vecFromArray)
 @pub effect Console {
   -- Write `text` exactly as given: no newline is added.
   writeOutput : String -> (),
+  -- Write `text` to standard error, after everything written to standard
+  -- output so far: for a warning, a log line, or why a program gave up.
+  writeError : String -> (),
   -- The next line, without its line terminator. `None` at end of input.
   readLine : () -> Maybe String,
   -- Exactly this many bytes of input, as text. `None` if it ends first. What a
@@ -58,6 +61,9 @@ use Std.Collections.Vector (vecFromArray)
 
 -- `print`, then a newline.
 @pub fun println (value : a) : () ! { Console | e } = writeOutput (S.concat (display value) "\n")
+
+-- `value` and a newline, to standard error.
+@pub fun eprintln (value : a) : () ! { Console | e } = writeError (S.concat (display value) "\n")
 
 -- --- reading ------------------------------------------------------------------
 

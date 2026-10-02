@@ -86,7 +86,7 @@ def meadow:Std/Collections.List.map <'a = da, 'b = db> (da: desc, db: desc, f: p
 `desc` is the representation of a descriptor parameter: an `i64` that a
 linker and the back end know to be one. Inside the definition, a value of rep
 `'a` is whatever `da` says. A call passes descriptors like any other argument:
-one at a known representation passes a constant (`desc i64`, `desc ptr`), and
+one at a known representation passes a constant (`desc(i64)`, `desc(ptr)`), and
 one at a variable passes the descriptor it was given. The back end's _specialise
 on known arguments_ pass makes a copy for each constant it sees. Code it does
 not specialise still runs, by reading the descriptor, which is what a debug
@@ -282,41 +282,45 @@ operation that is not bound here, and that no handler answers, is an error
 when the program is lowered, not when it runs.
 
 The runtime's operations, as Glade and Silo perform them today. An operation
-takes one value; several are passed as a tuple (`(str, str)`). An optional
+takes one value: one that takes several takes them as a tuple (`(str, str)`).
+A front end performs its own operation with its arguments as they are,
+`perform idyll:Prelude/Fs.writeString(path, text; c)`, and the back end packs
+them into the tuple the runtime operation it is bound to takes. An optional
 answer is the `none`/`some` roles, and a fallible one the `ok`/`err` roles with
 a `str` error.
 
-| operation                                          | takes                        | answers                                           |
-| -------------------------------------------------- | ---------------------------- | ------------------------------------------------- |
-| `Console.writeOutput`                              | `str`                        | `unit`                                            |
-| `Console.readLine`                                 | `unit`                       | optional `str`                                    |
-| `Console.readExact`                                | `i64`, a byte count          | optional `str`                                    |
-| `Fs.readToString`                                  | `str`, a path                | fallible `str`                                    |
-| `Fs.readBytes`                                     | `str`                        | fallible array of `u8`                            |
-| `Fs.writeString`, `Fs.appendString`                | `(str, str)`                 | fallible `unit`                                   |
-| `Fs.writeBytes`                                    | `(str, ptr)`, an array       | fallible `unit`                                   |
-| `Fs.removeFile`, `Fs.createDir`, `Fs.createDirAll` | `str`                        | fallible `unit`                                   |
-| `Fs.removeDir`, `Fs.removeDirAll`                  | `str`                        | fallible `unit`                                   |
-| `Fs.rename`, `Fs.copy`                             | `(str, str)`                 | fallible `unit`                                   |
-| `Fs.readDir`                                       | `str`                        | fallible array of `str`                           |
-| `Fs.metadata`                                      | `str`                        | fallible `file-meta`                              |
-| `Fs.exists`, `Fs.isFile`, `Fs.isDir`               | `str`                        | `bool`                                            |
-| `Process.spawn`, `Process.status`                  | a command: see `Std.Process` | fallible result                                   |
-| `Process.exit`                                     | `i64`                        | does not return                                   |
-| `Process.currentPid`                               | `unit`                       | `i64`                                             |
-| `Process.currentExe`                               | `unit`                       | `str`                                             |
-| `Process.isTerminal`                               | `i64`, a stream              | `bool`                                            |
-| `Process.argv`                                     | `unit`                       | a sequence of `str`: see below                    |
-| `Process.getEnv`                                   | `str`                        | optional `str`                                    |
-| `Process.setEnv`                                   | `(str, str)`                 | `unit`                                            |
-| `Process.removeEnv`                                | `str`                        | `unit`                                            |
-| `Random.nextInt`, `Random.nextSeed`                | `unit`                       | `i64`                                             |
-| `Random.nextFloat`                                 | `unit`                       | `f64`, in `[0, 1)`                                |
-| `Random.intBetween`                                | `(i64, i64)`                 | `i64`                                             |
-| `Time.now`                                         | `unit`                       | `i64`, milliseconds                               |
-| `Time.monotonic`                                   | `unit`                       | `i64`, nanoseconds                                |
-| `Time.sleep`                                       | `i64`, milliseconds          | `unit`                                            |
-| `Test.fail`                                        | `str`                        | does not return: stops with the message, status 1 |
+| operation                                          | takes                        | answers                                                     |
+| -------------------------------------------------- | ---------------------------- | ----------------------------------------------------------- |
+| `Console.writeOutput`                              | `str`                        | `unit`                                                      |
+| `Console.writeError`                               | `str`                        | `unit`: to standard error, after standard output is flushed |
+| `Console.readLine`                                 | `unit`                       | optional `str`                                              |
+| `Console.readExact`                                | `i64`, a byte count          | optional `str`                                              |
+| `Fs.readToString`                                  | `str`, a path                | fallible `str`                                              |
+| `Fs.readBytes`                                     | `str`                        | fallible array of `u8`                                      |
+| `Fs.writeString`, `Fs.appendString`                | `(str, str)`                 | fallible `unit`                                             |
+| `Fs.writeBytes`                                    | `(str, ptr)`, an array       | fallible `unit`                                             |
+| `Fs.removeFile`, `Fs.createDir`, `Fs.createDirAll` | `str`                        | fallible `unit`                                             |
+| `Fs.removeDir`, `Fs.removeDirAll`                  | `str`                        | fallible `unit`                                             |
+| `Fs.rename`, `Fs.copy`                             | `(str, str)`                 | fallible `unit`                                             |
+| `Fs.readDir`                                       | `str`                        | fallible array of `str`                                     |
+| `Fs.metadata`                                      | `str`                        | fallible `file-meta`                                        |
+| `Fs.exists`, `Fs.isFile`, `Fs.isDir`               | `str`                        | `bool`                                                      |
+| `Process.spawn`, `Process.status`                  | a command: see `Std.Process` | fallible result                                             |
+| `Process.exit`                                     | `i64`                        | does not return                                             |
+| `Process.currentPid`                               | `unit`                       | `i64`                                                       |
+| `Process.currentExe`                               | `unit`                       | `str`                                                       |
+| `Process.isTerminal`                               | `i64`, a stream              | `bool`                                                      |
+| `Process.argv`                                     | `unit`                       | a sequence of `str`: see below                              |
+| `Process.getEnv`                                   | `str`                        | optional `str`                                              |
+| `Process.setEnv`                                   | `(str, str)`                 | `unit`                                                      |
+| `Process.removeEnv`                                | `str`                        | `unit`                                                      |
+| `Random.nextInt`, `Random.nextSeed`                | `unit`                       | `i64`                                                       |
+| `Random.nextFloat`                                 | `unit`                       | `f64`, in `[0, 1)`                                          |
+| `Random.intBetween`                                | `(i64, i64)`                 | `i64`                                                       |
+| `Time.now`                                         | `unit`                       | `i64`, milliseconds                                         |
+| `Time.monotonic`                                   | `unit`                       | `i64`, nanoseconds                                          |
+| `Time.sleep`                                       | `i64`, milliseconds          | `unit`                                                      |
+| `Test.fail`                                        | `str`                        | does not return: stops with the message, status 1           |
 
 A sequence a runtime makes -- `Process.argv`'s, and any other an operation
 answers as a sequence -- is a vector if the program declares the vector roles,
@@ -324,8 +328,11 @@ and a plain array of its elements if it does not. So a language without
 Meadow's vector gets arrays, which the array primitives (`arrayLen`,
 `arrayGet`) take apart.
 
-`Test.fail` is how a program stops with a message it computed. `error` takes
-only a literal.
+A program that gives up says why with `Console.writeError` and stops with
+`Process.exit`: a language's own way of giving up, an `Abort` effect say, is
+its code over those two. `Test.fail` is for a failed assertion, which a test
+runner reads. The IR's `error` takes only a literal, and is for the back end's
+own use.
 
 This table is checked against the runtimes before v0 is frozen. `Std`'s
 `println` and similar conveniences are Meadow code over these; a
@@ -369,17 +376,21 @@ a consumer. So the IR has no separate notion of calling or returning.
 
 ```text
 p ::= x                                     a variable
+    | symbol                                a val's value (never a def's)
     | lit                                   42, 1.5, 'c', "text", true, unit
+    | desc(rep)                             a descriptor, as a constant
     | K(p, ...)                             a declared constructor, applied
     | μ k. s                                the value s gives to k
-    | cocase { m(x, ...; k, ...) => s; ... } codata: an object with methods
+    | cocase { m(x: rep, ...; k: ptr, ...) => s; ... }
+                                            codata: an object with methods
     | record { l = p, ... }                 a record
     | [p, ...]                              an array
 
 c ::= k                                     a continuation variable
     | halt                                  the end: a val's value, the entry's answer
-    | μ̃ x. s                                bind the value to x, then s
-    | case { K(x, ...) => s; ...; _ => s }  take data apart
+    | μ̃ x: rep. s                           bind the value to x, then s
+    | case { K(x: rep, ...) => s; ...; _ => s }
+                                            take data apart
     | m(p, ...; c, ...)                     call method m, with arguments and continuations
 
 s ::= <p | c>                               the cut: give p to c
@@ -390,7 +401,11 @@ s ::= <p | c>                               the cut: give p to c
     | error "message"
 ```
 
-Every binder carries a representation: `μ̃ x: i64. s`, `case { "::"(h: 'a, t: ptr) => ... }`.
+Every binder carries a representation, a continuation's included (`k: ptr`):
+`μ̃ x: i64. s`, `case { "::"(h: 'a, t: ptr) => ... }`, `cocase { apply(x: i64;
+k: ptr) => s }`. A val's symbol is a producer, and reads the value. A def's is
+not: a def is a statement with parameters, so a front end that needs one as a
+value wraps it in a `cocase` whose method calls it.
 A definition is a statement with parameters, values first and then
 continuations:
 
@@ -434,7 +449,9 @@ prim lt(x, y; c)                     the same comparison, as a bool to c
 ```
 
 `prim if` is how a `bool` is branched on. `case` is for data only. A literal
-pattern is a comparison: `prim eq(n, 0; c_other, c_zero)`.
+pattern is a comparison: `prim eq(n, 0; c_other, c_zero)`. A test's
+continuations receive `unit`, so a branch is written `μ̃ u: unit. s`: no
+consumer is value-less.
 
 The `i64` arithmetic is what `meadow_rt::num` does, and what every runtime and
 both front ends' interpreters agree on:

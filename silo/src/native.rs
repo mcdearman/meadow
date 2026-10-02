@@ -252,6 +252,14 @@ fn console(op: &str, arg: Val) -> Option<Build> {
             let _ = out.write_all(s.as_bytes());
             Build::unit()
         }
+        // Standard error, after what was written to standard output so far:
+        // a message about what a program printed comes after it.
+        "writeError" => {
+            let s = show::displayed(arg.word(), arg.bits().1);
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().lock().write_all(s.as_bytes());
+            Build::unit()
+        }
         "readLine" => {
             let _ = std::io::stdout().flush();
             let mut line = String::new();

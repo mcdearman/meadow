@@ -546,6 +546,15 @@ impl Vm<'_> {
                 self.write_out(&s);
                 Build::unit()
             }
+            // Standard error, after what was written to standard output so far:
+            // a message about what a program printed comes after it.
+            "writeError" => {
+                use std::io::Write;
+                let s = self.text(arg, "Console.writeError")?;
+                let _ = std::io::stdout().flush();
+                let _ = std::io::stderr().lock().write_all(s.as_bytes());
+                Build::unit()
+            }
             "readLine" => {
                 let _ = arg;
                 if let Some(input) = &mut self.io.input {

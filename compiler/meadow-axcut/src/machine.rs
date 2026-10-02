@@ -563,6 +563,15 @@ impl<'p> Machine<'p> {
                     }
                     Value::Unit
                 }
+                ("Console", "writeError", [v]) => {
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    match v {
+                        Value::Str(s) => eprint!("{s}"),
+                        other => eprint!("{other}"),
+                    }
+                    Value::Unit
+                }
                 _ => {
                     let effect = meadow_rt::spelling(&effect);
                     return err(format!("unhandled effect {effect}.{op}"));

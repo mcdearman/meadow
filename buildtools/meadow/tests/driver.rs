@@ -71,6 +71,39 @@ fn a_program_gets_what_follows_the_double_dash() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Prints, says why it gives up on standard error, and stops with status 3:
+/// giving up, made of the runtime's basics.
+const GIVES_UP: &str = "use Std.Process (exit)\n\nfun main () =\n  let _ = println \"before\" in\n  let _ = eprintln \"gave up: no input\" in\n  exit 3\n";
+
+#[test]
+fn a_program_gives_up_on_standard_error_on_every_engine() {
+    let dir = scratch("gives-up");
+    let root = package(&dir, "gives-up", GIVES_UP);
+    for engine in [
+        &[][..],
+        &["--backend", "vm"],
+        &["--cek"],
+        &["--runtime", "silo"],
+    ] {
+        let mut args = vec!["run"];
+        args.extend_from_slice(engine);
+        args.push(".");
+        let (ok, out, err) = meadow(&root, &args);
+        assert!(!ok, "{engine:?}: exit 3 is a failure");
+        assert_eq!(
+            answer(&out),
+            "before",
+            "{engine:?}: stdout keeps what it printed"
+        );
+        assert!(
+            err.contains("gave up: no input\n"),
+            "{engine:?}: the message is on stderr: {err}"
+        );
+        assert!(!out.contains("gave up"), "{engine:?}: and only there");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn bytes_are_written_as_they_are() {
     let dir = scratch("bytes");

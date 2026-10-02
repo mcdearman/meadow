@@ -2797,6 +2797,17 @@ fn native_console(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                 "Console.writeOutput: expected a String, got {other}"
             )),
         },
+        "writeError" => match arg {
+            Value::Str(s) => {
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                let _ = std::io::stderr().lock().write_all(s.as_bytes());
+                Ok(Value::Unit)
+            }
+            other => err(format!(
+                "Console.writeError: expected a String, got {other}"
+            )),
+        },
         "readLine" => {
             let _ = arg;
             let mut line = String::new();

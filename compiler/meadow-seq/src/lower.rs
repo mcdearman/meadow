@@ -308,6 +308,12 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     // function on a thread of its own has to hand it empty evidence, and
     // finds the tag by name.
     lower.tag_of(InternedString::from(EV_NONE));
+    // And so is every record a runtime builds by name -- `Fs.metadata`'s
+    // `FileMeta` -- for a program that only reads its fields, and so never
+    // names its constructor, to read them by.
+    for ctor in RUNTIME_RECORDS {
+        lower.tag_of(InternedString::from(*ctor));
+    }
 
     // A definition that is a lambda gets a second entry point, taking its
     // arguments directly. Registered before anything is lowered, so a call can
@@ -640,6 +646,11 @@ const EV: &str = "#ev";
 /// The evidence with no handlers in it: an object, so that evidence is always
 /// a reference, whatever it holds.
 pub const EV_NONE: &str = "#evnone";
+
+/// The records a runtime builds by their constructor's name: `Fs.metadata`'s
+/// `FileMeta`, a name the language knows (`meadow_rename`'s
+/// `LANGUAGE_NAMES`).
+pub const RUNTIME_RECORDS: &[&str] = &["FileMeta.FileMeta"];
 
 /// The constructors a runtime builds values of by name, without the program
 /// having built one: what a native answers (`Result.Ok`, `Maybe.Just`, a

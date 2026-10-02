@@ -2143,21 +2143,18 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
             Err(e) => ioerr(e),
         },
         "metadata" => match fs::metadata(&*one(&arg)?) {
-            Ok(md) => {
-                let mut rec = BTreeMap::new();
-                rec.insert(InternedString::from("isFile"), Value::Bool(md.is_file()));
-                rec.insert(InternedString::from("isDir"), Value::Bool(md.is_dir()));
-                rec.insert(InternedString::from("len"), Value::Int(md.len() as i64));
-                rec.insert(
-                    InternedString::from("readonly"),
+            // `Std.Fs.FileMeta`, a record the language knows by name: its
+            // fields in the order it declares them.
+            Ok(md) => ok(Value::ctor(
+                InternedString::from("FileMeta.FileMeta"),
+                vec![
+                    Value::Bool(md.is_file()),
+                    Value::Bool(md.is_dir()),
+                    Value::Int(md.len() as i64),
                     Value::Bool(md.permissions().readonly()),
-                );
-                rec.insert(
-                    InternedString::from("modified"),
                     Value::Int(meadow_core::args::modified_millis(&md)),
-                );
-                ok(Value::Record(rec))
-            }
+                ],
+            )),
             Err(e) => ioerr(e),
         },
         "exists" => Value::Bool(Path::new(&*one(&arg)?).exists()),

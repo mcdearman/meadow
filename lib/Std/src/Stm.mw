@@ -172,3 +172,36 @@ fun many from to (k : Int) = if k == 0 then () else let _ = move from to 1 in ma
   let tv = newTVarIO (V.range (toInt 0) 10000) in
   let _ = atomically (\() -> modifyTVar tv (\v -> V.pushBack v 10000)) in
   assertEq (V.len (readTVarIO tv)) 10001 "all of it, after an update"
+
+use Std.Collections.HashMap as H
+
+-- One entry more a transaction, from several threads at once.
+fun fill tv (from : Int) (to : Int) =
+  if from == to then ()
+  else
+    let _ = atomically (\() -> modifyTVar tv (\m -> H.insert from (show from) m)) in
+    fill tv (from + 1) to
+
+@test fun aMapInATVarGrowsFromManyThreads () =
+  let tv = newTVarIO H.empty in
+  let ts = V.map (\i -> T.spawn (\() -> fill tv (i * 500) ((i + 1) * 500))) (V.range (toInt 0) 4) in
+  let _ = V.map T.await ts in
+  let m = readTVarIO tv in
+  let _ = assertEq (H.size m) 2000 "every entry" in
+  assertEq (H.lookup 1234 m) (Just "1234") "each where it was put"
+
+-- A structure linked by `TVar`s: what a `TVar` holds may hold `TVar`s.
+data Link = Link Int (TVar (Maybe Link))
+
+use Link.*
+
+@test fun aTVarCanHoldTVars () =
+  let last = newTVarIO None in
+  let first = newTVarIO (Just (Link 1 last)) in
+  let _ = atomically (\() -> writeTVar last (Just (Link 2 (newTVar None)))) in
+  let total =
+    atomically (\() ->
+      match readTVar first with
+      | Just (Link a next) -> (match readTVar next with | Just (Link b _) -> a + b | None -> a)
+      | None -> 0) in
+    assertEq total 3 "followed from one TVar to the next"

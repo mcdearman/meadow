@@ -24,7 +24,6 @@
 use crate::heap::Kind;
 use crate::value::Value;
 use crate::vm::{Error, Vm, err};
-use meadow_intern::InternedString;
 
 /// A result to build, described before any of it exists.
 ///
@@ -36,7 +35,6 @@ pub enum Build {
     Str(String),
     Data(&'static str, Vec<Build>),
     Tuple(Vec<Build>),
-    Record(Vec<(&'static str, Build)>),
     /// An `Array` of `UInt8`, a byte to an element.
     Bytes(Vec<u8>),
     /// A `Std.Collections.Vector`, in the shape `Vector.fromArray` gives one --
@@ -113,9 +111,6 @@ impl Build {
             Build::Data(_, xs) | Build::Tuple(xs) => {
                 size(Kind::Data, xs.len()) + xs.iter().map(Build::slots).sum::<usize>()
             }
-            Build::Record(fs) => {
-                size(Kind::Record, 2 * fs.len()) + fs.iter().map(|(_, b)| b.slots()).sum::<usize>()
-            }
             Build::Bytes(b) => crate::heap::Heap::packed_slots(b.len()) + size(Kind::Array, 0),
             Build::Vector(xs) => {
                 let inner = xs.iter().map(Build::slots).sum::<usize>();
@@ -163,19 +158,6 @@ impl Vm<'_> {
                 let fields: Vec<Value> = xs.into_iter().map(|x| self.build_here(x)).collect();
                 let tag = self.ctor_tag("#tuple");
                 Value::Obj(self.heap.alloc(Kind::Data, tag, &fields))
-            }
-            Build::Record(fs) => {
-                let mut pairs: Vec<(InternedString, Value)> = fs
-                    .into_iter()
-                    .map(|(l, b)| (InternedString::from(l), self.build_here(b)))
-                    .collect();
-                pairs.sort_by_key(|(l, _)| *l);
-                let mut fields = Vec::with_capacity(pairs.len() * 2);
-                for (l, v) in pairs {
-                    fields.push(Value::Str(l));
-                    fields.push(v);
-                }
-                Value::Obj(self.heap.alloc(Kind::Record, 0, &fields))
             }
             Build::Bytes(b) => Value::Obj(self.heap.alloc_bytes(&b)),
             Build::Vector(xs) => {
@@ -389,19 +371,18 @@ impl Vm<'_> {
                 Err(e) => ioerr(e),
             },
             "metadata" => match fs::metadata(&*one(self, arg)?) {
-                Ok(md) => Build::ok(Build::Record(vec![
-                    ("isFile", Build::At(Value::Bool(md.is_file()))),
-                    ("isDir", Build::At(Value::Bool(md.is_dir()))),
-                    ("len", Build::int(md.len() as i64)),
-                    (
-                        "readonly",
+                // `Std.Fs.FileMeta`, a record the language knows by name: its
+                // fields in the order it declares them.
+                Ok(md) => Build::ok(Build::Data(
+                    "FileMeta.FileMeta",
+                    vec![
+                        Build::At(Value::Bool(md.is_file())),
+                        Build::At(Value::Bool(md.is_dir())),
+                        Build::int(md.len() as i64),
                         Build::At(Value::Bool(md.permissions().readonly())),
-                    ),
-                    (
-                        "modified",
                         Build::int(meadow_core::args::modified_millis(&md)),
-                    ),
-                ])),
+                    ],
+                )),
                 Err(e) => ioerr(e),
             },
             "exists" => Build::At(Value::Bool(Path::new(&*one(self, arg)?).exists())),

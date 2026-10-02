@@ -400,7 +400,7 @@ const LANGUAGE_NAMES: &[&str] = &[
     "Int", "BigInt", "Float", "String", "Char", "Bool", "Int64", "Int32", "Int16", "Int8", "UInt64",
     "UInt32", "UInt16", "UInt8", "Float64", "Float32", "Unit", "List", "Array", "Ref", "StRef",
     "StArray", "Compact", "Task", "Channel", "TVar", "Vector", "VNode", "Maybe", "Result",
-    // Effects the runtimes answer, or a primitive performs.
+    "FileMeta", // Effects the runtimes answer, or a primitive performs.
     "Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut", "Stm", "St",
     // Every one the runtime answers, by one name: what `main` may perform.
     "Eff",

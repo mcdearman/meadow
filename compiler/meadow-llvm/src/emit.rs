@@ -114,14 +114,28 @@ fn ties_knots(program: &Program) -> bool {
 }
 
 /// Whether the program can ever hold a value inside a compact region, which
-/// is whether it makes one: a region comes from `compact` and nowhere else,
-/// and nothing can be read out of one, sent between threads or added to that
-/// did not start there. A program with no `compact` in it therefore never
-/// meets a block whose count says it is in a region, and its counting helpers
-/// do not ask -- see `silo/src/region.rs`, which is where the asking is paid
-/// for.
+/// is whether it makes one: a region comes from `compact`, or holds what a
+/// `TVar` holds -- `silo/src/sched.rs` keeps a `TVar`'s value in one, where
+/// every thread reads it in place -- and nothing can be read out of one, sent
+/// between threads or added to that did not start there. A program with
+/// neither in it therefore never meets a block whose count says it is in a
+/// region, and its counting helpers do not ask -- see `silo/src/region.rs`,
+/// which is where the asking is paid for.
+///
+/// Leaving out the `TVar`s let a program share a value read from one without
+/// telling its region, while the runtime's own erase of the same value told
+/// it: the region went while the program still read it.
 fn makes_regions(program: &Program) -> bool {
-    uses(program, &[Prim::Compact, Prim::CompactAdd])
+    uses(
+        program,
+        &[
+            Prim::Compact,
+            Prim::CompactAdd,
+            Prim::StmNew,
+            Prim::StmRead,
+            Prim::StmWrite,
+        ],
+    )
 }
 
 /// Does the program use any of these primitives anywhere?

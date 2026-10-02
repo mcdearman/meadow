@@ -93,7 +93,15 @@ fn main() {
 fn precompiled_std(out: &Path) {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = here.join("../..");
-    let mut inputs: Vec<PathBuf> = vec![root.join("lib/Std"), here.join("src/stdlib.rs")];
+    // The library's sources and manifest -- not all of `lib/Std`, where a
+    // build of it by another compiler (MeadowBoot's) keeps its `target`: that
+    // changing is no change to `Std`, and watching it rebuilt `meadow` after
+    // every such build.
+    let mut inputs: Vec<PathBuf> = vec![
+        root.join("lib/Std/src"),
+        root.join("lib/Std/Meadow.toml"),
+        here.join("src/stdlib.rs"),
+    ];
     if let Ok(crates) = std::fs::read_dir(root.join("compiler")) {
         for c in crates.flatten() {
             let p = c.path();

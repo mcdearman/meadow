@@ -61,11 +61,14 @@
 //!
 //! A region is never looked inside, so nothing in it may change or hold code:
 //! [`compact`] fails on a value that reaches a `Ref`, a mutable array, a
-//! closure, a continuation, a channel, a thread or a `TVar`, rather than
-//! quietly making a region that lies about any of the above. Data, arrays,
-//! records, strings, numbers and other compacts are what is left, and a
-//! compact inside a compact is kept as it is -- its region retained, its
-//! contents not copied again.
+//! closure or a continuation, rather than quietly making a region that lies
+//! about any of the above. Data, arrays, records, strings, numbers and other
+//! compacts are what is left, and a compact inside a compact is kept as it is
+//! -- its region retained, its contents not copied again. A channel, a thread
+//! or a `TVar` goes in too, as `meadow-glade`'s regions take them: its block
+//! is a handle holding the address of something the scheduler keeps for the
+//! whole run, which never changes and owns nothing -- and a `TVar`, whose
+//! value lives in a region, may then hold a structure linked by `TVar`s.
 
 use crate::heap::{self, Word};
 use meadow_core::desc;
@@ -93,10 +96,14 @@ pub struct Region {
 
 struct Inside {
     /// The memory: a run of words each, packed with blocks from the start, so
-    /// that the blocks in a chunk can be walked without an index.
-    chunks: Vec<(*mut Word, usize)>,
-    /// Words of the last chunk that are used.
-    used: usize,
+    /// that the blocks in a chunk can be walked without an index -- where it
+    /// starts, how many words it has, and how many of them are used. A chunk
+    /// is left with room at its end when a copy needs more than is left, so
+    /// only the last is still being filled but any may end short: walking one
+    /// to its length rather than to what is used read what was never written
+    /// as blocks, once a region had been added to often enough to need a
+    /// second chunk -- as a `TVar`'s is.
+    chunks: Vec<(*mut Word, usize, usize)>,
     /// Words of blocks the region holds, which is what `compactSize` reports.
     words: usize,
 }
@@ -114,7 +121,6 @@ fn new() -> *const Region {
     Box::into_raw(Box::new(Region {
         inside: Mutex::new(Inside {
             chunks: Vec::new(),
-            used: 0,
             words: 0,
         }),
         refs: AtomicUsize::new(1),
@@ -222,7 +228,7 @@ pub unsafe fn release(r: *const Region) {
         std::mem::forget(region);
         return;
     }
-    for (p, n) in inside.chunks.drain(..) {
+    for (p, n, _) in inside.chunks.drain(..) {
         let layout = std::alloc::Layout::array::<Word>(n).expect("a chunk fits memory");
         // Safety: allocated with this layout in `room`.
         unsafe { std::alloc::dealloc(p as *mut u8, layout) };
@@ -235,9 +241,7 @@ pub unsafe fn release(r: *const Region) {
 /// kept on the side.
 fn blocks(inside: &Inside) -> Vec<Word> {
     let mut out = Vec::new();
-    let last = inside.chunks.len().saturating_sub(1);
-    for (i, &(p, n)) in inside.chunks.iter().enumerate() {
-        let words = if i == last { inside.used } else { n };
+    for &(p, _, words) in &inside.chunks {
         let mut at = 0;
         while at < words {
             // Safety: inside the chunk, at the word before a block.
@@ -255,7 +259,7 @@ fn room(inside: &mut Inside, need: usize) -> *mut Word {
     let fits = inside
         .chunks
         .last()
-        .is_some_and(|(_, n)| n - inside.used >= need);
+        .is_some_and(|&(_, n, used)| n - used >= need);
     if !fits {
         let n = need.max(CHUNK);
         let layout = std::alloc::Layout::array::<Word>(n).expect("a chunk fits memory");
@@ -264,25 +268,24 @@ fn room(inside: &mut Inside, need: usize) -> *mut Word {
         if p.is_null() {
             std::alloc::handle_alloc_error(layout);
         }
-        inside.chunks.push((p, n));
-        inside.used = 0;
+        inside.chunks.push((p, n, 0));
     }
-    let (p, _) = *inside.chunks.last().expect("a chunk");
+    let last = inside.chunks.last_mut().expect("a chunk");
     // Safety: `used` words are used and `need` more fit.
-    let at = unsafe { p.add(inside.used) };
-    inside.used += need;
+    let at = unsafe { last.0.add(last.2) };
+    last.2 += need;
     inside.words += need;
     at
 }
 
-/// Is `v` a block this region already holds?
-fn holds(inside: &Inside, v: Word) -> bool {
-    let last = inside.chunks.len().saturating_sub(1);
-    inside.chunks.iter().enumerate().any(|(i, &(p, n))| {
-        let words = if i == last { inside.used } else { n };
-        let base = p as Word;
-        v >= base && v < base + (words as Word) * 8
-    })
+/// Is `v` a block region `r` already holds? Its count says whether it is in a
+/// region at all, and the word before it which one: two loads, however many
+/// chunks the region has. Looking through the chunks instead made every `add`
+/// to a large region -- a `TVar`'s, which grows with every write -- cost as
+/// much as the region is long, for each block it shared.
+fn holds(r: *const Region, v: Word) -> bool {
+    // Safety: a block whose count says it is inside a region.
+    heap::in_region(v) && unsafe { owner(v) } == r
 }
 
 /// The region a `Compact` block names.
@@ -298,9 +301,6 @@ fn refused(v: Word) -> Option<&'static str> {
         heap::MUT_ARRAY => Some("a mutable array"),
         heap::CLOSURE => Some("a function"),
         heap::ONCE | heap::STACK => Some("a continuation"),
-        heap::CHANNEL => Some("a channel"),
-        heap::TASK => Some("a thread"),
-        heap::TVAR => Some("a TVar"),
         _ => None,
     }
 }
@@ -314,7 +314,7 @@ fn walks(v: Word) -> bool {
 /// The blocks of `v` that this region does not hold yet, each once, deepest
 /// last -- and how many words they take. Fails on anything a region may not
 /// hold.
-fn plan(inside: &Inside, v: Word, d: i64) -> Result<(Vec<Word>, usize), String> {
+fn plan(r: *const Region, v: Word, d: i64) -> Result<(Vec<Word>, usize), String> {
     let mut order = Vec::new();
     let mut seen = HashSet::new();
     let mut words = 0;
@@ -328,7 +328,7 @@ fn plan(inside: &Inside, v: Word, d: i64) -> Result<(Vec<Word>, usize), String> 
         }
         // Already in this region: it is shared rather than copied again, which
         // is what `add` is for.
-        if holds(inside, b) || !seen.insert(b) {
+        if holds(r, b) || !seen.insert(b) {
             continue;
         }
         order.push(b);
@@ -349,7 +349,7 @@ fn plan(inside: &Inside, v: Word, d: i64) -> Result<(Vec<Word>, usize), String> 
 /// Copy `v` into the region, sharing what of it the region holds already, and
 /// answer the word the value has inside it.
 fn copy(inside: &mut Inside, r: *const Region, v: Word, d: i64) -> Result<Word, String> {
-    let (order, words) = plan(inside, v, d)?;
+    let (order, words) = plan(r, v, d)?;
     if order.is_empty() {
         return Ok(v);
     }
@@ -458,6 +458,54 @@ pub unsafe fn add(c: Word, v: Word, d: i64) -> Result<Word, String> {
     // Safety: as above; the compact made below has one of its own.
     unsafe { retain(r) };
     Ok(compact_block(x, d, r))
+}
+
+/// `v` put where any thread can read it in place, for a `TVar` to hold: copied
+/// into `into`, sharing what of it is there already, or into a new region when
+/// there is none to add to. Answers the region, with a reference for the
+/// caller, and the value's word inside it -- or why the value cannot go in one.
+///
+/// # Safety
+///
+/// `into`, when given, must be a region the caller holds a reference to.
+pub unsafe fn share_into(
+    into: Option<*const Region>,
+    v: Word,
+    d: i64,
+) -> Result<(*const Region, Word), String> {
+    let r = into.unwrap_or_else(new);
+    // Safety: the caller's reference, or the one `new` gave.
+    let region = unsafe { &*r };
+    let made = {
+        let mut inside = region.inside.lock().expect("a region's lock");
+        copy(&mut inside, r, v, d)
+    };
+    match (made, into) {
+        (Ok(x), Some(_)) => {
+            // Safety: as above; the answer carries one of its own.
+            unsafe { retain(r) };
+            Ok((r, x))
+        }
+        (Ok(x), None) => Ok((r, x)),
+        (Err(why), Some(_)) => Err(why),
+        (Err(why), None) => {
+            // Safety: the reference `new` gave, given up: nothing else has one.
+            unsafe { release(r) };
+            Err(why)
+        }
+    }
+}
+
+/// Words of blocks `r` holds: what [`share_into`]'s caller weighs against a
+/// fresh copy to decide when a region has grown too much to keep adding to.
+///
+/// # Safety
+///
+/// `r` must be a region the caller holds a reference to.
+pub unsafe fn words(r: *const Region) -> usize {
+    // Safety: the caller's.
+    let region = unsafe { &*r };
+    region.inside.lock().expect("a region's lock").words
 }
 
 /// Bytes `c`'s region holds -- all of it, so every compact sharing a region

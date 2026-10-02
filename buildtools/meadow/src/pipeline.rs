@@ -38,6 +38,11 @@ pub struct BuildOutput {
     /// package the build needed was the same as last time, and read back
     /// instead -- see [`crate::incremental`].
     pub compiled: Vec<InternedString>,
+    /// The built package's fingerprint, which is of everything it was compiled
+    /// from -- its dependencies', the compiler's and the options' included:
+    /// what an executable made of it is known by, before anything is lowered.
+    /// `None` for a build of anything but what is on disk.
+    pub fingerprint: Option<u64>,
 }
 
 /// Discover, compile and link the package rooted at `entry`.
@@ -125,6 +130,7 @@ fn build_inner(
         true => None,
     };
     let compiled = compile_graph(&graph, opts, incremental.as_ref());
+    let fingerprint = (!adding).then(|| compiled.fingerprints[graph.root()]);
     let ordered = compiled
         .std
         .into_iter()
@@ -135,6 +141,7 @@ fn build_inner(
         diagnostics: compiled.diagnostics,
         package,
         compiled: compiled.compiled,
+        fingerprint,
     }
 }
 
@@ -185,6 +192,7 @@ impl BuildOutput {
             diagnostics: vec![d],
             package: None,
             compiled: Vec::new(),
+            fingerprint: None,
         }
     }
 }
@@ -236,6 +244,7 @@ pub fn build_each(entries: &[&Path], opts: Options) -> ManyOutput {
                 diagnostics: Vec::new(),
                 package: target_of(&graph, root),
                 compiled: Vec::new(),
+                fingerprint: Some(compiled.fingerprints[root]),
             }
         })
         .collect();
@@ -274,6 +283,7 @@ pub fn build_together(entries: &[&Path], opts: Options) -> (BuildOutput, Vec<Int
         diagnostics: compiled.diagnostics,
         package,
         compiled: compiled.compiled,
+        fingerprint: None,
     };
     (out, names)
 }

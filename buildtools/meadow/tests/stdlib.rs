@@ -107,6 +107,41 @@ fn std_set_dedups() {
     );
 }
 
+/// `metadata` answers a `FileMeta`, which the runtime builds: every machine's
+/// has to be the record the compiled code reads, field by field and whole.
+#[test]
+fn metadata_is_a_file_meta_on_every_machine() {
+    let dir = std::env::temp_dir().join(format!("meadow_meta_test_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let p = dir.join("five.txt");
+    std::fs::write(&p, "12345").unwrap();
+    let p = p.to_string_lossy().replace('\\', "/");
+    let src = format!(
+        "def result =\n\
+         \x20 match metadata \"{p}\" with\n\
+         \x20 | Ok (m : FileMeta) -> (m.len, m.isFile, m.isDir, m.modified > 0, m == m)\n\
+         \x20 | Err e -> (0, False, False, False, False)\n"
+    );
+    let (program, diags) =
+        pipeline::compile_str_with_std("test", &src, meadow::Options::debug().entry("result"));
+    assert!(
+        diags.is_empty(),
+        "{:?}",
+        diags.iter().map(|d| &d.msg).collect::<Vec<_>>()
+    );
+    let want = "(5, True, False, True, True)";
+    assert_eq!(
+        eval::run(&program)
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        want
+    );
+    let program = meadow_compiler::core::prune::prune(&program);
+    let on_vm = meadow::runtime::run(&program, meadow::Engine::Vm, meadow::Options::debug().opt);
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(on_vm, Ok(want.to_string()));
+}
+
 #[test]
 fn fs_write_read_list_remove() {
     use std::path::PathBuf;

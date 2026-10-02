@@ -6,8 +6,8 @@ version = 1
 [[package]]
 name = "Lingua"
 source = "git+https://github.com/mcdearman/Lingua.git?branch=master"
-rev = "8d9c58746ca28c883c15cee075b7b24a0d851bb3"
-tree = "40cce50ef3ae72d10eb995ddd8f1968dc7ad645c"
+rev = "d8f09eb39c22ed2b4b28febe14ca8eef9183e84f"
+tree = "b7224ad7b2e35617a97a74dee3ea2f9b8d614cba"
 
 [[package]]
 name = "Nettle"
@@ -18,8 +18,8 @@ tree = "efe45c638977f2ed42635f3a743269a0a31f55b2"
 [[package]]
 name = "Scythe"
 source = "git+https://github.com/mcdearman/Scythe.git?branch=master"
-rev = "36e77e30fdccb145a988c292f90fd56dbf6a6bfa"
-tree = "543f9dae3b0683667cdfccf427416f8b8becdcc9"
+rev = "ba1b2d2815d837a9749789e6c6145a565efd0729"
+tree = "bf8c0f80d3d41083a68e875ad77bd249ea0c77a5"
 
 [[package]]
 name = "UnicodeWidth"

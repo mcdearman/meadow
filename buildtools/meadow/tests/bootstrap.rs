@@ -30,39 +30,54 @@ fn meadow() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_meadow")))
 }
 
-/// What MeadowBoot prints for `args`, run with `meadow run --release`: offline
-/// when its dependencies are fetched already, and fetching them when not.
+/// MeadowBoot, built once for the whole run as `meadow build --release` builds
+/// it -- offline when its dependencies are fetched already, fetching them when
+/// not -- and the executable that made. Its runs are of the executable, so
+/// that none of them pays for a build, and as many as there is room for can
+/// run at once.
+fn meadowboot_exe() -> PathBuf {
+    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let dir = repo().join("bootstrap");
+            let build = |offline: bool| {
+                let mut c = Command::new(meadow());
+                c.arg("build").arg("--release");
+                if offline {
+                    c.arg("--offline");
+                }
+                c.arg(&dir).output().expect("meadow runs")
+            };
+            let mut out = build(true);
+            // Online again only for what offline could not have: a dependency
+            // not fetched yet.
+            if !out.status.success()
+                && String::from_utf8_lossy(&out.stderr).contains("not in the cache")
+            {
+                out = build(false);
+            }
+            assert!(
+                out.status.success(),
+                "MeadowBoot did not build:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            dir.join("target/release/native/silo")
+                .join(format!("MeadowBoot{}", std::env::consts::EXE_SUFFIX))
+        })
+        .clone()
+}
+
+/// What MeadowBoot prints for `args`.
 fn meadowboot(args: &[String]) -> String {
-    // One at a time: two tests building MeadowBoot at once write the same
-    // files, and one of them links a half-written executable.
-    static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _one = BUILDING.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = repo().join("bootstrap");
-    let run = |offline: bool| {
-        let mut c = Command::new(meadow());
-        c.arg("run").arg("--release");
-        if offline {
-            c.arg("--offline");
-        }
-        c.arg(&dir).arg("--").args(args);
-        // Where the standard library's sources are, for the passes that build
-        // a file's unit and the units it depends on.
-        c.env("MEADOWBOOT_STD", repo().join("lib").join("Std"));
-        // And what the Rust compiler's macros expanded to, where the rename
-        // test wrote it.
-        c.env("MEADOWBOOT_EXPANSIONS", expansions_dir());
-        c.output().expect("meadow runs")
-    };
-    let mut out = run(true);
-    // Online again only for what offline could not have: a dependency not
-    // fetched yet. Any other failure -- a build that did not finish -- is the
-    // answer, and running it twice doubles what it cost.
-    if !out.status.success()
-        && out.stdout.is_empty()
-        && String::from_utf8_lossy(&out.stderr).contains("not in the cache")
-    {
-        out = run(false);
-    }
+    let mut c = Command::new(meadowboot_exe());
+    c.args(args);
+    // Where the standard library's sources are, for the passes that build a
+    // file's unit and the units it depends on.
+    c.env("MEADOWBOOT_STD", repo().join("lib").join("Std"));
+    // And what the Rust compiler's macros expanded to, where the rename test
+    // wrote it.
+    c.env("MEADOWBOOT_EXPANSIONS", expansions_dir());
+    let out = c.output().expect("MeadowBoot runs");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         !stdout.is_empty(),
@@ -105,12 +120,90 @@ fn per_file(command: &str, files: &[PathBuf]) -> Vec<(PathBuf, String)> {
 }
 
 /// The same, with `args` -- a command and its options -- before the files.
+///
+/// A package's files go to one run, since a pass that builds a unit builds
+/// all of it; the files of no package are shared out between twice as many
+/// runs as there are jobs, so that every job has some and none is left with
+/// the long tail. The runs go at once, as many as `MEADOWBOOT_JOBS` says --
+/// eight, unless it says otherwise, each MeadowBoot holding a gigabyte or so
+/// -- and a run whose inputs are what they were the last time is answered
+/// with what it printed then, unless `MEADOWBOOT_FRESH` is set: see
+/// [`run_key`].
 fn per_file_with(args: &[String], files: &[PathBuf]) -> Vec<(PathBuf, String)> {
-    let mut out = Vec::new();
-    for batch in files.chunks(40) {
-        let mut args = args.to_vec();
-        args.extend(batch.iter().map(|p| p.display().to_string()));
-        let text = meadowboot(&args);
+    let started = std::time::Instant::now();
+    let mut by_package: Vec<(Option<PathBuf>, Vec<PathBuf>)> = Vec::new();
+    for p in files {
+        let root = package_of(p);
+        match by_package.iter_mut().find(|(r, _)| *r == root) {
+            Some((_, fs)) => fs.push(p.clone()),
+            None => by_package.push((root, vec![p.clone()])),
+        }
+    }
+    let jobs = std::env::var("MEADOWBOOT_JOBS")
+        .ok()
+        .and_then(|j| j.parse::<usize>().ok())
+        .unwrap_or(8)
+        .max(1);
+    let mut runs: Vec<Vec<PathBuf>> = Vec::new();
+    for (root, fs) in by_package {
+        match root {
+            Some(_) => runs.push(fs),
+            None => {
+                let each = fs.len().div_ceil(2 * jobs).max(1);
+                runs.extend(fs.chunks(each).map(|c| c.to_vec()));
+            }
+        }
+    }
+    let fresh = std::env::var_os("MEADOWBOOT_FRESH").is_some();
+    let cache = Path::new(env!("CARGO_TARGET_TMPDIR")).join("meadowboot-runs");
+    let _ = std::fs::create_dir_all(&cache);
+    let exe = meadowboot_exe();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let reused = std::sync::atomic::AtomicUsize::new(0);
+    let printed: Vec<std::sync::Mutex<String>> = runs
+        .iter()
+        .map(|_| std::sync::Mutex::new(String::new()))
+        .collect();
+    std::thread::scope(|scope| {
+        for _ in 0..jobs.min(runs.len()) {
+            scope.spawn(|| {
+                loop {
+                    let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(run) = runs.get(k) else { return };
+                    let at = cache.join(format!(
+                        "{}-{:016x}.txt",
+                        args.join("-"),
+                        run_key(&exe, args, run)
+                    ));
+                    let text = match std::fs::read_to_string(&at) {
+                        Ok(text) if !fresh => {
+                            reused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            text
+                        }
+                        _ => {
+                            let mut argv = args.to_vec();
+                            argv.extend(run.iter().map(|p| p.display().to_string()));
+                            let text = meadowboot(&argv);
+                            let _ = std::fs::write(&at, &text);
+                            text
+                        }
+                    };
+                    *printed[k].lock().unwrap_or_else(|e| e.into_inner()) = text;
+                }
+            });
+        }
+    });
+    eprintln!(
+        "MeadowBoot {}: {} files in {} runs, {} of them as last time, in {:.0?}",
+        args.join(" "),
+        files.len(),
+        runs.len(),
+        reused.load(std::sync::atomic::Ordering::Relaxed),
+        started.elapsed()
+    );
+    let mut out: Vec<(PathBuf, String)> = Vec::new();
+    for (run, text) in runs.iter().zip(printed) {
+        let text = text.into_inner().unwrap_or_else(|e| e.into_inner());
         // A line of a dump never starts with `== `: its lines start with a
         // number, or `! `.
         let mut sections: Vec<String> = Vec::new();
@@ -122,11 +215,115 @@ fn per_file_with(args: &[String], files: &[PathBuf]) -> Vec<(PathBuf, String)> {
             }
         }
         let mut sections = sections.into_iter();
-        for p in batch {
+        for p in run {
             out.push((p.clone(), sections.next().unwrap_or_default()));
         }
     }
-    out
+    // In the order asked for.
+    files
+        .iter()
+        .map(|p| {
+            out.iter()
+                .find(|(q, _)| q == p)
+                .cloned()
+                .unwrap_or((p.clone(), String::new()))
+        })
+        .collect()
+}
+
+/// What a run of MeadowBoot answers depends on: the executable, the command,
+/// the files, and -- for a file of a package -- that package's sources,
+/// manifest and lock, and those of every package it names by path; the
+/// standard library; and what the Rust compiler's macros expanded to. A
+/// package a lock pins by git is its lock line, since a pinned commit is what
+/// it is.
+fn run_key(exe: &Path, args: &[String], files: &[PathBuf]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h ^= 0xff;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    };
+    if let Ok(m) = std::fs::metadata(exe) {
+        feed(&m.len().to_le_bytes());
+        if let Some(t) = m
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        {
+            feed(&t.as_nanos().to_le_bytes());
+        }
+    }
+    for a in args {
+        feed(a.as_bytes());
+    }
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for f in files {
+        // A file of the repository by where it is; one written to a scratch
+        // directory, whose name changes from run to run, by its own name.
+        match f.strip_prefix(repo()) {
+            Ok(within) => feed(within.display().to_string().as_bytes()),
+            Err(_) => feed(f.file_name().unwrap_or_default().as_encoded_bytes()),
+        }
+        feed(&std::fs::read(f).unwrap_or_default());
+        if let Some(root) = package_of(f) {
+            package_inputs(&root, &mut seen);
+        }
+    }
+    let mut inputs = seen.clone();
+    inputs.push(repo().join("lib").join("Std"));
+    inputs.push(expansions_dir());
+    for dir in inputs {
+        let mut every = Vec::new();
+        sources_under(&dir, &mut every);
+        every.sort();
+        for p in every {
+            feed(p.display().to_string().as_bytes());
+            feed(&std::fs::read(&p).unwrap_or_default());
+        }
+    }
+    h
+}
+
+/// `root`, and every package it names by path, each once.
+fn package_inputs(root: &Path, seen: &mut Vec<PathBuf>) {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if seen.contains(&root) {
+        return;
+    }
+    seen.push(root.clone());
+    let manifest = std::fs::read_to_string(root.join("Meadow.toml")).unwrap_or_default();
+    for line in manifest.lines() {
+        if let Some(at) = line.find("path = \"") {
+            let rest = &line[at + "path = \"".len()..];
+            if let Some(end) = rest.find('"') {
+                package_inputs(&root.join(&rest[..end]), seen);
+            }
+        }
+    }
+}
+
+/// Every file under `dir` a run reads: sources, manifests, locks and the
+/// expansions' JSON -- but nothing a build wrote.
+fn sources_under(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for p in entries.flatten().map(|e| e.path()) {
+        if p.is_dir() {
+            if p.file_name().is_some_and(|n| n != "target" && n != ".git") {
+                sources_under(&p, out);
+            }
+        } else if p.extension().is_some_and(|e| e == "mw" || e == "json")
+            || p.file_name()
+                .is_some_and(|n| n == "Meadow.toml" || n == "meadow.lock")
+        {
+            out.push(p);
+        }
+    }
 }
 
 /// The files whose two texts differ, each at its first differing line.
@@ -1241,6 +1438,7 @@ fn every_source_infers_as_meadow_infer_infers_it() {
     let files = sources(&["lib", "examples", "benches", "bootstrap", "glade", "silo"]);
     // This compiler first, keeping what its macros expanded to, which
     // MeadowBoot is then given -- the standard library's too.
+    let rust_started = std::time::Instant::now();
     let mut packages: HashMap<PathBuf, HashMap<PathBuf, String>> = HashMap::new();
     let mut expanded = Vec::new();
     meadow_compiler::expand::record::start();
@@ -1257,6 +1455,11 @@ fn every_source_infers_as_meadow_infer_infers_it() {
             packages.insert(root, dumps);
         }
     }
+    eprintln!(
+        "the Rust compiler: {} packages in {:.0?}",
+        packages.len(),
+        rust_started.elapsed()
+    );
     write_expansions(&expanded);
     let theirs = per_file("infer", &files);
     let bad = differences(&theirs, |p| {
@@ -1505,6 +1708,7 @@ fn every_source_renames_as_meadow_rename_renames_it() {
     let files = sources(&["lib", "examples", "benches", "bootstrap", "glade", "silo"]);
     // This compiler first, keeping what its macros expanded to, which
     // MeadowBoot is then given.
+    let rust_started = std::time::Instant::now();
     let mut packages: HashMap<PathBuf, HashMap<PathBuf, String>> = HashMap::new();
     let mut expanded = Vec::new();
     // The standard library's too, which a build otherwise reads back from a
@@ -1523,6 +1727,11 @@ fn every_source_renames_as_meadow_rename_renames_it() {
             packages.insert(root, dumps);
         }
     }
+    eprintln!(
+        "the Rust compiler: {} packages in {:.0?}",
+        packages.len(),
+        rust_started.elapsed()
+    );
     write_expansions(&expanded);
     let theirs = per_file("rename", &files);
     let bad = differences(&theirs, |p| {

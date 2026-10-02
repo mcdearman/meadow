@@ -1324,3 +1324,54 @@ fn a_wide_call_in_a_program_with_threads() {
     let want = (2 * wide_want(300).parse::<usize>().unwrap()).to_string();
     assert_eq!(run_checked("wide_call_threads", &src, false), want);
 }
+
+/// The same program lowered and compiled twice is the same IR, byte for byte:
+/// what a build compares to tell whether its executable is already this one.
+#[test]
+fn the_same_program_compiles_to_the_same_ir() {
+    let src = "effect Ask { ask : () -> Int }\n\
+               use Shape.*\n\
+               data Shape = Circle Int | Rect Int Int\n\
+               record Box = { w : Int, h : Int }\n\
+               fun area s = match s with | Circle r -> r * r | Rect w h -> w * h\n\
+               fun sum xs = match xs with | Nil -> 0 | Cons x r -> x + sum r\n\
+               fun twice f x = f (f x)\n\
+               def result =\n\
+               \x20 let b = Box { w = 2, h = 3 } in\n\
+               \x20 let t = (area (Rect b.w b.h), sum (Cons 1 (Cons 2 Nil)), twice (\\x -> x + 1) 5) in\n\
+               \x20 handle (ask () + ask ()) with { ask u k -> k 21 }\n";
+    let p = program(src);
+    let ir = |p: &core::Program| {
+        for opt in [meadow_compiler::OptLevel::O1, meadow_compiler::OptLevel::O2] {
+            let lowered = meadow_seq::lower_program(p, opt);
+            let _ = meadow_llvm::compile_split(
+                &lowered.program,
+                meadow_llvm::UNIT,
+                meadow_llvm::CallConv::Ghc,
+            );
+        }
+        let lowered = meadow_seq::lower_program(p, meadow_compiler::OptLevel::O2);
+        meadow_llvm::compile_split(
+            &lowered.program,
+            meadow_llvm::UNIT,
+            meadow_llvm::CallConv::Ghc,
+        )
+        .expect("it compiles")
+    };
+    let (a, b) = (ir(&p), ir(&p));
+    assert_eq!(a.len(), b.len(), "as many modules");
+    for (x, y) in a.iter().zip(&b) {
+        if x != y {
+            let at = x
+                .lines()
+                .zip(y.lines())
+                .position(|(l, r)| l != r)
+                .unwrap_or(0);
+            panic!(
+                "the IR differs at line {at}:\n{}\n{}",
+                x.lines().nth(at).unwrap_or(""),
+                y.lines().nth(at).unwrap_or("")
+            );
+        }
+    }
+}

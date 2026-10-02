@@ -1057,6 +1057,7 @@ fn build(
     finish(
         linked,
         &out.package,
+        out.fingerprint,
         engine,
         listing,
         gc_stats,
@@ -1220,6 +1221,7 @@ fn build_many(
         finish(
             linked,
             &built.package,
+            built.fingerprint,
             None,
             listing,
             false,
@@ -1255,6 +1257,7 @@ fn for_target(mut profile: Resolved, target: &TargetArgs) -> Resolved {
 fn finish(
     linked: meadow::linker::LinkedProgram,
     package: &Option<(PathBuf, meadow_compiler::intern::InternedString)>,
+    fingerprint: Option<u64>,
     engine: Option<Engine>,
     listing: Listing,
     gc_stats: bool,
@@ -1361,6 +1364,7 @@ fn finish(
                     name,
                     &program,
                     target,
+                    fingerprint,
                 );
             }
             // What a training run saw the calls enter, if one was made of

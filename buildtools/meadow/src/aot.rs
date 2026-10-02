@@ -193,6 +193,12 @@ pub fn build(
 /// Compile `program` with the native backend -- AxCut to LLVM IR, compiled and
 /// linked with the `meadow_silo` runtime by clang -- into package `name`'s
 /// executable, answering where it went. See `docs/SILO.md`.
+///
+/// `inputs` is what the program was compiled from, as a build's fingerprint
+/// says it: given, an executable made of the same is left alone before
+/// anything is lowered -- lowering a large program takes a minute, and the IR
+/// it writes is not the same twice, since what the compiler interned first
+/// depends on which of its threads got there. Without it, the IR is compared.
 pub fn build_native(
     root: &Path,
     profile: Profile,
@@ -200,7 +206,47 @@ pub fn build_native(
     name: &str,
     program: &meadow_compiler::core::Program,
     target: Target,
+    inputs: Option<u64>,
 ) -> Result<PathBuf, String> {
+    let dir = native_dir(root, profile, target);
+    let exe = dir.join(format!("{name}{}", target.format.exe_suffix()));
+    let runtime = runtimes(target)?
+        .into_iter()
+        .next()
+        .ok_or("no Silo runtime library")?;
+    let stamp = exe.with_extension("stamp");
+    let meta = std::fs::metadata(&runtime).ok();
+    // The runtime library, as how long it is and when it was written.
+    let linked_with = meta
+        .iter()
+        .flat_map(|m| m.len().to_le_bytes())
+        .chain(
+            meta.iter()
+                .filter_map(|m| m.modified().ok())
+                .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .flat_map(|d| d.as_nanos().to_le_bytes()),
+        )
+        .collect::<Vec<u8>>();
+    let keyed = inputs.map(|f| {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in f
+            .to_le_bytes()
+            .into_iter()
+            .chain(opt.name().bytes())
+            .chain(target.triple().bytes())
+            .chain(linked_with.iter().copied())
+        {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        format!("inputs {h:016x}")
+    });
+    if let Some(want) = &keyed
+        && exe.exists()
+        && std::fs::read_to_string(&stamp).is_ok_and(|had| had == *want)
+    {
+        return Ok(exe);
+    }
     // Everything from here is the native half of the build, and on a large
     // program the longest part of it: said, so that it is not taken for a
     // hang.
@@ -214,34 +260,22 @@ pub fn build_native(
     }
     let units = meadow_llvm::compile_split(&lowered.program, meadow_llvm::UNIT, target.call_conv())
         .map_err(|e| e.msg)?;
-    let dir = native_dir(root, profile, target);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    let exe = dir.join(format!("{name}{}", target.format.exe_suffix()));
-    let runtime = runtimes(target)?
-        .into_iter()
-        .next()
-        .ok_or("no Silo runtime library")?;
     // Unchanged module and runtime: the executable there is this one.
-    let stamp = exe.with_extension("stamp");
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let meta = std::fs::metadata(&runtime).ok();
-    for b in units
-        .iter()
-        .flat_map(|u| u.bytes())
-        .chain(opt.name().bytes())
-        .chain(meta.iter().flat_map(|m| m.len().to_le_bytes()))
-        .chain(
-            meta.iter()
-                .filter_map(|m| m.modified().ok())
-                .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .flat_map(|d| d.as_nanos().to_le_bytes()),
-        )
-    {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    let want = format!("{h:016x}");
+    let want = keyed.unwrap_or_else(|| {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in units
+            .iter()
+            .flat_map(|u| u.bytes())
+            .chain(opt.name().bytes())
+            .chain(linked_with.iter().copied())
+        {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        format!("{h:016x}")
+    });
     if exe.exists() && std::fs::read_to_string(&stamp).is_ok_and(|had| had == want) {
         prune_units(&dir, name, units.len());
         return Ok(exe);

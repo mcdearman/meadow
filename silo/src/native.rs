@@ -42,7 +42,6 @@ enum Build {
     Str(String),
     Data(&'static str, Vec<Build>),
     Tuple(Vec<Build>),
-    Record(Vec<(&'static str, Build)>),
     Bytes(Vec<u8>),
     Vector(Vec<Build>),
 }
@@ -75,23 +74,6 @@ impl Build {
             Build::Tuple(xs) => {
                 let fields: Vec<Val> = xs.into_iter().map(Build::make).collect();
                 Val::Ref(value::data("#tuple", &fields))
-            }
-            Build::Record(fs) => {
-                let mut pairs: Vec<(usize, Val)> = fs
-                    .into_iter()
-                    .map(|(l, b)| (show::sym_named(l), b.make()))
-                    .collect();
-                pairs.sort_by_key(|(l, _)| show::sym_rank(*l));
-                let mut words = Vec::new();
-                let mut ds = Vec::new();
-                for (l, v) in pairs {
-                    words.push(l as Word);
-                    ds.push(desc::STR);
-                    let (w, d) = v.bits();
-                    words.push(w);
-                    ds.push(d);
-                }
-                Val::Ref(heap::build(heap::RECORD, 0, &words, &ds))
             }
             Build::Bytes(b) => {
                 let words: Vec<Word> = b.iter().map(|x| Word::from(*x)).collect();
@@ -368,16 +350,18 @@ fn fs(op: &str, arg: Val) -> Option<Build> {
             Err(e) => ioerr(e),
         },
         "metadata" => match fs::metadata(one()) {
-            Ok(md) => Build::ok(Build::Record(vec![
-                ("isFile", Build::bool(md.is_file())),
-                ("isDir", Build::bool(md.is_dir())),
-                ("len", Build::int(md.len() as i64)),
-                ("readonly", Build::bool(md.permissions().readonly())),
-                (
-                    "modified",
+            // `Std.Fs.FileMeta`, a record the language knows by name: its fields
+            // in the order it declares them.
+            Ok(md) => Build::ok(Build::Data(
+                "FileMeta.FileMeta",
+                vec![
+                    Build::bool(md.is_file()),
+                    Build::bool(md.is_dir()),
+                    Build::int(md.len() as i64),
+                    Build::bool(md.permissions().readonly()),
                     Build::int(meadow_core::args::modified_millis(&md)),
-                ),
-            ])),
+                ],
+            )),
             Err(e) => ioerr(e),
         },
         "exists" => Build::bool(Path::new(&one()).exists()),

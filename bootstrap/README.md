@@ -139,6 +139,21 @@ primitives' types are the Rust compiler's table, written out as Meadow
 (`src/Prims.mw`, by the test `write_prims`), whose test holds every one to
 how the Rust compiler writes it.
 
+Inference is a pass, `infer : Hir -> Inferring` (`src/Infer.mw`): every
+expression and pattern is given its type by a case of its own, and `settle :
+Inferring -> Typed` then reads each type out of the arena. A case infers a
+child in a context of its own by taking it `later` -- a lambda's body in the
+lambda's region, a `let`'s value a level in -- and one it has to look at
+before it can say how by taking it `raw`: `runSt`'s argument, a handler's
+clauses, a constructor given a record for its named fields. Children are
+inferred in `meadow_infer`'s order, since what unification knows when a field
+is selected or a name chosen depends on it. What no one node sees -- the order
+a unit's top-level bindings are inferred in, group by group across its
+modules, each group generalized when it is done -- is a driver's, which hands
+each binding to the pass in turn and writes it into its module's tables. The
+solver the cases call -- the arena, unification, rows, levels, traits -- is
+library code (`Types`, `Solve`, `Traits`), as the scopes are rename's.
+
 A name is known by its binder, as a `VarId` is in the Rust compiler; a type,
 an effect, a trait and a constructor by its canonical name, the fully
 qualified path renaming gives each (`Scopes.qualified`). Renaming leaves

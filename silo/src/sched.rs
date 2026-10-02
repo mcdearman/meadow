@@ -97,28 +97,101 @@ fn chan_state(c: &Chan) -> std::sync::MutexGuard<'_, ChanState> {
 }
 
 /// What a `TVar` holds: a value that is a word and nothing more -- an `Int`,
-/// a `Bool` -- kept as it is, and anything else as a parcel, since what a
-/// `TVar` holds belongs to no thread's heap.
+/// a `Bool` -- kept as it is, and anything else in a compact region, where
+/// every thread reads it in place. So what a region cannot hold -- a value
+/// reaching a function, a `Ref`, a mutable array or a continuation -- a `TVar`
+/// cannot either, as on `meadow-glade` (`meadow_core::stm`).
+///
+/// Reading a `TVar` that holds a large map costs a pointer, not a copy of the
+/// map -- as it does on `meadow-glade`, whose `stm` module this follows. A
+/// `TVar` used to hold a parcel, and every read copied all of it into the
+/// reader's heap and every write all of it out: a query database keeping its
+/// answers in one `TVar` spent nine tenths of its time copying them.
 #[derive(Clone)]
 enum Held {
     Imm(Word, i64),
-    Big(Arc<Parcel>),
+    Shared(Arc<InRegion>),
 }
 
+/// A value inside a region, and a reference to the region for as long as a
+/// `TVar` or a transaction holds it.
+struct InRegion {
+    region: *const crate::region::Region,
+    word: Word,
+    desc: i64,
+    /// Words the region held when it was last started afresh -- about what a
+    /// copy of the value costs, for deciding when it has grown too much.
+    fresh: usize,
+}
+
+// Safety: a region is closed and immutable once published, and its count is
+// atomic: see `crate::region`.
+unsafe impl Send for InRegion {}
+unsafe impl Sync for InRegion {}
+
+impl Drop for InRegion {
+    fn drop(&mut self) {
+        // Safety: the reference this holds, given up.
+        unsafe { crate::region::release(self.region) };
+    }
+}
+
+/// Words below which a region is always added to rather than started afresh:
+/// a small value's region is cheap to keep, and a fresh copy of it is too.
+const REGION_FLOOR: usize = 1 << 12;
+
 impl Held {
-    fn of(v: Val) -> Held {
+    /// `v` to hold, in place of `was`. A write copies the new value into the
+    /// region the old one is in, so whatever the two have in common -- a map
+    /// with one entry more shares all the rest -- is not copied again. That
+    /// region only grows, so once it has grown to four times a fresh copy a
+    /// write starts a new one, and the old is freed when nothing reads it.
+    fn of(v: Val, was: Option<&Held>) -> Held {
         let (w, d) = v.bits();
         if d != desc::REF || !heap::is_block(w) {
             return Held::Imm(w, d);
         }
-        Held::Big(Arc::new(parcel(v)))
+        let grown = |s: &InRegion| {
+            // Safety: `s` holds a reference to its region.
+            let words = unsafe { crate::region::words(s.region) };
+            words > 4 * s.fresh.max(REGION_FLOOR)
+        };
+        let into = match was {
+            Some(Held::Shared(s)) if !grown(s) => Some((s.region, s.fresh)),
+            _ => None,
+        };
+        // Safety: `was` holds a reference to the region added to.
+        match unsafe { crate::region::share_into(into.map(|i| i.0), w, d) } {
+            Ok((region, word)) => {
+                let fresh = match into {
+                    Some((_, f)) => f,
+                    // Safety: the reference `share_into` answered.
+                    None => unsafe { crate::region::words(region) },
+                };
+                Held::Shared(Arc::new(InRegion {
+                    region,
+                    word,
+                    desc: d,
+                    fresh,
+                }))
+            }
+            Err(why) => {
+                let what = why.strip_prefix("a compact cannot hold ").unwrap_or(&why);
+                crate::fail(&meadow_core::stm::unstorable(what))
+            }
+        }
     }
 
     /// The value, in the running thread's heap and owned by the caller.
     fn open(&self) -> (Word, i64) {
         match self {
             Held::Imm(w, d) => (*w, *d),
-            Held::Big(p) => (p.open(), p.desc()),
+            Held::Shared(s) => {
+                // Safety: `s` holds a reference to the region; the caller
+                // gets one of its own, which erasing the value gives up.
+                unsafe { crate::region::retain(s.region) };
+                (s.word, s.desc)
+            }
         }
     }
 }
@@ -666,7 +739,7 @@ pub fn prim(p: Prim, args: &[Val]) -> Word {
         StmNew => {
             // The cell lives for the whole run; the handle carries its
             // address, so no thread has to look it up.
-            let held = Held::of(arg(0));
+            let held = Held::of(arg(0), None);
             let cell: &'static TVar = Box::leak(Box::new(TVar {
                 state: Mutex::new((held, 0)),
                 waiters: Mutex::new(Vec::new()),
@@ -774,17 +847,29 @@ pub fn prim(p: Prim, args: &[Val]) -> Word {
                 outside("atomically")
             };
             // The last write to each, lifted out of this thread's heap before
-            // anything is locked.
-            let mut last: Vec<(usize, Held)> = Vec::new();
+            // anything is locked -- into the region of the value it replaces,
+            // looked at under the cell's lock and let go at once. Another
+            // commit may replace that value meanwhile; then this one conflicts,
+            // or its value went into a region that is no longer the latest,
+            // which costs sharing and nothing else.
+            let mut writes: Vec<(usize, Word, i64)> = Vec::new();
             for level in &txn.writes {
                 for &(id, x, d) in level {
-                    let held = Held::of(value::val(x, d));
-                    match last.iter_mut().find(|(t, _)| *t == id) {
-                        Some(slot) => slot.1 = held,
-                        None => last.push((id, held)),
+                    match writes.iter_mut().find(|(t, _, _)| *t == id) {
+                        Some(slot) => *slot = (id, x, d),
+                        None => writes.push((id, x, d)),
                     }
                 }
             }
+            let last: Vec<(usize, Held)> = writes
+                .into_iter()
+                .map(|(id, x, d)| {
+                    // Safety: the address of a cell that lives for the whole run.
+                    let c = unsafe { &*(id as *const TVar) };
+                    let was = c.state.lock().unwrap_or_else(|p| p.into_inner()).0.clone();
+                    (id, Held::of(value::val(x, d), Some(&was)))
+                })
+                .collect();
             // What it read must be as it was, and what it wrote goes out, as
             // one step: the cells it touched are locked for it, in address
             // order, and nothing else can be committing them meanwhile.

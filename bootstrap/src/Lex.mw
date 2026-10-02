@@ -369,19 +369,22 @@ fun fixed (t : Code) : Token =
 -- text between holes (`InterpMid`) and after the last (`InterpEnd`), each piece
 -- of text spanning the `${`, `}` and quotes around it.
 fun string (input : String) (from : Int) (l : Lexing) : (Lexing, Int) =
-  text input from (from + 1) from "" 0 l
+  text input from (from + 1) from [] 0 l
 
 -- Reading text at `at`, whose piece began at `piece` with `sofar` in it, after
--- `holes` holes.
-fun text (input : String) (from : Int) (at : Int) (piece : Int) (sofar : String) (holes : Int) (l : Lexing) : (Lexing, Int) =
+-- `holes` holes. What it has read is kept as the pieces it read, joined once
+-- the text ends: appending each to the text so far copied all of it every
+-- time, and a literal of many escapes -- Nettle's generated cases are some
+-- hundred kilobytes of them -- took minutes.
+fun text (input : String) (from : Int) (at : Int) (piece : Int) (sofar : [String]) (holes : Int) (l : Lexing) : (Lexing, Int) =
   match nextPiece input at with
   | Ok (Just p) -> piece_ input from (token p) (start p) (stop p) piece sofar holes l
   | _ ->
       let n = stringByteLength input in
       (problem (push l Token.Error from n) from n "this string is never closed", n)
 
-fun piece_ (input : String) (from : Int) (p : Piece) (at : Int) (to : Int) (piece : Int) (sofar : String) (holes : Int) (l : Lexing) : (Lexing, Int) =
-  let more = \s -> text input from to piece (sofar ++ s) holes l in
+fun piece_ (input : String) (from : Int) (p : Piece) (at : Int) (to : Int) (piece : Int) (sofar : [String]) (holes : Int) (l : Lexing) : (Lexing, Int) =
+  let more = \s -> text input from to piece (V.pushBack sofar s) holes l in
   let bad = \message -> text input from to piece sofar holes (problem l at to message) in
   match p with
   | Piece.Text s -> more s
@@ -402,10 +405,10 @@ fun piece_ (input : String) (from : Int) (p : Piece) (at : Int) (to : Int) (piec
   | Piece.BadEscape s -> bad "`\\${stringSlice s 1 (stringByteLength s)}` is not an escape; a backslash itself is `\\\\`"
   | Piece.Lone -> bad "a `\\` with nothing after it"
   | Piece.Close ->
-      let t = if holes == 0 then Token.Str sofar else Token.InterpEnd sofar in
+      let t = if holes == 0 then Token.Str (S.concatAll sofar) else Token.InterpEnd (S.concatAll sofar) in
       (push l t piece to, to)
   | Piece.Open ->
-      let t = if holes == 0 then Token.InterpStart sofar else Token.InterpMid sofar in
+      let t = if holes == 0 then Token.InterpStart (S.concatAll sofar) else Token.InterpMid (S.concatAll sofar) in
       hole input from at (push l t piece to) holes
 
 -- A `${`, at `at`: the code in it, to its `}`, read as a lexing of its own and
@@ -417,8 +420,8 @@ fun hole (input : String) (from : Int) (at : Int) (l : Lexing) (holes : Int) : (
   | (inside, close, True) ->
       if blank input open close then
         let l2 = problem (push l Token.Error at (close + 1)) at (close + 1) "`\${}` needs an expression inside" in
-        text input from (close + 1) close "" (holes + 1) l2
-      else text input from (close + 1) close "" (holes + 1) (joined l inside)
+        text input from (close + 1) close [] (holes + 1) l2
+      else text input from (close + 1) close [] (holes + 1) (joined l inside)
   | (_, n, False) -> (problem (push l Token.Error at n) at n "this `\${` is never closed", n)
 
 -- Whether `input` holds only whitespace between `from` and `to`.
@@ -621,15 +624,17 @@ fun bytesOf (s : String) = V.fromArray (S.toBytes s)
 
 -- `s` with every control byte and backslash written `\xNN`, so that a line
 -- holds it: the other bytes, UTF-8 included, as they are.
-@pub fun escape (s : String) : String = escapeFrom s 0 0 ""
+@pub fun escape (s : String) : String = S.concatAll (escapeFrom s 0 0 [])
 
 -- `s` from `run`, where the text not yet copied starts, with `i` the byte
--- being looked at: runs are copied whole, so a character is never cut.
-fun escapeFrom (s : String) (run : Int) (i : Int) (acc : String) : String =
-  if i >= stringByteLength s then acc ++ stringSlice s run i
+-- being looked at: runs are copied whole, so a character is never cut. The
+-- pieces are joined once, at the end -- appending each to what came before
+-- copied all of it every time.
+fun escapeFrom (s : String) (run : Int) (i : Int) (acc : [String]) : [String] =
+  if i >= stringByteLength s then V.pushBack acc (stringSlice s run i)
   else
     let n = byteAt s i in
-    if n < 32 or n == 127 or n == 92 then escapeFrom s (i + 1) (i + 1) (acc ++ stringSlice s run i ++ "\\x" ++ twoHex n)
+    if n < 32 or n == 127 or n == 92 then escapeFrom s (i + 1) (i + 1) (V.append acc [stringSlice s run i, "\\x", twoHex n])
     else escapeFrom s run (i + 1) acc
 
 fun twoHex (n : Int) : String =

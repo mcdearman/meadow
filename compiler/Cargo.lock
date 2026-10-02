@@ -302,6 +302,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "meadow-cut"
+version = "0.1.0-alpha"
+
+[[package]]
 name = "meadow-diagnostics"
 version = "0.1.0-alpha"
 dependencies = [

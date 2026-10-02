@@ -1,0 +1,9 @@
+[package]
+name = "meadow-cut"
+description = "Cut: the upper IR every front end hands Meadow's back end -- its text, read and written, and the reference interpreter that says what a program means. Nothing of any front end is in it."
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_cut"
+path = "src/lib.rs"

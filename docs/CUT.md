@@ -147,7 +147,7 @@ to their package, and the back end may rename them.
 ## A program
 
 A program is one text: a version line, then its declarations and definitions
-in any order.
+in any order. `--` starts a comment that runs to the end of the line.
 
 ```text
 cut 0
@@ -301,8 +301,9 @@ a `str` error.
 | `Fs.writeBytes`                                    | `(str, ptr)`, an array       | fallible `unit`                                             |
 | `Fs.removeFile`, `Fs.createDir`, `Fs.createDirAll` | `str`                        | fallible `unit`                                             |
 | `Fs.removeDir`, `Fs.removeDirAll`                  | `str`                        | fallible `unit`                                             |
-| `Fs.rename`, `Fs.copy`                             | `(str, str)`                 | fallible `unit`                                             |
-| `Fs.readDir`                                       | `str`                        | fallible array of `str`                                     |
+| `Fs.rename`                                        | `(str, str)`                 | fallible `unit`                                             |
+| `Fs.copy`                                          | `(str, str)`                 | fallible `i64`, the bytes copied                            |
+| `Fs.readDir`                                       | `str`                        | fallible sequence of `str`, the entries' names              |
 | `Fs.metadata`                                      | `str`                        | fallible `file-meta`                                        |
 | `Fs.exists`, `Fs.isFile`, `Fs.isDir`               | `str`                        | `bool`                                                      |
 | `Process.spawn`, `Process.status`                  | a command: see `Std.Process` | fallible result                                             |

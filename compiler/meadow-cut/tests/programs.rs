@@ -100,7 +100,7 @@ effect idyll:Main/Ask { ask(unit) -> i64 }
 
 def idyll:Main/main (; k: ptr) =
   handle {
-    idyll:Main/Ask.ask(u: unit; r: ptr, k2: ptr) => <r | resume(10; k2)>;
+    idyll:Main/Ask.ask(u: unit; r: ptr, k2: ptr) => <r | apply(10; k2)>;
     return(x: i64; k3: ptr) => <x | k3>
   } in μ b.
     perform idyll:Main/Ask.ask(unit; μ̃ a: i64.
@@ -125,8 +125,8 @@ effect idyll:Main/Choose { @many choose(unit) -> bool }
 def idyll:Main/main (; k: ptr) =
   handle {
     idyll:Main/Choose.choose(u: unit; r: ptr, k2: ptr) =>
-      <r | resume(true; μ̃ a: i64.
-        <r | resume(false; μ̃ b2: i64. prim add(a, b2; k2))>)>;
+      <r | apply(true; μ̃ a: i64.
+        <r | apply(false; μ̃ b2: i64. prim add(a, b2; k2))>)>;
     return(x: i64; k3: ptr) => <x | k3>
   } in μ b.
     perform idyll:Main/Choose.choose(unit; μ̃ c: bool.

@@ -636,8 +636,10 @@ impl<'p> Machine<'p> {
                 Ok(exec(Focused::Statement(&method.body), env, handlers))
             }
             Value::Resume(r) => {
-                if m != "resume" || vals.len() != 1 || ks.len() != 1 {
-                    return err("a resumption has one method, `resume(v; k)`");
+                // A function's method, since a resumption goes wherever a
+                // function can; `resume` names the same method.
+                if !matches!(m, "apply" | "resume") || vals.len() != 1 || ks.len() != 1 {
+                    return err("a resumption is a function: `apply(v; k)`");
                 }
                 let (v, k) = (vals.into_iter().next(), ks.into_iter().next());
                 *r.frame.target.borrow_mut() = k.expect("one continuation");
@@ -942,6 +944,20 @@ impl<'p> Machine<'p> {
                 arity(1)?;
                 let n = string(&args[0])?.len() as i64;
                 self.one(op, Value::Int(n), ks)
+            }
+            // The byte at an index, as an i64: Glade's answers a `u8`, which
+            // the lowering widens.
+            "stringByteAt" => {
+                arity(2)?;
+                let s = string(&args[0])?;
+                let i = index(&args[1])?;
+                match usize::try_from(i).ok().and_then(|at| s.as_bytes().get(at)) {
+                    Some(b) => self.one(op, Value::Int(i64::from(*b)), ks),
+                    None => err(format!(
+                        "stringByteAt: index {i} out of bounds (len {})",
+                        s.len()
+                    )),
+                }
             }
             "stringSlice" => {
                 arity(3)?;

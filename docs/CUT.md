@@ -464,7 +464,8 @@ both front ends' interpreters agree on:
   zero". It is never undefined.
 
 Text and arrays have their own primitives, among them `concatStrings` (an
-array of strings, joined), `stringByteLength`, `stringSlice`, `stringCompare`,
+array of strings, joined), `stringByteLength`, `stringByteAt` (the byte at an
+index, as an `i64`; out of bounds is an error), `stringSlice`, `stringCompare`,
 `arrayLen`, `arrayGet`, `arraySlice` and `arrayConcat`.
 
 **The runtimes turn no value into text but a string.** There is no generic
@@ -508,10 +509,12 @@ s ::= handle { E.op(x: rep, ...; r: ptr, k: ptr) => s; ...
 - `c` is where the handle's value goes. Every clause binds it as `k`. A clause
   that does not resume gives its answer to `k`, as `fail(_; r, k) => <0 | k>`
   does.
-- `r` is the resumption, codata with one method `resume`. Invoking it with a
+- `r` is the resumption, a function: codata with one method `apply`, as any
+  function is, so that it can go wherever a function can. `resume` names the
+  same method, for a clause that calls it directly. Invoking it with a
   value and a continuation continues the body from the `perform`, and the
   resumed body's eventual answer goes to that continuation. A clause that
-  resumes and then answers, `ask(; r, k) => <r | resume(10; k)>`, passes its
+  resumes and then answers, `ask(; r, k) => <r | apply(10; k)>`, passes its
   own `k`. Handlers are deep.
 - `perform E.op(p, ...; c)` performs the operation with its arguments. `c`
   receives what the clause resumes with.
@@ -539,7 +542,7 @@ kinds of a definition's effect variables, so a definition generic in its
 effects gets the strategy its caller's effects need:
 
 - **`Effect`**: evidence passing (see [Evidence](#evidence)). A tail-resumptive
-  clause, `op(x; r, k) => <e | r.resume(..; k)>` with `r` not otherwise used,
+  clause, `op(x; r, k) => <r | apply(e; k)>` with `r` not otherwise used,
   is a plain call. Any other clause captures the continuation as a stack
   segment, which is resumed in place, at most once. This is Meadow's lowering
   today, on both Glade (heap frame chunks) and Silo (native stack segments). A

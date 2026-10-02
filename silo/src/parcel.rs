@@ -11,7 +11,7 @@
 //! the scheduler keeps, and crosses as the same handle.
 
 use crate::heap::{self, Word};
-use meadow_core::desc;
+use meadow_rt::desc;
 use std::collections::HashMap;
 
 /// A value lifted out of a heap.
@@ -192,7 +192,7 @@ fn lift(v: Word) -> Result<Lifted, String> {
         _ => None,
     };
     if let Some(what) = why {
-        return Err(meadow_core::thread::unsendable(what));
+        return Err(meadow_rt::thread::unsendable(what));
     }
     let n = heap::size(v);
     let mut words: Vec<Word> = (0..n).map(|i| heap::word(v, i)).collect();

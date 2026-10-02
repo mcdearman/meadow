@@ -23,7 +23,8 @@
 use crate::heap::{Heap, Kind};
 use crate::value::{Addr, Value};
 use crate::vm::{Error, Vm, err};
-use meadow_core::{Prim, num};
+use meadow_rt::roles::Role;
+use meadow_rt::{Prim, num};
 use num_bigint::{BigInt, Sign};
 
 fn arith(p: Prim) -> num::Arith {
@@ -63,7 +64,7 @@ const NO_WORLD: &str = "transactions need the scheduler; this machine is running
 impl Vm<'_> {
     /// An array -- or a mutable one -- of `words`, each a value of descriptor
     /// `d`. Room must have been made.
-    fn array_of(&mut self, kind: Kind, words: &[u64], d: meadow_core::desc::Desc) -> Value {
+    fn array_of(&mut self, kind: Kind, words: &[u64], d: meadow_rt::desc::Desc) -> Value {
         Value::Obj(
             self.heap
                 .alloc_described(kind, 0, words.len(), |i| words[i], |_| d),
@@ -95,7 +96,7 @@ impl Vm<'_> {
             meta,
             limbs.len(),
             |i| limbs[i],
-            |_| meadow_core::desc::INT,
+            |_| meadow_rt::desc::INT,
         ))
     }
 
@@ -244,7 +245,7 @@ impl Vm<'_> {
         self.heap.adopt(&region);
         let root = match self.heap.compact_into(region.id, v) {
             Ok(root) => root,
-            Err(why) => return err(meadow_core::stm::unstorable(why.describe())),
+            Err(why) => return err(meadow_rt::stm::unstorable(why.describe())),
         };
         let fresh = if fresh_region { region.used() } else { fresh };
         Ok(crate::stm::Shared {
@@ -258,7 +259,7 @@ impl Vm<'_> {
     fn txn(&mut self, op: &str) -> Result<&mut crate::stm::Txn, Error> {
         match &mut self.txn {
             Some(t) if t.live => Ok(t),
-            _ => err(meadow_core::stm::outside(op)),
+            _ => err(meadow_rt::stm::outside(op)),
         }
     }
 
@@ -266,7 +267,7 @@ impl Vm<'_> {
     fn sendable(&self, v: Value) -> Result<crate::heap::Parcel, Error> {
         self.heap
             .export(v)
-            .or_else(|why| err(meadow_core::thread::unsendable(why.describe())))
+            .or_else(|why| err(meadow_rt::thread::unsendable(why.describe())))
     }
 
     /// The number of a channel or thread handle.
@@ -330,8 +331,8 @@ impl Vm<'_> {
     ///
     /// The tag has to be the one the program's `switch` arms were compiled with,
     /// or a `match` on the result would miss.
-    fn data(&mut self, name: &str, fields: &[Value]) -> Value {
-        let tag = self.ctor_tag(name);
+    fn data(&mut self, role: Role, fields: &[Value]) -> Value {
+        let tag = self.role_tag(role);
         Value::Obj(self.heap.alloc(Kind::Data, tag, fields))
     }
 
@@ -351,7 +352,7 @@ impl Vm<'_> {
         // What each operand is, once: a primitive may read one many times.
         let descs = [self.operand(0), self.operand(1), self.operand(2)];
         let arg = |vm: &Vm, i: usize| {
-            if descs[i] == meadow_core::desc::ANY {
+            if descs[i] == meadow_rt::desc::ANY {
                 vm.missing_descriptor(i, srcs[i]);
             }
             Value::from_bits(vm.reg(srcs[i]), descs[i])
@@ -619,7 +620,7 @@ impl Vm<'_> {
                 }
                 if !ok {
                     self.ensure(Heap::size_of(Kind::Data, 0));
-                    self.data("Maybe.None", &[])
+                    self.data(Role::None, &[])
                 } else {
                     // The array first, then `Just` around it — with room for
                     // both reserved up front, so the array cannot move in
@@ -629,7 +630,7 @@ impl Vm<'_> {
                     );
                     let words: Vec<u64> = out.iter().map(|v| v.bits()).collect();
                     let arr = Value::Obj(self.heap.alloc_array(&words, Heap::BYTE));
-                    self.data("Maybe.Just", &[arr])
+                    self.data(Role::Some, &[arr])
                 }
             }
             CharCode => match arg(self, 0) {
@@ -736,7 +737,7 @@ impl Vm<'_> {
             StringSlice => {
                 let a = self.text_addr(arg(self, 0), "stringSlice")?;
                 let (from, to) = (self.int(arg(self, 1))?, self.int(arg(self, 2))?);
-                let (lo, hi) = meadow_core::text::clamp(self.heap.packed_len(a), from, to);
+                let (lo, hi) = meadow_rt::text::clamp(self.heap.packed_len(a), from, to);
                 // Copied out before making room, which moves the string.
                 let bytes = self.heap.packed_bytes_in(a, lo, hi);
                 match std::str::from_utf8(&bytes) {
@@ -870,7 +871,7 @@ impl Vm<'_> {
                     Ok(root) => Value::Obj(self.heap.alloc(Kind::Compact, region, &[root])),
                     Err(why) => {
                         self.heap.free_region(region);
-                        return err(meadow_core::compact::uncompactable(why.describe()));
+                        return err(meadow_rt::compact::uncompactable(why.describe()));
                     }
                 }
             }
@@ -880,7 +881,7 @@ impl Vm<'_> {
                 let region = self.heap.meta(self.compact_handle(arg(self, 0))?);
                 match self.heap.compact_into(region, arg(self, 1)) {
                     Ok(root) => Value::Obj(self.heap.alloc(Kind::Compact, region, &[root])),
-                    Err(why) => return err(meadow_core::compact::uncompactable(why.describe())),
+                    Err(why) => return err(meadow_rt::compact::uncompactable(why.describe())),
                 }
             }
             CompactSize => {
@@ -1020,12 +1021,12 @@ impl Vm<'_> {
                 let read = match (&self.world, &mut self.txn) {
                     (None, _) => return err(NO_WORLD),
                     (Some(world), Some(txn)) if txn.live => world.read(txn, id),
-                    _ => return err(meadow_core::stm::outside("readTVar")),
+                    _ => return err(meadow_rt::stm::outside("readTVar")),
                 };
                 match read {
                     crate::stm::Read::Conflict => {
                         self.ensure(Heap::size_of(Kind::Data, 0));
-                        let tag = self.ctor_tag("Maybe.None");
+                        let tag = self.role_tag(Role::None);
                         Value::Obj(self.heap.alloc(Kind::Data, tag, &[]))
                     }
                     crate::stm::Read::Value(shared) => {
@@ -1035,7 +1036,7 @@ impl Vm<'_> {
                         if let Some(r) = &shared.region {
                             self.heap.adopt(r);
                         }
-                        let tag = self.ctor_tag("Maybe.Just");
+                        let tag = self.role_tag(Role::Some);
                         Value::Obj(self.heap.alloc(Kind::Data, tag, &[shared.root]))
                     }
                 }
@@ -1051,7 +1052,7 @@ impl Vm<'_> {
                         Some(world.region_for_write(txn, id))
                     }
                     (Value::Obj(_), ..) => {
-                        return err(meadow_core::stm::outside("writeTVar"));
+                        return err(meadow_rt::stm::outside("writeTVar"));
                     }
                     _ => None,
                 };
@@ -1080,7 +1081,7 @@ impl Vm<'_> {
                 let went = match (&self.world, &mut self.txn) {
                     (None, _) => return err(NO_WORLD),
                     (Some(world), Some(txn)) if txn.live => world.commit(txn),
-                    _ => return err(meadow_core::stm::outside("atomically")),
+                    _ => return err(meadow_rt::stm::outside("atomically")),
                 };
                 match went {
                     crate::stm::Commit::Conflict => Value::Bool(false),

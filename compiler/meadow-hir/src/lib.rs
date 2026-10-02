@@ -27,28 +27,7 @@ pub fn spell_name(name: &str) -> std::borrow::Cow<'_, str> {
 
 /// A type's, effect's or trait's name as a person writes it.
 ///
-/// A type declared outside the standard library is known past the resolver by
-/// its fully qualified path, written as the source writes a path --
-/// `anstyle.Color`, `app.Syntax.Tree.Expr` -- so that two packages, or two
-/// modules of one, may each declare a `Color`, and a program may use both.
-/// Messages, hovers and printed types show the name without its path, as the
-/// source spells it. A constructor keeps its type: see [`ctor_spelling`].
-pub fn spelling(name: &str) -> &str {
-    match name.rfind('.') {
-        Some(at) => &name[at + 1..],
-        None => name,
-    }
-}
-
-/// A constructor's canonical name, `Type.Ctor` after its type's path, as a
-/// person writes it: `anstyle.Color.Red` is `Color.Red`, and `Maybe.Just`,
-/// whose type the compiler knows, stays as it is.
-pub fn ctor_spelling(name: &str) -> &str {
-    match name.rfind('.').and_then(|at| name[..at].rfind('.')) {
-        Some(at) => &name[at + 1..],
-        None => name,
-    }
-}
+pub use meadow_rt::{ctor_spelling, spelling};
 
 /// The package a type's canonical name says it belongs to, if any: `None` for
 /// the names the compiler knows, which have none.
@@ -759,33 +738,7 @@ pub enum Pat {
 
 pub type Ident = Node<VarId>;
 
-/// Where the synthetic range begins.
-///
-/// Everything below is handed out by a compilation unit, through [`VarIdGen`].
-/// The top is for variables invented *after* compilation — a driver appending
-/// an entry point to a program it has already linked — which belong to no unit
-/// and must not collide with one.
-pub const SYNTHETIC_BASE: u32 = 0x7000_0000;
-
-#[derive(
-    Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct VarId(pub u32);
-
-impl VarId {
-    /// The `n`th variable invented after compilation — see [`SYNTHETIC_BASE`].
-    ///
-    /// Indexed by the caller rather than counted here, so that appending the
-    /// same definitions to the same program twice produces the same ids.
-    pub const fn synthetic(n: u32) -> Self {
-        VarId(SYNTHETIC_BASE + n)
-    }
-
-    /// Was this invented after compilation rather than by a unit?
-    pub const fn is_synthetic(self) -> bool {
-        self.0 >= SYNTHETIC_BASE
-    }
-}
+pub use meadow_axcut::{SYNTHETIC_BASE, VarId};
 
 /// Hands out the `VarId`s of one compilation unit.
 ///

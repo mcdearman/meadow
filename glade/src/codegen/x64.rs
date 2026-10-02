@@ -13,7 +13,7 @@
 
 use super::{Emit, FloatOp, IntOp, Label, Operand, UnaryOp, layout, thin};
 use meadow_bytecode::{Cond, Pc, Reg};
-use meadow_core::OptLevel;
+use meadow_rt::OptLevel;
 
 const RAX: u8 = 0;
 const RCX: u8 = 1;
@@ -922,7 +922,7 @@ impl Emit for Asm {
         // the arguments out of the way, the captures in, the arguments after.
         // Through `put`, so a pinned register is written where it lives, and
         // `chain` writes them all back on the way out.
-        let hdr = meadow_core::compact::header_slots(false, g.captures as usize) as u32;
+        let hdr = meadow_rt::compact::header_slots(false, g.captures as usize) as u32;
         let scratch = crate::vm::SCRATCH as u32;
         for j in 0..argc {
             self.get(RAX, base as u32 + j);

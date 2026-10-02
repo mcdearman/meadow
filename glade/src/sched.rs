@@ -325,7 +325,7 @@ enum Wake {
     /// Start at a definition -- the main thread.
     Entry(Pc),
     /// Start by calling a function with `()` -- a spawned thread.
-    Start(Parcel, meadow_core::desc::Desc),
+    Start(Parcel, meadow_rt::desc::Desc),
     /// The answer to what it was waiting for, into a register.
     Deliver(Reg, Parcel),
     /// A new channel or thread handle, into a register.
@@ -440,7 +440,7 @@ impl<'p> Shared<'p> {
             // Nothing running and nothing queued: nobody is left who could
             // wake a waiting thread.
             self.finish(Err(Error {
-                msg: meadow_core::thread::DEADLOCK.into(),
+                msg: meadow_rt::thread::DEADLOCK.into(),
             }));
         }
     }
@@ -705,7 +705,7 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                         .vm
                         .heap
                         .export(v)
-                        .map_err(|why| meadow_core::thread::unsendable(why.describe()));
+                        .map_err(|why| meadow_rt::thread::unsendable(why.describe()));
                     lock(&sh.stats).add(&fiber.vm.heap);
                     self.complete(fiber.task, outcome);
                     sh.release();
@@ -831,7 +831,7 @@ impl<'s, 'p: 's> Worker<'s, 'p> {
                 }
                 Request::StmWait { dst } => {
                     let Some(txn) = fiber.vm.txn.take() else {
-                        fiber.wake = Wake::Fail(meadow_core::stm::outside("retry"));
+                        fiber.wake = Wake::Fail(meadow_rt::stm::outside("retry"));
                         return Some(fiber);
                     };
                     // Counted before the check -- see `World::wait_begins`.

@@ -932,7 +932,7 @@ mod tests {
         crate::object::write_header(
             Kind::Data,
             0,
-            std::iter::repeat_n(meadow_core::desc::INT, len as usize),
+            std::iter::repeat_n(meadow_rt::desc::INT, len as usize),
             |k, w| old.put(a + k as Addr, w),
         );
     }

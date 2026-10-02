@@ -176,7 +176,7 @@ fn children(v: Word, out: &mut Vec<Word>) {
         return;
     }
     for i in 0..heap::len(v) {
-        if heap::field_desc(v, i) != meadow_core::desc::REF {
+        if heap::field_desc(v, i) != meadow_rt::desc::REF {
             continue;
         }
         let x = heap::field(v, i);
@@ -193,7 +193,7 @@ fn release_leaves(v: Word, heap: &mut heap::Heap) {
         return;
     }
     for i in 0..heap::len(v) {
-        if heap::field_desc(v, i) != meadow_core::desc::REF {
+        if heap::field_desc(v, i) != meadow_rt::desc::REF {
             continue;
         }
         let x = heap::field(v, i);

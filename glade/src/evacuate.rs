@@ -53,7 +53,7 @@ use crate::object::Head;
 use crate::old::{self, BLOCK, OLD_BASE, Old};
 use crate::region::REGION_BASE;
 use crate::value::{Addr, Value, Word};
-use meadow_core::desc;
+use meadow_rt::desc;
 
 /// A block a quarter full or less is worth moving. Moving costs what is in the
 /// block and what points at it, and frees the whole block either way, so the

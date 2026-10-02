@@ -15,7 +15,7 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 # Descriptors, number formatting and the numeric tower's rules, which this
 # runtime must agree with the others about.
-meadow-core = { path = "../compiler/meadow-core" }
+meadow-rt = { path = "../compiler/meadow-rt" }
 num-bigint = "0.4"
 # Stackful coroutines: the stack segments effect handlers run on (see
 # `src/segments.rs`). Guard pages, and on Windows the thread information block

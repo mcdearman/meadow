@@ -144,10 +144,10 @@
 //!   the descriptor in scope for each variable ([`Lower::with_descs`]).
 //!
 //! Every name's [`Rep::Var`] is the name of its variable's descriptor where it
-//! is bound. Liveness here ignores descriptors; [`crate::describe`] then adds
+//! is bound. Liveness here ignores descriptors; `meadow_axcut::describe` then adds
 //! each one to every environment holding a value it describes.
 
-use crate::{Block, Def, Extern, Label, NO_DESC, Name, Program, Rep, Statement, Tag};
+use crate::{Block, Def, Extern, Label, NO_DESC, Name, Program, Rep, Role, Statement, Tag};
 use meadow_core as core;
 use meadow_core::{OptLevel, Pat, Term, Var};
 use meadow_hir::VarId;
@@ -390,10 +390,10 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         });
         // An untyped definition -- one built by hand -- says what it answers
         // through its term, as far as that can be read.
-        let result = match known(Rep::of(&d.poly.ty)) {
+        let result = match known(rep_of(&d.poly.ty)) {
             Rep::Unknown => lower
                 .type_of(term)
-                .map_or(Rep::Unknown, |t| known(Rep::of(&t))),
+                .map_or(Rep::Unknown, |t| known(rep_of(&t))),
             rep => rep,
         };
         lower.results.insert(label, result);
@@ -476,7 +476,8 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
 
     // After everything else, so the program's own constructors keep the tags
     // they had.
-    for ctor in RUNTIME_CTORS {
+    lower.tag_of(InternedString::from(core::roles::TUPLE));
+    for (_, ctor) in MEADOW_ROLES {
         lower.tag_of(InternedString::from(*ctor));
     }
 
@@ -492,13 +493,13 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
             .or_insert_with(|| match lower.binder_reps.get(v) {
                 Some(rep) => *rep,
                 // A definition: a label, never a value.
-                None => match Rep::of(&poly.ty) {
+                None => match rep_of(&poly.ty) {
                     Rep::Var(_) => Rep::Var(NO_DESC),
                     rep => rep,
                 },
             });
     }
-    let unmet = crate::describe::close(&mut defs, &reps, &lower.threads, &lower.descs);
+    let unmet = meadow_axcut::describe::close(&mut defs, &reps, &lower.threads, &lower.descs);
     // A definition is entered knowing only its own descriptors.
     let entered: HashSet<Label> = (0..program.defs.len() as u32)
         .map(Label)
@@ -523,6 +524,10 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
             returns: lower.returns,
             frames: lower.frames,
             ctor_fields: program.ctor_fields.clone(),
+            roles: MEADOW_ROLES
+                .iter()
+                .map(|(role, ctor)| (*role, InternedString::from(*ctor)))
+                .collect(),
             origins: program.origins.clone(),
             reps,
             results: lower.results,
@@ -641,42 +646,45 @@ struct Lower {
 }
 
 /// The constructor of an evidence entry: `#ev(key, clause, target, rest)`.
-const EV: &str = "#ev";
+const EV: &str = core::roles::evidence::ENTRY;
 
 /// The evidence with no handlers in it: an object, so that evidence is always
 /// a reference, whatever it holds.
-pub const EV_NONE: &str = "#evnone";
+pub const EV_NONE: &str = core::roles::evidence::NONE;
 
 /// The records a runtime builds by their constructor's name: `Fs.metadata`'s
 /// `FileMeta`, a name the language knows (`meadow_rename`'s
 /// `LANGUAGE_NAMES`).
 pub const RUNTIME_RECORDS: &[&str] = &["FileMeta.FileMeta"];
 
-/// The constructors a runtime builds values of by name, without the program
-/// having built one: what a native answers (`Result.Ok`, `Maybe.Just`, a
-/// tuple, a `List` or a `Vector` it made), and what reading a line gives back.
-/// Every program gets a tag for each, whether or not its own code uses them --
-/// a pruned program (see `meadow_core::prune`) may well not, and a runtime
-/// that asks for a tag the program never assigned has nothing to build with.
-pub const RUNTIME_CTORS: &[&str] = &[
-    "#tuple",
-    "Maybe.None",
-    "Maybe.Just",
-    "Result.Ok",
-    "Result.Err",
-    "List.Nil",
-    "List.Cons",
-    "Vector.Empty",
-    "Vector.Single",
-    "Vector.Full",
-    "VNode.Leaf",
-    "VNode.Branch",
+/// Meadow's constructor for each role a runtime builds or recognizes by
+/// itself (`meadow_rt::roles`): what a native answers (`Result.Ok`,
+/// `Maybe.Just`, a `List` or a `Vector` it made), what reading a line gives
+/// back, what `show` prints as a sequence. Every program declares them all, and
+/// gets a tag for each -- and for a tuple's -- whether or not its own code uses
+/// them: a pruned program (see `meadow_core::prune`) may well not, and a
+/// runtime that asks for a tag the program never assigned has nothing to build
+/// with.
+pub const MEADOW_ROLES: &[(Role, &str)] = &[
+    (Role::None, "Maybe.None"),
+    (Role::Some, "Maybe.Just"),
+    (Role::Ok, "Result.Ok"),
+    (Role::Err, "Result.Err"),
+    (Role::Nil, "List.Nil"),
+    (Role::Cons, "List.Cons"),
+    (Role::VectorEmpty, "Vector.Empty"),
+    (Role::VectorSingle, "Vector.Single"),
+    (Role::VectorFull, "Vector.Full"),
+    (Role::VNodeLeaf, "VNode.Leaf"),
+    (Role::VNodeBranch, "VNode.Branch"),
+    (Role::False, "Bool.False"),
+    (Role::FileMeta, "FileMeta.FileMeta"),
 ];
 
 /// The same for a tail-resumptive clause -- `op x k -> k e` -- whose object
 /// takes the argument and the performing code's own continuation, and so
 /// needs no resumption at all.
-const EV_TAIL: &str = "#evt";
+const EV_TAIL: &str = core::roles::evidence::TAIL;
 
 /// If a clause only ever resumes, straight away, with a value computed without
 /// the resumption -- `op x k -> k e` -- that value.
@@ -732,7 +740,7 @@ impl Lower {
     fn set_type(&mut self, n: Name, ty: Option<core::Ty>) {
         match ty {
             Some(ty) => {
-                let rep = self.resolve(Rep::of(&ty));
+                let rep = self.resolve(rep_of(&ty));
                 self.reps.insert(n, rep);
                 self.note_thread(n, &ty);
                 self.types.insert(n, ty);
@@ -1014,7 +1022,7 @@ impl Lower {
             && &**name == "Task"
             && let [a] = args.as_slice()
         {
-            let rep = self.resolve(Rep::of(a));
+            let rep = self.resolve(rep_of(a));
             self.threads.insert(n, rep);
         }
     }
@@ -1030,7 +1038,7 @@ impl Lower {
 
     /// Record `v`'s type, and its representation in the scope it is bound in.
     fn bind_poly(&mut self, v: Var, poly: core::Poly) {
-        let rep = self.resolve(Rep::of(&poly.ty));
+        let rep = self.resolve(rep_of(&poly.ty));
         self.binder_reps.insert(v, rep);
         self.note_thread(v, &poly.ty);
         self.polys.insert(v, poly);
@@ -4364,5 +4372,21 @@ impl Lower {
                 )
             }
         }
+    }
+}
+
+/// The representation of a value of type `ty`.
+fn rep_of(ty: &meadow_core::Ty) -> Rep {
+    use meadow_core::desc;
+    match ty {
+        meadow_core::Ty::Var(v) => Rep::Var(*v),
+        ty => match desc::of(ty) {
+            Some(desc::REF) => Rep::Ref,
+            Some(desc::INT) => Rep::Int,
+            Some(desc::FLOAT) => Rep::Float,
+            Some(desc::STR) => Rep::Str,
+            Some(desc::ANY) | None => Rep::Unknown,
+            Some(d) => Rep::Bits(d),
+        },
     }
 }

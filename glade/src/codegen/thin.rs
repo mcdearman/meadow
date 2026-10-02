@@ -113,7 +113,7 @@ pub enum Step {
 /// asked for it, exactly as before. Every instruction starts that way and stops
 /// being that way one at a time, each with a test.
 pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
-    use meadow_core::Prim;
+    use meadow_rt::Prim;
     match i.op {
         // One argument and a result: a length, or what a cell holds.
         meadow_bytecode::Op::Prim1 => match program.prims.get(i.imm as usize)? {
@@ -124,19 +124,19 @@ pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
             // Only where the compiler says what the operand is: a program
             // lowered without representations leaves the check to the
             // interpreter.
-            Prim::CharFromCode if operand_is(program, pc, meadow_core::desc::INT) => {
+            Prim::CharFromCode if operand_is(program, pc, meadow_rt::desc::INT) => {
                 Some(char_from_code(i.a, i.b))
             }
             // A character's word is its code, which is the `Int`.
-            Prim::CharCode if operand_is(program, pc, meadow_core::desc::CHAR) => {
+            Prim::CharCode if operand_is(program, pc, meadow_rt::desc::CHAR) => {
                 Some(vec![Step::Put(i.a, Src::Reg(i.b))])
             }
             // A sized integer's word is its bits wrapped to its width, so an
             // unsigned one narrower than an `Int` already is the `Int`, and an
             // `Int` is itself. Anything else converts in the interpreter.
             Prim::ToInt => {
-                use meadow_core::desc;
-                use meadow_core::num::Width;
+                use meadow_rt::desc;
+                use meadow_rt::num::Width;
                 let from = program.operands(pc).first().copied()?;
                 if from >= meadow_bytecode::DESC_REG {
                     return None;
@@ -158,7 +158,7 @@ pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
             Prim::ArrayGet => Some(element(i.a, i.b, i.c, Kind::Array)),
             Prim::StringByteAt
                 if program.operands(pc).get(1).copied()
-                    == Some(meadow_core::desc::INT as meadow_bytecode::DescSrc) =>
+                    == Some(meadow_rt::desc::INT as meadow_bytecode::DescSrc) =>
             {
                 Some(string_byte(i.a, i.b, i.c))
             }
@@ -172,7 +172,7 @@ pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
             Prim::StSetArray => {
                 let value = program.operands(pc).get(2).copied();
                 Some(
-                    if value == Some(meadow_core::desc::REF as meadow_bytecode::DescSrc) {
+                    if value == Some(meadow_rt::desc::REF as meadow_bytecode::DescSrc) {
                         element_set_young(i.a, i.b, i.b + 1, i.b + 2)
                     } else {
                         element_set(i.a, i.b, i.b + 1, i.b + 2)
@@ -186,7 +186,7 @@ pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
 }
 
 /// Does the compiler say the first operand of the instruction at `pc` is `d`?
-fn operand_is(program: &Program, pc: usize, d: meadow_core::desc::Desc) -> bool {
+fn operand_is(program: &Program, pc: usize, d: meadow_rt::desc::Desc) -> bool {
     program.operands(pc).first().copied() == Some(d as meadow_bytecode::DescSrc)
 }
 
@@ -363,7 +363,7 @@ pub fn element_set(dst: Reg, obj: Reg, idx: Reg, val: Reg) -> Vec<Step> {
         ),
         Step::Shr(2, Tmp(2), DESC_SHIFT),
         Step::And(2, Tmp(2), DESC_BITS),
-        Step::Guard(Cond::Ne, Tmp(2), Imm(meadow_core::desc::REF as u64)),
+        Step::Guard(Cond::Ne, Tmp(2), Imm(meadow_rt::desc::REF as u64)),
         Step::Set(4, R(idx)),
         Step::Guard(Cond::Lt, Tmp(4), Tmp(3)),
         Step::Add(4, Tmp(4), Imm(UNIFORM_HEADER)),

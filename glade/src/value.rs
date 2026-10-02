@@ -23,9 +23,9 @@
 //!
 //! What it costs is that a `Value` only means something *next to its heap*.
 
-use meadow_core::desc::Desc;
-use meadow_core::num::Width;
 use meadow_intern::InternedString;
+use meadow_rt::desc::Desc;
+use meadow_rt::num::Width;
 
 /// One machine word: what a heap slot holds.
 pub type Word = u64;
@@ -48,7 +48,7 @@ pub enum Value {
     Int(i64) = layout::INT,
     /// A sized integer -- its width and its bits, masked to it. Immediate like
     /// an `Int`, so it lives in a register or a field with no allocation.
-    Word(meadow_core::num::Width, u64) = layout::WORD,
+    Word(meadow_rt::num::Width, u64) = layout::WORD,
     Float(f64) = layout::FLOAT,
     Float32(f32) = layout::FLOAT32,
     Char(char) = layout::CHAR,
@@ -95,7 +95,7 @@ impl Value {
     /// [`meadow_core::desc`]. What a heap object records for each field, so
     /// that the field can be one word.
     pub fn desc(self) -> Desc {
-        use meadow_core::desc;
+        use meadow_rt::desc;
         match self {
             Value::Unit => desc::UNIT,
             Value::Bool(_) => desc::BOOL,
@@ -128,7 +128,7 @@ impl Value {
     /// The value word `w` is, as descriptor `d` says. [`Value::bits`] undone.
     #[inline]
     pub fn from_bits(w: Word, d: Desc) -> Value {
-        use meadow_core::desc;
+        use meadow_rt::desc;
         match d {
             desc::REF => Value::Obj(w as Addr),
             desc::INT => Value::Int(w as i64),
@@ -199,7 +199,7 @@ mod size {
     #[test]
     fn the_layout_is_where_native_code_looks() {
         use super::{Value, layout::*};
-        use meadow_core::num::Width;
+        use meadow_rt::num::Width;
         let bytes = |v: Value| -> [u8; 16] {
             // Safety: a `Value` is 16 bytes of plain data.
             unsafe { std::mem::transmute(v) }

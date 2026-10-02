@@ -26,8 +26,8 @@
 
 use crate::heap::Kind;
 use crate::value::{Addr, Word};
-use meadow_core::compact::{DESCS_PER_WORD, INLINE_DESCS, header_slots};
-use meadow_core::desc::{self, Desc};
+use meadow_rt::compact::{DESCS_PER_WORD, INLINE_DESCS, header_slots};
+use meadow_rt::desc::{self, Desc};
 
 /// The kind byte of a first word left behind by a copy.
 pub const FORWARD: u8 = 0xFF;

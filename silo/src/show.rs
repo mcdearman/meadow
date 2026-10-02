@@ -3,7 +3,8 @@
 //! program's tables it reads names out of.
 
 use crate::heap::{self, Word};
-use meadow_core::desc;
+use meadow_rt::desc;
+use meadow_rt::roles::{Role, TUPLE};
 use std::fmt::Write;
 
 /// The program's tables the emitted module defines: constructor names and
@@ -11,6 +12,8 @@ use std::fmt::Write;
 /// their labels in -- by the small integers `Sym` literals load.
 pub struct Names {
     pub ctors: Vec<Option<String>>,
+    /// The constructor playing each role, by [`Role::index`].
+    pub roles: Vec<Option<String>>,
     pub fields: Vec<Option<Vec<String>>>,
     pub syms: Vec<String>,
     pub ranks: Vec<i64>,
@@ -20,6 +23,7 @@ unsafe extern "C" {
     static meadow_ctor_names: [*const std::ffi::c_char; 0];
     static meadow_ctor_fields: [*const std::ffi::c_char; 0];
     static meadow_ctor_count: i64;
+    static meadow_role_names: [*const std::ffi::c_char; 0];
     static meadow_sym_names: [*const std::ffi::c_char; 0];
     static meadow_sym_ranks: [i64; 0];
     static meadow_sym_count: i64;
@@ -49,6 +53,9 @@ pub fn names() -> &'static Names {
                         .map(|s| s.split(',').map(str::to_string).collect())
                 })
                 .collect();
+            let roles = (0..Role::ALL.len())
+                .map(|i| read(*meadow_role_names.as_ptr().add(i)))
+                .collect();
             let m = meadow_sym_count as usize;
             let syms = (0..m)
                 .map(|i| read(*meadow_sym_names.as_ptr().add(i)).unwrap_or_default())
@@ -56,6 +63,7 @@ pub fn names() -> &'static Names {
             let ranks = (0..m).map(|i| *meadow_sym_ranks.as_ptr().add(i)).collect();
             Names {
                 ctors,
+                roles,
                 fields,
                 syms,
                 ranks,
@@ -131,8 +139,25 @@ fn bare_ctor(name: &str) -> &str {
     }
 }
 
+/// The constructor playing `role` -- empty, which no constructor is called,
+/// where the program declares none. See `meadow_rt::roles`.
+pub fn role(role: Role) -> &'static str {
+    names().roles[role.index()].as_deref().unwrap_or("")
+}
+
+/// The role the constructor called `name` plays, if any.
+pub fn role_of(name: &str) -> Option<Role> {
+    if name.is_empty() {
+        return None;
+    }
+    Role::ALL.into_iter().find(|r| role(*r) == name)
+}
+
 fn is_vector_ctor(name: &str) -> bool {
-    matches!(name, "Vector.Empty" | "Vector.Single" | "Vector.Full")
+    matches!(
+        role_of(name),
+        Some(Role::VectorEmpty | Role::VectorSingle | Role::VectorFull)
+    )
 }
 
 /// The constructor `v` was built with, if it is data.
@@ -159,10 +184,10 @@ pub fn vector_elems(v: Word) -> Option<Vec<(Word, i64)>> {
         return None;
     }
     let f = fields_of(v);
-    match (name.as_str(), f.len()) {
-        ("Vector.Empty", 0) => Some(Vec::new()),
-        ("Vector.Single", 1) => array_elems(f[0].0),
-        ("Vector.Full", 7) => {
+    match (role_of(&name), f.len()) {
+        (Some(Role::VectorEmpty), 0) => Some(Vec::new()),
+        (Some(Role::VectorSingle), 1) => array_elems(f[0].0),
+        (Some(Role::VectorFull), 7) => {
             let mut out = Vec::new();
             for i in [2usize, 3] {
                 out.extend(array_elems(f[i].0)?);
@@ -179,12 +204,12 @@ pub fn vector_elems(v: Word) -> Option<Vec<(Word, i64)>> {
 
 fn vector_node(v: Word, out: &mut Vec<(Word, i64)>) -> Option<()> {
     let f = fields_of(v);
-    match (ctor_of(v)?.as_str(), f.len()) {
-        ("VNode.Leaf", 1) => {
+    match (role_of(&ctor_of(v)?), f.len()) {
+        (Some(Role::VNodeLeaf), 1) => {
             out.extend(array_elems(f[0].0)?);
             Some(())
         }
-        ("VNode.Branch", 2) => {
+        (Some(Role::VNodeBranch), 2) => {
             for (kid, _) in array_elems(f[1].0)? {
                 vector_node(kid, out)?;
             }
@@ -201,9 +226,9 @@ fn array_elems(v: Word) -> Option<Vec<(Word, i64)>> {
 fn list_items(mut v: Word) -> Option<Vec<(Word, i64)>> {
     let mut out = Vec::new();
     loop {
-        match ctor_of(v)?.as_str() {
-            "List.Nil" => return Some(out),
-            "List.Cons" => {
+        match role_of(&ctor_of(v)?) {
+            Some(Role::Nil) => return Some(out),
+            Some(Role::Cons) => {
                 let f = fields_of(v);
                 if f.len() != 2 {
                     return None;
@@ -239,8 +264,8 @@ fn render(out: &mut String, v: Word, d: i64) {
         desc::INT => {
             let _ = write!(out, "{}", v as i64);
         }
-        desc::FLOAT => out.push_str(&meadow_core::fmt_float(f64::from_bits(v))),
-        desc::FLOAT32 => out.push_str(&meadow_core::num::fmt_float32(f32::from_bits(v as u32))),
+        desc::FLOAT => out.push_str(&meadow_rt::fmt_float(f64::from_bits(v))),
+        desc::FLOAT32 => out.push_str(&meadow_rt::num::fmt_float32(f32::from_bits(v as u32))),
         desc::BOOL => out.push_str(if v != 0 { "True" } else { "False" }),
         desc::UNIT => out.push_str("()"),
         desc::CHAR => match char::from_u32(v as u32) {
@@ -253,7 +278,7 @@ fn render(out: &mut String, v: Word, d: i64) {
             let _ = write!(out, "{:?}", sym_name(v as usize));
         }
         d if (desc::WORD..desc::WORD + 7).contains(&d) => {
-            let w = meadow_core::num::Width::ALL[(d - desc::WORD) as usize];
+            let w = meadow_rt::num::Width::ALL[(d - desc::WORD) as usize];
             let _ = write!(out, "{}", w.value(v));
         }
         _ => render_ref(out, v),
@@ -338,12 +363,12 @@ fn render_data(out: &mut String, v: Word) {
         "" => {
             let _ = write!(out, "#{}(..)", if v & 1 == 1 { v >> 1 } else { 0 });
         }
-        "#tuple" => {
+        TUPLE => {
             out.push('(');
             join(out, &f, ", ");
             out.push(')');
         }
-        "List.Nil" | "List.Cons" => match list_items(v) {
+        n if matches!(role_of(n), Some(Role::Nil | Role::Cons)) => match list_items(v) {
             Some(xs) => {
                 out.push('[');
                 join(out, &xs, "; ");

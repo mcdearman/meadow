@@ -74,8 +74,8 @@
 use crate::heap::{Heap, Kind};
 use crate::value::{Addr, Value, Word};
 use meadow_bytecode::{Cond, Const, DESC_REG, DescSrc, Held, Instr, NO_MAP, Op, Pc, Program, Reg};
-use meadow_core::desc::{self, Desc};
 use meadow_intern::InternedString;
+use meadow_rt::desc::{self, Desc};
 
 /// How many registers there are. The compiler refuses to emit a block needing
 /// more.
@@ -354,7 +354,12 @@ impl<'p> Vm<'p> {
         self.heap
             .reserve(Heap::size_of(Kind::Closure, 1) + Heap::size_of(Kind::Data, 0) + body.len());
         let halt = Value::Obj(self.heap.alloc(Kind::Closure, 0, &[Value::Int(answer)]));
-        let none = match self.program.ctors.iter().position(|c| &**c == "#evnone") {
+        let none = match self
+            .program
+            .ctors
+            .iter()
+            .position(|c| &**c == meadow_rt::roles::evidence::NONE)
+        {
             Some(tag) => Value::Obj(self.heap.alloc(Kind::Data, tag as u32, &[])),
             None => return err("the program has no empty evidence to start a thread with"),
         };
@@ -695,7 +700,7 @@ impl<'p> Vm<'p> {
                             }
                             None => {
                                 let name = ctor.map_or("?".to_string(), |c| {
-                                    meadow_core::ctor_spelling(&c).to_string()
+                                    meadow_rt::ctor_spelling(&c).to_string()
                                 });
                                 return err(format!("`{name}` has no field `{label}`"));
                             }
@@ -985,7 +990,7 @@ impl<'p> Vm<'p> {
                 Ok(())
             }
             None => {
-                let effect = meadow_core::spelling(&effect);
+                let effect = meadow_rt::spelling(&effect);
                 err(format!("unhandled effect {effect}.{op}"))
             }
         }
@@ -1259,7 +1264,7 @@ impl<'p> Vm<'p> {
         roots
     }
 
-    fn primitive(&self, id: u32) -> Result<meadow_core::Prim, Error> {
+    fn primitive(&self, id: u32) -> Result<meadow_rt::Prim, Error> {
         match self.program.prims.get(id as usize) {
             Some(p) => Ok(*p),
             None => err(format!("no primitive {id}")),

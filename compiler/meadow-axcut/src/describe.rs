@@ -33,7 +33,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// Give every environment the descriptors its values need. Returns the blocks
 /// that needed descriptors nothing could pass them: a definition's, when
 /// lowering described a value by a variable no abstraction around it binds.
-pub(crate) fn close(
+pub fn close(
     defs: &mut [Def],
     reps: &HashMap<Name, Rep>,
     threads: &HashMap<Name, Rep>,
@@ -165,7 +165,7 @@ impl Closer<'_> {
                 // the answer's descriptor is needed where the spawn is -- in
                 // a closure too, which `Thread.spawn` taken as a value is.
                 // Nothing else names it: the `Task` itself is a pointer.
-                if matches!(op, Extern::Prim(meadow_core::Prim::ThreadSpawn)) {
+                if matches!(op, Extern::Prim(meadow_rt::Prim::ThreadSpawn)) {
                     for b in blocks {
                         for p in &b.params {
                             if let Some(Rep::Var(d)) = self.threads.get(p)

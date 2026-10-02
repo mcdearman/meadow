@@ -34,7 +34,7 @@ use crate::segments::{self, Down, SendSegment, Up};
 use crate::value::{self, Val};
 use corosensei::stack::DefaultStack;
 use corosensei::{Coroutine, CoroutineResult, Yielder};
-use meadow_core::{Prim, desc};
+use meadow_rt::{Prim, desc};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard};
@@ -177,7 +177,7 @@ impl Held {
             }
             Err(why) => {
                 let what = why.strip_prefix("a compact cannot hold ").unwrap_or(&why);
-                crate::fail(&meadow_core::stm::unstorable(what))
+                crate::fail(&meadow_rt::stm::unstorable(what))
             }
         }
     }
@@ -292,7 +292,7 @@ unsafe extern "C" {
 
 /// No handlers: what a thread starts with.
 fn no_evidence() -> Word {
-    (u64::from(value::tag("#evnone")) << 1) | 1
+    (u64::from(value::tag(meadow_rt::roles::evidence::NONE)) << 1) | 1
 }
 
 fn cx() -> &'static mut Ctx {
@@ -634,7 +634,7 @@ fn handle(v: Val, kind: u64, what: &str, op: &str) -> usize {
 }
 
 fn outside(op: &str) -> ! {
-    crate::fail(&meadow_core::stm::outside(op))
+    crate::fail(&meadow_rt::stm::outside(op))
 }
 
 fn parcel(v: Val) -> Parcel {
@@ -761,7 +761,10 @@ pub fn prim(p: Prim, args: &[Val]) -> Word {
                 .map(|(_, x, d)| (*x, *d));
             if let Some((x, d)) = written {
                 heap::share(x, d);
-                return value::data("Maybe.Just", &[value::val(x, d)]);
+                return value::data(
+                    crate::show::role(meadow_rt::roles::Role::Some),
+                    &[value::val(x, d)],
+                );
             }
             let start = txn.start;
             let seen = {
@@ -770,14 +773,17 @@ pub fn prim(p: Prim, args: &[Val]) -> Word {
             };
             // Written since this transaction began: it runs again.
             let Some((held, version)) = seen else {
-                return value::data("Maybe.None", &[]);
+                return value::data(crate::show::role(meadow_rt::roles::Role::None), &[]);
             };
             let txn = cx().txn.as_mut().expect("a transaction");
             if !txn.reads.iter().any(|(t, _)| *t == at(c)) {
                 txn.reads.push((at(c), version));
             }
             let (x, d) = held.open();
-            value::data("Maybe.Just", &[value::val(x, d)])
+            value::data(
+                crate::show::role(meadow_rt::roles::Role::Some),
+                &[value::val(x, d)],
+            )
         }
         StmWrite => {
             let c = cell(arg(0), "writeTVar");

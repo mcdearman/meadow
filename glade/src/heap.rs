@@ -113,7 +113,7 @@ use crate::object::{self, Head, forward, forwarded, write_header};
 use crate::old::{self, OLD_BASE, Old};
 use crate::region::{Block, Region};
 use crate::value::{Addr, Value, Word};
-use meadow_core::desc;
+use meadow_rt::desc;
 
 pub use crate::region::REGION_BASE;
 
@@ -810,12 +810,12 @@ impl Heap {
 
     /// Slots an object of `kind` with `len` fields takes.
     pub fn size_of(kind: Kind, len: usize) -> usize {
-        meadow_core::compact::object_slots(kind.is_uniform(), len)
+        meadow_rt::compact::object_slots(kind.is_uniform(), len)
     }
 
     pub fn alloc(&mut self, kind: Kind, meta: u32, fields: &[Value]) -> Addr {
         let at = self.top;
-        let header = meadow_core::compact::header_slots(kind.is_uniform(), fields.len());
+        let header = meadow_rt::compact::header_slots(kind.is_uniform(), fields.len());
         let size = header + fields.len();
         if at + size > self.space.len() {
             return self.alloc_old(kind, meta, fields);
@@ -846,7 +846,7 @@ impl Heap {
         desc: impl Fn(usize) -> desc::Desc,
     ) -> Addr {
         let at = self.top;
-        let header = meadow_core::compact::header_slots(kind.is_uniform(), len);
+        let header = meadow_rt::compact::header_slots(kind.is_uniform(), len);
         let size = header + len;
         if at + size > self.space.len() {
             let fields: Vec<Value> = (0..len)
@@ -1203,7 +1203,7 @@ impl Heap {
     /// Element `i` of the array at `a`, which has one.
     pub fn array_value(&self, a: Addr, i: usize) -> Value {
         match self.kind(a) {
-            Kind::Bytes => Value::Word(meadow_core::num::Width::U8, self.packed_byte(a, i) as u64),
+            Kind::Bytes => Value::Word(meadow_rt::num::Width::U8, self.packed_byte(a, i) as u64),
             _ => self.field(a, i),
         }
     }
@@ -2365,7 +2365,7 @@ impl Heap {
         object::write_header(Kind::Frame, meta, (0..n).map(&desc), |k, w| {
             old.put(a + k as Addr, w)
         });
-        let header = meadow_core::compact::header_slots(false, n) as Addr;
+        let header = meadow_rt::compact::header_slots(false, n) as Addr;
         for j in 0..n {
             old.put(a + header + j as Addr, word(j));
         }
@@ -2730,7 +2730,7 @@ mod tests {
 
     #[test]
     fn the_engines_estimate_compact_size_with_the_real_slot() {
-        assert_eq!(SLOT_BYTES, meadow_core::compact::SLOT_BYTES);
+        assert_eq!(SLOT_BYTES, meadow_rt::compact::SLOT_BYTES);
     }
 
     #[test]
@@ -3506,7 +3506,7 @@ mod tests {
             for (j, b) in texts.iter().enumerate() {
                 assert_eq!(
                     h.packed_compare(addrs[i], addrs[j]),
-                    meadow_core::text::compare(a, b),
+                    meadow_rt::text::compare(a, b),
                     "{a:?} against {b:?}"
                 );
             }
@@ -3517,7 +3517,7 @@ mod tests {
     fn an_array_of_bytes_takes_a_byte_an_element() {
         assert_eq!(
             Heap::BYTE,
-            desc::word(meadow_core::num::Width::U8),
+            desc::word(meadow_rt::num::Width::U8),
             "the descriptor packing is keyed on"
         );
         let mut h = generational(64, usize::MAX, 0);
@@ -3534,7 +3534,7 @@ mod tests {
         assert_eq!(h.array_desc(a), Heap::BYTE);
         assert_eq!(
             h.array_value(a, 257),
-            Value::Word(meadow_core::num::Width::U8, 1)
+            Value::Word(meadow_rt::num::Width::U8, 1)
         );
         assert_eq!(h.array_words(a, 254, 258), [254, 255, 0, 1]);
         let mut roots = [Value::Obj(a)];

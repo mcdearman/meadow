@@ -63,10 +63,11 @@
 //!   operation is an error here; the CEK discharges it against the real world.
 //!   `Test.fail` is the exception, because a test runner needs it.
 
-use crate::{Block, Extern, Name, Program, Rep, Statement, Tag};
-use meadow_core::num::{self, Arith, Bits, Cmp, IntTarget, Num, Width};
-use meadow_core::{Lit, Prim};
+use crate::{Block, Extern, Name, Program, Rep, Role, Statement, Tag};
 use meadow_intern::InternedString;
+use meadow_rt::num::{self, Arith, Bits, Cmp, IntTarget, Num, Width};
+use meadow_rt::roles::TUPLE;
+use meadow_rt::{Lit, Prim};
 use num_bigint::BigInt;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -251,6 +252,7 @@ impl<'p> Machine<'p> {
 
     /// Start at the definition labelled `entry` instead -- a test, say.
     pub fn at(program: &'p Program, entry: crate::Label) -> Result<Self, Error> {
+        set_roles(&program.roles);
         let Some(block) = program.block(entry) else {
             return err(format!("entry label {entry:?} is not defined"));
         };
@@ -562,7 +564,7 @@ impl<'p> Machine<'p> {
                     Value::Unit
                 }
                 _ => {
-                    let effect = meadow_core::spelling(&effect);
+                    let effect = meadow_rt::spelling(&effect);
                     return err(format!("unhandled effect {effect}.{op}"));
                 }
             },
@@ -601,7 +603,7 @@ impl<'p> Machine<'p> {
                     match at.and_then(|i| fields.get(i)) {
                         Some(v) => v.clone(),
                         None => {
-                            let name = meadow_core::ctor_spelling(name);
+                            let name = meadow_rt::ctor_spelling(name);
                             return err(format!("`{name}` has no field `{label}`"));
                         }
                     }
@@ -763,8 +765,8 @@ impl<'p> Machine<'p> {
 }
 
 /// Is `v` what descriptor `d` says?
-fn described(d: meadow_core::desc::Desc, v: &Value) -> bool {
-    use meadow_core::desc;
+fn described(d: meadow_rt::desc::Desc, v: &Value) -> bool {
+    use meadow_rt::desc;
     match d {
         desc::REF => matches!(
             v,
@@ -833,7 +835,7 @@ fn kind(v: &Value) -> &'static str {
 fn is_falsey(v: &Value) -> bool {
     match v {
         Value::Bool(b) => !b,
-        Value::Data(name, _, fields) => &**name == "Bool.False" && fields.is_empty(),
+        Value::Data(name, _, fields) => plays(name, Role::False) && fields.is_empty(),
         _ => false,
     }
 }
@@ -850,10 +852,10 @@ fn list_items<'p>(v: &Value<'p>) -> Option<Vec<Value<'p>>> {
     let mut cur = v.clone();
     loop {
         match cur {
-            Value::Data(ref n, _, ref fs) if &**n == "List.Nil" && fs.is_empty() => {
+            Value::Data(ref n, _, ref fs) if plays(n, Role::Nil) && fs.is_empty() => {
                 return Some(out);
             }
-            Value::Data(ref n, _, ref fs) if &**n == "List.Cons" && fs.len() == 2 => {
+            Value::Data(ref n, _, ref fs) if plays(n, Role::Cons) && fs.len() == 2 => {
                 out.push(fs[0].clone());
                 let next = fs[1].clone();
                 cur = next;
@@ -861,6 +863,34 @@ fn list_items<'p>(v: &Value<'p>) -> Option<Vec<Value<'p>>> {
             _ => return None,
         }
     }
+}
+
+thread_local! {
+    /// The running program's roles (`Program::roles`), for what prints and
+    /// compares values without the program at hand: a `List` prints as the
+    /// sequence it is, whichever constructors a language makes one of.
+    static ROLES: RefCell<HashMap<Role, InternedString>> = RefCell::new(HashMap::new());
+}
+
+/// Make `roles` the ones values are printed and compared by, on this thread.
+pub fn set_roles(roles: &HashMap<Role, InternedString>) {
+    ROLES.with(|r| *r.borrow_mut() = roles.clone());
+}
+
+/// The constructor playing `role` -- empty, which names no constructor, where
+/// the program declares none.
+fn role(role: Role) -> InternedString {
+    ROLES.with(|r| {
+        r.borrow()
+            .get(&role)
+            .copied()
+            .unwrap_or_else(|| InternedString::from(""))
+    })
+}
+
+/// Does the constructor called `name` play `role`?
+fn plays(name: &str, role: Role) -> bool {
+    ROLES.with(|r| r.borrow().get(&role).is_some_and(|c| &**c == name))
 }
 
 /// A constructor as a reader wants to see it: `Maybe.Just` prints as `Just`.
@@ -877,17 +907,19 @@ fn bare_ctor(name: &str) -> &str {
 }
 
 fn is_vector_ctor(name: &str) -> bool {
-    matches!(name, "Vector.Empty" | "Vector.Single" | "Vector.Full")
+    plays(name, Role::VectorEmpty)
+        || plays(name, Role::VectorSingle)
+        || plays(name, Role::VectorFull)
 }
 
 fn vector_elems<'p>(v: &Value<'p>) -> Option<Vec<Value<'p>>> {
     match v {
-        Value::Data(n, _, fs) if &**n == "Vector.Empty" && fs.is_empty() => Some(Vec::new()),
-        Value::Data(n, _, fs) if &**n == "Vector.Single" && fs.len() == 1 => match &fs[0] {
+        Value::Data(n, _, fs) if plays(n, Role::VectorEmpty) && fs.is_empty() => Some(Vec::new()),
+        Value::Data(n, _, fs) if plays(n, Role::VectorSingle) && fs.len() == 1 => match &fs[0] {
             Value::Array(xs) => Some(xs.iter().cloned().collect()),
             _ => None,
         },
-        Value::Data(n, _, fs) if &**n == "Vector.Full" && fs.len() == 7 => {
+        Value::Data(n, _, fs) if plays(n, Role::VectorFull) && fs.len() == 7 => {
             let mut out = Vec::new();
             for i in [2usize, 3] {
                 match &fs[i] {
@@ -910,14 +942,15 @@ fn vector_elems<'p>(v: &Value<'p>) -> Option<Vec<Value<'p>>> {
 
 fn vector_node_elems<'p>(n: &Value<'p>, out: &mut Vec<Value<'p>>) -> Option<()> {
     match n {
-        Value::Data(name, _, fs) if &**name == "VNode.Leaf" && fs.len() == 1 => match &fs[0] {
+        Value::Data(name, _, fs) if plays(name, Role::VNodeLeaf) && fs.len() == 1 => match &fs[0] {
             Value::Array(xs) => {
                 out.extend(xs.iter().cloned());
                 Some(())
             }
             _ => None,
         },
-        Value::Data(name, _, fs) if &**name == "VNode.Branch" && fs.len() == 2 => match &fs[1] {
+        Value::Data(name, _, fs) if plays(name, Role::VNodeBranch) && fs.len() == 2 => match &fs[1]
+        {
             Value::Array(kids) => {
                 for k in kids.iter() {
                     vector_node_elems(k, out)?;
@@ -1007,7 +1040,7 @@ pub fn value_eq<'p>(a: &Value<'p>, b: &Value<'p>) -> bool {
 /// `hash`, fed to [`meadow_core::hash::Hasher`] in the order every engine uses:
 /// a value's head, then its parts left to right.
 fn hash_value(v: &Value) -> Result<i64, Error> {
-    use meadow_core::hash::{Hasher, unhashable};
+    use meadow_rt::hash::{Hasher, unhashable};
     enum Work<'p> {
         Val(Value<'p>),
         Label(String),
@@ -1226,7 +1259,7 @@ fn prim<'p>(
             };
             let bytes = s.as_bytes();
             if bytes.len() % 2 != 0 {
-                return Ok(data("Maybe.None", vec![]));
+                return Ok(data(&role(Role::None), vec![]));
             }
             let mut out = Vec::with_capacity(bytes.len() / 2);
             for pair in bytes.chunks_exact(2) {
@@ -1235,10 +1268,10 @@ fn prim<'p>(
                     (pair[1] as char).to_digit(16),
                 ) {
                     (Some(h), Some(l)) => out.push(Value::Word(Width::U8, ((h << 4) | l) as u64)),
-                    _ => return Ok(data("Maybe.None", vec![])),
+                    _ => return Ok(data(&role(Role::None), vec![])),
                 }
             }
-            Ok(data("Maybe.Just", vec![Value::Array(Rc::new(out))]))
+            Ok(data(&role(Role::Some), vec![Value::Array(Rc::new(out))]))
         }
         Show => Ok(Value::Str(InternedString::from(args[0].to_string()))),
         CharCode => match &args[0] {
@@ -1306,7 +1339,7 @@ fn prim<'p>(
         StringSlice => {
             let s = text_arg(&args[0], "stringSlice")?;
             let (from, to) = (as_int(&args[1])?, as_int(&args[2])?);
-            Ok(Value::Str(InternedString::from(meadow_core::text::slice(
+            Ok(Value::Str(InternedString::from(meadow_rt::text::slice(
                 s.as_bytes(),
                 from,
                 to,
@@ -1315,7 +1348,7 @@ fn prim<'p>(
         StringCompare => {
             let a = text_arg(&args[0], "stringCompare")?;
             let b = text_arg(&args[1], "stringCompare")?;
-            Ok(Value::Int(meadow_core::text::compare(
+            Ok(Value::Int(meadow_rt::text::compare(
                 a.as_bytes(),
                 b.as_bytes(),
             )))
@@ -1323,7 +1356,7 @@ fn prim<'p>(
         StringIndexOf => {
             let hay = text_arg(&args[0], "stringIndexOf")?;
             let needle = text_arg(&args[1], "stringIndexOf")?;
-            Ok(Value::Int(meadow_core::text::index_of(
+            Ok(Value::Int(meadow_rt::text::index_of(
                 hay.as_bytes(),
                 needle.as_bytes(),
                 as_int(&args[2])?,
@@ -1398,7 +1431,7 @@ fn prim<'p>(
             Ok(Value::Compact(Rc::new((args[1].clone(), region))))
         }
         CompactSize => Ok(Value::Int(
-            (as_compact(&args[0])?.1.borrow().slots * meadow_core::compact::SLOT_BYTES) as i64,
+            (as_compact(&args[0])?.1.borrow().slots * meadow_rt::compact::SLOT_BYTES) as i64,
         )),
         // This machine checks the lowering one construct at a time, and has no
         // scheduler. Green threads run on the bytecode VM and the CEK machine,
@@ -1432,7 +1465,7 @@ fn as_compact<'a, 'p>(v: &'a Value<'p>) -> Result<&'a CompactCell<'p>, Error> {
 /// shares what is in a region rather than copying it again. A refusal leaves
 /// the region as it was. See `meadow_core::compact`.
 fn compact_into<'p>(region: &RefCell<Region<'p>>, v: &Value<'p>) -> Result<(), Error> {
-    use meadow_core::compact::uncompactable;
+    use meadow_rt::compact::uncompactable;
     let mut r = region.borrow_mut();
     let mut new: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
     let mut slots = 0usize;
@@ -1443,30 +1476,30 @@ fn compact_into<'p>(region: &RefCell<Region<'p>>, v: &Value<'p>) -> Result<(), E
         match &v {
             Value::Data(_, _, fields) => {
                 if first(Rc::as_ptr(fields) as *const ()) {
-                    slots += meadow_core::compact::object_slots(false, fields.len());
+                    slots += meadow_rt::compact::object_slots(false, fields.len());
                     stack.extend(fields.iter().cloned());
                 }
             }
             Value::Array(xs) => {
                 if first(Rc::as_ptr(xs) as *const ()) {
-                    slots += meadow_core::compact::object_slots(true, xs.len());
+                    slots += meadow_rt::compact::object_slots(true, xs.len());
                     stack.extend(xs.iter().cloned());
                 }
             }
             Value::Record(fields) => {
                 if first(Rc::as_ptr(fields) as *const ()) {
-                    slots += meadow_core::compact::object_slots(false, 2 * fields.len());
+                    slots += meadow_rt::compact::object_slots(false, 2 * fields.len());
                     stack.extend(fields.values().cloned());
                 }
             }
             Value::BigInt(b) => {
                 if first(Rc::as_ptr(b) as *const ()) {
-                    slots += meadow_core::compact::object_slots(true, b.iter_u32_digits().count());
+                    slots += meadow_rt::compact::object_slots(true, b.iter_u32_digits().count());
                 }
             }
             Value::Compact(c) => {
                 if first(Rc::as_ptr(c) as *const ()) {
-                    slots += meadow_core::compact::object_slots(false, 1);
+                    slots += meadow_rt::compact::object_slots(false, 1);
                     stack.push(c.0.clone());
                 }
             }
@@ -1602,7 +1635,7 @@ impl std::fmt::Display for Value<'_> {
         match self {
             Value::Int(n) => write!(f, "{n}"),
             Value::BigInt(n) => write!(f, "{n}"),
-            Value::Float(x) => f.write_str(&meadow_core::fmt_float(*x)),
+            Value::Float(x) => f.write_str(&meadow_rt::fmt_float(*x)),
             Value::Word(w, b) => write!(f, "{}", w.value(*b)),
             Value::Float32(x) => f.write_str(&num::fmt_float32(*x)),
             Value::Bool(b) => f.write_str(if *b { "True" } else { "False" }),
@@ -1629,7 +1662,7 @@ impl std::fmt::Display for Value<'_> {
                 }
                 f.write_str(" }")
             }
-            Value::Data(name, _, fields) if &**name == "#tuple" => {
+            Value::Data(name, _, fields) if &**name == TUPLE => {
                 f.write_str("(")?;
                 for (i, v) in fields.iter().enumerate() {
                     if i > 0 {
@@ -1640,7 +1673,7 @@ impl std::fmt::Display for Value<'_> {
                 f.write_str(")")
             }
             // `Std.Collections.List` prints in its own literal syntax: `[1; 2]`.
-            Value::Data(name, _, _) if matches!(&**name, "List.Nil" | "List.Cons") => {
+            Value::Data(name, _, _) if plays(name, Role::Nil) || plays(name, Role::Cons) => {
                 if let Some(xs) = list_items(self) {
                     f.write_str("[")?;
                     for (i, v) in xs.iter().enumerate() {
@@ -1713,6 +1746,7 @@ mod tests {
             frames: Default::default(),
             continuations: Default::default(),
             ctor_fields: Default::default(),
+            roles: Default::default(),
             reps: Default::default(),
             origins: Default::default(),
             results: Default::default(),
@@ -1875,6 +1909,10 @@ mod tests {
             Rc::new(Fields::new(vec![Value::Int(1), Value::Unit])),
         );
         assert_eq!(t.to_string(), "(1, ())");
+        set_roles(&HashMap::from([
+            (Role::Nil, InternedString::from("List.Nil")),
+            (Role::Cons, InternedString::from("List.Cons")),
+        ]));
         // A `List` prints as its elements, not as the chain it is.
         let nil = Value::Data(
             InternedString::from("List.Nil"),

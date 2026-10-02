@@ -19,7 +19,7 @@ fn main() {
     let roots = [
         here.join("src"),
         here.join("../compiler/meadow-bytecode/src"),
-        here.join("../compiler/meadow-core/src"),
+        here.join("../compiler/meadow-rt/src"),
     ];
     println!(
         "cargo:rustc-env=MEADOW_GLADE_FINGERPRINT={}",

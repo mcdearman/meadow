@@ -15,8 +15,8 @@
 use crate::heap::{self, Word};
 use crate::show;
 use crate::value::{self, Val, val};
-use meadow_core::desc;
-use meadow_core::{Prim, num};
+use meadow_rt::desc;
+use meadow_rt::{Prim, num};
 
 /// What the runtime keeps for the whole run -- string literals, top-level
 /// values -- from which what a leak check does not count is reachable.
@@ -448,9 +448,12 @@ fn prim(p: Prim, a: &[Val], d: &[i64]) -> Word {
             }
             if good {
                 let arr = new_array(heap::ARRAY, &out, desc::word(num::Width::U8));
-                value::data("Maybe.Just", &[Val::Ref(arr)])
+                value::data(
+                    crate::show::role(meadow_rt::roles::Role::Some),
+                    &[Val::Ref(arr)],
+                )
             } else {
-                value::data("Maybe.None", &[])
+                value::data(crate::show::role(meadow_rt::roles::Role::None), &[])
             }
         }
         CharCode => match arg(0) {
@@ -508,13 +511,13 @@ fn prim(p: Prim, a: &[Val], d: &[i64]) -> Word {
         }
         StringSlice => {
             let t = text(arg(0), "stringSlice");
-            string(meadow_core::text::slice(&t, int(arg(1)), int(arg(2))).as_bytes())
+            string(meadow_rt::text::slice(&t, int(arg(1)), int(arg(2))).as_bytes())
         }
-        StringCompare => meadow_core::text::compare(
+        StringCompare => meadow_rt::text::compare(
             &text(arg(0), "stringCompare"),
             &text(arg(1), "stringCompare"),
         ) as Word,
-        StringIndexOf => meadow_core::text::index_of(
+        StringIndexOf => meadow_rt::text::index_of(
             &text(arg(0), "stringIndexOf"),
             &text(arg(1), "stringIndexOf"),
             int(arg(2)),
@@ -853,7 +856,7 @@ pub fn equal(a: Val, b: Val) -> bool {
 /// A structural hash, consistent with [`equal`]: `meadow_core::hash`'s, which
 /// every backend uses.
 pub fn hash(v: Val) -> i64 {
-    use meadow_core::hash::{Hasher, unhashable};
+    use meadow_rt::hash::{Hasher, unhashable};
     enum Work {
         Val(Val),
         Label(String),
@@ -966,7 +969,7 @@ pub extern "C" fn meadow_equal(a: Word, ad: i64, b: Word, bd: i64) -> Word {
 /// `stringIndexOf s sub from`: where `sub` next appears in `s`, or -1.
 #[unsafe(no_mangle)]
 pub extern "C" fn meadow_string_index_of(s: Word, sub: Word, from: Word) -> Word {
-    meadow_core::text::index_of(
+    meadow_rt::text::index_of(
         &text(Val::Ref(s), "stringIndexOf"),
         &text(Val::Ref(sub), "stringIndexOf"),
         from as i64,
@@ -977,7 +980,7 @@ pub extern "C" fn meadow_string_index_of(s: Word, sub: Word, from: Word) -> Word
 #[unsafe(no_mangle)]
 pub extern "C" fn meadow_string_slice(s: Word, from: Word, to: Word) -> Word {
     let t = text(Val::Ref(s), "stringSlice");
-    string(meadow_core::text::slice(&t, from as i64, to as i64).as_bytes())
+    string(meadow_rt::text::slice(&t, from as i64, to as i64).as_bytes())
 }
 
 /// `getRef r`: what the cell holds, shared.

@@ -175,12 +175,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "meadow-axcut"
+version = "0.1.0-alpha"
+dependencies = [
+ "meadow-intern",
+ "meadow-rt",
+ "num-bigint",
+ "num-traits",
+ "serde",
+]
+
+[[package]]
 name = "meadow-core"
 version = "0.1.0-alpha"
 dependencies = [
  "meadow-hir",
  "meadow-infer",
  "meadow-intern",
+ "meadow-rt",
  "meadow-span",
  "num-bigint",
  "num-traits",
@@ -210,7 +222,9 @@ dependencies = [
 name = "meadow-hir"
 version = "0.1.0-alpha"
 dependencies = [
+ "meadow-axcut",
  "meadow-intern",
+ "meadow-rt",
  "meadow-span",
  "num-bigint",
  "num-traits",
@@ -234,6 +248,17 @@ version = "0.1.0-alpha"
 dependencies = [
  "lasso",
  "once_cell",
+ "serde",
+]
+
+[[package]]
+name = "meadow-rt"
+version = "0.1.0-alpha"
+dependencies = [
+ "meadow-intern",
+ "meadow-span",
+ "num-bigint",
+ "num-traits",
  "serde",
 ]
 

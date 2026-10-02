@@ -1,0 +1,16 @@
+[package]
+name = "meadow-axcut"
+description = "AxCut: the machine-level sequent-calculus IR every front end lowers to and every back end compiles from, with its abstract machine. Nothing of any front end is in it."
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "meadow_axcut"
+path = "src/lib.rs"
+
+[dependencies]
+meadow-rt.workspace = true
+meadow-intern.workspace = true
+num-bigint.workspace = true
+num-traits.workspace = true
+serde.workspace = true

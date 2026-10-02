@@ -213,7 +213,7 @@ impl Contents {
 
     /// Append an object, its fields as given, and answer its address.
     pub fn alloc(&mut self, kind: Kind, meta: u32, fields: &[Value]) -> Addr {
-        let header = meadow_core::compact::header_slots(kind.is_uniform(), fields.len());
+        let header = meadow_rt::compact::header_slots(kind.is_uniform(), fields.len());
         let size = header + fields.len();
         let fits = match (self.blocks.last(), self.lens.last()) {
             (Some(b), Some(&len)) => len + size <= b.cap,

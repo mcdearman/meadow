@@ -71,7 +71,7 @@
 //! value lives in a region, may then hold a structure linked by `TVar`s.
 
 use crate::heap::{self, Word};
-use meadow_core::desc;
+use meadow_rt::desc;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

@@ -39,8 +39,9 @@ fn main() {
                 root.join("glade/build.rs"),
                 root.join("glade/Cargo.toml"),
                 compiler.join("meadow-bytecode"),
-                compiler.join("meadow-core"),
+                compiler.join("meadow-rt"),
                 compiler.join("meadow-intern"),
+                compiler.join("meadow-span"),
             ],
         ),
         (
@@ -52,7 +53,9 @@ fn main() {
                 root.join("silo/Cargo.toml"),
                 root.join("glade/fingerprint.rs"),
                 compiler.join("meadow-llvm/src"),
-                compiler.join("meadow-core"),
+                compiler.join("meadow-rt"),
+                compiler.join("meadow-intern"),
+                compiler.join("meadow-span"),
             ],
         ),
     ];

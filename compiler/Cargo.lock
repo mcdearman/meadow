@@ -239,22 +239,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "meadow-axcut"
+version = "0.1.0-alpha"
+dependencies = [
+ "meadow-intern",
+ "meadow-rt",
+ "num-bigint",
+ "num-traits",
+ "serde",
+]
+
+[[package]]
 name = "meadow-bytecode"
 version = "0.1.0-alpha"
 dependencies = [
- "meadow-core",
  "meadow-intern",
+ "meadow-rt",
 ]
 
 [[package]]
 name = "meadow-codegen"
 version = "0.1.0-alpha"
 dependencies = [
+ "meadow-axcut",
  "meadow-bytecode",
- "meadow-core",
- "meadow-hir",
  "meadow-intern",
- "meadow-seq",
+ "meadow-rt",
 ]
 
 [[package]]
@@ -284,6 +294,7 @@ dependencies = [
  "meadow-hir",
  "meadow-infer",
  "meadow-intern",
+ "meadow-rt",
  "meadow-span",
  "num-bigint",
  "num-traits",
@@ -314,7 +325,9 @@ dependencies = [
 name = "meadow-hir"
 version = "0.1.0-alpha"
 dependencies = [
+ "meadow-axcut",
  "meadow-intern",
+ "meadow-rt",
  "meadow-span",
  "num-bigint",
  "num-traits",
@@ -359,10 +372,12 @@ dependencies = [
 name = "meadow-llvm"
 version = "0.1.0-alpha"
 dependencies = [
+ "meadow-axcut",
  "meadow-compiler",
  "meadow-core",
  "meadow-hir",
  "meadow-intern",
+ "meadow-rt",
  "meadow-seq",
 ]
 
@@ -395,6 +410,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "meadow-rt"
+version = "0.1.0-alpha"
+dependencies = [
+ "meadow-intern",
+ "meadow-span",
+ "num-bigint",
+ "num-traits",
+ "serde",
+]
+
+[[package]]
 name = "meadow-scc"
 version = "0.1.0-alpha"
 dependencies = [
@@ -405,6 +431,7 @@ dependencies = [
 name = "meadow-seq"
 version = "0.1.0-alpha"
 dependencies = [
+ "meadow-axcut",
  "meadow-core",
  "meadow-hir",
  "meadow-infer",

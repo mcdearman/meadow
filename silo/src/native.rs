@@ -7,7 +7,8 @@
 use crate::heap::{self, Word};
 use crate::show;
 use crate::value::{self, Val, val};
-use meadow_core::desc;
+use meadow_rt::desc;
+use meadow_rt::roles::{Role, TUPLE};
 
 fn fail<T>(msg: impl AsRef<str>) -> T {
     crate::fail(msg.as_ref())
@@ -40,7 +41,8 @@ fn read_exact_bounded<R: std::io::Read>(input: &mut R, n: i64) -> std::io::Resul
 enum Build {
     At(Val),
     Str(String),
-    Data(&'static str, Vec<Build>),
+    /// The constructor playing a role, with its fields.
+    Data(Role, Vec<Build>),
     Tuple(Vec<Build>),
     Bytes(Vec<u8>),
     Vector(Vec<Build>),
@@ -57,30 +59,30 @@ impl Build {
         Build::At(Val::Bool(b))
     }
     fn ok(v: Build) -> Build {
-        Build::Data("Result.Ok", vec![v])
+        Build::Data(Role::Ok, vec![v])
     }
     fn error(msg: String) -> Build {
-        Build::Data("Result.Err", vec![Build::Str(msg)])
+        Build::Data(Role::Err, vec![Build::Str(msg)])
     }
 
     fn make(self) -> Val {
         match self {
             Build::At(v) => v,
             Build::Str(s) => Val::Ref(heap::string(s.as_bytes())),
-            Build::Data(name, xs) => {
+            Build::Data(role, xs) => {
                 let fields: Vec<Val> = xs.into_iter().map(Build::make).collect();
-                Val::Ref(value::data(name, &fields))
+                Val::Ref(value::data(show::role(role), &fields))
             }
             Build::Tuple(xs) => {
                 let fields: Vec<Val> = xs.into_iter().map(Build::make).collect();
-                Val::Ref(value::data("#tuple", &fields))
+                Val::Ref(value::data(TUPLE, &fields))
             }
             Build::Bytes(b) => {
                 let words: Vec<Word> = b.iter().map(|x| Word::from(*x)).collect();
                 Val::Ref(crate::prims::new_array(
                     heap::ARRAY,
                     &words,
-                    desc::word(meadow_core::num::Width::U8),
+                    desc::word(meadow_rt::num::Width::U8),
                 ))
             }
             Build::Vector(xs) => {
@@ -103,11 +105,11 @@ fn vector(items: Vec<Val>) -> Word {
         Val::Ref(crate::prims::new_array(heap::ARRAY, &words, d))
     };
     if items.is_empty() {
-        return value::data("Vector.Empty", &[]);
+        return value::data(show::role(Role::VectorEmpty), &[]);
     }
     if items.len() <= VECTOR_WIDTH {
         let a = arr(&items);
-        return value::data("Vector.Single", &[a]);
+        return value::data(show::role(Role::VectorSingle), &[a]);
     }
     let n = items.len();
     let mut shift = 5i64;
@@ -118,18 +120,21 @@ fn vector(items: Vec<Val>) -> Word {
     }
     let mut nodes: Vec<Val> = items
         .chunks(VECTOR_WIDTH)
-        .map(|chunk| Val::Ref(value::data("VNode.Leaf", &[arr(chunk)])))
+        .map(|chunk| Val::Ref(value::data(show::role(Role::VNodeLeaf), &[arr(chunk)])))
         .collect();
     loop {
         let group = |kids: &[Val]| {
-            let none = Val::Ref(value::data("Maybe.None", &[]));
-            Val::Ref(value::data("VNode.Branch", &[none, arr(kids)]))
+            let none = Val::Ref(value::data(show::role(Role::None), &[]));
+            Val::Ref(value::data(
+                show::role(Role::VNodeBranch),
+                &[none, arr(kids)],
+            ))
         };
         if nodes.len() <= VECTOR_WIDTH {
             let root = group(&nodes);
             let empty = || arr(&[]);
             return value::data(
-                "Vector.Full",
+                show::role(Role::VectorFull),
                 &[
                     Val::Int(n as i64),
                     Val::Int(shift),
@@ -164,7 +169,7 @@ fn tuple(v: Val, n: usize, what: &str) -> Vec<Val> {
             if heap::is_block(w)
                 && heap::kind(w) == heap::DATA
                 && heap::len(w) == n
-                && show::ctor_name(heap::meta(w) as usize) == "#tuple" =>
+                && show::ctor_name(heap::meta(w) as usize) == TUPLE =>
         {
             (0..n)
                 .map(|i| val(heap::field(w, i), heap::field_desc(w, i)))
@@ -189,12 +194,12 @@ fn vector_arg(v: Val, what: &str) -> Vec<Val> {
 
 fn maybe(v: Val, what: &str) -> Option<Val> {
     if let Val::Ref(w) = v {
-        if w & 1 == 1 && show::ctor_name((w >> 1) as usize) == "Maybe.None" {
+        if w & 1 == 1 && show::role_of(&show::ctor_name((w >> 1) as usize)) == Some(Role::None) {
             return None;
         }
         if heap::is_block(w)
             && heap::kind(w) == heap::DATA
-            && show::ctor_name(heap::meta(w) as usize) == "Maybe.Just"
+            && show::role_of(&show::ctor_name(heap::meta(w) as usize)) == Some(Role::Some)
         {
             return Some(val(heap::field(w, 0), heap::field_desc(w, 0)));
         }
@@ -221,7 +226,7 @@ pub unsafe extern "C" fn meadow_native(
             std::ffi::CStr::from_ptr(op).to_string_lossy(),
         )
     };
-    let effect = meadow_core::spelling(&effect).to_string();
+    let effect = meadow_rt::spelling(&effect).to_string();
     let arg = val(arg, d);
     let built = match effect.as_str() {
         "Test" if op == "fail" => fail(show::displayed(arg.word(), d)),
@@ -251,11 +256,11 @@ fn console(op: &str, arg: Val) -> Option<Build> {
             let _ = std::io::stdout().flush();
             let mut line = String::new();
             match std::io::stdin().lock().read_line(&mut line) {
-                Ok(0) => Build::Data("Maybe.None", vec![]),
+                Ok(0) => Build::Data(Role::None, vec![]),
                 Ok(_) => {
                     let line = line.strip_suffix('\n').unwrap_or(&line);
                     let line = line.strip_suffix('\r').unwrap_or(line);
-                    Build::Data("Maybe.Just", vec![Build::Str(line.to_string())])
+                    Build::Data(Role::Some, vec![Build::Str(line.to_string())])
                 }
                 Err(e) => fail(format!("Console.readLine: {e}")),
             }
@@ -266,8 +271,8 @@ fn console(op: &str, arg: Val) -> Option<Build> {
             // Reads in chunks, so a hostile length costs nothing until the
             // bytes actually arrive, rather than a preallocation of `n`.
             match read_exact_bounded(&mut std::io::stdin().lock(), n) {
-                Ok(Some(text)) => Build::Data("Maybe.Just", vec![Build::Str(text)]),
-                Ok(None) => Build::Data("Maybe.None", vec![]),
+                Ok(Some(text)) => Build::Data(Role::Some, vec![Build::Str(text)]),
+                Ok(None) => Build::Data(Role::None, vec![]),
                 Err(e) => fail(format!("Console.readExact: {e}")),
             }
         }
@@ -353,13 +358,13 @@ fn fs(op: &str, arg: Val) -> Option<Build> {
             // `Std.Fs.FileMeta`, a record the language knows by name: its fields
             // in the order it declares them.
             Ok(md) => Build::ok(Build::Data(
-                "FileMeta.FileMeta",
+                Role::FileMeta,
                 vec![
                     Build::bool(md.is_file()),
                     Build::bool(md.is_dir()),
                     Build::int(md.len() as i64),
                     Build::bool(md.permissions().readonly()),
-                    Build::int(meadow_core::args::modified_millis(&md)),
+                    Build::int(meadow_rt::args::modified_millis(&md)),
                 ],
             )),
             Err(e) => ioerr(e),
@@ -416,7 +421,7 @@ fn process(op: &str, arg: Val) -> Option<Build> {
             )),
         },
         "currentPid" => Build::int(std::process::id() as i64),
-        "currentExe" => Build::Str(meadow_core::args::current_exe()),
+        "currentExe" => Build::Str(meadow_rt::args::current_exe()),
         "isTerminal" => match arg {
             Val::Int(fd) => Build::bool(is_terminal(fd)),
             other => fail(format!(
@@ -426,8 +431,8 @@ fn process(op: &str, arg: Val) -> Option<Build> {
         },
         "argv" => Build::Vector(std::env::args().skip(1).map(Build::Str).collect()),
         "getEnv" => match std::env::var(text(arg, &what)) {
-            Ok(v) => Build::Data("Maybe.Just", vec![Build::Str(v)]),
-            Err(_) => Build::Data("Maybe.None", vec![]),
+            Ok(v) => Build::Data(Role::Some, vec![Build::Str(v)]),
+            Err(_) => Build::Data(Role::None, vec![]),
         },
         "setEnv" => {
             let t = tuple(arg, 2, &what);
@@ -525,8 +530,8 @@ fn is_terminal(fd: i64) -> bool {
     use std::io::IsTerminal;
     match fd {
         0 => std::io::stdin().is_terminal(),
-        1 => std::io::stdout().is_terminal() && meadow_core::console::ansi(),
-        2 => std::io::stderr().is_terminal() && meadow_core::console::ansi(),
+        1 => std::io::stdout().is_terminal() && meadow_rt::console::ansi(),
+        2 => std::io::stderr().is_terminal() && meadow_rt::console::ansi(),
         _ => false,
     }
 }

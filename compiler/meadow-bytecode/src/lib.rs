@@ -43,8 +43,8 @@
 
 pub mod image;
 
-use meadow_core::Prim;
 use meadow_intern::InternedString;
+use meadow_rt::Prim;
 use std::fmt;
 
 /// A register. There is one flat file, not a frame — see the module docs.
@@ -445,7 +445,7 @@ pub enum Const {
     BigInt(i64),
     Float(f64),
     /// A sized integer literal: its width and wrapped bits.
-    Word(meadow_core::num::Width, u64),
+    Word(meadow_rt::num::Width, u64),
     Float32(f32),
     /// An interned name, loaded as its key: an effect operation's -- see
     /// `meadow_core::Lit::Sym`.
@@ -481,6 +481,10 @@ pub struct Program {
     /// Constructor name per tag. Only for printing and for the structural
     /// equality a `Vector` needs — the machine itself compares tags.
     pub ctors: Vec<InternedString>,
+    /// The constructor playing each runtime role, in role order: what the
+    /// runtime builds and recognizes by role rather than by a name one
+    /// language uses (`meadow_rt::roles`).
+    pub roles: Vec<(meadow_rt::roles::Role, InternedString)>,
     /// Named-field order per constructor name, for `.field` on a `record`
     /// value -- which is constructor data, not an anonymous record.
     pub ctor_fields: std::collections::HashMap<InternedString, Vec<InternedString>>,
@@ -526,8 +530,8 @@ pub struct Program {
     pub sources: Vec<Reg>,
     /// The descriptor of what each of [`Program::entries`] answers, in the
     /// same order, and of what [`Program::entry`] does.
-    pub results: Vec<meadow_core::desc::Desc>,
-    pub entry_result: meadow_core::desc::Desc,
+    pub results: Vec<meadow_rt::desc::Desc>,
+    pub entry_result: meadow_rt::desc::Desc,
 }
 
 /// Where an object's fields come from: see [`Program::fields`].
@@ -583,7 +587,7 @@ pub const NO_SOURCES: u32 = u32::MAX;
 /// it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NameDesc {
-    Known(meadow_core::desc::Desc),
+    Known(meadow_rt::desc::Desc),
     /// Whatever the descriptor in this name says.
     Var(u32),
 }
@@ -610,7 +614,7 @@ impl Program {
     }
 
     /// What the block starting at `pc` answers, if it is an entry point.
-    pub fn result_at(&self, pc: Pc) -> meadow_core::desc::Desc {
+    pub fn result_at(&self, pc: Pc) -> meadow_rt::desc::Desc {
         if self.entry == Some(pc) {
             return self.entry_result;
         }
@@ -618,7 +622,7 @@ impl Program {
             .iter()
             .position(|e| *e == pc)
             .and_then(|i| self.results.get(i).copied())
-            .unwrap_or(meadow_core::desc::ANY)
+            .unwrap_or(meadow_rt::desc::ANY)
     }
 }
 
@@ -664,7 +668,7 @@ pub struct GcMap {
 #[derive(Debug, Clone, Default)]
 pub struct DebugInfo {
     /// Per instruction: the source position it was compiled from, if any.
-    pub locs: Vec<Option<meadow_core::Loc>>,
+    pub locs: Vec<Option<meadow_rt::Loc>>,
     /// Per instruction: which of [`DebugInfo::envs`] holds while it runs.
     pub env_of: Vec<u32>,
     /// The environments the instructions run in, each stored once: which name
@@ -701,12 +705,12 @@ pub struct Region {
     /// The source position in effect where the code that creates this block
     /// was -- for a continuation, the call it is waiting on. `None` for a
     /// definition, which nothing creates.
-    pub origin: Option<meadow_core::Loc>,
+    pub origin: Option<meadow_rt::Loc>,
 }
 
 impl DebugInfo {
     /// Where the instruction at `pc` came from.
-    pub fn loc(&self, pc: Pc) -> Option<meadow_core::Loc> {
+    pub fn loc(&self, pc: Pc) -> Option<meadow_rt::Loc> {
         self.locs.get(pc as usize).copied().flatten()
     }
 
@@ -1019,5 +1023,5 @@ mod tests {
 /// standard library is known past the resolver by its package as well, which
 /// a disassembly has no reason to repeat.
 fn spelled(name: InternedString) -> String {
-    meadow_core::ctor_spelling(&name).to_string()
+    meadow_rt::ctor_spelling(&name).to_string()
 }

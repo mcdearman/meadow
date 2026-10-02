@@ -2,8 +2,8 @@
 //! work on, since a word alone does not say.
 
 use crate::heap::{self, Word};
-use meadow_core::desc;
-use meadow_core::num::{Num, Width};
+use meadow_rt::desc;
+use meadow_rt::num::{Num, Width};
 use num_bigint::{BigInt, Sign};
 
 #[derive(Debug, Clone, Copy, PartialEq)]

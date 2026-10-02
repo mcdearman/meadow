@@ -77,7 +77,7 @@ pub mod x64;
 
 use crate::value::Value;
 use meadow_bytecode::{Cond, Const, Instr, Op, Pc, Program, Reg};
-use meadow_core::OptLevel;
+use meadow_rt::OptLevel;
 use std::collections::HashMap;
 
 /// Where the fields of [`crate::Vm`] native code touches are.
@@ -1504,13 +1504,13 @@ fn header(
 ) -> Option<Vec<u64>> {
     use meadow_bytecode::DESC_REG;
     let operands = program.operands(pc);
-    let descs: Vec<meadow_core::desc::Desc> = (0..n)
+    let descs: Vec<meadow_rt::desc::Desc> = (0..n)
         .map(|k| {
             operands
                 .get(k)
                 .copied()
                 .filter(|d| *d < DESC_REG)
-                .map(|d| d as meadow_core::desc::Desc)
+                .map(|d| d as meadow_rt::desc::Desc)
         })
         .collect::<Option<_>>()?;
     if kind.is_uniform() {
@@ -1522,7 +1522,7 @@ fn header(
             return None;
         }
     }
-    let mut words = vec![0u64; meadow_core::compact::header_slots(kind.is_uniform(), n)];
+    let mut words = vec![0u64; meadow_rt::compact::header_slots(kind.is_uniform(), n)];
     crate::object::write_header(kind, meta, descs.into_iter(), |k, w| words[k] = w);
     Some(words)
 }

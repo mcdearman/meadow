@@ -123,13 +123,13 @@ pub unsafe extern "C" fn meadow_text(text: *const u8, len: i64) -> Word {
             // Safety: the caller's.
             let bytes = unsafe { std::slice::from_raw_parts(text, len as usize) };
             let s = heap::string(bytes);
-            prims::keep(s, meadow_core::desc::REF);
+            prims::keep(s, meadow_rt::desc::REF);
             // Safety: as above; `keep` and `string` do not touch the literals.
             unsafe { (*crate::ctx::get()).literals.insert(text as usize, s) };
             s
         }
     };
-    heap::share(v, meadow_core::desc::REF);
+    heap::share(v, meadow_rt::desc::REF);
     v
 }
 

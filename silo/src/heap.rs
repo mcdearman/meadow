@@ -128,7 +128,7 @@ const fn mutable(kind: u64) -> u64 {
 /// program that keeps its tables in such arrays -- a parser's, a compiler's --
 /// does not have the collector walk them every time one is let go of.
 fn mutable_holding(kind: u64, d: i64) -> u64 {
-    if d == meadow_core::desc::REF || d == meadow_core::desc::ANY {
+    if d == meadow_rt::desc::REF || d == meadow_rt::desc::ANY {
         mutable(kind)
     } else {
         0
@@ -146,7 +146,7 @@ pub const CYCLABLE: u64 = 1 << 19;
 /// `x`, described by `d`, is being stored in the mutable array at `arr`.
 #[inline]
 pub fn note_stored(arr: Word, x: Word, d: i64) {
-    if (d == meadow_core::desc::REF || d == meadow_core::desc::ANY)
+    if (d == meadow_rt::desc::REF || d == meadow_rt::desc::ANY)
         && is_block(x)
         && crate::cycles::may_cycle(x)
     {
@@ -169,7 +169,7 @@ pub fn may_hold_cycles(v: Word) -> bool {
 pub fn holds_refs(v: Word) -> bool {
     !uniform(v) || {
         let d = ((word(v, 1) >> DESC_SHIFT) & 15) as i64;
-        d == meadow_core::desc::REF || d == meadow_core::desc::ANY
+        d == meadow_rt::desc::REF || d == meadow_rt::desc::ANY
     }
 }
 
@@ -426,7 +426,7 @@ pub fn set_field(v: Word, i: usize, x: Word, d: i64) {
 /// `n` references more to `v`, described by `d`: one count written, unless
 /// the block is in a region, which counts each.
 pub fn share_n(v: Word, d: i64, n: usize) {
-    if n == 0 || d != meadow_core::desc::REF || !is_block(v) {
+    if n == 0 || d != meadow_rt::desc::REF || !is_block(v) {
         return;
     }
     if in_region(v) {
@@ -443,7 +443,7 @@ pub fn share_n(v: Word, d: i64, n: usize) {
 /// One reference more to `v`, described by `d`.
 #[inline]
 pub fn share(v: Word, d: i64) {
-    if d == meadow_core::desc::REF && is_block(v) {
+    if d == meadow_rt::desc::REF && is_block(v) {
         // Safety: a live block's count.
         let rc = unsafe { &mut *(v as *mut u32) };
         *rc += 1;
@@ -459,7 +459,7 @@ pub fn share(v: Word, d: i64) {
 /// One reference fewer.
 #[inline]
 pub fn erase(v: Word, d: i64) {
-    if d == meadow_core::desc::REF && is_block(v) {
+    if d == meadow_rt::desc::REF && is_block(v) {
         // Safety: a live block's count.
         let rc = unsafe { &mut *(v as *mut u32) };
         if *rc == 0 {
@@ -771,7 +771,7 @@ impl Heap {
             for i in from..to {
                 let d = field_desc(v, i);
                 let x = word(v, first + i);
-                if d == meadow_core::desc::REF && is_block(x) {
+                if d == meadow_rt::desc::REF && is_block(x) {
                     // Safety: a live block's count.
                     let rc = unsafe { &mut *(x as *mut u32) };
                     if *rc == 0 {
@@ -887,7 +887,7 @@ pub fn build_uniform(kind: u64, meta: u32, n: usize, d: i64) -> Word {
 /// A string of `bytes`, eight to a word.
 pub fn string(bytes: &[u8]) -> Word {
     let n = bytes.len().div_ceil(8);
-    let v = build_uniform(STRING, bytes.len() as u32, n, meadow_core::desc::INT);
+    let v = build_uniform(STRING, bytes.len() as u32, n, meadow_rt::desc::INT);
     for i in 0..n {
         let chunk = &bytes[8 * i..bytes.len().min(8 * i + 8)];
         let mut w = [0u8; 8];
@@ -915,7 +915,7 @@ pub fn reachable(roots: &[(Word, i64)]) -> std::collections::HashSet<usize> {
     let mut seen = std::collections::HashSet::new();
     let mut stack: Vec<(Word, i64)> = roots.to_vec();
     while let Some((w, d)) = stack.pop() {
-        if d != meadow_core::desc::REF || !is_block(w) || !seen.insert(w as usize) {
+        if d != meadow_rt::desc::REF || !is_block(w) || !seen.insert(w as usize) {
             continue;
         }
         if kind(w) != STRING && kind(w) != BIGINT {

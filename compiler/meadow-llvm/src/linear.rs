@@ -85,7 +85,7 @@
 //! and erased with the descriptor it is described by, and the emitted code
 //! asks the descriptor.
 
-use meadow_seq::{Block, Extern, Label, Name, Program, Rep, Statement, Tag};
+use meadow_axcut::{Block, Extern, Label, Name, Program, Rep, Statement, Tag};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -1491,9 +1491,7 @@ fn reusing() -> bool {
 fn packs(op: &Extern) -> bool {
     matches!(
         op,
-        Extern::Prim(
-            meadow_core::Prim::Enter | meadow_core::Prim::Detach | meadow_core::Prim::Reattach
-        )
+        Extern::Prim(meadow_rt::Prim::Enter | meadow_rt::Prim::Detach | meadow_rt::Prim::Reattach)
     )
 }
 
@@ -1645,7 +1643,7 @@ impl Pass<'_> {
     /// A new reuse token's name.
     fn token(&mut self) -> Name {
         self.tokens += 1;
-        meadow_hir::VarId(u32::MAX - self.tokens)
+        meadow_axcut::VarId(u32::MAX - self.tokens)
     }
 
     /// `l`, with the first `let` of `n` fields on each path building in token

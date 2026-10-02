@@ -19,9 +19,9 @@
 //! block whose count is zero takes them without touching a count.
 
 use crate::linear::{L, LBlock, SwitchArm};
-use meadow_core::desc;
-use meadow_core::{Lit, Prim};
-use meadow_seq::{Extern, Name, Program, Rep, VarId};
+use meadow_axcut::{Extern, Name, Program, Rep, VarId};
+use meadow_rt::desc;
+use meadow_rt::{Lit, Prim};
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::rc::Rc;
@@ -146,8 +146,8 @@ fn uses(program: &Program, want: &[Prim]) -> bool {
 /// Is there anywhere in the program a primitive `want` says yes to, given
 /// what it is applied to?
 fn knots(program: &Program, want: &dyn Fn(&Prim, &[Name]) -> bool) -> bool {
-    fn in_statement(s: &meadow_seq::Statement, want: &dyn Fn(&Prim, &[Name]) -> bool) -> bool {
-        use meadow_seq::Statement::*;
+    fn in_statement(s: &meadow_axcut::Statement, want: &dyn Fn(&Prim, &[Name]) -> bool) -> bool {
+        use meadow_axcut::Statement::*;
         match s {
             Substitute(_, b) => in_statement(&b.body, want),
             Jump(_) | Invoke(..) | Error(_) => false,
@@ -161,9 +161,9 @@ fn knots(program: &Program, want: &dyn Fn(&Prim, &[Name]) -> bool) -> bool {
             }
             Extern { op, args, blocks } => {
                 let here = match op {
-                    meadow_seq::Extern::Prim(p) => want(p, args),
-                    meadow_seq::Extern::PrimK(p, _) => want(p, args),
-                    meadow_seq::Extern::BranchPrim(p) => want(p, args),
+                    meadow_axcut::Extern::Prim(p) => want(p, args),
+                    meadow_axcut::Extern::PrimK(p, _) => want(p, args),
+                    meadow_axcut::Extern::BranchPrim(p) => want(p, args),
                     _ => false,
                 };
                 here || blocks.iter().any(|b| in_statement(&b.body, want))
@@ -346,7 +346,7 @@ impl<'p> Module<'p> {
     }
 
     /// A definition: its function.
-    pub fn def(&mut self, label: meadow_seq::Label, b: &LBlock) -> Result<(), Error> {
+    pub fn def(&mut self, label: meadow_axcut::Label, b: &LBlock) -> Result<(), Error> {
         let params: Vec<String> = (0..b.params.len()).map(|i| format!("%a{i}")).collect();
         let mut f = Fun::new(format!("@mw.L{}", label.0), params.clone());
         self.safe_point(&mut f);
@@ -545,7 +545,7 @@ impl<'p> Module<'p> {
             Some(Rep::Float) => D::Known(desc::FLOAT),
             Some(Rep::Str) => D::Known(desc::STR),
             Some(Rep::Bits(d)) => D::Known(*d),
-            Some(Rep::Var(d)) if *d == meadow_seq::NO_DESC => D::Known(desc::ANY),
+            Some(Rep::Var(d)) if *d == meadow_axcut::NO_DESC => D::Known(desc::ANY),
             Some(Rep::Var(d)) => match env.get(&VarId(*d)) {
                 Some(V::Val(v)) => D::Dyn(v.clone()),
                 _ => D::Known(desc::ANY),
@@ -1559,7 +1559,7 @@ impl<'p> Module<'p> {
                     // how it is represented, as the VM is.
                     _ if *p == Prim::ThreadSpawn => {
                         let answer = match result.and_then(|r| self.program.threads.get(&r)) {
-                            Some(Rep::Var(d)) if *d != meadow_seq::NO_DESC => {
+                            Some(Rep::Var(d)) if *d != meadow_axcut::NO_DESC => {
                                 match env.get(&VarId(*d)) {
                                     Some(V::Val(v)) => D::Dyn(v.clone()),
                                     // Not `ANY`: Silo would hand the answer
@@ -2201,7 +2201,7 @@ impl<'p> Module<'p> {
 
     /// The whole module's text, around its functions: the method table, the
     /// runtime's declarations, the entry point and the program's tables.
-    pub fn text(self, entry: meadow_seq::Label, result: i64, fingerprint: &str) -> String {
+    pub fn text(self, entry: meadow_axcut::Label, result: i64, fingerprint: &str) -> String {
         self.units(Entries::Main(entry), result, fingerprint, usize::MAX)
             .remove(0)
     }
@@ -2210,7 +2210,7 @@ impl<'p> Module<'p> {
     /// [`Module::units`].
     pub fn text_split(
         self,
-        entry: meadow_seq::Label,
+        entry: meadow_axcut::Label,
         result: i64,
         fingerprint: &str,
         unit: usize,
@@ -2222,13 +2222,13 @@ impl<'p> Module<'p> {
     /// and a `main` that runs the one its first argument numbers.
     pub fn text_tests(
         self,
-        entries: &[meadow_seq::Label],
+        entries: &[meadow_axcut::Label],
         fingerprint: &str,
         unit: usize,
     ) -> Vec<String> {
         self.units(
             Entries::Tests(entries.to_vec()),
-            meadow_core::desc::ANY,
+            meadow_rt::desc::ANY,
             fingerprint,
             unit,
         )
@@ -2424,6 +2424,16 @@ impl<'p> Module<'p> {
         }
         let _ = writeln!(out, "@meadow_ctor_fields = constant {}", array(&fields));
         let _ = writeln!(out, "@meadow_ctor_count = constant i64 {count}");
+        // The constructor playing each runtime role, in `Role::ALL`'s order,
+        // which the runtime reads them in: see `meadow_rt::roles`.
+        let roles: Vec<String> = meadow_rt::roles::Role::ALL
+            .into_iter()
+            .map(|role| match self.program.role(role) {
+                Some(c) => format!("ptr {}", self.cstr(&c).0),
+                None => "ptr null".to_string(),
+            })
+            .collect();
+        let _ = writeln!(out, "@meadow_role_names = constant {}", array(&roles));
         let syms: Vec<String> = self.syms.clone().iter().map(|s| s.to_string()).collect();
         let mut sym_ptrs = Vec::new();
         for s in &syms {
@@ -2883,8 +2893,8 @@ impl Fun {
 /// What a module's `main` runs: the program's entry point, or one of a table
 /// of tests.
 enum Entries {
-    Main(meadow_seq::Label),
-    Tests(Vec<meadow_seq::Label>),
+    Main(meadow_axcut::Label),
+    Tests(Vec<meadow_axcut::Label>),
 }
 
 /// Sharing and erasing, the paper's `share` and `erase`, as the module's own
@@ -3164,10 +3174,10 @@ fn direct(p: Prim) -> Option<(&'static str, Descs)> {
 /// the primitive means nobody else can see the value, and it may be changed in
 /// place -- which is how `arrayPush` grows an array without copying it, and
 /// how a record whose type says where the label is gets its field replaced.
-pub fn consumes(op: &meadow_seq::Extern) -> Option<usize> {
+pub fn consumes(op: &meadow_axcut::Extern) -> Option<usize> {
     match op {
-        meadow_seq::Extern::Prim(Prim::ArrayPush | Prim::ArrayConcat)
-        | meadow_seq::Extern::Extend(_, Some(_)) => Some(0),
+        meadow_axcut::Extern::Prim(Prim::ArrayPush | Prim::ArrayConcat)
+        | meadow_axcut::Extern::Extend(_, Some(_)) => Some(0),
         _ => None,
     }
 }

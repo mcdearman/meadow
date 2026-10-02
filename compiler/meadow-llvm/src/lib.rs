@@ -16,7 +16,7 @@
 pub mod emit;
 pub mod linear;
 
-use meadow_seq::Program;
+use meadow_axcut::Program;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
@@ -77,7 +77,7 @@ pub fn compile_split(program: &Program, unit: usize, conv: CallConv) -> Result<V
         .results
         .get(&entry)
         .and_then(|r| r.desc())
-        .unwrap_or(meadow_core::desc::ANY);
+        .unwrap_or(meadow_rt::desc::ANY);
     Ok(module.text_split(entry, result, fingerprint(), unit))
 }
 
@@ -87,7 +87,7 @@ pub fn compile_split(program: &Program, unit: usize, conv: CallConv) -> Result<V
 /// [`compile_split`] makes them.
 pub fn compile_tests(
     program: &Program,
-    tests: &[meadow_seq::Label],
+    tests: &[meadow_axcut::Label],
     unit: usize,
     conv: CallConv,
 ) -> Result<Vec<String>, Error> {

@@ -64,7 +64,7 @@ use crate::object::Head;
 use crate::old::{self, Block, OLD_BASE};
 use crate::region::{self, REGION_BASE};
 use crate::value::Addr;
-use meadow_core::desc;
+use meadow_rt::desc;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())

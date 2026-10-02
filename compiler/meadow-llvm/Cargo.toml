@@ -9,10 +9,13 @@ name = "meadow_llvm"
 path = "src/lib.rs"
 
 [dependencies]
-meadow-core.workspace = true
-meadow-hir.workspace = true
+meadow-axcut.workspace = true
 meadow-intern.workspace = true
-meadow-seq.workspace = true
+meadow-rt.workspace = true
 
 [dev-dependencies]
 meadow-compiler = { path = "../meadow-compiler" }
+# The tests lower real programs, which takes Meadow's front end.
+meadow-core.workspace = true
+meadow-hir.workspace = true
+meadow-seq.workspace = true

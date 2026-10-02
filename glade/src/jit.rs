@@ -37,7 +37,7 @@
 use crate::abi::NativeFn;
 use crate::codegen::{self, Arch};
 use meadow_bytecode::{Pc, Program};
-use meadow_core::OptLevel;
+use meadow_rt::OptLevel;
 use std::ffi::c_void;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};

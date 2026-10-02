@@ -9,8 +9,7 @@ name = "meadow_codegen"
 path = "src/lib.rs"
 
 [dependencies]
+meadow-axcut.workspace = true
 meadow-bytecode.workspace = true
-meadow-core.workspace = true
-meadow-hir.workspace = true
 meadow-intern.workspace = true
-meadow-seq.workspace = true
+meadow-rt.workspace = true

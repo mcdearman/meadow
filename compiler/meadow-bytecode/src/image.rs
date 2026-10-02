@@ -7,10 +7,10 @@
 //! give it to yet.
 
 use crate::{Const, Instr, Program};
-use meadow_core::{Prim, num::Width};
 use meadow_intern::InternedString;
+use meadow_rt::{Prim, num::Width};
 
-const MAGIC: &[u8; 8] = b"MDWIMG05";
+const MAGIC: &[u8; 8] = b"MDWIMG06";
 
 /// `program`, as bytes [`decode`] reads back.
 pub fn encode(program: &Program) -> Vec<u8> {
@@ -50,6 +50,11 @@ pub fn encode(program: &Program) -> Vec<u8> {
         w.str(o);
     }
     w.strs(&program.ctors);
+    w.u32(program.roles.len() as u32);
+    for (role, ctor) in &program.roles {
+        w.str(&InternedString::from(role.name()));
+        w.str(ctor);
+    }
     let mut fields: Vec<_> = program.ctor_fields.iter().collect();
     fields.sort_by(|a, b| a.0.cmp(b.0));
     w.u32(fields.len() as u32);
@@ -145,6 +150,12 @@ pub fn decode(bytes: &[u8]) -> Result<Program, String> {
     }
     p.ctors = r.strs()?;
     for _ in 0..r.u32()? {
+        let name = r.str()?;
+        let role =
+            meadow_rt::roles::Role::named(&name).ok_or_else(|| format!("unknown role `{name}`"))?;
+        p.roles.push((role, r.str()?));
+    }
+    for _ in 0..r.u32()? {
         let ctor = r.str()?;
         let names = r.strs()?;
         p.ctor_fields.insert(ctor, names);
@@ -187,9 +198,9 @@ pub fn decode(bytes: &[u8]) -> Result<Program, String> {
     p.results = r
         .take(n)?
         .iter()
-        .map(|b| *b as meadow_core::desc::Desc)
+        .map(|b| *b as meadow_rt::desc::Desc)
         .collect();
-    p.entry_result = r.take(1)?[0] as meadow_core::desc::Desc;
+    p.entry_result = r.take(1)?[0] as meadow_rt::desc::Desc;
     if r.at != bytes.len() {
         return Err("trailing bytes after the image".into());
     }
@@ -354,6 +365,10 @@ mod tests {
         p.prims = vec![Prim::Add, Prim::ToWord(Width::I16), Prim::TakeOnce];
         p.ops = vec![("Console".into(), "writeOutput".into())];
         p.ctors = vec!["Nil".into(), "Cons".into()];
+        p.roles = vec![
+            (meadow_rt::roles::Role::Nil, "Nil".into()),
+            (meadow_rt::roles::Role::Cons, "Cons".into()),
+        ];
         p.ctor_fields
             .insert("Point".into(), vec!["x".into(), "y".into()]);
         p.messages = vec!["non-exhaustive pattern match".into()];
@@ -370,12 +385,9 @@ mod tests {
         }];
         p.gc_at = vec![0, crate::NO_MAP];
         p.operands_at = vec![crate::NO_OPERANDS, 0];
-        p.operands = vec![
-            meadow_core::desc::INT as crate::DescSrc,
-            crate::DESC_REG + 3,
-        ];
-        p.results = vec![meadow_core::desc::REF, meadow_core::desc::STR];
-        p.entry_result = meadow_core::desc::UNIT;
+        p.operands = vec![meadow_rt::desc::INT as crate::DescSrc, crate::DESC_REG + 3];
+        p.results = vec![meadow_rt::desc::REF, meadow_rt::desc::STR];
+        p.entry_result = meadow_rt::desc::UNIT;
         let back = decode(&encode(&p)).expect("decodes");
         assert_eq!(format!("{:?}", back.code), format!("{:?}", p.code));
         assert_eq!(back.consts, p.consts);
@@ -385,6 +397,7 @@ mod tests {
         assert_eq!(back.prims, p.prims);
         assert_eq!(back.ops, p.ops);
         assert_eq!(back.ctors, p.ctors);
+        assert_eq!(back.roles, p.roles);
         assert_eq!(back.ctor_fields, p.ctor_fields);
         assert_eq!(back.messages, p.messages);
         assert_eq!(
@@ -413,11 +426,11 @@ mod tests {
         p.regs = 1;
         p.gc_at = vec![crate::NO_MAP];
         p.operands_at = vec![crate::NO_OPERANDS];
-        p.entry_result = meadow_core::desc::UNIT;
-        let mut want: Vec<u8> = b"MDWIMG05".to_vec();
+        p.entry_result = meadow_rt::desc::UNIT;
+        let mut want: Vec<u8> = b"MDWIMG06".to_vec();
         want.extend([1, 0, 0, 0]); // code
         want.extend([6, 0, 0, 0, 0, 0, 0, 0]); // halt r0
-        want.extend([0; 4 * 12]); // consts .. entries, all empty
+        want.extend([0; 4 * 13]); // consts .. entries, all empty
         want.push(0); // no entry
         want.extend([1, 0]); // regs
         want.extend([0; 4]); // gc_maps

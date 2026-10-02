@@ -20,6 +20,7 @@ use crate::Error;
 use crate::heap::Kind;
 use crate::value::Value;
 use crate::vm::Vm;
+use meadow_rt::roles::{Role, TUPLE};
 
 use num_bigint::{BigInt, Sign};
 use std::fmt::Write;
@@ -37,11 +38,41 @@ fn bare_ctor(name: &str) -> &str {
     }
 }
 
-fn is_vector_ctor(name: &str) -> bool {
-    matches!(name, "Vector.Empty" | "Vector.Single" | "Vector.Full")
-}
-
 impl Vm<'_> {
+    /// The constructor playing `role` in this program, if it declares one --
+    /// see `meadow_rt::roles`.
+    pub(crate) fn role(&self, role: Role) -> Option<meadow_intern::InternedString> {
+        self.program
+            .roles
+            .iter()
+            .find(|(r, _)| *r == role)
+            .map(|(_, c)| *c)
+    }
+
+    /// The tag of the constructor playing `role`: one no `switch` arm has
+    /// where the program declares none, as [`Vm::ctor_tag`] gives an unknown
+    /// name.
+    pub(crate) fn role_tag(&self, role: Role) -> u32 {
+        self.role(role).map_or(u32::MAX, |c| self.ctor_tag(&c))
+    }
+
+    /// The role the constructor called `name` plays, if any.
+    pub(crate) fn role_of(&self, name: &str) -> Option<Role> {
+        self.program
+            .roles
+            .iter()
+            .find(|(_, c)| &**c == name)
+            .map(|(r, _)| *r)
+    }
+
+    /// Is `name` one of a vector's constructors?
+    pub(crate) fn is_vector_ctor(&self, name: &str) -> bool {
+        matches!(
+            self.role_of(name),
+            Some(Role::VectorEmpty | Role::VectorSingle | Role::VectorFull)
+        )
+    }
+
     /// The tag a constructor has in this program, for the primitives that build
     /// one. A name the program never mentions gets a tag no `switch` arm has,
     /// which is the same thing the AxCut machine does.
@@ -64,9 +95,9 @@ impl Vm<'_> {
                 return None;
             }
             let name = self.program.ctor(self.heap.meta(a))?;
-            match (&*name, self.heap.len(a)) {
-                ("List.Nil", 0) => return Some(out),
-                ("List.Cons", 2) => {
+            match (self.role_of(&name), self.heap.len(a)) {
+                (Some(Role::Nil), 0) => return Some(out),
+                (Some(Role::Cons), 2) => {
                     out.push(self.heap.field(a, 0));
                     cur = self.heap.field(a, 1);
                 }
@@ -83,10 +114,10 @@ impl Vm<'_> {
         }
         let name = self.program.ctor(self.heap.meta(a))?;
         let n = self.heap.len(a);
-        match (&*name, n) {
-            ("Vector.Empty", 0) => Some(Vec::new()),
-            ("Vector.Single", 1) => self.array_elems(self.heap.field(a, 0)),
-            ("Vector.Full", 7) => {
+        match (self.role_of(&name), n) {
+            (Some(Role::VectorEmpty), 0) => Some(Vec::new()),
+            (Some(Role::VectorSingle), 1) => self.array_elems(self.heap.field(a, 0)),
+            (Some(Role::VectorFull), 7) => {
                 let mut out = Vec::new();
                 for i in [2usize, 3] {
                     out.extend(self.array_elems(self.heap.field(a, i))?);
@@ -107,12 +138,12 @@ impl Vm<'_> {
             return None;
         }
         let name = self.program.ctor(self.heap.meta(a))?;
-        match (&*name, self.heap.len(a)) {
-            ("VNode.Leaf", 1) => {
+        match (self.role_of(&name), self.heap.len(a)) {
+            (Some(Role::VNodeLeaf), 1) => {
                 out.extend(self.array_elems(self.heap.field(a, 0))?);
                 Some(())
             }
-            ("VNode.Branch", 2) => {
+            (Some(Role::VNodeBranch), 2) => {
                 for kid in self.array_elems(self.heap.field(a, 1))? {
                     self.vector_node(kid, out)?;
                 }
@@ -185,11 +216,11 @@ impl Vm<'_> {
             Value::Int(n) => {
                 let _ = write!(out, "{n}");
             }
-            Value::Float(x) => out.push_str(&meadow_core::fmt_float(x)),
+            Value::Float(x) => out.push_str(&meadow_rt::fmt_float(x)),
             Value::Word(w, b) => {
                 let _ = write!(out, "{}", w.value(b));
             }
-            Value::Float32(x) => out.push_str(&meadow_core::num::fmt_float32(x)),
+            Value::Float32(x) => out.push_str(&meadow_rt::num::fmt_float32(x)),
             // Printed as the constructors a program names them by.
             Value::Bool(b) => out.push_str(if b { "True" } else { "False" }),
             Value::Str(s) => {
@@ -259,22 +290,24 @@ impl Vm<'_> {
             }
         };
         match &*name {
-            "#tuple" => {
+            TUPLE => {
                 out.push('(');
                 self.join(out, &self.heap.fields(a), ", ", depth);
                 out.push(')');
             }
-            "List.Nil" | "List.Cons" => match self.list_items(v) {
-                Some(xs) => {
-                    out.push('[');
-                    self.join(out, &xs, "; ", depth);
-                    out.push(']');
+            n if matches!(self.role_of(n), Some(Role::Nil | Role::Cons)) => {
+                match self.list_items(v) {
+                    Some(xs) => {
+                        out.push('[');
+                        self.join(out, &xs, "; ", depth);
+                        out.push(']');
+                    }
+                    None => {
+                        let _ = write!(out, "{}(..)", bare_ctor(&name));
+                    }
                 }
-                None => {
-                    let _ = write!(out, "{}(..)", bare_ctor(&name));
-                }
-            },
-            n if is_vector_ctor(n) => match self.vector_elems(v) {
+            }
+            n if self.is_vector_ctor(n) => match self.vector_elems(v) {
                 Some(xs) => {
                     out.push('[');
                     self.join(out, &xs, ", ", depth);
@@ -316,7 +349,7 @@ impl Vm<'_> {
     /// last word's spare bytes zero, which is the very layout
     /// [`meadow_core::hash::Hasher::str`] hashes -- so the words go straight in
     /// and the result is the same as if they had been made a `String` first.
-    fn hash_packed(&self, a: crate::value::Addr, h: &mut meadow_core::hash::Hasher) {
+    fn hash_packed(&self, a: crate::value::Addr, h: &mut meadow_rt::hash::Hasher) {
         let len = self.heap.meta(a) as usize;
         h.str_packed(
             len,
@@ -330,11 +363,11 @@ impl Vm<'_> {
     /// -- something with children, which [`Vm::hash_value`] walks with a work
     /// stack. An `Err` is a value that cannot be hashed at all, which is the
     /// same answer either way and is better given without allocating first.
-    fn hash_flat(&self, v: Value, h: &mut meadow_core::hash::Hasher) -> Result<bool, Error> {
-        use meadow_core::hash::unhashable;
+    fn hash_flat(&self, v: Value, h: &mut meadow_rt::hash::Hasher) -> Result<bool, Error> {
+        use meadow_rt::hash::unhashable;
         match v {
             Value::Int(_) | Value::Word(..) | Value::Float(_) | Value::Float32(_) => {
-                meadow_core::num::hash_into(h, &self.num(v)?)
+                meadow_rt::num::hash_into(h, &self.num(v)?)
             }
             Value::Bool(b) => h.bool(b),
             Value::Char(c) => h.char(c),
@@ -348,7 +381,7 @@ impl Vm<'_> {
                     }
                     Kind::BigInt => match self.bigint_at(v) {
                         Some(b) => {
-                            meadow_core::num::hash_into(h, &meadow_core::num::Num::Big(b));
+                            meadow_rt::num::hash_into(h, &meadow_rt::num::Num::Big(b));
                             Ok(true)
                         }
                         None => Err(Error {
@@ -384,7 +417,7 @@ impl Vm<'_> {
     /// `hash`, fed to [`meadow_core::hash::Hasher`] in the order every engine
     /// uses: a value's head, then its parts left to right.
     pub fn hash_value(&self, v: Value) -> Result<i64, Error> {
-        use meadow_core::hash::{Hasher, unhashable};
+        use meadow_rt::hash::{Hasher, unhashable};
         enum Work {
             Val(Value),
             Label(String),
@@ -409,7 +442,7 @@ impl Vm<'_> {
             };
             let a = match v {
                 Value::Int(_) | Value::Word(..) | Value::Float(_) | Value::Float32(_) => {
-                    meadow_core::num::hash_into(&mut h, &self.num(v)?);
+                    meadow_rt::num::hash_into(&mut h, &self.num(v)?);
                     continue;
                 }
                 Value::Bool(b) => {
@@ -440,7 +473,7 @@ impl Vm<'_> {
                 Kind::Data => {
                     let name = self.program.ctor(self.heap.meta(a));
                     let name = name.as_deref().unwrap_or("?");
-                    if is_vector_ctor(name) {
+                    if self.is_vector_ctor(name) {
                         let Some(xs) = self.vector_elems(v) else {
                             let msg = format!("hash: a malformed vector ({name})");
                             return Err(Error { msg });
@@ -474,7 +507,7 @@ impl Vm<'_> {
                     }
                 }
                 Kind::BigInt => match self.bigint_at(v) {
-                    Some(b) => meadow_core::num::hash_into(&mut h, &meadow_core::num::Num::Big(b)),
+                    Some(b) => meadow_rt::num::hash_into(&mut h, &meadow_rt::num::Num::Big(b)),
                     None => {
                         return Err(Error {
                             msg: "hash: a malformed BigInt".into(),
@@ -531,7 +564,7 @@ impl Vm<'_> {
                 // value it stands beside -- see `meadow_core::num`.
                 (x, y) if is_number(x) || is_number(y) => {
                     match (self.try_num(x), self.try_num(y)) {
-                        (Some(p), Some(q)) if meadow_core::num::num_eq(&p, &q) => {}
+                        (Some(p), Some(q)) if meadow_rt::num::num_eq(&p, &q) => {}
                         _ => return false,
                     }
                 }
@@ -551,7 +584,7 @@ impl Vm<'_> {
                             // A `Vector` is a tree, so compare the sequences the
                             // two denote rather than their shapes.
                             let vectors = matches!((nx, ny), (Some(nx), Some(ny))
-                                if is_vector_ctor(&nx) && is_vector_ctor(&ny));
+                                if self.is_vector_ctor(&nx) && self.is_vector_ctor(&ny));
                             if vectors {
                                 match (self.vector_elems(a), self.vector_elems(b)) {
                                     (Some(xs), Some(ys)) if xs.len() == ys.len() => {

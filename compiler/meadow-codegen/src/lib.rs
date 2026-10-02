@@ -133,15 +133,15 @@
 //! capture unlinks whole chunks instead of copying frames. See
 //! `docs/RUNTIME.md`, "The call stack is a frame stack".
 
+use meadow_axcut as seq;
+use meadow_axcut::{Block, Extern, Label, Name, Rep, Statement};
 use meadow_bytecode::{
     Cond, Const, DESC_REG, DescSrc, GcMap, Held, Instr, NO_MAP, NO_OPERANDS, NO_SOURCES, NameDesc,
     Op, Pc, Program, Reg,
 };
-use meadow_core::desc::{self, Desc};
-use meadow_core::{Lit, Prim};
 use meadow_intern::InternedString;
-use meadow_seq as seq;
-use meadow_seq::{Block, Extern, Label, Name, Rep, Statement};
+use meadow_rt::desc::{self, Desc};
+use meadow_rt::{Lit, Prim};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,19 +177,19 @@ pub fn compile_with_debug_info(seq: &seq::Program) -> Result<Program, Error> {
 /// What [`compile_with_debug_info`] collects as it goes.
 #[derive(Default)]
 struct Recorder {
-    locs: Vec<Option<meadow_core::Loc>>,
+    locs: Vec<Option<meadow_rt::Loc>>,
     env_of: Vec<u32>,
     envs: Vec<Vec<(u32, Reg)>>,
     env_ids: HashMap<Vec<(u32, Reg)>, u32>,
     /// The environment the next instruction runs in.
     env: u32,
     /// The position the next instruction was written at.
-    loc: Option<meadow_core::Loc>,
+    loc: Option<meadow_rt::Loc>,
     /// Per region: the definition it belongs to, and the position in effect
     /// where it was discovered. A continuation's first instructions belong to
     /// the call that made it until they say otherwise.
     region_name: Vec<InternedString>,
-    region_loc: Vec<Option<meadow_core::Loc>>,
+    region_loc: Vec<Option<meadow_rt::Loc>>,
     /// The region being emitted.
     current: usize,
     /// The environment last noted, and names from the environment around a
@@ -651,6 +651,12 @@ impl<'a> Gen<'a> {
             prims: self.prims,
             ops: self.ops,
             ctors,
+            // In role order, so the image is the same every time.
+            roles: {
+                let mut roles: Vec<_> = self.seq.roles.iter().map(|(r, c)| (*r, *c)).collect();
+                roles.sort_by_key(|(r, _)| r.index());
+                roles
+            },
             ctor_fields: self.seq.ctor_fields.clone(),
             messages: self.messages,
             entries,

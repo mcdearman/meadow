@@ -22,7 +22,7 @@
 use super::vector::{Lanes, Plan, VOp};
 use super::{Emit, FloatOp, IntOp, Label, Operand, UnaryOp, layout, thin};
 use meadow_bytecode::{Cond, Instr, Op, Pc, Reg};
-use meadow_core::OptLevel;
+use meadow_rt::OptLevel;
 
 const X0: u32 = 0;
 const X1: u32 = 1;
@@ -1159,7 +1159,7 @@ impl Emit for Asm {
         }
         // The captures follow the header, which is longer than two words past
         // `compact::INLINE_DESCS` of them: see `object::write_header`.
-        let hdr = meadow_core::compact::header_slots(false, captures as usize) as u32;
+        let hdr = meadow_rt::compact::header_slots(false, captures as usize) as u32;
         for i in 0..captures {
             self.ldr(PIN_REGS[i as usize], X12, (hdr + i) * 8);
         }

@@ -15,7 +15,7 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 meadow-bytecode = { path = "../compiler/meadow-bytecode" }
-meadow-core = { path = "../compiler/meadow-core" }
+meadow-rt = { path = "../compiler/meadow-rt" }
 meadow-intern = { path = "../compiler/meadow-intern" }
 num-bigint = "0.4"
 num-traits = "0.2"
@@ -25,6 +25,7 @@ num-traits = "0.2"
 # source, the AxCut back end to turn one into bytecode, and the CEK machine to
 # say what the answer should be.
 meadow-compiler = { path = "../compiler/meadow-compiler" }
+meadow-core = { path = "../compiler/meadow-core" }
 meadow-seq = { path = "../compiler/meadow-seq" }
 meadow-codegen = { path = "../compiler/meadow-codegen" }
 meadow-eval = { path = "../eval" }
@@ -44,6 +45,9 @@ codegen-units = 1
 opt-level = 2
 
 [profile.dev.package.meadow-core]
+opt-level = 2
+
+[profile.dev.package.meadow-rt]
 opt-level = 2
 
 [target.'cfg(windows)'.dev-dependencies]

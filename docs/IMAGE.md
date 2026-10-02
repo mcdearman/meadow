@@ -44,32 +44,33 @@ follow one another byte for byte.
 
 In this order, and nothing after the last field -- trailing bytes are an error.
 
-| #   | field             | type                         | what it is                                                                                     |
-| --- | ----------------- | ---------------------------- | ---------------------------------------------------------------------------------------------- |
-| 0   | magic             | 8 bytes                      | `MDWIMG05` (ASCII)                                                                             |
-| 1   | `code`            | `vec<instr>`                 | the instructions, 8 bytes each -- [below](#instructions)                                       |
-| 2   | `consts`          | `vec<const>`                 | what `Const`, `PrimK`, `JumpUnlessPrimK` load -- [below](#constants)                           |
-| 3   | `methods`         | `vec<vec<pc>>`               | method tables: entry pcs. `Closure` and `Frame` name a table by index; `Invoke` names a method |
-| 4   | `method_captures` | `bytes`                      | per method table: how many captures an object made with it holds                               |
-| 5   | `method_params`   | `vec<bytes>`                 | per method table, per method: how many registers its block takes, captures included            |
-| 6   | `shapes`          | `vec<vec<str>>`              | per `MakeRecord` shape: field names, in argument order                                         |
-| 7   | `labels`          | `vec<str>`                   | field names for `Select` and `Extend`                                                          |
-| 8   | `prims`           | `vec<u16>`                   | which primitive each `Prim*` instruction's index means: `meadow_core::Prim::code`              |
-| 9   | `ops`             | `vec<(str, str)>`            | `(effect, operation)` for `Native`                                                             |
-| 10  | `ctors`           | `vec<str>`                   | constructor name per tag (canonical, `Type.Ctor`)                                              |
-| 11  | `ctor_fields`     | `vec<(str, vec<str>)>`       | named-field order per constructor, **sorted by constructor name** (byte order)                 |
-| 12  | `messages`        | `vec<str>`                   | what each `Error` says                                                                         |
-| 13  | `entries`         | `vec<pc>`                    | entry point per top-level definition, in the compiler's label order                            |
-| 14  | `entry`           | `u8`, then `pc` if it is `1` | the program's entry point: `0` for none, `1` followed by the pc                                |
-| 15  | `regs`            | `u16`                        | the most registers any block needs; at most 256                                                |
-| 16  | `gc_maps`         | `vec<gcmap>`                 | the distinct register maps -- [below](#collector-maps)                                         |
-| 17  | `gc_at`           | `vec<u32>`                   | per instruction: its map's index, or `0xFFFFFFFF` if it cannot collect                         |
-| 18  | `operands_at`     | `vec<u32>`                   | per instruction: where its operand descriptors start in `operands`, or `0xFFFFFFFF` for none   |
-| 19  | `operands`        | `vec<u16>`                   | operand descriptors -- [below](#descriptors)                                                   |
-| 20  | `sources_at`      | `vec<u32>`                   | empty, or per instruction: where its field registers start in `sources`, or `0xFFFFFFFF`       |
-| 21  | `sources`         | `bytes`                      | field registers -- [below](#field-registers)                                                   |
-| 22  | `results`         | `bytes`                      | per entry of `entries`: the descriptor of what it answers                                      |
-| 23  | `entry_result`    | `u8`                         | the descriptor of what `entry` answers                                                         |
+| #   | field             | type                         | what it is                                                                                          |
+| --- | ----------------- | ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| 0   | magic             | 8 bytes                      | `MDWIMG06` (ASCII)                                                                                  |
+| 1   | `code`            | `vec<instr>`                 | the instructions, 8 bytes each -- [below](#instructions)                                            |
+| 2   | `consts`          | `vec<const>`                 | what `Const`, `PrimK`, `JumpUnlessPrimK` load -- [below](#constants)                                |
+| 3   | `methods`         | `vec<vec<pc>>`               | method tables: entry pcs. `Closure` and `Frame` name a table by index; `Invoke` names a method      |
+| 4   | `method_captures` | `bytes`                      | per method table: how many captures an object made with it holds                                    |
+| 5   | `method_params`   | `vec<bytes>`                 | per method table, per method: how many registers its block takes, captures included                 |
+| 6   | `shapes`          | `vec<vec<str>>`              | per `MakeRecord` shape: field names, in argument order                                              |
+| 7   | `labels`          | `vec<str>`                   | field names for `Select` and `Extend`                                                               |
+| 8   | `prims`           | `vec<u16>`                   | which primitive each `Prim*` instruction's index means: `meadow_rt::Prim::code`                   |
+| 9   | `ops`             | `vec<(str, str)>`            | `(effect, operation)` for `Native`                                                                  |
+| 10  | `ctors`           | `vec<str>`                   | constructor name per tag (canonical, `Type.Ctor`)                                                   |
+| 11  | `roles`           | `vec<(str, str)>`            | the constructor playing each runtime role: the role's name, then the constructor -- [below](#roles) |
+| 12  | `ctor_fields`     | `vec<(str, vec<str>)>`       | named-field order per constructor, **sorted by constructor name** (byte order)                      |
+| 13  | `messages`        | `vec<str>`                   | what each `Error` says                                                                              |
+| 14  | `entries`         | `vec<pc>`                    | entry point per top-level definition, in the compiler's label order                                 |
+| 15  | `entry`           | `u8`, then `pc` if it is `1` | the program's entry point: `0` for none, `1` followed by the pc                                     |
+| 16  | `regs`            | `u16`                        | the most registers any block needs; at most 256                                                     |
+| 17  | `gc_maps`         | `vec<gcmap>`                 | the distinct register maps -- [below](#collector-maps)                                              |
+| 18  | `gc_at`           | `vec<u32>`                   | per instruction: its map's index, or `0xFFFFFFFF` if it cannot collect                              |
+| 19  | `operands_at`     | `vec<u32>`                   | per instruction: where its operand descriptors start in `operands`, or `0xFFFFFFFF` for none        |
+| 20  | `operands`        | `vec<u16>`                   | operand descriptors -- [below](#descriptors)                                                        |
+| 21  | `sources_at`      | `vec<u32>`                   | empty, or per instruction: where its field registers start in `sources`, or `0xFFFFFFFF`            |
+| 22  | `sources`         | `bytes`                      | field registers -- [below](#field-registers)                                                        |
+| 23  | `results`         | `bytes`                      | per entry of `entries`: the descriptor of what it answers                                           |
+| 24  | `entry_result`    | `u8`                         | the descriptor of what `entry` answers                                                              |
 
 Debug information (`meadow_bytecode::DebugInfo`) is **not** in the image. A
 debugger and a profiler build their own image in memory, from source.
@@ -106,8 +107,8 @@ unknown opcode is an error at load.
 | 8   | `MakeData`      | 21  | `JumpUnlessPrimK` | 34  | `DivF`  | 47  | `UshrI`  |
 | 9   | `MakeArray`     | 22  | `Native`          | 35  | `CmpI`  | 48  | `UshrIK` |
 | 10  | `MakeRecord`    | 23  | `AddI`            | 36  | `CmpIK` | 49  | `PopI`   |
-| 11  | `Field`         | 24  | `SubI`            | 37  | `CmpF`  | 50  | `ItoF`   |
-| 12  | `Select`        | 25  | `MulI`            | 38  | `BrI`   | 51  | `Frame`  |
+| 12  | `Field`         | 24  | `SubI`            | 37  | `CmpF`  | 50  | `ItoF`   |
+| 13  | `Select`        | 25  | `MulI`            | 38  | `BrI`   | 51  | `Frame`  |
 
 What each does with `a`, `b`, `c` and `imm` is on the variant in
 `compiler/meadow-bytecode/src/lib.rs`, and `meadow dis` prints any image in
@@ -146,18 +147,18 @@ A **descriptor** says how a word is represented, for whoever has to know: the
 collector, `show`, equality, a generic primitive. They are
 `meadow_core::desc`:
 
-| value | name      | the word is                                                               |
-| ----- | --------- | ------------------------------------------------------------------------- |
-| 0     | `REF`     | a heap address: data, closure, array, record, `String`, …                 |
-| 1     | `INT`     | an `Int`                                                                  |
-| 2     | `FLOAT`   | a `Float`'s bits                                                          |
-| 3     | `STR`     | an interned name's key                                                    |
-| 4     | `UNIT`    | unit                                                                      |
-| 5     | `BOOL`    | `0` or `1`                                                                |
-| 6     | `CHAR`    | a scalar value                                                            |
-| 7     | `FLOAT32` | a `Float32`'s bits                                                        |
-| 8–14  | `WORD+k`  | a sized integer, `k` its width's place in `Width::ALL`                    |
-| 15    | `ANY`     | unknown: ask the value (only in programs lowered without representations) |
+| value    | name                                                                      | the word is                                               |
+| -------- | ------------------------------------------------------------------------- | --------------------------------------------------------- |
+| 0        | `REF`                                                                     | a heap address: data, closure, array, record, `String`, … |
+| 1        | `INT`                                                                     | an `Int`                                                  |
+| 2        | `FLOAT`                                                                   | a `Float`'s bits                                          |
+| 3        | `STR`                                                                     | an interned name's key                                    |
+| 4        | `UNIT`                                                                    | unit                                                      |
+| 5        | `BOOL`                                                                    | `0` or `1`                                                |
+| 6        | `CHAR`                                                                    | a scalar value                                            |
+| 7        | `FLOAT32`                                                                 | a `Float32`'s bits                                        |
+| 8–14     | `WORD+k`                                                                  | a sized integer, `k` its width's place in `Width::ALL`    |
+| 16 `ANY` | unknown: ask the value (only in programs lowered without representations) |
 
 `results` and `entry_result` are descriptors, one byte each.
 
@@ -217,15 +218,46 @@ compiler has to guarantee it:
   is the machine's, for a fused compare-and-branch.
 - Every instruction that can allocate has a map, and the map is right: a
   register that holds an address and is read again must be listed as one.
-- The runtime builds a few constructors by name -- `Maybe.Just`, `Maybe.None`,
-  `Result.Ok`, `Result.Err`, tuples, `List` and `Vector` shapes
-  (`meadow_seq::RUNTIME_CTORS`) -- so `ctors` must give each of those a tag
-  whether or not the program names it.
+- The runtime builds and recognizes a few values by itself -- what a native
+  answers, an optional value, a result, a list, a vector, a tuple -- and asks
+  `roles` which constructor plays each part (see [Roles](#roles)). Every
+  constructor `roles` names, and `#tuple`, must have a tag in `ctors`, whether
+  or not the program builds one itself.
+
+## Roles
+
+A runtime builds some values itself -- `Some line` for a line it read,
+`Ok bytes` for a file, a list or a vector a primitive made -- and recognizes
+some to print them as the sequence they are. Which of the program's
+constructors plays each part is the front end's to say, not the runtime's, so
+`roles` lists them: each entry is a role's name, as `meadow_rt::roles::Role`
+writes it, and the constructor that plays it. A role's shape -- how many fields,
+and what each holds -- is the same in every language:
+
+| role            | fields                                                      |
+| --------------- | ----------------------------------------------------------- |
+| `none`          | none: the empty optional value                              |
+| `some`          | the value                                                   |
+| `ok`            | the value                                                   |
+| `err`           | the error                                                   |
+| `nil`           | none: the empty list                                        |
+| `cons`          | the first element, and the rest                             |
+| `vector-empty`  | none                                                        |
+| `vector-single` | an array of the elements                                    |
+| `vector-full`   | seven: see `Std.Collections.Vector`                         |
+| `vnode-leaf`    | an array of elements                                        |
+| `vnode-branch`  | an optional size table, and an array of children            |
+| `false`         | none: `False` built as data, which a branch treats as false |
+| `file-meta`     | `isFile`, `isDir`, `len`, `readonly`, `modified`            |
+
+A role the program declares no constructor for is one the runtime builds no
+value of: an operation that would have to fails, saying so. An unknown role
+name is an error.
 
 ## Versioning
 
 The last two bytes of the magic are the version, in ASCII decimal: this is
-`05`. There is no compatibility between versions: a loader refuses any magic
+`06`. There is no compatibility between versions: a loader refuses any magic
 but its own, and the message says so. The version changes whenever a field is
 added, removed or reordered, an opcode or constant tag is renumbered, or a
 descriptor changes meaning. Appending a primitive or an opcode does not change
@@ -238,7 +270,7 @@ The image of a program whose only instruction is `halt r0`, with nothing in any
 table, no entry point, and one register:
 
 ```text
-4D 44 57 49 4D 47 30 35   magic "MDWIMG05"
+4D 44 57 49 4D 47 30 36   magic "MDWIMG06"
 01 00 00 00               code: 1 instruction
 06 00 00 00 00 00 00 00     Halt a=0
 00 00 00 00               consts: 0
@@ -250,6 +282,7 @@ table, no entry point, and one register:
 00 00 00 00               prims: 0
 00 00 00 00               ops: 0
 00 00 00 00               ctors: 0
+00 00 00 00               roles: 0
 00 00 00 00               ctor_fields: 0
 00 00 00 00               messages: 0
 00 00 00 00               entries: 0

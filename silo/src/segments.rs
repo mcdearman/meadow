@@ -35,8 +35,8 @@ use crate::heap::{self, Word};
 use crate::value::Val;
 use corosensei::stack::DefaultStack;
 use corosensei::{Coroutine, CoroutineResult, Yielder};
-use meadow_core::Prim;
-use meadow_core::desc;
+use meadow_rt::Prim;
+use meadow_rt::desc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A segment's stack: reserved, and committed as it is touched.

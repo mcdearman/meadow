@@ -45,7 +45,7 @@
 
 use super::{FloatOp, Operand};
 use meadow_bytecode::{Cond, Instr, Op, Program, Reg};
-use meadow_core::{Prim, desc};
+use meadow_rt::{Prim, desc};
 use std::collections::HashMap;
 use std::rc::Rc;
 

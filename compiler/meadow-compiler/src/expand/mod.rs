@@ -903,6 +903,22 @@ impl<'a> Expander<'a> {
     /// span: what they produced is not written anywhere, and the call is the
     /// nearest thing in the file to point at.
     fn run(&mut self, call: &ast::MacCall) -> Option<Vec<LToken>> {
+        let out = self.run_call(call)?;
+        if record::producing() {
+            record::produced(
+                self.filename,
+                call.name().as_str(),
+                Span::new(call.path_span().start, call.arg.span().end),
+                call.arg.span(),
+                tt::flatten(&call.arg.trees).len(),
+                &out,
+            );
+        }
+        Some(out)
+    }
+
+    /// [`Expander::run`], before what it produced is written down.
+    fn run_call(&mut self, call: &ast::MacCall) -> Option<Vec<LToken>> {
         let span = call.arg.span();
         let one = |t: Token| Some(vec![LToken::new(t, span)]);
         // A qualified name waits for macros that can be exported, which is what

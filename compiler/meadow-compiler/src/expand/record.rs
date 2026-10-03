@@ -70,6 +70,111 @@ pub(crate) fn pat(filename: &str, at: Span, p: &ast::LPat) {
     keep(filename, at, "pat", || pat_of(p));
 }
 
+// --- what each call produced, as source ----------------------------------------
+
+/// One macro call and the tokens that stood in its place: what `meadow build
+/// --emit expanded` writes out, as `cargo expand` does for Rust.
+///
+/// One level: a call the tokens themselves contain is another of these, and
+/// since everything a macro produces carries its call's span, such a call's
+/// `call` lies inside the `arg` of the one that produced it.
+#[derive(Debug, Clone)]
+pub struct Produced {
+    pub filename: String,
+    /// The macro, as the call names it.
+    pub name: String,
+    /// The whole call, name and argument.
+    pub call: Span,
+    /// The call's argument.
+    pub arg: Span,
+    /// How many tokens the call was given, and how many it produced.
+    pub given: usize,
+    pub tokens: usize,
+    /// What it produced, as source: a declaration to a line where it produced
+    /// declarations.
+    pub text: String,
+}
+
+static PRODUCED: Mutex<Option<Vec<Produced>>> = Mutex::new(None);
+
+/// Start keeping what every macro call produces, from every thread.
+pub fn start_produced() {
+    *PRODUCED.lock().unwrap_or_else(|p| p.into_inner()) = Some(Vec::new());
+}
+
+/// Whether [`start_produced`] is in force: a build that wants the expansions
+/// has to compile the package again rather than read it back.
+pub fn producing() -> bool {
+    PRODUCED.lock().unwrap_or_else(|p| p.into_inner()).is_some()
+}
+
+/// Everything kept since [`start_produced`], and stop keeping it.
+pub fn take_produced() -> Vec<Produced> {
+    PRODUCED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+        .unwrap_or_default()
+}
+
+pub(crate) fn produced(
+    filename: &str,
+    name: &str,
+    call: Span,
+    arg: Span,
+    given: usize,
+    tokens: &[meadow_lexer::LToken],
+) {
+    let mut producing = PRODUCED.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(kept) = producing.as_mut() {
+        kept.push(Produced {
+            filename: filename.to_string(),
+            name: name.to_string(),
+            call,
+            arg,
+            given,
+            tokens: tokens.len(),
+            text: source(tokens),
+        });
+    }
+}
+
+/// `tokens` as source text, a new line before each declaration that is not
+/// inside brackets: what a macro wrote is otherwise one line however long.
+fn source(tokens: &[meadow_lexer::LToken]) -> String {
+    use meadow_lexer::tt::{TokenTree, render};
+    const DECLS: &[&str] = &[
+        "fun", "def", "data", "record", "effect", "trait", "impl", "use", "mod", "type", "macro",
+    ];
+    let mut out = String::new();
+    let mut line: Vec<TokenTree> = Vec::new();
+    let mut depth = 0usize;
+    // An attribute and the declaration it is on are one line.
+    let mut attributed = false;
+    for t in tokens {
+        let text = t.value().text();
+        let starts = depth == 0
+            && !line.is_empty()
+            && (text.starts_with('@') || (DECLS.contains(&text.as_str()) && !attributed));
+        if starts {
+            out.push_str(&render(&line));
+            out.push('\n');
+            line.clear();
+        }
+        if depth == 0 {
+            attributed = text.starts_with('@') || (attributed && !DECLS.contains(&text.as_str()));
+        }
+        match text.as_str() {
+            "(" | "[" | "{" | "#[" => depth += 1,
+            ")" | "]" | "}" => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        line.push(TokenTree::Token(t.clone()));
+    }
+    out.push_str(&render(&line));
+    out
+}
+
 // --- JSON ------------------------------------------------------------------------
 
 fn text(s: &str) -> String {

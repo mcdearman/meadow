@@ -45,8 +45,9 @@ enum Cmd {
         annotations: bool,
         /// What to write, in place of what a build writes by default -- the
         /// bytecode image, and for an `aot` build an executable: `image`,
-        /// `bytecode` (the image as text), `asm` (the native code as text) or
-        /// `exe`. Comma-separated, or repeated.
+        /// `bytecode` (the image as text), `asm` (the native code as text),
+        /// `exe`, or `expanded` (the sources with every macro call replaced
+        /// by what it produced). Comma-separated, or repeated.
         #[arg(long, value_name = "KIND", value_delimiter = ',', value_parser = emit)]
         emit: Vec<Emit>,
         #[command(flatten)]
@@ -486,7 +487,8 @@ struct ProfileArgs {
 }
 
 fn emit(s: &str) -> Result<Emit, String> {
-    Emit::parse(s).ok_or_else(|| format!("expected image, bytecode, asm or exe, got `{s}`"))
+    Emit::parse(s)
+        .ok_or_else(|| format!("expected image, bytecode, asm, exe or expanded, got `{s}`"))
 }
 
 fn backend(s: &str) -> Result<Backend, String> {
@@ -636,6 +638,12 @@ fn command() {
             profile,
             target,
         }) => {
+            // Asked for before anything compiles: the expander writes down
+            // what each call produces as it goes, and the packages built are
+            // compiled rather than read back.
+            if emit.contains(&Emit::Expanded) {
+                meadow_compiler::expand::record::start_produced();
+            }
             let selected = select(&packages.selection(), &path);
             let profile = profile.resolve(&path);
             let target = target.with(&profile);
@@ -1275,6 +1283,24 @@ fn finish(
         );
         std::process::exit(1);
     }
+    if emit.contains(&Emit::Expanded)
+        && let Some((root, _)) = package
+    {
+        let produced = meadow_compiler::expand::record::take_produced();
+        if !produced.is_empty() || emit == [Emit::Expanded] {
+            match meadow::expanded::write(root, profile.profile, &produced) {
+                Ok(report) => eprint!("{report}"),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        // Nothing else was asked for, and nothing else is made.
+        if emit == [Emit::Expanded] {
+            return;
+        }
+    }
     // A library has nothing to run. Its image would be the whole standard
     // library and everything else it could call, unpruned -- no entry point
     // to prune from -- and nothing reads it: what depends on the library links
@@ -1290,7 +1316,7 @@ fn finish(
         _ if !emit.is_empty() => emit.contains(&kind),
         Emit::Image => true,
         Emit::Exe => aot,
-        Emit::Bytecode | Emit::Asm => false,
+        Emit::Bytecode | Emit::Asm | Emit::Expanded => false,
     };
 
     // What runs: the entry point and what it reaches, unless the profile says

@@ -452,7 +452,13 @@ pub(crate) fn compile_graph(
         }
         let dep_prints: Vec<u64> = pkg.deps.iter().map(|&d| fingerprints[d]).collect();
         let fingerprint = incremental::fingerprint(pkg, &dep_prints, opts, floor);
-        let reused = cache.and_then(|c| c.load(&pkg.name, fingerprint));
+        // A build that writes out what macros produced has to run them: the
+        // packages asked for are compiled, not read back.
+        let expanding =
+            meadow_compiler::expand::record::producing() && graph.roots().contains(&pid);
+        let reused = cache
+            .filter(|_| !expanding)
+            .and_then(|c| c.load(&pkg.name, fingerprint));
         let cp = match reused {
             Some(mut cp) => {
                 cp.id = pkg.id;

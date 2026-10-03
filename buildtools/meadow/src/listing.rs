@@ -28,10 +28,19 @@ pub enum Emit {
     Asm,
     /// A native executable, linked.
     Exe,
+    /// The package's sources with every macro call replaced by what it
+    /// produced, under `expanded/`: what `cargo expand` shows of a crate.
+    Expanded,
 }
 
 impl Emit {
-    pub const ALL: [Emit; 4] = [Emit::Image, Emit::Bytecode, Emit::Asm, Emit::Exe];
+    pub const ALL: [Emit; 5] = [
+        Emit::Image,
+        Emit::Bytecode,
+        Emit::Asm,
+        Emit::Exe,
+        Emit::Expanded,
+    ];
 
     pub fn parse(s: &str) -> Option<Emit> {
         Self::ALL.into_iter().find(|e| e.name() == s)
@@ -43,6 +52,7 @@ impl Emit {
             Emit::Bytecode => "bytecode",
             Emit::Asm => "asm",
             Emit::Exe => "exe",
+            Emit::Expanded => "expanded",
         }
     }
 }

@@ -177,7 +177,7 @@ fn build_writes_text_in_place_of_binaries() {
 
     let (ok, err) = meadow(&root, &["build", "--emit", "elf"]);
     assert!(
-        !ok && err.contains("expected image, bytecode, asm or exe"),
+        !ok && err.contains("expected image, bytecode, asm, exe or expanded"),
         "{err}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -185,6 +185,40 @@ fn build_writes_text_in_place_of_binaries() {
 
 /// What `meadow dis` prints for the package at `root`, which is the text an
 /// `--emit bytecode` writes.
+/// `--emit expanded`: the package's sources again, with each macro call
+/// replaced by what it produced, and nothing else written. A second build
+/// writes them again, though nothing has changed and the package would
+/// otherwise be read back.
+#[test]
+fn build_writes_what_macros_produced() {
+    let dir = buildable(
+        "expanded",
+        "macro swap\n  | ($a, $b) -> { ($b, $a) }\n\
+         fun main () = println (swap!(1, \"two\"))\n",
+    );
+    for _ in 0..2 {
+        let (ok, said) = meadow(&dir, &["build", ".", "--emit", "expanded"]);
+        assert!(ok, "{said}");
+        assert!(
+            said.contains("swap!"),
+            "what each macro wrote is said: {said}"
+        );
+        let text = std::fs::read_to_string(dir.join("target/debug/expanded/src/Lib.mw"))
+            .expect("the expanded module");
+        assert!(text.contains("-- swap! produced"), "{text}");
+        assert!(text.contains("(\"two\", 1)"), "what it produced: {text}");
+        assert!(!text.contains("swap!(1"), "the call is gone: {text}");
+        assert!(
+            text.contains("fun main () = println ("),
+            "the rest is as written: {text}"
+        );
+    }
+    assert!(
+        !dir.join("target/debug/bytecode").exists(),
+        "nothing else was asked for"
+    );
+}
+
 fn image_text(root: &Path) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_meadow"))
         .current_dir(root)

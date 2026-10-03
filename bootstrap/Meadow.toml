@@ -6,10 +6,12 @@ version = "0.1.0"
 Lingua = { git = "https://github.com/mcdearman/Lingua.git", branch = "master" }
 Scythe = { git = "https://github.com/mcdearman/Scythe.git", branch = "master" }
 
+# Bytecode, on the JIT: a build with no LLVM in it, which is a third of the
+# time one through Silo takes.
+[profile.debug]
+runtime = "glade"
+
 # Native, through LLVM: the fastest MeadowBoot there is, and one that links
 # with what LLVM links with.
-[profile.debug]
-runtime = "silo"
-
 [profile.release]
 runtime = "silo"

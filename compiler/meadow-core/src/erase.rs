@@ -26,6 +26,7 @@ pub fn program(p: &Program) -> Program {
             .map(|d| Def {
                 var: d.var,
                 name: d.name,
+                module: d.module,
                 poly: d.poly.clone(),
                 term: term(&d.term),
             })

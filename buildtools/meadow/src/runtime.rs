@@ -704,6 +704,7 @@ fn with_tests(program: &core::Program, tests: &[core::Var]) -> (core::Program, u
         defs.push(core::Def {
             var: meadow_compiler::hir::VarId::synthetic(i as u32),
             name: "<test>".into(),
+            module: Default::default(),
             poly: program.result_of_calling(*var),
             term: core::Term::App(
                 std::sync::Arc::new(core::Term::Var(*var)),
@@ -737,6 +738,7 @@ fn test_image(
             // same program always produce the same image.
             var: meadow_compiler::hir::VarId::synthetic(i as u32),
             name: "<test>".into(),
+            module: Default::default(),
             // Whatever the test returns: what calling it has.
             poly: program.result_of_calling(*var),
             term: core::Term::App(

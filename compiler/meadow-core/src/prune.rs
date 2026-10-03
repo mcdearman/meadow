@@ -110,6 +110,7 @@ mod tests {
         Def {
             var: crate::hir::VarId(n),
             name: InternedString::from(format!("d{n}")),
+            module: Default::default(),
             poly: Poly::mono(crate::unknown()),
             term,
         }

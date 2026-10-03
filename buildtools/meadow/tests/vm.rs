@@ -247,6 +247,7 @@ fn every_standard_library_value_is_where_its_representation_says() {
         defs.push(core::Def {
             var: meadow_compiler::hir::VarId::synthetic(i as u32),
             name: "<test>".into(),
+            module: Default::default(),
             poly: std.program.result_of_calling(*var),
             term: core::Term::App(
                 std::sync::Arc::new(core::Term::Var(*var)),
@@ -305,6 +306,7 @@ fn calling(program: &core::Program, test: core::Var) -> core::Program {
     defs.push(core::Def {
         var: entry,
         name: "<test>".into(),
+        module: Default::default(),
         poly: program.result_of_calling(test),
         term: core::Term::App(
             std::sync::Arc::new(core::Term::Var(test)),

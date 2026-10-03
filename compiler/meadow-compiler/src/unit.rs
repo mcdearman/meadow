@@ -813,7 +813,20 @@ fn compile_unit_inner(
     let mut defs = Vec::new();
     for m in &typed {
         lowerer.locations = opts.debug_info.then_some(m.source.id);
+        let from = defs.len();
         defs.extend(lowerer.lower_module(&m.hir));
+        // Which module each is of, package first: what the native back end
+        // divides the program by.
+        let module = InternedString::from(
+            std::iter::once(pkg.to_string())
+                .chain(m.path.iter().map(|p| p.to_string()))
+                .collect::<Vec<_>>()
+                .join(".")
+                .as_str(),
+        );
+        for d in &mut defs[from..] {
+            d.module = module;
+        }
     }
     let var_end = lowerer.var_end();
 

@@ -426,6 +426,7 @@ impl Def {
         Def {
             var,
             name: name.into(),
+            module: InternedString::default(),
             poly: Poly::mono(unknown()),
             term,
         }
@@ -451,6 +452,16 @@ pub struct HClause {
 pub struct Def {
     pub var: Var,
     pub name: InternedString,
+    /// The module it was written in, package first: `Std.Collections.Vector`.
+    /// A definition a pass makes out of another -- a specialized copy, a
+    /// lifted lambda, a worker -- is of the module that one is. Empty for one
+    /// nobody wrote: a test's entry, a REPL line's.
+    ///
+    /// What the native back end divides a program by (`meadow_llvm`): a
+    /// module's code is a file of its own, which is the same file while the
+    /// module is.
+    #[serde(default)]
+    pub module: InternedString,
     /// The definition's type. A polymorphic one's `term` is a [`Term::TyLam`]
     /// binding exactly these binders.
     pub poly: Poly,
@@ -865,6 +876,7 @@ mod tests {
             defs: vec![Def {
                 var: a,
                 name: "id".into(),
+                module: Default::default(),
                 poly: poly.clone(),
                 term: Term::TyLam(
                     poly.binders.clone(),

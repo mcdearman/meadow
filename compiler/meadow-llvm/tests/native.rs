@@ -138,7 +138,7 @@ fn run_units(
         .enumerate()
         .map(|(i, ll)| {
             let path = dir.join(format!("prog{i}.ll"));
-            std::fs::write(&path, ll).unwrap();
+            std::fs::write(&path, &ll.text).unwrap();
             path
         })
         .collect();
@@ -229,7 +229,9 @@ fn aarch64_code_is_never_in_the_ghc_convention() {
     let text = |arch| {
         meadow_llvm::compile_split(&lowered.program, 1, meadow_llvm::CallConv::for_arch(arch))
             .unwrap_or_else(|e| panic!("{}", e.msg))
-            .concat()
+            .into_iter()
+            .map(|u| u.text)
+            .collect::<String>()
     };
     let a64 = text("aarch64");
     assert!(!a64.contains("ghccc"), "ghccc in aarch64 code");
@@ -472,7 +474,9 @@ fn aarch64_passes_nothing_on_the_stack() {
             meadow_llvm::CallConv::for_arch(arch),
         )
         .unwrap_or_else(|e| panic!("{}", e.msg))
-        .concat()
+        .into_iter()
+        .map(|u| u.text)
+        .collect::<String>()
         .lines()
         .filter(|l| l.contains("tailcc i64 ") || l.contains("ghccc i64 "))
         .map(|l| {
@@ -1406,6 +1410,8 @@ fn the_same_program_compiles_to_the_same_ir() {
     let (a, b) = (ir(&p), ir(&p));
     assert_eq!(a.len(), b.len(), "as many modules");
     for (x, y) in a.iter().zip(&b) {
+        assert_eq!(x.name, y.name, "by the same names");
+        let (x, y) = (&x.text, &y.text);
         if x != y {
             let at = x
                 .lines()

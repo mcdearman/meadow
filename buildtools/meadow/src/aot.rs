@@ -267,7 +267,7 @@ pub fn build_native(
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         for b in units
             .iter()
-            .flat_map(|u| u.bytes())
+            .flat_map(|u| u.text.bytes())
             .chain(opt.name().bytes())
             .chain(linked_with.iter().copied())
         {
@@ -277,7 +277,7 @@ pub fn build_native(
         format!("{h:016x}")
     });
     if exe.exists() && std::fs::read_to_string(&stamp).is_ok_and(|had| had == want) {
-        prune_units(&dir, name, units.len());
+        prune_units(&dir, name, &unit_paths(&dir, name, &units));
         return Ok(exe);
     }
     let modules = write_units(&dir, name, &units)?;
@@ -289,47 +289,70 @@ pub fn build_native(
     for m in &modules {
         let _ = std::fs::remove_file(m);
     }
-    prune_units(&dir, name, units.len());
+    prune_units(&dir, name, &modules);
     Ok(exe)
 }
 
 /// Remove what an earlier build of `name` left in `dir` that the executable
-/// there was not linked from: its LLVM IR, and the objects of the modules
-/// past the `count` this one has -- `name.o` too, when one module was compiled
-/// and linked in a single step.
-fn prune_units(dir: &Path, name: &str, count: usize) {
+/// there was not linked from: its LLVM IR, and the objects of modules that
+/// are not among `modules`, this build's -- `name.o` too, when one module was
+/// compiled and linked in a single step.
+fn prune_units(dir: &Path, name: &str, modules: &[PathBuf]) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
+    let objects: std::collections::HashSet<PathBuf> = if modules.len() == 1 {
+        Default::default()
+    } else {
+        modules.iter().map(|m| m.with_extension("o")).collect()
+    };
     for entry in entries.flatten() {
+        let path = entry.path();
         let file = entry.file_name();
         let Some(rest) = file.to_str().and_then(|f| f.strip_prefix(name)) else {
             continue;
         };
-        let stale = match rest.strip_prefix('.').and_then(|r| r.rsplit_once('.')) {
-            Some((_, "ll")) => true,
-            Some((i, "o")) => i.parse::<usize>().is_ok_and(|i| i >= count),
+        // `name.ll`, `name.<unit>.ll`, and the same in `.o`: nothing else of
+        // the build's is touched.
+        let stale = match rest.rsplit_once('.') {
+            Some((unit, "ll")) => unit.is_empty() || unit.starts_with('.'),
+            Some((unit, "o")) => {
+                (unit.is_empty() || unit.starts_with('.')) && !objects.contains(&path)
+            }
             _ => false,
-        } || rest == ".ll"
-            || (rest == ".o" && count == 1);
+        };
         if stale {
-            let _ = std::fs::remove_file(entry.path());
+            let _ = std::fs::remove_file(path);
         }
     }
 }
 
-/// Write the LLVM modules `units` into `dir`, as `name.ll`, `name.1.ll`, ...,
+/// Where the LLVM modules `units` of `name` go in `dir`: the first, which
+/// holds the tables and the entry points, is `name.ll`, and each of the
+/// others is named for what it holds -- `name.Std.Collections.Vector.ll`.
+fn unit_paths(dir: &Path, name: &str, units: &[meadow_llvm::Unit]) -> Vec<PathBuf> {
+    units
+        .iter()
+        .map(|u| {
+            if u.name.is_empty() {
+                dir.join(format!("{name}.ll"))
+            } else {
+                dir.join(format!("{name}.{}.ll", u.name))
+            }
+        })
+        .collect()
+}
+
+/// Write the LLVM modules `units` into `dir`, each where [`unit_paths`] says,
 /// and answer their paths.
-pub fn write_units(dir: &Path, name: &str, units: &[String]) -> Result<Vec<PathBuf>, String> {
-    let mut paths = Vec::with_capacity(units.len());
-    for (i, u) in units.iter().enumerate() {
-        let path = if i == 0 {
-            dir.join(format!("{name}.ll"))
-        } else {
-            dir.join(format!("{name}.{i}.ll"))
-        };
-        write(&path, u.as_bytes())?;
-        paths.push(path);
+pub fn write_units(
+    dir: &Path,
+    name: &str,
+    units: &[meadow_llvm::Unit],
+) -> Result<Vec<PathBuf>, String> {
+    let paths = unit_paths(dir, name, units);
+    for (path, u) in paths.iter().zip(units) {
+        write(path, u.text.as_bytes())?;
     }
     Ok(paths)
 }

@@ -217,6 +217,7 @@ impl<'d> Candidate<'d> {
         let entry = Def {
             var: self.def.var,
             name: self.def.name,
+            module: self.def.module,
             poly: self.def.poly.clone(),
             term: self.wrap(&self.params, entry_body),
         };
@@ -243,6 +244,7 @@ impl<'d> Candidate<'d> {
         let twin = Def {
             var: dps,
             name: self.def.name,
+            module: self.def.module,
             poly: Poly {
                 binders: self.binders.clone(),
                 ty: self.dps_type(),

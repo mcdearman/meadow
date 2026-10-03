@@ -1129,6 +1129,7 @@ mod tests {
         Def {
             var: f,
             name: InternedString::from("f"),
+            module: Default::default(),
             poly,
             term: Term::Lam(
                 a,
@@ -1142,6 +1143,7 @@ mod tests {
         Def {
             var: v(1),
             name: InternedString::from("main"),
+            module: Default::default(),
             poly: Poly::mono(con("Int")),
             term: args
                 .into_iter()
@@ -1203,6 +1205,7 @@ mod tests {
         let d = Def {
             var: f,
             name: InternedString::from("f"),
+            module: Default::default(),
             poly: Poly {
                 binders: binders.clone(),
                 ty: t.clone(),
@@ -1219,6 +1222,7 @@ mod tests {
         let main = Def {
             var: v(1),
             name: InternedString::from("main"),
+            module: Default::default(),
             poly: Poly::mono(con("Int")),
             term: Term::App(
                 Arc::new(Term::TyApp(Arc::new(Term::Var(f)), vec![con("Int")])),
@@ -1295,6 +1299,7 @@ mod tests {
         let d = Def {
             var: f,
             name: InternedString::from("f"),
+            module: Default::default(),
             poly: Poly::mono(con("Int")),
             term: Term::Lam(x, con("Int"), Arc::new(body)),
         };
@@ -1302,6 +1307,7 @@ mod tests {
         let main = Def {
             var: v(1),
             name: InternedString::from("main"),
+            module: Default::default(),
             poly: Poly::mono(con("Int")),
             term: Term::Tuple(vec![call(1), call(2)]),
         };

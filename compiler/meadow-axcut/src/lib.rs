@@ -363,6 +363,10 @@ pub enum Extern {
 pub struct Def {
     pub label: Label,
     pub name: InternedString,
+    /// The module its source is in, package first -- or empty, where a front
+    /// end does not say. A back end that compiles a program in parts divides
+    /// it by these.
+    pub module: InternedString,
     pub block: Block,
 }
 

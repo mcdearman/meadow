@@ -332,6 +332,7 @@ impl<'a> Macros<'a> {
             defs.push(core::Def {
                 var: meadow_compiler::hir::VarId::synthetic(i as u32),
                 name: "<macro>".into(),
+                module: Default::default(),
                 poly: program.result_of_calling(serve),
                 term: core::Term::App(Arc::new(instance(serve)), Arc::new(instance(*var))),
             });

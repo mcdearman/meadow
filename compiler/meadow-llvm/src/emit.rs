@@ -191,6 +191,10 @@ pub struct Module<'p> {
     /// in registers -- for declaring it in the other units: see
     /// [`Module::units`].
     funs: Vec<(String, String, usize)>,
+    /// The module each of `funs` is of, beside it: see [`Module::in_module`].
+    fun_modules: Vec<String>,
+    /// The module of the definition being written.
+    module: String,
     /// Every method's function, in method-table order: a closure's `meta` is
     /// the index of its first method here.
     methods: Vec<String>,
@@ -239,6 +243,8 @@ impl<'p> Module<'p> {
             cc: conv.keyword(),
             reg_words: conv.regs(),
             funs: Vec::new(),
+            fun_modules: Vec::new(),
+            module: String::new(),
             methods: Vec::new(),
             pending: Vec::new(),
             next_method: 0,
@@ -351,6 +357,15 @@ impl<'p> Module<'p> {
     }
 
     /// A definition: its function.
+    /// Say which module the definitions written from here on are of: what
+    /// [`Module::units`] divides the program by. A definition's methods and
+    /// frames are written with it, and are of its module.
+    pub fn in_module(&mut self, module: &str) {
+        if self.module != module {
+            self.module = module.to_string();
+        }
+    }
+
     pub fn def(&mut self, label: meadow_axcut::Label, b: &LBlock) -> Result<(), Error> {
         let params: Vec<String> = (0..b.params.len()).map(|i| format!("%a{i}")).collect();
         let mut f = Fun::new(format!("@mw.L{}", label.0), params.clone());
@@ -488,6 +503,7 @@ impl<'p> Module<'p> {
         );
         let words = f.params.len().min(regs) + usize::from(self.threaded);
         self.funs.push((f.name, text, words));
+        self.fun_modules.push(self.module.clone());
     }
 
     /// A method's function: the object first, then the arguments. It loads
@@ -2209,6 +2225,7 @@ impl<'p> Module<'p> {
     pub fn text(self, entry: meadow_axcut::Label, result: i64, fingerprint: &str) -> String {
         self.units(Entries::Main(entry), result, fingerprint, usize::MAX)
             .remove(0)
+            .1
     }
 
     /// [`Module::text`], in modules of about `unit` bytes each -- see
@@ -2219,7 +2236,7 @@ impl<'p> Module<'p> {
         result: i64,
         fingerprint: &str,
         unit: usize,
-    ) -> Vec<String> {
+    ) -> Vec<(String, String)> {
         self.units(Entries::Main(entry), result, fingerprint, unit)
     }
 
@@ -2230,7 +2247,7 @@ impl<'p> Module<'p> {
         entries: &[meadow_axcut::Label],
         fingerprint: &str,
         unit: usize,
-    ) -> Vec<String> {
+    ) -> Vec<(String, String)> {
         self.units(
             Entries::Tests(entries.to_vec()),
             meadow_rt::desc::ANY,
@@ -2239,9 +2256,15 @@ impl<'p> Module<'p> {
         )
     }
 
-    /// The program as LLVM modules of about `unit` bytes of functions each,
-    /// to be compiled apart -- in parallel -- and linked. The first holds the
-    /// tables and the entry points; each declares what it uses of the others.
+    /// The program as LLVM modules, each with the name it is known by, to be
+    /// compiled apart -- in parallel -- and linked: one for each module of
+    /// the program, and more for a module with over `unit` bytes of
+    /// functions. The first holds the tables and the entry points; each
+    /// declares what it uses of the others.
+    ///
+    /// By module, as `rustc` divides a crate, so that a unit is the same code
+    /// for as long as its module is: what a build that keeps its objects
+    /// needs, and what makes a file's name say what is in it.
     ///
     /// One module is what LLVM handles worst: its interprocedural passes grow
     /// faster than the program, and a module of the standard library's tests
@@ -2261,21 +2284,53 @@ impl<'p> Module<'p> {
         result: i64,
         fingerprint: &str,
         unit: usize,
-    ) -> Vec<String> {
+    ) -> Vec<(String, String)> {
         let header = self.header(entries, result, fingerprint);
         let funs = std::mem::take(&mut self.funs);
         let arity: HashMap<&str, usize> = funs.iter().map(|(n, _, r)| (n.as_str(), *r)).collect();
-        // Contiguous runs: a definition and its methods are written together,
-        // and call one another most.
-        let mut chunks: Vec<String> = vec![header];
-        let mut size = 0;
-        for (_, text, _) in &funs {
-            if size >= unit {
-                chunks.push(String::new());
-                size = 0;
+        // A module's functions are a unit of their own, or several where
+        // there are more than `unit` bytes of them, in the order they were
+        // written: a definition and its methods together, which call one
+        // another most. What is of no module -- an entry point, a program a
+        // test wrote as one text -- goes with the header, and past `unit`
+        // into units known by their number.
+        let modules = std::mem::take(&mut self.fun_modules);
+        let mut order: Vec<&str> = vec![""];
+        let mut of: HashMap<&str, Vec<&str>> = HashMap::new();
+        for ((_, text, _), module) in funs.iter().zip(&modules) {
+            // One unit, when that is what was asked for.
+            let module = if unit == usize::MAX {
+                ""
+            } else {
+                module.as_str()
+            };
+            let texts = of.entry(module).or_default();
+            if texts.is_empty() && !module.is_empty() {
+                order.push(module);
             }
-            size += text.len();
-            chunks.last_mut().expect("one").push_str(text);
+            texts.push(text);
+        }
+        let mut chunks: Vec<(String, String)> = vec![(String::new(), header)];
+        for module in order {
+            let mut part = 1;
+            let mut size = 0;
+            if !module.is_empty() {
+                chunks.push((module.to_string(), String::new()));
+            }
+            for text in of.get(module).into_iter().flatten() {
+                if size >= unit {
+                    part += 1;
+                    let name = if module.is_empty() {
+                        (part - 1).to_string()
+                    } else {
+                        format!("{module}.{part}")
+                    };
+                    chunks.push((name, String::new()));
+                    size = 0;
+                }
+                size += text.len();
+                chunks.last_mut().expect("one").1.push_str(text);
+            }
         }
         let first_only = format!(
             "@meadow_threaded = constant i8 {}\n@meadow_cycles = constant i8 {}\n\
@@ -2293,7 +2348,7 @@ impl<'p> Module<'p> {
         chunks
             .into_iter()
             .enumerate()
-            .map(|(i, body)| {
+            .map(|(i, (name, body))| {
                 let mut out = String::new();
                 if i > 0 {
                     let _ = writeln!(
@@ -2315,7 +2370,7 @@ impl<'p> Module<'p> {
                 }
                 out.push_str(&declarations(&body, &arity, self.cc));
                 out.push_str(&body);
-                out
+                (name, out)
             })
             .collect()
     }

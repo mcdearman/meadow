@@ -54,12 +54,14 @@ pub fn program(p: &Program, opt: OptLevel) -> Program {
         lifted: HashMap::new(),
         renames: Vec::new(),
         outer: InternedString::from(""),
+        module: InternedString::default(),
         count: 0,
         representations: opt.specializes(),
     };
     let mut defs = Vec::with_capacity(p.defs.len());
     for d in &p.defs {
         lifter.outer = d.name;
+        lifter.module = d.module;
         lifter.count = 0;
         lifter.tvs.clear();
         let term = lifter.term(&d.term);
@@ -105,6 +107,8 @@ struct Lifter {
     renames: Vec<HashMap<Var, Var>>,
     /// The definition being rewritten, to name what is lifted out of it.
     outer: InternedString,
+    /// And the module it is of, which what is lifted out of it is of too.
+    module: InternedString,
     count: usize,
     /// Whether `specialize` copied generic bindings per representation, whose
     /// mentions carry their original's type arguments -- see [`Lifter::lift`].
@@ -298,6 +302,7 @@ impl Lifter {
             self.made.push(Def {
                 var: def,
                 name: InternedString::from(format!("{}Local{}", self.outer, self.count)),
+                module: self.module,
                 poly: Poly { binders, ty },
                 term,
             });

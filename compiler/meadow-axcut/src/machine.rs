@@ -1764,6 +1764,7 @@ mod tests {
             defs: vec![Def {
                 label: Label(0),
                 name: InternedString::from("main"),
+                module: InternedString::default(),
                 block: Block {
                     params: vec![v(0)],
                     body,

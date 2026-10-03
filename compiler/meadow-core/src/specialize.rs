@@ -99,6 +99,7 @@ fn specialize(p: &Program, all: bool) -> Program {
         .map(|d| Def {
             var: d.var,
             name: d.name,
+            module: d.module,
             poly: d.poly.clone(),
             term: s.term(&d.term, &HashMap::new()),
         })
@@ -113,6 +114,7 @@ fn specialize(p: &Program, all: bool) -> Program {
         defs.push(Def {
             var,
             name: d.name,
+            module: d.module,
             poly,
             term,
         });

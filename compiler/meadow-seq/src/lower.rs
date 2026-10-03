@@ -266,6 +266,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     }
 
     let mut lower = Lower {
+        module: InternedString::default(),
         next_name: max_var(program) + 1,
         next_label: program.defs.len() as u32,
         globals,
@@ -353,6 +354,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
     let mut entry = None;
     for (i, d) in program.defs.iter().enumerate() {
         let label = Label(i as u32);
+        lower.module = d.module;
         // A generic definition takes its descriptors first, and its body is
         // what is under the abstraction.
         let (descs, term) = match ty_abs(&d.term) {
@@ -386,6 +388,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         lower.defs.push(Def {
             label,
             name: d.name,
+            module: d.module,
             block: Block { params, body },
         });
         // An untyped definition -- one built by hand -- says what it answers
@@ -418,6 +421,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
             lower.defs.push(Def {
                 label: worker,
                 name: d.name,
+                module: d.module,
                 block: Block {
                     params: block_params,
                     body,
@@ -460,6 +464,7 @@ pub fn lower_program(program: &core::Program, opt: OptLevel) -> Lowered {
         lower.defs.push(Def {
             label,
             name: program.defs[i].name,
+            module: program.defs[i].module,
             block: Block {
                 params: vec![k],
                 body,
@@ -574,6 +579,9 @@ fn const_operand(p: core::Prim, args: &[Term]) -> Option<(Term, core::Lit)> {
 }
 
 struct Lower {
+    /// The module of the definition being lowered, which every block made
+    /// out of it is of too.
+    module: InternedString,
     next_name: u32,
     next_label: u32,
     /// A definition or a `letrec` binding: where to jump, and the environment
@@ -2053,6 +2061,7 @@ impl Lower {
                 self.defs.push(Def {
                     label,
                     name: InternedString::from("<join>"),
+                    module: self.module,
                     block: Block {
                         params: block,
                         body: made,
@@ -2130,6 +2139,7 @@ impl Lower {
                     self.defs.push(Def {
                         label: *label,
                         name: InternedString::from("<letrec>"),
+                        module: self.module,
                         block: Block { params, body },
                     });
                 }
@@ -3062,6 +3072,7 @@ impl Lower {
         self.defs.push(Def {
             label,
             name: InternedString::from(format!("<perform {effect}.{op}>").as_str()),
+            module: self.module,
             block: Block {
                 params: params.clone(),
                 body: Statement::Switch {
@@ -4185,6 +4196,7 @@ impl Lower {
         self.defs.push(Def {
             label,
             name: InternedString::from("<arm>"),
+            module: self.module,
             block: Block {
                 params: block,
                 body: made,

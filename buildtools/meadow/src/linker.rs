@@ -140,6 +140,7 @@ fn start(program: &mut core::Program, main: VarId) -> VarId {
     program.defs.push(core::Def {
         var,
         name: InternedString::from("start"),
+        module: Default::default(),
         poly: core::Poly::mono(Type::unit()),
         term: core::Term::App(Arc::new(callee), Arc::new(core::Term::Lit(core::Lit::Unit))),
     });

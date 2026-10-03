@@ -129,6 +129,7 @@ pub fn program(p: &Program, opt: OptLevel) -> Program {
         .map(|d| Def {
             var: d.var,
             name: d.name,
+            module: d.module,
             poly: d.poly.clone(),
             term: s.term(&d.term),
         })
@@ -148,6 +149,7 @@ pub fn program(p: &Program, opt: OptLevel) -> Program {
 /// A definition that takes dictionaries before anything else.
 struct Function {
     name: InternedString,
+    module: InternedString,
     poly: Poly,
     /// Its type binders, its dictionary parameters, and the rest of it.
     body: Body,
@@ -291,6 +293,7 @@ impl Spec {
         };
         Some(Function {
             name: d.name,
+            module: d.module,
             poly: d.poly.clone(),
             body: Body {
                 binders,
@@ -373,6 +376,7 @@ impl Spec {
         self.made.push(Def {
             var,
             name: d.name,
+            module: d.module,
             poly: Poly::mono(ty),
             term,
         });
@@ -544,7 +548,7 @@ impl Spec {
         self.origins.insert(var, f);
 
         let function = &self.functions[&f];
-        let name = function.name;
+        let (name, module) = (function.name, function.module);
         // An effect argument may be the caller's own row variable, which the
         // copy -- a definition of its own -- does not bind. Effects are erased
         // below core and not checked in it, so the copy takes such a row as
@@ -628,6 +632,7 @@ impl Spec {
         self.made.push(Def {
             var,
             name,
+            module,
             poly,
             term,
         });

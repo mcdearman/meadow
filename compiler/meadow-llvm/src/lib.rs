@@ -52,23 +52,46 @@ pub use emit::CallConv;
 
 /// `program` as an LLVM module, as text, its functions in `conv`.
 pub fn compile(program: &Program, conv: CallConv) -> Result<String, Error> {
-    Ok(compile_split(program, usize::MAX, conv)?.remove(0))
+    Ok(compile_split(program, usize::MAX, conv)?.remove(0).text)
 }
 
-/// About how much of a program each of the modules [`compile_split`] makes
-/// holds: small enough that LLVM optimizes it quickly.
+/// The most of a program any of the modules [`compile_split`] makes holds:
+/// small enough that LLVM optimizes it quickly.
 pub const UNIT: usize = 2 << 20;
 
-/// `program` as LLVM modules of about `unit` bytes each, to compile apart and
-/// link: see `emit::Module::units`. Their functions are in `conv`, which is
-/// the target's: see [`CallConv`].
-pub fn compile_split(program: &Program, unit: usize, conv: CallConv) -> Result<Vec<String>, Error> {
+/// One of the LLVM modules a program is compiled as.
+pub struct Unit {
+    /// What it is of, for a file's name: the module of the program whose
+    /// functions these are -- `Std.Collections.Vector`, and
+    /// `Std.Collections.Vector.2` for the rest of one too big for a unit --
+    /// or a number, for functions of no module. Empty for the first, which
+    /// holds the tables and the entry points.
+    pub name: String,
+    /// The LLVM IR.
+    pub text: String,
+}
+
+impl Unit {
+    fn all(units: Vec<(String, String)>) -> Vec<Unit> {
+        units
+            .into_iter()
+            .map(|(name, text)| Unit { name, text })
+            .collect()
+    }
+}
+
+/// `program` as LLVM modules to compile apart and link -- one for each module
+/// of the program, and more for one with over `unit` bytes of functions: see
+/// `emit::Module::units`. Their functions are in `conv`, which is the
+/// target's: see [`CallConv`].
+pub fn compile_split(program: &Program, unit: usize, conv: CallConv) -> Result<Vec<Unit>, Error> {
     let entry = program.entry.ok_or_else(|| Error {
         msg: "the program has no entry point".into(),
     })?;
     let mut module = emit::Module::new(program, conv);
     let blocks = linear::program(program, &[entry])?;
     for (i, label, lb) in &blocks {
+        module.in_module(&program.defs[*i].module.to_string());
         module.def(*label, lb).map_err(|e| Error {
             msg: format!("in {}: {}", program.defs[*i].name, e.msg),
         })?;
@@ -78,7 +101,12 @@ pub fn compile_split(program: &Program, unit: usize, conv: CallConv) -> Result<V
         .get(&entry)
         .and_then(|r| r.desc())
         .unwrap_or(meadow_rt::desc::ANY);
-    Ok(module.text_split(entry, result, fingerprint(), unit))
+    Ok(Unit::all(module.text_split(
+        entry,
+        result,
+        fingerprint(),
+        unit,
+    )))
 }
 
 /// `program` as an LLVM module for a test executable: `tests` are the labels
@@ -90,13 +118,14 @@ pub fn compile_tests(
     tests: &[meadow_axcut::Label],
     unit: usize,
     conv: CallConv,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<Unit>, Error> {
     let mut module = emit::Module::new(program, conv);
     let blocks = linear::program(program, tests)?;
     for (i, label, lb) in &blocks {
+        module.in_module(&program.defs[*i].module.to_string());
         module.def(*label, lb).map_err(|e| Error {
             msg: format!("in {}: {}", program.defs[*i].name, e.msg),
         })?;
     }
-    Ok(module.text_tests(tests, fingerprint(), unit))
+    Ok(Unit::all(module.text_tests(tests, fingerprint(), unit)))
 }

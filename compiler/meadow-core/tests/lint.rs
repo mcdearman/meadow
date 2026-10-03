@@ -35,6 +35,7 @@ fn def(var: VarId, poly: Poly, term: Term) -> Program {
         defs: vec![Def {
             var,
             name: "it".into(),
+            module: Default::default(),
             poly,
             term,
         }],
@@ -69,6 +70,7 @@ fn with_id(use_it: impl FnOnce(VarId) -> Term) -> Program {
             Def {
                 var: f,
                 name: "id".into(),
+                module: Default::default(),
                 poly: poly.clone(),
                 term: Term::TyLam(
                     poly.binders.clone(),
@@ -78,6 +80,7 @@ fn with_id(use_it: impl FnOnce(VarId) -> Term) -> Program {
             Def {
                 var: VarId(2),
                 name: "main".into(),
+                module: Default::default(),
                 poly: Poly::mono(int()),
                 term: use_it(f),
             },
@@ -262,6 +265,7 @@ fn an_imported_binding_is_known_by_its_scheme() {
         defs: vec![Def {
             var: VarId(1),
             name: "main".into(),
+            module: Default::default(),
             poly: Poly::mono(int()),
             term: Term::App(
                 Arc::new(Term::TyApp(Arc::new(Term::Var(outside)), vec![at])),

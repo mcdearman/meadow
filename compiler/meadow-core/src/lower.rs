@@ -306,6 +306,7 @@ impl<'a> Lowerer<'a> {
             out.push(Def {
                 var: v,
                 name: self.name_of(v),
+                module: InternedString::default(),
                 poly,
                 term,
             });
@@ -423,6 +424,7 @@ impl<'a> Lowerer<'a> {
         out.push(Def {
             var: dict,
             name: self.name_of(dict),
+            module: InternedString::default(),
             term: Self::ty_lam(&poly, term),
             poly,
         });
@@ -498,6 +500,7 @@ impl<'a> Lowerer<'a> {
                 out.push(Def {
                     var: v,
                     name: self.name_of(v),
+                    module: InternedString::default(),
                     poly,
                     term,
                 });
@@ -523,6 +526,7 @@ impl<'a> Lowerer<'a> {
                         out.push(Def {
                             var: v,
                             name: self.name_of(v),
+                            module: InternedString::default(),
                             term: Self::ty_lam(&poly, rhs),
                             poly,
                         });
@@ -532,6 +536,7 @@ impl<'a> Lowerer<'a> {
                         out.push(Def {
                             var: v,
                             name: InternedString::from("_"),
+                            module: InternedString::default(),
                             poly: Poly::mono(self.ty(pat.id)),
                             term: rhs,
                         });
@@ -542,6 +547,7 @@ impl<'a> Lowerer<'a> {
                         out.push(Def {
                             var: scrut,
                             name: InternedString::from("$bind"),
+                            module: InternedString::default(),
                             poly: Poly::mono(self.ty(pat.id)),
                             term: rhs,
                         });
@@ -551,6 +557,7 @@ impl<'a> Lowerer<'a> {
                             out.push(Def {
                                 var: v,
                                 name: self.name_of(v),
+                                module: InternedString::default(),
                                 poly: Poly::mono(ty),
                                 term: t,
                             });

@@ -469,6 +469,126 @@ impl Vm<'_> {
                 }
                 Build::unit()
             }
+            // Calling C, for `Std.Ffi`: see `meadow_rt::ffi`. Everything is
+            // read out of the heap before the call and built after it.
+            op if op.starts_with("ffi") => {
+                use meadow_rt::ffi;
+                let int = |vm: &Vm, v: Value| -> Result<i64, Error> {
+                    match v {
+                        Value::Int(n) => Ok(n),
+                        other => err(format!("{what}: expected an Int, got {}", vm.show(other))),
+                    }
+                };
+                let float = |vm: &Vm, v: Value| -> Result<f64, Error> {
+                    match v {
+                        Value::Float(x) => Ok(x),
+                        other => err(format!("{what}: expected a Float, got {}", vm.show(other))),
+                    }
+                };
+                let answered = |r: Result<Build, String>| match r {
+                    Ok(b) => Build::ok(b),
+                    Err(e) => Build::error(e),
+                };
+                match op {
+                    "ffiOpen" => {
+                        let path = self.str_arg(&what, arg)?;
+                        answered(ffi::open(&path).map(Build::int))
+                    }
+                    "ffiSymbol" => {
+                        let t = self.tuple_arg(&what, arg, 2)?;
+                        let name = self.str_arg(&what, t[1])?;
+                        answered(ffi::symbol(int(self, t[0])?, &name).map(Build::int))
+                    }
+                    "ffiCall" => {
+                        let t = self.tuple_arg(&what, arg, 3)?;
+                        let function = int(self, t[0])?;
+                        let Some(ret) = ffi::Ret::from_code(int(self, t[1])?) else {
+                            return err(format!("{what}: no such kind of answer"));
+                        };
+                        let mut args = Vec::new();
+                        for a in self.vector_arg(&what, t[2])? {
+                            let a = self.tuple_arg(&what, a, 4)?;
+                            args.push(match int(self, a[0])? {
+                                0 => ffi::Arg::Int(int(self, a[1])?),
+                                1 => ffi::Arg::Float(float(self, a[2])?),
+                                2 => ffi::Arg::Str(self.str_arg(&what, a[3])?.to_string()),
+                                _ => return err(format!("{what}: no such kind of argument")),
+                            });
+                        }
+                        answered(ffi::call(function, ret, &args).map(|(n, x, s)| {
+                            Build::Tuple(vec![
+                                Build::int(n),
+                                Build::At(Value::Float(x)),
+                                Build::Str(s),
+                            ])
+                        }))
+                    }
+                    "ffiAlloc" => Build::int(ffi::alloc(int(self, arg)?)),
+                    "ffiFree" => {
+                        ffi::free(int(self, arg)?);
+                        Build::unit()
+                    }
+                    "ffiWriteInts" => {
+                        let t = self.tuple_arg(&what, arg, 3)?;
+                        let (at, width) = (int(self, t[0])?, int(self, t[1])?);
+                        let mut values = Vec::new();
+                        for v in self.vector_arg(&what, t[2])? {
+                            values.push(int(self, v)?);
+                        }
+                        // Safety: the program's word that the memory is its own.
+                        answered(
+                            unsafe { ffi::write_ints(at, width, &values) }.map(|()| Build::unit()),
+                        )
+                    }
+                    "ffiReadInts" => {
+                        let t = self.tuple_arg(&what, arg, 4)?;
+                        let signed = matches!(t[2], Value::Bool(true));
+                        // Safety: as above.
+                        let read = unsafe {
+                            ffi::read_ints(
+                                int(self, t[0])?,
+                                int(self, t[1])?,
+                                signed,
+                                int(self, t[3])?,
+                            )
+                        };
+                        answered(
+                            read.map(|ns| Build::Vector(ns.into_iter().map(Build::int).collect())),
+                        )
+                    }
+                    "ffiWriteFloats" => {
+                        let t = self.tuple_arg(&what, arg, 3)?;
+                        let (at, width) = (int(self, t[0])?, int(self, t[1])?);
+                        let mut values = Vec::new();
+                        for v in self.vector_arg(&what, t[2])? {
+                            values.push(float(self, v)?);
+                        }
+                        // Safety: as above.
+                        answered(
+                            unsafe { ffi::write_floats(at, width, &values) }
+                                .map(|()| Build::unit()),
+                        )
+                    }
+                    "ffiReadFloats" => {
+                        let t = self.tuple_arg(&what, arg, 3)?;
+                        // Safety: as above.
+                        let read = unsafe {
+                            ffi::read_floats(int(self, t[0])?, int(self, t[1])?, int(self, t[2])?)
+                        };
+                        answered(read.map(|xs| {
+                            Build::Vector(
+                                xs.into_iter().map(|x| Build::At(Value::Float(x))).collect(),
+                            )
+                        }))
+                    }
+                    "ffiReadText" => {
+                        let t = self.tuple_arg(&what, arg, 2)?;
+                        // Safety: as above.
+                        Build::Str(unsafe { ffi::read_text(int(self, t[0])?, int(self, t[1])?) })
+                    }
+                    _ => return Ok(None),
+                }
+            }
             _ => return Ok(None),
         };
         Ok(Some(self.build(built)))

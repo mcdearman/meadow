@@ -1,0 +1,230 @@
+-- Std.Ffi: calling C.
+--
+--   use Std.Ffi as Ffi
+--   use Std.Ffi (Arg)
+--
+--   fun main () =
+--     match Ffi.open "libm.dylib" with
+--     | Err why -> println why
+--     | Ok libm ->
+--         (match Ffi.function libm "pow" with
+--          | Err why -> println why
+--          | Ok pow -> println (Ffi.callFloat pow [Arg.FloatArg 2.0, Arg.FloatArg 10.0]))
+--
+-- A library is opened by its path, or by a name the system's loader knows
+-- where to find; a function is found in it by name; and the function is
+-- called with a list of arguments, by the `call…` that says what it answers.
+--
+--   C                               here
+--   int, long, size_t, a pointer    IntArg, PtrArg     callInt, callPtr
+--   double, float                   FloatArg           callFloat
+--   const char *                    StringArg          callString
+--   void                                               callUnit
+--
+-- A `StringArg` is handed over as a NUL-terminated string that lasts as long
+-- as the call does; a string answered is copied, and a null one is `""`.
+--
+-- **Nothing checks a call.** There is no declaration of the function here to
+-- check it against, so what is passed and which `call…` is used are taken at
+-- their word, and a call that says it wrongly does whatever the C does --
+-- usually crash. A call takes at most eight integers, pointers and strings
+-- (six on x86-64) and eight floats; a struct passed by value, a variadic
+-- function such as `printf`, and a C function calling back into Meadow are
+-- not expressible.
+--
+-- A `Ptr` is an address and nothing more: it is never followed or freed by
+-- the runtime. Memory C is to fill is `alloc`ed and `free`d by hand, or lent
+-- for the length of a function by `withBuffer`, and numbers are written to
+-- it and read back as so many bytes each: `writeFloats p 4 xs` writes each
+-- as a C `float`.
+--
+-- Unix only, so far: on Windows `open` answers `Err`.
+
+use Std.Process (Process, ffiOpen, ffiSymbol, ffiCall, ffiAlloc, ffiFree, ffiWriteInts, ffiReadInts, ffiWriteFloats, ffiReadFloats, ffiReadText)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+use Std.Result.Result.*
+
+-- A library, opened.
+@pub data Library = Library Int
+
+-- A function in one.
+@pub data Function = Function Int
+
+-- An address in C's memory.
+@derive(Debug, PartialEq)
+@pub data Ptr = Ptr Int
+
+-- An argument to a call.
+use Arg.*
+@pub data Arg = IntArg Int | FloatArg Float | StringArg String | PtrArg Ptr
+
+-- The pointer to nothing.
+@pub def null : Ptr = Ptr 0
+
+@pub fun isNull (p : Ptr) : Bool = address p == 0
+
+-- The address itself, for arithmetic C would do with it.
+@pub fun address (p : Ptr) : Int = match p with | Ptr at -> at
+
+-- The address `bytes` further on.
+@pub fun offset (p : Ptr) (bytes : Int) : Ptr = Ptr (address p + bytes)
+
+-- Open the library at `path`, or of that name wherever the system's loader
+-- looks: `Err` says why not.
+@pub fun open (path : String) : Result String Library ! { Process | e } =
+  match ffiOpen path with
+  | Ok at -> Ok (Library at)
+  | Err why -> Err why
+
+-- The function `name` in `library`.
+@pub fun function (library : Library) (name : String) : Result String Function ! { Process | e } =
+  match library with
+  | Library lib ->
+      (match ffiSymbol (lib, name) with
+       | Ok at -> Ok (Function at)
+       | Err why -> Err why)
+
+fun wire (a : Arg) : (Int, Int, Float, String) =
+  match a with
+  | IntArg n -> (0, n, 0.0, "")
+  | PtrArg p -> (0, address p, 0.0, "")
+  | FloatArg x -> (1, 0, x, "")
+  | StringArg s -> (2, 0, 0.0, s)
+
+fun invoke (f : Function) (answer : Int) (args : [Arg]) : Result String (Int, Float, String) ! { Process | e } =
+  match f with
+  | Function at -> ffiCall (at, answer, V.map wire args)
+
+-- Call a function that answers nothing.
+@pub fun callUnit (f : Function) (args : [Arg]) : Result String () ! { Process | e } =
+  match invoke f 0 args with
+  | Ok _ -> Ok ()
+  | Err why -> Err why
+
+-- Call a function that answers an integer.
+@pub fun callInt (f : Function) (args : [Arg]) : Result String Int ! { Process | e } =
+  match invoke f 1 args with
+  | Ok (n, _, _) -> Ok n
+  | Err why -> Err why
+
+-- Call a function that answers a pointer.
+@pub fun callPtr (f : Function) (args : [Arg]) : Result String Ptr ! { Process | e } =
+  match invoke f 1 args with
+  | Ok (n, _, _) -> Ok (Ptr n)
+  | Err why -> Err why
+
+-- Call a function that answers a `double`. One that answers a `float` cannot
+-- be called this way: its answer is half the size.
+@pub fun callFloat (f : Function) (args : [Arg]) : Result String Float ! { Process | e } =
+  match invoke f 2 args with
+  | Ok (_, x, _) -> Ok x
+  | Err why -> Err why
+
+-- Call a function that answers a C string, which is copied.
+@pub fun callString (f : Function) (args : [Arg]) : Result String String ! { Process | e } =
+  match invoke f 3 args with
+  | Ok (_, _, s) -> Ok s
+  | Err why -> Err why
+
+-- --- memory -------------------------------------------------------------------
+
+-- `bytes` bytes of C's memory, zeroed: `null` if there are none to be had.
+@pub fun alloc (bytes : Int) : Ptr ! { Process | e } = Ptr (ffiAlloc bytes)
+
+-- Give back what `alloc`, or C's `malloc`, allocated.
+@pub fun free (p : Ptr) : () ! { Process | e } = ffiFree (address p)
+
+-- Run `body` with `bytes` bytes of memory, freed after.
+@pub fun withBuffer (bytes : Int) (body : Ptr -> a ! { Process | e }) : a ! { Process | e } =
+  let p = alloc bytes in
+  let answer = body p in
+  let _ = free p in
+  answer
+
+-- Write `xs` from `p` on, each as an integer of `width` bytes: 1, 2, 4 or 8.
+@pub fun writeInts (p : Ptr) (width : Int) (xs : [Int]) : Result String () ! { Process | e } =
+  ffiWriteInts (address p, width, xs)
+
+-- Read `count` signed integers of `width` bytes from `p`.
+@pub fun readInts (p : Ptr) (width : Int) (count : Int) : Result String [Int] ! { Process | e } =
+  ffiReadInts (address p, width, True, count)
+
+-- Read `count` unsigned integers of `width` bytes from `p`: bytes, with a
+-- width of 1.
+@pub fun readUnsigned (p : Ptr) (width : Int) (count : Int) : Result String [Int] ! { Process | e } =
+  ffiReadInts (address p, width, False, count)
+
+-- Write `xs` from `p` on, each as a float of `width` bytes: 4 for a C
+-- `float`, 8 for a `double`.
+@pub fun writeFloats (p : Ptr) (width : Int) (xs : [Float]) : Result String () ! { Process | e } =
+  ffiWriteFloats (address p, width, xs)
+
+-- Read `count` floats of `width` bytes from `p`.
+@pub fun readFloats (p : Ptr) (width : Int) (count : Int) : Result String [Float] ! { Process | e } =
+  ffiReadFloats (address p, width, count)
+
+-- The `bytes` bytes at `p`, as text.
+@pub fun readText (p : Ptr) (bytes : Int) : String ! { Process | e } = ffiReadText (address p, bytes)
+
+-- --- tests --------------------------------------------------------------------
+--
+-- Against the C library, which every system has: by one name on macOS, and
+-- by another on Linux.
+
+use Std.Test (assertEq, assertTrue)
+
+fun libc () =
+  match open "libSystem.dylib" with
+  | Ok l -> Ok l
+  | Err _ -> open "libc.so.6"
+
+fun cFunction (name : String) =
+  match libc () with
+  | Err why -> Err why
+  | Ok l -> function l name
+
+@test fun aStringGoesInAndAnIntegerComesBack () =
+  match cFunction "strlen" with
+  | Err why -> assertEq why "" "the C library has strlen"
+  | Ok strlen -> assertEq (callInt strlen [StringArg "héllo"]) (Ok 6) "its bytes, counted by C"
+
+@test fun anIntegerGoesIn () =
+  match cFunction "labs" with
+  | Err why -> assertEq why "" "the C library has labs"
+  | Ok labs -> assertEq (callInt labs [IntArg (0 - 7)]) (Ok 7) "its absolute value"
+
+@test fun aFloatComesBack () =
+  match cFunction "atof" with
+  | Err why -> assertEq why "" "the C library has atof"
+  | Ok atof -> assertEq (callFloat atof [StringArg "2.5"]) (Ok 2.5) "the number it reads"
+
+@test fun aStringComesBackAndANullOneIsEmpty () =
+  match cFunction "getenv" with
+  | Err why -> assertEq why "" "the C library has getenv"
+  | Ok getenv ->
+      let _ = assertEq (callString getenv [StringArg "MEADOW_NO_SUCH_VARIABLE"]) (Ok "") "null is the empty string" in
+      assertTrue (callString getenv [StringArg "PATH"] != Ok "") "and PATH is set"
+
+@test fun cFillsMemoryThatIsReadBack () =
+  match cFunction "memset" with
+  | Err why -> assertEq why "" "the C library has memset"
+  | Ok memset ->
+      let got = withBuffer 16 (\p ->
+        let _ = callPtr memset [PtrArg p, IntArg 104, IntArg 3] in
+        (readText p 3, readUnsigned p 1 4)) in
+      assertEq got ("hhh", Ok [104, 104, 104, 0]) "three bytes set, the fourth as it was"
+
+@test fun numbersAreWrittenAndReadAtTheirWidth () =
+  let got = withBuffer 32 (\p ->
+    let _ = writeFloats p 4 [1.5, 2.25] in
+    let floats = readFloats p 4 2 in
+    let _ = writeInts (offset p 16) 2 [0 - 1, 513] in
+    (floats, readInts (offset p 16) 2 2, readUnsigned (offset p 16) 1 4)) in
+  assertEq got (Ok [1.5, 2.25], Ok [0 - 1, 513], Ok [255, 255, 1, 2]) "as C floats and shorts"
+
+@test fun whatIsNotThereIsSaid () =
+  let _ = assertTrue (match open "/no/such/library.dylib" with | Err _ -> True | Ok _ -> False) "no such library" in
+  match libc () with
+  | Err why -> assertEq why "" "the C library opens"
+  | Ok l -> assertTrue (match function l "meadow_no_such_function" with | Err _ -> True | Ok _ -> False) "no such function"

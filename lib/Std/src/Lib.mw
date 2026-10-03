@@ -38,6 +38,7 @@
 @pub mod Macro
 @pub mod Console
 @pub mod Terminal
+@pub mod Ffi
 @pub mod Time
 @pub mod Eff
 @pub mod Bench

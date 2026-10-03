@@ -472,6 +472,95 @@ fn process(op: &str, arg: Val) -> Option<Build> {
             unsafe { std::env::remove_var(k) };
             Build::unit()
         }
+        // Calling C, for `Std.Ffi`: see `meadow_rt::ffi`.
+        op if op.starts_with("ffi") => {
+            use meadow_rt::ffi;
+            let int = |v: Val| match v {
+                Val::Int(n) => n,
+                other => fail(format!("{what}: expected an Int, got {}", shown(other))),
+            };
+            let float = |v: Val| match v {
+                Val::Float(x) => x,
+                other => fail(format!("{what}: expected a Float, got {}", shown(other))),
+            };
+            let answered = |r: Result<Build, String>| match r {
+                Ok(b) => Build::ok(b),
+                Err(e) => Build::error(e),
+            };
+            match op {
+                "ffiOpen" => answered(ffi::open(&text(arg, &what)).map(Build::int)),
+                "ffiSymbol" => {
+                    let t = tuple(arg, 2, &what);
+                    answered(ffi::symbol(int(t[0]), &text(t[1], &what)).map(Build::int))
+                }
+                "ffiCall" => {
+                    let t = tuple(arg, 3, &what);
+                    let function = int(t[0]);
+                    let Some(ret) = ffi::Ret::from_code(int(t[1])) else {
+                        return fail(format!("{what}: no such kind of answer"));
+                    };
+                    let args: Vec<ffi::Arg> = vector_arg(t[2], &what)
+                        .into_iter()
+                        .map(|a| {
+                            let a = tuple(a, 4, &what);
+                            match int(a[0]) {
+                                0 => ffi::Arg::Int(int(a[1])),
+                                1 => ffi::Arg::Float(float(a[2])),
+                                2 => ffi::Arg::Str(text(a[3], &what)),
+                                _ => fail(format!("{what}: no such kind of argument")),
+                            }
+                        })
+                        .collect();
+                    answered(ffi::call(function, ret, &args).map(|(n, x, s)| {
+                        Build::Tuple(vec![Build::int(n), Build::At(Val::Float(x)), Build::Str(s)])
+                    }))
+                }
+                "ffiAlloc" => Build::int(ffi::alloc(int(arg))),
+                "ffiFree" => {
+                    ffi::free(int(arg));
+                    Build::unit()
+                }
+                "ffiWriteInts" => {
+                    let t = tuple(arg, 3, &what);
+                    let values: Vec<i64> = vector_arg(t[2], &what).into_iter().map(int).collect();
+                    // Safety: the program's word that the memory is its own.
+                    answered(
+                        unsafe { ffi::write_ints(int(t[0]), int(t[1]), &values) }
+                            .map(|()| Build::unit()),
+                    )
+                }
+                "ffiReadInts" => {
+                    let t = tuple(arg, 4, &what);
+                    let signed = matches!(t[2], Val::Bool(true));
+                    // Safety: as above.
+                    let read = unsafe { ffi::read_ints(int(t[0]), int(t[1]), signed, int(t[3])) };
+                    answered(read.map(|ns| Build::Vector(ns.into_iter().map(Build::int).collect())))
+                }
+                "ffiWriteFloats" => {
+                    let t = tuple(arg, 3, &what);
+                    let values: Vec<f64> = vector_arg(t[2], &what).into_iter().map(float).collect();
+                    // Safety: as above.
+                    answered(
+                        unsafe { ffi::write_floats(int(t[0]), int(t[1]), &values) }
+                            .map(|()| Build::unit()),
+                    )
+                }
+                "ffiReadFloats" => {
+                    let t = tuple(arg, 3, &what);
+                    // Safety: as above.
+                    let read = unsafe { ffi::read_floats(int(t[0]), int(t[1]), int(t[2])) };
+                    answered(read.map(|xs| {
+                        Build::Vector(xs.into_iter().map(|x| Build::At(Val::Float(x))).collect())
+                    }))
+                }
+                "ffiReadText" => {
+                    let t = tuple(arg, 2, &what);
+                    // Safety: as above.
+                    Build::Str(unsafe { ffi::read_text(int(t[0]), int(t[1])) })
+                }
+                _ => return None,
+            }
+        }
         _ => return None,
     })
 }

@@ -15,6 +15,7 @@ pub mod args;
 pub mod compact;
 pub mod console;
 pub mod desc;
+pub mod ffi;
 pub mod hash;
 pub mod num;
 pub mod roles;

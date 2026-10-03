@@ -39,6 +39,19 @@ use Std.Collections.Vector (Vector)
   getEnv : String -> Maybe String,
   setEnv : (String, String) -> (),
   removeEnv : String -> (),
+  -- Calling C: what `Std.Ffi` is written over, and where to look for how to
+  -- use these. A library and a function are addresses; an argument is
+  -- `(kind, integer, float, text)` and an answer `(integer, float, text)`.
+  ffiOpen : String -> Result String Int,
+  ffiSymbol : (Int, String) -> Result String Int,
+  ffiCall : (Int, Int, Vector (Int, Int, Float, String)) -> Result String (Int, Float, String),
+  ffiAlloc : Int -> Int,
+  ffiFree : Int -> (),
+  ffiWriteInts : (Int, Int, Vector Int) -> Result String (),
+  ffiReadInts : (Int, Int, Bool, Int) -> Result String (Vector Int),
+  ffiWriteFloats : (Int, Int, Vector Float) -> Result String (),
+  ffiReadFloats : (Int, Int, Int) -> Result String (Vector Float),
+  ffiReadText : (Int, Int) -> String,
 }
 
 @pub fun command (program : a) : (a, [b], Maybe c, [d]) = (program, V.empty, None, V.empty)

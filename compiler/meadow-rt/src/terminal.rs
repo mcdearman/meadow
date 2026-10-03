@@ -274,7 +274,7 @@ mod sys {
                 // change of size interrupts a read, to be said as an event.
                 libc::atexit(restore);
                 let mut act: libc::sigaction = std::mem::zeroed();
-                act.sa_sigaction = resized as usize;
+                act.sa_sigaction = resized as *const () as usize;
                 libc::sigaction(libc::SIGWINCH, &act, std::ptr::null_mut());
             }
         }

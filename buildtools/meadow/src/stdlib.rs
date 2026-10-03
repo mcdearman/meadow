@@ -135,6 +135,8 @@ pub const MODULES: &[(&str, &str)] = &[
     ),
     // After `Console`, whose operations it is written over.
     ("Terminal", include_str!("../../../lib/Std/src/Terminal.mw")),
+    // After `Process`, whose operations it is written over.
+    ("Ffi", include_str!("../../../lib/Std/src/Ffi.mw")),
     // After `Console`, so `time` can print what it measured.
     ("Time", include_str!("../../../lib/Std/src/Time.mw")),
     ("Eff", include_str!("../../../lib/Std/src/Eff.mw")),

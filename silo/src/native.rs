@@ -284,6 +284,22 @@ fn console(op: &str, arg: Val) -> Option<Build> {
                 Err(e) => fail(format!("Console.readExact: {e}")),
             }
         }
+        // The terminal, for `Std.Terminal`: see `meadow_rt::terminal`.
+        "rawMode" => match arg {
+            Val::Bool(on) => Build::bool(meadow_rt::terminal::raw(on)),
+            other => fail(format!(
+                "Console.rawMode: expected a Bool, got {}",
+                show::displayed(other.word(), other.bits().1)
+            )),
+        },
+        "readKey" => {
+            let (code, text, mods) = meadow_rt::terminal::read_key();
+            Build::Tuple(vec![Build::int(code), Build::Str(text), Build::int(mods)])
+        }
+        "terminalSize" => {
+            let (columns, rows) = meadow_rt::terminal::size();
+            Build::Tuple(vec![Build::int(columns), Build::int(rows)])
+        }
         _ => return None,
     })
 }

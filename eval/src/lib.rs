@@ -2839,6 +2839,23 @@ fn native_console(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                 Err(e) => err(format!("Console.readExact: {e}")),
             }
         }
+        // The terminal, for `Std.Terminal`: see `meadow_core::terminal`.
+        "rawMode" => match arg {
+            Value::Bool(on) => Ok(Value::Bool(meadow_core::terminal::raw(on))),
+            other => err(format!("Console.rawMode: expected a Bool, got {other}")),
+        },
+        "readKey" => {
+            let (code, text, mods) = meadow_core::terminal::read_key();
+            Ok(Value::Tuple(vec![
+                Value::Int(code),
+                Value::Str(InternedString::from(text.as_str())),
+                Value::Int(mods),
+            ]))
+        }
+        "terminalSize" => {
+            let (columns, rows) = meadow_core::terminal::size();
+            Ok(Value::Tuple(vec![Value::Int(columns), Value::Int(rows)]))
+        }
         other => err(format!("unhandled effect Console.{other}")),
     }
 }

@@ -19,6 +19,7 @@ pub mod hash;
 pub mod num;
 pub mod roles;
 pub mod stm;
+pub mod terminal;
 pub mod text;
 pub mod thread;
 

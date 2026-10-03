@@ -603,6 +603,24 @@ impl Vm<'_> {
                     Err(e) => return err(format!("Console.readExact: {e}")),
                 }
             }
+            // The terminal, for `Std.Terminal`: see `meadow_rt::terminal`.
+            "rawMode" => match arg {
+                Value::Bool(on) => Build::At(Value::Bool(meadow_rt::terminal::raw(on))),
+                other => {
+                    return err(format!(
+                        "Console.rawMode: expected a Bool, got {}",
+                        self.show(other)
+                    ));
+                }
+            },
+            "readKey" => {
+                let (code, text, mods) = meadow_rt::terminal::read_key();
+                Build::Tuple(vec![Build::int(code), Build::Str(text), Build::int(mods)])
+            }
+            "terminalSize" => {
+                let (columns, rows) = meadow_rt::terminal::size();
+                Build::Tuple(vec![Build::int(columns), Build::int(rows)])
+            }
             _ => return Ok(None),
         }))
     }

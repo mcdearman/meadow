@@ -190,6 +190,7 @@ dependencies = [
 name = "meadow-rt"
 version = "0.1.0-alpha"
 dependencies = [
+ "libc",
  "meadow-intern",
  "meadow-span",
  "num-bigint",

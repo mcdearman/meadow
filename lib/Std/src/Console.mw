@@ -50,6 +50,15 @@ use Std.Collections.Vector (vecFromArray)
   -- protocol that frames messages by length -- the Language Server Protocol's
   -- `Content-Length` -- reads a message's body with, since nothing ends it.
   readExact : Int -> Maybe String,
+  -- The terminal, a key at a time: what `Std.Terminal` is written over, and
+  -- where to look for how to use these.
+  --
+  -- Enter raw mode, or leave it: whether the terminal is now as asked.
+  rawMode : Bool -> Bool,
+  -- The next key, paste or change of size, as `(code, text, modifiers)`.
+  readKey : () -> (Int, String, Int),
+  -- Columns and rows, or zeros where there is no terminal.
+  terminalSize : () -> (Int, Int),
 }
 
 -- --- writing ------------------------------------------------------------------

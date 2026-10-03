@@ -37,6 +37,7 @@
 @pub mod Json
 @pub mod Macro
 @pub mod Console
+@pub mod Terminal
 @pub mod Time
 @pub mod Eff
 @pub mod Bench

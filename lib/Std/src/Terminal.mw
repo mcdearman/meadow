@@ -1,0 +1,214 @@
+-- Std.Terminal: the terminal a key at a time -- what a line editor, a REPL or
+-- anything drawn on the screen is written over.
+--
+--   use Std.Terminal as Term
+--   use Std.Terminal (Event, Code)
+--
+--   fun echoKeys () =
+--     match Term.nextEvent () with
+--     | Event.Closed -> ()
+--     | Event.Pressed k -> if k.ctrl and k.code == Code.Character "c" then () else
+--         let _ = println "${k:?}" in echoKeys ()
+--     | _ -> echoKeys ()
+--
+--   fun main () = Term.withRawMode echoKeys
+--
+-- Ordinarily a terminal hands a program whole lines, echoes what is typed and
+-- turns Ctrl-C into a signal. In **raw mode** it does none of that: each key
+-- arrives as it is pressed, unechoed, and Ctrl-C is a key like any other.
+-- `withRawMode` runs a function that way and puts the terminal back after;
+-- the runtime puts it back too when the program ends, however it ends, so a
+-- failure does not leave a shell nobody can type into. Output is as it always
+-- is: `println` still starts a new line.
+--
+-- `nextEvent` waits for what happens next: a key, with what was held; text
+-- pasted, all of it at once, so that its newlines are text and not Enter; the
+-- terminal changing size; or the input closing. Enter and Ctrl-J are told
+-- apart, as are Tab and Shift-Tab, and Alt with a key is that key with `alt`.
+-- A character arrives whole however many bytes it is.
+--
+-- All of it is `Console`, so it is handled like the rest of `Console`:
+-- `withEvents` runs a function with a list of events for its input and no
+-- terminal at all, which is how a program that reads keys is tested.
+--
+-- Unix only, so far. On Windows `enterRaw` answers `False`, and a program
+-- that asks first can fall back to `Console.readLine`.
+
+use Std.Console (Console, rawMode, readKey, terminalSize)
+use Std.Collections.Vector as V
+use Std.Collections.Vector (vecFromArray)
+use Std.Maybe.Maybe.*
+
+-- What was pressed. A character is its text: one letter, or one emoji.
+use Code.*
+@derive(Debug, PartialEq)
+@pub data Code
+  = Character String
+  | Enter
+  | Tab
+  | Backspace
+  | Delete
+  | Escape
+  | Up
+  | Down
+  | Left
+  | Right
+  | Home
+  | End
+  | PageUp
+  | PageDown
+  | Insert
+  | Function Int
+
+-- A key, and what was held with it.
+@derive(Debug, PartialEq)
+@pub record Key = {
+  @pub code : Code,
+  @pub ctrl : Bool,
+  @pub alt : Bool,
+  @pub shift : Bool,
+}
+
+-- What `nextEvent` answers. After `Resized`, `size` says what to.
+use Event.*
+@derive(Debug, PartialEq)
+@pub data Event = Pressed Key | Pasted String | Resized | Closed
+
+-- `code` with nothing held.
+@pub fun key (code : Code) : Key = Key { code = code, ctrl = False, alt = False, shift = False }
+
+-- Ctrl with a letter: `ctrl "f"`.
+@pub fun ctrl (letter : String) : Key = Key { code = Character letter, ctrl = True, alt = False, shift = False }
+
+-- Alt with a key.
+@pub fun alt (code : Code) : Key = Key { code = code, ctrl = False, alt = True, shift = False }
+
+-- Enter raw mode: whether the terminal took it. `False` when standard input
+-- is not a terminal -- a file, a pipe -- or cannot be driven this way.
+@pub fun enterRaw () : Bool ! { Console | e } = rawMode True
+
+-- Put the terminal back as it was.
+@pub fun leaveRaw () : () ! { Console | e } = let _ = rawMode False in ()
+
+-- Run `body` in raw mode, and put the terminal back after.
+@pub fun withRawMode (body : () -> a ! { Console | e }) : a ! { Console | e } =
+  let _ = rawMode True in
+  let answer = body () in
+  let _ = rawMode False in
+  answer
+
+-- Columns and rows, or `(0, 0)` where there is no terminal to ask.
+@pub fun size () : (Int, Int) ! { Console | e } = terminalSize ()
+
+-- Wait for the next key, paste or change of size.
+@pub fun nextEvent () : Event ! { Console | e } = decode (readKey ())
+
+-- Wait for the next key, passing over anything else. `None` once the input
+-- has closed.
+@pub fun nextKey () : Maybe Key ! { Console | e } =
+  match nextEvent () with
+  | Pressed k -> Just k
+  | Closed -> None
+  | _ -> nextKey ()
+
+-- Run `body` with `events` for its input and no terminal: once they are used
+-- up every `nextEvent` answers `Closed`. Raw mode is taken to succeed, and the
+-- terminal to be 80 by 24.
+@pub fun withEvents (events : [Event]) (body : () -> a ! { Console | e }) : a ! { Console | e } =
+  let feed =
+    handle body () with {
+      readKey () k -> \next -> (k (encode (V.get events next))) (next + 1),
+      rawMode on k -> \next -> (k True) next,
+      terminalSize () k -> \next -> (k (80, 24)) next,
+      return x -> \next -> x
+    }
+  in feed 0
+
+-- --- what crosses to the runtime ------------------------------------------------
+--
+-- An event is `(code, text, modifiers)` there: see `meadow_rt::terminal`,
+-- whose numbers these are.
+
+fun decode (raw : (Int, String, Int)) : Event =
+  match raw with
+  | (n, text, held) ->
+      if n == 0 then Closed
+      else if n == 20 then Resized
+      else if n == 21 then Pasted text
+      else Pressed (Key { code = codeOf n text, shift = bitAnd held 1 != 0, alt = bitAnd held 2 != 0, ctrl = bitAnd held 4 != 0 })
+
+fun codeOf (n : Int) (text : String) : Code =
+  if n == 1 then Character text
+  else if n == 2 then Enter
+  else if n == 3 then Tab
+  else if n == 4 then Backspace
+  else if n == 5 then Delete
+  else if n == 7 then Up
+  else if n == 8 then Down
+  else if n == 9 then Left
+  else if n == 10 then Right
+  else if n == 11 then Home
+  else if n == 12 then End
+  else if n == 13 then PageUp
+  else if n == 14 then PageDown
+  else if n == 15 then Insert
+  else if n >= 100 then Function (n - 100)
+  else Escape
+
+fun encode (event : Maybe Event) : (Int, String, Int) =
+  match event with
+  | None -> (0, "", 0)
+  | Just Closed -> (0, "", 0)
+  | Just Resized -> (20, "", 0)
+  | Just (Pasted text) -> (21, text, 0)
+  | Just (Pressed k) ->
+      let held = (if k.shift then 1 else 0) + (if k.alt then 2 else 0) + (if k.ctrl then 4 else 0) in
+      (match k.code with
+       | Character text -> (1, text, held)
+       | Enter -> (2, "", held)
+       | Tab -> (3, "", held)
+       | Backspace -> (4, "", held)
+       | Delete -> (5, "", held)
+       | Escape -> (6, "", held)
+       | Up -> (7, "", held)
+       | Down -> (8, "", held)
+       | Left -> (9, "", held)
+       | Right -> (10, "", held)
+       | Home -> (11, "", held)
+       | End -> (12, "", held)
+       | PageUp -> (13, "", held)
+       | PageDown -> (14, "", held)
+       | Insert -> (15, "", held)
+       | Function f -> (100 + f, "", held))
+
+-- --- tests --------------------------------------------------------------------
+
+use Std.Test (assertEq)
+
+@test fun eventsArriveInOrderAndThenTheInputCloses () =
+  let events = [Pressed (key (Character "é")), Pressed (ctrl "f"), Pasted "a\nb", Resized, Pressed (alt Enter)] in
+  let got = withEvents events (\() ->
+    let a = nextEvent () in
+    let b = nextEvent () in
+    let c = nextEvent () in
+    let d = nextEvent () in
+    let e = nextEvent () in
+    let f = nextEvent () in
+    [a, b, c, d, e, f]) in
+  assertEq got (V.pushBack events Closed) "each as it was given, then closed"
+
+@test fun everyKeySurvivesTheCrossing () =
+  let keys = [Enter, Tab, Backspace, Delete, Escape, Up, Down, Left, Right, Home, End, PageUp, PageDown, Insert, Function 5] in
+  let held = V.map (\c -> Key { code = c, ctrl = True, alt = False, shift = True }) keys in
+  let got = withEvents (V.map (\k -> Pressed k) held) (\() -> V.map (\k -> nextKey ()) held) in
+  assertEq got (V.map (\k -> Just k) held) "its code and what was held"
+
+@test fun nextKeyPassesOverWhatIsNotAKey () =
+  let got = withEvents [Resized, Pasted "p", Pressed (key Up)] (\() ->
+    let a = nextKey () in
+    let b = nextKey () in
+    (a, b)) in
+  assertEq got (Just (key Up), None) "the key, then the end"
+
+@test fun rawModeAndSizeNeedNoTerminal () =
+  assertEq (withEvents [] (\() -> withRawMode (\() -> (enterRaw (), size ())))) (True, (80, 24)) "taken, and 80 by 24"

@@ -133,6 +133,8 @@ pub const MODULES: &[(&str, &str)] = &[
         "Macro.Serve",
         include_str!("../../../lib/Std/src/Macro/Serve.mw"),
     ),
+    // After `Console`, whose operations it is written over.
+    ("Terminal", include_str!("../../../lib/Std/src/Terminal.mw")),
     // After `Console`, so `time` can print what it measured.
     ("Time", include_str!("../../../lib/Std/src/Time.mw")),
     ("Eff", include_str!("../../../lib/Std/src/Eff.mw")),

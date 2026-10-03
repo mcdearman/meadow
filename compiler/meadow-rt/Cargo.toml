@@ -13,3 +13,7 @@ num-traits.workspace = true
 meadow-intern.workspace = true
 meadow-span.workspace = true
 serde.workspace = true
+
+# What a terminal is set with and asked through: `terminal.rs`.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

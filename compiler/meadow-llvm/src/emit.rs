@@ -4,8 +4,9 @@
 //! method -- in LLVM's GHC convention, taking the environment as `i64`s and
 //! answering an `i64`. Everything else is basic blocks: a `switch`'s arms and a
 //! primitive's continuations branch, and a renaming emits nothing. `jump` and
-//! `invoke` are tail calls with every argument in a register: see [`REGS`] for
-//! why that convention, and what becomes of an argument past the tenth.
+//! `invoke` are tail calls with every argument in a register: see
+//! [`CallConv`] for why that convention, and [`CallConv::regs`] for what
+//! becomes of an argument past the last register.
 //!
 //! A **frame** (`docs/SILO.md`, "Frames are the native stack") is not built
 //! while it is only waiting to be the continuation of a call: the call is an
@@ -183,6 +184,9 @@ pub struct Module<'p> {
     /// The calling convention of every function the module defines: see
     /// [`CallConv`].
     cc: &'static str,
+    /// How many words that convention passes in registers: see
+    /// [`CallConv::regs`].
+    reg_words: usize,
     /// Every function written, as text, with how many parameters it takes
     /// in registers -- for declaring it in the other units: see
     /// [`Module::units`].
@@ -233,6 +237,7 @@ impl<'p> Module<'p> {
         Module {
             program,
             cc: conv.keyword(),
+            reg_words: conv.regs(),
             funs: Vec::new(),
             methods: Vec::new(),
             pending: Vec::new(),
@@ -307,10 +312,10 @@ impl<'p> Module<'p> {
         if self.threaded { CTX } else { "0" }
     }
 
-    /// How many of a call's arguments travel in registers: all of [`REGS`],
-    /// less the one the context takes.
+    /// How many of a call's arguments travel in registers: all the
+    /// convention has ([`CallConv::regs`]), less the one the context takes.
     fn regs(&self) -> usize {
-        if self.threaded { REGS - 1 } else { REGS }
+        self.reg_words - usize::from(self.threaded)
     }
 
     /// The arguments of a call, the context first where there is one.
@@ -2685,15 +2690,6 @@ fn lit_desc(l: &Lit) -> i64 {
     }
 }
 
-/// How many of a function's parameters travel in registers. The functions are
-/// in LLVM's GHC convention on x86-64, which passes ten words in registers,
-/// and whose tail calls LLVM makes as long as nothing goes on the stack:
-/// `tailcc` guarantees them too, but on Windows only for arguments that fit
-/// its four registers, and an AxCut environment is often bigger. On aarch64
-/// they are in `tailcc` (see [`CallConv`]), which passes eight in registers
-/// and the rest on the stack, and guarantees the tail calls either way.
-const REGS: usize = 10;
-
 /// What every function of a program that can spawn calls the running
 /// thread's context, its first parameter: the `Ctx` of `silo/src/ctx.rs`,
 /// whose first words are the spill area's address and the shadow chain's
@@ -2714,7 +2710,11 @@ const CTX: &str = "%ctx";
 /// the link register is never saved, and it does not make GHC-convention
 /// tail calls. A `tail call` became `bl` then `ret`, and the `ret` returned to
 /// itself for ever. `tailcc` has ordinary prologues, and LLVM guarantees its
-/// marked tail calls on aarch64 whatever is passed on the stack.
+/// marked tail calls on aarch64.
+///
+/// Either way **nothing is passed on the stack**: a function takes as many
+/// words as the convention has registers for ([`CallConv::regs`]), and the
+/// rest go through the spill area ([`spill`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallConv {
     Ghc,
@@ -2736,6 +2736,27 @@ impl CallConv {
         CallConv::for_arch(std::env::consts::ARCH)
     }
 
+    /// How many words a call passes in registers, and so how many a function
+    /// is ever handed as arguments: ten in `ghccc` on x86-64, eight in
+    /// `tailcc` on aarch64.
+    ///
+    /// `tailcc` would pass a ninth and a tenth on the stack, and LLVM's
+    /// aarch64 back end gets that wrong twice over (clang 22). The callee
+    /// owns what it is passed there and pops it, sixteen bytes at a time; a
+    /// caller passing one word is laid out as if the other eight bytes were
+    /// still its own, and keeps a local in them, which the callee's tail
+    /// call to a function of two words overwrites -- so a value live across
+    /// a call of nine words came back as an address. And at `-O0` the caller
+    /// does not take the stack pointer back after the callee has popped, so
+    /// everything it reads afterwards is sixteen bytes out.
+    /// `compiler/meadow-llvm/tests/native.rs` holds it to this.
+    pub fn regs(self) -> usize {
+        match self {
+            CallConv::Ghc => 10,
+            CallConv::Tail => 8,
+        }
+    }
+
     fn keyword(self) -> &'static str {
         match self {
             CallConv::Ghc => "ghccc",
@@ -2744,7 +2765,7 @@ impl CallConv {
     }
 }
 
-/// What does not fit [`REGS`] goes through the running thread's spill area
+/// What does not fit in registers ([`CallConv::regs`]) goes through the running thread's spill area
 /// (`meadow_spill_area`): stored just before the call, and loaded by the
 /// callee first thing, before anything else could use it.
 ///

@@ -205,7 +205,8 @@ described above, and `emit.rs` writes the LLVM IR.
 
 ## The rest of the design, in one paragraph each
 
-**The calling convention** is LLVM's `ghccc`: ten arguments in registers, the
+**The calling convention** is LLVM's `ghccc`: ten arguments in registers --
+`tailcc` and eight on aarch64, with nothing on the stack in either -- the
 rest through a per-thread spill area, and every jump and invoke a `tail call`,
 so a loop is a loop and nothing grows. Each block of the IR is a function;
 everything inside one is basic blocks and SSA, so a `substitute` emits no moves

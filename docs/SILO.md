@@ -338,8 +338,19 @@ function no prologue -- GHC keeps its own stack -- so the link register is
 never saved, and it makes no `ghccc` tail calls: a `tail call` became `bl`
 then `ret`, and the `ret` returned to itself for ever. `tailcc` functions
 have ordinary prologues, and LLVM guarantees their marked tail calls on
-aarch64 whatever goes on the stack. The emitter is told which
-(`meadow_llvm::CallConv`); the IR is otherwise the same.
+aarch64. The emitter is told which (`meadow_llvm::CallConv`); the IR is
+otherwise the same, but for how many arguments a call has.
+
+`tailcc` passes eight arguments in registers on aarch64, and a block with more
+takes the rest from the spill area there too, so nothing is ever passed on the
+stack. `tailcc` would pass a ninth and a tenth there, and LLVM's aarch64 back
+end gets that wrong (clang 22). The callee owns what it is passed on the stack
+and pops it, sixteen bytes at a time; a caller passing one word is laid out as
+if the other eight bytes were still its own and keeps a local in them, which
+the callee's tail call to a block of two such words overwrites -- a value
+live across a call of nine words came back as an address. At `-O0` the caller
+also fails to take the stack pointer back after the callee has popped, and
+reads everything afterwards sixteen bytes out.
 
 Reference counting is calls to small helpers the module defines (`mw.share`,
 `mw.erase`, and forms that look at a descriptor first), which LLVM inlines where

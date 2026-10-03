@@ -447,6 +447,51 @@ fn nested_handlers_and_performing_outwards() {
 
 // --- threads -----------------------------------------------------------------
 //
+#[test]
+fn aarch64_passes_nothing_on_the_stack() {
+    // `tailcc` on aarch64 passes eight words in registers and would pass the
+    // rest on the stack, which LLVM gets wrong there: a caller passing one
+    // word on the stack keeps a local beside it, in memory the callee owns
+    // and its tail call overwrites -- `Lingua.Query`'s `revision`, read before
+    // a `set`, came back as an address -- and at `-O0` the caller loses
+    // track of the stack pointer altogether. So no function takes more than
+    // eight words, the context among them, and the rest go through the
+    // spill area; x86-64, with ten registers, is as it was.
+    //
+    // Seven parameters, the word every function is passed after them, and
+    // the context a program that spawns hands on: nine.
+    let src = "fun seven (a : Int) (b : Int) (c : Int) (d : Int) (e : Int) (f : Int) (g : Int) : Int =\n\
+         \x20 if a == 0 then b + c + d + e + f + g else seven (a - 1) b c d e f g\n\
+         def result = let t = threadSpawn (\\() -> 1) in threadAwait t + seven 3 1 1 1 1 1 1\n";
+    let prog = program(src);
+    let lowered = meadow_seq::lower_program(&prog, meadow_core::OptLevel::O1);
+    let most = |arch, unit| {
+        meadow_llvm::compile_split(
+            &lowered.program,
+            unit,
+            meadow_llvm::CallConv::for_arch(arch),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.msg))
+        .concat()
+        .lines()
+        .filter(|l| l.contains("tailcc i64 ") || l.contains("ghccc i64 "))
+        .map(|l| {
+            l.rsplit_once('(')
+                .map_or(0, |(_, args)| args.matches("i64").count())
+        })
+        .max()
+    };
+    // One module, and one a function: the second declares what it calls.
+    for unit in [usize::MAX, 1] {
+        assert_eq!(most("aarch64", unit), Some(8), "words to a call on aarch64");
+        assert_eq!(most("x86_64", unit), Some(9), "words to a call on x86-64");
+    }
+    for opt in [meadow_core::OptLevel::O0, meadow_core::OptLevel::O1] {
+        let name = format!("nine_words_{opt:?}");
+        assert_eq!(run_full(&name, src, false, opt).0, "7");
+    }
+}
+
 // The AxCut machine has no scheduler, so these are checked by their answers.
 
 #[test]

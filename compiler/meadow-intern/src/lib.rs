@@ -16,9 +16,33 @@ use std::{
 
 static INTERNER: Lazy<ThreadedRodeo> = Lazy::new(|| ThreadedRodeo::default());
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct InternedString {
     pub key: Spur,
+}
+
+/// In the order of the text, not of the handles. A handle is a string's
+/// place in the order strings were first seen, and with several threads
+/// interning that is a different order each run -- so whatever was sorted by
+/// it came out differently each run too: where a record keeps each field,
+/// which of two definitions is written first, which string is `@s40`. The
+/// program meant the same, and was not the same program: an object file
+/// compiled from one build's text was no use to the next.
+impl Ord for InternedString {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.key == other.key {
+            return std::cmp::Ordering::Equal;
+        }
+        INTERNER
+            .resolve(&self.key)
+            .cmp(INTERNER.resolve(&other.key))
+    }
+}
+
+impl PartialOrd for InternedString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl InternedString {

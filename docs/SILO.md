@@ -556,6 +556,51 @@ block two threads can count at once. The only atomics are the scheduler's own
 bookkeeping -- what `await` has to hand back, what a channel holds, what a
 `TVar` holds -- which is shared by nature.
 
+## Units: a module at a time, and kept
+
+A program is compiled as many LLVM modules, **a unit for each module of the
+program** -- `Std.Collections.Vector`, `MeadowBoot.Infer` -- and several for a
+module with more than two megabytes of functions (`meadow_llvm::UNIT`). One
+LLVM module is what LLVM handles worst, and units compile on every core. Every
+definition says which module it was written in (`core::Def::module`), and what
+a pass makes of one -- a specialized copy, a lifted lambda, a join point -- is
+of the module that one is. The files are named for what they hold:
+`MeadowBoot.Std.Collections.Vector.ll`, `MeadowBoot.MeadowBoot.Infer.3.ll`.
+The first unit, `MeadowBoot.ll`, holds the tables and the entry points.
+
+**An object is kept, and compiled again only when its unit's text has
+changed** (`buildtools/meadow/src/aot.rs`): beside the objects, `<name>.units`
+says what text each was compiled from. So a unit's text has to be the same
+whenever its module is, which is why nothing in it is numbered across the
+program:
+
+- a function is named for its definition, `@mw.L.<module>.<name>.<k>`, the
+  `k`th block of that name in its module, and its methods and frames after
+  it (`@mw.M…`, `@mw.F…`);
+- a string is named for what it says, `@mw.s.<hash>`, and a unit declares the
+  ones it names and no others;
+- a closure's method-table index is read from a constant the first unit
+  defines, `@mw.mi…`, since the index is the method's place among every
+  method of the program;
+- and the compiler orders interned strings by their text. By the order they
+  were first seen, which with several threads is a different order each run,
+  two builds of one program differed in where a record kept its fields and in
+  which of two definitions came first.
+
+With that, a build of MeadowBoot from unchanged sources reuses every object
+but a handful, and one after an edit to a function in one module compiles
+that module's units and the first: 25 s where a build from nothing is 78.
+
+What is still numbered across the program is a **constructor's tag**, in the
+order constructors are first used, so a change that uses a constructor
+earlier than any use before it renumbers the ones after. And the text of a
+module depends on what was inlined into it and which copies of its generic
+functions the program asked for, so a change elsewhere can change it for
+that reason too.
+
+`MEADOW_SIZES=N` says, as a program is compiled, the `N` modules and the `N`
+definitions that came to the most LLVM IR.
+
 ## Testing
 
 - **Differential:** every program the backend compiles is run by the VM as

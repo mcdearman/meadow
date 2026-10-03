@@ -90,8 +90,15 @@ pub fn compile_split(program: &Program, unit: usize, conv: CallConv) -> Result<V
     })?;
     let mut module = emit::Module::new(program, conv);
     let blocks = linear::program(program, &[entry])?;
+    module.name_labels(blocks.iter().map(|(i, label, _)| {
+        let d = &program.defs[*i];
+        (*label, d.module.to_string(), d.name.to_string())
+    }));
     for (i, label, lb) in &blocks {
-        module.in_module(&program.defs[*i].module.to_string());
+        module.in_module(
+            &program.defs[*i].module.to_string(),
+            &program.defs[*i].name.to_string(),
+        );
         module.def(*label, lb).map_err(|e| Error {
             msg: format!("in {}: {}", program.defs[*i].name, e.msg),
         })?;
@@ -101,12 +108,41 @@ pub fn compile_split(program: &Program, unit: usize, conv: CallConv) -> Result<V
         .get(&entry)
         .and_then(|r| r.desc())
         .unwrap_or(meadow_rt::desc::ANY);
+    report_sizes(&module);
     Ok(Unit::all(module.text_split(
         entry,
         result,
         fingerprint(),
         unit,
     )))
+}
+
+/// `MEADOW_SIZES=N`: say the `N` definitions that came to the most LLVM IR,
+/// and how much every module did -- see [`emit::Module::sizes`].
+fn report_sizes(module: &emit::Module) {
+    let Some(n) = std::env::var("MEADOW_SIZES")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+    else {
+        return;
+    };
+    let sizes = module.sizes();
+    let mut by_module: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    for (m, _, bytes, funs) in &sizes {
+        let e = by_module.entry(m.as_str()).or_default();
+        e.0 += bytes;
+        e.1 += funs;
+    }
+    let mut modules: Vec<_> = by_module.into_iter().collect();
+    modules.sort_by_key(|(_, (bytes, _))| std::cmp::Reverse(*bytes));
+    eprintln!("{:>10} {:>8}  module", "IR KB", "funs");
+    for (m, (bytes, funs)) in modules.iter().take(n) {
+        eprintln!("{:>10.1} {funs:>8}  {m}", *bytes as f64 / 1024.0);
+    }
+    eprintln!("{:>10} {:>8}  definition", "IR KB", "funs");
+    for (m, d, bytes, funs) in sizes.iter().take(n) {
+        eprintln!("{:>10.1} {funs:>8}  {m}.{d}", *bytes as f64 / 1024.0);
+    }
 }
 
 /// `program` as an LLVM module for a test executable: `tests` are the labels
@@ -121,8 +157,15 @@ pub fn compile_tests(
 ) -> Result<Vec<Unit>, Error> {
     let mut module = emit::Module::new(program, conv);
     let blocks = linear::program(program, tests)?;
+    module.name_labels(blocks.iter().map(|(i, label, _)| {
+        let d = &program.defs[*i];
+        (*label, d.module.to_string(), d.name.to_string())
+    }));
     for (i, label, lb) in &blocks {
-        module.in_module(&program.defs[*i].module.to_string());
+        module.in_module(
+            &program.defs[*i].module.to_string(),
+            &program.defs[*i].name.to_string(),
+        );
         module.def(*label, lb).map_err(|e| Error {
             msg: format!("in {}: {}", program.defs[*i].name, e.msg),
         })?;

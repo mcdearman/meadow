@@ -280,9 +280,54 @@ pub fn build_native(
         prune_units(&dir, name, &unit_paths(&dir, name, &units));
         return Ok(exe);
     }
-    let modules = write_units(&dir, name, &units)?;
-    clang_link(&modules, &runtime, &exe, opt, target)?;
+    // A unit whose text is what its object was compiled from is not compiled
+    // again: its module has not changed, and neither has anything it names.
+    let modules = unit_paths(&dir, name, &units);
+    let kept = dir.join(format!("{name}.units"));
+    let had = objects_kept(&kept);
+    let prints: Vec<String> = units
+        .iter()
+        .map(|u| unit_print(&u.text, opt, target))
+        .collect();
+    let have: Vec<bool> = modules
+        .iter()
+        .zip(&prints)
+        .map(|(m, print)| {
+            let object = m.with_extension("o");
+            units.len() > 1
+                && object.exists()
+                && object
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .is_some_and(|f| had.get(f) == Some(print))
+        })
+        .collect();
+    // Forgotten until the objects are there: a build that stops half way
+    // leaves nothing that says an object is what it is not.
+    let _ = std::fs::remove_file(&kept);
+    for ((path, u), have) in modules.iter().zip(&units).zip(&have) {
+        if !have {
+            write(path, u.text.as_bytes())?;
+        }
+    }
+    let reused = have.iter().filter(|h| **h).count();
+    if reused > 0 {
+        crate::status::status(
+            "Reusing",
+            format!("{reused} of {} objects of `{name}`", units.len()),
+        );
+    }
+    clang_link(&modules, &have, &runtime, &exe, opt, target)?;
     let _ = std::fs::write(&stamp, &want);
+    let listed: String = modules
+        .iter()
+        .zip(&prints)
+        .filter_map(|(m, print)| {
+            let object = m.with_extension("o");
+            Some(format!("{}\t{print}\n", object.file_name()?.to_str()?))
+        })
+        .collect();
+    let _ = std::fs::write(&kept, listed);
     // The IR was only ever clang's input -- several times the size of the
     // objects it made -- and nothing reads it again: the next build writes it
     // afresh. Kept when the link fails, which is when someone wants to read it.
@@ -291,6 +336,38 @@ pub fn build_native(
     }
     prune_units(&dir, name, &modules);
     Ok(exe)
+}
+
+/// What says a unit's object is the one its text compiles to: the text, and
+/// how it was compiled.
+fn unit_print(text: &str, opt: meadow_compiler::OptLevel, target: Target) -> String {
+    // Two hashes of the same bytes, differently seeded: 128 bits between an
+    // object and being taken for another's.
+    let mut a: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut b: u64 = 0x8422_2325_cbf2_9ce4;
+    for byte in text
+        .bytes()
+        .chain(opt.name().bytes())
+        .chain(target.triple().bytes())
+    {
+        a ^= u64::from(byte);
+        a = a.wrapping_mul(0x0100_0000_01b3);
+        b = (b ^ u64::from(byte))
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            .rotate_left(23);
+    }
+    format!("{a:016x}{b:016x}")
+}
+
+/// The objects the last build left, each with the print of the unit it was
+/// compiled from: `<object>\t<print>` a line, in the file at `kept`.
+fn objects_kept(kept: &Path) -> std::collections::HashMap<String, String> {
+    std::fs::read_to_string(kept)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(object, print)| (object.to_string(), print.to_string()))
+        .collect()
 }
 
 /// Remove what an earlier build of `name` left in `dir` that the executable
@@ -359,9 +436,11 @@ pub fn write_units(
 
 /// Compile the LLVM modules at `modules` -- in parallel, when there are
 /// several -- and link them with the runtime library `runtime` into `exe`,
-/// with clang (or `MEADOW_CLANG`).
+/// with clang (or `MEADOW_CLANG`). One that `have` says is compiled already
+/// is not compiled again: its object is beside where its text would be.
 pub fn clang_link(
     modules: &[PathBuf],
+    have: &[bool],
     runtime: &Path,
     exe: &Path,
     opt: meadow_compiler::OptLevel,
@@ -411,6 +490,10 @@ pub fn clang_link(
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if i >= modules.len() {
                             return;
+                        }
+                        if have.get(i).copied().unwrap_or(false) {
+                            bar.lock().unwrap_or_else(|p| p.into_inner()).step();
+                            continue;
                         }
                         bar.lock()
                             .unwrap_or_else(|p| p.into_inner())

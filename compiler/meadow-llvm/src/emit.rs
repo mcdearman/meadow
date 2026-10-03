@@ -195,6 +195,19 @@ pub struct Module<'p> {
     fun_modules: Vec<String>,
     /// The module of the definition being written.
     module: String,
+    /// What each label's function is called: see [`Module::name_labels`].
+    label_names: HashMap<u32, String>,
+    /// The function of the definition being written, less its `@mw.L` --
+    /// what its methods and frames are named after -- and how many of each
+    /// it has had so far.
+    stem: String,
+    stem_methods: usize,
+    stem_frames: usize,
+    /// The definition being written, and how many bytes of functions and how
+    /// many functions each definition came to, by module and name: what
+    /// [`Module::sizes`] reports.
+    def_name: String,
+    sizes: HashMap<(String, String), (usize, usize)>,
     /// Every method's function, in method-table order: a closure's `meta` is
     /// the index of its first method here.
     methods: Vec<String>,
@@ -245,6 +258,12 @@ impl<'p> Module<'p> {
             funs: Vec::new(),
             fun_modules: Vec::new(),
             module: String::new(),
+            label_names: HashMap::new(),
+            stem: String::new(),
+            stem_methods: 0,
+            stem_frames: 0,
+            def_name: String::new(),
+            sizes: HashMap::new(),
             methods: Vec::new(),
             pending: Vec::new(),
             next_method: 0,
@@ -269,7 +288,22 @@ impl<'p> Module<'p> {
         if let Some(g) = self.strings.get(text) {
             return (g.clone(), text.len());
         }
-        let g = format!("@s{}", self.strings.len());
+        // Named for what it says, not for when it was first said: a number
+        // would move with every string before it in the program, and the
+        // text of every unit that names this one with it.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in text.bytes() {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        let mut g = format!("@mw.s.{h:016x}");
+        // Two texts of one hash: the later is told apart by how many there
+        // were before it, which is the same from build to build unless one
+        // of the two is new.
+        let mut again = 1;
+        while self.string_sizes.iter().any(|(had, _)| *had == g) {
+            again += 1;
+            g = format!("@mw.s.{h:016x}_{again}");
+        }
         let mut bytes = String::new();
         for b in text.as_bytes() {
             match b {
@@ -360,15 +394,70 @@ impl<'p> Module<'p> {
     /// Say which module the definitions written from here on are of: what
     /// [`Module::units`] divides the program by. A definition's methods and
     /// frames are written with it, and are of its module.
-    pub fn in_module(&mut self, module: &str) {
+    pub fn in_module(&mut self, module: &str, def: &str) {
         if self.module != module {
             self.module = module.to_string();
         }
+        if self.def_name != def {
+            self.def_name = def.to_string();
+        }
+    }
+
+    /// How much LLVM IR each definition came to, most first: its module, its
+    /// name, the bytes of its functions and how many there are -- a
+    /// definition's own, its methods' and its frames', and those of every
+    /// copy of it a pass made. With `MEADOW_SIZES=N`, the `N` largest are
+    /// said on stderr as the program is compiled: where a large build's IR
+    /// comes from.
+    pub fn sizes(&self) -> Vec<(String, String, usize, usize)> {
+        let mut all: Vec<_> = self
+            .sizes
+            .iter()
+            .map(|((m, d), (bytes, funs))| (m.clone(), d.clone(), *bytes, *funs))
+            .collect();
+        all.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| (&a.0, &a.1).cmp(&(&b.0, &b.1))));
+        all
+    }
+
+    /// Name each label's function for the definition it is of, rather than
+    /// by the label's number: `@mw.L.<module>.<name>.<k>`, the `k`th block of
+    /// that name in its module, in the order given. A definition's methods
+    /// and frames are named after it in turn.
+    ///
+    /// A label is a definition's place in the whole program, so a number in
+    /// a name moved whenever anything before it did -- and with it the text
+    /// of every unit that named the function, though nothing in them had
+    /// changed. A name of its own moves only with its own module.
+    pub fn name_labels(
+        &mut self,
+        labels: impl Iterator<Item = (meadow_axcut::Label, String, String)>,
+    ) {
+        let mut count: HashMap<String, usize> = HashMap::new();
+        for (label, module, name) in labels {
+            let stem = format!("{}.{}", symbol(&module), symbol(&name));
+            let k = count.entry(stem.clone()).or_default();
+            *k += 1;
+            self.label_names
+                .insert(label.0, format!("@mw.L.{stem}.{k}"));
+        }
+    }
+
+    /// The function label `l` is: its name, or its number where it was given
+    /// none.
+    fn label_fn(&self, l: meadow_axcut::Label) -> String {
+        self.label_names
+            .get(&l.0)
+            .cloned()
+            .unwrap_or_else(|| format!("@mw.L{}", l.0))
     }
 
     pub fn def(&mut self, label: meadow_axcut::Label, b: &LBlock) -> Result<(), Error> {
         let params: Vec<String> = (0..b.params.len()).map(|i| format!("%a{i}")).collect();
-        let mut f = Fun::new(format!("@mw.L{}", label.0), params.clone());
+        let name = self.label_fn(label);
+        self.stem = name["@mw.L".len()..].to_string();
+        self.stem_methods = 0;
+        self.stem_frames = 0;
+        let mut f = Fun::new(name, params.clone());
         self.safe_point(&mut f);
         let mut env = HashMap::new();
         for (n, p) in b.params.iter().zip(&params) {
@@ -445,7 +534,8 @@ impl<'p> Module<'p> {
         if let Some(n) = self.frame_fns.get(&fr.id) {
             return n.clone();
         }
-        let name = format!("@mw.F{}", fr.id);
+        self.stem_frames += 1;
+        let name = format!("@mw.F{}.{}", self.stem, self.stem_frames);
         self.frame_fns.insert(fr.id, name.clone());
         self.pending_frames.push((name.clone(), fr.clone()));
         name
@@ -502,6 +592,12 @@ impl<'p> Module<'p> {
             f.body
         );
         let words = f.params.len().min(regs) + usize::from(self.threaded);
+        let size = self
+            .sizes
+            .entry((self.module.clone(), self.def_name.clone()))
+            .or_default();
+        size.0 += text.len();
+        size.1 += 1;
         self.funs.push((f.name, text, words));
         self.fun_modules.push(self.module.clone());
     }
@@ -540,7 +636,8 @@ impl<'p> Module<'p> {
     fn methods_for(&mut self, methods: &[LBlock], ncap: usize) -> usize {
         let base = self.methods.len();
         for m in methods {
-            let name = format!("@mw.M{}", self.next_method);
+            self.stem_methods += 1;
+            let name = format!("@mw.M{}.{}", self.stem, self.stem_methods);
             self.next_method += 1;
             self.methods.push(name.clone());
             self.pending.push((name, m.clone(), ncap));
@@ -814,6 +911,51 @@ impl<'p> Module<'p> {
         self.build_in(f, kind, meta, vals, descs, None)
     }
 
+    /// A closure whose first method is `base` in the method table.
+    ///
+    /// Its `meta` is that index, which is the method's place among every
+    /// method of the program -- so it is read from a constant the first unit
+    /// defines ([`Module::method_index`]) rather than written here as a
+    /// number, which would change this unit's text whenever a method was
+    /// added anywhere before it.
+    fn build_closure(&self, f: &mut Fun, base: usize, vals: &[String], descs: &[D]) -> String {
+        let index = Self::method_index(&self.methods[base]);
+        let m = f.t();
+        f.i(format!("{m} = load i64, ptr {index}"));
+        if vals.is_empty() {
+            let s = f.t();
+            f.i(format!("{s} = shl i64 {m}, 1"));
+            let v = f.t();
+            f.i(format!("{v} = or i64 {s}, 1"));
+            return v;
+        }
+        let n = vals.len();
+        let b = f.t();
+        f.i(format!(
+            "{b} = call i64 @meadow_acquire(i64 {}, i64 {})",
+            self.cx(),
+            2 + n.div_ceil(16) + n
+        ));
+        // Written as method 0 -- the number itself must not be in the text --
+        // and then again with what was read: LLVM drops the first store.
+        self.write_block(f, &b, kind::CLOSURE, 0, vals, descs, None);
+        let p = f.ptr(&b);
+        let w1 = f.t();
+        f.i(format!("{w1} = getelementptr i64, ptr {p}, i64 1"));
+        let hi = f.t();
+        f.i(format!("{hi} = shl i64 {m}, 32"));
+        let word = f.t();
+        f.i(format!("{word} = or i64 {hi}, {}", kind::CLOSURE));
+        f.i(format!("store i64 {word}, ptr {w1}"));
+        b
+    }
+
+    /// The constant holding the method-table index of the method function
+    /// `name`: `@mw.M.x.1` has `@mw.mi.x.1`.
+    fn method_index(name: &str) -> String {
+        format!("@mw.mi{}", &name["@mw.M".len()..])
+    }
+
     /// [`Self::build`], in reuse token `reuse`'s block when it holds one --
     /// the size of this one, since only a `let` of as many fields is given one
     /// -- and in a new block when it does not.
@@ -1004,7 +1146,7 @@ impl<'p> Module<'p> {
             vals.push(v);
             descs.push(self.desc(fr.method.params[i], env));
         }
-        Ok(self.build(f, kind::CLOSURE, base as u64, &vals, &descs))
+        Ok(self.build_closure(f, base, &vals, &descs))
     }
 
     fn stmt(&mut self, s: &L, env: &mut HashMap<Name, V>, f: &mut Fun) -> Result<(), Error> {
@@ -1130,13 +1272,13 @@ impl<'p> Module<'p> {
                         vals.push(self.val(*c, env, f)?);
                         descs.push(self.desc(*c, env));
                     }
-                    let v = self.build(f, kind::CLOSURE, base as u64, &vals, &descs);
+                    let v = self.build_closure(f, base, &vals, &descs);
                     env.insert(*name, V::Val(v));
                 }
                 self.stmt(rest, env, f)
             }
             L::Jump { label, args } => {
-                let callee = format!("@mw.L{}", label.0);
+                let callee = self.label_fn(*label);
                 self.transfer(&callee, None, args, env, f)
             }
             L::Invoke { target, tag, args } => {
@@ -1514,7 +1656,7 @@ impl<'p> Module<'p> {
                 vals.push(self.val(*c, env, f)?);
                 descs.push(self.desc(*c, env));
             }
-            let code = self.build(f, kind::CLOSURE, base as u64, &vals, &descs);
+            let code = self.build_closure(f, base, &vals, &descs);
             let a = self.val(args[0], env, f)?;
             let entry = match p {
                 Prim::Enter => "meadow_enter",
@@ -2332,6 +2474,24 @@ impl<'p> Module<'p> {
                 chunks.last_mut().expect("one").1.push_str(text);
             }
         }
+        // The method indexes a unit reads, declared as it first names them.
+        let indexes_of = |body: &str| -> String {
+            let mut out = String::new();
+            let mut seen = std::collections::HashSet::new();
+            let mut rest = body;
+            while let Some(at) = rest.find("@mw.mi") {
+                let tail = &rest[at..];
+                let len = 6 + tail[6..]
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_'))
+                    .unwrap_or(tail.len() - 6);
+                let name = &tail[..len];
+                rest = &tail[len..];
+                if seen.insert(name) {
+                    let _ = writeln!(out, "{name} = external hidden constant i64");
+                }
+            }
+            out
+        };
         let first_only = format!(
             "@meadow_threaded = constant i8 {}\n@meadow_cycles = constant i8 {}\n\
              @meadow_spill_words = constant i64 {}\n\n",
@@ -2339,12 +2499,33 @@ impl<'p> Module<'p> {
             u8::from(self.cycles),
             self.spill_area()
         );
-        let methods = self.methods.len();
-        let strings: String = self
+        let string_sizes: HashMap<&str, usize> = self
             .string_sizes
             .iter()
-            .map(|(g, n)| format!("{g} = external hidden constant [{n} x i8]\n"))
+            .map(|(g, n)| (g.as_str(), *n))
             .collect();
+        // The strings a unit names, declared in the order it first names
+        // them: every string of the program, declared in every unit, made
+        // each unit's text change with any string anywhere.
+        let strings_of = |body: &str| -> String {
+            let mut out = String::new();
+            let mut seen = std::collections::HashSet::new();
+            let mut rest = body;
+            while let Some(at) = rest.find("@mw.s.") {
+                let tail = &rest[at..];
+                let len = 6 + tail[6..]
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(tail.len() - 6);
+                let name = &tail[..len];
+                rest = &tail[len..];
+                if let Some(n) = string_sizes.get(name)
+                    && seen.insert(name)
+                {
+                    let _ = writeln!(out, "{name} = external hidden constant [{n} x i8]");
+                }
+            }
+            out
+        };
         chunks
             .into_iter()
             .enumerate()
@@ -2357,11 +2538,12 @@ impl<'p> Module<'p> {
                     );
                     out.push_str(RUNTIME);
                     out.push_str(&helpers(self.cycles, self.regions));
-                    let _ = writeln!(
-                        out,
-                        "@meadow_methods = external hidden constant [{methods} x ptr]"
-                    );
-                    out.push_str(&strings);
+                    // Of no stated length: how many methods the program has
+                    // is not this unit's to say, and would be one more thing
+                    // that changed its text when another unit changed.
+                    out.push_str("@meadow_methods = external hidden constant [0 x ptr]\n");
+                    out.push_str(&strings_of(&body));
+                    out.push_str(&indexes_of(&body));
                     out.push('\n');
                 }
                 out.push_str(&self.threads_part(i == 0));
@@ -2450,6 +2632,12 @@ impl<'p> Module<'p> {
             "@meadow_methods = hidden constant {}\n",
             array(&methods)
         );
+        // Each method's place in that table, for the code that builds a
+        // closure to read: see [`Module::build_closure`].
+        for (i, m) in self.methods.iter().enumerate() {
+            let _ = writeln!(out, "{} = hidden constant i64 {i}", Self::method_index(m));
+        }
+        out.push('\n');
         // Constructor names by tag, for printing.
         let mut ctors: Vec<(u32, String)> = self
             .program
@@ -2527,8 +2715,9 @@ impl<'p> Module<'p> {
                 let (get, arg) = self.entry_ctx();
                 let _ = writeln!(
                     out,
-                    "define i64 @meadow_entry() {{\n{get}  %r = call {} i64 @mw.L{}({arg}i64 0)\n  ret i64 %r\n}}\n",
-                    self.cc, entry.0
+                    "define i64 @meadow_entry() {{\n{get}  %r = call {} i64 {}({arg}i64 0)\n  ret i64 %r\n}}\n",
+                    self.cc,
+                    self.label_fn(entry)
                 );
                 out.push_str(
                     "define i32 @main(i32 %argc, ptr %argv) {\n  \
@@ -2542,8 +2731,9 @@ impl<'p> Module<'p> {
                 for (i, l) in labels.iter().enumerate() {
                     let _ = writeln!(
                         out,
-                        "define i64 @meadow_test{i}() {{\n{get}  %r = call {} i64 @mw.L{}({arg}i64 0)\n  ret i64 %r\n}}\n",
-                        self.cc, l.0
+                        "define i64 @meadow_test{i}() {{\n{get}  %r = call {} i64 {}({arg}i64 0)\n  ret i64 %r\n}}\n",
+                        self.cc,
+                        self.label_fn(*l)
                     );
                     table.push(format!("ptr @meadow_test{i}"));
                 }
@@ -2561,6 +2751,20 @@ impl<'p> Module<'p> {
     }
 }
 
+/// `name` as it can stand in an LLVM symbol: letters, digits, `.` and `_`
+/// as they are, and `_` for anything else.
+fn symbol(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Declarations of the functions `body` calls and does not define, which
 /// another unit does.
 fn declarations(body: &str, arity: &HashMap<&str, usize>, cc: &str) -> String {
@@ -2573,7 +2777,7 @@ fn declarations(body: &str, arity: &HashMap<&str, usize>, cc: &str) -> String {
         while let Some(at) = rest.find("@mw.") {
             let tail = &rest[at..];
             let len = 4 + tail[4..]
-                .find(|c: char| !c.is_ascii_alphanumeric())
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_'))
                 .unwrap_or(tail.len() - 4);
             let name = &tail[..len];
             rest = &tail[len..];

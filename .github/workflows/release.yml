@@ -173,10 +173,10 @@ jobs:
           bin="target/${{ matrix.target }}/release/meadow"
           [ -f "$bin.exe" ] && bin="$bin.exe"
           "$bin" --version
-          echo 'def main = 6 * 7' > /tmp/smoke.mw
+          echo 'fun main () = println (show (6 * 7))' > /tmp/smoke.mw
           # With `Std` built in, a first run in an empty home compiles nothing
           # of it and keeps nothing.
-          MEADOW_HOME="$RUNNER_TEMP/fresh-home" "$bin" run /tmp/smoke.mw | tail -1 | grep -q '=> 42'
+          MEADOW_HOME="$RUNNER_TEMP/fresh-home" "$bin" run /tmp/smoke.mw | tail -1 | grep -qx '42'
           if [ -d "$RUNNER_TEMP/fresh-home/lib/std" ]; then
             echo "Std was compiled: the precompiled one is not built in" >&2
             exit 1

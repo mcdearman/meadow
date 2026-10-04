@@ -15,7 +15,7 @@ use meadow::{
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "meadow", about = "Meadow language compiler", version)]
+#[command(name = "meadow", about = "Meadow language compiler", version = meadow::channel::VERSION)]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,

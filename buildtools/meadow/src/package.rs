@@ -10,6 +10,7 @@
 //! [package]
 //! name = "demo"
 //! version = "0.1.0"
+//! features = ["ffi"]               # unstable features: see `crate::channel`
 //!
 //! [dependencies]
 //! util = "../util"                 # bare string = path
@@ -147,6 +148,9 @@ pub struct Dependency {
 pub struct Manifest {
     pub name: String,
     pub version: String,
+    /// `features = ["ffi"]`: the unstable features the package uses, which
+    /// only a nightly `meadow` accepts. See [`crate::channel`].
+    pub features: Vec<String>,
     /// Each dependency, in the order it was written.
     pub deps: Vec<Dependency>,
     /// What is wrong with the manifest but not wrong enough to stop the build:
@@ -245,6 +249,8 @@ pub struct Package {
     /// The manifest's `version`. A lone file has no manifest, and so no
     /// version to report.
     pub version: Option<String>,
+    /// The manifest's `features`: the unstable features it may use.
+    pub features: Vec<String>,
     /// Where the package came from, as a build reports it: its directory, or
     /// for a git dependency the repository and commit.
     pub origin: String,
@@ -708,6 +714,10 @@ impl Builder<'_> {
         let modules = discover_modules(&canon, name)?;
         let id = self.packages.len();
         let version = manifest.as_ref().map(|m| m.version.clone());
+        let features = manifest
+            .as_ref()
+            .map(|m| m.features.clone())
+            .unwrap_or_default();
         let origin = self
             .resolver
             .origins
@@ -718,6 +728,7 @@ impl Builder<'_> {
             id,
             name,
             version,
+            features,
             origin,
             root: canon.clone(),
             modules,
@@ -959,6 +970,7 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
     let mut version = "0.0.0".to_string();
     let mut deps: Vec<Dependency> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut features: Vec<String> = Vec::new();
     let mut profiles: HashMap<String, ProfileConfig> = HashMap::new();
     let mut section = String::new();
     let mut says_package = false;
@@ -1013,6 +1025,7 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
                     "name" => name = unquote(value).to_string(),
                     "version" if inline_flag(value, "workspace") => inherits.version = true,
                     "version" => version = unquote(value).to_string(),
+                    "features" => features = string_array(value),
                     _ if from_workspace(key).as_deref() == Some("version") => {
                         inherits.version = true
                     }
@@ -1094,17 +1107,23 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
         }
     }
 
+    // A feature this `meadow` does not have, or one it has and may not give.
+    let problems: Vec<String> = features
+        .iter()
+        .filter_map(|f| crate::channel::feature_problem(f, crate::channel::CHANNEL))
+        .collect();
     let manifest = Manifest {
         warnings,
         name,
         version,
+        features,
         deps,
         profiles,
         // A manifest with no `[workspace]` is a package's whatever it says,
         // as it always was: the name comes from the directory otherwise.
         is_package: says_package || workspace.is_none(),
         workspace,
-        problems: Vec::new(),
+        problems,
     };
     (manifest, inherits)
 }

@@ -63,7 +63,7 @@ parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --version)
-                [ $# -ge 2 ] || err "--version needs a tag, e.g. --version v0.1.0-alpha"
+                [ $# -ge 2 ] || err "--version needs a tag, e.g. --version v0.2.0"
                 VERSION="$2"
                 shift 2
                 ;;

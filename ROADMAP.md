@@ -152,13 +152,14 @@ bytecode image, the Cut IR and the runtimes' layouts are unstable until 1.0.
 Std's version tracks the toolchain's. Other packages keep versions of their
 own.
 
-| Task                                                                                                                                                                                                                                                | State         |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| Version `0.2.0` in every manifest, a `v0.2.0` tag that does not move, and a `CHANGELOG.md` with breaking, added and fixed sections per release                                                                                                      | Planned, next |
-| Nightly channel: a scheduled workflow that publishes a dated pre-release from `master` when it passes the check script; `meadow --version` says the channel and the commit                                                                          | Planned       |
-| Channels in `meadowup`: `meadowup default stable` or `nightly`, `meadowup install <version>`, recorded in `~/.meadow/toolchain`                                                                                                                     | Planned       |
-| Feature gates: an unstable feature is named in `Meadow.toml` (`features = ["ffi"]`) and accepted only by a nightly compiler; a stable one refuses it and says which channel has it. First behind gates: `Std.Ffi`, `Std.Terminal`, the Cut tooling. | Planned       |
-| A per-project toolchain file pinning the version a project builds with                                                                                                                                                                              | Planned       |
+| Task                                                                                                                                              | State                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Version `0.2.0` in every manifest, a `CHANGELOG.md` with breaking, added and fixed sections, and a release workflow that publishes a version once | Done. The `v0.2.0` tag is pushed after the full test run.                                              |
+| Nightly channel: `nightly.yml` publishes `master` under the tag `nightly`, as a pre-release, on days it has moved                                 | Done. First run is after the workflow reaches GitHub.                                                  |
+| Channels in `meadowup`: `meadowup default stable` or `nightly`, `meadowup install <version>`, and `meadow --version` saying which a build is      | Done                                                                                                   |
+| Feature gates: an unstable feature is named in `Meadow.toml` (`features = ["ffi"]`) and accepted only by a nightly or a build from a checkout     | Done. `ffi` is the one feature so far.                                                                 |
+| A `meadow-toolchain` file naming the channel or version a project builds with, which `meadow` holds a build to                                    | Done                                                                                                   |
+| Several toolchains installed side by side, with `meadowup` choosing by the project's `meadow-toolchain`                                           | Planned. Today there is one toolchain in a home, and a mismatch is an error that says what to install. |
 
 ## Standard library and packages
 

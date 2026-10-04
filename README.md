@@ -60,11 +60,13 @@ Options after `sh -s --` are passed to `meadowup install`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh \
-  | sh -s -- --version v0.1.0-alpha --no-modify-path
+  | sh -s -- --version v0.2.0 --no-modify-path
 ```
 
 ```sh
-meadowup install --version v0.1.0-alpha   # pin a release
+meadowup install 0.2.0                    # a particular release
+meadowup install nightly                  # master's latest build, and follow it
+meadowup default stable                   # follow the releases again
 meadowup update                           # bring the toolchain forward
 meadowup update --force                   # install again even if current
 meadowup install --no-modify-path         # leave profiles and PATH alone
@@ -439,7 +441,7 @@ For VS Code, build and install the extension:
 
 ```sh
 editors/vscode/build.sh
-code --install-extension editors/vscode/meadow-0.1.0-alpha.vsix
+code --install-extension editors/vscode/meadow-*.vsix
 ```
 
 Each release also attaches a built `.vsix`.
@@ -592,18 +594,50 @@ that does, which is the reason it exists.
 
 ## Releasing
 
-Push a tag; `.github/workflows/release.yml` cross-builds for Linux, macOS and
-Windows (x86-64 and arm64) and attaches the archives the installers look for.
+Meadow has two channels, as Rust does.
 
-Until the language settles there is one release, `v0.1.0-alpha`, and a new
-build replaces it rather than adding another. Move the tag to the commit to
-publish and push it again; the workflow deletes the old release before making
-the new one:
+**Stable** is a release with a [semantic version](https://semver.org) and a
+tag that is pushed once and never moves. While the major version is 0, a minor
+version may break source and a patch may not; the promise covers the language,
+`Std`'s public API and `Meadow.toml`. `Std`'s version is the toolchain's.
+[`CHANGELOG.md`](CHANGELOG.md) says what each one changed.
 
-```sh
-git tag -f v0.1.0-alpha && git push -f origin v0.1.0-alpha
+**Nightly** is `master`, built once a day when it has moved and published
+under the tag `nightly` by `.github/workflows/nightly.yml`. It says so —
+`meadow 0.3.0-nightly (2026-10-05 892808f)` — and it is the only channel that
+accepts unstable features, each named by the package that uses it:
+
+```toml
+[package]
+name = "torch"
+version = "0.4.0"
+features = ["ffi"]      # calling C through Std.Ffi
 ```
 
-The tag is gated on `scripts/check.sh --version <tag>`, which fails if the tag
-disagrees with the version in any of the five `Cargo.toml`s — the release assets
-carry no version, so nothing downstream would catch that.
+A build from a checkout (`scripts/install.sh`) is `-dev`, and takes what a
+nightly takes. A project can say which toolchain it is built with in a
+`meadow-toolchain` file beside its `Meadow.toml` — `stable`, `nightly`, or a
+version such as `0.2.0` — and `meadow` then refuses to build it with another,
+and says how to get the one it asks for.
+
+To cut a release:
+
+1. Move what is under _Unreleased_ in `CHANGELOG.md` into a section for the
+   version, and set that version in every manifest: the six `Cargo.toml`s
+   (`compiler`, `eval`, `glade`, `silo`, `buildtools`, `installer`),
+   `lib/Std/Meadow.toml` and `editors/vscode/package.json`.
+2. Run `scripts/check.sh --version v0.2.0`, which fails if any of them, or the
+   changelog, disagrees with the tag.
+3. Tag that commit and push the tag:
+
+   ```sh
+   git tag v0.2.0 && git push origin v0.2.0
+   ```
+
+   `.github/workflows/release.yml` runs the checks again, cross-builds for
+   Linux, macOS and Windows (x86-64 and arm64) and attaches the archives the
+   installers look for. It refuses a tag that already has a release.
+
+4. Set the next minor version in the manifests on `master`, so that the
+   nightlies after a release are builds of the version they are working
+   towards.

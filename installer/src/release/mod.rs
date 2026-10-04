@@ -28,6 +28,28 @@ pub fn latest_tag() -> Result<String, String> {
     field(&body, "tag_name").ok_or_else(|| "GitHub named no release".to_string())
 }
 
+/// What the release published under `tag` is called: for the nightly one,
+/// `nightly 2026-10-05 892808f` -- the day and the commit it was built from,
+/// which is how one nightly is told from the next.
+pub fn release_name(tag: &str) -> Result<String, String> {
+    if !valid_tag(tag) {
+        return Err(format!("`{tag}` is not a release tag"));
+    }
+    let url = format!("https://api.github.com/repos/{REPO}/releases/tags/{tag}");
+    let out = Command::new(curl())
+        .args(["-fsSL", "-H", "Accept: application/vnd.github+json", &url])
+        .output()
+        .map_err(|e| format!("could not run curl: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "could not ask GitHub for the {tag} release: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let body = String::from_utf8_lossy(&out.stdout);
+    field(&body, "name").ok_or_else(|| format!("GitHub named no {tag} release"))
+}
+
 /// Download and unpack the release `tag` for `target`, answering the directory
 /// it was unpacked into and how many bytes were fetched.
 ///
@@ -192,8 +214,8 @@ mod tests {
 
     #[test]
     fn a_field_is_read_out_of_the_release_json() {
-        let json = r#"{"url":"x","tag_name":"v0.1.0-alpha","name":"Meadow"}"#;
-        assert_eq!(field(json, "tag_name").as_deref(), Some("v0.1.0-alpha"));
+        let json = r#"{"url":"x","tag_name":"v0.2.0","name":"Meadow"}"#;
+        assert_eq!(field(json, "tag_name").as_deref(), Some("v0.2.0"));
     }
 
     #[test]
@@ -225,7 +247,7 @@ mod tests {
 
     #[test]
     fn a_tag_that_could_reach_elsewhere_is_refused() {
-        assert!(valid_tag("v0.1.0-alpha"));
+        assert!(valid_tag("v0.2.0"));
         assert!(valid_tag("v1.2.3"));
         assert!(!valid_tag("../../etc/passwd"));
         assert!(!valid_tag("v1/../v2"));

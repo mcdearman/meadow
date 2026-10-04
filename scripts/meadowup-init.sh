@@ -14,7 +14,7 @@
 #
 # Options go to `meadowup install`: with `sh -s -- <options>` after a pipe,
 #
-#   curl -fsSL …/meadowup-init.sh | sh -s -- --version v0.1.0-alpha
+#   curl -fsSL …/meadowup-init.sh | sh -s -- --version v0.2.0
 #
 # Run with --help for the list.
 
@@ -57,7 +57,7 @@ parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --version)
-                [ $# -ge 2 ] || err "--version needs a tag, e.g. --version v0.1.0-alpha"
+                [ $# -ge 2 ] || err "--version needs a tag, e.g. --version v0.2.0"
                 VERSION="$2"
                 shift 2
                 ;;

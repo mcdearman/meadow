@@ -1,0 +1,90 @@
+# The nightly channel: `master`, built for every platform and published under
+# the tag `nightly`, once a day when `master` has moved.
+#
+# The builds are `release.yml`'s, called with `channel: nightly`, so a nightly
+# is made exactly as a release is -- the same checks first, the same targets,
+# the same archives -- and differs in what it says it is: `meadow --version`
+# gives the version `master` is working towards, the day and the commit
+# (`0.3.0-nightly (2026-10-05 892808f)`), and it accepts the unstable features
+# a package names in its `Meadow.toml`.
+#
+# The `nightly` tag moves and its release is replaced each time; it is marked a
+# pre-release, so `/releases/latest` -- what the stable channel follows -- never
+# lands on it. `meadowup default nightly` is how a machine follows this one.
+
+name: nightly
+
+on:
+  schedule:
+    # 07:00 UTC: after the day's work in the Americas, before Europe's.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Nothing to do on a day `master` did not move: the nightly already there is
+  # built from it.
+  changed:
+    name: has master moved
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.look.outputs.build }}
+      date: ${{ steps.look.outputs.date }}
+      commit: ${{ steps.look.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - id: look
+        shell: bash
+        run: |
+          head=$(git rev-parse HEAD)
+          last=$(git rev-parse -q --verify 'refs/tags/nightly^{commit}' || true)
+          if [ "$head" = "$last" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: changed
+    if: needs.changed.outputs.build == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      channel: nightly
+      date: ${{ needs.changed.outputs.date }}
+      commit: ${{ needs.changed.outputs.commit }}
+
+  publish:
+    needs: [changed, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # The tag moves to what was built, and the release under it is replaced:
+      # the one already there goes first, so nothing of yesterday's is left
+      # behind or collides with an upload.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: nightly ${{ needs.changed.outputs.date }} ${{ needs.changed.outputs.commit }}
+        shell: bash
+        run: |
+          git tag -f nightly
+          git push -f origin nightly
+          gh release delete nightly --repo "${{ github.repository }}" --yes || true
+          gh release create nightly artifacts/* \
+            --repo "${{ github.repository }}" \
+            --prerelease \
+            --title "$NAME" \
+            --notes "\`master\` as of ${{ needs.changed.outputs.commit }}, built ${{ needs.changed.outputs.date }}. Unstable: it accepts the features a package names in \`features = […]\`, and anything in it may change. Follow it with \`meadowup default nightly\`, then \`meadowup update\`; \`meadowup default stable\` goes back."

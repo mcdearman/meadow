@@ -88,6 +88,71 @@ pub fn record(home: &Path, what: &Provenance) -> std::io::Result<()> {
     )
 }
 
+/// Which releases `meadowup update` follows, as rustup's channels: `stable`,
+/// the newest release with a version, or `nightly`, the build of `master`
+/// published under the tag [`NIGHTLY_TAG`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Stable,
+    Nightly,
+}
+
+/// The tag the nightly build is published under. It moves; a version's tag
+/// does not.
+pub const NIGHTLY_TAG: &str = "nightly";
+
+impl Channel {
+    pub fn named(name: &str) -> Option<Channel> {
+        match name {
+            "stable" => Some(Channel::Stable),
+            "nightly" => Some(Channel::Nightly),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Channel::Stable => "stable",
+            Channel::Nightly => "nightly",
+        }
+    }
+}
+
+fn channel_file(home: &Path) -> PathBuf {
+    home.join("channel")
+}
+
+/// The channel `home` follows: `stable` until `meadowup default` says
+/// otherwise.
+pub fn channel(home: &Path) -> Channel {
+    std::fs::read_to_string(channel_file(home))
+        .ok()
+        .and_then(|text| text.lines().next().and_then(|l| Channel::named(l.trim())))
+        .unwrap_or(Channel::Stable)
+}
+
+/// Have `home` follow `channel` from now on.
+pub fn set_channel(home: &Path, channel: Channel) -> std::io::Result<()> {
+    std::fs::create_dir_all(home)?;
+    std::fs::write(
+        channel_file(home),
+        format!(
+            "{}\n# Written by meadowup: the channel `meadowup update` follows.\n",
+            channel.name()
+        ),
+    )
+}
+
+/// The release tag `wanted` names: `0.2.0` and `v0.2.0` are `v0.2.0`, and
+/// anything else is taken as it is written.
+pub fn tag_for(wanted: &str) -> String {
+    if wanted.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("v{wanted}")
+    } else {
+        wanted.to_string()
+    }
+}
+
 /// Where the binaries go, and what joins the `PATH`.
 pub fn bin_dir(home: &Path) -> PathBuf {
     home.join("bin")
@@ -495,16 +560,34 @@ mod provenance_tests {
     use super::*;
 
     #[test]
+    fn a_home_follows_stable_until_it_is_told_otherwise() {
+        let home = scratch_dir("meadowup-channel").unwrap();
+        assert_eq!(channel(&home), Channel::Stable);
+        set_channel(&home, Channel::Nightly).unwrap();
+        assert_eq!(channel(&home), Channel::Nightly);
+        set_channel(&home, Channel::Stable).unwrap();
+        assert_eq!(channel(&home), Channel::Stable);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_version_is_its_tag_with_or_without_the_v() {
+        assert_eq!(tag_for("0.2.0"), "v0.2.0");
+        assert_eq!(tag_for("v0.2.0"), "v0.2.0");
+        assert_eq!(tag_for("nightly"), "nightly");
+    }
+
+    #[test]
     fn what_is_recorded_is_read_back() {
         let home = std::env::temp_dir().join(format!("meadowup-prov-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         assert_eq!(provenance(&home), None, "nothing recorded yet");
 
-        record(&home, &Provenance::Release("v0.1.0-alpha".into())).unwrap();
+        record(&home, &Provenance::Release("v0.2.0".into())).unwrap();
         assert_eq!(
             provenance(&home),
-            Some(Provenance::Release("v0.1.0-alpha".into()))
+            Some(Provenance::Release("v0.2.0".into()))
         );
 
         record(&home, &Provenance::Local).unwrap();

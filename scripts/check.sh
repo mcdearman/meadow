@@ -6,7 +6,7 @@
 #
 #   scripts/check.sh                 tests, and the checks that pass today
 #   scripts/check.sh --strict        ...plus rustfmt and clippy (not clean yet)
-#   scripts/check.sh --version v0.1.0    ...plus: the tag matches the manifests
+#   scripts/check.sh --version v0.2.0    ...plus: the tag matches the manifests
 #
 # Runs from anywhere; paths are resolved against the repository root.
 
@@ -40,14 +40,30 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 if [ -n "$VERSION" ]; then
   step "version"
   want="${VERSION#v}"
-  for ws in $WORKSPACES; do
-    got=$(grep -m1 '^version = ' "$ws/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
+  # Every manifest that carries the toolchain's version: the workspaces, Silo's
+  # runtime, the standard library -- whose version is the toolchain's -- and
+  # the editor extension.
+  for manifest in compiler/Cargo.toml eval/Cargo.toml glade/Cargo.toml \
+    silo/Cargo.toml buildtools/Cargo.toml installer/Cargo.toml \
+    lib/Std/Meadow.toml; do
+    got=$(grep -m1 '^version = ' "$manifest" | sed 's/.*"\(.*\)".*/\1/')
     if [ "$got" != "$want" ]; then
-      echo "  $ws/Cargo.toml says $got, tag says $want" >&2
+      echo "  $manifest says $got, tag says $want" >&2
       exit 1
     fi
-    echo "  $ws $got"
+    echo "  $manifest $got"
   done
+  got=$(grep -m1 '"version"' editors/vscode/package.json | sed 's/.*: *"\(.*\)".*/\1/')
+  if [ "$got" != "$want" ]; then
+    echo "  editors/vscode/package.json says $got, tag says $want" >&2
+    exit 1
+  fi
+  echo "  editors/vscode/package.json $got"
+  if ! grep -q "^## $want " CHANGELOG.md; then
+    echo "  CHANGELOG.md has no section for $want" >&2
+    exit 1
+  fi
+  echo "  CHANGELOG.md has $want"
 fi
 
 # --- tests -------------------------------------------------------------------

@@ -25,6 +25,34 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MEADOW_EMBED_RUNTIME");
     println!("cargo:rerun-if-changed=build.rs");
 
+    // The channel this build is for, and what `meadow --version` says: see
+    // `src/channel.rs`. A release workflow says `stable` or `nightly`, and a
+    // nightly says which day and commit it is; anything else is a build from
+    // a checkout.
+    for name in ["MEADOW_CHANNEL", "MEADOW_BUILD_DATE", "MEADOW_COMMIT"] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    let said = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    let number = env!("CARGO_PKG_VERSION");
+    let (channel, version) = match said("MEADOW_CHANNEL").as_deref() {
+        Some("stable") => ("stable", number.to_string()),
+        Some("nightly") => {
+            let stamp: Vec<String> = [said("MEADOW_BUILD_DATE"), said("MEADOW_COMMIT")]
+                .into_iter()
+                .flatten()
+                .collect();
+            let version = if stamp.is_empty() {
+                format!("{number}-nightly")
+            } else {
+                format!("{number}-nightly ({})", stamp.join(" "))
+            };
+            ("nightly", version)
+        }
+        _ => ("dev", format!("{number}-dev")),
+    };
+    println!("cargo:rustc-env=MEADOW_CHANNEL={channel}");
+    println!("cargo:rustc-env=MEADOW_VERSION={version}");
+
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = here.join("../..");
     let compiler = root.join("compiler");

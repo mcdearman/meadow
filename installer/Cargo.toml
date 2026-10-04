@@ -2,7 +2,7 @@
 
 [package]
 name = "meadowup"
-version = "0.1.0-alpha"
+version = "0.2.0"
 edition = "2024"
 description = "Installs and updates the Meadow language toolchain"
 

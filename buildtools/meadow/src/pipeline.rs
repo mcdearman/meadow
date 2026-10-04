@@ -317,6 +317,18 @@ fn discover_with(
     // Dependencies are resolved against the lockfile, and what was resolved is
     // written back -- so a first build pins what it found, and every build
     // after it uses those commits until `meadow update` says otherwise.
+    // And one its `meadow-toolchain` says is built with another `meadow`
+    // than this is not built with this one.
+    for entry in entries {
+        if let Some(msg) = crate::channel::check_toolchain(entry) {
+            return Err(Diagnostic {
+                msg,
+                filename: entry.display().to_string(),
+                label: (String::new(), Span::from(0..0)),
+                extra_labels: vec![],
+            });
+        }
+    }
     let lock_dir = crate::lock::dir_for(entries.first().copied().unwrap_or(Path::new(".")));
     let graph = PackageGraph::build_all_with(entries, resolver)?;
     // Said before anything is compiled, so that a manifest on its way out is
@@ -523,6 +535,29 @@ pub(crate) fn compile_graph(
     }
 }
 
+/// Where `decls` -- or a module written among them -- first says `use
+/// Std.Ffi`, if they do.
+fn uses_ffi(decls: &[meadow_compiler::ast::LDecl]) -> Option<Span> {
+    use meadow_compiler::ast::Decl;
+    decls.iter().find_map(|d| {
+        let base = match d.value() {
+            Decl::Attributed(_, inner) => inner.value(),
+            other => other,
+        };
+        match base {
+            Decl::Use(u)
+                if u.path.len() >= 2
+                    && &**u.path[0].value() == "Std"
+                    && &**u.path[1].value() == "Ffi" =>
+            {
+                Some(u.path[1].span)
+            }
+            Decl::Module(_, inner) => uses_ffi(inner),
+            _ => None,
+        }
+    })
+}
+
 fn compile_package(
     pkg: &Package,
     ident: InternedString,
@@ -547,6 +582,23 @@ fn compile_package(
                 name: m.name,
                 ast,
                 source: m.source,
+            });
+        }
+    }
+
+    // `Std.Ffi` is unstable: the package that names it has to have asked.
+    for m in &modules {
+        if let Some(span) = uses_ffi(&m.ast.value().decls)
+            && let Some(msg) = crate::channel::ffi_problem(
+                pkg.version.as_ref().map(|_| &pkg.features[..]),
+                crate::channel::CHANNEL,
+            )
+        {
+            diags.push(Diagnostic {
+                msg,
+                filename: m.source.name().to_string(),
+                label: ("used here".to_string(), span),
+                extra_labels: vec![],
             });
         }
     }

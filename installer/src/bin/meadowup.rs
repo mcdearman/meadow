@@ -10,7 +10,9 @@
 //!
 //! ```text
 //! meadowup install            put the latest Meadow on this machine
+//! meadowup install 0.2.0      that release, or `stable`, or `nightly`
 //! meadowup update             bring it, and meadowup itself, up to date
+//! meadowup default nightly    follow the nightly builds from now on
 //! meadowup show               what is installed, and where
 //! meadowup which              the path to the meadow binary
 //! meadowup uninstall          remove it and undo the PATH entry
@@ -20,7 +22,9 @@
 //! what joins the `PATH`.
 
 use meadowup::ui::{self, bold};
-use meadowup::{Provenance, bin_dir, exe_name, home, path, release, up_name, version_of};
+use meadowup::{
+    Channel, NIGHTLY_TAG, Provenance, bin_dir, exe_name, home, path, release, up_name, version_of,
+};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -52,6 +56,9 @@ fn main() -> ExitCode {
 struct Args {
     /// A release tag, rather than the newest.
     version: Option<String>,
+    /// What was written after the command with no `--` before it: a version
+    /// or a channel to install, or the channel `default` is given.
+    named: Option<String>,
     /// Re-install even when this version is already here.
     force: bool,
     /// Leave shell profiles and the registry alone.
@@ -74,6 +81,7 @@ fn run(argv: &[String]) -> Result<(), String> {
     match command {
         "install" => install(&args, false),
         "update" => install(&args, true),
+        "default" => default(&args),
         "show" => show(&args),
         "which" => which(&args),
         "uninstall" => uninstall(&args),
@@ -94,6 +102,7 @@ fn run(argv: &[String]) -> Result<(), String> {
 fn parse(argv: &[String]) -> Result<Args, String> {
     let mut args = Args {
         version: None,
+        named: None,
         force: false,
         modify_path: true,
         home: home(),
@@ -105,7 +114,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--version" => {
                 args.version = Some(
                     it.next()
-                        .ok_or("`--version` needs a tag, e.g. `--version v0.1.0-alpha`")?
+                        .ok_or("`--version` needs a tag, e.g. `--version v0.2.0`")?
                         .clone(),
                 );
             }
@@ -117,16 +126,35 @@ fn parse(argv: &[String]) -> Result<Args, String> {
                         .ok_or("`--from` needs a directory holding the binaries")?,
                 ));
             }
+            other if !other.starts_with('-') && args.named.is_none() => {
+                args.named = Some(other.to_string());
+            }
             other => return Err(format!("`{other}` is not an option here")),
         }
     }
     Ok(args)
 }
 
-/// The version in what `meadow --version` says: `0.1.0-alpha` of
-/// `meadow 0.1.0-alpha`.
+/// The version in what `meadow --version` says: `0.2.0` of
+/// `meadow 0.2.0`.
 fn number(said: &str) -> &str {
     said.split_whitespace().nth(1).unwrap_or(said)
+}
+
+/// `meadowup default <channel>`: which releases `update` follows from now
+/// on. With no channel, the one it follows now.
+fn default(args: &Args) -> Result<(), String> {
+    let Some(name) = &args.named else {
+        println!("{}", meadowup::channel(&args.home).name());
+        return Ok(());
+    };
+    let channel = Channel::named(name)
+        .ok_or_else(|| format!("`{name}` is not a channel: there are `stable` and `nightly`"))?;
+    meadowup::set_channel(&args.home, channel)
+        .map_err(|e| format!("could not record the channel: {e}"))?;
+    ui::info(format!("following the {} channel", bold(channel.name())));
+    ui::info("`meadowup update` installs its newest build");
+    Ok(())
 }
 
 /// Put the toolchain in place.
@@ -155,20 +183,57 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
         }
         None => {
             let target = meadowup::target_triple()?;
-            let tag = match &args.version {
-                Some(t) => t.clone(),
-                None => {
+            // A channel named here is the one followed from here on: there
+            // is one toolchain in a home, so installing nightly is switching
+            // to it.
+            let asked = args.version.as_deref().or(args.named.as_deref());
+            let channel = match asked.and_then(Channel::named) {
+                Some(c) => {
+                    meadowup::set_channel(&args.home, c)
+                        .map_err(|e| format!("could not record the channel: {e}"))?;
+                    c
+                }
+                None => meadowup::channel(&args.home),
+            };
+            let tag = match asked {
+                Some(t) if Channel::named(t).is_none() => meadowup::tag_for(t),
+                _ if channel == Channel::Nightly => NIGHTLY_TAG.to_string(),
+                _ => {
                     ui::info("checking for the latest release");
                     let tag = release::latest_tag()?;
                     ui::info(format!("latest release is {}", bold(&tag)));
                     tag
                 }
             };
-            let wanted = tag.trim_start_matches('v');
+            // A nightly is told from the last by the day and the commit in
+            // its release's name, which `meadow --version` says too.
+            let nightly = (tag == NIGHTLY_TAG).then(|| {
+                ui::info("checking for the latest nightly");
+                release::release_name(&tag)
+            });
+            let nightly = match nightly {
+                Some(Ok(name)) => {
+                    ui::info(format!("latest nightly is {}", bold(&name)));
+                    Some(name)
+                }
+                Some(Err(e)) => return Err(e),
+                None => None,
+            };
+            let wanted = match &nightly {
+                Some(name) => name.as_str(),
+                None => tag.trim_start_matches('v'),
+            };
+            let same = |have: &str| match &nightly {
+                Some(name) => name
+                    .split_whitespace()
+                    .last()
+                    .is_some_and(|commit| have.contains(commit)),
+                None => number(have) == wanted,
+            };
             // Already this version: say so rather than downloading it again.
             if !args.force
                 && let Some(have) = &before
-                && number(have) == wanted
+                && same(have)
             {
                 println!();
                 println!("  {} unchanged - {have}", bold("meadow"));
@@ -266,7 +331,7 @@ fn install(args: &Args, updating: bool) -> Result<(), String> {
     };
     println!();
     match (&before, &after) {
-        (Some(b), Some(a)) if number(b) != number(a) => {
+        (Some(b), Some(a)) if b != a => {
             println!(
                 "  {} updated - {a}{from} (from {})",
                 bold("meadow"),
@@ -334,6 +399,7 @@ fn show(args: &Args) -> Result<(), String> {
         "target     {}",
         meadowup::target_triple().unwrap_or("unknown")
     );
+    println!("channel    {}", meadowup::channel(&args.home).name());
     println!(
         "source     {}",
         match meadowup::provenance(&args.home) {
@@ -422,8 +488,10 @@ fn help() {
     println!("  meadowup <command> [options]");
     println!();
     println!("COMMANDS");
-    println!("  install      put the latest Meadow on this machine");
+    println!("  install      put the latest Meadow on this machine, or the version");
+    println!("               or channel named: `install 0.2.0`, `install nightly`");
     println!("  update       bring Meadow, and meadowup itself, up to date");
+    println!("  default      the channel `update` follows: `stable` or `nightly`");
     println!("  show         what is installed, and where");
     println!("  which        the path to the meadow binary");
     println!("  uninstall    remove Meadow and undo the PATH entry");

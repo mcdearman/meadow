@@ -25,6 +25,8 @@ beyond the last release is under _Unreleased_.
 
 ### Fixed
 
+- The finder reads `[a;]` in a type as a list. It dropped the `;` and looked
+  for a vector, so `(a -> b) -> [a;] -> [b;]` did not find a `map` over lists.
 - Two builds that fetch the same git dependency at once take turns in its
   cache. One could find the other's unfinished clone and report that the
   repository "has no releases".

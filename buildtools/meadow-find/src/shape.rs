@@ -170,6 +170,8 @@ enum Tok {
     Close,
     OpenList,
     OpenArray,
+    /// The `;` of `[a;]`, which is what says a list rather than a vector.
+    Semi,
     CloseList,
     OpenBrace,
     CloseBrace,
@@ -209,6 +211,7 @@ fn lex(s: &str) -> Vec<Tok> {
             '{' => (out.push(Tok::OpenBrace), i += 1).1,
             '}' => (out.push(Tok::CloseBrace), i += 1).1,
             ',' => (out.push(Tok::Comma), i += 1).1,
+            ';' => (out.push(Tok::Semi), i += 1).1,
             ':' => (out.push(Tok::Colon), i += 1).1,
             '!' => (out.push(Tok::Bang), i += 1).1,
             c if c.is_alphanumeric() || c == '_' => {
@@ -363,10 +366,18 @@ impl Parser {
                     Ty::Tuple(items)
                 }
             }
+            // `[a]` is a vector and `[a;]` a list, as the language writes
+            // them; `[;]`, with nothing in it yet, is a list of anything.
             Tok::OpenList => {
-                let item = self.arrow();
+                let item = if self.starts_atom() {
+                    self.arrow()
+                } else {
+                    Ty::Any
+                };
+                let list = self.eat(&Tok::Semi);
                 self.eat(&Tok::CloseList);
-                Ty::Con("Vector".into(), vec![item])
+                let con = if list { "List" } else { "Vector" };
+                Ty::Con(con.into(), vec![item])
             }
             Tok::OpenArray => {
                 let item = self.arrow();
@@ -687,6 +698,25 @@ mod tests {
 
     fn sig(s: &str) -> Sig {
         parse(s)
+    }
+
+    #[test]
+    fn a_semicolon_in_the_brackets_is_a_list_and_none_is_a_vector() {
+        let s = parse("(a -> b) -> [a;] -> [b;]");
+        assert_eq!(
+            s.args,
+            vec![
+                Ty::Fun(vec![Ty::Var(0)], Box::new(Ty::Var(1))),
+                Ty::Con("List".into(), vec![Ty::Var(0)]),
+            ]
+        );
+        assert_eq!(s.result, Ty::Con("List".into(), vec![Ty::Var(1)]));
+        assert_eq!(
+            parse("[a] -> Int").args,
+            vec![Ty::Con("Vector".into(), vec![Ty::Var(0)])]
+        );
+        // The same list, as its name.
+        assert_eq!(parse("[a;] -> Int").args, parse("List a -> Int").args);
     }
 
     #[test]

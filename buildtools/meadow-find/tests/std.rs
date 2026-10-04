@@ -92,6 +92,26 @@ fn a_type_finds_what_has_it() {
     assert!(found.contains(&"Std.String.lines".to_string()), "{found:?}");
 }
 
+/// `[a;]` is a list and `[a]` a vector, in a search as in a program: the
+/// query for a map over lists finds the list's, and not the vector's first.
+#[test]
+fn a_list_is_asked_for_with_its_semicolon() {
+    let lists = top("(a -> b) -> [a;] -> [b;]", 3);
+    assert!(
+        lists.contains(&"Std.Collections.List.map".to_string()),
+        "{lists:?}"
+    );
+    let vectors = top("(a -> b) -> [a] -> [b]", 3);
+    assert!(
+        vectors.contains(&"Std.Collections.Vector.map".to_string()),
+        "{vectors:?}"
+    );
+    assert!(
+        !vectors.contains(&"Std.Collections.List.map".to_string()),
+        "{vectors:?}"
+    );
+}
+
 #[test]
 fn a_type_finds_it_whatever_order_the_arguments_come_in() {
     // `unwrapOr` takes the default first.

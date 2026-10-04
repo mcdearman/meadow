@@ -31,12 +31,23 @@ fn index_of(name: &str) -> u32 {
     LEGEND.iter().position(|l| *l == name).unwrap_or(4) as u32
 }
 
+/// What decides a capitalised word's class, beyond its spelling: who is
+/// asking knows what is in scope, and where it can, what each occurrence
+/// resolved to.
+pub struct Scope<'a> {
+    /// What the word starting at each offset resolved to, where resolution
+    /// got that far: an answer about that occurrence.
+    pub resolved: &'a HashMap<u32, Namespace>,
+    /// Whether a constructor of that spelling is in scope: a guess, for a
+    /// word resolution did not reach.
+    pub is_ctor: &'a dyn Fn(&str) -> bool,
+    /// The same for a type.
+    pub is_type: &'a dyn Fn(&str) -> bool,
+}
+
 /// `(line, start character, length, token type)`, in source order.
 pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
-    let source = Source::new(SourceKind::Interactive, text.into());
-    let lex = tokenize(source);
     let idx = LineIndex::new(text);
-    let mut out = Vec::new();
 
     // What each capitalised word resolved to, by where it starts. The walk
     // records a type or constructor reference with the span of that one word —
@@ -47,6 +58,37 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
         .iter()
         .map(|(span, _, ns)| (span.start, *ns))
         .collect();
+    let scope = Scope {
+        resolved: &resolved,
+        is_ctor: &|n| analysis.ctors_in_scope.contains(n),
+        is_type: &|n| analysis.types_in_scope.contains(n),
+    };
+
+    let mut out = Vec::new();
+    for (start, end, kind) in classified(text, &scope) {
+        let (line, from) = idx.position(start);
+        let (end_line, to) = idx.position(end);
+        // A token that wraps a line would need splitting; none of ours do, and
+        // emitting a bad length would corrupt every token after it.
+        if line != end_line {
+            continue;
+        }
+        out.push((line, from, to - from, kind));
+    }
+    out
+}
+
+/// Each token of `text` that has a class: where it starts and ends, in bytes,
+/// and its class as an index into [`LEGEND`], in source order.
+///
+/// The one place that decides what a token is coloured as. The server
+/// answers an editor's `textDocument/semanticTokens/full` with it, and the
+/// REPL colours what is typed at its prompt with it.
+pub fn classified(text: &str, scope: &Scope<'_>) -> Vec<(usize, usize, u32)> {
+    let source = Source::new(SourceKind::Interactive, text.into());
+    let lex = tokenize(source);
+    let mut out = Vec::new();
+    let resolved = scope.resolved;
 
     // Inside `use a.b.c`, up to the import list: an unresolved capital there is
     // a module. The path is over at its list, or at anything a path cannot
@@ -122,12 +164,12 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
                     // Unresolved and qualifying something: a module or an
                     // alias (`S.concat`), whatever else that spelling means.
                     "namespace"
-                } else if analysis.ctors_in_scope.contains(&n) {
+                } else if (scope.is_ctor)(&n) {
                     // Only a guess from here on, for a document whose analysis
                     // did not get far enough to resolve it -- a parse error
                     // mid-edit -- where a guess beats losing colour entirely.
                     "enumMember"
-                } else if analysis.types_in_scope.contains(&n) {
+                } else if (scope.is_type)(&n) {
                     "type"
                 } else {
                     // An unresolved capital is a module qualifier or a name the
@@ -165,14 +207,7 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
             _ => continue,
         };
 
-        let (line, start) = idx.position(t.span.start as usize);
-        let (end_line, end) = idx.position(t.span.end as usize);
-        // A token that wraps a line would need splitting; none of ours do, and
-        // emitting a bad length would corrupt every token after it.
-        if line != end_line {
-            continue;
-        }
-        out.push((line, start, end - start, index_of(kind)));
+        out.push((t.span.start as usize, t.span.end as usize, index_of(kind)));
     }
     out
 }

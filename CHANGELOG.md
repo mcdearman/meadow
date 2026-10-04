@@ -13,6 +13,12 @@ beyond the last release is under _Unreleased_.
 
 ## Unreleased
 
+### Added
+
+- The REPL colours what is typed with the language server's token classes:
+  types, constructors and modules each have a colour, by what the session
+  has in scope. The `name : type` line an entry prints is coloured too.
+
 ### Fixed
 
 - Two builds that fetch the same git dependency at once take turns in its

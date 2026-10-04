@@ -71,7 +71,7 @@ impl Highlighter for TermValidator {
 
     /// What is being typed, coloured by what each token is: see [`coloured`].
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-        Cow::Owned(coloured(line))
+        Cow::Owned(coloured(line, &self.names))
     }
 
     /// Every key can change what a token is -- `le` is a name and `let` a
@@ -85,6 +85,12 @@ impl Highlighter for TermValidator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
     Keyword,
+    /// A type's name.
+    Type,
+    /// A data constructor.
+    Constructor,
+    /// A module, or an alias for one.
+    Module,
     Number,
     String,
     Comment,
@@ -95,13 +101,16 @@ enum Class {
 /// `line` cut into stretches, each with its class, that together are the
 /// whole of it in order.
 ///
-/// By the compiler's own lexer, so that what is coloured as a keyword is
-/// what the language takes for one. A comment never reaches the lexer, so
+/// The classes are the language server's -- `meadow_lsp::tokens::classified`,
+/// what an editor's semantic tokens are made from -- so the prompt and an
+/// editor colour a token alike, and by the compiler's own lexer: what is
+/// coloured as a keyword is what the language takes for one. A capitalised
+/// word is a type, a constructor or a module by what `names`, the session,
+/// has in scope under that spelling. A comment never reaches the lexer, so
 /// what lies between two tokens is looked at for one: `--` to the end of its
 /// line. Text the lexer cannot read -- a string not closed yet -- is plain.
-fn classes(line: &str) -> Vec<(std::ops::Range<usize>, Class)> {
-    use meadow_compiler::lexer::Token;
-    let lexed = tokenize(Source::new(SourceKind::Interactive, line.into()));
+fn classes(line: &str, names: &complete::Names) -> Vec<(std::ops::Range<usize>, Class)> {
+    use meadow_lsp::tokens::{LEGEND, Scope, classified};
     let mut out = Vec::new();
     let between = |from: usize, to: usize, out: &mut Vec<(std::ops::Range<usize>, Class)>| {
         let mut at = from;
@@ -123,47 +132,28 @@ fn classes(line: &str) -> Vec<(std::ops::Range<usize>, Class)> {
             }
         }
     };
+    // Nothing at the prompt is resolved while it is typed; what is in scope
+    // under a spelling is the answer there is.
+    let resolved = std::collections::HashMap::new();
+    let scope = Scope {
+        resolved: &resolved,
+        is_ctor: &|n| names.ctors.iter().any(|c| c == n),
+        is_type: &|n| names.types.iter().any(|t| t == n),
+    };
     let mut at = 0;
-    for t in &lexed.tokens {
-        let (start, end) = (t.span.start as usize, t.span.end as usize);
+    for (start, end, kind) in classified(line, &scope) {
         // A token made up for the layout, or out of order: nothing to colour.
         if start < at || end > line.len() || start >= end {
             continue;
         }
         between(at, start, &mut out);
-        let class = match t.value() {
-            Token::Mod
-            | Token::Use
-            | Token::Def
-            | Token::Fun
-            | Token::Let
-            | Token::In
-            | Token::Match
-            | Token::With
-            | Token::If
-            | Token::Then
-            | Token::Else
-            | Token::Data
-            | Token::Record
-            | Token::Effect
-            | Token::Handle
-            | Token::Type
-            | Token::Trait
-            | Token::Impl
-            | Token::Where
-            | Token::Infix
-            | Token::Infixl
-            | Token::Infixr
-            | Token::End
-            | Token::As
-            | Token::And
-            | Token::Or => Class::Keyword,
-            Token::Int(_) | Token::Real(_) => Class::Number,
-            Token::String(_)
-            | Token::InterpStart(_)
-            | Token::InterpMid(_)
-            | Token::InterpEnd(_)
-            | Token::Char(_) => Class::String,
+        let class = match LEGEND.get(kind as usize).copied() {
+            Some("keyword") => Class::Keyword,
+            Some("type") => Class::Type,
+            Some("enumMember") => Class::Constructor,
+            Some("namespace") => Class::Module,
+            Some("number") => Class::Number,
+            Some("string") => Class::String,
             _ => Class::Plain,
         };
         out.push((start..end, class));
@@ -173,15 +163,15 @@ fn classes(line: &str) -> Vec<(std::ops::Range<usize>, Class)> {
     out
 }
 
-/// `line` with its keywords bold, its numbers and its strings a colour each
-/// and its comments dim -- the colours a prompt made by Lingua's `repl!`
-/// uses -- and names and operators as they are. A line at a time, so that a
-/// string over several lines does not colour what starts the next; and
-/// nothing at all where `yansi` says there is to be no colour.
-fn coloured(line: &str) -> String {
+/// `line` with its keywords bold, its types, constructors, modules, numbers
+/// and strings a colour each and its comments dim, and names and operators
+/// as they are. A line at a time, so that a string over several lines does
+/// not colour what starts the next; and nothing at all where `yansi` says
+/// there is to be no colour.
+fn coloured(line: &str, names: &complete::Names) -> String {
     use yansi::Paint as _;
     let mut out = String::with_capacity(line.len() + 32);
-    for (range, class) in classes(line) {
+    for (range, class) in classes(line, names) {
         let text = &line[range];
         if class == Class::Plain {
             out.push_str(text);
@@ -196,6 +186,9 @@ fn coloured(line: &str) -> String {
             }
             let painted = match class {
                 Class::Keyword => piece.magenta().bold().to_string(),
+                Class::Type => piece.cyan().to_string(),
+                Class::Constructor => piece.blue().to_string(),
+                Class::Module => piece.cyan().dim().to_string(),
                 Class::Number => piece.yellow().to_string(),
                 Class::String => piece.green().to_string(),
                 Class::Comment => piece.dim().to_string(),
@@ -205,6 +198,26 @@ fn coloured(line: &str) -> String {
         }
     }
     out
+}
+
+/// `name : scheme`, as the prompt says what an entry bound: the name bold,
+/// and the type coloured as a type is where it is typed. Every capitalised
+/// word of a type is a type's name, whatever else is spelled that way.
+fn signature(name: &str, scheme: &str) -> String {
+    use yansi::Paint as _;
+    let all_types = complete::Names::default();
+    let mut out = String::new();
+    for (range, class) in classes(scheme, &all_types) {
+        let text = &scheme[range];
+        match class {
+            Class::Type | Class::Constructor | Class::Module => {
+                out.push_str(&text.cyan().to_string())
+            }
+            Class::Keyword => out.push_str(&text.magenta().bold().to_string()),
+            _ => out.push_str(text),
+        }
+    }
+    format!("{} : {out}", name.bold())
 }
 
 impl Completer for TermValidator {
@@ -1256,10 +1269,13 @@ impl Session {
             // `def it = …` still prints as `it`.
             match &label {
                 Some(l) => match &named {
-                    Some(scheme) => println!("{l} : {scheme}"),
-                    None => println!("{} : {}", l, e.scheme),
+                    Some(scheme) => println!("{}", signature(l, &scheme.to_string())),
+                    None => println!("{}", signature(l, &e.scheme.to_string())),
                 },
-                None => println!("{} : {}", hir::spell_name(&e.name), e.scheme),
+                None => println!(
+                    "{}",
+                    signature(&hir::spell_name(&e.name).to_string(), &e.scheme.to_string())
+                ),
             }
         }
         if compiled.exports.is_empty() && !had_error {
@@ -1479,7 +1495,8 @@ mod tests {
     #[test]
     fn an_entry_is_classed_by_what_the_lexer_sees() {
         let line = "let x = 42 in -- the answer\n  if x == 1.5 then \"a\" else f x";
-        let got = classes(line);
+        let names = complete::Names::default();
+        let got = classes(line, &names);
         let whole: String = got.iter().map(|(r, _)| &line[r.clone()]).collect();
         assert_eq!(whole, line, "every byte, once, in order");
         let of = |class: Class| -> Vec<&str> {
@@ -1494,12 +1511,46 @@ mod tests {
         assert_eq!(of(Class::Comment), ["-- the answer"]);
         // A name that starts as a keyword is a name, and a string not closed
         // yet is not coloured as anything.
-        assert_eq!(classes("letter"), vec![(0..6, Class::Plain)]);
-        let open: String = classes("f \"abc")
+        assert_eq!(classes("letter", &names), vec![(0..6, Class::Plain)]);
+        let open: String = classes("f \"abc", &names)
             .iter()
             .map(|(r, _)| &"f \"abc"[r.clone()])
             .collect();
         assert_eq!(open, "f \"abc");
+    }
+
+    /// A capitalised word is what the session has in scope under that
+    /// spelling -- the language server's rule, from its classifier.
+    #[test]
+    fn a_capital_is_a_type_a_constructor_or_a_module_by_what_is_in_scope() {
+        let names = complete::Names {
+            types: vec!["Maybe".to_string(), "Int".to_string()],
+            ctors: vec!["Just".to_string()],
+            ..Default::default()
+        };
+        let line = "def x : Maybe Int = V.map Just Unknown";
+        let got = classes(line, &names);
+        let of = |class: Class| -> Vec<&str> {
+            got.iter()
+                .filter(|(_, c)| *c == class)
+                .map(|(r, _)| &line[r.clone()])
+                .collect()
+        };
+        assert_eq!(of(Class::Type), ["Maybe", "Int"]);
+        assert_eq!(of(Class::Constructor), ["Just"]);
+        // A qualifier, and a capital nothing in scope explains.
+        assert_eq!(of(Class::Module), ["V", "Unknown"]);
+        assert_eq!(of(Class::Keyword), ["def"]);
+    }
+
+    /// With no colour to be had, what a binding's line says is what it said.
+    #[test]
+    fn a_signature_is_the_name_and_the_type() {
+        yansi::disable();
+        assert_eq!(
+            signature("xs", "Vector (Maybe a) -> Int"),
+            "xs : Vector (Maybe a) -> Int"
+        );
     }
 
     #[test]

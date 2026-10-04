@@ -905,12 +905,6 @@ impl<'p> Module<'p> {
         f.label(&on);
     }
 
-    /// A block of `kind` with `meta`, whose fields are `vals`, described by
-    /// `descs`. No fields at all is no block: `meta << 1 | 1`.
-    fn build(&self, f: &mut Fun, kind: u64, meta: u64, vals: &[String], descs: &[D]) -> String {
-        self.build_in(f, kind, meta, vals, descs, None)
-    }
-
     /// A closure whose first method is `base` in the method table.
     ///
     /// Its `meta` is that index, which is the method's place among every

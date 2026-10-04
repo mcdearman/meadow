@@ -17,21 +17,21 @@ use Lingua (lang!)
   Name + Name { text : String }
 
   Decl + Bind { bind : Bind }
-  Decl + ModDecl { name : Name }
-  Decl + UseDecl {
+  Decl + Mod { name : Name }
+  Decl + Use {
     path : [Name],
     names : [Name],
     macros : [Name],
     glob : Bool,
     alias : Maybe Name
   }
-  Decl + DataDecl { name : Name, params : [Name], variants : [Variant] }
-  Decl + RecordDecl { name : Name, params : [Name], fields : [Field] }
-  Decl + EffectDecl { name : Name, params : [Name], ops : [Field] }
-  Decl + AliasDecl { name : Name, params : [Name], ty : Type }
-  Decl + EffectAliasDecl { name : Name, params : [Name], row : Row }
-  Decl + SigDecl { name : Name, ty : Type, bounds : [Bound] }
-  Decl + TraitDecl {
+  Decl + Data { name : Name, params : [Name], variants : [Variant] }
+  Decl + Record { name : Name, params : [Name], fields : [Field] }
+  Decl + Effect { name : Name, params : [Name], ops : [Field] }
+  Decl + Alias { name : Name, params : [Name], ty : Type }
+  Decl + EffectAlias { name : Name, params : [Name], row : Row }
+  Decl + Sig { name : Name, ty : Type, bounds : [Bound] }
+  Decl + Trait {
     name : Name,
     params : [Name],
     supers : [Bound],
@@ -39,23 +39,23 @@ use Lingua (lang!)
     sigs : [MethodSig],
     defaults : [Bind]
   }
-  Decl + ImplDecl {
+  Decl + Impl {
     tr : Name,
     tys : [Type],
     context : [Bound],
     assocs : [AssocDef],
     methods : [Bind]
   }
-  Decl + FixityDecl { ops : [Name] }
+  Decl + Fixity { ops : [Name] }
   Decl + Attributed { attrs : [Attr], decl : Decl }
-  Decl + MacCallDecl { call : MacCall }
-  Decl + MacroDecl { name : Name }
+  Decl + MacCall { call : MacCall }
+  Decl + Macro { name : Name }
 
   Attr + Attr { name : Name, args : [Name], metas : [AttrMeta] }
-  AttrMeta + MetaWord { name : Name }
-  AttrMeta + MetaText { text : Name }
-  AttrMeta + MetaValue { name : Name, value : Name }
-  AttrMeta + MetaList { name : Name, metas : [AttrMeta] }
+  AttrMeta + Word { name : Name }
+  AttrMeta + Text { text : Name }
+  AttrMeta + Value { name : Name, value : Name }
+  AttrMeta + List { name : Name, metas : [AttrMeta] }
 
   MacCall + MacCall { path : [Name] }
 
@@ -72,44 +72,44 @@ use Lingua (lang!)
   AssocDef + AssocDef { name : Name, args : [Type], ty : Type }
   MethodSig + MethodSig { name : Name, ty : Type }
 
-  Type + TVar { name : Name }
-  Type + TCon { name : Name, args : [Type] }
-  Type + TFun { params : [Type], result : Type, row : Maybe Row }
-  Type + TTuple { items : [Type] }
-  Type + TVector { item : Type }
-  Type + TList { item : Type }
-  Type + TRecord { fields : [TField], tail : Maybe Name }
-  TField + TField { name : Name, ty : Type }
+  Type + Var { name : Name }
+  Type + Con { name : Name, args : [Type] }
+  Type + Fun { params : [Type], result : Type, row : Maybe Row }
+  Type + Tuple { items : [Type] }
+  Type + Vector { item : Type }
+  Type + List { item : Type }
+  Type + Record { fields : [TypeField], tail : Maybe Name }
+  TypeField + TypeField { name : Name, ty : Type }
   Row + Row { labels : [Label], tail : Maybe Name }
   Label + Label { name : Name, args : [Type] }
 
-  Bind + PatBind { pat : Pat, value : Expr }
-  Bind + FunBind { name : Name, params : [Pat], ret : Maybe Type, body : Expr }
+  Bind + Pat { pat : Pat, value : Expr }
+  Bind + Fun { name : Name, params : [Pat], ret : Maybe Type, body : Expr }
 
-  Lit + LitInt { text : String }
-  Lit + LitFloat { text : String }
-  Lit + LitString { text : String }
-  Lit + LitChar { text : String }
+  Lit + Int { text : String }
+  Lit + Float { text : String }
+  Lit + String { text : String }
+  Lit + Char { text : String }
 
-  Pat + PWild { }
-  Pat + PVar { name : Name }
-  Pat + PAnn { pat : Pat, ty : Type }
-  Pat + PLit { lit : Lit }
-  Pat + PAs { name : Name, pat : Pat }
-  Pat + PCons { name : Name, args : [Pat] }
-  Pat + PQualCons { qual : Name, name : Name, args : [Pat] }
-  Pat + PTuple { items : [Pat] }
-  Pat + PArray { items : [Pat] }
-  Pat + PVector { items : [Pat] }
-  Pat + PList { items : [Pat] }
-  Pat + PRecord { fields : [PField], open : Bool }
-  Pat + PUnit { }
-  Pat + PView { fn : Expr, pat : Pat }
-  Pat + PMacCall { call : MacCall }
-  PField + PField { name : Name, pat : Pat }
+  Pat + Wild { }
+  Pat + Var { name : Name }
+  Pat + Ann { pat : Pat, ty : Type }
+  Pat + Lit { lit : Lit }
+  Pat + As { name : Name, pat : Pat }
+  Pat + Cons { name : Name, args : [Pat] }
+  Pat + QualCons { qual : Name, name : Name, args : [Pat] }
+  Pat + Tuple { items : [Pat] }
+  Pat + Array { items : [Pat] }
+  Pat + Vector { items : [Pat] }
+  Pat + List { items : [Pat] }
+  Pat + Record { fields : [PatField], open : Bool }
+  Pat + Unit { }
+  Pat + View { fn : Expr, pat : Pat }
+  Pat + MacCall { call : MacCall }
+  PatField + PatField { name : Name, pat : Pat }
 
   Expr + Var { name : Name }
-  Expr + LitE { lit : Lit }
+  Expr + Lit { lit : Lit }
   Expr + Interp { texts : [String], holes : [Hole] }
   Expr + Lam { params : [Pat], body : Expr }
   Expr + App { func : Expr, args : [Expr] }
@@ -117,23 +117,23 @@ use Lingua (lang!)
   Expr + If { cond : Expr, yes : Expr, no : Expr }
   Expr + Match { scrutinee : Expr, arms : [Arm] }
   Expr + Neg { op : Name, operand : Expr }
-  Expr + AndE { op : Name, lhs : Expr, rhs : Expr }
-  Expr + OrE { op : Name, lhs : Expr, rhs : Expr }
+  Expr + And { op : Name, lhs : Expr, rhs : Expr }
+  Expr + Or { op : Name, lhs : Expr, rhs : Expr }
   Expr + Tuple { items : [Expr] }
-  Expr + ArrayE { items : [Expr] }
-  Expr + ListE { items : [Expr] }
+  Expr + Array { items : [Expr] }
+  Expr + List { items : [Expr] }
   Expr + Cons { name : Name, args : [Expr] }
   Expr + Qual { qual : Name, name : Name }
-  Expr + RecordE { fields : [FieldE], base : Maybe Expr }
-  Expr + Update { base : Expr, fields : [FieldE] }
+  Expr + Record { fields : [ExprField], base : Maybe Expr }
+  Expr + Update { base : Expr, fields : [ExprField] }
   Expr + Proj { target : Expr, label : Name }
   Expr + Handle { body : Expr, arms : [HArm], ret : Maybe Ret }
-  Expr + UnitE { }
-  Expr + HoleE { }
-  Expr + MacCallE { call : MacCall }
+  Expr + Unit { }
+  Expr + Hole { }
+  Expr + MacCall { call : MacCall }
   Hole + Hole { expr : Expr, debug : Bool }
   Arm + Arm { pat : Pat, guard : Maybe Expr, body : Expr }
   HArm + HArm { op : Name, param : Pat, resume : Name, body : Expr }
   Ret + Ret { pat : Pat, body : Expr }
-  FieldE + FieldE { name : Name, value : Expr }
+  ExprField + ExprField { name : Name, value : Expr }
 }

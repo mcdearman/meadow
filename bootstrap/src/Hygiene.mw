@@ -57,9 +57,9 @@ fun decl b (d : Int) =
   -- A top-level binding is an item: its name is not hygienic, though its
   -- parameters and body are.
   | AstDeclView.Bind r -> (let u = itemBinder b r.bind in bind b r.bind)
-  | AstDeclView.SigDecl r ->
+  | AstDeclView.Sig r ->
       (let u = unmark b r.name in let v = ty b r.ty in each (bound b) r.bounds)
-  | AstDeclView.TraitDecl r ->
+  | AstDeclView.Trait r ->
       let u = unmark b r.name in
       let v = each (unmark b) r.params in
       let w = each (bound b) r.supers in
@@ -78,7 +78,7 @@ fun decl b (d : Int) =
           r.sigs
       in
       each (\x -> (let z = funName b x in bind b x)) r.defaults
-  | AstDeclView.ImplDecl r ->
+  | AstDeclView.Impl r ->
       let u = unmark b r.tr in
       let v = each (ty b) r.tys in
       let w = each (bound b) r.context in
@@ -91,7 +91,7 @@ fun decl b (d : Int) =
           r.assocs
       in
       each (\m -> (let z = itemBinder b m in bind b m)) r.methods
-  | AstDeclView.DataDecl r ->
+  | AstDeclView.Data r ->
       let u = unmark b r.name in
       let v = each (unmark b) r.params in
       each
@@ -99,17 +99,17 @@ fun decl b (d : Int) =
           then each (field b) (astVariantFieldsIn b x)
           else each (ty b) (astVariantPositionalIn b x))
         r.variants
-  | AstDeclView.RecordDecl r ->
+  | AstDeclView.Record r ->
       (let u = unmark b r.name in
         let v = each (unmark b) r.params in
         each (field b) r.fields)
-  | AstDeclView.EffectDecl r ->
+  | AstDeclView.Effect r ->
       (let u = unmark b r.name in
         let v = each (unmark b) r.params in
         each (field b) r.ops)
-  | AstDeclView.AliasDecl r ->
+  | AstDeclView.Alias r ->
       (let u = unmark b r.name in let v = each (unmark b) r.params in ty b r.ty)
-  | AstDeclView.EffectAliasDecl r ->
+  | AstDeclView.EffectAlias r ->
       let u = unmark b r.name in
       let v = each (unmark b) r.params in
       let x =
@@ -120,39 +120,39 @@ fun decl b (d : Int) =
           (astRowLabelsIn b r.row)
       in
       maybe (unmark b) (astRowTailIn b r.row)
-  | AstDeclView.UseDecl r ->
+  | AstDeclView.Use r ->
       let u = each (unmark b) r.path in
       let v = each (unmark b) r.names in
       let w = each (unmark b) r.macros in
       maybe (unmark b) r.alias
   | AstDeclView.Attributed r -> decl b r.decl
-  | AstDeclView.ModDecl r -> unmark b r.name
-  | AstDeclView.FixityDecl r -> each (unmark b) r.ops
+  | AstDeclView.Mod r -> unmark b r.name
+  | AstDeclView.Fixity r -> each (unmark b) r.ops
   | _ -> ()
 
 -- A binding that is an item: a function's name, or what a pattern binds.
 fun itemBinder b (x : Int) =
   match viewAstBindIn b x with
-  | AstBindView.FunBind r -> unmark b r.name
-  | AstBindView.PatBind r -> itemPat b r.pat
+  | AstBindView.Fun r -> unmark b r.name
+  | AstBindView.Pat r -> itemPat b r.pat
 
 -- A trait's default: a function's name is the trait's.
 fun funName b (x : Int) =
   match viewAstBindIn b x with
-  | AstBindView.FunBind r -> unmark b r.name
-  | AstBindView.PatBind _ -> ()
+  | AstBindView.Fun r -> unmark b r.name
+  | AstBindView.Pat _ -> ()
 
 -- The names a top-level pattern binds, which are items.
 fun itemPat b (p : Int) =
   match viewAstPatIn b p with
-  | AstPatView.PVar r -> unmark b r.name
-  | AstPatView.PAnn r -> (let u = itemPat b r.pat in ty b r.ty)
-  | AstPatView.PTuple r -> each (itemPat b) r.items
-  | AstPatView.PArray r -> each (itemPat b) r.items
-  | AstPatView.PVector r -> each (itemPat b) r.items
-  | AstPatView.PList r -> each (itemPat b) r.items
-  | AstPatView.PAs r -> (let u = unmark b r.name in itemPat b r.pat)
-  | AstPatView.PView r -> (let u = expr b r.fn in itemPat b r.pat)
+  | AstPatView.Var r -> unmark b r.name
+  | AstPatView.Ann r -> (let u = itemPat b r.pat in ty b r.ty)
+  | AstPatView.Tuple r -> each (itemPat b) r.items
+  | AstPatView.Array r -> each (itemPat b) r.items
+  | AstPatView.Vector r -> each (itemPat b) r.items
+  | AstPatView.List r -> each (itemPat b) r.items
+  | AstPatView.As r -> (let u = unmark b r.name in itemPat b r.pat)
+  | AstPatView.View r -> (let u = expr b r.fn in itemPat b r.pat)
   | _ -> pat b p
 
 fun field b (f : Int) =
@@ -165,9 +165,9 @@ fun bound b (x : Int) =
 -- so none keeps a mark.
 fun ty b (t : Int) =
   match viewAstTypeIn b t with
-  | AstTypeView.TVar r -> unmark b r.name
-  | AstTypeView.TCon r -> (let u = unmark b r.name in each (ty b) r.args)
-  | AstTypeView.TFun r ->
+  | AstTypeView.Var r -> unmark b r.name
+  | AstTypeView.Con r -> (let u = unmark b r.name in each (ty b) r.args)
+  | AstTypeView.Fun r ->
       let u = each (ty b) r.params in
       let v = ty b r.result in
       maybe
@@ -181,15 +181,15 @@ fun ty b (t : Int) =
 in
           maybe (unmark b) (astRowTailIn b w)))
         r.row
-  | AstTypeView.TTuple r -> each (ty b) r.items
-  | AstTypeView.TVector r -> ty b r.item
-  | AstTypeView.TList r -> ty b r.item
-  | AstTypeView.TRecord r ->
+  | AstTypeView.Tuple r -> each (ty b) r.items
+  | AstTypeView.Vector r -> ty b r.item
+  | AstTypeView.List r -> ty b r.item
+  | AstTypeView.Record r ->
       (let u =
         each
           (\f ->
-            (let v = unmark b (astTFieldNameIn b f) in
-              ty b (astTFieldTyIn b f)))
+            (let v = unmark b (astTypeFieldNameIn b f) in
+              ty b (astTypeFieldTyIn b f)))
           r.fields
 in
       maybe (unmark b) r.tail)
@@ -198,8 +198,8 @@ in
 
 fun bind b (x : Int) =
   match viewAstBindIn b x with
-  | AstBindView.PatBind r -> (let u = pat b r.pat in expr b r.value)
-  | AstBindView.FunBind r ->
+  | AstBindView.Pat r -> (let u = pat b r.pat in expr b r.value)
+  | AstBindView.Fun r ->
       (let u = each (pat b) r.params in
         let v = maybe (ty b) r.ret in
         expr b r.body)
@@ -208,25 +208,26 @@ fun pat b (p : Int) =
   match viewAstPatIn b p with
   -- A record pattern's labels name the record's fields; only what each binds
   -- is a variable.
-  | AstPatView.PRecord r ->
+  | AstPatView.Record r ->
       each
         (\f ->
-          (let u = unmark b (astPFieldNameIn b f) in
-            pat b (astPFieldPatIn b f)))
+          (let u = unmark b (astPatFieldNameIn b f) in
+            pat b (astPatFieldPatIn b f)))
         r.fields
-  | AstPatView.PAnn r -> (let u = pat b r.pat in ty b r.ty)
-  | AstPatView.PAs r -> pat b r.pat
-  | AstPatView.PView r -> (let u = expr b r.fn in pat b r.pat)
-  | AstPatView.PCons r -> each (pat b) r.args
-  | AstPatView.PQualCons r -> each (pat b) r.args
-  | AstPatView.PTuple r -> each (pat b) r.items
-  | AstPatView.PArray r -> each (pat b) r.items
-  | AstPatView.PVector r -> each (pat b) r.items
-  | AstPatView.PList r -> each (pat b) r.items
+  | AstPatView.Ann r -> (let u = pat b r.pat in ty b r.ty)
+  | AstPatView.As r -> pat b r.pat
+  | AstPatView.View r -> (let u = expr b r.fn in pat b r.pat)
+  | AstPatView.Cons r -> each (pat b) r.args
+  | AstPatView.QualCons r -> each (pat b) r.args
+  | AstPatView.Tuple r -> each (pat b) r.items
+  | AstPatView.Array r -> each (pat b) r.items
+  | AstPatView.Vector r -> each (pat b) r.items
+  | AstPatView.List r -> each (pat b) r.items
   | _ -> ()
 
 fun fieldE b (f : Int) =
-  (let u = unmark b (astFieldENameIn b f) in expr b (astFieldEValueIn b f))
+  (let u = unmark b (astExprFieldNameIn b f) in
+    expr b (astExprFieldValueIn b f))
 
 fun expr b (e : Int) =
   match viewAstExprIn b e with
@@ -234,7 +235,7 @@ fun expr b (e : Int) =
   | AstExprView.Qual r -> unmark b r.name
   -- `e.label`: the label is the record's.
   | AstExprView.Proj r -> (let u = expr b r.target in unmark b r.label)
-  | AstExprView.RecordE r ->
+  | AstExprView.Record r ->
       (let u = each (fieldE b) r.fields in maybe (expr b) r.base)
   | AstExprView.Update r -> (let u = expr b r.base in each (fieldE b) r.fields)
   | AstExprView.Handle r ->
@@ -265,12 +266,12 @@ fun expr b (e : Int) =
             expr b (astArmBodyIn b a)))
         r.arms
   | AstExprView.Neg r -> expr b r.operand
-  | AstExprView.AndE r -> (let u = expr b r.lhs in expr b r.rhs)
-  | AstExprView.OrE r -> (let u = expr b r.lhs in expr b r.rhs)
+  | AstExprView.And r -> (let u = expr b r.lhs in expr b r.rhs)
+  | AstExprView.Or r -> (let u = expr b r.lhs in expr b r.rhs)
   | AstExprView.Interp r -> each (\h -> expr b (astHoleExprIn b h)) r.holes
   | AstExprView.Tuple r -> each (expr b) r.items
-  | AstExprView.ArrayE r -> each (expr b) r.items
-  | AstExprView.ListE r -> each (expr b) r.items
+  | AstExprView.Array r -> each (expr b) r.items
+  | AstExprView.List r -> each (expr b) r.items
   | AstExprView.Cons r -> each (expr b) r.args
   -- A bare name is a variable, and keeps its mark: whether it is a local or
   -- an item is the resolver's to decide, by looking.

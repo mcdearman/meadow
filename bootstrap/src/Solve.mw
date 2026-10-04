@@ -368,9 +368,9 @@ fun varsOf (q : Quantified) : [Int] =
 @pub fun collectTyvars (a : HirArena) (t : HirType) (out : [String]) :
     [String] =
   match viewHirType a t with
-  | HirTypeView.TVar r -> addVar out (hirNameText a r.name)
-  | HirTypeView.TCon r -> V.foldl (\acc x -> collectTyvars a x acc) out r.args
-  | HirTypeView.TFun r ->
+  | HirTypeView.Var r -> addVar out (hirNameText a r.name)
+  | HirTypeView.Con r -> V.foldl (\acc x -> collectTyvars a x acc) out r.args
+  | HirTypeView.Fun r ->
       let ps = V.foldl (\acc x -> collectTyvars a x acc) out r.params in
       let res = collectTyvars a r.result ps in
       (match r.row with
@@ -386,13 +386,16 @@ fun varsOf (q : Quantified) : [Int] =
             | Just tl -> addVar labels (hirNameText a tl)
             | None -> labels)
        | None -> res)
-  | HirTypeView.TTuple r ->
+  | HirTypeView.Tuple r ->
       V.foldl (\acc x -> collectTyvars a x acc) out r.items
-  | HirTypeView.TVector r -> collectTyvars a r.item out
-  | HirTypeView.TList r -> collectTyvars a r.item out
-  | HirTypeView.TRecord r ->
+  | HirTypeView.Vector r -> collectTyvars a r.item out
+  | HirTypeView.List r -> collectTyvars a r.item out
+  | HirTypeView.Record r ->
       let fs =
-        V.foldl (\acc f -> collectTyvars a (hirTFieldTy a f) acc) out r.fields
+        V.foldl
+          (\acc f -> collectTyvars a (hirTypeFieldTy a f) acc)
+          out
+          r.fields
       in
       (match r.tail with | Just tl -> addVar fs (hirNameText a tl) | None -> fs)
 
@@ -411,15 +414,15 @@ fun addVar (out : [String]) (n : String) : [String] =
 @pub fun tyOf (i : Inf s) (a : HirArena) (t : HirType)
     (params : HashMap String Int) : Type ! { St s | e } =
   match viewHirType a t with
-  | HirTypeView.TVar r ->
+  | HirTypeView.Var r ->
       (match H.lookup (hirNameText a r.name) params with
        | Just k -> Bound k
        | None -> Error)
-  | HirTypeView.TCon r ->
+  | HirTypeView.Con r ->
       let args = V.map (\x -> tyOf i a x params) r.args in
       let name = canonOf i (hirRefId a r.ref) (hirNameText a r.name) in
       conNamed i name args
-  | HirTypeView.TFun r ->
+  | HirTypeView.Fun r ->
       let eff =
         (match r.row with | Just row -> effOf i a row params | None -> RowEmpty)
       in
@@ -427,10 +430,10 @@ fun addVar (out : [String]) (n : String) : [String] =
         (V.map (\x -> tyOf i a x params) r.params)
         (tyOf i a r.result params)
         eff
-  | HirTypeView.TTuple r -> Tuple (V.map (\x -> tyOf i a x params) r.items)
-  | HirTypeView.TVector r -> vectorT (tyOf i a r.item params)
-  | HirTypeView.TList r -> listT (tyOf i a r.item params)
-  | HirTypeView.TRecord r ->
+  | HirTypeView.Tuple r -> Tuple (V.map (\x -> tyOf i a x params) r.items)
+  | HirTypeView.Vector r -> vectorT (tyOf i a r.item params)
+  | HirTypeView.List r -> listT (tyOf i a r.item params)
+  | HirTypeView.Record r ->
       let rest =
         (match r.tail with
          | Just tl ->
@@ -443,8 +446,8 @@ fun addVar (out : [String]) (n : String) : [String] =
         (V.foldl
           (\acc f ->
             RowExtend
-              (hirNameText a (hirTFieldName a f))
-              (tyOf i a (hirTFieldTy a f) params)
+              (hirNameText a (hirTypeFieldName a f))
+              (tyOf i a (hirTypeFieldTy a f) params)
               acc)
           rest
           (V.reverse r.fields))

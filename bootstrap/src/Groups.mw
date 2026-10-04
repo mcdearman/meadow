@@ -43,22 +43,22 @@ fun bindOf (a : HirArena) (d : HirDecl) : Maybe HirBind =
 -- Every name binding `b` binds, in the order written.
 @pub fun boundBy (a : HirArena) (b : HirBind) : [Int] =
   match viewHirBind a b with
-  | HirBindView.FunBind r -> [r.id]
-  | HirBindView.PatBind r -> patVars a r.pat
+  | HirBindView.Fun r -> [r.id]
+  | HirBindView.Pat r -> patVars a r.pat
 
 @pub fun patVars (a : HirArena) (p : HirPat) : [Int] =
   match viewHirPat a p with
-  | HirPatView.PVar r -> [r.id]
-  | HirPatView.PAnn r -> patVars a r.pat
-  | HirPatView.PAs r -> V.pushFront (patVars a r.pat) r.id
-  | HirPatView.PTuple r -> V.concatMap (patVars a) r.items
-  | HirPatView.PList r -> V.concatMap (patVars a) r.items
-  | HirPatView.PArray r -> V.concatMap (patVars a) r.items
-  | HirPatView.PVector r -> V.concatMap (patVars a) r.items
-  | HirPatView.PCons r -> V.concatMap (patVars a) r.args
-  | HirPatView.PRecord r ->
-      V.concatMap (\f -> patVars a (hirPFieldPat a f)) r.fields
-  | HirPatView.PView r -> patVars a r.pat
+  | HirPatView.Var r -> [r.id]
+  | HirPatView.Ann r -> patVars a r.pat
+  | HirPatView.As r -> V.pushFront (patVars a r.pat) r.id
+  | HirPatView.Tuple r -> V.concatMap (patVars a) r.items
+  | HirPatView.List r -> V.concatMap (patVars a) r.items
+  | HirPatView.Array r -> V.concatMap (patVars a) r.items
+  | HirPatView.Vector r -> V.concatMap (patVars a) r.items
+  | HirPatView.Cons r -> V.concatMap (patVars a) r.args
+  | HirPatView.Record r ->
+      V.concatMap (\f -> patVars a (hirPatFieldPat a f)) r.fields
+  | HirPatView.View r -> patVars a r.pat
   | _ -> []
 
 -- --- mentions ----------------------------------------------------------------
@@ -69,14 +69,14 @@ fun bindOf (a : HirArena) (d : HirDecl) : Maybe HirBind =
 @pub fun mentions (a : HirArena) (owner : HashMap Int Int)
     (overloads : HashMap Int [Int]) (b : HirBind) (out : [Int]) : [Int] =
   match viewHirBind a b with
-  | HirBindView.FunBind r ->
+  | HirBindView.Fun r ->
       exprMentions
         a
         owner
         overloads
         r.body
         (V.foldl (\acc p -> patMentions a owner overloads p acc) out r.params)
-  | HirBindView.PatBind r ->
+  | HirBindView.Pat r ->
       exprMentions
         a
         owner
@@ -87,28 +87,28 @@ fun bindOf (a : HirArena) (d : HirDecl) : Maybe HirBind =
 fun patMentions (a : HirArena) owner overloads (p : HirPat) (out : [Int]) :
     [Int] =
   match viewHirPat a p with
-  | HirPatView.PView r ->
+  | HirPatView.View r ->
       patMentions
         a
         owner
         overloads
         r.pat
         (exprMentions a owner overloads r.fn out)
-  | HirPatView.PAnn r -> patMentions a owner overloads r.pat out
-  | HirPatView.PAs r -> patMentions a owner overloads r.pat out
-  | HirPatView.PTuple r ->
+  | HirPatView.Ann r -> patMentions a owner overloads r.pat out
+  | HirPatView.As r -> patMentions a owner overloads r.pat out
+  | HirPatView.Tuple r ->
       V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
-  | HirPatView.PArray r ->
+  | HirPatView.Array r ->
       V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
-  | HirPatView.PVector r ->
+  | HirPatView.Vector r ->
       V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
-  | HirPatView.PList r ->
+  | HirPatView.List r ->
       V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
-  | HirPatView.PCons r ->
+  | HirPatView.Cons r ->
       V.foldl (\acc q -> patMentions a owner overloads q acc) out r.args
-  | HirPatView.PRecord r ->
+  | HirPatView.Record r ->
       V.foldl
-        (\acc f -> patMentions a owner overloads (hirPFieldPat a f) acc)
+        (\acc f -> patMentions a owner overloads (hirPatFieldPat a f) acc)
         out
         r.fields
   | _ -> out
@@ -172,13 +172,13 @@ fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) :
         (exprMentions a owner overloads r.scrutinee out)
         r.arms
   | HirExprView.Tuple r -> each out r.items
-  | HirExprView.ArrayE r -> each out r.items
-  | HirExprView.ListE r -> each out r.items
+  | HirExprView.Array r -> each out r.items
+  | HirExprView.List r -> each out r.items
   | HirExprView.Cons r -> each out r.args
-  | HirExprView.RecordE r ->
+  | HirExprView.Record r ->
       let fields =
         V.foldl
-          (\acc f -> exprMentions a owner overloads (hirFieldEValue a f) acc)
+          (\acc f -> exprMentions a owner overloads (hirExprFieldValue a f) acc)
           out
           r.fields
       in
@@ -188,7 +188,7 @@ fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) :
   | HirExprView.Proj r -> exprMentions a owner overloads r.target out
   | HirExprView.Update r ->
       V.foldl
-        (\acc f -> exprMentions a owner overloads (hirFieldEValue a f) acc)
+        (\acc f -> exprMentions a owner overloads (hirExprFieldValue a f) acc)
         (exprMentions a owner overloads r.base out)
         r.fields
   | HirExprView.Handle r ->

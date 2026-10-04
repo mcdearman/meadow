@@ -108,8 +108,8 @@ record Dep = { name : String, items : [([String], Item)], anyVis : Bool }
 -- A declaration's attributes and the declaration under them.
 fun peel (a : AstArena) (d : AstDecl) : ([AstAttr], AstDecl) =
   if kindAstDecl a d == AstDeclKind.Attributed then
-    (let inner = peel a (astAttributedDecl a d) in
-      (V.append (astAttributedAttrs a d) (fst inner), snd inner))
+    (let inner = peel a (astDeclAttributedDecl a d) in
+      (V.append (astDeclAttributedAttrs a d) (fst inner), snd inner))
   else ([], d)
 
 fun nameText (a : AstArena) (n : AstName) : String = astNameText a n
@@ -140,19 +140,20 @@ fun enabled (a : AstArena) (attrs : [AstAttr]) : Bool =
 
 fun holds (a : AstArena) (m : AstAttrMeta) : Bool =
   let k = kindAstAttrMeta a m in
-  if k == AstAttrMetaKind.MetaWord then
-    (let w = nameText a (astMetaWordName a m) in w == "windows" or w == "debug")
-  else if k == AstAttrMetaKind.MetaValue then
-    (let key = nameText a (astMetaValueName a m) in
-      let v = nameText a (astMetaValueValue a m) in
+  if k == AstAttrMetaKind.Word then
+    (let w = nameText a (astAttrMetaWordName a m) in
+      w == "windows" or w == "debug")
+  else if k == AstAttrMetaKind.Value then
+    (let key = nameText a (astAttrMetaValueName a m) in
+      let v = nameText a (astAttrMetaValueValue a m) in
       (key == "os" and v == "windows")
         or (key == "family" and v == "windows")
         or (key == "arch" and v == "x86_64")
         or (key == "profile" and v == "debug")
         or (key == "opt_level" and v == "0"))
-  else if k == AstAttrMetaKind.MetaList then
-    (let n = nameText a (astMetaListName a m) in
-      let args = astMetaListMetas a m in
+  else if k == AstAttrMetaKind.List then
+    (let n = nameText a (astAttrMetaListName a m) in
+      let args = astAttrMetaListMetas a m in
       if n == "all" then V.all (holds a) args
       else if n == "any" then V.any (holds a) args
       else if n == "not" then not (V.all (holds a) args)
@@ -196,7 +197,7 @@ fun frameOf (pkg : String) (src : Source) :
       in
       let uses =
         V.concatMap
-          (\x -> if kindAstDecl a (snd x) == AstDeclKind.UseDecl
+          (\x -> if kindAstDecl a (snd x) == AstDeclKind.Use
             then [(snd x, M.unwrapOr Private (visOf a (fst x)))]
             else [])
           decls
@@ -253,70 +254,72 @@ fun declItems (src : Source) (a : AstArena) (vis : Vis) (d : AstDecl) :
     \n kind owner -> item (nameText a n) kind (binderOf src a n kind) vis owner
   in
   if k == AstDeclKind.Bind then
-    (let b = astBindBind a d in
-      if kindAstBind a b == AstBindKind.FunBind
-      then [one (astFunBindName a b) "v" ""]
-      else V.map (\n -> one n "v" "") (patNames a (astPatBindPat a b)))
-  else if k == AstDeclKind.DataDecl then
-    (let ty = nameText a (astDataDeclName a d) in
+    (let b = astDeclBindBind a d in
+      if kindAstBind a b == AstBindKind.Fun
+      then [one (astBindFunName a b) "v" ""]
+      else V.map (\n -> one n "v" "") (patNames a (astBindPatPat a b)))
+  else if k == AstDeclKind.Data then
+    (let ty = nameText a (astDeclDataName a d) in
       V.pushFront
         (V.map
           (\v ->
             {(one (astVariantName a v) "c" ty) | fields = if astVariantNamed a v
               then Just (fieldNames a (astVariantFields a v))
               else None})
-          (astDataDeclVariants a d))
-        (one (astDataDeclName a d) "t" "data"))
-  else if k == AstDeclKind.RecordDecl then
-    (let n = astRecordDeclName a d in
+          (astDeclDataVariants a d))
+        (one (astDeclDataName a d) "t" "data"))
+  else if k == AstDeclKind.Record then
+    (let n = astDeclRecordName a d in
       -- A record's one constructor is named as its type is, and declared
       -- nowhere an editor looks: a use of it goes nowhere.
       [
         one n "t" "record",
-        { (item (nameText a n) "c" (declareBinder (nameText a n) "c" "-") vis (nameText a n)) | fields = Just (fieldNames a (astRecordDeclFields a d)) }
+        { (item (nameText a n) "c" (declareBinder (nameText a n) "c" "-") vis (nameText a n)) | fields = Just (fieldNames a (astDeclRecordFields a d)) }
       ])
-  else if k == AstDeclKind.EffectDecl then
-    (let e = nameText a (astEffectDeclName a d) in
+  else if k == AstDeclKind.Effect then
+    (let e = nameText a (astDeclEffectName a d) in
       V.pushFront
         (V.map
           (\f -> one (astFieldName a f) "v" ("op:" ++ e))
-          (astEffectDeclOps a d))
-        (one (astEffectDeclName a d) "t" "effect"))
-  else if k == AstDeclKind.AliasDecl
-  then [one (astAliasDeclName a d) "t" "alias"]
-  else if k == AstDeclKind.EffectAliasDecl
-  then [one (astEffectAliasDeclName a d) "t" "effectAlias"]
-  else if k == AstDeclKind.TraitDecl then
-    (let t = nameText a (astTraitDeclName a d) in
+          (astDeclEffectOps a d))
+        (one (astDeclEffectName a d) "t" "effect"))
+  else if k == AstDeclKind.Alias
+  then [one (astDeclAliasName a d) "t" "alias"]
+  else if k == AstDeclKind.EffectAlias
+  then [one (astDeclEffectAliasName a d) "t" "effectAlias"]
+  else if k == AstDeclKind.Trait then
+    (let t = nameText a (astDeclTraitName a d) in
       V.concat
-        [ [one (astTraitDeclName a d) "t" "trait"],
-          V.map (\x -> one (astAssocName a x) "t" ("assoc:" ++ t)) (astTraitDeclAssocs a d),
+        [ [one (astDeclTraitName a d) "t" "trait"],
+          V.map (\x -> one (astAssocName a x) "t" ("assoc:" ++ t)) (astDeclTraitAssocs a d),
           V.map
             (\s -> one (astMethodSigName a s) "v" t)
-            (astTraitDeclSigs a d) ])
+            (astDeclTraitSigs a d) ])
   else []
 
 -- The names a pattern binds, as written.
 fun patNames (a : AstArena) (p : AstPat) : [AstName] =
   let k = kindAstPat a p in
-  if k == AstPatKind.PVar then [astPVarName a p]
-  else if k == AstPatKind.PAs
-  then V.pushFront (patNames a (astPAsPat a p)) (astPAsName a p)
-  else if k == AstPatKind.PAnn then patNames a (astPAnnPat a p)
-  else if k == AstPatKind.PCons then V.concatMap (patNames a) (astPConsArgs a p)
-  else if k == AstPatKind.PQualCons
-  then V.concatMap (patNames a) (astPQualConsArgs a p)
-  else if k == AstPatKind.PTuple
-  then V.concatMap (patNames a) (astPTupleItems a p)
-  else if k == AstPatKind.PArray
-  then V.concatMap (patNames a) (astPArrayItems a p)
-  else if k == AstPatKind.PVector
-  then V.concatMap (patNames a) (astPVectorItems a p)
-  else if k == AstPatKind.PList
-  then V.concatMap (patNames a) (astPListItems a p)
-  else if k == AstPatKind.PRecord
-  then V.concatMap (\f -> patNames a (astPFieldPat a f)) (astPRecordFields a p)
-  else if k == AstPatKind.PView then patNames a (astPViewPat a p)
+  if k == AstPatKind.Var then [astPatVarName a p]
+  else if k == AstPatKind.As
+  then V.pushFront (patNames a (astPatAsPat a p)) (astPatAsName a p)
+  else if k == AstPatKind.Ann then patNames a (astPatAnnPat a p)
+  else if k == AstPatKind.Cons
+  then V.concatMap (patNames a) (astPatConsArgs a p)
+  else if k == AstPatKind.QualCons
+  then V.concatMap (patNames a) (astPatQualConsArgs a p)
+  else if k == AstPatKind.Tuple
+  then V.concatMap (patNames a) (astPatTupleItems a p)
+  else if k == AstPatKind.Array
+  then V.concatMap (patNames a) (astPatArrayItems a p)
+  else if k == AstPatKind.Vector
+  then V.concatMap (patNames a) (astPatVectorItems a p)
+  else if k == AstPatKind.List
+  then V.concatMap (patNames a) (astPatListItems a p)
+  else if k == AstPatKind.Record
+  then
+    V.concatMap (\f -> patNames a (astPatFieldPat a f)) (astPatRecordFields a p)
+  else if k == AstPatKind.View then patNames a (astPatViewPat a p)
   else []
 
 fun isCapital (s : String) : Bool =
@@ -567,18 +570,18 @@ fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
   | AstProgram a _ ->
       let u = fst one in
       let vis = snd one in
-      let segs = V.map (nameText a) (astUseDeclPath a u) in
+      let segs = V.map (nameText a) (astDeclUsePath a u) in
       let written =
-        V.map (\n -> (nameText a n, metaAstName a n)) (astUseDeclNames a u)
+        V.map (\n -> (nameText a n, metaAstName a n)) (astDeclUseNames a u)
       in
       let names = V.map fst written in
       let lastAt =
         M.unwrapOr
           (metaAstModule a 0)
-          (M.map (metaAstName a) (V.get (astUseDeclPath a u) (V.len segs - 1)))
+          (M.map (metaAstName a) (V.get (astDeclUsePath a u) (V.len segs - 1)))
       in
-      let glob = astUseDeclGlob a u in
-      let alias = M.map (nameText a) (astUseDeclAlias a u) in
+      let glob = astDeclUseGlob a u in
+      let alias = M.map (nameText a) (astDeclUseAlias a u) in
       let here = framePath m in
       let last = V.getOr "" segs (V.len segs - 1) in
       let owner = V.take segs (V.len segs - 1) in

@@ -199,7 +199,7 @@ fun written (c : Lc) b (s : GTree) =
             else attrs)
         in
         if V.isEmpty kept then snd x
-        else newAstAttributed b (spanOf s) (V.map (attr c b) kept) (snd x))
+        else newAstDeclAttributed b (spanOf s) (V.map (attr c b) kept) (snd x))
       bare
 
 -- A bare declaration's nodes, each with whether it is a signature.
@@ -209,18 +209,18 @@ fun item_ (c : Lc) b (s : GTree) =
   | GroupedFixity assoc prec ops ->
       [(
         False,
-        newAstFixityDecl
+        newAstDeclFixity
           b
           m
           (V.map (\f -> nm b (firstName (must NodeOpName f))) ops)
       )]
-  | GroupedModDecl name -> [(False, newAstModDecl b m (nm b (firstName name)))]
+  | GroupedModDecl name -> [(False, newAstDeclMod b m (nm b (firstName name)))]
   | GroupedUseDecl path glob alias names ->
       [(False, useDecl b m path glob alias names)]
   | GroupedDataDecl name params variants ->
       [(
         False,
-        newAstDataDecl
+        newAstDeclData
           b
           m
           (nm b (nameOf name))
@@ -230,7 +230,7 @@ fun item_ (c : Lc) b (s : GTree) =
   | GroupedRecordDecl name params fields ->
       [(
         False,
-        newAstRecordDecl
+        newAstDeclRecord
           b
           m
           (nm b (nameOf name))
@@ -242,7 +242,7 @@ fun item_ (c : Lc) b (s : GTree) =
        | Just alias ->
            [(
              False,
-             newAstEffectAliasDecl
+             newAstDeclEffectAlias
                b
                m
                (nm b (nameOf name))
@@ -250,11 +250,11 @@ fun item_ (c : Lc) b (s : GTree) =
                (row c b (must NodeEffRow alias))
            )]
        | None ->
-           [(False, newAstEffectDecl b m (nm b (nameOf name)) (V.map (\p -> nm b (nameOf p)) params) (V.map (field c b) (childrenOf NodeFieldTy (must NodeRecTy body))))])
+           [(False, newAstDeclEffect b m (nm b (nameOf name)) (V.map (\p -> nm b (nameOf p)) params) (V.map (field c b) (childrenOf NodeFieldTy (must NodeRecTy body))))])
   | GroupedTypeDecl name params t ->
       [(
         False,
-        newAstAliasDecl
+        newAstDeclAlias
           b
           m
           (nm b (nameOf name))
@@ -266,15 +266,15 @@ fun item_ (c : Lc) b (s : GTree) =
   | GroupedImplDecl tr tys context items ->
       [(False, implDecl c b m tr tys context items)]
   | GroupedMacroDecl name rules ->
-      [(False, newAstMacroDecl b m (nm b (nameOf name)))]
-  | GroupedMacCall _ _ _ -> [(False, newAstMacCallDecl b m (macCall b s))]
+      [(False, newAstDeclMacro b m (nm b (nameOf name)))]
+  | GroupedMacCall _ _ _ -> [(False, newAstDeclMacCall b m (macCall b s))]
   | GroupedFunItem name _ annot body clauses ->
       (match body with
-       | Just _ -> [(False, newAstBind b m (bindOf c b s))]
+       | Just _ -> [(False, newAstDeclBind b m (bindOf c b s))]
        | None -> sigDecl c b s True (vid name) (M.unwrapOr s annot) clauses)
   | GroupedDefItem p annot body clauses ->
       (match body with
-       | Just _ -> [(False, newAstBind b m (bindOf c b s))]
+       | Just _ -> [(False, newAstDeclBind b m (bindOf c b s))]
        | None -> sigDecl c b s False (patName p) (M.unwrapOr s annot) clauses)
   | GroupedPatternDecl name form -> patternDecl c b s (nameOf name) form
   | _ -> []
@@ -303,18 +303,18 @@ fun metaItem (c : Lc) b (s : GTree) =
   let m = spanOf s in
   match s with
   | GroupedMeta (Just text) _ _ ->
-      [newAstMetaText b m (nm b (stringName c text))]
-  | GroupedMeta _ (Just n) None -> [newAstMetaWord b m (nm b (firstName n))]
+      [newAstAttrMetaText b m (nm b (stringName c text))]
+  | GroupedMeta _ (Just n) None -> [newAstAttrMetaWord b m (nm b (firstName n))]
   | GroupedMeta _ (Just n) (Just rest) ->
       (match rest with
        | GroupedMetaRest (Just v) _ ->
-           [newAstMetaValue
+           [newAstAttrMetaValue
              b
              m
              (nm b (firstName n))
              (nm b (named (stringName c (must TokenStr v)).text (spanOf v)))]
        | GroupedMetaRest _ (Just args) ->
-           [newAstMetaList
+           [newAstAttrMetaList
              b
              m
              (nm b (firstName n))
@@ -334,7 +334,7 @@ fun useDecl b (m : Meta) (path : GTree) (glob : Maybe GTree)
     (match names with | Just ns -> childrenOf NodeUseItem ns | None -> [])
   in
   let bang = \i -> tokenIs TokenBang i or tokenIs TokenDeclBang i in
-  newAstUseDecl b m
+  newAstDeclUse b m
     (V.map (\x -> nm b (firstName x)) (childrenOf NodeSeg path))
     (V.map (\i -> nm b (useName i)) (V.filter (\i -> not (bang i)) items))
     (V.map (\i -> nm b (useName i)) (V.filter bang items))
@@ -408,7 +408,7 @@ fun traitDecl (c : Lc) b (m : Meta) (name : GTree) (params : [GTree])
         else
           (match definedBy c b (R.kindOf x == NodeFunItem) (sigName x) (childrenOf NodeClause x) (spanOf x) with | Just d -> [d] | None -> []))
       rest in
-    newAstTraitDecl b m
+    newAstDeclTrait b m
     (nm b (nameOf name))
     (V.map (\p -> nm b (nameOf p)) params)
     (V.map
@@ -450,7 +450,7 @@ fun implDecl (c : Lc) b (m : Meta) (tr : GTree) (tys : [GTree])
       items
   in
   let assocs = V.filter (\x -> R.kindOf x == NodeAssocDecl) members in
-  newAstImplDecl b m
+  newAstDeclImpl b m
     (nm b (nameOf tr))
     (V.map (tatom c b) tys)
     (V.map
@@ -516,7 +516,7 @@ fun sigDecl (c : Lc) b (s : GTree) (isFun : Bool) (n : Nm) (annot : GTree)
   let sig =
     (
       True,
-      newAstSigDecl
+      newAstDeclSig
         b
         (from (spanOf s) (spanOf t))
         (nm b n)
@@ -525,7 +525,7 @@ fun sigDecl (c : Lc) b (s : GTree) (isFun : Bool) (n : Nm) (annot : GTree)
     )
   in
   match definedBy c b isFun n clauses (spanOf s) with
-  | Just d -> [sig, (False, newAstBind b (spanOf s) d)]
+  | Just d -> [sig, (False, newAstDeclBind b (spanOf s) d)]
   | None -> [sig]
 
 fun sigBound (c : Lc) b (n : Nm) (ts : [GTree]) =
@@ -562,15 +562,19 @@ fun bindOf (c : Lc) b (s : GTree) =
     let params = childrenOf NodeParam s in
     let clauses = childrenOf NodeClause s in
     if V.isEmpty params and V.isEmpty clauses
-    then newAstFunBind b (spanOf s) (nm b n) [] ret (expr c b body)
+    then newAstBindFun b (spanOf s) (nm b n) [] ret (expr c b body)
     else equations c b n params ret body clauses (spanOf s)
   else
     let p = must NodePat s in
     let value = expr c b body in
     match ret with
     | Just t ->
-        newAstPatBind b (spanOf s) (newAstPAnn b (spanOf p) (pat c b p) t) value
-    | None -> newAstPatBind b (spanOf s) (pat c b p) value
+        newAstBindPat
+          b
+          (spanOf s)
+          (newAstPatAnn b (spanOf p) (pat c b p) t)
+          value
+    | None -> newAstBindPat b (spanOf s) (pat c b p) value
 
 -- A binding's `: T`, and its effects: `: T ! e` is a function of nothing
 -- performing `e`, spanning from the colon.
@@ -578,7 +582,7 @@ fun resultTy (c : Lc) b (annot : GTree) =
   let t = must NodeType annot in
   match childOf NodeEffAnnot annot with
   | Just e ->
-      newAstTFun
+      newAstTypeFun
         b
         (spanOf annot)
         []
@@ -597,11 +601,11 @@ fun equations (c : Lc) b (n : Nm) (params : [GTree]) ret (body : GTree)
     let count = V.len params in
     let vars =
       V.map
-        (\i -> newAstVar b n.at (nm b (named "_arg${show i}" n.at)))
+        (\i -> newAstExprVar b n.at (nm b (named "_arg${show i}" n.at)))
         (V.range 0 count)
     in
     let scrutinee =
-      (if count == 1 then V.getOr 0 vars 0 else newAstTuple b n.at vars)
+      (if count == 1 then V.getOr 0 vars 0 else newAstExprTuple b n.at vars)
     in
     let arm =
       \ps e ->
@@ -621,23 +625,23 @@ fun equations (c : Lc) b (n : Nm) (params : [GTree]) ret (body : GTree)
     in
     let pvars =
       V.map
-        (\i -> newAstPVar b n.at (nm b (named "_arg${show i}" n.at)))
+        (\i -> newAstPatVar b n.at (nm b (named "_arg${show i}" n.at)))
         (V.range 0 count)
     in
-    newAstFunBind b m (nm b n) pvars ret (newAstMatch b m scrutinee arms)
+    newAstBindFun b m (nm b n) pvars ret (newAstExprMatch b m scrutinee arms)
 
 fun patTuple b (pats : [Int]) (m : Meta) =
-  if V.len pats == 1 then V.getOr 0 pats 0 else newAstPTuple b m pats
+  if V.len pats == 1 then V.getOr 0 pats 0 else newAstPatTuple b m pats
 
 -- `f x = e` with arguments is a function; with none, the name bound, its
 -- type annotated where the name is.
 fun bindOfName (c : Lc) b (n : Nm) (params : [Int]) ret body (m : Meta) =
-  if not (V.isEmpty params) then newAstFunBind b m (nm b n) params ret body
+  if not (V.isEmpty params) then newAstBindFun b m (nm b n) params ret body
   else
-    let var = newAstPVar b n.at (nm b n) in
+    let var = newAstPatVar b n.at (nm b n) in
     match ret with
-    | Just t -> newAstPatBind b m (newAstPAnn b n.at var t) body
-    | None -> newAstPatBind b m var body
+    | Just t -> newAstBindPat b m (newAstPatAnn b n.at var t) body
+    | None -> newAstBindPat b m var body
 
 -- The binding a signature's clauses make, if it has any.
 fun definedBy (c : Lc) b (isFun : Bool) (n : Nm) (clauses : [GTree])
@@ -649,7 +653,7 @@ fun definedBy (c : Lc) b (isFun : Bool) (n : Nm) (clauses : [GTree])
       let body = must NodeExpr head in
       let rest = V.drop clauses 1 in
       if isFun and V.isEmpty params and V.isEmpty rest
-      then Just (newAstFunBind b m (nm b n) [] None (expr c b body))
+      then Just (newAstBindFun b m (nm b n) [] None (expr c b body))
       else Just (equations c b n params None body rest m)
 
 -- --- pattern synonyms --------------------------------------------------------
@@ -678,30 +682,32 @@ fun synonym (c : Lc) b (n : Nm) (s : GTree) (m : Meta) =
   let both = tokenIs TokenEq s in
   let rhs = must NodePat s in
   let at = \t -> named t n.at in
-  let vars = \u -> V.map (\(p : Nm) -> newAstVar b p.at (nm b p)) ps in
-  let noArgs = \t -> newAstCons b m (nm b (at t)) [] in
+  let vars = \u -> V.map (\(p : Nm) -> newAstExprVar b p.at (nm b p)) ps in
+  let noArgs = \t -> newAstExprCons b m (nm b (at t)) [] in
   let yes =
     (match V.len ps with
      | 0 -> noArgs "True"
-     | 1 -> newAstListE b m (vars ())
-     | _ -> newAstListE b m [newAstTuple b m (vars ())]) in
-    let no = (if V.len ps == 0 then noArgs "False" else newAstListE b m []) in
+     | 1 -> newAstExprList b m (vars ())
+     | _ -> newAstExprList b m [newAstExprTuple b m (vars ())]) in
+    let no =
+      (if V.len ps == 0 then noArgs "False" else newAstExprList b m [])
+    in
     let arms =
       [
         newAstArm b m (pat c b rhs) None yes,
-        newAstArm b m (newAstPWild b m) None no
+        newAstArm b m (newAstPatWild b m) None no
       ]
     in
     let scrutinee = at "$scrutinee" in
     let matcher =
-      newAstBind b m
-      (newAstFunBind
+      newAstDeclBind b m
+      (newAstBindFun
         b
         m
         (nm b (at "$m${show (V.len ps)}${n.text}"))
-        [newAstPVar b n.at (nm b scrutinee)]
+        [newAstPatVar b n.at (nm b scrutinee)]
         None
-        (newAstMatch b m (newAstVar b m (nm b scrutinee)) arms)) in
+        (newAstExprMatch b m (newAstExprVar b m (nm b scrutinee)) arms)) in
       let builder =
         (match childOf NodeSynBuilder s with
          | Just bl ->
@@ -715,7 +721,7 @@ fun synonym (c : Lc) b (n : Nm) (s : GTree) (m : Meta) =
              then
                Just
                  (
-                   V.map (\(p : Nm) -> newAstPVar b p.at (nm b p)) ps,
+                   V.map (\(p : Nm) -> newAstPatVar b p.at (nm b p)) ps,
                    patExpr c b rhs
                  )
              else None) in
@@ -725,10 +731,10 @@ fun synonym (c : Lc) b (n : Nm) (s : GTree) (m : Meta) =
               (False, matcher),
               (
                 False,
-                newAstBind
+                newAstDeclBind
                   b
                   m
-                  (newAstFunBind b m (nm b (at "$b${n.text}")) params None body)
+                  (newAstBindFun b m (nm b (at "$b${n.text}")) params None body)
               )
             ]
         | None -> [(False, matcher)]
@@ -737,16 +743,18 @@ fun synonym (c : Lc) b (n : Nm) (s : GTree) (m : Meta) =
 fun complete b (names : [Nm]) (m : Meta) =
   let ms =
     V.map
-      (\(x : Nm) -> newAstVar b x.at (nm b (named "$m?${x.text}" x.at)))
+      (\(x : Nm) -> newAstExprVar b x.at (nm b (named "$m?${x.text}" x.at)))
       names
   in
-  let value = (if V.len ms == 1 then V.getOr 0 ms 0 else newAstTuple b m ms) in
+  let value =
+    (if V.len ms == 1 then V.getOr 0 ms 0 else newAstExprTuple b m ms)
+  in
   let label =
     named "$complete:${S.join "|" (V.map (\(x : Nm) -> x.text) names)}" m
   in
   (
     False,
-    newAstBind b m (newAstPatBind b m (newAstPVar b m (nm b label)) value)
+    newAstDeclBind b m (newAstBindPat b m (newAstPatVar b m (nm b label)) value)
   )
 
 -- --- types -------------------------------------------------------------------
@@ -756,7 +764,7 @@ fun ty (c : Lc) b (s : GTree) =
   match childOf NodeArrow s with
   | None -> thead c b head
   | Just a ->
-      newAstTFun
+      newAstTypeFun
         b
         (spanOf s)
         [thead c b head]
@@ -766,7 +774,7 @@ fun ty (c : Lc) b (s : GTree) =
 fun thead (c : Lc) b (s : GTree) =
   match childOf NodeTCon s with
   | Just con ->
-      newAstTCon
+      newAstTypeCon
         b
         (spanOf con)
         (nm b (firstName con))
@@ -783,7 +791,7 @@ fun tatom (c : Lc) b (s : GTree) =
       if k == NodeTParen then tparen c b n
       else if k == NodeTArray
       then
-        newAstTCon
+        newAstTypeCon
           b
           (spanOf n)
           (nm b (named "Array" (spanOf n)))
@@ -791,30 +799,30 @@ fun tatom (c : Lc) b (s : GTree) =
       else if k == NodeTBrack
       then
         (if tokenIs TokenSemiColon n
-          then newAstTList b (spanOf n) (ty c b (must NodeType n))
-          else newAstTVector b (spanOf n) (ty c b (must NodeType n)))
+          then newAstTypeList b (spanOf n) (ty c b (must NodeType n))
+          else newAstTypeVector b (spanOf n) (ty c b (must NodeType n)))
       else if k == NodeRecTy then recTy c b n
-      else newAstTVar b m (nm b (firstName s))
+      else newAstTypeVar b m (nm b (firstName s))
   | None ->
       (match V.get (tokenKids s) 0 with
        | Just t ->
            if R.kindOf t == TokenUpperIdent or R.kindOf t == TokenMacUpper
-           then newAstTCon b m (nm b (nameOf t)) []
-           else newAstTVar b m (nm b (nameOf t))
-       | None -> newAstTTuple b m [])
+           then newAstTypeCon b m (nm b (nameOf t)) []
+           else newAstTypeVar b m (nm b (nameOf t))
+       | None -> newAstTypeTuple b m [])
 
 fun tparen (c : Lc) b (s : GTree) =
   let ts = childrenOf NodeType s in
   match V.len ts with
-  | 0 -> newAstTCon b (spanOf s) (nm b (named "Unit" (spanOf s))) []
+  | 0 -> newAstTypeCon b (spanOf s) (nm b (named "Unit" (spanOf s))) []
   | 1 -> ty c b (V.getOr s ts 0)
-  | _ -> newAstTTuple b (spanOf s) (V.map (ty c b) ts)
+  | _ -> newAstTypeTuple b (spanOf s) (V.map (ty c b) ts)
 
 fun recTy (c : Lc) b (s : GTree) =
-  newAstTRecord b (spanOf s)
+  newAstTypeRecord b (spanOf s)
     (V.map
       (\f ->
-        newAstTField
+        newAstTypeField
           b
           (spanOf f)
           (nm b (nameOf (must TokenLowerIdent f)))
@@ -872,7 +880,7 @@ fun asesAt b parts (names : [GTree]) (whole : Meta) (over : Maybe Meta) =
       V.foldl
         (\f a ->
           \o ->
-            newAstPAs
+            newAstPatAs
               b
               (M.unwrapOr whole o)
               (nm b (vid (must NodeVid a)))
@@ -899,7 +907,9 @@ fun consTagged (isPat : Bool) b parts (over : Maybe Meta) =
         let m = M.unwrapOr whole over in
         let name = nm b (named "Cons" whole) in
         let args = [f None, consTagged isPat b rest None] in
-        if isPat then newAstPCons b m name args else newAstCons b m name args
+        if isPat
+        then newAstPatCons b m name args
+        else newAstExprCons b m name args
 
 fun patomSpan (s : GTree) : Meta =
   match childOf NodeConPat s with
@@ -917,13 +927,13 @@ fun conPat (c : Lc) b (s : GTree) (args : [GTree]) (over : Maybe Meta) =
   let written = V.map (parg c b) args in
   match childOf NodeQualTail s with
   | Just q ->
-      newAstPQualCons
+      newAstPatQualCons
         b
         m
         (nm b (nameOf (must TokenUpperIdent s)))
         (nm b (nameOf (must TokenUpperIdent q)))
         written
-  | None -> newAstPCons b m (nm b (nameOf (must TokenUpperIdent s))) written
+  | None -> newAstPatCons b m (nm b (nameOf (must TokenUpperIdent s))) written
 
 fun parg (c : Lc) b (s : GTree) =
   match childOf NodeNullCon s with
@@ -938,21 +948,21 @@ fun arg (c : Lc) b (s : GTree) (over : Maybe Meta) =
       let k = R.kindOf n in
       if k == NodePatParen then parenPat c b n True over
       else if k == NodeRecPat then recPat c b n m
-      else if k == NodeVid then newAstPVar b m (nm b (vid n))
+      else if k == NodeVid then newAstPatVar b m (nm b (vid n))
       else if k == NodeArrPat
-      then newAstPArray b m (V.map (pat c b) (childrenOf NodePat n))
+      then newAstPatArray b m (V.map (pat c b) (childrenOf NodePat n))
       else if k == NodeBrackPat then brackPat c b n m
       else if k == NodeMacCall then patCall c b m n
-      else newAstPWild b m
+      else newAstPatWild b m
   | None -> litOrWild c b s m
 
 fun litOrWild (c : Lc) b (s : GTree) (m : Meta) =
   match V.get (tokenKids s) 0 with
   | Just t ->
       (if R.kindOf t == TokenWildcard
-        then newAstPWild b m
-        else newAstPLit b m (lit c b t))
-  | None -> newAstPWild b m
+        then newAstPatWild b m
+        else newAstPatLit b m (lit c b t))
+  | None -> newAstPatWild b m
 
 -- A parameter: as a pattern's argument, but for parentheses round one
 -- pattern, which are not part of it, and a bracket, which starts a whole
@@ -965,7 +975,7 @@ fun param (c : Lc) b (s : GTree) =
       if k == NodeNullCon then conPat c b n [] None
       else if k == NodePatParen then parenPat c b n False None
       else if k == NodeRecPat then recPat c b n m
-      else if k == NodeVid then newAstPVar b m (nm b (vid n))
+      else if k == NodeVid then newAstPatVar b m (nm b (vid n))
       else if k == NodeBrackParam or k == NodeArrParam then
         let first =
           (if k == NodeBrackParam
@@ -976,7 +986,7 @@ fun param (c : Lc) b (s : GTree) =
           (\o -> if k == NodeBrackParam
             then brackPat c b first (M.unwrapOr (spanOf first) o)
             else
-              newAstPArray
+              newAstPatArray
               b
               (M.unwrapOr (spanOf first) o)
               (V.map (pat c b) (childrenOf NodePat first)))
@@ -991,7 +1001,7 @@ fun param (c : Lc) b (s : GTree) =
             (head, spanOf first)
         in
         asesAt b atoms (childrenOf NodeAsTail n) (spanOf n) None
-      else newAstPWild b m
+      else newAstPatWild b m
   | None -> litOrWild c b s m
 
 fun recPat (c : Lc) b (s : GTree) (m : Meta) =
@@ -999,26 +1009,26 @@ fun recPat (c : Lc) b (s : GTree) (m : Meta) =
     V.map
       (\f ->
         let n = nameOf (must TokenLowerIdent f) in
-        newAstPField
+        newAstPatField
           b
           (spanOf f)
           (nm b n)
-          (match childOf NodePFieldValue f with | Just v -> pat c b (must NodePat v) | None -> newAstPVar b n.at (nm b n)))
+          (match childOf NodePFieldValue f with | Just v -> pat c b (must NodePat v) | None -> newAstPatVar b n.at (nm b n)))
       (childrenOf NodePField s) in
-    newAstPRecord b m fs (has NodeOpenTail s)
+    newAstPatRecord b m fs (has NodeOpenTail s)
 
 -- `[p; q]`, `[;]`, `[p, q]`, `[]`.
 fun brackPat (c : Lc) b (s : GTree) (m : Meta) =
   match childOf NodeBrackPatBody s with
-  | None -> newAstPVector b m []
+  | None -> newAstPatVector b m []
   | Just body ->
       (match childOf NodePat body with
-       | None -> newAstPList b m []
+       | None -> newAstPatList b m []
        | Just first ->
            let p = pat c b first in
            (match childOf NodeListPatTail body with
             | Just t ->
-                newAstPList
+                newAstPatList
                   b
                   m
                   (V.pushFront
@@ -1031,7 +1041,7 @@ fun brackPat (c : Lc) b (s : GTree) (m : Meta) =
             | None ->
                 (match childOf NodeVecPatTail body with
                  | Just t ->
-                     newAstPVector
+                     newAstPatVector
                        b
                        m
                        (V.pushFront
@@ -1041,7 +1051,7 @@ fun brackPat (c : Lc) b (s : GTree) (m : Meta) =
                              (childrenOf NodePat)
                              (childrenOf NodeCommaPat t)))
                          p)
-                 | None -> newAstPVector b m [p])))
+                 | None -> newAstPatVector b m [p])))
 
 -- Parentheses in a pattern: `()`, `(p : T)`, `(f -> p)`, a tuple -- or one
 -- pattern, which as an argument (`spans`) takes the parentheses' span and as
@@ -1051,16 +1061,16 @@ fun parenPat (c : Lc) b (s : GTree) (spans : Bool) (over : Maybe Meta) =
   let elems = childrenOf NodeElem s in
   match childOf NodeParenAnnot s with
   | Just a ->
-      newAstPAnn
+      newAstPatAnn
         b
         m
         (elemPat c b (V.getOr s elems 0) None)
         (ty c b (must NodeType a))
   | None ->
       (match V.len elems with
-       | 0 -> newAstPUnit b m
+       | 0 -> newAstPatUnit b m
        | 1 -> elemPat c b (V.getOr s elems 0) (if spans then Just m else None)
-       | _ -> newAstPTuple b m (V.map (\e -> elemPat c b e None) elems))
+       | _ -> newAstPatTuple b m (V.map (\e -> elemPat c b e None) elems))
 
 -- An element of a pattern's parentheses: `f -> p`, or a pattern.
 fun elemPat (c : Lc) b (s : GTree) (over : Maybe Meta) =
@@ -1068,7 +1078,7 @@ fun elemPat (c : Lc) b (s : GTree) (over : Maybe Meta) =
   | Just v ->
       let f = must NodeExpr s in
       let p = must NodePat v in
-      newAstPView
+      newAstPatView
         b
         (M.unwrapOr
           (spanMeta (metaStart (exprSpan c f)) (metaEnd (spanOf p)))
@@ -1104,14 +1114,14 @@ fun basePat (c : Lc) b (s : GTree) (over : Maybe Meta) =
       if k == NodeMacCall then patCall c b m h
       else if k == NodeQualHead
       then
-        newAstPQualCons
+        newAstPatQualCons
           b
           m
           (nm b (firstName h))
           (nm b (lastName h))
           (V.map (atomPat c b) args)
       else lowPat c b h over
-  | None -> newAstPCons b m (nm b (firstName head)) (V.map (atomPat c b) args)
+  | None -> newAstPatCons b m (nm b (firstName head)) (V.map (atomPat c b) args)
 
 fun atomPat (c : Lc) b (s : GTree) =
   let m = spanOf s in
@@ -1120,9 +1130,9 @@ fun atomPat (c : Lc) b (s : GTree) =
       let k = R.kindOf n in
       if k == NodeMacAtom then patCall c b m n
       else if k == NodeQualAtom
-      then newAstPQualCons b m (nm b (firstName n)) (nm b (lastName n)) []
+      then newAstPatQualCons b m (nm b (firstName n)) (nm b (lastName n)) []
       else lowPat c b n None
-  | None -> newAstPCons b m (nm b (firstName s)) []
+  | None -> newAstPatCons b m (nm b (firstName s)) []
 
 fun lowPat (c : Lc) b (s : GTree) (over : Maybe Meta) =
   let prim =
@@ -1134,16 +1144,16 @@ fun lowPat (c : Lc) b (s : GTree) (over : Maybe Meta) =
   let k = R.kindOf prim in
   if k == NodeParen then parenPat c b prim True over
   else if k == NodeOpRef
-  then newAstPVar b m (nm b (firstName (must NodeOpName prim)))
+  then newAstPatVar b m (nm b (firstName (must NodeOpName prim)))
   else if k == NodeLitE
-  then newAstPLit b m (lit c b (V.getOr prim (tokenKids prim) 0))
-  else if k == NodeVarE then newAstPVar b m (nm b (firstName prim))
-  else if k == NodeHoleE then newAstPWild b m
+  then newAstPatLit b m (lit c b (V.getOr prim (tokenKids prim) 0))
+  else if k == NodeVarE then newAstPatVar b m (nm b (firstName prim))
+  else if k == NodeHoleE then newAstPatWild b m
   else if k == NodeBraceE then bracePat c b prim m
   else if k == NodeBrackE then brackExprPat c b prim m
   else if k == NodeArrE
-  then newAstPArray b m (V.map (asExprPat c b) (childrenOf NodeAsExpr prim))
-  else newAstPWild b m
+  then newAstPatArray b m (V.map (asExprPat c b) (childrenOf NodeAsExpr prim))
+  else newAstPatWild b m
 
 fun asExprPat (c : Lc) b (s : GTree) =
   asesAt
@@ -1158,25 +1168,25 @@ fun bracePat (c : Lc) b (s : GTree) (m : Meta) =
     V.map
       (\item ->
         let n = firstName (must NodeAsExpr item) in
-        newAstPField
+        newAstPatField
           b
           (spanOf item)
           (nm b n)
-          (match childOf NodeFieldValue item with | Just v -> asExprPat c b (must NodeAsExpr v) | None -> newAstPVar b n.at (nm b n)))
+          (match childOf NodeFieldValue item with | Just v -> asExprPat c b (must NodeAsExpr v) | None -> newAstPatVar b n.at (nm b n)))
       (childrenOf NodeBraceItem s) in
-    newAstPRecord b m fs (has NodeBraceTail s)
+    newAstPatRecord b m fs (has NodeBraceTail s)
 
 fun brackExprPat (c : Lc) b (s : GTree) (m : Meta) =
   match childOf NodeBrackBody s with
-  | None -> newAstPVector b m []
+  | None -> newAstPatVector b m []
   | Just body ->
       (match childOf NodeAsExpr body with
-       | None -> newAstPList b m []
+       | None -> newAstPatList b m []
        | Just first ->
            let p = asExprPat c b first in
            (match childOf NodeListTail body with
             | Just t ->
-                newAstPList
+                newAstPatList
                   b
                   m
                   (V.pushFront
@@ -1189,7 +1199,7 @@ fun brackExprPat (c : Lc) b (s : GTree) (m : Meta) =
             | None ->
                 (match childOf NodeVecTail body with
                  | Just t ->
-                     newAstPVector
+                     newAstPatVector
                        b
                        m
                        (V.pushFront
@@ -1199,7 +1209,7 @@ fun brackExprPat (c : Lc) b (s : GTree) (m : Meta) =
                              (childrenOf NodeAsExpr)
                              (childrenOf NodeCommaItem t)))
                          p)
-                 | None -> newAstPVector b m [p])))
+                 | None -> newAstPatVector b m [p])))
 
 -- --- a pattern as the expression that builds what it matches -----------------
 
@@ -1323,7 +1333,7 @@ fun patExpr (c : Lc) b (s : GTree) =
 
 fun consExpr (c : Lc) b (atoms : [GTree]) =
   match V.get atoms 0 with
-  | None -> newAstUnitE b (spanMeta 0 0)
+  | None -> newAstExprUnit b (spanMeta 0 0)
   | Just h ->
       let rest = V.drop atoms 1 in
       if V.isEmpty rest then patomExpr c b h
@@ -1333,7 +1343,7 @@ fun consExpr (c : Lc) b (atoms : [GTree]) =
             (metaStart (patomSpan h))
             (metaEnd (patomSpan (V.getOr h rest (V.len rest - 1))))
         in
-        newAstCons
+        newAstExprCons
           b
           m
           (nm b (named "Cons" m))
@@ -1342,7 +1352,7 @@ fun consExpr (c : Lc) b (atoms : [GTree]) =
 fun patomExpr (c : Lc) b (s : GTree) =
   match childOf NodeConPat s with
   | Just con ->
-      newAstCons
+      newAstExprCons
         b
         (spanOf con)
         (nm b (nameOf (must TokenUpperIdent con)))
@@ -1352,7 +1362,11 @@ fun patomExpr (c : Lc) b (s : GTree) =
 fun pargExpr (c : Lc) b (s : GTree) =
   match childOf NodeNullCon s with
   | Just con ->
-      newAstCons b (spanOf con) (nm b (nameOf (must TokenUpperIdent con))) []
+      newAstExprCons
+        b
+        (spanOf con)
+        (nm b (nameOf (must TokenUpperIdent con)))
+        []
   | None -> argExpr c b (must NodeArg s)
 
 fun argExpr (c : Lc) b (s : GTree) =
@@ -1360,27 +1374,27 @@ fun argExpr (c : Lc) b (s : GTree) =
   match firstNode s with
   | Just n ->
       let k = R.kindOf n in
-      if k == NodeVid then newAstVar b m (nm b (vid n))
+      if k == NodeVid then newAstExprVar b m (nm b (vid n))
       else if k == NodeRecPat then
-        newAstRecordE b m
+        newAstExprRecord b m
           (V.map
             (\f ->
               (let fn = nameOf (must TokenLowerIdent f) in
-                newAstFieldE
+                newAstExprField
                 b
                 (spanOf f)
                 (nm b fn)
                 (match childOf NodePFieldValue f with
                  | Just v -> patExpr c b (must NodePat v)
-                 | None -> newAstVar b fn.at (nm b fn))))
+                 | None -> newAstExprVar b fn.at (nm b fn))))
             (childrenOf NodePField n))
           None
       else if k == NodeArrPat
-      then newAstArrayE b m (V.map (patExpr c b) (childrenOf NodePat n))
+      then newAstExprArray b m (V.map (patExpr c b) (childrenOf NodePat n))
       else if k == NodeBrackPat then
         (match childOf NodeBrackPatBody n with
          | Just body ->
-             newAstListE
+             newAstExprList
                b
                m
                (V.map
@@ -1392,13 +1406,13 @@ fun argExpr (c : Lc) b (s : GTree) =
                      (V.concatMap
                        (childrenOf NodeSemiPat)
                        (childrenOf NodeListPatTail body)))))
-         | None -> newAstListE b m [])
+         | None -> newAstExprList b m [])
       else if k == NodePatParen then parenExpr c b n (Just m)
-      else newAstUnitE b m
+      else newAstExprUnit b m
   | None ->
       (match V.get (tokenKids s) 0 with
-       | Just t -> newAstLitE b m (lit c b t)
-       | None -> newAstUnitE b m)
+       | Just t -> newAstExprLit b m (lit c b t)
+       | None -> newAstExprUnit b m)
 
 -- The same, for parentheses in a pattern, whose elements are read as
 -- expressions and then as patterns.
@@ -1407,10 +1421,10 @@ fun parenExpr (c : Lc) b (s : GTree) (over : Maybe Meta) =
   let elems = childrenOf NodeElem s in
   match (childOf NodeParenAnnot s, V.get elems 0) with
   | (Just _, Just e) -> elemExpr c b e None
-  | (_, None) -> newAstUnitE b m
+  | (_, None) -> newAstExprUnit b m
   | (None, Just e) ->
       if V.len elems == 1 then elemExpr c b e (Just m)
-      else newAstTuple b m (V.map (\x -> elemExpr c b x None) elems)
+      else newAstExprTuple b m (V.map (\x -> elemExpr c b x None) elems)
 
 fun elemExpr (c : Lc) b (s : GTree) (over : Maybe Meta) =
   consTagged
@@ -1427,11 +1441,11 @@ fun baseExpr (c : Lc) b (s : GTree) (over : Maybe Meta) =
   match firstNode head with
   | Just h -> lowExpr c b h over
   | None ->
-      newAstCons b (M.unwrapOr (spanOf s) over) (nm b (firstName head))
+      newAstExprCons b (M.unwrapOr (spanOf s) over) (nm b (firstName head))
         (V.map
           (\a -> match firstNode a with
                  | Just n -> lowExpr c b n None
-                 | None -> newAstCons b (spanOf a) (nm b (firstName a)) [])
+                 | None -> newAstExprCons b (spanOf a) (nm b (firstName a)) [])
           (childrenOf NodeAtom s))
 
 fun lowExpr (c : Lc) b (s : GTree) (over : Maybe Meta) =
@@ -1444,26 +1458,26 @@ fun lowExpr (c : Lc) b (s : GTree) (over : Maybe Meta) =
   let k = R.kindOf prim in
   if k == NodeParen then parenExpr c b prim over
   else if k == NodeOpRef
-  then newAstVar b m (nm b (firstName (must NodeOpName prim)))
+  then newAstExprVar b m (nm b (firstName (must NodeOpName prim)))
   else if k == NodeLitE
-  then newAstLitE b m (lit c b (V.getOr prim (tokenKids prim) 0))
-  else if k == NodeVarE then newAstVar b m (nm b (firstName prim))
+  then newAstExprLit b m (lit c b (V.getOr prim (tokenKids prim) 0))
+  else if k == NodeVarE then newAstExprVar b m (nm b (firstName prim))
   else if k == NodeBraceE then
-    newAstRecordE b m
+    newAstExprRecord b m
       (V.map
         (\i ->
           let n = firstName (must NodeAsExpr i) in
-          newAstFieldE
+          newAstExprField
             b
             (spanOf i)
             (nm b n)
-            (match childOf NodeFieldValue i with | Just v -> elemExpr c b (must NodeAsExpr v) None | None -> newAstVar b n.at (nm b n)))
+            (match childOf NodeFieldValue i with | Just v -> elemExpr c b (must NodeAsExpr v) None | None -> newAstExprVar b n.at (nm b n)))
         (childrenOf NodeBraceItem prim))
       None
   else if k == NodeBrackE then
     (match childOf NodeBrackBody prim with
      | Just body ->
-         newAstListE
+         newAstExprList
            b
            m
            (V.map
@@ -1475,14 +1489,14 @@ fun lowExpr (c : Lc) b (s : GTree) (over : Maybe Meta) =
                  (V.concatMap
                    (childrenOf NodeSemiItem)
                    (childrenOf NodeListTail body)))))
-     | None -> newAstListE b m [])
+     | None -> newAstExprList b m [])
   else if k == NodeArrE
   then
-    newAstArrayE
+    newAstExprArray
       b
       m
       (V.map (\x -> elemExpr c b x None) (childrenOf NodeAsExpr prim))
-  else newAstUnitE b m
+  else newAstExprUnit b m
 
 -- --- literals ----------------------------------------------------------------
 
@@ -1512,7 +1526,7 @@ fun exprIn (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
 
 fun backs (c : Lc) b (hs : [Int]) (pipes : [GTree]) (over : Maybe Meta) =
   match V.get pipes 0 with
-  | None -> newAstUnitE b (spanMeta 0 0)
+  | None -> newAstExprUnit b (spanMeta 0 0)
   | Just f ->
       let rest = V.drop pipes 1 in
       if V.isEmpty rest then pipeL c b hs f over
@@ -1522,7 +1536,7 @@ fun backs (c : Lc) b (hs : [Int]) (pipes : [GTree]) (over : Maybe Meta) =
             (V.foldl (\acc p -> join acc (pipeSpan c p)) (pipeSpan c f) rest)
             over
         in
-        newAstApp b m (pipeL c b hs f None) [backs c b hs rest None]
+        newAstExprApp b m (pipeL c b hs f None) [backs c b hs rest None]
 
 fun pipeL (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
   let ors =
@@ -1536,7 +1550,7 @@ fun pipeL (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
 fun pipes (c : Lc) b (hs : [Int]) (ors : [GTree]) (over : Maybe Meta) =
   let n = V.len ors in
   match V.get ors (n - 1) with
-  | None -> newAstUnitE b (spanMeta 0 0)
+  | None -> newAstExprUnit b (spanMeta 0 0)
   | Just f ->
       if n == 1 then orE c b hs f over
       else
@@ -1546,7 +1560,7 @@ fun pipes (c : Lc) b (hs : [Int]) (ors : [GTree]) (over : Maybe Meta) =
             (V.foldl (\acc o -> join acc (orSpan c o)) (orSpan c f) rest)
             over
         in
-        newAstApp b m (orE c b hs f None) [pipes c b hs rest None]
+        newAstExprApp b m (orE c b hs f None) [pipes c b hs rest None]
 
 fun orE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
   binFold
@@ -1572,7 +1586,7 @@ fun andE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
 fun binFold b (isAnd : Bool) (xs : [GTree]) write spanFn (over : Maybe Meta) =
   let n = V.len xs in
   match V.get xs (n - 1) with
-  | None -> newAstUnitE b (spanMeta 0 0)
+  | None -> newAstExprUnit b (spanMeta 0 0)
   | Just r ->
       if n == 1 then write r over
       else
@@ -1582,8 +1596,8 @@ fun binFold b (isAnd : Bool) (xs : [GTree]) write spanFn (over : Maybe Meta) =
         let lhs = binFold b isAnd rest write spanFn None in
         let rhs = write r None in
         if isAnd
-        then newAstAndE b (M.unwrapOr m over) op lhs rhs
-        else newAstOrE b (M.unwrapOr m over) op lhs rhs
+        then newAstExprAnd b (M.unwrapOr m over) op lhs rhs
+        else newAstExprOr b (M.unwrapOr m over) op lhs rhs
 
 -- A chain of operators, grouped: `(+) a b` for each operator applied to two,
 -- spanning its operands, and `Cons a b` for `::`. A chain's span is its
@@ -1596,15 +1610,15 @@ fun ops (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
       let m = join (opsSpan c l) (opsSpan c r) in
       let name = S.trim (R.text op) in
       if name == "::"
-      then newAstCons b m (nm b (named "Cons" (spanOf op))) [lhs, rhs]
+      then newAstExprCons b m (nm b (named "Cons" (spanOf op))) [lhs, rhs]
       else
-        newAstApp
+        newAstExprApp
           b
           m
-          (newAstVar b (spanOf op) (nm b (named name (spanOf op))))
+          (newAstExprVar b (spanOf op) (nm b (named name (spanOf op))))
           [lhs, rhs]
   | GroupedLeaf operand -> operandE c b hs operand over
-  | _ -> newAstUnitE b (spanOf s)
+  | _ -> newAstExprUnit b (spanOf s)
 
 -- `-e`: a literal's own value negated, and anything else under `neg` -- the
 -- minus nearest the operand first, each spanning from itself to the end.
@@ -1624,12 +1638,12 @@ fun negated (c : Lc) b (hs : [Int]) (minuses : [GTree]) (base : GTree)
   | Just (text, isFloat) ->
       let sign = n % 2 == 1 in
       let value = if sign then flipped text else text in
-      newAstLitE
+      newAstExprLit
         b
         m
         (if isFloat then newAstLitFloat b m value else newAstLitInt b m value)
   | None ->
-      newAstNeg
+      newAstExprNeg
         b
         m
         (nm b (named "neg" m))
@@ -1673,7 +1687,9 @@ fun baseE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
   let args = childrenOf NodeAtom s in
   let written = \u -> V.map (atomE c b hs) args in
   let applied =
-    \f -> if V.isEmpty args then f over else newAstApp b m (f None) (written ())
+    \f -> if V.isEmpty args
+          then f over
+          else newAstExprApp b m (f None) (written ())
   in
   match firstNode head with
   | Just h ->
@@ -1684,10 +1700,14 @@ fun baseE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
       then
         applied
           (\o ->
-            newAstQual b (spanOf s) (nm b (firstName h)) (nm b (lastName h)))
+            newAstExprQual
+              b
+              (spanOf s)
+              (nm b (firstName h))
+              (nm b (lastName h)))
       else if V.isEmpty args then lowAtom c b hs h over
-      else newAstApp b m (lowAtom c b hs h None) (written ())
-  | None -> newAstCons b m (nm b (firstName head)) (written ())
+      else newAstExprApp b m (lowAtom c b hs h None) (written ())
+  | None -> newAstExprCons b m (nm b (firstName head)) (written ())
 
 fun atomE (c : Lc) b (hs : [Int]) (s : GTree) =
   let m = spanOf s in
@@ -1703,16 +1723,16 @@ fun atomE (c : Lc) b (hs : [Int]) (s : GTree) =
         let x =
           (match V.get toks 1 with | Just t -> nameOf t | None -> named "" m)
         in
-        fields b n (newAstQual b (from q.at x.at) (nm b q) (nm b x))
+        fields b n (newAstExprQual b (from q.at x.at) (nm b q) (nm b x))
       else lowAtom c b hs n None
-  | None -> newAstCons b m (nm b (firstName s)) []
+  | None -> newAstExprCons b m (nm b (firstName s)) []
 
 -- An atom's `.field`s, each spanning the atom and every field: the
 -- outermost last.
 fun fields b (s : GTree) (inner : Int) =
   let m = spanOf s in
   V.foldl
-    (\e f -> newAstProj b m e (nm b (nameOf (must TokenLowerIdent f))))
+    (\e f -> newAstExprProj b m e (nm b (nameOf (must TokenLowerIdent f))))
     inner
     (childrenOf NodeFieldTail s)
 
@@ -1729,19 +1749,19 @@ fun closedPrim (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
   let k = R.kindOf s in
   if k == NodeParen then parenE c b hs s over
   else if k == NodeOpRef
-  then newAstVar b m (nm b (firstName (must NodeOpName s)))
+  then newAstExprVar b m (nm b (firstName (must NodeOpName s)))
   else if k == NodeLitE
-  then newAstLitE b m (lit c b (V.getOr s (tokenKids s) 0))
+  then newAstExprLit b m (lit c b (V.getOr s (tokenKids s) 0))
   else if k == NodeInterpE then interp c b hs s m
-  else if k == NodeVarE then newAstVar b m (nm b (firstName s))
+  else if k == NodeVarE then newAstExprVar b m (nm b (firstName s))
   else if k == NodeHoleE then
     (match V.find (\i -> V.getOr (0 - 1) hs i == metaStart (spanOf s)) (V.range 0 (V.len hs)) with
-     | Just i -> newAstVar b m (nm b (named "_hole${show i}" (spanOf s)))
-     | None -> newAstHoleE b m)
+     | Just i -> newAstExprVar b m (nm b (named "_hole${show i}" (spanOf s)))
+     | None -> newAstExprHole b m)
   else if k == NodeBraceE then braceE c b hs s m
   else if k == NodeBrackE then brackE c b hs s m
   else
-    newAstArrayE
+    newAstExprArray
       b
       m
       (V.map
@@ -1752,11 +1772,11 @@ fun openPrim (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
   let m = M.unwrapOr (spanOf s) over in
   let e = \x -> exprIn c b hs x None in
   match s with
-  | GroupedIfE cond yes no -> newAstIf b m (e cond) (e yes) (e no)
+  | GroupedIfE cond yes no -> newAstExprIf b m (e cond) (e yes) (e no)
   | GroupedLamE params body ->
-      newAstLam b m (V.map (pat c b) params) (expr c b body)
+      newAstExprLam b m (V.map (pat c b) params) (expr c b body)
   | GroupedMatchE scrutinee arms ->
-      newAstMatch b m (e scrutinee)
+      newAstExprMatch b m (e scrutinee)
         (V.concatMap
           (\a ->
             match a with
@@ -1774,9 +1794,9 @@ fun openPrim (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
             | _ -> [])
           arms)
   | GroupedLetE binds body ->
-      newAstLet b m (V.concatMap (letBind c b hs) binds) (e body)
+      newAstExprLet b m (V.concatMap (letBind c b hs) binds) (e body)
   | GroupedHandleE target arms -> handleE c b hs m target arms
-  | _ -> newAstUnitE b m
+  | _ -> newAstExprUnit b m
 
 -- A `let`'s binding: `fun f x = …`, `f x = …` (a name, maybe `rec`), or any
 -- other pattern `= …` -- whose value a section's holes are in; a function's
@@ -1802,7 +1822,7 @@ fun letBind (c : Lc) b (hs : [Int]) (s : GTree) =
                else expr c b value)
              (spanOf s)]
        | None ->
-           [newAstPatBind b (spanOf s) (pat c b p) (exprIn c b hs value None)])
+           [newAstBindPat b (spanOf s) (pat c b p) (exprIn c b hs value None)])
   | _ -> []
 
 -- A pattern that is one lower-case name as it was written.
@@ -1827,7 +1847,7 @@ fun handleE (c : Lc) b (hs : [Int]) (m : Meta) (target : GTree)
   let rets = V.filter isReturn arms in
   let ret = V.get rets (V.len rets - 1) in
   let e = \x -> exprIn c b hs x None in
-  newAstHandle b m (e target)
+  newAstExprHandle b m (e target)
     (V.map
       (\a ->
         let ls = childrenOf TokenLowerIdent a in
@@ -1852,7 +1872,7 @@ fun handleE (c : Lc) b (hs : [Int]) (m : Meta) (target : GTree)
 fun parenE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
   let elems = V.map (\x -> must NodeExpr x) (childrenOf NodeElem s) in
   match V.len elems with
-  | 0 -> newAstUnitE b (M.unwrapOr (spanOf s) over)
+  | 0 -> newAstExprUnit b (M.unwrapOr (spanOf s) over)
   | 1 ->
       let inner = V.getOr s elems 0 in
       let own = holesIn inner in
@@ -1862,15 +1882,15 @@ fun parenE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
         let params =
           V.map
             (\i ->
-              newAstPVar
+              newAstPatVar
                 b
                 (exprSpan c inner)
                 (nm b (named "_hole${show i}" (exprSpan c inner))))
             (V.range 0 (V.len own))
         in
-        newAstLam b m params (exprIn c b own inner None)
+        newAstExprLam b m params (exprIn c b own inner None)
   | _ ->
-      newAstTuple
+      newAstExprTuple
         b
         (M.unwrapOr (spanOf s) over)
         (V.map (\x -> exprIn c b hs x None) elems)
@@ -1902,7 +1922,7 @@ fun interp (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
         (V.map (\mid -> hole (must NodeHole mid)) (childrenOf NodeInterpMid s))
         (hole (must NodeHole s))
     in
-    newAstInterp b m texts holes
+    newAstExprInterp b m texts holes
 
 -- `{ r | x = e }` updates `r`; anything else is a record, `{ x }` short for
 -- `{ x = x }`, and `| r` what it extends.
@@ -1914,15 +1934,15 @@ fun braceE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
       let target =
         (match V.get items 0 with
          | Just i -> e (must NodeExpr (must NodeAsExpr i))
-         | None -> newAstUnitE b m)
+         | None -> newAstExprUnit b m)
       in
-      newAstUpdate
+      newAstExprUpdate
         b
         m
         target
         (V.map
           (\f ->
-            newAstFieldE
+            newAstExprField
               b
               (spanOf f)
               (nm b (nameOf (must TokenLowerIdent f)))
@@ -1933,35 +1953,35 @@ fun braceE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
         V.map
           (\i ->
             let n = firstName (must NodeAsExpr i) in
-            newAstFieldE
+            newAstExprField
               b
               (spanOf i)
               (nm b n)
-              (match childOf NodeFieldValue i with | Just fv -> e (must NodeExpr (must NodeAsExpr fv)) | None -> newAstVar b n.at (nm b n)))
+              (match childOf NodeFieldValue i with | Just fv -> e (must NodeExpr (must NodeAsExpr fv)) | None -> newAstExprVar b n.at (nm b n)))
           items in
         let base =
           M.andThen
             (\t -> M.map (\te -> e (must NodeExpr te)) (childOf NodeTailExpr t))
             (childOf NodeBraceTail s)
         in
-        newAstRecordE b m fs base
+        newAstExprRecord b m fs base
 
 -- `[lo .. hi]`, `[a; b]`, `[;]`, `[a, b]`, `[]`.
 fun brackE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
   let item = \x -> exprIn c b hs (must NodeExpr x) None in
   let vector =
     \es ->
-      newAstApp
+      newAstExprApp
         b
         m
-        (newAstVar b m (nm b (named "vecFromArray" m)))
-        [newAstArrayE b m es]
+        (newAstExprVar b m (nm b (named "vecFromArray" m)))
+        [newAstExprArray b m es]
   in
   match childOf NodeBrackBody s with
   | None -> vector []
   | Just body ->
       (match childOf NodeAsExpr body with
-       | None -> newAstListE b m []
+       | None -> newAstExprList b m []
        | Just first ->
            let lo = item first in
            (match childOf NodeRangeTail body with
@@ -1971,17 +1991,21 @@ fun brackE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
                 let hiE = exprIn c b hs hi None in
                 -- `[a .. b]` and `[a ..= b]` alike: `range a (b + 1)`.
                 let hi1 =
-                  newAstApp
+                  newAstExprApp
                     b
                     hm
-                    (newAstVar b hm (nm b (named "+" hm)))
-                    [hiE, newAstLitE b hm (newAstLitInt b hm "1")]
+                    (newAstExprVar b hm (nm b (named "+" hm)))
+                    [hiE, newAstExprLit b hm (newAstLitInt b hm "1")]
                 in
-                newAstApp b m (newAstVar b m (nm b (named "range" m))) [lo, hi1]
+                newAstExprApp
+                  b
+                  m
+                  (newAstExprVar b m (nm b (named "range" m)))
+                  [lo, hi1]
             | None ->
                 (match childOf NodeListTail body with
                  | Just t ->
-                     newAstListE
+                     newAstExprList
                        b
                        m
                        (V.pushFront
@@ -2155,20 +2179,24 @@ fun holesIn (s : GTree) : [Int] =
 fun exprCall (c : Lc) b (m : Meta) (call : GTree) =
   match rulesOf c call with
   | Just r ->
-      M.unwrapOr (newAstMacCallE b m (macCall b call)) (expandedExpr c b r call)
+      M.unwrapOr
+        (newAstExprMacCall b m (macCall b call))
+        (expandedExpr c b r call)
   | None ->
       (match expansion c "expr" m with
        | Just made -> jExpr c b made
-       | None -> newAstMacCallE b m (macCall b call))
+       | None -> newAstExprMacCall b m (macCall b call))
 
 fun patCall (c : Lc) b (m : Meta) (call : GTree) =
   match rulesOf c call with
   | Just r ->
-      M.unwrapOr (newAstPMacCall b m (macCall b call)) (expandedPat c b r call)
+      M.unwrapOr
+        (newAstPatMacCall b m (macCall b call))
+        (expandedPat c b r call)
   | None ->
       (match expansion c "pat" m with
        | Just made -> jPat c b made
-       | None -> newAstPMacCall b m (macCall b call))
+       | None -> newAstPatMacCall b m (macCall b call))
 
 -- --- `macro`s ----------------------------------------------------------------
 --
@@ -2377,11 +2405,11 @@ fun jDecl (c : Lc) b (j : Json) =
   let m = jmeta j in
   let t = jtag j in
   let f = jf j in
-  if t == "Bind" then newAstBind b m (jBind c b (f 0))
-  else if t == "ModDecl" then newAstModDecl b m (jn b (f 0))
+  if t == "Bind" then newAstDeclBind b m (jBind c b (f 0))
+  else if t == "ModDecl" then newAstDeclMod b m (jn b (f 0))
   else if t == "UseDecl"
   then
-    newAstUseDecl
+    newAstDeclUse
       b
       m
       (jns b (f 0))
@@ -2391,7 +2419,7 @@ fun jDecl (c : Lc) b (j : Json) =
       (jopt (jn b) (f 4))
   else if t == "DataDecl"
   then
-    newAstDataDecl
+    newAstDeclData
       b
       m
       (jn b (f 0))
@@ -2399,7 +2427,7 @@ fun jDecl (c : Lc) b (j : Json) =
       (V.map (jVariant c b) (jarr (f 2)))
   else if t == "RecordDecl"
   then
-    newAstRecordDecl
+    newAstDeclRecord
       b
       m
       (jn b (f 0))
@@ -2407,26 +2435,26 @@ fun jDecl (c : Lc) b (j : Json) =
       (V.map (jField c b) (jarr (f 2)))
   else if t == "EffectDecl"
   then
-    newAstEffectDecl
+    newAstDeclEffect
       b
       m
       (jn b (f 0))
       (jns b (f 1))
       (V.map (jField c b) (jarr (f 2)))
   else if t == "AliasDecl"
-  then newAstAliasDecl b m (jn b (f 0)) (jns b (f 1)) (jType c b (f 2))
+  then newAstDeclAlias b m (jn b (f 0)) (jns b (f 1)) (jType c b (f 2))
   else if t == "EffectAliasDecl"
-  then newAstEffectAliasDecl b m (jn b (f 0)) (jns b (f 1)) (jRow c b (f 2))
+  then newAstDeclEffectAlias b m (jn b (f 0)) (jns b (f 1)) (jRow c b (f 2))
   else if t == "SigDecl"
   then
-    newAstSigDecl
+    newAstDeclSig
       b
       m
       (jn b (f 0))
       (jType c b (f 1))
       (V.map (jBound c b) (jarr (f 2)))
   else if t == "TraitDecl" then
-    newAstTraitDecl
+    newAstDeclTrait
       b
       m
       (jn b (f 0))
@@ -2441,7 +2469,7 @@ fun jDecl (c : Lc) b (j : Json) =
         (jarr (f 4)))
       (V.map (jBind c b) (jarr (f 5)))
   else if t == "ImplDecl" then
-    newAstImplDecl
+    newAstDeclImpl
       b
       m
       (jn b (f 0))
@@ -2457,11 +2485,11 @@ fun jDecl (c : Lc) b (j : Json) =
             (jType c b (jf x 2)))
         (jarr (f 3)))
       (V.map (jBind c b) (jarr (f 4)))
-  else if t == "FixityDecl" then newAstFixityDecl b m (jns b (f 0))
+  else if t == "FixityDecl" then newAstDeclFixity b m (jns b (f 0))
   else if t == "Attributed"
-  then newAstAttributed b m (V.map (jAttr b) (jarr (f 0))) (jDecl c b (f 1))
-  else if t == "MacCallDecl" then newAstMacCallDecl b m (jMac b (f 0))
-  else newAstMacroDecl b m (jn b (f 0))
+  then newAstDeclAttributed b m (V.map (jAttr b) (jarr (f 0))) (jDecl c b (f 1))
+  else if t == "MacCallDecl" then newAstDeclMacCall b m (jMac b (f 0))
+  else newAstDeclMacro b m (jn b (f 0))
 
 fun jAttr b (j : Json) =
   newAstAttr
@@ -2474,11 +2502,11 @@ fun jAttr b (j : Json) =
 fun jMeta b (j : Json) =
   let m = jmeta j in
   let t = jtag j in
-  if t == "MetaWord" then newAstMetaWord b m (jn b (jf j 0))
-  else if t == "MetaText" then newAstMetaText b m (jn b (jf j 0))
+  if t == "MetaWord" then newAstAttrMetaWord b m (jn b (jf j 0))
+  else if t == "MetaText" then newAstAttrMetaText b m (jn b (jf j 0))
   else if t == "MetaValue"
-  then newAstMetaValue b m (jn b (jf j 0)) (jn b (jf j 1))
-  else newAstMetaList b m (jn b (jf j 0)) (V.map (jMeta b) (jarr (jf j 1)))
+  then newAstAttrMetaValue b m (jn b (jf j 0)) (jn b (jf j 1))
+  else newAstAttrMetaList b m (jn b (jf j 0)) (V.map (jMeta b) (jarr (jf j 1)))
 
 fun jMac b (j : Json) = newAstMacCall b (jmeta j) (jns b (jf j 0))
 
@@ -2508,19 +2536,19 @@ fun jType (c : Lc) b (j : Json) =
   let t = jtag j in
   let f = jf j in
   let ts = \x -> V.map (jType c b) (jarr x) in
-  if t == "TVar" then newAstTVar b m (jn b (f 0))
-  else if t == "TCon" then newAstTCon b m (jn b (f 0)) (ts (f 1))
+  if t == "TVar" then newAstTypeVar b m (jn b (f 0))
+  else if t == "TCon" then newAstTypeCon b m (jn b (f 0)) (ts (f 1))
   else if t == "TFun"
-  then newAstTFun b m (ts (f 0)) (jType c b (f 1)) (jopt (jRow c b) (f 2))
-  else if t == "TTuple" then newAstTTuple b m (ts (f 0))
-  else if t == "TVector" then newAstTVector b m (jType c b (f 0))
-  else if t == "TList" then newAstTList b m (jType c b (f 0))
+  then newAstTypeFun b m (ts (f 0)) (jType c b (f 1)) (jopt (jRow c b) (f 2))
+  else if t == "TTuple" then newAstTypeTuple b m (ts (f 0))
+  else if t == "TVector" then newAstTypeVector b m (jType c b (f 0))
+  else if t == "TList" then newAstTypeList b m (jType c b (f 0))
   else
-    newAstTRecord
+    newAstTypeRecord
       b
       m
       (V.map
-        (\x -> newAstTField b (jmeta x) (jn b (jf x 0)) (jType c b (jf x 1)))
+        (\x -> newAstTypeField b (jmeta x) (jn b (jf x 0)) (jType c b (jf x 1)))
         (jarr (f 0)))
       (jopt (jn b) (f 1))
 
@@ -2541,9 +2569,9 @@ fun jRow (c : Lc) b (j : Json) =
 fun jBind (c : Lc) b (j : Json) =
   let m = jmeta j in
   if jtag j == "PatBind"
-  then newAstPatBind b m (jPat c b (jf j 0)) (jExpr c b (jf j 1))
+  then newAstBindPat b m (jPat c b (jf j 0)) (jExpr c b (jf j 1))
   else
-    newAstFunBind
+    newAstBindFun
       b
       m
       (jn b (jf j 0))
@@ -2565,30 +2593,30 @@ fun jPat (c : Lc) b (j : Json) =
   let t = jtag j in
   let f = jf j in
   let ps = \x -> V.map (jPat c b) (jarr x) in
-  if t == "PWild" then newAstPWild b m
-  else if t == "PVar" then newAstPVar b m (jn b (f 0))
-  else if t == "PAnn" then newAstPAnn b m (jPat c b (f 0)) (jType c b (f 1))
-  else if t == "PLit" then newAstPLit b m (jLit b (f 0))
-  else if t == "PAs" then newAstPAs b m (jn b (f 0)) (jPat c b (f 1))
-  else if t == "PCons" then newAstPCons b m (jn b (f 0)) (ps (f 1))
+  if t == "PWild" then newAstPatWild b m
+  else if t == "PVar" then newAstPatVar b m (jn b (f 0))
+  else if t == "PAnn" then newAstPatAnn b m (jPat c b (f 0)) (jType c b (f 1))
+  else if t == "PLit" then newAstPatLit b m (jLit b (f 0))
+  else if t == "PAs" then newAstPatAs b m (jn b (f 0)) (jPat c b (f 1))
+  else if t == "PCons" then newAstPatCons b m (jn b (f 0)) (ps (f 1))
   else if t == "PQualCons"
-  then newAstPQualCons b m (jn b (f 0)) (jn b (f 1)) (ps (f 2))
-  else if t == "PTuple" then newAstPTuple b m (ps (f 0))
-  else if t == "PArray" then newAstPArray b m (ps (f 0))
-  else if t == "PVector" then newAstPVector b m (ps (f 0))
-  else if t == "PList" then newAstPList b m (ps (f 0))
+  then newAstPatQualCons b m (jn b (f 0)) (jn b (f 1)) (ps (f 2))
+  else if t == "PTuple" then newAstPatTuple b m (ps (f 0))
+  else if t == "PArray" then newAstPatArray b m (ps (f 0))
+  else if t == "PVector" then newAstPatVector b m (ps (f 0))
+  else if t == "PList" then newAstPatList b m (ps (f 0))
   else if t == "PRecord"
   then
-    newAstPRecord
+    newAstPatRecord
       b
       m
       (V.map
-        (\x -> newAstPField b (jmeta x) (jn b (jf x 0)) (jPat c b (jf x 1)))
+        (\x -> newAstPatField b (jmeta x) (jn b (jf x 0)) (jPat c b (jf x 1)))
         (jarr (f 0)))
       (M.unwrapOr False (J.asBool (f 1)))
-  else if t == "PUnit" then newAstPUnit b m
-  else if t == "PView" then newAstPView b m (jExpr c b (f 0)) (jPat c b (f 1))
-  else newAstPMacCall b m (jMac b (f 0))
+  else if t == "PUnit" then newAstPatUnit b m
+  else if t == "PView" then newAstPatView b m (jExpr c b (f 0)) (jPat c b (f 1))
+  else newAstPatMacCall b m (jMac b (f 0))
 
 fun jExpr (c : Lc) b (j : Json) =
   let m = jmeta j in
@@ -2598,14 +2626,14 @@ fun jExpr (c : Lc) b (j : Json) =
   let fieldsOf =
     \x ->
       V.map
-        (\y -> newAstFieldE b (jmeta y) (jn b (jf y 0)) (jExpr c b (jf y 1)))
+        (\y -> newAstExprField b (jmeta y) (jn b (jf y 0)) (jExpr c b (jf y 1)))
         (jarr x)
   in
-  if t == "Var" then newAstVar b m (jn b (f 0))
-  else if t == "LitE" then newAstLitE b m (jLit b (f 0))
+  if t == "Var" then newAstExprVar b m (jn b (f 0))
+  else if t == "LitE" then newAstExprLit b m (jLit b (f 0))
   else if t == "Interp"
   then
-    newAstInterp
+    newAstExprInterp
       b
       m
       (V.map (\x -> M.unwrapOr "" (J.asString x)) (jarr (f 0)))
@@ -2618,15 +2646,15 @@ fun jExpr (c : Lc) b (j : Json) =
             (M.unwrapOr False (J.asBool (jf h 1))))
         (jarr (f 1)))
   else if t == "Lam"
-  then newAstLam b m (V.map (jPat c b) (jarr (f 0))) (jExpr c b (f 1))
-  else if t == "App" then newAstApp b m (jExpr c b (f 0)) (es (f 1))
+  then newAstExprLam b m (V.map (jPat c b) (jarr (f 0))) (jExpr c b (f 1))
+  else if t == "App" then newAstExprApp b m (jExpr c b (f 0)) (es (f 1))
   else if t == "Let"
-  then newAstLet b m (V.map (jBind c b) (jarr (f 0))) (jExpr c b (f 1))
+  then newAstExprLet b m (V.map (jBind c b) (jarr (f 0))) (jExpr c b (f 1))
   else if t == "If"
-  then newAstIf b m (jExpr c b (f 0)) (jExpr c b (f 1)) (jExpr c b (f 2))
+  then newAstExprIf b m (jExpr c b (f 0)) (jExpr c b (f 1)) (jExpr c b (f 2))
   else if t == "Match"
   then
-    newAstMatch
+    newAstExprMatch
       b
       m
       (jExpr c b (f 0))
@@ -2639,24 +2667,25 @@ fun jExpr (c : Lc) b (j : Json) =
             (jopt (jExpr c b) (jf a 1))
             (jExpr c b (jf a 2)))
         (jarr (f 1)))
-  else if t == "Neg" then newAstNeg b m (jn b (f 0)) (jExpr c b (f 1))
+  else if t == "Neg" then newAstExprNeg b m (jn b (f 0)) (jExpr c b (f 1))
   else if t == "AndE"
-  then newAstAndE b m (jn b (f 0)) (jExpr c b (f 1)) (jExpr c b (f 2))
+  then newAstExprAnd b m (jn b (f 0)) (jExpr c b (f 1)) (jExpr c b (f 2))
   else if t == "OrE"
-  then newAstOrE b m (jn b (f 0)) (jExpr c b (f 1)) (jExpr c b (f 2))
+  then newAstExprOr b m (jn b (f 0)) (jExpr c b (f 1)) (jExpr c b (f 2))
   else if t == "Chain"
   then chainOf c b (jExpr c b (f 0)) (V.zip (jarr (f 1)) (es (f 2)))
-  else if t == "Tuple" then newAstTuple b m (es (f 0))
-  else if t == "ArrayE" then newAstArrayE b m (es (f 0))
-  else if t == "ListE" then newAstListE b m (es (f 0))
-  else if t == "Cons" then newAstCons b m (jn b (f 0)) (es (f 1))
-  else if t == "Qual" then newAstQual b m (jn b (f 0)) (jn b (f 1))
+  else if t == "Tuple" then newAstExprTuple b m (es (f 0))
+  else if t == "ArrayE" then newAstExprArray b m (es (f 0))
+  else if t == "ListE" then newAstExprList b m (es (f 0))
+  else if t == "Cons" then newAstExprCons b m (jn b (f 0)) (es (f 1))
+  else if t == "Qual" then newAstExprQual b m (jn b (f 0)) (jn b (f 1))
   else if t == "RecordE"
-  then newAstRecordE b m (fieldsOf (f 0)) (jopt (jExpr c b) (f 1))
-  else if t == "Update" then newAstUpdate b m (jExpr c b (f 0)) (fieldsOf (f 1))
-  else if t == "Proj" then newAstProj b m (jExpr c b (f 0)) (jn b (f 1))
+  then newAstExprRecord b m (fieldsOf (f 0)) (jopt (jExpr c b) (f 1))
+  else if t == "Update"
+  then newAstExprUpdate b m (jExpr c b (f 0)) (fieldsOf (f 1))
+  else if t == "Proj" then newAstExprProj b m (jExpr c b (f 0)) (jn b (f 1))
   else if t == "Handle" then
-    newAstHandle b m (jExpr c b (f 0))
+    newAstExprHandle b m (jExpr c b (f 0))
       (V.map
         (\a ->
           newAstHArm
@@ -2670,9 +2699,9 @@ fun jExpr (c : Lc) b (j : Json) =
       (jopt
         (\r -> newAstRet b (jmeta r) (jPat c b (jf r 0)) (jExpr c b (jf r 1)))
         (f 2))
-  else if t == "UnitE" then newAstUnitE b m
-  else if t == "HoleE" then newAstHoleE b m
-  else newAstMacCallE b m (jMac b (f 0))
+  else if t == "UnitE" then newAstExprUnit b m
+  else if t == "HoleE" then newAstExprHole b m
+  else newAstExprMacCall b m (jMac b (f 0))
 
 -- A chain of operators grouped by the unit's fixities, as `meadow-rename`
 -- groups one: each operator applied to its two operands, spanning them.
@@ -2729,9 +2758,11 @@ fun applyOp b (outs : [Int]) o =
       let rest = V.take outs (V.len outs - 2) in
       if jstr op 3 == "::"
       then
-        V.pushBack rest (newAstCons b m (newAstName b (jmeta op) "Cons") [l, r])
+        V.pushBack
+          rest
+          (newAstExprCons b m (newAstName b (jmeta op) "Cons") [l, r])
       else
         V.pushBack
           rest
-          (newAstApp b m (newAstVar b (jmeta op) (jn b op)) [l, r])
+          (newAstExprApp b m (newAstExprVar b (jmeta op) (jn b op)) [l, r])
   | _ -> outs

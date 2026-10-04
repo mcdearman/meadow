@@ -15,7 +15,7 @@
 -- that was already captured.
 --
 -- A term is a row of the program's tables (`Core`), read with the patterns
--- `lang!` made: `CoreApp f x` matches the row's production and reads its
+-- `lang!` made: `CoreTermApp f x` matches the row's production and reads its
 -- fields, and builds nothing. So the machine makes no terms either. Where the
 -- Rust machine rewrites a join point as a `letrec` of nested lambdas, and a
 -- jump as the applications of it, this one has a closure take its parameters
@@ -140,7 +140,7 @@ record Machine = {
 -- to be evaluated where it is first used.
 fun loaded (a : CoreArena) (t : CoreTerm) : Value =
   match (a, t) with
-  | CoreLam p body -> Closure [p] body Map.empty
+  | CoreTermLam p body -> Closure [p] body Map.empty
   | _ -> Lazy t
 
 fun go (m : Machine) (c : Control) (k : List Frame) =
@@ -173,14 +173,14 @@ fun variable (m : Machine) (v : Int) (env : Map (Ref Value)) (k : List Frame) =
 fun eval (m : Machine) (t : CoreTerm) (env : Map (Ref Value)) (k : List Frame) =
   let a = m.arena in
   match (a, t) with
-  | CoreVar v -> variable m v env k
-  | CoreConst l -> go m (Ret (literal a l)) k
-  | CoreLam p body -> go m (Ret (Closure [p] body env)) k
-  | CoreApp f x -> go m (Eval f env) (EvalArg x env :: k)
-  | CoreLet v rhs body -> go m (Eval rhs env) (Bind v body env :: k)
+  | CoreTermVar v -> variable m v env k
+  | CoreTermConst l -> go m (Ret (literal a l)) k
+  | CoreTermLam p body -> go m (Ret (Closure [p] body env)) k
+  | CoreTermApp f x -> go m (Eval f env) (EvalArg x env :: k)
+  | CoreTermLet v rhs body -> go m (Eval rhs env) (Bind v body env :: k)
   -- A `letrec` of the join point's lambdas: with parameters, the lambda is a
   -- closure at once; with none, it is the body, evaluated now.
-  | CoreJoin j params rhs body ->
+  | CoreTermJoin j params rhs body ->
       let scope = define env j Unit in
       if V.isEmpty params
       then go m (Eval rhs scope) (LetRec scope [(j, rhs)] body :: k)
@@ -189,35 +189,35 @@ fun eval (m : Machine) (t : CoreTerm) (env : Map (Ref Value)) (k : List Frame) =
           go m (Eval body scope) k)
   -- The join point applied to each argument in turn: the frames of
   -- `((j a) b)`, under `j`.
-  | CoreJump j args ->
+  | CoreTermJump j args ->
       variable m j env (V.foldr (\x acc -> EvalArg x env :: acc) k args)
-  | CoreLetRec binds body ->
+  | CoreTermLetRec binds body ->
       let pairs = V.map (\b -> (coreBindId a b, coreBindValue a b)) binds in
       let scope = V.foldl (\e b -> define e (fst b) Unit) env pairs in
       (match V.get pairs 0 with
        | Just (_, rhs) -> go m (Eval rhs scope) (LetRec scope pairs body :: k)
        | None -> go m (Eval body scope) k)
-  | CoreIf c y n -> go m (Eval c env) (If y n env :: k)
-  | CoreTuple xs -> start m Shape.Tuple xs env k
-  | CoreArray xs -> start m Shape.Array xs env k
-  | CoreCtor n xs -> start m (Shape.Ctor n) xs env k
-  | CorePrim op xs -> start m (Shape.Prim op) xs env k
-  | CoreRecord fs ->
+  | CoreTermIf c y n -> go m (Eval c env) (If y n env :: k)
+  | CoreTermTuple xs -> start m Shape.Tuple xs env k
+  | CoreTermArray xs -> start m Shape.Array xs env k
+  | CoreTermCtor n xs -> start m (Shape.Ctor n) xs env k
+  | CoreTermPrim op xs -> start m (Shape.Prim op) xs env k
+  | CoreTermRecord fs ->
       (match V.get fs 0 with
        | Just first ->
            go m (Eval (coreFieldValue a first) env) (BuildRecord [] fs env :: k)
        | None -> go m (Ret (Record [])) k)
-  | CoreProj x i -> go m (Eval x env) (Proj i :: k)
-  | CoreSel x l -> go m (Eval x env) (Sel l :: k)
-  | CoreExtend r l val -> go m (Eval r env) (ExtendVal l val env :: k)
-  | CoreCase s arms -> go m (Eval s env) (Match arms env :: k)
-  | CorePerform e o x -> go m (Eval x env) (PerformWith e o :: k)
-  | CoreHandle body clauses retId r ->
+  | CoreTermProj x i -> go m (Eval x env) (Proj i :: k)
+  | CoreTermSel x l -> go m (Eval x env) (Sel l :: k)
+  | CoreTermExtend r l val -> go m (Eval r env) (ExtendVal l val env :: k)
+  | CoreTermCase s arms -> go m (Eval s env) (Match arms env :: k)
+  | CoreTermPerform e o x -> go m (Eval x env) (PerformWith e o :: k)
+  | CoreTermHandle body clauses retId r ->
       let returned =
         (match (retId, r) with | (Just v, Just b) -> Just (v, b) | _ -> None)
       in
       go m (Eval body env) (HandleMark clauses returned env :: k)
-  | CoreIll -> Err "evaluating an ill-formed expression"
+  | CoreTermIll -> Err "evaluating an ill-formed expression"
 
 -- A sequence of sub-expressions, left to right, then what they make.
 fun start (m : Machine) (s : Shape) (xs : [CoreTerm]) (env : Map (Ref Value))
@@ -371,26 +371,26 @@ fun arms_ (m : Machine) (arms : [CoreArm]) (env : Map (Ref Value)) (from : Int)
 fun matched (a : CoreArena) (p : CorePat) (v : Value) (env : Map (Ref Value))
     : Maybe (Map (Ref Value)) ! { Mut | e } =
   match (a, p) with
-  | CorePWild -> Just env
-  | CorePVar x -> Just (define env x v)
-  | CorePAs x sub -> matched a sub v (define env x v)
-  | CorePLit l -> if litMatches a l v then Just env else None
-  | CorePTuple ps ->
+  | CorePatPWild -> Just env
+  | CorePatPVar x -> Just (define env x v)
+  | CorePatPAs x sub -> matched a sub v (define env x v)
+  | CorePatPLit l -> if litMatches a l v then Just env else None
+  | CorePatPTuple ps ->
       (match v with
        | Tuple vs -> (if V.len ps == V.len vs then all a ps vs env else None)
        | _ -> None)
-  | CorePArray ps ->
+  | CorePatPArray ps ->
       (match v with
        | Array vs -> (if V.len ps == V.len vs then all a ps vs env else None)
        | _ -> None)
-  | CorePCtor name ps ->
+  | CorePatPCtor name ps ->
       (match v with
        | Ctor vname vs ->
            if name == vname and V.len ps == V.len vs
            then all a ps vs env
            else None
        | _ -> None)
-  | CorePRecord fs ->
+  | CorePatPRecord fs ->
       (match v with
        | Record vfs ->
            V.foldl
@@ -414,27 +414,28 @@ fun all (a : CoreArena) (ps : [CorePat]) (vs : [Value]) (env : Map (Ref Value))
 
 fun litMatches (a : CoreArena) (l : CoreLit) (v : Value) : Bool =
   match (a, l) with
-  | CoreLInt n -> (match v with | Int b -> n == b | _ -> equal (literal a l) v)
-  | CoreLBig _ -> equal (literal a l) v
-  | CoreLWord _ _ -> equal (literal a l) v
-  | CoreLF64 x -> (match v with | Float y -> x == y | _ -> False)
-  | CoreLF32 _ -> equal (literal a l) v
-  | CoreLStr s -> (match v with | Str t -> s == t | _ -> False)
-  | CoreLChar c -> (match v with | Char ch -> c == C.code ch | _ -> False)
-  | CoreLBool b -> (match v with | Bool w -> b == w | _ -> False)
-  | CoreLUnit -> (match v with | Unit -> True | _ -> False)
+  | CoreLitLInt n ->
+      (match v with | Int b -> n == b | _ -> equal (literal a l) v)
+  | CoreLitLBig _ -> equal (literal a l) v
+  | CoreLitLWord _ _ -> equal (literal a l) v
+  | CoreLitLF64 x -> (match v with | Float y -> x == y | _ -> False)
+  | CoreLitLF32 _ -> equal (literal a l) v
+  | CoreLitLStr s -> (match v with | Str t -> s == t | _ -> False)
+  | CoreLitLChar c -> (match v with | Char ch -> c == C.code ch | _ -> False)
+  | CoreLitLBool b -> (match v with | Bool w -> b == w | _ -> False)
+  | CoreLitLUnit -> (match v with | Unit -> True | _ -> False)
 
 fun literal (a : CoreArena) (l : CoreLit) : Value =
   match (a, l) with
-  | CoreLInt n -> Int n
-  | CoreLBig n -> Big (toBigInt n)
-  | CoreLWord w n -> sized w (Int n)
-  | CoreLF64 x -> Float x
-  | CoreLF32 x -> F32 (toFloat32 x)
-  | CoreLStr s -> Str s
-  | CoreLChar c -> Char (C.fromCode c)
-  | CoreLBool b -> Bool b
-  | CoreLUnit -> Unit
+  | CoreLitLInt n -> Int n
+  | CoreLitLBig n -> Big (toBigInt n)
+  | CoreLitLWord w n -> sized w (Int n)
+  | CoreLitLF64 x -> Float x
+  | CoreLitLF32 x -> F32 (toFloat32 x)
+  | CoreLitLStr s -> Str s
+  | CoreLitLChar c -> Char (C.fromCode c)
+  | CoreLitLBool b -> Bool b
+  | CoreLitLUnit -> Unit
 
 -- `f` applied to `arg`. A closure with parameters still to take after this
 -- one is a closure again, as the lambda inside a lambda would have made.

@@ -29,7 +29,7 @@ use Std.Maybe.Maybe.*
 use Std.Sort (sortOn)
 
 @pub(pkg) lang! {
-  pub Hir extends Ast
+  pub Hir extends Ast with In
   Ref + Ref { id : Int, alts : [Int] }
 
   Expr - Var

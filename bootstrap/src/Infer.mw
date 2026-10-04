@@ -412,7 +412,7 @@ type Ty = Type
 -- so far: the arena's, whose variables later unification may yet write. Its
 -- tables are written in the `runSt` inference runs in, which `s` says.
 @pub(pkg) lang! {
-  pub Inferring s extends Hir
+  pub Inferring s extends Hir with In
   Expr * { typ : Ty }
   Pat * { typ : Ty }
 }

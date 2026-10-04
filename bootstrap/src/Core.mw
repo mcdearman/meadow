@@ -160,7 +160,7 @@ lang! { Printed from CoreText }
 -- Core: a binder is a number, a name or a text is itself, and a literal is
 -- its value.
 lang! {
-  pub Core extends Printed
+  pub Core extends Printed with In
   File + File { entry : Int, defs : [Def], named : [Named] }
   Def + Def { id : Int, body : Term }
   Named + Named { name : String, labels : [String] }

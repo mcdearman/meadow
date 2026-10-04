@@ -55,12 +55,17 @@ fn indentation_is_recovered_from_a_flattened_file() {
             }
         }
     }
-    // The stragglers are hand-aligned continuations — most of the bit-twiddling
-    // in `Std.Bytes`, and a handful elsewhere. A proportion rather than a count,
-    // so the bound keeps its meaning as the library grows: comfortably above the
-    // ~1.3% these account for, far below what a broken rule would produce.
+    // The stragglers are continuations: the lines a call or a chain goes on
+    // with, which hang a unit under the line they carry on because that is
+    // where they were put -- by hand, or by the formatter cutting a line
+    // that was too long -- and not because anything structural says so. Kept
+    // within 80 columns, the library is about 6% such lines; before, when a
+    // long line was left long, it was 1.3%. A proportion rather than a count,
+    // so the bound keeps its meaning as the library grows: comfortably above
+    // what continuations account for, far below what a broken rule would
+    // produce.
     assert!(
-        wrong * 50 <= total,
+        wrong * 12 <= total,
         "{wrong} of {total} lines were not recovered from a flattened standard library"
     );
 }

@@ -163,3 +163,77 @@ fn a_module_with_a_file_is_still_written_bare() {
     let ast = parse_ast("mod Tests\ndef x = 1\n");
     assert!(!ast.contains("Module("), "{ast}");
 }
+
+// --- `super` ---------------------------------------------------------------
+
+#[test]
+fn super_names_the_module_a_module_is_written_in() {
+    let src = "\
+fun helper n = n + 1
+
+mod Inner {
+  use super (helper)
+
+  @pub def answer = helper 41
+
+  @pub mod Deeper {
+    use super.super (helper)
+    use super (answer)
+
+    @pub def both = helper answer
+  }
+}
+
+def result = (Inner.answer, Inner.Deeper.both)
+";
+    assert_eq!(eval(src), "(42, 43)");
+}
+
+#[test]
+fn super_then_a_name_is_a_module_beside_this_one() {
+    let modules = [
+        ("", "mod A\nmod B\ndef result = B.viaA\n"),
+        ("A", "@pub(pkg) def one = 1\n"),
+        ("B", "use super.A (one)\n@pub(pkg) def viaA = one + 1\n"),
+    ];
+    assert_eq!(eval_unit(&modules), "2");
+}
+
+#[test]
+fn there_is_nothing_above_the_root() {
+    let out = errors("use super (x)\ndef result = 1\n");
+    assert!(out.contains("no module above the package's root"), "{out}");
+}
+
+// --- what a macro that writes a module over flat definitions relies on ------
+
+#[test]
+fn a_synonym_of_a_synonym_matches_builds_and_covers() {
+    let src = "\
+data Node = N Int Int
+
+fun kind n = match n with | Node.N k _ -> k
+fun field n = match n with | Node.N _ v -> v
+
+pattern FlatInt v <- ((\\n -> if kind n == 0 then [field n;] else [;]) -> [v;])
+  where FlatInt v = Node.N 0 v
+pattern FlatNeg v <- ((\\n -> if kind n == 1 then [field n;] else [;]) -> [v;])
+pattern FlatInt | FlatNeg
+
+mod Expr {
+  use super (FlatInt, FlatNeg)
+
+  @pub pattern Int v = FlatInt v
+  @pub pattern Neg v <- FlatNeg v
+  @pub pattern Int | Neg
+}
+
+fun eval n =
+  match n with
+  | Expr.Int v -> v
+  | Expr.Neg v -> 0 - v
+
+def result = (eval (Expr.Int 5), eval (Node.N 1 3))
+";
+    assert_eq!(eval(src), "(5, -3)");
+}

@@ -2249,6 +2249,11 @@ synonym, `Core.Expr.Lit n`, which matches and builds as it does written bare.
 A type is not yet named this way where a type is written — `e : Core.Expr.Node`
 — so bring it in with `use MyApp.Core.Expr (Node)`.
 
+A module inside another does not see what is around it for free, any more than
+a file does. `use super (helper)` names the module it is written in, as Rust's
+`super::`; `use super.super (…)` the one above that; and `use super.Other (…)`
+a module beside it.
+
 ### Visibility: `@pub`, `@pub(pkg)`, `@pub(super)`
 
 Nothing is visible outside the module it is written in until it says so. Three
@@ -3772,7 +3777,7 @@ fun versionOf tool =
 fun main () =
   let version =
     handle versionOf "meadow" with {
-      spawn cmd k -> k (Ok (0, "meadow 0.1.0-alpha", "")),
+      spawn cmd k -> k (Ok (0, "meadow 0.2.0", "")),
       return x -> x
     }
   in
@@ -3780,7 +3785,7 @@ fun main () =
 ```
 
 ```
-meadow 0.1.0-alpha
+meadow 0.2.0
 ```
 
 `spawn` captures stdout and stderr and gives you `(status, out, err)` — pick them

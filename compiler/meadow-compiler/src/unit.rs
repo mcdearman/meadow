@@ -1167,6 +1167,40 @@ fn use_in(
     diags: &mut Vec<Diagnostic>,
     types_brought: &mut Vec<InternedString>,
 ) -> Vec<InternedString> {
+    // `use super (…)`: the module this one is written in, as Rust's
+    // `super::`; `use super.super`, the one above that; `use super.Sibling`,
+    // a module beside this one. Read as the path from the package it stands
+    // for, so everything below treats it as if that had been written.
+    let from_above;
+    let u = if u.path.first().is_some_and(|s| &**s.value() == "super") {
+        let ups = u
+            .path
+            .iter()
+            .take_while(|s| &**s.value() == "super")
+            .count();
+        let here = resolver.current_module().to_vec();
+        if ups > here.len() {
+            diags.push(Diagnostic {
+                msg: "there is no module above the package's root for `super` to name".to_string(),
+                filename: filename.to_string(),
+                label: ("above the root".to_string(), u.path[ups - 1].span),
+                extra_labels: vec![],
+            });
+            return Vec::new();
+        }
+        let at = u.path[0].span;
+        let mut path = vec![ast::Ident::new(pkg, at)];
+        path.extend(
+            here[..here.len() - ups]
+                .iter()
+                .map(|s| ast::Ident::new(*s, at)),
+        );
+        path.extend(u.path[ups..].iter().cloned());
+        from_above = ast::UseDecl { path, ..u.clone() };
+        &from_above
+    } else {
+        u
+    };
     let segs: Vec<InternedString> = u.path.iter().map(|s| *s.value()).collect();
     if segs.is_empty() {
         return Vec::new();

@@ -13,7 +13,11 @@ beyond the last release is under _Unreleased_.
 
 ## Unreleased
 
-Nothing yet.
+### Fixed
+
+- Two builds that fetch the same git dependency at once take turns in its
+  cache. One could find the other's unfinished clone and report that the
+  repository "has no releases".
 
 ## 0.2.0 - 2026-10-04
 

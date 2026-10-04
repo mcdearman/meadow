@@ -1782,8 +1782,13 @@ fn every_source_renames_as_meadow_rename_renames_it() {
 /// string literal given to each `agree(…)` there. Read from that file, so a
 /// case added there is one here.
 fn glade_programs() -> Vec<String> {
+    // Read as the compiler reads a Rust file: a checkout on Windows has
+    // `\r\n` line endings, and a `\r` left in a case's text -- before the
+    // newline a `\` continues a string over, say -- makes it a different
+    // program, or none.
     let text = std::fs::read_to_string(repo().join("glade/tests/differential.rs"))
-        .expect("the glade cases");
+        .expect("the glade cases")
+        .replace("\r\n", "\n");
     let mut out = Vec::new();
     let mut rest = text.as_str();
     while let Some(at) = rest.find("agree(") {

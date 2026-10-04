@@ -7,6 +7,7 @@
 //! interpreter still run from; the machine code is every block that has some.
 
 use crate::abi::NativeFn;
+use meadow_bytecode::Op;
 use std::ffi::c_char;
 
 /// Defined only by a runtime library built from the sources the code generator
@@ -91,6 +92,33 @@ pub unsafe extern "C" fn meadow_silo_main(
         for ((pc, op), c) in all.iter().take(25) {
             eprintln!(
                 "  {c:>12}  {:5.1}%  pc {pc:<6} {op:?}",
+                100.0 * *c as f64 / total as f64
+            );
+        }
+        // And by what the instruction is, over every pc: which primitive,
+        // and for a field which one -- what there is to make native next.
+        let mut kinds: std::collections::HashMap<String, u64> = Default::default();
+        for ((pc, op), c) in &all {
+            let i = program.code.get(*pc as usize);
+            let kind = match (op, i) {
+                (Some(Op::Prim | Op::Prim1 | Op::Prim2), Some(i)) => {
+                    match program.prims.get(i.imm as usize) {
+                        Some(p) => format!("{p:?}"),
+                        None => format!("{op:?}"),
+                    }
+                }
+                (Some(Op::Field), Some(i)) => format!("Field {}", i.imm),
+                (Some(op), _) => format!("{op:?}"),
+                (None, _) => "?".to_string(),
+            };
+            *kinds.entry(kind).or_default() += c;
+        }
+        let mut kinds: Vec<_> = kinds.into_iter().collect();
+        kinds.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        eprintln!("traps, by instruction:");
+        for (kind, c) in kinds.iter().take(25) {
+            eprintln!(
+                "  {c:>12}  {:5.1}%  {kind}",
                 100.0 * *c as f64 / total as f64
             );
         }

@@ -892,6 +892,16 @@ impl Emit for Asm {
                     let m = self.thin_operand(b, WORK_B);
                     self.put(0x9AC0_2400 | m << 16 | n << 5 | dst(t)); // lsr xt, xn, xm
                 }
+                Step::ShlBy(t, a, b) => {
+                    let n = self.thin_operand(a, WORK_A);
+                    let m = self.thin_operand(b, WORK_B);
+                    self.put(0x9AC0_2000 | m << 16 | n << 5 | dst(t)); // lsl xt, xn, xm
+                }
+                Step::Xor(t, a, b) => {
+                    let n = self.thin_operand(a, WORK_A);
+                    let m = self.thin_operand(b, WORK_B);
+                    self.put(0xCA00_0000 | m << 16 | n << 5 | dst(t)); // eor xt, xn, xm
+                }
                 Step::Load(t, at) => {
                     let at = self.thin_operand(at, WORK_A);
                     self.thin_where(WORK_B, at);
@@ -981,14 +991,33 @@ impl Emit for Asm {
         self.length();
         self.put(0xF100_001F | i << 10 | X15 << 5); // cmp x15, #i
         self.b_cond(LS, slow);
-        let two_words = self.label();
+        // The fields come after the header: two words, and for an object
+        // that describes each field apart and has more than the eight the
+        // second word has room for, a word more for every sixteen after
+        // (`meadow_rt::compact::header_slots`). Such an object used to go to
+        // `slow`: a record of twelve fields had every read of it handed to
+        // the interpreter, and a parser's state is one.
+        let (two_words, wide, done) = (self.label(), self.label(), self.label());
         self.put(0xF274_001F | X13 << 5); // tst x13, #UNIFORM (bit 12)
         self.b_cond(NE, two_words);
         self.put(0xF100_201F | X15 << 5); // cmp x15, #8
-        self.b_cond(HI, slow);
+        self.b_cond(HI, wide);
         self.bind(two_words);
         self.ldr(X9, X12, (2 + i) * 8);
         self.store(a);
+        self.jump(done);
+        self.bind(wide);
+        const {
+            assert!(
+                meadow_rt::compact::INLINE_DESCS == 8 && meadow_rt::compact::DESCS_PER_WORD == 16
+            )
+        };
+        self.put(0x9100_0000 | 7 << 10 | X15 << 5 | X10); // add x10, x15, #7
+        self.thin_shr(X10, X10, 4); // the words of descriptors past the second
+        self.put(0x8B00_0000 | X10 << 16 | 3 << 10 | X12 << 5 | X11); // add x11, x12, x10, lsl #3
+        self.ldr(X9, X11, (2 + i) * 8);
+        self.store(a);
+        self.bind(done);
     }
 
     fn vector_loop(&mut self, plan: &Plan, scalar: Label) {

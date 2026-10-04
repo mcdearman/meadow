@@ -581,6 +581,18 @@ impl Emit for Asm {
                     self.bytes(&[0x48, 0xD3, 0xE8]); // shr rax, cl
                     self.thin_put(t, RAX);
                 }
+                Step::ShlBy(t, a, b) => {
+                    self.thin_operand(RAX, a);
+                    self.thin_operand(RCX, b);
+                    self.bytes(&[0x48, 0xD3, 0xE0]); // shl rax, cl
+                    self.thin_put(t, RAX);
+                }
+                Step::Xor(t, a, b) => {
+                    self.thin_operand(RAX, a);
+                    self.thin_operand(RCX, b);
+                    self.bytes(&[0x48, 0x31, 0xC8]); // xor rax, rcx
+                    self.thin_put(t, RAX);
+                }
                 Step::Load(t, at) => {
                     self.thin_operand(RAX, at);
                     self.thin_where();
@@ -853,15 +865,31 @@ impl Emit for Asm {
         self.bytes(&[0x48, 0x81, 0xFF]); // cmp rdi, i
         self.bytes(&i.to_le_bytes());
         self.jcc(CC_BE, slow);
-        let two_words = self.label();
+        // As on aarch64: a word of header more for every sixteen fields
+        // past the eight the second word describes.
+        let (two_words, wide, done) = (self.label(), self.label(), self.label());
         self.bytes(&[0xF7, 0xC6, 0x00, 0x10, 0x00, 0x00]); // test esi, UNIFORM
         self.jcc(CC_NE, two_words);
         self.bytes(&[0x48, 0x83, 0xFF, 0x08]); // cmp rdi, 8
-        self.jcc(CC_A, slow);
+        self.jcc(CC_A, wide);
         self.bind(two_words);
         self.bytes(&[0x48, 0x8B, 0x82]); // mov rax, [rdx + (2 + i) * 8]
         self.bytes(&((2 + i) * 8).to_le_bytes());
         self.store(a);
+        self.jump(done);
+        self.bind(wide);
+        const {
+            assert!(
+                meadow_rt::compact::INLINE_DESCS == 8 && meadow_rt::compact::DESCS_PER_WORD == 16
+            )
+        };
+        self.bytes(&[0x48, 0x89, 0xF9]); // mov rcx, rdi
+        self.bytes(&[0x48, 0x83, 0xC1, 0x07]); // add rcx, 7
+        self.bytes(&[0x48, 0xC1, 0xE9, 0x04]); // shr rcx, 4
+        self.bytes(&[0x48, 0x8B, 0x84, 0xCA]); // mov rax, [rdx + rcx * 8 + (2 + i) * 8]
+        self.bytes(&((2 + i) * 8).to_le_bytes());
+        self.store(a);
+        self.bind(done);
     }
 
     fn vector_loop(&mut self, _plan: &super::vector::Plan, _scalar: Label) {

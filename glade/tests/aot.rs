@@ -262,6 +262,50 @@ fn promoted_objects_are_reached_by_native_code() {
     assert_eq!(agrees("promoted", src), "(131072, 288672000, 19)");
 }
 
+/// What a compiler's own inner loops are made of, done by native code and
+/// answering what the interpreter answers: a field read out of a constructor
+/// with more fields than the second header word describes (twelve, then
+/// thirty, young and promoted), a cell written with an integer and with a
+/// reference, and the field `trmc` fills in after the call it turned into a
+/// jump. Each used to be handed back: on a parser generator's benchmark that
+/// was half a billion instructions.
+#[test]
+fn wide_fields_cells_and_filled_fields_run_natively() {
+    let fields: Vec<String> = (0..30).map(|i| format!("(a + {i})")).collect();
+    let binders: Vec<String> = (0..30).map(|i| format!("x{i}")).collect();
+    let sum = binders.join(" + ");
+    let src = format!(
+        "data Wide = Wide Int Int Int Int Int Int Int Int Int Int Int Int\n\
+         use Wide.*\n\
+         fun wide (a : Int) : Wide = Wide a (a + 1) (a + 2) (a + 3) (a + 4) (a + 5) (a + 6) (a + 7) (a + 8) (a + 9) (a + 10) (a + 11)\n\
+         fun total (w : Wide) : Int = match w with | Wide a b c d e f g h i j k l -> a + b + c + d + e + f + g + h + i + j + k + l\n\
+         data Wider = Wider {ints}\n\
+         use Wider.*\n\
+         fun wider (a : Int) : Wider = Wider {fields}\n\
+         fun totalWider (w : Wider) : Int = match w with | Wider {binders} -> {sum}\n\
+         fun churn (n : Int) (acc : Int) : Int = if n == 0 then acc else churn (n - 1) (acc + total (wide n) + totalWider (wider n))\n\
+         data L = Nil | Cons Int L\n\
+         use L.*\n\
+         fun upTo (i : Int) (n : Int) : L = if i == n then Nil else Cons i (upTo (i + 1) n)\n\
+         fun len (xs : L) (acc : Int) : Int = match xs with | Nil -> acc | Cons _ r -> len r (acc + 1)\n\
+         fun count (r : StRef s Int) (last : StRef s L) (n : Int) : Int ! {{ St s | e }} =\n\
+           if n == 0 then stGetRef r + len (stGetRef last) 0\n\
+           else (let _ = stSetRef r (stGetRef r + n) in let _ = stSetRef last (Cons n (stGetRef last)) in count r last (n - 1))\n\
+         def result =\n\
+           let w = wide 100 in\n\
+           let v = wider 1000 in\n\
+           let c = churn 20000 0 in\n\
+           (total w, totalWider v, c, len (upTo 0 100000) 0, runSt (\\() -> count (stNewRef 0) (stNewRef Nil) 50000))\n",
+        ints = vec!["Int"; 30].join(" "),
+        fields = fields.join(" "),
+        binders = binders.join(" "),
+    );
+    assert_eq!(
+        agrees("wide", &src),
+        "(1266, 30435, 8410440000, 100000, 1250075000)"
+    );
+}
+
 /// `popCount`, `>>>` and `toFloat` on an `Int` are one instruction each, and
 /// have to answer what the interpreter answers at the edges: a negative shifted
 /// logically, a count of 64, a shift of 64 and of 100 (modulo 64, on every

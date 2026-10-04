@@ -80,6 +80,11 @@ pub enum Step {
     /// `t = a >> (b % 64)`, unsigned: a shift by an amount only known at run
     /// time, which picking a byte out of a word needs.
     ShrBy(u8, Src, Src),
+    /// `t = a << (b % 64)`: a shift up by an amount only known at run time,
+    /// which putting four bits where a field's descriptor goes needs.
+    ShlBy(u8, Src, Src),
+    /// `t = a ^ b`
+    Xor(u8, Src, Src),
     /// The heap word at slot `at`. Slots, not bytes: an [`Addr`] indexes the
     /// heap as an array of words, which is what the machine holds it as.
     Load(u8, Src),
@@ -156,6 +161,16 @@ pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
         meadow_bytecode::Op::Prim2 => match program.prims.get(i.imm as usize)? {
             Prim::StGetArray => Some(element(i.a, i.b, i.c, Kind::MutArray)),
             Prim::ArrayGet => Some(element(i.a, i.b, i.c, Kind::Array)),
+            // Writing a cell, where the compiler says what the value is.
+            Prim::SetRef => {
+                let d = program.operands(pc).get(1).copied()?;
+                if d >= meadow_bytecode::DESC_REG
+                    || d as meadow_rt::desc::Desc == meadow_rt::desc::ANY
+                {
+                    return None;
+                }
+                Some(ref_set(i.a, i.b, i.c, d as meadow_rt::desc::Desc))
+            }
             Prim::StringByteAt
                 if program.operands(pc).get(1).copied()
                     == Some(meadow_rt::desc::INT as meadow_bytecode::DescSrc) =>
@@ -169,6 +184,21 @@ pub fn expand(program: &Program, pc: usize, i: Instr) -> Option<Vec<Step>> {
         // be a reference is stored only into a young array; anything else,
         // into an array of non-references.
         meadow_bytecode::Op::Prim if i.c == 3 => match program.prims.get(i.imm as usize)? {
+            // Filling in the field a constructor was built without (`trmc`),
+            // where the compiler says the value is a reference: the rest of
+            // a list, a subtree.
+            Prim::SetField
+                if program.operands(pc).get(2).copied()
+                    == Some(meadow_rt::desc::REF as meadow_bytecode::DescSrc) =>
+            {
+                Some(field_set_young(
+                    i.a,
+                    i.b,
+                    i.b + 1,
+                    i.b + 2,
+                    meadow_rt::desc::REF,
+                ))
+            }
             Prim::StSetArray => {
                 let value = program.operands(pc).get(2).copied();
                 Some(
@@ -203,6 +233,49 @@ pub fn ref_get(dst: Reg, obj: Reg) -> Vec<Step> {
         Step::Guard(Cond::Eq, Tmp(2), Imm(Kind::Ref as u64)),
         Step::LoadAt(2, Tmp(1), Imm(2)),
         Step::Put(dst, Tmp(2)),
+    ]
+}
+
+/// The cell in `r[obj]` `= r[val]`, a value whose descriptor is `d`, and
+/// `r[dst]` the unit the primitive answers with: what `setRef` does, where
+/// the cell already holds a value of that descriptor.
+///
+/// A cell says what its one field holds in the four bits [`field_set_young`]
+/// rewrites, and here they are only checked: a cell holds one type's values
+/// for as long as it lives, so they are right already, and one whose are not
+/// -- made with a placeholder, say -- is the interpreter's.
+///
+/// What is left is the store, and whether a bare store will do is
+/// [`element_set`]'s question and [`element_set_young`]'s. A value that is
+/// not a reference may be stored into any cell outside a compact region:
+/// the marker follows no such field, the snapshot barrier records no such
+/// value, and it is never a young address in an old slot. A reference may be
+/// stored so only into a young cell.
+///
+/// A parser keeps where it is in cells -- its position, its fuel -- and
+/// writes one for every token: `setRef` was the instruction native code
+/// handed back most on a compiler's own work.
+pub fn ref_set(dst: Reg, obj: Reg, val: Reg, d: meadow_rt::desc::Desc) -> Vec<Step> {
+    use Src::{Imm, Reg as R, Tmp};
+    let within = if d == meadow_rt::desc::REF {
+        crate::old::OLD_BASE
+    } else {
+        crate::region::REGION_BASE
+    };
+    vec![
+        Step::Set(0, R(obj)),
+        Step::Guard(Cond::Lt, Tmp(0), Imm(within as u64)),
+        Step::Locate(1, Tmp(0)),
+        Step::LoadAt(2, Tmp(1), Imm(0)),
+        Step::And(2, Tmp(2), KIND_BITS),
+        Step::Guard(Cond::Eq, Tmp(2), Imm(Kind::Ref as u64)),
+        Step::LoadAt(2, Tmp(1), Imm(1)),
+        Step::Shr(2, Tmp(2), 32),
+        Step::And(2, Tmp(2), DESC_BITS),
+        Step::Guard(Cond::Eq, Tmp(2), Imm(d as u64 & DESC_BITS)),
+        Step::StoreAt(Tmp(1), Imm(2), R(val)),
+        // `setRef` answers unit, whose word is zero.
+        Step::Put(dst, Imm(0)),
     ]
 }
 
@@ -405,6 +478,72 @@ pub fn element_set_young(dst: Reg, obj: Reg, idx: Reg, val: Reg) -> Vec<Step> {
     ]
 }
 
+/// Field `r[idx]` of the constructor in `r[obj]` `= r[val]`, a value whose
+/// descriptor is `d`, and `r[dst]` the unit the primitive answers with: what
+/// `setField` does, for a **young** constructor of at most
+/// [`meadow_rt::compact::INLINE_DESCS`] fields.
+///
+/// `setField` fills in a field a constructor was built with a placeholder
+/// in -- tail recursion modulo cons builds `Node l k v _` and then the rest
+/// of the tree, where a call would have built the rest first. The cell was
+/// made a moment ago, so it is nearly always still in the nursery, and there
+/// a store is all there is to do, for the reasons [`element_set_young`]
+/// gives: no marker reads the nursery while the program runs, and a young
+/// slot is not an old one. One that has been promoted goes to the
+/// interpreter, which runs the barriers.
+///
+/// Unlike an array's, the field's **descriptor** changes -- the placeholder
+/// was a unit and this is a reference -- so the four bits that say what the
+/// field holds are rewritten too. They are in the second header word, from
+/// bit 32, a field to four bits (`crate::object`); a constructor with more
+/// fields than fit there keeps the rest elsewhere, and is the interpreter's.
+///
+/// On a functional red-black tree this was every instruction native code
+/// handed back: 84 million of them.
+pub fn field_set_young(
+    dst: Reg,
+    obj: Reg,
+    idx: Reg,
+    val: Reg,
+    d: meadow_rt::desc::Desc,
+) -> Vec<Step> {
+    use Src::{Imm, Reg as R, Tmp};
+    let inline = meadow_rt::compact::INLINE_DESCS as u64;
+    // 1 is where the object is and 4 the index; 0, 2 and 3 are whatever is
+    // needed at the time.
+    vec![
+        Step::Set(0, R(obj)),
+        Step::Guard(Cond::Lt, Tmp(0), Imm(crate::old::OLD_BASE as u64)),
+        Step::Locate(1, Tmp(0)),
+        Step::LoadAt(2, Tmp(1), Imm(0)),
+        Step::Shr(3, Tmp(2), LEN_SHIFT),
+        Step::And(2, Tmp(2), KIND_BITS | 1 << UNIFORM_BIT),
+        Step::Guard(Cond::Eq, Tmp(2), Imm(Kind::Data as u64)),
+        Step::Guard(Cond::Lt, Tmp(3), Imm(inline + 1)),
+        Step::Set(4, R(idx)),
+        Step::Guard(Cond::Lt, Tmp(4), Tmp(3)),
+        // Where the field's descriptor is in the second header word:
+        // 32 + 4 * idx bits up.
+        Step::Add(0, Tmp(4), Tmp(4)),
+        Step::Add(0, Tmp(0), Tmp(0)),
+        Step::Add(0, Tmp(0), Imm(32)),
+        Step::LoadAt(2, Tmp(1), Imm(1)),
+        // What it says now, exclusive-or what it is to say, is the bits that
+        // differ: put back in place and exclusive-or'd in, they change it.
+        Step::ShrBy(3, Tmp(2), Tmp(0)),
+        Step::And(3, Tmp(3), DESC_BITS),
+        Step::Xor(3, Tmp(3), Imm(d as u64 & DESC_BITS)),
+        Step::ShlBy(3, Tmp(3), Tmp(0)),
+        Step::Xor(2, Tmp(2), Tmp(3)),
+        Step::StoreAt(Tmp(1), Imm(1), Tmp(2)),
+        // And the field itself, after the two words of header.
+        Step::Add(4, Tmp(4), Imm(2)),
+        Step::StoreAt(Tmp(1), Tmp(4), R(val)),
+        // `setField` answers unit, whose word is zero.
+        Step::Put(dst, Imm(0)),
+    ]
+}
+
 /// The most temporaries any expansion uses, which is how many scratch
 /// registers an architecture has to keep for them.
 pub const TEMPORARIES: usize = 5;
@@ -419,6 +558,8 @@ pub fn temporaries(steps: &[Step]) -> usize {
         | Step::And(t, _, _)
         | Step::Shr(t, _, _)
         | Step::ShrBy(t, _, _)
+        | Step::ShlBy(t, _, _)
+        | Step::Xor(t, _, _)
         | Step::Load(t, _)
         | Step::Locate(t, _)
         | Step::LoadAt(t, _, _) = s
@@ -469,6 +610,8 @@ impl<'h> Machine<'h> {
                 Step::And(t, a, m) => self.tmps[t as usize] = self.read(a) & m,
                 Step::Shr(t, a, n) => self.tmps[t as usize] = self.read(a) >> n,
                 Step::ShrBy(t, a, b) => self.tmps[t as usize] = self.read(a) >> (self.read(b) % 64),
+                Step::ShlBy(t, a, b) => self.tmps[t as usize] = self.read(a) << (self.read(b) % 64),
+                Step::Xor(t, a, b) => self.tmps[t as usize] = self.read(a) ^ self.read(b),
                 Step::Load(t, at) => {
                     self.tmps[t as usize] = self.heap.word_at(self.read(at) as Addr)
                 }
@@ -676,6 +819,128 @@ mod tests {
             for i in 0..64 {
                 assert_eq!(heap.field(a, i), Value::Int(i as i64 * 1000 + 1));
             }
+        }
+    }
+
+    /// A young constructor's field is filled in as the heap would have filled
+    /// it in -- the value, and what the header says the field now holds --
+    /// and nothing else in it moves; one that is old, or has more fields than
+    /// the header's second word describes, or an index outside it, is left to
+    /// the interpreter.
+    #[test]
+    fn a_filled_field_is_what_the_heap_would_have_filled() {
+        use meadow_rt::desc;
+        let build = |heap: &mut Heap, n: usize| {
+            let inner = ints(heap, 2);
+            // An integer, then placeholders: what `trmc` builds.
+            let mut fields = vec![Value::Unit; n];
+            fields[0] = Value::Int(7);
+            heap.reserve(Heap::size_of(Kind::Data, n));
+            (heap.alloc(Kind::Data, 3, &fields), inner)
+        };
+        for n in [1, 3, 8] {
+            for i in 0..n {
+                let mut heap = Heap::new();
+                let (a, inner) = build(&mut heap, n);
+                let mut want = Heap::new();
+                let (b, inner_b) = build(&mut want, n);
+                assert_eq!((a, inner), (b, inner_b), "the two heaps are laid out alike");
+                want.set_field(b, i, Value::Obj(inner_b));
+
+                let steps = field_set_young(0, 1, 2, 3, desc::REF);
+                let mut regs = [9, a as Word, i as Word, inner as Word];
+                assert_eq!(
+                    run(&mut heap, &mut regs, &steps, 0),
+                    Some(0),
+                    "answers unit"
+                );
+                for k in 0..Heap::size_of(Kind::Data, n) {
+                    assert_eq!(
+                        heap.word_at(a + k as Addr),
+                        want.word_at(b + k as Addr),
+                        "word {k} of a constructor of {n}, field {i}"
+                    );
+                }
+                assert_eq!(heap.field(a, i), Value::Obj(inner));
+            }
+        }
+        let steps = field_set_young(0, 1, 2, 3, desc::REF);
+        // More fields than the second header word describes.
+        let mut heap = Heap::new();
+        let (a, inner) = build(&mut heap, 9);
+        let mut regs = [9, a as Word, 1, inner as Word];
+        assert_eq!(run(&mut heap, &mut regs, &steps, 0), None, "nine fields");
+        // An index outside it, and a negative one.
+        let (a, inner) = build(&mut heap, 3);
+        for i in [3, -1i64 as Word] {
+            let mut regs = [9, a as Word, i, inner as Word];
+            assert_eq!(run(&mut heap, &mut regs, &steps, 0), None, "index {i}");
+        }
+        // Not a constructor: an array.
+        let mut regs = [9, inner as Word, 0, inner as Word];
+        assert_eq!(run(&mut heap, &mut regs, &steps, 0), None, "an array");
+        // Old: the barriers are the interpreter's to run.
+        let mut heap = old_heap();
+        let (a, inner) = build(&mut heap, 3);
+        if a >= crate::old::OLD_BASE {
+            let mut regs = [9, a as Word, 1, inner as Word];
+            assert_eq!(
+                run(&mut heap, &mut regs, &steps, 0),
+                None,
+                "an old constructor"
+            );
+        }
+    }
+
+    /// A cell is written as the heap would have written it, young or old,
+    /// where what it holds is not a reference; a reference goes into a young
+    /// cell only; and a cell holding something else, or no cell at all, is
+    /// the interpreter's.
+    #[test]
+    fn a_written_cell_is_what_the_heap_would_have_written() {
+        use meadow_rt::desc;
+        for mut heap in [Heap::new(), old_heap()] {
+            heap.reserve(Heap::size_of(Kind::Ref, 1));
+            let cell = heap.alloc(Kind::Ref, 0, &[Value::Int(1)]);
+            let steps = ref_set(0, 1, 2, desc::INT);
+            let mut regs = [9, cell as Word, Value::Int(42).bits()];
+            assert_eq!(
+                run(&mut heap, &mut regs, &steps, 0),
+                Some(0),
+                "answers unit"
+            );
+            assert_eq!(heap.field(cell, 0), Value::Int(42));
+            // The compiler says a reference, the cell holds an integer.
+            let other = ints(&mut heap, 2);
+            let steps = ref_set(0, 1, 2, desc::REF);
+            let mut regs = [9, cell as Word, other as Word];
+            assert_eq!(
+                run(&mut heap, &mut regs, &steps, 0),
+                None,
+                "not what it holds"
+            );
+            assert_eq!(heap.field(cell, 0), Value::Int(42), "and it is left alone");
+            // Not a cell.
+            let steps = ref_set(0, 1, 2, desc::INT);
+            let mut regs = [9, other as Word, 5];
+            assert_eq!(run(&mut heap, &mut regs, &steps, 0), None, "an array");
+        }
+        // A reference: into a young cell, and not into an old one.
+        let mut heap = Heap::new();
+        let (a, b) = (ints(&mut heap, 2), ints(&mut heap, 3));
+        heap.reserve(Heap::size_of(Kind::Ref, 1));
+        let cell = heap.alloc(Kind::Ref, 0, &[Value::Obj(a)]);
+        let steps = ref_set(0, 1, 2, desc::REF);
+        let mut regs = [9, cell as Word, b as Word];
+        assert_eq!(run(&mut heap, &mut regs, &steps, 0), Some(0));
+        assert_eq!(heap.field(cell, 0), Value::Obj(b));
+        let mut heap = old_heap();
+        let a = ints(&mut heap, 2);
+        heap.reserve(Heap::size_of(Kind::Ref, 1));
+        let cell = heap.alloc(Kind::Ref, 0, &[Value::Obj(a)]);
+        if cell >= crate::old::OLD_BASE {
+            let mut regs = [9, cell as Word, a as Word];
+            assert_eq!(run(&mut heap, &mut regs, &steps, 0), None, "an old cell");
         }
     }
 

@@ -193,6 +193,10 @@ struct Indenter {
     /// line above and has not reached its `=`. The lines that carry it on
     /// hang two units in, clear of the body that will hang one.
     head: bool,
+    /// Where on the stack the brace of each `mod Name {` still open is,
+    /// outermost first. What is inside one is declarations, as at the top
+    /// level, one unit further in.
+    modules: Vec<usize>,
 }
 
 impl Indenter {
@@ -202,6 +206,17 @@ impl Indenter {
             nest: Vec::new(),
             opened: true,
             head: false,
+            modules: Vec::new(),
+        }
+    }
+
+    /// Where declarations start here, as a place on the stack and a column:
+    /// the bottom and the margin, or just inside the innermost `mod Name {`.
+    fn floor(&self) -> (usize, usize) {
+        // One whose brace has been closed is no longer one.
+        match self.modules.iter().rev().find(|&&i| i < self.stack.len()) {
+            Some(&i) => (i + 1, self.stack[i].body()),
+            None => (0, 0),
         }
     }
 
@@ -259,6 +274,11 @@ impl Indenter {
         }
 
         let was = text.len() - trimmed.len();
+        // A `mod Name {` whose brace has been closed is no longer one.
+        while self.modules.last().is_some_and(|&i| i >= self.stack.len()) {
+            self.modules.pop();
+        }
+        let (start, margin) = self.floor();
         // Scan the trimmed line, so a token's column is relative to the line's
         // own indent and stays right after the line is moved.
         let code = self.code(trimmed);
@@ -272,22 +292,30 @@ impl Indenter {
 
         // As `indent_for` reads one: a macro call at the margin is a
         // declaration too.
-        let declares = starts_declaration(&toks) || (was == 0 && starts_macro_call(&toks));
+        let declares = starts_declaration(&toks) || (was == margin && starts_macro_call(&toks));
         // A clause (`| f x = …`) or a variant list is not the head going
         // on: it has a place of its own.
         let carries_on = self.head
             && !declares
-            && self.stack.is_empty()
+            && self.stack.len() == start
             && !matches!(toks.first_text(), "|" | "=");
         let indent = if carries_on {
-            2 * UNIT
+            margin + 2 * UNIT
         } else {
             self.indent_for(&toks, was)
         };
         // The body belongs to the declaration, not to the line of its head
         // that happens to end it.
-        self.update(&toks, if carries_on { 0 } else { indent });
-        self.head = (declares || carries_on) && !toks.has("=") && self.stack.is_empty();
+        self.update(&toks, if carries_on { margin } else { indent });
+        while self.modules.last().is_some_and(|&i| i >= self.stack.len()) {
+            self.modules.pop();
+        }
+        if opens_module(&toks) && matches!(self.stack.last(), Some(Frame::Open { close: '}', .. }))
+        {
+            self.modules.push(self.stack.len() - 1);
+        }
+        let start = self.floor().0;
+        self.head = (declares || carries_on) && !toks.has("=") && self.stack.len() == start;
         Line::Code {
             text: format!("{}{}", " ".repeat(indent), trimmed),
             indent,
@@ -375,35 +403,36 @@ impl Indenter {
         // there being no open bracket, so a record field never resets anything.
         // A macro call written at the left margin is a declaration too, as the
         // parser reads it; indented, it is part of what is above it.
-        let declares = starts_declaration(toks) || (author == 0 && starts_macro_call(toks));
-        if declares && !self.stack.iter().any(|f| matches!(f, Frame::Open { .. })) {
-            self.stack.clear();
-            return 0;
+        let (start, margin) = self.floor();
+        let declares = starts_declaration(toks) || (author == margin && starts_macro_call(toks));
+        let inside = self.stack.get(start..).unwrap_or(&[]);
+        if declares && !inside.iter().any(|f| matches!(f, Frame::Open { .. })) {
+            self.stack.truncate(start);
+            return margin;
         }
 
         // An item of a `trait` or an `impl` starts over too, one step inside
         // the braces that hold it: `fun`, `def` and `type` begin nothing else,
         // so inside a single top-level `{` they can only be the next item.
         if matches!(first, "fun" | "def" | "type")
-            && matches!(self.stack.first(), Some(Frame::Open { at: 0, close: '}' }))
-            && self
-                .stack
+            && matches!(inside.first(), Some(Frame::Open { at, close: '}' }) if *at == margin)
+            && inside
                 .iter()
                 .filter(|f| matches!(f, Frame::Open { .. }))
                 .count()
                 == 1
         {
-            self.stack.truncate(1);
-            return UNIT;
+            self.stack.truncate(start + 1);
+            return margin + UNIT;
         }
 
         let body = self.body();
-        if self.stack.is_empty() && author > 0 {
+        if self.stack.len() == start && author > margin {
             // At the top level and not a declaration: what a declaration
             // above carries on with -- the rest of a variant's fields, say --
             // which stays in from the margin, where its author put it.
             author
-        } else if self.opened || self.stack.is_empty() {
+        } else if self.opened || self.stack.len() == start {
             // The first line of a block, or the top level: structural.
             body
         } else {
@@ -658,6 +687,18 @@ fn starts_declaration(toks: &[Tok<'_>]) -> bool {
     }
 }
 
+/// Whether these tokens are `mod Name {`, attributes before it or not: the
+/// head of a module written where it is declared.
+fn opens_module(toks: &[Tok<'_>]) -> bool {
+    let Some(i) = toks.iter().position(|t| t.text == "mod") else {
+        return false;
+    };
+    starts_declaration(toks)
+        && toks.len() == i + 3
+        && toks[i + 2].text == "{"
+        && (i == 0 || toks.first_text() == "@")
+}
+
 /// Whether these tokens begin with a macro call: `name!` or `A.b.name!`.
 fn starts_macro_call(toks: &[Tok<'_>]) -> bool {
     let mut i = 0;
@@ -773,6 +814,60 @@ mod tests {
     // The tokenizer once walked bytes, and read the first byte of `é` as a
     // letter of its own: slicing the line there panicked, and an editor that
     // formats on save took the language server down with it.
+
+    #[test]
+    fn what_a_module_holds_is_one_unit_in() {
+        let src = "\
+@pub mod Core {
+fun secret n = n + 1
+
+@pub fun eval e =
+match e with
+| 0 -> 1
+| _ -> 2
+
+@pub mod Expr {
+use Node.*
+
+@pub data Node
+= Int Int
+| Add Node Node
+
+trait Shown a {
+fun shown : a -> String
+}
+}
+}
+
+def after = 1
+";
+        let want = "\
+@pub mod Core {
+  fun secret n = n + 1
+
+  @pub fun eval e =
+    match e with
+    | 0 -> 1
+    | _ -> 2
+
+  @pub mod Expr {
+    use Node.*
+
+    @pub data Node
+      = Int Int
+      | Add Node Node
+
+    trait Shown a {
+      fun shown : a -> String
+    }
+  }
+}
+
+def after = 1
+";
+        assert_eq!(f(src), want);
+        assert_eq!(f(want), want, "formatting is idempotent");
+    }
 
     #[test]
     fn a_name_that_is_not_ascii_is_one_word() {

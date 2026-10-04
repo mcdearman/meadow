@@ -149,6 +149,11 @@ pub enum Decl {
     /// `mod Foo` — declares child module `Foo`; its source is supplied by the
     /// driver (filesystem discovery or the embedded stdlib table).
     Mod(Ident),
+    /// `mod Foo { … }` — child module `Foo`, written where it is declared
+    /// rather than in a file of its own. The compiler lifts it out into a
+    /// module beside the others and leaves a [`Decl::Mod`] behind, so nothing
+    /// after that sees one.
+    Module(Ident, Vec<LDecl>),
     /// `use a.b.c` / `use a.b (x, y, z)` — `names` empty means the whole module.
     Use(UseDecl),
     /// `data Node a = Leaf (Vector a) | Internal { ... }`

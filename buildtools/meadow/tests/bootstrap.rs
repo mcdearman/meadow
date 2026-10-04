@@ -577,6 +577,10 @@ impl Tree<'_> {
         match d.value() {
             Decl::Bind(b) => self.node("Bind", s, |w| w.bind(b)),
             Decl::Mod(n) => self.node("Mod", s, |w| w.ident(n)),
+            Decl::Module(n, decls) => self.node("Module", s, |w| {
+                w.ident(n);
+                w.list("decls", decls, |w, d| w.decl(d));
+            }),
             Decl::Use(u) => self.node("Use", s, |w| {
                 w.idents("path", &u.path);
                 w.line(&format!("glob {}", u.glob));

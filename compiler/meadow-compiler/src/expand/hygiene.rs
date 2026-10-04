@@ -71,6 +71,20 @@ fn bound(b: &mut ast::Bound) {
     b.tys.iter_mut().for_each(ty);
 }
 
+fn meta(m: &mut ast::Meta) {
+    match m {
+        ast::Meta::Word(n) | ast::Meta::Text(n) => unmark(n),
+        ast::Meta::Value(n, v) => {
+            unmark(n);
+            unmark(v);
+        }
+        ast::Meta::List(n, ms) => {
+            unmark(n);
+            ms.iter_mut().for_each(meta);
+        }
+    }
+}
+
 fn decl(d: &mut ast::LDecl) {
     match &mut *d.value {
         // A top-level binding is an item: its *name* is not hygienic, though
@@ -180,8 +194,21 @@ fn decl(d: &mut ast::LDecl) {
                 unmark(a);
             }
         }
-        ast::Decl::Attributed(_, inner) => decl(inner),
+        // An attribute's words are not locals either: `@pub`, `@pub(pkg)`,
+        // `@cfg(test)` a template writes mean what they say.
+        ast::Decl::Attributed(attrs, inner) => {
+            for a in attrs {
+                unmark(&mut a.name);
+                a.args.iter_mut().for_each(unmark);
+                a.meta.iter_mut().for_each(meta);
+            }
+            decl(inner)
+        }
         ast::Decl::Mod(n) => unmark(n),
+        ast::Decl::Module(n, decls) => {
+            unmark(n);
+            decls.iter_mut().for_each(decl);
+        }
         ast::Decl::Fixity(_, _, ops) => ops.iter_mut().for_each(unmark),
         // Gone by the time this runs.
         ast::Decl::MacCall(_) | ast::Decl::Macro(_) => {}

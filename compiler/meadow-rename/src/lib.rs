@@ -185,6 +185,10 @@ pub struct Resolver {
     /// driver from this module's `mod` children and `use`d modules; consulted when
     /// resolving `Foo.name`.
     qualifiers: HashMap<InternedString, HashMap<InternedString, VarId>>,
+    /// The qualifiers that are a module of this unit under the current one,
+    /// and which: `Core.Expr` -> its path. What lets `Core.Expr.Int` be a
+    /// constructor of the type `Expr` that module `Core` declares.
+    qualifier_paths: HashMap<InternedString, Vec<InternedString>>,
     /// How every operator binds that something declared: this unit's own
     /// `infixl 6 +` and its dependencies'. One table for the whole unit,
     /// because an operator's fixity goes by its spelling, not by which
@@ -590,6 +594,7 @@ impl Resolver {
             test_vars: Vec::new(),
             macro_vars: Vec::new(),
             qualifiers: HashMap::new(),
+            qualifier_paths: HashMap::new(),
             fixities: HashMap::new(),
             prelude: HashMap::new(),
             errors: Vec::new(),
@@ -871,6 +876,7 @@ impl Resolver {
         self.current = path.to_vec();
         self.scope.truncate(self.base_scope);
         self.qualifiers.clear();
+        self.qualifier_paths.clear();
         self.tycons = self.base_tycons.clone();
         self.visible_ctors = self.base_ctors.clone();
         self.module_ctors.clear();
@@ -1278,6 +1284,42 @@ impl Resolver {
             self.names.insert(id, n);
         }
         self.qualifiers.insert(qualifier, values);
+    }
+
+    /// [`Resolver::activate_module`] for the module at `path`, one under the
+    /// module about to be resolved: `qualifier` is the path from here to it.
+    pub fn activate_child(&mut self, qualifier: InternedString, path: &[InternedString]) {
+        let values = self.module_values(path);
+        self.activate_module(qualifier, values);
+        self.qualifier_paths.insert(qualifier, path.to_vec());
+    }
+
+    /// `Core.Expr.Int`: the constructor `name` of the type that `q` names
+    /// through a module under this one -- `Core.Expr`, the type `Expr` of
+    /// module `Core`.
+    fn module_type_ctor(&self, q: InternedString, name: InternedString) -> Option<InternedString> {
+        let (module, ty) = q.rsplit_once('.')?;
+        let path = self.qualifier_paths.get(&InternedString::from(module))?;
+        let frame = self.frames.get(path)?;
+        frame
+            .ctors
+            .iter()
+            .find(|(bare, canonical, vis)| {
+                *bare == name && hir::spelling(&owner_of(*canonical)) == ty && self.sees(*vis, path)
+            })
+            .map(|(_, canonical, _)| *canonical)
+    }
+
+    /// The function `name` of the module `q` qualifies, as a use of it.
+    fn qualified_value(
+        &mut self,
+        q: InternedString,
+        name: InternedString,
+        span: Span,
+    ) -> Option<hir::LExpr> {
+        let id = self.qualifiers.get(&q)?.get(&name).copied()?;
+        let v = self.node(id, span);
+        Some(self.node(hir::Expr::Var(v), span))
     }
 
     fn node<T>(&mut self, value: T, span: Span) -> hir::Node<T> {
@@ -2414,7 +2456,11 @@ impl Resolver {
                 let segs = u.path.iter().map(|s| *s.value()).collect();
                 self.node(hir::Decl::Use(segs), decl.span)
             }
-            ast::Decl::Mod(name) => self.node(hir::Decl::Mod(*name.value()), decl.span),
+            // What `mod Foo { … }` holds is a module of its own by now: the
+            // compiler lifted it out before anything was resolved.
+            ast::Decl::Mod(name) | ast::Decl::Module(name, _) => {
+                self.node(hir::Decl::Mod(*name.value()), decl.span)
+            }
             ast::Decl::Data(dd) => {
                 let params = self.bind_tyvars(&dd.params);
                 let variants = dd
@@ -3225,11 +3271,24 @@ impl Resolver {
                 self.ambiguous_type(*q.value(), &cs, q.span);
             }
         }
-        let canonical = self.resolve_qualified_ctor(*q.value(), name)?;
+        let canonical = self
+            .resolve_qualified_ctor(*q.value(), name)
+            .or_else(|| self.module_type_ctor(*q.value(), name))?;
         // The qualifier *is* the type, written out — so it is a reference to
         // it, and a rename of the type has to rewrite it.
         self.note_ref(q.span, NameRef::Type(owner_of(canonical)));
         Some(canonical)
+    }
+
+    /// What [`Resolver::qualified_type_ctor`] would answer, without saying
+    /// anything or noting a reference.
+    fn qualified_type_ctor_known(
+        &self,
+        q: &ast::Ident,
+        name: InternedString,
+    ) -> Option<InternedString> {
+        self.resolve_qualified_ctor(*q.value(), name)
+            .or_else(|| self.module_type_ctor(*q.value(), name))
     }
 
     fn check_qualifier(&mut self, q: &ast::Ident) {
@@ -3417,6 +3476,13 @@ impl Resolver {
                     let ra = args.iter().map(|a| self.resolve_expr(a)).collect_vec();
                     return self.node(hir::Expr::Cons(label, ra), expr.span);
                 }
+                // `Core.Lam p b`: a pattern synonym of the module `Core`,
+                // building.
+                let builder = InternedString::from(format!("$b{}", name.value()).as_str());
+                if let Some(f) = self.qualified_value(*q.value(), builder, name.span) {
+                    let ra = args.iter().map(|a| self.resolve_expr(a)).collect_vec();
+                    return self.node(hir::Expr::App(f, ra), expr.span);
+                }
                 self.check_qualifier(q);
                 self.resolve_ctor_app(expr.span, name, args)
             }
@@ -3442,6 +3508,12 @@ impl Resolver {
                     if let Some(canonical) = self.qualified_type_ctor(q, nn) {
                         let label = self.node(canonical, name.span);
                         return self.node(hir::Expr::Cons(label, vec![]), expr.span);
+                    }
+                    // `Core.Lam`, the builder of a pattern synonym of the
+                    // module `Core`; applied, it is applied as any function.
+                    let builder = InternedString::from(format!("$b{nn}").as_str());
+                    if let Some(f) = self.qualified_value(qn, builder, name.span) {
+                        return f;
                     }
                     self.check_qualifier(q);
                     return self.resolve_ctor_app(expr.span, name, &[]);
@@ -3672,10 +3744,34 @@ impl Resolver {
         name: &ast::Ident,
         args: &[ast::LPat],
     ) -> Option<hir::LPat> {
+        self.synonym_pat_in(None, span, name, args)
+    }
+
+    /// [`Resolver::synonym_pat`], for `Q.P p1 p2` when `q` is given: the
+    /// synonym `P` of the module `Q` qualifies.
+    fn synonym_pat_in(
+        &mut self,
+        q: Option<InternedString>,
+        span: Span,
+        name: &ast::Ident,
+        args: &[ast::LPat],
+    ) -> Option<hir::LPat> {
         let bare = *name.value();
         let matcher = InternedString::from(format!("$m{}{bare}", args.len()).as_str());
-        let Some(f) = self.value_use(matcher, name.span) else {
-            let arity = self.synonym_arity(bare)?;
+        let found = match q {
+            Some(q) => self.qualified_value(q, matcher, name.span),
+            None => self.value_use(matcher, name.span),
+        };
+        let Some(f) = found else {
+            let arity = match q {
+                Some(q) => (0..=MAX_SYNONYM_ARITY).find(|n| {
+                    let m = InternedString::from(format!("$m{n}{bare}").as_str());
+                    self.qualifiers
+                        .get(&q)
+                        .is_some_and(|vs| vs.contains_key(&m))
+                }),
+                None => self.synonym_arity(bare),
+            }?;
             self.error(
                 format!(
                     "the pattern `{bare}` takes {arity} argument{}, not {}",
@@ -3850,6 +3946,13 @@ impl Resolver {
             }
             ast::Pat::Cons(name, args) => self.resolve_ctor_pat(pat.span, name, args),
             ast::Pat::QualCons(q, name, args) => {
+                // `Core.Lam p b`, a pattern synonym of the module `Core`.
+                if self.qualified_type_ctor_known(q, *name.value()).is_none()
+                    && let Some(matched) =
+                        self.synonym_pat_in(Some(*q.value()), pat.span, name, args)
+                {
+                    return matched;
+                }
                 if let Some(canonical) = self.qualified_type_ctor(q, *name.value()) {
                     // `Shape.Rect { w, h }` -- named fields, as they are unqualified.
                     if let [only] = args.as_slice()

@@ -190,7 +190,7 @@ struct Macro {
 /// expansion, for [`blame`].
 pub fn expand_unit(
     package: InternedString,
-    modules: &mut [crate::AstModule],
+    modules: &mut Vec<crate::AstModule>,
     deps: &[crate::Dep<'_>],
     procs: Option<&dyn proc::Runner>,
     filename: &str,
@@ -261,7 +261,14 @@ pub fn expand_unit(
             made.extend(ex.made);
         }
         bindings.extend(made);
-        if waiting == 0 {
+        // A `mod Foo { … }` a macro produced is a module now, and what it
+        // holds is expanded in the next round. Its marks start clear of the
+        // ones of the module it was written in, whose file it shares.
+        let parents = crate::unit::lift_inline_modules(modules);
+        for (k, parent) in parents.iter().enumerate() {
+            marks.push(marks[*parent].wrapping_add(1_000_000 * (k as u32 + 1)));
+        }
+        if waiting == 0 && parents.is_empty() {
             break;
         }
         // Nothing new, and something still waiting: whatever it waits for is
@@ -1475,6 +1482,8 @@ impl<'a> Expander<'a> {
             ast::Decl::MacCall(_)
             | ast::Decl::Macro(_)
             | ast::Decl::Mod(_)
+            // A module of its own once it is lifted out, and expanded then.
+            | ast::Decl::Module(..)
             | ast::Decl::Use(_)
             | ast::Decl::Data(_)
             | ast::Decl::Record(_)

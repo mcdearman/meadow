@@ -196,11 +196,26 @@ fn decl<'tokens, I>()
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
-    attr()
-        .repeated()
-        .collect::<Vec<_>>()
-        .then(bare_decl())
-        .map_with(|(attrs, ds), e| {
+    recursive(|decl| {
+        attr()
+            .repeated()
+            .collect::<Vec<_>>()
+            .then(bare_decl(decl))
+            .map_with(attributed)
+            .boxed()
+    })
+}
+
+/// `attrs` on each of the nodes one written declaration is.
+fn attributed<'tokens, I>(
+    (attrs, ds): (Vec<Attr>, Vec<LDecl>),
+    e: &mut chumsky::input::MapExtra<'tokens, '_, I, extra::Err<Rich<'tokens, Token, Span>>>,
+) -> Vec<LDecl>
+where
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
+{
+    {
+        {
             if attrs.is_empty() {
                 return ds;
             }
@@ -227,11 +242,13 @@ where
                     }
                 })
                 .collect()
-        })
+        }
+    }
 }
 
-fn bare_decl<'tokens, I>()
--> impl Parser<'tokens, I, Vec<LDecl>, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+fn bare_decl<'tokens, I>(
+    decl: impl Parser<'tokens, I, Vec<LDecl>, extra::Err<Rich<'tokens, Token, Span>>> + Clone + 'tokens,
+) -> impl Parser<'tokens, I, Vec<LDecl>, extra::Err<Rich<'tokens, Token, Span>>> + Clone
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
@@ -274,9 +291,24 @@ where
         fun_bind.or(pat_bind)
     };
 
+    // `mod Foo`, whose source is a file's, or `mod Foo { … }`, whose source
+    // is here. An empty one is written `mod Foo {}`.
     let mod_decl = just(Token::Mod)
         .ignore_then(path_seg())
-        .map_with(|name, e| LDecl::new(Decl::Mod(name), e.span()));
+        .then(
+            decl.repeated()
+                .collect::<Vec<_>>()
+                .validate(|groups, _, emitter| joined(groups, emitter))
+                .delimited_by(just(Token::LBrace), just(Token::RBrace))
+                .or_not(),
+        )
+        .map_with(|(name, body), e| {
+            let d = match body {
+                Some(decls) => Decl::Module(name, decls),
+                None => Decl::Mod(name),
+            };
+            LDecl::new(d, e.span())
+        });
 
     let use_decl = just(Token::Use)
         .ignore_then(
@@ -1368,6 +1400,32 @@ where
         .map_with(|(fields, tail), e| Located::new(TypeExpr::Record(fields, tail), e.span()))
 }
 
+/// A qualifier: `Mod`, or a path of them, `Core.Expr`, each followed by its
+/// `.`. A path is kept as one name, dots and all, which is what the resolver
+/// knows a module under another by.
+fn qualifier<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
+-> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
+    upper_ident()
+        .then_ignore(just(Token::Period))
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .map(|segs: Vec<Ident>| {
+            if let [only] = &segs[..] {
+                return only.clone();
+            }
+            let text = segs
+                .iter()
+                .map(|s| s.value().to_string())
+                .collect::<Vec<_>>()
+                .join(".");
+            let span = segs[1..]
+                .iter()
+                .fold(segs[0].span, |acc, s| acc.extend(s.span));
+            Ident::new(InternedString::from(text), span)
+        })
+}
+
 fn path_seg<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, Ident, extra::Err<Rich<'a, Token, Span>>> + Clone {
     select! {
@@ -1762,8 +1820,7 @@ where
             upper_ident().map_with(|n, e| Located::new(Expr::Cons(n, vec![]), e.span()));
 
         // `Mod.name` / `Mod.Ctor` as a bare atom (0-ary); `qual` below gathers args.
-        let qual_atom = upper_ident()
-            .then_ignore(just(Token::Period))
+        let qual_atom = qualifier()
             .then(choice((lower_ident(), upper_ident())))
             .map_with(|(q, n), e| Located::new(Expr::Qual(q, n), e.span()));
 
@@ -1902,8 +1959,7 @@ where
             .boxed();
 
         // `Mod.name a b` / `Mod.Ctor a b` — a qualified name applied to arguments.
-        let qual = upper_ident()
-            .then_ignore(just(Token::Period))
+        let qual = qualifier()
             .then(choice((lower_ident(), upper_ident())))
             .then(atom.clone().repeated().collect::<Vec<_>>())
             .map_with(|((q, n), args), e| {
@@ -2263,8 +2319,7 @@ where
         // A constructor that does take some is parenthesized, `Just (Cons x r)`.
         let argument = mac_call(true)
             .map(Pat::MacCall)
-            .or(upper_ident()
-                .then_ignore(just(Token::Period))
+            .or(qualifier()
                 .then(upper_ident())
                 .map(|(q, name)| Pat::QualCons(q, name, Vec::new())))
             .or(upper_ident().map(|name| Pat::Cons(name, Vec::new())))
@@ -2281,8 +2336,7 @@ where
             .boxed();
 
         // `Mod.Ctor p q` — a constructor pattern qualified by a `use`d module.
-        let qual_cons = upper_ident()
-            .then_ignore(just(Token::Period))
+        let qual_cons = qualifier()
             .then(upper_ident())
             .then(argument.clone().repeated().at_least(1).collect::<Vec<_>>())
             .map(|((q, name), args)| Pat::QualCons(q, name, args));
@@ -2419,8 +2473,7 @@ where
     // `Nothing`, `Maybe.Nothing` -- a constructor taking nothing. One that takes
     // something is written `(Just x)`, exactly as in Haskell, and for the same
     // reason: bare, it would read as two parameters.
-    let nullary = upper_ident()
-        .then_ignore(just(Token::Period))
+    let nullary = qualifier()
         .then(upper_ident())
         .map_with(|(q, n), e| LPat::new(Pat::QualCons(q, n, Vec::new()), e.span()))
         .or(upper_ident().map_with(|n, e| LPat::new(Pat::Cons(n, Vec::new()), e.span())));

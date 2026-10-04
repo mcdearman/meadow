@@ -2205,6 +2205,50 @@ with `pub use Ty::*`. After `@pub use MyLib.Shapes.Shape.*` in `MyLib`'s
 or a bare `use MyLib` to bring in all of them. A type re-exports the same way:
 after `@pub use MyLib.Shapes (Shape)`, a dependent writes `use MyLib (Shape)`.
 
+### A module inside a file
+
+A file is a module, and that is the default. A module can also be written
+where it is declared, with its declarations in braces, as Rust's
+`mod name { … }`:
+
+```meadow
+-- src/Main.mw
+@pub mod Core {
+  fun secret n = n + 1            -- this module only
+
+  @pub fun double n = secret n * 2 - 2
+
+  @pub mod Expr {
+    use Node.*
+
+    @pub data Node = Int Int | Add Node Node
+
+    @pub pattern Lit n = Int n
+
+    @pub fun eval e =
+      match e with
+      | Int n -> n
+      | Add a b -> eval a + eval b
+  }
+}
+
+fun main () = println (Core.Expr.eval (Core.Expr.Lit (Core.double 4)))
+```
+
+`mod Core` alone still names the module in `Core.mw`; `mod Core { … }` is the
+same module with its source here. Everything else about it is the same: it is
+its own namespace, `@pub` and `@cfg` on it and inside it mean what they do
+anywhere, and another module reaches it by its path, `use MyApp.Core.Expr`.
+`@cfg(test) mod Tests { … }` keeps a file's tests beside what they test. A
+macro may produce one.
+
+A module under the one you are writing — with a file or without — qualifies by
+its path from there, with no `use`: `Core.double`, `Core.Expr.eval`. The path
+may end in a type and its constructor, `Core.Expr.Node.Add`, or in a pattern
+synonym, `Core.Expr.Lit n`, which matches and builds as it does written bare.
+A type is not yet named this way where a type is written — `e : Core.Expr.Node`
+— so bring it in with `use MyApp.Core.Expr (Node)`.
+
 ### Visibility: `@pub`, `@pub(pkg)`, `@pub(super)`
 
 Nothing is visible outside the module it is written in until it says so. Three

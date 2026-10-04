@@ -237,6 +237,9 @@ fn decl(d: &ast::LDecl) -> String {
     match &*d.value {
         ast::Decl::Bind(b) => node("Bind", s, &[bind(b)]),
         ast::Decl::Mod(n) => node("ModDecl", s, &[name(n)]),
+        ast::Decl::Module(n, decls) => {
+            node("ModuleDecl", s, &[name(n), list(decls.iter().map(decl))])
+        }
         ast::Decl::Use(u) => node(
             "UseDecl",
             s,

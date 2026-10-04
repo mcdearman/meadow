@@ -448,6 +448,8 @@ fn compile_unit_inner(
     // else looks. Then macros, on what is left -- a call under a `@cfg` that
     // does not hold is never expanded, and one a macro produces is read here.
     let mut modules = modules;
+    // `mod Foo { … }` is a module like one with a file, from here on.
+    lift_inline_modules(&mut modules);
     // A child whose `mod` its parent declares only under a `@cfg` that does not
     // hold is not part of this build either, and nor is anything below it --
     // `@cfg(test) mod Tests` leaves `Tests.mw` out of an ordinary build.
@@ -590,6 +592,16 @@ fn compile_unit_inner(
             let here = module_filename(&filename, m.source);
             resolver.set_filename(here.clone());
             resolver.enter_module(&m.path);
+            // The modules under this one qualify by the path from here, as
+            // Rust's do: after `mod Core`, `Core.name`, and `Core.Expr.name`
+            // for a module `Expr` inside it. A `use … as Core` written here
+            // comes after, and so wins.
+            for below in &modules {
+                if below.path.len() > m.path.len() && below.path.starts_with(&m.path) {
+                    let qualifier = InternedString::from(dotted(&below.path[m.path.len()..]));
+                    resolver.activate_child(qualifier, &below.path);
+                }
+            }
             for d in &m.ast.value().decls {
                 let base = match d.value() {
                     ast::Decl::Attributed(_, inner) => inner.value(),
@@ -1029,6 +1041,52 @@ fn permute<T>(items: Vec<T>, order: &[usize]) -> Vec<T> {
         .iter()
         .map(|&i| slots[i].take().expect("each index appears once"))
         .collect()
+}
+
+/// Lift every `mod Foo { … }` out of `modules` into a module of its own,
+/// beside the ones that came from files, leaving `mod Foo` where it was
+/// written -- attributes and all, so a `@pub` or a `@cfg` on it means what it
+/// does on a module that has a file. A lifted module is lifted from in turn,
+/// so they nest. Returns, for each module added, the place in `modules` of
+/// the one it was written in.
+pub(crate) fn lift_inline_modules(modules: &mut Vec<AstModule>) -> Vec<usize> {
+    let mut parents = Vec::new();
+    let mut i = 0;
+    while i < modules.len() {
+        let mut lifted = Vec::new();
+        for d in &mut modules[i].ast.value.decls {
+            let span = d.span;
+            let slot = match &mut *d.value {
+                ast::Decl::Attributed(_, inner) => &mut *inner.value,
+                other => other,
+            };
+            if let ast::Decl::Module(name, decls) = slot {
+                let name = name.clone();
+                let decls = std::mem::take(decls);
+                *slot = ast::Decl::Mod(name.clone());
+                lifted.push((name, decls, span));
+            }
+        }
+        for (name, decls, span) in lifted {
+            let mut path = modules[i].path.clone();
+            path.push(*name.value());
+            modules.push(AstModule {
+                path,
+                name: *name.value(),
+                ast: ast::LModule::new(
+                    ast::Module {
+                        name: *name.value(),
+                        decls,
+                    },
+                    span,
+                ),
+                source: modules[i].source,
+            });
+            parents.push(i);
+        }
+        i += 1;
+    }
+    parents
 }
 
 /// The children `module` declares with `mod`, attributed or not.

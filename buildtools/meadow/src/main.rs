@@ -234,7 +234,8 @@ enum Cmd {
         /// is a place to cut it -- after a definition's `=`, an arm or a
         /// pipeline step to a line, an argument to a line. A string or a
         /// comment is never cut. `0` cuts nothing: no token leaves its line.
-        #[arg(long, value_name = "COLUMNS", default_value_t = 80)]
+        /// 100 unless it is given, as rustfmt has it.
+        #[arg(long, value_name = "COLUMNS", default_value_t = meadow_fmt::WIDTH)]
         width: usize,
     },
     /// Create a package: a `Meadow.toml` and a `src/Main.mw` that runs.

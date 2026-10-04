@@ -13,6 +13,11 @@ beyond the last release is under _Unreleased_.
 
 ## Unreleased
 
+### Breaking
+
+- `meadow fmt` cuts lines longer than 100 columns by default, as rustfmt does.
+  It was 80. `--width 80` asks for the old width.
+
 ### Added
 
 - The REPL colours what is typed as the language server would: the entry is

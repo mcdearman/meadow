@@ -51,6 +51,10 @@ mod wrap;
 /// One level of indentation.
 pub const UNIT: usize = 2;
 
+/// How many characters a line may be before `meadow fmt` cuts it, unless it
+/// is told another width: rustfmt's `max_width`, and the Rust style guide's.
+pub const WIDTH: usize = 100;
+
 /// [`format`], with every line longer than `width` characters cut into lines
 /// that fit, wherever there is a place to cut it: see [`wrap`].
 pub fn format_within(src: &str, width: usize) -> String {

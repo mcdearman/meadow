@@ -316,8 +316,11 @@ fun object =
   P.defer (\() -> members |> P.map Object |> P.label "an object")
 
 fun member =
-  let pairWith = \k -> value |> P.skipThen (symbol ":") |> P.map (\v -> pair k v) in
-  P.defer (\() -> P.bind (lexeme stringLit) pairWith)
+  P.defer (\() ->
+    P.pure pair
+      |> P.keep (lexeme stringLit)
+      |> P.skip (symbol ":")
+      |> P.keep value)
 
 -- --- lexical ------------------------------------------------------------------
 

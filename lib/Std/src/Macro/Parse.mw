@@ -149,12 +149,10 @@ fun located (r : (Int, Int)) : Loc = if fst r < 0 then Nowhere else At (fst r) (
   P.many (P.alt (P.choice [groupTree Paren, groupTree Bracket, groupTree Brace]) (P.satisfy (\t -> not (stop t) and not (bracket t))))
 
 fun groupTree (d : Delim) : Parser Tokens TokenTree =
-  P.bind
-    (P.satisfy (isPunct (opening d)))
-    (\o ->
-      P.bind
-        (P.defer (\u -> treesUntil (\t -> False)))
-        (\inner -> P.map (\c -> Group d inner (across (spanOf o) (spanOf c))) (P.satisfy (isPunct (closing d)))))
+  P.pure (\o inner c -> Group d inner (across (spanOf o) (spanOf c)))
+    |> P.keep (P.satisfy (isPunct (opening d)))
+    |> P.keep (P.defer (\u -> treesUntil (\t -> False)))
+    |> P.keep (P.satisfy (isPunct (closing d)))
 
 fun bracket (t : TokenTree) : Bool = V.any (\b -> isPunct b t) ["(", ")", "[", "]", "{", "}"]
 
@@ -172,10 +170,14 @@ def sample : [TokenTree] =
     Group Paren [Word "b" (At 10 11), Word "c" (At 12 13)] (At 9 14) ]
 
 @test fun aRunIsReadBackAsTheTreesItWas () =
-  let rule = P.bind ident (\n -> P.skipThen (punct "=") (P.map (\b -> (n, b)) (treesUntil (\t -> False)))) in
-  match parseTokens rule sample with
-  | Ok got -> assertEq (V.len (snd got)) 2 "a word and a group, as written"
-  | Err e -> assertEq (V.len e) 0 "it parses"
+  let rule =
+    P.pure (\n b -> (n, b))
+      |> P.keep ident
+      |> P.skip (punct "=")
+      |> P.keep (treesUntil (\t -> False)) in
+    match parseTokens rule sample with
+    | Ok got -> assertEq (V.len (snd got)) 2 "a word and a group, as written"
+    | Err e -> assertEq (V.len e) 0 "it parses"
 
 @test fun aFailureIsAtTheTokenThatWasWrong () =
   let wanted = P.skipThen ident (punct ":") in

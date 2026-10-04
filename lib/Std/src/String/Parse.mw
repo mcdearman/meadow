@@ -395,6 +395,27 @@ fun andThen c off2 hs reply =
 -- Apply the function `pf` yields to the value `pa` yields.
 @pub fun apply (pf : Parser s (a -> b)) (pa : Parser s a) : Parser s b = bind pf (\f -> map f pa)
 
+-- A parser of several things in a row, written as the function of what they
+-- are and then each of them in the order read:
+--
+--   P.pure (\name value -> (name, value))
+--     |> keep ident
+--     |> skip (symbol "=")
+--     |> keep expr
+--
+-- `keep p` reads `p` and hands what it read to the function as its next
+-- argument; `skip p` reads `p` and keeps nothing of it. Each is a line, so
+-- the parser reads down the page as the text it parses reads across it.
+-- `bind` is for what this cannot say: a step that depends on what an
+-- earlier one read.
+
+-- What `p` reads is the function's next argument.
+@pub fun keep (p : Parser s a) (pf : Parser s (a -> b)) : Parser s b =
+  apply pf p
+
+-- `p` is read, and nothing kept of it.
+@pub fun skip (p : Parser s a) (pf : Parser s b) : Parser s b = thenSkip pf p
+
 -- Run both, combining their results with `f`.
 @pub fun lift2 (f : a -> b -> c) (p : Parser s a) (q : Parser s b) : Parser s c = bind p (\a -> map (\b -> f a b) q)
 

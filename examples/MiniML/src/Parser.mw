@@ -70,9 +70,9 @@ fun boolLit =
 
 -- `f x y` -- application binds tightest and associates left.
 fun appE () =
-  P.bind (P.defer atomE)
-         (\f -> P.bind (P.many (P.defer atomE))
-                       (\args -> P.pure (V.foldl (\g a -> App g a) f args)))
+  P.pure (\f args -> V.foldl (\g a -> App g a) f args)
+    |> P.keep (P.defer atomE)
+    |> P.keep (P.many (P.defer atomE))
 
 -- A chain of left-associative binary operators at one precedence level.
 fun binaryE ops next =
@@ -93,16 +93,20 @@ fun atomE () =
 
 -- `fun x y -> e` is sugar for `fun x -> fun y -> e`.
 fun lamE () =
-  P.bind (P.skipThen (keyword "fun") (P.some ident))
-         (\names ->
-           P.bind (P.skipThen (symbol "->") (P.defer exprE))
-                   (\body -> P.pure (V.foldr (\n acc -> Lam n acc) body names)))
+  P.pure (\names body -> V.foldr (\n acc -> Lam n acc) body names)
+    |> P.skip (keyword "fun")
+    |> P.keep (P.some ident)
+    |> P.skip (symbol "->")
+    |> P.keep (P.defer exprE)
 
 fun ifE () =
-  P.bind (P.skipThen (keyword "if") (P.defer exprE))
-         (\c -> P.bind (P.skipThen (keyword "then") (P.defer exprE))
-           (\t -> P.bind (P.skipThen (keyword "else") (P.defer exprE))
-             (\e -> P.pure (If c t e))))
+  P.pure (\c t e -> If c t e)
+    |> P.skip (keyword "if")
+    |> P.keep (P.defer exprE)
+    |> P.skip (keyword "then")
+    |> P.keep (P.defer exprE)
+    |> P.skip (keyword "else")
+    |> P.keep (P.defer exprE)
 
 -- `let [rec] name args = rhs in body`.
 --
@@ -110,20 +114,27 @@ fun ifE () =
 -- right-hand side, and `let rec` with no argument is rejected because a
 -- recursive value that is not a function has nothing to stand on.
 fun letE () =
-  P.bind (P.skipThen (keyword "let") (P.optional (keyword "rec")))
-    (\isRec ->
-      P.bind ident (\name ->
-        P.bind (P.many ident) (\args ->
-          P.bind (P.skipThen (symbol "=") (P.defer exprE)) (\rhs ->
-            P.bind (P.skipThen (keyword "in") (P.defer exprE)) (\body ->
-              match isRec with
-              | None -> P.pure (Let name (V.foldr (\a acc -> Lam a acc) rhs args) body)
-              | Just r ->
-                  match V.head args with
-                  | None -> P.fail "an argument after `let rec`"
-                  | Just first ->
-                      let inner = V.foldr (\a acc -> Lam a acc) rhs (V.drop args 1) in
-                      P.pure (LetRec name first inner body))))))
+  let parts =
+    P.pure (\isRec name args rhs body -> (isRec, name, args, rhs, body))
+      |> P.skip (keyword "let")
+      |> P.keep (P.optional (keyword "rec"))
+      |> P.keep ident
+      |> P.keep (P.many ident)
+      |> P.skip (symbol "=")
+      |> P.keep (P.defer exprE)
+      |> P.skip (keyword "in")
+      |> P.keep (P.defer exprE) in
+    -- Whether it is a `let rec` decides whether what was read is one at all.
+    P.bind parts (\read ->
+      match read with
+      | (None, name, args, rhs, body) ->
+          P.pure (Let name (V.foldr (\a acc -> Lam a acc) rhs args) body)
+      | (Just r, name, args, rhs, body) ->
+          (match V.head args with
+           | None -> P.fail "an argument after `let rec`"
+           | Just first ->
+               let inner = V.foldr (\a acc -> Lam a acc) rhs (V.drop args 1) in
+               P.pure (LetRec name first inner body)))
 
 fun exprE () = P.choice [P.defer letE, P.defer lamE, P.defer ifE, P.defer cmpE]
 

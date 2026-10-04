@@ -143,13 +143,11 @@ fun signBy neg = P.alt (P.mapTo (\x -> x) (C.char '+')) (P.mapTo neg (C.char '-'
 -- the two: `signed sc decimal` reads `-12` and `+ 3`. For integers; floats
 -- have `signedFloat`.
 @pub fun signed (sc : Parser s a) (p : Parser s n) : Parser s n =
-  let f = signBy (\x -> 0 - x) |> lexeme sc |> P.option (\x -> x) in
-  P.bind f (\g -> P.map g p)
+  signBy (\x -> 0 - x) |> lexeme sc |> P.option (\x -> x) |> P.keep p
 
 -- `signed`, for a floating-point `p`.
 @pub fun signedFloat (sc : Parser s a) (p : Parser s f) : Parser s f =
-  let f = signBy (\x -> 0.0 -. x) |> lexeme sc |> P.option (\x -> x) in
-  P.bind f (\g -> P.map g p)
+  signBy (\x -> 0.0 -. x) |> lexeme sc |> P.option (\x -> x) |> P.keep p
 
 -- --- characters ----------------------------------------------------------------
 
@@ -222,7 +220,7 @@ fun columnAt input off = columnFrom input (lineStart input off) off 1
 
 -- The column the parser has reached.
 @pub fun indentLevel : Stream s => Parser s Int
-  | indentLevel = P.bind P.getInput (\input -> P.map (columnAt input) P.getOffset)
+  | indentLevel = P.pure columnAt |> P.keep P.getInput |> P.keep P.getOffset
 
 -- Fail, having wanted a column that relates to `ref` as `want` says.
 @pub fun incorrectIndent (want : Ordering) (ref : a) (actual : b) : Parser s c =

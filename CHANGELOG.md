@@ -15,9 +15,13 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
-- The REPL colours what is typed with the language server's token classes:
-  types, constructors and modules each have a colour, by what the session
-  has in scope. The `name : type` line an entry prints is coloured too.
+- The REPL colours what is typed as the language server would: the entry is
+  compiled against the session as it is typed, so types, constructors,
+  modules, functions and variables each have a colour, by what each name
+  resolved to and its type. The `name : type` line an entry prints is
+  coloured too.
+- The language server's semantic tokens mark a name whose type is a function
+  as `function`; every lower-case name was `variable`.
 
 ### Fixed
 

@@ -45,6 +45,186 @@ use std::sync::{Arc, Mutex, RwLock};
 #[derive(Helper, Hinter, Default)]
 struct TermValidator {
     names: complete::Names,
+    /// The session's compiled entries, lent to the prompt while a line is
+    /// read: what an entry being typed is compiled against to colour it. The
+    /// session takes them back when the line is in.
+    prefix: Vec<CompiledPackage>,
+    /// The session's `use`s, which an entry is compiled under.
+    uses: Vec<ast::LDecl>,
+    /// Which of the values the prefix exports are functions, for an entry
+    /// that does not parse yet: kept up with `prefix`.
+    known: std::collections::HashSet<meadow_compiler::hir::VarId>,
+    /// The trait methods and effect operations that are functions, by name:
+    /// values a program calls that the session's names do not carry an id
+    /// for.
+    methods: std::collections::HashSet<String>,
+    /// The last line coloured and what it came to. The line is asked for
+    /// again whenever the cursor moves, and an answer costs a compile.
+    seen: std::cell::RefCell<Option<(String, String)>>,
+}
+
+impl TermValidator {
+    /// Take the session's entries and `use`s for as long as a line is read.
+    fn lend(&mut self, prefix: Vec<CompiledPackage>, uses: &[ast::LDecl]) {
+        self.known = prefix
+            .iter()
+            .flat_map(|p| p.exports.iter())
+            .filter(|e| meadow_lsp::tokens::is_function_type(&e.scheme.to_string()))
+            .map(|e| e.var)
+            .collect();
+        // A trait's methods and an effect's operations are values a program
+        // calls too, and are not among the exports: a method is a function
+        // when its declared type is one, and an operation always takes its
+        // argument.
+        for d in prefix.iter().flat_map(|p| p.data_decls.iter()) {
+            match d.value() {
+                hir::Decl::Trait(td) => {
+                    for m in &td.methods {
+                        if matches!(m.ty.value(), hir::TypeExpr::Fun(..)) {
+                            self.known.insert(*m.var.value());
+                            self.methods.insert(m.name.to_string());
+                        }
+                    }
+                }
+                hir::Decl::Effect(ed) => {
+                    for (op, id, _) in &ed.ops {
+                        self.known.insert(*id.value());
+                        self.methods.insert(op.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.prefix = prefix;
+        self.uses = uses.to_vec();
+        *self.seen.borrow_mut() = None;
+    }
+
+    /// What `line` means, as far as can be told: compiled against the
+    /// session as the entry it will be, which is what the language server
+    /// does with a document, when it parses; and by what the session knows
+    /// of each spelling when it does not yet.
+    fn meaning(&self, line: &str) -> Meaning<'_> {
+        let mut meaning = Meaning::spelled(&self.names, &self.known);
+        meaning.methods = Some(&self.methods);
+        let src = Source::new(SourceKind::Interactive, InternedString::from(line));
+        let lex = tokenize(src);
+        let (parsed, _) = parser::parse_repl(src, &lex.tokens);
+        let Some(item) = parsed else { return meaning };
+        let entered = match item {
+            Either::Left(decls) => decls,
+            Either::Right(expr) => vec![synth_def("it", expr)],
+        };
+        let mut decls = self.uses.clone();
+        decls.extend(entered);
+        let name = InternedString::from("repl");
+        let module = AstModule {
+            path: vec![],
+            name,
+            ast: Located::new(ast::Module { name, decls }, Span::default()),
+            source: src,
+        };
+        let deps: Vec<meadow_compiler::Dep<'_>> =
+            self.prefix.iter().map(meadow_compiler::Dep::new).collect();
+        // What is typed is checked here only to colour it: whatever it gets
+        // wrong is said when it is entered, and a compiler that gives up on
+        // half an entry leaves it coloured by spelling.
+        let compiled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compile_unit(
+                InternedString::from("repl:prompt"),
+                self.prefix.len() + 1,
+                vec![module],
+                &deps,
+                Options {
+                    entry_name: Some("it"),
+                    ..Options::debug()
+                },
+            )
+        }));
+        let Ok((compiled, _)) = compiled else {
+            return meaning;
+        };
+        let analysis = meadow_lsp::analysis::of_unit(&compiled, line, src);
+        meaning.resolved = analysis
+            .name_refs
+            .iter()
+            .map(|(span, _, ns)| (span.start, *ns))
+            .collect();
+        meaning.functions = meadow_lsp::tokens::functions(&analysis);
+        meaning.typed = analysis
+            .typed
+            .iter()
+            .map(|(span, _)| (span.start as usize, span.end as usize))
+            .collect();
+        meaning
+    }
+}
+
+/// What is known of an entry's names, for colouring them.
+struct Meaning<'a> {
+    names: &'a complete::Names,
+    /// The exported values that are functions, by what they are.
+    known: &'a std::collections::HashSet<meadow_compiler::hir::VarId>,
+    /// The methods and operations that are functions, by name.
+    methods: Option<&'a std::collections::HashSet<String>>,
+    /// What a capitalised word resolved to, by where it starts.
+    resolved: std::collections::HashMap<u32, meadow_lsp::analysis::Namespace>,
+    /// The names that are functions, by where each is written.
+    functions: std::collections::HashSet<(usize, usize)>,
+    /// Every name inference gave a type, by where it is written: one of
+    /// these that is not among `functions` is not a function, whatever else
+    /// is spelled that way.
+    typed: std::collections::HashSet<(usize, usize)>,
+}
+
+impl<'a> Meaning<'a> {
+    /// What the session's names alone say: nothing resolved, nothing typed.
+    fn spelled(
+        names: &'a complete::Names,
+        known: &'a std::collections::HashSet<meadow_compiler::hir::VarId>,
+    ) -> Meaning<'a> {
+        Meaning {
+            names,
+            known,
+            methods: None,
+            resolved: Default::default(),
+            functions: Default::default(),
+            typed: Default::default(),
+        }
+    }
+
+    /// Whether the name written at `from..to` of `line` is a function.
+    fn is_function(&self, line: &str, from: usize, to: usize) -> bool {
+        if self.typed.contains(&(from, to)) {
+            return self.functions.contains(&(from, to));
+        }
+        // Not typed: by its spelling, through its qualifier if it has one.
+        let Some(name) = line.get(from..to) else {
+            return false;
+        };
+        let before = &line[..from];
+        let var = match before.strip_suffix('.') {
+            Some(path) => {
+                let start = path
+                    .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+                    .map_or(0, |i| i + 1);
+                self.names
+                    .qualified_vars
+                    .get(&path[start..])
+                    .and_then(|vs| vs.get(name))
+            }
+            None => self.names.value_vars.get(name),
+        };
+        match var {
+            Some(v) => self.known.contains(v),
+            // A method, an operation, or one of the language's own: `show`.
+            None => {
+                self.methods.is_some_and(|ms| ms.contains(name))
+                    || meadow_compiler::infer::primitive_scheme(name)
+                        .is_some_and(|s| meadow_lsp::tokens::is_function_type(&s.to_string()))
+            }
+        }
+    }
 }
 
 /// The prompt, in bold green — the same colour as the logo.
@@ -71,7 +251,14 @@ impl Highlighter for TermValidator {
 
     /// What is being typed, coloured by what each token is: see [`coloured`].
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-        Cow::Owned(coloured(line, &self.names))
+        if let Some((seen, painted)) = &*self.seen.borrow()
+            && seen == line
+        {
+            return Cow::Owned(painted.clone());
+        }
+        let painted = coloured(line, &self.meaning(line));
+        *self.seen.borrow_mut() = Some((line.to_string(), painted.clone()));
+        Cow::Owned(painted)
     }
 
     /// Every key can change what a token is -- `le` is a name and `let` a
@@ -91,6 +278,10 @@ enum Class {
     Constructor,
     /// A module, or an alias for one.
     Module,
+    /// A name that is a function.
+    Function,
+    /// Any other name.
+    Variable,
     Number,
     String,
     Comment,
@@ -109,7 +300,8 @@ enum Class {
 /// has in scope under that spelling. A comment never reaches the lexer, so
 /// what lies between two tokens is looked at for one: `--` to the end of its
 /// line. Text the lexer cannot read -- a string not closed yet -- is plain.
-fn classes(line: &str, names: &complete::Names) -> Vec<(std::ops::Range<usize>, Class)> {
+fn classes(line: &str, meaning: &Meaning<'_>) -> Vec<(std::ops::Range<usize>, Class)> {
+    let names = meaning.names;
     use meadow_lsp::tokens::{LEGEND, Scope, classified};
     let mut out = Vec::new();
     let between = |from: usize, to: usize, out: &mut Vec<(std::ops::Range<usize>, Class)>| {
@@ -132,13 +324,13 @@ fn classes(line: &str, names: &complete::Names) -> Vec<(std::ops::Range<usize>, 
             }
         }
     };
-    // Nothing at the prompt is resolved while it is typed; what is in scope
-    // under a spelling is the answer there is.
-    let resolved = std::collections::HashMap::new();
+    // What the entry resolved to where it compiled, and what is in scope
+    // under a spelling where it did not.
     let scope = Scope {
-        resolved: &resolved,
+        resolved: &meaning.resolved,
         is_ctor: &|n| names.ctors.iter().any(|c| c == n),
         is_type: &|n| names.types.iter().any(|t| t == n),
+        is_function: &|from, to| meaning.is_function(line, from, to),
     };
     let mut at = 0;
     for (start, end, kind) in classified(line, &scope) {
@@ -152,6 +344,8 @@ fn classes(line: &str, names: &complete::Names) -> Vec<(std::ops::Range<usize>, 
             Some("type") => Class::Type,
             Some("enumMember") => Class::Constructor,
             Some("namespace") => Class::Module,
+            Some("function") => Class::Function,
+            Some("variable") => Class::Variable,
             Some("number") => Class::Number,
             Some("string") => Class::String,
             _ => Class::Plain,
@@ -168,10 +362,10 @@ fn classes(line: &str, names: &complete::Names) -> Vec<(std::ops::Range<usize>, 
 /// as they are. A line at a time, so that a string over several lines does
 /// not colour what starts the next; and nothing at all where `yansi` says
 /// there is to be no colour.
-fn coloured(line: &str, names: &complete::Names) -> String {
+fn coloured(line: &str, meaning: &Meaning<'_>) -> String {
     use yansi::Paint as _;
     let mut out = String::with_capacity(line.len() + 32);
-    for (range, class) in classes(line, names) {
+    for (range, class) in classes(line, meaning) {
         let text = &line[range];
         if class == Class::Plain {
             out.push_str(text);
@@ -189,6 +383,8 @@ fn coloured(line: &str, names: &complete::Names) -> String {
                 Class::Type => piece.cyan().to_string(),
                 Class::Constructor => piece.blue().to_string(),
                 Class::Module => piece.cyan().dim().to_string(),
+                Class::Function => piece.bright_yellow().to_string(),
+                Class::Variable => piece.bright_blue().to_string(),
                 Class::Number => piece.yellow().to_string(),
                 Class::String => piece.green().to_string(),
                 Class::Comment => piece.dim().to_string(),
@@ -206,8 +402,9 @@ fn coloured(line: &str, names: &complete::Names) -> String {
 fn signature(name: &str, scheme: &str) -> String {
     use yansi::Paint as _;
     let all_types = complete::Names::default();
+    let none = std::collections::HashSet::new();
     let mut out = String::new();
-    for (range, class) in classes(scheme, &all_types) {
+    for (range, class) in classes(scheme, &Meaning::spelled(&all_types, &none)) {
         let text = &scheme[range];
         match class {
             Class::Type | Class::Constructor | Class::Module => {
@@ -913,7 +1110,10 @@ impl Session {
             Editor::with_config(config).expect("failed to create editor");
         let names = complete::snapshot(&self.prefix, &self.uses);
         self.refresh_finder(&names);
-        rl.set_helper(Some(TermValidator { names }));
+        rl.set_helper(Some(TermValidator {
+            names,
+            ..Default::default()
+        }));
 
         // `Ctrl-F`: find a declaration, by name or by type, and put it on the
         // prompt. See `meadow::finder`.
@@ -953,10 +1153,18 @@ impl Session {
         loop {
             // `:try` leaves an example on the prompt instead of running it, so
             // that it can be read and changed before it is.
+            // The prompt colours what is typed by compiling it against the
+            // session, so it has the session's entries while a line is read.
+            if let Some(h) = rl.helper_mut() {
+                h.lend(std::mem::take(&mut self.prefix), &self.uses);
+            }
             let read = match self.pending.take() {
                 Some(text) => rl.readline_with_initial(PROMPT, (&text, "")),
                 None => rl.readline(PROMPT),
             };
+            if let Some(h) = rl.helper_mut() {
+                self.prefix = std::mem::take(&mut h.prefix);
+            }
             match read {
                 Ok(line) => {
                     if line.trim().is_empty() {
@@ -1496,7 +1704,9 @@ mod tests {
     fn an_entry_is_classed_by_what_the_lexer_sees() {
         let line = "let x = 42 in -- the answer\n  if x == 1.5 then \"a\" else f x";
         let names = complete::Names::default();
-        let got = classes(line, &names);
+        let known = std::collections::HashSet::new();
+        let spelled = Meaning::spelled(&names, &known);
+        let got = classes(line, &spelled);
         let whole: String = got.iter().map(|(r, _)| &line[r.clone()]).collect();
         assert_eq!(whole, line, "every byte, once, in order");
         let of = |class: Class| -> Vec<&str> {
@@ -1511,8 +1721,8 @@ mod tests {
         assert_eq!(of(Class::Comment), ["-- the answer"]);
         // A name that starts as a keyword is a name, and a string not closed
         // yet is not coloured as anything.
-        assert_eq!(classes("letter", &names), vec![(0..6, Class::Plain)]);
-        let open: String = classes("f \"abc", &names)
+        assert_eq!(classes("letter", &spelled), vec![(0..6, Class::Variable)]);
+        let open: String = classes("f \"abc", &spelled)
             .iter()
             .map(|(r, _)| &"f \"abc"[r.clone()])
             .collect();
@@ -1529,7 +1739,8 @@ mod tests {
             ..Default::default()
         };
         let line = "def x : Maybe Int = V.map Just Unknown";
-        let got = classes(line, &names);
+        let known = std::collections::HashSet::new();
+        let got = classes(line, &Meaning::spelled(&names, &known));
         let of = |class: Class| -> Vec<&str> {
             got.iter()
                 .filter(|(_, c)| *c == class)
@@ -1541,6 +1752,53 @@ mod tests {
         // A qualifier, and a capital nothing in scope explains.
         assert_eq!(of(Class::Module), ["V", "Unknown"]);
         assert_eq!(of(Class::Keyword), ["def"]);
+    }
+
+    /// The prompt compiles what is typed against the session, as the
+    /// language server does a document, so a name is a function or not by
+    /// its type -- a parameter that is one included -- and an entry that
+    /// does not parse yet still has what the session knows of each spelling.
+    #[test]
+    fn a_name_is_a_function_by_its_type_and_by_the_session_until_it_has_one() {
+        let (prefix, _) = stdlib::std_packages(Options::debug());
+        let mut h = TermValidator {
+            names: complete::snapshot(&prefix, &[]),
+            ..Default::default()
+        };
+        h.lend(prefix, &[]);
+        let of = |line: &str, class: Class| -> Vec<String> {
+            classes(line, &h.meaning(line))
+                .iter()
+                .filter(|(_, c)| *c == class)
+                .map(|(r, _)| line[r.clone()].to_string())
+                .collect()
+        };
+
+        let line = "fun twice f x = f (f x)";
+        assert_eq!(of(line, Class::Function), ["twice", "f", "f", "f"]);
+        assert_eq!(of(line, Class::Variable), ["x", "x"]);
+
+        // A local that shadows a function is what its own type says.
+        let line = "let show = 1 in show + 1";
+        assert_eq!(of(line, Class::Function), Vec::<String>::new());
+        assert_eq!(of(line, Class::Variable), ["show", "show"]);
+
+        // Not an entry yet: `show` is the session's, a function.
+        let line = "let n = show (";
+        assert_eq!(of(line, Class::Function), ["show"]);
+        assert_eq!(of(line, Class::Variable), ["n"]);
+
+        let started = std::time::Instant::now();
+        for _ in 0..20 {
+            h.meaning("fun twice f x = f (f x)");
+        }
+        let each = started.elapsed() / 20;
+        assert!(
+            // A release build takes two or three milliseconds; a debug one,
+            // which is what the tests are, some tens.
+            each < std::time::Duration::from_millis(500),
+            "colouring an entry took {each:?}, which is too long for a key"
+        );
     }
 
     /// With no colour to be had, what a binding's line says is what it said.

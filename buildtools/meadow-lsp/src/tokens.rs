@@ -43,6 +43,37 @@ pub struct Scope<'a> {
     pub is_ctor: &'a dyn Fn(&str) -> bool,
     /// The same for a type.
     pub is_type: &'a dyn Fn(&str) -> bool,
+    /// Whether the name written from one offset to the other is a function:
+    /// by its type where the document was typed, or by what is known of the
+    /// spelling where it was not.
+    pub is_function: &'a dyn Fn(usize, usize) -> bool,
+}
+
+/// Whether a type, as it is rendered, is a function's: an arrow that is not
+/// inside brackets of any kind. `(a -> b) -> [a] -> [b]` is; `[a -> b]`, a
+/// list of functions, is not.
+pub fn is_function_type(rendered: &str) -> bool {
+    let mut depth = 0usize;
+    let bytes = rendered.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'-' if depth == 0 && bytes.get(i + 1) == Some(&b'>') => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The names in `analysis` that are functions, by where each is written.
+pub fn functions(analysis: &Analysis) -> std::collections::HashSet<(usize, usize)> {
+    analysis
+        .typed
+        .iter()
+        .filter(|(_, ty)| is_function_type(ty))
+        .map(|(span, _)| (span.start as usize, span.end as usize))
+        .collect()
 }
 
 /// `(line, start character, length, token type)`, in source order.
@@ -58,10 +89,12 @@ pub fn tokens(text: &str, analysis: &Analysis) -> Vec<(u32, u32, u32, u32)> {
         .iter()
         .map(|(span, _, ns)| (span.start, *ns))
         .collect();
+    let functions = functions(analysis);
     let scope = Scope {
         resolved: &resolved,
         is_ctor: &|n| analysis.ctors_in_scope.contains(n),
         is_type: &|n| analysis.types_in_scope.contains(n),
+        is_function: &|from, to| functions.contains(&(from, to)),
     };
 
     let mut out = Vec::new();
@@ -178,7 +211,13 @@ pub fn classified(text: &str, scope: &Scope<'_>) -> Vec<(usize, usize, u32)> {
                     "namespace"
                 }
             }
-            Token::LowerIdent(_) => "variable",
+            Token::LowerIdent(_) => {
+                if (scope.is_function)(t.span.start as usize, t.span.end as usize) {
+                    "function"
+                } else {
+                    "variable"
+                }
+            }
             Token::OpIdent(_)
             | Token::ConOpIdent(_)
             | Token::Plus
@@ -233,6 +272,17 @@ pub fn encode(tokens: &[(u32, u32, u32, u32)]) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_function_is_told_by_an_arrow_outside_every_bracket() {
+        assert!(is_function_type("Int -> Int"));
+        assert!(is_function_type("(a -> b) -> [a] -> [b]"));
+        assert!(is_function_type("() -> () ! Console"));
+        assert!(!is_function_type("Int"));
+        assert!(!is_function_type("[a -> b]"));
+        assert!(!is_function_type("(Int -> Int, String)"));
+        assert!(!is_function_type("{ f : a -> b }"));
+    }
 
     #[test]
     fn deltas_are_relative_to_the_previous_token() {

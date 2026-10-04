@@ -918,6 +918,53 @@ impl Std {
     }
 }
 
+/// What a unit already compiled says about one of its sources: what each
+/// name in it resolved to and what type each node has. Only what is read off
+/// the typed tree -- no candidates, no paths, no declarations -- so it is
+/// cheap enough to ask after every key: the REPL does, of the entry being
+/// typed, to colour it as an editor would.
+pub fn of_unit(pkg: &CompiledPackage, text: &str, source: Source) -> Analysis {
+    let mut a = Analysis {
+        source: text.to_string(),
+        source_id: source.id,
+        diagnostics: Vec::new(),
+        typed: Vec::new(),
+        typed_nodes: Vec::new(),
+        candidates: Vec::new(),
+        defs: Default::default(),
+        refs: Vec::new(),
+        binders: Vec::new(),
+        binding_names: Default::default(),
+        schemes: Default::default(),
+        name_refs: Vec::new(),
+        names: Default::default(),
+        types_in_scope: Default::default(),
+        ctors_in_scope: Default::default(),
+        wider: Default::default(),
+        wider_names: Default::default(),
+        wider_refs: Vec::new(),
+        wider_name_refs: Vec::new(),
+        functions: Vec::new(),
+        ctor_paths: Default::default(),
+        paths: Default::default(),
+        declarations: Vec::new(),
+    };
+    for m in &pkg.modules {
+        if m.source.id != source.id {
+            continue;
+        }
+        let mut w = Walk {
+            types: Some(&pkg.types),
+            source: m.source,
+            namer: meadow_compiler::infer::Renderer::for_table(&pkg.types),
+            a: &mut a,
+        };
+        w.module(&m.hir);
+        absorb_refs(&mut a, m);
+    }
+    a
+}
+
 /// Where each macro call standing for declarations is: `syntax! { … }`,
 /// `lang! { … }`, `derive! …`, attributed or not -- and each declaration
 /// with a `@derive(…)` on it.

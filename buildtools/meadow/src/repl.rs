@@ -32,7 +32,7 @@ use rustyline::{
     EventHandler, Helper, Hinter, KeyCode, KeyEvent, Modifiers, RepeatCount,
     completion::{Completer, Pair},
     error::ReadlineError,
-    highlight::Highlighter,
+    highlight::{CmdKind, Highlighter},
     validate::{ValidationResult, Validator},
 };
 use std::borrow::Cow;
@@ -68,6 +68,143 @@ impl Highlighter for TermValidator {
             Cow::Borrowed(prompt)
         }
     }
+
+    /// What is being typed, coloured by what each token is: see [`coloured`].
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        Cow::Owned(coloured(line))
+    }
+
+    /// Every key can change what a token is -- `le` is a name and `let` a
+    /// keyword -- so the line is coloured again after each.
+    fn highlight_char(&self, _line: &str, _pos: usize, _kind: CmdKind) -> bool {
+        true
+    }
+}
+
+/// What a stretch of an entry is, for colouring it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Keyword,
+    Number,
+    String,
+    Comment,
+    /// A name, an operator, punctuation, white space: left as it is.
+    Plain,
+}
+
+/// `line` cut into stretches, each with its class, that together are the
+/// whole of it in order.
+///
+/// By the compiler's own lexer, so that what is coloured as a keyword is
+/// what the language takes for one. A comment never reaches the lexer, so
+/// what lies between two tokens is looked at for one: `--` to the end of its
+/// line. Text the lexer cannot read -- a string not closed yet -- is plain.
+fn classes(line: &str) -> Vec<(std::ops::Range<usize>, Class)> {
+    use meadow_compiler::lexer::Token;
+    let lexed = tokenize(Source::new(SourceKind::Interactive, line.into()));
+    let mut out = Vec::new();
+    let between = |from: usize, to: usize, out: &mut Vec<(std::ops::Range<usize>, Class)>| {
+        let mut at = from;
+        while at < to {
+            let rest = &line[at..to];
+            match rest.find("--") {
+                Some(dashes) => {
+                    if dashes > 0 {
+                        out.push((at..at + dashes, Class::Plain));
+                    }
+                    let end = rest[dashes..].find('\n').map_or(to, |n| at + dashes + n);
+                    out.push((at + dashes..end, Class::Comment));
+                    at = end;
+                }
+                None => {
+                    out.push((at..to, Class::Plain));
+                    at = to;
+                }
+            }
+        }
+    };
+    let mut at = 0;
+    for t in &lexed.tokens {
+        let (start, end) = (t.span.start as usize, t.span.end as usize);
+        // A token made up for the layout, or out of order: nothing to colour.
+        if start < at || end > line.len() || start >= end {
+            continue;
+        }
+        between(at, start, &mut out);
+        let class = match t.value() {
+            Token::Mod
+            | Token::Use
+            | Token::Def
+            | Token::Fun
+            | Token::Let
+            | Token::In
+            | Token::Match
+            | Token::With
+            | Token::If
+            | Token::Then
+            | Token::Else
+            | Token::Data
+            | Token::Record
+            | Token::Effect
+            | Token::Handle
+            | Token::Type
+            | Token::Trait
+            | Token::Impl
+            | Token::Where
+            | Token::Infix
+            | Token::Infixl
+            | Token::Infixr
+            | Token::End
+            | Token::As
+            | Token::And
+            | Token::Or => Class::Keyword,
+            Token::Int(_) | Token::Real(_) => Class::Number,
+            Token::String(_)
+            | Token::InterpStart(_)
+            | Token::InterpMid(_)
+            | Token::InterpEnd(_)
+            | Token::Char(_) => Class::String,
+            _ => Class::Plain,
+        };
+        out.push((start..end, class));
+        at = end;
+    }
+    between(at, line.len(), &mut out);
+    out
+}
+
+/// `line` with its keywords bold, its numbers and its strings a colour each
+/// and its comments dim -- the colours a prompt made by Lingua's `repl!`
+/// uses -- and names and operators as they are. A line at a time, so that a
+/// string over several lines does not colour what starts the next; and
+/// nothing at all where `yansi` says there is to be no colour.
+fn coloured(line: &str) -> String {
+    use yansi::Paint as _;
+    let mut out = String::with_capacity(line.len() + 32);
+    for (range, class) in classes(line) {
+        let text = &line[range];
+        if class == Class::Plain {
+            out.push_str(text);
+            continue;
+        }
+        for (i, piece) in text.split('\n').enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            if piece.is_empty() {
+                continue;
+            }
+            let painted = match class {
+                Class::Keyword => piece.magenta().bold().to_string(),
+                Class::Number => piece.yellow().to_string(),
+                Class::String => piece.green().to_string(),
+                Class::Comment => piece.dim().to_string(),
+                Class::Plain => piece.to_string(),
+            };
+            out.push_str(&painted);
+        }
+    }
+    out
 }
 
 impl Completer for TermValidator {
@@ -1315,6 +1452,19 @@ mod tests {
 
         yansi::whenever(yansi::Condition::NEVER);
         assert_eq!(h.highlight_prompt("> ", true), "> ");
+        assert_eq!(h.highlight("let x = 1", 0), "let x = 1");
+
+        // What is typed is coloured, and is the same text under the colour.
+        yansi::whenever(yansi::Condition::ALWAYS);
+        let line = "let s = \"a\nb\" in 7 -- done";
+        let got = h.highlight(line, 0);
+        assert!(got.contains('\x1b'), "coloured: {got:?}");
+        assert_eq!(strip_ansi(&got), line);
+        // A string over two lines is coloured a line at a time.
+        assert!(
+            got.contains("\x1b[0m\n"),
+            "reset before the line ends: {got:?}"
+        );
 
         // rustyline's own prompts are never ours to style.
         yansi::whenever(yansi::Condition::ALWAYS);
@@ -1322,6 +1472,34 @@ mod tests {
             h.highlight_prompt("(i-search)`': ", false),
             "(i-search)`': "
         );
+    }
+
+    /// What is typed is cut into the stretches the lexer sees, with comments
+    /// found between them, and loses nothing: the stretches are the line.
+    #[test]
+    fn an_entry_is_classed_by_what_the_lexer_sees() {
+        let line = "let x = 42 in -- the answer\n  if x == 1.5 then \"a\" else f x";
+        let got = classes(line);
+        let whole: String = got.iter().map(|(r, _)| &line[r.clone()]).collect();
+        assert_eq!(whole, line, "every byte, once, in order");
+        let of = |class: Class| -> Vec<&str> {
+            got.iter()
+                .filter(|(_, c)| *c == class)
+                .map(|(r, _)| &line[r.clone()])
+                .collect()
+        };
+        assert_eq!(of(Class::Keyword), ["let", "in", "if", "then", "else"]);
+        assert_eq!(of(Class::Number), ["42", "1.5"]);
+        assert_eq!(of(Class::String), ["\"a\""]);
+        assert_eq!(of(Class::Comment), ["-- the answer"]);
+        // A name that starts as a keyword is a name, and a string not closed
+        // yet is not coloured as anything.
+        assert_eq!(classes("letter"), vec![(0..6, Class::Plain)]);
+        let open: String = classes("f \"abc")
+            .iter()
+            .map(|(r, _)| &"f \"abc"[r.clone()])
+            .collect();
+        assert_eq!(open, "f \"abc");
     }
 
     #[test]

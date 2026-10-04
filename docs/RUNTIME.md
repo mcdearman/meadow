@@ -824,7 +824,7 @@ goes. `Ref`s, mutable arrays and functions can't be compacted.
 | variable                 | default        | effect                                                  |
 | ------------------------ | -------------- | ------------------------------------------------------- |
 | `MEADOW_GC`              | `generational` | `copying` for the single-space baseline                 |
-| `MEADOW_GC_NURSERY`      | 32768          | largest nursery, in slots, which bounds nursery pauses  |
+| `MEADOW_GC_NURSERY`      | 262144         | largest nursery, in slots, which bounds nursery pauses  |
 | `MEADOW_GC_TRIGGER`      | 262144         | old-generation growth, in slots, before the first cycle |
 | `MEADOW_GC_MARK_THREADS` | cores / 4      | marker pool size; 0 means mark in pauses                |
 | `MEADOW_GC_EVACUATE`     | on             | `0` turns evacuation off                                |
@@ -834,6 +834,16 @@ goes. `Ref`s, mutable arrays and functions can't be compacted.
 
 `meadow run --gc-stats` reports collections, pause percentiles, promotion and
 marking.
+
+The nursery's limit is also `--nursery <SIZE>` on the command line and
+`nursery = "…"` in a `[profile.<name>]` of `Meadow.toml`, as a size in bytes
+-- `8M`, `512K`, `1G` -- from 256K to 1G; the default is 2M, which is the
+262144 slots above. A larger nursery is collected less often and promotes
+less: `binarytrees`, which spends two fifths of its time in collections, runs
+a quarter faster at 8M. Its nursery pauses are longer for it, and a program
+that keeps most of what it allocates gains nothing. Like `-j`, it is what
+`meadow` runs a program with: an executable run by hand reads
+`MEADOW_GC_NURSERY`.
 
 ## 5. Effects
 

@@ -384,6 +384,14 @@ struct TargetArgs {
     /// the same, and `threads = N` in a profile; both runtimes read it.
     #[arg(long, short = 'j', value_name = "N")]
     threads: Option<usize>,
+    /// How large Glade's collector lets a thread's nursery grow: `8M`, `512K`,
+    /// `1G`, or bytes, from 256K to 1G. 2M by default. A larger one collects
+    /// less often and promotes less, which a program that allocates a great
+    /// deal runs faster for, and its nursery pauses are longer.
+    /// `MEADOW_GC_NURSERY` says the same in words of eight bytes, and
+    /// `nursery = "…"` in a profile. Silo has no nursery.
+    #[arg(long, value_name = "SIZE", value_parser = meadow::profile::nursery_size)]
+    nursery: Option<u64>,
     /// After running, report the blocks the program left behind: what it
     /// still held at exit, by kind, and what held them. Silo counts by
     /// reference, so this is where a cycle shows up. `leaks = true` in a
@@ -403,6 +411,7 @@ impl TargetArgs {
                 .or_else(|| profile.target.map(|t| t.to_string())),
             runtime: profile.runtime,
             threads: self.threads.or(profile.threads),
+            nursery: self.nursery.or(profile.nursery),
             leaks: self.leaks || profile.leaks,
         }
     }
@@ -414,6 +423,10 @@ impl TargetArgs {
         if let Some(n) = self.threads.filter(|n| *n > 0) {
             // Safety: before the program, its threads or any child of it.
             unsafe { std::env::set_var("MEADOW_THREADS", n.to_string()) };
+        }
+        if let Some(bytes) = self.nursery {
+            // The collector counts in words. Safety: as above.
+            unsafe { std::env::set_var("MEADOW_GC_NURSERY", (bytes / 8).to_string()) };
         }
         if self.leaks {
             // Safety: as above.
@@ -530,6 +543,8 @@ impl ProfileArgs {
             // `-j`, `--leaks` and `--target` belong to the command, and win
             // over these when they are given: see `TargetArgs::with`.
             threads: None,
+            // Asked for with `--nursery`, which `TargetArgs` reads.
+            nursery: None,
             leaks: None,
             target: None,
         }

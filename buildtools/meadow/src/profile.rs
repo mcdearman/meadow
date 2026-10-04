@@ -125,6 +125,8 @@ pub struct Resolved {
     pub runtime: crate::aot::Runtime,
     /// `threads` from the manifest: `-j`'s default.
     pub threads: Option<usize>,
+    /// `nursery` from the manifest, in bytes: `--nursery`'s default.
+    pub nursery: Option<u64>,
     /// `leaks = true` from the manifest: `--leaks`'s default.
     pub leaks: bool,
     /// `target` from the manifest: `--target`'s default.
@@ -146,6 +148,7 @@ impl Resolved {
             sample: false,
             runtime: crate::aot::Runtime::Glade,
             threads: None,
+            nursery: None,
             leaks: false,
             target: None,
         }
@@ -196,6 +199,7 @@ impl Resolved {
             sample: from_manifest.profile.unwrap_or(false),
             runtime,
             threads: flags.threads.or(from_manifest.threads),
+            nursery: from_manifest.nursery,
             leaks: flags.leaks.or(from_manifest.leaks).unwrap_or(false),
             target: flags.target.or(from_manifest.target),
         }
@@ -275,5 +279,62 @@ mod tests {
             ..ProfileConfig::default()
         };
         assert_eq!(flag.apply(manifest.apply(base)).opt, OptLevel::O0);
+    }
+}
+
+/// The smallest and the largest a nursery may be asked to grow to, in bytes:
+/// below the first a program collects more than it runs, and past the second
+/// a nursery collection is no longer a short pause.
+pub const NURSERY_MIN: u64 = 256 << 10;
+pub const NURSERY_MAX: u64 = 1 << 30;
+
+/// A nursery size as `--nursery` and `nursery = "…"` write it -- bytes, or
+/// with a unit: `512K`, `8M`, `1G`, and `KiB`, `MiB`, `GiB` or `KB`, `MB`,
+/// `GB` for the same, all powers of 1024 -- or what is wrong with it. One
+/// outside [`NURSERY_MIN`] to [`NURSERY_MAX`] is refused.
+pub fn nursery_size(text: &str) -> Result<u64, String> {
+    let t = text.trim();
+    let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let (number, unit) = t.split_at(digits);
+    let shift = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 0,
+        "k" | "kb" | "kib" => 10,
+        "m" | "mb" | "mib" => 20,
+        "g" | "gb" | "gib" => 30,
+        _ => {
+            return Err(format!(
+                "`{text}` is not a size: write `8M`, `512K`, `1G`, or bytes"
+            ));
+        }
+    };
+    let bytes = number
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_shl(shift).filter(|b| b >> shift == n))
+        .ok_or_else(|| format!("`{text}` is not a size: write `8M`, `512K`, `1G`, or bytes"))?;
+    if !(NURSERY_MIN..=NURSERY_MAX).contains(&bytes) {
+        return Err(format!(
+            "a nursery of `{text}` is outside 256K to 1G, which is what it may be"
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod nursery_tests {
+    use super::*;
+
+    #[test]
+    fn a_size_is_bytes_or_has_a_unit_and_is_within_the_range() {
+        assert_eq!(nursery_size("8M"), Ok(8 << 20));
+        assert_eq!(nursery_size("8MiB"), Ok(8 << 20));
+        assert_eq!(nursery_size(" 512 kb "), Ok(512 << 10));
+        assert_eq!(nursery_size("1G"), Ok(1 << 30));
+        assert_eq!(nursery_size("2097152"), Ok(2 << 20));
+        assert!(nursery_size("64K").is_err(), "too small");
+        assert!(nursery_size("2G").is_err(), "too large");
+        assert!(nursery_size("lots").is_err());
+        assert!(nursery_size("8X").is_err());
+        assert!(nursery_size("").is_err());
     }
 }

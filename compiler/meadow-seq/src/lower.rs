@@ -2442,6 +2442,9 @@ impl Lower {
         if let Some(switch) = self.case_total(s, arms, &live, k) {
             return switch;
         }
+        if let Some(switch) = self.case_switch(s, arms, &live, k) {
+            return switch;
+        }
         if self.opt.case_trees()
             && let Some(tree) = self.case_matrix(s, arms, &live, k)
         {
@@ -2523,6 +2526,77 @@ impl Lower {
         } else {
             None
         }
+    }
+
+    /// The leading arms that each name a different constructor, unguarded and
+    /// with nothing inside that can fail, as one `switch` -- and whatever
+    /// follows them as its default: `match k with | A -> 1 | B x -> 2 | _ -> 0`.
+    ///
+    /// Once such an arm's tag has matched the arm is taken, so there is
+    /// nothing to fall back to and no failure object is built; a value of
+    /// none of those constructors goes on to the arms after, which is the
+    /// default's block, compiled as any `match`. Like [`Lower::case_total`],
+    /// which is this with nothing after, it is smaller than the chain as well
+    /// as faster, so it is not gated.
+    ///
+    /// The chain made an object an arm before testing anything -- each
+    /// holding everything live and the one after it -- and a function an arm
+    /// to test in: a `match` on a token's kind with 78 arms and a `_` was
+    /// eighty allocations a time it ran, and half a megabyte of LLVM IR.
+    fn case_switch(&mut self, s: Name, arms: &[Arm], live: &[Name], k: Name) -> Option<Statement> {
+        let mut seen: HashSet<InternedString> = HashSet::new();
+        let n = arms
+            .iter()
+            .take_while(|(p, g, _)| match p {
+                Pat::Ctor(name, subs) => {
+                    g.is_none() && subs.iter().all(irrefutable) && seen.insert(*name)
+                }
+                _ => false,
+            })
+            .count();
+        // Two at least: one is what the arms after it are for.
+        if n < 2 {
+            return None;
+        }
+        let scrutinee_ty = self.type_of_name(s);
+        let unused = self.fresh_ref();
+        let mut switch_arms = Vec::with_capacity(n);
+        for (pat, _, term) in &arms[..n] {
+            let Pat::Ctor(ctor, subs) = pat else {
+                unreachable!("the prefix is constructor patterns");
+            };
+            let tag = self.tag_of(*ctor);
+            let fields = self.field_names(*ctor, subs, scrutinee_ty.as_ref());
+            let mut arm_env = fields.clone();
+            arm_env.extend_from_slice(live);
+            let pairs: Vec<(&Pat, Name)> = subs.iter().zip(fields.iter().copied()).collect();
+            let body = self.match_all(
+                pairs,
+                arm_env.clone(),
+                unused,
+                Box::new(move |this, env1| this.expr(term, &env1, k)),
+            );
+            switch_arms.push((
+                tag,
+                Block {
+                    params: arm_env,
+                    body,
+                },
+            ));
+        }
+        let rest = if n == arms.len() {
+            Statement::Error("non-exhaustive pattern match")
+        } else {
+            self.case(s, &arms[n..], live.to_vec(), k)
+        };
+        Some(Statement::Switch {
+            scrutinee: s,
+            arms: switch_arms,
+            default: Box::new(Block {
+                params: live.to_vec(),
+                body: rest,
+            }),
+        })
     }
 
     /// The leading arms that test a literal, as a chain of compare-and-branch.

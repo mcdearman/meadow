@@ -540,8 +540,54 @@ fn case_trees_replace_the_chain_at_o2() {
         widths
     };
 
-    // One switch per arm, each testing one tag ...
-    assert_eq!(arms_at(OptLevel::O1), vec![1, 1]);
-    // ... against one switch that tests both.
+    // Neither arm can fail once its tag has matched, so there is nothing to
+    // fall back to and it is one switch that tests both, at any level: the
+    // chain's switch an arm, each testing one tag, came with an object an arm.
+    assert_eq!(arms_at(OptLevel::O1), vec![2]);
     assert_eq!(arms_at(OptLevel::O2), vec![2]);
+
+    // `match x with | Nothing -> 0 | Just (Just z) -> z | _ -> 0`: the second
+    // arm can fail after its tag has matched, and has to go on to the third.
+    let z = VarId(3);
+    let nested = Term::case(
+        Term::Var(x),
+        vec![
+            (Pat::Ctor("Nothing".into(), vec![]), Term::Lit(Lit::Int(0))),
+            (
+                Pat::Ctor(
+                    "Just".into(),
+                    vec![Pat::Ctor("Just".into(), vec![Pat::var(z)])],
+                ),
+                Term::Var(z),
+            ),
+            (Pat::Wild, Term::Lit(Lit::Int(0))),
+        ],
+    );
+    let term = Term::let_(
+        x,
+        opaque(
+            Term::ctor(
+                "Just",
+                vec![Term::ctor("Just", vec![Term::Lit(Lit::Int(9))])],
+            ),
+            Term::ctor("Nothing", vec![]),
+        ),
+        nested,
+    );
+    let widest = |opt| {
+        let lowered = lower_program(&main_def(term.clone()), opt);
+        let mut widest = 0;
+        for def in &lowered.program.defs {
+            walk(&def.block.body, &mut |s| {
+                if let Statement::Switch { arms, .. } = s {
+                    widest = widest.max(arms.len());
+                }
+            });
+        }
+        widest
+    };
+    // The chain: a switch an arm, each testing one tag ...
+    assert_eq!(widest(OptLevel::O1), 1);
+    // ... against a tree, whose first switch tests both.
+    assert_eq!(widest(OptLevel::O2), 2);
 }

@@ -56,7 +56,6 @@ use Std.Collections.Vector (Vector)
     : String ! { Fs | e } =
   path |> readToString |> unwrapOr default
 
-@pub fun tryReadDir (path : String) : [String] ! { Fs | e } =
-  path |> readDir |> unwrapOr V.empty
+@pub fun tryReadDir (path : String) : [String] ! { Fs | e } = path |> readDir |> unwrapOr V.empty
 
 @pub fun existsAll (paths : [String]) : Bool ! { Fs | e } = V.all exists paths

@@ -33,28 +33,21 @@ use Std.Tuple (fst, snd)
   } s0
 
 -- Just the result.
-@pub fun evalState (s0 : a) (act : () -> b ! { State a | e }) : b ! e =
-  fst (runState s0 act)
+@pub fun evalState (s0 : a) (act : () -> b ! { State a | e }) : b ! e = fst (runState s0 act)
 
 -- Just the final state.
-@pub fun execState (s0 : a) (act : () -> b ! { State a | e }) : a ! e =
-  snd (runState s0 act)
+@pub fun execState (s0 : a) (act : () -> b ! { State a | e }) : a ! e = snd (runState s0 act)
 
 -- --- derived operations ------------------------------------------------------
 
 -- Apply `f` to the state.
-@pub fun modify (f : a -> a ! { State a | e }) : () ! { State a | e } =
-  let s = get () in
-  put (f s)
+@pub fun modify (f : a -> a ! { State a | e }) : () ! { State a | e } = let s = get () in put (f s)
 
 -- Read the state through `f` without changing it.
 @pub fun gets (f : a -> b ! { State a | e }) : b ! { State a | e } = f (get ())
 
 -- Replace the state, returning the old one.
-@pub fun swap (s2 : a) : a ! { State a | e } =
-  let old = get () in
-  let ignored = put s2 in
-  old
+@pub fun swap (s2 : a) : a ! { State a | e } = let old = get () in let ignored = put s2 in old
 
 -- --- tests -------------------------------------------------------------------
 
@@ -78,16 +71,10 @@ fun tick () =
 
 @test fun modifyAndGets () =
   let a = assertEq (execState 10 (\u2 -> modify (\s -> s * 3))) 30 "modify" in
-  assertEq
-    (evalState 10 (\u2 -> gets (\s -> s + 1)))
-    11
-    "gets reads through a function"
+  assertEq (evalState 10 (\u2 -> gets (\s -> s + 1))) 11 "gets reads through a function"
 
 @test fun swapReturnsTheOldState () =
-  assertEq
-    (runState 1 (\u2 -> swap 2))
-    (1, 2)
-    "the old value, and the new state"
+  assertEq (runState 1 (\u2 -> swap 2)) (1, 2) "the old value, and the new state"
 
 @test fun aStateThatIsNeverTouchedComesBackUnchanged () =
   assertEq (runState 7 (\u2 -> 1)) (1, 7) "no get, no put"

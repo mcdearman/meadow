@@ -62,11 +62,7 @@ use Code.*
 
 -- A key, and what was held with it.
 @derive(Debug, PartialEq)
-@pub record Key = {
-  @pub code : Code,
-  @pub ctrl : Bool,
-  @pub alt : Bool,
-  @pub shift : Bool,
+@pub record Key = { @pub code : Code, @pub ctrl : Bool, @pub alt : Bool, @pub shift : Bool,
 }
 
 -- What `nextEvent` answers. After `Resized`, `size` says what to.
@@ -75,16 +71,14 @@ use Event.*
 @pub data Event = Pressed Key | Pasted String | Resized | Closed
 
 -- `code` with nothing held.
-@pub fun key (code : Code) : Key =
-  Key { code = code, ctrl = False, alt = False, shift = False }
+@pub fun key (code : Code) : Key = Key { code = code, ctrl = False, alt = False, shift = False }
 
 -- Ctrl with a letter: `ctrl "f"`.
 @pub fun ctrl (letter : String) : Key =
   Key { code = Character letter, ctrl = True, alt = False, shift = False }
 
 -- Alt with a key.
-@pub fun alt (code : Code) : Key =
-  Key { code = code, ctrl = False, alt = True, shift = False }
+@pub fun alt (code : Code) : Key = Key { code = code, ctrl = False, alt = True, shift = False }
 
 -- Enter raw mode: whether the terminal took it. `False` when standard input
 -- is not a terminal -- a file, a pipe -- or cannot be driven this way.
@@ -174,8 +168,7 @@ fun encode (event : Maybe Event) : (Int, String, Int) =
   | Just Resized -> (20, "", 0)
   | Just (Pasted text) -> (21, text, 0)
   | Just (Pressed k) ->
-      let held =
-        (if k.shift then 1 else 0) + (if k.alt then 2 else 0) + (if k.ctrl then 4 else 0)
+      let held = (if k.shift then 1 else 0) + (if k.alt then 2 else 0) + (if k.ctrl then 4 else 0)
       in
       (match k.code with
        | Character text -> (1, text, held)
@@ -201,12 +194,7 @@ use Std.Test (assertEq)
 
 @test fun eventsArriveInOrderAndThenTheInputCloses () =
   let events =
-    [
-      Pressed (key (Character "é")),
-      Pressed (ctrl "f"),
-      Pasted "a\nb",
-      Resized,
-      Pressed (alt Enter)
+    [ Pressed (key (Character "é")), Pressed (ctrl "f"), Pasted "a\nb", Resized, Pressed (alt Enter)
     ]
   in
   let got = withEvents events (\() ->
@@ -239,13 +227,9 @@ use Std.Test (assertEq)
       Function 5
     ]
   in
-  let held =
-    V.map (\c -> Key { code = c, ctrl = True, alt = False, shift = True }) keys
+  let held = V.map (\c -> Key { code = c, ctrl = True, alt = False, shift = True }) keys
   in
-  let got =
-    withEvents
-      (V.map (\k -> Pressed k) held)
-      (\() -> V.map (\k -> nextKey ()) held)
+  let got = withEvents (V.map (\k -> Pressed k) held) (\() -> V.map (\k -> nextKey ()) held)
   in
   assertEq got (V.map (\k -> Just k) held) "its code and what was held"
 

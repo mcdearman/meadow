@@ -166,8 +166,7 @@ fun infer counter env level e =
   | Expr.Var name -> instantiate counter level (lookupVar env name)
   | Expr.Lam param body ->
       let argT = newTv counter level in
-      let bodyT =
-        infer counter ((param, Scheme.Forall V.empty argT) :: env) level body
+      let bodyT = infer counter ((param, Scheme.Forall V.empty argT) :: env) level body
       in
       Ty.Fun argT bodyT
   | Expr.App f a ->

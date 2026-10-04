@@ -5,14 +5,11 @@ use Result.*
 @derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub data Result e a = Err e | Ok a
 
-@pub fun isOk (r : Result a b) : Bool =
-  match r with | Err e -> False | Ok x -> True
+@pub fun isOk (r : Result a b) : Bool = match r with | Err e -> False | Ok x -> True
 
-@pub fun isErr (r : Result a b) : Bool =
-  match r with | Err e -> True | Ok x -> False
+@pub fun isErr (r : Result a b) : Bool = match r with | Err e -> True | Ok x -> False
 
-@pub fun unwrapOr (fallback : a) (r : Result b a) : a =
-  match r with | Err e -> fallback | Ok x -> x
+@pub fun unwrapOr (fallback : a) (r : Result b a) : a = match r with | Err e -> fallback | Ok x -> x
 
 @pub fun map (f : a -> b ! e) (r : Result c a) : Result c b ! e =
   match r with
@@ -61,11 +58,7 @@ use Std.Maybe.Maybe.*
 
 @test fun andThenChainsAndShortCircuits () =
   let a = assertEq (andThen (\n -> Ok (n + 1)) (Ok 1)) (Ok 2) "andThen Ok" in
-  let b =
-    assertEq
-      (andThen (\n -> Err "bad") (Ok 1))
-      (Err "bad")
-      "the function may fail"
+  let b = assertEq (andThen (\n -> Err "bad") (Ok 1)) (Err "bad") "the function may fail"
   in
   assertEq (andThen (\n -> Ok n) (Err "e")) (Err "e") "andThen Err"
 

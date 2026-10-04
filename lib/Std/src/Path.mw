@@ -30,8 +30,7 @@ use Std.Maybe.Maybe.*
   else if endsWithSeparator a then S.concat a b
   else S.concatAll [a, separator, b]
 
-@pub fun joinAll (parts : [String]) : String =
-  V.foldl (\acc p -> join acc p) "" parts
+@pub fun joinAll (parts : [String]) : String = V.foldl (\acc p -> join acc p) "" parts
 
 -- --- splitting ---------------------------------------------------------------
 
@@ -78,8 +77,7 @@ use Std.Maybe.Maybe.*
   | Just d -> join d name
 
 -- Every non-empty component, separators discarded.
-@pub fun components (p : String) : [String] =
-  p |> splitAny |> V.filter (\c -> not (S.isEmpty c))
+@pub fun components (p : String) : [String] = p |> splitAny |> V.filter (\c -> not (S.isEmpty c))
 
 -- --- classifying -------------------------------------------------------------
 
@@ -197,11 +195,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let a =
     assertEq (withExtension "a/b/c.txt" "md") "a/b/c.md" "withExtension"
   in
-  let b =
-    assertEq
-      (withExtension "a/b/c.txt" "")
-      "a/b/c"
-      "an empty extension removes it"
+  let b = assertEq (withExtension "a/b/c.txt" "") "a/b/c" "an empty extension removes it"
   in
   let c = assertEq (withExtension "c" "txt") "c.txt" "adding one" in
   assertEq (withFileName "a/b/c.txt" "d.md") "a/b/d.md" "withFileName"

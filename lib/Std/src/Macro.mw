@@ -66,8 +66,7 @@ use Wire.*
 @pub fun fail (why : String) : [TokenTree] = [Fail why Nowhere]
 
 -- The same, reported at the token `t` -- the one that was wrong.
-@pub fun failAt (why : String) (t : TokenTree) : [TokenTree] =
-  [Fail why (spanOf t)]
+@pub fun failAt (why : String) (t : TokenTree) : [TokenTree] = [Fail why (spanOf t)]
 
 -- Where a token was written.
 @pub fun spanOf (t : TokenTree) : Loc =
@@ -99,15 +98,12 @@ use Wire.*
 -- argument as text starts from.
 @pub fun spaced (ts : [TokenTree]) : String = S.join " " (V.map text ts)
 
-@pub fun opening (d : Delim) : String =
-  match d with | Paren -> "(" | Bracket -> "[" | Brace -> "{"
+@pub fun opening (d : Delim) : String = match d with | Paren -> "(" | Bracket -> "[" | Brace -> "{"
 
-@pub fun closing (d : Delim) : String =
-  match d with | Paren -> ")" | Bracket -> "]" | Brace -> "}"
+@pub fun closing (d : Delim) : String = match d with | Paren -> ")" | Bracket -> "]" | Brace -> "}"
 
 -- Whether this is the word `w`.
-@pub fun isWord (w : String) (t : TokenTree) : Bool =
-  match t with | Word x _ -> x == w | _ -> False
+@pub fun isWord (w : String) (t : TokenTree) : Bool = match t with | Word x _ -> x == w | _ -> False
 
 -- Whether this is the punctuation `p`.
 @pub fun isPunct (p : String) (t : TokenTree) : Bool =
@@ -118,12 +114,10 @@ use Wire.*
   match t with | Group _ ts _ -> Just ts | _ -> None
 
 -- The word a token is, or none.
-@pub fun word (t : TokenTree) : Maybe String =
-  match t with | Word w _ -> Just w | _ -> None
+@pub fun word (t : TokenTree) : Maybe String = match t with | Word w _ -> Just w | _ -> None
 
 -- The string a token is, or none.
-@pub fun string (t : TokenTree) : Maybe String =
-  match t with | Str s _ -> Just s | _ -> None
+@pub fun string (t : TokenTree) : Maybe String = match t with | Str s _ -> Just s | _ -> None
 
 -- `ts` split on the punctuation `p`, which is dropped.
 --
@@ -175,8 +169,7 @@ impl ToTokens Float {
   fun toTokens x = [Real x Nowhere]
 }
 
-impl ToTokens Bool {
-  fun toTokens b = [Word (if b then "True" else "False") Nowhere]
+impl ToTokens Bool { fun toTokens b = [Word (if b then "True" else "False") Nowhere]
 }
 
 -- A string is spliced as a string literal. A name is a `Word`: splice
@@ -186,8 +179,7 @@ impl ToTokens String {
 }
 
 -- The runs of tokens a quote was cut into, joined.
-@pub fun quoted (parts : #[[TokenTree]]) : [TokenTree] =
-  V.concat (vecFromArray parts)
+@pub fun quoted (parts : #[[TokenTree]]) : [TokenTree] = V.concat (vecFromArray parts)
 
 -- --- compile-time bindings ---------------------------------------------------
 --
@@ -230,9 +222,7 @@ impl ToTokens String {
 --
 -- `define` leaves a value for a later macro, under a name in the calling
 -- module, visible as far as the call's own `@pub` says.
-@pub effect Expand {
-  lookup : String -> Maybe Datum,
-  define : (String, Datum) -> (),
+@pub effect Expand { lookup : String -> Maybe Datum, define : (String, Datum) -> (),
 }
 
 -- A type a macro can store and read back: to a `Datum`, and from one, saying
@@ -242,9 +232,7 @@ impl ToTokens String {
 -- `Tag` of its name and its fields, a record a `Rec` of its fields by name. The
 -- code it writes names `Reflect` and `Datum`, so both have to be in scope where
 -- it is derived: `use Std.Macro (Reflect, Datum)`.
-@pub trait Reflect a {
-  fun toDatum : a -> Datum
-  fun fromDatum : Datum -> Result String a
+@pub trait Reflect a { fun toDatum : a -> Datum fun fromDatum : Datum -> Result String a
 }
 
 impl Reflect Datum {
@@ -254,8 +242,7 @@ impl Reflect Datum {
 
 impl Reflect Int {
   fun toDatum n = Datum.Int n
-  fun fromDatum d =
-    match d with | Datum.Int n -> Ok n | other -> Err (expected "an Int" other)
+  fun fromDatum d = match d with | Datum.Int n -> Ok n | other -> Err (expected "an Int" other)
 }
 
 impl Reflect Float {
@@ -268,8 +255,7 @@ impl Reflect Float {
 
 impl Reflect Bool {
   fun toDatum b = Datum.Bool b
-  fun fromDatum d =
-    match d with | Datum.Bool b -> Ok b | other -> Err (expected "a Bool" other)
+  fun fromDatum d = match d with | Datum.Bool b -> Ok b | other -> Err (expected "a Bool" other)
 }
 
 impl Reflect String {
@@ -330,16 +316,11 @@ impl ToTokens Datum {
           Brace
           (commas
             (V.map
-              (\p ->
-                V.append
-                  [Word (fst p) Nowhere, Punct "=" Nowhere]
-                  (toTokens (snd p)))
+              (\p -> V.append [Word (fst p) Nowhere, Punct "=" Nowhere] (toTokens (snd p)))
               fs))
           Nowhere]
     | Datum.Tag name ds ->
-        V.pushFront
-          (V.concatMap (\x -> [Group Paren (toTokens x) Nowhere]) ds)
-          (Word name Nowhere)
+        V.pushFront (V.concatMap (\x -> [Group Paren (toTokens x) Nowhere]) ds) (Word name Nowhere)
     | Datum.Code ts -> ts
 }
 
@@ -353,8 +334,7 @@ fun commas (parts : [[TokenTree]]) : [TokenTree] =
     parts
 
 -- What a `fromDatum` says when it was given the wrong thing.
-@pub fun expected (what : String) (got : Datum) : String =
-  "expected ${what}, not ${show got}"
+@pub fun expected (what : String) (got : Datum) : String = "expected ${what}, not ${show got}"
 
 -- The value `name` stands for, read as an `a`.
 @pub fun lookupAs (name : String) : Result String a ! { Expand | e } =
@@ -363,8 +343,7 @@ fun commas (parts : [[TokenTree]]) : [TokenTree] =
   | None -> Err "nothing is defined as `${name}`"
 
 -- Leave `x` for a later macro, under `name`.
-@pub fun defineAs (name : String) (x : a) : () ! { Expand | e } =
-  define (name, toDatum x)
+@pub fun defineAs (name : String) (x : a) : () ! { Expand | e } = define (name, toDatum x)
 
 -- The field `name` of a `Rec`'s fields: what a derived `fromDatum` reads a
 -- record with.
@@ -435,8 +414,7 @@ fun wireOutcome (o : Outcome) : Wire =
   | Waiting name rs ->
       Node "Waiting" #[Text name, Node "" (V.toArray (V.map (\r -> Text r) rs))]
 
-fun wireTrees (ts : [TokenTree]) : Wire =
-  Node "" (V.toArray (V.map wireTree ts))
+fun wireTrees (ts : [TokenTree]) : Wire = Node "" (V.toArray (V.map wireTree ts))
 
 fun wireTree (t : TokenTree) : Wire =
   match t with
@@ -464,9 +442,7 @@ fun wireDatum (d : Datum) : Wire =
   | Datum.Bool b -> Node "Bool" #[Whole (if b then 1 else 0)]
   | Datum.List ds -> Node "List" (V.toArray (V.map wireDatum ds))
   | Datum.Rec fs ->
-      Node
-        "Rec"
-        (V.toArray (V.map (\p -> Node (fst p) #[wireDatum (snd p)]) fs))
+      Node "Rec" (V.toArray (V.map (\p -> Node (fst p) #[wireDatum (snd p)]) fs))
   | Datum.Tag name ds ->
       Node "Tag" #[Text name, Node "" (V.toArray (V.map wireDatum ds))]
   | Datum.Code ts -> Node "Code" #[wireTrees ts]
@@ -477,16 +453,11 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 
 @test fun textWritesATokenBack () =
   let a = assertEq (text (Word "fun" Nowhere)) "fun" "a word" in
-  let b =
-    assertEq (text (Str "hi" Nowhere)) "\"hi\"" "a string keeps its quotes"
+  let b = assertEq (text (Str "hi" Nowhere)) "\"hi\"" "a string keeps its quotes"
   in
   let c =
     assertEq
-      (text
-        (Group
-          Paren
-          [Num 1 Nowhere, Punct "+" Nowhere, Num 2 Nowhere]
-          Nowhere))
+      (text (Group Paren [Num 1 Nowhere, Punct "+" Nowhere, Num 2 Nowhere] Nowhere))
       "(1 + 2)"
       "a group"
   in
@@ -497,18 +468,12 @@ use Std.Test (assertEq, assertTrue, assertFalse)
     [
       Word "a" Nowhere,
       Punct "," Nowhere,
-      Group
-        Paren
-        [Word "b" Nowhere, Punct "," Nowhere, Word "c" Nowhere]
-        Nowhere
+      Group Paren [Word "b" Nowhere, Punct "," Nowhere, Word "c" Nowhere] Nowhere
     ]
   in
   let parts = splitOn "," ts in
   let a = assertEq (V.len parts) 2 "two parts" in
-  assertEq
-    (V.map spaced parts)
-    ["a", "(b , c)"]
-    "the bracketed comma is left alone"
+  assertEq (V.map spaced parts) ["a", "(b , c)"] "the bracketed comma is left alone"
 
 @test fun isWordAndIsPunctSayWhatATokenIs () =
   let a = assertTrue (isWord "data" (Word "data" Nowhere)) "a word" in

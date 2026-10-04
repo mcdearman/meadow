@@ -70,8 +70,7 @@ impl Debug () {
 }
 
 impl Debug (a, b) where Debug a, Debug b {
-  fun debug p =
-    match p with | (x, y) -> concatStrings #["(", debug x, ", ", debug y, ")"]
+  fun debug p = match p with | (x, y) -> concatStrings #["(", debug x, ", ", debug y, ")"]
 }
 
 impl Debug (a, b, c) where Debug a, Debug b, Debug c {
@@ -85,8 +84,7 @@ impl Debug (a, b, c, d) where Debug a, Debug b, Debug c, Debug d {
   fun debug p =
     match p with
     | (w, x, y, z) ->
-        concatStrings
-          #["(", debug w, ", ", debug x, ", ", debug y, ", ", debug z, ")"]
+        concatStrings #["(", debug w, ", ", debug x, ", ", debug y, ", ", debug z, ")"]
 }
 
 fun elements xs i acc =
@@ -95,6 +93,5 @@ fun elements xs i acc =
     let sep = if i == 0 then "" else ", " in
     elements xs (i + 1) (concatStrings #[acc, sep, debug (arrayGet xs i)])
 
-impl Debug #[a] where Debug a {
-  fun debug xs = concatStrings #["#[", elements xs 0 "", "]"]
+impl Debug #[a] where Debug a { fun debug xs = concatStrings #["#[", elements xs 0 "", "]"]
 }

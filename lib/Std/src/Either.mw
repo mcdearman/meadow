@@ -18,11 +18,9 @@ use Either.*
 @derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub data Either a b = Left a | Right b
 
-@pub fun isLeft (e : Either a b) : Bool =
-  match e with | Left a -> True | Right b -> False
+@pub fun isLeft (e : Either a b) : Bool = match e with | Left a -> True | Right b -> False
 
-@pub fun isRight (e : Either a b) : Bool =
-  match e with | Left a -> False | Right b -> True
+@pub fun isRight (e : Either a b) : Bool = match e with | Left a -> False | Right b -> True
 
 -- Collapse both sides to one type: `either f g` is the `Either` eliminator, the
 -- way `match` would do it but as a value.
@@ -100,16 +98,10 @@ use Either.*
 -- --- collections ------------------------------------------------------------
 
 @pub fun lefts (es : [Either a b]) : [a] =
-  V.foldl
-    (\acc e -> match e with | Left a -> V.pushBack acc a | Right b -> acc)
-    V.empty
-    es
+  V.foldl (\acc e -> match e with | Left a -> V.pushBack acc a | Right b -> acc) V.empty es
 
 @pub fun rights (es : [Either a b]) : [b] =
-  V.foldl
-    (\acc e -> match e with | Left a -> acc | Right b -> V.pushBack acc b)
-    V.empty
-    es
+  V.foldl (\acc e -> match e with | Left a -> acc | Right b -> V.pushBack acc b) V.empty es
 
 -- Both at once, in one pass, each side keeping its original order.
 @pub fun partitionEithers (es : [Either a b]) : ([a], [b]) =
@@ -149,11 +141,7 @@ use Std.Result.Result.*
   let a =
     assertEq (andThen (\x -> Right (x + 1)) (Right 1)) (Right 2) "andThen"
   in
-  let b =
-    assertEq
-      (andThen (\x -> Left "no") (Right 1))
-      (Left "no")
-      "the function may fail"
+  let b = assertEq (andThen (\x -> Left "no") (Right 1)) (Left "no") "the function may fail"
   in
   let c = assertEq (swap (Left 1)) (Right 1) "swap Left" in
   assertEq (swap (swap (Right 1))) (Right 1) "swap is an involution"

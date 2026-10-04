@@ -56,29 +56,20 @@ use Lingua.Green (Green)
       let top = R.root g in
       let wrong =
         V.concat
-          [
-            errs,
-            V.concatMap parenPatProblems (descendants NodePatParen top),
-            declProblems top
+          [ errs, V.concatMap parenPatProblems (descendants NodePatParen top), declProblems top
           ]
       in
       if not (V.isEmpty wrong) then Err wrong else Ok g
 
 -- The tree `top` of `input`, written as `parsed` writes it.
 @pub fun dumped (input : String) (top : Syntax Surface) : String =
-  let c =
-    Cx
-      { tokens = H.fromVec (V.map (\(l : Lexed) -> (l.from, l.token)) (lex input).tokens) }
+  let c = Cx { tokens = H.fromVec (V.map (\(l : Lexed) -> (l.from, l.token)) (lex input).tokens) }
   in
   S.join
     ""
     (V.map
       (\l -> l ++ "\n")
-      (node
-        0
-        "Module"
-        (spanOf top)
-        (V.concatMap (decl c 1) (childrenOf NodeDecl top))))
+      (node 0 "Module" (spanOf top) (V.concatMap (decl c 1) (childrenOf NodeDecl top))))
 
 -- Each token as the lexer read it, by where it starts: what a literal is
 -- worth, and what a macro's token trees say.
@@ -89,18 +80,15 @@ record Cx = { tokens : HashMap Int Token }
 type Syn = Syntax Surface
 
 -- `s`'s children, but for the text between tokens.
-fun kids (s : Syn) : [Syn] =
-  V.filter (\x -> R.kindOf x != Unknown) (R.children s)
+fun kids (s : Syn) : [Syn] = V.filter (\x -> R.kindOf x != Unknown) (R.children s)
 
 fun nodeKids (s : Syn) : [Syn] = V.filter (\x -> not (R.isTokenOf x)) (kids s)
 
 fun tokenKids (s : Syn) : [Syn] = V.filter R.isTokenOf (kids s)
 
-fun childOf (k : Surface) (s : Syn) : Maybe Syn =
-  V.find (\x -> R.kindOf x == k) (kids s)
+fun childOf (k : Surface) (s : Syn) : Maybe Syn = V.find (\x -> R.kindOf x == k) (kids s)
 
-fun childrenOf (k : Surface) (s : Syn) : [Syn] =
-  V.filter (\x -> R.kindOf x == k) (kids s)
+fun childrenOf (k : Surface) (s : Syn) : [Syn] = V.filter (\x -> R.kindOf x == k) (kids s)
 
 fun has (k : Surface) (s : Syn) : Bool = M.isSome (childOf k s)
 
@@ -109,8 +97,7 @@ fun firstNode (s : Syn) : Maybe Syn = V.get (nodeKids s) 0
 -- `s`'s one child of kind `k`, which the grammar says is there.
 fun must (k : Surface) (s : Syn) : Syn = M.unwrapOr s (childOf k s)
 
-fun tokenIs (k : Surface) (s : Syn) : Bool =
-  V.any (\t -> R.kindOf t == k) (tokenKids s)
+fun tokenIs (k : Surface) (s : Syn) : Bool = V.any (\t -> R.kindOf t == k) (tokenKids s)
 
 -- The bytes `s` spans: its first token's start to its last's end, the text
 -- around and between them not counted -- what a span is to `meadow-parser`.
@@ -118,9 +105,7 @@ fun spanOf (s : Syn) : Meta =
   match s with
   | Syntax g i ->
       let toks =
-        V.filter
-          (\j -> G.isTokenAt g j and G.kindAt g j != Unknown)
-          (V.range i (G.after g i))
+        V.filter (\j -> G.isTokenAt g j and G.kindAt g j != Unknown) (V.range i (G.after g i))
       in
       (match (V.get toks 0, V.get toks (V.len toks - 1)) with
        | (Just f, Just l) -> spanMeta (G.startAt g f) (G.endAt g l)
@@ -139,9 +124,7 @@ fun descendants (k : Surface) (s : Syn) : [Syn] =
   | Syntax g i ->
       V.map
         (\j -> Syntax g j)
-        (V.filter
-          (\j -> G.kindAt g j == k and not (G.isTokenAt g j))
-          (V.range i (G.after g i)))
+        (V.filter (\j -> G.kindAt g j == k and not (G.isTokenAt g j)) (V.range i (G.after g i)))
 
 -- --- writing -----------------------------------------------------------------
 --
@@ -174,19 +157,16 @@ fun at (m : Meta) : String = "${show (metaStart m)}..${show (metaEnd m)}"
 
 fun pad (d : Int) : String = S.repeat "  " d
 
-fun line (d : Int) (s : String) (below : [String]) : [String] =
-  V.pushFront below (pad d ++ s)
+fun line (d : Int) (s : String) (below : [String]) : [String] = V.pushFront below (pad d ++ s)
 
 fun leaf (d : Int) (s : String) : [String] = [pad d ++ s]
 
 fun node (d : Int) (tag : String) (m : Meta) (below : [String]) : [String] =
   line d "${tag} ${at m}" below
 
-fun under (d : Int) (tag : String) (xs : [[String]]) : [String] =
-  line d tag (V.concat xs)
+fun under (d : Int) (tag : String) (xs : [[String]]) : [String] = line d tag (V.concat xs)
 
-fun ident (d : Int) (n : Name) : [String] =
-  leaf d "ident ${escape n.text} ${at n.at}"
+fun ident (d : Int) (n : Name) : [String] = leaf d "ident ${escape n.text} ${at n.at}"
 
 fun idents (d : Int) (label : String) (ns : [Name]) : [String] =
   line d "${label} ${show (V.len ns)}" (V.concatMap (\n -> ident (d + 1) n) ns)
@@ -203,8 +183,7 @@ fun opt (d : Int) (label : String) (x : Maybe Out) : [String] =
 fun bool (b : Bool) : String = if b then "true" else "false"
 
 -- Each of `xs`, to be written by `f`.
-fun each (f : Int -> a -> [String]) (xs : [a]) : [Out] =
-  V.map (\x -> \k -> f k x) xs
+fun each (f : Int -> a -> [String]) (xs : [a]) : [Out] = V.map (\x -> \k -> f k x) xs
 
 -- --- declarations ------------------------------------------------------------
 --
@@ -228,12 +207,10 @@ fun declProblems (top : Syn) : [(Int, String)] =
       V.concatMap (\t -> needs t (childrenOf TokenLowerIdent t) "a trait has parameters") (descendants NodeTraitDecl top),
       V.concatMap (\i -> needs i (childrenOf NodeHeadTy i) "an impl is for types") (descendants NodeImplDecl top),
       V.concatMap
-        (\b ->
-          needs b (childrenOf NodeHeadTy b) "a bound applies a trait to types")
+        (\b -> needs b (childrenOf NodeHeadTy b) "a bound applies a trait to types")
         (descendants NodeBound top) ]
 
-fun problem (s : Syn) (why : String) : [(Int, String)] =
-  [(metaStart (spanOf s), why)]
+fun problem (s : Syn) (why : String) : [(Int, String)] = [(metaStart (spanOf s), why)]
 
 fun needs (s : Syn) (xs : [Syn]) (why : String) : [(Int, String)] =
   if V.isEmpty xs then problem s why else []
@@ -253,9 +230,7 @@ fun bindingProblems (s : Syn) (owner : Maybe Surface) : [(Int, String)] =
     V.append
       (match implied with
        | Just i ->
-           problem
-            i
-            "a binding's type takes no context: write it on a signature"
+           problem i "a binding's type takes no context: write it on a signature"
        | None -> [])
       (if isFun
         then []
@@ -280,16 +255,10 @@ fun bindingProblems (s : Syn) (owner : Maybe Surface) : [(Int, String)] =
             (match implied with
              | Just i ->
                  (if owner == Just NodeTraitDecl
-                   then
-                     problem
-                     i
-                     "a trait's method takes its bounds from the trait"
+                   then problem i "a trait's method takes its bounds from the trait"
                    else if isContext (must NodeType a)
                    then []
-                   else
-                     problem
-                     a
-                     "a context is bounds: `C a =>` or `(C a, D b) =>`")
+                   else problem a "a context is bounds: `C a =>` or `(C a, D b) =>`")
              | None -> []) ]
 
 -- Whether pattern `p` is only a name: what a `def` signature is for.
@@ -330,9 +299,7 @@ fun assocProblems (a : Syn) (owner : Maybe Surface) : [(Int, String)] =
   else
     V.append
       (needs a args "an associated type has arguments")
-      (if has NodeAssocValue a
-        then []
-        else problem a "an impl says what its associated type is")
+      (if has NodeAssocValue a then [] else problem a "an impl says what its associated type is")
 
 -- A written declaration: the nodes it is -- more than one for a signature
 -- with clauses, or a synonym -- each under the attributes written on it.
@@ -349,10 +316,7 @@ fun decl (c : Cx) (d : Int) (s : Syn) : [String] =
       (\b ->
         let kept =
           (if fst b
-            then
-              V.filter
-              (\a -> (firstName (must NodeAttrName a)).text == "cfg")
-              attrs
+            then V.filter (\a -> (firstName (must NodeAttrName a)).text == "cfg") attrs
             else attrs)
         in
         if V.isEmpty kept then snd b d
@@ -378,8 +342,7 @@ fun item_ (c : Cx) (s : Syn) : [(Bool, Out)] =
           then "Right"
           else "None")
       in
-      let level =
-        (match tokenOf c prec with | Just (Int n) -> max 0 (min 255 n) | _ -> 0)
+      let level = (match tokenOf c prec with | Just (Int n) -> max 0 (min 255 n) | _ -> 0)
       in
       one
         "Fixity ${a} ${show level}"
@@ -427,12 +390,7 @@ fun item_ (c : Cx) (s : Syn) : [(Bool, Out)] =
       one
         "TypeAlias"
         (\e ->
-          V.concat
-            [
-              ident e (nameOf name),
-              idents e "params" (V.map nameOf params),
-              ty c e t
-            ])
+          V.concat [ ident e (nameOf name), idents e "params" (V.map nameOf params), ty c e t ])
   | SurfaceTraitDecl name params supers items ->
       one "Trait" (\e -> traitDecl c e name params supers items)
   | SurfaceImplDecl tr tys context items ->
@@ -440,10 +398,7 @@ fun item_ (c : Cx) (s : Syn) : [(Bool, Out)] =
   | SurfaceMacroDecl name rules ->
       one
         "Macro"
-        (\e ->
-          V.append
-            (ident e (nameOf name))
-            (many e "rules" (each (macroRule c) rules)))
+        (\e -> V.append (ident e (nameOf name)) (many e "rules" (each (macroRule c) rules)))
   | SurfaceMacCall _ _ _ -> one "MacCall" (\e -> macCall c e s)
   | SurfaceFunItem name _ annot body clauses ->
       (match body with
@@ -469,9 +424,7 @@ fun attr (c : Cx) (d : Int) (s : Syn) : [String] =
      | None -> [])
   in
   let words =
-    V.concatMap
-      (\m -> if has NodeMetaRest m or has TokenStr m then [] else [firstName m])
-      metas
+    V.concatMap (\m -> if has NodeMetaRest m or has TokenStr m then [] else [firstName m]) metas
   in
   under
     d
@@ -501,9 +454,7 @@ fun metaItem (c : Cx) (d : Int) (s : Syn) : [String] =
            under
              d
              "List"
-             [
-               ident e (firstName n),
-               many e "meta" (each (metaItem c) (childrenOf NodeMeta args))
+             [ ident e (firstName n), many e "meta" (each (metaItem c) (childrenOf NodeMeta args))
              ]
        | _ -> [])
   | _ -> []
@@ -516,8 +467,7 @@ fun stringName (c : Cx) (t : Syn) : Name =
 
 fun useDecl (e : Int) (path : Syn) (glob : Maybe Syn) (alias : Maybe Syn)
     (names : Maybe Syn) : [String] =
-  let items =
-    (match names with | Just ns -> childrenOf NodeUseItem ns | None -> [])
+  let items = (match names with | Just ns -> childrenOf NodeUseItem ns | None -> [])
   in
   let bang = \i -> tokenIs TokenBang i or tokenIs TokenDeclBang i in
   V.concat
@@ -531,9 +481,7 @@ fun useName (i : Syn) : Name =
   let n = must NodeUseName i in
   match firstNode n with
   | Just x ->
-      (if R.kindOf x == NodeParenOp
-        then firstName (must NodeOpName x)
-        else firstName x)
+      (if R.kindOf x == NodeParenOp then firstName (must NodeOpName x) else firstName x)
   | None -> firstName n
 
 -- A variant's fields: named, when the first thing after its name is a brace
@@ -573,10 +521,7 @@ fun field (c : Cx) (d : Int) (s : Syn) : [String] =
 
 fun traitDecl (c : Cx) (e : Int) (name : Syn) (params : [Syn])
     (supers : Maybe Syn) (items : [Syn]) : [String] =
-  let members =
-    V.concatMap
-      (\m -> match firstNode m with | Just x -> [x] | None -> [])
-      items
+  let members = V.concatMap (\m -> match firstNode m with | Just x -> [x] | None -> []) items
   in
   let assocs = V.filter (\x -> R.kindOf x == NodeAssocDecl) members in
   let rest = V.filter (\x -> R.kindOf x != NodeAssocDecl) members in
@@ -606,10 +551,7 @@ fun sigName (s : Syn) : Name =
 
 fun implDecl (c : Cx) (e : Int) (tr : Syn) (tys : [Syn]) (context : Maybe Syn)
     (items : [Syn]) : [String] =
-  let members =
-    V.concatMap
-      (\m -> match firstNode m with | Just x -> [x] | None -> [])
-      items
+  let members = V.concatMap (\m -> match firstNode m with | Just x -> [x] | None -> []) items
   in
   let assocs = V.filter (\x -> R.kindOf x == NodeAssocDecl) members in
   V.concat
@@ -632,25 +574,19 @@ fun bound (c : Cx) (d : Int) (s : Syn) : [String] =
     ]
 
 fun isGroup (s : Syn) : Bool =
-  R.kindOf s == NodeParenGroup
-    or R.kindOf s == NodeBrackGroup
-    or R.kindOf s == NodeBraceGroup
+  R.kindOf s == NodeParenGroup or R.kindOf s == NodeBrackGroup or R.kindOf s == NodeBraceGroup
 
 -- A macro call's path and argument.
 fun macCall (c : Cx) (d : Int) (s : Syn) : [String] =
   let pathNode =
     M.unwrapOr
       s
-      (V.find
-        (\x -> R.kindOf x == NodeMacPath or R.kindOf x == NodeArgPath)
-        (nodeKids s))
+      (V.find (\x -> R.kindOf x == NodeMacPath or R.kindOf x == NodeArgPath) (nodeKids s))
   in
   let path =
     V.map
       firstName
-      (V.filter
-        (\x -> R.kindOf x == NodeAnySeg or R.kindOf x == NodeArgSeg)
-        (nodeKids pathNode))
+      (V.filter (\x -> R.kindOf x == NodeAnySeg or R.kindOf x == NodeArgSeg) (nodeKids pathNode))
   in
   let g = (match V.find isGroup (nodeKids s) with | Just x -> x | None -> s) in
   V.append (idents d "path" path) (group c d g)
@@ -690,8 +626,7 @@ fun tree (c : Cx) (d : Int) (s : Syn) : [String] =
   if isGroup s then group c d s
   else
     let t = (match V.get (tokenKids s) 0 with | Just x -> x | None -> s) in
-    let said =
-      (match tokenOf c t with | Just tok -> described tok | None -> R.text t)
+    let said = (match tokenOf c t with | Just tok -> described tok | None -> R.text t)
     in
     leaf d "tok ${said} ${at (spanOf t)}"
 
@@ -725,9 +660,7 @@ fun sigDecl (c : Cx) (s : Syn) (isFun : Bool) (n : Name) (annot : Syn)
                     under
                       k
                       "Bound"
-                      [
-                        ident (k + 1) (fst b),
-                        many (k + 1) "tys" (each (tatom c) (snd b))
+                      [ ident (k + 1) (fst b), many (k + 1) "tys" (each (tatom c) (snd b))
                       ])
                   bounds)
             ])
@@ -789,11 +722,7 @@ fun funBind (d : Int) (n : Name) (args : [Out]) (ret : Maybe Out) (body : Out) :
   under
     d
     "FunBind"
-    [
-      ident (d + 1) n,
-      many (d + 1) "params" args,
-      opt (d + 1) "ret" ret,
-      body (d + 1)
+    [ ident (d + 1) n, many (d + 1) "params" args, opt (d + 1) "ret" ret, body (d + 1)
     ]
 
 -- A binding's `: T`, and its effects: `: T ! e` is a function of nothing
@@ -825,8 +754,7 @@ fun equations (c : Cx) (d : Int) (n : Name) (args : [Out]) (ret : Maybe Out)
     let arg =
       \tag ->
         V.map
-          (\i ->
-            \k -> node k tag n.at (ident (k + 1) (named "_arg${show i}" n.at)))
+          (\i -> \k -> node k tag n.at (ident (k + 1) (named "_arg${show i}" n.at)))
           (V.range 0 (V.len args))
     in
     let vars = arg "Var" in
@@ -841,20 +769,12 @@ fun equations (c : Cx) (d : Int) (n : Name) (args : [Out]) (ret : Maybe Out)
           under
             k
             "Arm"
-            [
-              patTuple (k + 1) pats (exprSpan c b),
-              leaf (k + 1) "guard none",
-              expr c (k + 1) b
+            [ patTuple (k + 1) pats (exprSpan c b), leaf (k + 1) "guard none", expr c (k + 1) b
             ]
     in
     let arms =
       V.pushFront
-        (V.map
-          (\cl ->
-            arm
-              (each (param c) (childrenOf NodeParam cl))
-              (must NodeExpr cl))
-          clauses)
+        (V.map (\cl -> arm (each (param c) (childrenOf NodeParam cl)) (must NodeExpr cl)) clauses)
         (arm args body)
     in
     funBind
@@ -862,12 +782,7 @@ fun equations (c : Cx) (d : Int) (n : Name) (args : [Out]) (ret : Maybe Out)
       n
       (arg "PVar")
       ret
-      (\k ->
-        node
-          k
-          "Match"
-          m
-          (V.append (scrutinee (k + 1)) (many (k + 1) "arms" arms)))
+      (\k -> node k "Match" m (V.append (scrutinee (k + 1)) (many (k + 1) "arms" arms)))
 
 fun patTuple (d : Int) (pats : [Out]) (m : Meta) : [String] =
   if V.len pats == 1
@@ -886,9 +801,7 @@ fun bindOfName (d : Int) (n : Name) (args : [Out]) (ret : Maybe Out)
         under
           d
           "PatBind"
-          [
-            node (d + 1) "PAnn" n.at (V.append (var (d + 2)) (t (d + 2))),
-            body (d + 1)
+          [ node (d + 1) "PAnn" n.at (V.append (var (d + 2)) (t (d + 2))), body (d + 1)
           ]
     | None -> under d "PatBind" [var (d + 1), body (d + 1)]
 
@@ -917,9 +830,7 @@ fun patternDecl (c : Cx) (s : Syn) (n : Name) (form : Maybe Syn) :
         else
           let names =
             V.pushFront
-              (V.map
-                (\x -> nameOf (must TokenUpperIdent x))
-                (childrenOf NodeCompleteName syn))
+              (V.map (\x -> nameOf (must TokenUpperIdent x)) (childrenOf NodeCompleteName syn))
               n
           in
           [complete names (spanMeta (metaStart n.at) (metaEnd (V.getOr n names (V.len names - 1)).at))])
@@ -941,13 +852,7 @@ fun synonym (c : Cx) (n : Name) (s : Syn) (m : Meta) : [(Bool, Out)] =
          (
            (\k -> node k "Cons" m (V.append (ident (k + 1) (ident_ "True")) (many (k + 1) "args" []))),
            (\k ->
-             node
-               k
-               "Cons"
-               m
-               (V.append
-                 (ident (k + 1) (ident_ "False"))
-                 (many (k + 1) "args" [])))
+             node k "Cons" m (V.append (ident (k + 1) (ident_ "False")) (many (k + 1) "args" [])))
          )
      | 1 ->
          (
@@ -962,16 +867,10 @@ fun synonym (c : Cx) (n : Name) (s : Syn) (m : Meta) : [(Bool, Out)] =
     let scrutinee = ident_ "$scrutinee" in
     let arms =
       [\k ->
-        under k "Arm" [
-          pat c (k + 1) rhs,
-          leaf (k + 1) "guard none",
-          fst answers (k + 1)
+        under k "Arm" [ pat c (k + 1) rhs, leaf (k + 1) "guard none", fst answers (k + 1)
         ],
         \k ->
-          under k "Arm" [
-            node (k + 1) "PWild" m [],
-            leaf (k + 1) "guard none",
-            snd answers (k + 1)
+          under k "Arm" [ node (k + 1) "PWild" m [], leaf (k + 1) "guard none", snd answers (k + 1)
           ] ] in
       let matcher =
         \d ->
@@ -989,9 +888,7 @@ fun synonym (c : Cx) (n : Name) (s : Syn) (m : Meta) : [(Bool, Out)] =
             (match childOf NodeSynBuilder s with
              | Just bl ->
                  Just
-                 (
-                   each (param c) (childrenOf NodeParam bl),
-                   \k -> expr c k (must NodeExpr bl)
+                 ( each (param c) (childrenOf NodeParam bl), \k -> expr c k (must NodeExpr bl)
                  )
              | None ->
                  if both and builds rhs
@@ -1008,12 +905,7 @@ fun synonym (c : Cx) (n : Name) (s : Syn) (m : Meta) : [(Bool, Out)] =
                   (False, matcher),
                   (
                     False,
-                    \d ->
-                      node
-                      d
-                      "Bind"
-                      m
-                      (funBind (d + 1) (ident_ "$b${n.text}") args None body)
+                    \d -> node d "Bind" m (funBind (d + 1) (ident_ "$b${n.text}") args None body)
                   )
                 ]
             | None -> [(False, matcher)]
@@ -1021,18 +913,14 @@ fun synonym (c : Cx) (n : Name) (s : Syn) (m : Meta) : [(Bool, Out)] =
 -- `pattern A | B`: the matchers that together match every value.
 fun complete (names : [Name]) (m : Meta) : (Bool, Out) =
   let ms =
-    V.map
-      (\(x : Name) ->
-        \k -> node k "Var" x.at (ident (k + 1) (named "$m?${x.text}" x.at)))
-      names
+    V.map (\(x : Name) -> \k -> node k "Var" x.at (ident (k + 1) (named "$m?${x.text}" x.at))) names
   in
   let value =
     (if V.len ms == 1
       then V.getOr (\k -> []) ms 0
       else \k -> node k "Tuple" m (many (k + 1) "items" ms))
   in
-  let label =
-    named "$complete:${S.join "|" (V.map (\(x : Name) -> x.text) names)}" m
+  let label = named "$complete:${S.join "|" (V.map (\(x : Name) -> x.text) names)}" m
   in
   (
     False,
@@ -1041,10 +929,7 @@ fun complete (names : [Name]) (m : Meta) : (Bool, Out) =
         d
         "Bind"
         m
-        (under
-          (d + 1)
-          "PatBind"
-          [node (d + 2) "PVar" m (ident (d + 3) label), value (d + 2)])
+        (under (d + 1) "PatBind" [node (d + 2) "PVar" m (ident (d + 3) label), value (d + 2)])
   )
 
 -- --- types -------------------------------------------------------------------
@@ -1105,12 +990,7 @@ fun tatom (c : Cx) (d : Int) (s : Syn) : [String] =
       (match V.get (tokenKids s) 0 with
        | Just t ->
            if R.kindOf t == TokenUpperIdent or R.kindOf t == TokenMacUpper
-           then
-             node
-               d
-               "TCon"
-               m
-               (V.append (ident (d + 1) (nameOf t)) (many (d + 1) "args" []))
+           then node d "TCon" m (V.append (ident (d + 1) (nameOf t)) (many (d + 1) "args" []))
            else node d "TVar" m (ident (d + 1) (nameOf t))
        | None -> [])
 
@@ -1122,9 +1002,7 @@ fun tparen (c : Cx) (d : Int) (s : Syn) : [String] =
         d
         "TCon"
         (spanOf s)
-        (V.append
-          (ident (d + 1) (named "Unit" (spanOf s)))
-          (many (d + 1) "args" []))
+        (V.append (ident (d + 1) (named "Unit" (spanOf s))) (many (d + 1) "args" []))
   | 1 -> ty c d (V.getOr s ts 0)
   | _ -> node d "TTuple" (spanOf s) (many (d + 1) "items" (each (ty c) ts))
 
@@ -1139,17 +1017,13 @@ fun recTy (c : Cx) (d : Int) (s : Syn) : [String] =
             under
               k
               "TField"
-              [
-                ident (k + 1) (nameOf (must TokenLowerIdent f)),
-                ty c (k + 1) (must NodeType f)
+              [ ident (k + 1) (nameOf (must TokenLowerIdent f)), ty c (k + 1) (must NodeType f)
               ])
           (childrenOf NodeFieldTy s)))
       (opt (d + 1) "tail" (M.map (\r -> \k -> ident k (lastName r)) (childOf NodeRowTail s))))
 
 fun row (c : Cx) (d : Int) (s : Syn) : [String] =
-  let rowOf =
-    \labels tail ->
-      under d "Row" [many (d + 1) "labels" labels, opt (d + 1) "tail" tail]
+  let rowOf = \labels tail -> under d "Row" [many (d + 1) "labels" labels, opt (d + 1) "tail" tail]
   in
   match childOf NodeRowBraces s with
   | Just br ->
@@ -1165,9 +1039,7 @@ fun rowLabel (c : Cx) (d : Int) (s : Syn) : [String] =
   under
     d
     "Label"
-    [
-      ident (d + 1) (firstName s),
-      many (d + 1) "args" (each (tatom c) (childrenOf NodeTAtom s))
+    [ ident (d + 1) (firstName s), many (d + 1) "args" (each (tatom c) (childrenOf NodeTAtom s))
     ]
 
 -- --- patterns ----------------------------------------------------------------
@@ -1181,9 +1053,7 @@ fun pat (c : Cx) (d : Int) (s : Syn) : [String] = patAt c d s None
 
 fun patAt (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
   let atoms =
-    V.pushFront
-      (V.map (\t -> must NodePAtom t) (childrenOf NodeConsTail s))
-      (must NodePAtom s)
+    V.pushFront (V.map (\t -> must NodePAtom t) (childrenOf NodeConsTail s)) (must NodePAtom s)
   in
   asesAt
     d
@@ -1206,9 +1076,7 @@ fun asesAt (d : Int) (parts : [(Int -> Maybe Meta -> [String], Meta)])
             k
             "PAs"
             (M.unwrapOr whole o)
-            (V.append
-              (ident (k + 1) (vid (must NodeVid a)))
-              (inner (k + 1) None)))
+            (V.append (ident (k + 1) (vid (must NodeVid a))) (inner (k + 1) None)))
       (\k o -> consedAt k parts o)
       names
       d
@@ -1242,11 +1110,7 @@ fun consTagged (tag : String) (d : Int)
              (V.concat
                [
                  ident (d + 1) (named "Cons" (spanMeta (metaStart hm) tailEnd)),
-                 line
-                   (d + 1)
-                   "args 2"
-                   (V.concat
-                     [f (d + 2) None, consTagged tag (d + 2) rest None])
+                 line (d + 1) "args 2" (V.concat [f (d + 2) None, consTagged tag (d + 2) rest None])
                ])
        | None -> [])
 
@@ -1278,11 +1142,7 @@ fun conPat (c : Cx) (d : Int) (s : Syn) (args : [Syn]) (over : Maybe Meta) :
             argsOut
           ])
   | None ->
-      node
-        d
-        "PCons"
-        m
-        (V.append (ident (d + 1) (nameOf (must TokenUpperIdent s))) argsOut)
+      node d "PCons" m (V.append (ident (d + 1) (nameOf (must TokenUpperIdent s))) argsOut)
 
 fun parg (c : Cx) (d : Int) (s : Syn) : [String] =
   match childOf NodeNullCon s with
@@ -1299,12 +1159,7 @@ fun arg (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
       else if k == NodeRecPat then recPat c d n m
       else if k == NodeVid then node d "PVar" m (ident (d + 1) (vid n))
       else if k == NodeArrPat
-      then
-        node
-          d
-          "PArray"
-          m
-          (many (d + 1) "items" (each (pat c) (childrenOf NodePat n)))
+      then node d "PArray" m (many (d + 1) "items" (each (pat c) (childrenOf NodePat n)))
       else if k == NodeBrackPat then brackPat c d n m
       else if k == NodeMacCall then node d "PMacCall" m (macCall c (d + 1) n)
       else []
@@ -1331,10 +1186,7 @@ fun param (c : Cx) (d : Int) (s : Syn) : [String] =
       else if k == NodeRecPat then recPat c d n m
       else if k == NodeVid then node d "PVar" m (ident (d + 1) (vid n))
       else if k == NodeBrackParam or k == NodeArrParam then
-        let first =
-          (if k == NodeBrackParam
-            then must NodeBrackPat n
-            else must NodeArrPat n)
+        let first = (if k == NodeBrackParam then must NodeBrackPat n else must NodeArrPat n)
         in
         let head =
           (\j o -> if k == NodeBrackParam
@@ -1349,9 +1201,7 @@ fun param (c : Cx) (d : Int) (s : Syn) : [String] =
         let atoms =
           V.pushFront
             (V.map
-              (\t ->
-                (let a = must NodePAtom t in
-                  (\j o -> patom c j a o, patomSpan c a)))
+              (\t -> (let a = must NodePAtom t in (\j o -> patom c j a o, patomSpan c a)))
               (childrenOf NodeConsTail n))
             (head, spanOf first)
         in
@@ -1391,11 +1241,7 @@ fun brackPat (c : Cx) (d : Int) (s : Syn) (m : Meta) : [String] =
                 items
                   "PList"
                   (V.pushFront
-                    (each
-                      (pat c)
-                      (V.concatMap
-                        (childrenOf NodePat)
-                        (childrenOf NodeSemiPat t)))
+                    (each (pat c) (V.concatMap (childrenOf NodePat) (childrenOf NodeSemiPat t)))
                     p)
             | None ->
                 (match childOf NodeVecPatTail body with
@@ -1405,9 +1251,7 @@ fun brackPat (c : Cx) (d : Int) (s : Syn) (m : Meta) : [String] =
                        (V.pushFront
                          (each
                            (pat c)
-                           (V.concatMap
-                             (childrenOf NodePat)
-                             (childrenOf NodeCommaPat t)))
+                           (V.concatMap (childrenOf NodePat) (childrenOf NodeCommaPat t)))
                          p)
                  | None -> items "PVector" [p])))
 
@@ -1424,19 +1268,13 @@ fun parenPat (c : Cx) (d : Int) (s : Syn) (spans : Bool) (over : Maybe Meta) :
         d
         "PAnn"
         m
-        (V.append
-          (elemPat c (d + 1) (V.getOr s elems 0) None)
-          (ty c (d + 1) (must NodeType a)))
+        (V.append (elemPat c (d + 1) (V.getOr s elems 0) None) (ty c (d + 1) (must NodeType a)))
   | None ->
       (match V.len elems with
        | 0 -> node d "PUnit" m []
        | 1 -> elemPat c d (V.getOr s elems 0) (if spans then Just m else None)
        | _ ->
-           node
-             d
-             "PTuple"
-             m
-             (many (d + 1) "items" (each (\k e -> elemPat c k e None) elems)))
+           node d "PTuple" m (many (d + 1) "items" (each (\k e -> elemPat c k e None) elems)))
 
 -- An element of a pattern's parentheses: `f -> p`, or a pattern.
 fun elemPat (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
@@ -1447,17 +1285,10 @@ fun elemPat (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
       node
         d
         "PView"
-        (M.unwrapOr
-          (spanMeta (metaStart (exprSpan c f)) (metaEnd (spanOf p)))
-          over)
+        (M.unwrapOr (spanMeta (metaStart (exprSpan c f)) (metaEnd (spanOf p))) over)
         (V.append (expr c (d + 1) f) (pat c (d + 1) p))
   | None ->
-      asesAt
-        d
-        (exprPatParts c (must NodeExpr s))
-        (childrenOf NodeAsTail s)
-        (spanOf s)
-        over
+      asesAt d (exprPatParts c (must NodeExpr s)) (childrenOf NodeAsTail s) (spanOf s) over
 
 -- --- a pattern written as an expression --------------------------------------
 --
@@ -1485,8 +1316,7 @@ fun bare (k : Surface) (e : Syn) : Bool =
              not (has NodeAtom b)
                and (match M.andThen (childOf NodeClosedAtom) (firstNode (must NodeHead b)) with
                     | Just ca ->
-                        not (has NodeFieldTail ca)
-                          and M.map R.kindOf (firstNode ca) == Just k
+                        not (has NodeFieldTail ca) and M.map R.kindOf (firstNode ca) == Just k
                     | None -> False))
   | None -> False
 
@@ -1544,8 +1374,7 @@ fun atomPatProblems (a : Syn) : [(Int, String)] =
       if has NodeFieldTail n then notPattern n
       else if k == NodeMacAtom then []
       else if k == NodeQualAtom
-      then
-        (if V.len (childrenOf TokenUpperIdent n) == 2 then [] else notPattern n)
+      then (if V.len (childrenOf TokenUpperIdent n) == 2 then [] else notPattern n)
       else lowPatProblems n
   | None -> []
 
@@ -1557,8 +1386,7 @@ fun lowPatProblems (s : Syn) : [(Int, String)] =
       else
         let prim = M.unwrapOr ca (firstNode ca) in
         let k = R.kindOf prim in
-        let items =
-          \xs -> V.concatMap (\x -> exprPatProblems (must NodeExpr x)) xs
+        let items = \xs -> V.concatMap (\x -> exprPatProblems (must NodeExpr x)) xs
         in
         if k == NodeParen then parenPatProblems prim
         else
@@ -1569,9 +1397,7 @@ fun lowPatProblems (s : Syn) : [(Int, String)] =
                         | Just t ->
                             (match childOf NodeTailExpr t with
                              | Just te ->
-                                 (if bare NodeHoleE (must NodeExpr te)
-                                   then []
-                                   else notPattern t)
+                                 (if bare NodeHoleE (must NodeExpr te) then [] else notPattern t)
                              | None -> notPattern t)
                         | None -> []) in
             V.concat
@@ -1609,8 +1435,7 @@ fun lowPatProblems (s : Syn) : [(Int, String)] =
 
 fun exprPatParts (c : Cx) (s : Syn) : [(Int -> Maybe Meta -> [String], Meta)] =
   V.map
-    (\o ->
-      (let b = must NodeBase o in (\k over -> basePat c k b over, spanOf b)))
+    (\o -> (let b = must NodeBase o in (\k over -> basePat c k b over, spanOf b)))
     (operandsOf s)
 
 fun basePat (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
@@ -1628,8 +1453,7 @@ fun basePat (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
           d
           "PQualCons"
           m
-          (V.concat
-            [ident (d + 1) (firstName h), ident (d + 1) (lastName h), argsOut])
+          (V.concat [ident (d + 1) (firstName h), ident (d + 1) (lastName h), argsOut])
       else lowPat c d h over
   | None -> node d "PCons" m (V.append (ident (d + 1) (firstName head)) argsOut)
 
@@ -1646,18 +1470,11 @@ fun atomPat (c : Cx) (d : Int) (s : Syn) : [String] =
           "PQualCons"
           m
           (V.concat
-            [
-              ident (d + 1) (firstName n),
-              ident (d + 1) (lastName n),
-              many (d + 1) "args" []
+            [ ident (d + 1) (firstName n), ident (d + 1) (lastName n), many (d + 1) "args" []
             ])
       else lowPat c d n None
   | None ->
-      node
-        d
-        "PCons"
-        m
-        (V.append (ident (d + 1) (firstName s)) (many (d + 1) "args" []))
+      node d "PCons" m (V.append (ident (d + 1) (firstName s)) (many (d + 1) "args" []))
 
 fun lowPat (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
   let prim =
@@ -1677,21 +1494,11 @@ fun lowPat (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
   else if k == NodeBraceE then bracePat c d prim m
   else if k == NodeBrackE then brackExprPat c d prim m
   else if k == NodeArrE
-  then
-    node
-      d
-      "PArray"
-      m
-      (many (d + 1) "items" (each (asExprPat c) (childrenOf NodeAsExpr prim)))
+  then node d "PArray" m (many (d + 1) "items" (each (asExprPat c) (childrenOf NodeAsExpr prim)))
   else []
 
 fun asExprPat (c : Cx) (d : Int) (s : Syn) : [String] =
-  asesAt
-    d
-    (exprPatParts c (must NodeExpr s))
-    (childrenOf NodeAsTail s)
-    (spanOf s)
-    None
+  asesAt d (exprPatParts c (must NodeExpr s)) (childrenOf NodeAsTail s) (spanOf s) None
 
 fun bracePat (c : Cx) (d : Int) (s : Syn) (m : Meta) : [String] =
   let fs =
@@ -1726,9 +1533,7 @@ fun brackExprPat (c : Cx) (d : Int) (s : Syn) (m : Meta) : [String] =
                   (V.pushFront
                     (each
                       (asExprPat c)
-                      (V.concatMap
-                        (childrenOf NodeAsExpr)
-                        (childrenOf NodeSemiItem t)))
+                      (V.concatMap (childrenOf NodeAsExpr) (childrenOf NodeSemiItem t)))
                     p)
             | None ->
                 (match childOf NodeVecTail body with
@@ -1738,9 +1543,7 @@ fun brackExprPat (c : Cx) (d : Int) (s : Syn) (m : Meta) : [String] =
                        (V.pushFront
                          (each
                            (asExprPat c)
-                           (V.concatMap
-                             (childrenOf NodeAsExpr)
-                             (childrenOf NodeCommaItem t)))
+                           (V.concatMap (childrenOf NodeAsExpr) (childrenOf NodeCommaItem t)))
                          p)
                  | None -> items "PVector" [p])))
 
@@ -1785,9 +1588,7 @@ fun argBuilds (s : Syn) : Bool =
                     builds
                     (V.append
                       (childrenOf NodePat body)
-                      (V.concatMap
-                        (childrenOf NodePat)
-                        (childrenOf NodeSemiPat t)))
+                      (V.concatMap (childrenOf NodePat) (childrenOf NodeSemiPat t)))
               | None -> not (has NodePat body)))
       else if k == NodePatParen then V.all elemBuilds (childrenOf NodeElem n)
       else False
@@ -1810,9 +1611,7 @@ fun operandsOf (e : Syn) : [Syn] =
 fun baseBuilds (s : Syn) : Bool =
   match firstNode (must NodeHead s) with
   | Just h ->
-      R.kindOf h == NodeLowAtom
-        and V.isEmpty (childrenOf NodeAtom s)
-        and lowBuilds h
+      R.kindOf h == NodeLowAtom and V.isEmpty (childrenOf NodeAtom s) and lowBuilds h
   | None ->
       V.all
         (\a -> match firstNode a with
@@ -1842,9 +1641,7 @@ fun lowBuilds (s : Syn) : Bool =
                         elemBuilds
                         (V.append
                           (childrenOf NodeAsExpr body)
-                          (V.concatMap
-                            (childrenOf NodeAsExpr)
-                            (childrenOf NodeSemiItem t)))
+                          (V.concatMap (childrenOf NodeAsExpr) (childrenOf NodeSemiItem t)))
                   | None -> not (has NodeAsExpr body)))
           else if k == NodeArrE
           then V.all elemBuilds (childrenOf NodeAsExpr prim)
@@ -1855,9 +1652,7 @@ fun lowBuilds (s : Syn) : Bool =
 -- pattern's own span.
 fun patExpr (c : Cx) (d : Int) (s : Syn) : [String] =
   let atoms =
-    V.pushFront
-      (V.map (\t -> must NodePAtom t) (childrenOf NodeConsTail s))
-      (must NodePAtom s)
+    V.pushFront (V.map (\t -> must NodePAtom t) (childrenOf NodeConsTail s)) (must NodePAtom s)
   in
   consExpr c d atoms
 
@@ -1880,10 +1675,7 @@ fun consExpr (c : Cx) (d : Int) (atoms : [Syn]) : [String] =
           (V.concat
             [
               ident (d + 1) (named "Cons" m),
-              line
-                (d + 1)
-                "args 2"
-                (V.concat [patomExpr c (d + 2) h, consExpr c (d + 2) rest])
+              line (d + 1) "args 2" (V.concat [patomExpr c (d + 2) h, consExpr c (d + 2) rest])
             ])
 
 fun patomExpr (c : Cx) (d : Int) (s : Syn) : [String] =
@@ -1905,9 +1697,7 @@ fun pargExpr (c : Cx) (d : Int) (s : Syn) : [String] =
         d
         "Cons"
         (spanOf con)
-        (V.append
-          (ident (d + 1) (nameOf (must TokenUpperIdent con)))
-          (many (d + 1) "args" []))
+        (V.append (ident (d + 1) (nameOf (must TokenUpperIdent con))) (many (d + 1) "args" []))
   | None -> argExpr c d (must NodeArg s)
 
 fun argExpr (c : Cx) (d : Int) (s : Syn) : [String] =
@@ -1938,12 +1728,7 @@ fun argExpr (c : Cx) (d : Int) (s : Syn) : [String] =
                 (childrenOf NodePField n)))
             (leaf (d + 1) "base none"))
       else if k == NodeArrPat
-      then
-        node
-          d
-          "Array"
-          m
-          (many (d + 1) "items" (each (patExpr c) (childrenOf NodePat n)))
+      then node d "Array" m (many (d + 1) "items" (each (patExpr c) (childrenOf NodePat n)))
       else if k == NodeBrackPat then
         (match childOf NodeBrackPatBody n with
          | Just body ->
@@ -1960,9 +1745,7 @@ fun argExpr (c : Cx) (d : Int) (s : Syn) : [String] =
                      (childrenOf NodePat body)
                      (V.concatMap
                        (childrenOf NodePat)
-                       (V.concatMap
-                         (childrenOf NodeSemiPat)
-                         (childrenOf NodeListPatTail body))))))
+                       (V.concatMap (childrenOf NodeSemiPat) (childrenOf NodeListPatTail body))))))
          | None -> [])
       else if k == NodePatParen then parenExpr c d n (Just m)
       else []
@@ -1984,12 +1767,7 @@ fun parenExpr (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
   | (_, None) -> node d "Unit" m []
   | (None, Just e) ->
       if V.len elems == 1 then elemExpr c d e (Just m)
-      else
-        node
-          d
-          "Tuple"
-          m
-          (many (d + 1) "items" (each (\j x -> elemExpr c j x None) elems))
+      else node d "Tuple" m (many (d + 1) "items" (each (\j x -> elemExpr c j x None) elems))
 
 -- An `Elem` or `AsExpr` read as a pattern, then as the expression that builds
 -- it: its operands joined by `::` into `Cons`es, each spanning from its head
@@ -1999,8 +1777,7 @@ fun elemExpr (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
     "Cons"
     d
     (V.map
-      (\o ->
-        (let b = must NodeBase o in (\k ov -> baseExpr c k b ov, spanOf b)))
+      (\o -> (let b = must NodeBase o in (\k ov -> baseExpr c k b ov, spanOf b)))
       (operandsOf (must NodeExpr s)))
     over
 
@@ -2062,9 +1839,7 @@ fun lowExpr (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
                  (childrenOf NodeAsExpr body)
                  (V.concatMap
                    (childrenOf NodeAsExpr)
-                   (V.concatMap
-                     (childrenOf NodeSemiItem)
-                     (childrenOf NodeListTail body))))))
+                   (V.concatMap (childrenOf NodeSemiItem) (childrenOf NodeListTail body))))))
      | None -> [])
   else if k == NodeArrE
   then
@@ -2072,10 +1847,7 @@ fun lowExpr (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
       d
       "Array"
       m
-      (many
-        (d + 1)
-        "items"
-        (each (\j x -> elemExpr c j x None) (childrenOf NodeAsExpr prim)))
+      (many (d + 1) "items" (each (\j x -> elemExpr c j x None) (childrenOf NodeAsExpr prim)))
   else []
 
 -- --- literals ----------------------------------------------------------------
@@ -2095,8 +1867,7 @@ fun lit (c : Cx) (d : Int) (t : Syn) : [String] =
 
 fun expr (c : Cx) (d : Int) (s : Syn) : [String] = exprOver c d s None
 
-fun exprOver (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
-  exprIn c [] d s over
+fun exprOver (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] = exprIn c [] d s over
 
 -- `f <| g <| x` is `f (g x)`; `x |> f |> g` is `g (f x)`: applications, each
 -- spanning what it joins.
@@ -2115,10 +1886,7 @@ fun backs (c : Cx) (hs : [Int]) (d : Int) (pipes : [Syn]) (over : Maybe Meta) :
       let rest = V.drop pipes 1 in
       if V.isEmpty rest then pipeL c hs d f over
       else
-        let m =
-          M.unwrapOr
-            (V.foldl (\acc p -> join acc (pipeSpan c p)) (pipeSpan c f) rest)
-            over
+        let m = M.unwrapOr (V.foldl (\acc p -> join acc (pipeSpan c p)) (pipeSpan c f) rest) over
         in
         node
           d
@@ -2130,10 +1898,7 @@ fun backs (c : Cx) (hs : [Int]) (d : Int) (pipes : [Syn]) (over : Maybe Meta) :
 
 fun pipeL (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
     [String] =
-  let ors =
-    V.pushFront
-      (V.map (\p -> must NodeOrE p) (childrenOf NodePipe s))
-      (must NodeOrE s)
+  let ors = V.pushFront (V.map (\p -> must NodeOrE p) (childrenOf NodePipe s)) (must NodeOrE s)
   in
   pipes c hs d ors over
 
@@ -2147,18 +1912,13 @@ fun pipes (c : Cx) (hs : [Int]) (d : Int) (ors : [Syn]) (over : Maybe Meta) :
       if n == 1 then orE c hs d f over
       else
         let rest = V.take ors (n - 1) in
-        let m =
-          M.unwrapOr
-            (V.foldl (\acc o -> join acc (orSpan c o)) (orSpan c f) rest)
-            over
+        let m = M.unwrapOr (V.foldl (\acc o -> join acc (orSpan c o)) (orSpan c f) rest) over
         in
         node
           d
           "App"
           m
-          (V.append
-            (orE c hs (d + 1) f None)
-            (many (d + 1) "args" [\k -> pipes c hs k rest None]))
+          (V.append (orE c hs (d + 1) f None) (many (d + 1) "args" [\k -> pipes c hs k rest None]))
 
 fun orE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
     [String] =
@@ -2167,9 +1927,7 @@ fun orE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
     hs
     d
     "or"
-    (V.pushFront
-      (V.map (\t -> must NodeAndE t) (childrenOf NodeOrTail s))
-      (must NodeAndE s))
+    (V.pushFront (V.map (\t -> must NodeAndE t) (childrenOf NodeOrTail s)) (must NodeAndE s))
     (\k x o -> andE c hs k x o)
     (andSpan c)
     over
@@ -2181,9 +1939,7 @@ fun andE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
     hs
     d
     "and"
-    (V.pushFront
-      (V.map (\t -> must NodeOps t) (childrenOf NodeAndTail s))
-      (must NodeOps s))
+    (V.pushFront (V.map (\t -> must NodeOps t) (childrenOf NodeAndTail s)) (must NodeOps s))
     (\k x o -> ops c hs k x o)
     (opsSpan c)
     over
@@ -2310,8 +2066,7 @@ fun baseE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
       if k == NodeMacCall
       then
         applied
-          (\j o ->
-            node j "MacCallE" (M.unwrapOr (macSpan h) o) (macCall c (j + 1) h))
+          (\j o -> node j "MacCallE" (M.unwrapOr (macSpan h) o) (macCall c (j + 1) h))
           (macSpan h)
       else if k == NodeQualHead
       then
@@ -2321,23 +2076,12 @@ fun baseE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
               j
               "Qual"
               (spanOf s)
-              (V.append
-                (ident (j + 1) (firstName h))
-                (ident (j + 1) (lastName h))))
+              (V.append (ident (j + 1) (firstName h)) (ident (j + 1) (lastName h))))
           (spanOf s)
       else if V.isEmpty args then lowAtom c hs d h over
-      else
-        node
-          d
-          "App"
-          m
-          (V.append (lowAtom c hs (d + 1) h None) (argsOut (d + 1)))
+      else node d "App" m (V.append (lowAtom c hs (d + 1) h None) (argsOut (d + 1)))
   | None ->
-      node
-        d
-        "Cons"
-        m
-        (V.append (ident (d + 1) (firstName head)) (argsOut (d + 1)))
+      node d "Cons" m (V.append (ident (d + 1) (firstName head)) (argsOut (d + 1)))
 
 fun atomE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) : [String] =
   let m = spanOf s in
@@ -2345,38 +2089,25 @@ fun atomE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) : [String] =
   | Just n ->
       let k = R.kindOf n in
       if k == NodeMacAtom
-      then
-        fields d n (\j -> node j "MacCallE" (macSpan n) (macCall c (j + 1) n))
+      then fields d n (\j -> node j "MacCallE" (macSpan n) (macCall c (j + 1) n))
       else if k == NodeQualAtom then
         let toks = V.filter (\t -> R.kindOf t != TokenPeriod) (tokenKids n) in
-        let q =
-          (match V.get toks 0 with | Just t -> nameOf t | None -> named "" m)
+        let q = (match V.get toks 0 with | Just t -> nameOf t | None -> named "" m)
         in
-        let nm =
-          (match V.get toks 1 with | Just t -> nameOf t | None -> named "" m)
+        let nm = (match V.get toks 1 with | Just t -> nameOf t | None -> named "" m)
         in
         fields
           d
           n
-          (\j ->
-            node
-              j
-              "Qual"
-              (from q.at nm.at)
-              (V.append (ident (j + 1) q) (ident (j + 1) nm)))
+          (\j -> node j "Qual" (from q.at nm.at) (V.append (ident (j + 1) q) (ident (j + 1) nm)))
       else lowAtom c hs d n None
   | None ->
-      node
-        d
-        "Cons"
-        m
-        (V.append (ident (d + 1) (firstName s)) (many (d + 1) "args" []))
+      node d "Cons" m (V.append (ident (d + 1) (firstName s)) (many (d + 1) "args" []))
 
 -- An atom's `.field`s, each spanning the atom and every field: the
 -- outermost first.
 fun fields (d : Int) (s : Syn) (inner : Out) : [String] =
-  let fs =
-    V.map (\f -> nameOf (must TokenLowerIdent f)) (childrenOf NodeFieldTail s)
+  let fs = V.map (\f -> nameOf (must TokenLowerIdent f)) (childrenOf NodeFieldTail s)
   in
   fieldsFrom d (spanOf s) fs inner
 
@@ -2428,9 +2159,7 @@ fun closedPrim (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
       (many
         (d + 1)
         "items"
-        (each
-          (\j x -> exprIn c hs j (must NodeExpr x) None)
-          (childrenOf NodeAsExpr s)))
+        (each (\j x -> exprIn c hs j (must NodeExpr x) None) (childrenOf NodeAsExpr s)))
 
 fun openPrim (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
     [String] =
@@ -2440,13 +2169,7 @@ fun openPrim (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
   | SurfaceIfE cond yes no ->
       node d "If" m (V.concat [e (d + 1) cond, e (d + 1) yes, e (d + 1) no])
   | SurfaceLamE params body ->
-      node
-        d
-        "Lam"
-        m
-        (V.append
-          (many (d + 1) "params" (each (pat c) params))
-          (expr c (d + 1) body))
+      node d "Lam" m (V.append (many (d + 1) "params" (each (pat c) params)) (expr c (d + 1) body))
   | SurfaceMatchE scrutinee arms ->
       node d "Match" m
         (V.append
@@ -2471,9 +2194,7 @@ fun openPrim (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
         d
         "Let"
         m
-        (V.append
-          (many (d + 1) "binds" (V.concatMap (letBind c hs) binds))
-          (e (d + 1) body))
+        (V.append (many (d + 1) "binds" (V.concatMap (letBind c hs) binds)) (e (d + 1) body))
   | SurfaceHandleE target arms -> handleE c hs d s m target arms
   | _ -> []
 
@@ -2496,10 +2217,7 @@ fun letBind (c : Cx) (hs : [Int]) (s : Syn) : [Out] =
                n
                params
                ret
-               (\j ->
-                 (if V.isEmpty params
-                   then exprIn c hs j value None
-                   else expr c j value))]
+               (\j -> (if V.isEmpty params then exprIn c hs j value None else expr c j value))]
        | None ->
            [\k -> under k "PatBind" [pat c (k + 1) p, exprIn c hs (k + 1) value None]])
   | _ -> []
@@ -2519,9 +2237,7 @@ fun plainName (p : Syn) : Maybe Name =
 fun handleE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) (target : Syn)
     (arms : [Syn]) : [String] =
   let isReturn =
-    \a ->
-      V.len (childrenOf TokenLowerIdent a) == 1
-        and R.text (must TokenLowerIdent a) == "return"
+    \a -> V.len (childrenOf TokenLowerIdent a) == 1 and R.text (must TokenLowerIdent a) == "return"
   in
   let ops = V.filter (\a -> not (isReturn a)) arms in
   let rets = V.filter isReturn arms in
@@ -2577,9 +2293,7 @@ fun parenE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) :
                       k
                       "PVar"
                       (exprSpan c inner)
-                      (ident
-                        (k + 1)
-                        (named "_hole${show i}" (exprSpan c inner))))
+                      (ident (k + 1) (named "_hole${show i}" (exprSpan c inner))))
                 (V.range 0 (V.len own))))
             (exprIn c own (d + 1) inner None))
   | _ ->
@@ -2621,10 +2335,7 @@ fun interp (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
     "Interp"
     m
     (V.append
-      (many
-        (d + 1)
-        "texts"
-        (V.map (\t -> \k -> leaf k "text ${escape t}") texts))
+      (many (d + 1) "texts" (V.map (\t -> \k -> leaf k "text ${escape t}") texts))
       (many (d + 1) "holes" holes))
 
 -- `{ r | x = e }` updates `r`; anything else is a record, `{ x }` short for
@@ -2657,17 +2368,10 @@ fun braceE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
           items in
         let base =
           M.andThen
-            (\t ->
-              M.map
-                (\te -> \k -> e k (must NodeExpr te))
-                (childOf NodeTailExpr t))
+            (\t -> M.map (\te -> \k -> e k (must NodeExpr te)) (childOf NodeTailExpr t))
             (childOf NodeBraceTail s)
         in
-      node
-        d
-        "RecordE"
-        m
-        (V.append (many (d + 1) "fields" fs) (opt (d + 1) "base" base))
+      node d "RecordE" m (V.append (many (d + 1) "fields" fs) (opt (d + 1) "base" base))
 
 -- `[lo .. hi]`, `[a; b]`, `[;]`, `[a, b]`, `[]`.
 fun brackE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
@@ -2681,10 +2385,7 @@ fun brackE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
         (V.concat
           [
             node (d + 1) "Var" m (ident (d + 2) (named "vecFromArray" m)),
-            line
-              (d + 1)
-              "args 1"
-              (node (d + 2) "Array" m (many (d + 3) "items" es))
+            line (d + 1) "args 1" (node (d + 2) "Array" m (many (d + 3) "items" es))
           ])
   in
   match childOf NodeBrackBody s with
@@ -2739,9 +2440,7 @@ fun brackE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
                          (V.pushFront
                            (each
                              item
-                             (V.concatMap
-                               (childrenOf NodeAsExpr)
-                               (childrenOf NodeSemiItem t)))
+                             (V.concatMap (childrenOf NodeAsExpr) (childrenOf NodeSemiItem t)))
                            lo))
                  | None ->
                      (match childOf NodeVecTail body with
@@ -2750,9 +2449,7 @@ fun brackE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
                             (V.pushFront
                               (each
                                 item
-                                (V.concatMap
-                                  (childrenOf NodeAsExpr)
-                                  (childrenOf NodeCommaItem t)))
+                                (V.concatMap (childrenOf NodeAsExpr) (childrenOf NodeCommaItem t)))
                               lo)
                       | None -> vector [lo]))))
 
@@ -2789,8 +2486,7 @@ fun andSpan (c : Cx) (s : Syn) : Meta =
 fun opsSpan (c : Cx) (s : Syn) : Meta =
   if has NodeInfixTail s then spanOf s else operandSpan c (must NodeOperand s)
 
-fun operandSpan (c : Cx) (s : Syn) : Meta =
-  negSpan c (childrenOf TokenMinus s) (must NodeBase s)
+fun operandSpan (c : Cx) (s : Syn) : Meta = negSpan c (childrenOf TokenMinus s) (must NodeBase s)
 
 fun baseSpan (c : Cx) (s : Syn) : Meta =
   if has NodeAtom s then spanOf s
@@ -2799,9 +2495,7 @@ fun baseSpan (c : Cx) (s : Syn) : Meta =
     | Just low ->
         (match childOf NodeClosedAtom low with
          | Just ca ->
-             (if has NodeFieldTail ca
-               then spanOf ca
-               else primSpan c (M.unwrapOr ca (firstNode ca)))
+             (if has NodeFieldTail ca then spanOf ca else primSpan c (M.unwrapOr ca (firstNode ca)))
          | None -> spanOf low)
     | None ->
         (match M.andThen (childOf NodeMacCall) (childOf NodeHead s) with
@@ -2824,17 +2518,13 @@ fun holesIn (s : Syn) : [Int] =
     -- `f <| x`: the function, then what it is applied to.
     V.concatMap
       holesIn
-      (V.pushFront
-        (V.map (\p -> must NodePipeL p) (childrenOf NodeBackPipe s))
-        (must NodePipeL s))
+      (V.pushFront (V.map (\p -> must NodePipeL p) (childrenOf NodeBackPipe s)) (must NodePipeL s))
   else if k == NodePipeL then
     -- `x |> f |> g` is `g (f x)`: the last first.
     V.concatMap
       holesIn
       (V.reverse
-        (V.pushFront
-          (V.map (\p -> must NodeOrE p) (childrenOf NodePipe s))
-          (must NodeOrE s)))
+        (V.pushFront (V.map (\p -> must NodeOrE p) (childrenOf NodePipe s)) (must NodeOrE s)))
   else
     if k == NodeLamE
     or k == NodeMacCall
@@ -2856,10 +2546,7 @@ fun holesIn (s : Syn) : [Int] =
     else if k == NodeMatchE then
       V.concatMap
       (\x -> if R.kindOf x == NodeArm
-        then
-          V.concatMap
-          holesIn
-          (V.filter (\y -> R.kindOf y != NodePat) (nodeKids x))
+        then V.concatMap holesIn (V.filter (\y -> R.kindOf y != NodePat) (nodeKids x))
         else holesIn x)
       (nodeKids s)
     else if k == NodeLetE then
@@ -2867,10 +2554,7 @@ fun holesIn (s : Syn) : [Int] =
       (\x -> if R.kindOf x == NodeFunBind
         then []
         else if R.kindOf x == NodePatBind
-        then
-          (if V.isEmpty (childrenOf NodeParam x)
-            then holesIn (must NodeExpr x)
-            else [])
+        then (if V.isEmpty (childrenOf NodeParam x) then holesIn (must NodeExpr x) else [])
         else holesIn x)
       (nodeKids s)
     else if k == NodeHandleE then
@@ -2889,8 +2573,5 @@ fun holesIn (s : Syn) : [Int] =
       V.concatMap
       holesIn
       (V.filter
-        (\x ->
-          R.kindOf x != NodePat
-            and R.kindOf x != NodeAnnot
-            and R.kindOf x != NodeParam)
+        (\x -> R.kindOf x != NodePat and R.kindOf x != NodeAnnot and R.kindOf x != NodeParam)
         (nodeKids s))

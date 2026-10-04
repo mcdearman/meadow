@@ -175,18 +175,9 @@ lang! {
   Term + Ctor { name : String, args : [Term] }
   Term + Prim { op : String, args : [Term] }
   Term + Perform { eff : String, op : String, arg : Term }
-  Term + Handle {
-    body : Term,
-    clauses : [Clause],
-    retId : Maybe Int,
-    ret : Maybe Term
+  Term + Handle { body : Term, clauses : [Clause], retId : Maybe Int, ret : Maybe Term
   }
-  Clause + Clause {
-    eff : String,
-    op : String,
-    param : Int,
-    resume : Int,
-    body : Term
+  Clause + Clause { eff : String, op : String, param : Int, resume : Int, body : Term
   }
   Term + Join { id : Int, params : [Int], rhs : Term, body : Term }
   Term + Jump { id : Int, args : [Term] }
@@ -229,13 +220,7 @@ pass! {
     | Perform { eff, op, arg } ->
         Perform { eff = unquoted eff, op = unquoted op, arg = arg }
     | Handle { body, clauses, retId, ret } ->
-        Handle
-          {
-            body = body,
-            clauses = clauses,
-            retId = M.map number retId,
-            ret = ret
-          }
+        Handle { body = body, clauses = clauses, retId = M.map number retId, ret = ret }
     | Clause { eff, op, param, resume, body } ->
         Clause
           {
@@ -246,13 +231,7 @@ pass! {
             body = body
           }
     | Join { id, params, rhs, body } ->
-        Join
-          {
-            id = number id,
-            params = V.map number params,
-            rhs = rhs,
-            body = body
-          }
+        Join { id = number id, params = V.map number params, rhs = rhs, body = body }
     | Jump { id, args } -> Jump { id = number id, args = args }
     | LInt { value } -> LInt { value = number value }
     | LBig { value } -> LBig { value = number value }
@@ -267,12 +246,7 @@ pass! {
     | PCtor { name, args } -> PCtor { name = unquoted name, args = args }
     | PField { label, pat } -> PField { label = unquoted label, pat = pat }
     | Arm { pat, guard, body } ->
-        Arm
-          {
-            pat = pat,
-            guard = M.map (\g -> coreGuardCondIn out g) guard,
-            body = body
-          }
+        Arm { pat = pat, guard = M.map (\g -> coreGuardCondIn out g) guard, body = body }
 }
 
 -- The program `input` writes, or what is wrong with it.
@@ -292,20 +266,14 @@ pass! {
 fun number (s : String) : Int = M.unwrapOr 0 (S.toInt s)
 
 -- A quoted string's text: its quotes off, and each `\xNN` the byte it names.
-fun unquoted (s : String) : String =
-  unescaped (stringSlice s 1 (stringByteLength s - 1)) 0 0 ""
+fun unquoted (s : String) : String = unescaped (stringSlice s 1 (stringByteLength s - 1)) 0 0 ""
 
 fun unescaped (s : String) (run : Int) (i : Int) (acc : String) : String =
   if i >= stringByteLength s then acc ++ stringSlice s run i
   else if toInt (stringByteAt s i) == 92 then
-    let code =
-      hex (toInt (stringByteAt s (i + 2))) * 16 + hex (toInt (stringByteAt s (i + 3)))
+    let code = hex (toInt (stringByteAt s (i + 2))) * 16 + hex (toInt (stringByteAt s (i + 3)))
     in
-    unescaped
-      s
-      (i + 4)
-      (i + 4)
-      (acc ++ stringSlice s run i ++ C.toString (C.fromCode code))
+    unescaped s (i + 4) (i + 4) (acc ++ stringSlice s run i ++ C.toString (C.fromCode code))
   else unescaped s run (i + 1) acc
 
 fun hex (b : Int) : Int = if b >= 65 then b - 55 else b - 48

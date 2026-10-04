@@ -21,11 +21,9 @@ use Std.Ordering (isLess, isEqual, isGreater)
 -- U+10FFFF). `Std.Char.fromCodeSafe` checks first.
 @pub fun fromCode (n : Int) : Char = charFromCode n
 
-@pub fun isScalar (n : n) : Bool =
-  n >= 0 and n <= 1114111 and (n < 55296 or n > 57343)
+@pub fun isScalar (n : n) : Bool = n >= 0 and n <= 1114111 and (n < 55296 or n > 57343)
 
-@pub fun fromCodeSafe (n : Int) : Maybe Char =
-  if isScalar n then Just (charFromCode n) else None
+@pub fun fromCodeSafe (n : Int) : Maybe Char = if isScalar n then Just (charFromCode n) else None
 
 @pub fun toString (c : Char) : String = charsToString #[c]
 
@@ -49,23 +47,18 @@ use Std.Ordering (isLess, isEqual, isGreater)
 @pub fun isAlphaNum (c : Char) : Bool = isAlpha c or isDigit c
 
 -- Space, tab, newline, carriage return, form feed, vertical tab.
-@pub fun isSpace (c : Char) : Bool =
-  let n = code c in
-  n == 32 or (n >= 9 and n <= 13)
+@pub fun isSpace (c : Char) : Bool = let n = code c in n == 32 or (n >= 9 and n <= 13)
 
 -- --- case --------------------------------------------------------------------
 
-@pub fun toUpper (c : Char) : Char =
-  if isLower c then charFromCode (code c - 32) else c
+@pub fun toUpper (c : Char) : Char = if isLower c then charFromCode (code c - 32) else c
 
-@pub fun toLower (c : Char) : Char =
-  if isUpper c then charFromCode (code c + 32) else c
+@pub fun toLower (c : Char) : Char = if isUpper c then charFromCode (code c + 32) else c
 
 -- --- digits ------------------------------------------------------------------
 
 -- `'7'` to `7`; `None` for anything that is not a decimal digit.
-@pub fun digitToInt (c : Char) : Maybe Int =
-  if isDigit c then Just (code c - 48) else None
+@pub fun digitToInt (c : Char) : Maybe Int = if isDigit c then Just (code c - 48) else None
 
 -- `0`..`15` to `'0'`..`'f'`; `None` outside that range.
 @pub fun fromHexDigit (n : Int) : Maybe Char =

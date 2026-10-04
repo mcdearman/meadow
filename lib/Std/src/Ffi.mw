@@ -216,10 +216,7 @@ fun cFunction (name : String) =
   match cFunction "strlen" with
   | Err why -> assertEq why "" "the C library has strlen"
   | Ok strlen ->
-      assertEq
-        (callInt strlen [Arg.String "héllo"])
-        (Ok 6)
-        "its bytes, counted by C"
+      assertEq (callInt strlen [Arg.String "héllo"]) (Ok 6) "its bytes, counted by C"
 
 @test fun anIntegerGoesIn () =
   match cFunction "labs" with
@@ -231,10 +228,7 @@ fun cFunction (name : String) =
   match cFunction "atof" with
   | Err why -> assertEq why "" "the C library has atof"
   | Ok atof ->
-      assertEq
-        (callFloat atof [Arg.String "2.5"])
-        (Ok 2.5)
-        "the number it reads"
+      assertEq (callFloat atof [Arg.String "2.5"]) (Ok 2.5) "the number it reads"
 
 @test fun aStringComesBackAndANullOneIsEmpty () =
   match cFunction "getenv" with
@@ -246,9 +240,7 @@ fun cFunction (name : String) =
           (Ok "")
           "null is the empty string"
       in
-      assertTrue
-        (callString getenv [Arg.String "PATH"] != Ok "")
-        "and PATH is set"
+      assertTrue (callString getenv [Arg.String "PATH"] != Ok "") "and PATH is set"
 
 @test fun cFillsMemoryThatIsReadBack () =
   match cFunction "memset" with
@@ -257,10 +249,7 @@ fun cFunction (name : String) =
       let got = withBuffer 16 (\p ->
         let _ = callPtr memset [Arg.Ptr p, Arg.Int 104, Arg.Int 3] in
         (readText p 3, readUnsigned p 1 4)) in
-      assertEq
-        got
-        ("hhh", Ok [104, 104, 104, 0])
-        "three bytes set, the fourth as it was"
+      assertEq got ("hhh", Ok [104, 104, 104, 0]) "three bytes set, the fourth as it was"
 
 @test fun numbersAreWrittenAndReadAtTheirWidth () =
   let got = withBuffer 32 (\p ->
@@ -268,10 +257,7 @@ fun cFunction (name : String) =
     let floats = readFloats p 4 2 in
     let _ = writeInts (offset p 16) 2 [0 - 1, 513] in
     (floats, readInts (offset p 16) 2 2, readUnsigned (offset p 16) 1 4)) in
-  assertEq
-    got
-    (Ok [1.5, 2.25], Ok [0 - 1, 513], Ok [255, 255, 1, 2])
-    "as C floats and shorts"
+  assertEq got (Ok [1.5, 2.25], Ok [0 - 1, 513], Ok [255, 255, 1, 2]) "as C floats and shorts"
 
 @test fun whatIsNotThereIsSaid () =
   let _ =

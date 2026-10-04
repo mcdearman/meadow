@@ -23,8 +23,7 @@ use Std.Collections.Vector (Vector)
   spawn : (String, Vector String, Maybe String, Vector (String, String))
             -> Result String (Int, String, String),
   -- Run to completion, inheriting the parent's stdio; just the exit code.
-  status : (String, Vector String, Maybe String, Vector (String, String))
-             -> Result String Int,
+  status : (String, Vector String, Maybe String, Vector (String, String)) -> Result String Int,
   -- Terminate the current process immediately with the given exit code.
   exit : Int -> (),
   currentPid : () -> Int,
@@ -54,8 +53,7 @@ use Std.Collections.Vector (Vector)
   ffiReadText : (Int, Int) -> String,
 }
 
-@pub fun command (program : a) : (a, [b], Maybe c, [d]) =
-  (program, V.empty, None, V.empty)
+@pub fun command (program : a) : (a, [b], Maybe c, [d]) = (program, V.empty, None, V.empty)
 
 @pub fun withArg (a : a) (cmd : (b, [a], c, d)) : (b, [a], c, d) =
   match cmd with | (p, xs, cwd, envs) -> (p, V.pushBack xs a, cwd, envs)

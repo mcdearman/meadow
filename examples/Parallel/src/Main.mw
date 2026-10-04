@@ -50,9 +50,7 @@ fun countPrimesInParallel (lo : Int) (hi : Int) (pieces : Int) =
   V.foldl
     (\a b -> a + b)
     0
-    (Thread.parMap
-      (\c -> match c with | (a, b) -> countPrimes a b)
-      (chunks lo hi pieces))
+    (Thread.parMap (\c -> match c with | (a, b) -> countPrimes a b) (chunks lo hi pieces))
 
 -- --- one table, many readers -------------------------------------------------
 
@@ -66,27 +64,21 @@ fun primeTable (n : Int) =
 
 -- Sum the primes at positions `[from, to)`, looking each up in the table.
 fun sumAt table (from : Int) (to : Int) =
-  let rec go (k : Int) (acc : Int) =
-    if k >= to then acc else go (k + 1) (acc + H.getOr 0 k table)
+  let rec go (k : Int) (acc : Int) = if k >= to then acc else go (k + 1) (acc + H.getOr 0 k table)
   in go from 0
 
 -- --- main --------------------------------------------------------------------
 
-fun report label ns =
-  println (S.concatAll [label, formatDuration (nanosToMillis ns)])
+fun report label ns = println (S.concatAll [label, formatDuration (nanosToMillis ns)])
 
 fun main () =
   let limit = toInt 400000 in
   let _ = println (S.concatAll ["== primes below ", S.fromInt limit]) in
   let (one, oneNs) = timed (\() -> countPrimes 0 limit) in
-  let _ =
-    report (S.concatAll ["one thread:     ", S.fromInt one, " primes, "]) oneNs
+  let _ = report (S.concatAll ["one thread:     ", S.fromInt one, " primes, "]) oneNs
   in
   let (many, manyNs) = timed (\() -> countPrimesInParallel 0 limit 32) in
-  let _ =
-    report
-      (S.concatAll ["32 chunks:      ", S.fromInt many, " primes, "])
-      manyNs
+  let _ = report (S.concatAll ["32 chunks:      ", S.fromInt many, " primes, "]) manyNs
   in
 
   let _ = println "== eight threads reading one compacted table" in
@@ -95,18 +87,11 @@ fun main () =
   let _ =
     println
       (S.concatAll
-        [
-          S.fromInt size,
-          " primes in a region of ",
-          S.fromInt (C.size table / 1024),
-          " KiB"
+        [ S.fromInt size, " primes in a region of ", S.fromInt (C.size table / 1024), " KiB"
         ])
   in
   let pieces = chunks 1 (size + 1) 8 in
-  let sums =
-    Thread.parMap
-      (\c -> match c with | (a, b) -> sumAt (C.get table) a b)
-      pieces
+  let sums = Thread.parMap (\c -> match c with | (a, b) -> sumAt (C.get table) a b) pieces
   in
   let total = V.foldl (\a b -> a + b) 0 sums in
   println (S.concatAll ["sum of every prime below 200000: ", S.fromInt total])
@@ -116,22 +101,13 @@ fun main () =
 use Std.Test (assertEq)
 
 @test fun theSplitCountAgreesWithTheWholeOne () =
-  assertEq
-    (countPrimesInParallel 0 10000 7)
-    (countPrimes 0 10000)
-    "1229 either way"
+  assertEq (countPrimesInParallel 0 10000 7) (countPrimes 0 10000) "1229 either way"
 
 @test fun chunksCoverTheRangeExactly () =
   assertEq (chunks 0 10 3) [(0, 4), (4, 8), (8, 10)] "no gaps, no overlap"
 
 @test fun threadsReadTheSameCompactedTable () =
   let table = C.make (primeTable 1000) in
-  let sums =
-    Thread.parMap
-      (\c -> match c with | (a, b) -> sumAt (C.get table) a b)
-      (chunks 1 169 4)
+  let sums = Thread.parMap (\c -> match c with | (a, b) -> sumAt (C.get table) a b) (chunks 1 169 4)
   in
-  assertEq
-    (V.foldl (\a b -> a + b) 0 sums)
-    76127
-    "the primes below 1000 add up to 76127"
+  assertEq (V.foldl (\a b -> a + b) 0 sums) 76127 "the primes below 1000 add up to 76127"

@@ -43,8 +43,7 @@ effect Ask {
 
 -- Logging to the terminal.
 fun printingLogs act =
-  handle act () with {
-    log line k -> let _ = println (S.concat "[log] " line) in k (),
+  handle act () with { log line k -> let _ = println (S.concat "[log] " line) in k (),
   }
 
 -- Logging into a list, returned beside the result.
@@ -73,9 +72,7 @@ fun checkout basket =
     total + item) 0 basket in
   let _ =
     if subtotal > limit
-    then
-      raise
-        (S.concatAll ["order of ", S.fromInt subtotal, " is over the limit"])
+    then raise (S.concatAll ["order of ", S.fromInt subtotal, " is over the limit"])
     else 0
   in
   let total = subtotal + subtotal * rate / 100 in
@@ -86,9 +83,7 @@ fun checkout basket =
 fun runCheckout table basket =
   collectingLogs
     (\() ->
-      withSettings
-        table
-        (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout basket))))
+      withSettings table (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout basket))))
 
 -- --- effects the standard library already has -------------------------------
 
@@ -118,10 +113,7 @@ fun main () =
       (\() ->
         withSettings
           settings
-          (\() ->
-            runState
-              (toInt 0)
-              (\() -> toResult (\() -> checkout [10, 20, 30]))))
+          (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout [10, 20, 30]))))
   in
   let _ = println (S.concat "result and items counted: " (show result)) in
 
@@ -130,8 +122,7 @@ fun main () =
   let _ = println (S.concat "outcome: " (show outcome)) in
   let _ = println (S.concat "log: " (show lines)) in
 
-  let _ =
-    println "== a dice game with a seed and a frozen clock: the same every run"
+  let _ = println "== a dice game with a seed and a frozen clock: the same every run"
   in
   let _ = println (withClock 1000 (\() -> withSeed 42 (\() -> game ()))) in
 
@@ -154,10 +145,7 @@ use Std.Test (assertEq)
 
 @test fun aCheckoutOverTheLimitFailsWithAValue () =
   let (outcome, lines) = runCheckout [("limit", toInt 5)] [3, 4] in
-  assertEq
-    outcome
-    (Err "order of 7 is over the limit", 2)
-    "a value, not a crash"
+  assertEq outcome (Err "order of 7 is over the limit", 2) "a value, not a crash"
 
 @test fun theSameSeedGivesTheSameGame () =
   assertEq
@@ -169,14 +157,8 @@ use Std.Test (assertEq)
   let (u, printed) =
     withOutput (\() -> withInput ["Grace"] (\() -> greeter ()))
   in
-  assertEq
-    printed
-    "What is your name?\nHello, Grace!\n"
-    "one question, one greeting"
+  assertEq printed "What is your name?\nHello, Grace!\n" "one question, one greeting"
 
 @test fun theGreeterCopesWithNoInput () =
   let (u, printed) = withOutput (\() -> withInput [] (\() -> greeter ())) in
-  assertEq
-    printed
-    "What is your name?\nNobody there.\n"
-    "end of input is not an error"
+  assertEq printed "What is your name?\nNobody there.\n" "end of input is not an error"

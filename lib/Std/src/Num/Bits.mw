@@ -34,9 +34,7 @@
 
 -- Four bytes as one `UInt32`, `b0` least significant.
 @pub fun fromBytes4 (b0 : n) (b1 : n1) (b2 : n2) (b3 : n3) : UInt32 =
-  bitOr
-    (bitOr (toUInt32 b0) (toUInt32 b1 << 8))
-    (bitOr (toUInt32 b2 << 16) (toUInt32 b3 << 24))
+  bitOr (bitOr (toUInt32 b0) (toUInt32 b1 << 8)) (bitOr (toUInt32 b2 << 16) (toUInt32 b3 << 24))
 
 fun bitsClzGo x w n =
   if n >= w then w
@@ -47,21 +45,16 @@ fun bitsClzGo x w n =
 -- it is the whole width.
 @pub fun countLeadingZeros (x : n) : Int = bitsClzGo x (bitWidth x) 0
 
-fun bitsCtzGo x w n =
-  if n >= w then w
-  else if testBit x n then n
-  else bitsCtzGo x w (n + 1)
+fun bitsCtzGo x w n = if n >= w then w else if testBit x n then n else bitsCtzGo x w (n + 1)
 
 -- Trailing zero bits. `countTrailingZeros 8 == 3`; of 0 it is the whole width.
 @pub fun countTrailingZeros (x : n) : Int = bitsCtzGo x (bitWidth x) 0
 
 -- Rotate left by `n` (0 up to the width), at `x`'s width.
-@pub fun rotateLeft (x : n) (n : Int) : n =
-  bitOr (x << n) (ushr x (bitWidth x - n))
+@pub fun rotateLeft (x : n) (n : Int) : n = bitOr (x << n) (ushr x (bitWidth x - n))
 
 -- Rotate right by `n` (0 up to the width).
-@pub fun rotateRight (x : n) (n : Int) : n =
-  bitOr (ushr x n) (x << (bitWidth x - n))
+@pub fun rotateRight (x : n) (n : Int) : n = bitOr (ushr x n) (x << (bitWidth x - n))
 
 -- --- tests -------------------------------------------------------------------
 
@@ -101,23 +94,12 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 @test fun rotationsComeBackAround () =
   let a = assertEq (rotateLeft (toInt 1) 1) (toInt 2) "rotateLeft" in
   let b = assertEq (rotateRight (toInt 2) 1) (toInt 1) "rotateRight" in
-  let c =
-    assertEq
-      (rotateLeft (toUInt8 0x81) 1)
-      (toUInt8 0x03)
-      "a UInt8 wraps at eight bits"
+  let c = assertEq (rotateLeft (toUInt8 0x81) 1) (toUInt8 0x03) "a UInt8 wraps at eight bits"
   in
-  assertEq
-    (rotateRight (rotateLeft (toInt 0x1234) 9) 9)
-    (toInt 0x1234)
-    "a rotation is reversible"
+  assertEq (rotateRight (rotateLeft (toInt 0x1234) 9) 9) (toInt 0x1234) "a rotation is reversible"
 
 @test fun shiftsKnowTheirSign () =
-  let a =
-    assertEq
-      (toInt8 (0 - 128) >> 7)
-      (toInt8 (0 - 1))
-      "arithmetic on a signed type"
+  let a = assertEq (toInt8 (0 - 128) >> 7) (toInt8 (0 - 1)) "arithmetic on a signed type"
   in
   let b =
     assertEq (toUInt8 128 >> 7) (toUInt8 1) "logical on an unsigned one"

@@ -50,8 +50,7 @@
 
 @pub use Std.Tuple (fst, snd, pair, swap, mapFst, mapSnd)
 
-@pub use Std.Num.Int (
-  min, max, abs, signum, clamp, succ, pred, even, odd, gcd, lcm,
+@pub use Std.Num.Int ( min, max, abs, signum, clamp, succ, pred, even, odd, gcd, lcm,
 )
 
 @pub use Std.Num.Bits (

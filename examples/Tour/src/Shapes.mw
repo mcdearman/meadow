@@ -40,7 +40,4 @@ fun sqrt x =
   | Rect w h -> if w == h then "a square" else "a rectangle"
   | Triangle a b c -> "a triangle"
 
-@pub fun distance p q =
-  let dx = p.x -. q.x in
-  let dy = p.y -. q.y in
-  sqrt (dx *. dx +. dy *. dy)
+@pub fun distance p q = let dx = p.x -. q.x in let dy = p.y -. q.y in sqrt (dx *. dx +. dy *. dy)

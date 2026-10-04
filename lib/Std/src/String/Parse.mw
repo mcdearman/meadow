@@ -155,9 +155,7 @@ fun decodeAt s i =
   else if b >= 192 and b < 224 and i + 1 < n then
     (charFromCode ((bitAnd b 31 << 6) + contAt s (i + 1)), i + 2)
   else if b >= 224 and b < 240 and i + 2 < n then
-    (
-      charFromCode ((bitAnd b 15 << 12) + (contAt s (i + 1) << 6) + contAt s (i + 2)),
-      i + 3
+    ( charFromCode ((bitAnd b 15 << 12) + (contAt s (i + 1) << 6) + contAt s (i + 2)), i + 3
     )
   else if b >= 240 and i + 3 < n then
     let high = (bitAnd b 7 << 18) + (contAt s (i + 1) << 12) in
@@ -180,17 +178,14 @@ fun stringSkip s n i =
 impl Stream String {
   type Token String = Char
 
-  fun take1 s off =
-    if off >= stringByteLength s then None else Just (decodeAt s off)
+  fun take1 s off = if off >= stringByteLength s then None else Just (decodeAt s off)
 
   fun takeN s n off =
     match stringSkip s n off with
     | None -> None
     | Just stop -> Just (stringSlice s off stop, stop)
 
-  fun takeWhile s f off =
-    let stop = stringWhile s f off in
-    (stringSlice s off stop, stop)
+  fun takeWhile s f off = let stop = stringWhile s f off in (stringSlice s off stop, stop)
 
   fun tokenToChunk c = charsToString #[c]
 
@@ -240,12 +235,9 @@ impl Stream [t] {
     | Just x -> Just (x, off + 1)
     | None -> None
 
-  fun takeN v n off =
-    if off + n > V.len v then None else Just (V.slice v off (off + n), off + n)
+  fun takeN v n off = if off + n > V.len v then None else Just (V.slice v off (off + n), off + n)
 
-  fun takeWhile v f off =
-    let stop = vectorWhile v f off in
-    (V.slice v off stop, stop)
+  fun takeWhile v f off = let stop = vectorWhile v f off in (V.slice v off stop, stop)
 
   fun tokenToChunk x = [x]
 
@@ -364,8 +356,7 @@ use Parser.*
 
 -- Fail without consuming, without an opinion about what was wanted: the
 -- identity of `choice`.
-@pub def empty : Parser s a =
-  Parser (\input off -> Failed False (Trivial off None []))
+@pub def empty : Parser s a = Parser (\input off -> Failed False (Trivial off None []))
 
 -- Apply `f` to whatever `p` produces.
 @pub fun map (f : a -> b) (p : Parser s a) : Parser s b =
@@ -394,16 +385,14 @@ fun andThen c off2 hs reply =
     | Done c a off2 hs -> andThen c off2 hs (runP (f a) input off2))
 
 -- `p` then `q`, keeping `q`'s value.
-@pub fun skipThen (p : Parser s a) (q : Parser s b) : Parser s b =
-  bind p (\ignored -> q)
+@pub fun skipThen (p : Parser s a) (q : Parser s b) : Parser s b = bind p (\ignored -> q)
 
 -- `p` then `q`, keeping `p`'s value.
 @pub fun thenSkip (p : Parser s a) (q : Parser s b) : Parser s a =
   bind p (\a -> map (\ignored -> a) q)
 
 -- Apply the function `pf` yields to the value `pa` yields.
-@pub fun apply (pf : Parser s (a -> b)) (pa : Parser s a) : Parser s b =
-  bind pf (\f -> map f pa)
+@pub fun apply (pf : Parser s (a -> b)) (pa : Parser s a) : Parser s b = bind pf (\f -> map f pa)
 
 -- A parser of several things in a row, written as the function of what they
 -- are and then each of them in the order read:
@@ -420,8 +409,7 @@ fun andThen c off2 hs reply =
 -- earlier one read.
 
 -- What `p` reads is the function's next argument.
-@pub fun keep (p : Parser s a) (pf : Parser s (a -> b)) : Parser s b =
-  apply pf p
+@pub fun keep (p : Parser s a) (pf : Parser s (a -> b)) : Parser s b = apply pf p
 
 -- `p` is read, and nothing kept of it.
 @pub fun skip (p : Parser s a) (pf : Parser s b) : Parser s b = thenSkip pf p
@@ -448,8 +436,7 @@ fun andThen c off2 hs reply =
 -- loop while being defined. Break the cycle by wrapping the recursive use:
 --
 --   fun expr () = P.alt (P.lift2 add term (P.skipThen plus (P.defer expr))) term
-@pub fun defer (f : () -> Parser s a) : Parser s a =
-  Parser (\input off -> runP (f ()) input off)
+@pub fun defer (f : () -> Parser s a) : Parser s a = Parser (\input off -> runP (f ()) input off)
 
 -- ---------------------------------------------------------------------------
 -- Running
@@ -500,8 +487,7 @@ fun andThen c off2 hs reply =
          | other -> other))
 
 -- The first of `ps` that succeeds.
-@pub fun choice (ps : [Parser s a]) : Parser s a =
-  V.foldl (\acc p -> alt acc p) empty ps
+@pub fun choice (ps : [Parser s a]) : Parser s a = V.foldl (\acc p -> alt acc p) empty ps
 
 -- Run `p`, but report no consumption if it fails, so `alt` will still consider
 -- the next branch. This is how you get arbitrary lookahead.
@@ -554,8 +540,7 @@ fun found input off =
     | other -> other)
 
 -- `Just` what `p` produced, or `None` if it failed without consuming.
-@pub fun optional (p : Parser s a) : Parser s (Maybe a) =
-  alt (map Just p) (pure None)
+@pub fun optional (p : Parser s a) : Parser s (Maybe a) = alt (map Just p) (pure None)
 
 -- What `p` produced, or `x` if it failed without consuming.
 @pub fun option (x : a) (p : Parser s a) : Parser s a = alt p (pure x)
@@ -584,9 +569,7 @@ fun found input off =
           (match f t with
            | Just a -> Done True a next []
            | None ->
-               Failed
-                 False
-                 (Trivial off (Just (Tokens (tokenToChunk t))) expected)))
+               Failed False (Trivial off (Just (Tokens (tokenToChunk t))) expected)))
 
 -- Any single token; fails only at the end of input.
 @pub fun anySingle : Stream s => Parser s (Token s)
@@ -636,9 +619,7 @@ fun rest input off = fst (takeWhile input (\t -> True) off)
       match take1 input off with
       | None -> Done False () off []
       | Just (t, _) ->
-          Failed
-            False
-            (Trivial off (Just (Tokens (tokenToChunk t))) [EndOfInput]))
+          Failed False (Trivial off (Just (Tokens (tokenToChunk t))) [EndOfInput]))
 
 -- The longest run of tokens satisfying `f`, possibly empty. Never fails.
 --
@@ -687,9 +668,7 @@ fun rest input off = fst (takeWhile input (\t -> True) off)
 @pub fun withSpan : TraversableStream s => Parser s a -> Parser s (a, (Int, Int))
   | withSpan p =
     bind getInput (\input ->
-      map
-        (\t -> match t with | (a, from, to) -> (a, sourceSpan input from to))
-        (withOffsets p))
+      map (\t -> match t with | (a, from, to) -> (a, sourceSpan input from to)) (withOffsets p))
 
 -- ---------------------------------------------------------------------------
 -- Repetition
@@ -712,8 +691,7 @@ fun manyLoop p input acc off consumed =
   Parser (\input off -> manyLoop p input V.empty off False)
 
 -- One or more of `p`.
-@pub fun some (p : Parser s a) : Parser s [a] =
-  lift2 (\x xs -> V.pushFront xs x) p (many p)
+@pub fun some (p : Parser s a) : Parser s [a] = lift2 (\x xs -> V.pushFront xs x) p (many p)
 
 -- `many`, discarding the results.
 @pub fun skipMany (p : Parser s a) : Parser s () = p |> many |> void
@@ -738,12 +716,10 @@ fun countLoop n p acc =
   alt (sepBy1 p sep) (pure V.empty)
 
 -- Zero or more `p`, each followed by `sep`.
-@pub fun endBy (p : Parser s a) (sep : Parser s b) : Parser s [a] =
-  many (thenSkip p sep)
+@pub fun endBy (p : Parser s a) (sep : Parser s b) : Parser s [a] = many (thenSkip p sep)
 
 -- One or more `p`, each followed by `sep`.
-@pub fun endBy1 (p : Parser s a) (sep : Parser s b) : Parser s [a] =
-  some (thenSkip p sep)
+@pub fun endBy1 (p : Parser s a) (sep : Parser s b) : Parser s [a] = some (thenSkip p sep)
 
 -- Zero or more `p` separated by `sep`, allowing a trailing `sep`.
 @pub fun sepEndBy (p : Parser s a) (sep : Parser s b) : Parser s [a] =
@@ -764,16 +740,13 @@ fun tillLoop p stop input acc off consumed =
        | Done True a off2 _ ->
            tillLoop p stop input (V.pushBack acc a) off2 True
        | Done False _ _ _ ->
-           Failed
-             consumed
-             (Fancy off ["a repeated parser that consumes nothing"]))
+           Failed consumed (Fancy off ["a repeated parser that consumes nothing"]))
 
 -- `p` repeatedly until `stop` matches. The `stop` result is discarded.
 @pub fun manyTill (p : Parser s a) (stop : Parser s b) : Parser s [a] =
   Parser (\input off -> tillLoop p stop input V.empty off False)
 
-fun restL p op acc =
-  alt (bind op (\f -> bind p (\y -> restL p op (f acc y)))) (pure acc)
+fun restL p op acc = alt (bind op (\f -> bind p (\y -> restL p op (f acc y)))) (pure acc)
 
 -- `x`, then as many `op y` as follow, combined from the left:
 -- `chainl1 term (P.mapTo sub (C.char '-'))` reads `1-2-3` as `(1-2)-3`.
@@ -796,8 +769,7 @@ fun restL p op acc =
     | Label l -> l
     | EndOfInput -> "end of input"
 
-fun dedupe xs =
-  V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) V.empty xs
+fun dedupe xs = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) V.empty xs
 
 -- `a`, `a or b`, `a, b, or c`.
 fun orList xs =
@@ -805,9 +777,7 @@ fun orList xs =
   if n == 0 then ""
   else if n == 1 then V.getOr "" xs 0
   else if n == 2 then S.concatAll [V.getOr "" xs 0, " or ", V.getOr "" xs 1]
-  else
-    S.concatAll
-      [S.join ", " (V.take xs (n - 1)), ", or ", V.getOr "" xs (n - 1)]
+  else S.concatAll [S.join ", " (V.take xs (n - 1)), ", or ", V.getOr "" xs (n - 1)]
 
 -- What went wrong, as lines of text: `unexpected 'x'` and `expecting …`, or
 -- the program's own messages.
@@ -822,10 +792,7 @@ fun orList xs =
           | None -> ""
         in
         let wants = expected |> V.map showItem |> dedupe in
-        let x =
-          if V.isEmpty wants
-          then ""
-          else S.concatAll ["expecting ", orList wants, "\n"]
+        let x = if V.isEmpty wants then "" else S.concatAll ["expecting ", orList wants, "\n"]
         in
         let text = S.concat u x in
         if S.isEmpty text then "unknown parse error\n" else text
@@ -870,8 +837,7 @@ fun errorOf r =
 
 @test fun aStringIsAStreamOfChars () =
   let a = assertEq (take1 "héllo" 1) (Just ('é', 3)) "a two-byte character" in
-  let b =
-    assertEq (takeN "héllo" 2 0) (Just ("hé", 3)) "two characters, three bytes"
+  let b = assertEq (takeN "héllo" 2 0) (Just ("hé", 3)) "two characters, three bytes"
   in
   let c = assertEq (takeWhile "abc123" isAlpha 0) ("abc", 3) "a run" in
   assertEq (take1 "" 0) None "the end"
@@ -883,20 +849,12 @@ fun errorOf r =
 @test fun basicsParse () =
   let a = assertEq (runParser (single 'a') "abc") (Ok 'a') "single" in
   let b = assertEq (runParser (chunk "ab") "abc") (Ok "ab") "chunk" in
-  let c =
-    assertEq
-      (runParser (takeWhile1P "a digit" isDigit) "123x")
-      (Ok "123")
-      "takeWhile1P"
+  let c = assertEq (runParser (takeWhile1P "a digit" isDigit) "123x") (Ok "123") "takeWhile1P"
   in
   assertEq (runParser (many (single 'a')) "aab") (Ok ['a', 'a']) "many"
 
 @test fun errorsSayWhatWasFoundAndWanted () =
-  let a =
-    assertEq
-      (errorOf (runParser (single 'a') "b"))
-      "unexpected 'b'\nexpecting 'a'"
-      "a token"
+  let a = assertEq (errorOf (runParser (single 'a') "b")) "unexpected 'b'\nexpecting 'a'" "a token"
   in
   let b =
     assertEq
@@ -912,10 +870,7 @@ fun errorOf r =
   in
   let alts = alt (single 'a') (single 'b') in
   let d =
-    assertEq
-      (errorOf (runParser alts "c"))
-      "unexpected 'c'\nexpecting 'a' or 'b'"
-      "alternatives"
+    assertEq (errorOf (runParser alts "c")) "unexpected 'c'\nexpecting 'a' or 'b'" "alternatives"
   in
   assertEq
     (errorOf (runParser (single 'a') "\n"))
@@ -924,49 +879,28 @@ fun errorOf r =
 
 @test fun aLabelReplacesTheWishList () =
   let p = label "a letter" (satisfy isAlpha) in
-  assertEq
-    (errorOf (runParser p "1"))
-    "unexpected '1'\nexpecting a letter"
-    "labelled"
+  assertEq (errorOf (runParser p "1")) "unexpected '1'\nexpecting a letter" "labelled"
 
 @test fun consumingCommits () =
   let lz = skipThen (single 'l') (single 'z') in
   let a =
     assertFalse (isOk (runParser (alt lz (single 'l')) "let")) "committed"
   in
-  let b =
-    assertEq
-      (runParser (alt (try lz) (single 'l')) "let")
-      (Ok 'l')
-      "try un-consumes"
+  let b = assertEq (runParser (alt (try lz) (single 'l')) "let") (Ok 'l') "try un-consumes"
   in
-  assertEq
-    (runParser (alt (chunk "letter") (chunk "let")) "lets")
-    (Ok "let")
-    "chunk is atomic"
+  assertEq (runParser (alt (chunk "letter") (chunk "let")) "lets") (Ok "let") "chunk is atomic"
 
 @test fun hintsJoinWhatTheNextParserWanted () =
   let digit = label "a digit" (satisfy isDigit) in
   let many1 = runParser (thenSkip (many digit) eof) "12x" in
-  let a =
-    assertEq
-      (errorOf many1)
-      "unexpected 'x'\nexpecting end of input or a digit"
-      "after many"
+  let a = assertEq (errorOf many1) "unexpected 'x'\nexpecting end of input or a digit" "after many"
   in
   let sign = optional (single '-') in
   let opt = runParser (skipThen sign digit) "x" in
-  let b =
-    assertEq
-      (errorOf opt)
-      "unexpected 'x'\nexpecting a digit or '-'"
-      "after optional"
+  let b = assertEq (errorOf opt) "unexpected 'x'\nexpecting a digit or '-'" "after optional"
   in
   let run = runParser (thenSkip (takeWhile1P "a digit" isDigit) eof) "12x" in
-  assertEq
-    (errorOf run)
-    "unexpected 'x'\nexpecting end of input or a digit"
-    "after takeWhile1P"
+  assertEq (errorOf run) "unexpected 'x'\nexpecting end of input or a digit" "after takeWhile1P"
 
 @test fun anErrorHasASpanOfTheSource () =
   let p = skipThen (chunk "let x = ") (chunk "1") in
@@ -978,10 +912,7 @@ fun errorOf r =
 
 @test fun aVectorOfTokensParsesToo () =
   let a = assertEq (runParser (many (single 1)) [1, 1, 2]) (Ok [1, 1]) "many" in
-  assertEq
-    (errorOf (runParser (single 1) [2]))
-    "unexpected 2\nexpecting 1"
-    "shown by display"
+  assertEq (errorOf (runParser (single 1) [2])) "unexpected 2\nexpecting 1" "shown by display"
 
 @test fun chainsAssociate () =
   let digit = map (\c -> charCode c - 48) (satisfy isDigit) in

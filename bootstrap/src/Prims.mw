@@ -561,9 +561,7 @@ use Std.Test (assertEq)
     V.concatMap
       (\x -> match x with
              | (n, Just s, shown) ->
-                 (if showScheme s == shown
-                   then []
-                   else ["${n}: ${showScheme s}, not ${shown}"])
+                 (if showScheme s == shown then [] else ["${n}: ${showScheme s}, not ${shown}"])
              | _ -> [])
       prims
   in

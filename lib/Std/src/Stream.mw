@@ -25,9 +25,7 @@ use Std.Collections.Vector as V
 -- Every yielded value, in order, as a `Vector` -- the default sequence. Built
 -- with `pushBack`, so it costs one amortised push per value.
 @pub fun toVec (producer : () -> a ! { Yield b | e }) : [b] ! e =
-  handle producer () with {
-    yield x k -> \acc -> (k ()) (V.pushBack acc x),
-    return r -> \acc -> acc
+  handle producer () with { yield x k -> \acc -> (k ()) (V.pushBack acc x), return r -> \acc -> acc
   } V.empty
 
 -- Every yielded value, in order, as a `List`.
@@ -42,24 +40,18 @@ use Std.Collections.Vector as V
 -- number of values (the recursion still nests).
 @pub fun forEach (f : a -> b ! e) (producer : () -> c ! { Yield a | e }) :
     () ! e =
-  handle producer () with {
-    yield x k -> let ignored = f x in k (),
-    return r -> ()
+  handle producer () with { yield x k -> let ignored = f x in k (), return r -> ()
   }
 
 -- Left fold over the yielded values.
 @pub fun fold (f : a -> b -> a ! e) (acc : a)
     (producer : () -> c ! { Yield b | e }) : a ! e =
-  handle producer () with {
-    yield x k -> \a -> (k ()) (f a x),
-    return r -> \a -> a
+  handle producer () with { yield x k -> \a -> (k ()) (f a x), return r -> \a -> a
   } acc
 
-@pub fun count (producer : () -> a ! { Yield b | e }) : n ! e =
-  fold (\n x -> n + 1) 0 producer
+@pub fun count (producer : () -> a ! { Yield b | e }) : n ! e = fold (\n x -> n + 1) 0 producer
 
-@pub fun sum (producer : () -> a ! { Yield n | e }) : n ! e =
-  fold (\n x -> n + x) 0 producer
+@pub fun sum (producer : () -> a ! { Yield n | e }) : n ! e = fold (\n x -> n + x) 0 producer
 
 -- --- limiting ----------------------------------------------------------------
 --
@@ -70,9 +62,7 @@ use Std.Collections.Vector as V
 -- The first `n` values, as a `Vector`.
 @pub fun take (n : n) (producer : () -> a ! { Yield b | e }) : [b] ! e =
   handle producer () with {
-    yield x k -> \i -> \acc -> if i <= 0
-                               then acc
-                               else (k ()) (i - 1) (V.pushBack acc x),
+    yield x k -> \i -> \acc -> if i <= 0 then acc else (k ()) (i - 1) (V.pushBack acc x),
     return r -> \i -> \acc -> acc
   } n V.empty
 
@@ -94,23 +84,17 @@ use Std.Collections.Vector as V
 -- Whether any yielded value satisfies `pred`. Stops at the first one that does.
 @pub fun any (pred : a -> Bool ! e) (producer : () -> b ! { Yield a | e })
     : Bool ! e =
-  handle producer () with {
-    yield x k -> if pred x then True else k (),
-    return r -> False
+  handle producer () with { yield x k -> if pred x then True else k (), return r -> False
   }
 
 @pub fun all (pred : a -> Bool ! e) (producer : () -> b ! { Yield a | e })
     : Bool ! e =
-  handle producer () with {
-    yield x k -> if pred x then k () else False,
-    return r -> True
+  handle producer () with { yield x k -> if pred x then k () else False, return r -> True
   }
 
 @pub fun find (pred : a -> Bool ! e) (producer : () -> b ! { Yield a | e })
     : Maybe a ! e =
-  handle producer () with {
-    yield x k -> if pred x then Just x else k (),
-    return r -> None
+  handle producer () with { yield x k -> if pred x then Just x else k (), return r -> None
   }
 
 -- --- transforming ------------------------------------------------------------
@@ -120,9 +104,7 @@ use Std.Collections.Vector as V
 
 @pub fun map (f : a -> b ! { Yield b | e })
     (producer : () -> c ! { Yield a, Yield b | e }) : () ! { Yield b | e } =
-  handle producer () with {
-    yield x k -> let ignored = yield (f x) in k (),
-    return r -> ()
+  handle producer () with { yield x k -> let ignored = yield (f x) in k (), return r -> ()
   }
 
 @pub fun filter (keep : a -> Bool ! { Yield a | e })
@@ -171,8 +153,7 @@ use Std.Either.Either.*
 use Std.Maybe.Maybe.*
 use Std.Yield (Yield)
 
-fun countdown n =
-  if n <= 0 then () else let ignored = yield n in countdown (n - 1)
+fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n - 1)
 
 @test fun collectingWhatWasYielded () =
   let a = assertEq (toVec (\u2 -> countdown 3)) [3, 2, 1] "toVec" in
@@ -185,23 +166,16 @@ fun countdown n =
   let b = assertEq (sum (\u2 -> range 1 5)) 10 "sum" in
   let c = assertEq (count (\u2 -> range 0 7)) 7 "count" in
   -- A left fold, so a non-commutative operator shows the order.
-  assertEq
-    (fold (\acc x -> acc - x) 10 (\u2 -> ofVec [1, 2]))
-    7
-    "fold is left to right"
+  assertEq (fold (\acc x -> acc - x) 10 (\u2 -> ofVec [1, 2])) 7 "fold is left to right"
 
 @test fun takeStopsTheProducerEarly () =
   -- The handler simply does not resume, which unwinds the producer. Without
   -- that this would count to a million.
   let a = assertEq (take 3 (\u2 -> range 0 1000000)) [0, 1, 2] "take" in
   let b = assertEq (take 0 (\u2 -> range 0 10)) [] "take nothing" in
-  let c =
-    assertEq (take 9 (\u2 -> range 0 2)) [0, 1] "take more than is yielded"
+  let c = assertEq (take 9 (\u2 -> range 0 2)) [0, 1] "take more than is yielded"
   in
-  assertEq
-    (takeWhile (\x -> x < 3) (\u2 -> range 0 1000000))
-    [0, 1, 2]
-    "takeWhile"
+  assertEq (takeWhile (\x -> x < 3) (\u2 -> range 0 1000000)) [0, 1, 2] "takeWhile"
 
 @test fun searchingAlsoStopsEarly () =
   let a = assertEq (first (\u2 -> range 5 1000000)) (Just 5) "first" in
@@ -210,34 +184,19 @@ fun countdown n =
     assertEq (find (\x -> x > 2) (\u2 -> range 0 1000000)) (Just 3) "find"
   in
   let d = assertTrue (any (\x -> x > 2) (\u2 -> range 0 1000000)) "any" in
-  let e =
-    assertFalse (any (\x -> x > 9) (\u2 -> range 0 5)) "any, none matching"
+  let e = assertFalse (any (\x -> x > 9) (\u2 -> range 0 5)) "any, none matching"
   in
   let f = assertTrue (all (\x -> x < 5) (\u2 -> range 0 5)) "all" in
-  assertFalse
-    (all (\x -> x < 3) (\u2 -> range 0 1000000))
-    "all stops at the first failure"
+  assertFalse (all (\x -> x < 3) (\u2 -> range 0 1000000)) "all stops at the first failure"
 
 @test fun mapAndFilterAreProducersThemselves () =
-  let a =
-    assertEq
-      (toVec (\u2 -> map (\x -> x * 2) (\u3 -> range 0 3)))
-      [0, 2, 4]
-      "map"
+  let a = assertEq (toVec (\u2 -> map (\x -> x * 2) (\u3 -> range 0 3))) [0, 2, 4] "map"
   in
-  let b =
-    assertEq
-      (toVec (\u2 -> filter (\x -> x % 2 == 0) (\u3 -> range 0 6)))
-      [0, 2, 4]
-      "filter"
+  let b = assertEq (toVec (\u2 -> filter (\x -> x % 2 == 0) (\u3 -> range 0 6))) [0, 2, 4] "filter"
   in
   -- The interesting part: one composes onto the other.
   assertEq
-    (toVec
-      (\u2 ->
-        map
-          (\x -> x * 2)
-          (\u3 -> filter (\x -> x % 2 == 0) (\u4 -> range 0 6))))
+    (toVec (\u2 -> map (\x -> x * 2) (\u3 -> filter (\x -> x % 2 == 0) (\u4 -> range 0 6))))
     [0, 4, 8]
     "map over filter"
 
@@ -252,17 +211,11 @@ fun countdown n =
 @test fun forEachVisitsEveryValue () =
   -- `forEach` collects nothing, so count the visits with `State`.
   assertEq
-    (execState
-      0
-      (\u2 -> forEach (\x -> modify (\n -> n + x)) (\u3 -> range 1 5)))
+    (execState 0 (\u2 -> forEach (\x -> modify (\n -> n + x)) (\u3 -> range 1 5)))
     10
     "forEach saw every value"
 
 @test fun collectionsConvertBackAndForth () =
-  let a =
-    assertEq (toVec (\u2 -> V.toStream [1, 2, 3])) [1, 2, 3] "Vector.toStream"
+  let a = assertEq (toVec (\u2 -> V.toStream [1, 2, 3])) [1, 2, 3] "Vector.toStream"
   in
-  assertEq
-    (toList (\u2 -> ofVec [1, 2, 3]))
-    [1; 2; 3]
-    "vector to stream to list"
+  assertEq (toList (\u2 -> ofVec [1, 2, 3])) [1; 2; 3] "vector to stream to list"

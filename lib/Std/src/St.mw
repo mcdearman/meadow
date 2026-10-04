@@ -52,13 +52,11 @@ use Std.Collections.Vector (vecFromArray)
 -- --- arrays ------------------------------------------------------------------
 
 -- `n` copies of `x`.
-@pub fun newArray (n : Int) (x : a) : StArray b a ! { St b | e } =
-  stNewArray n x
+@pub fun newArray (n : Int) (x : a) : StArray b a ! { St b | e } = stNewArray n x
 
 @pub fun get (a : StArray a b) (i : Int) : b ! { St a | e } = stGetArray a i
 
-@pub fun set (a : StArray a b) (i : Int) (x : b) : () ! { St a | e } =
-  stSetArray a i x
+@pub fun set (a : StArray a b) (i : Int) (x : b) : () ! { St a | e } = stSetArray a i x
 
 @pub fun length (a : StArray a b) : Int = stArrayLen a
 
@@ -115,18 +113,13 @@ fun fibs n =
     let _ = forRange 2 n (\i -> set a i (get a (i - 1) + get a (i - 2))) in
     toVec a)
 
-@test fun aCellInsideRunStIsPure () =
-  assertEq (sumTo 100) 5050 "summed in a cell"
+@test fun aCellInsideRunStIsPure () = assertEq (sumTo 100) 5050 "summed in a cell"
 
 @test fun arraysAreWrittenInPlace () =
-  let a =
-    assertEq (reversed [1, 2, 3, 4, 5]) [5, 4, 3, 2, 1] "reversed in place"
+  let a = assertEq (reversed [1, 2, 3, 4, 5]) [5, 4, 3, 2, 1] "reversed in place"
   in
   let b = assertEq (reversed []) [] "nothing to reverse" in
-  assertEq
-    (fibs 10)
-    [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
-    "each from the two before"
+  assertEq (fibs 10) [0, 1, 1, 2, 3, 5, 8, 13, 21, 34] "each from the two before"
 
 @test fun freezeAndThawCopy () =
   let (frozen, after) =
@@ -136,8 +129,7 @@ fun fibs n =
       let _ = set a 0 99 in
       (snapshot, freeze a))
   in
-  let a =
-    assertEq frozen #[1, 2, 3] "a later write does not reach a frozen copy"
+  let a = assertEq frozen #[1, 2, 3] "a later write does not reach a frozen copy"
   in
   assertEq after #[99, 2, 3] "but does reach the array"
 
@@ -146,11 +138,7 @@ fun fibs n =
     runSt (\() ->
       let outer = newRef 1 in
       let inner =
-        runSt
-          (\() ->
-            let r = newRef 10 in
-            let _ = modifyRef outer (\x -> x + 1) in
-            getRef r)
+        runSt (\() -> let r = newRef 10 in let _ = modifyRef outer (\x -> x + 1) in getRef r)
       in
       getRef outer + inner)
   in

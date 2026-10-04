@@ -91,12 +91,7 @@ fun framePath (f : ModFrame) : [String] = f.src.path
 -- library, whether any of its declarations mentions visibility -- a unit
 -- that never does has none, and everything is seen everywhere -- its
 -- modules, and what its dependencies export, by the name it knows each by.
-record UnitCx = {
-  pkg : String,
-  isStd : Bool,
-  anyVis : Bool,
-  frames : [ModFrame],
-  deps : [Dep]
+record UnitCx = { pkg : String, isStd : Bool, anyVis : Bool, frames : [ModFrame], deps : [Dep]
 }
 
 -- A dependency: the name a `use` knows it by, what it exports -- each with the
@@ -132,17 +127,12 @@ fun visOf (a : AstArena) (attrs : [AstAttr]) : Maybe Vis =
 -- Whether a declaration's `@cfg`s hold here: on Windows, x86-64, a debug
 -- build that is not a test's.
 fun enabled (a : AstArena) (attrs : [AstAttr]) : Bool =
-  V.all
-    (\at ->
-      nameText a (astAttrName a at) != "cfg"
-        or V.all (holds a) (astAttrMetas a at))
-    attrs
+  V.all (\at -> nameText a (astAttrName a at) != "cfg" or V.all (holds a) (astAttrMetas a at)) attrs
 
 fun holds (a : AstArena) (m : AstAttrMeta) : Bool =
   let k = kindAstAttrMeta a m in
   if k == AstAttrMetaKind.Word then
-    (let w = nameText a (astAttrMetaWordName a m) in
-      w == "windows" or w == "debug")
+    (let w = nameText a (astAttrMetaWordName a m) in w == "windows" or w == "debug")
   else if k == AstAttrMetaKind.Value then
     (let key = nameText a (astAttrMetaValueName a m) in
       let v = nameText a (astAttrMetaValueValue a m) in
@@ -164,21 +154,14 @@ fun holds (a : AstArena) (m : AstAttrMeta) : Bool =
 @pub fun declsOf (src : Source) : [([AstAttr], AstDecl)] =
   match src.ast with
   | AstProgram a root ->
-      V.filter
-        (\x -> enabled a (fst x))
-        (V.map (peel a) (astModuleDecls a root))
+      V.filter (\x -> enabled a (fst x)) (V.map (peel a) (astModuleDecls a root))
 
-fun siteIn (src : Source) (m : Meta) : String =
-  "${src.file}@${show (metaStart m)}"
+fun siteIn (src : Source) (m : Meta) : String = "${src.file}@${show (metaStart m)}"
 
 -- A binder for name `n` of the module's.
 fun binderOf (src : Source) (a : AstArena) (n : AstName) (kind : String)
     : Int ! { Table Binder | e } =
-  declareBinderTo
-    (nameText a n)
-    kind
-    (siteIn src (metaAstName a n))
-    (metaEnd (metaAstName a n))
+  declareBinderTo (nameText a n) kind (siteIn src (metaAstName a n)) (metaEnd (metaAstName a n))
 
 -- What a module of package `pkg` declares, and its `use`s.
 fun frameOf (pkg : String) (src : Source) :
@@ -190,10 +173,7 @@ fun frameOf (pkg : String) (src : Source) :
       let items =
         V.map
           (canonical pkg src.path)
-          (V.concatMap
-            (\x ->
-              declItems src a (M.unwrapOr Private (visOf a (fst x))) (snd x))
-            decls)
+          (V.concatMap (\x -> declItems src a (M.unwrapOr Private (visOf a (fst x))) (snd x)) decls)
       in
       let uses =
         V.concatMap
@@ -250,8 +230,7 @@ fun fieldNames (a : AstArena) (fs : [AstField]) : [String] =
 fun declItems (src : Source) (a : AstArena) (vis : Vis) (d : AstDecl) :
     [Item] ! { Table Binder | e } =
   let k = kindAstDecl a d in
-  let one =
-    \n kind owner -> item (nameText a n) kind (binderOf src a n kind) vis owner
+  let one = \n kind owner -> item (nameText a n) kind (binderOf src a n kind) vis owner
   in
   if k == AstDeclKind.Bind then
     (let b = astDeclBindBind a d in
@@ -279,9 +258,7 @@ fun declItems (src : Source) (a : AstArena) (vis : Vis) (d : AstDecl) :
   else if k == AstDeclKind.Effect then
     (let e = nameText a (astDeclEffectName a d) in
       V.pushFront
-        (V.map
-          (\f -> one (astFieldName a f) "v" ("op:" ++ e))
-          (astDeclEffectOps a d))
+        (V.map (\f -> one (astFieldName a f) "v" ("op:" ++ e)) (astDeclEffectOps a d))
         (one (astDeclEffectName a d) "t" "effect"))
   else if k == AstDeclKind.Alias
   then [one (astDeclAliasName a d) "t" "alias"]
@@ -292,9 +269,7 @@ fun declItems (src : Source) (a : AstArena) (vis : Vis) (d : AstDecl) :
       V.concat
         [ [one (astDeclTraitName a d) "t" "trait"],
           V.map (\x -> one (astAssocName a x) "t" ("assoc:" ++ t)) (astDeclTraitAssocs a d),
-          V.map
-            (\s -> one (astMethodSigName a s) "v" t)
-            (astDeclTraitSigs a d) ])
+          V.map (\s -> one (astMethodSigName a s) "v" t) (astDeclTraitSigs a d) ])
   else []
 
 -- The names a pattern binds, as written.
@@ -317,8 +292,7 @@ fun patNames (a : AstArena) (p : AstPat) : [AstName] =
   else if k == AstPatKind.List
   then V.concatMap (patNames a) (astPatListItems a p)
   else if k == AstPatKind.Record
-  then
-    V.concatMap (\f -> patNames a (astPatFieldPat a f)) (astPatRecordFields a p)
+  then V.concatMap (\f -> patNames a (astPatFieldPat a f)) (astPatRecordFields a p)
   else if k == AstPatKind.View then patNames a (astPatViewPat a p)
   else []
 
@@ -337,8 +311,7 @@ fun partOfSynonym (value : String) (name : String) : Bool =
     let digits =
       V.len
         (V.takeWhile
-          (\i ->
-            (let ch = stringSlice rest i (i + 1) in ch >= "0" and ch <= "9"))
+          (\i -> (let ch = stringSlice rest i (i + 1) in ch >= "0" and ch <= "9"))
           (V.range 0 (stringByteLength rest)))
     in
     digits > 0 and stringSlice rest digits (stringByteLength rest) == name
@@ -417,15 +390,7 @@ record Layers = {
 }
 
 def noLayers : Layers =
-  Layers
-    {
-      values = [],
-      types = [],
-      ctors = [],
-      quals = [],
-      reexports = [],
-      refs = []
-    }
+  Layers { values = [], types = [], ctors = [], quals = [], reexports = [], refs = [] }
 
 fun withRefs (acc : Layers) (refs : [(Meta, Int)]) : Layers =
   { acc | refs = V.append acc.refs refs }
@@ -480,10 +445,7 @@ fun useType (acc : Layers) (vis : Vis) (items : [Item]) (t : Item) (at : Meta)
   let base = if alone or dep then withType items t else [] in
   let refs =
     V.concatMap
-      (\n ->
-        V.concatMap
-          (\(c : Item) -> if c.name == fst n then [(snd n, c.id)] else [])
-          ctors)
+      (\n -> V.concatMap (\(c : Item) -> if c.name == fst n then [(snd n, c.id)] else []) ctors)
       names
   in
   withRefs (bring acc vis (V.append base named)) (V.pushFront refs (at, t.id))
@@ -500,8 +462,7 @@ fun hasSibling (cx : UnitCx) (path : [String]) : Bool =
   V.any (\(f : ModFrame) -> framePath f == path) cx.frames
 
 -- What dependency `d` exports from module `path`.
-fun depItems (d : Dep) (path : [String]) : [Item] =
-  V.concatMap (depItem d path) d.items
+fun depItems (d : Dep) (path : [String]) : [Item] = V.concatMap (depItem d path) d.items
 
 fun depItem (d : Dep) (path : [String]) (x : ([String], Item)) : [Item] =
   match x with
@@ -515,14 +476,10 @@ fun indexIn (x : String) (xs : [String]) : Int =
     (V.len xs)
     (V.range 0 (V.len xs))
 
-fun depHas (d : Dep) (path : [String]) : Bool =
-  V.any (\x -> fst x == path) d.items
+fun depHas (d : Dep) (path : [String]) : Bool = V.any (\x -> fst x == path) d.items
 
 fun valuesMap (items : [Item]) : HashMap String Int =
-  V.foldl
-    (\m (i : Item) -> if i.kind == "v" then H.insert i.name i.id m else m)
-    H.empty
-    items
+  V.foldl (\m (i : Item) -> if i.kind == "v" then H.insert i.name i.id m else m) H.empty items
 
 -- What a bare `use` of a module with `items` brings: its values, its types
 -- with what each brings, and -- at a package's root -- the constructors it
@@ -571,8 +528,7 @@ fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
       let u = fst one in
       let vis = snd one in
       let segs = V.map (nameText a) (astDeclUsePath a u) in
-      let written =
-        V.map (\n -> (nameText a n, metaAstName a n)) (astDeclUseNames a u)
+      let written = V.map (\n -> (nameText a n, metaAstName a n)) (astDeclUseNames a u)
       in
       let names = V.map fst written in
       let lastAt =
@@ -587,8 +543,7 @@ fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
       let owner = V.take segs (V.len segs - 1) in
       let local = if V.getOr "" segs 0 == cx.pkg then V.drop segs 1 else segs in
       let localOwner = V.take local (max 0 (V.len local - 1)) in
-      let typeIn =
-        \items -> V.find (\(i : Item) -> i.kind == "t" and i.name == last) items
+      let typeIn = \items -> V.find (\(i : Item) -> i.kind == "t" and i.name == last) items
       in
       let moduleUse = \items ->
         -- A bare `use` brings no constructor bare but a type's own-named one,
@@ -601,14 +556,11 @@ fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
                in if V.isEmpty names
                   then qualified
                   else
-                    withRefs
-                      (bring qualified vis (namedIn items names))
-                      (namedRefs items written))
+                    withRefs (bring qualified vis (namedIn items names)) (namedRefs items written))
          | None ->
              if V.isEmpty names
              then bring acc vis (bareUse items root)
-             else
-               withRefs (bring acc vis (namedIn items names)) (namedRefs items written)) in
+             else withRefs (bring acc vis (namedIn items names)) (namedRefs items written)) in
         -- `use Ty ...` for a type this very module declares.
         match (if V.len segs == 1 then typeIn m.items else None) with
         | Just t -> useType acc vis m.items t lastAt written glob False
@@ -619,15 +571,7 @@ fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
             else
               (match (if V.isEmpty local then None else typeIn (siblingItems cx localOwner here)) with
                | Just t ->
-                   useType
-                     acc
-                     vis
-                     (siblingItems cx localOwner here)
-                     t
-                     lastAt
-                     written
-                     glob
-                     cx.isStd
+                   useType acc vis (siblingItems cx localOwner here) t lastAt written glob cx.isStd
                | None ->
                    (match V.find (\(d : Dep) -> d.name == V.getOr "" segs 0) cx.deps with
                     | None -> acc
@@ -694,9 +638,7 @@ fun lastWins (xs : [(String, a)]) : HashMap String a =
 
 fun firstWins (xs : [(String, a)]) : HashMap String a =
   V.foldl
-    (\h x -> if M.isSome (H.lookup (fst x) h)
-      then h
-      else H.insert (fst x) (snd x) h)
+    (\h x -> if M.isSome (H.lookup (fst x) h) then h else H.insert (fst x) (snd x) h)
     H.empty
     xs
 
@@ -715,9 +657,7 @@ fun candidates (base : HashMap String Int) (brought : [(String, Int)])
       brought
   in
   V.foldl
-    (\h kv -> if M.isSome (H.lookup (fst kv) h)
-      then h
-      else H.insert (fst kv) [snd kv] h)
+    (\h kv -> if M.isSome (H.lookup (fst kv) h) then h else H.insert (fst kv) [snd kv] h)
     own
     (H.toVec base)
 
@@ -734,20 +674,14 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) :
         [
           V.filter (\(i : Item) -> i.kind != "c") m.items,
           V.concatMap
-            (\(t : Item) -> if t.kind == "t"
-              then structCtor m.items t.name
-              else [])
+            (\(t : Item) -> if t.kind == "t" then structCtor m.items t.name else [])
             m.items
         ])
   in
   let used = V.foldl (applyUse cx m) own m.uses in
   let firstFirst =
     V.foldl
-      (\h x ->
-        H.insert
-          (fst x)
-          (V.pushBack (M.unwrapOr [] (H.lookup (fst x) h)) (snd x))
-          h)
+      (\h x -> H.insert (fst x) (V.pushBack (M.unwrapOr [] (H.lookup (fst x) h)) (snd x)) h)
       H.empty
       used.values
   in
@@ -835,21 +769,9 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
   let anyVis = V.any snd declared in
   let depCx =
     V.map
-      (\(d : DepExports) ->
-        Dep {
-          name = d.name,
-          items = depItemsOf d.exports,
-          anyVis = d.anyVis })
+      (\(d : DepExports) -> Dep { name = d.name, items = depItemsOf d.exports, anyVis = d.anyVis })
       deps in
-    let cx =
-      UnitCx
-        {
-          pkg = pkg,
-          isStd = isStd,
-          anyVis = anyVis,
-          frames = frames,
-          deps = depCx
-        }
+    let cx = UnitCx { pkg = pkg, isStd = isStd, anyVis = anyVis, frames = frames, deps = depCx }
     in
   -- Every constructor of every type the unit knows, by its type: its own
   -- modules', each type with the constructors declared beside it, and its
@@ -870,10 +792,7 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
             let pool = if V.len items == 1 then depCtors else items in
             H.insert
               t.id
-              (V.foldl
-                (\c (k : Item) -> H.insert k.name k.id c)
-                H.empty
-                (ctorsOfType pool t.name))
+              (V.foldl (\c (k : Item) -> H.insert k.name k.id c) H.empty (ctorsOfType pool t.name))
               g)
         h
         items)
@@ -887,9 +806,7 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
     in
   let bools =
     V.foldl
-      (\h (c : Item) -> if c.kind == "c" and c.owner == "Bool"
-        then H.insert c.name c.id h
-        else h)
+      (\h (c : Item) -> if c.kind == "c" and c.owner == "Bool" then H.insert c.name c.id h else h)
       H.empty
       allItems
   in
@@ -909,10 +826,7 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
         builtinCtor
         (M.map
           (\(i : Item) -> i.id)
-          (V.find
-            (\(i : Item) ->
-              i.kind == "c" and i.owner == o and i.name == n)
-            allItems))
+          (V.find (\(i : Item) -> i.kind == "c" and i.owner == o and i.name == n) allItems))
   in
   let builtinTypes = V.map (\n -> (n, typeNamed n)) builtinTyconNames in
   let builtinCtors =
@@ -979,18 +893,13 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
          | (sc, re, refs) ->
              (let u =
                  V.foldl
-                  (\z r ->
-                    useOf
-                      f.src.file
-                      (if snd r < 0 then builtinType else snd r)
-                      (fst r))
+                  (\z r -> useOf f.src.file (if snd r < 0 then builtinType else snd r) (fst r))
                   ()
                   refs
                in (f, sc, re))))
       frames
   in
-  let programs =
-    V.map (\x -> match x with | (f, sc, _) -> renameSource sc f) done
+  let programs = V.map (\x -> match x with | (f, sc, _) -> renameSource sc f) done
   in
   let exports =
     V.concatMap
@@ -1030,9 +939,7 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
       else [] in
       let modules =
         V.map
-          (\(f : ModFrame) ->
-            Declared
-              { file = f.src.file, path = framePath f, items = f.items })
+          (\(f : ModFrame) -> Declared { file = f.src.file, path = framePath f, items = f.items })
           frames
       in
   (programs, V.append exports flat, anyVis, modules, depCtors, prims)
@@ -1067,5 +974,4 @@ fun depItemsOf (exports : [Export]) :
       ([], H.empty)
       exports)
 
-fun renameSource (sc : Scope) (f : ModFrame) =
-  (f.src.file, rename (envOf sc) f.src.ast)
+fun renameSource (sc : Scope) (f : ModFrame) = (f.src.file, rename (envOf sc) f.src.ast)

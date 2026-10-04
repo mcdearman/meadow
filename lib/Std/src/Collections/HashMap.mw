@@ -70,8 +70,7 @@ def lastShift = 60
 fun arrayInsert xs i x =
   arrayConcat (arrayPush (arraySlice xs 0 i) x) (arraySlice xs i (arrayLen xs))
 
-fun arrayRemove xs i =
-  arrayConcat (arraySlice xs 0 i) (arraySlice xs (i + 1) (arrayLen xs))
+fun arrayRemove xs i = arrayConcat (arraySlice xs 0 i) (arraySlice xs (i + 1) (arrayLen xs))
 
 fun arrayFold f acc xs =
   let n = arrayLen xs in
@@ -81,10 +80,7 @@ fun arrayFold f acc xs =
 -- The index of the pair whose key is `k`, if there is one.
 fun pairIndex k pairs =
   let n = arrayLen pairs in
-  let rec go i =
-    if i >= n then None
-    else if fst (arrayGet pairs i) == k then Just i
-    else go (i + 1)
+  let rec go i = if i >= n then None else if fst (arrayGet pairs i) == k then Just i else go (i + 1)
   in go 0
 
 -- --- slots -------------------------------------------------------------------
@@ -130,8 +126,7 @@ fun lookupIn h shift k node =
 -- --- writing -----------------------------------------------------------------
 
 -- Add `k`, or replace what it held.
-@pub fun insert (k : a) (v : b) (m : HashMap a b) : HashMap a b =
-  insertHashed (hash k) k v m
+@pub fun insert (k : a) (v : b) (m : HashMap a b) : HashMap a b = insertHashed (hash k) k v m
 
 fun insertHashed h k v m =
   match m with
@@ -172,15 +167,13 @@ fun split shift h1 k1 v1 h2 k2 v2 =
     let i1 = bitAnd (h1 >>> shift) 31 in
     let i2 = bitAnd (h2 >>> shift) 31 in
     if i1 == i2
-    then
-      Bitmap (1 << i1) #[Child (split (shift + bitsPerLevel) h1 k1 v1 h2 k2 v2)]
+    then Bitmap (1 << i1) #[Child (split (shift + bitsPerLevel) h1 k1 v1 h2 k2 v2)]
     else if i1 < i2
     then Bitmap (bitOr (1 << i1) (1 << i2)) #[Entry h1 k1 v1, Entry h2 k2 v2]
     else Bitmap (bitOr (1 << i1) (1 << i2)) #[Entry h2 k2 v2, Entry h1 k1 v1]
 
 -- Remove `k`, if it is there.
-@pub fun delete (k : a) (m : HashMap a b) : HashMap a b =
-  deleteHashed (hash k) k m
+@pub fun delete (k : a) (m : HashMap a b) : HashMap a b = deleteHashed (hash k) k m
 
 fun deleteHashed h k m =
   match m with
@@ -264,14 +257,11 @@ fun foldNode f acc node =
         slots
 
 -- Every `(key, value)` pair, in the fold's order.
-@pub fun toVec (m : HashMap a b) : [(a, b)] =
-  foldl (\acc k v -> V.pushBack acc (k, v)) V.empty m
+@pub fun toVec (m : HashMap a b) : [(a, b)] = foldl (\acc k v -> V.pushBack acc (k, v)) V.empty m
 
-@pub fun keys (m : HashMap a b) : [a] =
-  foldl (\acc k v -> V.pushBack acc k) V.empty m
+@pub fun keys (m : HashMap a b) : [a] = foldl (\acc k v -> V.pushBack acc k) V.empty m
 
-@pub fun values (m : HashMap a b) : [b] =
-  foldl (\acc k v -> V.pushBack acc v) V.empty m
+@pub fun values (m : HashMap a b) : [b] = foldl (\acc k v -> V.pushBack acc v) V.empty m
 
 -- Later pairs win when a key repeats.
 @pub fun fromVec (pairs : [(a, b)]) : HashMap a b =
@@ -292,12 +282,7 @@ fun foldNode f acc node =
 fun mapNode f node =
   match node with
   | Collision ch pairs ->
-      Collision
-        ch
-        (arrayFold
-          (\acc p -> match p with | (k, v) -> arrayPush acc (k, f v))
-          #[]
-          pairs)
+      Collision ch (arrayFold (\acc p -> match p with | (k, v) -> arrayPush acc (k, f v)) #[] pairs)
   | Bitmap bitmap slots ->
       Bitmap
         bitmap
@@ -319,12 +304,10 @@ fun mapNode f node =
   foldl (\acc k v -> insert k v acc) a b
 
 -- Run `f key value` on every entry, for its effect.
-@pub fun forEach (f : a -> b -> () ! e) (m : HashMap a b) : () ! e =
-  foldl (\u k v -> f k v) () m
+@pub fun forEach (f : a -> b -> () ! e) (m : HashMap a b) : () ! e = foldl (\u k v -> f k v) () m
 
 -- Yield every `(key, value)` pair, for `Std.Stream`.
-@pub fun toStream (m : HashMap a b) : () ! { Yield (a, b) | e } =
-  forEach (\k v -> yield (k, v)) m
+@pub fun toStream (m : HashMap a b) : () ! { Yield (a, b) | e } = forEach (\k v -> yield (k, v)) m
 
 -- --- tests -------------------------------------------------------------------
 
@@ -352,11 +335,7 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
   let a = assertEq (lookup "two" m) None "deleted" in
   let b = assertEq (lookup "three" m) (Just 3) "the rest survive" in
   let c = assertEq (size m) 2 "size drops" in
-  let d =
-    assertEq
-      (size (delete "nine" sample))
-      3
-      "deleting a missing key changes nothing"
+  let d = assertEq (size (delete "nine" sample)) 3 "deleting a missing key changes nothing"
   in
   assertTrue (isEmpty (delete "one" (singleton "one" 1))) "down to empty"
 
@@ -365,32 +344,23 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
   let n = 2000 in
   let full = V.foldl (\m i -> insert i (i * i) m) empty (V.range 0 n) in
   let a = assertEq (size full) n "every key counted once" in
-  let b =
-    assertTrue
-      (V.all (\i -> lookup i full == Just (i * i)) (V.range 0 n))
-      "every key found"
+  let b = assertTrue (V.all (\i -> lookup i full == Just (i * i)) (V.range 0 n)) "every key found"
   in
   let c = assertEq (lookup n full) None "and nothing else" in
   let half = V.foldl (\m i -> delete (i * 2) m) full (V.range 0 (n / 2)) in
   let d = assertEq (size half) (n / 2) "half deleted" in
   let e =
     assertTrue
-      (V.all
-        (\i -> lookup i half == (if i % 2 == 0 then None else Just (i * i)))
-        (V.range 0 n))
+      (V.all (\i -> lookup i half == (if i % 2 == 0 then None else Just (i * i))) (V.range 0 n))
       "the right half"
   in
-  assertEq
-    (sort (keys half))
-    (V.map (\i -> i * 2 + 1) (V.range 0 (n / 2)))
-    "keys"
+  assertEq (sort (keys half)) (V.map (\i -> i * 2 + 1) (V.range 0 (n / 2))) "keys"
 
 @test fun theShapeDependsOnlyOnTheContents () =
   -- Built forwards, backwards, and with extra keys added and taken away again:
   -- the same entries, so the same map.
   let forwards = V.foldl (\m i -> insert i i m) empty (V.range 0 300) in
-  let backwards =
-    V.foldl (\m i -> insert (299 - i) (299 - i) m) empty (V.range 0 300)
+  let backwards = V.foldl (\m i -> insert (299 - i) (299 - i) m) empty (V.range 0 300)
   in
   let detour =
     V.foldl
@@ -412,18 +382,11 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
       (Just 2)
       "a vector, however it was built"
   in
-  let c =
-    assertEq
-      (lookup (Just "x") (singleton (Just "x") 3))
-      (Just 3)
-      "a constructor"
+  let c = assertEq (lookup (Just "x") (singleton (Just "x") 3)) (Just 3) "a constructor"
   in
   let d = assertEq (lookup (2 :: [;]) (singleton [2;] 5)) (Just 5) "a list" in
   let who = Person { name = "ada" } in
-  assertEq
-    (lookup who (singleton (Person { name = "ada" }) 4))
-    (Just 4)
-    "a record"
+  assertEq (lookup who (singleton (Person { name = "ada" }) 4)) (Just 4) "a record"
 
 -- A key is anything `PartialEq`: a record of its own derives it.
 @derive(PartialEq)
@@ -438,10 +401,7 @@ record Person = { name : String }
     V.foldl (\acc i -> insertHashed h i (i * 10) acc) empty (V.range 0 5)
   in
   let a = assertEq (size m) 5 "five colliding keys" in
-  let b =
-    assertTrue
-      (V.all (\i -> lookupHashed h i m == Just (i * 10)) (V.range 0 5))
-      "each found"
+  let b = assertTrue (V.all (\i -> lookupHashed h i m == Just (i * 10)) (V.range 0 5)) "each found"
   in
   let c =
     assertEq (lookupHashed h 9 m) None "a colliding key that is not there"
@@ -452,22 +412,12 @@ record Person = { name : String }
   let few = V.foldl (\acc i -> deleteHashed h i acc) m (V.range 1 5) in
   let e = assertEq (size few) 1 "four deleted" in
   let f = assertEq (lookupHashed h 0 few) (Just 0) "the last one left" in
-  assertTrue
-    (few == insertHashed h 0 0 empty)
-    "collapsed back to a single entry"
+  assertTrue (few == insertHashed h 0 0 empty) "collapsed back to a single entry"
 
 @test fun updatesInPlace () =
-  let a =
-    assertEq
-      (lookup "one" (adjust "one" (\v -> v + 1) sample))
-      (Just 2)
-      "adjust"
+  let a = assertEq (lookup "one" (adjust "one" (\v -> v + 1) sample)) (Just 2) "adjust"
   in
-  let b =
-    assertEq
-      (adjust "nine" (\v -> v + 1) sample)
-      sample
-      "adjust of a missing key"
+  let b = assertEq (adjust "nine" (\v -> v + 1) sample) sample "adjust of a missing key"
   in
   let c =
     assertEq
@@ -475,11 +425,7 @@ record Person = { name : String }
       (Just 11)
       "insertWith"
   in
-  let d =
-    assertEq
-      (lookup "nine" (alter (\o -> Just 9) "nine" sample))
-      (Just 9)
-      "alter adds"
+  let d = assertEq (lookup "nine" (alter (\o -> Just 9) "nine" sample)) (Just 9) "alter adds"
   in
   assertEq (lookup "one" (alter (\o -> None) "one" sample)) None "alter removes"
 

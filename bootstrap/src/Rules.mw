@@ -77,9 +77,7 @@ fun kids (s : Syntax Grouped) : [Syntax Grouped] =
 
 @pub fun isGroup (s : Syntax Grouped) : Bool =
   let k = R.kindOf s in
-  k == Grouped.NodeParenGroup
-    or k == Grouped.NodeBrackGroup
-    or k == Grouped.NodeBraceGroup
+  k == Grouped.NodeParenGroup or k == Grouped.NodeBrackGroup or k == Grouped.NodeBraceGroup
 
 fun delimOf (s : Syntax Grouped) : Delim =
   let k = R.kindOf s in
@@ -90,8 +88,7 @@ fun delimOf (s : Syntax Grouped) : Delim =
   else Brace
 
 -- A group's trees: what is between its brackets.
-@pub fun treesIn (t : Tree) : [Tree] =
-  match t with | Delimited _ _ _ ts -> ts | Leaf _ -> []
+@pub fun treesIn (t : Tree) : [Tree] = match t with | Delimited _ _ _ ts -> ts | Leaf _ -> []
 
 -- The bytes a group stands for, its brackets included.
 @pub fun spanOfTree (t : Tree) : (Int, Int) =
@@ -107,8 +104,7 @@ fun delimOf (s : Syntax Grouped) : Delim =
            | Delimited _ o c ts -> V.concat [[o], flatten ts, [c]])
     trees
 
-fun isDollar (t : Tok) : Bool =
-  match t.token with | Token.Dollar -> True | _ -> False
+fun isDollar (t : Tok) : Bool = match t.token with | Token.Dollar -> True | _ -> False
 
 fun identOf (t : Tok) : Maybe String =
   match t.token with
@@ -116,13 +112,11 @@ fun identOf (t : Tok) : Maybe String =
   | Token.UpperIdent n -> Just n
   | _ -> None
 
-fun isDeclBang (t : Tok) : Bool =
-  match t.token with | Token.DeclBang -> True | _ -> False
+fun isDeclBang (t : Tok) : Bool = match t.token with | Token.DeclBang -> True | _ -> False
 
 -- Whether two tokens are the same token: the lexer's reading of one text is
 -- its reading of the other, but for a `!` that starts a line's declaration.
-fun same (a : Tok) (b : Tok) : Bool =
-  a.text == b.text and isDeclBang a == isDeclBang b
+fun same (a : Tok) (b : Tok) : Bool = a.text == b.text and isDeclBang a == isDeclBang b
 
 -- `t`, standing for `from` to `to`.
 fun at (from : Int) (to : Int) (t : Tok) : Tok = { t | from = from, to = to }
@@ -227,9 +221,7 @@ fun piecesFrom (trees : [Tree]) (i : Int) (acc : [Piece]) : Result Invalid
 
 -- What follows the `$` at `i`, and how many trees it took.
 fun dollar (trees : [Tree]) (i : Int) (d : Tok) : Result Invalid (Piece, Int) =
-  let lone =
-    Err
-      (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d)
+  let lone = Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d)
   in
   match V.get trees (i + 1) with
   | Just (Leaf t) ->
@@ -268,16 +260,12 @@ fun dollar (trees : [Tree]) (i : Int) (d : Tok) : Result Invalid (Piece, Int) =
 -- The separator and count after a `$( … )`.
 fun repeatOf (trees : [Tree]) (i : Int) (o : Tok) : Result Invalid
     (Maybe Tok, Repeat) =
-  let tokenAt =
-    \k -> match V.get trees k with | Just (Leaf t) -> Just t | _ -> None
+  let tokenAt = \k -> match V.get trees k with | Just (Leaf t) -> Just t | _ -> None
   in
   match tokenAt i with
   | None ->
       Err
-        (invalid
-          "a repetition that does not say how many"
-          "expected `*`, `+` or `?` after this"
-          o)
+        (invalid "a repetition that does not say how many" "expected `*`, `+` or `?` after this" o)
   | Just t ->
       (match countOf t with
        | Just rep -> Ok (None, rep)
@@ -314,10 +302,7 @@ fun boundBy (ps : [Piece]) : [String] =
            if V.elem "pkg" names
            then
              Err
-               (invalid
-                 "`\$pkg` is the package a macro was written in"
-                 "this name is taken"
-                 whole)
+               (invalid "`\$pkg` is the package a macro was written in" "this name is taken" whole)
            else
              (match V.find (\i -> V.elem (V.getOr "" names i) (V.take names i)) (V.range 0 (V.len names)) with
               | Just i ->
@@ -353,9 +338,7 @@ fun checkOne (ps : [Piece]) (i : Int) (after : Ends) : Maybe Invalid =
         inside
         (match sep with
          | Just t ->
-             (if follows t and endedAfter ps i after
-               then Separator t
-               else Unended)
+             (if follows t and endedAfter ps i after then Separator t else Unended)
          | None -> Unended)
   | Just (Var name kind) ->
       if isParsed kind and not (endedAfter ps i after) then
@@ -417,9 +400,7 @@ fun matchFrom (ps : [Piece]) (trees : [Tree]) (i : Int) (at : Int)
        | Just (Delimited e _ _ ts) ->
            if sameDelim d e
            then
-             M.andThen
-               (\o -> matchFrom ps trees (i + 1) (at + 1) o)
-               (matchFrom inside ts 0 0 out)
+             M.andThen (\o -> matchFrom ps trees (i + 1) (at + 1) o) (matchFrom inside ts 0 0 out)
            else None
        | _ -> None)
   | Just (Var name kind) ->
@@ -427,26 +408,17 @@ fun matchFrom (ps : [Piece]) (trees : [Tree]) (i : Int) (at : Int)
         M.andThen
           (\e ->
             M.andThen
-              (\bound ->
-                matchFrom ps trees (i + 1) e (H.insert name (One bound) out))
+              (\bound -> matchFrom ps trees (i + 1) e (H.insert name (One bound) out))
               (fragment kind (V.slice trees at e)))
           (fragmentEnd ps trees i at)
       else
         (match V.get trees at with
          | None -> None
          | Just tree ->
-             let fits =
-               isTt kind
-                 or (match tree with | Leaf t -> accepts kind t | _ -> False)
+             let fits = isTt kind or (match tree with | Leaf t -> accepts kind t | _ -> False)
              in
              if fits
-             then
-               matchFrom
-                 ps
-                 trees
-                 (i + 1)
-                 (at + 1)
-                 (H.insert name (One [tree]) out)
+             then matchFrom ps trees (i + 1) (at + 1) (H.insert name (One [tree]) out)
              else None)
   | Just (Repeated inside sep rep) ->
       -- Greedy, but never into what the rest of the matcher needs.
@@ -465,13 +437,7 @@ fun matchFrom (ps : [Piece]) (trees : [Tree]) (i : Int) (at : Int)
              let bound =
                V.foldl
                  (\o n ->
-                   H.insert
-                     n
-                     (Many
-                       (V.map
-                         (\p -> M.unwrapOr (One []) (H.lookup n p))
-                         passes))
-                     o)
+                   H.insert n (Many (V.map (\p -> M.unwrapOr (One []) (H.lookup n p)) passes)) o)
                  out
                  (boundBy inside)
              in
@@ -535,9 +501,7 @@ fun passEnd (inside : [Piece]) (sep : Maybe Tok) (trees : [Tree]) (limit : Int)
     (s : Int) : Int =
   match sep with
   | Just want ->
-      M.unwrapOr
-        limit
-        (M.map (\k -> s + k) (nextOf want (V.slice trees s limit)))
+      M.unwrapOr limit (M.map (\k -> s + k) (nextOf want (V.slice trees s limit)))
   | None -> min limit (s + M.unwrapOr 1 (fixedLen inside))
 
 -- How many trees pieces take, when that does not depend on the input.
@@ -568,21 +532,14 @@ fun fragment (k : Fragment) (trees : [Tree]) : Maybe [Tree] =
 -- expression as the value of a definition, a pattern as a match's arm, an
 -- item as a file of one declaration.
 fun parses (k : Fragment) (trees : [Tree]) : Bool =
-  let given =
-    V.map (\(t : Tok) -> (t.token, t.from, t.to, t.text)) (flatten trees)
+  let given = V.map (\(t : Tok) -> (t.token, t.from, t.to, t.text)) (flatten trees)
   in
   let made = \t text -> (t, 0 - 1, 0 - 1, text) in
   let toks =
     (match k with
      | Expr ->
          V.concat
-           [
-             [
-               made Token.Def "def",
-               made (Token.LowerIdent "x") "x",
-               made Token.Eq "="
-             ],
-             given
+           [ [ made Token.Def "def", made (Token.LowerIdent "x") "x", made Token.Eq "=" ], given
            ]
      | Pat ->
          V.concat
@@ -598,10 +555,7 @@ fun parses (k : Fragment) (trees : [Tree]) : Bool =
                made Token.Bar "|"
              ],
              given,
-             [
-               made Token.RArrow "->",
-               made Token.LParen "(",
-               made Token.RParen ")"
+             [ made Token.RArrow "->", made Token.LParen "(", made Token.RParen ")"
              ]
            ]
      | _ -> given) in
@@ -630,46 +584,22 @@ fun writeFrom (template : [Tree]) (bound : HashMap String Binding)
   | Just (Delimited _ o c ts) ->
       (match writeFrom ts bound whole pkg mark 0 (V.pushBack out (at a z o)) with
        | Ok made ->
-           writeFrom
-             template
-             bound
-             whole
-             pkg
-             mark
-             (i + 1)
-             (V.pushBack made (at a z c))
+           writeFrom template bound whole pkg mark (i + 1) (V.pushBack made (at a z c))
        | Err e -> Err e)
   | Just (Leaf t) ->
       if isDollar t then
         (match splice template i bound whole pkg mark t with
          | Ok (made, used) ->
-             writeFrom
-               template
-               bound
-               whole
-               pkg
-               mark
-               (i + used)
-               (V.append out made)
+             writeFrom template bound whole pkg mark (i + used) (V.append out made)
          | Err e -> Err e)
-      else
-        writeFrom
-          template
-          bound
-          whole
-          pkg
-          mark
-          (i + 1)
-          (V.pushBack out (at a z (marked mark t)))
+      else writeFrom template bound whole pkg mark (i + 1) (V.pushBack out (at a z (marked mark t)))
 
 -- A token the template wrote, marked if it is a lowercase name: uppercase
 -- ones are types and constructors, never hygienic.
 fun marked (mark : Int) (t : Tok) : Tok =
   match t.token with
   | Token.LowerIdent n ->
-      {
-        t | token = Token.LowerIdent "${n}#${show mark}",
-        text = "${n}#${show mark}"
+      { t | token = Token.LowerIdent "${n}#${show mark}", text = "${n}#${show mark}"
       }
   | _ -> t
 
@@ -688,12 +618,7 @@ fun splice (template : [Tree]) (i : Int) (bound : HashMap String Binding)
          -- template names resolves where the macro is.
          | Just name ->
              if name == "pkg"
-             then
-               Ok
-                 (
-                   [Tok { token = packageToken pkg, text = pkg, from = a, to = z }],
-                   2
-                 )
+             then Ok ( [Tok { token = packageToken pkg, text = pkg, from = a, to = z }], 2 )
              else
                (match H.lookup name bound with
                 | Just (One trees) -> Ok (flatten trees, 2)
@@ -707,8 +632,7 @@ fun splice (template : [Tree]) (i : Int) (bound : HashMap String Binding)
                     Err
                       (invalid "`\$${name}` is not bound by this rule's matcher" "no such name is matched" t))
          | None ->
-             Err
-               (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d))
+             Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d))
   | Just (Delimited Paren o _ ts) ->
       (match repeatOf template (i + 2) o with
        | Err e -> Err e
@@ -766,11 +690,7 @@ fun splice (template : [Tree]) (i : Int) (bound : HashMap String Binding)
                     (V.range 0 passes)
                   |> Res.map (\made -> (made, used))))
   | _ ->
-      Err
-        (invalid
-          "a `\$` on its own"
-          "expected a name, a `(`, or another `\$`"
-          d)
+      Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d)
 
 -- A package's name as a token: which identifier it is follows its case.
 fun packageToken (pkg : String) : Token =
@@ -778,8 +698,7 @@ fun packageToken (pkg : String) : Token =
   then Token.UpperIdent pkg
   else Token.LowerIdent pkg
 
-fun isUpperStart (s : String) : Bool =
-  let c = stringSlice s 0 1 in c >= "A" and c <= "Z"
+fun isUpperStart (s : String) : Bool = let c = stringSlice s 0 1 in c >= "A" and c <= "Z"
 
 -- Every `$name` written in `trees`, at any depth, once each.
 fun dollarNames (trees : [Tree]) : [String] = dollarNamesFrom trees 0 []
@@ -791,10 +710,7 @@ fun dollarNamesFrom (trees : [Tree]) (i : Int) (acc : [String]) : [String] =
       dollarNamesFrom
         trees
         (i + 1)
-        (V.foldl
-          (\a n -> if V.elem n a then a else V.pushBack a n)
-          acc
-          (dollarNames ts))
+        (V.foldl (\a n -> if V.elem n a then a else V.pushBack a n) acc (dollarNames ts))
   | Just (Leaf t) ->
       if isDollar t then
         (match V.get trees (i + 1) with

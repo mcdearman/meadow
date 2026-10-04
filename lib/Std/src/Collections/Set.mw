@@ -38,14 +38,11 @@ fun unwrap s = match s with | Set t -> t
 
 @pub fun maxElem (s : Set) : Maybe Int = Tree.maxElem (unwrap s)
 
-@pub fun union (a : Set) (b : Set) : Set =
-  V.foldl (\acc x -> insert x acc) a (toVec b)
+@pub fun union (a : Set) (b : Set) : Set = V.foldl (\acc x -> insert x acc) a (toVec b)
 
-@pub fun diff (a : Set) (b : Set) : Set =
-  V.foldl (\acc x -> delete x acc) a (toVec b)
+@pub fun diff (a : Set) (b : Set) : Set = V.foldl (\acc x -> delete x acc) a (toVec b)
 
-@pub fun intersect (a : Set) (b : Set) : Set =
-  a |> toVec |> V.filter (\x -> member x b) |> fromVec
+@pub fun intersect (a : Set) (b : Set) : Set = a |> toVec |> V.filter (\x -> member x b) |> fromVec
 
 @pub fun subset (a : Set) (b : Set) : Bool = V.all (\x -> member x b) (toVec a)
 

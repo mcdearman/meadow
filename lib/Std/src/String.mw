@@ -54,10 +54,7 @@ fun joinLoop sep acc i xs =
   if i >= V.len xs then acc
   else
     let piece = V.getOr "" xs i in
-    let next =
-      if i == 0
-      then V.pushBack acc piece
-      else V.pushBack (V.pushBack acc sep) piece
+    let next = if i == 0 then V.pushBack acc piece else V.pushBack (V.pushBack acc sep) piece
     in
     joinLoop sep next (i + 1) xs
 
@@ -65,20 +62,17 @@ fun joinLoop sep acc i xs =
 @pub fun join (sep : String) (xs : [String]) : String =
   joinLoop sep V.empty 0 xs |> V.toArray |> concatStrings
 
-fun repeatLoop acc s n =
-  if n <= 0 then acc else repeatLoop (V.pushBack acc s) s (n - 1)
+fun repeatLoop acc s n = if n <= 0 then acc else repeatLoop (V.pushBack acc s) s (n - 1)
 
 -- `s` repeated `n` times.
-@pub fun repeat (s : String) (n : n) : String =
-  repeatLoop V.empty s n |> V.toArray |> concatStrings
+@pub fun repeat (s : String) (n : n) : String = repeatLoop V.empty s n |> V.toArray |> concatStrings
 
 -- ---------------------------------------------------------------------------
 -- Taking it apart
 -- ---------------------------------------------------------------------------
 
 -- The bytes of `s` from `from` up to (not including) `to`, clamped to the ends.
-@pub fun slice (s : String) (from : Int) (to : Int) : String =
-  stringSlice s from to
+@pub fun slice (s : String) (from : Int) (to : Int) : String = stringSlice s from to
 
 -- The first `n` bytes.
 @pub fun take (s : String) (n : Int) : String = slice s 0 n
@@ -102,11 +96,9 @@ fun repeatLoop acc s n =
 
 -- The byte offset of the first `needle` in `s`, if it is there. An empty needle
 -- is found at 0.
-@pub fun indexOf (needle : String) (s : String) : Maybe Int =
-  indexOfFrom needle s 0
+@pub fun indexOf (needle : String) (s : String) : Maybe Int = indexOfFrom needle s 0
 
-@pub fun contains (needle : String) (s : String) : Bool =
-  stringIndexOf s needle 0 >= 0
+@pub fun contains (needle : String) (s : String) : Bool = stringIndexOf s needle 0 >= 0
 
 @pub fun startsWith (prefix : String) (s : String) : Bool =
   let n = byteLength prefix in
@@ -126,9 +118,7 @@ fun pieces s sep i n =
 fun cutInto s sep i j out =
   let k = stringIndexOf s sep i in
   if k < 0 then St.set out j (slice s i (byteLength s))
-  else
-    let _ = St.set out j (slice s i k) in
-    cutInto s sep (k + byteLength sep) (j + 1) out
+  else let _ = St.set out j (slice s i k) in cutInto s sep (k + byteLength sep) (j + 1) out
 
 -- `s` cut at every occurrence of `sep`. An empty `sep` yields `s` whole, since
 -- splitting on nothing has no useful answer.
@@ -162,15 +152,12 @@ fun cutInto s sep i j out =
 
 @pub fun greaterThan (a : String) (b : String) : Bool = stringCompare a b > 0
 
-@pub fun greaterOrEqual (a : String) (b : String) : Bool =
-  stringCompare a b >= 0
+@pub fun greaterOrEqual (a : String) (b : String) : Bool = stringCompare a b >= 0
 
 -- The one that sorts first, and the one that sorts last.
-@pub fun minOf (a : String) (b : String) : String =
-  if stringCompare b a < 0 then b else a
+@pub fun minOf (a : String) (b : String) : String = if stringCompare b a < 0 then b else a
 
-@pub fun maxOf (a : String) (b : String) : String =
-  if stringCompare b a > 0 then b else a
+@pub fun maxOf (a : String) (b : String) : String = if stringCompare b a > 0 then b else a
 
 -- ---------------------------------------------------------------------------
 -- Whitespace
@@ -189,8 +176,7 @@ fun endOfText s i =
   else if isSpaceByte (stringByteAt s (i - 1)) then endOfText s (i - 1)
   else i
 
-@pub fun trimStart (s : String) : String =
-  slice s (startOfText s 0) (byteLength s)
+@pub fun trimStart (s : String) : String = slice s (startOfText s 0) (byteLength s)
 
 @pub fun trimEnd (s : String) : String = slice s 0 (endOfText s (byteLength s))
 
@@ -200,8 +186,7 @@ fun endOfText s i =
 @pub fun lines (s : String) : [String] =
   if isEmpty s then V.empty else s |> trimTrailingNewline |> split "\n"
 
-fun trimTrailingNewline s =
-  if endsWith "\n" s then take s (byteLength s - 1) else s
+fun trimTrailingNewline s = if endsWith "\n" s then take s (byteLength s - 1) else s
 
 -- ---------------------------------------------------------------------------
 -- ASCII case
@@ -216,11 +201,9 @@ fun upperByte (c : UInt8) = if c >= 97 and c <= 122 then c - 32 else c
 fun lowerByte (c : UInt8) = if c >= 65 and c <= 90 then c + 32 else c
 
 -- ASCII letters only; anything else is left alone.
-@pub fun toUpper (s : String) : String =
-  bytesToString (mapBytes upperByte (stringToBytes s) 0 #[])
+@pub fun toUpper (s : String) : String = bytesToString (mapBytes upperByte (stringToBytes s) 0 #[])
 
-@pub fun toLower (s : String) : String =
-  bytesToString (mapBytes lowerByte (stringToBytes s) 0 #[])
+@pub fun toLower (s : String) : String = bytesToString (mapBytes lowerByte (stringToBytes s) 0 #[])
 
 -- ---------------------------------------------------------------------------
 -- Numbers
@@ -326,24 +309,19 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let a = assertEq (indexOf "l" "hello") (Just 2) "first occurrence" in
   let b = assertEq (indexOf "lo" "hello") (Just 3) "a longer needle" in
   let c = assertEq (indexOf "z" "hello") None "absent" in
-  let d =
-    assertEq (indexOf "" "hello") (Just 0) "an empty needle is at the start"
+  let d = assertEq (indexOf "" "hello") (Just 0) "an empty needle is at the start"
   in
   let d2 = assertEq (indexOfFrom "l" "hello" 3) (Just 3) "from an offset" in
   let d3 = assertEq (indexOfFrom "l" "hello" 4) None "past the last" in
   let e = assertTrue (contains "ell" "hello") "contains" in
   let f = assertTrue (startsWith "he" "hello") "startsWith" in
-  let g =
-    assertFalse
-      (startsWith "hello!" "hello")
-      "a needle longer than the haystack"
+  let g = assertFalse (startsWith "hello!" "hello") "a needle longer than the haystack"
   in
   assertTrue (endsWith "llo" "hello") "endsWith"
 
 @test fun splittingAndLines () =
   let a = assertEq (split "," "a,b,c") ["a", "b", "c"] "split" in
-  let b =
-    assertEq (split "," "a,,b") ["a", "", "b"] "adjacent separators leave gaps"
+  let b = assertEq (split "," "a,,b") ["a", "", "b"] "adjacent separators leave gaps"
   in
   let c = assertEq (split "," "a") ["a"] "no separator" in
   -- An empty separator has no sensible answer; the string comes back whole
@@ -383,8 +361,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let b = assertEq (byteLength "héllo") 6 "six bytes -- `é` takes two" in
   let c = assertEq (charAt "héllo" 1) (Just 'é') "charAt" in
   let d = assertEq (charAt "hi" 9) None "past the end" in
-  let e =
-    assertEq (fromChars (chars "round trip é")) "round trip é" "round trip"
+  let e = assertEq (fromChars (chars "round trip é")) "round trip é" "round trip"
   in
   assertEq (chars "hi") ['h', 'i'] "chars"
 
@@ -405,11 +382,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 
 @test fun bytesRoundTrip () =
   let a = assertEq (fromBytes (toBytes "hello")) "hello" "round trip" in
-  let b =
-    assertEq
-      (fromBytes #[0xff, 0x41])
-      "\u{FFFD}A"
-      "what is not UTF-8 becomes U+FFFD"
+  let b = assertEq (fromBytes #[0xff, 0x41]) "\u{FFFD}A" "what is not UTF-8 becomes U+FFFD"
   in
   assertEq (toBytes "abc") #[97, 98, 99] "toBytes"
 
@@ -422,7 +395,6 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let big = repeat "abcdefgh" 100000 in
   let a = assertEq (byteLength big) 800000 "long" in
   let b = assertEq (slice big 799998 800000) "gh" "the end" in
-  let c =
-    assertEq (indexOfFrom "h" big 799990) (Just 799991) "found near the end"
+  let c = assertEq (indexOfFrom "h" big 799990) (Just 799991) "found near the end"
   in
   assertEq (byteAt big 400003) (Just 100) "a byte in the middle"

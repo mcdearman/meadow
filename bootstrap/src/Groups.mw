@@ -77,23 +77,13 @@ fun bindOf (a : HirArena) (d : HirDecl) : Maybe HirBind =
         r.body
         (V.foldl (\acc p -> patMentions a owner overloads p acc) out r.params)
   | HirBindView.Pat r ->
-      exprMentions
-        a
-        owner
-        overloads
-        r.value
-        (patMentions a owner overloads r.pat out)
+      exprMentions a owner overloads r.value (patMentions a owner overloads r.pat out)
 
 fun patMentions (a : HirArena) owner overloads (p : HirPat) (out : [Int]) :
     [Int] =
   match viewHirPat a p with
   | HirPatView.View r ->
-      patMentions
-        a
-        owner
-        overloads
-        r.pat
-        (exprMentions a owner overloads r.fn out)
+      patMentions a owner overloads r.pat (exprMentions a owner overloads r.fn out)
   | HirPatView.Ann r -> patMentions a owner overloads r.pat out
   | HirPatView.As r -> patMentions a owner overloads r.pat out
   | HirPatView.Tuple r ->
@@ -107,16 +97,12 @@ fun patMentions (a : HirArena) owner overloads (p : HirPat) (out : [Int]) :
   | HirPatView.Cons r ->
       V.foldl (\acc q -> patMentions a owner overloads q acc) out r.args
   | HirPatView.Record r ->
-      V.foldl
-        (\acc f -> patMentions a owner overloads (hirPatFieldPat a f) acc)
-        out
-        r.fields
+      V.foldl (\acc f -> patMentions a owner overloads (hirPatFieldPat a f) acc) out r.fields
   | _ -> out
 
 fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) :
     [Int] =
-  let each =
-    \acc xs -> V.foldl (\o x -> exprMentions a owner overloads x o) acc xs
+  let each = \acc xs -> V.foldl (\o x -> exprMentions a owner overloads x o) acc xs
   in
   match viewHirExpr a e with
   | HirExprView.Var r ->
@@ -153,12 +139,7 @@ fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) :
         owner
         overloads
         r.no
-        (exprMentions
-          a
-          owner
-          overloads
-          r.yes
-          (exprMentions a owner overloads r.cond out))
+        (exprMentions a owner overloads r.yes (exprMentions a owner overloads r.cond out))
   | HirExprView.Match r ->
       V.foldl
         (\acc arm ->
@@ -177,10 +158,7 @@ fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) :
   | HirExprView.Cons r -> each out r.args
   | HirExprView.Record r ->
       let fields =
-        V.foldl
-          (\acc f -> exprMentions a owner overloads (hirExprFieldValue a f) acc)
-          out
-          r.fields
+        V.foldl (\acc f -> exprMentions a owner overloads (hirExprFieldValue a f) acc) out r.fields
       in
       (match r.base with
        | Just b -> exprMentions a owner overloads b fields
@@ -242,11 +220,7 @@ fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) :
           out = out
         }
     in
-    let u =
-      V.foldl
-        (\w v -> if stGetArray index v < 0 then visit t v else ())
-        ()
-        (V.range 0 n)
+    let u = V.foldl (\w v -> if stGetArray index v < 0 then visit t v else ()) () (V.range 0 n)
     in
     stGetRef out)
 
@@ -272,11 +246,9 @@ fun visit (t : Tarjan s) (v : Int) : () ! { St s | e } =
       (\u w ->
         if stGetArray t.index w < 0
         then
-          (let x = visit t w in
-            stSetArray t.low v (min (stGetArray t.low v) (stGetArray t.low w)))
+          (let x = visit t w in stSetArray t.low v (min (stGetArray t.low v) (stGetArray t.low w)))
         else if stGetArray t.onStack w
-        then
-          stSetArray t.low v (min (stGetArray t.low v) (stGetArray t.index w))
+        then stSetArray t.low v (min (stGetArray t.low v) (stGetArray t.index w))
         else ())
       ()
       (V.getOr [] t.edges v) in
@@ -313,9 +285,7 @@ fun popTo (t : Tarjan s) (v : Int) (acc : [Int]) : [Int] ! { St s | e } =
   in
   let edges =
     V.map
-      (\m ->
-        sortedDistinct
-          (V.filter (\d -> d != m) (moduleMentions modules owner overloads m)))
+      (\m -> sortedDistinct (V.filter (\d -> d != m) (moduleMentions modules owner overloads m)))
       (V.range 0 (V.len modules))
   in
   V.concat (scc edges)
@@ -327,10 +297,7 @@ fun moduleMentions (modules : [(HirArena, [Binding])]) owner overloads (m : Int)
     : [Int] =
   match V.get modules m with
   | Just (a, bs) ->
-      V.foldl
-        (\acc (b : Binding) -> mentions a owner overloads b.bind acc)
-        []
-        bs
+      V.foldl (\acc (b : Binding) -> mentions a owner overloads b.bind acc) [] bs
   | None -> []
 
 -- A module's bindings in dependency order, and its groups, each member a
@@ -339,25 +306,17 @@ fun moduleMentions (modules : [(HirArena, [Binding])]) owner overloads (m : Int)
     (overloads : HashMap Int [Int]) : ([Binding], [Group]) =
   let owner =
     V.foldl
-      (\h slot ->
-        V.foldl (\g v -> H.insert v slot g) h (V.getOr noBinding binds slot).binds)
+      (\h slot -> V.foldl (\g v -> H.insert v slot g) h (V.getOr noBinding binds slot).binds)
       H.empty
       (V.range 0 (V.len binds))
   in
-  let edges =
-    V.map
-      (\(b : Binding) -> sortedDistinct (mentions a owner overloads b.bind []))
-      binds
+  let edges = V.map (\(b : Binding) -> sortedDistinct (mentions a owner overloads b.bind [])) binds
   in
   let comps = scc edges in
-  let ordered =
-    V.concatMap (\comp -> V.map (\s -> V.getOr noBinding binds s) comp) comps
+  let ordered = V.concatMap (\comp -> V.map (\s -> V.getOr noBinding binds s) comp) comps
   in
   let starts =
-    V.foldl
-      (\acc comp -> V.pushBack acc (V.getOr 0 acc (V.len acc - 1) + V.len comp))
-      [0]
-      comps
+    V.foldl (\acc comp -> V.pushBack acc (V.getOr 0 acc (V.len acc - 1) + V.len comp)) [0] comps
   in
   let groups =
     V.map
@@ -384,22 +343,16 @@ fun moduleMentions (modules : [(HirArena, [Binding])]) owner overloads (m : Int)
   let bindAt = \p -> V.getOr noBinding (bindsOf modules (fst p)) (snd p) in
   let owner =
     V.foldl
-      (\h slot ->
-        V.foldl (\g v -> H.insert v slot g) h (bindAt (V.getOr (0, 0) at slot)).binds)
+      (\h slot -> V.foldl (\g v -> H.insert v slot g) h (bindAt (V.getOr (0, 0) at slot)).binds)
       H.empty
       (V.range 0 (V.len at))
   in
-  let edges =
-    V.map
-      (\p -> sortedDistinct (bindMentions modules owner overloads p (bindAt p)))
-      at
+  let edges = V.map (\p -> sortedDistinct (bindMentions modules owner overloads p (bindAt p))) at
   in
   V.map
     (\comp ->
       Group
-        {
-          members = V.map (\s -> V.getOr (0, 0) at s) comp,
-          recursive = recursiveComp edges comp
+        { members = V.map (\s -> V.getOr (0, 0) at s) comp, recursive = recursiveComp edges comp
         })
     (scc edges)
 
@@ -414,10 +367,7 @@ fun recursiveComp (edges : [[Int]]) (comp : [Int]) : Bool =
     or (match V.get comp 0 with | Just s -> V.elem s (V.getOr [] edges s) | None -> False)
 
 fun sortedDistinct (xs : [Int]) : [Int] =
-  V.foldl
-    (\acc x -> if V.elem x acc then acc else V.pushBack acc x)
-    []
-    (sort xs)
+  V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] (sort xs)
 
 def noBinding : Binding = Binding { bind = 0 - 1, binds = [] }
 

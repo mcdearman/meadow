@@ -43,10 +43,7 @@ fun beats c =
   | Paper -> Rock
   | Scissors -> Paper
 
-fun judge you me =
-  if you == me then Draw
-  else if beats you == me then Win
-  else Lose
+fun judge you me = if you == me then Draw else if beats you == me then Win else Lose
 
 fun outcomeLine o =
   match o with
@@ -76,9 +73,7 @@ fun round () =
         | Just you ->
             let me = randomChoice () in
             let o = judge you me in
-            let _ =
-              println
-                (S.concatAll ["I played ", choiceName me, ". ", outcomeLine o])
+            let _ = println (S.concatAll ["I played ", choiceName me, ". ", outcomeLine o])
             in
             Just o
 
@@ -93,9 +88,7 @@ fun game () =
   let _ = println "Rock paper scissors. Ctrl-D or `quit` to stop." in
   let (wins, losses, draws) = tally 0 0 0 in
   let _ = println (S.concatAll
-    [ "\nYou won ", show wins
-        , ", lost ", show losses
-        , ", drew ", show draws, "."
+    [ "\nYou won ", show wins , ", lost ", show losses , ", drew ", show draws, "."
     ]) in
   ()
 
@@ -114,10 +107,7 @@ fun main () = game ()
       , (Scissors, Rock, Lose)
       , (Paper, Paper, Draw)
     ] in
-    assertEq
-      (map (\(a, b, _) -> judge a b) cases)
-      (map (\(_, _, o) -> o) cases)
-      "judged"
+    assertEq (map (\(a, b, _) -> judge a b) cases) (map (\(_, _, o) -> o) cases) "judged"
 
 @test fun inputIsForgiving () =
   let got = map parseChoice ["ROCK", " p ", "Scissors", "banana"] in

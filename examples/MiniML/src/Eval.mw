@@ -56,9 +56,7 @@ fun applyOp op l r =
   else if op == "-" then Value.Int (asInt l - asInt r)
   else if op == "*" then Value.Int (asInt l * asInt r)
   else if op == "/" then
-    (if asInt r == 0
-      then raise "division by zero"
-      else Value.Int (asInt l / asInt r))
+    (if asInt r == 0 then raise "division by zero" else Value.Int (asInt l / asInt r))
   else if op == "==" then Value.Bool (asInt l == asInt r)
   else if op == "<" then Value.Bool (asInt l < asInt r)
   else if op == ">" then Value.Bool (asInt l > asInt r)

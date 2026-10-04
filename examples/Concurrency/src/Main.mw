@@ -42,8 +42,7 @@ fun worker jobs results =
 fun pool (size : Int) work =
   let jobs = Thread.newChannel () in
   let results = Thread.newChannel () in
-  let workers =
-    V.map (\i -> Thread.spawn (\() -> worker jobs results)) (V.range 0 size)
+  let workers = V.map (\i -> Thread.spawn (\() -> worker jobs results)) (V.range 0 size)
   in
   let _ = V.forEach (\n -> Thread.send jobs (Just n)) work in
   -- One stop per worker, after the work: a channel keeps its order.
@@ -63,8 +62,7 @@ fun longest answers =
 fun describeLongest answers =
   match longest answers with
   | (n, steps) ->
-      S.concatAll
-        ["longest: ", S.fromInt n, " takes ", S.fromInt steps, " steps"]
+      S.concatAll ["longest: ", S.fromInt n, " takes ", S.fromInt steps, " steps"]
 
 fun describeFib t =
   match t with
@@ -84,10 +82,7 @@ fun stage f input output =
 -- Chain a stage per function, and answer the channel the last one writes to.
 fun pipeline fs input =
   V.foldl
-    (\ch f ->
-      let out = Thread.newChannel () in
-      let _ = Thread.spawn (\() -> stage f ch out) in
-      out)
+    (\ch f -> let out = Thread.newChannel () in let _ = Thread.spawn (\() -> stage f ch out) in out)
     input
     fs
 
@@ -106,8 +101,7 @@ fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
 fun main () =
   let _ = println "== a worker pool of 4, over 1..10000" in
   let answers = pool 4 (V.range 1 10001) in
-  let _ =
-    println (S.concatAll ["answered ", S.fromInt (V.len answers), " jobs"])
+  let _ = println (S.concatAll ["answered ", S.fromInt (V.len answers), " jobs"])
   in
   let _ = println (describeLongest answers) in
 

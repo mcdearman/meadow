@@ -58,9 +58,7 @@ use Std.Bool (not)
   P.label (show text)
     (P.try
       (P.bind (P.takeP "a word" (V.len want))
-        (\got ->
-          if V.map Ch.toLower (P.chunkToTokens got) == want then P.pure got
-          else P.empty)))
+        (\got -> if V.map Ch.toLower (P.chunkToTokens got) == want then P.pure got else P.empty)))
 
 -- --- white space -------------------------------------------------------------
 
@@ -128,9 +126,7 @@ fun isHorizontal c = c == ' ' or c == '\t'
 -- A character that is not a control character.
 @pub fun printChar : Stream s => Parser s Char
   | printChar =
-    P.label
-      "a printable character"
-      (P.satisfy (\c -> Ch.code c >= 32 and Ch.code c != 127))
+    P.label "a printable character" (P.satisfy (\c -> Ch.code c >= 32 and Ch.code c != 127))
 
 -- --- tests -------------------------------------------------------------------
 
@@ -144,25 +140,14 @@ use Std.String.Parse (Stream)
   let a = assertEq (P.runParser (char 'x') "xy") (Ok 'x') "char" in
   let b = assertEq (P.runParser (string "let") "let x") (Ok "let") "string" in
   let c =
-    assertEq
-      (P.runParser (stringCI "LeT") "lEt")
-      (Ok "lEt")
-      "stringCI keeps the input's spelling"
+    assertEq (P.runParser (stringCI "LeT") "lEt") (Ok "lEt") "stringCI keeps the input's spelling"
   in
   assertEq (P.runParser (charCI 'q') "Q") (Ok 'Q') "charCI"
 
 @test fun whiteSpaceAndLines () =
-  let a =
-    assertEq
-      (P.runParser (P.skipThen space (char 'x')) " \n\t x")
-      (Ok 'x')
-      "space"
+  let a = assertEq (P.runParser (P.skipThen space (char 'x')) " \n\t x") (Ok 'x') "space"
   in
-  let b =
-    assertEq
-      (P.runParser (P.skipThen hspace eol) "  \r\n")
-      (Ok "\r\n")
-      "hspace, then a CRLF"
+  let b = assertEq (P.runParser (P.skipThen hspace eol) "  \r\n") (Ok "\r\n") "hspace, then a CRLF"
   in
   assertFalse (isOk (P.runParser space1 "x")) "space1 wants one"
 
@@ -170,14 +155,8 @@ use Std.String.Parse (Stream)
   match P.runParser digitChar "x" with
   | Ok _ -> assertTrue False "it should fail"
   | Err e ->
-      assertEq
-        (P.parseErrorTextPretty e)
-        "unexpected 'x'\nexpecting a digit\n"
-        "labelled"
+      assertEq (P.parseErrorTextPretty e) "unexpected 'x'\nexpecting a digit\n" "labelled"
 
 @test fun aVectorOfCharsWorksToo () =
   let input = V.fromArray (stringToChars "ab1") in
-  assertEq
-    (P.runParser (P.some letterChar) input)
-    (Ok ['a', 'b'])
-    "any stream of Chars"
+  assertEq (P.runParser (P.some letterChar) input) (Ok ['a', 'b']) "any stream of Chars"

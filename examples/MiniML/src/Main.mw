@@ -71,8 +71,7 @@ fun loop () =
         loop ()
 
 @pub(pkg) fun main () =
-  let ignored =
-    println "mini-ml. An expression per line, `:q` or Ctrl-D to stop."
+  let ignored = println "mini-ml. An expression per line, `:q` or Ctrl-D to stop."
   in
   loop ()
 
@@ -89,40 +88,23 @@ fun loop () =
     "precedence"
 
 @test fun parsesLet () =
-  assertEq
-    (show (parse "let x = 1 in x"))
-    (show (Ok (Let "x" (Int 1) (Var "x"))))
-    "let"
+  assertEq (show (parse "let x = 1 in x")) (show (Ok (Let "x" (Int 1) (Var "x")))) "let"
 
 @test fun parsesLambdaAndApp () =
   assertEq (show (parse "(fun x y -> x) 1 2"))
-           (show (Ok (App (App (Lam "x" (Lam "y" (Var "x"))) (Int 1)) (Int 2))))
-             "curried"
+           (show (Ok (App (App (Lam "x" (Lam "y" (Var "x"))) (Int 1)) (Int 2)))) "curried"
 
 @test fun parsesLetRec () =
   assertEq (show (parse "let rec f n = f n in f 1"))
-           (show
-             (Ok
-               (LetRec
-                 "f"
-                 "n"
-                 (App (Var "f") (Var "n"))
-                 (App (Var "f") (Int 1)))))
-             "let rec"
+           (show (Ok (LetRec "f" "n" (App (Var "f") (Var "n")) (App (Var "f") (Int 1))))) "let rec"
 
 @test fun keywordsAreNotIdentifiers () =
-  assertEq
-    (show (parse "letter"))
-    (show (Ok (Var "letter")))
-    "`let` is a prefix of `letter`"
+  assertEq (show (parse "letter")) (show (Ok (Var "letter"))) "`let` is a prefix of `letter`"
 
 -- --- inference ---------------------------------------------------------------
 
 @test fun infersSimpleTypes () =
-  let got =
-    map
-      typeOfSource
-      ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"]
+  let got = map typeOfSource ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"]
   in
   assertEq got [Ok "Int", Ok "Bool", Ok "(Int -> Int)", Ok "Int"] "ground types"
 
@@ -148,10 +130,7 @@ fun loop () =
            (Err "occurs check: a type would contain itself") "self-application"
 
 @test fun mismatchIsReported () =
-  assertEq
-    (typeOfSource "1 + true")
-    (Err "cannot unify Bool with Int")
-    "adding a bool"
+  assertEq (typeOfSource "1 + true") (Err "cannot unify Bool with Int") "adding a bool"
 
 @test fun unboundIsReported () =
   assertEq (typeOfSource "x + 1") (Err "unbound variable: x") "unbound"
@@ -159,8 +138,7 @@ fun loop () =
 @test fun recursiveFunctionsType () =
   assertEq
     (typeOfSource
-      "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5")
-           (Ok "Int") "factorial"
+      "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5") (Ok "Int") "factorial"
 
 -- --- evaluation --------------------------------------------------------------
 
@@ -179,16 +157,10 @@ fun loop () =
            (Ok "3628800") "factorial"
 
 @test fun evaluatesMutualShadowing () =
-  assertEq
-    (runSource "let x = 1 in let x = x + 1 in x")
-    (Ok "2")
-    "shadowing sees the old binding"
+  assertEq (runSource "let x = 1 in let x = x + 1 in x") (Ok "2") "shadowing sees the old binding"
 
 @test fun divisionByZeroIsCaught () =
-  assertEq
-    (runSource "1 / 0")
-    (Err "division by zero")
-    "a run-time error, not a crash"
+  assertEq (runSource "1 / 0") (Err "division by zero") "a run-time error, not a crash"
 
 -- --- the REPL, end to end ----------------------------------------------------
 
@@ -200,10 +172,7 @@ fun loop () =
 
 @test fun replReportsEachKindOfFailure () =
   let got = map replLine ["1 +", "1 + true", "1 / 0"] in
-  assertEq
-    (map (\s -> S.contains ":" s) got)
-    [True, True, True]
-    "all three are reported"
+  assertEq (map (\s -> S.contains ":" s) got) [True, True, True] "all three are reported"
 
 @test fun replRunsUnderWithInput () =
   -- `main`'s own loop, driven by the `Console` effect: no terminal involved.

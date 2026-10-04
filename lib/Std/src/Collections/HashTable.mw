@@ -42,8 +42,7 @@ use Slot.*
 -- The slots, how many hold an entry, and how many hold a tombstone. The slots
 -- are in a cell because growing replaces the array.
 use HashTable.*
-@pub data HashTable s k v =
-  Table (StRef s (StArray s (Slot k v))) (StRef s Int) (StRef s Int)
+@pub data HashTable s k v = Table (StRef s (StArray s (Slot k v))) (StRef s Int) (StRef s Int)
 
 def initialCapacity = 16
 
@@ -52,10 +51,7 @@ def initialCapacity = 16
 
 -- A table with room for `n` entries before it first grows.
 @pub fun withCapacity (n : Int) : HashTable a b c ! { St a | e } =
-  Table
-    (St.newRef (St.newArray (capacityFor n) Empty))
-    (St.newRef 0)
-    (St.newRef 0)
+  Table (St.newRef (St.newArray (capacityFor n) Empty)) (St.newRef 0) (St.newRef 0)
 
 -- The smallest power of two that holds `n` entries under three quarters full.
 fun capacityFor n = capacityUp initialCapacity (n * 4 / 3 + 1)
@@ -130,8 +126,7 @@ fun place slots mask h k i free =
            | Full h2 k2 old -> St.set slots idx (Full h k (f v old))
            | _ -> ())
       | (idx, False) ->
-          let wasTomb =
-            (match St.get slots idx with | Tomb -> True | _ -> False)
+          let wasTomb = (match St.get slots idx with | Tomb -> True | _ -> False)
           in
           let _ = St.set slots idx (Full h k v) in
           let _ = St.setRef n (St.getRef n + 1) in
@@ -302,20 +297,13 @@ use Std.Sort as Sort
     let _ = insert "k" 9 t in
     let _ = insert "j" 8 t in
     toVec t) in
-  let sorted =
-    Sort.sortBy
-      (\p q -> match (p, q) with | ((_, a), (_, b)) -> compare a b)
-      pairs
+  let sorted = Sort.sortBy (\p q -> match (p, q) with | ((_, a), (_, b)) -> compare a b) pairs
   in
   let a = assertEq sorted [("j", 8), ("k", 9)] "cleared, then two" in
-  let ks =
-    runSt (\() -> Sort.sort (keys (fromVec [(3, "x"), (1, "y"), (2, "z")])))
+  let ks = runSt (\() -> Sort.sort (keys (fromVec [(3, "x"), (1, "y"), (2, "z")])))
   in
   let b = assertEq ks [1, 2, 3] "keys" in
-  let total =
-    runSt
-      (\() ->
-        foldl (\acc k v -> acc + v) 0 (fromVec [(1, 10), (2, 20), (3, 30)]))
+  let total = runSt (\() -> foldl (\acc k v -> acc + v) 0 (fromVec [(1, 10), (2, 20), (3, 30)]))
   in
   assertEq total 60 "folded"
 

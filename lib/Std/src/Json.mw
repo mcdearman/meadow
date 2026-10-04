@@ -56,11 +56,9 @@ use Json.*
 
 @pub fun isNull (v : Json) : Bool = match v with | Null -> True | _ -> False
 
-@pub fun asBool (v : Json) : Maybe Bool =
-  match v with | Bool b -> Just b | _ -> None
+@pub fun asBool (v : Json) : Maybe Bool = match v with | Bool b -> Just b | _ -> None
 
-@pub fun asInt (v : Json) : Maybe Int =
-  match v with | Int n -> Just n | _ -> None
+@pub fun asInt (v : Json) : Maybe Int = match v with | Int n -> Just n | _ -> None
 
 @pub fun asFloat (v : Json) : Maybe Float =
   match v with
@@ -68,11 +66,9 @@ use Json.*
   | Int n -> Just (toFloat n)
   | _ -> None
 
-@pub fun asString (v : Json) : Maybe String =
-  match v with | String s -> Just s | _ -> None
+@pub fun asString (v : Json) : Maybe String = match v with | String s -> Just s | _ -> None
 
-@pub fun asArray (v : Json) : Maybe [Json] =
-  match v with | Array xs -> Just xs | _ -> None
+@pub fun asArray (v : Json) : Maybe [Json] = match v with | Array xs -> Just xs | _ -> None
 
 @pub fun asObject (v : Json) : Maybe [(String, Json)] =
   match v with | Object fs -> Just fs | _ -> None
@@ -200,11 +196,7 @@ fun scanText (s : String) (n : Int) (from : Int) (i : Int) (pieces : [String])
     (let c = byteAt s i in
       if c == 34 then
         (let piece = stringSlice s from i in
-          Read
-            (if V.len pieces == 0
-              then piece
-              else S.concatAll (V.pushBack pieces piece))
-            (i + 1))
+          Read (if V.len pieces == 0 then piece else S.concatAll (V.pushBack pieces piece)) (i + 1))
       else if c == 92 then
         (if i + 1 >= n then Unread
           else
@@ -242,8 +234,7 @@ fun digitsValue (s : String) (i : Int) (stop : Int) (acc : Int) : Int =
   else digitsValue s (i + 1) stop (acc * 10 + (byteAt s i - 48))
 
 -- Whether `c` could go on a number: a fraction, an exponent, a sign.
-fun numberMore (c : Int) : Bool =
-  c == 46 or c == 101 or c == 69 or c == 43 or c == 45
+fun numberMore (c : Int) : Bool = c == 46 or c == 101 or c == 69 or c == 43 or c == 45
 
 fun numberEnd (s : String) (n : Int) (i : Int) : Int =
   if i < n
@@ -264,9 +255,7 @@ fun scanNumber (s : String) (n : Int) (i : Int) : Scan =
       match P.runParser (P.thenSkip number P.eof) (stringSlice s i j) with
       | Ok v -> Got v j
       | Err _ -> Lost)
-  else
-    (let v = digitsValue s start stop 0 in
-      Got (Int (if negative then 0 - v else v)) stop)
+  else (let v = digitsValue s start stop 0 in Got (Int (if negative then 0 - v else v)) stop)
 
 -- From just past `[` and any space after it.
 fun scanArray (s : String) (n : Int) (i : Int) : Scan =
@@ -311,12 +300,7 @@ fun scanMembers (s : String) (n : Int) (i : Int) (acc : [(String, Json)])
                     else
                       (let c = byteAt s q in
                         if c == 44
-                        then
-                          scanMembers
-                            s
-                            n
-                            (skipSpace s n (q + 1))
-                            (V.pushBack acc (pair key v))
+                        then scanMembers s n (skipSpace s n (q + 1)) (V.pushBack acc (pair key v))
                         else if c == 125
                         then Got (Object (V.pushBack acc (pair key v))) (q + 1)
                         else Lost)))))
@@ -354,8 +338,7 @@ fun array =
   P.defer (\() -> items |> P.map Array |> P.label "an array")
 
 fun object =
-  let members =
-    P.between (symbol "{") (C.char '}') (P.sepBy member (symbol ","))
+  let members = P.between (symbol "{") (C.char '}') (P.sepBy member (symbol ","))
   in
   P.defer (\() -> members |> P.map Object |> P.label "an object")
 
@@ -368,26 +351,21 @@ fun member =
 
 -- --- lexical -----------------------------------------------------------------
 
-fun float negative =
-  P.map (\x -> Float (if negative then 0.0 -. x else x)) L.float
+fun float negative = P.map (\x -> Float (if negative then 0.0 -. x else x)) L.float
 
-fun integer negative =
-  P.map (\n -> Int (if negative then 0 - n else n)) L.decimal
+fun integer negative = P.map (\n -> Int (if negative then 0 - n else n)) L.decimal
 
 -- Numbers: an optional minus, digits, and an optional fraction and exponent.
 -- One with neither is an `Int`; one with either is a `Float`.
 fun number =
   let minus = P.option False (P.mapTo True (C.char '-')) in
-  P.label
-    "a number"
-    (P.bind minus (\negative -> P.alt (float negative) (integer negative)))
+  P.label "a number" (P.bind minus (\negative -> P.alt (float negative) (integer negative)))
 
 -- Strings: `\uXXXX` is the one gap. Decoding one means UTF-16 surrogate
 -- pairing, which belongs in `Std.String` rather than here, so for now such an
 -- escape is rejected instead of half-handled.
 fun stringLit =
-  let chars =
-    P.skipThen (C.char '"') (P.manyTill (P.alt escape plainChar) (C.char '"'))
+  let chars = P.skipThen (C.char '"') (P.manyTill (P.alt escape plainChar) (C.char '"'))
   in
   chars |> P.map (\cs -> charsToString (V.toArray cs)) |> P.label "a string"
 
@@ -420,8 +398,7 @@ fun escape = P.choice escapes |> P.label "an escape" |> P.skipThen (C.char '\\')
   | Array xs -> S.concatAll ["[", S.join "," (V.map render xs), "]"]
   | Object fs -> S.concatAll ["{", S.join "," (V.map renderMember fs), "}"]
 
-fun renderMember entry =
-  S.concatAll [quote (fst entry), ":", render (snd entry)]
+fun renderMember entry = S.concatAll [quote (fst entry), ":", render (snd entry)]
 
 -- Two spaces per level, one element per line -- the shape `meadow fmt` uses for
 -- meadow itself.
@@ -487,8 +464,7 @@ fun showFloat x =
   in
   S.concatAll [S.fromInt whole, ".", padLeft 6 (S.fromInt scaled)]
 
-fun padLeft width s =
-  if S.byteLength s >= width then s else padLeft width (S.concat "0" s)
+fun padLeft width s = if S.byteLength s >= width then s else padLeft width (S.concat "0" s)
 
 -- --- tests -------------------------------------------------------------------
 
@@ -522,26 +498,19 @@ fun isFloat v = match v with | Float x -> True | _ -> False
 
 @test fun anErrorPointsAtTheSpot () =
   let text = "{\"a\": [1, 2,\n  ]}" in
-  let wanted =
-    "expecting \"null\", \"true\", \"false\", a string, an array, an object, or a number"
+  let wanted = "expecting \"null\", \"true\", \"false\", a string, an array, an object, or a number"
   in
   let a =
     match parse text with
     | Ok _ -> assertTrue False "it should fail"
     | Err e ->
-        assertEq
-          e
-          "at offset 15: unexpected \"]}\"; ${wanted}"
-          "the offset, and what went wrong"
+        assertEq e "at offset 15: unexpected \"]}\"; ${wanted}" "the offset, and what went wrong"
   in
   match parseSpanned text with
   | Ok _ -> assertTrue False "it should fail"
   | Err (at, message) ->
       let b = assertEq at (15, 17) "the span of what was found" in
-      assertEq
-        message
-        "unexpected \"]}\"\n${wanted}\n"
-        "what went wrong, in lines"
+      assertEq message "unexpected \"]}\"\n${wanted}\n" "what went wrong, in lines"
 
 @test fun containersNestAndAreOrdered () =
   let a = assertEq (parsed "[]") (Array []) "an empty array" in
@@ -551,10 +520,7 @@ fun isFloat v = match v with | Float x -> True | _ -> False
   assertEq (parsed "[[1],[2]]") (Array [Array [Int 1], Array [Int 2]]) "nesting"
 
 @test fun whitespaceIsIgnoredBetweenTokens () =
-  assertEq
-    (parsed "  { \"a\" : [ 1 , 2 ] }  ")
-    (parsed "{\"a\":[1,2]}")
-    "spaces do not matter"
+  assertEq (parsed "  { \"a\" : [ 1 , 2 ] }  ") (parsed "{\"a\":[1,2]}") "spaces do not matter"
 
 -- Two layers of escaping meet here: the meadow literal, and the JSON text it
 -- holds. `"\"a\\nb\""` is the six characters `"a\nb"` -- JSON for a newline.
@@ -587,10 +553,7 @@ fun byGrammar (text : String) : Result String Json =
     " { \"k\" : [ 1 , 2.0 , \"x\" , null , true , { \"n\" : { } } ] , \"e\\n\" : -3 }\n",
     "\t[\r\n1\n]\n",
   ] in
-  let same =
-    V.all
-      (\t -> parse t == byGrammar t and parseSpanned t == P.parse document t)
-      texts
+  let same = V.all (\t -> parse t == byGrammar t and parseSpanned t == P.parse document t) texts
   in
   let quickly = V.all (\t -> M.isSome (quick t)) texts in
   let a = assertTrue same "the same value either way" in
@@ -619,10 +582,7 @@ fun byGrammar (text : String) : Result String Json =
   let a = assertEq (render (String "a\"b")) "\"a\\\"b\"" "a quote" in
   let b = assertEq (render (String "a\nb")) "\"a\\nb\"" "a newline" in
   let awkward = String "tricky \" \\ \n\t" in
-  assertEq
-    (parsed (render awkward))
-    awkward
-    "everything that needs escaping round trips"
+  assertEq (parsed (render awkward)) awkward "everything that needs escaping round trips"
 
 @test fun accessorsReachIntoTheTree () =
   let v = parsed "{\"n\":{\"deep\":true},\"xs\":[10,20]}" in
@@ -643,12 +603,8 @@ fun byGrammar (text : String) : Result String Json =
   assertEq (asFloat (Int 2)) (Just 2.0) "asFloat widens an Int"
 
 @test fun indentedRenderingNestsByTwo () =
-  let a =
-    assertEq (renderIndented (Array [])) "[]" "an empty array stays on one line"
+  let a = assertEq (renderIndented (Array [])) "[]" "an empty array stays on one line"
   in
   let b = assertEq (renderIndented (Object [])) "{}" "and an empty object" in
   let c = assertEq (renderIndented (Array [Int 1])) "[\n  1\n]" "one element" in
-  assertEq
-    (renderIndented (Object [("a", Int 1)]))
-    "{\n  \"a\": 1\n}"
-    "one field"
+  assertEq (renderIndented (Object [("a", Int 1)])) "{\n  \"a\": 1\n}" "one field"

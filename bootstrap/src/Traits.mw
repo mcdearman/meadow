@@ -88,8 +88,7 @@ fun want (i : Inf s) (p : Pred) (owner : Maybe Int) : Int ! { St s | e } =
 -- Answer every wanted whose types are known by now, and settle associated
 -- types that have to agree.
 @pub fun solveWanted (i : Inf s) : () ! { St s | e } =
-  let progress =
-    V.foldl (\acc k -> solveOne i k or acc) False (V.range 0 (B.len i.wanted))
+  let progress = V.foldl (\acc k -> solveOne i k or acc) False (V.range 0 (B.len i.wanted))
   in
   if progress then solveWanted i else ()
 
@@ -200,11 +199,7 @@ fun agree (i : Inf s) (k : Int) (tys : [Type]) : () ! { St s | e } =
         if V.map (zonk i.ar) (fst o) != tys then ()
         else
           V.foldl
-            (\x j ->
-              unifyAt
-                i
-                (V.getOr Error w.pred.assocs j)
-                (V.getOr Error (snd o) j))
+            (\x j -> unifyAt i (V.getOr Error w.pred.assocs j) (V.getOr Error (snd o) j))
             ()
             (V.range 0 (min (V.len w.pred.assocs) (V.len (snd o)))))
       ()
@@ -265,9 +260,7 @@ fun knownAssoc (i : Inf s) (owner : String) (assoc : String) (over : [Type])
             | Just k ->
                 (match V.foldl (\acc j -> M.andThen (\m -> matchBound (V.getOr Error theirs j) (V.getOr Error over j) m) acc) (Just H.empty) (V.range 0 (min sh.params (V.len over))) with
                  | Just m ->
-                     M.andThen
-                       (\t -> substMap t m)
-                       (V.get theirs (sh.params + k))
+                     M.andThen (\t -> substMap t m) (V.get theirs (sh.params + k))
                  | None -> None)
             | None -> None)
        | _ -> None)
@@ -280,10 +273,7 @@ fun knownAssoc (i : Inf s) (owner : String) (assoc : String) (over : [Type])
   else
     match H.lookup tr (stGetRef i.shapes) with
     | Just (sh : TraitShape) ->
-        V.foldl
-          (\m (sup : Super) -> max m (1 + traitDepth i sup.tr (seen + 1)))
-          0
-          sh.supers
+        V.foldl (\m (sup : Super) -> max m (1 + traitDepth i sup.tr (seen + 1))) 0 sh.supers
     | None -> 0
 
 -- Keep every variable something is still wanted of from generalizing here.
@@ -316,21 +306,15 @@ fun knownAssoc (i : Inf s) (owner : String) (assoc : String) (over : [Type])
   let v = stSetRef i.group [] in
   if not dictionaries then (let x = holdBackWanted i in H.empty)
   else
-    let signatureVars =
-      V.foldl (\acc m -> freeVars i.ar (zonk i.ar (snd m)) acc) [] members
+    let signatureVars = V.foldl (\acc m -> freeVars i.ar (zonk i.ar (snd m)) acc) [] members
     in
     -- The group's `where`: what was given, then what turned out wanted.
     match V.foldl (\acc k -> closeOne i level signed signatureVars acc k) (givens, []) (V.range started (B.len i.wanted)) with
     | (all, pending) ->
         -- Each member asks for what its own type can settle.
-        let lists =
-          V.foldl
-            (\h m -> H.insert (fst m) (settledBy i all (snd m)) h)
-            H.empty
-            members
+        let lists = V.foldl (\h m -> H.insert (fst m) (settledBy i all (snd m)) h) H.empty members
         in
-        let only =
-          if V.len members == 1 then M.map fst (V.get members 0) else None
+        let only = if V.len members == 1 then M.map fst (V.get members 0) else None
         in
         let w = V.foldl (\x pj -> placeWanted i lists only pj) () pending in
         H.fromVec
@@ -338,13 +322,7 @@ fun knownAssoc (i : Inf s) (owner : String) (assoc : String) (over : [Type])
             (\kv ->
               (
                 fst kv,
-                V.map
-                  (\j ->
-                    V.getOr
-                      (Pred { tr = "", tys = [], assocs = [] })
-                      all
-                      j)
-                  (snd kv)
+                V.map (\j -> V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j) (snd kv)
               ))
             (H.toVec lists))
 
@@ -367,18 +345,10 @@ fun closeOne (i : Inf s) (level : Int) (signed : Bool) (signatureVars : [Int])
                        | Just x -> Just x
                        | None ->
                            (let have =
-                               V.getOr
-                                 (Pred { tr = "", tys = [], assocs = [] })
-                                 all
-                                 j
+                               V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j
                              in M.map
                              (\path -> (j, path))
-                             (superPath
-                               i
-                               have.tr
-                               (V.map (zonk i.ar) have.tys)
-                               w.pred.tr
-                               wantTys)))
+                             (superPath i have.tr (V.map (zonk i.ar) have.tys) w.pred.tr wantTys)))
               None
               (V.range 0 (V.len all))
           in
@@ -404,11 +374,7 @@ fun closeOne (i : Inf s) (level : Int) (signed : Bool) (signatureVars : [Int])
               in
               let u =
                 V.foldl
-                  (\x n ->
-                    unifyAt
-                      i
-                      (V.getOr Error w.pred.assocs n)
-                      (V.getOr Error theirs n))
+                  (\x n -> unifyAt i (V.getOr Error w.pred.assocs n) (V.getOr Error theirs n))
                   ()
                   (V.range 0 (min (V.len w.pred.assocs) (V.len theirs)))
               in
@@ -445,8 +411,7 @@ fun settleLoop (i : Inf s) (all : [Pred]) (settled : [Int]) (mine : [Int]) :
                else
                  (let p =
                      V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j
-                   in let over =
-                     V.foldl (\o t -> freeVars i.ar (zonk i.ar t) o) [] p.tys
+                   in let over = V.foldl (\o t -> freeVars i.ar (zonk i.ar t) o) [] p.tys
                    in if V.all (\x -> V.elem x s1) over
                       then
                         (
@@ -478,8 +443,7 @@ fun placeWanted (i : Inf s) (lists : HashMap Int [Int]) (only : Maybe Int)
     let u = setSol i k None in
     if defaultWanted i k then ()
     else
-      (let v =
-          report i "cannot tell which `impl ${spelling w.pred.tr}` is meant"
+      (let v = report i "cannot tell which `impl ${spelling w.pred.tr}` is meant"
         in setSol i k (Just Failed))
 
 -- The unit is done: what is still wanted of a type nothing said is
@@ -491,8 +455,7 @@ fun placeWanted (i : Inf s) (lists : HashMap Int [Int]) (only : Maybe Int)
     (\x k -> if M.isSome (wantedAt i k).sol
       then ()
       else
-        (let y =
-            report i "ambiguous `impl ${spelling (wantedAt i k).pred.tr}`"
+        (let y = report i "ambiguous `impl ${spelling (wantedAt i k).pred.tr}`"
           in setSol i k (Just Failed)))
     ()
     (V.range 0 (B.len i.wanted))
@@ -500,10 +463,7 @@ fun placeWanted (i : Inf s) (lists : HashMap Int [Int]) (only : Maybe Int)
 fun finishFrom (i : Inf s) (k : Int) : () ! { St s | e } =
   if k >= B.len i.wanted then ()
   else
-    let u =
-      (if M.isNone (wantedAt i k).sol and defaultWanted i k
-        then solveWanted i
-        else ())
+    let u = (if M.isNone (wantedAt i k).sol and defaultWanted i k then solveWanted i else ())
     in
     finishFrom i (k + 1)
 
@@ -515,8 +475,7 @@ fun finishFrom (i : Inf s) (k : Int) : () ! { St s | e } =
 
 fun assocVar (assoc : String) (over : [Type]) (st : AssocVars) :
     (Int, AssocVars) =
-  let scrutinee =
-    V.find (\x -> match x with | (a, t, _) -> a == assoc and t == over) st.table
+  let scrutinee = V.find (\x -> match x with | (a, t, _) -> a == assoc and t == over) st.table
   in
   match scrutinee with
   | Just (_, _, k) -> (k, st)
@@ -525,9 +484,7 @@ fun assocVar (assoc : String) (over : [Type]) (st : AssocVars) :
         (
           k,
           AssocVars
-            {
-              table = V.pushBack st.table (assoc, over, k),
-              quant = V.pushBack st.quant Plain
+            { table = V.pushBack st.table (assoc, over, k), quant = V.pushBack st.quant Plain
             }
         )
 
@@ -580,8 +537,7 @@ fun liftEach (i : Inf s) (ts : [Type]) (st : AssocVars) :
                                       | Just x -> [x]
                                       | None -> [])
                                (V.getOr [] sh.assocParams k)
-                             in
-                             match assocVar (V.getOr "" sh.assocs k) over s1 with
+                             in match assocVar (V.getOr "" sh.assocs k) over s1 with
                              | (q, s2) -> (V.pushBack xs (Bound q), s2)))
             ([], st)
             (V.range 0 (V.len sh.assocs))
@@ -680,11 +636,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) :
       (if a == b and V.len xs == V.len ys
         then
           V.foldl
-          (\acc j ->
-            M.andThen
-              (\m2 ->
-                matchBound (V.getOr Error xs j) (V.getOr Error ys j) m2)
-              acc)
+          (\acc j -> M.andThen (\m2 -> matchBound (V.getOr Error xs j) (V.getOr Error ys j) m2) acc)
           (Just m)
           (V.range 0 (V.len xs))
         else (if pattern == t then Just m else None))
@@ -692,11 +644,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) :
       (if V.len xs == V.len ys
         then
           V.foldl
-          (\acc j ->
-            M.andThen
-              (\m2 ->
-                matchBound (V.getOr Error xs j) (V.getOr Error ys j) m2)
-              acc)
+          (\acc j -> M.andThen (\m2 -> matchBound (V.getOr Error xs j) (V.getOr Error ys j) m2) acc)
           (Just m)
           (V.range 0 (V.len xs))
         else None)
@@ -706,8 +654,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) :
   let each =
     \ts ->
       V.foldl
-        (\acc x ->
-          M.andThen (\xs -> M.map (\y -> V.pushBack xs y) (substMap x m)) acc)
+        (\acc x -> M.andThen (\xs -> M.map (\y -> V.pushBack xs y) (substMap x m)) acc)
         (Just [])
         ts
   in
@@ -717,16 +664,11 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) :
   | Tuple items -> M.map (\xs -> Tuple xs) (each items)
   | Fun ps ret eff ->
       M.andThen
-        (\xs ->
-          M.andThen
-            (\r -> M.map (\e2 -> Fun xs r e2) (substMap eff m))
-            (substMap ret m))
+        (\xs -> M.andThen (\r -> M.map (\e2 -> Fun xs r e2) (substMap eff m)) (substMap ret m))
         (each ps)
   | Record row -> M.map (\r -> Record r) (substMap row m)
   | RowExtend l f rest ->
-      M.andThen
-        (\f2 -> M.map (\r -> RowExtend l f2 r) (substMap rest m))
-        (substMap f m)
+      M.andThen (\f2 -> M.map (\r -> RowExtend l f2 r) (substMap rest m)) (substMap f m)
   | other -> Just other
 
 -- --- declarations ------------------------------------------------------------
@@ -789,10 +731,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) :
       (\x k ->
         stSetRef
           i.assocOf
-          (H.insert
-            (V.getOr "" assocs k)
-            (AssocOwner { tr = name, at = k })
-            (stGetRef i.assocOf)))
+          (H.insert (V.getOr "" assocs k) (AssocOwner { tr = name, at = k }) (stGetRef i.assocOf)))
       ()
       (V.range 0 (V.len assocs))
   in
@@ -813,9 +752,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) :
       supers
   in
   let methodFields =
-    V.map
-      (\m -> registerMethod i a name params allAssocs assocParams headArgs m)
-      methods
+    V.map (\m -> registerMethod i a name params allAssocs assocParams headArgs m) methods
   in
   let quant = V.replicate (np + n) Plain in
   recordCtorIn i name dict quant head (V.append superFields methodFields)
@@ -830,8 +767,7 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
   | (mname, var, mty, dflt) ->
       let np = V.len params in
       let n = V.len assocs in
-      let others =
-        V.filter (\x -> not (V.elem x params)) (collectTyvars a mty [])
+      let others = V.filter (\x -> not (V.elem x params)) (collectTyvars a mty [])
       in
       let vars =
         V.foldl
@@ -845,12 +781,7 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
       in
       let table =
         V.map
-          (\k ->
-            (
-              V.getOr "" assocs k,
-              V.map (\p -> Bound p) (V.getOr [] assocParams k),
-              np + k
-            ))
+          (\k -> ( V.getOr "" assocs k, V.map (\p -> Bound p) (V.getOr [] assocParams k), np + k ))
           (V.range 0 n)
       in
       match liftAssocs i raw (AssocVars { table = table, quant = quant }) with
@@ -858,9 +789,7 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
           let field =
             substBound
               ty
-              (V.map
-                (\k -> if k < np + n then Bound k else RowEmpty)
-                (V.range 0 (V.len st.quant)))
+              (V.map (\k -> if k < np + n then Bound k else RowEmpty) (V.range 0 (V.len st.quant)))
           in
           let sc =
             Scheme
@@ -871,10 +800,7 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
                 lacks = []
               }
           in
-          let u =
-            stSetRef
-              i.methods
-              (H.insert (methodKey tr mname) sc (stGetRef i.methods))
+          let u = stSetRef i.methods (H.insert (methodKey tr mname) sc (stGetRef i.methods))
           in
           let v =
             (match dflt with
@@ -928,11 +854,7 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
                    H.insert
                    nm
                    (Scheme
-                     {
-                       quant = quant,
-                       preds = [],
-                       ty = Fun [head] (snd f) RowEmpty,
-                       lacks = []
+                     { quant = quant, preds = [], ty = Fun [head] (snd f) RowEmpty, lacks = []
                      })
                    h
                | None -> h)
@@ -952,8 +874,7 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
   | Just (sh : TraitShape) ->
       let names =
         V.foldl
-          (\acc b ->
-            V.foldl (\o x -> collectTyvars a x o) acc (hirBoundTys a b))
+          (\acc b -> V.foldl (\o x -> collectTyvars a x o) acc (hirBoundTys a b))
           (V.foldl (\acc t -> collectTyvars a t acc) [] tys)
           context
       in
@@ -982,8 +903,7 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
               i
               "`impl ${spelling tr}`: an `impl` is for a type constructor applied to distinct variables"
         | Just k ->
-            let st0 =
-              AssocVars { table = [], quant = V.replicate (V.len names) Plain }
+            let st0 = AssocVars { table = [], quant = V.replicate (V.len names) Plain }
             in
             let scrutinee =
               V.foldl
@@ -1019,13 +939,7 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
                     match V.foldl (\acc j -> inheritedAssoc i sh heads acc j) (args1, st2, preds0) (V.range sh.ownAssocs (V.len sh.assocs)) with
                     | (args, st3, preds) ->
                         let sc =
-                          Scheme
-                            {
-                              quant = st3.quant,
-                              preds = preds,
-                              ty = Con tr args,
-                              lacks = []
-                            }
+                          Scheme { quant = st3.quant, preds = preds, ty = Con tr args, lacks = [] }
                         in
                         match findImpl i tr k with
                         | Just prev ->
@@ -1042,10 +956,7 @@ fun addImpl (i : Inf s) (tr : String) (k : String) (dict : Int) (sc : Scheme) :
   let u = setScheme i dict sc in
   stSetRef
     i.impls
-    (H.insert
-      (implKey tr k)
-      (ImplDef { dict = dict, scheme = sc })
-      (stGetRef i.impls))
+    (H.insert (implKey tr k) (ImplDef { dict = dict, scheme = sc }) (stGetRef i.impls))
 
 fun inheritedAssoc (i : Inf s) (sh : TraitShape) (heads : [Type])
     (acc : ([Type], AssocVars, [Pred])) (j : Int) :
@@ -1058,8 +969,7 @@ fun inheritedAssoc (i : Inf s) (sh : TraitShape) (heads : [Type])
           (\p -> match V.get heads p with | Just t -> [t] | None -> [])
           (V.getOr [] sh.assocParams j)
       in
-      let owner =
-        M.map (\(o : AssocOwner) -> o.tr) (H.lookup x (stGetRef i.assocOf))
+      let owner = M.map (\(o : AssocOwner) -> o.tr) (H.lookup x (stGetRef i.assocOf))
       in
       match M.andThen (\o -> knownAssoc i o x over) owner with
       | Just known -> (V.pushBack args known, st, preds)
@@ -1097,12 +1007,8 @@ fun distinctParams (head : Type) : Bool =
 -- A scheme nothing generalized -- a method's, a dictionary's -- recorded with
 -- an arena variable for each quantifier.
 @pub fun recordPoly (i : Inf s) (vid : Int) (sc : Scheme) : () ! { St s | e } =
-  let vars =
-    V.map (\k -> match freshIn i.ar k with | Var id -> id | _ -> 0) sc.quant
+  let vars = V.map (\k -> match freshIn i.ar k with | Var id -> id | _ -> 0) sc.quant
   in
   stSetRef
     i.generalized
-    (H.insert
-      vid
-      (Generalized { scheme = sc, vars = vars })
-      (stGetRef i.generalized))
+    (H.insert vid (Generalized { scheme = sc, vars = vars }) (stGetRef i.generalized))

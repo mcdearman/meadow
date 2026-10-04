@@ -67,8 +67,7 @@ def builtin : [(String, Fixity)] =
     ("<=", fx Neither 4), (">=", fx Neither 4), ("<.", fx Neither 4), (">.", fx Neither 4),
     ("<=.", fx Neither 4), (">=.", fx Neither 4) ]
 
-fun builtinOf (op : String) : Maybe Fixity =
-  M.map snd (V.find (\b -> fst b == op) builtin)
+fun builtinOf (op : String) : Maybe Fixity = M.map snd (V.find (\b -> fst b == op) builtin)
 
 -- The keyword a fixity is declared with.
 fun keyword (f : Fixity) : String =
@@ -108,13 +107,7 @@ fun declareOne (acc : HashMap String Fixity) (d : Syntax Surface)
           level
       in
       if level > 9
-      then
-        (let u =
-            say
-              (errorAt
-                (metaOf prec)
-                "fixity level ${show level} is out of range")
-          in acc)
+      then (let u = say (errorAt (metaOf prec) "fixity level ${show level} is out of range") in acc)
       else V.foldl (\a o -> declareOp a f o) acc ops
   | _ -> acc
 
@@ -191,9 +184,7 @@ fun chain (out : Origin Surface Grouped) (table : HashMap String Fixity)
             let name = S.trim (W.textOf out op) in
             let here = fixityOf table name in
             let reduced = reduce out outs ops name here op in
-            (
-              V.pushBack (fst reduced) (leaf operand),
-              V.pushBack (snd reduced) (op, here, name)
+            ( V.pushBack (fst reduced) (leaf operand), V.pushBack (snd reduced) (op, here, name)
             ))
       ([leaf first], [])
       steps in
@@ -242,9 +233,7 @@ fun apply (out : Origin Surface Grouped) (outs : [Part Grouped])
     (o : (Part Grouped, Fixity, String)) : [Part Grouped] =
   match (o, V.get outs (V.len outs - 2), V.get outs (V.len outs - 1)) with
   | ((op, _, _), Just l, Just r) ->
-      V.pushBack
-        (V.take outs (V.len outs - 2))
-        (W.node out Grouped.NodeInfix [l, op, r])
+      V.pushBack (V.take outs (V.len outs - 2)) (W.node out Grouped.NodeInfix [l, op, r])
   | _ -> outs
 
 -- `tree` with every chain grouped by `table`'s fixities, and what was wrong.
@@ -261,8 +250,7 @@ fun apply (out : Origin Surface Grouped) (outs : [Part Grouped])
 -- as a pattern, not a chain.
 
 -- Every chain of `tree` outside a pattern, a line each, first operator first.
-@pub fun chainsOf (tree : Syntax Grouped) : [String] =
-  V.map snd (sortOn fst (chainsIn tree False))
+@pub fun chainsOf (tree : Syntax Grouped) : [String] = V.map snd (sortOn fst (chainsIn tree False))
 
 -- The chains under `s`, each with where its first operator is. `pattern` is
 -- whether `s` is inside a pattern's parentheses.
@@ -275,9 +263,7 @@ fun chainsIn (s : Syntax Grouped) (pattern : Bool) : [(Int, String)] =
   else if k == Grouped.NodePatParen
   then
     V.concatMap
-      (\c -> if R.kindOf c == Grouped.NodeElem
-        then elemChains c True
-        else chainsIn c pattern)
+      (\c -> if R.kindOf c == Grouped.NodeElem then elemChains c True else chainsIn c pattern)
       (R.nodes s)
   else if k == Grouped.NodeElem then elemChains s pattern
   else V.concatMap (\c -> chainsIn c pattern) (R.nodes s)
@@ -287,8 +273,7 @@ fun chainsIn (s : Syntax Grouped) (pattern : Bool) : [(Int, String)] =
 fun elemChains (e : Syntax Grouped) (pattern : Bool) : [(Int, String)] =
   let view = V.any (\c -> R.kindOf c == Grouped.NodeViewTail) (R.nodes e) in
   V.concatMap
-    (\c ->
-      chainsIn c (pattern and not (view and R.kindOf c == Grouped.NodeExpr)))
+    (\c -> chainsIn c (pattern and not (view and R.kindOf c == Grouped.NodeExpr)))
     (R.nodes e)
 
 -- The operands of a chain, however deep: where the chains inside it are.
@@ -300,9 +285,7 @@ fun leaves (s : Syntax Grouped) : [Syntax Grouped] =
 fun firstOp (s : Syntax Grouped) : Int =
   match s with
   | GroupedInfix l op _ ->
-      (if R.kindOf l == Grouped.NodeInfix
-        then min (firstOp l) (startOf op)
-        else startOf op)
+      (if R.kindOf l == Grouped.NodeInfix then min (firstOp l) (startOf op) else startOf op)
   | _ -> 0
 
 fun bracketed (s : Syntax Grouped) : String =
@@ -316,9 +299,7 @@ fun bracketed (s : Syntax Grouped) : String =
 fun startOf (s : Syntax Grouped) : Int =
   M.unwrapOr
     (R.offset s)
-    (M.map
-      R.offset
-      (V.find (\t -> not (groupedIsTrivia (R.kindOf t))) (tokensUnder s)))
+    (M.map R.offset (V.find (\t -> not (groupedIsTrivia (R.kindOf t))) (tokensUnder s)))
 
 fun endOf (s : Syntax Grouped) : Int =
   let ts =

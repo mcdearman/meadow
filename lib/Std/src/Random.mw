@@ -107,8 +107,7 @@ fun posMod v m =
 
 -- An effect operation takes exactly one argument, so `intBetween` takes a pair.
 -- This is the curried form to actually call.
-@pub fun between (lo : Int) (hi : Int) : Int ! { Random | e } =
-  intBetween (lo, hi)
+@pub fun between (lo : Int) (hi : Int) : Int ! { Random | e } = intBetween (lo, hi)
 
 @pub fun bool () : Bool ! { Random | e } = between 0 2 == 1
 
@@ -145,11 +144,7 @@ use Std.Collections.Vector (vecFromArray)
 use Std.Maybe.Maybe.*
 
 @test fun aSeedGivesTheSameRunTwice () =
-  let a =
-    assertEq
-      (withSeed 42 (\u2 -> between 1 7))
-      (withSeed 42 (\u2 -> between 1 7))
-      "same seed"
+  let a = assertEq (withSeed 42 (\u2 -> between 1 7)) (withSeed 42 (\u2 -> between 1 7)) "same seed"
   in
   assertEq
     (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
@@ -177,9 +172,7 @@ use Std.Maybe.Maybe.*
   assertEq (withSeed 1 (\u2 -> between 5 1)) 5 "inverted"
 
 @test fun nextFloatIsInTheUnitInterval () =
-  assertTrue
-    (withSeed 9 (\u2 -> let x = nextFloat () in x >=. 0.0 and x <. 1.0))
-    "[0, 1)"
+  assertTrue (withSeed 9 (\u2 -> let x = nextFloat () in x >=. 0.0 and x <. 1.0)) "[0, 1)"
 
 @test fun thePureGeneratorThreadsItsState () =
   -- `step` is the interface `withSeed` is built on; the state must move.

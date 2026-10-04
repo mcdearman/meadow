@@ -16,8 +16,7 @@ use Map.*
 
 @pub def empty : Map a = Tip
 
-@pub fun null (m : Map a) : Bool =
-  match m with | Tip -> True | Node l k v r -> False
+@pub fun null (m : Map a) : Bool = match m with | Tip -> True | Node l k v r -> False
 
 @pub fun size (m : Map a) : n =
   match m with
@@ -61,8 +60,7 @@ fun pushInOrder acc m =
 
 fun insertPair p m = match p with | (k, v) -> insert k v m
 
-@pub fun fromVec (ps : [(Int, a)]) : Map a =
-  V.foldl (\acc p -> insertPair p acc) empty ps
+@pub fun fromVec (ps : [(Int, a)]) : Map a = V.foldl (\acc p -> insertPair p acc) empty ps
 
 -- The same, as a `List`.
 @pub fun toList (m : Map a) : List (Int, a) = consInOrder [;] m
@@ -72,8 +70,7 @@ fun consInOrder acc m =
   | Tip -> acc
   | Node l k v r -> consInOrder ((k, v) :: consInOrder acc r) l
 
-@pub fun fromList (ps : List (Int, a)) : Map a =
-  List.foldl (\acc p -> insertPair p acc) empty ps
+@pub fun fromList (ps : List (Int, a)) : Map a = List.foldl (\acc p -> insertPair p acc) empty ps
 
 @pub fun map (f : a -> b ! e) (m : Map a) : Map b ! e =
   match m with
@@ -131,8 +128,7 @@ impl PartialEq (Map a) where PartialEq a {
 impl Eq (Map a) where Eq a {
 }
 
-impl PartialOrd (Map a) where PartialOrd a {
-  fun partialCmp x y = partialCmp (toList x) (toList y)
+impl PartialOrd (Map a) where PartialOrd a { fun partialCmp x y = partialCmp (toList x) (toList y)
 }
 
 impl Ord (Map a) where Ord a {
@@ -169,10 +165,7 @@ def sample = fromVec [(1, "a"), (2, "b")]
   let y = assertEq (values m) ["a", "b", "c"] "values" in
   let z = assertEq (toVec m) [(1, "a"), (2, "b"), (3, "c")] "toVec" in
   let w = assertEq (toList m) [(1, "a"); (2, "b"); (3, "c")] "toList" in
-  assertEq
-    (toVec (fromList [(2, "b"); (1, "a")]))
-    [(1, "a"), (2, "b")]
-    "fromList"
+  assertEq (toVec (fromList [(2, "b"); (1, "a")])) [(1, "a"), (2, "b")] "fromList"
 
 @test fun mapTouchesValuesOnly () =
   assertEq (toVec (map (\v -> "!") sample)) [(1, "!"), (2, "!")] "map"
@@ -183,5 +176,4 @@ def sample = fromVec [(1, "a"), (2, "b")]
   let y = assertEq (lookup 2 m) (Just "b") "the rest survive" in
   assertEq (size (delete 9 sample)) 2 "deleting a missing key changes nothing"
 
-@test fun minEntryIsTheSmallestKey () =
-  assertEq (minEntry sample) (Just (1, "a")) "minEntry"
+@test fun minEntryIsTheSmallestKey () = assertEq (minEntry sample) (Just (1, "a")) "minEntry"

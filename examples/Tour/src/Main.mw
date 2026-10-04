@@ -39,11 +39,7 @@ fun primesBelow (n : Int) =
     let marks = St.newArray n True in
     let _ = St.forRange 2 n (\i ->
       if St.get marks i
-      then
-        St.forRange
-          2
-          (n / i + 1)
-          (\j -> if i * j < n then St.set marks (i * j) False else ())
+      then St.forRange 2 (n / i + 1) (\j -> if i * j < n then St.set marks (i * j) False else ())
       else ()) in
     V.filter (\i -> i >= 2 and St.get marks i) (V.range 0 n))
 
@@ -51,27 +47,17 @@ fun primesBelow (n : Int) =
 
 -- How often each word appears.
 fun wordCounts text =
-  V.foldl
-    (\counts w -> H.insert w (H.getOr 0 w counts + 1) counts)
-    H.empty
-    (S.split " " text)
+  V.foldl (\counts w -> H.insert w (H.getOr 0 w counts + 1) counts) H.empty (S.split " " text)
 
 -- --- main --------------------------------------------------------------------
 
 fun main () =
   let _ = println "== shapes: data types, records, matching" in
-  let shapes =
-    [Circle 1.0, Rect 2.0 3.0, Rect 2.0 2.0, Triangle 3.0 4.0 5.0, Rect 0.0 4.0]
+  let shapes = [Circle 1.0, Rect 2.0 3.0, Rect 2.0 2.0, Triangle 3.0 4.0 5.0, Rect 0.0 4.0]
   in
-  let _ =
-    V.forEach
-      (\s -> println (describe s ++ " with area " ++ show (area s)))
-      shapes
+  let _ = V.forEach (\s -> println (describe s ++ " with area " ++ show (area s))) shapes
   in
-  let _ =
-    println
-      ("degenerate: "
-        ++ show (V.filter (\d -> d != None) (V.map degenerate shapes)))
+  let _ = println ("degenerate: " ++ show (V.filter (\d -> d != None) (V.map degenerate shapes)))
   in
   let _ =
     println
@@ -83,15 +69,10 @@ fun main () =
   let _ =
     println ("factorial 30 as an Int, wrapping: " ++ show (factorial 30))
   in
-  let _ =
-    println
-      ("factorial 30 as a BigInt, exact: " ++ show (factorial (toBigInt 30)))
+  let _ = println ("factorial 30 as a BigInt, exact: " ++ show (factorial (toBigInt 30)))
   in
   let _ = println ("200 + 100 as a UInt8: " ++ show (toUInt8 200 + 100)) in
-  let _ =
-    println
-      ("a third as a Float32 and a Float: "
-        ++ show (toFloat32 1.0 /. 3.0, 1.0 /. 3.0))
+  let _ = println ("a third as a Float32 and a Float: " ++ show (toFloat32 1.0 /. 3.0, 1.0 /. 3.0))
   in
 
   let _ = println "== local mutation" in
@@ -111,21 +92,12 @@ use Std.Test (assertEq, assertTrue)
 
 @test fun areasAreRight () =
   let _ = assertEq (area (Rect 2.0 3.0)) 6.0 "a rectangle" in
-  assertTrue
-    (area (Triangle 3.0 4.0 5.0) -. 6.0 <. 0.000001)
-    "a 3-4-5 triangle has area 6"
+  assertTrue (area (Triangle 3.0 4.0 5.0) -. 6.0 <. 0.000001) "a 3-4-5 triangle has area 6"
 
 @test fun factorialIsGenericOverItsNumberType () =
-  let _ =
-    assertEq
-      (show (factorial (toBigInt 25)))
-      "15511210043330985984000000"
-      "exact as a BigInt"
+  let _ = assertEq (show (factorial (toBigInt 25))) "15511210043330985984000000" "exact as a BigInt"
   in
-  assertEq
-    (factorial (toUInt8 5))
-    (toUInt8 120)
-    "and fine as a UInt8 while it fits"
+  assertEq (factorial (toUInt8 5)) (toUInt8 120) "and fine as a UInt8 while it fits"
 
 @test fun theSieveFindsThePrimes () =
   assertEq (primesBelow 20) [2, 3, 5, 7, 11, 13, 17, 19] "below 20"

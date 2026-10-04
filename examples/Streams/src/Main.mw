@@ -37,16 +37,12 @@ fun collatz (n : Int) =
   else collatz (3 * n + 1)
 
 -- The words of a string, one at a time, without building the whole list.
-fun words text =
-  V.forEach
-    (\w -> if S.byteLength w > 0 then yield w else ())
-    (S.split " " text)
+fun words text = V.forEach (\w -> if S.byteLength w > 0 then yield w else ()) (S.split " " text)
 
 -- --- building on them --------------------------------------------------------
 
 fun isPrime (n : Int) =
-  n >= 2
-    and (let rec trial (d : Int) = d * d > n or (n % d != 0 and trial (d + 1)) in trial 2)
+  n >= 2 and (let rec trial (d : Int) = d * d > n or (n % d != 0 and trial (d + 1)) in trial 2)
 
 -- The primes, forever: the naturals, filtered.
 fun primes u = Stream.filter isPrime (\() -> from 2)

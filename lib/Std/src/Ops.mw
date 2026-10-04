@@ -46,10 +46,7 @@ infix 4 ==, !=, <, >, <=, >=, <., >., <=., >=.
 
 -- Shifts, by an `Int` whatever the type shifted.
 
-@pub trait Shift a {
-  fun (<<) : a -> Int -> a
-  fun (>>) : a -> Int -> a
-  fun (>>>) : a -> Int -> a
+@pub trait Shift a { fun (<<) : a -> Int -> a fun (>>) : a -> Int -> a fun (>>>) : a -> Int -> a
 }
 
 -- The float operators: `1.5 +. x`. Separate from `+` so that a literal says by

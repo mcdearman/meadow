@@ -47,8 +47,7 @@ fun unmark b (n : Int) =
 
 fun each (f : Int -> () ! e) (xs : [Int]) : () ! e = V.foldl (\u x -> f x) () xs
 
-fun maybe (f : Int -> () ! e) (x : Maybe Int) : () ! e =
-  match x with | Just v -> f v | None -> ()
+fun maybe (f : Int -> () ! e) (x : Maybe Int) : () ! e = match x with | Just v -> f v | None -> ()
 
 -- --- declarations ------------------------------------------------------------
 
@@ -65,16 +64,12 @@ fun decl b (d : Int) =
       let w = each (bound b) r.supers in
       let x =
         each
-          (\a ->
-            (let y = unmark b (astAssocNameIn b a) in
-              each (unmark b) (astAssocParamsIn b a)))
+          (\a -> (let y = unmark b (astAssocNameIn b a) in each (unmark b) (astAssocParamsIn b a)))
           r.assocs
       in
       let y =
         each
-          (\s ->
-            (let z = unmark b (astMethodSigNameIn b s) in
-              ty b (astMethodSigTyIn b s)))
+          (\s -> (let z = unmark b (astMethodSigNameIn b s) in ty b (astMethodSigTyIn b s)))
           r.sigs
       in
       each (\x -> (let z = funName b x in bind b x)) r.defaults
@@ -100,13 +95,9 @@ fun decl b (d : Int) =
           else each (ty b) (astVariantPositionalIn b x))
         r.variants
   | AstDeclView.Record r ->
-      (let u = unmark b r.name in
-        let v = each (unmark b) r.params in
-        each (field b) r.fields)
+      (let u = unmark b r.name in let v = each (unmark b) r.params in each (field b) r.fields)
   | AstDeclView.Effect r ->
-      (let u = unmark b r.name in
-        let v = each (unmark b) r.params in
-        each (field b) r.ops)
+      (let u = unmark b r.name in let v = each (unmark b) r.params in each (field b) r.ops)
   | AstDeclView.Alias r ->
       (let u = unmark b r.name in let v = each (unmark b) r.params in ty b r.ty)
   | AstDeclView.EffectAlias r ->
@@ -114,9 +105,7 @@ fun decl b (d : Int) =
       let v = each (unmark b) r.params in
       let x =
         each
-          (\l ->
-            (let y = unmark b (astLabelNameIn b l) in
-              each (ty b) (astLabelArgsIn b l)))
+          (\l -> (let y = unmark b (astLabelNameIn b l) in each (ty b) (astLabelArgsIn b l)))
           (astRowLabelsIn b r.row)
       in
       maybe (unmark b) (astRowTailIn b r.row)
@@ -155,11 +144,9 @@ fun itemPat b (p : Int) =
   | AstPatView.View r -> (let u = expr b r.fn in itemPat b r.pat)
   | _ -> pat b p
 
-fun field b (f : Int) =
-  (let u = unmark b (astFieldNameIn b f) in ty b (astFieldTyIn b f))
+fun field b (f : Int) = (let u = unmark b (astFieldNameIn b f) in ty b (astFieldTyIn b f))
 
-fun bound b (x : Int) =
-  (let u = unmark b (astBoundTrIn b x) in each (ty b) (astBoundTysIn b x))
+fun bound b (x : Int) = (let u = unmark b (astBoundTrIn b x) in each (ty b) (astBoundTysIn b x))
 
 -- Every name in a type is a type's -- a variable, a constructor, a label --
 -- so none keeps a mark.
@@ -174,9 +161,7 @@ fun ty b (t : Int) =
         (\w ->
           (let x =
               each
-                (\l ->
-                  (let y = unmark b (astLabelNameIn b l) in
-                    each (ty b) (astLabelArgsIn b l)))
+                (\l -> (let y = unmark b (astLabelNameIn b l) in each (ty b) (astLabelArgsIn b l)))
                 (astRowLabelsIn b w)
             in maybe (unmark b) (astRowTailIn b w)))
         r.row
@@ -186,9 +171,7 @@ fun ty b (t : Int) =
   | AstTypeView.Record r ->
       (let u =
           each
-            (\f ->
-              (let v = unmark b (astTypeFieldNameIn b f) in
-                ty b (astTypeFieldTyIn b f)))
+            (\f -> (let v = unmark b (astTypeFieldNameIn b f) in ty b (astTypeFieldTyIn b f)))
             r.fields
         in maybe (unmark b) r.tail)
 
@@ -198,9 +181,7 @@ fun bind b (x : Int) =
   match viewAstBindIn b x with
   | AstBindView.Pat r -> (let u = pat b r.pat in expr b r.value)
   | AstBindView.Fun r ->
-      (let u = each (pat b) r.params in
-        let v = maybe (ty b) r.ret in
-        expr b r.body)
+      (let u = each (pat b) r.params in let v = maybe (ty b) r.ret in expr b r.body)
 
 fun pat b (p : Int) =
   match viewAstPatIn b p with
@@ -208,9 +189,7 @@ fun pat b (p : Int) =
   -- is a variable.
   | AstPatView.Record r ->
       each
-        (\f ->
-          (let u = unmark b (astPatFieldNameIn b f) in
-            pat b (astPatFieldPatIn b f)))
+        (\f -> (let u = unmark b (astPatFieldNameIn b f) in pat b (astPatFieldPatIn b f)))
         r.fields
   | AstPatView.Ann r -> (let u = pat b r.pat in ty b r.ty)
   | AstPatView.As r -> pat b r.pat
@@ -224,8 +203,7 @@ fun pat b (p : Int) =
   | _ -> ()
 
 fun fieldE b (f : Int) =
-  (let u = unmark b (astExprFieldNameIn b f) in
-    expr b (astExprFieldValueIn b f))
+  (let u = unmark b (astExprFieldNameIn b f) in expr b (astExprFieldValueIn b f))
 
 fun expr b (e : Int) =
   match viewAstExprIn b e with
@@ -247,9 +225,7 @@ fun expr b (e : Int) =
               expr b (astHArmBodyIn b a)))
           r.arms
       in
-      maybe
-        (\x -> (let y = pat b (astRetPatIn b x) in expr b (astRetBodyIn b x)))
-        r.ret
+      maybe (\x -> (let y = pat b (astRetPatIn b x) in expr b (astRetBodyIn b x))) r.ret
   | AstExprView.Lam r -> (let u = each (pat b) r.params in expr b r.body)
   | AstExprView.App r -> (let u = expr b r.func in each (expr b) r.args)
   | AstExprView.Let r -> (let u = each (bind b) r.binds in expr b r.body)

@@ -66,16 +66,13 @@ use Std.Collections.Vector (vecFromArray)
 -- Write a value with no trailing newline. A `String` is written as its text;
 -- anything else the way `show` renders it, so `print 42` writes `42` and
 -- `print "hi"` writes `hi`, not `"hi"`.
-@pub fun print (value : a) : () ! { Console | e } =
-  value |> display |> writeOutput
+@pub fun print (value : a) : () ! { Console | e } = value |> display |> writeOutput
 
 -- `print`, then a newline.
-@pub fun println (value : a) : () ! { Console | e } =
-  writeOutput (S.concat (display value) "\n")
+@pub fun println (value : a) : () ! { Console | e } = writeOutput (S.concat (display value) "\n")
 
 -- `value` and a newline, to standard error.
-@pub fun eprintln (value : a) : () ! { Console | e } =
-  writeError (S.concat (display value) "\n")
+@pub fun eprintln (value : a) : () ! { Console | e } = writeError (S.concat (display value) "\n")
 
 -- --- reading -----------------------------------------------------------------
 
@@ -85,8 +82,7 @@ use Std.Collections.Vector (vecFromArray)
   readLine ()
 
 -- The next line, or `fallback` at end of input.
-@pub fun readLineOr (fallback : String) : String ! { Console | e } =
-  unwrapOr fallback (readLine ())
+@pub fun readLineOr (fallback : String) : String ! { Console | e } = unwrapOr fallback (readLine ())
 
 -- The next line with surrounding whitespace removed, which is almost always what
 -- you want from a person typing: a stray space before `rock` should not be a
@@ -151,30 +147,19 @@ fun readAllLoop acc =
 -- reason the terminal is an effect at all.
 
 @test fun printAndPrintlnWriteTheirText () =
-  let got =
-    withOutput (\() -> let _ = print "a" in let _ = println "b" in println 42)
+  let got = withOutput (\() -> let _ = print "a" in let _ = println "b" in println 42)
   in
-  assertEq
-    got
-    ((), "ab\n42\n")
-    "a String as itself, anything else as show renders it"
+  assertEq got ((), "ab\n42\n") "a String as itself, anything else as show renders it"
 
 @test fun withOutputKeepsTheResult () =
-  assertEq
-    (withOutput (\() -> let _ = print "x" in 7))
-    (7, "x")
-    "the value and the text"
+  assertEq (withOutput (\() -> let _ = print "x" in 7)) (7, "x") "the value and the text"
 
 @test fun aPromptIsATranscript () =
   -- Both halves of the conversation, with nothing touching the terminal.
   let got = withOutput (\() -> withInput ["ada"] (\() -> prompt "name: ")) in
-  assertEq
-    got
-    (Just "ada", "name: ")
-    "the question was written, the answer read"
+  assertEq got (Just "ada", "name: ") "the question was written, the answer read"
 
-@test fun nothingWrittenIsTheEmptyString () =
-  assertEq (withOutput (\() -> 1)) (1, "") "no output"
+@test fun nothingWrittenIsTheEmptyString () = assertEq (withOutput (\() -> 1)) (1, "") "no output"
 
 @test fun readsLinesInOrder () =
   let got = withInput ["one", "two"] (\() -> (readLine (), readLine ())) in
@@ -207,8 +192,7 @@ fun readAllLoop acc =
   let parse = \s -> match s with | "yes" -> Just True | _ -> None in
   let (got, written) =
     withOutput (\() -> withInput ["no", "maybe", "yes"] (\() -> promptUntil "?" "again" parse)) in
-    let a =
-      assertEq got (Just True) "keeps asking past the answers that do not parse"
+    let a = assertEq got (Just True) "keeps asking past the answers that do not parse"
     in
   assertEq written "?again\n?again\n?" "asked three times, told off twice"
 
@@ -216,7 +200,6 @@ fun readAllLoop acc =
   -- Otherwise a piped-in file that never satisfies `parse` would spin forever.
   let parse = \s -> match s with | "yes" -> Just True | _ -> None in
   let (got, written) =
-    withOutput
-      (\() -> withInput ["no", "no"] (\() -> promptUntil "?" "again" parse))
+    withOutput (\() -> withInput ["no", "no"] (\() -> promptUntil "?" "again" parse))
   in
   assertEq got None "runs out rather than looping"

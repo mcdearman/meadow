@@ -34,8 +34,7 @@ use Std.Macro (Reflect)
 -- One constructor of a type: its canonical name, its fields' types over the
 -- type's parameters, and their labels if they have them.
 @derive(Debug, PartialEq, Reflect)
-@pub record VariantSig =
-  { name : String, fields : [Type], labels : Maybe [String] }
+@pub record VariantSig = { name : String, fields : [Type], labels : Maybe [String] }
 
 -- An operation of an effect: its argument's and its result's types, over the
 -- effect's parameters.
@@ -125,8 +124,7 @@ use Meaning.*
 -- A name inference has not chosen a meaning for yet: where it was written,
 -- its meanings, the type the context wants of it, and the level it was
 -- mentioned at.
-@pub record Pending =
-  { node : String, candidates : [Meaning], ty : Type, level : Int }
+@pub record Pending = { node : String, candidates : [Meaning], ty : Type, level : Int }
 
 -- How a wanted trait was answered: by the binding's own `where`, by an
 -- `impl`, or not at all.
@@ -197,8 +195,7 @@ use Sol.*
 @pub fun report (i : Inf s) (msg : String) : () ! { St s | e } =
   stSetRef i.errors (V.pushBack (stGetRef i.errors) msg)
 
-@pub fun schemeOf (i : Inf s) (v : Int) : Maybe Scheme ! { St s | e } =
-  H.lookup v (stGetRef i.env)
+@pub fun schemeOf (i : Inf s) (v : Int) : Maybe Scheme ! { St s | e } = H.lookup v (stGetRef i.env)
 
 @pub fun setScheme (i : Inf s) (v : Int) (sc : Scheme) : () ! { St s | e } =
   stSetRef i.env (H.insert v sc (stGetRef i.env))
@@ -263,11 +260,7 @@ fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
     (classes : Bool) (preds : [Pred]) : Scheme ! { St s | e } =
   let level = levelOf i.ar in
   -- A name still waiting on its overload has a type that is not settled.
-  let u =
-    V.foldl
-      (\w (p : Pending) -> holdBack i.ar p.ty level)
-      ()
-      (stGetRef i.pending)
+  let u = V.foldl (\w (p : Pending) -> holdBack i.ar p.ty level) () (stGetRef i.pending)
   in
   let z = zonk i.ar t in
   let v = if classes then () else holdBackClasses i.ar z level in
@@ -299,14 +292,7 @@ fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
                   else [Lacking { at = snd kv, labels = ls }]))
               (H.toVec qall.map)
           in
-          let sc =
-            Scheme
-              {
-                quant = qall.kinds,
-                preds = qpreds,
-                ty = body,
-                lacks = sortLacks lacks
-              }
+          let sc = Scheme { quant = qall.kinds, preds = qpreds, ty = body, lacks = sortLacks lacks }
           in
           let w =
             (match vid with
@@ -342,18 +328,14 @@ fun insertLacking (acc : [Lacking]) (l : Lacking) : [Lacking] =
 -- The arena variable behind each quantifier, in quantifier order.
 fun varsOf (q : Quantified) : [Int] =
   V.map
-    (\k ->
-      M.unwrapOr 0 (M.map fst (V.find (\kv -> snd kv == k) (H.toVec q.map))))
+    (\k -> M.unwrapOr 0 (M.map fst (V.find (\kv -> snd kv == k) (H.toVec q.map))))
     (V.range 0 (V.len q.kinds))
 
 -- A binding not generalized, recorded as one.
 @pub fun recordMono (i : Inf s) (vid : Int) (sc : Scheme) : () ! { St s | e } =
   stSetRef
     i.generalized
-    (H.insert
-      vid
-      (Generalized { scheme = sc, vars = [] })
-      (stGetRef i.generalized))
+    (H.insert vid (Generalized { scheme = sc, vars = [] }) (stGetRef i.generalized))
 
 -- `sc` with its body and `where` resolved as far as the arena says now.
 @pub fun normalizeScheme (i : Inf s) (sc : Scheme) : Scheme ! { St s | e } =
@@ -377,8 +359,7 @@ fun varsOf (q : Quantified) : [Int] =
        | Just row ->
            let labels =
              V.foldl
-               (\acc l ->
-                 V.foldl (\o x -> collectTyvars a x o) acc (hirLabelArgs a l))
+               (\acc l -> V.foldl (\o x -> collectTyvars a x o) acc (hirLabelArgs a l))
                res
                (hirRowLabels a row)
            in
@@ -391,23 +372,15 @@ fun varsOf (q : Quantified) : [Int] =
   | HirTypeView.Vector r -> collectTyvars a r.item out
   | HirTypeView.List r -> collectTyvars a r.item out
   | HirTypeView.Record r ->
-      let fs =
-        V.foldl
-          (\acc f -> collectTyvars a (hirTypeFieldTy a f) acc)
-          out
-          r.fields
+      let fs = V.foldl (\acc f -> collectTyvars a (hirTypeFieldTy a f) acc) out r.fields
       in
       (match r.tail with | Just tl -> addVar fs (hirNameText a tl) | None -> fs)
 
-fun addVar (out : [String]) (n : String) : [String] =
-  if V.elem n out then out else V.pushBack out n
+fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out else V.pushBack out n
 
 -- Each of `names`'s place.
 @pub fun indexed (names : [String]) : HashMap String Int =
-  V.foldl
-    (\h k -> H.insert (V.getOr "" names k) k h)
-    H.empty
-    (V.range 0 (V.len names))
+  V.foldl (\h k -> H.insert (V.getOr "" names k) k h) H.empty (V.range 0 (V.len names))
 
 -- A written type as a type: its variables, by `params`, `Bound`, and every
 -- alias expanded.
@@ -423,13 +396,9 @@ fun addVar (out : [String]) (n : String) : [String] =
       let name = canonOf i (hirRefId a r.ref) (hirNameText a r.name) in
       conNamed i name args
   | HirTypeView.Fun r ->
-      let eff =
-        (match r.row with | Just row -> effOf i a row params | None -> RowEmpty)
+      let eff = (match r.row with | Just row -> effOf i a row params | None -> RowEmpty)
       in
-      funcEff
-        (V.map (\x -> tyOf i a x params) r.params)
-        (tyOf i a r.result params)
-        eff
+      funcEff (V.map (\x -> tyOf i a x params) r.params) (tyOf i a r.result params) eff
   | HirTypeView.Tuple r -> Tuple (V.map (\x -> tyOf i a x params) r.items)
   | HirTypeView.Vector r -> vectorT (tyOf i a r.item params)
   | HirTypeView.List r -> listT (tyOf i a r.item params)
@@ -478,9 +447,7 @@ fun addVar (out : [String]) (n : String) : [String] =
   let tail =
     (match hirRowTail a row with
      | Just tl ->
-         M.unwrapOr
-          RowEmpty
-          (M.map (\k -> Bound k) (H.lookup (hirNameText a tl) params))
+         M.unwrapOr RowEmpty (M.map (\k -> Bound k) (H.lookup (hirNameText a tl) params))
      | None -> RowEmpty)
   in
   let labels =
@@ -489,10 +456,7 @@ fun addVar (out : [String]) (n : String) : [String] =
         spliceLabel
           i
           acc
-          (canonOf
-            i
-            (hirRefId a (hirLabelRef a l))
-            (hirNameText a (hirLabelName a l)))
+          (canonOf i (hirRefId a (hirLabelRef a l)) (hirNameText a (hirLabelName a l)))
           (V.map (\x -> tyOf i a x params) (hirLabelArgs a l)))
       []
       (hirRowLabels a row) in
@@ -512,8 +476,7 @@ fun spliceLabel (i : Inf s) (acc : [(String, Type)]) (name : String)
       if d.params == V.len args and isRow d.body
       then
         V.foldl
-          (\x (lab : (String, Type)) ->
-            addLabel x (fst lab) (substBound (snd lab) args))
+          (\x (lab : (String, Type)) -> addLabel x (fst lab) (substBound (snd lab) args))
           acc
           (labelsOf d.body)
       else addLabel acc name (Tuple args)
@@ -542,8 +505,7 @@ fun isRow (t : Type) : Bool =
 @pub fun markEffectVars (t : Type) (kinds : [VarKind]) : [VarKind] =
   match t with
   | Fun args ret eff ->
-      let k1 =
-        markEffectVars ret (V.foldl (\ks x -> markEffectVars x ks) kinds args)
+      let k1 = markEffectVars ret (V.foldl (\ks x -> markEffectVars x ks) kinds args)
       in
       markRowEnd eff k1 Effect
   | Con _ args -> V.foldl (\ks x -> markEffectVars x ks) kinds args

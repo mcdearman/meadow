@@ -24,18 +24,7 @@ use Std.Bool (not)
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
 use Std.Tuple (fst, snd)
-use Std.Macro (
-  TokenTree,
-  Delim,
-  Loc,
-  spanOf,
-  text,
-  opening,
-  closing,
-  isWord,
-  isPunct,
-  word,
-  string
+use Std.Macro ( TokenTree, Delim, Loc, spanOf, text, opening, closing, isWord, isPunct, word, string
 )
 use Std.Macro.TokenTree.*
 use Std.Macro.Loc.*
@@ -59,11 +48,9 @@ fun flat (t : TokenTree) : [TokenTree] =
         (Punct (closing d) (closeAt at))
   | other -> [other]
 
-fun openAt (s : Loc) : Loc =
-  match s with | At a b -> At a (a + 1) | Nowhere -> Nowhere
+fun openAt (s : Loc) : Loc = match s with | At a b -> At a (a + 1) | Nowhere -> Nowhere
 
-fun closeAt (s : Loc) : Loc =
-  match s with | At a b -> At (b - 1) b | Nowhere -> Nowhere
+fun closeAt (s : Loc) : Loc = match s with | At a b -> At (b - 1) b | Nowhere -> Nowhere
 
 impl Stream Tokens {
   type Token Tokens = TokenTree
@@ -124,8 +111,7 @@ fun spanned (a : Maybe TokenTree) (b : Maybe TokenTree) : (Int, Int) =
 fun startOf (t : TokenTree) : (Int, Int) =
   match spanOf t with | At s _ -> (s, s) | Nowhere -> nowhere
 
-fun endOf (t : TokenTree) : (Int, Int) =
-  match spanOf t with | At _ e -> (e, e) | Nowhere -> nowhere
+fun endOf (t : TokenTree) : (Int, Int) = match spanOf t with | At _ e -> (e, e) | Nowhere -> nowhere
 
 -- --- running ---------------------------------------------------------------
 
@@ -145,8 +131,7 @@ fun endOf (t : TokenTree) : (Int, Int) =
   | Ok out -> out
   | Err failed -> failed
 
-fun located (r : (Int, Int)) : Loc =
-  if fst r < 0 then Nowhere else At (fst r) (snd r)
+fun located (r : (Int, Int)) : Loc = if fst r < 0 then Nowhere else At (fst r) (snd r)
 
 -- --- tokens ------------------------------------------------------------------
 
@@ -154,22 +139,17 @@ fun located (r : (Int, Int)) : Loc =
 @pub def ident : Parser Tokens String = P.label "a name" (P.token word [])
 
 -- The word `w`: a keyword of the language being read.
-@pub fun keyword (w : String) : Parser Tokens () =
-  P.label "`${w}`" (P.void (P.satisfy (isWord w)))
+@pub fun keyword (w : String) : Parser Tokens () = P.label "`${w}`" (P.void (P.satisfy (isWord w)))
 
 -- The punctuation `p`.
-@pub fun punct (p : String) : Parser Tokens () =
-  P.label "`${p}`" (P.void (P.satisfy (isPunct p)))
+@pub fun punct (p : String) : Parser Tokens () = P.label "`${p}`" (P.void (P.satisfy (isPunct p)))
 
 -- A string literal's contents.
-@pub def stringLit : Parser Tokens String =
-  P.label "a string" (P.token string [])
+@pub def stringLit : Parser Tokens String = P.label "a string" (P.token string [])
 
 -- An integer literal.
 @pub def number : Parser Tokens Int =
-  P.label
-    "a number"
-    (P.token (\t -> match t with | Num n _ -> Just n | _ -> None) [])
+  P.label "a number" (P.token (\t -> match t with | Num n _ -> Just n | _ -> None) [])
 
 -- `p` inside brackets `d`.
 @pub fun group (d : Delim) (p : Parser Tokens a) : Parser Tokens a =
@@ -190,11 +170,9 @@ fun groupTree (d : Delim) : Parser Tokens TokenTree =
     |> P.keep (P.defer (\u -> treesUntil (\t -> False)))
     |> P.keep (P.satisfy (isPunct (closing d)))
 
-fun bracket (t : TokenTree) : Bool =
-  V.any (\b -> isPunct b t) ["(", ")", "[", "]", "{", "}"]
+fun bracket (t : TokenTree) : Bool = V.any (\b -> isPunct b t) ["(", ")", "[", "]", "{", "}"]
 
-fun across (a : Loc) (b : Loc) : Loc =
-  match (a, b) with | (At s _, At _ e) -> At s e | _ -> Nowhere
+fun across (a : Loc) (b : Loc) : Loc = match (a, b) with | (At s _, At _ e) -> At s e | _ -> Nowhere
 
 -- --- tests -------------------------------------------------------------------
 
@@ -227,9 +205,7 @@ def sample : [TokenTree] =
   let wanted =
     P.skipThen
       ident
-      (P.skipThen
-        (punct "=")
-        (P.skipThen ident (group Paren (P.skipThen ident number))))
+      (P.skipThen (punct "=") (P.skipThen ident (group Paren (P.skipThen ident number))))
   in
   match parseTokens wanted sample with
   | Ok got -> assertEq 0 1 "it should not parse"

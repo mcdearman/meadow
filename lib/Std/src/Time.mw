@@ -107,19 +107,14 @@ use Std.Collections.Vector (vecFromArray)
   let _ = println line in
   result
 
-fun repeatRuns (n : Int) act =
-  if n <= 1 then act () else let _ = act () in repeatRuns (n - 1) act
+fun repeatRuns (n : Int) act = if n <= 1 then act () else let _ = act () in repeatRuns (n - 1) act
 
 -- --- handling ----------------------------------------------------------------
 
 -- Run `act` with the clock frozen at `t`: every `now` answers `t`, `monotonic`
 -- counts from zero, and `sleep` returns instantly.
 @pub fun withClock (t : Int) (act : () -> a ! { Time | e }) : a ! e =
-  handle act () with {
-    now () k -> k t,
-    monotonic () k -> k 0,
-    sleep ms k -> k (),
-    return x -> x
+  handle act () with { now () k -> k t, monotonic () k -> k 0, sleep ms k -> k (), return x -> x
   }
 
 -- Run `act` with a clock that starts at `t` and advances by `tick` on every
@@ -150,24 +145,12 @@ fun repeatRuns (n : Int) act =
   else if ns < 3599950000000 then
     let tenths = (ns + 50000000) / 100000000 in
     S.concatAll
-      [
-        S.fromInt (tenths / 600),
-        "m ",
-        pad2 (tenths % 600 / 10),
-        ".",
-        S.fromInt (tenths % 10),
-        "s"
+      [ S.fromInt (tenths / 600), "m ", pad2 (tenths % 600 / 10), ".", S.fromInt (tenths % 10), "s"
       ]
   else if ns < 86399500000000 then
     let secs = (ns + 500000000) / nanosPerSecond in
     S.concatAll
-      [
-        S.fromInt (secs / 3600),
-        "h ",
-        pad2 (secs % 3600 / 60),
-        "m ",
-        pad2 (secs % 60),
-        "s"
+      [ S.fromInt (secs / 3600), "h ", pad2 (secs % 3600 / 60), "m ", pad2 (secs % 60), "s"
       ]
   else formatMinutes (roundDiv ns 60000000000)
 
@@ -298,18 +281,15 @@ def monthNames = [
 -- The name of ISO weekday `w`: 1 is Monday.
 @pub fun weekdayName (w : Int) : String = V.getOr "?" weekdayNames (w - 1)
 
-def weekdayNames =
-  ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+def weekdayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 fun dateOf t = S.concatAll [yearOf t.year, "-", pad2 t.month, "-", pad2 t.day]
 
 fun clockOf t =
-  S.concatAll
-    [pad2 t.hour, ":", pad2 t.minute, ":", pad2 t.second, ".", pad3 t.millis]
+  S.concatAll [pad2 t.hour, ":", pad2 t.minute, ":", pad2 t.second, ".", pad3 t.millis]
 
 -- Four digits at least, and a sign before the year 0.
-fun yearOf (y : Int) =
-  if y < 0 then S.concat "-" (padTo 4 (0 - y)) else padTo 4 y
+fun yearOf (y : Int) = if y < 0 then S.concat "-" (padTo 4 (0 - y)) else padTo 4 y
 
 -- --- arithmetic and digits ---------------------------------------------------
 
@@ -362,32 +342,18 @@ use Std.Console (Console)
 
 @test fun aFrozenClockAlwaysAnswersTheSame () =
   let a = assertEq (withClock 500 (\u2 -> now ())) 500 "now" in
-  let b =
-    assertEq
-      (withClock 500 (\u2 -> let x = now () in now () - x))
-      0
-      "it does not advance"
+  let b = assertEq (withClock 500 (\u2 -> let x = now () in now () - x)) 0 "it does not advance"
   in
   assertEq (withClock 500 (\u2 -> monotonic ())) 0 "monotonic starts at zero"
 
 @test fun sleepUnderAFrozenClockReturnsAtOnce () =
   -- If this touched the real clock the test suite would take an hour.
-  assertEq
-    (withClock 0 (\u2 -> let i = sleep (hours 1) in 1))
-    1
-    "slept instantly"
+  assertEq (withClock 0 (\u2 -> let i = sleep (hours 1) in 1)) 1 "slept instantly"
 
 @test fun aTickingClockAdvances () =
-  let a =
-    assertEq
-      (withTickingClock 0 100 (\u2 -> let x = now () in now () - x))
-      100
-      "one tick"
+  let a = assertEq (withTickingClock 0 100 (\u2 -> let x = now () in now () - x)) 100 "one tick"
   in
-  assertEq
-    (withTickingClock 5 1 (\u2 -> now ()))
-    5
-    "the first reading is the start"
+  assertEq (withTickingClock 5 1 (\u2 -> now ())) 5 "the first reading is the start"
 
 @test fun timedMeasuresWithTheMonotonicClock () =
   let (result, ns) = withTickingClock 0 7 (\u2 -> timed (\u3 -> 42)) in
@@ -397,17 +363,9 @@ use Std.Console (Console)
 @test fun durationsFormat () =
   let a = assertEq (formatDuration 0) "00:00:00.000" "zero" in
   let b = assertEq (formatDuration 1) "00:00:00.001" "one millisecond" in
-  let c =
-    assertEq
-      (formatDuration (seconds 3661))
-      "01:01:01.000"
-      "an hour, a minute, a second"
+  let c = assertEq (formatDuration (seconds 3661)) "01:01:01.000" "an hour, a minute, a second"
   in
-  let d =
-    assertEq
-      (formatDuration 90061001)
-      "25:01:01.001"
-      "past a day, hours keep counting"
+  let d = assertEq (formatDuration 90061001) "25:01:01.001" "past a day, hours keep counting"
   in
   assertEq (formatDuration (0 - 1500)) "-00:00:01.500" "negative"
 
@@ -433,10 +391,7 @@ use Std.Console (Console)
   in
   let d = assertEq (formatNanos 9995) "10.0µs" "rounds up a digit" in
   let e = assertEq (formatNanos 59950000000) "1m 00.0s" "a minute, not 60.0s" in
-  assertEq
-    (formatNanos (0 - 9223372036854775807 - 1))
-    "-106_751d 23h 47m"
-    "the most negative Int"
+  assertEq (formatNanos (0 - 9223372036854775807 - 1)) "-106_751d 23h 47m" "the most negative Int"
 
 @test fun millisFormatToo () =
   let a = assertEq (formatMillis 1500) "1.50s" "seconds" in
@@ -454,20 +409,12 @@ use Std.Console (Console)
       "2000-02-29T00:00:00.000Z"
       "a leap day in a 400-year leap year"
   in
-  let c =
-    assertEq
-      (formatTimestamp 1789405445123)
-      "2026-09-14T17:04:05.123Z"
-      "milliseconds and all"
+  let c = assertEq (formatTimestamp 1789405445123) "2026-09-14T17:04:05.123Z" "milliseconds and all"
   in
   let d =
-    assertEq
-      (formatTimestamp (0 - 1))
-      "1969-12-31T23:59:59.999Z"
-      "before the epoch rounds down"
+    assertEq (formatTimestamp (0 - 1)) "1969-12-31T23:59:59.999Z" "before the epoch rounds down"
   in
-  let e =
-    assertEq (formatDate 4107542400000) "2100-03-01" "2100 is not a leap year"
+  let e = assertEq (formatDate 4107542400000) "2100-03-01" "2100 is not a leap year"
   in
   assertEq (formatTimeOfDay 1789405445123) "17:04:05.123" "time of day"
 
@@ -479,10 +426,7 @@ use Std.Console (Console)
     assertEq (weekdayName later.weekday) "Monday" "2026-09-14 is a Monday"
   in
   let c = assertEq (monthName later.month) "September" "and in September" in
-  assertEq
-    (formatReadable 1789405445123)
-    "Mon 14 Sep 2026 17:04:05 UTC"
-    "readable"
+  assertEq (formatReadable 1789405445123) "Mon 14 Sep 2026 17:04:05 UTC" "readable"
 
 @test fun agoRoundsToTheUnitThatMatters () =
   let a = assertEq (formatAgo 10000 9500) "just now" "under a second" in

@@ -44,8 +44,7 @@
 use Std.Time (monotonic)
 use Std.Time as T
 use Std.Console (println)
-use Std.Collections.Vector (
-  vecFromArray, empty, isEmpty, len, getOr, pushBack, map, forEach,
+use Std.Collections.Vector ( vecFromArray, empty, isEmpty, len, getOr, pushBack, map, forEach,
 )
 use Std.Num.Int as I
 use Std.String as S
@@ -103,10 +102,7 @@ use Std.Time (Time)
 fun spin n act = if n <= 0 then () else let _ = act () in spin (n - 1) act
 
 -- Nanoseconds for `n` calls, including the loop around them.
-fun timeLoop n act =
-  let start = monotonic () in
-  let _ = spin n act in
-  monotonic () - start
+fun timeLoop n act = let start = monotonic () in let _ = spin n act in monotonic () - start
 
 -- The loop itself, with nothing in it. Subtracted from every measurement.
 --
@@ -173,8 +169,7 @@ fun collect k n act acc =
 -- The middle value of an already-sorted vector, or 0 if it is empty. For an
 -- even count this takes the lower of the two middles rather than averaging
 -- them, which keeps the result an actual measurement.
-@pub fun middle (sorted : [n]) : n =
-  if isEmpty sorted then 0 else getOr 0 sorted (len sorted / 2)
+@pub fun middle (sorted : [n]) : n = if isEmpty sorted then 0 else getOr 0 sorted (len sorted / 2)
 
 -- --- reporting ---------------------------------------------------------------
 
@@ -298,7 +293,6 @@ fun padTo width s =
         , unitsPerCall = 1
         , unitsPerSecond = 1000000
       } in
-      let _ =
-        assertEq (throughput r) 1000000000 "units win when there are units"
+      let _ = assertEq (throughput r) 1000000000 "units win when there are units"
       in
   assertEq (throughput plain) 1000000 "calls otherwise"

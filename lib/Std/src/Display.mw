@@ -94,18 +94,7 @@ impl Display (a, b, c, d) where Display a, Display b, Display c, Display d {
   fun display p =
     match p with
     | (w, x, y, z) ->
-        concatStrings
-          #[
-            "(",
-            display w,
-            ", ",
-            display x,
-            ", ",
-            display y,
-            ", ",
-            display z,
-            ")"
-          ]
+        concatStrings #[ "(", display w, ", ", display x, ", ", display y, ", ", display z, ")" ]
 }
 
 fun elements xs i acc =
@@ -114,6 +103,5 @@ fun elements xs i acc =
     let sep = if i == 0 then "" else ", " in
     elements xs (i + 1) (concatStrings #[acc, sep, display (arrayGet xs i)])
 
-impl Display #[a] where Display a {
-  fun display xs = concatStrings #["#[", elements xs 0 "", "]"]
+impl Display #[a] where Display a { fun display xs = concatStrings #["#[", elements xs 0 "", "]"]
 }

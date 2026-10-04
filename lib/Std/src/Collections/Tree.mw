@@ -17,8 +17,7 @@ use Tree.*
 
 @pub def empty : Tree a = Leaf
 
-@pub fun null (t : Tree a) : Bool =
-  match t with | Leaf -> True | Node l x r -> False
+@pub fun null (t : Tree a) : Bool = match t with | Leaf -> True | Node l x r -> False
 
 @pub fun size (t : Tree a) : n =
   match t with
@@ -96,8 +95,7 @@ fun pushInOrder acc t =
 -- The same, as a `List`.
 @pub fun toList (t : Tree a) : List a = foldr (\x acc -> x :: acc) [;] t
 
-@pub fun fromList (xs : List a) : Tree a =
-  List.foldl (\acc x -> insert x acc) empty xs
+@pub fun fromList (xs : List a) : Tree a = List.foldl (\acc x -> insert x acc) empty xs
 
 @pub fun foldr (f : a -> b -> b ! e) (acc : b) (t : Tree a) : b ! e =
   match t with
@@ -130,8 +128,7 @@ impl PartialEq (Tree a) where PartialEq a {
 impl Eq (Tree a) where Eq a {
 }
 
-impl PartialOrd (Tree a) where PartialOrd a {
-  fun partialCmp x y = partialCmp (toList x) (toList y)
+impl PartialOrd (Tree a) where PartialOrd a { fun partialCmp x y = partialCmp (toList x) (toList y)
 }
 
 impl Ord (Tree a) where Ord a {
@@ -158,11 +155,7 @@ def sample = fromVec [5, 3, 8, 1]
   assertEq (size (insert 5 sample)) 4 "re-insert"
 
 @test fun toVecIsSorted () =
-  let a =
-    assertEq
-      (toVec sample)
-      [1, 3, 5, 8]
-      "in order regardless of insertion order"
+  let a = assertEq (toVec sample) [1, 3, 5, 8] "in order regardless of insertion order"
   in
   let b = assertEq (toVec empty) [] "empty" in
   let c = assertEq (toList sample) [1; 3; 5; 8] "toList agrees" in
@@ -178,10 +171,7 @@ def sample = fromVec [5, 3, 8, 1]
   let a = assertFalse (member 5 t) "deleted" in
   let b = assertTrue (member 3 t) "the others survive" in
   let c = assertEq (size t) 3 "size drops by one" in
-  assertEq
-    (toVec (delete 9 sample))
-    (toVec sample)
-    "deleting a missing key changes nothing"
+  assertEq (toVec (delete 9 sample)) (toVec sample) "deleting a missing key changes nothing"
 
 @test fun nullAndDepth () =
   let a = assertTrue (null empty) "null" in

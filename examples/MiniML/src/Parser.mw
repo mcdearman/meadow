@@ -39,8 +39,7 @@ fun keyword s =
     |> P.try
     |> lexeme
 
-def reserved =
-  ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"]
+def reserved = ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"]
 
 -- An identifier, refusing the reserved words so `let` cannot be a variable.
 --
@@ -62,10 +61,7 @@ fun ident =
 
 fun intLit = L.decimal |> lexeme |> P.map (\n -> Int n)
 
-fun boolLit =
-  P.alt
-    (P.mapTo (Bool True) (keyword "true"))
-    (P.mapTo (Bool False) (keyword "false"))
+fun boolLit = P.alt (P.mapTo (Bool True) (keyword "true")) (P.mapTo (Bool False) (keyword "false"))
 
 -- --- the grammar ----------------------------------------------------------
 --
@@ -82,8 +78,7 @@ fun appE () =
 
 -- A chain of left-associative binary operators at one precedence level.
 fun binaryE ops next =
-  P.chainl1 (P.defer next)
-    (ops |> V.map (\o -> P.mapTo (\l r -> Bin o l r) (symbol o)) |> P.choice)
+  P.chainl1 (P.defer next) (ops |> V.map (\o -> P.mapTo (\l r -> Bin o l r) (symbol o)) |> P.choice)
 
 fun mulE () = binaryE ["*", "/"] appE
 fun addE () = binaryE ["+", "-"] mulE

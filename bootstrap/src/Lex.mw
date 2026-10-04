@@ -229,19 +229,14 @@ fun problem (l : Lexing) (from : Int) (to : Int) (message : String) : Lexing =
   { l | problems = V.pushBack l.problems (Problem { from = from, to = to, message = message }) }
 
 fun joined (a : Lexing) (b : Lexing) : Lexing =
-  Lexing
-    {
-      tokens = V.append a.tokens b.tokens,
-      problems = V.append a.problems b.problems
-    }
+  Lexing { tokens = V.append a.tokens b.tokens, problems = V.append a.problems b.problems }
 
 -- --- lexing ------------------------------------------------------------------
 
 -- Every token of `input`, to `f` in turn with where it starts and ends, as a
 -- Scythe lexer's fold hands them: what `syntax!` reads a source with.
 @pub fun foldToken f acc (input : String) =
-  Ok
-    (V.foldl (\a (l : Lexed) -> f a l.token l.from l.to) acc (lex input).tokens)
+  Ok (V.foldl (\a (l : Lexed) -> f a l.token l.from l.to) acc (lex input).tokens)
 
 -- `input`'s tokens: `meadow-lexer`'s `tokenize`.
 @pub fun lex (input : String) : Lexing =
@@ -264,15 +259,9 @@ fun code (input : String) (at : Int) (hole : Bool) (depth : Int) (l : Lexing) :
 fun stuck (input : String) (at : Int) (hole : Bool) (depth : Int) (l : Lexing) :
     (Lexing, Int, Bool) =
   let reached = reachCode input at in
-  let to =
-    if reached > at then boundary input reached else at + charLength input at
+  let to = if reached > at then boundary input reached else at + charLength input at
   in
-  let l2 =
-    problem
-      (push l Token.Error at to)
-      at
-      to
-      "Invalid token: ${stringSlice input at to}"
+  let l2 = problem (push l Token.Error at to) at to "Invalid token: ${stringSlice input at to}"
   in
   code input to hole depth l2
 
@@ -293,12 +282,7 @@ fun read (input : String) (t : Code) (from : Int) (to : Int) (hole : Bool)
       (match converted input other from to with
        | Ok tok -> code input to hole depth (push l tok from to)
        | Err message ->
-           code
-             input
-             to
-             hole
-             depth
-             (problem (push l Token.Error from to) from to message))
+           code input to hole depth (problem (push l Token.Error from to) from to message))
 
 -- A matched token as `meadow-lexer` has it once its callback has run: a
 -- number read, a character unescaped -- or, where the callback refuses, why.
@@ -411,17 +395,14 @@ fun text (input : String) (from : Int) (at : Int) (piece : Int)
       piece_ input from (token p) (start p) (stop p) piece sofar holes l
   | _ ->
       let n = stringByteLength input in
-      (
-        problem (push l Token.Error from n) from n "this string is never closed",
-        n
+      ( problem (push l Token.Error from n) from n "this string is never closed", n
       )
 
 fun piece_ (input : String) (from : Int) (p : Piece) (at : Int) (to : Int)
     (piece : Int) (sofar : [String]) (holes : Int) (l : Lexing) :
     (Lexing, Int) =
   let more = \s -> text input from to piece (V.pushBack sofar s) holes l in
-  let bad =
-    \message -> text input from to piece sofar holes (problem l at to message)
+  let bad = \message -> text input from to piece sofar holes (problem l at to message)
   in
   match p with
   | Piece.Text s -> more s
@@ -539,9 +520,7 @@ fun raw (input : String) (from : Int) (l : Lexing) : (Lexing, Int) =
       )
   | None ->
       let n = stringByteLength input in
-      (
-        problem (push l Token.Error from n) from n "this raw string is never closed",
-        n
+      ( problem (push l Token.Error from n) from n "this raw string is never closed", n
       )
 
 -- --- what logos's callbacks do -----------------------------------------------
@@ -557,8 +536,7 @@ fun parseInt (text : String) : Maybe Int =
   else digitsIn text 10
 
 -- `digits` in `radix`, or `None` past what an `Int` holds.
-fun digitsIn (digits : String) (radix : Int) : Maybe Int =
-  digitsFrom digits radix 0 0
+fun digitsIn (digits : String) (radix : Int) : Maybe Int = digitsFrom digits radix 0 0
 
 fun digitsFrom (digits : String) (radix : Int) (i : Int) (acc : Int)
     : Maybe Int =
@@ -596,14 +574,7 @@ fun escaped (rest : String) : Maybe (Int, Int) =
   else if c == 117 then unicodeEscape rest
   else
     if c == 110
-    or c == 114
-      or c == 116
-      or c == 48
-      or c == 97
-      or c == 98
-      or c == 102
-      or c == 118
-      or c == 101
+    or c == 114 or c == 116 or c == 48 or c == 97 or c == 98 or c == 102 or c == 118 or c == 101
     then Just (firstChar (simple c), 1)
     else if c == 92 or c == 34 or c == 39 or c == 36 then Just (c, 1)
     else None
@@ -658,11 +629,9 @@ fun isName (t : Token) : Bool =
   | Token.UpperIdent _ -> True
   | _ -> False
 
-fun isPeriod (t : Token) : Bool =
-  match t with | Token.Period -> True | _ -> False
+fun isPeriod (t : Token) : Bool = match t with | Token.Period -> True | _ -> False
 
-fun lineStart (input : String) (from : Int) : Bool =
-  from == 0 or byteAt input (from - 1) == 10
+fun lineStart (input : String) (from : Int) : Bool = from == 0 or byteAt input (from - 1) == 10
 
 fun at (tokens : [Lexed]) (i : Int) : Lexed =
   V.getOr (Lexed { token = Token.Error, from = 0, to = 0 }) tokens i
@@ -705,8 +674,7 @@ fun allHex (s : String) (i : Int) : Bool =
   then allHex s (i + 1)
   else False
 
-fun hexValue (s : String) : Int =
-  V.foldl (\acc b -> acc * 16 + hexDigit (toInt b)) 0 (bytesOf s)
+fun hexValue (s : String) : Int = V.foldl (\acc b -> acc * 16 + hexDigit (toInt b)) 0 (bytesOf s)
 
 fun bytesOf (s : String) = V.fromArray (S.toBytes s)
 
@@ -718,14 +686,12 @@ fun bytesOf (s : String) = V.fromArray (S.toBytes s)
 @pub fun dump (l : Lexing) : String =
   let ts =
     V.foldl
-      (\acc (t : Lexed) ->
-        acc ++ "${show t.from} ${show t.to} ${described t.token}\n")
+      (\acc (t : Lexed) -> acc ++ "${show t.from} ${show t.to} ${described t.token}\n")
       ""
       l.tokens
   in
   V.foldl
-    (\acc (p : Problem) ->
-      acc ++ "! ${show p.from} ${show p.to} ${escape p.message}\n")
+    (\acc (p : Problem) -> acc ++ "! ${show p.from} ${show p.to} ${escape p.message}\n")
     ts
     l.problems
 
@@ -757,12 +723,7 @@ fun escapeFrom (s : String) (run : Int) (i : Int) (acc : [String]) : [String] =
   else
     let n = byteAt s i in
     if n < 32 or n == 127 or n == 92
-    then
-      escapeFrom
-        s
-        (i + 1)
-        (i + 1)
-        (V.append acc [stringSlice s run i, "\\x", twoHex n])
+    then escapeFrom s (i + 1) (i + 1) (V.append acc [stringSlice s run i, "\\x", twoHex n])
     else escapeFrom s run (i + 1) acc
 
 fun twoHex (n : Int) : String =

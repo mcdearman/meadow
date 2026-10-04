@@ -28,8 +28,7 @@ use Std.Test (assertEq)
 @test fun flipSwapsTheFirstTwoArguments () =
   assertEq (flip (\a b -> a - b) 3 10) 7 "flip subtraction"
 
-@test fun applyIsJustApplication () =
-  assertEq (apply (\n -> n * 3) 4) 12 "apply"
+@test fun applyIsJustApplication () = assertEq (apply (\n -> n * 3) 4) 12 "apply"
 
 @test fun twiceAppliesTwice () =
   assertEq (twice (\n -> n * 3) 2) 18 "twice"

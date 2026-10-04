@@ -137,6 +137,24 @@ worth finding.
 | ABI backwards compatibility                                                                                                                                                                                      | Planned                                                                                                       |
 | A pull request to GitHub Linguist                                                                                                                                                                                | Planned                                                                                                       |
 
+## Releases and versioning
+
+Decided on 2026-10-04: semantic versions in place of the rolling
+`v0.1.0-alpha` tag, and a stable and a nightly channel as Rust has them. While
+the major version is 0, a minor version may break source and a patch may not.
+The promise covers the language, Std's public API and `Meadow.toml`; the
+bytecode image, the Cut IR and the runtimes' layouts are unstable until 1.0.
+Std's version tracks the toolchain's. Other packages keep versions of their
+own.
+
+| Task                                                                                                                                                                                                                                                | State         |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| Version `0.2.0` in every manifest, a `v0.2.0` tag that does not move, and a `CHANGELOG.md` with breaking, added and fixed sections per release                                                                                                      | Planned, next |
+| Nightly channel: a scheduled workflow that publishes a dated pre-release from `master` when it passes the check script; `meadow --version` says the channel and the commit                                                                          | Planned       |
+| Channels in `meadowup`: `meadowup default stable` or `nightly`, `meadowup install <version>`, recorded in `~/.meadow/toolchain`                                                                                                                     | Planned       |
+| Feature gates: an unstable feature is named in `Meadow.toml` (`features = ["ffi"]`) and accepted only by a nightly compiler; a stable one refuses it and says which channel has it. First behind gates: `Std.Ffi`, `Std.Terminal`, the Cut tooling. | Planned       |
+| A per-project toolchain file pinning the version a project builds with                                                                                                                                                                              | Planned       |
+
 ## Standard library and packages
 
 | Task                                                                                                  | State                                                                                                                                                         |

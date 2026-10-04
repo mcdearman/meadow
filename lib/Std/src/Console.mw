@@ -210,7 +210,7 @@ fun readAllLoop acc =
     let a =
       assertEq got (Just True) "keeps asking past the answers that do not parse"
     in
-    assertEq written "?again\n?again\n?" "asked three times, told off twice"
+  assertEq written "?again\n?again\n?" "asked three times, told off twice"
 
 @test fun promptUntilGivesUpAtEndOfInput () =
   -- Otherwise a piped-in file that never satisfies `parse` would spin forever.

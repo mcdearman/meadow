@@ -2611,21 +2611,21 @@ fun interp (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
             "Hole ${if tokenIs TokenDebugFmt h then "Debug" else "Display"}"
             [exprIn c hs (k + 1) (must NodeExpr h) None]
     in
-    let holes =
-      V.pushFront
-        (V.map (\mid -> hole (must NodeHole mid)) (childrenOf NodeInterpMid s))
-        (hole (must NodeHole s))
-    in
-    node
-      d
-      "Interp"
-      m
-      (V.append
-        (many
-          (d + 1)
-          "texts"
-          (V.map (\t -> \k -> leaf k "text ${escape t}") texts))
-        (many (d + 1) "holes" holes))
+  let holes =
+    V.pushFront
+      (V.map (\mid -> hole (must NodeHole mid)) (childrenOf NodeInterpMid s))
+      (hole (must NodeHole s))
+  in
+  node
+    d
+    "Interp"
+    m
+    (V.append
+      (many
+        (d + 1)
+        "texts"
+        (V.map (\t -> \k -> leaf k "text ${escape t}") texts))
+      (many (d + 1) "holes" holes))
 
 -- `{ r | x = e }` updates `r`; anything else is a record, `{ x }` short for
 -- `{ x = x }`, and `| r` what it extends.
@@ -2663,11 +2663,11 @@ fun braceE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
                 (childOf NodeTailExpr t))
             (childOf NodeBraceTail s)
         in
-        node
-          d
-          "RecordE"
-          m
-          (V.append (many (d + 1) "fields" fs) (opt (d + 1) "base" base))
+      node
+        d
+        "RecordE"
+        m
+        (V.append (many (d + 1) "fields" fs) (opt (d + 1) "base" base))
 
 -- `[lo .. hi]`, `[a; b]`, `[;]`, `[a, b]`, `[]`.
 fun brackE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =

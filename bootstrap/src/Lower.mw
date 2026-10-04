@@ -692,52 +692,52 @@ fun synonym (c : Lc) b (n : Nm) (s : GTree) (m : Meta) =
     let no =
       (if V.len ps == 0 then noArgs "False" else newAstExprList b m [])
     in
-    let arms =
-      [
-        newAstArm b m (pat c b rhs) None yes,
-        newAstArm b m (newAstPatWild b m) None no
-      ]
-    in
-    let scrutinee = at "$scrutinee" in
-    let matcher =
-      newAstDeclBind b m
-      (newAstBindFun
-        b
-        m
-        (nm b (at "$m${show (V.len ps)}${n.text}"))
-        [newAstPatVar b n.at (nm b scrutinee)]
-        None
-        (newAstExprMatch b m (newAstExprVar b m (nm b scrutinee)) arms)) in
-      let builder =
-        (match childOf NodeSynBuilder s with
-         | Just bl ->
+  let arms =
+    [
+      newAstArm b m (pat c b rhs) None yes,
+      newAstArm b m (newAstPatWild b m) None no
+    ]
+  in
+  let scrutinee = at "$scrutinee" in
+  let matcher =
+    newAstDeclBind b m
+    (newAstBindFun
+      b
+      m
+      (nm b (at "$m${show (V.len ps)}${n.text}"))
+      [newAstPatVar b n.at (nm b scrutinee)]
+      None
+      (newAstExprMatch b m (newAstExprVar b m (nm b scrutinee)) arms)) in
+    let builder =
+      (match childOf NodeSynBuilder s with
+       | Just bl ->
+           Just
+             (
+               V.map (param c b) (childrenOf NodeParam bl),
+               expr c b (must NodeExpr bl)
+             )
+       | None ->
+           if both and builds rhs
+           then
              Just
                (
-                 V.map (param c b) (childrenOf NodeParam bl),
-                 expr c b (must NodeExpr bl)
+                 V.map (\(p : Nm) -> newAstPatVar b p.at (nm b p)) ps,
+                 patExpr c b rhs
                )
-         | None ->
-             if both and builds rhs
-             then
-               Just
-                 (
-                   V.map (\(p : Nm) -> newAstPatVar b p.at (nm b p)) ps,
-                   patExpr c b rhs
-                 )
-             else None) in
-        match builder with
-        | Just (params, body) ->
-            [
-              (False, matcher),
-              (
-                False,
-                newAstDeclBind
-                  b
-                  m
-                  (newAstBindFun b m (nm b (at "$b${n.text}")) params None body)
-              )
-            ]
-        | None -> [(False, matcher)]
+           else None) in
+      match builder with
+      | Just (params, body) ->
+          [
+            (False, matcher),
+            (
+              False,
+              newAstDeclBind
+                b
+                m
+                (newAstBindFun b m (nm b (at "$b${n.text}")) params None body)
+            )
+          ]
+      | None -> [(False, matcher)]
 
 -- `pattern A | B`: the matchers that together match every value.
 fun complete b (names : [Nm]) (m : Meta) =
@@ -1917,12 +1917,12 @@ fun interp (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
           (exprIn c b hs (must NodeExpr h) None)
           (tokenIs TokenDebugFmt h)
     in
-    let holes =
-      V.pushFront
-        (V.map (\mid -> hole (must NodeHole mid)) (childrenOf NodeInterpMid s))
-        (hole (must NodeHole s))
-    in
-    newAstExprInterp b m texts holes
+  let holes =
+    V.pushFront
+      (V.map (\mid -> hole (must NodeHole mid)) (childrenOf NodeInterpMid s))
+      (hole (must NodeHole s))
+  in
+  newAstExprInterp b m texts holes
 
 -- `{ r | x = e }` updates `r`; anything else is a record, `{ x }` short for
 -- `{ x = x }`, and `| r` what it extends.
@@ -1964,7 +1964,7 @@ fun braceE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
             (\t -> M.map (\te -> e (must NodeExpr te)) (childOf NodeTailExpr t))
             (childOf NodeBraceTail s)
         in
-        newAstExprRecord b m fs base
+      newAstExprRecord b m fs base
 
 -- `[lo .. hi]`, `[a; b]`, `[;]`, `[a, b]`, `[]`.
 fun brackE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =

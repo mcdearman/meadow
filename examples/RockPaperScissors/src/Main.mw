@@ -93,10 +93,10 @@ fun game () =
   let _ = println "Rock paper scissors. Ctrl-D or `quit` to stop." in
   let (wins, losses, draws) = tally 0 0 0 in
   let _ = println (S.concatAll
-  [ "\nYou won ", show wins
+    [ "\nYou won ", show wins
         , ", lost ", show losses
         , ", drew ", show draws, "."
-  ]) in
+    ]) in
   ()
 
 fun main () = game ()

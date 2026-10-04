@@ -51,8 +51,8 @@ fun shuffle accounts (i : Int) (rounds : Int) =
   | (Just from, Just to) ->
       let rec go (k : Int) =
         if k == 0 then () else let _ = transfer from to 1
-      in
-      go (k - 1) in
+        in
+        go (k - 1) in
       go rounds
   | _ -> ()
 

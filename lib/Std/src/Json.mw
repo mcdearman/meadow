@@ -581,7 +581,7 @@ fun byGrammar (text : String) : Result String Json =
 
 @test fun theScannerAndTheGrammarAgree () =
   let texts = [
-  "null", " true ", "false", "0", "-0", "007", "-12", "123456789012345678", "1234567890123456789012",
+    "null", " true ", "false", "0", "-0", "007", "-12", "123456789012345678", "1234567890123456789012",
     "1.5", "-2.5E-1", "2e3", "1e+2", "\"\"", "\"héllo, wörld\"", "\"a\\nb\\t\\\"c\\\\d\\/e\\bf\\fg\\r\"",
     "[]", "[ ]", "[1]", "[1, [2, [3, []]], {}]", "{}", "{ }", "{\"a\":1}",
     " { \"k\" : [ 1 , 2.0 , \"x\" , null , true , { \"n\" : { } } ] , \"e\\n\" : -3 }\n",
@@ -598,7 +598,7 @@ fun byGrammar (text : String) : Result String Json =
 
 @test fun whatTheScannerGivesUpOnTheGrammarStillSays () =
   let texts = [
-  "", " ", "[1,", "[1,]", "{\"a\"}", "{\"a\":}", "{a:1}", "tru", "truex", "nul", "1 2", "1.", "1e", "-", "--1",
+    "", " ", "[1,", "[1,]", "{\"a\"}", "{\"a\":}", "{a:1}", "tru", "truex", "nul", "1 2", "1.", "1e", "-", "--1",
     "\"open", "\"bad \\q escape\"", "\"\\u0041\"", "[1 2]", "{\"a\":1,}", "]", "1.5.2",
   ] in
   let unread = V.all (\t -> not (M.isSome (quick t))) texts in

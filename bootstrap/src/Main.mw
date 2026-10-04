@@ -155,9 +155,8 @@ fun renameFile named (path : String) =
   match lines with
   | Just ls ->
       (let u =
-        writeOutput ("== ${path}\n" ++ S.join "" (V.map (\l -> l ++ "\n") ls))
-in
-      True)
+          writeOutput ("== ${path}\n" ++ S.join "" (V.map (\l -> l ++ "\n") ls))
+        in True)
   | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
 
 -- `path`'s abstract syntax, a node a line, under a line naming it -- or
@@ -204,13 +203,12 @@ fun fixityFile dbs (path : String) =
       (match M.andThen (\r -> M.andThen snd (V.find (\d -> fst d == r) dbs)) (packageOf file) with
        | None ->
            (let u =
-             writeOutput "== ${path}\nerror: its package did not build\n"
-in
-           False)
-  | Just db ->
-      -- A file of the package that is none of its modules -- a test's
-      -- -- grouped by the package's fixities all the same.
-      let u = setCompilerSource db file text in
+               writeOutput "== ${path}\nerror: its package did not build\n"
+             in False)
+       | Just db ->
+           -- A file of the package that is none of its modules -- a test's
+           -- -- grouped by the package's fixities all the same.
+           let u = setCompilerSource db file text in
            (match compilerGrouped db file with
             | None -> (let w = writeOutput "== ${path}\nparse failed\n" in True)
             | Just (g, ds) ->
@@ -238,15 +236,14 @@ fun evalFile (path : String) : Bool ! { Fs, Console | e } =
       (match program text with
        | Err why ->
            (let u =
-             writeOutput "== ${path}\nerror: cannot read it: ${why}\n"
-in
-           False)
-  | Ok p ->
-      (match Cek.run p with
-       | Ok v ->
-           (let u = writeOutput "== ${path}\n${Cek.display v}\n" in True)
-       | Err why ->
-           (let u = writeOutput "== ${path}\nerror: ${why}\n" in True)))
+               writeOutput "== ${path}\nerror: cannot read it: ${why}\n"
+             in False)
+       | Ok p ->
+           (match Cek.run p with
+            | Ok v ->
+                (let u = writeOutput "== ${path}\n${Cek.display v}\n" in True)
+            | Err why ->
+                (let u = writeOutput "== ${path}\nerror: ${why}\n" in True)))
 
 -- End with status 1 when something went wrong.
 fun finish (ok : Bool) = if ok then () else exit 1

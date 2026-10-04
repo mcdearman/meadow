@@ -25,6 +25,11 @@ beyond the last release is under _Unreleased_.
 
 ### Fixed
 
+- `meadow fmt` places the `in` of a `let` written in brackets. It sent that
+  `in` to the left margin and lost its place in the bracket for the lines
+  after. A bracketed `let` is now laid out with its value four in, its `in`
+  two in, and its body on the `in`'s line when they fit; and a line that
+  carries another on moves with it when that line is moved.
 - The finder reads `[a;]` in a type as a list. It dropped the `;` and looked
   for a vector, so `(a -> b) -> [a;] -> [b;]` did not find a `map` over lists.
 - Two builds that fetch the same git dependency at once take turns in its

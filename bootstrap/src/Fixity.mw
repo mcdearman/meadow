@@ -110,13 +110,12 @@ fun declareOne (acc : HashMap String Fixity) (d : Syntax Surface)
       if level > 9
       then
         (let u =
-          say
-            (errorAt
-              (metaOf prec)
-              "fixity level ${show level} is out of range")
-in
-        acc)
-else V.foldl (\a o -> declareOp a f o) acc ops
+            say
+              (errorAt
+                (metaOf prec)
+                "fixity level ${show level} is out of range")
+          in acc)
+      else V.foldl (\a o -> declareOp a f o) acc ops
   | _ -> acc
 
 fun declareOp (acc : HashMap String Fixity) (f : Fixity) (o : Syntax Surface)
@@ -131,26 +130,24 @@ fun declareOp (acc : HashMap String Fixity) (f : Fixity) (o : Syntax Surface)
             then acc
             else
               (let u =
-                say
-                (errorAt
-                  (metaOf n)
-                  "`${name}` is `${keyword b} ${show b.level}` in the language itself")
-in
-            acc))
-  | None ->
-      (match H.lookup name acc with
-       | Just before ->
-           (if before == f
-             then acc
-             else
-               (let u =
-                 say
-                     (errorAt
-                       (metaOf n)
-                       "`${name}` was already declared `${keyword before} ${show before.level}`")
-in
-                 acc))
-  | None -> H.insert name f acc)
+                  say
+                  (errorAt
+                    (metaOf n)
+                    "`${name}` is `${keyword b} ${show b.level}` in the language itself")
+                in acc))
+      | None ->
+          (match H.lookup name acc with
+           | Just before ->
+               (if before == f
+                 then acc
+                 else
+                   (let u =
+                       say
+                       (errorAt
+                         (metaOf n)
+                         "`${name}` was already declared `${keyword before} ${show before.level}`")
+                     in acc))
+           | None -> H.insert name f acc)
 
 fun metaOf (s : Syntax Surface) = spanMeta (R.offset s) (R.endOffset s)
 
@@ -203,7 +200,7 @@ fun chain (out : Origin Surface Grouped) (table : HashMap String Fixity)
       let outs =
         V.foldr (\o acc -> apply out acc o) (fst applied) (snd applied)
       in
-      M.unwrapOr (leaf first) (V.get outs (V.len outs - 1))
+  M.unwrapOr (leaf first) (V.get outs (V.len outs - 1))
 
 -- Apply every operator on the stack that goes before operator `name`, which
 -- binds as `here`.

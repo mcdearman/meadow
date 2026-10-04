@@ -299,27 +299,27 @@ fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
                   else [Lacking { at = snd kv, labels = ls }]))
               (H.toVec qall.map)
           in
-            let sc =
-              Scheme
-                {
-                  quant = qall.kinds,
-                  preds = qpreds,
-                  ty = body,
-                  lacks = sortLacks lacks
-                }
-            in
-            let w =
-              (match vid with
-               | Just id ->
-                   stSetRef
-                    i.generalized
-                    (H.insert
-                      id
-                      (Generalized { scheme = sc, vars = varsOf qall })
-                      (stGetRef i.generalized))
-               | None -> ())
-            in
-            sc
+          let sc =
+            Scheme
+              {
+                quant = qall.kinds,
+                preds = qpreds,
+                ty = body,
+                lacks = sortLacks lacks
+              }
+          in
+          let w =
+            (match vid with
+             | Just id ->
+                 stSetRef
+                  i.generalized
+                  (H.insert
+                    id
+                    (Generalized { scheme = sc, vars = varsOf qall })
+                    (stGetRef i.generalized))
+             | None -> ())
+          in
+          sc
 
 fun quantifyEach (i : Inf s) (ts : [Type]) (q : Quantified) (level : Int)
     (classes : Bool) : ([Type], Quantified) ! { St s | e } =

@@ -61,7 +61,7 @@ pub fn format_within(src: &str, width: usize) -> String {
     // puts further in than it was measured at.
     let mut text = format(src);
     for _ in 0..6 {
-        let next = format(&wrap::wrap(&text, width));
+        let next = format(&join_ins(&wrap::wrap(&text, width), width));
         if next == text {
             break;
         }
@@ -75,6 +75,64 @@ pub fn format_within(src: &str, width: usize) -> String {
 /// Re-indents every line, strips trailing whitespace, collapses runs of blank
 /// lines to one, drops leading and trailing blank lines, and ends with exactly
 /// one newline. The result uses `\r\n` if that is what `src` mostly used.
+/// `in` and what follows it on one line, for a `let` written in brackets:
+///
+/// ```text
+/// (let u =
+///     mention env name
+///   in Decl.Record { name = name })
+/// ```
+///
+/// A cut leaves that `in` on a line of its own, as it does one that closes a
+/// `let` heading its line -- where the body under it is the next of a
+/// sequence, and reads so. In brackets there is one `let` and one body, and
+/// the body reads as what the `in` introduces. Joined where the two fit in
+/// `width`; left apart where they do not.
+fn join_ins(text: &str, width: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let joined = (|| {
+            if line.trim() != "in" {
+                return None;
+            }
+            let at = indent(line);
+            // The line that opened it: the nearest above that is further out,
+            // which for a bracketed `let` is `(let …`, a unit out.
+            let opener = lines[..i]
+                .iter()
+                .rev()
+                .find(|l| !l.trim().is_empty() && indent(l) < at)?;
+            let rest = opener.trim_start().trim_start_matches(['(', '[', '{']);
+            let bracketed = rest.len() < opener.trim_start().len()
+                && (rest == "let" || rest.starts_with("let "))
+                && indent(opener) + UNIT == at;
+            let next = lines.get(i + 1)?.trim();
+            let fits = at + "in ".len() + next.chars().count() <= width;
+            (bracketed && !next.is_empty() && !next.starts_with("--") && fits)
+                .then(|| format!("{}in {next}", " ".repeat(at)))
+        })();
+        match joined {
+            Some(both) => {
+                out.push(both);
+                i += 2;
+            }
+            None => {
+                out.push(line.to_string());
+                i += 1;
+            }
+        }
+    }
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
 pub fn format(src: &str) -> String {
     // A byte-order mark is kept as it was, and never read as code.
     if let Some(rest) = src.strip_prefix('\u{feff}') {
@@ -197,6 +255,13 @@ struct Indenter {
     /// outermost first. What is inside one is declarations, as at the top
     /// level, one unit further in.
     modules: Vec<usize>,
+    /// How far the last line with a place of its own was moved from where
+    /// its author had it. A line that only carries it on keeps its author's
+    /// column, and that column was measured from where the line above stood:
+    /// it moves as far, so what hung under a line still hangs under it.
+    shift: isize,
+    /// Whether the line just placed was one that carries on the line above.
+    continued: bool,
 }
 
 impl Indenter {
@@ -207,6 +272,8 @@ impl Indenter {
             opened: true,
             head: false,
             modules: Vec::new(),
+            shift: 0,
+            continued: false,
         }
     }
 
@@ -299,11 +366,15 @@ impl Indenter {
             && !declares
             && self.stack.len() == start
             && !matches!(toks.first_text(), "|" | "=");
+        self.continued = false;
         let indent = if carries_on {
             margin + 2 * UNIT
         } else {
             self.indent_for(&toks, was)
         };
+        if !self.continued {
+            self.shift = indent as isize - was as isize;
+        }
         // The body belongs to the declaration, not to the line of its head
         // that happens to end it.
         self.update(&toks, if carries_on { margin } else { indent });
@@ -437,8 +508,11 @@ impl Indenter {
             body
         } else {
             // An unanchored continuation — the author's own alignment stands, as
-            // long as it clears the block it sits in.
-            author.max(body)
+            // long as it clears the block it sits in, moved as far as the line
+            // it carries on was.
+            self.continued = true;
+            let moved = (author as isize + self.shift).max(0) as usize;
+            moved.max(body)
         }
     }
 
@@ -468,7 +542,63 @@ impl Indenter {
         // Between an arm's `|` and its `->`: where an `if` is the arm's guard,
         // which has no `else` to wait for.
         let mut in_arm_head = false;
+        // Where on the stack each `let` of this line is, until its `in` comes:
+        // one still here when the line ends wants its `in` on a later line.
+        let mut lets_here: Vec<usize> = Vec::new();
+        // Whether one of them is written in brackets, `(let x =`.
+        let mut bracketed_let = false;
         for tok in toks {
+            // A `let` wherever it is on the line, and not only at its head:
+            // `(let x =` opens one too, and its `in` belongs under it and not
+            // at the margin, which is where a `let` nobody recorded sent it --
+            // taking the bracket around it along.
+            match tok.text {
+                "let" => {
+                    // Its own place when only brackets come before it --
+                    // `(let x =` -- and under its line when it comes after
+                    // something else, far to the right: an `in` out there
+                    // would be under nothing a reader looks at.
+                    let after_brackets = toks
+                        .iter()
+                        .take_while(|t| !std::ptr::eq(*t, tok))
+                        .all(|t| matches!(t.text, "(" | "[" | "{"));
+                    // In brackets, its `in` is a unit in from the bracket
+                    // and what it binds a unit further: `(let x =`, the
+                    // value under it at four, `in` at two.
+                    let at = if after_brackets && !std::ptr::eq(tok, &toks[0]) {
+                        bracketed_let = true;
+                        indent + UNIT
+                    } else {
+                        indent
+                    };
+                    lets_here.push(self.stack.len());
+                    self.stack.push(Frame::Let { at });
+                }
+                "in" => {
+                    if let Some(at) = lets_here.pop() {
+                        self.stack.truncate(at);
+                    } else if !std::ptr::eq(tok, &toks[0]) {
+                        // The `in` of a `let` from a line above, ending this
+                        // one: it closes that `let` too, if no bracket opened
+                        // since stands between them. (One that heads its line
+                        // was answered when the line was placed.)
+                        let open = self
+                            .stack
+                            .iter()
+                            .rposition(|f| matches!(f, Frame::Open { .. }));
+                        let found = self
+                            .stack
+                            .iter()
+                            .rposition(|f| matches!(f, Frame::Let { .. }));
+                        if let Some(at) = found
+                            && open.is_none_or(|o| o < at)
+                        {
+                            self.stack.truncate(at);
+                        }
+                    }
+                }
+                _ => {}
+            }
             if open_here.is_empty() {
                 match tok.text {
                     "|" => in_arm_head = true,
@@ -520,10 +650,6 @@ impl Indenter {
             }
         }
 
-        // A `let` whose `in` is not on this line will want one later.
-        if toks.first_text() == "let" && !toks.has("in") {
-            self.stack.push(Frame::Let { at: indent });
-        }
         // An `else` on a later line lines up with the `if` itself, which is not
         // the start of the line when the `if` is a right-hand side.
         if let Some(col) = pending_if {
@@ -535,6 +661,10 @@ impl Indenter {
             // A `|` arm whose body starts on the next line hangs two units in, so
             // it clears the `->` and reads as subordinate to the arm.
             "->" if toks.has("|") => self.stack.push(Frame::Block { at: indent + UNIT }),
+            // What a bracketed `let` binds hangs a unit past its `in`.
+            "=" if bracketed_let && !lets_here.is_empty() => {
+                self.stack.push(Frame::Block { at: indent + UNIT })
+            }
             "=" | "->" | "then" | "else" | "\\" | "<-" => {
                 self.stack.push(Frame::Block { at: indent })
             }
@@ -558,8 +688,12 @@ impl Indenter {
         // not: code inside brackets is routinely aligned under the opener or under
         // an argument, and no rule this small reproduces that — so the author's
         // own column is the better answer there.
-        self.opened =
-            self.stack.len() > before && !matches!(self.stack.last(), Some(Frame::Open { .. }));
+        // And an `in` alone on its line: what is under it is what the `let`
+        // is for, and stands where the block it is in puts it.
+        let lone_in = toks.len() == 1 && toks.first_text() == "in";
+        self.opened = lone_in
+            || (self.stack.len() > before
+                && !matches!(self.stack.last(), Some(Frame::Open { .. })));
     }
 
     /// Reduce a line to just its code: comments dropped, and each string or
@@ -814,6 +948,84 @@ mod tests {
     // The tokenizer once walked bytes, and read the first byte of `é` as a
     // letter of its own: slicing the line there panicked, and an editor that
     // formats on save took the language server down with it.
+
+    #[test]
+    fn an_in_closes_a_let_that_does_not_head_its_line() {
+        // `(let x =`: what it binds hangs at four, the `in` is at two inside
+        // the bracket, and the bracket is still open for what follows.
+        let src = "\
+fun f xs =
+  if V.isEmpty xs then 0
+  else
+    (let fits =
+      V.filter
+        (\\c -> c > 0)
+        xs
+in
+      if V.len fits == 1
+      then 1
+      else 2)
+";
+        let want = "\
+fun f xs =
+  if V.isEmpty xs then 0
+  else
+    (let fits =
+        V.filter
+          (\\c -> c > 0)
+          xs
+      in
+      if V.len fits == 1
+      then 1
+      else 2)
+";
+        assert_eq!(f(src), want);
+        assert_eq!(f(want), want, "formatting is idempotent");
+        // One that heads its line is where it was.
+        let headed = "fun g x =\n  let total =\n    compute x\n  in\n  total\n";
+        assert_eq!(f(headed), headed);
+        // A `let` far along its line has its `in` under the line, not out
+        // under the `let`; and what a bracket opened after a `let` holds is
+        // a unit in from the `let`.
+        let far = "fun k n =\n  if n == 0 then () else let u = step n\n  in\n  k (n - 1)\n";
+        assert_eq!(f(far), far);
+        let listed = "fun g () =\n  let xs = [\n    1,\n    2\n  ] in\n  xs\n";
+        assert_eq!(f(listed), listed);
+        // And a `let … in` on one line leaves nothing open.
+        let one = "fun h x =\n  (let y = x in\n    y + 1)\n";
+        assert_eq!(f(one), one);
+    }
+
+    #[test]
+    fn a_bracketed_let_has_its_body_on_the_line_of_its_in() {
+        let src = "\
+fun d name =
+  (let u =
+    mention env name
+  in
+    Decl.Record { name = name })
+";
+        let want = "\
+fun d name =
+  (let u =
+      mention env name
+    in Decl.Record { name = name })
+";
+        assert_eq!(format_within(src, 80), want);
+        assert_eq!(format_within(want, 80), want, "and again changes nothing");
+        // Too long to share a line: the body stays under the `in`.
+        let long = "\
+fun d name =
+  (let u =
+      mention env name
+    in
+    Decl.Record { name = name, params = params, fields = fields, more = more })
+";
+        assert_eq!(format_within(long, 80), long);
+        // A `let` heading its line keeps its body on the next: a sequence.
+        let headed = "fun g x =\n  let total =\n    compute x\n  in\n  total\n";
+        assert_eq!(format_within(headed, 80), headed);
+    }
 
     #[test]
     fn what_a_module_holds_is_one_unit_in() {

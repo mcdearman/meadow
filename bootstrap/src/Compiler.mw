@@ -204,7 +204,7 @@ fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
             { name = i.package, exports = i.exports, anyVis = i.anyVis })
         imported
     in
-    (sources, renameUnit pkg isStd (V.map snd sources) deps)
+  (sources, renameUnit pkg isStd (V.map snd sources) deps)
 
 fun fileOf (s : Source) : String = s.file
 

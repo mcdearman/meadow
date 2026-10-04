@@ -105,11 +105,10 @@ fun solveOne (i : Inf s) (k : Int) : Bool ! { St s | e } =
       | None -> (let u = agree i k tys in False)
       | Just key ->
           (let scrutinee =
-            (match findImpl i w.pred.tr key with
-             | Just f -> Just f
-             | None -> findImpl i w.pred.tr (blanketKey (V.len tys)))
-in
-            match scrutinee with
+              (match findImpl i w.pred.tr key with
+               | Just f -> Just f
+               | None -> findImpl i w.pred.tr (blanketKey (V.len tys)))
+            in match scrutinee with
             | Just found -> (let u = answerWith i k tys found in True)
             | None ->
                 (let u = report i "`${S.join " " (V.map showType tys)}` does not implement `${spelling w.pred.tr}`" in let v = setSol i k (Just Failed) in True))
@@ -368,22 +367,21 @@ fun closeOne (i : Inf s) (level : Int) (signed : Bool) (signatureVars : [Int])
                        | Just x -> Just x
                        | None ->
                            (let have =
-                             V.getOr
-                               (Pred { tr = "", tys = [], assocs = [] })
-                               all
-                               j
-          in
-                  M.map
-                    (\path -> (j, path))
-                    (superPath
-                      i
-                      have.tr
-                      (V.map (zonk i.ar) have.tys)
-                      w.pred.tr
-                      wantTys)))
+                               V.getOr
+                                 (Pred { tr = "", tys = [], assocs = [] })
+                                 all
+                                 j
+                             in M.map
+                             (\path -> (j, path))
+                             (superPath
+                               i
+                               have.tr
+                               (V.map (zonk i.ar) have.tys)
+                               w.pred.tr
+                               wantTys)))
               None
               (V.range 0 (V.len all))
-in
+          in
           let free = V.foldl (\o t -> freeVars i.ar t o) [] wantTys in
           let ours = V.any (\x -> slotLevel i.ar x > level) free in
           match found with
@@ -422,13 +420,12 @@ in
                 if local and defaultWanted i k then acc
                 else
                   (let u =
-                    report
-                      i
-                      "this needs `${spelling w.pred.tr} ${S.join " " (V.map showType wantTys)}`, which the signature does not ask for"
-in
-                  let v = setSol i k (Just Failed) in
-                  acc)
-else (V.pushBack all w.pred, V.pushBack pending (k, V.len all))
+                      report
+                        i
+                        "this needs `${spelling w.pred.tr} ${S.join " " (V.map showType wantTys)}`, which the signature does not ask for"
+                    in let v = setSol i k (Just Failed) in
+                    acc)
+              else (V.pushBack all w.pred, V.pushBack pending (k, V.len all))
 
 -- The places in the group's `where` a member of type `t` asks for: every one
 -- whose types its own type settles, and those that settles in turn.
@@ -447,21 +444,19 @@ fun settleLoop (i : Inf s) (all : [Pred]) (settled : [Int]) (mine : [Int]) :
                then acc
                else
                  (let p =
-                   V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j
+                     V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j
+                   in let over =
+                     V.foldl (\o t -> freeVars i.ar (zonk i.ar t) o) [] p.tys
+                   in if V.all (\x -> V.elem x s1) over
+                      then
+                        (
+                          V.foldl (\o t -> freeVars i.ar (zonk i.ar t) o) s1 p.assocs,
+                          V.pushBack m1 j
+                        )
+                      else acc))))
+         (settled, mine)
+         (V.range 0 (V.len all))
   in
-              let over =
-                V.foldl (\o t -> freeVars i.ar (zonk i.ar t) o) [] p.tys
-              in
-              if V.all (\x -> V.elem x s1) over
-              then
-                (
-                  V.foldl (\o t -> freeVars i.ar (zonk i.ar t) o) s1 p.assocs,
-                  V.pushBack m1 j
-                )
-              else acc))))
-      (settled, mine)
-      (V.range 0 (V.len all))
-in
   match scrutinee with
   | (s2, m2) -> if V.len m2 == V.len mine then m2 else settleLoop i all s2 m2
 
@@ -484,9 +479,8 @@ fun placeWanted (i : Inf s) (lists : HashMap Int [Int]) (only : Maybe Int)
     if defaultWanted i k then ()
     else
       (let v =
-        report i "cannot tell which `impl ${spelling w.pred.tr}` is meant"
-in
-      setSol i k (Just Failed))
+          report i "cannot tell which `impl ${spelling w.pred.tr}` is meant"
+        in setSol i k (Just Failed))
 
 -- The unit is done: what is still wanted of a type nothing said is
 -- defaulted, one at a time, and what is left is ambiguous.
@@ -498,9 +492,8 @@ in
       then ()
       else
         (let y =
-          report i "ambiguous `impl ${spelling (wantedAt i k).pred.tr}`"
-in
-      setSol i k (Just Failed)))
+            report i "ambiguous `impl ${spelling (wantedAt i k).pred.tr}`"
+          in setSol i k (Just Failed)))
     ()
     (V.range 0 (B.len i.wanted))
 
@@ -578,22 +571,21 @@ fun liftEach (i : Inf s) (ts : [Type]) (st : AssocVars) :
   match H.lookup tr (stGetRef i.shapes) with
   | Just (sh : TraitShape) ->
       (let scrutinee =
-        V.foldl
-          (\acc k -> match acc with
-                     | (xs, s1) ->
-                         (let over =
-                           V.concatMap
-                           (\p -> match V.get tys p with
-                                  | Just x -> [x]
-                                  | None -> [])
-                           (V.getOr [] sh.assocParams k)
-in
-              match assocVar (V.getOr "" sh.assocs k) over s1 with
-              | (q, s2) -> (V.pushBack xs (Bound q), s2)))
-          ([], st)
-          (V.range 0 (V.len sh.assocs))
-in
-        match scrutinee with
+          V.foldl
+            (\acc k -> match acc with
+                       | (xs, s1) ->
+                           (let over =
+                               V.concatMap
+                               (\p -> match V.get tys p with
+                                      | Just x -> [x]
+                                      | None -> [])
+                               (V.getOr [] sh.assocParams k)
+                             in
+                             match assocVar (V.getOr "" sh.assocs k) over s1 with
+                             | (q, s2) -> (V.pushBack xs (Bound q), s2)))
+            ([], st)
+            (V.range 0 (V.len sh.assocs))
+        in match scrutinee with
         | (assocs, st2) -> (Pred { tr = tr, tys = tys, assocs = assocs }, st2))
   | None -> (Pred { tr = tr, tys = tys, assocs = [] }, st)
 
@@ -660,20 +652,19 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) :
               V.foldl
                 (\x (p : Pred) ->
                   (let k =
-                    want
-                      i
-                      (Pred
-                        {
-                          tr = p.tr,
-                          tys = V.map (\y -> substBound y fresh) p.tys,
-                          assocs = V.map (\y -> substBound y fresh) p.assocs
-                        })
-                      owner
-            in
-                  ()))
+                      want
+                        i
+                        (Pred
+                          {
+                            tr = p.tr,
+                            tys = V.map (\y -> substBound y fresh) p.tys,
+                            assocs = V.map (\y -> substBound y fresh) p.assocs
+                          })
+                        owner
+                    in ()))
                 ()
                 preds
-in
+            in
             substBound lifted fresh
 
 -- --- matching an impl's head -------------------------------------------------
@@ -793,41 +784,41 @@ in
           labels = V.append (V.map (\(sup : Super) -> superLabel sup.tr) supers) (V.map (\m -> match m with | (mn, _, _, _) -> mn) methods)
         }
     in
-    let u =
-      V.foldl
-        (\x k ->
-          stSetRef
-            i.assocOf
-            (H.insert
-              (V.getOr "" assocs k)
-              (AssocOwner { tr = name, at = k })
-              (stGetRef i.assocOf)))
-        ()
-        (V.range 0 (V.len assocs))
-    in
-    let v = stSetRef i.shapes (H.insert name shape (stGetRef i.shapes)) in
-    let headArgs = V.map (\k -> Bound k) (V.range 0 (np + n)) in
-    let head = Con name headArgs in
-    let superFields =
-      V.map
-        (\(sup : Super) ->
-          (
-            Just (superLabel sup.tr),
-            Con
-              sup.tr
-              (V.append
-                (V.map (\k -> Bound k) sup.over)
-                (superAssocs i name (V.drop headArgs np) sup.tr sup.over))
-          ))
-        supers
-    in
-    let methodFields =
-      V.map
-        (\m -> registerMethod i a name params allAssocs assocParams headArgs m)
-        methods
-    in
-    let quant = V.replicate (np + n) Plain in
-    recordCtorIn i name dict quant head (V.append superFields methodFields)
+  let u =
+    V.foldl
+      (\x k ->
+        stSetRef
+          i.assocOf
+          (H.insert
+            (V.getOr "" assocs k)
+            (AssocOwner { tr = name, at = k })
+            (stGetRef i.assocOf)))
+      ()
+      (V.range 0 (V.len assocs))
+  in
+  let v = stSetRef i.shapes (H.insert name shape (stGetRef i.shapes)) in
+  let headArgs = V.map (\k -> Bound k) (V.range 0 (np + n)) in
+  let head = Con name headArgs in
+  let superFields =
+    V.map
+      (\(sup : Super) ->
+        (
+          Just (superLabel sup.tr),
+          Con
+            sup.tr
+            (V.append
+              (V.map (\k -> Bound k) sup.over)
+              (superAssocs i name (V.drop headArgs np) sup.tr sup.over))
+        ))
+      supers
+  in
+  let methodFields =
+    V.map
+      (\m -> registerMethod i a name params allAssocs assocParams headArgs m)
+      methods
+  in
+  let quant = V.replicate (np + n) Plain in
+  recordCtorIn i name dict quant head (V.append superFields methodFields)
 
 -- One method: its scheme over the trait's parameters and associated types,
 -- and its field in the dictionary.
@@ -1013,15 +1004,14 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
                     (\acc j -> match acc with
                                | (xs, s1) ->
                                    (let is =
-                                     (match V.find (\x -> fst x == V.getOr "" sh.assocs j) assocs with
-                                      | Just (_, t) -> tyOf i a t vars
-                                      | None -> Error)
-                in
-                        match liftAssocs i is s1 with
-                        | (x, s2) -> (V.pushBack xs x, s2)))
+                                       (match V.find (\x -> fst x == V.getOr "" sh.assocs j) assocs with
+                                        | Just (_, t) -> tyOf i a t vars
+                                        | None -> Error)
+                                     in match liftAssocs i is s1 with
+                                     | (x, s2) -> (V.pushBack xs x, s2)))
                     (heads, st1)
                     (V.range 0 sh.ownAssocs)
-in
+                in
                 match scrutinee with
                 | (args1, st2) ->
                     -- An inherited one is what the `impl` of the trait that
@@ -1037,15 +1027,15 @@ in
                               lacks = []
                             }
                         in
-                            match findImpl i tr k with
-                            | Just prev ->
-                                (if prev.dict != dict
-                                  then
-                                    report
-                                    i
-                                    "`${spelling tr}` is already implemented for these types"
-                                  else addImpl i tr k dict sc)
-                            | None -> addImpl i tr k dict sc
+                        match findImpl i tr k with
+                        | Just prev ->
+                            (if prev.dict != dict
+                              then
+                                report
+                                i
+                                "`${spelling tr}` is already implemented for these types"
+                              else addImpl i tr k dict sc)
+                        | None -> addImpl i tr k dict sc
 
 fun addImpl (i : Inf s) (tr : String) (k : String) (dict : Int) (sc : Scheme) :
     () ! { St s | e } =

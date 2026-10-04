@@ -597,19 +597,18 @@ fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
         (match alias with
          | Just q ->
              (let qualified =
-               { acc | quals = V.pushBack acc.quals (q, valuesMap items) }
-      in
-               if V.isEmpty names
-               then qualified
-               else
-                 withRefs
-                   (bring qualified vis (namedIn items names))
-                   (namedRefs items written))
-  | None ->
-      if V.isEmpty names
-      then bring acc vis (bareUse items root)
-      else
-        withRefs (bring acc vis (namedIn items names)) (namedRefs items written)) in
+                 { acc | quals = V.pushBack acc.quals (q, valuesMap items) }
+               in if V.isEmpty names
+                  then qualified
+                  else
+                    withRefs
+                      (bring qualified vis (namedIn items names))
+                      (namedRefs items written))
+         | None ->
+             if V.isEmpty names
+             then bring acc vis (bareUse items root)
+             else
+               withRefs (bring acc vis (namedIn items names)) (namedRefs items written)) in
         -- `use Ty ...` for a type this very module declares.
         match (if V.len segs == 1 then typeIn m.items else None) with
         | Just t -> useType acc vis m.items t lastAt written glob False
@@ -852,192 +851,191 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
           deps = depCx
         }
     in
-    -- Every constructor of every type the unit knows, by its type: its own
-    -- modules', each type with the constructors declared beside it, and its
-    -- dependencies'.
-    let groups =
-      V.append
-        (V.map (\(f : ModFrame) -> f.items) frames)
-        (V.concatMap (\(d : Dep) -> V.map (\x -> [snd x]) d.items) depCx)
-    in
-    let depCtors = V.concatMap (\(d : Dep) -> V.map snd d.items) depCx in
-    let typeCtors =
+  -- Every constructor of every type the unit knows, by its type: its own
+  -- modules', each type with the constructors declared beside it, and its
+  -- dependencies'.
+  let groups =
+    V.append
+      (V.map (\(f : ModFrame) -> f.items) frames)
+      (V.concatMap (\(d : Dep) -> V.map (\x -> [snd x]) d.items) depCx)
+  in
+  let depCtors = V.concatMap (\(d : Dep) -> V.map snd d.items) depCx in
+  let typeCtors =
+    V.foldl
+    (\h (items : [Item]) ->
       V.foldl
-      (\h (items : [Item]) ->
-        V.foldl
-          (\g (t : Item) ->
-            if t.kind != "t" then g
-            else
-              let pool = if V.len items == 1 then depCtors else items in
-              H.insert
-                t.id
-                (V.foldl
-                  (\c (k : Item) -> H.insert k.name k.id c)
-                  H.empty
-                  (ctorsOfType pool t.name))
-                g)
-          h
-          items)
-      H.empty
-      groups in
-      -- `and` and `or` are `Bool`'s constructors, whatever is in scope.
-      let allItems =
-        V.append
-          (V.concatMap (\(f : ModFrame) -> f.items) frames)
-          (V.concatMap (\(d : Dep) -> V.map snd d.items) depCx)
-      in
-      let bools =
-        V.foldl
-          (\h (c : Item) -> if c.kind == "c" and c.owner == "Bool"
-            then H.insert c.name c.id h
-            else h)
-          H.empty
-          allItems
-      in
-      -- The types and constructors every module has without asking: the
-      -- standard library's, where it declares them.
-      let typeNamed =
-        \n ->
-          M.unwrapOr
-            builtinType
-            (M.map
-              (\(i : Item) -> i.id)
-              (V.find (\(i : Item) -> i.kind == "t" and i.name == n) allItems))
-      in
-      let ctorNamed =
-        \o n ->
-          M.unwrapOr
-            builtinCtor
-            (M.map
-              (\(i : Item) -> i.id)
-              (V.find
-                (\(i : Item) ->
-                  i.kind == "c" and i.owner == o and i.name == n)
-                allItems))
-      in
-      let builtinTypes = V.map (\n -> (n, typeNamed n)) builtinTyconNames in
-      let builtinCtors =
-        V.map
-          (\oc -> (snd oc, ctorNamed (fst oc) (snd oc)))
-          [
-            ("List", "Nil"),
-            ("List", "Cons"),
-            ("Bool", "True"),
-            ("Bool", "False")
-          ]
-      in
-      -- Every trait's associated types, by the trait: what an `impl`'s `type`
-      -- is, whatever is in scope.
-      let traitAssocs =
-        V.foldl
-        (\h (t : Item) ->
-          if t.kind == "t" and t.owner == "trait"
-          then
+        (\g (t : Item) ->
+          if t.kind != "t" then g
+          else
+            let pool = if V.len items == 1 then depCtors else items in
             H.insert
               t.id
               (V.foldl
-                (\g (x : Item) ->
-                  if x.kind == "t" and x.owner == "assoc:" ++ t.name
-                  then H.insert x.name x.id g
-                  else g)
+                (\c (k : Item) -> H.insert k.name k.id c)
                 H.empty
-                allItems)
-              h
-          else h)
-        H.empty
-        allItems in
-        let ctorFields =
-          V.foldl
-            (\h (c : Item) -> match c.fields with
-                              | Just fs ->
-                                  (if c.kind == "c"
-                                    then H.insert c.id fs h
-                                    else h)
-                              | None -> h)
+                (ctorsOfType pool t.name))
+              g)
+        h
+        items)
+    H.empty
+    groups in
+    -- `and` and `or` are `Bool`'s constructors, whatever is in scope.
+    let allItems =
+      V.append
+        (V.concatMap (\(f : ModFrame) -> f.items) frames)
+        (V.concatMap (\(d : Dep) -> V.map snd d.items) depCx)
+    in
+  let bools =
+    V.foldl
+      (\h (c : Item) -> if c.kind == "c" and c.owner == "Bool"
+        then H.insert c.name c.id h
+        else h)
+      H.empty
+      allItems
+  in
+  -- The types and constructors every module has without asking: the
+  -- standard library's, where it declares them.
+  let typeNamed =
+    \n ->
+      M.unwrapOr
+        builtinType
+        (M.map
+          (\(i : Item) -> i.id)
+          (V.find (\(i : Item) -> i.kind == "t" and i.name == n) allItems))
+  in
+  let ctorNamed =
+    \o n ->
+      M.unwrapOr
+        builtinCtor
+        (M.map
+          (\(i : Item) -> i.id)
+          (V.find
+            (\(i : Item) ->
+              i.kind == "c" and i.owner == o and i.name == n)
+            allItems))
+  in
+  let builtinTypes = V.map (\n -> (n, typeNamed n)) builtinTyconNames in
+  let builtinCtors =
+    V.map
+      (\oc -> (snd oc, ctorNamed (fst oc) (snd oc)))
+      [
+        ("List", "Nil"),
+        ("List", "Cons"),
+        ("Bool", "True"),
+        ("Bool", "False")
+      ]
+  in
+  -- Every trait's associated types, by the trait: what an `impl`'s `type`
+  -- is, whatever is in scope.
+  let traitAssocs =
+    V.foldl
+    (\h (t : Item) ->
+      if t.kind == "t" and t.owner == "trait"
+      then
+        H.insert
+          t.id
+          (V.foldl
+            (\g (x : Item) ->
+              if x.kind == "t" and x.owner == "assoc:" ++ t.name
+              then H.insert x.name x.id g
+              else g)
             H.empty
-            allItems
-        in
-        let sh =
-          Shared
-            {
-              prims = prims,
-              unknown = unknown,
-              builtinType = builtinType,
-              builtinCtor = builtinCtor,
-              typeCtors = typeCtors,
-              bools = bools,
-              builtinTypes = builtinTypes,
-              builtinCtors = builtinCtors,
-              traitAssocs = traitAssocs,
-              vectorEmpty = ctorNamed "Vector" "Empty",
-              ctorFields = ctorFields
-            }
-        in
-        let done =
+            allItems)
+          h
+      else h)
+    H.empty
+    allItems in
+    let ctorFields =
+      V.foldl
+        (\h (c : Item) -> match c.fields with
+                          | Just fs ->
+                              (if c.kind == "c"
+                                then H.insert c.id fs h
+                                else h)
+                          | None -> h)
+        H.empty
+        allItems
+    in
+  let sh =
+    Shared
+      {
+        prims = prims,
+        unknown = unknown,
+        builtinType = builtinType,
+        builtinCtor = builtinCtor,
+        typeCtors = typeCtors,
+        bools = bools,
+        builtinTypes = builtinTypes,
+        builtinCtors = builtinCtors,
+        traitAssocs = traitAssocs,
+        vectorEmpty = ctorNamed "Vector" "Empty",
+        ctorFields = ctorFields
+      }
+  in
+  let done =
+    V.map
+      (\(f : ModFrame) ->
+        (match scopeOf cx sh f with
+         | (sc, re, refs) ->
+             (let u =
+                 V.foldl
+                  (\z r ->
+                    useOf
+                      f.src.file
+                      (if snd r < 0 then builtinType else snd r)
+                      (fst r))
+                  ()
+                  refs
+               in (f, sc, re))))
+      frames
+  in
+  let programs =
+    V.map (\x -> match x with | (f, sc, _) -> renameSource sc f) done
+  in
+  let exports =
+    V.concatMap
+    (\x ->
+      match x with
+      | (f, _, re) ->
           V.map
-            (\(f : ModFrame) ->
-              (match scopeOf cx sh f with
-               | (sc, re, refs) ->
-                   (let u =
-                     V.foldl
-                      (\z r ->
-                        useOf
-                          f.src.file
-                          (if snd r < 0 then builtinType else snd r)
-                          (fst r))
-                      ()
-                      refs
-        in
-                  (f, sc, re))))
-            frames
-in
-        let programs =
-          V.map (\x -> match x with | (f, sc, _) -> renameSource sc f) done
-        in
-        let exports =
-          V.concatMap
-          (\x ->
-            match x with
-            | (f, _, re) ->
-                V.map
-                  (\(i : Item) ->
-                    Export
-                      {
-                        module = framePath f,
-                        name = i.name,
-                        kind = i.kind,
-                        site = show i.id,
-                        vis = i.vis,
-                        owner = i.owner,
-                        flat = i.flat,
-                        fields = i.fields,
-                        canon = i.canon,
-                        binder = i.id,
-                        scheme = None
-                      })
-                  (V.append f.items re))
-          done in
-          -- The standard library's operators, `display`, `debug` and comparison are
-          -- at its root too: every program has them unqualified.
-          let flat =
-            if isStd
-            then
-              V.concatMap
-                (\(e : Export) ->
-                  if V.elem (dotted e.module) flatModules
-                  and e.vis == Exported
-                  then [{ e | module = [] }]
-                  else [])
-                exports
-            else [] in
-            let modules =
-              V.map
-                (\(f : ModFrame) ->
-                  Declared
-                    { file = f.src.file, path = framePath f, items = f.items })
-                frames
-            in
-            (programs, V.append exports flat, anyVis, modules, depCtors, prims)
+            (\(i : Item) ->
+              Export
+                {
+                  module = framePath f,
+                  name = i.name,
+                  kind = i.kind,
+                  site = show i.id,
+                  vis = i.vis,
+                  owner = i.owner,
+                  flat = i.flat,
+                  fields = i.fields,
+                  canon = i.canon,
+                  binder = i.id,
+                  scheme = None
+                })
+            (V.append f.items re))
+    done in
+    -- The standard library's operators, `display`, `debug` and comparison are
+    -- at its root too: every program has them unqualified.
+    let flat =
+      if isStd
+      then
+        V.concatMap
+          (\(e : Export) ->
+            if V.elem (dotted e.module) flatModules
+            and e.vis == Exported
+            then [{ e | module = [] }]
+            else [])
+          exports
+      else [] in
+      let modules =
+        V.map
+          (\(f : ModFrame) ->
+            Declared
+              { file = f.src.file, path = framePath f, items = f.items })
+          frames
+      in
+  (programs, V.append exports flat, anyVis, modules, depCtors, prims)
 
 -- A dependency's exports as items, each with the module it is in: one binder
 -- for each thing exported, however many places export it -- a module and the

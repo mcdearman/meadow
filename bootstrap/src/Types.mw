@@ -860,29 +860,28 @@ fun effectSuffix (nm : Namer) (eff : Type) (hidden : [Int]) : (String, Namer) =
              else
                let braces = V.len labels != 1 or M.isSome named in
                (let scrutinee =
-                 V.foldl
-                   (\acc (lab : (String, [Type])) -> match acc with
-                                                     | (parts, n3) ->
-                                                         (match writeEach n3 (snd lab) app hidden " " with
-                                                          | (s, n4) ->
-                                                              (
-                                                                V.pushBack parts (if V.isEmpty (snd lab) then spelling (fst lab) else spelling (fst lab) ++ " " ++ s),
-                                                                n4
-                                                              )))
-                   ([], n2)
-                   labels
-in
-                 match scrutinee with
+                   V.foldl
+                     (\acc (lab : (String, [Type])) -> match acc with
+                                                       | (parts, n3) ->
+                                                           (match writeEach n3 (snd lab) app hidden " " with
+                                                            | (s, n4) ->
+                                                                (
+                                                                  V.pushBack parts (if V.isEmpty (snd lab) then spelling (fst lab) else spelling (fst lab) ++ " " ++ s),
+                                                                  n4
+                                                                )))
+                     ([], n2)
+                     labels
+                 in match scrutinee with
                  | (parts, n5) ->
                      let body =
                        S.join ", " parts
                          ++ (match named with | Just tn -> " | " ++ tn | None -> "")
                      in
-                      (
-                        " ! "
-                          ++ (if braces then "{ " ++ body ++ " }" else body),
-                        n5
-                      )))
+                     (
+                       " ! "
+                         ++ (if braces then "{ " ++ body ++ " }" else body),
+                       n5
+                     )))
 
 -- An effect row's labels, each with its arguments, and what it ends in: a
 -- variable, or nothing.
@@ -1002,7 +1001,7 @@ fun counted (t : Type) (acc : (HashMap Int Int, [Int])) :
               else S.join ", " parts)
               ++ " => "
         in
-        head ++ context ++ fst (writeType n3 scheme.ty top hidden)
+      head ++ context ++ fst (writeType n3 scheme.ty top hidden)
 
 -- --- tests -------------------------------------------------------------------
 

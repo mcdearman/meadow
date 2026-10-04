@@ -301,4 +301,4 @@ fun padTo width s =
       let _ =
         assertEq (throughput r) 1000000000 "units win when there are units"
       in
-      assertEq (throughput plain) 1000000 "calls otherwise"
+  assertEq (throughput plain) 1000000 "calls otherwise"

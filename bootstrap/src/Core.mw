@@ -31,50 +31,50 @@ data Word
   = @regex("[ \t\r\n]+") Space
   | @token("[") Open
   | @token("]") Close
-  | @token("program") KProgram
-  | @token("defs") KDefs
-  | @token("fields") KFields
-  | @token("var") KVar
-  | @token("lam") KLam
-  | @token("app") KApp
-  | @token("let") KLet
-  | @token("letrec") KLetRec
-  | @token("if") KIf
-  | @token("tuple") KTuple
-  | @token("array") KArray
-  | @token("proj") KProj
-  | @token("record") KRecord
-  | @token("sel") KSel
-  | @token("extend") KExtend
-  | @token("ctor") KCtor
-  | @token("prim") KPrim
-  | @token("case") KCase
-  | @token("when") KWhen
-  | @token("perform") KPerform
-  | @token("handle") KHandle
-  | @token("return") KReturn
-  | @token("join") KJoin
-  | @token("jump") KJump
-  | @token("error") KError
-  | @token("const") KConst
-  | @token("int") KInt
-  | @token("bigint") KBigInt
-  | @token("f64") KF64
-  | @token("f32") KF32
-  | @token("word") KWord
-  | @token("str") KStr
-  | @token("char") KChar
-  | @token("true") KTrue
-  | @token("false") KFalse
-  | @token("unit") KUnit
-  | @token("wild") KWild
-  | @token("pvar") KPVar
-  | @token("pas") KPAs
-  | @token("plit") KPLit
-  | @token("ptuple") KPTuple
-  | @token("parray") KPArray
-  | @token("pctor") KPCtor
-  | @token("precord") KPRecord
+  | @token("program") Program
+  | @token("defs") Defs
+  | @token("fields") Fields
+  | @token("var") Var
+  | @token("lam") Lam
+  | @token("app") App
+  | @token("let") Let
+  | @token("letrec") LetRec
+  | @token("if") If
+  | @token("tuple") Tuple
+  | @token("array") Array
+  | @token("proj") Proj
+  | @token("record") Record
+  | @token("sel") Sel
+  | @token("extend") Extend
+  | @token("ctor") Ctor
+  | @token("prim") Prim
+  | @token("case") Case
+  | @token("when") When
+  | @token("perform") Perform
+  | @token("handle") Handle
+  | @token("return") Return
+  | @token("join") Join
+  | @token("jump") Jump
+  | @token("error") Error
+  | @token("const") Const
+  | @token("int") Int
+  | @token("bigint") BigInt
+  | @token("f64") F64
+  | @token("f32") F32
+  | @token("word") Word
+  | @token("str") Str
+  | @token("char") Char
+  | @token("true") True
+  | @token("false") False
+  | @token("unit") Unit
+  | @token("wild") Wild
+  | @token("pvar") PVar
+  | @token("pas") PAs
+  | @token("plit") PLit
+  | @token("ptuple") PTuple
+  | @token("parray") PArray
+  | @token("pctor") PCtor
+  | @token("precord") PRecord
   | @regex("-?[0-9]+") Number
   | @regex("\"[^\"]*\"") Quoted
 
@@ -83,15 +83,15 @@ syntax! {
   lexer Word
   trivia { Space }
   tokens {
-    "[" = Open, "]" = Close, "program" = KProgram, "defs" = KDefs, "fields" = KFields,
-    "var" = KVar, "lam" = KLam, "app" = KApp, "let" = KLet, "letrec" = KLetRec, "if" = KIf,
-    "tuple" = KTuple, "array" = KArray, "proj" = KProj, "record" = KRecord, "sel" = KSel,
-    "extend" = KExtend, "ctor" = KCtor, "prim" = KPrim, "case" = KCase, "when" = KWhen,
-    "perform" = KPerform, "handle" = KHandle, "return" = KReturn, "join" = KJoin, "jump" = KJump,
-    "error" = KError, "const" = KConst, "int" = KInt, "bigint" = KBigInt, "f64" = KF64,
-    "f32" = KF32, "word" = KWord, "str" = KStr, "char" = KChar, "true" = KTrue, "false" = KFalse,
-    "unit" = KUnit, "wild" = KWild, "pvar" = KPVar, "pas" = KPAs, "plit" = KPLit,
-    "ptuple" = KPTuple, "parray" = KPArray, "pctor" = KPCtor, "precord" = KPRecord,
+    "[" = Open, "]" = Close, "program" = Program, "defs" = Defs, "fields" = Fields,
+    "var" = Var, "lam" = Lam, "app" = App, "let" = Let, "letrec" = LetRec, "if" = If,
+    "tuple" = Tuple, "array" = Array, "proj" = Proj, "record" = Record, "sel" = Sel,
+    "extend" = Extend, "ctor" = Ctor, "prim" = Prim, "case" = Case, "when" = When,
+    "perform" = Perform, "handle" = Handle, "return" = Return, "join" = Join, "jump" = Jump,
+    "error" = Error, "const" = Const, "int" = Int, "bigint" = BigInt, "f64" = F64,
+    "f32" = F32, "word" = Word, "str" = Str, "char" = Char, "true" = True, "false" = False,
+    "unit" = Unit, "wild" = Wild, "pvar" = PVar, "pas" = PAs, "plit" = PLit,
+    "ptuple" = PTuple, "parray" = PArray, "pctor" = PCtor, "precord" = PRecord,
     "number" = Number, "string" = Quoted
   }
   grammar {

@@ -2713,7 +2713,7 @@ fun reduceOps (c : Lc) b (outs : [Int]) ops (here : Fixity) =
 fun goesBefore (there : Fixity) (here : Fixity) : Bool =
   if there.level > here.level then True
   else if there.level < here.level then False
-  else not (there.assoc == GroupsRight and here.assoc == GroupsRight)
+  else not (there.assoc == Right and here.assoc == Right)
 
 -- The top two operands, operator `o` applied to them: `(+) l r`, or `Cons l r`.
 fun applyOp b (outs : [Int]) o =

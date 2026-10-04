@@ -9,19 +9,19 @@
 --     | Ok libm ->
 --         (match Ffi.function libm "pow" with
 --          | Err why -> println why
---          | Ok pow -> println (Ffi.callFloat pow [Arg.FloatArg 2.0, Arg.FloatArg 10.0]))
+--          | Ok pow -> println (Ffi.callFloat pow [Arg.Float 2.0, Arg.Float 10.0]))
 --
 -- A library is opened by its path, or by a name the system's loader knows
 -- where to find; a function is found in it by name; and the function is
 -- called with a list of arguments, by the `call…` that says what it answers.
 --
 --   C                               here
---   int, long, size_t, a pointer    IntArg, PtrArg     callInt, callPtr
---   double, float                   FloatArg           callFloat
---   const char *                    StringArg          callString
+--   int, long, size_t, a pointer    Arg.Int, Arg.Ptr   callInt, callPtr
+--   double, float                   Arg.Float          callFloat
+--   const char *                    Arg.String         callString
 --   void                                               callUnit
 --
--- A `StringArg` is handed over as a NUL-terminated string that lasts as long
+-- An `Arg.String` is handed over as a NUL-terminated string that lasts as long
 -- as the call does; a string answered is copied, and a null one is `""`.
 --
 -- **Nothing checks a call.** There is no declaration of the function here to
@@ -68,8 +68,7 @@ use Std.Result.Result.*
 @pub data Ptr = Ptr Int
 
 -- An argument to a call.
-use Arg.*
-@pub data Arg = IntArg Int | FloatArg Float | StringArg String | PtrArg Ptr
+@pub data Arg = Int Int | Float Float | String String | Ptr Ptr
 
 -- The pointer to nothing.
 @pub def null : Ptr = Ptr 0
@@ -100,10 +99,10 @@ use Arg.*
 
 fun wire (a : Arg) : (Int, Int, Float, String) =
   match a with
-  | IntArg n -> (0, n, 0.0, "")
-  | PtrArg p -> (0, address p, 0.0, "")
-  | FloatArg x -> (1, 0, x, "")
-  | StringArg s -> (2, 0, 0.0, s)
+  | Arg.Int n -> (0, n, 0.0, "")
+  | Arg.Ptr p -> (0, address p, 0.0, "")
+  | Arg.Float x -> (1, 0, x, "")
+  | Arg.String s -> (2, 0, 0.0, s)
 
 fun invoke (f : Function) (answer : Int) (args : [Arg]) : Result String
     (Int, Float, String) ! { Process | e } =
@@ -215,7 +214,7 @@ fun cFunction (name : String) =
   | Err why -> assertEq why "" "the C library has strlen"
   | Ok strlen ->
       assertEq
-        (callInt strlen [StringArg "héllo"])
+        (callInt strlen [Arg.String "héllo"])
         (Ok 6)
         "its bytes, counted by C"
 
@@ -223,13 +222,16 @@ fun cFunction (name : String) =
   match cFunction "labs" with
   | Err why -> assertEq why "" "the C library has labs"
   | Ok labs ->
-      assertEq (callInt labs [IntArg (0 - 7)]) (Ok 7) "its absolute value"
+      assertEq (callInt labs [Arg.Int (0 - 7)]) (Ok 7) "its absolute value"
 
 @test fun aFloatComesBack () =
   match cFunction "atof" with
   | Err why -> assertEq why "" "the C library has atof"
   | Ok atof ->
-      assertEq (callFloat atof [StringArg "2.5"]) (Ok 2.5) "the number it reads"
+      assertEq
+        (callFloat atof [Arg.String "2.5"])
+        (Ok 2.5)
+        "the number it reads"
 
 @test fun aStringComesBackAndANullOneIsEmpty () =
   match cFunction "getenv" with
@@ -237,12 +239,12 @@ fun cFunction (name : String) =
   | Ok getenv ->
       let _ =
         assertEq
-          (callString getenv [StringArg "MEADOW_NO_SUCH_VARIABLE"])
+          (callString getenv [Arg.String "MEADOW_NO_SUCH_VARIABLE"])
           (Ok "")
           "null is the empty string"
       in
       assertTrue
-        (callString getenv [StringArg "PATH"] != Ok "")
+        (callString getenv [Arg.String "PATH"] != Ok "")
         "and PATH is set"
 
 @test fun cFillsMemoryThatIsReadBack () =
@@ -250,7 +252,7 @@ fun cFunction (name : String) =
   | Err why -> assertEq why "" "the C library has memset"
   | Ok memset ->
       let got = withBuffer 16 (\p ->
-        let _ = callPtr memset [PtrArg p, IntArg 104, IntArg 3] in
+        let _ = callPtr memset [Arg.Ptr p, Arg.Int 104, Arg.Int 3] in
         (readText p 3, readUnsigned p 1 4)) in
       assertEq
         got

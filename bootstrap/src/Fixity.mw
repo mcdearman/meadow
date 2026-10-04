@@ -42,7 +42,7 @@ use Std.Result.Result.*
 -- Which way an operator groups: `a - b - c` is `(a - b) - c`, `a ^ b ^ c` is
 -- `a ^ (b ^ c)`, and `a == b == c` is neither.
 @derive(Debug, PartialEq, Reflect)
-@pub data Assoc = GroupsLeft | GroupsRight | GroupsNeither
+@pub data Assoc = Left | Right | Neither
 
 use Assoc.*
 
@@ -54,18 +54,18 @@ use Assoc.*
 fun fx (a : Assoc) (l : Int) : Fixity = Fixity { assoc = a, level = l }
 
 -- What an operator nobody declared binds as.
-def undeclared : Fixity = fx GroupsLeft 9
+def undeclared : Fixity = fx Left 9
 
 -- The operators the language itself knows (`meadow_hir::OPERATORS`).
 def builtin : [(String, Fixity)] =
-  [ ("^", fx GroupsRight 8),
-    ("*", fx GroupsLeft 7), ("/", fx GroupsLeft 7), ("%", fx GroupsLeft 7), ("*.", fx GroupsLeft 7), ("/.", fx GroupsLeft 7),
-    ("+", fx GroupsLeft 6), ("-", fx GroupsLeft 6), ("+.", fx GroupsLeft 6), ("-.", fx GroupsLeft 6),
-    ("<<", fx GroupsLeft 6), (">>", fx GroupsLeft 6), (">>>", fx GroupsLeft 6),
-    ("::", fx GroupsRight 5), ("++", fx GroupsRight 5),
-    ("==", fx GroupsNeither 4), ("!=", fx GroupsNeither 4), ("<", fx GroupsNeither 4), (">", fx GroupsNeither 4),
-    ("<=", fx GroupsNeither 4), (">=", fx GroupsNeither 4), ("<.", fx GroupsNeither 4), (">.", fx GroupsNeither 4),
-    ("<=.", fx GroupsNeither 4), (">=.", fx GroupsNeither 4) ]
+  [ ("^", fx Right 8),
+    ("*", fx Left 7), ("/", fx Left 7), ("%", fx Left 7), ("*.", fx Left 7), ("/.", fx Left 7),
+    ("+", fx Left 6), ("-", fx Left 6), ("+.", fx Left 6), ("-.", fx Left 6),
+    ("<<", fx Left 6), (">>", fx Left 6), (">>>", fx Left 6),
+    ("::", fx Right 5), ("++", fx Right 5),
+    ("==", fx Neither 4), ("!=", fx Neither 4), ("<", fx Neither 4), (">", fx Neither 4),
+    ("<=", fx Neither 4), (">=", fx Neither 4), ("<.", fx Neither 4), (">.", fx Neither 4),
+    ("<=.", fx Neither 4), (">=.", fx Neither 4) ]
 
 fun builtinOf (op : String) : Maybe Fixity =
   M.map snd (V.find (\b -> fst b == op) builtin)
@@ -73,9 +73,9 @@ fun builtinOf (op : String) : Maybe Fixity =
 -- The keyword a fixity is declared with.
 fun keyword (f : Fixity) : String =
   match f.assoc with
-  | GroupsLeft -> "infixl"
-  | GroupsRight -> "infixr"
-  | GroupsNeither -> "infix"
+  | Left -> "infixl"
+  | Right -> "infixr"
+  | Neither -> "infix"
 
 -- How `op` binds, with the unit's declarations `declared`.
 @pub fun fixityOf (declared : HashMap String Fixity) (op : String) : Fixity =
@@ -101,10 +101,10 @@ fun declareOne (acc : HashMap String Fixity) (d : Syntax Surface)
       let f =
         fx
           (if R.kindOf assoc == TokenInfixl
-            then GroupsLeft
+            then Left
             else if R.kindOf assoc == TokenInfixr
-            then GroupsRight
-            else GroupsNeither)
+            then Right
+            else Neither)
           level
       in
       if level > 9
@@ -217,12 +217,12 @@ fun reduce (out : Origin Surface Grouped) (outs : [Part Grouped])
       let goes =
         if there.level > here.level then True
         else if there.level < here.level then False
-        else if there.assoc == GroupsLeft and here.assoc == GroupsLeft then True
-        else if there.assoc == GroupsRight and here.assoc == GroupsRight
+        else if there.assoc == Left and here.assoc == Left then True
+        else if there.assoc == Right and here.assoc == Right
         then False
         else
           let why =
-            if topName == name and there.assoc == GroupsNeither
+            if topName == name and there.assoc == Neither
             then
               "`${topName}` is `${keyword there} ${show there.level}`, which does not group: `x ${topName} y ${topName} z` means nothing"
             else

@@ -267,16 +267,15 @@ fun columnAt input off = columnFrom input (lineStart input off) off 1
 
 -- What the head of an indented block says comes under it, for `indentBlock`.
 --
--- * `IndentNone x`: nothing does; the block is `x`.
--- * `IndentMany at f p`: any number of `p`s, one per line, all at one column
---   further in than the head -- `at` if it is `Just` one, or wherever the
---   first is -- and the block is `f` of them.
--- * `IndentSome at f p`: the same, but at least one.
-use IndentOpt.*
+-- * `IndentOpt.None x`: nothing does; the block is `x`.
+-- * `IndentOpt.Many at f p`: any number of `p`s, one per line, all at one
+--   column further in than the head -- `at` if it is `Just` one, or wherever
+--   the first is -- and the block is `f` of them.
+-- * `IndentOpt.Some at f p`: the same, but at least one.
 @pub data IndentOpt s a b
-  = IndentNone a
-  | IndentMany (Maybe Int) ([b] -> Parser s a) (Parser s b)
-  | IndentSome (Maybe Int) ([b] -> Parser s a) (Parser s b)
+  = None a
+  | Many (Maybe Int) ([b] -> Parser s a) (Parser s b)
+  | Some (Maybe Int) ([b] -> Parser s a) (Parser s b)
 
 fun orAt indent lvl =
   match indent with
@@ -302,7 +301,7 @@ fun itemsAt ref lvl sc p pos =
       (P.defer (\() -> indentedItems ref lvl sc p))
   else incorrectIndent Equal lvl pos
 
--- `IndentMany`: the items, if the next line is indented past the head.
+-- `IndentOpt.Many`: the items, if the next line is indented past the head.
 fun manyBlock sc ref indent f p =
   let next =
     P.skipThen C.eol (indentGuard sc Greater ref) |> P.try |> P.optional
@@ -313,7 +312,7 @@ fun manyBlock sc ref indent f p =
       | (Just at, None) -> P.bind (indentedItems ref (orAt indent at) sc p) f
       | _ -> P.skipThen sc (f [])))
 
--- `IndentSome`: the first item on the next line, which has to be indented
+-- `IndentOpt.Some`: the first item on the next line, which has to be indented
 -- past the head, and the rest at its column.
 fun someBlock sc ref indent f p =
   P.bind (P.skipThen C.eol (indentGuard sc Greater ref)) (\pos ->
@@ -332,16 +331,16 @@ fun someBlock sc ref indent f p =
 -- space consumer that skips newlines too, since the block's lines are on
 -- lines of their own:
 --
---   fun item = header |> P.map (\name -> IndentMany None (P.pure . Node name) leaf) |> L.indentBlock scn
+--   fun item = header |> P.map (\name -> IndentOpt.Many None (P.pure . Node name) leaf) |> L.indentBlock scn
 @pub fun indentBlock (sc : Parser s a) (r : Parser s (IndentOpt s b c))
     : Parser s b =
   P.skipThen sc
     (P.bind indentLevel (\ref ->
       P.bind r (\opt ->
         match opt with
-        | IndentNone x -> P.mapTo x sc
-        | IndentMany indent f p -> manyBlock sc ref indent f p
-        | IndentSome indent f p -> someBlock sc ref indent f p)))
+        | IndentOpt.None x -> P.mapTo x sc
+        | IndentOpt.Many indent f p -> manyBlock sc ref indent f p
+        | IndentOpt.Some indent f p -> someBlock sc ref indent f p)))
 
 -- A line fold: a construct that may continue on further lines, as long as
 -- they are indented past where it began. `action` is handed a space consumer
@@ -438,7 +437,7 @@ fun name = lexeme hsc (P.takeWhile1P "a name" Ch.isAlpha)
 fun tree u =
   indentBlock scn
     (P.map
-      (\n -> IndentMany None (\kids -> P.pure (Node n kids)) (P.defer tree))
+      (\n -> IndentOpt.Many None (\kids -> P.pure (Node n kids)) (P.defer tree))
       name)
 
 @test fun indentBlocksNest () =

@@ -128,7 +128,8 @@ impl PartialEq (Tree a) where PartialEq a {
 impl Eq (Tree a) where Eq a {
 }
 
-impl PartialOrd (Tree a) where PartialOrd a { fun partialCmp x y = partialCmp (toList x) (toList y)
+impl PartialOrd (Tree a) where PartialOrd a {
+  fun partialCmp x y = partialCmp (toList x) (toList y)
 }
 
 impl Ord (Tree a) where Ord a {

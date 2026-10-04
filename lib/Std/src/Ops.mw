@@ -46,7 +46,10 @@ infix 4 ==, !=, <, >, <=, >=, <., >., <=., >=.
 
 -- Shifts, by an `Int` whatever the type shifted.
 
-@pub trait Shift a { fun (<<) : a -> Int -> a fun (>>) : a -> Int -> a fun (>>>) : a -> Int -> a
+@pub trait Shift a {
+  fun (<<) : a -> Int -> a
+  fun (>>) : a -> Int -> a
+  fun (>>>) : a -> Int -> a
 }
 
 -- The float operators: `1.5 +. x`. Separate from `+` so that a literal says by
@@ -90,31 +93,31 @@ impl Floating Float32 {
 
 macro integer
   | ($( $t : ident ),*) -> {
-      $(
-        impl Add $t {
-          fun (+) x y = _primAdd x y
-        }
-        impl Sub $t {
-          fun (-) x y = _primSub x y
-        }
-        impl Mul $t {
-          fun (*) x y = _primMul x y
-        }
-        impl Div $t {
-          fun (/) x y = _primDiv x y
-        }
-        impl Rem $t {
-          fun (%) x y = _primMod x y
-        }
-        impl Pow $t {
-          fun (^) x y = _primPow x y
-        }
-        impl Shift $t {
-          fun (<<) x n = _primShl x n
-          fun (>>) x n = _primShr x n
-          fun (>>>) x n = _primUshr x n
-        }
-      )*
+    $(
+      impl Add $t {
+        fun (+) x y = _primAdd x y
+      }
+      impl Sub $t {
+        fun (-) x y = _primSub x y
+      }
+      impl Mul $t {
+        fun (*) x y = _primMul x y
+      }
+      impl Div $t {
+        fun (/) x y = _primDiv x y
+      }
+      impl Rem $t {
+        fun (%) x y = _primMod x y
+      }
+      impl Pow $t {
+        fun (^) x y = _primPow x y
+      }
+      impl Shift $t {
+        fun (<<) x n = _primShl x n
+        fun (>>) x n = _primShr x n
+        fun (>>>) x n = _primUshr x n
+      }
+    )*
   }
 
 integer! { Int, BigInt, Int8, Int16, Int32, UInt8, UInt16, UInt32, UInt64 }

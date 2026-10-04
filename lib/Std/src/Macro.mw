@@ -169,7 +169,8 @@ impl ToTokens Float {
   fun toTokens x = [Real x Nowhere]
 }
 
-impl ToTokens Bool { fun toTokens b = [Word (if b then "True" else "False") Nowhere]
+impl ToTokens Bool {
+  fun toTokens b = [Word (if b then "True" else "False") Nowhere]
 }
 
 -- A string is spliced as a string literal. A name is a `Word`: splice
@@ -232,7 +233,9 @@ impl ToTokens String {
 -- `Tag` of its name and its fields, a record a `Rec` of its fields by name. The
 -- code it writes names `Reflect` and `Datum`, so both have to be in scope where
 -- it is derived: `use Std.Macro (Reflect, Datum)`.
-@pub trait Reflect a { fun toDatum : a -> Datum fun fromDatum : Datum -> Result String a
+@pub trait Reflect a {
+  fun toDatum : a -> Datum
+  fun fromDatum : Datum -> Result String a
 }
 
 impl Reflect Datum {
@@ -375,13 +378,13 @@ fun commas (parts : [[TokenTree]]) : [TokenTree] =
     : Wire ! e =
   wireOutcome
     (handle run input with {
-       lookup name k ->
-         match V.find (\p -> fst p == name) scope with
-         | Just p -> reading name (k (Just (snd p)))
-         | None ->
-             if settled then reading name (k None) else Waiting name V.empty,
-       define made k -> defining made (k ()),
-       return ts -> Answered ts V.empty V.empty
+      lookup name k ->
+        match V.find (\p -> fst p == name) scope with
+        | Just p -> reading name (k (Just (snd p)))
+        | None ->
+            if settled then reading name (k None) else Waiting name V.empty,
+      define made k -> defining made (k ()),
+      return ts -> Answered ts V.empty V.empty
     })
 
 fun reading name o =

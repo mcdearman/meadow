@@ -128,7 +128,8 @@ impl PartialEq (Map a) where PartialEq a {
 impl Eq (Map a) where Eq a {
 }
 
-impl PartialOrd (Map a) where PartialOrd a { fun partialCmp x y = partialCmp (toList x) (toList y)
+impl PartialOrd (Map a) where PartialOrd a {
+  fun partialCmp x y = partialCmp (toList x) (toList y)
 }
 
 impl Ord (Map a) where Ord a {

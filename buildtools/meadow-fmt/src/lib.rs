@@ -417,6 +417,9 @@ impl Indenter {
             self.modules.pop();
         }
         let (start, margin) = self.floor();
+        // `Ctor{` is `Ctor {`: a brace is set off from the name it follows.
+        let spaced = space_before_braces(trimmed);
+        let trimmed = spaced.as_str();
         // Scan the trimmed line, so a token's column is relative to the line's
         // own indent and stays right after the line is moved.
         let code = self.code(trimmed);
@@ -762,7 +765,14 @@ impl Indenter {
         // And an `in` alone on its line: what is under it is what the `let`
         // is for, and stands where the block it is in puts it.
         let lone_in = toks.len() == 1 && toks.first_text() == "in";
+        // And a bracket that ends its line: there is nothing after it for
+        // what it holds to be lined up under, so that goes a unit in -- a
+        // record's fields under `Ctor {`, as rustfmt has a struct's.
+        let ends_open = matches!(toks.last_text(), "{" | "(" | "[")
+            && self.stack.len() > before
+            && matches!(self.stack.last(), Some(Frame::Open { .. }));
         self.opened = lone_in
+            || ends_open
             || (self.stack.len() > before
                 && !matches!(self.stack.last(), Some(Frame::Open { .. })));
     }
@@ -890,6 +900,60 @@ fn starts_declaration(toks: &[Tok<'_>]) -> bool {
             .is_some_and(|t| t.text.starts_with(|c: char| c.is_alphabetic())),
         _ => false,
     }
+}
+
+/// `line` with a space between a name and a `{` written against it: `Ctor{`
+/// is `Ctor {`, as rustfmt has a struct's. Only in code -- what is in a
+/// string, a character or a comment is left -- and not at all on a line with
+/// a raw string in it, which this does not read.
+fn space_before_braces(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    if !chars.contains(&'{') || (0..chars.len()).any(|i| opens_raw(&chars, i).is_some()) {
+        return line.to_string();
+    }
+    let mut out = String::with_capacity(line.len() + 2);
+    let mut i = 0;
+    let mut in_string = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_string {
+            out.push(c);
+            if c == '\\' {
+                if let Some(&next) = chars.get(i + 1) {
+                    out.push(next);
+                    i += 1;
+                }
+            } else if c == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            // A comment: the rest is as it was written.
+            '-' if chars.get(i + 1) == Some(&'-') => {
+                out.extend(&chars[i..]);
+                return out;
+            }
+            // A character: `'{'`, `'\\n'`.
+            '\'' if chars.get(i + 2) == Some(&'\'') => {
+                out.extend(&chars[i..i + 3]);
+                i += 3;
+                continue;
+            }
+            '\'' if chars.get(i + 1) == Some(&'\\') && chars.get(i + 3) == Some(&'\'') => {
+                out.extend(&chars[i..i + 4]);
+                i += 4;
+                continue;
+            }
+            '{' if i > 0 && is_word(chars[i - 1]) => out.push(' '),
+            _ => {}
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 /// Whether these tokens are `mod Name {`, attributes before it or not: the
@@ -1096,6 +1160,24 @@ fun d name =
         // A `let` heading its line keeps its body on the next: a sequence.
         let headed = "fun g x =\n  let total =\n    compute x\n  in\n  total\n";
         assert_eq!(format_within(headed, 80), headed);
+    }
+
+    #[test]
+    fn a_brace_is_set_off_from_the_name_before_it() {
+        assert_eq!(
+            f("def p = Point{ x = 1, y = 2 }\n"),
+            "def p = Point { x = 1, y = 2 }\n"
+        );
+        // Not in a string, a hole of one, a character or a comment.
+        for same in [
+            "def s = \"Point{ x }\"\n",
+            "def s = \"a ${show x} b\"\n",
+            "def c = '{'\n",
+            "def n = 1 -- Point{ x }\n",
+            "def q = Point { x = 1 }\n",
+        ] {
+            assert_eq!(f(same), same);
+        }
     }
 
     #[test]

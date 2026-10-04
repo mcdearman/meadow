@@ -93,5 +93,6 @@ fun elements xs i acc =
     let sep = if i == 0 then "" else ", " in
     elements xs (i + 1) (concatStrings #[acc, sep, debug (arrayGet xs i)])
 
-impl Debug #[a] where Debug a { fun debug xs = concatStrings #["#[", elements xs 0 "", "]"]
+impl Debug #[a] where Debug a {
+  fun debug xs = concatStrings #["#[", elements xs 0 "", "]"]
 }

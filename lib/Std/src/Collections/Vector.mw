@@ -643,7 +643,8 @@ impl PartialEq [a] where PartialEq a {
 impl Eq [a] where Eq a {
 }
 
-impl PartialOrd [a] where PartialOrd a { fun partialCmp x y = partialCmp (toArray x) (toArray y)
+impl PartialOrd [a] where PartialOrd a {
+  fun partialCmp x y = partialCmp (toArray x) (toArray y)
 }
 
 impl Ord [a] where Ord a {

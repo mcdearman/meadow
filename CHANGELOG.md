@@ -23,6 +23,11 @@ beyond the last release is under _Unreleased_.
 - `meadow fmt` sets a record out as rustfmt sets out a struct: its brace on the
   line of what it belongs to, a field to a line, and the closing brace back
   under the start of that line.
+- Formatting on save in an editor does what `meadow fmt` does: it cuts and
+  joins lines as well as indenting. It only indented before.
+- `meadow fmt` puts a space between a name and a `{` written against it,
+  `Ctor{` to `Ctor {`, and indents what follows a bracket that ends its line
+  by one level.
 - The REPL colours what is typed as the language server would: the entry is
   compiled against the session as it is typed, so types, constructors,
   modules, functions and variables each have a colour, by what each name

@@ -1,7 +1,7 @@
 //! `textDocument/formatting`: what `meadow fmt` would do to a document, as the
 //! edits an editor applies -- which is how format-on-save reaches the server.
 //!
-//! The formatter is [`meadow_fmt::format`], the same one `meadow fmt` runs, so
+//! The formatter is [`formatted`], what `meadow fmt` runs with no options, so
 //! saving in the editor and formatting on the command line cannot disagree. It
 //! is given the document as the editor holds it, unsaved changes and all.
 
@@ -20,8 +20,34 @@ use lsp_types::{Position, Range, TextEdit};
 /// The edit starts at a line start and ends at one. Both ends are therefore
 /// ASCII boundaries in both texts -- a newline in the old one, and bytes equal
 /// to the old one's in the new -- so neither can land inside a character.
+/// `text` as `meadow fmt` leaves it: indented, lines longer than the width
+/// cut, and a record or a bracketed `let` set out as the formatter sets them
+/// out -- [`meadow_fmt::format_within`] at [`meadow_fmt::WIDTH`].
+///
+/// Cutting and joining lines move tokens, and must move nothing else: what
+/// the compiler's lexer reads out of the result is checked against what it
+/// read out of `text`, as the command line checks it, and a document where
+/// they differ is only indented, which moves none.
+pub fn formatted(text: &str) -> String {
+    use meadow_compiler::lexer::tokenize;
+    use meadow_compiler::source::{Source, SourceKind};
+    let out = meadow_fmt::format_within(text, meadow_fmt::WIDTH);
+    let tokens = |text: &str| {
+        tokenize(Source::new(SourceKind::Interactive, text.into()))
+            .tokens
+            .iter()
+            .map(|t| t.value().clone())
+            .collect::<Vec<_>>()
+    };
+    if tokens(text) == tokens(&out) {
+        out
+    } else {
+        meadow_fmt::format(text)
+    }
+}
+
 pub fn edits(text: &str) -> Vec<TextEdit> {
-    let formatted = meadow_fmt::format(text);
+    let formatted = formatted(text);
     if formatted == text {
         return Vec::new();
     }
@@ -82,8 +108,19 @@ mod tests {
 
     fn check(text: &str) -> Vec<TextEdit> {
         let edits = edits(text);
-        assert_eq!(apply(text, &edits), meadow_fmt::format(text), "{text:?}");
+        assert_eq!(apply(text, &edits), formatted(text), "{text:?}");
         edits
+    }
+
+    #[test]
+    fn a_save_sets_a_record_out_as_the_command_line_does() {
+        let text = "fun p r =\n  LetRec\n    {\n       id = id,\n       body = b\n     }\n";
+        let want = "fun p r =\n  LetRec {\n    id = id,\n    body = b\n  }\n";
+        assert_eq!(formatted(text), want);
+        assert_eq!(
+            formatted("fun p r =\n  LetRec{\n    id = id,\n    body = b\n  }\n"),
+            want
+        );
     }
 
     #[test]

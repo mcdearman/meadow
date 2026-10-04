@@ -32,7 +32,8 @@ use Std.Ordering.Ordering.*
 @pub trait Eq a <: PartialEq a {
 }
 
-@pub trait PartialOrd a <: PartialEq a { fun partialCmp : a -> a -> Maybe Ordering
+@pub trait PartialOrd a <: PartialEq a {
+  fun partialCmp : a -> a -> Maybe Ordering
 
   fun (<) : a -> a -> Bool
     | (<) x y = match partialCmp x y with | Just Less -> True | _ -> False
@@ -80,23 +81,25 @@ use Std.Ordering.Ordering.*
 
   macro comparable
   | ($( $t : ident ),*) -> {
-      $(
-        impl PartialEq $t { fun (==) x y = _primEq x y fun (!=) x y = _primNe x y
-        }
-        impl Eq $t {
-        }
-        impl PartialOrd $t {
-          fun partialCmp x y =
-            Just (if _primLt x y then Less else if _primEq x y then Equal else Greater)
-            fun (<) x y = _primLt x y
-            fun (>) x y = _primGt x y
-            fun (<=) x y = _primLe x y
-            fun (>=) x y = _primGe x y
-        }
-        impl Ord $t {
-          fun compare x y = if _primLt x y then Less else if _primEq x y then Equal else Greater
-        }
-      )*
+    $(
+      impl PartialEq $t {
+        fun (==) x y = _primEq x y
+        fun (!=) x y = _primNe x y
+      }
+      impl Eq $t {
+      }
+      impl PartialOrd $t {
+        fun partialCmp x y =
+          Just (if _primLt x y then Less else if _primEq x y then Equal else Greater)
+          fun (<) x y = _primLt x y
+          fun (>) x y = _primGt x y
+          fun (<=) x y = _primLe x y
+          fun (>=) x y = _primGe x y
+      }
+      impl Ord $t {
+        fun compare x y = if _primLt x y then Less else if _primEq x y then Equal else Greater
+      }
+    )*
   }
 
   comparable! { Int, BigInt, Int8, Int16, Int32, UInt8, UInt16, UInt32, UInt64 }
@@ -108,22 +111,22 @@ use Std.Ordering.Ordering.*
 
   macro floating
   | ($( $t : ident ),*) -> {
-      $(
-        impl PartialEq $t {
-          fun (==) x y = _primLeF x y and _primGeF x y
-        }
-        impl PartialOrd $t {
-          fun partialCmp x y =
-            if _primLtF x y then Just Less
-            else if _primGtF x y then Just Greater
-            else if _primLeF x y then Just Equal
-            else None
-            fun (<) x y = _primLtF x y
-            fun (>) x y = _primGtF x y
-            fun (<=) x y = _primLeF x y
-            fun (>=) x y = _primGeF x y
-        }
-      )*
+    $(
+      impl PartialEq $t {
+        fun (==) x y = _primLeF x y and _primGeF x y
+      }
+      impl PartialOrd $t {
+        fun partialCmp x y =
+          if _primLtF x y then Just Less
+          else if _primGtF x y then Just Greater
+          else if _primLeF x y then Just Equal
+          else None
+          fun (<) x y = _primLtF x y
+          fun (>) x y = _primGtF x y
+          fun (<=) x y = _primLeF x y
+          fun (>=) x y = _primGeF x y
+      }
+    )*
   }
 
   floating! { Float, Float32 }
@@ -266,7 +269,8 @@ impl Eq (Ref a) {
 }
 
 -- A compact region is equal to another holding an equal value.
-impl PartialEq (Compact a) where PartialEq a { fun (==) x y = getCompact x == getCompact y
+impl PartialEq (Compact a) where PartialEq a {
+  fun (==) x y = getCompact x == getCompact y
 }
 
 impl Eq (Compact a) where Eq a {
@@ -387,7 +391,8 @@ impl PartialEq #[a] where PartialEq a {
 impl Eq #[a] where Eq a {
 }
 
-impl PartialOrd #[a] where PartialOrd a { fun partialCmp xs ys = arrayPartialCmp xs ys 0
+impl PartialOrd #[a] where PartialOrd a {
+  fun partialCmp xs ys = arrayPartialCmp xs ys 0
 }
 
 impl Ord #[a] where Ord a {

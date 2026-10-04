@@ -122,12 +122,11 @@ record Machine = { arena : CoreArena, root : Map (Ref Value), fields : [(String,
       (coreFileDefs a file)
   in
   let m =
-    Machine
-      {
-        arena = a,
-        root = root,
-        fields = V.map (\n -> (coreNamedName a n, coreNamedLabels a n)) (coreFileNamed a file)
-      }
+    Machine {
+      arena = a,
+      root = root,
+      fields = V.map (\n -> (coreNamedName a n, coreNamedLabels a n)) (coreFileNamed a file)
+    }
   in
   let entry = coreFileEntry a file in
   if entry < 0 then Ok Unit else variable m entry Map.empty [;]

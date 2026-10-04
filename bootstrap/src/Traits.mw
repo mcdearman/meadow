@@ -610,12 +610,11 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) :
                   (let k =
                       want
                         i
-                        (Pred
-                          {
-                            tr = p.tr,
-                            tys = V.map (\y -> substBound y fresh) p.tys,
-                            assocs = V.map (\y -> substBound y fresh) p.assocs
-                          })
+                        (Pred {
+                          tr = p.tr,
+                          tys = V.map (\y -> substBound y fresh) p.tys,
+                          assocs = V.map (\y -> substBound y fresh) p.assocs
+                        })
                         owner
                     in ()))
                 ()
@@ -714,17 +713,16 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) :
     let assocParams = snd inherited in
     let n = V.len allAssocs in
     let shape =
-      TraitShape
-        {
-          params = np,
-          supers = supers,
-          assocs = allAssocs,
-          assocParams = assocParams,
-          ownAssocs = V.len assocs,
-          methods = V.map (\m -> match m with | (mn, _, _, _) -> mn) methods,
-          dict = dict,
-          labels = V.append (V.map (\(sup : Super) -> superLabel sup.tr) supers) (V.map (\m -> match m with | (mn, _, _, _) -> mn) methods)
-        }
+      TraitShape {
+        params = np,
+        supers = supers,
+        assocs = allAssocs,
+        assocParams = assocParams,
+        ownAssocs = V.len assocs,
+        methods = V.map (\m -> match m with | (mn, _, _, _) -> mn) methods,
+        dict = dict,
+        labels = V.append (V.map (\(sup : Super) -> superLabel sup.tr) supers) (V.map (\m -> match m with | (mn, _, _, _) -> mn) methods)
+      }
     in
   let u =
     V.foldl
@@ -792,13 +790,12 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
               (V.map (\k -> if k < np + n then Bound k else RowEmpty) (V.range 0 (V.len st.quant)))
           in
           let sc =
-            Scheme
-              {
-                quant = st.quant,
-                preds = [Pred { tr = tr, tys = V.take headArgs np, assocs = V.drop headArgs np }],
-                ty = ty,
-                lacks = []
-              }
+            Scheme {
+              quant = st.quant,
+              preds = [Pred { tr = tr, tys = V.take headArgs np, assocs = V.drop headArgs np }],
+              ty = ty,
+              lacks = []
+            }
           in
           let u = stSetRef i.methods (H.insert (methodKey tr mname) sc (stGetRef i.methods))
           in

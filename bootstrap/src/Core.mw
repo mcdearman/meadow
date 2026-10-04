@@ -222,14 +222,13 @@ pass! {
     | Handle { body, clauses, retId, ret } ->
         Handle { body = body, clauses = clauses, retId = M.map number retId, ret = ret }
     | Clause { eff, op, param, resume, body } ->
-        Clause
-          {
-            eff = unquoted eff,
-            op = unquoted op,
-            param = number param,
-            resume = number resume,
-            body = body
-          }
+        Clause {
+          eff = unquoted eff,
+          op = unquoted op,
+          param = number param,
+          resume = number resume,
+          body = body
+        }
     | Join { id, params, rhs, body } ->
         Join { id = number id, params = V.map number params, rhs = rhs, body = body }
     | Jump { id, args } -> Jump { id = number id, args = args }

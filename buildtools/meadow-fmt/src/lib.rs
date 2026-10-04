@@ -65,7 +65,10 @@ pub fn format_within(src: &str, width: usize) -> String {
     // puts further in than it was measured at.
     let mut text = format(src);
     for _ in 0..6 {
-        let next = format(&join_ins(&wrap::wrap(&text, width), width));
+        let next = format(&join_braces(
+            &join_ins(&wrap::wrap(&text, width), width),
+            width,
+        ));
         if next == text {
             break;
         }
@@ -128,6 +131,70 @@ fn join_ins(text: &str, width: usize) -> String {
                 out.push(line.to_string());
                 i += 1;
             }
+        }
+    }
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+/// A record's opening brace on the line of what it belongs to, as rustfmt
+/// has a struct's:
+///
+/// ```text
+/// Pat.Cons {
+///   ref = refAlts out env n,
+///   args = args
+/// }
+/// ```
+///
+/// A `{` alone on its line -- which is where an argument to a line once put
+/// a record -- joins the line above it when that leaves the line within
+/// `width`, and what it holds, with the brace that closes it, comes out by as
+/// much as the brace was in from that line.
+fn join_braces(text: &str, width: usize) -> String {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut out: Vec<String> = Vec::new();
+    // How far the lines of a record being joined come out, and the column
+    // its opening brace was in: lines deeper than that are its.
+    let mut pulling: Option<(usize, usize)> = None;
+    for line in text.lines() {
+        if let Some((by, brace)) = pulling {
+            let at = indent(line);
+            let closes = at == brace && line.trim_start().starts_with('}');
+            if !line.trim().is_empty() && (at > brace || closes) {
+                out.push(format!("{}{}", " ".repeat(at - by), line.trim_start()));
+                if closes {
+                    pulling = None;
+                }
+                continue;
+            }
+            if !line.trim().is_empty() {
+                pulling = None;
+            }
+        }
+        let above = out.last().map(String::as_str).unwrap_or("");
+        let code = above.split("--").next().unwrap_or("").trim_end();
+        let joins = line.trim() == "{"
+            && !above.trim().is_empty()
+            && code.len() == above.trim_end().len()
+            && above.matches('"').count() % 2 == 0
+            && indent(line) > indent(above)
+            && above.trim_end().chars().count() + 2 <= width
+            // A brace the line above already ends with opens something else.
+            && !code.ends_with(['{', '(', '[', ',']);
+        if joins {
+            let brace = indent(line);
+            let by = brace - indent(above);
+            let joined = format!("{} {{", above.trim_end());
+            if let Some(last) = out.last_mut() {
+                *last = joined;
+            }
+            pulling = Some((by, brace));
+        } else {
+            out.push(line.to_string());
         }
     }
     let mut joined = out.join("\n");
@@ -1029,6 +1096,29 @@ fun d name =
         // A `let` heading its line keeps its body on the next: a sequence.
         let headed = "fun g x =\n  let total =\n    compute x\n  in\n  total\n";
         assert_eq!(format_within(headed, 80), headed);
+    }
+
+    #[test]
+    fn a_brace_alone_joins_the_line_its_record_belongs_to() {
+        let src = "\
+fun p r =
+  wrap
+    (Pat.Cons
+      {
+        ref = refAlts out env n,
+        args = args
+      })
+";
+        let want = "\
+fun p r =
+  wrap
+    (Pat.Cons {
+      ref = refAlts out env n,
+      args = args
+    })
+";
+        assert_eq!(format_within(src, 100), want);
+        assert_eq!(format_within(want, 100), want, "and again changes nothing");
     }
 
     #[test]

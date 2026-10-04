@@ -209,16 +209,15 @@ fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) :
     let next = stNewRef 0 in
     let out = stNewRef [] in
     let t =
-      Tarjan
-        {
-          edges = edges,
-          index = index,
-          low = low,
-          onStack = onStack,
-          stack = stack,
-          next = next,
-          out = out
-        }
+      Tarjan {
+        edges = edges,
+        index = index,
+        low = low,
+        onStack = onStack,
+        stack = stack,
+        next = next,
+        out = out
+      }
     in
     let u = V.foldl (\w v -> if stGetArray index v < 0 then visit t v else ()) () (V.range 0 n)
     in
@@ -322,11 +321,10 @@ fun moduleMentions (modules : [(HirArena, [Binding])]) owner overloads (m : Int)
     V.map
       (\i ->
         let comp = V.getOr [] comps i in
-        Group
-          {
-            members = V.map (\k -> (0, V.getOr 0 starts i + k)) (V.range 0 (V.len comp)),
-            recursive = recursiveComp edges comp
-          })
+        Group {
+          members = V.map (\k -> (0, V.getOr 0 starts i + k)) (V.range 0 (V.len comp)),
+          recursive = recursiveComp edges comp
+        })
       (V.range 0 (V.len comps)) in
     (ordered, groups)
 

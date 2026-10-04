@@ -52,9 +52,15 @@ use Std.Process (exit)
 
 cli! {
   pub Cli "meadowboot" "Meadow's compiler, written in Meadow"
-    | lex "Each file's tokens, one a line, and then what is wrong in them" { files : [String] "the files to read" }
-    | eval "Run each program of core with the CEK machine, and say its value" { files : [String] "core, as the Rust compiler writes it" }
-    | parse "Parse each file, and write the abstract syntax it is" { files : [String] "the files to read" }
+    | lex "Each file's tokens, one a line, and then what is wrong in them" {
+      files : [String] "the files to read"
+    }
+    | eval "Run each program of core with the CEK machine, and say its value" {
+      files : [String] "core, as the Rust compiler writes it"
+    }
+    | parse "Parse each file, and write the abstract syntax it is" {
+      files : [String] "the files to read"
+    }
     | fixity "Group each file's operators by every fixity its unit knows, and write how each chain grouped"
         { files : [String] "the files to read, each in a package; the standard library's sources are where `MEADOWBOOT_STD` says" }
     | rename "Resolve each file's names with its unit's, and write each name and where what it names was declared"

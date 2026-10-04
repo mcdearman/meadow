@@ -26,6 +26,8 @@
 //! | an arm and its body                        | after the `->`                 |
 //! | an `if … then … else`                      | before `then` and `else`       |
 //! | a pipeline                                 | before each `\|>`              |
+//! | a record that ends the line                | a field to a line, its brace   |
+//! |                                            | staying on the line before it  |
 //! | a bracketed list with commas               | an item to a line              |
 //! | a chain of `++`, `and` or `or`             | before each                    |
 //! | a function and its arguments               | an argument to a line          |
@@ -381,6 +383,41 @@ fn wrap_piece(chars: &[char], toks: &[Tok], indent: usize, width: usize, out: &m
             return;
         }
     }
+    // A record that ends the line -- `Pat.Cons { ref = r, args = args }`,
+    // `def p = { x = 1, y = 2 }`, a `record`'s fields -- is set out as
+    // rustfmt sets out a struct: its brace on the line of what it belongs
+    // to, a field to a line a unit in, and the closing brace back under the
+    // start of that line.
+    //
+    //     Pat.Cons {
+    //       ref = refAlts out env n,
+    //       args = args
+    //     }
+    if let Some(o) = (1..n).rev().find(|&i| top(i) && toks[i].kind == Kind::Open)
+        && text_of(chars, &toks[o]) == "{"
+        && let Some(c) = (o + 1..n).find(|&i| top(i) && toks[i].kind == Kind::Close)
+        && c > o + 1
+        // Nothing after it but what closes around it.
+        && (c + 1..n).all(|i| toks[i].kind == Kind::Close)
+        && indent + (toks[o].end - toks[0].start) <= width
+        // What is before it is on one line with it: not a `match … with`
+        // whose arms come first, nor an `if`'s branches.
+        && (0..o).all(|i| !top(i) || !(word(i, "with") || word(i, "then") || word(i, "else")))
+    {
+        out.push(piece_text(chars, &toks[..=o], indent));
+        let mut from = o + 1;
+        for i in o + 1..c {
+            if depth[i] == 1 && toks[i].kind == Kind::Comma {
+                wrap_piece(chars, &toks[from..=i], indent + UNIT, width, out);
+                from = i + 1;
+            }
+        }
+        if from < c {
+            wrap_piece(chars, &toks[from..c], indent + UNIT, width, out);
+        }
+        out.push(piece_text(chars, &toks[c..], indent));
+        return;
+    }
     // A variant and its fields: a field to a line, under the constructor.
     if (op(0, "=") || op(0, "|")) && n > 2 && find(1, &|i| op(i, "->") || op(i, "=")).is_none() {
         let fields: Vec<usize> = (2..n)
@@ -664,6 +701,23 @@ mod tests {
         assert_eq!(
             w("fun t () =\n  assertEq (parse \"null\") (Ok Null) \"it is null\"\n"),
             "fun t () =\n  assertEq\n    (parse \"null\")\n    (Ok Null)\n    \"it is null\"\n"
+        );
+    }
+
+    #[test]
+    fn a_record_is_set_out_as_rustfmt_sets_out_a_struct() {
+        assert_eq!(
+            w("fun p r =\n  Pat.Cons { ref = refAlts out env n, args = args }\n"),
+            "fun p r =\n  Pat.Cons {\n    ref = refAlts out env n,\n    args = args\n  }\n"
+        );
+        assert_eq!(
+            w("record Person = { name : String, age : Int, email : String }\n"),
+            "record Person = {\n  name : String,\n  age : Int,\n  email : String\n}\n"
+        );
+        // In brackets, what closes around it stays with its brace.
+        assert_eq!(
+            w("fun q r =\n  wrap (Pat.Cons { ref = refAlts out env n, args = args })\n"),
+            "fun q r =\n  wrap\n    (Pat.Cons {\n      ref = refAlts out env n,\n      args = args\n    })\n"
         );
     }
 

@@ -263,17 +263,15 @@ pass! {
                   newHirExprVar out (nameMeta out name) (refTo out env builder (nameMeta out name))
                 in if V.isEmpty args then f else newHirExprApp out here f args)
           | _ ->
-              Cons
-                {
-                  ref = refAlts out env (ctorApplied out env n args) (ctorAlts out env n args) (nameMeta out name),
-                  args = args
-                })
+              Cons {
+                ref = refAlts out env (ctorApplied out env n args) (ctorAlts out env n args) (nameMeta out name),
+                args = args
+              })
     | Neg { op, operand } ->
-        App
-          {
-            func = newHirExprVar out (nameMeta out op) (refTo out env (valueOf env "neg") (nameMeta out op)),
-            args = [operand]
-          }
+        App {
+          func = newHirExprVar out (nameMeta out op) (refTo out env (valueOf env "neg") (nameMeta out op)),
+          args = [operand]
+        }
     | Expr.And { op, lhs, rhs } ->
         If { cond = lhs, yes = rhs, no = boolCon out env "False" (nameMeta out op) }
     | Expr.Or { op, lhs, rhs } ->
@@ -303,14 +301,13 @@ pass! {
           in
           -- The operation, which says which effect is handled: known to
           -- inference, and to nobody reading the program.
-          HArm
-            {
-              op = op,
-              opRef = hidden out (nameMeta out op) (valueOf env (textOf out op)),
-              param = p,
-              resume = k,
-              body = body inner
-            })
+          HArm {
+            op = op,
+            opRef = hidden out (nameMeta out op) (valueOf env (textOf out op)),
+            param = p,
+            resume = k,
+            body = body inner
+          })
     | Ret { later pat, later body } ->
         (let p = pat (nested env) in
           Ret { pat = p, body = body (bindAll (nested env) (patBinders out p)) })
@@ -335,11 +332,10 @@ pass! {
           | (None, Just matcher) ->
               synonymPat out env here (nameMeta out name) matcher args
           | _ ->
-              Pat.Cons
-                {
-                  ref = refAlts out env (ctorOf env n) (ctorPatAlts env n) (nameMeta out name),
-                  args = args
-                })
+              Pat.Cons {
+                ref = refAlts out env (ctorOf env n) (ctorPatAlts env n) (nameMeta out name),
+                args = args
+              })
     | Pat.Vector { items } ->
         -- `[]` is the empty `Vector`: its constructor `Vector.Empty`.
         (if V.isEmpty items
@@ -348,20 +344,18 @@ pass! {
     | Pat.QualCons { qual, name, args } ->
         Pat.Cons { ref = qualifiedCtor out env qual name, args = args }
     | Type.Con { name, args } ->
-        Type.Con
-          {
-            name = name,
-            ref = refTo out env (typeOf env (textOf out name)) (nameMeta out name),
-            args = args
-          }
+        Type.Con {
+          name = name,
+          ref = refTo out env (typeOf env (textOf out name)) (nameMeta out name),
+          args = args
+        }
     -- An effect a type names: which, for inference; nobody's use of it.
     | Label { name, args } ->
-        Label
-          {
-            name = name,
-            ref = hidden out (nameMeta out name) (typeOf env (textOf out name)),
-            args = args
-          }
+        Label {
+          name = name,
+          ref = hidden out (nameMeta out name) (typeOf env (textOf out name)),
+          args = args
+        }
     | Decl.Sig { name, ty, bounds } ->
         (let u = mention env (valueOf env (textOf out name)) (nameMeta out name)
           in Decl.Sig { name = name, ty = ty, bounds = bounds })
@@ -407,28 +401,26 @@ pass! {
                   mention env (typeOf env (textOf out n)) (nameMeta out n)))
               ()
               assocs
-          in Decl.Trait
-            {
-              name = name,
-              params = params,
-              supers = supers,
-              assocs = assocs,
-              sigs = sigs,
-              defaults = V.map (\d -> d (asMethods env)) defaults
-            })
+          in Decl.Trait {
+            name = name,
+            params = params,
+            supers = supers,
+            assocs = assocs,
+            sigs = sigs,
+            defaults = V.map (\d -> d (asMethods env)) defaults
+          })
     | Decl.Impl { tr, tys, context, later assocs, later methods } ->
         (let t = typeOf env (textOf out tr) in
           let u = mention env t (nameMeta out tr) in
           let inImpl = { env | assocs = M.unwrapOr H.empty (H.lookup t env.scope.traitAssocs) }
-          in Decl.Impl
-            {
-              tr = tr,
-              trRef = hidden out (nameMeta out tr) t,
-              tys = tys,
-              context = context,
-              assocs = V.map (\a -> a inImpl) assocs,
-              methods = V.map (\m -> m (asMethods env)) methods
-            })
+          in Decl.Impl {
+            tr = tr,
+            trRef = hidden out (nameMeta out tr) t,
+            tys = tys,
+            context = context,
+            assocs = V.map (\a -> a inImpl) assocs,
+            methods = V.map (\m -> m (asMethods env)) methods
+          })
     | AssocDef { name, later args, ty } ->
         (let n = textOf out name in
           let u =

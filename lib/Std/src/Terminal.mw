@@ -135,13 +135,12 @@ fun decode (raw : (Int, String, Int)) : Event =
       else if n == 21 then Pasted text
       else
         Pressed
-          (Key
-            {
-              code = codeOf n text,
-              shift = bitAnd held 1 != 0,
-              alt = bitAnd held 2 != 0,
-              ctrl = bitAnd held 4 != 0
-            })
+          (Key {
+            code = codeOf n text,
+            shift = bitAnd held 1 != 0,
+            alt = bitAnd held 2 != 0,
+            ctrl = bitAnd held 4 != 0
+          })
 
 fun codeOf (n : Int) (text : String) : Code =
   if n == 1 then Character text

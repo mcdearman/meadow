@@ -64,13 +64,12 @@ fun inner (tokenOf : Syntax Grouped -> Maybe Token) (s : Syntax Grouped)
   else Leaf (tok tokenOf (V.getOr s (V.filter R.isTokenOf (kids s)) 0))
 
 fun tok (tokenOf : Syntax Grouped -> Maybe Token) (t : Syntax Grouped) : Tok =
-  Tok
-    {
-      token = M.unwrapOr (Token.OpIdent (R.text t)) (tokenOf t),
-      text = R.text t,
-      from = R.offset t,
-      to = R.endOffset t
-    }
+  Tok {
+    token = M.unwrapOr (Token.OpIdent (R.text t)) (tokenOf t),
+    text = R.text t,
+    from = R.offset t,
+    to = R.endOffset t
+  }
 
 fun kids (s : Syntax Grouped) : [Syntax Grouped] =
   V.filter (\x -> R.kindOf x != Grouped.Unknown) (R.children s)
@@ -343,13 +342,12 @@ fun checkOne (ps : [Piece]) (i : Int) (after : Ends) : Maybe Invalid =
   | Just (Var name kind) ->
       if isParsed kind and not (endedAfter ps i after) then
         Just
-          (Invalid
-            {
-              msg = "nothing says where `\$${name} : ${fragmentName kind}` ends",
-              label = "follow it with `,`, `;`, `->`, `|`, `then`, `else`, `in`, `with`, or a closing bracket",
-              from = 0,
-              to = 0
-            })
+          (Invalid {
+            msg = "nothing says where `\$${name} : ${fragmentName kind}` ends",
+            label = "follow it with `,`, `;`, `->`, `|`, `then`, `else`, `in`, `with`, or a closing bracket",
+            from = 0,
+            to = 0
+          })
       else None
   | _ -> None
 

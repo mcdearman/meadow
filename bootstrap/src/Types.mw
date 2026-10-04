@@ -156,24 +156,22 @@ use UnifyError.*
 -- The slots; the level; every slot's contents before it was written since
 -- the oldest snapshot still open, so a trial can be taken back; how many
 -- snapshots are open; and every rigid type a `runSt` made, with its level.
-@pub record Arena s =
-  {
-    slots : Buf s Slot,
-    level : StRef s Int,
-    trail : Buf s (Int, Slot),
-    snapshots : StRef s Int,
-    skolems : StRef s (HashMap String Int)
-  }
+@pub record Arena s = {
+  slots : Buf s Slot,
+  level : StRef s Int,
+  trail : Buf s (Int, Slot),
+  snapshots : StRef s Int,
+  skolems : StRef s (HashMap String Int)
+}
 
 @pub fun newArena () : Arena s ! { St s | e } =
-  Arena
-    {
-      slots = B.buffer (),
-      level = stNewRef 0,
-      trail = B.buffer (),
-      snapshots = stNewRef 0,
-      skolems = stNewRef H.empty
-    }
+  Arena {
+    slots = B.buffer (),
+    level = stNewRef 0,
+    trail = B.buffer (),
+    snapshots = stNewRef 0,
+    skolems = stNewRef H.empty
+  }
 
 @pub fun levelOf (ar : Arena s) : Int ! { St s | e } = stGetRef ar.level
 
@@ -664,14 +662,13 @@ fun lastIndexOf (needle : String) (hay : String) : Maybe Int =
 -- Names given so far, by variable; how many plain ones; the kinds of free
 -- variables that are not plain; how many of each kind have been named; and
 -- the enclosing scheme's quantifiers' kinds.
-@pub record Namer =
-  {
-    names : HashMap Int String,
-    next : Int,
-    classes : HashMap Int VarKind,
-    classNext : HashMap String Int,
-    boundKinds : [VarKind]
-  }
+@pub record Namer = {
+  names : HashMap Int String,
+  next : Int,
+  classes : HashMap Int VarKind,
+  classNext : HashMap String Int,
+  boundKinds : [VarKind]
+}
 
 @pub def newNamer : Namer =
   Namer { names = H.empty, next = 0, classes = H.empty, classNext = H.empty, boundKinds = [] }
@@ -991,13 +988,12 @@ use Std.Test (assertEq)
   let a = assertEq (showScheme s) "forall a. a -> a" "said once, it says nothing"
   in
   let t =
-    Scheme
-      {
-        quant = [Num, Effect],
-        preds = [Pred { tr = "Std::Ops::Add", tys = [Bound 0], assocs = [] }],
-        ty = funcEff [Bound 0] (Bound 0) (RowExtend "Console" (Tuple []) (Bound 1)),
-        lacks = []
-      }
+    Scheme {
+      quant = [Num, Effect],
+      preds = [Pred { tr = "Std::Ops::Add", tys = [Bound 0], assocs = [] }],
+      ty = funcEff [Bound 0] (Bound 0) (RowExtend "Console" (Tuple []) (Bound 1)),
+      lacks = []
+    }
   in
   assertEq
     (showScheme t)

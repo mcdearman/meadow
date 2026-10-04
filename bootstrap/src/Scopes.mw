@@ -44,17 +44,16 @@ use Vis.*
 -- their names: what picks one of several constructors of one name. And, for
 -- a type or a constructor, its canonical name: the fully qualified path that
 -- makes it the one it is (`qualified`).
-@pub record Item =
-  {
-    name : String,
-    kind : String,
-    id : Int,
-    vis : Vis,
-    owner : String,
-    flat : Bool,
-    fields : Maybe [String],
-    canon : String
-  }
+@pub record Item = {
+  name : String,
+  kind : String,
+  id : Int,
+  vis : Vis,
+  owner : String,
+  flat : Bool,
+  fields : Maybe [String],
+  canon : String
+}
 
 -- What a unit tells the units after it of each name it exports: the module
 -- it is in, its name and kind, where it was declared, how far it is seen
@@ -62,20 +61,19 @@ use Vis.*
 @derive(Reflect, Debug, PartialEq)
 -- And, once inference has said, its scheme -- and, before that, its binder
 -- in the unit that declares it.
-@pub record Export =
-  {
-    module : [String],
-    name : String,
-    kind : String,
-    site : String,
-    vis : Vis,
-    owner : String,
-    flat : Bool,
-    fields : Maybe [String],
-    canon : String,
-    binder : Int,
-    scheme : Maybe Scheme
-  }
+@pub record Export = {
+  module : [String],
+  name : String,
+  kind : String,
+  site : String,
+  vis : Vis,
+  owner : String,
+  flat : Bool,
+  fields : Maybe [String],
+  canon : String,
+  binder : Int,
+  scheme : Maybe Scheme
+}
 
 -- One module of a unit: where it is in the unit, its file as a dump names
 -- it, and its syntax.
@@ -186,17 +184,16 @@ fun frameOf (pkg : String) (src : Source) :
 
 fun item (name : String) (kind : String) (id : Int) (vis : Vis) (owner : String)
     : Item =
-  Item
-    {
-      name = name,
-      kind = kind,
-      id = id,
-      vis = vis,
-      owner = owner,
-      flat = False,
-      fields = None,
-      canon = ""
-    }
+  Item {
+    name = name,
+    kind = kind,
+    id = id,
+    vis = vis,
+    owner = owner,
+    flat = False,
+    fields = None,
+    canon = ""
+  }
 
 -- `i`, declared in module `path` of package `pkg`, with its canonical name:
 -- a type's its qualified path, a constructor's its type's and its own.
@@ -719,16 +716,15 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) :
 -- inference reads beside the programs: each module's file, path and
 -- declarations; the declarations its dependencies export, each with the
 -- binder it has here; and each primitive's binder.
-@pub record Renamed =
-  {
-    programs : [(String, HirProgram)],
-    binders : [Binder],
-    exports : [Export],
-    anyVis : Bool,
-    modules : [Declared],
-    depItems : [Item],
-    prims : [(String, Int)]
-  }
+@pub record Renamed = {
+  programs : [(String, HirProgram)],
+  binders : [Binder],
+  exports : [Export],
+  anyVis : Bool,
+  modules : [Declared],
+  depItems : [Item],
+  prims : [(String, Int)]
+}
 
 -- A module's file as a dump names it, its path in its unit, and what it
 -- declares.
@@ -740,16 +736,15 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) :
     (deps : [DepExports]) : Renamed =
   match tabled (\() -> renaming pkg isStd sources deps) with
   | ((programs, exports, anyVis, modules, depItems, prims), binders) ->
-      Renamed
-        {
-          programs = programs,
-          binders = binders,
-          exports = V.map (\(e : Export) -> { e | site = siteOfId binders e.site }) exports,
-          anyVis = anyVis,
-          modules = modules,
-          depItems = depItems,
-          prims = prims
-        }
+      Renamed {
+        programs = programs,
+        binders = binders,
+        exports = V.map (\(e : Export) -> { e | site = siteOfId binders e.site }) exports,
+        anyVis = anyVis,
+        modules = modules,
+        depItems = depItems,
+        prims = prims
+      }
 
 -- An export's site, while renaming: its binder's id, which is read back as
 -- where the binder was declared once the table is done.
@@ -871,20 +866,19 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
         allItems
     in
   let sh =
-    Shared
-      {
-        prims = prims,
-        unknown = unknown,
-        builtinType = builtinType,
-        builtinCtor = builtinCtor,
-        typeCtors = typeCtors,
-        bools = bools,
-        builtinTypes = builtinTypes,
-        builtinCtors = builtinCtors,
-        traitAssocs = traitAssocs,
-        vectorEmpty = ctorNamed "Vector" "Empty",
-        ctorFields = ctorFields
-      }
+    Shared {
+      prims = prims,
+      unknown = unknown,
+      builtinType = builtinType,
+      builtinCtor = builtinCtor,
+      typeCtors = typeCtors,
+      bools = bools,
+      builtinTypes = builtinTypes,
+      builtinCtors = builtinCtors,
+      traitAssocs = traitAssocs,
+      vectorEmpty = ctorNamed "Vector" "Empty",
+      ctorFields = ctorFields
+    }
   in
   let done =
     V.map
@@ -908,20 +902,19 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
       | (f, _, re) ->
           V.map
             (\(i : Item) ->
-              Export
-                {
-                  module = framePath f,
-                  name = i.name,
-                  kind = i.kind,
-                  site = show i.id,
-                  vis = i.vis,
-                  owner = i.owner,
-                  flat = i.flat,
-                  fields = i.fields,
-                  canon = i.canon,
-                  binder = i.id,
-                  scheme = None
-                })
+              Export {
+                module = framePath f,
+                name = i.name,
+                kind = i.kind,
+                site = show i.id,
+                vis = i.vis,
+                owner = i.owner,
+                flat = i.flat,
+                fields = i.fields,
+                canon = i.canon,
+                binder = i.id,
+                scheme = None
+              })
             (V.append f.items re))
     done in
     -- The standard library's operators, `display`, `debug` and comparison are

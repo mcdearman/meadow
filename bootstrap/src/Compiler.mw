@@ -173,12 +173,11 @@ fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
             let file = "${pkg}/${relativeTo dir path}" in
             [(
               path,
-              Source
-                {
-                  path = modulePath isStd src path,
-                  file = file,
-                  ast = lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx
-                }
+              Source {
+                path = modulePath isStd src path,
+                file = file,
+                ast = lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx
+              }
             )]
         | _ -> [])
       files in
@@ -301,11 +300,10 @@ fun compiling (u : Given Interface) =
                   (M.map snd (V.find (\s -> S.endsWith "Meadow.toml" (fst s)) (unitSources u)))
               in
               Ok
-                (Interface
-                  {
-                    fixities = compilerFixities db 0,
-                    package = packageName manifest,
-                    exports = exports,
-                    anyVis = anyVis,
-                    types = types
-                  })
+                (Interface {
+                  fixities = compilerFixities db 0,
+                  package = packageName manifest,
+                  exports = exports,
+                  anyVis = anyVis,
+                  types = types
+                })

@@ -54,17 +54,16 @@ use Std.Macro (Reflect)
 -- are its own; its methods' names; its dictionary's constructor, and the
 -- labels of its fields.
 @derive(Debug, PartialEq, Reflect)
-@pub record TraitShape =
-  {
-    params : Int,
-    supers : [Super],
-    assocs : [String],
-    assocParams : [[Int]],
-    ownAssocs : Int,
-    methods : [String],
-    dict : String,
-    labels : [String]
-  }
+@pub record TraitShape = {
+  params : Int,
+  supers : [Super],
+  assocs : [String],
+  assocParams : [[Int]],
+  ownAssocs : Int,
+  methods : [String],
+  dict : String,
+  labels : [String]
+}
 
 -- A trait a trait requires, and the requiring trait's parameters it is of.
 @derive(Debug, PartialEq, Reflect)
@@ -101,18 +100,17 @@ use Std.Macro (Reflect)
 @pub record AssocOwner = { tr : String, at : Int }
 
 @pub def noTypes : TypeEnv =
-  TypeEnv
-    {
-      ctors = [],
-      variants = [],
-      fields = [],
-      effects = [],
-      aliases = [],
-      shapes = [],
-      methods = [],
-      assocOf = [],
-      impls = []
-    }
+  TypeEnv {
+    ctors = [],
+    variants = [],
+    fields = [],
+    effects = [],
+    aliases = [],
+    shapes = [],
+    methods = [],
+    assocOf = [],
+    impls = []
+  }
 
 -- An overloaded name's meanings: a value's binder, or a constructor's
 -- canonical name.
@@ -245,12 +243,11 @@ fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
     substBound sc.ty fresh,
     V.map
       (\(p : Pred) ->
-        Pred
-          {
-            tr = p.tr,
-            tys = V.map (\t -> substBound t fresh) p.tys,
-            assocs = V.map (\t -> substBound t fresh) p.assocs
-          })
+        Pred {
+          tr = p.tr,
+          tys = V.map (\t -> substBound t fresh) p.tys,
+          assocs = V.map (\t -> substBound t fresh) p.assocs
+        })
       sc.preds
   )
 
@@ -338,11 +335,10 @@ fun varsOf (q : Quantified) : [Int] =
     (H.insert vid (Generalized { scheme = sc, vars = [] }) (stGetRef i.generalized))
 
 -- `sc` with its body and `where` resolved as far as the arena says now.
-@pub fun normalizeScheme (i : Inf s) (sc : Scheme) : Scheme ! { St s | e } =
-  {
-    sc | preds = V.map (\(p : Pred) -> Pred { tr = p.tr, tys = V.map (zonk i.ar) p.tys, assocs = V.map (zonk i.ar) p.assocs }) sc.preds,
-    ty = zonk i.ar sc.ty
-  }
+@pub fun normalizeScheme (i : Inf s) (sc : Scheme) : Scheme ! { St s | e } = {
+  sc | preds = V.map (\(p : Pred) -> Pred { tr = p.tr, tys = V.map (zonk i.ar) p.tys, assocs = V.map (zonk i.ar) p.assocs }) sc.preds,
+  ty = zonk i.ar sc.ty
+}
 
 -- --- written types -----------------------------------------------------------
 

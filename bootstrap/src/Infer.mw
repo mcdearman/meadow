@@ -594,28 +594,26 @@ record ClauseTys = { arg : Type, ret : Type, result : Type, outside : Type }
 }
 
 fun newCx (i : Inf s) (here : Here) (mode : Mode) : Cx s ! { St s | e } =
-  Cx
-    {
-      i = i,
-      here = here,
-      mode = mode,
-      bound = stNewRef [],
-      arm = None,
-      clause = None,
-      back = None,
-      seed = None,
-      pure = stNewRef True
-    }
-
--- `cx` for a child: nothing of the node's own passed on.
-fun plain (cx : Cx s) : Cx s =
-  {
-    cx | mode = Mode.Local,
+  Cx {
+    i = i,
+    here = here,
+    mode = mode,
+    bound = stNewRef [],
     arm = None,
     clause = None,
     back = None,
-    seed = None
+    seed = None,
+    pure = stNewRef True
   }
+
+-- `cx` for a child: nothing of the node's own passed on.
+fun plain (cx : Cx s) : Cx s = {
+  cx | mode = Mode.Local,
+  arm = None,
+  clause = None,
+  back = None,
+  seed = None
+}
 
 -- `cx` for a pattern: what it binds collected afresh.
 fun binding (cx : Cx s) : Cx s ! { St s | e } = { (plain cx) | bound = stNewRef [] }
@@ -712,13 +710,12 @@ pass! {
     | HArm { op, opRef, later param, resume, later body } ->
         (let tys =
             M.unwrapOr
-              (ClauseTys
-                {
-                  arg = fresh cx.i.ar,
-                  ret = fresh cx.i.ar,
-                  result = fresh cx.i.ar,
-                  outside = freshEffect cx.i.ar
-                })
+              (ClauseTys {
+                arg = fresh cx.i.ar,
+                ret = fresh cx.i.ar,
+                result = fresh cx.i.ar,
+                outside = freshEffect cx.i.ar
+              })
               cx.clause
           in let p = param (binding cx) in
           let u = unifyAt cx.i (typInferringPat p) tys.arg in
@@ -783,13 +780,12 @@ pass! {
     | Bind.Fun { id, later params, raw ret, later body } ->
         (match funBindParts cx src out id params ret body with
          | (ps, b) ->
-             Bind.Fun
-               {
-                 id = id,
-                 params = ps,
-                 ret = M.map (\t -> inferType src out (plain cx) t) ret,
-                 body = b
-               })
+             Bind.Fun {
+               id = id,
+               params = ps,
+               ret = M.map (\t -> inferType src out (plain cx) t) ret,
+               body = b
+             })
     | Bind.Pat { later pat, later value } ->
         (match patBindParts cx out pat value with
          | (p, v) -> Bind.Pat { pat = p, value = v })
@@ -1840,12 +1836,11 @@ fun registerTypes (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
     V.concatMap
       (\d -> match viewHirDecl a d with
              | HirDeclView.Alias r ->
-                 [AliasSrc
-                   {
-                     name = typeCanon items (hirNameText a r.name),
-                     params = V.map (\n -> hirNameText a n) r.params,
-                     ty = r.ty
-                   }]
+                 [AliasSrc {
+                   name = typeCanon items (hirNameText a r.name),
+                   params = V.map (\n -> hirNameText a n) r.params,
+                   ty = r.ty
+                 }]
              | _ -> [])
       decls
   in
@@ -1959,13 +1954,12 @@ fun registerTypes (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
                      setScheme
                       i
                       it.id
-                      (Scheme
-                        {
-                          quant = quant,
-                          preds = [],
-                          ty = Fun [fst parts] (snd parts) row,
-                          lacks = []
-                        })
+                      (Scheme {
+                        quant = quant,
+                        preds = [],
+                        ty = Fun [fst parts] (snd parts) row,
+                        lacks = []
+                      })
                  | None -> ())
               in
               EffOp { name = opName, arg = fst parts, ret = snd parts })
@@ -2076,11 +2070,10 @@ fun registerTraitDecl (i : Inf s) (a : HirArena) (items : [Item])
         in
         if V.all M.isSome over
         then
-          [Super
-            {
-              tr = canonOf i (hirRefId a (hirBoundRef a b)) (hirNameText a (hirBoundTr a b)),
-              over = V.map (M.unwrapOr 0) over
-            }]
+          [Super {
+            tr = canonOf i (hirRefId a (hirBoundRef a b)) (hirNameText a (hirBoundTr a b)),
+            over = V.map (M.unwrapOr 0) over
+          }]
         else [])
       superBounds in
     let assocs =
@@ -2206,13 +2199,12 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
                          (V.range 0 (V.len method.quant))
                      in
                      let sc =
-                       Scheme
-                         {
-                           quant = quant,
-                           preds = found.preds,
-                           ty = substBound method.ty subst,
-                           lacks = []
-                         }
+                       Scheme {
+                         quant = quant,
+                         preds = found.preds,
+                         ty = substBound method.ty subst,
+                         lacks = []
+                       }
                      in
                      let x = stSetRef i.methodSigs (H.insert vid sc (stGetRef i.methodSigs))
                      in
@@ -2238,12 +2230,11 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
                        substBound found.ty binders,
                        V.map
                        (\(p : Pred) ->
-                         Pred
-                           {
-                             tr = p.tr,
-                             tys = V.map (\t -> substBound t binders) p.tys,
-                             assocs = V.map (\t -> substBound t binders) p.assocs
-                           })
+                         Pred {
+                           tr = p.tr,
+                           tys = V.map (\t -> substBound t binders) p.tys,
+                           assocs = V.map (\t -> substBound t binders) p.assocs
+                         })
                        found.preds
                      )
                    else instantiateWithPreds i found)
@@ -2259,16 +2250,15 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
                           (let k =
                               B.push
                                 i.wanted
-                                (Wanted
-                                  {
-                                    pred = Pred {
-                                      tr = sup.tr,
-                                      tys = V.map (\j -> V.getOr Error over j) sup.over,
-                                      assocs = superAssocs i tr (V.drop over shape.params) sup.tr sup.over
-                                    },
-                                    owner = Just dict,
-                                    sol = None
-                                  })
+                                (Wanted {
+                                  pred = Pred {
+                                    tr = sup.tr,
+                                    tys = V.map (\j -> V.getOr Error over j) sup.over,
+                                    assocs = superAssocs i tr (V.drop over shape.params) sup.tr sup.over
+                                  },
+                                  owner = Just dict,
+                                  sol = None
+                                })
                             in ()))
                         ()
                         shape.supers
@@ -2287,13 +2277,12 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
 -- What inferring a unit made: each module's top-level bindings' schemes as
 -- the infer test compares them, by file; the schemes of the binders it
 -- exports; and what it tells the units after it about types.
-@pub record Inferred =
-  {
-    dumps : [(String, [String])],
-    schemes : HashMap Int Scheme,
-    types : TypeEnv,
-    typed : [TypedProgram]
-  }
+@pub record Inferred = {
+  dumps : [(String, [String])],
+  schemes : HashMap Int Scheme,
+  types : TypeEnv,
+  typed : [TypedProgram]
+}
 
 -- Infer unit `r`, whose dependencies exported `deps` -- their values' schemes
 -- -- and `depTypes`, in the order its dependencies' items were given binders.
@@ -2792,13 +2781,12 @@ fun declarations (i : Inf s) (k : Int) (decls : [HirDecl]) (items : [Item]) :
                  i.sigs
                  (H.insert
                    it.id
-                   (SigOf
-                     {
-                       here = Here { a = a, m = k, scope = "${show k}:sig${show d}"
-                       },
-                       ty = r.ty,
-                       bounds = r.bounds
-                     })
+                   (SigOf {
+                     here = Here { a = a, m = k, scope = "${show k}:sig${show d}"
+                     },
+                     ty = r.ty,
+                     bounds = r.bounds
+                   })
                    (stGetRef i.sigs))
            | None -> ())
       | _ -> ())

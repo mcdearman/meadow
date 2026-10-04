@@ -45,13 +45,12 @@ use MeadowBoot.Hygiene as Hy
     counting count (\() ->
       let b = newAstBuilder () in
       let bare =
-        Lc
-          {
-            tokens = H.fromVec (V.map (\(l : Lexed) -> (l.from, l.token)) (lex input).tokens),
-            exps = exps,
-            fx = fx,
-            macros = H.empty
-          }
+        Lc {
+          tokens = H.fromVec (V.map (\(l : Lexed) -> (l.from, l.token)) (lex input).tokens),
+          exps = exps,
+          fx = fx,
+          macros = H.empty
+        }
       in
       let top = R.root tree in
       let c = { bare | macros = macrosOf bare pkg top } in

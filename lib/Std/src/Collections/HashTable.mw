@@ -130,9 +130,7 @@ fun place slots mask h k i free =
           in
           let _ = St.set slots idx (Full h k v) in
           let _ = St.setRef n (St.getRef n + 1) in
-          let _ =
-            if wasTomb then St.setRef tombs (St.getRef tombs - 1) else ()
-          in
+          let _ = if wasTomb then St.setRef tombs (St.getRef tombs - 1) else () in
           grow t
 
 -- Apply `f` to what `k` holds, if anything.

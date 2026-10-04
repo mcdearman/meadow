@@ -75,9 +75,7 @@ fun pieces (w : Wire) (acc : [String]) : [String] =
     let colon = upTo s (i + 1) 58 in
     let n = numberIn s (i + 1) colon in
     let semi = upTo s (colon + 1 + n) 59 in
-    let kids =
-      readMany s (semi + 1) (numberIn s (colon + 1 + n) semi) V.empty
-    in
+    let kids = readMany s (semi + 1) (numberIn s (colon + 1 + n) semi) V.empty in
     ( Node (stringSlice s (colon + 1) (colon + 1 + n)) (V.toArray (fst kids)), snd kids
     )
   else (Text "", stringByteLength s)

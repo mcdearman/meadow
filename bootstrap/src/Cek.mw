@@ -848,9 +848,7 @@ fun toWidth (w : String) (a : Value) =
 
 -- The integer `a` -- a `Int` or a `Big` -- as the type `w` names.
 fun sized (w : String) (a : Value) : Value =
-  let big =
-    (match a with | Big x -> x | Int x -> toBigInt x | _ -> toBigInt 0)
-  in
+  let big = (match a with | Big x -> x | Int x -> toBigInt x | _ -> toBigInt 0) in
   match w with
   | "I8" -> I8 (toInt8 big)
   | "I16" -> I16 (toInt16 big)

@@ -177,9 +177,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 
 @test fun splittingAPath () =
   let a = assertEq (fileName "a/b/c.txt") "c.txt" "fileName" in
-  let b =
-    assertEq (fileName "c.txt") "c.txt" "a bare name is its own fileName"
-  in
+  let b = assertEq (fileName "c.txt") "c.txt" "a bare name is its own fileName" in
   let c = assertEq (fileStem "a/b/c.txt") "c" "fileStem" in
   let d = assertEq (extension "a/b/c.txt") "txt" "extension" in
   let e = assertEq (parent "a/b/c.txt") (Just "a/b") "parent" in
@@ -192,9 +190,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   assertTrue (hasExtension "a.txt") "a real extension"
 
 @test fun replacingPartsOfAPath () =
-  let a =
-    assertEq (withExtension "a/b/c.txt" "md") "a/b/c.md" "withExtension"
-  in
+  let a = assertEq (withExtension "a/b/c.txt" "md") "a/b/c.md" "withExtension" in
   let b = assertEq (withExtension "a/b/c.txt" "") "a/b/c" "an empty extension removes it"
   in
   let c = assertEq (withExtension "c" "txt") "c.txt" "adding one" in

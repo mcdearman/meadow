@@ -373,16 +373,12 @@ fun ok p text = P.runParser (P.thenSkip p P.eof) text
   let a = assertEq (ok float "1.5") (Ok 1.5) "a fraction" in
   let b = assertEq (ok float "2e3") (Ok 2000.0) "an exponent" in
   let c = assertEq (ok float "2.5e-1") (Ok 0.25) "both" in
-  let d =
-    assertEq (ok (signedFloat sc float) "-0.5") (Ok (0.0 -. 0.5)) "signed"
-  in
+  let d = assertEq (ok (signedFloat sc float) "-0.5") (Ok (0.0 -. 0.5)) "signed" in
   assertFalse (isOk (ok float "3")) "an integer is not a float"
 
 @test fun charLiteralsDecodeEscapes () =
   let str = P.skipThen (C.char '"') (P.manyTill charLiteral (C.char '"')) in
-  let a =
-    assertEq (ok str "\"a\\tb\\n\"") (Ok ['a', '\t', 'b', '\n']) "escapes"
-  in
+  let a = assertEq (ok str "\"a\\tb\\n\"") (Ok ['a', '\t', 'b', '\n']) "escapes" in
   assertEq (ok str "\"\\x41\\u{e9}\"") (Ok ['A', 'é']) "by number"
 
 @test fun indentationIsChecked () =
@@ -429,8 +425,6 @@ fun tree u =
 @test fun aLineFoldContinuesOnIndentedLines () =
   -- As in megaparsec, the fold's space consumer goes in a `try`: it fails
   -- having skipped a newline, at a line that is not a continuation.
-  let words =
-    lineFold scn (\sc2 -> P.thenSkip (P.sepBy1 name (P.try sc2)) scn)
-  in
+  let words = lineFold scn (\sc2 -> P.thenSkip (P.sepBy1 name (P.try sc2)) scn) in
   let p = P.thenSkip (P.many words) P.eof in
   assertEq (P.runParser p "a b\n  c\nd\n e") (Ok [["a", "b", "c"], ["d", "e"]]) "two folds"

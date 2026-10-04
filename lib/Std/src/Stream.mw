@@ -180,9 +180,7 @@ fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n -
 @test fun searchingAlsoStopsEarly () =
   let a = assertEq (first (\u2 -> range 5 1000000)) (Just 5) "first" in
   let b = assertEq (first (\u2 -> ())) None "first of nothing" in
-  let c =
-    assertEq (find (\x -> x > 2) (\u2 -> range 0 1000000)) (Just 3) "find"
-  in
+  let c = assertEq (find (\x -> x > 2) (\u2 -> range 0 1000000)) (Just 3) "find" in
   let d = assertTrue (any (\x -> x > 2) (\u2 -> range 0 1000000)) "any" in
   let e = assertFalse (any (\x -> x > 9) (\u2 -> range 0 5)) "any, none matching"
   in

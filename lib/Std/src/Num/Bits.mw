@@ -101,7 +101,5 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 @test fun shiftsKnowTheirSign () =
   let a = assertEq (toInt8 (0 - 128) >> 7) (toInt8 (0 - 1)) "arithmetic on a signed type"
   in
-  let b =
-    assertEq (toUInt8 128 >> 7) (toUInt8 1) "logical on an unsigned one"
-  in
+  let b = assertEq (toUInt8 128 >> 7) (toUInt8 1) "logical on an unsigned one" in
   assertEq (toInt8 (0 - 128) >>> 7) (toInt8 1) "ushr is logical everywhere"

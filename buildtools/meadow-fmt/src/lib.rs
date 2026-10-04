@@ -65,8 +65,9 @@ pub fn format_within(src: &str, width: usize) -> String {
     // puts further in than it was measured at.
     let mut text = format(src);
     for _ in 0..6 {
+        let cut = wrap::wrap(&text, width);
         let next = format(&join_braces(
-            &join_ins(&wrap::wrap(&text, width), width),
+            &join_ins(&join_lets(&cut, width), width),
             width,
         ));
         if next == text {
@@ -134,6 +135,88 @@ fn join_ins(text: &str, width: usize) -> String {
         }
     }
     let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+/// What a `let` binds on the line of the `let`, when it fits there:
+///
+/// ```text
+/// let named =
+///   V.filter (\\c -> known c) cands
+/// in
+/// ```
+///
+/// is `let named = V.filter (\\c -> known c) cands in`. A value is put under
+/// its `let` when the line is too long, and stays there after what made it
+/// long has gone -- a shorter name, a wider page. It goes back when the
+/// `let`, its `=` and all of the value are no longer than `width`; the `in`
+/// that closed it on a line of its own follows when that fits too.
+///
+/// Nothing with a comment or a blank line in it is joined, nor a string that
+/// runs over a line, nor a value whose lines are a `match`'s arms.
+fn join_lets(text: &str, width: usize) -> String {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let joinable = |l: &str| {
+        !l.trim().is_empty()
+            && !l.contains("--")
+            && l.matches('"').count() % 2 == 0
+            && !l.trim_start().starts_with('|')
+    };
+    let is_in = |l: &str| {
+        let t = l.trim();
+        t == "in" || t.starts_with("in ")
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    // From the bottom, so that a `let` inside a value is joined before the
+    // one it is the value of is measured.
+    let mut i = lines.len();
+    while i > 0 {
+        i -= 1;
+        let head = lines[i].clone();
+        let at = indent(&head);
+        let opens = {
+            let t = head.trim_start().trim_start_matches(['(', '[', '{']);
+            t.starts_with("let ") && head.trim_end().ends_with('=') && joinable(&head)
+        };
+        if !opens {
+            continue;
+        }
+        // What is under it: every line further in, but for the `in` of a
+        // `let` in brackets, which is further in too and is not its value.
+        let mut end = i + 1;
+        while end < lines.len() && !lines[end].trim().is_empty() && indent(&lines[end]) > at {
+            if is_in(&lines[end]) && indent(&lines[end]) <= at + UNIT {
+                break;
+            }
+            end += 1;
+        }
+        let value = &lines[i + 1..end];
+        if value.is_empty() || !value.iter().all(|l| joinable(l)) {
+            continue;
+        }
+        let mut one = head.trim_end().to_string();
+        for l in value {
+            one.push(' ');
+            one.push_str(l.trim());
+        }
+        if one.chars().count() > width {
+            continue;
+        }
+        // The `in` alone under a `let` that heads its line comes up too.
+        let lone_in = lines
+            .get(end)
+            .is_some_and(|l| l.trim() == "in" && indent(l) == at);
+        let mut upto = end;
+        if lone_in && one.chars().count() + " in".len() <= width {
+            one.push_str(" in");
+            upto = end + 1;
+        }
+        lines.splice(i..upto, [one]);
+    }
+    let mut joined = lines.join("\n");
     if text.ends_with('\n') {
         joined.push('\n');
     }
@@ -1136,30 +1219,60 @@ fun f xs =
         let src = "\
 fun d name =
   (let u =
-    mention env name
+    mention env (typeOf env (textOf out name)) (nameMeta out name) (andMore out name)
   in
     Decl.Record { name = name })
 ";
         let want = "\
 fun d name =
   (let u =
-      mention env name
+      mention env (typeOf env (textOf out name)) (nameMeta out name) (andMore out name)
     in Decl.Record { name = name })
 ";
-        assert_eq!(format_within(src, 80), want);
-        assert_eq!(format_within(want, 80), want, "and again changes nothing");
+        assert_eq!(format_within(src, 90), want);
+        assert_eq!(format_within(want, 90), want, "and again changes nothing");
         // Too long to share a line: the body stays under the `in`.
         let long = "\
 fun d name =
-  (let u =
-      mention env name
+  (let u = mention env name
     in
     Decl.Record { name = name, params = params, fields = fields, more = more })
 ";
         assert_eq!(format_within(long, 80), long);
         // A `let` heading its line keeps its body on the next: a sequence.
-        let headed = "fun g x =\n  let total =\n    compute x\n  in\n  total\n";
+        let headed = "fun g x =\n  let total = compute x in\n  total\n";
         assert_eq!(format_within(headed, 80), headed);
+    }
+
+    #[test]
+    fn what_a_let_binds_goes_back_on_its_line_when_it_fits() {
+        let w = |src: &str| format_within(src, 60);
+        assert_eq!(
+            w("fun f xs =\n  let named =\n    V.filter known xs\n  in\n  named\n"),
+            "fun f xs =\n  let named = V.filter known xs in\n  named\n"
+        );
+        // Over several lines, when all of it fits on one.
+        assert_eq!(
+            w("fun f xs =\n  let named =\n    V.filter\n      known\n      xs\n  in\n  named\n"),
+            "fun f xs =\n  let named = V.filter known xs in\n  named\n"
+        );
+        // In brackets: the value comes up, and the `in` keeps its body.
+        assert_eq!(
+            w("fun d n =\n  (let u =\n      mention env n\n    in Decl.Record { name = n })\n"),
+            "fun d n =\n  (let u = mention env n\n    in Decl.Record { name = n })\n"
+        );
+        // Too long for one line: left as it is.
+        let long = "fun f xs =\n  let named =\n    V.filter (\\c -> isKnownToTheScope c) (candidatesOf xs)\n  in\n  named\n";
+        assert_eq!(w(long), long);
+        // A comment in it, or a `match`'s arms: left.
+        let noted = "fun f xs =\n  let named =\n    -- only the known ones\n    V.filter known xs\n  in\n  named\n";
+        assert_eq!(w(noted), noted);
+        let arms =
+            "fun f x =\n  let n =\n    match x with\n    | A -> 1\n    | B -> 2\n  in\n  n\n";
+        assert_eq!(w(arms), arms);
+        // And again changes nothing.
+        let once = w("fun f xs =\n  let named =\n    V.filter known xs\n  in\n  named\n");
+        assert_eq!(w(&once), once);
     }
 
     #[test]

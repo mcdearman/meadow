@@ -119,9 +119,7 @@ fun half n = if n % 2 == 0 then n / 2 else raise "odd"
   assertEq (toResult deep) (Err "odd") "unwound from inside an expression"
 
 @test fun ofResultAndOfMaybeLift () =
-  let a =
-    assertEq (toResult (\u2 -> ofResult (Ok 1) + 1)) (Ok 2) "ofResult Ok"
-  in
+  let a = assertEq (toResult (\u2 -> ofResult (Ok 1) + 1)) (Ok 2) "ofResult Ok" in
   let b = assertEq (toResult (\u2 -> ofResult (Err "bad") + 1)) (Err "bad") "ofResult Err"
   in
   let c = assertEq (toResult (\u2 -> ofMaybe "none" (Just 1))) (Ok 1) "ofMaybe Just"
@@ -130,9 +128,7 @@ fun half n = if n % 2 == 0 then n / 2 else raise "odd"
 
 @test fun ensureAndRefute () =
   let a = assertEq (toResult (\u2 -> ensure True "e")) (Ok ()) "ensure holds" in
-  let b =
-    assertEq (toResult (\u2 -> ensure False "e")) (Err "e") "ensure fails"
-  in
+  let b = assertEq (toResult (\u2 -> ensure False "e")) (Err "e") "ensure fails" in
   assertEq (toResult (\u2 -> refute True "e")) (Err "e") "refute"
 
 @test fun theErrorCanBeAnyType () =

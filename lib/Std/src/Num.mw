@@ -62,9 +62,7 @@ use Std.Test (assertEq, assertTrue)
 
 @test fun literalsTakeTheirTypeFromUse () =
   let a = assertEq (toUInt8 250 + 10) (toUInt8 4) "10 is a UInt8 here" in
-  let b =
-    assertEq (toInt16 (0 - 1) * 2) (toInt16 (0 - 2)) "and an Int16 here"
-  in
+  let b = assertEq (toInt16 (0 - 1) * 2) (toInt16 (0 - 2)) "and an Int16 here" in
   let c =
     assertEq (show (toBigInt 2 ^ 100)) "1267650600228229401496703205376" "a BigInt where asked"
   in

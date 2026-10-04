@@ -616,9 +616,7 @@ fun synonym (c : Lc) b (n : Nm) (s : GTree) (m : Meta) =
      | 0 -> noArgs "True"
      | 1 -> newAstExprList b m (vars ())
      | _ -> newAstExprList b m [newAstExprTuple b m (vars ())]) in
-    let no =
-      (if V.len ps == 0 then noArgs "False" else newAstExprList b m [])
-    in
+    let no = (if V.len ps == 0 then noArgs "False" else newAstExprList b m []) in
   let arms = [ newAstArm b m (pat c b rhs) None yes, newAstArm b m (newAstPatWild b m) None no ]
   in
   let scrutinee = at "$scrutinee" in
@@ -654,9 +652,7 @@ fun synonym (c : Lc) b (n : Nm) (s : GTree) (m : Meta) =
 fun complete b (names : [Nm]) (m : Meta) =
   let ms = V.map (\(x : Nm) -> newAstExprVar b x.at (nm b (named "$m?${x.text}" x.at))) names
   in
-  let value =
-    (if V.len ms == 1 then V.getOr 0 ms 0 else newAstExprTuple b m ms)
-  in
+  let value = (if V.len ms == 1 then V.getOr 0 ms 0 else newAstExprTuple b m ms) in
   let label = named "$complete:${S.join "|" (V.map (\(x : Nm) -> x.text) names)}" m
   in
   ( False, newAstDeclBind b m (newAstBindPat b m (newAstPatVar b m (nm b label)) value)

@@ -191,9 +191,7 @@ use Std.Maybe.Maybe.*
   assertTrue (V.all (\x -> V.elem x shuffled) v) "every element survives"
 
 @test fun chooseIsAMemberOrNothing () =
-  let a =
-    assertEq (withSeed 3 (\u2 -> choose (V.empty))) None "choose of empty"
-  in
+  let a = assertEq (withSeed 3 (\u2 -> choose (V.empty))) None "choose of empty" in
   assertTrue (withSeed 3 (\u2 -> V.elem 0 [0] == True)) "a one-element vector"
 
 @test fun withSeedFromHandsBackTheState () =

@@ -79,9 +79,7 @@ fun main () =
       )
   in
   let _ = println "== running totals of 1..10" in
-  let _ =
-    println (Stream.toVec (\() -> runningSum (\() -> Stream.range 1 11)))
-  in
+  let _ = println (Stream.toVec (\() -> runningSum (\() -> Stream.range 1 11))) in
   let _ = println "== the first word longer than four letters" in
   println
     (Stream.find

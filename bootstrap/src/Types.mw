@@ -704,9 +704,7 @@ fun nameVar (nm : Namer) (id : Int) : (String, Namer) =
 -- effects and the number classes each count their own.
 fun boundName (nm : Namer) (i : Int) : String =
   let kind = V.getOr Plain nm.boundKinds i in
-  let rank =
-    V.len (V.filter (\k -> sameKind kind k) (V.take nm.boundKinds i))
-  in
+  let rank = V.len (V.filter (\k -> sameKind kind k) (V.take nm.boundKinds i)) in
   kindedVarName kind rank
 
 fun sameKind (kind : VarKind) (k : VarKind) : Bool = kindKey kind == kindKey k

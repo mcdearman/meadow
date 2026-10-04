@@ -548,8 +548,7 @@ fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
         let root = V.len segs == 1 and V.getOr "" segs 0 != cx.pkg in
         (match alias with
          | Just q ->
-             (let qualified =
-                 { acc | quals = V.pushBack acc.quals (q, valuesMap items) }
+             (let qualified = { acc | quals = V.pushBack acc.quals (q, valuesMap items) }
                in if V.isEmpty names
                   then qualified
                   else

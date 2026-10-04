@@ -607,9 +607,7 @@ fun group (c : Cx) (d : Int) (s : Syn) : [String] =
       else "Brace")
   in
   let toks = tokenKids s in
-  let open =
-    (match V.get toks 0 with | Just t -> spanOf t | None -> spanOf s)
-  in
+  let open = (match V.get toks 0 with | Just t -> spanOf t | None -> spanOf s) in
   let close =
     (match V.get toks (V.len toks - 1) with
      | Just t -> spanOf t
@@ -843,9 +841,7 @@ fun synonym (c : Cx) (n : Name) (s : Syn) (m : Meta) : [(Bool, Out)] =
   let both = tokenIs TokenEq s in
   let rhs = must NodePat s in
   let ident_ = \t -> named t n.at in
-  let vars =
-    V.map (\(p : Name) -> \k -> node k "Var" p.at (ident (k + 1) p)) ps
-  in
+  let vars = V.map (\(p : Name) -> \k -> node k "Var" p.at (ident (k + 1) p)) ps in
   let answers =
     (match V.len vars with
      | 0 ->

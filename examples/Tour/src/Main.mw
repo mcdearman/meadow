@@ -66,9 +66,7 @@ fun main () =
   in
 
   let _ = println "== numbers" in
-  let _ =
-    println ("factorial 30 as an Int, wrapping: " ++ show (factorial 30))
-  in
+  let _ = println ("factorial 30 as an Int, wrapping: " ++ show (factorial 30)) in
   let _ = println ("factorial 30 as a BigInt, exact: " ++ show (factorial (toBigInt 30)))
   in
   let _ = println ("200 + 100 as a UInt8: " ++ show (toUInt8 200 + 100)) in

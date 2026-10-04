@@ -374,9 +374,7 @@ use Std.Console (Console)
   let b = assertEq (formatNanos 742) "742ns" "nanoseconds" in
   let c = assertEq (formatNanos 1234) "1.23µs" "microseconds" in
   let d = assertEq (formatNanos 45678000) "45.7ms" "milliseconds, rounded" in
-  let e =
-    assertEq (formatNanos 321000000) "321ms" "three figures, no decimals"
-  in
+  let e = assertEq (formatNanos 321000000) "321ms" "three figures, no decimals" in
   let f = assertEq (formatNanos 3210000000) "3.21s" "seconds" in
   let g = assertEq (formatNanos 125300000000) "2m 05.3s" "minutes" in
   let h = assertEq (formatNanos 3723000000000) "1h 02m 03s" "hours" in
@@ -386,9 +384,7 @@ use Std.Console (Console)
 @test fun roundingCarriesIntoTheNextUnit () =
   let a = assertEq (formatNanos 999) "999ns" "the last nanosecond" in
   let b = assertEq (formatNanos 999499) "999µs" "just under" in
-  let c =
-    assertEq (formatNanos 999500) "1.00ms" "rounds up into milliseconds"
-  in
+  let c = assertEq (formatNanos 999500) "1.00ms" "rounds up into milliseconds" in
   let d = assertEq (formatNanos 9995) "10.0µs" "rounds up a digit" in
   let e = assertEq (formatNanos 59950000000) "1m 00.0s" "a minute, not 60.0s" in
   assertEq (formatNanos (0 - 9223372036854775807 - 1)) "-106_751d 23h 47m" "the most negative Int"
@@ -422,9 +418,7 @@ use Std.Console (Console)
   let epoch = utc 0 in
   let later = utc 1789405445123 in
   let a = assertEq epoch.weekday 4 "1970-01-01 was a Thursday" in
-  let b =
-    assertEq (weekdayName later.weekday) "Monday" "2026-09-14 is a Monday"
-  in
+  let b = assertEq (weekdayName later.weekday) "Monday" "2026-09-14 is a Monday" in
   let c = assertEq (monthName later.month) "September" "and in September" in
   assertEq (formatReadable 1789405445123) "Mon 14 Sep 2026 17:04:05 UTC" "readable"
 

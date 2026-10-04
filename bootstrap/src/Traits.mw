@@ -344,8 +344,7 @@ fun closeOne (i : Inf s) (level : Int) (signed : Bool) (signatureVars : [Int])
               (\f j -> match f with
                        | Just x -> Just x
                        | None ->
-                           (let have =
-                               V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j
+                           (let have = V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j
                              in M.map
                              (\path -> (j, path))
                              (superPath i have.tr (V.map (zonk i.ar) have.tys) w.pred.tr wantTys)))
@@ -358,9 +357,7 @@ fun closeOne (i : Inf s) (level : Int) (signed : Bool) (signatureVars : [Int])
           | Just (j, path) ->
               -- What the given says the associated types are, through every
               -- trait on the way.
-              let have =
-                V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j
-              in
+              let have = V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j in
               let theirs =
                 fst
                   (V.foldl
@@ -409,8 +406,7 @@ fun settleLoop (i : Inf s) (all : [Pred]) (settled : [Int]) (mine : [Int]) :
              (if V.elem j m1
                then acc
                else
-                 (let p =
-                     V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j
+                 (let p = V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j
                    in let over = V.foldl (\o t -> freeVars i.ar (zonk i.ar t) o) [] p.tys
                    in if V.all (\x -> V.elem x s1) over
                       then
@@ -774,9 +770,7 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
           (V.range 0 (V.len others))
       in
       let raw = tyOf i a mty vars in
-      let quant =
-        markEffectVars raw (V.replicate (np + n + V.len others) Plain)
-      in
+      let quant = markEffectVars raw (V.replicate (np + n + V.len others) Plain) in
       let table =
         V.map
           (\k -> ( V.getOr "" assocs k, V.map (\p -> Bound p) (V.getOr [] assocParams k), np + k ))
@@ -838,12 +832,8 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String])
       then V.map (\(v : VariantSig) -> if v.name == ctor then sig else v) group
       else V.pushBack group sig)
   in
-  let w =
-    stSetRef i.variants (H.insert tyname replaced (stGetRef i.variants))
-  in
-  let accessors =
-    M.unwrapOr H.empty (H.lookup tyname (stGetRef i.recordFields))
-  in
+  let w = stSetRef i.variants (H.insert tyname replaced (stGetRef i.variants)) in
+  let accessors = M.unwrapOr H.empty (H.lookup tyname (stGetRef i.recordFields)) in
   let more =
     V.foldl
       (\h f -> match fst f with

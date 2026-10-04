@@ -125,9 +125,7 @@ use Std.Maybe.Maybe.*
   let a = assertEq (bytesGetU16LE b 0) (toUInt16 0x1234) "u16 little-endian" in
   let c = assertEq (bytesGetU16BE b 0) (toUInt16 0x3412) "u16 big-endian" in
   let (d : #[UInt8]) = #[0x78, 0x56, 0x34, 0x12] in
-  let e =
-    assertEq (bytesGetU32LE d 0) (toUInt32 0x12345678) "u32 little-endian"
-  in
+  let e = assertEq (bytesGetU32LE d 0) (toUInt32 0x12345678) "u32 little-endian" in
   assertEq (bytesGetU32BE d 0) (toUInt32 0x78563412) "u32 big-endian"
 
 @test fun multiByteReadsPastTheEndAreZero () =

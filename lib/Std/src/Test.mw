@@ -90,9 +90,7 @@ fun cat a b =
   in
   let c = assertTrue (didFail (\u2 -> assertNeq 1 1 "x")) "assertNeq of equal values"
   in
-  let d =
-    assertTrue (didFail (\u2 -> assertTrue False "x")) "assertTrue False"
-  in
+  let d = assertTrue (didFail (\u2 -> assertTrue False "x")) "assertTrue False" in
   let e = assertTrue (didFail (\u2 -> failWith "x")) "failWith" in
   assertTrue (didFail (\u2 -> refuteThat True "x")) "refuteThat True"
 

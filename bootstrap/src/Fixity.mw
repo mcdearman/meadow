@@ -188,9 +188,7 @@ fun chain (out : Origin Surface Grouped) (table : HashMap String Fixity)
             ))
       ([leaf first], [])
       steps in
-      let outs =
-        V.foldr (\o acc -> apply out acc o) (fst applied) (snd applied)
-      in
+      let outs = V.foldr (\o acc -> apply out acc o) (fst applied) (snd applied) in
   M.unwrapOr (leaf first) (V.get outs (V.len outs - 1))
 
 -- Apply every operator on the stack that goes before operator `name`, which
@@ -302,9 +300,7 @@ fun startOf (s : Syntax Grouped) : Int =
     (M.map R.offset (V.find (\t -> not (groupedIsTrivia (R.kindOf t))) (tokensUnder s)))
 
 fun endOf (s : Syntax Grouped) : Int =
-  let ts =
-    V.filter (\t -> not (groupedIsTrivia (R.kindOf t))) (tokensUnder s)
-  in
+  let ts = V.filter (\t -> not (groupedIsTrivia (R.kindOf t))) (tokensUnder s) in
   M.unwrapOr (R.endOffset s) (M.map R.endOffset (V.get ts (V.len ts - 1)))
 
 fun tokensUnder (s : Syntax Grouped) : [Syntax Grouped] =

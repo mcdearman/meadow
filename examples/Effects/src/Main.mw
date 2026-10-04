@@ -126,12 +126,8 @@ fun main () =
   in
   let _ = println (withClock 1000 (\() -> withSeed 42 (\() -> game ()))) in
 
-  let _ =
-    println "== the greeter, fed its input and with its output captured"
-  in
-  let (u, printed) =
-    withOutput (\() -> withInput ["Ada"] (\() -> greeter ()))
-  in
+  let _ = println "== the greeter, fed its input and with its output captured" in
+  let (u, printed) = withOutput (\() -> withInput ["Ada"] (\() -> greeter ())) in
   println (S.concat "it printed: " (show printed))
 
 -- --- tests -------------------------------------------------------------------
@@ -154,9 +150,7 @@ use Std.Test (assertEq)
     "reproducible"
 
 @test fun theGreeterGreets () =
-  let (u, printed) =
-    withOutput (\() -> withInput ["Grace"] (\() -> greeter ()))
-  in
+  let (u, printed) = withOutput (\() -> withInput ["Grace"] (\() -> greeter ())) in
   assertEq printed "What is your name?\nHello, Grace!\n" "one question, one greeting"
 
 @test fun theGreeterCopesWithNoInput () =

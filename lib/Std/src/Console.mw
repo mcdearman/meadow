@@ -166,18 +166,14 @@ fun readAllLoop acc =
   assertEq got (Just "one", Just "two") "two lines, in order"
 
 @test fun endOfInputIsNoneNotAnError () =
-  let got =
-    withInput ["only"] (\() -> (readLine (), readLine (), readLine ()))
-  in
+  let got = withInput ["only"] (\() -> (readLine (), readLine (), readLine ())) in
   assertEq got (Just "only", None, None) "None once the input runs out"
 
 @test fun emptyInputReadsNothing () =
   assertEq (withInput [] (\() -> readLine ())) None "nothing to read"
 
 @test fun readLineOrSubstitutesAtEndOfInput () =
-  let got =
-    withInput ["here"] (\() -> (readLineOr "gone", readLineOr "gone"))
-  in
+  let got = withInput ["here"] (\() -> (readLineOr "gone", readLineOr "gone")) in
   assertEq got ("here", "gone") "the fallback only applies at the end"
 
 @test fun readWordTrimsSurroundingSpace () =

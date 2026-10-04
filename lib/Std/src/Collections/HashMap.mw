@@ -372,9 +372,7 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
   assertTrue (forwards == detour) "deleting what was added"
 
 @test fun anyStructuredValueIsAKey () =
-  let a =
-    assertEq (lookup (1, "a") (singleton (1, "a") 1)) (Just 1) "a tuple"
-  in
+  let a = assertEq (lookup (1, "a") (singleton (1, "a") 1)) (Just 1) "a tuple" in
   -- A literal and a pushed vector are equal with different shapes inside.
   let b =
     assertEq
@@ -397,15 +395,11 @@ record Person = { name : String }
   -- have to be told apart by `==` in a collision node, and deleting them must
   -- collapse it again.
   let h = 12345 in
-  let m =
-    V.foldl (\acc i -> insertHashed h i (i * 10) acc) empty (V.range 0 5)
-  in
+  let m = V.foldl (\acc i -> insertHashed h i (i * 10) acc) empty (V.range 0 5) in
   let a = assertEq (size m) 5 "five colliding keys" in
   let b = assertTrue (V.all (\i -> lookupHashed h i m == Just (i * 10)) (V.range 0 5)) "each found"
   in
-  let c =
-    assertEq (lookupHashed h 9 m) None "a colliding key that is not there"
-  in
+  let c = assertEq (lookupHashed h 9 m) None "a colliding key that is not there" in
   let m2 = insertHashed h 3 99 m in
   let d = assertEq (lookupHashed h 3 m2) (Just 99) "replaced in place" in
   let d2 = assertEq (size m2) 5 "without growing" in

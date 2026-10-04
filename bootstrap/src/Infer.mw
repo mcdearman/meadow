@@ -302,8 +302,7 @@ fun solveJointly (i : Inf s) : Bool ! { St s | e } =
             (\w d ->
               (match V.find (\k -> (V.getOr (emptyPending ()) (stGetRef i.pending) k).node == fst d) (V.range 0 (V.len (stGetRef i.pending))) with
                | Just k ->
-                   (let p =
-                       V.getOr (emptyPending ()) (stGetRef i.pending) k
+                   (let p = V.getOr (emptyPending ()) (stGetRef i.pending) k
                      in let x = removePending i k in
                      choose i p (snd d))
                | None -> ()))
@@ -317,8 +316,7 @@ fun solveJointly (i : Inf s) : Bool ! { St s | e } =
                 (\x node ->
                   (match V.find (\k -> (V.getOr (emptyPending ()) (stGetRef i.pending) k).node == node) (V.range 0 (V.len (stGetRef i.pending))) with
                    | Just k ->
-                       (let p =
-                           V.getOr (emptyPending ()) (stGetRef i.pending) k
+                       (let p = V.getOr (emptyPending ()) (stGetRef i.pending) k
                          in let y = removePending i k in
                          let z = unify i.ar p.ty Error in
                          ())
@@ -415,9 +413,7 @@ fun search (i : Inf s) (group : [Pending]) (chosen : [Int]) (st : SearchState s)
              | None -> True)
           in
           let z = setLevel i.ar outer in
-          let q =
-            (if fits then search i group (V.pushBack chosen k) st else ())
-          in
+          let q = (if fits then search i group (V.pushBack chosen k) st else ()) in
           rollback i.ar snap)
       ()
       (V.range 0 (V.len p.candidates))
@@ -922,9 +918,7 @@ fun runStArg (cx : Cx s) (src : HirArena) out (body : HirExpr) =
   let outside = freshEffect i.ar in
   let mark = V.len (stGetRef i.subsumptions) in
   let u = enterLevel i.ar in
-  let v =
-    stSetRef i.stLevels (V.pushBack (stGetRef i.stLevels) (levelOf i.ar))
-  in
+  let v = stSetRef i.stLevels (V.pushBack (stGetRef i.stLevels) (levelOf i.ar)) in
   let state = freshSkolem i.ar in
   let lam =
     (match viewHirExpr src body with
@@ -1095,9 +1089,7 @@ fun updateParts (cx : Cx s) (src : HirArena) out base
          M.map (\acc -> (tyname, acc)) (H.lookup tyname (stGetRef i.recordFields))
      | _ -> None)
   in
-  let valueTy =
-    \fx -> typInferringExprIn out (inferringExprFieldValueIn out fx)
-  in
+  let valueTy = \fx -> typInferringExprIn out (inferringExprFieldValueIn out fx) in
   match nominal with
   | Just (tyname, accessors) ->
       let one =
@@ -1889,9 +1881,7 @@ fun registerTypes (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
         let params = V.map (\n -> hirNameText a n) r.params in
         let vars = indexed params in
         let quant = V.replicate (V.len params) Plain in
-        let head =
-          Con canon (V.map (\k -> Bound k) (V.range 0 (V.len params)))
-        in
+        let head = Con canon (V.map (\k -> Bound k) (V.range 0 (V.len params))) in
         V.foldl
           (\x v2 ->
             let fields =
@@ -1917,9 +1907,7 @@ fun registerTypes (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
         let canon = typeCanon items (hirNameText a r.name) in
         let params = V.map (\n -> hirNameText a n) r.params in
         let vars = indexed params in
-        let head =
-          Con canon (V.map (\k -> Bound k) (V.range 0 (V.len params)))
-        in
+        let head = Con canon (V.map (\k -> Bound k) (V.range 0 (V.len params))) in
         recordCtorIn
           i
           canon
@@ -2188,9 +2176,7 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
                  | Just (method : Scheme) ->
                      let base = V.len found.quant in
                      let own = V.len dictArgs in
-                     let quant =
-                       V.append found.quant (V.drop method.quant own)
-                     in
+                     let quant = V.append found.quant (V.drop method.quant own) in
                      let subst =
                        V.map
                          (\k -> if k < own
@@ -2326,9 +2312,7 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
     let dicts = implDicts r in
     -- Each module's tables, which the pass writes a binding into as its turn
     -- comes; and what each binding became.
-    let outs =
-      V.map (\k -> newInferringBuilder ()) (V.range 0 (V.len i.mods))
-    in
+    let outs = V.map (\k -> newInferringBuilder ()) (V.range 0 (V.len i.mods)) in
     let done = stNewRef H.empty in
     let u4 =
       V.foldl
@@ -2337,9 +2321,7 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
         ()
         order
     in
-    let u5 =
-      V.foldl (\w k -> exportEffectOps i (declaredOf r k).items) () order
-    in
+    let u5 = V.foldl (\w k -> exportEffectOps i (declaredOf r k).items) () order in
     let u6 =
       V.foldl
         (\w k ->
@@ -2371,8 +2353,7 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
             (V.map
               (\p ->
                 (let m = V.getOr 0 order (fst p) in
-                  let bs =
-                    snd (V.getOr (emptyArena (), []) grouped (fst p))
+                  let bs = snd (V.getOr (emptyArena (), []) grouped (fst p))
                   in (
                     hereAtBind i m (V.getOr (Binding { bind = 0, binds = [] }) bs (snd p)),
                     (V.getOr (Binding { bind = 0, binds = [] }) bs (snd p)).bind

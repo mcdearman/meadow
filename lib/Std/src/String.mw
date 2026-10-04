@@ -278,9 +278,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let b = assertEq (concat "" "x") "x" "concat onto nothing" in
   let c = assertEq (concatAll ["a", "b", "c"]) "abc" "concatAll" in
   let d = assertEq (join ", " ["a", "b"]) "a, b" "join" in
-  let e =
-    assertEq (join ", " ["only"]) "only" "one element gets no separator"
-  in
+  let e = assertEq (join ", " ["only"]) "only" "one element gets no separator" in
   let f = assertEq (join ", " []) "" "nothing" in
   let g = assertEq (repeat "ab" 3) "ababab" "repeat" in
   assertEq (repeat "ab" 0) "" "repeat none"
@@ -328,9 +326,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   -- rather than looping forever.
   let d = assertEq (split "" "abc") ["abc"] "an empty separator" in
   let e = assertEq (lines "a\nb\nc") ["a", "b", "c"] "lines" in
-  let f =
-    assertEq (lines "a\nb\n") ["a", "b"] "one trailing newline is ignored"
-  in
+  let f = assertEq (lines "a\nb\n") ["a", "b"] "one trailing newline is ignored" in
   assertEq (lines "") [] "no lines"
 
 @test fun trimming () =
@@ -373,9 +369,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let e = assertTrue (lessThan "" "a") "the empty string sorts first" in
   let f = assertTrue (lessThan "Zebra" "apple") "upper case before lower" in
   let g = assertTrue (lessThan "abcdefgh" "abcdefgi") "across a word" in
-  let h =
-    assertTrue (lessThan "abcdefgh" "abcdefgh\0") "a real zero byte after"
-  in
+  let h = assertTrue (lessThan "abcdefgh" "abcdefgh\0") "a real zero byte after" in
   let i = assertTrue (lessThan "z" "é") "by code point" in
   let j = assertEq (minOf "pear" "fig") "fig" "minOf" in
   assertEq (maxOf "pear" "fig") "pear" "maxOf"

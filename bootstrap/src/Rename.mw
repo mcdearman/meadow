@@ -212,9 +212,7 @@ fun ctorOf (env : Env) (name : String) : Int =
 -- `meadow-rename`'s `named_ctor` picks; else the first.
 fun ctorApplied out (env : Env) (name : String) (args : [HirExpr]) =
   let cands = M.unwrapOr [] (H.lookup (unmarked name) env.scope.ctors) in
-  let named =
-    V.filter (\c -> M.isSome (H.lookup c env.scope.ctorFields)) cands
-  in
+  let named = V.filter (\c -> M.isSome (H.lookup c env.scope.ctorFields)) cands in
   match (if V.len args == 1 then M.andThen (recordLabels out) (V.get args 0) else None) with
   | Just labels ->
       if V.len named == 1 then V.getOr (ctorOf env name) named 0
@@ -392,8 +390,7 @@ pass! {
           { tr = tr, ref = hidden out (nameMeta out tr) (typeOf env (textOf out tr)), tys = tys
           })
     | Decl.Trait { name, params, supers, assocs, sigs, later defaults } ->
-        (let u =
-            mention env (typeOf env (textOf out name)) (nameMeta out name)
+        (let u = mention env (typeOf env (textOf out name)) (nameMeta out name)
           in let w =
             V.foldl
               (\acc a ->

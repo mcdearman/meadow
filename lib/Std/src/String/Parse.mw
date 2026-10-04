@@ -607,9 +607,7 @@ fun rest input off = fst (takeWhile input (\t -> True) off)
           else Failed False (Trivial off (Just (Tokens got)) [Tokens want])
       | None ->
           let left = rest input off in
-          let unexpected =
-            if chunkEmpty left then EndOfInput else Tokens left
-          in
+          let unexpected = if chunkEmpty left then EndOfInput else Tokens left in
           Failed False (Trivial off (Just unexpected) [Tokens want]))
 
 -- The end of the input.
@@ -883,9 +881,7 @@ fun errorOf r =
 
 @test fun consumingCommits () =
   let lz = skipThen (single 'l') (single 'z') in
-  let a =
-    assertFalse (isOk (runParser (alt lz (single 'l')) "let")) "committed"
-  in
+  let a = assertFalse (isOk (runParser (alt lz (single 'l')) "let")) "committed" in
   let b = assertEq (runParser (alt (try lz) (single 'l')) "let") (Ok 'l') "try un-consumes"
   in
   assertEq (runParser (alt (chunk "letter") (chunk "let")) "lets") (Ok "let") "chunk is atomic"

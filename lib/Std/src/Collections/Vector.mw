@@ -38,13 +38,11 @@ fun vaMap f xs =
 
 fun vaFoldl f z xs =
   let n = arrayLen xs in
-  let rec go i acc =
-    if i >= n then acc else go (i + 1) (f acc (arrayGet xs i))
+  let rec go i acc = if i >= n then acc else go (i + 1) (f acc (arrayGet xs i))
   in go 0 z
 
 fun vaFoldr f z xs =
-  let rec go i acc =
-    if i < 0 then acc else go (i - 1) (f (arrayGet xs i) acc)
+  let rec go i acc = if i < 0 then acc else go (i - 1) (f (arrayGet xs i) acc)
   in go (arrayLen xs - 1) z
 
 -- --- representation ------------------------------------------------------
@@ -205,9 +203,7 @@ fun vPopChunkBack shift node =
         | Just _ -> Branch (Just (vSizesOf shift kids2)) kids2
       in
       if shift == vBits then
-        let chunk =
-          match vaLast kids with | Leaf xs -> xs | Branch _ _ -> #[]
-        in
+        let chunk = match vaLast kids with | Leaf xs -> xs | Branch _ _ -> #[] in
         (chunk, rebuilt (vaInit kids))
       else
         let (chunk, last2) = vPopChunkBack (shift - vBits) (vaLast kids) in
@@ -238,9 +234,7 @@ fun vPrependChunk shift node chunk =
         let room = vNodeLen (shift - vBits) fst0 + vWidth <= vNodeCap (shift - vBits)
         in
         if room then
-          let kids2 =
-            arraySet kids 0 (vPrependChunk (shift - vBits) fst0 chunk)
-          in
+          let kids2 = arraySet kids 0 (vPrependChunk (shift - vBits) fst0 chunk) in
           Branch (Just (vSizesOf shift kids2)) kids2
         else
           let kids2 = arrayConcat #[vNewSpine (shift - vBits) chunk] kids in
@@ -403,9 +397,7 @@ fun vPopChunkFront shift node =
         let rest = arraySlice kids 1 (arrayLen kids) in
         (chunk, Branch (Just (vSizesOf shift rest)) rest)
       else
-        let (chunk, first2) =
-          vPopChunkFront (shift - vBits) (arrayGet kids 0)
-        in
+        let (chunk, first2) = vPopChunkFront (shift - vBits) (arrayGet kids 0) in
         if vNodeLen (shift - vBits) first2 == 0
         then
           let rest = arraySlice kids 1 (arrayLen kids) in
@@ -729,9 +721,7 @@ use Std.Yield (Yield)
   assertEq (minimum [3, 1, 2]) (Just 1) "minimum"
 
 @test fun zipUnzipAndPartition () =
-  let a =
-    assertEq (toList (zip [1, 2] ["a", "b"])) [(1, "a"); (2, "b")] "zip"
-  in
+  let a = assertEq (toList (zip [1, 2] ["a", "b"])) [(1, "a"); (2, "b")] "zip" in
   let b = assertEq (toList (zipWith (\x y -> x + y) [1, 2] [10, 20])) [11; 22] "zipWith"
   in
   -- `zip` stops at the shorter side.
